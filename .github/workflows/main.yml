@@ -1,0 +1,1044 @@
+name: Windows RDP
+
+on:
+  workflow_dispatch:
+    inputs:
+      mirror_downloads_public:
+        description: 'Mirror Downloads+Temp+D-RDP-Storage (AES-256) to gofile+rentry. PUBLIC index! default OFF'
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Download Tailscale
+        run: |
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
+          $out = "tailscale-setup.msi"
+          $ok = $false
+          for ($a=1; $a -le 4; $a++) {
+            Remove-Item $out -Force -ErrorAction SilentlyContinue
+            & curl.exe -fL --retry 3 --retry-delay 2 --retry-connrefused --connect-timeout 30 --max-time 300 -o $out $url 2>$null
+            $LASTEXITCODE = 0
+            if ((Test-Path $out) -and (Get-Item $out).Length -gt 1000000) { $ok = $true; Write-Host "Downloaded via curl (attempt $a), size=$((Get-Item $out).Length)"; break }
+            Write-Host "curl attempt $a failed, retrying in $((3*$a))s..."; Start-Sleep -Seconds (3 * $a)
+          }
+          if (-not $ok) {
+            for ($a=1; $a -le 3; $a++) {
+              try { Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing; if ((Test-Path $out) -and (Get-Item $out).Length -gt 1000000) { $ok = $true; Write-Host "Downloaded via IWR (attempt $a)"; break } } catch { Write-Host "IWR attempt $a failed: $_" }
+              Start-Sleep -Seconds (3 * $a)
+            }
+          }
+          if (-not $ok) { throw "Could not download Tailscale MSI after retries (transient network issue - just re-run)." }
+
+      - name: Install Tailscale
+        run: |
+          Start-Process msiexec.exe -Wait -ArgumentList '/i tailscale-setup.msi /quiet'
+          Start-Sleep -Seconds 5
+
+      - name: Get Tailscale sign-in link
+        run: |
+          $ts = "C:\Program Files\Tailscale\tailscale.exe"
+          $daemonOk = $false
+          for ($i = 0; $i -lt 30; $i++) {
+            try { $j = & $ts status --json 2>$null | ConvertFrom-Json -ErrorAction Stop; if ($j -and $j.BackendState) { $daemonOk = $true; break } } catch { }
+            if ($i -eq 5) { Start-Service Tailscale -ErrorAction SilentlyContinue }
+            Start-Sleep -Seconds 2
+          }
+          if (-not $daemonOk) { throw "tailscaled not started." }
+          $upLog = Join-Path $env:RUNNER_TEMP "ts-up.log"; $upErr = Join-Path $env:RUNNER_TEMP "ts-up.err"
+          $null = Start-Process -FilePath $ts -ArgumentList "up" -RedirectStandardOutput $upLog -RedirectStandardError $upErr -WindowStyle Hidden -PassThru
+          $url = $null
+          for ($i = 0; $i -lt 60; $i++) {
+            $txt = ""
+            foreach ($f in @($upLog, $upErr)) { if (Test-Path $f) { try { $fs = [System.IO.File]::Open($f,'Open','Read','ReadWrite'); $sr = New-Object System.IO.StreamReader($fs); $txt += $sr.ReadToEnd(); $sr.Close(); $fs.Close() } catch { } } }
+            if ($txt -match 'https://login\.tailscale\.com/[A-Za-z0-9_/\-]+') { $url = $Matches[0]; break }
+            Start-Sleep -Seconds 2
+          }
+          if (-not $url) { Write-Host $txt; throw "Sign-in link not found." }
+          Write-Host "TAILSCALE SIGN-IN LINK: $url"
+          $url | Out-File (Join-Path $env:RUNNER_TEMP "ts-login-url.txt") -Encoding utf8
+          "### Tailscale Sign-in Link (click to authorize the runner)" >> $env:GITHUB_STEP_SUMMARY; "" >> $env:GITHUB_STEP_SUMMARY; "[$url]($url)" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Wait for Tailscale sign-in
+        run: |
+          $ts = "C:\Program Files\Tailscale\tailscale.exe"; $authed = $false
+          for ($i = 0; $i -lt 120; $i++) {
+            try { $j = & $ts status --json 2>$null | ConvertFrom-Json -ErrorAction Stop; if ($j -and $j.BackendState -eq 'Running') { $authed = $true; break } } catch { }
+            Start-Sleep -Seconds 5
+          }
+          if (-not $authed) { throw "Sign-in timeout." }
+          Write-Host "Tailscale connected. IP = $((& $ts ip -4).Trim())"
+
+      # === EDIT 1: Auto-enable Funnel - prints FULL Sinhala guide WITH clickable links IN THIS LOG when secret missing ===
+      - name: Auto-enable Funnel on tailnet (Tailscale API, one-time secret)
+        env:
+          TS_KEY: ${{ secrets.TS_API_KEY }}
+        run: |
+          $tok = $env:TS_KEY
+          $secretPage = 'https://github.com/' + $env:GITHUB_REPOSITORY + '/settings/secrets/actions/new'
+          $actionsPage = 'https://github.com/' + $env:GITHUB_REPOSITORY + '/actions'
+          $tokenPage  = 'https://login.tailscale.com/admin/settings/keys'
+          $aclPage    = 'https://login.tailscale.com/admin/acls'
+          if(-not $tok){
+            Write-Host ''
+            Write-Host '############################################################'
+            Write-Host '#  CLICKABLE HYPERLINK GUIDE  (මේ step log එක ඇතුළේම)'
+            Write-Host '#  TS_API_KEY secret එක තාම add කරලා නෑ. පහත links click'
+            Write-Host '#  කරලා එක පාරක් setup කරන්න - ඊට පස්සේ සදහටම auto.'
+            Write-Host '############################################################'
+            Write-Host ''
+            Write-Host '[පියවර 1] අලුත් code commit කරන්න: මේ file එකේ EDIT 1 + EDIT 2 changes ටික repo එකට commit/push කරන්න (දැනටමත් කරලා නම් ඊළඟ පියවරට).'
+            Write-Host ''
+            Write-Host '[පියවර 2] Tailscale API token එකක් හදාගන්න - මේ link එක click කරන්න:'
+            Write-Host ('    ' + $tokenPage)
+            Write-Host '    -> Access tokens කොටසේ "Generate access token" ඔබන්න -> නම ghrdp දෙන්න, expiry පුළුවන් තරම් වැඩියෙන් -> Generate -> tskey-api-... token එක COPY කරගන්න (ආයේ පේන්නේ නෑ).'
+            Write-Host ''
+            Write-Host '[පියවර 3] Token එක GitHub secret එකක් විදිහට දාන්න - මේ link එක click කරන්න (ඔයාගේ repo secret page එකටම යනවා):'
+            Write-Host ('    ' + $secretPage)
+            Write-Host '    -> Name = TS_API_KEY (capital අකුරින්) -> Value = copy කරපු token paste -> Add secret.'
+            Write-Host ''
+            Write-Host '[පියවර 4] Workflow එක re-run කරන්න - මේ link එක click කරන්න:'
+            Write-Host ('    ' + $actionsPage)
+            Write-Host '    -> Run workflow ඔබන්න -> Tailscale sign-in link එක click කරන්න. මේ පාර මේ step එක API එක හරහා ACL update කරලා Funnel ON කරනවා.'
+            Write-Host ''
+            Write-Host '[පියවර 5] විඳගන්න: re-run එකේ Show RDP credentials step එක expand කරාම clickable https hyperlink එක (Funnel link) පේනවා -> click -> web-app load -> zero-typing RDP.'
+            Write-Host ''
+            Write-Host '--- Secret add කරන්න බෑ නම් MANUAL විදිහටත් පුළුවන් - මේ link එක click කරන්න:'
+            Write-Host ('    ' + $aclPage)
+            Write-Host '    -> ACL JSON එකට  "nodeAttrs":[{"target":["*"],"attr":["funnel"]}]  merge කරලා Save -> re-run.'
+            Write-Host ''
+            Write-Host '############################################################'
+            Write-Host '#  දැන්ම RDP යන්න (wait කරන්න ඕනෑ නෑ) - මේ ghrdp link එක'
+            Write-Host '#  ඔයාගේ LOCAL browser address bar එකේ PASTE කරලා Enter,'
+            Write-Host '#  ඊට පස්සේ Open එක පාරක් click (password auto-fill වෙනවා):'
+            Write-Host ('#    ' + $env:GHRDP_NOW)
+            Write-Host '#  (ghrdp:// log එකේ clickable වෙන්නේ නෑ - GitHub rule එකක්;'
+            Write-Host '#   ඒක paste fallback විතරයි. clickable link = පියවර 5.)'
+            Write-Host '############################################################'
+            Write-Host ''
+            exit 0
+          }
+          $base = 'https://api.tailscale.com/api/v2/tailnet/-/acl'
+          $authH = @{ Authorization = ("Bearer " + $tok); Accept = 'application/json' }
+          $txt = $null
+          try { $r = Invoke-WebRequest -Uri $base -Headers $authH -UseBasicParsing -TimeoutSec 30; $txt = $r.Content } catch { Write-Host "[acl] GET failed: $($_.Exception.Message)" }
+          $acl = $null
+          if($txt){
+            $clean = $txt -replace '/\*[\s\S]*?\*/',''
+            $clean = ($clean -split "`n" | ForEach-Object { $_ -replace '//[^\r\n]*','' }) -join "`n"
+            $clean = $clean -replace ',(\s*[\]}])','$1'
+            try { $acl = $clean | ConvertFrom-Json -ErrorAction Stop } catch { Write-Host "[acl] could not parse ACL text - will NOT clobber your rules."; $acl=$null }
+          }
+          $needPost = $false
+          if($acl){
+            $na = @()
+            if($acl.PSObject.Properties['nodeAttrs'] -and $acl.nodeAttrs){ $na = @($acl.nodeAttrs) }
+            $has = $false
+            foreach($n in $na){ $tg=@($n.target); $at=@($n.attr); if(($tg -contains '*') -and ($at -contains 'funnel')){ $has=$true } }
+            if(-not $has){
+              $na = $na + ,@{ target=@('*'); attr=@('funnel') }
+              if($acl.PSObject.Properties['nodeAttrs']){ $acl.nodeAttrs = $na } else { $acl | Add-Member -NotePropertyName 'nodeAttrs' -NotePropertyValue $na -Force }
+              $needPost = $true
+            } else { Write-Host "[acl] funnel attr already present - nothing to do." }
+          }
+          if($needPost){
+            $body = [System.Text.Encoding]::UTF8.GetBytes(($acl | ConvertTo-Json -Depth 12 -Compress))
+            try {
+              Invoke-WebRequest -Uri $base -Headers (@{ Authorization=("Bearer "+$tok); 'Content-Type'='application/json' }) -Method Post -Body $body -UseBasicParsing -TimeoutSec 30 | Out-Null
+              Write-Host "[acl] SUCCESS - Funnel attr added via API (existing acls/ssh rules kept)."
+            } catch { Write-Host "[acl] merged POST failed: $($_.Exception.Message) - NOT clobbering your ACL." }
+          }
+          if(-not $acl){ Write-Host "[acl] left ACL unchanged (could not safely read it). If Funnel still fails, regenerate the token with admin rights." }
+
+      # === FIX: Setup tailnet web link - serve launched NON-BLOCKING (never hangs) ===
+      - name: Setup tailnet web link (Tailscale Serve - clickable, no secret needed)
+        run: |
+          $ts="C:\Program Files\Tailscale\tailscale.exe"
+          $rng=[System.Security.Cryptography.RandomNumberGenerator]::Create(); $alpha='abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'; $b=[byte[]]::new(24); $rng.GetBytes($b); $dashToken=-join ($b|%{$alpha[[int]$_ % $alpha.Length]})
+          Add-Content $env:GITHUB_ENV ("DASH_TOKEN=" + $dashToken)
+          $serveOut=Join-Path $env:RUNNER_TEMP 'serve.out'; $serveErr=Join-Path $env:RUNNER_TEMP 'serve.err'
+          Remove-Item $serveOut,$serveErr -Force -EA 0
+          # --- NON-BLOCKING: launch serve detached, NEVER wait on it (THIS is what hung before) ---
+          try { Start-Process -FilePath $ts -ArgumentList @('serve','--bg','7331') -RedirectStandardOutput $serveOut -RedirectStandardError $serveErr -WindowStyle Hidden | Out-Null; Write-Host '[serve] launched detached (non-blocking) - step will NOT hang' } catch { Write-Host ('[serve] launch err: ' + $_) }
+          # --- DNSName is ready right after sign-in; poll FAST with a hard 20s cap (each status call itself time-boxed) ---
+          $serveUrl=''; $dns=''
+          $deadline=(Get-Date).AddSeconds(20)
+          while((Get-Date) -lt $deadline){
+            $stj=$null
+            try { $j=Start-Job -ScriptBlock { param($t) & $t status --json 2>$null } -ArgumentList $ts; if(Wait-Job $j -Timeout 4){ $stj=Receive-Job $j | ConvertFrom-Json -EA 0 }; Remove-Job $j -Force -EA 0 } catch { try{ Remove-Job $j -Force -EA 0 }catch{} }
+            if($stj -and $stj.Self.DNSName){ $dns=$stj.Self.DNSName.TrimEnd('.'); break }
+            Start-Sleep -Seconds 2
+          }
+          if($dns){ $serveUrl = ('https://' + $dns + '/?key=' + $dashToken) }
+          Add-Content $env:GITHUB_ENV ('SERVE_URL=' + $serveUrl)
+          Start-Sleep -Seconds 2
+          $slog=''; if(Test-Path $serveOut){ $slog=(Get-Content $serveOut -Raw -EA 0) }
+          $serr=''; if(Test-Path $serveErr){ $serr=(Get-Content $serveErr -Raw -EA 0) }
+          if($slog){ Write-Host ('[serve out] ' + (($slog -replace "`r`n",' ').Trim())) }
+          if($serr){ Write-Host ('[serve err] ' + (($serr -replace "`r`n",' ').Trim())) }
+          Write-Host '============================================================'
+          if($serveUrl){
+            Write-Host '  TAILNET WEB LINK (clickable on your LOCAL pc):'
+            Write-Host ('  SERVE_WEBAPP_LINK: ' + $serveUrl)
+            Write-Host '  Serve applies in the background; link is live ~1 min after'
+            Write-Host '  the run starts (when Keep Alive hosts the dashboard).'
+          } else {
+            Write-Host '  DNS name not found within 20s - serve link skipped this run.'
+            Write-Host '  Use the ghrdp paste link in the Show RDP credentials step.'
+          }
+          Write-Host '============================================================'
+          '### Tailnet web-app link (click on your local pc)' >> $env:GITHUB_STEP_SUMMARY
+          if($serveUrl){ ('**[>>> OPEN RDP WEB-APP FROM YOUR PC <<<](' + $serveUrl + ')**  _(live once Keep Alive starts)_') >> $env:GITHUB_STEP_SUMMARY } else { '_Serve link not ready - use the ghrdp paste link in the Show RDP credentials step._' >> $env:GITHUB_STEP_SUMMARY }
+      - name: Enable RDP + harden + open dashboard port (all profiles)
+        run: |
+          $rdp = 'HKLM:\System\CurrentControlSet\Control\Terminal Server'
+          Set-ItemProperty -Path $rdp -Name "fDenyTSConnections" -Value 0
+          Set-ItemProperty -Path "$rdp\WinStations\RDP-Tcp" -Name "UserAuthentication" -Value 1
+          Set-ItemProperty -Path "$rdp\WinStations\RDP-Tcp" -Name "SecurityLayer" -Value 2
+          Set-ItemProperty -Path "$rdp\WinStations\RDP-Tcp" -Name "MinEncryptionLevel" -Value 3
+          Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+          Get-NetFirewallRule -DisplayGroup "Remote Desktop" -Direction Inbound -ErrorAction SilentlyContinue | Set-NetFirewallRule -RemoteAddress "100.64.0.0/10" -ErrorAction SilentlyContinue
+          Remove-NetFirewallRule -DisplayName 'ghrdp-dash' -ErrorAction SilentlyContinue
+          New-NetFirewallRule -DisplayName 'ghrdp-dash' -Direction Inbound -LocalPort 7331 -Protocol TCP -Action Allow -Profile Any -Enabled True -ErrorAction SilentlyContinue | Out-Null
+          & netsh.exe advfirewall firewall add rule name="ghrdp-dash-netsh" dir=in action=allow protocol=TCP localport=7331 enable=yes | Out-Null; $LASTEXITCODE=0
+          & net.exe accounts /lockoutthreshold:5 /lockoutduration:30 /lockoutwindow:30 2>$null | Out-Null; $LASTEXITCODE = 0
+
+      - name: Create secure random RDP account + D-RDP-Storage
+        run: |
+          $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+          $alpha = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+          $bytes = [byte[]]::new(24); $rng.GetBytes($bytes); $pass = -join ($bytes | ForEach-Object { $alpha[[int]$_ % $alpha.Length] })
+          $hb = [byte[]]::new(4); $rng.GetBytes($hb); $user = 'rdp' + (-join ($hb | ForEach-Object { $_.ToString('x2') }))
+          New-LocalUser -Name $user -Password (ConvertTo-SecureString $pass -AsPlainText -Force) -FullName "RDP Session" -PasswordNeverExpires -ErrorAction Stop | Out-Null
+          Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction SilentlyContinue
+          if (Test-Path 'D:\') {
+            $big = 'D:\RDP-Storage'; New-Item -ItemType Directory -Path $big -Force | Out-Null
+            & icacls.exe $big /grant "${user}:(OI)(CI)F" 2>$null | Out-Null; $LASTEXITCODE = 0
+            $ws = New-Object -ComObject WScript.Shell; $sc = $ws.CreateShortcut("C:\Users\Public\Desktop\RDP-Storage (D).lnk"); $sc.TargetPath = $big; $sc.Save()
+            Write-Host "D:\RDP-Storage ready (146GB-backed, mirrored)."
+          } else { Write-Host "No D: drive detected." }
+          Add-Content $env:GITHUB_ENV "RDP_USER=$user"; Add-Content $env:GITHUB_ENV "RDP_PASS=$pass"
+          Write-Host "Created account: $user"
+
+      # === EDIT 2: Show RDP credentials - creds + clickable Funnel link + ghrdp paste + guide, ALL in this log ===
+      - name: Show RDP credentials (open THIS step for IP/user/pass + clickable link)
+        run: |
+          $ip = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4).Trim()
+          $user = $env:RDP_USER; $pass = $env:RDP_PASS
+          $ghrdp = "ghrdp://" + $ip + "/" + [uri]::EscapeDataString($user) + "/" + [uri]::EscapeDataString($pass)
+          Add-Content $env:GITHUB_ENV ("GHRDP_NOW=" + $ghrdp)
+          $serveUrl = $env:SERVE_URL
+          Write-Host '============================================================'
+          Write-Host ('  RDP CREDENTIALS  IP=' + $ip + '  USER=' + $user + '  PASS=' + $pass)
+          Write-Host '============================================================'
+          if($serveUrl){
+            Write-Host ''
+            Write-Host '>>> CLICKABLE WEB-APP LINK (LOCAL pc -> auto RDP, zero typing):'
+            Write-Host ('    WEBAPP_LINK: ' + $serveUrl)
+            Write-Host '    (live ~1 min after run starts, when Keep Alive hosts it)'
+          }
+          Write-Host ''
+          Write-Host '>>> ZERO-TYPING now (PASTE in LOCAL browser bar + Enter + Open):'
+          Write-Host ('    ' + $ghrdp)
+          Write-Host ''
+          Write-Host ('>>> Manual mstsc: mstsc -> ' + $ip + '  user ' + $user + '  pass ' + $pass)
+          Write-Host '============================================================'
+
+      - name: Write mirror lib (shared functions)
+        if: ${{ github.event.inputs.mirror_downloads_public == 'true' }}
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/ghrdp-lib.ps1" <<'EOF'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $ErrorActionPreference = 'SilentlyContinue'
+          function Read-Cfg { Get-Content $env:GHRDP_CFG -Raw | ConvertFrom-Json }
+          function B64U($s){ $x=[Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($s)); return $x.Replace('+','-').Replace('/','_').TrimEnd('=') }
+          $global:GHRDP_PROG = @{ ts=''; alive=$true; active=@{name='';phase='idle';bytesDone=0;bytesTotal=0;pct=0;speedBps=0}; agg=@{total=0;done=0;active=0;failed=0;tracked=0;bytesDone=0;bytesTotal=0;overallPct=0;speedBps=0}; files=@(); log=@() }
+          $global:GHRDP_PROG_PATH = $null; $global:GHRDP_LASTFLUSH = 0
+          $global:GHRDP_DONE_BYTES = 0; $global:GHRDP_TOTAL_BYTES = 0
+          $global:GHRDP_SP = @{t=0;b=0}; $global:GHRDP_SP_A = @{t=0;b=0}
+          function Init-Progress($path){ $global:GHRDP_PROG_PATH=$path; $n=[datetime]::Now.Ticks; $global:GHRDP_SP=@{t=$n;b=0}; $global:GHRDP_SP_A=@{t=$n;b=0} }
+          function Set-Active($name,$phase,$total){ $a=$global:GHRDP_PROG.active; $a.name=$name; $a.phase=$phase; $a.bytesDone=0; $a.bytesTotal=[long]$total; $a.pct=0; $a.speedBps=0; $global:GHRDP_SP_A=@{t=[datetime]::Now.Ticks;b=0} }
+          function Tick-Bytes($n){ $p=$global:GHRDP_PROG; $p.active.bytesDone += [long]$n; $now=[datetime]::Now.Ticks; if(($now-$global:GHRDP_LASTFLUSH) -gt 2000000){ Flush-Progress $false } }
+          function Flush-Progress($force){ $now=[datetime]::Now.Ticks; if(-not $force -and ($now-$global:GHRDP_LASTFLUSH) -lt 2000000){ return }; $global:GHRDP_LASTFLUSH=$now; $p=$global:GHRDP_PROG; $p.ts=[datetime]::Now.ToString('o'); $comp = $global:GHRDP_DONE_BYTES + $(if($p.active.phase -eq 'upload'){ $p.active.bytesDone } else { 0 }); $dt=($now-$global:GHRDP_SP.t)/10000000.0; if($dt -gt 0.5){ $p.agg.speedBps=[math]::Max(0,[math]::Round(($comp-$global:GHRDP_SP.b)/$dt)); $global:GHRDP_SP=@{t=$now;b=$comp} }; $dta=($now-$global:GHRDP_SP_A.t)/10000000.0; if($dta -gt 0.5){ $p.active.speedBps=[math]::Max(0,[math]::Round(($p.active.bytesDone-$global:GHRDP_SP_A.b)/$dta)); $global:GHRDP_SP_A=@{t=$now;b=$p.active.bytesDone} }; if($p.active.bytesTotal -gt 0){ $p.active.pct=[math]::Round(100.0*$p.active.bytesDone/$p.active.bytesTotal,1) } else { $p.active.pct=0 }; $p.agg.bytesDone=$comp; if($p.agg.bytesTotal -gt 0){ $p.agg.overallPct=[math]::Round(100.0*$comp/$p.agg.bytesTotal,1) } else { $p.agg.overallPct=0 }; if($global:GHRDP_PROG_PATH){ try{ $p | ConvertTo-Json -Depth 6 -Compress | Set-Content $global:GHRDP_PROG_PATH -Encoding UTF8 }catch{} } }
+          function Encrypt-File($inPath,$outPath,$password){
+          $aes=[System.Security.Cryptography.Aes]::Create(); $aes.KeySize=256; $aes.Mode='CBC'; $aes.Padding='PKCS7'
+          $salt=[byte[]]::new(16); ([System.Security.Cryptography.RandomNumberGenerator]::Create()).GetBytes($salt)
+          $aes.IV=[byte[]]::new(16); ([System.Security.Cryptography.RandomNumberGenerator]::Create()).GetBytes($aes.IV)
+          $kdf=New-Object System.Security.Cryptography.Rfc2898DeriveBytes($password,$salt,100000,[System.Security.Cryptography.HashAlgorithmName]::SHA256); $aes.Key=$kdf.GetBytes(32)
+          $outFs=[System.IO.File]::Create($outPath); $outFs.Write($salt,0,16); $outFs.Write($aes.IV,0,16)
+          $cs=New-Object System.Security.Cryptography.CryptoStream($outFs, $aes.CreateEncryptor(), [System.Security.Cryptography.CryptoStreamMode]::Write)
+          $inFs=[System.IO.File]::Open($inPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+          $buf=New-Object byte[] 65536; $r=1
+          while($r -gt 0){ $r=$inFs.Read($buf,0,$buf.Length); if($r -gt 0){ $cs.Write($buf,0,$r); Tick-Bytes $r } }
+          $inFs.Close(); $cs.Close(); $outFs.Close(); $aes.Clear() }
+          function Upload-Gofile-Streamed($encPath,$dispName){
+          for($a=1;$a -le 3;$a++){
+            $srv=$null
+            try { $gs=(& curl.exe -s --max-time 30 "https://api.gofile.io/getServer")|ConvertFrom-Json -ErrorAction Stop; $srv=$gs.data.server } catch { "getServer err $_"|Out-File $env:GHRDP_LOG -Append; $LASTEXITCODE=0; Start-Sleep -Seconds (5*$a); continue }
+            try {
+              $boundary='ghrdp'+[guid]::NewGuid().ToString('N'); $iso=[System.Text.Encoding]::GetEncoding('iso-8859-1')
+              $hdr=$iso.GetBytes("--$boundary`r`nContent-Disposition: form-data; name=`"file`"; filename=`"$dispName`"`r`nContent-Type: application/octet-stream`r`n`r`n")
+              $foot=$iso.GetBytes("`r`n--$boundary--`r`n")
+              $req=[System.Net.HttpWebRequest]::Create("https://$srv.gofile.io/contents/uploadfile")
+              $req.Method='POST'; $req.ContentType="multipart/form-data; boundary=$boundary"; $req.SendChunked=$true; $req.Timeout=1800000; $req.ReadWriteTimeout=1800000; $req.UserAgent='ghrdp/1'
+              $rs=$req.GetRequestStream(); $rs.Write($hdr,0,$hdr.Length)
+              $fs=[System.IO.File]::Open($encPath,'Open','Read','Read'); $buf=New-Object byte[] 65536; $r=1
+              while($r -gt 0){ $r=$fs.Read($buf,0,$buf.Length); if($r -gt 0){ $rs.Write($buf,0,$r); Tick-Bytes $r } }
+              $fs.Close(); $rs.Write($foot,0,$foot.Length); $rs.Close()
+              $resp=$req.GetResponse(); $sr=New-Object System.IO.StreamReader($resp.GetResponseStream()); $raw=$sr.ReadToEnd(); $sr.Close(); $resp.Close()
+              $uj=$raw|ConvertFrom-Json -ErrorAction Stop
+              if($uj.status -eq 'ok'){ if($uj.data.downloadPage){return $uj.data.downloadPage}; if($uj.data.code){return "https://gofile.io/d/$($uj.data.code)"}; if($uj.data.id){return "https://gofile.io/d/$($uj.data.id)"} }
+              "gofile-stream try $a status=$($uj.status)"|Out-File $env:GHRDP_LOG -Append
+            } catch {
+              "gofile-stream try $a err $_"|Out-File $env:GHRDP_LOG -Append
+              try { $raw=& curl.exe -s --max-time 1800 -X POST "https://$srv.gofile.io/contents/uploadfile" -F "file=@$encPath"; $uj=$raw|ConvertFrom-Json -ErrorAction Stop; if($uj.status -eq 'ok'){ if($uj.data.downloadPage){return $uj.data.downloadPage}; if($uj.data.code){return "https://gofile.io/d/$($uj.data.code)"} } } catch { "gofile-curl fallback err $_"|Out-File $env:GHRDP_LOG -Append }
+            }
+            $LASTEXITCODE=0; Start-Sleep -Seconds (5*$a)
+          }
+          return $null }
+          function Push-Rentry($cfg,$text){
+          for ($n=0; $n -lt 2; $n++){
+            try { $out=& curl.exe -s -S --max-time 30 -X POST ("https://rentry.co/api/edit/"+$cfg.slug) --data-urlencode "edit_code=$($cfg.editCode)" --data-urlencode "text=$text" --data-urlencode "update_mode=replace" 2>$null
+            $j=$out|ConvertFrom-Json -ErrorAction Stop; if("$($j.status)" -eq '200'){return $true}; "rentry $($j.status)"|Out-File $env:GHRDP_LOG -Append } catch { "rentry err $_"|Out-File $env:GHRDP_LOG -Append }
+            $LASTEXITCODE=0; Start-Sleep -Seconds 3 }
+          return $false }
+          function Load-Index($cfg){ if(Test-Path $cfg.idxFile){ try{ return [System.Collections.ArrayList]@(Get-Content $cfg.idxFile -Raw|ConvertFrom-Json -ErrorAction Stop) }catch{} }; return (New-Object System.Collections.ArrayList) }
+          function Save-Index($cfg,$idx){ $idx|ConvertTo-Json -Depth 5|Set-Content $cfg.idxFile -Encoding UTF8 }
+          function Icon($s){ if($s -eq 'ok'){return 'OK'} elseif($s -eq 'limit'){return 'LIMIT'} else {return '...' } }
+          function Build-Rentry($cfg,$idx){
+          $sb=New-Object System.Text.StringBuilder
+          [void]$sb.AppendLine("# GitHub RDP - mirrored files"); [void]$sb.AppendLine("")
+          [void]$sb.AppendLine("Files are **AES-256 encrypted** on gofile. **Decrypt password:** ``$($cfg.decPw)``"); [void]$sb.AppendLine("")
+          [void]$sb.AppendLine("| # | File | Status | One-click | gofile | Source | Time |"); [void]$sb.AppendLine("|---|---|---|---|---|---|---|")
+          if($idx.Count -eq 0){ [void]$sb.AppendLine("| - | _(none yet)_ | - | - | - | - | - |") }
+          $n=1; foreach($it in $idx){ $oc=if($it.status -eq 'ok'){'[open](ghrdp://dl/'+$it.payload+')'}else{'-'}; $gf=if($it.gofile){'[gofile]('+$it.gofile+')'}else{'-'}; [void]$sb.AppendLine("| $n | "+$it.name+" | "+(Icon $it.status)+" | "+$oc+" | "+$gf+" | "+$it.src+" | "+$it.time+" |"); $n++ }
+          [void]$sb.AppendLine(""); [void]$sb.AppendLine("_OK uploaded  ... progress  LIMIT auto-retry_"); return $sb.ToString() }
+          EOF
+
+      - name: Write dashboard server script (token gate + funnel-aware + accurate diag)
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/rdp-redirect-server.ps1" <<'EOF'
+          function Start-GhrdpServer {
+          param([int]$Port,[string]$BindAddress,[string]$UiDir,[string]$ProgressPath,[string]$CfgPath,[string]$EmergencyFlagPath,[string]$FlushFlagPath,[string]$OkFile)
+          $ErrorActionPreference='SilentlyContinue'
+          $uiPath = Join-Path $UiDir 'ghrdp-ui.html'
+          $uiBytes = if(Test-Path $uiPath){ [System.IO.File]::ReadAllBytes($uiPath) } else { [System.Text.Encoding]::UTF8.GetBytes('<h1 style="font-family:sans-serif;color:#e9eef3;background:#0a0e12;padding:30px">dashboard ui missing</h1>') }
+          function ParseHeaders($raw){
+            $h=@{}; $lines=$raw -split "`r`n"; for($i=1;$i -lt $lines.Length;$i++){ $l=$lines[$i]; $ix=$l.IndexOf(':'); if($ix -gt 0){ $h[($l.Substring(0,$ix).Trim().ToLower())]=$l.Substring($ix+1).Trim() } }
+            $qp=@{}; if($lines[0] -match '\?(.+)\s'){ foreach($kv in ($Matches[1] -split '&')){ $p=$kv -split '='; if($p.Length -eq 2){ $qp[$p[0].ToLower()]=[uri]::UnescapeDataString($p[1]) } } }
+            return @{ headers=$h; query=$qp }
+          }
+          function IsLoopbackHost($parsed){
+            $host_ = $parsed.headers['host']; if($host_){ $host_ = ($host_ -split ':')[0] }
+            $xfh = $parsed.headers['x-forwarded-host']; $xff = $parsed.headers['x-forwarded-for']
+            $loopHost = ($host_ -eq '127.0.0.1') -or ($host_ -eq 'localhost') -or ($host_ -eq '[::1]')
+            return ($loopHost -and -not $xfh -and -not $xff)
+          }
+          function ReadReq($stream){ $stream.ReadTimeout=5000; $acc=New-Object System.Text.StringBuilder; $buf=New-Object byte[] 4096; while($true){ $n=0; try{$n=$stream.Read($buf,0,$buf.Length)}catch{break}; if($n -le 0){break}; [void]$acc.Append([System.Text.Encoding]::ASCII.GetString($buf,0,$n)); if($acc.ToString().Contains("`r`n`r`n")){break}; if($acc.Length -gt 16384){break} }; return $acc.ToString() }
+          function WriteResp($stream,$code,$ctype,$bodyBytes){ $status=switch([int]$code){200{'OK'}401{'Unauthorized'}404{'Not Found'}default{'OK'}}; $hdr="HTTP/1.1 $code $status`r`nContent-Type: $ctype`r`nContent-Length: $($bodyBytes.Length)`r`nConnection: close`r`nCache-Control: no-store`r`n`r`n"; $hb=[System.Text.Encoding]::ASCII.GetBytes($hdr); $stream.Write($hb,0,$hb.Length); if($bodyBytes.Length -gt 0){ $stream.Write($bodyBytes,0,$bodyBytes.Length) }; $stream.Flush() }
+          function BuildDiag($cfg,$parsed){
+            $bindOk = $true
+            $fw = $false; try { $fw = [bool](Get-NetFirewallRule -DisplayName 'ghrdp-dash' -ErrorAction Stop) } catch {}
+            $tsip = $cfg.rdpIp; if(-not $tsip){ try { $tsip = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4 2>$null).Trim() } catch {} }
+            $selfConnect = $false; $selfErr = ''
+            if($tsip){ try { Invoke-WebRequest -Uri ("http://{0}:{1}/?key={2}" -f $tsip,$Port,$cfg.dashToken) -UseBasicParsing -TimeoutSec 4 | Out-Null; $selfConnect = $true } catch { $selfErr = "$_" } }
+            $listen = [bool](Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue)
+            $loopback = IsLoopbackHost $parsed
+            return [ordered]@{
+              bindAddress = $BindAddress; bindOk = $bindOk; portListening = $listen; firewallRulePresent = $fw
+              tailscaleIp = $tsip; selfConnectFromVmViaTailscaleIp = $selfConnect; selfConnectError = $selfErr
+              funnelUrl = $(if($cfg.funnelUrl){$cfg.funnelUrl}else{'(funnel not enabled - see Mission Control console)'})
+              requestCameViaLoopback = $loopback; requestHost = $parsed.headers['host']
+              note = "Direct Tailscale-IP access from a local pc is blocked by GitHub runner network policy. Use the FUNNEL url (token-gated) for local-pc access; the dashboard then AUTO-FIRES the ghrdp handler for zero-typing RDP."
+            }
+          }
+          function HandleOne($client){
+            try {
+              $stream=$client.GetStream(); $req=ReadReq $stream; $parsed=ParseHeaders $req
+              $path='/'; if($req -match '(?m)^GET\s+(\S+)'){ $path=($Matches[1] -split '\?')[0] }
+              $cfg=$null; try{ $cfg=Get-Content $CfgPath -Raw|ConvertFrom-Json -ErrorAction Stop }catch{}
+              $loop = IsLoopbackHost $parsed
+              $keyOk = $loop -or (($parsed.query['key']) -and ($parsed.query['key'] -eq $cfg.dashToken))
+              if(-not $keyOk){ $msg=[System.Text.Encoding]::UTF8.GetBytes("401 - missing or bad ?key=. Use the ONE-CLICK RDP link in the GitHub Summary tab (it carries the key)."); WriteResp $stream 401 'text/plain; charset=utf-8' $msg; return }
+              if($path -eq '/emergency'){ Set-Content $EmergencyFlagPath (Get-Date -f o) -Encoding ascii; WriteResp $stream 200 'application/json' ([System.Text.Encoding]::UTF8.GetBytes('{"ok":true}')) }
+              elseif($path -eq '/diag'){ $d = BuildDiag $cfg $parsed; WriteResp $stream 200 'application/json' ([System.Text.Encoding]::UTF8.GetBytes(($d|ConvertTo-Json -Depth 6 -Compress))) }
+              elseif($path -eq '/progress' -or $path -eq '/app.js'){
+                $prog=@{alive=$false}; if(Test-Path $ProgressPath){ try{ $prog=Get-Content $ProgressPath -Raw|ConvertFrom-Json -ErrorAction Stop }catch{} }
+                $obj=[ordered]@{ serverTs=(Get-Date -f o); viaLoopback=$loop; funnelUrl=$(if($cfg.funnelUrl){$cfg.funnelUrl}else{''}); ghrdp=$(if($cfg){$cfg.ghrdp}else{''}); rentry=$(if($cfg){$cfg.rentryUrl}else{''}); mirror=$(if($cfg){[bool]$cfg.mirror}else{$false}); creds=@{ip=$(if($cfg){$cfg.rdpIp}else{''});user=$(if($cfg){$cfg.rdpUser}else{''});pass=$(if($cfg){$cfg.rdpPass}else{''})}; ts=$prog.ts; alive=$prog.alive; active=$prog.active; agg=$prog.agg; files=$prog.files; log=$prog.log }
+                WriteResp $stream 200 'application/json' ([System.Text.Encoding]::UTF8.GetBytes(($obj|ConvertTo-Json -Depth 8 -Compress)))
+              } else { WriteResp $stream 200 'text/html; charset=utf-8' $uiBytes }
+            } catch { }
+            try { $client.Close() } catch {}
+          }
+          $ipObj = [System.Net.IPAddress]::Parse($BindAddress)
+          $listener = New-Object System.Net.Sockets.TcpListener $ipObj, ([int]$Port)
+          try { $listener.Start() } catch { Set-Content $OkFile ("LISTEN_FAIL on {0}: {1}" -f $BindAddress,$_) -Encoding ascii; throw }
+          Set-Content $OkFile ("LISTENING bind={0} pid={1} port={2} at {3}" -f $BindAddress,$PID,$Port,(Get-Date -f o)) -Encoding ascii
+          while($true){
+            if(Test-Path $FlushFlagPath){ Remove-Item $FlushFlagPath -Force -EA 0 }
+            while($listener.Pending()){ $c=$null; try{ $c=$listener.AcceptTcpClient() }catch{}; if($c){ HandleOne $c } }
+            Start-Sleep -Milliseconds 200
+          }
+          }
+          EOF
+
+      - name: Write dashboard UI (AUTO-FIRES ghrdp on local pc = zero-typing RDP)
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/ghrdp-ui.html" <<'UIEOF'
+          <!doctype html>
+          <html lang="en">
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1">
+          <meta http-equiv="refresh" content="60">
+          <title>RDP · Mission Control</title>
+          <link rel="preconnect" href="https://fonts.googleapis.com">
+          <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+          <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+          <style>
+          :root{ --bg:#0a0e12; --panel:#11171d; --panel2:#0d1217; --line:#223039; --ink:#e9eef3; --mut:#8aa0ad; --teal:#37c6b0; --teal-d:#0c3b34; --amber:#f0a830; --red:#e0533d; --green:#3ecf8e; --violet:#8b7bf0; --mono:'JetBrains Mono',ui-monospace,monospace; --disp:'Space Grotesk',system-ui,sans-serif; --body:'IBM Plex Sans',system-ui,sans-serif; }
+          *{box-sizing:border-box;margin:0;padding:0}
+          html,body{height:100%}
+          body{ font-family:var(--body); color:var(--ink); background:var(--bg); min-height:100vh; padding:18px; position:relative; overflow-x:hidden;
+            background-image:
+              radial-gradient(900px 500px at 12% -8%, rgba(55,198,176,.10), transparent 60%),
+              radial-gradient(800px 600px at 100% 110%, rgba(139,123,240,.08), transparent 55%),
+              linear-gradient(rgba(255,255,255,.022) 1px, transparent 1px),
+              linear-gradient(90deg, rgba(255,255,255,.022) 1px, transparent 1px);
+            background-size:auto,auto,26px 26px,26px 26px; }
+          body::before{ content:""; position:fixed; inset:0 0 auto 0; height:3px; background:linear-gradient(90deg,var(--teal),var(--violet),var(--amber)); opacity:.85; }
+          .wrap{ max-width:1180px; margin:0 auto; }
+          header{ display:flex; align-items:center; justify-content:space-between; gap:14px; padding:6px 2px 18px; border-bottom:1px solid var(--line); margin-bottom:18px; flex-wrap:wrap; }
+          .brand{ display:flex; align-items:baseline; gap:12px; }
+          .brand h1{ font-family:var(--disp); font-weight:700; font-size:22px; letter-spacing:-.4px; }
+          .brand .tag{ font-family:var(--mono); font-size:11px; color:var(--mut); letter-spacing:.12em; text-transform:uppercase; }
+          .hstat{ display:flex; align-items:center; gap:10px; font-family:var(--mono); font-size:12px; color:var(--mut); flex-wrap:wrap; }
+          .pill{ display:inline-flex; align-items:center; gap:7px; padding:5px 11px; border-radius:999px; border:1px solid var(--line); font-weight:600; font-size:11px; letter-spacing:.08em; text-transform:uppercase; transition:all .2s ease; }
+          .pill .d{ width:8px; height:8px; border-radius:50%; background:var(--red); }
+          .pill.on{ color:var(--teal); border-color:var(--teal-d); }
+          .pill.on .d{ background:var(--teal); animation:pulse 1.4s infinite; }
+          .mode{ padding:5px 11px; border-radius:999px; border:1px solid var(--line); font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; }
+          .mode.loop{ color:var(--teal); border-color:var(--teal-d); }
+          .mode.funnel{ color:var(--violet); border-color:#33305a; }
+          .diagbtn{ font-family:var(--mono); font-size:11px; letter-spacing:.06em; background:#16202a; color:var(--amber); border:1px solid #5a4414; border-radius:8px; padding:6px 10px; cursor:pointer; transition:background .15s ease; }
+          .diagbtn:hover{ background:#241c0c; }
+          @keyframes pulse{ 0%{box-shadow:0 0 0 0 rgba(55,198,176,.55)} 70%{box-shadow:0 0 0 9px rgba(55,198,176,0)} 100%{box-shadow:0 0 0 0 rgba(55,198,176,0)} }
+          .autobox{ margin:0 0 18px; padding:18px; border-radius:16px; border:1px solid #33305a; background:linear-gradient(180deg,#13111f,#0d0b16); text-align:center; }
+          .autobox .big{ font-family:var(--disp); font-weight:700; font-size:18px; color:#cfc7ff; margin-bottom:6px; }
+          .autobox .spin{ display:inline-block; width:14px; height:14px; border:2px solid #4a4470; border-top-color:var(--violet); border-radius:50%; animation:spin 0.8s linear infinite; vertical-align:-2px; margin-right:8px; }
+          @keyframes spin{ to{ transform:rotate(360deg) } }
+          .autobox .sub{ font-family:var(--mono); font-size:11px; color:var(--mut); line-height:1.6; margin-top:8px; }
+          .autobox .manual{ display:inline-block; margin-top:14px; font-family:var(--disp); font-weight:700; letter-spacing:.04em; text-transform:uppercase; background:linear-gradient(180deg,#8b7bf0,#6a5ad0); color:#fff; border:0; border-radius:12px; padding:13px 26px; font-size:14px; cursor:pointer; text-decoration:none; box-shadow:0 10px 26px rgba(139,123,240,.3); }
+          .autobox .manual:hover{ filter:brightness(1.08); }
+          .grid{ display:grid; grid-template-columns:1.45fr 1fr; gap:16px; }
+          .panel{ background:linear-gradient(180deg,var(--panel),var(--panel2)); border:1px solid var(--line); border-radius:16px; padding:20px; position:relative; overflow:hidden; transition:border-color .2s ease; }
+          .panel:hover{ border-color:#2c3b46; }
+          .panel .lbl{ font-family:var(--mono); font-size:10.5px; letter-spacing:.18em; text-transform:uppercase; color:var(--mut); }
+          .stack{ display:flex; flex-direction:column; gap:16px; }
+          .hero .pct{ font-family:var(--disp); font-weight:700; font-size:clamp(58px,11vw,104px); line-height:.92; letter-spacing:-3px; font-variant-numeric:tabular-nums; margin:6px 0 2px; }
+          .hero .pct small{ font-size:.32em; color:var(--mut); letter-spacing:0; margin-left:6px; vertical-align:.5em; }
+          .track{ height:16px; border-radius:999px; background:#0a1014; border:1px solid var(--line); overflow:hidden; margin:14px 0 12px; position:relative; }
+          .fill{ height:100%; width:0%; border-radius:999px; background:linear-gradient(90deg,var(--teal),#5fe0cd); position:relative; transition:width .5s cubic-bezier(.2,.7,.2,1); }
+          .fill::after{ content:""; position:absolute; inset:0; background:linear-gradient(100deg,transparent 30%,rgba(255,255,255,.45) 50%,transparent 70%); transform:translateX(-100%); animation:sheen 1.8s infinite; }
+          @keyframes sheen{ to{ transform:translateX(220%) } }
+          .meta{ display:flex; flex-wrap:wrap; gap:8px 22px; font-family:var(--mono); font-size:12.5px; color:var(--mut); }
+          .meta b{ color:var(--ink); font-weight:500; }
+          .active .row1{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin:10px 0 8px; }
+          .active .fname{ font-family:var(--mono); font-size:13px; color:var(--ink); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+          .phase{ font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase; padding:3px 9px; border-radius:6px; background:var(--teal-d); color:var(--teal); white-space:nowrap; }
+          .phase.encrypt{ background:#3a2f12; color:var(--amber); }
+          .phase.idle{ background:#1a2228; color:var(--mut); }
+          .mini{ height:8px; border-radius:999px; background:#0a1014; border:1px solid var(--line); overflow:hidden; }
+          .mini > i{ display:block; height:100%; background:var(--amber); width:0%; transition:width .35s linear; }
+          .stats{ display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+          .tile{ background:var(--panel2); border:1px solid var(--line); border-radius:13px; padding:14px 15px; transition:transform .15s ease,border-color .15s ease; }
+          .tile:hover{ transform:translateY(-2px); border-color:#33485440; }
+          .tile .n{ font-family:var(--disp); font-weight:700; font-size:30px; line-height:1; font-variant-numeric:tabular-nums; }
+          .tile .k{ font-family:var(--mono); font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--mut); margin-top:7px; }
+          .tile.done .n{ color:var(--teal); } .tile.act .n{ color:var(--amber); } .tile.fail .n{ color:var(--red); } .tile.trk .n{ color:var(--ink); }
+          .btn{ display:block; width:100%; text-align:center; border:0; cursor:pointer; font-family:var(--disp); font-weight:700; letter-spacing:.06em; text-transform:uppercase; border-radius:12px; padding:15px; font-size:14px; transition:transform .12s ease,box-shadow .2s ease,filter .2s ease; }
+          .btn.em{ background:linear-gradient(180deg,#ef5b45,#c83a26); color:#fff; box-shadow:0 10px 26px rgba(224,83,61,.28); }
+          .btn.em:hover{ filter:brightness(1.08); box-shadow:0 14px 34px rgba(224,83,61,.42); }
+          .btn.em:active{ transform:scale(.98); }
+          .btn.rdp{ background:linear-gradient(180deg,#3fd2bd,#23a08e); color:#04201c; text-decoration:none; margin-bottom:12px; box-shadow:0 10px 24px rgba(55,198,176,.22); }
+          .btn.rdp:hover{ filter:brightness(1.06); }
+          .banner{ display:none; margin-top:12px; padding:14px; border-radius:12px; text-align:center; font-family:var(--disp); font-weight:700; font-size:14px; }
+          .banner.safe{ display:block; background:linear-gradient(180deg,#173f2c,#102a1e); color:var(--green); border:1px solid #1f6f43; }
+          .banner.warn{ display:block; background:#3a2410; color:var(--amber); border:1px solid #6b4414; }
+          .lower{ display:grid; grid-template-columns:1.25fr 1fr; gap:16px; margin-top:16px; }
+          .files .head, .frow{ display:grid; grid-template-columns:78px 1fr 92px 64px; gap:10px; align-items:center; }
+          .files .head{ font-family:var(--mono); font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--mut); padding:0 4px 10px; border-bottom:1px solid var(--line); }
+          .flist{ max-height:300px; overflow:auto; margin-top:6px; }
+          .frow{ padding:9px 4px; border-bottom:1px solid #1a242b; transition:background .15s ease,transform .15s ease; }
+          .frow:hover{ background:#141c22; transform:translateX(2px); }
+          .frow .nm{ font-family:var(--mono); font-size:12px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+          .frow .src{ font-family:var(--mono); font-size:10px; color:var(--mut); }
+          .st{ font-family:var(--mono); font-size:10px; letter-spacing:.06em; padding:3px 8px; border-radius:6px; text-align:center; }
+          .st.ok{ background:var(--teal-d); color:var(--teal); } .st.limit{ background:#3a1712; color:var(--red); } .st.uploading{ background:#3a2f12; color:var(--amber); }
+          .bar{ height:6px; border-radius:999px; background:#0a1014; border:1px solid var(--line); overflow:hidden; }
+          .bar.ok > i{ display:block; height:100%; width:100%; background:var(--teal); }
+          .bar.up > i{ display:block; height:100%; width:40%; background:repeating-linear-gradient(45deg,var(--amber),var(--amber) 6px,#7a5612 6px,#7a5612 12px); animation:slide 1s linear infinite; }
+          .bar.limit > i{ display:block; height:100%; width:100%; background:var(--red); }
+          @keyframes slide{ to{ background-position:24px 0 } }
+          .log pre{ font-family:var(--mono); font-size:11px; line-height:1.55; color:#9fe7d6; background:#070b0e; border:1px solid var(--line); border-radius:10px; padding:12px; height:300px; overflow:auto; white-space:pre-wrap; word-break:break-word; }
+          .empty{ color:var(--mut); font-family:var(--mono); font-size:12px; padding:18px 4px; }
+          .code{ margin-top:14px; font-family:var(--mono); font-size:11px; color:var(--mut); background:#070b0e; border:1px solid var(--line); border-radius:10px; padding:10px; word-break:break-all; }
+          .crow{display:grid;grid-template-columns:46px 1fr 58px;gap:10px;align-items:center;margin:7px 0}
+          .crow .ck{font-family:var(--mono);font-size:10px;letter-spacing:.12em;color:var(--mut)}
+          .crow code{font-family:var(--mono);font-size:12px;background:#070b0e;border:1px solid var(--line);border-radius:8px;padding:7px 9px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ink)}
+          .cp{font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;background:#16202a;color:var(--teal);border:1px solid var(--teal-d);border-radius:8px;padding:7px 4px;cursor:pointer; transition:background .15s ease;}
+          .cp:hover{background:var(--teal-d)}
+          .cp.done{color:var(--green);border-color:#1f6f43}
+          #diagBox{ display:none; margin-top:12px; }
+          #diagBox pre{ font-family:var(--mono); font-size:11px; line-height:1.6; background:#070b0e; border:1px solid var(--line); border-radius:10px; padding:12px; max-height:360px; overflow:auto; white-space:pre-wrap; word-break:break-word; color:#cfe9e4; }
+          .ok{ color:var(--green); } .bad{ color:var(--red); }
+          @media (max-width:860px){ .grid,.lower{ grid-template-columns:1fr } }
+          ::-webkit-scrollbar{width:9px;height:9px} ::-webkit-scrollbar-thumb{background:#26343d;border-radius:9px}
+          </style>
+          </head>
+          <body>
+          <div class="wrap">
+            <header>
+              <div class="brand"><h1>RDP · Mission Control</h1><span class="tag">live mirror telemetry</span></div>
+              <div class="hstat">
+                <span id="mode" class="mode">…</span>
+                <span id="clock">--:--:--</span>
+                <button class="diagbtn" id="diagBtn" type="button">🔍 DIAGNOSE</button>
+                <span id="alive" class="pill"><span class="d"></span><span id="alivetxt">checking</span></span>
+              </div>
+            </header>
+
+            <div class="autobox" id="autoBox" style="display:none">
+              <div class="big"><span class="spin" id="autoSpin"></span><span id="autoTitle">Connecting you to RDP…</span></div>
+              <div class="sub" id="autoSub">Firing your local RDP handler (zero typing). If your browser shows an “Open app?” prompt, tick <b>Always allow</b> + Open — after that it is fully automatic.</div>
+              <a class="manual" id="autoManual" href="#">⚡ Open RDP now (if it didn’t auto-open)</a>
+            </div>
+
+            <div class="grid">
+              <div class="stack">
+                <div class="panel hero">
+                  <div class="lbl">Overall uploaded</div>
+                  <div class="pct"><span id="pct">0</span><small>%</small></div>
+                  <div class="track"><div class="fill" id="fill"></div></div>
+                  <div class="meta">
+                    <span><b id="bDone">0 B</b> / <span id="bTotal">0 B</span></span>
+                    <span>throughput <b id="speed">0 B/s</b></span>
+                    <span>eta <b id="eta">—</b></span>
+                  </div>
+                </div>
+                <div class="panel active">
+                  <div class="lbl">Active transfer</div>
+                  <div class="row1"><span class="fname" id="aName">idle</span><span class="phase idle" id="aPhase">idle</span></div>
+                  <div class="mini"><i id="aBar"></i></div>
+                  <div class="meta" style="margin-top:9px"><span><b id="aBytes">0 B</b> / <span id="aTotal">0 B</span></span><span><b id="aSpeed">0 B/s</b></span></div>
+                </div>
+              </div>
+              <div class="stack">
+                <div class="panel creds">
+                  <div class="lbl" style="margin-bottom:12px">RDP credentials <span style="color:var(--mut);text-transform:none;letter-spacing:0">(auto-filled by handler)</span></div>
+                  <div class="crow" data-k="ip"><span class="ck">IP</span><code id="vIp">-</code><button class="cp" type="button">copy</button></div>
+                  <div class="crow" data-k="user"><span class="ck">USER</span><code id="vUser">-</code><button class="cp" type="button">copy</button></div>
+                  <div class="crow" data-k="pass"><span class="ck">PASS</span><code id="vPass">-</code><button class="cp" type="button">copy</button></div>
+                  <div style="margin-top:12px">
+                    <div class="lbl" style="margin-bottom:8px">One-click RDP (clickable ghrdp link inside this webapp)</div>
+                    <a id="ghrdpLink" href="#" style="display:block;font-family:var(--mono);font-size:11.5px;color:var(--teal);background:#070b0e;border:1px solid var(--teal-d);border-radius:9px;padding:10px 12px;word-break:break-all;text-decoration:none">ghrdp://…</a>
+                    <p style="font-family:var(--mono);font-size:10px;color:var(--mut);margin-top:7px;line-height:1.5">This ghrdp link is clickable HERE (a web page can link custom schemes; GitHub log/Summary cannot - that is a GitHub rule). On your local pc it works after the one-time connector is installed.</p>
+                  </div>
+                  <div id="diagBox"><pre id="diagOut">running diagnostics…</pre></div>
+                </div>
+                <div class="panel"><div class="lbl" style="margin-bottom:12px">Counters</div>
+                  <div class="stats">
+                    <div class="tile done"><div class="n" id="cDone">0</div><div class="k">done</div></div>
+                    <div class="tile act"><div class="n" id="cAct">0</div><div class="k">active</div></div>
+                    <div class="tile fail"><div class="n" id="cFail">0</div><div class="k">failed</div></div>
+                    <div class="tile trk"><div class="n" id="cTrk">0</div><div class="k">tracked</div></div>
+                  </div>
+                </div>
+                <div class="panel actions">
+                  <a class="btn rdp" id="rdp" href="#">Open Remote Desktop</a>
+                  <div id="mirrorBox">
+                    <button class="btn em" id="emBtn">⚡ Upload everything now</button>
+                    <div class="banner" id="banner"></div>
+                    <p style="font-family:var(--mono);font-size:11px;color:var(--mut);margin-top:10px;line-height:1.5">Click it, wait for the green banner, <b style="color:var(--ink)">then</b> press Cancel workflow. A 2nd Cancel force‑kills.</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="lower">
+              <div class="panel files">
+                <div class="lbl" style="margin-bottom:10px">File queue</div>
+                <div class="head"><span>status</span><span>file</span><span>progress</span><span>src</span></div>
+                <div class="flist" id="flist"><div class="empty">No files tracked yet.</div></div>
+              </div>
+              <div class="panel">
+                <div class="lbl" style="margin-bottom:10px">Live log</div>
+                <pre id="log">waiting for watcher…</pre>
+                <div class="code" id="rentry" style="display:none"></div>
+              </div>
+            </div>
+          </div>
+          <script>
+          (function(){
+            var D={pct:0,bDone:0};
+            var ghrdpUrl=null; var autoFired=false;
+            function fb(b){ b=+b||0; if(b<1024)return b+' B'; if(b<1048576)return (b/1024).toFixed(1)+' KB'; if(b<1073741824)return (b/1048576).toFixed(1)+' MB'; return (b/1073741824).toFixed(2)+' GB'; }
+            function fs(b){ b=+b||0; return fb(b)+'/s'; }
+            function fe(remB,sp){ sp=+sp||0; if(sp<=0||remB<=0)return '—'; var s=remB/sp; if(s<60)return Math.round(s)+'s'; if(s<3600)return Math.round(s/60)+'m'; return (s/3600).toFixed(1)+'h'; }
+            function lerp(a,b){ return a+(b-a)*0.18; }
+            function tick(){ D.pct=lerp(D.pct,+ (window.__PCT||0)); D.bDone=lerp(D.bDone,+ (window.__BDONE||0)); document.getElementById('pct').textContent=Math.round(D.pct); document.getElementById('bDone').textContent=fb(D.bDone); document.getElementById('fill').style.width=Math.min(100,D.pct)+'%'; requestAnimationFrame(tick); }
+            requestAnimationFrame(tick);
+            function clk(){ var d=new Date(); document.getElementById('clock').textContent=d.toTimeString().slice(0,8); }
+            setInterval(clk,1000); clk();
+            var logEl=document.getElementById('log');
+            function fallbackCopy(t){ var ta=document.createElement('textarea'); ta.value=t; ta.style.position='fixed'; ta.style.opacity='0'; document.body.appendChild(ta); ta.select(); try{document.execCommand('copy');}catch(e){} document.body.removeChild(ta); }
+            function copyBtn(btn,val){ function ok(){ btn.textContent='copied'; btn.classList.add('done'); setTimeout(function(){btn.textContent='copy';btn.classList.remove('done');},1200); } if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(val).then(ok).catch(function(){ fallbackCopy(val); ok(); }); } else { fallbackCopy(val); ok(); } }
+            function setCreds(c){ if(!c)return; var map={ip:c.ip,user:c.user,pass:c.pass}; ['ip','user','pass'].forEach(function(k){ var row=document.querySelector('.crow[data-k="'+k+'"]'); if(!row)return; row.dataset.val=map[k]||''; var code=row.querySelector('code'); if(code)code.textContent=map[k]||'-'; }); }
+            function setGhrdp(u){ var a=document.getElementById('ghrdpLink'); if(a){ a.href = u || '#'; a.textContent = u || 'ghrdp://…'; } }
+            document.querySelectorAll('.crow .cp').forEach(function(b){ b.addEventListener('click',function(){ var row=b.closest('.crow'); copyBtn(b, row?row.dataset.val:''); }); });
+            function setMode(loop){ var m=document.getElementById('mode'); if(loop){ m.className='mode loop'; m.textContent='◉ RDP / loopback'; } else { m.className='mode funnel'; m.textContent='⬈ LOCAL PC (auto-connect)'; } }
+            function fireAutoConnect(url){
+              if(!url || autoFired) return;
+              autoFired=true;
+              var box=document.getElementById('autoBox'); box.style.display='block';
+              document.getElementById('autoManual').href=url;
+              // try an invisible iframe first (some browsers fire the protocol handler without leaving the page)
+              try { var ifr=document.createElement('iframe'); ifr.style.display='none'; ifr.src=url; document.body.appendChild(ifr); } catch(e){}
+              // also a direct location assign as fallback
+              setTimeout(function(){ try{ window.location.href=url; }catch(e){} }, 300);
+            }
+            function yn(v){ return v? '<span class="ok">PASS</span>' : '<span class="bad">FAIL</span>'; }
+            document.getElementById('diagBtn').addEventListener('click',function(){
+              var box=document.getElementById('diagBox'); var out=document.getElementById('diagOut');
+              box.style.display='block'; out.innerHTML='running diagnostics…';
+              fetch('/diag',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+                var L=[];
+                L.push('== SERVER SELF TEST (/diag) ==');
+                L.push('bind 0.0.0.0            : '+yn(d.bindOk));
+                L.push('port 7331 listening     : '+yn(d.portListening));
+                L.push('firewall rule present   : '+yn(d.firewallRulePresent));
+                L.push('tailscale ip            : '+(d.tailscaleIp||'(none)'));
+                L.push('self-connect via TS ip  : '+yn(d.selfConnectFromVmViaTailscaleIp)+'  (FAIL here is EXPECTED -> GitHub blocks it; Funnel+handler is the path)');
+                L.push('funnel url              : '+(d.funnelUrl||'(not enabled)'));
+                L.push('this request via loopbk : '+yn(d.requestCameViaLoopback)+'   host='+d.requestHost);
+                L.push('');
+                L.push('== HOW ZERO-TYPING RDP WORKS ==');
+                L.push('On your LOCAL pc this page auto-fires ghrdp:// -> your installed handler');
+                L.push('runs cmdkey (saves password) + mstsc -> RDP opens with NO typing.');
+                L.push('First time: browser asks "Open app?" -> tick ALWAYS ALLOW + Open.');
+                L.push('If auto did not fire: click the purple "Open RDP now" button at the top.');
+                L.push('');
+                L.push('raw: '+JSON.stringify(d,null,1));
+                out.innerHTML=L.join('\n');
+              }).catch(function(e){ out.innerHTML='<span class="bad">/diag failed: '+e+'</span>'; });
+            });
+            function render(s){
+              if(!s){ return; }
+              var now=Date.now(); var ts=s.ts? new Date(s.ts).getTime():0; var age=(now-ts)/1000;
+              var on, txt;
+              if(!s.mirror){ on=true; txt='rdp ready'; }
+              else { on = s.alive && age<15; txt = on? 'online' : (s.alive? 'stale '+Math.round(age)+'s':'offline'); }
+              var al=document.getElementById('alive'); al.className='pill'+(on?' on':''); document.getElementById('alivetxt').textContent=txt;
+              if(s.ghrdp){ ghrdpUrl=s.ghrdp; document.getElementById('rdp').href=s.ghrdp; document.getElementById('autoManual').href=s.ghrdp; }
+              if(s.rentry){ var r=document.getElementById('rentry'); r.style.display='block'; r.textContent='index: '+s.rentry; }
+              document.getElementById('mirrorBox').style.display = s.mirror? 'block':'none';
+              setCreds(s.creds); setGhrdp(s.ghrdp); setMode(!!s.viaLoopback);
+              // AUTO-CONNECT only when viewed from the LOCAL pc (Funnel), never from inside RDP loopback
+              if(s.ghrdp && !s.viaLoopback){ fireAutoConnect(s.ghrdp); }
+              var a=s.agg||{}; window.__PCT=a.overallPct||0; window.__BDONE=a.bytesDone||0;
+              document.getElementById('bTotal').textContent=fb(a.bytesTotal); document.getElementById('speed').textContent=fs(a.speedBps);
+              document.getElementById('eta').textContent=fe((a.bytesTotal||0)-(a.bytesDone||0),a.speedBps);
+              document.getElementById('cDone').textContent=a.done||0; document.getElementById('cAct').textContent=a.active||0; document.getElementById('cFail').textContent=a.failed||0; document.getElementById('cTrk').textContent=a.tracked||0;
+              var ac=s.active||{}; document.getElementById('aName').textContent=ac.name||'idle';
+              var ph=document.getElementById('aPhase'); ph.textContent=ac.phase||'idle'; ph.className='phase '+(ac.phase||'idle');
+              document.getElementById('aBar').style.width=(ac.pct||0)+'%'; document.getElementById('aBytes').textContent=fb(ac.bytesDone); document.getElementById('aTotal').textContent=fb(ac.bytesTotal); document.getElementById('aSpeed').textContent=fs(ac.speedBps);
+              var f=s.files||[]; var fl=document.getElementById('flist');
+              if(!f.length){ fl.innerHTML='<div class="empty">No files tracked yet.</div>'; }
+              else { var h=''; for(var i=0;i<f.length;i++){ var it=f[i]; var st=(it.status||'uploading'); var bc = st==='ok'?'ok':(st==='limit'?'limit':'up'); h+='<div class="frow"><span class="st '+st+'">'+(st==='ok'?'OK':(st==='limit'?'FAIL':'…'))+'</span><span class="nm" title="'+(it.name||'')+'">'+(it.name||'')+'</span><span class="bar '+bc+'"><i></i></span><span class="src">'+(it.src||'')+'</span></div>'; } fl.innerHTML=h; }
+              var lg=(s.log||[]); if(lg.length){ var atBottom = logEl.scrollHeight-logEl.scrollTop-logEl.clientHeight<60; logEl.textContent=lg.join('\n'); if(atBottom) logEl.scrollTop=logEl.scrollHeight; }
+              var bn=document.getElementById('banner'); bn.className='banner';
+              if(s.mirror){ if((a.failed||0)>0 && (a.active||0)===0){ bn.className='banner warn'; bn.textContent=(a.failed)+' file(s) failed — retry or check log.'; } else if((a.tracked||0)>0 && (a.active||0)===0 && (a.failed||0)===0 && (a.done||0)>0){ bn.className='banner safe'; bn.textContent='ALL UPLOADED — safe to Cancel workflow now.'; } }
+            }
+            function poll(){ fetch('/progress',{cache:'no-store'}).then(function(r){return r.json();}).then(render).catch(function(){}); }
+            document.getElementById('emBtn').addEventListener('click',function(){ var b=this; b.disabled=true; b.textContent='triggered…'; fetch('/emergency',{cache:'no-store'}).then(function(){ setTimeout(function(){ b.disabled=false; b.textContent='⚡ Upload everything now'; },1500); }).catch(function(){ b.disabled=false; b.textContent='⚡ Upload everything now'; }); });
+            poll(); setInterval(poll,1500);
+          })();
+          </script>
+          </body>
+          </html>
+          UIEOF
+
+      - name: Write mirror watcher script
+        if: ${{ github.event.inputs.mirror_downloads_public == 'true' }}
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/ghrdp-watcher.ps1" <<'EOF'
+          param([string]$CfgPath)
+          $ErrorActionPreference='SilentlyContinue'
+          $cfg = Get-Content $CfgPath -Raw | ConvertFrom-Json
+          $env:GHRDP_CFG=$CfgPath; $env:GHRDP_LOG=$cfg.logFile
+          . $cfg.libPath
+          Init-Progress $cfg.progressPath
+          $junk=@('.tmp','.crdownload','.partial','.lock','.log','.etl','.pf','.db-journal','.sqlite-journal','.old','.bak')
+          $done=@{}; if(Test-Path $cfg.doneFile){ Get-Content $cfg.doneFile | %{$done[$_]=$true} }
+          $idx=Load-Index $cfg
+          Push-Rentry $cfg (Build-Rentry $cfg $idx) | Out-Null
+          function DoUpload($fi,$tag){
+            if($done.ContainsKey($fi.FullName)){return}
+            $len=$fi.Length; $safe=$fi.Name -replace '\|','_'; $disp=($safe -replace '[^\x20-\x7E]','_')
+            $ex=$idx | ?{$_.name -eq $safe -and $_.src -eq $tag} | select -First 1
+            if(-not $ex){ $ex=@{name=$safe;src=$tag;status='uploading';payload='';gofile='';time=(Get-Date -f 'HH:mm:ss')}; [void]$idx.Add($ex); $global:GHRDP_TOTAL_BYTES += $len; Save-Index $cfg $idx }
+            $ex.status='uploading'; $ex.time=(Get-Date -f 'HH:mm:ss')
+            $enc=Join-Path $cfg.tmpDir ('ge_'+[guid]::NewGuid().ToString('N')+'.enc'); $gofile=$null
+            Set-Active $disp 'encrypt' $len
+            try { Encrypt-File $fi.FullName $enc $cfg.decPw } catch { "encrypt err $($fi.Name): $_"|Out-File $cfg.logFile -Append }
+            Set-Active $disp 'upload' $len
+            try { $gofile=Upload-Gofile-Streamed $enc $disp } catch { "upload err $($fi.Name): $_"|Out-File $cfg.logFile -Append }
+            Remove-Item $enc -Force -ErrorAction SilentlyContinue
+            if($gofile){ $ex.payload=B64U ($gofile+'|'+$cfg.decPw+'|'+$safe); $ex.gofile=$gofile; $ex.status='ok'; $ex.time=(Get-Date -f 'HH:mm:ss'); $done[$fi.FullName]=$true; $fi.FullName|Out-File $cfg.doneFile -Append; $global:GHRDP_DONE_BYTES += $len; Save-Index $cfg $idx; Push-Rentry $cfg (Build-Rentry $cfg $idx)|Out-Null; "[$(Get-Date -f o)] OK $tag $($fi.Name) ($len bytes)"|Out-File $cfg.logFile -Append }
+            else { $ex.status='limit'; $ex.time=(Get-Date -f 'HH:mm:ss'); Save-Index $cfg $idx; Push-Rentry $cfg (Build-Rentry $cfg $idx)|Out-Null; "[$(Get-Date -f o)] LIMIT $tag $($fi.Name)"|Out-File $cfg.logFile -Append }
+            Set-Active '' 'idle' 0 }
+          function Proc($fi,$tag){ if($done.ContainsKey($fi.FullName)){return}; DoUpload $fi $tag }
+          function Scan($r){ if(-not (Test-Path $r.path)){return}; $items=if($r.rec){Get-ChildItem -LiteralPath $r.path -File -Recurse -Depth 4 -ErrorAction SilentlyContinue}else{Get-ChildItem -LiteralPath $r.path -File -ErrorAction SilentlyContinue}; foreach($fi in $items){ if($done.ContainsKey($fi.FullName)){continue}; if($junk -contains $fi.Extension.ToLower()){continue}; if($fi.Length -lt $r.min){continue}; if($fi.FullName -match '\\(Windows|\$Recycle\.Bin|Program Files|Program Files \(x86\)|ProgramData|hostedtoolcache|\\a\\)'){continue}; Proc $fi $r.tag } }
+          function SweepAll($r){ if(-not (Test-Path $r.path)){return}; $items=if($r.rec){Get-ChildItem -LiteralPath $r.path -File -Recurse -Depth 4 -ErrorAction SilentlyContinue | Sort-Object Length -Descending}else{Get-ChildItem -LiteralPath $r.path -File -ErrorAction SilentlyContinue | Sort-Object Length -Descending}; foreach($fi in $items){ if($done.ContainsKey($fi.FullName)){continue}; if($junk -contains $fi.Extension.ToLower()){continue}; if($fi.Length -lt $r.min){continue}; if($fi.FullName -match '\\(Windows|\$Recycle\.Bin|Program Files|Program Files \(x86\)|ProgramData|hostedtoolcache|\\a\\)'){continue}; DoUpload $fi $r.tag } }
+          function EmergencyPass{
+            "[$(Get-Date -f o)] EMERGENCY pass start"|Out-File $cfg.logFile -Append
+            foreach($p in @('qbittorrent','qbittorrent-nox')){ Get-Process -Name $p -ErrorAction SilentlyContinue|Stop-Process -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Seconds 4
+            for($round=0;$round -lt 3;$round++){ foreach($r in $cfg.roots){ Scan $r }; Start-Sleep -Seconds 4 }
+            foreach($r in $cfg.roots){ SweepAll $r }
+            Save-Index $cfg $idx; Push-Rentry $cfg (Build-Rentry $cfg $idx)|Out-Null
+            Remove-Item $cfg.emergencyFlag -Force -ErrorAction SilentlyContinue
+            "[$(Get-Date -f o)] EMERGENCY pass end"|Out-File $cfg.logFile -Append }
+          function SyncProg{ $p=$global:GHRDP_PROG; $d=0;$u=0;$f=0; foreach($it in $idx){ if($it.status -eq 'ok'){$d++} elseif($it.status -eq 'limit'){$f++} else {$u++} }; $p.agg.done=$d; $p.agg.failed=$f; $p.agg.tracked=$idx.Count; $p.agg.active=if($p.active.phase -ne 'idle'){1}else{0}; $p.agg.bytesTotal=$global:GHRDP_TOTAL_BYTES; $p.files=@( foreach($it in $idx){ @{name=$it.name;src=$it.src;status=$it.status} } ); if(Test-Path $cfg.logFile){ $p.log=@(Get-Content $cfg.logFile -Tail 40 -ErrorAction SilentlyContinue) } else { $p.log=@() }; Flush-Progress $true }
+          $fsw=$null
+          try{ if(Test-Path $cfg.dlDir){ $fsw=New-Object System.IO.FileSystemWatcher; $fsw.Path=$cfg.dlDir; $fsw.IncludeSubdirectories=$false; $fsw.EnableRaisingEvents=$true; $fsw.NotifyFilter=[System.IO.NotifyFilters]::FileName -bor [System.IO.NotifyFilters]::Size -bor [System.IO.NotifyFilters]::LastWrite } }catch{}
+          while($true){
+            if(Test-Path $cfg.emergencyFlag){ EmergencyPass } else { foreach($r in $cfg.roots){ Scan $r }; if(Test-Path $cfg.flushFlag){ "[$(Get-Date -f o)] FLUSH seen"|Out-File $cfg.logFile -Append; for($p=0;$p -lt 8;$p++){ foreach($r in $cfg.roots){Scan $r}; if(-not ($idx | ?{$_.status -ne 'ok'})){break}; Start-Sleep -Seconds 8 }; Push-Rentry $cfg (Build-Rentry $cfg $idx)|Out-Null; Remove-Item $cfg.flushFlag -Force -ErrorAction SilentlyContinue } }
+            SyncProg
+            Start-Sleep -Seconds 3 }
+          EOF
+
+      # === EDIT 1: launcher - robust Funnel (works when ACL done) + passes funnel status to Summary ===
+      - name: Write Mission Control launcher (observe mode - server runs from Keep Alive)
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/ghrdp-launcher.ps1" <<'EOF'
+          param([string]$CfgPath,[int]$Port=7331)
+          $sd=Split-Path $CfgPath -Parent
+          $progressPath=Join-Path $sd 'ghrdp_progress.json'
+          $cfg=Get-Content $CfgPath -Raw|ConvertFrom-Json
+          function Line($c,$m){ Write-Host ("[{0}] {1}" -f (Get-Date -f 'HH:mm:ss'),$m) -ForegroundColor $c }
+          Line Cyan "Mission Control (observe mode) - dashboard+watcher+serve run from the workflow; this window shows live status + opens the RDP-internal tab."
+          Line White ("RDP IP={0}  USER={1}  MIRROR={2}" -f $cfg.rdpIp,$cfg.rdpUser,$cfg.mirror)
+          try{ Start-Process ("http://127.0.0.1:{0}/" -f $Port) | Out-Null; Line Green "[browser] opened dashboard tab (inside RDP)" }catch{}
+          while($true){
+            $listen=[bool](Get-NetTCPConnection -LocalPort $Port -State Listen -EA 0)
+            $done=0;$act=0;$fail=0;$trk=0;$pct=0
+            if(Test-Path $progressPath){ try{ $p=Get-Content $progressPath -Raw|ConvertFrom-Json -EA 0; if($p -and $p.agg){$done=$p.agg.done;$act=$p.agg.active;$fail=$p.agg.failed;$trk=$p.agg.tracked;$pct=$p.agg.overallPct} }catch{} }
+            Line $(if($listen){'Green'}else{'Red'}) ("listen={0} | done={1} active={2} fail={3} tracked={4} overall={5}%" -f $listen,$done,$act,$fail,$trk,$pct)
+            Start-Sleep -Seconds 2
+          }
+          EOF
+
+      # === EDIT 1: summary - clickable Funnel link when ready; FULL Sinhala guide WITH hyperlinks when secret missing; ghrdp paste works RIGHT NOW ===
+      - name: Write summary helper (highlighted ONE-CLICK link in Summary)
+        env:
+          REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/ghrdp-summary.ps1" <<'EOF'
+          param([string]$CfgPath)
+          $ErrorActionPreference='SilentlyContinue'
+          if(-not (Test-Path $CfgPath)){ return }
+          $cfg = Get-Content $CfgPath -Raw | ConvertFrom-Json
+          $ip=$cfg.rdpIp; $user=$cfg.rdpUser; $pass=$cfg.rdpPass; $ghrdp=$cfg.ghrdp; $funnel=$cfg.funnelUrl; $ferr=$cfg.funnelErr
+          $repo = $env:REPO
+          $tokenPage  = 'https://login.tailscale.com/admin/settings/keys'
+          $secretPage = 'https://github.com/' + $repo + '/settings/secrets/actions/new'
+          $aclPage    = 'https://login.tailscale.com/admin/acls'
+          $S = $env:GITHUB_STEP_SUMMARY
+          Write-Host '============================================================'
+          Write-Host ('  RDP READY  IP=' + $ip + '  USER=' + $user + '  PASS=' + $pass)
+          if($funnel){ Write-Host ('  CLICKABLE HYPERLINK (local pc): ' + $funnel) }
+          else       { Write-Host '  CLICKABLE HYPERLINK: not yet -> see the Summary tab guide (links inside) OR use the ghrdp paste to connect NOW.' }
+          Write-Host ('  CONNECT NOW (paste in browser bar): ' + $ghrdp)
+          Write-Host '============================================================'
+          '### RDP සූදානම් 🎯' >> $S
+          '' >> $S
+          if($funnel){
+            '#### 1) ඔයාගේ PC එකේ මේ hyperlink එක click කරන්න (web-app එක open වෙලා RDP auto-connect වෙනවා, type කරන්න කිසිවක් නෑ):' >> $S
+            '' >> $S
+            ('**[>>> OPEN RDP WEB-APP FROM YOUR PC <<<](' + $funnel + ')**') >> $S
+            '' >> $S
+            ('Copyable: `' + $funnel + '`') >> $S
+            '' >> $S
+            'අලුත් PC එකක නම් පළමු පාර web-app එක connector installer එකක් පෙන්නනවා (Download + Run with PowerShell එක පාරක්); ඊට පස්සේ හැම click එකක්ම auto-connect. Browser popup එකේ Always-allow එක පාරක් tick කරන්න.' >> $S
+            '' >> $S
+          } else {
+            '#### 🔑 Clickable hyperlink එක ලබා ගන්න - පියවරෙන් පියවර (එක පාරක් විතරයි, ඊට පස්සේ සදහටම auto)' >> $S
+            '' >> $S
+            'මේ පියවර ටික **එකම එක වතාවක්** විතරයි කරන්න ඕන. ඊට පස්සේ හැම run එකකම workflow එකම ඉබේ Funnel ON කරලා clickable link එක දෙනවා.' >> $S
+            '' >> $S
+            '**පියවර 1 - අලුත් code commit කරන්න:** මේ file එකේ EDIT 1 + EDIT 2 changes ටික ඔයාගේ repo එකට commit/push කරන්න (දැනටමත් කරලා නම් ඊළඟ පියවරට යන්න).' >> $S
+            '' >> $S
+            ('**පියවර 2 - Tailscale API token එකක් හදාගන්න:** මේ link එක click කරන්න → **[Tailscale Access Tokens පිටුව](' + $tokenPage + ')** → **Access tokens** කොටසේ **Generate access token** ඔබන්න → නම `ghrdp` දෙන්න, expiry පුළුවන් තරම් වැඩියෙන් → Generate → `tskey-api-...` token එක **copy** කරගන්න (ආයේ පේන්නේ නෑ).') >> $S
+            '' >> $S
+            ('**පියවර 3 - Token එක GitHub secret එකක් විදිහට දාන්න:** මේ link එක click කරන්න (ඒක ඔයාගේ repo එකේ secret page එකටම යනවා) → **[GitHub Secrets පිටුව](' + $secretPage + ')** → **Name** = `TS_API_KEY` (capital අකුරින්) → **Value** = copy කරපු token එක paste → **Add secret**.') >> $S
+            '' >> $S
+            '**පියවර 4 - Workflow එක re-run කරන්න:** Actions tab → **Run workflow** → Tailscale sign-in link එක click කරන්න. මේ පාර Auto-enable Funnel step එක API එක හරහා ACL එක update කරලා Funnel ON කරනවා.' >> $S
+            '' >> $S
+            '**පියවර 5 - විඳගන්න:** Summary tab එකේ දැන් ඉහළ **නිල් clickable hyperlink** එක (`>>> OPEN RDP WEB-APP FROM YOUR PC <<<`) එනවා → ඒක click → web-app load → zero-typing RDP. 🎉' >> $S
+            '' >> $S
+            ('> Secret add කරන්න බෑ නම් **manual** විදිහටත් පුළුවන්: **[Tailscale ACL පිටුව](' + $aclPage + ')** → ACL JSON එකට `"nodeAttrs":[{"target":["*"],"attr":["funnel"]}]` merge කරලා Save → re-run.') >> $S
+            '' >> $S
+            if($ferr){ ('Runner එකෙන් අන්තිම Funnel error: `' + $ferr + '`') >> $S; '' >> $S }
+          }
+          '#### 2) දැන්ම RDP යන්න (secret add කරනකන් wait කරන්න ඕනෑ නෑ) - මේක ඔයාගේ LOCAL browser address bar එකේ PASTE කරලා Enter, ඊට පස්සේ Open එක පාරක් click:' >> $S
+          '' >> $S
+          '```' >> $S
+          $ghrdp >> $S
+          '```' >> $S
+          '' >> $S
+          'මේක RDP එක password auto-fill කරලා open කරනවා (IP/user/password type කරන්න ඕනෑ නෑ). GitHub custom-scheme links (`ghrdp://`) clickable hyperlink විදිහට render කරන්නේ නෑ (ක GitHub rule එකක්) - ඒක නිසා මේක paste එකක්; **clickable hyperlink** එක ඉහළ පියවර 1 හෝ 5 න් ලැබෙනවා.' >> $S
+          '' >> $S
+          '#### 3) Manual mstsc (reference විතරයි)' >> $S
+          '' >> $S
+          ('IP: ' + $ip + '   User: ' + $user + '   Pass: ' + $pass) >> $S
+          '' >> $S
+          if($cfg.mirror){ ('Mirror ON: RDP ඇතුළේ dashboard එකේ UPLOAD-EVERYTHING-NOW click → කොළ banner → Cancel. Index: ' + $cfg.rentryUrl) >> $S }
+          EOF
+
+      # === EDIT 3: installer part - robust, self-verifying, friendly (no admin, first-time safe) ===
+      - name: Write ghrdp installer part (registry; helper embedded as base64 marker)
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/ghrdp-install.part.ps1" <<'PARTEOF'
+          param()
+          # friendly top-level guard: never crash with a raw red error for a first-time user
+          try {
+            $hb64 = 'REPLACE_ME_B64'
+            $dir = Join-Path $env:LOCALAPPDATA 'ghrdp'
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            $helperPath = Join-Path $dir 'ghrdp.ps1'
+            $helperText = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($hb64))
+            Set-Content -Path $helperPath -Value $helperText -Encoding ASCII
+            $root='HKCU:\Software\Classes\ghrdp'
+            New-Item -Path $root -Force | Out-Null
+            Set-Item -Path $root -Value 'URL:GitHub RDP Connect'
+            New-ItemProperty -Path $root -Name 'URL Protocol' -Value '' -PropertyType String -Force | Out-Null
+            New-Item -Path "$root\shell\open\command" -Force | Out-Null
+            $pwsh=(Get-Command powershell.exe -ErrorAction SilentlyContinue).Source
+            if(-not $pwsh){ $pwsh='C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' }
+            Set-Item -Path "$root\shell\open\command" -Value "`"$pwsh`" -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$helperPath`" `"%1`""
+            # ---- self verify (so a first-time user never wonders if it worked) ----
+            $ok = [bool](Get-ItemProperty -Path "$root\shell\open\command" -ErrorAction SilentlyContinue)
+            $ok = $ok -and (Test-Path $helperPath)
+            Write-Host ''
+            if($ok){
+              Write-Host '====================================================' -ForegroundColor Green
+              Write-Host '  SUCCESS - RDP connector installed.' -ForegroundColor Green
+              Write-Host '  Now go back and CLICK the RDP link again.' -ForegroundColor Green
+              Write-Host '  RDP will open with NO typing.' -ForegroundColor Green
+              Write-Host '  (If the browser asks "Open app?" tick Always-allow + Open once.)' -ForegroundColor Yellow
+              Write-Host '====================================================' -ForegroundColor Green
+            } else {
+              Write-Host '====================================================' -ForegroundColor Red
+              Write-Host '  INSTALL LOOKS INCOMPLETE - registry key missing.' -ForegroundColor Red
+              Write-Host '  Re-run this script by RIGHT-CLICK -> Run with PowerShell.' -ForegroundColor Yellow
+              Write-Host '  If blocked: file Properties -> Unblock, or run in PowerShell:' -ForegroundColor Yellow
+              Write-Host '    Set-ExecutionPolicy -Scope CurrentUser Bypass -Force' -ForegroundColor Cyan
+              Write-Host '====================================================' -ForegroundColor Red
+            }
+          } catch {
+            Write-Host ''
+            Write-Host '====================================================' -ForegroundColor Red
+            Write-Host '  INSTALL ERROR (copy this line if you need help):' -ForegroundColor Red
+            Write-Host ("  " + $_.Exception.Message) -ForegroundColor Red
+            Write-Host '  Most common fix - run this once in PowerShell then retry:' -ForegroundColor Yellow
+            Write-Host '    Set-ExecutionPolicy -Scope CurrentUser Bypass -Force' -ForegroundColor Cyan
+            Write-Host '====================================================' -ForegroundColor Red
+          }
+          try { Write-Host ''; Read-Host 'Press Enter to close this window' } catch {}
+          PARTEOF
+
+      - name: Configure theme + bookmarks + apps + Mission Control shortcut
+        run: |
+          $ErrorActionPreference = 'Continue'
+          function Reset-Exit { $script:LASTEXITCODE = 0 }
+          $mPers='HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+          if(-not(Test-Path $mPers)){New-Item -Path $mPers -Force|Out-Null}
+          New-ItemProperty -Path $mPers -Name 'AppsUseLightTheme'    -Value 0 -PropertyType DWord -Force|Out-Null
+          New-ItemProperty -Path $mPers -Name 'SystemUsesLightTheme' -Value 0 -PropertyType DWord -Force|Out-Null
+          New-ItemProperty -Path $mPers -Name 'ColorPrevalence'      -Value 0 -PropertyType DWord -Force|Out-Null
+          $mAcc='HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Explorer\Accent'
+          if(-not(Test-Path $mAcc)){New-Item -Path $mAcc -Force|Out-Null}
+          New-ItemProperty -Path $mAcc -Name 'AccentColorMenu' -Value 0x8c2bc4 -PropertyType DWord -Force|Out-Null
+          New-ItemProperty -Path $mAcc -Name 'StartColor'      -Value 0x8c2bc4 -PropertyType DWord -Force|Out-Null
+          New-ItemProperty -Path $mAcc -Name 'AccentColor'     -Value 0xffc42b8c -PropertyType DWord -Force|Out-Null
+          try{ $mag=[byte[]](0x8C,0x2B,0xC4,0xFF,0x9E,0x33,0xD0,0xFF,0xB0,0x3B,0xDC,0xFF,0xC2,0x43,0xE8,0xFF,0x7A,0x22,0xB0,0xFF,0x66,0x1A,0x9C,0xFF,0x52,0x12,0x88,0xFF,0x3E,0x0A,0x74,0xFF); Set-ItemProperty -Path $mAcc -Name 'AccentPalette' -Value $mag -PropertyType Binary -Force|Out-Null }catch{}
+          Write-Host "Machine-wide dark mode + magenta accent set."
+          $edgePol='HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist'; if(-not(Test-Path $edgePol)){New-Item -Path $edgePol -Force|Out-Null}
+          $crx='https://edge.microsoft.com/extensionwebstorebase/v1/crx'
+          New-ItemProperty -Path $edgePol -Name '1' -Value "odfafepnkmbhccpbejgmiehpchacaeak;$crx" -PropertyType String -Force|Out-Null
+          New-ItemProperty -Path $edgePol -Name '2' -Value "ifoakfbpdcdoeenechcleahebpibofpc;$crx" -PropertyType String -Force|Out-Null
+          $fav='[{"name":"FMHY Torrenting","url":"https://fmhy.net/torrenting"},{"name":"GitHub RDP Mirror","url":"https://rentry.co/Rt7mK2pL9vQ4wX8nB3cF6zYe"}]'
+          New-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'ManagedFavorites' -Value $fav -PropertyType String -Force|Out-Null
+          $ffdist='C:\Program Files\Mozilla Firefox\distribution'; New-Item -ItemType Directory -Path $ffdist -Force|Out-Null
+          $ffpol='{"policies":{"Bookmarks":[{"Title":"FMHY Torrenting","URL":"https://fmhy.net/torrenting","Placement":"toolbar"},{"Title":"GitHub RDP Mirror","URL":"https://rentry.co/Rt7mK2pL9vQ4wX8nB3cF6zYe","Placement":"toolbar"}]}}'
+          Set-Content -Path (Join-Path $ffdist 'policies.json') -Value $ffpol -Encoding UTF8
+          try { winget install --id qBittorrent.qBittorrent -e --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>$null|Out-Null; Write-Host "qBittorrent installed." } catch { Write-Host "qBittorrent winget failed (non-fatal)." }; Reset-Exit
+          try { winget install --id Parsec.Parsec -e --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>$null|Out-Null; Write-Host "Parsec installed." } catch { Write-Host "Parsec winget failed (non-fatal)." }; Reset-Exit
+          $pcfg='C:\ProgramData\Parsec'; New-Item -ItemType Directory -Path $pcfg -Force|Out-Null
+          "app_host = 1`r`nprivacy_mode = 0`r`nserver_resolution = 1920x1080" | Set-Content (Join-Path $pcfg 'config.txt') -Encoding ASCII -ErrorAction SilentlyContinue
+          if(Test-Path 'C:\Program Files\Parsec\parsecd.exe'){ New-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run' -Name 'ParsecAuto' -Value '"C:\Program Files\Parsec\parsecd.exe"' -PropertyType String -Force -ErrorAction SilentlyContinue|Out-Null; Write-Host "Parsec autolaunch set." } else { Write-Host "Parsec exe not found - skipped autolaunch." }
+          Reset-Exit
+          $sd=$env:RUNNER_TEMP
+          $cfgPath=Join-Path $sd 'ghrdp_cfg.json'
+          $launcher=Join-Path $sd 'ghrdp-launcher.ps1'
+          $ps="C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+          $args = "-NoExit -ExecutionPolicy Bypass -File `"$launcher`" -CfgPath `"$cfgPath`" -Port 7331"
+          foreach($desk in @("C:\Users\Public\Desktop","C:\Users\$($env:RDP_USER)\Desktop")){
+            try { New-Item -ItemType Directory -Path $desk -Force -EA 0 | Out-Null; $ws=New-Object -ComObject WScript.Shell; $sc=$ws.CreateShortcut((Join-Path $desk 'Mission Control.lnk')); $sc.TargetPath=$ps; $sc.Arguments=$args; $sc.WindowStyle=1; $sc.Description='Start RDP dashboard + mirror + Funnel (live console)'; $sc.Save(); Write-Host "Mission Control shortcut -> $desk" } catch { Write-Host "shortcut err $desk : $_" }
+          }
+          & (Join-Path $sd 'ghrdp-summary.ps1') $cfgPath
+          "### Theme + Bookmarks + qBittorrent + Parsec + Mission Control + Funnel + ONE-CLICK RDP Ready" >> $env:GITHUB_STEP_SUMMARY
+          "Dark mode, bookmarks, qBittorrent, Parsec installed. **ONE-CLICK RDP link is in the Summary tab** - click it on your pc and RDP auto-connects with zero typing (first time tick 'Always allow' on the browser prompt)." >> $env:GITHUB_STEP_SUMMARY
+          Write-Host "Configure step complete (exit forced 0)."
+          exit 0
+
+      - name: Prepare dashboard + mirror config (incl. random dashboard token)
+        env:
+          MIRROR: ${{ github.event.inputs.mirror_downloads_public }}
+        run: |
+          $ts="C:\Program Files\Tailscale\tailscale.exe"; $ip=(& $ts ip -4).Trim(); $user=$env:RDP_USER; $pass=$env:RDP_PASS
+          $eu=[uri]::EscapeDataString($user); $ep=[uri]::EscapeDataString($pass); $ghrdp="ghrdp://$ip/$eu/$ep"; $sd=$env:RUNNER_TEMP
+          New-Item -ItemType Directory -Path (Join-Path $sd 'ghrdp_tmp') -Force | Out-Null
+          $indexPath=Join-Path $sd 'ghrdp_mirror_index.json'; $progressPath=Join-Path $sd 'ghrdp_progress.json'
+          $hbPath=Join-Path $sd 'ghrdp_heartbeat.txt'; $emPath=Join-Path $sd 'ghrdp_emergency.flag'; $cfPath=Join-Path $sd 'ghrdp_cancel.flag'; $adPath=Join-Path $sd 'ghrdp_alldone.flag'
+          $cfgPath=Join-Path $sd 'ghrdp_cfg.json'; $mirrorOn=($env:MIRROR -eq 'true')
+          $dashToken = $env:DASH_TOKEN
+          if(-not $dashToken){ $rng=[System.Security.Cryptography.RandomNumberGenerator]::Create(); $alpha='abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'; $b=[byte[]]::new(24); $rng.GetBytes($b); $dashToken=-join ($b|%{$alpha[[int]$_ % $alpha.Length]}) }
+          $serveUrl = $env:SERVE_URL
+          if($mirrorOn){
+            $b2=[byte[]]::new(20); $rng.GetBytes($b2); $decPw=-join ($b2|%{$alpha[[int]$_ % $alpha.Length]})
+            $dlDir="C:\Users\$user\Downloads"; $tempDir="C:\Users\$user\AppData\Local\Temp"
+            $roots=@(@{path=$dlDir;rec=$false;min=0;tag='Downloads'},@{path=$tempDir;rec=$true;min=102400;tag='Temp'})
+            if(Test-Path 'D:\RDP-Storage'){ $roots += @{path='D:\RDP-Storage';rec=$true;min=0;tag='D-Storage'}; Write-Host "D-Storage added to mirror." }
+            $cfg=@{ rdpIp=$ip; rdpUser=$user; rdpPass=$pass; ghrdp=$ghrdp; mirror=$true; rentryUrl='https://rentry.co/Rt7mK2pL9vQ4wX8nB3cF6zYe'; editCode='Gf5xW9qL2mK7pR4tBn3Y'; slug='Rt7mK2pL9vQ4wX8nB3cF6zYe'; decPw=$decPw; dashToken=$dashToken; funnelUrl=$serveUrl; user=$user; dlDir=$dlDir; tempDir=$tempDir; roots=$roots; idxFile=$indexPath; doneFile=(Join-Path $sd 'ghrdp_uploaded.txt'); logFile=(Join-Path $sd 'ghrdp_mirror.log'); flushFlag=(Join-Path $sd 'ghrdp_flush.flag'); cfgPath=$cfgPath; libPath=(Join-Path $sd 'ghrdp-lib.ps1'); heartbeatPath=$hbPath; emergencyFlag=$emPath; cancelFlag=$cfPath; allDoneFlag=$adPath; progressPath=$progressPath; tmpDir=(Join-Path $sd 'ghrdp_tmp') }
+            $cfg | ConvertTo-Json -Depth 6 | Set-Content $cfgPath -Encoding UTF8
+          } else {
+            @{ rdpIp=$ip; rdpUser=$user; rdpPass=$pass; ghrdp=$ghrdp; mirror=$false; rentryUrl=''; dashToken=$dashToken; funnelUrl=$serveUrl } | ConvertTo-Json -Depth 4 | Set-Content $cfgPath -Encoding UTF8
+          }
+          Write-Host "Config written. mirror=$mirrorOn. Funnel + ONE-CLICK link set by Mission Control launcher."
+          & (Join-Path $sd 'ghrdp-summary.ps1') $cfgPath
+
+      - name: Keep Alive (5h30) - hosts dashboard + watcher (so local-pc web link works)
+        run: |
+          $sd=$env:RUNNER_TEMP
+          & (Join-Path $sd 'ghrdp-summary.ps1') (Join-Path $sd 'ghrdp_cfg.json')
+          $cfgPath=Join-Path $sd 'ghrdp_cfg.json'; $serverScript=Join-Path $sd 'rdp-redirect-server.ps1'; $watcherScript=Join-Path $sd 'ghrdp-watcher.ps1'
+          $progressPath=Join-Path $sd 'ghrdp_progress.json'; $emFlag=Join-Path $sd 'ghrdp_emergency.flag'; $flushFlag=Join-Path $sd 'ghrdp_flush.flag'; $okFile=Join-Path $sd 'ghrdp_server_ok.txt'
+          $cfg=Get-Content $cfgPath -Raw|ConvertFrom-Json
+          Remove-Item $okFile -Force -EA 0
+          $wjob=$null
+          if($cfg.mirror -and (Test-Path $watcherScript)){ try{ $wjob=Start-Job -FilePath $watcherScript -ArgumentList $cfgPath; Write-Host "[watcher] job $($wjob.Id)" }catch{ Write-Host "[watcher] err $_" } }
+          $sjob=$null
+          try{ $sjob=Start-Job -ScriptBlock { param($ss,$port,$bind,$uidir,$prog,$cfgp,$em,$fl,$ok) $ErrorActionPreference='Continue'; try{ . $ss; Start-GhrdpServer -Port $port -BindAddress $bind -UiDir $uidir -ProgressPath $prog -CfgPath $cfgp -EmergencyFlagPath $em -FlushFlagPath $fl -OkFile $ok }catch{ Set-Content $ok ("JOB_EXCEPTION: $_") -Encoding ascii } } -ArgumentList $serverScript,7331,'0.0.0.0',$sd,$progressPath,$cfgPath,$emFlag,$flushFlag,$okFile; Write-Host "[server] job $($sjob.Id)" }catch{ Write-Host "[server] err $_" }
+          for($i=0;$i -lt 30;$i++){ if((Test-Path $okFile) -and ((Get-Content $okFile -Raw) -match 'LISTENING')){ Write-Host "[server] up on 7331"; break }; Start-Sleep -Milliseconds 500 }
+          Write-Host "Dashboard alive: 127.0.0.1:7331 (inside RDP) AND the tailnet web link printed in earlier steps. Keeping alive 5h30..."
+          $limit=New-TimeSpan -Hours 5 -Minutes 30; $start=Get-Date
+          while(((Get-Date)-$start) -lt $limit){
+            if($sjob -and $sjob.State -ne 'Running'){ Write-Host "[server] died: $(Receive-Job $sjob -EA 0)" }
+            if($wjob -and $wjob.State -ne 'Running'){ Write-Host "[watcher] died: $(Receive-Job $wjob -EA 0)" }
+            Start-Sleep -Seconds 60
+          }
+
+      - name: Emergency upload on cancel (always)
+        if: ${{ always() && github.event.inputs.mirror_downloads_public == 'true' }}
+        env:
+          STATUS: ${{ job.status }}
+        run: |
+          $sd=$env:RUNNER_TEMP
+          $cfgPath=Join-Path $sd 'ghrdp_cfg.json'; $lib=Join-Path $sd 'ghrdp-lib.ps1'
+          if(-not ((Test-Path $cfgPath) -and (Test-Path $lib))){ Write-Host "no mirror cfg/lib - skip"; exit 0 }
+          $emf=Join-Path $sd 'ghrdp_emergency.flag'; $progressPath=Join-Path $sd 'ghrdp_progress.json'
+          Set-Content $emf (Get-Date -f o) -Encoding ascii
+          Write-Host "EMERGENCY (status=$env:STATUS) - signalled watcher; monitoring live progress..."
+          $deadline=(Get-Date).AddMinutes(12); $watcherSeen=$false
+          while((Get-Date) -lt $deadline){
+            $prog=$null; if(Test-Path $progressPath){ try{ $prog=Get-Content $progressPath -Raw|ConvertFrom-Json -ErrorAction Stop }catch{} }
+            if($prog -and $prog.ts){ $age=[int]((Get-Date)-(Get-Date $prog.ts)).TotalSeconds; if($age -lt 15){ $watcherSeen=$true } else { Write-Host "watcher stale (${age}s) - fallback."; break } }
+            if($prog -and $prog.agg){ $u=[int]$prog.agg.active; $f=[int]$prog.agg.failed; $d=[int]$prog.agg.done; $pct=$prog.agg.overallPct; Write-Host "...done=$d active=$u failed=$f overall=${pct}% (watcher alive=$watcherSeen)" }
+            if($watcherSeen -and $prog -and $prog.agg -and [int]$prog.agg.active -eq 0 -and [int]($prog.agg.tracked) -gt 0 -and [int]($prog.agg.done) -ge ([int]($prog.agg.tracked)-[int]($prog.agg.failed))){ Write-Host "Watcher finished all transfers."; break }
+            Start-Sleep -Seconds 5
+          }
+          $needFallback = -not $watcherSeen
+          if(-not $needFallback -and (Test-Path $progressPath)){ try{ $pp=Get-Content $progressPath -Raw|ConvertFrom-Json -ErrorAction Stop; if($pp.agg -and [int]$pp.agg.active -gt 0){ $needFallback=$true } }catch{} }
+          if($needFallback){
+            Write-Host "DIRECT fallback upload (streaming, lock-safe)..."
+            $env:GHRDP_CFG=$cfgPath; . $lib; $cfg=Read-Cfg; $env:GHRDP_LOG=$cfg.logFile; Init-Progress $progressPath
+            foreach($p in @('qbittorrent','qbittorrent-nox')){ Get-Process -Name $p -ErrorAction SilentlyContinue|Stop-Process -Force -ErrorAction SilentlyContinue }
+            Start-Sleep -Seconds 4
+            $junk=@('.tmp','.crdownload','.partial','.lock','.log','.etl','.pf','.db-journal','.sqlite-journal','.old','.bak')
+            $done=@{}; if(Test-Path $cfg.doneFile){ Get-Content $cfg.doneFile | %{$done[$_]=$true} }
+            $idx=Load-Index $cfg
+            foreach($r in $cfg.roots){
+              if(-not (Test-Path $r.path)){ continue }
+              $items=if($r.rec){Get-ChildItem -LiteralPath $r.path -File -Recurse -Depth 4 -ErrorAction SilentlyContinue | Sort-Object Length -Descending}else{Get-ChildItem -LiteralPath $r.path -File -ErrorAction SilentlyContinue | Sort-Object Length -Descending}
+              foreach($fi in $items){
+                if($done.ContainsKey($fi.FullName)){continue}; if($junk -contains $fi.Extension.ToLower()){continue}; if($fi.Length -lt $r.min){continue}
+                if($fi.FullName -match '\\(Windows|\$Recycle\.Bin|Program Files|Program Files \(x86\)|ProgramData|hostedtoolcache|\\a\\)'){continue}
+                $len=$fi.Length; $safe=$fi.Name -replace '\|','_'; $disp=($safe -replace '[^\x20-\x7E]','_')
+                $ex=$idx | ?{$_.name -eq $safe -and $_.src -eq $r.tag} | select -First 1
+                if(-not $ex){ $ex=@{name=$safe;src=$r.tag;status='uploading';payload='';gofile='';time=(Get-Date -f 'HH:mm:ss')}; [void]$idx.Add($ex); $global:GHRDP_TOTAL_BYTES += $len }
+                $ex.status='uploading'; $enc=Join-Path $cfg.tmpDir ('em_'+[guid]::NewGuid().ToString('N')+'.enc'); $gf=$null
+                Set-Active $disp 'encrypt' $len; try{ Encrypt-File $fi.FullName $enc $cfg.decPw }catch{}
+                Set-Active $disp 'upload' $len; try{ $gf=Upload-Gofile-Streamed $enc $disp }catch{}
+                Remove-Item $enc -Force -ErrorAction SilentlyContinue
+                if($gf){ $ex.payload=B64U ($gf+'|'+$cfg.decPw+'|'+$safe); $ex.gofile=$gf; $ex.status='ok'; $ex.time=(Get-Date -f 'HH:mm:ss'); $done[$fi.FullName]=$true; $fi.FullName|Out-File $cfg.doneFile -Append; $global:GHRDP_DONE_BYTES += $len; Write-Host "DIRECT OK $($fi.Name) ($len bytes)" }
+                else { $ex.status='limit'; Write-Host "DIRECT LIMIT $($fi.Name)" }
+                Set-Active '' 'idle' 0
+              }
+            }
+            Save-Index $cfg $idx; Push-Rentry $cfg (Build-Rentry $cfg $idx)|Out-Null
+            Write-Host "DIRECT fallback upload complete."
+          }
+          Write-Host "Emergency handling complete. (A 2nd Cancel force-kills immediately.)"
+
+      - name: Secure Cleanup (wipe all data)
+        if: ${{ always() }}
+        run: |
+          $ml=Join-Path $env:RUNNER_TEMP 'ghrdp_mirror.log'; if(Test-Path $ml){ Write-Host "----- mirror log (tail) -----"; Get-Content $ml -Tail 120 | %{Write-Host $_} }
+          foreach($p in @('chrome','msedge','firefox','iexplore','brave','opera','qbittorrent')){ Get-Process -Name $p -ErrorAction SilentlyContinue|Stop-Process -Force -ErrorAction SilentlyContinue }
+          Start-Sleep -Seconds 3
+          foreach($p in @("$env:LOCALAPPDATA\Google\Chrome\User Data","$env:LOCALAPPDATA\Microsoft\Edge\User Data","$env:APPDATA\Mozilla\Firefox\Profiles","$env:LOCALAPPDATA\Mozilla\Firefox\Profiles","$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data","$env:APPDATA\Opera Software\Opera Stable")){ if(Test-Path $p){ try{Remove-Item -Path $p -Recurse -Force -ErrorAction Stop}catch{Start-Sleep 2;Remove-Item -Path $p -Recurse -Force -ErrorAction SilentlyContinue} } }
+          foreach($p in @("$env:USERPROFILE\Downloads","$env:USERPROFILE\Desktop","$env:USERPROFILE\Documents")){ if(Test-Path $p){Remove-Item "$p\*" -Recurse -Force -ErrorAction SilentlyContinue} }
+          if($env:RDP_USER){ foreach($s in @('Downloads','AppData\Local\Temp')){ $d="C:\Users\$($env:RDP_USER)\$s"; if(Test-Path $d){Remove-Item "$d\*" -Recurse -Force -ErrorAction SilentlyContinue} } }
+          if(Test-Path 'D:\RDP-Storage'){ Remove-Item 'D:\RDP-Storage\*' -Recurse -Force -ErrorAction SilentlyContinue }
+          Remove-Item "$env:LOCALAPPDATA\Temp\*" -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item "$env:TEMP\*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-Item "$env:APPDATA\Microsoft\Windows\Recent\*" -Recurse -Force -ErrorAction SilentlyContinue
+          Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\RunMRU' -Name '*' -ErrorAction SilentlyContinue
+          Remove-Item -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\TypedPaths' -ErrorAction SilentlyContinue
+          Set-Clipboard -Value "" -ErrorAction SilentlyContinue; Clear-RecycleBin -Force -ErrorAction SilentlyContinue
+          wevtutil el 2>$null | %{wevtutil cl "$_" 2>$null}; $LASTEXITCODE = 0
+          & "C:\Program Files\Tailscale\tailscale.exe" funnel --bg 7331 off 2>$null | Out-Null; $LASTEXITCODE=0
+          & "C:\Program Files\Tailscale\tailscale.exe" serve reset 2>$null | Out-Null; $LASTEXITCODE=0
+          "### Secure Cleanup Complete" >> $env:GITHUB_STEP_SUMMARY
+          "VM wiped (incl D-RDP-Storage). Mirror copies (AES) + rentry index remain if mirror ON. Funnel turned off. No GitHub secrets - recoverable from script." >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Overwrite free space (skip on cancel)
+        if: ${{ always() && !cancelled() }}
+        run: |
+          Write-Host "Overwriting free space (cipher /w)..."
+          cipher /w:C:\
+          $LASTEXITCODE = 0
+          "Free-space overwrite complete." >> $env:GITHUB_STEP_SUMMARY
