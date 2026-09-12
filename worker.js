@@ -1,95 +1,203 @@
-// ghrdp-worker.js — control proxy + gofile PREVIEW proxy
-export default {
-  async fetch(request, env, ctx) {
-    const url = new URL(request.url);
-    const AO = env.ALLOW_ORIGIN || '*';
-    const AC = {
-      'Access-Control-Allow-Origin': AO,
-      'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type,X-Access-Code,Range',
-      'Access-Control-Expose-Headers': 'Content-Length,Content-Range,Accept-Ranges,Content-Type'
-    };
-    if (request.method === 'OPTIONS') return new Response(null, { headers: AC });
-    try {
-      if (url.pathname === '/proxy') return await proxyGofile(request, env, AC);
-      if (url.pathname === '/ping') return json({ ok: true, ts: Date.now() }, AC, 200);
-      if (url.pathname === '/dispatch' || url.pathname === '/running' || url.pathname.startsWith('/cancel')) {
-        const ok = await verifyCode(request, env);
-        if (!ok) return json({ ok: false, message: 'invalid access code' }, AC, 401);
-        if (url.pathname === '/dispatch') return await doDispatch(request, env, AC);
-        if (url.pathname === '/running') return await listRunning(env, AC);
-        return await doCancel(url, env, AC);
-      }
-      return json({ ok: false, message: 'not found' }, AC, 404);
-    } catch (e) {
-      return json({ ok: false, message: String((e && e.message) || e) }, AC, 500);
-    }
-  }
-};
-function json(o, AC, s) { return new Response(JSON.stringify(o), { status: s || 200, headers: Object.assign({ 'Content-Type': 'application/json' }, AC) }); }
-async function sha256hex(s) { const d = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)); return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, '0')).join(''); }
-async function verifyCode(request, env) {
-  const want = env.ACCESS_CODE_HASH; if (!want) return false;
-  let code = '';
-  if (request.method === 'POST') { try { code = (await request.clone().json()).code || ''; } catch (e) {} }
-  if (!code) code = request.headers.get('X-Access-Code') || '';
-  if (!code) return false;
-  return (await sha256hex(code)).toLowerCase() === String(want).toLowerCase();
+const CORS_ORIGIN = 'https://dekarita.github.io';
+const RATE_LIMIT_MS = 30000;
+const ipTimestamps = new Map();
+
+function corsHeaders(origin) {
+  const allowed = origin === CORS_ORIGIN ? CORS_ORIGIN : '';
+  return {
+    'Access-Control-Allow-Origin': allowed,
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Access-Code, Range',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Type',
+    'Access-Control-Max-Age': '86400',
+  };
 }
-async function doDispatch(request, env, AC) {
-  const b = await request.json(); const inputs = (b && b.inputs) || {};
-  const r = await fetch(`https://api.github.com/repos/${env.GH_REPO}/actions/workflows/${env.WORKFLOW_FILE || 'main.yml'}/dispatches`, {
-    method: 'POST',
-    headers: { Authorization: 'Bearer ' + env.GH_PAT, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': '2022-11-28', 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ref: env.BRANCH || 'main', inputs: { mirror_downloads_public: String(!!inputs.mirror), encrypt_mode: inputs.encrypt || 'none' } })
+
+function jsonResponse(data, status = 200, origin = '') {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) },
   });
-  return json({ ok: r.status === 204, status: r.status }, AC, r.status === 204 ? 200 : r.status);
 }
-async function listRunning(env, AC) {
-  const r = await fetch(`https://api.github.com/repos/${env.GH_REPO}/actions/runs?status=in_progress&per_page=5`, { headers: { Authorization: 'Bearer ' + env.GH_PAT, Accept: 'application/vnd.github+json' } });
-  const j = await r.json();
-  return json({ ok: true, runs: (j.workflow_runs || []).map(x => ({ id: x.id, created: x.created_at })) }, AC);
+
+async function sha256(text) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('');
 }
-async function doCancel(url, env, AC) {
-  const id = url.pathname.split('/').pop();
-  const r = await fetch(`https://api.github.com/repos/${env.GH_REPO}/actions/runs/${id}/cancel`, { method: 'POST', headers: { Authorization: 'Bearer ' + env.GH_PAT, Accept: 'application/vnd.github+json' } });
-  return json({ ok: r.status === 202, status: r.status }, AC, r.status === 202 ? 200 : r.status);
+
+async function constantTimeCompare(a, b) {
+  if (a.length !== b.length) return false;
+  const enc = new TextEncoder();
+  const ka = await crypto.subtle.importKey('raw', enc.encode(a), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const kb = await crypto.subtle.importKey('raw', enc.encode(b), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sa = await crypto.subtle.sign('HMAC', ka, enc.encode('verify'));
+  const sb = await crypto.subtle.sign('HMAC', kb, enc.encode('verify'));
+  const va = new Uint8Array(sa), vb = new Uint8Array(sb);
+  let diff = 0;
+  for (let i = 0; i < va.length; i++) diff |= va[i] ^ vb[i];
+  return diff === 0;
 }
-/* ---------- gofile preview bridge ---------- */
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-async function gofileToken(env) {
+
+function rateLimit(ip) {
   const now = Date.now();
-  if (globalThis.__gf && globalThis.__gf.at > now - 3600e3) return globalThis.__gf.t;
-  const r = await fetch('https://api.gofile.io/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json', 'User-Agent': UA } });
-  const j = await r.json();
-  const t = j && j.data && j.data.token;
-  if (!t) throw new Error('gofile account token failed: ' + (j && j.status));
-  globalThis.__gf = { t, at: now };
-  return t;
+  const last = ipTimestamps.get(ip) || 0;
+  if (now - last < RATE_LIMIT_MS) return false;
+  ipTimestamps.set(ip, now);
+  if (ipTimestamps.size > 10000) {
+    for (const [k, v] of ipTimestamps) { if (now - v > 120000) ipTimestamps.delete(k); }
+  }
+  return true;
 }
-async function proxyGofile(request, env, AC) {
-  const q = new URL(request.url).searchParams;
-  const link = q.get('url') || '';
-  const m = link.match(/gofile\.io\/d\/([A-Za-z0-9]+)/);
-  const code = q.get('code') || (m && m[1]);
-  if (!code) return json({ ok: false, message: 'missing ?url= (a gofile /d/ link)' }, AC, 400);
-  const token = await gofileToken(env);
-  const wt = env.GOFILE_WT || '4fd6sg89d7s6';
-  const info = await (await fetch(`https://api.gofile.io/contents/${code}?wt=${wt}`, { headers: { Authorization: 'Bearer ' + token, 'User-Agent': UA } })).json();
-  if (!info || info.status !== 'ok' || !info.data) return json({ ok: false, message: 'gofile contents: ' + (info && info.status) }, AC, 502);
-  let direct = info.data.directLink || '';
-  if (!direct && info.data.children) { const k = Object.keys(info.data.children)[0]; if (k) direct = info.data.children[k].link || info.data.children[k].directLink || ''; }
-  if (!direct) return json({ ok: false, message: 'no directLink in gofile response' }, AC, 502);
-  const h = { 'User-Agent': UA, 'Cookie': 'accountToken=' + token, 'Referer': 'https://gofile.io/' };
-  const range = request.headers.get('Range'); if (range) h['Range'] = range;
-  const up = await fetch(direct, { headers: h, redirect: 'follow' });
-  if (!up.ok) return json({ ok: false, message: 'upstream ' + up.status }, AC, 502);
-  const hd = new Headers();
-  Object.keys(AC).forEach(k => hd.set(k, AC[k]));
-  hd.set('Content-Type', up.headers.get('Content-Type') || 'application/octet-stream');
-  const cl = up.headers.get('Content-Length'); if (cl) hd.set('Content-Length', cl);
-  const cr = up.headers.get('Content-Range'); if (cr) hd.set('Content-Range', cr);
-  hd.set('Accept-Ranges', 'bytes');
-  hd.set('Cache-Control', 'public, max-age=3600');
-  return new Response(up.body, { status: up.status, headers: hd });
-}
+
+export default {
+  async fetch(request, env) {
+    const url = new URL(request.url);
+    const origin = request.headers.get('Origin') || '';
+
+    if (request.method === 'OPTIONS') {
+      const oh = url.pathname === '/proxy'
+        ? { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, OPTIONS', 'Access-Control-Allow-Headers': 'Range', 'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Accept-Ranges, Content-Type', 'Access-Control-Max-Age': '86400' }
+        : corsHeaders(origin);
+      return new Response(null, { status: 204, headers: oh });
+    }
+
+    if (url.pathname === '/proxy') {
+      const target = url.searchParams.get('url') || '';
+      const gm = target.match(/gofile\.io\/d\/([A-Za-z0-9]+)/);
+      if (!gm) return new Response(JSON.stringify({ ok: false, message: 'need a gofile /d/ link' }), {
+        status: 400, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+      });
+      const cid = gm[1];
+      try {
+        if (!globalThis.__gfToken || (globalThis.__gfAt || 0) < Date.now() - 3600e3) {
+          const ar = await fetch('https://api.gofile.io/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
+          const aj = await ar.json();
+          if (!aj || !aj.data || !aj.data.token) throw new Error('gofile token failed');
+          globalThis.__gfToken = aj.data.token; globalThis.__gfAt = Date.now();
+        }
+        const token = globalThis.__gfToken;
+        const ir = await fetch('https://api.gofile.io/contents/' + cid + '?wt=4fd6sg89d7s6', { headers: { Authorization: 'Bearer ' + token } });
+        const ij = await ir.json();
+        let direct = '';
+        if (ij && ij.status === 'ok' && ij.data) {
+          if (ij.data.directLink) direct = ij.data.directLink;
+          else if (ij.data.children) { const k = Object.keys(ij.data.children)[0]; direct = (ij.data.children[k] && ij.data.children[k].link) || ''; }
+        }
+        if (!direct) return new Response(JSON.stringify({ ok: false, message: 'no direct link from gofile' }), {
+          status: 502, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+        const h = new Headers();
+        h.set('Cookie', 'accountToken=' + token);
+        h.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+        const range = request.headers.get('Range'); if (range) h.set('Range', range);
+        const up = await fetch(direct, { headers: h, redirect: 'follow' });
+        if (!up.ok) return new Response(JSON.stringify({ ok: false, message: 'upstream ' + up.status }), {
+          status: 502, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+        const rh = new Headers();
+        rh.set('Access-Control-Allow-Origin', '*');
+        rh.set('Accept-Ranges', 'bytes');
+        const ct = up.headers.get('Content-Type'); if (ct) rh.set('Content-Type', ct);
+        const cr = up.headers.get('Content-Range'); if (cr) rh.set('Content-Range', cr);
+        const cl = up.headers.get('Content-Length'); if (cl) rh.set('Content-Length', cl);
+        rh.set('Cache-Control', 'public, max-age=3600');
+        return new Response(up.body, { status: up.status, headers: rh });
+      } catch (e) {
+        return new Response(JSON.stringify({ ok: false, message: String((e && e.message) || e) }), {
+          status: 502, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
+        });
+      }
+    }
+
+    if (url.pathname === '/ping') {
+      return jsonResponse({ ok: true, ts: Date.now() }, 200, origin);
+    }
+
+    if (origin !== CORS_ORIGIN) {
+      return jsonResponse({ error: 'origin not allowed' }, 403, origin);
+    }
+
+    const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+    if (!rateLimit(ip)) {
+      return jsonResponse({ error: 'rate limited (1 req / 30s)' }, 429, origin);
+    }
+
+    const accessCode = request.headers.get('X-Access-Code') || '';
+    if (!accessCode) {
+      return jsonResponse({ error: 'missing access code' }, 401, origin);
+    }
+    const codeHash = await sha256(accessCode);
+    const expectedHash = env.WORKER_ACCESS_CODE_HASH || '';
+    if (!await constantTimeCompare(codeHash, expectedHash)) {
+      return jsonResponse({ error: 'invalid access code' }, 403, origin);
+    }
+
+    const ghToken = env.GH_PAT || '';
+    const repo = env.GH_REPO || 'dekarita/supreme-lamp';
+    const workflowFile = env.GH_WORKFLOW || 'main.yml';
+    const ghHeaders = {
+      Authorization: `Bearer ${ghToken}`,
+      Accept: 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'User-Agent': 'ghrdp-worker',
+    };
+
+    if (url.pathname === '/dispatch' && request.method === 'POST') {
+      let body = {};
+      try { body = await request.json(); } catch {}
+      const ref = body.ref || 'main';
+      const inputs = {};
+      if (body.mirror !== undefined) inputs.mirror_downloads_public = String(body.mirror);
+      if (body.encrypt_mode) inputs.encrypt_mode = body.encrypt_mode;
+
+      const resp = await fetch(`https://api.github.com/repos/${repo}/actions/workflows/${workflowFile}/dispatches`, {
+        method: 'POST',
+        headers: { ...ghHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ref, inputs }),
+      });
+      if (resp.status === 204) {
+        return jsonResponse({ ok: true, message: 'workflow dispatched' }, 200, origin);
+      }
+      const err = await resp.text();
+      return jsonResponse({ ok: false, status: resp.status, error: err }, resp.status, origin);
+    }
+
+    if (url.pathname === '/cancel' && request.method === 'POST') {
+      let body = {};
+      try { body = await request.json(); } catch {}
+      const runId = body.run_id;
+      if (!runId) return jsonResponse({ error: 'missing run_id' }, 400, origin);
+
+      const resp = await fetch(`https://api.github.com/repos/${repo}/actions/runs/${runId}/cancel`, {
+        method: 'POST',
+        headers: ghHeaders,
+      });
+      if (resp.status === 202) {
+        return jsonResponse({ ok: true, message: 'cancel requested' }, 200, origin);
+      }
+      const err = await resp.text();
+      return jsonResponse({ ok: false, status: resp.status, error: err }, resp.status, origin);
+    }
+
+    if (url.pathname === '/workflow' && request.method === 'GET') {
+      const resp = await fetch(`https://api.github.com/repos/${repo}/actions/runs?per_page=5&status=in_progress`, {
+        headers: ghHeaders,
+      });
+      if (!resp.ok) {
+        const err = await resp.text();
+        return jsonResponse({ ok: false, error: err }, resp.status, origin);
+      }
+      const data = await resp.json();
+      const runs = (data.workflow_runs || []).map(r => ({
+        id: r.id,
+        status: r.status,
+        conclusion: r.conclusion,
+        created_at: r.created_at,
+        html_url: r.html_url,
+      }));
+      return jsonResponse({ ok: true, runs }, 200, origin);
+    }
+
+    return jsonResponse({ error: 'not found' }, 404, origin);
+  },
+};
