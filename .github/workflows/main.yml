@@ -221,19 +221,32 @@ jobs:
               $upLog = Join-Path $env:RUNNER_TEMP 'ts-up.log'
               $upErr = Join-Path $env:RUNNER_TEMP 'ts-up.err'
               Start-Process -FilePath $ts -ArgumentList @('up', ('--authkey=' + $env:TS_AUTHKEY), '--accept-dns=false', ('--hostname=' + $hostname)) -RedirectStandardOutput $upLog -RedirectStandardError $upErr -WindowStyle Hidden | Out-Null
-              $ok = $false
-              for ($i = 0; $i -lt 60; $i++) {
+              $ok = $false; $badReason = ''
+              for ($i = 0; $i -lt 45; $i++) {
                   try {
                       $j = (& $ts status --json 2>$null) | ConvertFrom-Json -ErrorAction Stop
                       if ($j -and ($j.BackendState -eq 'Running')) { $ok = $true; break }
                   } catch { }
+                  $all = ''
+                  try { if (Test-Path $upErr) { $all += [System.IO.File]::ReadAllText($upErr) } } catch { }
+                  try { if (Test-Path $upLog) { $all += "`n" + [System.IO.File]::ReadAllText($upLog) } } catch { }
+                  if ($all -match 'invalid|expired|not valid|unauthorized|forbidden|already been used') {
+                      $badReason = (@($all -split "`n" | Where-Object { $_ -match 'invalid|expired|not valid|unauthorized|forbidden|already been used' }) | Select-Object -First 1)
+                      Write-Host ('[ts] AUTHKEY REJECTED: ' + $badReason)
+                      break
+                  }
                   Start-Sleep -Seconds 2
               }
               if ($ok) {
                   Write-Host '[ts] auto-login OK via TS_AUTHKEY'
                   if ($S) { '### Tailscale: auto-logged-in via TS_AUTHKEY' | Add-Content -Path $S }
               } else {
-                  Write-Host '[ts] WARNING: TS_AUTHKEY login did not reach Running (expired or invalid key); falling back to interactive sign-in'
+                  Write-Host ('[ts] WARNING: TS_AUTHKEY did not reach Running' + $(if ($badReason) { ' (' + $badReason + ')' } else { '' }) + ' - falling back to interactive sign-in')
+                  if ($S) {
+                      '### Tailscale auth key rejected or expired' | Add-Content -Path $S
+                      ('Reason: ' + $(if ($badReason) { $badReason } else { 'timeout' })) | Add-Content -Path $S
+                      'Fix: Tailscale admin > Settings > Keys > generate a REUSABLE key (no expiry, no approval), then update repo secret TS_AUTHKEY.' | Add-Content -Path $S
+                  }
               }
               try { $state = [string](((& $ts status --json 2>$null) | ConvertFrom-Json).BackendState) } catch { }
           }
