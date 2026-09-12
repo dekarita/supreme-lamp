@@ -332,6 +332,24 @@ function Send-CurlUpload {
     }
     return $null
 }
+function Send-PreviewCopy {
+    param([string]$Path, [string]$DispName, [long]$MaxBytes = 157286400)
+    try { if ((Get-Item -LiteralPath $Path).Length -gt $MaxBytes) { return '' } } catch { return '' }
+    $trials = @(
+        @{ name = 'litter.catbox.moe'; args = @('-sS', '--max-time', '1800', '-F', ('fileToUpload=@{0};filename={1}' -f $Path, $DispName), 'https://litter.catbox.moe/') },
+        @{ name = 'catbox.moe'; args = @('-sS', '--max-time', '1800', '-F', 'reqtype=fileupload', '-F', ('fileToUpload=@{0};filename={1}' -f $Path, $DispName), 'https://catbox.moe/user/api.php') },
+        @{ name = '0x0.st'; args = @('-sS', '--max-time', '1800', '-F', ('file=@{0};filename={1}' -f $Path, $DispName), 'https://0x0.st') }
+    )
+    foreach ($t in $trials) {
+        try {
+            $raw = (& curl.exe @($t.args) 2>$null) -join ''
+            $LASTEXITCODE = 0
+            $raw = ([string]$raw).Trim()
+            if ($raw -match '^https?://\S+$') { Add-MirrorLog ('[preview] preview copy on {0}: {1}' -f $t.name, $raw); return $raw }
+        } catch { }
+    }
+    return ''
+}
 function Send-AnyUpload {
     param([string]$EncPath, [string]$DispName)
     $link = Send-GofileStreamed -EncPath $EncPath -DispName $DispName
@@ -672,7 +690,7 @@ function Publish-SearchPage {
     $docs = Join-Path $tmp 'docs'
     New-Item -ItemType Directory -Path $docs -Force | Out-Null
     $data = @()
-    foreach ($it in @($IndexList)) { $data += [ordered]@{ n = [string]$it.name; f = [string]$it.folder; s = [long]$it.size; d = [string]$it.time; dsl = [string]$it.timeSL; e = [string]$it.encrypted; l = [string]$it.link; st = [string]$it.status } }
+    foreach ($it in @($IndexList)) { $data += [ordered]@{ n = [string]$it.name; f = [string]$it.folder; s = [long]$it.size; d = [string]$it.time; dsl = [string]$it.timeSL; e = [string]$it.encrypted; l = [string]$it.link; p = [string]$it.preview; st = [string]$it.status } }
     $json = ConvertTo-Json -InputObject @($data) -Depth 4 -Compress
     $sb2 = New-Object System.Text.StringBuilder
     [void]$sb2.Append('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">')
@@ -771,7 +789,7 @@ function Publish-GithubPagesData {
     try { $token = ([System.IO.File]::ReadAllText('C:\ghrdp\gh-pages-token.txt')).Trim() } catch { }
     if (-not $token) { Add-MirrorLog '[pages] no token - skip data.json'; return $false }
     $files = @()
-    foreach ($it in @($IndexList)) { $files += [ordered]@{ n = [string]$it.name; s = [long]$it.size; d = [string]$it.time; dsl = [string]$it.timeSL; e = [string]$it.encrypted; l = [string]$it.link; f = [string]$it.folder } }
+    foreach ($it in @($IndexList)) { $files += [ordered]@{ n = [string]$it.name; s = [long]$it.size; d = [string]$it.time; dsl = [string]$it.timeSL; e = [string]$it.encrypted; l = [string]$it.link; p = [string]$it.preview; f = [string]$it.folder } }
     $data = [ordered]@{
         ts = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')
         sessionId = [string]$Cfg.sessionId
@@ -787,11 +805,11 @@ function Publish-GithubPagesData {
     Put-GhFile -Repo ([string]$Cfg.repo) -Path 'data.json' -Text ($data | ConvertTo-Json -Depth 6 -Compress) -Token $token
     Add-MirrorLog '[pages] data.json pushed'
     $treeFiles = @()
-    foreach ($it in @($IndexList)) { $treeFiles += [ordered]@{ n = [string]$it.name; f = [string]$it.folder; s = [long]$it.size; l = [string]$it.link; e = [string]$it.encrypted; t = [string]$it.timeSL } }
+    foreach ($it in @($IndexList)) { $treeFiles += [ordered]@{ n = [string]$it.name; f = [string]$it.folder; s = [long]$it.size; l = [string]$it.link; p = [string]$it.preview; e = [string]$it.encrypted; t = [string]$it.timeSL } }
     $treeObj = [ordered]@{ updated = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'); sessionId = [string]$Cfg.sessionId; live = $true; files = $treeFiles }
     try { Put-GhFile -Repo ([string]$Cfg.repo) -Path 'tree.json' -Text ($treeObj | ConvertTo-Json -Depth 6 -Compress) -Token $token; Add-MirrorLog '[pages] tree.json pushed (explorer live tree)' } catch { Add-MirrorLog ('[pages] tree.json push failed: ' + $_.Exception.Message) }
     $liveFiles = @()
-    foreach ($it in @($IndexList)) { $liveFiles += [ordered]@{ n = [string]$it.name; s = [long]$it.size; l = [string]$it.link; e = [string]$it.encrypted; f = ([string]$it.folder) } }
+    foreach ($it in @($IndexList)) { $liveFiles += [ordered]@{ n = [string]$it.name; s = [long]$it.size; l = [string]$it.link; p = [string]$it.preview; e = [string]$it.encrypted; f = ([string]$it.folder) } }
     $liveBytes = [long]0
     foreach ($it in @($IndexList)) { $liveBytes += [long]$it.size }
     $live = [ordered]@{ id = ([string]$Cfg.sessionId); date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'); live = $true; filesCount = @($IndexList).Count; bytes = $liveBytes; key = [string]$Cfg.mirrorKey; telegraph = [string]$Cfg.mirrorIndexUrl; rentry = ''; files = $liveFiles }

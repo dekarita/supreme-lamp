@@ -156,7 +156,7 @@ function childFolder(parent,name){
   var f={name:name,type:'folder',children:[],parent:parent,opath:parent.opath+'/'+name};
   parent.children.push(f);return f;
 }
-function fileNode(f,parent){return {name:f.n,type:'file',size:f.s,link:f.l,enc:f.e,date:f.d||f.t||'',parent:parent,opath:parent.opath+'/'+f.n};}
+function fileNode(f,parent){return {name:f.n,type:'file',size:f.s,link:f.l,preview:f.p||'',enc:f.e,date:f.d||f.t||'',parent:parent,opath:parent.opath+'/'+f.n};}
 function sessionNode(s){
   var n={name:(s.id||'session'),type:'folder',children:[],parent:root,opath:'/'+(s.id||'session'),session:true};
   (s.files||[]).forEach(function(f){
@@ -362,7 +362,7 @@ function showPreview(n){
   $('prevPane').style.display='flex'; $('divPrev').style.display='block'; $('bPrev').classList.add('on');
   $('pvName').textContent=n.name+(total>1?' ('+(idx+1)+'/'+total+')':'');
   var b=$('pvBody'); b.innerHTML='<div class="spin"></div>';
-  var e=extOf(n.name), raw=n.link||'', url=proxyUrl(raw);
+  var e=extOf(n.name), raw=n.link||'', url=n.preview||proxyUrl(raw);
   function fall(msg){ b.innerHTML='<div class="pfall"><div class="big">'+iconOf(n.name)+'</div><div>'+esc(msg)+'</div><div>'+fmtB(n.size)+'</div>'+(raw?'<a class="cbtn" href="'+esc(raw)+'" target="_blank" rel="noopener">⬇ Download</a>':'')+'</div>'; }
   if(IMG[e]){
     var im=new Image(), tried=false;
