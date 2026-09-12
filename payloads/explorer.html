@@ -145,7 +145,7 @@ var cur=root, hist=[root], hi=0, sel=[], anchor=null, view='details';
 var expanded={}; var nodeMap={};
 var OV={ren:{},hid:[],mov:{}};
 try{ OV=JSON.parse(localStorage.getItem('ghx-overrides')||'{}'); }catch(e){}
-var PROXY_BASE=(window.GHRDP_WORKER_URL||localStorage.getItem('ghx-proxy')||'').replace(/\/$/,'');
+var PROXY_BASE=(window.GHRDP_WORKER_URL||localStorage.getItem('ghrdp:worker')||'').replace(/\/$/,'');
 function saveOV(){ localStorage.setItem('ghx-overrides', JSON.stringify(OV)); }
 function $(id){return document.getElementById(id);}
 function toast(m){var t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},2200);}
@@ -347,6 +347,7 @@ function proxyUrl(url){
   if(!/gofile\.io/i.test(url)) return url;
   return PROXY_BASE+'/proxy?url='+encodeURIComponent(url);
 }
+window.__ghrdpProxyTest=function(link){ var p=proxyUrl(link); return p===link?Promise.resolve('NO PROXY'):fetch(p).then(function(r){return r.ok?'OK '+r.status:'FAIL '+r.status;}).catch(function(e){return 'ERR '+e.message;}); };
 function pvNav(dir){
   __pvFiles=pvFileList(); if(!__pvFiles.length)return;
   var i=__pvFiles.indexOf(__pvCur);
