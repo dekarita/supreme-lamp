@@ -76,18 +76,6 @@ tbody td{padding:6px 10px;border-bottom:1px solid rgba(255,255,255,.04);white-sp
 .gcard.sel{background:var(--accent-fill);border-color:rgba(76,194,255,.4)}
 .gcard .ic{font-size:calc(var(--gis,140px)*.34);line-height:1.15}
 .gcard .nm{font-size:12px;margin-top:6px;word-break:break-word;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.preview{width:360px;flex:0 0 auto;overflow:auto;border-left:1px solid var(--stroke);display:flex;flex-direction:column}
-.phead{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--stroke);font-size:13px}
-.phead span{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.pbody{padding:12px;display:flex;flex-direction:column;gap:10px;align-items:center}
-.pbody img{max-width:100%;border-radius:var(--r8);border:1px solid var(--stroke)}
-.pbody video,.pbody audio{max-width:100%;border-radius:var(--r8)}
-.pbody pre{width:100%;max-height:60vh;overflow:auto;background:rgba(0,0,0,.35);border:1px solid var(--stroke);border-radius:var(--r8);
-  padding:10px;font:12px/1.5 Consolas,'Cascadia Mono',monospace;color:#d6d6d6;white-space:pre-wrap;word-break:break-word}
-.pfall{display:flex;flex-direction:column;align-items:center;gap:8px;color:var(--text2);font-size:12px;text-align:center}
-.pfall .big{font-size:44px}
-.spin{width:26px;height:26px;border-radius:50%;border:3px solid var(--stroke-hi);border-top-color:var(--accent);animation:sp 0.8s linear infinite}
-@keyframes sp{to{transform:rotate(360deg)}}
 .statusbar{display:flex;align-items:center;gap:14px;padding:5px 12px;font-size:12px;color:var(--text2);
   background:var(--acrylic);backdrop-filter:blur(20px);border-top:1px solid var(--stroke)}
 .statusbar input[type=range]{accent-color:var(--accent);width:120px}
@@ -95,7 +83,7 @@ tbody td{padding:6px 10px;border-bottom:1px solid rgba(255,255,255,.04);white-sp
   border:1px solid var(--stroke-hi);border-radius:var(--r8);padding:8px 16px;font-size:13px;color:var(--text);
   box-shadow:0 8px 24px rgba(0,0,0,.4);opacity:0;transition:opacity .18s ease;pointer-events:none;z-index:50}
 .toast.show{opacity:1}
-@media (max-width:768px){ .tree{position:absolute;z-index:5;height:100%;box-shadow:8px 0 24px rgba(0,0,0,.4)} .preview{position:absolute;right:0;z-index:6;height:100%} }
+@media (max-width:768px){ .tree{position:absolute;z-index:5;height:100%;box-shadow:8px 0 24px rgba(0,0,0,.4)} }
 </style>
 </head>
 <body>
@@ -119,18 +107,11 @@ tbody td{padding:6px 10px;border-bottom:1px solid rgba(255,255,255,.04);white-sp
     <span class="spacer"></span>
     <button class="cbtn on" id="bViewD" title="Details">&#x2630;</button>
     <button class="cbtn" id="bViewG" title="Grid">&#x25A6;</button>
-    <span class="sep"></span>
-    <button class="cbtn" id="bPrev" title="Toggle preview pane">Preview</button>
   </div>
   <div class="body" id="bodySplit">
     <aside class="pane tree" id="treePane"><div class="ptitle">Explorer</div><div id="tree"></div></aside>
     <div class="divider" id="divTree" title="Drag to resize"></div>
     <main class="pane main" id="mainPane"><div id="content"></div></main>
-    <div class="divider" id="divPrev" title="Drag to resize" style="display:none"></div>
-    <aside class="pane preview" id="prevPane" style="display:none">
-      <div class="phead"><button class="cbtn" id="pvPrev" title="Previous (←)">&#8592;</button><button class="cbtn" id="pvNext" title="Next (→)">&#8594;</button><span id="pvName"></span><button class="cbtn" id="pvClose" title="Close">&#215;</button></div>
-      <div class="pbody" id="pvBody"></div>
-    </aside>
   </div>
   <footer class="statusbar">
     <span id="stCount"></span><span id="stSel"></span><span class="spacer"></span>
@@ -145,7 +126,6 @@ var cur=root, hist=[root], hi=0, sel=[], anchor=null, view='details';
 var expanded={}; var nodeMap={};
 var OV={ren:{},hid:[],mov:{}};
 try{ OV=JSON.parse(localStorage.getItem('ghx-overrides')||'{}'); }catch(e){}
-var PROXY_BASE=(window.GHRDP_WORKER_URL||localStorage.getItem('ghrdp:worker')||'').replace(/\/$/,'');
 function saveOV(){ localStorage.setItem('ghx-overrides', JSON.stringify(OV)); }
 function $(id){return document.getElementById(id);}
 function toast(m){var t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},2200);}
@@ -156,7 +136,7 @@ function childFolder(parent,name){
   var f={name:name,type:'folder',children:[],parent:parent,opath:parent.opath+'/'+name};
   parent.children.push(f);return f;
 }
-function fileNode(f,parent){return {name:f.n,type:'file',size:f.s,link:f.l,preview:f.p||'',enc:f.e,date:f.d||f.t||'',parent:parent,opath:parent.opath+'/'+f.n};}
+function fileNode(f,parent){return {name:f.n,type:'file',size:f.s,link:f.l,enc:f.e,date:f.d||f.t||'',parent:parent,opath:parent.opath+'/'+f.n};}
 function sessionNode(s){
   var n={name:(s.id||'session'),type:'folder',children:[],parent:root,opath:'/'+(s.id||'session'),session:true};
   (s.files||[]).forEach(function(f){
@@ -262,12 +242,12 @@ function renderContent(){
 }
 function wire(el,c,i){
   el.onclick=function(e){ select(c,i,e); };
-  el.ondblclick=function(){ if(c.type==='folder') navigate(c); else showPreview(c); };
+  el.ondblclick=function(){ if(c.type==='folder') navigate(c); else if(c.link) window.open(c.link,'_blank'); };
 }
 function select(c,i,e){
   if(e&&e.ctrlKey){ var x=sel.indexOf(c); if(x>=0)sel.splice(x,1); else sel.push(c); anchor=i; }
   else if(e&&e.shiftKey&&anchor!=null){ var a=Math.min(anchor,i),b=Math.max(anchor,i); var cs=sortedChildren(); sel=cs.slice(a,b+1); }
-  else { sel=[c]; anchor=i; if(c.type==='file') showPreview(c); }
+  else { sel=[c]; anchor=i; }
   syncSel();
 }
 function syncSel(){
@@ -328,64 +308,12 @@ dragSplit($('divTree'), function(e){
   var w=Math.min(480,Math.max(180,e.clientX-r.left));
   $('treePane').style.width=w+'px'; localStorage.setItem('ghx-treew',w);
 });
-dragSplit($('divPrev'), function(e){
-  var r=$('bodySplit').getBoundingClientRect();
-  var w=Math.min(560,Math.max(260,r.right-e.clientX));
-  $('prevPane').style.width=w+'px'; localStorage.setItem('ghx-prevw',w);
-});
-(function(){ var w=localStorage.getItem('ghx-treew'); if(w)$('treePane').style.width=w+'px';
-  var pw=localStorage.getItem('ghx-prevw'); if(pw)$('prevPane').style.width=pw+'px'; })();
+(function(){ var w=localStorage.getItem('ghx-treew'); if(w)$('treePane').style.width=w+'px'; })();
 var IMG={jpg:1,jpeg:1,png:1,gif:1,webp:1,bmp:1,svg:1}, AUD={mp3:1,wav:1,ogg:1,flac:1,m4a:1,aac:1,opus:1},
     VID={mp4:1,webm:1,mov:1,m4v:1}, TXT={txt:1,md:1,nfo:1,log:1,cue:1,srt:1,json:1,xml:1,csv:1};
 function extOf(n){var m=String(n).match(/\.([^.]+)$/);return m?m[1].toLowerCase():'';}
 function iconOf(n){var e=extOf(n);if(IMG[e])return '🖼';if(AUD[e])return '🎵';if(VID[e])return '🎬';if(TXT[e])return '📄';if(/zip|rar|7z|iso/.test(e))return '📦';return '📄';}
 function typeName(n){var e=extOf(n);if(IMG[e])return e.toUpperCase()+' Image';if(AUD[e])return 'Audio';if(VID[e])return 'Video';if(TXT[e])return 'Text';return e?e.toUpperCase()+' File':'File';}
-var __pvCur=null, __pvFiles=[];
-function pvFileList(){ return (window.__curItems||[]).filter(function(c){return c.type==='file';}); }
-function proxyUrl(url){
-  if(!PROXY_BASE||!url) return url;
-  if(!/gofile\.io/i.test(url)) return url;
-  return PROXY_BASE+'/proxy?url='+encodeURIComponent(url);
-}
-window.__ghrdpProxyTest=function(link){ var p=proxyUrl(link); return p===link?Promise.resolve('NO PROXY'):fetch(p).then(function(r){return r.ok?'OK '+r.status:'FAIL '+r.status;}).catch(function(e){return 'ERR '+e.message;}); };
-function pvNav(dir){
-  __pvFiles=pvFileList(); if(!__pvFiles.length)return;
-  var i=__pvFiles.indexOf(__pvCur);
-  if(i<0) i=0; else i+=dir;
-  if(i<0) i=__pvFiles.length-1; if(i>=__pvFiles.length) i=0;
-  showPreview(__pvFiles[i]);
-}
-function showPreview(n){
-  __pvCur=n; __pvFiles=pvFileList();
-  var idx=__pvFiles.indexOf(n), total=__pvFiles.length;
-  $('pvPrev').disabled=total<2; $('pvNext').disabled=total<2;
-  $('prevPane').style.display='flex'; $('divPrev').style.display='block'; $('bPrev').classList.add('on');
-  $('pvName').textContent=n.name+(total>1?' ('+(idx+1)+'/'+total+')':'');
-  var b=$('pvBody'); b.innerHTML='<div class="spin"></div>';
-  var e=extOf(n.name), raw=n.link||'', url=n.preview||proxyUrl(raw);
-  function fall(msg){ b.innerHTML='<div class="pfall"><div class="big">'+iconOf(n.name)+'</div><div>'+esc(msg)+'</div><div>'+fmtB(n.size)+'</div>'+(raw?'<a class="cbtn" href="'+esc(raw)+'" target="_blank" rel="noopener">⬇ Download</a>':'')+'</div>'; }
-  if(IMG[e]){
-    var im=new Image(), tried=false;
-    im.onload=function(){b.innerHTML='';b.appendChild(im);};
-    im.onerror=function(){ if(!tried&&url!==raw){tried=true;im.src=raw;} else fall('Preview blocked by host (CORS/hotlink).'); };
-    im.src=url; im.alt=n.name;
-  }
-  else if(AUD[e]){ var a=document.createElement('audio'); a.controls=true; a.src=url; a.onerror=function(){fall('Audio blocked by host.');}; b.innerHTML=''; b.appendChild(a); }
-  else if(VID[e]){ var v=document.createElement('video'); v.controls=true; v.src=url; v.onerror=function(){fall('Video blocked by host.');}; b.innerHTML=''; b.appendChild(v); }
-  else if(TXT[e]){ fetch(url,{mode:'cors'}).then(function(r){if(!r.ok)throw 0;return r.text();}).then(function(t){ b.innerHTML=''; var pre=document.createElement('pre'); pre.textContent=t.slice(0,200000); b.appendChild(pre); }).catch(function(){fall('Text preview blocked by host (CORS).');}); }
-  else fall('No inline preview for this type.');
-}
-$('pvPrev').onclick=function(){pvNav(-1);};
-$('pvNext').onclick=function(){pvNav(1);};
-$('pvClose').onclick=function(){ $('prevPane').style.display='none'; $('divPrev').style.display='none'; $('bPrev').classList.remove('on'); };
-document.addEventListener('keydown',function(e){
-  if($('prevPane').style.display==='none')return;
-  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
-  if(e.key==='ArrowLeft'){e.preventDefault();pvNav(-1);}
-  else if(e.key==='ArrowRight'){e.preventDefault();pvNav(1);}
-  else if(e.key==='Escape'){e.preventDefault();$('pvClose').onclick();}
-});
-$('bPrev').onclick=function(){ if($('prevPane').style.display==='none'){ if(sel.length===1&&sel[0].type==='file')showPreview(sel[0]); else {$('prevPane').style.display='flex';$('divPrev').style.display='block';$('pvName').textContent='';$('pvBody').innerHTML='<div class="pfall"><div class="big">👁</div><div>Select a file to preview</div></div>';} $('bPrev').classList.add('on'); } else $('pvClose').onclick(); };
 load();
 </script>
 </body>
