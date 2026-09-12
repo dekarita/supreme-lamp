@@ -1754,6 +1754,9 @@ jobs:
               }
               Write-Host ''
               Write-Host ('  ' + $icons.link + ' INDEXES & KEYS')
+              Write-Host ('     Mirror (Pages) .....: ' + [string]$cfg.pagesBase + '/search.html')
+              Write-Host ('     Explorer (Win11) ...: ' + [string]$cfg.pagesBase + '/explorer.html')
+              Write-Host ('     Archive / Decrypt ..: ' + [string]$cfg.pagesBase + '/archive.html  |  ' + [string]$cfg.pagesBase + '/decrypt.html')
               Write-Host ('     Legacy Rentry ......: ' + $legacyUrl)
               if ($legacyKey) {
                   Write-Host ('     LEGACY decrypt key .: ' + $legacyKey + '   (files uploaded before this run)')
@@ -1763,12 +1766,12 @@ jobs:
               if ($rentryNew) {
                   Write-Host ('     New Rentry .........: ' + $rentryNew)
               } else {
-                  Write-Host '     New Rentry .........: (created when the first file uploads)'
+                  Write-Host '     New Rentry .........: (pending - appears at first upload; Pages mirror already live above)'
               }
               if ($tele) {
                   Write-Host ('     Telegraph ..........: ' + $tele)
               } else {
-                  Write-Host '     Telegraph ..........: (created when the first file uploads)'
+                  Write-Host '     Telegraph ..........: (pending - appears at first upload; Pages mirror already live above)'
               }
               if ($mirrorOn -and $mirrorKey) {
                   Write-Host ('     Current decrypt key : ' + $mirrorKey + '   (current run)')
@@ -1809,6 +1812,11 @@ jobs:
               Write-Host ('  ' + $icons.hourglass + ' time remaining: ' + (Get-Remaining))
               Write-Host '====================================================================='
               Write-Host ''
+          }
+          if ([bool]$cfgKa.mirror -and -not [string]$cfgKa.mirrorIndexUrl) {
+          Write-Host '[index] publishing initial (zero-file) index so Telegraph + Rentry links exist from t0'
+          try { Publish-AllIndexes -Cfg $cfgKa -IndexList (Get-MirrorIndexList -IdxFile $idxPath) } catch { Write-Host ('[index] initial publish failed: ' + $_.Exception.Message) }
+          Save-MirrorCfg -Cfg $cfgKa -Path $cfgPath
           }
           Show-Banner -Reason 'session start'
           if ($summary) {

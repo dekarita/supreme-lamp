@@ -58,6 +58,42 @@ a.dl:hover { text-decoration: underline; }
 #status { padding: 8px 16px; background: var(--panel); backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border-top: 1px solid var(--line); color: var(--mut); display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; }
 .path-text { font-family: monospace; color: var(--mut); font-size: 11px; }
 @media(max-width: 760px) { #side { display: none; } #q { width: 120px; } }
+#linksDrawer {
+    position: fixed;
+    right: 18px;
+    top: 58px;
+    width: min(620px, calc(100vw - 36px));
+    max-height: calc(100vh - 110px);
+    overflow: auto;
+    background: rgba(32,32,32,.88);
+    backdrop-filter: blur(20px);
+    -webkit-backdrop-filter: blur(20px);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    box-shadow: 0 18px 50px rgba(0,0,0,.45);
+    z-index: 99;
+    display: none;
+    padding: 12px;
+}
+#linksDrawer.show { display: block; }
+#linksDrawer h3 { margin: 0 0 10px; font-size: 14px; }
+.linkRow {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 8px;
+    align-items: center;
+    border-bottom: 1px solid var(--line);
+    padding: 8px 0;
+    font-size: 12px;
+}
+.linkRow:last-child { border-bottom: 0; }
+.linkRow .lnName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.linkRow .lnMeta { color: var(--mut); font-size: 11px; margin-top: 2px; }
+.linkRow a { color: var(--acc); text-decoration: none; border: 1px solid var(--line); padding: 4px 8px; border-radius: 4px; }
+.linkRow a:hover { background: var(--sel); }
+.gridLink { margin-top: 4px; font-size: 11px; color: var(--acc); text-decoration: none; }
+.gridLink:hover { text-decoration: underline; }
+.emptyLinks { color: var(--mut); font-size: 13px; padding: 20px; text-align: center; }
 </style>
 </head>
 <body>
@@ -73,6 +109,8 @@ a.dl:hover { text-decoration: underline; }
     </div>
     <button id="btnGrid" title="Grid view">&#9638;</button>
     <button id="btnList" title="List view">&#9776;</button>
+    <button id="btnLinks" title="Show all download links">&#128279; All Links</button>
+    <button id="btnCopyLinks" title="Copy all download links">&#128203; Copy Links</button>
 </header>
 <div id="main">
     <nav id="side"></nav>
@@ -85,6 +123,10 @@ a.dl:hover { text-decoration: underline; }
             </table>
         </div>
     </section>
+</div>
+<div id="linksDrawer">
+    <h3>&#128279; All Download Links</h3>
+    <div id="linksBody"></div>
 </div>
 <div id="status">
     <span id="stCount"></span>
@@ -103,21 +145,54 @@ function fmtB(n) { n=+n||0; if(n<1024) return n+' B'; var u=['KB','MB','GB','TB'
 
 var SESSIONS = [], cur = {s:0, node:null, hist:[]}, mode = 'grid', filter = '', isGlobal = false;
 var allFilesFlat = [];
+var linksOpen = false;
+
+function normFile(f) {
+    f = f || {};
+    return {
+        name: String(f.n || f.name || f.file || 'unnamed'),
+        folder: String(f.f || f.folder || f.path || '.'),
+        size: Number(f.s || f.size || f.bytes || 0),
+        link: String(f.l || f.link || f.url || ''),
+        enc: String(f.e || f.encrypted || 'false'),
+        time: String(f.d || f.t || f.time || f.timeSL || ''),
+        session: String(f.session || '')
+    };
+}
 
 function buildTree(files) {
     var root = {name:'/', type:'dir', children:[]};
     (files||[]).forEach(function(f) {
-        var parts = String(f.f || '.').split(/[\\/]/).filter(function(p){return p && p!=='.';});
+        var nf = normFile(f);
+        var parts = String(nf.folder || '.').split(/[\\/]/).filter(function(p){return p && p!=='.';});
         var n = root;
         parts.forEach(function(p) {
             var found = null;
-            for(var i=0; i<n.children.length; i++) { if(n.children[i].type==='dir' && n.children[i].name===p) { found=n.children[i]; break; } }
-            if(!found) { found={name:p, type:'dir', children:[]}; n.children.push(found); }
+            for(var i=0; i<n.children.length; i++) {
+                if(n.children[i].type==='dir' && n.children[i].name===p) {
+                    found=n.children[i];
+                    break;
+                }
+            }
+            if(!found) {
+                found={name:p, type:'dir', children:[]};
+                n.children.push(found);
+            }
             n = found;
         });
-        n.children.push({name:f.n, type:'file', size:f.s, link:f.l, enc:f.e, time:f.t});
+        n.children.push({
+            name:nf.name,
+            type:'file',
+            size:nf.size,
+            link:nf.link,
+            enc:nf.enc,
+            time:nf.time,
+            folder:nf.folder,
+            session:nf.session || ''
+        });
     });
-    sortTree(root); return root;
+    sortTree(root);
+    return root;
 }
 function sortTree(n) { if(n.type!=='dir') return; n.children.sort(function(a,b){ if(a.type!==b.type) return a.type==='dir'?-1:1; return String(a.name).localeCompare(String(b.name)); }); n.children.forEach(sortTree); }
 
@@ -131,8 +206,14 @@ function buildFlatIndex() {
                     traverse(c, path + c.name + '/');
                 } else {
                     allFilesFlat.push({
-                        name: c.name, size: c.size, link: c.link, enc: c.enc, time: c.time,
-                        path: path, session: s.id, live: s.live
+                        name: c.name,
+                        size: c.size,
+                        link: c.link,
+                        enc: c.enc,
+                        time: c.time,
+                        path: path,
+                        session: s.id,
+                        live: s.live
                     });
                 }
             });
@@ -143,13 +224,72 @@ function buildFlatIndex() {
 
 async function load() {
     SESSIONS = [];
-    try { var r = await fetch('tree.json?'+Date.now(), {cache:'no-store'}); if(r.ok) { var t = await r.json(); if(t && t.files) SESSIONS.push({id:t.sessionId||'live', date:t.updated||'', live:true, tree:buildTree(t.files)}); } } catch(e){}
-    try { var r2 = await fetch('archive.json?'+Date.now(), {cache:'no-store'}); if(r2.ok) { var a = await r2.json(); (a.sessions||[]).forEach(function(s){ if(s && s.files && s.id !== ((SESSIONS[0]||{}).id)) SESSIONS.push({id:s.id, date:s.date||'', live:false, tree:buildTree(s.files)}); }); } } catch(e){}
-    if(!SESSIONS.length) SESSIONS.push({id:'empty', date:'', live:false, tree:{name:'/', type:'dir', children:[]}});
+
+    try {
+        var dres = await fetch('data.json?' + Date.now(), {cache:'no-store'});
+        if(dres.ok) {
+            var d = await dres.json();
+            var df = d.files || [];
+            if(df.length) {
+                SESSIONS.push({
+                    id: d.sessionId || d.id || 'Current session',
+                    date: d.updated || d.date || '',
+                    live: true,
+                    tree: buildTree(df)
+                });
+            }
+        }
+    } catch(e) {}
+
+    try {
+        var tres = await fetch('tree.json?' + Date.now(), {cache:'no-store'});
+        if(tres.ok) {
+            var t = await tres.json();
+            var tf = t.files || [];
+            if(tf.length) {
+                var alreadyLive = SESSIONS.some(function(x){ return x.live; });
+                if(!alreadyLive) {
+                    SESSIONS.push({
+                        id: t.sessionId || t.id || 'Current session',
+                        date: t.updated || t.date || '',
+                        live: true,
+                        tree: buildTree(tf)
+                    });
+                }
+            }
+        }
+    } catch(e) {}
+
+    try {
+        var ares = await fetch('archive.json?' + Date.now(), {cache:'no-store'});
+        if(ares.ok) {
+            var a = await ares.json();
+            (a.sessions || []).forEach(function(s) {
+                var files = s.files || [];
+                if(!files.length) return;
+                SESSIONS.push({
+                    id: s.id || s.session || 'archive-session',
+                    date: s.date || s.updated || '',
+                    live: false,
+                    tree: buildTree(files)
+                });
+            });
+        }
+    } catch(e) {}
+
+    if(!SESSIONS.length) {
+        SESSIONS.push({
+            id:'No links yet',
+            date:'',
+            live:false,
+            tree:{name:'/', type:'dir', children:[]}
+        });
+    }
 
     buildFlatIndex();
     renderSide();
     navigate(0, SESSIONS[0].tree, true);
+    renderLinksDrawer();
 }
 
 function renderSide() {
@@ -236,7 +376,11 @@ function renderMain() {
         cs.forEach(function(c) {
             var d = document.createElement('div'); d.className = 'item';
             var ic = c.type==='dir' ? ICONS.dir : ICONS[kindOf(c.name)];
-            d.innerHTML = '<div class="ic">'+ic+'</div><div class="nm">'+esc(c.name)+'</div>' + (c.type==='file'&&c.enc==='true'?'<span class="badge enc">ENC</span>':'');
+            d.innerHTML =
+                '<div class="ic">'+ic+'</div>' +
+                '<div class="nm">'+esc(c.name)+'</div>' +
+                (c.type==='file'&&c.enc==='true'?'<span class="badge enc">ENC</span>':'') +
+                (c.type==='file'&&c.link ? '<a class="gridLink" href="'+esc(c.link)+'" target="_blank" rel="noopener" onclick="event.stopPropagation()">download</a>' : '');
             d.ondblclick = function() { openItem(c); };
             d.onclick = function() { sel(d); };
             g.appendChild(d);
@@ -269,6 +413,63 @@ document.getElementById('q').oninput = function() { filter = this.value.toLowerC
 document.getElementById('globalToggle').onchange = function() { isGlobal = this.checked; if(isGlobal) mode = 'list'; renderMain(); };
 document.getElementById('btnGrid').onclick = function() { mode = 'grid'; isGlobal = false; document.getElementById('globalToggle').checked = false; renderMain(); };
 document.getElementById('btnList').onclick = function() { mode = 'list'; renderMain(); };
+
+function getAllLinks() {
+    return allFilesFlat.filter(function(f){
+        return f.link && /^https?:\/\//i.test(f.link);
+    });
+}
+
+function renderLinksDrawer() {
+    var body = document.getElementById('linksBody');
+    if(!body) return;
+
+    var links = getAllLinks();
+    if(!links.length) {
+        body.innerHTML = '<div class="emptyLinks">No links found yet. If dashboard shows mirror OFF or files 0/0, upload has not produced links yet.</div>';
+        return;
+    }
+
+    body.innerHTML = links.map(function(f) {
+        return '<div class="linkRow">' +
+            '<div>' +
+                '<div class="lnName">'+esc(f.name)+'</div>' +
+                '<div class="lnMeta">'+esc(f.session)+' &middot; '+esc(f.path || '/')+' &middot; '+fmtB(f.size)+'</div>' +
+            '</div>' +
+            '<a href="'+esc(f.link)+'" target="_blank" rel="noopener">open</a>' +
+        '</div>';
+    }).join('');
+}
+
+function toggleLinksDrawer() {
+    linksOpen = !linksOpen;
+    renderLinksDrawer();
+    document.getElementById('linksDrawer').classList.toggle('show', linksOpen);
+}
+
+function copyAllLinks() {
+    var links = getAllLinks();
+    if(!links.length) {
+        alert('No links found yet. Upload must finish first.');
+        return;
+    }
+    var text = links.map(function(f){
+        return f.name + ': ' + f.link;
+    }).join('\n');
+
+    if(navigator.clipboard) {
+        navigator.clipboard.writeText(text).then(function(){
+            alert('Copied ' + links.length + ' links.');
+        }, function(){
+            prompt('Copy links:', text);
+        });
+    } else {
+        prompt('Copy links:', text);
+    }
+}
+
+document.getElementById('btnLinks').onclick = toggleLinksDrawer;
+document.getElementById('btnCopyLinks').onclick = copyAllLinks;
 
 setInterval(function(){ if(!document.hidden) load(); }, 60000);
 load();
