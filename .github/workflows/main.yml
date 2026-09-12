@@ -736,47 +736,66 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           $repo = $env:GITHUB_REPOSITORY
-          $owner = ($repo -split '/')[0]; $name = ($repo -split '/')[1]
           $base = "https://api.github.com/repos/$repo/pages"
           $h = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28'; 'Content-Type' = 'application/json' }
-          function Put-GhFileEarly {
-            param([string]$Path, [string]$Text)
-            $api = "https://api.github.com/repos/$repo/contents/$Path"
+          function Put-GhPagesFile {
+            param([string]$RelPath, [string]$Text)
+            $api = "https://api.github.com/repos/$repo/contents/$RelPath"
             $sha = $null
-            try { $g = Invoke-RestMethod -Uri $api -Headers $h -ErrorAction Stop; $sha = $g.sha } catch { }
+            try { $g = Invoke-RestMethod -Uri ($api + '?ref=main') -Headers $h -ErrorAction Stop; $sha = $g.sha } catch { }
             $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Text))
-            $body = @{ message = "docs: ensure $Path"; content = $b64; branch = 'main' }
+            $body = @{ message = "docs: ensure $RelPath"; content = $b64; branch = 'main' }
             if ($sha) { $body.sha = $sha }
-            try { Invoke-RestMethod -Uri $api -Headers $h -Method Put -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null; Write-Host "[pages] ensured $Path" } catch { Write-Host ("[pages] ensure $Path failed: " + $_.Exception.Message) }
+            try { Invoke-RestMethod -Uri $api -Headers $h -Method Put -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null; Write-Host "[pages] ensured $RelPath" } catch { Write-Host "[pages] ensure $RelPath failed: $($_.Exception.Message)" }
           }
-          Put-GhFileEarly 'docs/.nojekyll' ''
-          Put-GhFileEarly 'docs/index.html' '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=explorer.html"><title>GHRDP Mirror</title><style>body{font-family:system-ui,sans-serif;background:#0b0f14;color:#e8eef3;display:grid;place-items:center;height:100vh;margin:0}a{color:#7dd3fc}</style></head><body><p>Loading... <a href="explorer.html">explorer</a> | <a href="archive.html">archive</a> | <a href="decrypt.html">decrypt</a></p></body></html>'
+          Put-GhPagesFile 'docs/.nojekyll' ''
+          Put-GhPagesFile 'docs/index.html' '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="0;url=search.html"><title>GHRDP Mirror</title><style>body{font-family:system-ui,sans-serif;background:#0b0f14;color:#e8eef3;display:grid;place-items:center;height:100vh;margin:0}a{color:#7dd3fc}</style></head><body><p>Loading... <a href="search.html">search</a> | <a href="archive.html">archive</a> | <a href="decrypt.html">decrypt</a></p></body></html>'
+
+          # 1) site exists? create if missing
           $site = $null
-          try { $site = Invoke-RestMethod -Uri $base -Headers $h -ErrorAction Stop } catch {
-            $code = 0; try { $code = [int]$_.Exception.Response.StatusCode.value__ } catch { }
-            if ($code -eq 404) {
-              Write-Host '[pages] site missing - creating'
-              try { $site = Invoke-RestMethod -Uri $base -Headers $h -Method Post -Body (@{ source = @{ branch = 'main'; path = '/docs' } } | ConvertTo-Json -Compress) -ErrorAction Stop } catch { Write-Host ('[pages] create failed: ' + $_.Exception.Message) }
-            } else { Write-Host ("[pages] GET failed code $code") }
-          }
-          if ($site) {
-            $src = $site.source
-            $needPut = (-not $src) -or ([string]$src.branch -ne 'main') -or ([string]$src.path -ne '/docs')
-            if ($needPut) {
-              try { Invoke-RestMethod -Uri $base -Headers $h -Method Put -Body (@{ source = @{ branch = 'main'; path = '/docs' } } | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null; Write-Host '[pages] source set to main:/docs' } catch { Write-Host ('[pages] source PUT failed: ' + $_.Exception.Message) }
-            } else { Write-Host '[pages] source already main:/docs' }
+          try { $site = Invoke-RestMethod -Uri $base -Headers $h -ErrorAction Stop } catch { }
+          if (-not $site) {
+            Write-Host '[pages] site missing - creating'
+            try { Invoke-RestMethod -Uri $base -Headers $h -Method Post -Body (@{ source = @{ branch = 'main'; path = '/docs' } } | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null; Write-Host '[pages] created' } catch { Write-Host "[pages] create failed: $($_.Exception.Message)" }
           } else {
-            Write-Host '[pages] API enable failed - MANUAL FALLBACK: Settings -> Pages -> Deploy from a branch -> main / /docs -> Save'
+            Write-Host ('[pages] source currently ' + [string]$site.source.branch + ':' + [string]$site.source.path + ' (status was: ' + [string]$site.status + ')')
           }
-          for ($i = 0; $i -lt 30; $i++) {
+          # 2) FORCE a fresh build: re-PUT the source even when unchanged (this is THE unstick after branch surgery)
+          try {
+            Invoke-RestMethod -Uri $base -Headers $h -Method Put -Body (@{ source = @{ branch = 'main'; path = '/docs' } } | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null
+            Write-Host '[pages] source re-PUT (forces a fresh Pages build)'
+          } catch { Write-Host "[pages] source PUT failed: $($_.Exception.Message)" }
+
+          # 3) poll the DEPLOYMENTS list (fresh builds), NOT the stale site status
+          $stepStart = (Get-Date)
+          $built = $false
+          for ($i = 0; $i -lt 24; $i++) {
             Start-Sleep -Seconds 5
             try {
-              $st = Invoke-RestMethod -Uri $base -Headers $h -ErrorAction Stop
-              Write-Host ('[pages] status: ' + [string]$st.status)
-              if ([string]$st.status -eq 'built') { Write-Host ('[pages] built: ' + [string]$st.html_url); break }
-            } catch { }
+              $deps = @(Invoke-RestMethod -Uri "$base/deployments?per_page=5" -Headers $h -ErrorAction Stop)
+              $fresh = $deps | Where-Object { $_.status -eq 'built' -and ([datetime]$_.created_at) -gt $stepStart.AddSeconds(-60) } | Select-Object -First 1
+              if ($fresh) { $built = $true; Write-Host ('[pages] deployment built: ' + $fresh.commit); break }
+              if ($deps.Count -gt 0) { Write-Host ('[pages] latest deployment: ' + $deps[0].status + ' @ ' + $deps[0].created_at) }
+            } catch { Write-Host '[pages] deployments poll failed (retrying)' }
           }
-          Write-Host ('[pages] site URL: https://' + $owner + '.github.io/' + $name + '/')
+
+          # 4) still not built => full Pages reset (delete + recreate) - the known fix for a stuck 'errored' site
+          if (-not $built) {
+            Write-Host '[pages] no fresh build yet - performing full Pages reset (delete + recreate)'
+            try { Invoke-RestMethod -Uri $base -Headers $h -Method Delete -ErrorAction Stop | Out-Null; Write-Host '[pages] deleted old site' } catch { Write-Host "[pages] delete failed: $($_.Exception.Message)" }
+            Start-Sleep -Seconds 3
+            try { Invoke-RestMethod -Uri $base -Headers $h -Method Post -Body (@{ source = @{ branch = 'main'; path = '/docs' } } | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null; Write-Host '[pages] recreated site' } catch { Write-Host "[pages] recreate failed: $($_.Exception.Message)" }
+            for ($i = 0; $i -lt 12; $i++) {
+              Start-Sleep -Seconds 5
+              try {
+                $deps2 = @(Invoke-RestMethod -Uri "$base/deployments?per_page=3" -Headers $h -ErrorAction Stop)
+                $ok2 = $deps2 | Where-Object { $_.status -eq 'built' } | Select-Object -First 1
+                if ($ok2) { $built = $true; Write-Host ('[pages] deployment built after reset: ' + $ok2.commit); break }
+              } catch { }
+            }
+          }
+          if ($built) { Write-Host ('[pages] OK: Pages live at https://' + (($repo -split '/')[0]) + '.github.io/' + (($repo -split '/')[1]) + '/') }
+          else { Write-Host '[pages] WARNING: not built within this step; the next docs/ push retries automatically. Job continues (non-fatal).' }
           exit 0
 
       - name: Start Mission Control dashboard EARLY (PS 7331, SYSTEM task, confirm LISTENING)
