@@ -128,7 +128,7 @@ tbody td{padding:6px 10px;border-bottom:1px solid rgba(255,255,255,.04);white-sp
     <main class="pane main" id="mainPane"><div id="content"></div></main>
     <div class="divider" id="divPrev" title="Drag to resize" style="display:none"></div>
     <aside class="pane preview" id="prevPane" style="display:none">
-      <div class="phead"><span id="pvName"></span><button class="cbtn" id="pvClose" title="Close">&#215;</button></div>
+      <div class="phead"><button class="cbtn" id="pvPrev" title="Previous (←)">&#8592;</button><button class="cbtn" id="pvNext" title="Next (→)">&#8594;</button><span id="pvName"></span><button class="cbtn" id="pvClose" title="Close">&#215;</button></div>
       <div class="pbody" id="pvBody"></div>
     </aside>
   </div>
@@ -145,6 +145,7 @@ var cur=root, hist=[root], hi=0, sel=[], anchor=null, view='details';
 var expanded={}; var nodeMap={};
 var OV={ren:{},hid:[],mov:{}};
 try{ OV=JSON.parse(localStorage.getItem('ghx-overrides')||'{}'); }catch(e){}
+var PROXY_BASE=(window.GHRDP_WORKER_URL||localStorage.getItem('ghx-proxy')||'').replace(/\/$/,'');
 function saveOV(){ localStorage.setItem('ghx-overrides', JSON.stringify(OV)); }
 function $(id){return document.getElementById(id);}
 function toast(m){var t=$('toast');t.textContent=m;t.classList.add('show');setTimeout(function(){t.classList.remove('show');},2200);}
@@ -233,7 +234,7 @@ function sortedChildren(){
   return cs.sort(function(a,b){ if(a.type!==b.type)return a.type==='folder'?-1:1; return a.name.localeCompare(b.name); });
 }
 function renderContent(){
-  var cs=sortedChildren(), el=$('content');
+  var cs=sortedChildren(); window.__curItems=cs; var el=$('content');
   $('stCount').textContent=cs.length+' item'+(cs.length===1?'':'s');
   $('stSel').textContent=sel.length? (sel.length+' selected'):'';
   $('stView').textContent = view==='details'?'Details':'Grid';
@@ -339,19 +340,50 @@ var IMG={jpg:1,jpeg:1,png:1,gif:1,webp:1,bmp:1,svg:1}, AUD={mp3:1,wav:1,ogg:1,fl
 function extOf(n){var m=String(n).match(/\.([^.]+)$/);return m?m[1].toLowerCase():'';}
 function iconOf(n){var e=extOf(n);if(IMG[e])return '🖼';if(AUD[e])return '🎵';if(VID[e])return '🎬';if(TXT[e])return '📄';if(/zip|rar|7z|iso/.test(e))return '📦';return '📄';}
 function typeName(n){var e=extOf(n);if(IMG[e])return e.toUpperCase()+' Image';if(AUD[e])return 'Audio';if(VID[e])return 'Video';if(TXT[e])return 'Text';return e?e.toUpperCase()+' File':'File';}
+var __pvCur=null, __pvFiles=[];
+function pvFileList(){ return (window.__curItems||[]).filter(function(c){return c.type==='file';}); }
+function proxyUrl(url){
+  if(!PROXY_BASE||!url) return url;
+  if(!/gofile\.io/i.test(url)) return url;
+  return PROXY_BASE+'/proxy?url='+encodeURIComponent(url);
+}
+function pvNav(dir){
+  __pvFiles=pvFileList(); if(!__pvFiles.length)return;
+  var i=__pvFiles.indexOf(__pvCur);
+  if(i<0) i=0; else i+=dir;
+  if(i<0) i=__pvFiles.length-1; if(i>=__pvFiles.length) i=0;
+  showPreview(__pvFiles[i]);
+}
 function showPreview(n){
+  __pvCur=n; __pvFiles=pvFileList();
+  var idx=__pvFiles.indexOf(n), total=__pvFiles.length;
+  $('pvPrev').disabled=total<2; $('pvNext').disabled=total<2;
   $('prevPane').style.display='flex'; $('divPrev').style.display='block'; $('bPrev').classList.add('on');
-  $('pvName').textContent=n.name;
+  $('pvName').textContent=n.name+(total>1?' ('+(idx+1)+'/'+total+')':'');
   var b=$('pvBody'); b.innerHTML='<div class="spin"></div>';
-  var e=extOf(n.name), url=n.link||'';
-  function fall(msg){ b.innerHTML='<div class="pfall"><div class="big">'+iconOf(n.name)+'</div><div>'+esc(msg)+'</div><div>'+fmtB(n.size)+'</div>'+(url?'<a class="cbtn" href="'+esc(url)+'" target="_blank" rel="noopener">⬇ Download</a>':'')+'</div>'; }
-  if(IMG[e]){ var im=new Image(); im.onload=function(){b.innerHTML='';b.appendChild(im);}; im.onerror=function(){fall('Preview blocked by host (CORS/hotlink).');}; im.src=url; im.alt=n.name; }
+  var e=extOf(n.name), raw=n.link||'', url=proxyUrl(raw);
+  function fall(msg){ b.innerHTML='<div class="pfall"><div class="big">'+iconOf(n.name)+'</div><div>'+esc(msg)+'</div><div>'+fmtB(n.size)+'</div>'+(raw?'<a class="cbtn" href="'+esc(raw)+'" target="_blank" rel="noopener">⬇ Download</a>':'')+'</div>'; }
+  if(IMG[e]){
+    var im=new Image(), tried=false;
+    im.onload=function(){b.innerHTML='';b.appendChild(im);};
+    im.onerror=function(){ if(!tried&&url!==raw){tried=true;im.src=raw;} else fall('Preview blocked by host (CORS/hotlink).'); };
+    im.src=url; im.alt=n.name;
+  }
   else if(AUD[e]){ var a=document.createElement('audio'); a.controls=true; a.src=url; a.onerror=function(){fall('Audio blocked by host.');}; b.innerHTML=''; b.appendChild(a); }
   else if(VID[e]){ var v=document.createElement('video'); v.controls=true; v.src=url; v.onerror=function(){fall('Video blocked by host.');}; b.innerHTML=''; b.appendChild(v); }
   else if(TXT[e]){ fetch(url,{mode:'cors'}).then(function(r){if(!r.ok)throw 0;return r.text();}).then(function(t){ b.innerHTML=''; var pre=document.createElement('pre'); pre.textContent=t.slice(0,200000); b.appendChild(pre); }).catch(function(){fall('Text preview blocked by host (CORS).');}); }
   else fall('No inline preview for this type.');
 }
+$('pvPrev').onclick=function(){pvNav(-1);};
+$('pvNext').onclick=function(){pvNav(1);};
 $('pvClose').onclick=function(){ $('prevPane').style.display='none'; $('divPrev').style.display='none'; $('bPrev').classList.remove('on'); };
+document.addEventListener('keydown',function(e){
+  if($('prevPane').style.display==='none')return;
+  if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA')return;
+  if(e.key==='ArrowLeft'){e.preventDefault();pvNav(-1);}
+  else if(e.key==='ArrowRight'){e.preventDefault();pvNav(1);}
+  else if(e.key==='Escape'){e.preventDefault();$('pvClose').onclick();}
+});
 $('bPrev').onclick=function(){ if($('prevPane').style.display==='none'){ if(sel.length===1&&sel[0].type==='file')showPreview(sel[0]); else {$('prevPane').style.display='flex';$('divPrev').style.display='block';$('pvName').textContent='';$('pvBody').innerHTML='<div class="pfall"><div class="big">👁</div><div>Select a file to preview</div></div>';} $('bPrev').classList.add('on'); } else $('pvClose').onclick(); };
 load();
 </script>

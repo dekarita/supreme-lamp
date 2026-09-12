@@ -66,7 +66,7 @@ export default {
     }
 
     const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
-    if (!rateLimit(ip)) {
+    if (url.pathname !== '/proxy' && !rateLimit(ip)) {
       return jsonResponse({ error: 'rate limited (1 req / 30s)' }, 429, origin);
     }
 
@@ -144,6 +144,29 @@ export default {
         html_url: r.html_url,
       }));
       return jsonResponse({ ok: true, runs }, 200, origin);
+    }
+
+    if (url.pathname === '/proxy' && request.method === 'GET') {
+      const target = url.searchParams.get('url') || '';
+      if (!/^https:\/\/.*gofile\.io\//i.test(target)) {
+        return jsonResponse({ error: 'only gofile.io URLs allowed' }, 400, origin);
+      }
+      const upstream = await fetch(target, {
+        headers: {
+          'Referer': 'https://gofile.io/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': '*/*',
+        },
+        redirect: 'follow',
+      });
+      if (!upstream.ok) {
+        return jsonResponse({ error: 'upstream ' + upstream.status }, upstream.status, origin);
+      }
+      const ct = upstream.headers.get('Content-Type') || 'application/octet-stream';
+      const cl = upstream.headers.get('Content-Length');
+      const h = { ...corsHeaders(origin), 'Content-Type': ct };
+      if (cl) h['Content-Length'] = cl;
+      return new Response(upstream.body, { status: 200, headers: h });
     }
 
     return jsonResponse({ error: 'not found' }, 404, origin);
