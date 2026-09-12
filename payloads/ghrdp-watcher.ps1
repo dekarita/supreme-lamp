@@ -54,6 +54,30 @@ function Test-MirrorJunk {
     if ($dir -match '\\appdata\\local\\temp\\[a-f0-9\-]{20,}\\') { return $true }
     return $false
 }
+function Get-ExtraRoots {
+param([string]$UserName)
+$out = New-Object System.Collections.ArrayList
+$prof = Resolve-RealProfile -User $UserName
+if ($prof) {
+$ini = Join-Path $prof 'AppData\Local\qBittorrent\qBittorrent.ini'
+if (Test-Path -LiteralPath $ini) {
+foreach ($ln in (Get-Content -LiteralPath $ini -ErrorAction SilentlyContinue)) {
+if ($ln -match '^\s*SavePath\s*=\s*(.+)$') {
+$p = $Matches[1].Trim()
+if ($p -and (Test-Path -LiteralPath $p)) { [void]$out.Add($p) }
+}
+}
+}
+foreach ($cand in @(
+(Join-Path $prof 'Downloads'),
+(Join-Path $prof 'Downloads\qBittorrent'),
+(Join-Path $prof 'Torrents'),
+'D:\RDP-Storage',
+'C:\Torrents'
+)) { if (Test-Path -LiteralPath $cand) { [void]$out.Add($cand) } }
+}
+return @($out | Select-Object -Unique)
+}
 function Get-WatcherRoots {
     param([string]$UserName)
     $list = New-Object System.Collections.ArrayList
@@ -275,11 +299,15 @@ try {
   if (Test-Path -LiteralPath $flushFlag) {
       Remove-Item -LiteralPath $flushFlag -Force -ErrorAction SilentlyContinue
       $fullPass = $true
+      $script:GhrdpStable = @{}
+      $enqueued = @{}
       if (-not [bool]$cfg.mirror) {
           $cfg.mirror = $true
           Save-MirrorCfg -Cfg $cfg -Path (Join-Path $Root 'config.json')
           Add-MirrorLog '[watcher] mirror ENABLED by flush request (Upload everything now button)'
       }
+      $roots = @((Get-WatcherRoots -UserName $userName) + (Get-ExtraRoots -UserName $userName) | Select-Object -Unique)
+      $telemetry.roots = @($roots)
       Add-MirrorLog '[watcher] full pass requested (upload everything now)'
   }
   if (@(Get-ChildItem -Path (Join-Path $Root 'enc') -File -ErrorAction SilentlyContinue).Count -gt 0) { Add-MirrorLog '[watcher] stale .ghenc leftovers found in enc dir - cleaning' ; Remove-Item -LiteralPath (Join-Path $Root 'enc\*') -Force -ErrorAction SilentlyContinue }
@@ -287,7 +315,7 @@ try {
   $prog.alive = $true
   $telemetry.scans = [int]$telemetry.scans + 1
   $telemetry.lastScan = (Get-Date -Format o)
-  $roots = Get-WatcherRoots -UserName $userName
+  $roots = @((Get-WatcherRoots -UserName $userName) + (Get-ExtraRoots -UserName $userName) | Select-Object -Unique)
   $telemetry.roots = @($roots)
   $queue = New-Object System.Collections.ArrayList
   if (-not $script:GhrdpStable) { $script:GhrdpStable = @{} }
@@ -338,7 +366,7 @@ try {
                   if ($script:GhrdpStable.ContainsKey($key)) { $prev = $script:GhrdpStable[$key] }
                   if ($null -eq $prev) { $script:GhrdpStable[$key] = @{ size = [long]$f.Length; t = $nowT }; continue }
                   if ([long]$prev.size -ne [long]$f.Length) { $script:GhrdpStable[$key] = @{ size = [long]$f.Length; t = $nowT }; continue }
-                  if (($nowT - [datetime]$prev.t).TotalSeconds -lt 30) { continue }
+                  if (($nowT - [datetime]$prev.t).TotalSeconds -lt 15) { continue }
               }
               $enqueued[$key] = [long]$f.Length
               $prog.agg.total = [int]$prog.agg.total + 1
@@ -351,6 +379,12 @@ try {
   $telemetry.queued = [int]$queue.Count
   if (@($queue).Count -gt 0) { Add-MirrorLog ('[watcher] queue={0} mirror={1} (click "Upload everything now" to bypass stability gate)' -f @($queue).Count, [bool]$cfg.mirror) }
   $prog.agg.active = [int]$queue.Count
+  if ((@($queue).Count -gt 0) -or ($telemetry.seen -gt 0) -or (($beat2 = ($telemetry.scans % 6)) -eq 0)) {
+  Add-MirrorLog ('[watcher] scan #{0}: seen={1} queued={2} mirror={3} roots={4}' -f $telemetry.scans, $telemetry.seen, @($queue).Count, [bool]$cfg.mirror, @($roots).Count)
+  }
+  if ((-not [bool]$cfg.mirror) -and (@($queue).Count -gt 0)) {
+  Add-MirrorLog ('[watcher] MIRROR IS OFF - {0} file(s) tracked but NOT uploaded. Click "Upload everything now" or re-run with mirror=true.' -f @($queue).Count)
+  }
   Flush-MirrorProgress -Force
   if ([bool]$cfg.mirror -and (@($queue).Count -gt 0)) {
       $encryptMode = [string]$cfg.encryptMode
