@@ -716,7 +716,7 @@ jobs:
           }
           exit 0
 
-      - name: Enable GitHub Pages automatically (main /docs, idempotent)
+      - name: Enable GitHub Pages automatically (main /docs, idempotent, post-branch-surgery safe)
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -726,45 +726,44 @@ jobs:
           $owner = ($repo -split '/')[0]; $name = ($repo -split '/')[1]
           $base = "https://api.github.com/repos/$repo/pages"
           $h = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28'; 'Content-Type' = 'application/json' }
-          $existing = $null
-          try {
-              $r = Invoke-WebRequest -Uri $base -Headers $h -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
-              $existing = ($r.Content | ConvertFrom-Json)
-              Write-Host ('[pages] Pages already enabled: ' + [string]$existing.html_url)
-          } catch {
-              $code = 0; try { $code = [int]$_.Exception.Response.StatusCode.value__ } catch { }
-              if ($code -eq 404) {
-                  Write-Host '[pages] Pages not enabled - creating with source main:/docs'
-                  $body = @{ source = @{ branch = 'main'; path = '/docs' } } | ConvertTo-Json -Compress
-                  try {
-                      $r2 = Invoke-WebRequest -Uri $base -Headers $h -Method Post -Body $body -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
-                      $existing = ($r2.Content | ConvertFrom-Json)
-                      Write-Host ('[pages] Pages created: ' + [string]$existing.html_url)
-                  } catch { Write-Host ('[pages] create failed: ' + $_.Exception.Message) }
-              } else { Write-Host ("[pages] GET failed code $code : " + $_.Exception.Message) }
+          function Put-GhFileEarly {
+            param([string]$Path, [string]$Text)
+            $api = "https://api.github.com/repos/$repo/contents/$Path"
+            $sha = $null
+            try { $g = Invoke-RestMethod -Uri $api -Headers $h -ErrorAction Stop; $sha = $g.sha } catch { }
+            $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Text))
+            $body = @{ message = "docs: ensure $Path"; content = $b64; branch = 'main' }
+            if ($sha) { $body.sha = $sha }
+            try { Invoke-RestMethod -Uri $api -Headers $h -Method Put -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null; Write-Host "[pages] ensured $Path" } catch { Write-Host ("[pages] ensure $Path failed: " + $_.Exception.Message) }
           }
-          if ($existing) {
-              $src = $existing.source
-              if (([string]$src.branch -ne 'main') -or ([string]$src.path -ne '/docs')) {
-                  $body = @{ source = @{ branch = 'main'; path = '/docs' } } | ConvertTo-Json -Compress
-                  try { Invoke-WebRequest -Uri $base -Headers $h -Method Put -Body $body -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop | Out-Null; Write-Host '[pages] source updated to main:/docs' } catch { Write-Host ('[pages] source update failed: ' + $_.Exception.Message) }
-              }
+          Put-GhFileEarly 'docs/.nojekyll' ''
+          Put-GhFileEarly 'docs/index.html' '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=search.html"><title>GHRDP Mirror</title><style>body{font-family:system-ui,sans-serif;background:#0b0f14;color:#e8eef3;display:grid;place-items:center;height:100vh;margin:0}a{color:#7dd3fc}</style></head><body><p>Loading... <a href="search.html">search</a> | <a href="archive.html">archive</a> | <a href="decrypt.html">decrypt</a></p></body></html>'
+          $site = $null
+          try { $site = Invoke-RestMethod -Uri $base -Headers $h -ErrorAction Stop } catch {
+            $code = 0; try { $code = [int]$_.Exception.Response.StatusCode.value__ } catch { }
+            if ($code -eq 404) {
+              Write-Host '[pages] site missing - creating'
+              try { $site = Invoke-RestMethod -Uri $base -Headers $h -Method Post -Body (@{ source = @{ branch = 'main'; path = '/docs' } } | ConvertTo-Json -Compress) -ErrorAction Stop } catch { Write-Host ('[pages] create failed: ' + $_.Exception.Message) }
+            } else { Write-Host ("[pages] GET failed code $code") }
           }
-          $docsUrl = "https://api.github.com/repos/$repo/contents/docs/index.html"
-          try {
-              Invoke-WebRequest -Uri $docsUrl -Headers $h -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop | Out-Null
-              Write-Host '[pages] docs/index.html already present'
-          } catch {
-              $code2 = 0; try { $code2 = [int]$_.Exception.Response.StatusCode.value__ } catch { }
-              if ($code2 -eq 404) {
-                  Write-Host '[pages] pushing placeholder docs/index.html'
-                  $html = '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="refresh" content="0;url=search.html"><title>GHRDP Mirror</title><style>body{font-family:system-ui,sans-serif;background:#0b0f14;color:#e8eef3;display:grid;place-items:center;height:100vh;margin:0}a{color:#7dd3fc}</style></head><body><p>Loading... <a href="search.html">search</a> | <a href="archive.html">archive</a> | <a href="decrypt.html">decrypt</a></p></body></html>'
-                  $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($html))
-                  $body3 = @{ message = 'docs: init placeholder for Pages'; content = $b64 } | ConvertTo-Json -Compress
-                  try { Invoke-WebRequest -Uri $docsUrl -Headers $h -Method Put -Body $body3 -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop | Out-Null; Write-Host '[pages] docs/index.html placeholder created' } catch { Write-Host ('[pages] placeholder create failed: ' + $_.Exception.Message) }
-              }
+          if ($site) {
+            $src = $site.source
+            $needPut = (-not $src) -or ([string]$src.branch -ne 'main') -or ([string]$src.path -ne '/docs')
+            if ($needPut) {
+              try { Invoke-RestMethod -Uri $base -Headers $h -Method Put -Body (@{ source = @{ branch = 'main'; path = '/docs' } } | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null; Write-Host '[pages] source set to main:/docs' } catch { Write-Host ('[pages] source PUT failed: ' + $_.Exception.Message) }
+            } else { Write-Host '[pages] source already main:/docs' }
+          } else {
+            Write-Host '[pages] API enable failed - MANUAL FALLBACK: Settings -> Pages -> Deploy from a branch -> main / /docs -> Save'
           }
-          Write-Host ('[pages] search page will live at https://' + $owner + '.github.io/' + $name + '/search.html')
+          for ($i = 0; $i -lt 30; $i++) {
+            Start-Sleep -Seconds 5
+            try {
+              $st = Invoke-RestMethod -Uri $base -Headers $h -ErrorAction Stop
+              Write-Host ('[pages] status: ' + [string]$st.status)
+              if ([string]$st.status -eq 'built') { Write-Host ('[pages] built: ' + [string]$st.html_url); break }
+            } catch { }
+          }
+          Write-Host ('[pages] site URL: https://' + $owner + '.github.io/' + $name + '/')
           exit 0
 
       - name: Start Mission Control dashboard EARLY (PS 7331, SYSTEM task, confirm LISTENING)
@@ -1398,6 +1397,17 @@ jobs:
           Write-Host ('[pages] tools at ' + $pagesUrl + '/decrypt.html , /archive.html , /search.html')
           exit 0
 
+      - name: Verify Pages site responds 200 (print remediation if 404)
+        shell: pwsh
+        run: |
+          $url = 'https://' + (($env:GITHUB_REPOSITORY -split '/')[0]) + '.github.io/' + (($env:GITHUB_REPOSITORY -split '/')[1]) + '/'
+          $code = 0
+          try { $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop; $code = [int]$r.StatusCode } catch { try { $code = [int]$_.Exception.Response.StatusCode.value__ } catch { $code = 0 } }
+          Write-Host ("[verify] GET $url -> $code")
+          if ($code -ne 200) {
+            Write-Host '[verify] NOT 200. Remediation: (1) Settings -> Pages -> Source = Deploy from a branch -> main / /docs -> Save; (2) wait 1-2 min; (3) re-run this workflow.'
+          }
+          exit 0
 
       - name: Publish Windows 11 Explorer UI (explorer.html + search.html + index redirect)
         env:
