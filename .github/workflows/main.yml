@@ -563,12 +563,12 @@ jobs:
           cp "$GITHUB_WORKSPACE/payloads/ui.html" "$RUNNER_TEMP/ghrdp-stage/ui.html"
           echo '[ui] ui.html written'
 
-      - name: Write File Explorer UI (explorer.html, Windows-Explorer style)
+      - name: Write Unified Fluent Explorer (replaces search.html + explorer.html)
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/explorer.html" "$RUNNER_TEMP/ghrdp-stage/explorer.html"
-          echo '[explorer] explorer.html written'
+          echo '[explorer] unified fluent explorer written'
 
       - name: Write GitHub Pages control-center template (docs/index.html source)
         shell: bash
@@ -675,7 +675,7 @@ jobs:
               hiddenFiles = @()
               sessionId = ('s-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
               pagesBase = ('https://' + (([string]$env:GITHUB_REPOSITORY -split '/')[0]) + '.github.io/' + (([string]$env:GITHUB_REPOSITORY -split '/')[1]))
-              searchUrl = (('https://' + (([string]$env:GITHUB_REPOSITORY -split '/')[0]) + '.github.io/' + (([string]$env:GITHUB_REPOSITORY -split '/')[1]) + '/search.html'))
+              searchUrl = (('https://' + (([string]$env:GITHUB_REPOSITORY -split '/')[0]) + '.github.io/' + (([string]$env:GITHUB_REPOSITORY -split '/')[1]) + '/explorer.html'))
           }
           [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), ($cfg | ConvertTo-Json -Depth 10), $global:GhrdpEncNoBom)
           [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), $tok, $global:GhrdpEncNoBom)
@@ -750,7 +750,7 @@ jobs:
             try { Invoke-RestMethod -Uri $api -Headers $h -Method Put -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null; Write-Host "[pages] ensured $Path" } catch { Write-Host ("[pages] ensure $Path failed: " + $_.Exception.Message) }
           }
           Put-GhFileEarly 'docs/.nojekyll' ''
-          Put-GhFileEarly 'docs/index.html' '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=search.html"><title>GHRDP Mirror</title><style>body{font-family:system-ui,sans-serif;background:#0b0f14;color:#e8eef3;display:grid;place-items:center;height:100vh;margin:0}a{color:#7dd3fc}</style></head><body><p>Loading... <a href="search.html">search</a> | <a href="archive.html">archive</a> | <a href="decrypt.html">decrypt</a></p></body></html>'
+          Put-GhFileEarly 'docs/index.html' '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=explorer.html"><title>GHRDP Mirror</title><style>body{font-family:system-ui,sans-serif;background:#0b0f14;color:#e8eef3;display:grid;place-items:center;height:100vh;margin:0}a{color:#7dd3fc}</style></head><body><p>Loading... <a href="explorer.html">explorer</a> | <a href="archive.html">archive</a> | <a href="decrypt.html">decrypt</a></p></body></html>'
           $site = $null
           try { $site = Invoke-RestMethod -Uri $base -Headers $h -ErrorAction Stop } catch {
             $code = 0; try { $code = [int]$_.Exception.Response.StatusCode.value__ } catch { }
@@ -1183,164 +1183,29 @@ jobs:
           [void]$aSb.Append('document.getElementById("next").onclick=function(){page++;draw();};')
           [void]$aSb.Append('load();</script></body></html>')
           $archiveHtml = $aSb.ToString()
-          $searchHtml = @'
-          <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GHRDP File Explorer</title>
-          <style>
-          :root{--bg:#f3f3f3;--surface:#fbfbfb;--acryl:rgba(243,243,243,.72);--text:#1b1b1b;--text2:#5c5c5c;--border:#e5e5e5;--hover:rgba(0,0,0,.06);--sel:rgba(0,103,192,.18);--accent:#0067c0;--gis:160px}
-          html[data-theme=dark]{--bg:#202020;--surface:#282828;--acryl:rgba(40,40,40,.78);--text:#fff;--text2:#a6a6a6;--border:#333;--hover:rgba(255,255,255,.08);--sel:rgba(0,103,192,.35)}
-          *{box-sizing:border-box}body{margin:0;height:100vh;display:flex;flex-direction:column;overflow:hidden;background:var(--bg);color:var(--text);font-family:'Segoe UI Variable','Segoe UI',system-ui,sans-serif;font-size:14px}
-          #cmd{display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--acryl);backdrop-filter:blur(20px);border-bottom:1px solid var(--border)}
-          #cmd button,#cmd .nb{border:0;background:transparent;color:var(--text);padding:6px 9px;border-radius:4px;cursor:pointer;font-size:13px}
-          #cmd button:hover,#cmd .nb:hover{background:var(--hover)}
-          #crumbs{display:flex;align-items:center;gap:4px;flex:1;min-width:120px;overflow:hidden;white-space:nowrap}
-          #crumbs span{padding:4px 7px;border-radius:4px;cursor:pointer}#crumbs span:hover{background:var(--hover)}#crumbs i{color:var(--text2);font-style:normal}
-          #q{flex:0 0 220px;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text)}
-          #shell{flex:1;display:flex;min-height:0}
-          #side{width:220px;flex:0 0 220px;overflow:auto;background:var(--acryl);backdrop-filter:blur(20px);border-right:1px solid var(--border);padding:8px 6px}
-          #side .g{color:var(--text2);font-size:11px;margin:8px 8px 4px}#side div.it{padding:6px 10px;border-radius:4px;cursor:pointer;display:flex;gap:8px;align-items:center}
-          #side div.it:hover{background:var(--hover)}#side div.it.on{background:var(--sel)}
-          #main{flex:1;overflow:auto;position:relative;background:var(--surface)}
-          table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--border);font-size:13px;white-space:nowrap}
-          th{color:var(--text2);font-weight:600;position:sticky;top:0;background:var(--surface)}
-          .item{cursor:pointer;outline:none}.item:hover{background:var(--hover)}.item.sel{background:var(--sel)}.item:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
-          #main.grid table{display:none}#main.grid #grid{display:flex;flex-wrap:wrap;gap:8px;padding:10px}
-          #grid{display:none}#main.grid .gc{display:flex}
-          .gc{flex-direction:column;align-items:center;width:var(--gis);padding:10px;border-radius:8px;cursor:pointer;border:1px solid transparent}
-          .gc:hover{background:var(--hover)}.gc.sel{background:var(--sel);border-color:var(--accent)}
-          .gc .ic{font-size:44px;line-height:1.2}.gc .nm{font-size:12px;text-align:center;word-break:break-word;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-          #st{display:flex;align-items:center;gap:12px;padding:5px 12px;border-top:1px solid var(--border);background:var(--acryl);backdrop-filter:blur(20px);font-size:12px;color:var(--text2)}
-          #st .r{margin-left:auto;display:flex;align-items:center;gap:8px}#zoom{width:120px}
-          .menu,.submenu{position:fixed;list-style:none;margin:0;padding:4px;background:var(--acryl);backdrop-filter:blur(24px);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:50;min-width:180px}
-          .menu li,.submenu li{padding:6px 12px;border-radius:4px;cursor:pointer;position:relative}
-          .menu li:hover,.submenu li:hover{background:var(--hover)}.menu li:focus-visible,.submenu li:focus-visible{outline:2px solid var(--accent)}
-          .submenu{display:none;top:0;left:100%}.menu li.hs:hover>.submenu,.menu li.hs.open>.submenu{display:block}
-          .menu{display:none}.menu.show{display:block}
-          #burger{display:none}@media(max-width:768px){#side{display:none}#side.open{display:block;position:absolute;z-index:40;height:100%}#burger{display:inline-block}}
-          </style></head><body>
-          <div id="cmd">
-          <button id="burger" title="Menu">&#9776;</button>
-          <button id="bBack" title="Back">&#8592;</button><button id="bFwd" title="Forward">&#8594;</button><button id="bUp" title="Up">&#8593;</button>
-          <nav id="crumbs"></nav>
-          <input id="q" placeholder="Search" autocomplete="off">
-          <button id="vDet" title="Details">&#9776;</button><button id="vGrid" title="Grid">&#9638;</button>
-          <span class="nb hs" id="nb" tabindex="0">New &#9662;</span>
-          <button id="th" title="Toggle theme">&#127769;</button>
-          </div>
-          <div id="shell">
-          <nav id="side">
-          <div class="g">Quick access</div>
-          <div class="it" data-nav="root">&#127968; Home</div>
-          <div class="it" data-nav="gallery">&#128444; Gallery</div>
-          <div class="it" data-nav="Downloads">&#11015; Downloads</div>
-          <div class="it" data-nav="Desktop">&#128421; Desktop</div>
-          <div class="it" data-nav="Documents">&#128196; Documents</div>
-          <div class="it" data-nav="Pictures">&#128444; Pictures</div>
-          <div class="g">This PC</div>
-          <div class="it" data-nav="root">&#128187; This PC</div>
-          <div class="it" data-nav="Archive">&#128193; Archive (past sessions)</div>
-          </nav>
-          <main id="main"><table><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody id="rows"></tbody></table><div id="grid"></div></main>
-          </div>
-          <div id="st"><span id="stL"></span><span class="r"><span id="vLbl">Details view</span><input type="range" id="zoom" min="96" max="256" value="160" title="Icon size"></span></div>
-          <ul class="menu" id="ctx">
-          <li class="hs" tabindex="0">New &#9656;<ul class="submenu"><li data-new="folder" tabindex="0">Folder</li><li data-new="txt" tabindex="0">Text Document</li></ul></li>
-          <li data-act="open" tabindex="0">Open</li>
-          <li data-act="copy" tabindex="0">Copy link</li>
-          <li data-act="rename" tabindex="0">Rename</li>
-          <li data-act="del" tabindex="0">Delete</li>
-          </ul>
-          <script>
-          (function(){
-          "use strict";
-          var root={name:"This PC",type:"folder",children:[]},cur=root,hist=[root],hi=0,sel=[],anchor=-1,view="details",ctxTarget=null;
-          function nd(n,t){return{name:n,type:t,children:[],meta:null}}
-          function typeOf(n){if(n.type==="folder")return"File folder";var e=(n.name.split(".").pop()||"").toLowerCase();return{mp4:"Video file",mkv:"Video file",avi:"Video file",mp3:"Audio file",flac:"Audio file",wav:"Audio file",png:"PNG image",jpg:"JPG image",jpeg:"JPG image",gif:"GIF image",txt:"Text Document",nfo:"Text Document",log:"Text Document",iso:"Disc image"}[e]||"File"}
-          function iconOf(n){if(n.type==="folder")return"\uD83D\uDCC1";var e=(n.name.split(".").pop()||"").toLowerCase();return{mp4:"\uD83C\uDFAC",mkv:"\uD83C\uDFAC",avi:"\uD83C\uDFAC",mp3:"\uD83C\uDFB5",flac:"\uD83C\uDFB5",wav:"\uD83C\uDFB5",png:"\uD83D\uDDBC",jpg:"\uD83D\uDDBC",jpeg:"\uD83D\uDDBC",gif:"\uD83D\uDDBC",txt:"\uD83D\uDCC4",nfo:"\uD83D\uDCC4",log:"\uD83D\uDCC4",iso:"\uD83D\uDCBF"}[e]||"\uD83D\uDCC4"}
-          function addFile(parts,meta){var n=root;for(var i=0;i<parts.length-1;i++){var f=null;for(var j=0;j<n.children.length;j++){if(n.children[j].type==="folder"&&n.children[j].name===parts[i]){f=n.children[j];break}}if(!f){f=nd(parts[i],"folder");n.children.push(f)}n=f}
-          var leaf=nd(parts[parts.length-1],"file");leaf.meta=meta;n.children.push(leaf)}
-          function load(){var p1=fetch("data.json",{cache:"no-store"}).then(function(r){return r.ok?r.json():null}).catch(function(){return null});
-          var p2=fetch("archive.json",{cache:"no-store"}).then(function(r){return r.ok?r.json():null}).catch(function(){return null});
-          Promise.all([p1,p2]).then(function(rs){
-          var d=rs[0],a=rs[1];
-          if(d)(d.files||[]).forEach(function(f){addFile(((f.f||"Downloads")+"\\"+f.n).split(/[\\/]/).filter(Boolean),f)});
-          if(a)(a.sessions||[]).forEach(function(s){(s.files||[]).forEach(function(f){addFile(("Archive\\"+(s.id||"session")+"\\"+(f.f||"")+"\\"+f.n).split(/[\\/]/).filter(Boolean),f)})});
-          setParents();render()})}
-          function pathOf(n){var p=[],c=n;while(c&&c!==root){p.unshift(c.name);c=c.parent}return p}
-          function setParents(){(function w(n){n.children.forEach(function(c){c.parent=n;w(c)})})(root)}
-          setParents();
-          function kids(){var q=(document.getElementById("q").value||"").toLowerCase();var cs=cur.children.slice().sort(function(a,b){return(a.type===b.type)?a.name.localeCompare(b.name):(a.type==="folder"?-1:1)});return q?cs.filter(function(c){return c.name.toLowerCase().indexOf(q)>=0}):cs}
-          function render(){var cs=kids();document.getElementById("rows").innerHTML=cs.map(function(c,i){return "<tr class=\"item\" tabindex=\"0\" data-i=\""+i+"\"><td>"+iconOf(c)+" "+c.name+"</td><td>"+(c.meta&&c.meta.d?c.meta.d:"")+"</td><td>"+typeOf(c)+"</td><td>"+(c.type==="folder"?"":fmt(c.meta&&c.meta.s))+"</td></tr>"}).join("");
-          document.getElementById("grid").innerHTML=cs.map(function(c,i){return "<div class=\"gc item\" tabindex=\"0\" data-i=\""+i+"\"><span class=\"ic\">"+iconOf(c)+"</span><span class=\"nm\">"+c.name+"</span></div>"}).join("");
-          var cr=document.getElementById("crumbs");cr.innerHTML="<span data-p=\"-1\">This PC</span>"+pathOf(cur).map(function(p,i){return "<i>&#8250;</i><span data-p=\""+i+"\">"+p+"</span>"}).join("");
-          cr.querySelectorAll("span").forEach(function(s){s.onclick=function(){var p=+s.dataset.p;navTo(p<0?root:nodeAt(p))}});
-          document.getElementById("stL").textContent=cs.length+" items"+(sel.length?" | "+sel.length+" item(s) selected":"");
-          document.querySelectorAll("#side .it").forEach(function(el){el.classList.toggle("on",el.dataset.nav===cur.name||(el.dataset.nav==="root"&&cur===root))});
-          markSel()}
-          function nodeAt(i){var p=pathOf(cur);var n=root;for(var k=0;k<=i;k++){n=n.children.find(function(c){return c.name===p[k]&&c.type==="folder"})}return n||root}
-          function fmt(b){b=+b||0;if(b<1024)return b+" B";var u=["KB","MB","GB","TB"],i=-1;do{b/=1024;i++}while(b>=1024&&i<u.length-1);return b.toFixed(1)+" "+u[i]}
-          function navTo(n){if(!n)return;hist=hist.slice(0,hi+1);hist.push(n);hi++;cur=n;sel=[];anchor=-1;render()}
-          document.getElementById("bBack").onclick=function(){if(hi>0){hi--;cur=hist[hi];sel=[];render()}};
-          document.getElementById("bFwd").onclick=function(){if(hi<hist.length-1){hi++;cur=hist[hi];sel=[];render()}};
-          document.getElementById("bUp").onclick=function(){navTo(cur.parent||root)};
-          document.getElementById("q").oninput=render;
-          document.getElementById("vDet").onclick=function(){view="details";document.getElementById("main").classList.remove("grid");document.getElementById("vLbl").textContent="Details view"};
-          document.getElementById("vGrid").onclick=function(){view="grid";document.getElementById("main").classList.add("grid");document.getElementById("vLbl").textContent="Grid view"};
-          document.getElementById("zoom").oninput=function(){document.documentElement.style.setProperty("--gis",this.value+"px")};
-          document.getElementById("burger").onclick=function(){document.getElementById("side").classList.toggle("open")};
-          document.getElementById("th").onclick=function(){var h=document.documentElement;var d=h.dataset.theme==="dark";h.dataset.theme=d?"light":"dark";try{localStorage.setItem("ghx-theme",d?"light":"dark")}catch(e){}this.textContent=d?"\uD83C\uDF19":"\u2600"};
-          (function(){try{var t=localStorage.getItem("ghx-theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;document.getElementById("th").textContent=t==="dark"?"\u2600":"\uD83C\uDF19"}catch(e){}})();
-          document.querySelectorAll("#side .it").forEach(function(el){el.onclick=function(){var n=el.dataset.nav;if(n==="root")navTo(root);else if(n==="gallery"){var g=nd("Gallery","folder");g.children=[];(function w(x){x.children.forEach(function(c){if(c.type==="folder")w(c);else if(/png|jpe?g|gif/i.test(c.name))g.children.push(c)})})(root);navTo(g)}else{var f=root.children.find(function(c){return c.name===n&&c.type==="folder"});navTo(f||nd(n,"folder"))}}});
-          function items(){return Array.prototype.slice.call(document.querySelectorAll("#main .item"))}
-          function markSel(){items().forEach(function(el){el.classList.toggle("sel",sel.indexOf(+el.dataset.i)>=0)});document.getElementById("stL").textContent=kids().length+" items"+(sel.length?" | "+sel.length+" item(s) selected":"")}
-          document.getElementById("main").addEventListener("click",function(e){var el=e.target.closest(".item");if(!el){sel=[];anchor=-1;markSel();return}
-          var i=+el.dataset.i;
-          if(e.shiftKey&&anchor>=0){var a=Math.min(anchor,i),b=Math.max(anchor,i);sel=[];for(var k=a;k<=b;k++)sel.push(k)}
-          else if(e.ctrlKey){var x=sel.indexOf(i);if(x>=0)sel.splice(x,1);else sel.push(i);anchor=i}
-          else{sel=[i];anchor=i}
-          markSel()});
-          document.getElementById("main").addEventListener("dblclick",function(e){var el=e.target.closest(".item");if(!el)return;openItem(kids()[+el.dataset.i])});
-          document.getElementById("main").addEventListener("keydown",function(e){var el=e.target.closest(".item");if(!el)return;if(e.key==="Enter"){openItem(kids()[+el.dataset.i])}});
-          function openItem(c){if(!c)return;if(c.type==="folder")navTo(c);else if(c.meta&&c.meta.l)FilePreview.open({name:c.name,size:+(c.meta&&c.meta.s)||0,url:c.meta.l,preview:c.meta.p||''})}
-          var ctx=document.getElementById("ctx");
-          document.getElementById("main").addEventListener("contextmenu",function(e){e.preventDefault();var el=e.target.closest(".item");if(el){var i=+el.dataset.i;if(sel.indexOf(i)<0){sel=[i];anchor=i;markSel()}ctxTarget=kids()[i]}else ctxTarget=null;
-          ctx.classList.add("show");ctx.style.left=Math.min(e.clientX,innerWidth-200)+"px";ctx.style.top=Math.min(e.clientY,innerHeight-220)+"px"});
-          document.addEventListener("click",function(e){if(!e.target.closest("#ctx"))ctx.classList.remove("show")});
-          document.addEventListener("keydown",function(e){if(e.key==="Escape"){ctx.classList.remove("show");var hs=ctx.querySelector(".hs");if(hs)hs.classList.remove("open")}});
-          ctx.querySelector(".hs").addEventListener("keydown",function(e){if(e.key==="Enter"||e.key===" "){this.classList.toggle("open");e.preventDefault()}});
-          ctx.querySelectorAll("[data-act]").forEach(function(li){li.onclick=function(){var a=li.dataset.act;var c=ctxTarget;if(a==="open"&&c)openItem(c);
-          if(a==="copy"&&c&&c.meta&&c.meta.l){(navigator.clipboard?navigator.clipboard.writeText(c.meta.l):Promise.reject()).then(function(){},function(){prompt("Copy:",c.meta.l)})}
-          if(a==="rename"&&c){var n=prompt("Rename (client-side only):",c.name);if(n)c.name=n;render()}
-          if(a==="del"&&c){var p=c.parent||cur;p.children=p.children.filter(function(x){return x!==c});sel=[];render()}
-          ctx.classList.remove("show")}});
-          ctx.querySelectorAll("[data-new]").forEach(function(li){li.onclick=function(){var t=li.dataset.new;var name=t==="folder"?("New folder"):("New Text Document.txt");var n=nd(name,t==="folder"?"folder":"file");n.parent=cur;n.meta={n:name,s:0,d:new Date().toISOString().substring(0,10),e:"false",l:""};cur.children.push(n);render();ctx.classList.remove("show")}});
-          load();
-          })();
-          </script>
-          <script>
-          window.FilePreview={open:function(nd){if(nd&&nd.url){window.open(nd.url,'_blank');}},close:function(){}};
-          </script>
-          </body></html>
-          '@
           $swSb = [System.Text.StringBuilder]::new()
-          [void]$swSb.Append('const CACHE_NAME=''ghrdp-explorer-v2-nopreview'';')
-          [void]$swSb.Append('const URLS_TO_CACHE=[''search.html'',''tree.json'',''archive.json''];')
+          [void]$swSb.Append('const CACHE_NAME=''ghrdp-explorer-v3-unified'';')
+          [void]$swSb.Append('const URLS_TO_CACHE=[''explorer.html'',''tree.json'',''archive.json''];')
           [void]$swSb.Append('self.addEventListener(''install'',event=>{event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(URLS_TO_CACHE).catch(()=>{})));self.skipWaiting();});')
           [void]$swSb.Append('self.addEventListener(''activate'',event=>{event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE_NAME).map(k=>caches.delete(k)))));self.clients.claim();});')
-          [void]$swSb.Append('self.addEventListener(''fetch'',event=>{if(event.request.method!==''GET'')return;event.respondWith(fetch(event.request).then(response=>{if(!response||response.status!==200||response.type!==''basic'')return response;var responseToCache=response.clone();caches.open(CACHE_NAME).then(cache=>{cache.put(event.request,responseToCache);});return response;}).catch(()=>{return caches.match(event.request).then(response=>{if(response)return response;if(event.request.destination===''document'')return caches.match(''search.html'');});}));});')
+          [void]$swSb.Append('self.addEventListener(''fetch'',event=>{if(event.request.method!==''GET'')return;event.respondWith(fetch(event.request).then(response=>{if(!response||response.status!==200||response.type!==''basic'')return response;var responseToCache=response.clone();caches.open(CACHE_NAME).then(cache=>{cache.put(event.request,responseToCache);});return response;}).catch(()=>{return caches.match(event.request).then(response=>{if(response)return response;if(event.request.destination===''document'')return caches.match(''explorer.html'');});}));});')
           $swJs = $swSb.ToString()
           Put-GhFile 'docs/decrypt.html' $decryptHtml
           Put-GhFile 'docs/archive.html' $archiveHtml
-          Put-GhFile 'docs/search.html' $searchHtml
-          Put-GhFile 'docs/sw.js' $swJs
           $explorerSrc = 'C:\ghrdp\explorer.html'
-          if (Test-Path -LiteralPath $explorerSrc) { Put-GhFile 'docs/explorer.html' ([System.IO.File]::ReadAllText($explorerSrc, [System.Text.Encoding]::UTF8)); Write-Host '[pages] pushed docs/explorer.html' } else { Write-Host '[pages] explorer.html missing in stage - skipped' }
+          if (Test-Path -LiteralPath $explorerSrc) {
+            $explorerHtml = [System.IO.File]::ReadAllText($explorerSrc, [System.Text.Encoding]::UTF8)
+            Put-GhFile 'docs/explorer.html' $explorerHtml
+            Put-GhFile 'docs/search.html' $explorerHtml
+          } else { Write-Host '[pages] explorer.html missing in stage - skipped' }
+          Put-GhFile 'docs/sw.js' $swJs
           $api = "https://api.github.com/repos/$repo/contents/docs/archive.json"
           $exists = $true
           try { Invoke-RestMethod -Uri $api -Headers $hdr -ErrorAction Stop | Out-Null } catch { $exists = $false }
           if (-not $exists) { Put-GhFile 'docs/archive.json' '{"sessions":[]}' }
           $pagesUrl = 'https://' + (($repo -split '/')[0]) + '.github.io/' + (($repo -split '/')[1])
           Add-Content -Path $env:GITHUB_ENV -Value ("PAGES_BASE=" + $pagesUrl)
-          Write-Host ('[pages] tools at ' + $pagesUrl + '/decrypt.html , /archive.html , /search.html')
+          Write-Host ('[pages] tools at ' + $pagesUrl + '/explorer.html , /archive.html , /decrypt.html')
           exit 0
 
       - name: Verify Pages site responds 200 (print remediation if 404)
@@ -1355,7 +1220,7 @@ jobs:
           }
           exit 0
 
-      - name: Publish Windows 11 Explorer UI (explorer.html + search.html + index redirect)
+      - name: Publish Unified Fluent Explorer (explorer.html + search.html redirect + index)
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
@@ -1369,157 +1234,18 @@ jobs:
             $sha = $null
             try { $g = Invoke-RestMethod -Uri $api -Headers $hdr -ErrorAction Stop; $sha = $g.sha } catch { }
             $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Text))
-            $body = @{ message = "ui: windows-11 explorer $Path"; content = $b64 }
+            $body = @{ message = "ui: unified fluent explorer $Path"; content = $b64 }
             if ($sha) { $body.sha = $sha }
             try { Invoke-RestMethod -Uri $api -Headers $hdr -Method Put -ContentType "application/json" -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null; Write-Host "[ui] pushed $Path" } catch { Write-Host ("[ui] push failed $Path : " + $_.Exception.Message) }
           }
-          $html = @'
-          <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GHRDP Explorer</title>
-          <style>
-          :root{--mica:#f3f3f3;--acrylic:rgba(243,243,243,.72);--surface:#fbfbfb;--surface2:#efefef;--text:#1a1a1a;--text2:#5c5c5c;--border:#e5e5e5;--hover:rgba(0,0,0,.06);--sel:rgba(0,103,192,.18);--accent:#0067C0;--r8:8px;--r4:4px;--gis:96px}
-          @media(prefers-color-scheme:dark){:root{--mica:#202020;--acrylic:rgba(40,40,40,.75);--surface:#282828;--surface2:#2d2d2d;--text:#fff;--text2:#a6a6a6;--border:#333;--hover:rgba(255,255,255,.08);--sel:rgba(0,103,192,.35)}}
-          html[data-theme=light]{--mica:#f3f3f3;--acrylic:rgba(243,243,243,.72);--surface:#fbfbfb;--surface2:#efefef;--text:#1a1a1a;--text2:#5c5c5c;--border:#e5e5e5;--hover:rgba(0,0,0,.06);--sel:rgba(0,103,192,.18)}
-          html[data-theme=dark]{--mica:#202020;--acrylic:rgba(40,40,40,.75);--surface:#282828;--surface2:#2d2d2d;--text:#fff;--text2:#a6a6a6;--border:#333;--hover:rgba(255,255,255,.08);--sel:rgba(0,103,192,.35)}
-          *{box-sizing:border-box}body{margin:0;height:100vh;display:flex;flex-direction:column;overflow:hidden;font-family:'Segoe UI Variable','Segoe UI',system-ui,sans-serif;background:var(--mica);color:var(--text);transition:background-color .2s ease,color .2s ease}
-          #acrylic,.side,#ctx,.cmdbar{backdrop-filter:blur(24px) saturate(1.4);-webkit-backdrop-filter:blur(24px) saturate(1.4);background:var(--acrylic)}
-          .cmdbar{display:flex;align-items:center;gap:6px;padding:6px 10px;border-bottom:1px solid var(--border);flex-wrap:wrap}
-          button{font:inherit;font-size:13px;padding:5px 10px;border-radius:var(--r4);border:1px solid transparent;background:transparent;color:var(--text);cursor:pointer;transition:background-color .15s ease}
-          button:hover{background:var(--hover)}button:active{background:var(--sel)}
-          #addr{flex:1;display:flex;align-items:center;gap:4px;min-width:160px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r4);padding:4px 8px;overflow:hidden}
-          #addr span{cursor:pointer;padding:2px 4px;border-radius:var(--r4);white-space:nowrap}#addr span:hover{background:var(--hover)}#addr i{color:var(--text2);font-style:normal}
-          #q{width:180px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r4);padding:5px 8px;color:var(--text)}
-          #body{flex:1;display:flex;min-height:0}
-          .side{width:240px;border-right:1px solid var(--border);overflow:auto;padding:6px}
-          .side .node{padding:4px 8px;border-radius:var(--r4);cursor:pointer;white-space:nowrap;font-size:13px}
-          .side .node:hover{background:var(--hover)}.side .node.on{background:var(--sel)}
-          #burger{display:none}
-          @media(max-width:768px){#burger{display:inline-block}.side{display:none}.side.open{display:block;position:absolute;z-index:40;top:44px;bottom:30px;box-shadow:0 8px 24px rgba(0,0,0,.3)}}
-          #main{flex:1;overflow:auto;padding:8px}
-          table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:5px 10px;border-radius:var(--r4)}th{color:var(--text2);font-weight:600;font-size:12px}
-          tbody tr{cursor:default}tbody tr:hover{background:var(--hover)}tbody tr.selected{background:var(--sel)}
-          #grid{display:none;grid-template-columns:repeat(auto-fill,minmax(var(--gis),1fr));gap:6px}
-          #grid .gi{padding:10px 6px;border-radius:var(--r4);text-align:center;cursor:default}#grid .gi:hover{background:var(--hover)}#grid .gi.selected{background:var(--sel)}
-          #grid .gi .ic{font-size:calc(var(--gis)*.42);line-height:1.1}#grid .gi .nm{font-size:12px;word-break:break-word}
-          #status{display:flex;align-items:center;gap:12px;padding:4px 12px;border-top:1px solid var(--border);font-size:12px;color:var(--text2);background:var(--acrylic);backdrop-filter:blur(24px)}
-          #status .right{margin-left:auto;display:flex;align-items:center;gap:8px}
-          #ctx{position:fixed;display:none;z-index:60;min-width:190px;border:1px solid var(--border);border-radius:var(--r8);box-shadow:0 12px 32px rgba(0,0,0,.35);padding:4px;background:var(--acrylic);backdrop-filter:blur(24px) saturate(1.4);-webkit-backdrop-filter:blur(24px) saturate(1.4)}
-          #ctx .mi{padding:6px 10px;border-radius:var(--r4);cursor:pointer;font-size:13px;position:relative}
-          #ctx .mi:hover,#ctx .mi:focus{background:var(--hover)}
-          #ctx .mi .sub{display:none;position:absolute;left:100%;top:0;min-width:150px;background:var(--acrylic);backdrop-filter:blur(24px);border:1px solid var(--border);border-radius:var(--r8);padding:4px;box-shadow:0 12px 32px rgba(0,0,0,.35)}
-          #ctx .mi.open .sub,#ctx .mi:focus-within .sub{display:block}
-          #ctx .hr{height:1px;background:var(--border);margin:4px 6px}
-          </style></head><body>
-          <div class="cmdbar">
-          <button id="burger" title="Menu">&#9776;</button>
-          <button id="bBack" title="Back">&#8592;</button><button id="bFwd" title="Forward">&#8594;</button><button id="bUp" title="Up">&#8593;</button>
-          <div id="addr"></div>
-          <input id="q" placeholder="Search" autocomplete="off">
-          <button id="bTheme" title="Toggle theme">&#9788;</button>
-          <button id="bDet" title="Details view">&#9776;</button><button id="bGrid" title="Grid view">&#9638;</button>
-          </div>
-          <div id="body">
-          <nav class="side" id="side"></nav>
-          <main id="main">
-          <table id="tbl"><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody id="rows"></tbody></table>
-          <div id="grid"></div>
-          </main>
-          </div>
-          <div id="status"><span id="stL">0 items</span><span id="stS"></span><span class="right"><span id="stV">Details</span><input type="range" id="zoom" min="64" max="160" value="96" title="Icon size"></span></div>
-          <div id="ctx" role="menu"></div>
-          <script>
-          (function(){
-          "use strict";
-          var FS={name:"This PC",type:"folder",children:[]};
-          var cur=FS,hist=[],hi=-1,sel=[],anchor=-1,view="det";
-          function ext(n){var m=String(n).match(/\.([^.]+)$/);return m?m[1].toLowerCase():"";}
-          function typeOf(n){var e=ext(n);if(["mp4","mkv","avi","mov","webm"].indexOf(e)>=0)return "Video";if(["mp3","flac","wav","aac","ogg"].indexOf(e)>=0)return "Audio";if(["jpg","jpeg","png","gif","webp"].indexOf(e)>=0)return "Image";if(["zip","rar","7z","iso"].indexOf(e)>=0)return "Archive";if(!e)return "File folder";return e.toUpperCase()+" File";}
-          function icon(n){var e=ext(n);if(["mp4","mkv","avi","mov","webm"].indexOf(e)>=0)return "🎬";if(["mp3","flac","wav","aac","ogg"].indexOf(e)>=0)return "🎵";if(["jpg","jpeg","png","gif","webp"].indexOf(e)>=0)return "🖼";if(["zip","rar","7z","iso"].indexOf(e)>=0)return "📦";if(!e)return "📁";return "📄";}
-          function fmt(n){n=+n||0;if(n<1024)return n+" B";var u=["KB","MB","GB","TB"],i=-1;do{n/=1024;i++;}while(n>=1024&&i<u.length-1);return n.toFixed(1)+" "+u[i];}
-          function addFolder(parent,name){for(var i=0;i<parent.children.length;i++){var c=parent.children[i];if(c.type==="folder"&&c.name===name)return c;}var f={name:name,type:"folder",children:[]};parent.children.push(f);return f;}
-          function addFile(parent,o){parent.children.push({name:o.n,type:"file",size:o.s||0,dateModified:o.d||o.t||"",link:o.l||"",enc:o.e||"false",extension:ext(o.n)});}
-          function ingest(sessionNode,files){(files||[]).forEach(function(o){var parts=String(o.f||"").split(/[\\/]/).filter(Boolean);var node=sessionNode;parts.forEach(function(p){node=addFolder(node,p);});addFile(node,o);});}
-          function load(){
-            Promise.all([fetch("data.json",{cache:"no-store"}).then(function(r){return r.ok?r.json():null}).catch(function(){return null}),fetch("archive.json",{cache:"no-store"}).then(function(r){return r.ok?r.json():null}).catch(function(){return null})]).then(function(js){
-              var d=js[0],a=js[1];
-              FS.children=[];
-              if(d&&(d.files||[]).length){var curNode={name:"Current run",type:"folder",children:[]};FS.children.push(curNode);ingest(curNode,d.files);}
-              if(a&&(a.sessions||[]).length){a.sessions.slice().reverse().forEach(function(s){var n={name:(s.id||"session")+" ("+(s.date||"")+")",type:"folder",children:[]};FS.children.push(n);ingest(n,s.files);});}
-              if(!FS.children.length){FS.children.push({name:"(empty)",type:"folder",children:[]});}
-              navTo(FS,true);
-            });
-          }
-          function navTo(node,reset){if(!reset){hist=hist.slice(0,hi+1);hist.push(node);hi++;}else{hist=[node];hi=0;}cur=node;sel=[];anchor=-1;render();renderSide();}
-          function renderSide(){var el=document.getElementById("side");el.innerHTML="";(function walk(node,depth){var d=document.createElement("div");d.className="node"+(node===cur?" on":"");d.style.paddingLeft=(8+depth*14)+"px";d.textContent=(node.type==="folder"?"📁 ":"📄 ")+node.name;d.onclick=function(){if(node.type==="folder")navTo(node);};el.appendChild(d);(node.children||[]).filter(function(c){return c.type==="folder";}).forEach(function(c){walk(c,depth+1);});})(FS,0);}
-          function render(){
-            var q=document.getElementById("q").value.toLowerCase();
-            var items=(cur.children||[]).filter(function(c){return !q||c.name.toLowerCase().indexOf(q)>=0;});
-            items.sort(function(a,b){if(a.type!==b.type)return a.type==="folder"?-1:1;return a.name.localeCompare(b.name);});
-            document.getElementById("stL").textContent=items.length+" item"+(items.length===1?"":"s")+(sel.length?(" | "+sel.length+" selected"):"");
-            var addr=document.getElementById("addr");addr.innerHTML="";var path=[];var p=cur;while(p&&p!==FS){path.unshift(p);p=p.parent;}
-            function crumb(node,label){var s=document.createElement("span");s.textContent=label;s.onclick=function(){navTo(node);};addr.appendChild(s);}
-            crumb(FS,"This PC");path.forEach(function(n){var iv=document.createElement("i");iv.innerHTML="&#8250;";addr.appendChild(iv);crumb(n,n.name);});
-            var rows=document.getElementById("rows"),grid=document.getElementById("grid");
-            rows.innerHTML="";grid.innerHTML="";
-            items.forEach(function(c,idx){
-              c.parent=cur;
-              var isSel=sel.indexOf(idx)>=0;
-              if(view==="det"){var tr=document.createElement("tr");if(isSel)tr.className="selected";tr.innerHTML="<td>"+icon(c.name)+" "+esc(c.name)+"</td><td>"+(c.dateModified||"")+"</td><td>"+typeOf(c.name)+"</td><td>"+(c.type==="folder"?"":fmt(c.size))+"</td>";wire(tr,c,idx);rows.appendChild(tr);}
-              else{var g=document.createElement("div");g.className="gi"+(isSel?" selected":"");g.innerHTML="<div class=\"ic\">"+icon(c.name)+"</div><div class=\"nm\">"+esc(c.name)+"</div>";wire(g,c,idx);grid.appendChild(g);}
-            });
-            document.getElementById("tbl").style.display=view==="det"?"":"none";
-            grid.style.display=view==="grid"?"grid":"none";
-            document.getElementById("stV").textContent=view==="det"?"Details":"Grid";
-          }
-          function esc(s){return String(s==null?"":s).replace(/[&<>]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;"}[c];});}
-          function wire(el,c,idx){
-            el.onclick=function(ev){if(ev.ctrlKey){var i=sel.indexOf(idx);if(i>=0)sel.splice(i,1);else sel.push(idx);anchor=idx;}else if(ev.shiftKey&&anchor>=0){var a=Math.min(anchor,idx),b=Math.max(anchor,idx);sel=[];for(var k=a;k<=b;k++)sel.push(k);}else{sel=[idx];anchor=idx;}render();ev.stopPropagation();};
-            el.ondblclick=function(){if(c.type==="folder")navTo(c);else if(c.link)FilePreview.open({name:c.name,size:c.size||0,url:c.link,preview:c.p||''});};
-            el.oncontextmenu=function(ev){ev.preventDefault();showCtx(ev,c);};
-          }
-          document.getElementById("main").addEventListener("click",function(){sel=[];anchor=-1;render();});
-          function showCtx(ev,c){
-            var m=document.getElementById("ctx");m.innerHTML="";
-            function mi(label,fn,sub){var d=document.createElement("div");d.className="mi";d.tabIndex=0;d.textContent=label;d.onclick=function(e){e.stopPropagation();m.style.display="none";if(fn)fn();};d.onkeydown=function(e){if(e.key==="Enter"||e.key===" "){e.preventDefault();d.click();}};if(sub){var s=document.createElement("div");s.className="sub";sub.forEach(function(x){var sd=document.createElement("div");sd.className="mi";sd.tabIndex=0;sd.textContent=x[0];sd.onclick=function(e){e.stopPropagation();m.style.display="none";if(x[1])x[1]();};s.appendChild(sd);});d.appendChild(s);d.onmouseenter=function(){d.classList.add("open");};}m.appendChild(d);return d;}
-            if(c&&c.type==="file"){
-              mi("Open",function(){if(c.link)window.open(c.link,'_blank');});
-              mi("Download",function(){if(c.link)window.open(c.link,"_blank");});
-              mi("Copy link",function(){if(c.link)cpTxt(c.link);});
-              if(String(c.enc)==="true")mi("Copy decrypt command",function(){cpTxt("powershell -c \"& { $p=Read-Host 'Password'; $s=[IO.File]::ReadAllBytes($args[0]); $kdf=[Security.Cryptography.Rfc2898DeriveBytes]::new($p,$s[0..15],100000,'SHA256'); $a=[Security.Cryptography.Aes]::Create(); $a.Key=$kdf.GetBytes(32); $a.IV=$s[16..31]; $d=$a.CreateDecryptor(); $ms=[IO.MemoryStream]::new(); $cs=[Security.Cryptography.CryptoStream]::new($ms,$d,'Write'); $cs.Write($s,32,$s.Length-32); $cs.FlushFinalBlock(); [IO.File]::WriteAllBytes(($args[0] -replace '\\.ghenc$',''), $ms.ToArray()) }\" "+c.name);});
-              mi("Properties",function(){alert("Name: "+c.name+"\nType: "+typeOf(c.name)+"\nSize: "+fmt(c.size)+"\nModified: "+(c.dateModified||"-")+"\nEncrypted: "+c.enc);});
-            } else if(c){
-              mi("Open",function(){navTo(c);});
-              mi("Properties",function(){alert("Folder: "+c.name+"\nItems: "+(c.children||[]).length);});
-            }
-            m.appendChild(Object.assign(document.createElement("div"),{className:"hr"}));
-            mi("New",null,[["Folder",function(){var n={name:"New folder",type:"folder",children:[]};(c||cur).children.push(n);render();}],["Text Document",function(){(c||cur).children.push({name:"New Text Document.txt",type:"file",size:0,dateModified:"",link:"",enc:"false",extension:"txt"});render();}]]);
-            m.style.display="block";
-            m.style.left=Math.min(ev.clientX,innerWidth-210)+"px";m.style.top=Math.min(ev.clientY,innerHeight-220)+"px";
-          }
-          document.addEventListener("click",function(e){if(!e.target.closest("#ctx"))document.getElementById("ctx").style.display="none";});
-          document.addEventListener("keydown",function(e){if(e.key==="Escape")document.getElementById("ctx").style.display="none";});
-          function cpTxt(t){if(navigator.clipboard)navigator.clipboard.writeText(t).catch(function(){prompt("Copy:",t);});else prompt("Copy:",t);}
-          document.getElementById("bBack").onclick=function(){if(hi>0){hi--;cur=hist[hi];sel=[];render();renderSide();}};
-          document.getElementById("bFwd").onclick=function(){if(hi<hist.length-1){hi++;cur=hist[hi];sel=[];render();renderSide();}};
-          document.getElementById("bUp").onclick=function(){if(cur&&cur!==FS&&cur.parent){navTo(cur.parent);}};
-          document.getElementById("bDet").onclick=function(){view="det";render();};
-          document.getElementById("bGrid").onclick=function(){view="grid";render();};
-          document.getElementById("zoom").oninput=function(){document.documentElement.style.setProperty("--gis",this.value+"px");};
-          document.getElementById("q").oninput=function(){render();};
-          document.getElementById("burger").onclick=function(){document.getElementById("side").classList.toggle("open");};
-          (function theme(){try{var stored=localStorage.getItem("ghrdp-theme");if(stored){document.documentElement.setAttribute("data-theme",stored);}}catch(e){}document.getElementById("bTheme").onclick=function(){var curT=document.documentElement.getAttribute("data-theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");var nx=curT==="dark"?"light":"dark";document.documentElement.setAttribute("data-theme",nx);try{localStorage.setItem("ghrdp-theme",nx);}catch(e){}};})();
-          load();
-          })();
-          </script>
-          <script>
-          window.FilePreview={open:function(nd){if(nd&&nd.url){window.open(nd.url,'_blank');}},close:function(){}};
-          </script>
-          </body></html>
-          '@
+          $explorerSrc = 'C:\ghrdp\explorer.html'
+          if (-not (Test-Path -LiteralPath $explorerSrc)) { Write-Host '[ui] explorer.html not found in stage - skipping'; exit 0 }
+          $html = [System.IO.File]::ReadAllText($explorerSrc, [System.Text.Encoding]::UTF8)
           Put-GhFile2 'docs/explorer.html' $html
           Put-GhFile2 'docs/search.html' $html
           Put-GhFile2 'docs/index.html' '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=explorer.html"><title>GHRDP</title><p><a href="explorer.html">Open GHRDP Explorer</a></p>'
           exit 0
-      - name: Publish redesigned search UI + offline service worker
+      - name: Publish offline service worker
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
@@ -1531,162 +1257,13 @@ jobs:
             $api = "https://api.github.com/repos/$repo/contents/$Path"; $sha = $null
             try { $g = Invoke-RestMethod -Uri $api -Headers $hdr -ErrorAction Stop; $sha = $g.sha } catch { }
             $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Text))
-            $body = @{ message = "redesign $Path"; content = $b64 }
+            $body = @{ message = "update $Path"; content = $b64 }
             if ($sha) { $body.sha = $sha }
             try { Invoke-RestMethod -Uri $api -Headers $hdr -Method Put -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null; Write-Host "[ui] pushed $Path" } catch { Write-Host ("[ui] push failed $Path : " + $_.Exception.Message) }
           }
-          $searchHtml = @'
-          <!doctype html><html lang="en"><head><meta charset="utf-8">
-          <meta name="viewport" content="width=device-width,initial-scale=1">
-          <meta name="theme-color" content="#0b0f14"><title>GHRDP File Search</title>
-          <style>
-          :root{--bg:#0b0f14;--panel:#101820;--line:#1e2a36;--ink:#e8eef3;--mut:#8aa0ad;--acc:#22d3ee;--acc2:#34d399;--bad:#f87171;--warn:#fbbf24}
-          *{box-sizing:border-box}html,body{margin:0;height:100%;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--ink)}
-          header{position:sticky;top:0;z-index:20;display:flex;gap:10px;align-items:center;padding:10px 16px;background:rgba(16,24,32,.92);backdrop-filter:blur(12px);border-bottom:1px solid var(--line);flex-wrap:wrap}
-          .brand{font-weight:700;font-size:15px;letter-spacing:.06em;color:var(--acc)}
-          #q{flex:1;min-width:160px;max-width:520px;padding:9px 14px;border-radius:10px;border:1px solid var(--line);background:#0d1420;color:var(--ink);font-size:14px;outline:none}
-          #q:focus{border-color:var(--acc)}
-          .pill{display:inline-flex;align-items:center;gap:6px;padding:5px 10px;border-radius:999px;border:1px solid var(--line);font-size:11px;color:var(--mut)}
-          .pill.on{color:var(--acc2);border-color:rgba(52,211,153,.4)}.pill.off{color:var(--bad);border-color:rgba(248,113,113,.4)}
-          .layout{display:flex;min-height:calc(100vh - 52px)}
-          aside{width:230px;flex:0 0 230px;border-right:1px solid var(--line);padding:12px;overflow:auto;background:rgba(13,20,32,.6)}
-          aside h4{margin:10px 0 6px;font-size:10px;letter-spacing:.1em;color:var(--mut);text-transform:uppercase}
-          .sitem{display:flex;justify-content:space-between;gap:6px;padding:7px 9px;border-radius:8px;cursor:pointer;font-size:12.5px;color:var(--mut)}
-          .sitem:hover{background:#16202e;color:var(--ink)}
-          .sitem.sel{background:#16202e;color:var(--ink);border:1px solid var(--line)}
-          .sitem .cnt{color:var(--mut);font-size:11px}
-          .sitem .live{color:var(--acc2);font-size:10px}
-          select,button{padding:7px 10px;border-radius:8px;border:1px solid var(--line);background:#0d1420;color:var(--ink);font-size:12px;cursor:pointer}
-          button.primary{background:linear-gradient(135deg,var(--acc),var(--acc2));color:#04121a;border:none;font-weight:600}
-          main{flex:1;padding:14px 16px;overflow:auto}
-          .bar{display:flex;gap:10px;align-items:center;margin-bottom:10px;flex-wrap:wrap;color:var(--mut);font-size:12px}
-          table{width:100%;border-collapse:collapse;font-size:12.5px}
-          th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:middle}
-          th{color:var(--mut);font-size:10px;text-transform:uppercase;letter-spacing:.08em;cursor:pointer;user-select:none}
-          tbody tr{cursor:pointer}tbody tr:hover{background:#121b28}
-          .badge{font-size:10px;padding:2px 7px;border-radius:999px;border:1px solid var(--line);color:var(--mut)}
-          .badge.enc{color:var(--warn);border-color:rgba(251,191,36,.4)}
-          .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
-          .card{border:1px solid var(--line);border-radius:12px;padding:10px;background:var(--panel);cursor:pointer;overflow:hidden}
-          .card .nm{font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-          .card .mt{color:var(--mut);font-size:10.5px;margin-top:4px}
-          .drawer{position:fixed;top:0;right:0;bottom:0;width:min(420px,92vw);background:var(--panel);border-left:1px solid var(--line);transform:translateX(100%);transition:transform .25s ease;z-index:30;padding:16px;overflow:auto}
-          .drawer.open{transform:none}
-          .drawer h3{margin:0 0 8px;font-size:14px;word-break:break-all}
-          .kv{display:flex;justify-content:space-between;gap:10px;font-size:12px;color:var(--mut);padding:4px 0}
-          .kv b{color:var(--ink);font-weight:500;word-break:break-all}
-          .row{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
-          pre{background:#0d1420;border:1px solid var(--line);border-radius:8px;padding:8px;font-size:10.5px;overflow:auto;white-space:pre-wrap;word-break:break-all}
-          .empty{color:var(--mut);padding:40px 0;text-align:center;font-size:13px}
-          .more{margin:12px auto;display:block}
-          @media(max-width:760px){aside{display:none}aside.show{display:block;position:fixed;z-index:25;top:52px;bottom:0;left:0}}
-          </style></head><body>
-          <header>
-          <span class="brand">GHRDP SEARCH</span>
-          <input id="q" placeholder="Search files…  ( / )" autocomplete="off">
-          <span class="pill on" id="netPill">ONLINE</span>
-          <span class="pill" id="syncPill">synced —</span>
-          <span class="pill" id="countPill">0 files</span>
-          <button id="viewBtn">Grid</button>
-          <button id="sideBtn">☰</button>
-          </header>
-          <div class="layout">
-          <aside id="side">
-          <h4>Sessions</h4><div id="sessList"></div>
-          <h4>Filters</h4>
-          <select id="encF"><option value="">Enc: All</option><option value="yes">Encrypted only</option><option value="no">Plain only</option></select>
-          <select id="sortF" style="margin-top:6px"><option value="new">Sort: Newest</option><option value="old">Oldest</option><option value="name">Name A-Z</option><option value="size">Largest</option></select>
-          <div class="row"><button id="copyAll">Copy all filtered links</button></div>
-          </aside>
-          <main>
-          <div class="bar"><span id="resInfo"></span></div>
-          <div id="tableWrap"><table><thead><tr><th data-s="name">Name</th><th data-s="size">Size</th><th data-s="d">Date</th><th>Session</th><th>Enc</th></tr></thead><tbody id="tb"></tbody></table></div>
-          <div id="gridWrap" class="grid" style="display:none"></div>
-          <button class="more" id="moreBtn" style="display:none">Show 100 more</button>
-          <div class="empty" id="empty" style="display:none">No files match. If offline, this is your last synced snapshot.</div>
-          </main>
-          </div>
-          <div class="drawer" id="drawer">
-          <h3 id="dName"></h3>
-          <div class="kv"><span>Size</span><b id="dSize"></b></div>
-          <div class="kv"><span>Date</span><b id="dDate"></b></div>
-          <div class="kv"><span>Session</span><b id="dSess"></b></div>
-          <div class="kv"><span>Encrypted</span><b id="dEnc"></b></div>
-          <div class="row"><button class="primary" id="dOpen">Open link</button><button id="dCopy">Copy link</button><button id="dCmd">Copy decrypt cmd</button><button id="dClose">Close</button></div>
-          <pre id="dCmdBox" style="display:none"></pre>
-          </div>
-          <script>
-          var SESSIONS=[],FILES=[],FILTERED=[],SHOWN=0,PAGE=100,VIEW='table',CUR=null;
-          function $(id){return document.getElementById(id)}
-          function fmt(n){n=+n||0;if(n<1024)return n+' B';var u=['KB','MB','GB','TB'];var i=-1;do{n/=1024;i++}while(n>=1024&&i<u.length-1);return n.toFixed(1)+' '+u[i]}
-          function j(u){return fetch(u,{cache:'no-store'}).then(function(r){return r.ok?r.json():null}).catch(function(){return null})}
-          async function loadAll(){
-            var arch=await j('./archive.json'), data=await j('./data.json');
-            SESSIONS=[];FILES=[];
-            if(arch&&arch.sessions)(arch.sessions||[]).forEach(function(s){
-              var fs=(s.files||[]).map(function(f){return{n:f.n,s:f.s,l:f.l,e:f.e,d:f.d||s.date,sid:s.id}});
-              SESSIONS.push({id:s.id,date:s.date,key:s.key,count:fs.length,live:false});
-              FILES=FILES.concat(fs);
-            });
-            if(data&&data.files&&data.files.length){
-              var lf=data.files.map(function(f){return{n:f.n,s:f.s,l:f.l,e:f.e,d:f.d||data.ts,sid:data.sessionId||'live'}});
-              SESSIONS.unshift({id:data.sessionId||'live',date:data.ts,key:data.mirrorKey,count:lf.length,live:true});
-              FILES=lf.concat(FILES);
-            }
-            localStorage.setItem('ghrdp:lastSync',new Date().toISOString());
-            paintSync();buildSessions();apply();
-          }
-          function paintSync(){var ls=localStorage.getItem('ghrdp:lastSync');$('syncPill').textContent='synced '+(ls?new Date(ls).toLocaleTimeString():'—');
-            var on=navigator.onLine;var p=$('netPill');p.textContent=on?'ONLINE':'OFFLINE';p.className='pill '+(on?'on':'off');}
-          function buildSessions(){var el=$('sessList');var h='<div class="sitem sel" data-id="">All sessions<span class="cnt">'+FILES.length+'</span></div>';
-            SESSIONS.forEach(function(s){h+='<div class="sitem" data-id="'+s.id+'">'+s.id+(s.live?' <span class="live">LIVE</span>':'')+'<span class="cnt">'+s.count+'</span></div>'});
-            el.innerHTML=h;
-            el.querySelectorAll('.sitem').forEach(function(it){it.onclick=function(){el.querySelectorAll('.sitem').forEach(function(x){x.classList.remove('sel')});it.classList.add('sel');CUR=it.getAttribute('data-id')||null;apply();}});
-          }
-          function apply(){
-            var q=$('q').value.toLowerCase(),enc=$('encF').value,sort=$('sortF').value;
-            FILTERED=FILES.filter(function(f){return(!CUR||f.sid===CUR)&&(!enc||f.e===enc)&&(!q||f.n.toLowerCase().indexOf(q)>=0)});
-            FILTERED.sort(function(a,b){if(sort==='name')return a.n.localeCompare(b.n);if(sort==='size')return b.s-a.s;if(sort==='old')return String(a.d).localeCompare(String(b.d));return String(b.d).localeCompare(String(a.d))});
-            SHOWN=0;render();
-          }
-          function render(){
-            var slice=FILTERED.slice(0,SHOWN+PAGE);SHOWN=slice.length;
-            $('resInfo').textContent=FILTERED.length+' file(s)'+(CUR?' in '+CUR:'')+' · showing '+slice.length;
-            $('countPill').textContent=FILES.length+' files';
-            $('moreBtn').style.display=FILTERED.length>SHOWN?'block':'none';
-            $('empty').style.display=FILTERED.length?'none':'block';
-            if(VIEW==='table'){
-              $('tableWrap').style.display='';$('gridWrap').style.display='none';
-              $('tb').innerHTML=slice.map(function(f,i){return '<tr data-i="'+FILES.indexOf(f)+'"><td>'+f.n+'</td><td>'+fmt(f.s)+'</td><td>'+String(f.d||'').replace('T',' ').substring(0,16)+'</td><td>'+f.sid+'</td><td>'+(f.e==='true'?'<span class="badge enc">ENC</span>':'<span class="badge">plain</span>')+'</td></tr>'}).join('');
-              $('tb').querySelectorAll('tr').forEach(function(tr){tr.onclick=function(){openDrawer(FILES[+tr.getAttribute('data-i')])}});
-            }else{
-              $('tableWrap').style.display='none';$('gridWrap').style.display='';
-              $('gridWrap').innerHTML=slice.map(function(f,i){return '<div class="card" data-i="'+FILES.indexOf(f)+'"><div class="nm">'+f.n+'</div><div class="mt">'+fmt(f.s)+' · '+f.sid+'</div></div>'}).join('');
-              $('gridWrap').querySelectorAll('.card').forEach(function(c){c.onclick=function(){openDrawer(FILES[+c.getAttribute('data-i')])}});
-            }
-          }
-          function openDrawer(f){CURF=f;$('dName').textContent=f.n;$('dSize').textContent=fmt(f.s);$('dDate').textContent=String(f.d||'').replace('T',' ').substring(0,19);$('dSess').textContent=f.sid;$('dEnc').textContent=f.e==='true'?'YES':'no';$('drawer').classList.add('open');$('dCmdBox').style.display='none'}
-          function copy(t){if(navigator.clipboard)navigator.clipboard.writeText(t);else{var ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove()}}
-          $('dCopy').onclick=function(){if(CURF)copy(CURF.l)};
-          $('dOpen').onclick=function(){if(CURF)window.open(CURF.l,'_blank')};
-          $('dCmd').onclick=function(){if(!CURF)return;var s=SESSIONS.filter(function(x){return x.id===CURF.sid})[0];var k=(s&&s.key)||'';var cmd='powershell -c "& { $p=\''+k+'\'; $s=[IO.File]::ReadAllBytes($args[0]); $kdf=[Security.Cryptography.Rfc2898DeriveBytes]::new($p,$s[0..15],100000,[Security.Cryptography.HashAlgorithmName]::SHA256); $a=[Security.Cryptography.Aes]::Create(); $a.Key=$kdf.GetBytes(32); $a.IV=$s[16..31]; $d=$a.CreateDecryptor(); $m=[IO.MemoryStream]::new(); $c=[Security.Cryptography.CryptoStream]::new($m,$d,[Security.Cryptography.CryptoStreamMode]::Write); $c.Write($s,32,$s.Length-32); $c.FlushFinalBlock(); [IO.File]::WriteAllBytes(($args[0]-replace \'\\.ghenc$\',\'\'),$m.ToArray()) }" '+CURF.n;
-            $('dCmdBox').textContent=cmd;$('dCmdBox').style.display='';copy(cmd)};
-          $('dClose').onclick=function(){$('drawer').classList.remove('open')};
-          $('q').oninput=apply;$('encF').onchange=apply;$('sortF').onchange=apply;
-          $('moreBtn').onclick=function(){render()};
-          $('viewBtn').onclick=function(){VIEW=VIEW==='table'?'grid':'table';$('viewBtn').textContent=VIEW==='table'?'Grid':'Table';render()};
-          $('sideBtn').onclick=function(){$('side').classList.toggle('show')};
-          $('copyAll').onclick=function(){copy(FILTERED.map(function(f){return f.l}).join('\n'))};
-          document.querySelectorAll('th[data-s]').forEach(function(th){th.onclick=function(){$('sortF').value=th.getAttribute('data-s')==='name'?'name':(th.getAttribute('data-s')==='size'?'size':(th.getAttribute('data-s')==='d'?'new':'new'));apply()}});
-          document.addEventListener('keydown',function(e){if(e.key==='/'&&document.activeElement!==$('q')){e.preventDefault();$('q').focus()}if(e.key==='Escape'){$('drawer').classList.remove('open')}});
-          window.addEventListener('online',paintSync);window.addEventListener('offline',paintSync);
-          if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js').catch(function(){})}
-          loadAll();
-          </script></body></html>
-          '@
           $swJs = @'
-          var CACHE='ghrdp-search-v3-nopreview';
-          var PRE=['./search.html','./archive.json','./data.json','./archive.html','./decrypt.html'];
+          var CACHE='ghrdp-explorer-v1';
+          var PRE=['./explorer.html','./archive.json','./data.json','./archive.html','./decrypt.html'];
           self.addEventListener('install',function(e){
             e.waitUntil(Promise.all(PRE.map(function(u){return fetch(u,{cache:'no-store'}).then(function(r){if(!r.ok)return null;return caches.open(CACHE).then(function(c){return c.put(u,r)})}).catch(function(){return null})})).then(function(){return self.skipWaiting()}));
           });
@@ -1699,7 +1276,7 @@ jobs:
             var u=new URL(req.url);
             if(u.origin!==location.origin)return;
             if(req.mode==='navigate'){
-              e.respondWith(fetch(req).then(function(r){var c=r.clone();caches.open(CACHE).then(function(cc){cc.put(req,c)});return r}).catch(function(){return caches.match('./search.html')}));
+              e.respondWith(fetch(req).then(function(r){var c=r.clone();caches.open(CACHE).then(function(cc){cc.put(req,c)});return r}).catch(function(){return caches.match('./explorer.html')}));
               return;
             }
             e.respondWith(caches.match(req).then(function(hit){
@@ -1708,7 +1285,6 @@ jobs:
             }));
           });
           '@
-          Put-GhFile2 'docs/search.html' $searchHtml
           Put-GhFile2 'docs/sw.js' $swJs
           foreach ($pg in @('archive.html','decrypt.html')) {
             $api = "https://api.github.com/repos/$repo/contents/docs/$pg"
@@ -1720,166 +1296,6 @@ jobs:
                 Put-GhFile2 ("docs/$pg") $txt
               }
             } catch { Write-Host "[ui] skip sw-inject $pg : $($_.Exception.Message)" }
-          }
-          exit 0
-
-      - name: Overwrite search.html with SaaS Dashboard UI
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $repo = $env:GITHUB_REPOSITORY
-          $hdr = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
-          $api = "https://api.github.com/repos/$repo/contents/docs/search.html"
-          $sha = $null
-          try { $g = Invoke-RestMethod -Uri $api -Headers $hdr -ErrorAction Stop; $sha = $g.sha } catch { }
-          $searchHtml = @'
-          <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GHRDP File Explorer</title>
-          <style>
-          :root{--bg:#f3f3f3;--surface:#fbfbfb;--acryl:rgba(243,243,243,.72);--text:#1b1b1b;--text2:#5c5c5c;--border:#e5e5e5;--hover:rgba(0,0,0,.06);--sel:rgba(0,103,192,.18);--accent:#0067c0;--gis:160px}
-          html[data-theme=dark]{--bg:#202020;--surface:#282828;--acryl:rgba(40,40,40,.78);--text:#fff;--text2:#a6a6a6;--border:#333;--hover:rgba(255,255,255,.08);--sel:rgba(0,103,192,.35)}
-          *{box-sizing:border-box}body{margin:0;height:100vh;display:flex;flex-direction:column;overflow:hidden;background:var(--bg);color:var(--text);font-family:'Segoe UI Variable','Segoe UI',system-ui,sans-serif;font-size:14px}
-          #cmd{display:flex;align-items:center;gap:6px;padding:6px 10px;background:var(--acryl);backdrop-filter:blur(20px);border-bottom:1px solid var(--border)}
-          #cmd button,#cmd .nb{border:0;background:transparent;color:var(--text);padding:6px 9px;border-radius:4px;cursor:pointer;font-size:13px}
-          #cmd button:hover,#cmd .nb:hover{background:var(--hover)}
-          #crumbs{display:flex;align-items:center;gap:4px;flex:1;min-width:120px;overflow:hidden;white-space:nowrap}
-          #crumbs span{padding:4px 7px;border-radius:4px;cursor:pointer}#crumbs span:hover{background:var(--hover)}#crumbs i{color:var(--text2);font-style:normal}
-          #q{flex:0 0 220px;padding:6px 10px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text)}
-          #shell{flex:1;display:flex;min-height:0}
-          #side{width:220px;flex:0 0 220px;overflow:auto;background:var(--acryl);backdrop-filter:blur(20px);border-right:1px solid var(--border);padding:8px 6px}
-          #side .g{color:var(--text2);font-size:11px;margin:8px 8px 4px}#side div.it{padding:6px 10px;border-radius:4px;cursor:pointer;display:flex;gap:8px;align-items:center}
-          #side div.it:hover{background:var(--hover)}#side div.it.on{background:var(--sel)}
-          #main{flex:1;overflow:auto;position:relative;background:var(--surface)}
-          table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 10px;border-bottom:1px solid var(--border);font-size:13px;white-space:nowrap}
-          th{color:var(--text2);font-weight:600;position:sticky;top:0;background:var(--surface)}
-          .item{cursor:pointer;outline:none}.item:hover{background:var(--hover)}.item.sel{background:var(--sel)}.item:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
-          #main.grid table{display:none}#main.grid #grid{display:flex;flex-wrap:wrap;gap:8px;padding:10px}
-          #grid{display:none}#main.grid .gc{display:flex}
-          .gc{flex-direction:column;align-items:center;width:var(--gis);padding:10px;border-radius:8px;cursor:pointer;border:1px solid transparent}
-          .gc:hover{background:var(--hover)}.gc.sel{background:var(--sel);border-color:var(--accent)}
-          .gc .ic{font-size:44px;line-height:1.2}.gc .nm{font-size:12px;text-align:center;word-break:break-word;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-          #st{display:flex;align-items:center;gap:12px;padding:5px 12px;border-top:1px solid var(--border);background:var(--acryl);backdrop-filter:blur(20px);font-size:12px;color:var(--text2)}
-          #st .r{margin-left:auto;display:flex;align-items:center;gap:8px}#zoom{width:120px}
-          .menu,.submenu{position:fixed;list-style:none;margin:0;padding:4px;background:var(--acryl);backdrop-filter:blur(24px);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.25);z-index:50;min-width:180px}
-          .menu li,.submenu li{padding:6px 12px;border-radius:4px;cursor:pointer;position:relative}
-          .menu li:hover,.submenu li:hover{background:var(--hover)}.menu li:focus-visible,.submenu li:focus-visible{outline:2px solid var(--accent)}
-          .submenu{display:none;top:0;left:100%}.menu li.hs:hover>.submenu,.menu li.hs.open>.submenu{display:block}
-          .menu{display:none}.menu.show{display:block}
-          #burger{display:none}@media(max-width:768px){#side{display:none}#side.open{display:block;position:absolute;z-index:40;height:100%}#burger{display:inline-block}}
-          </style></head><body>
-          <div id="cmd">
-          <button id="burger" title="Menu">&#9776;</button>
-          <button id="bBack" title="Back">&#8592;</button><button id="bFwd" title="Forward">&#8594;</button><button id="bUp" title="Up">&#8593;</button>
-          <nav id="crumbs"></nav>
-          <input id="q" placeholder="Search" autocomplete="off">
-          <button id="vDet" title="Details">&#9776;</button><button id="vGrid" title="Grid">&#9638;</button>
-          <span class="nb hs" id="nb" tabindex="0">New &#9662;</span>
-          <button id="th" title="Toggle theme">&#127769;</button>
-          </div>
-          <div id="shell">
-          <nav id="side">
-          <div class="g">Quick access</div>
-          <div class="it" data-nav="root">&#127968; Home</div>
-          <div class="it" data-nav="gallery">&#128444; Gallery</div>
-          <div class="it" data-nav="Downloads">&#11015; Downloads</div>
-          <div class="it" data-nav="Desktop">&#128421; Desktop</div>
-          <div class="it" data-nav="Documents">&#128196; Documents</div>
-          <div class="it" data-nav="Pictures">&#128444; Pictures</div>
-          <div class="g">This PC</div>
-          <div class="it" data-nav="root">&#128187; This PC</div>
-          <div class="it" data-nav="Archive">&#128193; Archive (past sessions)</div>
-          </nav>
-          <main id="main"><table><thead><tr><th>Name</th><th>Date modified</th><th>Type</th><th>Size</th></tr></thead><tbody id="rows"></tbody></table><div id="grid"></div></main>
-          </div>
-          <div id="st"><span id="stL"></span><span class="r"><span id="vLbl">Details view</span><input type="range" id="zoom" min="96" max="256" value="160" title="Icon size"></span></div>
-          <ul class="menu" id="ctx">
-          <li class="hs" tabindex="0">New &#9656;<ul class="submenu"><li data-new="folder" tabindex="0">Folder</li><li data-new="txt" tabindex="0">Text Document</li></ul></li>
-          <li data-act="open" tabindex="0">Open</li>
-          <li data-act="copy" tabindex="0">Copy link</li>
-          <li data-act="rename" tabindex="0">Rename</li>
-          <li data-act="del" tabindex="0">Delete</li>
-          </ul>
-          <script>
-          (function(){
-          "use strict";
-          var root={name:"This PC",type:"folder",children:[]},cur=root,hist=[root],hi=0,sel=[],anchor=-1,view="details",ctxTarget=null;
-          function nd(n,t){return{name:n,type:t,children:[],meta:null}}
-          function typeOf(n){if(n.type==="folder")return"File folder";var e=(n.name.split(".").pop()||"").toLowerCase();return{mp4:"Video file",mkv:"Video file",avi:"Video file",mp3:"Audio file",flac:"Audio file",wav:"Audio file",png:"PNG image",jpg:"JPG image",jpeg:"JPG image",gif:"GIF image",txt:"Text Document",nfo:"Text Document",log:"Text Document",iso:"Disc image"}[e]||"File"}
-          function iconOf(n){if(n.type==="folder")return"\uD83D\uDCC1";var e=(n.name.split(".").pop()||"").toLowerCase();return{mp4:"\uD83C\uDFAC",mkv:"\uD83C\uDFAC",avi:"\uD83C\uDFAC",mp3:"\uD83C\uDFB5",flac:"\uD83C\uDFB5",wav:"\uD83C\uDFB5",png:"\uD83D\uDDBC",jpg:"\uD83D\uDDBC",jpeg:"\uD83D\uDDBC",gif:"\uD83D\uDDBC",txt:"\uD83D\uDCC4",nfo:"\uD83D\uDCC4",log:"\uD83D\uDCC4",iso:"\uD83D\uDCBF"}[e]||"\uD83D\uDCC4"}
-          function addFile(parts,meta){var n=root;for(var i=0;i<parts.length-1;i++){var f=null;for(var j=0;j<n.children.length;j++){if(n.children[j].type==="folder"&&n.children[j].name===parts[i]){f=n.children[j];break}}if(!f){f=nd(parts[i],"folder");n.children.push(f)}n=f}
-          var leaf=nd(parts[parts.length-1],"file");leaf.meta=meta;n.children.push(leaf)}
-          function load(){var p1=fetch("data.json",{cache:"no-store"}).then(function(r){return r.ok?r.json():null}).catch(function(){return null});
-          var p2=fetch("archive.json",{cache:"no-store"}).then(function(r){return r.ok?r.json():null}).catch(function(){return null});
-          Promise.all([p1,p2]).then(function(rs){
-          var d=rs[0],a=rs[1];
-          if(d)(d.files||[]).forEach(function(f){addFile(((f.f||"Downloads")+"\\"+f.n).split(/[\\/]/).filter(Boolean),f)});
-          if(a)(a.sessions||[]).forEach(function(s){(s.files||[]).forEach(function(f){addFile(("Archive\\"+(s.id||"session")+"\\"+(f.f||"")+"\\"+f.n).split(/[\\/]/).filter(Boolean),f)})});
-          setParents();render()})}
-          function pathOf(n){var p=[],c=n;while(c&&c!==root){p.unshift(c.name);c=c.parent}return p}
-          function setParents(){(function w(n){n.children.forEach(function(c){c.parent=n;w(c)})})(root)}
-          setParents();
-          function kids(){var q=(document.getElementById("q").value||"").toLowerCase();var cs=cur.children.slice().sort(function(a,b){return(a.type===b.type)?a.name.localeCompare(b.name):(a.type==="folder"?-1:1)});return q?cs.filter(function(c){return c.name.toLowerCase().indexOf(q)>=0}):cs}
-          function render(){var cs=kids();document.getElementById("rows").innerHTML=cs.map(function(c,i){return "<tr class=\"item\" tabindex=\"0\" data-i=\""+i+"\"><td>"+iconOf(c)+" "+c.name+"</td><td>"+(c.meta&&c.meta.d?c.meta.d:"")+"</td><td>"+typeOf(c)+"</td><td>"+(c.type==="folder"?"":fmt(c.meta&&c.meta.s))+"</td></tr>"}).join("");
-          document.getElementById("grid").innerHTML=cs.map(function(c,i){return "<div class=\"gc item\" tabindex=\"0\" data-i=\""+i+"\"><span class=\"ic\">"+iconOf(c)+"</span><span class=\"nm\">"+c.name+"</span></div>"}).join("");
-          var cr=document.getElementById("crumbs");cr.innerHTML="<span data-p=\"-1\">This PC</span>"+pathOf(cur).map(function(p,i){return "<i>&#8250;</i><span data-p=\""+i+"\">"+p+"</span>"}).join("");
-          cr.querySelectorAll("span").forEach(function(s){s.onclick=function(){var p=+s.dataset.p;navTo(p<0?root:nodeAt(p))}});
-          document.getElementById("stL").textContent=cs.length+" items"+(sel.length?" | "+sel.length+" item(s) selected":"");
-          document.querySelectorAll("#side .it").forEach(function(el){el.classList.toggle("on",el.dataset.nav===cur.name||(el.dataset.nav==="root"&&cur===root))});
-          markSel()}
-          function nodeAt(i){var p=pathOf(cur);var n=root;for(var k=0;k<=i;k++){n=n.children.find(function(c){return c.name===p[k]&&c.type==="folder"})}return n||root}
-          function fmt(b){b=+b||0;if(b<1024)return b+" B";var u=["KB","MB","GB","TB"],i=-1;do{b/=1024;i++}while(b>=1024&&i<u.length-1);return b.toFixed(1)+" "+u[i]}
-          function navTo(n){if(!n)return;hist=hist.slice(0,hi+1);hist.push(n);hi++;cur=n;sel=[];anchor=-1;render()}
-          document.getElementById("bBack").onclick=function(){if(hi>0){hi--;cur=hist[hi];sel=[];render()}};
-          document.getElementById("bFwd").onclick=function(){if(hi<hist.length-1){hi++;cur=hist[hi];sel=[];render()}};
-          document.getElementById("bUp").onclick=function(){navTo(cur.parent||root)};
-          document.getElementById("q").oninput=render;
-          document.getElementById("vDet").onclick=function(){view="details";document.getElementById("main").classList.remove("grid");document.getElementById("vLbl").textContent="Details view"};
-          document.getElementById("vGrid").onclick=function(){view="grid";document.getElementById("main").classList.add("grid");document.getElementById("vLbl").textContent="Grid view"};
-          document.getElementById("zoom").oninput=function(){document.documentElement.style.setProperty("--gis",this.value+"px")};
-          document.getElementById("burger").onclick=function(){document.getElementById("side").classList.toggle("open")};
-          document.getElementById("th").onclick=function(){var h=document.documentElement;var d=h.dataset.theme==="dark";h.dataset.theme=d?"light":"dark";try{localStorage.setItem("ghx-theme",d?"light":"dark")}catch(e){}this.textContent=d?"\uD83C\uDF19":"\u2600"};
-          (function(){try{var t=localStorage.getItem("ghx-theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light");document.documentElement.dataset.theme=t;document.getElementById("th").textContent=t==="dark"?"\u2600":"\uD83C\uDF19"}catch(e){}})();
-          document.querySelectorAll("#side .it").forEach(function(el){el.onclick=function(){var n=el.dataset.nav;if(n==="root")navTo(root);else if(n==="gallery"){var g=nd("Gallery","folder");g.children=[];(function w(x){x.children.forEach(function(c){if(c.type==="folder")w(c);else if(/png|jpe?g|gif/i.test(c.name))g.children.push(c)})})(root);navTo(g)}else{var f=root.children.find(function(c){return c.name===n&&c.type==="folder"});navTo(f||nd(n,"folder"))}}});
-          function items(){return Array.prototype.slice.call(document.querySelectorAll("#main .item"))}
-          function markSel(){items().forEach(function(el){el.classList.toggle("sel",sel.indexOf(+el.dataset.i)>=0)});document.getElementById("stL").textContent=kids().length+" items"+(sel.length?" | "+sel.length+" item(s) selected":"")}
-          document.getElementById("main").addEventListener("click",function(e){var el=e.target.closest(".item");if(!el){sel=[];anchor=-1;markSel();return}
-          var i=+el.dataset.i;
-          if(e.shiftKey&&anchor>=0){var a=Math.min(anchor,i),b=Math.max(anchor,i);sel=[];for(var k=a;k<=b;k++)sel.push(k)}
-          else if(e.ctrlKey){var x=sel.indexOf(i);if(x>=0)sel.splice(x,1);else sel.push(i);anchor=i}
-          else{sel=[i];anchor=i}
-          markSel()});
-          document.getElementById("main").addEventListener("dblclick",function(e){var el=e.target.closest(".item");if(!el)return;openItem(kids()[+el.dataset.i])});
-          document.getElementById("main").addEventListener("keydown",function(e){var el=e.target.closest(".item");if(!el)return;if(e.key==="Enter"){openItem(kids()[+el.dataset.i])}});
-          function openItem(c){if(!c)return;if(c.type==="folder")navTo(c);else if(c.meta&&c.meta.l)FilePreview.open({name:c.name,size:+(c.meta&&c.meta.s)||0,url:c.meta.l,preview:c.meta.p||''})}
-          var ctx=document.getElementById("ctx");
-          document.getElementById("main").addEventListener("contextmenu",function(e){e.preventDefault();var el=e.target.closest(".item");if(el){var i=+el.dataset.i;if(sel.indexOf(i)<0){sel=[i];anchor=i;markSel()}ctxTarget=kids()[i]}else ctxTarget=null;
-          ctx.classList.add("show");ctx.style.left=Math.min(e.clientX,innerWidth-200)+"px";ctx.style.top=Math.min(e.clientY,innerHeight-220)+"px"});
-          document.addEventListener("click",function(e){if(!e.target.closest("#ctx"))ctx.classList.remove("show")});
-          document.addEventListener("keydown",function(e){if(e.key==="Escape"){ctx.classList.remove("show");var hs=ctx.querySelector(".hs");if(hs)hs.classList.remove("open")}});
-          ctx.querySelector(".hs").addEventListener("keydown",function(e){if(e.key==="Enter"||e.key===" "){this.classList.toggle("open");e.preventDefault()}});
-          ctx.querySelectorAll("[data-act]").forEach(function(li){li.onclick=function(){var a=li.dataset.act;var c=ctxTarget;if(a==="open"&&c)openItem(c);
-          if(a==="copy"&&c&&c.meta&&c.meta.l){(navigator.clipboard?navigator.clipboard.writeText(c.meta.l):Promise.reject()).then(function(){},function(){prompt("Copy:",c.meta.l)})}
-          if(a==="rename"&&c){var n=prompt("Rename (client-side only):",c.name);if(n)c.name=n;render()}
-          if(a==="del"&&c){var p=c.parent||cur;p.children=p.children.filter(function(x){return x!==c});sel=[];render()}
-          ctx.classList.remove("show")}});
-          ctx.querySelectorAll("[data-new]").forEach(function(li){li.onclick=function(){var t=li.dataset.new;var name=t==="folder"?("New folder"):("New Text Document.txt");var n=nd(name,t==="folder"?"folder":"file");n.parent=cur;n.meta={n:name,s:0,d:new Date().toISOString().substring(0,10),e:"false",l:""};cur.children.push(n);render();ctx.classList.remove("show")}});
-          load();
-          })();
-          </script>
-          <script>
-          window.FilePreview={open:function(nd){if(nd&&nd.url){window.open(nd.url,'_blank');}},close:function(){}};
-          </script>
-          </body></html>
-          '@
-          $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($searchHtml))
-          $body = @{ message = "feat: redesign search.html as SaaS File Explorer"; content = $b64 }
-          if ($sha) { $body.sha = $sha }
-          try {
-              Invoke-RestMethod -Uri $api -Headers $hdr -Method Put -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null
-              Write-Host "[ui] successfully pushed redesign search.html"
-          } catch {
-              Write-Host ("[ui] push failed: " + $_.Exception.Message)
           }
           exit 0
 
@@ -2000,8 +1416,7 @@ jobs:
               $sessionBookmarks += @(
                   @{ name = 'Decryptor'; url = ($pagesBase + '/decrypt.html') },
                   @{ name = 'Archive'; url = ($pagesBase + '/archive.html') },
-                  @{ name = 'File Search'; url = ($pagesBase + '/search.html') },
-                  @{ name = 'GHRDP Explorer (Win11)'; url = ($pagesBase + '/explorer.html') }
+                  @{ name = 'GHRDP Explorer'; url = ($pagesBase + '/explorer.html') }
               )
           }
           $allBookmarks = $reqBookmarks + $sessionBookmarks
