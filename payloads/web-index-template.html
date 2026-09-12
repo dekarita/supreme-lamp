@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>GHRDP Mission Control</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;padding:0;background:#05070d;color:#e6eef6;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,system-ui,sans-serif}
+body{min-height:100vh;padding-bottom:60px}
+.top{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 20px;background:rgba(5,7,13,.7);backdrop-filter:blur(20px);border-bottom:1px solid rgba(255,255,255,.1)}
+.top h1{margin:0;font-size:15px;letter-spacing:.1em;text-transform:uppercase;background:linear-gradient(135deg,#22d3ee,#34d399,#a78bfa);-webkit-background-clip:text;background-clip:text;color:transparent}
+.tabs{display:flex;gap:6px;flex-wrap:wrap}
+.tab{padding:7px 14px;border-radius:999px;border:1px solid transparent;color:#93a3b8;font-size:11px;text-transform:uppercase;letter-spacing:.06em;cursor:pointer}
+.tab.on{color:#e6eef6;background:rgba(255,255,255,.1);border-color:rgba(255,255,255,.18)}
+main{max-width:1180px;margin:0 auto;padding:20px;display:flex;flex-direction:column;gap:16px}
+.card{background:rgba(255,255,255,.055);border:1px solid rgba(255,255,255,.1);border-radius:18px;padding:16px 18px;backdrop-filter:blur(18px)}
+.card h2{margin:0 0 10px;font-size:11px;color:#22d3ee;text-transform:uppercase;letter-spacing:.12em}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
+.kv{background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:10px}
+.kv b{display:block;font-size:15px;word-break:break-all}
+.kv span{font-size:10px;color:#93a3b8;text-transform:uppercase;letter-spacing:.08em}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin:6px 0}
+.row .k{color:#93a3b8;min-width:120px;font-size:11px;text-transform:uppercase}
+.row .v{font-family:Consolas,monospace;background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:6px 10px;font-size:12px;flex:1;word-break:break-all}
+button,.btn{padding:8px 16px;border-radius:999px;border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#e6eef6;font-size:12px;cursor:pointer;text-decoration:none;display:inline-block}
+button.primary{background:linear-gradient(135deg,#22d3ee,#34d399);color:#05070d;border-color:transparent;font-weight:600}
+button.danger{background:linear-gradient(135deg,#f87171,#ef4444);color:#fff;border-color:transparent}
+input,select{background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.12);color:#e6eef6;border-radius:10px;padding:8px 12px;font-size:12px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid rgba(255,255,255,.08)}
+th{color:#93a3b8;font-size:10px;text-transform:uppercase}
+a{color:#22d3ee;text-decoration:none}
+.pill{display:inline-block;padding:3px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.15);font-size:10.5px;margin-right:6px}
+.pill.ok{border-color:rgba(52,211,153,.5);color:#a7f3d0}
+.pill.bad{border-color:rgba(248,113,113,.5);color:#fecaca}
+.hide{display:none}
+</style>
+</head>
+<body>
+<div class="top">
+<h1>GHRDP Mission Control</h1>
+<div class="tabs">
+<span class="tab on" data-t="ov">Overview</span>
+<span class="tab" data-t="ct">Control</span>
+<span class="tab" data-t="fi">Files</span>
+<span class="tab" data-t="de">Decrypt</span>
+<span class="tab" data-t="ar">Archive</span>
+</div>
+</div>
+<main>
+<section class="card" id="p-ov">
+<h2>Session</h2>
+<div class="grid">
+<div class="kv"><span>status</span><b id="sStatus">-</b></div>
+<div class="kv"><span>session id</span><b id="sId">-</b></div>
+<div class="kv"><span>uptime</span><b id="sUp">-</b></div>
+<div class="kv"><span>remaining</span><b id="sRem">-</b></div>
+<div class="kv"><span>last update</span><b id="sUpd">-</b></div>
+</div>
+<h2 style="margin-top:14px">Services</h2>
+<div class="grid">
+<div class="kv"><span>tailscale</span><b id="vTs">-</b></div>
+<div class="kv"><span>rdp 3389</span><b id="vRdp">-</b></div>
+<div class="kv"><span>dash 7331</span><b id="vPs">-</b></div>
+<div class="kv"><span>rust ws 7332</span><b id="vRust">-</b></div>
+<div class="kv"><span>watcher</span><b id="vWatch">-</b></div>
+</div>
+<h2 style="margin-top:14px">Mirror progress</h2>
+<div class="grid">
+<div class="kv"><span>files</span><b id="mFiles">0 / 0</b></div>
+<div class="kv"><span>speed</span><b id="mSpeed">-</b></div>
+<div class="kv"><span>mirror</span><b id="mOn">off</b></div>
+<div class="kv"><span>encrypt</span><b id="mEnc">-</b></div>
+</div>
+<h2 style="margin-top:14px">Quick links</h2>
+<div class="row">
+<a class="btn" id="qDash" href="#" target="_blank">Dashboard</a>
+<a class="btn" id="qRun" href="#" target="_blank">GitHub Run</a>
+<a class="btn" id="qTele" href="#" target="_blank">Telegraph</a>
+<a class="btn" href="search.html" target="_blank">Search</a>
+<a class="btn" id="qPages" href="#" target="_blank">Pages Home</a>
+</div>
+<h2 style="margin-top:14px">Credentials</h2>
+<div class="row"><span class="k">RDP user</span><span class="v" id="cUser">-</span><button onclick="cp('cUser')">copy</button></div>
+<div class="row"><span class="k">RDP pass</span><span class="v" id="cPass">-</span><button onclick="cp('cPass')">copy</button></div>
+<div class="row"><span class="k">decrypt key</span><span class="v" id="cKey">-</span><button onclick="cp('cKey')">copy</button></div>
+</section>
+<section class="card hide" id="p-ct">
+<h2>Start new session</h2>
+<p style="font-size:12px;color:#93a3b8">Dispatch a new workflow run via the Cloudflare Worker proxy.</p>
+<div class="row"><span class="k">mirror downloads</span><select id="wMirror"><option value="false">Off</option><option value="true">On</option></select></div>
+<div class="row"><span class="k">encrypt mode</span><select id="wEnc"><option>none</option><option>media-plain</option><option>all</option></select></div>
+<div class="row"><span class="k">access code</span><input type="password" id="wCode" placeholder="shared access code"></div>
+<div class="row"><span class="k">worker url</span><input id="wUrl" placeholder="https://your-worker.workers.dev"></div>
+<div class="row"><button class="primary" onclick="dispatch()">Dispatch Workflow</button><button onclick="checkRun()">Check Running</button></div>
+<h2 style="margin-top:14px">Cancel running session</h2>
+<div class="row"><span class="k">run id</span><input id="cRunId" placeholder="from Check Running"></div>
+<div class="row"><button class="danger" onclick="cancelRun()">Cancel Run</button></div>
+</section>
+<section class="card hide" id="p-fi">
+<h2>Mirrored files</h2>
+<div class="row"><input id="fQ" placeholder="filter..." oninput="drawFiles()"><span class="pill" id="fCount">0 files</span></div>
+<table><thead><tr><th>Name</th><th>Size</th><th>Date</th><th>Enc</th><th>Link</th></tr></thead><tbody id="fBody"></tbody></table>
+</section>
+<section class="card hide" id="p-de">
+<h2>Web decryptor</h2>
+<p style="font-size:12px;color:#93a3b8">Decrypt .ghenc locally in browser. AES-256-CBC + PBKDF2. Nothing uploaded.</p>
+<div class="row"><input type="file" id="dFile"></div>
+<div class="row"><span class="k">decrypt key</span><input type="password" id="dKey"></div>
+<div class="row"><button class="primary" onclick="decrypt()">Decrypt &amp; Download</button><span id="dMsg" style="font-size:12px"></span></div>
+</section>
+<section class="card hide" id="p-ar">
+<h2>Session archive</h2>
+<div class="row"><button onclick="loadArchive()">refresh</button><span class="pill" id="aCount">0 sessions</span></div>
+<table><thead><tr><th>Session</th><th>Date</th><th>Files</th><th>Key</th><th>Links</th></tr></thead><tbody id="aBody"></tbody></table>
+</section>
+</main>
+<script>
+var D=__DATA__;
+var ARCH=null;
+function $(id){return document.getElementById(id)}
+function cp(id){var t=$(id).textContent;if(navigator.clipboard)navigator.clipboard.writeText(t);else{var ta=document.createElement('textarea');ta.value=t;document.body.appendChild(ta);ta.select();document.execCommand('copy');ta.remove();}}
+document.querySelectorAll('.tab').forEach(function(t){t.onclick=function(){document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('on')});t.classList.add('on');['ov','ct','fi','de','ar'].forEach(function(k){$('p-'+k).classList.add('hide')});$('p-'+t.dataset.t).classList.remove('hide');if(t.dataset.t==='ar')loadArchive();};});
+function fmtB(n){n=+n||0;if(n<1024)return n+' B';var u=['KB','MB','GB','TB'],i=-1;do{n/=1024;i++}while(n>=1024&&i<u.length-1);return n.toFixed(1)+' '+u[i]}
+function render(){
+var p=D.progress||D;var agg=p.agg||{};
+$('sStatus').textContent=p.alive?'alive':'stopped';
+$('sId').textContent=D.runId||'-';
+$('sUp').textContent=D.uptime||'-';
+$('sRem').textContent=D.remaining||'-';
+$('sUpd').textContent=(D.ts||'').replace('T',' ').substring(0,19);
+$('vTs').textContent=D.svc?D.svc.ts:'-';$('vRdp').textContent=D.svc?D.svc.rdp:'-';$('vPs').textContent=D.svc?D.svc.ps:'-';$('vRust').textContent=D.svc?D.svc.rust:'-';$('vWatch').textContent=p.alive?'active':'-';
+$('mFiles').textContent=(agg.done||0)+' / '+(agg.total||0);
+$('mSpeed').textContent=fmtB(agg.speedBps)+'/s';
+$('mOn').textContent=D.mirror?'on':'off';
+$('mEnc').textContent=D.encryptMode||'none';
+$('cUser').textContent=(D.creds||{}).user||'-';
+$('cPass').textContent=(D.creds||{}).pass||'-';
+$('cKey').textContent=D.mirrorKey||'-';
+var base=D.pagesBase||'';
+$('qDash').href=D.dashUrl||'#';
+$('qRun').href=D.runUrl||'#';
+$('qTele').href=D.mirrorIndexUrl||'#';
+$('qPages').href=base||'#';
+D.files=D.files||p.files||[];
+drawFiles();
+}
+function drawFiles(){
+var q=($('fQ').value||'').toLowerCase();
+var f=(D.files||[]).filter(function(x){return !q||((x.name||'')+'').toLowerCase().indexOf(q)>=0});
+$('fCount').textContent=f.length+' files';
+$('fBody').innerHTML=f.map(function(x){return '<tr><td>'+x.name+'</td><td>'+fmtB(x.size)+'</td><td>'+(x.time||'')+'</td><td>'+(x.encrypted==='true'?'yes':'no')+'</td><td><a href="'+x.link+'" target="_blank">open</a></td></tr>'}).join('');
+}
+async function loadArchive(){
+if(!ARCH){try{var r=await fetch('archive.json',{cache:'no-store'});ARCH=r.ok?await r.json():{sessions:[]}}catch(e){ARCH={sessions:[]}}}
+var s=ARCH.sessions||[];$('aCount').textContent=s.length+' sessions';
+$('aBody').innerHTML=s.map(function(x){return '<tr><td>'+(x.runId||'')+'</td><td>'+(x.startedAt||'')+'</td><td>'+(x.filesCount||0)+'</td><td>'+(x.key||'')+'</td><td><a href="'+(x.telegraphUrl||'#')+'" target="_blank">telegraph</a></td></tr>'}).join('');
+}
+function wbase(){return ($('wUrl').value||localStorage.getItem('ghrdp:worker')||'').replace(/\/+$/,'')}
+function wcode(){return $('wCode').value||localStorage.getItem('ghrdp:code')||''}
+async function dispatch(){localStorage.setItem('ghrdp:worker',$('wUrl').value);localStorage.setItem('ghrdp:code',$('wCode').value);var r=await fetch(wbase()+'/dispatch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:wcode(),inputs:{mirror_downloads_public:$('wMirror').value==='true',encrypt_mode:$('wEnc').value}})});var j=await r.json();alert(j.message||('HTTP '+r.status))}
+async function checkRun(){var r=await fetch(wbase()+'/running',{headers:{'X-Access-Code':wcode()}});var j=await r.json();alert(JSON.stringify(j))}
+async function cancelRun(){var r=await fetch(wbase()+'/cancel/'+$('cRunId').value,{method:'POST',headers:{'X-Access-Code':wcode()}});var j=await r.json();alert(j.message||('HTTP '+r.status))}
+async function decrypt(){
+var f=$('dFile').files[0];if(!f){$('dMsg').textContent='pick a file';return}
+var key=$('dKey').value;if(!key){$('dMsg').textContent='enter key';return}
+var buf=await f.arrayBuffer();var u8=new Uint8Array(buf);
+if(u8.length<48){$('dMsg').textContent='too small';return}
+var salt=u8.slice(0,16),iv=u8.slice(16,32),ct=u8.slice(32);
+try{
+var km=await crypto.subtle.importKey('raw',new TextEncoder().encode(key),'PBKDF2',false,['deriveKey']);
+var k=await crypto.subtle.deriveKey({name:'PBKDF2',salt:salt,iterations:100000,hash:'SHA-256'},km,{name:'AES-CBC',length:256},false,['decrypt']);
+var plain=await crypto.subtle.decrypt({name:'AES-CBC',iv:iv},k,ct);
+var a=document.createElement('a');a.href=URL.createObjectURL(new Blob([plain]));a.download=f.name.replace(/\.ghenc$/i,'');a.click();
+$('dMsg').textContent='decrypted OK';
+}catch(e){$('dMsg').textContent='wrong key or corrupt file'}
+}
+render();
+</script>
+</body>
+</html>

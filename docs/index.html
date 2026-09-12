@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GHRDP Mission Control</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0a0e14;--card:rgba(15,20,30,0.75);--card-border:rgba(100,160,255,0.12);--glass:rgba(20,30,50,0.55);--accent:#4facfe;--accent2:#00f2fe;--green:#41d18f;--red:#ff4d6a;--yellow:#ffd166;--text:#e0e8f0;--text2:#8aa0b8;--radius:14px;--shadow:0 8px 32px rgba(0,0,0,0.4)}
+body{font-family:'Segoe UI',system-ui,-apple-system,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden}
+.bg-glow{position:fixed;top:-200px;left:50%;transform:translateX(-50%);width:800px;height:800px;background:radial-gradient(circle,rgba(79,172,254,0.08) 0%,transparent 70%);pointer-events:none;z-index:0}
+.container{max-width:960px;margin:0 auto;padding:20px;position:relative;z-index:1}
+h1{font-size:1.6rem;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:4px}
+.subtitle{color:var(--text2);font-size:0.82rem;margin-bottom:16px}
+.tabs{display:flex;gap:4px;margin-bottom:16px;flex-wrap:wrap}
+.tab{padding:8px 16px;border-radius:8px;cursor:pointer;font-size:0.82rem;font-weight:600;color:var(--text2);background:var(--glass);border:1px solid transparent;transition:all .2s}
+.tab:hover{color:var(--text);border-color:var(--card-border)}
+.tab.active{color:var(--accent);border-color:var(--accent);background:rgba(79,172,254,0.1)}
+.panel{display:none}
+.panel.active{display:block}
+.card{background:var(--card);border:1px solid var(--card-border);border-radius:var(--radius);padding:18px;margin-bottom:14px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);box-shadow:var(--shadow)}
+.card h2{font-size:1rem;font-weight:600;margin-bottom:10px;color:var(--accent)}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:640px){.grid2{grid-template-columns:1fr}}
+.kv{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.04);font-size:0.82rem}
+.kv .k{color:var(--text2)}.kv .v{font-weight:600;word-break:break-all}
+.badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:0.72rem;font-weight:700;text-transform:uppercase}
+.badge.on{background:rgba(65,209,143,0.15);color:var(--green)}
+.badge.off{background:rgba(255,77,106,0.12);color:var(--red)}
+.badge.warn{background:rgba(255,209,102,0.15);color:var(--yellow)}
+.badge.info{background:rgba(79,172,254,0.12);color:var(--accent)}
+.progress-bar{height:6px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;margin:6px 0}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:3px;transition:width .6s ease}
+button{padding:10px 20px;border-radius:8px;border:1px solid var(--card-border);background:var(--glass);color:var(--text);font-size:0.85rem;font-weight:600;cursor:pointer;transition:all .2s}
+button:hover{border-color:var(--accent);background:rgba(79,172,254,0.1)}
+button:disabled{opacity:0.4;cursor:not-allowed}
+button.danger{border-color:var(--red);color:var(--red)}
+button.danger:hover{background:rgba(255,77,106,0.1)}
+button.primary{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#000;border:none;font-weight:700}
+button.primary:hover{opacity:0.9}
+input,select{padding:8px 12px;border-radius:8px;border:1px solid var(--card-border);background:var(--glass);color:var(--text);font-size:0.85rem;width:100%}
+input:focus,select:focus{outline:none;border-color:var(--accent)}
+.file-table{width:100%;border-collapse:collapse;font-size:0.78rem;margin-top:8px}
+.file-table th{text-align:left;color:var(--text2);padding:6px 8px;border-bottom:1px solid var(--card-border);font-weight:600}
+.file-table td{padding:6px 8px;border-bottom:1px solid rgba(255,255,255,0.03)}
+.file-table a{color:var(--accent);text-decoration:none}
+.file-table a:hover{text-decoration:underline}
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:6px}
+.status-dot.green{background:var(--green);box-shadow:0 0 6px var(--green)}
+.status-dot.red{background:var(--red);box-shadow:0 0 6px var(--red)}
+.status-dot.yellow{background:var(--yellow);box-shadow:0 0 6px var(--yellow)}
+.log-box{background:rgba(0,0,0,0.3);border-radius:8px;padding:12px;font-family:'Cascadia Code','Fira Code',monospace;font-size:0.72rem;max-height:260px;overflow-y:auto;white-space:pre-wrap;color:var(--text2);line-height:1.5}
+.toast{position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:10px;font-size:0.82rem;font-weight:600;z-index:9999;opacity:0;transform:translateY(-10px);transition:all .3s}
+.toast.show{opacity:1;transform:translateY(0)}
+.toast.ok{background:rgba(65,209,143,0.9);color:#000}
+.toast.err{background:rgba(255,77,106,0.9);color:#fff}
+#refreshTimer{color:var(--text2);font-size:0.72rem;margin-left:auto}
+.header-row{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+label.field{display:block;margin-bottom:10px;font-size:0.82rem;color:var(--text2)}
+label.field span{display:block;margin-bottom:4px}
+.decrypt-drop{border:2px dashed var(--card-border);border-radius:var(--radius);padding:40px;text-align:center;color:var(--text2);cursor:pointer;transition:border-color .2s}
+.decrypt-drop:hover,.decrypt-drop.over{border-color:var(--accent)}
+.flex-gap{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.search-input{max-width:300px}
+</style>
+</head>
+<body>
+<div class="bg-glow"></div>
+<div id="toast" class="toast"></div>
+<div class="container">
+  <div class="header-row">
+    <div>
+      <h1>GHRDP Mission Control</h1>
+      <div class="subtitle">Ephemeral RDP &middot; Tailscale &middot; Mirror &middot; Encrypt</div>
+    </div>
+    <span id="refreshTimer"></span>
+  </div>
+  <div class="tabs">
+    <div class="tab active" data-tab="overview">Overview</div>
+    <div class="tab" data-tab="control">Control</div>
+    <div class="tab" data-tab="files">Files</div>
+    <div class="tab" data-tab="decrypt">Decrypt</div>
+    <div class="tab" data-tab="archive">Archive</div>
+  </div>
+
+  <!-- OVERVIEW -->
+  <div id="overview" class="panel active">
+    <div class="grid2">
+      <div class="card">
+        <h2>Session</h2>
+        <div class="kv"><span class="k">Status</span><span class="v" id="oStatus"><span class="badge off">unknown</span></span></div>
+        <div class="kv"><span class="k">Session ID</span><span class="v" id="oSessionId">-</span></div>
+        <div class="kv"><span class="k">Uptime</span><span class="v" id="oUptime">-</span></div>
+        <div class="kv"><span class="k">Remaining</span><span class="v" id="oRemaining">-</span></div>
+        <div class="kv"><span class="k">Last Update</span><span class="v" id="oLastUpdate">-</span></div>
+      </div>
+      <div class="card">
+        <h2>Services</h2>
+        <div class="kv"><span class="k">Tailscale</span><span class="v" id="oTs">-</span></div>
+        <div class="kv"><span class="k">RDP (3389)</span><span class="v" id="oRdp">-</span></div>
+        <div class="kv"><span class="k">Dashboard (7331)</span><span class="v" id="oPs">-</span></div>
+        <div class="kv"><span class="k">Rust WS (7332)</span><span class="v" id="oRust">-</span></div>
+        <div class="kv"><span class="k">Watcher</span><span class="v" id="oWatcher">-</span></div>
+      </div>
+    </div>
+    <div class="card">
+      <h2>Mirror Progress</h2>
+      <div class="kv"><span class="k">Files</span><span class="v" id="oFiles">0 / 0</span></div>
+      <div class="progress-bar"><div class="progress-fill" id="oBar" style="width:0"></div></div>
+      <div class="kv"><span class="k">Speed</span><span class="v" id="oSpeed">-</span></div>
+      <div class="kv"><span class="k">Mirror</span><span class="v" id="oMirror"><span class="badge off">off</span></span></div>
+      <div class="kv"><span class="k">Encrypt</span><span class="v" id="oEncrypt">-</span></div>
+    </div>
+    <div class="grid2">
+      <div class="card">
+        <h2>Quick Links</h2>
+        <div class="kv"><span class="k">Dashboard</span><span class="v"><a id="oDashLink" href="#" target="_blank">-</a></span></div>
+        <div class="kv"><span class="k">GitHub Run</span><span class="v"><a id="oRunLink" href="#" target="_blank">-</a></span></div>
+        <div class="kv"><span class="k">Telegraph</span><span class="v"><a id="oTelegraph" href="#" target="_blank">-</a></span></div>
+        <div class="kv"><span class="k">Search</span><span class="v"><a href="search.html">search.html</a></span></div>
+      </div>
+      <div class="card">
+        <h2>Credentials</h2>
+        <div class="kv"><span class="k">RDP User</span><span class="v" id="oCUser">-</span></div>
+        <div class="kv"><span class="k">RDP Pass</span><span class="v" id="oCPass">-</span></div>
+        <div class="kv"><span class="k">Decrypt Key</span><span class="v" id="oCKey">-</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTROL -->
+  <div id="control" class="panel">
+    <div class="card">
+      <h2>Start New Session</h2>
+      <p style="color:var(--text2);font-size:0.82rem;margin-bottom:12px">Dispatch a new workflow run via Cloudflare Worker proxy.</p>
+      <div class="grid2" style="margin-bottom:12px">
+        <label class="field"><span>Mirror downloads</span>
+          <select id="ctrlMirror"><option value="false">Off</option><option value="true">On</option></select>
+        </label>
+        <label class="field"><span>Encrypt mode</span>
+          <select id="ctrlEncrypt"><option value="none">None</option><option value="media-plain">Media plain</option><option value="all">All</option></select>
+        </label>
+      </div>
+      <label class="field"><span>Access code</span><input id="ctrlCode" type="password" placeholder="Worker access code"></label>
+      <label class="field"><span>Worker URL</span><input id="ctrlWorker" type="text" placeholder="https://ghrdp-worker.your-subdomain.workers.dev"></label>
+      <div class="flex-gap" style="margin-top:8px">
+        <button class="primary" id="btnDispatch">Dispatch Workflow</button>
+        <button id="btnCheck">Check Running</button>
+      </div>
+      <div id="ctrlResult" style="margin-top:10px;font-size:0.82rem;color:var(--text2)"></div>
+    </div>
+    <div class="card">
+      <h2>Cancel Running Session</h2>
+      <label class="field"><span>Run ID (from check above)</span><input id="ctrlRunId" type="text" placeholder="e.g. 12345678"></label>
+      <button class="danger" id="btnCancel" style="margin-top:8px">Cancel Run</button>
+      <div id="cancelResult" style="margin-top:10px;font-size:0.82rem;color:var(--text2)"></div>
+    </div>
+  </div>
+
+  <!-- FILES -->
+  <div id="files" class="panel">
+    <div class="card">
+      <h2>Mirrored Files</h2>
+      <div class="flex-gap" style="margin-bottom:8px">
+        <input class="search-input" id="fileSearch" placeholder="Search files...">
+        <span style="font-size:0.78rem;color:var(--text2)" id="fileCount">0 files</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="file-table">
+          <thead><tr><th>Name</th><th>Size</th><th>Date</th><th>Enc</th><th>Link</th></tr></thead>
+          <tbody id="fileTbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- DECRYPT -->
+  <div id="decrypt" class="panel">
+    <div class="card">
+      <h2>Web Decryptor</h2>
+      <p style="color:var(--text2);font-size:0.82rem;margin-bottom:14px">Decrypt <code>.ghenc</code> files locally in your browser. Nothing is uploaded. AES-256-CBC + PBKDF2.</p>
+      <div class="decrypt-drop" id="dropZone">Drop .ghenc file here or click to select<input type="file" id="decFile" accept=".ghenc" style="display:none"></div>
+      <div id="decFileName" style="margin-top:8px;font-size:0.82rem;color:var(--text2)"></div>
+      <label class="field" style="margin-top:12px"><span>Decrypt key</span><input id="decKey" type="password" placeholder="Paste key or auto-filled from data.json"></label>
+      <button class="primary" id="btnDecrypt" style="margin-top:4px">Decrypt &amp; Download</button>
+      <div id="decResult" style="margin-top:10px;font-size:0.82rem"></div>
+    </div>
+  </div>
+
+  <!-- ARCHIVE -->
+  <div id="archive" class="panel">
+    <div class="card">
+      <h2>Session Archive</h2>
+      <div class="flex-gap" style="margin-bottom:8px">
+        <input class="search-input" id="archSearch" placeholder="Search sessions...">
+        <span style="font-size:0.78rem;color:var(--text2)" id="archCount">0 sessions</span>
+        <button id="archPrev" style="padding:4px 10px">&laquo;</button>
+        <button id="archNext" style="padding:4px 10px">&raquo;</button>
+        <span id="archPage" style="font-size:0.78rem;color:var(--text2)"></span>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="file-table">
+          <thead><tr><th>Session</th><th>Date</th><th>Files</th><th>Size</th><th>Key</th><th>Links</th></tr></thead>
+          <tbody id="archTbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var state = { data: null, status: null, archive: null, refreshSec: 60, countdown: 60 };
+  var archPage = 0, ARCH_PER = 10;
+
+  // --- Tabs ---
+  document.querySelectorAll('.tab').forEach(function(t){
+    t.addEventListener('click', function(){
+      document.querySelectorAll('.tab').forEach(function(x){x.classList.remove('active')});
+      document.querySelectorAll('.panel').forEach(function(x){x.classList.remove('active')});
+      t.classList.add('active');
+      document.getElementById(t.dataset.tab).classList.add('active');
+    });
+  });
+
+  // --- Toast ---
+  function toast(msg, ok){
+    var el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = 'toast show ' + (ok ? 'ok' : 'err');
+    setTimeout(function(){ el.className = 'toast'; }, 3000);
+  }
+
+  // --- Helpers ---
+  function fmt(bytes){
+    if(!bytes||bytes<1)return '0 B';
+    var u=['B','KB','MB','GB'];var i=Math.floor(Math.log(bytes)/Math.log(1024));
+    return (bytes/Math.pow(1024,i)).toFixed(i?1:0)+' '+u[i];
+  }
+  function svcBadge(val){
+    if(!val||val==='-')return '<span class="badge off">?</span>';
+    var v=val.toUpperCase();
+    if(v==='UP'||v==='OK'||v==='ACTIVE')return '<span class="status-dot green"></span>'+val;
+    if(v==='DOWN')return '<span class="status-dot red"></span>'+val;
+    return '<span class="status-dot yellow"></span>'+val;
+  }
+  function el(id){return document.getElementById(id)}
+  function setT(id,v){var e=el(id);if(e)e.textContent=v||'-'}
+  function setH(id,v){var e=el(id);if(e)e.innerHTML=v||'-'}
+
+  // --- Load data.json (mirror index) ---
+  function loadData(){
+    fetch('data.json',{cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(d){
+      if(d)state.data=d;
+      renderOverviewData();
+      renderFiles();
+    }).catch(function(){});
+  }
+
+  // --- Load status.json (live telemetry) ---
+  function loadStatus(){
+    fetch('status.json',{cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(d){
+      if(d)state.status=d;
+      renderOverviewStatus();
+    }).catch(function(){});
+  }
+
+  // --- Load archive.json ---
+  function loadArchive(){
+    fetch('archive.json',{cache:'no-store'}).then(function(r){return r.ok?r.json():null}).then(function(d){
+      if(d)state.archive=d;
+      renderArchive();
+    }).catch(function(){});
+  }
+
+  // --- Render overview from data.json ---
+  function renderOverviewData(){
+    var d=state.data;if(!d)return;
+    setT('oSessionId',d.sessionId);
+    setT('oCKey',d.mirrorKey);
+    if(d.mirror){setH('oMirror','<span class="badge on">on</span>')}else{setH('oMirror','<span class="badge off">off</span>')}
+    setT('oEncrypt',d.encryptMode||'none');
+    if(d.telegraph){var a=el('oTelegraph');if(a){a.href=d.telegraph;a.textContent='open'}}
+    if(d.pagesBase){
+      var sl=el('oDashLink');if(sl){sl.textContent='loading...';}
+    }
+    // auto-fill decrypt key
+    if(d.mirrorKey){var dk=el('decKey');if(dk&&!dk.value)dk.value=d.mirrorKey;}
+  }
+
+  // --- Render overview from status.json ---
+  function renderOverviewStatus(){
+    var s=state.status;if(!s)return;
+    var isLive=false;
+    if(s.ts){
+      var age=(Date.now()/1000)-s.ts;
+      isLive=age<120;
+      setH('oStatus',isLive?'<span class="badge on">live</span>':'<span class="badge warn">stale ('+Math.round(age)+'s)</span>');
+      setT('oLastUpdate',new Date(s.ts*1000).toLocaleTimeString());
+    }
+    if(s.uptime)setT('oUptime',s.uptime);
+    if(s.remaining)setT('oRemaining',s.remaining);
+    if(s.services){
+      setH('oTs',svcBadge(s.services.tailscale));
+      setH('oRdp',svcBadge(s.services.rdp));
+      setH('oPs',svcBadge(s.services.ps));
+      setH('oRust',svcBadge(s.services.rust));
+      setH('oWatcher',svcBadge(s.services.watcher));
+    }
+    if(s.mirror){
+      var m=s.mirror;
+      setT('oFiles',(m.done||0)+' / '+(m.total||0)+' (failed: '+(m.failed||0)+')');
+      var pct=m.total>0?Math.round(m.done/m.total*100):0;
+      var bar=el('oBar');if(bar)bar.style.width=pct+'%';
+      setT('oSpeed',m.speed||'-');
+    }
+    if(s.dashUrl){var dl=el('oDashLink');if(dl){dl.href=s.dashUrl;dl.textContent=s.dashUrl.replace(/^https?:\/\//,'')}}
+    if(s.runUrl){var rl=el('oRunLink');if(rl){rl.href=s.runUrl;rl.textContent='open'}}
+    if(s.creds){
+      setT('oCUser',s.creds.user);
+      setT('oCPass',s.creds.pass);
+    }
+  }
+
+  // --- Render files from data.json ---
+  function renderFiles(){
+    var d=state.data;if(!d||!d.files)return;
+    var q=(el('fileSearch').value||'').toLowerCase();
+    var list=d.files.filter(function(f){return !q||f.n.toLowerCase().indexOf(q)>=0});
+    el('fileCount').textContent=list.length+' files';
+    var h='';
+    list.forEach(function(f){
+      h+='<tr><td>'+esc(f.n)+'</td><td>'+fmt(f.s)+'</td><td>'+(f.d||'-')+'</td><td>'+(f.e==='true'?'<span class="badge warn">enc</span>':'no')+'</td><td><a href="'+esc(f.l)+'" target="_blank">open</a></td></tr>';
+    });
+    el('fileTbody').innerHTML=h||'<tr><td colspan="5" style="color:var(--text2)">No files yet</td></tr>';
+  }
+  el('fileSearch').addEventListener('input',renderFiles);
+
+  // --- Render archive ---
+  function renderArchive(){
+    var a=state.archive;if(!a||!a.sessions)return;
+    var q=(el('archSearch').value||'').toLowerCase();
+    var all=a.sessions.filter(function(s){
+      var blob=(s.id+' '+s.date+' '+s.key+' '+(s.files||[]).map(function(f){return f.n}).join(' ')).toLowerCase();
+      return !q||blob.indexOf(q)>=0;
+    });
+    el('archCount').textContent=all.length+' sessions';
+    var pages=Math.max(1,Math.ceil(all.length/ARCH_PER));
+    if(archPage>=pages)archPage=pages-1;if(archPage<0)archPage=0;
+    var slice=all.slice(archPage*ARCH_PER,archPage*ARCH_PER+ARCH_PER);
+    var h='';
+    slice.forEach(function(s){
+      var links='';
+      if(s.telegraph)links+='<a href="'+esc(s.telegraph)+'" target="_blank">tg</a> ';
+      if(s.rentry)links+='<a href="'+esc(s.rentry)+'" target="_blank">re</a>';
+      h+='<tr style="cursor:pointer" onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display===\'table-row\'?\'none\':\'table-row\'">';
+      h+='<td>'+esc(s.id)+'</td><td>'+esc(s.date)+'</td><td>'+s.filesCount+'</td><td>'+fmt(s.bytes)+'</td><td>'+esc(s.key||'-')+'</td><td>'+links+'</td></tr>';
+      h+='<tr style="display:none;background:rgba(0,0,0,0.2)"><td colspan="6" style="font-size:0.72rem;padding:8px">';
+      (s.files||[]).forEach(function(f){
+        h+='<a href="'+esc(f.l)+'" target="_blank">'+esc(f.n)+'</a> ('+fmt(f.s)+')'+(f.e==='true'?' [enc]':'')+'<br>';
+      });
+      h+='</td></tr>';
+    });
+    el('archTbody').innerHTML=h||'<tr><td colspan="6" style="color:var(--text2)">No sessions</td></tr>';
+    el('archPage').textContent='page '+(archPage+1)+'/'+pages;
+  }
+  el('archSearch').addEventListener('input',function(){archPage=0;renderArchive()});
+  el('archPrev').addEventListener('click',function(){archPage--;renderArchive()});
+  el('archNext').addEventListener('click',function(){archPage++;renderArchive()});
+
+  // --- Decrypt ---
+  var decFileData=null;
+  var dropZone=el('dropZone'), decInput=el('decFile');
+  dropZone.addEventListener('click',function(){decInput.click()});
+  dropZone.addEventListener('dragover',function(e){e.preventDefault();dropZone.classList.add('over')});
+  dropZone.addEventListener('dragleave',function(){dropZone.classList.remove('over')});
+  dropZone.addEventListener('drop',function(e){e.preventDefault();dropZone.classList.remove('over');if(e.dataTransfer.files[0])handleDecFile(e.dataTransfer.files[0])});
+  decInput.addEventListener('change',function(){if(decInput.files[0])handleDecFile(decInput.files[0])});
+  function handleDecFile(f){decFileData=f;el('decFileName').textContent='Selected: '+f.name+' ('+fmt(f.size)+')';}
+  el('btnDecrypt').addEventListener('click',async function(){
+    if(!decFileData){toast('Pick a .ghenc file first',false);return}
+    var key=el('decKey').value;if(!key){toast('Enter decrypt key',false);return}
+    try{
+      var buf=await decFileData.arrayBuffer();var u8=new Uint8Array(buf);
+      var salt=u8.slice(0,16),iv=u8.slice(16,32),data=u8.slice(32);
+      var keyMat=await crypto.subtle.importKey('raw',new TextEncoder().encode(key),{name:'PBKDF2'},false,['deriveKey']);
+      var aes=await crypto.subtle.deriveKey({name:'PBKDF2',salt:salt,iterations:100000,hash:'SHA-256'},keyMat,{name:'AES-CBC',length:256},false,['decrypt']);
+      var plain=await crypto.subtle.decrypt({name:'AES-CBC',iv:iv},aes,data);
+      var name=decFileData.name.replace(/\.ghenc$/,'');
+      var blob=new Blob([plain]);var url=URL.createObjectURL(blob);
+      var a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      el('decResult').innerHTML='<span style="color:var(--green)">Decrypted '+esc(name)+' ('+fmt(plain.byteLength)+')</span>';
+      toast('Decrypted successfully',true);
+    }catch(e){
+      el('decResult').innerHTML='<span style="color:var(--red)">Failed: '+esc(String(e))+'</span>';
+      toast('Decrypt failed',false);
+    }
+  });
+
+  // --- URL hash auto-fill ---
+  var params=new URLSearchParams(location.hash.slice(1));
+  var hKey=params.get('key');if(hKey)el('decKey').value=hKey;
+  var hFile=params.get('file');
+  if(hFile){
+    el('decFileName').innerHTML='File URL: <a href="'+esc(hFile)+'" target="_blank">download .ghenc</a>, then drop it above.';
+    document.querySelectorAll('.tab').forEach(function(t){if(t.dataset.tab==='decrypt')t.click()});
+  }
+
+  // --- Worker control ---
+  function getWorkerUrl(){return (el('ctrlWorker').value||'').replace(/\/+$/,'')}
+  function getAccessCode(){return el('ctrlCode').value||''}
+  function saveCtrl(){try{localStorage.setItem('ghrdp_worker',getWorkerUrl());localStorage.setItem('ghrdp_code',getAccessCode())}catch(e){}}
+  function loadCtrl(){try{var w=localStorage.getItem('ghrdp_worker');if(w)el('ctrlWorker').value=w;var c=localStorage.getItem('ghrdp_code');if(c)el('ctrlCode').value=c}catch(e){}}
+  loadCtrl();
+
+  async function workerFetch(path, method, body){
+    var url=getWorkerUrl();if(!url){toast('Set worker URL',false);return null}
+    saveCtrl();
+    var opts={method:method||'GET',headers:{'X-Access-Code':getAccessCode(),'Content-Type':'application/json'}};
+    if(body)opts.body=JSON.stringify(body);
+    try{var r=await fetch(url+path,opts);return await r.json()}catch(e){toast('Worker error: '+e,false);return null}
+  }
+
+  el('btnDispatch').addEventListener('click',async function(){
+    el('ctrlResult').textContent='Dispatching...';
+    var d=await workerFetch('/dispatch','POST',{mirror:el('ctrlMirror').value==='true',encrypt_mode:el('ctrlEncrypt').value});
+    if(!d)return;
+    if(d.ok){el('ctrlResult').innerHTML='<span style="color:var(--green)">Dispatched! Check running sessions in ~30s.</span>';toast('Workflow dispatched',true)}
+    else{el('ctrlResult').innerHTML='<span style="color:var(--red)">Error: '+esc(d.error||JSON.stringify(d))+'</span>';toast('Dispatch failed',false)}
+  });
+
+  el('btnCheck').addEventListener('click',async function(){
+    el('ctrlResult').textContent='Checking...';
+    var d=await workerFetch('/workflow','GET');
+    if(!d)return;
+    if(d.ok&&d.runs&&d.runs.length>0){
+      var h='<strong>Active runs:</strong><br>';
+      d.runs.forEach(function(r){h+='ID: '+r.id+' | '+r.status+' | <a href="'+esc(r.html_url)+'" target="_blank">open</a><br>'});
+      el('ctrlResult').innerHTML=h;
+      el('ctrlRunId').value=d.runs[0].id;
+      toast(d.runs.length+' run(s) found',true);
+    }else{
+      el('ctrlResult').innerHTML='<span style="color:var(--text2)">No active runs.</span>';
+    }
+  });
+
+  el('btnCancel').addEventListener('click',async function(){
+    var rid=el('ctrlRunId').value;if(!rid){toast('Enter run ID',false);return}
+    el('cancelResult').textContent='Cancelling...';
+    var d=await workerFetch('/cancel','POST',{run_id:parseInt(rid)});
+    if(!d)return;
+    if(d.ok){el('cancelResult').innerHTML='<span style="color:var(--green)">Cancel requested.</span>';toast('Cancel sent',true)}
+    else{el('cancelResult').innerHTML='<span style="color:var(--red)">Error: '+esc(d.error||JSON.stringify(d))+'</span>'}
+  });
+
+  // --- Escape HTML ---
+  function esc(s){if(!s)return '';return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
+
+  // --- Refresh loop ---
+  function refresh(){loadData();loadStatus();loadArchive();state.countdown=state.refreshSec}
+  refresh();
+  setInterval(function(){
+    state.countdown--;
+    if(state.countdown<=0)refresh();
+    el('refreshTimer').textContent='refresh in '+state.countdown+'s';
+  },1000);
+})();
+</script>
+</body>
+</html>
