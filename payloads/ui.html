@@ -392,7 +392,7 @@ function copyById(id,btn){var el=$(id);if(el)copyText(el.textContent,btn)}
 function copyLog(btn){copyText($('logBox').textContent,btn)}
 function copyAllLinks(btn){var out=[];if(lastData){if(lastData.legacyIndexUrl)out.push('LEGACY RENTRY: '+lastData.legacyIndexUrl);if(lastData.rentryNewUrl)out.push('NEW RENTRY: '+lastData.rentryNewUrl);if(lastData.mirrorIndexUrl)out.push('TELEGRAPH: '+lastData.mirrorIndexUrl);var fl=lastData.files||[];for(var i=0;i<fl.length;i++){if(fl[i].link)out.push(fl[i].name+': '+fl[i].link)}}if(out.length===0){flashBtn(btn,'no links yet');toast('No links yet','warn');return}copyText(out.join('\n'),btn)}
 async function getJson(url){try{var r=await fetch(url,{cache:'no-store'});if(!r.ok)return null;return await r.json()}catch(e){return null}}
-async function doFlush(btn){flashBtn(btn,'...');var d=await getJson('/flush');if(d&&d.ok){toast('Flush requested - watcher will upload everything','ok')}else{toast('Flush failed - server not reachable','bad')}}
+async function doFlush(btn){flashBtn(btn,'...');await getJson('/launch');var d=await getJson('/flush');if(d&&d.ok){toast('Flush requested - watcher will upload everything','ok')}else{toast('Flush failed - server not reachable','bad')}}
 async function doLaunch(btn){flashBtn(btn,'...');var d=await getJson('/launch');if(d&&d.ok){toast('Watcher start requested','ok')}else{toast('Launch failed - server not reachable','bad')}}
 async function doDiag(){openDrawer();var db=$('diagBox');db.textContent='running /diag...';var d=await getJson('/diag');db.textContent=d?JSON.stringify(d,null,2):'Diagnostics failed - server not reachable.'}
 function openDrawer(){$('drawer').classList.add('open');$('drawer').setAttribute('aria-hidden','false');$('drawerScrim').classList.add('open')}

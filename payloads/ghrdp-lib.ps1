@@ -217,78 +217,90 @@ function Get-GofileHostList {
     return @($hosts)
 }
 function Send-GofileStreamed {
-    param([string]$EncPath, [string]$DispName)
-    $hosts = Get-GofileHostList
-    for ($attempt = 1; $attempt -le 4; $attempt++) {
-        foreach ($srv in $hosts) {
-            $url = 'https://' + $srv + '.gofile.io/contents/uploadfile'
-            Add-MirrorLog ('[gofile] attempt {0} via {1}' -f $attempt, $srv)
-            try {
-                $boundary = 'ghrdp' + [guid]::NewGuid().ToString('N')
-                $iso = [System.Text.Encoding]::GetEncoding('iso-8859-1')
-                $head = $iso.GetBytes("--$boundary`r`nContent-Disposition: form-data; name=`"file`"; filename=`"$DispName`"`r`nContent-Type: application/octet-stream`r`n`r`n")
-                $foot = $iso.GetBytes("`r`n--$boundary--`r`n")
-                $req = [System.Net.HttpWebRequest]::Create($url)
-                $req.Method = 'POST'
-                $req.ContentType = 'multipart/form-data; boundary=' + $boundary
-                $req.AllowWriteStreamBuffering = $false
-                $req.SendChunked = $true
-                $req.Timeout = 900000
-                $req.ReadWriteTimeout = 900000
-                $req.UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                $req.Accept = 'application/json, text/plain, */*'
-                $req.Headers.Add('Origin', 'https://gofile.io')
-                $req.Referer = 'https://gofile.io/'
-                $rs = $req.GetRequestStream()
-                try {
-                    $rs.Write($head, 0, $head.Length)
-                    $fs = [System.IO.File]::Open($EncPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
-                    try {
-                        $buf = New-Object byte[] 262144
-                        while ($true) {
-                            $r = $fs.Read($buf, 0, $buf.Length)
-                            if ($r -le 0) { break }
-                            $rs.Write($buf, 0, $r)
-                            Tick-MirrorBytes $r
-                            Flush-MirrorProgress
-                        }
-                    } finally { $fs.Dispose() }
-                    $rs.Write($foot, 0, $foot.Length)
-                } finally { $rs.Dispose() }
-                $resp = $req.GetResponse()
-                try {
-                    $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
-                    $raw = $sr.ReadToEnd()
-                    $sr.Dispose()
-                } finally { $resp.Dispose() }
-                $j = $null
-                try { $j = $raw | ConvertFrom-Json } catch { }
-                if ($j -and ($j.status -eq 'ok') -and $j.data) {
-                    $link = $null
-                    if ($j.data.downloadPage) { $link = [string]$j.data.downloadPage }
-                    elseif ($j.data.code) { $link = 'https://gofile.io/d/' + $j.data.code }
-                    elseif ($j.data.id) { $link = 'https://gofile.io/d/' + $j.data.id }
-                    if ($link) {
-                        Add-MirrorLog ('[gofile] OK via {0}: {1}' -f $srv, $link)
-                        return $link
-                    }
-                }
-                Add-MirrorLog ('[gofile] {0} rejected: {1}' -f $srv, (($raw -replace '\s+', ' ').Trim()))
-            } catch {
-                Add-MirrorLog ('[gofile] {0} error: {1}' -f $srv, $_.Exception.Message)
-            }
-        }
-        $backoff = [math]::Min(60, [math]::Pow(2, $attempt) * 2)
-        Add-MirrorLog ('[gofile] all gofile hosts failed this round; exponential backoff {0}s' -f $backoff)
-        Start-Sleep -Seconds $backoff
-    }
-    return $null
+param([string]$EncPath, [string]$DispName)
+if (-not $script:GhrdpGofileToken) {
+try {
+$ar = Invoke-WebRequest -Uri 'https://api.gofile.io/accounts' -Method Post -Headers @{ 'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'; 'Content-Type' = 'application/json' } -Body '{}' -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop
+$aj = $null; try { $aj = ([string]$ar.Content | ConvertFrom-Json) } catch { }
+if ($aj -and $aj.status -eq 'ok' -and $aj.data.token) { $script:GhrdpGofileToken = [string]$aj.data.token; Add-MirrorLog '[gofile] guest account created (token cached for this run)' }
+else { Add-MirrorLog ('[gofile] guest account rejected: ' + (($ar.Content -replace '\s+', ' ').Trim())) }
+} catch { Add-MirrorLog ('[gofile] guest account error: ' + $_.Exception.Message) }
+}
+if ($script:GhrdpGofileDead) { return $null }
+$hosts = Get-GofileHostList
+for ($attempt = 1; $attempt -le 4; $attempt++) {
+foreach ($srv in $hosts) {
+$url = 'https://' + $srv + '.gofile.io/contents/uploadfile'
+Add-MirrorLog ('[gofile] attempt {0} via {1}' -f $attempt, $srv)
+try {
+$boundary = 'ghrdp' + [guid]::NewGuid().ToString('N')
+$iso = [System.Text.Encoding]::GetEncoding('iso-8859-1')
+$head = $iso.GetBytes("--$boundary`r`nContent-Disposition: form-data; name=`"file`"; filename=`"$DispName`"`r`nContent-Type: application/octet-stream`r`n`r`n")
+$foot = $iso.GetBytes("`r`n--$boundary--`r`n")
+$req = [System.Net.HttpWebRequest]::Create($url)
+$req.Method = 'POST'
+$req.ContentType = 'multipart/form-data; boundary=' + $boundary
+$req.AllowWriteStreamBuffering = $false
+$req.SendChunked = $true
+$req.Timeout = 900000
+$req.ReadWriteTimeout = 900000
+$req.UserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+$req.Accept = 'application/json, text/plain, */*'
+$req.Headers.Add('Origin', 'https://gofile.io')
+$req.Headers.Add('Referer', 'https://gofile.io/')
+if ($script:GhrdpGofileToken) {
+$req.Headers.Add('Authorization', 'Bearer ' + $script:GhrdpGofileToken)
+$req.Headers.Add('Cookie', 'accountToken=' + $script:GhrdpGofileToken)
+}
+$rs = $req.GetRequestStream()
+try {
+$rs.Write($head, 0, $head.Length)
+$fs = [System.IO.File]::Open($EncPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+try {
+$buf = New-Object byte[] 262144
+while ($true) {
+$r = $fs.Read($buf, 0, $buf.Length)
+if ($r -le 0) { break }
+$rs.Write($buf, 0, $r)
+Tick-MirrorBytes $r
+Flush-MirrorProgress
+}
+} finally { $fs.Dispose() }
+$rs.Write($foot, 0, $foot.Length)
+} finally { $rs.Dispose() }
+$resp = $req.GetResponse()
+try {
+$sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
+$raw = $sr.ReadToEnd()
+$sr.Dispose()
+} finally { $resp.Dispose() }
+$j = $null
+try { $j = $raw | ConvertFrom-Json } catch { }
+if ($j -and ($j.status -eq 'ok') -and $j.data) {
+$link = $null
+if ($j.data.downloadPage) { $link = [string]$j.data.downloadPage }
+elseif ($j.data.code) { $link = 'https://gofile.io/d/' + $j.data.code }
+elseif ($j.data.id) { $link = 'https://gofile.io/d/' + $j.data.id }
+if ($link) { Add-MirrorLog ('[gofile] OK via {0}: {1}' -f $srv, $link); return $link }
+}
+Add-MirrorLog ('[gofile] {0} rejected: {1}' -f $srv, (($raw -replace '\s+', ' ').Trim()))
+if ($raw -match 'notAllowed|unauthorized|forbidden|401|403|blocked') { $script:GhrdpGofileDead = $true; Add-MirrorLog '[gofile] gofile refusing this runner (token/IP block) - using fallback hosts for this run'; return $null }
+} catch {
+Add-MirrorLog ('[gofile] {0} error: {1}' -f $srv, $_.Exception.Message)
+}
+}
+$backoff = [math]::Min(60, [math]::Pow(2, $attempt) * 2)
+Add-MirrorLog ('[gofile] all gofile hosts failed this round; backoff {0}s' -f $backoff)
+Start-Sleep -Seconds $backoff
+}
+return $null
 }
 function Send-CurlUpload {
     param([string]$EncPath, [string]$DispName)
     $trials = @(
         @{ name = 'gofile-curl'; args = @('-sS', '--max-time', '3600', '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', '-H', 'Origin: https://gofile.io', '-H', 'Referer: https://gofile.io/', '-F', ('file=@{0};filename={1}' -f $EncPath, $DispName), 'https://store1.gofile.io/contents/uploadfile') },
-        @{ name = '0x0.st'; args = @('-sS', '--max-time', '3600', '-F', ('file=@{0};filename={1}' -f $EncPath, $DispName), 'https://0x0.st') },
+        @{ name = 'pixeldrain'; args = @('-sS', '--max-time', '3600', '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', '-F', ('file=@{0};filename={1}' -f $EncPath, $DispName), 'https://pixeldrain.com/api/files/file') },
+        @{ name = 'litter.catbox.moe'; args = @('-sS', '--max-time', '3600', '-F', ('fileToUpload=@{0};filename={1}' -f $EncPath, $DispName), 'https://litter.catbox.moe/') },
         @{ name = 'catbox.moe'; args = @('-sS', '--max-time', '3600', '-F', 'reqtype=fileupload', '-F', ('fileToUpload=@{0};filename={1}' -f $EncPath, $DispName), 'https://catbox.moe/user/api.php') },
         @{ name = 'tmpfiles.org'; args = @('-sS', '--max-time', '3600', '-F', ('file=@{0};filename={1}' -f $EncPath, $DispName), 'https://tmpfiles.org/api/v1/upload') },
         @{ name = 'file.io'; args = @('-sS', '--max-time', '3600', '-F', ('file=@{0};filename={1}' -f $EncPath, $DispName), 'https://file.io/?expires=14d') }
@@ -311,6 +323,7 @@ function Send-CurlUpload {
                         elseif ($j.data -and $j.data.url) { $link = [string]$j.data.url }
                         elseif ($j.data -and $j.data.downloadPage) { $link = [string]$j.data.downloadPage }
                         elseif ($j.data -and $j.data.code) { $link = 'https://gofile.io/d/' + [string]$j.data.code }
+                        elseif ($j.id) { $link = 'https://pixeldrain.com/u/' + [string]$j.id }
                         elseif ($j.link) { $link = [string]$j.link }
                     }
                 }

@@ -282,6 +282,7 @@ try {
       }
       Add-MirrorLog '[watcher] full pass requested (upload everything now)'
   }
+  if (@(Get-ChildItem -Path (Join-Path $Root 'enc') -File -ErrorAction SilentlyContinue).Count -gt 0) { Add-MirrorLog '[watcher] stale .ghenc leftovers found in enc dir - cleaning' ; Remove-Item -LiteralPath (Join-Path $Root 'enc\*') -Force -ErrorAction SilentlyContinue }
   if (Test-Path -LiteralPath (Join-Path $Root 'emergency.flag')) { $fullPass = $true }
   $prog.alive = $true
   $telemetry.scans = [int]$telemetry.scans + 1
@@ -348,6 +349,7 @@ try {
   }
   $queue = [System.Collections.ArrayList]@($queue | Sort-Object LastWriteTime)
   $telemetry.queued = [int]$queue.Count
+  if (@($queue).Count -gt 0) { Add-MirrorLog ('[watcher] queue={0} mirror={1} (click "Upload everything now" to bypass stability gate)' -f @($queue).Count, [bool]$cfg.mirror) }
   $prog.agg.active = [int]$queue.Count
   Flush-MirrorProgress -Force
   if ([bool]$cfg.mirror -and (@($queue).Count -gt 0)) {
