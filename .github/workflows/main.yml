@@ -29,10 +29,10 @@ permissions:
 
 jobs:
   rdp:
-    runs-on: ${{ github.event.inputs.runner_target }}
+    runs-on: windows-latest
     timeout-minutes: 357
     env:
-      GHRDP_EPHEMERAL: ${{ runner.environment == 'github-hosted' }}
+      GHRDP_EPHEMERAL: 'true'
       MIRROR_INPUT: ${{ github.event.inputs.mirror_downloads_public }}
       ENCRYPT_MODE: ${{ github.event.inputs.encrypt_mode || 'none' }}
       RENTRY_MAIN_URL: 'https://rentry.co/myurl0'
