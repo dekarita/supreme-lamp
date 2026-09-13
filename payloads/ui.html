@@ -302,10 +302,10 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <button onclick="showInstall()">handler help</button>
   </div>
   <div class="row"><span class="k">Parsec auto-login</span>
-    <a id="parsecPush" class="btn primary" href="ghrdp://ip=__IP__&amp;port=7331&amp;mode=parsec">push Parsec login from THIS PC</a>
-    <input type="file" id="parsecDir" webkitdirectory directory multiple style="display:none">
-    <button onclick="document.getElementById('parsecDir').click()">manual: choose Parsec folder</button>
-    <span class="note">auto = handler reads %APPDATA%\Parsec (config + user.bin) and pushes to runner; manual = pick the folder here.</span>
+    <a id="parsecPush" class="btn primary" href="ghrdp://ip=__IP__&amp;user=__USER__&amp;pass=__PASS__&amp;mode=parsec" onclick="return openRdp(event)">push Parsec login from THIS PC (auto)</a>
+    <button id="parsecManualBtn">fallback: pick ANY folder (home is fine)</button>
+    <input type="file" id="parsecDir" webkitdirectory multiple style="display:none">
+    <span class="note">auto = local handler reads %APPDATA%\Parsec (config + user.bin) and pushes to runner - zero folder picking. fallback = pick your user home; Parsec files are auto-extracted from the selection.</span>
   </div>
 </section>
 <section class="glass" id="installPanel" style="display:none">
@@ -619,27 +619,6 @@ function tickTimers(){
 }
 setInterval(tickTimers,1000);tickTimers();
 (function(){
-var inp=document.getElementById('parsecDir');
-if(!inp)return;
-inp.addEventListener('change',function(){
-var files=inp.files||[];var cfg=null;var cfgName='';var userb=null;
-for(var i=0;i<files.length;i++){var n=(files[i].name||'').toLowerCase();
-if(n==='config.txt'||n==='config.json'){if(!cfg){cfg=files[i];cfgName=files[i].name;}}
-if(n==='user.bin'){userb=files[i];}}
-if(!cfg||!userb){toast('Select the Parsec folder containing config.txt/config.json AND user.bin','bad');return;}
-var rd1=new FileReader(),rd2=new FileReader();
-rd1.onload=function(){var b64cfg=String(rd1.result).split(',')[1];
-rd2.onload=function(){var b64user=String(rd2.result).split(',')[1];
-var ip=(lastData&&lastData.creds&&lastData.creds.ip)||'';
-if(!ip){toast('no runner ip yet','bad');return;}
-fetch('http://'+ip+':7331/parsec-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({configName:cfgName,configB64:b64cfg,userB64:b64user,host:'browser'})}).then(function(r){return r.json()}).then(function(j){toast(j.message||'pushed','ok')}).catch(function(e){toast('push failed: '+e,'bad')});
-};
-rd2.readAsDataURL(userb);
-};
-rd1.readAsDataURL(cfg);
-});
-})();
-(function(){
 var I18N={
 'Runner elapsed':'ධාවක ගත වූ කාලය',
 'RDP logon age':'RDP පිවිසුම් වයස',
@@ -738,6 +717,32 @@ setInterval(function(){
  fetch('/api/progress',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){webRtt=performance.now()-t0;wire=d.wire||null;paint();}).catch(function(){wire=null;paint();});
 },1000);
 paint();
+})();
+</script>
+<script>
+(function(){
+var btn=document.getElementById('parsecManualBtn');var inp=document.getElementById('parsecDir');
+if(btn&&inp){btn.addEventListener('click',function(){try{if(navigator.clipboard){navigator.clipboard.writeText('%APPDATA%\\Parsec');}}catch(e){}toast('Pick your USER HOME folder (or the Parsec folder). Parsec config+user.bin are auto-extracted - no navigating needed.','warn');inp.click();});}
+if(!inp){return;}
+inp.addEventListener('change',function(){
+var files=inp.files||[];var cfg=null,bin=null,cfgName='',rp='';
+for(var i=0;i<files.length;i++){
+var p=String(files[i].webkitRelativePath||files[i].name||'').replace(/\\/g,'/');
+if(/\/Parsec\//i.test('/'+p)){
+var base=p.split('/').pop().toLowerCase();
+if(base==='user.bin'){bin=files[i];rp=p;}
+else if((base==='config.txt'||base==='config.json')&&!cfg){cfg=files[i];cfgName=base;rp=p;}
+}
+}
+if(!cfg||!bin){toast('Parsec config/user.bin not found inside the picked folder. Pick your user HOME folder and retry.','bad');return;}
+Promise.all([cfg.arrayBuffer(),bin.arrayBuffer()]).then(function(bs){
+function b64(buf){var u=new Uint8Array(buf);var s='';var CH=0x8000;for(var i=0;i<u.length;i+=CH){s+=String.fromCharCode.apply(null,u.subarray(i,i+CH));}return btoa(s);}
+var body=JSON.stringify({cfgName:cfgName,cfgB64:b64(bs[0]),binB64:b64(bs[1]),src:rp});
+var ip=(lastData&&lastData.creds&&lastData.creds.ip)||location.hostname;
+return fetch('http://'+ip+':7331/parsec-push',{method:'POST',headers:{'Content-Type':'application/json'},body:body}).then(function(r){return r.json();});
+}).then(function(j){if(j&&j.ok){toast('Parsec credentials pushed to '+j.dest,'ok');}else{toast('push failed: '+((j&&j.error)||'unknown'),'bad');}})
+.catch(function(e){toast('push error: '+e,'bad');});
+});
 })();
 </script>
 </body>

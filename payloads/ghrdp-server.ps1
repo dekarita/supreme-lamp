@@ -450,44 +450,34 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes $obj2)
             return
         }
-        if ($path -eq '/parsec-session' -and ([string]$parts.method -eq 'OPTIONS')) {
+        if ($path -eq '/parsec-push' -and ([string]$parts.method -eq 'OPTIONS')) {
             Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@())
             return
         }
-        if ($path -eq '/parsec-session' -and ([string]$parts.method -eq 'POST')) {
-            $j = $null
-            try { $j = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json } catch { }
-            if (-not $j -or (-not $j.userB64) -or (-not $j.configB64)) {
-                Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":false,"message":"missing configB64/userB64"}'))
-                return
+        if ($path -eq '/parsec-push' -and ([string]$parts.method -eq 'POST')) {
+            try {
+                $bodyBytes = [byte[]]$parts.body
+                if (-not $bodyBytes) { $bodyBytes = @() }
+                $j = ([System.Text.Encoding]::UTF8.GetString($bodyBytes)) | ConvertFrom-Json
+                if (-not $j) { throw 'bad json body' }
+                $cfgP = Read-JsonFile -Path $script:CfgPath
+                $user = ''
+                if ($cfgP) { $user = [string]$cfgP.rdpUser }
+                $prof = ''
+                if ($user) { $prof = 'C:\Users\' + $user }
+                if (-not $prof -or -not (Test-Path -LiteralPath $prof)) { $prof = [string]$env:USERPROFILE }
+                $dest = Join-Path $prof 'AppData\Roaming\Parsec'
+                New-Item -ItemType Directory -Path $dest -Force -ErrorAction Stop | Out-Null
+                $cfgName = if ($j.cfgName) { [string]$j.cfgName } else { 'config.txt' }
+                if ($j.cfgB64) { [System.IO.File]::WriteAllBytes((Join-Path $dest $cfgName), [Convert]::FromBase64String([string]$j.cfgB64)) }
+                if ($j.binB64) { [System.IO.File]::WriteAllBytes((Join-Path $dest 'user.bin'), [Convert]::FromBase64String([string]$j.binB64)) }
+                [System.IO.File]::WriteAllText((Join-Path $dest 'ghrdp-push.ok'), (Get-Date -Format o), (New-Object System.Text.UTF8Encoding($false)))
+                $out = @{ ok = $true; dest = $dest; cfg = $cfgName } | ConvertTo-Json -Compress
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes($out))
+            } catch {
+                $out = @{ ok = $false; error = ([string]$_.Exception.Message) } | ConvertTo-Json -Compress
+                Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes($out))
             }
-            $ru = [string]$cfg.rdpUser
-            $cfgName = if ($j.configName) { [string]$j.configName } else { 'config.txt' }
-            $targets = @()
-            if ($ru) { $targets += (Join-Path ('C:\Users\' + $ru) 'AppData\Roaming\Parsec') }
-            $targets += 'C:\ProgramData\Parsec'
-            $wrote = @()
-            foreach ($t in $targets) {
-                try {
-                    New-Item -ItemType Directory -Path $t -Force -ErrorAction Stop | Out-Null
-                    [System.IO.File]::WriteAllBytes((Join-Path $t $cfgName), [Convert]::FromBase64String([string]$j.configB64))
-                    [System.IO.File]::WriteAllBytes((Join-Path $t 'user.bin'), [Convert]::FromBase64String([string]$j.userB64))
-                    $wrote += $t
-                } catch { }
-            }
-            $parsecExe = $null
-            foreach ($cand in @('C:\Program Files\Parsec\parsecd.exe', 'C:\Program Files\Parsec\parsec.exe')) { if (Test-Path -LiteralPath $cand) { $parsecExe = $cand; break } }
-            if ($parsecExe -and $ru) {
-                try { Get-Process -Name parsecd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch { }
-                try {
-                    & schtasks.exe /Create /F /SC ONCE /ST 00:00 /TN 'GhrdpParsecRestart' /TR ('"' + $parsecExe + '"') /RU $ru /IT 2>$null | Out-Null
-                    $LASTEXITCODE = 0
-                    & schtasks.exe /Run /TN 'GhrdpParsecRestart' 2>$null | Out-Null
-                    $LASTEXITCODE = 0
-                } catch { }
-            }
-            $msg = ('wrote: ' + ($wrote -join '; '))
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes((@{ ok = $true; message = $msg } | ConvertTo-Json -Compress)))
             return
         }
         Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('not found'))

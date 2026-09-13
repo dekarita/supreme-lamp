@@ -25,37 +25,47 @@ if ($Url -match 'ghrdp://(.+)$') {
     }
 }
 Write-ConnLog ('parsed: ip=' + $ip + ' user=' + $user + ' passLen=' + $pass.Length)
-$port = '7331'
-if ($Url -match 'port=(\d+)') { $port = $Matches[1] }
-if ($Url -match 'mode=parsec' -or $Url -match 'parsec-push') {
-    Write-ConnLog 'parsec-push mode: locating local Parsec session files'
-    $cands = @((Join-Path $env:APPDATA 'Parsec'), (Join-Path $env:LOCALAPPDATA 'Parsec'), 'C:\ProgramData\Parsec')
-    $src = $null; $cfgName = $null
+$mode = ''
+if ($Url -match 'mode=([a-z]+)') { $mode = $Matches[1] }
+if ($mode -eq 'parsec') {
+    Write-ConnLog 'parsec mode: auto-discovering local Parsec credential folder (no folder picker)'
+    $cands = @()
+    if ($env:APPDATA)      { $cands += (Join-Path $env:APPDATA 'Parsec') }
+    if ($env:LOCALAPPDATA) { $cands += (Join-Path $env:LOCALAPPDATA 'Parsec') }
+    if ($env:PROGRAMDATA)  { $cands += (Join-Path $env:PROGRAMDATA 'Parsec') }
+    try {
+        $hits = Get-ChildItem -Path $env:USERPROFILE -Directory -Recurse -Depth 4 -Filter 'Parsec' -ErrorAction SilentlyContinue | Select-Object -First 5
+        foreach ($h in @($hits)) { $cands += [string]$h.FullName }
+    } catch { }
+    $src = $null; $cfgFile = $null; $binFile = $null
     foreach ($c in $cands) {
-        if (Test-Path -LiteralPath (Join-Path $c 'user.bin')) {
-            if (Test-Path -LiteralPath (Join-Path $c 'config.txt')) { $cfgName = 'config.txt' }
-            elseif (Test-Path -LiteralPath (Join-Path $c 'config.json')) { $cfgName = 'config.json' }
-            if ($cfgName) { $src = $c; break }
-        }
+        if (-not $c -or -not (Test-Path -LiteralPath $c)) { continue }
+        $cf = $null
+        $bf = Join-Path $c 'user.bin'
+        if (Test-Path -LiteralPath (Join-Path $c 'config.txt'))      { $cf = Join-Path $c 'config.txt' }
+        elseif (Test-Path -LiteralPath (Join-Path $c 'config.json')) { $cf = Join-Path $c 'config.json' }
+        if ($cf -and (Test-Path -LiteralPath $bf)) { $src = $c; $cfgFile = $cf; $binFile = $bf; break }
     }
     if (-not $src) {
-        Write-ConnLog 'ERROR: no local Parsec session (user.bin + config) found'
-        try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Parsec session not found on this PC. Log in to Parsec here first, then retry.', 'GHRDP Parsec push') | Out-Null } catch { }
+        Write-ConnLog 'parsec push: no Parsec folder with config+user.bin found locally'
+        try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Parsec credential folder not found on this PC. Log in to Parsec here once, then retry.', 'GHRDP Parsec push') | Out-Null } catch { }
         exit 2
     }
-    $cfgB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes((Join-Path $src $cfgName)))
-    $userB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes((Join-Path $src 'user.bin')))
-    $body = (@{ configName = $cfgName; configB64 = $cfgB64; userB64 = $userB64; host = $env:COMPUTERNAME } | ConvertTo-Json -Compress)
+    $cfgB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($cfgFile))
+    $binB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($binFile))
+    $cfgName = Split-Path -Leaf $cfgFile
+    $body = (@{ cfgName = $cfgName; cfgB64 = $cfgB64; binB64 = $binB64; src = $src } | ConvertTo-Json -Compress)
+    $pushUrl = 'http://' + $ip + ':7331/parsec-push'
     try {
-        $resp = Invoke-RestMethod -Uri ('http://' + $ip + ':' + $port + '/parsec-session') -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 90
+        $resp = Invoke-RestMethod -Uri $pushUrl -Method Post -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -ContentType 'application/json' -TimeoutSec 30
         Write-ConnLog ('parsec push OK: ' + ($resp | ConvertTo-Json -Compress))
-        try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(('Parsec session pushed to runner OK.' + [Environment]::NewLine + [string]$resp.message), 'GHRDP Parsec push') | Out-Null } catch { }
+        try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(('Parsec credentials pushed to runner: ' + [string]$resp.dest), 'GHRDP Parsec push') | Out-Null } catch { }
+        exit 0
     } catch {
         Write-ConnLog ('parsec push FAILED: ' + $_.Exception.Message)
         try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(('Parsec push failed: ' + $_.Exception.Message), 'GHRDP Parsec push') | Out-Null } catch { }
         exit 3
     }
-    exit 0
 }
 if ([string]::IsNullOrEmpty($ip)) {
     Write-ConnLog 'ERROR: missing ip parameter'
