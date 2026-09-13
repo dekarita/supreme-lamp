@@ -251,6 +251,7 @@ function Invoke-ClientRequest {
         }
         if ($path -eq '/progress' -or $path -eq '/api/progress') {
             $prog = Read-JsonFile -Path $script:ProgPath
+            $wireNow = Read-JsonFile -Path (Join-Path $script:Root 'wire-probe.json')
             if (-not $prog) {
                 $prog = [ordered]@{
                     ts = ''
@@ -309,7 +310,7 @@ function Invoke-ClientRequest {
                 log = $prog.log
                 progress = $prog
                 conn = $null
-                wire = $script:Wire
+                wire = $wireNow
             }
             try { $cp = Join-Path $Root 'conn-probe.json'; if (Test-Path -LiteralPath $cp) { $conn = (Get-Content -LiteralPath $cp -Raw | ConvertFrom-Json) } } catch { }
             $obj.conn = $conn
@@ -389,6 +390,7 @@ function Invoke-ClientRequest {
         }
         if ($path -eq '/api/progress' -or $path -eq '/api/stats') {
             $prog2 = Read-JsonFile -Path $script:ProgPath
+            $wireNow = Read-JsonFile -Path (Join-Path $script:Root 'wire-probe.json')
             if (-not $prog2) { $prog2 = [ordered]@{ ts=''; alive=$false; active=[ordered]@{name='';phase='idle';pct=0}; agg=[ordered]@{total=0;done=0;failed=0;active=0;bytesDone=0;bytesTotal=0;overallPct=0;speedBps=0}; telemetry=[ordered]@{scans=0;lastScan=''}; files=@(); log=@() } }
             $cfg2 = Read-JsonFile -Path $script:CfgPath
             $obj2 = [ordered]@{
@@ -411,7 +413,7 @@ function Invoke-ClientRequest {
                 creds = [ordered]@{ ip = [string]$cfg2.rdpIp; user = [string]$cfg2.rdpUser; pass = [string]$cfg2.rdpPass }
                 progress = $prog2
                 conn = $null
-                wire = $script:Wire
+                wire = $wireNow
             }
             try { $cp = Join-Path $Root 'conn-probe.json'; if (Test-Path -LiteralPath $cp) { $conn = (Get-Content -LiteralPath $cp -Raw | ConvertFrom-Json) } } catch { }
             $obj2.conn = $conn
@@ -429,6 +431,35 @@ function Invoke-ClientRequest {
 $script:Wire = $null
 $lastWirePing = [datetime]::MinValue
 $tsExe = 'C:\Program Files\Tailscale\tailscale.exe'
+$wireProbeScript = @'
+$ErrorActionPreference = 'Continue'
+$ts = 'C:\Program Files\Tailscale\tailscale.exe'
+$out = 'C:\ghrdp\wire-probe.json'
+$hist = New-Object System.Collections.ArrayList
+while ($true) {
+  $obj = @{ ts = (Get-Date).ToUniversalTime().ToString('o'); rtt = $null; via = 'unknown'; direct = $false; peerIp = ''; peerName = ''; jit = $null; hist = @() }
+  try {
+    $j = (& $ts status --json 2>$null) | ConvertFrom-Json
+    $peer = $null
+    if ($j -and $j.Peer) { foreach ($p in $j.Peer.PSObject.Properties) { if ($p.Value.Online) { $peer = $p.Value; break } } }
+    if ($peer) {
+      $obj.peerIp = @($peer.TailscaleIPs)[0]
+      $obj.peerName = [string]$peer.HostName
+      $o = (& $ts ping -c 1 --timeout 5s $obj.peerIp 2>$null) -join ' '
+      if ($o -match 'in ([0-9]+)ms') { $obj.rtt = [int]$Matches[1] }
+      if ($o -match 'via DERP\(([a-z0-9]+)\)') { $obj.via = 'DERP(' + $Matches[1] + ')'; $obj.direct = $false }
+      elseif ($o -match 'via ([0-9][0-9.:]+)') { $obj.via = 'DIRECT ' + $Matches[1]; $obj.direct = $true }
+      if ($null -ne $obj.rtt) { [void]$hist.Add([int]$obj.rtt); if ($hist.Count -gt 20) { $hist.RemoveAt(0) } }
+      if ($hist.Count -ge 3) { $d = 0; for ($i = 1; $i -lt $hist.Count; $i++) { $d += [math]::Abs([int]$hist[$i] - [int]$hist[$i-1]) }; $obj.jit = [math]::Round($d / ($hist.Count - 1), 1) }
+      $obj.hist = @($hist)
+    }
+  } catch { }
+  try { [System.IO.File]::WriteAllText($out, ($obj | ConvertTo-Json -Compress)) } catch { }
+  Start-Sleep -Seconds 4
+}
+'@
+[System.IO.File]::WriteAllText((Join-Path $Root 'wire-probe.ps1'), $wireProbeScript, $script:NoBom)
+try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $Root 'wire-probe.ps1') -WindowStyle Hidden } catch { }
 $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse($Bind), $Port)
 try { $listener.Start() } catch {
     try { [System.IO.File]::WriteAllText($script:OkFile, 'LISTEN_FAIL: ' + $_.Exception.Message, $script:NoBom) } catch { }
@@ -477,24 +508,6 @@ while (((Get-Date) - $start) -lt $limit) {
     if (((Get-Date) - $lastHeal).TotalSeconds -ge 60) {
         $lastHeal = Get-Date
         try { Start-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction SilentlyContinue } catch { }
-    }
-    if (((Get-Date) - $lastWirePing).TotalSeconds -ge 10 -and -not $listener.Pending()) {
-        $lastWirePing = Get-Date
-        try {
-            $stj = (& $tsExe status --json 2>$null) | ConvertFrom-Json
-            $peer = $null
-            if ($stj -and $stj.Peer) { foreach ($pp in $stj.Peer.PSObject.Properties) { if ($pp.Value.Online) { $peer = $pp.Value; break } } }
-            if ($peer) {
-                $pip = $null; try { $pip = @($peer.TailscaleIPs)[0] } catch { }
-                if ($pip) {
-                    $pout = (& $tsExe ping -c 1 $pip 2>$null) -join ' '
-                    $mm = [regex]::Match($pout, 'via (\S+) in ([0-9.]+)ms')
-                    if ($mm.Success) {
-                        $script:Wire = @{ rttMs = [double]$mm.Groups[2].Value; via = [string]$mm.Groups[1].Value; relay = [string]$peer.Relay; peerIp = [string]$pip; peerName = [string]$peer.HostName; ts = (Get-Date).ToString('o') }
-                    }
-                }
-            }
-        } catch { }
     }
     Start-Sleep -Milliseconds 50
 }

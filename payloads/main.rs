@@ -154,7 +154,7 @@ fn build_snapshot(root: &Path, wire_opt: Option<Value>) -> Value {
         "runnerEgressIp": cfg_str(&cfg, "runnerEgressIp"),
         "pagesBase": cfg_str(&cfg, "pagesBase"),
         "progress": prog,
-        "wire": wire_opt,
+        "wire": read_json_retry(&root.join("wire-probe.json")).or(wire_opt),
     })
 }
 
@@ -1328,6 +1328,31 @@ setInterval(function(){
     paint(dt);
   }).catch(function(){ samples.push(null); if(samples.length>60)samples.shift(); paint(null); });
 },2000);
+})();
+</script>
+<script>
+(function(){
+function cr(id){return document.getElementById(id)}
+['connRtt','connVia','connBadge','connFps','connJit','connSpark'].forEach(function(id){var e=cr(id);if(e){var r=e.closest('.row');if(r)r.style.display='none';}});
+var mstsc=cr('mstscVal');if(mstsc){var row=mstsc.closest('.row');if(row){var nr=document.createElement('div');nr.className='row';nr.innerHTML='<span class="k">Connectivity</span><span class="timer" id="c2Rtt" style="font-size:20px">-- ms</span><span class="badge" id="c2Via">path: --</span><span class="badge" id="c2Fps">-- fps</span><span class="badge" id="c2Jit">jit -- ms</span><canvas id="c2Spark" width="220" height="34" style="width:220px;height:34px"></canvas>';row.insertAdjacentElement('afterend',nr);}}
+var frames=0,fps=0,lastT=performance.now();
+function raf(t){frames++;if(t-lastT>=1000){fps=Math.round(frames*1000/(t-lastT));frames=0;lastT=t;}requestAnimationFrame(raf);}
+requestAnimationFrame(raf);
+var wire=null,webRtt=null;
+function paint(){
+ var r=cr('c2Rtt'),v=cr('c2Via'),f=cr('c2Fps'),j=cr('c2Jit'),cv=cr('c2Spark');
+ var showRtt=(wire&&wire.rtt!=null)?wire.rtt:webRtt;
+ if(r){r.textContent=(showRtt==null?'--':Math.round(showRtt))+' ms';r.style.color=showRtt==null?'var(--bad)':(showRtt<100?'var(--ok)':(showRtt<200?'var(--warn)':'var(--bad)'));}
+ if(v){v.textContent=wire?('path: '+wire.via+(wire.direct?' (direct)':' (relay)')):'path: --';v.style.color=wire&&wire.direct?'var(--ok)':'var(--warn)';}
+ if(f)f.textContent=fps+' fps';
+ if(j)j.textContent='jit '+((wire&&wire.jit!=null)?wire.jit:'--')+' ms';
+ if(cv&&wire&&wire.hist&&wire.hist.length){var ctx=cv.getContext('2d');ctx.clearRect(0,0,cv.width,cv.height);var mx=Math.max.apply(null,wire.hist.concat([50]));ctx.strokeStyle='#22d3ee';ctx.beginPath();for(var i=0;i<wire.hist.length;i++){var x=i*(cv.width/19);var y=cv.height-(wire.hist[i]/mx)*(cv.height-4)-2;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}ctx.stroke();}
+}
+setInterval(function(){
+ var t0=performance.now();
+ fetch('/api/progress',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){webRtt=performance.now()-t0;wire=d.wire||null;paint();}).catch(function(){wire=null;paint();});
+},1000);
+paint();
 })();
 </script>
 </body>
