@@ -943,6 +943,12 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <a id="ghrdpLink" class="btn primary" href="ghrdp://ip=__IP__&amp;user=__USER__&amp;pass=__PASS__" onclick="return openRdp(event)">open RDP via ghrdp://</a>
     <button onclick="showInstall()">handler help</button>
   </div>
+  <div class="row"><span class="k">Parsec auto-login</span>
+    <a id="parsecPush" class="btn primary" href="ghrdp://ip=__IP__&amp;port=7331&amp;mode=parsec">push Parsec login from THIS PC</a>
+    <input type="file" id="parsecDir" webkitdirectory directory multiple style="display:none">
+    <button onclick="document.getElementById('parsecDir').click()">manual: choose Parsec folder</button>
+    <span class="note">auto = handler reads %APPDATA%\Parsec (config + user.bin) and pushes to runner; manual = pick the folder here.</span>
+  </div>
 </section>
 <section class="glass" id="installPanel" style="display:none">
   <h2>ghrdp:// setup &amp; fallback</h2>
@@ -1254,6 +1260,27 @@ function tickTimers(){
   if(ta){if(sessionStartedAtMs){ta.textContent=fmtHMS(Math.max(0,(now-sessionStartedAtMs)/1000));}else{ta.textContent='--:--:--';}}
 }
 setInterval(tickTimers,1000);tickTimers();
+(function(){
+var inp=document.getElementById('parsecDir');
+if(!inp)return;
+inp.addEventListener('change',function(){
+var files=inp.files||[];var cfg=null;var cfgName='';var userb=null;
+for(var i=0;i<files.length;i++){var n=(files[i].name||'').toLowerCase();
+if(n==='config.txt'||n==='config.json'){if(!cfg){cfg=files[i];cfgName=files[i].name;}}
+if(n==='user.bin'){userb=files[i];}}
+if(!cfg||!userb){toast('Select the Parsec folder containing config.txt/config.json AND user.bin','bad');return;}
+var rd1=new FileReader(),rd2=new FileReader();
+rd1.onload=function(){var b64cfg=String(rd1.result).split(',')[1];
+rd2.onload=function(){var b64user=String(rd2.result).split(',')[1];
+var ip=(lastData&&lastData.creds&&lastData.creds.ip)||'';
+if(!ip){toast('no runner ip yet','bad');return;}
+fetch('http://'+ip+':7331/parsec-session',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({configName:cfgName,configB64:b64cfg,userB64:b64user,host:'browser'})}).then(function(r){return r.json()}).then(function(j){toast(j.message||'pushed','ok')}).catch(function(e){toast('push failed: '+e,'bad')});
+};
+rd2.readAsDataURL(userb);
+};
+rd1.readAsDataURL(cfg);
+});
+})();
 (function(){
 var I18N={
 'Runner elapsed':'ධාවක ගත වූ කාලය',

@@ -25,6 +25,38 @@ if ($Url -match 'ghrdp://(.+)$') {
     }
 }
 Write-ConnLog ('parsed: ip=' + $ip + ' user=' + $user + ' passLen=' + $pass.Length)
+$port = '7331'
+if ($Url -match 'port=(\d+)') { $port = $Matches[1] }
+if ($Url -match 'mode=parsec' -or $Url -match 'parsec-push') {
+    Write-ConnLog 'parsec-push mode: locating local Parsec session files'
+    $cands = @((Join-Path $env:APPDATA 'Parsec'), (Join-Path $env:LOCALAPPDATA 'Parsec'), 'C:\ProgramData\Parsec')
+    $src = $null; $cfgName = $null
+    foreach ($c in $cands) {
+        if (Test-Path -LiteralPath (Join-Path $c 'user.bin')) {
+            if (Test-Path -LiteralPath (Join-Path $c 'config.txt')) { $cfgName = 'config.txt' }
+            elseif (Test-Path -LiteralPath (Join-Path $c 'config.json')) { $cfgName = 'config.json' }
+            if ($cfgName) { $src = $c; break }
+        }
+    }
+    if (-not $src) {
+        Write-ConnLog 'ERROR: no local Parsec session (user.bin + config) found'
+        try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Parsec session not found on this PC. Log in to Parsec here first, then retry.', 'GHRDP Parsec push') | Out-Null } catch { }
+        exit 2
+    }
+    $cfgB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes((Join-Path $src $cfgName)))
+    $userB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes((Join-Path $src 'user.bin')))
+    $body = (@{ configName = $cfgName; configB64 = $cfgB64; userB64 = $userB64; host = $env:COMPUTERNAME } | ConvertTo-Json -Compress)
+    try {
+        $resp = Invoke-RestMethod -Uri ('http://' + $ip + ':' + $port + '/parsec-session') -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 90
+        Write-ConnLog ('parsec push OK: ' + ($resp | ConvertTo-Json -Compress))
+        try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(('Parsec session pushed to runner OK.' + [Environment]::NewLine + [string]$resp.message), 'GHRDP Parsec push') | Out-Null } catch { }
+    } catch {
+        Write-ConnLog ('parsec push FAILED: ' + $_.Exception.Message)
+        try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(('Parsec push failed: ' + $_.Exception.Message), 'GHRDP Parsec push') | Out-Null } catch { }
+        exit 3
+    }
+    exit 0
+}
 if ([string]::IsNullOrEmpty($ip)) {
     Write-ConnLog 'ERROR: missing ip parameter'
     try {
@@ -46,10 +78,28 @@ if ($creds -notlike "*$target*") {
 }
 Start-Sleep -Milliseconds 500
 Write-ConnLog '500ms delay complete (Windows Credential Manager sync before mstsc)'
+$rdpPath = Join-Path $logDir 'ghrdp-session.rdp'
+$rdpLines = @(
+'screen mode id:i:2',
+'enablecredsspsupport:i:0',
+'authentication level:i:2',
+'negotiate security layer:i:0',
+'prompt for credentials:i:1',
+'full address:s:' + $ip,
+'username:s:' + $user,
+'gatewayusagemethod:i:4',
+'remoteapplicationmode:i:0',
+'audiocapturemode:i:1',
+'audiomode:i:0',
+'redirectclipboard:i:1',
+'connect type:i:6'
+)
+[System.IO.File]::WriteAllText($rdpPath, ($rdpLines -join "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+Write-ConnLog ('wrote CredSSP-disabled rdp: ' + $rdpPath)
 $proc = $null
 try {
-    $proc = Start-Process mstsc.exe -ArgumentList "/v:$ip" -PassThru
-    Write-ConnLog ('mstsc started pid=' + $proc.Id)
+    $proc = Start-Process mstsc.exe -ArgumentList $rdpPath -PassThru
+    Write-ConnLog ('mstsc started with CredSSP-disabled .rdp pid=' + $proc.Id)
 } catch {
     Write-ConnLog ('mstsc start failed: ' + $_.Exception.Message)
     & cmdkey.exe "/delete:$target" 2>$null | Out-Null

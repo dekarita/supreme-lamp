@@ -70,7 +70,9 @@ function Get-RequestParts {
         $ix = $l.IndexOf(':')
         if ($ix -gt 0) { $headers[$l.Substring(0, $ix).Trim().ToLower()] = $l.Substring($ix + 1).Trim() }
     }
-    return @{ path = $path; headers = $headers; query = $query }
+    $method = 'GET'
+    if ($lines.Count -gt 0 -and $lines[0]) { $tok0 = ($lines[0].Trim() -split ' ')[0]; if ($tok0) { $method = $tok0.ToUpper() } }
+    return @{ path = $path; headers = $headers; query = $query; method = $method }
 }
 function Test-ClientAllowed {
     param($Client, $Query, $Token)
@@ -85,19 +87,41 @@ function Test-ClientAllowed {
     return $false
 }
 function Read-ClientRequest {
-    param($Stream)
-    $acc = New-Object System.Text.StringBuilder
-    $buf = New-Object byte[] 4096
-    try { $Stream.ReadTimeout = 5000 } catch { }
-    while ($true) {
-        $n = 0
-        try { $n = $Stream.Read($buf, 0, $buf.Length) } catch { break }
-        if ($n -le 0) { break }
-        [void]$acc.Append([System.Text.Encoding]::ASCII.GetString($buf, 0, $n))
-        if ($acc.ToString().Contains("`r`n`r`n")) { break }
-        if ($acc.Length -gt 16384) { break }
-    }
-    return $acc.ToString()
+param($Stream)
+$acc = New-Object System.Text.StringBuilder
+$buf = New-Object byte[] 4096
+try { $Stream.ReadTimeout = 5000 } catch { }
+$headerDone = $false
+$idx = -1
+$cl = 0
+$bodyBytes = New-Object System.Collections.Generic.List[byte]
+while ($true) {
+$n = 0
+try { $n = $Stream.Read($buf, 0, $buf.Length) } catch { break }
+if ($n -le 0) { break }
+if (-not $headerDone) {
+[void]$acc.Append([System.Text.Encoding]::ASCII.GetString($buf, 0, $n))
+$txt = $acc.ToString()
+$idx = $txt.IndexOf("`r`n`r`n")
+if ($idx -ge 0) {
+$headerDone = $true
+$m = [regex]::Match($txt, '(?im)^Content-Length:\s*(\d+)')
+if ($m.Success) { $cl = [int]$m.Groups[1].Value }
+$priorLen = $acc.Length - $n
+$bodyStart = ($idx + 4) - $priorLen
+if ($bodyStart -lt 0) { $bodyStart = 0 }
+if ($bodyStart -lt $n) { $bodyBytes.AddRange([byte[]]$buf[$bodyStart..($n - 1)]) }
+if ($bodyBytes.Count -ge $cl) { break }
+}
+if ($acc.Length -gt 65536) { break }
+} else {
+$bodyBytes.AddRange([byte[]]$buf[0..($n - 1)])
+if ($bodyBytes.Count -ge $cl) { break }
+}
+}
+$head = $acc.ToString()
+if ($idx -ge 0) { $head = $head.Substring(0, $idx + 4) }
+return @{ head = $head; body = $bodyBytes.ToArray() }
 }
 function Send-ClientResponse {
     param($Stream, [int]$Code, [string]$CType, [byte[]]$Body)
@@ -105,7 +129,7 @@ function Send-ClientResponse {
     if ($Code -eq 401) { $status = 'Unauthorized' }
     if ($Code -eq 404) { $status = 'Not Found' }
     if ($Code -eq 500) { $status = 'Server Error' }
-    $hdr = "HTTP/1.1 $Code $status`r`nContent-Type: $CType`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`nCache-Control: no-store`r`n`r`n"
+    $hdr = "HTTP/1.1 $Code $status`r`nContent-Type: $CType`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`nCache-Control: no-store`r`nAccess-Control-Allow-Origin: *`r`nAccess-Control-Allow-Headers: Content-Type`r`nAccess-Control-Allow-Methods: GET,POST,OPTIONS`r`n`r`n"
     $hb = [System.Text.Encoding]::ASCII.GetBytes($hdr)
     $Stream.Write($hb, 0, $hb.Length)
     if ($Body.Length -gt 0) { $Stream.Write($Body, 0, $Body.Length) }
@@ -129,9 +153,10 @@ function Invoke-ClientRequest {
     $stream = $null
     try {
         $stream = $Client.GetStream()
-        $raw = Read-ClientRequest -Stream $stream
-        if (-not $raw) { return }
-        $parts = Get-RequestParts -Raw $raw
+        $rr = Read-ClientRequest -Stream $stream
+        if (-not $rr -or -not $rr.head) { return }
+        $parts = Get-RequestParts -Raw ([string]$rr.head)
+        $parts['body'] = [byte[]]$rr.body
         $path = [string]$parts.path
         if (-not $path) { $path = '/' }
         if (-not (Test-ClientAllowed -Client $Client -Query $parts.query -Token $Token)) {
@@ -335,27 +360,32 @@ function Invoke-ClientRequest {
             if ($cfg) { $rdpIp2 = [string]$cfg.rdpIp; $rdpUser2 = [string]$cfg.rdpUser }
             $lines = @(
                 'screen mode id:i:2',
-                'use multimon:i:0',
                 'desktopwidth:i:1920',
                 'desktopheight:i:1080',
                 'session bpp:i:32',
                 'compression:i:1',
                 'keyboardhook:i:2',
                 'audiocapturemode:i:0',
-                'videoplaybackmode:i:1',
-                'connection type:i:7',
-                'networkautodetect:i:1',
-                'bandwidthautodetect:i:1',
-                'displayconnectionbar:i:1',
+                'videoplaybackmode:i:0',
+                'connection type:i:3',
+                'networkautodetect:i:0',
+                'bandwidthautodetect:i:0',
                 'disable wallpaper:i:1',
-                'enable font smoothing:i:1',
-                'enable composition:i:1',
-                'remoteapplicationmode:i:0',
-                'gatewayusagemethod:i:4',
-                'gatewaycredentialssource:i:4',
-                'gatewayprofileusagemethod:i:0',
-                'promptcredentialonce:i:0',
-                'use redirection server name:i:0',
+                'disable full window drag:i:1',
+                'disable menu anims:i:1',
+                'disable themes:i:0',
+                'disable cursor setting:i:1',
+                'bitmapcachepersist:i:1',
+                'smart sizing:i:0',
+                'redirectclipboard:i:1',
+                'redirectprinters:i:0',
+                'redirectcomports:i:0',
+                'redirectsmartcards:i:0',
+                'redirectdrives:i:0',
+                'autoreconnection enabled:i:1',
+                'prompt credential once:i:0',
+                'enableworkspacereconnect:i:0',
+                'use multimon:i:0',
                 'enablerdpudp:i:1',
                 ('full address:s:' + $rdpIp2),
                 ('username:s:' + $rdpUser2),
@@ -418,6 +448,46 @@ function Invoke-ClientRequest {
             try { $cp = Join-Path $Root 'conn-probe.json'; if (Test-Path -LiteralPath $cp) { $conn = (Get-Content -LiteralPath $cp -Raw | ConvertFrom-Json) } } catch { }
             $obj2.conn = $conn
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes $obj2)
+            return
+        }
+        if ($path -eq '/parsec-session' -and ([string]$parts.method -eq 'OPTIONS')) {
+            Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@())
+            return
+        }
+        if ($path -eq '/parsec-session' -and ([string]$parts.method -eq 'POST')) {
+            $j = $null
+            try { $j = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json } catch { }
+            if (-not $j -or (-not $j.userB64) -or (-not $j.configB64)) {
+                Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":false,"message":"missing configB64/userB64"}'))
+                return
+            }
+            $ru = [string]$cfg.rdpUser
+            $cfgName = if ($j.configName) { [string]$j.configName } else { 'config.txt' }
+            $targets = @()
+            if ($ru) { $targets += (Join-Path ('C:\Users\' + $ru) 'AppData\Roaming\Parsec') }
+            $targets += 'C:\ProgramData\Parsec'
+            $wrote = @()
+            foreach ($t in $targets) {
+                try {
+                    New-Item -ItemType Directory -Path $t -Force -ErrorAction Stop | Out-Null
+                    [System.IO.File]::WriteAllBytes((Join-Path $t $cfgName), [Convert]::FromBase64String([string]$j.configB64))
+                    [System.IO.File]::WriteAllBytes((Join-Path $t 'user.bin'), [Convert]::FromBase64String([string]$j.userB64))
+                    $wrote += $t
+                } catch { }
+            }
+            $parsecExe = $null
+            foreach ($cand in @('C:\Program Files\Parsec\parsecd.exe', 'C:\Program Files\Parsec\parsec.exe')) { if (Test-Path -LiteralPath $cand) { $parsecExe = $cand; break } }
+            if ($parsecExe -and $ru) {
+                try { Get-Process -Name parsecd -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch { }
+                try {
+                    & schtasks.exe /Create /F /SC ONCE /ST 00:00 /TN 'GhrdpParsecRestart' /TR ('"' + $parsecExe + '"') /RU $ru /IT 2>$null | Out-Null
+                    $LASTEXITCODE = 0
+                    & schtasks.exe /Run /TN 'GhrdpParsecRestart' 2>$null | Out-Null
+                    $LASTEXITCODE = 0
+                } catch { }
+            }
+            $msg = ('wrote: ' + ($wrote -join '; '))
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes((@{ ok = $true; message = $msg } | ConvertTo-Json -Compress)))
             return
         }
         Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('not found'))

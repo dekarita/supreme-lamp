@@ -2,6 +2,13 @@ name: Windows RDP - Tailscale Mission Control (6h ephemeral)
 on:
   workflow_dispatch:
     inputs:
+      runner_target:
+        description: 'Runner: windows-latest = US Azure (fast DL, ~260ms RDP) | self-hosted-windows-near = your nearby runner (10-60ms RDP)'
+        type: choice
+        options:
+          - windows-latest
+          - self-hosted-windows-near
+        default: windows-latest
       mirror_downloads_public:
         description: 'Mirror Downloads/Desktop/Documents/Temp/D:\RDP-Storage to gofile with fallbacks and publish PUBLIC Telegraph + Rentry indexes. Default ON.'
         type: boolean
@@ -22,9 +29,10 @@ permissions:
 
 jobs:
   rdp:
-    runs-on: windows-latest
+    runs-on: ${{ github.event.inputs.runner_target }}
     timeout-minutes: 357
     env:
+      GHRDP_EPHEMERAL: ${{ runner.environment == 'github-hosted' }}
       MIRROR_INPUT: ${{ github.event.inputs.mirror_downloads_public }}
       ENCRYPT_MODE: ${{ github.event.inputs.encrypt_mode || 'none' }}
       RENTRY_MAIN_URL: 'https://rentry.co/myurl0'
@@ -408,9 +416,10 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $rdp = 'HKLM:\System\CurrentControlSet\Control\Terminal Server'
           Set-ItemProperty -Path $rdp -Name 'fDenyTSConnections' -Value 0
-          Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'UserAuthentication' -Value 1
+          Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'UserAuthentication' -Value 0
           Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'SecurityLayer' -Value 2
           Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'MinEncryptionLevel' -Value 3
+          Write-Host '[rdp] NLA disabled (UserAuthentication=0) - bypasses client-side CredSSP/AV auth errors; TLS encryption still ON'
           Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'fPromptForPassword' -Value 0
           $tsPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
           New-Item -Path $tsPol -Force -ErrorAction SilentlyContinue | Out-Null
@@ -450,6 +459,12 @@ jobs:
               }
               if ($created) { Write-Host ('[fw] ' + $r.name + ' open: TCP ' + $r.port + ' inbound from 100.64.0.0/10 (loopback always allowed)') }
           }
+          foreach ($if in Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\Tcpip\Parameters\Interfaces') {
+              Set-ItemProperty -Path $if.PSPath -Name 'TcpNoDelay' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+              Set-ItemProperty -Path $if.PSPath -Name 'TcpAckFrequency' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+          }
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'fDisableUdp' -Value 0 -Force -ErrorAction SilentlyContinue
+          Write-Host '[rdp] Nagle disabled + ACK frequency 1 + UDP forced (latency tuning)'
           foreach ($r in $rules) {
               $found = $false
               try {
@@ -1447,9 +1462,7 @@ jobs:
           Write-Host '  (c) dashboard Start-watcher button + servers auto-heal the task every 60s'
           exit 0
 
-      - name: Machine personalization + apps (Edge/Chrome/Firefox extensions + bookmarks, qBittorrent, Parsec, VB-CABLE)
-        env:
-          PARSEC_TOKEN: ${{ secrets.PARSEC_TOKEN }}
+      - name: Machine personalization + apps (Edge/Chrome/Firefox extensions + bookmarks, qBittorrent, VB-CABLE)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -1578,8 +1591,7 @@ jobs:
               Write-Host '[browsers] gpupdate /force executed'
           } catch { }
           foreach ($pkg in @(
-              @{ id = 'qBittorrent.qBittorrent'; label = 'qBittorrent' },
-              @{ id = 'Parsec.Parsec'; label = 'Parsec' }
+              @{ id = 'qBittorrent.qBittorrent'; label = 'qBittorrent' }
           )) {
               $done = $false
               for ($a = 1; $a -le 2; $a++) {
@@ -1596,18 +1608,7 @@ jobs:
               }
               if (-not $done) { Write-Host ('[apps] WARNING: {0} not installed (optional; continuing)' -f $pkg.label) }
           }
-          $parsecExe = $null
-          foreach ($cand in @('C:\Program Files\Parsec\parsecd.exe', 'C:\Program Files\Parsec\parsec.exe', (Join-Path $env:LOCALAPPDATA 'Parsec\parsecd.exe'))) {
-              if (Test-Path -LiteralPath $cand) { $parsecExe = $cand; break }
-          }
-          if ($parsecExe) {
-              $defRun = 'Registry::HKEY_USERS\.DEFAULT\Software\Microsoft\Windows\CurrentVersion\Run'
-              New-Item -Path $defRun -Force -ErrorAction SilentlyContinue | Out-Null
-              Set-ItemProperty -Path $defRun -Name 'Parsec' -Value ('"{0}"' -f $parsecExe) -ErrorAction SilentlyContinue
-              Write-Host ('[parsec] autolaunch enabled: ' + $parsecExe)
-          } else {
-              Write-Host '[parsec] exe not found yet; watcher sets autolaunch at logon if present'
-          }
+          Write-Host '[parsec] skipped - new Parsec requires email OTP (token pairing deprecated); RDP with CredSSP-disabled .rdp is the primary path'
           try {
               $vcUrl = 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Setup_x64.exe'
               $vcPath = Join-Path $env:RUNNER_TEMP 'VBCABLE_Setup_x64.exe'
@@ -2269,7 +2270,7 @@ jobs:
           exit 0
 
       - name: Secure cleanup (wipe profiles/storage, clear logs, reset funnel/serve)
-        if: ${{ always() }}
+        if: ${{ always() && env.GHRDP_EPHEMERAL == 'true' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -2381,7 +2382,7 @@ jobs:
           exit 0
 
       - name: Overwrite free space (skipped when cancelled)
-        if: ${{ always() && !cancelled() }}
+        if: ${{ always() && !cancelled() && env.GHRDP_EPHEMERAL == 'true' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
