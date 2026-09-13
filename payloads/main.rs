@@ -26,6 +26,7 @@ struct AppState {
     root: PathBuf,
     tx: broadcast::Sender<String>,
     clients: Arc<Mutex<usize>>,
+    wire: Arc<Mutex<Option<Value>>>,
     started: Instant,
     port: u16,
 }
@@ -93,7 +94,7 @@ fn cfg_str(cfg: &Value, key: &str) -> String {
         .to_owned()
 }
 
-fn build_snapshot(root: &Path) -> Value {
+fn build_snapshot(root: &Path, wire_opt: Option<Value>) -> Value {
     let cfg = read_json_retry(&root.join("config.json")).unwrap_or_else(|| json!({}));
     let prog = read_json_retry(&root.join("progress.json")).unwrap_or_else(|| {
         json!({
@@ -153,6 +154,7 @@ fn build_snapshot(root: &Path) -> Value {
         "runnerEgressIp": cfg_str(&cfg, "runnerEgressIp"),
         "pagesBase": cfg_str(&cfg, "pagesBase"),
         "progress": prog,
+        "wire": wire_opt,
     })
 }
 
@@ -183,8 +185,9 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
     }
     let (mut sender, mut receiver) = socket.split();
     let root = state.root.clone();
+    let wire = state.wire.lock().map(|g| g.clone()).unwrap_or(None);
 
-    let snapshot = tokio::task::spawn_blocking(move || build_snapshot(&root))
+    let snapshot = tokio::task::spawn_blocking(move || build_snapshot(&root, wire))
         .await
         .unwrap_or_else(|_| json!({ "error": "snapshot task failed" }));
 
@@ -254,9 +257,19 @@ async fn health_handler(State(state): State<SharedState>) -> Json<Value> {
     }))
 }
 
+async fn ping_handler(State(state): State<SharedState>) -> Json<Value> {
+    let wire = state.wire.lock().map(|g| g.clone()).unwrap_or(None);
+    Json(json!({
+        "ok": true,
+        "ts": now_iso(),
+        "wire": wire,
+    }))
+}
+
 async fn api_progress(State(state): State<SharedState>) -> Json<Value> {
     let root = state.root.clone();
-    let snapshot = tokio::task::spawn_blocking(move || build_snapshot(&root))
+    let wire = state.wire.lock().map(|g| g.clone()).unwrap_or(None);
+    let snapshot = tokio::task::spawn_blocking(move || build_snapshot(&root, wire))
         .await
         .unwrap_or_else(|_| json!({ "error": "snapshot task failed" }));
     Json(snapshot)
@@ -432,7 +445,7 @@ fn spawn_file_watcher(state: SharedState) {
       }
       last_emit = Some(Instant::now());
 
-      if let Ok(text) = serde_json::to_string(&build_snapshot(&root)) {
+      if let Ok(text) = serde_json::to_string(&build_snapshot(&root, None)) {
           let _ = tx.send(text);
       }
   }
@@ -449,13 +462,93 @@ async fn periodic_broadcast(state: SharedState) {
     loop {
         interval.tick().await;
         let root = state.root.clone();
-        let snapshot = tokio::task::spawn_blocking(move || build_snapshot(&root))
+        let wire = state.wire.lock().map(|g| g.clone()).unwrap_or(None);
+        let snapshot = tokio::task::spawn_blocking(move || build_snapshot(&root, wire))
   .await
   .unwrap_or_else(|_| json!({ "error": "snapshot task failed" }));
         if let Ok(text) = serde_json::to_string(&snapshot) {
   let _ = state.tx.send(text);
         }
     }
+}
+
+async fn wire_pinger(state: SharedState) {
+    let mut interval = tokio::time::interval(Duration::from_secs(10));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        interval.tick().await;
+        let current = probe_wire().await;
+        if let Ok(mut guard) = state.wire.lock() {
+            *guard = current;
+        }
+    }
+}
+
+async fn probe_wire() -> Option<Value> {
+    let ts = r"C:\Program Files\Tailscale\tailscale.exe";
+    let status_out = tokio::process::Command::new(ts)
+        .arg("status")
+        .arg("--json")
+        .output()
+        .await
+        .ok()?;
+    let status_txt = String::from_utf8_lossy(&status_out.stdout);
+    let stj: Value = serde_json::from_str(&status_txt).ok()?;
+    let peers = stj.get("Peer")?.as_object()?;
+    let peer = peers
+        .iter()
+        .find(|(_, v)| v.get("Online").and_then(Value::as_bool).unwrap_or(false))?
+        .1;
+    let pip = peer
+        .get("TailscaleIPs")
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    if pip.is_empty() {
+        return None;
+    }
+    let ping_out = tokio::process::Command::new(ts)
+        .args(["ping", "-c", "1"])
+        .arg(&pip)
+        .output()
+        .await
+        .ok()?;
+    if !ping_out.status.success() {
+        return None;
+    }
+    let pout = String::from_utf8_lossy(&ping_out.stdout);
+    let mut via = String::new();
+    let mut rtt_ms: f64 = 0.0;
+    if let Some(vi) = pout.find("via ") {
+        let rest = &pout[vi + 4..];
+        if let Some(inx) = rest.find(" in ") {
+            via = rest[..inx].trim().to_string();
+            let after = &rest[inx + 4..];
+            if let Some(msx) = after.find("ms") {
+                rtt_ms = after[..msx].trim().parse::<f64>().unwrap_or(0.0);
+            }
+        }
+    }
+    let relay = peer
+        .get("Relay")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let peer_name = peer
+        .get("HostName")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    Some(json!({
+        "rttMs": rtt_ms,
+        "via": via,
+        "relay": relay,
+        "peerIp": pip,
+        "peerName": peer_name,
+        "ts": now_iso(),
+    }))
 }
 
 async fn shutdown_signal() {
@@ -480,16 +573,19 @@ async fn main() {
         root: root.clone(),
         tx,
         clients: Arc::new(Mutex::new(0)),
+        wire: Arc::new(Mutex::new(None)),
         started: Instant::now(),
         port,
     });
 
     spawn_file_watcher(state.clone());
     tokio::spawn(periodic_broadcast(state.clone()));
+    tokio::spawn(wire_pinger(state.clone()));
 
     let state_router: Router<Arc<AppState>> = axum::Router::new()
         .route("/ws", get(ws_handler))
         .route("/health", get(health_handler))
+        .route("/ping", get(ping_handler))
         .route("/api/progress", get(api_progress))
         .route("/api/config", get(api_config))
         .route("/api/uploads", get(api_uploads))
@@ -719,6 +815,9 @@ td.link a{background:var(--accent);-webkit-background-clip:text;background-clip:
 .stag.expired{background:rgba(148,163,184,.1);color:var(--mut);border:1px solid rgba(148,163,184,.2)}
 tr.expired-row{opacity:.45}tr.expired-row td.link a{text-decoration:line-through}
 .timer.ended{color:var(--bad)}
+.badge{font-size:10.5px;border:1px solid var(--line);border-radius:10px;padding:2px 7px;color:var(--mut);display:inline-block;vertical-align:middle;margin-left:4px}
+.badge.ok{color:var(--ok);border-color:var(--ok)}
+.badge.warn{color:var(--warn);border-color:var(--warn)}
 .banner.ended{display:none!important;color:var(--bad);border:1px solid rgba(248,113,113,.4);background:rgba(248,113,113,.08);padding:10px 14px;border-radius:8px;margin-top:8px;font-weight:600}
 .banner.ended.show{display:block!important}
 body.expired .timer{color:var(--bad)}
@@ -835,6 +934,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">RDP username</span><span class="v" id="credUser">__USER__</span><button onclick="copyById('credUser',this)">copy</button></div>
   <div class="row"><span class="k">RDP password</span><span class="v" id="credPass">__PASS__</span><button onclick="copyById('credPass',this)">copy</button></div>
   <div class="row"><span class="k">mstsc command</span><span class="v" id="mstscVal">mstsc /v:__IP__</span><button onclick="copyById('mstscVal',this)">copy</button></div>
+  <div class="row"><span class="k">Connectivity</span><span class="timer" id="connRtt" style="font-size:18px">-- ms</span><span class="badge" id="connBadge">path: --</span><span class="badge" id="connFps">-- fps</span><span class="badge" id="connJit">jit -- ms</span><canvas id="connSpark" width="220" height="34" style="width:220px;height:34px"></canvas></div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
   <div class="row"><span class="k">RDP logon age</span><span class="timer" id="timerRdpAge">--:--:--</span></div>
   <div class="row"><span class="k">Remaining (5h30 session)</span><span class="timer" id="timerRemaining">--:--:--</span></div>
@@ -1187,6 +1287,47 @@ var nav=document.querySelector('.topbar .nav')||document.querySelector('.topbar'
 if(nav)nav.appendChild(tb);
 applyLang();
 setInterval(applyLang,3000);
+})();
+(function(){
+var samples=[], lastWire=null;
+function el(i){return document.getElementById(i);}
+function badge(w){
+  if(!w) return {t:'PATH unknown', c:'warn'};
+  if(w.relay) return {t:'DERP '+w.relay+' via '+w.via, c:'warn'};
+  return {t:'DIRECT '+w.via, c:'ok'};
+}
+function jit(a){
+  if(a.length<2) return 0;
+  var m=0;for(var k=0;k<a.length;k++)m+=a[k];m/=a.length;
+  var d=[];for(var k=0;k<a.length;k++)d.push(Math.abs(a[k]-m));
+  d.sort(function(x,y){return x-y});
+  return Math.round(d[Math.floor(d.length/2)]);
+}
+function paint(httpRtt){
+  var r=el('connRtt'), b=el('connBadge'), f=el('connFps'), j=el('connJit'), cv=el('connSpark');
+  var showRtt=null, src='';
+  if(lastWire && (Date.now()-Date.parse(lastWire.ts))<25000){showRtt=lastWire.rttMs;src='wire';}
+  else if(httpRtt!=null){showRtt=httpRtt;src='http';}
+  if(r){
+    r.textContent=(showRtt==null?'--':Math.round(showRtt))+' ms';
+    r.style.color=showRtt==null?'var(--bad)':(showRtt<120?'var(--ok)':(showRtt<300?'var(--warn)':'var(--bad)'));
+  }
+  if(b){ var bd=badge(lastWire); b.textContent=(src==='wire'?bd.t:'HTTP '+(bd.t.indexOf('DIRECT')===0?'direct':bd.t)); b.className='badge '+bd.c; }
+  if(j) j.textContent='jit '+jit(samples)+' ms';
+  if(cv){ var ctx=cv.getContext('2d'); var W=cv.width,H=cv.height; ctx.clearRect(0,0,W,H);
+    if(samples.length){ var mx=Math.max.apply(null,samples.concat([50])); ctx.strokeStyle='#22d3ee'; ctx.lineWidth=1.5; ctx.beginPath();
+      for(var i=0;i<samples.length;i++){ var x=i*(W/59); var y=H-(samples[i]/mx)*(H-6)-3; if(i===0)ctx.moveTo(x,y); else ctx.lineTo(x,y); }
+      ctx.stroke(); }
+  }
+}
+setInterval(function(){
+  var t0=performance.now();
+  fetch('/ping',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+    var dt=performance.now()-t0; samples.push(dt); if(samples.length>60)samples.shift();
+    if(d&&d.wire)lastWire=d.wire;
+    paint(dt);
+  }).catch(function(){ samples.push(null); if(samples.length>60)samples.shift(); paint(null); });
+},2000);
 })();
 </script>
 </body>
