@@ -173,6 +173,7 @@ td.link a{background:var(--accent);-webkit-background-clip:text;background-clip:
 .stag.expired{background:rgba(148,163,184,.1);color:var(--mut);border:1px solid rgba(148,163,184,.2)}
 tr.expired-row{opacity:.45}tr.expired-row td.link a{text-decoration:line-through}
 .timer.ended{color:var(--bad)}
+.badge{font-size:10.5px;border:1px solid var(--line);border-radius:10px;padding:2px 7px;color:var(--mut);display:inline-block;vertical-align:middle;margin-left:4px}
 .banner.ended{display:none!important;color:var(--bad);border:1px solid rgba(248,113,113,.4);background:rgba(248,113,113,.08);padding:10px 14px;border-radius:8px;margin-top:8px;font-weight:600}
 .banner.ended.show{display:block!important}
 body.expired .timer{color:var(--bad)}
@@ -289,7 +290,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">RDP username</span><span class="v" id="credUser">__USER__</span><button onclick="copyById('credUser',this)">copy</button></div>
   <div class="row"><span class="k">RDP password</span><span class="v" id="credPass">__PASS__</span><button onclick="copyById('credPass',this)">copy</button></div>
   <div class="row"><span class="k">mstsc command</span><span class="v" id="mstscVal">mstsc /v:__IP__</span><button onclick="copyById('mstscVal',this)">copy</button></div>
-  <div class="row"><span class="k">Optimized .rdp</span><a id="rdpFileLink" class="btn" href="/rdp" download="ghrdp-optimized.rdp">download ghrdp-optimized.rdp</a><span class="note">UDP + autodetect + no wallpaper - smoother than plain mstsc</span></div>
+  <div class="row"><span class="k">Connectivity</span><span class="timer" id="connRtt" style="font-size:18px">-- ms</span><span class="badge" id="connVia">path: --</span><span class="badge" id="connFps">-- fps</span><span class="badge" id="connJit">jit -- ms</span><canvas id="connSpark" width="220" height="34" style="width:220px;height:34px"></canvas></div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
   <div class="row"><span class="k">RDP logon age</span><span class="timer" id="timerRdpAge">--:--:--</span></div>
   <div class="row"><span class="k">Remaining (5h30 session)</span><span class="timer" id="timerRemaining">--:--:--</span></div>
@@ -609,6 +610,25 @@ function tickTimers(){
   if(ta){if(sessionStartedAtMs){ta.textContent=fmtHMS(Math.max(0,(now-sessionStartedAtMs)/1000));}else{ta.textContent='--:--:--';}}
 }
 setInterval(tickTimers,1000);tickTimers();
+var fpsFrames=0,fpsLast=performance.now(),fpsVal=0;
+function fpsLoop(t){fpsFrames++;if(t-fpsLast>=1000){fpsVal=Math.round(fpsFrames*1000/(t-fpsLast));fpsFrames=0;fpsLast=t;}requestAnimationFrame(fpsLoop);}
+requestAnimationFrame(fpsLoop);
+var rttHist=[];
+function paintConn(dt){
+var r=document.getElementById('connRtt'),v=document.getElementById('connVia'),f=document.getElementById('connFps'),j=document.getElementById('connJit'),cv=document.getElementById('connSpark');
+if(r){if(dt==null){r.textContent='-- ms';r.style.color='var(--bad)';}else{r.textContent=Math.round(dt)+' ms';r.style.color=(dt<100?'var(--ok)':(dt<200?'var(--warn)':'var(--bad)'));}}
+if(f)f.textContent=fpsVal+' fps';
+if(lastData&&lastData.conn){var c=lastData.conn;
+ if(v){v.textContent=(c.direct?'DIRECT':'RELAY '+(c.via||''));v.style.color=(c.direct?'var(--ok)':'var(--warn)');}
+ if(j&&c.rtt!=null){j.textContent='wire '+Math.round(c.rtt)+' ms';}
+}
+if(rttHist.length>1){var mean=0;for(var i=0;i<rttHist.length;i++)mean+=rttHist[i];mean/=rttHist.length;var va=0;for(var i2=0;i2<rttHist.length;i2++){va+=Math.pow(rttHist[i2]-mean,2);}va/=rttHist.length;if(j&&dt!=null)j.textContent='jit '+Math.round(Math.sqrt(va))+' ms';}
+if(cv){var ctx=cv.getContext('2d');ctx.clearRect(0,0,cv.width,cv.height);ctx.strokeStyle='#22d3ee';ctx.lineWidth=1.5;ctx.beginPath();for(var k=0;k<rttHist.length;k++){var x=k*(cv.width/59);var y=cv.height-Math.min(1,rttHist[k]/400)*(cv.height-4)-2;if(k===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}ctx.stroke();}
+}
+setInterval(function(){
+var t0=performance.now();
+fetch('/health',{cache:'no-store'}).then(function(r){return r.json();}).then(function(){var dt=performance.now()-t0;rttHist.push(dt);if(rttHist.length>60)rttHist.shift();paintConn(dt);}).catch(function(){paintConn(null);});
+},1000);
 (function(){
 var I18N={
 'Runner elapsed':'ධාවක ගත වූ කාලය',

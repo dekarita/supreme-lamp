@@ -308,7 +308,10 @@ function Invoke-ClientRequest {
                 files = $prog.files
                 log = $prog.log
                 progress = $prog
+                conn = $null
             }
+            try { $cp = Join-Path $Root 'conn-probe.json'; if (Test-Path -LiteralPath $cp) { $conn = (Get-Content -LiteralPath $cp -Raw | ConvertFrom-Json) } } catch { }
+            $obj.conn = $conn
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes $obj)
             return
         }
@@ -402,7 +405,10 @@ function Invoke-ClientRequest {
                 sessionStartedAt = (To-IsoUtc ([string]$cfg2.sessionStartedAt))
                 creds = [ordered]@{ ip = [string]$cfg2.rdpIp; user = [string]$cfg2.rdpUser; pass = [string]$cfg2.rdpPass }
                 progress = $prog2
+                conn = $null
             }
+            try { $cp = Join-Path $Root 'conn-probe.json'; if (Test-Path -LiteralPath $cp) { $conn = (Get-Content -LiteralPath $cp -Raw | ConvertFrom-Json) } } catch { }
+            $obj2.conn = $conn
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes $obj2)
             return
         }
@@ -420,6 +426,36 @@ try { $listener.Start() } catch {
     exit 1
 }
 [System.IO.File]::WriteAllText($script:OkFile, ('LISTENING pid={0} bind={1} port={2} at={3}' -f $PID, $Bind, $Port, (Get-Date -Format o)), $script:NoBom)
+$probeScript = @'
+$ErrorActionPreference='Continue'
+$ts='C:\Program Files\Tailscale\tailscale.exe'
+$out='C:\ghrdp\conn-probe.json'
+while($true){
+  $obj=@{ts=(Get-Date).ToString('o'); rtt=$null; via='unknown'; direct=$false; peer=''}
+  try{
+    $j=(& $ts status --json 2>$null)|ConvertFrom-Json
+    if($j -and $j.Peer){
+      foreach($p in $j.Peer.PSObject.Properties){
+        $peer=$p.Value
+        if($peer.Online){
+          $obj.peer=@($peer.TailscaleIPs)[0]
+          break
+        }
+      }
+    }
+    if($obj.peer){
+      $o=(& $ts ping -c 1 --timeout 2s $obj.peer 2>$null) -join ' '
+      if($o -match 'via (DERP[A-Za-z0-9]*|[Dd]irect[A-Za-z0-9]*)'){ $obj.via=$Matches[1]; $obj.direct=($Matches[1] -like 'irect*' -or $Matches[1] -like 'D*irect*') }
+      if($o -match 'in ([0-9.]+)\s*ms'){ $obj.rtt=[double]$Matches[1] }
+    }
+  }catch{}
+  try{ [System.IO.File]::WriteAllText($out,($obj|ConvertTo-Json -Compress)) }catch{}
+  Start-Sleep -Seconds 4
+}
+'@
+$probePath = Join-Path $Root 'conn-probe.ps1'
+[System.IO.File]::WriteAllText($probePath, $probeScript, $script:NoBom)
+try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$probePath -WindowStyle Hidden } catch { }
 $start = Get-Date
 $limit = New-TimeSpan -Minutes $LimitMinutes
 $lastHeal = Get-Date
