@@ -670,7 +670,12 @@ jobs:
           $ip = ''
           $dns = ''
           $ghName = ''
-          try { $ip = ([string](& $ts ip -4 2>$null | Select-Object -First 1)).Trim(); $LASTEXITCODE = 0 } catch { }
+          for ($ipTry = 1; $ipTry -le 10; $ipTry++) {
+              try { $ip = ([string](& $ts ip -4 2>$null | Select-Object -First 1)).Trim(); $LASTEXITCODE = 0 } catch { $ip = '' }
+              if ($ip) { break }
+              Start-Sleep -Seconds 3
+          }
+          if (-not $ip) { Write-Host '[stage] WARNING: Tailscale IP still empty after 10 tries' }
           try {
               $j = (& $ts status --json 2>$null) | ConvertFrom-Json
               $ghName = [string]$j.Self.HostName
@@ -1378,8 +1383,11 @@ jobs:
           try { $g = Invoke-RestMethod -Uri $api -Headers $hdr -ErrorAction Stop; $sha = $g.sha; $existing = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($g.content)) } catch { }
           if ($existing) {
               $arch = $existing | ConvertFrom-Json
-              foreach ($s in @($arch.sessions)) { if ([string]$s.id -eq 'legacy-myurl0') { Write-Host '[migrate] legacy-myurl0 already in archive - skipping'; exit 0 } }
+              $existingLegacy = $null
+              foreach ($s in @($arch.sessions)) { if ([string]$s.id -eq 'legacy-myurl0') { $existingLegacy = $s } }
+              if ($existingLegacy -and ([int]$existingLegacy.filesCount -gt 0)) { Write-Host '[migrate] legacy-myurl0 already in archive WITH files - skipping'; exit 0 }
           }
+          Write-Host '[migrate] legacy record missing/empty - re-importing from myurl0'
           $raw = ''
           try { $raw = (Invoke-WebRequest -Uri 'https://rentry.co/myurl0/raw' -UseBasicParsing -TimeoutSec 20).Content } catch { }
           if (-not $raw) { Write-Host '[migrate] myurl0 unreachable - nothing to migrate'; exit 0 }
@@ -1395,8 +1403,8 @@ jobs:
           elseif ($raw -match 'decrypt\s+(?:password|pw|key)[^A-Za-z0-9]{0,40}([A-Za-z0-9]{16,64})') { $key = $Matches[1] }
           $rec = [ordered]@{ id = 'legacy-myurl0'; date = ('migrated ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')); filesCount = $files.Count; bytes = [long]0; key = $key; telegraph = ''; rentry = 'https://rentry.co/myurl0'; files = $files }
           $sessions = @()
-          if ($existing) { $sessions = @(($existing | ConvertFrom-Json).sessions) }
-          $sessions = $sessions + @($rec)
+          if ($existing) { $sessions = @(@(($existing | ConvertFrom-Json).sessions) | Where-Object { [string]$_.id -ne 'legacy-myurl0' }) }
+          $sessions = @($rec) + @($sessions)
           $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes((@{ sessions = $sessions } | ConvertTo-Json -Depth 8 -Compress)))
           $body = @{ message = 'migrate myurl0 history (append-only)'; content = $b64 }
           if ($sha) { $body.sha = $sha }
@@ -1639,6 +1647,15 @@ jobs:
           $deadline = $idleCap
           . (Join-Path $root 'ghrdp-lib.ps1')
           $cfgKa = Read-MirrorCfg -Path $cfgPath
+          if ($cfgKa -and -not [string]$cfgKa.rdpIp) {
+              $ipBack = ''
+              for ($bt = 1; $bt -le 10; $bt++) {
+                  try { $ipBack = ([string](& $ts ip -4 2>$null | Select-Object -First 1)).Trim(); $LASTEXITCODE = 0 } catch { $ipBack = '' }
+                  if ($ipBack) { break }
+                  Start-Sleep -Seconds 3
+              }
+              if ($ipBack) { $cfgKa.rdpIp = $ipBack; Save-MirrorCfg -Cfg $cfgKa -Path $cfgPath; Write-Host ('[keepalive] backfilled rdpIp=' + $ipBack) }
+          }
           if ($cfgKa) { $cfgKa | Add-Member -NotePropertyName keepAliveDeadline -NotePropertyValue ($deadline.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')) -Force; $cfgKa | Add-Member -NotePropertyName keepAlivePhase -NotePropertyValue 'idle-wait' -Force; Save-MirrorCfg -Cfg $cfgKa -Path $cfgPath }
           $beat = 0
           $lastBannerBeat = -10
