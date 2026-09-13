@@ -325,6 +325,42 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'text/html; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($html))
             return
         }
+        if ($path -eq '/rdp') {
+            $rdpIp2 = ''; $rdpUser2 = ''
+            if ($cfg) { $rdpIp2 = [string]$cfg.rdpIp; $rdpUser2 = [string]$cfg.rdpUser }
+            $lines = @(
+                'screen mode id:i:2',
+                'use multimon:i:0',
+                'desktopwidth:i:1920',
+                'desktopheight:i:1080',
+                'session bpp:i:32',
+                'compression:i:1',
+                'keyboardhook:i:2',
+                'audiocapturemode:i:0',
+                'videoplaybackmode:i:1',
+                'connection type:i:7',
+                'networkautodetect:i:1',
+                'bandwidthautodetect:i:1',
+                'displayconnectionbar:i:1',
+                'disable wallpaper:i:1',
+                'enable font smoothing:i:1',
+                'enable composition:i:1',
+                'remoteapplicationmode:i:0',
+                'gatewayusagemethod:i:4',
+                'gatewaycredentialssource:i:4',
+                'gatewayprofileusagemethod:i:0',
+                'promptcredentialonce:i:0',
+                'use redirection server name:i:0',
+                'enablerdpudp:i:1',
+                ('full address:s:' + $rdpIp2),
+                ('username:s:' + $rdpUser2),
+                'prompt for credentials:i:1',
+                'negotiate security layer:i:1'
+            )
+            $rdpTxt = ($lines -join "`r`n")
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/x-rdp-file; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($rdpTxt))
+            return
+        }
         if ($path -eq '/health') {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes @{ ok = $true; ws = $false; port = $Port; pid = $PID; ts = (Get-Date -Format o) })
             return

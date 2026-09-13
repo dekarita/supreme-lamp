@@ -289,6 +289,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">RDP username</span><span class="v" id="credUser">__USER__</span><button onclick="copyById('credUser',this)">copy</button></div>
   <div class="row"><span class="k">RDP password</span><span class="v" id="credPass">__PASS__</span><button onclick="copyById('credPass',this)">copy</button></div>
   <div class="row"><span class="k">mstsc command</span><span class="v" id="mstscVal">mstsc /v:__IP__</span><button onclick="copyById('mstscVal',this)">copy</button></div>
+  <div class="row"><span class="k">Optimized .rdp</span><a id="rdpFileLink" class="btn" href="/rdp" download="ghrdp-optimized.rdp">download ghrdp-optimized.rdp</a><span class="note">UDP + autodetect + no wallpaper - smoother than plain mstsc</span></div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
   <div class="row"><span class="k">RDP logon age</span><span class="timer" id="timerRdpAge">--:--:--</span></div>
   <div class="row"><span class="k">Remaining (5h30 session)</span><span class="timer" id="timerRemaining">--:--:--</span></div>

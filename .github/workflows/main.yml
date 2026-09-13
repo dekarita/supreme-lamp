@@ -309,6 +309,43 @@ jobs:
           Write-Host ('[ts] connected. Tailscale IP = ' + $ip)
           exit 0
 
+      - name: Optimize Tailscale path (direct-connection hunter, every 5 min)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          New-Item -ItemType Directory -Path 'C:\ghrdp' -Force | Out-Null
+          $hunter = @'
+          $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+          try {
+            $j = (& $ts status --json 2>$null) | ConvertFrom-Json
+            if (-not $j -or -not $j.Peer) { exit 0 }
+            foreach ($prop in $j.Peer.PSObject.Properties) {
+              $ip = $null
+              try { $ip = @($prop.Value.TailscaleIPs)[0] } catch { }
+              if (-not $ip) { continue }
+              $o = (& $ts ping -c 1 $ip 2>$null) -join ' '
+              if ($o -match 'via DERP') {
+                Write-Host ("[hunter] peer $ip via DERP - hole-punching for direct")
+                & $ts ping --until-direct -c 20 --timeout 45s $ip 2>$null | Out-Null
+                $LASTEXITCODE = 0
+              }
+            }
+          } catch { }
+          exit 0
+          '@
+          $hunter = ($hunter -split "`r?`n" | ForEach-Object { $_ -replace '^\s{10}', '' }) -join "`r`n"
+          [System.IO.File]::WriteAllText('C:\ghrdp\direct-hunter.ps1', $hunter, (New-Object System.Text.UTF8Encoding($false)))
+          try {
+            $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\direct-hunter.ps1"'
+            $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Hours 6)
+            $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+            $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 4)
+            Register-ScheduledTask -TaskName 'GhrdpDirectHunter' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+            Start-ScheduledTask -TaskName 'GhrdpDirectHunter' -ErrorAction SilentlyContinue
+            Write-Host '[ts] direct-hunter registered (every 5 min; forces direct hole-punch)'
+          } catch { Write-Host ('[ts] hunter task failed: ' + $_.Exception.Message) }
+          exit 0
+
       - name: Optional Funnel ACL via TS_API_KEY
         env:
           TS_KEY: ${{ secrets.TS_API_KEY }}
@@ -375,6 +412,15 @@ jobs:
           Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'SecurityLayer' -Value 2
           Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'MinEncryptionLevel' -Value 3
           Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'fPromptForPassword' -Value 0
+          $tsPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
+          New-Item -Path $tsPol -Force -ErrorAction SilentlyContinue | Out-Null
+          Set-ItemProperty -Path $tsPol -Name 'fDisableWallpaper' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path $tsPol -Name 'fDisableCdm' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path $tsPol -Name 'fDisableCpm' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path $tsPol -Name 'fDisableCcm' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path $tsPol -Name 'fDisableLpt' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path $tsPol -Name 'fDisableClipboard' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+          Write-Host '[rdp] perf policy applied: wallpaper/drives/printers/COM/LPT off; clipboard + UDP on'
           try { Set-Service -Name TermService -StartupType Automatic -ErrorAction Stop } catch { Write-Host ('[rdp] TermService startup: ' + $_.Exception.Message) }
           try {
               Enable-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction Stop
@@ -384,19 +430,20 @@ jobs:
               Write-Host '[rdp] firewall group scoping failed (continuing)'
           }
           $rules = @(
-              @{ name = 'ghrdp-rdp-3389';  port = 3389 },
-              @{ name = 'ghrdp-dash-7331'; port = 7331 },
-              @{ name = 'ghrdp-dash-7332'; port = 7332 }
+              @{ name = 'ghrdp-rdp-3389';     port = 3389; proto = 'TCP' },
+              @{ name = 'ghrdp-rdp-3389-udp'; port = 3389; proto = 'UDP' },
+              @{ name = 'ghrdp-dash-7331';    port = 7331; proto = 'TCP' },
+              @{ name = 'ghrdp-dash-7332';    port = 7332; proto = 'TCP' }
           )
           foreach ($r in $rules) {
               $created = $false
               try {
-                  New-NetFirewallRule -DisplayName $r.name -Direction Inbound -LocalPort $r.port -Protocol TCP -Action Allow -RemoteAddress '100.64.0.0/10' -Profile Any -Enabled True -ErrorAction Stop | Out-Null
+                  New-NetFirewallRule -DisplayName $r.name -Direction Inbound -LocalPort $r.port -Protocol $r.proto -Action Allow -RemoteAddress '100.64.0.0/10' -Profile Any -Enabled True -ErrorAction Stop | Out-Null
                   $created = $true
               } catch {
                   & netsh.exe advfirewall firewall delete rule name="$($r.name)" 2>$null | Out-Null
                   $LASTEXITCODE = 0
-                  & netsh.exe advfirewall firewall add rule name="$($r.name)" dir=in action=allow protocol=TCP localport=$($r.port) remoteip=100.64.0.0/10 enable=yes 2>$null | Out-Null
+                  & netsh.exe advfirewall firewall add rule name="$($r.name)" dir=in action=allow protocol=$($r.proto.ToLower()) localport=$($r.port) remoteip=100.64.0.0/10 enable=yes 2>$null | Out-Null
                   $LASTEXITCODE = 0
                   $created = $true
                   Write-Host ('[fw] ' + $r.name + ' created via netsh advfirewall fallback')
@@ -2002,11 +2049,29 @@ jobs:
               }
               $tsStr = 'OK'
               if (-not $tsOk) { $tsStr = 'DOWN' }
+              $tsPath = 'n/a'
+              if ($tsOk) {
+                  try {
+                      $j2 = (& $ts status --json 2>$null) | ConvertFrom-Json
+                      if ($j2 -and $j2.Peer) {
+                          foreach ($prop in $j2.Peer.PSObject.Properties) {
+                              $pip = $null
+                              try { $pip = @($prop.Value.TailscaleIPs)[0] } catch { }
+                              if (-not $pip) { continue }
+                              $o = (& $ts ping -c 1 $pip 2>$null) -join ' '
+                              $ms = [regex]::Match($o, 'in ([0-9.]+)ms')
+                              if ($o -match 'via DERP') { $tsPath = 'DERP ' + $ms.Groups[1].Value + 'ms' }
+                              elseif ($ms.Success) { $tsPath = 'DIRECT ' + $ms.Groups[1].Value + 'ms' }
+                              break
+                          }
+                      }
+                  } catch { }
+              }
               $rdpStr = 'OK'
               if (-not $rdpOk) { $rdpStr = 'DOWN' }
               $psStr = 'UP'
               if (-not $psOk) { $psStr = 'DOWN' }
-              $line = 'HEARTBEAT ' + $icons.hourglass + ' remaining ' + (Get-Remaining) + ' | dashboard ' + $dashShort + ' | ts:' + $tsStr + ' | rdp3389:' + $rdpStr + ' | ps7331:' + $psStr + ' | rust7332:' + $rustStr + ' | watcher:' + $watcherStr + ' (scans ' + $scans + ') | files ' + $done + '/' + $total + ' failed ' + $failed + ' | speed ' + (Get-SpeedStr -Bps $spd) + ' | Last updated: ' + $stamp
+              $line = 'HEARTBEAT ' + $icons.hourglass + ' remaining ' + (Get-Remaining) + ' | dashboard ' + $dashShort + ' | ts:' + $tsStr + ' path:' + $tsPath + ' | rdp3389:' + $rdpStr + ' | ps7331:' + $psStr + ' | rust7332:' + $rustStr + ' | watcher:' + $watcherStr + ' (scans ' + $scans + ') | files ' + $done + '/' + $total + ' failed ' + $failed + ' | speed ' + (Get-SpeedStr -Bps $spd) + ' | Last updated: ' + $stamp
               if (-not ($tsOk -and $rdpOk -and $psOk)) { $line = $icons.warn + ' ' + $line }
               Write-Host $line
               try {
@@ -2200,7 +2265,7 @@ jobs:
               }
               Write-Host '[cleanup] tailscale serve/funnel reset'
           }
-          foreach ($tn in @('GhrdpWatcher', 'GhrdpServer', 'GhrdpRustDash')) {
+          foreach ($tn in @('GhrdpWatcher', 'GhrdpServer', 'GhrdpRustDash', 'GhrdpDirectHunter')) {
               try { Stop-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue } catch { }
               try { Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue } catch { }
           }
