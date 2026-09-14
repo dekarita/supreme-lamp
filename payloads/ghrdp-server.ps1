@@ -258,6 +258,21 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/octet-stream' -Body ([System.Text.Encoding]::ASCII.GetBytes($bat))
             return
         }
+        if ($path -eq '/webdesk-boot') {
+            $outB = @{ ok = $false; message = '' }
+            try {
+                $cfgB = Read-JsonFile -Path $script:CfgPath
+                $srvKey = 'HKCU:\Software\Microsoft\Terminal Server Client\Servers\127.0.0.1'
+                New-Item -Path $srvKey -Force -ErrorAction SilentlyContinue | Out-Null
+                Set-ItemProperty -Path $srvKey -Name 'AuthenticationLevelOverride' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+                & cmdkey.exe /generic:TERMSRV/127.0.0.1 ('/user:' + [string]$cfgB.rdpUser) ('/pass:' + [string]$cfgB.rdpPass) 2>$null | Out-Null
+                $LASTEXITCODE = 0
+                Start-Process mstsc.exe -ArgumentList '/v:127.0.0.1','/w:1280','/h:720' -WindowStyle Hidden
+                $outB.ok = $true; $outB.message = 'loopback desktop session bootstrap launched'
+            } catch { $outB.message = $_.Exception.Message }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes(($outB | ConvertTo-Json -Compress)))
+            return
+        }
         if ($path -eq '/webdesk-status') {
             $ageMs = -1
             try { $tsTxt = [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\frame-ts.txt'); $ageMs = [int]((Get-Date) - [datetime]$tsTxt).TotalMilliseconds } catch { }

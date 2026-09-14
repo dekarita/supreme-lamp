@@ -2130,13 +2130,27 @@ jobs:
                   $lastWatchNudge = Get-Date
                   try { Start-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction SilentlyContinue } catch { }
               }
-              $wdAge = -1
-              try { $wdTs = [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\frame-ts.txt'); $wdAge = [int]((Get-Date) - [datetime]$wdTs).TotalMilliseconds } catch { }
-              if (($wdAge -lt 0 -or $wdAge -gt 15000) -and (((Get-Date) - $lastWebDeskFix).TotalMinutes -ge 2)) {
-                  $lastWebDeskFix = Get-Date
-                  Write-Host ($icons.wrench + ' ' + $stamp + ' web desktop capture stale/missing (frameAge=' + $wdAge + 'ms) - restarting GhrdpWebDesk')
-                  try { Start-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction Stop } catch { Write-Host ('   webdesk restart failed: ' + $_.Exception.Message) }
-              }
+           $wdAge = -1
+           try { $wdTs = [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\frame-ts.txt'); $wdAge = [int]((Get-Date) - [datetime]$wdTs).TotalMilliseconds } catch { }
+           if (($wdAge -lt 0 -or $wdAge -gt 15000) -and (((Get-Date) - $lastWebDeskFix).TotalMinutes -ge 2)) {
+               $lastWebDeskFix = Get-Date
+               $sess = $false
+               try { $q = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0; if ($q -match [regex]::Escape([string]$cfgNow.rdpUser)) { $sess = $true } } catch { }
+               if (-not $sess) {
+                   Write-Host ($icons.wrench + ' ' + $stamp + ' no interactive session for RDP user - booting loopback RDP session (creates the desktop the web desktop captures)')
+                   try {
+                       $srvKey = 'HKCU:\Software\Microsoft\Terminal Server Client\Servers\127.0.0.1'
+                       New-Item -Path $srvKey -Force -ErrorAction SilentlyContinue | Out-Null
+                       Set-ItemProperty -Path $srvKey -Name 'AuthenticationLevelOverride' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+                       & cmdkey.exe /generic:TERMSRV/127.0.0.1 ('/user:' + [string]$cfgNow.rdpUser) ('/pass:' + [string]$cfgNow.rdpPass) 2>$null | Out-Null
+                       $LASTEXITCODE = 0
+                       Start-Process mstsc.exe -ArgumentList '/v:127.0.0.1','/w:1280','/h:720' -WindowStyle Hidden
+                   } catch { Write-Host ('   loopback boot failed: ' + $_.Exception.Message) }
+               } else {
+                   Write-Host ($icons.wrench + ' ' + $stamp + ' session exists but capture stale (frameAge=' + $wdAge + 'ms) - restarting GhrdpWebDesk')
+                   try { Start-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction Stop } catch { Write-Host ('   webdesk restart failed: ' + $_.Exception.Message) }
+               }
+           }
               $tsStr = 'OK'
               if (-not $tsOk) { $tsStr = 'DOWN' }
               $tsPath = 'n/a'
