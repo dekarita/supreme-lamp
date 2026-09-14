@@ -319,10 +319,10 @@ function Invoke-ClientRequest {
 <style>html,body{margin:0;height:100%;background:#101418;overflow:hidden}#bar{position:fixed;top:0;left:0;right:0;padding:6px 10px;font:13px system-ui;color:#e8eef3;background:#1b2530;display:flex;gap:10px;align-items:center;z-index:9}#bar .st{color:#8aa0ad}#bar button{background:#153e5c;color:#e8eef3;border:0;border-radius:6px;padding:5px 9px;cursor:pointer}#wrap{position:absolute;top:34px;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center}img{max-width:100%;max-height:100%;cursor:crosshair}</style>
 </head><body>
 <div id="bar"><b>GHRDP Web Desktop</b><span class="st" id="st">connecting...</span><button id="cp">Copy remote clipboard</button><button id="ps">Paste into remote</button></div>
-<div id="wrap"><img id="fr" alt="remote"></div>
+<div id="wrap"><img id="fr" alt="remote" style="display:none"></div>
 <script>
 var img=document.getElementById('fr'),st=document.getElementById('st'),pend=[],oldUrl=null;
-function frame(){fetch('/webdesk-frame?'+Date.now(),{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.blob();}).then(function(b){if(oldUrl)URL.revokeObjectURL(oldUrl);oldUrl=URL.createObjectURL(b);img.src=oldUrl;st.textContent='live';}).catch(function(){st.textContent='waiting for first frame (log on via RDP once)...';});}
+function frame(){fetch('/webdesk-frame?'+Date.now(),{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.blob();}).then(function(b){if(oldUrl)URL.revokeObjectURL(oldUrl);oldUrl=URL.createObjectURL(b);img.src=oldUrl;img.style.display='';st.textContent='live';}).catch(function(){st.textContent='waiting for first frame (log on via RDP once)...';});}
 setInterval(frame,300);frame();
 (async function selfBoot(){
 for(var round=0;round<3;round++){

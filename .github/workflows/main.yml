@@ -2140,7 +2140,7 @@ jobs:
                try { $q = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0; if ($q -match [regex]::Escape([string]$cfgNow.rdpUser)) { $sess = $true } } catch { }
                if (-not $sess) {
                    Write-Host ($icons.wrench + ' ' + $stamp + ' no interactive session for RDP user - booting loopback RDP session (creates the desktop the web desktop captures)')
-                   try { $null = Start-GhrdpLoopbackSession -User ([string]$cfgNow.rdpUser) -Pass ([string]$cfgNow.rdpPass) } catch { Write-Host ('   loopback boot failed: ' + $_.Exception.Message) }
+                   try { $okSess = Start-GhrdpLoopbackSession -User ([string]$cfgNow.rdpUser) -Pass ([string]$cfgNow.rdpPass); Write-Host ('   loopback session after heal: ' + $okSess) } catch { Write-Host ('   loopback boot failed: ' + $_.Exception.Message) }
                } else {
                    Write-Host ($icons.wrench + ' ' + $stamp + ' session exists but capture stale (frameAge=' + $wdAge + 'ms) - restarting GhrdpWebDesk')
                    try { Start-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction Stop } catch { Write-Host ('   webdesk restart failed: ' + $_.Exception.Message) }
