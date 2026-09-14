@@ -893,7 +893,7 @@ jobs:
             $c | Add-Member -NotePropertyName vncPass -NotePropertyValue $vncPass -Force
             [System.IO.File]::WriteAllText($cfgPath, ($c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
           }
-          Write-Host ('[vnc] web desktop ready: vnc=' + $vncUp + ' bridge=' + $brUp + ' page=http://<ts-ip>:7331/novnc')
+          Write-Host ('[vnc] backend verified: vnc5900=' + $vncUp + ' bridge7333=' + $brUp)
           exit 0
 
       - name: Start Mission Control dashboard EARLY (PS 7331, SYSTEM task, confirm LISTENING)

@@ -262,8 +262,39 @@ function Invoke-ClientRequest {
             $cfgN = Read-JsonFile -Path $script:CfgPath
             $vp = ''
             if ($cfgN) { $vp = [string]$cfgN.vncPass }
-            $htmlN = '<!doctype html><html><head><meta charset="utf-8"><title>GHRDP Web Desktop</title><style>html,body{margin:0;height:100%;background:#101418}#screen{width:100%;height:100%}</style></head><body><div id="screen"></div><script type="module">import RFB from ''https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js'';const rfb=new RFB(document.getElementById(''screen''),''ws://''+location.hostname+'':7333/websockify'',{credentials:{password:''PASSPLACEHOLDER''}});rfb.scaleViewport=true;rfb.clipboardCapable=true;rfb.addEventListener(''clipboard'',e=>{if(navigator.clipboard)navigator.clipboard.writeText(e.detail.text).catch(()=>{});});</script></body></html>'
-            $htmlN = $htmlN.Replace('PASSPLACEHOLDER', $vp)
+            $htmlN = @'
+<!doctype html><html><head><meta charset="utf-8"><title>GHRDP Web Desktop</title>
+<style>html,body{margin:0;height:100%;background:#101418;overflow:hidden}#screen{width:100%;height:100%}#bar{position:fixed;top:0;left:0;right:0;padding:8px 12px;font:13px system-ui;color:#e8eef3;background:#1b2530;display:flex;gap:12px;align-items:center;z-index:9}#bar .st{color:#8aa0ad}#bar button{background:#153e5c;color:#e8eef3;border:0;border-radius:6px;padding:6px 10px;cursor:pointer}</style>
+</head><body>
+<div id="bar"><b>GHRDP Web Desktop</b><span class="st" id="st">checking backend...</span><button id="re">Retry</button></div>
+<div id="screen"></div>
+<script type="module">
+const st=document.getElementById('st');
+const VP=__VP__;
+let rfb=null;
+async function boot(){
+  st.textContent='checking backend...';
+  try{
+    const r=await fetch('/vncstatus',{cache:'no-store'});
+    const j=await r.json();
+    if(!j.ok){ st.textContent='backend down: vnc5900='+j.vnc+' bridge7333='+j.bridge+' - keep-alive self-heals every 2 min; click Retry'; return; }
+  }catch(e){ st.textContent='cannot reach /vncstatus: '+e; return; }
+  st.textContent='loading noVNC + connecting...';
+  try{
+    const mod=await import('https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js');
+    rfb=new mod.default(document.getElementById('screen'),'ws://'+location.hostname+':7333/websockify',{credentials:{password:VP}});
+    rfb.scaleViewport=true; rfb.clipboardCapable=true;
+    rfb.addEventListener('connect',()=>{st.textContent='connected - clipboard active';});
+    rfb.addEventListener('disconnect',e=>{st.textContent='disconnected: '+((e.detail&&e.detail.reason)||'unknown')+' - click Retry';});
+    rfb.addEventListener('credentialsrequired',()=>{rfb.sendCredentials({password:VP});});
+    rfb.addEventListener('securityfailure',e=>{st.textContent='VNC password rejected: '+e.detail.reason;});
+  }catch(e){ st.textContent='noVNC CDN load failed: '+e; }
+}
+document.getElementById('re').onclick=boot;
+boot();
+</script></body></html>
+'@
+            $htmlN = $htmlN.Replace('__VP__', ("'" + $vp + "'"))
             Send-ClientResponse -Stream $stream -Code 200 -CType 'text/html; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($htmlN))
             return
         }
