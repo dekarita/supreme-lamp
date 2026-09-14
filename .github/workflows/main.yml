@@ -644,6 +644,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-watcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-watcher.ps1"
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-webdesk.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-webdesk.ps1"
           echo '[watcher] ghrdp-watcher.ps1 written'
 
       - name: Write launcher + ghrdp:// connector (cmdkey 500ms fix) + DEBUG tools
@@ -1494,6 +1495,27 @@ jobs:
           Write-Host '  (c) dashboard Start-watcher button + servers auto-heal the task every 60s'
           exit 0
 
+      - name: Register web desktop capture (ONLOGON, runs in RDP session)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $user = $env:RDP_USER
+          $pwshPath = 'powershell.exe'
+          try { $c = Get-Command powershell.exe -ErrorAction Stop; if ($c) { $pwshPath = $c.Source } } catch {
+            try { $c2 = Get-Command pwsh.exe -ErrorAction Stop; if ($c2) { $pwshPath = $c2.Source } } catch { }
+          }
+          $argLine = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-webdesk.ps1"'
+          try {
+              $action = New-ScheduledTaskAction -Execute $pwshPath -Argument $argLine
+              $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+              $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+              $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 6)
+              Register-ScheduledTask -TaskName 'GhrdpWebDesk' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+              Start-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction SilentlyContinue
+              Write-Host '[webdesk] GhrdpWebDesk registered + start attempted (active once the RDP user logs on)'
+          } catch { Write-Host ('[webdesk] register failed: ' + $_.Exception.Message) }
+          exit 0
+
       - name: Machine personalization + apps (Edge/Chrome/Firefox extensions + bookmarks, qBittorrent, VB-CABLE)
         shell: pwsh
         run: |
@@ -1698,6 +1720,7 @@ jobs:
           $lastPsFix = (Get-Date).AddMinutes(-10)
           $lastRustFix = (Get-Date).AddMinutes(-10)
           $lastStaleFix = (Get-Date).AddMinutes(-10)
+          $lastWebDeskFix = (Get-Date).AddMinutes(-10)
           $lastVncFix = (Get-Date).AddMinutes(-10)
           $icons = [ordered]@{
               rocket = [char]::ConvertFromUtf32(0x1F680)
@@ -2106,6 +2129,13 @@ jobs:
               if (((Get-Date) - $lastWatchNudge).TotalMinutes -ge 10) {
                   $lastWatchNudge = Get-Date
                   try { Start-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction SilentlyContinue } catch { }
+              }
+              $wdAge = -1
+              try { $wdTs = [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\frame-ts.txt'); $wdAge = [int]((Get-Date) - [datetime]$wdTs).TotalMilliseconds } catch { }
+              if (($wdAge -lt 0 -or $wdAge -gt 15000) -and (((Get-Date) - $lastWebDeskFix).TotalMinutes -ge 2)) {
+                  $lastWebDeskFix = Get-Date
+                  Write-Host ($icons.wrench + ' ' + $stamp + ' web desktop capture stale/missing (frameAge=' + $wdAge + 'ms) - restarting GhrdpWebDesk')
+                  try { Start-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction Stop } catch { Write-Host ('   webdesk restart failed: ' + $_.Exception.Message) }
               }
               $tsStr = 'OK'
               if (-not $tsOk) { $tsStr = 'DOWN' }

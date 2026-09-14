@@ -258,6 +258,68 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/octet-stream' -Body ([System.Text.Encoding]::ASCII.GetBytes($bat))
             return
         }
+        if ($path -eq '/webdesk-status') {
+            $ageMs = -1
+            try { $tsTxt = [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\frame-ts.txt'); $ageMs = [int]((Get-Date) - [datetime]$tsTxt).TotalMilliseconds } catch { }
+            $outJ = @{ ok = ($ageMs -ge 0 -and $ageMs -lt 15000); frameAgeMs = $ageMs } | ConvertTo-Json -Compress
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes($outJ))
+            return
+        }
+        if ($path -eq '/webdesk-frame') {
+            try { $b = [System.IO.File]::ReadAllBytes('C:\ghrdp\webdesk\frame.jpg'); Send-ClientResponse -Stream $stream -Code 200 -CType 'image/jpeg' -Body $b } catch { Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('no frame yet')) }
+            return
+        }
+        if ($path -eq '/webdesk-input') {
+            try {
+                $btxt = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body))
+                $bj = $btxt | ConvertFrom-Json
+                $linesOut = @()
+                if ($bj -is [System.Collections.IEnumerable] -and $bj -isnot [string]) { foreach ($e1 in $bj) { $linesOut += ($e1 | ConvertTo-Json -Compress) } } else { $linesOut += $btxt }
+                [System.IO.File]::AppendAllText('C:\ghrdp\webdesk\input.ndjson', (($linesOut -join "`n") + "`n"))
+            } catch { }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":true}'))
+            return
+        }
+        if ($path -eq '/webdesk-clip') {
+            if ([string]$parts.method -eq 'POST') {
+                try { [System.IO.File]::WriteAllText('C:\ghrdp\webdesk\clip-set.json', ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body))) } catch { }
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":true}'))
+                return
+            }
+            try { [System.IO.File]::WriteAllText('C:\ghrdp\webdesk\clip-get.flag', (Get-Date).ToUniversalTime().ToString('o')) } catch { }
+            $txt = $null
+            try { if (Test-Path 'C:\ghrdp\webdesk\clip.txt') { $txt = [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\clip.txt') } } catch { }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes((@{ text = $txt } | ConvertTo-Json -Compress)))
+            return
+        }
+        if ($path -eq '/webdesk') {
+            $pg = @'
+<!doctype html><html><head><meta charset="utf-8"><title>GHRDP Web Desktop</title>
+<style>html,body{margin:0;height:100%;background:#101418;overflow:hidden}#bar{position:fixed;top:0;left:0;right:0;padding:6px 10px;font:13px system-ui;color:#e8eef3;background:#1b2530;display:flex;gap:10px;align-items:center;z-index:9}#bar .st{color:#8aa0ad}#bar button{background:#153e5c;color:#e8eef3;border:0;border-radius:6px;padding:5px 9px;cursor:pointer}#wrap{position:absolute;top:34px;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center}img{max-width:100%;max-height:100%;cursor:crosshair}</style>
+</head><body>
+<div id="bar"><b>GHRDP Web Desktop</b><span class="st" id="st">connecting...</span><button id="cp">Copy remote clipboard</button><button id="ps">Paste into remote</button></div>
+<div id="wrap"><img id="fr" alt="remote"></div>
+<script>
+var img=document.getElementById('fr'),st=document.getElementById('st'),pend=[],oldUrl=null;
+function frame(){fetch('/webdesk-frame?'+Date.now(),{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.blob();}).then(function(b){if(oldUrl)URL.revokeObjectURL(oldUrl);oldUrl=URL.createObjectURL(b);img.src=oldUrl;st.textContent='live';}).catch(function(){st.textContent='waiting for first frame (log on via RDP once)...';});}
+setInterval(frame,300);frame();
+setInterval(function(){if(pend.length){var b=pend;pend=[];fetch('/webdesk-input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).catch(function(){});}},100);
+function norm(e){var r=img.getBoundingClientRect();return {nx:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),ny:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))};}
+img.addEventListener('mousemove',function(e){var p=norm(e);pend.push({t:'m',nx:p.nx,ny:p.ny});});
+img.addEventListener('mousedown',function(e){var p=norm(e);pend.push({t:(e.button===2?'rd':'ld'),nx:p.nx,ny:p.ny});e.preventDefault();});
+img.addEventListener('mouseup',function(e){var p=norm(e);pend.push({t:(e.button===2?'ru':'lu'),nx:p.nx,ny:p.ny});});
+img.addEventListener('wheel',function(e){var p=norm(e);pend.push({t:'w',nx:p.nx,ny:p.ny,d:Math.sign(e.deltaY)});e.preventDefault();},{passive:false});
+img.addEventListener('contextmenu',function(e){e.preventDefault();});
+var SPEC={Enter:13,Backspace:8,Tab:9,Escape:27,ArrowLeft:37,ArrowUp:38,ArrowRight:39,ArrowDown:40,Delete:46,Home:36,End:35};
+addEventListener('keydown',function(e){if(e.key.length===1){pend.push({t:'k',ch:e.key});}else if(SPEC[e.key]){pend.push({t:'kd',vk:SPEC[e.key]});}e.preventDefault();});
+addEventListener('keyup',function(e){if(SPEC[e.key]){pend.push({t:'ku',vk:SPEC[e.key]});}e.preventDefault();});
+document.getElementById('cp').onclick=function(){fetch('/webdesk-clip?want=1').then(function(r){return r.json();}).then(function(j){if(j.text!=null&&navigator.clipboard)navigator.clipboard.writeText(j.text).then(function(){st.textContent='remote clipboard copied';});});};
+document.getElementById('ps').onclick=function(){if(navigator.clipboard)navigator.clipboard.readText().then(function(t){return fetch('/webdesk-clip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});}).then(function(){st.textContent='pasted into remote';});};
+</script></body></html>
+'@
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'text/html; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($pg))
+            return
+        }
         if ($path -eq '/novnc') {
             $htmlN = @'
 <!doctype html><html><head><meta charset="utf-8"><title>GHRDP Web Desktop</title>
