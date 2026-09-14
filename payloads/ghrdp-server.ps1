@@ -473,7 +473,20 @@ function Invoke-ClientRequest {
                 $cfgName = if ($j.cfgName) { [string]$j.cfgName } else { 'config.txt' }
                 if ($j.cfgB64) { [System.IO.File]::WriteAllBytes((Join-Path $dest $cfgName), [Convert]::FromBase64String([string]$j.cfgB64)) }
                 [System.IO.File]::WriteAllBytes((Join-Path $dest 'user.bin'), [Convert]::FromBase64String([string]$j.binB64))
+                if ($j.hkB64) { [System.IO.File]::WriteAllBytes((Join-Path $dest 'hotkey.json'), [Convert]::FromBase64String([string]$j.hkB64)) }
                 [System.IO.File]::WriteAllText((Join-Path $dest 'ghrdp-push.ok'), (Get-Date -Format o), $script:NoBom)
+                $parsecExe = $null
+                foreach ($cand in @('C:\Program Files\Parsec\parsecd.exe', 'C:\Program Files\Parsec\parsec.exe')) { if (Test-Path -LiteralPath $cand) { $parsecExe = $cand; break } }
+                if ($parsecExe -and $ru) {
+                    try { Get-Process -Name parsecd,parsec -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch { }
+                    try {
+                        $ruPass = [string]$cfg.rdpPass
+                        & schtasks.exe /Create /F /SC ONLOGON /TN 'GhrdpParsecStart' /TR ('"' + $parsecExe + '"') /RU $ru /RP $ruPass /IT 2>$null | Out-Null
+                        $LASTEXITCODE = 0
+                        & schtasks.exe /Run /TN 'GhrdpParsecStart' 2>$null | Out-Null
+                        $LASTEXITCODE = 0
+                    } catch { }
+                }
                 $out = @{ ok = $true; dest = $dest; cfg = $cfgName; src = ([string]$j.src) } | ConvertTo-Json -Compress
                 Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes($out))
             } catch {

@@ -4,6 +4,10 @@ $logDir = Join-Path $env:LOCALAPPDATA 'ghrdp'
 New-Item -ItemType Directory -Path $logDir -Force -ErrorAction SilentlyContinue | Out-Null
 $logFile = Join-Path $logDir 'ghrdp-connect.log'
 function Write-ConnLog { param([string]$Message) try { Add-Content -Path $logFile -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' ' + $Message) } catch { } }
+$cacheFile = Join-Path $logDir 'last-url.txt'
+if (([string]$Url -notmatch 'ghrdp://') -and (Test-Path -LiteralPath $cacheFile)) {
+    try { $Url = ([System.IO.File]::ReadAllText($cacheFile)).Trim(); Write-ConnLog 'using cached url from last successful connect' } catch { }
+}
 Write-ConnLog ('--- connect requested: ' + $Url)
 $ip = [string]::Empty
 $user = [string]::Empty
@@ -22,6 +26,7 @@ if ($Url -match 'ghrdp://(.+)$') {
     }
 }
 Write-ConnLog ('parsed: ip=' + $ip + ' user=' + $user + ' passLen=' + $pass.Length)
+if ($ip) { try { [System.IO.File]::WriteAllText($cacheFile, [string]$Url) } catch { } }
 # ==== Parsec exact-path modes (top block owns BOTH; NO other path is ever read) ====
 $script:ParsecExact = Join-Path $env:APPDATA 'Parsec'   # = C:\Users\<You>\AppData\Roaming\Parsec
 $port = '7331'
@@ -55,7 +60,9 @@ if ($Url -match 'mode=parsec(?![a-z])') {
     $cfgName = if ($cfgFile) { Split-Path -Leaf $cfgFile } else { '' }
     $cfgB64  = if ($cfgFile) { [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($cfgFile)) } else { '' }
     $binB64  = if (Test-Path -LiteralPath $userBin) { [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($userBin)) } else { '' }
-    $body = (@{ cfgName = $cfgName; cfgB64 = $cfgB64; binB64 = $binB64; src = $env:COMPUTERNAME } | ConvertTo-Json -Compress)
+    $hkPath  = Join-Path $script:ParsecExact 'hotkey.json'
+    $hkB64   = if (Test-Path -LiteralPath $hkPath) { [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($hkPath)) } else { '' }
+    $body = (@{ cfgName = $cfgName; cfgB64 = $cfgB64; binB64 = $binB64; hkB64 = $hkB64; src = $env:COMPUTERNAME } | ConvertTo-Json -Compress)
     try {
         $resp = Invoke-RestMethod -Uri ('http://' + $ip + ':' + $port + '/parsec-push') -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 90
         Write-ConnLog ('parsec push OK: ' + ($resp | ConvertTo-Json -Compress))
