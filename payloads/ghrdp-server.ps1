@@ -261,14 +261,10 @@ function Invoke-ClientRequest {
         if ($path -eq '/webdesk-boot') {
             $outB = @{ ok = $false; message = '' }
             try {
+                try { . 'C:\ghrdp\ghrdp-lib.ps1' } catch { }
                 $cfgB = Read-JsonFile -Path $script:CfgPath
-                $srvKey = 'HKCU:\Software\Microsoft\Terminal Server Client\Servers\127.0.0.1'
-                New-Item -Path $srvKey -Force -ErrorAction SilentlyContinue | Out-Null
-                Set-ItemProperty -Path $srvKey -Name 'AuthenticationLevelOverride' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-                & cmdkey.exe /generic:TERMSRV/127.0.0.1 ('/user:' + [string]$cfgB.rdpUser) ('/pass:' + [string]$cfgB.rdpPass) 2>$null | Out-Null
-                $LASTEXITCODE = 0
-                Start-Process mstsc.exe -ArgumentList '/v:127.0.0.1','/w:1280','/h:720' -WindowStyle Hidden
-                $outB.ok = $true; $outB.message = 'loopback desktop session bootstrap launched'
+                $made = Start-GhrdpLoopbackSession -User ([string]$cfgB.rdpUser) -Pass ([string]$cfgB.rdpPass)
+                $outB.ok = $true; $outB.message = ('loopback bootstrap ran; session row=' + $made + '; diag=C:\ghrdp\webdesk\boot-diag.txt')
             } catch { $outB.message = $_.Exception.Message }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes(($outB | ConvertTo-Json -Compress)))
             return
@@ -280,7 +276,7 @@ function Invoke-ClientRequest {
             try { $task = [bool](Get-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction SilentlyContinue) } catch { }
             $sess = $false
             try { $q = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0; $cfgP = Read-JsonFile -Path $script:CfgPath; if ($q -match [regex]::Escape([string]$cfgP.rdpUser)) { $sess = $true } } catch { }
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes((@{ webdeskPs = $wPs; bootstrapPs = $bPs; task = $task; session = $sess } | ConvertTo-Json -Compress)))
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes((@{ webdeskPs = $wPs; bootstrapPs = $bPs; task = $task; session = $sess; diag = $(try { [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\boot-diag.txt') } catch { '' }) } | ConvertTo-Json -Compress)))
             return
         }
         if ($path -eq '/webdesk-status') {
