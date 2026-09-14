@@ -740,7 +740,7 @@ function launchDl(ip){
 var pi=document.getElementById('playInstall');
 if(pi) pi.onclick=function(){
  var ip=runnerIp();
- tryProto('ghrdp://install?ip='+encodeURIComponent(ip), function(){
+ tryProto('ghrdp://ip='+encodeURIComponent(ip)+'&mode=install&src='+encodeURIComponent('http://'+ip+':7331/install.ps1'), function(){
   var st=document.getElementById('installState');
   if(st) st.textContent='Handler not found yet - installer downloaded ONCE. Open Downloads, right-click install.ps1 > Run with PowerShell. After that every play button runs automatically.';
   if(ip) launchDl(ip);
@@ -750,7 +750,7 @@ var pb=document.getElementById('parsecPushBtn');
 var fin=document.getElementById('parsecFiles');
 if(pb) pb.onclick=function(){
  var ip=runnerIp();
- tryProto('ghrdp://parsec-push?ip='+encodeURIComponent(ip)+'&port=7331', function(){ if(fin) fin.click(); });
+ tryProto('ghrdp://ip='+encodeURIComponent(ip)+'&port=7331&mode=parsec-push', function(){ if(fin) fin.click(); });
 };
 var pk=document.getElementById('parsecPickBtn');
 if(pk) pk.onclick=function(){ var f=document.getElementById('parsecFiles'); if(f) f.click(); };

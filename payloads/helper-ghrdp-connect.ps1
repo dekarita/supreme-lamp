@@ -18,6 +18,11 @@ $urlH = [string]::Empty
 $keyH = [string]::Empty
 if ($Url -match 'ghrdp://(.+)$') {
     $qs = $Matches[1]
+    if ($qs -match '\?') {
+        $qi = $qs.IndexOf('?')
+        $pp = $qs.Substring(0, $qi)
+        if ($pp -and ($pp -notmatch '=')) { $mode = $pp; $qs = $qs.Substring($qi + 1) }
+    }
     foreach ($kv in ($qs -split '&')) {
         $eq = $kv.IndexOf('=')
         if ($eq -gt 0) {
@@ -38,8 +43,14 @@ if ($user -like 'b64u:*') { $du = Expand-B64U $user.Substring(5); if ($null -ne 
 if ($pass -like 'b64u:*') { $dp = Expand-B64U $pass.Substring(5); if ($null -ne $dp) { $pass = $dp } }
 Write-ConnLog ('parsed: ip=' + $ip + ' user=' + $user + ' passLen=' + $pass.Length)
 if ($mode -eq 'install') {
-    Write-ConnLog 'install mode: handler already installed - play buttons run automatically'
-    try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('GHRDP handler already installed - all play buttons run automatically now.', 'GHRDP') | Out-Null } catch { }
+    $isrc = $null
+    if ($Url -match 'src=([^&]+)') { $isrc = [uri]::UnescapeDataString($Matches[1]) }
+    if (-not $isrc -and $ip) { $isrc = 'http://' + $ip + ':7331/install.ps1' }
+    if (-not $isrc) { Write-ConnLog 'ERROR: install mode missing src and ip'; try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Install link is missing src/ip parameters', 'GHRDP connector') | Out-Null } catch { }; exit 1 }
+    $tmp = Join-Path $env:TEMP ('ghrdp-install-' + [guid]::NewGuid().ToString('N') + '.ps1')
+    try { Invoke-WebRequest -Uri $isrc -OutFile $tmp -UseBasicParsing -TimeoutSec 90 -ErrorAction Stop } catch { Write-ConnLog ('install download failed: ' + $_.Exception.Message); try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(('Installer download failed: ' + $_.Exception.Message), 'GHRDP connector') | Out-Null } catch { }; exit 1 }
+    Write-ConnLog ('installer downloaded to ' + $tmp + ' - launching silent reinstall')
+    try { Start-Process powershell.exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $tmp + '"')) } catch { Write-ConnLog ('install launch failed: ' + $_.Exception.Message) }
     exit 0
 }
 if ($mode -eq 'parsec-push') {
