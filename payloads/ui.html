@@ -790,7 +790,7 @@ row.innerHTML='<span class="k">RDP resources</span>'+
 '<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="resDrives"> Local disks</label>';
 var rows=sec.querySelectorAll('.row');if(rows.length)rows[0].parentNode.insertBefore(row,rows[0]);
 var act=document.createElement('div');act.className='row';act.id='autoRow';
-act.innerHTML='<span class="k">One-click RDP</span><a id="autoLogin" class="btn primary" href="#">AUTO-LOGIN RDP (web)</a><a id="webDesk" class="btn" href="#">WEB DESKTOP (zero-install)</a><span class="note" id="ghNotice"></span>';
+act.innerHTML='<span class="k">One-click RDP</span><a id="autoLogin" class="btn primary" href="#">AUTO-LOGIN RDP (web)</a><a id="webDesk" class="btn" href="#">WEB DESKTOP (zero-install)</a><span class="note" id="ghNotice"></span><span id="sessPill" class="note" style="padding:4px 8px;border-radius:6px;font-size:12px"></span>';
 sec.appendChild(act);
 window.showInstall=function(msg){var n=document.getElementById('ghNotice');if(n)n.textContent=msg||'';};
 function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
@@ -816,6 +816,17 @@ function tick(){
  });
 }
 tick(); setInterval(tick,10000);
+})();
+</script>
+<script>
+(function(){
+setInterval(function(){
+ fetch('/api/progress',{cache:'no-store'}).then(function(r){return r.json();}).then(function(p){
+   var pill=document.getElementById('sessPill'); if(!pill)return;
+   if(p&&(p.sessionStartedAt||p.alive)){ pill.style.background='#0b3d1f'; pill.style.color='#b7f5c9'; pill.textContent='SESSION LIVE - WEB DESKTOP buttons active'; }
+   else { pill.style.background='#3d2a0b'; pill.style.color='#f5d9b7'; pill.textContent='NO SESSION - click AUTO-LOGIN RDP once to start'; }
+ }).catch(function(){});
+},5000);
 })();
 </script>
 </body>

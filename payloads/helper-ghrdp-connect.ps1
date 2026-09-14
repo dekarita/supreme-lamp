@@ -237,8 +237,16 @@ try {
 }
 Start-Sleep -Seconds 6
 if ($proc.HasExited) {
-    Write-ConnLog ('mstsc exited early code=' + $proc.ExitCode)
-    try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(('mstsc closed immediately (code ' + $proc.ExitCode + '). Log: ' + $logFile), 'GHRDP connector') | Out-Null } catch { }
+    $code = $proc.ExitCode
+    Write-ConnLog ('mstsc exited early code=' + $code)
+    $diag = @('=== mstsc EARLY EXIT code=' + $code + ' ===', '--- RDP client event log (last 5) ---')
+    try { $diag += (& wevtutil.exe qe Microsoft-Windows-TerminalServices-ClientActiveXCore/Operational /c:5 /rd:true /f:text 2>$null) } catch { }
+    $diag += '--- Security 4624/4625 (last 5) ---'
+    try { $diag += (& wevtutil.exe qe Security /q:"*[System[(EventID=4624 or EventID=4625)]]" /c:5 /rd:true /f:text 2>$null) } catch { }
+    [System.IO.File]::WriteAllText((Join-Path $logDir 'mstsc-exit-diag.txt'), ($diag -join "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+    Write-ConnLog 'diag written to mstsc-exit-diag.txt - relaunching mstsc once'
+    try { $proc = Start-Process mstsc.exe -ArgumentList $rdpPath -PassThru; Write-ConnLog ('mstsc relaunched pid=' + $proc.Id) } catch { Write-ConnLog ('relaunch failed: ' + $_.Exception.Message) }
+    try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(('mstsc closed immediately (code ' + $code + '). Relaunched once - evidence in ' + $logDir + '\mstsc-exit-diag.txt'), 'GHRDP connector') | Out-Null } catch { }
 } else {
     Write-ConnLog 'mstsc running - auto-logon expected via saved credential'
 }
