@@ -3,10 +3,7 @@ $ErrorActionPreference = 'Continue'
 $logDir = Join-Path $env:LOCALAPPDATA 'ghrdp'
 New-Item -ItemType Directory -Path $logDir -Force -ErrorAction SilentlyContinue | Out-Null
 $logFile = Join-Path $logDir 'ghrdp-connect.log'
-function Write-ConnLog {
-    param([string]$Message)
-    try { Add-Content -Path $logFile -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' ' + $Message) } catch { }
-}
+function Write-ConnLog { param([string]$Message) try { Add-Content -Path $logFile -Value ((Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' ' + $Message) } catch { } }
 Write-ConnLog ('--- connect requested: ' + $Url)
 $ip = [string]::Empty
 $user = [string]::Empty
@@ -25,39 +22,37 @@ if ($Url -match 'ghrdp://(.+)$') {
     }
 }
 Write-ConnLog ('parsed: ip=' + $ip + ' user=' + $user + ' passLen=' + $pass.Length)
-$mode = ''
-if ($Url -match 'mode=([a-z]+)') { $mode = $Matches[1] }
-if ($mode -eq 'parsec') {
-    Write-ConnLog 'parsec mode: auto-discovering local Parsec credential folder (no folder picker)'
-    $cands = @()
-    if ($env:APPDATA)      { $cands += (Join-Path $env:APPDATA 'Parsec') }
-    if ($env:LOCALAPPDATA) { $cands += (Join-Path $env:LOCALAPPDATA 'Parsec') }
-    if ($env:PROGRAMDATA)  { $cands += (Join-Path $env:PROGRAMDATA 'Parsec') }
-    try {
-        $hits = Get-ChildItem -Path $env:USERPROFILE -Directory -Recurse -Depth 4 -Filter 'Parsec' -ErrorAction SilentlyContinue | Select-Object -First 5
-        foreach ($h in @($hits)) { $cands += [string]$h.FullName }
-    } catch { }
-    $src = $null; $cfgFile = $null; $binFile = $null
-    foreach ($c in $cands) {
-        if (-not $c -or -not (Test-Path -LiteralPath $c)) { continue }
-        $cf = $null
-        $bf = Join-Path $c 'user.bin'
-        if (Test-Path -LiteralPath (Join-Path $c 'config.txt'))      { $cf = Join-Path $c 'config.txt' }
-        elseif (Test-Path -LiteralPath (Join-Path $c 'config.json')) { $cf = Join-Path $c 'config.json' }
-        if ($cf -and (Test-Path -LiteralPath $bf)) { $src = $c; $cfgFile = $cf; $binFile = $bf; break }
+# ==== Parsec exact-path modes (top block owns BOTH; NO other path is ever read) ====
+$script:ParsecExact = Join-Path $env:APPDATA 'Parsec'   # = C:\Users\<You>\AppData\Roaming\Parsec
+$port = '7331'
+if ($Url -match 'port=(\d+)') { $port = $Matches[1] }
+if ($Url -match 'mode=parsecdir') {
+    Write-ConnLog ('parsecdir: opening Windows Explorer at EXACT path: ' + $script:ParsecExact)
+    if (-not (Test-Path -LiteralPath $script:ParsecExact)) { try { New-Item -ItemType Directory -Path $script:ParsecExact -Force | Out-Null } catch { } }
+    try { Start-Process explorer.exe -ArgumentList $script:ParsecExact } catch { Write-ConnLog ('parsecdir explorer launch failed: ' + $_.Exception.Message) }
+    exit 0
+}
+if ($Url -match 'mode=parsec(?![a-z])') {
+    Write-ConnLog ('parsec: reading ONLY from EXACT path: ' + $script:ParsecExact)
+    if (-not (Test-Path -LiteralPath $script:ParsecExact)) {
+        Write-ConnLog 'parsec: EXACT path missing - Parsec not installed/logged-in on this PC'
+        try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Parsec folder not found at:' + [Environment]::NewLine + $script:ParsecExact + [Environment]::NewLine + 'Install/login Parsec first, then retry.', 'GHRDP Parsec push') | Out-Null } catch { }
+        exit 1
     }
-    if (-not $src) {
-        Write-ConnLog 'parsec push: no Parsec folder with config+user.bin found locally'
-        try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Parsec credential folder not found on this PC. Log in to Parsec here once, then retry.', 'GHRDP Parsec push') | Out-Null } catch { }
-        exit 2
+    $cfgFile = $null
+    foreach ($cn in @('config.txt','config.json')) { $p = Join-Path $script:ParsecExact $cn; if (Test-Path -LiteralPath $p) { $cfgFile = $p; break } }
+    $userBin = Join-Path $script:ParsecExact 'user.bin'
+    if (-not $cfgFile -and -not (Test-Path -LiteralPath $userBin)) {
+        Write-ConnLog 'parsec: no config/user.bin in EXACT path - not logged in yet'
+        try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('No Parsec login files at:' + [Environment]::NewLine + $script:ParsecExact + [Environment]::NewLine + 'Open Parsec and log in first, then retry.', 'GHRDP Parsec push') | Out-Null } catch { }
+        exit 1
     }
-    $cfgB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($cfgFile))
-    $binB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($binFile))
-    $cfgName = Split-Path -Leaf $cfgFile
-    $body = (@{ cfgName = $cfgName; cfgB64 = $cfgB64; binB64 = $binB64; src = $src } | ConvertTo-Json -Compress)
-    $pushUrl = 'http://' + $ip + ':7331/parsec-push'
+    $cfgName = if ($cfgFile) { Split-Path -Leaf $cfgFile } else { '' }
+    $cfgB64  = if ($cfgFile) { [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($cfgFile)) } else { '' }
+    $binB64  = if (Test-Path -LiteralPath $userBin) { [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($userBin)) } else { '' }
+    $body = (@{ cfgName = $cfgName; cfgB64 = $cfgB64; binB64 = $binB64; src = $env:COMPUTERNAME } | ConvertTo-Json -Compress)
     try {
-        $resp = Invoke-RestMethod -Uri $pushUrl -Method Post -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -ContentType 'application/json' -TimeoutSec 30
+        $resp = Invoke-RestMethod -Uri ('http://' + $ip + ':' + $port + '/parsec-push') -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 90
         Write-ConnLog ('parsec push OK: ' + ($resp | ConvertTo-Json -Compress))
         try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(('Parsec credentials pushed to runner: ' + [string]$resp.dest), 'GHRDP Parsec push') | Out-Null } catch { }
         exit 0

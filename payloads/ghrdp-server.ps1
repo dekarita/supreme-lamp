@@ -450,32 +450,34 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes $obj2)
             return
         }
-        if ($path -eq '/parsec-push' -and ([string]$parts.method -eq 'OPTIONS')) {
-            Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@())
-            return
-        }
-        if ($path -eq '/parsec-push' -and ([string]$parts.method -eq 'POST')) {
+        if ($path -eq '/parsec-push') {
+            $j = $null
+            try { $j = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json } catch { }
+            if (-not $j -or (-not $j.binB64)) {
+                Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":false,"message":"missing binB64"}'))
+                return
+            }
+            $ru = [string]$cfg.rdpUser
+            $prof = $null
             try {
-                $bodyBytes = [byte[]]$parts.body
-                if (-not $bodyBytes) { $bodyBytes = @() }
-                $j = ([System.Text.Encoding]::UTF8.GetString($bodyBytes)) | ConvertFrom-Json
-                if (-not $j) { throw 'bad json body' }
-                $cfgP = Read-JsonFile -Path $script:CfgPath
-                $user = ''
-                if ($cfgP) { $user = [string]$cfgP.rdpUser }
-                $prof = ''
-                if ($user) { $prof = 'C:\Users\' + $user }
-                if (-not $prof -or -not (Test-Path -LiteralPath $prof)) { $prof = [string]$env:USERPROFILE }
-                $dest = Join-Path $prof 'AppData\Roaming\Parsec'
+                $keys = Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList' -ErrorAction SilentlyContinue
+                foreach ($k in $keys) {
+                    $img = (Get-ItemProperty -Path $k.PSPath -Name ProfileImagePath -ErrorAction SilentlyContinue).ProfileImagePath
+                    if ($img -and ((Split-Path -Leaf ([string]$img)) -ieq $ru)) { $prof = [string]$img; break }
+                }
+            } catch { }
+            if (-not $prof) { $prof = 'C:\Users\' + $ru }
+            $dest = Join-Path $prof 'AppData\Roaming\Parsec'
+            try {
                 New-Item -ItemType Directory -Path $dest -Force -ErrorAction Stop | Out-Null
                 $cfgName = if ($j.cfgName) { [string]$j.cfgName } else { 'config.txt' }
                 if ($j.cfgB64) { [System.IO.File]::WriteAllBytes((Join-Path $dest $cfgName), [Convert]::FromBase64String([string]$j.cfgB64)) }
-                if ($j.binB64) { [System.IO.File]::WriteAllBytes((Join-Path $dest 'user.bin'), [Convert]::FromBase64String([string]$j.binB64)) }
-                [System.IO.File]::WriteAllText((Join-Path $dest 'ghrdp-push.ok'), (Get-Date -Format o), (New-Object System.Text.UTF8Encoding($false)))
-                $out = @{ ok = $true; dest = $dest; cfg = $cfgName } | ConvertTo-Json -Compress
+                [System.IO.File]::WriteAllBytes((Join-Path $dest 'user.bin'), [Convert]::FromBase64String([string]$j.binB64))
+                [System.IO.File]::WriteAllText((Join-Path $dest 'ghrdp-push.ok'), (Get-Date -Format o), $script:NoBom)
+                $out = @{ ok = $true; dest = $dest; cfg = $cfgName; src = ([string]$j.src) } | ConvertTo-Json -Compress
                 Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes($out))
             } catch {
-                $out = @{ ok = $false; error = ([string]$_.Exception.Message) } | ConvertTo-Json -Compress
+                $out = @{ ok = $false; error = ($_.Exception.Message) } | ConvertTo-Json -Compress
                 Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes($out))
             }
             return
