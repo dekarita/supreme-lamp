@@ -258,6 +258,23 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/octet-stream' -Body ([System.Text.Encoding]::ASCII.GetBytes($bat))
             return
         }
+        if ($path -eq '/novnc') {
+            $cfgN = Read-JsonFile -Path $script:CfgPath
+            $vp = ''
+            if ($cfgN) { $vp = [string]$cfgN.vncPass }
+            $htmlN = '<!doctype html><html><head><meta charset="utf-8"><title>GHRDP Web Desktop</title><style>html,body{margin:0;height:100%;background:#101418}#screen{width:100%;height:100%}</style></head><body><div id="screen"></div><script type="module">import RFB from ''https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js'';const rfb=new RFB(document.getElementById(''screen''),''ws://''+location.hostname+'':7333/websockify'',{credentials:{password:''PASSPLACEHOLDER''}});rfb.scaleViewport=true;rfb.clipboardCapable=true;rfb.addEventListener(''clipboard'',e=>{if(navigator.clipboard)navigator.clipboard.writeText(e.detail.text).catch(()=>{});});</script></body></html>'
+            $htmlN = $htmlN.Replace('PASSPLACEHOLDER', $vp)
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'text/html; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($htmlN))
+            return
+        }
+        if ($path -eq '/vncstatus') {
+            $vncUp = $false; $brUp = $false
+            try { $vncUp = [bool](Get-NetTCPConnection -LocalPort 5900 -State Listen -ErrorAction SilentlyContinue) } catch { }
+            try { $brUp = [bool](Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue) } catch { }
+            $outJ = @{ ok = ($vncUp -and $brUp); vnc = $vncUp; bridge = $brUp } | ConvertTo-Json -Compress
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes($outJ))
+            return
+        }
         if ($path -eq '/install.ps1') {
             if (Test-Path -LiteralPath $script:InstPath) {
                 Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body ([System.IO.File]::ReadAllBytes($script:InstPath))

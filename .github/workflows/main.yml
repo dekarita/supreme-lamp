@@ -796,28 +796,6 @@ jobs:
           }
           exit 0
 
-      - name: Install TightVNC (web desktop backend, silent, tailnet-only 5900)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $url = 'https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi'
-          $msi = Join-Path $env:RUNNER_TEMP 'tvn.msi'
-          & curl.exe -fL --retry 3 --connect-timeout 20 --max-time 300 -o $msi $url 2>$null
-          $LASTEXITCODE = 0
-          if (-not (Test-Path $msi)) { Write-Host '[vnc] download failed; web desktop unavailable this run'; exit 0 }
-          $vncPass = ([guid]::NewGuid().ToString('N').Substring(0, 8))
-          Start-Process msiexec.exe -Wait -ArgumentList '/i', $msi, '/quiet', '/norestart', 'SET_USEVNCAUTHENTICATION=1', 'VALUE_OF_USEVNCAUTHENTICATION=1', 'SET_PASSWORD=1', ('VALUE_OF_PASSWORD=' + $vncPass), 'SET_USECONTROLAUTHENTICATION=0', 'VALUE_OF_USECONTROLAUTHENTICATION=0'
-          $cfgPath = 'C:\ghrdp\config.json'
-          if (Test-Path $cfgPath) {
-            $c = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
-            $c | Add-Member -NotePropertyName vncPass -NotePropertyValue $vncPass -Force
-            [System.IO.File]::WriteAllText($cfgPath, ($c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
-          }
-          try { New-NetFirewallRule -DisplayName 'ghrdp-vnc-5900' -Direction Inbound -LocalPort 5900 -Protocol TCP -Action Allow -RemoteAddress '100.64.0.0/10' -Profile Any -Enabled True -ErrorAction Stop | Out-Null } catch { & netsh.exe advfirewall firewall add rule name="ghrdp-vnc-5900" dir=in action=allow protocol=TCP localport=5900 remoteip=100.64.0.0/10 enable=yes 2>$null | Out-Null; $LASTEXITCODE = 0 }
-          try { Start-Service -Name 'tvnserver' -ErrorAction Stop; Write-Host '[vnc] tvnserver running' } catch { Write-Host '[vnc] service start failed (web desktop may be unavailable)' }
-          Write-Host '[vnc] TightVNC installed; web desktop backend ready on 127.0.0.1:5900'
-          exit 0
-
       - name: Enable GitHub Pages automatically (main /docs, idempotent, post-branch-surgery safe)
         shell: pwsh
         env:
@@ -885,6 +863,37 @@ jobs:
           }
           if ($built) { Write-Host ('[pages] OK: Pages live at https://' + (($repo -split '/')[0]) + '.github.io/' + (($repo -split '/')[1]) + '/') }
           else { Write-Host '[pages] WARNING: not built within this step; the next docs/ push retries automatically. Job continues (non-fatal).' }
+          exit 0
+
+      - name: Web desktop backend (TightVNC 5900 + websockify 7333, verified, tailnet-only)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $vncPass = ([guid]::NewGuid().ToString('N').Substring(0, 8))
+          $msi = Join-Path $env:RUNNER_TEMP 'tvn.msi'
+          & curl.exe -fL --retry 3 --connect-timeout 20 --max-time 300 -o $msi 'https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi' 2>$null
+          $LASTEXITCODE = 0
+          if (Test-Path $msi) {
+            Start-Process msiexec.exe -Wait -ArgumentList '/i', $msi, '/quiet', '/norestart', 'SET_USEVNCAUTHENTICATION=1', 'VALUE_OF_USEVNCAUTHENTICATION=1', 'SET_PASSWORD=1', ('VALUE_OF_PASSWORD=' + $vncPass), 'SET_USECONTROLAUTHENTICATION=1', 'VALUE_OF_USECONTROLAUTHENTICATION=0'
+            try { Start-Service -Name tvnserver -ErrorAction Stop } catch { Write-Host '[vnc] tvnserver start failed' }
+          } else { Write-Host '[vnc] TightVNC download failed' }
+          $vncUp = $false
+          for ($i = 0; $i -lt 20; $i++) { try { if (Get-NetTCPConnection -LocalPort 5900 -State Listen -ErrorAction SilentlyContinue) { $vncUp = $true; break } } catch { }; Start-Sleep -Seconds 2 }
+          Write-Host ('[vnc] 5900 listening: ' + $vncUp)
+          & python -m pip install --quiet --disable-pip-version-check websockify 2>$null
+          $LASTEXITCODE = 0
+          Start-Process -FilePath python -ArgumentList '-m','websockify','0.0.0.0:7333','127.0.0.1:5900' -WindowStyle Hidden
+          $brUp = $false
+          for ($i = 0; $i -lt 15; $i++) { try { if (Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue) { $brUp = $true; break } } catch { }; Start-Sleep -Seconds 2 }
+          Write-Host ('[vnc] 7333 bridge listening: ' + $brUp)
+          try { New-NetFirewallRule -DisplayName 'ghrdp-ws-7333' -Direction Inbound -LocalPort 7333 -Protocol TCP -Action Allow -RemoteAddress '100.64.0.0/10' -Profile Any -Enabled True -ErrorAction Stop | Out-Null } catch { & netsh.exe advfirewall firewall add rule name="ghrdp-ws-7333" dir=in action=allow protocol=TCP localport=7333 remoteip=100.64.0.0/10 enable=yes 2>$null | Out-Null; $LASTEXITCODE = 0 }
+          $cfgPath = 'C:\ghrdp\config.json'
+          if (Test-Path $cfgPath) {
+            $c = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
+            $c | Add-Member -NotePropertyName vncPass -NotePropertyValue $vncPass -Force
+            [System.IO.File]::WriteAllText($cfgPath, ($c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+          }
+          Write-Host ('[vnc] web desktop ready: vnc=' + $vncUp + ' bridge=' + $brUp + ' page=http://<ts-ip>:7331/novnc')
           exit 0
 
       - name: Start Mission Control dashboard EARLY (PS 7331, SYSTEM task, confirm LISTENING)
@@ -1688,6 +1697,7 @@ jobs:
           $lastPsFix = (Get-Date).AddMinutes(-10)
           $lastRustFix = (Get-Date).AddMinutes(-10)
           $lastStaleFix = (Get-Date).AddMinutes(-10)
+          $lastVncFix = (Get-Date).AddMinutes(-10)
           $icons = [ordered]@{
               rocket = [char]::ConvertFromUtf32(0x1F680)
               screen = [char]::ConvertFromUtf32(0x1F5A5)
@@ -2001,6 +2011,15 @@ jobs:
                       $psOk = Test-DashHttp
                       if ($psOk) { Write-Host ($icons.check + ' RECOVERED ' + $stamp + ' PowerShell dashboard is responding again') } else { Write-Host ($icons.warn + ' STILL DOWN ' + $stamp + ' PS dashboard 7331') }
                   }
+              }
+              $vncOk = $false; $brOk = $false
+              try { $vncOk = [bool](Get-NetTCPConnection -LocalPort 5900 -State Listen -ErrorAction SilentlyContinue) } catch { }
+              try { $brOk = [bool](Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue) } catch { }
+              if ((-not $vncOk -or -not $brOk) -and (((Get-Date) - $lastVncFix).TotalMinutes -ge 2)) {
+                  $lastVncFix = Get-Date
+                  Write-Host ($icons.wrench + ' ' + $stamp + ' web desktop backend down (vnc=' + $vncOk + ' bridge=' + $brOk + ') - restarting')
+                  if (-not $vncOk) { try { Start-Service -Name tvnserver -ErrorAction Stop } catch { } }
+                  if (-not $brOk) { try { Start-Process -FilePath python -ArgumentList '-m','websockify','0.0.0.0:7333','127.0.0.1:5900' -WindowStyle Hidden } catch { } }
               }
               $rustStr = 'OFF'
               if ($rustProbeOn) {

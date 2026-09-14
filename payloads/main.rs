@@ -2,7 +2,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::io::Write;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::{header, StatusCode};
@@ -367,40 +366,6 @@ async fn diag_handler(State(state): State<SharedState>) -> Json<Value> {
     }))
 }
 
-async fn vncws_handler(ws: WebSocketUpgrade) -> Response {
-    ws.on_upgrade(move |socket| vnc_bridge(socket))
-}
-async fn vnc_bridge(socket: WebSocket) {
-    let tcp = match tokio::net::TcpStream::connect("127.0.0.1:5900").await { Ok(t) => t, Err(e) => { log_line(&format!("vnc bridge connect failed: {}", e)); return; } };
-    let (mut ws_sink, mut ws_stream) = socket.split();
-    let (mut tcp_read, mut tcp_write) = tcp.split();
-    let mut buf = [0u8; 8192];
-    let tcp_to_ws = async {
-        loop {
-            match tcp_read.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => { if ws_sink.send(Message::Binary(buf[..n].to_vec())).await.is_err() { break; } }
-            }
-        }
-    };
-    let ws_to_tcp = async {
-        while let Some(Ok(msg)) = ws_stream.next().await {
-            match msg {
-                Message::Binary(b) => { if tcp_write.write_all(&b).await.is_err() { break; } }
-                Message::Close(_) => break,
-                _ => {}
-            }
-        }
-    };
-    tokio::select! { _ = tcp_to_ws => {}, _ = ws_to_tcp => {} }
-}
-async fn novnc_handler(State(state): State<SharedState>) -> Response {
-    let root = state.root.clone();
-    let cfg = tokio::task::spawn_blocking(move || read_json_retry(&root.join("config.json"))).await.unwrap_or(None).unwrap_or_else(|| json!({}));
-    let pass = cfg.get("vncPass").and_then(Value::as_str).unwrap_or("").to_string();
-    let html = format!(r#"<!doctype html><html><head><meta charset="utf-8"><title>GHRDP Web Desktop</title><style>html,body{{margin:0;height:100%;background:#101418}}#screen{{width:100%;height:100%}}</style></head><body><div id="screen"></div><script type="module">import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js';const rfb=new RFB(document.getElementById('screen'),'ws://'+location.host+'/vncws',{{credentials:{{password:{pass:?}}}}});rfb.scaleViewport=true;rfb.clipboardCapable=true;rfb.addEventListener('clipboard',e=>{{if(navigator.clipboard)navigator.clipboard.writeText(e.detail.text).catch(()=>{{}});}});</script></body></html>"#);
-    (StatusCode::OK, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
-}
 async fn index_handler() -> Response {
     let static_path = std::env::var("GHRDP_ROOT")
         .map(|r| std::path::PathBuf::from(r).join("rust").join("static").join("index.html"))
@@ -628,9 +593,7 @@ async fn main() {
         .route("/install.ps1", get(install_ps1_handler))
         .route("/flush", get(flush_handler))
         .route("/launch", get(launch_handler))
-        .route("/diag", get(diag_handler))
-        .route("/vncws", get(vncws_handler))
-        .route("/novnc", get(novnc_handler));
+        .route("/diag", get(diag_handler));
 
     let app: axum::Router<()> = state_router
         .with_state(state)
@@ -1475,7 +1438,7 @@ window.showInstall=function(msg){var n=document.getElementById('ghNotice');if(n)
 function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
 function flags(){return '&clip='+(document.getElementById('resClip').checked?1:0)+'&mic='+(document.getElementById('resMic').checked?1:0)+'&print='+(document.getElementById('resPrint').checked?1:0)+'&drives='+(document.getElementById('resDrives').checked?1:0);}
 function launchUrl(u){if(window.ghrdpLaunchProto){window.ghrdpLaunchProto(u);return;}var ifr=document.createElement('iframe');ifr.style.display='none';try{document.body.appendChild(ifr);ifr.src=u;}catch(e){}}
-document.getElementById('webDesk').onclick=function(e){e.preventDefault();var c=(window.lastData&&lastData.creds)||{};var host=c.ip||location.hostname;var ctl=new AbortController();var to=setTimeout(function(){ctl.abort();},2500);function showNotice(){var n=document.getElementById('ghNotice');if(n)n.textContent='Web desktop unavailable on THIS run (Rust dashboard or TightVNC down). Also confirm you are using the CURRENT run IP - it changes every run. Use AUTO-LOGIN RDP instead.';}fetch('http://'+host+':7332/health',{signal:ctl.signal,cache:'no-store'}).then(function(r){clearTimeout(to);if(r.ok){window.open('http://'+host+':7332/novnc','_blank');}else{showNotice();}}).catch(function(){clearTimeout(to);showNotice();});};
+document.getElementById('webDesk').onclick=function(e){e.preventDefault();var c=(window.lastData&&lastData.creds)||{};var host=c.ip||location.hostname;var ctl=new AbortController();var to=setTimeout(function(){ctl.abort();},2500);function notice(m){var n=document.getElementById('ghNotice');if(n)n.textContent=m;}fetch('http://'+host+':7331/vncstatus',{signal:ctl.signal,cache:'no-store'}).then(function(r){clearTimeout(to);return r.json();}).then(function(j){if(j&&j.ok){window.open('http://'+host+':7331/novnc','_blank');}else{notice('Web desktop backend not ready: vnc='+((j&&j.vnc)||false)+' bridge='+((j&&j.bridge)||false)+'. Keep-alive will retry every 2 min; meanwhile use AUTO-LOGIN RDP.');}}).catch(function(){clearTimeout(to);notice('Cannot reach dashboard 7331 - confirm you are on the CURRENT run IP. Use AUTO-LOGIN RDP instead.');});};
 document.getElementById('autoLogin').onclick=function(e){e.preventDefault();var c=(window.lastData&&lastData.creds)||{};if(!c.ip||!c.user){showInstall('Waiting for live credentials...');return;}var u='ghrdp://ip='+encodeURIComponent(c.ip)+'&u=b64u:'+b64u(c.user)+'&p=b64u:'+b64u(c.pass||'')+flags();var wasFocused=true;var lost=function(){wasFocused=false};window.addEventListener('blur',lost);var vis=function(){if(document.hidden)wasFocused=false};document.addEventListener('visibilitychange',vis);launchUrl(u);setTimeout(function(){window.removeEventListener('blur',lost);document.removeEventListener('visibilitychange',vis);if(wasFocused)showInstall('No ghrdp handler on this PC yet - use WEB DESKTOP (zero-install); it needs nothing installed and keeps clipboard.');},900);};
 })();
 </script>
