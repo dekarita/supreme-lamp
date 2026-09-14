@@ -298,9 +298,11 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">Remaining (5h30 session)</span><span class="timer" id="timerRemaining">--:--:--</span></div>
   <div class="banner ended" id="endedBanner" style="display:none;">SESSION EXPIRED - GitHub hard cap reached. Runner termination imminent.</div>
   <div class="row"><span class="k">One-click RDP</span>
-    <a id="ghrdpLink" class="btn primary" href="ghrdp://ip=__IP__&amp;user=__USER__&amp;pass=__PASS__" onclick="return openRdp(event)">open RDP via ghrdp://</a>
-    <button onclick="showInstall()">handler help</button>
-  </div>
+<a id="batNow" class="btn primary" href="#" download="ghrdp-connect-now.bat">auto-connect NOW (.bat)</a>
+<a id="ghrdpLink" class="btn" href="ghrdp://ip=__IP__&amp;user=__USER__&amp;pass=__PASS__" onclick="return openRdp(event)">open RDP via ghrdp://</a>
+<a id="batInstall" class="btn" href="#" download="ghrdp-install.bat">install one-click handler (.bat)</a>
+<button onclick="showInstall()">handler help</button>
+</div>
   <div class="row"><span class="k">Parsec auto-login</span>
 <button class="primary" id="parsecPushBtn" title="Upload my Parsec login to the runner automatically">&#9654; push Parsec login from THIS PC</button>
 <button id="parsecPickBtn">manual select (fallback)</button>
@@ -432,6 +434,8 @@ function render(d){
     ghrdpUrl='ghrdp://ip='+encodeURIComponent(c.ip)+'&u=b64u:'+b64u(c.user)+'&p=b64u:'+b64u(c.pass||'');
     var a1=$('ghrdpLink');if(a1)a1.href=ghrdpUrl;
     var a2=$('retryLink');if(a2)a2.href=ghrdpUrl;
+    var b1=$('batNow');if(b1){b1.href='http://'+c.ip+':7331/connect-now.bat';}
+    var b2=$('batInstall');if(b2){b2.href='http://'+c.ip+':7331/install.bat';}
     var ibat=$('installBat');if(ibat)ibat.href='http://'+c.ip+':7331/install.bat';
   }
   if(d.runnerEgressIp){

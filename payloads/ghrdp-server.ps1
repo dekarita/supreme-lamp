@@ -252,6 +252,12 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/octet-stream' -Body ([System.Text.Encoding]::ASCII.GetBytes($bat))
             return
         }
+        if ($path -eq '/connect-now.bat') {
+            $cip = [string]$cfg.rdpIp; $cu = [string]$cfg.rdpUser; $cpBat = ([string]$cfg.rdpPass) -replace '\^', '^^'
+            $bat = '@echo off' + "`r`n" + 'title GHRDP auto-connect' + "`r`n" + 'cmdkey /generic:TERMSRV/' + $cip + ' /user:' + $cu + ' /pass:' + $cpBat + ' >nul 2>&1' + "`r`n" + 'start "" mstsc /v:' + $cip + "`r`n" + 'timeout /t 15 >nul' + "`r`n" + 'cmdkey /delete:TERMSRV/' + $cip + ' >nul 2>&1' + "`r`n" + 'exit /b 0' + "`r`n"
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/octet-stream' -Body ([System.Text.Encoding]::ASCII.GetBytes($bat))
+            return
+        }
         if ($path -eq '/install.ps1') {
             if (Test-Path -LiteralPath $script:InstPath) {
                 Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body ([System.IO.File]::ReadAllBytes($script:InstPath))
