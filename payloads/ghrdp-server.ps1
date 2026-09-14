@@ -259,9 +259,6 @@ function Invoke-ClientRequest {
             return
         }
         if ($path -eq '/novnc') {
-            $cfgN = Read-JsonFile -Path $script:CfgPath
-            $vp = ''
-            if ($cfgN) { $vp = [string]$cfgN.vncPass }
             $htmlN = @'
 <!doctype html><html><head><meta charset="utf-8"><title>GHRDP Web Desktop</title>
 <style>html,body{margin:0;height:100%;background:#101418;overflow:hidden}#screen{width:100%;height:100%}#bar{position:fixed;top:0;left:0;right:0;padding:8px 12px;font:13px system-ui;color:#e8eef3;background:#1b2530;display:flex;gap:12px;align-items:center;z-index:9}#bar .st{color:#8aa0ad}#bar button{background:#153e5c;color:#e8eef3;border:0;border-radius:6px;padding:6px 10px;cursor:pointer}</style>
@@ -270,7 +267,8 @@ function Invoke-ClientRequest {
 <div id="screen"></div>
 <script type="module">
 const st=document.getElementById('st');
-const VP=__VP__;
+const WS='ws://'+location.hostname+':7333/';
+function wsProbe(url){return new Promise((res,rej)=>{let w;try{w=new WebSocket(url);}catch(e){rej(e);return;}const t=setTimeout(()=>{try{w.close();}catch(e){}rej(new Error('timeout - bridge not answering'));},5000);w.onopen=()=>{clearTimeout(t);try{w.close();}catch(e){}res(true);};w.onerror=()=>{clearTimeout(t);rej(new Error('websocket refused/blocked - firewall 7333 or websockify down'));};});}
 let rfb=null;
 async function boot(){
   st.textContent='checking backend...';
@@ -279,22 +277,24 @@ async function boot(){
     const j=await r.json();
     if(!j.ok){ st.textContent='backend down: vnc5900='+j.vnc+' bridge7333='+j.bridge+' - keep-alive self-heals every 2 min; click Retry'; return; }
   }catch(e){ st.textContent='cannot reach /vncstatus: '+e; return; }
+  st.textContent='probing websocket '+WS+' ...';
+  try{ await wsProbe(WS); }catch(e){ st.textContent='WS probe failed: '+e.message; return; }
   st.textContent='loading noVNC + connecting...';
   try{
     const mod=await import('https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js');
-    rfb=new mod.default(document.getElementById('screen'),'ws://'+location.hostname+':7333/websockify',{credentials:{password:VP}});
+    if(rfb){ try{rfb.disconnect();}catch(e){} }
+    rfb=new mod.default(document.getElementById('screen'),WS,{});
     rfb.scaleViewport=true; rfb.clipboardCapable=true;
     rfb.addEventListener('connect',()=>{st.textContent='connected - clipboard active';});
-    rfb.addEventListener('disconnect',e=>{st.textContent='disconnected: '+((e.detail&&e.detail.reason)||'unknown')+' - click Retry';});
-    rfb.addEventListener('credentialsrequired',()=>{rfb.sendCredentials({password:VP});});
-    rfb.addEventListener('securityfailure',e=>{st.textContent='VNC password rejected: '+e.detail.reason;});
-  }catch(e){ st.textContent='noVNC CDN load failed: '+e; }
+    rfb.addEventListener('securityfailure',e=>{st.textContent='VNC security rejected: '+e.detail.reason+' (type '+e.detail.status+')';});
+    rfb.addEventListener('disconnect',e=>{st.textContent='disconnected code='+((e.detail&&e.detail.code)||'none')+' reason='+((e.detail&&e.detail.reason)||'none')+' clean='+((e.detail&&e.detail.clean)||false)+' - Retry';});
+    rfb.addEventListener('credentialsrequired',()=>{st.textContent='server demands a password but auth should be NONE - run PATCH 1 on the runner';});
+  }catch(e){ st.textContent='noVNC load failed: '+e; }
 }
 document.getElementById('re').onclick=boot;
 boot();
 </script></body></html>
 '@
-            $htmlN = $htmlN.Replace('__VP__', ("'" + $vp + "'"))
             Send-ClientResponse -Stream $stream -Code 200 -CType 'text/html; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($htmlN))
             return
         }

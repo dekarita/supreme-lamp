@@ -865,35 +865,36 @@ jobs:
           else { Write-Host '[pages] WARNING: not built within this step; the next docs/ push retries automatically. Job continues (non-fatal).' }
           exit 0
 
-      - name: Web desktop backend (TightVNC 5900 + websockify 7333, verified, tailnet-only)
+      - name: Web desktop backend (TightVNC no-auth 5900 + websockify 7333, verified, tailnet-only)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          $vncPass = ([guid]::NewGuid().ToString('N').Substring(0, 8))
           $msi = Join-Path $env:RUNNER_TEMP 'tvn.msi'
           & curl.exe -fL --retry 3 --connect-timeout 20 --max-time 300 -o $msi 'https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi' 2>$null
           $LASTEXITCODE = 0
           if (Test-Path $msi) {
-            Start-Process msiexec.exe -Wait -ArgumentList '/i', $msi, '/quiet', '/norestart', 'SET_USEVNCAUTHENTICATION=1', 'VALUE_OF_USEVNCAUTHENTICATION=1', 'SET_PASSWORD=1', ('VALUE_OF_PASSWORD=' + $vncPass), 'SET_USECONTROLAUTHENTICATION=1', 'VALUE_OF_USECONTROLAUTHENTICATION=0'
-            try { Start-Service -Name tvnserver -ErrorAction Stop } catch { Write-Host '[vnc] tvnserver start failed' }
-          } else { Write-Host '[vnc] TightVNC download failed' }
+            Start-Process msiexec.exe -Wait -ArgumentList '/i', $msi, '/quiet', '/norestart'
+          } else { Write-Host '[vnc] TightVNC download FAILED' }
+          $tp = 'HKLM:\SOFTWARE\TightVNC\Server'
+          New-Item -Path $tp -Force -ErrorAction SilentlyContinue | Out-Null
+          Set-ItemProperty -Path $tp -Name 'AcceptRfbConnections' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path $tp -Name 'UseVncAuthentication' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path $tp -Name 'UseControlAuthentication' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+          try { Restart-Service tvnserver -Force -ErrorAction Stop } catch { try { Start-Service tvnserver -ErrorAction Stop } catch { Write-Host '[vnc] tvnserver start failed' } }
           $vncUp = $false
           for ($i = 0; $i -lt 20; $i++) { try { if (Get-NetTCPConnection -LocalPort 5900 -State Listen -ErrorAction SilentlyContinue) { $vncUp = $true; break } } catch { }; Start-Sleep -Seconds 2 }
-          Write-Host ('[vnc] 5900 listening: ' + $vncUp)
           & python -m pip install --quiet --disable-pip-version-check websockify 2>$null
           $LASTEXITCODE = 0
           Start-Process -FilePath python -ArgumentList '-m','websockify','0.0.0.0:7333','127.0.0.1:5900' -WindowStyle Hidden
           $brUp = $false
           for ($i = 0; $i -lt 15; $i++) { try { if (Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue) { $brUp = $true; break } } catch { }; Start-Sleep -Seconds 2 }
-          Write-Host ('[vnc] 7333 bridge listening: ' + $brUp)
-          try { New-NetFirewallRule -DisplayName 'ghrdp-ws-7333' -Direction Inbound -LocalPort 7333 -Protocol TCP -Action Allow -RemoteAddress '100.64.0.0/10' -Profile Any -Enabled True -ErrorAction Stop | Out-Null } catch { & netsh.exe advfirewall firewall add rule name="ghrdp-ws-7333" dir=in action=allow protocol=TCP localport=7333 remoteip=100.64.0.0/10 enable=yes 2>$null | Out-Null; $LASTEXITCODE = 0 }
-          $cfgPath = 'C:\ghrdp\config.json'
-          if (Test-Path $cfgPath) {
-            $c = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
-            $c | Add-Member -NotePropertyName vncPass -NotePropertyValue $vncPass -Force
-            [System.IO.File]::WriteAllText($cfgPath, ($c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
-          }
-          Write-Host ('[vnc] backend verified: vnc5900=' + $vncUp + ' bridge7333=' + $brUp)
+          netsh advfirewall firewall delete rule name="ghrdp-ws-7333" 2>$null | Out-Null
+          $LASTEXITCODE = 0
+          netsh advfirewall firewall add rule name="ghrdp-ws-7333" dir=in action=allow protocol=TCP localport=7333 remoteip=100.64.0.0/10 enable=yes 2>$null | Out-Null
+          $LASTEXITCODE = 0
+          $ruleOk = $false
+          try { if (Get-NetFirewallRule -DisplayName 'ghrdp-ws-7333' -ErrorAction SilentlyContinue) { $ruleOk = $true } } catch { }
+          Write-Host ('[vnc] verified: vnc5900=' + $vncUp + ' bridge7333=' + $brUp + ' fwRule=' + $ruleOk + ' (auth=NONE, tailnet-gated)')
           exit 0
 
       - name: Start Mission Control dashboard EARLY (PS 7331, SYSTEM task, confirm LISTENING)
