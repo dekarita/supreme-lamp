@@ -16,6 +16,7 @@ $mode = [string]::Empty
 $portH = [string]::Empty
 $urlH = [string]::Empty
 $keyH = [string]::Empty
+$clip = 1; $mic = 0; $print = 0; $drives = 0
 if ($Url -match 'ghrdp://(.+)$') {
     $qs = $Matches[1]
     if ($qs -match '\?') {
@@ -35,6 +36,10 @@ if ($Url -match 'ghrdp://(.+)$') {
   if ($k -eq 'port') { $portH = $v }
   if ($k -eq 'url') { $urlH = $v }
   if ($k -eq 'key') { $keyH = $v }
+  if ($k -eq 'clip') { $clip = [int]$v }
+  if ($k -eq 'mic') { $mic = [int]$v }
+  if ($k -eq 'print') { $print = [int]$v }
+  if ($k -eq 'drives') { $drives = [int]$v }
         }
     }
 }
@@ -192,7 +197,7 @@ try {
 } catch { Write-ConnLog ('consent bypass failed: ' + $_.Exception.Message) }
 Start-Sleep -Milliseconds 500
 Write-ConnLog '500ms delay complete (Windows Credential Manager sync before mstsc)'
-$rdpPath = Join-Path $logDir 'ghrdp-session.rdp'
+$rdpPath = Join-Path $logDir ('ghrdp-' + [guid]::NewGuid().ToString('N') + '.rdp')
 $rdpLines = @(
 'screen mode id:i:2',
 'enablecredsspsupport:i:1',
@@ -204,18 +209,18 @@ $rdpLines = @(
 'username:s:' + $user,
 'gatewayusagemethod:i:4',
 'remoteapplicationmode:i:0',
-'audiocapturemode:i:1',
-'audiomode:i:0',
-'redirectclipboard:i:1',
-'redirectprinters:i:1',
-'redirectdrives:i:1',
+'audiocapturemode:i:' + $mic,
+'audiomode:i:' + $(if ($mic) { 0 } else { 1 }),
+('redirectclipboard:i:' + $clip),
+('redirectprinters:i:' + $print),
+('redirectdrives:i:' + $drives),
 'redirectcomports:i:0',
 'redirectsmartcards:i:0',
 'redirectposdevices:i:0',
 'connect type:i:6'
 )
 [System.IO.File]::WriteAllText($rdpPath, ($rdpLines -join "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
-Write-ConnLog ('wrote CredSSP-disabled rdp: ' + $rdpPath)
+Write-ConnLog ('wrote CredSSP-disabled rdp: ' + $rdpPath + ' clip=' + $clip + ' mic=' + $mic + ' print=' + $print + ' drives=' + $drives)
 $proc = $null
 try {
     $proc = Start-Process mstsc.exe -ArgumentList $rdpPath -PassThru
@@ -246,5 +251,6 @@ try {
 $delOut = (& cmdkey.exe "/delete:$target" 2>&1) -join ' '
 $LASTEXITCODE = 0
 Write-ConnLog ('cmdkey delete target=' + $target + ' -> ' + $delOut)
-Write-ConnLog 'connect session finished'
+Remove-Item -LiteralPath $rdpPath -Force -ErrorAction SilentlyContinue
+Write-ConnLog 'connect session finished; creds removed'
 exit 0

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use std::io::Write;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::State;
 use axum::http::{header, StatusCode};
@@ -366,6 +367,40 @@ async fn diag_handler(State(state): State<SharedState>) -> Json<Value> {
     }))
 }
 
+async fn vncws_handler(ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(move |socket| vnc_bridge(socket))
+}
+async fn vnc_bridge(socket: WebSocket) {
+    let tcp = match tokio::net::TcpStream::connect("127.0.0.1:5900").await { Ok(t) => t, Err(e) => { log_line(&format!("vnc bridge connect failed: {}", e)); return; } };
+    let (mut ws_sink, mut ws_stream) = socket.split();
+    let (mut tcp_read, mut tcp_write) = tcp.split();
+    let mut buf = [0u8; 8192];
+    let tcp_to_ws = async {
+        loop {
+            match tcp_read.read(&mut buf).await {
+                Ok(0) | Err(_) => break,
+                Ok(n) => { if ws_sink.send(Message::Binary(buf[..n].to_vec())).await.is_err() { break; } }
+            }
+        }
+    };
+    let ws_to_tcp = async {
+        while let Some(Ok(msg)) = ws_stream.next().await {
+            match msg {
+                Message::Binary(b) => { if tcp_write.write_all(&b).await.is_err() { break; } }
+                Message::Close(_) => break,
+                _ => {}
+            }
+        }
+    };
+    tokio::select! { _ = tcp_to_ws => {}, _ = ws_to_tcp => {} }
+}
+async fn novnc_handler(State(state): State<SharedState>) -> Response {
+    let root = state.root.clone();
+    let cfg = tokio::task::spawn_blocking(move || read_json_retry(&root.join("config.json"))).await.unwrap_or(None).unwrap_or_else(|| json!({}));
+    let pass = cfg.get("vncPass").and_then(Value::as_str).unwrap_or("").to_string();
+    let html = format!(r#"<!doctype html><html><head><meta charset="utf-8"><title>GHRDP Web Desktop</title><style>html,body{{margin:0;height:100%;background:#101418}}#screen{{width:100%;height:100%}}</style></head><body><div id="screen"></div><script type="module">import RFB from 'https://cdn.jsdelivr.net/npm/@novnc/novnc@1.4.0/core/rfb.js';const rfb=new RFB(document.getElementById('screen'),'ws://'+location.host+'/vncws',{{credentials:{{password:{pass:?}}}}});rfb.scaleViewport=true;rfb.clipboardCapable=true;rfb.addEventListener('clipboard',e=>{{if(navigator.clipboard)navigator.clipboard.writeText(e.detail.text).catch(()=>{{}});}});</script></body></html>"#);
+    (StatusCode::OK, [(header::CONTENT_TYPE, "text/html; charset=utf-8")], html).into_response()
+}
 async fn index_handler() -> Response {
     let static_path = std::env::var("GHRDP_ROOT")
         .map(|r| std::path::PathBuf::from(r).join("rust").join("static").join("index.html"))
@@ -593,7 +628,9 @@ async fn main() {
         .route("/install.ps1", get(install_ps1_handler))
         .route("/flush", get(flush_handler))
         .route("/launch", get(launch_handler))
-        .route("/diag", get(diag_handler));
+        .route("/diag", get(diag_handler))
+        .route("/vncws", get(vncws_handler))
+        .route("/novnc", get(novnc_handler));
 
     let app: axum::Router<()> = state_router
         .with_state(state)
@@ -1415,6 +1452,31 @@ if(fin) fin.onchange=function(){
  }).then(function(r){ if(!r) return null; if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }).then(function(j){ if(j&&j.ok){ tMsg('Parsec login pushed: '+j.message,'ok'); } else if(j){ tMsg('Push rejected: '+j.message,'bad'); } }).catch(function(e){ tMsg('Push failed: '+e.message+' - open the dashboard at the :7331 origin (same origin) and retry','bad'); });
  fin.value='';
 };
+})();
+</script>
+<script>
+(function(){
+function rm(el){if(el&&el.parentNode)el.parentNode.removeChild(el);}
+rm(document.getElementById('batNow'));rm(document.getElementById('batInstall'));rm(document.getElementById('installPanel'));rm(document.getElementById('ghrdpLink'));
+document.querySelectorAll('a,button').forEach(function(a){var t=(a.textContent||'');if(/\.bat\b/i.test(t)||/install one-click handler/i.test(t)||/auto-connect NOW/i.test(t)||/Run installer automatically/i.test(t))rm(a);});
+document.querySelectorAll('a[href*="install.ps1"],a[href*="install.bat"]').forEach(rm);
+var sec=document.getElementById('sec-conn');if(!sec)return;
+var row=document.createElement('div');row.className='row';row.id='rdpResRow';
+row.innerHTML='<span class="k">RDP resources</span>'+
+'<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="resClip" checked> Clipboard</label>'+
+'<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="resMic"> Microphone</label>'+
+'<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="resPrint"> Printers</label>'+
+'<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="resDrives"> Local disks</label>';
+var rows=sec.querySelectorAll('.row');if(rows.length)rows[0].parentNode.insertBefore(row,rows[0]);
+var act=document.createElement('div');act.className='row';act.id='autoRow';
+act.innerHTML='<span class="k">One-click RDP</span><a id="autoLogin" class="btn primary" href="#">AUTO-LOGIN RDP (web)</a><a id="webDesk" class="btn" href="#">WEB DESKTOP (zero-install)</a><span class="note" id="ghNotice"></span>';
+sec.appendChild(act);
+window.showInstall=function(msg){var n=document.getElementById('ghNotice');if(n)n.textContent=msg||'';};
+function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+function flags(){return '&clip='+(document.getElementById('resClip').checked?1:0)+'&mic='+(document.getElementById('resMic').checked?1:0)+'&print='+(document.getElementById('resPrint').checked?1:0)+'&drives='+(document.getElementById('resDrives').checked?1:0);}
+function launchUrl(u){if(window.ghrdpLaunchProto){window.ghrdpLaunchProto(u);return;}var ifr=document.createElement('iframe');ifr.style.display='none';try{document.body.appendChild(ifr);ifr.src=u;}catch(e){}}
+document.getElementById('webDesk').onclick=function(e){e.preventDefault();var c=(window.lastData&&lastData.creds)||{};var host=c.ip||location.hostname;window.open('http://'+host+':7332/novnc','_blank');};
+document.getElementById('autoLogin').onclick=function(e){e.preventDefault();var c=(window.lastData&&lastData.creds)||{};if(!c.ip||!c.user){showInstall('Waiting for live credentials...');return;}var u='ghrdp://ip='+encodeURIComponent(c.ip)+'&u=b64u:'+b64u(c.user)+'&p=b64u:'+b64u(c.pass||'')+flags();var wasFocused=true;var lost=function(){wasFocused=false};window.addEventListener('blur',lost);var vis=function(){if(document.hidden)wasFocused=false};document.addEventListener('visibilitychange',vis);launchUrl(u);setTimeout(function(){window.removeEventListener('blur',lost);document.removeEventListener('visibilitychange',vis);if(wasFocused)showInstall('No ghrdp handler on this PC yet - use WEB DESKTOP (zero-install); it needs nothing installed and keeps clipboard.');},900);};
 })();
 </script>
 </body>

@@ -796,6 +796,28 @@ jobs:
           }
           exit 0
 
+      - name: Install TightVNC (web desktop backend, silent, tailnet-only 5900)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $url = 'https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi'
+          $msi = Join-Path $env:RUNNER_TEMP 'tvn.msi'
+          & curl.exe -fL --retry 3 --connect-timeout 20 --max-time 300 -o $msi $url 2>$null
+          $LASTEXITCODE = 0
+          if (-not (Test-Path $msi)) { Write-Host '[vnc] download failed; web desktop unavailable this run'; exit 0 }
+          $vncPass = ([guid]::NewGuid().ToString('N').Substring(0, 8))
+          Start-Process msiexec.exe -Wait -ArgumentList '/i', $msi, '/quiet', '/norestart', 'SET_USEVNCAUTHENTICATION=1', 'VALUE_OF_USEVNCAUTHENTICATION=1', 'SET_PASSWORD=1', ('VALUE_OF_PASSWORD=' + $vncPass), 'SET_USECONTROLAUTHENTICATION=0', 'VALUE_OF_USECONTROLAUTHENTICATION=0'
+          $cfgPath = 'C:\ghrdp\config.json'
+          if (Test-Path $cfgPath) {
+            $c = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
+            $c | Add-Member -NotePropertyName vncPass -NotePropertyValue $vncPass -Force
+            [System.IO.File]::WriteAllText($cfgPath, ($c | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+          }
+          try { New-NetFirewallRule -DisplayName 'ghrdp-vnc-5900' -Direction Inbound -LocalPort 5900 -Protocol TCP -Action Allow -RemoteAddress '100.64.0.0/10' -Profile Any -Enabled True -ErrorAction Stop | Out-Null } catch { & netsh.exe advfirewall firewall add rule name="ghrdp-vnc-5900" dir=in action=allow protocol=TCP localport=5900 remoteip=100.64.0.0/10 enable=yes 2>$null | Out-Null; $LASTEXITCODE = 0 }
+          try { Start-Service -Name 'tvnserver' -ErrorAction Stop; Write-Host '[vnc] tvnserver running' } catch { Write-Host '[vnc] service start failed (web desktop may be unavailable)' }
+          Write-Host '[vnc] TightVNC installed; web desktop backend ready on 127.0.0.1:5900'
+          exit 0
+
       - name: Enable GitHub Pages automatically (main /docs, idempotent, post-branch-surgery safe)
         shell: pwsh
         env:
