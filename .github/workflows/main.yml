@@ -1538,6 +1538,21 @@ jobs:
           } catch { Write-Host ('[webdesk] runneradmin task register failed: ' + $_.Exception.Message) }
           exit 0
 
+      - name: Keep Parsec host session warm (auto-relaunch parsecd as RDP user)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $ru = $env:RDP_USER
+          try {
+              $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "while($true){ if(-not (Get-Process parsecd -ErrorAction SilentlyContinue)){ $p=(Get-ChildItem ''C:\Program Files\Parsec\parsecd.exe'',''C:\Program Files (x86)\Parsec\parsec.exe'' -ErrorAction SilentlyContinue | Select -First 1); if($p){ Start-Process $p.FullName } }; Start-Sleep 10 }"')
+              $trigger = New-ScheduledTaskTrigger -AtLogOn -User $ru
+              $principal = New-ScheduledTaskPrincipal -UserId $ru -LogonType Interactive -RunLevel Highest
+              Register-ScheduledTask -TaskName 'GhrdpParsecWarm' -Action $action -Trigger $trigger -Principal $principal -Force -ErrorAction Stop | Out-Null
+              Write-Host '[parsec] warm-keep task registered for ' + $ru
+              try { Start-ScheduledTask -TaskName 'GhrdpParsecWarm' -ErrorAction Stop; Write-Host '[parsec] warm task started (session live now)' } catch { Write-Host '[parsec] warm task starts at next logon' }
+          } catch { Write-Host ('[parsec] warm task failed: ' + $_.Exception.Message) }
+          exit 0
+
       - name: Machine personalization + apps (Edge/Chrome/Firefox extensions + bookmarks, qBittorrent, VB-CABLE)
         shell: pwsh
         run: |

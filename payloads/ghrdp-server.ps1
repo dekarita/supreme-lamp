@@ -324,7 +324,7 @@ function Invoke-ClientRequest {
 var img=document.getElementById('fr'),st=document.getElementById('st'),pend=[],oldUrl=null;
 var miss=0;
 function frame(){fetch('/webdesk-frame?'+Date.now(),{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;miss=0;return r.blob();}).then(function(b){if(oldUrl)URL.revokeObjectURL(oldUrl);oldUrl=URL.createObjectURL(b);img.src=oldUrl;img.style.display='';st.textContent='live';}).catch(function(){miss++;if(miss>10){fetch('/webdesk-probe',{cache:'no-store'}).then(function(r){return r.json();}).then(function(p){st.textContent=p.wdErr?('CAPTURE ERROR: '+p.wdErr.split('\n')[1]):(p.session?'session live but capture dead - restart GhrdpWebDesk task':'no session yet - click START SESSION');}).catch(function(){});}else{st.textContent='waiting for frames...';}});}
-setInterval(frame,1500);frame();
+setInterval(frame,180);frame();
 (async function selfBoot(){
 for(var round=0;round<3;round++){
 var st=await fetch('/webdesk-status',{cache:'no-store'}).then(function(r){return r.json();}).catch(function(){return null;});
@@ -335,7 +335,7 @@ for(var i=0;i<20;i++){await new Promise(function(r){setTimeout(r,1500);});var s2
 }
 document.getElementById('st').textContent='boot failed 3 rounds - read C:\\ghrdp\\webdesk\\boot-diag.txt on the runner';
 })();
-setInterval(function(){if(pend.length){var b=pend;pend=[];fetch('/webdesk-input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).catch(function(){});}},100);
+setInterval(function(){if(pend.length){var b=pend;pend=[];fetch('/webdesk-input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).catch(function(){});}},30);
 function norm(e){var r=img.getBoundingClientRect();return {nx:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),ny:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))};}
 img.addEventListener('mousemove',function(e){var p=norm(e);pend.push({t:'m',nx:p.nx,ny:p.ny});});
 img.addEventListener('mousedown',function(e){var p=norm(e);pend.push({t:(e.button===2?'rd':'ld'),nx:p.nx,ny:p.ny});e.preventDefault();});
@@ -348,6 +348,14 @@ addEventListener('keyup',function(e){if(SPEC[e.key]){pend.push({t:'ku',vk:SPEC[e
 document.getElementById('cp').onclick=function(){fetch('/webdesk-clip?want=1').then(function(r){return r.json();}).then(function(j){if(j.text!=null&&navigator.clipboard)navigator.clipboard.writeText(j.text).then(function(){st.textContent='remote clipboard copied';});});};
 document.getElementById('go').onclick=function(){fetch('/api/config',{cache:'no-store'}).then(function(r){return r.json();}).then(function(cf){if(cf&&cf.rdpIp&&cf.rdpUser){function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}var u='ghrdp://ip='+encodeURIComponent(cf.rdpIp)+'&u=b64u:'+b64u(cf.rdpUser)+'&p=b64u:'+b64u(cf.rdpPass||'');var ifr=document.createElement('iframe');ifr.style.display='none';try{document.body.appendChild(ifr);ifr.src=u;}catch(e){}document.getElementById('st').textContent='session start වෙනවා... මේ tab එකේ frames ටිකෙන් පේනවා';}});};
 setTimeout(function(){fetch('/webdesk-status',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){if(!s.ok){document.getElementById('go').click();}});},2500);
+(function(){
+var cur=document.createElement('div');cur.style.cssText='position:fixed;width:14px;height:14px;border:2px solid #0ff;border-radius:50%;pointer-events:none;z-index:99;display:none;transform:translate(-50%,-50%)';document.body.appendChild(cur);
+var rip=document.createElement('div');rip.style.cssText='position:fixed;width:10px;height:10px;background:#0ff;border-radius:50%;pointer-events:none;z-index:99;display:none;transform:translate(-50%,-50%)';document.body.appendChild(rip);
+var fi=document.getElementById('fr');
+fi.addEventListener('mousemove',function(e){cur.style.display='block';cur.style.left=e.clientX+'px';cur.style.top=e.clientY+'px';});
+fi.addEventListener('mouseleave',function(){cur.style.display='none';});
+fi.addEventListener('mousedown',function(e){rip.style.display='block';rip.style.left=e.clientX+'px';rip.style.top=e.clientY+'px';rip.style.opacity='1';setTimeout(function(){rip.style.opacity='0';},150);setTimeout(function(){rip.style.display='none';},300);});
+})();
 document.getElementById('ps').onclick=function(){if(navigator.clipboard)navigator.clipboard.readText().then(function(t){return fetch('/webdesk-clip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});}).then(function(){st.textContent='pasted into remote';});};
 </script></body></html>
 '@

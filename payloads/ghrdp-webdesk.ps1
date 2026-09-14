@@ -33,7 +33,11 @@ $bmp = New-Object System.Drawing.Bitmap $vs.Width, $vs.Height
 $gfx = [System.Drawing.Graphics]::FromImage($bmp)
 $codec = @([System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders()) | Where-Object { $_.MimeType -eq 'image/jpeg' } | Select-Object -First 1
 $ep = New-Object System.Drawing.Imaging.EncoderParameters 1
-$ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]55)
+$ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]35)
+$scale = 0.6
+$sw = [int]($vs.Width * $scale); $sh = [int]($vs.Height * $scale)
+$small = New-Object System.Drawing.Bitmap $sw, $sh
+$gsmall = [System.Drawing.Graphics]::FromImage($small)
 $framePath = Join-Path $dir 'frame.jpg'
 $tmpPath = Join-Path $dir 'frame.tmp.jpg'
 $tsPath = Join-Path $dir 'frame-ts.txt'
@@ -48,7 +52,8 @@ while ($true) {
     try {
         try { [System.IO.File]::WriteAllText($alive, (Get-Date).ToUniversalTime().ToString('o')) } catch { }
         $gfx.CopyFromScreen($vs.X, $vs.Y, 0, 0, $bmp.Size)
-        $bmp.Save($tmpPath, $codec, $ep)
+        $gsmall.DrawImage($bmp, 0, 0, $sw, $sh)
+        $small.Save($tmpPath, $codec, $ep)
         Move-Item -LiteralPath $tmpPath -Destination $framePath -Force
         [System.IO.File]::WriteAllText($tsPath, (Get-Date).ToUniversalTime().ToString('o'))
     } catch { }
@@ -79,7 +84,7 @@ while ($true) {
     if (Test-Path -LiteralPath $clipGetFlag) {
         try { $t = ''; try { $t = Get-Clipboard -Raw } catch { }; [System.IO.File]::WriteAllText($clipTxt, $t); Remove-Item -LiteralPath $clipGetFlag -Force } catch { }
     }
-    Start-Sleep -Milliseconds 300
+    Start-Sleep -Milliseconds 100
 }
 } catch {
     try { [System.IO.File]::WriteAllText($errFile, ((Get-Date -Format o) + "`r`n" + $_.Exception.Message + "`r`n" + $_.ScriptStackTrace)) } catch { }
