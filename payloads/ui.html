@@ -302,9 +302,11 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <button onclick="showInstall()">handler help</button>
   </div>
   <div class="row"><span class="k">Parsec auto-login</span>
-<a id="parsecPush" class="btn primary" href="#" onclick="return openRdp(event)">push Parsec login from THIS PC</a>
-<a id="parsecOpen" class="btn" href="#" onclick="return openRdp(event)">open Parsec folder in Explorer</a>
-<span class="note">auto = local handler reads ONLY %APPDATA%\Parsec (config + user.bin) and pushes to the runner; the second button opens that exact folder in Windows Explorer.</span>
+<button class="btn primary" id="parsecPushBtn" type="button">push Parsec login from THIS PC</button>
+<button class="btn" id="parsecDirBtn" type="button">copy Parsec folder path</button>
+<a class="btn" id="parsecAutoLink" href="#" title="Optional: needs the ghrdp:// handler installed on THIS PC">auto via handler</a>
+<input type="file" id="parsecFiles" multiple accept=".json,.txt,.bin" style="display:none">
+<span class="note">push = a file picker opens: choose config.txt/config.json + user.bin from %APPDATA%\Parsec; the page uploads them straight to the runner (no handler, no blocked page). copy = puts %APPDATA%\Parsec on your clipboard (Win+E, paste, Enter). auto via handler = pushes via the local handler in a hidden iframe (never shows a blocked tab).</span>
 </div>
 </section>
 <section class="glass" id="installPanel" style="display:none">
@@ -407,7 +409,9 @@ async function doDiag(){openDrawer();var db=$('diagBox');db.textContent='running
 function openDrawer(){$('drawer').classList.add('open');$('drawer').setAttribute('aria-hidden','false');$('drawerScrim').classList.add('open')}
 function closeDrawer(){$('drawer').classList.remove('open');$('drawer').setAttribute('aria-hidden','true');$('drawerScrim').classList.remove('open')}
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeDrawer()});
-function openRdp(ev){if(!ghrdpUrl){showInstall('Cannot build the ghrdp:// link yet - wait for live data.');return true}var wasFocused=true;var lost=function(){wasFocused=false};window.addEventListener('blur',lost);var visLost=function(){if(document.hidden)wasFocused=false};document.addEventListener('visibilitychange',visLost);setTimeout(function(){window.removeEventListener('blur',lost);document.removeEventListener('visibilitychange',visLost);if(wasFocused)showInstall('ghrdp:// handler NOT detected (this page kept focus after firing the link - the browser logged the request as canceled). Install it below or use the mstsc command.')},700);return true}
+function launchProto(url){var ifr=document.createElement('iframe');ifr.style.display='none';ifr.setAttribute('aria-hidden','true');ifr.src=url;document.body.appendChild(ifr);setTimeout(function(){if(ifr&&ifr.parentNode)ifr.parentNode.removeChild(ifr);},4000);}
+window.ghrdpLaunchProto=launchProto;
+function openRdp(ev){if(ev&&ev.preventDefault)ev.preventDefault();if(!ghrdpUrl){showInstall('Cannot build the ghrdp:// link yet - wait for live data.');return false}var wasFocused=true;var lost=function(){wasFocused=false};window.addEventListener('blur',lost);var visLost=function(){if(document.hidden)wasFocused=false};document.addEventListener('visibilitychange',visLost);launchProto(ghrdpUrl);setTimeout(function(){window.removeEventListener('blur',lost);document.removeEventListener('visibilitychange',visLost);if(wasFocused)showInstall('ghrdp:// handler NOT detected (no hand-off happened). Install it below or use the mstsc command.')},900);return false}
 function showInstall(msg){var p=$('installPanel');if(msg){var d=$('installDetected');if(d)d.textContent=msg}p.style.display='block';try{p.scrollIntoView({behavior:'smooth',block:'center'})}catch(e){}}
 function chip(id,text,cls){var p=$(id);if(!p)return;p.className='chip '+(cls||'');p.innerHTML='<i class="dot"></i><span>'+esc(text)+'</span>'}
 (function(){var box=$('logBox');if(!box)return;box.addEventListener('mouseenter',function(){logPaused=true});box.addEventListener('mouseleave',function(){logPaused=false})})();
@@ -430,8 +434,6 @@ function render(d){
     ghrdpUrl='ghrdp://ip='+encodeURIComponent(c.ip)+'&u=b64u:'+b64u(c.user)+'&p=b64u:'+b64u(c.pass||'');
     var a1=$('ghrdpLink');if(a1)a1.href=ghrdpUrl;
     var a2=$('retryLink');if(a2)a2.href=ghrdpUrl;
-    var pp=$('parsecPush');if(pp)pp.href=ghrdpUrl+'&port=7331&mode=parsec';
-    var po=$('parsecOpen');if(po)po.href=ghrdpUrl+'&mode=parsecdir';
   }
   if(d.runnerEgressIp){
     $('egressLine').textContent='Uploads execute ON THE RUNNER (egress IP '+d.runnerEgressIp+') - your PC\'s connection is never used for uploads.';
@@ -719,6 +721,32 @@ setInterval(function(){
  fetch('/api/progress',{cache:'no-store'}).then(function(r){return r.json()}).then(function(d){webRtt=performance.now()-t0;wire=d.wire||null;paint();}).catch(function(){wire=null;paint();});
 },1000);
 paint();
+})();
+</script>
+<script>
+(function(){
+function tMsg(t,k){ try{ toast(t,k); }catch(e){ alert(t); } }
+function b64buf(buf){ var u=new Uint8Array(buf); var s=''; var CH=0x8000; for(var i=0;i<u.length;i+=CH){ s+=String.fromCharCode.apply(null,u.subarray(i,i+CH)); } return btoa(s); }
+var pushBtn=document.getElementById('parsecPushBtn');
+var dirBtn=document.getElementById('parsecDirBtn');
+var autoA=document.getElementById('parsecAutoLink');
+var fin=document.getElementById('parsecFiles');
+if(pushBtn) pushBtn.onclick=function(){ if(fin) fin.click(); else tMsg('picker missing','bad'); };
+if(dirBtn) dirBtn.onclick=function(){ var p='%APPDATA%\\Parsec'; function done(){ tMsg('Copied '+p+' - press Win+E and paste into the address bar','ok'); } if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(p).then(done,function(){ try{legacyCopy(p,null);}catch(e){} done(); }); } else { try{legacyCopy(p,null);}catch(e){} done(); } };
+if(autoA) autoA.onclick=function(e){ e.preventDefault(); if(!window.ghrdpUrl){ tMsg('Wait for live data first','warn'); return; } window.ghrdpLaunchProto(window.ghrdpUrl+'&port=7331&mode=parsec'); tMsg('Auto-push requested in background (handler reads %APPDATA%\\Parsec, no picking). If nothing happens, use the push button instead.','warn'); };
+if(fin) fin.onchange=function(){
+ var files=fin.files||[]; var cfg=null, bin=null;
+ for(var i=0;i<files.length;i++){ var nm=(files[i].name||'').toLowerCase(); if(nm==='user.bin') bin=files[i]; if(nm==='config.txt'||nm==='config.json') cfg=files[i]; }
+ if(!cfg||!bin){ tMsg('Select BOTH config.txt (or config.json) AND user.bin from %APPDATA%\\Parsec','bad'); fin.value=''; return; }
+ var ip=(window.lastData&&window.lastData.creds&&window.lastData.creds.ip)||'';
+ if(!ip){ tMsg('No runner IP yet - wait for live data','bad'); fin.value=''; return; }
+ tMsg('Uploading Parsec login to runner...','warn');
+ Promise.all([cfg.arrayBuffer(),bin.arrayBuffer()]).then(function(bs){
+  var body=JSON.stringify({cfgName:cfg.name,cfgB64:b64buf(bs[0]),binB64:b64buf(bs[1]),host:location.hostname});
+  return fetch('http://'+ip+':7331/parsec-push',{method:'POST',headers:{'Content-Type':'application/json'},body:body});
+ }).then(function(r){ if(!r) return null; if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }).then(function(j){ if(j&&j.ok){ tMsg('Parsec login pushed: '+j.message,'ok'); } else if(j){ tMsg('Push rejected: '+j.message,'bad'); } }).catch(function(e){ tMsg('Push failed: '+e.message+' - open the dashboard at the :7331 origin (same origin) and retry','bad'); });
+ fin.value='';
+};
 })();
 </script>
 </body>
