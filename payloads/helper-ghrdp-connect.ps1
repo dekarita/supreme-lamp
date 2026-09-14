@@ -12,6 +12,10 @@ Write-ConnLog ('--- connect requested: ' + $Url)
 $ip = [string]::Empty
 $user = [string]::Empty
 $pass = [string]::Empty
+$mode = [string]::Empty
+$portH = [string]::Empty
+$urlH = [string]::Empty
+$keyH = [string]::Empty
 if ($Url -match 'ghrdp://(.+)$') {
     $qs = $Matches[1]
     foreach ($kv in ($qs -split '&')) {
@@ -22,6 +26,10 @@ if ($Url -match 'ghrdp://(.+)$') {
   if ($k -eq 'ip') { $ip = $v }
   if ($k -eq 'user' -or $k -eq 'u') { $user = $v }
   if ($k -eq 'pass' -or $k -eq 'p') { $pass = $v }
+  if ($k -eq 'mode') { $mode = $v }
+  if ($k -eq 'port') { $portH = $v }
+  if ($k -eq 'url') { $urlH = $v }
+  if ($k -eq 'key') { $keyH = $v }
         }
     }
 }
@@ -29,8 +37,53 @@ function Expand-B64U { param([string]$S) $s = ([string]$S).Replace('-', '+').Rep
 if ($user -like 'b64u:*') { $du = Expand-B64U $user.Substring(5); if ($null -ne $du) { $user = $du } }
 if ($pass -like 'b64u:*') { $dp = Expand-B64U $pass.Substring(5); if ($null -ne $dp) { $pass = $dp } }
 Write-ConnLog ('parsed: ip=' + $ip + ' user=' + $user + ' passLen=' + $pass.Length)
-if ($ip) { try { [System.IO.File]::WriteAllText($cacheFile, [string]$Url) } catch { } }
-if ($ip -and ((-not $user) -or (-not $pass))) {
+if ($mode -eq 'install') {
+    Write-ConnLog 'install mode: handler already installed - play buttons run automatically'
+    try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('GHRDP handler already installed - all play buttons run automatically now.', 'GHRDP') | Out-Null } catch { }
+    exit 0
+}
+if ($mode -eq 'parsec-push') {
+    $src = Join-Path $env:APPDATA 'Parsec'
+    Write-ConnLog ('parsec-push mode: reading ONLY from EXACT path: ' + $src)
+    $cfgFile = $null
+    foreach ($cn in @('config.txt','config.json')) { $p = Join-Path $src $cn; if (Test-Path -LiteralPath $p) { $cfgFile = $p; break } }
+    $binFile = Join-Path $src 'user.bin'
+    if ((-not $cfgFile) -or (-not (Test-Path -LiteralPath $binFile))) {
+        Write-ConnLog 'parsec-push: config or user.bin missing in %APPDATA%\Parsec'
+        try { Start-Process explorer.exe -ArgumentList ('"' + $src + '"') } catch { }
+        try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Parsec login files not found. Open Parsec and log in first, then click play again. The Parsec folder is now open in Explorer.', 'GHRDP Parsec') | Out-Null } catch { }
+        exit 1
+    }
+    $body = (@{ cfgName = (Split-Path -Leaf $cfgFile); cfgB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($cfgFile)); binB64 = [Convert]::ToBase64String([System.IO.File]::ReadAllBytes($binFile)); src = $env:COMPUTERNAME } | ConvertTo-Json -Compress)
+    $portUse = if ($portH) { $portH } else { '7331' }
+    $ok = $false
+    try {
+        $r = Invoke-RestMethod -Uri ('http://' + $ip + ':' + $portUse + '/parsec-push') -Method Post -Body ([System.Text.Encoding]::UTF8.GetBytes($body)) -ContentType 'application/json' -TimeoutSec 30
+        $ok = $true
+        Write-ConnLog ('parsec-push OK: ' + ($r | ConvertTo-Json -Compress))
+    } catch { Write-ConnLog ('parsec-push failed: ' + $_.Exception.Message) }
+    try { Start-Process explorer.exe -ArgumentList ('"' + $src + '"') } catch { }
+    try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show($(if ($ok) { 'Parsec login uploaded to the RDP runner successfully. The Parsec folder is open in Explorer.' } else { 'Upload failed - is the runner dashboard reachable?' }), 'GHRDP Parsec') | Out-Null } catch { }
+    exit 0
+}
+if ($mode -eq 'decrypt') {
+    Write-ConnLog ('decrypt mode: url len=' + ([string]$urlH).Length)
+    $dl = Join-Path $env:TEMP ('ghrdp-' + [guid]::NewGuid().ToString('N') + '.ghenc')
+    try { & curl.exe -fL --max-time 600 -o $dl $urlH 2>$null; $LASTEXITCODE = 0 } catch { }
+    if (-not (Test-Path -LiteralPath $dl)) { try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Download failed - check the link.', 'GHRDP decrypt') | Out-Null } catch { }; exit 1 }
+    $outFile = $dl -replace '\.ghenc$', ''
+    $env:GHRDP_KEY = $keyH; $env:GHRDP_IN = $dl; $env:GHRDP_OUT = $outFile
+    try {
+        & powershell.exe -NoProfile -Command { $p=$env:GHRDP_KEY; $s=[IO.File]::ReadAllBytes($env:GHRDP_IN); $kdf=[Security.Cryptography.Rfc2898DeriveBytes]::new($p,$s[0..15],100000,[Security.Cryptography.HashAlgorithmName]::SHA256); $a=[Security.Cryptography.Aes]::Create(); $a.Key=$kdf.GetBytes(32); $a.IV=$s[16..31]; $d=$a.CreateDecryptor(); $m=[IO.MemoryStream]::new(); $c=[Security.Cryptography.CryptoStream]::new($m,$d,[Security.Cryptography.CryptoStreamMode]::Write); $c.Write($s,32,$s.Length-32); $c.FlushFinalBlock(); [IO.File]::WriteAllBytes($env:GHRDP_OUT,$m.ToArray()) }
+        $LASTEXITCODE = 0
+    } catch { Write-ConnLog ('decrypt failed: ' + $_.Exception.Message) }
+    try { Start-Process explorer.exe -ArgumentList ('/select,"' + $outFile + '"') } catch { }
+    try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Decrypt finished - decrypted file selected in Explorer.', 'GHRDP decrypt') | Out-Null } catch { }
+    Remove-Item -LiteralPath $dl -Force -ErrorAction SilentlyContinue
+    exit 0
+}
+if ($ip -and ($Url -notmatch 'mode=')) { try { [System.IO.File]::WriteAllText($cacheFile, [string]$Url) } catch { } }
+if ($ip -and ((-not $user) -or (-not $pass)) -and ($Url -notmatch 'mode=')) {
     Write-ConnLog 'creds missing from URL - trying /api/config on runner (7331 then 7332)'
     foreach ($cfgPort in @(7331, 7332)) {
         try {

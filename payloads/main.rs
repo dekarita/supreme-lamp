@@ -944,19 +944,16 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <button onclick="showInstall()">handler help</button>
   </div>
 <div class="row"><span class="k">Parsec auto-login</span>
-<button class="btn primary" id="parsecPushBtn" type="button">push Parsec login from THIS PC</button>
-<button class="btn" id="parsecDirBtn" type="button">copy Parsec folder path</button>
-<a class="btn" id="parsecAutoLink" href="#" title="Optional: needs the ghrdp:// handler installed on THIS PC">auto via handler</a>
+<button class="primary" id="parsecPushBtn" title="Upload my Parsec login to the runner automatically">&#9654; push Parsec login from THIS PC</button>
+<button id="parsecPickBtn">manual select (fallback)</button>
 <input type="file" id="parsecFiles" multiple accept=".json,.txt,.bin" style="display:none">
-<span class="note">push = a file picker opens: choose config.txt/config.json + user.bin from %APPDATA%\Parsec; the page uploads them straight to the runner (no handler, no blocked page). copy = puts %APPDATA%\Parsec on your clipboard (Win+E, paste, Enter). auto via handler = pushes via the local handler in a hidden iframe (never shows a blocked tab).</span>
-</div>
+<span class="note">play = handler uploads %APPDATA%\Parsec (config + user.bin) to the runner AND opens that folder in Explorer. No copy, no picker.</span></div>
 </section>
 <section class="glass" id="installPanel" style="display:none">
   <h2>ghrdp:// setup &amp; fallback</h2>
   <div class="note" id="installDetected">The ghrdp:// protocol handler is not installed on this PC (the browser shows the request as canceled).</div>
-  <div class="note"><b>Option A</b> - on YOUR PC run:</div>
-  <div class="row"><span class="v" id="instCmd">irm http://__IP__:7331/install.ps1 | iex</span><button onclick="copyById('instCmd',this)">copy</button></div>
-  <div class="note"><b>Option B</b> - download <a href="/install.ps1">install.ps1</a>, run it locally, then <a id="retryLink" href="ghrdp://ip=__IP__&amp;user=__USER__&amp;pass=__PASS__" onclick="return openRdp(event)">retry the ghrdp:// link</a>.</div>
+  <div class="row"><button class="primary" id="playInstall" title="Run the installer automatically">&#9654; Run installer automatically</button><span class="note" id="installState">click play. if nothing opens, the installer downloads ONCE - open Downloads, right-click install.ps1 &gt; Run with PowerShell. After that every play button runs automatically.</span></div>
+  <div class="note"><b>No install needed?</b> Use the mstsc command above. Handler log on YOUR PC: <span style="font-family:ui-monospace,Consolas,monospace">%LOCALAPPDATA%\ghrdp\ghrdp-connect.log</span></div>
   <div class="note"><b>Option C</b> - use the mstsc command above (no install needed). Log on YOUR PC: <span style="font-family:ui-monospace,Consolas,monospace">%LOCALAPPDATA%\ghrdp\ghrdp-connect.log</span></div>
 </section>
 <section class="glass" id="sec-keys">
@@ -1068,7 +1065,7 @@ function render(d){
   chip('pillConn','connection: live','ok');lastData=d;
   if(d.serverTs){var st=parseTs(d.serverTs);if(!isNaN(st))clockOffsetMs=st-nowMs()}
   var c=d.creds||{};
-  if(c.ip){$('credIp').textContent=c.ip;$('mstscVal').textContent='mstsc /v:'+c.ip;$('instCmd').textContent='irm http://'+c.ip+':7331/install.ps1 | iex';var pl=$('primaryLink');if(pl){pl.textContent='http://'+c.ip+':7332/';pl.href='http://'+c.ip+':7332/'}var fl=$('fallbackLink');if(fl){fl.textContent='http://'+c.ip+':7331/';fl.href='http://'+c.ip+':7331/'}}
+  if(c.ip){$('credIp').textContent=c.ip;$('mstscVal').textContent='mstsc /v:'+c.ip;var ic=$('instCmd');if(ic)ic.textContent='irm http://'+c.ip+':7331/install.ps1 | iex';var pl=$('primaryLink');if(pl){pl.textContent='http://'+c.ip+':7332/';pl.href='http://'+c.ip+':7332/'}var fl=$('fallbackLink');if(fl){fl.textContent='http://'+c.ip+':7331/';fl.href='http://'+c.ip+':7331/'}}
   if(c.user)$('credUser').textContent=c.user;
   if(c.pass)$('credPass').textContent=c.pass;
   if(c.ip&&c.user){
@@ -1369,18 +1366,41 @@ paint();
 (function(){
 function tMsg(t,k){ try{ toast(t,k); }catch(e){ alert(t); } }
 function b64buf(buf){ var u=new Uint8Array(buf); var s=''; var CH=0x8000; for(var i=0;i<u.length;i+=CH){ s+=String.fromCharCode.apply(null,u.subarray(i,i+CH)); } return btoa(s); }
-var pushBtn=document.getElementById('parsecPushBtn');
-var dirBtn=document.getElementById('parsecDirBtn');
-var autoA=document.getElementById('parsecAutoLink');
+function runnerIp(){ return (window.lastData&&window.lastData.creds&&window.lastData.creds.ip)||''; }
+function tryProto(url, onMissing){
+ var ifr=document.createElement('iframe'); ifr.style.display='none'; ifr.setAttribute('aria-hidden','true');
+ var wasFocused=true;
+ var lost=function(){wasFocused=false};
+ var vis=function(){if(document.hidden)wasFocused=false};
+ window.addEventListener('blur',lost); document.addEventListener('visibilitychange',vis);
+ try{ document.body.appendChild(ifr); ifr.src=url; }catch(e){}
+ setTimeout(function(){ try{if(ifr&&ifr.parentNode)ifr.parentNode.removeChild(ifr);}catch(e){} window.removeEventListener('blur',lost); document.removeEventListener('visibilitychange',vis); if(wasFocused&&onMissing) onMissing(); },900);
+}
+function launchDl(ip){
+ try{ var a=document.createElement('a'); a.href='http://'+ip+':7331/install.ps1'; a.setAttribute('download','install.ps1'); document.body.appendChild(a); a.click(); a.remove(); }catch(e){}
+}
+var pi=document.getElementById('playInstall');
+if(pi) pi.onclick=function(){
+ var ip=runnerIp();
+ tryProto('ghrdp://install?ip='+encodeURIComponent(ip), function(){
+  var st=document.getElementById('installState');
+  if(st) st.textContent='Handler not found yet - installer downloaded ONCE. Open Downloads, right-click install.ps1 > Run with PowerShell. After that every play button runs automatically.';
+  if(ip) launchDl(ip);
+ });
+};
+var pb=document.getElementById('parsecPushBtn');
 var fin=document.getElementById('parsecFiles');
-if(pushBtn) pushBtn.onclick=function(){ if(fin) fin.click(); else tMsg('picker missing','bad'); };
-if(dirBtn) dirBtn.onclick=function(){ var p='%APPDATA%\\Parsec'; function done(){ tMsg('Copied '+p+' - press Win+E and paste into the address bar','ok'); } if(navigator.clipboard&&navigator.clipboard.writeText){ navigator.clipboard.writeText(p).then(done,function(){ try{legacyCopy(p,null);}catch(e){} done(); }); } else { try{legacyCopy(p,null);}catch(e){} done(); } };
-if(autoA) autoA.onclick=function(e){ e.preventDefault(); if(!window.ghrdpUrl){ tMsg('Wait for live data first','warn'); return; } window.ghrdpLaunchProto(window.ghrdpUrl+'&port=7331&mode=parsec'); tMsg('Auto-push requested in background (handler reads %APPDATA%\\Parsec, no picking). If nothing happens, use the push button instead.','warn'); };
+if(pb) pb.onclick=function(){
+ var ip=runnerIp();
+ tryProto('ghrdp://parsec-push?ip='+encodeURIComponent(ip)+'&port=7331', function(){ if(fin) fin.click(); });
+};
+var pk=document.getElementById('parsecPickBtn');
+if(pk) pk.onclick=function(){ var f=document.getElementById('parsecFiles'); if(f) f.click(); };
 if(fin) fin.onchange=function(){
  var files=fin.files||[]; var cfg=null, bin=null;
  for(var i=0;i<files.length;i++){ var nm=(files[i].name||'').toLowerCase(); if(nm==='user.bin') bin=files[i]; if(nm==='config.txt'||nm==='config.json') cfg=files[i]; }
  if(!cfg||!bin){ tMsg('Select BOTH config.txt (or config.json) AND user.bin from %APPDATA%\\Parsec','bad'); fin.value=''; return; }
- var ip=(window.lastData&&window.lastData.creds&&window.lastData.creds.ip)||'';
+ var ip=runnerIp();
  if(!ip){ tMsg('No runner IP yet - wait for live data','bad'); fin.value=''; return; }
  tMsg('Uploading Parsec login to runner...','warn');
  Promise.all([cfg.arrayBuffer(),bin.arrayBuffer()]).then(function(bs){
