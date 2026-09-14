@@ -426,7 +426,8 @@ function render(d){
   if(c.user)$('credUser').textContent=c.user;
   if(c.pass)$('credPass').textContent=c.pass;
   if(c.ip&&c.user){
-    ghrdpUrl='ghrdp://ip='+encodeURIComponent(c.ip)+'&user='+encodeURIComponent(c.user)+'&pass='+encodeURIComponent(c.pass||'');
+    function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
+    ghrdpUrl='ghrdp://ip='+encodeURIComponent(c.ip)+'&u=b64u:'+b64u(c.user)+'&p=b64u:'+b64u(c.pass||'');
     var a1=$('ghrdpLink');if(a1)a1.href=ghrdpUrl;
     var a2=$('retryLink');if(a2)a2.href=ghrdpUrl;
     var pp=$('parsecPush');if(pp)pp.href=ghrdpUrl+'&port=7331&mode=parsec';

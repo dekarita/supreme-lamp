@@ -20,13 +20,25 @@ if ($Url -match 'ghrdp://(.+)$') {
   $k = [uri]::UnescapeDataString($kv.Substring(0, $eq))
   $v = [uri]::UnescapeDataString($kv.Substring($eq + 1))
   if ($k -eq 'ip') { $ip = $v }
-  if ($k -eq 'user') { $user = $v }
-  if ($k -eq 'pass') { $pass = $v }
+  if ($k -eq 'user' -or $k -eq 'u') { $user = $v }
+  if ($k -eq 'pass' -or $k -eq 'p') { $pass = $v }
         }
     }
 }
+function Expand-B64U { param([string]$S) $s = ([string]$S).Replace('-', '+').Replace('_', '/'); switch ($s.Length % 4) { 2 { $s += '==' } 3 { $s += '=' } 1 { return $null } }; try { return [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($s)) } catch { return $null } }
+if ($user -like 'b64u:*') { $du = Expand-B64U $user.Substring(5); if ($null -ne $du) { $user = $du } }
+if ($pass -like 'b64u:*') { $dp = Expand-B64U $pass.Substring(5); if ($null -ne $dp) { $pass = $dp } }
 Write-ConnLog ('parsed: ip=' + $ip + ' user=' + $user + ' passLen=' + $pass.Length)
 if ($ip) { try { [System.IO.File]::WriteAllText($cacheFile, [string]$Url) } catch { } }
+if ($ip -and ((-not $user) -or (-not $pass))) {
+    Write-ConnLog 'creds missing from URL - trying /api/config on runner (7331 then 7332)'
+    foreach ($cfgPort in @(7331, 7332)) {
+        try {
+            $cj = Invoke-RestMethod -Uri ('http://' + $ip + ':' + $cfgPort + '/api/config') -TimeoutSec 8 -ErrorAction Stop
+            if ($cj.rdpUser -and $cj.rdpPass) { $user = [string]$cj.rdpUser; $pass = [string]$cj.rdpPass; Write-ConnLog ('creds fetched from :' + $cfgPort); break }
+        } catch { Write-ConnLog ('creds fetch failed :' + $cfgPort + ' ' + $_.Exception.Message) }
+    }
+}
 # ==== Parsec exact-path modes (top block owns BOTH; NO other path is ever read) ====
 $script:ParsecExact = Join-Path $env:APPDATA 'Parsec'   # = C:\Users\<You>\AppData\Roaming\Parsec
 $port = '7331'
@@ -79,6 +91,14 @@ if ([string]::IsNullOrEmpty($ip)) {
     try {
         Add-Type -AssemblyName PresentationFramework
         [System.Windows.MessageBox]::Show('ghrdp link is missing the ip parameter', 'GHRDP connector') | Out-Null
+    } catch { }
+    exit 1
+}
+if ([string]::IsNullOrEmpty($user) -or [string]::IsNullOrEmpty($pass)) {
+    Write-ConnLog 'ERROR: creds unavailable (not in URL, cache, or /api/config) - refusing degraded connect'
+    try {
+        Add-Type -AssemblyName PresentationFramework
+        [System.Windows.MessageBox]::Show(('Could not get RDP credentials for ' + $ip + ' (not in link, cache, or runner :7331/:7332 /api/config). Is the runner dashboard running?'), 'GHRDP connector') | Out-Null
     } catch { }
     exit 1
 }
