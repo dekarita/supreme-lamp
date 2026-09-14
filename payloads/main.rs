@@ -953,6 +953,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <h2>ghrdp:// setup &amp; fallback</h2>
   <div class="note" id="installDetected">The ghrdp:// protocol handler is not installed on this PC (the browser shows the request as canceled).</div>
   <div class="row"><button class="primary" id="playInstall" title="Run the installer automatically">&#9654; Run installer automatically</button><span class="note" id="installState">click play. if nothing opens, the installer downloads ONCE - open Downloads, right-click install.ps1 &gt; Run with PowerShell. After that every play button runs automatically.</span></div>
+  <div class="row"><span class="note">Prefer double-click? download <a id="installBat" href="/install.bat">install.bat</a> and run it once (SmartScreen may warn - choose Run).</span></div>
   <div class="note"><b>No install needed?</b> Use the mstsc command above. Handler log on YOUR PC: <span style="font-family:ui-monospace,Consolas,monospace">%LOCALAPPDATA%\ghrdp\ghrdp-connect.log</span></div>
   <div class="note"><b>Option C</b> - use the mstsc command above (no install needed). Log on YOUR PC: <span style="font-family:ui-monospace,Consolas,monospace">%LOCALAPPDATA%\ghrdp\ghrdp-connect.log</span></div>
 </section>
@@ -1073,6 +1074,7 @@ function render(d){
     ghrdpUrl='ghrdp://ip='+encodeURIComponent(c.ip)+'&u=b64u:'+b64u(c.user)+'&p=b64u:'+b64u(c.pass||'');
     var a1=$('ghrdpLink');if(a1)a1.href=ghrdpUrl;
     var a2=$('retryLink');if(a2)a2.href=ghrdpUrl;
+    var ibat=$('installBat');if(ibat)ibat.href='http://'+c.ip+':7331/install.bat';
   }
   if(d.runnerEgressIp){
     $('egressLine').textContent='Uploads execute ON THE RUNNER (egress IP '+d.runnerEgressIp+') - your PC\'s connection is never used for uploads.';

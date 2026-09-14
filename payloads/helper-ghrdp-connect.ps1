@@ -167,6 +167,9 @@ if ([string]::IsNullOrEmpty($user) -or [string]::IsNullOrEmpty($pass)) {
     exit 1
 }
 $target = 'TERMSRV/' + $ip
+& cmdkey.exe "/delete:$target" 2>$null | Out-Null
+$LASTEXITCODE = 0
+Write-ConnLog ('stale credential cleared for target=' + $target)
 $storeOut = (& cmdkey.exe "/generic:$target" "/user:$user" "/pass:$pass" 2>&1) -join ' '
 $LASTEXITCODE = 0
 Write-ConnLog ('cmdkey store target=' + $target + ' user=' + $user + ' -> ' + $storeOut)
@@ -182,10 +185,11 @@ Write-ConnLog '500ms delay complete (Windows Credential Manager sync before msts
 $rdpPath = Join-Path $logDir 'ghrdp-session.rdp'
 $rdpLines = @(
 'screen mode id:i:2',
-'enablecredsspsupport:i:0',
-'authentication level:i:2',
-'negotiate security layer:i:0',
-'prompt for credentials:i:1',
+'enablecredsspsupport:i:1',
+'authentication level:i:0',
+'negotiate security layer:i:1',
+'prompt for credentials:i:0',
+'promptcredentialonce:i:0',
 'full address:s:' + $ip,
 'username:s:' + $user,
 'gatewayusagemethod:i:4',
@@ -210,6 +214,13 @@ try {
         [System.Windows.MessageBox]::Show(('Could not start mstsc.exe: ' + $_.Exception.Message), 'GHRDP connector') | Out-Null
     } catch { }
     exit 1
+}
+Start-Sleep -Seconds 6
+if ($proc.HasExited) {
+    Write-ConnLog ('mstsc exited early code=' + $proc.ExitCode)
+    try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(('mstsc closed immediately (code ' + $proc.ExitCode + '). Log: ' + $logFile), 'GHRDP connector') | Out-Null } catch { }
+} else {
+    Write-ConnLog 'mstsc running - auto-logon expected via saved credential'
 }
 try {
     $proc.WaitForExit()

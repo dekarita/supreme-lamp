@@ -245,6 +245,13 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes $d)
             return
         }
+        if ($path -eq '/install.bat') {
+            $ipForBat = '127.0.0.1'
+            try { $cfgBat = Read-JsonFile -Path $script:CfgPath; if ($cfgBat -and $cfgBat.rdpIp) { $ipForBat = [string]$cfgBat.rdpIp } } catch { }
+            $bat = "@echo off`r`ntitle GHRDP installer`r`npowershell -NoProfile -ExecutionPolicy Bypass -Command `"irm http://" + $ipForBat + ":7331/install.ps1 | iex`"`r`necho.`r`necho If nothing happened above, copy the printed command and run it manually.`r`npause`r`n"
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/octet-stream' -Body ([System.Text.Encoding]::ASCII.GetBytes($bat))
+            return
+        }
         if ($path -eq '/install.ps1') {
             if (Test-Path -LiteralPath $script:InstPath) {
                 Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body ([System.IO.File]::ReadAllBytes($script:InstPath))
