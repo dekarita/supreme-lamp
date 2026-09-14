@@ -2,6 +2,11 @@ $ErrorActionPreference = 'Continue'
 $root = 'C:\ghrdp'
 $dir = Join-Path $root 'webdesk'
 New-Item -ItemType Directory -Path $dir -Force -ErrorAction SilentlyContinue | Out-Null
+$errFile = Join-Path $dir 'webdesk-error.txt'
+try { Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue } catch { }
+$mtx = $null
+try { $mtx = New-Object System.Threading.Mutex($false, 'GhrdpWebDeskSingle'); if (-not $mtx.WaitOne(0)) { exit 0 } } catch { }
+try {
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 Add-Type -TypeDefinition @'
 using System;using System.Runtime.InteropServices;
@@ -73,4 +78,7 @@ while ($true) {
         try { $t = ''; try { $t = Get-Clipboard -Raw } catch { }; [System.IO.File]::WriteAllText($clipTxt, $t); Remove-Item -LiteralPath $clipGetFlag -Force } catch { }
     }
     Start-Sleep -Milliseconds 300
+}
+} catch {
+    try { [System.IO.File]::WriteAllText($errFile, ((Get-Date -Format o) + "`r`n" + $_.Exception.Message + "`r`n" + $_.ScriptStackTrace)) } catch { }
 }
