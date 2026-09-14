@@ -895,37 +895,48 @@ $diag = 'C:\ghrdp\webdesk\boot-diag.txt'
 New-Item -ItemType Directory -Path (Split-Path $diag -Parent) -Force -ErrorAction SilentlyContinue | Out-Null
 $L = @()
 try { $q0 = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0; if ($q0 -match [regex]::Escape($User)) { $L += 'session already present - no boot needed'; [System.IO.File]::WriteAllText($diag, ($L -join "`r`n"), (New-Object System.Text.UTF8Encoding($false))); return $true } } catch { }
+$rdpTcp = 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+$oldNla = $null
+try { $oldNla = (Get-ItemProperty -Path $rdpTcp -Name 'UserAuthentication' -ErrorAction SilentlyContinue).UserAuthentication } catch { }
 try {
-    Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -Value 0 -Force -ErrorAction Stop
-    Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'fPromptForPassword' -Value 0 -Force -ErrorAction SilentlyContinue
-    Restart-Service TermService -Force -ErrorAction Stop
-    $L += 'NLA off + fPromptForPassword=0 + TermService restarted'
-} catch { $L += ('NLA/TermService step failed: ' + $_.Exception.Message) }
+    Set-ItemProperty -Path $rdpTcp -Name 'UserAuthentication' -Value 0 -Force
+    Set-ItemProperty -Path $rdpTcp -Name 'fPromptForPassword' -Value 0 -Force
+    if ([int]$oldNla -ne 0) { Restart-Service TermService -Force -ErrorAction Stop; $L += 'NLA turned off + TermService restarted' } else { $L += 'NLA already off (no restart needed)' }
+} catch { $L += ('NLA step failed: ' + $_.Exception.Message) }
+$listen = $false
+for ($i = 0; $i -lt 30; $i++) { try { if (Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue) { $listen = $true; break } } catch { }; Start-Sleep -Seconds 1 }
+$L += ('3389 listening before mstsc: ' + $listen)
+if (-not $listen) { [System.IO.File]::WriteAllText($diag, ($L -join "`r`n"), (New-Object System.Text.UTF8Encoding($false))); return $false }
 try {
     $sk = 'HKCU:\Software\Microsoft\Terminal Server Client\Servers\127.0.0.1'
     New-Item -Path $sk -Force -ErrorAction SilentlyContinue | Out-Null
-    Set-ItemProperty -Path $sk -Name 'AuthenticationLevelOverride' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path $sk -Name 'Username' -Value $User -Force -ErrorAction SilentlyContinue
-    $L += 'client cert override + username preset'
-} catch { $L += ('client override failed: ' + $_.Exception.Message) }
+    Set-ItemProperty -Path $sk -Name 'AuthenticationLevelOverride' -Value 0 -Type DWord -Force
+    Set-ItemProperty -Path $sk -Name 'Username' -Value $User -Force
+} catch { }
 & cmdkey.exe /generic:TERMSRV/127.0.0.1 ('/user:' + $User) ('/pass:' + $Pass) 2>$null | Out-Null
 $L += 'cmdkey stored for TERMSRV/127.0.0.1'
-$p = $null
-try { $p = Start-Process mstsc.exe -ArgumentList '/v:127.0.0.1' -PassThru; $L += ('mstsc pid=' + $p.Id) } catch { $L += ('mstsc launch failed: ' + $_.Exception.Message) }
 $got = $false
-for ($i = 0; $i -lt 15; $i++) {
-    Start-Sleep -Seconds 2
-    $q = (& quser.exe 2>$null) -join "`n"
-    $LASTEXITCODE = 0
-    if ($q -match [regex]::Escape($User)) { $got = $true; break }
+foreach ($argsSet in @(@('/v:127.0.0.1'), @('/v:127.0.0.1','/admin'))) {
+    for ($tryN = 1; $tryN -le 2; $tryN++) {
+        $p = $null
+        try { $p = Start-Process mstsc.exe -ArgumentList $argsSet -PassThru -WindowStyle Hidden; $L += ('mstsc [' + ($argsSet -join ' ') + '] pid=' + $p.Id + ' try=' + $tryN) } catch { $L += ('mstsc launch failed: ' + $_.Exception.Message); continue }
+        for ($i = 0; $i -lt 15; $i++) {
+            Start-Sleep -Seconds 2
+            $q = (& quser.exe 2>$null) -join "`n"
+            $LASTEXITCODE = 0
+            if ($q -match [regex]::Escape($User)) { $got = $true; break }
+        }
+        if ($got) { break }
+        if ($p -and $p.HasExited) { $L += ('mstsc exited code=' + $p.ExitCode + ' -> relaunching') } else { if ($p) { try { $p.Kill() } catch { } } }
+    }
+    if ($got) { break }
 }
 $L += ('quser row present: ' + $got)
 if (-not $got) {
-    $L += ('mstsc still alive: ' + $(if ($p) { -not $p.HasExited } else { 'n/a' }))
-    $L += '--- LocalSessionManager (last 5) ---'
-    try { $L += ((& wevtutil.exe qe Microsoft-Windows-TerminalServices-LocalSessionManager/Operational /c:5 /rd:true /f:text 2>$null) -join "`n") } catch { }
-    $L += '--- Security 4624/4625 (last 5) ---'
-    try { $L += ((& wevtutil.exe qe Security /q:"*[System[(EventID=4624 or EventID=4625)]]" /c:5 /rd:true /f:text 2>$null) -join "`n") } catch { }
+    $L += '--- LocalSessionManager (last 6) ---'
+    try { $L += ((& wevtutil.exe qe Microsoft-Windows-TerminalServices-LocalSessionManager/Operational /c:6 /rd:true /f:text 2>$null) -join "`n") } catch { }
+    $L += '--- Security 4624/4625 (last 6) ---'
+    try { $L += ((& wevtutil.exe qe Security /q:"*[System[(EventID=4624 or EventID=4625)]]" /c:6 /rd:true /f:text 2>$null) -join "`n") } catch { }
 }
 [System.IO.File]::WriteAllText($diag, ($L -join "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
 return $got
