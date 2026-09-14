@@ -29,7 +29,12 @@ if ($Url -match 'port=(\d+)') { $port = $Matches[1] }
 if ($Url -match 'mode=parsecdir') {
     Write-ConnLog ('parsecdir: opening Windows Explorer at EXACT path: ' + $script:ParsecExact)
     if (-not (Test-Path -LiteralPath $script:ParsecExact)) { try { New-Item -ItemType Directory -Path $script:ParsecExact -Force | Out-Null } catch { } }
-    try { Start-Process explorer.exe -ArgumentList $script:ParsecExact } catch { Write-ConnLog ('parsecdir explorer launch failed: ' + $_.Exception.Message) }
+    $opened = $false
+    try { Invoke-Item -LiteralPath $script:ParsecExact; $opened = $true } catch { Write-ConnLog ('parsecdir Invoke-Item failed: ' + $_.Exception.Message) }
+    if (-not $opened) {
+        try { Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $script:ParsecExact + '"'); $opened = $true } catch { Write-ConnLog ('parsecdir explorer.exe failed: ' + $_.Exception.Message) }
+    }
+    if ($opened) { Write-ConnLog ('parsecdir: Explorer opened at EXACT path: ' + $script:ParsecExact) } else { Write-ConnLog 'parsecdir: FAILED to open Explorer' }
     exit 0
 }
 if ($Url -match 'mode=parsec(?![a-z])') {
