@@ -223,6 +223,8 @@ $rdpLines = @(
 Write-ConnLog ('wrote CredSSP-disabled rdp: ' + $rdpPath + ' clip=' + $clip + ' mic=' + $mic + ' print=' + $print + ' drives=' + $drives)
 $proc = $null
 try {
+    $oldMstsc = @(Get-Process mstsc -ErrorAction SilentlyContinue)
+    if ($oldMstsc.Count -gt 0) { Write-ConnLog ('mstsc already running (pid ' + ($oldMstsc[0].Id) + ') - session likely alive; not launching second instance'); exit 0 }
     $proc = Start-Process mstsc.exe -ArgumentList $rdpPath -PassThru
     Write-ConnLog ('mstsc started with CredSSP-disabled .rdp pid=' + $proc.Id)
 } catch {
@@ -244,6 +246,7 @@ if ($proc.HasExited) {
     $diag += '--- Security 4624/4625 (last 5) ---'
     try { $diag += (& wevtutil.exe qe Security /q:"*[System[(EventID=4624 or EventID=4625)]]" /c:5 /rd:true /f:text 2>$null) } catch { }
     [System.IO.File]::WriteAllText((Join-Path $logDir 'mstsc-exit-diag.txt'), ($diag -join "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+    try { [System.IO.File]::WriteAllText('C:\ghrdp\webdesk\mstsc-exit-diag.txt', ($diag -join "`r`n"), (New-Object System.Text.UTF8Encoding($false))) } catch { }
     Write-ConnLog 'diag written to mstsc-exit-diag.txt - relaunching mstsc once'
     try { $proc = Start-Process mstsc.exe -ArgumentList $rdpPath -PassThru; Write-ConnLog ('mstsc relaunched pid=' + $proc.Id) } catch { Write-ConnLog ('relaunch failed: ' + $_.Exception.Message) }
     try { Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(('mstsc closed immediately (code ' + $code + '). Relaunched once - evidence in ' + $logDir + '\mstsc-exit-diag.txt'), 'GHRDP connector') | Out-Null } catch { }

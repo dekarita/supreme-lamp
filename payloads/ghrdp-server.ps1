@@ -276,7 +276,7 @@ function Invoke-ClientRequest {
             try { $task = [bool](Get-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction SilentlyContinue) } catch { }
             $sess = $false
             try { $q = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0; $cfgP = Read-JsonFile -Path $script:CfgPath; if ($q -match [regex]::Escape([string]$cfgP.rdpUser)) { $sess = $true } } catch { }
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes((@{ webdeskPs = $wPs; bootstrapPs = $bPs; task = $task; session = $sess; diag = $(try { [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\boot-diag.txt') } catch { '' }); wdErr = $(try { [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\webdesk-error.txt') } catch { '' }) } | ConvertTo-Json -Compress)))
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes((@{ webdeskPs = $wPs; bootstrapPs = $bPs; task = $task; session = $sess; diag = $(try { [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\boot-diag.txt') } catch { '' }); wdErr = $(try { [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\webdesk-error.txt') } catch { '' }); mstscDiag = $(try { [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\mstsc-exit-diag.txt') } catch { '' }) } | ConvertTo-Json -Compress)))
             return
         }
         if ($path -eq '/webdesk-status') {
@@ -318,7 +318,7 @@ function Invoke-ClientRequest {
 <!doctype html><html><head><meta charset="utf-8"><title>GHRDP Web Desktop</title>
 <style>html,body{margin:0;height:100%;background:#101418;overflow:hidden}#bar{position:fixed;top:0;left:0;right:0;padding:6px 10px;font:13px system-ui;color:#e8eef3;background:#1b2530;display:flex;gap:10px;align-items:center;z-index:9}#bar .st{color:#8aa0ad}#bar button{background:#153e5c;color:#e8eef3;border:0;border-radius:6px;padding:5px 9px;cursor:pointer}#wrap{position:absolute;top:34px;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center}img{max-width:100%;max-height:100%;cursor:crosshair}</style>
 </head><body>
-<div id="bar"><b>GHRDP Web Desktop</b><span class="st" id="st">connecting...</span><button id="cp">Copy remote clipboard</button><button id="ps">Paste into remote</button></div>
+<div id="bar"><b>GHRDP Web Desktop</b><span class="st" id="st">connecting...</span><button id="go" style="background:#1d6b3a">▶ START SESSION (auto-login)</button><button id="cp">Copy remote clipboard</button><button id="ps">Paste into remote</button></div>
 <div id="wrap"><img id="fr" alt="remote" style="display:none"></div>
 <script>
 var img=document.getElementById('fr'),st=document.getElementById('st'),pend=[],oldUrl=null;
@@ -345,6 +345,8 @@ var SPEC={Enter:13,Backspace:8,Tab:9,Escape:27,ArrowLeft:37,ArrowUp:38,ArrowRigh
 addEventListener('keydown',function(e){if(e.key.length===1){pend.push({t:'k',ch:e.key});}else if(SPEC[e.key]){pend.push({t:'kd',vk:SPEC[e.key]});}e.preventDefault();});
 addEventListener('keyup',function(e){if(SPEC[e.key]){pend.push({t:'ku',vk:SPEC[e.key]});}e.preventDefault();});
 document.getElementById('cp').onclick=function(){fetch('/webdesk-clip?want=1').then(function(r){return r.json();}).then(function(j){if(j.text!=null&&navigator.clipboard)navigator.clipboard.writeText(j.text).then(function(){st.textContent='remote clipboard copied';});});};
+document.getElementById('go').onclick=function(){fetch('/api/config',{cache:'no-store'}).then(function(r){return r.json();}).then(function(cf){if(cf&&cf.rdpIp&&cf.rdpUser){function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}var u='ghrdp://ip='+encodeURIComponent(cf.rdpIp)+'&u=b64u:'+b64u(cf.rdpUser)+'&p=b64u:'+b64u(cf.rdpPass||'');var ifr=document.createElement('iframe');ifr.style.display='none';try{document.body.appendChild(ifr);ifr.src=u;}catch(e){}document.getElementById('st').textContent='session start වෙනවා... මේ tab එකේ frames ටිකෙන් පේනවා';}});};
+setTimeout(function(){fetch('/webdesk-status',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){if(!s.ok){document.getElementById('go').click();}});},2500);
 document.getElementById('ps').onclick=function(){if(navigator.clipboard)navigator.clipboard.readText().then(function(t){return fetch('/webdesk-clip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});}).then(function(){st.textContent='pasted into remote';});};
 </script></body></html>
 '@
