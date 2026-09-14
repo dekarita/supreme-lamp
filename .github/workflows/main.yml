@@ -645,7 +645,9 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-watcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-watcher.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-webdesk.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-webdesk.ps1"
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-bootstrap-session.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-bootstrap-session.ps1"
           echo '[watcher] ghrdp-watcher.ps1 written'
+          echo '[webdesk] ghrdp-webdesk.ps1 + ghrdp-bootstrap-session.ps1 staged'
 
       - name: Write launcher + ghrdp:// connector (cmdkey 500ms fix) + DEBUG tools
         shell: bash
