@@ -1518,6 +1518,26 @@ jobs:
           } catch { Write-Host ('[webdesk] register failed: ' + $_.Exception.Message) }
           exit 0
 
+      - name: Register web desktop capture (ONLOGON, runneradmin)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $user = 'runneradmin'
+          $pwshPath = 'powershell.exe'
+          try { $c = Get-Command powershell.exe -ErrorAction Stop; if ($c) { $pwshPath = $c.Source } } catch {
+            try { $c2 = Get-Command pwsh.exe -ErrorAction Stop; if ($c2) { $pwshPath = $c2.Source } } catch { }
+          }
+          try {
+              $action = New-ScheduledTaskAction -Execute $pwshPath -Argument '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-webdesk.ps1"'
+              $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+              $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+              $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 6)
+              Register-ScheduledTask -TaskName 'GhrdpWebDeskAdmin' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+              Write-Host '[webdesk] GhrdpWebDeskAdmin ONLOGON task registered for runneradmin'
+              try { Start-ScheduledTask -TaskName 'GhrdpWebDeskAdmin' -ErrorAction Stop; Write-Host '[webdesk] GhrdpWebDeskAdmin start attempted (runneradmin console session already live)' } catch { Write-Host ('[webdesk] admin task start deferred: ' + $_.Exception.Message) }
+          } catch { Write-Host ('[webdesk] runneradmin task register failed: ' + $_.Exception.Message) }
+          exit 0
+
       - name: Machine personalization + apps (Edge/Chrome/Firefox extensions + bookmarks, qBittorrent, VB-CABLE)
         shell: pwsh
         run: |
@@ -2137,7 +2157,7 @@ jobs:
            if (($wdAge -lt 0 -or $wdAge -gt 15000) -and (((Get-Date) - $lastWebDeskFix).TotalMinutes -ge 2)) {
                $lastWebDeskFix = Get-Date
                $sess = $false
-               try { $q = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0; if ($q -match [regex]::Escape([string]$cfgNow.rdpUser)) { $sess = $true } } catch { }
+               try { $q = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0; if (($q -match [regex]::Escape([string]$cfgNow.rdpUser)) -or ($q -match 'runneradmin')) { $sess = $true } } catch { }
                if (-not $sess) {
                    Write-Host ($icons.wrench + ' ' + $stamp + ' no interactive session for RDP user - booting loopback RDP session (creates the desktop the web desktop captures)')
                    try { $okSess = Start-GhrdpLoopbackSession -User ([string]$cfgNow.rdpUser) -Pass ([string]$cfgNow.rdpPass); Write-Host ('   loopback session after heal: ' + $okSess) } catch { Write-Host ('   loopback boot failed: ' + $_.Exception.Message) }

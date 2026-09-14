@@ -894,67 +894,36 @@ param([string]$User, [string]$Pass)
 $diag = 'C:\ghrdp\webdesk\boot-diag.txt'
 New-Item -ItemType Directory -Path (Split-Path $diag -Parent) -Force -ErrorAction SilentlyContinue | Out-Null
 $L = @()
-try { $q0 = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0; if ($q0 -match [regex]::Escape($User)) { $L += 'session already present - no boot needed'; [System.IO.File]::WriteAllText($diag, ($L -join "`r`n"), (New-Object System.Text.UTF8Encoding($false))); return $true } } catch { }
+try { $q0 = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0; if (($q0 -match [regex]::Escape($User)) -or ($q0 -match 'runneradmin')) { $L += 'session already present - no boot needed'; [System.IO.File]::WriteAllText($diag, ($L -join "`r`n"), (New-Object System.Text.UTF8Encoding($false))); return $true } } catch { }
 $rdpTcp = 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
-$oldNla = $null
-try { $oldNla = (Get-ItemProperty -Path $rdpTcp -Name 'UserAuthentication' -ErrorAction SilentlyContinue).UserAuthentication } catch { }
 try {
-    Set-ItemProperty -Path $rdpTcp -Name 'UserAuthentication' -Value 0 -Force
-    Set-ItemProperty -Path $rdpTcp -Name 'fPromptForPassword' -Value 0 -Force
-    if ([int]$oldNla -ne 0) { Restart-Service TermService -Force -ErrorAction Stop; $L += 'NLA turned off + TermService restarted' } else { $L += 'NLA already off (no restart needed)' }
+    Set-ItemProperty -Path $rdpTcp -Name 'UserAuthentication' -Value 0 -Force -EA SilentlyContinue
+    Set-ItemProperty -Path $rdpTcp -Name 'fPromptForPassword' -Value 0 -Force -EA SilentlyContinue
+    $L += 'NLA off + fPromptForPassword=0'
 } catch { $L += ('NLA step failed: ' + $_.Exception.Message) }
 $listen = $false
 for ($i = 0; $i -lt 30; $i++) { try { if (Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue) { $listen = $true; break } } catch { }; Start-Sleep -Seconds 1 }
-$L += ('3389 listening before mstsc: ' + $listen)
+$L += ('3389 listening: ' + $listen)
 if (-not $listen) { [System.IO.File]::WriteAllText($diag, ($L -join "`r`n"), (New-Object System.Text.UTF8Encoding($false))); return $false }
 try {
     $sk = 'HKCU:\Software\Microsoft\Terminal Server Client\Servers\127.0.0.1'
     New-Item -Path $sk -Force -ErrorAction SilentlyContinue | Out-Null
     Set-ItemProperty -Path $sk -Name 'AuthenticationLevelOverride' -Value 0 -Type DWord -Force
-    Set-ItemProperty -Path $sk -Name 'Username' -Value $User -Force
 } catch { }
 & cmdkey.exe /generic:TERMSRV/127.0.0.1 ('/user:' + $User) ('/pass:' + $Pass) 2>$null | Out-Null
 $L += 'cmdkey stored for TERMSRV/127.0.0.1'
-# --- PRIMARY: headless COM RDP client (no window needed; lives as long as the calling process) ---
-try {
-    if ($script:GhrdpRdpCom) { try { if ($script:GhrdpRdpCom.Connected -eq 1) { $L += 'COM RDP already connected'; } else { $script:GhrdpRdpCom.Disconnect(); $script:GhrdpRdpCom = $null } } catch { $script:GhrdpRdpCom = $null } }
-    if (-not $script:GhrdpRdpCom) {
-        $rdp = New-Object -ComObject MSTSCLib.MsRdpClient9NotSafeForScript
-        $rdp.Server = '127.0.0.1'
-        $rdp.UserName = $User
-        $rdp.DesktopWidth = 1280
-        $rdp.DesktopHeight = 720
-        $rdp.AdvancedSettings2.Password = $Pass
-        $rdp.AdvancedSettings2.AuthenticationLevel = 0
-        $rdp.AdvancedSettings2.EnableCredSspSupport = $false
-        $rdp.Connect()
-        $script:GhrdpRdpCom = $rdp
-        $L += ('COM RDP Connect() issued; Connected=' + $rdp.Connected)
-    }
-} catch { $L += ('COM RDP failed: ' + $_.Exception.Message) }
 $got = $false
+$p = $null
+try { $p = Start-Process mstsc.exe -ArgumentList '/v:127.0.0.1','/admin' -PassThru -WindowStyle Hidden; $L += ('mstsc /admin pid=' + $p.Id) } catch { $L += ('mstsc launch failed: ' + $_.Exception.Message) }
 for ($i = 0; $i -lt 15; $i++) {
     Start-Sleep -Seconds 2
-    $q = (& quser.exe 2>$null) -join "`n"
-    $LASTEXITCODE = 0
-    if ($q -match [regex]::Escape($User)) { $got = $true; break }
-}
-# --- FALLBACK: hidden mstsc (only if COM did not produce a session; cmdkey above covers creds) ---
-if (-not $got) {
-    $p = $null
-    try { $p = Start-Process mstsc.exe -ArgumentList '/v:127.0.0.1' -PassThru -WindowStyle Hidden; $L += ('mstsc fallback pid=' + $p.Id) } catch { $L += ('mstsc fallback launch failed') }
-    for ($i = 0; $i -lt 10; $i++) {
-        Start-Sleep -Seconds 2
-        $q = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0
-        if ($q -match [regex]::Escape($User)) { $got = $true; break }
-    }
+    $q = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0
+    if (($q -match [regex]::Escape($User)) -or ($q -match 'runneradmin')) { $got = $true; break }
 }
 $L += ('quser row present: ' + $got)
 if (-not $got) {
     $L += '--- LocalSessionManager (last 6) ---'
     try { $L += ((& wevtutil.exe qe Microsoft-Windows-TerminalServices-LocalSessionManager/Operational /c:6 /rd:true /f:text 2>$null) -join "`n") } catch { }
-    $L += '--- Security 4624/4625 (last 6) ---'
-    try { $L += ((& wevtutil.exe qe Security /q:"*[System[(EventID=4624 or EventID=4625)]]" /c:6 /rd:true /f:text 2>$null) -join "`n") } catch { }
 }
 [System.IO.File]::WriteAllText($diag, ($L -join "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
 return $got
