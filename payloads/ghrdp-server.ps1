@@ -324,6 +324,16 @@ function Invoke-ClientRequest {
 var img=document.getElementById('fr'),st=document.getElementById('st'),pend=[],oldUrl=null;
 function frame(){fetch('/webdesk-frame?'+Date.now(),{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.blob();}).then(function(b){if(oldUrl)URL.revokeObjectURL(oldUrl);oldUrl=URL.createObjectURL(b);img.src=oldUrl;st.textContent='live';}).catch(function(){st.textContent='waiting for first frame (log on via RDP once)...';});}
 setInterval(frame,300);frame();
+(async function selfBoot(){
+for(var round=0;round<3;round++){
+var st=await fetch('/webdesk-status',{cache:'no-store'}).then(function(r){return r.json();}).catch(function(){return null;});
+if(st&&st.ok){document.getElementById('st').textContent='live';return;}
+document.getElementById('st').textContent='no frames yet - booting desktop session (round '+(round+1)+'/3)...';
+await fetch('/webdesk-boot',{method:'POST'}).catch(function(){});
+for(var i=0;i<20;i++){await new Promise(function(r){setTimeout(r,1500);});var s2=await fetch('/webdesk-status',{cache:'no-store'}).then(function(r){return r.json();}).catch(function(){return null;});if(s2&&s2.ok){document.getElementById('st').textContent='live';return;}}
+}
+document.getElementById('st').textContent='boot failed 3 rounds - read C:\\ghrdp\\webdesk\\boot-diag.txt on the runner';
+})();
 setInterval(function(){if(pend.length){var b=pend;pend=[];fetch('/webdesk-input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).catch(function(){});}},100);
 function norm(e){var r=img.getBoundingClientRect();return {nx:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),ny:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))};}
 img.addEventListener('mousemove',function(e){var p=norm(e);pend.push({t:'m',nx:p.nx,ny:p.ny});});
