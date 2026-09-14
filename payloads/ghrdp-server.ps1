@@ -322,8 +322,9 @@ function Invoke-ClientRequest {
 <div id="wrap"><img id="fr" alt="remote" style="display:none"></div>
 <script>
 var img=document.getElementById('fr'),st=document.getElementById('st'),pend=[],oldUrl=null;
-function frame(){fetch('/webdesk-frame?'+Date.now(),{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.blob();}).then(function(b){if(oldUrl)URL.revokeObjectURL(oldUrl);oldUrl=URL.createObjectURL(b);img.src=oldUrl;img.style.display='';st.textContent='live';}).catch(function(){st.textContent='waiting for first frame (log on via RDP once)...';});}
-setInterval(frame,300);frame();
+var miss=0;
+function frame(){fetch('/webdesk-frame?'+Date.now(),{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;miss=0;return r.blob();}).then(function(b){if(oldUrl)URL.revokeObjectURL(oldUrl);oldUrl=URL.createObjectURL(b);img.src=oldUrl;img.style.display='';st.textContent='live';}).catch(function(){miss++;if(miss>10){fetch('/webdesk-probe',{cache:'no-store'}).then(function(r){return r.json();}).then(function(p){st.textContent=p.wdErr?('CAPTURE ERROR: '+p.wdErr.split('\n')[1]):(p.session?'session live but capture dead - restart GhrdpWebDesk task':'no session yet - click START SESSION');}).catch(function(){});}else{st.textContent='waiting for frames...';}});}
+setInterval(frame,1500);frame();
 (async function selfBoot(){
 for(var round=0;round<3;round++){
 var st=await fetch('/webdesk-status',{cache:'no-store'}).then(function(r){return r.json();}).catch(function(){return null;});

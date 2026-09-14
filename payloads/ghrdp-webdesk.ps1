@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Continue'
 $root = 'C:\ghrdp'
 $dir = Join-Path $root 'webdesk'
 New-Item -ItemType Directory -Path $dir -Force -ErrorAction SilentlyContinue | Out-Null
+$alive = Join-Path $dir 'webdesk-alive.txt'
 $errFile = Join-Path $dir 'webdesk-error.txt'
 try { Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue } catch { }
 $mtx = $null
@@ -45,6 +46,7 @@ function Send-KeyChar { param([string]$ch) $c = [int][char]$ch[0]; [void][Inp]::
 function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk, 0, 2) } else { [void][Inp]::Key($vk, 0, 0) } }
 while ($true) {
     try {
+        try { [System.IO.File]::WriteAllText($alive, (Get-Date).ToUniversalTime().ToString('o')) } catch { }
         $gfx.CopyFromScreen($vs.X, $vs.Y, 0, 0, $bmp.Size)
         $bmp.Save($tmpPath, $codec, $ep)
         Move-Item -LiteralPath $tmpPath -Destination $framePath -Force
