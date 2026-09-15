@@ -11,7 +11,7 @@ $errFile = Join-Path $dir 'webdesk-error.txt'
 try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'BelowNormal' } catch { }
 try { New-Item -ItemType Directory -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Force -ErrorAction SilentlyContinue | Out-Null; Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name 'VisualFXSetting' -Value 2 -Type DWord -Force } catch { }
 $verFile = Join-Path $dir 'webdesk-version.txt'
-try { [System.IO.File]::WriteAllText($verFile, 'v4-multi-retry') } catch { }
+try { [System.IO.File]::WriteAllText($verFile, 'v5-blank-detect') } catch { }
 try { Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue } catch { }
 $mtx = $null
 try { $mtx = New-Object System.Threading.Mutex($false, 'GhrdpWebDeskSingle'); if (-not $mtx.WaitOne(0)) { exit 0 } } catch { }
@@ -91,6 +91,14 @@ function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk
                 } catch { $lastErr += ' | PrintWindow: ' + $_.Exception.Message }
             } }
         if (-not $ok) { throw ('capture failed: ' + $lastErr) }
+        try {
+            $isBlank = $true
+            foreach ($pt in @(@(0.5,0.5),@(0.1,0.1),@(0.9,0.1),@(0.1,0.9),@(0.9,0.9))) {
+                $px = $bmp.GetPixel([int]($vs.Width * $pt[0]), [int]($vs.Height * $pt[1]))
+                if ($px.R -ne 0 -or $px.G -ne 0 -or $px.B -ne 0) { $isBlank = $false; break }
+            }
+            if ($isBlank) { throw 'blank frame (headless session - no rendered desktop)' }
+        } catch { if ($_.Exception.Message -ne 'blank frame (headless session - no rendered desktop)') { $isBlank = $false } else { throw } }
         $gsmall.DrawImage($bmp, 0, 0, $sw, $sh)
         try { if (Test-Path -LiteralPath $ctlPath) { $ctl = Get-Content -LiteralPath $ctlPath -Raw | ConvertFrom-Json; if ($ctl.q) { $qNow = [Math]::Max(10, [Math]::Min(80, [int]$ctl.q)); $ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$qNow) }; if ($ctl.interval) { $intNow = [Math]::Max(30, [Math]::Min(2000, [int]$ctl.interval)) } } } catch { }
         $small.Save($tmpPath, $codec, $ep)
