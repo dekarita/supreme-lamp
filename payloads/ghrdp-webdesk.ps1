@@ -122,7 +122,10 @@ function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk
         $gsmall.DrawImage($bmp, 0, 0, $sw, $sh)
         try { if (Test-Path -LiteralPath $ctlPath) { $ctl = Get-Content -LiteralPath $ctlPath -Raw | ConvertFrom-Json; if ($ctl.q) { $qNow = [Math]::Max(10, [Math]::Min(80, [int]$ctl.q)); $ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$qNow) }; if ($ctl.interval) { $intNow = [Math]::Max(30, [Math]::Min(2000, [int]$ctl.interval)) } } } catch { }
         $small.Save($tmpPath, $codec, $ep)
-        Move-Item -LiteralPath $tmpPath -Destination $framePath -Force
+        $moveOk = $false
+        try { Move-Item -LiteralPath $tmpPath -Destination $framePath -Force -ErrorAction Stop; $moveOk = $true } catch { $lastErr = 'Move-Item: ' + $_.Exception.Message
+            try { Copy-Item -LiteralPath $tmpPath -Destination $framePath -Force -ErrorAction Stop; Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue; $moveOk = $true; $lastErr = '' } catch { $lastErr = 'Move+Copy failed: ' + $_.Exception.Message; try { Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue } catch { } } }
+        if (-not $moveOk -or -not (Test-Path -LiteralPath $framePath)) { if (-not $lastErr) { $lastErr = 'frame.jpg not found after move' }; throw ('publish failed: ' + $lastErr) }
         $fsize = (Get-Item -LiteralPath $framePath).Length
         if ($fsize -lt 1000) { $lastErr = ('frame too small: ' + $fsize + ' bytes'); throw ('frame too small: ' + $fsize + ' bytes') }
         [System.IO.File]::WriteAllText($tsPath, (Get-Date).ToUniversalTime().ToString('o'))
