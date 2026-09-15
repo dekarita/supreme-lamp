@@ -1718,6 +1718,24 @@ jobs:
           }
           exit 0
 
+      - name: Install virtual display driver (headless console session renders forever)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $zip = Join-Path $env:RUNNER_TEMP 'idd.zip'
+          & curl.exe -fL --retry 3 --connect-timeout 20 --max-time 180 -o $zip 'https://github.com/ge9/IddSampleDriver/releases/download/v1.0.2/IddSampleDriver.zip' 2>$null
+          $LASTEXITCODE = 0
+          if (-not (Test-Path $zip)) { Write-Host '[vdd] download failed - webdesk will need an open RDP client (minimized is fine)'; exit 0 }
+          $dst = 'C:\ghrdp\idd'
+          try { Expand-Archive -LiteralPath $zip -DestinationPath $dst -Force } catch { Write-Host '[vdd] extract failed'; exit 0 }
+          $inf = Get-ChildItem -Path $dst -Recurse -Filter '*.inf' | Select-Object -First 1
+          if ($inf) {
+              & pnputil.exe /add-driver $inf.FullName /install 2>$null | Out-Null
+              $LASTEXITCODE = 0
+              Write-Host '[vdd] virtual display driver installed: ' + $inf.Name
+          } else { Write-Host '[vdd] inf not found in zip' }
+          exit 0
+
       - name: Keep-alive 5h30 (60s heartbeat, rust probe, auto-restart, banners)
         shell: pwsh
         run: |
