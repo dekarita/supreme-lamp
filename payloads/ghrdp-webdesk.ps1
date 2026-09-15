@@ -117,7 +117,7 @@ function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk
                 $p = $bmp.GetPixel($x, $y)
                 if (-not ($p.R -eq 0 -and $p.G -eq 0 -and $p.B -eq 0)) { $nonBlackCount++ }
             }
-            if ($nonBlackCount -lt 5) { throw 'blank frame (headless session - no rendered desktop)' }
+            if ($nonBlackCount -lt 5) { $lastErr = 'blank frame (headless session - no rendered desktop)'; throw $lastErr }
         } catch { if ($_.Exception.Message -ne 'blank frame (headless session - no rendered desktop)') { $isBlank = $false } else { throw } }
         $gsmall.DrawImage($bmp, 0, 0, $sw, $sh)
         try { if (Test-Path -LiteralPath $ctlPath) { $ctl = Get-Content -LiteralPath $ctlPath -Raw | ConvertFrom-Json; if ($ctl.q) { $qNow = [Math]::Max(10, [Math]::Min(80, [int]$ctl.q)); $ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$qNow) }; if ($ctl.interval) { $intNow = [Math]::Max(30, [Math]::Min(2000, [int]$ctl.interval)) } } } catch { }
