@@ -4,6 +4,8 @@ $dir = Join-Path $root 'webdesk'
 New-Item -ItemType Directory -Path $dir -Force -ErrorAction SilentlyContinue | Out-Null
 $alive = Join-Path $dir 'webdesk-alive.txt'
 $errFile = Join-Path $dir 'webdesk-error.txt'
+try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'BelowNormal' } catch { }
+try { New-Item -ItemType Directory -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Force -ErrorAction SilentlyContinue | Out-Null; Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name 'VisualFXSetting' -Value 2 -Type DWord -Force } catch { }
 try { Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue } catch { }
 $mtx = $null
 try { $mtx = New-Object System.Threading.Mutex($false, 'GhrdpWebDeskSingle'); if (-not $mtx.WaitOne(0)) { exit 0 } } catch { }
@@ -33,8 +35,8 @@ $bmp = New-Object System.Drawing.Bitmap $vs.Width, $vs.Height
 $gfx = [System.Drawing.Graphics]::FromImage($bmp)
 $codec = @([System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders()) | Where-Object { $_.MimeType -eq 'image/jpeg' } | Select-Object -First 1
 $ep = New-Object System.Drawing.Imaging.EncoderParameters 1
-$ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]35)
-$scale = 0.6
+    $ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]30)
+    $scale = 0.5
 $sw = [int]($vs.Width * $scale); $sh = [int]($vs.Height * $scale)
 $small = New-Object System.Drawing.Bitmap $sw, $sh
 $gsmall = [System.Drawing.Graphics]::FromImage($small)
@@ -48,7 +50,11 @@ $clipTxt = Join-Path $dir 'clip.txt'
 function Send-Mouse { param([double]$nx, [double]$ny, [uint32]$flags, [int32]$wheel) [void][Inp]::Mouse($nx, $ny, $flags, $wheel) }
 function Send-KeyChar { param([string]$ch) $c = [int][char]$ch[0]; [void][Inp]::Key(0, $c, 4); [void][Inp]::Key(0, $c, 6) }
 function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk, 0, 2) } else { [void][Inp]::Key($vk, 0, 0) } }
-while ($true) {
+    while ($true) {
+        try { [System.IO.File]::WriteAllText($alive, (Get-Date).ToUniversalTime().ToString('o')) } catch { }
+        $clients = 0
+        try { $clients = [int]([System.IO.File]::ReadAllText('C:\ghrdp\webdesk\ws-clients.txt').Trim()) } catch { $clients = 0 }
+        if ($clients -le 0) { Start-Sleep -Milliseconds 1500; continue }
     try {
         try { [System.IO.File]::WriteAllText($alive, (Get-Date).ToUniversalTime().ToString('o')) } catch { }
         $gfx.CopyFromScreen($vs.X, $vs.Y, 0, 0, $bmp.Size)

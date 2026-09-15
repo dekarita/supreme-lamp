@@ -217,7 +217,12 @@ $rdpLines = @(
 'redirectcomports:i:0',
 'redirectsmartcards:i:0',
 'redirectposdevices:i:0',
-'connect type:i:6'
+'connect type:i:6',
+'disable wallpaper:i:1',
+'disable full window drag:i:1',
+'disable menu anims:i:1',
+'disable themes:i:1',
+'disable cursor setting:i:1'
 )
 [System.IO.File]::WriteAllText($rdpPath, ($rdpLines -join "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
 Write-ConnLog ('wrote CredSSP-disabled rdp: ' + $rdpPath + ' clip=' + $clip + ' mic=' + $mic + ' print=' + $print + ' drives=' + $drives)

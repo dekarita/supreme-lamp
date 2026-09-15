@@ -10,6 +10,9 @@ use axum::routing::get;
 use axum::{Json, Router};
 use futures::{SinkExt, StreamExt};
 use tokio::sync::mpsc;
+use std::sync::atomic::{AtomicI32, Ordering};
+static WS_CLIENTS: AtomicI32 = AtomicI32::new(0);
+fn write_ws_clients(n: i32) { let _ = std::fs::write("C:\\ghrdp\\webdesk\\ws-clients.txt", n.to_string()); }
 use tokio::io::AsyncWriteExt;
 use notify::{recommended_watcher, RecursiveMode, Watcher};
 use serde_json::{json, Value};
@@ -384,6 +387,8 @@ async fn webdesk_ws_handler(ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(handle_webdesk_ws)
 }
 async fn handle_webdesk_ws(socket: WebSocket) {
+    let n = WS_CLIENTS.fetch_add(1, Ordering::SeqCst) + 1;
+    write_ws_clients(n);
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<String>(8);
     tokio::spawn(async move {
@@ -434,6 +439,8 @@ async fn handle_webdesk_ws(socket: WebSocket) {
         }
     };
     tokio::select! { _ = send_fut => {}, _ = recv_fut => {} }
+    let n = WS_CLIENTS.fetch_sub(1, Ordering::SeqCst) - 1;
+    write_ws_clients(if n < 0 { 0 } else { n });
 }
 async fn index_handler() -> Response {
     let static_path = std::env::var("GHRDP_ROOT")
@@ -650,6 +657,7 @@ async fn main() {
     spawn_file_watcher(state.clone());
     tokio::spawn(periodic_broadcast(state.clone()));
     tokio::spawn(wire_pinger(state.clone()));
+    write_ws_clients(0);
 
     let state_router: Router<Arc<AppState>> = axum::Router::new()
         .route("/ws", get(ws_handler))
