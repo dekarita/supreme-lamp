@@ -11,8 +11,12 @@ $errFile = Join-Path $dir 'webdesk-error.txt'
 try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'BelowNormal' } catch { }
 try { New-Item -ItemType Directory -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Force -ErrorAction SilentlyContinue | Out-Null; Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name 'VisualFXSetting' -Value 2 -Type DWord -Force } catch { }
 $verFile = Join-Path $dir 'webdesk-version.txt'
-try { [System.IO.File]::WriteAllText($verFile, 'v5-blank-detect') } catch { }
+try { [System.IO.File]::WriteAllText($verFile, 'v6-startup-clean') } catch { }
 try { Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue } catch { }
+try { Remove-Item -LiteralPath $failFile -Force -ErrorAction SilentlyContinue } catch { }
+try { Remove-Item -LiteralPath $framePath -Force -ErrorAction SilentlyContinue } catch { }
+try { Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue } catch { }
+try { [System.IO.File]::WriteAllText((Join-Path $dir 'webdesk-start.txt'), (Get-Date).ToUniversalTime().ToString('o')) } catch { }
 $mtx = $null
 try { $mtx = New-Object System.Threading.Mutex($false, 'GhrdpWebDeskSingle'); if (-not $mtx.WaitOne(0)) { exit 0 } } catch { }
 try {
@@ -92,17 +96,21 @@ function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk
             } }
         if (-not $ok) { throw ('capture failed: ' + $lastErr) }
         try {
-            $isBlank = $true
-            foreach ($pt in @(@(0.5,0.5),@(0.1,0.1),@(0.9,0.1),@(0.1,0.9),@(0.9,0.9))) {
-                $px = $bmp.GetPixel([int]($vs.Width * $pt[0]), [int]($vs.Height * $pt[1]))
-                if ($px.R -ne 0 -or $px.G -ne 0 -or $px.B -ne 0) { $isBlank = $false; break }
+            $nonBlackCount = 0
+            for ($px = 0; $px -lt 100; $px++) {
+                $x = Get-Random -Minimum 0 -Maximum ([int]$vs.Width)
+                $y = Get-Random -Minimum 0 -Maximum ([int]$vs.Height)
+                $p = $bmp.GetPixel($x, $y)
+                if (-not ($p.R -eq 0 -and $p.G -eq 0 -and $p.B -eq 0)) { $nonBlackCount++ }
             }
-            if ($isBlank) { throw 'blank frame (headless session - no rendered desktop)' }
+            if ($nonBlackCount -lt 5) { throw 'blank frame (headless session - no rendered desktop)' }
         } catch { if ($_.Exception.Message -ne 'blank frame (headless session - no rendered desktop)') { $isBlank = $false } else { throw } }
         $gsmall.DrawImage($bmp, 0, 0, $sw, $sh)
         try { if (Test-Path -LiteralPath $ctlPath) { $ctl = Get-Content -LiteralPath $ctlPath -Raw | ConvertFrom-Json; if ($ctl.q) { $qNow = [Math]::Max(10, [Math]::Min(80, [int]$ctl.q)); $ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$qNow) }; if ($ctl.interval) { $intNow = [Math]::Max(30, [Math]::Min(2000, [int]$ctl.interval)) } } } catch { }
         $small.Save($tmpPath, $codec, $ep)
         Move-Item -LiteralPath $tmpPath -Destination $framePath -Force
+        $fsize = (Get-Item -LiteralPath $framePath).Length
+        if ($fsize -lt 1000) { $lastErr = ('frame too small: ' + $fsize + ' bytes'); throw ('frame too small: ' + $fsize + ' bytes') }
         [System.IO.File]::WriteAllText($tsPath, (Get-Date).ToUniversalTime().ToString('o'))
             $consecFail = 0
             if (-not (Test-Path -LiteralPath $firstFile)) { try { [System.IO.File]::WriteAllText($firstFile, (Get-Date).ToUniversalTime().ToString('o')) } catch { } }
