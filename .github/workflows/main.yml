@@ -2178,8 +2178,16 @@ jobs:
                    Write-Host ($icons.wrench + ' ' + $stamp + ' no interactive session for RDP user - booting loopback RDP session (creates the desktop the web desktop captures)')
                    try { $okSess = Start-GhrdpLoopbackSession -User ([string]$cfgNow.rdpUser) -Pass ([string]$cfgNow.rdpPass); Write-Host ('   loopback session after heal: ' + $okSess) } catch { Write-Host ('   loopback boot failed: ' + $_.Exception.Message) }
                } else {
-                   Write-Host ($icons.wrench + ' ' + $stamp + ' session exists but capture stale (frameAge=' + $wdAge + 'ms) - restarting GhrdpWebDesk')
-                   try { Start-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction Stop } catch { Write-Host ('   webdesk restart failed: ' + $_.Exception.Message) }
+                   $aliveAge = -1
+                   try { $aliveAge = [int]((Get-Date) - [datetime][System.IO.File]::ReadAllText('C:\ghrdp\webdesk\webdesk-alive.txt')).TotalMilliseconds } catch { }
+                   $actSess = $false
+                   try { $ql = @(& quser.exe 2>$null); $LASTEXITCODE = 0; foreach ($qr in $ql) { if ((($qr -match [regex]::Escape([string]$cfgNow.rdpUser)) -or ($qr -match 'runneradmin')) -and ($qr -match '\bActive\b')) { $actSess = $true; break } } } catch { }
+                   if ($actSess -and ($wdAge -gt 15000) -and (((Get-Date) - $lastWebDeskFix).TotalMinutes -ge 1)) {
+                       $lastWebDeskFix = Get-Date
+                       Write-Host ($icons.wrench + ' ' + $stamp + ' active session but capture stale (frame=' + $wdAge + 'ms alive=' + $aliveAge + 'ms) - killing wrong-session captures + restarting')
+                       try { Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ghrdp-webdesk.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
+                       try { Start-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction Stop } catch { Write-Host ('   webdesk restart failed: ' + $_.Exception.Message) }
+                   }
                }
            }
            try {

@@ -3,6 +3,10 @@ $root = 'C:\ghrdp'
 $dir = Join-Path $root 'webdesk'
 New-Item -ItemType Directory -Path $dir -Force -ErrorAction SilentlyContinue | Out-Null
 $alive = Join-Path $dir 'webdesk-alive.txt'
+$failFile = Join-Path $dir 'webdesk-capture-fail.txt'
+$firstFile = Join-Path $dir 'webdesk-first-frame.txt'
+$lastSessCheck = (Get-Date).AddSeconds(-10)
+$consecFail = 0
 $errFile = Join-Path $dir 'webdesk-error.txt'
 try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'BelowNormal' } catch { }
 try { New-Item -ItemType Directory -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Force -ErrorAction SilentlyContinue | Out-Null; Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name 'VisualFXSetting' -Value 2 -Type DWord -Force } catch { }
@@ -53,6 +57,12 @@ function Send-KeyChar { param([string]$ch) $c = [int][char]$ch[0]; [void][Inp]::
 function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk, 0, 2) } else { [void][Inp]::Key($vk, 0, 0) } }
     while ($true) {
         try { [System.IO.File]::WriteAllText($alive, (Get-Date).ToUniversalTime().ToString('o')) } catch { }
+        if (((Get-Date) - $lastSessCheck).TotalSeconds -ge 5) {
+            $lastSessCheck = Get-Date
+            $mySess = (Get-Process -Id $PID).SessionId
+            $st = (& query.exe session $mySess 2>$null) -join ' '
+            if ($st -notmatch 'Active') { try { [System.IO.File]::WriteAllText($failFile, ("own session $mySess not Active: " + $st)) } catch { }; exit 0 }
+        }
         $clients = 1
         try { if (Test-Path 'C:\ghrdp\webdesk\ws-clients.txt') { $clients = [int]([System.IO.File]::ReadAllText('C:\ghrdp\webdesk\ws-clients.txt').Trim()) } } catch { $clients = 1 }
         if ($clients -le 0) { Start-Sleep -Milliseconds 800; continue }
@@ -64,7 +74,10 @@ function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk
         $small.Save($tmpPath, $codec, $ep)
         Move-Item -LiteralPath $tmpPath -Destination $framePath -Force
         [System.IO.File]::WriteAllText($tsPath, (Get-Date).ToUniversalTime().ToString('o'))
-    } catch { }
+            $consecFail = 0
+            if (-not (Test-Path -LiteralPath $firstFile)) { try { [System.IO.File]::WriteAllText($firstFile, (Get-Date).ToUniversalTime().ToString('o')) } catch { } }
+            try { Remove-Item -LiteralPath $failFile -Force -ErrorAction SilentlyContinue } catch { }
+        } catch { $consecFail++; if ($consecFail -ge 20) { try { [System.IO.File]::WriteAllText($failFile, ("CopyFromScreen failing x$consecFail in session " + (Get-Process -Id $PID).SessionId)) } catch { }; $consecFail = 0 } }
     if (Test-Path -LiteralPath $inPath) {
         $lines = @()
         try { $lines = @([System.IO.File]::ReadAllLines($inPath)); Remove-Item -LiteralPath $inPath -Force } catch { }
