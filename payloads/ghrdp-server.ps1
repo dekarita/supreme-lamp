@@ -482,14 +482,22 @@ document.getElementById('bCopy').onclick=function(){navigator.clipboard.writeTex
         if ($path -eq '/webdesk') {
             $pg = @'
 <!doctype html><html><head><meta charset="utf-8"><title>GHRDP Web Desktop</title>
-<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}#bar{position:fixed;top:0;left:0;right:0;height:36px;background:#161b22;display:flex;gap:6px;align-items:center;padding:0 8px;z-index:9;color:#e6edf3;font:12px system-ui}#bar button{background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:4px 8px;cursor:pointer}#wrap{position:absolute;top:36px;bottom:0;left:0;right:0;display:flex;align-items:center;justify-content:center}#fr{max-width:100%;max-height:100%;cursor:none}#st{color:#8b949e}</style></head><body>
-<div id="bar"><b>GHRDP Web Desktop</b><span id="st">connecting...</span><button id="fs">Fullscreen</button><button id="cp">Copy clip</button><button id="ps">Paste clip</button></div>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}#bar{position:fixed;top:0;left:0;right:0;height:36px;background:#161b22;display:flex;gap:6px;align-items:center;padding:0 8px;z-index:9;color:#e6edf3;font:12px system-ui}#bar button{background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:4px 8px;cursor:pointer}#wrap{position:absolute;top:36px;bottom:0;left:0;right:0;display:flex;align-items:center;justify-content:center}#fr{cursor:none;display:none}#bar button.on{background:linear-gradient(180deg,#3fb950,#2ea043);border-color:rgba(255,255,255,.35)}#st{color:#8b949e}</style></head><body>
+<div id="bar"><b>GHRDP Web Desktop</b><span id="st">connecting...</span><button id="fit" class="on">Fit</button><button id="one">1:1</button><button id="str">Stretch</button><button id="fs">Fullscreen</button><button id="cp">Copy clip</button><button id="ps">Paste clip</button></div>
 <div id="wrap"><img id="fr" alt=""></div>
 <script>
 var fr=document.getElementById('fr'),st=document.getElementById('st'),fc=0,fl=performance.now();
 function send(arr){fetch('/webdesk-input',{method:'POST',headers:{'Content-Type':'application/json'},body:arr.map(function(x){return JSON.stringify(x);}).join('\n')}).catch(function(){});}
 function poll(){fetch('/webdesk-frame?'+Date.now(),{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.blob();}).then(function(b){fr.src=URL.createObjectURL(b);fr.style.display='block';fc++;st.textContent='live';}).catch(function(){fr.style.display='none';st.textContent='waiting for frames...';});}
 setInterval(function(){st.textContent='live fps~'+fc;fc=0;},1000);
+var wrap=document.getElementById('wrap'),mode='fit';
+function layout(){var w=wrap.clientWidth,h=wrap.clientHeight,nw=fr.naturalWidth,nh=fr.naturalHeight;if(!nw||!nh)return;if(mode==='fit'){var s=Math.min(w/nw,h/nh);fr.style.width=(nw*s)+'px';fr.style.height=(nh*s)+'px';}else if(mode==='one'){fr.style.width=nw+'px';fr.style.height=nh+'px';}else{fr.style.width=w+'px';fr.style.height=h+'px';}}
+function setm(m){mode=m;document.getElementById('fit').className=(m==='fit'?'on':'');document.getElementById('one').className=(m==='one'?'on':'');document.getElementById('str').className=(m==='str'?'on':'');layout();}
+document.getElementById('fit').onclick=function(){setm('fit');};
+document.getElementById('one').onclick=function(){setm('one');};
+document.getElementById('str').onclick=function(){setm('str');};
+addEventListener('resize',layout);
+fr.addEventListener('load',layout);
 setInterval(poll,200);poll();
 function norm(e){var r=fr.getBoundingClientRect();return{nx:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),ny:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))};}
 var pend=[],mt=null;
