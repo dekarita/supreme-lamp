@@ -2188,6 +2188,7 @@ jobs:
               }
            $wdAge = -1
            try { $wdTs = [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\frame-ts.txt'); $wdAge = [int]((Get-Date) - [datetime]$wdTs).TotalMilliseconds } catch { }
+           try { $pz = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ghrdp-webdesk.ps1*' } | ForEach-Object { $_.ProcessId.ToString() + '/s' + $_.SessionId }); [System.IO.File]::WriteAllText('C:\ghrdp\webdesk\procs.txt', ($pz -join ',')) } catch { }
             if (($wdAge -lt 0 -or $wdAge -gt 15000) -and (((Get-Date) - $lastWebDeskFix).TotalMinutes -ge 2)) {
                 $lastWebDeskFix = Get-Date
                 $sess = $false; $discId = $null; $actSess = $false
