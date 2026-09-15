@@ -2170,26 +2170,38 @@ jobs:
               }
            $wdAge = -1
            try { $wdTs = [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\frame-ts.txt'); $wdAge = [int]((Get-Date) - [datetime]$wdTs).TotalMilliseconds } catch { }
-           if (($wdAge -lt 0 -or $wdAge -gt 15000) -and (((Get-Date) - $lastWebDeskFix).TotalMinutes -ge 2)) {
-               $lastWebDeskFix = Get-Date
-               $sess = $false
-               try { $q = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0; if (($q -match [regex]::Escape([string]$cfgNow.rdpUser)) -or ($q -match 'runneradmin')) { $sess = $true } } catch { }
-               if (-not $sess) {
-                   Write-Host ($icons.wrench + ' ' + $stamp + ' no interactive session for RDP user - booting loopback RDP session (creates the desktop the web desktop captures)')
-                   try { $okSess = Start-GhrdpLoopbackSession -User ([string]$cfgNow.rdpUser) -Pass ([string]$cfgNow.rdpPass); Write-Host ('   loopback session after heal: ' + $okSess) } catch { Write-Host ('   loopback boot failed: ' + $_.Exception.Message) }
-               } else {
-                   $aliveAge = -1
-                   try { $aliveAge = [int]((Get-Date) - [datetime][System.IO.File]::ReadAllText('C:\ghrdp\webdesk\webdesk-alive.txt')).TotalMilliseconds } catch { }
-                   $actSess = $false
-                   try { $ql = @(& quser.exe 2>$null); $LASTEXITCODE = 0; foreach ($qr in $ql) { if ((($qr -match [regex]::Escape([string]$cfgNow.rdpUser)) -or ($qr -match 'runneradmin')) -and ($qr -match '\bActive\b')) { $actSess = $true; break } } } catch { }
-                   if ($actSess -and ($wdAge -gt 15000) -and (((Get-Date) - $lastWebDeskFix).TotalMinutes -ge 1)) {
-                       $lastWebDeskFix = Get-Date
-                       Write-Host ($icons.wrench + ' ' + $stamp + ' active session but capture stale (frame=' + $wdAge + 'ms alive=' + $aliveAge + 'ms) - killing wrong-session captures + restarting')
-                       try { Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ghrdp-webdesk.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
-                       try { Start-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction Stop } catch { Write-Host ('   webdesk restart failed: ' + $_.Exception.Message) }
-                   }
-               }
-           }
+            if (($wdAge -lt 0 -or $wdAge -gt 15000) -and (((Get-Date) - $lastWebDeskFix).TotalMinutes -ge 2)) {
+                $lastWebDeskFix = Get-Date
+                $sess = $false; $discId = $null; $actSess = $false
+                try {
+                    $ql = @(& quser.exe 2>$null); $LASTEXITCODE = 0
+                    foreach ($qr in $ql) {
+                        if (($qr -match [regex]::Escape([string]$cfgNow.rdpUser)) -or ($qr -match 'runneradmin')) {
+                            $sess = $true
+                            $m2 = [regex]::Match($qr, '(\d+)\s+(Disc|Active|Conn)')
+                            if ($m2.Success) {
+                                if ($m2.Groups[2].Value -eq 'Disc' -and -not $discId) { $discId = $m2.Groups[1].Value }
+                                if ($m2.Groups[2].Value -eq 'Active') { $actSess = $true }
+                            }
+                        }
+                    }
+                } catch { }
+                if ($discId) {
+                    Write-Host ($icons.wrench + ' ' + $stamp + ' session ' + $discId + ' DISCONNECTED - tscon to console so desktop re-renders')
+                    try { & tscon.exe $discId /dest:console ('/password:' + [string]$cfgNow.rdpPass) 2>$null | Out-Null; $LASTEXITCODE = 0 } catch { Write-Host ('   tscon failed: ' + $_.Exception.Message) }
+                } elseif (-not $sess) {
+                    Write-Host ($icons.wrench + ' ' + $stamp + ' no interactive session for RDP user - booting loopback RDP session (creates the desktop the web desktop captures)')
+                    try { $okSess = Start-GhrdpLoopbackSession -User ([string]$cfgNow.rdpUser) -Pass ([string]$cfgNow.rdpPass); Write-Host ('   loopback session after heal: ' + $okSess) } catch { Write-Host ('   loopback boot failed: ' + $_.Exception.Message) }
+                } else {
+                    $aliveAge = -1
+                    try { $aliveAge = [int]((Get-Date) - [datetime][System.IO.File]::ReadAllText('C:\ghrdp\webdesk\webdesk-alive.txt')).TotalMilliseconds } catch { }
+                    if ($actSess -and ($wdAge -gt 15000)) {
+                        Write-Host ($icons.wrench + ' ' + $stamp + ' active session but capture stale (frame=' + $wdAge + 'ms alive=' + $aliveAge + 'ms) - killing wrong-session captures + restarting')
+                        try { Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ghrdp-webdesk.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
+                        try { Start-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction Stop } catch { Write-Host ('   webdesk restart failed: ' + $_.Exception.Message) }
+                    }
+                }
+            }
            try {
                $tsj = (& 'C:\Program Files\Tailscale\tailscale.exe' status --json 2>$null) | ConvertFrom-Json
                $peer = $null
