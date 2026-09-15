@@ -90,9 +90,11 @@ function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk
             $st = (& query.exe session $mySess 2>$null) -join ' '
             if ($st -notmatch 'Active') { try { [System.IO.File]::WriteAllText($failFile, ("v7 own session $mySess not Active: " + $st)) } catch { }; exit 0 }
         }
-        $clients = 1
-        try { if (Test-Path 'C:\ghrdp\webdesk\ws-clients.txt') { $clients = [int]([System.IO.File]::ReadAllText('C:\ghrdp\webdesk\ws-clients.txt').Trim()) } } catch { $clients = 1 }
-        if ($clients -le 0) { Start-Sleep -Milliseconds 800; continue }
+        $clients = 1; $cliFresh = $false
+        try { if (Test-Path 'C:\ghrdp\webdesk\ws-clients.txt') { $cliAge = ((Get-Date) - (Get-Item 'C:\ghrdp\webdesk\ws-clients.txt').LastWriteTime).TotalSeconds; if ($cliAge -lt 120) { $cliFresh = $true; $clients = [int]([System.IO.File]::ReadAllText('C:\ghrdp\webdesk\ws-clients.txt').Trim()) } } } catch { $clients = 1 }
+        if ($cliFresh -and ($clients -le 0)) { Start-Sleep -Milliseconds 800; continue }
+        $bmp = $null; $gfx = $null
+        try { $bmp = New-Object System.Drawing.Bitmap $vs.Width, $vs.Height; $gfx = [System.Drawing.Graphics]::FromImage($bmp) } catch { }
     try {
         try { [System.IO.File]::WriteAllText($alive, (Get-Date).ToUniversalTime().ToString('o')) } catch { }
         $ok = $false; $method = ''; $lastErr = ''
@@ -135,7 +137,7 @@ function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk
             $consecFail = 0
             if (-not (Test-Path -LiteralPath $firstFile)) { try { [System.IO.File]::WriteAllText($firstFile, (Get-Date).ToUniversalTime().ToString('o')) } catch { } }
             try { Remove-Item -LiteralPath $failFile -Force -ErrorAction SilentlyContinue } catch { }
-        } catch { $consecFail++; try { [System.IO.File]::WriteAllText($failFile, ("v7 capture failing x$consecFail [" + $method + "] in session " + (Get-Process -Id $PID).SessionId + " :: " + $lastErr)) } catch { }; if ($consecFail -ge 60) { $consecFail = 0 }; Start-Sleep -Milliseconds 1500; continue }
+        } catch { $consecFail++; try { [System.IO.File]::WriteAllText($failFile, ("v7 capture failing x$consecFail [" + $method + "] in session " + (Get-Process -Id $PID).SessionId + " :: " + $lastErr)) } catch { }; if ($consecFail -ge 60) { $consecFail = 0 }; try { if ($gfx) { $gfx.Dispose() } } catch { }; try { if ($bmp) { $bmp.Dispose() } } catch { }; Start-Sleep -Milliseconds 1500; continue }
     if (Test-Path -LiteralPath $inPath) {
         $lines = @()
         try { $lines = @([System.IO.File]::ReadAllLines($inPath)); Remove-Item -LiteralPath $inPath -Force } catch { }
@@ -163,6 +165,8 @@ function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk
     if (Test-Path -LiteralPath $clipGetFlag) {
         try { $t = ''; try { $t = Get-Clipboard -Raw } catch { }; [System.IO.File]::WriteAllText($clipTxt, $t); Remove-Item -LiteralPath $clipGetFlag -Force } catch { }
     }
+    try { if ($gfx) { $gfx.Dispose() } } catch { }
+    try { if ($bmp) { $bmp.Dispose() } } catch { }
     Start-Sleep -Milliseconds $intNow
 }
 } catch {

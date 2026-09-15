@@ -394,7 +394,10 @@ document.getElementById('bCopy').onclick=function(){navigator.clipboard.writeTex
                     $twrap = '& ' + [char]39 + $tscript + [char]39 + ' *> ' + [char]39 + $toutF + [char]39 + '; exit $LASTEXITCODE'
                     $targ = '-NoProfile -ExecutionPolicy Bypass -Command "' + $twrap + '"'
                     $tact = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $targ
-                    $tprn = New-ScheduledTaskPrincipal -UserId ([string]$cfgT.rdpUser) -LogonType Interactive -RunLevel Highest
+                    $activeU = $null
+                    foreach ($ln2 in (@(& quser.exe 2>$null))) { if ($ln2 -match '^\s*>?\s*(\S+)\s+\S+\s+\d+\s+Active') { $activeU = $Matches[1] } }
+                    if (-not $activeU) { $activeU = [string]$cfgT.rdpUser }
+                    $tprn = New-ScheduledTaskPrincipal -UserId $activeU -LogonType Interactive -RunLevel Highest
                     try {
                         Register-ScheduledTask -TaskName $ttask -Action $tact -Principal $tprn -Force -ErrorAction Stop | Out-Null
                         Start-ScheduledTask -TaskName $ttask -ErrorAction Stop
@@ -459,67 +462,26 @@ document.getElementById('bCopy').onclick=function(){navigator.clipboard.writeTex
         if ($path -eq '/webdesk') {
             $pg = @'
 <!doctype html><html><head><meta charset="utf-8"><title>GHRDP Web Desktop</title>
-<style>html,body{margin:0;height:100%;background:#0d1117;overflow:hidden;font-family:system-ui}#bar{position:fixed;top:0;left:0;right:0;height:40px;background:#161b22;display:flex;gap:8px;align-items:center;padding:0 10px;z-index:9}#bar b{color:#e6edf3}#bar button{background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:5px 9px;cursor:pointer;font-size:12px}#bar button.on{background:#1d6b3a;border-color:#2ea043}#bar .st{color:#8b949e;font-size:12px}#wrap{position:absolute;top:40px;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;background:#000}#fr{display:none;cursor:none}#fr.fit{max-width:100%;max-height:100%;object-fit:contain}#fr.stretch{width:100%;height:100%;object-fit:fill}#fr.one{width:auto;height:auto;object-fit:none}#stats{position:fixed;bottom:8px;right:8px;background:rgba(0,0,0,.6);color:#7ee787;font:12px ui-monospace,monospace;padding:6px 8px;border-radius:6px;z-index:9}#ghcur{position:fixed;width:14px;height:14px;border:2px solid #0ff;border-radius:50%;pointer-events:none;z-index:99;display:none;transform:translate(-50%,-50%)}#rip{position:fixed;width:10px;height:10px;background:#0ff;border-radius:50%;pointer-events:none;z-index:99;display:none;transform:translate(-50%,-50%)}</style>
-</head><body>
-<div id="bar"><b>GHRDP Web Desktop</b><span class="st" id="st">connecting...</span><button id="go">▶ START SESSION</button><button id="fs">⛶ Fullscreen</button><button id="mFit" class="on">Fit</button><button id="m1">1:1</button><button id="mStr">Stretch</button><button id="q">Quality: Bal</button><button id="cp">Copy clip</button><button id="term">Terminal</button><button id="ps">Paste clip</button><span class="st" id="path"></span></div>
-<div id="wrap"><img id="fr" class="fit" alt="remote"></div>
-<div id="stats"></div><div id="ghcur"></div><div id="rip"></div>
+<style>html,body{margin:0;height:100%;background:#000;overflow:hidden}#bar{position:fixed;top:0;left:0;right:0;height:36px;background:#161b22;display:flex;gap:6px;align-items:center;padding:0 8px;z-index:9;color:#e6edf3;font:12px system-ui}#bar button{background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:4px 8px;cursor:pointer}#wrap{position:absolute;top:36px;bottom:0;left:0;right:0;display:flex;align-items:center;justify-content:center}#fr{max-width:100%;max-height:100%;cursor:none}#st{color:#8b949e}</style></head><body>
+<div id="bar"><b>GHRDP Web Desktop</b><span id="st">connecting...</span><button id="fs">Fullscreen</button><button id="cp">Copy clip</button><button id="ps">Paste clip</button></div>
+<div id="wrap"><img id="fr" alt=""></div>
 <script>
-var img=document.getElementById('fr'),st=document.getElementById('st'),pend=[],oldUrl=null,fps=0,fCount=0,fLast=performance.now(),rtt=0;
-var miss=0;
-function frame(){fetch('/webdesk-frame?'+Date.now(),{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;miss=0;return r.blob();}).then(function(b){if(oldUrl)URL.revokeObjectURL(oldUrl);oldUrl=URL.createObjectURL(b);img.src=oldUrl;img.style.display='';fCount++;st.textContent='live';}).catch(function(){miss++;if(miss>10){fetch('/webdesk-probe',{cache:'no-store'}).then(function(r){return r.json();}).then(function(p){st.textContent=p.wdErr?('CAPTURE ERROR: '+p.wdErr.split('\n')[1]):(p.session?'session live but capture dead - restart GhrdpWebDesk task':'no session yet - click START SESSION');}).catch(function(){});}else{st.textContent='waiting for frames...';}});}
-setInterval(function(){ if(!window.__ghWsActive){ frame(); } },180); frame();
-setInterval(function(){var n=performance.now();fps=Math.round(fCount*1000/(n-fLast));fCount=0;fLast=n;var se=document.getElementById('stats');if(se)se.textContent='fps:'+fps+' rtt:'+Math.round(rtt)+'ms'+(window.__ghWsActive?' [ws]':' [poll]');},1000);
-setInterval(function(){var t=performance.now();fetch('/webdesk-probe',{cache:'no-store'}).then(function(r){return r.json();}).then(function(p){rtt=performance.now()-t;var pa=document.getElementById('path');if(pa&&p.tsPath)pa.textContent=p.tsPath;if(p.capFail){st.textContent='CAPTURE FAIL: '+p.capFail;}}).catch(function(){});},3000);
-(async function selfBoot(){
-for(var round=0;round<3;round++){
-var st=await fetch('/webdesk-status',{cache:'no-store'}).then(function(r){return r.json();}).catch(function(){return null;});
-if(st&&st.ok){document.getElementById('st').textContent='live';return;}
-document.getElementById('st').textContent='no frames yet - booting desktop session (round '+(round+1)+'/3)...';
-await fetch('/webdesk-boot',{method:'POST'}).catch(function(){});
-for(var i=0;i<20;i++){await new Promise(function(r){setTimeout(r,1500);});var s2=await fetch('/webdesk-status',{cache:'no-store'}).then(function(r){return r.json();}).catch(function(){return null;});if(s2&&s2.ok){document.getElementById('st').textContent='live';return;}}
-}
-document.getElementById('st').textContent='boot failed 3 rounds - read C:\\ghrdp\\webdesk\\boot-diag.txt on the runner';
-})();
-setInterval(function(){if(pend.length){var b=pend;pend=[];if(window.__ghWs&&window.__ghWs.readyState===1){window.__ghWs.send(JSON.stringify(b));}else{fetch('/webdesk-input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).catch(function(){});}}},16);
-function norm(e){var r=img.getBoundingClientRect();return {nx:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),ny:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))};}
-function send(b){if(window.__ghWs&&window.__ghWs.readyState===1){window.__ghWs.send(JSON.stringify(b));}else{fetch('/webdesk-input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).catch(function(){});}}
-img.addEventListener('mousemove',function(e){var p=norm(e);pend.push({t:'m',nx:p.nx,ny:p.ny});var c=document.getElementById('ghcur');c.style.display='block';c.style.left=e.clientX+'px';c.style.top=e.clientY+'px';});
-img.addEventListener('mouseleave',function(){document.getElementById('ghcur').style.display='none';});
-['mousedown','mouseup'].forEach(function(ev){img.addEventListener(ev,function(e){var p=norm(e);var t=(ev==='mousedown'?(e.button===2?'rd':'ld'):(e.button===2?'ru':'lu'));send([{t:t,nx:p.nx,ny:p.ny}]);if(ev==='mousedown'){var r=document.getElementById('rip');r.style.display='block';r.style.left=e.clientX+'px';r.style.top=e.clientY+'px';setTimeout(function(){r.style.display='none';},200);}});});
-img.addEventListener('wheel',function(e){var p=norm(e);send([{t:'w',nx:p.nx,ny:p.ny,d:Math.sign(e.deltaY)}]);e.preventDefault();},{passive:false});
-img.addEventListener('contextmenu',function(e){e.preventDefault();});
-var SPEC={Enter:13,Backspace:8,Tab:9,Escape:27,ArrowLeft:37,ArrowUp:38,ArrowRight:39,ArrowDown:40,Delete:46,Home:36,End:35};
-addEventListener('keydown',function(e){if(e.key.length===1){send([{t:'k',ch:e.key}]);}else if(SPEC[e.key]){send([{t:'kd',vk:SPEC[e.key]}]);}e.preventDefault();});
+var fr=document.getElementById('fr'),st=document.getElementById('st'),fc=0,fl=performance.now();
+function send(arr){fetch('/webdesk-input',{method:'POST',headers:{'Content-Type':'application/json'},body:arr.map(function(x){return JSON.stringify(x);}).join('\n')}).catch(function(){});}
+function poll(){fetch('/webdesk-frame?'+Date.now(),{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.blob();}).then(function(b){fr.src=URL.createObjectURL(b);fr.style.display='block';fc++;st.textContent='live';}).catch(function(){fr.style.display='none';st.textContent='waiting for frames...';});}
+setInterval(function(){st.textContent='live fps~'+fc;fc=0;},1000);
+setInterval(poll,200);poll();
+function norm(e){var r=fr.getBoundingClientRect();return{nx:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),ny:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))};}
+var pend=[],mt=null;
+fr.addEventListener('mousemove',function(e){var p=norm(e);pend.push({t:'m',nx:p.nx,ny:p.ny});if(!mt)mt=setInterval(function(){if(pend.length){send(pend);pend=[];}},16);});
+['mousedown','mouseup'].forEach(function(ev){fr.addEventListener(ev,function(e){var p=norm(e);send([{t:(ev==='mousedown'?(e.button===2?'rd':'ld'):(e.button===2?'ru':'lu')),nx:p.nx,ny:p.ny}]);});});
+fr.addEventListener('wheel',function(e){var p=norm(e);send([{t:'w',nx:p.nx,ny:p.ny,d:Math.sign(e.deltaY)}]);e.preventDefault();},{passive:false});
+var SPEC={Enter:13,Backspace:8,Tab:9,Escape:27,ArrowLeft:37,ArrowUp:38,ArrowRight:39,ArrowDown:40,Delete:46};
+addEventListener('keydown',function(e){if(e.key.length===1){send([{t:'k',ch:e.key}]);}else if(SPEC[e.key]){send([{t:'kd',vk:SPEC[e.key]}]);}else{return;}e.preventDefault();});
 addEventListener('keyup',function(e){if(SPEC[e.key]){send([{t:'ku',vk:SPEC[e.key]}]);}e.preventDefault();});
-document.getElementById('term').onclick=function(){window.open('/terminal','_blank');};
-document.getElementById('cp').onclick=function(){fetch('/webdesk-clip?want=1').then(function(r){return r.json();}).then(function(j){if(j.text!=null&&navigator.clipboard)navigator.clipboard.writeText(j.text).then(function(){st.textContent='remote clipboard copied';});});};
-document.getElementById('go').onclick=function(){fetch('/api/config',{cache:'no-store'}).then(function(r){return r.json();}).then(function(cf){if(cf&&cf.rdpIp&&cf.rdpUser){function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}var u='ghrdp://ip='+encodeURIComponent(cf.rdpIp)+'&u=b64u:'+b64u(cf.rdpUser)+'&p=b64u:'+b64u(cf.rdpPass||'');var wasF=true;var bl=function(){wasF=false;};window.addEventListener('blur',bl);var ifr=document.createElement('iframe');ifr.style.display='none';try{document.body.appendChild(ifr);ifr.src=u;}catch(e){}setTimeout(function(){window.removeEventListener('blur',bl);if(wasF){document.getElementById('st').textContent='handler නෑ - dashboard එකේ AUTO-LOGIN එකෙන් handler එක install කරන්න';}else{document.getElementById('st').textContent='mstsc window එක බලන්න: cert/cred prompt එකක් තියෙනවා නම් Accept කරන්න. Window එක open තියන්න (close කරන්න එපා) - frames තත්පර 5ක් ඇතුළත එනවා.';}},1200);}});};
-setTimeout(function(){fetch('/webdesk-status',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){if(!s.ok){document.getElementById('go').click();}});},2500);
 document.getElementById('fs').onclick=function(){if(document.fullscreenElement){document.exitFullscreen();}else{document.documentElement.requestFullscreen();}};
-img.addEventListener('dblclick',function(){if(document.fullscreenElement){document.exitFullscreen();}else{document.documentElement.requestFullscreen();}});
-function setMode(m){img.className=m;['mFit','m1','mStr'].forEach(function(id){document.getElementById(id).classList.remove('on');});document.getElementById(m==='fit'?'mFit':(m==='one'?'m1':'mStr')).classList.add('on');}
-document.getElementById('mFit').onclick=function(){setMode('fit');};
-document.getElementById('m1').onclick=function(){setMode('one');};
-document.getElementById('mStr').onclick=function(){setMode('stretch');};
-var QS=[{n:'Low',q:20,i:100},{n:'Bal',q:30,i:66},{n:'High',q:45,i:50}];var qi=1;
-document.getElementById('q').onclick=function(){qi=(qi+1)%3;var s=QS[qi];document.getElementById('q').textContent='Quality: '+s.n;fetch('/webdesk-ctl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:s.q,interval:s.i})}).catch(function(){});};
-(function(){
-  function connectWs(){
-    var ws;
-    try{ ws=new WebSocket('ws://'+location.hostname+':7332/webdesk-ws'); }catch(e){ window.__ghWsActive=false; return; }
-    ws.onopen=function(){ window.__ghWs=ws; window.__ghWsActive=true; var s=document.getElementById('st'); if(s)s.textContent='live (ws push)'; };
-    ws.onmessage=function(ev){ if(typeof ev.data==='string'&&ev.data.length>100){ var im=document.getElementById('fr'); if(im){ im.src='data:image/jpeg;base64,'+ev.data; im.style.display=''; fCount++; } } };
-    ws.onclose=function(){ window.__ghWsActive=false; window.__ghWs=null; setTimeout(connectWs,2000); };
-    ws.onerror=function(){ window.__ghWsActive=false; };
-  }
-  connectWs();
-})();
-document.getElementById('ps').onclick=function(){if(navigator.clipboard)navigator.clipboard.readText().then(function(t){return fetch('/webdesk-clip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});}).then(function(){st.textContent='pasted into remote';});};
-</script>
-<script>
-setInterval(function(){ if(rtt>600 && window.__autoQ!=='low'){ window.__autoQ='low'; fetch('/webdesk-ctl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:20,interval:100})}).catch(function(){}); var qb=document.getElementById('q'); if(qb)qb.textContent='Quality: Low (auto)'; } },5000);
-(function(){ var n=0; var iv=setInterval(function(){ n++; fetch('/webdesk-probe',{cache:'no-store'}).then(function(r){return r.json();}).then(function(p){ if(p&&p.session){ var s=document.getElementById('st'); if(s)s.textContent='live'; clearInterval(iv); } else if(n>=15){ var s2=document.getElementById('st'); if(s2)s2.textContent='session හැදුණේ නෑ - START SESSION ආයේ click කරන්න'; clearInterval(iv); } }).catch(function(){}); },2000); })();
+document.getElementById('cp').onclick=function(){fetch('/webdesk-clip?want=1').then(function(r){return r.json();}).then(function(j){if(j.text!=null&&navigator.clipboard)navigator.clipboard.writeText(j.text);});};
+document.getElementById('ps').onclick=function(){if(navigator.clipboard)navigator.clipboard.readText().then(function(t){return fetch('/webdesk-clip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});});};
 </script></body></html>
 '@
             Send-ClientResponse -Stream $stream -Code 200 -CType 'text/html; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($pg))
