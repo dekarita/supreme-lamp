@@ -323,40 +323,113 @@ function Invoke-ClientRequest {
         if ($path -eq '/terminal') {
             $termPage = @'
 <!doctype html><html><head><meta charset="utf-8"><title>GHRDP Terminal</title>
-<style>body{margin:0;background:#1e1e1e;color:#d4d4d4;font-family:Consolas,monospace}#term{padding:10px;white-space:pre-wrap;font-size:14px;height:calc(100vh - 60px);overflow-y:auto}#input{position:fixed;bottom:0;left:0;right:0;background:#2d2d30;padding:8px;display:flex;gap:8px}#cmd{flex:1;background:#3c3c3c;color:#d4d4d4;border:1px solid #555;padding:6px;font-family:inherit;font-size:14px}#run{background:#0e639c;color:#fff;border:0;padding:6px 16px;cursor:pointer}</style>
-</head><body><div id="term">GHRDP Remote Terminal - Type commands below (runs on runner, 60s limit, all commands audit-logged)</div><div id="input"><input id="cmd" placeholder="Enter PowerShell command..."/><button id="run">Run</button></div>
+<style>body{margin:0;background:#1e1e1e;color:#d4d4d4;font-family:Consolas,monospace;font-size:13px}#bar{padding:8px;background:#2d2d30;display:flex;gap:6px;flex-wrap:wrap;align-items:center}#bar input,#bar select,#bar button{background:#3c3c3c;color:#d4d4d4;border:1px solid #555;padding:5px;font-family:inherit}#bar button{background:#0e639c;border:0;cursor:pointer}#code{width:100%;height:180px;background:#252526;color:#d4d4d4;border:1px solid #3c3c3c;padding:6px;font-family:inherit;font-size:13px;box-sizing:border-box}#out{white-space:pre-wrap;padding:8px;height:calc(100vh - 320px);overflow:auto;background:#1e1e1e}.err{color:#f48771}.meta{color:#6a995e}</style>
+</head><body>
+<div id="bar">
+<input id="cmd" size="60" placeholder="one-line command (inline mode)"/>
+<button id="bCmd">Run Cmd</button>
+<input id="fpath" size="40" placeholder="C:\path\script.ps1 (file mode)"/>
+<button id="bFile">Run File</button>
+<select id="sess"><option value="system">SYSTEM (s0)</option><option value="interactive">INTERACTIVE (user session)</option></select>
+<input id="tmo" size="6" value="60000"/>
+<button id="bPaste">Run Paste</button>
+<button id="bCopy">Copy Out</button>
+</div>
+<textarea id="code" placeholder="paste long .ps1 here then click Run Paste (upload mode, base64-safe)"></textarea>
+<div id="out"></div>
 <script>
-var term=document.getElementById('term'),cmd=document.getElementById('cmd'),run=document.getElementById('run');
-function execute(){
-  var c=cmd.value.trim();if(!c)return;
-  cmd.value='';
-  term.textContent+='\n> '+c+'\n';
-  fetch('/terminal-exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:c})}).then(function(r){return r.json();}).then(function(j){term.textContent+=(j.output||'(no output)')+'\n';}).catch(function(e){term.textContent+='ERROR: '+e.message+'\n';});
-  term.scrollTop=term.scrollHeight;
-}
-run.onclick=execute;cmd.onkeydown=function(e){if(e.key==='Enter')execute();};
-cmd.focus();
+var tok=new URLSearchParams(location.search).get('token')||'';
+var out=document.getElementById('out');
+function show(j){out.innerHTML='';var m=document.createElement('div');m.className='meta';m.textContent='exit='+j.exitCode+' timedOut='+j.timedOut+' ms='+j.durationMs+' session='+j.session+' file='+j.scriptPath;out.appendChild(m);var o=document.createElement('div');o.textContent=j.output||'(no stdout)';out.appendChild(o);if(j.error){var e=document.createElement('div');e.className='err';e.textContent='STDERR:\n'+j.error;out.appendChild(e);}}
+function run(body){out.textContent='running...';fetch('/terminal-exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(function(r){return r.json();}).then(show).catch(function(e){out.textContent='FETCH ERROR: '+e;});}
+document.getElementById('bCmd').onclick=function(){run({mode:'inline',cmd:document.getElementById('cmd').value,session:document.getElementById('sess').value,timeout:+document.getElementById('tmo').value});};
+document.getElementById('bFile').onclick=function(){run({mode:'file',file:document.getElementById('fpath').value,session:document.getElementById('sess').value,timeout:+document.getElementById('tmo').value});};
+document.getElementById('bPaste').onclick=function(){var t=document.getElementById('code').value;run({mode:'upload',script_b64:btoa(unescape(encodeURIComponent(t))),session:document.getElementById('sess').value,timeout:+document.getElementById('tmo').value});};
+document.getElementById('bCopy').onclick=function(){navigator.clipboard.writeText(out.innerText);};
 </script></body></html>
 '@
             Send-ClientResponse -Stream $stream -Code 200 -CType 'text/html; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($termPage))
             return
         }
-        if ($path -eq '/terminal-exec') {
-            $tout = 60
+                if ($path -eq '/terminal-exec') {
+            $timeoutMs = 60000
             $tres = ''
+            $terr = ''
+            $texit = $null
+            $ttimed = $false
+            $tmode = 'inline'
+            $tsess = 'system'
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
             try {
-                $bj = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json
-                $tcmd = [string]$bj.cmd
-                if (-not $tcmd) { throw 'empty cmd' }
-                try { [System.IO.File]::AppendAllText('C:\ghrdp\webdesk\terminal-audit.log', ((Get-Date).ToUniversalTime().ToString('o') + ' CMD: ' + $tcmd + "`n")) } catch { }
-                $tjob = Start-Job -ScriptBlock { param($c) powershell -NoProfile -ExecutionPolicy Bypass -Command $c } -ArgumentList $tcmd
-                $tjob | Wait-Job -Timeout $tout | Out-Null
-                if ($tjob.State -eq 'Running') { $tjob | Stop-Job -Force; $tres = 'TIMEOUT after ' + $tout + 's' }
-                else { $tres = ($tjob | Receive-Job | Out-String); if (-not $tres) { $tres = '(no output)' } }
-                try { $tjob | Remove-Job -Force } catch { }
-            } catch { $tres = 'ERROR: ' + $_.Exception.Message }
-            try { [System.IO.File]::AppendAllText('C:\ghrdp\webdesk\terminal-audit.log', ('RESULT: ' + ([string]$tres).Substring(0, [Math]::Min(500, ([string]$tres).Length)) + "`n")) } catch { }
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes(('{"output":' + ([string]$tres | ConvertTo-Json) + '}')))
+                $req = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json
+                $tmode = if ($req.mode) { [string]$req.mode } else { 'inline' }
+                if ($req.timeout) { $timeoutMs = [int]$req.timeout }
+                if ($timeoutMs -gt 300000) { $timeoutMs = 300000 }
+                if ($timeoutMs -lt 1000) { $timeoutMs = 1000 }
+                $tout = [int]($timeoutMs / 1000)
+                if ($req.session -eq 'interactive') { $tsess = 'interactive' }
+                $workDir = 'C:\ghrdp\webdesk\term'
+                New-Item -ItemType Directory -Path $workDir -Force -ErrorAction SilentlyContinue | Out-Null
+                $tid = [guid]::NewGuid().ToString('N').Substring(0, 8)
+                $tscript = Join-Path $workDir ('run-' + $tid + '.ps1')
+                $toutF = Join-Path $workDir ('out-' + $tid + '.txt')
+                $terrF = Join-Path $workDir ('err-' + $tid + '.txt')
+                $ownScript = $true
+                if ($tmode -eq 'upload') {
+                    if (-not [string]$req.script_b64) { throw 'missing script_b64' }
+                    [System.IO.File]::WriteAllText($tscript, ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$req.script_b64))))
+                } elseif ($tmode -eq 'file') {
+                    if (-not (Test-Path -LiteralPath ([string]$req.file))) { throw ('file not found: ' + [string]$req.file) }
+                    $tscript = [string]$req.file
+                    $ownScript = $false
+                } else {
+                    if (-not [string]$req.cmd) { throw 'empty cmd' }
+                    [System.IO.File]::WriteAllText($tscript, ([string]$req.cmd))
+                }
+                try { [System.IO.File]::AppendAllText('C:\ghrdp\webdesk\terminal-audit.log', ((Get-Date).ToUniversalTime().ToString('o') + ' mode=' + $tmode + ' session=' + $tsess + ' file=' + $tscript + "`n")) } catch { }
+                $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                if ($tsess -eq 'interactive') {
+                    $cfgT = Read-JsonFile -Path $script:CfgPath
+                    $ttask = 'GhrdpTerm-' + $tid
+                    $twrap = '& ' + [char]39 + $tscript + [char]39 + ' *> ' + [char]39 + $toutF + [char]39 + '; exit $LASTEXITCODE'
+                    $targ = '-NoProfile -ExecutionPolicy Bypass -Command "' + $twrap + '"'
+                    $tact = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $targ
+                    $tprn = New-ScheduledTaskPrincipal -UserId ([string]$cfgT.rdpUser) -LogonType Interactive -RunLevel Highest
+                    try {
+                        Register-ScheduledTask -TaskName $ttask -Action $tact -Principal $tprn -Force -ErrorAction Stop | Out-Null
+                        Start-ScheduledTask -TaskName $ttask -ErrorAction Stop
+                        Start-Sleep -Seconds 2
+                        $tstarted = $false
+                        $tbegin = Get-Date
+                        while (((Get-Date) - $tbegin).TotalMilliseconds -lt $timeoutMs) {
+                            try { $tst = (Get-ScheduledTask -TaskName $ttask -ErrorAction Stop).State } catch { $tst = '' }
+                            if ($tst -eq 'Running') { $tstarted = $true }
+                            elseif ($tstarted) { break }
+                            elseif (((Get-Date) - $tbegin).TotalSeconds -gt 20) { break }
+                            Start-Sleep -Milliseconds 500
+                        }
+                        if (-not $tstarted) { throw 'task did not start (no interactive session for task user?)' }
+                        if (((Get-Date) - $tbegin).TotalMilliseconds -ge $timeoutMs) { $ttimed = $true }
+                        try { $texit = [int](Get-ScheduledTaskInfo -TaskName $ttask -ErrorAction SilentlyContinue).LastTaskResult } catch { }
+                    } finally {
+                        try { Unregister-ScheduledTask -TaskName $ttask -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+                    }
+                } else {
+                    $p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $tscript + '"')) -RedirectStandardOutput $toutF -RedirectStandardError $terrF -NoNewWindow -PassThru -WorkingDirectory $workDir
+                    if (-not $p.WaitForExit($timeoutMs)) { try { $p.Kill() } catch { }; $ttimed = $true } else { $texit = $p.ExitCode }
+                }
+                $sw.Stop()
+                if (Test-Path -LiteralPath $toutF) { $tres = [System.IO.File]::ReadAllText($toutF) }
+                if (Test-Path -LiteralPath $terrF) { $terr = [System.IO.File]::ReadAllText($terrF) }
+                if ($ownScript) { try { Remove-Item -LiteralPath $tscript -Force -ErrorAction SilentlyContinue } catch { } }
+                try { Remove-Item -LiteralPath $toutF -Force -ErrorAction SilentlyContinue } catch { }
+                try { Remove-Item -LiteralPath $terrF -Force -ErrorAction SilentlyContinue } catch { }
+                if ($ttimed) { $tres = 'TIMEOUT after ' + ([int]($timeoutMs / 1000)) + 's' + "`n" + $tres }
+                if (-not $tres) { $tres = '(no output)' }
+            } catch { $tres = 'ERROR: ' + $_.Exception.Message; $terr = '' }
+            try { $sw.Stop() } catch { }
+            try { [System.IO.File]::AppendAllText('C:\ghrdp\webdesk\terminal-audit.log', ('RESULT exit=' + $texit + ' timedOut=' + $ttimed + ' ms=' + $sw.ElapsedMilliseconds + ' outLen=' + ([string]$tres).Length + "`n")) } catch { }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes(('{"output":' + ([string]$tres | ConvertTo-Json) + ',"error":' + ([string]$terr | ConvertTo-Json) + ',"exitCode":' + $(if ($null -eq $texit) { 'null' } else { [string]$texit }) + ',"timedOut":' + $(if ($ttimed) { 'true' } else { 'false' }) + ',"durationMs":' + $sw.ElapsedMilliseconds + ',"session":' + ('"' + $tsess + '"') + ',"scriptPath":' + ($tscript | ConvertTo-Json) + '}')))
             return
         }
         if ($path -eq '/remote-exec') {
