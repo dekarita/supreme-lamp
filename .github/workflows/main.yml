@@ -1507,15 +1507,39 @@ jobs:
             try { $c2 = Get-Command pwsh.exe -ErrorAction Stop; if ($c2) { $pwshPath = $c2.Source } } catch { }
           }
           $argLine = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-webdesk.ps1"'
+          $scriptPath = 'C:\ghrdp\ghrdp-webdesk.ps1'
+          try { Unregister-ScheduledTask -TaskName 'GhrdpWebDesk' -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+          try { Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ghrdp-webdesk.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
           try {
               $action = New-ScheduledTaskAction -Execute $pwshPath -Argument $argLine
               $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
               $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
               $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 6)
               Register-ScheduledTask -TaskName 'GhrdpWebDesk' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
-              Start-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction SilentlyContinue
-              Write-Host '[webdesk] GhrdpWebDesk registered + start attempted (active once the RDP user logs on)'
-          } catch { Write-Host ('[webdesk] register failed: ' + $_.Exception.Message) }
+              Write-Host '[webdesk] task registered for ' + $user
+          } catch {
+              Write-Host ('[webdesk] task register failed: ' + $_.Exception.Message)
+              exit 0
+          }
+          try {
+              Start-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction Stop
+              Write-Host '[webdesk] task started immediately'
+          } catch {
+              Write-Host ('[webdesk] task start failed: ' + $_.Exception.Message)
+              try {
+                  Start-Process $pwshPath -ArgumentList '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-webdesk.ps1"' -WindowStyle Hidden
+                  Write-Host '[webdesk] fallback: direct process start'
+              } catch {
+                  Write-Host ('[webdesk] fallback also failed: ' + $_.Exception.Message)
+              }
+          }
+          Start-Sleep -Seconds 5
+          $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ghrdp-webdesk.ps1*' } | Select-Object -First 1
+          if ($proc) {
+              Write-Host ('[webdesk] process running: PID=' + $proc.ProcessId + ' Session=' + $proc.SessionId)
+          } else {
+              Write-Host '[webdesk] process NOT running after start attempts - check task registration and payload path ' + $scriptPath
+          }
           exit 0
 
       - name: Register web desktop capture (ONLOGON, runneradmin)
@@ -2218,6 +2242,13 @@ jobs:
                         Write-Host ($icons.wrench + ' ' + $stamp + ' active session but capture stale (frame=' + $wdAge + 'ms alive=' + $aliveAge + 'ms) - killing wrong-session captures + restarting')
                         try { Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ghrdp-webdesk.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
                         try { Start-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction Stop } catch { Write-Host ('   webdesk restart failed: ' + $_.Exception.Message) }
+                        Start-Sleep -Seconds 5
+                        $stillGone = $true
+                        try { if (Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ghrdp-webdesk.ps1*' }) { $stillGone = $false } } catch { }
+                        if ($stillGone) {
+                            Write-Host ($icons.wrench + ' ' + $stamp + ' task restart produced no process - fallback direct start')
+                            try { Start-Process 'powershell.exe' -ArgumentList '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-webdesk.ps1"' -WindowStyle Hidden } catch { Write-Host ('   fallback direct start failed: ' + $_.Exception.Message) }
+                        }
                     }
                 }
             }
