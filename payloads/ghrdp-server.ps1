@@ -320,12 +320,73 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":true}'))
             return
         }
+        if ($path -eq '/terminal') {
+            $termPage = @'
+<!doctype html><html><head><meta charset="utf-8"><title>GHRDP Terminal</title>
+<style>body{margin:0;background:#1e1e1e;color:#d4d4d4;font-family:Consolas,monospace}#term{padding:10px;white-space:pre-wrap;font-size:14px;height:calc(100vh - 60px);overflow-y:auto}#input{position:fixed;bottom:0;left:0;right:0;background:#2d2d30;padding:8px;display:flex;gap:8px}#cmd{flex:1;background:#3c3c3c;color:#d4d4d4;border:1px solid #555;padding:6px;font-family:inherit;font-size:14px}#run{background:#0e639c;color:#fff;border:0;padding:6px 16px;cursor:pointer}</style>
+</head><body><div id="term">GHRDP Remote Terminal - Type commands below (runs on runner, 60s limit, all commands audit-logged)</div><div id="input"><input id="cmd" placeholder="Enter PowerShell command..."/><button id="run">Run</button></div>
+<script>
+var term=document.getElementById('term'),cmd=document.getElementById('cmd'),run=document.getElementById('run');
+function execute(){
+  var c=cmd.value.trim();if(!c)return;
+  cmd.value='';
+  term.textContent+='\n> '+c+'\n';
+  fetch('/terminal-exec',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({cmd:c})}).then(function(r){return r.json();}).then(function(j){term.textContent+=(j.output||'(no output)')+'\n';}).catch(function(e){term.textContent+='ERROR: '+e.message+'\n';});
+  term.scrollTop=term.scrollHeight;
+}
+run.onclick=execute;cmd.onkeydown=function(e){if(e.key==='Enter')execute();};
+cmd.focus();
+</script></body></html>
+'@
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'text/html; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($termPage))
+            return
+        }
+        if ($path -eq '/terminal-exec') {
+            $tout = 60
+            $tres = ''
+            try {
+                $bj = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json
+                $tcmd = [string]$bj.cmd
+                if (-not $tcmd) { throw 'empty cmd' }
+                try { [System.IO.File]::AppendAllText('C:\ghrdp\webdesk\terminal-audit.log', ((Get-Date).ToUniversalTime().ToString('o') + ' CMD: ' + $tcmd + "`n")) } catch { }
+                $tjob = Start-Job -ScriptBlock { param($c) powershell -NoProfile -ExecutionPolicy Bypass -Command $c } -ArgumentList $tcmd
+                $tjob | Wait-Job -Timeout $tout | Out-Null
+                if ($tjob.State -eq 'Running') { $tjob | Stop-Job -Force; $tres = 'TIMEOUT after ' + $tout + 's' }
+                else { $tres = ($tjob | Receive-Job | Out-String); if (-not $tres) { $tres = '(no output)' } }
+                try { $tjob | Remove-Job -Force } catch { }
+            } catch { $tres = 'ERROR: ' + $_.Exception.Message }
+            try { [System.IO.File]::AppendAllText('C:\ghrdp\webdesk\terminal-audit.log', ('RESULT: ' + ([string]$tres).Substring(0, [Math]::Min(500, ([string]$tres).Length)) + "`n")) } catch { }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes(('{"output":' + ([string]$tres | ConvertTo-Json) + '}')))
+            return
+        }
+        if ($path -eq '/remote-exec') {
+            $timeout = 30000
+            $out = ''
+            try {
+                $rj = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json
+                $sb64 = [string]$rj.script_b64
+                if (-not $sb64) { throw 'missing script_b64' }
+                if ($rj.timeout) { $timeout = [int]$rj.timeout }
+                $scriptContent = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($sb64))
+                try { [System.IO.File]::AppendAllText('C:\ghrdp\webdesk\remote-exec-audit.log', ((Get-Date).ToUniversalTime().ToString('o') + ' REMOTE-EXEC len=' + $scriptContent.Length + ' head=' + $scriptContent.Substring(0, [Math]::Min(200, $scriptContent.Length)) + "`n")) } catch { }
+                $tmpScript = Join-Path $env:TEMP ('ghrdp-remote-' + [guid]::NewGuid().ToString('N') + '.ps1')
+                [System.IO.File]::WriteAllText($tmpScript, $scriptContent)
+                $job = Start-Job -ScriptBlock { param($s) powershell -NoProfile -ExecutionPolicy Bypass -File $s } -ArgumentList $tmpScript
+                $job | Wait-Job -Timeout ($timeout / 1000) | Out-Null
+                if ($job.State -eq 'Running') { $job | Stop-Job -Force; $out = 'TIMEOUT after ' + ($timeout / 1000) + 's' }
+                else { $out = ($job | Receive-Job | Out-String); if (-not $out) { $out = '(no output)' } }
+                try { $job | Remove-Job -Force } catch { }
+                try { Remove-Item -LiteralPath $tmpScript -Force -ErrorAction SilentlyContinue } catch { }
+            } catch { $out = 'ERROR: ' + $_.Exception.Message }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes(('{"output":' + ([string]$out | ConvertTo-Json) + '}')))
+            return
+        }
         if ($path -eq '/webdesk') {
             $pg = @'
 <!doctype html><html><head><meta charset="utf-8"><title>GHRDP Web Desktop</title>
 <style>html,body{margin:0;height:100%;background:#0d1117;overflow:hidden;font-family:system-ui}#bar{position:fixed;top:0;left:0;right:0;height:40px;background:#161b22;display:flex;gap:8px;align-items:center;padding:0 10px;z-index:9}#bar b{color:#e6edf3}#bar button{background:#21262d;color:#e6edf3;border:1px solid #30363d;border-radius:6px;padding:5px 9px;cursor:pointer;font-size:12px}#bar button.on{background:#1d6b3a;border-color:#2ea043}#bar .st{color:#8b949e;font-size:12px}#wrap{position:absolute;top:40px;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:center;background:#000}#fr{display:none;cursor:none}#fr.fit{max-width:100%;max-height:100%;object-fit:contain}#fr.stretch{width:100%;height:100%;object-fit:fill}#fr.one{width:auto;height:auto;object-fit:none}#stats{position:fixed;bottom:8px;right:8px;background:rgba(0,0,0,.6);color:#7ee787;font:12px ui-monospace,monospace;padding:6px 8px;border-radius:6px;z-index:9}#ghcur{position:fixed;width:14px;height:14px;border:2px solid #0ff;border-radius:50%;pointer-events:none;z-index:99;display:none;transform:translate(-50%,-50%)}#rip{position:fixed;width:10px;height:10px;background:#0ff;border-radius:50%;pointer-events:none;z-index:99;display:none;transform:translate(-50%,-50%)}</style>
 </head><body>
-<div id="bar"><b>GHRDP Web Desktop</b><span class="st" id="st">connecting...</span><button id="go">▶ START SESSION</button><button id="fs">⛶ Fullscreen</button><button id="mFit" class="on">Fit</button><button id="m1">1:1</button><button id="mStr">Stretch</button><button id="q">Quality: Bal</button><button id="cp">Copy clip</button><button id="ps">Paste clip</button><span class="st" id="path"></span></div>
+<div id="bar"><b>GHRDP Web Desktop</b><span class="st" id="st">connecting...</span><button id="go">▶ START SESSION</button><button id="fs">⛶ Fullscreen</button><button id="mFit" class="on">Fit</button><button id="m1">1:1</button><button id="mStr">Stretch</button><button id="q">Quality: Bal</button><button id="cp">Copy clip</button><button id="term">Terminal</button><button id="ps">Paste clip</button><span class="st" id="path"></span></div>
 <div id="wrap"><img id="fr" class="fit" alt="remote"></div>
 <div id="stats"></div><div id="ghcur"></div><div id="rip"></div>
 <script>
@@ -356,6 +417,7 @@ img.addEventListener('contextmenu',function(e){e.preventDefault();});
 var SPEC={Enter:13,Backspace:8,Tab:9,Escape:27,ArrowLeft:37,ArrowUp:38,ArrowRight:39,ArrowDown:40,Delete:46,Home:36,End:35};
 addEventListener('keydown',function(e){if(e.key.length===1){send([{t:'k',ch:e.key}]);}else if(SPEC[e.key]){send([{t:'kd',vk:SPEC[e.key]}]);}e.preventDefault();});
 addEventListener('keyup',function(e){if(SPEC[e.key]){send([{t:'ku',vk:SPEC[e.key]}]);}e.preventDefault();});
+document.getElementById('term').onclick=function(){window.open('/terminal','_blank');};
 document.getElementById('cp').onclick=function(){fetch('/webdesk-clip?want=1').then(function(r){return r.json();}).then(function(j){if(j.text!=null&&navigator.clipboard)navigator.clipboard.writeText(j.text).then(function(){st.textContent='remote clipboard copied';});});};
 document.getElementById('go').onclick=function(){fetch('/api/config',{cache:'no-store'}).then(function(r){return r.json();}).then(function(cf){if(cf&&cf.rdpIp&&cf.rdpUser){function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}var u='ghrdp://ip='+encodeURIComponent(cf.rdpIp)+'&u=b64u:'+b64u(cf.rdpUser)+'&p=b64u:'+b64u(cf.rdpPass||'');var wasF=true;var bl=function(){wasF=false;};window.addEventListener('blur',bl);var ifr=document.createElement('iframe');ifr.style.display='none';try{document.body.appendChild(ifr);ifr.src=u;}catch(e){}setTimeout(function(){window.removeEventListener('blur',bl);if(wasF){document.getElementById('st').textContent='handler නෑ - dashboard එකේ AUTO-LOGIN එකෙන් handler එක install කරන්න';}else{document.getElementById('st').textContent='mstsc window එක බලන්න: cert/cred prompt එකක් තියෙනවා නම් Accept කරන්න. Window එක open තියන්න (close කරන්න එපා) - frames තත්පර 5ක් ඇතුළත එනවා.';}},1200);}});};
 setTimeout(function(){fetch('/webdesk-status',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){if(!s.ok){document.getElementById('go').click();}});},2500);
