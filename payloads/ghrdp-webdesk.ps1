@@ -11,7 +11,7 @@ $errFile = Join-Path $dir 'webdesk-error.txt'
 try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'BelowNormal' } catch { }
 try { New-Item -ItemType Directory -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Force -ErrorAction SilentlyContinue | Out-Null; Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name 'VisualFXSetting' -Value 2 -Type DWord -Force } catch { }
 $verFile = Join-Path $dir 'webdesk-version.txt'
-try { [System.IO.File]::WriteAllText($verFile, 'v6-startup-clean') } catch { }
+try { [System.IO.File]::WriteAllText($verFile, 'v7-hangproof') } catch { }
 try { Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue } catch { }
 try { Remove-Item -LiteralPath $failFile -Force -ErrorAction SilentlyContinue } catch { }
 try { Remove-Item -LiteralPath $framePath -Force -ErrorAction SilentlyContinue } catch { }
@@ -55,6 +55,19 @@ $ep = New-Object System.Drawing.Imaging.EncoderParameters 1
 $sw = [int]($vs.Width * $scale); $sh = [int]($vs.Height * $scale)
 $small = New-Object System.Drawing.Bitmap $sw, $sh
 $gsmall = [System.Drawing.Graphics]::FromImage($small)
+try {
+    $initResult = "init: session=" + (Get-Process -Id $PID).SessionId + " vs=" + $vs.Width + "x" + $vs.Height
+    $initOk = $false
+    try {
+        $gfx.CopyFromScreen([int]$vs.X, [int]$vs.Y, 0, 0, $bmp.Size)
+        $sampleP = $bmp.GetPixel([int]($vs.Width/2), [int]($vs.Height/2))
+        $initResult += " | CopyFromScreen OK pixel=R" + $sampleP.R + "G" + $sampleP.G + "B" + $sampleP.B
+        $initOk = $true
+    } catch {
+        $initResult += " | CopyFromScreen EXCEPTION: " + $_.Exception.GetType().FullName + " :: " + $_.Exception.Message
+    }
+    try { [System.IO.File]::WriteAllText((Join-Path $dir 'webdesk-init.txt'), $initResult) } catch { }
+} catch { }
     $qNow = 30; $intNow = 66
     $ctlPath = Join-Path $dir 'ctl.json'
 $tmpPath = Join-Path $dir 'frame.tmp.jpg'
@@ -72,7 +85,7 @@ function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk
             $lastSessCheck = Get-Date
             $mySess = (Get-Process -Id $PID).SessionId
             $st = (& query.exe session $mySess 2>$null) -join ' '
-            if ($st -notmatch 'Active') { try { [System.IO.File]::WriteAllText($failFile, ("own session $mySess not Active: " + $st)) } catch { }; exit 0 }
+            if ($st -notmatch 'Active') { try { [System.IO.File]::WriteAllText($failFile, ("v7 own session $mySess not Active: " + $st)) } catch { }; exit 0 }
         }
         $clients = 1
         try { if (Test-Path 'C:\ghrdp\webdesk\ws-clients.txt') { $clients = [int]([System.IO.File]::ReadAllText('C:\ghrdp\webdesk\ws-clients.txt').Trim()) } } catch { $clients = 1 }
@@ -115,7 +128,7 @@ function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk
             $consecFail = 0
             if (-not (Test-Path -LiteralPath $firstFile)) { try { [System.IO.File]::WriteAllText($firstFile, (Get-Date).ToUniversalTime().ToString('o')) } catch { } }
             try { Remove-Item -LiteralPath $failFile -Force -ErrorAction SilentlyContinue } catch { }
-        } catch { $consecFail++; try { [System.IO.File]::WriteAllText($failFile, ("capture failing x$consecFail [" + $method + "] in session " + (Get-Process -Id $PID).SessionId + " :: " + $lastErr)) } catch { }; if ($consecFail -ge 60) { $consecFail = 0 }; Start-Sleep -Milliseconds 1500; continue }
+        } catch { $consecFail++; try { [System.IO.File]::WriteAllText($failFile, ("v7 capture failing x$consecFail [" + $method + "] in session " + (Get-Process -Id $PID).SessionId + " :: " + $lastErr)) } catch { }; if ($consecFail -ge 60) { $consecFail = 0 }; Start-Sleep -Milliseconds 1500; continue }
     if (Test-Path -LiteralPath $inPath) {
         $lines = @()
         try { $lines = @([System.IO.File]::ReadAllLines($inPath)); Remove-Item -LiteralPath $inPath -Force } catch { }
