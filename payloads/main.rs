@@ -394,7 +394,7 @@ async fn handle_webdesk_ws(socket: WebSocket) {
     tokio::spawn(async move {
         let mut last_ts = String::new();
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(16)).await;
             if let Ok(ts) = tokio::fs::read_to_string("C:\\ghrdp\\webdesk\\frame-ts.txt").await {
                 if ts != last_ts {
                     last_ts = ts;

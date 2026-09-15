@@ -40,7 +40,8 @@ $ep = New-Object System.Drawing.Imaging.EncoderParameters 1
 $sw = [int]($vs.Width * $scale); $sh = [int]($vs.Height * $scale)
 $small = New-Object System.Drawing.Bitmap $sw, $sh
 $gsmall = [System.Drawing.Graphics]::FromImage($small)
-$framePath = Join-Path $dir 'frame.jpg'
+    $qNow = 30; $intNow = 66
+    $ctlPath = Join-Path $dir 'ctl.json'
 $tmpPath = Join-Path $dir 'frame.tmp.jpg'
 $tsPath = Join-Path $dir 'frame-ts.txt'
 $inPath = Join-Path $dir 'input.ndjson'
@@ -59,6 +60,7 @@ function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk
         try { [System.IO.File]::WriteAllText($alive, (Get-Date).ToUniversalTime().ToString('o')) } catch { }
         $gfx.CopyFromScreen($vs.X, $vs.Y, 0, 0, $bmp.Size)
         $gsmall.DrawImage($bmp, 0, 0, $sw, $sh)
+        try { if (Test-Path -LiteralPath $ctlPath) { $ctl = Get-Content -LiteralPath $ctlPath -Raw | ConvertFrom-Json; if ($ctl.q) { $qNow = [Math]::Max(10, [Math]::Min(80, [int]$ctl.q)); $ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$qNow) }; if ($ctl.interval) { $intNow = [Math]::Max(30, [Math]::Min(2000, [int]$ctl.interval)) } } } catch { }
         $small.Save($tmpPath, $codec, $ep)
         Move-Item -LiteralPath $tmpPath -Destination $framePath -Force
         [System.IO.File]::WriteAllText($tsPath, (Get-Date).ToUniversalTime().ToString('o'))
@@ -90,7 +92,7 @@ function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk
     if (Test-Path -LiteralPath $clipGetFlag) {
         try { $t = ''; try { $t = Get-Clipboard -Raw } catch { }; [System.IO.File]::WriteAllText($clipTxt, $t); Remove-Item -LiteralPath $clipGetFlag -Force } catch { }
     }
-    Start-Sleep -Milliseconds 66
+    Start-Sleep -Milliseconds $intNow
 }
 } catch {
     try { [System.IO.File]::WriteAllText($errFile, ((Get-Date -Format o) + "`r`n" + $_.Exception.Message + "`r`n" + $_.ScriptStackTrace)) } catch { }
