@@ -17,6 +17,7 @@ try { Remove-Item -LiteralPath $failFile -Force -ErrorAction SilentlyContinue } 
 try { Remove-Item -LiteralPath $framePath -Force -ErrorAction SilentlyContinue } catch { }
 try { Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue } catch { }
 try { [System.IO.File]::WriteAllText((Join-Path $dir 'webdesk-start.txt'), (Get-Date).ToUniversalTime().ToString('o')) } catch { }
+try { [System.IO.File]::WriteAllText((Join-Path $dir 'webdesk.pid'), [string]$PID) } catch { }
 $mtx = $null
 try { $mtx = New-Object System.Threading.Mutex($false, 'GhrdpWebDeskSingle'); if (-not $mtx.WaitOne(0)) { exit 0 } } catch { }
 try {
