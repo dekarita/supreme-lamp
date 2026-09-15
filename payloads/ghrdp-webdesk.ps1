@@ -99,7 +99,7 @@ function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk
             $consecFail = 0
             if (-not (Test-Path -LiteralPath $firstFile)) { try { [System.IO.File]::WriteAllText($firstFile, (Get-Date).ToUniversalTime().ToString('o')) } catch { } }
             try { Remove-Item -LiteralPath $failFile -Force -ErrorAction SilentlyContinue } catch { }
-        } catch { $consecFail++; if ($consecFail -ge 20) { try { [System.IO.File]::WriteAllText($failFile, ("capture failing x$consecFail [" + $method + "] in session " + (Get-Process -Id $PID).SessionId + " :: " + $lastErr)) } catch { }; $consecFail = 0; Start-Sleep -Milliseconds 2000; continue } }
+        } catch { $consecFail++; try { [System.IO.File]::WriteAllText($failFile, ("capture failing x$consecFail [" + $method + "] in session " + (Get-Process -Id $PID).SessionId + " :: " + $lastErr)) } catch { }; if ($consecFail -ge 60) { $consecFail = 0 }; Start-Sleep -Milliseconds 1500; continue }
     if (Test-Path -LiteralPath $inPath) {
         $lines = @()
         try { $lines = @([System.IO.File]::ReadAllLines($inPath)); Remove-Item -LiteralPath $inPath -Force } catch { }
