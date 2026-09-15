@@ -313,6 +313,11 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes((@{ text = $txt } | ConvertTo-Json -Compress)))
             return
         }
+        if ($path -eq '/webdesk-ctl') {
+            try { [System.IO.File]::WriteAllText('C:\ghrdp\webdesk\ctl.json', ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body))) } catch { }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":true}'))
+            return
+        }
         if ($path -eq '/webdesk') {
             $pg = @'
 <!doctype html><html><head><meta charset="utf-8"><title>GHRDP Web Desktop</title>
@@ -350,7 +355,7 @@ var SPEC={Enter:13,Backspace:8,Tab:9,Escape:27,ArrowLeft:37,ArrowUp:38,ArrowRigh
 addEventListener('keydown',function(e){if(e.key.length===1){send([{t:'k',ch:e.key}]);}else if(SPEC[e.key]){send([{t:'kd',vk:SPEC[e.key]}]);}e.preventDefault();});
 addEventListener('keyup',function(e){if(SPEC[e.key]){send([{t:'ku',vk:SPEC[e.key]}]);}e.preventDefault();});
 document.getElementById('cp').onclick=function(){fetch('/webdesk-clip?want=1').then(function(r){return r.json();}).then(function(j){if(j.text!=null&&navigator.clipboard)navigator.clipboard.writeText(j.text).then(function(){st.textContent='remote clipboard copied';});});};
-document.getElementById('go').onclick=function(){fetch('/api/config',{cache:'no-store'}).then(function(r){return r.json();}).then(function(cf){if(cf&&cf.rdpIp&&cf.rdpUser){function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}var u='ghrdp://ip='+encodeURIComponent(cf.rdpIp)+'&u=b64u:'+b64u(cf.rdpUser)+'&p=b64u:'+b64u(cf.rdpPass||'');var ifr=document.createElement('iframe');ifr.style.display='none';try{document.body.appendChild(ifr);ifr.src=u;}catch(e){}document.getElementById('st').textContent='session start වෙනවා... මේ tab එකේ frames ටිකෙන් පේනවා';}});};
+document.getElementById('go').onclick=function(){fetch('/api/config',{cache:'no-store'}).then(function(r){return r.json();}).then(function(cf){if(cf&&cf.rdpIp&&cf.rdpUser){function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}var u='ghrdp://ip='+encodeURIComponent(cf.rdpIp)+'&u=b64u:'+b64u(cf.rdpUser)+'&p=b64u:'+b64u(cf.rdpPass||'');var wasF=true;var bl=function(){wasF=false;};window.addEventListener('blur',bl);var ifr=document.createElement('iframe');ifr.style.display='none';try{document.body.appendChild(ifr);ifr.src=u;}catch(e){}setTimeout(function(){window.removeEventListener('blur',bl);if(wasF){document.getElementById('st').textContent='handler නෑ - dashboard එකේ AUTO-LOGIN එකෙන් handler එක install කරන්න';}else{document.getElementById('st').textContent='mstsc window එක බලන්න: cert/cred prompt එකක් තියෙනවා නම් Accept කරන්න. Window එක open තියන්න (close කරන්න එපා) - frames තත්පර 5ක් ඇතුළත එනවා.';}},1200);}});};
 setTimeout(function(){fetch('/webdesk-status',{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){if(!s.ok){document.getElementById('go').click();}});},2500);
 document.getElementById('fs').onclick=function(){if(document.fullscreenElement){document.exitFullscreen();}else{document.documentElement.requestFullscreen();}};
 img.addEventListener('dblclick',function(){if(document.fullscreenElement){document.exitFullscreen();}else{document.documentElement.requestFullscreen();}});
