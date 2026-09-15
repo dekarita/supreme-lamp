@@ -10,6 +10,8 @@ $consecFail = 0
 $errFile = Join-Path $dir 'webdesk-error.txt'
 try { [System.Diagnostics.Process]::GetCurrentProcess().PriorityClass = 'BelowNormal' } catch { }
 try { New-Item -ItemType Directory -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Force -ErrorAction SilentlyContinue | Out-Null; Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects' -Name 'VisualFXSetting' -Value 2 -Type DWord -Force } catch { }
+$verFile = Join-Path $dir 'webdesk-version.txt'
+try { [System.IO.File]::WriteAllText($verFile, 'v4-multi-retry') } catch { }
 try { Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue } catch { }
 $mtx = $null
 try { $mtx = New-Object System.Threading.Mutex($false, 'GhrdpWebDeskSingle'); if (-not $mtx.WaitOne(0)) { exit 0 } } catch { }

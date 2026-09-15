@@ -2226,7 +2226,8 @@ jobs:
                if ($tsj -and $tsj.Peer) { foreach ($pp in $tsj.Peer.PSObject.Properties) { if ($pp.Value.Online) { $peer = $pp.Value; break } } }
                if ($peer) {
                    $isDirect = [bool]$peer.CurAddr
-                   [System.IO.File]::WriteAllText('C:\ghrdp\webdesk\ts-path.txt', $(if ($isDirect) { 'DIRECT ' + [string]$peer.CurAddr } else { 'DERP ' + [string]$peer.Relay }), (New-Object System.Text.UTF8Encoding($false)))
+                    [System.IO.File]::WriteAllText('C:\ghrdp\webdesk\ts-path.txt', $(if ($isDirect) { 'DIRECT ' + [string]$peer.CurAddr } else { 'DERP ' + [string]$peer.Relay }), (New-Object System.Text.UTF8Encoding($false)))
+                    try { $dc = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue).Count; [System.IO.File]::WriteAllText('C:\ghrdp\webdesk\display-count.txt', [string]$dc) } catch { }
                    if (-not $isDirect -and (((Get-Date) - $lastDirectTry).TotalMinutes -ge 5)) { $lastDirectTry = Get-Date; & 'C:\Program Files\Tailscale\tailscale.exe' ping --until-direct -c 3 --timeout 5s ([string]@($peer.TailscaleIPs)[0]) 2>$null | Out-Null; $LASTEXITCODE = 0 }
                }
            } catch { }
