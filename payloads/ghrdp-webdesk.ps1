@@ -22,6 +22,11 @@ public static class Inp{
 [StructLayout(LayoutKind.Sequential)]struct KI{public ushort wVk;public ushort wScan;public uint dwFlags;public uint time;public IntPtr dwExtra;}
 [StructLayout(LayoutKind.Explicit)]struct INPUT{[FieldOffset(0)]public int type;[FieldOffset(8)]public MI mi;[FieldOffset(8)]public KI ki;}
 [DllImport("user32.dll",SetLastError=true)]static extern uint SendInput(uint n,INPUT[] inp,int cbSize);
+[DllImport("user32.dll")]public static extern IntPtr GetDC(IntPtr hWnd);
+[DllImport("gdi32.dll")]public static extern bool BitBlt(IntPtr hdcDest,int x,int y,int w,int h,IntPtr hdcSrc,int sx,int sy,uint rop);
+[DllImport("user32.dll")]public static extern int ReleaseDC(IntPtr hWnd,IntPtr hDC);
+[DllImport("user32.dll")]public static extern IntPtr GetDesktopWindow();
+[DllImport("user32.dll")]public static extern bool PrintWindow(IntPtr hWnd,IntPtr hdcBlt,uint nFlags);
 public static void Mouse(double nx,double ny,uint flags,int wheel){
 INPUT i=new INPUT();i.type=0;
 i.mi.dx=(int)(nx*65535);i.mi.dy=(int)(ny*65535);
@@ -68,7 +73,22 @@ function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk
         if ($clients -le 0) { Start-Sleep -Milliseconds 800; continue }
     try {
         try { [System.IO.File]::WriteAllText($alive, (Get-Date).ToUniversalTime().ToString('o')) } catch { }
-        $gfx.CopyFromScreen($vs.X, $vs.Y, 0, 0, $bmp.Size)
+        $ok = $false; $method = ''; $lastErr = ''
+        try { $gfx.CopyFromScreen($vs.X, $vs.Y, 0, 0, $bmp.Size); $method = 'CopyFromScreen'; $ok = $true } catch { $lastErr = 'CopyFromScreen: ' + $_.Exception.Message
+            $hdcSrc = [IntPtr]::Zero
+            try {
+                $hdcSrc = [Inp]::GetDC([IntPtr]::Zero)
+                $hdcDst = $gfx.GetHdc()
+                try { [Inp]::BitBlt($hdcDst, 0, 0, $vs.Width, $vs.Height, $hdcSrc, $vs.X, $vs.Y, 0x00CC0020) | Out-Null; $method = 'BitBlt'; $ok = $true } finally { try { $gfx.ReleaseHdc() } catch { } }
+            } catch { $lastErr += ' | BitBlt: ' + $_.Exception.Message } finally { if ($hdcSrc -ne [IntPtr]::Zero) { try { [Inp]::ReleaseDC([IntPtr]::Zero, $hdcSrc) | Out-Null } catch { } } }
+            if (-not $ok) {
+                $hdcB = [IntPtr]::Zero; $gotB = $false
+                try {
+                    $hw = [Inp]::GetDesktopWindow(); $hdcB = $gfx.GetHdc(); $gotB = $true
+                    try { [Inp]::PrintWindow($hw, $hdcB, 2) | Out-Null; $method = 'PrintWindow'; $ok = $true } finally { if ($gotB) { try { $gfx.ReleaseHdc() } catch { } } }
+                } catch { $lastErr += ' | PrintWindow: ' + $_.Exception.Message }
+            } }
+        if (-not $ok) { throw ('capture failed: ' + $lastErr) }
         $gsmall.DrawImage($bmp, 0, 0, $sw, $sh)
         try { if (Test-Path -LiteralPath $ctlPath) { $ctl = Get-Content -LiteralPath $ctlPath -Raw | ConvertFrom-Json; if ($ctl.q) { $qNow = [Math]::Max(10, [Math]::Min(80, [int]$ctl.q)); $ep.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]$qNow) }; if ($ctl.interval) { $intNow = [Math]::Max(30, [Math]::Min(2000, [int]$ctl.interval)) } } } catch { }
         $small.Save($tmpPath, $codec, $ep)
@@ -77,7 +97,7 @@ function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk
             $consecFail = 0
             if (-not (Test-Path -LiteralPath $firstFile)) { try { [System.IO.File]::WriteAllText($firstFile, (Get-Date).ToUniversalTime().ToString('o')) } catch { } }
             try { Remove-Item -LiteralPath $failFile -Force -ErrorAction SilentlyContinue } catch { }
-        } catch { $consecFail++; if ($consecFail -ge 20) { try { [System.IO.File]::WriteAllText($failFile, ("CopyFromScreen failing x$consecFail in session " + (Get-Process -Id $PID).SessionId)) } catch { }; $consecFail = 0 } }
+        } catch { $consecFail++; if ($consecFail -ge 20) { try { [System.IO.File]::WriteAllText($failFile, ("capture failing x$consecFail [" + $method + "] in session " + (Get-Process -Id $PID).SessionId + " :: " + $lastErr)) } catch { }; $consecFail = 0; exit 0 } }
     if (Test-Path -LiteralPath $inPath) {
         $lines = @()
         try { $lines = @([System.IO.File]::ReadAllLines($inPath)); Remove-Item -LiteralPath $inPath -Force } catch { }

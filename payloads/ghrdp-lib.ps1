@@ -914,7 +914,7 @@ try {
 $L += 'cmdkey stored for TERMSRV/127.0.0.1'
 $got = $false
 $p = $null
-try { $p = Start-Process mstsc.exe -ArgumentList '/v:127.0.0.1','/admin' -PassThru -WindowStyle Hidden; $L += ('mstsc /admin pid=' + $p.Id) } catch { $L += ('mstsc launch failed: ' + $_.Exception.Message) }
+try { $p = Start-Process mstsc.exe -ArgumentList '/v:127.0.0.1' -PassThru -WindowStyle Hidden; $L += ('mstsc pid=' + $p.Id) } catch { $L += ('mstsc launch failed: ' + $_.Exception.Message) }
 for ($i = 0; $i -lt 15; $i++) {
     Start-Sleep -Seconds 2
     $q = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0
