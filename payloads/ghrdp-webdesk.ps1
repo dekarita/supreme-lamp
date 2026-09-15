@@ -53,9 +53,9 @@ function Send-KeyChar { param([string]$ch) $c = [int][char]$ch[0]; [void][Inp]::
 function Send-KeyVk { param([int]$vk, [bool]$up) if ($up) { [void][Inp]::Key($vk, 0, 2) } else { [void][Inp]::Key($vk, 0, 0) } }
     while ($true) {
         try { [System.IO.File]::WriteAllText($alive, (Get-Date).ToUniversalTime().ToString('o')) } catch { }
-        $clients = 0
-        try { $clients = [int]([System.IO.File]::ReadAllText('C:\ghrdp\webdesk\ws-clients.txt').Trim()) } catch { $clients = 0 }
-        if ($clients -le 0) { Start-Sleep -Milliseconds 1500; continue }
+        $clients = 1
+        try { if (Test-Path 'C:\ghrdp\webdesk\ws-clients.txt') { $clients = [int]([System.IO.File]::ReadAllText('C:\ghrdp\webdesk\ws-clients.txt').Trim()) } } catch { $clients = 1 }
+        if ($clients -le 0) { Start-Sleep -Milliseconds 800; continue }
     try {
         try { [System.IO.File]::WriteAllText($alive, (Get-Date).ToUniversalTime().ToString('o')) } catch { }
         $gfx.CopyFromScreen($vs.X, $vs.Y, 0, 0, $bmp.Size)

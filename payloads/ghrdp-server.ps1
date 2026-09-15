@@ -372,6 +372,10 @@ document.getElementById('q').onclick=function(){qi=(qi+1)%3;var s=QS[qi];documen
   connectWs();
 })();
 document.getElementById('ps').onclick=function(){if(navigator.clipboard)navigator.clipboard.readText().then(function(t){return fetch('/webdesk-clip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});}).then(function(){st.textContent='pasted into remote';});};
+</script>
+<script>
+setInterval(function(){ if(rtt>600 && window.__autoQ!=='low'){ window.__autoQ='low'; fetch('/webdesk-ctl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:20,interval:100})}).catch(function(){}); var qb=document.getElementById('q'); if(qb)qb.textContent='Quality: Low (auto)'; } },5000);
+(function(){ var n=0; var iv=setInterval(function(){ n++; fetch('/webdesk-probe',{cache:'no-store'}).then(function(r){return r.json();}).then(function(p){ if(p&&p.session){ var s=document.getElementById('st'); if(s)s.textContent='live'; clearInterval(iv); } else if(n>=15){ var s2=document.getElementById('st'); if(s2)s2.textContent='session හැදුණේ නෑ - START SESSION ආයේ click කරන්න'; clearInterval(iv); } }).catch(function(){}); },2000); })();
 </script></body></html>
 '@
             Send-ClientResponse -Stream $stream -Code 200 -CType 'text/html; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($pg))
