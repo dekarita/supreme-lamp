@@ -9,6 +9,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
 use futures::{SinkExt, StreamExt};
+use tokio::sync::mpsc;
+use tokio::io::AsyncWriteExt;
 use notify::{recommended_watcher, RecursiveMode, Watcher};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, oneshot};
@@ -366,6 +368,73 @@ async fn diag_handler(State(state): State<SharedState>) -> Json<Value> {
     }))
 }
 
+fn b64_encode(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut s = String::with_capacity((data.len() + 2) / 3 * 4);
+    for c in data.chunks(3) {
+        let n: u32 = (c[0] as u32) << 16 | (*c.get(1).unwrap_or(&0) as u32) << 8 | (*c.get(2).unwrap_or(&0) as u32);
+        s.push(T[(n >> 18) as usize & 63] as char);
+        s.push(T[(n >> 12) as usize & 63] as char);
+        s.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
+        s.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+    }
+    s
+}
+async fn webdesk_ws_handler(ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(handle_webdesk_ws)
+}
+async fn handle_webdesk_ws(socket: WebSocket) {
+    let (mut sink, mut stream) = socket.split();
+    let (tx, mut rx) = mpsc::channel::<String>(8);
+    tokio::spawn(async move {
+        let mut last_ts = String::new();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            if let Ok(ts) = tokio::fs::read_to_string("C:\\ghrdp\\webdesk\\frame-ts.txt").await {
+                if ts != last_ts {
+                    last_ts = ts;
+                    if let Ok(bytes) = tokio::fs::read("C:\\ghrdp\\webdesk\\frame.jpg").await {
+                        let b64 = b64_encode(&bytes);
+                        if tx.send(b64).await.is_err() { break; }
+                    }
+                }
+            }
+        }
+    });
+    let send_fut = async {
+        while let Some(b) = rx.recv().await {
+            if sink.send(Message::Text(b)).await.is_err() { break; }
+        }
+    };
+    let recv_fut = async {
+        while let Some(Ok(msg)) = stream.next().await {
+            if let Message::Text(t) = msg {
+                let data = t.as_bytes();
+                let mut out: Vec<u8> = Vec::new();
+                match serde_json::from_slice::<serde_json::Value>(data) {
+                    Ok(serde_json::Value::Array(items)) => {
+                        for it in &items {
+                            if let Ok(line) = serde_json::to_vec(it) {
+                                out.extend_from_slice(&line);
+                                out.push(b'\n');
+                            }
+                        }
+                    }
+                    _ => {
+                        out.extend_from_slice(data);
+                        out.push(b'\n');
+                    }
+                }
+                if !out.is_empty() {
+                    if let Ok(mut f) = tokio::fs::OpenOptions::new().append(true).create(true).open("C:\\ghrdp\\webdesk\\input.ndjson").await {
+                        let _ = f.write_all(&out).await;
+                    }
+                }
+            }
+        }
+    };
+    tokio::select! { _ = send_fut => {}, _ = recv_fut => {} }
+}
 async fn index_handler() -> Response {
     let static_path = std::env::var("GHRDP_ROOT")
         .map(|r| std::path::PathBuf::from(r).join("rust").join("static").join("index.html"))
@@ -584,6 +653,7 @@ async fn main() {
 
     let state_router: Router<Arc<AppState>> = axum::Router::new()
         .route("/ws", get(ws_handler))
+        .route("/webdesk-ws", get(webdesk_ws_handler))
         .route("/health", get(health_handler))
         .route("/ping", get(ping_handler))
         .route("/api/progress", get(api_progress))

@@ -84,7 +84,7 @@ while ($true) {
     if (Test-Path -LiteralPath $clipGetFlag) {
         try { $t = ''; try { $t = Get-Clipboard -Raw } catch { }; [System.IO.File]::WriteAllText($clipTxt, $t); Remove-Item -LiteralPath $clipGetFlag -Force } catch { }
     }
-    Start-Sleep -Milliseconds 100
+    Start-Sleep -Milliseconds 66
 }
 } catch {
     try { [System.IO.File]::WriteAllText($errFile, ((Get-Date -Format o) + "`r`n" + $_.Exception.Message + "`r`n" + $_.ScriptStackTrace)) } catch { }

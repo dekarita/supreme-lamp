@@ -276,7 +276,7 @@ function Invoke-ClientRequest {
             try { $task = [bool](Get-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction SilentlyContinue) } catch { }
             $sess = $false
             try { $q = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0; $cfgP = Read-JsonFile -Path $script:CfgPath; if (($q -match [regex]::Escape([string]$cfgP.rdpUser)) -or ($q -match 'runneradmin')) { $sess = $true } } catch { }
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes((@{ webdeskPs = $wPs; bootstrapPs = $bPs; task = $task; session = $sess; diag = $(try { [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\boot-diag.txt') } catch { '' }); wdErr = $(try { [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\webdesk-error.txt') } catch { '' }); mstscDiag = $(try { [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\mstsc-exit-diag.txt') } catch { '' }) } | ConvertTo-Json -Compress)))
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes((@{ webdeskPs = $wPs; bootstrapPs = $bPs; task = $task; session = $sess; diag = $(try { [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\boot-diag.txt') } catch { '' }); wdErr = $(try { [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\webdesk-error.txt') } catch { '' }); mstscDiag = $(try { [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\mstsc-exit-diag.txt') } catch { '' }); tsPath = $(try { [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\ts-path.txt') } catch { '' }) } | ConvertTo-Json -Compress)))
             return
         }
         if ($path -eq '/webdesk-status') {
@@ -324,7 +324,7 @@ function Invoke-ClientRequest {
 var img=document.getElementById('fr'),st=document.getElementById('st'),pend=[],oldUrl=null;
 var miss=0;
 function frame(){fetch('/webdesk-frame?'+Date.now(),{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;miss=0;return r.blob();}).then(function(b){if(oldUrl)URL.revokeObjectURL(oldUrl);oldUrl=URL.createObjectURL(b);img.src=oldUrl;img.style.display='';st.textContent='live';}).catch(function(){miss++;if(miss>10){fetch('/webdesk-probe',{cache:'no-store'}).then(function(r){return r.json();}).then(function(p){st.textContent=p.wdErr?('CAPTURE ERROR: '+p.wdErr.split('\n')[1]):(p.session?'session live but capture dead - restart GhrdpWebDesk task':'no session yet - click START SESSION');}).catch(function(){});}else{st.textContent='waiting for frames...';}});}
-setInterval(frame,180);frame();
+setInterval(function(){ if(!window.__ghWsActive){ frame(); } },180); frame();
 (async function selfBoot(){
 for(var round=0;round<3;round++){
 var st=await fetch('/webdesk-status',{cache:'no-store'}).then(function(r){return r.json();}).catch(function(){return null;});
@@ -335,7 +335,7 @@ for(var i=0;i<20;i++){await new Promise(function(r){setTimeout(r,1500);});var s2
 }
 document.getElementById('st').textContent='boot failed 3 rounds - read C:\\ghrdp\\webdesk\\boot-diag.txt on the runner';
 })();
-setInterval(function(){if(pend.length){var b=pend;pend=[];fetch('/webdesk-input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).catch(function(){});}},30);
+setInterval(function(){if(pend.length){var b=pend;pend=[];if(window.__ghWs&&window.__ghWs.readyState===1){window.__ghWs.send(JSON.stringify(b));}else{fetch('/webdesk-input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)}).catch(function(){});}}},16);
 function norm(e){var r=img.getBoundingClientRect();return {nx:Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)),ny:Math.max(0,Math.min(1,(e.clientY-r.top)/r.height))};}
 img.addEventListener('mousemove',function(e){var p=norm(e);pend.push({t:'m',nx:p.nx,ny:p.ny});});
 img.addEventListener('mousedown',function(e){var p=norm(e);pend.push({t:(e.button===2?'rd':'ld'),nx:p.nx,ny:p.ny});e.preventDefault();});
@@ -355,6 +355,17 @@ var fi=document.getElementById('fr');
 fi.addEventListener('mousemove',function(e){cur.style.display='block';cur.style.left=e.clientX+'px';cur.style.top=e.clientY+'px';});
 fi.addEventListener('mouseleave',function(){cur.style.display='none';});
 fi.addEventListener('mousedown',function(e){rip.style.display='block';rip.style.left=e.clientX+'px';rip.style.top=e.clientY+'px';rip.style.opacity='1';setTimeout(function(){rip.style.opacity='0';},150);setTimeout(function(){rip.style.display='none';},300);});
+})();
+(function(){
+  function connectWs(){
+    var ws;
+    try{ ws=new WebSocket('ws://'+location.hostname+':7332/webdesk-ws'); }catch(e){ window.__ghWsActive=false; return; }
+    ws.onopen=function(){ window.__ghWs=ws; window.__ghWsActive=true; var s=document.getElementById('st'); if(s)s.textContent='live (ws push)'; };
+    ws.onmessage=function(ev){ if(typeof ev.data==='string'&&ev.data.length>100){ var im=document.getElementById('fr'); if(im){ im.src='data:image/jpeg;base64,'+ev.data; im.style.display=''; } } };
+    ws.onclose=function(){ window.__ghWsActive=false; window.__ghWs=null; setTimeout(connectWs,2000); };
+    ws.onerror=function(){ window.__ghWsActive=false; };
+  }
+  connectWs();
 })();
 document.getElementById('ps').onclick=function(){if(navigator.clipboard)navigator.clipboard.readText().then(function(t){return fetch('/webdesk-clip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});}).then(function(){st.textContent='pasted into remote';});};
 </script></body></html>
