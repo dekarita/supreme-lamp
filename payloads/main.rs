@@ -24,6 +24,54 @@ const READ_ATTEMPTS: u32 = 3;
 const READ_RETRY_DELAY: Duration = Duration::from_millis(120);
 const LEGACY_URL: &str = "https://rentry.co/myurl0";
 
+/// WebRTC-first pipeline (see docs/webdesk-pipeline.md). The broker lives in
+/// session 0 with the rest of this service so it inherits the existing build,
+/// launch, port, sentinel and cleanup paths.
+pub mod broker;
+
+/// Broker policy tick. Fast enough to catch a sustained-window trigger promptly,
+/// slow enough that the percentile math is over real samples.
+const BROKER_POLICY_PERIOD: Duration = Duration::from_millis(250);
+/// Send tick. Only retries a frame the transport refused; a normal send is
+/// completed on the receive path, so this is a backstop, not the main cadence.
+const BROKER_SEND_PERIOD: Duration = Duration::from_millis(10);
+const BROKER_STATS_PERIOD: Duration = Duration::from_secs(1);
+
+/// A log line for the broker's own log file. Rewritten as a bounded ring rather
+/// than appended, because read-modify-write on Windows races.
+pub fn log_line(msg: &str) {
+    let line = format!("[{}] {}", now_iso(), msg);
+    let _ = writeln!(std::io::stdout(), "{}", line);
+    let _ = writeln!(std::io::stderr(), "{}", line);
+    if let Ok(root) = std::env::var("GHRDP_ROOT") {
+        let path = PathBuf::from(root).join("dash.log");
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "{}", line);
+        }
+    }
+    log_ring_push(&line);
+}
+
+/// Bounded in-memory ring for `broker.log`, flushed as a whole file. Never
+/// read-modify-written (section 7.4).
+fn log_ring_push(line: &str) {
+    use std::sync::OnceLock;
+    const LOG_RING_CAPACITY: usize = 512;
+    static RING: OnceLock<Mutex<std::collections::VecDeque<String>>> = OnceLock::new();
+    let ring = RING.get_or_init(|| Mutex::new(std::collections::VecDeque::with_capacity(LOG_RING_CAPACITY)));
+    let snapshot = {
+        let mut guard = ring.lock().unwrap_or_else(|e| e.into_inner());
+        guard.push_back(line.to_string());
+        while guard.len() > LOG_RING_CAPACITY {
+            guard.pop_front();
+        }
+        guard.iter().cloned().collect::<Vec<_>>().join("\n")
+    };
+    if let Ok(root) = std::env::var("GHRDP_ROOT") {
+        let _ = std::fs::write(PathBuf::from(root).join("broker.log"), snapshot);
+    }
+}
+
 struct AppState {
     root: PathBuf,
     tx: broadcast::Sender<String>,
@@ -31,23 +79,15 @@ struct AppState {
     wire: Arc<Mutex<Option<Value>>>,
     started: Instant,
     port: u16,
+    /// The WebRTC-first pipeline broker. `None` when the broker failed to start,
+    /// in which case every `/webdesk-rtc/*` route reports the failure and the
+    /// client stays on MJPEG.
+    broker: Arc<Mutex<Option<Arc<broker::Broker>>>>,
 }
 type SharedState = Arc<AppState>;
 
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
-}
-
-fn log_line(msg: &str) {
-    let line = format!("[{}] {}", now_iso(), msg);
-    let _ = writeln!(std::io::stdout(), "{}", line);
-    let _ = writeln!(std::io::stderr(), "{}", line);
-    if let Ok(root) = std::env::var("GHRDP_ROOT") {
-        let path = PathBuf::from(root).join("dash.log");
-        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
-  let _ = writeln!(file, "{}", line);
-        }
-    }
 }
 
 fn strip_bom(bytes: Vec<u8>) -> String {
@@ -383,6 +423,316 @@ fn b64_encode(data: &[u8]) -> String {
 async fn webdesk_ws_handler(ws: WebSocketUpgrade) -> Response {
     ws.on_upgrade(handle_webdesk_ws)
 }
+
+/// Signaling handshake, the successor to `/webdesk-ws` for the WebRTC path.
+///
+/// `POST /webdesk-rtc/offer` takes the browser's SDP offer and candidates and
+/// returns the answer plus the gathered candidates. `GET /webdesk-rtc/stats`
+/// returns the stats surface; `GET /webdesk-rtc/config` and
+/// `POST /webdesk-rtc/config` read and set the `auto | webrtc | mjpeg`
+/// override; `GET /webdesk-rtc/status` is the client's startup gate.
+#[cfg(feature = "webrtc")]
+async fn webdesk_rtc_offer(
+    State(state): State<SharedState>,
+    Json(offer): Json<broker::webrtc_transport::OfferRequest>,
+) -> Response {
+    let b = match broker_ref(&state) {
+        Some(b) => b,
+        None => {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "ok": false,
+                    "error": "broker_unavailable",
+                    "message": "the WebRTC pipeline did not initialise; the client stays on MJPEG",
+                })),
+            )
+                .into_response()
+        }
+    };
+    let transport = match broker::webrtc_transport::WebRtcTransport::new().await {
+        Ok(t) => Arc::new(t),
+        Err(err) => {
+            log_line(&format!("[broker] WebRTC transport init failed: {}", err));
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Json(json!({
+                    "ok": false,
+                    "error": "webrtc_init_failed",
+                    "message": err,
+                })),
+            )
+                .into_response();
+        }
+    };
+    match transport.answer(offer).await {
+        Ok(answer) => {
+            let ice_state = answer.ice_state.clone();
+            b.note_ice_state(ice_state == "failed");
+            Json(json!({
+                "ok": true,
+                "answer": answer,
+                "transport": "webrtc",
+            }))
+            .into_response()
+        }
+        Err(err) => {
+            log_line(&format!("[broker] offer handling failed: {}", err));
+            (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "ok": false, "error": "signaling_failed", "message": err })),
+            )
+                .into_response()
+        }
+    }
+}
+
+/// Without the media stack compiled in there is no peer connection to signal
+/// against, so the handshake is refused with an explicit reason and the client
+/// stays on the warm MJPEG path.
+#[cfg(not(feature = "webrtc"))]
+async fn webdesk_rtc_offer(Json(_offer): Json<Value>) -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "ok": false,
+            "error": "webrtc_feature_disabled",
+            "message": "this build has no WebRTC media stack; MJPEG path is serving",
+        })),
+    )
+        .into_response()
+}
+
+async fn webdesk_rtc_stats(State(state): State<SharedState>) -> Json<Value> {
+    match broker_ref(&state) {
+        Some(b) => Json(json!({ "ok": true, "stats": b.snapshot() })),
+        None => Json(json!({
+            "ok": false,
+            "error": "broker_unavailable",
+            "stats": Value::Null,
+        })),
+    }
+}
+
+async fn webdesk_rtc_status(State(state): State<SharedState>) -> Json<Value> {
+    let root = state.root.clone();
+    let enc = tokio::task::spawn_blocking(move || read_json_retry(&root.join("webdesk-encoder.json")))
+        .await
+        .unwrap_or(None);
+    match broker_ref(&state) {
+        Some(b) => {
+            let snap = b.snapshot();
+            Json(json!({
+                "ok": true,
+                "brokerReady": true,
+                "transport": snap["broker"]["transport"],
+                "clientPath": snap["clientPath"],
+                "pathType": snap["path"]["type"],
+                "encoder": enc,
+                "message": "WebRTC pipeline ready",
+            }))
+        }
+        None => Json(json!({
+            "ok": false,
+            "brokerReady": false,
+            "clientPath": "mjpeg",
+            "encoder": enc,
+            "message": "WebRTC pipeline did not initialise - MJPEG path is serving",
+        })),
+    }
+}
+
+/// `GET` reads the persisted override, `POST` sets it. The value lives in
+/// `config.json` as `webdeskPath` so it survives with the rest of the config
+/// surface and is visible through `/api/config`.
+async fn webdesk_rtc_config(
+    State(state): State<SharedState>,
+    method: axum::http::Method,
+    body: Option<Json<Value>>,
+) -> Response {
+    let path = state.root.join("config.json");
+    if method == axum::http::Method::GET {
+        let cfg = tokio::task::spawn_blocking(move || read_json_retry(&path))
+            .await
+            .unwrap_or(None);
+        let override_path = cfg
+            .as_ref()
+            .and_then(|c| c.get("webdeskPath"))
+            .and_then(Value::as_str)
+            .unwrap_or("auto")
+            .to_string();
+        let effective = broker_ref(&state)
+            .map(|b| b.snapshot()["clientPath"].clone())
+            .unwrap_or_else(|| json!("mjpeg"));
+        return Json(json!({
+            "ok": true,
+            "override": override_path,
+            "effective": effective,
+            "allowed": ["auto", "webrtc", "mjpeg"],
+        }))
+        .into_response();
+    }
+
+    let requested = body
+        .and_then(|Json(v)| {
+            v.get("path")
+                .or_else(|| v.get("override"))
+                .and_then(Value::as_str)
+                .map(|s| s.to_string())
+        })
+        .unwrap_or_default();
+    let parsed = match broker::policy::ClientPath::parse(&requested) {
+        Some(p) => p,
+        None => {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({
+                    "ok": false,
+                    "error": "invalid_path",
+                    "message": format!("{} is not one of auto|webrtc|mjpeg", requested),
+                })),
+            )
+                .into_response()
+        }
+    };
+
+    let mut cfg = tokio::task::spawn_blocking(move || read_json_retry(&path))
+        .await
+        .unwrap_or(None)
+        .unwrap_or_else(|| json!({}));
+    if let Some(obj) = cfg.as_object_mut() {
+        obj.insert(
+            "webdeskPath".to_string(),
+            Value::String(parsed.as_str().to_string()),
+        );
+    }
+    let cfg_path = state.root.join("config.json");
+    let to_write = cfg.clone();
+    let write_result = tokio::task::spawn_blocking(move || {
+        std::fs::write(&cfg_path, to_write.to_string())
+    })
+    .await
+    .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())));
+    if let Err(err) = write_result {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "ok": false, "error": "config_write_failed", "message": err.to_string() })),
+        )
+            .into_response();
+    }
+
+    let effective = match broker_ref(&state) {
+        Some(b) => b.set_override(parsed).as_str().to_string(),
+        None => parsed.as_str().to_string(),
+    };
+    Json(json!({
+        "ok": true,
+        "override": parsed.as_str(),
+        "effective": effective,
+    }))
+    .into_response()
+}
+
+/// Client render feedback. This is what makes the render-failure and
+/// frame-to-render triggers measurable end to end, and it is why the client does
+/// not have to be trusted to compute the SLO itself.
+async fn webdesk_rtc_render(
+    State(state): State<SharedState>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let Some(b) = broker_ref(&state) else {
+        return Json(json!({ "ok": false, "error": "broker_unavailable" }));
+    };
+    let ok = body.get("ok").and_then(Value::as_bool).unwrap_or(true);
+    let ms = body
+        .get("frameToRenderMs")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    b.note_render(ms, ok);
+    if body.get("decoderFatal").and_then(Value::as_bool).unwrap_or(false) {
+        let mut s = b.stats.lock().unwrap_or_else(|e| e.into_inner());
+        s.decoder_fatal = true;
+    }
+    if let Some(failed) = body.get("iceFailed").and_then(Value::as_bool) {
+        b.note_ice_state(failed);
+    }
+    Json(json!({ "ok": true, "clientPath": b.snapshot()["clientPath"] }))
+}
+
+/// Client input relay for the WebRTC path. Keeps the `input.ndjson` contract
+/// valid by also appending there, so the fallback input path is unaffected if
+/// the primary path dies mid-session.
+async fn webdesk_rtc_input(
+    State(state): State<SharedState>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    let events = body
+        .get("events")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_else(|| vec![body.clone()]);
+    let mut accepted = 0u64;
+    if let Some(b) = broker_ref(&state) {
+        for ev in &events {
+            let kind = ev.get("t").and_then(Value::as_str).unwrap_or("");
+            if kind.is_empty() {
+                continue;
+            }
+            let input_ts_us = ev
+                .get("clientTsUs")
+                .and_then(Value::as_u64)
+                .or_else(|| ev.get("tsUs").and_then(Value::as_u64));
+            b.push_input(kind, ev.clone(), input_ts_us);
+            accepted += 1;
+        }
+    }
+    // The legacy contract stays valid: the in-session agent drains this file for
+    // the fallback path.
+    let legacy = state.root.join("webdesk").join("input.ndjson");
+    let lines: Vec<String> = events
+        .iter()
+        .map(|e| e.to_string())
+        .collect::<Vec<_>>();
+    if !lines.is_empty() {
+        let payload = format!("{}\n", lines.join("\n"));
+        let _ = tokio::task::spawn_blocking(move || {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(legacy)
+            {
+                let _ = f.write_all(payload.as_bytes());
+            }
+        })
+        .await;
+    }
+    Json(json!({ "ok": true, "accepted": accepted }))
+}
+
+/// Mirrors the broker snapshot to disk so `/diag`-style inspection and post-run
+/// analysis work without the client.
+async fn webdesk_rtc_diag(State(state): State<SharedState>) -> Json<Value> {
+    let root = state.root.clone();
+    let file = tokio::task::spawn_blocking(move || {
+        read_json_retry(&root.join("webdesk-rtc-stats.json"))
+    })
+    .await
+    .unwrap_or(None);
+    match broker_ref(&state) {
+        Some(b) => Json(json!({ "ok": true, "live": b.snapshot(), "mirrored": file })),
+        None => Json(json!({ "ok": false, "error": "broker_unavailable", "mirrored": file })),
+    }
+}
+
+fn broker_ref(state: &SharedState) -> Option<Arc<broker::Broker>> {
+    state
+        .broker
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
 async fn handle_webdesk_ws(socket: WebSocket) {
     let (mut sink, mut stream) = socket.split();
     let (tx, mut rx) = mpsc::channel::<String>(8);
@@ -620,13 +970,93 @@ async fn probe_wire() -> Option<Value> {
     }))
 }
 
+/// Start the broker (plan Phase 2) with startup gating (section 10).
+///
+/// Every failure mode here is non-fatal by design: if the loopback sockets
+/// cannot be bound, or the encoder probe reports no H.264 MFT, the service comes
+/// up on MJPEG and says so, exactly as the repo already does for a failed Rust
+/// build. Nothing new may break the existing, working desktop path.
+async fn start_broker(state: SharedState) {
+    let root = state.root.clone();
+    let agent_rx_port = std::env::var("GHRDP_IPC_AGENT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(broker::DEFAULT_AGENT_RX_PORT);
+    let broker_rx_port = std::env::var("GHRDP_IPC_BROKER")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(broker::DEFAULT_BROKER_RX_PORT);
+
+    let (agent_rx, broker_rx) = match broker::bind_ipc(agent_rx_port, broker_rx_port).await {
+        Ok(s) => s,
+        Err(err) => {
+            log_line(&format!(
+                "[broker] IPC bind failed on 127.0.0.1:{}/{}: {} - staying on MJPEG",
+                agent_rx_port, broker_rx_port, err
+            ));
+            let _ = std::fs::write(
+                root.join("webdesk-rtc-error.txt"),
+                format!("IPC bind failed: {} at {}", err, now_iso()),
+            );
+            return;
+        }
+    };
+
+    let socket = Arc::new(broker_rx);
+    let transport: Arc<dyn broker::transport::Transport> = Arc::new(
+        broker::transport::UdpTransport::new(socket.clone()),
+    );
+    let b = broker::Broker::new(transport);
+
+    // Encoder gate: the in-session agent publishes its probe result. An absent
+    // file means "not probed yet", which is not a failure.
+    let encoder_available = root
+        .join("webdesk-encoder.json")
+        .exists();
+    b.set_encoder_available(encoder_available);
+
+    if std::env::var("GHRDP_LOOPBACK").ok().as_deref() == Some("1") {
+        b.set_loopback_log(Some(root.join("ipc-loopback.ndjson")));
+    }
+
+    {
+        let mut guard = state.broker.lock().unwrap_or_else(|e| e.into_inner());
+        *guard = Some(b.clone());
+    }
+
+    let agent_socket = Arc::new(agent_rx);
+    tokio::spawn(broker::run_agent_rx(b.clone(), agent_socket));
+    tokio::spawn(broker::run_send_tick(b.clone(), BROKER_SEND_PERIOD));
+    tokio::spawn(broker::run_policy_tick(b.clone(), BROKER_POLICY_PERIOD));
+    tokio::spawn(broker::run_stats_tick(
+        b.clone(),
+        BROKER_STATS_PERIOD,
+        root.join("webdesk-rtc-stats.json"),
+    ));
+
+    let _ = std::fs::write(
+        root.join("webdesk-rtc-ok.txt"),
+        format!(
+            "BROKER pid={} agentRx=127.0.0.1:{} brokerRx=127.0.0.1:{} encoderAvailable={} at={}",
+            std::process::id(),
+            agent_rx_port,
+            broker_rx_port,
+            encoder_available,
+            now_iso()
+        ),
+    );
+    log_line(&format!(
+        "[broker] listening on 127.0.0.1:{} (agent rx) and 127.0.0.1:{} (broker rx); encoder available: {}",
+        agent_rx_port, broker_rx_port, encoder_available
+    ));
+}
+
 async fn shutdown_signal() {
     if let Err(err) = tokio::signal::ctrl_c().await {
         log_line(&format!("failed to wait for ctrl_c: {}", err));
     }
     log_line("shutdown signal received");
 }
-
 #[tokio::main]
 async fn main() {
     let root = PathBuf::from(
@@ -645,15 +1075,27 @@ async fn main() {
         wire: Arc::new(Mutex::new(None)),
         started: Instant::now(),
         port,
+        broker: Arc::new(Mutex::new(None)),
     });
 
     spawn_file_watcher(state.clone());
     tokio::spawn(periodic_broadcast(state.clone()));
     tokio::spawn(wire_pinger(state.clone()));
+    start_broker(state.clone()).await;
 
     let state_router: Router<Arc<AppState>> = axum::Router::new()
         .route("/ws", get(ws_handler))
         .route("/webdesk-ws", get(webdesk_ws_handler))
+        .route("/webdesk-rtc/offer", axum::routing::post(webdesk_rtc_offer))
+        .route("/webdesk-rtc/stats", get(webdesk_rtc_stats))
+        .route("/webdesk-rtc/status", get(webdesk_rtc_status))
+        .route(
+            "/webdesk-rtc/config",
+            get(webdesk_rtc_config).post(webdesk_rtc_config),
+        )
+        .route("/webdesk-rtc/render", axum::routing::post(webdesk_rtc_render))
+        .route("/webdesk-rtc/input", axum::routing::post(webdesk_rtc_input))
+        .route("/webdesk-rtc/diag", get(webdesk_rtc_diag))
         .route("/health", get(health_handler))
         .route("/ping", get(ping_handler))
         .route("/api/progress", get(api_progress))
