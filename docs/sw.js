@@ -1,1 +1,22 @@
-const CACHE_NAME='ghrdp-explorer-v3-unified';const URLS_TO_CACHE=['explorer.html','tree.json','archive.json'];self.addEventListener('install',event=>{event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(URLS_TO_CACHE).catch(()=>{})));self.skipWaiting();});self.addEventListener('activate',event=>{event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE_NAME).map(k=>caches.delete(k)))));self.clients.claim();});self.addEventListener('fetch',event=>{if(event.request.method!=='GET')return;event.respondWith(fetch(event.request).then(response=>{if(!response||response.status!==200||response.type!=='basic')return response;var responseToCache=response.clone();caches.open(CACHE_NAME).then(cache=>{cache.put(event.request,responseToCache);});return response;}).catch(()=>{return caches.match(event.request).then(response=>{if(response)return response;if(event.request.destination==='document')return caches.match('explorer.html');});}));});
+var CACHE='ghrdp-explorer-v1';
+var PRE=['./explorer.html','./archive.json','./data.json','./archive.html','./decrypt.html'];
+self.addEventListener('install',function(e){
+  e.waitUntil(Promise.all(PRE.map(function(u){return fetch(u,{cache:'no-store'}).then(function(r){if(!r.ok)return null;return caches.open(CACHE).then(function(c){return c.put(u,r)})}).catch(function(){return null})})).then(function(){return self.skipWaiting()}));
+});
+self.addEventListener('activate',function(e){
+  e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==CACHE}).map(function(k){return caches.delete(k)}))}).then(function(){return self.clients.claim()}));
+});
+self.addEventListener('fetch',function(e){
+  var req=e.request;
+  if(req.method!=='GET')return;
+  var u=new URL(req.url);
+  if(u.origin!==location.origin)return;
+  if(req.mode==='navigate'){
+    e.respondWith(fetch(req).then(function(r){var c=r.clone();caches.open(CACHE).then(function(cc){cc.put(req,c)});return r}).catch(function(){return caches.match('./explorer.html')}));
+    return;
+  }
+  e.respondWith(caches.match(req).then(function(hit){
+    var net=fetch(req).then(function(r){if(r.ok){var c=r.clone();caches.open(CACHE).then(function(cc){cc.put(req,c)})}return r}).catch(function(){return hit||Response.error()});
+    return hit||net;
+  }));
+});
