@@ -10,8 +10,19 @@ $auth  = @{ Authorization = 'Bearer ' + $token; 'Content-Type' = 'application/js
 $results = @()
 function Do-Post([string]$path, [hashtable]$body, [int]$timeoutSec=90) {
   $json = $body | ConvertTo-Json -Depth 6 -Compress
-  try { $r = Invoke-WebRequest -Uri ($base+$path) -Method POST -Headers $auth -Body $json -TimeoutSec $timeoutSec -UseBasicParsing -ErrorAction Stop
-    return @{ status = [int]$r.StatusCode; body = ($r.Content | ConvertFrom-Json) } }
+  try { $r = Invoke-WebRequest -Uri ($base+$path) -Method POST -Headers $auth -Body $json -TimeoutSec 15 -UseBasicParsing -ErrorAction Stop
+    $parsed = $r.Content | ConvertFrom-Json
+    if ($parsed.runId) {
+      $deadline = (Get-Date).AddSeconds($timeoutSec)
+      while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Milliseconds 500
+        try { $pr = Invoke-WebRequest -Uri ($base+'/terminal-result?id='+[System.Web.HttpUtility]::UrlEncode($parsed.runId)) -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+          $pj = $pr.Content | ConvertFrom-Json
+          if ($pj.done) { return @{ status = [int]$r.StatusCode; body = $pj } } } catch { }
+      }
+      return @{ status = [int]$r.StatusCode; body = @{ error='polling timeout'; done=$true; timedOut=$true } }
+    }
+    return @{ status = [int]$r.StatusCode; body = $parsed } }
   catch { return @{ status = -1; body = @{ error = $_.Exception.Message } } }
 }
 function Add-Result([string]$id, [string]$name, [bool]$pass, [string]$note='') {

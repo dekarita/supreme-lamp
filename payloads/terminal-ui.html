@@ -203,6 +203,16 @@ Get-Date
    var j = null;
    try { j = await r.json(); } catch(e) { j = { error:'invalid JSON: '+e.message }; }
    if (!r.ok && !j.error) j.error = 'HTTP '+r.status;
+   if (j.runId) {
+    while (true) {
+     await new Promise(function(ok){ setTimeout(ok, 500); });
+     try {
+      var pr = await fetch('/terminal-result?id=' + encodeURIComponent(j.runId));
+      var pj = await pr.json();
+      if (pj.done) { j = pj; break; }
+     } catch(pe) {}
+    }
+   }
    show({
     output:j.output||'', error:j.error||'',
     exitCode:(j.exitCode===null||j.exitCode===undefined)?null:j.exitCode,

@@ -333,7 +333,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
 (function(){
   function setup(){
     fetch('/api/config',{cache:'no-store'}).then(function(r){return r.json();}).then(function(cf){
-      var u=(cf&&cf.creds&&cf.creds.user)||'';
+      var u=(cf&&cf.creds&&cf.creds.user)||cf.rdpUser||cf.user||'';
       var url=location.origin+'/terminal?token=ghrdp-term-'+u;
       var el=document.getElementById('termUrl'); if(el) el.textContent=url;
       var bo=document.getElementById('btnTermOpen'); if(bo) bo.onclick=function(){window.open(url,'_blank');};

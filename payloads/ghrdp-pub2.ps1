@@ -64,7 +64,7 @@ function Send-KeyEvent {
     param([ushort]$Vk,[bool]$KeyUp)
     $ki = New-Object GhrdpInput+KEYBDINPUT
     $ki.wVk = $Vk; $ki.wScan = 0
-    $ki.dwFlags = ([uint32]([int](if ($KeyUp) { $KEF_UP } else { 0 })))
+    $ki.dwFlags = $(if ($KeyUp) { [uint32]$KEF_UP } else { [uint32]0 })
     $ki.time = 0; $ki.dwExtraInfo = [IntPtr]::Zero
     $u = New-Object GhrdpInput+INPUT_UNION; $u.ki = $ki
     $inp = New-Object GhrdpInput+INPUT; $inp.type = $IT_KBD; $inp.u = $u
