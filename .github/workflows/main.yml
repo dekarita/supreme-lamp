@@ -771,6 +771,7 @@ jobs:
             $p = Join-Path 'C:\ghrdp\webdesk' $f
             if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
           }
+          if (-not (Test-Path 'C:\ghrdp\webdesk\ctl.json') -or ((Get-Item 'C:\ghrdp\webdesk\ctl.json').Length -eq 0)) { [System.IO.File]::WriteAllText('C:\ghrdp\webdesk\ctl.json', '{"q":35,"scale":0.5}') }
           [System.IO.File]::WriteAllText('C:\ghrdp\webdesk-version.txt', 'staged at ' + (Get-Date -Format o), (New-Object System.Text.UTF8Encoding($false)))
           Write-Host '[stage] ACLs set: Users get modify on C:\ghrdp (watcher runs as the RDP user)'
           $batPath = Join-Path $root 'DEBUG-GHRDP.bat'

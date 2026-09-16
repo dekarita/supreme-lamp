@@ -17,6 +17,7 @@ $inputFile  = Join-Path $root 'input.ndjson'
 $capFailFile= Join-Path $root 'webdesk-capture-fail.txt'
 $wsClients  = Join-Path $root 'ws-clients.txt'
 $ctlFile    = Join-Path $root 'ctl.json'
+try { if (-not (Test-Path -LiteralPath $ctlFile) -or ([System.IO.File]::ReadAllText($ctlFile).Trim().Length -eq 0)) { [System.IO.File]::WriteAllText($ctlFile, '{"q":35,"scale":0.5}') } } catch { }
 New-Item -ItemType Directory -Path $root -Force -ErrorAction SilentlyContinue | Out-Null
 
 # ---- P/Invoke: SendInput (mouse + keyboard) ----
@@ -126,6 +127,8 @@ try {
             if (Test-Path -LiteralPath $ctlFile) {
                 $ctl = [System.IO.File]::ReadAllText($ctlFile) | ConvertFrom-Json
                 $nq = [long]$ctl.q; $ns = [double]$ctl.scale
+                if ($null -eq $nq -or $nq -le 0 -or $nq -gt 100) { $nq = 35 }
+                if ($null -eq $ns -or $ns -le 0 -or $ns -gt 1) { $ns = 0.5 }
                 if ($nq -ne $curQ -or [Math]::Abs($ns - $curScale) -gt 0.001) {
                     $curQ = $nq; $curScale = $ns
                     $encParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, $curQ)

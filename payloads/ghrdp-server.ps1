@@ -329,9 +329,30 @@ function Invoke-ClientRequest {
             return
         }
         if ($path -eq '/webdesk-ctl') {
-            try { [System.IO.File]::WriteAllText('C:\ghrdp\webdesk\ctl.json', ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body))) } catch { }
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":true}'))
-            return
+            if ($parts.method -eq 'POST') {
+                try {
+                    $body = [System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)
+                    $j = $body | ConvertFrom-Json
+                    if ($j -and $null -ne $j.q -and $null -ne $j.scale) {
+                        $qq = [long]$j.q; $ss = [double]$j.scale
+                        if ($qq -ge 1 -and $qq -le 100 -and $ss -gt 0 -and $ss -le 1) {
+                            [System.IO.File]::WriteAllText('C:\ghrdp\webdesk\ctl.json', ('{"q":' + $qq + ',"scale":' + $ss.ToString([System.Globalization.CultureInfo]::InvariantCulture) + '}'))
+                        }
+                    }
+                } catch { }
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":true}'))
+                return
+            } else {
+                $cur = @{ q = 35; scale = 0.5 }
+                if (Test-Path -LiteralPath 'C:\ghrdp\webdesk\ctl.json') {
+                    try {
+                        $raw2 = [System.IO.File]::ReadAllText('C:\ghrdp\webdesk\ctl.json').Trim()
+                        if ($raw2.Length -gt 0) { $cur = $raw2 | ConvertFrom-Json } else { [System.IO.File]::WriteAllText('C:\ghrdp\webdesk\ctl.json', '{"q":35,"scale":0.5}') }
+                    } catch { }
+                }
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes(($cur | ConvertTo-Json -Compress)))
+                return
+            }
         }
         if ($path -eq '/terminal') {
             $termPage = @'
