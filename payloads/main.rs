@@ -14,6 +14,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 static WS_CLIENTS: AtomicI32 = AtomicI32::new(0);
 fn write_ws_clients(n: i32) { let _ = std::fs::write("C:\\ghrdp\\webdesk\\ws-clients.txt", n.to_string()); }
 use tokio::io::AsyncWriteExt;
+use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use notify::{recommended_watcher, RecursiveMode, Watcher};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, oneshot};
@@ -442,6 +443,50 @@ async fn handle_webdesk_ws(socket: WebSocket) {
     let n = WS_CLIENTS.fetch_sub(1, Ordering::SeqCst) - 1;
     write_ws_clients(if n < 0 { 0 } else { n });
 }
+async fn terminal_ws(ws: WebSocketUpgrade, State(state): State<SharedState>) -> impl IntoResponse {
+    ws.on_upgrade(move |socket| handle_terminal_ws(socket, state))
+}
+async fn handle_terminal_ws(mut socket: WebSocket, state: SharedState) {
+    let audit_path = state.root.join("webdesk").join("terminal-audit.log");
+    let mut last_size: u64 = std::fs::metadata(&audit_path).map(|m| m.len()).unwrap_or(0);
+    let mut tick = tokio::time::interval(Duration::from_millis(2000));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        tokio::select! {
+            _ = tick.tick() => {
+                let cur_size = match tokio::fs::metadata(&audit_path).await {
+                    Ok(m) => m.len(),
+                    Err(_) => { continue; }
+                };
+                if cur_size > last_size {
+                    match tokio::fs::read(&audit_path).await {
+                        Ok(bytes) => {
+                            let slice = if (last_size as usize) < bytes.len() { &bytes[last_size as usize ..] } else { &bytes[..] };
+                            let text = String::from_utf8_lossy(slice).to_string();
+                            for raw in text.split('\n') {
+                                let line = raw.trim_end_matches('\r');
+                                if line.is_empty() { continue; }
+                                let payload = format!(r#"{{"type":"audit","line":{}}}"#, serde_json::to_string(line).unwrap_or_else(|_| "\"\"".to_string()));
+                                if socket.send(Message::Text(payload)).await.is_err() { return; }
+                            }
+                            last_size = cur_size;
+                        }
+                        Err(_) => {}
+                    }
+                } else if cur_size < last_size {
+                    last_size = cur_size;
+                }
+            }
+            recv = socket.recv() => {
+                match recv {
+                    Some(Ok(Message::Close(_))) | None => return,
+                    Some(Err(_)) => return,
+                    _ => {}
+                }
+            }
+        }
+    }
+}
 async fn index_handler() -> Response {
     let static_path = std::env::var("GHRDP_ROOT")
         .map(|r| std::path::PathBuf::from(r).join("rust").join("static").join("index.html"))
@@ -662,6 +707,7 @@ async fn main() {
     let state_router: Router<Arc<AppState>> = axum::Router::new()
         .route("/ws", get(ws_handler))
         .route("/webdesk-ws", get(webdesk_ws_handler))
+        .route("/terminal-ws", get(terminal_ws))
         .route("/health", get(health_handler))
         .route("/ping", get(ping_handler))
         .route("/api/progress", get(api_progress))

@@ -12,6 +12,207 @@ $script:InstPath = Join-Path $Root 'ghrdp-install.ps1'
 $script:OkFile = Join-Path $Root 'server-ok.txt'
 $script:FlushFlag = Join-Path $Root 'flush.flag'
 $script:NoBom = New-Object System.Text.UTF8Encoding($false)
+$script:WebDeskHtml = @'
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>GHRDP Web Desktop</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;padding:0;height:100%;background:#05070d;color:#e6eef6;font-family:-apple-system,"SF Pro Text","Segoe UI",system-ui,sans-serif;overflow:hidden}
+.stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000}
+.wrap{position:relative;width:100%;height:100%;overflow:auto;display:flex;align-items:center;justify-content:center}
+#view{display:block;background:#000;user-select:none;-webkit-user-select:none;image-rendering:auto;touch-action:none}
+.blob{position:fixed;inset:-20%;z-index:-1;pointer-events:none;filter:blur(90px);opacity:.35}
+.blob b{position:absolute;display:block;border-radius:50%;mix-blend-mode:screen}
+.blob b.a{width:55vw;height:55vw;left:-10vw;top:-10vh;background:radial-gradient(circle,#22d3ee 0,transparent 60%);animation:d1 60s ease-in-out infinite alternate}
+.blob b.b{width:50vw;height:50vw;right:-15vw;bottom:-15vh;background:radial-gradient(circle,#a78bfa 0,transparent 60%);animation:d2 74s ease-in-out infinite alternate}
+@keyframes d1{to{transform:translate3d(6vw,4vh,0) scale(1.1)}}
+@keyframes d2{to{transform:translate3d(-6vw,-4vh,0) scale(1.08)}}
+.hint{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#93a3b8;font-size:14px;text-align:center;z-index:5;background:rgba(0,0,0,.4);padding:12px 20px;border-radius:14px}
+.hint.hidden{display:none}
+.toolbar{position:fixed;left:50%;bottom:calc(16px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:20;
+ display:flex;gap:8px;padding:8px 12px;border-radius:16px;
+ background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);
+ box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 20px 60px rgba(0,0,0,.55);
+ backdrop-filter:blur(18px) saturate(1.6);-webkit-backdrop-filter:blur(18px) saturate(1.6);
+ color:#eef2f7;font-size:12px;align-items:center;max-width:calc(100vw - 32px);flex-wrap:wrap}
+@supports (backdrop-filter: url(#lg-refract)){.toolbar{backdrop-filter:url(#lg-refract) blur(18px) saturate(1.6);-webkit-backdrop-filter:blur(18px) saturate(1.6)}}
+@supports not (backdrop-filter: blur(1px)){.toolbar{background:rgba(20,22,28,.92)}}
+@media (prefers-reduced-transparency: reduce){.toolbar{background:rgba(20,22,28,.92);backdrop-filter:none;-webkit-backdrop-filter:none}}
+@media (prefers-reduced-motion: reduce){.blob b{animation:none!important}}
+.toolbar button,.toolbar .badge{appearance:none;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:#eef2f7;font:600 12px/1 -apple-system,system-ui;padding:8px 12px;border-radius:999px;cursor:pointer;transition:transform .12s cubic-bezier(.32,.72,0,1),background .18s}
+.toolbar button:hover{background:rgba(255,255,255,.14)}
+.toolbar button:active{transform:scale(.96)}
+.toolbar button.on{background:linear-gradient(135deg,#22d3ee,#34d399);color:#05070d;border-color:transparent;font-weight:700}
+.toolbar .badge{cursor:default;font-variant-numeric:tabular-nums;background:rgba(0,0,0,.35)}
+.toolbar .sep{width:1px;height:22px;background:rgba(255,255,255,.14);margin:0 4px}
+.toolbar :focus-visible{outline:none;box-shadow:0 0 0 2px rgba(34,211,238,.65)}
+</style>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+ <filter id="lg-refract" x="0%" y="0%" width="100%" height="100%">
+  <feTurbulence type="fractalNoise" baseFrequency="0.012 0.020" numOctaves="2" seed="7"/>
+  <feDisplacementMap in="SourceGraphic" scale="14"/>
+  <feSpecularLighting surfaceScale="2" specularConstant=".35" specularExponent="20" lighting-color="#ffffff" result="spec">
+   <feDistantLight azimuth="235" elevation="55"/>
+  </feSpecularLighting>
+  <feComposite in="spec" in2="SourceGraphic" operator="in" result="specIn"/>
+  <feColorMatrix in="specIn" values="1 0 0 0 0  0 1 0 0 0  0 0 1 0 0  0 0 0 .35 0"/>
+ </filter>
+</svg>
+</head>
+<body>
+<div class="blob" aria-hidden="true"><b class="a"></b><b class="b"></b></div>
+<div class="stage"><div class="wrap" id="wrap"><img id="view" alt="remote desktop" draggable="false"></div></div>
+<div class="hint" id="hint">waiting for frames…</div>
+<div class="toolbar" role="toolbar" aria-label="Web Desktop controls">
+ <button id="mFit" class="on" title="Fit">Fit</button>
+ <button id="mOne" title="1:1">1:1</button>
+ <button id="mStretch" title="Stretch">Stretch</button>
+ <span class="sep"></span>
+ <button id="btnFs" title="Fullscreen">⛶ Fullscreen</button>
+ <button id="btnCopy" title="Copy remote clipboard">Copy clip</button>
+ <button id="btnPaste" title="Paste to remote clipboard">Paste clip</button>
+ <span class="sep"></span>
+ <span class="badge" id="fps">0 fps</span>
+ <span class="badge" id="src">poll</span>
+</div>
+<script>
+(function(){
+ "use strict";
+ var img = document.getElementById('view');
+ var wrap = document.getElementById('wrap');
+ var hint = document.getElementById('hint');
+ var fpsEl = document.getElementById('fps');
+ var srcEl = document.getElementById('src');
+ var mode = 'fit';
+ var natW = 0, natH = 0;
+ var moveBuf = [];
+ var lastFlush = 0;
+ var frameCount = 0;
+ var lastFpsAt = performance.now();
+ var lastFrameAt = 0;
+ var currentUrl = null;
+ var wsFrameAt = 0;
+ var polling = true;
+
+ function setMode(m){ mode = m;
+  ['mFit','mOne','mStretch'].forEach(function(id){document.getElementById(id).classList.remove('on');});
+  document.getElementById(m==='fit'?'mFit':m==='one'?'mOne':'mStretch').classList.add('on');
+  layout();
+ }
+ document.getElementById('mFit').onclick = function(){ setMode('fit'); };
+ document.getElementById('mOne').onclick = function(){ setMode('one'); };
+ document.getElementById('mStretch').onclick = function(){ setMode('stretch'); };
+ document.getElementById('btnFs').onclick = function(){ if(document.fullscreenElement){document.exitFullscreen();}else{document.documentElement.requestFullscreen();} };
+
+ function layout(){
+  if(!natW||!natH) return;
+  var wrapW = wrap.clientWidth, wrapH = wrap.clientHeight;
+  if(mode==='one'){ img.style.width = natW+'px'; img.style.height = natH+'px'; }
+  else if(mode==='stretch'){ img.style.width = wrapW+'px'; img.style.height = wrapH+'px'; }
+  else { var s = Math.min(wrapW/natW, wrapH/natH); img.style.width = Math.floor(natW*s)+'px'; img.style.height = Math.floor(natH*s)+'px'; }
+ }
+ window.addEventListener('resize', layout);
+
+ img.onload = function(){
+  natW = img.naturalWidth; natH = img.naturalHeight;
+  layout();
+  if(hint.classList) hint.classList.add('hidden');
+  frameCount++;
+  var now = performance.now();
+  lastFrameAt = now;
+  if(now - lastFpsAt >= 1000){ fpsEl.textContent = frameCount+' fps'; frameCount=0; lastFpsAt = now; }
+  if(currentUrl){ URL.revokeObjectURL(currentUrl); currentUrl = null; }
+ };
+
+ async function pollFrame(){
+  if(!polling) return;
+  try{
+   var r = await fetch('/webdesk-frame?t='+Date.now(), { cache:'no-store' });
+   if(r.ok){
+    var b = await r.blob();
+    var u = URL.createObjectURL(b);
+    if(currentUrl) URL.revokeObjectURL(currentUrl);
+    currentUrl = u;
+    img.src = u;
+    srcEl.textContent = 'poll';
+   }
+  }catch(e){}
+ }
+ setInterval(pollFrame, 200);
+ pollFrame();
+
+ // WS optional; if no WS frame in 3s → stay on polling.
+ var ws = null;
+ try {
+  var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  var host = location.hostname + ':7332';
+  ws = new WebSocket(proto + '//' + host + '/webdesk-ws');
+  ws.binaryType = 'arraybuffer';
+  ws.onmessage = function(ev){
+   var blob = null;
+   if(typeof ev.data === 'string'){
+    try{ var bin = atob(ev.data); var bytes = new Uint8Array(bin.length); for(var i=0;i<bin.length;i++){ bytes[i]=bin.charCodeAt(i); } blob = new Blob([bytes],{type:'image/jpeg'}); }catch(e){ return; }
+   } else if(ev.data instanceof ArrayBuffer){ blob = new Blob([ev.data],{type:'image/jpeg'}); }
+   if(!blob) return;
+   var u = URL.createObjectURL(blob);
+   if(currentUrl) URL.revokeObjectURL(currentUrl);
+   currentUrl = u; img.src = u; wsFrameAt = performance.now(); srcEl.textContent = 'ws';
+  };
+  ws.onclose = function(){ srcEl.textContent = 'poll'; };
+  ws.onerror = function(){};
+ } catch(e){}
+ setInterval(function(){ if(performance.now() - wsFrameAt > 3000){ srcEl.textContent = polling ? 'poll' : 'poll'; } }, 500);
+
+ // Pointer mapping (getBoundingClientRect is source of truth)
+ function toNorm(ev){
+  var r = img.getBoundingClientRect();
+  if(r.width===0||r.height===0) return null;
+  var nx = (ev.clientX - r.left) / r.width;
+  var ny = (ev.clientY - r.top) / r.height;
+  if(nx<0||nx>1||ny<0||ny>1) return null;
+  return {nx:nx, ny:ny};
+ }
+ function pushEv(o){ moveBuf.push(o); }
+ function flush(){
+  if(!moveBuf.length) return;
+  var body = moveBuf.map(function(e){return JSON.stringify(e);}).join('\n');
+  moveBuf = [];
+  fetch('/webdesk-input', { method:'POST', headers:{'Content-Type':'application/x-ndjson'}, body:body, keepalive:true }).catch(function(){});
+ }
+ setInterval(flush, 16);
+
+ img.addEventListener('pointermove', function(ev){ var p = toNorm(ev); if(p) pushEv({t:'m', nx:p.nx, ny:p.ny}); }, {passive:true});
+ img.addEventListener('pointerdown', function(ev){ var p = toNorm(ev); if(p) pushEv({t:'m', nx:p.nx, ny:p.ny}); if(ev.button===0) pushEv({t:'ld'}); else if(ev.button===2) pushEv({t:'rd'}); flush(); });
+ img.addEventListener('pointerup',   function(ev){ if(ev.button===0) pushEv({t:'lu'}); else if(ev.button===2) pushEv({t:'ru'}); flush(); });
+ img.addEventListener('contextmenu', function(ev){ ev.preventDefault(); });
+ img.addEventListener('wheel', function(ev){ ev.preventDefault(); pushEv({t:'w', d: ev.deltaY < 0 ? 1 : -1}); flush(); }, {passive:false});
+
+ var SPECIAL = {Enter:13,Backspace:8,Tab:9,Escape:27,ArrowLeft:37,ArrowUp:38,ArrowRight:39,ArrowDown:40,Delete:46,Home:36,End:35,PageUp:33,PageDown:34,Shift:16,Control:17,Alt:18,Meta:91};
+ window.addEventListener('keydown', function(ev){
+  if(SPECIAL[ev.key] !== undefined){ pushEv({t:'kd', vk: SPECIAL[ev.key]}); ev.preventDefault(); return; }
+  if(ev.key.length===1){ pushEv({t:'k', ch: ev.key}); ev.preventDefault(); }
+ });
+ window.addEventListener('keyup', function(ev){
+  if(SPECIAL[ev.key] !== undefined){ pushEv({t:'ku', vk: SPECIAL[ev.key]}); ev.preventDefault(); }
+ });
+
+ document.getElementById('btnCopy').onclick = async function(){
+  try{ var r = await fetch('/webdesk-clip', {cache:'no-store'}); var j = await r.json(); if(j && typeof j.text === 'string'){ await navigator.clipboard.writeText(j.text); alert('Copied '+j.text.length+' chars to local clipboard'); } }catch(e){ alert('Copy failed: '+e.message); }
+ };
+ document.getElementById('btnPaste').onclick = async function(){
+  try{ var t = await navigator.clipboard.readText(); await fetch('/webdesk-clip', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text:t})}); alert('Sent '+t.length+' chars to remote clipboard'); }catch(e){ alert('Paste failed: '+e.message); }
+ };
+
+ setMode('fit');
+})();
+</script>
+</body>
+</html>
+'@
+$script:TerminalPage = [System.IO.File]::ReadAllText('C:\ghrdp\terminal-ui.html', [System.Text.Encoding]::UTF8)
 $script:Token = ''
 try {
     $tp = Join-Path $Root 'dash-token.txt'
@@ -270,7 +471,7 @@ function Invoke-ClientRequest {
             return
         }
         if ($path -eq '/webdesk-probe') {
-            $wPs = Test-Path -LiteralPath 'C:\ghrdp\ghrdp-webdesk.ps1'
+            $wPs = Test-Path -LiteralPath 'C:\ghrdp\ghrdp-pub2.ps1'
             $bPs = Test-Path -LiteralPath 'C:\ghrdp\ghrdp-bootstrap-session.ps1'
             $task = $false
             try { $task = [bool](Get-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction SilentlyContinue) } catch { }
