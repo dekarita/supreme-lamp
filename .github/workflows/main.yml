@@ -645,6 +645,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp -f payloads/ghrdp-pub2.ps1 "$RUNNER_TEMP/ghrdp-stage/ghrdp-pub2.ps1"
           echo '[webdesk] payload staged'
+      - name: Write webdesk UI (payloads → stage)
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/ghrdp-stage"
+          cp -f payloads/webdesk-ui.html "$RUNNER_TEMP/ghrdp-stage/webdesk-ui.html"
+          echo '[webdesk-ui] staged'
       - name: Write watcher (mutex, heartbeat, egress, legacy scrape, guarded success path, no .ghenc display name)
         shell: bash
         run: |
