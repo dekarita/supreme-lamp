@@ -435,9 +435,11 @@ document.getElementById('bCopy').onclick=function(){navigator.clipboard.writeTex
                           if (-not $activeUser) { [System.IO.File]::WriteAllText($statusFile, 'error=no active user session') }
                           else {
                               $taskName = 'GhrdpTerm-' + $tid
-                              $cmdString = "& '" + $tscript + "' *> '" + $toutF + "'"
+                              $wrapPath = Join-Path $workDir ('wrap-' + $tid + '.ps1')
+                              $wrap = 'param($sp,$op,$ep2)' + "`r`n" + '$p = Start-Process -FilePath ''powershell.exe'' -ArgumentList @(''-NoProfile'',''-ExecutionPolicy'',''Bypass'',''-File'',([char]34 + $sp + [char]34)) -RedirectStandardOutput $op -RedirectStandardError $ep2 -NoNewWindow -Wait -PassThru' + "`r`n" + 'exit $p.ExitCode'
+                              [System.IO.File]::WriteAllText($wrapPath, $wrap)
                               try {
-                                  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -Command "' + ($cmdString -replace '"','\"') + '"')
+                                  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "' + $wrapPath + '" "' + $tscript + '" "' + $toutF + '" "' + $terrF + '"')
                                   $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(1)
                                   $principal = New-ScheduledTaskPrincipal -UserId $activeUser -LogonType Interactive -RunLevel Highest
                                   $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::FromMilliseconds($timeoutMs))
