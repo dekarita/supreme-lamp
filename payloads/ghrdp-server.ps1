@@ -270,7 +270,7 @@ function Invoke-ClientRequest {
             return
         }
         if ($path -eq '/webdesk-probe') {
-            $wPs = Test-Path -LiteralPath 'C:\ghrdp\ghrdp-webdesk.ps1'
+            $wPs = Test-Path -LiteralPath 'C:\ghrdp\ghrdp-pub2.ps1'
             $bPs = Test-Path -LiteralPath 'C:\ghrdp\ghrdp-bootstrap-session.ps1'
             $task = $false
             try { $task = [bool](Get-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction SilentlyContinue) } catch { }

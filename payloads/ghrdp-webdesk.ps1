@@ -18,7 +18,7 @@ try { Remove-Item -LiteralPath $framePath -Force -ErrorAction SilentlyContinue }
 try { Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue } catch { }
 try { [System.IO.File]::WriteAllText((Join-Path $dir 'webdesk-start.txt'), (Get-Date).ToUniversalTime().ToString('o')) } catch { }
 try { [System.IO.File]::WriteAllText((Join-Path $dir 'webdesk.pid'), [string]$PID) } catch { }
-try { Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ghrdp-webdesk.ps1*' -and $_.ProcessId -ne $PID } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
+try { Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ghrdp-pub2.ps1*' -and $_.ProcessId -ne $PID } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
 $mtx = $null
 try { $mtx = New-Object System.Threading.Mutex($false, 'Global\GhrdpWebDeskSingle'); if (-not $mtx.WaitOne(0)) { exit 0 } } catch { }
 $traceFile = Join-Path $dir 'webdesk-trace.txt'
