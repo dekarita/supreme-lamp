@@ -3,9 +3,9 @@
 <title>GHRDP Web Desktop</title>
 <style>
 *{box-sizing:border-box}html,body{margin:0;height:100%;background:#05070d;color:#e6eef6;font-family:-apple-system,"SF Pro Text","Segoe UI",system-ui,sans-serif;overflow:hidden}
-.stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000}
+.stage{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:#000;isolation:isolate;z-index:1}
 .wrap{position:relative;width:100%;height:100%;overflow:hidden;display:flex;align-items:center;justify-content:center}
-#view{display:block;background:#000;user-select:none;-webkit-user-select:none;touch-action:none;cursor:none;outline:none}
+#view{display:block;background:#000;user-select:none;-webkit-user-select:none;touch-action:none;cursor:none;outline:none;opacity:1}
 .blob{position:fixed;inset:-20%;z-index:-1;pointer-events:none;filter:blur(90px);opacity:.35}
 .blob b{position:absolute;display:block;border-radius:50%;mix-blend-mode:screen}
 .blob b.a{width:55vw;height:55vw;left:-10vw;top:-10vh;background:radial-gradient(circle,#22d3ee 0,transparent 60%);animation:d1 60s ease-in-out infinite alternate}
@@ -13,24 +13,24 @@
 @keyframes d1{to{transform:translate3d(6vw,4vh,0) scale(1.1)}}@keyframes d2{to{transform:translate3d(-6vw,-4vh,0) scale(1.08)}}
 .hint{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#93a3b8;font-size:14px;text-align:center;z-index:5;background:rgba(0,0,0,.4);padding:12px 20px;border-radius:14px}
 .hint.hidden{display:none}
-.toolbar{position:fixed;left:50%;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:20;display:flex;gap:8px;padding:8px 12px;border-radius:16px;background:rgba(16,18,24,.62);border:1px solid rgba(255,255,255,.14);box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 20px 60px rgba(0,0,0,.55);backdrop-filter:blur(18px) saturate(1.6);-webkit-backdrop-filter:blur(18px) saturate(1.6);color:#eef2f7;font-size:12px;align-items:center;max-width:calc(100vw - 32px);flex-wrap:wrap;transition:opacity .25s}
+.toolbar{position:fixed;left:50%;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:20;display:flex;gap:6px;padding:6px 10px;border-radius:16px;background:rgba(16,18,24,.62);border:1px solid rgba(255,255,255,.14);box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 20px 60px rgba(0,0,0,.55);backdrop-filter:blur(18px) saturate(1.6);-webkit-backdrop-filter:blur(18px) saturate(1.6);color:#eef2f7;font-size:11px;align-items:center;max-width:calc(100vw - 32px);flex-wrap:nowrap;white-space:nowrap;overflow:hidden;transition:transform .3s ease,opacity .25s}
+.toolbar.tb-hide{transform:translateX(-50%) translateY(calc(100% + 20px));opacity:0;pointer-events:none}
 @supports (backdrop-filter: url(#lg-refract)){.toolbar{backdrop-filter:url(#lg-refract) blur(18px) saturate(1.6)}}
 @supports not (backdrop-filter: blur(1px)){.toolbar{background:rgba(20,22,28,.92)}}
 @media (prefers-reduced-transparency: reduce){.toolbar{background:rgba(20,22,28,.92);backdrop-filter:none}}
 @media (prefers-reduced-motion: reduce){.blob b{animation:none!important}}
-:fullscreen .toolbar,:-webkit-full-screen .toolbar{opacity:0;pointer-events:none;transition:opacity .25s}
-:fullscreen .toolbar:hover,:-webkit-full-screen .toolbar:hover{opacity:1;pointer-events:auto}
+:fullscreen .toolbar,:-webkit-full-screen .toolbar{display:none!important}
 :fullscreen .stage,:-webkit-full-screen .stage{position:fixed!important;inset:0!important;width:100vw!important;height:100vh!important;padding:0!important;margin:0!important}
 :fullscreen .wrap,:-webkit-full-screen .wrap{width:100%!important;height:100%!important;padding:0!important;margin:0!important}
-:fullscreen body,:-webkit-full-screen body{overflow:hidden!important;margin:0!important}
+:fullscreen body,:-webkit-full-screen body{overflow:hidden!important;margin:0!important;background:#000!important}
 :fullscreen .hint,:-webkit-full-screen .hint{display:none!important}
 :fullscreen #view,:-webkit-full-screen #view{max-width:none!important;max-height:none!important}
 :fullscreen .blob,:-webkit-full-screen .blob{display:none}
-.toolbar button,.toolbar .badge{appearance:none;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:#eef2f7;font:600 12px/1 -apple-system,system-ui;padding:8px 12px;border-radius:999px;cursor:pointer;transition:transform .12s cubic-bezier(.32,.72,0,1),background .18s}
+.toolbar button,.toolbar .badge{appearance:none;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:#eef2f7;font:600 11px/1 -apple-system,system-ui;padding:6px 10px;border-radius:999px;cursor:pointer;transition:transform .12s cubic-bezier(.32,.72,0,1),background .18s}
 .toolbar button:hover{background:rgba(255,255,255,.14)}.toolbar button:active{transform:scale(.96)}
 .toolbar button.on{background:linear-gradient(135deg,#22d3ee,#34d399);color:#05070d;border-color:transparent;font-weight:700}
 .toolbar .badge{cursor:default;font-variant-numeric:tabular-nums;background:rgba(0,0,0,.35)}
-.toolbar .sep{width:1px;height:22px;background:rgba(255,255,255,.14);margin:0 4px}
+.toolbar .sep{width:1px;height:22px;background:rgba(255,255,255,.14);margin:0 2px}
 .qmenu{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);display:none;flex-direction:column;gap:6px;padding:10px;border-radius:14px;z-index:30;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(18px) saturate(1.6)}
 .qmenu.open{display:flex}
 #cdot{position:fixed;width:10px;height:10px;border-radius:50%;background:rgba(34,211,238,.9);box-shadow:0 0 10px rgba(34,211,238,.8);pointer-events:none;z-index:40;display:none}
@@ -49,7 +49,7 @@
  <span class="sep"></span>
  <button id="btnQ">Quality: Low</button>
  <button id="btnFs">Fullscreen</button>
- <button id="btnCopy">Copy clip</button><button id="btnPaste">Paste clip</button>
+ <button id="btnCopy">Copy</button><button id="btnPaste">Paste</button>
  <span class="sep"></span>
  <span class="badge" id="fps">0 fps</span><span class="badge" id="src">poll</span>
 </div>
@@ -60,38 +60,40 @@ var img=document.getElementById('view'),wrap=document.getElementById('wrap'),hin
     qmenu=document.getElementById('qmenu'),btnQ=document.getElementById('btnQ');
 var mode='fit',natW=0,natH=0,frameCount=0;
 var lastGoodUrl=null,pendingUrl=null,polling=false;
-var moveBuf=[],sending=false;
+var moveBuf=[],sending=false,lastRtt=0;
 
-/* ---- SC3 FIX: Layout with explicit fullscreen dimensions ---- */
+/* ---- D6: Layout — forced contain-fit in fullscreen, user choice in windowed ---- */
 function setMode(m){mode=m;['mFit','mFill','mOne','mStretch'].forEach(function(id){document.getElementById(id).classList.remove('on');});
  document.getElementById(m==='fit'?'mFit':m==='fill'?'mFill':m==='one'?'mOne':'mStretch').classList.add('on');layout();}
 ['mFit','mFill','mOne','mStretch'].forEach(function(id){document.getElementById(id).onclick=function(){setMode(id.replace('m','').toLowerCase());};});
 function layout(){
  if(!natW||!natH)return;
  var fs=!!(document.fullscreenElement||document.webkitFullscreenElement);
- var w=fs?window.innerWidth:wrap.clientWidth, h=fs?window.innerHeight:wrap.clientHeight;
+ var w=fs?window.innerWidth:wrap.clientWidth,h=fs?window.innerHeight:wrap.clientHeight;
  if(!w||!h)return;
- if(mode==='one'){img.style.width=natW+'px';img.style.height=natH+'px';}
- else if(mode==='stretch'){img.style.width=w+'px';img.style.height=h+'px';}
- else if(mode==='fill'){var s=Math.max(w/natW,h/natH);img.style.width=Math.ceil(natW*s)+'px';img.style.height=Math.ceil(natH*s)+'px';}
+ var m2=fs?'fit':mode;
+ if(m2==='one'){img.style.width=natW+'px';img.style.height=natH+'px';}
+ else if(m2==='stretch'){img.style.width=w+'px';img.style.height=h+'px';}
+ else if(m2==='fill'){var s=Math.max(w/natW,h/natH);img.style.width=Math.ceil(natW*s)+'px';img.style.height=Math.ceil(natH*s)+'px';}
  else{var s2=Math.min(w/natW,h/natH);img.style.width=Math.floor(natW*s2)+'px';img.style.height=Math.floor(natH*s2)+'px';}
 }
 window.addEventListener('resize',layout);
-document.addEventListener('fullscreenchange',function(){
- if(document.fullscreenElement){setMode('fill');}else{setMode('fit');}
+window.addEventListener('orientationchange',function(){setTimeout(layout,100);});
+function onFsChange(){
+ layout();
+ if(!document.fullscreenElement&&!document.webkitFullscreenElement)tbShow();
  setTimeout(layout,50);setTimeout(layout,200);setTimeout(layout,600);
-});
+}
+document.addEventListener('fullscreenchange',onFsChange);
+document.addEventListener('webkitfullscreenchange',onFsChange);
 document.getElementById('btnFs').onclick=function(){
  var el=document.fullscreenElement||document.webkitFullscreenElement;
  if(el){(document.exitFullscreen||document.webkitExitFullscreen).call(document);}
  else{var fn=document.documentElement.requestFullscreen||document.documentElement.webkitRequestFullscreen;
-  if(fn)fn.call(document.documentElement).then(function(){setMode('fill');setTimeout(layout,50);setTimeout(layout,200);}).catch(function(){});}
+  if(fn)fn.call(document.documentElement).then(function(){setTimeout(layout,50);setTimeout(layout,200);}).catch(function(){});}
 };
 
-/* ---- SC2 FIX: Never-go-black frame loading ----
-   pendingUrl = URL currently being decoded by <img>
-   lastGoodUrl = last URL that onload confirmed — kept until replaced
-   Evidence: E6 FRAME-FAIL 404 at t+15s caused black flash */
+/* ---- SC2: Never-go-black frame loading ---- */
 img.decoding='async';
 img.onload=function(){
  natW=img.naturalWidth;natH=img.naturalHeight;layout();
@@ -112,7 +114,7 @@ function applyFrame(blob,label){
  srcEl.textContent=label;
 }
 
-/* ---- Poll fallback ---- */
+/* ---- D2: Poll 100ms when no WS ---- */
 function pollFrame(){
  if(polling)return;polling=true;
  fetch('/webdesk-frame?t='+Date.now(),{cache:'no-store'})
@@ -120,7 +122,7 @@ function pollFrame(){
   .then(function(b){applyFrame(b,'poll');})
   .catch(function(){}).finally(function(){polling=false;});
 }
-var pollTimer=setInterval(pollFrame,120);pollFrame();
+var pollTimer=setInterval(pollFrame,100);pollFrame();
 
 /* ---- WebSocket primary source ---- */
 try{
@@ -135,16 +137,13 @@ try{
   }else if(ev.data instanceof ArrayBuffer){blob=new Blob([ev.data],{type:'image/jpeg'});}
   if(blob)applyFrame(blob,'ws');
  };
- ws.onclose=function(){srcEl.textContent='poll';pollTimer=setInterval(pollFrame,120);pollFrame();};
+ ws.onclose=function(){srcEl.textContent='poll';pollTimer=setInterval(pollFrame,100);pollFrame();};
 }catch(e){}
 
-/* ---- FPS counter (separate interval, always updates) ---- */
-setInterval(function(){fpsEl.textContent=frameCount+' fps';frameCount=0;},1000);
+/* ---- FPS + RTT counter ---- */
+setInterval(function(){fpsEl.textContent=frameCount+' fps'+(lastRtt?' '+lastRtt+'ms':'');frameCount=0;},1000);
 
-/* ---- SC1 FIX: One-in-flight input dispatch ----
-   Evidence: E6 postAvgMs=21865 — fetch queue buildup on main thread.
-   Fix: only one fetch in flight; events buffer until it completes.
-   Max added latency = 1 RTT (~40ms per E13), not 20s. */
+/* ---- D2: One-in-flight input with RTT measurement ---- */
 function toNorm(ev){
  var r=img.getBoundingClientRect();
  if(!r.width||!r.height)return null;
@@ -156,13 +155,14 @@ function flush(){
  if(!moveBuf.length||sending)return;
  var batch=moveBuf;moveBuf=[];
  var body=batch.map(function(e){return JSON.stringify(e);}).join('\n');
- sending=true;
+ sending=true;var t0=performance.now();
  fetch('/webdesk-input',{method:'POST',headers:{'Content-Type':'application/x-ndjson'},body:body,keepalive:true})
+  .then(function(){lastRtt=Math.round(performance.now()-t0);})
   .catch(function(){}).finally(function(){sending=false;if(moveBuf.length)flush();});
 }
 setInterval(flush,16);
 
-/* ---- Pointer events (with setPointerCapture for drag safety) ---- */
+/* ---- Pointer events (flush immediately on click for D2 latency) ---- */
 img.addEventListener('pointermove',function(ev){
  var p=toNorm(ev);if(p)moveBuf.push({t:'m',nx:p.nx,ny:p.ny});
  cdot.style.display='block';cdot.style.left=ev.clientX+'px';cdot.style.top=ev.clientY+'px';
@@ -186,22 +186,29 @@ img.addEventListener('wheel',function(ev){
  moveBuf.push({t:'w',nx:p?p.nx:0.5,ny:p?p.ny:0.5,d:ev.deltaY<0?1:-1});flush();
 },{passive:false});
 
-/* ---- SC4 FIX: Keyboard capture phase — 100% interception ----
-   capture:true fires before any element can swallow the event.
-   img.focus() on pointerdown + tabindex="0" guarantees focus stays on view.
-   Evidence: E15 keys lost when focus escaped img element. */
-var SPECIAL={Enter:13,Backspace:8,Tab:9,Escape:27,ArrowLeft:37,ArrowUp:38,ArrowRight:39,ArrowDown:40,
+/* ---- D1 FIX: Keyboard — KEYEVENTF_UNICODE for printable chars,
+   VK codes only for specials + modifier combos (Ctrl+C).
+   Fixes 'a'(97=0x61=VK_NUMPAD1) bug by never casting charcode→VK. ---- */
+var SPECIAL={Enter:13,Backspace:8,Tab:9,Escape:27,' ':32,ArrowLeft:37,ArrowUp:38,ArrowRight:39,ArrowDown:40,
  Delete:46,Home:36,End:35,PageUp:33,PageDown:34,Shift:16,Control:17,Alt:18,Meta:91,
  F1:112,F2:113,F3:114,F4:115,F5:116,F6:117,F7:118,F8:119,F9:120,F10:121,F11:122,F12:123,
  Insert:45,CapsLock:20,NumLock:144,ScrollLock:145,Pause:19,PrintScreen:44};
+var vkDown={};
 document.addEventListener('keydown',function(ev){
  if(ev.target&&ev.target.tagName==='INPUT')return;
  if(SPECIAL[ev.key]!==undefined){moveBuf.push({t:'kd',vk:SPECIAL[ev.key]});ev.preventDefault();return;}
- if(ev.key.length===1){moveBuf.push({t:'k',ch:ev.key});ev.preventDefault();}
+ if(ev.key.length===1){
+  var uc=ev.key.toUpperCase(),isAln=(uc>='A'&&uc<='Z')||(uc>='0'&&uc<='9');
+  if(isAln&&(ev.ctrlKey||ev.altKey||ev.metaKey)){var vk=uc.charCodeAt(0);moveBuf.push({t:'kd',vk:vk});vkDown[ev.code||ev.key]=vk;}
+  else{moveBuf.push({t:'k',ch:ev.key});}
+  ev.preventDefault();
+ }
 },true);
 document.addEventListener('keyup',function(ev){
  if(ev.target&&ev.target.tagName==='INPUT')return;
- if(SPECIAL[ev.key]!==undefined){moveBuf.push({t:'ku',vk:SPECIAL[ev.key]});ev.preventDefault();}
+ if(SPECIAL[ev.key]!==undefined){moveBuf.push({t:'ku',vk:SPECIAL[ev.key]});ev.preventDefault();return;}
+ var code=ev.code||ev.key;
+ if(vkDown[code]){moveBuf.push({t:'ku',vk:vkDown[code]});delete vkDown[code];ev.preventDefault();}
 },true);
 
 /* ---- Quality menu ---- */
@@ -214,7 +221,16 @@ document.addEventListener('click',function(e){if(!qmenu.contains(e.target)&&e.ta
 fetch('/webdesk-ctl',{cache:'no-store'}).then(function(r){return r.json();}).then(function(c){
  btnQ.textContent='Quality: '+(c.q<=40?'Low':c.q<=60?'Mid':'High');}).catch(function(){});
 
-/* ---- Clipboard with HTTP prompt() fallback (Constraint #6) ---- */
+/* ---- D5: Toolbar auto-hide after 2s, reappear on mouse near bottom ---- */
+var tb=document.querySelector('.toolbar'),tbTimer=null;
+function tbShow(){tb.classList.remove('tb-hide');clearTimeout(tbTimer);tbTimer=setTimeout(tbHide,2000);}
+function tbHide(){tb.classList.add('tb-hide');}
+document.addEventListener('mousemove',function(ev){if(ev.clientY>window.innerHeight-60)tbShow();});
+tb.addEventListener('mouseenter',function(){tb.classList.remove('tb-hide');clearTimeout(tbTimer);});
+tb.addEventListener('mouseleave',function(){tbTimer=setTimeout(tbHide,2000);});
+tbTimer=setTimeout(tbHide,3000);
+
+/* ---- Clipboard with HTTP prompt() fallback ---- */
 document.getElementById('btnCopy').onclick=function(){
  fetch('/webdesk-clip',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){
   if(!j||typeof j.text!=='string')return;

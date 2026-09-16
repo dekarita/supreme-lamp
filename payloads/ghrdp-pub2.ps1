@@ -47,7 +47,7 @@ public static class GhrdpInput {
 }
 $MEF_MOVE=0x0001;$MEF_LD=0x0002;$MEF_LU=0x0004;$MEF_RD=0x0008;$MEF_RU=0x0010
 $MEF_WHEEL=0x0800;$MEF_ABS=0x8000;$MEF_VDESK=0x4000
-$IT_MOUSE=0;$IT_KBD=1;$KEF_UP=0x0002
+$IT_MOUSE=0;$IT_KBD=1;$KEF_UP=0x0002;$KEF_UNICODE=0x0004
 $INPUT_SIZE = [System.Runtime.InteropServices.Marshal]::SizeOf([type][GhrdpInput+INPUT])
 
 function Send-MouseEvent {
@@ -71,6 +71,21 @@ function Send-KeyEvent {
     $arr = New-Object 'GhrdpInput+INPUT[]' 1; $arr[0] = $inp
     [void][GhrdpInput]::SendInput(1, $arr, $INPUT_SIZE)
 }
+function Send-UnicodeChar {
+    param([System.UInt16]$CharCode)
+    $ki1 = New-Object GhrdpInput+KEYBDINPUT
+    $ki1.wVk = [System.UInt16]0; $ki1.wScan = $CharCode
+    $ki1.dwFlags = [uint32]$KEF_UNICODE; $ki1.time = 0; $ki1.dwExtraInfo = [IntPtr]::Zero
+    $u1 = New-Object GhrdpInput+INPUT_UNION; $u1.ki = $ki1
+    $inp1 = New-Object GhrdpInput+INPUT; $inp1.type = $IT_KBD; $inp1.u = $u1
+    $ki2 = New-Object GhrdpInput+KEYBDINPUT
+    $ki2.wVk = [System.UInt16]0; $ki2.wScan = $CharCode
+    $ki2.dwFlags = [uint32]($KEF_UNICODE -bor $KEF_UP); $ki2.time = 0; $ki2.dwExtraInfo = [IntPtr]::Zero
+    $u2 = New-Object GhrdpInput+INPUT_UNION; $u2.ki = $ki2
+    $inp2 = New-Object GhrdpInput+INPUT; $inp2.type = $IT_KBD; $inp2.u = $u2
+    $arr = New-Object 'GhrdpInput+INPUT[]' 2; $arr[0] = $inp1; $arr[1] = $inp2
+    [void][GhrdpInput]::SendInput(2, $arr, $INPUT_SIZE)
+}
 
 $jpegEncoder = $null
 foreach ($enc in [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders()) {
@@ -80,7 +95,7 @@ $curQ = [long]35; $curScale = 0.5
 $encParams = New-Object System.Drawing.Imaging.EncoderParameters 1
 $encParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, $curQ)
 
-try { [System.IO.File]::WriteAllText((Join-Path 'C:\ghrdp' 'webdesk-version.txt'), ('ghrdp-pub2 v2.2 pid=' + $PID + ' at=' + ((Get-Date).ToUniversalTime().ToString('o')))) } catch { }
+try { [System.IO.File]::WriteAllText((Join-Path 'C:\ghrdp' 'webdesk-version.txt'), ('ghrdp-pub2 v3.0 pid=' + $PID + ' at=' + ((Get-Date).ToUniversalTime().ToString('o')))) } catch { }
 
 function Get-WsClientCount {
     if (-not (Test-Path -LiteralPath $wsClients)) { return 1 }
@@ -111,9 +126,7 @@ function Process-InputBatch {
             'kd' { Send-KeyEvent -Vk ([System.UInt16][int]$ev.vk) -KeyUp:$false }
             'ku' { Send-KeyEvent -Vk ([System.UInt16][int]$ev.vk) -KeyUp:$true }
             'k'  { $ch=[string]$ev.ch; if ($ch.Length -gt 0) {
-                       $vk = [System.UInt16][int][char]$ch[0]
-                       Send-KeyEvent -Vk $vk -KeyUp:$false
-                       Send-KeyEvent -Vk $vk -KeyUp:$true } }
+                       Send-UnicodeChar -CharCode ([System.UInt16][int][char]$ch[0]) } }
         }
     }
     try { $ap = 'C:\ghrdp\webdesk\input-applied.txt'; $n2 = 0; if (Test-Path -LiteralPath $ap) { try { $n2 = [int]([System.IO.File]::ReadAllText($ap).Trim()) } catch { } }; [System.IO.File]::WriteAllText($ap, ([string]($n2 + $lines.Count))) } catch { }
@@ -138,14 +151,15 @@ try {
         $pri0 = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
         if ($pri0.Height -gt $pri0.Width) { Start-Sleep -Milliseconds 1000; continue }
         $bmp=$null;$g=$null;$scaled=$null;$sg=$null
+        $capSw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
             $pri = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-            $bmp = New-Object System.Drawing.Bitmap ($pri.Width, $pri.Height, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+            $bmp = New-Object System.Drawing.Bitmap ($pri.Width, $pri.Height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
             $g   = [System.Drawing.Graphics]::FromImage($bmp)
             $g.CopyFromScreen(0, 0, 0, 0, $bmp.Size)
             $sw = [int][Math]::Max(1,[Math]::Floor($pri.Width * $curScale))
             $sh = [int][Math]::Max(1,[Math]::Floor($pri.Height * $curScale))
-            $scaled = New-Object System.Drawing.Bitmap ($sw, $sh, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
+            $scaled = New-Object System.Drawing.Bitmap ($sw, $sh, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
             $sg = [System.Drawing.Graphics]::FromImage($scaled)
             $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::Bilinear
             $sg.DrawImage($bmp, 0, 0, $sw, $sh)
@@ -161,7 +175,10 @@ try {
             if ($g)      { try { $g.Dispose() }      catch { } }
             if ($bmp)    { try { $bmp.Dispose() }    catch { } }
         }
-        Start-Sleep -Milliseconds 66
+        $capSw.Stop()
+        try { [System.IO.File]::WriteAllText((Join-Path $root 'frame-timing.txt'), ('{0}ms q={1} scale={2}' -f [int]$capSw.ElapsedMilliseconds, $curQ, $curScale)) } catch { }
+        $sleepMs = [int][Math]::Max(5, 33 - [int]$capSw.ElapsedMilliseconds)
+        Start-Sleep -Milliseconds $sleepMs
     }
 } finally {
     try { $encParams.Dispose() } catch { }
