@@ -188,7 +188,7 @@ try {
             if ($g)      { try { $g.Dispose() }      catch { } }
             if ($bmp)    { try { $bmp.Dispose() }    catch { } }
         }
-        Start-Sleep -Milliseconds 100
+        Start-Sleep -Milliseconds 66
     }
 } finally {
     try { $encParams.Dispose() } catch { }

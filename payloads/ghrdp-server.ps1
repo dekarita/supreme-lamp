@@ -381,95 +381,112 @@ document.getElementById('bPaste').onclick=function(){var t=document.getElementBy
 document.getElementById('bCopy').onclick=function(){navigator.clipboard.writeText(out.innerText);};
 </script></body></html>
 '@
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'text/html; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($termPage))
+                      $htmlT = $null
+                      try { if (Test-Path -LiteralPath 'C:\ghrdp\terminal-ui.html') { $htmlT = [System.IO.File]::ReadAllText('C:\ghrdp\terminal-ui.html') } } catch { }
+                      if (-not $htmlT) { $htmlT = $termPage }
+                      Send-ClientResponse -Stream $stream -Code 200 -CType 'text/html; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($htmlT))
             return
         }
                 if ($path -eq '/terminal-exec') {
-            $timeoutMs = 60000
-            $tres = ''
-            $terr = ''
-            $texit = $null
-            $ttimed = $false
-            $tmode = 'inline'
-            $tsess = 'system'
-            $sw = [System.Diagnostics.Stopwatch]::StartNew()
-            try {
-                $req = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json
-                $tmode = if ($req.mode) { [string]$req.mode } else { 'inline' }
-                if ($req.timeout) { $timeoutMs = [int]$req.timeout }
-                if ($timeoutMs -gt 300000) { $timeoutMs = 300000 }
-                if ($timeoutMs -lt 1000) { $timeoutMs = 1000 }
-                $tout = [int]($timeoutMs / 1000)
-                if ($req.session -eq 'interactive') { $tsess = 'interactive' }
-                $workDir = 'C:\ghrdp\webdesk\term'
-                New-Item -ItemType Directory -Path $workDir -Force -ErrorAction SilentlyContinue | Out-Null
-                $tid = [guid]::NewGuid().ToString('N').Substring(0, 8)
-                $tscript = Join-Path $workDir ('run-' + $tid + '.ps1')
-                $toutF = Join-Path $workDir ('out-' + $tid + '.txt')
-                $terrF = Join-Path $workDir ('err-' + $tid + '.txt')
-                $ownScript = $true
-                if ($tmode -eq 'upload') {
-                    if (-not [string]$req.script_b64) { throw 'missing script_b64' }
-                    [System.IO.File]::WriteAllText($tscript, ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$req.script_b64))))
-                } elseif ($tmode -eq 'file') {
-                    if (-not (Test-Path -LiteralPath ([string]$req.file))) { throw ('file not found: ' + [string]$req.file) }
-                    $tscript = [string]$req.file
-                    $ownScript = $false
-                } else {
-                    if (-not [string]$req.cmd) { throw 'empty cmd' }
-                    [System.IO.File]::WriteAllText($tscript, ([string]$req.cmd))
-                }
-                try { [System.IO.File]::AppendAllText('C:\ghrdp\webdesk\terminal-audit.log', ((Get-Date).ToUniversalTime().ToString('o') + ' mode=' + $tmode + ' session=' + $tsess + ' file=' + $tscript + "`n")) } catch { }
-                $sw = [System.Diagnostics.Stopwatch]::StartNew()
-                if ($tsess -eq 'interactive') {
-                    $cfgT = Read-JsonFile -Path $script:CfgPath
-                    $ttask = 'GhrdpTerm-' + $tid
-                    $twrap = '& ' + [char]39 + $tscript + [char]39 + ' *> ' + [char]39 + $toutF + [char]39 + '; exit $LASTEXITCODE'
-                    $targ = '-NoProfile -ExecutionPolicy Bypass -Command "' + $twrap + '"'
-                    $tact = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $targ
-                    $activeU = $null
-                    foreach ($ln2 in (@(& quser.exe 2>$null))) { if ($ln2 -match '^\s*>?\s*(\S+)\s+\S+\s+\d+\s+Active') { $activeU = $Matches[1] } }
-                    if (-not $activeU) { $activeU = [string]$cfgT.rdpUser }
-                    $tprn = New-ScheduledTaskPrincipal -UserId $activeU -LogonType Interactive -RunLevel Highest
+                    $timeoutMs = 60000
+                    $tmode = 'inline'
+                    $tsess = 'system'
+                    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+                    $tid = ''
+                    $tscript = ''
+                    $toutF = ''
+                    $terrF = ''
+                    $workDir = 'C:\ghrdp\webdesk\term'
                     try {
-                        Register-ScheduledTask -TaskName $ttask -Action $tact -Principal $tprn -Force -ErrorAction Stop | Out-Null
-                        Start-ScheduledTask -TaskName $ttask -ErrorAction Stop
-                        Start-Sleep -Seconds 2
-                        $tstarted = $false
-                        $tbegin = Get-Date
-                        while (((Get-Date) - $tbegin).TotalMilliseconds -lt $timeoutMs) {
-                            try { $tst = (Get-ScheduledTask -TaskName $ttask -ErrorAction Stop).State } catch { $tst = '' }
-                            if ($tst -eq 'Running') { $tstarted = $true }
-                            elseif ($tstarted) { break }
-                            elseif (((Get-Date) - $tbegin).TotalSeconds -gt 20) { break }
-                            Start-Sleep -Milliseconds 500
+                        $req = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json
+                        $tmode = if ($req.mode) { [string]$req.mode } else { 'inline' }
+                        if ($req.timeout) { $timeoutMs = [int]$req.timeout }
+                        if ($timeoutMs -gt 300000) { $timeoutMs = 300000 }
+                        if ($timeoutMs -lt 1000) { $timeoutMs = 1000 }
+                        if ($req.session -eq 'interactive') { $tsess = 'interactive' }
+                        New-Item -ItemType Directory -Path $workDir -Force -ErrorAction SilentlyContinue | Out-Null
+                        $tid = [guid]::NewGuid().ToString('N').Substring(0, 8)
+                        $tscript = Join-Path $workDir ('run-' + $tid + '.ps1')
+                        $toutF = Join-Path $workDir ('out-' + $tid + '.txt')
+                        $terrF = Join-Path $workDir ('err-' + $tid + '.txt')
+                        $ownScript = $true
+                        if ($tmode -eq 'upload') {
+                            if (-not [string]$req.script_b64) { throw 'missing script_b64' }
+                            [System.IO.File]::WriteAllText($tscript, ([System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$req.script_b64))))
+                        } elseif ($tmode -eq 'file') {
+                            if (-not (Test-Path -LiteralPath ([string]$req.file))) { throw ('file not found: ' + [string]$req.file) }
+                            $tscript = [string]$req.file
+                            $ownScript = $false
+                        } else {
+                            if (-not [string]$req.cmd) { throw 'empty cmd' }
+                            [System.IO.File]::WriteAllText($tscript, ([string]$req.cmd))
                         }
-                        if (-not $tstarted) { throw 'task did not start (no interactive session for task user?)' }
-                        if (((Get-Date) - $tbegin).TotalMilliseconds -ge $timeoutMs) { $ttimed = $true }
-                        try { $texit = [int](Get-ScheduledTaskInfo -TaskName $ttask -ErrorAction SilentlyContinue).LastTaskResult } catch { }
-                    } finally {
-                        try { Unregister-ScheduledTask -TaskName $ttask -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+                        try { [System.IO.File]::AppendAllText('C:\ghrdp\webdesk\terminal-audit.log', ((Get-Date).ToUniversalTime().ToString('o') + ' mode=' + $tmode + ' session=' + $tsess + ' file=' + $tscript + "`n")) } catch { }
+                      $statusFile = Join-Path $workDir ('status-' + $tid + '.txt')
+                      [System.IO.File]::WriteAllText($statusFile, 'running')
+                      if ($tsess -eq 'system') {
+                          try {
+                              $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"' + $tscript + '"')) -WorkingDirectory $workDir -RedirectStandardOutput $toutF -RedirectStandardError $terrF -NoNewWindow -PassThru
+                              Start-Job -ScriptBlock { param($pid2,$tmo,$sf) $p = Get-Process -Id $pid2 -ErrorAction SilentlyContinue; if ($p) { if (-not $p.WaitForExit($tmo)) { try { $p.Kill() } catch { }; [System.IO.File]::WriteAllText($sf,'timeout') } else { [System.IO.File]::WriteAllText($sf,('exit=' + $p.ExitCode)) } } else { [System.IO.File]::WriteAllText($sf,'exit=-1') } } -ArgumentList $proc.Id, $timeoutMs, $statusFile | Out-Null
+                          } catch { [System.IO.File]::WriteAllText($statusFile, ('error=' + $_.Exception.Message)) }
+                      } else {
+                          $activeUser = ''
+                          try { $qu = & quser.exe 2>$null; $LASTEXITCODE = 0; foreach ($line in @($qu)) { if ($line -match '^\s*>?\s*(\S+)\s+\S+\s+\d+\s+Active') { $activeUser = $Matches[1]; break } } } catch { }
+                          if (-not $activeUser) { [System.IO.File]::WriteAllText($statusFile, 'error=no active user session') }
+                          else {
+                              $taskName = 'GhrdpTerm-' + $tid
+                              $cmdString = "& '" + $tscript + "' *> '" + $toutF + "'"
+                              try {
+                                  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -Command "' + ($cmdString -replace '"','\"') + '"')
+                                  $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(1)
+                                  $principal = New-ScheduledTaskPrincipal -UserId $activeUser -LogonType Interactive -RunLevel Highest
+                                  $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::FromMilliseconds($timeoutMs))
+                                  Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+                                  Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+                                  Start-Job -ScriptBlock { param($tn,$tmo,$sf) $deadline = (Get-Date).AddMilliseconds($tmo); while ((Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500; $ti = Get-ScheduledTaskInfo -TaskName $tn -ErrorAction SilentlyContinue; if ($ti) { $lr = [int]$ti.LastTaskResult; if ($lr -ne 267009 -and $lr -ne 267010 -and $lr -ne 267011) { [System.IO.File]::WriteAllText($sf, ('exit=' + $lr)); try { Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue } catch { }; return } } }; [System.IO.File]::WriteAllText($sf, 'timeout'); try { Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue } catch { } } -ArgumentList $taskName, $timeoutMs, $statusFile | Out-Null
+                              } catch { [System.IO.File]::WriteAllText($statusFile, ('error=' + $_.Exception.Message)) }
+                          }
+                      }
+                      Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ runId = $tid; session = $tsess; scriptPath = $tscript })
+                      return
+                    } catch {
+                      $errMsg = $_.Exception.Message
+                      try {
+                        if ($tid) {
+                          $sfErr = Join-Path $workDir ('status-' + $tid + '.txt')
+                          [System.IO.File]::WriteAllText($sfErr, ('error=' + $errMsg))
+                        }
+                      } catch { }
+                      Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ error = $errMsg })
+                      return
                     }
-                } else {
-                    $p = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"' + $tscript + '"')) -RedirectStandardOutput $toutF -RedirectStandardError $terrF -NoNewWindow -PassThru -WorkingDirectory $workDir
-                    if (-not $p.WaitForExit($timeoutMs)) { try { $p.Kill() } catch { }; $ttimed = $true } else { $texit = $p.ExitCode }
-                }
-                $sw.Stop()
-                $tres = ''; $terr = ''
-                for ($rd = 0; $rd -lt 5; $rd++) {
-                    try { if (Test-Path -LiteralPath $toutF) { $tres = [System.IO.File]::ReadAllText($toutF) }; if (Test-Path -LiteralPath $terrF) { $terr = [System.IO.File]::ReadAllText($terrF) }; break } catch { Start-Sleep -Milliseconds 400 }
-                }
-                if ($ownScript) { try { Remove-Item -LiteralPath $tscript -Force -ErrorAction SilentlyContinue } catch { } }
-                try { Remove-Item -LiteralPath $toutF -Force -ErrorAction SilentlyContinue } catch { }
-                try { Remove-Item -LiteralPath $terrF -Force -ErrorAction SilentlyContinue } catch { }
-                if ($ttimed) { $tres = 'TIMEOUT after ' + ([int]($timeoutMs / 1000)) + 's' + "`n" + $tres }
-                if (-not $tres) { $tres = '(no output)' }
-            } catch { $tres = 'ERROR: ' + $_.Exception.Message; $terr = '' }
-            try { $sw.Stop() } catch { }
-            try { [System.IO.File]::AppendAllText('C:\ghrdp\webdesk\terminal-audit.log', ('RESULT exit=' + $texit + ' timedOut=' + $ttimed + ' ms=' + $sw.ElapsedMilliseconds + ' outLen=' + ([string]$tres).Length + "`n")) } catch { }
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes(('{"output":' + ([string]$tres | ConvertTo-Json) + ',"error":' + ([string]$terr | ConvertTo-Json) + ',"exitCode":' + $(if ($null -eq $texit) { 'null' } else { [string]$texit }) + ',"timedOut":' + $(if ($ttimed) { 'true' } else { 'false' }) + ',"durationMs":' + $sw.ElapsedMilliseconds + ',"session":' + ('"' + $tsess + '"') + ',"scriptPath":' + ($tscript | ConvertTo-Json) + '}')))
-            return
-        }
+                  }
+                  # ============= /terminal-result (GET ?id=) =============
+                  if ($path -eq '/terminal-result') {
+                      $rid = ''
+                      if ($parts.query -and $parts.query.ContainsKey('id')) { $rid = [string]$parts.query['id'] }
+                      $workDir2 = 'C:\ghrdp\webdesk\term'
+                      $sf2 = Join-Path $workDir2 ('status-' + $rid + '.txt')
+                      $st = 'running'; if (Test-Path -LiteralPath $sf2) { try { $st = [System.IO.File]::ReadAllText($sf2).Trim() } catch { } }
+                      $done = ($st -ne 'running')
+                      $exitCode = $null; $timedOut = $false; $errMsg = ''
+                      if ($st -like 'exit=*') { $exitCode = [int]($st.Substring(5)) }
+                      elseif ($st -eq 'timeout') { $timedOut = $true }
+                      elseif ($st -like 'error=*') { $errMsg = $st.Substring(6) }
+                      $outTxt = ''; $errTxt = ''
+                      if ($done) {
+                          for ($a = 1; $a -le 5; $a++) {
+                              $o1 = $true; $o2 = $true
+                              try { $op = Join-Path $workDir2 ('out-' + $rid + '.txt'); if (Test-Path -LiteralPath $op) { $outTxt = [System.IO.File]::ReadAllText($op) } } catch { $o1 = $false }
+                              try { $ep2 = Join-Path $workDir2 ('err-' + $rid + '.txt'); if (Test-Path -LiteralPath $ep2) { $errTxt = [System.IO.File]::ReadAllText($ep2) } } catch { $o2 = $false }
+                              if ($o1 -and $o2) { break }
+                              Start-Sleep -Milliseconds 300
+                          }
+                          if ($errMsg -and -not $errTxt) { $errTxt = $errMsg }
+                      }
+                      Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ done = $done; exitCode = $exitCode; timedOut = $timedOut; output = $outTxt; error = $errTxt })
+                      return
+                  }
         if ($path -eq '/remote-exec') {
             $timeout = 30000
             $out = ''
