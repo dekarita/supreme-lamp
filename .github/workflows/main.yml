@@ -1422,6 +1422,9 @@ jobs:
             Copy-Item -Path (Join-Path 'payloads' 'terminal-ui.html') -Destination (Join-Path $stage 'terminal-ui.html') -Force
           }
           Copy-Item -Path (Join-Path $stage 'terminal-ui.html') -Destination 'C:\ghrdp\terminal-ui.html' -Force -ErrorAction SilentlyContinue
+          if (Test-Path -LiteralPath (Join-Path 'payloads' 'term-runner.ps1')) {
+            Copy-Item -Path (Join-Path 'payloads' 'term-runner.ps1') -Destination 'C:\ghrdp\term-runner.ps1' -Force
+          }
           New-Item -ItemType Directory -Path 'C:\ghrdp\webdesk\term' -Force -ErrorAction SilentlyContinue | Out-Null
           Remove-Item -LiteralPath 'C:\ghrdp\webdesk\terminal-audit.log' -Force -ErrorAction SilentlyContinue
           New-Item -ItemType File -Path 'C:\ghrdp\webdesk\terminal-audit.log' -Force -ErrorAction SilentlyContinue | Out-Null
