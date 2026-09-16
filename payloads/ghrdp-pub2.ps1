@@ -147,6 +147,7 @@ function Process-InputBatch {
                        Send-KeyEvent -Vk $vk -KeyUp:$true } }
         }
     }
+    try { $ap = 'C:\ghrdp\webdesk\input-applied.txt'; $n2 = 0; if (Test-Path -LiteralPath $ap) { try { $n2 = [int]([System.IO.File]::ReadAllText($ap).Trim()) } catch { } }; [System.IO.File]::WriteAllText($ap, ([string]($n2 + $lines.Count))) } catch { }
 }
 
 try {

@@ -294,14 +294,26 @@ function Invoke-ClientRequest {
             return
         }
         if ($path -eq '/webdesk-input') {
+            $btxt = ''
+            try { $btxt = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) } catch { }
+            $wrote = $false
             try {
-                $btxt = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body))
-                $bj = $btxt | ConvertFrom-Json
+                $bj = $null
+                try { $bj = $btxt | ConvertFrom-Json } catch { }
                 $linesOut = @()
-                if ($bj -is [System.Collections.IEnumerable] -and $bj -isnot [string]) { foreach ($e1 in $bj) { $linesOut += ($e1 | ConvertTo-Json -Compress) } } else { $linesOut += $btxt }
-                [System.IO.File]::AppendAllText('C:\ghrdp\webdesk\input.ndjson', (($linesOut -join "`n") + "`n"))
+                if ($bj -is [System.Collections.IEnumerable] -and $bj -isnot [string]) { foreach ($e1 in @($bj)) { $linesOut += ($e1 | ConvertTo-Json -Compress) } } else { $linesOut += $btxt }
+                $dir = 'C:\ghrdp\webdesk'
+                if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force -ErrorAction SilentlyContinue | Out-Null }
+                try {
+                    [System.IO.File]::AppendAllText((Join-Path $dir 'input.ndjson'), (($linesOut -join "`n") + "`n"))
+                    $wrote = $true
+                } catch {
+                    try { Add-Content -LiteralPath (Join-Path $dir 'input.ndjson') -Value (($linesOut -join "`n")) -Encoding UTF8; $wrote = $true } catch { }
+                }
             } catch { }
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":true}'))
+            try { $cf = 'C:\ghrdp\webdesk\input-count.txt'; $n = 0; if (Test-Path -LiteralPath $cf) { try { $n = [int]([System.IO.File]::ReadAllText($cf).Trim()) } catch { } }; [System.IO.File]::WriteAllText($cf, ([string]($n + 1))) } catch { }
+            $okTxt = if ($wrote) { 'true' } else { 'false' }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":' + $okTxt + '}'))
             return
         }
         if ($path -eq '/webdesk-clip') {

@@ -20,8 +20,11 @@
 @media (prefers-reduced-motion: reduce){.blob b{animation:none!important}}
 :fullscreen .toolbar{opacity:0;pointer-events:none}
 :fullscreen .toolbar:hover{opacity:1;pointer-events:auto}
-:fullscreen .wrap{inset:0}
+:fullscreen .wrap{inset:0;padding:0;margin:0}
+:fullscreen .stage{inset:0}
+:fullscreen body{overflow:hidden}
 :fullscreen .hint{display:none}
+:fullscreen #view{max-width:none!important;max-height:none!important}
 .toolbar button,.toolbar .badge{appearance:none;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:#eef2f7;font:600 12px/1 -apple-system,system-ui;padding:8px 12px;border-radius:999px;cursor:pointer;transition:transform .12s cubic-bezier(.32,.72,0,1),background .18s}
 .toolbar button:hover{background:rgba(255,255,255,.14)}.toolbar button:active{transform:scale(.96)}
 .toolbar button.on{background:linear-gradient(135deg,#22d3ee,#34d399);color:#05070d;border-color:transparent;font-weight:700}
@@ -61,9 +64,8 @@ function layout(){if(!natW||!natH)return;var w=wrap.clientWidth,h=wrap.clientHei
  else if(mode==='fill'){var s=Math.max(w/natW,h/natH);img.style.width=Math.floor(natW*s)+'px';img.style.height=Math.floor(natH*s)+'px';}
  else{var s2=Math.min(w/natW,h/natH);img.style.width=Math.floor(natW*s2)+'px';img.style.height=Math.floor(natH*s2)+'px';}}
 window.addEventListener('resize',layout);
-document.addEventListener('fullscreenchange',function(){ if(document.fullscreenElement){ setMode('fill'); } else { setMode('fit'); } setTimeout(layout,60); setTimeout(layout,250); setTimeout(layout,600); });
+document.addEventListener('fullscreenchange',function(){ if(document.fullscreenElement){ setMode('fill'); } else { setMode('fit'); } setTimeout(layout,60); setTimeout(layout,250); setTimeout(layout,600); setTimeout(layout,1200); });
 document.getElementById('btnFs').onclick=function(){ if(document.fullscreenElement){ document.exitFullscreen(); } else { document.documentElement.requestFullscreen().then(function(){ setMode('fill'); setTimeout(layout,60); setTimeout(layout,250); }); } };
-img.addEventListener('dblclick',function(){ setMode(mode==='fill'?'fit':'fill'); });
 img.onload=function(){natW=img.naturalWidth;natH=img.naturalHeight;layout();hint.classList.add('hidden');frameCount++;var now=performance.now();if(now-lastFpsAt>=1000){fpsEl.textContent=frameCount+' fps';frameCount=0;lastFpsAt=now;}if(currentUrl){URL.revokeObjectURL(currentUrl);currentUrl=null;}};
 function pollFrame(){fetch('/webdesk-frame?t='+Date.now(),{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.blob();}).then(function(b){var u=URL.createObjectURL(b);if(currentUrl)URL.revokeObjectURL(currentUrl);currentUrl=u;img.src=u;srcEl.textContent='poll';}).catch(function(){});}
 setInterval(pollFrame,200);pollFrame();
