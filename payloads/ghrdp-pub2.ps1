@@ -4,6 +4,38 @@ $ErrorActionPreference = 'Continue'
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
 
+# ---- Display orientation self-heal (rotated console => grey portrait frames) ----
+try {
+    if (-not ([System.Management.Automation.PSTypeName]'GhrdpDisp').Type) {
+        Add-Type -TypeDefinition @'
+using System;using System.Runtime.InteropServices;
+[StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]
+public struct DM2 { public const int N=32; public const int F=32;
+ [MarshalAs(UnmanagedType.ByValTStr, SizeConst=N)] public string dmDeviceName;
+ public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra;
+ public int dmFields; public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation; public int dmDisplayFixedOutput;
+ public short dmColor; public short dmDuplex; public short dmYResolution; public short dmTTOption; public short dmCollate;
+ [MarshalAs(UnmanagedType.ByValTStr, SizeConst=F)] public string dmFormName;
+ public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight;
+ public int dmDisplayFlags; public int dmDisplayFrequency; public int dmICMMethod; public int dmICMIntent;
+ public int dmMediaType; public int dmDitherType; public int dmReserved1; public int dmReserved2;
+ public int dmPanningWidth; public int dmPanningHeight; }
+public static class GhrdpDisp {
+ [DllImport("user32.dll", CharSet=CharSet.Ansi)] public static extern bool EnumDisplaySettings(string n, int m, ref DM2 d);
+ [DllImport("user32.dll", CharSet=CharSet.Ansi)] public static extern int ChangeDisplaySettingsEx(string n, ref DM2 d, IntPtr h, int f, IntPtr l);
+}
+'@
+    }
+    $dmx = New-Object DM2
+    $dmx.dmSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type][DM2])
+    if ([GhrdpDisp]::EnumDisplaySettings($null, -1, [ref]$dmx)) {
+        if ($dmx.dmDisplayOrientation -ne 0) {
+            $dmx.dmDisplayOrientation = 0
+            $tw = $dmx.dmPelsWidth; $dmx.dmPelsWidth = $dmx.dmPelsHeight; $dmx.dmPelsHeight = $tw
+            [void][GhrdpDisp]::ChangeDisplaySettingsEx($null, [ref]$dmx, [IntPtr]::Zero, 0, [IntPtr]::Zero)
+        }
+    }
+} catch { }
 # ---- Single-instance gate (Global\ spans sessions; Local\ = per-session dupes) ----
 $script:Mutex = New-Object System.Threading.Mutex($false, 'Global\GhrdpWebDeskSingle')
 if (-not $script:Mutex.WaitOne(0)) { try { $script:Mutex.Dispose() } catch { }; exit 0 }
