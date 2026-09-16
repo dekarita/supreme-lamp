@@ -13,13 +13,15 @@
 @keyframes d1{to{transform:translate3d(6vw,4vh,0) scale(1.1)}}@keyframes d2{to{transform:translate3d(-6vw,-4vh,0) scale(1.08)}}
 .hint{position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);color:#93a3b8;font-size:14px;text-align:center;z-index:5;background:rgba(0,0,0,.4);padding:12px 20px;border-radius:14px}
 .hint.hidden{display:none}
-.toolbar{position:fixed;left:50%;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:20;display:flex;gap:8px;padding:8px 12px;border-radius:16px;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 20px 60px rgba(0,0,0,.55);backdrop-filter:blur(18px) saturate(1.6);-webkit-backdrop-filter:blur(18px) saturate(1.6);color:#eef2f7;font-size:12px;align-items:center;max-width:calc(100vw - 32px);flex-wrap:wrap;transition:opacity .25s}
+.toolbar{position:fixed;left:50%;bottom:calc(14px + env(safe-area-inset-bottom));transform:translateX(-50%);z-index:20;display:flex;gap:8px;padding:8px 12px;border-radius:16px;background:rgba(16,18,24,.62);border:1px solid rgba(255,255,255,.14);box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 20px 60px rgba(0,0,0,.55);backdrop-filter:blur(18px) saturate(1.6);-webkit-backdrop-filter:blur(18px) saturate(1.6);color:#eef2f7;font-size:12px;align-items:center;max-width:calc(100vw - 32px);flex-wrap:wrap;transition:opacity .25s}
 @supports (backdrop-filter: url(#lg-refract)){.toolbar{backdrop-filter:url(#lg-refract) blur(18px) saturate(1.6)}}
 @supports not (backdrop-filter: blur(1px)){.toolbar{background:rgba(20,22,28,.92)}}
 @media (prefers-reduced-transparency: reduce){.toolbar{background:rgba(20,22,28,.92);backdrop-filter:none}}
 @media (prefers-reduced-motion: reduce){.blob b{animation:none!important}}
 :fullscreen .toolbar{opacity:0;pointer-events:none}
 :fullscreen .toolbar:hover{opacity:1;pointer-events:auto}
+:fullscreen .wrap{inset:0}
+:fullscreen .hint{display:none}
 .toolbar button,.toolbar .badge{appearance:none;background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.14);color:#eef2f7;font:600 12px/1 -apple-system,system-ui;padding:8px 12px;border-radius:999px;cursor:pointer;transition:transform .12s cubic-bezier(.32,.72,0,1),background .18s}
 .toolbar button:hover{background:rgba(255,255,255,.14)}.toolbar button:active{transform:scale(.96)}
 .toolbar button.on{background:linear-gradient(135deg,#22d3ee,#34d399);color:#05070d;border-color:transparent;font-weight:700}
@@ -59,8 +61,9 @@ function layout(){if(!natW||!natH)return;var w=wrap.clientWidth,h=wrap.clientHei
  else if(mode==='fill'){var s=Math.max(w/natW,h/natH);img.style.width=Math.floor(natW*s)+'px';img.style.height=Math.floor(natH*s)+'px';}
  else{var s2=Math.min(w/natW,h/natH);img.style.width=Math.floor(natW*s2)+'px';img.style.height=Math.floor(natH*s2)+'px';}}
 window.addEventListener('resize',layout);
-document.addEventListener('fullscreenchange',function(){ if(document.fullscreenElement){ setMode('fill'); } else { setMode('fit'); } setTimeout(layout,60); });
-document.getElementById('btnFs').onclick=function(){ if(document.fullscreenElement){ document.exitFullscreen(); } else { document.documentElement.requestFullscreen().then(function(){ setMode('fill'); }); } };
+document.addEventListener('fullscreenchange',function(){ if(document.fullscreenElement){ setMode('fill'); } else { setMode('fit'); } setTimeout(layout,60); setTimeout(layout,250); setTimeout(layout,600); });
+document.getElementById('btnFs').onclick=function(){ if(document.fullscreenElement){ document.exitFullscreen(); } else { document.documentElement.requestFullscreen().then(function(){ setMode('fill'); setTimeout(layout,60); setTimeout(layout,250); }); } };
+img.addEventListener('dblclick',function(){ setMode(mode==='fill'?'fit':'fill'); });
 img.onload=function(){natW=img.naturalWidth;natH=img.naturalHeight;layout();hint.classList.add('hidden');frameCount++;var now=performance.now();if(now-lastFpsAt>=1000){fpsEl.textContent=frameCount+' fps';frameCount=0;lastFpsAt=now;}if(currentUrl){URL.revokeObjectURL(currentUrl);currentUrl=null;}};
 function pollFrame(){fetch('/webdesk-frame?t='+Date.now(),{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.blob();}).then(function(b){var u=URL.createObjectURL(b);if(currentUrl)URL.revokeObjectURL(currentUrl);currentUrl=u;img.src=u;srcEl.textContent='poll';}).catch(function(){});}
 setInterval(pollFrame,200);pollFrame();
