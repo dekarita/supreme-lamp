@@ -645,7 +645,6 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp -f payloads/ghrdp-pub2.ps1 "$RUNNER_TEMP/ghrdp-stage/ghrdp-pub2.ps1"
           echo '[webdesk] payload staged'
-
       - name: Write watcher (mutex, heartbeat, egress, legacy scrape, guarded success path, no .ghenc display name)
         shell: bash
         run: |
@@ -690,13 +689,6 @@ jobs:
           $root = 'C:\ghrdp'
           New-Item -ItemType Directory -Path $root -Force | Out-Null
           Copy-Item -Path (Join-Path $stage '*') -Destination $root -Recurse -Force -ErrorAction SilentlyContinue
-          Copy-Item -Path (Join-Path $env:RUNNER_TEMP 'ghrdp-stage\ghrdp-pub2.ps1') -Destination 'C:\ghrdp\ghrdp-pub2.ps1' -Force
-          New-Item -ItemType Directory -Path 'C:\ghrdp\webdesk' -Force -ErrorAction SilentlyContinue | Out-Null
-          foreach ($f in @('frame.jpg','frame.pub.tmp.jpg','webdesk-capture-fail.txt')) {
-            $p = Join-Path 'C:\ghrdp\webdesk' $f
-            if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
-          }
-          [System.IO.File]::WriteAllText('C:\ghrdp\webdesk-version.txt', 'staged at ' + (Get-Date -Format o), (New-Object System.Text.UTF8Encoding($false)))
           . (Join-Path $root 'ghrdp-lib.ps1')
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $ip = ''
@@ -767,6 +759,13 @@ jobs:
           try { [System.IO.File]::WriteAllText((Join-Path $root 'gh-pages-token.txt'), [string]$env:GITHUB_TOKEN, $global:GhrdpEncNoBom) } catch { }
           & icacls.exe $root /grant 'Users:(OI)(CI)M' 2>$null | Out-Null
           $LASTEXITCODE = 0
+          Copy-Item -Path (Join-Path $env:RUNNER_TEMP 'ghrdp-stage\ghrdp-pub2.ps1') -Destination 'C:\ghrdp\ghrdp-pub2.ps1' -Force
+          New-Item -ItemType Directory -Path 'C:\ghrdp\webdesk' -Force -ErrorAction SilentlyContinue | Out-Null
+          foreach ($f in @('frame.jpg','frame.pub.tmp.jpg','webdesk-capture-fail.txt')) {
+            $p = Join-Path 'C:\ghrdp\webdesk' $f
+            if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction SilentlyContinue }
+          }
+          [System.IO.File]::WriteAllText('C:\ghrdp\webdesk-version.txt', 'staged at ' + (Get-Date -Format o), (New-Object System.Text.UTF8Encoding($false)))
           Write-Host '[stage] ACLs set: Users get modify on C:\ghrdp (watcher runs as the RDP user)'
           $batPath = Join-Path $root 'DEBUG-GHRDP.bat'
           if (Test-Path -LiteralPath $batPath) {
@@ -1407,7 +1406,6 @@ jobs:
           Write-Host ('[migrate] imported ' + $files.Count + ' legacy entries from myurl0 into archive.json (myurl0 untouched)')
           exit 0
 
-
       - name: Stage terminal UI + create term dir
         shell: pwsh
         run: |
@@ -1417,11 +1415,7 @@ jobs:
             Copy-Item -Path (Join-Path 'payloads' 'terminal-ui.html') -Destination (Join-Path $stage 'terminal-ui.html') -Force
           }
           Copy-Item -Path (Join-Path $stage 'terminal-ui.html') -Destination 'C:\ghrdp\terminal-ui.html' -Force -ErrorAction SilentlyContinue
-          if (Test-Path -LiteralPath (Join-Path 'payloads' 'term-runner.ps1')) {
-            Copy-Item -Path (Join-Path 'payloads' 'term-runner.ps1') -Destination 'C:\ghrdp\term-runner.ps1' -Force
-          }
           New-Item -ItemType Directory -Path 'C:\ghrdp\webdesk\term' -Force -ErrorAction SilentlyContinue | Out-Null
-          # Fresh audit log per run so tests J below observe growth
           Remove-Item -LiteralPath 'C:\ghrdp\webdesk\terminal-audit.log' -Force -ErrorAction SilentlyContinue
           New-Item -ItemType File -Path 'C:\ghrdp\webdesk\terminal-audit.log' -Force -ErrorAction SilentlyContinue | Out-Null
           & icacls.exe 'C:\ghrdp\webdesk\term' /grant 'Users:(OI)(CI)M' 2>$null | Out-Null; $LASTEXITCODE=0
@@ -1436,12 +1430,6 @@ jobs:
               ForEach-Object { try { Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch { } }
             Write-Host '[terminal] pruned any stale GhrdpTerm-* scheduled tasks'
           } catch { }
-      - name: Stage terminal verification script
-        shell: pwsh
-        run: |
-          Copy-Item -Path (Join-Path 'payloads' 'verify-terminal.ps1') -Destination 'C:\ghrdp\verify-terminal.ps1' -Force -ErrorAction SilentlyContinue
-          & icacls.exe 'C:\ghrdp\verify-terminal.ps1' /grant 'Users:(OI)(CI)RX' 2>$null | Out-Null; $LASTEXITCODE=0
-
       - name: Register watcher autostart (ONLOGON)
         shell: pwsh
         run: |
@@ -1485,7 +1473,7 @@ jobs:
           try {
             $qu = & quser.exe 2>$null; $LASTEXITCODE = 0
             foreach ($line in @($qu)) {
-              if ($line -match '^\s*(>?)\s*(\S+)\s+\S+\s+\d+\s+Active') { $activeUser = $Matches[2] }
+              if ($line -match '^\s*(>?)\s*(\S+)\s+\S+\s+(\d+)\s+Active') { $activeUser = $Matches[2] }
             }
           } catch { }
           if (-not $activeUser) { $activeUser = $env:RDP_USER }
@@ -1500,52 +1488,6 @@ jobs:
             Start-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction SilentlyContinue
             Write-Host '[webdesk] GhrdpWebDesk task registered + started'
           } catch { Write-Host ('[webdesk] task registration failed: ' + $_.Exception.Message) }
-
-
-      - name: Register web desktop capture (ONLOGON, runs in RDP session)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $user = $env:RDP_USER
-          $pwshPath = 'powershell.exe'
-          try { $c = Get-Command powershell.exe -ErrorAction Stop; if ($c) { $pwshPath = $c.Source } } catch {
-            try { $c2 = Get-Command pwsh.exe -ErrorAction Stop; if ($c2) { $pwshPath = $c2.Source } } catch { }
-          }
-          $argLine = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-pub2.ps1"'
-          $scriptPath = 'C:\ghrdp\ghrdp-pub2.ps1'
-          try { Unregister-ScheduledTask -TaskName 'GhrdpWebDesk' -Confirm:$false -ErrorAction SilentlyContinue } catch { }
-          try { Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ghrdp-pub2.ps1*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
-          try {
-              $action = New-ScheduledTaskAction -Execute $pwshPath -Argument $argLine
-              $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
-              $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
-              $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 6)
-              Register-ScheduledTask -TaskName 'GhrdpWebDesk' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
-              Write-Host '[webdesk] task registered for ' + $user
-          } catch {
-              Write-Host ('[webdesk] task register failed: ' + $_.Exception.Message)
-              exit 0
-          }
-          try {
-              Start-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction Stop
-              Write-Host '[webdesk] task started immediately'
-          } catch {
-              Write-Host ('[webdesk] task start failed: ' + $_.Exception.Message)
-              try {
-                  Start-Process $pwshPath -ArgumentList '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-pub2.ps1"' -WindowStyle Hidden
-                  Write-Host '[webdesk] fallback: direct process start'
-              } catch {
-                  Write-Host ('[webdesk] fallback also failed: ' + $_.Exception.Message)
-              }
-          }
-          Start-Sleep -Seconds 5
-          $proc = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ghrdp-pub2.ps1*' } | Select-Object -First 1
-          if ($proc) {
-              Write-Host ('[webdesk] process running: PID=' + $proc.ProcessId + ' Session=' + $proc.SessionId)
-          } else {
-              Write-Host '[webdesk] process NOT running after start attempts - check task registration and payload path ' + $scriptPath
-          }
-          exit 0
 
       - name: Register web desktop capture (ONLOGON, runneradmin)
         shell: pwsh
@@ -2268,47 +2210,6 @@ jobs:
                    if (-not $isDirect -and (((Get-Date) - $lastDirectTry).TotalMinutes -ge 5)) { $lastDirectTry = Get-Date; & 'C:\Program Files\Tailscale\tailscale.exe' ping --until-direct -c 3 --timeout 5s ([string]@($peer.TailscaleIPs)[0]) 2>$null | Out-Null; $LASTEXITCODE = 0 }
                }
            } catch { }
-          # ---- WEBDESK keep-alive: heal stale capture + reconnect Disc session ----
-          try {
-            $tsp = 'C:\ghrdp\webdesk\frame-ts.txt'
-            $stale = $true
-            if (Test-Path -LiteralPath $tsp) {
-              try { $t = [DateTime]::Parse((Get-Content -LiteralPath $tsp -Raw)).ToUniversalTime()
-                    if (((Get-Date).ToUniversalTime() - $t).TotalSeconds -lt 15) { $stale = $false } } catch { }
-            }
-            if ($stale) {
-              Write-Host ('[webdesk] frame stale — restarting capture at ' + (Get-Date -Format o))
-              try { Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue |
-                    Where-Object { $_.CommandLine -and ($_.CommandLine -like '*ghrdp-pub2.ps1*') } |
-                    ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch { } } } catch { }
-              try { Start-ScheduledTask -TaskName 'GhrdpWebDesk' -ErrorAction Stop } catch {
-                # Path used here MUST match the registered task (ghrdp-pub2.ps1 — never the old webdesk engine)
-                try { $pwshPath='powershell.exe'; $c=Get-Command pwsh.exe -ErrorAction SilentlyContinue; if($c){$pwshPath=$c.Source}
-                      Start-Process -FilePath $pwshPath -ArgumentList '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-pub2.ps1"' -WindowStyle Hidden } catch { }
-              }
-            }
-            $sid = ''; $sstate = ''
-            try { $qu = & quser.exe 2>$null; $LASTEXITCODE = 0
-              foreach ($line in @($qu)) { if ($line -match '^\s*(>?)\s*(\S+)\s+\S+\s+(\d+)\s+(Active|Disc)') { $sid = $Matches[3]; $sstate = $Matches[4] } }
-            } catch { }
-            if ($sid -and $sstate -eq 'Disc') {
-              Write-Host ('[webdesk] session ' + $sid + ' Disc → tscon /dest:console')
-              try { & tscon.exe $sid /dest:console 2>$null | Out-Null; $LASTEXITCODE = 0 } catch { }
-            }
-          } catch { Write-Host ('[webdesk] keep-alive: ' + $_.Exception.Message) }
-
-          # Reap any GhrdpTerm-* scheduled tasks whose script file is > 15 min old (safety net vs orphaned tasks)
-          try {
-            Get-ScheduledTask -ErrorAction SilentlyContinue |
-              Where-Object { $_.TaskName -like 'GhrdpTerm-*' } |
-              ForEach-Object {
-                $ti = Get-ScheduledTaskInfo -TaskName $_.TaskName -ErrorAction SilentlyContinue
-                if ($ti -and $ti.LastRunTime -and (((Get-Date) - $ti.LastRunTime).TotalMinutes -gt 15) -and $ti.LastTaskResult -ne 267009) {
-                  try { Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
-                }
-              }
-          } catch { }
-
               $tsStr = 'OK'
               if (-not $tsOk) { $tsStr = 'DOWN' }
               $tsPath = 'n/a'

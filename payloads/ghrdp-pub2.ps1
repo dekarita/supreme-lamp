@@ -16,6 +16,7 @@ $tsFile     = Join-Path $root 'frame-ts.txt'
 $inputFile  = Join-Path $root 'input.ndjson'
 $capFailFile= Join-Path $root 'webdesk-capture-fail.txt'
 $wsClients  = Join-Path $root 'ws-clients.txt'
+$ctlFile    = Join-Path $root 'ctl.json'
 New-Item -ItemType Directory -Path $root -Force -ErrorAction SilentlyContinue | Out-Null
 
 # ---- P/Invoke: SendInput (mouse + keyboard) ----
@@ -50,8 +51,6 @@ $INPUT_SIZE = [System.Runtime.InteropServices.Marshal]::SizeOf([type][GhrdpInput
 
 function Send-MouseEvent {
     param([uint32]$Flags,[int]$Dx=0,[int]$Dy=0,[uint32]$MouseData=0)
-    # CRITICAL: build MI as a NAMED variable, then assign onto u.mi. Field-of-field
-    # assignment writes to a copy and injects at 0,0 (bug graveyard #… input-lands-at-origin).
     $mi = New-Object GhrdpInput+MOUSEINPUT
     $mi.dx = $Dx; $mi.dy = $Dy; $mi.mouseData = $MouseData
     $mi.dwFlags = $Flags; $mi.time = 0; $mi.dwExtraInfo = [IntPtr]::Zero
@@ -64,7 +63,7 @@ function Send-KeyEvent {
     param([ushort]$Vk,[bool]$KeyUp)
     $ki = New-Object GhrdpInput+KEYBDINPUT
     $ki.wVk = $Vk; $ki.wScan = 0
-    $ki.dwFlags = $(if ($KeyUp) { [uint32]$KEF_UP } else { [uint32]0 })
+    if ($KeyUp) { $ki.dwFlags = [uint32]$KEF_UP } else { $ki.dwFlags = [uint32]0 }
     $ki.time = 0; $ki.dwExtraInfo = [IntPtr]::Zero
     $u = New-Object GhrdpInput+INPUT_UNION; $u.ki = $ki
     $inp = New-Object GhrdpInput+INPUT; $inp.type = $IT_KBD; $inp.u = $u
@@ -72,19 +71,18 @@ function Send-KeyEvent {
     [void][GhrdpInput]::SendInput(1, $arr, $INPUT_SIZE)
 }
 
-# ---- JPEG encoder (built once) ----
 $jpegEncoder = $null
 foreach ($enc in [System.Drawing.Imaging.ImageCodecInfo]::GetImageEncoders()) {
     if ($enc.MimeType -eq 'image/jpeg') { $jpegEncoder = $enc; break }
 }
+$curQ = [long]35; $curScale = 0.5
 $encParams = New-Object System.Drawing.Imaging.EncoderParameters 1
-$encParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, [long]35)
+$encParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, $curQ)
 
-# ---- Marker + version file ----
-try { [System.IO.File]::WriteAllText((Join-Path 'C:\ghrdp' 'webdesk-version.txt'), 'ghrdp-pub2 v2.0 pid=' + $PID + ' at=' + ((Get-Date).ToUniversalTime().ToString('o'))) } catch { }
+try { [System.IO.File]::WriteAllText((Join-Path 'C:\ghrdp' 'webdesk-version.txt'), ('ghrdp-pub2 v2.2 pid=' + $PID + ' at=' + ((Get-Date).ToUniversalTime().ToString('o')))) } catch { }
 
 function Get-WsClientCount {
-    if (-not (Test-Path -LiteralPath $wsClients)) { return 1 }   # FAIL OPEN
+    if (-not (Test-Path -LiteralPath $wsClients)) { return 1 }
     try { $raw = ([System.IO.File]::ReadAllText($wsClients)).Trim(); $n = 0
         if ([int]::TryParse($raw, [ref]$n)) { return [Math]::Max(0, $n) } } catch { }
     return 1
@@ -119,28 +117,33 @@ function Process-InputBatch {
     }
 }
 
-# ---- Main loop ----
 try {
     while ($true) {
         try { Process-InputBatch } catch { }
-        # (Idle gate: capture even with 0 WS clients — polling clients don't register)
         [void](Get-WsClientCount)
-
+        try {
+            if (Test-Path -LiteralPath $ctlFile) {
+                $ctl = [System.IO.File]::ReadAllText($ctlFile) | ConvertFrom-Json
+                $nq = [long]$ctl.q; $ns = [double]$ctl.scale
+                if ($nq -ne $curQ -or [Math]::Abs($ns - $curScale) -gt 0.001) {
+                    $curQ = $nq; $curScale = $ns
+                    $encParams.Param[0] = New-Object System.Drawing.Imaging.EncoderParameter([System.Drawing.Imaging.Encoder]::Quality, $curQ)
+                }
+            }
+        } catch { }
         $bmp=$null;$g=$null;$scaled=$null;$sg=$null
         try {
             $pri = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
             $bmp = New-Object System.Drawing.Bitmap ($pri.Width, $pri.Height, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
             $g   = [System.Drawing.Graphics]::FromImage($bmp)
             $g.CopyFromScreen(0, 0, 0, 0, $bmp.Size)
-            $sw = [int][Math]::Max(1,[Math]::Floor($pri.Width * 0.5))
-            $sh = [int][Math]::Max(1,[Math]::Floor($pri.Height * 0.5))
+            $sw = [int][Math]::Max(1,[Math]::Floor($pri.Width * $curScale))
+            $sh = [int][Math]::Max(1,[Math]::Floor($pri.Height * $curScale))
             $scaled = New-Object System.Drawing.Bitmap ($sw, $sh, [System.Drawing.Imaging.PixelFormat]::Format24bppRgb)
             $sg = [System.Drawing.Graphics]::FromImage($scaled)
             $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::Bilinear
             $sg.DrawImage($bmp, 0, 0, $sw, $sh)
             $scaled.Save($frameTmp, $jpegEncoder, $encParams)
-            # PS 5.1 has no [IO.File]::Move(src,dst,bool); Move-Item -Force is the only working
-            # atomic-ish publish. Move-Item on existing dest requires -Force.
             Move-Item -LiteralPath $frameTmp -Destination $framePath -Force -ErrorAction Stop
             [System.IO.File]::WriteAllText($tsFile, (Get-Date).ToUniversalTime().ToString('o'))
             if (Test-Path -LiteralPath $capFailFile) { Remove-Item -LiteralPath $capFailFile -Force -ErrorAction SilentlyContinue }

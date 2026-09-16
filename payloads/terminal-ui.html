@@ -6,110 +6,39 @@
 <meta name="color-scheme" content="dark">
 <title>GHRDP Terminal</title>
 <style>
-:root{
- --ink:#eef2f7;--mut:#9aa6b8;--acc:#4f8cff;--acc2:#22d3ee;--ok:#34d399;--bad:#f87171;
- --line:rgba(255,255,255,.16);--line-hi:rgba(255,255,255,.24);
- --glass:rgba(255,255,255,.08);--glass-hi:rgba(255,255,255,.14);
- --spring:cubic-bezier(.32,.72,0,1);
-}
+:root{--ink:#eef2f7;--mut:#9aa6b8;--line:rgba(255,255,255,.16);--glass:rgba(255,255,255,.08);--spring:cubic-bezier(.32,.72,0,1)}
 *{box-sizing:border-box}
-html,body{margin:0;padding:0;height:100%;color:var(--ink);background:#05070d;
- font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,system-ui,sans-serif;
- -webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;overflow:hidden}
-body::before{
- content:"";position:fixed;inset:-25%;z-index:-1;pointer-events:none;filter:blur(40px) saturate(1.6);
- background:
-  radial-gradient(48vw 48vw at 12% 18%,rgba(34,211,238,.30),transparent 60%),
-  radial-gradient(46vw 46vw at 82% 32%,rgba(79,140,255,.28),transparent 60%),
-  radial-gradient(60vw 60vw at 50% 92%,rgba(167,139,250,.22),transparent 60%);
- animation:drift 18s ease-in-out infinite alternate;
-}
-@keyframes drift{
- 0%{transform:translate3d(0,0,0) scale(1)}
- 100%{transform:translate3d(4vw,-3vh,0) scale(1.06)}
-}
-.glass{
- background:var(--glass);
- border:1px solid var(--line);
- border-radius:18px;
- backdrop-filter:blur(18px) saturate(1.6);-webkit-backdrop-filter:blur(18px) saturate(1.6);
- box-shadow:0 8px 32px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.12);
-}
-@supports (backdrop-filter: url(#liquid-refraction)){
- .glass{backdrop-filter:url(#liquid-refraction) blur(18px) saturate(1.6);-webkit-backdrop-filter:blur(18px) saturate(1.6)}
-}
-@supports not (backdrop-filter: blur(1px)){
- .glass{background:rgba(20,22,28,.92);backdrop-filter:none;-webkit-backdrop-filter:none}
-}
-@media (prefers-reduced-transparency: reduce){
- body::before{display:none}
- .glass{background:rgba(20,22,28,.92);backdrop-filter:none;-webkit-backdrop-filter:none}
-}
-@media (prefers-reduced-motion: reduce){
- body::before{animation:none}
-}
+html,body{margin:0;height:100%;color:var(--ink);background:#05070d;font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,system-ui,sans-serif;overflow:hidden}
+body::before{content:"";position:fixed;inset:-25%;z-index:-1;pointer-events:none;filter:blur(40px) saturate(1.6);background:radial-gradient(48vw 48vw at 12% 18%,rgba(34,211,238,.30),transparent 60%),radial-gradient(46vw 46vw at 82% 32%,rgba(79,140,255,.28),transparent 60%),radial-gradient(60vw 60vw at 50% 92%,rgba(167,139,250,.22),transparent 60%);animation:drift 18s ease-in-out infinite alternate}
+@keyframes drift{0%{transform:translate3d(0,0,0) scale(1)}100%{transform:translate3d(4vw,-3vh,0) scale(1.06)}}
+.glass{background:var(--glass);border:1px solid var(--line);border-radius:18px;backdrop-filter:blur(18px) saturate(1.6);-webkit-backdrop-filter:blur(18px) saturate(1.6);box-shadow:0 8px 32px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.12)}
+@supports (backdrop-filter: url(#liquid-refraction)){.glass{backdrop-filter:url(#liquid-refraction) blur(18px) saturate(1.6)}}
+@supports not (backdrop-filter: blur(1px)){.glass{background:rgba(20,22,28,.92);backdrop-filter:none}}
+@media (prefers-reduced-transparency: reduce){body::before{display:none}.glass{background:rgba(20,22,28,.92);backdrop-filter:none}}
+@media (prefers-reduced-motion: reduce){body::before{animation:none}}
 .page{display:flex;flex-direction:column;height:100%;padding:12px;gap:12px}
 .bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;padding:10px 12px}
 .bar .grow{flex:1;min-width:220px}
-input,select,textarea,button{
- font:400 13px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,system-ui,sans-serif;
- color:var(--ink);
-}
-input,select,textarea{
- background:rgba(0,0,0,.35);border:1px solid var(--line);border-radius:12px;
- padding:8px 12px;outline:none;transition:border-color .18s var(--spring),background .18s var(--spring),box-shadow .18s var(--spring);
-}
-input:focus,select:focus,textarea:focus{
- border-color:rgba(34,211,238,.6);background:rgba(0,0,0,.5);box-shadow:0 0 0 3px rgba(34,211,238,.20)
-}
-button{
- appearance:none;cursor:pointer;padding:8px 14px;border-radius:10px;font-weight:600;color:var(--ink);
- background:linear-gradient(180deg,rgba(255,255,255,.22),rgba(255,255,255,.08));
- border:1px solid rgba(255,255,255,.20);
- box-shadow:inset 0 1px 0 rgba(255,255,255,.16);
- transition:transform .12s var(--spring),background .18s var(--spring),border-color .18s var(--spring),box-shadow .18s var(--spring);
-}
-button:hover{background:linear-gradient(180deg,rgba(255,255,255,.30),rgba(255,255,255,.14));border-color:var(--line-hi)}
+input,select,textarea,button{font:400 13px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,system-ui,sans-serif;color:var(--ink)}
+input,select,textarea{background:rgba(0,0,0,.35);border:1px solid var(--line);border-radius:12px;padding:8px 12px;outline:none}
+input:focus,select:focus,textarea:focus{border-color:rgba(34,211,238,.6);box-shadow:0 0 0 3px rgba(34,211,238,.20)}
+button{appearance:none;cursor:pointer;padding:8px 14px;border-radius:10px;font-weight:600;background:linear-gradient(180deg,rgba(255,255,255,.22),rgba(255,255,255,.08));border:1px solid rgba(255,255,255,.20)}
+button:hover{background:linear-gradient(180deg,rgba(255,255,255,.30),rgba(255,255,255,.14))}
 button:active{transform:scale(.97)}
-button:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(34,211,238,.35),inset 0 1px 0 rgba(255,255,255,.16)}
-button.primary{
- background:linear-gradient(180deg,#4f8cff,#2f6bff);border-color:transparent;color:#fff;
- box-shadow:inset 0 1px 0 rgba(255,255,255,.24),0 6px 18px rgba(47,107,255,.35);
-}
-button.primary:hover{background:linear-gradient(180deg,#5f97ff,#3a75ff)}
-.pill{
- display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;
- border:1px solid var(--line);background:var(--glass);font-size:11px;color:var(--mut);
- font-variant-numeric:tabular-nums;
-}
-.pill b{color:var(--ink)}
+button.primary{background:linear-gradient(180deg,#4f8cff,#2f6bff);border-color:transparent;color:#fff}
+.pill{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;border:1px solid var(--line);background:var(--glass);font-size:11px;color:var(--mut);font-variant-numeric:tabular-nums}
+.pill b{color:var(--ink)}.pill.ok b{color:#34d399}.pill.bad b{color:#f87171}
 label.k{color:var(--mut);font-size:11px;letter-spacing:.05em;text-transform:uppercase}
 .paste{padding:10px 12px;flex:0 0 26vh;display:flex;flex-direction:column;gap:8px}
 .paste textarea{flex:1;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.5;resize:none}
-.out{
- flex:1;min-height:0;
- background:rgba(0,0,0,.45);border:1px solid var(--line);border-radius:16px;
- backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
- padding:14px 16px;display:flex;flex-direction:column;gap:10px;overflow:hidden;
-}
+.out{flex:1;min-height:0;background:rgba(0,0,0,.45);border:1px solid var(--line);border-radius:16px;backdrop-filter:blur(14px);padding:14px 16px;display:flex;flex-direction:column;gap:10px;overflow:hidden}
 .out .head{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 .out .body{flex:1;min-height:0;overflow:auto;background:rgba(0,0,0,.55);border:1px solid var(--line);border-radius:12px;padding:12px}
 .out pre{margin:0;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12px;line-height:1.55;color:#e8f2f7;white-space:pre-wrap;word-break:break-all}
 .out pre.stderr{color:#fda4af;margin-top:12px;border-top:1px dashed rgba(248,113,113,.35);padding-top:10px}
-.pill.ok b{color:var(--ok)}.pill.bad b{color:var(--bad)}
-.hint{font-size:11px;color:var(--mut);padding:0 4px}
+.hint{font-size:11px;color:var(--mut)}
 </style>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true">
- <filter id="liquid-refraction" x="0%" y="0%" width="100%" height="100%">
-  <feTurbulence type="fractalNoise" baseFrequency="0.01" numOctaves="3" seed="4"/>
-  <feDisplacementMap in="SourceGraphic" scale="8"/>
-  <feSpecularLighting surfaceScale="2" specularConstant=".35" specularExponent="20" lighting-color="#ffffff" result="spec">
-   <feDistantLight azimuth="235" elevation="55"/>
-  </feSpecularLighting>
-  <feComposite in="spec" in2="SourceGraphic" operator="in" result="specIn"/>
-  <feColorMatrix in="specIn" type="matrix" values="1 .05 0 0 0  0 1 .05 0 0  .05 0 1 0 0  0 0 0 .5 0"/>
- </filter>
-</svg>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><filter id="liquid-refraction" x="0%" y="0%" width="100%" height="100%"><feTurbulence type="fractalNoise" baseFrequency="0.01" numOctaves="3" seed="4"/><feDisplacementMap in="SourceGraphic" scale="8"/><feSpecularLighting surfaceScale="2" specularConstant=".35" specularExponent="20" lighting-color="#ffffff" result="spec"><feDistantLight azimuth="235" elevation="55"/></feSpecularLighting><feComposite in="spec" in2="SourceGraphic" operator="in" result="specIn"/><feColorMatrix in="specIn" type="matrix" values="1 .05 0 0 0  0 1 .05 0 0  .05 0 1 0 0  0 0 0 .5 0"/></filter></svg>
 </head>
 <body>
 <div class="page">
@@ -163,20 +92,9 @@ Get-Date
 
  function $(id){ return document.getElementById(id); }
  function show(resp){
-  var stdout = String(resp.output || '');
-  var stderr = String(resp.error || '');
-  var body = $('body');
-  body.innerHTML = '';
-  var preOut = document.createElement('pre');
-  preOut.id = 'stdout';
-  preOut.textContent = stdout || '(no stdout)';
-  body.appendChild(preOut);
-  if (stderr) {
-   var preErr = document.createElement('pre');
-   preErr.className = 'stderr';
-   preErr.textContent = 'STDERR:\n' + stderr;
-   body.appendChild(preErr);
-  }
+  var body = $('body'); body.innerHTML = '';
+  var preOut = document.createElement('pre'); preOut.id = 'stdout'; preOut.textContent = resp.output || '(no stdout)'; body.appendChild(preOut);
+  if (resp.error) { var preErr = document.createElement('pre'); preErr.className = 'stderr'; preErr.textContent = 'STDERR:\n' + resp.error; body.appendChild(preErr); }
   $('mExit').textContent = (resp.exitCode === null || resp.exitCode === undefined) ? '—' : String(resp.exitCode);
   $('mTo').textContent = resp.timedOut ? 'yes' : 'no';
   $('mMs').textContent = (Number(resp.durationMs) || 0) + ' ms';
@@ -186,63 +104,34 @@ Get-Date
   $('pillTo').className = 'pill ' + (resp.timedOut ? 'bad' : 'ok');
  }
  function loading(){
-  var body = $('body');
-  body.innerHTML = '<pre id="stdout" style="color:#9aa6b8">running…</pre>';
+  var body = $('body'); body.innerHTML = '<pre id="stdout" style="color:#9aa6b8">running…</pre>';
   $('mExit').textContent = '…'; $('mTo').textContent = '…'; $('mMs').textContent = '… ms'; $('mSess').textContent = '…'; $('mFile').textContent = '…';
  }
  function utf8ToB64(s){ return btoa(unescape(encodeURIComponent(String(s || '')))); }
  async function run(payload){
   loading();
   try {
-   var r = await fetch('/terminal-exec', {
-    method:'POST',
-    headers:{ 'Content-Type':'application/json', 'Authorization': 'Bearer ' + token },
-    body: JSON.stringify(payload),
-   });
+   var r = await fetch('/terminal-exec', { method:'POST', headers:{ 'Content-Type':'application/json', 'Authorization': 'Bearer ' + token }, body: JSON.stringify(payload) });
    if (r.status === 401) { show({ output:'', error:'HTTP 401: bad or missing token in URL', exitCode:null, timedOut:false, durationMs:0, session:payload.session, scriptPath:'' }); return; }
-   var j = null;
-   try { j = await r.json(); } catch(e) { j = { error:'invalid JSON: '+e.message }; }
-   if (!r.ok && !j.error) j.error = 'HTTP '+r.status;
-   if (j.runId) {
-    while (true) {
-     await new Promise(function(ok){ setTimeout(ok, 500); });
-     try {
-      var pr = await fetch('/terminal-result?id=' + encodeURIComponent(j.runId));
-      var pj = await pr.json();
-      if (pj.done) { j = pj; break; }
-     } catch(pe) {}
-    }
+   var j = await r.json();
+   if (!j.runId) { show({ output:'', error:(j.error||'no runId'), exitCode:null, timedOut:false, durationMs:0, session:payload.session, scriptPath:'' }); return; }
+   var t0 = Date.now();
+   while (true) {
+    await new Promise(function(res){ setTimeout(res, 500); });
+    var rr = await fetch('/terminal-result?id=' + encodeURIComponent(j.runId), { cache:'no-store' });
+    var q = await rr.json();
+    if (q.done) { show({ output:q.output||'', error:q.error||'', exitCode:(q.exitCode===null||q.exitCode===undefined)?null:q.exitCode, timedOut:!!q.timedOut, durationMs:(Date.now()-t0), session:payload.session, scriptPath:j.scriptPath||'' }); return; }
+    if (Date.now() - t0 > (payload.timeout + 15000)) { show({ output:'', error:'client-side wait timeout', exitCode:null, timedOut:true, durationMs:(Date.now()-t0), session:payload.session, scriptPath:j.scriptPath||'' }); return; }
    }
-   show({
-    output:j.output||'', error:j.error||'',
-    exitCode:(j.exitCode===null||j.exitCode===undefined)?null:j.exitCode,
-    timedOut:!!j.timedOut, durationMs:Number(j.durationMs)||0,
-    session:j.session||payload.session, scriptPath:j.scriptPath||'',
-   });
-  } catch (e) {
-   show({ output:'', error:'network: '+e.message, exitCode:null, timedOut:false, durationMs:0, session:payload.session, scriptPath:'' });
-  }
+  } catch (e) { show({ output:'', error:'network: '+e.message, exitCode:null, timedOut:false, durationMs:0, session:payload.session, scriptPath:'' }); }
  }
  function baseOpts(){
   return { session:$('inSession').value, timeout: Math.min(300000, Math.max(1000, Number($('inTimeout').value)||60000)) };
  }
- $('btnRunCmd').addEventListener('click', function(){
-  var cmd = $('inCmd').value; if (!cmd.trim()) { alert('Enter an inline command first.'); return; }
-  run(Object.assign(baseOpts(), { mode:'inline', cmd:cmd }));
- });
- $('btnRunFile').addEventListener('click', function(){
-  var f = $('inFile').value.trim(); if (!f) { alert('Enter a file path first.'); return; }
-  run(Object.assign(baseOpts(), { mode:'file', file:f }));
- });
- $('btnRunPaste').addEventListener('click', function(){
-  var t = $('paste').value; if (!t.trim()) { alert('Paste a script first.'); return; }
-  run(Object.assign(baseOpts(), { mode:'upload', script_b64: utf8ToB64(t) }));
- });
- $('btnCopyOut').addEventListener('click', async function(){
-  var text = ($('stdout') ? $('stdout').textContent : '') + '\n' + (document.querySelector('pre.stderr') ? document.querySelector('pre.stderr').textContent : '');
-  try { await navigator.clipboard.writeText(text); this.textContent = 'Copied'; setTimeout((function(b){ return function(){ b.textContent='Copy Out'; }; })(this), 1200); }
-  catch(e) { alert('Clipboard blocked: '+e.message); }
- });
+ $('btnRunCmd').addEventListener('click', function(){ var cmd = $('inCmd').value; if (!cmd.trim()) { alert('Enter an inline command first.'); return; } run(Object.assign(baseOpts(), { mode:'inline', cmd:cmd })); });
+ $('btnRunFile').addEventListener('click', function(){ var f = $('inFile').value.trim(); if (!f) { alert('Enter a file path first.'); return; } run(Object.assign(baseOpts(), { mode:'file', file:f })); });
+ $('btnRunPaste').addEventListener('click', function(){ var t = $('paste').value; if (!t.trim()) { alert('Paste a script first.'); return; } run(Object.assign(baseOpts(), { mode:'upload', script_b64: utf8ToB64(t) })); });
+ $('btnCopyOut').addEventListener('click', async function(){ var text = ($('stdout') ? $('stdout').textContent : '') + '\n' + (document.querySelector('pre.stderr') ? document.querySelector('pre.stderr').textContent : ''); try { await navigator.clipboard.writeText(text); } catch(e) { alert('Clipboard blocked: '+e.message); } });
  window.addEventListener('keydown', function(e){
   if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); $('btnRunPaste').click(); }
   else if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) { e.preventDefault(); $('body').innerHTML='<pre id="stdout" style="color:#9aa6b8">(cleared)</pre>'; }

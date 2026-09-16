@@ -14,7 +14,6 @@ use std::sync::atomic::{AtomicI32, Ordering};
 static WS_CLIENTS: AtomicI32 = AtomicI32::new(0);
 fn write_ws_clients(n: i32) { let _ = std::fs::write("C:\\ghrdp\\webdesk\\ws-clients.txt", n.to_string()); }
 use tokio::io::AsyncWriteExt;
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
 use notify::{recommended_watcher, RecursiveMode, Watcher};
 use serde_json::{json, Value};
 use tokio::sync::{broadcast, oneshot};
@@ -198,7 +197,7 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
         .unwrap_or_else(|_| json!({ "error": "snapshot task failed" }));
 
     if let Ok(text) = serde_json::to_string(&snapshot) {
-        if sender.send(Message::Text(text.into())).await.is_err() {
+        if sender.send(Message::Text(text)).await.is_err() {
   let mut clients = state.clients.lock().unwrap_or_else(|e| e.into_inner());
   *clients -= 1;
   return;
@@ -212,7 +211,7 @@ async fn handle_socket(socket: WebSocket, state: SharedState) {
         loop {
   match rx.recv().await {
       Ok(msg) => {
-          if sender.send(Message::Text(msg.into())).await.is_err() {
+          if sender.send(Message::Text(msg)).await.is_err() {
               break;
           }
       }
@@ -409,7 +408,7 @@ async fn handle_webdesk_ws(socket: WebSocket) {
     });
     let send_fut = async {
         while let Some(b) = rx.recv().await {
-            if sink.send(Message::Text(b.into())).await.is_err() { break; }
+            if sink.send(Message::Text(b)).await.is_err() { break; }
         }
     };
     let recv_fut = async {
@@ -443,9 +442,11 @@ async fn handle_webdesk_ws(socket: WebSocket) {
     let n = WS_CLIENTS.fetch_sub(1, Ordering::SeqCst) - 1;
     write_ws_clients(if n < 0 { 0 } else { n });
 }
+
 async fn terminal_ws(ws: WebSocketUpgrade, State(state): State<SharedState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_terminal_ws(socket, state))
 }
+
 async fn handle_terminal_ws(mut socket: WebSocket, state: SharedState) {
     let audit_path = state.root.join("webdesk").join("terminal-audit.log");
     let mut last_size: u64 = std::fs::metadata(&audit_path).map(|m| m.len()).unwrap_or(0);
@@ -467,7 +468,7 @@ async fn handle_terminal_ws(mut socket: WebSocket, state: SharedState) {
                                 let line = raw.trim_end_matches('\r');
                                 if line.is_empty() { continue; }
                                 let payload = format!(r#"{{"type":"audit","line":{}}}"#, serde_json::to_string(line).unwrap_or_else(|_| "\"\"".to_string()));
-                                if socket.send(Message::Text(payload.into())).await.is_err() { return; }
+                                if socket.send(Message::Text(payload)).await.is_err() { return; }
                             }
                             last_size = cur_size;
                         }
@@ -1088,27 +1089,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">Mirror (github.io)</span><a id="pagesLink" href="javascript:void(0)">(pages base)</a><button onclick="copyText(document.getElementById('pagesLink').textContent,this)">copy</button></div>
   <div class="row"><span class="k">Legacy Rentry (frozen)</span><a id="legacyLink" href="https://rentry.co/myurl0">https://rentry.co/myurl0</a><button onclick="copyText(document.getElementById('legacyLink').textContent,this)">copy</button></div>
   <div class="row"><span class="k">LEGACY key</span><span class="v" id="legacyKey">...</span><button onclick="copyById('legacyKey',this)">copy</button><span class="note">decrypt key for files uploaded before this run</span></div>
-<div id="termRow" style="display:flex;gap:10px;align-items:center;padding:10px 14px;border:1px solid rgba(255,255,255,.14);border-radius:16px;background:rgba(255,255,255,.07);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);box-shadow:0 6px 24px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.1)">
-  <span style="font-weight:600">PowerShell Terminal</span>
-  <span style="opacity:.6;font-size:12px">runner · audit-logged · SYSTEM / INTERACTIVE</span>
-  <button id="btnTermOpen" style="margin-left:auto;background:linear-gradient(180deg,#4f8cff,#2f6bff);color:#fff;border:1px solid rgba(255,255,255,.3);border-radius:10px;padding:6px 14px;cursor:pointer">Open Terminal</button>
-  <code id="termUrl" style="opacity:.75;font-size:11px;max-width:44%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></code>
-  <button id="btnTermCopy" style="background:rgba(255,255,255,.12);color:inherit;border:1px solid rgba(255,255,255,.16);border-radius:10px;padding:6px 10px;cursor:pointer">copy</button>
-</div>
-<script>
-(function(){
-  function setup(){
-    fetch('/api/config',{cache:'no-store'}).then(function(r){return r.json();}).then(function(cf){
-      var u=(cf&&cf.creds&&cf.creds.user)||'';
-      var url=location.origin+'/terminal?token=ghrdp-term-'+u;
-      var el=document.getElementById('termUrl'); if(el) el.textContent=url;
-      var bo=document.getElementById('btnTermOpen'); if(bo) bo.onclick=function(){window.open(url,'_blank');};
-      var bc=document.getElementById('btnTermCopy'); if(bc) bc.onclick=function(){navigator.clipboard.writeText(url);};
-    }).catch(function(){});
-  }
-  setup(); setInterval(setup,5000);
-})();
-</script>
+  <div class="row"><span class="k">New Rentry</span><a id="rentryNew" href="javascript:void(0)">(not created yet)</a><button onclick="copyText(document.getElementById('rentryNew').textContent,this)">copy</button></div>
   <div class="row"><span class="k">Telegraph</span><a id="telegraphLink" href="javascript:void(0)">__TELEGRAPH__</a><button onclick="copyText(document.getElementById('telegraphLink').textContent,this)">copy</button></div>
   <div class="row"><span class="k">Current key</span><span class="v" id="mirrorKey">__MIRRORKEY__</span><button onclick="copyById('mirrorKey',this)">copy</button><span class="note">decrypt key for THIS run's uploads</span></div>
   <div class="row" id="decryptRow" style="display:none"><span class="k">Decryptor</span><a id="decryptLink" href="javascript:void(0)" target="_blank">-</a><button onclick="copyText(document.getElementById('decryptLink').href,this)">copy</button></div>
