@@ -2216,6 +2216,10 @@ jobs:
                    if (-not $isDirect -and (((Get-Date) - $lastDirectTry).TotalMinutes -ge 5)) { $lastDirectTry = Get-Date; & 'C:\Program Files\Tailscale\tailscale.exe' ping --until-direct -c 3 --timeout 5s ([string]@($peer.TailscaleIPs)[0]) 2>$null | Out-Null; $LASTEXITCODE = 0 }
                }
            } catch { }
+          try {
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*webdesk\term\run-*.ps1*' -and ((Get-Date) - $_.CreationDate).TotalMinutes -gt 6 } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch { } }
+            Get-ChildItem 'C:\ghrdp\webdesk\term\status-*.txt' -ErrorAction SilentlyContinue | ForEach-Object { $tx = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue; if ($tx -match 'running' -and ((Get-Date) - $_.LastWriteTime).TotalMinutes -gt 6) { Set-Content $_.FullName 'exit=-1' -ErrorAction SilentlyContinue } }
+          } catch { }
               $tsStr = 'OK'
               if (-not $tsOk) { $tsStr = 'DOWN' }
               $tsPath = 'n/a'
