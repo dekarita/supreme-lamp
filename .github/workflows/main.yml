@@ -1437,7 +1437,9 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item -Path (Join-Path 'payloads' 'verify-terminal.ps1') -Destination 'C:\ghrdp\verify-terminal.ps1' -Force -ErrorAction SilentlyContinue
-          & icacls.exe 'C:\ghrdp\verify-terminal.ps1' /grant 'Users:(OI)(CI)RX' 2>$null | Out-Null; $LASTEXITCODE=0      - name: Register watcher autostart (ONLOGON)
+          & icacls.exe 'C:\ghrdp\verify-terminal.ps1' /grant 'Users:(OI)(CI)RX' 2>$null | Out-Null; $LASTEXITCODE=0
+
+      - name: Register watcher autostart (ONLOGON)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
