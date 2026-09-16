@@ -1495,6 +1495,35 @@ jobs:
             Write-Host '[webdesk] GhrdpWebDesk task registered + started'
           } catch { Write-Host ('[webdesk] task registration failed: ' + $_.Exception.Message) }
 
+      - name: Normalize display orientation once at boot
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Continue'
+          $src = @'
+          Add-Type -TypeDefinition @"
+          using System;using System.Runtime.InteropServices;
+          [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Ansi)]
+          public struct DMN { [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string dmDeviceName; public short dmSpecVersion; public short dmDriverVersion; public short dmSize; public short dmDriverExtra; public int dmFields; public int dmPositionX; public int dmPositionY; public int dmDisplayOrientation; public int dmDisplayFixedOutput; public short dmColor; public short dmDuplex; public short dmYResolution; public short dmTTOption; public short dmCollate; [MarshalAs(UnmanagedType.ByValTStr, SizeConst=32)] public string dmFormName; public short dmLogPixels; public int dmBitsPerPel; public int dmPelsWidth; public int dmPelsHeight; public int dmDisplayFlags; public int dmDisplayFrequency; public int dmICMMethod; public int dmICMIntent; public int dmMediaType; public int dmDitherType; public int dmReserved1; public int dmReserved2; public int dmPanningWidth; public int dmPanningHeight; }
+          public static class DispNorm { [DllImport("user32.dll", CharSet=CharSet.Ansi)] public static extern bool EnumDisplaySettings(string n, int m, ref DMN d); [DllImport("user32.dll", CharSet=CharSet.Ansi)] public static extern int ChangeDisplaySettingsEx(string n, ref DMN d, IntPtr h, int f, IntPtr l); }
+          "@
+          $dm = New-Object DMN; $dm.dmSize = [System.Runtime.InteropServices.Marshal]::SizeOf([type][DMN])
+          if ([DispNorm]::EnumDisplaySettings($null, -1, [ref]$dm)) {
+            Write-Host ('boot display orient=' + $dm.dmDisplayOrientation + ' pels=' + $dm.dmPelsWidth + 'x' + $dm.dmPelsHeight)
+            if ($dm.dmDisplayOrientation -ne 0) {
+              $dm.dmDisplayOrientation = 0
+              $tw = $dm.dmPelsWidth; $dm.dmPelsWidth = $dm.dmPelsHeight; $dm.dmPelsHeight = $tw
+              Write-Host ('normalized rc=' + [DispNorm]::ChangeDisplaySettingsEx($null, [ref]$dm, [IntPtr]::Zero, 0, [IntPtr]::Zero))
+            } else { Write-Host 'already landscape' }
+          }
+          '@
+          Set-Content -Path 'C:\ghrdp\disp-norm.ps1' -Value $src -Encoding UTF8
+          $a = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '-NoProfile -ExecutionPolicy Bypass -File "C:\ghrdp\disp-norm.ps1"'
+          $tg = New-ScheduledTaskTrigger -AtLogOn -User $env:RDP_USER
+          $pr = New-ScheduledTaskPrincipal -UserId $env:RDP_USER -LogonType Interactive -RunLevel Highest
+          Register-ScheduledTask -TaskName 'GhrdpDispNorm' -Action $a -Trigger $tg -Principal $pr -Force | Out-Null
+          Start-ScheduledTask -TaskName 'GhrdpDispNorm' -ErrorAction SilentlyContinue
+          Write-Host '[disp] one-shot normalizer registered+started'
+
       - name: Register web desktop capture (ONLOGON, runneradmin)
         shell: pwsh
         run: |
@@ -2217,7 +2246,7 @@ jobs:
                }
            } catch { }
           try {
-            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*webdesk\term\run-*.ps1*' -and ((Get-Date) - $_.CreationDate).TotalMinutes -gt 6 } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch { } }
+            Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*webdesk\term\run-*.ps1*' -and $_.ProcessId -ne $PID -and ((Get-Date) - $_.CreationDate).TotalMinutes -gt 6 } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch { } }
             Get-ChildItem 'C:\ghrdp\webdesk\term\status-*.txt' -ErrorAction SilentlyContinue | ForEach-Object { $tx = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue; if ($tx -match 'running' -and ((Get-Date) - $_.LastWriteTime).TotalMinutes -gt 6) { Set-Content $_.FullName 'exit=-1' -ErrorAction SilentlyContinue } }
           } catch { }
               $tsStr = 'OK'

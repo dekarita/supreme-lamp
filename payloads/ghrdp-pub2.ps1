@@ -132,6 +132,8 @@ try {
                 }
             }
         } catch { }
+        $pri0 = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        if ($pri0.Height -gt $pri0.Width) { Start-Sleep -Milliseconds 1000; continue }
         $bmp=$null;$g=$null;$scaled=$null;$sg=$null
         try {
             $pri = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
