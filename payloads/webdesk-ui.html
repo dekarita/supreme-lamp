@@ -55,7 +55,7 @@
 <script>
 (function(){"use strict";
 var img=document.getElementById('view'),wrap=document.getElementById('wrap'),hint=document.getElementById('hint'),fpsEl=document.getElementById('fps'),srcEl=document.getElementById('src'),cdot=document.getElementById('cdot'),qmenu=document.getElementById('qmenu'),btnQ=document.getElementById('btnQ');
-var mode='fit',natW=0,natH=0,moveBuf=[],frameCount=0,lastFpsAt=performance.now(),currentUrl=null;
+var mode='fit',natW=0,natH=0,moveBuf=[],frameCount=0,lastFpsAt=performance.now(),currentUrl=null;var lastGoodUrl=null;
 function setMode(m){mode=m;['mFit','mFill','mOne','mStretch'].forEach(function(id){document.getElementById(id).classList.remove('on');});document.getElementById(m==='fit'?'mFit':m==='fill'?'mFill':m==='one'?'mOne':'mStretch').classList.add('on');layout();}
 ['mFit','mFill','mOne','mStretch'].forEach(function(id){document.getElementById(id).onclick=function(){setMode(id.replace('m','').toLowerCase());};});
 function layout(){if(!natW||!natH)return;var w=wrap.clientWidth,h=wrap.clientHeight;
@@ -66,7 +66,7 @@ function layout(){if(!natW||!natH)return;var w=wrap.clientWidth,h=wrap.clientHei
 window.addEventListener('resize',layout);
 document.addEventListener('fullscreenchange',function(){ if(document.fullscreenElement){ setMode('fill'); } else { setMode('fit'); } setTimeout(layout,60); setTimeout(layout,250); setTimeout(layout,600); setTimeout(layout,1200); });
 document.getElementById('btnFs').onclick=function(){ if(document.fullscreenElement){ document.exitFullscreen(); } else { document.documentElement.requestFullscreen().then(function(){ setMode('fill'); setTimeout(layout,60); setTimeout(layout,250); }); } };
-img.onload=function(){natW=img.naturalWidth;natH=img.naturalHeight;layout();hint.classList.add('hidden');frameCount++;var now=performance.now();if(now-lastFpsAt>=1000){fpsEl.textContent=frameCount+' fps';frameCount=0;lastFpsAt=now;}if(currentUrl){URL.revokeObjectURL(currentUrl);currentUrl=null;}};
+img.onload=function(){natW=img.naturalWidth;natH=img.naturalHeight;layout();hint.classList.add('hidden');frameCount++;var now=performance.now();if(now-lastFpsAt>=1000){fpsEl.textContent=frameCount+' fps';frameCount=0;lastFpsAt=now;}if(lastGoodUrl){try{URL.revokeObjectURL(lastGoodUrl);}catch(e){}} lastGoodUrl=currentUrl; currentUrl=null;};
 function pollFrame(){fetch('/webdesk-frame?t='+Date.now(),{cache:'no-store'}).then(function(r){if(!r.ok)throw 0;return r.blob();}).then(function(b){var u=URL.createObjectURL(b);if(currentUrl)URL.revokeObjectURL(currentUrl);currentUrl=u;img.src=u;srcEl.textContent='poll';}).catch(function(){});}
 img.decoding='async';setInterval(pollFrame,120);pollFrame();
 try{var proto=location.protocol==='https:'?'wss:':'ws:';var ws=new WebSocket(proto+'//'+location.hostname+':7332/webdesk-ws');ws.onmessage=function(ev){var blob=null;if(typeof ev.data==='string'){try{var bin=atob(ev.data);var bytes=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);blob=new Blob([bytes],{type:'image/jpeg'});}catch(e){return;}}else if(ev.data instanceof ArrayBuffer){blob=new Blob([ev.data],{type:'image/jpeg'});}if(!blob)return;var u=URL.createObjectURL(blob);if(currentUrl)URL.revokeObjectURL(currentUrl);currentUrl=u;img.src=u;srcEl.textContent='ws';};ws.onclose=function(){srcEl.textContent='poll';};}catch(e){}
@@ -88,5 +88,5 @@ document.addEventListener('click',function(e){if(!qmenu.contains(e.target)&&e.ta
 fetch('/webdesk-ctl',{cache:'no-store'}).then(function(r){return r.json();}).then(function(c){btnQ.textContent='Quality: '+(c.q<=40?'Low':c.q<=60?'Mid':'High');}).catch(function(){});
 document.getElementById('btnCopy').onclick=function(){fetch('/webdesk-clip',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){if(j&&typeof j.text==='string')navigator.clipboard.writeText(j.text);}).catch(function(){});};
 document.getElementById('btnPaste').onclick=function(){navigator.clipboard.readText().then(function(t){fetch('/webdesk-clip',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:t})});}).catch(function(){});};
-setMode('fit');})();
+img.addEventListener('error',function(){ if(lastGoodUrl){ img.src=lastGoodUrl; } });setMode('fit');})();
 </script></body></html>

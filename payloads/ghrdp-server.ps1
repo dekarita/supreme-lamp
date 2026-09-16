@@ -290,7 +290,12 @@ function Invoke-ClientRequest {
             return
         }
         if ($path -eq '/webdesk-frame') {
-            try { $b = [System.IO.File]::ReadAllBytes('C:\ghrdp\webdesk\frame.jpg'); Send-ClientResponse -Stream $stream -Code 200 -CType 'image/jpeg' -Body $b } catch { Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('no frame yet')) }
+            $b = $null
+            for ($ra = 1; $ra -le 4; $ra++) {
+                try { $b = [System.IO.File]::ReadAllBytes('C:\ghrdp\webdesk\frame.jpg'); if ($b -and $b.Length -gt 0) { break } } catch { $b = $null }
+                Start-Sleep -Milliseconds 25
+            }
+            if ($b -and $b.Length -gt 0) { Send-ClientResponse -Stream $stream -Code 200 -CType 'image/jpeg' -Body $b } else { Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('no frame yet')) }
             return
         }
         if ($path -eq '/webdesk-input') {

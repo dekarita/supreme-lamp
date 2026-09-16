@@ -61,7 +61,7 @@ function Send-MouseEvent {
     [void][GhrdpInput]::SendInput(1, $arr, $INPUT_SIZE)
 }
 function Send-KeyEvent {
-    param([ushort]$Vk,[bool]$KeyUp)
+    param([System.UInt16]$Vk,[bool]$KeyUp)
     $ki = New-Object GhrdpInput+KEYBDINPUT
     $ki.wVk = $Vk; $ki.wScan = 0
     if ($KeyUp) { $ki.dwFlags = [uint32]$KEF_UP } else { $ki.dwFlags = [uint32]0 }
@@ -108,10 +108,10 @@ function Process-InputBatch {
             'ru' { Send-MouseEvent -Flags ([uint32]$MEF_RU) }
             'w'  { $d=[int]$ev.d; if ($d -eq 0) { $d = -1 }
                    Send-MouseEvent -Flags ([uint32]$MEF_WHEEL) -MouseData ([uint32]($d*120)) }
-            'kd' { Send-KeyEvent -Vk ([ushort][int]$ev.vk) -KeyUp:$false }
-            'ku' { Send-KeyEvent -Vk ([ushort][int]$ev.vk) -KeyUp:$true }
+            'kd' { Send-KeyEvent -Vk ([System.UInt16][int]$ev.vk) -KeyUp:$false }
+            'ku' { Send-KeyEvent -Vk ([System.UInt16][int]$ev.vk) -KeyUp:$true }
             'k'  { $ch=[string]$ev.ch; if ($ch.Length -gt 0) {
-                       $vk = [ushort][int][char]$ch[0]
+                       $vk = [System.UInt16][int][char]$ch[0]
                        Send-KeyEvent -Vk $vk -KeyUp:$false
                        Send-KeyEvent -Vk $vk -KeyUp:$true } }
         }
