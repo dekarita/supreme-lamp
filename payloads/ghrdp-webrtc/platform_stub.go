@@ -80,6 +80,10 @@ func acquireSingleton() (func(), error) {
 
 func killStaleFFmpeg() {}
 
+func killPortOwner(port int) {}
+
+func startDisplayKeepAlive() {}
+
 func handleInputMessage(data []byte) {
 	stats.lastInputNs.Store(time.Now().UnixNano())
 }
