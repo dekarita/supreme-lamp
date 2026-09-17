@@ -114,36 +114,33 @@ function applyFrame(blob,label){
  srcEl.textContent=label;
 }
 
-/* ---- D2: Poll 100ms when no WS ---- */
+/* ---- D2: Poll-on-complete (fire next immediately when current finishes) ---- */
+var wsUp=false;
 function pollFrame(){
- if(polling)return;polling=true;
+ if(wsUp)return;
  fetch('/webdesk-frame?t='+Date.now(),{cache:'no-store'})
   .then(function(r){if(!r.ok)throw 0;return r.blob();})
   .then(function(b){applyFrame(b,'poll');})
-  .catch(function(){}).finally(function(){polling=false;});
+  .catch(function(){}).finally(function(){if(!wsUp)setTimeout(pollFrame,5);});
 }
-var pollTimer=setInterval(pollFrame,100);pollFrame();
+pollFrame();
 
-/* ---- WebSocket primary source with reconnect ---- */
-var wsProto=location.protocol==='https:'?'wss:':'ws:';
-var wsUrl=wsProto+'//'+location.hostname+':7332/webdesk-ws';
-function connectWs(){
- try{
-  var ws=new WebSocket(wsUrl);
-  ws.binaryType='arraybuffer';
-  ws.onopen=function(){clearInterval(pollTimer);srcEl.textContent='ws';};
-  ws.onmessage=function(ev){
-   var blob=null;
-   if(typeof ev.data==='string'){
-    try{var bin=atob(ev.data);var bytes=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);blob=new Blob([bytes],{type:'image/jpeg'});}catch(e){return;}
-   }else if(ev.data instanceof ArrayBuffer){blob=new Blob([ev.data],{type:'image/jpeg'});}
-   if(blob)applyFrame(blob,'ws');
-  };
-  ws.onclose=function(){srcEl.textContent='poll';pollTimer=setInterval(pollFrame,100);pollFrame();setTimeout(connectWs,3000);};
-  ws.onerror=function(){};
- }catch(e){setTimeout(connectWs,5000);}
-}
-connectWs();
+/* ---- WebSocket (single attempt — no reconnect if port 7332 absent) ---- */
+try{
+ var wsProto=location.protocol==='https:'?'wss:':'ws:';
+ var ws=new WebSocket(wsProto+'//'+location.hostname+':7332/webdesk-ws');
+ ws.binaryType='arraybuffer';
+ ws.onopen=function(){wsUp=true;srcEl.textContent='ws';};
+ ws.onmessage=function(ev){
+  var blob=null;
+  if(typeof ev.data==='string'){
+   try{var bin=atob(ev.data);var bytes=new Uint8Array(bin.length);for(var i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);blob=new Blob([bytes],{type:'image/jpeg'});}catch(e){return;}
+  }else if(ev.data instanceof ArrayBuffer){blob=new Blob([ev.data],{type:'image/jpeg'});}
+  if(blob)applyFrame(blob,'ws');
+ };
+ ws.onclose=function(){wsUp=false;srcEl.textContent='poll';pollFrame();};
+ ws.onerror=function(){};
+}catch(e){}
 
 /* ---- FPS + RTT counter ---- */
 setInterval(function(){fpsEl.textContent=frameCount+' fps'+(lastRtt?' '+lastRtt+'ms':'');frameCount=0;},1000);
