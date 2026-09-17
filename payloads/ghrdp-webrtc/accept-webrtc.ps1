@@ -220,6 +220,62 @@ if ($acc) {
     }
 }
 
+# --- B6: exactly one server, one ffmpeg, and ffmpeg -video_size == /version ----
+# The v2 desync was capture 512x384 feeding an ffmpeg told 1024x768, which shows
+# up as a grey gradient over the top quarter of the frame. /version reports what
+# the pipeline intends; ffmpeg's own command line is what actually happens. If
+# they disagree, the stream is desynced even when the probe still says PASS.
+function Get-ServerExePath {
+    try {
+        $v = Invoke-RestMethod -Uri 'http://127.0.0.1:8080/version' -TimeoutSec 5 -ErrorAction Stop
+        if ($v.exe_path) { return [string]$v.exe_path }
+    } catch { }
+    return ''
+}
+
+# Pure so it can be exercised on any platform: given the sizes ffmpeg was told and
+# the resolution the server reports, list the mismatches. v2's grey gradient was
+# exactly this disagreement.
+function Get-DesyncProblems {
+    param([string[]]$Sizes, [string]$Res)
+    $out = @()
+    if (-not $Res) { return $out }
+    foreach ($sz in @($Sizes)) {
+        if ($sz -and $sz -ne $Res) {
+            $out += ('ffmpeg -video_size ' + $sz + ' != /version res ' + $Res + ' (desync)')
+        }
+    }
+    return $out
+}
+
+function Get-PipelineCounts {
+    if (-not (Get-Command Get-CimInstance -ErrorAction SilentlyContinue)) { return $null }
+    $exePath = Get-ServerExePath
+    $exeLeaf = if ($exePath) { Split-Path -Leaf $exePath } else { Get-ServerExeName }
+    $servers = @(Get-CimInstance Win32_Process -Filter ("Name='{0}'" -f $exeLeaf) -ErrorAction SilentlyContinue)
+    $ffmpegs = @(Get-CimInstance Win32_Process -Filter "Name='ffmpeg.exe'" -ErrorAction SilentlyContinue)
+    return [pscustomobject]@{
+        ServerExe   = $exeLeaf
+        Servers     = $servers.Count
+        Ffmpegs     = $ffmpegs.Count
+        FfmpegSizes = @($ffmpegs | ForEach-Object {
+                if ($_.CommandLine -match '-video_size\s+(\S+)') { $Matches[1] }
+            })
+    }
+}
+
+$counts = $null
+if ($acc) {
+    $counts = Get-PipelineCounts
+    if ($counts) {
+        if ($counts.Servers -ne 1) { $healthProblems += ('server processes = ' + $counts.Servers + ' (want 1)') }
+        if ($counts.Ffmpegs -ne 1) { $healthProblems += ('ffmpeg processes = ' + $counts.Ffmpegs + ' (want 1)') }
+        if ($health -and $health.res) {
+            $healthProblems += Get-DesyncProblems -Sizes $counts.FfmpegSizes -Res ([string]$health.res)
+        }
+    }
+}
+
 # --- summary + verdict ------------------------------------------------------
 $verdict = 'FAIL'
 if ($acc) { $verdict = [string]$acc.verdict }
@@ -249,6 +305,11 @@ if ($health) {
     $summaryLines += ('| guard_tripped | {0} |' -f [bool]$health.guard_tripped)
 } else {
     $summaryLines += '| stats | unreachable |'
+}
+if ($counts) {
+    $summaryLines += ('| server procs | {0} (exe {1}) |' -f $counts.Servers, $counts.ServerExe)
+    $summaryLines += ('| ffmpeg procs | {0} |' -f $counts.Ffmpegs)
+    $summaryLines += ('| ffmpeg -video_size | {0} |' -f ($counts.FfmpegSizes -join ', '))
 }
 if ($healthProblems.Count) {
     $summaryLines += ''
