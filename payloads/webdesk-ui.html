@@ -161,7 +161,7 @@ function flush(){
  var batch=moveBuf;moveBuf=[];
  var body=batch.map(function(e){return JSON.stringify(e);}).join('\n');
  inflight=true;var t0=performance.now();
-  fetch('http://100.84.43.48:7331/webdesk-input',{method:'POST',headers:{'Content-Type':'application/x-ndjson'},body:body,keepalive:true})
+ fetch('/webdesk-input',{method:'POST',headers:{'Content-Type':'application/x-ndjson'},body:body,keepalive:true})
   .then(function(){lastRtt=Math.round(performance.now()-t0);})
   .catch(function(){}).finally(function(){inflight=false;if(moveBuf.length)flush();});
 }

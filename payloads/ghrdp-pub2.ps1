@@ -164,6 +164,8 @@ try {
             $sg = [System.Drawing.Graphics]::FromImage($scaled)
             $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
             $sg.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
+            $sg.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::HighQuality
+            $sg.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::HighQuality
             $sg.DrawImage($bmp, 0, 0, $sw, $sh)
             $scaled.Save($frameTmp, $jpegEncoder, $encParams)
             Move-Item -LiteralPath $frameTmp -Destination $framePath -Force -ErrorAction Stop
