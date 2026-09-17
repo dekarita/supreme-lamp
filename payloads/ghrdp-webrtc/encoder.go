@@ -97,6 +97,12 @@ func newEncoder(width, height int, mode modeSpec) (*encoder, error) {
 			"-keyint_min", fmt.Sprintf("%d", mode.FPS),
 			"-sc_threshold", "0",
 			"-x264-params", "rc-lookahead=0:bframes=0:ref=1:repeat-headers=1",
+			// Single-threaded encode. On the 2 vCPU runner x264's default frame
+			// threading lets one frame sit in another thread's queue, which shows up
+			// directly as input_to_frame_ms. 512x384@15 and 640x480@15 are far below
+			// what one core handles with ultrafast, so the trade is latency for
+			// headroom we do not need (B4 <= 120ms).
+			"-threads", "1",
 			"-f", "h264",
 			"-flush_packets", "1",
 		}

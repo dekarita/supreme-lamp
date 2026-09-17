@@ -183,6 +183,14 @@ function startWebRTC() {
       stream.addTrack(ev.track);
     }
     view.srcObject = stream;
+    // The stream is live from the first frame, so there is nothing to build a
+    // playout buffer for. Chrome's default jitter buffer adds 100-200ms on top
+    // of the relay path; on a localhost/DC connection it buys nothing.
+    try { ev.receiver.jitterBufferTarget = 0; } catch (e) { }
+    // Note: no requestKeyFrame() here. The Go server writes the H.264 track and
+    // never reads RTCP, so a PLI would be silently dropped. Join latency is
+    // bounded by the encoder's IDR cadence (-g 30 = 2s at 15fps), which is the
+    // B3 blackout budget; shortening it further costs bitrate on 2 vCPU.
     if ('requestVideoFrameCallback' in view) {
       view.requestVideoFrameCallback(onVideoFrame);
     }

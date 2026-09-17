@@ -1659,10 +1659,11 @@ jobs:
           # failure that skipped the keep-alive and destroyed the session. A PASS
           # verdict is authoritative here and must never exit non-zero.
           if ($verdict -eq 'PASS') { Write-Host '[accept] verdict PASS - not failing the step'; exit 0 }
-          if ($rc -ne 0) { Write-Host '[accept] WARN: acceptance did not PASS - recorded above; the session steps below still run' }
-          # continue-on-error keeps this step non-fatal either way; exiting with the
-          # real code keeps a genuine FAIL visible in the run UI.
-          exit 0
+          Write-Host '[accept] WARN: acceptance did not PASS - recorded above; the session steps below still run'
+          # continue-on-error makes a non-zero exit non-fatal, so returning the real
+          # code costs nothing and keeps a genuine FAIL visible in the run UI.
+          if ($rc -ne 0) { exit $rc }
+          exit 1
 
       - name: Upload acceptance artifact
         if: ${{ always() }}
