@@ -1913,6 +1913,7 @@ jobs:
           if ($cfgKa) { $cfgKa | Add-Member -NotePropertyName keepAliveDeadline -NotePropertyValue ($deadline.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')) -Force; $cfgKa | Add-Member -NotePropertyName keepAlivePhase -NotePropertyValue 'idle-wait' -Force; Save-MirrorCfg -Cfg $cfgKa -Path $cfgPath }
           $beat = 0
           $lastBannerBeat = -10
+          $lastSummaryPhase = ''
           $lastWatchNudge = (Get-Date).AddMinutes(-10)
           $lastTsFix = (Get-Date).AddMinutes(-10)
           $lastRdpFix = (Get-Date).AddMinutes(-10)
@@ -2397,7 +2398,7 @@ jobs:
                     Write-Host ($icons.wrench + ' ' + $stamp + ' WebRTC heal: alive=' + $wAlive + ' version=' + [bool]$wv + ' session=' + $wSess + ' ffmpeg=' + $wFfmpeg)
                     try { Stop-ScheduledTask -TaskName 'GhrdpWebRTC' -ErrorAction SilentlyContinue } catch { }
                     try {
-                        Get-CimInstance Win32_Process -Filter "Name='webrtc-server.exe'" -ErrorAction SilentlyContinue | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch { } }
+                        Get-CimInstance Win32_Process -Filter $webRtcFilter -ErrorAction SilentlyContinue | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch { } }
                         Get-CimInstance Win32_Process -Filter "Name='ffmpeg.exe'" -ErrorAction SilentlyContinue | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch { } }
                     } catch { }
                     Start-Sleep -Seconds 2
@@ -2445,6 +2446,14 @@ jobs:
               if (-not $rdpOk) { $rdpStr = 'DOWN' }
               $psStr = 'UP'
               if (-not $psOk) { $psStr = 'DOWN' }
+              if (($beat % 5) -eq 0) {
+                  # The runner IP changes every run; without printing it the user
+                  # has to guess which box to RDP into.
+                  try {
+                      $tsIpNow = ([string](& $ts ip -4 2>$null | Select-Object -First 1)).Trim()
+                      if ($tsIpNow) { Write-Host ($icons.link + ' tailscale IP: ' + $tsIpNow + ' | RDP: ' + $tsIpNow + ':3389 | web: http://' + $tsIpNow + ':8080/') }
+                  } catch { }
+              }
               $line = 'HEARTBEAT ' + $icons.hourglass + ' remaining ' + (Get-Remaining) + ' | dashboard ' + $dashShort + ' | ts:' + $tsStr + ' path:' + $tsPath + ' | rdp3389:' + $rdpStr + ' | ps7331:' + $psStr + ' | rust7332:' + $rustStr + ' | watcher:' + $watcherStr + ' (scans ' + $scans + ') | files ' + $done + '/' + $total + ' failed ' + $failed + ' | speed ' + (Get-SpeedStr -Bps $spd) + ' | Last updated: ' + $stamp
               if (-not ($tsOk -and $rdpOk -and $psOk)) { $line = $icons.warn + ' ' + $line }
               Write-Host $line
@@ -2487,6 +2496,41 @@ jobs:
                   }
                   Publish-StatusToGhPages -JsonText ($statusObj2 | ConvertTo-Json -Depth 20 -Compress)
               } catch { Write-Host ('[status] publish failed: ' + $_.Exception.Message) }
+              # Heartbeat breadcrumb. The keep-alive is a 5h30 step: if the job
+              # dies or the step is skipped, the only way to tell from outside is
+              # to compare this timestamp against the wall clock. Written every
+              # beat, next to the artifacts, so a stale file is unambiguous.
+              try {
+                  $hb = [ordered]@{
+                      ts         = $stamp
+                      beat       = $beat
+                      remaining  = (Get-Remaining)
+                      phase      = $phaseNow
+                      webrtcExe  = $webRtcExeName
+                      tsOk       = $tsOk
+                      rdpOk      = $rdpOk
+                      psOk       = $psOk
+                      pid        = $PID
+                      runId      = [string]$env:GITHUB_RUN_ID
+                  }
+                  [System.IO.File]::WriteAllText((Join-Path $root 'keepalive-last-beat.json'), ($hb | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
+              } catch { }
+
+              # Record the heartbeat on the run page. APPEND, never overwrite:
+              # the summary file is shared with every earlier step, and the
+              # acceptance PASS line that explains this run has to survive. To
+              # keep 5h30 of beats from flooding it, only write on a phase change
+              # or every 30 beats; the per-minute truth lives in the JSON file.
+              if ($summary -and (($phaseNow -ne $lastSummaryPhase) -or (($beat % 30) -eq 0))) {
+                  $lastSummaryPhase = $phaseNow
+                  try {
+                      $sline = '- keep-alive ' + $phaseNow + ': last beat ' + $stamp + ' (beat ' + $beat + ', remaining ' + (Get-Remaining) + ') | tailscale=' + $tsStr + ' rdp3389=' + $rdpStr + ' ps7331=' + $psStr + ' rust7332=' + $rustStr + ' | webrtc exe=' + $webRtcExeName + "`n"
+                      Add-Content -LiteralPath $summary -Value $sline -Encoding UTF8 -ErrorAction Stop
+                  } catch {
+                      try { [System.IO.File]::AppendAllText($summary, $sline) } catch { }
+                  }
+              }
+
               if (($beat - $lastBannerBeat) -ge 10) {
                   $lastBannerBeat = $beat
                   Show-Banner -Reason ('auto-refresh, heartbeat ' + $beat)
