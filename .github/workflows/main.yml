@@ -1533,6 +1533,57 @@ jobs:
           } catch { Write-Host ('[webdesk] runneradmin task register failed: ' + $_.Exception.Message) }
           exit 0
 
+      - name: Build and deploy WebRTC server (Go + pion/webrtc + H.264)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host '=== WebRTC server build ==='
+          # Install FFmpeg for H.264 encoding
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+              Write-Host '[webrtc] Installing FFmpeg...'
+              choco install ffmpeg -y --no-progress 2>&1 | Out-Null
+              $env:PATH = [System.Environment]::GetEnvironmentVariable('PATH','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('PATH','User')
+          }
+          Write-Host ('[webrtc] ffmpeg: ' + ((ffmpeg -version 2>&1 | Select-Object -First 1) -replace 'ffmpeg version ',''))
+          Write-Host ('[webrtc] go: ' + (go version))
+          # Build
+          $srcDir = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-webrtc'
+          $deployDir = 'C:\ghrdp\webrtc'
+          New-Item -ItemType Directory -Path $deployDir -Force | Out-Null
+          Push-Location $srcDir
+          $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+          go get github.com/pion/webrtc/v3@latest 2>&1
+          go get github.com/gorilla/websocket@latest 2>&1
+          go mod tidy 2>&1
+          $binPath = Join-Path $deployDir 'webrtc-server.exe'
+          go build -ldflags='-s -w' -o $binPath .
+          if ($LASTEXITCODE -ne 0) { Write-Host '[webrtc] BUILD FAILED'; Pop-Location; exit 0 }
+          Write-Host ('[webrtc] built: ' + (((Get-Item $binPath).Length / 1MB).ToString('F1')) + ' MB')
+          Pop-Location
+          # Deploy static files
+          $staticDst = Join-Path $deployDir 'static'
+          New-Item -ItemType Directory -Path $staticDst -Force | Out-Null
+          Copy-Item -Path (Join-Path $srcDir 'static\*') -Destination $staticDst -Recurse -Force
+          # Register scheduled task (Interactive principal, same as GhrdpWebDesk)
+          $activeUser = $env:RDP_USER
+          try { $qu = & quser.exe 2>$null; foreach ($ln in @($qu)) { if ($ln -match '^\s*>?\s*(\S+)\s+\S+\s+(\d+)\s+Active') { $activeUser = $Matches[1] } } } catch { }
+          if (-not $activeUser) { $activeUser = $env:USERNAME }
+          Write-Host ('[webrtc] task user: ' + $activeUser)
+          try { Unregister-ScheduledTask -TaskName 'GhrdpWebRTC' -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+          try {
+              $action   = New-ScheduledTaskAction -Execute $binPath -WorkingDirectory $deployDir
+              $trigger  = New-ScheduledTaskTrigger -AtLogOn -User $activeUser
+              $principal = New-ScheduledTaskPrincipal -UserId $activeUser -LogonType Interactive -RunLevel Highest
+              $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 6)
+              Register-ScheduledTask -TaskName 'GhrdpWebRTC' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null
+              Start-ScheduledTask -TaskName 'GhrdpWebRTC' -ErrorAction SilentlyContinue
+              Start-Sleep -Seconds 3
+              $resp = try { Invoke-WebRequest -Uri 'http://localhost:8080/health' -TimeoutSec 5 -UseBasicParsing } catch { $null }
+              if ($resp -and $resp.StatusCode -eq 200) { Write-Host '[webrtc] server running on :8080' }
+              else { Write-Host '[webrtc] server not responding — may start at next logon' }
+          } catch { Write-Host ('[webrtc] task failed: ' + $_.Exception.Message) }
+          exit 0
+
       - name: Keep Parsec host session warm (auto-relaunch parsecd as RDP user)
         shell: pwsh
         run: |
