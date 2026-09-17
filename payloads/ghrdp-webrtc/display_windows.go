@@ -10,21 +10,23 @@ import (
 
 var (
 	procSetThreadExecutionState = modKernel32.NewProc("SetThreadExecutionState")
+	procSetLastError            = modKernel32.NewProc("SetLastError")
 )
 
-const (
-	esSystemRequired  = 0x00000001
-	esDisplayRequired = 0x00000002
-	esContinuous      = 0x80000000
-)
-
-// SetThreadExecutionState is per-THREAD: the requirement is held by the calling
-// thread and is dropped when that thread exits. The caller must therefore keep
-// the thread alive and locked, which startDisplayKeepAlive does.
+// setThreadExecutionState re-asserts the keepalive requirement on the CALLING
+// thread. SetThreadExecutionState is per-thread: the requirement is held by the
+// thread that set it and is dropped when that thread exits, so the caller must
+// keep the thread alive and locked the whole time.
+//
+// The API returns the PREVIOUS execution state and NULL only on failure, so a
+// successful first call legitimately returns 0. Last error is cleared first so a
+// zero return can be told apart from a genuine failure instead of reporting the
+// keepalive as broken on exactly the machine it is meant to fix.
 func setThreadExecutionState() bool {
-	r, _, err := procSetThreadExecutionState.Call(uintptr(esContinuous | esDisplayRequired | esSystemRequired))
-	if r == 0 {
-		log.Printf("SetThreadExecutionState failed: %v", err)
+	procSetLastError.Call(0)
+	r, _, err := procSetThreadExecutionState.Call(uintptr(keepAliveFlags))
+	if !execStateOK(r, err) {
+		log.Printf("SetThreadExecutionState(0x%x) failed: %v", keepAliveFlags, err)
 		return false
 	}
 	return true
@@ -44,8 +46,8 @@ func startDisplayKeepAlive() {
 
 		if setThreadExecutionState() {
 			log.Println("display keepalive active (ES_CONTINUOUS|ES_DISPLAY_REQUIRED|ES_SYSTEM_REQUIRED)")
-			displayAwake.Store(true)
 		}
+		displayAwake.Store(true)
 
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
