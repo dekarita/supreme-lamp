@@ -89,7 +89,7 @@ func runProbe(wsURL string, dur time.Duration) (*probeResult, error) {
 	}
 	defer pc.Close()
 
-	pc.AddTransceiver(webrtc.RTPCodecTypeVideo, webrtc.RTPTransceiverInit{
+	pc.AddTransceiverFromKind(webrtc.RTPCodecTypeVideo, webrtc.RTPTransceiverInit{
 		Direction: webrtc.RTPTransceiverDirectionRecvonly,
 	})
 
