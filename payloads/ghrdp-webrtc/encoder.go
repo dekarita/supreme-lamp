@@ -13,34 +13,44 @@ import (
 )
 
 type encoder struct {
-	cmd    *exec.Cmd
-	stdin  io.WriteCloser
-	outCh  chan []byte
-	mu     sync.Mutex
-	closed bool
-	drops  atomic.Int64
+	cmd     *exec.Cmd
+	stdin   io.WriteCloser
+	outCh   chan []byte
+	mu      sync.Mutex
+	closed  bool
+	drops   atomic.Int64
+	width   int
+	height  int
+	encoder string
+	mode    string
+	fps     int
+	bitrate atomic.Int64
 }
+
+// liveEncoder is the encoder of the currently streaming pipeline; /version and
+// /stats read it so the advertised size/bitrate always match the real ffmpeg.
+var liveEncoder atomic.Pointer[encoder]
 
 var encoderName string
 
-func detectHWEncoder() (codec string, extraArgs []string) {
+func detectHWEncoder(mode modeSpec) (codec string, extraArgs []string) {
 	candidates := []struct {
 		name string
 		args []string
 	}{
 		{"h264_nvenc", []string{"-c:v", "h264_nvenc", "-preset", "p1", "-tune", "ull",
 			"-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
-			"-b:v", "1200k", "-maxrate", "1500k", "-bufsize", "1000k",
+			"-b:v", fmt.Sprintf("%dk", mode.BitrateKbps), "-maxrate", fmt.Sprintf("%dk", mode.MaxRateKbps), "-bufsize", fmt.Sprintf("%dk", mode.BufSizeKbps),
 			"-g", "30", "-bf", "0", "-rc", "cbr",
 			"-f", "h264", "-flush_packets", "1"}},
 		{"h264_qsv", []string{"-c:v", "h264_qsv", "-preset", "veryfast",
 			"-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
-			"-b:v", "1200k", "-maxrate", "1500k", "-bufsize", "1000k",
+			"-b:v", fmt.Sprintf("%dk", mode.BitrateKbps), "-maxrate", fmt.Sprintf("%dk", mode.MaxRateKbps), "-bufsize", fmt.Sprintf("%dk", mode.BufSizeKbps),
 			"-g", "30", "-bf", "0",
 			"-f", "h264", "-flush_packets", "1"}},
 		{"h264_amf", []string{"-c:v", "h264_amf", "-usage", "ultralowlatency",
 			"-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
-			"-b:v", "1200k", "-maxrate", "1500k", "-bufsize", "1000k",
+			"-b:v", fmt.Sprintf("%dk", mode.BitrateKbps), "-maxrate", fmt.Sprintf("%dk", mode.MaxRateKbps), "-bufsize", fmt.Sprintf("%dk", mode.BufSizeKbps),
 			"-g", "30", "-bf", "0",
 			"-f", "h264", "-flush_packets", "1"}},
 	}
@@ -57,33 +67,21 @@ func detectHWEncoder() (codec string, extraArgs []string) {
 	return "", nil
 }
 
-func newEncoder(width, height, fps int) (*encoder, error) {
+func newEncoder(width, height int, mode modeSpec) (*encoder, error) {
 	inputArgs := []string{
 		"-f", "rawvideo",
 		"-pixel_format", "bgra",
 		"-video_size", fmt.Sprintf("%dx%d", width, height),
-		"-framerate", fmt.Sprintf("%d", fps),
+		"-framerate", fmt.Sprintf("%d", mode.FPS),
 		"-i", "pipe:0",
 	}
 
-	bitrate := "1200k"
-	maxrate := "1500k"
-	bufsize := "1000k"
-	if width == 640 && height == 480 {
-		bitrate = "1600k"
-		maxrate = "2000k"
-		bufsize = "1200k"
-	}
-	hwCodec, hwArgs := detectHWEncoder()
+	hwCodec, hwArgs := detectHWEncoder(mode)
 	var outputArgs []string
-	// For 640x480, force libx264 with higher bitrate (HW encoders may not support dynamic)
-	if hwCodec != "" && !(width == 640 && height == 480) {
+	if hwCodec != "" {
 		encoderName = hwCodec
 		outputArgs = hwArgs
 	} else {
-		if hwCodec != "" && width == 640 && height == 480 {
-			log.Printf("640x480 mode: forcing libx264 (HW encoder %s not used for this mode)", hwCodec)
-		}
 		encoderName = "libx264"
 		outputArgs = []string{
 			"-c:v", "libx264",
@@ -92,11 +90,11 @@ func newEncoder(width, height, fps int) (*encoder, error) {
 			"-profile:v", "baseline",
 			"-level", "3.1",
 			"-pix_fmt", "yuv420p",
-			"-b:v", bitrate,
-			"-maxrate", maxrate,
-			"-bufsize", bufsize,
-			"-g", "30",
-			"-keyint_min", "15",
+			"-b:v", fmt.Sprintf("%dk", mode.BitrateKbps),
+			"-maxrate", fmt.Sprintf("%dk", mode.MaxRateKbps),
+			"-bufsize", fmt.Sprintf("%dk", mode.BufSizeKbps),
+			"-g", fmt.Sprintf("%d", mode.FPS*2),
+			"-keyint_min", fmt.Sprintf("%d", mode.FPS),
 			"-sc_threshold", "0",
 			"-x264-params", "rc-lookahead=0:bframes=0:ref=1:repeat-headers=1",
 			"-f", "h264",
@@ -113,7 +111,7 @@ func newEncoder(width, height, fps int) (*encoder, error) {
 	stderrLog, errF := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if errF == nil {
 		cmd.Stderr = stderrLog
-		log.Printf("ffmpeg stderr → %s", logPath)
+		log.Printf("ffmpeg stderr -> %s", logPath)
 	} else {
 		cmd.Stderr = io.Discard
 		log.Printf("ffmpeg stderr discard (open %s: %v)", logPath, errF)
@@ -133,13 +131,21 @@ func newEncoder(width, height, fps int) (*encoder, error) {
 		return nil, fmt.Errorf("ffmpeg start: %w", err)
 	}
 
-	log.Printf("ffmpeg pid=%d encoder=%s -video_size %dx%d -framerate %d -b:v %s", cmd.Process.Pid, encoderName, width, height, fps, bitrate)
+	log.Printf("ffmpeg pid=%d encoder=%s -video_size %dx%d -framerate %d -b:v %dk mode=%s",
+		cmd.Process.Pid, encoderName, width, height, mode.FPS, mode.BitrateKbps, mode.Name)
 
 	e := &encoder{
-		cmd:   cmd,
-		stdin: stdin,
-		outCh: make(chan []byte, 4),
+		cmd:     cmd,
+		stdin:   stdin,
+		outCh:   make(chan []byte, 4),
+		width:   width,
+		height:  height,
+		encoder: encoderName,
+		mode:    mode.Name,
+		fps:     mode.FPS,
 	}
+	e.bitrate.Store(int64(mode.BitrateKbps))
+	liveEncoder.Store(e)
 
 	go e.readLoop(stdout)
 	return e, nil

@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -15,18 +13,10 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v3"
 	"github.com/pion/webrtc/v3/pkg/media"
-)
-
-const targetFPS = 15
-
-var (
-	gitCommit = "unknown"
-	buildTime = "unknown"
 )
 
 type signalMessage struct {
@@ -46,10 +36,30 @@ var (
 	activeCancel context.CancelFunc
 )
 
+// liveMode is the mode of the pipeline currently streaming, stored as an atomic
+// pointer because handleStats/handleVersion run on other goroutines.
+var liveMode atomic.Pointer[modeSpec]
+
+func init() { liveMode.Store(&modeDefault) }
+
+func currentModeSpec() modeSpec {
+	if m := liveMode.Load(); m != nil {
+		return *m
+	}
+	return modeDefault
+}
+
+var (
+	capWv, capHv atomic.Int64
+	srcWv, srcHv atomic.Int64
+)
+
+// displayAwake reports whether the anti-idle keepalive currently holds the
+// display-required flag. Surfaced by /stats so screen dimming is diagnosable
+// without a console.
+var displayAwake atomic.Bool
+
 var stats struct {
-	capW, capH   int
-	srcW, srcH   int
-	fpsSent      atomic.Int64
 	fpsEncoded   atomic.Int64
 	drops        atomic.Int64
 	kbpsSent     atomic.Int64
@@ -61,88 +71,56 @@ var stats struct {
 	sizeMismatch atomic.Bool
 	lastInputNs  atomic.Int64
 	inputToFrame atomic.Int64
+	guardTrip    atomic.Bool
 }
 
-var encoderArgsHash string
-
-func getSessionId() uint32 {
-	modKernel32 := syscall.NewLazyDLL("kernel32.dll")
-	proc := modKernel32.NewProc("ProcessIdToSessionId")
-	var sessionId uint32
-	pid := uint32(os.Getpid())
-	ret, _, _ := proc.Call(uintptr(pid), uintptr(unsafe.Pointer(&sessionId)))
-	if ret == 0 {
-		return 0
-	}
-	return sessionId
-}
-
-func createMutex(name string) (uintptr, error) {
-	modKernel32 := syscall.NewLazyDLL("kernel32.dll")
-	proc := modKernel32.NewProc("CreateMutexW")
-	namePtr, _ := syscall.UTF16PtrFromString(name)
-	ret, _, err := proc.Call(0, 0, uintptr(unsafe.Pointer(namePtr)))
-	if ret == 0 {
-		return 0, fmt.Errorf("CreateMutexW failed: %v", err)
-	}
-	// Check GetLastError for ERROR_ALREADY_EXISTS (183)
-	if err != nil && err.Error() != "The operation completed successfully." {
-		// If error is ERROR_ALREADY_EXISTS, another instance is running
-		if errno, ok := err.(syscall.Errno); ok && errno == 183 {
-			return ret, fmt.Errorf("already running")
-		}
-	}
-	return ret, nil
-}
-
-func killStaleFFmpeg() {
-	// Kill ffmpeg children of dead parents (orphaned)
-	// Use WMI via PowerShell to find ffmpeg with parent pid not existing
-	// Simplified: kill any ffmpeg where parent pid not in process list
-	// Log killed pids
-	modKernel32 := syscall.NewLazyDLL("kernel32.dll")
-	procCreateToolhelp32Snapshot := modKernel32.NewProc("CreateToolhelp32Snapshot")
-	// Fallback to using taskkill via WMI is simpler: just log via Go
-	// For now, use `tasklist` and `wmic` parsing
-	// This is a best-effort; workflow also does taskkill before start
-	log.Println("checking stale ffmpeg...")
-	// Use PowerShell to find stale
-	// We shell out to wmic
-}
+func statsCapW() int { return int(capWv.Load()) }
+func statsCapH() int { return int(capHv.Load()) }
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
-	log.Printf("ghrdp-webrtc starting commit=%s time=%s", gitCommit, buildTime)
+	log.Println("ghrdp-webrtc starting")
 
-	// P8 SINGLE-INSTANCE mutex
-	mutexName := "Global\\GhrdpWebRTC"
-	mutex, err := createMutex(mutexName)
+	resolveRequiredSession()
+
+	release, err := acquireSingleton()
 	if err != nil {
-		log.Fatalf("mutex %s already held, another instance running: %v", mutexName, err)
+		log.Printf("FATAL: %v", err)
+		os.Exit(43)
 	}
-	defer syscall.CloseHandle(syscall.Handle(mutex))
-	log.Printf("mutex %s acquired", mutexName)
+	defer release()
 
-	// P8 kill stale ffmpeg children of dead parents
-	// Find and kill orphaned ffmpeg
-	{
-		// Use Get-Process via Go: enumerate processes
-		// Simplified: try to kill stale ffmpeg via tasklist
-		// We log killed pids
-		log.Println("killing stale ffmpeg children of dead parents")
-		// The actual kill is done via PowerShell in workflow before start, but we also do here
-		// Use `taskkill /F /IM ffmpeg.exe` for orphans? Instead, list and kill those with parent dead
-		// For now, just log
-	}
-
-	// P9 SESSION GUARD
-	sid := getSessionId()
-	log.Printf("session_id=%d", sid)
-	if sid == 0 {
-		log.Printf("FATAL session=0 (Session 0 cannot GDI-capture, will black/1fps/crash-restart 22s blackout) exiting 42")
+	sessionID, err = resolveSessionID()
+	if err != nil {
+		log.Printf("FATAL: cannot determine session id: %v", err)
 		os.Exit(42)
 	}
-	log.Printf("session guard PASS session_id=%d", sid)
+	if sessionID != requiredSessionID {
+		log.Printf("FATAL: session %d != required %d - desktop capture is dead outside the interactive session; refusing to serve a black stream (exit 42)", sessionID, requiredSessionID)
+		os.Exit(42)
+	}
+	log.Printf("session check PASS: session_id=%d (interactive)", sessionID)
+
+	killStaleFFmpeg()
+
+	// The singleton mutex is already held here, so anything still bound to :8080 is
+	// a squatter (orphaned previous server). Clear it before ListenAndServe.
+	killPortOwner(8080)
+
+	// Windows dims/blanks the console after an idle period, which the capture path
+	// faithfully streams as a darkening desktop. Hold the display awake for the
+	// whole process lifetime (no-op off Windows).
+	startDisplayKeepAlive()
+
+	// Detect the encoder once at boot so /version can name it before a client
+	// connects; the per-stream encoder re-detects and publishes via liveEncoder.
+	if enc, _ := detectHWEncoder(modeDefault); enc != "" {
+		encoderName = enc
+	} else {
+		encoderName = "libx264"
+	}
+	pcw, pch := plannedCapture(modeDefault)
+	log.Printf("encoder planned: %s, default capture %dx%d", encoderName, pcw, pch)
 
 	staticDir := "static"
 	if _, err := os.Stat(staticDir); os.IsNotExist(err) {
@@ -171,37 +149,10 @@ func main() {
 		srv.Shutdown(context.Background())
 	}()
 
-	log.Println("listening on :8080")
+	log.Printf("commit=%s build=%s default_mode=%s listening on :8080", gitCommit, buildTime, modeDefault.Name)
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
 		log.Fatalf("server: %v", err)
 	}
-}
-
-func handleVersion(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	// Compute encoder args hash (hash of current encoder outputArgs for default 512x384)
-	// Use the same args as newEncoder would for 512x384
-	// For version, we report the hash of the default encoder args
-	hash := encoderArgsHash
-	if hash == "" {
-		// Fallback: hash of placeholder
-		h := sha256.Sum256([]byte("512x384@15-1200k"))
-		hash = hex.EncodeToString(h[:])[:8]
-	}
-	sid := getSessionId()
-	out := map[string]interface{}{
-		"git_commit":        gitCommit,
-		"build_time":        buildTime,
-		"capture":           fmt.Sprintf("%dx%d", stats.capW, stats.capH),
-		"src_res":           fmt.Sprintf("%dx%d", stats.srcW, stats.srcH),
-		"encoder_args_hash": hash,
-		"session_id":        sid,
-		"capture_mode":      stats.captureMode,
-		"encoder":           encoderName,
-		"target_fps":        targetFPS,
-		"uptime_s":          fmt.Sprintf("%.0f", time.Since(stats.startTime).Seconds()),
-	}
-	json.NewEncoder(w).Encode(out)
 }
 
 func handleStats(w http.ResponseWriter, r *http.Request) {
@@ -212,35 +163,60 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 	if uptime > 1 {
 		fps = float64(sent) / uptime
 	}
+	enc := encoderName
+	cur := currentModeSpec()
+	bitrate := cur.BitrateKbps
+	cw, ch := plannedCapture(cur)
+	if e := liveEncoder.Load(); e != nil {
+		if e.encoder != "" {
+			enc = e.encoder
+		}
+		bitrate = int(e.bitrate.Load())
+		if e.width > 0 {
+			cw, ch = e.width, e.height
+		}
+	}
+	if enc == "" {
+		enc = "unknown"
+	}
 	out := map[string]interface{}{
-		"res":          fmt.Sprintf("%dx%d", stats.capW, stats.capH),
-		"src_res":      fmt.Sprintf("%dx%d", stats.srcW, stats.srcH),
-		"fps_sent":     fmt.Sprintf("%.1f", fps),
-		"frames_sent":  sent,
-		"drops":        stats.drops.Load(),
-		"idr_count":    stats.idrCount.Load(),
-		"uptime_s":     fmt.Sprintf("%.0f", uptime),
-		"capture_mode": stats.captureMode,
-		"encoder":         encoderName,
-		"target_fps":      targetFPS,
+		"res":               fmt.Sprintf("%dx%d", cw, ch),
+		"src_res":           fmt.Sprintf("%dx%d", int(srcWv.Load()), int(srcHv.Load())),
+		"fps_sent":          fmt.Sprintf("%.1f", fps),
+		"frames_sent":       sent,
+		"drops":             stats.drops.Load(),
+		"idr_count":         stats.idrCount.Load(),
+		"uptime_s":          fmt.Sprintf("%.0f", uptime),
+		"capture_mode":      stats.captureMode,
+		"encoder":           enc,
+		"target_fps":        cur.FPS,
+		"bitrate_kbps":      bitrate,
+		"mode":              cur.Name,
+		"session_id":        sessionID,
+		"git_commit":        gitCommit,
 		"input_to_frame_ms": stats.inputToFrame.Load(),
+		"display_awake":     displayAwake.Load(),
 	}
 	if stats.sizeMismatch.Load() {
 		out["size_mismatch"] = true
+	}
+	if stats.guardTrip.Load() {
+		out["guard_tripped"] = true
 	}
 	json.NewEncoder(w).Encode(out)
 }
 
 func handleWS(w http.ResponseWriter, r *http.Request) {
-	// P12 quality mode via query ?mode=640x480
-	mode := r.URL.Query().Get("mode")
 	ws, err := wsUpgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("ws upgrade: %v", err)
 		return
 	}
 	defer ws.Close()
-	log.Printf("client connected mode=%s", mode)
+	log.Println("client connected")
+
+	mode := modeFor(r.URL.Query().Get("mode"))
+	log.Printf("client mode=%s", mode.Name)
 
 	activeMu.Lock()
 	if activeCancel != nil {
@@ -294,7 +270,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 		switch s {
 		case webrtc.PeerConnectionStateConnected:
 			pipelineOnce.Do(func() {
-				go runCapturePipeline(ctx, videoTrack, mode)
+				go supervisePipeline(ctx, videoTrack, mode)
 			})
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
 			cancel()
@@ -342,26 +318,72 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	log.Println("client disconnected")
 }
 
-func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSample, mode string) {
-	srcW, srcH := getScreenSize()
-	capW := srcW / 2
-	capH := srcH / 2
-	// P12 quality mode
-	if mode == "640x480" {
-		capW = 640
-		capH = 480
-		log.Printf("mode 640x480 requested")
-	} else if mode != "" && mode != "512x384" {
-		log.Printf("unknown mode %s, using default 512x384", mode)
+// maxPipelineRestarts bounds consecutive failures. A pipeline that cannot start
+// ten times in a row (dead encoder, missing ffmpeg, size assertion trip) will not
+// recover by trying again, so the supervisor stops instead of spinning forever.
+const maxPipelineRestarts = 10
+
+// pipelineRun is the pipeline body the supervisor repeatedly invokes. It is a
+// variable so tests can drive the retry loop without a desktop or an encoder.
+var pipelineRun = runCapturePipeline
+
+// supervisePipeline keeps the capture pipeline alive for the lifetime of the
+// client connection. runCapturePipeline returns on any failure - capture error,
+// encoder exit, ffmpeg crash, size assertion trip - and without this loop the
+// stream would simply stop forever while /health kept answering "ok".
+func supervisePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSample, mode modeSpec) {
+	for attempt := 0; attempt < maxPipelineRestarts; attempt++ {
+		if ctx.Err() != nil {
+			return
+		}
+		if attempt > 0 {
+			// 1s, 3s, 5s, ... capped at 10s. attempt is 1-based here while the
+			// ramp is indexed from 0, so the first retry waits 1s rather than 3s:
+			// B3 allows at most a 2s blackout, and a 3s delay guarantees a breach
+			// on every transient failure.
+			backoff := pipelineBackoff(attempt - 1)
+			log.Printf("pipeline restart %d/%d in %s", attempt, maxPipelineRestarts, backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+		}
+		pipelineRun(ctx, track, mode)
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("pipeline exited (attempt %d), will restart", attempt+1)
 	}
+	log.Printf("pipeline gave up after %d consecutive failures", maxPipelineRestarts)
+}
+
+var pipelineBackoff = func(attempt int) time.Duration {
+	return time.Duration(min(attempt*2+1, 10)) * time.Second
+}
+
+// benchmarkOnce keeps the 400-frame GDI/DXGI benchmark to one run per process.
+// The pipeline supervisor restarts the capture loop on failure, and re-benchmarking
+// every restart would burn 2 vCPU for seconds exactly when the stream is recovering.
+var benchmarkOnce sync.Once
+
+func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSample, mode modeSpec) {
+	liveMode.Store(&mode)
+	// A restart after a guard trip must not leave guard_tripped stuck true in
+	// /stats, or the acceptance check cannot tell a recovered stream from a broken one.
+	stats.guardTrip.Store(false)
+	stats.sizeMismatch.Store(false)
+	srcW, srcH := getScreenSize()
+	capW, capH := mode.resolveSize(srcW, srcH)
 	expectedBytes := capW * capH * 4
 
-	stats.srcW = srcW
-	stats.srcH = srcH
-	stats.capW = capW
-	stats.capH = capH
+	srcWv.Store(int64(srcW))
+	srcHv.Store(int64(srcH))
+	capWv.Store(int64(capW))
+	capHv.Store(int64(capH))
 
-	// Try DXGI Desktop Duplication, fall back to GDI StretchBlt
+	// Try DXGI Desktop Duplication, fall back to GDI StretchBlt. On the GPU-less
+	// Azure DS2_v2 DXGI init returns DXGI_ERROR_NOT_FOUND and GDI is the real path.
 	useDXGI := false
 	if err := initDXGI(); err != nil {
 		log.Printf("DXGI init failed (using GDI fallback): %v", err)
@@ -373,11 +395,10 @@ func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSampl
 		log.Printf("DXGI Desktop Duplication active: %dx%d", dxgi.width, dxgi.height)
 	}
 
-	log.Printf("screen: %dx%d → capture: %dx%d @ %dfps (%d bytes/frame, %.1f MB/s pipe) mode=%s",
-		srcW, srcH, capW, capH, targetFPS, expectedBytes, float64(expectedBytes*targetFPS)/1048576.0, stats.captureMode)
+	log.Printf("screen: %dx%d -> capture: %dx%d @ %dfps (%d bytes/frame, %.1f MB/s pipe) mode=%s",
+		srcW, srcH, capW, capH, mode.FPS, expectedBytes, float64(expectedBytes*mode.FPS)/1048576.0, stats.captureMode)
 
-	// Run benchmark (200 frames each)
-	go benchmarkCapture(srcW, srcH, capW, capH)
+	benchmarkOnce.Do(func() { go benchmarkCapture(srcW, srcH, capW, capH) })
 
 	captureFunc := func() ([]byte, error) {
 		if useDXGI {
@@ -391,25 +412,19 @@ func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSampl
 			if dw == capW && dh == capH {
 				return frame, nil
 			}
-			// DXGI gives full-res; need to scale via GDI
+			// DXGI gives full-res; scale via GDI instead of feeding a wrong-sized frame.
 			_ = frame
 			return captureScreenScaled(srcW, srcH, capW, capH)
 		}
 		return captureScreenScaled(srcW, srcH, capW, capH)
 	}
 
-	enc, err := newEncoder(capW, capH, targetFPS)
+	enc, err := newEncoder(capW, capH, mode)
 	if err != nil {
 		log.Printf("encoder: %v", err)
 		return
 	}
 	defer enc.close()
-
-	// Compute encoder args hash for /version
-	{
-		h := sha256.Sum256([]byte(fmt.Sprintf("%dx%d@%d-%s", capW, capH, targetFPS, encoderName)))
-		encoderArgsHash = hex.EncodeToString(h[:])[:8]
-	}
 
 	go func() {
 		for {
@@ -422,7 +437,7 @@ func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSampl
 				}
 				if err := track.WriteSample(media.Sample{
 					Data:     au,
-					Duration: time.Second / time.Duration(targetFPS),
+					Duration: time.Second / time.Duration(mode.FPS),
 				}); err != nil {
 					log.Printf("writeSample: %v", err)
 					return
@@ -439,10 +454,11 @@ func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSampl
 		}
 	}()
 
-	ticker := time.NewTicker(time.Second / time.Duration(targetFPS))
+	ticker := time.NewTicker(time.Second / time.Duration(mode.FPS))
 	defer ticker.Stop()
 
-	// verify first frame size
+	// Size assertion: a frame whose length disagrees with the encoder's declared
+	// input size is the v2 desync signature (grey top band, ~25% correct pixels).
 	testFrame, err := captureFunc()
 	if err != nil {
 		log.Printf("first capture failed: %v", err)
@@ -450,7 +466,8 @@ func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSampl
 	}
 	if len(testFrame) != expectedBytes {
 		stats.sizeMismatch.Store(true)
-		log.Printf("SIZE MISMATCH: capture returned %d bytes, encoder expects %d (cap=%dx%d)",
+		stats.guardTrip.Store(true)
+		log.Printf("FATAL: SIZE MISMATCH: capture returned %d bytes, encoder expects %d (cap=%dx%d) - refusing to stream a desynced frame",
 			len(testFrame), expectedBytes, capW, capH)
 		return
 	}
@@ -472,6 +489,13 @@ func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSampl
 			frame, err := captureFunc()
 			if err != nil {
 				continue
+			}
+			if len(frame) != expectedBytes {
+				stats.sizeMismatch.Store(true)
+				stats.guardTrip.Store(true)
+				log.Printf("FATAL: SIZE MISMATCH mid-stream: %d bytes != %d (cap=%dx%d) - stopping pipeline",
+					len(frame), expectedBytes, capW, capH)
+				return
 			}
 			if err := enc.writeFrame(frame); err != nil {
 				log.Printf("writeFrame: %v", err)
