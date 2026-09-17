@@ -210,7 +210,7 @@ document.addEventListener('keyup',function(ev){
 },true);
 
 /* ---- D3 FIX: Lock quality to High (q=80 scale=1) — eliminates JPEG switching artifacts ---- */
-fetch('/webdesk-ctl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:80,scale:1})}).catch(function(){});
+fetch('/webdesk-ctl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:80,scale:0.75})}).catch(function(){});
 
 /* ---- D5: Toolbar auto-hide after 2s, reappear on mouse near bottom ---- */
 var tb=document.querySelector('.toolbar'),tbTimer=null;

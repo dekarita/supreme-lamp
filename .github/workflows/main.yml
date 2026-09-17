@@ -29,7 +29,7 @@ permissions:
 
 jobs:
   rdp:
-    runs-on: windows-latest
+    runs-on: ${{ github.event.inputs.runner_target || 'windows-latest' }}
     timeout-minutes: 357
     env:
       GHRDP_EPHEMERAL: 'true'
