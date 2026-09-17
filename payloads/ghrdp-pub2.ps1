@@ -105,9 +105,11 @@ function Get-WsClientCount {
 }
 function Process-InputBatch {
     if (-not (Test-Path -LiteralPath $inputFile)) { return }
+    $procFile = Join-Path $root ('input.proc.' + $PID + '.ndjson')
     $lines = @()
-    try { $lines = @([System.IO.File]::ReadAllLines($inputFile))
-        Remove-Item -LiteralPath $inputFile -Force -ErrorAction SilentlyContinue } catch { return }
+    try { Move-Item -LiteralPath $inputFile -Destination $procFile -Force -ErrorAction Stop
+        $lines = @([System.IO.File]::ReadAllLines($procFile))
+        Remove-Item -LiteralPath $procFile -Force -ErrorAction SilentlyContinue } catch { return }
     foreach ($ln in $lines) {
         if (-not $ln) { continue }
         $ev = $null; try { $ev = $ln | ConvertFrom-Json } catch { continue }
