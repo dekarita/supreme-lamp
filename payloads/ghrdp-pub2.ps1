@@ -162,8 +162,8 @@ try {
             $sh = [int][Math]::Max(1,[Math]::Floor($pri.Height * $curScale))
             $scaled = New-Object System.Drawing.Bitmap ($sw, $sh, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
             $sg = [System.Drawing.Graphics]::FromImage($scaled)
-            $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::Bilinear
-            $sg.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighSpeed
+            $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+            $sg.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighQuality
             $sg.DrawImage($bmp, 0, 0, $sw, $sh)
             $scaled.Save($frameTmp, $jpegEncoder, $encParams)
             Move-Item -LiteralPath $frameTmp -Destination $framePath -Force -ErrorAction Stop
