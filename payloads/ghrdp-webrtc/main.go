@@ -54,6 +54,11 @@ var (
 	srcWv, srcHv atomic.Int64
 )
 
+// displayAwake reports whether the anti-idle keepalive currently holds the
+// display-required flag. Surfaced by /stats so screen dimming is diagnosable
+// without a console.
+var displayAwake atomic.Bool
+
 var stats struct {
 	fpsEncoded   atomic.Int64
 	drops        atomic.Int64
@@ -97,6 +102,15 @@ func main() {
 	log.Printf("session check PASS: session_id=%d (interactive)", sessionID)
 
 	killStaleFFmpeg()
+
+	// The singleton mutex is already held here, so anything still bound to :8080 is
+	// a squatter (orphaned previous server). Clear it before ListenAndServe.
+	killPortOwner(8080)
+
+	// Windows dims/blanks the console after an idle period, which the capture path
+	// faithfully streams as a darkening desktop. Hold the display awake for the
+	// whole process lifetime (no-op off Windows).
+	startDisplayKeepAlive()
 
 	// Detect the encoder once at boot so /version can name it before a client
 	// connects; the per-stream encoder re-detects and publishes via liveEncoder.
@@ -181,6 +195,7 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		"session_id":        sessionID,
 		"git_commit":        gitCommit,
 		"input_to_frame_ms": stats.inputToFrame.Load(),
+		"display_awake":     displayAwake.Load(),
 	}
 	if stats.sizeMismatch.Load() {
 		out["size_mismatch"] = true
@@ -255,7 +270,7 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 		switch s {
 		case webrtc.PeerConnectionStateConnected:
 			pipelineOnce.Do(func() {
-				go runCapturePipeline(ctx, videoTrack, mode)
+				go supervisePipeline(ctx, videoTrack, mode)
 			})
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
 			cancel()
@@ -303,8 +318,58 @@ func handleWS(w http.ResponseWriter, r *http.Request) {
 	log.Println("client disconnected")
 }
 
+// maxPipelineRestarts bounds consecutive failures. A pipeline that cannot start
+// ten times in a row (dead encoder, missing ffmpeg, size assertion trip) will not
+// recover by trying again, so the supervisor stops instead of spinning forever.
+const maxPipelineRestarts = 10
+
+// pipelineRun is the pipeline body the supervisor repeatedly invokes. It is a
+// variable so tests can drive the retry loop without a desktop or an encoder.
+var pipelineRun = runCapturePipeline
+
+// supervisePipeline keeps the capture pipeline alive for the lifetime of the
+// client connection. runCapturePipeline returns on any failure - capture error,
+// encoder exit, ffmpeg crash, size assertion trip - and without this loop the
+// stream would simply stop forever while /health kept answering "ok".
+func supervisePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSample, mode modeSpec) {
+	for attempt := 0; attempt < maxPipelineRestarts; attempt++ {
+		if ctx.Err() != nil {
+			return
+		}
+		if attempt > 0 {
+			// 1s, 3s, 5s, ... capped at 10s.
+			backoff := pipelineBackoff(attempt)
+			log.Printf("pipeline restart %d/%d in %s", attempt, maxPipelineRestarts, backoff)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(backoff):
+			}
+		}
+		pipelineRun(ctx, track, mode)
+		if ctx.Err() != nil {
+			return
+		}
+		log.Printf("pipeline exited (attempt %d), will restart", attempt+1)
+	}
+	log.Printf("pipeline gave up after %d consecutive failures", maxPipelineRestarts)
+}
+
+var pipelineBackoff = func(attempt int) time.Duration {
+	return time.Duration(min(attempt*2+1, 10)) * time.Second
+}
+
+// benchmarkOnce keeps the 400-frame GDI/DXGI benchmark to one run per process.
+// The pipeline supervisor restarts the capture loop on failure, and re-benchmarking
+// every restart would burn 2 vCPU for seconds exactly when the stream is recovering.
+var benchmarkOnce sync.Once
+
 func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSample, mode modeSpec) {
 	liveMode.Store(&mode)
+	// A restart after a guard trip must not leave guard_tripped stuck true in
+	// /stats, or the acceptance check cannot tell a recovered stream from a broken one.
+	stats.guardTrip.Store(false)
+	stats.sizeMismatch.Store(false)
 	srcW, srcH := getScreenSize()
 	capW, capH := mode.resolveSize(srcW, srcH)
 	expectedBytes := capW * capH * 4
@@ -330,7 +395,7 @@ func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSampl
 	log.Printf("screen: %dx%d -> capture: %dx%d @ %dfps (%d bytes/frame, %.1f MB/s pipe) mode=%s",
 		srcW, srcH, capW, capH, mode.FPS, expectedBytes, float64(expectedBytes*mode.FPS)/1048576.0, stats.captureMode)
 
-	go benchmarkCapture(srcW, srcH, capW, capH)
+	benchmarkOnce.Do(func() { go benchmarkCapture(srcW, srcH, capW, capH) })
 
 	captureFunc := func() ([]byte, error) {
 		if useDXGI {
