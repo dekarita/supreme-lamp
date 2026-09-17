@@ -31,8 +31,6 @@
 .toolbar button.on{background:linear-gradient(135deg,#22d3ee,#34d399);color:#05070d;border-color:transparent;font-weight:700}
 .toolbar .badge{cursor:default;font-variant-numeric:tabular-nums;background:rgba(0,0,0,.35)}
 .toolbar .sep{width:1px;height:22px;background:rgba(255,255,255,.14);margin:0 2px}
-.qmenu{position:fixed;bottom:76px;left:50%;transform:translateX(-50%);display:none;flex-direction:column;gap:6px;padding:10px;border-radius:14px;z-index:30;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.14);backdrop-filter:blur(18px) saturate(1.6)}
-.qmenu.open{display:flex}
 #cdot{position:fixed;width:10px;height:10px;border-radius:50%;background:rgba(34,211,238,.9);box-shadow:0 0 10px rgba(34,211,238,.8);pointer-events:none;z-index:40;display:none}
 .ripple{position:fixed;width:26px;height:26px;margin:-13px 0 0 -13px;border-radius:50%;border:2px solid rgba(34,211,238,.9);pointer-events:none;z-index:41;animation:rip .45s ease-out forwards}
 @keyframes rip{to{transform:scale(2.2);opacity:0}}
@@ -43,11 +41,9 @@
 <div class="stage"><div class="wrap" id="wrap"><img id="view" alt="remote desktop" draggable="false" tabindex="0"></div></div>
 <div class="hint" id="hint">waiting for frames…</div>
 <div id="cdot"></div>
-<div class="qmenu" id="qmenu"><button data-q="35" data-s="0.5">Low (fast)</button><button data-q="55" data-s="0.75">Mid</button><button data-q="80" data-s="1">High (sharp)</button></div>
 <div class="toolbar" role="toolbar">
  <button id="mFit" class="on">Fit</button><button id="mFill">Fill</button><button id="mOne">1:1</button><button id="mStretch">Stretch</button>
  <span class="sep"></span>
- <button id="btnQ">Quality: Low</button>
  <button id="btnFs">Fullscreen</button>
  <button id="btnCopy">Copy</button><button id="btnPaste">Paste</button>
  <span class="sep"></span>
@@ -57,7 +53,7 @@
 (function(){"use strict";
 var img=document.getElementById('view'),wrap=document.getElementById('wrap'),hint=document.getElementById('hint'),
     fpsEl=document.getElementById('fps'),srcEl=document.getElementById('src'),cdot=document.getElementById('cdot'),
-    qmenu=document.getElementById('qmenu'),btnQ=document.getElementById('btnQ');
+    cdot2=null;
 var mode='fit',natW=0,natH=0,frameCount=0;
 var lastGoodUrl=null,pendingUrl=null,polling=false;
 var moveBuf=[],inflight=false,lastRtt=0;
@@ -213,15 +209,8 @@ document.addEventListener('keyup',function(ev){
  if(vkDown[code]){moveBuf.push({t:'ku',vk:vkDown[code]});delete vkDown[code];ev.preventDefault();}
 },true);
 
-/* ---- Quality menu ---- */
-btnQ.onclick=function(e){e.stopPropagation();qmenu.classList.toggle('open');};
-qmenu.querySelectorAll('button').forEach(function(b){b.onclick=function(){
- btnQ.textContent='Quality: '+b.textContent.split(' ')[0];
- fetch('/webdesk-ctl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:+b.getAttribute('data-q'),scale:+b.getAttribute('data-s')})}).catch(function(){});
- qmenu.classList.remove('open');};});
-document.addEventListener('click',function(e){if(!qmenu.contains(e.target)&&e.target!==btnQ)qmenu.classList.remove('open');});
-fetch('/webdesk-ctl',{cache:'no-store'}).then(function(r){return r.json();}).then(function(c){
- btnQ.textContent='Quality: '+(c.q<=40?'Low':c.q<=60?'Mid':'High');}).catch(function(){});
+/* ---- D3 FIX: Lock quality to High (q=80 scale=1) — eliminates JPEG switching artifacts ---- */
+fetch('/webdesk-ctl',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({q:80,scale:1})}).catch(function(){});
 
 /* ---- D5: Toolbar auto-hide after 2s, reappear on mouse near bottom ---- */
 var tb=document.querySelector('.toolbar'),tbTimer=null;
