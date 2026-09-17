@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"time"
 	"unsafe"
 )
 
@@ -66,6 +67,7 @@ func handleInputMessage(data []byte) {
 	if json.Unmarshal(data, &ev) != nil {
 		return
 	}
+	stats.lastInputNs.Store(time.Now().UnixNano())
 	switch ev.T {
 	case "m":
 		nx := ev.NX

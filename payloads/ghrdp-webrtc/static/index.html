@@ -206,7 +206,22 @@ function updateStats() {
         prevTime = nowMs;
       }
     });
-    statsEl.textContent = w + 'x' + h + ' ' + fps + 'fps ' + kbps + 'kbps';
+    var txt = w + 'x' + h + ' ' + fps + 'fps ' + kbps + 'kbps';
+    // fetch server stats for extra fields
+    if (!window._srvStatsBusy) {
+      window._srvStatsBusy = true;
+      fetch('/stats').then(function(r){ return r.json(); }).then(function(s){
+        window._srvStats = s;
+        window._srvStatsBusy = false;
+      }).catch(function(){ window._srvStatsBusy = false; });
+    }
+    var ss = window._srvStats;
+    if (ss) {
+      if (ss.drops > 0) txt += ' d:' + ss.drops;
+      txt += ' ' + (ss.capture_mode || '');
+      if (ss.input_to_frame_ms > 0) txt += ' itf:' + ss.input_to_frame_ms + 'ms';
+    }
+    statsEl.textContent = txt;
   });
 }
 

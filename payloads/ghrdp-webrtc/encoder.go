@@ -21,30 +21,77 @@ type encoder struct {
 	drops  atomic.Int64
 }
 
+var encoderName string
+
+func detectHWEncoder() (codec string, extraArgs []string) {
+	candidates := []struct {
+		name string
+		args []string
+	}{
+		{"h264_nvenc", []string{"-c:v", "h264_nvenc", "-preset", "p1", "-tune", "ull",
+			"-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
+			"-b:v", "1200k", "-maxrate", "1500k", "-bufsize", "1000k",
+			"-g", "30", "-bf", "0", "-rc", "cbr",
+			"-f", "h264", "-flush_packets", "1"}},
+		{"h264_qsv", []string{"-c:v", "h264_qsv", "-preset", "veryfast",
+			"-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
+			"-b:v", "1200k", "-maxrate", "1500k", "-bufsize", "1000k",
+			"-g", "30", "-bf", "0",
+			"-f", "h264", "-flush_packets", "1"}},
+		{"h264_amf", []string{"-c:v", "h264_amf", "-usage", "ultralowlatency",
+			"-profile:v", "baseline", "-level", "3.1", "-pix_fmt", "yuv420p",
+			"-b:v", "1200k", "-maxrate", "1500k", "-bufsize", "1000k",
+			"-g", "30", "-bf", "0",
+			"-f", "h264", "-flush_packets", "1"}},
+	}
+	for _, c := range candidates {
+		probe := exec.Command("ffmpeg", "-hide_banner", "-f", "lavfi", "-i",
+			"nullsrc=s=64x64:d=0.1", append(c.args, "-frames:v", "1", os.DevNull)...)
+		if err := probe.Run(); err == nil {
+			log.Printf("HW encoder detected: %s", c.name)
+			return c.name, c.args
+		}
+	}
+	return "", nil
+}
+
 func newEncoder(width, height, fps int) (*encoder, error) {
-	args := []string{
+	inputArgs := []string{
 		"-f", "rawvideo",
 		"-pixel_format", "bgra",
 		"-video_size", fmt.Sprintf("%dx%d", width, height),
 		"-framerate", fmt.Sprintf("%d", fps),
 		"-i", "pipe:0",
-		"-c:v", "libx264",
-		"-preset", "ultrafast",
-		"-tune", "zerolatency",
-		"-profile:v", "baseline",
-		"-level", "3.1",
-		"-pix_fmt", "yuv420p",
-		"-b:v", "1200k",
-		"-maxrate", "1500k",
-		"-bufsize", "1000k",
-		"-g", "30",
-		"-keyint_min", "15",
-		"-sc_threshold", "0",
-		"-x264-params", "rc-lookahead=0:bframes=0:ref=1:repeat-headers=1",
-		"-f", "h264",
-		"-flush_packets", "1",
-		"pipe:1",
 	}
+
+	hwCodec, hwArgs := detectHWEncoder()
+	var outputArgs []string
+	if hwCodec != "" {
+		encoderName = hwCodec
+		outputArgs = hwArgs
+	} else {
+		encoderName = "libx264"
+		outputArgs = []string{
+			"-c:v", "libx264",
+			"-preset", "ultrafast",
+			"-tune", "zerolatency",
+			"-profile:v", "baseline",
+			"-level", "3.1",
+			"-pix_fmt", "yuv420p",
+			"-b:v", "1200k",
+			"-maxrate", "1500k",
+			"-bufsize", "1000k",
+			"-g", "30",
+			"-keyint_min", "15",
+			"-sc_threshold", "0",
+			"-x264-params", "rc-lookahead=0:bframes=0:ref=1:repeat-headers=1",
+			"-f", "h264",
+			"-flush_packets", "1",
+		}
+	}
+
+	args := append(inputArgs, outputArgs...)
+	args = append(args, "pipe:1")
 
 	cmd := exec.Command("ffmpeg", args...)
 
@@ -72,7 +119,7 @@ func newEncoder(width, height, fps int) (*encoder, error) {
 		return nil, fmt.Errorf("ffmpeg start: %w", err)
 	}
 
-	log.Printf("ffmpeg pid=%d args: -video_size %dx%d -framerate %d -b:v 1200k", cmd.Process.Pid, width, height, fps)
+	log.Printf("ffmpeg pid=%d encoder=%s -video_size %dx%d -framerate %d -b:v 1200k", cmd.Process.Pid, encoderName, width, height, fps)
 
 	e := &encoder{
 		cmd:   cmd,

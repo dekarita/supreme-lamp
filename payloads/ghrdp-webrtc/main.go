@@ -51,6 +51,8 @@ var stats struct {
 	framesSent   atomic.Int64
 	bytesSent    atomic.Int64
 	sizeMismatch atomic.Bool
+	lastInputNs  atomic.Int64
+	inputToFrame atomic.Int64
 }
 
 func main() {
@@ -106,7 +108,9 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		"idr_count":    stats.idrCount.Load(),
 		"uptime_s":     fmt.Sprintf("%.0f", uptime),
 		"capture_mode": stats.captureMode,
-		"target_fps":   targetFPS,
+		"encoder":         encoderName,
+		"target_fps":      targetFPS,
+		"input_to_frame_ms": stats.inputToFrame.Load(),
 	}
 	if stats.sizeMismatch.Load() {
 		out["size_mismatch"] = true
@@ -234,8 +238,42 @@ func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSampl
 	stats.capW = capW
 	stats.capH = capH
 
-	log.Printf("screen: %dx%d → capture: %dx%d @ %dfps (%d bytes/frame, %.1f MB/s pipe)",
-		srcW, srcH, capW, capH, targetFPS, expectedBytes, float64(expectedBytes*targetFPS)/1048576.0)
+	// Try DXGI Desktop Duplication, fall back to GDI StretchBlt
+	useDXGI := false
+	if err := initDXGI(); err != nil {
+		log.Printf("DXGI init failed (using GDI fallback): %v", err)
+		stats.captureMode = "gdi-stretchblt"
+	} else {
+		useDXGI = true
+		stats.captureMode = "dxgi"
+		defer closeDXGI()
+		log.Printf("DXGI Desktop Duplication active: %dx%d", dxgi.width, dxgi.height)
+	}
+
+	log.Printf("screen: %dx%d → capture: %dx%d @ %dfps (%d bytes/frame, %.1f MB/s pipe) mode=%s",
+		srcW, srcH, capW, capH, targetFPS, expectedBytes, float64(expectedBytes*targetFPS)/1048576.0, stats.captureMode)
+
+	// Run benchmark (200 frames each)
+	go benchmarkCapture(srcW, srcH, capW, capH)
+
+	captureFunc := func() ([]byte, error) {
+		if useDXGI {
+			frame, dw, dh, err := captureDXGI()
+			if err != nil {
+				useDXGI = false
+				stats.captureMode = "gdi-stretchblt"
+				log.Printf("DXGI capture failed, switching to GDI: %v", err)
+				return captureScreenScaled(srcW, srcH, capW, capH)
+			}
+			if dw == capW && dh == capH {
+				return frame, nil
+			}
+			// DXGI gives full-res; need to scale via GDI
+			_ = frame
+			return captureScreenScaled(srcW, srcH, capW, capH)
+		}
+		return captureScreenScaled(srcW, srcH, capW, capH)
+	}
 
 	enc, err := newEncoder(capW, capH, targetFPS)
 	if err != nil {
@@ -262,6 +300,12 @@ func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSampl
 				}
 				stats.framesSent.Add(1)
 				stats.bytesSent.Add(int64(len(au)))
+				if lastIn := stats.lastInputNs.Load(); lastIn > 0 {
+					delta := time.Now().UnixNano() - lastIn
+					if delta > 0 && delta < int64(2*time.Second) {
+						stats.inputToFrame.Store(delta / int64(time.Millisecond))
+					}
+				}
 			}
 		}
 	}()
@@ -270,7 +314,7 @@ func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSampl
 	defer ticker.Stop()
 
 	// verify first frame size
-	testFrame, err := captureScreenScaled(srcW, srcH, capW, capH)
+	testFrame, err := captureFunc()
 	if err != nil {
 		log.Fatalf("first capture failed: %v", err)
 	}
@@ -294,7 +338,7 @@ func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSampl
 				stats.drops.Add(1)
 				continue
 			}
-			frame, err := captureScreenScaled(srcW, srcH, capW, capH)
+			frame, err := captureFunc()
 			if err != nil {
 				continue
 			}
