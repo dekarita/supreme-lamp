@@ -36,9 +36,24 @@ resolution; an explicit mode overrides that.
 - `GET /` — client page (video, input, stats bar, commit/session badge)
 - `GET /ws?mode=<m>` — signaling WebSocket; one pipeline per client
 - `GET /health` — `ok` when the process is alive
-- `GET /stats` — live pipeline telemetry (res, fps, drops, encoder, input_to_frame_ms)
+- `GET /stats` — live pipeline telemetry (res, fps, drops, encoder, input_to_frame_ms);
+  adds `size_mismatch` / `guard_tripped` only when a guard has fired, and
+  `display_awake` for the anti-idle keepalive
 - `GET /version` — deploy identity: `git_commit`, `build_time`, `capture`, `mode`,
-  `encoder`, `session_id`, `exe_path`, `pid`, `required_session_id`
+  `encoder`, `session_id`, `exe_path`, `pid`, `required_session_id`, `default_mode`,
+  `capture_mode`
+
+## Failure handling
+
+- **pipeline restart** — the capture pipeline is supervised, not run once. If capture,
+  the encoder or ffmpeg dies (or the size assertion trips) it restarts after 1s..10s,
+  gives up after 10 consecutive failures, and stops when the client disconnects.
+- **session guard** — outside session 2 the process logs a FATAL and exits 42 rather
+  than serving a black stream.
+- **anti-idle** — the display is held awake with `SetThreadExecutionState` so a
+  long-idle session does not dim into a dark stream.
+- **stale owners** — a leftover server on :8080 and stale `ffmpeg.exe` are cleared at
+  startup, after the singleton mutex is held.
 
 ## Deploy model
 
@@ -58,15 +73,25 @@ and verifies `/version` reports `session_id == 2`.
 `PASS`, if `acceptance.json` is missing, or if its `git_commit` does not match the sha
 the workflow deployed.
 
+After the probe it also checks the deployed state, because a probe window alone cannot
+prove the stream is still healthy: a tripped capture guard, `session_id != 2`, a
+missing server or ffmpeg, or an `ffmpeg -video_size` that disagrees with `/version`
+`res` (the v2 desync) all override a `PASS` to `FAIL`. A missing display keepalive is
+reported as a warning only, since it degrades after minutes of idle rather than
+stopping video.
+
 ## Failure signatures
 
 | Symptom | Cause | Check |
 | --- | --- | --- |
-| top ~25% band is a grey gradient | capture size != encoder `-video_size` (v2 desync) | `ffmpeg.exe` CommandLine vs `/version` `capture` |
+| top ~25% band is a grey gradient | capture size != encoder `-video_size` (v2 desync) | `ffmpeg.exe` CommandLine vs `/version` `res` |
 | black canvas, `res=0x0`, `frames_sent=0` | server started in Session 0 | `/version` `session_id` |
-| ~22 s blackout then retry | server crash-looping | process `CreationDate`, `ffmpeg-stderr.log` |
+| short blackout, then video returns | pipeline exited and the supervisor restarted it | `deploy.log` for `pipeline exited` / `pipeline restart` |
+| blackout that never recovers | pipeline gave up after 10 consecutive failures | `deploy.log` for `pipeline gave up`, `ffmpeg-stderr.log` |
+| stream darkens / goes black after minutes idle | display blanked, no keepalive holding it awake | `/stats` `display_awake` |
 | stats frozen, one server but two ffmpeg | orphan ffmpeg from a previous run | `ffmpeg.exe` parent pid |
 | stream refuses to start, exit 42 | session guard tripped (not session 2) | task principal, `quser` |
+| `bind: address already in use` | leftover server still holding :8080 | `deploy.log` for `killed stale :8080 listener` |
 
 ## Honest limits
 
