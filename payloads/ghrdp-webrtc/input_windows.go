@@ -14,11 +14,11 @@ const (
 	inputMouse    = 0
 	inputKeyboard = 1
 
-	mousefMove     = 0x0001
-	mousefAbsolute = 0x8000
-	mousefVDesk    = 0x4000
-	mousefLeftDown = 0x0002
-	mousefLeftUp   = 0x0004
+	mousefMove      = 0x0001
+	mousefAbsolute  = 0x8000
+	mousefVDesk     = 0x4000
+	mousefLeftDown  = 0x0002
+	mousefLeftUp    = 0x0004
 	mousefRightDown = 0x0008
 	mousefRightUp   = 0x0010
 	mousefWheel     = 0x0800
