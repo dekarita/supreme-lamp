@@ -1534,70 +1534,104 @@ jobs:
           } catch { Write-Host ('[webdesk] runneradmin task register failed: ' + $_.Exception.Message) }
           exit 0
 
-      - name: Build and deploy WebRTC server (Go + pion/webrtc + H.264)
+      - name: Build and deploy WebRTC server (identity-proof, stamped, session-guarded)
+        env:
+          GH_SHA: ${{ github.sha }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          Write-Host '=== WebRTC server build ==='
-          # Install FFmpeg for H.264 encoding
+          Write-Host '=== WebRTC server deploy (P1/P2/P3/P6) ==='
           if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
               Write-Host '[webrtc] Installing FFmpeg...'
               choco install ffmpeg -y --no-progress 2>&1 | Out-Null
               $env:PATH = [System.Environment]::GetEnvironmentVariable('PATH','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('PATH','User')
           }
           Write-Host ('[webrtc] ffmpeg: ' + ((ffmpeg -version 2>&1 | Select-Object -First 1) -replace 'ffmpeg version ',''))
-          Write-Host ('[webrtc] go: ' + (go version))
-          # Build
-          $srcDir = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-webrtc'
-          $deployDir = 'C:\ghrdp\webrtc'
-          New-Item -ItemType Directory -Path $deployDir -Force | Out-Null
-          Push-Location $srcDir
-          $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
-          go get github.com/pion/webrtc/v3@latest 2>&1
-          go get github.com/gorilla/websocket@latest 2>&1
-          go mod tidy 2>&1
-          $binPath = Join-Path $deployDir 'webrtc-server.exe'
-          go build -ldflags='-s -w' -o $binPath .
-          if ($LASTEXITCODE -ne 0) { Write-Host '[webrtc] BUILD FAILED'; Pop-Location; exit 0 }
-          Write-Host ('[webrtc] built: ' + (((Get-Item $binPath).Length / 1MB).ToString('F1')) + ' MB')
-          # Guard: verify encoder uses dynamic capture dimensions, not hardcoded values
-          $mainSrc = Get-Content (Join-Path $srcDir 'main.go') -Raw
-          $encSrc = Get-Content (Join-Path $srcDir 'encoder.go') -Raw
-          if ($mainSrc -match 'newEncoder\(capW,\s*capH,') {
-              Write-Host '[webrtc] GUARD PASS: encoder initialized with dynamic capture dimensions'
-          } else {
-              Write-Host '[webrtc] GUARD FAIL: encoder not using capW/capH — size desync risk!'
-              Pop-Location; exit 1
+          # Discover the workspace the SAME way a SYSTEM/terminal-exec run must:
+          # recursive search for payloads\ghrdp-webrtc\go.mod under D:\a first.
+          $repoRoot = ''
+          foreach ($root in @('D:\a','C:\a')) {
+              if (-not (Test-Path $root)) { continue }
+              $hit = Get-ChildItem -Path $root -Recurse -Filter 'go.mod' -Depth 8 -ErrorAction SilentlyContinue |
+                     Where-Object { $_.FullName -like '*payloads\ghrdp-webrtc\go.mod' } | Select-Object -First 1
+              if ($hit) { $repoRoot = $hit.FullName.Substring(0, $hit.FullName.Length - '\payloads\ghrdp-webrtc\go.mod'.Length); break }
           }
-          if ($mainSrc -match 'SIZE MISMATCH.*log\.Fatalf') {
-              Write-Host '[webrtc] GUARD PASS: startup size assertion present'
-          } else {
-              Write-Host '[webrtc] GUARD WARN: no startup size assertion found'
-          }
-          Pop-Location
-          # Deploy static files
-          $staticDst = Join-Path $deployDir 'static'
-          New-Item -ItemType Directory -Path $staticDst -Force | Out-Null
-          Copy-Item -Path (Join-Path $srcDir 'static\*') -Destination $staticDst -Recurse -Force
-          # Register scheduled task (Interactive principal, same as GhrdpWebDesk)
-          $activeUser = $env:RDP_USER
-          try { $qu = & quser.exe 2>$null; foreach ($ln in @($qu)) { if ($ln -match '^\s*>?\s*(\S+)\s+\S+\s+(\d+)\s+Active') { $activeUser = $Matches[1] } } } catch { }
-          if (-not $activeUser) { $activeUser = $env:USERNAME }
-          Write-Host ('[webrtc] task user: ' + $activeUser)
-          try { Unregister-ScheduledTask -TaskName 'GhrdpWebRTC' -Confirm:$false -ErrorAction SilentlyContinue } catch { }
-          try {
-              $action   = New-ScheduledTaskAction -Execute $binPath -WorkingDirectory $deployDir
-              $trigger  = New-ScheduledTaskTrigger -AtLogOn -User $activeUser
-              $principal = New-ScheduledTaskPrincipal -UserId $activeUser -LogonType Interactive -RunLevel Highest
-              $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 6)
-              Register-ScheduledTask -TaskName 'GhrdpWebRTC' -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force -ErrorAction Stop | Out-Null
-              Start-ScheduledTask -TaskName 'GhrdpWebRTC' -ErrorAction SilentlyContinue
-              Start-Sleep -Seconds 3
-              $resp = try { Invoke-WebRequest -Uri 'http://localhost:8080/health' -TimeoutSec 5 -UseBasicParsing } catch { $null }
-              if ($resp -and $resp.StatusCode -eq 200) { Write-Host '[webrtc] server running on :8080' }
-              else { Write-Host '[webrtc] server not responding — may start at next logon' }
-          } catch { Write-Host ('[webrtc] task failed: ' + $_.Exception.Message) }
+          if (-not $repoRoot) { $repoRoot = $env:GITHUB_WORKSPACE }
+          Write-Host ('[webrtc] repo root: ' + $repoRoot)
+          $bootstrap = Join-Path $repoRoot 'payloads\ghrdp-webrtc\deploy-bootstrap.ps1'
+          if (-not (Test-Path $bootstrap)) { Write-Host ('[webrtc] FATAL: bootstrap missing at ' + $bootstrap); exit 1 }
+          & $bootstrap -RepoRoot $repoRoot -GitCommit $env:GH_SHA
+          $rc = $LASTEXITCODE
+          Write-Host ('[webrtc] deploy-bootstrap exit code: ' + $rc)
+          if ($rc -ne 0) { Write-Host '[webrtc] FATAL: identity-proof deploy failed - not silently continuing'; exit $rc }
           exit 0
+
+      - name: Stamp guard (/version git_commit == workflow sha, session_id == 2)
+        env:
+          GH_SHA: ${{ github.sha }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $deadline = (Get-Date).AddSeconds(20)
+          $v = $null
+          while ((Get-Date) -lt $deadline) {
+              try { $v = Invoke-RestMethod -Uri 'http://127.0.0.1:8080/version' -TimeoutSec 3 -ErrorAction Stop; if ($v) { break } } catch { }
+              Start-Sleep -Milliseconds 750
+          }
+          if (-not $v) { Write-Host '[stamp] FATAL: /version unreachable on :8080'; exit 1 }
+          Write-Host ('[stamp] /version -> commit=' + $v.git_commit + ' session_id=' + $v.session_id + ' capture=' + $v.capture + ' encoder=' + $v.encoder + ' mode=' + $v.mode + ' exe=' + $v.exe_path)
+          $stampSha = [string]$v.git_commit
+          if (-not $stampSha -or $stampSha -eq 'unknown') { Write-Host '[stamp] FATAL: binary is unstamped (no git_commit in /version)'; exit 1 }
+          if ($stampSha -ne $env:GH_SHA) { Write-Host ('[stamp] FATAL: /version git_commit ' + $stampSha + ' != workflow sha ' + $env:GH_SHA); exit 1 }
+          if ([int]$v.session_id -ne 2) {
+              Write-Host ('[stamp] session_id ' + $v.session_id + ' != 2 - restarting GhrdpWebRTC once')
+              try { Stop-ScheduledTask -TaskName 'GhrdpWebRTC' -ErrorAction SilentlyContinue } catch { }
+              $stampExe = 'webrtc-server.exe'
+              try {
+                  $st = Get-ScheduledTask -TaskName 'GhrdpWebRTC' -ErrorAction SilentlyContinue
+                  if ($st -and $st.Actions -and $st.Actions[0].Execute) { $stampExe = Split-Path -Leaf ([string]$st.Actions[0].Execute) }
+              } catch { }
+              Get-CimInstance Win32_Process -Filter ("Name='" + $stampExe + "'") -ErrorAction SilentlyContinue | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch { } }
+              Start-Sleep -Seconds 3
+              try { Start-ScheduledTask -TaskName 'GhrdpWebRTC' -ErrorAction Stop } catch { }
+              Start-Sleep -Seconds 5
+              try { $v = Invoke-RestMethod -Uri 'http://127.0.0.1:8080/version' -TimeoutSec 5 -ErrorAction Stop } catch { $v = $null }
+              if (-not $v -or [int]$v.session_id -ne 2) { Write-Host '[stamp] FATAL: server not in session 2 after restart'; exit 1 }
+              Write-Host ('[stamp] post-restart session_id=' + $v.session_id)
+          }
+          Write-Host '[stamp] GUARD PASS: stamped binary serving in session 2'
+          exit 0
+
+      - name: Auto-acceptance probe (30s -> acceptance.json -> artifact + summary)
+        env:
+          GH_SHA: ${{ github.sha }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $acc = 'C:\ghrdp\webrtc\accept-webrtc.ps1'
+          if (-not (Test-Path $acc)) { Write-Host ('[accept] FATAL: ' + $acc + ' missing'); exit 1 }
+          & $acc -ExpectedSha $env:GH_SHA -DurationSec 30 -SummaryPath $env:GITHUB_STEP_SUMMARY
+          $rc = $LASTEXITCODE
+          Write-Host ('[accept] acceptance exit code: ' + $rc)
+          $j = 'C:\ghrdp\webrtc\acceptance.json'
+          if (Test-Path $j) { Write-Host '[accept] acceptance.json:'; Get-Content $j | ForEach-Object { Write-Host ('  ' + $_) } }
+          else { Write-Host '[accept] FATAL: acceptance.json was not produced' }
+          if ($rc -ne 0) { Write-Host '[accept] FATAL: acceptance FAILED - see summary above'; exit $rc }
+          exit 0
+
+      - name: Upload acceptance artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: webrtc-acceptance-${{ github.run_id }}
+          path: |
+            C:\ghrdp\webrtc\acceptance.json
+            C:\ghrdp\webrtc\probe-1.out
+            C:\ghrdp\webrtc\probe-2.out
+            C:\ghrdp\webrtc\deploy.log
+            C:\ghrdp\webrtc\ffmpeg-stderr.log
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Keep Parsec host session warm (auto-relaunch parsecd as RDP user)
         shell: pwsh
@@ -1837,6 +1871,18 @@ jobs:
           $lastRustFix = (Get-Date).AddMinutes(-10)
           $lastStaleFix = (Get-Date).AddMinutes(-10)
           $lastWebDeskFix = (Get-Date).AddMinutes(-10)
+          $lastWebRtcFix = (Get-Date).AddMinutes(-10)
+          # Resolve the WebRTC exe name from the task definition instead of assuming
+          # webrtc-server.exe, so a renamed binary still heals correctly (graveyard #30).
+          $webRtcExeName = 'webrtc-server.exe'
+          try {
+              $wt = Get-ScheduledTask -TaskName 'GhrdpWebRTC' -ErrorAction SilentlyContinue
+              if ($wt -and $wt.Actions -and $wt.Actions[0].Execute) {
+                  $webRtcExeName = Split-Path -Leaf ([string]$wt.Actions[0].Execute)
+              }
+          } catch { }
+          Write-Host ('[keepalive] WebRTC exe name from task definition: ' + $webRtcExeName)
+          $webRtcFilter = "Name='" + $webRtcExeName + "'"
           $lastVncFix = (Get-Date).AddMinutes(-10)
           $lastDirectTry = (Get-Date).AddMinutes(-10)
           $icons = [ordered]@{
@@ -2287,6 +2333,28 @@ jobs:
                             try { Start-Process 'powershell.exe' -ArgumentList '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-pub2.ps1"' -WindowStyle Hidden } catch { Write-Host ('   fallback direct start failed: ' + $_.Exception.Message) }
                         }
                     }
+                }
+            }
+            # --- WebRTC watchdog (P3/P4): keep exactly one server+ffmpeg in session 2 ---
+            if (((Get-Date) - $lastWebRtcFix).TotalMinutes -ge 2) {
+                $lastWebRtcFix = Get-Date
+                $wv = $null
+                try { $wv = Invoke-RestMethod -Uri 'http://127.0.0.1:8080/version' -TimeoutSec 3 -ErrorAction Stop } catch { }
+                $wAlive = $false; $wSess = -1; $wFfmpeg = 0
+                try { if (Get-CimInstance Win32_Process -Filter $webRtcFilter -ErrorAction SilentlyContinue) { $wAlive = $true } } catch { }
+                try { if ($wv) { $wSess = [int]$wv.session_id } } catch { }
+                try { $wFfmpeg = @(Get-CimInstance Win32_Process -Filter "Name='ffmpeg.exe'" -ErrorAction SilentlyContinue).Count } catch { }
+                if ((!$wAlive) -or (!$wv) -or ($wSess -ne 2) -or ($wFfmpeg -gt 1)) {
+                    Write-Host ($icons.wrench + ' ' + $stamp + ' WebRTC heal: alive=' + $wAlive + ' version=' + [bool]$wv + ' session=' + $wSess + ' ffmpeg=' + $wFfmpeg)
+                    try { Stop-ScheduledTask -TaskName 'GhrdpWebRTC' -ErrorAction SilentlyContinue } catch { }
+                    try {
+                        Get-CimInstance Win32_Process -Filter "Name='webrtc-server.exe'" -ErrorAction SilentlyContinue | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch { } }
+                        Get-CimInstance Win32_Process -Filter "Name='ffmpeg.exe'" -ErrorAction SilentlyContinue | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch { } }
+                    } catch { }
+                    Start-Sleep -Seconds 2
+                    try { Start-ScheduledTask -TaskName 'GhrdpWebRTC' -ErrorAction Stop } catch { Write-Host ('   webrtc restart failed: ' + $_.Exception.Message) }
+                    Start-Sleep -Seconds 3
+                    try { $wv2 = Invoke-RestMethod -Uri 'http://127.0.0.1:8080/version' -TimeoutSec 5 -ErrorAction Stop; Write-Host ('   webrtc healed: session_id=' + $wv2.session_id + ' commit=' + $wv2.git_commit) } catch { Write-Host '   webrtc still down after restart' }
                 }
             }
            try {

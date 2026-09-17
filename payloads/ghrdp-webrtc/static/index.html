@@ -20,6 +20,13 @@ body{background:#0a0a0a;overflow:hidden;font-family:system-ui,-apple-system,sans
 .btn{background:rgba(255,255,255,0.1);border:none;color:#ccc;padding:4px 10px;
   border-radius:4px;cursor:pointer;font-size:12px}
 .btn:hover{background:rgba(255,255,255,0.2)}
+#mode{background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.15);
+  color:#ccc;padding:3px 6px;border-radius:4px;font-size:12px}
+#badge{position:fixed;bottom:6px;right:8px;z-index:11;font-family:monospace;
+  font-size:11px;color:#666;background:rgba(0,0,0,0.6);padding:2px 6px;
+  border-radius:3px;pointer-events:none;transition:opacity 0.3s;opacity:0}
+#badge.show{opacity:1}
+#badge .sha{color:#8ab}
 </style>
 </head>
 <body>
@@ -27,9 +34,14 @@ body{background:#0a0a0a;overflow:hidden;font-family:system-ui,-apple-system,sans
 <div id="toolbar">
   <span id="dot" class="dot dot-red"></span>
   <span id="status">connecting</span>
+  <select id="mode" title="Capture mode">
+    <option value="">512x384 @15</option>
+    <option value="640x480">640x480 @15</option>
+  </select>
   <span id="stats"></span>
   <button class="btn" onclick="toggleFs()">Fullscreen</button>
 </div>
+<div id="badge"><span id="badge-txt"></span></div>
 <script>
 (function(){
 'use strict';
@@ -42,6 +54,15 @@ var toolbar = document.getElementById('toolbar');
 var ws, pc, dc;
 var connected = false;
 var hideTimer;
+var modeSel = document.getElementById('mode');
+var badge = document.getElementById('badge');
+var badgeTxt = document.getElementById('badge-txt');
+
+function currentMode() {
+  var q = new URLSearchParams(location.search).get('mode');
+  if (q) return q;
+  try { return localStorage.getItem('ghrdp-mode') || ''; } catch (e) { return ''; }
+}
 
 function setStatus(txt, color) {
   statusEl.textContent = txt;
@@ -54,9 +75,37 @@ function showToolbar() {
   hideTimer = setTimeout(function(){ toolbar.classList.remove('show'); }, 2500);
 }
 
+// Server stamp badge (P2): the operator must be able to see at a glance which
+// commit/session is actually serving, without opening devtools.
+var badgeTimer;
+function showBadge() {
+  badge.classList.add('show');
+  clearTimeout(badgeTimer);
+  badgeTimer = setTimeout(function(){ badge.classList.remove('show'); }, 8000);
+}
+
+function renderBadge(v) {
+  var sha = (v.git_commit || 'unknown').slice(0, 8);
+  var warn = (v.session_id !== 2) ? ' !!session' + v.session_id : '';
+  badgeTxt.innerHTML = '<span class="sha">' + sha + '</span> ' +
+    v.capture + ' ' + v.mode + ' ' + (v.encoder || '') +
+    ' s' + v.session_id + ' ' + (v.target_fps || '') + 'fps ' +
+    (v.bitrate_kbps || '') + 'k' + warn;
+  showBadge();
+}
+
+function loadVersion() {
+  var q = currentMode();
+  fetch('/version' + (q ? ('?mode=' + encodeURIComponent(q)) : ''))
+    .then(function(r){ return r.json(); })
+    .then(renderBadge)
+    .catch(function(){ badgeTxt.textContent = 'version fetch failed'; showBadge(); });
+}
+
 function connect() {
   var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(proto + '//' + location.host + '/ws');
+  var q = currentMode();
+  ws = new WebSocket(proto + '//' + location.host + '/ws' + (q ? ('?mode=' + encodeURIComponent(q)) : ''));
   ws.onopen = function() {
     setStatus('signaling', 'yellow');
     startWebRTC();
@@ -353,6 +402,22 @@ window.toggleFs = function() {
   }
 };
 
+// Operator-initiated mode switch: persists the choice and reconnects so the
+// server spins a fresh pipeline with the requested capture size (P7).
+if (modeSel) {
+  var savedMode = currentMode();
+  if (savedMode === '640x480') modeSel.value = '640x480';
+  modeSel.addEventListener('change', function() {
+    try { localStorage.setItem('ghrdp-mode', modeSel.value); } catch (e) {}
+    setStatus('switching mode', 'yellow');
+    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+    if (ws) { try { ws.close(); } catch (e) {} }
+    loadVersion();
+  });
+  modeSel.addEventListener('mouseenter', function() { showToolbar(); });
+}
+
+loadVersion();
 showToolbar();
 connect();
 })();
