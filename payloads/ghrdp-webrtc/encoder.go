@@ -66,12 +66,24 @@ func newEncoder(width, height, fps int) (*encoder, error) {
 		"-i", "pipe:0",
 	}
 
+	bitrate := "1200k"
+	maxrate := "1500k"
+	bufsize := "1000k"
+	if width == 640 && height == 480 {
+		bitrate = "1600k"
+		maxrate = "2000k"
+		bufsize = "1200k"
+	}
 	hwCodec, hwArgs := detectHWEncoder()
 	var outputArgs []string
-	if hwCodec != "" {
+	// For 640x480, force libx264 with higher bitrate (HW encoders may not support dynamic)
+	if hwCodec != "" && !(width == 640 && height == 480) {
 		encoderName = hwCodec
 		outputArgs = hwArgs
 	} else {
+		if hwCodec != "" && width == 640 && height == 480 {
+			log.Printf("640x480 mode: forcing libx264 (HW encoder %s not used for this mode)", hwCodec)
+		}
 		encoderName = "libx264"
 		outputArgs = []string{
 			"-c:v", "libx264",
@@ -80,9 +92,9 @@ func newEncoder(width, height, fps int) (*encoder, error) {
 			"-profile:v", "baseline",
 			"-level", "3.1",
 			"-pix_fmt", "yuv420p",
-			"-b:v", "1200k",
-			"-maxrate", "1500k",
-			"-bufsize", "1000k",
+			"-b:v", bitrate,
+			"-maxrate", maxrate,
+			"-bufsize", bufsize,
 			"-g", "30",
 			"-keyint_min", "15",
 			"-sc_threshold", "0",
@@ -121,7 +133,7 @@ func newEncoder(width, height, fps int) (*encoder, error) {
 		return nil, fmt.Errorf("ffmpeg start: %w", err)
 	}
 
-	log.Printf("ffmpeg pid=%d encoder=%s -video_size %dx%d -framerate %d -b:v 1200k", cmd.Process.Pid, encoderName, width, height, fps)
+	log.Printf("ffmpeg pid=%d encoder=%s -video_size %dx%d -framerate %d -b:v %s", cmd.Process.Pid, encoderName, width, height, fps, bitrate)
 
 	e := &encoder{
 		cmd:   cmd,
