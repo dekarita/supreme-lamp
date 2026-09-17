@@ -22,6 +22,8 @@ type encoder struct {
 	width   int
 	height  int
 	encoder string
+	mode    string
+	fps     int
 	bitrate atomic.Int64
 }
 
@@ -139,6 +141,8 @@ func newEncoder(width, height int, mode modeSpec) (*encoder, error) {
 		width:   width,
 		height:  height,
 		encoder: encoderName,
+		mode:    mode.Name,
+		fps:     mode.FPS,
 	}
 	e.bitrate.Store(int64(mode.BitrateKbps))
 	liveEncoder.Store(e)

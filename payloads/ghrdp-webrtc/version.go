@@ -73,6 +73,8 @@ func handleVersion(w http.ResponseWriter, r *http.Request) {
 		enc = "unknown"
 	}
 	bitrate := m.BitrateKbps
+	modeName := m.Name
+	targetFPS := m.FPS
 	pw, ph := plannedCapture(m)
 	res := strconv.Itoa(pw) + "x" + strconv.Itoa(ph)
 	if e := liveEncoder.Load(); e != nil {
@@ -83,14 +85,21 @@ func handleVersion(w http.ResponseWriter, r *http.Request) {
 		if e.encoder != "" {
 			enc = e.encoder
 		}
+		// Advertise the live pipeline's mode, not the requested one.
+		if e.mode != "" {
+			modeName = e.mode
+		}
+		if e.fps > 0 {
+			targetFPS = e.fps
+		}
 	}
 	out := versionInfo{
 		GitCommit:    gitCommit,
 		BuildTime:    buildTime,
 		Capture:      res,
-		Mode:         m.Name,
+		Mode:         modeName,
 		Encoder:      enc,
-		TargetFPS:    m.FPS,
+		TargetFPS:    targetFPS,
 		BitrateKbps:  bitrate,
 		SessionID:    sessionID,
 		ExePath:      exe,
