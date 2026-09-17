@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"sync"
+	"sync/atomic"
 )
 
 type encoder struct {
@@ -15,6 +18,7 @@ type encoder struct {
 	outCh  chan []byte
 	mu     sync.Mutex
 	closed bool
+	drops  atomic.Int64
 }
 
 func newEncoder(width, height, fps int) (*encoder, error) {
@@ -30,17 +34,29 @@ func newEncoder(width, height, fps int) (*encoder, error) {
 		"-profile:v", "baseline",
 		"-level", "3.1",
 		"-pix_fmt", "yuv420p",
-		"-crf", "28",
-		"-g", "60",
+		"-b:v", "1200k",
+		"-maxrate", "1500k",
+		"-bufsize", "1000k",
+		"-g", "30",
+		"-keyint_min", "15",
 		"-sc_threshold", "0",
-		"-x264-params", "repeat-headers=1",
+		"-x264-params", "rc-lookahead=0:bframes=0:ref=1:repeat-headers=1",
 		"-f", "h264",
 		"-flush_packets", "1",
 		"pipe:1",
 	}
 
 	cmd := exec.Command("ffmpeg", args...)
-	cmd.Stderr = io.Discard
+
+	logPath := filepath.Join(filepath.Dir(os.Args[0]), "ffmpeg-stderr.log")
+	stderrLog, errF := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if errF == nil {
+		cmd.Stderr = stderrLog
+		log.Printf("ffmpeg stderr → %s", logPath)
+	} else {
+		cmd.Stderr = io.Discard
+		log.Printf("ffmpeg stderr discard (open %s: %v)", logPath, errF)
+	}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -56,10 +72,12 @@ func newEncoder(width, height, fps int) (*encoder, error) {
 		return nil, fmt.Errorf("ffmpeg start: %w", err)
 	}
 
+	log.Printf("ffmpeg pid=%d args: -video_size %dx%d -framerate %d -b:v 1200k", cmd.Process.Pid, width, height, fps)
+
 	e := &encoder{
 		cmd:   cmd,
 		stdin: stdin,
-		outCh: make(chan []byte, 8),
+		outCh: make(chan []byte, 4),
 	}
 
 	go e.readLoop(stdout)
@@ -109,7 +127,7 @@ func (e *encoder) readLoop(stdout io.ReadCloser) {
 				select {
 				case e.outCh <- cp:
 				default:
-					log.Println("encoder: frame dropped (consumer slow)")
+					e.drops.Add(1)
 				}
 				pending = append(pending[:0], rest...)
 			}
@@ -125,9 +143,6 @@ func (e *encoder) readLoop(stdout io.ReadCloser) {
 	}
 }
 
-// extractAccessUnit splits one H.264 access unit from Annex B data.
-// An access unit boundary is where the next VCL NAL (type 1 or 5) begins
-// after we already saw one, or where an SPS appears after a slice.
 func extractAccessUnit(data []byte) (au, rest []byte, found bool) {
 	positions := findStartCodes(data)
 	if len(positions) < 2 {
@@ -153,12 +168,12 @@ func extractAccessUnit(data []byte) (au, rest []byte, found bool) {
 
 func findStartCodes(data []byte) []int {
 	var pos []int
-	for i := 0; i < len(data)-3; i++ {
+	for i := 0; i <= len(data)-3; i++ {
 		if data[i] == 0 && data[i+1] == 0 {
 			if data[i+2] == 1 {
 				pos = append(pos, i)
 				i += 2
-			} else if i < len(data)-4 && data[i+2] == 0 && data[i+3] == 1 {
+			} else if i <= len(data)-4 && data[i+2] == 0 && data[i+3] == 1 {
 				pos = append(pos, i)
 				i += 3
 			}
@@ -168,9 +183,9 @@ func findStartCodes(data []byte) []int {
 }
 
 func nalTypeAt(data []byte, pos int) byte {
-	off := pos + 3 // assume 3-byte start code
+	off := pos + 3
 	if pos+3 < len(data) && data[pos+2] == 0 {
-		off = pos + 4 // 4-byte start code
+		off = pos + 4
 	}
 	if off >= len(data) {
 		return 0

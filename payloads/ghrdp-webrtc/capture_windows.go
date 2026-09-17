@@ -19,6 +19,8 @@ var (
 	procCreateCompatibleBitmap = modGdi32.NewProc("CreateCompatibleBitmap")
 	procSelectObject           = modGdi32.NewProc("SelectObject")
 	procBitBlt                 = modGdi32.NewProc("BitBlt")
+	procStretchBlt             = modGdi32.NewProc("StretchBlt")
+	procSetStretchBltMode      = modGdi32.NewProc("SetStretchBltMode")
 	procGetDIBits              = modGdi32.NewProc("GetDIBits")
 	procDeleteObject           = modGdi32.NewProc("DeleteObject")
 	procDeleteDC               = modGdi32.NewProc("DeleteDC")
@@ -53,6 +55,10 @@ func getScreenSize() (int, int) {
 }
 
 func captureScreen(width, height int) ([]byte, error) {
+	return captureScreenScaled(width, height, width, height)
+}
+
+func captureScreenScaled(srcW, srcH, dstW, dstH int) ([]byte, error) {
 	hScreen, _, _ := procGetDC.Call(0)
 	if hScreen == 0 {
 		return nil, fmt.Errorf("GetDC failed")
@@ -65,31 +71,38 @@ func captureScreen(width, height int) ([]byte, error) {
 	}
 	defer procDeleteDC.Call(hMemDC)
 
-	hBitmap, _, _ := procCreateCompatibleBitmap.Call(hScreen, uintptr(width), uintptr(height))
+	hBitmap, _, _ := procCreateCompatibleBitmap.Call(hScreen, uintptr(dstW), uintptr(dstH))
 	if hBitmap == 0 {
 		return nil, fmt.Errorf("CreateCompatibleBitmap failed")
 	}
 	defer procDeleteObject.Call(hBitmap)
 
 	hOld, _, _ := procSelectObject.Call(hMemDC, hBitmap)
-	r, _, _ := procBitBlt.Call(hMemDC, 0, 0, uintptr(width), uintptr(height), hScreen, 0, 0, srcCopy)
+	var r uintptr
+	if srcW == dstW && srcH == dstH {
+		r, _, _ = procBitBlt.Call(hMemDC, 0, 0, uintptr(dstW), uintptr(dstH), hScreen, 0, 0, srcCopy)
+	} else {
+		procSetStretchBltMode.Call(hMemDC, 3) // COLORONCOLOR
+		r, _, _ = procStretchBlt.Call(hMemDC, 0, 0, uintptr(dstW), uintptr(dstH),
+			hScreen, 0, 0, uintptr(srcW), uintptr(srcH), srcCopy)
+	}
 	procSelectObject.Call(hMemDC, hOld)
 	if r == 0 {
-		return nil, fmt.Errorf("BitBlt failed")
+		return nil, fmt.Errorf("capture failed")
 	}
 
 	bmi := bitmapInfoHeader{
 		Size:        uint32(unsafe.Sizeof(bitmapInfoHeader{})),
-		Width:       int32(width),
-		Height:      -int32(height), // negative = top-down
+		Width:       int32(dstW),
+		Height:      -int32(dstH),
 		Planes:      1,
 		BitCount:    32,
 		Compression: biRGB,
 	}
 
-	buf := make([]byte, width*height*4)
+	buf := make([]byte, dstW*dstH*4)
 	r, _, _ = procGetDIBits.Call(
-		hMemDC, hBitmap, 0, uintptr(height),
+		hMemDC, hBitmap, 0, uintptr(dstH),
 		uintptr(unsafe.Pointer(&buf[0])),
 		uintptr(unsafe.Pointer(&bmi)),
 		dibRGBColors,

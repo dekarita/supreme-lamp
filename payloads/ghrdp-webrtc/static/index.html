@@ -54,7 +54,6 @@ function showToolbar() {
   hideTimer = setTimeout(function(){ toolbar.classList.remove('show'); }, 2500);
 }
 
-// --- WebSocket Signaling ---
 function connect() {
   var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(proto + '//' + location.host + '/ws');
@@ -83,7 +82,29 @@ function connect() {
   ws.onerror = function() {};
 }
 
-// --- WebRTC ---
+// fps via requestVideoFrameCallback
+var fpsFrameCount = 0;
+var fpsLastTime = 0;
+var currentFps = 0;
+
+function onVideoFrame(now) {
+  fpsFrameCount++;
+  if (fpsLastTime === 0) fpsLastTime = now;
+  var delta = now - fpsLastTime;
+  if (delta >= 1000) {
+    currentFps = Math.round(fpsFrameCount * 1000 / delta);
+    fpsFrameCount = 0;
+    fpsLastTime = now;
+  }
+  view.requestVideoFrameCallback(onVideoFrame);
+}
+
+// fallback fps via currentTime delta
+var fallbackFps = 0;
+var lastCT = 0;
+var ctFrames = 0;
+var ctStart = 0;
+
 function startWebRTC() {
   var config = {
     iceServers: [
@@ -105,12 +126,16 @@ function startWebRTC() {
   };
 
   pc.ontrack = function(ev) {
+    var stream;
     if (ev.streams && ev.streams[0]) {
-      view.srcObject = ev.streams[0];
+      stream = ev.streams[0];
     } else {
-      var s = new MediaStream();
-      s.addTrack(ev.track);
-      view.srcObject = s;
+      stream = new MediaStream();
+      stream.addTrack(ev.track);
+    }
+    view.srcObject = stream;
+    if ('requestVideoFrameCallback' in view) {
+      view.requestVideoFrameCallback(onVideoFrame);
     }
   };
 
@@ -142,24 +167,50 @@ function startWebRTC() {
     ws.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
   });
 
-  // Stats polling
-  setInterval(function() {
-    if (!pc) return;
-    pc.getStats().then(function(stats) {
-      stats.forEach(function(report) {
-        if (report.type === 'inbound-rtp' && report.kind === 'video') {
-          var fps = report.framesPerSecond || 0;
-          var w = report.frameWidth || 0;
-          var h = report.frameHeight || 0;
-          var kbps = Math.round((report.bytesReceived || 0) * 8 / 1000);
-          statsEl.textContent = w + 'x' + h + ' ' + Math.round(fps) + 'fps ' + kbps + 'kbps';
-        }
-      });
-    });
-  }, 1000);
+  setInterval(updateStats, 1000);
 }
 
-// --- Input Handling ---
+var prevBytes = 0;
+var prevTime = 0;
+
+function updateStats() {
+  if (!pc) return;
+
+  // fallback fps from currentTime
+  var ct = view.currentTime;
+  if (lastCT > 0 && ct > lastCT) {
+    ctFrames++;
+  }
+  if (ctStart === 0) ctStart = Date.now();
+  var ctElapsed = (Date.now() - ctStart) / 1000;
+  if (ctElapsed > 2) {
+    fallbackFps = Math.round(ctFrames / ctElapsed);
+    ctFrames = 0;
+    ctStart = Date.now();
+  }
+  lastCT = ct;
+
+  pc.getStats().then(function(rtcStats) {
+    var fps = currentFps || fallbackFps;
+    var w = 0, h = 0, kbps = 0;
+    rtcStats.forEach(function(report) {
+      if (report.type === 'inbound-rtp' && report.kind === 'video') {
+        if (report.framesPerSecond) fps = Math.round(report.framesPerSecond);
+        w = report.frameWidth || 0;
+        h = report.frameHeight || 0;
+        var nowMs = Date.now();
+        if (prevTime > 0 && nowMs > prevTime) {
+          kbps = Math.round((report.bytesReceived - prevBytes) * 8 / (nowMs - prevTime));
+        }
+        prevBytes = report.bytesReceived || 0;
+        prevTime = nowMs;
+      }
+    });
+    statsEl.textContent = w + 'x' + h + ' ' + fps + 'fps ' + kbps + 'kbps';
+  });
+}
+
+// --- Input ---
 function send(obj) {
   if (connected && dc && dc.readyState === 'open') {
     dc.send(JSON.stringify(obj));
@@ -189,7 +240,6 @@ function normCoords(e) {
   return { nx: Math.max(0, Math.min(1, nx)), ny: Math.max(0, Math.min(1, ny)) };
 }
 
-// Throttle mouse move to ~60 events/sec
 var lastMove = 0;
 view.addEventListener('mousemove', function(e) {
   var now = Date.now();
@@ -219,7 +269,6 @@ view.addEventListener('wheel', function(e) {
 
 view.addEventListener('contextmenu', function(e) { e.preventDefault(); });
 
-// Keyboard
 var VK_MAP = {
   'Backspace':8,'Tab':9,'Enter':13,'ShiftLeft':16,'ShiftRight':16,
   'ControlLeft':17,'ControlRight':17,'AltLeft':18,'AltRight':18,
@@ -244,9 +293,7 @@ var VK_MAP = {
 document.addEventListener('keydown', function(e) {
   e.preventDefault();
   var vk = VK_MAP[e.code];
-  if (vk) {
-    send({ t:'kd', vk:vk });
-  }
+  if (vk) send({ t:'kd', vk:vk });
   if (e.key.length === 1 && !e.ctrlKey && !e.altKey && !e.metaKey) {
     send({ t:'k', ch:e.key });
   }
@@ -255,17 +302,13 @@ document.addEventListener('keydown', function(e) {
 document.addEventListener('keyup', function(e) {
   e.preventDefault();
   var vk = VK_MAP[e.code];
-  if (vk) {
-    send({ t:'ku', vk:vk });
-  }
+  if (vk) send({ t:'ku', vk:vk });
 });
 
-// Touch support
 var lastTouch = null;
 view.addEventListener('touchstart', function(e) {
   e.preventDefault();
   var t = e.touches[0];
-  lastTouch = { x: t.clientX, y: t.clientY };
   var c = normCoords(t);
   send({ t:'m', nx:c.nx, ny:c.ny });
   send({ t:'ld' });
@@ -283,7 +326,6 @@ view.addEventListener('touchend', function(e) {
   send({ t:'lu' });
 }, { passive: false });
 
-// Toolbar hover zone (top 40px)
 document.addEventListener('mousemove', function(e) {
   if (e.clientY < 40) showToolbar();
 });
@@ -296,7 +338,6 @@ window.toggleFs = function() {
   }
 };
 
-// Start
 showToolbar();
 connect();
 })();

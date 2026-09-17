@@ -442,7 +442,8 @@ jobs:
               @{ name = 'ghrdp-rdp-3389';     port = 3389; proto = 'TCP' },
               @{ name = 'ghrdp-rdp-3389-udp'; port = 3389; proto = 'UDP' },
               @{ name = 'ghrdp-dash-7331';    port = 7331; proto = 'TCP' },
-              @{ name = 'ghrdp-dash-7332';    port = 7332; proto = 'TCP' }
+              @{ name = 'ghrdp-dash-7332';    port = 7332; proto = 'TCP' },
+              @{ name = 'ghrdp-webrtc-8080';  port = 8080; proto = 'TCP' }
           )
           foreach ($r in $rules) {
               $created = $false
@@ -1559,6 +1560,20 @@ jobs:
           go build -ldflags='-s -w' -o $binPath .
           if ($LASTEXITCODE -ne 0) { Write-Host '[webrtc] BUILD FAILED'; Pop-Location; exit 0 }
           Write-Host ('[webrtc] built: ' + (((Get-Item $binPath).Length / 1MB).ToString('F1')) + ' MB')
+          # Guard: verify encoder uses dynamic capture dimensions, not hardcoded values
+          $mainSrc = Get-Content (Join-Path $srcDir 'main.go') -Raw
+          $encSrc = Get-Content (Join-Path $srcDir 'encoder.go') -Raw
+          if ($mainSrc -match 'newEncoder\(capW,\s*capH,') {
+              Write-Host '[webrtc] GUARD PASS: encoder initialized with dynamic capture dimensions'
+          } else {
+              Write-Host '[webrtc] GUARD FAIL: encoder not using capW/capH — size desync risk!'
+              Pop-Location; exit 1
+          }
+          if ($mainSrc -match 'SIZE MISMATCH.*log\.Fatalf') {
+              Write-Host '[webrtc] GUARD PASS: startup size assertion present'
+          } else {
+              Write-Host '[webrtc] GUARD WARN: no startup size assertion found'
+          }
           Pop-Location
           # Deploy static files
           $staticDst = Join-Path $deployDir 'static'
