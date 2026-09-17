@@ -143,6 +143,21 @@ function Stop-StaleServer {
         } catch { }
     }
     try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch { }
+    # A previous server that never released the port would make the new one die on
+    # ListenAndServe. The server also does this internally, but clearing it here
+    # means the failure mode is visible in the deploy log with the pid.
+    try {
+        Get-NetTCPConnection -LocalPort 8080 -State Listen -ErrorAction SilentlyContinue |
+            Select-Object -ExpandProperty OwningProcess -Unique |
+            Where-Object { $_ -and $_ -ne $PID } |
+            ForEach-Object {
+                try {
+                    Stop-Process -Id $_ -Force -ErrorAction Stop
+                    $killed++
+                    Write-Log ("killed stale :8080 listener pid={0}" -f $_)
+                } catch { }
+            }
+    } catch { }
     return $killed
 }
 Write-Log ("stale process sweep: killed {0}" -f (Stop-StaleServer))
@@ -161,8 +176,11 @@ Push-Location $srcDir
 try {
     $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
     $ldflags = ('-s -w -X main.gitCommit={0} -X main.buildTime={1}' -f $GitCommit, $BuildTime)
-    Write-Log ("go build -ldflags `"{0}`"" -f $ldflags)
-    & $goExe build -ldflags $ldflags -o $buildOut . 2>&1 | ForEach-Object { Write-Log ("  go: {0}" -f $_) }
+    Write-Log ("go build -mod=readonly -ldflags `"{0}`"" -f $ldflags)
+    # -mod=readonly: go.mod/go.sum are committed, so the build must not silently
+    # rewrite them. A missing requirement is a build failure here, not a quiet
+    # `go mod tidy` that makes this runner's binary differ from the committed sha.
+    & $goExe build -mod=readonly -ldflags $ldflags -o $buildOut . 2>&1 | ForEach-Object { Write-Log ("  go: {0}" -f $_) }
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $buildOut)) {
         Write-Log ("FATAL: go build failed (exit {0})" -f $LASTEXITCODE)
         Pop-Location
@@ -170,7 +188,7 @@ try {
     }
     # also build the probe next to the server, used by acceptance (P5)
     $probeOut = Join-Path $DeployDir 'probe.exe'
-    & $goExe build -ldflags '-s -w' -o $probeOut ./cmd/probe 2>&1 | ForEach-Object { Write-Log ("  probe: {0}" -f $_) }
+    & $goExe build -mod=readonly -ldflags '-s -w' -o $probeOut ./cmd/probe 2>&1 | ForEach-Object { Write-Log ("  probe: {0}" -f $_) }
     if ($LASTEXITCODE -ne 0) { Write-Log 'WARN: probe build failed; acceptance will report FAIL' }
 } finally {
     Pop-Location

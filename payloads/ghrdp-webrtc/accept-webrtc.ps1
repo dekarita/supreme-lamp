@@ -188,6 +188,38 @@ if ($acc -and ([string]$acc.verdict -eq 'PASS')) {
     if (Test-StaleDeploy -Acc $acc) { exit 2 }
 }
 
+# --- A7/A2 health check -----------------------------------------------------
+# The probe proves frames flowed during its window; it cannot prove the pipeline
+# is still alive afterwards or that the display is being held awake. Read /stats
+# so a stream that died immediately after the probe, a stuck guard, or a dropped
+# anti-idle requirement still fails the deploy.
+function Get-ServerStats {
+    try {
+        return Invoke-RestMethod -Uri 'http://127.0.0.1:8080/stats' -TimeoutSec 5 -ErrorAction Stop
+    } catch {
+        Write-Log ("stats unreachable: {0}" -f $_.Exception.Message)
+        return $null
+    }
+}
+
+$health = $null
+$healthProblems = @()
+$healthWarnings = @()
+if ($acc) {
+    $health = Get-ServerStats
+    if (-not $health) {
+        $healthProblems += 'stats unreachable after probe'
+    } else {
+        # Hard failures: these mean the stream is not actually healthy.
+        if ($health.size_mismatch) { $healthProblems += 'size_mismatch set' }
+        if ($health.guard_tripped) { $healthProblems += 'capture guard tripped' }
+        if ([int]$health.session_id -ne 2) { $healthProblems += ('session_id ' + $health.session_id + ' != 2') }
+        # Warning only: anti-idle failing degrades after minutes of idle, it does
+        # not stop video. Failing the deploy over it would reject a working stream.
+        if (-not $health.display_awake) { $healthWarnings += 'display keepalive inactive (screen may dim when idle)' }
+    }
+}
+
 # --- summary + verdict ------------------------------------------------------
 $verdict = 'FAIL'
 if ($acc) { $verdict = [string]$acc.verdict }
@@ -203,6 +235,35 @@ if ($acc) {
     }
 } else {
     $summaryLines += 'acceptance.json was not produced (probe timeout or crash).'
+}
+$summaryLines += ''
+$summaryLines += '| post-probe health | value |'
+$summaryLines += '| --- | --- |'
+if ($health) {
+    $summaryLines += ('| display_awake | {0} |' -f $health.display_awake)
+    $summaryLines += ('| frames_sent | {0} |' -f $health.frames_sent)
+    $summaryLines += ('| fps_sent | {0} |' -f $health.fps_sent)
+    $summaryLines += ('| drops | {0} |' -f $health.drops)
+    $summaryLines += ('| capture_mode | {0} |' -f $health.capture_mode)
+    $summaryLines += ('| size_mismatch | {0} |' -f [bool]$health.size_mismatch)
+    $summaryLines += ('| guard_tripped | {0} |' -f [bool]$health.guard_tripped)
+} else {
+    $summaryLines += '| stats | unreachable |'
+}
+if ($healthProblems.Count) {
+    $summaryLines += ''
+    $summaryLines += ('**health problems:** ' + ($healthProblems -join '; '))
+    if ($verdict -eq 'PASS') {
+        Write-Log ('acceptance PASS overridden by health problems: ' + ($healthProblems -join '; '))
+        $verdict = 'FAIL'
+    }
+}
+if ($healthWarnings.Count) {
+    $summaryLines += ''
+    $summaryLines += ('**health warnings:** ' + ($healthWarnings -join '; '))
+    # Warnings are reported but never change the verdict: they describe
+    # degradation that only appears after minutes of idle.
+    Write-Log ('health warnings: ' + ($healthWarnings -join '; '))
 }
 if ($summaryLines -and $SummaryPath) {
     try { Add-Content -LiteralPath $SummaryPath -Value ($summaryLines -join "`n") -ErrorAction SilentlyContinue } catch { }

@@ -1534,6 +1534,32 @@ jobs:
           } catch { Write-Host ('[webdesk] runneradmin task register failed: ' + $_.Exception.Message) }
           exit 0
 
+      - name: WebRTC unit tests (pipeline restart loop, backoff ramp)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $repoRoot = ''
+          foreach ($root in @('D:\a','C:\a')) {
+              if (-not (Test-Path $root)) { continue }
+              $hit = Get-ChildItem -Path $root -Recurse -Filter 'go.mod' -Depth 8 -ErrorAction SilentlyContinue |
+                     Where-Object { $_.FullName -like '*payloads\ghrdp-webrtc\go.mod' } | Select-Object -First 1
+              if ($hit) { $repoRoot = $hit.FullName.Substring(0, $hit.FullName.Length - '\payloads\ghrdp-webrtc\go.mod'.Length); break }
+          }
+          if (-not $repoRoot) { $repoRoot = $env:GITHUB_WORKSPACE }
+          $src = Join-Path $repoRoot 'payloads\ghrdp-webrtc'
+          Write-Host ('[webrtc] unit tests in ' + $src)
+          Push-Location $src
+          try {
+              $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+              go test -mod=readonly -count=1 ./... 2>&1 | ForEach-Object { Write-Host ('  go test: ' + $_) }
+              $rc = $LASTEXITCODE
+          } finally { Pop-Location }
+          # A failing restart loop is the blackout bug; failing here is much cheaper
+          # than discovering it from a 22s black canvas on the deployed server.
+          if ($rc -ne 0) { Write-Host '[webrtc] FATAL: unit tests failed'; exit 1 }
+          Write-Host '[webrtc] unit tests passed'
+          exit 0
+
       - name: Build and deploy WebRTC server (identity-proof, stamped, session-guarded)
         env:
           GH_SHA: ${{ github.sha }}
