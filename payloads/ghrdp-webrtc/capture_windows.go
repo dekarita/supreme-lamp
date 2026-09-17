@@ -88,7 +88,8 @@ func captureScreenScaled(srcW, srcH, dstW, dstH int) ([]byte, error) {
 	}
 	procSelectObject.Call(hMemDC, hOld)
 	if r == 0 {
-		return nil, fmt.Errorf("capture failed")
+		return nil, fmt.Errorf("StretchBlt failed: srcW=%d srcH=%d dstW=%d dstH=%d hScreen=%x hMemDC=%x",
+			srcW, srcH, dstW, dstH, hScreen, hMemDC)
 	}
 
 	bmi := bitmapInfoHeader{

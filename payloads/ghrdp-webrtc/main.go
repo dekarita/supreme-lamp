@@ -316,12 +316,14 @@ func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSampl
 	// verify first frame size
 	testFrame, err := captureFunc()
 	if err != nil {
-		log.Fatalf("first capture failed: %v", err)
+		log.Printf("first capture failed: %v", err)
+		return
 	}
 	if len(testFrame) != expectedBytes {
 		stats.sizeMismatch.Store(true)
-		log.Fatalf("SIZE MISMATCH: capture returned %d bytes, encoder expects %d (cap=%dx%d)",
+		log.Printf("SIZE MISMATCH: capture returned %d bytes, encoder expects %d (cap=%dx%d)",
 			len(testFrame), expectedBytes, capW, capH)
+		return
 	}
 	log.Printf("size assertion PASS: %d bytes == %dx%dx4", len(testFrame), capW, capH)
 	if err := enc.writeFrame(testFrame); err != nil {
