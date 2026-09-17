@@ -39,6 +39,10 @@ type probeResult struct {
 	Bytes        int64   `json:"bytes"`
 	Duration     float64 `json:"duration_s"`
 	InputToFrame float64 `json:"input_to_frame_ms"`
+	// MaxGapMS is the longest stall between consecutive frames. An average fps
+	// hides a blackout: a 3s freeze in a 30s window still averages ~11fps at
+	// 15fps nominal, so it reads as healthy while the viewer saw nothing.
+	MaxGapMS float64 `json:"max_gap_ms"`
 }
 
 // acceptance mirrors the P5 contract written next to the deploy.
@@ -54,6 +58,7 @@ type acceptance struct {
 	Mode         string  `json:"mode"`
 	Encoder      string  `json:"encoder"`
 	InputToFrame float64 `json:"input_to_frame_ms"`
+	MaxGapMS     float64 `json:"max_gap_ms"`
 	ProbeAt      string  `json:"probe_at"`
 	Addr         string  `json:"addr"`
 	Error        string  `json:"error,omitempty"`
@@ -113,12 +118,16 @@ func main() {
 	acc.DecodeOK = round3(result.DecodeOK)
 	acc.Candidate = result.CandType
 	acc.InputToFrame = result.InputToFrame
+	acc.MaxGapMS = round1(result.MaxGapMS)
 	if ver.Capture != "" {
 		acc.Capture = ver.Capture
 	}
 
+	// B3 forbids a blackout longer than 2s. Average fps cannot see one, so the
+	// verdict fails on the longest inter-frame gap as well.
 	pass := result.FPS >= *minFPS && result.KbpsAvg <= 2500 && result.DecodeOK >= 0.99 &&
-		result.CandType != "" && result.CandType != "unknown" && ver.SessionID == 2
+		result.CandType != "" && result.CandType != "unknown" && ver.SessionID == 2 &&
+		result.MaxGapMS <= maxGapMSAllowed
 	if pass {
 		acc.Verdict = "PASS"
 		fmt.Println("\nVERDICT: PASS")
@@ -141,6 +150,9 @@ func main() {
 	}
 	if ver.SessionID != 2 {
 		fmt.Printf("  session_id %d != 2\n", ver.SessionID)
+	}
+	if result.MaxGapMS > maxGapMSAllowed {
+		fmt.Printf("  max frame gap %.0fms > %.0fms (blackout)\n", result.MaxGapMS, maxGapMSAllowed)
 	}
 	writeAcceptance(*out, acc)
 	os.Exit(1)
@@ -217,6 +229,13 @@ func runProbe(wsURL string, dur time.Duration) (*probeResult, error) {
 		trackStart time.Time
 		trackOnce  sync.Once
 		writeMu    sync.Mutex
+
+		// Stall tracking. lastFrame/lastFrameNS are touched only from the single
+		// OnTrack goroutine, so the gap can be computed in place; maxGapMS is
+		// published atomically because the report reads it after the read loop
+		// may still be draining.
+		lastFrameNS atomic.Int64
+		maxGapMS    atomic.Int64
 	)
 
 	// OnICECandidate fires from Pion's gatherer goroutine while the main path
@@ -241,7 +260,15 @@ func runProbe(wsURL string, dur time.Duration) (*probeResult, error) {
 			if err != nil {
 				return
 			}
-			firstOnce.Do(func() { firstFrame = time.Now() })
+			now := time.Now()
+			if prev := lastFrameNS.Load(); prev > 0 {
+				gap := now.UnixNano() - prev
+				if gap > 0 && gap > maxGapMS.Load() {
+					maxGapMS.Store(gap)
+				}
+			}
+			lastFrameNS.Store(now.UnixNano())
+			firstOnce.Do(func() { firstFrame = now })
 			frames.Add(1)
 			bytes.Add(int64(len(pkt.Payload)))
 			decodeOK.Add(1)
@@ -339,6 +366,10 @@ measuring:
 	startFrames := frames.Load()
 	startBytes := bytes.Load()
 	start := time.Now()
+	// Only stalls inside the measurement window count: reset before measuring so
+	// the first-frame handshake gap is not reported as a blackout.
+	lastFrameNS.Store(0)
+	maxGapMS.Store(0)
 
 	// Input latency: wait for the data channel, send one move event, and measure
 	// how long the next encoded frame takes to arrive (B4, <=120ms).
@@ -392,11 +423,16 @@ measuring:
 		Bytes:        totalBytes,
 		Duration:     elapsed,
 		InputToFrame: float64(inputToFrame.Milliseconds()),
+		MaxGapMS:     float64(maxGapMS.Load()) / float64(time.Millisecond),
 	}, nil
 }
 
 func round1(v float64) float64 { return math.Round(v*10) / 10 }
 func round3(v float64) float64 { return math.Round(v*1000) / 1000 }
+
+// maxGapMSAllowed is the longest inter-frame stall B3 tolerates: a blackout
+// longer than this fails acceptance even if every other metric looks healthy.
+const maxGapMSAllowed = 2000.0
 
 func printReport(r *probeResult, v versionInfo, minFPS float64) {
 	w := 52
@@ -408,6 +444,7 @@ func printReport(r *probeResult, v versionInfo, minFPS float64) {
 	fmt.Printf("  %-22s %8.3f\n", "Decode OK ratio:", r.DecodeOK)
 	fmt.Printf("  %-22s %8.0f ms\n", "First frame:", r.FirstFrame)
 	fmt.Printf("  %-22s %8.0f ms\n", "Input to frame:", r.InputToFrame)
+	fmt.Printf("  %-22s %8.0f ms\n", "Max frame gap:", r.MaxGapMS)
 	fmt.Printf("  %-22s %8s\n", "Candidate type:", r.CandType)
 	fmt.Printf("  %-22s %8d\n", "Frames measured:", r.Frames)
 	fmt.Printf("  %-22s %8.1f s\n", "Duration:", r.Duration)
@@ -430,4 +467,5 @@ func printReport(r *probeResult, v versionInfo, minFPS float64) {
 	check("decode_ok >= 0.99", r.DecodeOK >= 0.99, fmt.Sprintf("%.3f", r.DecodeOK))
 	check("candidate resolved", r.CandType != "" && r.CandType != "unknown", r.CandType)
 	check("session_id == 2", v.SessionID == 2, fmt.Sprintf("%d", v.SessionID))
+	check("no blackout > 2s", r.MaxGapMS <= maxGapMSAllowed, fmt.Sprintf("%.0fms", r.MaxGapMS))
 }

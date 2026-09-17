@@ -337,8 +337,11 @@ func supervisePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSample
 			return
 		}
 		if attempt > 0 {
-			// 1s, 3s, 5s, ... capped at 10s.
-			backoff := pipelineBackoff(attempt)
+			// 1s, 3s, 5s, ... capped at 10s. attempt is 1-based here while the
+			// ramp is indexed from 0, so the first retry waits 1s rather than 3s:
+			// B3 allows at most a 2s blackout, and a 3s delay guarantees a breach
+			// on every transient failure.
+			backoff := pipelineBackoff(attempt - 1)
 			log.Printf("pipeline restart %d/%d in %s", attempt, maxPipelineRestarts, backoff)
 			select {
 			case <-ctx.Done():

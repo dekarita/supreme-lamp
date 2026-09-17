@@ -80,6 +80,10 @@ missing server or ffmpeg, or an `ffmpeg -video_size` that disagrees with `/versi
 reported as a warning only, since it degrades after minutes of idle rather than
 stopping video.
 
+The probe also fails on `max_gap_ms > 2000`. Average fps cannot see a blackout — a 3s
+freeze in a 30s window still averages above the 10fps floor — so the longest gap
+between consecutive frames is measured separately and gates the verdict.
+
 ## Failure signatures
 
 | Symptom | Cause | Check |

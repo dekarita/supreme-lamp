@@ -286,7 +286,7 @@ $summaryLines += ''
 if ($acc) {
     $summaryLines += '| field | value |'
     $summaryLines += '| --- | --- |'
-    foreach ($k in @('verdict', 'fps', 'kbps', 'decode_ok', 'candidate', 'git_commit', 'session_id', 'capture', 'mode', 'encoder', 'input_to_frame_ms', 'probe_at')) {
+    foreach ($k in @('verdict', 'fps', 'kbps', 'decode_ok', 'candidate', 'git_commit', 'session_id', 'capture', 'mode', 'encoder', 'input_to_frame_ms', 'max_gap_ms', 'probe_at')) {
         $summaryLines += ('| {0} | {1} |' -f $k, $acc.$k)
     }
 } else {
