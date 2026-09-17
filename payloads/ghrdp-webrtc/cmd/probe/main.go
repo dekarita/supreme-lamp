@@ -79,6 +79,7 @@ type acceptance struct {
 	// that died mid-probe is visible in the artifact instead of only in ffmpeg's log.
 	TerminalGapMS float64 `json:"terminal_gap_ms"`
 	ActiveFPS     float64 `json:"active_fps"`
+	ActiveS       float64 `json:"active_s"`
 	ProbeAt       string  `json:"probe_at"`
 	Addr          string  `json:"addr"`
 	Error         string  `json:"error,omitempty"`
@@ -141,6 +142,7 @@ func main() {
 	acc.MaxGapMS = round1(result.MaxGapMS)
 	acc.TerminalGapMS = round1(result.TerminalGapMS)
 	acc.ActiveFPS = round1(result.ActiveFPS)
+	acc.ActiveS = round1(result.ActiveS)
 	if ver.Capture != "" {
 		acc.Capture = ver.Capture
 	}
