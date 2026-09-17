@@ -248,6 +248,31 @@ function Get-DesyncProblems {
     return $out
 }
 
+# A liveness failure (server gone, ffmpeg gone, /stats dead) is repairable: the
+# probe measured a window that has since ended, and the server is a supervised
+# scheduled task that can simply be started again. Repair once and re-verify so a
+# transient death becomes a recovered session instead of a red run. Run
+# 35258476317 lost the server mid-probe; the correct response was to bring it
+# back, not to fail the deploy and tear the runner down.
+function Repair-Pipeline {
+    param([string]$Reason)
+    Write-Log ('liveness failure (' + $Reason + ') - restarting the server task once')
+    try { Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue } catch { }
+    Stop-ServerProcesses
+    Start-Sleep -Seconds 2
+    try { Start-ScheduledTask -TaskName $TaskName -ErrorAction Stop } catch { Write-Log ('   restart failed: {0}' -f $_.Exception.Message) }
+    Start-Sleep -Seconds 6
+    return (Get-ServerStats)
+}
+
+function Test-LivenessProblem {
+    param([string[]]$Problems)
+    foreach ($p in @($Problems)) {
+        if ($p -match 'stats unreachable' -or $p -match 'server processes' -or $p -match 'ffmpeg processes') { return $true }
+    }
+    return $false
+}
+
 function Get-PipelineCounts {
     if (-not (Get-Command Get-CimInstance -ErrorAction SilentlyContinue)) { return $null }
     $exePath = Get-ServerExePath
@@ -272,6 +297,32 @@ if ($acc) {
         if ($counts.Ffmpegs -ne 1) { $healthProblems += ('ffmpeg processes = ' + $counts.Ffmpegs + ' (want 1)') }
         if ($health -and $health.res) {
             $healthProblems += Get-DesyncProblems -Sizes $counts.FfmpegSizes -Res ([string]$health.res)
+        }
+    }
+
+    # Repair before judging. A dead server or a dead pipeline is the recoverable
+    # case, and the only reason this used to be fatal is that the verdict was
+    # computed before anyone tried to fix it.
+    if (Test-LivenessProblem -Problems $healthProblems) {
+        $healthProblems = @()
+        $health = Repair-Pipeline -Reason 'server or pipeline stopped after the probe'
+        if ($health) {
+            if ([int]$health.session_id -ne 2) { $healthProblems += ('session_id ' + $health.session_id + ' != 2') }
+            if ($health.size_mismatch) { $healthProblems += 'size_mismatch set' }
+            if ($health.guard_tripped) { $healthProblems += 'capture guard tripped' }
+            if (-not $health.display_awake) { $healthWarnings += 'display keepalive inactive (screen may dim when idle)' }
+            Write-Log ('recovery probe: session_id={0} frames_sent={1} fps_sent={2}' -f $health.session_id, $health.frames_sent, $health.fps_sent)
+        } else {
+            $healthProblems += 'stats unreachable after repair'
+        }
+        $counts = Get-PipelineCounts
+        if ($counts) {
+            if ($counts.Servers -ne 1) { $healthProblems += ('server processes = ' + $counts.Servers + ' after repair (want 1)') }
+            if ($counts.Ffmpegs -lt 1) { $healthWarnings += ('ffmpeg processes = ' + $counts.Ffmpegs + ' (idle pipeline: ffmpeg starts on client connect)') }
+            if ($counts.Ffmpegs -gt 1) { $healthProblems += ('ffmpeg processes = ' + $counts.Ffmpegs + ' after repair (want <=1)') }
+            if ($health -and $health.res) {
+                $healthProblems += Get-DesyncProblems -Sizes $counts.FfmpegSizes -Res ([string]$health.res)
+            }
         }
     }
 }

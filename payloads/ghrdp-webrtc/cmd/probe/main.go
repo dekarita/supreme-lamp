@@ -43,6 +43,21 @@ type probeResult struct {
 	// hides a blackout: a 3s freeze in a 30s window still averages ~11fps at
 	// 15fps nominal, so it reads as healthy while the viewer saw nothing.
 	MaxGapMS float64 `json:"max_gap_ms"`
+	// TerminalGapMS is the silence between the LAST frame received and the end of
+	// the measurement window. Without it a stream that dies mid-probe is invisible:
+	// the stall that matters produces no further packet, so no between-frames gap is
+	// ever computed. Run 35258476317 lost the server ~13s in and still reported
+	// 47.9fps / max_gap 171ms / PASS.
+	TerminalGapMS float64 `json:"terminal_gap_ms"`
+	// ActiveS is the window the frames actually arrived over (first to last), which
+	// excludes the dead tail. ActiveFPS is measured over ActiveS alone.
+	ActiveS   float64 `json:"active_s"`
+	ActiveFPS float64 `json:"active_fps"`
+	// DecodeOKCount/DecodeFailCount make decode_ok falsifiable. The old ratio was
+	// decodeOK/endFrames where both were incremented together per received packet,
+	// so it was structurally pinned at 1.000 and could never fail.
+	DecodeOKCount   int64 `json:"decode_ok_count"`
+	DecodeFailCount int64 `json:"decode_fail_count"`
 }
 
 // acceptance mirrors the P5 contract written next to the deploy.
@@ -59,9 +74,14 @@ type acceptance struct {
 	Encoder      string  `json:"encoder"`
 	InputToFrame float64 `json:"input_to_frame_ms"`
 	MaxGapMS     float64 `json:"max_gap_ms"`
-	ProbeAt      string  `json:"probe_at"`
-	Addr         string  `json:"addr"`
-	Error        string  `json:"error,omitempty"`
+	// TerminalGapMS is the silence from the last frame to the end of the window:
+	// i.e. the stream was still alive when the probe finished. Recorded so a stream
+	// that died mid-probe is visible in the artifact instead of only in ffmpeg's log.
+	TerminalGapMS float64 `json:"terminal_gap_ms"`
+	ActiveFPS     float64 `json:"active_fps"`
+	ProbeAt       string  `json:"probe_at"`
+	Addr          string  `json:"addr"`
+	Error         string  `json:"error,omitempty"`
 }
 
 type versionInfo struct {
@@ -119,15 +139,20 @@ func main() {
 	acc.Candidate = result.CandType
 	acc.InputToFrame = result.InputToFrame
 	acc.MaxGapMS = round1(result.MaxGapMS)
+	acc.TerminalGapMS = round1(result.TerminalGapMS)
+	acc.ActiveFPS = round1(result.ActiveFPS)
 	if ver.Capture != "" {
 		acc.Capture = ver.Capture
 	}
 
 	// B3 forbids a blackout longer than 2s. Average fps cannot see one, so the
 	// verdict fails on the longest inter-frame gap as well.
+	// Liveness is a first-class criterion. MaxGapMS already absorbs the terminal
+	// silence, but state the requirement directly so the reason a stream failed is
+	// never "the numbers looked fine".
 	pass := result.FPS >= *minFPS && result.KbpsAvg <= 2500 && result.DecodeOK >= 0.99 &&
 		result.CandType != "" && result.CandType != "unknown" && ver.SessionID == 2 &&
-		result.MaxGapMS <= maxGapMSAllowed
+		result.MaxGapMS <= maxGapMSAllowed && result.TerminalGapMS <= maxGapMSAllowed
 	if pass {
 		acc.Verdict = "PASS"
 		fmt.Println("\nVERDICT: PASS")
@@ -153,6 +178,9 @@ func main() {
 	}
 	if result.MaxGapMS > maxGapMSAllowed {
 		fmt.Printf("  max frame gap %.0fms > %.0fms (blackout)\n", result.MaxGapMS, maxGapMSAllowed)
+	}
+	if result.TerminalGapMS > maxGapMSAllowed {
+		fmt.Printf("  stream stopped %.0fms before the probe ended (dead tail > %.0fms)\n", result.TerminalGapMS, maxGapMSAllowed)
 	}
 	writeAcceptance(*out, acc)
 	os.Exit(1)
@@ -236,6 +264,11 @@ func runProbe(wsURL string, dur time.Duration) (*probeResult, error) {
 		// may still be draining.
 		lastFrameNS atomic.Int64
 		maxGapMS    atomic.Int64
+		// firstFrameNS/lastFrameNSAbs bound the window frames actually arrived over,
+		// so a dead tail cannot be averaged away.
+		firstFrameNS   atomic.Int64
+		lastFrameNSAbs atomic.Int64
+		decodeFail     atomic.Int64
 	)
 
 	// OnICECandidate fires from Pion's gatherer goroutine while the main path
@@ -268,10 +301,18 @@ func runProbe(wsURL string, dur time.Duration) (*probeResult, error) {
 				}
 			}
 			lastFrameNS.Store(now.UnixNano())
+			lastFrameNSAbs.Store(now.UnixNano())
+			firstFrameNS.CompareAndSwap(0, now.UnixNano())
 			firstOnce.Do(func() { firstFrame = now })
 			frames.Add(1)
 			bytes.Add(int64(len(pkt.Payload)))
-			decodeOK.Add(1)
+			// A payload that cannot be split into access units is undecodable. The
+			// old counter incremented unconditionally, so decode_ok was always 1.000.
+			if len(pkt.Payload) > 0 {
+				decodeOK.Add(1)
+			} else {
+				decodeFail.Add(1)
+			}
 		}
 	})
 
@@ -370,6 +411,11 @@ measuring:
 	// the first-frame handshake gap is not reported as a blackout.
 	lastFrameNS.Store(0)
 	maxGapMS.Store(0)
+	// Bound the arrival window: firstFrameNS stays 0 until a frame lands, and
+	// lastFrameNSAbs is seeded at the window start so a stall that never ends is
+	// still visible as a terminal gap.
+	firstFrameNS.Store(0)
+	lastFrameNSAbs.Store(start.UnixNano())
 
 	// Input latency: wait for the data channel, send one move event, and measure
 	// how long the next encoded frame takes to arrive (B4, <=120ms).
@@ -408,22 +454,45 @@ measuring:
 	fps := float64(totalFrames) / elapsed
 	kbps := float64(totalBytes) * 8 / elapsed / 1000
 
-	decodeRatio := 1.0
-	if endFrames > 0 {
-		decodeRatio = math.Min(1.0, float64(decodeOK.Load())/float64(endFrames))
+	okCount := decodeOK.Load()
+	failCount := decodeFail.Load()
+	decodeRatio := decodeRatio(okCount, failCount)
+
+	// The stall that matters is the one still in progress when the window ends:
+	// it emits no further packet, so the between-frames scan cannot see it. Measure
+	// the silence from the last frame to the end of the window and fold it into the
+	// blackout check; otherwise a server that dies mid-probe reports healthy.
+	end := time.Now()
+	firstNS := firstFrameNS.Load()
+	lastNS := lastFrameNSAbs.Load()
+	var activeS, activeFPS float64
+	if firstNS > 0 && lastNS >= firstNS {
+		activeS = float64(lastNS-firstNS) / float64(time.Second)
+		if activeS > 0 {
+			activeFPS = float64(totalFrames) / activeS
+		}
+	}
+	terminalGapMS := float64(livenessGap(end, time.Unix(0, lastNS))) / float64(time.Millisecond)
+	if terminalGapMS > float64(maxGapMS.Load())/float64(time.Millisecond) {
+		maxGapMS.Store(int64(terminalGapMS * float64(time.Millisecond)))
 	}
 
 	return &probeResult{
-		FPS:          fps,
-		KbpsAvg:      kbps,
-		DecodeOK:     decodeRatio,
-		FirstFrame:   firstFrameLatency.Seconds() * 1000,
-		CandType:     candType.Load().(string),
-		Frames:       totalFrames,
-		Bytes:        totalBytes,
-		Duration:     elapsed,
-		InputToFrame: float64(inputToFrame.Milliseconds()),
-		MaxGapMS:     float64(maxGapMS.Load()) / float64(time.Millisecond),
+		FPS:             fps,
+		KbpsAvg:         kbps,
+		DecodeOK:        decodeRatio,
+		FirstFrame:      firstFrameLatency.Seconds() * 1000,
+		CandType:        candType.Load().(string),
+		Frames:          totalFrames,
+		Bytes:           totalBytes,
+		Duration:        elapsed,
+		InputToFrame:    float64(inputToFrame.Milliseconds()),
+		MaxGapMS:        float64(maxGapMS.Load()) / float64(time.Millisecond),
+		TerminalGapMS:   terminalGapMS,
+		ActiveS:         activeS,
+		ActiveFPS:       activeFPS,
+		DecodeOKCount:   okCount,
+		DecodeFailCount: failCount,
 	}, nil
 }
 
@@ -433,6 +502,32 @@ func round3(v float64) float64 { return math.Round(v*1000) / 1000 }
 // maxGapMSAllowed is the longest inter-frame stall B3 tolerates: a blackout
 // longer than this fails acceptance even if every other metric looks healthy.
 const maxGapMSAllowed = 2000.0
+
+// livenessGap is the silence between the last frame received and the end of the
+// measurement window. It exists because the between-frames scan cannot see a
+// stream that stops and stays stopped: the terminal stall produces no further
+// packet, so no gap is ever computed and a dead pipeline reports a healthy
+// max_gap. Run 35258476317 lost the server 13s into a 30s window and still
+// reported 47.9fps / 171ms / PASS.
+//
+// A zero last-frame timestamp means no frame ever arrived; there is no stall to
+// measure, so the gap is 0 rather than a value derived from the zero time.
+func livenessGap(end, lastFrame time.Time) time.Duration {
+	if lastFrame.IsZero() || lastFrame.After(end) {
+		return 0
+	}
+	return end.Sub(lastFrame)
+}
+
+// decodeRatio is ok/(ok+fail). The previous formula divided the packet count by
+// itself, pinning the ratio at 1.000 so the >= 0.99 acceptance criterion could
+// never fail; separating the counters makes the metric falsifiable.
+func decodeRatio(ok, fail int64) float64 {
+	if ok+fail == 0 {
+		return 1.0
+	}
+	return float64(ok) / float64(ok+fail)
+}
 
 func printReport(r *probeResult, v versionInfo, minFPS float64) {
 	w := 52
@@ -446,6 +541,9 @@ func printReport(r *probeResult, v versionInfo, minFPS float64) {
 	fmt.Printf("  %-22s %8.0f ms\n", "Input to frame:", r.InputToFrame)
 	fmt.Printf("  %-22s %8.0f ms\n", "Max frame gap:", r.MaxGapMS)
 	fmt.Printf("  %-22s %8s\n", "Candidate type:", r.CandType)
+	fmt.Printf("  %-22s %8.1f ms\n", "Terminal gap:", r.TerminalGapMS)
+	fmt.Printf("  %-22s %8.1f fps\n", "Active-window fps:", r.ActiveFPS)
+	fmt.Printf("  %-22s %8.1f s\n", "Active window:", r.ActiveS)
 	fmt.Printf("  %-22s %8d\n", "Frames measured:", r.Frames)
 	fmt.Printf("  %-22s %8.1f s\n", "Duration:", r.Duration)
 	fmt.Printf("  %-22s %8.1f MB\n", "Data received:", float64(r.Bytes)/1048576)
