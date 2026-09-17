@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -105,7 +106,7 @@ func killStaleFFmpeg() {
 	}
 	self := os.Getpid()
 	live := map[int]bool{self: true}
-	for _, pid := range processIDsByName("webrtc-server.exe") {
+	for _, pid := range processIDsByName(exeBaseName()) {
 		if pid != self {
 			live[pid] = true
 		}
@@ -154,4 +155,49 @@ func processIDsByName(name string) []int {
 		}
 	}
 	return pids
+}
+
+// killPortOwner terminates whatever process is listening on the given TCP port,
+// excluding this process. It runs AFTER the singleton mutex is held, so the only
+// thing it can kill is a squatter: a leftover server from a previous deploy that
+// lost its mutex, or an unrelated process. Without this, ListenAndServe fails
+// with "address already in use" and the whole server dies on a fresh runner.
+//
+// Errors are logged, never fatal: if the port is genuinely still occupied the
+// subsequent ListenAndServe reports it precisely.
+func killPortOwner(port int) {
+	ps := fmt.Sprintf(`$c = Get-NetTCPConnection -LocalPort %d -State Listen -ErrorAction SilentlyContinue; if ($c) { $c | Select-Object -ExpandProperty OwningProcess -Unique }`, port)
+	out, err := exec.Command("powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps).Output()
+	if err != nil && len(out) == 0 {
+		log.Printf("port %d owner scan skipped: %v", port, err)
+		return
+	}
+	self := os.Getpid()
+	killed := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		pid, err := strconv.Atoi(strings.TrimSpace(line))
+		if err != nil || pid <= 0 || pid == self {
+			continue
+		}
+		// Never kill a system-critical process; a squatter on our own port is a
+		// plain user process, but be defensive about the low ranges.
+		if pid < 100 {
+			log.Printf("port %d held by system pid=%d, not killing", port, pid)
+			continue
+		}
+		p, err := os.FindProcess(pid)
+		if err != nil {
+			continue
+		}
+		if err := p.Kill(); err == nil {
+			killed++
+			log.Printf("killed stale listener on port %d: pid=%d", port, pid)
+		} else {
+			log.Printf("could not kill port %d owner pid=%d: %v", port, pid, err)
+		}
+	}
+	if killed > 0 {
+		time.Sleep(500 * time.Millisecond)
+	}
+	log.Printf("port %d owner scan complete: %d killed", port, killed)
 }
