@@ -45,8 +45,10 @@ func detectHWEncoder() (codec string, extraArgs []string) {
 			"-f", "h264", "-flush_packets", "1"}},
 	}
 	for _, c := range candidates {
-		probe := exec.Command("ffmpeg", "-hide_banner", "-f", "lavfi", "-i",
-			"nullsrc=s=64x64:d=0.1", append(c.args, "-frames:v", "1", os.DevNull)...)
+		probeArgs := []string{"-hide_banner", "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1"}
+		probeArgs = append(probeArgs, c.args...)
+		probeArgs = append(probeArgs, "-frames:v", "1", os.DevNull)
+		probe := exec.Command("ffmpeg", probeArgs...)
 		if err := probe.Run(); err == nil {
 			log.Printf("HW encoder detected: %s", c.name)
 			return c.name, c.args
