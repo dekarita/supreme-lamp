@@ -60,7 +60,7 @@ var img=document.getElementById('view'),wrap=document.getElementById('wrap'),hin
     qmenu=document.getElementById('qmenu'),btnQ=document.getElementById('btnQ');
 var mode='fit',natW=0,natH=0,frameCount=0;
 var lastGoodUrl=null,pendingUrl=null,polling=false;
-var moveBuf=[],sending=false,lastRtt=0;
+var moveBuf=[],inflight=false,lastRtt=0;
 
 /* ---- D6: Layout — forced contain-fit in fullscreen, user choice in windowed ---- */
 function setMode(m){mode=m;['mFit','mFill','mOne','mStretch'].forEach(function(id){document.getElementById(id).classList.remove('on');});
@@ -78,7 +78,7 @@ function layout(){
  else{var s2=Math.min(w/natW,h/natH);img.style.width=Math.floor(natW*s2)+'px';img.style.height=Math.floor(natH*s2)+'px';}
 }
 window.addEventListener('resize',layout);
-window.addEventListener('orientationchange',function(){setTimeout(layout,100);});
+window.addEventListener('orientationchange',function(){setTimeout(layout,300);});;
 function onFsChange(){
  layout();
  if(!document.fullscreenElement&&!document.webkitFullscreenElement)tbShow();
@@ -157,13 +157,13 @@ function toNorm(ev){
  return{nx:nx,ny:ny};
 }
 function flush(){
- if(!moveBuf.length||sending)return;
+ if(!moveBuf.length||inflight)return;
  var batch=moveBuf;moveBuf=[];
  var body=batch.map(function(e){return JSON.stringify(e);}).join('\n');
- sending=true;var t0=performance.now();
+ inflight=true;var t0=performance.now();
  fetch('/webdesk-input',{method:'POST',headers:{'Content-Type':'application/x-ndjson'},body:body,keepalive:true})
   .then(function(){lastRtt=Math.round(performance.now()-t0);})
-  .catch(function(){}).finally(function(){sending=false;if(moveBuf.length)flush();});
+  .catch(function(){}).finally(function(){inflight=false;if(moveBuf.length)flush();});
 }
 setInterval(flush,16);
 

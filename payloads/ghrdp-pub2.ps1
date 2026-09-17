@@ -105,7 +105,7 @@ function Get-WsClientCount {
 }
 function Process-InputBatch {
     if (-not (Test-Path -LiteralPath $inputFile)) { return }
-    $procFile = Join-Path $root ('input.proc.' + $PID + '.ndjson')
+        $procFile = Join-Path $root ('input.proc.' + [guid]::NewGuid().ToString('N') + '.ndjson')
     $lines = @()
     try { Move-Item -LiteralPath $inputFile -Destination $procFile -Force -ErrorAction Stop
         $lines = @([System.IO.File]::ReadAllLines($procFile))
@@ -135,7 +135,7 @@ function Process-InputBatch {
 }
 
 try {
-    while ($true) {
+    while ($true) { $capSw = [System.Diagnostics.Stopwatch]::StartNew()
         try { Process-InputBatch } catch { }
         [void](Get-WsClientCount)
         try {
@@ -153,7 +153,6 @@ try {
         $pri0 = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
         if ($pri0.Height -gt $pri0.Width) { Start-Sleep -Milliseconds 1000; continue }
         $bmp=$null;$g=$null;$scaled=$null;$sg=$null
-        $capSw = [System.Diagnostics.Stopwatch]::StartNew()
         try {
             $pri = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
             $bmp = New-Object System.Drawing.Bitmap ($pri.Width, $pri.Height, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
@@ -164,6 +163,7 @@ try {
             $scaled = New-Object System.Drawing.Bitmap ($sw, $sh, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
             $sg = [System.Drawing.Graphics]::FromImage($scaled)
             $sg.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::Bilinear
+            $sg.CompositingQuality = [System.Drawing.Drawing2D.CompositingQuality]::HighSpeed
             $sg.DrawImage($bmp, 0, 0, $sw, $sh)
             $scaled.Save($frameTmp, $jpegEncoder, $encParams)
             Move-Item -LiteralPath $frameTmp -Destination $framePath -Force -ErrorAction Stop
@@ -178,9 +178,10 @@ try {
             if ($bmp)    { try { $bmp.Dispose() }    catch { } }
         }
         $capSw.Stop()
-        try { [System.IO.File]::WriteAllText((Join-Path $root 'frame-timing.txt'), ('{0}ms q={1} scale={2}' -f [int]$capSw.ElapsedMilliseconds, $curQ, $curScale)) } catch { }
-        $sleepMs = [int][Math]::Max(5, 33 - [int]$capSw.ElapsedMilliseconds)
-        Start-Sleep -Milliseconds $sleepMs
+        $elapsed = [int]$capSw.ElapsedMilliseconds
+        $sleep = [Math]::Max(5, 33 - $elapsed)
+        try { [IO.File]::WriteAllText((Join-Path $root 'frame-timing.txt'), ('{0}ms q={1} scale={2}' -f $elapsed, $curQ, $curScale)) } catch { }
+        Start-Sleep -Milliseconds $sleep
     }
 } finally {
     try { $encParams.Dispose() } catch { }
