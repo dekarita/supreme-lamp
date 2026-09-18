@@ -301,6 +301,15 @@ function Invoke-ClientRequest {
             }
             return
         }
+        if ($path -eq '/launcher.ps1') {
+            try { $b = [System.IO.File]::ReadAllBytes((Join-Path $Root 'launcher.ps1')); Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body $b } catch { Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('missing')) }
+            return
+        }
+        if ($path -eq '/api/rdp-status') {
+            $age = -1
+            try { $ls = Get-CimInstance Win32_LogonSession -Filter "LogonType=10" -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -First 1; if ($ls) { $age = [int]((Get-Date) - $ls.StartTime).TotalSeconds } } catch { }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes(('{"rdp_age_s":' + $age + '}'))); return
+        }
         if ($path -eq '/webdesk-boot') {
             $outB = @{ ok = $false; message = '' }
             try {
