@@ -240,6 +240,15 @@ try {
     Write-Log ("WER LocalDumps -> {0}" -f $dumpsDir)
 } catch { Write-Log ('WER registry setup skipped: ' + $_.Exception.Message) }
 
+# ---- P6: power policy — prevent screen dimming/standby ----------------------
+try {
+    powercfg /change monitor-timeout-ac 0 2>$null
+    powercfg /change standby-timeout-ac 0 2>$null
+    powercfg /change hibernate-timeout-ac 0 2>$null
+    powercfg /setactive 8c5e7fda-e8bf-4a96-9a85-a6e23a8c635c 2>$null
+    Write-Log 'power policy: monitor never dims, high performance'
+} catch { Write-Log ('power policy setup skipped: ' + $_.Exception.Message) }
+
 if ($NoStart) { Write-Log 'NoStart set; deploy complete without starting the task'; exit 0 }
 
 # booleans: exit 0 = success, exit 10 = needs restart (session mismatch)

@@ -49,11 +49,11 @@ func startDisplayKeepAlive() {
 		}
 		displayAwake.Store(true)
 
-		ticker := time.NewTicker(30 * time.Second)
+		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			// Re-assert: some power-policy changes clear the flag underneath us.
 			displayAwake.Store(setThreadExecutionState())
+			sendMouseEvent(mousefMove, 0, 0, 0)
 		}
 	}()
 }

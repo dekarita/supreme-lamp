@@ -7,7 +7,7 @@
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a0a;overflow:hidden;font-family:system-ui,-apple-system,sans-serif;touch-action:none}
-#view{width:100vw;height:100vh;object-fit:contain;background:#000;display:block;cursor:default}
+#view{width:100vw;height:100vh;object-fit:contain;background:#000;display:block;cursor:default;image-rendering:pixelated}
 #toolbar{position:fixed;top:0;left:0;right:0;display:flex;align-items:center;gap:8px;
   padding:6px 12px;background:rgba(0,0,0,0.85);color:#ccc;font-size:13px;
   z-index:10;transition:opacity 0.3s;opacity:0}
@@ -35,8 +35,8 @@ body{background:#0a0a0a;overflow:hidden;font-family:system-ui,-apple-system,sans
   <span id="dot" class="dot dot-red"></span>
   <span id="status">connecting</span>
   <select id="mode" title="Capture mode">
-    <option value="">512x384 @15</option>
-    <option value="640x480">640x480 @15</option>
+    <option value="">384x288 @12</option>
+    <option value="512x384">512x384 @15</option>
   </select>
   <span id="stats"></span>
   <button class="btn" onclick="toggleFs()">Fullscreen</button>
@@ -270,7 +270,8 @@ function updateStats() {
     var ss = window._srvStats;
     if (ss) {
       if (ss.drops > 0) txt += ' d:' + ss.drops;
-      txt += ' ' + (ss.capture_mode || '');
+      if (ss.frames_skipped > 0) txt += ' skip:' + ss.frames_skipped;
+      txt += ' cap:' + (ss.capture_ms||0) + 'ms enc:' + (ss.encode_ms||0) + 'ms';
       if (ss.input_to_frame_ms > 0) txt += ' itf:' + ss.input_to_frame_ms + 'ms';
     }
     statsEl.textContent = txt;
@@ -409,7 +410,7 @@ window.toggleFs = function() {
 // server spins a fresh pipeline with the requested capture size (P7).
 if (modeSel) {
   var savedMode = currentMode();
-  if (savedMode === '640x480') modeSel.value = '640x480';
+  if (savedMode === '512x384') modeSel.value = '512x384';
   modeSel.addEventListener('change', function() {
     try { localStorage.setItem('ghrdp-mode', modeSel.value); } catch (e) {}
     setStatus('switching mode', 'yellow');

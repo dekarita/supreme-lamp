@@ -16,6 +16,16 @@ type modeSpec struct {
 }
 
 var modeDefault = modeSpec{
+	Name:        "384x288",
+	Width:       384,
+	Height:      288,
+	FPS:         12,
+	BitrateKbps: 800,
+	MaxRateKbps: 1000,
+	BufSizeKbps: 600,
+}
+
+var modeHiRes = modeSpec{
 	Name:        "512x384",
 	Width:       0,
 	Height:      0,
@@ -25,21 +35,11 @@ var modeDefault = modeSpec{
 	BufSizeKbps: 1000,
 }
 
-var modeHiRes = modeSpec{
-	Name:        "640x480",
-	Width:       640,
-	Height:      480,
-	FPS:         15,
-	BitrateKbps: 1600,
-	MaxRateKbps: 2000,
-	BufSizeKbps: 1400,
-}
-
 // modeFor maps a ?mode= query value to a profile. Unknown/empty values fall
 // back to the default so a bad URL can never disable the stream.
 func modeFor(q string) modeSpec {
 	switch strings.ToLower(strings.TrimSpace(q)) {
-	case "640x480", "hi", "high", "640":
+	case "512x384", "512", "hi", "high":
 		return modeHiRes
 	default:
 		return modeDefault

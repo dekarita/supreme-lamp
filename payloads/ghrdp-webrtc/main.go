@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"log"
 	"net/http"
 	"os"
@@ -69,9 +70,13 @@ var stats struct {
 	framesSent   atomic.Int64
 	bytesSent    atomic.Int64
 	sizeMismatch atomic.Bool
-	lastInputNs  atomic.Int64
-	inputToFrame atomic.Int64
-	guardTrip    atomic.Bool
+	lastInputNs   atomic.Int64
+	inputToFrame  atomic.Int64
+	guardTrip     atomic.Bool
+	framesSkipped atomic.Int64
+	captureMs     atomic.Int64
+	encodeMs      atomic.Int64
+	queueDepth    atomic.Int64
 }
 
 func statsCapW() int { return int(capWv.Load()) }
@@ -196,6 +201,10 @@ func handleStats(w http.ResponseWriter, r *http.Request) {
 		"git_commit":        gitCommit,
 		"input_to_frame_ms": stats.inputToFrame.Load(),
 		"display_awake":     displayAwake.Load(),
+		"frames_skipped":    stats.framesSkipped.Load(),
+		"capture_ms":        stats.captureMs.Load(),
+		"encode_ms":         stats.encodeMs.Load(),
+		"queue_depth":       stats.queueDepth.Load(),
 	}
 	if stats.sizeMismatch.Load() {
 		out["size_mismatch"] = true
@@ -477,6 +486,11 @@ func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSampl
 		return
 	}
 
+	prevCRC := crc32.ChecksumIEEE(testFrame)
+	var sameCount int
+	normalInterval := time.Second / time.Duration(mode.FPS)
+	idleInterval := 200 * time.Millisecond
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -486,10 +500,12 @@ func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSampl
 				stats.drops.Add(1)
 				continue
 			}
+			capStart := time.Now()
 			frame, err := captureFunc()
 			if err != nil {
 				continue
 			}
+			stats.captureMs.Store(time.Since(capStart).Milliseconds())
 			if len(frame) != expectedBytes {
 				stats.sizeMismatch.Store(true)
 				stats.guardTrip.Store(true)
@@ -497,10 +513,27 @@ func runCapturePipeline(ctx context.Context, track *webrtc.TrackLocalStaticSampl
 					len(frame), expectedBytes, capW, capH)
 				return
 			}
+			crc := crc32.ChecksumIEEE(frame)
+			if crc == prevCRC {
+				stats.framesSkipped.Add(1)
+				sameCount++
+				if sameCount == 30 {
+					ticker.Reset(idleInterval)
+				}
+				continue
+			}
+			if sameCount >= 30 {
+				ticker.Reset(normalInterval)
+			}
+			prevCRC = crc
+			sameCount = 0
+			stats.queueDepth.Store(int64(len(enc.output())))
+			encStart := time.Now()
 			if err := enc.writeFrame(frame); err != nil {
 				log.Printf("writeFrame: %v", err)
 				return
 			}
+			stats.encodeMs.Store(time.Since(encStart).Milliseconds())
 		}
 	}
 }
