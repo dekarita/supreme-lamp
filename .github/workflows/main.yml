@@ -667,6 +667,7 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-launcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-launcher.ps1"
+          cp "$GITHUB_WORKSPACE/payloads/launcher.ps1" "$RUNNER_TEMP/ghrdp-stage/launcher.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-launch.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-launch.ps1"
           cp "$GITHUB_WORKSPACE/payloads/helper-ghrdp-connect.ps1" "$RUNNER_TEMP/ghrdp-stage/helper-ghrdp-connect.ps1"
           B64=$(base64 -w0 "$RUNNER_TEMP/ghrdp-stage/helper-ghrdp-connect.ps1")
