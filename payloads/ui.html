@@ -830,6 +830,7 @@ diagRow.innerHTML=
   '<div>agentBuild: <span id="dgBuild">-</span> &nbsp; taskOk: <span id="dgTask">-</span></div>'+
   '<div>err: <span id="dgErr" style="color:#f5b7b7">-</span></div>'+
   '<div>bundle: <a id="dgBundle" href="#" target="_blank" style="color:#7dffc9;text-decoration:underline">-</a></div>'+
+  '<details id="dgTailBox" style="margin-top:6px;display:none"><summary style="cursor:pointer;color:#f5d9b7">enroll.log tail (last 40)</summary><pre id="dgTail" style="background:#0a0a0a;color:#e8eef3;padding:8px;border-radius:6px;max-height:200px;overflow:auto;font:10px monospace"></pre></details>'+
   '<div style="margin-top:8px;display:flex;gap:8px">'+
    '<button id="dgReenroll" style="padding:6px 12px;background:#2ee6a6;color:#04110c;border:0;border-radius:6px;cursor:pointer;font-size:11px">Re-enroll agent</button>'+
    '<button id="dgRefresh" style="padding:6px 12px;background:#333;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:11px">Refresh now</button>'+
@@ -876,7 +877,7 @@ function agentPillPaint(state){
 }
 function showEnrollOverlay(ip){
  var ov=document.getElementById('ghrdpEnroll');
- var line='powershell -NoProfile -ExecutionPolicy Bypass -Command "$u=\'http://'+ip+':7331/api/agent.ps1\';$d=\\"$env:LOCALAPPDATA\\GhrdpAgent\\";ni $d -Type Directory -Force|Out-Null;iwr $u -UseBasicParsing -OutFile \\"$d\\agent.ps1\\";Unblock-File \\"$d\\agent.ps1\\";& \\"$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\\" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \\"$d\\agent.ps1\\" -Enroll -Server '+ip+'"';
+ var line='powershell -NoProfile -ExecutionPolicy Bypass -Command "$ip=\''+ip+'\';$d=\\"$env:LOCALAPPDATA\\GhrdpAgent\\";ni $d -Type Directory -Force|Out-Null;iwr \\"http://$ip:7331/api/agent.ps1\\" -UseBasicParsing -OutFile \\"$d\\agent.ps1\\";Unblock-File \\"$d\\agent.ps1\\";$sys=\\"$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\\";Start-Process $sys -ArgumentList \'-NoProfile\',\'-ExecutionPolicy\',\'Bypass\',\'-WindowStyle\',\'Hidden\',\'-File\',(\\"$d\\agent.ps1\\"),\'-Enroll\',\'-Server\',$ip -WindowStyle Hidden;$ok=$false;$dev=$null;for($i=0;$i -lt 20;$i++){Start-Sleep 1;if(Test-Path \\"$d\\device.json\\"){try{$dev=Get-Content \\"$d\\device.json\\" -Raw|ConvertFrom-Json}catch{}if($dev.deviceId -and $dev.deviceToken){try{$s=irm \\"http://$ip:7331/api/agent-status?device=$($dev.deviceId)&probe=1\\" -TimeoutSec 3;if($s.seen){$ok=$true;break}}catch{}}}};if($ok){Write-Host \\"ENROLL PASS deviceId=$($dev.deviceId)\\" -ForegroundColor Green}else{Write-Host \\"ENROLL FAIL — dumping diagnostics:\\" -ForegroundColor Red;Write-Host \\"--- enroll.log tail ---\\";if(Test-Path \\"$d\\enroll.log\\"){Get-Content \\"$d\\enroll.log\\" -Tail 40|Write-Host}else{Write-Host \\"(no enroll.log)\\"};Write-Host \\"--- HTTP matrix ---\\";foreach($u in @(\\"/api/ping\\",\\"/api/agent.ps1\\",\\"/api/device-enroll\\")){try{$r=iwr \\"http://$ip:7331$u\\" -Method Head -UseBasicParsing -TimeoutSec 5;Write-Host \\"$u => $($r.StatusCode)\\"}catch{Write-Host \\"$u => $($_.Exception.Message)\\"}};Write-Host \\"--- PSVersionTable ---\\";$PSVersionTable|Out-String|Write-Host}"';
  if(ov){ov.style.display='flex';var t=ov.querySelector('textarea');if(t)t.value=line;return;}
  ov=document.createElement('div');ov.id='ghrdpEnroll';
  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:99;display:flex;align-items:center;justify-content:center';
@@ -918,6 +919,7 @@ function renderDiag(st,pg){
   if($('dgTask'))$('dgTask').textContent=(st.taskOk!=null?String(st.taskOk):'-');
   if($('dgErr'))$('dgErr').textContent=st.err||'-';
   if($('dgBundle')){var bEl=$('dgBundle');if(st.diagUrl){bEl.href=apiBase()+st.diagUrl;bEl.textContent=st.diagId||'view bundle';}else{bEl.removeAttribute('href');bEl.textContent='-';}}
+  if($('dgTailBox')){if(st.err&&st.enrollLogTail){$('dgTailBox').style.display='block';if($('dgTail'))$('dgTail').textContent=st.enrollLogTail;}else{$('dgTailBox').style.display='none';}}
   var hb=$('agentHb');if(hb){if(st.ageSeconds>=0){hb.textContent='heartbeat: '+st.ageSeconds+'s ago';}else{hb.textContent='heartbeat: never';}}
   if(!getDeviceId()){agentPillPaint('never');}
   else if(st.ageSeconds<0){agentPillPaint('offline');}

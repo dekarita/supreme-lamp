@@ -681,6 +681,7 @@ jobs:
           cp "$GITHUB_WORKSPACE/payloads/DEBUG-GHRDP.bat" "$RUNNER_TEMP/ghrdp-stage/DEBUG-GHRDP.bat"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-agent.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-agent.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-enroll.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-enroll.ps1"
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-accept.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-accept.ps1"
           ls -la "$RUNNER_TEMP/ghrdp-stage"
 
       - name: Write Rust dashboard source (Cargo.toml + src/main.rs, StatusCode import fixed)

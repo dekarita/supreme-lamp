@@ -420,26 +420,85 @@ function Invoke-ClientRequest {
             return
         }
         if ($path -eq '/api/device-enroll' -and $parts.method -eq 'POST') {
-            $devId = ''; $devName = ''; $devOs = ''
+            $devId = ''; $devName = ''; $devOs = ''; $devKey = ''; $devHint = ''
             try {
                 $bj = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json
                 $devId = [string]$bj.deviceId
+                $devKey = [string]$bj.dev
+                $devHint = [string]$bj.deviceIdHint
                 $devName = [string]$bj.name
                 $devOs = [string]$bj.os
             } catch { }
-            if (-not $devId) {
-                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = 'missing deviceId' })
-                return
-            }
+            # Prefer stable dev-key; fall back to hint or new guid
+            if ($devKey) {
+                $regPath = Join-Path $Root 'device-registry.json'
+                $reg = @{}
+                if (Test-Path -LiteralPath $regPath) { try { $r = [System.IO.File]::ReadAllText($regPath) | ConvertFrom-Json; foreach ($p in $r.PSObject.Properties) { $reg[$p.Name] = [string]$p.Value } } catch { } }
+                if ($reg.ContainsKey($devKey) -and $reg[$devKey]) { $devId = $reg[$devKey] }
+                elseif ($devHint) { $devId = $devHint; $reg[$devKey] = $devId }
+                else { $devId = [guid]::NewGuid().ToString('N'); $reg[$devKey] = $devId }
+                try { ($reg | ConvertTo-Json -Compress) | Set-Content -LiteralPath $regPath -Encoding UTF8 -Force } catch { }
+            } elseif (-not $devId -and $devHint) { $devId = $devHint }
+            if (-not $devId) { $devId = [guid]::NewGuid().ToString('N') }
             $existing = @($script:DeviceTokens.Keys | Where-Object { $script:DeviceTokens[$_].deviceId -eq $devId })
             foreach ($ek in $existing) { $script:DeviceTokens.Remove($ek) }
-            $newDt = ([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N').Substring(0, 0))
+            $newDt = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
             $nowIso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
             $script:DeviceTokens[$newDt] = @{ deviceId = $devId; enrolledAt = $nowIso }
             Save-DeviceTokens
-            Write-ClientAudit ('ENROLL device=' + $devId + ' name=' + $devName + ' os=' + $devOs + ' tok=' + $newDt.Substring(0,8) + '...')
-            $out = [ordered]@{ deviceToken = $newDt; runnerIp = (Get-TailnetIp); epoch = $nowIso }
+            # Compute pagesStatusUrl from config's pagesBase, normalizing slashes
+            $pagesStatus = ''
+            try {
+                $cfgE = Read-JsonFile -Path $script:CfgPath
+                $pb = [string]$cfgE.pagesBase
+                if ($pb) {
+                    $pb = $pb.TrimEnd('/')
+                    $pagesStatus = ($pb + '/status.json') -replace '(?<!:)/{2,}', '/'
+                }
+            } catch { }
+            Write-ClientAudit ('ENROLL device=' + $devId + ' name=' + $devName + ' os=' + $devOs + ' key=' + $devKey + ' tok=' + $newDt.Substring(0,8) + '...')
+            $out = [ordered]@{
+                deviceId       = $devId
+                deviceToken    = $newDt
+                runnerIp       = (Get-TailnetIp)
+                epoch          = $nowIso
+                pagesStatusUrl = $pagesStatus
+            }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $out)
+            return
+        }
+        if (($path -eq '/api/agent-hello') -and $parts.method -eq 'POST') {
+            $devId = ''; $reqTok = ''; $build = 0; $regPath = ''; $taskOk = $false
+            try {
+                $bj = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json
+                $devId = [string]$bj.deviceId
+                $reqTok = [string]$bj.dt
+                if ($null -ne $bj.build) { $build = [int]$bj.build }
+                $regPath = [string]$bj.regPath
+                if ($null -ne $bj.taskOk) { $taskOk = [bool]$bj.taskOk }
+            } catch { }
+            if (-not $reqTok -or -not $script:DeviceTokens.ContainsKey($reqTok) -or $script:DeviceTokens[$reqTok].deviceId -ne $devId) {
+                Write-ClientAudit ('HELLO REJECT device=' + $devId)
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ack = $false; error = 'invalid device token' })
+                return
+            }
+            $safeDev = ($devId -replace '[^A-Za-z0-9_-]', '_')
+            $sFile = Join-Path $Root ('client-status-' + $safeDev + '.json')
+            $rec = [ordered]@{
+                deviceId = $devId
+                stage    = 'hello'
+                mstscPid = 0
+                logonAge = -1
+                err      = ''
+                build    = $build
+                regPath  = $regPath
+                taskOk   = $taskOk
+                received = (Get-Date).ToUniversalTime().ToString('o')
+                lastSeen = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            }
+            try { [System.IO.File]::WriteAllText($sFile, (($rec | ConvertTo-Json -Depth 6 -Compress)), $script:NoBom) } catch { }
+            Write-ClientAudit ('HELLO device=' + $devId + ' build=' + $build)
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ack = $true })
             return
         }
         if ($path -eq '/api/client-cmd' -and $parts.method -eq 'POST') {
@@ -518,8 +577,8 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $out)
             return
         }
-        if ($path -eq '/api/client-status' -and $parts.method -eq 'POST') {
-            $devId = ''; $reqTok = ''; $cmdId = ''; $stage = ''; $mstscPid = 0; $logonAge = -1; $err = ''; $build = 0; $regPath = ''; $taskOk = $false
+        if (($path -eq '/api/client-status' -or $path -eq '/api/agent-status') -and $parts.method -eq 'POST') {
+            $devId = ''; $reqTok = ''; $cmdId = ''; $stage = ''; $mstscPid = 0; $logonAge = -1; $err = ''; $build = 0; $regPath = ''; $taskOk = $false; $enrollTail = ''
             try {
                 $bj = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json
                 $devId = [string]$bj.deviceId
@@ -532,6 +591,7 @@ function Invoke-ClientRequest {
                 if ($null -ne $bj.build) { $build = [int]$bj.build }
                 $regPath = [string]$bj.regPath
                 if ($null -ne $bj.taskOk) { $taskOk = [bool]$bj.taskOk }
+                $enrollTail = [string]$bj.enrollLogTail
             } catch { }
             if (-not $reqTok -or -not $script:DeviceTokens.ContainsKey($reqTok) -or $script:DeviceTokens[$reqTok].deviceId -ne $devId) {
                 Write-ClientAudit ('STATUS REJECT device=' + $devId + ' tok=' + ($reqTok.Substring(0, [Math]::Min(8, $reqTok.Length))) + '...')
@@ -550,6 +610,7 @@ function Invoke-ClientRequest {
                 build = $build
                 regPath = $regPath
                 taskOk = $taskOk
+                enrollLogTail = $enrollTail
                 received = (Get-Date).ToUniversalTime().ToString('o')
                 lastSeen = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
             }
@@ -558,9 +619,25 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ack = $true })
             return
         }
-        if ($path -eq '/api/client-status' -and $parts.method -eq 'GET') {
-            $devId = ''
+        if (($path -eq '/api/client-status' -or $path -eq '/api/agent-status') -and $parts.method -eq 'GET') {
+            $devId = ''; $probe = $false
             if ($parts.query.ContainsKey('device')) { $devId = [string]$parts.query['device'] }
+            if ($parts.query.ContainsKey('probe') -and [string]$parts.query['probe'] -eq '1') { $probe = $true }
+            if ($probe -and -not $devId) {
+                # Enumerate all recent devices — return list with lastSeen ages
+                $devices = @()
+                try {
+                    foreach ($f in (Get-ChildItem -LiteralPath $Root -Filter 'client-status-*.json' -ErrorAction SilentlyContinue)) {
+                        try {
+                            $r = [System.IO.File]::ReadAllText($f.FullName) | ConvertFrom-Json
+                            $a = -1; try { $a = [int]((Get-Date).ToUniversalTime() - [datetime]$r.received).TotalSeconds } catch { }
+                            $devices += [ordered]@{ deviceId = [string]$r.deviceId; stage = [string]$r.stage; ageSeconds = $a }
+                        } catch { }
+                    }
+                } catch { }
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ probe = $true; devices = $devices; count = $devices.Count })
+                return
+            }
             if (-not $devId) {
                 Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"stage":"unknown","ageSeconds":-1}'))
                 return
@@ -568,6 +645,7 @@ function Invoke-ClientRequest {
             $safeDev = ($devId -replace '[^A-Za-z0-9_-]', '_')
             $sFile = Join-Path $Root ('client-status-' + $safeDev + '.json')
             if (-not (Test-Path -LiteralPath $sFile)) {
+                if ($probe) { Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ probe = $true; seen = $false; ageSeconds = -1 }); return }
                 Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"stage":"unknown","ageSeconds":-1}'))
                 return
             }
@@ -579,6 +657,10 @@ function Invoke-ClientRequest {
             }
             $ageSec = -1
             try { $ageSec = [int]((Get-Date).ToUniversalTime() - [datetime]$rec.received).TotalSeconds } catch { }
+            if ($probe) {
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ probe = $true; seen = $true; deviceId = [string]$rec.deviceId; stage = [string]$rec.stage; ageSeconds = $ageSec; build = [int]$rec.build })
+                return
+            }
             $out = [ordered]@{
                 deviceId = [string]$rec.deviceId
                 stage = [string]$rec.stage
@@ -588,6 +670,7 @@ function Invoke-ClientRequest {
                 build = [int]$rec.build
                 ageSeconds = $ageSec
                 lastSeen = [string]$rec.lastSeen
+                enrollLogTail = [string]$rec.enrollLogTail
                 diagId = [string]$rec.diagId
                 diagUrl = [string]$rec.diagUrl
             }
@@ -599,6 +682,15 @@ function Invoke-ClientRequest {
                 Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body ([System.IO.File]::ReadAllBytes($script:AgentPath))
             } else {
                 Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('agent.ps1 not deployed'))
+            }
+            return
+        }
+        if ($path -eq '/api/accept.ps1') {
+            $ap = Join-Path $Root 'ghrdp-accept.ps1'
+            if (Test-Path -LiteralPath $ap) {
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body ([System.IO.File]::ReadAllBytes($ap))
+            } else {
+                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('accept.ps1 not deployed'))
             }
             return
         }
