@@ -682,7 +682,28 @@ jobs:
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-agent.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-agent.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-enroll.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-enroll.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-accept.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-accept.ps1"
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-acceptance.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-acceptance.ps1"
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-diag.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-diag.ps1"
           ls -la "$RUNNER_TEMP/ghrdp-stage"
+
+      - name: Gate — PSParser tokenize ghrdp-agent.ps1 (bug #57)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $p = Join-Path $env:RUNNER_TEMP 'ghrdp-stage/ghrdp-agent.ps1'
+          if (-not (Test-Path $p)) { Write-Host "[gate] FAIL: $p missing"; exit 1 }
+          $t = Get-Content -LiteralPath $p -Raw
+          $e = $null
+          [void][System.Management.Automation.PSParser]::Tokenize($t, [ref]$e)
+          if ($e -and $e.Count) {
+            Write-Host ("[gate] FAIL: " + $e.Count + " parse error(s)")
+            $e | Select-Object -First 5 | ForEach-Object { Write-Host ("  line=" + $_.Token.StartLine + " msg=" + $_.Message) }
+            exit 1
+          }
+          $b = [System.IO.File]::ReadAllBytes($p)
+          $h = [System.Security.Cryptography.SHA256]::Create().ComputeHash($b)
+          $hex = ($h | ForEach-Object { $_.ToString('x2') }) -join ''
+          Write-Host ("[gate] PASS staged size=" + $b.Length + " sha256=" + $hex)
 
       - name: Write Rust dashboard source (Cargo.toml + src/main.rs, StatusCode import fixed)
         shell: bash

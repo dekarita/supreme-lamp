@@ -1,6 +1,13 @@
-# ghrdp-agent.ps1 v2 — persistent pull-model RDP agent.
-# Modes: -Enroll -Server <ip> | -Loop | -Poll (alias -Loop) | -Dispatch <url> | -SelfHealOnly
-# CRITICAL: param() must be the FIRST executable statement — PowerShell ignores it otherwise.
+# ghrdp-agent.ps1 v3 (build 3.0.0) - persistent pull-model RDP agent.
+# INVARIANTS (do not violate):
+#   - param() FIRST executable statement (else PowerShell ignores it)
+#   - ASCII-only (no non-ASCII chars anywhere)
+#   - ZERO -f format operators (bug #56: & inside -f breaks the parser)
+#   - URLs built by single-quoted concatenation only
+#   - Test-PsSyntax gates every remote agent.ps1 copy before overwrite
+#   - transcript-before-action to enroll.log
+#   - top-level try/catch logs exceptions
+
 [CmdletBinding()]
 param(
     [switch]$Enroll,
@@ -8,46 +15,41 @@ param(
     [switch]$Loop,
     [switch]$Poll,
     [string]$Dispatch = '',
-    [switch]$SelfHealOnly,
-    [string]$PagesUrl = ''
+    [switch]$SelfHealOnly
 )
 
-# Transcript-before-action: FIRST executable code after param() creates log dir + records invocation.
-# This is the transcript-before-action guarantee: no code path can die silently.
+# ---- Transcript-before-action ---------------------------------------------
 $script:AgentDir = Join-Path $env:LOCALAPPDATA 'GhrdpAgent'
 if (-not (Test-Path $script:AgentDir)) { try { New-Item -ItemType Directory -Path $script:AgentDir -Force | Out-Null } catch {} }
 $script:EnrollLog = Join-Path $script:AgentDir 'enroll.log'
+$script:LogPath   = Join-Path $script:AgentDir 'agent.log'
+$script:LogBak    = $script:LogPath + '.1'
 try {
-    $argStr = @()
-    if ($Enroll) { $argStr += '-Enroll' }
-    if ($Server) { $argStr += "-Server=$Server" }
-    if ($Loop)   { $argStr += '-Loop' }
-    if ($Poll)   { $argStr += '-Poll' }
-    if ($Dispatch) { $argStr += "-Dispatch=$Dispatch" }
-    if ($SelfHealOnly) { $argStr += '-SelfHealOnly' }
-    if ($PagesUrl) { $argStr += "-PagesUrl=$PagesUrl" }
-    if ($args) { $argStr += ('extra:' + ($args -join ' ')) }
-    Add-Content -LiteralPath $script:EnrollLog -Value ("{0} START v2 pid={1} argv=[{2}]" -f (Get-Date -Format o), $PID, ($argStr -join ' ')) -ErrorAction SilentlyContinue
+    $argSummary = 'START v3.0.0 pid=' + $PID + ' Enroll=' + [bool]$Enroll + ' Server=' + $Server + ' Loop=' + [bool]$Loop + ' Poll=' + [bool]$Poll + ' Dispatch=' + $Dispatch + ' SelfHealOnly=' + [bool]$SelfHealOnly
+    Add-Content -LiteralPath $script:EnrollLog -Value ((Get-Date -Format o) + ' ' + $argSummary) -ErrorAction SilentlyContinue
 } catch {}
 
 $ErrorActionPreference = 'Continue'
 $ProgressPreference    = 'SilentlyContinue'
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
 
-$script:Build          = 20260918002
-$script:AgentPath      = Join-Path $script:AgentDir 'agent.ps1'
-$script:PendingPath    = Join-Path $script:AgentDir 'pending.json'
-$script:DeviceJson     = Join-Path $script:AgentDir 'device.json'
-$script:LogPath        = Join-Path $script:AgentDir 'agent.log'
-$script:LogBak         = "$script:LogPath.1"
-$script:TaskName       = 'GhrdpAgent'
-$script:ProtoName      = 'ghrdp'
-$script:SysPwsh        = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$script:Build       = '3.0.0'
+$script:AgentPath   = Join-Path $script:AgentDir 'agent.ps1'
+$script:PendingPath = Join-Path $script:AgentDir 'pending.json'
+$script:DeviceJson  = Join-Path $script:AgentDir 'device.json'
+$script:TaskName    = 'GhrdpAgent'
+$script:SysPwsh     = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
-function Log([string]$m,[string]$lvl='INFO',[string]$tgt='both'){
-    $ln = "{0} [{1}] {2}" -f (Get-Date -Format o), $lvl, $m
+# Sustained 401 tracking (bug #58 companion: auto re-enroll after token invalidation)
+$script:Http401Count = 0
+$script:LastReEnroll = [DateTime]::MinValue
+
+function Log([string]$msg,[string]$lvl='INFO',[string]$tgt='both') {
+    $ln = (Get-Date -Format o) + ' [' + $lvl + '] ' + $msg
     try {
-        if ($tgt -eq 'both' -or $tgt -eq 'enroll') { Add-Content -LiteralPath $script:EnrollLog -Value $ln -ErrorAction SilentlyContinue }
+        if ($tgt -eq 'both' -or $tgt -eq 'enroll') {
+            Add-Content -LiteralPath $script:EnrollLog -Value $ln -ErrorAction SilentlyContinue
+        }
         if ($tgt -eq 'both' -or $tgt -eq 'agent') {
             if ((Test-Path $script:LogPath) -and (Get-Item $script:LogPath).Length -gt 200KB) {
                 try { Copy-Item $script:LogPath $script:LogBak -Force -ErrorAction SilentlyContinue } catch {}
@@ -58,48 +60,73 @@ function Log([string]$m,[string]$lvl='INFO',[string]$tgt='both'){
     } catch {}
 }
 
-# HTTP helpers with 3 retries + full transcript logging
-function Http-Get([string]$url,[int]$timeoutSec=6){
-    for ($i=1; $i -le 3; $i++) {
+# ---- PSParser gate (Test-PsSyntax) ----------------------------------------
+# Returns $true when the script parses cleanly. Used to protect against bug #58
+# (never overwrite a good local agent with an unparseable remote push).
+function Test-PsSyntax([string]$path) {
+    try {
+        if (-not (Test-Path -LiteralPath $path)) { return $false }
+        $text = Get-Content -LiteralPath $path -Raw
+        if (-not $text -or $text.Length -lt 1000) { return $false }
+        $errors = $null
+        [void][System.Management.Automation.PSParser]::Tokenize($text, [ref]$errors)
+        if ($errors -and $errors.Count -gt 0) {
+            $first = $errors[0]
+            Log ('PSParser FAIL count=' + $errors.Count + ' first-line=' + $first.Token.StartLine + ' msg=' + $first.Message) 'ERR'
+            return $false
+        }
+        return $true
+    } catch { Log ('PSParser exception: ' + $_.Exception.Message) 'ERR'; return $false }
+}
+
+# ---- HTTP helpers with 3 retries + full transcript ------------------------
+function Http-Get([string]$url,[int]$timeoutSec = 6) {
+    for ($i = 1; $i -le 3; $i++) {
         $sw = [Diagnostics.Stopwatch]::StartNew()
         try {
-            Log "GET $url attempt=$i timeout=$timeoutSec" 'HTTP' 'agent'
+            Log ('GET ' + $url + ' attempt=' + $i + ' timeout=' + $timeoutSec) 'HTTP' 'agent'
             $r = Invoke-RestMethod -Uri $url -Method Get -UseBasicParsing -TimeoutSec $timeoutSec
             $sw.Stop()
-            Log "GET-OK $url ms=$($sw.ElapsedMilliseconds)" 'HTTP' 'agent'
+            Log ('GET-OK ' + $url + ' ms=' + $sw.ElapsedMilliseconds) 'HTTP' 'agent'
             return $r
         } catch {
             $sw.Stop()
-            Log "GET-FAIL $url attempt=$i ms=$($sw.ElapsedMilliseconds) err=$($_.Exception.Message)" 'HTTP' 'agent'
+            $stat = ''
+            try { $stat = 'status=' + [int]$_.Exception.Response.StatusCode + ' ' } catch {}
+            Log ('GET-FAIL ' + $url + ' attempt=' + $i + ' ms=' + $sw.ElapsedMilliseconds + ' ' + $stat + 'err=' + $_.Exception.Message) 'HTTP' 'agent'
+            # Sustained 401 tracker on client-cmd
+            if ($url -like '*client-cmd*' -and $stat -like '*401*') { $script:Http401Count++ }
             if ($i -lt 3) { Start-Sleep -Milliseconds (400 * $i) }
         }
     }
     return $null
 }
-function Http-Post([string]$url,$body,[int]$timeoutSec=8){
+function Http-Post([string]$url, $body, [int]$timeoutSec = 8) {
     $json = $null
-    try { $json = ($body | ConvertTo-Json -Depth 8 -Compress) } catch { Log "POST body serialize fail $url $_" 'ERR' 'agent'; return $null }
-    for ($i=1; $i -le 3; $i++) {
+    try { $json = ($body | ConvertTo-Json -Depth 8 -Compress) } catch { Log ('POST serialize fail ' + $url + ' ' + $_.Exception.Message) 'ERR' 'agent'; return $null }
+    for ($i = 1; $i -le 3; $i++) {
         $sw = [Diagnostics.Stopwatch]::StartNew()
         try {
-            $snip = if ($json.Length -gt 220) { $json.Substring(0,220) + '...' } else { $json }
-            Log "POST $url attempt=$i body=$snip" 'HTTP' 'agent'
+            $snip = $json
+            if ($snip.Length -gt 220) { $snip = $snip.Substring(0, 220) + '...' }
+            Log ('POST ' + $url + ' attempt=' + $i + ' body=' + $snip) 'HTTP' 'agent'
             $r = Invoke-RestMethod -Uri $url -Method Post -Body $json -ContentType 'application/json' -UseBasicParsing -TimeoutSec $timeoutSec
             $sw.Stop()
-            Log "POST-OK $url ms=$($sw.ElapsedMilliseconds)" 'HTTP' 'agent'
+            Log ('POST-OK ' + $url + ' ms=' + $sw.ElapsedMilliseconds) 'HTTP' 'agent'
             return $r
         } catch {
             $sw.Stop()
-            Log "POST-FAIL $url attempt=$i ms=$($sw.ElapsedMilliseconds) err=$($_.Exception.Message)" 'HTTP' 'agent'
+            $stat = ''
+            try { $stat = 'status=' + [int]$_.Exception.Response.StatusCode + ' ' } catch {}
+            Log ('POST-FAIL ' + $url + ' attempt=' + $i + ' ms=' + $sw.ElapsedMilliseconds + ' ' + $stat + 'err=' + $_.Exception.Message) 'HTTP' 'agent'
             if ($i -lt 3) { Start-Sleep -Milliseconds (400 * $i) }
         }
     }
     return $null
 }
 
-function Normalize-Url([string]$u){
+function Normalize-Url([string]$u) {
     if (-not $u) { return '' }
-    # Collapse double slashes except after scheme (http:// | https://)
     return ($u -replace '(?<!:)/{2,}', '/')
 }
 
@@ -108,20 +135,23 @@ function Load-Device {
     try { return (Get-Content -LiteralPath $script:DeviceJson -Raw | ConvertFrom-Json) } catch { return $null }
 }
 function Save-Device($obj) {
-    try { ($obj | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $script:DeviceJson -Encoding UTF8 -Force } catch { Log "save-device fail $_" 'ERR' }
+    try { ($obj | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $script:DeviceJson -Encoding UTF8 -Force } catch { Log ('save-device fail ' + $_.Exception.Message) 'ERR' }
 }
 
-function Ping-Runner([string]$ip){
+function Ping-Runner([string]$ip) {
     if ([string]::IsNullOrWhiteSpace($ip)) { return $null }
-    $r = Http-Get ("http://{0}:7331/api/ping" -f $ip) 3
+    $r = Http-Get ('http://' + $ip + ':7331/api/ping') 3
     if ($r -and $r.epoch) { return $r }
     return $null
 }
 
+$script:LastTailScan = [DateTime]::MinValue
+$script:TailCache = @()
 function Scan-Tailscale {
+    # 30s throttle to avoid spawning tailscale.exe every 2s
+    if (([DateTime]::UtcNow - $script:LastTailScan).TotalSeconds -lt 30 -and $script:TailCache.Count -gt 0) { return $script:TailCache }
     $ts = 'C:\Program Files\Tailscale\tailscale.exe'
-    if (-not (Test-Path $ts)) { Log "tailscale: exe missing" 'DBG'; return @() }
-    Log "tailscale: enumerating peers" 'DBG'
+    if (-not (Test-Path $ts)) { return @() }
     try {
         $j = (& $ts status --json 2>$null | ConvertFrom-Json)
         $ips = @()
@@ -130,50 +160,48 @@ function Scan-Tailscale {
                 if ($p.Value.Online) { $ips += @($p.Value.TailscaleIPs)[0] }
             }
         }
-        Log ("tailscale peers online=" + $ips.Count) 'DBG'
+        $script:LastTailScan = [DateTime]::UtcNow
+        $script:TailCache = $ips
+        Log ('tailscale online peers=' + $ips.Count) 'DBG' 'agent'
         return $ips
     } catch {
-        Log "tailscale scan fail $_" 'WARN'
+        Log ('tailscale scan fail ' + $_.Exception.Message) 'WARN' 'agent'
         return @()
     }
 }
 
-function Discover-Runner($dev){
-    # Order: $Server (arg) → lastRunner → tailscale peers (PRIMARY) → Pages (SECONDARY single-slash) → runnersCache
+function Discover-Runner($dev) {
     if ($Server) {
-        Log "discover: try -Server=$Server"
         $p = Ping-Runner $Server
-        if ($p) { Log "discover: server-arg OK $Server"; return $Server }
+        if ($p) { Log ('discover: -Server arg OK ' + $Server) 'DBG' 'agent'; return $Server }
     }
     if ($dev -and $dev.lastRunner) {
-        Log "discover: try lastRunner=$($dev.lastRunner)"
         $p = Ping-Runner $dev.lastRunner
-        if ($p) { Log "discover: lastRunner OK"; return $dev.lastRunner }
+        if ($p) { return $dev.lastRunner }
     }
     foreach ($ip in (Scan-Tailscale)) {
         $p = Ping-Runner $ip
-        if ($p) { Log "discover: tailscale peer OK $ip"; return $ip }
+        if ($p) { Log ('discover: tailscale ' + $ip) 'DBG' 'agent'; return $ip }
     }
     if ($dev -and $dev.pagesUrl) {
         $u = Normalize-Url $dev.pagesUrl
-        Log "discover: try pages url=$u"
         $s = Http-Get $u 6
         if ($s -and $s.runnerIp) {
             $p = Ping-Runner $s.runnerIp
-            if ($p) { Log "discover: pages runnerIp OK $($s.runnerIp)"; return $s.runnerIp }
+            if ($p) { Log ('discover: pages ' + $s.runnerIp) 'DBG' 'agent'; return $s.runnerIp }
         }
     }
     if ($dev -and $dev.runnersCache) {
         foreach ($ip in @($dev.runnersCache)) {
             $p = Ping-Runner $ip
-            if ($p) { Log "discover: cache OK $ip"; return $ip }
+            if ($p) { return $ip }
         }
     }
-    Log "discover: NO RUNNER FOUND" 'ERR'
+    Log 'discover: NO RUNNER FOUND' 'ERR' 'agent'
     return $null
 }
 
-function Update-Cache($dev,[string]$ip){
+function Update-Cache($dev, [string]$ip) {
     if (-not $dev) { return $dev }
     $dev.lastRunner = $ip
     $cache = @()
@@ -200,16 +228,57 @@ function Get-TaskOk {
     try { $t = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop; return ($null -ne $t) } catch { return $false }
 }
 
-function Get-LogonAge {
-    try {
-        $ev = Get-WinEvent -FilterHashtable @{LogName='Security';Id=4624} -MaxEvents 20 -ErrorAction SilentlyContinue |
-              Where-Object { $_.Message -match 'Logon Type:\s+10' } | Select-Object -First 1
-        if ($ev) { return [int]((Get-Date) - $ev.TimeCreated).TotalSeconds }
-    } catch {}
-    return -1
+# ---- Wait-Connected: LogonType 10 preferred, degraded fallbacks -----------
+# baseline = timestamp before mstsc launch. Only counts events NEWER than baseline
+# (else stale 4624 from an unrelated logon reads as instant success).
+function Wait-Connected($mstscProc, [DateTime]$baseline, [int]$timeoutSec = 8) {
+    for ($i = 0; $i -lt $timeoutSec; $i++) {
+        Start-Sleep -Seconds 1
+        # (a) Preferred: Security 4624 LogonType 10 newer than baseline (requires SeSecurityPrivilege)
+        try {
+            $ev = Get-WinEvent -FilterHashtable @{ LogName='Security'; Id=4624; StartTime=$baseline } -MaxEvents 5 -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Message -match 'Logon Type:\s+10' } | Select-Object -First 1
+            if ($ev) {
+                $age = [int]((Get-Date) - $ev.TimeCreated).TotalSeconds
+                return @{ ok = $true; via = '4624'; age = $age }
+            }
+        } catch {}
+        # (b) Degraded: TerminalServices-ClientActiveXCore recency <=20s (standard-user readable)
+        try {
+            $ev2 = Get-WinEvent -FilterHashtable @{ LogName='Microsoft-Windows-TerminalServices-ClientActiveXCore/Operational'; StartTime=$baseline } -MaxEvents 5 -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($ev2) {
+                $age2 = [int]((Get-Date) - $ev2.TimeCreated).TotalSeconds
+                if ($age2 -le 20) { return @{ ok = $true; via = 'tsclient'; age = $age2 } }
+            }
+        } catch {}
+        # (c) Final fallback: mstsc survives 8s grace (didn't crash / no blank dialog)
+        if ($mstscProc -and $mstscProc.HasExited) { return @{ ok = $false; via = 'mstsc-exited'; age = -1 } }
+    }
+    # Timed out - one last mstsc-survival check
+    if ($mstscProc -and -not $mstscProc.HasExited) { return @{ ok = $true; via = 'mstsc-survived'; age = -1 } }
+    return @{ ok = $false; via = 'timeout'; age = -1 }
 }
 
-function Get-EnrollTail([int]$n=40){
+# ---- Stale RDP file cleanup + stale mstsc kill ----------------------------
+function Cleanup-StaleRdp {
+    try {
+        Get-ChildItem -LiteralPath $script:AgentDir -Filter 'ghrdp-*.rdp' -ErrorAction SilentlyContinue |
+            Where-Object { ((Get-Date) - $_.LastWriteTime).TotalHours -gt 1 } |
+            ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue } catch {} }
+        Get-ChildItem -LiteralPath $script:AgentDir -Filter 'sess-*.rdp' -ErrorAction SilentlyContinue |
+            Where-Object { ((Get-Date) - $_.LastWriteTime).TotalHours -gt 1 } |
+            ForEach-Object { try { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue } catch {} }
+    } catch {}
+}
+function Stop-StaleMstsc {
+    try {
+        Get-Process mstsc -ErrorAction SilentlyContinue | ForEach-Object {
+            try { $_ | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
+        }
+    } catch {}
+}
+
+function Get-EnrollTail([int]$n = 40) {
     try {
         if (-not (Test-Path $script:EnrollLog)) { return '' }
         return ((Get-Content -LiteralPath $script:EnrollLog -Tail $n) -join "`n")
@@ -217,317 +286,363 @@ function Get-EnrollTail([int]$n=40){
 }
 
 function Register-Protocol {
-    Log "register-protocol: HKCU\Software\Classes\ghrdp -> $script:SysPwsh"
+    Log ('register-protocol: HKCU\Software\Classes\ghrdp -> ' + $script:SysPwsh)
     try {
         $cls = 'HKCU:\Software\Classes\ghrdp'
         New-Item -Path $cls -Force -ErrorAction SilentlyContinue | Out-Null
         Set-ItemProperty -Path $cls -Name '(default)' -Value 'URL:GHRDP Protocol' -Force
         Set-ItemProperty -Path $cls -Name 'URL Protocol' -Value '' -Force
-        $cmdKey = "$cls\shell\open\command"
+        $cmdKey = $cls + '\shell\open\command'
         New-Item -Path $cmdKey -Force -ErrorAction SilentlyContinue | Out-Null
-        $cmd = "`"$script:SysPwsh`" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script:AgentPath`" -Dispatch `"%1`""
+        $cmd = '"' + $script:SysPwsh + '" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $script:AgentPath + '" -Dispatch "%1"'
         Set-ItemProperty -Path $cmdKey -Name '(default)' -Value $cmd -Force
-        Log "register-protocol: OK cmd=$cmd"
-    } catch { Log "register-protocol FAIL $_" 'ERR' }
+        Log ('register-protocol OK cmd=' + $cmd)
+    } catch { Log ('register-protocol FAIL ' + $_.Exception.Message) 'ERR' }
 }
 
 function Register-Task {
-    Log "register-task: creating $script:TaskName (AtLogOn+AtStartup)"
+    Log ('register-task: creating ' + $script:TaskName + ' (AtLogOn + Once+3s)')
     try {
         try { Unregister-ScheduledTask -TaskName $script:TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
-        $arg = "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$script:AgentPath`" -Loop"
+        $arg = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $script:AgentPath + '" -Loop'
         $act = New-ScheduledTaskAction -Execute $script:SysPwsh -Argument $arg
-        $trigA = New-ScheduledTaskTrigger -AtLogOn -User "$env:USERDOMAIN\$env:USERNAME"
+        $trigA = New-ScheduledTaskTrigger -AtLogOn -User ($env:USERDOMAIN + '\' + $env:USERNAME)
         $trigB = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddSeconds(3))
         $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -Hidden -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-        $prin = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive -RunLevel Limited
+        $prin = New-ScheduledTaskPrincipal -UserId ($env:USERDOMAIN + '\' + $env:USERNAME) -LogonType Interactive -RunLevel Limited
         Register-ScheduledTask -TaskName $script:TaskName -Action $act -Trigger @($trigA,$trigB) -Settings $set -Principal $prin -Force | Out-Null
-        Log "register-task: registered"
-        try { Start-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop; Log "register-task: started" } catch { Log "register-task start warn $_" 'WARN' }
-    } catch { Log "register-task FAIL $_" 'ERR' }
+        Log 'register-task: registered'
+        try { Start-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop; Log 'register-task: started' } catch { Log ('register-task start warn ' + $_.Exception.Message) 'WARN' }
+    } catch { Log ('register-task FAIL ' + $_.Exception.Message) 'ERR' }
 }
 
-function Post-Status($runner,$dev,$stage,[hashtable]$extra){
+function Post-Status($runner, $dev, [string]$stage, [hashtable]$extra) {
     if (-not $runner -or -not $dev -or -not $dev.deviceToken) { return }
     $body = [ordered]@{
-        deviceId = $dev.deviceId
-        dt       = $dev.deviceToken
-        stage    = $stage
-        build    = $script:Build
-        agentHash= (Get-AgentHash)
-        regPath  = (Get-RegPath)
-        taskOk   = (Get-TaskOk)
-        mstscPid = 0
-        logonAge = (Get-LogonAge)
-        err      = ''
-        received = (Get-Date).ToUniversalTime().ToString('o')
+        deviceId  = $dev.deviceId
+        dt        = $dev.deviceToken
+        stage     = $stage
+        build     = $script:Build
+        agentHash = (Get-AgentHash)
+        regPath   = (Get-RegPath)
+        taskOk    = (Get-TaskOk)
+        mstscPid  = 0
+        logonAge  = -1
+        err       = ''
+        received  = (Get-Date).ToUniversalTime().ToString('o')
     }
     if ($extra) { foreach ($k in $extra.Keys) { $body[$k] = $extra[$k] } }
     if ($body.err) { $body.enrollLogTail = (Get-EnrollTail 40) }
-    Http-Post ("http://{0}:7331/api/agent-status" -f $runner) $body 6 | Out-Null
+    Http-Post ('http://' + $runner + ':7331/api/agent-status') $body 6 | Out-Null
 }
 
-function Write-Rdp([string]$hostAddr,[string]$user,[hashtable]$opts,[int]$authLvl,[int]$credssp){
-    $file = Join-Path $script:AgentDir ("sess-{0}.rdp" -f ([guid]::NewGuid().ToString('N').Substring(0,8)))
+function Write-Rdp([string]$hostAddr, [string]$user, [hashtable]$opts, [int]$authLvl, [int]$credssp) {
+    $file = Join-Path $script:AgentDir ('ghrdp-' + [guid]::NewGuid().ToString('N').Substring(0,8) + '.rdp')
+    $mic = [bool]$opts.mic
+    $audiomode = 2
+    if ($mic) { $audiomode = 0 }
     $lines = @(
-        "screen mode id:i:2"
-        "use multimon:i:0"
-        "session bpp:i:32"
-        "connection type:i:7"
-        "gatewayusagemethod:i:0"
-        ("full address:s:{0}" -f $hostAddr)
-        ("username:s:{0}" -f $user)
-        ("authentication level:i:{0}" -f $authLvl)
-        ("enablecredsspsupport:i:{0}" -f $credssp)
-        "prompt for credentials:i:0"
-        "negotiate security layer:i:1"
-        "autoreconnection enabled:i:1"
-        "bitmapcachepersistenable:i:1"
-        ("redirectclipboard:i:{0}" -f ([int]([bool]$opts.clip)))
-        ("redirectprinters:i:{0}"  -f ([int]([bool]$opts.print)))
-        ("redirectdrives:i:{0}"    -f ([int]([bool]$opts.drives)))
-        ("audiomode:i:{0}"         -f (@{ $true=0; $false=2 }[[bool]$opts.mic]))
-        ("audiocapturemode:i:{0}"  -f ([int]([bool]$opts.mic)))
-        "redirectcomports:i:0"
-        "redirectsmartcards:i:1"
-        "redirectposdevices:i:0"
+        'screen mode id:i:2',
+        'use multimon:i:0',
+        'session bpp:i:32',
+        'connection type:i:7',
+        'gatewayusagemethod:i:0',
+        ('full address:s:' + $hostAddr),
+        ('username:s:' + $user),
+        ('authentication level:i:' + $authLvl),
+        ('enablecredsspsupport:i:' + $credssp),
+        'prompt for credentials:i:0',
+        'prompt for credentials on client:i:0',
+        'enable password share:i:1',
+        'negotiate security layer:i:1',
+        'autoreconnection enabled:i:1',
+        'bitmapcachepersistenable:i:1',
+        ('redirectclipboard:i:' + [int][bool]$opts.clip),
+        ('redirectprinters:i:'  + [int][bool]$opts.print),
+        ('redirectdrives:i:'    + [int][bool]$opts.drives),
+        ('audiomode:i:'         + $audiomode),
+        ('audiocapturemode:i:'  + [int]$mic),
+        'redirectcomports:i:0',
+        'redirectsmartcards:i:1',
+        'redirectposdevices:i:0'
     )
     [System.IO.File]::WriteAllText($file, ($lines -join "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
     try { Unblock-File -LiteralPath $file -ErrorAction SilentlyContinue } catch {}
+    try {
+        $zi = $file + ':Zone.Identifier'
+        if (Test-Path -LiteralPath $zi) { Remove-Item -LiteralPath $zi -Force -ErrorAction SilentlyContinue }
+    } catch {}
     return $file
 }
 
-function Ladder-Connect($runner,$dev,$cmd){
+function Ladder-Connect($runner, $dev, $cmd) {
     $hostAddr = [string]$cmd.host
     $user     = [string]$cmd.user
     $pass     = [string]$cmd.pass
     $opts     = @{ clip = [bool]$cmd.clip; print = [bool]$cmd.print; drives = [bool]$cmd.drives; mic = [bool]$cmd.mic }
-    if (-not $hostAddr -or -not $user -or -not $pass) { Post-Status $runner $dev 'failed' @{ err='missing creds' }; return }
-    Log "connect: host=$hostAddr user=$user clip=$($opts.clip) print=$($opts.print) drives=$($opts.drives) mic=$($opts.mic)"
+    $cmdId    = [string]$cmd.cmdId
+    if (-not $hostAddr -or -not $user -or -not $pass) { Post-Status $runner $dev 'failed' @{ cmdId=$cmdId; err='missing creds' }; return }
+    Log ('connect: host=' + $hostAddr + ' user=' + $user + ' clip=' + $opts.clip + ' print=' + $opts.print + ' drives=' + $opts.drives + ' mic=' + $opts.mic + ' cmdId=' + $cmdId)
 
-    & cmdkey /generic:("TERMSRV/{0}" -f $hostAddr) /user:$user /pass:$pass 2>$null | Out-Null
-    Post-Status $runner $dev 'cmdkey-armed' @{ mstscPid=0 }
+    # cmdkey - hidden, wait for it to persist
+    & cmdkey ('/generic:TERMSRV/' + $hostAddr) ('/user:' + $user) ('/pass:' + $pass) 2>$null | Out-Null
+    Start-Sleep -Milliseconds 200
+    Post-Status $runner $dev 'cmdkey-armed' @{ cmdId=$cmdId }
+
+    # Stop any stale mstsc so we don't stack sessions (A3)
+    Stop-StaleMstsc
+    $baseline = Get-Date
 
     $needRdp = ($opts.print -or $opts.drives -or $opts.mic)
-    Post-Status $runner $dev 'L1-launching' @{}
+    Post-Status $runner $dev 'L1-launching' @{ cmdId=$cmdId }
     if (-not $needRdp) {
-        $p = Start-Process -FilePath 'mstsc.exe' -ArgumentList ("/v:{0}" -f $hostAddr) -WindowStyle Hidden -PassThru
+        $p = Start-Process -FilePath 'mstsc.exe' -ArgumentList @('/v:' + $hostAddr, '/f') -WindowStyle Hidden -PassThru
     } else {
         $rdp = Write-Rdp $hostAddr $user $opts 2 1
-        $p = Start-Process -FilePath 'mstsc.exe' -ArgumentList ('"{0}"' -f $rdp) -WindowStyle Hidden -PassThru
+        $p = Start-Process -FilePath 'mstsc.exe' -ArgumentList @($rdp, '/f') -WindowStyle Hidden -PassThru
     }
-    Start-Sleep -Seconds 2
-    if ($p -and -not $p.HasExited) {
-        Post-Status $runner $dev 'mstsc-alive' @{ mstscPid=$p.Id }
-        # Wait up to 8s for LogonType=10
-        for ($i=0; $i -lt 8; $i++) {
-            Start-Sleep -Seconds 1
-            $age = Get-LogonAge
-            if ($age -ge 0 -and $age -le 30) { Post-Status $runner $dev 'connected' @{ mstscPid=$p.Id; logonAge=$age }; Log "L1 connected age=$age"; return }
-            if ($p.HasExited) { break }
-        }
-        Log "L1 no logon in 8s, escalating"
-    }
+    Post-Status $runner $dev 'mstsc-alive' @{ cmdId=$cmdId; mstscPid = if ($p) { $p.Id } else { 0 } }
+    $r = Wait-Connected $p $baseline 8
+    if ($r.ok) { Post-Status $runner $dev 'connected' @{ cmdId=$cmdId; mstscPid=$p.Id; logonAge=$r.age; err=('via=' + $r.via) }; Log ('L1 connected via=' + $r.via + ' age=' + $r.age); return }
+    Log ('L1 no connect (via=' + $r.via + '), escalating')
 
-    Post-Status $runner $dev 'L2-launching' @{}
+    Stop-StaleMstsc
+    $baseline = Get-Date
+    Post-Status $runner $dev 'L2-launching' @{ cmdId=$cmdId }
     $rdp2 = Write-Rdp $hostAddr $user $opts 2 1
-    $p2 = Start-Process -FilePath 'mstsc.exe' -ArgumentList ('"{0}"' -f $rdp2) -WindowStyle Hidden -PassThru
-    Start-Sleep -Seconds 6
-    if ($p2 -and -not $p2.HasExited) {
-        $age = Get-LogonAge
-        if ($age -ge 0 -and $age -le 30) { Post-Status $runner $dev 'connected' @{ mstscPid=$p2.Id; logonAge=$age }; return }
-    }
+    $p2 = Start-Process -FilePath 'mstsc.exe' -ArgumentList @($rdp2, '/f') -WindowStyle Hidden -PassThru
+    $r2 = Wait-Connected $p2 $baseline 10
+    if ($r2.ok) { Post-Status $runner $dev 'connected' @{ cmdId=$cmdId; mstscPid=$p2.Id; logonAge=$r2.age; err=('via=' + $r2.via) }; return }
 
-    Post-Status $runner $dev 'L3-launching' @{}
+    Stop-StaleMstsc
+    $baseline = Get-Date
+    Post-Status $runner $dev 'L3-launching' @{ cmdId=$cmdId }
     try {
         Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Terminal Server Client' -Name 'PublisherBypassList' -Value '*' -Force -ErrorAction SilentlyContinue
         Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Terminal Server Client' -Name 'AuthenticationLevelOverride' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
     } catch {}
     $rdp3 = Write-Rdp $hostAddr $user $opts 0 0
-    $p3 = Start-Process -FilePath 'mstsc.exe' -ArgumentList ('"{0}"' -f $rdp3) -WindowStyle Hidden -PassThru
-    Start-Sleep -Seconds 6
-    if ($p3 -and -not $p3.HasExited) {
-        $age = Get-LogonAge
-        if ($age -ge 0 -and $age -le 30) { Post-Status $runner $dev 'connected' @{ mstscPid=$p3.Id; logonAge=$age }; return }
-    }
+    $p3 = Start-Process -FilePath 'mstsc.exe' -ArgumentList @($rdp3, '/f') -WindowStyle Hidden -PassThru
+    $r3 = Wait-Connected $p3 $baseline 10
+    if ($r3.ok) { Post-Status $runner $dev 'connected' @{ cmdId=$cmdId; mstscPid=$p3.Id; logonAge=$r3.age; err=('via=' + $r3.via) }; return }
 
-    Post-Status $runner $dev 'failed' @{ err='ladder-exhausted' }
+    Post-Status $runner $dev 'failed' @{ cmdId=$cmdId; err='ladder-exhausted' }
     Upload-Diag $runner $dev 'ladder-exhausted'
 }
 
-function Upload-Diag($runner,$dev,[string]$reason){
-    Log "diag-upload: reason=$reason" 'ERR'
+function Upload-Diag($runner, $dev, [string]$reason) {
+    Log ('diag-upload: reason=' + $reason) 'ERR'
     if (-not $runner -or -not $dev -or -not $dev.deviceToken) { return }
     $bundle = @{
         enrollLogTail = (Get-EnrollTail 100)
         agentLogTail  = ''
         regQuery      = (Get-RegPath)
         taskOk        = (Get-TaskOk)
-        cmdkey        = ''
+        cmdkeyCount   = 0
         wevtutil      = ''
     }
     try { if (Test-Path $script:LogPath) { $bundle.agentLogTail = ((Get-Content -LiteralPath $script:LogPath -Tail 100) -join "`n") } } catch {}
-    try { $bundle.cmdkey = (& cmdkey /list 2>$null | Select-String 'TERMSRV' | Measure-Object).Count } catch {}
+    try { $bundle.cmdkeyCount = (& cmdkey /list 2>$null | Select-String 'TERMSRV' | Measure-Object).Count } catch {}
     try { $bundle.wevtutil = ((& wevtutil.exe qe Microsoft-Windows-TerminalServices-ClientActiveXCore/Operational /c:5 /rd:true /f:text 2>$null) -join "`n") } catch {}
-    Http-Post ("http://{0}:7331/api/diag-upload" -f $runner) @{ deviceId=$dev.deviceId; dt=$dev.deviceToken; reason=$reason; bundle=$bundle } 8 | Out-Null
+    Http-Post ('http://' + $runner + ':7331/api/diag-upload') @{ deviceId=$dev.deviceId; dt=$dev.deviceToken; reason=$reason; bundle=$bundle } 8 | Out-Null
 }
 
-function Self-Heal($runner,$dev){
-    Log "self-heal: check"
-    if (-not (Get-TaskOk)) { Log "self-heal: task missing, re-register"; Register-Task }
+# ---- Self-Heal: gated remote refresh (never install unparseable) ---------
+function Self-Heal($runner, $dev) {
+    Log 'self-heal: check'
+    if (-not (Get-TaskOk)) { Log 'self-heal: task missing, re-register'; Register-Task }
     $reg = Get-RegPath
-    if (-not $reg -or ($reg -notlike "*$script:AgentPath*") -or ($reg -notlike "*System32\WindowsPowerShell*")) {
-        Log "self-heal: reg drifted, re-register (was=$reg)"
-        Register-Protocol
-    }
+    $needReg = $false
+    if (-not $reg) { $needReg = $true }
+    elseif ($reg -notmatch [regex]::Escape($script:AgentPath)) { $needReg = $true }
+    elseif ($reg -notmatch 'System32\\WindowsPowerShell') { $needReg = $true }
+    if ($needReg) { Log 'self-heal: reg drifted, re-register'; Register-Protocol }
     if ($runner) {
-        $h = Http-Get ("http://{0}:7331/api/agent-hash" -f $runner) 4
+        $h = Http-Get ('http://' + $runner + ':7331/api/agent-hash') 4
         if ($h -and $h.sha256) {
             $local = Get-AgentHash
             if ($local -and ($local -ne $h.sha256.ToLower())) {
-                Log "self-heal: hash drift local=$local remote=$($h.sha256)"
-                try { Invoke-WebRequest -Uri ("http://{0}:7331/api/agent.ps1" -f $runner) -OutFile $script:AgentPath -UseBasicParsing -TimeoutSec 10 } catch { Log "self-heal refresh fail $_" 'ERR' }
+                Log ('self-heal: hash drift local=' + $local + ' remote=' + $h.sha256)
+                $tmpPath = $script:AgentPath + '.new'
+                try {
+                    Invoke-WebRequest -Uri ('http://' + $runner + ':7331/api/agent.ps1') -OutFile $tmpPath -UseBasicParsing -TimeoutSec 15
+                    # Gate #57: PSParser tokenize before overwrite
+                    if (Test-PsSyntax $tmpPath) {
+                        $newHash = (Get-FileHash -LiteralPath $tmpPath -Algorithm SHA256).Hash.ToLower()
+                        if ($newHash -eq $h.sha256.ToLower()) {
+                            Copy-Item $tmpPath $script:AgentPath -Force
+                            Log ('self-heal: agent.ps1 refreshed to ' + $newHash)
+                        } else { Log ('self-heal: refreshed bytes hash mismatch — abort') 'ERR' }
+                    } else { Log 'self-heal: REMOTE UNPARSEABLE — keeping local (bug #58)' 'ERR' }
+                    Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
+                } catch { Log ('self-heal refresh fail ' + $_.Exception.Message) 'ERR' }
             }
         }
     }
+    Cleanup-StaleRdp
 }
 
-function Consume-Pending($runner,$dev){
+function Consume-Pending($runner, $dev) {
     if (-not (Test-Path $script:PendingPath)) { return }
     try {
         $p = Get-Content -LiteralPath $script:PendingPath -Raw | ConvertFrom-Json
         Remove-Item -LiteralPath $script:PendingPath -Force -ErrorAction SilentlyContinue
-        Log "pending consumed: $($p.action)"
+        Log ('pending consumed action=' + $p.action)
         if ($p.action -eq 'rdp') { Ladder-Connect $runner $dev $p }
-    } catch { Log "pending parse fail $_" 'ERR' }
+    } catch { Log ('pending parse fail ' + $_.Exception.Message) 'ERR' }
 }
 
 function Do-Enroll {
-    Log "== ENROLL BEGIN Server=$Server PagesUrl=$PagesUrl =="
-
-    # Discover runner
+    Log ('== ENROLL BEGIN Server=' + $Server + ' ==')
     $dev = Load-Device
     $runner = Discover-Runner $dev
-    if (-not $runner) { Log "ENROLL FATAL: no runner discovered" 'ERR'; exit 0 }
-    Log "enroll: runner=$runner"
+    if (-not $runner) { Log 'ENROLL FATAL: no runner discovered' 'ERR'; exit 0 }
+    Log ('enroll: runner=' + $runner)
 
-    # Fetch fresh agent.ps1 (self-update path)
-    Log "enroll: refreshing agent.ps1 from runner"
+    # Gated agent.ps1 refresh (bug #58: never overwrite local with unparseable remote)
+    Log 'enroll: refreshing agent.ps1 (gated)'
     try {
-        Invoke-WebRequest -Uri ("http://{0}:7331/api/agent.ps1" -f $runner) -OutFile $script:AgentPath -UseBasicParsing -TimeoutSec 15
-        try { Unblock-File -LiteralPath $script:AgentPath -ErrorAction SilentlyContinue } catch {}
-        Log "enroll: agent.ps1 refreshed ($((Get-Item $script:AgentPath).Length) bytes)"
-    } catch { Log "enroll: agent.ps1 refresh fail (continuing) $_" 'WARN' }
+        $tmpPath = $script:AgentPath + '.new'
+        Invoke-WebRequest -Uri ('http://' + $runner + ':7331/api/agent.ps1') -OutFile $tmpPath -UseBasicParsing -TimeoutSec 15
+        if (Test-PsSyntax $tmpPath) {
+            try { Unblock-File -LiteralPath $tmpPath -ErrorAction SilentlyContinue } catch {}
+            Copy-Item $tmpPath $script:AgentPath -Force
+            Log ('enroll: agent.ps1 refreshed (' + (Get-Item $script:AgentPath).Length + ' bytes)')
+        } else { Log 'enroll: remote agent UNPARSEABLE — keeping local' 'ERR' }
+        Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
+    } catch { Log ('enroll: refresh fail (continuing) ' + $_.Exception.Message) 'WARN' }
 
-    # Build stable device identity from MachineGuid + username
+    # Stable dev-key from MachineGuid + username
     $mg = ''
     try { $mg = [string](Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Cryptography' -Name MachineGuid -ErrorAction Stop).MachineGuid } catch { $mg = [guid]::NewGuid().ToString() }
-    $devKey = "{0}-{1}" -f $mg, $env:USERNAME
+    $devKey = $mg + '-' + $env:USERNAME
     if (-not $dev) {
         $dev = [pscustomobject]@{
             deviceId     = ''
             deviceToken  = ''
             runnersCache = @($runner)
             lastRunner   = $runner
-            pagesUrl     = (Normalize-Url $PagesUrl)
+            pagesUrl     = ''
             enrolledAt   = ''
         }
     }
-
-    # POST /api/device-enroll
-    $body = @{ dev = $devKey; name = $env:COMPUTERNAME; os = "$([Environment]::OSVersion.Version)"; deviceIdHint = $dev.deviceId }
-    Log "enroll: POST /api/device-enroll dev=$devKey"
-    $resp = Http-Post ("http://{0}:7331/api/device-enroll" -f $runner) $body 10
-    if (-not $resp -or -not $resp.deviceToken) { Log "ENROLL FATAL: no deviceToken in response" 'ERR'; exit 0 }
+    $body = @{ dev = $devKey; name = $env:COMPUTERNAME; os = ([Environment]::OSVersion.Version.ToString()); deviceIdHint = $dev.deviceId }
+    Log ('enroll: POST /api/device-enroll dev=' + $devKey)
+    $resp = Http-Post ('http://' + $runner + ':7331/api/device-enroll') $body 10
+    if (-not $resp -or -not $resp.deviceToken) { Log 'ENROLL FATAL: no deviceToken in response' 'ERR'; exit 0 }
 
     $dev.deviceId    = [string]$resp.deviceId
     $dev.deviceToken = [string]$resp.deviceToken
     if (-not $dev.deviceId) { $dev.deviceId = [guid]::NewGuid().ToString('N') }
     if ($resp.pagesStatusUrl) { $dev.pagesUrl = Normalize-Url $resp.pagesStatusUrl }
-    elseif ($resp.pagesUrl)   { $dev.pagesUrl = Normalize-Url $resp.pagesUrl }
     $dev = Update-Cache $dev $runner
     $dev.enrolledAt = (Get-Date).ToUniversalTime().ToString('o')
     Save-Device $dev
-    Log "enroll: deviceId=$($dev.deviceId) tokenLen=$($dev.deviceToken.Length) pagesUrl=$($dev.pagesUrl)"
+    Log ('enroll: deviceId=' + $dev.deviceId + ' tokenLen=' + $dev.deviceToken.Length + ' pagesUrl=' + $dev.pagesUrl)
 
     Register-Protocol
     Register-Task
 
-    Log "enroll: POST /api/agent-hello"
-    Http-Post ("http://{0}:7331/api/agent-hello" -f $runner) @{ deviceId=$dev.deviceId; dt=$dev.deviceToken; build=$script:Build; regPath=(Get-RegPath); taskOk=(Get-TaskOk) } 6 | Out-Null
+    Log 'enroll: POST /api/agent-hello'
+    Http-Post ('http://' + $runner + ':7331/api/agent-hello') @{ deviceId=$dev.deviceId; dt=$dev.deviceToken; build=$script:Build; regPath=(Get-RegPath); taskOk=(Get-TaskOk) } 6 | Out-Null
 
-    # Kick a detached Loop instance right now (task will also fire at logon)
     try {
-        Log "enroll: starting Loop instance detached"
-        Start-Process -FilePath $script:SysPwsh -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',"`"$script:AgentPath`"",'-Loop') -WindowStyle Hidden | Out-Null
-    } catch { Log "enroll: loop-start fail $_" 'WARN' }
+        Log 'enroll: starting detached -Loop'
+        Start-Process -FilePath $script:SysPwsh -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',('"' + $script:AgentPath + '"'),'-Loop') -WindowStyle Hidden | Out-Null
+    } catch { Log ('enroll: loop-start fail ' + $_.Exception.Message) 'WARN' }
 
-    Log "ENROLL-OK deviceId=$($dev.deviceId)"
+    $script:Http401Count = 0
+    Log ('ENROLL-OK deviceId=' + $dev.deviceId)
     exit 0
 }
 
 function Poll-Loop {
-    Log "== LOOP BEGIN build=$script:Build =="
+    Log ('== LOOP BEGIN build=' + $script:Build + ' ==')
     $dev = Load-Device
-    if (-not $dev -or -not $dev.deviceToken) { Log "LOOP: no device.json — need enrollment" 'ERR'; return }
+    if (-not $dev -or -not $dev.deviceToken) { Log 'LOOP: no device.json - need enrollment' 'ERR'; return }
 
     $tickHb = [DateTime]::UtcNow.AddSeconds(-100)
     $tickHeal = [DateTime]::UtcNow.AddSeconds(-100)
 
     while ($true) {
-        $runner = Discover-Runner $dev
-        if (-not $runner) { Start-Sleep -Seconds 5; continue }
-        $dev = Update-Cache $dev $runner
+        try {
+            $runner = Discover-Runner $dev
+            if (-not $runner) { Start-Sleep -Seconds 5; continue }
+            $dev = Update-Cache $dev $runner
 
-        if (([DateTime]::UtcNow - $tickHeal).TotalSeconds -ge 300) {
-            Self-Heal $runner $dev
-            $tickHeal = [DateTime]::UtcNow
+            if (([DateTime]::UtcNow - $tickHeal).TotalSeconds -ge 300) {
+                Self-Heal $runner $dev
+                $tickHeal = [DateTime]::UtcNow
+            }
+
+            Consume-Pending $runner $dev
+
+            $cmd = Http-Get ('http://' + $runner + ':7331/api/client-cmd?device=' + [uri]::EscapeDataString($dev.deviceId) + '&dt=' + [uri]::EscapeDataString($dev.deviceToken)) 5
+            if ($cmd -and $cmd.action -eq 'rdp' -and $cmd.host) {
+                $script:Http401Count = 0
+                Ladder-Connect $runner $dev $cmd
+            }
+
+            # Sustained-401 auto re-enroll (>=3, rate limited to <=1/300s)
+            if ($script:Http401Count -ge 3 -and (([DateTime]::UtcNow - $script:LastReEnroll).TotalSeconds -ge 300)) {
+                Log ('sustained 401 detected (count=' + $script:Http401Count + '), auto re-enroll') 'WARN'
+                $script:LastReEnroll = [DateTime]::UtcNow
+                $script:Http401Count = 0
+                try {
+                    Start-Process -FilePath $script:SysPwsh -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',('"' + $script:AgentPath + '"'),'-Enroll','-Server',$runner) -WindowStyle Hidden | Out-Null
+                } catch { Log ('auto-reenroll spawn fail ' + $_.Exception.Message) 'ERR' }
+            }
+
+            if (([DateTime]::UtcNow - $tickHb).TotalSeconds -ge 30) {
+                $mp = 0
+                try { $mp = (@(Get-Process mstsc -ErrorAction SilentlyContinue))[0].Id } catch {}
+                Post-Status $runner $dev 'heartbeat' @{ mstscPid = $mp }
+                Cleanup-StaleRdp
+                $tickHb = [DateTime]::UtcNow
+            }
+            Start-Sleep -Seconds 2
+        } catch {
+            Log ('LOOP iteration exception ' + $_.Exception.Message) 'ERR'
+            Start-Sleep -Seconds 3
         }
-
-        Consume-Pending $runner $dev
-
-        # Poll for cmd
-        $cmd = Http-Get ("http://{0}:7331/api/client-cmd?device={1}&dt={2}" -f $runner, [uri]::EscapeDataString($dev.deviceId), [uri]::EscapeDataString($dev.deviceToken)) 5
-        if ($cmd -and $cmd.action -eq 'rdp' -and $cmd.host) { Ladder-Connect $runner $dev $cmd }
-
-        if (([DateTime]::UtcNow - $tickHb).TotalSeconds -ge 30) {
-            Post-Status $runner $dev 'heartbeat' @{ mstscPid = (@(Get-Process mstsc -ErrorAction SilentlyContinue)[0].Id) }
-            $tickHb = [DateTime]::UtcNow
-        }
-
-        Start-Sleep -Seconds 2
     }
 }
 
 function Do-Dispatch([string]$url) {
-    Log "== DISPATCH url=$url =="
+    Log ('== DISPATCH url=' + $url + ' ==')
     try {
         $raw = $url -replace '^ghrdp:(//)?', '' -replace '^connect\??', '' -replace '^/', ''
         $p = @{}
-        foreach ($kv in ($raw -split '&')) { $eq = $kv.IndexOf('='); if ($eq -gt 0) { $p[[uri]::UnescapeDataString($kv.Substring(0,$eq)).ToLower()] = [uri]::UnescapeDataString($kv.Substring($eq+1)) } }
+        foreach ($kv in ($raw -split '&')) {
+            $eq = $kv.IndexOf('=')
+            if ($eq -gt 0) {
+                $k = [uri]::UnescapeDataString($kv.Substring(0, $eq)).ToLower()
+                $v = [uri]::UnescapeDataString($kv.Substring($eq + 1))
+                $p[$k] = $v
+            }
+        }
         if ($url -match '^ghrdp://enroll') {
-            $Script:Server = $p['server']
+            $script:Server = $p['server']
             Do-Enroll
             return
         }
-        # legacy connect: write pending.json for a running loop to consume
         if ($p.host -or $p.server) {
             $obj = @{ action='rdp'; host=$p['host']; server=$p['server']; clip=($p['clip'] -eq '1'); print=($p['print'] -eq '1'); drives=($p['drives'] -eq '1'); mic=($p['mic'] -eq '1') }
             $obj | ConvertTo-Json -Compress | Set-Content -LiteralPath $script:PendingPath -Encoding UTF8 -Force
-            Log "dispatch: wrote pending.json"
+            Log 'dispatch: wrote pending.json'
         }
-    } catch { Log "dispatch fail $_" 'ERR' }
+    } catch { Log ('dispatch fail ' + $_.Exception.Message) 'ERR' }
 }
 
-# --- Entrypoint dispatch ---
+# ---- Entrypoint dispatch --------------------------------------------------
 try {
-    if ($Enroll)         { Do-Enroll; exit 0 }
-    if ($Dispatch)       { Do-Dispatch $Dispatch; exit 0 }
-    if ($SelfHealOnly)   { $d=Load-Device; if($d){ $r=Discover-Runner $d; Self-Heal $r $d }; exit 0 }
-    if ($Loop -or $Poll) { Poll-Loop; exit 0 }
-    Log "no mode flag provided — nothing to do (args=$($args -join ' '))" 'WARN'
+    if ($Enroll)                 { Do-Enroll; exit 0 }
+    if ($Dispatch)               { Do-Dispatch $Dispatch; exit 0 }
+    if ($SelfHealOnly)           { $d = Load-Device; if ($d) { $r = Discover-Runner $d; Self-Heal $r $d }; exit 0 }
+    if ($Loop -or $Poll)         { Poll-Loop; exit 0 }
+    Log ('no mode flag provided - nothing to do') 'WARN'
     exit 0
 } catch {
-    Log "TOP-LEVEL EXCEPTION $_" 'ERR'
+    Log ('TOP-LEVEL EXCEPTION ' + $_.Exception.Message) 'ERR'
     exit 0
 }

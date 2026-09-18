@@ -685,12 +685,22 @@ function Invoke-ClientRequest {
             }
             return
         }
-        if ($path -eq '/api/accept.ps1') {
-            $ap = Join-Path $Root 'ghrdp-accept.ps1'
+        if ($path -eq '/api/accept.ps1' -or $path -eq '/api/acceptance.ps1') {
+            $ap = Join-Path $Root 'ghrdp-acceptance.ps1'
+            if (-not (Test-Path -LiteralPath $ap)) { $ap = Join-Path $Root 'ghrdp-accept.ps1' }
             if (Test-Path -LiteralPath $ap) {
                 Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body ([System.IO.File]::ReadAllBytes($ap))
             } else {
-                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('accept.ps1 not deployed'))
+                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('acceptance.ps1 not deployed'))
+            }
+            return
+        }
+        if ($path -eq '/api/diag.ps1') {
+            $dp = Join-Path $Root 'ghrdp-diag.ps1'
+            if (Test-Path -LiteralPath $dp) {
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body ([System.IO.File]::ReadAllBytes($dp))
+            } else {
+                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('diag.ps1 not deployed'))
             }
             return
         }
