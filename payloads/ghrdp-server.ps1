@@ -18,6 +18,7 @@ try {
     $tp = Join-Path $Root 'dash-token.txt'
     if (Test-Path -LiteralPath $tp) { $script:Token = ([System.IO.File]::ReadAllText($tp)).Trim() }
 } catch { }
+$script:RdpTokens = @{}
 
 function Read-JsonFile {
     param([string]$Path)
@@ -257,6 +258,47 @@ function Invoke-ClientRequest {
             $cip = [string]$cfg.rdpIp; $cu = [string]$cfg.rdpUser; $cpBat = ([string]$cfg.rdpPass) -replace '\^', '^^'
             $bat = '@echo off' + "`r`n" + 'title GHRDP auto-connect' + "`r`n" + 'cmdkey /generic:TERMSRV/' + $cip + ' /user:' + $cu + ' /pass:' + $cpBat + ' >nul 2>&1' + "`r`n" + 'start "" mstsc /v:' + $cip + "`r`n" + 'timeout /t 15 >nul' + "`r`n" + 'cmdkey /delete:TERMSRV/' + $cip + ' >nul 2>&1' + "`r`n" + 'exit /b 0' + "`r`n"
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/octet-stream' -Body ([System.Text.Encoding]::ASCII.GetBytes($bat))
+            return
+        }
+        if ($path -eq '/api/rdp-token' -and $parts.method -eq 'POST') {
+            $now = [datetime]::UtcNow
+            $expired = @($script:RdpTokens.Keys | Where-Object { ($now - $script:RdpTokens[$_].created).TotalSeconds -gt 60 })
+            foreach ($ek in $expired) { $script:RdpTokens.Remove($ek) }
+            $newTok = [guid]::NewGuid().ToString('N')
+            $script:RdpTokens[$newTok] = @{ created = $now; used = $false }
+            try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now.ToString('o') + ' ISSUED ' + $newTok.Substring(0,8) + "...`n")) } catch { }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ token = $newTok; ttl = 60 })
+            return
+        }
+        if ($path -eq '/api/rdp-creds') {
+            $reqTok = ''
+            if ($parts.query -and $parts.query.ContainsKey('token')) { $reqTok = [string]$parts.query['token'] }
+            $now2 = [datetime]::UtcNow
+            if (-not $reqTok -or -not $script:RdpTokens.ContainsKey($reqTok)) {
+                try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + " REJECTED invalid`n")) } catch { }
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"error":"invalid or expired token"}'))
+                return
+            }
+            $te = $script:RdpTokens[$reqTok]
+            if (($now2 - $te.created).TotalSeconds -gt 60 -or $te.used) {
+                $script:RdpTokens.Remove($reqTok)
+                try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + ' REJECTED expired/used ' + $reqTok.Substring(0,8) + "...`n")) } catch { }
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"error":"token expired or already used"}'))
+                return
+            }
+            $script:RdpTokens.Remove($reqTok)
+            $cfgC = Read-JsonFile -Path $script:CfgPath
+            try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + ' REDEEMED ' + $reqTok.Substring(0,8) + "...`n")) } catch { }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ host = [string]$cfgC.rdpIp; user = [string]$cfgC.rdpUser; pass = [string]$cfgC.rdpPass; hostip = [string]$cfgC.rdpIp })
+            return
+        }
+        if ($path -eq '/api/launch.ps1') {
+            $lp = Join-Path $Root 'ghrdp-launch.ps1'
+            if (Test-Path -LiteralPath $lp) {
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body ([System.IO.File]::ReadAllBytes($lp))
+            } else {
+                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('launch.ps1 not deployed'))
+            }
             return
         }
         if ($path -eq '/webdesk-boot') {

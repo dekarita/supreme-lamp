@@ -817,7 +817,54 @@ function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.re
 function flags(){return '&clip='+(document.getElementById('resClip').checked?1:0)+'&mic='+(document.getElementById('resMic').checked?1:0)+'&print='+(document.getElementById('resPrint').checked?1:0)+'&drives='+(document.getElementById('resDrives').checked?1:0);}
 function launchUrl(u){if(window.ghrdpLaunchProto){window.ghrdpLaunchProto(u);return;}var ifr=document.createElement('iframe');ifr.style.display='none';try{document.body.appendChild(ifr);ifr.src=u;}catch(e){}}
 document.getElementById('webDesk').onclick=function(e){e.preventDefault();var c=(window.lastData&&lastData.creds)||{};var ip=c.ip||location.hostname;window.open('http://'+ip+':7331/webdesk','_blank');};
-document.getElementById('autoLogin').onclick=function(e){e.preventDefault();var c=(window.lastData&&lastData.creds)||{};var ip=c.ip||location.hostname;var base='http://'+ip+':7331';var u='ghrdp://ip='+encodeURIComponent(ip)+'&u=b64u:'+b64u(c.user||'')+'&p=b64u:'+b64u(c.pass||'')+flags();var pill=document.getElementById('sessPill');if(pill){pill.style.background='#0b2a3d';pill.style.color='#b7e3f5';pill.textContent='connecting... (polling runner for session)';}launchUrl(u);var n=0;var iv=setInterval(function(){n++;fetch(base+'/webdesk-probe',{cache:'no-store'}).then(function(r){return r.json();}).then(function(p){if(p&&p.session){clearInterval(iv);if(pill){pill.style.background='#0b3d1f';pill.style.color='#b7f5c9';pill.textContent='SESSION LIVE - WEB DESKTOP buttons active';}window.open(base+'/webdesk','_blank');}else if(n>=20){clearInterval(iv);if(pill){pill.style.background='#3d0b0b';pill.style.color='#f5b7b7';pill.textContent='handler connected නෑ - helper log එක බලන්න: %LOCALAPPDATA%\\ghrdp\\ghrdp-connect.log (handler install නැත්නම් handler help → install.bat ONCE)';}}}).catch(function(){if(n>=20)clearInterval(iv);});},1000);};
+function showSetupOverlay(ip){
+ var ov=document.getElementById('ghrdpSetup');
+ if(ov){ov.style.display='flex';return;}
+ ov=document.createElement('div');ov.id='ghrdpSetup';
+ ov.style.cssText='position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.7);display:flex;align-items:center;justify-content:center;backdrop-filter:blur(8px)';
+ var box=document.createElement('div');
+ box.style.cssText='background:#1a1f2e;border:1px solid rgba(255,255,255,.15);border-radius:20px;padding:28px;max-width:560px;width:90%;color:#e8eef3;font:14px/1.5 system-ui,sans-serif';
+ var cmd='$d="$env:LOCALAPPDATA\\ghrdp";md $d -Force|Out-Null;iwr http://'+ip+':7331/api/launch.ps1 -OutFile "$d\\launch.ps1";New-Item "HKCU:\\Software\\Classes\\ghrdp" -Force|Out-Null;sp "HKCU:\\Software\\Classes\\ghrdp" \'(Default)\' \'URL:GHRDP\';sp "HKCU:\\Software\\Classes\\ghrdp" \'URL Protocol\' \'\';New-Item "HKCU:\\Software\\Classes\\ghrdp\\shell\\open\\command" -Force|Out-Null;sp "HKCU:\\Software\\Classes\\ghrdp\\shell\\open\\command" \'(Default)\' (\'powershell -NoProfile -ExecutionPolicy Bypass -File "\'+$d+\'\\launch.ps1" "%1"\')';
+ box.innerHTML='<h2 style="margin:0 0 12px;font-size:18px">ghrdp:// Handler Setup</h2>'+
+  '<p style="opacity:.8;margin:0 0 16px">One-time setup (3 seconds). Run this in PowerShell on YOUR PC:</p>'+
+  '<div style="position:relative"><pre id="setupCmd" style="background:rgba(0,0,0,.4);border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:12px;font:12px/1.4 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-all;max-height:120px;overflow:auto;color:#e8eef3"></pre>'+
+  '<button id="setupCopy" style="position:absolute;top:8px;right:8px;background:#2f6bff;color:#fff;border:0;border-radius:8px;padding:4px 10px;font-size:12px;cursor:pointer">Copy</button></div>'+
+  '<p style="opacity:.6;font-size:12px;margin:12px 0 0">After running, click AUTO-LOGIN RDP again. No admin needed.<br>Log: %LOCALAPPDATA%\\ghrdp\\ghrdp-connect.log</p>'+
+  '<button id="setupClose" style="margin-top:16px;background:rgba(255,255,255,.12);color:#e8eef3;border:1px solid rgba(255,255,255,.16);border-radius:10px;padding:8px 16px;cursor:pointer;width:100%">Close</button>';
+ ov.appendChild(box);document.body.appendChild(ov);
+ document.getElementById('setupCmd').textContent=cmd;
+ document.getElementById('setupCopy').onclick=function(){navigator.clipboard.writeText(cmd);this.textContent='Copied!';var b=this;setTimeout(function(){b.textContent='Copy';},1500);};
+ document.getElementById('setupClose').onclick=function(){ov.style.display='none';};
+ ov.onclick=function(e){if(e.target===ov)ov.style.display='none';};
+}
+document.getElementById('autoLogin').onclick=function(e){
+ e.preventDefault();
+ var c=(window.lastData&&lastData.creds)||{};
+ var ip=c.ip||location.hostname;
+ var base='http://'+ip+':7331';
+ var pill=document.getElementById('sessPill');
+ if(pill){pill.style.background='#0b2a3d';pill.style.color='#b7e3f5';pill.textContent='requesting token...';}
+ fetch(base+'/api/rdp-token',{method:'POST',cache:'no-store'}).then(function(r){return r.json();}).then(function(d){
+  if(!d||!d.token){if(pill){pill.style.background='#3d0b0b';pill.style.color='#f5b7b7';pill.textContent='token request failed';}return;}
+  var u='ghrdp://server='+encodeURIComponent(ip)+'&port=7331&token='+encodeURIComponent(d.token)+flags();
+  if(pill){pill.textContent='launching ghrdp://...';}
+  var hadFocus=true;
+  var onBlur=function(){hadFocus=false;};
+  window.addEventListener('blur',onBlur);
+  launchUrl(u);
+  setTimeout(function(){
+   window.removeEventListener('blur',onBlur);
+   if(hadFocus){showSetupOverlay(ip);if(pill){pill.style.background='#3d2a0b';pill.style.color='#f5d9b7';pill.textContent='handler not found - see setup overlay';}return;}
+   if(pill){pill.style.background='#0b2a3d';pill.style.color='#b7e3f5';pill.textContent='connecting... (polling for session)';}
+   var n=0;var iv=setInterval(function(){n++;
+    fetch(base+'/webdesk-probe',{cache:'no-store'}).then(function(r){return r.json();}).then(function(p){
+     if(p&&p.session){clearInterval(iv);if(pill){pill.style.background='#0b3d1f';pill.style.color='#b7f5c9';pill.textContent='SESSION LIVE';}}
+     else if(n>=20){clearInterval(iv);if(pill){pill.style.background='#3d0b0b';pill.style.color='#f5b7b7';pill.textContent='timeout - check log: %LOCALAPPDATA%\\ghrdp\\ghrdp-connect.log';}}
+    }).catch(function(){if(n>=20)clearInterval(iv);});
+   },1000);
+  },1200);
+ }).catch(function(er){if(pill){pill.style.background='#3d0b0b';pill.style.color='#f5b7b7';pill.textContent='error: '+er.message;}});
+};
 })();
 </script>
 <script>
@@ -825,14 +872,13 @@ document.getElementById('autoLogin').onclick=function(e){e.preventDefault();var 
 if(sessionStorage.getItem('ghrdpOrch')==='1')return; sessionStorage.setItem('ghrdpOrch','1');
 var base=(location.port==='7331'||location.port==='7332')?location.origin:('http://'+location.hostname+':7331');
 function P(u,o){return fetch(base+u,Object.assign({cache:'no-store'},o)).then(function(r){return r.json();});}
-function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
 function fire(u){var ifr=document.createElement('iframe');ifr.style.display='none';try{document.body.appendChild(ifr);ifr.src=u;}catch(e){}}
 var tried=false, opened=false;
 function tick(){
  P('/webdesk-probe').catch(function(){return null;}).then(function(pr){
   if(!pr)return;
   if(pr.session&&!opened){opened=true;window.open(base+'/webdesk','_blank');}
-  if(!pr.session&&!tried){tried=true;P('/api/config').catch(function(){return null;}).then(function(cf){ if(cf&&cf.rdpIp&&cf.rdpUser){ fire('ghrdp://ip='+encodeURIComponent(cf.rdpIp)+'&u=b64u:'+b64u(cf.rdpUser)+'&p=b64u:'+b64u(cf.rdpPass||'')); } });}
+  if(!pr.session&&!tried){tried=true;P('/api/rdp-token',{method:'POST'}).catch(function(){return null;}).then(function(t){ if(t&&t.token){ fire('ghrdp://server='+encodeURIComponent(location.hostname)+'&port=7331&token='+encodeURIComponent(t.token)); } });}
  });
 }
 tick(); setInterval(tick,10000);
