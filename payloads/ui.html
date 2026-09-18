@@ -833,6 +833,8 @@ function showSetupOverlay(ip){
  ov.querySelector('#clSetup').onclick=function(){ov.remove();};
 }
 function showBanner(msg){var pill=document.getElementById('sessPill');if(pill){pill.style.background='#0b3d1f';pill.style.color='#b7f5c9';pill.textContent=msg;}else if(window.showInstall){window.showInstall(msg);}}
+function rdpToast(msg,color){var t=document.createElement('div');t.style.cssText='position:fixed;right:16px;bottom:16px;z-index:98;max-width:420px;background:#12241f;border:1px solid '+color+';color:#eafff5;padding:12px 14px;border-radius:10px;font:12px monospace';t.textContent=msg;document.body.appendChild(t);setTimeout(function(){t.remove();},12000);}
+function rdpEl(id){return document.getElementById(id);}
 document.getElementById('autoLogin').onclick=function(e){
  e.preventDefault();
  return (async function(){
@@ -848,25 +850,39 @@ document.getElementById('autoLogin').onclick=function(e){
   try{var r=await fetch(base+'/api/rdp-token?key='+encodeURIComponent(key),{method:'POST',cache:'no-store'});var j=await r.json();tok=j.token||'';}catch(err){}
   if(!tok){try{var r2=await fetch('/api/rdp-token?key='+encodeURIComponent(key),{method:'POST',cache:'no-store'});var j2=await r2.json();tok=j2.token||'';}catch(err2){}}
   if(!tok){if(pill){pill.style.background='#3d0b0b';pill.style.color='#f5b7b7';pill.textContent='RDP token fail - check session';}return;}
-  var clip=document.getElementById('resClip')?(document.getElementById('resClip').checked?1:0):1;
-  var mic=document.getElementById('resMic')?(document.getElementById('resMic').checked?1:0):0;
-  var prn=document.getElementById('resPrint')?(document.getElementById('resPrint').checked?1:0):0;
-  var drv=document.getElementById('resDrives')?(document.getElementById('resDrives').checked?1:0):0;
-  var base2='ghrdp://connect?ip='+encodeURIComponent(ip)+'&t='+encodeURIComponent(tok)+'&u='+encodeURIComponent(RDP_USER)+'&clip='+clip+'&mic='+mic+'&printers='+prn+'&drives='+drv;
-  var blurred=false;var onB=function(){blurred=true;};
+  var clipEl=rdpEl('resClip'),micEl=rdpEl('resMic'),prnEl=rdpEl('resPrint')||rdpEl('resPrn'),drvEl=rdpEl('resDrives')||rdpEl('resDrv');
+  var clip=clipEl?(clipEl.checked?1:0):1;
+  var mic=micEl?(micEl.checked?1:0):0;
+  var prn=prnEl?(prnEl.checked?1:0):0;
+  var drv=drvEl?(drvEl.checked?1:0):0;
+  var u1='ghrdp://connect?ip='+encodeURIComponent(ip)+'&h='+encodeURIComponent(ip)+'&t='+encodeURIComponent(tok)+'&token='+encodeURIComponent(tok)+
+   '&u='+encodeURIComponent(RDP_USER)+'&user='+encodeURIComponent(RDP_USER)+
+   '&clip='+clip+'&clipboard='+clip+'&mic='+mic+'&printers='+prn+'&drives='+drv;
+  var blurred=0;var onB=function(){blurred++;};
   window.addEventListener('blur',onB);
-  location.href=base2;
-  await sleep(1200);
-  if(!blurred){location.href=base2+'&p='+b64u(RDP_PASS);}
-  await sleep(1200);
-  window.removeEventListener('blur',onB);
-  var ok=false;
-  for(var i=0;i<5;i++){
-   await sleep(2000);
-   try{var s=await(await fetch(base+'/api/rdp-status?key='+encodeURIComponent(key),{cache:'no-store'})).json();if(s.rdp_age_s>=0&&s.rdp_age_s<=25){ok=true;break;}}catch(err3){}
+  location.href=u1;
+  await sleep(1300);
+  if(blurred===0){
+   location.href=u1+
+    '&computer='+encodeURIComponent(ip)+'&host='+encodeURIComponent(ip)+
+    '&username='+encodeURIComponent(RDP_USER)+
+    '&p='+b64u(RDP_PASS)+'&password='+b64u(RDP_PASS)+
+    '&pass='+encodeURIComponent(RDP_PASS)+'&pw='+encodeURIComponent(RDP_PASS);
+   await sleep(1300);
   }
-  if(ok){showBanner('RDP session active ✔');if(pill){pill.style.background='#0b3d1f';pill.style.color='#b7f5c9';pill.textContent='RDP session active ✔';}}
-  else{showSetupOverlay(ip);if(pill){pill.style.background='#3d2a0b';pill.style.color='#f5d9b7';pill.textContent='handler not found - see setup overlay';}}
+  window.removeEventListener('blur',onB);
+  if(blurred>0){
+   var ok=false;
+   for(var i=0;i<6;i++){
+    await sleep(2500);
+    try{var s=await(await fetch(base+'/api/rdp-status?key='+encodeURIComponent(key),{cache:'no-store'})).json();if(s.rdp_age_s>=0&&s.rdp_age_s<=30){ok=true;break;}}catch(err3){}
+   }
+   if(ok){rdpToast('RDP session active ✔','#2ee6a6');if(pill){pill.style.background='#0b3d1f';pill.style.color='#b7f5c9';pill.textContent='RDP session active ✔';}}
+   else{rdpToast('RDP window opened — Connect prompt එකක් තියෙනවා නම් ඒක confirm කරන්න. Fields හිස් නම්: handler param mismatch — report එකක් යවන්න.','#ffb020');if(pill){pill.style.background='#0b2a3d';pill.style.color='#b7e3f5';pill.textContent='RDP window opened — prompt check';}}
+   return;
+  }
+  showSetupOverlay(ip);
+  if(pill){pill.style.background='#3d2a0b';pill.style.color='#f5d9b7';pill.textContent='handler not found - see setup overlay';}
  })();
 };
 })();
