@@ -49,12 +49,14 @@ if (-not (Test-Path $ProbeExe)) {
 }
 
 function Get-ServerExeName {
-    # Never assume the binary name; read it from the task definition (graveyard #30).
     $name = 'webrtc-server.exe'
     try {
         $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
         if ($t -and $t.Actions -and $t.Actions[0].Execute) {
-            $name = Split-Path -Leaf ([string]$t.Actions[0].Execute)
+            $leaf = Split-Path -Leaf ([string]$t.Actions[0].Execute)
+            if ($leaf -ne 'cmd.exe' -and $leaf -ne 'powershell.exe') {
+                $name = $leaf
+            }
         }
     } catch { }
     return $name
@@ -286,7 +288,7 @@ $summaryLines += ''
 if ($acc) {
     $summaryLines += '| field | value |'
     $summaryLines += '| --- | --- |'
-    foreach ($k in @('verdict', 'fps', 'kbps', 'decode_ok', 'candidate', 'git_commit', 'session_id', 'capture', 'mode', 'encoder', 'input_to_frame_ms', 'max_gap_ms', 'probe_at')) {
+    foreach ($k in @('verdict', 'fps', 'kbps', 'decode_ok', 'candidate', 'git_commit', 'session_id', 'capture', 'mode', 'encoder', 'input_to_frame_ms', 'max_gap_ms', 'terminal_gap_ms', 'probe_at')) {
         $summaryLines += ('| {0} | {1} |' -f $k, $acc.$k)
     }
 } else {
@@ -330,6 +332,22 @@ if ($summaryLines -and $SummaryPath) {
     try { Add-Content -LiteralPath $SummaryPath -Value ($summaryLines -join "`n") -ErrorAction SilentlyContinue } catch { }
 }
 $summaryLines | ForEach-Object { Write-Host $_ }
+
+# --- crash forensics: append crash.log tail to summary on failure -----------
+$crashLog = Join-Path $DeployDir 'crash.log'
+if ($verdict -ne 'PASS' -and (Test-Path $crashLog)) {
+    $tail = Get-Content -LiteralPath $crashLog -Tail 30 -ErrorAction SilentlyContinue
+    if ($tail) {
+        $summaryLines += ''
+        $summaryLines += '**crash.log (last 30 lines):**'
+        $summaryLines += '```'
+        $summaryLines += $tail
+        $summaryLines += '```'
+        if ($SummaryPath) {
+            try { Add-Content -LiteralPath $SummaryPath -Value (($summaryLines | Select-Object -Last ($tail.Count + 4)) -join "`n") -ErrorAction SilentlyContinue } catch { }
+        }
+    }
+}
 
 if ($verdict -ne 'PASS') {
     Write-Log '=== ACCEPTANCE RESULT: FAIL ==='

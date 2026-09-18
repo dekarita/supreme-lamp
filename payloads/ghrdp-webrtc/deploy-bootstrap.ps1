@@ -77,6 +77,11 @@ function Resolve-ExeFromTask {
         $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
         $exe = [string]$t.Actions[0].Execute
         if ($exe) {
+            $leaf = Split-Path -Leaf $exe.Trim('"')
+            if ($leaf -eq 'cmd.exe' -or $leaf -eq 'powershell.exe') {
+                Write-Log ("task {0} runs supervisor ({1}); using default exe" -f $TaskName, $leaf)
+                return $DefaultExe
+            }
             Write-Log ("exe from task definition ({0}): {1}" -f $TaskName, $exe)
             return $exe.Trim('"')
         }
@@ -214,7 +219,7 @@ Write-Log ("static deployed to {0}" -f $staticDst)
 
 # Stage the heal/acceptance scripts next to the binary so later steps and any
 # out-of-band terminal-exec run can reach them by a fixed path.
-foreach ($script in @('deploy-bootstrap.ps1', 'accept-webrtc.ps1', 'setup.ps1')) {
+foreach ($script in @('deploy-bootstrap.ps1', 'accept-webrtc.ps1', 'setup.ps1', 'run-server.cmd')) {
     $from = Join-Path $srcDir $script
     if (Test-Path $from) {
         Copy-Item -LiteralPath $from -Destination (Join-Path $DeployDir $script) -Force -ErrorAction SilentlyContinue
@@ -224,6 +229,17 @@ Write-Log 'heal scripts staged in deploy dir'
 
 [System.IO.File]::WriteAllText((Join-Path $DeployDir 'deploy-sha.txt'), ($GitCommit + "`n"), (New-Object System.Text.UTF8Encoding($false)))
 
+# ---- P2: WER crash dumps for the server binary -----------------------------
+$dumpsDir = Join-Path $DeployDir 'dumps'
+New-Item -ItemType Directory -Path $dumpsDir -Force -ErrorAction SilentlyContinue | Out-Null
+$werKey = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps\webrtc-server.exe'
+try {
+    New-Item -Path $werKey -Force -ErrorAction SilentlyContinue | Out-Null
+    Set-ItemProperty -Path $werKey -Name 'DumpType' -Value 2 -Type DWord -ErrorAction SilentlyContinue
+    Set-ItemProperty -Path $werKey -Name 'DumpFolder' -Value $dumpsDir -Type ExpandString -ErrorAction SilentlyContinue
+    Write-Log ("WER LocalDumps -> {0}" -f $dumpsDir)
+} catch { Write-Log ('WER registry setup skipped: ' + $_.Exception.Message) }
+
 if ($NoStart) { Write-Log 'NoStart set; deploy complete without starting the task'; exit 0 }
 
 # booleans: exit 0 = success, exit 10 = needs restart (session mismatch)
@@ -231,7 +247,8 @@ if ($NoStart) { Write-Log 'NoStart set; deploy complete without starting the tas
 function Start-RebuildTask {
     param([string]$User)
     try { Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
-    $action = New-ScheduledTaskAction -Execute $exePath -WorkingDirectory $DeployDir
+    $cmdPath = Join-Path $DeployDir 'run-server.cmd'
+    $action = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/c "' + $cmdPath + '"') -WorkingDirectory $DeployDir
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $User
     $principal = New-ScheduledTaskPrincipal -UserId $User -LogonType Interactive -RunLevel Highest
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `

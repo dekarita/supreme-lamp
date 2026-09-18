@@ -43,25 +43,30 @@ type probeResult struct {
 	// hides a blackout: a 3s freeze in a 30s window still averages ~11fps at
 	// 15fps nominal, so it reads as healthy while the viewer saw nothing.
 	MaxGapMS float64 `json:"max_gap_ms"`
+	// TerminalGapMS is the gap between the last received frame and the end of
+	// the measurement window. A stream that dies mid-probe produces a large
+	// terminal gap even when inter-frame max_gap stays small.
+	TerminalGapMS float64 `json:"terminal_gap_ms"`
 }
 
 // acceptance mirrors the P5 contract written next to the deploy.
 type acceptance struct {
-	FPS          float64 `json:"fps"`
-	Kbps         float64 `json:"kbps"`
-	DecodeOK     float64 `json:"decode_ok"`
-	Candidate    string  `json:"candidate"`
-	Verdict      string  `json:"verdict"`
-	GitCommit    string  `json:"git_commit"`
-	SessionID    int     `json:"session_id"`
-	Capture      string  `json:"capture"`
-	Mode         string  `json:"mode"`
-	Encoder      string  `json:"encoder"`
-	InputToFrame float64 `json:"input_to_frame_ms"`
-	MaxGapMS     float64 `json:"max_gap_ms"`
-	ProbeAt      string  `json:"probe_at"`
-	Addr         string  `json:"addr"`
-	Error        string  `json:"error,omitempty"`
+	FPS           float64 `json:"fps"`
+	Kbps          float64 `json:"kbps"`
+	DecodeOK      float64 `json:"decode_ok"`
+	Candidate     string  `json:"candidate"`
+	Verdict       string  `json:"verdict"`
+	GitCommit     string  `json:"git_commit"`
+	SessionID     int     `json:"session_id"`
+	Capture       string  `json:"capture"`
+	Mode          string  `json:"mode"`
+	Encoder       string  `json:"encoder"`
+	InputToFrame  float64 `json:"input_to_frame_ms"`
+	MaxGapMS      float64 `json:"max_gap_ms"`
+	TerminalGapMS float64 `json:"terminal_gap_ms"`
+	ProbeAt       string  `json:"probe_at"`
+	Addr          string  `json:"addr"`
+	Error         string  `json:"error,omitempty"`
 }
 
 type versionInfo struct {
@@ -119,15 +124,14 @@ func main() {
 	acc.Candidate = result.CandType
 	acc.InputToFrame = result.InputToFrame
 	acc.MaxGapMS = round1(result.MaxGapMS)
+	acc.TerminalGapMS = round1(result.TerminalGapMS)
 	if ver.Capture != "" {
 		acc.Capture = ver.Capture
 	}
 
-	// B3 forbids a blackout longer than 2s. Average fps cannot see one, so the
-	// verdict fails on the longest inter-frame gap as well.
 	pass := result.FPS >= *minFPS && result.KbpsAvg <= 2500 && result.DecodeOK >= 0.99 &&
 		result.CandType != "" && result.CandType != "unknown" && ver.SessionID == 2 &&
-		result.MaxGapMS <= maxGapMSAllowed
+		result.MaxGapMS <= maxGapMSAllowed && result.TerminalGapMS <= maxGapMSAllowed
 	if pass {
 		acc.Verdict = "PASS"
 		fmt.Println("\nVERDICT: PASS")
@@ -153,6 +157,9 @@ func main() {
 	}
 	if result.MaxGapMS > maxGapMSAllowed {
 		fmt.Printf("  max frame gap %.0fms > %.0fms (blackout)\n", result.MaxGapMS, maxGapMSAllowed)
+	}
+	if result.TerminalGapMS > maxGapMSAllowed {
+		fmt.Printf("  terminal gap %.0fms > %.0fms (stream died)\n", result.TerminalGapMS, maxGapMSAllowed)
 	}
 	writeAcceptance(*out, acc)
 	os.Exit(1)
@@ -401,7 +408,8 @@ measuring:
 
 	endFrames := frames.Load()
 	endBytes := bytes.Load()
-	elapsed := time.Since(start).Seconds()
+	measureEnd := time.Now()
+	elapsed := measureEnd.Sub(start).Seconds()
 
 	totalFrames := endFrames - startFrames
 	totalBytes := endBytes - startBytes
@@ -413,17 +421,23 @@ measuring:
 		decodeRatio = math.Min(1.0, float64(decodeOK.Load())/float64(endFrames))
 	}
 
+	var terminalGapMS float64
+	if lastNS := lastFrameNS.Load(); lastNS > 0 {
+		terminalGapMS = float64(measureEnd.UnixNano()-lastNS) / float64(time.Millisecond)
+	}
+
 	return &probeResult{
-		FPS:          fps,
-		KbpsAvg:      kbps,
-		DecodeOK:     decodeRatio,
-		FirstFrame:   firstFrameLatency.Seconds() * 1000,
-		CandType:     candType.Load().(string),
-		Frames:       totalFrames,
-		Bytes:        totalBytes,
-		Duration:     elapsed,
-		InputToFrame: float64(inputToFrame.Milliseconds()),
-		MaxGapMS:     float64(maxGapMS.Load()) / float64(time.Millisecond),
+		FPS:           fps,
+		KbpsAvg:       kbps,
+		DecodeOK:      decodeRatio,
+		FirstFrame:    firstFrameLatency.Seconds() * 1000,
+		CandType:      candType.Load().(string),
+		Frames:        totalFrames,
+		Bytes:         totalBytes,
+		Duration:      elapsed,
+		InputToFrame:  float64(inputToFrame.Milliseconds()),
+		MaxGapMS:      float64(maxGapMS.Load()) / float64(time.Millisecond),
+		TerminalGapMS: terminalGapMS,
 	}, nil
 }
 
@@ -445,6 +459,7 @@ func printReport(r *probeResult, v versionInfo, minFPS float64) {
 	fmt.Printf("  %-22s %8.0f ms\n", "First frame:", r.FirstFrame)
 	fmt.Printf("  %-22s %8.0f ms\n", "Input to frame:", r.InputToFrame)
 	fmt.Printf("  %-22s %8.0f ms\n", "Max frame gap:", r.MaxGapMS)
+	fmt.Printf("  %-22s %8.0f ms\n", "Terminal gap:", r.TerminalGapMS)
 	fmt.Printf("  %-22s %8s\n", "Candidate type:", r.CandType)
 	fmt.Printf("  %-22s %8d\n", "Frames measured:", r.Frames)
 	fmt.Printf("  %-22s %8.1f s\n", "Duration:", r.Duration)
@@ -468,4 +483,5 @@ func printReport(r *probeResult, v versionInfo, minFPS float64) {
 	check("candidate resolved", r.CandType != "" && r.CandType != "unknown", r.CandType)
 	check("session_id == 2", v.SessionID == 2, fmt.Sprintf("%d", v.SessionID))
 	check("no blackout > 2s", r.MaxGapMS <= maxGapMSAllowed, fmt.Sprintf("%.0fms", r.MaxGapMS))
+	check("stream alive at end", r.TerminalGapMS <= maxGapMSAllowed, fmt.Sprintf("%.0fms", r.TerminalGapMS))
 }

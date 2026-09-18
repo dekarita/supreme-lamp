@@ -1629,6 +1629,7 @@ jobs:
           exit 0
 
       - name: Auto-acceptance probe (30s -> acceptance.json -> artifact + summary)
+        continue-on-error: true
         env:
           GH_SHA: ${{ github.sha }}
         shell: pwsh
@@ -1656,10 +1657,15 @@ jobs:
             C:\ghrdp\webrtc\probe-2.out
             C:\ghrdp\webrtc\deploy.log
             C:\ghrdp\webrtc\ffmpeg-stderr.log
+            C:\ghrdp\webrtc\crash.log
+            C:\ghrdp\webrtc\server.log
+            C:\ghrdp\webrtc\accept.log
+            C:\ghrdp\webrtc\dumps\*
           if-no-files-found: warn
           retention-days: 14
 
       - name: Keep Parsec host session warm (auto-relaunch parsecd as RDP user)
+        if: ${{ always() }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -1675,6 +1681,7 @@ jobs:
           exit 0
 
       - name: Machine personalization + apps (Edge/Chrome/Firefox extensions + bookmarks, qBittorrent, VB-CABLE)
+        if: ${{ always() }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -1840,6 +1847,7 @@ jobs:
           exit 0
 
       - name: Install virtual display driver (headless console session renders forever)
+        if: ${{ always() }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -1858,6 +1866,7 @@ jobs:
           exit 0
 
       - name: Keep-alive 5h30 (60s heartbeat, rust probe, auto-restart, banners)
+        if: ${{ always() }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -2475,7 +2484,7 @@ jobs:
           exit 0
 
       - name: Emergency mirror pass on cancel (final index with BOTH keys + ALL links)
-        if: ${{ cancelled() }}
+        if: ${{ always() }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'

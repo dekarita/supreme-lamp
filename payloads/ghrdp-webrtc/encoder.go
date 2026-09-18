@@ -110,6 +110,7 @@ func newEncoder(width, height int, mode modeSpec) (*encoder, error) {
 			"-profile:v", "baseline",
 			"-level", "3.1",
 			"-pix_fmt", "yuv420p",
+			"-threads", "1",
 			"-b:v", fmt.Sprintf("%dk", mode.BitrateKbps),
 			"-maxrate", fmt.Sprintf("%dk", mode.MaxRateKbps),
 			"-bufsize", fmt.Sprintf("%dk", mode.BufSizeKbps),

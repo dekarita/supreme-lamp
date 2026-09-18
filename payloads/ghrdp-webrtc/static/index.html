@@ -183,6 +183,9 @@ function startWebRTC() {
       stream.addTrack(ev.track);
     }
     view.srcObject = stream;
+    if (ev.receiver && typeof ev.receiver.jitterBufferTarget !== 'undefined') {
+      ev.receiver.jitterBufferTarget = 0;
+    }
     if ('requestVideoFrameCallback' in view) {
       view.requestVideoFrameCallback(onVideoFrame);
     }
