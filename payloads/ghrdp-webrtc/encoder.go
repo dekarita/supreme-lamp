@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 type encoder struct {
@@ -33,7 +35,20 @@ var liveEncoder atomic.Pointer[encoder]
 
 var encoderName string
 
+var (
+	hwDetectOnce   sync.Once
+	hwDetectCodec  string
+	hwDetectArgs   []string
+)
+
 func detectHWEncoder(mode modeSpec) (codec string, extraArgs []string) {
+	hwDetectOnce.Do(func() {
+		hwDetectCodec, hwDetectArgs = probeHWEncoders(mode)
+	})
+	return hwDetectCodec, hwDetectArgs
+}
+
+func probeHWEncoders(mode modeSpec) (codec string, extraArgs []string) {
 	candidates := []struct {
 		name string
 		args []string
@@ -58,12 +73,17 @@ func detectHWEncoder(mode modeSpec) (codec string, extraArgs []string) {
 		probeArgs := []string{"-hide_banner", "-f", "lavfi", "-i", "nullsrc=s=64x64:d=0.1"}
 		probeArgs = append(probeArgs, c.args...)
 		probeArgs = append(probeArgs, "-frames:v", "1", os.DevNull)
-		probe := exec.Command("ffmpeg", probeArgs...)
-		if err := probe.Run(); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		probe := exec.CommandContext(ctx, "ffmpeg", probeArgs...)
+		err := probe.Run()
+		cancel()
+		if err == nil {
 			log.Printf("HW encoder detected: %s", c.name)
 			return c.name, c.args
 		}
+		log.Printf("HW probe %s: %v", c.name, err)
 	}
+	log.Println("no HW encoder available, using libx264")
 	return "", nil
 }
 
