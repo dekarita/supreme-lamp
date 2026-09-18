@@ -270,26 +270,44 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ token = $newTok; ttl = 60 })
             return
         }
-        if ($path -eq '/api/rdp-creds') {
+        if ($path -eq '/api/rdp-creds' -or $path -eq '/rdp-creds' -or $path -eq '/api/rdp-info') {
             $reqTok = ''
             if ($parts.query -and $parts.query.ContainsKey('token')) { $reqTok = [string]$parts.query['token'] }
             $now2 = [datetime]::UtcNow
-            if (-not $reqTok -or -not $script:RdpTokens.ContainsKey($reqTok)) {
+            $allow = $false
+            if ($reqTok -and $script:RdpTokens.ContainsKey($reqTok)) {
+                $te = $script:RdpTokens[$reqTok]
+                if (($now2 - $te.created).TotalSeconds -le 60 -and -not $te.used) {
+                    $script:RdpTokens.Remove($reqTok)
+                    try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + ' REDEEMED ' + $reqTok.Substring(0,8) + "...`n")) } catch { }
+                    $allow = $true
+                } else {
+                    $script:RdpTokens.Remove($reqTok)
+                    try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + ' REJECTED expired/used ' + $reqTok.Substring(0,8) + "...`n")) } catch { }
+                }
+            } elseif (-not $reqTok) {
+                $cip = ''
+                try { $cip = $Client.Client.RemoteEndPoint.Address.ToString() } catch { }
+                $isTail = $false
+                try {
+                    if ($Client.Client.RemoteEndPoint.Address.IsLoopback) { $isTail = $true }
+                    elseif ($cip -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') { $isTail = $true }
+                } catch { }
+                if ($isTail) {
+                    $allow = $true
+                    try { Add-Content (Join-Path $Root 'webdesk\rdp-creds-legacy.log') ((Get-Date).ToString('o') + ' no-token from ' + $cip) } catch { }
+                } else {
+                    try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + ' REJECTED no-token non-tailnet ' + $cip + "`n")) } catch { }
+                }
+            } else {
                 try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + " REJECTED invalid`n")) } catch { }
-                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"error":"invalid or expired token"}'))
-                return
             }
-            $te = $script:RdpTokens[$reqTok]
-            if (($now2 - $te.created).TotalSeconds -gt 60 -or $te.used) {
-                $script:RdpTokens.Remove($reqTok)
-                try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + ' REJECTED expired/used ' + $reqTok.Substring(0,8) + "...`n")) } catch { }
-                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"error":"token expired or already used"}'))
-                return
+            if ($allow) {
+                $cfgC = Read-JsonFile -Path $script:CfgPath
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ host = [string]$cfgC.rdpIp; user = [string]$cfgC.rdpUser; pass = [string]$cfgC.rdpPass; hostip = [string]$cfgC.rdpIp })
+            } else {
+                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('token invalid or expired'))
             }
-            $script:RdpTokens.Remove($reqTok)
-            $cfgC = Read-JsonFile -Path $script:CfgPath
-            try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + ' REDEEMED ' + $reqTok.Substring(0,8) + "...`n")) } catch { }
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ host = [string]$cfgC.rdpIp; user = [string]$cfgC.rdpUser; pass = [string]$cfgC.rdpPass; hostip = [string]$cfgC.rdpIp })
             return
         }
         if ($path -eq '/api/launch.ps1') {

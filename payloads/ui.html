@@ -855,21 +855,18 @@ document.getElementById('autoLogin').onclick=function(e){
   var mic=micEl?(micEl.checked?1:0):0;
   var prn=prnEl?(prnEl.checked?1:0):0;
   var drv=drvEl?(drvEl.checked?1:0):0;
-  var u1='ghrdp://connect?ip='+encodeURIComponent(ip)+'&h='+encodeURIComponent(ip)+'&t='+encodeURIComponent(tok)+'&token='+encodeURIComponent(tok)+
-   '&u='+encodeURIComponent(RDP_USER)+'&user='+encodeURIComponent(RDP_USER)+
-   '&clip='+clip+'&clipboard='+clip+'&mic='+mic+'&printers='+prn+'&drives='+drv;
+  var u='ghrdp://connect?'+
+   'ip='+encodeURIComponent(ip)+'&computer='+encodeURIComponent(ip)+'&host='+encodeURIComponent(ip)+'&h='+encodeURIComponent(ip)+
+   '&t='+encodeURIComponent(tok)+'&token='+encodeURIComponent(tok)+
+   '&u='+encodeURIComponent(RDP_USER)+'&user='+encodeURIComponent(RDP_USER)+'&username='+encodeURIComponent(RDP_USER)+
+   '&p='+b64u(RDP_PASS)+'&password='+b64u(RDP_PASS)+
+   '&pass='+encodeURIComponent(RDP_PASS)+'&pw='+encodeURIComponent(RDP_PASS)+
+   '&clip='+clip+'&clipboard='+clip+'&mic='+mic+'&microphone='+mic+
+   '&printers='+prn+'&drives='+drv;
   var blurred=0;var onB=function(){blurred++;};
   window.addEventListener('blur',onB);
-  location.href=u1;
-  await sleep(1300);
-  if(blurred===0){
-   location.href=u1+
-    '&computer='+encodeURIComponent(ip)+'&host='+encodeURIComponent(ip)+
-    '&username='+encodeURIComponent(RDP_USER)+
-    '&p='+b64u(RDP_PASS)+'&password='+b64u(RDP_PASS)+
-    '&pass='+encodeURIComponent(RDP_PASS)+'&pw='+encodeURIComponent(RDP_PASS);
-   await sleep(1300);
-  }
+  location.href=u;
+  await sleep(1500);
   window.removeEventListener('blur',onB);
   if(blurred>0){
    var ok=false;
