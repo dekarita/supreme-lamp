@@ -97,6 +97,9 @@ jobs:
               files = @()
               logTail = @()
               history = @()
+              runnerIp = ''
+              epoch = (Get-Date).ToUniversalTime().ToString('o')
+              serverPort = 7331
           }
           Publish-GitHubFile -RelPath 'docs/status.json' -Content ($statusObj | ConvertTo-Json -Depth 20 -Compress) -Msg 'chore: initial status.json [skip ci]'
           $sb = [System.Text.StringBuilder]::new()
@@ -676,6 +679,8 @@ jobs:
           rm -f "$RUNNER_TEMP/ghrdp-stage/helper-ghrdp-connect.ps1"
           cp "$GITHUB_WORKSPACE/payloads/DEBUG-GHRDP.ps1" "$RUNNER_TEMP/ghrdp-stage/DEBUG-GHRDP.ps1"
           cp "$GITHUB_WORKSPACE/payloads/DEBUG-GHRDP.bat" "$RUNNER_TEMP/ghrdp-stage/DEBUG-GHRDP.bat"
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-agent.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-agent.ps1"
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-enroll.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-enroll.ps1"
           ls -la "$RUNNER_TEMP/ghrdp-stage"
 
       - name: Write Rust dashboard source (Cargo.toml + src/main.rs, StatusCode import fixed)
@@ -1867,6 +1872,29 @@ jobs:
           } else { Write-Host '[vdd] inf not found in zip' }
           exit 0
 
+      - name: D1 synthetic loopback agent gate
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # Enroll a loopback device
+          $enrollBody = (@{deviceId='localtest'; name='loopback'; os='synthetic'} | ConvertTo-Json -Compress)
+          $er = Invoke-RestMethod -Uri 'http://127.0.0.1:7331/api/device-enroll' -Method POST -Body $enrollBody -ContentType 'application/json'
+          $tok = $er.deviceToken
+          # Issue a command via dashboard-key
+          $dashKey = (Get-Content C:\ghrdp\dash-token.txt -Raw).Trim()
+          $cmdBody = (@{deviceId='localtest'; action='rdp'; clip=1; mic=0; print=0; drives=0} | ConvertTo-Json -Compress)
+          Invoke-RestMethod -Uri ("http://127.0.0.1:7331/api/client-cmd?key=$dashKey") -Method POST -Body $cmdBody -ContentType 'application/json'
+          # Spawn loopback agent as background job that polls once
+          Start-Job -ScriptBlock {
+            param($tok)
+            $c = Invoke-RestMethod -Uri "http://127.0.0.1:7331/api/client-cmd?device=localtest&dt=$tok" -TimeoutSec 5
+            Invoke-RestMethod -Uri 'http://127.0.0.1:7331/api/client-status' -Method POST -Body (@{deviceId='localtest';dt=$tok;cmdId=$c.cmdId;stage='connected';mstscPid=999;logonAge=0;build=999} | ConvertTo-Json -Compress) -ContentType 'application/json'
+          } -ArgumentList $tok | Out-Null
+          Start-Sleep -Seconds 3
+          $s = Invoke-RestMethod -Uri 'http://127.0.0.1:7331/api/client-status?device=localtest' -TimeoutSec 5
+          if ($s.stage -eq 'connected') { Write-Host 'D1 GATE PASS: loopback agent completed' } else { Write-Host "D1 GATE FAIL: stage=$($s.stage)"; exit 0 }
+
       - name: Keep-alive 5h30 (60s heartbeat, rust probe, auto-restart, banners)
         if: ${{ always() }}
         shell: pwsh
@@ -2472,6 +2500,9 @@ jobs:
                       files = $files2
                       logTail = $tail2
                       history = @()
+                      runnerIp = $(if ($cfg2) { [string]$cfg2.rdpIp } else { '' })
+                      epoch = (Get-Date).ToUniversalTime().ToString('o')
+                      serverPort = 7331
                   }
                   Publish-StatusToGhPages -JsonText ($statusObj2 | ConvertTo-Json -Depth 20 -Compress)
               } catch { Write-Host ('[status] publish failed: ' + $_.Exception.Message) }

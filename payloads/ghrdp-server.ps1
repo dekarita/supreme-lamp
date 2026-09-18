@@ -20,6 +20,40 @@ try {
 } catch { }
 $script:RdpTokens = @{}
 $script:LauncherSeen = $false
+$script:DeviceTokens = @{}
+$script:DeviceTokensPath = Join-Path $Root 'device-tokens.json'
+$script:ClientAuditLog = Join-Path $Root 'client-audit.log'
+$script:AgentPath = Join-Path $Root 'ghrdp-agent.ps1'
+$script:DiagDir = Join-Path $Root 'diag-bundles'
+try {
+    if (Test-Path -LiteralPath $script:DeviceTokensPath) {
+        $dt0 = [System.IO.File]::ReadAllText($script:DeviceTokensPath) | ConvertFrom-Json
+        if ($dt0) { foreach ($p in $dt0.PSObject.Properties) { $script:DeviceTokens[[string]$p.Name] = @{ deviceId = [string]$p.Value.deviceId; enrolledAt = [string]$p.Value.enrolledAt } } }
+    }
+} catch { }
+function Save-DeviceTokens {
+    try {
+        $h = @{}
+        foreach ($k in $script:DeviceTokens.Keys) { $h[$k] = @{ deviceId = $script:DeviceTokens[$k].deviceId; enrolledAt = $script:DeviceTokens[$k].enrolledAt } }
+        [System.IO.File]::WriteAllText($script:DeviceTokensPath, ($h | ConvertTo-Json -Depth 5 -Compress), $script:NoBom)
+    } catch { }
+}
+function Write-ClientAudit {
+    param([string]$Line)
+    try { [System.IO.File]::AppendAllText($script:ClientAuditLog, ((Get-Date).ToUniversalTime().ToString('o') + ' ' + $Line + "`n")) } catch { }
+}
+function Get-TailnetIp {
+    try {
+        $addrs = [System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName())
+        foreach ($a in $addrs) {
+            if ($a.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork) {
+                $ob = $a.GetAddressBytes()
+                if ($ob[0] -eq 100 -and $ob[1] -ge 64 -and $ob[1] -le 127) { return $a.ToString() }
+            }
+        }
+    } catch { }
+    return '127.0.0.1'
+}
 
 function Read-JsonFile {
     param([string]$Path)
@@ -375,6 +409,272 @@ function Invoke-ClientRequest {
                 }
             } catch { }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"rdp_age_s":' + $rdpAgeSec + ',"logon_type":' + $logonType + '}'))
+            return
+        }
+        if ($path -eq '/api/ping') {
+            $tIp = Get-TailnetIp
+            $commit = ''
+            try { $cfgP2 = Read-JsonFile -Path $script:CfgPath; if ($cfgP2 -and $cfgP2.commit) { $commit = [string]$cfgP2.commit } } catch { }
+            $obj = [ordered]@{ ok = $true; ip = $tIp; epoch = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); commit = $commit }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $obj)
+            return
+        }
+        if ($path -eq '/api/device-enroll' -and $parts.method -eq 'POST') {
+            $devId = ''; $devName = ''; $devOs = ''
+            try {
+                $bj = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json
+                $devId = [string]$bj.deviceId
+                $devName = [string]$bj.name
+                $devOs = [string]$bj.os
+            } catch { }
+            if (-not $devId) {
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = 'missing deviceId' })
+                return
+            }
+            $existing = @($script:DeviceTokens.Keys | Where-Object { $script:DeviceTokens[$_].deviceId -eq $devId })
+            foreach ($ek in $existing) { $script:DeviceTokens.Remove($ek) }
+            $newDt = ([guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N').Substring(0, 0))
+            $nowIso = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            $script:DeviceTokens[$newDt] = @{ deviceId = $devId; enrolledAt = $nowIso }
+            Save-DeviceTokens
+            Write-ClientAudit ('ENROLL device=' + $devId + ' name=' + $devName + ' os=' + $devOs + ' tok=' + $newDt.Substring(0,8) + '...')
+            $out = [ordered]@{ deviceToken = $newDt; runnerIp = (Get-TailnetIp); epoch = $nowIso }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $out)
+            return
+        }
+        if ($path -eq '/api/client-cmd' -and $parts.method -eq 'POST') {
+            $devId = ''; $action = 'rdp'; $clip = 1; $mic = 0; $prn = 0; $drv = 0
+            try {
+                $bj = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json
+                $devId = [string]$bj.deviceId
+                if ($bj.action) { $action = [string]$bj.action }
+                if ($null -ne $bj.clip) { $clip = [int]$bj.clip }
+                if ($null -ne $bj.mic) { $mic = [int]$bj.mic }
+                if ($null -ne $bj.print) { $prn = [int]$bj.print }
+                if ($null -ne $bj.drives) { $drv = [int]$bj.drives }
+            } catch { }
+            if (-not $devId) {
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ queued = $false; error = 'missing deviceId' })
+                return
+            }
+            $cmdId = [guid]::NewGuid().ToString('N').Substring(0, 8)
+            $cfgQ = Read-JsonFile -Path $script:CfgPath
+            $rec = [ordered]@{
+                cmdId = $cmdId
+                action = $action
+                host = [string]$cfgQ.rdpIp
+                user = [string]$cfgQ.rdpUser
+                pass = [string]$cfgQ.rdpPass
+                clip = $clip; mic = $mic; print = $prn; drives = $drv
+                issuedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+                created = (Get-Date).ToUniversalTime().ToString('o')
+            }
+            $safeDev = ($devId -replace '[^A-Za-z0-9_-]', '_')
+            $qFile = Join-Path $Root ('client-cmd-' + $safeDev + '.json')
+            try { [System.IO.File]::WriteAllText($qFile, (($rec | ConvertTo-Json -Depth 6 -Compress)), $script:NoBom) } catch { }
+            Write-ClientAudit ('CMD-QUEUE device=' + $devId + ' cmdId=' + $cmdId + ' action=' + $action + ' clip=' + $clip + ' mic=' + $mic + ' print=' + $prn + ' drives=' + $drv)
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ queued = $true; cmdId = $cmdId })
+            return
+        }
+        if ($path -eq '/api/client-cmd' -and $parts.method -eq 'GET') {
+            $devId = ''; $reqTok = ''
+            if ($parts.query.ContainsKey('device')) { $devId = [string]$parts.query['device'] }
+            if ($parts.query.ContainsKey('dt')) { $reqTok = [string]$parts.query['dt'] }
+            if (-not $reqTok -or -not $script:DeviceTokens.ContainsKey($reqTok) -or $script:DeviceTokens[$reqTok].deviceId -ne $devId) {
+                Write-ClientAudit ('CMD-GET REJECT device=' + $devId + ' tok=' + ($reqTok.Substring(0, [Math]::Min(8, $reqTok.Length))) + '...')
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ error = 'invalid device token' })
+                return
+            }
+            $safeDev = ($devId -replace '[^A-Za-z0-9_-]', '_')
+            $qFile = Join-Path $Root ('client-cmd-' + $safeDev + '.json')
+            if (-not (Test-Path -LiteralPath $qFile)) {
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{}'))
+                return
+            }
+            $rec = $null
+            try { $rec = [System.IO.File]::ReadAllText($qFile) | ConvertFrom-Json } catch { }
+            try { Remove-Item -LiteralPath $qFile -Force -ErrorAction SilentlyContinue } catch { }
+            if (-not $rec) {
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{}'))
+                return
+            }
+            $ageSec = -1
+            try { $ageSec = [int]((Get-Date).ToUniversalTime() - [datetime]$rec.created).TotalSeconds } catch { }
+            if ($ageSec -lt 0 -or $ageSec -gt 60) {
+                Write-ClientAudit ('CMD-GET EXPIRED device=' + $devId + ' cmdId=' + [string]$rec.cmdId + ' age=' + $ageSec)
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{}'))
+                return
+            }
+            Write-ClientAudit ('CMD-GET DEQUEUE device=' + $devId + ' cmdId=' + [string]$rec.cmdId + ' age=' + $ageSec)
+            $out = [ordered]@{
+                cmdId = [string]$rec.cmdId
+                action = [string]$rec.action
+                host = [string]$rec.host
+                user = [string]$rec.user
+                pass = [string]$rec.pass
+                clip = [int]$rec.clip; mic = [int]$rec.mic; print = [int]$rec.print; drives = [int]$rec.drives
+                issuedAt = [string]$rec.issuedAt
+            }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $out)
+            return
+        }
+        if ($path -eq '/api/client-status' -and $parts.method -eq 'POST') {
+            $devId = ''; $reqTok = ''; $cmdId = ''; $stage = ''; $mstscPid = 0; $logonAge = -1; $err = ''; $build = 0; $regPath = ''; $taskOk = $false
+            try {
+                $bj = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json
+                $devId = [string]$bj.deviceId
+                $reqTok = [string]$bj.dt
+                $cmdId = [string]$bj.cmdId
+                $stage = [string]$bj.stage
+                if ($null -ne $bj.mstscPid) { $mstscPid = [int]$bj.mstscPid }
+                if ($null -ne $bj.logonAge) { $logonAge = [int]$bj.logonAge }
+                $err = [string]$bj.err
+                if ($null -ne $bj.build) { $build = [int]$bj.build }
+                $regPath = [string]$bj.regPath
+                if ($null -ne $bj.taskOk) { $taskOk = [bool]$bj.taskOk }
+            } catch { }
+            if (-not $reqTok -or -not $script:DeviceTokens.ContainsKey($reqTok) -or $script:DeviceTokens[$reqTok].deviceId -ne $devId) {
+                Write-ClientAudit ('STATUS REJECT device=' + $devId + ' tok=' + ($reqTok.Substring(0, [Math]::Min(8, $reqTok.Length))) + '...')
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ack = $false; error = 'invalid device token' })
+                return
+            }
+            $safeDev = ($devId -replace '[^A-Za-z0-9_-]', '_')
+            $sFile = Join-Path $Root ('client-status-' + $safeDev + '.json')
+            $rec = [ordered]@{
+                deviceId = $devId
+                cmdId = $cmdId
+                stage = $stage
+                mstscPid = $mstscPid
+                logonAge = $logonAge
+                err = $err
+                build = $build
+                regPath = $regPath
+                taskOk = $taskOk
+                received = (Get-Date).ToUniversalTime().ToString('o')
+                lastSeen = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            }
+            try { [System.IO.File]::WriteAllText($sFile, (($rec | ConvertTo-Json -Depth 6 -Compress)), $script:NoBom) } catch { }
+            Write-ClientAudit ('STATUS device=' + $devId + ' cmdId=' + $cmdId + ' stage=' + $stage + ' mstscPid=' + $mstscPid + ' logonAge=' + $logonAge + ' build=' + $build)
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ack = $true })
+            return
+        }
+        if ($path -eq '/api/client-status' -and $parts.method -eq 'GET') {
+            $devId = ''
+            if ($parts.query.ContainsKey('device')) { $devId = [string]$parts.query['device'] }
+            if (-not $devId) {
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"stage":"unknown","ageSeconds":-1}'))
+                return
+            }
+            $safeDev = ($devId -replace '[^A-Za-z0-9_-]', '_')
+            $sFile = Join-Path $Root ('client-status-' + $safeDev + '.json')
+            if (-not (Test-Path -LiteralPath $sFile)) {
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"stage":"unknown","ageSeconds":-1}'))
+                return
+            }
+            $rec = $null
+            try { $rec = [System.IO.File]::ReadAllText($sFile) | ConvertFrom-Json } catch { }
+            if (-not $rec) {
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"stage":"unknown","ageSeconds":-1}'))
+                return
+            }
+            $ageSec = -1
+            try { $ageSec = [int]((Get-Date).ToUniversalTime() - [datetime]$rec.received).TotalSeconds } catch { }
+            $out = [ordered]@{
+                deviceId = [string]$rec.deviceId
+                stage = [string]$rec.stage
+                mstscPid = [int]$rec.mstscPid
+                logonAge = [int]$rec.logonAge
+                err = [string]$rec.err
+                build = [int]$rec.build
+                ageSeconds = $ageSec
+                lastSeen = [string]$rec.lastSeen
+                diagId = [string]$rec.diagId
+                diagUrl = [string]$rec.diagUrl
+            }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $out)
+            return
+        }
+        if ($path -eq '/api/agent.ps1') {
+            if (Test-Path -LiteralPath $script:AgentPath) {
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body ([System.IO.File]::ReadAllBytes($script:AgentPath))
+            } else {
+                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('agent.ps1 not deployed'))
+            }
+            return
+        }
+        if ($path -eq '/api/agent-hash') {
+            if (Test-Path -LiteralPath $script:AgentPath) {
+                $sha = ''
+                $sz = 0
+                try {
+                    $bytes = [System.IO.File]::ReadAllBytes($script:AgentPath)
+                    $sz = $bytes.Length
+                    $h = [System.Security.Cryptography.SHA256]::Create()
+                    $hb = $h.ComputeHash($bytes)
+                    $h.Dispose()
+                    $sha = ($hb | ForEach-Object { $_.ToString('x2') }) -join ''
+                } catch { }
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ sha256 = $sha; size = $sz })
+            } else {
+                Send-ClientResponse -Stream $stream -Code 404 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ error = 'agent.ps1 not deployed' })
+            }
+            return
+        }
+        if ($path -eq '/api/diag-upload' -and $parts.method -eq 'POST') {
+            $devId = ''; $reqTok = ''; $reason = ''; $bundle = $null
+            try {
+                $bj = ([System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)) | ConvertFrom-Json
+                $devId = [string]$bj.deviceId
+                $reqTok = [string]$bj.dt
+                $reason = [string]$bj.reason
+                $bundle = $bj.bundle
+            } catch { }
+            if (-not $reqTok -or -not $script:DeviceTokens.ContainsKey($reqTok) -or $script:DeviceTokens[$reqTok].deviceId -ne $devId) {
+                Write-ClientAudit ('DIAG REJECT device=' + $devId)
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ stored = $false; error = 'invalid device token' })
+                return
+            }
+            try { if (-not (Test-Path -LiteralPath $script:DiagDir)) { New-Item -ItemType Directory -Path $script:DiagDir -Force -ErrorAction SilentlyContinue | Out-Null } } catch { }
+            $diagId = ((Get-Date).ToUniversalTime().ToString('yyyyMMdd-HHmmss') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+            $dFile = Join-Path $script:DiagDir ($diagId + '.json')
+            $store = [ordered]@{
+                id = $diagId
+                deviceId = $devId
+                reason = $reason
+                receivedAt = (Get-Date).ToUniversalTime().ToString('o')
+                bundle = $bundle
+            }
+            try { [System.IO.File]::WriteAllText($dFile, (($store | ConvertTo-Json -Depth 10 -Compress)), $script:NoBom) } catch { }
+            try {
+                $safeDevD = ($devId -replace '[^A-Za-z0-9_-]', '_')
+                $sFileD = Join-Path $Root ('client-status-' + $safeDevD + '.json')
+                $recD = $null
+                if (Test-Path -LiteralPath $sFileD) { try { $recD = [System.IO.File]::ReadAllText($sFileD) | ConvertFrom-Json } catch { } }
+                if (-not $recD) {
+                    $recD = [ordered]@{ deviceId = $devId; stage = 'failed'; mstscPid = 0; logonAge = -1; err = $reason; build = 0; regPath = ''; taskOk = $false; received = (Get-Date).ToUniversalTime().ToString('o'); lastSeen = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+                }
+                $recD | Add-Member -NotePropertyName diagId  -NotePropertyValue $diagId -Force
+                $recD | Add-Member -NotePropertyName diagUrl -NotePropertyValue ('/api/diag-file?id=' + $diagId) -Force
+                [System.IO.File]::WriteAllText($sFileD, (($recD | ConvertTo-Json -Depth 6 -Compress)), $script:NoBom)
+            } catch { }
+            Write-ClientAudit ('DIAG STORED device=' + $devId + ' id=' + $diagId + ' reason=' + $reason)
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ url = ('/api/diag-file?id=' + $diagId); stored = $true; id = $diagId })
+            return
+        }
+        if ($path -eq '/api/diag-file') {
+            $did = ''
+            if ($parts.query.ContainsKey('id')) { $did = [string]$parts.query['id'] }
+            $safeId = ($did -replace '[^A-Za-z0-9_.-]', '')
+            if (-not $safeId) {
+                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('not found'))
+                return
+            }
+            $dFile = Join-Path $script:DiagDir ($safeId + '.json')
+            if (-not (Test-Path -LiteralPath $dFile)) {
+                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('not found'))
+                return
+            }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.IO.File]::ReadAllBytes($dFile))
             return
         }
         if ($path -eq '/client-install.ps1') {
