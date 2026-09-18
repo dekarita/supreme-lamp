@@ -354,6 +354,15 @@ function Invoke-ClientRequest {
             }
             return
         }
+        if ($path -eq '/api/enroll.ps1') {
+            $ep = Join-Path $Root 'ghrdp-enroll.ps1'
+            if (Test-Path -LiteralPath $ep) {
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body ([System.IO.File]::ReadAllBytes($ep))
+            } else {
+                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('enroll.ps1 not deployed'))
+            }
+            return
+        }
         if ($path -eq '/api/launcher-hello') {
             $verNum = 0
             if ($parts.query -and $parts.query.ContainsKey('ver')) { try { $verNum = [int]$parts.query['ver'] } catch { } }

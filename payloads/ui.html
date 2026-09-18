@@ -798,7 +798,7 @@ if(fin) fin.onchange=function(){
 <script>
 (function(){
 function rm(el){if(el&&el.parentNode)el.parentNode.removeChild(el);}
-rm(document.getElementById('batNow'));rm(document.getElementById('batInstall'));rm(document.getElementById('installPanel'));rm(document.getElementById('ghrdpLink'));
+rm(document.getElementById('batNow'));rm(document.getElementById('batInstall'));rm(document.getElementById('installPanel'));/* D5: keep #ghrdpLink static embedded-creds anchor per user requirement (plaintext pass lives only in local protocol href, never in server logs) */
 document.querySelectorAll('a,button').forEach(function(a){var t=(a.textContent||'');if(/\.bat\b/i.test(t)||/install one-click handler/i.test(t)||/auto-connect NOW/i.test(t)||/Run installer automatically/i.test(t))rm(a);});
 document.querySelectorAll('a[href*="install.ps1"],a[href*="install.bat"]').forEach(rm);
 var sec=document.getElementById('sec-conn');if(!sec)return;
@@ -875,24 +875,80 @@ function agentPillPaint(state){
  else if(state==='connecting'){el.style.background='#0b2a3d';el.style.color='#b7e3f5';el.textContent='agent connecting...';}
  else {el.style.background='#3d2a0b';el.style.color='#f5d9b7';el.textContent='never enrolled';}
 }
+// D3: 3-tier enrollment overlay. Primary buttons on top (no visible raw command → no uBlock ClickFix
+// per F3/#60). Secondary: download link. Tertiary: <details> collapsed containing the parse-safe D1
+// line filled by JS at expand-time. The D1 line uses -File with a downloaded script, ZERO embedded
+// \" escapes (F1/#56/#59). IP is substituted here in JS at render time.
+function buildD1EnrollLine(ip){
+ // D1 parse-safe: no double-quote escapes inside a -Command string. Uses -File + downloaded script.
+ // The dashboard substitutes IP; the string itself is a normal PowerShell command line.
+ return "iwr 'http://" + ip + ":7331/api/agent.ps1' -OutFile \"$env:TEMP\\ghrdp-agent.ps1\"; Unblock-File \"$env:TEMP\\ghrdp-agent.ps1\"; powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"$env:TEMP\\ghrdp-agent.ps1\" -Enroll -Server " + ip;
+}
 function showEnrollOverlay(ip){
  var ov=document.getElementById('ghrdpEnroll');
- var line='powershell -NoProfile -ExecutionPolicy Bypass -Command "$ip=\''+ip+'\';$d=\\"$env:LOCALAPPDATA\\GhrdpAgent\\";ni $d -Type Directory -Force|Out-Null;iwr \\"http://$ip:7331/api/agent.ps1\\" -UseBasicParsing -OutFile \\"$d\\agent.ps1\\";Unblock-File \\"$d\\agent.ps1\\";$sys=\\"$env:SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\\";Start-Process $sys -ArgumentList \'-NoProfile\',\'-ExecutionPolicy\',\'Bypass\',\'-WindowStyle\',\'Hidden\',\'-File\',(\\"$d\\agent.ps1\\"),\'-Enroll\',\'-Server\',$ip -WindowStyle Hidden;$ok=$false;$dev=$null;for($i=0;$i -lt 20;$i++){Start-Sleep 1;if(Test-Path \\"$d\\device.json\\"){try{$dev=Get-Content \\"$d\\device.json\\" -Raw|ConvertFrom-Json}catch{}if($dev.deviceId -and $dev.deviceToken){try{$s=irm \\"http://$ip:7331/api/agent-status?device=$($dev.deviceId)&probe=1\\" -TimeoutSec 3;if($s.seen){$ok=$true;break}}catch{}}}};if($ok){Write-Host \\"ENROLL PASS deviceId=$($dev.deviceId)\\" -ForegroundColor Green}else{Write-Host \\"ENROLL FAIL — dumping diagnostics:\\" -ForegroundColor Red;Write-Host \\"--- enroll.log tail ---\\";if(Test-Path \\"$d\\enroll.log\\"){Get-Content \\"$d\\enroll.log\\" -Tail 40|Write-Host}else{Write-Host \\"(no enroll.log)\\"};Write-Host \\"--- HTTP matrix ---\\";foreach($u in @(\\"/api/ping\\",\\"/api/agent.ps1\\",\\"/api/device-enroll\\")){try{$r=iwr \\"http://$ip:7331$u\\" -Method Head -UseBasicParsing -TimeoutSec 5;Write-Host \\"$u => $($r.StatusCode)\\"}catch{Write-Host \\"$u => $($_.Exception.Message)\\"}};Write-Host \\"--- PSVersionTable ---\\";$PSVersionTable|Out-String|Write-Host}"';
- if(ov){ov.style.display='flex';var t=ov.querySelector('textarea');if(t)t.value=line;return;}
+ if(ov){ov.style.display='flex';return;}
  ov=document.createElement('div');ov.id='ghrdpEnroll';
  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:99;display:flex;align-items:center;justify-content:center';
- ov.innerHTML='<div style="max-width:720px;background:#12241f;border:1px solid #2ee6a6;padding:20px;border-radius:12px;color:#eafff5;font:12px monospace">'+
-  '<b>One-time enrollment (agent offline / not installed)</b><br>'+
-  'Win+R → <code>powershell</code> → Enter → paste line below → Enter. Agent installs as a hidden scheduled task; runs at every logon. This is the ONLY manual step.<br><br>'+
-  '<textarea readonly style="width:100%;height:110px;background:#0a1512;color:#7dffc9;border:1px solid #2ee6a6"></textarea><br>'+
-  '<button id="cpEnroll" style="margin-top:8px;padding:8px 14px;background:#2ee6a6;color:#04110c;border:0;border-radius:8px;cursor:pointer">Copy enrollment line</button> '+
-  '<button id="tryProto" style="margin-top:8px;padding:8px 14px;background:#3d5a8f;color:#fff;border:0;border-radius:8px;cursor:pointer">Try ghrdp:// enroll</button> '+
-  '<button id="clEnroll" style="margin-top:8px;padding:8px 14px;background:#333;color:#fff;border:0;border-radius:8px;cursor:pointer">Close</button></div>';
+ var box=document.createElement('div');
+ box.style.cssText='max-width:720px;width:90%;background:#12241f;border:1px solid #2ee6a6;padding:20px;border-radius:12px;color:#eafff5;font:13px system-ui,sans-serif';
+ // Primary: two action buttons (auto-enroll + auto-login-now)
+ // Secondary: <a download> for enroll.ps1
+ // Tertiary: <details> collapsed manual paste (NO visible raw command by default → no ClickFix)
+ box.innerHTML =
+   '<h2 style="margin:0 0 10px;font-size:18px">One-time enrollment</h2>' +
+   '<p style="margin:0 0 14px;opacity:.85">Installs a per-user background agent + logon task. No admin needed.</p>' +
+   '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+     '<button id="autoEnroll" type="button" style="padding:10px 16px;background:#2ee6a6;color:#04110c;border:0;border-radius:8px;cursor:pointer;font-weight:600">Auto-enroll via ghrdp://</button>' +
+     '<button id="autoLoginNow" type="button" style="padding:10px 16px;background:#3d5a8f;color:#fff;border:0;border-radius:8px;cursor:pointer">Auto-login now (token)</button>' +
+   '</div>' +
+   '<p style="margin:14px 0 6px;opacity:.75;font-size:12px">Requires a compatible ghrdp:// handler on this PC. Browser may ask permission once.</p>' +
+   '<hr style="margin:14px 0;border:0;border-top:1px solid rgba(255,255,255,.1)">' +
+   '<p style="margin:0 0 8px"><a id="enrollDl" href="/api/enroll.ps1" download="ghrdp-enroll.ps1" style="color:#7dffc9">Download enroll.ps1 (one-time)</a> - right-click &gt; Run with PowerShell</p>' +
+   '<details id="manualDetails" style="margin-top:8px">' +
+     '<summary style="cursor:pointer;color:#f5d9b7;font-size:13px">Manual paste in interactive Windows PowerShell (advanced)</summary>' +
+     '<div id="manualBox" style="margin-top:10px"></div>' +
+   '</details>' +
+   '<div style="text-align:right;margin-top:14px">' +
+     '<button id="clEnroll" type="button" style="padding:8px 14px;background:#333;color:#fff;border:0;border-radius:8px;cursor:pointer">Close</button>' +
+   '</div>';
+ ov.appendChild(box);
  document.body.appendChild(ov);
- ov.querySelector('textarea').value=line;
- ov.querySelector('#cpEnroll').onclick=function(){var t=ov.querySelector('textarea');if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t.value);}else{t.select();try{document.execCommand('copy');}catch(e){window.prompt('Copy with Ctrl+C:',t.value);}}};
- ov.querySelector('#tryProto').onclick=function(){var u='ghrdp://enroll?src='+encodeURIComponent('http://'+ip+':7331/api/agent.ps1')+'&server='+encodeURIComponent(ip);var ifr=document.createElement('iframe');ifr.style.display='none';ifr.src=u;document.body.appendChild(ifr);setTimeout(function(){ifr.remove();},4000);};
- ov.querySelector('#clEnroll').onclick=function(){ov.remove();};
+ // Wire buttons
+ var elAE = document.getElementById('autoEnroll');
+ var elAL = document.getElementById('autoLoginNow');
+ var elCL = document.getElementById('clEnroll');
+ var elDL = document.getElementById('enrollDl');
+ var elDET = document.getElementById('manualDetails');
+ if (elDL && ip) { elDL.href = 'http://' + ip + ':7331/api/enroll.ps1'; }
+ elAE.onclick = function(){ location.href = 'ghrdp://enroll?server=' + encodeURIComponent(ip); };
+ elAL.onclick = async function(){ ov.style.display='none'; try { if (typeof window.autoLoginTokenFlow === 'function') { await window.autoLoginTokenFlow(); } else { rdpToast('token flow function missing','#ff6b6b'); } } catch(e) { rdpToast('token flow error: '+e.message,'#ff6b6b'); } };
+ elCL.onclick = function(){ ov.remove(); };
+ // Tertiary: build the textarea ONLY when user expands details (per D3/#60: no raw cmd rendered visibly by default)
+ elDET.addEventListener('toggle', function(){
+   var box = document.getElementById('manualBox');
+   if (!box) return;
+   box.replaceChildren();
+   if (!elDET.open) return;
+   var ta = document.createElement('textarea');
+   ta.readOnly = true;
+   ta.style.cssText = 'width:100%;min-height:100px;background:#0a1512;color:#7dffc9;border:1px solid #2ee6a6;padding:8px;font:11px ui-monospace,Consolas,monospace;border-radius:6px;box-sizing:border-box';
+   ta.value = buildD1EnrollLine(ip);
+   var cp = document.createElement('button');
+   cp.type = 'button';
+   cp.textContent = 'Copy';
+   cp.style.cssText = 'margin-top:8px;padding:6px 12px;background:#2ee6a6;color:#04110c;border:0;border-radius:6px;cursor:pointer';
+   cp.onclick = async function(){
+     try {
+       if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(ta.value); }
+       else { ta.focus(); ta.select(); document.execCommand('copy'); }
+       cp.textContent = 'Copied';
+     } catch(_) { ta.focus(); ta.select(); cp.textContent = 'Select and Ctrl+C'; }
+   };
+   var note = document.createElement('p');
+   note.style.cssText = 'margin:8px 0 0;opacity:.7;font-size:11px';
+   note.textContent = 'Open Windows PowerShell (not Win+R), paste this line, press Enter. It downloads the agent to %TEMP% and runs -Enroll.';
+   box.append(ta, cp, note);
+ });
 }
 async function fetchClientStatus(){
  var dev=getDeviceId();if(!dev)return null;
@@ -943,6 +999,14 @@ var btnClearDev=document.getElementById('dgClearDev');if(btnClearDev)btnClearDev
 setInterval(async function(){var st=await fetchClientStatus();renderDiag(st,window.__lastPing||null);},5000);
 setInterval(async function(){var pg=await fetchPing();window.__lastPing=pg;renderDiag(window.__lastStatus||null,pg);},30000);
 // New pull-model autoLogin handler
+// D4/D5: expose token flow as window.autoLoginTokenFlow so the enrollment overlay's
+// "Auto-login now" button can invoke the same code path directly.
+window.autoLoginTokenFlow = async function(){
+ var ip=getRunnerIp();
+ // Trigger the button click programmatically (guarantees single code path).
+ var b = document.getElementById('autoLogin');
+ if (b) { b.click(); }
+};
 document.getElementById('autoLogin').onclick=function(e){
  e.preventDefault();
  return (async function(){
