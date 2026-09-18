@@ -130,13 +130,53 @@ function Normalize-Url([string]$u) {
     return ($u -replace '(?<!:)/{2,}', '/')
 }
 
-function Load-Device {
-    if (-not (Test-Path $script:DeviceJson)) { return $null }
-    try { return (Get-Content -LiteralPath $script:DeviceJson -Raw | ConvertFrom-Json) } catch { return $null }
+# ---- F1: atomic + shared device.json IO (fixes E1 lock contention) --------
+# Read-DeviceJson opens the file with FileShare.ReadWrite so a concurrent writer/reader
+# never triggers IOException 'file is being used by another process'. 4 retries at 250ms
+# backoff cover transient collisions inside the atomic rename window. Never returns null
+# on transient failure - only when the file genuinely does not exist or is truly corrupt.
+function Read-DeviceJson {
+    if (-not (Test-Path -LiteralPath $script:DeviceJson)) { return $null }
+    $lastErr = ''
+    for ($i = 1; $i -le 4; $i++) {
+        $fs = $null; $sr = $null
+        try {
+            $fs = [System.IO.File]::Open($script:DeviceJson, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            $sr = New-Object System.IO.StreamReader($fs, [System.Text.Encoding]::UTF8, $true)
+            $text = $sr.ReadToEnd()
+            if ($text) {
+                # Strip BOM if present
+                if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+                return ($text | ConvertFrom-Json)
+            }
+            return $null
+        } catch {
+            $lastErr = $_.Exception.Message
+            if ($i -lt 4) { Start-Sleep -Milliseconds 250 }
+        } finally {
+            if ($sr) { $sr.Dispose() }
+            if ($fs) { $fs.Dispose() }
+        }
+    }
+    Log ('Read-DeviceJson: exhausted 4 retries err=' + $lastErr) 'WARN'
+    return $null
 }
-function Save-Device($obj) {
-    try { ($obj | ConvertTo-Json -Depth 6) | Set-Content -LiteralPath $script:DeviceJson -Encoding UTF8 -Force } catch { Log ('save-device fail ' + $_.Exception.Message) 'ERR' }
+function Write-DeviceJson($obj) {
+    $tmp = $script:DeviceJson + '.tmp'
+    try {
+        $json = $obj | ConvertTo-Json -Depth 6
+        [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
+        [System.IO.File]::Move($tmp, $script:DeviceJson, $true)
+        return $true
+    } catch {
+        Log ('Write-DeviceJson: fail err=' + $_.Exception.Message) 'ERR'
+        try { if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue } } catch {}
+        return $false
+    }
 }
+# Back-compat wrappers so existing call sites keep working
+function Load-Device { return (Read-DeviceJson) }
+function Save-Device($obj) { [void](Write-DeviceJson $obj) }
 
 function Ping-Runner([string]$ip) {
     if ([string]::IsNullOrWhiteSpace($ip)) { return $null }
@@ -576,8 +616,8 @@ function Self-Heal($runner, $dev) {
                         if ($newHash -eq $h.sha256.ToLower()) {
                             Copy-Item $tmpPath $script:AgentPath -Force
                             Log ('self-heal: agent.ps1 refreshed to ' + $newHash)
-                        } else { Log ('self-heal: refreshed bytes hash mismatch — abort') 'ERR' }
-                    } else { Log 'self-heal: REMOTE UNPARSEABLE — keeping local (bug #58)' 'ERR' }
+                        } else { Log ('self-heal: refreshed bytes hash mismatch - abort') 'ERR' }
+                    } else { Log 'self-heal: REMOTE UNPARSEABLE - keeping local (bug #58)' 'ERR' }
                     Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
                 } catch { Log ('self-heal refresh fail ' + $_.Exception.Message) 'ERR' }
             }
@@ -612,7 +652,7 @@ function Do-Enroll {
             try { Unblock-File -LiteralPath $tmpPath -ErrorAction SilentlyContinue } catch {}
             Copy-Item $tmpPath $script:AgentPath -Force
             Log ('enroll: agent.ps1 refreshed (' + (Get-Item $script:AgentPath).Length + ' bytes)')
-        } else { Log 'enroll: remote agent UNPARSEABLE — keeping local' 'ERR' }
+        } else { Log 'enroll: remote agent UNPARSEABLE - keeping local' 'ERR' }
         Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue
     } catch { Log ('enroll: refresh fail (continuing) ' + $_.Exception.Message) 'WARN' }
 
@@ -657,7 +697,7 @@ function Do-Enroll {
 
     $script:Http401Count = 0
 
-    # F4: enroll self-verify — poll probe up to 20s and confirm heartbeat visibility
+    # F4: enroll self-verify - poll probe up to 20s and confirm heartbeat visibility
     Log 'enroll: self-verify (poll /api/agent-status?probe=1 for seen=true up to 20s)'
     $verifyOk = $false
     $verifyDetail = ''
@@ -699,14 +739,53 @@ function Do-Enroll {
 
 function Poll-Loop {
     Log ('== LOOP BEGIN build=' + $script:Build + ' ==')
-    $dev = Load-Device
-    if (-not $dev -or -not $dev.deviceToken) { Log 'LOOP: no device.json - need enrollment' 'ERR'; return }
+    # F2: single-instance mutex - second concurrent loop exits immediately.
+    # Uses Global\ so it is machine-wide (task + startup + Run key + detached spawn all contend for one slot).
+    $loopMutex = $null
+    $loopOwned = $false
+    try {
+        $created = $false
+        $loopMutex = New-Object System.Threading.Mutex($true, 'Global\GhrdpAgentLoopSingle', [ref]$created)
+        if ($created) {
+            $loopOwned = $true
+        } else {
+            try { $loopOwned = $loopMutex.WaitOne(0) } catch [System.Threading.AbandonedMutexException] { $loopOwned = $true }
+        }
+    } catch { Log ('LOOP: mutex create/acquire fail ' + $_.Exception.Message) 'ERR'; return }
+    if (-not $loopOwned) { Log 'LOOP: another loop instance holds Global\GhrdpAgentLoopSingle - exiting cleanly (F2 single-instance)'; return }
+    Log 'LOOP: acquired Global\GhrdpAgentLoopSingle mutex'
+
+    # F3: retry Load-Device 10 x 2s on transient failure. Never die on first hit.
+    $dev = $null
+    for ($i = 1; $i -le 10; $i++) {
+        $dev = Read-DeviceJson
+        if ($dev -and $dev.deviceToken) { break }
+        Log ('LOOP: Read-DeviceJson attempt ' + $i + '/10 empty or locked, waiting 2s')
+        Start-Sleep -Seconds 2
+    }
+    if (-not $dev -or -not $dev.deviceToken) {
+        Log 'LOOP: 10 device.json retries exhausted - need re-enrollment' 'ERR'
+        if ($loopOwned) { try { $loopMutex.ReleaseMutex() } catch {} }
+        if ($loopMutex) { $loopMutex.Dispose() }
+        return
+    }
 
     $tickHb = [DateTime]::UtcNow.AddSeconds(-100)
     $tickHeal = [DateTime]::UtcNow.AddSeconds(-100)
+    $tickReload = [DateTime]::UtcNow
 
     while ($true) {
         try {
+            # Every 60s, re-read device.json so re-enrollments (F4 rotates deviceToken) are picked up
+            # by the running loop instead of remaining pinned to a stale token (fixes REVIEW.md N6).
+            if (([DateTime]::UtcNow - $tickReload).TotalSeconds -ge 60) {
+                $fresh = Read-DeviceJson
+                if ($fresh -and $fresh.deviceToken -and $fresh.deviceId -eq $dev.deviceId -and $fresh.deviceToken -ne $dev.deviceToken) {
+                    Log 'LOOP: device.json rotated (fresh token detected), reloading'
+                    $dev = $fresh
+                }
+                $tickReload = [DateTime]::UtcNow
+            }
             $runner = Discover-Runner $dev
             if (-not $runner) { Start-Sleep -Seconds 5; continue }
             $dev = Update-Cache $dev $runner

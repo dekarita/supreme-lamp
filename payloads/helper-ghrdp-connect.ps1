@@ -72,21 +72,51 @@ try {
     } -ArgumentList $server, $port, ([Environment]::OSVersion.Version.Build) | Out-Null
 } catch { }
 
-# ---- Fetch creds via token (primary) or legacy no-token (fallback) ----
+# ---- Fetch creds: token (primary) → legacy no-token → embedded-URL (last-resort fallback F6) ----
 $creds = $null
+$credSource = ''
 if ($token) {
-    try { $creds = Invoke-RestMethod -Uri ("http://${server}:${port}/api/rdp-creds?token=" + [uri]::EscapeDataString($token)) -TimeoutSec 5 -ErrorAction Stop; L 'creds via token' } catch { L "token cred fetch: $($_.Exception.Message)" }
+    try {
+        $creds = Invoke-RestMethod -Uri ("http://${server}:${port}/api/rdp-creds?token=" + [uri]::EscapeDataString($token)) -TimeoutSec 5 -ErrorAction Stop
+        $credSource = 'token'
+        L 'creds via token'
+    } catch { L "token cred fetch: $($_.Exception.Message)" }
 }
 if (-not $creds) {
-    try { $creds = Invoke-RestMethod -Uri "http://${server}:${port}/api/rdp-creds" -TimeoutSec 5 -ErrorAction Stop; L 'creds via legacy' } catch { L "legacy fetch: $($_.Exception.Message)" }
+    try {
+        $creds = Invoke-RestMethod -Uri "http://${server}:${port}/api/rdp-creds" -TimeoutSec 5 -ErrorAction Stop
+        $credSource = 'legacy'
+        L 'creds via legacy'
+    } catch { L "legacy fetch: $($_.Exception.Message)" }
 }
-if (-not $creds) { L 'FATAL: no creds'; exit 0 }
+# F6: embedded-creds fallback. Some URLs carry user/pass; if server is unreachable AND the URL had them,
+# use them so the user's static dashboard anchor keeps working. Base64URL decoded when 'b64u:' prefix seen.
+if (-not $creds) {
+    function Expand-B64U([string]$s) {
+        try {
+            $x = $s -replace '^b64u:', ''
+            $x = $x.Replace('-', '+').Replace('_', '/')
+            switch ($x.Length % 4) { 2 { $x += '==' } 3 { $x += '=' } }
+            return [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($x))
+        } catch { return $s }
+    }
+    $embUser = Pick @('user', 'u', 'username')
+    $embPass = Pick @('pass', 'p', 'password', 'pw')
+    if ($embUser -match '^b64u:') { $embUser = Expand-B64U $embUser }
+    if ($embPass -match '^b64u:') { $embPass = Expand-B64U $embPass }
+    if ($embUser -and $embPass) {
+        $creds = [pscustomobject]@{ host = $server; user = $embUser; pass = $embPass; hostip = $server }
+        $credSource = 'embedded'
+        L ('creds via embedded link (fallback): ' + $embUser + '@' + $server)
+    }
+}
+if (-not $creds) { L 'FATAL: no creds (token/legacy/embedded all failed)'; exit 0 }
 
 $rdpHost = [string]$creds.host; if (-not $rdpHost) { $rdpHost = $server }
 $rdpUser = [string]$creds.user
 $rdpPass = [string]$creds.pass
 if (-not $rdpUser -or -not $rdpPass) { L 'FATAL: incomplete creds'; exit 0 }
-L "creds ok: $rdpUser@$rdpHost"
+L ("creds ok: " + $rdpUser + '@' + $rdpHost + ' src=' + $credSource)
 
 # ---- Pre-trust host to suppress publisher warnings ----
 try {
