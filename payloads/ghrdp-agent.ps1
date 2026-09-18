@@ -300,8 +300,63 @@ function Register-Protocol {
     } catch { Log ('register-protocol FAIL ' + $_.Exception.Message) 'ERR' }
 }
 
-function Register-Task {
-    Log ('register-task: creating ' + $script:TaskName + ' (AtLogOn + Once+3s)')
+# ---- Persistence ladder (F2/RC1 fix: E2 0x80070005 in non-elevated context) ----
+# Try scheduled task first; on ANY failure fall back to Startup .lnk + HKCU Run key.
+# Both fallbacks are user-scope only, no admin required.
+$script:PersistMech = 'none'
+
+function Get-StartupLnkPath {
+    $startup = [Environment]::GetFolderPath('Startup')
+    if (-not $startup) { $startup = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Startup' }
+    return (Join-Path $startup 'GhrdpAgent.lnk')
+}
+
+function Register-StartupLnk {
+    try {
+        $lnk = Get-StartupLnkPath
+        $sh = New-Object -ComObject WScript.Shell
+        $s = $sh.CreateShortcut($lnk)
+        $s.TargetPath = $script:SysPwsh
+        $s.Arguments  = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $script:AgentPath + '" -Loop'
+        $s.WorkingDirectory = $script:AgentDir
+        $s.WindowStyle = 7  # Minimized
+        $s.Description = 'GHRDP Agent (auto-start)'
+        $s.Save()
+        if (Test-Path -LiteralPath $lnk) { Log ('persist: startup .lnk written ' + $lnk); return $true }
+    } catch { Log ('persist: startup .lnk fail ' + $_.Exception.Message) 'WARN' }
+    return $false
+}
+
+function Register-RunKey {
+    try {
+        $rk = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+        if (-not (Test-Path $rk)) { New-Item -Path $rk -Force -ErrorAction SilentlyContinue | Out-Null }
+        $cmd = '"' + $script:SysPwsh + '" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $script:AgentPath + '" -Loop'
+        Set-ItemProperty -Path $rk -Name 'GhrdpAgent' -Value $cmd -Force
+        $v = (Get-ItemProperty -Path $rk -Name 'GhrdpAgent' -ErrorAction SilentlyContinue).GhrdpAgent
+        if ($v -eq $cmd) { Log 'persist: HKCU Run key written'; return $true }
+    } catch { Log ('persist: HKCU Run key fail ' + $_.Exception.Message) 'WARN' }
+    return $false
+}
+
+function Get-PersistOk {
+    $viaTask = $false
+    try { $t = Get-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop; if ($t) { $viaTask = $true } } catch {}
+    $viaStartup = $false
+    try { $viaStartup = Test-Path -LiteralPath (Get-StartupLnkPath) } catch {}
+    $viaRun = $false
+    try { $v = (Get-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'GhrdpAgent' -ErrorAction Stop).GhrdpAgent; if ($v) { $viaRun = $true } } catch {}
+    $mech = @()
+    if ($viaTask) { $mech += 'task' }
+    if ($viaStartup) { $mech += 'startup' }
+    if ($viaRun) { $mech += 'run' }
+    if ($mech.Count -eq 0) { return @{ ok = $false; mech = 'none' } }
+    return @{ ok = $true; mech = ($mech -join '+') }
+}
+
+function Register-Persistence {
+    Log 'register-persistence: attempting task -> startup -> HKCU Run ladder'
+    $taskOk = $false
     try {
         try { Unregister-ScheduledTask -TaskName $script:TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
         $arg = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $script:AgentPath + '" -Loop'
@@ -310,14 +365,61 @@ function Register-Task {
         $trigB = New-ScheduledTaskTrigger -Once -At ((Get-Date).AddSeconds(3))
         $set = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -Hidden -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
         $prin = New-ScheduledTaskPrincipal -UserId ($env:USERDOMAIN + '\' + $env:USERNAME) -LogonType Interactive -RunLevel Limited
-        Register-ScheduledTask -TaskName $script:TaskName -Action $act -Trigger @($trigA,$trigB) -Settings $set -Principal $prin -Force | Out-Null
-        Log 'register-task: registered'
-        try { Start-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop; Log 'register-task: started' } catch { Log ('register-task start warn ' + $_.Exception.Message) 'WARN' }
-    } catch { Log ('register-task FAIL ' + $_.Exception.Message) 'ERR' }
+        Register-ScheduledTask -TaskName $script:TaskName -Action $act -Trigger @($trigA,$trigB) -Settings $set -Principal $prin -Force -ErrorAction Stop | Out-Null
+        $taskOk = $true
+        Log 'persist: scheduled task registered'
+        try { Start-ScheduledTask -TaskName $script:TaskName -ErrorAction Stop; Log 'persist: task started' } catch { Log ('persist: task start warn ' + $_.Exception.Message) 'WARN' }
+    } catch {
+        Log ('persist: task registration FAILED (' + $_.Exception.Message + ') -- falling back to Startup+Run') 'WARN'
+    }
+    # ALWAYS layer Startup .lnk + HKCU Run alongside (belt+suspenders). If task exists it wins at logon; the
+    # others cover the case where the task is denied or later unregistered.
+    $startupOk = Register-StartupLnk
+    $runOk = Register-RunKey
+    $status = Get-PersistOk
+    $script:PersistMech = $status.mech
+    if (-not $status.ok) { Log 'persist: ALL MECHANISMS FAILED' 'ERR'; return }
+    Log ('persist: active mechanisms=' + $status.mech)
+}
+
+# Ensure-Loop-Running: spawn a hidden detached -Loop if none is present in the current session.
+# Used from Do-Dispatch (protocol click) and after enroll (immediate liveness).
+function Ensure-Loop-Running {
+    $running = 0
+    try {
+        $procs = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
+                   Where-Object { $_.CommandLine -match [regex]::Escape('agent.ps1') -and $_.CommandLine -match '(?i)(^|\s)-Loop(\s|$)' })
+        $running = $procs.Count
+    } catch {}
+    if ($running -ge 1) { Log ('loop-check: already running (' + $running + ')'); return $true }
+    Log 'loop-check: no -Loop process found, starting detached'
+    try {
+        Start-Process -FilePath $script:SysPwsh -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',('"' + $script:AgentPath + '"'),'-Loop') -WindowStyle Hidden | Out-Null
+        return $true
+    } catch { Log ('loop-check: spawn fail ' + $_.Exception.Message) 'ERR'; return $false }
+}
+
+# Idempotent RDP client registry sweep (F5). All keys are HKCU (no admin).
+function Sweep-RdpRegistry {
+    Log 'rdp-sweep: applying HKCU Terminal Server Client zero-prompt defaults'
+    try {
+        $tsc = 'HKCU:\Software\Microsoft\Terminal Server Client'
+        if (-not (Test-Path $tsc)) { New-Item -Path $tsc -Force -ErrorAction SilentlyContinue | Out-Null }
+        Set-ItemProperty -Path $tsc -Name 'AuthenticationLevelOverride' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path $tsc -Name 'DisablePasswordSaving'       -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+        Set-ItemProperty -Path $tsc -Name 'PublisherBypassList'         -Value '*' -Force -ErrorAction SilentlyContinue
+        $ld = $tsc + '\LocalDevices'
+        if (-not (Test-Path $ld)) { New-Item -Path $ld -Force -ErrorAction SilentlyContinue | Out-Null }
+        # Wildcard trust: local devices + clipboard + drives + printers + audio
+        # 0x01 local | 0x20 clipboard | 0x04 drives | 0x08 printers | 0x40 audio = 0x6D; keep 0xC5 for compat
+        Set-ItemProperty -Path $ld -Name '*' -Value 0xC5 -Type DWord -Force -ErrorAction SilentlyContinue
+        Log 'rdp-sweep: OK (AuthLvlOverride=0, LocalDevices\*=0xC5)'
+    } catch { Log ('rdp-sweep FAIL ' + $_.Exception.Message) 'WARN' }
 }
 
 function Post-Status($runner, $dev, [string]$stage, [hashtable]$extra) {
     if (-not $runner -or -not $dev -or -not $dev.deviceToken) { return }
+    $persistNow = Get-PersistOk
     $body = [ordered]@{
         deviceId  = $dev.deviceId
         dt        = $dev.deviceToken
@@ -326,6 +428,7 @@ function Post-Status($runner, $dev, [string]$stage, [hashtable]$extra) {
         agentHash = (Get-AgentHash)
         regPath   = (Get-RegPath)
         taskOk    = (Get-TaskOk)
+        persist   = $persistNow.mech
         mstscPid  = 0
         logonAge  = -1
         err       = ''
@@ -450,7 +553,8 @@ function Upload-Diag($runner, $dev, [string]$reason) {
 # ---- Self-Heal: gated remote refresh (never install unparseable) ---------
 function Self-Heal($runner, $dev) {
     Log 'self-heal: check'
-    if (-not (Get-TaskOk)) { Log 'self-heal: task missing, re-register'; Register-Task }
+    $ps = Get-PersistOk
+    if (-not $ps.ok) { Log 'self-heal: no persistence mechanism active, re-register ladder'; Register-Persistence }
     $reg = Get-RegPath
     $needReg = $false
     if (-not $reg) { $needReg = $true }
@@ -541,18 +645,55 @@ function Do-Enroll {
     Log ('enroll: deviceId=' + $dev.deviceId + ' tokenLen=' + $dev.deviceToken.Length + ' pagesUrl=' + $dev.pagesUrl)
 
     Register-Protocol
-    Register-Task
+    Register-Persistence
+    Sweep-RdpRegistry
 
+    $persist = Get-PersistOk
     Log 'enroll: POST /api/agent-hello'
-    Http-Post ('http://' + $runner + ':7331/api/agent-hello') @{ deviceId=$dev.deviceId; dt=$dev.deviceToken; build=$script:Build; regPath=(Get-RegPath); taskOk=(Get-TaskOk) } 6 | Out-Null
+    Http-Post ('http://' + $runner + ':7331/api/agent-hello') @{ deviceId=$dev.deviceId; dt=$dev.deviceToken; build=$script:Build; regPath=(Get-RegPath); taskOk=(Get-TaskOk); persist=$persist.mech } 6 | Out-Null
 
-    try {
-        Log 'enroll: starting detached -Loop'
-        Start-Process -FilePath $script:SysPwsh -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',('"' + $script:AgentPath + '"'),'-Loop') -WindowStyle Hidden | Out-Null
-    } catch { Log ('enroll: loop-start fail ' + $_.Exception.Message) 'WARN' }
+    # F3: guarantee loop is running (task may be denied on this account; belt+suspenders)
+    Ensure-Loop-Running
 
     $script:Http401Count = 0
-    Log ('ENROLL-OK deviceId=' + $dev.deviceId)
+
+    # F4: enroll self-verify — poll probe up to 20s and confirm heartbeat visibility
+    Log 'enroll: self-verify (poll /api/agent-status?probe=1 for seen=true up to 20s)'
+    $verifyOk = $false
+    $verifyDetail = ''
+    $sw = [Diagnostics.Stopwatch]::StartNew()
+    while ($sw.Elapsed.TotalSeconds -lt 20) {
+        try {
+            $pr = Invoke-RestMethod -Uri ('http://' + $runner + ':7331/api/agent-status?device=' + [uri]::EscapeDataString($dev.deviceId) + '&probe=1') -TimeoutSec 3 -UseBasicParsing
+            if ($pr -and $pr.seen -eq $true) {
+                $verifyOk = $true
+                $verifyDetail = 'stage=' + $pr.stage + ' ageSeconds=' + $pr.ageSeconds + ' build=' + $pr.build
+                break
+            }
+        } catch { }
+        Start-Sleep -Milliseconds 500
+    }
+    $loopN = 0
+    try { $loopN = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match [regex]::Escape('agent.ps1') -and $_.CommandLine -match '(?i)(^|\s)-Loop(\s|$)' }).Count } catch {}
+    if ($verifyOk) {
+        Log ('ENROLL-VERIFY PASS deviceId=' + $dev.deviceId + ' loop=' + $loopN + ' persist=' + $persist.mech + ' ' + $verifyDetail)
+        Write-Host ('ENROLL-VERIFY PASS deviceId=' + $dev.deviceId)
+        Write-Host ('  loopProcs=' + $loopN + ' persist=' + $persist.mech + ' ' + $verifyDetail)
+    } else {
+        Log ('ENROLL-VERIFY FAIL loop=' + $loopN + ' persist=' + $persist.mech) 'ERR'
+        Write-Host 'ENROLL-VERIFY FAIL' -ForegroundColor Red
+        Write-Host ('  loopProcs=' + $loopN + ' persist=' + $persist.mech)
+        Write-Host '  device.json:'
+        if (Test-Path $script:DeviceJson) { Get-Content $script:DeviceJson | Write-Host } else { Write-Host '  (missing)' }
+        Write-Host '  enroll.log tail 20:'
+        Get-Content $script:EnrollLog -Tail 20 | Write-Host
+        Write-Host '  agent.log tail 20:'
+        if (Test-Path $script:LogPath) { Get-Content $script:LogPath -Tail 20 | Write-Host } else { Write-Host '  (no agent.log yet)' }
+        Write-Host '  next: verify persistence via `Get-ScheduledTask GhrdpAgent`, Startup folder, HKCU Run key'
+        exit 1
+    }
+
+    Log ('ENROLL-OK deviceId=' + $dev.deviceId + ' persist=' + $persist.mech)
     exit 0
 }
 
@@ -630,6 +771,8 @@ function Do-Dispatch([string]$url) {
             $obj = @{ action='rdp'; host=$p['host']; server=$p['server']; clip=($p['clip'] -eq '1'); print=($p['print'] -eq '1'); drives=($p['drives'] -eq '1'); mic=($p['mic'] -eq '1') }
             $obj | ConvertTo-Json -Compress | Set-Content -LiteralPath $script:PendingPath -Encoding UTF8 -Force
             Log 'dispatch: wrote pending.json'
+            # F3: guarantee a loop is up to consume pending.json (task may be missing/denied)
+            Ensure-Loop-Running
         }
     } catch { Log ('dispatch fail ' + $_.Exception.Message) 'ERR' }
 }
