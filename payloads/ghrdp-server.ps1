@@ -19,6 +19,7 @@ try {
     if (Test-Path -LiteralPath $tp) { $script:Token = ([System.IO.File]::ReadAllText($tp)).Trim() }
 } catch { }
 $script:RdpTokens = @{}
+$script:LauncherSeen = $false
 
 function Read-JsonFile {
     param([string]$Path)
@@ -329,7 +330,9 @@ function Invoke-ClientRequest {
                 [System.IO.File]::AppendAllText((Join-Path $Root 'launcher-hello.log'), ($now3.ToString('o') + " ver=$verNum build=$bldNum`n"))
                 [System.IO.File]::WriteAllText((Join-Path $Root 'launcher-hello-last.json'), ('{"ver":' + $verNum + ',"build":"' + $bldNum + '","ts":"' + $now3.ToString('o') + '"}'))
             } catch { }
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"acked":true,"ver":3}'))
+            if ($parts.method -eq 'POST' -or ($parts.query -and $parts.query.ContainsKey('ver'))) { $script:LauncherSeen = $true }
+            $seenTxt = if ($script:LauncherSeen) { 'true' } else { 'false' }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes(('{"acked":true,"ver":3,"seen":' + $seenTxt + '}')))
             return
         }
         if ($path -eq '/api/launcher-status') {

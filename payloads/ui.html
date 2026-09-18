@@ -855,7 +855,9 @@ document.getElementById('autoLogin').onclick=function(e){
   var mic=micEl?(micEl.checked?1:0):0;
   var prn=prnEl?(prnEl.checked?1:0):0;
   var drv=drvEl?(drvEl.checked?1:0):0;
-  var v3=false;try{v3=(localStorage.getItem('ghrdp_v3')==='1');}catch(_){}
+  async function hello(){try{return (await(await fetch('/api/launcher-hello?ip='+encodeURIComponent(ip),{cache:'no-store'})).json()).seen===true;}catch(e){return false;}}
+  var v3=await hello();
+  try{v3?localStorage.setItem('ghrdp_v3','1'):localStorage.removeItem('ghrdp_v3');}catch(_){}
   var u;
   if(v3){
    u='ghrdp://connect?server='+encodeURIComponent(ip)+'&ip='+encodeURIComponent(ip)+'&h='+encodeURIComponent(ip)+'&port=7331&token='+encodeURIComponent(tok)+
@@ -872,7 +874,13 @@ document.getElementById('autoLogin').onclick=function(e){
   }
   var blurred=0;var onB=function(){blurred++;};
   window.addEventListener('blur',onB);
-  location.href=u;
+  if(!v3){
+   location.href='ghrdp://install?ip='+encodeURIComponent(ip)+'&src='+encodeURIComponent('http://'+ip+':7331/client-install.ps1');
+   await sleep(6000);
+   v3=await hello();
+   try{v3?localStorage.setItem('ghrdp_v3','1'):localStorage.removeItem('ghrdp_v3');}catch(_){}
+  }
+  blurred=0;location.href=u;
   await sleep(1500);
   window.removeEventListener('blur',onB);
   if(blurred>0){
