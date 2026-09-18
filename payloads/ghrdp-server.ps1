@@ -310,7 +310,7 @@ function Invoke-ClientRequest {
             }
             return
         }
-        if ($path -eq '/api/launch.ps1') {
+        if ($path -eq '/api/launch.ps1' -or $path -eq '/launcher.ps1') {
             $lp = Join-Path $Root 'ghrdp-launch.ps1'
             if (Test-Path -LiteralPath $lp) {
                 Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body ([System.IO.File]::ReadAllBytes($lp))
@@ -319,14 +319,64 @@ function Invoke-ClientRequest {
             }
             return
         }
-        if ($path -eq '/launcher.ps1') {
-            try { $b = [System.IO.File]::ReadAllBytes((Join-Path $Root 'launcher.ps1')); Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body $b } catch { Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('missing')) }
+        if ($path -eq '/api/launcher-hello') {
+            $verNum = 0
+            if ($parts.query -and $parts.query.ContainsKey('ver')) { try { $verNum = [int]$parts.query['ver'] } catch { } }
+            $bldNum = ''
+            if ($parts.query -and $parts.query.ContainsKey('build')) { $bldNum = [string]$parts.query['build'] }
+            $now3 = [datetime]::UtcNow
+            try {
+                [System.IO.File]::AppendAllText((Join-Path $Root 'launcher-hello.log'), ($now3.ToString('o') + " ver=$verNum build=$bldNum`n"))
+                [System.IO.File]::WriteAllText((Join-Path $Root 'launcher-hello-last.json'), ('{"ver":' + $verNum + ',"build":"' + $bldNum + '","ts":"' + $now3.ToString('o') + '"}'))
+            } catch { }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"acked":true,"ver":3}'))
+            return
+        }
+        if ($path -eq '/api/launcher-status') {
+            $body = '{"ver":0,"ts":"","ageSeconds":-1}'
+            try {
+                $lhFile = Join-Path $Root 'launcher-hello-last.json'
+                if (Test-Path -LiteralPath $lhFile) {
+                    $lh = [System.IO.File]::ReadAllText($lhFile) | ConvertFrom-Json
+                    $age = [int]([datetime]::UtcNow - [datetime]$lh.ts).TotalSeconds
+                    $body = '{"ver":' + [int]$lh.ver + ',"build":"' + [string]$lh.build + '","ts":"' + [string]$lh.ts + '","ageSeconds":' + $age + '}'
+                }
+            } catch { }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
             return
         }
         if ($path -eq '/api/rdp-status') {
-            $age = -1
-            try { $ls = Get-CimInstance Win32_LogonSession -Filter "LogonType=10" -ErrorAction SilentlyContinue | Sort-Object StartTime -Descending | Select-Object -First 1; if ($ls) { $age = [int]((Get-Date) - $ls.StartTime).TotalSeconds } } catch { }
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes(('{"rdp_age_s":' + $age + '}'))); return
+            $rdpAgeSec = -1
+            $logonType = 0
+            try {
+                $cfgS = Read-JsonFile -Path $script:CfgPath
+                $u = [string]$cfgS.rdpUser
+                $sessions = @(query.exe user 2>$null)
+                foreach ($qr in $sessions) {
+                    if (($qr -match [regex]::Escape($u)) -and ($qr -match '\bActive\b')) {
+                        if ($qr -match '(\d{1,2}:\d{2})') {
+                            $rdpAgeSec = 0
+                        } else { $rdpAgeSec = 0 }
+                        $logonType = 10
+                        break
+                    }
+                }
+                if ($rdpAgeSec -lt 0) {
+                    $ev = Get-WinEvent -FilterHashtable @{LogName='Security';Id=4624} -MaxEvents 20 -ErrorAction SilentlyContinue |
+                        Where-Object { $_.Message -match 'Logon Type:\s+10' -and $_.Message -match [regex]::Escape($u) } |
+                        Select-Object -First 1
+                    if ($ev) {
+                        $rdpAgeSec = [int]((Get-Date) - $ev.TimeCreated).TotalSeconds
+                        $logonType = 10
+                    }
+                }
+            } catch { }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"rdp_age_s":' + $rdpAgeSec + ',"logon_type":' + $logonType + '}'))
+            return
+        }
+        if ($path -eq '/client-install.ps1') {
+            try { $b = [System.IO.File]::ReadAllBytes((Join-Path $Root 'ghrdp-client-install.ps1')); Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body $b } catch { Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('missing')) }
+            return
         }
         if ($path -eq '/webdesk-boot') {
             $outB = @{ ok = $false; message = '' }

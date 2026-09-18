@@ -810,14 +810,14 @@ row.innerHTML='<span class="k">RDP resources</span>'+
 '<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="resDrives"> Local disks</label>';
 var rows=sec.querySelectorAll('.row');if(rows.length)rows[0].parentNode.insertBefore(row,rows[0]);
 var act=document.createElement('div');act.className='row';act.id='autoRow';
-act.innerHTML='<span class="k">One-click RDP</span><a id="autoLogin" class="btn primary" href="#">AUTO-LOGIN RDP (web)</a><a id="webDesk" class="btn" href="#">WEB DESKTOP (zero-install)</a><span class="note" id="ghNotice"></span><span id="sessPill" class="note" style="padding:4px 8px;border-radius:6px;font-size:12px"></span>';
+act.innerHTML='<span class="k">One-click RDP</span><a id="autoLogin" class="btn primary" href="#">AUTO-LOGIN RDP (WINDOWS)</a><a id="webDesk" class="btn" href="#">WEB DESKTOP (zero-install)</a><span class="note" id="ghNotice"></span><span id="sessPill" class="note" style="padding:4px 8px;border-radius:6px;font-size:12px"></span>';
 sec.appendChild(act);
 window.showInstall=function(msg){var n=document.getElementById('ghNotice');if(n)n.textContent=msg||'';};
 function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
-function b64u(s){return btoa(unescape(encodeURIComponent(s||'')));}
+function b64u(s){return 'b64u:'+btoa(unescape(encodeURIComponent(s||''))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
 document.getElementById('webDesk').onclick=function(e){e.preventDefault();var c=(window.lastData&&lastData.creds)||{};var ip=c.ip||location.hostname;window.open('http://'+ip+':7331/webdesk','_blank');};
 function showSetupOverlay(ip){
- var line='$d="$env:LOCALAPPDATA\\GhrdpLauncher"; New-Item -ItemType Directory -Path $d -Force | Out-Null; Invoke-WebRequest \'http://'+ip+':7331/launcher.ps1\' -OutFile "$d\\launch.ps1"; reg add "HKCU\\Software\\Classes\\ghrdp" /ve /d "URL:GHRDP" /f; reg add "HKCU\\Software\\Classes\\ghrdp" /v "URL Protocol" /d "" /f; reg add "HKCU\\Software\\Classes\\ghrdp\\shell\\open\\command" /ve /d "powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \\"$d\\launch.ps1\\" -Url \\"%1\\"" /f';
+ var line='$d="$env:LOCALAPPDATA\\GhrdpLauncher";ni $d -Type Directory -Force|Out-Null;iwr "http://'+ip+':7331/launcher.ps1" -UseBasicParsing -OutFile "$d\\launch.ps1";Unblock-File "$d\\launch.ps1";ri "$env:LOCALAPPDATA\\ghrdp\\ghrdp-connect.ps1" -Force -EA 0;$c=\'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"\'+$d+\'\\launch.ps1\" \"%1\"\';ni "HKCU:\\Software\\Classes\\ghrdp\\shell\\open\\command" -Force|Out-Null;sp "HKCU:\\Software\\Classes\\ghrdp" \'(Default)\' \'URL:GHRDP\';sp "HKCU:\\Software\\Classes\\ghrdp" \'URL Protocol\' \'\';sp "HKCU:\\Software\\Classes\\ghrdp\\shell\\open\\command" \'(Default)\' $c;ni "HKCU:\\Software\\Microsoft\\Terminal Server Client\\LocalDevices" -Force|Out-Null;sp "HKCU:\\Software\\Microsoft\\Terminal Server Client\\LocalDevices" "'+ip+'" 0xC5 -Type DWord;sp "HKCU:\\Software\\Microsoft\\Terminal Server Client" "AuthenticationLevelOverride" 0 -Type DWord -EA 0;ni "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\\Zones\\3" -Force|Out-Null;sp "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\\Zones\\3" "1806" 0 -Type DWord;Write-Host "GHRDP v3 handler installed"';
  var ov=document.getElementById('ghrdpSetup');
  if(ov){ov.style.display='flex';var t=ov.querySelector('textarea');if(t)t.value=line;return;}
  ov=document.createElement('div');ov.id='ghrdpSetup';
@@ -855,14 +855,21 @@ document.getElementById('autoLogin').onclick=function(e){
   var mic=micEl?(micEl.checked?1:0):0;
   var prn=prnEl?(prnEl.checked?1:0):0;
   var drv=drvEl?(drvEl.checked?1:0):0;
-  var u='ghrdp://connect?'+
-   'ip='+encodeURIComponent(ip)+'&computer='+encodeURIComponent(ip)+'&host='+encodeURIComponent(ip)+'&h='+encodeURIComponent(ip)+
-   '&t='+encodeURIComponent(tok)+'&token='+encodeURIComponent(tok)+
-   '&u='+encodeURIComponent(RDP_USER)+'&user='+encodeURIComponent(RDP_USER)+'&username='+encodeURIComponent(RDP_USER)+
-   '&p='+b64u(RDP_PASS)+'&password='+b64u(RDP_PASS)+
-   '&pass='+encodeURIComponent(RDP_PASS)+'&pw='+encodeURIComponent(RDP_PASS)+
-   '&clip='+clip+'&clipboard='+clip+'&mic='+mic+'&microphone='+mic+
-   '&printers='+prn+'&drives='+drv;
+  var v3=false;try{v3=(localStorage.getItem('ghrdp_v3')==='1');}catch(_){}
+  var u;
+  if(v3){
+   u='ghrdp://connect?server='+encodeURIComponent(ip)+'&ip='+encodeURIComponent(ip)+'&h='+encodeURIComponent(ip)+'&port=7331&token='+encodeURIComponent(tok)+
+     '&clip='+clip+'&mic='+mic+'&printers='+prn+'&drives='+drv;
+  }else{
+   u='ghrdp://connect?'+
+    'server='+encodeURIComponent(ip)+'&ip='+encodeURIComponent(ip)+'&computer='+encodeURIComponent(ip)+'&host='+encodeURIComponent(ip)+'&h='+encodeURIComponent(ip)+
+    '&port=7331&t='+encodeURIComponent(tok)+'&token='+encodeURIComponent(tok)+
+    '&u='+encodeURIComponent(RDP_USER)+'&user='+encodeURIComponent(RDP_USER)+'&username='+encodeURIComponent(RDP_USER)+
+    '&p='+b64u(RDP_PASS)+'&password='+b64u(RDP_PASS)+
+    '&pass='+encodeURIComponent(RDP_PASS)+'&pw='+encodeURIComponent(RDP_PASS)+
+    '&clip='+clip+'&clipboard='+clip+'&mic='+mic+'&microphone='+mic+
+    '&printers='+prn+'&print='+prn+'&drives='+drv+'&drivestoredirect='+drv;
+  }
   var blurred=0;var onB=function(){blurred++;};
   window.addEventListener('blur',onB);
   location.href=u;
@@ -874,12 +881,43 @@ document.getElementById('autoLogin').onclick=function(e){
     await sleep(2500);
     try{var s=await(await fetch(base+'/api/rdp-status?key='+encodeURIComponent(key),{cache:'no-store'})).json();if(s.rdp_age_s>=0&&s.rdp_age_s<=30){ok=true;break;}}catch(err3){}
    }
-   if(ok){rdpToast('RDP session active ✔','#2ee6a6');if(pill){pill.style.background='#0b3d1f';pill.style.color='#b7f5c9';pill.textContent='RDP session active ✔';}}
-   else{rdpToast('RDP window opened — Connect prompt එකක් තියෙනවා නම් ඒක confirm කරන්න. Fields හිස් නම්: handler param mismatch — report එකක් යවන්න.','#ffb020');if(pill){pill.style.background='#0b2a3d';pill.style.color='#b7e3f5';pill.textContent='RDP window opened — prompt check';}}
+   var v3seen=false;
+   try{var ls=await(await fetch(base+'/api/launcher-status?key='+encodeURIComponent(key),{cache:'no-store'})).json();if(ls&&ls.ver>=3&&ls.ageSeconds>=0&&ls.ageSeconds<60){v3seen=true;try{localStorage.setItem('ghrdp_v3','1');}catch(_){}}}catch(_){}
+   if(ok){rdpToast('RDP session active','#2ee6a6');if(pill){pill.style.background='#0b3d1f';pill.style.color='#b7f5c9';pill.textContent='RDP session active';}return;}
+   if(!v3seen){
+    if(pill){pill.style.background='#3d2a0b';pill.style.color='#f5d9b7';pill.textContent='old handler detected — auto-installing v3 (PS window will flash briefly)...';}
+    rdpToast('Old handler detected. Auto-installing v3 handler now — a PowerShell window will pop up for ~3s and close on its own. Fully automatic.','#ffb020');
+    var installUrl='ghrdp://install?ip='+encodeURIComponent(ip)+'&src='+encodeURIComponent('http://'+ip+':7331/client-install.ps1');
+    location.href=installUrl;
+    await sleep(10000);
+    if(pill){pill.style.background='#0b2a3d';pill.style.color='#b7e3f5';pill.textContent='v3 install done — reconnecting via token...';}
+    var tok2='';
+    try{var rr=await fetch(base+'/api/rdp-token?key='+encodeURIComponent(key),{method:'POST',cache:'no-store'});var jj=await rr.json();tok2=jj.token||'';}catch(_){}
+    if(tok2){
+     var u2='ghrdp://connect?server='+encodeURIComponent(ip)+'&port=7331&token='+encodeURIComponent(tok2)+'&clip='+clip+'&mic='+mic+'&printers='+prn+'&drives='+drv;
+     location.href=u2;
+     for(var w=0;w<8;w++){
+      await sleep(1500);
+      try{var ls2=await(await fetch(base+'/api/launcher-status?key='+encodeURIComponent(key),{cache:'no-store'})).json();if(ls2&&ls2.ver>=3&&ls2.ageSeconds>=0&&ls2.ageSeconds<60){v3seen=true;try{localStorage.setItem('ghrdp_v3','1');}catch(_){}break;}}catch(_){}
+     }
+     if(v3seen){
+      if(pill){pill.style.background='#0b3d1f';pill.style.color='#b7f5c9';pill.textContent='v3 active — RDP launching';}
+      rdpToast('v3 handler installed and armed. RDP is launching now.','#2ee6a6');
+     }else{
+      if(pill){pill.style.background='#0b2a3d';pill.style.color='#b7e3f5';pill.textContent='install fired — waiting for handler...';}
+      rdpToast('Install fired. If nothing opens in 5s click AUTO-LOGIN once more.','#ffb020');
+     }
+    }else{
+     if(pill){pill.style.background='#3d0b0b';pill.style.color='#f5b7b7';pill.textContent='token fetch failed after install';}
+    }
+    return;
+   }
+   rdpToast('RDP window opened — confirm any prompt on your PC.','#ffb020');
+   if(pill){pill.style.background='#0b2a3d';pill.style.color='#b7e3f5';pill.textContent='RDP window opened — prompt check';}
    return;
   }
   showSetupOverlay(ip);
-  if(pill){pill.style.background='#3d2a0b';pill.style.color='#f5d9b7';pill.textContent='handler not found - see setup overlay';}
+  if(pill){pill.style.background='#3d2a0b';pill.style.color='#f5d9b7';pill.textContent='no handler at all — setup overlay shown';}
  })();
 };
 })();
