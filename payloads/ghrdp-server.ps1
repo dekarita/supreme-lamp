@@ -704,6 +704,47 @@ function Invoke-ClientRequest {
             }
             return
         }
+        # /api/logon-status — RUNNER-SIDE RDP logon proof (addresses REVIEW.md N8).
+        # Query the RUNNER's Security log for event 4624 with Logon Type 10 for the RDP account
+        # newer than the caller-supplied baseline. This is genuine RDP-into-runner evidence.
+        # Client-side LogonType 10 is inbound-to-client and does NOT prove the outbound RDP.
+        if ($path -eq '/api/logon-status') {
+            $sinceIso = ''
+            if ($parts.query -and $parts.query.ContainsKey('since')) { $sinceIso = [string]$parts.query['since'] }
+            $userQ = ''
+            if ($parts.query -and $parts.query.ContainsKey('user')) { $userQ = [string]$parts.query['user'] }
+            if (-not $userQ) { try { $cfgL = Read-JsonFile -Path $script:CfgPath; $userQ = [string]$cfgL.rdpUser } catch { } }
+            $since = [DateTime]::UtcNow.AddMinutes(-2)
+            if ($sinceIso) { try { $since = [DateTime]::Parse($sinceIso).ToUniversalTime() } catch { } }
+            $connected = $false; $ts = ''; $ageSec = -1; $ip = ''; $checked = 0
+            try {
+                $filter = @{ LogName='Security'; Id=4624; StartTime=$since.ToLocalTime() }
+                $events = Get-WinEvent -FilterHashtable $filter -MaxEvents 80 -ErrorAction SilentlyContinue
+                foreach ($ev in @($events)) {
+                    $checked++
+                    $msg = [string]$ev.Message
+                    if ($msg -notmatch 'Logon Type:\s+10') { continue }
+                    if ($userQ -and $msg -notmatch [regex]::Escape($userQ)) { continue }
+                    $connected = $true
+                    $ts = $ev.TimeCreated.ToUniversalTime().ToString('o')
+                    $ageSec = [int]((Get-Date) - $ev.TimeCreated).TotalSeconds
+                    if ($msg -match 'Source Network Address:\s+(\S+)') { $ip = $Matches[1] }
+                    break
+                }
+            } catch { }
+            $body = [ordered]@{
+                connected  = $connected
+                ts         = $ts
+                ageSeconds = $ageSec
+                sourceIp   = $ip
+                user       = $userQ
+                since      = $since.ToString('o')
+                checked    = $checked
+                note       = 'Runner-side Security 4624 LogonType 10; requires SeSecurityPrivilege on server process'
+            }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $body)
+            return
+        }
         if ($path -eq '/api/agent-hash') {
             if (Test-Path -LiteralPath $script:AgentPath) {
                 $sha = ''
