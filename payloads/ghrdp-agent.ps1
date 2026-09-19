@@ -424,36 +424,77 @@ function Register-Persistence {
 
 # Ensure-Loop-Running: spawn a hidden detached -Loop if none is present in the current session.
 # Used from Do-Dispatch (protocol click) and after enroll (immediate liveness).
+# F4: Ensure-Loop-Running via named-mutex lookup (race-free vs Get-CimInstance CommandLine grep).
+# The loop holds Global\GhrdpAgentLoopSingle for its lifetime; if OpenExisting fails or WaitOne(0)
+# succeeds (meaning no owner), we spawn a detached loop. Never holds the mutex ourselves - the loop
+# will contend and win the moment it starts.
 function Ensure-Loop-Running {
-    $running = 0
+    $needSpawn = $false
     try {
-        $procs = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue |
-                   Where-Object { $_.CommandLine -match [regex]::Escape('agent.ps1') -and $_.CommandLine -match '(?i)(^|\s)-Loop(\s|$)' })
-        $running = $procs.Count
-    } catch {}
-    if ($running -ge 1) { Log ('loop-check: already running (' + $running + ')'); return $true }
-    Log 'loop-check: no -Loop process found, starting detached'
+        $m = [System.Threading.Mutex]::OpenExisting('Global\GhrdpAgentLoopSingle')
+        try {
+            $held = $m.WaitOne(0)
+            if ($held) {
+                # Mutex existed but was unowned -> no live loop. Release and spawn.
+                $m.ReleaseMutex()
+                $needSpawn = $true
+                Log 'loop-check: mutex existed unowned -> spawning'
+            } else {
+                Log 'loop-check: mutex held by live loop, skip'
+            }
+        } finally { $m.Dispose() }
+    } catch [System.Threading.WaitHandleCannotBeOpenedException] {
+        # Mutex does not exist -> no loop has ever started this session
+        $needSpawn = $true
+        Log 'loop-check: mutex absent -> spawning'
+    } catch { Log ('loop-check: mutex open err ' + $_.Exception.Message) 'WARN'; $needSpawn = $true }
+    if (-not $needSpawn) { return $true }
     try {
         Start-Process -FilePath $script:SysPwsh -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',('"' + $script:AgentPath + '"'),'-Loop') -WindowStyle Hidden | Out-Null
         return $true
     } catch { Log ('loop-check: spawn fail ' + $_.Exception.Message) 'ERR'; return $false }
 }
 
-# Idempotent RDP client registry sweep (F5). All keys are HKCU (no admin).
-function Sweep-RdpRegistry {
-    Log 'rdp-sweep: applying HKCU Terminal Server Client zero-prompt defaults'
+# F10: Per-host trust helper. Called from Ladder-Connect once the host is known.
+# Writes ONLY to HKCU\...\Servers\<host> and HKCU\...\LocalDevices\<host> - never the wildcard '*'.
+# Mask semantics: 0x01 local | 0x04 drives | 0x08 printers | 0x20 clipboard | 0x40 audio | 0x80 serial.
+function Trust-Host([string]$hostAddr, [hashtable]$opts) {
+    if (-not $hostAddr) { return }
     try {
         $tsc = 'HKCU:\Software\Microsoft\Terminal Server Client'
         if (-not (Test-Path $tsc)) { New-Item -Path $tsc -Force -ErrorAction SilentlyContinue | Out-Null }
-        Set-ItemProperty -Path $tsc -Name 'AuthenticationLevelOverride' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $tsc -Name 'DisablePasswordSaving'       -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path $tsc -Name 'PublisherBypassList'         -Value '*' -Force -ErrorAction SilentlyContinue
+        # Per-host authentication override (never global)
+        $srv = $tsc + '\Servers\' + $hostAddr
+        if (-not (Test-Path $srv)) { New-Item -Path $srv -Force -ErrorAction SilentlyContinue | Out-Null }
+        Set-ItemProperty -Path $srv -Name 'AuthenticationLevelOverride' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+        # Per-host LocalDevices mask (never global)
         $ld = $tsc + '\LocalDevices'
         if (-not (Test-Path $ld)) { New-Item -Path $ld -Force -ErrorAction SilentlyContinue | Out-Null }
-        # Wildcard trust: local devices + clipboard + drives + printers + audio
-        # 0x01 local | 0x20 clipboard | 0x04 drives | 0x08 printers | 0x40 audio = 0x6D; keep 0xC5 for compat
-        Set-ItemProperty -Path $ld -Name '*' -Value 0xC5 -Type DWord -Force -ErrorAction SilentlyContinue
-        Log 'rdp-sweep: OK (AuthLvlOverride=0, LocalDevices\*=0xC5)'
+        $mask = 0x01
+        if ($opts.clip)   { $mask = $mask -bor 0x20 }
+        if ($opts.drives) { $mask = $mask -bor 0x04 }
+        if ($opts.print)  { $mask = $mask -bor 0x08 }
+        if ($opts.mic)    { $mask = $mask -bor 0x40 }
+        Set-ItemProperty -Path $ld -Name $hostAddr -Value $mask -Type DWord -Force -ErrorAction SilentlyContinue
+        Log ('trust-host: ' + $hostAddr + ' Servers\AuthLvlOverride=0 LocalDevices=0x' + ('{0:X}' -f $mask))
+    } catch { Log ('trust-host FAIL ' + $_.Exception.Message) 'WARN' }
+}
+
+# F10 SAFE SWEEP - enroll-time only. Sets SAFE HKCU defaults; NEVER writes wildcard '*'.
+# Per-host trust is applied later in Ladder-Connect via Trust-Host.
+function Sweep-RdpRegistry {
+    Log 'rdp-sweep: applying HKCU Terminal Server Client safe defaults (no wildcard, per graveyard #75)'
+    try {
+        $tsc = 'HKCU:\Software\Microsoft\Terminal Server Client'
+        if (-not (Test-Path $tsc)) { New-Item -Path $tsc -Force -ErrorAction SilentlyContinue | Out-Null }
+        # DisablePasswordSaving=0 lets cmdkey persist; this is a safe default, not a bypass.
+        Set-ItemProperty -Path $tsc -Name 'DisablePasswordSaving' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+        # Remove legacy wildcards written by earlier builds (recovery from graveyard #75 regression).
+        try { Remove-ItemProperty -Path $tsc -Name 'AuthenticationLevelOverride' -Force -ErrorAction SilentlyContinue } catch {}
+        try { Remove-ItemProperty -Path $tsc -Name 'PublisherBypassList' -Force -ErrorAction SilentlyContinue } catch {}
+        $ld = $tsc + '\LocalDevices'
+        if (Test-Path $ld) { try { Remove-ItemProperty -Path $ld -Name '*' -Force -ErrorAction SilentlyContinue } catch {} }
+        Log 'rdp-sweep: OK (safe defaults only; per-host trust deferred to connect)'
     } catch { Log ('rdp-sweep FAIL ' + $_.Exception.Message) 'WARN' }
 }
 
@@ -527,6 +568,9 @@ function Ladder-Connect($runner, $dev, $cmd) {
     if (-not $hostAddr -or -not $user -or -not $pass) { Post-Status $runner $dev 'failed' @{ cmdId=$cmdId; err='missing creds' }; return }
     Log ('connect: host=' + $hostAddr + ' user=' + $user + ' clip=' + $opts.clip + ' print=' + $opts.print + ' drives=' + $opts.drives + ' mic=' + $opts.mic + ' cmdId=' + $cmdId)
 
+    # F10: per-host trust (Servers\<host> + LocalDevices\<host>) - never wildcard
+    Trust-Host $hostAddr $opts
+
     # cmdkey - hidden, wait for it to persist
     & cmdkey ('/generic:TERMSRV/' + $hostAddr) ('/user:' + $user) ('/pass:' + $pass) 2>$null | Out-Null
     Start-Sleep -Milliseconds 200
@@ -560,10 +604,7 @@ function Ladder-Connect($runner, $dev, $cmd) {
     Stop-StaleMstsc
     $baseline = Get-Date
     Post-Status $runner $dev 'L3-launching' @{ cmdId=$cmdId }
-    try {
-        Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Terminal Server Client' -Name 'PublisherBypassList' -Value '*' -Force -ErrorAction SilentlyContinue
-        Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Terminal Server Client' -Name 'AuthenticationLevelOverride' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-    } catch {}
+    # F10/graveyard #75: NO global wildcards. Trust-Host already scoped the override to this host only.
     $rdp3 = Write-Rdp $hostAddr $user $opts 0 0
     $p3 = Start-Process -FilePath 'mstsc.exe' -ArgumentList @($rdp3, '/f') -WindowStyle Hidden -PassThru
     $r3 = Wait-Connected $p3 $baseline 10
