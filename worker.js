@@ -62,51 +62,8 @@ export default {
     }
 
     if (url.pathname === '/proxy') {
-      const target = url.searchParams.get('url') || '';
-      const gm = target.match(/gofile\.io\/d\/([A-Za-z0-9]+)/);
-      if (!gm) return new Response(JSON.stringify({ ok: false, message: 'need a gofile /d/ link' }), {
-        status: 400, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-      });
-      const cid = gm[1];
-      try {
-        if (!globalThis.__gfToken || (globalThis.__gfAt || 0) < Date.now() - 3600e3) {
-          const ar = await fetch('https://api.gofile.io/accounts', { method: 'POST', headers: { 'Content-Type': 'application/json' } });
-          const aj = await ar.json();
-          if (!aj || !aj.data || !aj.data.token) throw new Error('gofile token failed');
-          globalThis.__gfToken = aj.data.token; globalThis.__gfAt = Date.now();
-        }
-        const token = globalThis.__gfToken;
-        const ir = await fetch('https://api.gofile.io/contents/' + cid + '?wt=4fd6sg89d7s6', { headers: { Authorization: 'Bearer ' + token } });
-        const ij = await ir.json();
-        let direct = '';
-        if (ij && ij.status === 'ok' && ij.data) {
-          if (ij.data.directLink) direct = ij.data.directLink;
-          else if (ij.data.children) { const k = Object.keys(ij.data.children)[0]; direct = (ij.data.children[k] && ij.data.children[k].link) || ''; }
-        }
-        if (!direct) return new Response(JSON.stringify({ ok: false, message: 'no direct link from gofile' }), {
-          status: 502, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-        });
-        const h = new Headers();
-        h.set('Cookie', 'accountToken=' + token);
-        h.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
-        const range = request.headers.get('Range'); if (range) h.set('Range', range);
-        const up = await fetch(direct, { headers: h, redirect: 'follow' });
-        if (!up.ok) return new Response(JSON.stringify({ ok: false, message: 'upstream ' + up.status }), {
-          status: 502, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-        });
-        const rh = new Headers();
-        rh.set('Access-Control-Allow-Origin', '*');
-        rh.set('Accept-Ranges', 'bytes');
-        const ct = up.headers.get('Content-Type'); if (ct) rh.set('Content-Type', ct);
-        const cr = up.headers.get('Content-Range'); if (cr) rh.set('Content-Range', cr);
-        const cl = up.headers.get('Content-Length'); if (cl) rh.set('Content-Length', cl);
-        rh.set('Cache-Control', 'public, max-age=3600');
-        return new Response(up.body, { status: up.status, headers: rh });
-      } catch (e) {
-        return new Response(JSON.stringify({ ok: false, message: String((e && e.message) || e) }), {
-          status: 502, headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' }
-        });
-      }
+      // Public gofile mirror proxy removed (mirror decommissioned).
+      return new Response(JSON.stringify({ ok:false, message:'gone: public mirror proxy removed' }), { status:410, headers:{ 'Content-Type':'application/json', 'Access-Control-Allow-Origin':'*' } });
     }
 
     if (url.pathname === '/ping') {

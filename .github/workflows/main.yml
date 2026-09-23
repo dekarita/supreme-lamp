@@ -10,9 +10,9 @@ on:
           - self-hosted-windows-near
         default: windows-latest
       mirror_downloads_public:
-        description: 'Mirror Downloads/Desktop/Documents/Temp/D:\RDP-Storage to gofile with fallbacks and publish PUBLIC Telegraph + Rentry indexes. Default ON.'
+        description: 'DEPRECATED - public mirroring removed. Leave false.'
         type: boolean
-        default: true
+        default: false
       encrypt_mode:
         description: 'none = upload original files unencrypted (streamable on gofile); media-plain = video/audio plain, rest AES-256; all = encrypt everything (.ghenc suffix)'
         type: choice
@@ -36,7 +36,7 @@ jobs:
       MIRROR_INPUT: ${{ github.event.inputs.mirror_downloads_public }}
       ENCRYPT_MODE: ${{ github.event.inputs.encrypt_mode || 'none' }}
       RENTRY_MAIN_URL: 'https://rentry.co/myurl0'
-      RENTRY_MAIN_EDIT: 'RDP@7898'
+      RENTRY_MAIN_EDIT: ''
       RUN_STARTED_AT: ${{ github.run_started_at || '' }}
 
     steps:
@@ -419,11 +419,10 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $rdp = 'HKLM:\System\CurrentControlSet\Control\Terminal Server'
           Set-ItemProperty -Path $rdp -Name 'fDenyTSConnections' -Value 0
-          Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'UserAuthentication' -Value 0
+          Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'UserAuthentication' -Value 1
           Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'SecurityLayer' -Value 2
           Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'MinEncryptionLevel' -Value 3
-          Write-Host '[rdp] NLA disabled (UserAuthentication=0) - bypasses client-side CredSSP/AV auth errors; TLS encryption still ON'
-          Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'fPromptForPassword' -Value 0
+          Write-Host '[rdp] NLA ON (UserAuthentication=1); CredSSP/NLA required; TLS encryption ON'
           $tsPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
           New-Item -Path $tsPol -Force -ErrorAction SilentlyContinue | Out-Null
           Set-ItemProperty -Path $tsPol -Name 'fDisableWallpaper' -Value 1 -Type DWord -ErrorAction SilentlyContinue
@@ -671,7 +670,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-launcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-launcher.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-client-install.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-client-install.ps1"
-          cp "$GITHUB_WORKSPACE/payloads/ghrdp-launch.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-launch.ps1"
+          # [remediation] ghrdp-launch.ps1 staging removed (banned old-helper duplicate deleted; superseded by helper-ghrdp-connect.ps1)
           cp "$GITHUB_WORKSPACE/payloads/helper-ghrdp-connect.ps1" "$RUNNER_TEMP/ghrdp-stage/helper-ghrdp-connect.ps1"
           B64=$(base64 -w0 "$RUNNER_TEMP/ghrdp-stage/helper-ghrdp-connect.ps1")
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-install.template.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-install.ps1"
@@ -679,31 +678,10 @@ jobs:
           rm -f "$RUNNER_TEMP/ghrdp-stage/helper-ghrdp-connect.ps1"
           cp "$GITHUB_WORKSPACE/payloads/DEBUG-GHRDP.ps1" "$RUNNER_TEMP/ghrdp-stage/DEBUG-GHRDP.ps1"
           cp "$GITHUB_WORKSPACE/payloads/DEBUG-GHRDP.bat" "$RUNNER_TEMP/ghrdp-stage/DEBUG-GHRDP.bat"
-          cp "$GITHUB_WORKSPACE/payloads/ghrdp-agent.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-agent.ps1"
-          cp "$GITHUB_WORKSPACE/payloads/ghrdp-enroll.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-enroll.ps1"
-          cp "$GITHUB_WORKSPACE/payloads/ghrdp-accept.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-accept.ps1"
-          cp "$GITHUB_WORKSPACE/payloads/ghrdp-acceptance.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-acceptance.ps1"
-          cp "$GITHUB_WORKSPACE/payloads/ghrdp-diag.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-diag.ps1"
+          # [remediation] agent + enroll + accept payload staging removed (C2 client + acceptance-of-agent gone)
+          # [remediation] acceptance + diag staging removed (agent-dependent probes deleted)
           ls -la "$RUNNER_TEMP/ghrdp-stage"
 
-      - name: Gate — PSParser tokenize ghrdp-agent.ps1 (bug #57)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $p = Join-Path $env:RUNNER_TEMP 'ghrdp-stage/ghrdp-agent.ps1'
-          if (-not (Test-Path $p)) { Write-Host "[gate] FAIL: $p missing"; exit 1 }
-          $t = Get-Content -LiteralPath $p -Raw
-          $e = $null
-          [void][System.Management.Automation.PSParser]::Tokenize($t, [ref]$e)
-          if ($e -and $e.Count) {
-            Write-Host ("[gate] FAIL: " + $e.Count + " parse error(s)")
-            $e | Select-Object -First 5 | ForEach-Object { Write-Host ("  line=" + $_.Token.StartLine + " msg=" + $_.Message) }
-            exit 1
-          }
-          $b = [System.IO.File]::ReadAllBytes($p)
-          $h = [System.Security.Cryptography.SHA256]::Create().ComputeHash($b)
-          $hex = ($h | ForEach-Object { $_.ToString('x2') }) -join ''
-          Write-Host ("[gate] PASS staged size=" + $b.Length + " sha256=" + $hex)
 
       - name: Write Rust dashboard source (Cargo.toml + src/main.rs, StatusCode import fixed)
         shell: bash
@@ -763,7 +741,7 @@ jobs:
               dashToken = $tok
               mirror = $mirrorOn
               encryptMode = [string]$env:ENCRYPT_MODE
-              mirrorKey = New-MirrorPassword -Length 40
+              mirrorKey = ''
               telegraphToken = ''
               telegraphPath = ''
               mirrorIndexUrl = ''
@@ -777,8 +755,8 @@ jobs:
               legacyLinks = @()
               rentryNewUrl = ''
               rentryEditKey = ''
-              rentryEditCode = $editCode
-              rentryEditCookie = [string]$env:RENTRY_EDIT_COOKIE
+              rentryEditCode = ''
+              rentryEditCookie = ''
               runnerEgressIp = ''
               githubDeadline = $(try { (([datetime]$(if ($env:JOB_STARTED_AT) { $env:JOB_STARTED_AT } else { (Get-Date -Format o) })).AddMinutes(357)).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } catch { (Get-Date).AddMinutes(357).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') })
               keepAliveDeadline = ''
@@ -1088,7 +1066,7 @@ jobs:
           $rustOn = ($env:RUST_AVAILABLE -eq 'true')
           $rustUrl = [string]$env:RUST_URL
           if (-not [string]$cfg.legacyIndexUrl) {
-              $leg = Invoke-LegacyScrape -Url $global:GhrdpLegacyUrl
+              try { $leg = Invoke-LegacyScrape -Url $global:GhrdpLegacyUrl } catch { $leg = @{ ok = $false; key = ''; links = @() }; Write-Host '[expose] legacy scrape disabled per remediation' }
               $cfg.legacyIndexUrl = $global:GhrdpLegacyUrl
               if ($leg.ok) {
                   $cfg.legacyDecryptKey = [string]$leg.key
@@ -1177,7 +1155,7 @@ jobs:
           Write-Host '------------------------------------------------------------'
           Write-Host ('  Tailscale IP ........: ' + $ip)
           Write-Host ('  RDP ................: mstsc /v:' + $ip + '   (user: ' + $user + ')')
-          Write-Host ('  RDP password .......: ' + $pass + '   (also shown in Mission Control)')
+          # [remediation 8D] RDP password print removed (Mission Control still serves creds host-only over tailnet).
           Write-Host ('  Dashboard (PS) .....: http://' + $ip + ':7331/' + $keyPart)
           if ($rustOn -and $rustUrl) {
               Write-Host ('  Dashboard (real-time) : ' + $rustUrl + '   (Rust, WebSocket; tailnet-only, NOT funneled)')
@@ -1186,16 +1164,7 @@ jobs:
           }
           if ($serveUrl) { Write-Host ('  Dashboard (serve) ..: ' + $serveUrl + $keyPart + '   (tailnet only)') }
           if ($funnelUrl) { Write-Host ('  Dashboard (funnel) .: ' + $funnelUrl + $keyPart + '   (public)') }
-          Write-Host '  ---- INDEXES & KEYS -------------------------------------'
-          Write-Host ('  Legacy Rentry .......: ' + $legacyUrl)
-          if ($legacyKey) {
-              Write-Host ('  LEGACY decrypt key ..: ' + $legacyKey + '   (files uploaded before this run)')
-          } else {
-              Write-Host '  LEGACY decrypt key ..: (not found on the legacy page)'
-          }
-          if ($rentryNew) { Write-Host ('  New Rentry ..........: ' + $rentryNew) } else { Write-Host '  New Rentry ..........: (created when the first file uploads)' }
-          if ($telegraph) { Write-Host ('  Telegraph ...........: ' + $telegraph) } else { Write-Host '  Telegraph ...........: (created when the first file uploads)' }
-          Write-Host ('  Current decrypt key .: ' + [string]$cfg.mirrorKey + '   (current run)')
+          # [remediation 8D] INDEXES & KEYS banner (Legacy/New Rentry, Telegraph, decrypt keys) removed - dead mirror.
           Write-Host '  ---- EMERGENCY STOP --------------------------------------'
           Write-Host ('  web : open ' + $runUrl + '  and press "Cancel workflow"')
           Write-Host ('  cli : ' + $cancelCli + '   (copy: triple-click + Ctrl+C)')
@@ -1203,112 +1172,17 @@ jobs:
           if ($S) {
               '## Mission Control READY' | Add-Content -Path $S
               ('- **Tailscale IP**: ' + $ip) | Add-Content -Path $S
-              ('- **RDP**: `mstsc /v:' + $ip + '` as `' + $user + '` (password: `' + $pass + '`, also in the dashboard)') | Add-Content -Path $S
+              # [remediation 8D] RDP password + mirror index/key lines removed from job summary.
+              ('- **RDP**: `mstsc /v:' + $ip + '` as `' + $user + '` (password shown host-only in Mission Control)') | Add-Content -Path $S
               ('- **Dashboard (PS)**: http://' + $ip + ':7331/' + $keyPart) | Add-Content -Path $S
               if ($rustOn -and $rustUrl) { ('- **Dashboard (real-time)**: ' + $rustUrl) | Add-Content -Path $S } else { '- **Dashboard (real-time)**: unavailable this run (PowerShell dashboard on 7331 is serving)' | Add-Content -Path $S }
               if ($serveUrl) { ('- **Dashboard (serve)**: ' + $serveUrl + $keyPart) | Add-Content -Path $S }
               if ($funnelUrl) { ('- **Dashboard (funnel)**: ' + $funnelUrl + $keyPart) | Add-Content -Path $S }
-              ('- **Legacy Rentry**: ' + $legacyUrl) | Add-Content -Path $S
-              if ($legacyKey) { ('- **LEGACY decrypt key**: `' + $legacyKey + '` (files uploaded before this run)') | Add-Content -Path $S }
-              if ($rentryNew) { ('- **New Rentry**: ' + $rentryNew) | Add-Content -Path $S }
-              if ($telegraph) { ('- **Telegraph**: ' + $telegraph) | Add-Content -Path $S }
-              ('- **Current decrypt key**: `' + [string]$cfg.mirrorKey + '`') | Add-Content -Path $S
               if ($egress) { ('- Uploads execute ON THE RUNNER (egress IP ' + $egress + ')') | Add-Content -Path $S }
               ('- Emergency stop: open the run page and Cancel workflow, or run `' + $cancelCli + '`') | Add-Content -Path $S
           }
           exit 0
 
-      - name: Publish GitHub Pages tools (decrypt.html + archive.html + search.html + archive.json)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $repo = $env:GITHUB_REPOSITORY
-          $hdr = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
-          function Put-GhFile {
-              param([string]$Path, [string]$Text)
-              $api = "https://api.github.com/repos/$repo/contents/$Path"
-              $sha = $null
-              try { $g = Invoke-RestMethod -Uri $api -Headers $hdr -ErrorAction Stop; $sha = $g.sha } catch { }
-              $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Text))
-              $body = @{ message = "update $Path"; content = $b64 }
-              if ($sha) { $body.sha = $sha }
-              try { Invoke-RestMethod -Uri $api -Headers $hdr -Method Put -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null; Write-Host "[pages] pushed $Path" } catch { Write-Host ("[pages] push failed $Path : " + $_.Exception.Message) }
-          }
-          $dSb = [System.Text.StringBuilder]::new()
-          [void]$dSb.Append('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GHRDP Decryptor</title>')
-          [void]$dSb.Append('<style>body{font-family:system-ui,sans-serif;background:#0b0f14;color:#e8eef3;margin:0;padding:24px;max-width:720px;margin:auto}h1{font-size:22px}label{display:block;margin:12px 0}input,button{padding:10px;border-radius:8px;border:1px solid #2b3a4a;background:#101820;color:#e8eef3}button{cursor:pointer;background:#153e5c}.sub{color:#8aa0ad}#out{margin-top:14px;color:#41d18f}</style></head><body>')
-          [void]$dSb.Append('<h1>GHRDP Web Decryptor</h1><p class="sub">Decrypt .ghenc files locally in your browser. Nothing is uploaded. Key is saved on THIS device for permanent unlock.</p>')
-          [void]$dSb.Append('<div id="info"></div><label>Pick .ghenc file <input type="file" id="f" accept=".ghenc"></label>')
-          [void]$dSb.Append('<label>Decrypt key <input id="key" type="password"></label>')
-          [void]$dSb.Append('<button id="go">Decrypt &amp; Download</button><div id="out"></div>')
-          [void]$dSb.Append('<script>')
-          [void]$dSb.Append('var params=new URLSearchParams(location.hash.slice(1));var fileUrl=params.get("file")||"",key=params.get("key")||"";')
-          [void]$dSb.Append('if(key)document.getElementById("key").value=key;')
-          [void]$dSb.Append('if(fileUrl){document.getElementById("info").innerHTML="Step 1: <a href=\""+fileUrl+"\" target=\"_blank\">download the .ghenc file</a>, then pick it below. Key auto-filled.";}')
-          [void]$dSb.Append('async function sha256(buf){var d=await crypto.subtle.digest("SHA-256",buf);return Array.from(new Uint8Array(d)).map(function(b){return b.toString(16).padStart(2,"0")}).join("");}')
-          [void]$dSb.Append('document.getElementById("go").onclick=async function(){')
-          [void]$dSb.Append('var fi=document.getElementById("f").files[0];if(!fi){alert("pick a .ghenc file");return;}')
-          [void]$dSb.Append('var buf=await fi.arrayBuffer();var u8=new Uint8Array(buf);var hash=await sha256(buf);')
-          [void]$dSb.Append('var k=document.getElementById("key").value||localStorage.getItem("ghkey:"+hash)||"";')
-          [void]$dSb.Append('if(!k){alert("enter decrypt key");return;}localStorage.setItem("ghkey:"+hash,k);')
-          [void]$dSb.Append('try{var salt=u8.slice(0,16),iv=u8.slice(16,32),data=u8.slice(32);var enc=new TextEncoder();')
-          [void]$dSb.Append('var keyMat=await crypto.subtle.importKey("raw",enc.encode(k),{name:"PBKDF2"},false,["deriveKey"]);')
-          [void]$dSb.Append('var aes=await crypto.subtle.deriveKey({name:"PBKDF2",salt:salt,iterations:100000,hash:"SHA-256"},keyMat,{name:"AES-CBC",length:256},false,["decrypt"]);')
-          [void]$dSb.Append('var plain=await crypto.subtle.decrypt({name:"AES-CBC",iv:iv},aes,data);')
-          [void]$dSb.Append('var name=fi.name.replace(/\.ghenc$/,"");var a=document.createElement("a");a.href=URL.createObjectURL(new Blob([plain]));a.download=name;a.click();')
-          [void]$dSb.Append('document.getElementById("out").textContent="Decrypted "+name+" ("+plain.byteLength+" bytes). Key saved on this device.";')
-          [void]$dSb.Append('}catch(e){alert("Decrypt failed: wrong key or corrupt file. "+e);}};')
-          [void]$dSb.Append('</script></body></html>')
-          $decryptHtml = $dSb.ToString()
-          $aSb = [System.Text.StringBuilder]::new()
-          [void]$aSb.Append('<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>GHRDP Session Archive</title>')
-          [void]$aSb.Append('<style>body{font-family:system-ui,sans-serif;background:#0b0f14;color:#e8eef3;margin:0;padding:24px}h1{font-size:22px}input{padding:8px;border-radius:8px;border:1px solid #2b3a4a;background:#101820;color:#e8eef3;width:260px}table{width:100%;border-collapse:collapse;font-size:12px;margin-top:12px}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid #1b2530}th{color:#8aa0ad}.det{display:none;background:#0d131a}tr.open+.det{display:table-row}button{cursor:pointer}.sub{color:#8aa0ad}a{color:#7dd3fc}</style></head><body>')
-          [void]$aSb.Append('<h1>GHRDP Session Archive</h1><p class="sub">Past RDP sessions. Search + expand rows - no endless scrolling (10 per page).</p>')
-          [void]$aSb.Append('<input id="q" placeholder="search session / file / key..."> <button id="prev">&laquo;</button> <button id="next">&raquo;</button> <span id="pg"></span>')
-          [void]$aSb.Append('<table><thead><tr><th></th><th>Session</th><th>Date</th><th>Files</th><th>Size</th><th>Key</th><th>Links</th></tr></thead><tbody id="tb"></tbody></table>')
-          [void]$aSb.Append('<script>var data={sessions:[]},page=0,PER=10,filtered=[];')
-          [void]$aSb.Append('async function load(){try{var r=await fetch("archive.json",{cache:"no-store"});if(r.ok)data=await r.json();}catch(e){}filtered=data.sessions||[];draw();}')
-          [void]$aSb.Append('function draw(){var q=document.getElementById("q").value.toLowerCase();')
-          [void]$aSb.Append('var f=(data.sessions||[]).filter(function(s){var blob=(s.id+" "+s.date+" "+s.key+" "+(s.files||[]).map(function(x){return x.n}).join(" ")).toLowerCase();return !q||blob.includes(q);});')
-          [void]$aSb.Append('filtered=f;var pages=Math.max(1,Math.ceil(f.length/PER));if(page>=pages)page=pages-1;if(page<0)page=0;')
-          [void]$aSb.Append('var slice=f.slice(page*PER,page*PER+PER);var html="";')
-          [void]$aSb.Append('slice.forEach(function(s,i){html+=''<tr onclick="this.classList.toggle(')
-          [void]$aSb.Append("'open'")
-          [void]$aSb.Append(')"><td>+</td><td>''+s.id+''</td><td>''+s.date+''</td><td>''+s.filesCount+''</td><td>''+s.bytes+''</td><td>''+s.key+''</td><td><a href="''+s.telegraph+''" target="_blank">telegraph</a> <a href="''+s.rentry+''" target="_blank">rentry</a></td></tr>'';')
-          [void]$aSb.Append('html+=''<tr class="det"><td colspan="7">''+(s.files||[]).map(function(x){return ''<a href="''+x.l+''" target="_blank">''+(x.f? x.f+'' / '':'''')+x.n+''</a> (''+x.s+'')''+(x.e===''true''?'' [enc]'':'''')}).join(''<br>'')+''</td></tr>'';});')
-          [void]$aSb.Append('document.getElementById("tb").innerHTML=html||''<tr><td colspan="7">no sessions yet</td></tr>'';')
-          [void]$aSb.Append('document.getElementById("pg").textContent="page "+(page+1)+"/"+pages;}')
-          [void]$aSb.Append('document.getElementById("q").oninput=function(){page=0;draw();};')
-          [void]$aSb.Append('document.getElementById("prev").onclick=function(){page--;draw();};')
-          [void]$aSb.Append('document.getElementById("next").onclick=function(){page++;draw();};')
-          [void]$aSb.Append('load();</script></body></html>')
-          $archiveHtml = $aSb.ToString()
-          $swSb = [System.Text.StringBuilder]::new()
-          [void]$swSb.Append('const CACHE_NAME=''ghrdp-explorer-v3-unified'';')
-          [void]$swSb.Append('const URLS_TO_CACHE=[''explorer.html'',''tree.json'',''archive.json''];')
-          [void]$swSb.Append('self.addEventListener(''install'',event=>{event.waitUntil(caches.open(CACHE_NAME).then(cache=>cache.addAll(URLS_TO_CACHE).catch(()=>{})));self.skipWaiting();});')
-          [void]$swSb.Append('self.addEventListener(''activate'',event=>{event.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>k!==CACHE_NAME).map(k=>caches.delete(k)))));self.clients.claim();});')
-          [void]$swSb.Append('self.addEventListener(''fetch'',event=>{if(event.request.method!==''GET'')return;event.respondWith(fetch(event.request).then(response=>{if(!response||response.status!==200||response.type!==''basic'')return response;var responseToCache=response.clone();caches.open(CACHE_NAME).then(cache=>{cache.put(event.request,responseToCache);});return response;}).catch(()=>{return caches.match(event.request).then(response=>{if(response)return response;if(event.request.destination===''document'')return caches.match(''explorer.html'');});}));});')
-          $swJs = $swSb.ToString()
-          Put-GhFile 'docs/decrypt.html' $decryptHtml
-          Put-GhFile 'docs/archive.html' $archiveHtml
-          $explorerSrc = 'C:\ghrdp\explorer.html'
-          if (Test-Path -LiteralPath $explorerSrc) {
-            $explorerHtml = [System.IO.File]::ReadAllText($explorerSrc, [System.Text.Encoding]::UTF8)
-            Put-GhFile 'docs/explorer.html' $explorerHtml
-            Put-GhFile 'docs/search.html' $explorerHtml
-          } else { Write-Host '[pages] explorer.html missing in stage - skipped' }
-          Put-GhFile 'docs/sw.js' $swJs
-          $api = "https://api.github.com/repos/$repo/contents/docs/archive.json"
-          $exists = $true
-          try { Invoke-RestMethod -Uri $api -Headers $hdr -ErrorAction Stop | Out-Null } catch { $exists = $false }
-          if (-not $exists) { Put-GhFile 'docs/archive.json' '{"sessions":[]}' }
-          $pagesUrl = 'https://' + (($repo -split '/')[0]) + '.github.io/' + (($repo -split '/')[1])
-          Add-Content -Path $env:GITHUB_ENV -Value ("PAGES_BASE=" + $pagesUrl)
-          Write-Host ('[pages] tools at ' + $pagesUrl + '/explorer.html , /archive.html , /decrypt.html')
-          exit 0
 
       - name: Verify Pages site responds 200 (print remediation if 404)
         shell: pwsh
@@ -1322,126 +1196,6 @@ jobs:
           }
           exit 0
 
-      - name: Publish Unified Fluent Explorer (explorer.html + search.html redirect + index)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Continue"
-          $repo = $env:GITHUB_REPOSITORY
-          $hdr = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = "application/vnd.github+json"; "X-GitHub-Api-Version" = "2022-11-28" }
-          function Put-GhFile2 {
-            param([string]$Path, [string]$Text)
-            $api = "https://api.github.com/repos/$repo/contents/$Path"
-            $sha = $null
-            try { $g = Invoke-RestMethod -Uri $api -Headers $hdr -ErrorAction Stop; $sha = $g.sha } catch { }
-            $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Text))
-            $body = @{ message = "ui: unified fluent explorer $Path"; content = $b64 }
-            if ($sha) { $body.sha = $sha }
-            try { Invoke-RestMethod -Uri $api -Headers $hdr -Method Put -ContentType "application/json" -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null; Write-Host "[ui] pushed $Path" } catch { Write-Host ("[ui] push failed $Path : " + $_.Exception.Message) }
-          }
-          $explorerSrc = 'C:\ghrdp\explorer.html'
-          if (-not (Test-Path -LiteralPath $explorerSrc)) { Write-Host '[ui] explorer.html not found in stage - skipping'; exit 0 }
-          $html = [System.IO.File]::ReadAllText($explorerSrc, [System.Text.Encoding]::UTF8)
-          Put-GhFile2 'docs/explorer.html' $html
-          Put-GhFile2 'docs/search.html' $html
-          Put-GhFile2 'docs/index.html' '<!doctype html><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=explorer.html"><title>GHRDP</title><p><a href="explorer.html">Open GHRDP Explorer</a></p>'
-          exit 0
-      - name: Publish offline service worker
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $repo = $env:GITHUB_REPOSITORY
-          $hdr = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
-          function Put-GhFile2 { param([string]$Path,[string]$Text)
-            $api = "https://api.github.com/repos/$repo/contents/$Path"; $sha = $null
-            try { $g = Invoke-RestMethod -Uri $api -Headers $hdr -ErrorAction Stop; $sha = $g.sha } catch { }
-            $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Text))
-            $body = @{ message = "update $Path"; content = $b64 }
-            if ($sha) { $body.sha = $sha }
-            try { Invoke-RestMethod -Uri $api -Headers $hdr -Method Put -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null; Write-Host "[ui] pushed $Path" } catch { Write-Host ("[ui] push failed $Path : " + $_.Exception.Message) }
-          }
-          $swJs = @'
-          var CACHE='ghrdp-explorer-v1';
-          var PRE=['./explorer.html','./archive.json','./data.json','./archive.html','./decrypt.html'];
-          self.addEventListener('install',function(e){
-            e.waitUntil(Promise.all(PRE.map(function(u){return fetch(u,{cache:'no-store'}).then(function(r){if(!r.ok)return null;return caches.open(CACHE).then(function(c){return c.put(u,r)})}).catch(function(){return null})})).then(function(){return self.skipWaiting()}));
-          });
-          self.addEventListener('activate',function(e){
-            e.waitUntil(caches.keys().then(function(ks){return Promise.all(ks.filter(function(k){return k!==CACHE}).map(function(k){return caches.delete(k)}))}).then(function(){return self.clients.claim()}));
-          });
-          self.addEventListener('fetch',function(e){
-            var req=e.request;
-            if(req.method!=='GET')return;
-            var u=new URL(req.url);
-            if(u.origin!==location.origin)return;
-            if(req.mode==='navigate'){
-              e.respondWith(fetch(req).then(function(r){var c=r.clone();caches.open(CACHE).then(function(cc){cc.put(req,c)});return r}).catch(function(){return caches.match('./explorer.html')}));
-              return;
-            }
-            e.respondWith(caches.match(req).then(function(hit){
-              var net=fetch(req).then(function(r){if(r.ok){var c=r.clone();caches.open(CACHE).then(function(cc){cc.put(req,c)})}return r}).catch(function(){return hit||Response.error()});
-              return hit||net;
-            }));
-          });
-          '@
-          Put-GhFile2 'docs/sw.js' $swJs
-          foreach ($pg in @('archive.html','decrypt.html')) {
-            $api = "https://api.github.com/repos/$repo/contents/docs/$pg"
-            try {
-              $g = Invoke-RestMethod -Uri $api -Headers $hdr -ErrorAction Stop
-              $txt = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($g.content))
-              if ($txt -notmatch 'serviceWorker') {
-                $txt = $txt -replace '</body>', "<script>if('serviceWorker' in navigator){navigator.serviceWorker.register('./sw.js').catch(function(){})}</script></body>"
-                Put-GhFile2 ("docs/$pg") $txt
-              }
-            } catch { Write-Host "[ui] skip sw-inject $pg : $($_.Exception.Message)" }
-          }
-          exit 0
-
-      - name: Migrate myurl0 history into Pages archive (one-time, read-only on rentry)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $repo = $env:GITHUB_REPOSITORY
-          $hdr = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
-          $api = "https://api.github.com/repos/$repo/contents/docs/archive.json"
-          $sha = $null; $existing = $null
-          try { $g = Invoke-RestMethod -Uri $api -Headers $hdr -ErrorAction Stop; $sha = $g.sha; $existing = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($g.content)) } catch { }
-          if ($existing) {
-              $arch = $existing | ConvertFrom-Json
-              $existingLegacy = $null
-              foreach ($s in @($arch.sessions)) { if ([string]$s.id -eq 'legacy-myurl0') { $existingLegacy = $s } }
-              if ($existingLegacy -and ([int]$existingLegacy.filesCount -gt 0)) { Write-Host '[migrate] legacy-myurl0 already in archive WITH files - skipping'; exit 0 }
-          }
-          Write-Host '[migrate] legacy record missing/empty - re-importing from myurl0'
-          $raw = ''
-          try { $raw = (Invoke-WebRequest -Uri 'https://rentry.co/myurl0/raw' -UseBasicParsing -TimeoutSec 20).Content } catch { }
-          if (-not $raw) { Write-Host '[migrate] myurl0 unreachable - nothing to migrate'; exit 0 }
-          $files = @()
-          foreach ($m in [regex]::Matches($raw, '\[(?:open|download)\]\((https?://[^)]+)\)')) {
-              $u = $m.Groups[1].Value
-              $nm = [uri]::UnescapeDataString(($u -split '/')[-1])
-              $files += [ordered]@{ n = $nm; s = [long]0; l = $u; e = 'false'; f = '.' }
-          }
-          $key = ''
-          if ($raw -match 'LEGACY\s+decrypt\s+key[^A-Za-z0-9]{0,40}([A-Za-z0-9]{16,64})') { $key = $Matches[1] }
-          elseif ($raw -match 'Current\s+decrypt\s+key[^A-Za-z0-9]{0,40}([A-Za-z0-9]{16,64})') { $key = $Matches[1] }
-          elseif ($raw -match 'decrypt\s+(?:password|pw|key)[^A-Za-z0-9]{0,40}([A-Za-z0-9]{16,64})') { $key = $Matches[1] }
-          $rec = [ordered]@{ id = 'legacy-myurl0'; date = ('migrated ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')); filesCount = $files.Count; bytes = [long]0; key = $key; telegraph = ''; rentry = 'https://rentry.co/myurl0'; files = $files }
-          $sessions = @()
-          if ($existing) { $sessions = @(@(($existing | ConvertFrom-Json).sessions) | Where-Object { [string]$_.id -ne 'legacy-myurl0' }) }
-          $sessions = @($rec) + @($sessions)
-          $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes((@{ sessions = $sessions } | ConvertTo-Json -Depth 8 -Compress)))
-          $body = @{ message = 'migrate myurl0 history (append-only)'; content = $b64 }
-          if ($sha) { $body.sha = $sha }
-          Invoke-RestMethod -Uri $api -Headers $hdr -Method Put -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null
-          Write-Host ('[migrate] imported ' + $files.Count + ' legacy entries from myurl0 into archive.json (myurl0 untouched)')
-          exit 0
 
       - name: Stage terminal UI + create term dir
         shell: pwsh
@@ -1733,12 +1487,7 @@ jobs:
           $rustOn = ($env:RUST_AVAILABLE -eq 'true')
           $tailPort = '7331'
           if ($rustOn) { $tailPort = '7332' }
-          $reqBookmarks = @(
-              @{ name = 'Megathread'; url = 'https://rentry.org/megathread' },
-              @{ name = 'FMHY Torrenting'; url = 'https://fmhy.net/torrenting' },
-              @{ name = 'GHRDP Mirror (github.io)'; url = [string]$cfg.pagesBase },
-              @{ name = 'Legacy mirror (frozen myurl0)'; url = 'https://rentry.co/myurl0' }
-          )
+          $reqBookmarks = @()
           $sessionBookmarks = @(
               @{ name = 'Mission Control (local)'; url = 'http://127.0.0.1:7331' }
           )
@@ -1747,13 +1496,7 @@ jobs:
               @{ name = 'Tailscale Admin'; url = 'https://login.tailscale.com/admin/machines' },
               @{ name = 'GitHub Actions'; url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions') }
           )
-          if ($pagesBase) {
-              $sessionBookmarks += @(
-                  @{ name = 'Decryptor'; url = ($pagesBase + '/decrypt.html') },
-                  @{ name = 'Archive'; url = ($pagesBase + '/archive.html') },
-                  @{ name = 'GHRDP Explorer'; url = ($pagesBase + '/explorer.html') }
-              )
-          }
+          # [remediation] pagesBase tool bookmarks (Decryptor/Archive/Explorer) removed
           $allBookmarks = $reqBookmarks + $sessionBookmarks
           $edgePol = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
           New-Item -Path $edgePol -Force -ErrorAction SilentlyContinue | Out-Null
@@ -1894,46 +1637,8 @@ jobs:
           } else { Write-Host '[vdd] inf not found in zip' }
           exit 0
 
-      - name: D1 synthetic tailnet agent gate (F4/#61/#64 loopback quirk fix)
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          $ErrorActionPreference = 'Continue'
-          # F4 fix: loopback 401s on some builds. Use tailnet IP + ?key for every call.
-          $cfg = Get-Content 'C:\ghrdp\config.json' -Raw | ConvertFrom-Json
-          $dashKey = (Get-Content 'C:\ghrdp\dash-token.txt' -Raw).Trim()
-          $addr = $null
-          if (-not [Net.IPAddress]::TryParse([string]$cfg.rdpIp, [ref]$addr)) { Write-Host 'D1 GATE FAIL: config.rdpIp not parseable'; exit 0 }
-          $base = 'http://' + $addr.ToString() + ':7331'
-          $key = [uri]::EscapeDataString($dashKey)
-          Write-Host ('D1 base=' + $base + ' auth=?key (redacted)')
-          function Url([string]$p) { $s = '?'; if ($p.Contains('?')) { $s = '&' }; return $base + $p + $s + 'key=' + $key }
-          try {
-            # Enroll
-            $enrollBody = (@{dev='ci-localtest'; deviceIdHint='localtest'; name='ci-synthetic'; os='synthetic'} | ConvertTo-Json -Compress)
-            $er = Invoke-RestMethod -Uri (Url '/api/device-enroll') -Method POST -Body $enrollBody -ContentType 'application/json' -TimeoutSec 6
-            $tok = $er.deviceToken
-            $devId = $er.deviceId
-            # Queue command
-            $cmdBody = (@{deviceId=$devId; action='rdp'; clip=$true; mic=$false; print=$false; drives=$false} | ConvertTo-Json -Compress)
-            $q = Invoke-RestMethod -Uri (Url '/api/client-cmd') -Method POST -Body $cmdBody -ContentType 'application/json' -TimeoutSec 6
-            $cmdId = $q.cmdId
-            # Synthetic agent poll + status POST via tailnet + dt (single-slot semantics)
-            Start-Job -ScriptBlock {
-              param($base, $devId, $tok, $cmdId)
-              $c = Invoke-RestMethod -Uri ($base + '/api/client-cmd?device=' + [uri]::EscapeDataString($devId) + '&dt=' + [uri]::EscapeDataString($tok)) -TimeoutSec 5
-              $sBody = @{deviceId=$devId; dt=$tok; cmdId=$cmdId; stage='connected'; mstscPid=999; logonAge=0; build='ci-synthetic'; regPath=''; taskOk=$false; err=''} | ConvertTo-Json -Compress
-              Invoke-RestMethod -Uri ($base + '/api/agent-status') -Method POST -Body $sBody -ContentType 'application/json' -TimeoutSec 5
-            } -ArgumentList $base, $devId, $tok, $cmdId | Out-Null
-            Start-Sleep -Seconds 3
-            $s = Invoke-RestMethod -Uri (Url ('/api/agent-status?device=' + [uri]::EscapeDataString($devId))) -TimeoutSec 5
-            if ($s.stage -eq 'connected') { Write-Host ('D1 GATE PASS: base=' + $base + ' devId=' + $devId + ' stage=connected') } else { Write-Host ('D1 GATE FAIL stage=' + $s.stage); exit 0 }
-          } catch {
-            $code = 'none'
-            if ($_.Exception.Response) { $code = [string][int]$_.Exception.Response.StatusCode }
-            Write-Host ('D1 GATE FAIL HTTP=' + $code + ' err=' + $_.Exception.Message)
-            exit 0
-          }
+      # [remediation #7D] prior tailnet-agent gate step removed - it drove
+      # the C2 enroll/client-cmd/agent-status flow whose endpoints are now 404.
 
       - name: Keep-alive 5h30 (60s heartbeat, rust probe, auto-restart, banners)
         if: ${{ always() }}
@@ -2142,54 +1847,15 @@ jobs:
                   Write-Host '     funnel (public) ...: (off - set optional TS_API_KEY to enable)'
               }
               Write-Host ''
-              Write-Host ('  ' + $icons.link + ' INDEXES & KEYS')
-              Write-Host ('     Mirror (Pages) .....: ' + [string]$cfg.pagesBase + '/search.html')
-              Write-Host ('     Explorer (Win11) ...: ' + [string]$cfg.pagesBase + '/explorer.html')
-              Write-Host ('     Archive / Decrypt ..: ' + [string]$cfg.pagesBase + '/archive.html  |  ' + [string]$cfg.pagesBase + '/decrypt.html')
-              Write-Host ('     Legacy Rentry ......: ' + $legacyUrl)
-              if ($legacyKey) {
-                  Write-Host ('     LEGACY decrypt key .: ' + $legacyKey + '   (files uploaded before this run)')
-              } else {
-                  Write-Host '     LEGACY decrypt key .: (not found / page unreachable)'
-              }
-              if ($rentryNew) {
-                  Write-Host ('     New Rentry .........: ' + $rentryNew)
-              } else {
-                  Write-Host '     New Rentry .........: (pending - appears at first upload; Pages mirror already live above)'
-              }
-              if ($tele) {
-                  Write-Host ('     Telegraph ..........: ' + $tele)
-              } else {
-                  Write-Host '     Telegraph ..........: (pending - appears at first upload; Pages mirror already live above)'
-              }
-              if ($mirrorOn -and $mirrorKey) {
-                  Write-Host ('     Current decrypt key : ' + $mirrorKey + '   (current run)')
-              } else {
-                  Write-Host '     Current decrypt key : (mirror OFF this run)'
-              }
-              if ($egress) {
-                  Write-Host ('     Runner egress ......: ' + $egress + '  (uploads execute ON THE RUNNER - your PC is never used)')
-              } else {
-                  Write-Host '     Runner egress ......: unknown (lookup failed) - uploads still run on the runner'
-              }
-              Write-Host ''
-              Write-Host ('  ' + $icons.folder + ' LAST 5 UPLOADED LINKS')
-              $last5 = Get-Last5Links
-              if (@($last5).Count -eq 0) {
-                  Write-Host '     (no files uploaded yet)'
-              } else {
-                  foreach ($l in @($last5)) { Write-Host ('     ' + $l) }
-              }
-              Write-Host ''
+              # [remediation #7D] INDEXES & KEYS + LAST 5 UPLOADED LINKS banner sections
+              # removed - mirror/Pages/Rentry/Telegraph publishing is disabled and their
+              # URLs/keys must not be surfaced.
               Write-Host ('  ' + $icons.screen + ' RDP CONNECTION')
               if ($ip) {
-                  Write-Host ('     one-click (handler): ghrdp://ip=' + $ip + '&user=' + $user + '&pass=<session password>')
                   Write-Host ('     mstsc command ......: mstsc /v:' + $ip)
               }
               Write-Host ('     user ...............: ' + $user)
-              if ($pass) {
-                  Write-Host ('     password ...........: ' + $pass + '   (also shown inside the dashboard)')
-              }
+              # [remediation #7D] embedded-creds ghrdp:// URL + password banner line removed.
               Write-Host ''
               Write-Host ('  ' + $icons.siren + ' EMERGENCY STOP')
               Write-Host ('     web : open ' + $runUrl + '  and press "Cancel workflow"')
@@ -2204,7 +1870,7 @@ jobs:
           }
           if ([bool]$cfgKa.mirror -and -not [string]$cfgKa.mirrorIndexUrl) {
           Write-Host '[index] publishing initial (zero-file) index so Telegraph + Rentry links exist from t0'
-          try { Publish-AllIndexes -Cfg $cfgKa -IndexList (Get-MirrorIndexList -IdxFile $idxPath) } catch { Write-Host ('[index] initial publish failed: ' + $_.Exception.Message) }
+          try { Publish-AllIndexes -Cfg $cfgKa -IndexList (Get-MirrorIndexList -IdxFile $idxPath) } catch { Write-Host '[keepalive] mirror publish disabled per remediation' }
           Save-MirrorCfg -Cfg $cfgKa -Path $cfgPath
           }
           Show-Banner -Reason 'session start'
@@ -2418,11 +2084,10 @@ jobs:
                     }
                 } catch { }
                 if ($discId) {
-                    Write-Host ($icons.wrench + ' ' + $stamp + ' session ' + $discId + ' DISCONNECTED - tscon to console so desktop re-renders')
-                    try { & tscon.exe $discId /dest:console ('/password:' + [string]$cfgNow.rdpPass) 2>$null | Out-Null; $LASTEXITCODE = 0 } catch { Write-Host ('   tscon failed: ' + $_.Exception.Message) }
+                    # [remediation 8D] tscon /password heal removed - no plaintext RDP password on command line. Disconnected sessions self-recover on next RDP login.
+                    Write-Host ($icons.wrench + ' ' + $stamp + ' session ' + $discId + ' DISCONNECTED - waiting for user RDP login (no auto-tscon)')
                 } elseif (-not $sess) {
-                    Write-Host ($icons.wrench + ' ' + $stamp + ' no interactive session for RDP user - booting loopback RDP session (creates the desktop the web desktop captures)')
-                    try { $okSess = Start-GhrdpLoopbackSession -User ([string]$cfgNow.rdpUser) -Pass ([string]$cfgNow.rdpPass); Write-Host ('   loopback session after heal: ' + $okSess) } catch { Write-Host ('   loopback boot failed: ' + $_.Exception.Message) }
+                    Write-Host ($icons.wrench + ' ' + $stamp + ' no interactive session for RDP user - remediation #7C removed loopback-boot (NLA-off + plaintext cmdkey); log in via real RDP with NLA on')
                 } else {
                     $aliveAge = -1
                     try { $aliveAge = [int]((Get-Date) - [datetime][System.IO.File]::ReadAllText('C:\ghrdp\webdesk\webdesk-alive.txt')).TotalMilliseconds } catch { }
@@ -2556,135 +2221,7 @@ jobs:
           Write-Host '[keepalive] keep-alive window complete; the cleanup steps will run now'
           exit 0
 
-      - name: Emergency mirror pass on cancel (final index with BOTH keys + ALL links)
-        if: ${{ always() }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $root = 'C:\ghrdp'
-          $libPath = Join-Path $root 'ghrdp-lib.ps1'
-          if (-not (Test-Path -LiteralPath $libPath)) {
-              Write-Host '[emergency] mirror lib missing; nothing to do'
-              exit 0
-          }
-          . $libPath
-          $cfg = Read-MirrorCfg -Path (Join-Path $root 'config.json')
-          if (-not $cfg) {
-              Write-Host '[emergency] config missing; nothing to do'
-              exit 0
-          }
-          $idx = Get-MirrorIndexList -IdxFile (Join-Path $root 'mirror-index.json')
-          if ($null -eq $idx) { $idx = New-Object System.Collections.ArrayList }
-          if (-not [bool]$cfg.mirror) {
-              Write-Host '[emergency] mirror disabled for this run; republishing indexes anyway so keys+links survive'
-          } else {
-              Write-Host '[emergency] mirror enabled: triggering emergency upload pass'
-              try {
-                  [System.IO.File]::WriteAllText((Join-Path $root 'emergency.flag'), (Get-Date -Format o), $global:GhrdpEncNoBom)
-              } catch { }
-              try { Start-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction Stop } catch { Write-Host ('[emergency] watcher task could not start: ' + $_.Exception.Message) }
-              $limit = (Get-Date).AddMinutes(10)
-              while ((Get-Date) -lt $limit) {
-                  $prog = $null
-                  for ($r = 0; $r -lt 3; $r++) {
-                      $prog = Read-MirrorCfg -Path (Join-Path $root 'progress.json')
-                      if ($prog) { break }
-                      Start-Sleep -Seconds 1
-                  }
-                  if ($prog -and $prog.agg) {
-                      $remain = [int]$prog.agg.total - [int]$prog.agg.done - [int]$prog.agg.failed
-                      Write-Host ('[emergency] files remaining: ' + $remain)
-                      if ($remain -le 0) { break }
-                  } else {
-                      Write-Host '[emergency] waiting for watcher progress ...'
-                  }
-                  Start-Sleep -Seconds 20
-              }
-              $idx = Get-MirrorIndexList -IdxFile (Join-Path $root 'mirror-index.json')
-              if ($null -eq $idx) { $idx = New-Object System.Collections.ArrayList }
-          }
-          Write-Host '[emergency] publishing FINAL index containing BOTH decrypt keys + ALL links ...'
-          try {
-              Publish-TelegraphIndex -Cfg $cfg -IndexList $idx
-              try { [void](Publish-GithubPagesData -Cfg $cfg -IndexList $idx) } catch { Write-Host ('[emergency] data.json push failed: ' + $_.Exception.Message) }
-              try {
-                  $finalBody = Build-IndexBodyText -Cfg $cfg -IndexList $idx
-                  [void](Publish-MirrorRentry -Cfg $cfg -BodyText $finalBody -IndexList $idx)
-                  Write-Host ('[emergency] FINAL Rentry: ' + $global:GhrdpLegacyUrl)
-              } catch { Write-Host ('[emergency] rentry myurl0 edit failed: ' + $_.Exception.Message) }
-              Save-MirrorCfg -Cfg $cfg -Path (Join-Path $root 'config.json')
-              Write-Host ('[emergency] FINAL Telegraph: ' + [string]$cfg.mirrorIndexUrl)
-              Write-Host ('[emergency] FINAL Pages: ' + [string]$cfg.pagesBase)
-              Write-Host ('[emergency] LEGACY decrypt key preserved: ' + [string]$cfg.legacyDecryptKey)
-              Write-Host ('[emergency] current decrypt key preserved: ' + [string]$cfg.mirrorKey)
-              $all = @($idx)
-              Write-Host ('[emergency] total links preserved in the indexes: ' + (@($all).Count + @($cfg.legacyLinks).Count))
-          } catch {
-              Write-Host ('[emergency] final publish failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace)
-          }
-          Write-Host '[emergency] emergency pass finished'
-          exit 0
-
-      - name: Pre-cleanup final save to GitHub Pages (append-only archive + telegraph backup)
-        if: ${{ always() }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $root = 'C:\ghrdp'
-          $libPath = Join-Path $root 'ghrdp-lib.ps1'
-          if (-not (Test-Path -LiteralPath $libPath)) { Write-Host '[final] lib missing'; exit 0 }
-          . $libPath
-          $cfgPath = Join-Path $root 'config.json'
-          if (-not (Test-Path -LiteralPath $cfgPath)) { Write-Host '[final] config missing'; exit 0 }
-          $cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
-          $idxPath = Join-Path $root 'mirror-index.json'
-          $idx = @()
-          if (Test-Path -LiteralPath $idxPath) { try { $idx = @(Get-Content -LiteralPath $idxPath -Raw | ConvertFrom-Json) } catch { } }
-          $sessionId = [string]$cfg.sessionId
-          if (-not $sessionId) { $sessionId = 's-unknown' }
-          $totalBytes = [long]0; $totalFiles = @($idx).Count
-          foreach ($e in @($idx)) { $totalBytes += [long]$e.size }
-          Write-Host ('[final] session=' + $sessionId + ' files=' + $totalFiles + ' bytes=' + $totalBytes)
-          try { [void](Publish-GithubPagesData -Cfg $cfg -IndexList $idx) } catch { Write-Host ('[final] data.json: ' + $_.Exception.Message) }
-          try { Publish-TelegraphIndex -Cfg $cfg -IndexList $idx } catch { Write-Host ('[final] telegraph: ' + $_.Exception.Message) }
-          $token = [string]$env:GITHUB_TOKEN
-          $repo = [string]$env:GITHUB_REPOSITORY
-          $hdr = @{ Authorization = ('Bearer ' + $token); Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
-          try {
-              $archApi = "https://api.github.com/repos/$repo/contents/docs/archive.json"
-              $sha = $null; $existing = '{"sessions":[]}'
-              try { $g = Invoke-RestMethod -Uri $archApi -Headers $hdr -ErrorAction Stop; $sha = $g.sha; $existing = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($g.content)) } catch { }
-              $arch = $existing | ConvertFrom-Json
-              $filesArr = @()
-              foreach ($it in @($idx)) { $filesArr += [ordered]@{ n = [string]$it.name; s = [long]$it.size; l = [string]$it.link; e = [string]$it.encrypted; f = [string]$it.folder; dsl = [string]$it.timeSL } }
-              $rec = [ordered]@{ id = $sessionId; date = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); filesCount = $totalFiles; bytes = $totalBytes; key = [string]$cfg.mirrorKey; telegraph = [string]$cfg.mirrorIndexUrl; rentry = ''; files = $filesArr }
-              $sessions = @(@($arch.sessions) + @($rec)) | Select-Object -Last 50
-              $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes((@{ sessions = $sessions } | ConvertTo-Json -Depth 8 -Compress)))
-              $body = @{ message = ('archive session ' + $sessionId); content = $b64 }
-              if ($sha) { $body.sha = $sha }
-              Invoke-RestMethod -Uri $archApi -Headers $hdr -Method Put -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null
-              Write-Host ('[final] archive.json appended (append-only; capped at 50 sessions)')
-          } catch { Write-Host ('[final] archive.json: ' + $_.Exception.Message) }
-          try {
-              $endStatus = [ordered]@{
-                  ts = [long][double]::Parse((Get-Date -UFormat '%s'))
-                  sessionId = $sessionId
-                  uptime = '-'; remaining = '0h 0m'
-                  services = [ordered]@{ tailscale = 'ended'; rdp = 'ended'; ps = 'ended'; rust = 'ended'; watcher = 'ended' }
-                  mirror = [ordered]@{ done = $totalFiles; total = $totalFiles; failed = 0; speed = '0' }
-                  creds = [ordered]@{ user = ''; pass = '' }
-                  dashUrl = ''; runUrl = ''
-                  ended = $true
-              }
-              Publish-StatusJson -StatusObj $endStatus -Repo $repo -Token $token
-              Write-Host '[final] status.json set to ended'
-          } catch { Write-Host ('[final] status.json: ' + $_.Exception.Message) }
-          Write-Host '[final] pre-cleanup save complete: Pages data.json + archive.json + telegraph + status.json'
-          exit 0
-
-      - name: Secure cleanup (wipe profiles/storage, clear logs, reset funnel/serve)
+      - name: Cleanup (wipe profiles/storage, reset funnel/serve) - no log-clear per remediation 8E
         if: ${{ always() && env.GHRDP_EPHEMERAL == 'true' }}
         shell: pwsh
         run: |
@@ -2751,27 +2288,7 @@ jobs:
           foreach ($n in @('RDP-Storage (D).lnk', 'Mission Control.lnk', 'GHRDP Start (watcher + dashboard).lnk', 'DEBUG-GHRDP.bat', 'GHRDP-DEBUG-REPORT.txt')) {
               try { Remove-Item -LiteralPath ('C:\Users\Public\Desktop\' + $n) -Force -ErrorAction SilentlyContinue } catch { }
           }
-          try {
-              $logNames = @(& wevtutil.exe el 2>$null)
-              $LASTEXITCODE = 0
-              $stopAt = (Get-Date).AddSeconds(90)
-              $cleared = 0
-              foreach ($lg in @($logNames)) {
-                  if ((Get-Date) -gt $stopAt) { break }
-                  if ($lg) {
-                      & wevtutil.exe cl $lg 2>$null
-                      $LASTEXITCODE = 0
-                      $cleared++
-                  }
-              }
-              Write-Host ('[cleanup] event logs cleared: ' + $cleared)
-          } catch {
-              Write-Host ('[cleanup] log clear failed: ' + $_.Exception.Message)
-          }
-          try {
-              $hist = Join-Path $env:USERPROFILE 'AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt'
-              if (Test-Path -LiteralPath $hist) { Remove-Item -LiteralPath $hist -Force -ErrorAction SilentlyContinue }
-          } catch { }
+          # [remediation 8E] wevtutil cl event-log-clear loop + PSReadLine history delete removed - no anti-forensics.
           if (Test-Path -LiteralPath $ts) {
               try { & $ts logout 2>$null | Out-Null } catch { }
               $LASTEXITCODE = 0
@@ -2796,39 +2313,4 @@ jobs:
           } catch { Write-Host ('[cleanup] finalize failed: ' + $_.Exception.Message) }
           exit 0
 
-      - name: Overwrite free space (skipped when cancelled)
-        if: ${{ always() && !cancelled() && env.GHRDP_EPHEMERAL == 'true' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $deadline = (Get-Date).AddMinutes(4)
-          $wipeDir = 'C:\ghrdp-wipe'
-          New-Item -ItemType Directory -Path $wipeDir -Force -ErrorAction SilentlyContinue | Out-Null
-          $rng = $null
-          $buf = $null
-          $chunks = 0
-          try {
-              $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-              $buf = New-Object byte[] 4194304
-              $rng.GetBytes($buf)
-              while ((Get-Date) -lt $deadline) {
-                  $free = $null
-                  try { $free = (Get-PSDrive -Name C -ErrorAction Stop).Free } catch { }
-                  if ($null -eq $free -or $free -lt 2147483648) { break }
-                  $path = Join-Path $wipeDir ('w{0:d6}.bin' -f $chunks)
-                  try {
-                      [System.IO.File]::WriteAllBytes($path, $buf)
-                      $chunks++
-                  } catch { break }
-                  if (($chunks % 64) -eq 0) {
-                      try { $rng.GetBytes($buf) } catch { }
-                  }
-              }
-          } catch {
-              Write-Host ('[wipe] error: ' + $_.Exception.Message)
-          } finally {
-              if ($rng) { $rng.Dispose() }
-          }
-          try { Remove-Item -LiteralPath $wipeDir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
-          Write-Host ('[wipe] free-space overwrite wrote {0} x 4 MiB chunks' -f $chunks)
-          exit 0
+# [remediation 8E] "Overwrite free space" step removed - no anti-forensics.

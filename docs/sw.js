@@ -1,5 +1,5 @@
-var CACHE='ghrdp-explorer-v1';
-var PRE=['./explorer.html','./archive.json','./data.json','./archive.html','./decrypt.html'];
+var CACHE='ghrdp-explorer-v2';
+var PRE=['./explorer.html','./archive.html','./decrypt.html'];
 self.addEventListener('install',function(e){
   e.waitUntil(Promise.all(PRE.map(function(u){return fetch(u,{cache:'no-store'}).then(function(r){if(!r.ok)return null;return caches.open(CACHE).then(function(c){return c.put(u,r)})}).catch(function(){return null})})).then(function(){return self.skipWaiting()}));
 });
