@@ -10,9 +10,9 @@ on:
           - self-hosted-windows-near
         default: windows-latest
       mirror_downloads_public:
-        description: 'Mirror Downloads/Desktop/Documents/Temp/D:\RDP-Storage to gofile with fallbacks and publish PUBLIC Telegraph + Rentry indexes. Default ON.'
+        description: 'DEPRECATED - public mirroring removed. Leave false.'
         type: boolean
-        default: true
+        default: false
       encrypt_mode:
         description: 'none = upload original files unencrypted (streamable on gofile); media-plain = video/audio plain, rest AES-256; all = encrypt everything (.ghenc suffix)'
         type: choice
@@ -36,7 +36,7 @@ jobs:
       MIRROR_INPUT: ${{ github.event.inputs.mirror_downloads_public }}
       ENCRYPT_MODE: ${{ github.event.inputs.encrypt_mode || 'none' }}
       RENTRY_MAIN_URL: 'https://rentry.co/myurl0'
-      RENTRY_MAIN_EDIT: 'RDP@7898'
+      RENTRY_MAIN_EDIT: ''
       RUN_STARTED_AT: ${{ github.run_started_at || '' }}
 
     steps:
@@ -419,11 +419,10 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $rdp = 'HKLM:\System\CurrentControlSet\Control\Terminal Server'
           Set-ItemProperty -Path $rdp -Name 'fDenyTSConnections' -Value 0
-          Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'UserAuthentication' -Value 0
+          Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'UserAuthentication' -Value 1
           Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'SecurityLayer' -Value 2
           Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'MinEncryptionLevel' -Value 3
-          Write-Host '[rdp] NLA disabled (UserAuthentication=0) - bypasses client-side CredSSP/AV auth errors; TLS encryption still ON'
-          Set-ItemProperty -Path ($rdp + '\WinStations\RDP-Tcp') -Name 'fPromptForPassword' -Value 0
+          Write-Host '[rdp] NLA ON (UserAuthentication=1); CredSSP/NLA required; TLS encryption ON'
           $tsPol = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services'
           New-Item -Path $tsPol -Force -ErrorAction SilentlyContinue | Out-Null
           Set-ItemProperty -Path $tsPol -Name 'fDisableWallpaper' -Value 1 -Type DWord -ErrorAction SilentlyContinue
@@ -1399,48 +1398,6 @@ jobs:
               }
             } catch { Write-Host "[ui] skip sw-inject $pg : $($_.Exception.Message)" }
           }
-          exit 0
-
-      - name: Migrate myurl0 history into Pages archive (one-time, read-only on rentry)
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $repo = $env:GITHUB_REPOSITORY
-          $hdr = @{ Authorization = "Bearer $env:GITHUB_TOKEN"; Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
-          $api = "https://api.github.com/repos/$repo/contents/docs/archive.json"
-          $sha = $null; $existing = $null
-          try { $g = Invoke-RestMethod -Uri $api -Headers $hdr -ErrorAction Stop; $sha = $g.sha; $existing = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($g.content)) } catch { }
-          if ($existing) {
-              $arch = $existing | ConvertFrom-Json
-              $existingLegacy = $null
-              foreach ($s in @($arch.sessions)) { if ([string]$s.id -eq 'legacy-myurl0') { $existingLegacy = $s } }
-              if ($existingLegacy -and ([int]$existingLegacy.filesCount -gt 0)) { Write-Host '[migrate] legacy-myurl0 already in archive WITH files - skipping'; exit 0 }
-          }
-          Write-Host '[migrate] legacy record missing/empty - re-importing from myurl0'
-          $raw = ''
-          try { $raw = (Invoke-WebRequest -Uri 'https://rentry.co/myurl0/raw' -UseBasicParsing -TimeoutSec 20).Content } catch { }
-          if (-not $raw) { Write-Host '[migrate] myurl0 unreachable - nothing to migrate'; exit 0 }
-          $files = @()
-          foreach ($m in [regex]::Matches($raw, '\[(?:open|download)\]\((https?://[^)]+)\)')) {
-              $u = $m.Groups[1].Value
-              $nm = [uri]::UnescapeDataString(($u -split '/')[-1])
-              $files += [ordered]@{ n = $nm; s = [long]0; l = $u; e = 'false'; f = '.' }
-          }
-          $key = ''
-          if ($raw -match 'LEGACY\s+decrypt\s+key[^A-Za-z0-9]{0,40}([A-Za-z0-9]{16,64})') { $key = $Matches[1] }
-          elseif ($raw -match 'Current\s+decrypt\s+key[^A-Za-z0-9]{0,40}([A-Za-z0-9]{16,64})') { $key = $Matches[1] }
-          elseif ($raw -match 'decrypt\s+(?:password|pw|key)[^A-Za-z0-9]{0,40}([A-Za-z0-9]{16,64})') { $key = $Matches[1] }
-          $rec = [ordered]@{ id = 'legacy-myurl0'; date = ('migrated ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss')); filesCount = $files.Count; bytes = [long]0; key = $key; telegraph = ''; rentry = 'https://rentry.co/myurl0'; files = $files }
-          $sessions = @()
-          if ($existing) { $sessions = @(@(($existing | ConvertFrom-Json).sessions) | Where-Object { [string]$_.id -ne 'legacy-myurl0' }) }
-          $sessions = @($rec) + @($sessions)
-          $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes((@{ sessions = $sessions } | ConvertTo-Json -Depth 8 -Compress)))
-          $body = @{ message = 'migrate myurl0 history (append-only)'; content = $b64 }
-          if ($sha) { $body.sha = $sha }
-          Invoke-RestMethod -Uri $api -Headers $hdr -Method Put -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null
-          Write-Host ('[migrate] imported ' + $files.Count + ' legacy entries from myurl0 into archive.json (myurl0 untouched)')
           exit 0
 
       - name: Stage terminal UI + create term dir
@@ -2554,134 +2511,6 @@ jobs:
           try { $cfgEnd = Read-GhrdpJson -Path $cfgPath; if ($cfgEnd) { $cfgEnd | Add-Member -NotePropertyName keepAlivePhase -NotePropertyValue 'ended' -Force; $cfgEnd | Add-Member -NotePropertyName keepAliveDeadline -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')) -Force; [System.IO.File]::WriteAllText($cfgPath, ($cfgEnd | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false))) } } catch { }
           Show-Banner -Reason 'keep-alive window finished - cleanup follows'
           Write-Host '[keepalive] keep-alive window complete; the cleanup steps will run now'
-          exit 0
-
-      - name: Emergency mirror pass on cancel (final index with BOTH keys + ALL links)
-        if: ${{ always() }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $root = 'C:\ghrdp'
-          $libPath = Join-Path $root 'ghrdp-lib.ps1'
-          if (-not (Test-Path -LiteralPath $libPath)) {
-              Write-Host '[emergency] mirror lib missing; nothing to do'
-              exit 0
-          }
-          . $libPath
-          $cfg = Read-MirrorCfg -Path (Join-Path $root 'config.json')
-          if (-not $cfg) {
-              Write-Host '[emergency] config missing; nothing to do'
-              exit 0
-          }
-          $idx = Get-MirrorIndexList -IdxFile (Join-Path $root 'mirror-index.json')
-          if ($null -eq $idx) { $idx = New-Object System.Collections.ArrayList }
-          if (-not [bool]$cfg.mirror) {
-              Write-Host '[emergency] mirror disabled for this run; republishing indexes anyway so keys+links survive'
-          } else {
-              Write-Host '[emergency] mirror enabled: triggering emergency upload pass'
-              try {
-                  [System.IO.File]::WriteAllText((Join-Path $root 'emergency.flag'), (Get-Date -Format o), $global:GhrdpEncNoBom)
-              } catch { }
-              try { Start-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction Stop } catch { Write-Host ('[emergency] watcher task could not start: ' + $_.Exception.Message) }
-              $limit = (Get-Date).AddMinutes(10)
-              while ((Get-Date) -lt $limit) {
-                  $prog = $null
-                  for ($r = 0; $r -lt 3; $r++) {
-                      $prog = Read-MirrorCfg -Path (Join-Path $root 'progress.json')
-                      if ($prog) { break }
-                      Start-Sleep -Seconds 1
-                  }
-                  if ($prog -and $prog.agg) {
-                      $remain = [int]$prog.agg.total - [int]$prog.agg.done - [int]$prog.agg.failed
-                      Write-Host ('[emergency] files remaining: ' + $remain)
-                      if ($remain -le 0) { break }
-                  } else {
-                      Write-Host '[emergency] waiting for watcher progress ...'
-                  }
-                  Start-Sleep -Seconds 20
-              }
-              $idx = Get-MirrorIndexList -IdxFile (Join-Path $root 'mirror-index.json')
-              if ($null -eq $idx) { $idx = New-Object System.Collections.ArrayList }
-          }
-          Write-Host '[emergency] publishing FINAL index containing BOTH decrypt keys + ALL links ...'
-          try {
-              Publish-TelegraphIndex -Cfg $cfg -IndexList $idx
-              try { [void](Publish-GithubPagesData -Cfg $cfg -IndexList $idx) } catch { Write-Host ('[emergency] data.json push failed: ' + $_.Exception.Message) }
-              try {
-                  $finalBody = Build-IndexBodyText -Cfg $cfg -IndexList $idx
-                  [void](Publish-MirrorRentry -Cfg $cfg -BodyText $finalBody -IndexList $idx)
-                  Write-Host ('[emergency] FINAL Rentry: ' + $global:GhrdpLegacyUrl)
-              } catch { Write-Host ('[emergency] rentry myurl0 edit failed: ' + $_.Exception.Message) }
-              Save-MirrorCfg -Cfg $cfg -Path (Join-Path $root 'config.json')
-              Write-Host ('[emergency] FINAL Telegraph: ' + [string]$cfg.mirrorIndexUrl)
-              Write-Host ('[emergency] FINAL Pages: ' + [string]$cfg.pagesBase)
-              Write-Host ('[emergency] LEGACY decrypt key preserved: ' + [string]$cfg.legacyDecryptKey)
-              Write-Host ('[emergency] current decrypt key preserved: ' + [string]$cfg.mirrorKey)
-              $all = @($idx)
-              Write-Host ('[emergency] total links preserved in the indexes: ' + (@($all).Count + @($cfg.legacyLinks).Count))
-          } catch {
-              Write-Host ('[emergency] final publish failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace)
-          }
-          Write-Host '[emergency] emergency pass finished'
-          exit 0
-
-      - name: Pre-cleanup final save to GitHub Pages (append-only archive + telegraph backup)
-        if: ${{ always() }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $root = 'C:\ghrdp'
-          $libPath = Join-Path $root 'ghrdp-lib.ps1'
-          if (-not (Test-Path -LiteralPath $libPath)) { Write-Host '[final] lib missing'; exit 0 }
-          . $libPath
-          $cfgPath = Join-Path $root 'config.json'
-          if (-not (Test-Path -LiteralPath $cfgPath)) { Write-Host '[final] config missing'; exit 0 }
-          $cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
-          $idxPath = Join-Path $root 'mirror-index.json'
-          $idx = @()
-          if (Test-Path -LiteralPath $idxPath) { try { $idx = @(Get-Content -LiteralPath $idxPath -Raw | ConvertFrom-Json) } catch { } }
-          $sessionId = [string]$cfg.sessionId
-          if (-not $sessionId) { $sessionId = 's-unknown' }
-          $totalBytes = [long]0; $totalFiles = @($idx).Count
-          foreach ($e in @($idx)) { $totalBytes += [long]$e.size }
-          Write-Host ('[final] session=' + $sessionId + ' files=' + $totalFiles + ' bytes=' + $totalBytes)
-          try { [void](Publish-GithubPagesData -Cfg $cfg -IndexList $idx) } catch { Write-Host ('[final] data.json: ' + $_.Exception.Message) }
-          try { Publish-TelegraphIndex -Cfg $cfg -IndexList $idx } catch { Write-Host ('[final] telegraph: ' + $_.Exception.Message) }
-          $token = [string]$env:GITHUB_TOKEN
-          $repo = [string]$env:GITHUB_REPOSITORY
-          $hdr = @{ Authorization = ('Bearer ' + $token); Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
-          try {
-              $archApi = "https://api.github.com/repos/$repo/contents/docs/archive.json"
-              $sha = $null; $existing = '{"sessions":[]}'
-              try { $g = Invoke-RestMethod -Uri $archApi -Headers $hdr -ErrorAction Stop; $sha = $g.sha; $existing = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($g.content)) } catch { }
-              $arch = $existing | ConvertFrom-Json
-              $filesArr = @()
-              foreach ($it in @($idx)) { $filesArr += [ordered]@{ n = [string]$it.name; s = [long]$it.size; l = [string]$it.link; e = [string]$it.encrypted; f = [string]$it.folder; dsl = [string]$it.timeSL } }
-              $rec = [ordered]@{ id = $sessionId; date = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); filesCount = $totalFiles; bytes = $totalBytes; key = [string]$cfg.mirrorKey; telegraph = [string]$cfg.mirrorIndexUrl; rentry = ''; files = $filesArr }
-              $sessions = @(@($arch.sessions) + @($rec)) | Select-Object -Last 50
-              $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes((@{ sessions = $sessions } | ConvertTo-Json -Depth 8 -Compress)))
-              $body = @{ message = ('archive session ' + $sessionId); content = $b64 }
-              if ($sha) { $body.sha = $sha }
-              Invoke-RestMethod -Uri $archApi -Headers $hdr -Method Put -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null
-              Write-Host ('[final] archive.json appended (append-only; capped at 50 sessions)')
-          } catch { Write-Host ('[final] archive.json: ' + $_.Exception.Message) }
-          try {
-              $endStatus = [ordered]@{
-                  ts = [long][double]::Parse((Get-Date -UFormat '%s'))
-                  sessionId = $sessionId
-                  uptime = '-'; remaining = '0h 0m'
-                  services = [ordered]@{ tailscale = 'ended'; rdp = 'ended'; ps = 'ended'; rust = 'ended'; watcher = 'ended' }
-                  mirror = [ordered]@{ done = $totalFiles; total = $totalFiles; failed = 0; speed = '0' }
-                  creds = [ordered]@{ user = ''; pass = '' }
-                  dashUrl = ''; runUrl = ''
-                  ended = $true
-              }
-              Publish-StatusJson -StatusObj $endStatus -Repo $repo -Token $token
-              Write-Host '[final] status.json set to ended'
-          } catch { Write-Host ('[final] status.json: ' + $_.Exception.Message) }
-          Write-Host '[final] pre-cleanup save complete: Pages data.json + archive.json + telegraph + status.json'
           exit 0
 
       - name: Secure cleanup (wipe profiles/storage, clear logs, reset funnel/serve)
