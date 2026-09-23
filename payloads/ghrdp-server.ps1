@@ -210,52 +210,9 @@ function Invoke-ClientRequest {
             return
         }
         $cfg = Read-JsonFile -Path $script:CfgPath
+        # [remediation 8A] /rentrydiag removed: no public-mirror editing
         if ($path -eq '/rentrydiag') {
-            $editCode = [string]$cfg.rentryEditCode
-            $pageCode = ([string]$cfg.legacyIndexUrl -replace '^https://rentry\.co/', '')
-            if (-not $pageCode) { $pageCode = 'myurl0' }
-            $apply = ($parts.query.ContainsKey('apply') -and ([string]$parts.query['apply'] -eq '1'))
-            $jar = Join-Path $env:TEMP ('ghrdp-diag-' + [guid]::NewGuid().ToString('N') + '.txt')
-            $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-            $patterns = @(
-                @{ name = 'edit/<edit_code>';  url = ('https://rentry.co/edit/' + [uri]::EscapeDataString($editCode)) },
-                @{ name = 'edit/<page_code>';  url = ('https://rentry.co/edit/' + $pageCode) },
-                @{ name = '<page_code>/edit';  url = ('https://rentry.co/' + $pageCode + '/edit') }
-            )
-            $results = New-Object System.Collections.ArrayList
-            $workUrl = $null; $workCsrf = $null; $workCurrent = $null
-            foreach ($pt in $patterns) {
-                $html = (& curl.exe -sL -b $jar -c $jar --max-time 15 -A $ua $pt.url 2>$null) -join "`n"
-                $csrf = ''; $cur = ''; $isErr = ($html -match '<title>Error</title>')
-                if ($html -match 'name="csrfmiddlewaretoken"\s+value="([^"]+)"') { $csrf = $Matches[1] }
-                if ($html -match '(?s)<textarea[^>]*name="text"[^>]*>(.*?)</textarea>') { $cur = [System.Net.WebUtility]::HtmlDecode($Matches[1]) }
-                [void]$results.Add(@{ pattern = $pt.name; url = $pt.url; errorPage = $isErr; csrfFound = ([bool]$csrf); textareaFound = ([bool]$cur) })
-                if ($csrf -and $cur -and (-not $workUrl)) { $workUrl = $pt.url; $workCsrf = $csrf; $workCurrent = $cur }
-            }
-            $applied = $false; $applyMsg = 'not applied'
-            if ($apply -and $workUrl) {
-                $body = $workCurrent
-                $idxJson = $null
-                try { $idxJson = Read-JsonFile -Path (Join-Path $script:Root 'mirror-index.json') } catch { }
-                if ($idxJson) {
-                    $body += "`r`n`r`nCURRENT RUN FILES:`r`n"
-                    $i = 1
-                    foreach ($it in @($idxJson)) {
-                        $body += ('{0}. {1} ({2} bytes) {3} {4}' -f $i, [string]$it.name, [string]$it.size, [string]$it.time, [string]$it.link) + "`r`n"
-                        $i++
-                    }
-                    if ([string]$cfg.mirrorKey) { $body += ("`r`nCurrent decrypt key: " + [string]$cfg.mirrorKey) }
-                }
-                $bf = Join-Path $env:TEMP ('ghrdp-apply-' + [guid]::NewGuid().ToString('N') + '.txt')
-                [System.IO.File]::WriteAllText($bf, $body, $script:NoBom)
-                $po = (& curl.exe -s -b $jar -A $ua -e $workUrl -X POST $workUrl --data-urlencode ('csrfmiddlewaretoken=' + $workCsrf) --data-urlencode ('edit_code=' + $editCode) --data-urlencode ('text@' + $bf) 2>$null) -join "`n"
-                $applied = ($po -notmatch '<title>Error</title>')
-                $applyMsg = if ($applied) { 'myurl0 append SUCCEEDED via ' + ($results | Where-Object { $_.csrfFound -and $_.textareaFound } | Select-Object -First 1).pattern } else { 'append still failed (rentry rejected POST)' }
-                Remove-Item -LiteralPath $bf -Force -ErrorAction SilentlyContinue
-            }
-            Remove-Item -LiteralPath $jar -Force -ErrorAction SilentlyContinue
-            $out = [ordered]@{ editCode = $editCode; pageCode = $pageCode; patterns = $results; workingPattern = $workUrl; applied = $applied; applyMsg = $applyMsg }
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes $out)
+            Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('endpoint removed per remediation'))
             return
         }
         if ($path -eq '/flush') {
