@@ -1650,46 +1650,8 @@ jobs:
           } else { Write-Host '[vdd] inf not found in zip' }
           exit 0
 
-      - name: D1 synthetic tailnet agent gate (F4/#61/#64 loopback quirk fix)
-        shell: pwsh
-        continue-on-error: true
-        run: |
-          $ErrorActionPreference = 'Continue'
-          # F4 fix: loopback 401s on some builds. Use tailnet IP + ?key for every call.
-          $cfg = Get-Content 'C:\ghrdp\config.json' -Raw | ConvertFrom-Json
-          $dashKey = (Get-Content 'C:\ghrdp\dash-token.txt' -Raw).Trim()
-          $addr = $null
-          if (-not [Net.IPAddress]::TryParse([string]$cfg.rdpIp, [ref]$addr)) { Write-Host 'D1 GATE FAIL: config.rdpIp not parseable'; exit 0 }
-          $base = 'http://' + $addr.ToString() + ':7331'
-          $key = [uri]::EscapeDataString($dashKey)
-          Write-Host ('D1 base=' + $base + ' auth=?key (redacted)')
-          function Url([string]$p) { $s = '?'; if ($p.Contains('?')) { $s = '&' }; return $base + $p + $s + 'key=' + $key }
-          try {
-            # Enroll
-            $enrollBody = (@{dev='ci-localtest'; deviceIdHint='localtest'; name='ci-synthetic'; os='synthetic'} | ConvertTo-Json -Compress)
-            $er = Invoke-RestMethod -Uri (Url '/api/device-enroll') -Method POST -Body $enrollBody -ContentType 'application/json' -TimeoutSec 6
-            $tok = $er.deviceToken
-            $devId = $er.deviceId
-            # Queue command
-            $cmdBody = (@{deviceId=$devId; action='rdp'; clip=$true; mic=$false; print=$false; drives=$false} | ConvertTo-Json -Compress)
-            $q = Invoke-RestMethod -Uri (Url '/api/client-cmd') -Method POST -Body $cmdBody -ContentType 'application/json' -TimeoutSec 6
-            $cmdId = $q.cmdId
-            # Synthetic agent poll + status POST via tailnet + dt (single-slot semantics)
-            Start-Job -ScriptBlock {
-              param($base, $devId, $tok, $cmdId)
-              $c = Invoke-RestMethod -Uri ($base + '/api/client-cmd?device=' + [uri]::EscapeDataString($devId) + '&dt=' + [uri]::EscapeDataString($tok)) -TimeoutSec 5
-              $sBody = @{deviceId=$devId; dt=$tok; cmdId=$cmdId; stage='connected'; mstscPid=999; logonAge=0; build='ci-synthetic'; regPath=''; taskOk=$false; err=''} | ConvertTo-Json -Compress
-              Invoke-RestMethod -Uri ($base + '/api/agent-status') -Method POST -Body $sBody -ContentType 'application/json' -TimeoutSec 5
-            } -ArgumentList $base, $devId, $tok, $cmdId | Out-Null
-            Start-Sleep -Seconds 3
-            $s = Invoke-RestMethod -Uri (Url ('/api/agent-status?device=' + [uri]::EscapeDataString($devId))) -TimeoutSec 5
-            if ($s.stage -eq 'connected') { Write-Host ('D1 GATE PASS: base=' + $base + ' devId=' + $devId + ' stage=connected') } else { Write-Host ('D1 GATE FAIL stage=' + $s.stage); exit 0 }
-          } catch {
-            $code = 'none'
-            if ($_.Exception.Response) { $code = [string][int]$_.Exception.Response.StatusCode }
-            Write-Host ('D1 GATE FAIL HTTP=' + $code + ' err=' + $_.Exception.Message)
-            exit 0
-          }
+      # [remediation #7D] prior tailnet-agent gate step removed - it drove
+      # the C2 enroll/client-cmd/agent-status flow whose endpoints are now 404.
 
       - name: Keep-alive 5h30 (60s heartbeat, rust probe, auto-restart, banners)
         if: ${{ always() }}
@@ -1898,54 +1860,15 @@ jobs:
                   Write-Host '     funnel (public) ...: (off - set optional TS_API_KEY to enable)'
               }
               Write-Host ''
-              Write-Host ('  ' + $icons.link + ' INDEXES & KEYS')
-              Write-Host ('     Mirror (Pages) .....: ' + [string]$cfg.pagesBase + '/search.html')
-              Write-Host ('     Explorer (Win11) ...: ' + [string]$cfg.pagesBase + '/explorer.html')
-              Write-Host ('     Archive / Decrypt ..: ' + [string]$cfg.pagesBase + '/archive.html  |  ' + [string]$cfg.pagesBase + '/decrypt.html')
-              Write-Host ('     Legacy Rentry ......: ' + $legacyUrl)
-              if ($legacyKey) {
-                  Write-Host ('     LEGACY decrypt key .: ' + $legacyKey + '   (files uploaded before this run)')
-              } else {
-                  Write-Host '     LEGACY decrypt key .: (not found / page unreachable)'
-              }
-              if ($rentryNew) {
-                  Write-Host ('     New Rentry .........: ' + $rentryNew)
-              } else {
-                  Write-Host '     New Rentry .........: (pending - appears at first upload; Pages mirror already live above)'
-              }
-              if ($tele) {
-                  Write-Host ('     Telegraph ..........: ' + $tele)
-              } else {
-                  Write-Host '     Telegraph ..........: (pending - appears at first upload; Pages mirror already live above)'
-              }
-              if ($mirrorOn -and $mirrorKey) {
-                  Write-Host ('     Current decrypt key : ' + $mirrorKey + '   (current run)')
-              } else {
-                  Write-Host '     Current decrypt key : (mirror OFF this run)'
-              }
-              if ($egress) {
-                  Write-Host ('     Runner egress ......: ' + $egress + '  (uploads execute ON THE RUNNER - your PC is never used)')
-              } else {
-                  Write-Host '     Runner egress ......: unknown (lookup failed) - uploads still run on the runner'
-              }
-              Write-Host ''
-              Write-Host ('  ' + $icons.folder + ' LAST 5 UPLOADED LINKS')
-              $last5 = Get-Last5Links
-              if (@($last5).Count -eq 0) {
-                  Write-Host '     (no files uploaded yet)'
-              } else {
-                  foreach ($l in @($last5)) { Write-Host ('     ' + $l) }
-              }
-              Write-Host ''
+              # [remediation #7D] INDEXES & KEYS + LAST 5 UPLOADED LINKS banner sections
+              # removed - mirror/Pages/Rentry/Telegraph publishing is disabled and their
+              # URLs/keys must not be surfaced.
               Write-Host ('  ' + $icons.screen + ' RDP CONNECTION')
               if ($ip) {
-                  Write-Host ('     one-click (handler): ghrdp://ip=' + $ip + '&user=' + $user + '&pass=<session password>')
                   Write-Host ('     mstsc command ......: mstsc /v:' + $ip)
               }
               Write-Host ('     user ...............: ' + $user)
-              if ($pass) {
-                  Write-Host ('     password ...........: ' + $pass + '   (also shown inside the dashboard)')
-              }
+              # [remediation #7D] embedded-creds ghrdp:// URL + password banner line removed.
               Write-Host ''
               Write-Host ('  ' + $icons.siren + ' EMERGENCY STOP')
               Write-Host ('     web : open ' + $runUrl + '  and press "Cancel workflow"')
