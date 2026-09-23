@@ -2221,7 +2221,7 @@ jobs:
           Write-Host '[keepalive] keep-alive window complete; the cleanup steps will run now'
           exit 0
 
-      - name: Secure cleanup (wipe profiles/storage, clear logs, reset funnel/serve)
+      - name: Cleanup (wipe profiles/storage, reset funnel/serve) - no log-clear per remediation 8E
         if: ${{ always() && env.GHRDP_EPHEMERAL == 'true' }}
         shell: pwsh
         run: |
@@ -2288,27 +2288,7 @@ jobs:
           foreach ($n in @('RDP-Storage (D).lnk', 'Mission Control.lnk', 'GHRDP Start (watcher + dashboard).lnk', 'DEBUG-GHRDP.bat', 'GHRDP-DEBUG-REPORT.txt')) {
               try { Remove-Item -LiteralPath ('C:\Users\Public\Desktop\' + $n) -Force -ErrorAction SilentlyContinue } catch { }
           }
-          try {
-              $logNames = @(& wevtutil.exe el 2>$null)
-              $LASTEXITCODE = 0
-              $stopAt = (Get-Date).AddSeconds(90)
-              $cleared = 0
-              foreach ($lg in @($logNames)) {
-                  if ((Get-Date) -gt $stopAt) { break }
-                  if ($lg) {
-                      & wevtutil.exe cl $lg 2>$null
-                      $LASTEXITCODE = 0
-                      $cleared++
-                  }
-              }
-              Write-Host ('[cleanup] event logs cleared: ' + $cleared)
-          } catch {
-              Write-Host ('[cleanup] log clear failed: ' + $_.Exception.Message)
-          }
-          try {
-              $hist = Join-Path $env:USERPROFILE 'AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt'
-              if (Test-Path -LiteralPath $hist) { Remove-Item -LiteralPath $hist -Force -ErrorAction SilentlyContinue }
-          } catch { }
+          # [remediation 8E] wevtutil cl event-log-clear loop + PSReadLine history delete removed - no anti-forensics.
           if (Test-Path -LiteralPath $ts) {
               try { & $ts logout 2>$null | Out-Null } catch { }
               $LASTEXITCODE = 0
@@ -2333,39 +2313,4 @@ jobs:
           } catch { Write-Host ('[cleanup] finalize failed: ' + $_.Exception.Message) }
           exit 0
 
-      - name: Overwrite free space (skipped when cancelled)
-        if: ${{ always() && !cancelled() && env.GHRDP_EPHEMERAL == 'true' }}
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $deadline = (Get-Date).AddMinutes(4)
-          $wipeDir = 'C:\ghrdp-wipe'
-          New-Item -ItemType Directory -Path $wipeDir -Force -ErrorAction SilentlyContinue | Out-Null
-          $rng = $null
-          $buf = $null
-          $chunks = 0
-          try {
-              $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-              $buf = New-Object byte[] 4194304
-              $rng.GetBytes($buf)
-              while ((Get-Date) -lt $deadline) {
-                  $free = $null
-                  try { $free = (Get-PSDrive -Name C -ErrorAction Stop).Free } catch { }
-                  if ($null -eq $free -or $free -lt 2147483648) { break }
-                  $path = Join-Path $wipeDir ('w{0:d6}.bin' -f $chunks)
-                  try {
-                      [System.IO.File]::WriteAllBytes($path, $buf)
-                      $chunks++
-                  } catch { break }
-                  if (($chunks % 64) -eq 0) {
-                      try { $rng.GetBytes($buf) } catch { }
-                  }
-              }
-          } catch {
-              Write-Host ('[wipe] error: ' + $_.Exception.Message)
-          } finally {
-              if ($rng) { $rng.Dispose() }
-          }
-          try { Remove-Item -LiteralPath $wipeDir -Recurse -Force -ErrorAction SilentlyContinue } catch { }
-          Write-Host ('[wipe] free-space overwrite wrote {0} x 4 MiB chunks' -f $chunks)
-          exit 0
+# [remediation 8E] "Overwrite free space" step removed - no anti-forensics.
