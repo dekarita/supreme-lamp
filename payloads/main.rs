@@ -130,13 +130,13 @@ fn build_snapshot(root: &Path, wire_opt: Option<Value>) -> Value {
         })
         .unwrap_or_default();
 
+    // [remediation 8G] rdpPass no longer surfaced in dashboard snapshot; view-only IP/user.
     json!({
         "serverTs": now_iso(),
         "kind": "snapshot",
         "creds": {
   "ip": cfg_str(&cfg, "rdpIp"),
   "user": cfg_str(&cfg, "rdpUser"),
-  "pass": cfg_str(&cfg, "rdpPass"),
         },
         "ghrdp": cfg_str(&cfg, "ghrdp"),
         "mirror": mirror,
@@ -286,7 +286,15 @@ async fn api_config(State(state): State<SharedState>) -> Response {
         .await
         .unwrap_or(None);
     match config {
-        Some(value) => Json(value).into_response(),
+        // [remediation 8G] filter secrets out of /api/config response.
+        Some(mut value) => {
+            if let Some(obj) = value.as_object_mut() {
+                for k in ["rdpPass", "mirrorKey", "rentryEditCode", "legacyDecryptKey"] {
+                    obj.remove(k);
+                }
+            }
+            Json(value).into_response()
+        }
         None => (StatusCode::NOT_FOUND, "config.json missing").into_response(),
     }
 }
@@ -1057,32 +1065,15 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <h2>Connection</h2>
   <div class="row"><span class="k">Tailscale IP</span><span class="v" id="credIp">__IP__</span><button onclick="copyById('credIp',this)">copy</button></div>
   <div class="row"><span class="k">RDP username</span><span class="v" id="credUser">__USER__</span><button onclick="copyById('credUser',this)">copy</button></div>
-  <div class="row"><span class="k">RDP password</span><span class="v" id="credPass">__PASS__</span><button onclick="copyById('credPass',this)">copy</button></div>
+  <!-- [remediation 8G] RDP password row removed; use mstsc + host-only cred display in the PS server /rdp-creds (tailnet only). -->
   <div class="row"><span class="k">mstsc command</span><span class="v" id="mstscVal">mstsc /v:__IP__</span><button onclick="copyById('mstscVal',this)">copy</button></div>
   <div class="row"><span class="k">Connectivity</span><span class="timer" id="connRtt" style="font-size:18px">-- ms</span><span class="badge" id="connBadge">path: --</span><span class="badge" id="connFps">-- fps</span><span class="badge" id="connJit">jit -- ms</span><canvas id="connSpark" width="220" height="34" style="width:220px;height:34px"></canvas></div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
   <div class="row"><span class="k">RDP logon age</span><span class="timer" id="timerRdpAge">--:--:--</span></div>
   <div class="row"><span class="k">Remaining (5h30 session)</span><span class="timer" id="timerRemaining">--:--:--</span></div>
   <div class="banner ended" id="endedBanner" style="display:none;">SESSION EXPIRED - GitHub hard cap reached. Runner termination imminent.</div>
-  <div class="row"><span class="k">One-click RDP</span>
-<a id="batNow" class="btn primary" href="#" download="ghrdp-connect-now.bat">auto-connect NOW (.bat)</a>
-<a id="ghrdpLink" class="btn" href="ghrdp://ip=__IP__&amp;user=__USER__&amp;pass=__PASS__" onclick="return openRdp(event)">open RDP via ghrdp://</a>
-<a id="batInstall" class="btn" href="#" download="ghrdp-install.bat">install one-click handler (.bat)</a>
-<button onclick="showInstall()">handler help</button>
-</div>
-<div class="row"><span class="k">Parsec auto-login</span>
-<button class="primary" id="parsecPushBtn" title="Upload my Parsec login to the runner automatically">&#9654; push Parsec login from THIS PC</button>
-<button id="parsecPickBtn">manual select (fallback)</button>
-<input type="file" id="parsecFiles" multiple accept=".json,.txt,.bin" style="display:none">
-<span class="note">play = handler uploads %APPDATA%\Parsec (config + user.bin) to the runner AND opens that folder in Explorer. No copy, no picker.</span></div>
-</section>
-<section class="glass" id="installPanel" style="display:none">
-  <h2>ghrdp:// setup &amp; fallback</h2>
-  <div class="note" id="installDetected">The ghrdp:// protocol handler is not installed on this PC (the browser shows the request as canceled).</div>
-  <div class="row"><button class="primary" id="playInstall" title="Run the installer automatically">&#9654; Run installer automatically</button><span class="note" id="installState">click play. if nothing opens, the installer downloads ONCE - open Downloads, right-click install.ps1 &gt; Run with PowerShell. After that every play button runs automatically.</span></div>
-  <div class="row"><span class="note">Prefer double-click? download <a id="installBat" href="/install.bat">install.bat</a> and run it once (SmartScreen may warn - choose Run).</span></div>
-  <div class="note"><b>No install needed?</b> Use the mstsc command above. Handler log on YOUR PC: <span style="font-family:ui-monospace,Consolas,monospace">%LOCALAPPDATA%\ghrdp\ghrdp-connect.log</span></div>
-  <div class="note"><b>Option C</b> - use the mstsc command above (no install needed). Log on YOUR PC: <span style="font-family:ui-monospace,Consolas,monospace">%LOCALAPPDATA%\ghrdp\ghrdp-connect.log</span></div>
+  <!-- [remediation 8G] one-click .bat auto-connect + ghrdp:// embedded-cred URL + install.bat + Parsec-push panel removed. Use the mstsc command above; enter credentials in the RDP prompt (get password from Mission Control host-only /rdp-creds). -->
+  <div class="row"><span class="k">How to connect</span><span class="note">1) run the mstsc command above  2) enter <b>__USER__</b> when prompted  3) fetch password from Mission Control (tailnet-only <code>/rdp-creds</code>) and paste. NLA is required.</span></div>
 </section>
 <section class="glass" id="sec-keys">
   <h2>Indexes &amp; keys</h2>
@@ -1178,8 +1169,9 @@ function closeDrawer(){$('drawer').classList.remove('open');$('drawer').setAttri
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeDrawer()});
 function launchProto(url){var ifr=document.createElement('iframe');ifr.style.display='none';ifr.setAttribute('aria-hidden','true');ifr.src=url;document.body.appendChild(ifr);setTimeout(function(){if(ifr&&ifr.parentNode)ifr.parentNode.removeChild(ifr);},4000);}
 window.ghrdpLaunchProto=launchProto;
-function openRdp(ev){if(ev&&ev.preventDefault)ev.preventDefault();if(!ghrdpUrl){showInstall('Cannot build the ghrdp:// link yet - wait for live data.');return false}var wasFocused=true;var lost=function(){wasFocused=false};window.addEventListener('blur',lost);var visLost=function(){if(document.hidden)wasFocused=false};document.addEventListener('visibilitychange',visLost);launchProto(ghrdpUrl);setTimeout(function(){window.removeEventListener('blur',lost);document.removeEventListener('visibilitychange',visLost);if(wasFocused)showInstall('ghrdp:// handler NOT detected (no hand-off happened). Install it below or use the mstsc command.')},900);return false}
-function showInstall(msg){var p=$('installPanel');if(msg){var d=$('installDetected');if(d)d.textContent=msg}p.style.display='block';try{p.scrollIntoView({behavior:'smooth',block:'center'})}catch(e){}}
+// [remediation 8G] openRdp() + showInstall() no-op'd - dashboard has no ghrdp:// / one-click launch.
+function openRdp(ev){if(ev&&ev.preventDefault)ev.preventDefault();return false;}
+function showInstall(msg){/* [remediation 8G] installPanel removed */}
 function chip(id,text,cls){var p=$(id);if(!p)return;p.className='chip '+(cls||'');p.innerHTML='<i class="dot"></i><span>'+esc(text)+'</span>'}
 (function(){var box=$('logBox');if(!box)return;box.addEventListener('mouseenter',function(){logPaused=true});box.addEventListener('mouseleave',function(){logPaused=false})})();
 function toggleLogPause(btn){logPaused=!logPaused;btn.textContent=logPaused?'resume':'pause';btn.classList.toggle('copied',logPaused)}
@@ -1195,16 +1187,8 @@ function render(d){
   var c=d.creds||{};
   if(c.ip){$('credIp').textContent=c.ip;$('mstscVal').textContent='mstsc /v:'+c.ip;var ic=$('instCmd');if(ic)ic.textContent='irm http://'+c.ip+':7331/install.ps1 | iex';var pl=$('primaryLink');if(pl){pl.textContent='http://'+c.ip+':7332/';pl.href='http://'+c.ip+':7332/'}var fl=$('fallbackLink');if(fl){fl.textContent='http://'+c.ip+':7331/';fl.href='http://'+c.ip+':7331/'}}
   if(c.user)$('credUser').textContent=c.user;
-  if(c.pass)$('credPass').textContent=c.pass;
-  if(c.ip&&c.user){
-    function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
-    ghrdpUrl='ghrdp://ip='+encodeURIComponent(c.ip)+'&u=b64u:'+b64u(c.user)+'&p=b64u:'+b64u(c.pass||'');
-    var a1=$('ghrdpLink');if(a1)a1.href=ghrdpUrl;
-    var a2=$('retryLink');if(a2)a2.href=ghrdpUrl;
-    var b1=$('batNow');if(b1){b1.href='http://'+c.ip+':7331/connect-now.bat';}
-    var b2=$('batInstall');if(b2){b2.href='http://'+c.ip+':7331/install.bat';}
-    var ibat=$('installBat');if(ibat)ibat.href='http://'+c.ip+':7331/install.bat';
-  }
+  // [remediation 8G] c.pass no longer surfaced by server; do not display or embed in URLs.
+  // credPass DOM element removed; ghrdp:// URL builder removed; .bat auto-connect wires removed.
   if(d.runnerEgressIp){
     $('egressLine').textContent='Uploads execute ON THE RUNNER (egress IP '+d.runnerEgressIp+') - your PC\'s connection is never used for uploads.';
     $('egressLine').className='banner egress';
@@ -1510,88 +1494,28 @@ function tryProto(url, onMissing){
 function launchDl(ip){
  try{ var a=document.createElement('a'); a.href='http://'+ip+':7331/install.ps1'; a.setAttribute('download','install.ps1'); document.body.appendChild(a); a.click(); a.remove(); }catch(e){}
 }
-var pi=document.getElementById('playInstall');
-if(pi) pi.onclick=function(){
- var ip=runnerIp();
- tryProto('ghrdp://ip='+encodeURIComponent(ip)+'&mode=install&src='+encodeURIComponent('http://'+ip+':7331/install.ps1'), function(){
-  var st=document.getElementById('installState');
-  if(st) st.textContent='Handler not found yet - installer downloaded ONCE. Open Downloads, right-click install.ps1 > Run with PowerShell. After that every play button runs automatically.';
-  if(ip) launchDl(ip);
- });
-};
-var pb=document.getElementById('parsecPushBtn');
-var fin=document.getElementById('parsecFiles');
-if(pb) pb.onclick=function(){
- var ip=runnerIp();
- tryProto('ghrdp://ip='+encodeURIComponent(ip)+'&port=7331&mode=parsec-push', function(){ if(fin) fin.click(); });
-};
-var pk=document.getElementById('parsecPickBtn');
-if(pk) pk.onclick=function(){ var f=document.getElementById('parsecFiles'); if(f) f.click(); };
-if(fin) fin.onchange=function(){
- var files=fin.files||[]; var cfg=null, bin=null;
- for(var i=0;i<files.length;i++){ var nm=(files[i].name||'').toLowerCase(); if(nm==='user.bin') bin=files[i]; if(nm==='config.txt'||nm==='config.json') cfg=files[i]; }
- if(!cfg||!bin){ tMsg('Select BOTH config.txt (or config.json) AND user.bin from %APPDATA%\\Parsec','bad'); fin.value=''; return; }
- var ip=runnerIp();
- if(!ip){ tMsg('No runner IP yet - wait for live data','bad'); fin.value=''; return; }
- tMsg('Uploading Parsec login to runner...','warn');
- Promise.all([cfg.arrayBuffer(),bin.arrayBuffer()]).then(function(bs){
-  var body=JSON.stringify({cfgName:cfg.name,cfgB64:b64buf(bs[0]),binB64:b64buf(bs[1]),host:location.hostname});
-  return fetch('http://'+ip+':7331/parsec-push',{method:'POST',headers:{'Content-Type':'application/json'},body:body});
- }).then(function(r){ if(!r) return null; if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }).then(function(j){ if(j&&j.ok){ tMsg('Parsec login pushed: '+j.message,'ok'); } else if(j){ tMsg('Push rejected: '+j.message,'bad'); } }).catch(function(e){ tMsg('Push failed: '+e.message+' - open the dashboard at the :7331 origin (same origin) and retry','bad'); });
- fin.value='';
-};
+// [remediation 8G] playInstall / parsecPushBtn / parsecPickBtn / parsecFiles handlers removed.
+// Install-handler flow deleted; Parsec push (which fetched /parsec-push, now 404) deleted.
 })();
 </script>
 <script>
+// [remediation 8G] auto-login + one-click ghrdp:// UI rebuild removed. Dashboard exposes only view-only mstsc command.
 (function(){
 function rm(el){if(el&&el.parentNode)el.parentNode.removeChild(el);}
-rm(document.getElementById('batNow'));rm(document.getElementById('batInstall'));rm(document.getElementById('installPanel'));rm(document.getElementById('ghrdpLink'));
-document.querySelectorAll('a,button').forEach(function(a){var t=(a.textContent||'');if(/\.bat\b/i.test(t)||/install one-click handler/i.test(t)||/auto-connect NOW/i.test(t)||/Run installer automatically/i.test(t))rm(a);});
-document.querySelectorAll('a[href*="install.ps1"],a[href*="install.bat"]').forEach(rm);
-var sec=document.getElementById('sec-conn');if(!sec)return;
-var row=document.createElement('div');row.className='row';row.id='rdpResRow';
-row.innerHTML='<span class="k">RDP resources</span>'+
-'<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="resClip" checked> Clipboard</label>'+
-'<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="resMic"> Microphone</label>'+
-'<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="resPrint"> Printers</label>'+
-'<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="resDrives"> Local disks</label>';
-var rows=sec.querySelectorAll('.row');if(rows.length)rows[0].parentNode.insertBefore(row,rows[0]);
-var act=document.createElement('div');act.className='row';act.id='autoRow';
-act.innerHTML='<span class="k">One-click RDP</span><a id="autoLogin" class="btn primary" href="#">AUTO-LOGIN RDP (web)</a><a id="webDesk" class="btn" href="#">WEB DESKTOP (zero-install)</a><span class="note" id="ghNotice"></span><span id="sessPill" class="note" style="padding:4px 8px;border-radius:6px;font-size:12px"></span>';
-sec.appendChild(act);
-window.showInstall=function(msg){var n=document.getElementById('ghNotice');if(n)n.textContent=msg||'';};
-function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
-function flags(){return '&clip='+(document.getElementById('resClip').checked?1:0)+'&mic='+(document.getElementById('resMic').checked?1:0)+'&print='+(document.getElementById('resPrint').checked?1:0)+'&drives='+(document.getElementById('resDrives').checked?1:0);}
-function launchUrl(u){if(window.ghrdpLaunchProto){window.ghrdpLaunchProto(u);return;}var ifr=document.createElement('iframe');ifr.style.display='none';try{document.body.appendChild(ifr);ifr.src=u;}catch(e){}}
-document.getElementById('webDesk').onclick=function(e){e.preventDefault();var c=(window.lastData&&lastData.creds)||{};var ip=c.ip||location.hostname;window.open('http://'+ip+':7331/webdesk','_blank');};
-document.getElementById('autoLogin').onclick=function(e){e.preventDefault();var c=(window.lastData&&lastData.creds)||{};var ip=c.ip||location.hostname;var base='http://'+ip+':7331';var u='ghrdp://ip='+encodeURIComponent(ip)+'&u=b64u:'+b64u(c.user||'')+'&p=b64u:'+b64u(c.pass||'')+flags();var pill=document.getElementById('sessPill');if(pill){pill.style.background='#0b2a3d';pill.style.color='#b7e3f5';pill.textContent='connecting... (polling runner for session)';}launchUrl(u);var n=0;var iv=setInterval(function(){n++;fetch(base+'/webdesk-probe',{cache:'no-store'}).then(function(r){return r.json();}).then(function(p){if(p&&p.session){clearInterval(iv);if(pill){pill.style.background='#0b3d1f';pill.style.color='#b7f5c9';pill.textContent='SESSION LIVE - WEB DESKTOP buttons active';}window.open(base+'/webdesk','_blank');}else if(n>=20){clearInterval(iv);if(pill){pill.style.background='#3d0b0b';pill.style.color='#f5b7b7';pill.textContent='handler connected නෑ - helper log එක බලන්න: %LOCALAPPDATA%\\ghrdp\\ghrdp-connect.log (handler install නැත්නම් handler help → install.bat ONCE)';}}}).catch(function(){if(n>=20)clearInterval(iv);});},1000);};
+// Defense-in-depth: strip any stale DOM elements a cached page might still have.
+['batNow','batInstall','installPanel','ghrdpLink','credPass','parsecPushBtn','parsecPickBtn','parsecFiles','playInstall','autoLogin'].forEach(function(id){rm(document.getElementById(id));});
+document.querySelectorAll('a[href*="install.ps1"],a[href*="install.bat"],a[href*="connect-now.bat"],a[href*="/parsec-push"],a[href^="ghrdp://"]').forEach(rm);
 })();
 </script>
-<script>
-(function(){
-if(sessionStorage.getItem('ghrdpOrch')==='1')return; sessionStorage.setItem('ghrdpOrch','1');
-var base=(location.port==='7331'||location.port==='7332')?location.origin:('http://'+location.hostname+':7331');
-function P(u,o){return fetch(base+u,Object.assign({cache:'no-store'},o)).then(function(r){return r.json();});}
-function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
-function fire(u){var ifr=document.createElement('iframe');ifr.style.display='none';try{document.body.appendChild(ifr);ifr.src=u;}catch(e){}}
-var tried=false, opened=false;
-function tick(){
- P('/webdesk-probe').catch(function(){return null;}).then(function(pr){
-  if(!pr)return;
-  if(pr.session&&!opened){opened=true;window.open(base+'/webdesk','_blank');}
-  if(!pr.session&&!tried){tried=true;P('/api/config').catch(function(){return null;}).then(function(cf){ if(cf&&cf.rdpIp&&cf.rdpUser){ fire('ghrdp://ip='+encodeURIComponent(cf.rdpIp)+'&u=b64u:'+b64u(cf.rdpUser)+'&p=b64u:'+b64u(cf.rdpPass||'')); } });}
- });
-}
-tick(); setInterval(tick,10000);
-})();
-</script>
+<!-- [remediation 8G] background ghrdp:// auto-fire orchestrator removed - it embedded rdpPass into an iframe src URL. -->
+
 <script>
 (function(){
 setInterval(function(){
  fetch('/api/progress',{cache:'no-store'}).then(function(r){return r.json();}).then(function(p){
    var pill=document.getElementById('sessPill'); if(!pill)return;
    if(p&&(p.sessionStartedAt||p.alive)){ pill.style.background='#0b3d1f'; pill.style.color='#b7f5c9'; pill.textContent='SESSION LIVE - WEB DESKTOP buttons active'; }
-   else { pill.style.background='#3d2a0b'; pill.style.color='#f5d9b7'; pill.textContent='NO SESSION - click AUTO-LOGIN RDP once to start'; }
+   else { pill.style.background='#3d2a0b'; pill.style.color='#f5d9b7'; pill.textContent='NO SESSION - run the mstsc command above to log in'; }
  }).catch(function(){});
 },5000);
 })();
