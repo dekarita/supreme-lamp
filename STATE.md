@@ -39,14 +39,21 @@
 - Push: 665d0897..d8f5b529  main -> main (verified: git ls-remote origin refs/heads/main == local HEAD).
 - Workflow is workflow_dispatch-only - push triggered nothing; next manual dispatch runs remediated code.
 
+## Migration P1-P3 (Tailscale cert + FQDN + POST token)
+- P1. [DONE] payloads/Enable-RdpTlsCertificate.ps1: `tailscale cert <fqdn>` -> LocalMachine\My (PersistKeySet|MachineKeySet) -> Win32_TSGeneralSetting.SetSSLCertificateSHA1Hash (SSLCertificateSHA1Hash registry fallback). Grants NETWORK SERVICE read on priv key. Idempotent. Re-asserts NLA=1 pre + post. Requires PS 7+ + tailnet HTTPS enabled. docs/MIGRATION.md §1.3 rewritten (public LE chain -> zero client trust-store manipulation).
+- P2. [DONE] helper-ghrdp-connect.ps1 refuses non-`*.ts.net` server response (no IP fallback, no server= fallback). ghrdp-server.ps1 /api/rdp-creds returns 409 if config.rdpIp isn't FQDN; response fields `host` + `fqdn` (dropped `hostip` alias). docs/MIGRATION.md §1.4 rewritten: TERMSRV/<fqdn>.ts.net explicit, interactive cmdkey only (no /pass: on cmdline -> avoids ETW/wmic/EDR plaintext exposure).
+- P3. [DONE] /api/rdp-creds POST-only (GET -> 410 Gone; token no longer in query string / logs / history). Token in JSON body. Legacy tailnet-source no-token path removed (network guard is not auth). Handler: Global\GHRDP-<fqdn> named mutex wraps mstsc launch; startup sweeps stale TERMSRV/*.ts.net cmdkey entries (log-only, no auto-delete); structured JSONL audit at %LOCALAPPDATA%\ghrdp\ghrdp-connect.log (event + ts + fqdn + pid + exit + ms).
+
 ## Residual flags
 - payloads/ghrdp-uninstall.ps1: cmdkey /list + /delete kept for prior-stash cleanup (removes, does not stash) - benign.
 - No local Rust toolchain -> cargo check for main.rs deferred to VPS/CI. Edits audited by inspection: raw-string delimiters intact (r##" ... "##;), `for k in [&str;N]` + Map::remove(&str) valid.
 
 ## Anchors (re-derive by search)
 - main.yml: keepalive-heal (tscon block guard) ~:2087; Cleanup step ~:2224.
-- payloads/ghrdp-server.ps1: 404 guard array :253; /webdesk-boot (neutered) :462.
+- payloads/ghrdp-server.ps1: 404 guard array :253; /api/rdp-creds POST-only+FQDN-guard ~:268; /webdesk-boot (neutered) :462.
 - payloads/main.rs: snapshot_payload creds :133-140; api_config secret-strip :283-300; sec-conn IP/user rows :1066-1069.
+- payloads/helper-ghrdp-connect.ps1: full-file P2+P3 rewrite; sweep ~:34; mutex acquire ~:105.
+- payloads/Enable-RdpTlsCertificate.ps1: NEW (P1). tailscale cert -> LocalMachine\My :~45; SetSSLCertificateSHA1Hash :~78.
 
 ## Acceptance
 - [x] E5 HEAD grep for secret prefixes: only STATE.md masked ledger.
@@ -61,4 +68,4 @@
 - rentry pw RDP@... blanked in main.yml env. mirror keys fJSJ.../WdX9.../E9RS.../YuKb.../FWXk.../tncr... purged from docs; still in git history + Pages/CDN caches until rewrite/rotation.
 
 ## Last delta
-- 2026-09-23 queue #8 A-E + 8C-ext + 8G + 8G-ext done (8 remediation commits). Full E-battery now green (E5/E6/E7/E8/NLA + parse + YAML all pass). Ready for §3 merge to main + push. Rust cargo check deferred - no local toolchain; VPS/CI runner will catch any compile issue on first build.
+- 2026-09-23 Migration P1-P3 done (uncommitted, ready for review). NEW payloads/Enable-RdpTlsCertificate.ps1 (tailscale LE -> RDP-Tcp bind; requires PS 7+ on host + tailnet HTTPS toggle). helper-ghrdp-connect.ps1 rewritten: FQDN-only mstsc target, POST token, Global\GHRDP-<fqdn> mutex, JSONL audit, startup stale-cred sweep (log-only). ghrdp-server.ps1 /api/rdp-creds: POST-only body-token (GET -> 410 Gone; legacy tailnet-source no-token path removed), 409 on non-FQDN config.rdpIp. docs/MIGRATION.md §1.3 + §1.4 rewritten. P4 handler shape (Rust binary vs Authenticode PS vs MSIX) deferred per user selection. P5 doc split + P6 test harness not started.

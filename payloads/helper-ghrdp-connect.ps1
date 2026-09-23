@@ -1,19 +1,60 @@
 # helper-ghrdp-connect.ps1 - remediated ghrdp:// handler.
-# Flow: parse ghrdp://connect?server=<ip>&t=<token> -> redeem the one-time token for the HOST only
-#       -> launch mstsc /v:<host>.
-# Credentials come from the user's OWN Windows Credential Manager entry (created once, interactively).
-# This handler NEVER fetches, sees, or stores a password; it writes no local RDP config file, does no
-# Mark-of-the-Web handling, sets no auth-suppression flags, and uses a normal window.
+#
+# Flow: parse ghrdp://connect?server=<tailnet-ip-or-fqdn>&t=<token>
+#       -> sweep stale TERMSRV/*.ts.net cmdkey entries (log-only)
+#       -> POST /api/rdp-creds with {token:...} to get the RDP FQDN
+#       -> acquire Global\GHRDP-<fqdn> mutex (prevents concurrent mstsc races)
+#       -> launch `mstsc /v:<fqdn>.<tailnet>.ts.net`
+#       -> release mutex on exit.
+#
+# Discipline:
+#   - `server=` reaches the ghrdp-server API only. It is NEVER the mstsc target.
+#   - The mstsc target MUST be the MagicDNS FQDN the server returns. Any other
+#     shape (IP, non-.ts.net, empty) is a hard fail.
+#   - Token is redeemed via POST body only (P3). GET was deprecated because it
+#     leaks the token to browser history / access logs / proxies.
+#   - No password is fetched, seen, or stored. The user's cmdkey entry for
+#     TERMSRV/<fqdn> handles auth; NLA/CredSSP + tailnet LE cert => zero prompts,
+#     zero warnings, zero suppression flags.
+#   - This script writes no local RDP config file, does no Mark-of-the-Web
+#     handling, sets no auth-suppression flags, and uses a normal window.
 param([string]$Url)
 $ErrorActionPreference = 'SilentlyContinue'
+
+# ---- logging (structured JSONL per line) ---------------------------------------
 $logDir = Join-Path $env:LOCALAPPDATA 'ghrdp'
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null }
 $logFile = Join-Path $logDir 'ghrdp-connect.log'
-function L($m) { try { [System.IO.File]::AppendAllText($logFile, ('[' + ([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss')) + '] ' + $m + "`r`n")) } catch { } }
-L '=== ghrdp handler invoked ==='
-L "url=$Url"
+function A {
+    param([hashtable]$Fields)
+    try {
+        $Fields['ts'] = [DateTime]::UtcNow.ToString('o')
+        $line = ($Fields | ConvertTo-Json -Compress -Depth 4)
+        [System.IO.File]::AppendAllText($logFile, $line + "`r`n")
+    } catch { }
+}
+A @{ event = 'invoked'; url = $Url }
 
-# ---- parse ghrdp://connect?server=<ip>&t=<token> ----
+# ---- P3 startup sweep: stale TERMSRV/*.ts.net entries (log-only) ---------------
+# We do NOT delete. Users may keep entries for hosts they aren't reaching this
+# session but still want. Report them so the user (or ghrdp-uninstall.ps1) can
+# clean them up deliberately.
+try {
+    $cklist = @(& cmdkey /list 2>$null)
+    foreach ($line in $cklist) {
+        if ($line -match 'Target:\s+(?:LegacyGeneric:target=)?TERMSRV/([^\s]+\.ts\.net)') {
+            $t = $matches[1]
+            $resolves = $false
+            try {
+                $r = [System.Net.Dns]::GetHostEntry($t)
+                if ($r -and $r.AddressList -and $r.AddressList.Count -gt 0) { $resolves = $true }
+            } catch { }
+            if (-not $resolves) { A @{ event = 'stale-cmdkey'; target = "TERMSRV/$t"; note = 'DNS did not resolve; entry may be orphaned' } }
+        }
+    }
+} catch { A @{ event = 'sweep-error'; err = $_.Exception.Message } }
+
+# ---- parse ghrdp://connect?server=<host>&t=<token> -----------------------------
 $raw = $Url -replace '^ghrdp:(//)?', '' -replace '^connect\??', '' -replace '^/', ''
 $p = @{}
 foreach ($kv in ($raw -split '&')) {
@@ -29,22 +70,72 @@ $server = Pick @('server', 'ip', 'host', 'h')
 $port = Pick @('port'); if (-not $port) { $port = '7331' }
 $token = Pick @('token', 't')
 
-# ---- resolve HOST only (never credentials) ----
-$rdpHost = ''
-if ($token -and $server) {
-    try {
-        $resp = Invoke-RestMethod -Uri ("http://${server}:${port}/api/rdp-creds?token=" + [uri]::EscapeDataString($token)) -TimeoutSec 5 -ErrorAction Stop
-        $rdpHost = [string]$resp.host
-        L "resolved host via token: $rdpHost"
-    } catch { L "token host-resolve failed: $($_.Exception.Message)" }
+# ---- validate the API endpoint reachability parameter --------------------------
+$apiHostOk = $false
+if ($server) {
+    if ($server -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$') { $apiHostOk = $true }
+    elseif ($server -match '\.ts\.net$') { $apiHostOk = $true }
 }
-if (-not $rdpHost) { $rdpHost = $server }
-if (-not $rdpHost) { L 'FATAL: no host resolved (no token result and no server= in URL)'; exit 0 }
+if (-not $apiHostOk) { A @{ event = 'fatal'; reason = 'server-not-tailnet'; server = $server }; exit 1 }
+if (-not $token)     { A @{ event = 'fatal'; reason = 'no-token' }; exit 1 }
 
-# ---- launch mstsc against the host ----
-# No credentials are passed. mstsc uses the user's own Credential Manager entry for the host, created
-# once by the user via Windows Credential Manager. With NLA/CredSSP and a trusted server certificate,
-# this connects with zero prompts and zero warnings - no suppression needed.
-Start-Process 'mstsc.exe' -ArgumentList "/v:$rdpHost" -WindowStyle Normal
-L "mstsc launched for $rdpHost"
+# ---- redeem token for the MagicDNS FQDN via POST body (P3) ---------------------
+$rdpHost = ''
+try {
+    $bodyJson = @{ token = $token } | ConvertTo-Json -Compress
+    $resp = Invoke-RestMethod `
+        -Uri ("http://${server}:${port}/api/rdp-creds") `
+        -Method POST `
+        -Body $bodyJson `
+        -ContentType 'application/json' `
+        -TimeoutSec 5 `
+        -ErrorAction Stop
+    $rdpHost = [string]$resp.host
+    A @{ event = 'redeemed'; server = $server; fqdn = $rdpHost }
+} catch {
+    A @{ event = 'redeem-failed'; err = $_.Exception.Message }
+    exit 1
+}
+
+# ---- ENFORCE: mstsc target must be a MagicDNS FQDN -----------------------------
+if ($rdpHost -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
+    A @{ event = 'fatal'; reason = 'server-returned-non-fqdn'; got = $rdpHost }
+    exit 1
+}
+
+# ---- P3 per-host mutex: prevent racing / duplicate concurrent mstsc launches ---
+$mutexName = 'Global\GHRDP-' + ($rdpHost -replace '[^a-zA-Z0-9.-]', '_')
+$mutex = New-Object System.Threading.Mutex($false, $mutexName)
+$held = $false
+try {
+    $held = $mutex.WaitOne(2000)  # 2s: another launch in flight? bail.
+    if (-not $held) {
+        A @{ event = 'mutex-contended'; mutex = $mutexName; note = 'another handler holds the mutex; skipping' }
+        exit 0
+    }
+
+    # ---- launch mstsc against the FQDN --------------------------------------
+    # No credentials are passed. mstsc uses the user's own TERMSRV/<fqdn>
+    # cmdkey entry (created interactively via `cmdkey /generic:TERMSRV/<fqdn>
+    # /user:<user>`, password typed at the prompt - never on the command line).
+    # NLA + CredSSP + tailnet LE cert => zero prompts, zero warnings.
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $proc = Start-Process 'mstsc.exe' -ArgumentList "/v:$rdpHost" -WindowStyle Normal -PassThru
+    A @{ event = 'mstsc-started'; fqdn = $rdpHost; pid = $proc.Id }
+
+    # Wait long enough for mstsc to establish (or bail if it dies fast). We do
+    # NOT block the URI-handler indefinitely - hold the mutex only through the
+    # startup window. If mstsc closes fast (auth failure), record exit code.
+    try {
+        if ($proc.WaitForExit(1500)) {
+            A @{ event = 'mstsc-exited-fast'; fqdn = $rdpHost; exit = $proc.ExitCode; ms = $sw.ElapsedMilliseconds }
+        } else {
+            A @{ event = 'mstsc-running'; fqdn = $rdpHost; ms = $sw.ElapsedMilliseconds }
+        }
+    } catch { A @{ event = 'mstsc-wait-error'; err = $_.Exception.Message } }
+}
+finally {
+    if ($held) { $mutex.ReleaseMutex() }
+    $mutex.Dispose()
+}
 exit 0

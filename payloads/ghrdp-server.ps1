@@ -266,42 +266,64 @@ function Invoke-ClientRequest {
             return
         }
         if ($path -eq '/api/rdp-creds' -or $path -eq '/rdp-creds' -or $path -eq '/api/rdp-info') {
-            $reqTok = ''
-            if ($parts.query -and $parts.query.ContainsKey('token')) { $reqTok = [string]$parts.query['token'] }
             $now2 = [datetime]::UtcNow
+            $cip = ''
+            try { $cip = $Client.Client.RemoteEndPoint.Address.ToString() } catch { }
+
+            # [P3] GET is deprecated. Token in query string leaks to any process
+            # that can read the URL (browser history, HTTP server access logs,
+            # any proxy in between). Force POST with token in JSON body.
+            if ($parts.method -ne 'POST') {
+                try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + " REJECTED method=$($parts.method) from $cip (use POST)`n")) } catch { }
+                Send-ClientResponse -Stream $stream -Code 410 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes("Gone. Use POST /api/rdp-creds with body {`"token`":`"...`"}. GET was deprecated in P3 (token in query string leaked to logs)."))
+                return
+            }
+
+            # [P3] Extract token from JSON body only. Query string is ignored.
+            $reqTok = ''
+            try {
+                if ($parts.body -and $parts.body.Length -gt 0) {
+                    $bodyTxt = [System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)
+                    if ($bodyTxt) {
+                        $bj = $bodyTxt | ConvertFrom-Json
+                        if ($bj -and $bj.token) { $reqTok = [string]$bj.token }
+                    }
+                }
+            } catch { }
+
             $allow = $false
             if ($reqTok -and $script:RdpTokens.ContainsKey($reqTok)) {
                 $te = $script:RdpTokens[$reqTok]
                 if (($now2 - $te.created).TotalSeconds -le 60 -and -not $te.used) {
                     $script:RdpTokens.Remove($reqTok)
-                    try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + ' REDEEMED ' + $reqTok.Substring(0,8) + "...`n")) } catch { }
+                    try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + ' REDEEMED ' + $reqTok.Substring(0,8) + '... from ' + $cip + "`n")) } catch { }
                     $allow = $true
                 } else {
                     $script:RdpTokens.Remove($reqTok)
                     try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + ' REJECTED expired/used ' + $reqTok.Substring(0,8) + "...`n")) } catch { }
                 }
             } elseif (-not $reqTok) {
-                $cip = ''
-                try { $cip = $Client.Client.RemoteEndPoint.Address.ToString() } catch { }
-                $isTail = $false
-                try {
-                    if ($Client.Client.RemoteEndPoint.Address.IsLoopback) { $isTail = $true }
-                    elseif ($cip -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') { $isTail = $true }
-                } catch { }
-                if ($isTail) {
-                    $allow = $true
-                    try { Add-Content (Join-Path $Root 'webdesk\rdp-creds-legacy.log') ((Get-Date).ToString('o') + ' no-token from ' + $cip) } catch { }
-                } else {
-                    try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + ' REJECTED no-token non-tailnet ' + $cip + "`n")) } catch { }
-                }
+                # [P3] The legacy "tailnet source implies allow" no-token path is
+                # gone. Every redemption requires a live token issued by
+                # /api/rdp-token. Tailnet-only firewalling is a network guard, not
+                # an auth mechanism, and confusing the two enabled earlier bugs.
+                try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + " REJECTED missing token from $cip`n")) } catch { }
             } else {
-                try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + " REJECTED invalid`n")) } catch { }
+                try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + " REJECTED invalid from $cip`n")) } catch { }
             }
+
             if ($allow) {
                 $cfgC = Read-JsonFile -Path $script:CfgPath
-                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ host = [string]$cfgC.rdpIp; hostip = [string]$cfgC.rdpIp })
+                $rdpTarget = [string]$cfgC.rdpIp
+                # [P2 FQDN discipline] Only a MagicDNS FQDN may be returned.
+                if ($rdpTarget -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
+                    try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + " REJECTED non-fqdn config.rdpIp='$rdpTarget'`n")) } catch { }
+                    Send-ClientResponse -Stream $stream -Code 409 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('server config.rdpIp is not a MagicDNS FQDN (*.ts.net); handler will refuse to launch. Fix config.json.'))
+                } else {
+                    Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ host = $rdpTarget; fqdn = $rdpTarget })
+                }
             } else {
-                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('token invalid or expired'))
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('token invalid, expired, or missing'))
             }
             return
         }

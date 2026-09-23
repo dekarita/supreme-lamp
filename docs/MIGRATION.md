@@ -30,25 +30,56 @@ Apply and keep applied:
 
 ### 1.3 Trusted certificate (silences the CredSSP warning honestly)
 
-- Issue a real TLS certificate for the RDP-Tcp listener (public CA if the host is
-  reachable by name; internal CA if tailnet-only). Bind via `Set-RDCertificate` or
-  the RD Session Host Configuration UI.
-- Install the CA root into the CLIENT PC's `Cert:\CurrentUser\Root` (per user) or
-  `Cert:\LocalMachine\Root` (per machine) so the client trusts the server cert.
-- Result: `mstsc /v:<host>` succeeds at auth-level 2 + CredSSP verification with
-  zero warnings, no suppression flags needed.
+Because the host is reached exclusively over Tailscale MagicDNS
+(`<node>.<tailnet>.ts.net`), the cheapest legitimate path is a
+Tailscale-issued Let's Encrypt certificate — publicly chained, no CA to
+stand up, no client-side trust manipulation.
+
+- Prerequisite: HTTPS enabled in the tailnet (Tailscale admin console → DNS
+  → "Enable HTTPS…"). One-time toggle per tailnet.
+- On the RDP HOST, run (elevated, PowerShell 7+):
+  `payloads\Enable-RdpTlsCertificate.ps1`
+  It fetches the cert via `tailscale cert <fqdn>`, imports into
+  `LocalMachine\My` with `PersistKeySet|MachineKeySet`, grants
+  `NETWORK SERVICE` read on the private key, binds the thumbprint on the
+  `RDP-Tcp` listener (`Win32_TSGeneralSetting.SetSSLCertificateSHA1Hash`
+  with `HKLM:\...\RDP-Tcp\SSLCertificateSHA1Hash` registry fallback), and
+  re-asserts `UserAuthentication = 1` (NLA ON, no suppression).
+- Restart the listener for the new cert to take effect:
+  `Restart-Service TermService -Force` (kicks active sessions — schedule).
+- Re-run the script when the LE cert renews (~every 90 days). Idempotent.
+- Result: `mstsc /v:<fqdn>` succeeds at auth-level 2 + CredSSP verification
+  with zero warnings. No client-side `Trusted Root` import, no self-signed
+  cert, no `AuthenticationLevelOverride`, no `authentication level:i:*`
+  suppression, no MOTW / SmartScreen bypass.
+- FALLBACK (only if `tailscale cert` is unavailable on the host): generate
+  a self-signed cert with a long expiry, export the public part, and
+  import once into each client's `Cert:\CurrentUser\Root`. Same
+  zero-warning outcome, one manual step per client. Use only as a bridge.
 
 ### 1.4 User-run-once cmdkey (typed password, benign UX)
 
 - The USER runs, once, on their own PC:
-  `cmdkey /generic:TERMSRV/<host> /user:<user> /pass:<their-typed-password>`
-- This stores the credential in the current user's Windows Credential Manager;
-  Windows uses it silently on future `mstsc /v:<host>` launches.
-- Tooling in this repo must NOT run cmdkey on the user's behalf, must NOT transit
-  the password over the network, must NOT prompt for it in a browser page, and
-  must NOT bake it into a `.bat` or `ghrdp://` URL.
-- The remediated one-click handler (`payloads/ghrdp-handler.ps1`) resolves the
-  host from a short-lived server token and calls `mstsc /v:<host>` only.
+  `cmdkey /generic:TERMSRV/<node>.<tailnet>.ts.net /user:<user>`
+  cmdkey then prompts interactively for the password. Do NOT use `/pass:`
+  on the command line — that puts the plaintext in the process command line
+  where it is visible to `wmic`, `Get-CimInstance Win32_Process`, ETW, and
+  any local Sysmon / EDR.
+- The target MUST be `TERMSRV/<fqdn>.ts.net`, matching (a) the MagicDNS name
+  the handler passes to `mstsc /v:`, and (b) the CN on the LE cert bound on
+  the RDP-Tcp listener. A `TERMSRV/<ip>` target will NOT match and Windows
+  will fall back to NTLM / prompt, defeating the silent-auth goal.
+- Windows stores the credential in the current user's Credential Manager;
+  it is used silently on future `mstsc /v:<fqdn>.ts.net` launches, without
+  any tooling in this repo ever touching the plaintext.
+- Tooling in this repo MUST NOT run cmdkey on the user's behalf, MUST NOT
+  transit the password over the network, MUST NOT prompt for it in a
+  browser page, and MUST NOT bake it into a `.bat` file or `ghrdp://` URL.
+- The remediated one-click handler (`payloads/helper-ghrdp-connect.ps1`)
+  resolves the FQDN from a short-lived server token and calls
+  `mstsc /v:<fqdn>.ts.net` only. As of P2 it hard-refuses any resolved
+  value that is not a `*.ts.net` FQDN (no IP fallback, no `server=`
+  fallback).
 
 ### 1.5 Private file sync (replaces the public mirror)
 
