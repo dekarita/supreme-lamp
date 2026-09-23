@@ -33,7 +33,15 @@
 - 8G. [DONE] 4b64b7e main.rs Rust dashboard cred surface stripped: snapshot_payload no pass, api_config strips secrets, HTML template cred row + ghrdp:// URL + .bat one-click + Parsec push panel deleted, JS ghrdpUrl builders + orch iframe fire deleted.
 - 8G-ext. [DONE] 17caeab ghrdp-lib.ps1 Publish-SearchPage/Build-StatusObject dead `creds.pass` scrubbed (unreachable past 3b throw but was source-of-truth).
 
-## Ready for §3 (merge to main + push origin main). NO stop flags open.
+## §3 BLOCKED - STOP condition (new secret-bearing files on origin/main)
+- origin/main is 25 commits ahead of ghrdp-remediation branch-point (665d0897 HEAD).
+- Non-ff. Content: 21x docs/status.json ping (creds now blanked, safe), 1x .gitignore+package-lock+ghrdp-webrtc/README delete (safe), 6x docs/{live,tree,data}.json updates, 1x docs/archive.json update.
+- Secret payloads a merge would bring in:
+  - docs/data.json: mirrorKey=XsDkNt... + telegraph=https://telegra.ph/GHRDP-file-mirror-09-23 + pagesBase.
+  - docs/live.json: key=XsDkNt... + telegraph url.
+  - docs/archive.json: FULL SESSION LEDGER incl. mirror keys WdX9../E9RS../YuKb../FWXk../tncr../AAfFky../XsDkNt.. and matching telegra.ph URLs for 7 sessions.
+- Merging would re-emit purged keys (E5 grep would go RED) and re-publish live public telegraph mirror URLs (violates permanent decision "no public mirror/index").
+- Options for user: (A) local branch surgery on main - blank the 3 docs files in the merge commit (`git checkout origin/main -- .; blank docs/{data,live,archive}.json; git commit -m "merge ghrdp-remediation + strip mirror-index"`), (B) accept the reintroduction (NOT recommended - violates §5), (C) hard-reset main to ghrdp-remediation and force-push (destructive to origin/main history; deletes 25 commits incl. session archive; needs explicit user go-ahead per §4 "user instruction conflicts with permanent decisions").
 
 ## Residual flags
 - payloads/ghrdp-uninstall.ps1: cmdkey /list + /delete kept for prior-stash cleanup (removes, does not stash) - benign.
