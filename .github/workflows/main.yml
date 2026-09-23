@@ -670,7 +670,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-launcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-launcher.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-client-install.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-client-install.ps1"
-          cp "$GITHUB_WORKSPACE/payloads/ghrdp-launch.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-launch.ps1"
+          # [remediation] ghrdp-launch.ps1 staging removed (banned old-helper duplicate deleted; superseded by helper-ghrdp-connect.ps1)
           cp "$GITHUB_WORKSPACE/payloads/helper-ghrdp-connect.ps1" "$RUNNER_TEMP/ghrdp-stage/helper-ghrdp-connect.ps1"
           B64=$(base64 -w0 "$RUNNER_TEMP/ghrdp-stage/helper-ghrdp-connect.ps1")
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-install.template.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-install.ps1"
@@ -678,31 +678,10 @@ jobs:
           rm -f "$RUNNER_TEMP/ghrdp-stage/helper-ghrdp-connect.ps1"
           cp "$GITHUB_WORKSPACE/payloads/DEBUG-GHRDP.ps1" "$RUNNER_TEMP/ghrdp-stage/DEBUG-GHRDP.ps1"
           cp "$GITHUB_WORKSPACE/payloads/DEBUG-GHRDP.bat" "$RUNNER_TEMP/ghrdp-stage/DEBUG-GHRDP.bat"
-          cp "$GITHUB_WORKSPACE/payloads/ghrdp-agent.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-agent.ps1"
-          cp "$GITHUB_WORKSPACE/payloads/ghrdp-enroll.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-enroll.ps1"
-          cp "$GITHUB_WORKSPACE/payloads/ghrdp-accept.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-accept.ps1"
-          cp "$GITHUB_WORKSPACE/payloads/ghrdp-acceptance.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-acceptance.ps1"
-          cp "$GITHUB_WORKSPACE/payloads/ghrdp-diag.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-diag.ps1"
+          # [remediation] agent + enroll + accept payload staging removed (C2 client + acceptance-of-agent gone)
+          # [remediation] acceptance + diag staging removed (agent-dependent probes deleted)
           ls -la "$RUNNER_TEMP/ghrdp-stage"
 
-      - name: Gate — PSParser tokenize ghrdp-agent.ps1 (bug #57)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $p = Join-Path $env:RUNNER_TEMP 'ghrdp-stage/ghrdp-agent.ps1'
-          if (-not (Test-Path $p)) { Write-Host "[gate] FAIL: $p missing"; exit 1 }
-          $t = Get-Content -LiteralPath $p -Raw
-          $e = $null
-          [void][System.Management.Automation.PSParser]::Tokenize($t, [ref]$e)
-          if ($e -and $e.Count) {
-            Write-Host ("[gate] FAIL: " + $e.Count + " parse error(s)")
-            $e | Select-Object -First 5 | ForEach-Object { Write-Host ("  line=" + $_.Token.StartLine + " msg=" + $_.Message) }
-            exit 1
-          }
-          $b = [System.IO.File]::ReadAllBytes($p)
-          $h = [System.Security.Cryptography.SHA256]::Create().ComputeHash($b)
-          $hex = ($h | ForEach-Object { $_.ToString('x2') }) -join ''
-          Write-Host ("[gate] PASS staged size=" + $b.Length + " sha256=" + $hex)
 
       - name: Write Rust dashboard source (Cargo.toml + src/main.rs, StatusCode import fixed)
         shell: bash

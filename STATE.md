@@ -20,7 +20,7 @@
 - 3a. [DONE] 3 Publish steps deleted (Pages tools/Explorer/offline SW incl SW-injection); Verify Pages kept; step count 48; Put-GhFile/serviceWorker=0.
 - 3b. [DONE] 21 ghrdp-lib.ps1 fns throw-on-call (parses OK); watcher mirror path removed (grep 21 fns=0, heartbeat kept); main.yml Expose(:1090)/keepalive(:1993) try/catch-wrapped.
 - 3d. [DONE] $reqBookmarks=@(); Decryptor/Archive/Explorer tool bookmarks removed; kept Mission Control(local+tailnet)/Tailscale Admin/GitHub Actions. (Show-Banner log lines :1923-25 still print dead Pages URLs - log-only, flagged.)
-- 5. Delete agent+enroll payloads + cp lines; ship ghrdp-uninstall.ps1; rewrite helper-ghrdp-connect.ps1 -> token->host->mstsc only; stop serving agent payloads.
+- 5. [DONE] deleted agent+enroll+launch+accept+acceptance+diag+review/ (git rm); helper rewritten token->host->mstsc (clean, parses); ghrdp-uninstall.ps1 shipped; install.template + client-install de-armed (no trust/publisher-bypass/MOTW); main.yml staging+PSParser-gate removed; server C2/payload routes 404-guarded; /api/rdp-creds host-only.
 - 7. Server/ui cleanup: remove C2 endpoints + D1 gate; strip creds from /progress|/api/progress|/config; ui.html __PASS__/&pass=/auto-connect/agent-diag.
 - 6. docs/MIGRATION.md + decommission checklist (drop Secure cleanup + Overwrite free space). No migration now.
 
@@ -37,4 +37,4 @@
 - rentry pw RDP@... blanked in main.yml env. mirror keys fJSJ.../WdX9.../E9RS.../YuKb.../FWXk.../tncr... purged from docs working tree; still in git history + Pages/CDN caches until rewrite/rotation.
 
 ## Last delta
-- 2026-09-23 3d done: mirror + tool bookmarks removed, kept MC/Tailscale/Actions. Next: #5 client rewrite (delete agent+enroll, ship uninstall, rewrite helper, 404 agent routes).
+- 2026-09-23 #5 done: client rewrite (agent/enroll/launch/accept/acceptance/diag/review deleted; helper+installers cleaned; uninstall shipped; server routes 404-guarded; rdp-creds host-only). Residual flags: server dead-handlers (decommission #6), lib Start-GhrdpLoopbackSession auth/cmdkey (#7), verify-ghrdp probe tool. Next: #7.

@@ -282,6 +282,12 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes $d)
             return
         }
+        # [remediation] C2 / agent-payload / .bat endpoints removed -> 404
+        # (no enrollment, no command queue, no agent hello/status, no diag up/download, no served payloads/bat)
+        if ($path -in @('/install.bat','/connect-now.bat','/api/enroll.ps1','/api/launch.ps1','/launcher.ps1','/api/agent.ps1','/api/accept.ps1','/api/acceptance.ps1','/api/device-enroll','/api/client-cmd','/api/agent-hello','/api/agent-status','/api/client-status','/api/diag-upload','/api/diag-file')) {
+            Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('endpoint removed per remediation'))
+            return
+        }
         if ($path -eq '/install.bat') {
             $ipForBat = '127.0.0.1'
             try { $cfgBat = Read-JsonFile -Path $script:CfgPath; if ($cfgBat -and $cfgBat.rdpIp) { $ipForBat = [string]$cfgBat.rdpIp } } catch { }
@@ -339,7 +345,7 @@ function Invoke-ClientRequest {
             }
             if ($allow) {
                 $cfgC = Read-JsonFile -Path $script:CfgPath
-                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ host = [string]$cfgC.rdpIp; user = [string]$cfgC.rdpUser; pass = [string]$cfgC.rdpPass; hostip = [string]$cfgC.rdpIp })
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ host = [string]$cfgC.rdpIp; hostip = [string]$cfgC.rdpIp })
             } else {
                 Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('token invalid or expired'))
             }

@@ -12,7 +12,7 @@ reg add "HKCU\Software\Classes\ghrdp" /ve /d "URL:GHRDP" /f | Out-Null
 reg add "HKCU\Software\Classes\ghrdp" /v "URL Protocol" /d "" /f | Out-Null
 reg add "HKCU\Software\Classes\ghrdp\shell\open\command" /ve /d ("`"" + $ps + "`" -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"" + $d + "\launch.ps1`" -Url `"%1`"") /f | Out-Null
 Remove-Item "$env:LOCALAPPDATA\ghrdp\ghrdp-connect.ps1" -Force -ErrorAction SilentlyContinue
-reg add "HKCU\Software\Microsoft\Terminal Server Client" /v PublisherBypass /t REG_DWORD /d 1 /f | Out-Null
+# [remediation] publisher-warning-bypass registry arming removed (RDP uses NLA/CredSSP + trusted server cert)
 try { Invoke-RestMethod ("http://"+$runner+":7331/api/launcher-hello") -Method POST -TimeoutSec 5 | Out-Null; L 'hello posted' } catch {}
 L 'install v2 complete'
 exit 0

@@ -1,7 +1,7 @@
 # ghrdp-install.ps1 v3 (template) — silent installer, no admin required.
 # Deploys v3 helper to BOTH legacy path AND new GhrdpLauncher path.
-# Registry re-registers HKCU handler with -WindowStyle Hidden.
-# Arms 24H2 trust registry keys so mstsc never prompts.
+# Registry registers the HKCU ghrdp:// handler pointing at the local helper.
+# No auth-trust arming: connections rely on NLA/CredSSP + a trusted server certificate.
 $ErrorActionPreference = 'Continue'
 
 # Kill stuck mstsc / old helper processes
@@ -29,8 +29,8 @@ foreach ($tuple in @(@($oldDir, $oldHelper), @($newDir, $newHelper))) {
     $dir = $tuple[0]; $path = $tuple[1]
     New-Item -ItemType Directory -Path $dir -Force -ErrorAction SilentlyContinue | Out-Null
     [System.IO.File]::WriteAllText($path, $text, $noBom)
-    try { Unblock-File -Path $path -ErrorAction SilentlyContinue } catch { }
-    Write-Host ('v3 helper: ' + $path + ' (' + (Get-Item -LiteralPath $path).Length + ' bytes)')
+    # [remediation] no Mark-of-the-Web handling; the helper is written locally, not downloaded
+    Write-Host ('helper: ' + $path + ' (' + (Get-Item -LiteralPath $path).Length + ' bytes)')
 }
 
 # Registry: point ghrdp:// at the NEW path with -WindowStyle Hidden
@@ -46,19 +46,9 @@ Set-ItemProperty -Path ($cls + '\DefaultIcon') -Name '(default)' -Value 'mstsc.e
 New-Item -Path ($cls + '\shell\open\command') -Force | Out-Null
 Set-ItemProperty -Path ($cls + '\shell\open\command') -Name '(default)' -Value $cmd
 
-# Arm 24H2 trust: LocalDevices per-host trust + Zone 3 attachment bypass + auth override
-try {
-    $ld = 'HKCU:\Software\Microsoft\Terminal Server Client\LocalDevices'
-    if (-not (Test-Path $ld)) { New-Item -Path $ld -Force | Out-Null }
-    # Wildcard host = every RDP target (0xC5 = local devices + drives + printers + audio + serial)
-    Set-ItemProperty -Path $ld -Name '*' -Value 0xC5 -Type DWord -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Terminal Server Client' -Name 'AuthenticationLevelOverride' -Value 0 -Type DWord -ErrorAction SilentlyContinue
-    Set-ItemProperty -Path 'HKCU:\Software\Microsoft\Terminal Server Client' -Name 'PublisherBypass' -Value 1 -Type DWord -ErrorAction SilentlyContinue
-    $z3 = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings\Zones\3'
-    if (-not (Test-Path $z3)) { New-Item -Path $z3 -Force | Out-Null }
-    Set-ItemProperty -Path $z3 -Name '1806' -Value 0 -Type DWord -ErrorAction SilentlyContinue
-    Write-Host 'trust keys armed (LocalDevices\*=0xC5, AuthLevelOverride=0, Zone3\1806=0)'
-} catch { Write-Host ('trust key arm failed: ' + $_.Exception.Message) }
+# [remediation] removed the old "24H2 trust" arming (wildcard RDP client-device trust, auth-level override,
+# publisher-warning bypass, and the IE attachment-zone bypass). RDP now relies on NLA/CredSSP with a trusted
+# server certificate; no auth-check suppression or warning bypass.
 
 $verify = (& reg.exe query 'HKCU\Software\Classes\ghrdp\shell\open\command' /ve 2>$null) -join ' '
 $LASTEXITCODE = 0
