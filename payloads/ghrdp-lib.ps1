@@ -747,7 +747,7 @@ function Publish-SearchPage {
         mirrorIndexUrl = [string]$Cfg.mirrorIndexUrl
         pagesBase = [string]$Cfg.searchUrl
         dashUrl = ('http://' + [string]$Cfg.rdpIp + ':7331/')
-        creds = [ordered]@{ user = [string]$Cfg.rdpUser; pass = [string]$Cfg.rdpPass }
+        creds = [ordered]@{ user = [string]$Cfg.rdpUser } # [remediation 8G-ext] pass removed from serialized status (was dead code past a throw)
         svc = [ordered]@{ ts = 'see-dash'; rdp = 'see-dash'; ps = 'see-dash'; rust = 'see-dash' }
         files = $data
     }
@@ -885,7 +885,7 @@ function Build-StatusObject {
             ps = [string]$Svc.ps; rust = [string]$Svc.rust; watcher = $wStr
         }
         mirror = [ordered]@{ done = $done; total = $total; failed = $failed; speed = $spd }
-        creds = [ordered]@{ user = [string]$Cfg.rdpUser; pass = [string]$Cfg.rdpPass }
+        creds = [ordered]@{ user = [string]$Cfg.rdpUser } # [remediation 8G-ext] pass removed from serialized status (was dead code past a throw)
         dashUrl = $dashUrl; runUrl = $runUrl
     }
 }
