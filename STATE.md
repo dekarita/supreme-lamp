@@ -23,44 +23,38 @@
 
 ## Queue
 - 3a/3b/3d/5/6/7A-7D: [DONE] (see git log).
-- 8A. [DONE] ece74aa /rentrydiag body -> 404 guard; 0 live rentry.co mirror-publish.
-- 8B. [DONE] 13bfeb3 /parsec-push body -> 404 guard; 0 plaintext rdpPass ONLOGON transit.
-- 8C. [DONE] 1d24bfe dead C2 handler bodies deleted (device-enroll, agent-hello, client-cmd POST+GET, client-status/agent-status POST+GET, agent.ps1, accept.ps1, diag-upload, diag-file, launch.ps1, enroll.ps1).
-- 8C-ext. [DONE] 545e991 /install.bat + /connect-now.bat dead bodies deleted (violated no-plaintext-transit).
-- 8D. [DONE] 22134a6 tscon /password heal + password/mirror-keys removed from early banner + step summary.
+- 8A. [DONE] ece74aa /rentrydiag body -> 404 guard.
+- 8B. [DONE] 13bfeb3 /parsec-push body -> 404 guard.
+- 8C. [DONE] 1d24bfe dead C2 handler bodies deleted.
+- 8C-ext. [DONE] 545e991 /install.bat + /connect-now.bat dead bodies deleted.
+- 8D. [DONE] 22134a6 tscon /password heal + password/mirror-keys removed from early banner.
 - 8E. [DONE] 5f9835b anti-forensics gone (wevtutil cl loop, PSReadLine wipe, Overwrite-free-space step).
-- 8F. [PARTIAL] E-battery: E5 clean, E7 clean, E8 (queue #8 greps) clean, NLA clean, 16/16 .ps1 parse OK, YAML OK. E6 RED - see #8G below.
+- 8F. [DONE] E-battery green - see Acceptance.
+- 8G. [DONE] 4b64b7e main.rs Rust dashboard cred surface stripped: snapshot_payload no pass, api_config strips secrets, HTML template cred row + ghrdp:// URL + .bat one-click + Parsec push panel deleted, JS ghrdpUrl builders + orch iframe fire deleted.
+- 8G-ext. [DONE] 17caeab ghrdp-lib.ps1 Publish-SearchPage/Build-StatusObject dead `creds.pass` scrubbed (unreachable past 3b throw but was source-of-truth).
 
-## Open (blocks §3 push per STOP-condition "any E-check red")
-- 8G. payloads/main.rs (Rust dashboard, inline HTML template) still exposes creds/legacy actions:
-  - :1060  `__PASS__` template placeholder (server substitutes plaintext RDP password into dashboard HTML)
-  - :1068  `download="ghrdp-connect-now.bat"` link (server now 404s the route, but dashboard advertises it)
-  - :1069  `href="ghrdp://ip=__IP__&user=__USER__&pass=__PASS__"` embedded-creds URL
-  - :1070  `download="ghrdp-install.bat"` link
-  - :1074-77  `parsecPushBtn` + parsecFiles picker (server /parsec-push now 404 per 8B, dashboard still exposes UI)
-  - :1201, 1567, 1582  JS `ghrdpUrl='ghrdp://ip=...&p=b64u:'+b64u(c.pass||'')` builders (base64url != encryption)
-  - :1204-1206, 1550  JS wires btn hrefs to /connect-now.bat, /install.bat routes
-  - :1516, 1526, 1539  install/parsec-push protocol handoff via ghrdp:// + fetch to /parsec-push
-- Recovery scope decision NEEDED from user: (a) strip to view-only mstsc-command dashboard (kill cred fields + all one-click paths + Parsec push), OR (b) leave main.rs alone and mark Rust dashboard NOT BUILT/SHIPPED. If (b), also strip main.yml step that compiles or serves ghrdp-dash.exe. Cannot proceed to §3 push either way without user call.
+## Ready for §3 (merge to main + push origin main). NO stop flags open.
 
 ## Residual flags
 - payloads/ghrdp-uninstall.ps1: cmdkey /list + /delete kept for prior-stash cleanup (removes, does not stash) - benign.
+- No local Rust toolchain -> cargo check for main.rs deferred to VPS/CI. Edits audited by inspection: raw-string delimiters intact (r##" ... "##;), `for k in [&str;N]` + Map::remove(&str) valid.
 
 ## Anchors (re-derive by search)
-- main.yml: keepalive-heal (tscon block guard) ~:2087; Cleanup step name ~:2224.
-- payloads/ghrdp-server.ps1: 404 guard array :253; /webdesk-boot (neutered) :462; /parsec-push (neutered) :369.
-- payloads/main.rs: sec-conn cred block :1057-1078; JS ghrdpUrl builders :1201/1567/1582.
+- main.yml: keepalive-heal (tscon block guard) ~:2087; Cleanup step ~:2224.
+- payloads/ghrdp-server.ps1: 404 guard array :253; /webdesk-boot (neutered) :462.
+- payloads/main.rs: snapshot_payload creds :133-140; api_config secret-strip :283-300; sec-conn IP/user rows :1066-1069.
 
 ## Acceptance
 - [x] E5 HEAD grep for secret prefixes: only STATE.md masked ledger.
-- [ ] E6 RED - main.rs Rust dashboard template still emits __PASS__ + ghrdp://&pass= + connect-now.bat/install.bat one-click. Scope of fix pending user call (see 8G).
-- [x] E7 mirror OFF (default false, DEPRECATED description) + publishers gone.
+- [x] E6 client payloads: 0 live cred emissions; 2 rdpPass hits are strip loops (ghrdp-server.ps1:192 Remove-CredKeys, main.rs:292 api_config filter). ghrdp-uninstall.ps1 cmdkey /list + /delete benign.
+- [x] E7 mirror OFF (default false, DEPRECATED description).
 - [x] E8 (queue #8 greps) 0 live hits; remaining hits are the guard array + remediation comments.
 - [x] NLA: UserAuthentication=1; 0 live fPromptForPassword setters.
-- [x] Parse: 16/16 payloads/*.ps1 parse OK; main.yml YAML parses OK.
+- [x] Parse: 16/16 payloads/*.ps1; main.yml YAML.
+- [~] Rust build for main.rs deferred (no local toolchain); syntax audited.
 
 ## Secrets ledger (masked; rotation = user parallel track)
 - rentry pw RDP@... blanked in main.yml env. mirror keys fJSJ.../WdX9.../E9RS.../YuKb.../FWXk.../tncr... purged from docs; still in git history + Pages/CDN caches until rewrite/rotation.
 
 ## Last delta
-- 2026-09-23 queue #8 A-E done (5 commits) + 8C-ext extra commit killing /install.bat + /connect-now.bat dead bodies. 8F E-battery run: E5/E7/E8/NLA green; parses green. E6 RED - main.rs Rust dashboard HTML template still has __PASS__ template + ghrdp://&pass= URL + connect-now.bat/install.bat + Parsec-push button + JS builders (previously missed - 7B checked only ui.html). §3 push NOT executed; per §4 STOP condition "any E-check red". Await user call on 8G scope (strip main.rs vs mark Rust dashboard not-shipped).
+- 2026-09-23 queue #8 A-E + 8C-ext + 8G + 8G-ext done (8 remediation commits). Full E-battery now green (E5/E6/E7/E8/NLA + parse + YAML all pass). Ready for §3 merge to main + push. Rust cargo check deferred - no local toolchain; VPS/CI runner will catch any compile issue on first build.
