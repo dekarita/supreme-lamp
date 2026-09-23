@@ -762,7 +762,7 @@ jobs:
               dashToken = $tok
               mirror = $mirrorOn
               encryptMode = [string]$env:ENCRYPT_MODE
-              mirrorKey = New-MirrorPassword -Length 40
+              mirrorKey = ''
               telegraphToken = ''
               telegraphPath = ''
               mirrorIndexUrl = ''
@@ -776,8 +776,8 @@ jobs:
               legacyLinks = @()
               rentryNewUrl = ''
               rentryEditKey = ''
-              rentryEditCode = $editCode
-              rentryEditCookie = [string]$env:RENTRY_EDIT_COOKIE
+              rentryEditCode = ''
+              rentryEditCookie = ''
               runnerEgressIp = ''
               githubDeadline = $(try { (([datetime]$(if ($env:JOB_STARTED_AT) { $env:JOB_STARTED_AT } else { (Get-Date -Format o) })).AddMinutes(357)).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } catch { (Get-Date).AddMinutes(357).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') })
               keepAliveDeadline = ''
@@ -1691,8 +1691,6 @@ jobs:
           $tailPort = '7331'
           if ($rustOn) { $tailPort = '7332' }
           $reqBookmarks = @(
-              @{ name = 'Megathread'; url = 'https://rentry.org/megathread' },
-              @{ name = 'FMHY Torrenting'; url = 'https://fmhy.net/torrenting' },
               @{ name = 'GHRDP Mirror (github.io)'; url = [string]$cfg.pagesBase },
               @{ name = 'Legacy mirror (frozen myurl0)'; url = 'https://rentry.co/myurl0' }
           )
