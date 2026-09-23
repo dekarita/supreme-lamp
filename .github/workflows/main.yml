@@ -1087,7 +1087,7 @@ jobs:
           $rustOn = ($env:RUST_AVAILABLE -eq 'true')
           $rustUrl = [string]$env:RUST_URL
           if (-not [string]$cfg.legacyIndexUrl) {
-              $leg = Invoke-LegacyScrape -Url $global:GhrdpLegacyUrl
+              try { $leg = Invoke-LegacyScrape -Url $global:GhrdpLegacyUrl } catch { $leg = @{ ok = $false; key = ''; links = @() }; Write-Host '[expose] legacy scrape disabled per remediation' }
               $cfg.legacyIndexUrl = $global:GhrdpLegacyUrl
               if ($leg.ok) {
                   $cfg.legacyDecryptKey = [string]$leg.key
@@ -1990,7 +1990,7 @@ jobs:
           }
           if ([bool]$cfgKa.mirror -and -not [string]$cfgKa.mirrorIndexUrl) {
           Write-Host '[index] publishing initial (zero-file) index so Telegraph + Rentry links exist from t0'
-          try { Publish-AllIndexes -Cfg $cfgKa -IndexList (Get-MirrorIndexList -IdxFile $idxPath) } catch { Write-Host ('[index] initial publish failed: ' + $_.Exception.Message) }
+          try { Publish-AllIndexes -Cfg $cfgKa -IndexList (Get-MirrorIndexList -IdxFile $idxPath) } catch { Write-Host '[keepalive] mirror publish disabled per remediation' }
           Save-MirrorCfg -Cfg $cfgKa -Path $cfgPath
           }
           Show-Banner -Reason 'session start'

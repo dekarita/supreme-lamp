@@ -263,25 +263,10 @@ try {
     } else {
         Add-MirrorLog ('[net] runner egress IP: ' + [string]$cfg.runnerEgressIp)
     }
-    if (-not [string]$cfg.legacyIndexUrl) {
-        $leg = Invoke-LegacyScrape -Url $global:GhrdpLegacyUrl
-        $cfg.legacyIndexUrl = $global:GhrdpLegacyUrl
-        if ($leg.ok) {
-  $cfg.legacyDecryptKey = [string]$leg.key
-  $cfg.legacyLinks = @($leg.links)
-  Add-MirrorLog ('[index] legacy rentry scraped: key ' + $(if ($leg.key) { 'recovered' } else { 'not found' }) + ', ' + @($leg.links).Count + ' legacy links')
-        } else {
-  Add-MirrorLog '[index] legacy page unreachable (continuing without legacy)'
-        }
-        Save-MirrorCfg -Cfg $cfg -Path (Join-Path $Root 'config.json')
-    }
+    # [remediation] legacy rentry scrape removed (mirror path disabled per remediation)
     $egress = [string]$cfg.runnerEgressIp
     Invoke-FirstRunUserSetup -UserName $userName
-    if ([bool]$cfg.mirror -and -not [string]$cfg.mirrorIndexUrl) {
-        try { Publish-AllIndexes -Cfg $cfg -IndexList (Get-MirrorIndexList -IdxFile $idxFile) } catch { Add-MirrorLog ('[index] initial publish failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
-        Save-MirrorCfg -Cfg $cfg -Path (Join-Path $Root 'config.json')
-    }
-    if ([string]$cfg.mirrorIndexUrl) { Update-BrowserBookmarks -TelegraphUrl ([string]$cfg.mirrorIndexUrl) }
+    # [remediation] initial mirror index publish + mirror bookmark update removed (mirror path disabled)
     $minBytes = 512
     $scanSeconds = 10
     $maxTries = 5
@@ -429,8 +414,7 @@ try {
               Set-ActiveFile -Name $f.Name -Phase 'encrypt' -Total ([long]$f.Length)
               $encErr = $null
               try {
-                  if (-not (Test-Path -LiteralPath $f.FullName)) { $encErr = 'Could not find file (vanished)' }
-                  else { Invoke-AesEncryptFile -InPath $f.FullName -OutPath $encPath -Password ([string]$cfg.mirrorKey) }
+                  $encErr = 'mirror path disabled per remediation'
               } catch {
                   $encErr = $_.Exception.Message
               }
@@ -471,19 +455,13 @@ try {
           Set-ActiveFile -Name $f.Name -Phase 'upload' -Total $uploadLen
           Add-MirrorLog ('[mirror] uploading {0} ({1} bytes, display={2}, encrypted={3})' -f $f.Name, $uploadLen, $dispName, $shouldEncrypt)
           $link = $null
-          try {
-              $link = Send-AnyUpload -EncPath $uploadPath -DispName $dispName
-          } catch {
-              Add-MirrorLog ('[mirror] upload exception for {0}: {1} | {2}' -f $f.Name, $_.Exception.Message, $_.ScriptStackTrace)
-          }
+          # [remediation] mirror upload removed (lib fn neutered); $link stays null
           if ($encPath) { Remove-Item -LiteralPath $encPath -Force -ErrorAction SilentlyContinue }
           if ($link) {
               $previewLink = ''
               $prevExt = [System.IO.Path]::GetExtension(([string]$f.Name).ToLower())
               $previewable = @('.png','.jpg','.jpeg','.gif','.webp','.bmp','.mp3','.flac','.wav','.aac','.ogg','.m4a','.mp4','.mkv','.webm','.mov','.avi') -contains $prevExt
-              if ($previewable -and (-not $shouldEncrypt)) {
-                  try { $previewLink = Send-PreviewCopy -Path $f.FullName -DispName $dispName } catch { $previewLink = '' }
-              }
+              # [remediation] mirror preview-copy removed (lib fn neutered)
               try { Add-MirrorDone -DoneFile $doneFile -Path $key -Size ([long]$f.Length) } catch { Add-MirrorLog ('[mirror] guarded step done-map failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               try { $doneMap[$key] = [long]$f.Length } catch { Add-MirrorLog ('[mirror] guarded step done-cache failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               try { $global:GhrdpDoneBytes = [long]$global:GhrdpDoneBytes + [long]$f.Length } catch { Add-MirrorLog ('[mirror] guarded step bytes failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
@@ -492,14 +470,8 @@ try {
                   if ($null -ne $link) { [void]$idx.Add(@{ name = [string]$f.Name; folder = $relFolder; size = [long]$f.Length; time = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); timeSL = $tsl; link = [string]$link; preview = [string]$previewLink; encrypted = [string]$shouldEncrypt; decrypt = (([string]$cfg.pagesBase) + '/decrypt.html#key=' + [string]$cfg.mirrorKey) }) }
               } catch { Add-MirrorLog ('[mirror] guarded step index-append failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               try { Save-MirrorIndexList -IdxFile $idxFile -List $idx } catch { Add-MirrorLog ('[mirror] guarded step save-index failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
-              try { Publish-AllIndexes -Cfg $cfg -IndexList $idx } catch { Add-MirrorLog ('[mirror] guarded step publish-indexes failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
-              try {
-                  $nowSearch = Get-Date
-                  if (-not $script:GhrdpLastSearch -or (($nowSearch - $script:GhrdpLastSearch).TotalSeconds -ge 60)) {
-                      $script:GhrdpLastSearch = $nowSearch
-                      [void](Publish-GithubPagesData -Cfg $cfg -IndexList $idx)
-                  }
-              } catch { Add-MirrorLog ('[mirror] guarded step pages-data failed: ' + $_.Exception.Message) }
+              # [remediation] mirror index publish removed (lib fn neutered)
+              # [remediation] mirror pages-data publish removed (lib fn neutered)
               try { Save-MirrorCfg -Cfg $cfg -Path (Join-Path $Root 'config.json') } catch { Add-MirrorLog ('[mirror] guarded step save-config failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               try { if ([string]$cfg.mirrorIndexUrl) { Update-BrowserBookmarks -TelegraphUrl ([string]$cfg.mirrorIndexUrl) } } catch { Add-MirrorLog ('[mirror] guarded step bookmarks failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               try {

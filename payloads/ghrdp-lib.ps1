@@ -24,6 +24,7 @@ function Pick-Char {
 }
 function New-MirrorPassword {
     param([int]$Length = 40)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $set = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
     $arr = New-Object char[] $Length
     for ($i = 0; $i -lt $Length; $i++) { $arr[$i] = [char](Pick-Char -Set $set) }
@@ -153,6 +154,7 @@ function Flush-MirrorProgress {
 }
 function Invoke-AesEncryptFile {
     param([string]$InPath, [string]$OutPath, [string]$Password)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     $salt = New-Object byte[] 16
     $iv = New-Object byte[] 16
@@ -193,6 +195,7 @@ function Invoke-AesEncryptFile {
     }
 }
 function Get-GofileHostList {
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $hosts = @()
     try {
         $r = Invoke-WebRequest -Uri 'https://api.gofile.io/servers' -UseBasicParsing -TimeoutSec 15 -Headers @{ 'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' } -ErrorAction Stop
@@ -218,6 +221,7 @@ function Get-GofileHostList {
 }
 function Send-GofileStreamed {
 param([string]$EncPath, [string]$DispName)
+throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
 if (-not $script:GhrdpGofileToken) {
 try {
 $ar = Invoke-WebRequest -Uri 'https://api.gofile.io/accounts' -Method Post -Headers @{ 'User-Agent' = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'; 'Content-Type' = 'application/json' } -Body '{}' -UseBasicParsing -TimeoutSec 20 -ErrorAction Stop
@@ -297,6 +301,7 @@ return $null
 }
 function Send-CurlUpload {
     param([string]$EncPath, [string]$DispName)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $trials = @(
         @{ name = 'gofile-curl'; args = @('-sS', '--max-time', '3600', '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36', '-H', 'Origin: https://gofile.io', '-H', 'Referer: https://gofile.io/', '-F', ('file=@{0};filename={1}' -f $EncPath, $DispName), 'https://store1.gofile.io/contents/uploadfile') },
         @{ name = 'pixeldrain'; args = @('-sS', '--max-time', '3600', '-A', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', '-F', ('file=@{0};filename={1}' -f $EncPath, $DispName), 'https://pixeldrain.com/api/files/file') },
@@ -347,6 +352,7 @@ function Send-CurlUpload {
 }
 function Send-PreviewCopy {
     param([string]$Path, [string]$DispName, [long]$MaxBytes = 157286400)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     try { if ((Get-Item -LiteralPath $Path).Length -gt $MaxBytes) { return '' } } catch { return '' }
     $trials = @(
         @{ name = 'litter.catbox.moe'; args = @('-sS', '--max-time', '1800', '-F', ('fileToUpload=@{0};filename={1}' -f $Path, $DispName), 'https://litter.catbox.moe/') },
@@ -365,6 +371,7 @@ function Send-PreviewCopy {
 }
 function Send-AnyUpload {
     param([string]$EncPath, [string]$DispName)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $link = Send-GofileStreamed -EncPath $EncPath -DispName $DispName
     if (-not $link) {
         Add-MirrorLog '[upload] gofile exhausted; using fallback hosts'
@@ -430,6 +437,7 @@ function Get-RunnerEgressIp {
 }
 function Invoke-LegacyScrape {
     param([string]$Url)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $result = @{ key = ''; links = @(); ok = $false }
     try {
         $raw = & curl.exe -sL --max-time 10 $Url 2>$null
@@ -447,6 +455,7 @@ function Invoke-LegacyScrape {
 }
 function Build-IndexBodyText {
     param($Cfg, $IndexList)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $sb = New-Object System.Text.StringBuilder
     $encMode = [string]$Cfg.encryptMode
     if (-not $encMode) { $encMode = 'none' }
@@ -521,6 +530,7 @@ function Build-IndexBodyText {
 }
 function Invoke-TelegraphPost {
     param([string]$Method, [hashtable]$Fields)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     try {
         $json = ConvertTo-Json -InputObject $Fields -Depth 12 -Compress
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
@@ -532,6 +542,7 @@ function Invoke-TelegraphPost {
 }
 function Publish-TelegraphIndex {
     param($Cfg, $IndexList)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $nodes = New-Object System.Collections.ArrayList
     $encMode = [string]$Cfg.encryptMode
     if (-not $encMode) { $encMode = 'none' }
@@ -601,6 +612,7 @@ function Publish-TelegraphIndex {
 }
 function Get-RentryCsrf {
     param([string]$Jar)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $csrf = ''
     try {
         $homePage = (& curl.exe -sL -c $Jar --max-time 15 'https://rentry.co' 2>$null) -join "`n"
@@ -619,6 +631,7 @@ function Get-RentryCsrf {
 }
 function Edit-RentryPage {
     param([string]$PageCode, [string]$EditCode, [string]$NewText, [string]$EditCookie)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $editUrl = 'https://rentry.co/' + $PageCode + '/edit'
     $jar = Join-Path $env:TEMP ('ghrdp-jar-' + [guid]::NewGuid().ToString('N') + '.txt')
     $csrf = Get-RentryCsrf -Jar $jar
@@ -652,6 +665,7 @@ function Edit-RentryPage {
 }
 function Edit-MainRentry {
     param($Cfg, [string]$BodyText, $IndexList = $null)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $legacyCode = ($global:GhrdpLegacyUrl -replace '^https://rentry\.co/', '')
     $editCode = [string]$Cfg.rentryEditCode
     if (-not $editCode) { $editCode = [string]$env:RENTRY_MAIN_EDIT }
@@ -691,6 +705,7 @@ function Edit-MainRentry {
 }
 function Publish-SearchPage {
     param($Cfg, $IndexList, [string]$Root)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $tokFile = Join-Path $Root 'gh-pages-token.txt'
     if (-not (Test-Path -LiteralPath $tokFile)) { Add-MirrorLog '[search] no gh-pages token - skipping web pages'; return }
     $token = ([System.IO.File]::ReadAllText($tokFile)).Trim()
@@ -756,6 +771,7 @@ function Publish-SearchPage {
 }
 function Publish-MirrorRentry {
     param($Cfg, [string]$BodyText, $IndexList = $null)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $editCode = [string]$Cfg.rentryEditCode
     if (-not $editCode) { $editCode = [string]$env:RENTRY_EDIT_PASSWORD }
     if (-not $editCode) {
@@ -766,6 +782,7 @@ function Publish-MirrorRentry {
 }
 function Publish-AllIndexes {
     param($Cfg, $IndexList)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     try { Publish-TelegraphIndex -Cfg $Cfg -IndexList $IndexList } catch {
         Add-MirrorLog ('[index] telegraph backup failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace)
     }
@@ -787,6 +804,7 @@ function Publish-AllIndexes {
 }
 function Put-GhFile {
     param([string]$Repo, [string]$Path, [string]$Text, [string]$Token)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $hdr = @{ Authorization = ('Bearer ' + $Token); Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }
     $api = 'https://api.github.com/repos/' + $Repo + '/contents/docs/' + $Path
     $sha = $null
@@ -798,6 +816,7 @@ function Put-GhFile {
 }
 function Publish-GithubPagesData {
     param($Cfg, $IndexList)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $token = ''
     try { $token = ([System.IO.File]::ReadAllText('C:\ghrdp\gh-pages-token.txt')).Trim() } catch { }
     if (-not $token) { Add-MirrorLog '[pages] no token - skip data.json'; return $false }
@@ -831,6 +850,7 @@ function Publish-GithubPagesData {
 }
 function Build-StatusObject {
     param($Cfg, $Prog, $Svc)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     $done = 0; $total = 0; $failed = 0; $spd = ''
     if ($Prog -and $Prog.agg) {
         $done = [int]$Prog.agg.done; $total = [int]$Prog.agg.total
@@ -871,6 +891,7 @@ function Build-StatusObject {
 }
 function Publish-StatusJson {
     param($StatusObj, $Repo, $Token)
+    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
     if (-not $Token) { return }
     $text = $StatusObj | ConvertTo-Json -Depth 6 -Compress
     $hdr = @{ Authorization = ('Bearer ' + $Token); Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28' }

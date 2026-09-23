@@ -18,7 +18,7 @@
 
 ## Queue
 - 3a. [DONE] 3 Publish steps deleted (Pages tools/Explorer/offline SW incl SW-injection); Verify Pages kept; step count 48; Put-GhFile/serviceWorker=0.
-- 3b. Neuter ghrdp-lib.ps1 publish/upload/key-gen fns (throw); KEEP helpers + 'Write mirror library' step.
+- 3b. [DONE] 21 ghrdp-lib.ps1 fns throw-on-call (parses OK); watcher mirror path removed (grep 21 fns=0, heartbeat kept); main.yml Expose(:1090)/keepalive(:1993) try/catch-wrapped.
 - 3d. Remove remaining $reqBookmarks mirror entries (GHRDP Mirror, Legacy myurl0) + pagesBase tool bookmarks; keep Mission Control/Tailscale/Actions.
 - 5. Delete agent+enroll payloads + cp lines; ship ghrdp-uninstall.ps1; rewrite helper-ghrdp-connect.ps1 -> token->host->mstsc only; stop serving agent payloads.
 - 7. Server/ui cleanup: remove C2 endpoints + D1 gate; strip creds from /progress|/api/progress|/config; ui.html __PASS__/&pass=/auto-connect/agent-diag.
@@ -37,4 +37,4 @@
 - rentry pw RDP@... blanked in main.yml env. mirror keys fJSJ.../WdX9.../E9RS.../YuKb.../FWXk.../tncr... purged from docs working tree; still in git history + Pages/CDN caches until rewrite/rotation.
 
 ## Last delta
-- 2026-09-23 3a done: 3 Publish steps deleted (incl SW-injection loop); grep Put-GhFile/serviceWorker/Publish-GithubPagesData=0; Verify Pages kept; steps=48. Next: 3b neuter ghrdp-lib.ps1.
+- 2026-09-23 3b done: 21 lib fns neutered (throw); watcher mirror engine removed (grep 21 fns=0, heartbeat kept); main.yml Expose/keepalive wrapped; lib+watcher parse OK. Next: 3d bookmarks.
