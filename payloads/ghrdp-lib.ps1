@@ -911,41 +911,10 @@ function Publish-StatusJson {
     }
 }
 function Start-GhrdpLoopbackSession {
-param([string]$User, [string]$Pass)
-$diag = 'C:\ghrdp\webdesk\boot-diag.txt'
-New-Item -ItemType Directory -Path (Split-Path $diag -Parent) -Force -ErrorAction SilentlyContinue | Out-Null
-$L = @()
-try { $q0 = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0; if (($q0 -match [regex]::Escape($User)) -or ($q0 -match 'runneradmin')) { $L += 'session already present - no boot needed'; [System.IO.File]::WriteAllText($diag, ($L -join "`r`n"), (New-Object System.Text.UTF8Encoding($false))); return $true } } catch { }
-$rdpTcp = 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
-try {
-    Set-ItemProperty -Path $rdpTcp -Name 'UserAuthentication' -Value 0 -Force -EA SilentlyContinue
-    Set-ItemProperty -Path $rdpTcp -Name 'fPromptForPassword' -Value 0 -Force -EA SilentlyContinue
-    $L += 'NLA off + fPromptForPassword=0'
-} catch { $L += ('NLA step failed: ' + $_.Exception.Message) }
-$listen = $false
-for ($i = 0; $i -lt 30; $i++) { try { if (Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue) { $listen = $true; break } } catch { }; Start-Sleep -Seconds 1 }
-$L += ('3389 listening: ' + $listen)
-if (-not $listen) { [System.IO.File]::WriteAllText($diag, ($L -join "`r`n"), (New-Object System.Text.UTF8Encoding($false))); return $false }
-try {
-    $sk = 'HKCU:\Software\Microsoft\Terminal Server Client\Servers\127.0.0.1'
-    New-Item -Path $sk -Force -ErrorAction SilentlyContinue | Out-Null
-    Set-ItemProperty -Path $sk -Name 'AuthenticationLevelOverride' -Value 0 -Type DWord -Force
-} catch { }
-& cmdkey.exe /generic:TERMSRV/127.0.0.1 ('/user:' + $User) ('/pass:' + $Pass) 2>$null | Out-Null
-$L += 'cmdkey stored for TERMSRV/127.0.0.1'
-$got = $false
-$p = $null
-try { $p = Start-Process mstsc.exe -ArgumentList '/v:127.0.0.1' -PassThru -WindowStyle Hidden; $L += ('mstsc pid=' + $p.Id) } catch { $L += ('mstsc launch failed: ' + $_.Exception.Message) }
-for ($i = 0; $i -lt 15; $i++) {
-    Start-Sleep -Seconds 2
-    $q = (& quser.exe 2>$null) -join "`n"; $LASTEXITCODE = 0
-    if (($q -match [regex]::Escape($User)) -or ($q -match 'runneradmin')) { $got = $true; break }
-}
-$L += ('quser row present: ' + $got)
-if (-not $got) {
-    $L += '--- LocalSessionManager (last 6) ---'
-    try { $L += ((& wevtutil.exe qe Microsoft-Windows-TerminalServices-LocalSessionManager/Operational /c:6 /rd:true /f:text 2>$null) -join "`n") } catch { }
-}
-[System.IO.File]::WriteAllText($diag, ($L -join "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
-return $got
+    param([string]$User, [string]$Pass)
+    # [remediation #7C] Loopback-boot removed: it turned NLA off (UserAuthentication=0,
+    # fPromptForPassword=0), set HKCU AuthenticationLevelOverride=0, and stashed
+    # plaintext cmdkey for TERMSRV/127.0.0.1 - all forbidden by permanent decisions
+    # (NLA ON only, no credential stashing, no plaintext-password transit).
+    throw 'Start-GhrdpLoopbackSession removed per remediation #7C - no auto-session-boot; require a real interactive RDP login.'
 }

@@ -849,13 +849,8 @@ function Invoke-ClientRequest {
             return
         }
         if ($path -eq '/webdesk-boot') {
-            $outB = @{ ok = $false; message = '' }
-            try {
-                try { . 'C:\ghrdp\ghrdp-lib.ps1' } catch { }
-                $cfgB = Read-JsonFile -Path $script:CfgPath
-                $made = Start-GhrdpLoopbackSession -User ([string]$cfgB.rdpUser) -Pass ([string]$cfgB.rdpPass)
-                $outB.ok = $true; $outB.message = ('loopback bootstrap ran; session row=' + $made + '; diag=C:\ghrdp\webdesk\boot-diag.txt')
-            } catch { $outB.message = $_.Exception.Message }
+            # [remediation #7C] loopback-boot call removed - it turned NLA off + stashed plaintext cmdkey.
+            $outB = @{ ok = $false; message = 'loopback bootstrap removed per remediation #7C - log in via real RDP with NLA on' }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes(($outB | ConvertTo-Json -Compress)))
             return
         }

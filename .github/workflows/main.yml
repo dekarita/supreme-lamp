@@ -2177,8 +2177,7 @@ jobs:
                     Write-Host ($icons.wrench + ' ' + $stamp + ' session ' + $discId + ' DISCONNECTED - tscon to console so desktop re-renders')
                     try { & tscon.exe $discId /dest:console ('/password:' + [string]$cfgNow.rdpPass) 2>$null | Out-Null; $LASTEXITCODE = 0 } catch { Write-Host ('   tscon failed: ' + $_.Exception.Message) }
                 } elseif (-not $sess) {
-                    Write-Host ($icons.wrench + ' ' + $stamp + ' no interactive session for RDP user - booting loopback RDP session (creates the desktop the web desktop captures)')
-                    try { $okSess = Start-GhrdpLoopbackSession -User ([string]$cfgNow.rdpUser) -Pass ([string]$cfgNow.rdpPass); Write-Host ('   loopback session after heal: ' + $okSess) } catch { Write-Host ('   loopback boot failed: ' + $_.Exception.Message) }
+                    Write-Host ($icons.wrench + ' ' + $stamp + ' no interactive session for RDP user - remediation #7C removed loopback-boot (NLA-off + plaintext cmdkey); log in via real RDP with NLA on')
                 } else {
                     $aliveAge = -1
                     try { $aliveAge = [int]((Get-Date) - [datetime][System.IO.File]::ReadAllText('C:\ghrdp\webdesk\webdesk-alive.txt')).TotalMilliseconds } catch { }
