@@ -290,7 +290,6 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <h2>Connection</h2>
   <div class="row"><span class="k">Tailscale IP</span><span class="v" id="credIp">__IP__</span><button onclick="copyById('credIp',this)">copy</button></div>
   <div class="row"><span class="k">RDP username</span><span class="v" id="credUser">__USER__</span><button onclick="copyById('credUser',this)">copy</button></div>
-  <div class="row"><span class="k">RDP password</span><span class="v" id="credPass">__PASS__</span><button onclick="copyById('credPass',this)">copy</button></div>
   <div class="row"><span class="k">mstsc command</span><span class="v" id="mstscVal">mstsc /v:__IP__</span><button onclick="copyById('mstscVal',this)">copy</button></div>
   <div class="row"><span class="k">Connectivity</span><span class="timer" id="connRtt" style="font-size:18px">-- ms</span><span class="badge" id="connBadge">path: --</span><span class="badge" id="connFps">-- fps</span><span class="badge" id="connJit">jit -- ms</span><canvas id="connSpark" width="220" height="34" style="width:220px;height:34px"></canvas></div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
@@ -298,9 +297,6 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">Remaining (5h30 session)</span><span class="timer" id="timerRemaining">--:--:--</span></div>
   <div class="banner ended" id="endedBanner" style="display:none;">SESSION EXPIRED - GitHub hard cap reached. Runner termination imminent.</div>
   <div class="row"><span class="k">One-click RDP</span>
-<a id="batNow" class="btn primary" href="#" download="ghrdp-connect-now.bat">auto-connect NOW (.bat)</a>
-<a id="ghrdpLink" class="btn" href="ghrdp://ip=__IP__&amp;user=__USER__&amp;pass=__PASS__" onclick="return openRdp(event)">open RDP via ghrdp://</a>
-<a id="batInstall" class="btn" href="#" download="ghrdp-install.bat">install one-click handler (.bat)</a>
 <button onclick="showInstall()">handler help</button>
 </div>
   <div class="row"><span class="k">Parsec auto-login</span>
@@ -448,16 +444,7 @@ function render(d){
   var c=d.creds||{};
   if(c.ip){$('credIp').textContent=c.ip;$('mstscVal').textContent='mstsc /v:'+c.ip;var ic=$('instCmd');if(ic)ic.textContent='irm http://'+c.ip+':7331/install.ps1 | iex';var pl=$('primaryLink');if(pl){pl.textContent='http://'+c.ip+':7332/';pl.href='http://'+c.ip+':7332/'}var fl=$('fallbackLink');if(fl){fl.textContent='http://'+c.ip+':7331/';fl.href='http://'+c.ip+':7331/'}}
   if(c.user)$('credUser').textContent=c.user;
-  if(c.pass)$('credPass').textContent=c.pass;
-  if(c.ip&&c.user){
-    function b64u(s){s=unescape(encodeURIComponent(s||''));var b=btoa(s);return b.replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
-    ghrdpUrl='ghrdp://ip='+encodeURIComponent(c.ip)+'&u=b64u:'+b64u(c.user)+'&p=b64u:'+b64u(c.pass||'');
-    var a1=$('ghrdpLink');if(a1)a1.href=ghrdpUrl;
-    var a2=$('retryLink');if(a2)a2.href=ghrdpUrl;
-    var b1=$('batNow');if(b1){b1.href='http://'+c.ip+':7331/connect-now.bat';}
-    var b2=$('batInstall');if(b2){b2.href='http://'+c.ip+':7331/install.bat';}
-    var ibat=$('installBat');if(ibat)ibat.href='http://'+c.ip+':7331/install.bat';
-  }
+  /* [remediation #7B] credPass display, embedded-creds ghrdp:// URL, and auto-connect .bat href setters removed. Token-based ghrdp:// connect fires from the /api/rdp-token flow below. */
   if(d.runnerEgressIp){
     $('egressLine').textContent='Uploads execute ON THE RUNNER (egress IP '+d.runnerEgressIp+') - your PC\'s connection is never used for uploads.';
     $('egressLine').className='banner egress';
