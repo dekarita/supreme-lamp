@@ -15,26 +15,43 @@
 - 1bafebcb #2 main.yml mirror teardown (input off, rentry pw blank, 3 terminal publishers deleted) + NLA ON.
 - c73b67fa worker.js /proxy -> 410.
 - 32b5225e #3c config.json staging blanks + Megathread/FMHY bookmark removal.
+- 79e785ea #7A ghrdp-server.ps1 creds stripped from all live responses (+ Remove-CredKeys).
+- 1a4481b8 #7B ui.html __PASS__/pass= anchor/auto-connect .bat removed (agent-status literal was already 0).
+- e2a849c2 #7C Start-GhrdpLoopbackSession throw-on-call; /webdesk-boot + main.yml keepalive callers stubbed.
+- 68f5adc  #7D D1 synthetic tailnet-agent gate step deleted; Show-Banner dead pagesBase/mirror URLs stripped.
+- 797fb277 #6  docs/MIGRATION.md added (write-only VPS plan + decommission checklist).
 
 ## Queue
-- 3a. [DONE] 3 Publish steps deleted (Pages tools/Explorer/offline SW incl SW-injection); Verify Pages kept; step count 48; Put-GhFile/serviceWorker=0.
-- 3b. [DONE] 21 ghrdp-lib.ps1 fns throw-on-call (parses OK); watcher mirror path removed (grep 21 fns=0, heartbeat kept); main.yml Expose(:1090)/keepalive(:1993) try/catch-wrapped.
-- 3d. [DONE] $reqBookmarks=@(); Decryptor/Archive/Explorer tool bookmarks removed; kept Mission Control(local+tailnet)/Tailscale Admin/GitHub Actions. (Show-Banner log lines :1923-25 still print dead Pages URLs - log-only, flagged.)
-- 5. [DONE] deleted agent+enroll+launch+accept+acceptance+diag+review/ (git rm); helper rewritten token->host->mstsc (clean, parses); ghrdp-uninstall.ps1 shipped; install.template + client-install de-armed (no trust/publisher-bypass/MOTW); main.yml staging+PSParser-gate removed; server C2/payload routes 404-guarded; /api/rdp-creds host-only.
-- 7. Server/ui cleanup: remove C2 endpoints + D1 gate; strip creds from /progress|/api/progress|/config; ui.html __PASS__/&pass=/auto-connect/agent-diag.
-- 6. docs/MIGRATION.md + decommission checklist (drop Secure cleanup + Overwrite free space). No migration now.
+- 3a. [DONE] 3 Publish steps deleted; step count 48; Put-GhFile/serviceWorker=0.
+- 3b. [DONE] 21 ghrdp-lib fns throw-on-call; watcher mirror path removed.
+- 3d. [DONE] $reqBookmarks=@(); tool bookmarks removed; kept Mission Control/Tailscale/Actions.
+- 5.  [DONE] agent/enroll/launch/accept/acceptance/diag/review deleted; helper token->mstsc; uninstall shipped; server C2 routes 404-guarded; /api/rdp-creds host-only.
+- 7A. [DONE] 0 rdpPass/rdpUser inside live response objects (grep classified).
+- 7B. [DONE] 0 __PASS__, 0 'pass=', 0 agent-status.
+- 7C. [DONE] Start-GhrdpLoopbackSession body begins with throw; 0 live callers.
+- 7D. [DONE] 0 'D1 synthetic'; banner retains DASHBOARD + RDP CONNECTION (mstsc/user only) + EMERGENCY STOP.
+- 6.  [DONE] docs/MIGRATION.md exists; names Secure-cleanup + Overwrite-free-space removals; write-only.
+
+## Residual flags (out of this branch's scope)
+- payloads/ghrdp-server.ps1 /rentrydiag: live rentry.co mirror-publish + mirrorKey leak; #6 target.
+- payloads/ghrdp-server.ps1 /parsec-push: live plaintext rdpPass transit into schtasks ONLOGON; #6.
+- payloads/ghrdp-server.ps1 dead 404-guarded C2 handler bodies below the guard (/connect-now.bat, /api/client-cmd): unreachable but should be deleted at #6.
+- main.yml keepalive: tscon.exe /password: line still transits plaintext RDP password on the tscon command line; #6/follow-up plaintext-transit sweep.
+- main.yml ~line 1167: separate inline "---- INDEXES & KEYS ----" banner in an earlier step still prints dead mirror content; #6.
+- payloads/ghrdp-uninstall.ps1: cmdkey /list + cmdkey /delete kept for prior-stash cleanup (removes, does not stash) - benign.
 
 ## Anchors (re-derive by search before each edit; lines shift)
-- main.yml: Publish steps ~:1220/:1324/:1349; Verify Pages ~:1312; personalization $reqBookmarks ~:1691; D1 gate; Secure cleanup; Overwrite free space.
-- payloads/ghrdp-lib.ps1 neuter list; ghrdp-server.ps1 endpoints; ui.html __PASS__/anchor; delete ghrdp-agent.ps1 + ghrdp-enroll.ps1.
+- main.yml: keepalive branch (tscon/loopback); Show-Banner ~:1809; earlier inline "---- INDEXES & KEYS ----" ~:1167.
+- payloads/ghrdp-server.ps1: /rentrydiag ~:213; /parsec-push ~:1380; dead 404-guarded C2 bodies below :287 guard.
 
 ## Acceptance
-- [~] E5 no secrets in HEAD: working tree clean; git history pre-branch still holds them (rewrite = separate user decision).
-- [ ] E6 payloads clean (after 3b/#5/#7). [~] E7 mirror off + 3 publishers gone + config blanks + Megathread/FMHY gone; 3a/3d/3b remain.
-- [x] NLA UserAuth=1, fPromptForPassword absent. Live NLA probe DEFERRED to next runner/VPS.
+- [x] E5 HEAD grep for secret prefixes: only STATE.md masked ledger; all other files clean.
+- [~] E6 shipped client payloads: 0 banned patterns EXCEPT ghrdp-uninstall.ps1 cmdkey /list + /delete (removes prior stashes; benign cleanup).
+- [x] E7 mirror off + publishers gone + Megathread/FMHY gone; docs/sw.js CACHE=ghrdp-explorer-v2.
+- [x] NLA: main.yml sets UserAuthentication=1; fPromptForPassword appears only in descriptive text (STATE / MIGRATION / #7C neutering comment), 0 live setters. Live NLA probe DEFERRED to next runner/VPS.
 
 ## Secrets ledger (masked; rotation = user parallel track, NOT confirmed)
 - rentry pw RDP@... blanked in main.yml env. mirror keys fJSJ.../WdX9.../E9RS.../YuKb.../FWXk.../tncr... purged from docs working tree; still in git history + Pages/CDN caches until rewrite/rotation.
 
 ## Last delta
-- 2026-09-23 #5 done: client rewrite (agent/enroll/launch/accept/acceptance/diag/review deleted; helper+installers cleaned; uninstall shipped; server routes 404-guarded; rdp-creds host-only). Residual flags: server dead-handlers (decommission #6), lib Start-GhrdpLoopbackSession auth/cmdkey (#7), verify-ghrdp probe tool. Next: #7.
+- 2026-09-23 #7A/#7B/#7C/#7D + #6 done. #7 queue closed on-branch: server response bodies cred-free; ui.html cred display/anchor/bat gone; loopback function throw + callers stubbed; D1 gate deleted + banner trimmed; migration doc written. Residual flags listed above (rentrydiag, parsec-push, tscon /password, dead 404 bodies, earlier inline banner) tracked for #6/follow-up. Await user instruction on push/PR/merge.
