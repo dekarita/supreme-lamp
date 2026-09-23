@@ -1521,10 +1521,7 @@ jobs:
           $rustOn = ($env:RUST_AVAILABLE -eq 'true')
           $tailPort = '7331'
           if ($rustOn) { $tailPort = '7332' }
-          $reqBookmarks = @(
-              @{ name = 'GHRDP Mirror (github.io)'; url = [string]$cfg.pagesBase },
-              @{ name = 'Legacy mirror (frozen myurl0)'; url = 'https://rentry.co/myurl0' }
-          )
+          $reqBookmarks = @()
           $sessionBookmarks = @(
               @{ name = 'Mission Control (local)'; url = 'http://127.0.0.1:7331' }
           )
@@ -1533,13 +1530,7 @@ jobs:
               @{ name = 'Tailscale Admin'; url = 'https://login.tailscale.com/admin/machines' },
               @{ name = 'GitHub Actions'; url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions') }
           )
-          if ($pagesBase) {
-              $sessionBookmarks += @(
-                  @{ name = 'Decryptor'; url = ($pagesBase + '/decrypt.html') },
-                  @{ name = 'Archive'; url = ($pagesBase + '/archive.html') },
-                  @{ name = 'GHRDP Explorer'; url = ($pagesBase + '/explorer.html') }
-              )
-          }
+          # [remediation] pagesBase tool bookmarks (Decryptor/Archive/Explorer) removed
           $allBookmarks = $reqBookmarks + $sessionBookmarks
           $edgePol = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
           New-Item -Path $edgePol -Force -ErrorAction SilentlyContinue | Out-Null
