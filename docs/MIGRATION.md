@@ -103,7 +103,62 @@ no encryption-key publication, no shared decrypt link.
 - Optional: also restrict 3389 to Tailscale interface only via a rule matching
   the `Tailscale` network profile.
 
+### 1.7 Full VPS bootstrap (`Provision-GhrdpVps.ps1`)
+
+`payloads/Provision-GhrdpVps.ps1` chains §1.1 through §1.6 idempotently:
+winget-installs Tailscale, joins the tailnet (interactive OR
+`$env:TS_AUTHKEY`; never `--authkey=` on the command line), hard-fails
+if the resolved MagicDNS FQDN is not `*.ts.net`, creates the `rdpuser`
+account with an interactively-typed password
+(`Read-Host -AsSecureString`), sets `UserAuthentication = 1` and
+`fDenyTSConnections = 0`, delegates to `Enable-RdpTlsCertificate.ps1`
+(§1.3) for the LE cert bind, and creates a firewall rule allowing
+inbound TCP/3389 on the Tailscale interface only while disabling the
+default 'Remote Desktop' inbound rules. Explicit non-actions per
+discipline: no `AuthenticationLevelOverride`, no `fPromptForPassword = 0`,
+no MOTW / Zone.Identifier strip, no publisher-trust arming, no
+credential stash. Re-run every ~90 days to bind a fresh LE cert.
+
+Invoke (elevated, PowerShell 7+):
+
+    pwsh -ExecutionPolicy Bypass -File .\payloads\Provision-GhrdpVps.ps1
+
+Unattended tailnet auth (still interactive password):
+
+    $env:TS_AUTHKEY = 'tskey-auth-...'
+    pwsh -ExecutionPolicy Bypass -File .\payloads\Provision-GhrdpVps.ps1
+
+### 1.8 Secret rotation (execute BEFORE decommission and BEFORE §4)
+
+Every value below is compromised (lived in workflow env, push logs,
+Pages caches, or pre-remediation git history) and must be rotated out
+of band.
+
+- [ ] **Rentry admin password (`RDP@...`)**. Log into `rentry.co`,
+      delete the mirror paste, generate a fresh strong password, store
+      in a password manager. Do NOT recreate the mirror; it is retired.
+- [ ] **6 Rentry mirror edit codes** (masked prefixes in `STATE.md`
+      `Secrets ledger`; original values from private records). Log in,
+      delete each paste, discard each code. Do NOT recreate.
+- [ ] **Tailscale auth keys**. In the admin console at
+      `https://login.tailscale.com/admin/settings/keys`, revoke every
+      current key. Generate ONE reusable auth key for VPS bootstrap,
+      expiry ≤7 days, tagged `tag:ghrdp-vps`. Delete after §1.7
+      succeeds.
+- [ ] **`rdpuser` password**. Choose a fresh strong password at §1.7
+      provision time (the script prompts interactively).
+- [ ] **`dashToken`**. Generate a fresh random 32+ byte value; store
+      the VPS side in the `ghrdp-server.ps1` config and the dashboard
+      side in a password manager. Never commit.
+- [ ] **GitHub PATs scoping this repo** during Actions-as-RDP
+      operation. Rotate under `https://github.com/settings/tokens`.
+
 ## 2. Decommission checklist (Actions-as-RDP teardown)
+
+> Prerequisites: §1.7 VPS provisioned and client NLA-probe verified;
+> §1.8 secret rotation complete. §4 covers history rewrite separately.
+> Do NOT disable the Actions workflow until the VPS is
+> production-verified from the client.
 
 Execute in order, one at a time. Nothing here runs automatically.
 
@@ -167,3 +222,79 @@ Under no circumstance should the new host or its associated tooling:
 - Publicly mirror or index third-party content, or the user's own content, or
   any decrypt key.
 - Clear event logs, wipe profiles, or overwrite free space to hide activity.
+
+## 4. Git history rewrite (one-time; force-push gated on user confirmation)
+
+Old secrets still live in commits ancestral to `main`, in Pages / CDN
+caches, and in any clone or fork taken before remediation. Removing
+them from `HEAD` does NOT invalidate them. §1.8 rotation is the
+primary defense; this rewrite is defense-in-depth.
+
+The standing "never force-push" rule is overridden ONLY for this
+specific one-time rewrite, ONLY on this personal repository, ONLY
+AFTER §1.8 rotation, and ONLY AFTER the user explicitly types
+`history-rewrite-go` in the working session. It does NOT generalize.
+
+### 4.1 Preparation
+
+- [ ] Confirm §1.8 is complete for every leaked value.
+- [ ] Full backup: `git clone --mirror <repo-path> ghrdp-backup.git`.
+- [ ] Notify every clone / fork holder that history will be rewritten;
+      they will need to re-clone.
+- [ ] Choose a dedicated maintenance window.
+
+### 4.2 Purge with `git-filter-repo` (preferred)
+
+`git-filter-repo` is faster and safer than BFG for literal-string
+purge. Install with `pipx install git-filter-repo`.
+
+STEP 1. Prepare `replacements.txt` OUT OF BAND (never commit, never
+paste into a PR / issue / this doc):
+
+    <exact-leaked-string-1>==>REDACTED
+    <exact-leaked-string-2>==>REDACTED
+    ...
+
+Take the exact strings from your private records. `STATE.md`
+`Secrets ledger` has only masked prefixes; the full values are yours.
+
+STEP 2. Rewrite on a fresh clone (NEVER on your working checkout):
+
+    git clone --no-local <repo-path> ghrdp-rewrite
+    cd ghrdp-rewrite
+    git filter-repo --replace-text ../replacements.txt
+
+STEP 3. Verify no live secrets remain (must return zero hits):
+
+    git grep -nE "RDP@|fJSJ|WdX9|E9RS|YuKb|FWXk|tncr" $(git rev-list --all)
+
+STEP 4. **USER CONFIRMATION GATE**. Do NOT proceed to STEP 5 until you
+explicitly type `history-rewrite-go`.
+
+STEP 5. Force-push (destructive; the one-time override):
+
+    git remote add origin <remote-url>
+    git push --force-with-lease --all origin
+    git push --force-with-lease --tags origin
+
+STEP 6. Post-rewrite:
+
+- [ ] Purge GitHub Pages cache (Settings → Pages → unpublish, then
+      re-publish, or delete the deployment).
+- [ ] Every clone / fork holder re-clones. Old clones retain leaked
+      strings in reflogs and loose objects until GC.
+- [ ] Delete `ghrdp-backup.git` after ≥30 days of verified operation.
+- [ ] Shred `replacements.txt` (`Remove-Item -Force`).
+
+### 4.3 BFG alternative (only if `git-filter-repo` unavailable)
+
+BFG requires a `--mirror` bare clone:
+
+    git clone --mirror <repo-path> ghrdp-rewrite.git
+    java -jar bfg.jar --replace-text ../replacements.txt --no-blob-protection ghrdp-rewrite.git
+    cd ghrdp-rewrite.git
+    git reflog expire --expire=now --all
+    git gc --prune=now --aggressive
+
+The STEP 4 confirmation gate and STEP 6 post-rewrite items apply
+identically.
