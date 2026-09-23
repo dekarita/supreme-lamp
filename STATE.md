@@ -22,36 +22,45 @@
 - 797fb277 #6  docs/MIGRATION.md added (write-only VPS plan + decommission checklist).
 
 ## Queue
-- 3a. [DONE] 3 Publish steps deleted; step count 48; Put-GhFile/serviceWorker=0.
-- 3b. [DONE] 21 ghrdp-lib fns throw-on-call; watcher mirror path removed.
-- 3d. [DONE] $reqBookmarks=@(); tool bookmarks removed; kept Mission Control/Tailscale/Actions.
-- 5.  [DONE] agent/enroll/launch/accept/acceptance/diag/review deleted; helper token->mstsc; uninstall shipped; server C2 routes 404-guarded; /api/rdp-creds host-only.
-- 7A. [DONE] 0 rdpPass/rdpUser inside live response objects (grep classified).
-- 7B. [DONE] 0 __PASS__, 0 'pass=', 0 agent-status.
-- 7C. [DONE] Start-GhrdpLoopbackSession body begins with throw; 0 live callers.
-- 7D. [DONE] 0 'D1 synthetic'; banner retains DASHBOARD + RDP CONNECTION (mstsc/user only) + EMERGENCY STOP.
-- 6.  [DONE] docs/MIGRATION.md exists; names Secure-cleanup + Overwrite-free-space removals; write-only.
+- 3a/3b/3d/5/6/7A-7D: [DONE] (see git log).
+- 8A. [DONE] ece74aa /rentrydiag body -> 404 guard; 0 live rentry.co mirror-publish.
+- 8B. [DONE] 13bfeb3 /parsec-push body -> 404 guard; 0 plaintext rdpPass ONLOGON transit.
+- 8C. [DONE] 1d24bfe dead C2 handler bodies deleted (device-enroll, agent-hello, client-cmd POST+GET, client-status/agent-status POST+GET, agent.ps1, accept.ps1, diag-upload, diag-file, launch.ps1, enroll.ps1).
+- 8C-ext. [DONE] 545e991 /install.bat + /connect-now.bat dead bodies deleted (violated no-plaintext-transit).
+- 8D. [DONE] 22134a6 tscon /password heal + password/mirror-keys removed from early banner + step summary.
+- 8E. [DONE] 5f9835b anti-forensics gone (wevtutil cl loop, PSReadLine wipe, Overwrite-free-space step).
+- 8F. [PARTIAL] E-battery: E5 clean, E7 clean, E8 (queue #8 greps) clean, NLA clean, 16/16 .ps1 parse OK, YAML OK. E6 RED - see #8G below.
 
-## Residual flags (out of this branch's scope)
-- payloads/ghrdp-server.ps1 /rentrydiag: live rentry.co mirror-publish + mirrorKey leak; #6 target.
-- payloads/ghrdp-server.ps1 /parsec-push: live plaintext rdpPass transit into schtasks ONLOGON; #6.
-- payloads/ghrdp-server.ps1 dead 404-guarded C2 handler bodies below the guard (/connect-now.bat, /api/client-cmd): unreachable but should be deleted at #6.
-- main.yml keepalive: tscon.exe /password: line still transits plaintext RDP password on the tscon command line; #6/follow-up plaintext-transit sweep.
-- main.yml ~line 1167: separate inline "---- INDEXES & KEYS ----" banner in an earlier step still prints dead mirror content; #6.
-- payloads/ghrdp-uninstall.ps1: cmdkey /list + cmdkey /delete kept for prior-stash cleanup (removes, does not stash) - benign.
+## Open (blocks §3 push per STOP-condition "any E-check red")
+- 8G. payloads/main.rs (Rust dashboard, inline HTML template) still exposes creds/legacy actions:
+  - :1060  `__PASS__` template placeholder (server substitutes plaintext RDP password into dashboard HTML)
+  - :1068  `download="ghrdp-connect-now.bat"` link (server now 404s the route, but dashboard advertises it)
+  - :1069  `href="ghrdp://ip=__IP__&user=__USER__&pass=__PASS__"` embedded-creds URL
+  - :1070  `download="ghrdp-install.bat"` link
+  - :1074-77  `parsecPushBtn` + parsecFiles picker (server /parsec-push now 404 per 8B, dashboard still exposes UI)
+  - :1201, 1567, 1582  JS `ghrdpUrl='ghrdp://ip=...&p=b64u:'+b64u(c.pass||'')` builders (base64url != encryption)
+  - :1204-1206, 1550  JS wires btn hrefs to /connect-now.bat, /install.bat routes
+  - :1516, 1526, 1539  install/parsec-push protocol handoff via ghrdp:// + fetch to /parsec-push
+- Recovery scope decision NEEDED from user: (a) strip to view-only mstsc-command dashboard (kill cred fields + all one-click paths + Parsec push), OR (b) leave main.rs alone and mark Rust dashboard NOT BUILT/SHIPPED. If (b), also strip main.yml step that compiles or serves ghrdp-dash.exe. Cannot proceed to §3 push either way without user call.
 
-## Anchors (re-derive by search before each edit; lines shift)
-- main.yml: keepalive branch (tscon/loopback); Show-Banner ~:1809; earlier inline "---- INDEXES & KEYS ----" ~:1167.
-- payloads/ghrdp-server.ps1: /rentrydiag ~:213; /parsec-push ~:1380; dead 404-guarded C2 bodies below :287 guard.
+## Residual flags
+- payloads/ghrdp-uninstall.ps1: cmdkey /list + /delete kept for prior-stash cleanup (removes, does not stash) - benign.
+
+## Anchors (re-derive by search)
+- main.yml: keepalive-heal (tscon block guard) ~:2087; Cleanup step name ~:2224.
+- payloads/ghrdp-server.ps1: 404 guard array :253; /webdesk-boot (neutered) :462; /parsec-push (neutered) :369.
+- payloads/main.rs: sec-conn cred block :1057-1078; JS ghrdpUrl builders :1201/1567/1582.
 
 ## Acceptance
-- [x] E5 HEAD grep for secret prefixes: only STATE.md masked ledger; all other files clean.
-- [~] E6 shipped client payloads: 0 banned patterns EXCEPT ghrdp-uninstall.ps1 cmdkey /list + /delete (removes prior stashes; benign cleanup).
-- [x] E7 mirror off + publishers gone + Megathread/FMHY gone; docs/sw.js CACHE=ghrdp-explorer-v2.
-- [x] NLA: main.yml sets UserAuthentication=1; fPromptForPassword appears only in descriptive text (STATE / MIGRATION / #7C neutering comment), 0 live setters. Live NLA probe DEFERRED to next runner/VPS.
+- [x] E5 HEAD grep for secret prefixes: only STATE.md masked ledger.
+- [ ] E6 RED - main.rs Rust dashboard template still emits __PASS__ + ghrdp://&pass= + connect-now.bat/install.bat one-click. Scope of fix pending user call (see 8G).
+- [x] E7 mirror OFF (default false, DEPRECATED description) + publishers gone.
+- [x] E8 (queue #8 greps) 0 live hits; remaining hits are the guard array + remediation comments.
+- [x] NLA: UserAuthentication=1; 0 live fPromptForPassword setters.
+- [x] Parse: 16/16 payloads/*.ps1 parse OK; main.yml YAML parses OK.
 
-## Secrets ledger (masked; rotation = user parallel track, NOT confirmed)
-- rentry pw RDP@... blanked in main.yml env. mirror keys fJSJ.../WdX9.../E9RS.../YuKb.../FWXk.../tncr... purged from docs working tree; still in git history + Pages/CDN caches until rewrite/rotation.
+## Secrets ledger (masked; rotation = user parallel track)
+- rentry pw RDP@... blanked in main.yml env. mirror keys fJSJ.../WdX9.../E9RS.../YuKb.../FWXk.../tncr... purged from docs; still in git history + Pages/CDN caches until rewrite/rotation.
 
 ## Last delta
-- 2026-09-23 #7A/#7B/#7C/#7D + #6 done. #7 queue closed on-branch: server response bodies cred-free; ui.html cred display/anchor/bat gone; loopback function throw + callers stubbed; D1 gate deleted + banner trimmed; migration doc written. Residual flags listed above (rentrydiag, parsec-push, tscon /password, dead 404 bodies, earlier inline banner) tracked for #6/follow-up. Await user instruction on push/PR/merge.
+- 2026-09-23 queue #8 A-E done (5 commits) + 8C-ext extra commit killing /install.bat + /connect-now.bat dead bodies. 8F E-battery run: E5/E7/E8/NLA green; parses green. E6 RED - main.rs Rust dashboard HTML template still has __PASS__ template + ghrdp://&pass= URL + connect-now.bat/install.bat + Parsec-push button + JS builders (previously missed - 7B checked only ui.html). §3 push NOT executed; per §4 STOP condition "any E-check red". Await user call on 8G scope (strip main.rs vs mark Rust dashboard not-shipped).
