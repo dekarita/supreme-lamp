@@ -185,6 +185,15 @@ function ConvertTo-JsonBytes {
     param($Obj)
     return [System.Text.Encoding]::UTF8.GetBytes(($Obj | ConvertTo-Json -Depth 10 -Compress))
 }
+function Remove-CredKeys {
+    # [remediation #7A] strip credential fields from a config object before it leaves in any response body
+    param($Obj)
+    if (-not $Obj) { return $Obj }
+    foreach ($k in @('rdpUser', 'rdpPass', 'mirrorKey', 'legacyDecryptKey', 'creds')) {
+        try { if ($Obj.PSObject.Properties[$k]) { $Obj.PSObject.Properties.Remove($k) } } catch { }
+    }
+    return $Obj
+}
 function Invoke-ClientRequest {
     param($Client, $Token)
     $stream = $null
@@ -1181,21 +1190,9 @@ boot();
             return
         }
         if ($path -eq '/config') {
-            if (Test-Path -LiteralPath $script:CfgPath) {
-                $bytes = $null
-                try {
-                    $fs = [System.IO.File]::Open($script:CfgPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-                    $ms = New-Object System.IO.MemoryStream
-                    $fs.CopyTo($ms)
-                    $fs.Dispose()
-                    $bytes = $ms.ToArray()
-                    $ms.Dispose()
-                } catch { }
-                if ($bytes) {
-                    Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body $bytes
-                } else {
-                    Send-ClientResponse -Stream $stream -Code 500 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('config read failed'))
-                }
+            $cfgOut = Remove-CredKeys (Read-JsonFile -Path $script:CfgPath)
+            if ($cfgOut) {
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $cfgOut)
             } else {
                 Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('config missing'))
             }
@@ -1220,13 +1217,12 @@ boot();
             $ip = ''; $us = ''; $pw = ''; $mk = ''; $tg = ''; $sv = ''; $fu = ''; $sa = ''; $rsa = ''; $ssa = ''; $em = 'none'; $lu = ''; $lk = ''; $rn = ''; $eg = ''
             $mirrorFlag = $false
             if ($cfg) {
-                $ip = [string]$cfg.rdpIp; $us = [string]$cfg.rdpUser; $pw = [string]$cfg.rdpPass; $tg = [string]$cfg.mirrorIndexUrl
+                $tg = [string]$cfg.mirrorIndexUrl
                 $sv = [string]$cfg.serveUrl; $fu = [string]$cfg.funnelUrl; $sa = [string]$cfg.startedAt
                 $rsa = [string]$cfg.runStartedAt; $ssa = [string]$cfg.sessionStartedAt
                 $em = if ([string]$cfg.encryptMode) { [string]$cfg.encryptMode } else { 'none' }
-                $lu = [string]$cfg.legacyIndexUrl; $lk = [string]$cfg.legacyDecryptKey; $rn = [string]$cfg.rentryNewUrl; $eg = [string]$cfg.runnerEgressIp
+                $lu = [string]$cfg.legacyIndexUrl; $rn = [string]$cfg.rentryNewUrl; $eg = [string]$cfg.runnerEgressIp
                 $mirrorFlag = [bool]$cfg.mirror
-                if ($mirrorFlag) { $mk = [string]$cfg.mirrorKey }
             }
             $sessionEnd = $null; $cands = @()
             foreach ($k in @('githubDeadline','keepAliveDeadline','watcherDeadline')) { $v = [string]$cfg.$k; if ($v) { try { $cands += [datetime]$v } catch { } } }
@@ -1235,7 +1231,6 @@ boot();
                 serverTs = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
                 mirror = $mirrorFlag
                 encryptMode = $em
-                mirrorKey = $mk
                 ghrdp = [string]$cfg.ghrdp
                 mirrorIndexUrl = $tg
                 serveUrl = $sv
@@ -1245,13 +1240,11 @@ boot();
                 sessionStartedAt = (To-IsoUtc $ssa)
                 sessionEnd = $(if ($sessionEnd) { $sessionEnd.ToString('o') } else { '' })
                 legacyIndexUrl = $lu
-                legacyDecryptKey = $lk
                 rentryNewUrl = $rn
                 runnerEgressIp = $eg
                 keepAliveDeadline = [string]$cfg.keepAliveDeadline
                 keepAlivePhase = [string]$cfg.keepAlivePhase
                 pagesBase = [string]$cfg.pagesBase
-                creds = [ordered]@{ ip = $ip; user = $us; pass = $pw }
                 ts = $prog.ts
                 alive = [bool]$prog.alive
                 active = $prog.active
@@ -1272,13 +1265,12 @@ boot();
         if (($path -eq '/') -or ($path -eq '/index.html')) {
             $html = '<h1>Mission Control UI file missing</h1>'
             try { $html = [System.IO.File]::ReadAllText($script:UiPath, [System.Text.Encoding]::UTF8) } catch { }
-            $ip = ''; $us = ''; $pw = ''; $mk = ''; $tg = ''
+            $ip = ''; $tg = ''
             if ($cfg) {
-                $ip = [string]$cfg.rdpIp; $us = [string]$cfg.rdpUser; $pw = [string]$cfg.rdpPass
+                $ip = [string]$cfg.rdpIp
                 $tg = [string]$cfg.mirrorIndexUrl
-                if ([bool]$cfg.mirror) { $mk = [string]$cfg.mirrorKey }
             }
-            $html = $html.Replace('__IP__', $ip).Replace('__USER__', $us).Replace('__PASS__', $pw).Replace('__MIRRORKEY__', $mk).Replace('__TELEGRAPH__', $tg)
+            $html = $html.Replace('__IP__', $ip).Replace('__TELEGRAPH__', $tg)
             Send-ClientResponse -Stream $stream -Code 200 -CType 'text/html; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($html))
             return
         }
@@ -1332,17 +1324,8 @@ boot();
             return
         }
         if ($path -eq '/api/config') {
-            if (Test-Path -LiteralPath $script:CfgPath) {
-                $bytes = $null
-                try {
-                    $fs = [System.IO.File]::Open($script:CfgPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-                    $ms = New-Object System.IO.MemoryStream
-                    $fs.CopyTo($ms); $fs.Dispose(); $bytes = $ms.ToArray(); $ms.Dispose()
-                } catch { }
-                if ($bytes) { Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body $bytes } else { Send-ClientResponse -Stream $stream -Code 500 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('config read failed')) }
-            } else {
-                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('config missing'))
-            }
+            $cfgOut = Remove-CredKeys (Read-JsonFile -Path $script:CfgPath)
+            if ($cfgOut) { Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $cfgOut) } else { Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('config missing')) }
             return
         }
         if ($path -eq '/api/progress' -or $path -eq '/api/stats') {
@@ -1355,11 +1338,9 @@ boot();
                 kind = 'snapshot'
                 mirror = [bool]$cfg2.mirror
                 encryptMode = [string]$cfg2.encryptMode
-                mirrorKey = [string]$cfg2.mirrorKey
                 mirrorIndexUrl = [string]$cfg2.mirrorIndexUrl
                 rentryNewUrl = [string]$cfg2.rentryNewUrl
                 legacyIndexUrl = [string]$cfg2.legacyIndexUrl
-                legacyDecryptKey = [string]$cfg2.legacyDecryptKey
                 runnerEgressIp = [string]$cfg2.runnerEgressIp
                 keepAliveDeadline = [string]$cfg2.keepAliveDeadline
                 keepAlivePhase = [string]$cfg2.keepAlivePhase
@@ -1367,7 +1348,6 @@ boot();
                 startedAt = (To-IsoUtc ([string]$cfg2.startedAt))
                 runStartedAt = (To-IsoUtc ([string]$cfg2.runStartedAt))
                 sessionStartedAt = (To-IsoUtc ([string]$cfg2.sessionStartedAt))
-                creds = [ordered]@{ ip = [string]$cfg2.rdpIp; user = [string]$cfg2.rdpUser; pass = [string]$cfg2.rdpPass }
                 progress = $prog2
                 conn = $null
                 wire = $wireNow
