@@ -17,7 +17,7 @@
 - 32b5225e #3c config.json staging blanks + Megathread/FMHY bookmark removal.
 
 ## Queue
-- 3a. Delete 3 Publish steps (Pages tools / Explorer / offline SW incl SW-injection into archive/decrypt.html). KEEP 'Verify Pages responds 200'.
+- 3a. [DONE] 3 Publish steps deleted (Pages tools/Explorer/offline SW incl SW-injection); Verify Pages kept; step count 48; Put-GhFile/serviceWorker=0.
 - 3b. Neuter ghrdp-lib.ps1 publish/upload/key-gen fns (throw); KEEP helpers + 'Write mirror library' step.
 - 3d. Remove remaining $reqBookmarks mirror entries (GHRDP Mirror, Legacy myurl0) + pagesBase tool bookmarks; keep Mission Control/Tailscale/Actions.
 - 5. Delete agent+enroll payloads + cp lines; ship ghrdp-uninstall.ps1; rewrite helper-ghrdp-connect.ps1 -> token->host->mstsc only; stop serving agent payloads.
@@ -37,4 +37,4 @@
 - rentry pw RDP@... blanked in main.yml env. mirror keys fJSJ.../WdX9.../E9RS.../YuKb.../FWXk.../tncr... purged from docs working tree; still in git history + Pages/CDN caches until rewrite/rotation.
 
 ## Last delta
-- 2026-09-23 repo-root scope confirmed; STATE.md persisted. Next: 3a Publish-step deletes.
+- 2026-09-23 3a done: 3 Publish steps deleted (incl SW-injection loop); grep Put-GhFile/serviceWorker/Publish-GithubPagesData=0; Verify Pages kept; steps=48. Next: 3b neuter ghrdp-lib.ps1.
