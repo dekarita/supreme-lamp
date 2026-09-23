@@ -1155,7 +1155,7 @@ jobs:
           Write-Host '------------------------------------------------------------'
           Write-Host ('  Tailscale IP ........: ' + $ip)
           Write-Host ('  RDP ................: mstsc /v:' + $ip + '   (user: ' + $user + ')')
-          Write-Host ('  RDP password .......: ' + $pass + '   (also shown in Mission Control)')
+          # [remediation 8D] RDP password print removed (Mission Control still serves creds host-only over tailnet).
           Write-Host ('  Dashboard (PS) .....: http://' + $ip + ':7331/' + $keyPart)
           if ($rustOn -and $rustUrl) {
               Write-Host ('  Dashboard (real-time) : ' + $rustUrl + '   (Rust, WebSocket; tailnet-only, NOT funneled)')
@@ -1164,16 +1164,7 @@ jobs:
           }
           if ($serveUrl) { Write-Host ('  Dashboard (serve) ..: ' + $serveUrl + $keyPart + '   (tailnet only)') }
           if ($funnelUrl) { Write-Host ('  Dashboard (funnel) .: ' + $funnelUrl + $keyPart + '   (public)') }
-          Write-Host '  ---- INDEXES & KEYS -------------------------------------'
-          Write-Host ('  Legacy Rentry .......: ' + $legacyUrl)
-          if ($legacyKey) {
-              Write-Host ('  LEGACY decrypt key ..: ' + $legacyKey + '   (files uploaded before this run)')
-          } else {
-              Write-Host '  LEGACY decrypt key ..: (not found on the legacy page)'
-          }
-          if ($rentryNew) { Write-Host ('  New Rentry ..........: ' + $rentryNew) } else { Write-Host '  New Rentry ..........: (created when the first file uploads)' }
-          if ($telegraph) { Write-Host ('  Telegraph ...........: ' + $telegraph) } else { Write-Host '  Telegraph ...........: (created when the first file uploads)' }
-          Write-Host ('  Current decrypt key .: ' + [string]$cfg.mirrorKey + '   (current run)')
+          # [remediation 8D] INDEXES & KEYS banner (Legacy/New Rentry, Telegraph, decrypt keys) removed - dead mirror.
           Write-Host '  ---- EMERGENCY STOP --------------------------------------'
           Write-Host ('  web : open ' + $runUrl + '  and press "Cancel workflow"')
           Write-Host ('  cli : ' + $cancelCli + '   (copy: triple-click + Ctrl+C)')
@@ -1181,16 +1172,12 @@ jobs:
           if ($S) {
               '## Mission Control READY' | Add-Content -Path $S
               ('- **Tailscale IP**: ' + $ip) | Add-Content -Path $S
-              ('- **RDP**: `mstsc /v:' + $ip + '` as `' + $user + '` (password: `' + $pass + '`, also in the dashboard)') | Add-Content -Path $S
+              # [remediation 8D] RDP password + mirror index/key lines removed from job summary.
+              ('- **RDP**: `mstsc /v:' + $ip + '` as `' + $user + '` (password shown host-only in Mission Control)') | Add-Content -Path $S
               ('- **Dashboard (PS)**: http://' + $ip + ':7331/' + $keyPart) | Add-Content -Path $S
               if ($rustOn -and $rustUrl) { ('- **Dashboard (real-time)**: ' + $rustUrl) | Add-Content -Path $S } else { '- **Dashboard (real-time)**: unavailable this run (PowerShell dashboard on 7331 is serving)' | Add-Content -Path $S }
               if ($serveUrl) { ('- **Dashboard (serve)**: ' + $serveUrl + $keyPart) | Add-Content -Path $S }
               if ($funnelUrl) { ('- **Dashboard (funnel)**: ' + $funnelUrl + $keyPart) | Add-Content -Path $S }
-              ('- **Legacy Rentry**: ' + $legacyUrl) | Add-Content -Path $S
-              if ($legacyKey) { ('- **LEGACY decrypt key**: `' + $legacyKey + '` (files uploaded before this run)') | Add-Content -Path $S }
-              if ($rentryNew) { ('- **New Rentry**: ' + $rentryNew) | Add-Content -Path $S }
-              if ($telegraph) { ('- **Telegraph**: ' + $telegraph) | Add-Content -Path $S }
-              ('- **Current decrypt key**: `' + [string]$cfg.mirrorKey + '`') | Add-Content -Path $S
               if ($egress) { ('- Uploads execute ON THE RUNNER (egress IP ' + $egress + ')') | Add-Content -Path $S }
               ('- Emergency stop: open the run page and Cancel workflow, or run `' + $cancelCli + '`') | Add-Content -Path $S
           }
@@ -2097,8 +2084,8 @@ jobs:
                     }
                 } catch { }
                 if ($discId) {
-                    Write-Host ($icons.wrench + ' ' + $stamp + ' session ' + $discId + ' DISCONNECTED - tscon to console so desktop re-renders')
-                    try { & tscon.exe $discId /dest:console ('/password:' + [string]$cfgNow.rdpPass) 2>$null | Out-Null; $LASTEXITCODE = 0 } catch { Write-Host ('   tscon failed: ' + $_.Exception.Message) }
+                    # [remediation 8D] tscon /password heal removed - no plaintext RDP password on command line. Disconnected sessions self-recover on next RDP login.
+                    Write-Host ($icons.wrench + ' ' + $stamp + ' session ' + $discId + ' DISCONNECTED - waiting for user RDP login (no auto-tscon)')
                 } elseif (-not $sess) {
                     Write-Host ($icons.wrench + ' ' + $stamp + ' no interactive session for RDP user - remediation #7C removed loopback-boot (NLA-off + plaintext cmdkey); log in via real RDP with NLA on')
                 } else {
