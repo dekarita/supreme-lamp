@@ -315,6 +315,100 @@ jobs:
           Write-Host ('[ts] connected. Tailscale IP = ' + $ip)
           exit 0
 
+      # [U5b / MIGRATION 1.3] Bind the tailnet Let's Encrypt cert to the
+      # RDP-Tcp listener automatically at every run, so certBound reads YES
+      # on /api/native-status without any manual step. NLA stays ON, no
+      # AuthenticationLevelOverride, no client-side trust manipulation.
+      # Logs the thumbprint only (never the private key). Idempotent: safe
+      # to re-run when the LE cert renews (~90 days).
+      - name: Bind tailnet LE cert to RDP-Tcp (U5b)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+          $S = $env:GITHUB_STEP_SUMMARY
+          $fqdn = ''
+          try {
+              $j = (& $ts status --json 2>$null) | ConvertFrom-Json
+              $fqdn = ([string]$j.Self.DNSName).TrimEnd('.')
+          } catch { }
+          if (-not ($fqdn -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$')) {
+              Write-Host '[cert] no MagicDNS FQDN resolved; skipping cert bind (native-status will show fqdn-not-tsnet)'
+              exit 0
+          }
+          Write-Host ('[cert] FQDN = ' + $fqdn)
+          $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+          try { Set-ItemProperty -Path $rdpKey -Name 'UserAuthentication' -Value 1 -Type DWord -ErrorAction Stop; Write-Host '[cert] NLA reasserted (UserAuthentication=1)' } catch { Write-Host ('[cert] NLA reassert failed: ' + $_.Exception.Message) }
+          $workDir = 'C:\ghrdp\tls'
+          New-Item -ItemType Directory -Path $workDir -Force -ErrorAction SilentlyContinue | Out-Null
+          $crtPath = Join-Path $workDir ($fqdn + '.crt')
+          $keyPath = Join-Path $workDir ($fqdn + '.key')
+          try { icacls.exe $workDir /inheritance:r 2>&1 | Out-Null; icacls.exe $workDir /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' 'NETWORK SERVICE:(OI)(CI)R' 2>&1 | Out-Null; $LASTEXITCODE=0 } catch { }
+          $certLog = Join-Path $env:RUNNER_TEMP 'ts-cert.log'
+          $certErr = Join-Path $env:RUNNER_TEMP 'ts-cert.err'
+          $p = Start-Process -FilePath $ts -ArgumentList @('cert', '--cert-file', $crtPath, '--key-file', $keyPath, $fqdn) -RedirectStandardOutput $certLog -RedirectStandardError $certErr -WindowStyle Hidden -PassThru
+          try { $p.WaitForExit(120000) | Out-Null } catch { }
+          $certOk = ($p.HasExited -and $p.ExitCode -eq 0 -and (Test-Path -LiteralPath $crtPath) -and (Test-Path -LiteralPath $keyPath))
+          if (-not $certOk) {
+              $tail = ''
+              try { if (Test-Path $certErr) { $tail = [System.IO.File]::ReadAllText($certErr) } } catch { }
+              Write-Host ('[cert] tailscale cert failed (exit=' + $p.ExitCode + '); check HTTPS is ENABLED in tailnet admin -> DNS. err: ' + ($tail -replace "`r?`n", ' ' | Select-Object -First 1))
+              if ($S) { '### RDP cert bind skipped (tailscale cert failed)' | Add-Content -Path $S; 'Fix: Tailscale admin console -> DNS -> "Enable HTTPS...". Then re-run.' | Add-Content -Path $S }
+              exit 0
+          }
+          $thumb = ''
+          try {
+              $loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile($crtPath, $keyPath)
+              $pfxBytes = $loaded.Export('Pfx', [string]::Empty)
+              $flags = 'PersistKeySet,MachineKeySet,Exportable'
+              $imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, [string]::Empty, $flags)
+              $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
+              $store.Open('ReadWrite')
+              foreach ($old in @($store.Certificates | Where-Object { $_.Subject -match [regex]::Escape($fqdn) })) { $store.Remove($old) }
+              $store.Add($imported)
+              $store.Close()
+              $thumb = $imported.Thumbprint
+              try {
+                  $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported)
+                  if ($rsa -and $rsa.Key -and $rsa.Key.UniqueName) {
+                      $machineKeys = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
+                      $keyFile = Join-Path $machineKeys $rsa.Key.UniqueName
+                      if (Test-Path -LiteralPath $keyFile) {
+                          $acl = Get-Acl -Path $keyFile
+                          $rule = New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\NETWORK SERVICE', 'Read', 'Allow')
+                          $acl.AddAccessRule($rule)
+                          Set-Acl -Path $keyFile -AclObject $acl
+                      }
+                  }
+              } catch { Write-Host ('[cert] key ACL step skipped: ' + $_.Exception.Message) }
+          } catch { Write-Host ('[cert] import failed: ' + $_.Exception.Message); exit 0 }
+          try {
+              $tsSetting = Get-CimInstance -Namespace 'root/cimv2/TerminalServices' -ClassName 'Win32_TSGeneralSetting' -Filter "TerminalName='RDP-Tcp'" -ErrorAction Stop
+              $bindResult = Invoke-CimMethod -InputObject $tsSetting -MethodName 'SetSSLCertificateSHA1Hash' -Arguments @{ SSLCertificateSHA1Hash = $thumb } -ErrorAction Stop
+              if ($bindResult.ReturnValue -ne 0) {
+                  Write-Host ('[cert] SetSSLCertificateSHA1Hash returned ' + $bindResult.ReturnValue + '; falling back to registry write')
+                  $hashBytes = -split ($thumb -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
+                  New-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hashBytes -Force | Out-Null
+              }
+          } catch {
+              Write-Host ('[cert] WMI bind failed (' + $_.Exception.Message + '); registry-only fallback')
+              try {
+                  $hashBytes = -split ($thumb -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
+                  New-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hashBytes -Force | Out-Null
+              } catch { Write-Host ('[cert] registry fallback failed: ' + $_.Exception.Message); exit 0 }
+          }
+          $boundHex = ''
+          try { $bound = (Get-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -ErrorAction Stop).SSLCertificateSHA1Hash; $boundHex = ($bound | ForEach-Object { $_.ToString('X2') }) -join '' } catch { }
+          if ($boundHex -ieq $thumb) {
+              Write-Host ('[cert] OK: cert ' + $thumb + ' bound on RDP-Tcp; NLA=1')
+              try { Restart-Service TermService -Force -ErrorAction SilentlyContinue; Write-Host '[cert] TermService restarted' } catch { }
+              if ($S) { '### RDP cert bind OK' | Add-Content -Path $S; ('Thumbprint: `' + $thumb + '`') | Add-Content -Path $S }
+          } else {
+              Write-Host ('[cert] bind verification mismatch: registry=' + $boundHex + ' expected=' + $thumb)
+              if ($S) { '### RDP cert bind mismatch (see workflow log)' | Add-Content -Path $S }
+          }
+          exit 0
+
       - name: Optimize Tailscale path (direct-connection hunter, every 5 min)
         shell: pwsh
         run: |
@@ -822,10 +916,160 @@ jobs:
           }
           exit 0
 
-      # [U1 / #7C-extended] "Web desktop backend (TightVNC no-auth 5900 + websockify 7333)" step removed.
-      # No-auth VNC — even tailnet-gated — is a bright-line NLA / credential-required regression and is
-      # incompatible with the native mstsc-only architecture. WebSockify bridge and 7333 firewall rule
-      # go with it. Reintroduction is banned by STATE.md decisions.
+      # [U1 / #7C-extended] "Web desktop backend (TightVNC no-auth 5900 + websockify 7333)" step removed
+      # in prior remediation. No-auth VNC — even tailnet-gated — is a bright-line credential-required
+      # regression and is incompatible with the native mstsc-only architecture.
+      #
+      # [U5c / MIGRATION 1.10] Web desktop reintroduced ONLY in the password-required + tailnet-only
+      # form. Credentials remain required (TightVNC control + view password from repo secret VNC_PASS,
+      # never echoed to logs/summary), and exposure is limited to the tailnet via `tailscale serve` on
+      # 127.0.0.1:7333. No public port, no funnel, no anonymous access. VNC_PASS empty -> step skips
+      # cleanly and config.webdeskUrl stays '' so the dashboard button remains disabled. The banned
+      # posture (no-auth VNC on any interface) stays banned.
+      - name: Web desktop (noVNC + TightVNC, tailnet-only via tailscale serve)
+        env:
+          VNC_PASS: ${{ secrets.VNC_PASS }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $S = $env:GITHUB_STEP_SUMMARY
+          $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+          $vp = [string]$env:VNC_PASS
+          if (-not $vp) {
+              Write-Host '[webdesk] VNC_PASS secret not set; skipping (dashboard WEB DESKTOP stays disabled).'
+              if ($S) { '### Web desktop skipped (VNC_PASS not set)' | Add-Content -Path $S }
+              exit 0
+          }
+          if ($vp.Length -lt 8) {
+              Write-Host '[webdesk] VNC_PASS shorter than 8 chars; refusing (weak passwords are not acceptable for a network-reachable service).'
+              if ($S) { '### Web desktop skipped (VNC_PASS too short; require >= 8 chars)' | Add-Content -Path $S }
+              exit 0
+          }
+          # Install TightVNC via chocolatey (preinstalled on windows-latest). Password is passed as
+          # an installer package parameter that goes to msiexec briefly and never touches our logs.
+          $inst = $false
+          try {
+              $vpArg = 'ADDLOCAL=Server SERVER_REGISTER_AS_SERVICE=1 SERVER_ADD_FIREWALL_EXCEPTION=0 SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=' + $vp + ' SET_USECONTROLAUTHENTICATION=1 VALUE_OF_USECONTROLAUTHENTICATION=1 SET_CONTROLPASSWORD=1 VALUE_OF_CONTROLPASSWORD=' + $vp + ' SET_REMOVEWALLPAPER=0'
+              & choco install tightvnc --no-progress --limit-output -y --install-arguments="/quiet /norestart ADDDEFAULT=Server" --params="'/SET:'$vpArg'" 2>&1 | Where-Object { $_ -notmatch [regex]::Escape($vp) } | Select-Object -Last 20 | Out-Null
+              # Fallback: direct msiexec if chocolatey did not bring the service up
+              $svc = Get-Service -Name 'tvnserver' -ErrorAction SilentlyContinue
+              if (-not $svc) {
+                  $msi = Join-Path $env:RUNNER_TEMP 'tightvnc.msi'
+                  Invoke-WebRequest -Uri 'https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi' -OutFile $msi -UseBasicParsing -TimeoutSec 60
+                  $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $msi, '/quiet', '/norestart', 'ADDLOCAL=Server', 'SERVER_REGISTER_AS_SERVICE=1', 'SERVER_ADD_FIREWALL_EXCEPTION=0', 'SET_USEVNCAUTHENTICATION=1', 'VALUE_OF_USEVNCAUTHENTICATION=1', 'SET_PASSWORD=1', ('VALUE_OF_PASSWORD=' + $vp), 'SET_USECONTROLAUTHENTICATION=1', 'VALUE_OF_USECONTROLAUTHENTICATION=1', 'SET_CONTROLPASSWORD=1', ('VALUE_OF_CONTROLPASSWORD=' + $vp)) -Wait -PassThru -WindowStyle Hidden
+                  Write-Host ('[webdesk] tightvnc msi exit=' + $p.ExitCode)
+              }
+              # Reassert password via registry (belt-and-braces; TightVNC uses DES-encrypted format from
+              # the installer, so we rely on the installer's own encoding; we do NOT compute or log the
+              # hash here). Then bind VNC to loopback only so nothing but websockify can reach 5900.
+              $tvKey = 'HKLM:\SOFTWARE\TightVNC\Server'
+              if (Test-Path -LiteralPath $tvKey) {
+                  Set-ItemProperty -Path $tvKey -Name 'AcceptRfbConnections' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'UseVncAuthentication' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'AllowLoopback'     -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'LoopbackOnly'      -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'AlwaysShared'      -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'RemoveWallpaper'   -Value 0 -Type DWord -ErrorAction SilentlyContinue
+              }
+              try { Restart-Service -Name 'tvnserver' -Force -ErrorAction Stop; $inst = $true } catch { Write-Host ('[webdesk] tvnserver service restart failed: ' + $_.Exception.Message) }
+          } catch { Write-Host ('[webdesk] TightVNC install error: ' + $_.Exception.Message) }
+          if (-not $inst) {
+              if ($S) { '### Web desktop install failed (see workflow log; secret NOT leaked)' | Add-Content -Path $S }
+              exit 0
+          }
+          # Install noVNC + websockify. Python is preinstalled on the runner.
+          $novncDir = 'C:\ghrdp\novnc'
+          try {
+              if (-not (Test-Path -LiteralPath (Join-Path $novncDir 'vnc.html'))) {
+                  New-Item -ItemType Directory -Path 'C:\ghrdp' -Force -ErrorAction SilentlyContinue | Out-Null
+                  & git.exe clone --depth 1 https://github.com/novnc/noVNC.git $novncDir 2>&1 | Select-Object -Last 3 | Out-Null
+              }
+              & python -m pip install --disable-pip-version-check --quiet websockify 2>&1 | Select-Object -Last 3 | Out-Null
+          } catch { Write-Host ('[webdesk] noVNC/websockify install error: ' + $_.Exception.Message) }
+          if (-not (Test-Path -LiteralPath (Join-Path $novncDir 'vnc.html'))) {
+              Write-Host '[webdesk] noVNC assets missing; skipping serve'
+              if ($S) { '### Web desktop skipped (noVNC clone failed)' | Add-Content -Path $S }
+              exit 0
+          }
+          # Wait for VNC 5900 to be LISTENING on loopback before starting websockify.
+          $vncUp = $false
+          for ($i = 0; $i -lt 30; $i++) {
+              $c = Get-NetTCPConnection -LocalPort 5900 -State Listen -ErrorAction SilentlyContinue
+              if ($c) { $vncUp = $true; break }
+              Start-Sleep -Seconds 1
+          }
+          if (-not $vncUp) { Write-Host '[webdesk] VNC 5900 did not reach LISTEN in 30s' }
+          # Start websockify on 127.0.0.1:7333, bridging to 127.0.0.1:5900, serving noVNC.
+          try { Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*websockify*7333*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
+          try {
+              $wsLog = 'C:\ghrdp\webdesk\websockify.log'
+              New-Item -ItemType Directory -Path 'C:\ghrdp\webdesk' -Force -ErrorAction SilentlyContinue | Out-Null
+              Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $novncDir, '127.0.0.1:7333', '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsLog -WindowStyle Hidden | Out-Null
+          } catch { Write-Host ('[webdesk] websockify start failed: ' + $_.Exception.Message) }
+          $wsUp = $false
+          for ($i = 0; $i -lt 20; $i++) {
+              $c = Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue
+              if ($c) { $wsUp = $true; break }
+              Start-Sleep -Seconds 1
+          }
+          if (-not $wsUp) {
+              Write-Host '[webdesk] websockify 7333 did not reach LISTEN in 20s'
+              if ($S) { '### Web desktop skipped (websockify did not bind)' | Add-Content -Path $S }
+              exit 0
+          }
+          # Expose ONLY on the tailnet.
+          $serveUrl = ''
+          try {
+              $serveLog = Join-Path $env:RUNNER_TEMP 'ts-serve-webdesk.log'
+              & $ts serve --bg https://127.0.0.1:7333 2>&1 | Tee-Object -FilePath $serveLog | Out-Null
+              $LASTEXITCODE = 0
+              try {
+                  $ss = (& $ts serve status --json 2>$null) | ConvertFrom-Json
+                  if ($ss -and $ss.Web) {
+                      foreach ($k in $ss.Web.PSObject.Properties.Name) {
+                          $entry = $ss.Web.$k
+                          if ($entry -and $entry.Handlers) {
+                              foreach ($hk in $entry.Handlers.PSObject.Properties.Name) {
+                                  $h = $entry.Handlers.$hk
+                                  if ($h.Proxy -and ($h.Proxy -match '127\.0\.0\.1:7333')) { $serveUrl = 'https://' + $k + $hk; break }
+                              }
+                          }
+                          if ($serveUrl) { break }
+                      }
+                  }
+              } catch { }
+              if (-not $serveUrl) {
+                  try {
+                      $j = (& $ts status --json 2>$null) | ConvertFrom-Json
+                      $fq = ([string]$j.Self.DNSName).TrimEnd('.')
+                      if ($fq) { $serveUrl = 'https://' + $fq + '/' }
+                  } catch { }
+              }
+              if ($serveUrl -and -not ($serveUrl.EndsWith('/'))) { $serveUrl = $serveUrl + '/' }
+              if ($serveUrl) { $serveUrl = $serveUrl + 'vnc.html?autoconnect=1&resize=remote' }
+          } catch { Write-Host ('[webdesk] tailscale serve failed: ' + $_.Exception.Message) }
+          if (-not $serveUrl) {
+              Write-Host '[webdesk] tailscale serve did not produce a URL'
+              if ($S) { '### Web desktop skipped (tailscale serve produced no URL)' | Add-Content -Path $S }
+              exit 0
+          }
+          # Write config.webdeskUrl (safe: no password anywhere in the URL).
+          try {
+              $cfgPath = 'C:\ghrdp\config.json'
+              if (Test-Path -LiteralPath $cfgPath) {
+                  $enc = New-Object System.Text.UTF8Encoding($false)
+                  $cfgJ = [System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json
+                  if ($cfgJ.PSObject.Properties['webdeskUrl']) { $cfgJ.webdeskUrl = $serveUrl } else { $cfgJ | Add-Member -NotePropertyName webdeskUrl -NotePropertyValue $serveUrl -Force }
+                  [System.IO.File]::WriteAllText($cfgPath, ($cfgJ | ConvertTo-Json -Depth 10), $enc)
+              }
+          } catch { Write-Host ('[webdesk] config.json update failed: ' + $_.Exception.Message) }
+          Write-Host ('[webdesk] serve URL = ' + $serveUrl)
+          if ($S) {
+              '### Web desktop LIVE (tailnet-only, VNC-password-gated)' | Add-Content -Path $S
+              ('URL: ' + $serveUrl) | Add-Content -Path $S
+              'Credentials: VNC password from repo secret VNC_PASS (never printed).' | Add-Content -Path $S
+          }
+          exit 0
 
       - name: Start Mission Control dashboard EARLY (PS 7331, SYSTEM task, confirm LISTENING)
         shell: pwsh

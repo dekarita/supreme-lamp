@@ -330,11 +330,18 @@ function Invoke-ClientRequest {
 
             if ($allow) {
                 $cfgC = Read-JsonFile -Path $script:CfgPath
-                $rdpTarget = [string]$cfgC.rdpIp
+                # [U5a] Prefer config.dnsName (the *.ts.net MagicDNS FQDN);
+                # fall back to config.rdpIp only when dnsName is empty.
+                # In the current workflow config.rdpIp holds the tailnet IPv4
+                # (100.x.y.z), so a strict rdpIp-only path structurally 409'd
+                # every redemption on ephemeral runners.
+                $rdpTarget = ''
+                if ($cfgC -and $cfgC.PSObject.Properties['dnsName'] -and $cfgC.dnsName) { $rdpTarget = [string]$cfgC.dnsName }
+                if (-not $rdpTarget -and $cfgC -and $cfgC.rdpIp) { $rdpTarget = [string]$cfgC.rdpIp }
                 # [P2 FQDN discipline] Only a MagicDNS FQDN may be returned.
                 if ($rdpTarget -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
-                    try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + " REJECTED non-fqdn config.rdpIp='$rdpTarget'`n")) } catch { }
-                    Send-ClientResponse -Stream $stream -Code 409 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('server config.rdpIp is not a MagicDNS FQDN (*.ts.net); handler will refuse to launch. Fix config.json.'))
+                    try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + " REJECTED non-fqdn resolved target='$rdpTarget'`n")) } catch { }
+                    Send-ClientResponse -Stream $stream -Code 409 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('server config.dnsName is missing or not a MagicDNS FQDN (*.ts.net); handler will refuse to launch. Fix config.json.'))
                 } else {
                     Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ host = $rdpTarget; fqdn = $rdpTarget })
                 }
@@ -343,14 +350,25 @@ function Invoke-ClientRequest {
             }
             return
         }
-        # [U3] GET /api/native-status - dashboard readiness snapshot for the
-        # native mstsc auto-login button. Aggregates FQDN validity, LE-cert
+        # [U3 / U5a] GET /api/native-status - dashboard readiness snapshot for
+        # the native mstsc auto-login button. Aggregates FQDN validity, LE-cert
         # bind, NLA state, and handler-hello age. reasonsDisabled is computed
         # server-side (client contributes cred-store presence separately).
         # Dash-token gated via Test-ClientAllowed at the routing entry.
+        # [U5a / MIGRATION 1.7] FQDN validity is computed from config.dnsName
+        # (the *.ts.net MagicDNS FQDN Tailscale assigned to this node). The
+        # older code sourced fqdnN from config.rdpIp, which under the current
+        # workflow is the tailnet IPv4 (100.x.y.z), so the /^ts\.net$/ check
+        # was structurally guaranteed to fail on every ephemeral runner even
+        # though dnsName was a valid target. The rdpIp fallback is retained
+        # only when dnsName is empty (legacy configs). Ephemeral runner
+        # ts.net names are VALID auto-login targets; a real "VPS pending"
+        # state is surfaced as advisory vpsPending, NOT as a blocker.
         if ($path -eq '/api/native-status') {
             $cfgN = Read-JsonFile -Path $script:CfgPath
-            $fqdnN = ''; if ($cfgN -and $cfgN.rdpIp) { $fqdnN = [string]$cfgN.rdpIp }
+            $fqdnN = ''
+            if ($cfgN -and $cfgN.PSObject.Properties['dnsName'] -and $cfgN.dnsName) { $fqdnN = [string]$cfgN.dnsName }
+            if (-not $fqdnN -and $cfgN -and $cfgN.rdpIp) { $fqdnN = [string]$cfgN.rdpIp }
             $fqdnOk = ($fqdnN -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$')
             $certBound = $false; $nlaOn = $false
             try {
@@ -368,11 +386,21 @@ function Invoke-ClientRequest {
                     if ($hh -and $hh.ts) { $handlerAge = [int]([datetime]::UtcNow - [datetime]$hh.ts).TotalSeconds }
                 }
             } catch { }
+            $vpsPending = $false
+            try {
+                if ($cfgN -and $cfgN.PSObject.Properties['vpsPending']) { $vpsPending = [bool]$cfgN.vpsPending }
+            } catch { }
             $reasons = @()
             if (-not $fqdnOk)   { $reasons += 'fqdn-not-tsnet' }
             if (-not $certBound){ $reasons += 'cert-not-bound' }
             if (-not $nlaOn)    { $reasons += 'nla-off' }
             if ($null -eq $handlerAge -or $handlerAge -gt 86400) { $reasons += 'handler-not-seen' }
+            $probeReasons = [ordered]@{
+                fqdn    = $(if ($fqdnOk)    { '' } else { 'dnsName missing or not *.ts.net (config.dnsName=' + $fqdnN + ')' })
+                cert    = $(if ($certBound) { '' } else { 'no SSLCertificateSHA1Hash bound on RDP-Tcp' })
+                nla     = $(if ($nlaOn)     { '' } else { 'UserAuthentication != 1 on RDP-Tcp' })
+                handler = $(if ($null -ne $handlerAge -and $handlerAge -le 86400) { '' } else { 'no /api/handler-hello beacon in the last 24h' })
+            }
             $wd = ''; if ($cfgN -and $cfgN.webdeskUrl) { $wd = [string]$cfgN.webdeskUrl }
             $ns = [ordered]@{
                 fqdn = $fqdnN
@@ -380,6 +408,8 @@ function Invoke-ClientRequest {
                 nlaOn = $nlaOn
                 handlerSeenAgeSec = $handlerAge
                 webdeskUrl = $wd
+                vpsPending = $vpsPending
+                probeReasons = $probeReasons
                 reasonsDisabled = @($reasons)
             }
             # [U4] lastHandlerVerb: verb + result of the most recent /api/handler-hello,
