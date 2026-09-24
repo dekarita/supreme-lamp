@@ -54,10 +54,15 @@ try {
     }
 } catch { A @{ event = 'sweep-error'; err = $_.Exception.Message } }
 
-# ---- parse ghrdp://connect?server=<host>&t=<token> -----------------------------
-$raw = $Url -replace '^ghrdp:(//)?', '' -replace '^connect\??', '' -replace '^/', ''
+# ---- parse ghrdp://<verb>?server=<host>&... ------------------------------------
+# Verb dispatch: install / setup / check / connect (default). All verbs post a
+# handler-hello beacon to /api/handler-hello so the dashboard's probe grid can
+# tell what the last click did. Nothing writes creds server-side.
+$rest = $Url -replace '^ghrdp:(//)?', '' -replace '^/', ''
+$verb = 'connect'
+if ($rest -match '^(?<v>[a-z\-]+)\??(?<rest>.*)$') { $verb = $Matches['v'].ToLower(); $rest = $Matches['rest'] }
 $p = @{}
-foreach ($kv in ($raw -split '&')) {
+foreach ($kv in ($rest -split '&')) {
     $eq = $kv.IndexOf('=')
     if ($eq -gt 0) {
         $k = [uri]::UnescapeDataString($kv.Substring(0, $eq)).ToLower()
@@ -69,6 +74,68 @@ function Pick { param([string[]]$keys) foreach ($k in $keys) { if ($p.ContainsKe
 $server = Pick @('server', 'ip', 'host', 'h')
 $port = Pick @('port'); if (-not $port) { $port = '7331' }
 $token = Pick @('token', 't')
+$hUser = Pick @('user', 'u'); if (-not $hUser) { $hUser = 'rdpuser' }
+
+function Send-Hello {
+    param([string]$Verb, [bool]$Ok, [string]$Details)
+    if (-not $server) { return }
+    if ($server -notmatch '\.ts\.net$') { return }
+    try {
+        $b = @{ verb = $Verb; ok = $Ok; details = $Details } | ConvertTo-Json -Compress
+        Invoke-RestMethod -Uri ("http://${server}:${port}/api/handler-hello") -Method POST -Body $b -ContentType 'application/json' -TimeoutSec 3 -ErrorAction SilentlyContinue | Out-Null
+    } catch { }
+}
+
+# ---- verb dispatch: install / setup / check ------------------------------------
+if ($verb -eq 'install') {
+    # Copy self to %LOCALAPPDATA%\ghrdp\helper-ghrdp-connect.ps1 (canonical) and
+    # register HKCU\Software\Classes\ghrdp -> pwsh -File <canonical> "%1". No UAC.
+    $canon = Join-Path $logDir 'helper-ghrdp-connect.ps1'
+    try {
+        if ($PSCommandPath -and (Test-Path -LiteralPath $PSCommandPath) -and ((Resolve-Path -LiteralPath $PSCommandPath).Path -ne (Resolve-Path -LiteralPath $canon -ErrorAction SilentlyContinue).Path)) {
+            Copy-Item -LiteralPath $PSCommandPath -Destination $canon -Force
+        }
+        $cmd = ('"{0}" -NoProfile -ExecutionPolicy Bypass -File "{1}" "%1"' -f (Get-Command powershell).Source, $canon)
+        $reg = 'HKCU:\Software\Classes\ghrdp'
+        New-Item -Path $reg -Force | Out-Null
+        Set-ItemProperty -Path $reg -Name '(default)' -Value 'URL:ghrdp Protocol' -Force
+        Set-ItemProperty -Path $reg -Name 'URL Protocol' -Value '' -Force
+        New-Item -Path (Join-Path $reg 'shell\open\command') -Force | Out-Null
+        Set-ItemProperty -Path (Join-Path $reg 'shell\open\command') -Name '(default)' -Value $cmd -Force
+        A @{ event = 'install-ok'; canon = $canon }
+        Send-Hello -Verb 'install' -Ok $true -Details ("hkcu-registered: " + $canon)
+    } catch { A @{ event = 'install-failed'; err = $_.Exception.Message }; Send-Hello -Verb 'install' -Ok $false -Details $_.Exception.Message }
+    exit 0
+}
+if ($verb -eq 'setup') {
+    if ($server -notmatch '\.ts\.net$') { A @{ event = 'fatal'; reason = 'setup-server-not-tsnet'; server = $server }; Send-Hello -Verb 'setup' -Ok $false -Details 'server-not-tsnet'; exit 1 }
+    # Interactive cmdkey - Windows prompts for the password itself; never
+    # echo/log/transmit it. No `/pass:` argument, ever.
+    try {
+        & cmdkey.exe "/generic:TERMSRV/$server" "/user:$hUser" | Out-Null
+        $verifyLine = ((& cmdkey.exe /list 2>$null) | Where-Object { $_ -match "TERMSRV/$([regex]::Escape($server))" }) -join ' '
+        $ok = [bool]$verifyLine
+        A @{ event = 'setup-done'; ok = $ok; fqdn = $server; user = $hUser }
+        Send-Hello -Verb 'setup' -Ok $ok -Details ("target=TERMSRV/$server user=$hUser stored=" + ($ok.ToString().ToLower()))
+    } catch { A @{ event = 'setup-failed'; err = $_.Exception.Message }; Send-Hello -Verb 'setup' -Ok $false -Details $_.Exception.Message }
+    exit 0
+}
+if ($verb -eq 'check') {
+    $regOk = Test-Path -LiteralPath 'HKCU:\Software\Classes\ghrdp\shell\open\command'
+    $ckLine = ''
+    try { $ckLine = ((& cmdkey.exe /list 2>$null) | Where-Object { $_ -match 'TERMSRV/[^\s]+\.ts\.net' }) -join ' | ' } catch { }
+    $tsOn = $false
+    try { $tsStat = & tailscale.exe status --json 2>$null; if ($tsStat) { $tsj = $tsStat | ConvertFrom-Json; if ($tsj.Self.Online) { $tsOn = $true } } } catch { }
+    $summary = ("handler-reg={0}; cmdkey={1}; tailscale-online={2}" -f $regOk, ([bool]$ckLine), $tsOn)
+    A @{ event = 'check'; details = $summary }
+    Send-Hello -Verb 'check' -Ok ($regOk -and [bool]$ckLine) -Details $summary
+    # Show a local result box so the user sees something happened (no secrets).
+    try { [System.Windows.Forms.MessageBox]::Show($summary, 'ghrdp check', 'OK', 'Information') | Out-Null } catch {
+        try { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.MessageBox]::Show($summary, 'ghrdp check', 'OK', 'Information') | Out-Null } catch { Write-Host $summary }
+    }
+    exit 0
+}
+# fall through: verb=connect (default)
 
 # ---- validate the API endpoint reachability parameter --------------------------
 # [U1 tightening] Accept ONLY *.ts.net MagicDNS FQDNs; drop the raw 100.64.0.0/10
@@ -97,21 +164,13 @@ try {
     exit 1
 }
 
-# ---- [U3c] handler-hello beacon (fire-and-forget) ------------------------------
+# ---- [U3c/U4] handler-hello beacon (fire-and-forget) ---------------------------
 # Signals to /api/native-status that this client PC has the handler installed;
 # the dashboard flips 'Handler' from missing -> installed and drops the
-# 'handler-not-seen' reason. Body is empty; only the timestamp matters. Never
-# blocks the mstsc launch on network errors.
-try {
-    Invoke-RestMethod `
-        -Uri ("http://${server}:${port}/api/handler-hello") `
-        -Method POST `
-        -Body '{}' `
-        -ContentType 'application/json' `
-        -TimeoutSec 3 `
-        -ErrorAction SilentlyContinue | Out-Null
-    A @{ event = 'handler-hello-sent'; server = $server }
-} catch { A @{ event = 'handler-hello-failed'; err = $_.Exception.Message } }
+# 'handler-not-seen' reason. verb=connect so lastHandlerVerb reflects the
+# actual click. Never blocks the mstsc launch on network errors.
+Send-Hello -Verb 'connect' -Ok $true -Details ("fqdn=" + $rdpHost)
+A @{ event = 'handler-hello-sent'; server = $server }
 
 # ---- ENFORCE: mstsc target must be a MagicDNS FQDN -----------------------------
 if ($rdpHost -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {

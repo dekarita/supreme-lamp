@@ -235,6 +235,35 @@ Verification (E-battery greps for banned patterns; must return zero):
 (Comment-line matches noting removed items are acceptable and expected;
 only live code references are bugs.)
 
+### 1.10 Web desktop (Apache Guacamole via `tailscale serve`)
+
+The dashboard's WEB DESKTOP button is enabled only when
+`config.webdeskUrl` is set. On an ephemeral GitHub Actions runner it
+stays disabled (no persistent host). On the VPS (post-§1.7) install
+Guacamole and expose it tailnet-only:
+
+    # As root on the VPS (Ubuntu 22.04+ example):
+    apt-get update
+    apt-get install -y guacd tomcat10 tomcat10-common guacamole-tomcat
+    # Guacamole stores its own RDP host mapping in
+    #   /etc/guacamole/user-mapping.xml
+    # The RDP hostname there is <fqdn>.ts.net; the RDP password is entered
+    # once by the operator on the host, not stashed by our tooling.
+    systemctl enable --now guacd tomcat10
+    # Expose ONLY on the tailnet (no public port):
+    tailscale serve --bg https://127.0.0.1:8080
+
+Then set `config.webdeskUrl` on the ghrdp-server host to the
+`tailscale serve` URL that command printed (`https://<fqdn>.ts.net/`).
+The dashboard's next `/api/native-status` poll picks it up and enables
+WEB DESKTOP. Nothing here stashes the RDP password on the operator's
+PC or in dashboard state.
+
+Decommission note: uninstalling Guacamole is `apt-get remove
+--purge guacd tomcat10 guacamole-tomcat && tailscale serve reset`.
+Clearing `config.webdeskUrl` disables the button on the next poll;
+running the two removes above closes the tailnet listener.
+
 ## 2. Decommission checklist (Actions-as-RDP teardown)
 
 > Prerequisites: §1.7 VPS provisioned and client NLA-probe verified;

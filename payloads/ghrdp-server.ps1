@@ -373,24 +373,47 @@ function Invoke-ClientRequest {
             if (-not $certBound){ $reasons += 'cert-not-bound' }
             if (-not $nlaOn)    { $reasons += 'nla-off' }
             if ($null -eq $handlerAge -or $handlerAge -gt 86400) { $reasons += 'handler-not-seen' }
+            $wd = ''; if ($cfgN -and $cfgN.webdeskUrl) { $wd = [string]$cfgN.webdeskUrl }
             $ns = [ordered]@{
                 fqdn = $fqdnN
                 certBound = $certBound
                 nlaOn = $nlaOn
                 handlerSeenAgeSec = $handlerAge
+                webdeskUrl = $wd
                 reasonsDisabled = @($reasons)
             }
+            # [U4] lastHandlerVerb: verb + result of the most recent /api/handler-hello,
+            # so the dashboard can show "last: install ok" / "last: setup skipped" without
+            # keeping any per-client state on the server. Optional (may be null).
+            try {
+                $lvFile = Join-Path $Root 'handler-hello-last.json'
+                if (Test-Path -LiteralPath $lvFile) {
+                    $lv = [System.IO.File]::ReadAllText($lvFile) | ConvertFrom-Json
+                    if ($lv -and $lv.verb) { $ns.lastHandlerVerb = @{ verb = [string]$lv.verb; ok = [bool]$lv.ok; details = [string]$lv.details; ts = [string]$lv.ts } }
+                }
+            } catch { }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $ns)
             return
         }
-        # [U3] POST /api/handler-hello - handler beacon. Body is ignored; only
-        # the timestamp matters. Written to handler-hello-last.json for the
-        # native-status age computation. Dash-token gated via routing entry.
+        # [U3/U4] POST /api/handler-hello - handler beacon. Body may carry
+        # {verb,ok,details} from install/setup/check verbs; connect posts empty
+        # body. Only timestamp + verb summary are written; no IP/user/creds.
+        # Dash-token gated via routing entry.
         if ($path -eq '/api/handler-hello' -and $parts.method -eq 'POST') {
+            $hh = [ordered]@{ ts = [datetime]::UtcNow.ToString('o') }
             try {
-                $hhOut = @{ ts = [datetime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress
-                [System.IO.File]::WriteAllText((Join-Path $Root 'handler-hello-last.json'), $hhOut, $script:NoBom)
+                $bodyRaw = $parts.body
+                if ($bodyRaw -and $bodyRaw.Length -gt 0) {
+                    $bTxt = [System.Text.Encoding]::UTF8.GetString([byte[]]$bodyRaw)
+                    $bj = $bTxt | ConvertFrom-Json -ErrorAction SilentlyContinue
+                    if ($bj) {
+                        if ($bj.verb)    { $hh.verb    = [string]$bj.verb }
+                        if ($null -ne $bj.ok) { $hh.ok = [bool]$bj.ok }
+                        if ($bj.details) { $hh.details = ([string]$bj.details).Substring(0, [Math]::Min(280, ([string]$bj.details).Length)) }
+                    }
+                }
             } catch { }
+            try { [System.IO.File]::WriteAllText((Join-Path $Root 'handler-hello-last.json'), ($hh | ConvertTo-Json -Compress), $script:NoBom) } catch { }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":true}'))
             return
         }
