@@ -1098,6 +1098,51 @@ jobs:
           }
           exit 0
 
+      # [F8d] Web desktop self-test: prove the serve URL returns noVNC HTML.
+      # Reads config.webdeskUrl (written by the previous step), curls it with
+      # -k, and expects the 'noVNC' marker. PASS/FAIL + HTTP code go to the step
+      # summary. FAIL clears config.webdeskUrl and sets webdeskReason=
+      # serve-failed so the dashboard cannot claim ready on a dead URL.
+      # VNC_PASS is never referenced here and can never leak. Never fails run.
+      - name: Web desktop self-test (curl serve URL, expect noVNC marker)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $S = $env:GITHUB_STEP_SUMMARY
+          $cfgPath = 'C:\ghrdp\config.json'
+          $url = ''
+          try { $cfgT = [System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json; if ($cfgT -and $cfgT.webdeskUrl) { $url = [string]$cfgT.webdeskUrl } } catch { }
+          if (-not $url) {
+              Write-Host '[webdesk-test] SKIP: config.webdeskUrl empty (web-desktop step skipped; see its summary).'
+              if ($S) { '### Web desktop self-test SKIP (no URL advertised)' | Add-Content -Path $S }
+              exit 0
+          }
+          $code = ''; $body = ''; $ok = $false
+          for ($i = 1; $i -le 3; $i++) {
+              try {
+                  $tmpOut = Join-Path $env:RUNNER_TEMP ('webdesk-test-' + $i + '.html')
+                  $code = ((& curl.exe -sk --max-time 20 -o $tmpOut -w '%{http_code}' $url 2>$null) -join '').Trim()
+                  if (Test-Path -LiteralPath $tmpOut) { $body = [System.IO.File]::ReadAllText($tmpOut); Remove-Item -LiteralPath $tmpOut -Force -ErrorAction SilentlyContinue }
+                  if ($code -eq '200' -and $body -match 'noVNC') { $ok = $true; break }
+              } catch { }
+              Start-Sleep -Seconds 3
+          }
+          if ($ok) {
+              Write-Host ('[webdesk-test] PASS: HTTP ' + $code + ' + noVNC marker')
+              if ($S) { ('### Web desktop self-test PASS (HTTP ' + $code + ', noVNC marker present)') | Add-Content -Path $S }
+              exit 0
+          }
+          Write-Host ('[webdesk-test] FAIL: HTTP [' + $code + '] no noVNC marker after 3 tries; clearing advertised URL')
+          if ($S) { ('### Web desktop self-test FAIL (HTTP ' + $code + '; advertised URL cleared, reason=serve-failed)') | Add-Content -Path $S }
+          try {
+              $encT = New-Object System.Text.UTF8Encoding($false)
+              $cfgF = [System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json
+              if ($cfgF.PSObject.Properties['webdeskUrl']) { $cfgF.webdeskUrl = '' } else { $cfgF | Add-Member -NotePropertyName webdeskUrl -NotePropertyValue '' -Force }
+              if ($cfgF.PSObject.Properties['webdeskReason']) { $cfgF.webdeskReason = 'serve-failed' } else { $cfgF | Add-Member -NotePropertyName webdeskReason -NotePropertyValue 'serve-failed' -Force }
+              [System.IO.File]::WriteAllText($cfgPath, ($cfgF | ConvertTo-Json -Depth 10), $encT)
+          } catch { Write-Host ('[webdesk-test] config clear failed: ' + $_.Exception.Message) }
+          exit 0
+
       - name: Start Mission Control dashboard EARLY (PS 7331, SYSTEM task, confirm LISTENING)
         shell: pwsh
         run: |
