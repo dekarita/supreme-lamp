@@ -725,7 +725,8 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ui.html" "$RUNNER_TEMP/ghrdp-stage/ui.html"
-          echo '[ui] ui.html written'
+          sed -i "s/__BUILD_SHA__/${GITHUB_SHA}/g" "$RUNNER_TEMP/ghrdp-stage/ui.html"
+          echo "[ui] ui.html written sha=${GITHUB_SHA}"
 
       - name: Write Unified Fluent Explorer (replaces search.html + explorer.html)
         shell: bash
@@ -840,6 +841,7 @@ jobs:
               ghrdp = $ghName
               dnsName = $dns
               hostKind = 'ephemeral'
+              buildSha = [string]$env:GITHUB_SHA
               repo = [string]$env:GITHUB_REPOSITORY
               dashToken = $tok
               mirror = $mirrorOn

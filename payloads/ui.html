@@ -307,7 +307,9 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
         cmdkey credential silently. Handler NEVER reads, writes, or deletes it.
      No plaintext creds in any URL, UI field, form body, header, or log.
      NLA (UserAuthentication=1) + CredSSP stay ON. -->
+<meta id="ghrdpBuild" name="ghrdp-build" content="__BUILD_SHA__">
 <section class="glass" id="sec-native-rdp">
+  <div class="row" id="nrBuildWarn" style="display:none"><span class="k">Deploy</span><span class="v" id="nrBuildWarnText" style="color:#f5d9b7"></span></div>
   <h2>Native mstsc auto-login</h2>
   <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>
   <div class="row"><span class="k">Cert bound</span><span class="v" id="nrCert">...</span><span class="note" id="nrCertReason">RDP-Tcp SSLCertificateSHA1Hash present (from /api/native-status).</span></div>
@@ -845,6 +847,7 @@ var REASON_TEXT={
 function credStamp(){ try{ return parseInt(localStorage.getItem('ghrdp.credSet')||'0',10); }catch(_){ return 0; } }
 function markCredSet(){ try{ localStorage.setItem('ghrdp.credSet', String(Date.now())); }catch(_){ } }
 function credOk(){ var t=credStamp(); return t>0 && (Date.now()-t) < 90*24*3600*1000; }
+var BUILD_SHA='__BUILD_SHA__';
 async function nativeStatus(){
  try{
   var key=getKey();
@@ -905,6 +908,12 @@ async function nativeStatus(){
    if(!okAll){b.disabled=true;b.style.opacity='0.5';b.style.cursor='not-allowed';}
    else{b.disabled=false;b.style.opacity='';b.style.cursor='';}
   }
+  if(s&&s.buildSha){ window.__serverBuildSha=s.buildSha; }
+  if(typeof BUILD_SHA==='string' && BUILD_SHA!=='__BUILD_SHA__' && s&&s.buildSha && s.buildSha!==BUILD_SHA){
+    var bw=document.getElementById('nrBuildWarn'), bt=document.getElementById('nrBuildWarnText');
+    if(bw) bw.style.display='';
+    if(bt) bt.textContent='deployed UI older than origin/main - re-dispatch';
+  }
   var kind=(s&&s.hostKind==='vps')?'vps':'ephemeral';
   var hk=document.getElementById('nrHostKind');
   if(hk){hk.textContent=kind;hk.style.color=kind==='vps'?'':'#f5d9b7';}
@@ -933,6 +942,15 @@ function fireVerb(){ paint('this page does not launch a local script host; use W
 })();
 nativeStatus();
 setInterval(nativeStatus,15000);
+fetch('https://api.github.com/repos/dekarita/supreme-lamp/commits/main',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){
+  var main=j&&j.sha;
+  if(main && typeof BUILD_SHA==='string' && BUILD_SHA!=='__BUILD_SHA__' && BUILD_SHA!==main){
+    var bw=document.getElementById('nrBuildWarn'), bt=document.getElementById('nrBuildWarnText');
+    if(bw) bw.style.display='';
+    if(bt) bt.textContent='deployed UI older than origin/main - re-dispatch';
+  }
+}).catch(function(){});
+
 var btn=$('autoLoginNative');
 if(btn) btn.onclick=function(ev){
  if(ev&&ev.preventDefault)ev.preventDefault();

@@ -402,6 +402,7 @@ function Invoke-ClientRequest {
             $ns = [ordered]@{
                 fqdn = $fqdnN
                 hostKind = $hostKind
+                buildSha = $(if ($cfgN -and $cfgN.PSObject.Properties['buildSha']) { [string]$cfgN.buildSha } else { '' })
                 certBound = $certBound
                 nlaOn = $nlaOn
                 handlerSeenAgeSec = $handlerAge
