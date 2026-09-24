@@ -442,7 +442,24 @@ function Invoke-ClientRequest {
             } elseif ($hostKind -eq 'vps') {
                 $advisory += 'run the cmdkey line once (current user), then pin the mstsc shortcut'
             }
-            $wd = ''; if ($cfgN -and $cfgN.webdeskUrl) { $wd = [string]$cfgN.webdeskUrl }
+            $wd = ''; $wdr = ''
+            # [F8a] webdeskReason explains an EMPTY webdeskUrl. Enum:
+            # vnc-pass-missing | serve-failed | config-stale | step-not-run.
+            # Config is re-read per request (Read-JsonFile at the top of this
+            # block), so a reason/URL written by the workflow AFTER server
+            # start is visible on the very next poll - no restart needed.
+            if ($cfgN -and $cfgN.webdeskUrl) { $wd = [string]$cfgN.webdeskUrl }
+            if ($cfgN -and $cfgN.PSObject.Properties['webdeskReason'] -and $cfgN.webdeskReason) { $wdr = [string]$cfgN.webdeskReason }
+            if ($wd) { $wdr = '' } elseif (-not $wdr) { $wdr = 'step-not-run' }
+            # [F8a] config-stale: URL advertised but nothing listens on
+            # 127.0.0.1:7333 (websockify died after the step wrote config).
+            # Best-effort; any error leaves the advertised values untouched.
+            if ($wd) {
+                try {
+                    $wsConn = Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction Stop
+                    if (-not $wsConn) { $wd = ''; $wdr = 'config-stale' }
+                } catch { }
+            }
             $ns = [ordered]@{
                 fqdn = $fqdnN
                 hostKind = $hostKind
@@ -451,6 +468,7 @@ function Invoke-ClientRequest {
                 nlaOn = $nlaOn
                 handlerSeenAgeSec = $handlerAge
                 webdeskUrl = $wd
+                webdeskReason = $wdr
                 vpsPending = $vpsPending
                 probeReasons = $probeReasons
                 reasonsDisabled = @($reasons)
