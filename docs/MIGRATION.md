@@ -145,8 +145,9 @@ Run **on the VPS console, elevated, with PowerShell 7+**. Do not use an
 active RDP session: `TermService` must restart after certificate binding.
 The script configures *native RDP*; it does NOT install/start the dashboard,
 noVNC/TightVNC, or a file-sync agent. Deploy those separately before
-claiming a production migration or decommissioning Actions (§2). No VPS has
-been provisioned or tested from this repository session.
+claiming a production migration or decommissioning Actions (§2). CI run
+`36047443590` passed static contracts, PowerShell parsing, and an isolated
+Windows ACL smoke test; **no VPS or client RDP login was tested**.
 
 - Requires Windows 10/11 Pro or Windows Server, installs Tailscale via winget
   if needed and joins interactively. Optional `$env:TS_AUTHKEY` is read only
@@ -376,8 +377,11 @@ Execute in order, one at a time. Nothing here runs automatically.
       `.github/workflows/main.yml` outright, or reduce it to a benign CI check.
 - [ ] **Delete the runner-side C2 dead handler bodies** in `payloads/ghrdp-server.ps1`
       below the 404-guard: `/install.bat`, `/connect-now.bat`, `/api/client-cmd`,
-      and other C2 handler bodies whose paths are already 404-guarded. Bodies are
-      unreachable but should not sit in shipped source.
+      and other C2 handler bodies whose paths are already 404-guarded. Also
+      stop staging the legacy PowerShell installer/helper assets in `main.yml`
+      once Actions is decommissioned; the new dashboard has no script-host
+      installation link. Unreachable bodies and staged installers should not
+      remain in shipped source.
 - [ ] **Delete `/rentrydiag` and `/parsec-push` handlers** in
       `payloads/ghrdp-server.ps1` — the former POSTs a run's decrypt key to a
       public rentry.co paste (live mirror-publish path); the latter arms a

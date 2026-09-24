@@ -9,7 +9,7 @@
 
 ## Done ledger (sha-only; older shas prune to git log)
 - U1 repair (launch-gates run 36045997362 PASS; live client NOT verified): restored VPS-only AUTO-LOGIN button, explicit cmdkey confirmation, rid-only URI, validated WEB DESKTOP URL + linked missing-secret advisory, zero E-battery UI matches; server requires dashboard bearer for 60s single-use rid, returns only FQDN; pinned compiled .NET handler built and self-tested on Windows CI. User must install binary on client; no real RDP connection claimed.
-- G3 native hardening (session branch; Windows CI/live VPS pending): provisioning locks static rdpuser, NLA+TLS-only/CredSSP, exact-FQDN LE cert+key ACL, IPv4 tailnet-only TCP/3389, protected config+token and hostKind=vps; certBound checks exact name/expiry; missing VNC_PASS clears URL and halts, install failures withhold secret-bearing exception text. F9g stage DNS retry was already present. VPS dashboard/web gateway still require user deployment and live validation; do NOT decommission Actions.
+- G3 native hardening (launch-gates run 36047443590 PASS; live VPS NOT verified): provisioning locks static rdpuser, NLA+TLS-only/CredSSP, exact-FQDN LE cert+key ACL, IPv4 tailnet-only TCP/3389, protected config+token and hostKind=vps; certBound checks exact name/expiry; missing VNC_PASS clears URL and halts, install failures withhold secret-bearing exception text. F9g stage DNS retry was already present. VPS dashboard/web gateway still require user deployment and live validation; do NOT decommission Actions.
 - F9h main.yml web-desktop step: VNC_PASS missing is now FAIL-CLOSED. Guard runs BEFORE any install command; writes ::error:: annotation + Step Summary card with a direct link to /settings/secrets/actions, stamps config.json webdeskReason='vnc-pass-missing' + vncPassAdminUrl, then throws (run fails by design). Supersedes the old loud `exit 0` skip, which reported a green run with the web desktop permanently absent. Short-but-present VNC_PASS (<8 chars) is unchanged: loud non-fatal skip. Belt block retained (also throws) so the two F8 launch-gate markers stay in the step region.
 - F9f launch-gates: admin-link count >= 3 in main.yml + every Self.DNSName step must validate *.ts.net (no gate passes on empty/non-ts.net name); D/E + F8 gates kept untouched.
 - F9a main.yml: all 3 MagicDNS gates (ts-connect, cert-bind, stage) append 'halted by design' + [Enable MagicDNS now](admin/dns) + re-run line to GITHUB_STEP_SUMMARY, echo to log, throw with URL; 15-min HOLDs removed (halt immediate; re-dispatch after enabling).
@@ -27,6 +27,7 @@
 - G4. Actions decommission after G3 verified live AND G1 done: checklist = MIGRATION.md sec 2 (13 items).
 
 ## Residual flags
+- Legacy script-installer/helper assets still staged by main.yml but no UI links and serving endpoints are 404; retire them during gated G4 cleanup, not as a new client launch path.
 - ghrdp-uninstall.ps1 cmdkey /list+/delete kept for prior-stash cleanup (removes, never stashes).
 - Rust main.rs audited by inspection; no local cargo toolchain (deferred to CI).
 - Main.yml runs 2026-09-23/24 cancelled by user pre-F9-verify; re-dispatch per F9 verify loop (MIGRATION 1.3).
