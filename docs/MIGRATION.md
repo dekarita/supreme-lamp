@@ -277,11 +277,19 @@ helper is not the primary handler, but still accepts the FQDN-only response
 for existing callers. Handler telemetry is advisory, never a readiness gate.
 
 WEB DESKTOP opens only a non-empty, valid tailnet `https://*.ts.net` URL from
-`config.webdeskUrl`; an empty URL disables it and displays a yellow advisory
-link to GitHub Actions secrets for `VNC_PASS`. Browser tests run via
-`node --test tests/ui-native.test.js`; CI also parses PowerShell scripts and
-self-tests/publishes the compiled handler. None of these tests establishes
-a successful live RDP login on the user's Windows PC.
+`config.webdeskUrl`; an empty URL disables it and displays reason-specific
+guidance from the VERIFIED `webdeskReason` (never from an empty URL alone):
+the GitHub Actions secrets link for `VNC_PASS` appears ONLY for
+`vnc-pass-missing`; `vnc-pass-too-short` says the secret is present and must
+be updated; `serve-failed` gives an honest host-side startup/serve-failure
+message (with the fixed `webdeskDetail` sub-cause mapped to text) and
+explicitly says NOT to re-add the secret; `config-stale`, `step-not-run` and
+`invalid-webdesk-url` each have their own text (see [F9i] in §1.10).
+Browser tests run via `node --test tests/ui-native.test.js
+tests/webdesk-reasons.test.js tests/workflow-webdesk.test.js`; CI also
+parses PowerShell scripts and self-tests/publishes the compiled handler.
+None of these tests establishes a successful live RDP login on the user's
+Windows PC.
 
 ### 1.10 Web desktop (noVNC + TightVNC via `tailscale serve`)
 
@@ -313,7 +321,9 @@ The dashboard's WEB DESKTOP button is enabled only when
   `AllowLoopback=1`, `AcceptRfbConnections=1`), starts websockify on
   `127.0.0.1:7333` serving the noVNC static UI (cloned to
   `C:\ghrdp\novnc`), exposes that with `tailscale serve --bg
-  https://127.0.0.1:7333`, resolves the serve URL from
+  http://127.0.0.1:7333` (plaintext HTTP target - tailscaled terminates
+  tailnet TLS itself; an `https://` target would 502 on every hit),
+  resolves the serve URL from
   `tailscale serve status --json`, and writes it as
   `config.webdeskUrl = https://<fqdn>.ts.net/vnc.html?autoconnect=1&resize=remote`.
   The dashboard's next `/api/native-status` poll picks it up and enables
@@ -322,7 +332,46 @@ The dashboard's WEB DESKTOP button is enabled only when
   `VNC_PASS` **fails the run** (see [F9h] above); a *present but short*
   `VNC_PASS` (< 8 chars) still skips the step cleanly as a loud
   non-fatal skip and leaves WEB DESKTOP disabled with
-  `config.webdeskReason = 'vnc-pass-missing'`.
+  `config.webdeskReason = 'vnc-pass-too-short'` (a PRESENT-but-short
+  secret is never reported as missing - the dashboard's advice for that
+  reason is to update the existing secret, not to add one).
+- **[F9i] Web-desktop root-cause fix + fail-closed serve paths + reason-
+  driven dashboard guidance.**
+  - *Root cause of the `serve-failed` runs:* the websockify launcher used
+    `Start-Process -RedirectStandardOutput $wsLog -RedirectStandardError
+    $wsLog` - the SAME file for stdout and stderr. Windows opens each
+    redirect target exclusively, so `Start-Process` threw before python
+    ever started; websockify never bound `127.0.0.1:7333` and every run
+    degraded to `webdeskReason='serve-failed'` while the step itself
+    reported green. Fix: two separate files
+    (`C:\ghrdp\webdesk\websockify.log` / `websockify.err.log`). websockify
+    never receives the VNC password, so neither log can carry it.
+  - *Fail-closed serve paths:* the four startup-failure exits
+    (TightVNC install, noVNC assets, websockify bind, serve mapping) now
+    `throw` instead of `exit 0` - a green run with a dead web desktop is a
+    false-LIVE (same rationale as F9h). Each records a fixed, secret-free
+    `config.webdeskDetail` sub-cause code
+    (`tightvnc-install` | `novnc-assets` | `websockify-bind` |
+    `serve-mapping`) so the dashboard and Step Summary name the exact
+    failure; installer arguments and exception text are still withheld
+    (they may carry the secret). The serve-mapping check re-reads
+    `tailscale serve status --json` once after a 5s settle before
+    halting, so slow registration cannot false-fail.
+  - *Self-test fail-closed:* a self-test FAIL still clears
+    `config.webdeskUrl` and records `serve-failed` +
+    `webdeskDetail='self-test-failed'`, and now also halts the run by
+    design.
+  - *Dashboard honesty:* `payloads/ui.html` renders web-desktop guidance
+    from the VERIFIED `webdeskReason` (via `/api/native-status`, which now
+    also exposes `webdeskDetail` and the F9h `vncPassAdminUrl`), never
+    from an empty URL alone. `vnc-pass-missing` shows the GitHub Secrets
+    `VNC_PASS` setup steps; `vnc-pass-too-short` says the secret IS
+    present and must be updated; `serve-failed` gives an honest
+    host-side startup/serve-failure message (with the mapped sub-cause)
+    and explicitly says NOT to re-add the secret; `config-stale`,
+    `step-not-run` and `invalid-webdesk-url` each have their own text.
+    WEB DESKTOP stays the primary ephemeral action and stays enabled only
+    for a valid configured tailnet HTTPS URL.
 - **Persistent Windows VPS (post-§1.7)**: §1.7 does NOT provision a web
   desktop. The operator must separately deploy authenticated TightVNC
   bound to loopback, websockify/noVNC on loopback, and `tailscale serve`

@@ -1036,15 +1036,23 @@ jobs:
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $vp = [string]$env:VNC_PASS
           # [F8c] LOUD skips: every early exit records config.webdeskReason so
-          # /api/native-status can explain the disabled button. Never fails run.
+          # /api/native-status can explain the disabled button. [F9i] A
+          # present-but-short secret is a non-fatal skip (U5c); a startup/serve
+          # failure THROWS (fail-closed) - a green run with a dead web desktop
+          # is a false-LIVE.
           $cfgPathW = 'C:\ghrdp\config.json'
-          function Set-WebdeskCfg([string]$Url, [string]$Reason) {
+          # [F9i] $Detail is a fixed, secret-free sub-cause code (tightvnc-install,
+          # novnc-assets, websockify-bind, serve-mapping, self-test-failed) so the
+          # dashboard can name the exact failure. Never installer args, never
+          # exception text - those may carry the secret.
+          function Set-WebdeskCfg([string]$Url, [string]$Reason, [string]$Detail = '') {
               try {
                   if (-not (Test-Path -LiteralPath $cfgPathW)) { return }
                   $encW = New-Object System.Text.UTF8Encoding($false)
                   $cfgW = [System.IO.File]::ReadAllText($cfgPathW) | ConvertFrom-Json
                   if ($cfgW.PSObject.Properties['webdeskUrl']) { $cfgW.webdeskUrl = $Url } else { $cfgW | Add-Member -NotePropertyName webdeskUrl -NotePropertyValue $Url -Force }
                   if ($cfgW.PSObject.Properties['webdeskReason']) { $cfgW.webdeskReason = $Reason } else { $cfgW | Add-Member -NotePropertyName webdeskReason -NotePropertyValue $Reason -Force }
+                  if ($cfgW.PSObject.Properties['webdeskDetail']) { $cfgW.webdeskDetail = $Detail } else { $cfgW | Add-Member -NotePropertyName webdeskDetail -NotePropertyValue $Detail -Force }
                   [System.IO.File]::WriteAllText($cfgPathW, ($cfgW | ConvertTo-Json -Depth 10), $encW)
               } catch { Write-Host ('[webdesk] config.json webdesk update failed: ' + $_.Exception.Message) }
           }
@@ -1089,9 +1097,14 @@ jobs:
               throw 'VNC_PASS missing (belt check). Halted by design.'
           }
           if ($vp.Length -lt 8) {
-              Write-Host '[webdesk] VNC_PASS shorter than 8 chars; refusing (weak passwords are not acceptable for a network-reachable service).'
-              if ($S) { '### VNC_PASS too short - web desktop disabled (require >= 8 chars)' | Add-Content -Path $S }
-              Set-WebdeskCfg '' 'vnc-pass-missing'
+              # [F9i] PRESENT-but-short is NOT 'missing': the old code stamped
+              # 'vnc-pass-missing' here, which made the dashboard tell the user
+              # to add a secret that already exists. Diagnose it accurately.
+              # Loud non-fatal skip (locked U5c design) - the run still delivers
+              # the RDP host; only the web desktop is withheld.
+              Write-Host '[webdesk] VNC_PASS present but shorter than 8 chars; refusing (weak passwords are not acceptable for a network-reachable service).'
+              if ($S) { '### VNC_PASS too short - web desktop disabled (the secret IS present; require >= 8 chars)' | Add-Content -Path $S }
+              Set-WebdeskCfg '' 'vnc-pass-too-short'
               exit 0
           }
           # Install TightVNC via chocolatey (preinstalled on windows-latest). Password is passed as
@@ -1123,10 +1136,15 @@ jobs:
               try { Restart-Service -Name 'tvnserver' -Force -ErrorAction Stop; $inst = $true } catch { Write-Host ('[webdesk] tvnserver service restart failed: ' + $_.Exception.Message) }
           } catch { Write-Host '[webdesk] TightVNC install error (details withheld: installer arguments may contain VNC_PASS).' }
           if (-not $inst) {
-              Write-Host '[webdesk] TightVNC install failed; web desktop DISABLED.'
+              # [F9i] fail-closed: a GREEN run with a dead web desktop is a
+              # false-LIVE (F9h rationale) - the step throws instead of exit 0.
+              # Detail carries a fixed code only; installer args / exception
+              # text are withheld because they may contain the secret.
+              Write-Host '[webdesk] TightVNC install failed; web desktop DISABLED. Halted by design.'
               if ($S) { '### Web desktop DISABLED (TightVNC install failed; secret NOT leaked)' | Add-Content -Path $S }
-              Set-WebdeskCfg '' 'serve-failed'
-              exit 0
+              if ($S) { 'Re-dispatch the workflow for a fresh ephemeral host.' | Add-Content -Path $S }
+              Set-WebdeskCfg '' 'serve-failed' 'tightvnc-install'
+              throw 'Web desktop not deployed: TightVNC install failed. Halted by design. See Step Summary.'
           }
           # Install noVNC + websockify. Python is preinstalled on the runner.
           $novncDir = 'C:\ghrdp\novnc'
@@ -1138,10 +1156,12 @@ jobs:
               & python -m pip install --disable-pip-version-check --quiet websockify 2>&1 | Select-Object -Last 3 | Out-Null
           } catch { Write-Host ('[webdesk] noVNC/websockify install error: ' + $_.Exception.Message) }
           if (-not (Test-Path -LiteralPath (Join-Path $novncDir 'vnc.html'))) {
-              Write-Host '[webdesk] noVNC assets missing; web desktop DISABLED.'
+              # [F9i] fail-closed (see tightvnc-install block above).
+              Write-Host '[webdesk] noVNC assets missing; web desktop DISABLED. Halted by design.'
               if ($S) { '### Web desktop DISABLED (noVNC clone failed)' | Add-Content -Path $S }
-              Set-WebdeskCfg '' 'serve-failed'
-              exit 0
+              if ($S) { 'Re-dispatch the workflow for a fresh ephemeral host.' | Add-Content -Path $S }
+              Set-WebdeskCfg '' 'serve-failed' 'novnc-assets'
+              throw 'Web desktop not deployed: noVNC/websockify assets unavailable. Halted by design. See Step Summary.'
           }
           # Wait for VNC 5900 to be LISTENING on loopback before starting websockify.
           $vncUp = $false
@@ -1154,9 +1174,17 @@ jobs:
           # Start websockify on 127.0.0.1:7333, bridging to 127.0.0.1:5900, serving noVNC.
           try { Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*websockify*7333*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
           try {
-              $wsLog = 'C:\ghrdp\webdesk\websockify.log'
               New-Item -ItemType Directory -Path 'C:\ghrdp\webdesk' -Force -ErrorAction SilentlyContinue | Out-Null
-              Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $novncDir, '127.0.0.1:7333', '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsLog -WindowStyle Hidden | Out-Null
+              # [F9i] ROOT-CAUSE FIX: -RedirectStandardOutput and -RedirectStandardError
+              # MUST name two DIFFERENT files. Windows opens each redirect target
+              # exclusively (FileShare.None), so pointing both at the same file makes
+              # Start-Process throw BEFORE python starts at all - websockify then never
+              # binds 127.0.0.1:7333 and every run degraded to 'serve-failed'. (The
+              # other Start-Process calls in this workflow already use paired files.)
+              # websockify never receives the VNC password, so neither log can carry it.
+              $wsLog = 'C:\ghrdp\webdesk\websockify.log'
+              $wsErr = 'C:\ghrdp\webdesk\websockify.err.log'
+              Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $novncDir, '127.0.0.1:7333', '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr -WindowStyle Hidden | Out-Null
           } catch { Write-Host ('[webdesk] websockify start failed: ' + $_.Exception.Message) }
           $wsUp = $false
           for ($i = 0; $i -lt 20; $i++) {
@@ -1165,10 +1193,15 @@ jobs:
               Start-Sleep -Seconds 1
           }
           if (-not $wsUp) {
-              Write-Host '[webdesk] websockify 7333 did not reach LISTEN in 20s; web desktop DISABLED.'
+              # [F9i] fail-closed (see tightvnc-install block above). The
+              # .log/.err files under C:\ghrdp\webdesk are host-local only and
+              # are named in the summary so a re-dispatch can be diagnosed
+              # without any secret-bearing text.
+              Write-Host '[webdesk] websockify 7333 did not reach LISTEN in 20s; web desktop DISABLED. Halted by design. Logs: C:\ghrdp\webdesk\websockify.log / websockify.err.log'
               if ($S) { '### Web desktop DISABLED (websockify did not bind 7333)' | Add-Content -Path $S }
-              Set-WebdeskCfg '' 'serve-failed'
-              exit 0
+              if ($S) { 'Inspect C:\ghrdp\webdesk\websockify.log and websockify.err.log on the host for the websockify error, then re-dispatch the workflow.' | Add-Content -Path $S }
+              Set-WebdeskCfg '' 'serve-failed' 'websockify-bind'
+              throw 'Web desktop not deployed: websockify did not bind 127.0.0.1:7333. Halted by design. See Step Summary.'
           }
           # Expose ONLY on the tailnet.
           $serveUrl = ''
@@ -1200,10 +1233,36 @@ jobs:
               if ($serveUrl) { $serveUrl = $serveUrl + 'vnc.html?autoconnect=1&resize=remote' }
           } catch { Write-Host ('[webdesk] tailscale serve failed: ' + $_.Exception.Message) }
           if (-not $serveUrl) {
-              Write-Host '[webdesk] tailscale serve produced no mapping for 127.0.0.1:7333; web desktop DISABLED.'
-              if ($S) { '### Web desktop DISABLED (tailscale serve produced no URL)' | Add-Content -Path $S }
-              Set-WebdeskCfg '' 'serve-failed'
-              exit 0
+              # [F9i] fail-closed (see tightvnc-install block above). The
+              # serve status JSON is re-checked once after a 5s settle before
+              # halting, so a slow serve registration cannot false-fail the
+              # step; if it still has no mapping the run halts by design.
+              $serveUrl = ''
+              try {
+                  Start-Sleep -Seconds 5
+                  $ss2 = (& $ts serve status --json 2>$null) | ConvertFrom-Json
+                  if ($ss2 -and $ss2.Web) {
+                      foreach ($k2 in $ss2.Web.PSObject.Properties.Name) {
+                          $entry2 = $ss2.Web.$k2
+                          if ($entry2 -and $entry2.Handlers) {
+                              foreach ($hk2 in $entry2.Handlers.PSObject.Properties.Name) {
+                                  $h2 = $entry2.Handlers.$hk2
+                                  if ($h2.Proxy -and ($h2.Proxy -match '127\.0\.0\.1:7333')) { $serveUrl = 'https://' + $k2 + $hk2; break }
+                              }
+                          }
+                          if ($serveUrl) { break }
+                      }
+                  }
+              } catch { }
+              if ($serveUrl -and -not ($serveUrl.EndsWith('/'))) { $serveUrl = $serveUrl + '/' }
+              if ($serveUrl) { $serveUrl = $serveUrl + 'vnc.html?autoconnect=1&resize=remote' }
+              if (-not $serveUrl) {
+                  Write-Host '[webdesk] tailscale serve produced no mapping for 127.0.0.1:7333; web desktop DISABLED. Halted by design.'
+                  if ($S) { '### Web desktop DISABLED (tailscale serve produced no URL)' | Add-Content -Path $S }
+                  if ($S) { 'Re-dispatch the workflow for a fresh ephemeral host.' | Add-Content -Path $S }
+                  Set-WebdeskCfg '' 'serve-failed' 'serve-mapping'
+                  throw 'Web desktop not deployed: tailscale serve produced no tailnet mapping. Halted by design. See Step Summary.'
+              }
           }
           # Write config.webdeskUrl + clear webdeskReason (safe: no password in URL).
           # Server re-reads config per request (F8a), so it sees this immediately.
@@ -1220,8 +1279,9 @@ jobs:
       # Reads config.webdeskUrl (written by the previous step), curls it with
       # -k, and expects the 'noVNC' marker. PASS/FAIL + HTTP code go to the step
       # summary. FAIL clears config.webdeskUrl and sets webdeskReason=
-      # serve-failed so the dashboard cannot claim ready on a dead URL.
-      # VNC_PASS is never referenced here and can never leak. Never fails run.
+      # serve-failed (detail self-test-failed) so the dashboard cannot claim
+      # ready on a dead URL, then halts the run by design (F9i fail-closed).
+      # VNC_PASS is never referenced here and can never leak.
       - name: Web desktop self-test (curl serve URL, expect noVNC marker)
         shell: pwsh
         run: |
@@ -1250,16 +1310,22 @@ jobs:
               if ($S) { ('### Web desktop self-test PASS (HTTP ' + $code + ', noVNC marker present)') | Add-Content -Path $S }
               exit 0
           }
-          Write-Host ('[webdesk-test] FAIL: HTTP [' + $code + '] no noVNC marker after 3 tries; clearing advertised URL')
+          # [F9i] fail-closed: an advertised URL that does not serve the noVNC
+          # page must not leave a GREEN run behind. Clear the URL + record the
+          # reason/detail, then halt by design (the dashboard then shows the
+          # honest serve-failure guidance, not a dead 'ready' button).
+          Write-Host ('[webdesk-test] FAIL: HTTP [' + $code + '] no noVNC marker after 3 tries; clearing advertised URL. Halted by design.')
           if ($S) { ('### Web desktop self-test FAIL (HTTP ' + $code + '; advertised URL cleared, reason=serve-failed)') | Add-Content -Path $S }
+          if ($S) { 'Re-dispatch the workflow for a fresh ephemeral host.' | Add-Content -Path $S }
           try {
               $encT = New-Object System.Text.UTF8Encoding($false)
               $cfgF = [System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json
               if ($cfgF.PSObject.Properties['webdeskUrl']) { $cfgF.webdeskUrl = '' } else { $cfgF | Add-Member -NotePropertyName webdeskUrl -NotePropertyValue '' -Force }
               if ($cfgF.PSObject.Properties['webdeskReason']) { $cfgF.webdeskReason = 'serve-failed' } else { $cfgF | Add-Member -NotePropertyName webdeskReason -NotePropertyValue 'serve-failed' -Force }
+              if ($cfgF.PSObject.Properties['webdeskDetail']) { $cfgF.webdeskDetail = 'self-test-failed' } else { $cfgF | Add-Member -NotePropertyName webdeskDetail -NotePropertyValue 'self-test-failed' -Force }
               [System.IO.File]::WriteAllText($cfgPath, ($cfgF | ConvertTo-Json -Depth 10), $encT)
           } catch { Write-Host ('[webdesk-test] config clear failed: ' + $_.Exception.Message) }
-          exit 0
+          throw 'Web desktop self-test FAILED: advertised URL did not return the noVNC page. Halted by design. See Step Summary.'
 
       - name: Start Mission Control dashboard EARLY (PS 7331, SYSTEM task, confirm LISTENING)
         shell: pwsh
