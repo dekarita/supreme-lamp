@@ -33,3 +33,37 @@ jobs:
             echo 'ghrdp-server.ps1 still builds a handler-hello reason' >&2
             exit 1
           fi
+      - name: F8 web-desktop honesty gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          # UI must not claim ready without a webdeskUrl: every non-comment
+          # 'WEB DESKTOP ready' line must reference webdeskUrl on the same line.
+          if grep -n 'WEB DESKTOP ready' payloads/ui.html | grep -v '^[0-9]*:[[:space:]]*//' | grep -v 'webdeskUrl'; then
+            echo 'ui.html can claim WEB DESKTOP ready without webdeskUrl' >&2
+            exit 1
+          fi
+          grep -q 'web desktop not deployed' payloads/ui.html
+          grep -q 'webdeskReason' payloads/ui.html
+          grep -q 'webdeskReason' payloads/ghrdp-server.ps1
+          grep -q "webdeskReason = \$wdr" payloads/ghrdp-server.ps1
+          # Web-desktop step must fail LOUD: all 6 skip paths record a reason.
+          grep -q 'webdeskReason' .github/workflows/main.yml
+          grep -q 'VNC_PASS not set - web desktop disabled' .github/workflows/main.yml
+          step=$(awk '/Web desktop \(noVNC/{f=1} /Start Mission Control dashboard EARLY/{f=0} f' .github/workflows/main.yml)
+          n=$(printf '%s' "$step" | grep -c "Set-WebdeskCfg ''" || true)
+          if [ "$n" -lt 6 ]; then
+            echo "web-desktop step has silent skip paths (only $n reason writes)" >&2
+            exit 1
+          fi
+          # No fabricated serve URL: a URL needs a real serve mapping.
+          if grep -n "serveUrl = 'https://' + \$fq" .github/workflows/main.yml; then
+            echo 'web-desktop step fabricates a serve URL without a mapping' >&2
+            exit 1
+          fi
+          # Self-test step must exist and gate on the noVNC marker.
+          grep -q 'Web desktop self-test' .github/workflows/main.yml
+          teststep=$(awk '/Web desktop self-test/{f=1} /Start Mission Control dashboard EARLY/{f=0} f' .github/workflows/main.yml)
+          printf '%s' "$teststep" | grep -q 'noVNC'
+          printf '%s' "$teststep" | grep -q 'self-test PASS'
+          printf '%s' "$teststep" | grep -q 'self-test FAIL'
