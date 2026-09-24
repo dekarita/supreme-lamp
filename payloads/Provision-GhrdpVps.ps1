@@ -136,3 +136,17 @@ Write-Host '  cmdkey will prompt for the password interactively. Do NOT use /pas
 Write-Host '  on the command line -- plaintext would land in wmic/ETW/EDR.'
 Write-Host ''
 Write-Host "Then: mstsc /v:$fqdn        (zero prompts, zero warnings, NLA + CredSSP)."
+
+# hostKind=vps so the dashboard does not treat this static node as an ephemeral runner.
+$hkDir = 'C:\ghrdp'
+New-Item -ItemType Directory -Path $hkDir -Force | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $hkDir 'hostKind.txt'), "vps`r`n")
+$cfgPath = Join-Path $hkDir 'config.json'
+if (Test-Path -LiteralPath $cfgPath) {
+    try {
+        $cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
+        $cfg | Add-Member -NotePropertyName hostKind -NotePropertyValue 'vps' -Force
+        [System.IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 8))
+    } catch { Write-Host '[hostKind] config.json present but not updated; hostKind.txt is vps' }
+}
+Write-Host '[hostKind] vps'

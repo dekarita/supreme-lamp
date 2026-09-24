@@ -264,7 +264,7 @@ pre.box::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:
 <main>
 <p class="note" style="margin:0 0 -4px">
 primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP__:7332/</a> (Rust, realtime WS)
-&nbsp;|&nbsp; fallback: <a id="fallbackLink" href="http://__IP__:7331/">http://__IP__:7331/</a> (PowerShell polling)
+&nbsp;|&nbsp; fallback: <a id="fallbackLink" href="http://__IP__:7331/">http://__IP__:7331/</a> (HTTP polling)
 </p>
 <div id="connBanner" class="banner">connection lost - cannot reach the dashboard server. Values below are the LAST KNOWN data and may be stale. Retrying...</div>
 <div class="banner egress" id="egressLine">Uploads execute ON THE RUNNER (egress IP ...) - your PC's connection is never used for uploads.</div>
@@ -312,34 +312,27 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>
   <div class="row"><span class="k">Cert bound</span><span class="v" id="nrCert">...</span><span class="note" id="nrCertReason">RDP-Tcp SSLCertificateSHA1Hash present (from /api/native-status).</span></div>
   <div class="row"><span class="k">NLA</span><span class="v" id="nrNla">...</span><span class="note" id="nrNlaReason">UserAuthentication == 1 on the RDP-Tcp listener.</span></div>
-  <div class="row"><span class="k">Handler</span><span class="v" id="nrHandler">...</span><span class="note" id="nrHandlerReason">ghrdp:// handler POST /api/handler-hello within the last 24h. Fix: press RUN INSTALL below.</span></div>
-  <div class="row" id="nrInstallFallbackRow" style="display:none;flex-direction:column;align-items:stretch;gap:6px">
-    <span class="k" style="font-weight:600">Handler install fallback (one-time bootstrap when ghrdp:// is not yet registered)</span>
-    <span class="note">Open PowerShell as your user (not admin), replace <code>&lt;repo&gt;</code> with your local checkout path, paste, press Enter. Registers <code>HKCU\Software\Classes\ghrdp</code> - no admin, no download, no UAC. This row hides itself once the handler posts <code>/api/handler-hello</code>.</span>
-    <div style="display:flex;gap:8px;align-items:center">
-      <code id="nrInstallSnippet" style="flex:1;padding:8px 10px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:12px ui-monospace,Consolas,monospace;overflow-x:auto">powershell -NoProfile -Command "Copy-Item &lt;repo&gt;\payloads\helper-ghrdp-connect.ps1 $env:LOCALAPPDATA\ghrdp\ -Force; reg add HKCU\Software\Classes\ghrdp /ve /d URL:GHRDP /f; reg add HKCU\Software\Classes\ghrdp /v \"URL Protocol\" /d \"\" /f; reg add HKCU\Software\Classes\ghrdp\shell\open\command /ve /d \"powershell.exe -NoProfile -ExecutionPolicy Bypass -File $env:LOCALAPPDATA\ghrdp\helper-ghrdp-connect.ps1 -Url \\\"%1\\\"\" /f"</code>
-      <button onclick="copyById('nrInstallSnippet',this)">copy</button>
-    </div>
+  <div class="row"><span class="k">Host</span><span class="v" id="nrHostKind">...</span><span class="note" id="nrHostKindNote">ephemeral runners change name every run. A one-time TERMSRV entry is VPS-only.</span></div>
+  <div class="row" id="nrEphemeralRow" style="display:none;flex-direction:column;align-items:stretch;gap:6px">
+    <span class="k" style="font-weight:600">WEB DESKTOP (primary) + shortcut instructions</span>
+    <span class="note">This host is ephemeral. Click WEB DESKTOP. Do not expect a stored TERMSRV entry to survive the next run. One-time cmdkey is VPS-only.</span>
   </div>
-  <div class="row"><span class="k">Credential</span><span class="v" id="nrCred">...</span><span class="note">This PC has a TERMSRV cmdkey entry (localStorage; per-client). Fix: press RUN SETUP below.</span></div>
+  <div class="row" id="nrVpsShortcutRow" style="display:none;flex-direction:column;align-items:stretch;gap:6px">
+    <span class="k" style="font-weight:600">Native fallback (VPS only)</span>
+    <span class="note">One-time, on your PC: run the cmdkey line below and type the password at the prompt. Pin a shortcut whose target is the mstsc line. This page does not launch a script host.</span>
+  </div>
   <div class="row" id="nrReasonsRow" style="display:none"><span class="k">Blocked by</span><span class="v" id="nrReasons" style="color:#f5b7b7"></span></div>
-  <div class="row" id="nrVpsPendingRow" style="display:none"><span class="k">VPS status</span><span class="v" id="nrVpsPending" style="color:#f5d9b7">provisioning pending (advisory - does NOT block auto-login)</span></div>
-  <div class="row"><span class="k">Last handler action</span><span class="v" id="nrLastVerb">-</span><span class="note">Most recent /api/handler-hello (verb + ok + short details). Log: <code>%LOCALAPPDATA%\ghrdp\ghrdp-connect.log</code></span></div>
+  <div class="row" id="nrVpsPendingRow" style="display:none"><span class="k">VPS status</span><span class="v" id="nrVpsPending" style="color:#f5d9b7">provisioning pending (advisory)</span></div>
   <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
-    <span class="k" style="font-weight:600">One-click actions (primary)</span>
+    <span class="k" style="font-weight:600">WEB DESKTOP (primary)</span>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button class="primary" id="btnRunInstall" type="button" style="display:none">RUN INSTALL (once)</button>
-      <button class="primary" id="btnRunSetup" type="button">RUN SETUP (user)</button>
-      <button class="primary" id="btnRunCheck" type="button">RUN CHECK</button>
-      <button class="primary" id="btnRunDirect" type="button">RUN DIRECT</button>
-      <button class="primary" id="autoLoginNative" type="button" disabled>AUTO-LOGIN (native mstsc)</button>
-      <button class="primary" id="btnWebDesk" type="button" disabled>WEB DESKTOP</button>
+      <button class="primary" id="btnWebDesk" type="button" disabled>WEB DESKTOP (primary)</button>
       <span class="note" id="autoLoginStatus"></span>
     </div>
-    <span class="note">Each RUN fires <code>ghrdp://&lt;verb&gt;?server=&lt;fqdn&gt;</code>. Windows dispatches the handler silently (no browser prompt after the one-time HKCU install). AUTO-LOGIN enables only when all probes pass. WEB DESKTOP requires <code>config.webdeskUrl</code> (workflow U5c: noVNC + TightVNC behind <code>tailscale serve</code>, docs/MIGRATION.md sec 1.10).</span>
+    <span class="note">Opens the tailnet web desktop already served by this host. Nothing is installed on the client. NLA on the Windows listener stays on.</span>
   </div>
   <div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
-    <span class="k" style="font-weight:600">Manual fallbacks (only if the handler is not registered yet)</span>
+    <span class="k" style="font-weight:600">Shortcut text (copy only; VPS one-time cmdkey)</span>
     <div style="display:flex;gap:8px;align-items:center">
       <span class="note" style="opacity:.7">cmdkey line:</span>
       <code id="cmdkeyLine" style="flex:1;padding:6px 8px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:11px ui-monospace,Consolas,monospace;overflow-x:auto">(populating...)</code>
@@ -350,7 +343,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
       <code id="mstscFallback" style="flex:1;padding:6px 8px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:11px ui-monospace,Consolas,monospace">mstsc /v:__IP__</code>
       <a href="javascript:void(0)" onclick="copyById('mstscFallback',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
     </div>
-    <span class="note">Silent auth if the setup verb has run. Use these only if the <code>ghrdp://</code> handler is not installed (verify: <code>cmdkey /list</code> shows <code>TERMSRV/&lt;fqdn&gt;.ts.net</code>). Post-install log: <code>%LOCALAPPDATA%\ghrdp\ghrdp-connect.log</code>.</span>
+    <span class="note">Password is typed at the prompt, never placed on the command line. Ephemeral hosts: ignore this pair and use WEB DESKTOP.</span>
   </div>
 </section>
 <section class="glass" id="sec-keys">
@@ -359,7 +352,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">Legacy Rentry (frozen)</span><a id="legacyLink" href="https://rentry.co/myurl0">https://rentry.co/myurl0</a><button onclick="copyText(document.getElementById('legacyLink').textContent,this)">copy</button></div>
   <div class="row"><span class="k">LEGACY key</span><span class="v" id="legacyKey">...</span><button onclick="copyById('legacyKey',this)">copy</button><span class="note">decrypt key for files uploaded before this run</span></div>
 <div id="termRow" style="display:flex;gap:10px;align-items:center;padding:10px 14px;border:1px solid rgba(255,255,255,.14);border-radius:16px;background:rgba(255,255,255,.07);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);box-shadow:0 6px 24px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.1)">
-  <span style="font-weight:600">PowerShell Terminal</span>
+  <span style="font-weight:600">Terminal</span>
   <span style="opacity:.6;font-size:12px">runner · audit-logged · SYSTEM / INTERACTIVE</span>
   <button id="btnTermOpen" style="margin-left:auto;background:linear-gradient(180deg,#4f8cff,#2f6bff);color:#fff;border:1px solid rgba(255,255,255,.3);border-radius:10px;padding:6px 14px;cursor:pointer">Open Terminal</button>
   <code id="termUrl" style="opacity:.75;font-size:11px;max-width:44%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></code>
@@ -829,7 +822,7 @@ async function bootstrapConfig(){
   if(!r.ok)return;
   var cf=await r.json();
   var cr=(cf&&cf.creds)||{};
-  var fqdn=cr.fqdn||cr.ip||'', user=cr.user||'', ip=cr.ip||fqdn;
+  var fqdn=cr.fqdn||'', user=cr.user||'', ip=cr.ip||'';
   var uEl=document.getElementById('credUser');if(uEl&&user)uEl.textContent=user;
   var iEl=document.getElementById('credIp');if(iEl&&ip)iEl.textContent=ip;
   var mv=document.getElementById('mstscVal');if(mv&&fqdn)mv.textContent='mstsc /v:'+fqdn;
@@ -912,6 +905,13 @@ async function nativeStatus(){
    if(!okAll){b.disabled=true;b.style.opacity='0.5';b.style.cursor='not-allowed';}
    else{b.disabled=false;b.style.opacity='';b.style.cursor='';}
   }
+  var kind=(s&&s.hostKind==='vps')?'vps':'ephemeral';
+  var hk=document.getElementById('nrHostKind');
+  if(hk){hk.textContent=kind;hk.style.color=kind==='vps'?'':'#f5d9b7';}
+  var er=document.getElementById('nrEphemeralRow');
+  if(er) er.style.display = kind==='vps' ? 'none' : '';
+  var vr=document.getElementById('nrVpsShortcutRow');
+  if(vr) vr.style.display = kind==='vps' ? '' : 'none';
   var wb=$('btnWebDesk');
   if(wb){
    if(s.webdeskUrl){ wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(s.webdeskUrl,'_blank');}; wb.title=s.webdeskUrl; }
@@ -920,14 +920,7 @@ async function nativeStatus(){
  }catch(_){}
 }
 // RUN INSTALL / SETUP / CHECK / DIRECT -> fire ghrdp://<verb>?server=<fqdn>
-function fireVerb(v, extra){
- var f=(document.getElementById('rdpFqdn')||{}).textContent||'';
- if(!f){ paint('FQDN not set - cannot fire ghrdp:// verb','#f5b7b7'); return; }
- var u='ghrdp://'+v+'?server='+encodeURIComponent(f);
- if(extra) u += '&' + extra;
- paint('firing '+u.split('?')[0]+' ...','#b7e3f5');
- launchProto(u);
-}
+function fireVerb(){ paint('this page does not launch a local script host; use WEB DESKTOP','#f5d9b7'); }
 (function(){
  var i=$('btnRunInstall'); if(i) i.onclick=function(){ fireVerb('install'); };
  var c=$('btnRunCheck'); if(c) c.onclick=function(){ fireVerb('check'); };
@@ -961,7 +954,7 @@ if(btn) btn.onclick=function(ev){
   var vis=function(){if(document.hidden)wasFocused=false;};
   window.addEventListener('blur',lost);
   document.addEventListener('visibilitychange',vis);
-  launchProto('ghrdp://connect?server='+encodeURIComponent(runnerHost())+'&port=7331&t='+encodeURIComponent(tok));
+  paint('use WEB DESKTOP; this page does not launch a local handler','#f5d9b7');
   setTimeout(function(){
    window.removeEventListener('blur',lost);
    document.removeEventListener('visibilitychange',vis);

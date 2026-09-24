@@ -839,6 +839,7 @@ jobs:
               rdpPass = [string]$env:RDP_PASS
               ghrdp = $ghName
               dnsName = $dns
+              hostKind = 'ephemeral'
               repo = [string]$env:GITHUB_REPOSITORY
               dashToken = $tok
               mirror = $mirrorOn

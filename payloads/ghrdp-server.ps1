@@ -391,8 +391,17 @@ function Invoke-ClientRequest {
                 handler = $(if ($null -ne $handlerAge -and $handlerAge -le 86400) { '' } else { 'no /api/handler-hello beacon in the last 24h' })
             }
             $wd = ''; if ($cfgN -and $cfgN.webdeskUrl) { $wd = [string]$cfgN.webdeskUrl }
+            $hostKind = 'ephemeral'
+            try {
+                if ($cfgN -and $cfgN.PSObject.Properties['hostKind'] -and [string]$cfgN.hostKind -eq 'vps') { $hostKind = 'vps' }
+                elseif (Test-Path -LiteralPath (Join-Path $Root 'hostKind.txt')) {
+                    $hk = ([System.IO.File]::ReadAllText((Join-Path $Root 'hostKind.txt'))).Trim().ToLower()
+                    if ($hk -eq 'vps') { $hostKind = 'vps' }
+                }
+            } catch { }
             $ns = [ordered]@{
                 fqdn = $fqdnN
+                hostKind = $hostKind
                 certBound = $certBound
                 nlaOn = $nlaOn
                 handlerSeenAgeSec = $handlerAge
