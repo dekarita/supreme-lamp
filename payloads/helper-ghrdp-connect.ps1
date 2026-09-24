@@ -97,6 +97,22 @@ try {
     exit 1
 }
 
+# ---- [U3c] handler-hello beacon (fire-and-forget) ------------------------------
+# Signals to /api/native-status that this client PC has the handler installed;
+# the dashboard flips 'Handler' from missing -> installed and drops the
+# 'handler-not-seen' reason. Body is empty; only the timestamp matters. Never
+# blocks the mstsc launch on network errors.
+try {
+    Invoke-RestMethod `
+        -Uri ("http://${server}:${port}/api/handler-hello") `
+        -Method POST `
+        -Body '{}' `
+        -ContentType 'application/json' `
+        -TimeoutSec 3 `
+        -ErrorAction SilentlyContinue | Out-Null
+    A @{ event = 'handler-hello-sent'; server = $server }
+} catch { A @{ event = 'handler-hello-failed'; err = $_.Exception.Message } }
+
 # ---- ENFORCE: mstsc target must be a MagicDNS FQDN -----------------------------
 if ($rdpHost -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
     A @{ event = 'fatal'; reason = 'server-returned-non-fqdn'; got = $rdpHost }

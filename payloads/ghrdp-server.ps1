@@ -343,6 +343,57 @@ function Invoke-ClientRequest {
             }
             return
         }
+        # [U3] GET /api/native-status - dashboard readiness snapshot for the
+        # native mstsc auto-login button. Aggregates FQDN validity, LE-cert
+        # bind, NLA state, and handler-hello age. reasonsDisabled is computed
+        # server-side (client contributes cred-store presence separately).
+        # Dash-token gated via Test-ClientAllowed at the routing entry.
+        if ($path -eq '/api/native-status') {
+            $cfgN = Read-JsonFile -Path $script:CfgPath
+            $fqdnN = ''; if ($cfgN -and $cfgN.rdpIp) { $fqdnN = [string]$cfgN.rdpIp }
+            $fqdnOk = ($fqdnN -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$')
+            $certBound = $false; $nlaOn = $false
+            try {
+                $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+                $sh = (Get-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -ErrorAction SilentlyContinue).SSLCertificateSHA1Hash
+                if ($sh -and $sh.Length -ge 20) { $certBound = $true }
+                $ua = (Get-ItemProperty -Path $rdpKey -Name 'UserAuthentication' -ErrorAction SilentlyContinue).UserAuthentication
+                if ([int]$ua -eq 1) { $nlaOn = $true }
+            } catch { }
+            $handlerAge = $null
+            try {
+                $hhFile = Join-Path $Root 'handler-hello-last.json'
+                if (Test-Path -LiteralPath $hhFile) {
+                    $hh = [System.IO.File]::ReadAllText($hhFile) | ConvertFrom-Json
+                    if ($hh -and $hh.ts) { $handlerAge = [int]([datetime]::UtcNow - [datetime]$hh.ts).TotalSeconds }
+                }
+            } catch { }
+            $reasons = @()
+            if (-not $fqdnOk)   { $reasons += 'fqdn-not-tsnet' }
+            if (-not $certBound){ $reasons += 'cert-not-bound' }
+            if (-not $nlaOn)    { $reasons += 'nla-off' }
+            if ($null -eq $handlerAge -or $handlerAge -gt 86400) { $reasons += 'handler-not-seen' }
+            $ns = [ordered]@{
+                fqdn = $fqdnN
+                certBound = $certBound
+                nlaOn = $nlaOn
+                handlerSeenAgeSec = $handlerAge
+                reasonsDisabled = @($reasons)
+            }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $ns)
+            return
+        }
+        # [U3] POST /api/handler-hello - handler beacon. Body is ignored; only
+        # the timestamp matters. Written to handler-hello-last.json for the
+        # native-status age computation. Dash-token gated via routing entry.
+        if ($path -eq '/api/handler-hello' -and $parts.method -eq 'POST') {
+            try {
+                $hhOut = @{ ts = [datetime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress
+                [System.IO.File]::WriteAllText((Join-Path $Root 'handler-hello-last.json'), $hhOut, $script:NoBom)
+            } catch { }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":true}'))
+            return
+        }
         # [remediation 8C] /api/launch.ps1, /launcher.ps1, /api/enroll.ps1 bodies deleted; unreachable due to guard above.
         # [remediation 8C-extended] /api/launcher-hello body deleted; unreachable due to 404 guard above. It acknowledged agent-launcher heartbeats — obsolete under the native mstsc flow (no agent, no launcher).
         if ($path -eq '/api/launcher-status') {

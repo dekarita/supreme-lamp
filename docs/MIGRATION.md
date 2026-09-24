@@ -209,6 +209,24 @@ FQDN sourcing:
   and disables the AUTO-LOGIN button, so an unprovisioned dashboard
   never emits a bad `mstsc` target.
 
+Readiness snapshot (`/api/native-status`, U3):
+
+- The UI additionally polls `GET /api/native-status` every 15s (dash-
+  token + tailnet gated via the shared routing entry). The response
+  is `{ fqdn, certBound, nlaOn, handlerSeenAgeSec, reasonsDisabled }`.
+  `certBound` reads the `RDP-Tcp` `SSLCertificateSHA1Hash` registry
+  value on the host; `nlaOn` reads `UserAuthentication == 1`;
+  `handlerSeenAgeSec` is the age of the last `POST /api/handler-hello`
+  the ghrdp:// handler fired on invoke.
+- `reasonsDisabled` names anything failing: `fqdn-not-tsnet`,
+  `cert-not-bound`, `nla-off`, `handler-not-seen`. The UI shows each
+  as a plain-English row and disables AUTO-LOGIN whenever the list is
+  non-empty. Client-side cred presence is NOT transmitted; the server
+  never learns whether a given PC has the TERMSRV cred stored.
+- `POST /api/handler-hello` records only `{ ts }` to
+  `handler-hello-last.json`. No IP, user, or credential fields are
+  written or transmitted.
+
 Verification (E-battery greps for banned patterns; must return zero):
 
     git grep -nE "enroll|agentPill|/api/client-status|/api/agent|/api/enroll|showEnrollOverlay|LocalDevices|AuthenticationLevelOverride|__PASS__|install\.bat|install\.ps1|parsec-push" -- payloads/ui.html
