@@ -186,12 +186,28 @@ function ConvertTo-JsonBytes {
     return [System.Text.Encoding]::UTF8.GetBytes(($Obj | ConvertTo-Json -Depth 10 -Compress))
 }
 function Remove-CredKeys {
-    # [remediation #7A] strip credential fields from a config object before it leaves in any response body
+    # [remediation #7A / U1] Strip secrets from a config object before it leaves
+    # in any response body, then rebuild `creds` to expose ONLY the fields the UI
+    # needs for the native mstsc auto-login flow: { fqdn, user, ip }.
+    #   fqdn = config.dnsName (P2 discipline: *.ts.net MagicDNS FQDN) OR
+    #          config.rdpIp fallback (under P2 that is also the FQDN).
+    #   user = config.rdpUser  (a username, not a secret; the password is never here).
+    #   ip   = config.rdpIp    (the same value as fqdn under P2).
+    # Everything else that could carry a secret (rdpPass, mirrorKey,
+    # legacyDecryptKey, rentryEditCode, rentryEditCookie, dashToken) is removed.
     param($Obj)
     if (-not $Obj) { return $Obj }
-    foreach ($k in @('rdpUser', 'rdpPass', 'mirrorKey', 'legacyDecryptKey', 'creds')) {
+    $fqdn = ''; $user = ''; $ip = ''
+    try { if ($Obj.PSObject.Properties['dnsName']) { $fqdn = [string]$Obj.dnsName } } catch { }
+    try { if ($Obj.PSObject.Properties['rdpUser']) { $user = [string]$Obj.rdpUser } } catch { }
+    try { if ($Obj.PSObject.Properties['rdpIp'])   { $ip   = [string]$Obj.rdpIp   } } catch { }
+    if (-not $fqdn) { $fqdn = $ip }  # P2 fallback: rdpIp is itself the FQDN
+    foreach ($k in @('rdpUser','rdpPass','mirrorKey','legacyDecryptKey','creds','rentryEditCode','rentryEditCookie','dashToken')) {
         try { if ($Obj.PSObject.Properties[$k]) { $Obj.PSObject.Properties.Remove($k) } } catch { }
     }
+    try {
+        $Obj | Add-Member -MemberType NoteProperty -Name 'creds' -Value ([pscustomobject]@{ fqdn = $fqdn; user = $user; ip = $ip }) -Force
+    } catch { }
     return $Obj
 }
 function Invoke-ClientRequest {
@@ -250,7 +266,7 @@ function Invoke-ClientRequest {
         }
         # [remediation] C2 / agent-payload / .bat endpoints removed -> 404
         # (no enrollment, no command queue, no agent hello/status, no diag up/download, no served payloads/bat)
-        if ($path -in @('/install.bat','/connect-now.bat','/api/enroll.ps1','/api/launch.ps1','/launcher.ps1','/api/agent.ps1','/api/accept.ps1','/api/acceptance.ps1','/api/device-enroll','/api/client-cmd','/api/agent-hello','/api/agent-status','/api/client-status','/api/diag-upload','/api/diag-file')) {
+        if ($path -in @('/install.bat','/connect-now.bat','/install.ps1','/client-install.ps1','/api/enroll.ps1','/api/launch.ps1','/launcher.ps1','/api/launcher-hello','/api/agent.ps1','/api/agent-hash','/api/accept.ps1','/api/acceptance.ps1','/api/device-enroll','/api/client-cmd','/api/agent-hello','/api/agent-status','/api/client-status','/api/diag-upload','/api/diag-file')) {
             Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('endpoint removed per remediation'))
             return
         }
@@ -328,21 +344,7 @@ function Invoke-ClientRequest {
             return
         }
         # [remediation 8C] /api/launch.ps1, /launcher.ps1, /api/enroll.ps1 bodies deleted; unreachable due to guard above.
-        if ($path -eq '/api/launcher-hello') {
-            $verNum = 0
-            if ($parts.query -and $parts.query.ContainsKey('ver')) { try { $verNum = [int]$parts.query['ver'] } catch { } }
-            $bldNum = ''
-            if ($parts.query -and $parts.query.ContainsKey('build')) { $bldNum = [string]$parts.query['build'] }
-            $now3 = [datetime]::UtcNow
-            try {
-                [System.IO.File]::AppendAllText((Join-Path $Root 'launcher-hello.log'), ($now3.ToString('o') + " ver=$verNum build=$bldNum`n"))
-                [System.IO.File]::WriteAllText((Join-Path $Root 'launcher-hello-last.json'), ('{"ver":' + $verNum + ',"build":"' + $bldNum + '","ts":"' + $now3.ToString('o') + '"}'))
-            } catch { }
-            if ($parts.method -eq 'POST' -or ($parts.query -and $parts.query.ContainsKey('ver'))) { $script:LauncherSeen = $true }
-            $seenTxt = if ($script:LauncherSeen) { 'true' } else { 'false' }
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes(('{"acked":true,"ver":3,"seen":' + $seenTxt + '}')))
-            return
-        }
+        # [remediation 8C-extended] /api/launcher-hello body deleted; unreachable due to 404 guard above. It acknowledged agent-launcher heartbeats — obsolete under the native mstsc flow (no agent, no launcher).
         if ($path -eq '/api/launcher-status') {
             $body = '{"ver":0,"ts":"","ageSeconds":-1}'
             try {
@@ -446,29 +448,9 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $body)
             return
         }
-        if ($path -eq '/api/agent-hash') {
-            if (Test-Path -LiteralPath $script:AgentPath) {
-                $sha = ''
-                $sz = 0
-                try {
-                    $bytes = [System.IO.File]::ReadAllBytes($script:AgentPath)
-                    $sz = $bytes.Length
-                    $h = [System.Security.Cryptography.SHA256]::Create()
-                    $hb = $h.ComputeHash($bytes)
-                    $h.Dispose()
-                    $sha = ($hb | ForEach-Object { $_.ToString('x2') }) -join ''
-                } catch { }
-                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ sha256 = $sha; size = $sz })
-            } else {
-                Send-ClientResponse -Stream $stream -Code 404 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ error = 'agent.ps1 not deployed' })
-            }
-            return
-        }
+        # [remediation 8C-extended] /api/agent-hash body deleted; unreachable due to 404 guard above. It served SHA256 of the removed agent.ps1 payload — no agent, no hash.
         # [remediation 8C] /api/diag-upload, /api/diag-file bodies deleted; unreachable due to 404 guard above.
-        if ($path -eq '/client-install.ps1') {
-            try { $b = [System.IO.File]::ReadAllBytes((Join-Path $Root 'ghrdp-client-install.ps1')); Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body $b } catch { Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('missing')) }
-            return
-        }
+        # [remediation 8C-extended] /client-install.ps1 body deleted; unreachable due to 404 guard above. It served the client-install script — replaced by docs/AUTOLOGIN.md manual reg-add + cmdkey.
         if ($path -eq '/webdesk-boot') {
             # [remediation #7C] loopback-boot call removed - it turned NLA off + stashed plaintext cmdkey.
             $outB = @{ ok = $false; message = 'loopback bootstrap removed per remediation #7C - log in via real RDP with NLA on' }
@@ -797,14 +779,7 @@ boot();
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body ([System.Text.Encoding]::UTF8.GetBytes($outJ))
             return
         }
-        if ($path -eq '/install.ps1') {
-            if (Test-Path -LiteralPath $script:InstPath) {
-                Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body ([System.IO.File]::ReadAllBytes($script:InstPath))
-            } else {
-                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('installer missing'))
-            }
-            return
-        }
+        # [remediation 8C-extended] /install.ps1 body deleted; unreachable due to 404 guard above. It served the ghrdp:// handler installer — replaced by docs/AUTOLOGIN.md manual reg-add.
         if ($path -eq '/config') {
             $cfgOut = Remove-CredKeys (Read-JsonFile -Path $script:CfgPath)
             if ($cfgOut) {

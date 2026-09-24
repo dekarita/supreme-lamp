@@ -153,6 +153,70 @@ of band.
 - [ ] **GitHub PATs scoping this repo** during Actions-as-RDP
       operation. Rotate under `https://github.com/settings/tokens`.
 
+### 1.9 Dashboard native auto-login button contract (U1)
+
+`payloads/ui.html` exposes a single native RDP entry point in
+`#sec-native-rdp`. This is the ONLY sanctioned dashboard-driven RDP
+launch path; the previous agent-enrollment / DIAG / Parsec-push /
+`install.bat` surface is removed.
+
+Client-side flow (button `#autoLoginNative`):
+
+1. `POST http://<runner>:7331/api/rdp-token` (dashboard `key` query
+   only when the dashboard is auth-guarded; no body).
+2. Server issues `{ token, ttl:60 }`, single-use, in-memory only.
+3. UI fires the URI `ghrdp://connect?server=<runner-host>&port=7331&t=<token>`
+   via a hidden `<iframe>` (no `window.open`, no navigation).
+4. Local `ghrdp://` handler (`payloads/helper-ghrdp-connect.ps1`)
+   parses `server` + `t`, POSTs `/api/rdp-creds` with
+   `{ "token": "<t>" }`, receives `{ host, fqdn }` — server enforces
+   `*.ts.net` (P2 discipline), any other value returns HTTP 409.
+5. Handler runs `mstsc /v:<fqdn>`. Windows LSA silently supplies the
+   per-user `TERMSRV/<fqdn>` credential stored by §1.4 cmdkey.
+6. Handler NEVER reads, writes, or deletes the stored credential; it
+   only resolves an FQDN and launches `mstsc`.
+
+Banned in this section and its script — presence is a bug:
+
+- Any `ghrdp://` URI with a `pass=`, `password=`, `user=`, `key=`, or
+  literal credential parameter.
+- A `credPass` / `__PASS__` UI element, or a plaintext-password
+  display of any kind.
+- References to `/api/enroll.ps1`, `/api/agent.ps1`, `/api/client-status`,
+  `/api/agent-status`, `/api/client-cmd`, `/api/agent-hello`, or
+  `showEnrollOverlay` — the endpoints are 404-guarded server-side; UI
+  references would falsely imply live paths.
+- `install.bat` or `install.ps1` download anchors and any
+  auto-executing installer helper.
+- LocalDevices arming, `AuthenticationLevelOverride`, MOTW /
+  Zone.Identifier strip, or publisher-trust arming (§3 bans them
+  system-wide).
+- File uploads from the dashboard to the runner (`/parsec-push` is
+  404; no re-introduction).
+
+Fallback shown in the same section — always visible:
+
+- The literal `mstsc /v:<fqdn>` command line, for clients that have
+  no handler installed. Silent auth still applies once §1.4 cmdkey
+  is complete.
+
+FQDN sourcing:
+
+- The server substitutes `__IP__` -> `cfg.rdpIp` when serving `/`.
+  Under P2 discipline `cfg.rdpIp` is a MagicDNS FQDN (`*.ts.net`);
+  before VPS provision (§1.7) it may be blank or a stale IP. The UI
+  hard-refuses anything not matching `^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$`
+  and disables the AUTO-LOGIN button, so an unprovisioned dashboard
+  never emits a bad `mstsc` target.
+
+Verification (E-battery greps for banned patterns; must return zero):
+
+    git grep -nE "enroll|agentPill|/api/client-status|/api/agent|/api/enroll|showEnrollOverlay|LocalDevices|AuthenticationLevelOverride|__PASS__|install\.bat|install\.ps1|parsec-push" -- payloads/ui.html
+    git grep -nE "ghrdp://.*pass=|&pass=|/api/client-cmd|fPromptForPassword" -- payloads/ui.html
+
+(Comment-line matches noting removed items are acceptable and expected;
+only live code references are bugs.)
+
 ## 2. Decommission checklist (Actions-as-RDP teardown)
 
 > Prerequisites: §1.7 VPS provisioned and client NLA-probe verified;

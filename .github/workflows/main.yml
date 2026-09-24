@@ -9,10 +9,6 @@ on:
           - windows-latest
           - self-hosted-windows-near
         default: windows-latest
-      mirror_downloads_public:
-        description: 'DEPRECATED - public mirroring removed. Leave false.'
-        type: boolean
-        default: false
       encrypt_mode:
         description: 'none = upload original files unencrypted (streamable on gofile); media-plain = video/audio plain, rest AES-256; all = encrypt everything (.ghenc suffix)'
         type: choice
@@ -33,7 +29,6 @@ jobs:
     timeout-minutes: 357
     env:
       GHRDP_EPHEMERAL: 'true'
-      MIRROR_INPUT: ${{ github.event.inputs.mirror_downloads_public }}
       ENCRYPT_MODE: ${{ github.event.inputs.encrypt_mode || 'none' }}
       RENTRY_MAIN_URL: 'https://rentry.co/myurl0'
       RENTRY_MAIN_EDIT: ''
@@ -827,37 +822,10 @@ jobs:
           }
           exit 0
 
-      - name: Web desktop backend (TightVNC no-auth 5900 + websockify 7333, verified, tailnet-only)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $msi = Join-Path $env:RUNNER_TEMP 'tvn.msi'
-          & curl.exe -fL --retry 3 --connect-timeout 20 --max-time 300 -o $msi 'https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi' 2>$null
-          $LASTEXITCODE = 0
-          if (Test-Path $msi) {
-            Start-Process msiexec.exe -Wait -ArgumentList '/i', $msi, '/quiet', '/norestart'
-          } else { Write-Host '[vnc] TightVNC download FAILED' }
-          $tp = 'HKLM:\SOFTWARE\TightVNC\Server'
-          New-Item -Path $tp -Force -ErrorAction SilentlyContinue | Out-Null
-          Set-ItemProperty -Path $tp -Name 'AcceptRfbConnections' -Value 1 -Type DWord -Force -ErrorAction SilentlyContinue
-          Set-ItemProperty -Path $tp -Name 'UseVncAuthentication' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-          Set-ItemProperty -Path $tp -Name 'UseControlAuthentication' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
-          try { Restart-Service tvnserver -Force -ErrorAction Stop } catch { try { Start-Service tvnserver -ErrorAction Stop } catch { Write-Host '[vnc] tvnserver start failed' } }
-          $vncUp = $false
-          for ($i = 0; $i -lt 20; $i++) { try { if (Get-NetTCPConnection -LocalPort 5900 -State Listen -ErrorAction SilentlyContinue) { $vncUp = $true; break } } catch { }; Start-Sleep -Seconds 2 }
-          & python -m pip install --quiet --disable-pip-version-check websockify 2>$null
-          $LASTEXITCODE = 0
-          Start-Process -FilePath python -ArgumentList '-m','websockify','0.0.0.0:7333','127.0.0.1:5900' -WindowStyle Hidden
-          $brUp = $false
-          for ($i = 0; $i -lt 15; $i++) { try { if (Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue) { $brUp = $true; break } } catch { }; Start-Sleep -Seconds 2 }
-          netsh advfirewall firewall delete rule name="ghrdp-ws-7333" 2>$null | Out-Null
-          $LASTEXITCODE = 0
-          netsh advfirewall firewall add rule name="ghrdp-ws-7333" dir=in action=allow protocol=TCP localport=7333 remoteip=100.64.0.0/10 enable=yes 2>$null | Out-Null
-          $LASTEXITCODE = 0
-          $ruleOk = $false
-          try { if (Get-NetFirewallRule -DisplayName 'ghrdp-ws-7333' -ErrorAction SilentlyContinue) { $ruleOk = $true } } catch { }
-          Write-Host ('[vnc] verified: vnc5900=' + $vncUp + ' bridge7333=' + $brUp + ' fwRule=' + $ruleOk + ' (auth=NONE, tailnet-gated)')
-          exit 0
+      # [U1 / #7C-extended] "Web desktop backend (TightVNC no-auth 5900 + websockify 7333)" step removed.
+      # No-auth VNC — even tailnet-gated — is a bright-line NLA / credential-required regression and is
+      # incompatible with the native mstsc-only architecture. WebSockify bridge and 7333 firewall rule
+      # go with it. Reintroduction is banned by STATE.md decisions.
 
       - name: Start Mission Control dashboard EARLY (PS 7331, SYSTEM task, confirm LISTENING)
         shell: pwsh
@@ -1463,7 +1431,7 @@ jobs:
           } catch { Write-Host ('[parsec] warm task failed: ' + $_.Exception.Message) }
           exit 0
 
-      - name: Machine personalization + apps (Edge/Chrome/Firefox extensions + bookmarks, qBittorrent, VB-CABLE)
+      - name: Machine personalization + apps (Edge/Chrome/Firefox extensions + bookmarks, VB-CABLE)
         if: ${{ always() }}
         shell: pwsh
         run: |
@@ -1581,24 +1549,8 @@ jobs:
               $LASTEXITCODE = 0
               Write-Host '[browsers] gpupdate /force executed'
           } catch { }
-          foreach ($pkg in @(
-              @{ id = 'qBittorrent.qBittorrent'; label = 'qBittorrent' }
-          )) {
-              $done = $false
-              for ($a = 1; $a -le 2; $a++) {
-                  try {
-                      & winget.exe install --id $pkg.id --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>$null
-                      $code = $LASTEXITCODE
-                      $LASTEXITCODE = 0
-                      Write-Host ('[apps] winget {0} attempt {1} exit={2}' -f $pkg.label, $a, $code)
-                      if ($code -eq 0) { $done = $true }
-                  } catch {
-                      Write-Host ('[apps] winget {0} attempt {1} error: {2}' -f $pkg.label, $a, $_.Exception.Message)
-                  }
-                  if (-not $done) { Start-Sleep -Seconds 5 }
-              }
-              if (-not $done) { Write-Host ('[apps] WARNING: {0} not installed (optional; continuing)' -f $pkg.label) }
-          }
+          # [U1 / #7D] qBittorrent winget block removed. Torrent client is not part of the native
+          # RDP auto-login architecture and its presence widened the runner attack surface.
           Write-Host '[parsec] skipped - new Parsec requires email OTP (token pairing deprecated); RDP with CredSSP-disabled .rdp is the primary path'
           try {
               $vcUrl = 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Setup_x64.exe'
