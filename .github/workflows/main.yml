@@ -855,12 +855,28 @@ jobs:
               Start-Sleep -Seconds 3
           }
           if (-not $ip) { Write-Host '[stage] WARNING: Tailscale IP still empty after 10 tries' }
-          try {
-              $j = (& $ts status --json 2>$null) | ConvertFrom-Json
-              $ghName = [string]$j.Self.HostName
-              $dns = ([string]$j.Self.DNSName).TrimEnd('.')
-              $LASTEXITCODE = 0
-          } catch { }
+          # [F9g] transient-read retry: 10 attempts (~50s), logged, so a
+          # one-call CLI blip cannot masquerade as MagicDNS-off here.
+          for ($dnsTry = 1; $dnsTry -le 10; $dnsTry++) {
+              try {
+                  $j = (& $ts status --json 2>$null) | ConvertFrom-Json
+                  if (-not $ghName -and $j -and $j.Self) { $ghName = [string]$j.Self.HostName }
+                  $dns = ([string]$j.Self.DNSName).TrimEnd('.')
+                  $LASTEXITCODE = 0
+              } catch { }
+              if ($dns -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') { break }
+              Write-Host ('[stage] dns read attempt ' + $dnsTry + ': Self.DNSName = [' + $dns + '] - retrying')
+              Start-Sleep -Seconds 5
+          }
+          # Fallback: original single-read (only reached if all retries failed)
+          if (-not $dns -or $dns -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
+              try {
+                  $j = (& $ts status --json 2>$null) | ConvertFrom-Json
+                  $ghName = [string]$j.Self.HostName
+                  $dns = ([string]$j.Self.DNSName).TrimEnd('.')
+                  $LASTEXITCODE = 0
+              } catch { }
+          }
           # [F9b] opt-in auto-enable: only when BOTH TS_API_TOKEN and
           # TS_TAILNET_NAME are set. The token travels in the Authorization
           # header only and is never printed. Secrets absent -> silent skip.
