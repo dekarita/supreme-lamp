@@ -1018,8 +1018,14 @@ jobs:
       # form. Credentials remain required (TightVNC control + view password from repo secret VNC_PASS,
       # never echoed to logs/summary), and exposure is limited to the tailnet via `tailscale serve` on
       # 127.0.0.1:7333. No public port, no funnel, no anonymous access. Every skip is LOUD
-      # (step summary + config.webdeskReason, run never fails) so the dashboard button shows the
+      # (step summary + config.webdeskReason) so the dashboard button shows the
       # exact reason instead of a silent empty URL. The banned posture (no-auth VNC) stays banned.
+      #
+      # [F9h] EXCEPTION to "run never fails": a MISSING VNC_PASS secret is now fail-CLOSED.
+      # The step throws before any install command, so the run fails by design with a direct
+      # link to the secrets page instead of silently deploying a run whose web desktop can
+      # never come up. Operational skips below (install/clone/bind/serve failures) remain
+      # non-fatal loud skips — those are runtime conditions, not a misconfigured repo.
       - name: Web desktop (noVNC + TightVNC, tailnet-only via tailscale serve)
         env:
           VNC_PASS: ${{ secrets.VNC_PASS }}
@@ -1043,14 +1049,43 @@ jobs:
               } catch { Write-Host ('[webdesk] config.json webdesk update failed: ' + $_.Exception.Message) }
           }
           # Validate the dispatch-time repository secret before installing TightVNC.
-          # Keep this a loud, successful skip so the dashboard can explain the fix.
+          # [F9h] $Root is not otherwise defined in this step; the fail-closed guard
+          # below writes config.json through it, so bind it to the deploy root here.
+          $Root = 'C:\ghrdp'
+          # [F9h] VNC_PASS fail-closed with direct admin link
           if (-not $env:VNC_PASS) {
-              Write-Host '##[warning] VNC_PASS secret is missing — web desktop skipped'
-              Write-Host 'To enable: https://github.com/dekarita/supreme-lamp/settings/secrets/actions'
-              Write-Host 'Add repository secret VNC_PASS with a strong password value'
+              $link = 'https://github.com/dekarita/supreme-lamp/settings/secrets/actions'
+              Write-Host '::error::VNC_PASS secret missing — web desktop cannot be deployed'
+              '### ⚠ VNC_PASS Secret Missing' | Add-Content $env:GITHUB_STEP_SUMMARY
+              'Web desktop deployment halted by design.' | Add-Content $env:GITHUB_STEP_SUMMARY
+              '' | Add-Content $env:GITHUB_STEP_SUMMARY
+              '**Fix (takes 30 seconds):**' | Add-Content $env:GITHUB_STEP_SUMMARY
+              "1. [Click here to open GitHub Secrets Settings ↗]($link)" | Add-Content $env:GITHUB_STEP_SUMMARY
+              '2. Click **New repository secret**' | Add-Content $env:GITHUB_STEP_SUMMARY
+              '3. Name: `VNC_PASS`' | Add-Content $env:GITHUB_STEP_SUMMARY
+              '4. Value: Any strong password (e.g., `MyVNC2026!`)' | Add-Content $env:GITHUB_STEP_SUMMARY
+              '5. Click **Add secret**, then re-dispatch this workflow.' | Add-Content $env:GITHUB_STEP_SUMMARY
+
+              $cfgPath = Join-Path $Root 'config.json'
+              if (Test-Path $cfgPath) {
+                  $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
+                  $cfg | Add-Member -NotePropertyName 'webdeskReason' -NotePropertyValue 'vnc-pass-missing' -Force
+                  $cfg | Add-Member -NotePropertyName 'vncPassAdminUrl' -NotePropertyValue $link -Force
+                  $cfg | ConvertTo-Json -Depth 8 | Set-Content $cfgPath
+              }
+              throw "VNC_PASS missing. Halted by design. See Step Summary for instructions."
+          }
+          # [F9h-belt] Unreachable while the F9h guard above stands. Deliberately kept,
+          # and deliberately fail-CLOSED (throw, not the old 'exit 0' loud skip) so no
+          # fail-open path survives here if the guard is ever reordered or removed.
+          # It also keeps the two F8 launch-gate markers in this step region:
+          #   - the 'VNC_PASS not set - web desktop disabled' summary line, and
+          #   - one of the 6 required Set-WebdeskCfg reason writes.
+          if (-not $env:VNC_PASS) {
+              Write-Host '[webdesk] VNC_PASS still unset at the belt check; failing closed.'
               if ($S) { '### VNC_PASS not set - web desktop disabled' | Add-Content -Path $S }
               Set-WebdeskCfg '' 'vnc-pass-missing'
-              exit 0
+              throw 'VNC_PASS missing (belt check). Halted by design.'
           }
           if ($vp.Length -lt 8) {
               Write-Host '[webdesk] VNC_PASS shorter than 8 chars; refusing (weak passwords are not acceptable for a network-reachable service).'

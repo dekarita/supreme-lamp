@@ -287,6 +287,19 @@ only live code references are bugs.)
 The dashboard's WEB DESKTOP button is enabled only when
 `config.webdeskUrl` is set.
 
+- **[F9h] `VNC_PASS` missing = FAIL-CLOSED (halt by design).** The step
+  *checks the secret before running a single install command*. If
+  `VNC_PASS` is unset the workflow **fails**: it emits a `::error::`
+  annotation, writes a Step Summary card with a direct link to
+  [repository Actions secrets](https://github.com/dekarita/supreme-lamp/settings/secrets/actions)
+  (New repository secret → name `VNC_PASS` → strong value → Add secret →
+  re-dispatch), records `config.webdeskReason = 'vnc-pass-missing'` plus
+  `config.vncPassAdminUrl` on `C:\ghrdp\config.json`, and then `throw`s.
+  This deliberately reverses the earlier behaviour, where a missing
+  secret produced a *successful* run with the web desktop silently
+  absent. Rationale: a run that reports green while a promised component
+  can never start is worse than a red run. Fix takes ~30 seconds and the
+  run is re-dispatched, not repaired.
 - **[U5c] Ephemeral GitHub Actions runner**: the workflow now provisions
   the web desktop automatically on every run, but *only* when repo
   secret `VNC_PASS` is present and ≥ 8 characters. Step
@@ -303,9 +316,11 @@ The dashboard's WEB DESKTOP button is enabled only when
   `config.webdeskUrl = https://<fqdn>.ts.net/vnc.html?autoconnect=1&resize=remote`.
   The dashboard's next `/api/native-status` poll picks it up and enables
   WEB DESKTOP. **Never exposes VNC on 0.0.0.0**, **never disables VNC
-  authentication**, **never publishes on Tailscale Funnel**. Empty or
-  short `VNC_PASS` skips the step cleanly and leaves WEB DESKTOP
-  disabled.
+  authentication**, **never publishes on Tailscale Funnel**. Empty
+  `VNC_PASS` **fails the run** (see [F9h] above); a *present but short*
+  `VNC_PASS` (< 8 chars) still skips the step cleanly as a loud
+  non-fatal skip and leaves WEB DESKTOP disabled with
+  `config.webdeskReason = 'vnc-pass-missing'`.
 - **Persistent VPS (post-§1.7)**: same shape, either the workflow's
   approach ported to systemd (`tightvncserver` + `websockify --web
   /usr/share/novnc 127.0.0.1:7333 127.0.0.1:5900` + `tailscale serve
