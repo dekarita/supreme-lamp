@@ -310,6 +310,32 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
 <section class="glass" id="sec-native-rdp">
   <h2>Native mstsc auto-login</h2>
   <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><button onclick="copyById('rdpFqdn',this)">copy</button><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound on RDP-Tcp per docs/MIGRATION.md sec 1.3.</span></div>
+  <div class="row"><span class="k">Cert bound</span><span class="v" id="nrCert">...</span><span class="note">RDP-Tcp SSLCertificateSHA1Hash present (from /api/native-status). Fix: run Enable-RdpTlsCertificate.ps1 on the host.</span></div>
+  <div class="row"><span class="k">NLA</span><span class="v" id="nrNla">...</span><span class="note">UserAuthentication == 1 on the RDP-Tcp listener. Fix: set UserAuthentication=1 on the host.</span></div>
+  <div class="row"><span class="k">Handler</span><span class="v" id="nrHandler">...</span><span class="note">ghrdp:// handler POST /api/handler-hello within the last 24h. Fix: press RUN INSTALL (once); or run the one-time fallback below.</span></div>
+  <div class="row" id="nrInstallFallbackRow" style="display:none;flex-direction:column;align-items:stretch;gap:6px">
+    <span class="k" style="font-weight:600">Handler install fallback (bootstrap when ghrdp:// is not yet registered)</span>
+    <span class="note">Open PowerShell as your user (not admin), replace <code>&lt;repo&gt;</code> with your local checkout path, paste, press Enter. Copies the handler to <code>%LOCALAPPDATA%\ghrdp\</code> and registers <code>HKCU\Software\Classes\ghrdp</code>. No admin, no network.</span>
+    <div style="display:flex;gap:8px;align-items:center">
+      <code id="nrInstallSnippet" style="flex:1;padding:8px 10px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:12px ui-monospace,Consolas,monospace;overflow-x:auto">powershell -NoProfile -Command "Copy-Item &lt;repo&gt;\payloads\helper-ghrdp-connect.ps1 $env:LOCALAPPDATA\ghrdp\ -Force; reg add HKCU\Software\Classes\ghrdp /ve /d URL:GHRDP /f; reg add HKCU\Software\Classes\ghrdp /v \"URL Protocol\" /d \"\" /f; reg add HKCU\Software\Classes\ghrdp\shell\open\command /ve /d \"powershell.exe -NoProfile -ExecutionPolicy Bypass -File $env:LOCALAPPDATA\ghrdp\helper-ghrdp-connect.ps1 -Url \\\"%1\\\"\" /f"</code>
+      <button onclick="copyById('nrInstallSnippet',this)">copy</button>
+    </div>
+  </div>
+  <div class="row"><span class="k">Credential</span><span class="v" id="nrCred">...</span><span class="note">This PC has a TERMSRV cmdkey entry (localStorage; per-client). Fix: press RUN SETUP (current user).</span></div>
+  <div class="row" id="nrReasonsRow" style="display:none"><span class="k">Blocked by</span><span class="v" id="nrReasons" style="color:#f5b7b7"></span></div>
+  <div class="row"><span class="k">Last handler action</span><span class="v" id="nrLastVerb">-</span><span class="note">Most recent /api/handler-hello (verb + ok + short details). Log: <code>%LOCALAPPDATA%\ghrdp\ghrdp-connect.log</code></span></div>
+  <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
+    <span class="k" style="font-weight:600">One-click actions</span>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button id="btnRunInstall" type="button">RUN INSTALL (once)</button>
+      <button id="btnRunSetup" type="button">RUN SETUP (user)</button>
+      <button id="btnRunCheck" type="button">RUN CHECK</button>
+      <button class="primary" id="autoLoginNative" type="button" disabled>AUTO-LOGIN (native mstsc)</button>
+      <button id="btnWebDesk" type="button" disabled>WEB DESKTOP</button>
+      <span class="note" id="autoLoginStatus"></span>
+    </div>
+    <span class="note">Each RUN fires <code>ghrdp://&lt;verb&gt;?server=&lt;fqdn&gt;</code>. Browser prompts once for the protocol handler; silent thereafter. AUTO-LOGIN enables only when all five probes pass. WEB DESKTOP requires <code>config.webdeskUrl</code> (Guacamole on VPS behind <code>tailscale serve</code>, docs/MIGRATION.md sec 1.10).</span>
+  </div>
   <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
     <span class="k" style="font-weight:600">Step 1 - one-time interactive setup (per client PC)</span>
     <span class="note">Open PowerShell as your user (not admin), paste the line, press Enter. Windows prompts for the RDP password interactively. Nothing here is transmitted to any server; the password never leaves your PC. See docs/MIGRATION.md sec 1.4.</span>
@@ -319,14 +345,9 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     </div>
     <span class="note">Verify: <code>cmdkey /list</code> should show <code>Target: TERMSRV/&lt;fqdn&gt;.ts.net</code>. Remove later: <code>cmdkey /delete:TERMSRV/&lt;fqdn&gt;.ts.net</code>.</span>
   </div>
-  <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
-    <span class="k" style="font-weight:600">Step 2 - AUTO-LOGIN</span>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button class="primary" id="autoLoginNative" type="button">AUTO-LOGIN (native mstsc)</button>
-      <span class="note" id="autoLoginStatus"></span>
-    </div>
-    <span class="note">Requires the <code>ghrdp://</code> handler installed once on this PC AND Step 1 completed. Zero prompts on success - Windows LSA uses the stored TERMSRV credential silently and the LE cert satisfies CredSSP without warning.</span>
-  </div>
+  <!-- [U4] Step 2 AUTO-LOGIN button moved into the "One-click actions" row
+       above, alongside RUN INSTALL / RUN SETUP / RUN CHECK / WEB DESKTOP. -->
+
   <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
     <span class="k" style="font-weight:600">Fallback - direct mstsc</span>
     <div style="display:flex;gap:8px;align-items:center">
@@ -821,6 +842,82 @@ async function bootstrapConfig(){
 }
 bootstrapConfig();
 setInterval(bootstrapConfig,15000);
+// [U3b] /api/native-status: server-side snapshot of fqdn/cert/nla/handler.
+// The reasonsDisabled list is the source of truth for disabling AUTO-LOGIN;
+// the local *.ts.net check in populateFqdn() stays as a belt-and-braces
+// second gate (server + client both must agree).
+var REASON_TEXT={
+ 'fqdn-not-tsnet':'VPS FQDN not *.ts.net - provision per docs/MIGRATION.md sec 1.7',
+ 'cert-not-bound':'LE cert not bound on RDP-Tcp - run Enable-RdpTlsCertificate.ps1 on host',
+ 'nla-off':'NLA off on host - set UserAuthentication=1 on RDP-Tcp',
+ 'handler-not-seen':'ghrdp:// handler never phoned home - press RUN INSTALL (once)',
+ 'cred-not-set':'no cmdkey entry for TERMSRV/<fqdn> on this PC - press RUN SETUP (current user)'
+};
+function credStamp(){ try{ return parseInt(localStorage.getItem('ghrdp.credSet')||'0',10); }catch(_){ return 0; } }
+function markCredSet(){ try{ localStorage.setItem('ghrdp.credSet', String(Date.now())); }catch(_){ } }
+function credOk(){ var t=credStamp(); return t>0 && (Date.now()-t) < 90*24*3600*1000; }
+async function nativeStatus(){
+ try{
+  var key=getKey();
+  var r=await fetch(apiBase()+'/api/native-status'+(key?('?key='+encodeURIComponent(key)):''),{cache:'no-store'});
+  if(!r.ok)return;
+  var s=await r.json();
+  var ce=document.getElementById('nrCert');if(ce){ce.textContent=s.certBound?'yes':'NO';ce.style.color=s.certBound?'':'#f5b7b7';}
+  var ne=document.getElementById('nrNla');if(ne){ne.textContent=s.nlaOn?'ON':'OFF';ne.style.color=s.nlaOn?'':'#f5b7b7';}
+  var he=document.getElementById('nrHandler');
+  var handlerOk=false;
+  if(he){
+   if(s.handlerSeenAgeSec==null){he.textContent='never';he.style.color='#f5b7b7';}
+   else if(s.handlerSeenAgeSec>86400){he.textContent='stale ('+Math.round(s.handlerSeenAgeSec/3600)+'h)';he.style.color='#f5b7b7';}
+   else{he.textContent='installed ('+(s.handlerSeenAgeSec<60?s.handlerSeenAgeSec+'s':Math.round(s.handlerSeenAgeSec/60)+'m')+' ago)';he.style.color='';handlerOk=true;}
+  }
+  var ifr=document.getElementById('nrInstallFallbackRow');
+  if(ifr) ifr.style.display = handlerOk ? 'none' : '';
+  var cok=credOk();
+  var cel=document.getElementById('nrCred');if(cel){cel.textContent=cok?('set ('+new Date(credStamp()).toISOString().slice(0,10)+')'):'not set';cel.style.color=cok?'':'#f5b7b7';}
+  var lv=s.lastHandlerVerb, lvEl=document.getElementById('nrLastVerb');
+  if(lvEl){ if(lv&&lv.verb){ lvEl.textContent = lv.verb+' '+(lv.ok?'ok':'FAIL')+(lv.details?' - '+lv.details:'')+(lv.ts?' ('+lv.ts.replace('T',' ').slice(0,19)+'Z)':''); lvEl.style.color = lv.ok?'':'#f5b7b7'; } else { lvEl.textContent='-'; lvEl.style.color=''; } }
+  var srvReasons=(s.reasonsDisabled||[]).slice();
+  if(!cok) srvReasons.push('cred-not-set');
+  var reasons=srvReasons.map(function(x){return REASON_TEXT[x]||x;});
+  var row=document.getElementById('nrReasonsRow'), rEl=document.getElementById('nrReasons');
+  if(row&&rEl){
+   if(reasons.length){row.style.display='';rEl.textContent=reasons.join(' | ');}
+   else{row.style.display='none';rEl.textContent='';}
+  }
+  var b=$('autoLoginNative');
+  if(b){
+   var okAll = srvReasons.length===0 && (/^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$/i).test((document.getElementById('rdpFqdn')||{}).textContent||'');
+   if(!okAll){b.disabled=true;b.style.opacity='0.5';b.style.cursor='not-allowed';}
+   else{b.disabled=false;b.style.opacity='';b.style.cursor='';}
+  }
+  var wb=$('btnWebDesk');
+  if(wb){
+   if(s.webdeskUrl){ wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(s.webdeskUrl,'_blank');}; wb.title=s.webdeskUrl; }
+   else { wb.disabled=true; wb.style.opacity='0.5'; wb.style.cursor='not-allowed'; wb.title='config.webdeskUrl not set - install Guacamole on VPS per docs/MIGRATION.md sec 1.10'; }
+  }
+ }catch(_){}
+}
+// RUN INSTALL / SETUP / CHECK -> fire ghrdp://<verb>?server=<fqdn>
+function fireVerb(v, extra){
+ var f=(document.getElementById('rdpFqdn')||{}).textContent||'';
+ if(!f){ paint('FQDN not set - cannot fire ghrdp:// verb','#f5b7b7'); return; }
+ var u='ghrdp://'+v+'?server='+encodeURIComponent(f);
+ if(extra) u += '&' + extra;
+ paint('firing '+u.split('?')[0]+' ...','#b7e3f5');
+ launchProto(u);
+}
+(function(){
+ var i=$('btnRunInstall'); if(i) i.onclick=function(){ fireVerb('install'); };
+ var c=$('btnRunCheck'); if(c) c.onclick=function(){ fireVerb('check'); };
+ var s=$('btnRunSetup'); if(s) s.onclick=function(){
+  var u=(document.getElementById('credUser')||{}).textContent||'rdpuser';
+  fireVerb('setup','user='+encodeURIComponent(u));
+  markCredSet(); nativeStatus();
+ };
+})();
+nativeStatus();
+setInterval(nativeStatus,15000);
 var btn=$('autoLoginNative');
 if(btn) btn.onclick=function(ev){
  if(ev&&ev.preventDefault)ev.preventDefault();

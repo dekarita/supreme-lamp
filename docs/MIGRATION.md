@@ -153,6 +153,117 @@ of band.
 - [ ] **GitHub PATs scoping this repo** during Actions-as-RDP
       operation. Rotate under `https://github.com/settings/tokens`.
 
+### 1.9 Dashboard native auto-login button contract (U1)
+
+`payloads/ui.html` exposes a single native RDP entry point in
+`#sec-native-rdp`. This is the ONLY sanctioned dashboard-driven RDP
+launch path; the previous agent-enrollment / DIAG / Parsec-push /
+`install.bat` surface is removed.
+
+Client-side flow (button `#autoLoginNative`):
+
+1. `POST http://<runner>:7331/api/rdp-token` (dashboard `key` query
+   only when the dashboard is auth-guarded; no body).
+2. Server issues `{ token, ttl:60 }`, single-use, in-memory only.
+3. UI fires the URI `ghrdp://connect?server=<runner-host>&port=7331&t=<token>`
+   via a hidden `<iframe>` (no `window.open`, no navigation).
+4. Local `ghrdp://` handler (`payloads/helper-ghrdp-connect.ps1`)
+   parses `server` + `t`, POSTs `/api/rdp-creds` with
+   `{ "token": "<t>" }`, receives `{ host, fqdn }` — server enforces
+   `*.ts.net` (P2 discipline), any other value returns HTTP 409.
+5. Handler runs `mstsc /v:<fqdn>`. Windows LSA silently supplies the
+   per-user `TERMSRV/<fqdn>` credential stored by §1.4 cmdkey.
+6. Handler NEVER reads, writes, or deletes the stored credential; it
+   only resolves an FQDN and launches `mstsc`.
+
+Banned in this section and its script — presence is a bug:
+
+- Any `ghrdp://` URI with a `pass=`, `password=`, `user=`, `key=`, or
+  literal credential parameter.
+- A `credPass` / `__PASS__` UI element, or a plaintext-password
+  display of any kind.
+- References to `/api/enroll.ps1`, `/api/agent.ps1`, `/api/client-status`,
+  `/api/agent-status`, `/api/client-cmd`, `/api/agent-hello`, or
+  `showEnrollOverlay` — the endpoints are 404-guarded server-side; UI
+  references would falsely imply live paths.
+- `install.bat` or `install.ps1` download anchors and any
+  auto-executing installer helper.
+- LocalDevices arming, `AuthenticationLevelOverride`, MOTW /
+  Zone.Identifier strip, or publisher-trust arming (§3 bans them
+  system-wide).
+- File uploads from the dashboard to the runner (`/parsec-push` is
+  404; no re-introduction).
+
+Fallback shown in the same section — always visible:
+
+- The literal `mstsc /v:<fqdn>` command line, for clients that have
+  no handler installed. Silent auth still applies once §1.4 cmdkey
+  is complete.
+
+FQDN sourcing:
+
+- The server substitutes `__IP__` -> `cfg.rdpIp` when serving `/`.
+  Under P2 discipline `cfg.rdpIp` is a MagicDNS FQDN (`*.ts.net`);
+  before VPS provision (§1.7) it may be blank or a stale IP. The UI
+  hard-refuses anything not matching `^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$`
+  and disables the AUTO-LOGIN button, so an unprovisioned dashboard
+  never emits a bad `mstsc` target.
+
+Readiness snapshot (`/api/native-status`, U3):
+
+- The UI additionally polls `GET /api/native-status` every 15s (dash-
+  token + tailnet gated via the shared routing entry). The response
+  is `{ fqdn, certBound, nlaOn, handlerSeenAgeSec, reasonsDisabled }`.
+  `certBound` reads the `RDP-Tcp` `SSLCertificateSHA1Hash` registry
+  value on the host; `nlaOn` reads `UserAuthentication == 1`;
+  `handlerSeenAgeSec` is the age of the last `POST /api/handler-hello`
+  the ghrdp:// handler fired on invoke.
+- `reasonsDisabled` names anything failing: `fqdn-not-tsnet`,
+  `cert-not-bound`, `nla-off`, `handler-not-seen`. The UI shows each
+  as a plain-English row and disables AUTO-LOGIN whenever the list is
+  non-empty. Client-side cred presence is NOT transmitted; the server
+  never learns whether a given PC has the TERMSRV cred stored.
+- `POST /api/handler-hello` records only `{ ts }` to
+  `handler-hello-last.json`. No IP, user, or credential fields are
+  written or transmitted.
+
+Verification (E-battery greps for banned patterns; must return zero):
+
+    git grep -nE "enroll|agentPill|/api/client-status|/api/agent|/api/enroll|showEnrollOverlay|LocalDevices|AuthenticationLevelOverride|__PASS__|install\.bat|install\.ps1|parsec-push" -- payloads/ui.html
+    git grep -nE "ghrdp://.*pass=|&pass=|/api/client-cmd|fPromptForPassword" -- payloads/ui.html
+
+(Comment-line matches noting removed items are acceptable and expected;
+only live code references are bugs.)
+
+### 1.10 Web desktop (Apache Guacamole via `tailscale serve`)
+
+The dashboard's WEB DESKTOP button is enabled only when
+`config.webdeskUrl` is set. On an ephemeral GitHub Actions runner it
+stays disabled (no persistent host). On the VPS (post-§1.7) install
+Guacamole and expose it tailnet-only:
+
+    # As root on the VPS (Ubuntu 22.04+ example):
+    apt-get update
+    apt-get install -y guacd tomcat10 tomcat10-common guacamole-tomcat
+    # Guacamole stores its own RDP host mapping in
+    #   /etc/guacamole/user-mapping.xml
+    # The RDP hostname there is <fqdn>.ts.net; the RDP password is entered
+    # once by the operator on the host, not stashed by our tooling.
+    systemctl enable --now guacd tomcat10
+    # Expose ONLY on the tailnet (no public port):
+    tailscale serve --bg https://127.0.0.1:8080
+
+Then set `config.webdeskUrl` on the ghrdp-server host to the
+`tailscale serve` URL that command printed (`https://<fqdn>.ts.net/`).
+The dashboard's next `/api/native-status` poll picks it up and enables
+WEB DESKTOP. Nothing here stashes the RDP password on the operator's
+PC or in dashboard state.
+
+Decommission note: uninstalling Guacamole is `apt-get remove
+--purge guacd tomcat10 guacamole-tomcat && tailscale serve reset`.
+Clearing `config.webdeskUrl` disables the button on the next poll;
+running the two removes above closes the tailnet listener.
+
 ## 2. Decommission checklist (Actions-as-RDP teardown)
 
 > Prerequisites: §1.7 VPS provisioned and client NLA-probe verified;
