@@ -1,0 +1,27 @@
+name: launch-gates
+on:
+  pull_request:
+  push:
+jobs:
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: D/E launch gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -E -n 'powershell|-ExecutionPolicy' payloads/ui.html; then
+            echo 'ui.html still contains a script-host launch' >&2
+            exit 1
+          fi
+          if grep -E -n 'dnsName = \$ip|dnsName = \[string\]\$ip' .github/workflows/main.yml; then
+            echo 'dnsName assigned from an IP' >&2
+            exit 1
+          fi
+          if grep -E -n 'fqdnN = \[string\]\$cfgN.rdpIp|rdpTarget = \[string\]\$cfgC.rdpIp' payloads/ghrdp-server.ps1; then
+            echo 'native target still falls back to rdpIp' >&2
+            exit 1
+          fi
+          grep -q 'hostKind = $hostKind' payloads/ghrdp-server.ps1
+          grep -q "hostKind = 'ephemeral'" .github/workflows/main.yml
