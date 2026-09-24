@@ -33,6 +33,10 @@ jobs:
       RENTRY_MAIN_URL: 'https://rentry.co/myurl0'
       RENTRY_MAIN_EDIT: ''
       RUN_STARTED_AT: ${{ github.run_started_at || '' }}
+      # [F9b] opt-in MagicDNS auto-enable: empty unless the user sets both
+      # secrets; the gates then POST /dns/preferences before halting.
+      TS_API_TOKEN: ${{ secrets.TS_API_TOKEN }}
+      TS_TAILNET_NAME: ${{ secrets.TS_TAILNET_NAME }}
 
     steps:
       - name: Checkout repo (payloads)
@@ -315,6 +319,16 @@ jobs:
           Write-Host ('[ts] connected. Tailscale IP = ' + $ip)
           $dnsName = ''
           try { $dnsName = ([string]$j.Self.DNSName).TrimEnd('.') } catch { }
+          # [F9b] opt-in auto-enable: only when BOTH TS_API_TOKEN and
+          # TS_TAILNET_NAME are set. The token travels in the Authorization
+          # header only and is never printed. Secrets absent -> silent skip.
+          if ($dnsName -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$' -and $env:TS_API_TOKEN -and $env:TS_TAILNET_NAME) {
+              $null = & curl.exe -sS --fail -X POST ('https://api.tailscale.com/api/v2/tailnet/' + $env:TS_TAILNET_NAME + '/dns/preferences') -H ('Authorization: Bearer ' + $env:TS_API_TOKEN) -H 'Content-Type: application/json' -d '{"magicDNSEnabled":true}' --max-time 30 2>$null
+              if ($LASTEXITCODE -eq 0) { Write-Host '[ts] F9b: opt-in MagicDNS auto-enable POST accepted' } else { Write-Host ('[ts] F9b: MagicDNS auto-enable API call failed (curl exit ' + $LASTEXITCODE + ') - check TS_API_TOKEN scope; token never printed') }
+              $LASTEXITCODE = 0
+              Start-Sleep -Seconds 5
+              try { $j = (& $ts status --json 2>$null) | ConvertFrom-Json; $dnsName = ([string]$j.Self.DNSName).TrimEnd('.'); $LASTEXITCODE = 0 } catch { }
+          }
           # [F9a] MagicDNS OFF = halt by design. Before throwing, the step
           # summary gets the clickable admin link, the log echoes the same
           # lines, and the thrown message repeats the URL. Never continues.
@@ -349,6 +363,16 @@ jobs:
               $j = (& $ts status --json 2>$null) | ConvertFrom-Json
               $fqdn = ([string]$j.Self.DNSName).TrimEnd('.')
           } catch { }
+          # [F9b] opt-in auto-enable: only when BOTH TS_API_TOKEN and
+          # TS_TAILNET_NAME are set. The token travels in the Authorization
+          # header only and is never printed. Secrets absent -> silent skip.
+          if ($fqdn -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$' -and $env:TS_API_TOKEN -and $env:TS_TAILNET_NAME) {
+              $null = & curl.exe -sS --fail -X POST ('https://api.tailscale.com/api/v2/tailnet/' + $env:TS_TAILNET_NAME + '/dns/preferences') -H ('Authorization: Bearer ' + $env:TS_API_TOKEN) -H 'Content-Type: application/json' -d '{"magicDNSEnabled":true}' --max-time 30 2>$null
+              if ($LASTEXITCODE -eq 0) { Write-Host '[cert] F9b: opt-in MagicDNS auto-enable POST accepted' } else { Write-Host ('[cert] F9b: MagicDNS auto-enable API call failed (curl exit ' + $LASTEXITCODE + ') - check TS_API_TOKEN scope; token never printed') }
+              $LASTEXITCODE = 0
+              Start-Sleep -Seconds 5
+              try { $j = (& $ts status --json 2>$null) | ConvertFrom-Json; $fqdn = ([string]$j.Self.DNSName).TrimEnd('.'); $LASTEXITCODE = 0 } catch { }
+          }
           # [F9a] MagicDNS OFF = halt by design. Before throwing, the step
           # summary gets the clickable admin link, the log echoes the same
           # lines, and the thrown message repeats the URL. Never continues.
@@ -837,6 +861,16 @@ jobs:
               $dns = ([string]$j.Self.DNSName).TrimEnd('.')
               $LASTEXITCODE = 0
           } catch { }
+          # [F9b] opt-in auto-enable: only when BOTH TS_API_TOKEN and
+          # TS_TAILNET_NAME are set. The token travels in the Authorization
+          # header only and is never printed. Secrets absent -> silent skip.
+          if ($dns -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$' -and $env:TS_API_TOKEN -and $env:TS_TAILNET_NAME) {
+              $null = & curl.exe -sS --fail -X POST ('https://api.tailscale.com/api/v2/tailnet/' + $env:TS_TAILNET_NAME + '/dns/preferences') -H ('Authorization: Bearer ' + $env:TS_API_TOKEN) -H 'Content-Type: application/json' -d '{"magicDNSEnabled":true}' --max-time 30 2>$null
+              if ($LASTEXITCODE -eq 0) { Write-Host '[stage] F9b: opt-in MagicDNS auto-enable POST accepted' } else { Write-Host ('[stage] F9b: MagicDNS auto-enable API call failed (curl exit ' + $LASTEXITCODE + ') - check TS_API_TOKEN scope; token never printed') }
+              $LASTEXITCODE = 0
+              Start-Sleep -Seconds 5
+              try { $j = (& $ts status --json 2>$null) | ConvertFrom-Json; $dns = ([string]$j.Self.DNSName).TrimEnd('.'); $LASTEXITCODE = 0 } catch { }
+          }
           # [F9a] MagicDNS OFF = halt by design. Before throwing, the step
           # summary gets the clickable admin link, the log echoes the same
           # lines, and the thrown message repeats the URL. Never continues.
