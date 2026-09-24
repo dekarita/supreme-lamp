@@ -1042,8 +1042,12 @@ jobs:
                   [System.IO.File]::WriteAllText($cfgPathW, ($cfgW | ConvertTo-Json -Depth 10), $encW)
               } catch { Write-Host ('[webdesk] config.json webdesk update failed: ' + $_.Exception.Message) }
           }
-          if (-not $vp) {
-              Write-Host '[webdesk] VNC_PASS secret not set; web desktop DISABLED (dashboard button stays disabled with reason).'
+          # Validate the dispatch-time repository secret before installing TightVNC.
+          # Keep this a loud, successful skip so the dashboard can explain the fix.
+          if (-not $env:VNC_PASS) {
+              Write-Host '##[warning] VNC_PASS secret is missing — web desktop skipped'
+              Write-Host 'To enable: https://github.com/dekarita/supreme-lamp/settings/secrets/actions'
+              Write-Host 'Add repository secret VNC_PASS with a strong password value'
               if ($S) { '### VNC_PASS not set - web desktop disabled' | Add-Content -Path $S }
               Set-WebdeskCfg '' 'vnc-pass-missing'
               exit 0
