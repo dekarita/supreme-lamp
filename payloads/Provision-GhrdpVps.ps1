@@ -67,10 +67,10 @@ $state = & tailscale status --json 2>$null | ConvertFrom-Json
 if (-not $state -or $state.BackendState -ne 'Running') {
     if ($env:TS_AUTHKEY) {
         Write-Host '[tailscale] joining tailnet via $env:TS_AUTHKEY...'
-        & tailscale up --authkey $env:TS_AUTHKEY --hostname $TailscaleHostname --accept-dns=false --accept-routes=false
+        & tailscale up --authkey $env:TS_AUTHKEY --hostname $TailscaleHostname --accept-dns=true --accept-routes=false
     } else {
         Write-Host '[tailscale] interactive auth (browser prompt will open)...'
-        & tailscale up --hostname $TailscaleHostname --accept-dns=false --accept-routes=false
+        & tailscale up --hostname $TailscaleHostname --accept-dns=true --accept-routes=false
     }
     if ($LASTEXITCODE -ne 0) { throw "tailscale up failed (exit $LASTEXITCODE)." }
     $state = & tailscale status --json | ConvertFrom-Json
@@ -79,7 +79,7 @@ if (-not $state -or $state.BackendState -ne 'Running') {
 # ---- 3. Resolve MagicDNS FQDN (fail-hard on non-.ts.net) ---------------------
 $fqdn = $state.Self.DNSName
 if ($fqdn) { $fqdn = $fqdn.TrimEnd('.') }
-if (-not $fqdn -or $fqdn -notmatch '\.ts\.net$') { throw "MagicDNS FQDN unavailable or not *.ts.net: '$fqdn'. Enable HTTPS in tailnet admin (DNS -> Enable HTTPS)." }
+if (-not $fqdn -or $fqdn -notmatch '\.ts\.net$') { throw 'enable MagicDNS in tailnet DNS settings' }
 Write-Host "[tailscale] FQDN=$fqdn"
 
 # ---- 4. Create local RDP user (interactive password only) --------------------

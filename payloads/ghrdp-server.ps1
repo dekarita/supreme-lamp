@@ -189,8 +189,7 @@ function Remove-CredKeys {
     # [remediation #7A / U1] Strip secrets from a config object before it leaves
     # in any response body, then rebuild `creds` to expose ONLY the fields the UI
     # needs for the native mstsc auto-login flow: { fqdn, user, ip }.
-    #   fqdn = config.dnsName (P2 discipline: *.ts.net MagicDNS FQDN) OR
-    #          config.rdpIp fallback (under P2 that is also the FQDN).
+    #   fqdn = config.dnsName only (*.ts.net). Never the tailnet IP.
     #   user = config.rdpUser  (a username, not a secret; the password is never here).
     #   ip   = config.rdpIp    (the same value as fqdn under P2).
     # Everything else that could carry a secret (rdpPass, mirrorKey,
@@ -201,7 +200,7 @@ function Remove-CredKeys {
     try { if ($Obj.PSObject.Properties['dnsName']) { $fqdn = [string]$Obj.dnsName } } catch { }
     try { if ($Obj.PSObject.Properties['rdpUser']) { $user = [string]$Obj.rdpUser } } catch { }
     try { if ($Obj.PSObject.Properties['rdpIp'])   { $ip   = [string]$Obj.rdpIp   } } catch { }
-    if (-not $fqdn) { $fqdn = $ip }  # P2 fallback: rdpIp is itself the FQDN
+    # dnsName only. Never present the tailnet IP as the FQDN.
     foreach ($k in @('rdpUser','rdpPass','mirrorKey','legacyDecryptKey','creds','rentryEditCode','rentryEditCookie','dashToken')) {
         try { if ($Obj.PSObject.Properties[$k]) { $Obj.PSObject.Properties.Remove($k) } } catch { }
     }
@@ -330,14 +329,11 @@ function Invoke-ClientRequest {
 
             if ($allow) {
                 $cfgC = Read-JsonFile -Path $script:CfgPath
-                # [U5a] Prefer config.dnsName (the *.ts.net MagicDNS FQDN);
-                # fall back to config.rdpIp only when dnsName is empty.
-                # In the current workflow config.rdpIp holds the tailnet IPv4
-                # (100.x.y.z), so a strict rdpIp-only path structurally 409'd
+                # dnsName only. Missing or non-*.ts.net is a 409. Never use rdpIp.
                 # every redemption on ephemeral runners.
                 $rdpTarget = ''
                 if ($cfgC -and $cfgC.PSObject.Properties['dnsName'] -and $cfgC.dnsName) { $rdpTarget = [string]$cfgC.dnsName }
-                if (-not $rdpTarget -and $cfgC -and $cfgC.rdpIp) { $rdpTarget = [string]$cfgC.rdpIp }
+                # no rdpIp fallback: an IP is not a MagicDNS name
                 # [P2 FQDN discipline] Only a MagicDNS FQDN may be returned.
                 if ($rdpTarget -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
                     try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + " REJECTED non-fqdn resolved target='$rdpTarget'`n")) } catch { }
@@ -355,20 +351,13 @@ function Invoke-ClientRequest {
         # bind, NLA state, and handler-hello age. reasonsDisabled is computed
         # server-side (client contributes cred-store presence separately).
         # Dash-token gated via Test-ClientAllowed at the routing entry.
-        # [U5a / MIGRATION 1.7] FQDN validity is computed from config.dnsName
-        # (the *.ts.net MagicDNS FQDN Tailscale assigned to this node). The
-        # older code sourced fqdnN from config.rdpIp, which under the current
-        # workflow is the tailnet IPv4 (100.x.y.z), so the /^ts\.net$/ check
-        # was structurally guaranteed to fail on every ephemeral runner even
-        # though dnsName was a valid target. The rdpIp fallback is retained
-        # only when dnsName is empty (legacy configs). Ephemeral runner
-        # ts.net names are VALID auto-login targets; a real "VPS pending"
-        # state is surfaced as advisory vpsPending, NOT as a blocker.
+        # FQDN validity is config.dnsName only. An empty name stays empty;
+        # the tailnet IP is never substituted. vpsPending stays advisory.
         if ($path -eq '/api/native-status') {
             $cfgN = Read-JsonFile -Path $script:CfgPath
             $fqdnN = ''
             if ($cfgN -and $cfgN.PSObject.Properties['dnsName'] -and $cfgN.dnsName) { $fqdnN = [string]$cfgN.dnsName }
-            if (-not $fqdnN -and $cfgN -and $cfgN.rdpIp) { $fqdnN = [string]$cfgN.rdpIp }
+            # no rdpIp fallback
             $fqdnOk = ($fqdnN -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$')
             $certBound = $false; $nlaOn = $false
             try {
