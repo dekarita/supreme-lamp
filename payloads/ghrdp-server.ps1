@@ -391,12 +391,9 @@ function Invoke-ClientRequest {
             if ($cfgN -and $cfgN.PSObject.Properties['dnsName'] -and $cfgN.dnsName) { $fqdnN = [string]$cfgN.dnsName }
             # no rdpIp fallback
             $fqdnOk = ($fqdnN -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$')
-            # [F6] certBound is TRUE only when the bound listener cert is a real
-            # tailnet cert: its Subject ends with the node's *.ts.net FQDN, OR
-            # its Issuer is Let's Encrypt. Windows' default self-signed RDP cert
-            # (Subject == Issuer, CN matches the machine name) is REJECTED even
-            # though its SHA1 hash is 20 bytes long - that shape caused the old
-            # 'certBound = true' false positive.
+            # certBound requires the *bound* LE certificate to match this exact
+            # FQDN, remain valid, and have a private key. Issuer alone is NOT
+            # enough (a different node's LE certificate still triggers a prompt).
             $certBound = $false; $nlaOn = $false; $certReason = ''
             try {
                 $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
@@ -410,18 +407,16 @@ function Invoke-ClientRequest {
                         $bound = $store.Certificates | Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1
                     } finally { try { $store.Close() } catch { } }
                     if ($bound) {
-                        $subj = [string]$bound.Subject
-                        $iss  = [string]$bound.Issuer
-                        $selfSigned = ($subj -eq $iss)
-                        $leIssuer   = ($iss -match "Let'?s Encrypt")
-                        $subjMatch  = $false
-                        if ($fqdnN) { $subjMatch = ($subj -like ('*' + $fqdnN)) }
-                        if ($selfSigned -and -not $leIssuer) {
-                            $certReason = 'self-signed listener cert'
-                        } elseif ($subjMatch -or $leIssuer) {
-                            $certBound = $true
+                        $dns = $bound.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::DnsName, $false)
+                        if ($bound.Subject -eq $bound.Issuer -or $bound.Issuer -notmatch "Let'?s Encrypt") {
+                            $certReason = 'listener certificate is not a Tailscale LE certificate'
+                        } elseif ($dns -ne $fqdnN) {
+                            $certReason = 'bound listener certificate does not match the MagicDNS FQDN'
+                        } elseif ($bound.NotAfter.ToUniversalTime() -le [datetime]::UtcNow -or
+                            $bound.NotBefore.ToUniversalTime() -gt [datetime]::UtcNow -or -not $bound.HasPrivateKey) {
+                            $certReason = 'bound listener certificate expired, not yet valid or missing private key'
                         } else {
-                            $certReason = 'listener cert subject does not end with ts.net FQDN and issuer is not Let''s Encrypt'
+                            $certBound = $true
                         }
                     } else {
                         $certReason = 'bound cert thumbprint not in LocalMachine\My'

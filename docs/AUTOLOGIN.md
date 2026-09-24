@@ -3,8 +3,10 @@
 WEB DESKTOP is the primary dashboard action for both VPS and ephemeral hosts.
 Native AUTO-LOGIN is offered **only** when the server reports `hostKind=vps`
 and its FQDN, certificate and NLA checks pass. The fallback is a normal
-`mstsc /v:<fqdn>` shortcut. The user performs both one-time steps below on
-their own Windows PC; nothing installs or stores a credential from the page.
+`mstsc /v:<fqdn>` shortcut. VPS provisioning alone does not deploy the web
+gateway or dashboard service; the operator must do that separately before
+WEB DESKTOP can open. The user performs both one-time steps below on their
+own Windows PC; nothing installs or stores a credential from the page.
 
 ## 1. Store the credential interactively
 

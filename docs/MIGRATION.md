@@ -139,42 +139,76 @@ no encryption-key publication, no shared decrypt link.
 - Optional: also restrict 3389 to Tailscale interface only via a rule matching
   the `Tailscale` network profile.
 
-### 1.7 Full VPS bootstrap (`Provision-GhrdpVps.ps1`)
+### 1.7 Permanent Windows VPS provisioning (`Provision-GhrdpVps.ps1`)
 
-`payloads/Provision-GhrdpVps.ps1` chains §1.1 through §1.6 idempotently:
-winget-installs Tailscale, joins the tailnet (interactive OR
-`$env:TS_AUTHKEY`; never `--authkey=` on the command line), hard-fails
-if the resolved MagicDNS FQDN is not `*.ts.net`, creates the `rdpuser`
-account with an interactively-typed password
-(`Read-Host -AsSecureString`), sets `UserAuthentication = 1` and
-`fDenyTSConnections = 0`, delegates to `Enable-RdpTlsCertificate.ps1`
-(§1.3) for the LE cert bind, and creates a firewall rule allowing
-inbound TCP/3389 on the Tailscale interface only while disabling the
-default 'Remote Desktop' inbound rules. Explicit non-actions per
-discipline: no `AuthenticationLevelOverride`, no `fPromptForPassword = 0`,
-no MOTW / Zone.Identifier strip, no publisher-trust arming, no
-credential stash. Re-run every ~90 days to bind a fresh LE cert.
+Run **on the VPS console, elevated, with PowerShell 7+**. Do not use an
+active RDP session: `TermService` must restart after certificate binding.
+The script configures *native RDP*; it does NOT install/start the dashboard,
+noVNC/TightVNC, or a file-sync agent. Deploy those separately before
+claiming a production migration or decommissioning Actions (§2). No VPS has
+been provisioned or tested from this repository session.
 
-Invoke (elevated, PowerShell 7+):
+- Requires Windows 10/11 Pro or Windows Server, installs Tailscale via winget
+  if needed and joins interactively. Optional `$env:TS_AUTHKEY` is read only
+  when joining; it is put briefly in an admin-only temp file and passed as
+  `--auth-key file:<path>`, **not** as an argv value; the temp file is removed
+  in `finally`. Tailscale documents the `file:` option. After joining it
+  retries `tailscale status --json` 10 times (~50 seconds) for transient DNS
+  blips and refuses an empty/non-`*.ts.net` `Self.DNSName` or missing
+  100.64.0.0/10 address. The workflow's stage gate already has its own
+  ten-attempt, five-second F9g DNS retry before the MagicDNS halt.
+- Creates/retains exactly one static local `rdpuser` (no username override),
+  prompts for a new account password with `Read-Host -AsSecureString` only
+  when the account is first created, and adds it to the Remote Desktop Users
+  built-in group. Rotate an existing account's password separately (§1.8).
+- Forces RDP-Tcp `UserAuthentication=1` (NLA/CredSSP) and `SecurityLayer=2`
+  (TLS-only). Calls `Enable-RdpTlsCertificate.ps1 -Fqdn <exact MagicDNS
+  name>`, which runs `tailscale cert`, verifies leaf DNS name, expiry,
+  private key and LE trust chain, imports the PFX into `LocalMachine\My`,
+  grants NETWORK SERVICE read on the persisted key (CNG or legacy RSA), and
+  binds the hash by WMI/registry with read-back verification. PEM files are
+  restricted to SYSTEM and Administrators. No client certificate-warning
+  override, no NLA-off fallback, no credential stashing.
+- Disables default inbound Remote Desktop rules, refuses a remaining explicit
+  inbound TCP/3389 allow rule, replaces its own rule on each run and opens
+  **only** TCP/3389 from `100.64.0.0/10` on the Tailscale interface to the
+  host's Tailscale IPv4. Only after cert/firewall setup does it enable RDP,
+  restart TermService (failure is fatal) and check policy again. The VPS
+  operator must ALSO block public 3389 in the cloud NSG/router and inspect
+  other broad inbound firewall rules; this script cannot control the NSG.
+- Restricts `C:\ghrdp` and the files it writes to SYSTEM/Administrators;
+  writes `hostKind=vps` to `hostKind.txt` and `config.json` along with
+  `dnsName`, `rdpIp`, and `rdpUser`. `rdpPass` and old mirror secrets are
+  removed from VPS config; `mirror=false`. On first run a random 32-byte
+  dashboard token is generated in protected `dash-token.txt` and copied to
+  protected config (required by the dashboard); re-runs preserve it.
+  Transfer it from the VPS **privately** into a password manager; never
+  print it to logs, put it in chat, or commit it. Follow §1.8 for rotation.
+  An absent web desktop URL remains empty (`step-not-run`); this script
+  does not claim a web desktop was deployed.
 
-    pwsh -ExecutionPolicy Bypass -File .\payloads\Provision-GhrdpVps.ps1
+Invoke (from an elevated PowerShell 7 console on the VPS):
 
-Unattended tailnet auth (still interactive password):
+    pwsh -File .\payloads\Provision-GhrdpVps.ps1
 
-    $env:TS_AUTHKEY = 'tskey-auth-...'
-    pwsh -ExecutionPolicy Bypass -File .\payloads\Provision-GhrdpVps.ps1
+To join with an optional auth key without putting it on a command line,
+get the value privately, then prompt for it in the current shell:
 
-MagicDNS prerequisite (F9): this script hard-fails — and the workflow's three
-DNS gates halt by design — until MagicDNS is enabled on the tailnet.
-[Enable MagicDNS now (Tailscale admin → DNS)](https://login.tailscale.com/admin/dns) —
-toggle **MagicDNS** ON, Save, then re-run. Runs stay halted until enabled.
-Optional API one-liner (same call the workflow's F9b opt-in makes when the
-repo secrets `TS_API_TOKEN` + `TS_TAILNET_NAME` are set; token in the
-`Authorization` header only, never printed):
+    $env:TS_AUTHKEY = Read-Host 'Tailscale auth key (local, masked)' -MaskInput
+    pwsh -File .\payloads\Provision-GhrdpVps.ps1
 
-    curl -sS -X POST "https://api.tailscale.com/api/v2/tailnet/${TS_TAILNET_NAME}/dns/preferences" \
-      -H "Authorization: Bearer ${TS_API_TOKEN}" -H "Content-Type: application/json" \
-      -d '{"magicDNSEnabled":true}'
+Before running, enable **HTTPS** in the tailnet and **MagicDNS** under
+[DNS settings](https://login.tailscale.com/admin/dns). If MagicDNS is OFF,
+enable it, Save, and re-run. The workflow's three DNS gates likewise halt by
+design. With the optional `TS_API_TOKEN` + `TS_TAILNET_NAME` repository secrets,
+the workflow may POST the MagicDNS preference via the Tailscale API; it never
+places the token in a URL. This is separate from VPS provisioning.
+
+When the operator has manually deployed a private dashboard and a protected
+web desktop, verified `/api/native-status` (`fqdn`, `certBound`, `nlaOn`,
+`hostKind=vps`, non-empty `webdeskUrl`), confirmed a real client NLA login
+and seen the Windows desktop via WEB DESKTOP, §2 may be considered — never
+before. See `docs/AUTOLOGIN.md` for the user-run client steps.
 
 ### 1.8 Secret rotation (execute BEFORE decommission and BEFORE §4)
 
@@ -193,11 +227,14 @@ of band.
       current key. Generate ONE reusable auth key for VPS bootstrap,
       expiry ≤7 days, tagged `tag:ghrdp-vps`. Delete after §1.7
       succeeds.
-- [ ] **`rdpuser` password**. Choose a fresh strong password at §1.7
-      provision time (the script prompts interactively).
-- [ ] **`dashToken`**. Generate a fresh random 32+ byte value; store
-      the VPS side in the `ghrdp-server.ps1` config and the dashboard
-      side in a password manager. Never commit.
+- [ ] **`rdpuser` password**. §1.7 prompts interactively for a fresh strong
+      password *when creating the account*. If `rdpuser` already exists,
+      change its password privately before using the VPS.
+- [ ] **`dashToken`**. §1.7 generates 32 random bytes when missing and stores
+      them in protected `C:\ghrdp\dash-token.txt` and `config.json`;
+      re-runs preserve the value. Rotate any existing/burned token out of
+      band, update both VPS files while the dashboard is stopped, restart it,
+      and store the new value in a password manager. Never commit or log it.
 - [ ] **GitHub PATs scoping this repo** during Actions-as-RDP
       operation. Rotate under `https://github.com/settings/tokens`.
 
@@ -256,7 +293,8 @@ The dashboard's WEB DESKTOP button is enabled only when
   annotation, writes a Step Summary card with a direct link to
   [repository Actions secrets](https://github.com/dekarita/supreme-lamp/settings/secrets/actions)
   (New repository secret → name `VNC_PASS` → strong value → Add secret →
-  re-dispatch), records `config.webdeskReason = 'vnc-pass-missing'` plus
+  re-dispatch), clears `config.webdeskUrl`, records
+  `config.webdeskReason = 'vnc-pass-missing'` plus
   `config.vncPassAdminUrl` on `C:\ghrdp\config.json`, and then `throw`s.
   This deliberately reverses the earlier behaviour, where a missing
   secret produced a *successful* run with the web desktop silently
@@ -284,23 +322,24 @@ The dashboard's WEB DESKTOP button is enabled only when
   `VNC_PASS` (< 8 chars) still skips the step cleanly as a loud
   non-fatal skip and leaves WEB DESKTOP disabled with
   `config.webdeskReason = 'vnc-pass-missing'`.
-- **Persistent VPS (post-§1.7)**: same shape, either the workflow's
-  approach ported to systemd (`tightvncserver` + `websockify --web
-  /usr/share/novnc 127.0.0.1:7333 127.0.0.1:5900` + `tailscale serve
-  --bg https://127.0.0.1:7333`), or the previous option of Apache
-  Guacamole (`guacd` + `tomcat10 guacamole-tomcat` + `tailscale serve
-  --bg https://127.0.0.1:8080`). Either way the passwords sit on the
-  VPS, not on the operator's PC or in dashboard state.
+- **Persistent Windows VPS (post-§1.7)**: §1.7 does NOT provision a web
+  desktop. The operator must separately deploy authenticated TightVNC
+  bound to loopback, websockify/noVNC on loopback, and `tailscale serve`
+  (tailnet HTTPS, **not** Funnel); verify the gateway requires a VNC password
+  before setting the protected VPS `config.webdeskUrl`. No local client
+  installation is required. This VPS web gateway has **not** been deployed
+  or tested in this session; do not claim Proof C or disable Actions yet.
 
 **Security posture (bright lines)**:
-- Credentials are ALWAYS required (VNC password / Guacamole login).
-  The prior banned posture — *no-auth VNC on any interface, even
-  tailnet-gated* — remains banned.
+- Credentials are ALWAYS required (VNC password). The prior banned
+  posture — *no-auth VNC on any interface, even tailnet-gated* — remains
+  banned.
 - Exposure is ALWAYS tailnet-only via `tailscale serve`. No public port,
   no funnel, no anonymous reverse proxy.
-- The password is set only via installer parameters (msiexec) and never
-  logged, never echoed to the step summary, and never included in
-  `config.webdeskUrl`.
+- On Actions the VNC password is supplied by the repository secret to the
+  installer; the installer-error message is withheld because it might contain
+  that value. On a VPS it must be configured locally by the operator. Neither
+  path logs the password or includes it in `config.webdeskUrl`.
 
 Decommission note: uninstalling TightVNC is `choco uninstall tightvnc -y`
 (or the vendor uninstaller) followed by `tailscale serve reset`.

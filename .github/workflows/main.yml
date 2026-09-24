@@ -1069,6 +1069,7 @@ jobs:
               $cfgPath = Join-Path $Root 'config.json'
               if (Test-Path $cfgPath) {
                   $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
+                  $cfg | Add-Member -NotePropertyName 'webdeskUrl' -NotePropertyValue '' -Force
                   $cfg | Add-Member -NotePropertyName 'webdeskReason' -NotePropertyValue 'vnc-pass-missing' -Force
                   $cfg | Add-Member -NotePropertyName 'vncPassAdminUrl' -NotePropertyValue $link -Force
                   $cfg | ConvertTo-Json -Depth 8 | Set-Content $cfgPath
@@ -1120,7 +1121,7 @@ jobs:
                   Set-ItemProperty -Path $tvKey -Name 'RemoveWallpaper'   -Value 0 -Type DWord -ErrorAction SilentlyContinue
               }
               try { Restart-Service -Name 'tvnserver' -Force -ErrorAction Stop; $inst = $true } catch { Write-Host ('[webdesk] tvnserver service restart failed: ' + $_.Exception.Message) }
-          } catch { Write-Host ('[webdesk] TightVNC install error: ' + $_.Exception.Message) }
+          } catch { Write-Host '[webdesk] TightVNC install error (details withheld: installer arguments may contain VNC_PASS).' }
           if (-not $inst) {
               Write-Host '[webdesk] TightVNC install failed; web desktop DISABLED.'
               if ($S) { '### Web desktop DISABLED (TightVNC install failed; secret NOT leaked)' | Add-Content -Path $S }

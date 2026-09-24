@@ -92,8 +92,8 @@ jobs:
             echo 'a step reads Self.DNSName without a non-empty *.ts.net validation - a MagicDNS gate could pass on an empty or non-ts.net name' >&2
             exit 1
           fi
-      - name: Native UI contract (Node)
-        run: node --test tests/ui-native.test.js
+      - name: Native UI and VPS contracts (Node)
+        run: node --test tests/*.test.js
   windows-native:
     runs-on: windows-latest
     steps:
@@ -106,6 +106,23 @@ jobs:
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
               if ($errors) { throw "$file has $($errors.Count) PowerShell syntax error(s): $($errors[0].Message)" }
           }
+      - name: Smoke-test VPS ACL helper in temporary files only
+        shell: pwsh
+        run: |
+          $source = Get-Content payloads/Provision-GhrdpVps.ps1 -Raw
+          $ast = [System.Management.Automation.Language.Parser]::ParseInput($source, [ref]$null, [ref]$null)
+          $fn = $ast.Find({param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Protect-Path'}, $true)
+          if (-not $fn) { throw 'Protect-Path definition missing' }
+          . ([scriptblock]::Create($fn.Extent.Text))
+          $dir = Join-Path $env:RUNNER_TEMP ('ghrdp-acl-' + [guid]::NewGuid().ToString('N'))
+          try {
+              New-Item -ItemType Directory -Path $dir -ErrorAction Stop | Out-Null
+              Protect-Path -Path $dir -Directory $true
+              $file = Join-Path $dir 'safe.txt'
+              [System.IO.File]::WriteAllText($file, 'non-secret CI test')
+              Protect-Path -Path $file
+              if (-not (Get-Acl $dir).AreAccessRulesProtected -or -not (Get-Acl $file).AreAccessRulesProtected) { throw 'ACL protection failed' }
+          } finally { if (Test-Path $dir) { Remove-Item $dir -Recurse -Force } }
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'

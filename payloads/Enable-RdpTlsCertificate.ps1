@@ -40,43 +40,60 @@ if ($nla -ne 1) { throw "UserAuthentication is $nla; NLA must be 1 (see STATE.md
 # --- 3. Fetch cert via `tailscale cert` (writes PEM cert + key) ------------------
 $workDir = Join-Path $env:ProgramData 'ghrdp\tls'
 New-Item -ItemType Directory -Path $workDir -Force | Out-Null
+# Restrict PEM key material BEFORE tailscale writes it, including on renewal.
+$dirAcl = Get-Acl -LiteralPath $workDir
+$dirAcl.SetSecurityDescriptorSddlForm('D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)')
+Set-Acl -LiteralPath $workDir -AclObject $dirAcl -ErrorAction Stop
 $crtPath = Join-Path $workDir "$Fqdn.crt"
 $keyPath = Join-Path $workDir "$Fqdn.key"
 & tailscale cert --cert-file $crtPath --key-file $keyPath $Fqdn
 if ($LASTEXITCODE -ne 0) { throw "tailscale cert failed for $Fqdn (exit $LASTEXITCODE). Enable HTTPS in tailnet admin console." }
+foreach ($pem in @($crtPath, $keyPath)) {
+    $acl = Get-Acl -LiteralPath $pem -ErrorAction Stop
+    $acl.SetSecurityDescriptorSddlForm('D:P(A;;FA;;;SY)(A;;FA;;;BA)')
+    Set-Acl -LiteralPath $pem -AclObject $acl -ErrorAction Stop
+}
 
 # --- 4. Load PEM into X509 with private key, import to LocalMachine\My ----------
 $loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile($crtPath, $keyPath)
+$dns = $loaded.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::DnsName, $false)
+if ($dns -ne $Fqdn -or -not $loaded.HasPrivateKey -or $loaded.NotAfter.ToUniversalTime() -le [datetime]::UtcNow -or
+    $loaded.Issuer -notmatch "Let'?s Encrypt") {
+    throw 'Certificate is expired, not a Tailscale LE cert, lacks its private key, or does not match the MagicDNS FQDN.'
+}
+$chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
+try { if (-not $chain.Build($loaded)) { throw 'Tailscale LE certificate chain is not trusted on this host.' } }
+finally { $chain.Dispose() }
 # Re-export/import to persist the key with MachineKeySet + PersistKeySet.
 $pfxBytes = $loaded.Export('Pfx', [string]::Empty)
-$flags = 'PersistKeySet,MachineKeySet,Exportable'
+$flags = 'PersistKeySet,MachineKeySet'
 $imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, [string]::Empty, $flags)
 
 $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
-$store.Open('ReadWrite')
-foreach ($old in @($store.Certificates | Where-Object { $_.Subject -match [regex]::Escape($Fqdn) })) {
-    $store.Remove($old)
-}
-$store.Add($imported)
-$store.Close()
+try { $store.Open('ReadWrite'); $store.Add($imported) }
+finally { $store.Close() }
 $thumb = $imported.Thumbprint
 Write-Host "Imported thumbprint: $thumb"
 
-# --- 5. Grant NETWORK SERVICE read on the private key file ----------------------
-try {
-    $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported)
-    $keyName = $rsa.Key.UniqueName
-    $machineKeys = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
-    $keyFile = Join-Path $machineKeys $keyName
-    if (Test-Path -LiteralPath $keyFile) {
-        $acl = Get-Acl -Path $keyFile
-        $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-            'NT AUTHORITY\NETWORK SERVICE', 'Read', 'Allow')
-        $acl.AddAccessRule($rule)
-        Set-Acl -Path $keyFile -AclObject $acl
-        Write-Host "Granted NETWORK SERVICE read on private key ($keyName)"
-    }
-} catch { Write-Warning "Private-key ACL step skipped: $($_.Exception.Message)" }
+# --- 5. Grant NETWORK SERVICE read on the actual persisted key container -----
+$privateKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported)
+if (-not $privateKey) {
+    $privateKey = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($imported)
+}
+if ($privateKey -is [System.Security.Cryptography.RSACng] -or
+    $privateKey -is [System.Security.Cryptography.ECDsaCng]) {
+    $keyFile = Join-Path (Join-Path $env:ProgramData 'Microsoft\Crypto\Keys') $privateKey.Key.UniqueName
+} elseif ($privateKey -is [System.Security.Cryptography.RSACryptoServiceProvider]) {
+    $keyFile = Join-Path (Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys') $privateKey.CspKeyContainerInfo.UniqueKeyContainerName
+} else { throw 'Imported certificate private key has no supported machine key container.' }
+if (-not (Test-Path -LiteralPath $keyFile)) { throw 'Persisted machine key not found; refusing to bind an unreadable RDP certificate.' }
+$keyAcl = Get-Acl -LiteralPath $keyFile -ErrorAction Stop
+$keyAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+    [System.Security.Principal.SecurityIdentifier]::new('S-1-5-20'),
+    [System.Security.AccessControl.FileSystemRights]::Read,
+    [System.Security.AccessControl.AccessControlType]::Allow))
+Set-Acl -LiteralPath $keyFile -AclObject $keyAcl -ErrorAction Stop
+Write-Host 'NETWORK SERVICE can read the listener private key'
 
 # --- 6. Bind on RDP-Tcp listener ------------------------------------------------
 $tsSetting = Get-CimInstance -Namespace 'root/cimv2/TerminalServices' `
