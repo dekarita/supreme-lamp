@@ -135,6 +135,31 @@ if ($verb -eq 'check') {
     }
     exit 0
 }
+# [U5d] verb=direct - open a VISIBLE mstsc window against `server=<fqdn>` with no
+# token redemption, no cred stashing, no /pass:, no .rdp file. The user's own
+# per-user TERMSRV/<fqdn> cmdkey (§1.4) is consumed silently by mstsc via NLA +
+# CredSSP against the tailnet LE-bound listener. Useful when the dashboard is
+# unreachable (offline runner) but the user still has a valid cmdkey and wants
+# a manual auto-login click.
+if ($verb -eq 'direct') {
+    if ($server -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
+        A @{ event = 'fatal'; reason = 'direct-server-not-fqdn'; server = $server }
+        Send-Hello -Verb 'direct' -Ok $false -Details 'server-not-tsnet'
+        exit 1
+    }
+    $ok = $false; $details = ''
+    try {
+        $proc = Start-Process 'mstsc.exe' -ArgumentList "/v:$server" -WindowStyle Normal -PassThru -ErrorAction Stop
+        $ok = ($null -ne $proc -and $proc.Id -gt 0)
+        $details = ("fqdn=" + $server + "; pid=" + $(if ($proc) { $proc.Id } else { -1 }))
+        A @{ event = 'direct-started'; fqdn = $server; pid = $(if ($proc) { $proc.Id } else { -1 }) }
+    } catch {
+        $details = $_.Exception.Message
+        A @{ event = 'direct-failed'; err = $details }
+    }
+    Send-Hello -Verb 'direct' -Ok $ok -Details $details
+    exit 0
+}
 # fall through: verb=connect (default)
 
 # ---- validate the API endpoint reachability parameter --------------------------
