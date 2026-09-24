@@ -9,6 +9,7 @@
 
 ## Done ledger (sha-only; older shas prune to git log)
 - F9f launch-gates: admin-link count >= 3 in main.yml + every Self.DNSName step must validate *.ts.net (no gate passes on empty/non-ts.net name); D/E + F8 gates kept untouched.
+- F9a main.yml: all 3 MagicDNS gates (ts-connect, cert-bind, stage) append 'halted by design' + [Enable MagicDNS now](admin/dns) + re-run line to GITHUB_STEP_SUMMARY, echo to log, throw with URL; 15-min HOLDs removed (halt immediate; re-dispatch after enabling).
 - Prior: 4812cdd5 remediation merged; 478d015b P1-P3 (cert script, FQDN discipline, POST-token/mutex/JSONL); 2252263e G3 provision; 053894c5 MIGRATION rewrite.
 - Prior: U1-U4 native-mstsc rewrite (ui/server/helper, AUTO-LOGIN contract); F6-F8 certBound honesty, hostKind reasons, advisory rows, webdesk honesty + self-test; PR#9 F9 HOLD variant superseded by F9a halt-by-design.
 
