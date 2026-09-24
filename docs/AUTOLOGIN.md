@@ -1,75 +1,80 @@
-# GHRDP launch path — web desktop primary, native shortcut fallback
+# GHRDP native auto-login (VPS only)
 
-Primary click is WEB DESKTOP on the dashboard. Nothing is installed on
-the client, and the page does not launch a script host.
+WEB DESKTOP is the primary dashboard action for both VPS and ephemeral hosts.
+Native AUTO-LOGIN is offered **only** when the server reports `hostKind=vps`
+and its FQDN, certificate and NLA checks pass. The fallback is a normal
+`mstsc /v:<fqdn>` shortcut. The user performs both one-time steps below on
+their own Windows PC; nothing installs or stores a credential from the page.
 
-The one-time cmdkey below is VPS-only. An Actions runner advertises a
-new hostname every run, so a stored TERMSRV entry cannot be one-time
-there.
+## 1. Store the credential interactively
 
-> Placeholders — replace before running:
-> - `<FQDN>` — the VPS MagicDNS name (`*.ts.net`) from the dashboard
->   Target FQDN row. Not the tailnet IP.
-> - `<RDPUSER>` — the RDP account name (default: `rdpuser`).
+Replace `<fqdn>` with the exact `*.ts.net` name from the VPS dashboard:
 
-## Step 1 — open WEB DESKTOP
-
-Use the primary button. It opens the tailnet URL the host already
-serves. NLA on the Windows listener stays on. This repo does not write
-a gateway password.
-
-## Step 2 — store the RDP credential in Windows Credential Manager
-
-```powershell
-cmdkey /generic:TERMSRV/<FQDN> /user:<RDPUSER>
+```text
+cmdkey /generic:TERMSRV/<fqdn> /user:rdpuser
 ```
 
-`cmdkey` **prompts interactively** for the password — do not use
-`/pass:` on the command line (that leaks the plaintext to WMI /
-`Get-CimInstance Win32_Process` / ETW / any local Sysmon or EDR).
+Windows prompts for the password. Never add `/pass:` or type a password in
+the dashboard. The Credential Manager entry must match the VPS name and
+RDP-Tcp Let's Encrypt certificate. In the dashboard, tick **I ran cmdkey**
+only *after* running it; copying the line does not create a credential.
+The tick is a local assertion, not a test of Credential Manager.
 
-Windows stores the credential per user, silently supplies it on
-future `mstsc /v:<FQDN>` launches, and the LE cert bound on the
-RDP-Tcp listener (from `payloads/Enable-RdpTlsCertificate.ps1`)
-satisfies CredSSP without warning. Result: zero prompts, zero
-warnings, NLA + CredSSP stay ON.
+## 2. Register the compiled protocol handler (optional)
 
-## Verification
+Download the `ghrdp-handler-win-x64` artifact from a successful
+**launch-gates** run for the reviewed revision. Keep `GhrdpHandler.exe` in a
+stable location on your PC, inspect its provenance, then run it yourself:
 
-```powershell
-cmdkey /list
-# expect a row: Target: LegacyGeneric:target=TERMSRV/<FQDN>
-#                Type: Generic
-#                User: <RDPUSER>
+```text
+GhrdpHandler.exe --install <fqdn>
 ```
 
-Click AUTO-LOGIN on the dashboard: mstsc opens directly on the
-remote desktop. Handler log (append-only JSONL):
+This registers `ghrdp:` **for the current Windows user only** and saves
+only the pinned public VPS FQDN under `%LOCALAPPDATA%\ghrdp\handler-fqdn.txt`.
+It does not copy or unblock the executable, remove Mark-of-the-Web, bypass
+SmartScreen, change browser permissions, or touch credentials. If Windows
+blocks an untrusted executable, **do not bypass the warning**; use the manual
+`mstsc` fallback until a trusted/signed handler is available. Keep the EXE
+at the registered path. The first browser protocol dispatch may also ask for
+confirmation; that is a browser safety prompt, not an RDP credential prompt.
 
-```
-%LOCALAPPDATA%\ghrdp\ghrdp-connect.log
-```
+The old script-based handler does **not** support the new rid-only URI;
+installing this compiled handler replaces its `ghrdp:` registration. The
+button never launches a script host.
 
-## Removal
+## 3. Connect
 
-```powershell
-cmdkey /delete:LegacyGeneric:target=TERMSRV/<FQDN>
-reg delete "HKCU\Software\Classes\ghrdp" /f
-```
+Click **AUTO-LOGIN (VPS only)** on the authenticated dashboard. The click:
 
-## What NOT to do
+1. Sends the dashboard token in the `Authorization: Bearer` header of a POST
+   to `/api/rdp-token` (not in this request's URL). The VPS requires this
+   header even for callers already inside the tailnet and returns a random
+   60-second single-use `rid`.
+2. Dispatches `ghrdp:connect?rid=<rid>` to the local EXE. The URI contains
+   no host, username, password, or dashboard token. The EXE never logs it.
+3. POSTs `{"token":"<rid>"}` to the *pinned* `http://<fqdn>:7331/api/rdp-creds`
+   over the encrypted private Tailscale network; redirects are forbidden.
+   The server returns only `{"fqdn":"<fqdn>"}`. The EXE rejects a different
+   host or a non-`*.ts.net` FQDN, then opens `mstsc /v:<fqdn>`.
+4. Windows consumes the stored `TERMSRV/<fqdn>` credential. NLA/CredSSP
+   remain enabled and the server's LE certificate must match. The page
+   cannot prove that mstsc authenticated; verify the first connection.
 
-- Do **not** write the password on the `cmdkey` command line
-  (`/pass:` — leaks plaintext to process command line).
-- Do **not** bake credentials into a `.rdp` file, a `.bat`, a
-  `ghrdp://…&pass=…` URL, an HTTP header, or an HTML input field.
-- Do **not** disable NLA (`UserAuthentication=1` stays ON), set
-  `fPromptForPassword=0`, set
-  `HKCU\...\Terminal Server Client\Servers\<host>\AuthenticationLevelOverride`,
-  or ship any `.rdp` with `authentication level:i:0|3` or
-  `prompt for credentials:i:0`.
-- Do **not** strip Mark-of-the-Web / Zone.Identifier from the
-  helper file, install publisher-trust entries, or pre-arm
-  `LocalDevices`.
-- Do **not** put the helper in `%TEMP%` (auto-cleaned; breaks the
-  handler silently).
+If the handler is absent, use the dashboard's copyable `mstsc /v:<fqdn>`
+command instead. Rejected/expired rid? Click again for a fresh one; a rid
+cannot be reused. A token issued before a server restart also expires.
+
+## Verification and cleanup
+
+Run `cmdkey /list` locally and verify a `TERMSRV/<fqdn>` target under the
+correct Windows user. Check the VPS certificate and NLA status in the
+browser; then manually test `mstsc /v:<fqdn>` before relying on the button.
+The Windows build in `launch-gates` parses the server scripts and runs the
+compiled handler's local FQDN/URI self-tests; only a live client can prove
+that Credential Manager, browser protocol dispatch and RDP actually work.
+
+To remove access on your PC, delete the current-user `ghrdp:` protocol key,
+`%LOCALAPPDATA%\ghrdp\handler-fqdn.txt`, and your own TERMSRV entry with
+`cmdkey /delete:TERMSRV/<fqdn>` if no longer needed. Do not put a password
+into the deletion command.

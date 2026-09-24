@@ -92,3 +92,31 @@ jobs:
             echo 'a step reads Self.DNSName without a non-empty *.ts.net validation - a MagicDNS gate could pass on an empty or non-ts.net name' >&2
             exit 1
           fi
+      - name: Native UI contract (Node)
+        run: node --test tests/ui-native.test.js
+  windows-native:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse native PowerShell scripts
+        shell: pwsh
+        run: |
+          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1')) {
+              $errors = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
+              if ($errors) { throw "$file has $($errors.Count) PowerShell syntax error(s): $($errors[0].Message)" }
+          }
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Test and publish compiled native handler
+        shell: pwsh
+        run: |
+          dotnet run --project payloads/ghrdp-handler/GhrdpHandler.csproj -- --self-test
+          if ($LASTEXITCODE -ne 0) { throw 'Handler self-test failed' }
+          dotnet publish payloads/ghrdp-handler/GhrdpHandler.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:DebugType=none -p:DebugSymbols=false -o "$env:RUNNER_TEMP\ghrdp-handler"
+          if ($LASTEXITCODE -ne 0) { throw 'Handler publish failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ghrdp-handler-win-x64
+          path: ${{ runner.temp }}\ghrdp-handler\GhrdpHandler.exe

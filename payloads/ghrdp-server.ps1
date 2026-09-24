@@ -164,9 +164,12 @@ function Send-ClientResponse {
     param($Stream, [int]$Code, [string]$CType, [byte[]]$Body)
     $status = 'OK'
     if ($Code -eq 401) { $status = 'Unauthorized' }
+    if ($Code -eq 204) { $status = 'No Content' }
+    if ($Code -eq 403) { $status = 'Forbidden' }
     if ($Code -eq 404) { $status = 'Not Found' }
+    if ($Code -eq 409) { $status = 'Conflict' }
     if ($Code -eq 500) { $status = 'Server Error' }
-    $hdr = "HTTP/1.1 $Code $status`r`nContent-Type: $CType`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`nCache-Control: no-store`r`nAccess-Control-Allow-Origin: *`r`nAccess-Control-Allow-Headers: Content-Type`r`nAccess-Control-Allow-Methods: GET,POST,OPTIONS`r`n`r`n"
+    $hdr = "HTTP/1.1 $Code $status`r`nContent-Type: $CType`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`nCache-Control: no-store`r`nAccess-Control-Allow-Origin: *`r`nAccess-Control-Allow-Headers: Content-Type, Authorization`r`nAccess-Control-Allow-Methods: GET,POST,OPTIONS`r`n`r`n"
     $hb = [System.Text.Encoding]::ASCII.GetBytes($hdr)
     $Stream.Write($hb, 0, $hb.Length)
     if ($Body.Length -gt 0) { $Stream.Write($Body, 0, $Body.Length) }
@@ -220,6 +223,11 @@ function Invoke-ClientRequest {
         $parts['body'] = [byte[]]$rr.body
         $path = [string]$parts.path
         if (-not $path) { $path = '/' }
+        # Browser cross-origin preflight carries no bearer; disclose nothing.
+        if ($path -eq '/api/rdp-token' -and $parts.method -eq 'OPTIONS') {
+            Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@())
+            return
+        }
         if (-not (Test-ClientAllowed -Client $Client -Query $parts.query -Token $Token)) {
             Send-ClientResponse -Stream $stream -Code 401 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('unauthorized'))
             return
@@ -271,13 +279,37 @@ function Invoke-ClientRequest {
         }
         # [remediation 8C-extended] /install.bat + /connect-now.bat bodies deleted; unreachable due to 404 guard above. /connect-now.bat body was serving a .bat with cmdkey /generic:TERMSRV/<ip> /pass:<plaintext> - direct violation of the no-plaintext-transit decision.
         if ($path -eq '/api/rdp-token' -and $parts.method -eq 'POST') {
+            # Tailnet reachability alone must not mint native RDP tokens. Require
+            # the dashboard secret in a header (never in the request URL).
+            $auth = [string]$parts.headers['authorization']
+            $expected = [System.Text.Encoding]::UTF8.GetBytes('Bearer ' + $Token)
+            $received = [System.Text.Encoding]::UTF8.GetBytes($auth)
+            if (-not $Token -or $received.Length -ne $expected.Length -or
+                -not [System.Security.Cryptography.CryptographicOperations]::FixedTimeEquals($received, $expected)) {
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('dashboard authorization required'))
+                return
+            }
+            $vps = ($cfg -and $cfg.PSObject.Properties['hostKind'] -and $cfg.hostKind -eq 'vps')
+            if (-not $vps -and (Test-Path -LiteralPath (Join-Path $Root 'hostKind.txt'))) {
+                $vps = ([System.IO.File]::ReadAllText((Join-Path $Root 'hostKind.txt'))).Trim() -eq 'vps'
+            }
+            if (-not $vps) {
+                Send-ClientResponse -Stream $stream -Code 403 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('native auto-login is VPS-only'))
+                return
+            }
+            if (-not $cfg -or [string]$cfg.dnsName -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
+                Send-ClientResponse -Stream $stream -Code 409 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('MagicDNS FQDN missing'))
+                return
+            }
             $now = [datetime]::UtcNow
             $expired = @($script:RdpTokens.Keys | Where-Object { ($now - $script:RdpTokens[$_].created).TotalSeconds -gt 60 })
             foreach ($ek in $expired) { $script:RdpTokens.Remove($ek) }
-            $newTok = [guid]::NewGuid().ToString('N')
+            $random = New-Object byte[] 16
+            [System.Security.Cryptography.RandomNumberGenerator]::Fill($random)
+            $newTok = [Convert]::ToHexString($random).ToLowerInvariant()
             $script:RdpTokens[$newTok] = @{ created = $now; used = $false }
             try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now.ToString('o') + ' ISSUED ' + $newTok.Substring(0,8) + "...`n")) } catch { }
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ token = $newTok; ttl = 60 })
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ rid = $newTok; ttl = 60 })
             return
         }
         if ($path -eq '/api/rdp-creds' -or $path -eq '/rdp-creds' -or $path -eq '/api/rdp-info') {
@@ -339,7 +371,7 @@ function Invoke-ClientRequest {
                     try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + " REJECTED non-fqdn resolved target='$rdpTarget'`n")) } catch { }
                     Send-ClientResponse -Stream $stream -Code 409 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('server config.dnsName is missing or not a MagicDNS FQDN (*.ts.net); handler will refuse to launch. Fix config.json.'))
                 } else {
-                    Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ host = $rdpTarget; fqdn = $rdpTarget })
+                    Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ fqdn = $rdpTarget })
                 }
             } else {
                 Send-ClientResponse -Stream $stream -Code 401 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('token invalid, expired, or missing'))
