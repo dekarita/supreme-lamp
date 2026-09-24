@@ -37,17 +37,25 @@ stand up, no client-side trust manipulation.
 
 - Prerequisite: HTTPS enabled in the tailnet (Tailscale admin console → DNS
   → "Enable HTTPS…"). One-time toggle per tailnet.
-- On the RDP HOST, run (elevated, PowerShell 7+):
-  `payloads\Enable-RdpTlsCertificate.ps1`
-  It fetches the cert via `tailscale cert <fqdn>`, imports into
-  `LocalMachine\My` with `PersistKeySet|MachineKeySet`, grants
-  `NETWORK SERVICE` read on the private key, binds the thumbprint on the
-  `RDP-Tcp` listener (`Win32_TSGeneralSetting.SetSSLCertificateSHA1Hash`
-  with `HKLM:\...\RDP-Tcp\SSLCertificateSHA1Hash` registry fallback), and
-  re-asserts `UserAuthentication = 1` (NLA ON, no suppression).
-- Restart the listener for the new cert to take effect:
-  `Restart-Service TermService -Force` (kicks active sessions — schedule).
-- Re-run the script when the LE cert renews (~every 90 days). Idempotent.
+- **[U5b] On an ephemeral GitHub Actions runner the workflow now binds the
+  cert automatically on every run** — the step
+  *"Bind tailnet LE cert to RDP-Tcp (U5b)"* runs right after
+  *"Wait for Tailscale connected"*. It reads the MagicDNS FQDN from
+  `tailscale status --json`, re-asserts `UserAuthentication = 1`,
+  runs `tailscale cert --cert-file --key-file <fqdn>`, imports the
+  resulting PEM as a PFX into `LocalMachine\My` with
+  `PersistKeySet|MachineKeySet`, grants `NETWORK SERVICE` read on the
+  private key, and binds the thumbprint on `RDP-Tcp` via WMI
+  `Win32_TSGeneralSetting.SetSSLCertificateSHA1Hash` (with a registry
+  fallback to `HKLM:\...\RDP-Tcp\SSLCertificateSHA1Hash`). The step
+  logs the thumbprint only — never the private key, never any password,
+  never anything that could be replayed. `TermService` is restarted so
+  the new cert takes effect. Idempotent: safe to re-run every workflow
+  invocation, and idempotent on LE renewal.
+- On a persistent VPS (see §1.7), run once (elevated, PowerShell 7+):
+  `payloads\Enable-RdpTlsCertificate.ps1` — same logic as the workflow
+  step, wrapped as a standalone script. Re-run when the LE cert renews
+  (~every 90 days). Idempotent.
 - Result: `mstsc /v:<fqdn>` succeeds at auth-level 2 + CredSSP verification
   with zero warnings. No client-side `Trusted Root` import, no self-signed
   cert, no `AuthenticationLevelOverride`, no `authentication level:i:*`
@@ -235,34 +243,52 @@ Verification (E-battery greps for banned patterns; must return zero):
 (Comment-line matches noting removed items are acceptable and expected;
 only live code references are bugs.)
 
-### 1.10 Web desktop (Apache Guacamole via `tailscale serve`)
+### 1.10 Web desktop (noVNC + TightVNC via `tailscale serve`)
 
 The dashboard's WEB DESKTOP button is enabled only when
-`config.webdeskUrl` is set. On an ephemeral GitHub Actions runner it
-stays disabled (no persistent host). On the VPS (post-§1.7) install
-Guacamole and expose it tailnet-only:
+`config.webdeskUrl` is set.
 
-    # As root on the VPS (Ubuntu 22.04+ example):
-    apt-get update
-    apt-get install -y guacd tomcat10 tomcat10-common guacamole-tomcat
-    # Guacamole stores its own RDP host mapping in
-    #   /etc/guacamole/user-mapping.xml
-    # The RDP hostname there is <fqdn>.ts.net; the RDP password is entered
-    # once by the operator on the host, not stashed by our tooling.
-    systemctl enable --now guacd tomcat10
-    # Expose ONLY on the tailnet (no public port):
-    tailscale serve --bg https://127.0.0.1:8080
+- **[U5c] Ephemeral GitHub Actions runner**: the workflow now provisions
+  the web desktop automatically on every run, but *only* when repo
+  secret `VNC_PASS` is present and ≥ 8 characters. Step
+  *"Web desktop (noVNC + TightVNC, tailnet-only via tailscale serve)"*
+  installs TightVNC in service mode with the VNC and control passwords
+  set to `VNC_PASS` (via msiexec `ADDLOCAL=Server SET_PASSWORD=1
+  VALUE_OF_PASSWORD=…`; the password is never echoed to logs or the
+  step summary), binds VNC to loopback only (`LoopbackOnly=1`,
+  `AllowLoopback=1`, `AcceptRfbConnections=1`), starts websockify on
+  `127.0.0.1:7333` serving the noVNC static UI (cloned to
+  `C:\ghrdp\novnc`), exposes that with `tailscale serve --bg
+  https://127.0.0.1:7333`, resolves the serve URL from
+  `tailscale serve status --json`, and writes it as
+  `config.webdeskUrl = https://<fqdn>.ts.net/vnc.html?autoconnect=1&resize=remote`.
+  The dashboard's next `/api/native-status` poll picks it up and enables
+  WEB DESKTOP. **Never exposes VNC on 0.0.0.0**, **never disables VNC
+  authentication**, **never publishes on Tailscale Funnel**. Empty or
+  short `VNC_PASS` skips the step cleanly and leaves WEB DESKTOP
+  disabled.
+- **Persistent VPS (post-§1.7)**: same shape, either the workflow's
+  approach ported to systemd (`tightvncserver` + `websockify --web
+  /usr/share/novnc 127.0.0.1:7333 127.0.0.1:5900` + `tailscale serve
+  --bg https://127.0.0.1:7333`), or the previous option of Apache
+  Guacamole (`guacd` + `tomcat10 guacamole-tomcat` + `tailscale serve
+  --bg https://127.0.0.1:8080`). Either way the passwords sit on the
+  VPS, not on the operator's PC or in dashboard state.
 
-Then set `config.webdeskUrl` on the ghrdp-server host to the
-`tailscale serve` URL that command printed (`https://<fqdn>.ts.net/`).
-The dashboard's next `/api/native-status` poll picks it up and enables
-WEB DESKTOP. Nothing here stashes the RDP password on the operator's
-PC or in dashboard state.
+**Security posture (bright lines)**:
+- Credentials are ALWAYS required (VNC password / Guacamole login).
+  The prior banned posture — *no-auth VNC on any interface, even
+  tailnet-gated* — remains banned.
+- Exposure is ALWAYS tailnet-only via `tailscale serve`. No public port,
+  no funnel, no anonymous reverse proxy.
+- The password is set only via installer parameters (msiexec) and never
+  logged, never echoed to the step summary, and never included in
+  `config.webdeskUrl`.
 
-Decommission note: uninstalling Guacamole is `apt-get remove
---purge guacd tomcat10 guacamole-tomcat && tailscale serve reset`.
+Decommission note: uninstalling TightVNC is `choco uninstall tightvnc -y`
+(or the vendor uninstaller) followed by `tailscale serve reset`.
 Clearing `config.webdeskUrl` disables the button on the next poll;
-running the two removes above closes the tailnet listener.
+removing TightVNC + resetting serve closes the tailnet listener.
 
 ## 2. Decommission checklist (Actions-as-RDP teardown)
 
