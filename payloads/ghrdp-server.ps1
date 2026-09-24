@@ -429,7 +429,7 @@ function Invoke-ClientRequest {
             if (-not $nlaOn)    { $reasons += 'nla-off' }
             if ($hostKind -eq 'vps') { $reasons += 'no-cmdkey-entry' }
             $probeReasons = [ordered]@{
-                fqdn    = $(if ($fqdnOk)    { '' } else { 'dnsName missing or not *.ts.net (config.dnsName=' + $fqdnN + ')' })
+                fqdn    = $(if ($fqdnOk)    { '' } else { 'dnsName missing or not *.ts.net (config.dnsName=' + $fqdnN + ') - enable MagicDNS: https://login.tailscale.com/admin/dns' })
                 cert    = $(if ($certBound) { '' } elseif ($certReason) { $certReason } else { 'no SSLCertificateSHA1Hash bound on RDP-Tcp' })
                 nla     = $(if ($nlaOn)     { '' } else { 'UserAuthentication != 1 on RDP-Tcp' })
                 cmdkey  = $(if ($hostKind -eq 'vps') { 'TERMSRV/<fqdn> cmdkey entry not verifiable server-side; run once on your PC' } else { '' })
@@ -470,6 +470,10 @@ function Invoke-ClientRequest {
                 webdeskUrl = $wd
                 webdeskReason = $wdr
                 vpsPending = $vpsPending
+                # [F9c] actionable MagicDNS admin link: the dashboard linkifies
+                # it whenever the fqdn reason renders (fqdn missing) and hides
+                # it once the FQDN resolves. Carries no credentials.
+                magicDnsAdminUrl = 'https://login.tailscale.com/admin/dns'
                 probeReasons = $probeReasons
                 reasonsDisabled = @($reasons)
                 advisory = @($advisory)
