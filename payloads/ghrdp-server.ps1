@@ -359,11 +359,42 @@ function Invoke-ClientRequest {
             if ($cfgN -and $cfgN.PSObject.Properties['dnsName'] -and $cfgN.dnsName) { $fqdnN = [string]$cfgN.dnsName }
             # no rdpIp fallback
             $fqdnOk = ($fqdnN -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$')
-            $certBound = $false; $nlaOn = $false
+            # [F6] certBound is TRUE only when the bound listener cert is a real
+            # tailnet cert: its Subject ends with the node's *.ts.net FQDN, OR
+            # its Issuer is Let's Encrypt. Windows' default self-signed RDP cert
+            # (Subject == Issuer, CN matches the machine name) is REJECTED even
+            # though its SHA1 hash is 20 bytes long - that shape caused the old
+            # 'certBound = true' false positive.
+            $certBound = $false; $nlaOn = $false; $certReason = ''
             try {
                 $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
                 $sh = (Get-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -ErrorAction SilentlyContinue).SSLCertificateSHA1Hash
-                if ($sh -and $sh.Length -ge 20) { $certBound = $true }
+                if ($sh -and $sh.Length -ge 20) {
+                    $thumb = ($sh | ForEach-Object { $_.ToString('X2') }) -join ''
+                    $bound = $null
+                    $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
+                    try {
+                        $store.Open('ReadOnly')
+                        $bound = $store.Certificates | Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1
+                    } finally { try { $store.Close() } catch { } }
+                    if ($bound) {
+                        $subj = [string]$bound.Subject
+                        $iss  = [string]$bound.Issuer
+                        $selfSigned = ($subj -eq $iss)
+                        $leIssuer   = ($iss -match "Let'?s Encrypt")
+                        $subjMatch  = $false
+                        if ($fqdnN) { $subjMatch = ($subj -like ('*' + $fqdnN)) }
+                        if ($selfSigned -and -not $leIssuer) {
+                            $certReason = 'self-signed listener cert'
+                        } elseif ($subjMatch -or $leIssuer) {
+                            $certBound = $true
+                        } else {
+                            $certReason = 'listener cert subject does not end with ts.net FQDN and issuer is not Let''s Encrypt'
+                        }
+                    } else {
+                        $certReason = 'bound cert thumbprint not in LocalMachine\My'
+                    }
+                }
                 $ua = (Get-ItemProperty -Path $rdpKey -Name 'UserAuthentication' -ErrorAction SilentlyContinue).UserAuthentication
                 if ([int]$ua -eq 1) { $nlaOn = $true }
             } catch { }
@@ -386,7 +417,7 @@ function Invoke-ClientRequest {
             if ($null -eq $handlerAge -or $handlerAge -gt 86400) { $reasons += 'handler-not-seen' }
             $probeReasons = [ordered]@{
                 fqdn    = $(if ($fqdnOk)    { '' } else { 'dnsName missing or not *.ts.net (config.dnsName=' + $fqdnN + ')' })
-                cert    = $(if ($certBound) { '' } else { 'no SSLCertificateSHA1Hash bound on RDP-Tcp' })
+                cert    = $(if ($certBound) { '' } elseif ($certReason) { $certReason } else { 'no SSLCertificateSHA1Hash bound on RDP-Tcp' })
                 nla     = $(if ($nlaOn)     { '' } else { 'UserAuthentication != 1 on RDP-Tcp' })
                 handler = $(if ($null -ne $handlerAge -and $handlerAge -le 86400) { '' } else { 'no /api/handler-hello beacon in the last 24h' })
             }
