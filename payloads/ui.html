@@ -254,6 +254,7 @@ pre.box::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:
   </div>
   <nav class="nav" aria-label="sections">
     <a href="#sec-conn">connection</a>
+    <a href="#sec-native-rdp">rdp</a>
     <a href="#sec-keys">keys</a>
     <a href="#sec-mirror">mirror</a>
     <a href="#sec-log">log</a>
@@ -296,22 +297,44 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">RDP logon age</span><span class="timer" id="timerRdpAge">--:--:--</span></div>
   <div class="row"><span class="k">Remaining (5h30 session)</span><span class="timer" id="timerRemaining">--:--:--</span></div>
   <div class="banner ended" id="endedBanner" style="display:none;">SESSION EXPIRED - GitHub hard cap reached. Runner termination imminent.</div>
-  <div class="row"><span class="k">One-click RDP</span>
-<button onclick="showInstall()">handler help</button>
-</div>
-  <div class="row"><span class="k">Parsec auto-login</span>
-<button class="primary" id="parsecPushBtn" title="Upload my Parsec login to the runner automatically">&#9654; push Parsec login from THIS PC</button>
-<button id="parsecPickBtn">manual select (fallback)</button>
-<input type="file" id="parsecFiles" multiple accept=".json,.txt,.bin" style="display:none">
-<span class="note">play = handler uploads %APPDATA%\Parsec (config + user.bin) to the runner AND opens that folder in Explorer. No copy, no picker.</span></div>
 </section>
-<section class="glass" id="installPanel" style="display:none">
-  <h2>ghrdp:// setup &amp; fallback</h2>
-  <div class="note" id="installDetected">The ghrdp:// protocol handler is not installed on this PC (the browser shows the request as canceled).</div>
-  <div class="row"><button class="primary" id="playInstall" title="Run the installer automatically">&#9654; Run installer automatically</button><span class="note" id="installState">click play. if nothing opens, the installer downloads ONCE - open Downloads, right-click install.ps1 &gt; Run with PowerShell. After that every play button runs automatically.</span></div>
-  <div class="row"><span class="note">Prefer double-click? download <a id="installBat" href="/install.bat">install.bat</a> and run it once (SmartScreen may warn - choose Run).</span></div>
-  <div class="note"><b>No install needed?</b> Use the mstsc command above. Handler log on YOUR PC: <span style="font-family:ui-monospace,Consolas,monospace">%LOCALAPPDATA%\ghrdp\ghrdp-connect.log</span></div>
-  <div class="note"><b>Option C</b> - use the mstsc command above (no install needed). Log on YOUR PC: <span style="font-family:ui-monospace,Consolas,monospace">%LOCALAPPDATA%\ghrdp\ghrdp-connect.log</span></div>
+<!-- U1 native mstsc auto-login. Contract:
+     1. POST /api/rdp-token -> {token} (60s TTL, single-use).
+     2. Fire ghrdp://connect?server=<runner-host>&port=7331&t=<token>.
+     3. Handler POST-redeems /api/rdp-creds with {token}, receives {host, fqdn};
+        server enforces *.ts.net (P2 discipline, hard-refuses IP fallback).
+     4. Handler runs mstsc /v:<fqdn>. Windows uses the per-user TERMSRV/<fqdn>
+        cmdkey credential silently. Handler NEVER reads, writes, or deletes it.
+     No plaintext creds in any URL, UI field, form body, header, or log.
+     NLA (UserAuthentication=1) + CredSSP stay ON. -->
+<section class="glass" id="sec-native-rdp">
+  <h2>Native mstsc auto-login</h2>
+  <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><button onclick="copyById('rdpFqdn',this)">copy</button><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound on RDP-Tcp per docs/MIGRATION.md sec 1.3.</span></div>
+  <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
+    <span class="k" style="font-weight:600">Step 1 - one-time interactive setup (per client PC)</span>
+    <span class="note">Open PowerShell as your user (not admin), paste the line, press Enter. Windows prompts for the RDP password interactively. Nothing here is transmitted to any server; the password never leaves your PC. See docs/MIGRATION.md sec 1.4.</span>
+    <div style="display:flex;gap:8px;align-items:center">
+      <code id="cmdkeyLine" style="flex:1;padding:8px 10px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:12px ui-monospace,Consolas,monospace;overflow-x:auto">(populating...)</code>
+      <button onclick="copyById('cmdkeyLine',this)">copy</button>
+    </div>
+    <span class="note">Verify: <code>cmdkey /list</code> should show <code>Target: TERMSRV/&lt;fqdn&gt;.ts.net</code>. Remove later: <code>cmdkey /delete:TERMSRV/&lt;fqdn&gt;.ts.net</code>.</span>
+  </div>
+  <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
+    <span class="k" style="font-weight:600">Step 2 - AUTO-LOGIN</span>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="primary" id="autoLoginNative" type="button">AUTO-LOGIN (native mstsc)</button>
+      <span class="note" id="autoLoginStatus"></span>
+    </div>
+    <span class="note">Requires the <code>ghrdp://</code> handler installed once on this PC AND Step 1 completed. Zero prompts on success - Windows LSA uses the stored TERMSRV credential silently and the LE cert satisfies CredSSP without warning.</span>
+  </div>
+  <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
+    <span class="k" style="font-weight:600">Fallback - direct mstsc</span>
+    <div style="display:flex;gap:8px;align-items:center">
+      <code id="mstscFallback" style="flex:1;padding:8px 10px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:12px ui-monospace,Consolas,monospace">mstsc /v:__IP__</code>
+      <button onclick="copyById('mstscFallback',this)">copy</button>
+    </div>
+    <span class="note">Silent auth if Step 1 was done. Use if the <code>ghrdp://</code> handler is not installed. Handler log (post-install): <code>%LOCALAPPDATA%\ghrdp\ghrdp-connect.log</code>.</span>
+  </div>
 </section>
 <section class="glass" id="sec-keys">
   <h2>Indexes &amp; keys</h2>
@@ -400,7 +423,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="body"><pre id="diagBox">click Refresh to run /diag on the server.</pre></div>
 </aside>
 <script>
-var lastData=null,lostCount=0,ws=null,wsTimer=null,wsAlive=false,pollTimer=null;
+var lastData=null,lostCount=0,ws=null,wsTimer=null,wsAlive=false,pollTimer=null,wsLive=false;
 var clockOffsetMs=0,runStartedAtMs=null,sessionStartedAtMs=null;
 var speedHist=[],logPaused=false,firstRenderDone=false,ghrdpUrl='';
 function $(id){return document.getElementById(id)}
@@ -425,10 +448,7 @@ async function doDiag(){openDrawer();var db=$('diagBox');db.textContent='running
 function openDrawer(){$('drawer').classList.add('open');$('drawer').setAttribute('aria-hidden','false');$('drawerScrim').classList.add('open')}
 function closeDrawer(){$('drawer').classList.remove('open');$('drawer').setAttribute('aria-hidden','true');$('drawerScrim').classList.remove('open')}
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeDrawer()});
-function launchProto(url){var ifr=document.createElement('iframe');ifr.style.display='none';ifr.setAttribute('aria-hidden','true');ifr.src=url;document.body.appendChild(ifr);setTimeout(function(){if(ifr&&ifr.parentNode)ifr.parentNode.removeChild(ifr);},4000);}
-window.ghrdpLaunchProto=launchProto;
-function openRdp(ev){if(ev&&ev.preventDefault)ev.preventDefault();if(!ghrdpUrl){showInstall('Cannot build the ghrdp:// link yet - wait for live data.');return false}var wasFocused=true;var lost=function(){wasFocused=false};window.addEventListener('blur',lost);var visLost=function(){if(document.hidden)wasFocused=false};document.addEventListener('visibilitychange',visLost);launchProto(ghrdpUrl);setTimeout(function(){window.removeEventListener('blur',lost);document.removeEventListener('visibilitychange',visLost);if(wasFocused)showInstall('ghrdp:// handler NOT detected (no hand-off happened). Install it below or use the mstsc command.')},900);return false}
-function showInstall(msg){var p=$('installPanel');if(msg){var d=$('installDetected');if(d)d.textContent=msg}p.style.display='block';try{p.scrollIntoView({behavior:'smooth',block:'center'})}catch(e){}}
+/* [remediation #7B / U1] embedded-creds ghrdp:// URL, credPass display, auto-connect .bat href, installer helpers, and agent enrollment overlay all removed. Token-based ghrdp:// connect lives in the Native mstsc auto-login section script (sec-native-rdp). */
 function chip(id,text,cls){var p=$(id);if(!p)return;p.className='chip '+(cls||'');p.innerHTML='<i class="dot"></i><span>'+esc(text)+'</span>'}
 (function(){var box=$('logBox');if(!box)return;box.addEventListener('mouseenter',function(){logPaused=true});box.addEventListener('mouseleave',function(){logPaused=false})})();
 function toggleLogPause(btn){logPaused=!logPaused;btn.textContent=logPaused?'resume':'pause';btn.classList.toggle('copied',logPaused)}
@@ -442,9 +462,9 @@ function render(d){
   chip('pillConn','connection: live','ok');lastData=d;
   if(d.serverTs){var st=parseTs(d.serverTs);if(!isNaN(st))clockOffsetMs=st-nowMs()}
   var c=d.creds||{};
-  if(c.ip){$('credIp').textContent=c.ip;$('mstscVal').textContent='mstsc /v:'+c.ip;var ic=$('instCmd');if(ic)ic.textContent='irm http://'+c.ip+':7331/install.ps1 | iex';var pl=$('primaryLink');if(pl){pl.textContent='http://'+c.ip+':7332/';pl.href='http://'+c.ip+':7332/'}var fl=$('fallbackLink');if(fl){fl.textContent='http://'+c.ip+':7331/';fl.href='http://'+c.ip+':7331/'}}
+  if(c.ip){$('credIp').textContent=c.ip;$('mstscVal').textContent='mstsc /v:'+c.ip;var pl=$('primaryLink');if(pl){pl.textContent='http://'+c.ip+':7332/';pl.href='http://'+c.ip+':7332/'}var fl=$('fallbackLink');if(fl){fl.textContent='http://'+c.ip+':7331/';fl.href='http://'+c.ip+':7331/'}}
   if(c.user)$('credUser').textContent=c.user;
-  /* [remediation #7B] credPass display, embedded-creds ghrdp:// URL, and auto-connect .bat href setters removed. Token-based ghrdp:// connect fires from the /api/rdp-token flow below. */
+  /* [remediation #7B] credPass display, embedded-creds ghrdp:// URL, and auto-connect .bat href setters removed. Token-based ghrdp:// connect fires from the /api/rdp-token flow in sec-native-rdp. */
   if(d.runnerEgressIp){
     $('egressLine').textContent='Uploads execute ON THE RUNNER (egress IP '+d.runnerEgressIp+') - your PC\'s connection is never used for uploads.';
     $('egressLine').className='banner egress';
@@ -453,8 +473,6 @@ function render(d){
   }
   if(d.legacyIndexUrl){var ll=$('legacyLink');ll.textContent=d.legacyIndexUrl;ll.href=d.legacyIndexUrl;}
   if(d.legacyDecryptKey){$('legacyKey').textContent=d.legacyDecryptKey;}
-  var rn=$('rentryNew');
-  if(d.rentryNewUrl){rn.textContent=d.rentryNewUrl;rn.href=d.rentryNewUrl;}else{rn.textContent='(not created yet)';rn.href='javascript:void(0)';}
   var tl=$('telegraphLink');
   if(d.mirrorIndexUrl){tl.textContent=d.mirrorIndexUrl;tl.href=d.mirrorIndexUrl;}else{tl.textContent='(not created yet)';tl.href='javascript:void(0)';}
   if(d.mirrorKey){$('mirrorKey').textContent=d.mirrorKey;}
@@ -620,7 +638,7 @@ function tickTimers(){
     var eb=$('endedBanner');
     if(eb){
       eb.classList.toggle('show',expired);
-      if(expired){eb.textContent=(window.__ghrdpLang&&window.__ghrdpLang()==='si')?'⚠️ සැසිය අවසන් - පැය 5:30 සැසි කවුළුව ඉකුත් විය; ධාවක පිරිසිදු කිරීම ආසන්නයි.':'⚠️ SESSION EXPIRED - 5h30 session window elapsed; runner cleanup imminent.';}
+      if(expired){eb.textContent=(window.__ghrdpLang&&window.__ghrdpLang()==='si')?'⚠️ සැසිය අවසන - පැය 5:30 සැසි කවුළුව ඉකුත් විය; ධාවක පිරිසිදු කිරීම ආසන්නයි.':'⚠️ SESSION EXPIRED - 5h30 session window elapsed; runner cleanup imminent.';}
     }
     document.body.classList.toggle('expired',expired);
   }else{
@@ -643,7 +661,7 @@ var I18N={
 'RDP password':'RDP මුරපදය',
 'mstsc command':'mstsc විධානය',
 'One-click RDP':'එක-ක්ලික් RDP',
-'Files':'ගොනු','Speed':'වීගය','Scans':'ස්කෑන්','ETA':'ETA','Overall':'සමස්ත'
+'Files':'ගොනු','Speed':'වීගය','Scans':'ස්කැන්','ETA':'ETA','Overall':'සමස්ත'
 };
 var LANG=localStorage.getItem('ghrdp:lang')||'en';
 window.__ghrdpLang=function(){return LANG;};
@@ -735,379 +753,107 @@ paint();
 </script>
 <script>
 (function(){
-function tMsg(t,k){ try{ toast(t,k); }catch(e){ alert(t); } }
-function b64buf(buf){ var u=new Uint8Array(buf); var s=''; var CH=0x8000; for(var i=0;i<u.length;i+=CH){ s+=String.fromCharCode.apply(null,u.subarray(i,i+CH)); } return btoa(s); }
-function runnerIp(){ return (window.lastData&&window.lastData.creds&&window.lastData.creds.ip)||''; }
-function tryProto(url, onMissing){
- var ifr=document.createElement('iframe'); ifr.style.display='none'; ifr.setAttribute('aria-hidden','true');
- var wasFocused=true;
- var lost=function(){wasFocused=false};
- var vis=function(){if(document.hidden)wasFocused=false};
- window.addEventListener('blur',lost); document.addEventListener('visibilitychange',vis);
- try{ document.body.appendChild(ifr); ifr.src=url; }catch(e){}
- setTimeout(function(){ try{if(ifr&&ifr.parentNode)ifr.parentNode.removeChild(ifr);}catch(e){} window.removeEventListener('blur',lost); document.removeEventListener('visibilitychange',vis); if(wasFocused&&onMissing) onMissing(); },900);
+// U1 native mstsc auto-login. Replaces the removed agent enrollment / installer / DIAG / Parsec-push
+// surface. Single code path:
+//   1. POST /api/rdp-token -> {token} (60s TTL, single-use).
+//   2. Fire ghrdp://connect?server=<runner-host>&port=7331&t=<token>.
+//   3. Handler POST-redeems /api/rdp-creds with {token}, receives {host,fqdn};
+//      server enforces *.ts.net (P2 discipline, hard-refuses IP fallback).
+//   4. Handler runs mstsc /v:<fqdn>. Windows uses the per-user TERMSRV/<fqdn>
+//      cmdkey credential silently. Handler NEVER reads/writes/deletes it.
+// NLA + CredSSP stay ON. Zero plaintext creds anywhere. No LocalDevices arming,
+// no AuthenticationLevelOverride, no MOTW strip, no publisher-trust arming.
+function $(id){return document.getElementById(id);}
+function runnerHost(){return location.hostname;}
+function apiBase(){return 'http://'+runnerHost()+':7331';}
+function getKey(){var m=location.search.match(/[?&]key=([^&]+)/);return m?m[1]:'';}
+function paint(txt,color){var el=$('autoLoginStatus');if(!el)return;el.style.color=color||'';el.textContent=txt||'';}
+function launchProto(url){
+ // [U1] Prefer top-level navigation (`window.location.href`) over a hidden
+ // iframe: browsers with a registered ghrdp:// handler stay on the dashboard
+ // (the protocol dispatch does not navigate); browsers without one show a
+ // native "protocol not registered" prompt / navigate to an error page that
+ // the user can back out of. The blur/focus fallback timer in the caller
+ // detects the missing-handler case regardless of dispatch mode.
+ try{window.location.href=url;}catch(_){}
 }
-function launchDl(ip){
- try{ var a=document.createElement('a'); a.href='http://'+ip+':7331/install.ps1'; a.setAttribute('download','install.ps1'); document.body.appendChild(a); a.click(); a.remove(); }catch(e){}
-}
-var pi=document.getElementById('playInstall');
-if(pi) pi.onclick=function(){
- var ip=runnerIp();
- tryProto('ghrdp://ip='+encodeURIComponent(ip)+'&mode=install&src='+encodeURIComponent('http://'+ip+':7331/install.ps1'), function(){
-  var st=document.getElementById('installState');
-  if(st) st.textContent='Handler not found yet - installer downloaded ONCE. Open Downloads, right-click install.ps1 > Run with PowerShell. After that every play button runs automatically.';
-  if(ip) launchDl(ip);
- });
-};
-var pb=document.getElementById('parsecPushBtn');
-var fin=document.getElementById('parsecFiles');
-if(pb) pb.onclick=function(){
- var ip=runnerIp();
- tryProto('ghrdp://ip='+encodeURIComponent(ip)+'&port=7331&mode=parsec-push', function(){ if(fin) fin.click(); });
-};
-var pk=document.getElementById('parsecPickBtn');
-if(pk) pk.onclick=function(){ var f=document.getElementById('parsecFiles'); if(f) f.click(); };
-if(fin) fin.onchange=function(){
- var files=fin.files||[]; var cfg=null, bin=null;
- for(var i=0;i<files.length;i++){ var nm=(files[i].name||'').toLowerCase(); if(nm==='user.bin') bin=files[i]; if(nm==='config.txt'||nm==='config.json') cfg=files[i]; }
- if(!cfg||!bin){ tMsg('Select BOTH config.txt (or config.json) AND user.bin from %APPDATA%\\Parsec','bad'); fin.value=''; return; }
- var ip=runnerIp();
- if(!ip){ tMsg('No runner IP yet - wait for live data','bad'); fin.value=''; return; }
- tMsg('Uploading Parsec login to runner...','warn');
- Promise.all([cfg.arrayBuffer(),bin.arrayBuffer()]).then(function(bs){
-  var body=JSON.stringify({cfgName:cfg.name,cfgB64:b64buf(bs[0]),binB64:b64buf(bs[1]),host:location.hostname});
-  return fetch('http://'+ip+':7331/parsec-push',{method:'POST',headers:{'Content-Type':'application/json'},body:body});
- }).then(function(r){ if(!r) return null; if(!r.ok) throw new Error('HTTP '+r.status); return r.json(); }).then(function(j){ if(j&&j.ok){ tMsg('Parsec login pushed: '+j.message,'ok'); } else if(j){ tMsg('Push rejected: '+j.message,'bad'); } }).catch(function(e){ tMsg('Push failed: '+e.message+' - open the dashboard at the :7331 origin (same origin) and retry','bad'); });
- fin.value='';
-};
-})();
-</script>
-<script>
-(function(){
-function rm(el){if(el&&el.parentNode)el.parentNode.removeChild(el);}
-rm(document.getElementById('batNow'));rm(document.getElementById('batInstall'));rm(document.getElementById('installPanel'));/* D5: keep #ghrdpLink static embedded-creds anchor per user requirement (plaintext pass lives only in local protocol href, never in server logs) */
-document.querySelectorAll('a,button').forEach(function(a){var t=(a.textContent||'');if(/\.bat\b/i.test(t)||/install one-click handler/i.test(t)||/auto-connect NOW/i.test(t)||/Run installer automatically/i.test(t))rm(a);});
-document.querySelectorAll('a[href*="install.ps1"],a[href*="install.bat"]').forEach(rm);
-var sec=document.getElementById('sec-conn');if(!sec)return;
-var row=document.createElement('div');row.className='row';row.id='rdpResRow';
-row.innerHTML='<span class="k">RDP resources</span>'+
-'<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="resClip" checked> Clipboard</label>'+
-'<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="resMic"> Microphone</label>'+
-'<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="resPrint"> Printers</label>'+
-'<label style="display:flex;gap:6px;align-items:center;font-size:12px"><input type="checkbox" id="resDrives"> Local disks</label>';
-var rows=sec.querySelectorAll('.row');if(rows.length)rows[0].parentNode.insertBefore(row,rows[0]);
-var act=document.createElement('div');act.className='row';act.id='autoRow';
-act.innerHTML='<span class="k">One-click RDP</span><a id="autoLogin" class="btn primary" href="#">AUTO-LOGIN RDP (WINDOWS)</a><a id="webDesk" class="btn" href="#">WEB DESKTOP (zero-install)</a><span class="note" id="ghNotice"></span><span id="sessPill" class="note" style="padding:4px 8px;border-radius:6px;font-size:12px"></span>';
-sec.appendChild(act);
-// DIAG panel: pull-model agent status
-var diagRow=document.createElement('div');diagRow.className='row';diagRow.id='agentDiagRow';
-diagRow.style.cssText='flex-direction:column;align-items:stretch;gap:6px';
-diagRow.innerHTML=
- '<div style="display:flex;gap:10px;align-items:center;cursor:pointer" id="agentDiagHead">'+
-  '<span class="k" style="min-width:120px">Agent DIAG</span>'+
-  '<span id="agentPill" class="note" style="padding:4px 10px;border-radius:6px;font-size:12px;background:#3d2a0b;color:#f5d9b7">never enrolled</span>'+
-  '<span id="agentHb" class="note" style="font-size:11px;color:#8ea8b8">heartbeat: -</span>'+
-  '<span id="agentToggle" class="note" style="margin-left:auto;font-size:11px;color:#8ea8b8;cursor:pointer">[expand]</span>'+
- '</div>'+
- '<div id="agentDiagBody" style="display:none;padding:8px 10px;background:#0a1512;border:1px solid #1e3a2f;border-radius:8px;font:11px monospace;color:#b7e3f5">'+
-  '<div>runnerIp: <span id="dgRunnerIp">-</span> &nbsp; epoch: <span id="dgEpoch">-</span></div>'+
-  '<div>deviceId: <span id="dgDevId">-</span></div>'+
-  '<div>lastStage: <span id="dgStage">-</span> &nbsp; mstscPid: <span id="dgPid">-</span> &nbsp; logonAge: <span id="dgLogon">-</span>s</div>'+
-  '<div>regPath: <span id="dgReg">-</span></div>'+
-  '<div>agentBuild: <span id="dgBuild">-</span> &nbsp; taskOk: <span id="dgTask">-</span></div>'+
-  '<div>err: <span id="dgErr" style="color:#f5b7b7">-</span></div>'+
-  '<div>bundle: <a id="dgBundle" href="#" target="_blank" style="color:#7dffc9;text-decoration:underline">-</a></div>'+
-  '<details id="dgTailBox" style="margin-top:6px;display:none"><summary style="cursor:pointer;color:#f5d9b7">enroll.log tail (last 40)</summary><pre id="dgTail" style="background:#0a0a0a;color:#e8eef3;padding:8px;border-radius:6px;max-height:200px;overflow:auto;font:10px monospace"></pre></details>'+
-  '<div style="margin-top:8px;display:flex;gap:8px">'+
-   '<button id="dgReenroll" style="padding:6px 12px;background:#2ee6a6;color:#04110c;border:0;border-radius:6px;cursor:pointer;font-size:11px">Re-enroll agent</button>'+
-   '<button id="dgRefresh" style="padding:6px 12px;background:#333;color:#fff;border:0;border-radius:6px;cursor:pointer;font-size:11px">Refresh now</button>'+
-   '<button id="dgClearDev" style="padding:6px 12px;background:#3d1b1b;color:#f5b7b7;border:0;border-radius:6px;cursor:pointer;font-size:11px">Clear deviceId</button>'+
-  '</div>'+
- '</div>';
-sec.appendChild(diagRow);
-window.showInstall=function(msg){var n=document.getElementById('ghNotice');if(n)n.textContent=msg||'';};
-function sleep(ms){return new Promise(function(r){setTimeout(r,ms);});}
-function b64u(s){return 'b64u:'+btoa(unescape(encodeURIComponent(s||''))).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');}
-document.getElementById('webDesk').onclick=function(e){e.preventDefault();var c=(window.lastData&&lastData.creds)||{};var ip=c.ip||location.hostname;window.open('http://'+ip+':7331/webdesk','_blank');};
-function showSetupOverlay(ip){
- var line='$d="$env:LOCALAPPDATA\\GhrdpLauncher";ni $d -Type Directory -Force|Out-Null;iwr "http://'+ip+':7331/launcher.ps1" -UseBasicParsing -OutFile "$d\\launch.ps1";Unblock-File "$d\\launch.ps1";ri "$env:LOCALAPPDATA\\ghrdp\\ghrdp-connect.ps1" -Force -EA 0;$c=\'powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"\'+$d+\'\\launch.ps1\" \"%1\"\';ni "HKCU:\\Software\\Classes\\ghrdp\\shell\\open\\command" -Force|Out-Null;sp "HKCU:\\Software\\Classes\\ghrdp" \'(Default)\' \'URL:GHRDP\';sp "HKCU:\\Software\\Classes\\ghrdp" \'URL Protocol\' \'\';sp "HKCU:\\Software\\Classes\\ghrdp\\shell\\open\\command" \'(Default)\' $c;ni "HKCU:\\Software\\Microsoft\\Terminal Server Client\\LocalDevices" -Force|Out-Null;sp "HKCU:\\Software\\Microsoft\\Terminal Server Client\\LocalDevices" "'+ip+'" 0xC5 -Type DWord;sp "HKCU:\\Software\\Microsoft\\Terminal Server Client" "AuthenticationLevelOverride" 0 -Type DWord -EA 0;ni "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\\Zones\\3" -Force|Out-Null;sp "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\\Zones\\3" "1806" 0 -Type DWord;Write-Host "GHRDP v3 handler installed"';
- var ov=document.getElementById('ghrdpSetup');
- if(ov){ov.style.display='flex';var t=ov.querySelector('textarea');if(t)t.value=line;return;}
- ov=document.createElement('div');ov.id='ghrdpSetup';
- ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:99;display:flex;align-items:center;justify-content:center';
- ov.innerHTML='<div style="max-width:680px;background:#12241f;border:1px solid #2ee6a6;padding:20px;border-radius:12px;color:#eafff5;font:12px monospace">'+
-  '<b>Handler එක broken/නෑ — one-time fix (3s):</b> Win+R → <code>powershell</code> → Enter → මේක paste → Enter. ඊට පස්සේ button එක ආයේ click — ආයේ මේක එන්නේ නෑ.<br><br>'+
-  '<textarea readonly style="width:100%;height:90px;background:#0a1512;color:#7dffc9;border:1px solid #2ee6a6"></textarea><br>'+
-  '<button id="cpSetup" style="margin-top:8px;padding:8px 14px;background:#2ee6a6;color:#04110c;border:0;border-radius:8px;cursor:pointer">Copy fix line</button> '+
-  '<button id="clSetup" style="margin-top:8px;padding:8px 14px;background:#333;color:#fff;border:0;border-radius:8px;cursor:pointer">Close</button></div>';
- document.body.appendChild(ov);
- ov.querySelector('textarea').value=line;
- ov.querySelector('#cpSetup').onclick=function(){var t=ov.querySelector('textarea');if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(t.value);}else{t.select();try{document.execCommand('copy');}catch(e){window.prompt('Copy with Ctrl+C:',t.value);}}};
- ov.querySelector('#clSetup').onclick=function(){ov.remove();};
-}
-function showBanner(msg){var pill=document.getElementById('sessPill');if(pill){pill.style.background='#0b3d1f';pill.style.color='#b7f5c9';pill.textContent=msg;}else if(window.showInstall){window.showInstall(msg);}}
-function rdpToast(msg,color){var t=document.createElement('div');t.style.cssText='position:fixed;right:16px;bottom:16px;z-index:98;max-width:420px;background:#12241f;border:1px solid '+color+';color:#eafff5;padding:12px 14px;border-radius:10px;font:12px monospace';t.textContent=msg;document.body.appendChild(t);setTimeout(function(){t.remove();},12000);}
-function rdpEl(id){return document.getElementById(id);}
-function getKey(){return (location.search.match(/key=([^&]+)/)||[])[1]||'';}
-function getRunnerIp(){var c=(window.lastData&&lastData.creds)||{};return c.ip||location.hostname;}
-function apiBase(){return 'http://'+getRunnerIp()+':7331';}
-function newGuid(){if(window.crypto&&crypto.randomUUID)return crypto.randomUUID();var s='xxxxxxxxxxxx4xxxyxxxxxxxxxxxxxxx'.replace(/[xy]/g,function(c){var r=Math.random()*16|0;return (c==='x'?r:(r&0x3|0x8)).toString(16);});return s;}
-function getDeviceId(){var d='';try{d=localStorage.getItem('ghrdp_device')||'';}catch(_){}return d;}
-function setDeviceId(id){try{localStorage.setItem('ghrdp_device',id);}catch(_){}}
-function pillPaint(bg,fg,txt){var p=document.getElementById('sessPill');if(p){p.style.background=bg;p.style.color=fg;p.textContent=txt;}}
-function agentPillPaint(state){
- var el=document.getElementById('agentPill');if(!el)return;
- if(state==='online'){el.style.background='#0b3d1f';el.style.color='#b7f5c9';el.textContent='agent online';}
- else if(state==='offline'){el.style.background='#3d0b0b';el.style.color='#f5b7b7';el.textContent='agent offline';}
- else if(state==='connecting'){el.style.background='#0b2a3d';el.style.color='#b7e3f5';el.textContent='agent connecting...';}
- else {el.style.background='#3d2a0b';el.style.color='#f5d9b7';el.textContent='never enrolled';}
-}
-// D3: 3-tier enrollment overlay. Primary buttons on top (no visible raw command → no uBlock ClickFix
-// per F3/#60). Secondary: download link. Tertiary: <details> collapsed containing the parse-safe D1
-// line filled by JS at expand-time. The D1 line uses -File with a downloaded script, ZERO embedded
-// \" escapes (F1/#56/#59). IP is substituted here in JS at render time.
-function buildD1EnrollLine(ip){
- // D1 parse-safe: no double-quote escapes inside a -Command string. Uses -File + downloaded script.
- // The dashboard substitutes IP; the string itself is a normal PowerShell command line.
- return "iwr 'http://" + ip + ":7331/api/agent.ps1' -OutFile \"$env:TEMP\\ghrdp-agent.ps1\"; Unblock-File \"$env:TEMP\\ghrdp-agent.ps1\"; powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File \"$env:TEMP\\ghrdp-agent.ps1\" -Enroll -Server " + ip;
-}
-function showEnrollOverlay(ip){
- var ov=document.getElementById('ghrdpEnroll');
- if(ov){ov.style.display='flex';return;}
- ov=document.createElement('div');ov.id='ghrdpEnroll';
- ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.8);z-index:99;display:flex;align-items:center;justify-content:center';
- var box=document.createElement('div');
- box.style.cssText='max-width:720px;width:90%;background:#12241f;border:1px solid #2ee6a6;padding:20px;border-radius:12px;color:#eafff5;font:13px system-ui,sans-serif';
- // Primary: two action buttons (auto-enroll + auto-login-now)
- // Secondary: <a download> for enroll.ps1
- // Tertiary: <details> collapsed manual paste (NO visible raw command by default → no ClickFix)
- box.innerHTML =
-   '<h2 style="margin:0 0 10px;font-size:18px">One-time enrollment</h2>' +
-   '<p style="margin:0 0 14px;opacity:.85">Installs a per-user background agent + logon task. No admin needed.</p>' +
-   '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-     '<button id="autoEnroll" type="button" style="padding:10px 16px;background:#2ee6a6;color:#04110c;border:0;border-radius:8px;cursor:pointer;font-weight:600">Auto-enroll via ghrdp://</button>' +
-     '<button id="autoLoginNow" type="button" style="padding:10px 16px;background:#3d5a8f;color:#fff;border:0;border-radius:8px;cursor:pointer">Auto-login now (token)</button>' +
-   '</div>' +
-   '<p style="margin:14px 0 6px;opacity:.75;font-size:12px">Requires a compatible ghrdp:// handler on this PC. Browser may ask permission once.</p>' +
-   '<hr style="margin:14px 0;border:0;border-top:1px solid rgba(255,255,255,.1)">' +
-   '<p style="margin:0 0 8px"><a id="enrollDl" href="/api/enroll.ps1" download="ghrdp-enroll.ps1" style="color:#7dffc9">Download enroll.ps1 (one-time)</a> - right-click &gt; Run with PowerShell</p>' +
-   '<details id="manualDetails" style="margin-top:8px">' +
-     '<summary style="cursor:pointer;color:#f5d9b7;font-size:13px">Manual paste in interactive Windows PowerShell (advanced)</summary>' +
-     '<div id="manualBox" style="margin-top:10px"></div>' +
-   '</details>' +
-   '<div style="text-align:right;margin-top:14px">' +
-     '<button id="clEnroll" type="button" style="padding:8px 14px;background:#333;color:#fff;border:0;border-radius:8px;cursor:pointer">Close</button>' +
-   '</div>';
- ov.appendChild(box);
- document.body.appendChild(ov);
- // Wire buttons
- var elAE = document.getElementById('autoEnroll');
- var elAL = document.getElementById('autoLoginNow');
- var elCL = document.getElementById('clEnroll');
- var elDL = document.getElementById('enrollDl');
- var elDET = document.getElementById('manualDetails');
- if (elDL && ip) { elDL.href = 'http://' + ip + ':7331/api/enroll.ps1'; }
- elAE.onclick = function(){ location.href = 'ghrdp://enroll?server=' + encodeURIComponent(ip); };
- elAL.onclick = async function(){ ov.style.display='none'; try { if (typeof window.autoLoginTokenFlow === 'function') { await window.autoLoginTokenFlow(); } else { rdpToast('token flow function missing','#ff6b6b'); } } catch(e) { rdpToast('token flow error: '+e.message,'#ff6b6b'); } };
- elCL.onclick = function(){ ov.remove(); };
- // Tertiary: build the textarea ONLY when user expands details (per D3/#60: no raw cmd rendered visibly by default)
- elDET.addEventListener('toggle', function(){
-   var box = document.getElementById('manualBox');
-   if (!box) return;
-   box.replaceChildren();
-   if (!elDET.open) return;
-   var ta = document.createElement('textarea');
-   ta.readOnly = true;
-   ta.style.cssText = 'width:100%;min-height:100px;background:#0a1512;color:#7dffc9;border:1px solid #2ee6a6;padding:8px;font:11px ui-monospace,Consolas,monospace;border-radius:6px;box-sizing:border-box';
-   ta.value = buildD1EnrollLine(ip);
-   var cp = document.createElement('button');
-   cp.type = 'button';
-   cp.textContent = 'Copy';
-   cp.style.cssText = 'margin-top:8px;padding:6px 12px;background:#2ee6a6;color:#04110c;border:0;border-radius:6px;cursor:pointer';
-   cp.onclick = async function(){
-     try {
-       if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(ta.value); }
-       else { ta.focus(); ta.select(); document.execCommand('copy'); }
-       cp.textContent = 'Copied';
-     } catch(_) { ta.focus(); ta.select(); cp.textContent = 'Select and Ctrl+C'; }
-   };
-   var note = document.createElement('p');
-   note.style.cssText = 'margin:8px 0 0;opacity:.7;font-size:11px';
-   note.textContent = 'Open Windows PowerShell (not Win+R), paste this line, press Enter. It downloads the agent to %TEMP% and runs -Enroll.';
-   box.append(ta, cp, note);
- });
-}
-async function fetchClientStatus(){
- var dev=getDeviceId();if(!dev)return null;
- var key=getKey();
- try{
-  var r=await fetch(apiBase()+'/api/client-status?device='+encodeURIComponent(dev)+(key?'&key='+encodeURIComponent(key):''),{cache:'no-store'});
-  if(!r.ok)return null;
-  return await r.json();
- }catch(_){return null;}
-}
-async function fetchPing(){
- try{var r=await fetch(apiBase()+'/api/ping',{cache:'no-store'});if(!r.ok)return null;return await r.json();}catch(_){return null;}
-}
-function renderDiag(st,pg){
- var $=function(id){return document.getElementById(id);};
- if(pg){if($('dgRunnerIp'))$('dgRunnerIp').textContent=pg.ip||'-';if($('dgEpoch'))$('dgEpoch').textContent=pg.epoch||'-';}
- if($('dgDevId'))$('dgDevId').textContent=getDeviceId()||'(none)';
- if(st){
-  if($('dgStage'))$('dgStage').textContent=st.stage||'-';
-  if($('dgPid'))$('dgPid').textContent=(st.mstscPid!=null?st.mstscPid:'-');
-  if($('dgLogon'))$('dgLogon').textContent=(st.logonAge!=null?st.logonAge:'-');
-  if($('dgReg'))$('dgReg').textContent=st.regPath||'-';
-  if($('dgBuild'))$('dgBuild').textContent=(st.build!=null?st.build:'-');
-  if($('dgTask'))$('dgTask').textContent=(st.taskOk!=null?String(st.taskOk):'-');
-  if($('dgErr'))$('dgErr').textContent=st.err||'-';
-  if($('dgBundle')){var bEl=$('dgBundle');if(st.diagUrl){bEl.href=apiBase()+st.diagUrl;bEl.textContent=st.diagId||'view bundle';}else{bEl.removeAttribute('href');bEl.textContent='-';}}
-  if($('dgTailBox')){if(st.err&&st.enrollLogTail){$('dgTailBox').style.display='block';if($('dgTail'))$('dgTail').textContent=st.enrollLogTail;}else{$('dgTailBox').style.display='none';}}
-  var hb=$('agentHb');if(hb){if(st.ageSeconds>=0){hb.textContent='heartbeat: '+st.ageSeconds+'s ago';}else{hb.textContent='heartbeat: never';}}
-  if(!getDeviceId()){agentPillPaint('never');}
-  else if(st.ageSeconds<0){agentPillPaint('offline');}
-  else if(st.ageSeconds>90){agentPillPaint('offline');}
-  else{agentPillPaint('online');}
- }else{
-  if(!getDeviceId()){agentPillPaint('never');var hb2=$('agentHb');if(hb2)hb2.textContent='heartbeat: (no deviceId)';}
-  else{agentPillPaint('offline');var hb3=$('agentHb');if(hb3)hb3.textContent='heartbeat: unreachable';}
+// [U1] Initial render seeds the FQDN-derived cells from the server-substituted
+// __IP__ template; bootstrapConfig() then overrides with the live /api/config
+// values (creds.fqdn, creds.user, creds.ip) so a stale template placeholder
+// never lies about what will be dialled. Anything not *.ts.net disables the
+// AUTO-LOGIN button — the UI stays honest about the P2/P3 architecture.
+var FQDN_RE=/^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$/i;
+function populateFqdn(fqdn, user){
+ var el=$('rdpFqdn'), line=$('cmdkeyLine'), mst=$('mstscFallback'), btn=$('autoLoginNative');
+ var okFqdn=FQDN_RE.test(fqdn||'');
+ var okUser=(typeof user==='string'&&user.length>0);
+ if(!okFqdn){
+  if(el){el.textContent=fqdn||'(not set)';el.style.color='#f5b7b7';}
+  if(line)line.textContent='(fqdn missing - provision the VPS per docs/MIGRATION.md sec 1.7)';
+  if(mst)mst.textContent='(fqdn missing)';
+  if(btn){btn.disabled=true;btn.style.opacity='0.5';btn.style.cursor='not-allowed';}
+  paint('server config.rdpIp is not a *.ts.net FQDN - cannot auto-login','#f5b7b7');
+  return;
  }
+ if(el){el.textContent=fqdn;el.style.color='';}
+ if(line)line.textContent='cmdkey /generic:TERMSRV/'+fqdn+' /user:'+(okUser?user:'rdpuser');
+ if(mst)mst.textContent='mstsc /v:'+fqdn;
+ if(btn){btn.disabled=false;btn.style.opacity='';btn.style.cursor='';}
+ paint('','');
 }
-// DIAG panel wiring
-var diagHead=document.getElementById('agentDiagHead');
-var diagBody=document.getElementById('agentDiagBody');
-var diagTog=document.getElementById('agentToggle');
-if(diagHead){diagHead.onclick=function(){var open=diagBody.style.display!=='none';diagBody.style.display=open?'none':'block';if(diagTog)diagTog.textContent=open?'[expand]':'[collapse]';};}
-var btnReenroll=document.getElementById('dgReenroll');if(btnReenroll)btnReenroll.onclick=function(){showEnrollOverlay(getRunnerIp());};
-var btnRefresh=document.getElementById('dgRefresh');if(btnRefresh)btnRefresh.onclick=async function(){var st=await fetchClientStatus();var pg=await fetchPing();renderDiag(st,pg);};
-var btnClearDev=document.getElementById('dgClearDev');if(btnClearDev)btnClearDev.onclick=function(){try{localStorage.removeItem('ghrdp_device');}catch(_){}renderDiag(null,null);rdpToast('deviceId cleared','#ffb020');};
-// Poll status every 5s, ping every 30s
-(async function(){var pg=await fetchPing();var st=await fetchClientStatus();renderDiag(st,pg);})();
-setInterval(async function(){var st=await fetchClientStatus();renderDiag(st,window.__lastPing||null);},5000);
-setInterval(async function(){var pg=await fetchPing();window.__lastPing=pg;renderDiag(window.__lastStatus||null,pg);},30000);
-// New pull-model autoLogin handler
-// D4/D5: expose token flow as window.autoLoginTokenFlow so the enrollment overlay's
-// "Auto-login now" button can invoke the same code path directly.
-window.autoLoginTokenFlow = async function(){
- var ip=getRunnerIp();
- // Trigger the button click programmatically (guarantees single code path).
- var b = document.getElementById('autoLogin');
- if (b) { b.click(); }
-};
-document.getElementById('autoLogin').onclick=function(e){
- e.preventDefault();
- return (async function(){
-  var ip=getRunnerIp();
+populateFqdn('__IP__','rdpuser');
+// bootstrapConfig(): fetch /api/config on load + every 15s; override the seed
+// values above with the live creds{fqdn,user,ip} the server exposes via the
+// U1 Remove-CredKeys rebuild. Also refreshes the Connection-row rdpUser/ip
+// cells (server no longer substitutes __USER__).
+async function bootstrapConfig(){
+ try{
+  var r=await fetch(apiBase()+'/api/config',{cache:'no-store'});
+  if(!r.ok)return;
+  var cf=await r.json();
+  var cr=(cf&&cf.creds)||{};
+  var fqdn=cr.fqdn||cr.ip||'', user=cr.user||'', ip=cr.ip||fqdn;
+  var uEl=document.getElementById('credUser');if(uEl&&user)uEl.textContent=user;
+  var iEl=document.getElementById('credIp');if(iEl&&ip)iEl.textContent=ip;
+  var mv=document.getElementById('mstscVal');if(mv&&fqdn)mv.textContent='mstsc /v:'+fqdn;
+  populateFqdn(fqdn,user);
+ }catch(_){}
+}
+bootstrapConfig();
+setInterval(bootstrapConfig,15000);
+var btn=$('autoLoginNative');
+if(btn) btn.onclick=function(ev){
+ if(ev&&ev.preventDefault)ev.preventDefault();
+ if(btn.disabled)return;
+ (async function(){
+  paint('requesting one-time token...','#f5d9b7');
   var key=getKey();
-  var base=apiBase();
-  var dev=getDeviceId();
-  if(!dev){
-   pillPaint('#3d2a0b','#f5d9b7','no device enrolled - overlay shown');
-   showEnrollOverlay(ip);
-   rdpToast('First time on this PC: run the enrollment line once (Win+R → powershell → paste). Then click AUTO-LOGIN again.','#ffb020');
-   return;
-  }
-  // Check agent liveness first
-  pillPaint('#0b2a3d','#b7e3f5','checking agent...');
-  var pre=await fetchClientStatus();
-  if(!pre||pre.ageSeconds<0||pre.ageSeconds>90){
-   agentPillPaint('offline');
-   pillPaint('#3d0b0b','#f5b7b7','agent offline (last seen '+(pre&&pre.ageSeconds>=0?pre.ageSeconds+'s ago':'never')+')');
-   showEnrollOverlay(ip);
-   rdpToast('Agent offline. Re-run enrollment (see overlay), or start the AtLogOn task.','#ff5555');
-   return;
-  }
-  agentPillPaint('online');
-  // Read redirection options
-  var clipEl=rdpEl('resClip'),micEl=rdpEl('resMic'),prnEl=rdpEl('resPrint')||rdpEl('resPrn'),drvEl=rdpEl('resDrives')||rdpEl('resDrv');
-  var clip=clipEl?(clipEl.checked?1:0):1;
-  var mic=micEl?(micEl.checked?1:0):0;
-  var prn=prnEl?(prnEl.checked?1:0):0;
-  var drv=drvEl?(drvEl.checked?1:0):0;
-  // POST client-cmd
-  pillPaint('#0b2a3d','#b7e3f5','queueing rdp cmd...');
-  var body=JSON.stringify({deviceId:dev,action:'rdp',clip:clip,mic:mic,print:prn,drives:drv});
-  var cmdId='';
+  var url=apiBase()+'/api/rdp-token'+(key?('?key='+encodeURIComponent(key)):'');
+  var tok='';
   try{
-   var r=await fetch(base+'/api/client-cmd?key='+encodeURIComponent(key),{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json'},body:body});
-   if(!r.ok){pillPaint('#3d0b0b','#f5b7b7','queue failed: HTTP '+r.status);rdpToast('client-cmd rejected (HTTP '+r.status+'). Check dashboard-key.','#ff5555');return;}
-   var j=await r.json();cmdId=j.cmdId||'';
-   if(!j.queued){pillPaint('#3d0b0b','#f5b7b7','queue rejected');rdpToast('Runner refused to queue the cmd.','#ff5555');return;}
-  }catch(err){pillPaint('#3d0b0b','#f5b7b7','queue network error');rdpToast('Cannot reach runner /api/client-cmd.','#ff5555');return;}
-  pillPaint('#0b2a3d','#b7e3f5','queued (cmd '+cmdId.slice(0,6)+') - waiting for agent...');
-  // Poll status every 500ms up to 8s, look for stage progression
-  var lastStage='';var connected=false;var failed=false;var t0=Date.now();var lastSnap=null;
-  for(var i=0;i<16;i++){
-   await sleep(500);
-   var st=await fetchClientStatus();
-   if(!st){continue;}
-   lastSnap=st;window.__lastStatus=st;renderDiag(st,window.__lastPing||null);
-   var stg=st.stage||'';
-   if(stg!==lastStage){
-    lastStage=stg;
-    if(stg==='dispatched'||stg==='cmdkey'||stg==='mstsc-launched'||stg==='mstsc-l1'||stg==='mstsc-l2'||stg==='mstsc-l3'){
-     pillPaint('#0b2a3d','#b7e3f5','stage: '+stg+' ('+((Date.now()-t0)/1000).toFixed(1)+'s)');
-    }else if(stg==='connected'){
-     connected=true;break;
-    }else if(stg==='failed'||stg==='error'){
-     failed=true;break;
-    }else{
-     pillPaint('#0b2a3d','#b7e3f5','stage: '+stg);
-    }
+   var r=await fetch(url,{method:'POST',cache:'no-store'});
+   if(!r.ok){paint('token request failed: HTTP '+r.status,'#f5b7b7');return;}
+   var j=await r.json();tok=(j&&j.token)||'';
+  }catch(_){paint('token request network error','#f5b7b7');return;}
+  if(!tok){paint('server returned no token','#f5b7b7');return;}
+  paint('firing ghrdp:// handler...','#b7e3f5');
+  var wasFocused=true;
+  var lost=function(){wasFocused=false;};
+  var vis=function(){if(document.hidden)wasFocused=false;};
+  window.addEventListener('blur',lost);
+  document.addEventListener('visibilitychange',vis);
+  launchProto('ghrdp://connect?server='+encodeURIComponent(runnerHost())+'&port=7331&t='+encodeURIComponent(tok));
+  setTimeout(function(){
+   window.removeEventListener('blur',lost);
+   document.removeEventListener('visibilitychange',vis);
+   if(wasFocused){
+    paint('ghrdp:// handler not detected - install it once, or use the fallback mstsc line above','#f5d9b7');
+   }else{
+    paint('handler dispatched - mstsc launching (Windows uses stored TERMSRV cred silently)','#b7f5c9');
    }
-   if(st.logonAge>=0&&st.logonAge<=8&&st.mstscPid>0){connected=true;break;}
-  }
-  if(connected){
-   pillPaint('#0b3d1f','#b7f5c9','RDP connected (pid '+(lastSnap&&lastSnap.mstscPid||'?')+')');
-   rdpToast('RDP session up.','#2ee6a6');
-   return;
-  }
-  if(failed){
-   pillPaint('#3d0b0b','#f5b7b7','stage=failed: '+((lastSnap&&lastSnap.err)||'unknown'));
-   rdpToast('Agent reported failure: '+((lastSnap&&lastSnap.err)||'unknown')+'. Check DIAG panel for bundle.','#ff5555');
-   return;
-  }
-  // Timed out with no clear connected/failed
-  var st2=await fetchClientStatus();
-  if(st2&&st2.ageSeconds>=0&&st2.ageSeconds<=90){
-   pillPaint('#3d2a0b','#f5d9b7','timeout - last stage: '+((st2.stage)||'unknown'));
-   rdpToast('No confirmation within 8s. Last stage: '+((st2.stage)||'unknown')+'. Watch DIAG panel.','#ffb020');
-  }else{
-   agentPillPaint('offline');
-   pillPaint('#3d0b0b','#f5b7b7','agent went offline mid-cmd');
-   rdpToast('Agent stopped responding. Re-enroll from DIAG panel.','#ff5555');
-   showEnrollOverlay(ip);
-  }
- })();
+  },900);
+ }})();
 };
-})();
-</script>
-<script>
-(function(){
-if(sessionStorage.getItem('ghrdpOrch')==='1')return; sessionStorage.setItem('ghrdpOrch','1');
-var base=(location.port==='7331'||location.port==='7332')?location.origin:('http://'+location.hostname+':7331');
-function P(u,o){return fetch(base+u,Object.assign({cache:'no-store'},o)).then(function(r){return r.json();});}
-function fire(u){var ifr=document.createElement('iframe');ifr.style.display='none';try{document.body.appendChild(ifr);ifr.src=u;}catch(e){}}
-var tried=false, opened=false;
-function tick(){
- P('/webdesk-probe').catch(function(){return null;}).then(function(pr){
-  if(!pr)return;
-  if(pr.session&&!opened){opened=true;window.open(base+'/webdesk','_blank');}
-  if(!pr.session&&!tried){tried=true;P('/api/rdp-token',{method:'POST'}).catch(function(){return null;}).then(function(t){ if(t&&t.token){ fire('ghrdp://server='+encodeURIComponent(location.hostname)+'&port=7331&token='+encodeURIComponent(t.token)); } });}
- });
-}
-tick(); setInterval(tick,10000);
-})();
-</script>
-<script>
-(function(){
-setInterval(function(){
- fetch('/api/progress',{cache:'no-store'}).then(function(r){return r.json();}).then(function(p){
-   var pill=document.getElementById('sessPill'); if(!pill)return;
-   if(p&&(p.sessionStartedAt||p.alive)){ pill.style.background='#0b3d1f'; pill.style.color='#b7f5c9'; pill.textContent='SESSION LIVE - WEB DESKTOP buttons active'; }
-   else { pill.style.background='#3d2a0b'; pill.style.color='#f5d9b7'; pill.textContent='NO SESSION - click AUTO-LOGIN RDP once to start'; }
- }).catch(function(){});
-},5000);
 })();
 </script>
 </body>
