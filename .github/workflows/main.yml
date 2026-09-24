@@ -916,10 +916,160 @@ jobs:
           }
           exit 0
 
-      # [U1 / #7C-extended] "Web desktop backend (TightVNC no-auth 5900 + websockify 7333)" step removed.
-      # No-auth VNC — even tailnet-gated — is a bright-line NLA / credential-required regression and is
-      # incompatible with the native mstsc-only architecture. WebSockify bridge and 7333 firewall rule
-      # go with it. Reintroduction is banned by STATE.md decisions.
+      # [U1 / #7C-extended] "Web desktop backend (TightVNC no-auth 5900 + websockify 7333)" step removed
+      # in prior remediation. No-auth VNC — even tailnet-gated — is a bright-line credential-required
+      # regression and is incompatible with the native mstsc-only architecture.
+      #
+      # [U5c / MIGRATION 1.10] Web desktop reintroduced ONLY in the password-required + tailnet-only
+      # form. Credentials remain required (TightVNC control + view password from repo secret VNC_PASS,
+      # never echoed to logs/summary), and exposure is limited to the tailnet via `tailscale serve` on
+      # 127.0.0.1:7333. No public port, no funnel, no anonymous access. VNC_PASS empty -> step skips
+      # cleanly and config.webdeskUrl stays '' so the dashboard button remains disabled. The banned
+      # posture (no-auth VNC on any interface) stays banned.
+      - name: Web desktop (noVNC + TightVNC, tailnet-only via tailscale serve)
+        env:
+          VNC_PASS: ${{ secrets.VNC_PASS }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $S = $env:GITHUB_STEP_SUMMARY
+          $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+          $vp = [string]$env:VNC_PASS
+          if (-not $vp) {
+              Write-Host '[webdesk] VNC_PASS secret not set; skipping (dashboard WEB DESKTOP stays disabled).'
+              if ($S) { '### Web desktop skipped (VNC_PASS not set)' | Add-Content -Path $S }
+              exit 0
+          }
+          if ($vp.Length -lt 8) {
+              Write-Host '[webdesk] VNC_PASS shorter than 8 chars; refusing (weak passwords are not acceptable for a network-reachable service).'
+              if ($S) { '### Web desktop skipped (VNC_PASS too short; require >= 8 chars)' | Add-Content -Path $S }
+              exit 0
+          }
+          # Install TightVNC via chocolatey (preinstalled on windows-latest). Password is passed as
+          # an installer package parameter that goes to msiexec briefly and never touches our logs.
+          $inst = $false
+          try {
+              $vpArg = 'ADDLOCAL=Server SERVER_REGISTER_AS_SERVICE=1 SERVER_ADD_FIREWALL_EXCEPTION=0 SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=' + $vp + ' SET_USECONTROLAUTHENTICATION=1 VALUE_OF_USECONTROLAUTHENTICATION=1 SET_CONTROLPASSWORD=1 VALUE_OF_CONTROLPASSWORD=' + $vp + ' SET_REMOVEWALLPAPER=0'
+              & choco install tightvnc --no-progress --limit-output -y --install-arguments="/quiet /norestart ADDDEFAULT=Server" --params="'/SET:'$vpArg'" 2>&1 | Where-Object { $_ -notmatch [regex]::Escape($vp) } | Select-Object -Last 20 | Out-Null
+              # Fallback: direct msiexec if chocolatey did not bring the service up
+              $svc = Get-Service -Name 'tvnserver' -ErrorAction SilentlyContinue
+              if (-not $svc) {
+                  $msi = Join-Path $env:RUNNER_TEMP 'tightvnc.msi'
+                  Invoke-WebRequest -Uri 'https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi' -OutFile $msi -UseBasicParsing -TimeoutSec 60
+                  $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $msi, '/quiet', '/norestart', 'ADDLOCAL=Server', 'SERVER_REGISTER_AS_SERVICE=1', 'SERVER_ADD_FIREWALL_EXCEPTION=0', 'SET_USEVNCAUTHENTICATION=1', 'VALUE_OF_USEVNCAUTHENTICATION=1', 'SET_PASSWORD=1', ('VALUE_OF_PASSWORD=' + $vp), 'SET_USECONTROLAUTHENTICATION=1', 'VALUE_OF_USECONTROLAUTHENTICATION=1', 'SET_CONTROLPASSWORD=1', ('VALUE_OF_CONTROLPASSWORD=' + $vp)) -Wait -PassThru -WindowStyle Hidden
+                  Write-Host ('[webdesk] tightvnc msi exit=' + $p.ExitCode)
+              }
+              # Reassert password via registry (belt-and-braces; TightVNC uses DES-encrypted format from
+              # the installer, so we rely on the installer's own encoding; we do NOT compute or log the
+              # hash here). Then bind VNC to loopback only so nothing but websockify can reach 5900.
+              $tvKey = 'HKLM:\SOFTWARE\TightVNC\Server'
+              if (Test-Path -LiteralPath $tvKey) {
+                  Set-ItemProperty -Path $tvKey -Name 'AcceptRfbConnections' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'UseVncAuthentication' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'AllowLoopback'     -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'LoopbackOnly'      -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'AlwaysShared'      -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'RemoveWallpaper'   -Value 0 -Type DWord -ErrorAction SilentlyContinue
+              }
+              try { Restart-Service -Name 'tvnserver' -Force -ErrorAction Stop; $inst = $true } catch { Write-Host ('[webdesk] tvnserver service restart failed: ' + $_.Exception.Message) }
+          } catch { Write-Host ('[webdesk] TightVNC install error: ' + $_.Exception.Message) }
+          if (-not $inst) {
+              if ($S) { '### Web desktop install failed (see workflow log; secret NOT leaked)' | Add-Content -Path $S }
+              exit 0
+          }
+          # Install noVNC + websockify. Python is preinstalled on the runner.
+          $novncDir = 'C:\ghrdp\novnc'
+          try {
+              if (-not (Test-Path -LiteralPath (Join-Path $novncDir 'vnc.html'))) {
+                  New-Item -ItemType Directory -Path 'C:\ghrdp' -Force -ErrorAction SilentlyContinue | Out-Null
+                  & git.exe clone --depth 1 https://github.com/novnc/noVNC.git $novncDir 2>&1 | Select-Object -Last 3 | Out-Null
+              }
+              & python -m pip install --disable-pip-version-check --quiet websockify 2>&1 | Select-Object -Last 3 | Out-Null
+          } catch { Write-Host ('[webdesk] noVNC/websockify install error: ' + $_.Exception.Message) }
+          if (-not (Test-Path -LiteralPath (Join-Path $novncDir 'vnc.html'))) {
+              Write-Host '[webdesk] noVNC assets missing; skipping serve'
+              if ($S) { '### Web desktop skipped (noVNC clone failed)' | Add-Content -Path $S }
+              exit 0
+          }
+          # Wait for VNC 5900 to be LISTENING on loopback before starting websockify.
+          $vncUp = $false
+          for ($i = 0; $i -lt 30; $i++) {
+              $c = Get-NetTCPConnection -LocalPort 5900 -State Listen -ErrorAction SilentlyContinue
+              if ($c) { $vncUp = $true; break }
+              Start-Sleep -Seconds 1
+          }
+          if (-not $vncUp) { Write-Host '[webdesk] VNC 5900 did not reach LISTEN in 30s' }
+          # Start websockify on 127.0.0.1:7333, bridging to 127.0.0.1:5900, serving noVNC.
+          try { Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*websockify*7333*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
+          try {
+              $wsLog = 'C:\ghrdp\webdesk\websockify.log'
+              New-Item -ItemType Directory -Path 'C:\ghrdp\webdesk' -Force -ErrorAction SilentlyContinue | Out-Null
+              Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $novncDir, '127.0.0.1:7333', '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsLog -WindowStyle Hidden | Out-Null
+          } catch { Write-Host ('[webdesk] websockify start failed: ' + $_.Exception.Message) }
+          $wsUp = $false
+          for ($i = 0; $i -lt 20; $i++) {
+              $c = Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue
+              if ($c) { $wsUp = $true; break }
+              Start-Sleep -Seconds 1
+          }
+          if (-not $wsUp) {
+              Write-Host '[webdesk] websockify 7333 did not reach LISTEN in 20s'
+              if ($S) { '### Web desktop skipped (websockify did not bind)' | Add-Content -Path $S }
+              exit 0
+          }
+          # Expose ONLY on the tailnet.
+          $serveUrl = ''
+          try {
+              $serveLog = Join-Path $env:RUNNER_TEMP 'ts-serve-webdesk.log'
+              & $ts serve --bg https://127.0.0.1:7333 2>&1 | Tee-Object -FilePath $serveLog | Out-Null
+              $LASTEXITCODE = 0
+              try {
+                  $ss = (& $ts serve status --json 2>$null) | ConvertFrom-Json
+                  if ($ss -and $ss.Web) {
+                      foreach ($k in $ss.Web.PSObject.Properties.Name) {
+                          $entry = $ss.Web.$k
+                          if ($entry -and $entry.Handlers) {
+                              foreach ($hk in $entry.Handlers.PSObject.Properties.Name) {
+                                  $h = $entry.Handlers.$hk
+                                  if ($h.Proxy -and ($h.Proxy -match '127\.0\.0\.1:7333')) { $serveUrl = 'https://' + $k + $hk; break }
+                              }
+                          }
+                          if ($serveUrl) { break }
+                      }
+                  }
+              } catch { }
+              if (-not $serveUrl) {
+                  try {
+                      $j = (& $ts status --json 2>$null) | ConvertFrom-Json
+                      $fq = ([string]$j.Self.DNSName).TrimEnd('.')
+                      if ($fq) { $serveUrl = 'https://' + $fq + '/' }
+                  } catch { }
+              }
+              if ($serveUrl -and -not ($serveUrl.EndsWith('/'))) { $serveUrl = $serveUrl + '/' }
+              if ($serveUrl) { $serveUrl = $serveUrl + 'vnc.html?autoconnect=1&resize=remote' }
+          } catch { Write-Host ('[webdesk] tailscale serve failed: ' + $_.Exception.Message) }
+          if (-not $serveUrl) {
+              Write-Host '[webdesk] tailscale serve did not produce a URL'
+              if ($S) { '### Web desktop skipped (tailscale serve produced no URL)' | Add-Content -Path $S }
+              exit 0
+          }
+          # Write config.webdeskUrl (safe: no password anywhere in the URL).
+          try {
+              $cfgPath = 'C:\ghrdp\config.json'
+              if (Test-Path -LiteralPath $cfgPath) {
+                  $enc = New-Object System.Text.UTF8Encoding($false)
+                  $cfgJ = [System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json
+                  if ($cfgJ.PSObject.Properties['webdeskUrl']) { $cfgJ.webdeskUrl = $serveUrl } else { $cfgJ | Add-Member -NotePropertyName webdeskUrl -NotePropertyValue $serveUrl -Force }
+                  [System.IO.File]::WriteAllText($cfgPath, ($cfgJ | ConvertTo-Json -Depth 10), $enc)
+              }
+          } catch { Write-Host ('[webdesk] config.json update failed: ' + $_.Exception.Message) }
+          Write-Host ('[webdesk] serve URL = ' + $serveUrl)
+          if ($S) {
+              '### Web desktop LIVE (tailnet-only, VNC-password-gated)' | Add-Content -Path $S
+              ('URL: ' + $serveUrl) | Add-Content -Path $S
+              'Credentials: VNC password from repo secret VNC_PASS (never printed).' | Add-Content -Path $S
+          }
+          exit 0
 
       - name: Start Mission Control dashboard EARLY (PS 7331, SYSTEM task, confirm LISTENING)
         shell: pwsh
