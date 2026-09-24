@@ -309,52 +309,48 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
      NLA (UserAuthentication=1) + CredSSP stay ON. -->
 <section class="glass" id="sec-native-rdp">
   <h2>Native mstsc auto-login</h2>
-  <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><button onclick="copyById('rdpFqdn',this)">copy</button><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound on RDP-Tcp per docs/MIGRATION.md sec 1.3.</span></div>
-  <div class="row"><span class="k">Cert bound</span><span class="v" id="nrCert">...</span><span class="note">RDP-Tcp SSLCertificateSHA1Hash present (from /api/native-status). Fix: run Enable-RdpTlsCertificate.ps1 on the host.</span></div>
-  <div class="row"><span class="k">NLA</span><span class="v" id="nrNla">...</span><span class="note">UserAuthentication == 1 on the RDP-Tcp listener. Fix: set UserAuthentication=1 on the host.</span></div>
-  <div class="row"><span class="k">Handler</span><span class="v" id="nrHandler">...</span><span class="note">ghrdp:// handler POST /api/handler-hello within the last 24h. Fix: press RUN INSTALL (once); or run the one-time fallback below.</span></div>
+  <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>
+  <div class="row"><span class="k">Cert bound</span><span class="v" id="nrCert">...</span><span class="note" id="nrCertReason">RDP-Tcp SSLCertificateSHA1Hash present (from /api/native-status).</span></div>
+  <div class="row"><span class="k">NLA</span><span class="v" id="nrNla">...</span><span class="note" id="nrNlaReason">UserAuthentication == 1 on the RDP-Tcp listener.</span></div>
+  <div class="row"><span class="k">Handler</span><span class="v" id="nrHandler">...</span><span class="note" id="nrHandlerReason">ghrdp:// handler POST /api/handler-hello within the last 24h. Fix: press RUN INSTALL below.</span></div>
   <div class="row" id="nrInstallFallbackRow" style="display:none;flex-direction:column;align-items:stretch;gap:6px">
-    <span class="k" style="font-weight:600">Handler install fallback (bootstrap when ghrdp:// is not yet registered)</span>
-    <span class="note">Open PowerShell as your user (not admin), replace <code>&lt;repo&gt;</code> with your local checkout path, paste, press Enter. Copies the handler to <code>%LOCALAPPDATA%\ghrdp\</code> and registers <code>HKCU\Software\Classes\ghrdp</code>. No admin, no network.</span>
+    <span class="k" style="font-weight:600">Handler install fallback (one-time bootstrap when ghrdp:// is not yet registered)</span>
+    <span class="note">Open PowerShell as your user (not admin), replace <code>&lt;repo&gt;</code> with your local checkout path, paste, press Enter. Registers <code>HKCU\Software\Classes\ghrdp</code> - no admin, no download, no UAC. This row hides itself once the handler posts <code>/api/handler-hello</code>.</span>
     <div style="display:flex;gap:8px;align-items:center">
       <code id="nrInstallSnippet" style="flex:1;padding:8px 10px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:12px ui-monospace,Consolas,monospace;overflow-x:auto">powershell -NoProfile -Command "Copy-Item &lt;repo&gt;\payloads\helper-ghrdp-connect.ps1 $env:LOCALAPPDATA\ghrdp\ -Force; reg add HKCU\Software\Classes\ghrdp /ve /d URL:GHRDP /f; reg add HKCU\Software\Classes\ghrdp /v \"URL Protocol\" /d \"\" /f; reg add HKCU\Software\Classes\ghrdp\shell\open\command /ve /d \"powershell.exe -NoProfile -ExecutionPolicy Bypass -File $env:LOCALAPPDATA\ghrdp\helper-ghrdp-connect.ps1 -Url \\\"%1\\\"\" /f"</code>
       <button onclick="copyById('nrInstallSnippet',this)">copy</button>
     </div>
   </div>
-  <div class="row"><span class="k">Credential</span><span class="v" id="nrCred">...</span><span class="note">This PC has a TERMSRV cmdkey entry (localStorage; per-client). Fix: press RUN SETUP (current user).</span></div>
+  <div class="row"><span class="k">Credential</span><span class="v" id="nrCred">...</span><span class="note">This PC has a TERMSRV cmdkey entry (localStorage; per-client). Fix: press RUN SETUP below.</span></div>
   <div class="row" id="nrReasonsRow" style="display:none"><span class="k">Blocked by</span><span class="v" id="nrReasons" style="color:#f5b7b7"></span></div>
+  <div class="row" id="nrVpsPendingRow" style="display:none"><span class="k">VPS status</span><span class="v" id="nrVpsPending" style="color:#f5d9b7">provisioning pending (advisory - does NOT block auto-login)</span></div>
   <div class="row"><span class="k">Last handler action</span><span class="v" id="nrLastVerb">-</span><span class="note">Most recent /api/handler-hello (verb + ok + short details). Log: <code>%LOCALAPPDATA%\ghrdp\ghrdp-connect.log</code></span></div>
   <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
-    <span class="k" style="font-weight:600">One-click actions</span>
+    <span class="k" style="font-weight:600">One-click actions (primary)</span>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button id="btnRunInstall" type="button">RUN INSTALL (once)</button>
-      <button id="btnRunSetup" type="button">RUN SETUP (user)</button>
-      <button id="btnRunCheck" type="button">RUN CHECK</button>
+      <button class="primary" id="btnRunInstall" type="button" style="display:none">RUN INSTALL (once)</button>
+      <button class="primary" id="btnRunSetup" type="button">RUN SETUP (user)</button>
+      <button class="primary" id="btnRunCheck" type="button">RUN CHECK</button>
+      <button class="primary" id="btnRunDirect" type="button">RUN DIRECT</button>
       <button class="primary" id="autoLoginNative" type="button" disabled>AUTO-LOGIN (native mstsc)</button>
-      <button id="btnWebDesk" type="button" disabled>WEB DESKTOP</button>
+      <button class="primary" id="btnWebDesk" type="button" disabled>WEB DESKTOP</button>
       <span class="note" id="autoLoginStatus"></span>
     </div>
-    <span class="note">Each RUN fires <code>ghrdp://&lt;verb&gt;?server=&lt;fqdn&gt;</code>. Browser prompts once for the protocol handler; silent thereafter. AUTO-LOGIN enables only when all five probes pass. WEB DESKTOP requires <code>config.webdeskUrl</code> (Guacamole on VPS behind <code>tailscale serve</code>, docs/MIGRATION.md sec 1.10).</span>
+    <span class="note">Each RUN fires <code>ghrdp://&lt;verb&gt;?server=&lt;fqdn&gt;</code>. Windows dispatches the handler silently (no browser prompt after the one-time HKCU install). AUTO-LOGIN enables only when all probes pass. WEB DESKTOP requires <code>config.webdeskUrl</code> (workflow U5c: noVNC + TightVNC behind <code>tailscale serve</code>, docs/MIGRATION.md sec 1.10).</span>
   </div>
-  <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
-    <span class="k" style="font-weight:600">Step 1 - one-time interactive setup (per client PC)</span>
-    <span class="note">Open PowerShell as your user (not admin), paste the line, press Enter. Windows prompts for the RDP password interactively. Nothing here is transmitted to any server; the password never leaves your PC. See docs/MIGRATION.md sec 1.4.</span>
+  <div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
+    <span class="k" style="font-weight:600">Manual fallbacks (only if the handler is not registered yet)</span>
     <div style="display:flex;gap:8px;align-items:center">
-      <code id="cmdkeyLine" style="flex:1;padding:8px 10px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:12px ui-monospace,Consolas,monospace;overflow-x:auto">(populating...)</code>
-      <button onclick="copyById('cmdkeyLine',this)">copy</button>
+      <span class="note" style="opacity:.7">cmdkey line:</span>
+      <code id="cmdkeyLine" style="flex:1;padding:6px 8px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:11px ui-monospace,Consolas,monospace;overflow-x:auto">(populating...)</code>
+      <a href="javascript:void(0)" onclick="copyById('cmdkeyLine',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
     </div>
-    <span class="note">Verify: <code>cmdkey /list</code> should show <code>Target: TERMSRV/&lt;fqdn&gt;.ts.net</code>. Remove later: <code>cmdkey /delete:TERMSRV/&lt;fqdn&gt;.ts.net</code>.</span>
-  </div>
-  <!-- [U4] Step 2 AUTO-LOGIN button moved into the "One-click actions" row
-       above, alongside RUN INSTALL / RUN SETUP / RUN CHECK / WEB DESKTOP. -->
-
-  <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
-    <span class="k" style="font-weight:600">Fallback - direct mstsc</span>
     <div style="display:flex;gap:8px;align-items:center">
-      <code id="mstscFallback" style="flex:1;padding:8px 10px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:12px ui-monospace,Consolas,monospace">mstsc /v:__IP__</code>
-      <button onclick="copyById('mstscFallback',this)">copy</button>
+      <span class="note" style="opacity:.7">mstsc line:</span>
+      <code id="mstscFallback" style="flex:1;padding:6px 8px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:11px ui-monospace,Consolas,monospace">mstsc /v:__IP__</code>
+      <a href="javascript:void(0)" onclick="copyById('mstscFallback',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
     </div>
-    <span class="note">Silent auth if Step 1 was done. Use if the <code>ghrdp://</code> handler is not installed. Handler log (post-install): <code>%LOCALAPPDATA%\ghrdp\ghrdp-connect.log</code>.</span>
+    <span class="note">Silent auth if the setup verb has run. Use these only if the <code>ghrdp://</code> handler is not installed (verify: <code>cmdkey /list</code> shows <code>TERMSRV/&lt;fqdn&gt;.ts.net</code>). Post-install log: <code>%LOCALAPPDATA%\ghrdp\ghrdp-connect.log</code>.</span>
   </div>
 </section>
 <section class="glass" id="sec-keys">
@@ -862,8 +858,12 @@ async function nativeStatus(){
   var r=await fetch(apiBase()+'/api/native-status'+(key?('?key='+encodeURIComponent(key)):''),{cache:'no-store'});
   if(!r.ok)return;
   var s=await r.json();
+  var pr=(s&&s.probeReasons)||{};
+  function setReason(id, txt){ var el=document.getElementById(id); if(el&&txt){ el.textContent=txt; } }
   var ce=document.getElementById('nrCert');if(ce){ce.textContent=s.certBound?'yes':'NO';ce.style.color=s.certBound?'':'#f5b7b7';}
+  if(!s.certBound && pr.cert) setReason('nrCertReason','BLOCKED: '+pr.cert);
   var ne=document.getElementById('nrNla');if(ne){ne.textContent=s.nlaOn?'ON':'OFF';ne.style.color=s.nlaOn?'':'#f5b7b7';}
+  if(!s.nlaOn && pr.nla) setReason('nrNlaReason','BLOCKED: '+pr.nla);
   var he=document.getElementById('nrHandler');
   var handlerOk=false;
   if(he){
@@ -871,20 +871,41 @@ async function nativeStatus(){
    else if(s.handlerSeenAgeSec>86400){he.textContent='stale ('+Math.round(s.handlerSeenAgeSec/3600)+'h)';he.style.color='#f5b7b7';}
    else{he.textContent='installed ('+(s.handlerSeenAgeSec<60?s.handlerSeenAgeSec+'s':Math.round(s.handlerSeenAgeSec/60)+'m')+' ago)';he.style.color='';handlerOk=true;}
   }
+  if(!handlerOk && pr.handler) setReason('nrHandlerReason','BLOCKED: '+pr.handler+'. Fix: press RUN INSTALL below.');
   var ifr=document.getElementById('nrInstallFallbackRow');
   if(ifr) ifr.style.display = handlerOk ? 'none' : '';
+  // [U5e] Handler-install fallback copy button + RUN INSTALL button are
+  // BOTH visible only while the handler has never been seen. Once hello
+  // is seen, RUN INSTALL becomes redundant; hide it and rely on RUN
+  // SETUP / RUN CHECK / RUN DIRECT / AUTO-LOGIN. The fallback copy row
+  // remains the ONLY copy-fallback in the UI (unavoidable one-time
+  // bootstrap; no download, no UAC).
+  var bi=document.getElementById('btnRunInstall');
+  if(bi){ bi.style.display = handlerOk ? 'none' : ''; }
   var cok=credOk();
   var cel=document.getElementById('nrCred');if(cel){cel.textContent=cok?('set ('+new Date(credStamp()).toISOString().slice(0,10)+')'):'not set';cel.style.color=cok?'':'#f5b7b7';}
   var lv=s.lastHandlerVerb, lvEl=document.getElementById('nrLastVerb');
   if(lvEl){ if(lv&&lv.verb){ lvEl.textContent = lv.verb+' '+(lv.ok?'ok':'FAIL')+(lv.details?' - '+lv.details:'')+(lv.ts?' ('+lv.ts.replace('T',' ').slice(0,19)+'Z)':''); lvEl.style.color = lv.ok?'':'#f5b7b7'; } else { lvEl.textContent='-'; lvEl.style.color=''; } }
   var srvReasons=(s.reasonsDisabled||[]).slice();
   if(!cok) srvReasons.push('cred-not-set');
-  var reasons=srvReasons.map(function(x){return REASON_TEXT[x]||x;});
+  // [U5e] Render probeReasons verbatim per row (see setReason() calls
+  // above for cert/nla/handler). For the blocked-by summary row, we
+  // prefer the server's verbatim probeReasons string when it exists so
+  // the user sees exactly what the server saw; otherwise fall back to
+  // the REASON_TEXT translation of the reason key.
+  var reasonMap={'fqdn-not-tsnet':pr.fqdn,'cert-not-bound':pr.cert,'nla-off':pr.nla,'handler-not-seen':pr.handler};
+  var reasons=srvReasons.map(function(x){return reasonMap[x] || REASON_TEXT[x] || x;});
   var row=document.getElementById('nrReasonsRow'), rEl=document.getElementById('nrReasons');
   if(row&&rEl){
    if(reasons.length){row.style.display='';rEl.textContent=reasons.join(' | ');}
    else{row.style.display='none';rEl.textContent='';}
   }
+  // [U5e] vpsPending is ADVISORY only: the workflow flips it while the
+  // dedicated VPS is still being provisioned, but does NOT contribute to
+  // reasonsDisabled and does NOT block AUTO-LOGIN. Ephemeral runner
+  // ts.net names are valid auto-login targets.
+  var vpRow=document.getElementById('nrVpsPendingRow');
+  if(vpRow) vpRow.style.display = (s && s.vpsPending) ? '' : 'none';
   var b=$('autoLoginNative');
   if(b){
    var okAll = srvReasons.length===0 && (/^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$/i).test((document.getElementById('rdpFqdn')||{}).textContent||'');
@@ -894,11 +915,11 @@ async function nativeStatus(){
   var wb=$('btnWebDesk');
   if(wb){
    if(s.webdeskUrl){ wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(s.webdeskUrl,'_blank');}; wb.title=s.webdeskUrl; }
-   else { wb.disabled=true; wb.style.opacity='0.5'; wb.style.cursor='not-allowed'; wb.title='config.webdeskUrl not set - install Guacamole on VPS per docs/MIGRATION.md sec 1.10'; }
+   else { wb.disabled=true; wb.style.opacity='0.5'; wb.style.cursor='not-allowed'; wb.title='config.webdeskUrl not set - workflow U5c installs noVNC+TightVNC behind tailscale serve; needs repo secret VNC_PASS.'; }
   }
  }catch(_){}
 }
-// RUN INSTALL / SETUP / CHECK -> fire ghrdp://<verb>?server=<fqdn>
+// RUN INSTALL / SETUP / CHECK / DIRECT -> fire ghrdp://<verb>?server=<fqdn>
 function fireVerb(v, extra){
  var f=(document.getElementById('rdpFqdn')||{}).textContent||'';
  if(!f){ paint('FQDN not set - cannot fire ghrdp:// verb','#f5b7b7'); return; }
@@ -910,6 +931,7 @@ function fireVerb(v, extra){
 (function(){
  var i=$('btnRunInstall'); if(i) i.onclick=function(){ fireVerb('install'); };
  var c=$('btnRunCheck'); if(c) c.onclick=function(){ fireVerb('check'); };
+ var d=$('btnRunDirect'); if(d) d.onclick=function(){ fireVerb('direct'); };
  var s=$('btnRunSetup'); if(s) s.onclick=function(){
   var u=(document.getElementById('credUser')||{}).textContent||'rdpuser';
   fireVerb('setup','user='+encodeURIComponent(u));
