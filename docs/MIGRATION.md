@@ -95,11 +95,11 @@ stand up, no client-side trust manipulation.
 - Tooling in this repo MUST NOT run cmdkey on the user's behalf, MUST NOT
   transit the password over the network, MUST NOT prompt for it in a
   browser page, and MUST NOT bake it into a `.bat` file or `ghrdp://` URL.
-- The remediated one-click handler (`payloads/helper-ghrdp-connect.ps1`)
-  resolves the FQDN from a short-lived server token and calls
-  `mstsc /v:<fqdn>.ts.net` only. As of P2 it hard-refuses any resolved
-  value that is not a `*.ts.net` FQDN (no IP fallback, no `server=`
-  fallback).
+- The VPS one-click path uses the compiled `payloads/ghrdp-handler/` EXE
+  (§1.9). It POST-redeems a short-lived rid, requires a `*.ts.net` FQDN
+  equal to the user's locally pinned VPS, then calls `mstsc /v:<fqdn>`.
+  The older PowerShell helper is not installed by the dashboard; it remains
+  compatible with the FQDN-only redemption response.
 
 ### 1.4.1 Launch path (D primary, E fallback)
 
@@ -109,9 +109,10 @@ stand up, no client-side trust manipulation.
 - Gateway passwords are user-managed on the host. Tooling must not stash
   them, and must not put them in a URL, a log, or the page. NLA and
   CredSSP stay on.
-- E is the documented native fallback: one manual `cmdkey` prompt plus a
-  pinned `mstsc /v:<fqdn>` shortcut. That promise is VPS-only
-  (`hostKind=vps`). Ephemeral `hostKind` must not offer it as one-time.
+- Native AUTO-LOGIN is secondary and VPS-only (`hostKind=vps`): the user
+  runs interactive `cmdkey` once and registers the compiled handler locally.
+  A copyable `mstsc /v:<fqdn>` shortcut remains the handler-free fallback.
+  Ephemeral hosts never offer a one-time native login promise.
 - Lab login (gateway to loopback RDP, stored cred, NLA) is not measured
   in this landing. No PASS is claimed. SAC enforce and WDAC remain
   limitations for any future local binary; they are not bypassed.
@@ -138,42 +139,77 @@ no encryption-key publication, no shared decrypt link.
 - Optional: also restrict 3389 to Tailscale interface only via a rule matching
   the `Tailscale` network profile.
 
-### 1.7 Full VPS bootstrap (`Provision-GhrdpVps.ps1`)
+### 1.7 Permanent Windows VPS provisioning (`Provision-GhrdpVps.ps1`)
 
-`payloads/Provision-GhrdpVps.ps1` chains §1.1 through §1.6 idempotently:
-winget-installs Tailscale, joins the tailnet (interactive OR
-`$env:TS_AUTHKEY`; never `--authkey=` on the command line), hard-fails
-if the resolved MagicDNS FQDN is not `*.ts.net`, creates the `rdpuser`
-account with an interactively-typed password
-(`Read-Host -AsSecureString`), sets `UserAuthentication = 1` and
-`fDenyTSConnections = 0`, delegates to `Enable-RdpTlsCertificate.ps1`
-(§1.3) for the LE cert bind, and creates a firewall rule allowing
-inbound TCP/3389 on the Tailscale interface only while disabling the
-default 'Remote Desktop' inbound rules. Explicit non-actions per
-discipline: no `AuthenticationLevelOverride`, no `fPromptForPassword = 0`,
-no MOTW / Zone.Identifier strip, no publisher-trust arming, no
-credential stash. Re-run every ~90 days to bind a fresh LE cert.
+Run **on the VPS console, elevated, with PowerShell 7+**. Do not use an
+active RDP session: `TermService` must restart after certificate binding.
+The script configures *native RDP*; it does NOT install/start the dashboard,
+noVNC/TightVNC, or a file-sync agent. Deploy those separately before
+claiming a production migration or decommissioning Actions (§2). CI run
+`36047443590` passed static contracts, PowerShell parsing, and an isolated
+Windows ACL smoke test; **no VPS or client RDP login was tested**.
 
-Invoke (elevated, PowerShell 7+):
+- Requires Windows 10/11 Pro or Windows Server, installs Tailscale via winget
+  if needed and joins interactively. Optional `$env:TS_AUTHKEY` is read only
+  when joining; it is put briefly in an admin-only temp file and passed as
+  `--auth-key file:<path>`, **not** as an argv value; the temp file is removed
+  in `finally`. Tailscale documents the `file:` option. After joining it
+  retries `tailscale status --json` 10 times (~50 seconds) for transient DNS
+  blips and refuses an empty/non-`*.ts.net` `Self.DNSName` or missing
+  100.64.0.0/10 address. The workflow's stage gate already has its own
+  ten-attempt, five-second F9g DNS retry before the MagicDNS halt.
+- Creates/retains exactly one static local `rdpuser` (no username override),
+  prompts for a new account password with `Read-Host -AsSecureString` only
+  when the account is first created, and adds it to the Remote Desktop Users
+  built-in group. Rotate an existing account's password separately (§1.8).
+- Forces RDP-Tcp `UserAuthentication=1` (NLA/CredSSP) and `SecurityLayer=2`
+  (TLS-only). Calls `Enable-RdpTlsCertificate.ps1 -Fqdn <exact MagicDNS
+  name>`, which runs `tailscale cert`, verifies leaf DNS name, expiry,
+  private key and LE trust chain, imports the PFX into `LocalMachine\My`,
+  grants NETWORK SERVICE read on the persisted key (CNG or legacy RSA), and
+  binds the hash by WMI/registry with read-back verification. PEM files are
+  restricted to SYSTEM and Administrators. No client certificate-warning
+  override, no NLA-off fallback, no credential stashing.
+- Disables default inbound Remote Desktop rules, refuses a remaining explicit
+  inbound TCP/3389 allow rule, replaces its own rule on each run and opens
+  **only** TCP/3389 from `100.64.0.0/10` on the Tailscale interface to the
+  host's Tailscale IPv4. Only after cert/firewall setup does it enable RDP,
+  restart TermService (failure is fatal) and check policy again. The VPS
+  operator must ALSO block public 3389 in the cloud NSG/router and inspect
+  other broad inbound firewall rules; this script cannot control the NSG.
+- Restricts `C:\ghrdp` and the files it writes to SYSTEM/Administrators;
+  writes `hostKind=vps` to `hostKind.txt` and `config.json` along with
+  `dnsName`, `rdpIp`, and `rdpUser`. `rdpPass` and old mirror secrets are
+  removed from VPS config; `mirror=false`. On first run a random 32-byte
+  dashboard token is generated in protected `dash-token.txt` and copied to
+  protected config (required by the dashboard); re-runs preserve it.
+  Transfer it from the VPS **privately** into a password manager; never
+  print it to logs, put it in chat, or commit it. Follow §1.8 for rotation.
+  An absent web desktop URL remains empty (`step-not-run`); this script
+  does not claim a web desktop was deployed.
 
-    pwsh -ExecutionPolicy Bypass -File .\payloads\Provision-GhrdpVps.ps1
+Invoke (from an elevated PowerShell 7 console on the VPS):
 
-Unattended tailnet auth (still interactive password):
+    pwsh -File .\payloads\Provision-GhrdpVps.ps1
 
-    $env:TS_AUTHKEY = 'tskey-auth-...'
-    pwsh -ExecutionPolicy Bypass -File .\payloads\Provision-GhrdpVps.ps1
+To join with an optional auth key without putting it on a command line,
+get the value privately, then prompt for it in the current shell:
 
-MagicDNS prerequisite (F9): this script hard-fails — and the workflow's three
-DNS gates halt by design — until MagicDNS is enabled on the tailnet.
-[Enable MagicDNS now (Tailscale admin → DNS)](https://login.tailscale.com/admin/dns) —
-toggle **MagicDNS** ON, Save, then re-run. Runs stay halted until enabled.
-Optional API one-liner (same call the workflow's F9b opt-in makes when the
-repo secrets `TS_API_TOKEN` + `TS_TAILNET_NAME` are set; token in the
-`Authorization` header only, never printed):
+    $env:TS_AUTHKEY = Read-Host 'Tailscale auth key (local, masked)' -MaskInput
+    pwsh -File .\payloads\Provision-GhrdpVps.ps1
 
-    curl -sS -X POST "https://api.tailscale.com/api/v2/tailnet/${TS_TAILNET_NAME}/dns/preferences" \
-      -H "Authorization: Bearer ${TS_API_TOKEN}" -H "Content-Type: application/json" \
-      -d '{"magicDNSEnabled":true}'
+Before running, enable **HTTPS** in the tailnet and **MagicDNS** under
+[DNS settings](https://login.tailscale.com/admin/dns). If MagicDNS is OFF,
+enable it, Save, and re-run. The workflow's three DNS gates likewise halt by
+design. With the optional `TS_API_TOKEN` + `TS_TAILNET_NAME` repository secrets,
+the workflow may POST the MagicDNS preference via the Tailscale API; it never
+places the token in a URL. This is separate from VPS provisioning.
+
+When the operator has manually deployed a private dashboard and a protected
+web desktop, verified `/api/native-status` (`fqdn`, `certBound`, `nlaOn`,
+`hostKind=vps`, non-empty `webdeskUrl`), confirmed a real client NLA login
+and seen the Windows desktop via WEB DESKTOP, §2 may be considered — never
+before. See `docs/AUTOLOGIN.md` for the user-run client steps.
 
 ### 1.8 Secret rotation (execute BEFORE decommission and BEFORE §4)
 
@@ -192,95 +228,60 @@ of band.
       current key. Generate ONE reusable auth key for VPS bootstrap,
       expiry ≤7 days, tagged `tag:ghrdp-vps`. Delete after §1.7
       succeeds.
-- [ ] **`rdpuser` password**. Choose a fresh strong password at §1.7
-      provision time (the script prompts interactively).
-- [ ] **`dashToken`**. Generate a fresh random 32+ byte value; store
-      the VPS side in the `ghrdp-server.ps1` config and the dashboard
-      side in a password manager. Never commit.
+- [ ] **`rdpuser` password**. §1.7 prompts interactively for a fresh strong
+      password *when creating the account*. If `rdpuser` already exists,
+      change its password privately before using the VPS.
+- [ ] **`dashToken`**. §1.7 generates 32 random bytes when missing and stores
+      them in protected `C:\ghrdp\dash-token.txt` and `config.json`;
+      re-runs preserve the value. Rotate any existing/burned token out of
+      band, update both VPS files while the dashboard is stopped, restart it,
+      and store the new value in a password manager. Never commit or log it.
 - [ ] **GitHub PATs scoping this repo** during Actions-as-RDP
       operation. Rotate under `https://github.com/settings/tokens`.
 
-### 1.9 Dashboard native auto-login button contract (U1)
+### 1.9 Dashboard native auto-login button contract (U1 repair)
 
-`payloads/ui.html` exposes a single native RDP entry point in
-`#sec-native-rdp`. This is the ONLY sanctioned dashboard-driven RDP
-launch path; the previous agent-enrollment / DIAG / Parsec-push /
-`install.bat` surface is removed.
+The native section in `payloads/ui.html` shows WEB DESKTOP for all hosts and
+shows AUTO-LOGIN **only** when `/api/native-status` says `hostKind=vps`.
+Readiness requires the `*.ts.net` FQDN, bound RDP certificate, NLA, and a
+*user confirmation* that they have already run §1.4 cmdkey on this PC.
+Copying a line does not mark the credential as present. The client confirmation
+is keyed to the FQDN in localStorage; no credential is stored there. The
+server cannot inspect the client's Credential Manager and does not claim to.
+The raw `mstsc /v:<fqdn>` command remains a copy-only fallback.
 
-Client-side flow (button `#autoLoginNative`):
+The approved VPS button contract is:
 
-1. `POST http://<runner>:7331/api/rdp-token` (dashboard `key` query
-   only when the dashboard is auth-guarded; no body).
-2. Server issues `{ token, ttl:60 }`, single-use, in-memory only.
-3. UI fires the URI `ghrdp://connect?server=<runner-host>&port=7331&t=<token>`
-   via a hidden `<iframe>` (no `window.open`, no navigation).
-4. Local `ghrdp://` handler (`payloads/helper-ghrdp-connect.ps1`)
-   parses `server` + `t`, POSTs `/api/rdp-creds` with
-   `{ "token": "<t>" }`, receives `{ host, fqdn }` — server enforces
-   `*.ts.net` (P2 discipline), any other value returns HTTP 409.
-5. Handler runs `mstsc /v:<fqdn>`. Windows LSA silently supplies the
-   per-user `TERMSRV/<fqdn>` credential stored by §1.4 cmdkey.
-6. Handler NEVER reads, writes, or deletes the stored credential; it
-   only resolves an FQDN and launches `mstsc`.
+1. `POST /api/rdp-token` with the dashboard token in an `Authorization: Bearer`
+   header. The server rejects missing/incorrect credentials (including callers
+   on the tailnet), non-VPS hosts and invalid `config.dnsName`; the response is
+   `{ "rid": "<random-32-hex>", "ttl": 60 }`. The rid is single-use/in-memory.
+   The UI does not put the dashboard token into this request's URL.
+2. The browser dispatches **only** `ghrdp:connect?rid=<rid>`. No host,
+   username, password, dashboard token or script-host command is in the URI.
+3. The user-installed **compiled** `GhrdpHandler.exe` (source in
+   `payloads/ghrdp-handler/`, win-x64 build artifact in launch-gates) reads
+   its locally pinned VPS FQDN, and POSTs `{ "token": "<rid>" }` to
+   `http://<fqdn>:7331/api/rdp-creds` across the private encrypted tailnet.
+   Redirects are disabled; no token is logged. The server returns only
+   `{ "fqdn": "<fqdn>" }`. It never returns a credential.
+4. The executable checks that the response is exactly a valid `*.ts.net`
+   FQDN equal to the pinned host, then starts `mstsc /v:<fqdn>` without a
+   password argument. Windows supplies the user's §1.4 Credential Manager
+   entry, with NLA/CredSSP and the listener's trusted LE certificate intact.
 
-Banned in this section and its script — presence is a bug:
+First-time handler registration is a **user action** on the client per
+`docs/AUTOLOGIN.md`; no page installs it, suppresses Windows warnings, or
+claims that protocol/browser prompts cannot occur. The legacy PowerShell
+helper is not the primary handler, but still accepts the FQDN-only response
+for existing callers. Handler telemetry is advisory, never a readiness gate.
 
-- Any `ghrdp://` URI with a `pass=`, `password=`, `user=`, `key=`, or
-  literal credential parameter.
-- A `credPass` / `__PASS__` UI element, or a plaintext-password
-  display of any kind.
-- References to `/api/enroll.ps1`, `/api/agent.ps1`, `/api/client-status`,
-  `/api/agent-status`, `/api/client-cmd`, `/api/agent-hello`, or
-  `showEnrollOverlay` — the endpoints are 404-guarded server-side; UI
-  references would falsely imply live paths.
-- `install.bat` or `install.ps1` download anchors and any
-  auto-executing installer helper.
-- LocalDevices arming, `AuthenticationLevelOverride`, MOTW /
-  Zone.Identifier strip, or publisher-trust arming (§3 bans them
-  system-wide).
-- File uploads from the dashboard to the runner (`/parsec-push` is
-  404; no re-introduction).
-
-Fallback shown in the same section — always visible:
-
-- The literal `mstsc /v:<fqdn>` command line, for clients that have
-  no handler installed. Silent auth still applies once §1.4 cmdkey
-  is complete.
-
-FQDN sourcing:
-
-- The server substitutes `__IP__` -> `cfg.rdpIp` when serving `/`.
-  Under P2 discipline `cfg.rdpIp` is a MagicDNS FQDN (`*.ts.net`);
-  before VPS provision (§1.7) it may be blank or a stale IP. The UI
-  hard-refuses anything not matching `^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$`
-  and disables the AUTO-LOGIN button, so an unprovisioned dashboard
-  never emits a bad `mstsc` target.
-
-Readiness snapshot (`/api/native-status`, U3):
-
-- The UI additionally polls `GET /api/native-status` every 15s (dash-
-  token + tailnet gated via the shared routing entry). The response
-  is `{ fqdn, certBound, nlaOn, handlerSeenAgeSec, reasonsDisabled }`.
-  `certBound` reads the `RDP-Tcp` `SSLCertificateSHA1Hash` registry
-  value on the host; `nlaOn` reads `UserAuthentication == 1`;
-  `handlerSeenAgeSec` is the age of the last `POST /api/handler-hello`
-  the ghrdp:// handler fired on invoke.
-- `reasonsDisabled` names anything failing: `fqdn-not-tsnet`,
-  `cert-not-bound`, `nla-off`, `handler-not-seen`. The UI shows each
-  as a plain-English row and disables AUTO-LOGIN whenever the list is
-  non-empty. Client-side cred presence is NOT transmitted; the server
-  never learns whether a given PC has the TERMSRV cred stored.
-- `POST /api/handler-hello` records only `{ ts }` to
-  `handler-hello-last.json`. No IP, user, or credential fields are
-  written or transmitted.
-
-Verification (E-battery greps for banned patterns; must return zero):
-
-    git grep -nE "enroll|agentPill|/api/client-status|/api/agent|/api/enroll|showEnrollOverlay|LocalDevices|AuthenticationLevelOverride|__PASS__|install\.bat|install\.ps1|parsec-push" -- payloads/ui.html
-    git grep -nE "ghrdp://.*pass=|&pass=|/api/client-cmd|fPromptForPassword" -- payloads/ui.html
-
-(Comment-line matches noting removed items are acceptable and expected;
-only live code references are bugs.)
+WEB DESKTOP opens only a non-empty, valid tailnet `https://*.ts.net` URL from
+`config.webdeskUrl`; an empty URL disables it and displays a yellow advisory
+link to GitHub Actions secrets for `VNC_PASS`. Browser tests run via
+`node --test tests/ui-native.test.js`; CI also parses PowerShell scripts and
+self-tests/publishes the compiled handler. None of these tests establishes
+a successful live RDP login on the user's Windows PC.
 
 ### 1.10 Web desktop (noVNC + TightVNC via `tailscale serve`)
 
@@ -293,7 +294,8 @@ The dashboard's WEB DESKTOP button is enabled only when
   annotation, writes a Step Summary card with a direct link to
   [repository Actions secrets](https://github.com/dekarita/supreme-lamp/settings/secrets/actions)
   (New repository secret → name `VNC_PASS` → strong value → Add secret →
-  re-dispatch), records `config.webdeskReason = 'vnc-pass-missing'` plus
+  re-dispatch), clears `config.webdeskUrl`, records
+  `config.webdeskReason = 'vnc-pass-missing'` plus
   `config.vncPassAdminUrl` on `C:\ghrdp\config.json`, and then `throw`s.
   This deliberately reverses the earlier behaviour, where a missing
   secret produced a *successful* run with the web desktop silently
@@ -321,23 +323,24 @@ The dashboard's WEB DESKTOP button is enabled only when
   `VNC_PASS` (< 8 chars) still skips the step cleanly as a loud
   non-fatal skip and leaves WEB DESKTOP disabled with
   `config.webdeskReason = 'vnc-pass-missing'`.
-- **Persistent VPS (post-§1.7)**: same shape, either the workflow's
-  approach ported to systemd (`tightvncserver` + `websockify --web
-  /usr/share/novnc 127.0.0.1:7333 127.0.0.1:5900` + `tailscale serve
-  --bg https://127.0.0.1:7333`), or the previous option of Apache
-  Guacamole (`guacd` + `tomcat10 guacamole-tomcat` + `tailscale serve
-  --bg https://127.0.0.1:8080`). Either way the passwords sit on the
-  VPS, not on the operator's PC or in dashboard state.
+- **Persistent Windows VPS (post-§1.7)**: §1.7 does NOT provision a web
+  desktop. The operator must separately deploy authenticated TightVNC
+  bound to loopback, websockify/noVNC on loopback, and `tailscale serve`
+  (tailnet HTTPS, **not** Funnel); verify the gateway requires a VNC password
+  before setting the protected VPS `config.webdeskUrl`. No local client
+  installation is required. This VPS web gateway has **not** been deployed
+  or tested in this session; do not claim Proof C or disable Actions yet.
 
 **Security posture (bright lines)**:
-- Credentials are ALWAYS required (VNC password / Guacamole login).
-  The prior banned posture — *no-auth VNC on any interface, even
-  tailnet-gated* — remains banned.
+- Credentials are ALWAYS required (VNC password). The prior banned
+  posture — *no-auth VNC on any interface, even tailnet-gated* — remains
+  banned.
 - Exposure is ALWAYS tailnet-only via `tailscale serve`. No public port,
   no funnel, no anonymous reverse proxy.
-- The password is set only via installer parameters (msiexec) and never
-  logged, never echoed to the step summary, and never included in
-  `config.webdeskUrl`.
+- On Actions the VNC password is supplied by the repository secret to the
+  installer; the installer-error message is withheld because it might contain
+  that value. On a VPS it must be configured locally by the operator. Neither
+  path logs the password or includes it in `config.webdeskUrl`.
 
 Decommission note: uninstalling TightVNC is `choco uninstall tightvnc -y`
 (or the vendor uninstaller) followed by `tailscale serve reset`.
@@ -374,8 +377,11 @@ Execute in order, one at a time. Nothing here runs automatically.
       `.github/workflows/main.yml` outright, or reduce it to a benign CI check.
 - [ ] **Delete the runner-side C2 dead handler bodies** in `payloads/ghrdp-server.ps1`
       below the 404-guard: `/install.bat`, `/connect-now.bat`, `/api/client-cmd`,
-      and other C2 handler bodies whose paths are already 404-guarded. Bodies are
-      unreachable but should not sit in shipped source.
+      and other C2 handler bodies whose paths are already 404-guarded. Also
+      stop staging the legacy PowerShell installer/helper assets in `main.yml`
+      once Actions is decommissioned; the new dashboard has no script-host
+      installation link. Unreachable bodies and staged installers should not
+      remain in shipped source.
 - [ ] **Delete `/rentrydiag` and `/parsec-push` handlers** in
       `payloads/ghrdp-server.ps1` — the former POSTs a run's decrypt key to a
       public rentry.co paste (live mirror-publish path); the latter arms a

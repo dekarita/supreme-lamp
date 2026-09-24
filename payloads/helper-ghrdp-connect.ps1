@@ -33,7 +33,8 @@ function A {
         [System.IO.File]::AppendAllText($logFile, $line + "`r`n")
     } catch { }
 }
-A @{ event = 'invoked'; url = $Url }
+# Do not put a bearer rid (from the protocol URI) into a local log.
+A @{ event = 'invoked' }
 
 # ---- P3 startup sweep: stale TERMSRV/*.ts.net entries (log-only) ---------------
 # We do NOT delete. Users may keep entries for hosts they aren't reaching this
@@ -182,7 +183,7 @@ try {
         -ContentType 'application/json' `
         -TimeoutSec 5 `
         -ErrorAction Stop
-    $rdpHost = [string]$resp.host
+    $rdpHost = [string]$resp.fqdn
     A @{ event = 'redeemed'; server = $server; fqdn = $rdpHost }
 } catch {
     A @{ event = 'redeem-failed'; err = $_.Exception.Message }

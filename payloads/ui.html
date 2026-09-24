@@ -298,15 +298,10 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">Remaining (5h30 session)</span><span class="timer" id="timerRemaining">--:--:--</span></div>
   <div class="banner ended" id="endedBanner" style="display:none;">SESSION EXPIRED - GitHub hard cap reached. Runner termination imminent.</div>
 </section>
-<!-- U1 native mstsc auto-login. Contract:
-     1. POST /api/rdp-token -> {token} (60s TTL, single-use).
-     2. Fire ghrdp://connect?server=<runner-host>&port=7331&t=<token>.
-     3. Handler POST-redeems /api/rdp-creds with {token}, receives {host, fqdn};
-        server enforces *.ts.net (P2 discipline, hard-refuses IP fallback).
-     4. Handler runs mstsc /v:<fqdn>. Windows uses the per-user TERMSRV/<fqdn>
-        cmdkey credential silently. Handler NEVER reads, writes, or deletes it.
-     No plaintext creds in any URL, UI field, form body, header, or log.
-     NLA (UserAuthentication=1) + CredSSP stay ON. -->
+<!-- Native VPS access: a dashboard-authorized, single-use rid launches the
+     locally installed executable. It POST-redeems for the pinned MagicDNS
+     FQDN and opens mstsc; Windows supplies the credential stored by the user.
+     Web desktop is the primary option, including on ephemeral hosts. -->
 <meta id="ghrdpBuild" name="ghrdp-build" content="__BUILD_SHA__">
 <section class="glass" id="sec-native-rdp">
   <div class="row" id="nrBuildWarn" style="display:none"><span class="k">Deploy</span><span class="v" id="nrBuildWarnText" style="color:#f5d9b7"></span></div>
@@ -320,8 +315,10 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <span class="note">This host is ephemeral. Click WEB DESKTOP. Do not expect a stored TERMSRV entry to survive the next run. One-time cmdkey is VPS-only.</span>
   </div>
   <div class="row" id="nrVpsShortcutRow" style="display:none;flex-direction:column;align-items:stretch;gap:6px">
-    <span class="k" style="font-weight:600">Native fallback (VPS only)</span>
-    <span class="note">One-time, on your PC: run the cmdkey line below and type the password at the prompt. Pin a shortcut whose target is the mstsc line. This page does not launch a script host.</span>
+    <span class="k" style="font-weight:600">Native auto-login (VPS only)</span>
+    <span class="note">One time on your PC: install the compiled protocol handler (see docs/AUTOLOGIN.md), run the cmdkey line below, and type the password at the Windows prompt. Neither the page nor the handler reads that password.</span>
+    <label class="note"><input type="checkbox" id="nrCmdkeyConfirmed"> I ran cmdkey for this FQDN on this PC (copying the line does not count).</label>
+    <button id="autoLoginNative" type="button" disabled>AUTO-LOGIN (VPS only)</button>
   </div>
   <div class="row" id="nrReadyRow" style="display:none"><span class="k">Status</span><span class="v" id="nrReady" style="color:#7dffc9"></span></div>
   <div class="row" id="nrAdvisoryRow" style="display:none"><span class="k">Advisory</span><span class="v" id="nrAdvisory" style="color:#f5d9b7"></span></div>
@@ -349,13 +346,13 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     </ol>
     After re-dispatch, this button will enable automatically.
   </div>
-  <div class="row" id="webdeskVncAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" style="color:#f5d9b7">Web desktop disabled: VNC_PASS not set at dispatch — see instructions above</span></div>
+  <div class="row" id="webdeskVncAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" style="color:#f5d9b7">Web desktop unavailable: set <code>VNC_PASS</code> in <a href="https://github.com/dekarita/supreme-lamp/settings/secrets/actions" target="_blank" rel="noopener">GitHub Actions secrets</a>, then re-run.</span></div>
   <div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
     <span class="k" style="font-weight:600">Shortcut text (copy only; VPS one-time cmdkey)</span>
     <div style="display:flex;gap:8px;align-items:center">
       <span class="note" style="opacity:.7">cmdkey line:</span>
       <code id="cmdkeyLine" style="flex:1;padding:6px 8px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:11px ui-monospace,Consolas,monospace;overflow-x:auto">(populating...)</code>
-      <a href="javascript:void(0)" onclick="copyById('cmdkeyLine',this);try{localStorage.setItem('ghrdp.credSet',String(Date.now()))}catch(_){}" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
+      <a href="javascript:void(0)" onclick="copyById('cmdkeyLine',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
       <span class="note" style="opacity:.7">mstsc line:</span>
@@ -477,7 +474,7 @@ async function doDiag(){openDrawer();var db=$('diagBox');db.textContent='running
 function openDrawer(){$('drawer').classList.add('open');$('drawer').setAttribute('aria-hidden','false');$('drawerScrim').classList.add('open')}
 function closeDrawer(){$('drawer').classList.remove('open');$('drawer').setAttribute('aria-hidden','true');$('drawerScrim').classList.remove('open')}
 document.addEventListener('keydown',function(e){if(e.key==='Escape')closeDrawer()});
-/* [remediation #7B / U1] embedded-creds ghrdp:// URL, credPass display, auto-connect .bat href, installer helpers, and agent enrollment overlay all removed. Token-based ghrdp:// connect lives in the Native mstsc auto-login section script (sec-native-rdp). */
+/* Native access is handled exclusively by the dedicated VPS section below. */
 function chip(id,text,cls){var p=$(id);if(!p)return;p.className='chip '+(cls||'');p.innerHTML='<i class="dot"></i><span>'+esc(text)+'</span>'}
 (function(){var box=$('logBox');if(!box)return;box.addEventListener('mouseenter',function(){logPaused=true});box.addEventListener('mouseleave',function(){logPaused=false})})();
 function toggleLogPause(btn){logPaused=!logPaused;btn.textContent=logPaused?'resume':'pause';btn.classList.toggle('copied',logPaused)}
@@ -493,7 +490,7 @@ function render(d){
   var c=d.creds||{};
   if(c.ip){$('credIp').textContent=c.ip;$('mstscVal').textContent='mstsc /v:'+c.ip;var pl=$('primaryLink');if(pl){pl.textContent='http://'+c.ip+':7332/';pl.href='http://'+c.ip+':7332/'}var fl=$('fallbackLink');if(fl){fl.textContent='http://'+c.ip+':7331/';fl.href='http://'+c.ip+':7331/'}}
   if(c.user)$('credUser').textContent=c.user;
-  /* [remediation #7B] credPass display, embedded-creds ghrdp:// URL, and auto-connect .bat href setters removed. Token-based ghrdp:// connect fires from the /api/rdp-token flow in sec-native-rdp. */
+  /* No credential values are rendered by the dashboard. */
   if(d.runnerEgressIp){
     $('egressLine').textContent='Uploads execute ON THE RUNNER (egress IP '+d.runnerEgressIp+') - your PC\'s connection is never used for uploads.';
     $('egressLine').className='banner egress';
@@ -782,20 +779,13 @@ paint();
 </script>
 <script>
 (function(){
-// U1 native mstsc auto-login. Replaces the removed agent enrollment / installer / DIAG / Parsec-push
-// surface. Single code path:
-//   1. POST /api/rdp-token -> {token} (60s TTL, single-use).
-//   2. Fire ghrdp://connect?server=<runner-host>&port=7331&t=<token>.
-//   3. Handler POST-redeems /api/rdp-creds with {token}, receives {host,fqdn};
-//      server enforces *.ts.net (P2 discipline, hard-refuses IP fallback).
-//   4. Handler runs mstsc /v:<fqdn>. Windows uses the per-user TERMSRV/<fqdn>
-//      cmdkey credential silently. Handler NEVER reads/writes/deletes it.
-// NLA + CredSSP stay ON. Zero plaintext creds anywhere. No LocalDevices arming,
-// no AuthenticationLevelOverride, no MOTW strip, no publisher-trust arming.
+// VPS-only native flow: dashboard bearer header -> short-lived rid ->
+// ghrdp:connect?rid=<rid> -> locally pinned executable -> POST redemption ->
+// mstsc /v:<fqdn>. No password crosses the page, URI, or API.
 function $(id){return document.getElementById(id);}
 function runnerHost(){return location.hostname;}
 function apiBase(){return 'http://'+runnerHost()+':7331';}
-function getKey(){var m=location.search.match(/[?&]key=([^&]+)/);return m?m[1]:'';}
+function getKey(){var m=location.search.match(/[?&]key=([^&]+)/);try{return m?decodeURIComponent(m[1]):'';}catch(_){return '';}}
 function paint(txt,color){var el=$('autoLoginStatus');if(!el)return;el.style.color=color||'';el.textContent=txt||'';}
 function launchProto(url){
  // [U1] Prefer top-level navigation (`window.location.href`) over a hidden
@@ -806,12 +796,17 @@ function launchProto(url){
  // detects the missing-handler case regardless of dispatch mode.
  try{window.location.href=url;}catch(_){}
 }
-// [U1] Initial render seeds the FQDN-derived cells from the server-substituted
-// __IP__ template; bootstrapConfig() then overrides with the live /api/config
-// values (creds.fqdn, creds.user, creds.ip) so a stale template placeholder
-// never lies about what will be dialled. Anything not *.ts.net disables the
-// AUTO-LOGIN button — the UI stays honest about the P2/P3 architecture.
+// A valid FQDN is necessary, but never sufficient, to enable native access.
+// Status, host kind and the user's explicit local confirmation gate the button.
 var FQDN_RE=/^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$/i;
+var nativeHostKind='ephemeral', nativeReady=false, nativeReadyFqdn='';
+function syncNativeButton(){
+ var btn=$('autoLoginNative');if(!btn)return;
+ var fqdn=($('rdpFqdn')||{}).textContent||'';
+ btn.disabled=!(nativeHostKind==='vps'&&nativeReady&&fqdn===nativeReadyFqdn&&FQDN_RE.test(fqdn)&&credOk());
+ btn.style.opacity=btn.disabled?'0.5':'';
+ btn.style.cursor=btn.disabled?'not-allowed':'';
+}
 function populateFqdn(fqdn, user){
  var el=$('rdpFqdn'), line=$('cmdkeyLine'), mst=$('mstscFallback'), btn=$('autoLoginNative');
  var okFqdn=FQDN_RE.test(fqdn||'');
@@ -820,14 +815,16 @@ function populateFqdn(fqdn, user){
   if(el){el.textContent=fqdn||'(not set)';el.style.color='#f5b7b7';}
   if(line)line.textContent='(fqdn missing - provision the VPS per docs/MIGRATION.md sec 1.7)';
   if(mst)mst.textContent='(fqdn missing)';
-  if(btn){btn.disabled=true;btn.style.opacity='0.5';btn.style.cursor='not-allowed';}
-  paint('server config.rdpIp is not a *.ts.net FQDN - cannot auto-login','#f5b7b7');
+  if(btn)syncNativeButton();
+  paint('server config.dnsName is not a *.ts.net FQDN - cannot auto-login','#f5b7b7');
   return;
  }
  if(el){el.textContent=fqdn;el.style.color='';}
  if(line)line.textContent='cmdkey /generic:TERMSRV/'+fqdn+' /user:'+(okUser?user:'rdpuser');
  if(mst)mst.textContent='mstsc /v:'+fqdn;
- if(btn){btn.disabled=false;btn.style.opacity='';btn.style.cursor='';}
+ var cb=$('nrCmdkeyConfirmed');
+ if(cb){try{cb.checked=localStorage.getItem('ghrdp.cmdkeyConfirmedFqdn')===fqdn;}catch(_){cb.checked=false;}}
+ syncNativeButton();
  paint('','');
 }
 populateFqdn('__IP__','rdpuser');
@@ -874,9 +871,18 @@ function linkifyInto(el, txt, url){
  var rest=txt.slice(i+url.length);
  if(rest){el.appendChild(document.createTextNode(rest));}
 }
-function credStamp(){ try{ return parseInt(localStorage.getItem('ghrdp.credSet')||'0',10); }catch(_){ return 0; } }
-function markCredSet(){ try{ localStorage.setItem('ghrdp.credSet', String(Date.now())); }catch(_){ } }
-function credOk(){ var t=credStamp(); return t>0 && (Date.now()-t) < 90*24*3600*1000; }
+function credOk(){
+ var fqdn=($('rdpFqdn')||{}).textContent||'';
+ try{return FQDN_RE.test(fqdn)&&localStorage.getItem('ghrdp.cmdkeyConfirmedFqdn')===fqdn;}
+ catch(_){return false;}
+}
+var confirmBox=$('nrCmdkeyConfirmed');
+if(confirmBox)confirmBox.onchange=function(){
+ var fqdn=($('rdpFqdn')||{}).textContent||'';
+ try{if(this.checked&&FQDN_RE.test(fqdn))localStorage.setItem('ghrdp.cmdkeyConfirmedFqdn',fqdn);
+ else localStorage.removeItem('ghrdp.cmdkeyConfirmedFqdn');}catch(_){}
+ syncNativeButton();nativeStatus();
+};
 var BUILD_SHA='__BUILD_SHA__';
 async function nativeStatus(){
  try{
@@ -926,19 +932,17 @@ async function nativeStatus(){
   // ts.net names are valid auto-login targets.
   var vpRow=document.getElementById('nrVpsPendingRow');
   if(vpRow) vpRow.style.display = (s && s.vpsPending) ? '' : 'none';
-  var b=$('autoLoginNative');
-  if(b){
-   var okAll = srvReasons.length===0 && (/^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$/i).test((document.getElementById('rdpFqdn')||{}).textContent||'');
-   if(!okAll){b.disabled=true;b.style.opacity='0.5';b.style.cursor='not-allowed';}
-   else{b.disabled=false;b.style.opacity='';b.style.cursor='';}
-  }
+  var kind=(s&&s.hostKind==='vps')?'vps':'ephemeral';
+  nativeHostKind=kind;
+  nativeReady=srvReasons.length===0;
+  nativeReadyFqdn=(s&&s.fqdn)||'';
+  syncNativeButton();
   if(s&&s.buildSha){ window.__serverBuildSha=s.buildSha; }
   if(typeof BUILD_SHA==='string' && BUILD_SHA!=='__BUILD_SHA__' && s&&s.buildSha && s.buildSha!==BUILD_SHA){
     var bw=document.getElementById('nrBuildWarn'), bt=document.getElementById('nrBuildWarnText');
     if(bw) bw.style.display='';
     if(bt) bt.textContent='deployed UI older than origin/main - re-dispatch';
   }
-  var kind=(s&&s.hostKind==='vps')?'vps':'ephemeral';
   var hk=document.getElementById('nrHostKind');
   if(hk){hk.textContent=kind;hk.style.color=kind==='vps'?'':'#f5d9b7';}
   var er=document.getElementById('nrEphemeralRow');
@@ -956,22 +960,28 @@ async function nativeStatus(){
     linkifyInto(mdEl,'workflow halted until MagicDNS enabled - open the admin link, enable, re-dispatch: '+ADMIN,ADMIN);
    } else { mdRow.style.display='none'; mdEl.textContent=''; }
   }
-  // [F8b] Ready row - ephemeral readiness requires hard reasons empty AND a
-  // non-empty webdeskUrl; an empty URL shows the exact webdeskReason instead.
+  // Open only a valid tailnet HTTPS desktop URL supplied by config.json.
+  var webdeskUrl='';
+  try{
+   var desk=new URL(String(s.webdeskUrl||''));
+   if(desk.protocol==='https:'&&FQDN_RE.test(desk.hostname)&&!desk.username&&!desk.password&&!desk.port)webdeskUrl=desk.href;
+  }catch(_){}
+  var deskReason=s.webdeskUrl?'invalid-webdesk-url':(s.webdeskReason||'step-not-run');
+  // An empty or invalid desktop URL never displays a ready state.
   var readyRow=document.getElementById('nrReadyRow'), readyEl=document.getElementById('nrReady');
   if(readyRow&&readyEl){
    if(kind==='vps'){
     if(srvReasons.length===0){ readyRow.style.display=''; readyEl.style.color='#7dffc9'; readyEl.textContent='native shortcut ready'; }
     else { readyRow.style.display='none'; readyEl.textContent=''; }
-   } else if(srvReasons.length===0 && s.webdeskUrl){ readyRow.style.display=''; readyEl.style.color='#7dffc9'; readyEl.textContent='WEB DESKTOP ready'; }
-   else if(!s.webdeskUrl){ readyRow.style.display=''; readyEl.style.color='#f5d9b7'; readyEl.textContent='web desktop not deployed: '+(s.webdeskReason||'step-not-run'); }
+   } else if(srvReasons.length===0 && webdeskUrl){ readyRow.style.display=''; readyEl.style.color='#7dffc9'; readyEl.textContent='WEB DESKTOP ready'; }
+   else if(!webdeskUrl){ readyRow.style.display=''; readyEl.style.color='#f5d9b7'; readyEl.textContent='web desktop not deployed: '+deskReason; }
    else { readyRow.style.display='none'; readyEl.textContent=''; }
   }
   // [F8b] webdesk URL cell - hostname preview; full URL in title + copy target.
   var wuEl=document.getElementById('webdeskUrlVal');
   if(wuEl){
-   if(s.webdeskUrl){ var wdm=/^https?:\/\/([^\/]+)/i.exec(s.webdeskUrl||''); wuEl.textContent=wdm?wdm[1]:s.webdeskUrl; wuEl.title=s.webdeskUrl; try{wuEl.setAttribute('data-full',s.webdeskUrl);}catch(_){} }
-   else { wuEl.textContent='(not set)'; wuEl.title=''; try{wuEl.removeAttribute('data-full');}catch(_){} }
+   if(webdeskUrl){ wuEl.textContent=new URL(webdeskUrl).hostname; wuEl.title=webdeskUrl; wuEl.setAttribute('data-full',webdeskUrl); }
+   else { wuEl.textContent=s.webdeskUrl?'(invalid URL)':'(not set)'; wuEl.title=''; wuEl.removeAttribute('data-full'); }
   }
   var missingVnc=!s.webdeskUrl;
   var vncGuide=document.getElementById('webdeskVncGuidance');
@@ -980,14 +990,13 @@ async function nativeStatus(){
   if(vncAdvice) vncAdvice.style.display=missingVnc?'':'none';
   var wb=$('btnWebDesk');
   if(wb){
-   if(s.webdeskUrl){ wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(s.webdeskUrl,'_blank');}; wb.title=s.webdeskUrl; }
-   else { wb.disabled=true; wb.style.opacity='0.5'; wb.style.cursor='not-allowed'; wb.onclick=null; wb.title='web desktop not deployed: '+(s.webdeskReason||'step-not-run'); }
+   if(webdeskUrl){ wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(webdeskUrl,'_blank','noopener');}; wb.title=webdeskUrl; }
+   else { wb.disabled=true; wb.style.opacity='0.5'; wb.style.cursor='not-allowed'; wb.onclick=null; wb.title='web desktop not deployed: '+deskReason; }
   }
  }catch(_){}
 }
-// [F7] Legacy verb-fire buttons removed (no handler exists post-F2; the page
-// launches none). WEB DESKTOP is the only click on ephemeral runners; VPS
-// uses the copy-only cmdkey/mstsc shortcut.
+// WEB DESKTOP is the only launch button on ephemeral runners. VPS users may
+// use the pinned executable after the interactive cmdkey prerequisite.
 nativeStatus();
 setInterval(nativeStatus,15000);
 fetch('https://api.github.com/repos/dekarita/supreme-lamp/commits/main',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){
@@ -1002,32 +1011,32 @@ fetch('https://api.github.com/repos/dekarita/supreme-lamp/commits/main',{cache:'
 var btn=$('autoLoginNative');
 if(btn) btn.onclick=function(ev){
  if(ev&&ev.preventDefault)ev.preventDefault();
- if(btn.disabled)return;
+ if(btn.disabled||nativeHostKind!=='vps'||!credOk())return;
  (async function(){
-  paint('requesting one-time token...','#f5d9b7');
   var key=getKey();
-  var url=apiBase()+'/api/rdp-token'+(key?('?key='+encodeURIComponent(key)):'');
-  var tok='';
+  if(!key){paint('dashboard token missing; open your authenticated dashboard link','#f5b7b7');return;}
+  paint('requesting one-time token...','#f5d9b7');
+  var rid='';
   try{
-   var r=await fetch(url,{method:'POST',cache:'no-store'});
+   var r=await fetch(apiBase()+'/api/rdp-token',{method:'POST',headers:{Authorization:'Bearer '+key},cache:'no-store'});
    if(!r.ok){paint('token request failed: HTTP '+r.status,'#f5b7b7');return;}
-   var j=await r.json();tok=(j&&j.token)||'';
+   var j=await r.json();rid=(j&&j.rid)||'';
   }catch(_){paint('token request network error','#f5b7b7');return;}
-  if(!tok){paint('server returned no token','#f5b7b7');return;}
-  paint('firing ghrdp:// handler...','#b7e3f5');
+  if(!/^[0-9a-f]{32}$/i.test(rid)){paint('server returned no valid token','#f5b7b7');return;}
   var wasFocused=true;
   var lost=function(){wasFocused=false;};
   var vis=function(){if(document.hidden)wasFocused=false;};
   window.addEventListener('blur',lost);
   document.addEventListener('visibilitychange',vis);
-  paint('use WEB DESKTOP; this page does not launch a local handler','#f5d9b7');
+  paint('dispatching local ghrdp handler...','#b7e3f5');
+  launchProto('ghrdp:connect?rid='+rid);
   setTimeout(function(){
    window.removeEventListener('blur',lost);
    document.removeEventListener('visibilitychange',vis);
    if(wasFocused){
-    paint('ghrdp:// handler not detected - install it once, or use the fallback mstsc line above','#f5d9b7');
+    paint('handler not detected - install the compiled helper, or copy the mstsc fallback','#f5d9b7');
    }else{
-    paint('handler dispatched - mstsc launching (Windows uses stored TERMSRV cred silently)','#b7f5c9');
+    paint('protocol dispatched - check that mstsc opened with your stored credential','#b7f5c9');
    }
   },900);
  })();

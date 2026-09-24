@@ -164,9 +164,12 @@ function Send-ClientResponse {
     param($Stream, [int]$Code, [string]$CType, [byte[]]$Body)
     $status = 'OK'
     if ($Code -eq 401) { $status = 'Unauthorized' }
+    if ($Code -eq 204) { $status = 'No Content' }
+    if ($Code -eq 403) { $status = 'Forbidden' }
     if ($Code -eq 404) { $status = 'Not Found' }
+    if ($Code -eq 409) { $status = 'Conflict' }
     if ($Code -eq 500) { $status = 'Server Error' }
-    $hdr = "HTTP/1.1 $Code $status`r`nContent-Type: $CType`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`nCache-Control: no-store`r`nAccess-Control-Allow-Origin: *`r`nAccess-Control-Allow-Headers: Content-Type`r`nAccess-Control-Allow-Methods: GET,POST,OPTIONS`r`n`r`n"
+    $hdr = "HTTP/1.1 $Code $status`r`nContent-Type: $CType`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`nCache-Control: no-store`r`nAccess-Control-Allow-Origin: *`r`nAccess-Control-Allow-Headers: Content-Type, Authorization`r`nAccess-Control-Allow-Methods: GET,POST,OPTIONS`r`n`r`n"
     $hb = [System.Text.Encoding]::ASCII.GetBytes($hdr)
     $Stream.Write($hb, 0, $hb.Length)
     if ($Body.Length -gt 0) { $Stream.Write($Body, 0, $Body.Length) }
@@ -220,6 +223,11 @@ function Invoke-ClientRequest {
         $parts['body'] = [byte[]]$rr.body
         $path = [string]$parts.path
         if (-not $path) { $path = '/' }
+        # Browser cross-origin preflight carries no bearer; disclose nothing.
+        if ($path -eq '/api/rdp-token' -and $parts.method -eq 'OPTIONS') {
+            Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@())
+            return
+        }
         if (-not (Test-ClientAllowed -Client $Client -Query $parts.query -Token $Token)) {
             Send-ClientResponse -Stream $stream -Code 401 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('unauthorized'))
             return
@@ -271,13 +279,37 @@ function Invoke-ClientRequest {
         }
         # [remediation 8C-extended] /install.bat + /connect-now.bat bodies deleted; unreachable due to 404 guard above. /connect-now.bat body was serving a .bat with cmdkey /generic:TERMSRV/<ip> /pass:<plaintext> - direct violation of the no-plaintext-transit decision.
         if ($path -eq '/api/rdp-token' -and $parts.method -eq 'POST') {
+            # Tailnet reachability alone must not mint native RDP tokens. Require
+            # the dashboard secret in a header (never in the request URL).
+            $auth = [string]$parts.headers['authorization']
+            $expected = [System.Text.Encoding]::UTF8.GetBytes('Bearer ' + $Token)
+            $received = [System.Text.Encoding]::UTF8.GetBytes($auth)
+            if (-not $Token -or $received.Length -ne $expected.Length -or
+                -not [System.Security.Cryptography.CryptographicOperations]::FixedTimeEquals($received, $expected)) {
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('dashboard authorization required'))
+                return
+            }
+            $vps = ($cfg -and $cfg.PSObject.Properties['hostKind'] -and $cfg.hostKind -eq 'vps')
+            if (-not $vps -and (Test-Path -LiteralPath (Join-Path $Root 'hostKind.txt'))) {
+                $vps = ([System.IO.File]::ReadAllText((Join-Path $Root 'hostKind.txt'))).Trim() -eq 'vps'
+            }
+            if (-not $vps) {
+                Send-ClientResponse -Stream $stream -Code 403 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('native auto-login is VPS-only'))
+                return
+            }
+            if (-not $cfg -or [string]$cfg.dnsName -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
+                Send-ClientResponse -Stream $stream -Code 409 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('MagicDNS FQDN missing'))
+                return
+            }
             $now = [datetime]::UtcNow
             $expired = @($script:RdpTokens.Keys | Where-Object { ($now - $script:RdpTokens[$_].created).TotalSeconds -gt 60 })
             foreach ($ek in $expired) { $script:RdpTokens.Remove($ek) }
-            $newTok = [guid]::NewGuid().ToString('N')
+            $random = New-Object byte[] 16
+            [System.Security.Cryptography.RandomNumberGenerator]::Fill($random)
+            $newTok = [Convert]::ToHexString($random).ToLowerInvariant()
             $script:RdpTokens[$newTok] = @{ created = $now; used = $false }
             try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now.ToString('o') + ' ISSUED ' + $newTok.Substring(0,8) + "...`n")) } catch { }
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ token = $newTok; ttl = 60 })
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ rid = $newTok; ttl = 60 })
             return
         }
         if ($path -eq '/api/rdp-creds' -or $path -eq '/rdp-creds' -or $path -eq '/api/rdp-info') {
@@ -339,7 +371,7 @@ function Invoke-ClientRequest {
                     try { [System.IO.File]::AppendAllText((Join-Path $Root 'rdp-token-audit.log'), ($now2.ToString('o') + " REJECTED non-fqdn resolved target='$rdpTarget'`n")) } catch { }
                     Send-ClientResponse -Stream $stream -Code 409 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('server config.dnsName is missing or not a MagicDNS FQDN (*.ts.net); handler will refuse to launch. Fix config.json.'))
                 } else {
-                    Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ host = $rdpTarget; fqdn = $rdpTarget })
+                    Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ fqdn = $rdpTarget })
                 }
             } else {
                 Send-ClientResponse -Stream $stream -Code 401 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('token invalid, expired, or missing'))
@@ -359,12 +391,9 @@ function Invoke-ClientRequest {
             if ($cfgN -and $cfgN.PSObject.Properties['dnsName'] -and $cfgN.dnsName) { $fqdnN = [string]$cfgN.dnsName }
             # no rdpIp fallback
             $fqdnOk = ($fqdnN -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$')
-            # [F6] certBound is TRUE only when the bound listener cert is a real
-            # tailnet cert: its Subject ends with the node's *.ts.net FQDN, OR
-            # its Issuer is Let's Encrypt. Windows' default self-signed RDP cert
-            # (Subject == Issuer, CN matches the machine name) is REJECTED even
-            # though its SHA1 hash is 20 bytes long - that shape caused the old
-            # 'certBound = true' false positive.
+            # certBound requires the *bound* LE certificate to match this exact
+            # FQDN, remain valid, and have a private key. Issuer alone is NOT
+            # enough (a different node's LE certificate still triggers a prompt).
             $certBound = $false; $nlaOn = $false; $certReason = ''
             try {
                 $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
@@ -378,18 +407,16 @@ function Invoke-ClientRequest {
                         $bound = $store.Certificates | Where-Object { $_.Thumbprint -eq $thumb } | Select-Object -First 1
                     } finally { try { $store.Close() } catch { } }
                     if ($bound) {
-                        $subj = [string]$bound.Subject
-                        $iss  = [string]$bound.Issuer
-                        $selfSigned = ($subj -eq $iss)
-                        $leIssuer   = ($iss -match "Let'?s Encrypt")
-                        $subjMatch  = $false
-                        if ($fqdnN) { $subjMatch = ($subj -like ('*' + $fqdnN)) }
-                        if ($selfSigned -and -not $leIssuer) {
-                            $certReason = 'self-signed listener cert'
-                        } elseif ($subjMatch -or $leIssuer) {
-                            $certBound = $true
+                        $dns = $bound.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::DnsName, $false)
+                        if ($bound.Subject -eq $bound.Issuer -or $bound.Issuer -notmatch "Let'?s Encrypt") {
+                            $certReason = 'listener certificate is not a Tailscale LE certificate'
+                        } elseif ($dns -ne $fqdnN) {
+                            $certReason = 'bound listener certificate does not match the MagicDNS FQDN'
+                        } elseif ($bound.NotAfter.ToUniversalTime() -le [datetime]::UtcNow -or
+                            $bound.NotBefore.ToUniversalTime() -gt [datetime]::UtcNow -or -not $bound.HasPrivateKey) {
+                            $certReason = 'bound listener certificate expired, not yet valid or missing private key'
                         } else {
-                            $certReason = 'listener cert subject does not end with ts.net FQDN and issuer is not Let''s Encrypt'
+                            $certBound = $true
                         }
                     } else {
                         $certReason = 'bound cert thumbprint not in LocalMachine\My'

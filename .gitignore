@@ -1,2 +1,4 @@
 node_modules/
 .env
+payloads/ghrdp-handler/bin/
+payloads/ghrdp-handler/obj/
