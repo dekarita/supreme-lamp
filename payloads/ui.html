@@ -346,7 +346,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     </ol>
     After re-dispatch, this button will enable automatically.
   </div>
-  <div class="row" id="webdeskVncAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" style="color:#f5d9b7">Web desktop unavailable: set <code>VNC_PASS</code> in <a href="https://github.com/dekarita/supreme-lamp/settings/secrets/actions" target="_blank" rel="noopener">GitHub Actions secrets</a>, then re-run.</span></div>
+  <div class="row" id="webdeskVncAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" id="webdeskVncAdvisoryText" style="color:#f5d9b7">Web desktop unavailable: set <code>VNC_PASS</code> in <a href="https://github.com/dekarita/supreme-lamp/settings/secrets/actions" target="_blank" rel="noopener">GitHub Actions secrets</a>, then re-run.</span></div>
   <div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
     <span class="k" style="font-weight:600">Shortcut text (copy only; VPS one-time cmdkey)</span>
     <div style="display:flex;gap:8px;align-items:center">
@@ -983,11 +983,81 @@ async function nativeStatus(){
    if(webdeskUrl){ wuEl.textContent=new URL(webdeskUrl).hostname; wuEl.title=webdeskUrl; wuEl.setAttribute('data-full',webdeskUrl); }
    else { wuEl.textContent=s.webdeskUrl?'(invalid URL)':'(not set)'; wuEl.title=''; wuEl.removeAttribute('data-full'); }
   }
-  var missingVnc=!s.webdeskUrl;
+  // [F9i] Guidance follows the VERIFIED reason, never the mere absence of a
+  // URL. The old logic ('!s.webdeskUrl') told the user to add the VNC_PASS
+  // secret even when the run had already verified the secret and failed for a
+  // host-side startup/serve reason ('serve-failed'). Each known reason renders
+  // its own honest, actionable text; an unknown reason gets a generic message
+  // and never fabricates a 'missing secret' diagnosis.
   var vncGuide=document.getElementById('webdeskVncGuidance');
   var vncAdvice=document.getElementById('webdeskVncAdvisory');
-  if(vncGuide) vncGuide.style.display=missingVnc?'block':'none';
-  if(vncAdvice) vncAdvice.style.display=missingVnc?'':'none';
+  var vncAdviceTxt=document.getElementById('webdeskVncAdvisoryText');
+  // Local escaper: this script block must stay self-contained (single-file
+  // dashboard; cross-block helpers are not reliable inside the sandbox tests).
+  var escWd=function(t){return String(t==null?'':t).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];})};
+  var SECRETS_URL='https://github.com/dekarita/supreme-lamp/settings/secrets/actions';
+  var ACTIONS_URL='https://github.com/dekarita/supreme-lamp/actions';
+  var DETAIL_TEXT={
+    'tightvnc-install':'TightVNC server installation failed on the host',
+    'novnc-assets':'noVNC/websockify assets could not be prepared on the host',
+    'websockify-bind':'websockify did not start on loopback:7333',
+    'serve-mapping':'tailscale serve produced no tailnet mapping for the websockify port',
+    'self-test-failed':'the advertised URL did not serve the noVNC page (self-test failed)',
+    'listener-gone':'the websockify listener on loopback:7333 is no longer present'
+  };
+  var guideHtml='';
+  var adviceHtml='';
+  if(!webdeskUrl){
+    if(deskReason==='vnc-pass-missing'){
+      adviceHtml='Web desktop unavailable: set <code>VNC_PASS</code> in <a href="'+SECRETS_URL+'" target="_blank" rel="noopener">GitHub Actions secrets</a>, then re-run.';
+      guideHtml='VNC_PASS secret is missing. To enable web desktop:'+
+        '<ol style="margin:6px 0 0 20px">'+
+        '<li>Open <a href="'+SECRETS_URL+'" target="_blank" rel="noopener">GitHub Secrets Settings</a></li>'+
+        '<li>Click &ldquo;New repository secret&rdquo;</li>'+
+        '<li>Name: <code>VNC_PASS</code></li>'+
+        '<li>Value: any strong password (min 8 chars, e.g. MySecureVNC2026!)</li>'+
+        '<li>Click &ldquo;Add secret&rdquo;</li>'+
+        '<li>Re-dispatch the workflow (Actions &rarr; Windows RDP &rarr; Run workflow &rarr; main &rarr; Run)</li>'+
+        '</ol>'+
+        'After re-dispatch, this button will enable automatically.';
+    } else if(deskReason==='vnc-pass-too-short'){
+      adviceHtml='Web desktop unavailable: <code>VNC_PASS</code> is present but shorter than 8 characters - update the existing secret, do not re-add it.';
+      guideHtml='The <code>VNC_PASS</code> secret IS set, but it is shorter than 8 characters, so the web desktop was refused (weak passwords are not acceptable for a network-reachable service).'+
+        '<ol style="margin:6px 0 0 20px">'+
+        '<li>Open <a href="'+SECRETS_URL+'" target="_blank" rel="noopener">GitHub Secrets Settings</a></li>'+
+        '<li>Find <code>VNC_PASS</code>, edit it, and set a strong value (min 8 chars)</li>'+
+        '<li>Re-dispatch the workflow (Actions &rarr; Windows RDP &rarr; Run workflow &rarr; main &rarr; Run)</li>'+
+        '</ol>';
+    } else if(deskReason==='serve-failed'){
+      var dCode=(s&&s.webdeskDetail)?String(s.webdeskDetail):'';
+      var dTxt=DETAIL_TEXT[dCode]||'';
+      adviceHtml='Web desktop not deployed: host-side startup/serve failure - this is NOT a missing VNC_PASS; do not re-add the secret.';
+      guideHtml='The web desktop backend failed to start on this host'+(dTxt?' ('+dTxt+')':'')+'. Re-adding VNC_PASS will not fix this.'+
+        '<ol style="margin:6px 0 0 20px">'+
+        '<li>Open <a href="'+ACTIONS_URL+'" target="_blank" rel="noopener">GitHub Actions</a> and read the &ldquo;Web desktop (noVNC + TightVNC&hellip;)&rdquo; step and its Step Summary for the specific sub-failure</li>'+
+        '<li>Re-dispatch the workflow for a fresh ephemeral host</li>'+
+        '</ol>';
+    } else if(deskReason==='config-stale'){
+      adviceHtml='Web desktop stopped responding after deployment: the websockify listener on this host is gone.';
+      guideHtml='The web desktop URL was valid when this host was provisioned, but the websockify listener on loopback:7333 is no longer present.'+
+        (kind==='vps'
+          ? 'Check websockify on the VPS, or re-run the provisioning, then verify the URL again.'
+          : '<ol style="margin:6px 0 0 20px"><li>Re-dispatch the workflow for a fresh ephemeral host</li></ol>');
+    } else if(deskReason==='step-not-run'){
+      adviceHtml='Web desktop not deployed yet for this host.';
+      guideHtml=kind==='vps'
+        ? 'This VPS host has no operator-deployed web desktop yet. Deploy authenticated TightVNC (loopback) + websockify + tailscale serve per MIGRATION.md &sect;1.10, then set the protected config.webdeskUrl.'
+        : 'The web desktop step has not completed for this run yet (it runs early in the workflow). Check the run in <a href="'+ACTIONS_URL+'" target="_blank" rel="noopener">GitHub Actions</a>; if it failed, re-dispatch.';
+    } else if(deskReason==='invalid-webdesk-url'){
+      adviceHtml='The configured web desktop URL failed validation (must be a tailnet https URL with no credentials or port).';
+      guideHtml='config.webdeskUrl is set but is not a valid tailnet HTTPS URL, so the value is hidden. Fix the web desktop step in the workflow and re-dispatch.';
+    } else {
+      adviceHtml='Web desktop not deployed (reason: '+escWd(deskReason)+').';
+      guideHtml='This web-desktop reason has no specific guidance. Open <a href="'+ACTIONS_URL+'" target="_blank" rel="noopener">GitHub Actions</a>, check the &ldquo;Web desktop&rdquo; step of the run that started this host, and re-dispatch.';
+    }
+  }
+  if(vncGuide){ vncGuide.innerHTML=guideHtml; vncGuide.style.display=guideHtml?'block':'none'; }
+  if(vncAdvice){ vncAdvice.style.display=adviceHtml?'':'none'; if(vncAdviceTxt) vncAdviceTxt.innerHTML=adviceHtml; }
   var wb=$('btnWebDesk');
   if(wb){
    if(webdeskUrl){ wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(webdeskUrl,'_blank','noopener');}; wb.title=webdeskUrl; }

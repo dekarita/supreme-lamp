@@ -469,22 +469,37 @@ function Invoke-ClientRequest {
             } elseif ($hostKind -eq 'vps') {
                 $advisory += 'run the cmdkey line once (current user), then pin the mstsc shortcut'
             }
-            $wd = ''; $wdr = ''
+            $wd = ''; $wdr = ''; $wdDetail = ''
             # [F8a] webdeskReason explains an EMPTY webdeskUrl. Enum:
-            # vnc-pass-missing | serve-failed | config-stale | step-not-run.
+            # vnc-pass-missing | vnc-pass-too-short | serve-failed | config-stale
+            # | step-not-run. (A PRESENT-but-short VNC_PASS is 'vnc-pass-too-short',
+            # never 'vnc-pass-missing' - the dashboard must not tell the user to
+            # add a secret that already exists.)
             # Config is re-read per request (Read-JsonFile at the top of this
             # block), so a reason/URL written by the workflow AFTER server
             # start is visible on the very next poll - no restart needed.
             if ($cfgN -and $cfgN.webdeskUrl) { $wd = [string]$cfgN.webdeskUrl }
             if ($cfgN -and $cfgN.PSObject.Properties['webdeskReason'] -and $cfgN.webdeskReason) { $wdr = [string]$cfgN.webdeskReason }
-            if ($wd) { $wdr = '' } elseif (-not $wdr) { $wdr = 'step-not-run' }
+            if ($cfgN -and $cfgN.PSObject.Properties['webdeskDetail'] -and $cfgN.webdeskDetail) { $wdDetail = [string]$cfgN.webdeskDetail }
+            # [F9i] webdeskDetail is a fixed, secret-free sub-cause code written
+            # only by the workflow (tightvnc-install | novnc-assets |
+            # websockify-bind | serve-mapping | self-test-failed). Cap length so
+            # a tampered config cannot bloat the response; never carries secrets.
+            if ($wdDetail.Length -gt 64) { $wdDetail = $wdDetail.Substring(0, 64) }
+            # [F9i] vncPassAdminUrl: the direct secrets-settings link the F9h
+            # guard writes into config.json; default is the repo's fixed URL.
+            # Exposed so the dashboard links the verified location instead of
+            # hardcoding it in the page.
+            $vncAdmin = 'https://github.com/dekarita/supreme-lamp/settings/secrets/actions'
+            if ($cfgN -and $cfgN.PSObject.Properties['vncPassAdminUrl'] -and $cfgN.vncPassAdminUrl -match '^https://github\.com/') { $vncAdmin = [string]$cfgN.vncPassAdminUrl }
+            if ($wd) { $wdr = ''; $wdDetail = '' } elseif (-not $wdr) { $wdr = 'step-not-run' }
             # [F8a] config-stale: URL advertised but nothing listens on
             # 127.0.0.1:7333 (websockify died after the step wrote config).
             # Best-effort; any error leaves the advertised values untouched.
             if ($wd) {
                 try {
                     $wsConn = Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction Stop
-                    if (-not $wsConn) { $wd = ''; $wdr = 'config-stale' }
+                    if (-not $wsConn) { $wd = ''; $wdr = 'config-stale'; $wdDetail = 'listener-gone' }
                 } catch { }
             }
             $ns = [ordered]@{
@@ -496,6 +511,8 @@ function Invoke-ClientRequest {
                 handlerSeenAgeSec = $handlerAge
                 webdeskUrl = $wd
                 webdeskReason = $wdr
+                webdeskDetail = $wdDetail
+                vncPassAdminUrl = $vncAdmin
                 vpsPending = $vpsPending
                 # [F9c] actionable MagicDNS admin link: the dashboard linkifies
                 # it whenever the fqdn reason renders (fqdn missing) and hides
