@@ -337,6 +337,19 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <span class="note">Opens the tailnet web desktop already served by this host. Nothing is installed on the client. NLA on the Windows listener stays on.</span>
   </div>
   <div class="row"><span class="k">Web desktop URL</span><span class="v" id="webdeskUrlVal">(not set)</span><a href="javascript:void(0)" onclick="copyById('webdeskUrlVal',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">VNC password = the VNC_PASS secret set at dispatch; this page never stores or shows it.</span></div>
+  <div class="note" id="webdeskVncGuidance" style="display:none;color:#f5d9b7;margin:4px 0 10px 130px">
+    VNC_PASS secret is missing. To enable web desktop:
+    <ol style="margin:6px 0 0 20px">
+      <li>Open <a href="https://github.com/dekarita/supreme-lamp/settings/secrets/actions" target="_blank" rel="noopener">GitHub Secrets Settings</a></li>
+      <li>Click “New repository secret”</li>
+      <li>Name: <code>VNC_PASS</code></li>
+      <li>Value: any strong password (min 8 chars, e.g. MySecureVNC2026!)</li>
+      <li>Click “Add secret”</li>
+      <li>Re-dispatch the workflow (Actions → Windows RDP → Run workflow → main → Run)</li>
+    </ol>
+    After re-dispatch, this button will enable automatically.
+  </div>
+  <div class="row" id="webdeskVncAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" style="color:#f5d9b7">Web desktop disabled: VNC_PASS not set at dispatch — see instructions above</span></div>
   <div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
     <span class="k" style="font-weight:600">Shortcut text (copy only; VPS one-time cmdkey)</span>
     <div style="display:flex;gap:8px;align-items:center">
@@ -960,6 +973,11 @@ async function nativeStatus(){
    if(s.webdeskUrl){ var wdm=/^https?:\/\/([^\/]+)/i.exec(s.webdeskUrl||''); wuEl.textContent=wdm?wdm[1]:s.webdeskUrl; wuEl.title=s.webdeskUrl; try{wuEl.setAttribute('data-full',s.webdeskUrl);}catch(_){} }
    else { wuEl.textContent='(not set)'; wuEl.title=''; try{wuEl.removeAttribute('data-full');}catch(_){} }
   }
+  var missingVnc=!s.webdeskUrl;
+  var vncGuide=document.getElementById('webdeskVncGuidance');
+  var vncAdvice=document.getElementById('webdeskVncAdvisory');
+  if(vncGuide) vncGuide.style.display=missingVnc?'block':'none';
+  if(vncAdvice) vncAdvice.style.display=missingVnc?'':'none';
   var wb=$('btnWebDesk');
   if(wb){
    if(s.webdeskUrl){ wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(s.webdeskUrl,'_blank');}; wb.title=s.webdeskUrl; }
