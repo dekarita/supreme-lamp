@@ -315,6 +315,100 @@ jobs:
           Write-Host ('[ts] connected. Tailscale IP = ' + $ip)
           exit 0
 
+      # [U5b / MIGRATION 1.3] Bind the tailnet Let's Encrypt cert to the
+      # RDP-Tcp listener automatically at every run, so certBound reads YES
+      # on /api/native-status without any manual step. NLA stays ON, no
+      # AuthenticationLevelOverride, no client-side trust manipulation.
+      # Logs the thumbprint only (never the private key). Idempotent: safe
+      # to re-run when the LE cert renews (~90 days).
+      - name: Bind tailnet LE cert to RDP-Tcp (U5b)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+          $S = $env:GITHUB_STEP_SUMMARY
+          $fqdn = ''
+          try {
+              $j = (& $ts status --json 2>$null) | ConvertFrom-Json
+              $fqdn = ([string]$j.Self.DNSName).TrimEnd('.')
+          } catch { }
+          if (-not ($fqdn -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$')) {
+              Write-Host '[cert] no MagicDNS FQDN resolved; skipping cert bind (native-status will show fqdn-not-tsnet)'
+              exit 0
+          }
+          Write-Host ('[cert] FQDN = ' + $fqdn)
+          $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+          try { Set-ItemProperty -Path $rdpKey -Name 'UserAuthentication' -Value 1 -Type DWord -ErrorAction Stop; Write-Host '[cert] NLA reasserted (UserAuthentication=1)' } catch { Write-Host ('[cert] NLA reassert failed: ' + $_.Exception.Message) }
+          $workDir = 'C:\ghrdp\tls'
+          New-Item -ItemType Directory -Path $workDir -Force -ErrorAction SilentlyContinue | Out-Null
+          $crtPath = Join-Path $workDir ($fqdn + '.crt')
+          $keyPath = Join-Path $workDir ($fqdn + '.key')
+          try { icacls.exe $workDir /inheritance:r 2>&1 | Out-Null; icacls.exe $workDir /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' 'NETWORK SERVICE:(OI)(CI)R' 2>&1 | Out-Null; $LASTEXITCODE=0 } catch { }
+          $certLog = Join-Path $env:RUNNER_TEMP 'ts-cert.log'
+          $certErr = Join-Path $env:RUNNER_TEMP 'ts-cert.err'
+          $p = Start-Process -FilePath $ts -ArgumentList @('cert', '--cert-file', $crtPath, '--key-file', $keyPath, $fqdn) -RedirectStandardOutput $certLog -RedirectStandardError $certErr -WindowStyle Hidden -PassThru
+          try { $p.WaitForExit(120000) | Out-Null } catch { }
+          $certOk = ($p.HasExited -and $p.ExitCode -eq 0 -and (Test-Path -LiteralPath $crtPath) -and (Test-Path -LiteralPath $keyPath))
+          if (-not $certOk) {
+              $tail = ''
+              try { if (Test-Path $certErr) { $tail = [System.IO.File]::ReadAllText($certErr) } } catch { }
+              Write-Host ('[cert] tailscale cert failed (exit=' + $p.ExitCode + '); check HTTPS is ENABLED in tailnet admin -> DNS. err: ' + ($tail -replace "`r?`n", ' ' | Select-Object -First 1))
+              if ($S) { '### RDP cert bind skipped (tailscale cert failed)' | Add-Content -Path $S; 'Fix: Tailscale admin console -> DNS -> "Enable HTTPS...". Then re-run.' | Add-Content -Path $S }
+              exit 0
+          }
+          $thumb = ''
+          try {
+              $loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile($crtPath, $keyPath)
+              $pfxBytes = $loaded.Export('Pfx', [string]::Empty)
+              $flags = 'PersistKeySet,MachineKeySet,Exportable'
+              $imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, [string]::Empty, $flags)
+              $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
+              $store.Open('ReadWrite')
+              foreach ($old in @($store.Certificates | Where-Object { $_.Subject -match [regex]::Escape($fqdn) })) { $store.Remove($old) }
+              $store.Add($imported)
+              $store.Close()
+              $thumb = $imported.Thumbprint
+              try {
+                  $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported)
+                  if ($rsa -and $rsa.Key -and $rsa.Key.UniqueName) {
+                      $machineKeys = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
+                      $keyFile = Join-Path $machineKeys $rsa.Key.UniqueName
+                      if (Test-Path -LiteralPath $keyFile) {
+                          $acl = Get-Acl -Path $keyFile
+                          $rule = New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\NETWORK SERVICE', 'Read', 'Allow')
+                          $acl.AddAccessRule($rule)
+                          Set-Acl -Path $keyFile -AclObject $acl
+                      }
+                  }
+              } catch { Write-Host ('[cert] key ACL step skipped: ' + $_.Exception.Message) }
+          } catch { Write-Host ('[cert] import failed: ' + $_.Exception.Message); exit 0 }
+          try {
+              $tsSetting = Get-CimInstance -Namespace 'root/cimv2/TerminalServices' -ClassName 'Win32_TSGeneralSetting' -Filter "TerminalName='RDP-Tcp'" -ErrorAction Stop
+              $bindResult = Invoke-CimMethod -InputObject $tsSetting -MethodName 'SetSSLCertificateSHA1Hash' -Arguments @{ SSLCertificateSHA1Hash = $thumb } -ErrorAction Stop
+              if ($bindResult.ReturnValue -ne 0) {
+                  Write-Host ('[cert] SetSSLCertificateSHA1Hash returned ' + $bindResult.ReturnValue + '; falling back to registry write')
+                  $hashBytes = -split ($thumb -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
+                  New-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hashBytes -Force | Out-Null
+              }
+          } catch {
+              Write-Host ('[cert] WMI bind failed (' + $_.Exception.Message + '); registry-only fallback')
+              try {
+                  $hashBytes = -split ($thumb -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
+                  New-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hashBytes -Force | Out-Null
+              } catch { Write-Host ('[cert] registry fallback failed: ' + $_.Exception.Message); exit 0 }
+          }
+          $boundHex = ''
+          try { $bound = (Get-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -ErrorAction Stop).SSLCertificateSHA1Hash; $boundHex = ($bound | ForEach-Object { $_.ToString('X2') }) -join '' } catch { }
+          if ($boundHex -ieq $thumb) {
+              Write-Host ('[cert] OK: cert ' + $thumb + ' bound on RDP-Tcp; NLA=1')
+              try { Restart-Service TermService -Force -ErrorAction SilentlyContinue; Write-Host '[cert] TermService restarted' } catch { }
+              if ($S) { '### RDP cert bind OK' | Add-Content -Path $S; ('Thumbprint: `' + $thumb + '`') | Add-Content -Path $S }
+          } else {
+              Write-Host ('[cert] bind verification mismatch: registry=' + $boundHex + ' expected=' + $thumb)
+              if ($S) { '### RDP cert bind mismatch (see workflow log)' | Add-Content -Path $S }
+          }
+          exit 0
+
       - name: Optimize Tailscale path (direct-connection hunter, every 5 min)
         shell: pwsh
         run: |
