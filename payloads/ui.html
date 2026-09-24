@@ -325,6 +325,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   </div>
   <div class="row" id="nrReadyRow" style="display:none"><span class="k">Status</span><span class="v" id="nrReady" style="color:#7dffc9"></span></div>
   <div class="row" id="nrAdvisoryRow" style="display:none"><span class="k">Advisory</span><span class="v" id="nrAdvisory" style="color:#f5d9b7"></span></div>
+  <div class="row" id="nrMagicDnsRow" style="display:none"><span class="k">MagicDNS</span><span class="v" id="nrMagicDns" style="color:#f5d9b7"></span></div>
   <div class="row" id="nrReasonsRow" style="display:none"><span class="k">Blocked by</span><span class="v" id="nrReasons" style="color:#f5b7b7"></span></div>
   <div class="row" id="nrVpsPendingRow" style="display:none"><span class="k">VPS status</span><span class="v" id="nrVpsPending" style="color:#f5d9b7">provisioning pending (advisory)</span></div>
   <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
@@ -841,11 +842,25 @@ setInterval(bootstrapConfig,15000);
 // the local *.ts.net check in populateFqdn() stays as a belt-and-braces
 // second gate (server + client both must agree).
 var REASON_TEXT={
- 'fqdn-not-tsnet':'VPS FQDN not *.ts.net - provision per docs/MIGRATION.md sec 1.7',
+ 'fqdn-not-tsnet':'FQDN not *.ts.net - if MagicDNS is off, enable it: https://login.tailscale.com/admin/dns (workflow halts until enabled); VPS: provision per docs/MIGRATION.md sec 1.7',
  'cert-not-bound':'LE cert not bound on RDP-Tcp - run Enable-RdpTlsCertificate.ps1 on host',
  'nla-off':'NLA off on host - set UserAuthentication=1 on RDP-Tcp',
  'no-cmdkey-entry':'no cmdkey entry for TERMSRV/<fqdn> on this PC - run the cmdkey line once (current user)'
 };
+// [F9d] Render a reason string with the MagicDNS admin URL as a real link
+// (target=_blank rel=noopener). Only the fqdn reason carries the URL, so the
+// link appears exactly while the FQDN is missing and never once it resolves.
+function linkifyInto(el, txt, url){
+ el.textContent='';
+ if(!txt){return;}
+ var i=txt.indexOf(url);
+ if(i<0){el.appendChild(document.createTextNode(txt));return;}
+ if(i>0){el.appendChild(document.createTextNode(txt.slice(0,i)));}
+ var a=document.createElement('a');a.href=url;a.target='_blank';a.rel='noopener';
+ a.style.color='#8fd3ff';a.textContent=url;el.appendChild(a);
+ var rest=txt.slice(i+url.length);
+ if(rest){el.appendChild(document.createTextNode(rest));}
+}
 function credStamp(){ try{ return parseInt(localStorage.getItem('ghrdp.credSet')||'0',10); }catch(_){ return 0; } }
 function markCredSet(){ try{ localStorage.setItem('ghrdp.credSet', String(Date.now())); }catch(_){ } }
 function credOk(){ var t=credStamp(); return t>0 && (Date.now()-t) < 90*24*3600*1000; }
@@ -857,6 +872,7 @@ async function nativeStatus(){
   if(!r.ok)return;
   var s=await r.json();
   var pr=(s&&s.probeReasons)||{};
+  var ADMIN=(s&&s.magicDnsAdminUrl)||'https://login.tailscale.com/admin/dns';
   function setReason(id, txt){ var el=document.getElementById(id); if(el&&txt){ el.textContent=txt; } }
   var ce=document.getElementById('nrCert');if(ce){ce.textContent=s.certBound?'yes':'NO';ce.style.color=s.certBound?'':'#f5b7b7';}
   if(!s.certBound && pr.cert) setReason('nrCertReason','BLOCKED: '+pr.cert);
@@ -871,7 +887,17 @@ async function nativeStatus(){
   var reasons=srvReasons.map(function(x){return reasonMap[x] || REASON_TEXT[x] || x;});
   var row=document.getElementById('nrReasonsRow'), rEl=document.getElementById('nrReasons');
   if(row&&rEl){
-   if(reasons.length){row.style.display='';rEl.textContent=reasons.join(' | ');}
+   if(reasons.length){
+    row.style.display='';rEl.textContent='';
+    // [F9d] the fqdn reason carries the MagicDNS admin URL - render it as a
+    // real <a target="_blank" rel="noopener">, not plain text.
+    reasons.forEach(function(t,i){
+     if(i>0){rEl.appendChild(document.createTextNode(' | '));}
+     var sp=document.createElement('span');
+     if(t&&t.indexOf(ADMIN)>=0){linkifyInto(sp,t,ADMIN);}else{sp.textContent=t;}
+     rEl.appendChild(sp);
+    });
+   }
    else{row.style.display='none';rEl.textContent='';}
   }
   // [F7] advisory[] is yellow guidance, never blocks. Renders in its own row.
@@ -906,6 +932,17 @@ async function nativeStatus(){
   if(er) er.style.display = kind==='vps' ? 'none' : '';
   var vr=document.getElementById('nrVpsShortcutRow');
   if(vr) vr.style.display = kind==='vps' ? '' : 'none';
+  // [F9d] ephemeral host + missing FQDN = the workflow halted at the MagicDNS
+  // gate. Yellow advisory row with the linkified admin URL; hidden once the
+  // FQDN is present, so the link is visible only while fqdn is missing.
+  var mdRow=document.getElementById('nrMagicDnsRow'), mdEl=document.getElementById('nrMagicDns');
+  if(mdRow&&mdEl){
+   var fqdnMissing=!(/^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$/i).test((s&&s.fqdn)||'');
+   if(kind==='ephemeral'&&fqdnMissing){
+    mdRow.style.display='';
+    linkifyInto(mdEl,'workflow halted until MagicDNS enabled - open the admin link, enable, re-dispatch: '+ADMIN,ADMIN);
+   } else { mdRow.style.display='none'; mdEl.textContent=''; }
+  }
   // [F8b] Ready row - ephemeral readiness requires hard reasons empty AND a
   // non-empty webdeskUrl; an empty URL shows the exact webdeskReason instead.
   var readyRow=document.getElementById('nrReadyRow'), readyEl=document.getElementById('nrReady');
