@@ -235,6 +235,49 @@ Verification (E-battery greps for banned patterns; must return zero):
 (Comment-line matches noting removed items are acceptable and expected;
 only live code references are bugs.)
 
+### 1.10 Web desktop (Guacamole on VPS, tailnet-only)
+
+An optional browser-based fallback for clients that cannot install the
+`ghrdp://` handler or that prefer to reach the desktop without mstsc.
+Runs on the provisioned VPS (§1.7) only; never on an ephemeral
+GitHub Actions runner.
+
+On the provisioned VPS:
+
+- Install `guacd` + `guacamole` (Docker Compose is fine; native works too).
+- Configure the RDP connection mapping in `guacamole.properties` /
+  `user-mapping.xml` to point at `<vps-fqdn>.<tailnet>.ts.net:3389` with
+  the per-user credential stored SERVER-SIDE (Guacamole's own auth
+  database or its LDAP backend). This repo's tooling MUST NOT provision
+  or read that credential; the VPS owner sets it once.
+- Expose the Guacamole HTTP endpoint on the tailnet only:
+  `tailscale serve --bg https://127.0.0.1:8080`
+- Set `config.webdeskUrl` (in `C:\ghrdp\config.json` on the runner /
+  dashboard host) to the Tailscale-served URL. The dashboard reads it
+  via `GET /api/native-status` (`webdeskUrl` field) and enables the
+  **WEB DESKTOP** button on `#sec-native-rdp`. The URL is opened with
+  `window.open(webdeskUrl, '_blank', 'noopener,noreferrer')` — no
+  credentials, no query-string secrets, no auto-login handoff.
+
+Ephemeral GitHub Actions runner: the button is disabled with hover
+tooltip "available on VPS after G3". `webdeskUrl` stays empty in the
+runner's `config.json`; the dashboard never emits a broken link.
+
+Discipline (unchanged; presence is a bug):
+
+- Never place a credential, session token, or dash-token inside
+  `webdeskUrl`. It is a plain tailnet URL only.
+- Never expose Guacamole to the public Internet. Tailnet-only.
+- Never proxy or replay `webdesk-*` frame data through the ghrdp-server
+  (`/webdesk-boot`, `/webdesk-frame`, `/webdesk-input` remain neutered
+  per remediation #7C; the Guacamole service is reached DIRECTLY over
+  tailnet, not through this server).
+
+Decommission when migrating off Actions-as-RDP (per §2): stop the
+`guacd` container on the VPS and clear `config.webdeskUrl`. The
+dashboard button then disables itself automatically on the next
+15-second poll.
+
 ## 2. Decommission checklist (Actions-as-RDP teardown)
 
 > Prerequisites: §1.7 VPS provisioned and client NLA-probe verified;

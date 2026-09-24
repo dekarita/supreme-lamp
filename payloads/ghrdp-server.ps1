@@ -20,6 +20,11 @@ try {
 } catch { }
 $script:RdpTokens = @{}
 $script:LauncherSeen = $false
+# [U4] In-memory latest handler-hello per verb. Populated from POST
+# /api/handler-hello body {verb,ok,details}. Read by /api/native-status
+# as lastHandlerVerb. No disk persistence (survives only until server restart);
+# handler-hello-last.json still records the ts for handler-not-seen aging.
+$script:LastHandlerVerb = $null
 $script:DeviceTokens = @{}
 $script:DeviceTokensPath = Join-Path $Root 'device-tokens.json'
 $script:ClientAuditLog = Join-Path $Root 'client-audit.log'
@@ -373,23 +378,60 @@ function Invoke-ClientRequest {
             if (-not $certBound){ $reasons += 'cert-not-bound' }
             if (-not $nlaOn)    { $reasons += 'nla-off' }
             if ($null -eq $handlerAge -or $handlerAge -gt 86400) { $reasons += 'handler-not-seen' }
+            # [U4] webdeskUrl from config; empty until VPS provisions Guacamole
+            # per docs/MIGRATION.md sec 1.10. Never a credential-bearing URL.
+            $webdeskUrlN = ''
+            try { if ($cfgN -and $cfgN.webdeskUrl) { $webdeskUrlN = [string]$cfgN.webdeskUrl } } catch { }
             $ns = [ordered]@{
                 fqdn = $fqdnN
                 certBound = $certBound
                 nlaOn = $nlaOn
                 handlerSeenAgeSec = $handlerAge
+                webdeskUrl = $webdeskUrlN
+                lastHandlerVerb = $script:LastHandlerVerb
                 reasonsDisabled = @($reasons)
             }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $ns)
             return
         }
-        # [U3] POST /api/handler-hello - handler beacon. Body is ignored; only
-        # the timestamp matters. Written to handler-hello-last.json for the
-        # native-status age computation. Dash-token gated via routing entry.
+        # [U3/U4] POST /api/handler-hello - handler beacon.
+        # Body (U4): {verb, ok, details} - the last-run action from the
+        # ghrdp:// helper (install/setup/check/connect). Stored in-memory as
+        # LastHandlerVerb and surfaced via /api/native-status. `details` is a
+        # short human string only; helper MUST NOT include credentials.
+        # `ts` is always the server clock, never a client-supplied value.
+        # handler-hello-last.json still tracks age for handler-not-seen.
         if ($path -eq '/api/handler-hello' -and $parts.method -eq 'POST') {
+            $nowIso = [datetime]::UtcNow.ToString('o')
             try {
-                $hhOut = @{ ts = [datetime]::UtcNow.ToString('o') } | ConvertTo-Json -Compress
+                $hhOut = @{ ts = $nowIso } | ConvertTo-Json -Compress
                 [System.IO.File]::WriteAllText((Join-Path $Root 'handler-hello-last.json'), $hhOut, $script:NoBom)
+            } catch { }
+            try {
+                if ($parts.body -and $parts.body.Length -gt 0) {
+                    $hhTxt = [System.Text.Encoding]::UTF8.GetString([byte[]]$parts.body)
+                    if ($hhTxt.Trim().Length -gt 0) {
+                        $hj = $hhTxt | ConvertFrom-Json
+                        $vName = ''
+                        try { if ($hj.PSObject.Properties['verb']) { $vName = [string]$hj.verb } } catch { }
+                        if ($vName -in @('install','setup','check','connect')) {
+                            $vOk = $false
+                            try { if ($hj.PSObject.Properties['ok']) { $vOk = [bool]$hj.ok } } catch { }
+                            $vDet = ''
+                            try { if ($hj.PSObject.Properties['details']) { $vDet = [string]$hj.details } } catch { }
+                            # Trim details to keep the surface small; server-side
+                            # cap prevents accidental log-flooding from a chatty
+                            # helper build. Everything else in the body is dropped.
+                            if ($vDet.Length -gt 240) { $vDet = $vDet.Substring(0,240) }
+                            $script:LastHandlerVerb = [ordered]@{
+                                verb    = $vName
+                                ok      = $vOk
+                                details = $vDet
+                                ts      = $nowIso
+                            }
+                        }
+                    }
+                }
             } catch { }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":true}'))
             return
