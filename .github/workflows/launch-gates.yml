@@ -67,3 +67,19 @@ jobs:
           printf '%s' "$teststep" | grep -q 'noVNC'
           printf '%s' "$teststep" | grep -q 'self-test PASS'
           printf '%s' "$teststep" | grep -q 'self-test FAIL'
+      - name: F9 MagicDNS one-click-link gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Every MagicDNS failure output (log/summary/throw) must carry the
+          # one-click fix link. Excluded: the $msg definition, the success
+          # echo, and comments.
+          if grep -n 'MagicDNS' .github/workflows/main.yml | grep -v '^[0-9]*:[[:space:]]*#' | grep -v 'login.tailscale.com/admin/dns' | grep -v 'MagicDNS = ' | grep -v "\$msg = 'enable MagicDNS"; then
+            echo 'MagicDNS failure output without one-click fix link' >&2
+            exit 1
+          fi
+          # F9b: all 3 DNS gates must HOLD (not continue) while MagicDNS is OFF.
+          if [ "$(grep -c 'HOLD: MagicDNS is OFF - workflow paused here' .github/workflows/main.yml)" -lt 3 ]; then
+            echo 'a MagicDNS gate can continue without MagicDNS (HOLD missing)' >&2
+            exit 1
+          fi
