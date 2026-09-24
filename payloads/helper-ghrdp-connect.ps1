@@ -71,12 +71,12 @@ $port = Pick @('port'); if (-not $port) { $port = '7331' }
 $token = Pick @('token', 't')
 
 # ---- validate the API endpoint reachability parameter --------------------------
-$apiHostOk = $false
-if ($server) {
-    if ($server -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$') { $apiHostOk = $true }
-    elseif ($server -match '\.ts\.net$') { $apiHostOk = $true }
-}
-if (-not $apiHostOk) { A @{ event = 'fatal'; reason = 'server-not-tailnet'; server = $server }; exit 1 }
+# [U1 tightening] Accept ONLY *.ts.net MagicDNS FQDNs; drop the raw 100.64.0.0/10
+# tailnet-CGNAT IP fallback. The dashboard is reached at its MagicDNS name (bound
+# to the LE cert), so an IP `server=` value would mean either a stale link or a
+# spoofed one; hard-fail without redemption.
+$apiHostOk = ($server -and ($server -match '\.ts\.net$'))
+if (-not $apiHostOk) { A @{ event = 'fatal'; reason = 'server-not-magicdns-fqdn'; server = $server }; exit 1 }
 if (-not $token)     { A @{ event = 'fatal'; reason = 'no-token' }; exit 1 }
 
 # ---- redeem token for the MagicDNS FQDN via POST body (P3) ---------------------
