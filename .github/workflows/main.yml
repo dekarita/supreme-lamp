@@ -315,11 +315,24 @@ jobs:
           Write-Host ('[ts] connected. Tailscale IP = ' + $ip)
           $dnsName = ''
           try { $dnsName = ([string]$j.Self.DNSName).TrimEnd('.') } catch { }
+          # [F9b] HOLD: never continue without MagicDNS. Wait up to 15 min,
+          # re-printing the one-click fix link, so toggling it lets THIS run
+          # continue (no re-dispatch). The gate below fails only on timeout.
+          if ($dnsName -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
+              Write-Host '[ts] HOLD: MagicDNS is OFF - workflow paused here (max 15 min). One-click fix: https://login.tailscale.com/admin/dns -> toggle MagicDNS ON.'
+              if ($env:GITHUB_STEP_SUMMARY) { '### HOLD: workflow paused - turn MagicDNS ON here: https://login.tailscale.com/admin/dns' | Add-Content $env:GITHUB_STEP_SUMMARY }
+              for ($wh = 0; $wh -lt 90; $wh++) {
+                  Start-Sleep -Seconds 10
+                  try { $j = (& $ts status --json 2>$null) | ConvertFrom-Json; $dnsName = ([string]$j.Self.DNSName).TrimEnd('.'); $LASTEXITCODE = 0 } catch { }
+                  if ($dnsName -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') { break }
+                  if ((($wh + 1) % 6) -eq 0) { Write-Host ('[ts] HOLD: still waiting for MagicDNS (' + [int](($wh + 1) / 6) + '/15 min). Fix: https://login.tailscale.com/admin/dns') }
+              }
+          }
           if ($dnsName -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
               $msg = 'enable MagicDNS in tailnet DNS settings'
               Write-Host ('[ts] FAIL: ' + $msg + ' (Self.DNSName empty or not *.ts.net). Admin: https://login.tailscale.com/admin/dns -> Enable MagicDNS, then re-run. Do not substitute the tailnet IP.')
-              if ($env:GITHUB_STEP_SUMMARY) { '### MagicDNS missing' | Add-Content $env:GITHUB_STEP_SUMMARY; $msg | Add-Content $env:GITHUB_STEP_SUMMARY; 'Admin: Tailscale console -> DNS -> Enable MagicDNS. Then re-run. IP is not a valid dnsName.' | Add-Content $env:GITHUB_STEP_SUMMARY }
-              throw $msg
+              if ($env:GITHUB_STEP_SUMMARY) { '### MagicDNS is OFF - one-click fix: https://login.tailscale.com/admin/dns' | Add-Content $env:GITHUB_STEP_SUMMARY; 'Toggle MagicDNS ON, then re-run. The tailnet IP is not a valid dnsName.' | Add-Content $env:GITHUB_STEP_SUMMARY }
+              throw ($msg + ' (https://login.tailscale.com/admin/dns)')
           }
           Write-Host ('[ts] MagicDNS = ' + $dnsName)
           exit 0
@@ -341,9 +354,22 @@ jobs:
               $j = (& $ts status --json 2>$null) | ConvertFrom-Json
               $fqdn = ([string]$j.Self.DNSName).TrimEnd('.')
           } catch { }
+          # [F9b] HOLD: never continue without MagicDNS. Wait up to 15 min,
+          # re-printing the one-click fix link, so toggling it lets THIS run
+          # continue (no re-dispatch). The gate below fails only on timeout.
+          if ($fqdn -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
+              Write-Host '[cert] HOLD: MagicDNS is OFF - workflow paused here (max 15 min). One-click fix: https://login.tailscale.com/admin/dns -> toggle MagicDNS ON.'
+              if ($S) { '### HOLD: workflow paused - turn MagicDNS ON here: https://login.tailscale.com/admin/dns' | Add-Content $S }
+              for ($wh = 0; $wh -lt 90; $wh++) {
+                  Start-Sleep -Seconds 10
+                  try { $j = (& $ts status --json 2>$null) | ConvertFrom-Json; $fqdn = ([string]$j.Self.DNSName).TrimEnd('.'); $LASTEXITCODE = 0 } catch { }
+                  if ($fqdn -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') { break }
+                  if ((($wh + 1) % 6) -eq 0) { Write-Host ('[cert] HOLD: still waiting for MagicDNS (' + [int](($wh + 1) / 6) + '/15 min). Fix: https://login.tailscale.com/admin/dns') }
+              }
+          }
           if (-not ($fqdn -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$')) {
-              Write-Host '[cert] FAIL: enable MagicDNS in tailnet DNS settings'
-              if ($S) { '### MagicDNS missing' | Add-Content -Path $S; 'enable MagicDNS in tailnet DNS settings' | Add-Content -Path $S }
+              Write-Host '[cert] FAIL: MagicDNS is OFF. One-click fix: https://login.tailscale.com/admin/dns -> toggle MagicDNS ON, then re-dispatch.'
+              if ($S) { '### MagicDNS is OFF - one-click fix: https://login.tailscale.com/admin/dns' | Add-Content -Path $S; 'Toggle MagicDNS ON, then re-dispatch this workflow.' | Add-Content -Path $S }
               exit 1
           }
           Write-Host ('[cert] FQDN = ' + $fqdn)
@@ -820,8 +846,25 @@ jobs:
               $dns = ([string]$j.Self.DNSName).TrimEnd('.')
               $LASTEXITCODE = 0
           } catch { }
+          # [F9b] HOLD: never continue without MagicDNS. Wait up to 15 min,
+          # re-printing the one-click fix link, so toggling it lets THIS run
+          # continue (no re-dispatch). The gate below fails only on timeout.
           if ($dns -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
-              throw 'enable MagicDNS in tailnet DNS settings'
+              Write-Host '[stage] HOLD: MagicDNS is OFF - workflow paused here (max 15 min). One-click fix: https://login.tailscale.com/admin/dns -> toggle MagicDNS ON.'
+              if ($env:GITHUB_STEP_SUMMARY) { '### HOLD: workflow paused - turn MagicDNS ON here: https://login.tailscale.com/admin/dns' | Add-Content $env:GITHUB_STEP_SUMMARY }
+              for ($wh = 0; $wh -lt 90; $wh++) {
+                  Start-Sleep -Seconds 10
+                  try { $j = (& $ts status --json 2>$null) | ConvertFrom-Json; $dns = ([string]$j.Self.DNSName).TrimEnd('.'); $LASTEXITCODE = 0 } catch { }
+                  if ($dns -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') { break }
+                  if ((($wh + 1) % 6) -eq 0) { Write-Host ('[stage] HOLD: still waiting for MagicDNS (' + [int](($wh + 1) / 6) + '/15 min). Fix: https://login.tailscale.com/admin/dns') }
+              }
+          }
+          if ($dns -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
+              # [F9] MagicDNS OFF = hard gate. Print the one-click fix link in the
+              # log + step summary (both render it clickable) before throwing.
+              Write-Host '[stage] FATAL: MagicDNS is OFF (Self.DNSName empty or not *.ts.net). One-click fix: https://login.tailscale.com/admin/dns -> toggle MagicDNS ON, then re-dispatch. Do not substitute the tailnet IP.'
+              if ($env:GITHUB_STEP_SUMMARY) { '### MagicDNS is OFF - one-click fix: https://login.tailscale.com/admin/dns' | Add-Content -Path $env:GITHUB_STEP_SUMMARY; 'Toggle MagicDNS ON, then re-dispatch this workflow. The tailnet IP is not a valid dnsName.' | Add-Content -Path $env:GITHUB_STEP_SUMMARY }
+              throw 'enable MagicDNS in tailnet DNS settings (https://login.tailscale.com/admin/dns)'
           }
           if (-not $ip) { Write-Host '[stage] WARNING: no Tailscale IP resolved yet' }
           $mirrorOn = ($env:MIRROR_INPUT -eq 'true')
