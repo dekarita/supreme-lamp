@@ -453,7 +453,7 @@ function toast(msg,kind){var t=document.createElement('div');t.className='toast 
 function flashBtn(btn,msg){if(!btn)return;if(!btn.getAttribute('data-orig'))btn.setAttribute('data-orig',btn.textContent);btn.textContent=msg;btn.classList.add('copied');setTimeout(function(){btn.textContent=btn.getAttribute('data-orig');btn.classList.remove('copied')},1400)}
 function legacyCopy(text,btn){var ok=false;try{var ta=document.createElement('textarea');ta.value=text;ta.setAttribute('readonly','readonly');ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.focus();ta.select();ok=document.execCommand('copy');document.body.removeChild(ta)}catch(e){ok=false}if(ok){flashBtn(btn,'copied');toast('Copied','ok')}else{flashBtn(btn,'copy manually');window.prompt('Clipboard blocked - copy with Ctrl+C:',text);toast('Copy fallback opened','warn')}}
 function copyText(text,btn){text=String(text||'');if(!text){flashBtn(btn,'nothing');toast('Nothing to copy','warn');return}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(function(){flashBtn(btn,'copied');toast('Copied','ok')},function(){legacyCopy(text,btn)});return}legacyCopy(text,btn)}
-function copyById(id,btn){var el=$(id);if(el)copyText(el.textContent,btn)}
+function copyById(id,btn){var el=$(id);if(el)copyText((el.getAttribute&&el.getAttribute('data-full'))||el.textContent,btn)}
 function copyLog(btn){copyText($('logBox').textContent,btn)}
 function copyAllLinks(btn){var out=[];if(lastData){if(lastData.legacyIndexUrl)out.push('LEGACY RENTRY: '+lastData.legacyIndexUrl);if(lastData.rentryNewUrl)out.push('NEW RENTRY: '+lastData.rentryNewUrl);if(lastData.mirrorIndexUrl)out.push('TELEGRAPH: '+lastData.mirrorIndexUrl);var fl=lastData.files||[];for(var i=0;i<fl.length;i++){if(fl[i].link)out.push(fl[i].name+': '+fl[i].link)}}if(out.length===0){flashBtn(btn,'no links yet');toast('No links yet','warn');return}copyText(out.join('\n'),btn)}
 async function getJson(url){try{var r=await fetch(url,{cache:'no-store'});if(!r.ok)return null;return await r.json()}catch(e){return null}}
@@ -906,23 +906,27 @@ async function nativeStatus(){
   if(er) er.style.display = kind==='vps' ? 'none' : '';
   var vr=document.getElementById('nrVpsShortcutRow');
   if(vr) vr.style.display = kind==='vps' ? '' : 'none';
-  // [F7] Ready row - green message when hard reasons empty. Text varies by host kind.
+  // [F8b] Ready row - ephemeral readiness requires hard reasons empty AND a
+  // non-empty webdeskUrl; an empty URL shows the exact webdeskReason instead.
   var readyRow=document.getElementById('nrReadyRow'), readyEl=document.getElementById('nrReady');
   if(readyRow&&readyEl){
-   if(srvReasons.length===0){
-    readyRow.style.display='';
-    readyEl.textContent = kind==='vps' ? 'native shortcut ready' : 'WEB DESKTOP ready';
-   } else {
-    readyRow.style.display='none'; readyEl.textContent='';
-   }
+   if(kind==='vps'){
+    if(srvReasons.length===0){ readyRow.style.display=''; readyEl.style.color='#7dffc9'; readyEl.textContent='native shortcut ready'; }
+    else { readyRow.style.display='none'; readyEl.textContent=''; }
+   } else if(srvReasons.length===0 && s.webdeskUrl){ readyRow.style.display=''; readyEl.style.color='#7dffc9'; readyEl.textContent='WEB DESKTOP ready'; }
+   else if(!s.webdeskUrl){ readyRow.style.display=''; readyEl.style.color='#f5d9b7'; readyEl.textContent='web desktop not deployed: '+(s.webdeskReason||'step-not-run'); }
+   else { readyRow.style.display='none'; readyEl.textContent=''; }
   }
-  // [F7] webdesk URL cell - always populated when server exposes it.
+  // [F8b] webdesk URL cell - hostname preview; full URL in title + copy target.
   var wuEl=document.getElementById('webdeskUrlVal');
-  if(wuEl){ wuEl.textContent = s.webdeskUrl || '(not set)'; }
+  if(wuEl){
+   if(s.webdeskUrl){ var wdm=/^https?:\/\/([^\/]+)/i.exec(s.webdeskUrl||''); wuEl.textContent=wdm?wdm[1]:s.webdeskUrl; wuEl.title=s.webdeskUrl; try{wuEl.setAttribute('data-full',s.webdeskUrl);}catch(_){} }
+   else { wuEl.textContent='(not set)'; wuEl.title=''; try{wuEl.removeAttribute('data-full');}catch(_){} }
+  }
   var wb=$('btnWebDesk');
   if(wb){
    if(s.webdeskUrl){ wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(s.webdeskUrl,'_blank');}; wb.title=s.webdeskUrl; }
-   else { wb.disabled=true; wb.style.opacity='0.5'; wb.style.cursor='not-allowed'; wb.title='config.webdeskUrl not set - workflow U5c installs noVNC+TightVNC behind tailscale serve; needs repo secret VNC_PASS.'; }
+   else { wb.disabled=true; wb.style.opacity='0.5'; wb.style.cursor='not-allowed'; wb.onclick=null; wb.title='web desktop not deployed: '+(s.webdeskReason||'step-not-run'); }
   }
  }catch(_){}
 }
