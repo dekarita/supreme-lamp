@@ -410,18 +410,9 @@ function Invoke-ClientRequest {
             try {
                 if ($cfgN -and $cfgN.PSObject.Properties['vpsPending']) { $vpsPending = [bool]$cfgN.vpsPending }
             } catch { }
-            $reasons = @()
-            if (-not $fqdnOk)   { $reasons += 'fqdn-not-tsnet' }
-            if (-not $certBound){ $reasons += 'cert-not-bound' }
-            if (-not $nlaOn)    { $reasons += 'nla-off' }
-            if ($null -eq $handlerAge -or $handlerAge -gt 86400) { $reasons += 'handler-not-seen' }
-            $probeReasons = [ordered]@{
-                fqdn    = $(if ($fqdnOk)    { '' } else { 'dnsName missing or not *.ts.net (config.dnsName=' + $fqdnN + ')' })
-                cert    = $(if ($certBound) { '' } elseif ($certReason) { $certReason } else { 'no SSLCertificateSHA1Hash bound on RDP-Tcp' })
-                nla     = $(if ($nlaOn)     { '' } else { 'UserAuthentication != 1 on RDP-Tcp' })
-                handler = $(if ($null -ne $handlerAge -and $handlerAge -le 86400) { '' } else { 'no /api/handler-hello beacon in the last 24h' })
-            }
-            $wd = ''; if ($cfgN -and $cfgN.webdeskUrl) { $wd = [string]$cfgN.webdeskUrl }
+            # [F7] hostKind must be resolved BEFORE building reasons so 'no-cmdkey-entry'
+            # can be conditionally emitted for VPS only. Ephemeral runners never carry a
+            # persistent cmdkey (they're new hosts every run) - use WEB DESKTOP instead.
             $hostKind = 'ephemeral'
             try {
                 if ($cfgN -and $cfgN.PSObject.Properties['hostKind'] -and [string]$cfgN.hostKind -eq 'vps') { $hostKind = 'vps' }
@@ -430,6 +421,28 @@ function Invoke-ClientRequest {
                     if ($hk -eq 'vps') { $hostKind = 'vps' }
                 }
             } catch { }
+            # [F7] handler-hello reason removed. This page never launches a ghrdp:// handler
+            # post-F2, so absence of a handler beacon can no longer block AUTO-LOGIN readiness.
+            $reasons = @()
+            if (-not $fqdnOk)   { $reasons += 'fqdn-not-tsnet' }
+            if (-not $certBound){ $reasons += 'cert-not-bound' }
+            if (-not $nlaOn)    { $reasons += 'nla-off' }
+            if ($hostKind -eq 'vps') { $reasons += 'no-cmdkey-entry' }
+            $probeReasons = [ordered]@{
+                fqdn    = $(if ($fqdnOk)    { '' } else { 'dnsName missing or not *.ts.net (config.dnsName=' + $fqdnN + ')' })
+                cert    = $(if ($certBound) { '' } elseif ($certReason) { $certReason } else { 'no SSLCertificateSHA1Hash bound on RDP-Tcp' })
+                nla     = $(if ($nlaOn)     { '' } else { 'UserAuthentication != 1 on RDP-Tcp' })
+                cmdkey  = $(if ($hostKind -eq 'vps') { 'TERMSRV/<fqdn> cmdkey entry not verifiable server-side; run once on your PC' } else { '' })
+            }
+            # [F7] advisory[] carries yellow guidance the UI renders as a NOTE row.
+            # Never blocks AUTO-LOGIN, never counted in reasonsDisabled.
+            $advisory = @()
+            if ($hostKind -eq 'ephemeral') {
+                $advisory += 'stored TERMSRV entry is VPS-only - use WEB DESKTOP'
+            } elseif ($hostKind -eq 'vps') {
+                $advisory += 'run the cmdkey line once (current user), then pin the mstsc shortcut'
+            }
+            $wd = ''; if ($cfgN -and $cfgN.webdeskUrl) { $wd = [string]$cfgN.webdeskUrl }
             $ns = [ordered]@{
                 fqdn = $fqdnN
                 hostKind = $hostKind
@@ -441,6 +454,7 @@ function Invoke-ClientRequest {
                 vpsPending = $vpsPending
                 probeReasons = $probeReasons
                 reasonsDisabled = @($reasons)
+                advisory = @($advisory)
             }
             # [U4] lastHandlerVerb: verb + result of the most recent /api/handler-hello,
             # so the dashboard can show "last: install ok" / "last: setup skipped" without

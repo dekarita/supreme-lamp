@@ -25,3 +25,11 @@ jobs:
           fi
           grep -q 'hostKind = $hostKind' payloads/ghrdp-server.ps1
           grep -q "hostKind = 'ephemeral'" .github/workflows/main.yml
+          if grep -E -n 'RUN SETUP|RUN INSTALL' payloads/ui.html; then
+            echo 'ui.html still references RUN SETUP / RUN INSTALL buttons' >&2
+            exit 1
+          fi
+          if grep -E -n "reasons \+= 'handler-not-seen'|handler-not-seen'" payloads/ghrdp-server.ps1; then
+            echo 'ghrdp-server.ps1 still builds a handler-hello reason' >&2
+            exit 1
+          fi

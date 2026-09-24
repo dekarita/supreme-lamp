@@ -323,6 +323,8 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <span class="k" style="font-weight:600">Native fallback (VPS only)</span>
     <span class="note">One-time, on your PC: run the cmdkey line below and type the password at the prompt. Pin a shortcut whose target is the mstsc line. This page does not launch a script host.</span>
   </div>
+  <div class="row" id="nrReadyRow" style="display:none"><span class="k">Status</span><span class="v" id="nrReady" style="color:#7dffc9"></span></div>
+  <div class="row" id="nrAdvisoryRow" style="display:none"><span class="k">Advisory</span><span class="v" id="nrAdvisory" style="color:#f5d9b7"></span></div>
   <div class="row" id="nrReasonsRow" style="display:none"><span class="k">Blocked by</span><span class="v" id="nrReasons" style="color:#f5b7b7"></span></div>
   <div class="row" id="nrVpsPendingRow" style="display:none"><span class="k">VPS status</span><span class="v" id="nrVpsPending" style="color:#f5d9b7">provisioning pending (advisory)</span></div>
   <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
@@ -333,12 +335,13 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     </div>
     <span class="note">Opens the tailnet web desktop already served by this host. Nothing is installed on the client. NLA on the Windows listener stays on.</span>
   </div>
+  <div class="row"><span class="k">Web desktop URL</span><span class="v" id="webdeskUrlVal">(not set)</span><a href="javascript:void(0)" onclick="copyById('webdeskUrlVal',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">VNC password = the VNC_PASS secret set at dispatch; this page never stores or shows it.</span></div>
   <div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
     <span class="k" style="font-weight:600">Shortcut text (copy only; VPS one-time cmdkey)</span>
     <div style="display:flex;gap:8px;align-items:center">
       <span class="note" style="opacity:.7">cmdkey line:</span>
       <code id="cmdkeyLine" style="flex:1;padding:6px 8px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:11px ui-monospace,Consolas,monospace;overflow-x:auto">(populating...)</code>
-      <a href="javascript:void(0)" onclick="copyById('cmdkeyLine',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
+      <a href="javascript:void(0)" onclick="copyById('cmdkeyLine',this);try{localStorage.setItem('ghrdp.credSet',String(Date.now()))}catch(_){}" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
     </div>
     <div style="display:flex;gap:8px;align-items:center">
       <span class="note" style="opacity:.7">mstsc line:</span>
@@ -841,8 +844,7 @@ var REASON_TEXT={
  'fqdn-not-tsnet':'VPS FQDN not *.ts.net - provision per docs/MIGRATION.md sec 1.7',
  'cert-not-bound':'LE cert not bound on RDP-Tcp - run Enable-RdpTlsCertificate.ps1 on host',
  'nla-off':'NLA off on host - set UserAuthentication=1 on RDP-Tcp',
- 'handler-not-seen':'ghrdp:// handler never phoned home - press RUN INSTALL (once)',
- 'cred-not-set':'no cmdkey entry for TERMSRV/<fqdn> on this PC - press RUN SETUP (current user)'
+ 'no-cmdkey-entry':'no cmdkey entry for TERMSRV/<fqdn> on this PC - run the cmdkey line once (current user)'
 };
 function credStamp(){ try{ return parseInt(localStorage.getItem('ghrdp.credSet')||'0',10); }catch(_){ return 0; } }
 function markCredSet(){ try{ localStorage.setItem('ghrdp.credSet', String(Date.now())); }catch(_){ } }
@@ -860,41 +862,24 @@ async function nativeStatus(){
   if(!s.certBound && pr.cert) setReason('nrCertReason','BLOCKED: '+pr.cert);
   var ne=document.getElementById('nrNla');if(ne){ne.textContent=s.nlaOn?'ON':'OFF';ne.style.color=s.nlaOn?'':'#f5b7b7';}
   if(!s.nlaOn && pr.nla) setReason('nrNlaReason','BLOCKED: '+pr.nla);
-  var he=document.getElementById('nrHandler');
-  var handlerOk=false;
-  if(he){
-   if(s.handlerSeenAgeSec==null){he.textContent='never';he.style.color='#f5b7b7';}
-   else if(s.handlerSeenAgeSec>86400){he.textContent='stale ('+Math.round(s.handlerSeenAgeSec/3600)+'h)';he.style.color='#f5b7b7';}
-   else{he.textContent='installed ('+(s.handlerSeenAgeSec<60?s.handlerSeenAgeSec+'s':Math.round(s.handlerSeenAgeSec/60)+'m')+' ago)';he.style.color='';handlerOk=true;}
-  }
-  if(!handlerOk && pr.handler) setReason('nrHandlerReason','BLOCKED: '+pr.handler+'. Fix: press RUN INSTALL below.');
-  var ifr=document.getElementById('nrInstallFallbackRow');
-  if(ifr) ifr.style.display = handlerOk ? 'none' : '';
-  // [U5e] Handler-install fallback copy button + RUN INSTALL button are
-  // BOTH visible only while the handler has never been seen. Once hello
-  // is seen, RUN INSTALL becomes redundant; hide it and rely on RUN
-  // SETUP / RUN CHECK / RUN DIRECT / AUTO-LOGIN. The fallback copy row
-  // remains the ONLY copy-fallback in the UI (unavoidable one-time
-  // bootstrap; no download, no UAC).
-  var bi=document.getElementById('btnRunInstall');
-  if(bi){ bi.style.display = handlerOk ? 'none' : ''; }
-  var cok=credOk();
-  var cel=document.getElementById('nrCred');if(cel){cel.textContent=cok?('set ('+new Date(credStamp()).toISOString().slice(0,10)+')'):'not set';cel.style.color=cok?'':'#f5b7b7';}
-  var lv=s.lastHandlerVerb, lvEl=document.getElementById('nrLastVerb');
-  if(lvEl){ if(lv&&lv.verb){ lvEl.textContent = lv.verb+' '+(lv.ok?'ok':'FAIL')+(lv.details?' - '+lv.details:'')+(lv.ts?' ('+lv.ts.replace('T',' ').slice(0,19)+'Z)':''); lvEl.style.color = lv.ok?'':'#f5b7b7'; } else { lvEl.textContent='-'; lvEl.style.color=''; } }
   var srvReasons=(s.reasonsDisabled||[]).slice();
-  if(!cok) srvReasons.push('cred-not-set');
-  // [U5e] Render probeReasons verbatim per row (see setReason() calls
-  // above for cert/nla/handler). For the blocked-by summary row, we
-  // prefer the server's verbatim probeReasons string when it exists so
-  // the user sees exactly what the server saw; otherwise fall back to
-  // the REASON_TEXT translation of the reason key.
-  var reasonMap={'fqdn-not-tsnet':pr.fqdn,'cert-not-bound':pr.cert,'nla-off':pr.nla,'handler-not-seen':pr.handler};
+  // [F7] Server can't verify client-PC cmdkey state; the user marks it locally
+  // by copying the cmdkey line (see markCredSet). Filter out the reason when set.
+  if(credOk()){ srvReasons=srvReasons.filter(function(x){return x!=='no-cmdkey-entry';}); }
+  // [F7] Blocked-by shows ONLY hard reasons from the server. Advisories are yellow.
+  var reasonMap={'fqdn-not-tsnet':pr.fqdn,'cert-not-bound':pr.cert,'nla-off':pr.nla,'no-cmdkey-entry':pr.cmdkey};
   var reasons=srvReasons.map(function(x){return reasonMap[x] || REASON_TEXT[x] || x;});
   var row=document.getElementById('nrReasonsRow'), rEl=document.getElementById('nrReasons');
   if(row&&rEl){
    if(reasons.length){row.style.display='';rEl.textContent=reasons.join(' | ');}
    else{row.style.display='none';rEl.textContent='';}
+  }
+  // [F7] advisory[] is yellow guidance, never blocks. Renders in its own row.
+  var adv=(s&&s.advisory)||[];
+  var advRow=document.getElementById('nrAdvisoryRow'), advEl=document.getElementById('nrAdvisory');
+  if(advRow&&advEl){
+   if(adv.length){advRow.style.display='';advEl.textContent=adv.join(' | ');}
+   else{advRow.style.display='none';advEl.textContent='';}
   }
   // [U5e] vpsPending is ADVISORY only: the workflow flips it while the
   // dedicated VPS is still being provisioned, but does NOT contribute to
@@ -921,6 +906,19 @@ async function nativeStatus(){
   if(er) er.style.display = kind==='vps' ? 'none' : '';
   var vr=document.getElementById('nrVpsShortcutRow');
   if(vr) vr.style.display = kind==='vps' ? '' : 'none';
+  // [F7] Ready row - green message when hard reasons empty. Text varies by host kind.
+  var readyRow=document.getElementById('nrReadyRow'), readyEl=document.getElementById('nrReady');
+  if(readyRow&&readyEl){
+   if(srvReasons.length===0){
+    readyRow.style.display='';
+    readyEl.textContent = kind==='vps' ? 'native shortcut ready' : 'WEB DESKTOP ready';
+   } else {
+    readyRow.style.display='none'; readyEl.textContent='';
+   }
+  }
+  // [F7] webdesk URL cell - always populated when server exposes it.
+  var wuEl=document.getElementById('webdeskUrlVal');
+  if(wuEl){ wuEl.textContent = s.webdeskUrl || '(not set)'; }
   var wb=$('btnWebDesk');
   if(wb){
    if(s.webdeskUrl){ wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(s.webdeskUrl,'_blank');}; wb.title=s.webdeskUrl; }
@@ -928,18 +926,9 @@ async function nativeStatus(){
   }
  }catch(_){}
 }
-// RUN INSTALL / SETUP / CHECK / DIRECT -> fire ghrdp://<verb>?server=<fqdn>
-function fireVerb(){ paint('this page does not launch a local script host; use WEB DESKTOP','#f5d9b7'); }
-(function(){
- var i=$('btnRunInstall'); if(i) i.onclick=function(){ fireVerb('install'); };
- var c=$('btnRunCheck'); if(c) c.onclick=function(){ fireVerb('check'); };
- var d=$('btnRunDirect'); if(d) d.onclick=function(){ fireVerb('direct'); };
- var s=$('btnRunSetup'); if(s) s.onclick=function(){
-  var u=(document.getElementById('credUser')||{}).textContent||'rdpuser';
-  fireVerb('setup','user='+encodeURIComponent(u));
-  markCredSet(); nativeStatus();
- };
-})();
+// [F7] Legacy verb-fire buttons removed (no handler exists post-F2; the page
+// launches none). WEB DESKTOP is the only click on ephemeral runners; VPS
+// uses the copy-only cmdkey/mstsc shortcut.
 nativeStatus();
 setInterval(nativeStatus,15000);
 fetch('https://api.github.com/repos/dekarita/supreme-lamp/commits/main',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){
