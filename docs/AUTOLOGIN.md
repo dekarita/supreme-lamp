@@ -1,37 +1,22 @@
-# GHRDP native mstsc auto-login — one-time client setup
+# GHRDP launch path — web desktop primary, native shortcut fallback
 
-Two commands, per client PC, once ever. Paste in an **interactive**
-Windows PowerShell window (not `Win + R`). No downloads, no elevation,
-no installer.
+Primary click is WEB DESKTOP on the dashboard. Nothing is installed on
+the client, and the page does not launch a script host.
+
+The one-time cmdkey below is VPS-only. An Actions runner advertises a
+new hostname every run, so a stored TERMSRV entry cannot be one-time
+there.
 
 > Placeholders — replace before running:
-> - `<HELPER>` — absolute path to `helper-ghrdp-connect.ps1` on your
->   PC (fetch it from the repo and save it somewhere stable, e.g.
->   `C:\ghrdp\helper-ghrdp-connect.ps1`; **do not** put it in
->   `%TEMP%`).
-> - `<FQDN>` — the VPS's Tailscale MagicDNS name (e.g.
->   `myhost.tail1234.ts.net`). Get it from Tailscale admin or the
->   dashboard's *Target FQDN* row.
-> - `<RDPUSER>` — the RDP account name provisioned by
->   `payloads/Provision-GhrdpVps.ps1` (default: `rdpuser`). Get it
->   from `/api/config` → `creds.user`.
+> - `<FQDN>` — the VPS MagicDNS name (`*.ts.net`) from the dashboard
+>   Target FQDN row. Not the tailnet IP.
+> - `<RDPUSER>` — the RDP account name (default: `rdpuser`).
 
-## Step 1 — register the `ghrdp://` protocol handler (HKCU, no admin)
+## Step 1 — open WEB DESKTOP
 
-```powershell
-reg add "HKCU\Software\Classes\ghrdp" /ve /d "URL:GHRDP" /f
-reg add "HKCU\Software\Classes\ghrdp" /v "URL Protocol" /d "" /f
-reg add "HKCU\Software\Classes\ghrdp\shell\open\command" /ve /d "\"powershell.exe\" -NoProfile -ExecutionPolicy Bypass -File \"<HELPER>\" -Url \"%1\"" /f
-```
-
-This binds `ghrdp://…` links to `helper-ghrdp-connect.ps1`. The
-handler parses the URL, POSTs `/api/rdp-creds` to redeem the
-one-time token for the server's MagicDNS FQDN, and launches
-`mstsc /v:<fqdn>`.
-
-The handler never reads, writes, or deletes credentials, never
-downloads anything, never touches `LocalDevices` or any
-authentication-suppression flag, and never runs `mstsc` hidden.
+Use the primary button. It opens the tailnet URL the host already
+serves. NLA on the Windows listener stays on. This repo does not write
+a gateway password.
 
 ## Step 2 — store the RDP credential in Windows Credential Manager
 

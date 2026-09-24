@@ -226,7 +226,7 @@ jobs:
               Write-Host '[ts] TS_AUTHKEY secret found - attempting automatic login'
               $upLog = Join-Path $env:RUNNER_TEMP 'ts-up.log'
               $upErr = Join-Path $env:RUNNER_TEMP 'ts-up.err'
-              Start-Process -FilePath $ts -ArgumentList @('up', ('--authkey=' + $env:TS_AUTHKEY), '--accept-dns=false', ('--hostname=' + $hostname)) -RedirectStandardOutput $upLog -RedirectStandardError $upErr -WindowStyle Hidden | Out-Null
+              Start-Process -FilePath $ts -ArgumentList @('up', ('--authkey=' + $env:TS_AUTHKEY), '--accept-dns=true', ('--hostname=' + $hostname)) -RedirectStandardOutput $upLog -RedirectStandardError $upErr -WindowStyle Hidden | Out-Null
               $ok = $false; $badReason = ''
               for ($i = 0; $i -lt 45; $i++) {
                   try {
@@ -260,7 +260,7 @@ jobs:
           if ($state -ne 'Running') {
               $upLog2 = Join-Path $env:RUNNER_TEMP 'ts-up-manual.log'
               $upErr2 = Join-Path $env:RUNNER_TEMP 'ts-up-manual.err'
-              Start-Process -FilePath $ts -ArgumentList @('up', ('--hostname=' + $hostname)) -RedirectStandardOutput $upLog2 -RedirectStandardError $upErr2 -WindowStyle Hidden | Out-Null
+              Start-Process -FilePath $ts -ArgumentList @('up', '--accept-dns=true', ('--hostname=' + $hostname)) -RedirectStandardOutput $upLog2 -RedirectStandardError $upErr2 -WindowStyle Hidden | Out-Null
               $url = $null
               $txt = ''
               for ($i = 0; $i -lt 90; $i++) {
@@ -313,6 +313,15 @@ jobs:
           $ip = ([string](& $ts ip -4 2>$null | Select-Object -First 1)).Trim()
           $LASTEXITCODE = 0
           Write-Host ('[ts] connected. Tailscale IP = ' + $ip)
+          $dnsName = ''
+          try { $dnsName = ([string]$j.Self.DNSName).TrimEnd('.') } catch { }
+          if ($dnsName -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
+              $msg = 'enable MagicDNS in tailnet DNS settings'
+              Write-Host ('[ts] FAIL: ' + $msg + ' (Self.DNSName empty or not *.ts.net). Admin: https://login.tailscale.com/admin/dns -> Enable MagicDNS, then re-run. Do not substitute the tailnet IP.')
+              if ($env:GITHUB_STEP_SUMMARY) { '### MagicDNS missing' | Add-Content $env:GITHUB_STEP_SUMMARY; $msg | Add-Content $env:GITHUB_STEP_SUMMARY; 'Admin: Tailscale console -> DNS -> Enable MagicDNS. Then re-run. IP is not a valid dnsName.' | Add-Content $env:GITHUB_STEP_SUMMARY }
+              throw $msg
+          }
+          Write-Host ('[ts] MagicDNS = ' + $dnsName)
           exit 0
 
       # [U5b / MIGRATION 1.3] Bind the tailnet Let's Encrypt cert to the
@@ -333,8 +342,9 @@ jobs:
               $fqdn = ([string]$j.Self.DNSName).TrimEnd('.')
           } catch { }
           if (-not ($fqdn -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$')) {
-              Write-Host '[cert] no MagicDNS FQDN resolved; skipping cert bind (native-status will show fqdn-not-tsnet)'
-              exit 0
+              Write-Host '[cert] FAIL: enable MagicDNS in tailnet DNS settings'
+              if ($S) { '### MagicDNS missing' | Add-Content -Path $S; 'enable MagicDNS in tailnet DNS settings' | Add-Content -Path $S }
+              exit 1
           }
           Write-Host ('[cert] FQDN = ' + $fqdn)
           $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
@@ -715,7 +725,8 @@ jobs:
         run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ui.html" "$RUNNER_TEMP/ghrdp-stage/ui.html"
-          echo '[ui] ui.html written'
+          sed -i "s/__BUILD_SHA__/${GITHUB_SHA}/g" "$RUNNER_TEMP/ghrdp-stage/ui.html"
+          echo "[ui] ui.html written sha=${GITHUB_SHA}"
 
       - name: Write Unified Fluent Explorer (replaces search.html + explorer.html)
         shell: bash
@@ -809,6 +820,9 @@ jobs:
               $dns = ([string]$j.Self.DNSName).TrimEnd('.')
               $LASTEXITCODE = 0
           } catch { }
+          if ($dns -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
+              throw 'enable MagicDNS in tailnet DNS settings'
+          }
           if (-not $ip) { Write-Host '[stage] WARNING: no Tailscale IP resolved yet' }
           $mirrorOn = ($env:MIRROR_INPUT -eq 'true')
           $tokSet = 'abcdefghijklmnopqrstuvwxyz0123456789'
@@ -826,6 +840,8 @@ jobs:
               rdpPass = [string]$env:RDP_PASS
               ghrdp = $ghName
               dnsName = $dns
+              hostKind = 'ephemeral'
+              buildSha = [string]$env:GITHUB_SHA
               repo = [string]$env:GITHUB_REPOSITORY
               dashToken = $tok
               mirror = $mirrorOn

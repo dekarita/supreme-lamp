@@ -67,10 +67,10 @@ $state = & tailscale status --json 2>$null | ConvertFrom-Json
 if (-not $state -or $state.BackendState -ne 'Running') {
     if ($env:TS_AUTHKEY) {
         Write-Host '[tailscale] joining tailnet via $env:TS_AUTHKEY...'
-        & tailscale up --authkey $env:TS_AUTHKEY --hostname $TailscaleHostname --accept-dns=false --accept-routes=false
+        & tailscale up --authkey $env:TS_AUTHKEY --hostname $TailscaleHostname --accept-dns=true --accept-routes=false
     } else {
         Write-Host '[tailscale] interactive auth (browser prompt will open)...'
-        & tailscale up --hostname $TailscaleHostname --accept-dns=false --accept-routes=false
+        & tailscale up --hostname $TailscaleHostname --accept-dns=true --accept-routes=false
     }
     if ($LASTEXITCODE -ne 0) { throw "tailscale up failed (exit $LASTEXITCODE)." }
     $state = & tailscale status --json | ConvertFrom-Json
@@ -79,7 +79,7 @@ if (-not $state -or $state.BackendState -ne 'Running') {
 # ---- 3. Resolve MagicDNS FQDN (fail-hard on non-.ts.net) ---------------------
 $fqdn = $state.Self.DNSName
 if ($fqdn) { $fqdn = $fqdn.TrimEnd('.') }
-if (-not $fqdn -or $fqdn -notmatch '\.ts\.net$') { throw "MagicDNS FQDN unavailable or not *.ts.net: '$fqdn'. Enable HTTPS in tailnet admin (DNS -> Enable HTTPS)." }
+if (-not $fqdn -or $fqdn -notmatch '\.ts\.net$') { throw 'enable MagicDNS in tailnet DNS settings' }
 Write-Host "[tailscale] FQDN=$fqdn"
 
 # ---- 4. Create local RDP user (interactive password only) --------------------
@@ -136,3 +136,17 @@ Write-Host '  cmdkey will prompt for the password interactively. Do NOT use /pas
 Write-Host '  on the command line -- plaintext would land in wmic/ETW/EDR.'
 Write-Host ''
 Write-Host "Then: mstsc /v:$fqdn        (zero prompts, zero warnings, NLA + CredSSP)."
+
+# hostKind=vps so the dashboard does not treat this static node as an ephemeral runner.
+$hkDir = 'C:\ghrdp'
+New-Item -ItemType Directory -Path $hkDir -Force | Out-Null
+[System.IO.File]::WriteAllText((Join-Path $hkDir 'hostKind.txt'), "vps`r`n")
+$cfgPath = Join-Path $hkDir 'config.json'
+if (Test-Path -LiteralPath $cfgPath) {
+    try {
+        $cfg = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
+        $cfg | Add-Member -NotePropertyName hostKind -NotePropertyValue 'vps' -Force
+        [System.IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 8))
+    } catch { Write-Host '[hostKind] config.json present but not updated; hostKind.txt is vps' }
+}
+Write-Host '[hostKind] vps'

@@ -89,6 +89,21 @@ stand up, no client-side trust manipulation.
   value that is not a `*.ts.net` FQDN (no IP fallback, no `server=`
   fallback).
 
+### 1.4.1 Launch path (D primary, E fallback)
+
+- Primary one-click is WEB DESKTOP for every host, including ephemeral
+  runners. The page opens the tailnet URL. It does not launch a script
+  host and it does not install a client component.
+- Gateway passwords are user-managed on the host. Tooling must not stash
+  them, and must not put them in a URL, a log, or the page. NLA and
+  CredSSP stay on.
+- E is the documented native fallback: one manual `cmdkey` prompt plus a
+  pinned `mstsc /v:<fqdn>` shortcut. That promise is VPS-only
+  (`hostKind=vps`). Ephemeral `hostKind` must not offer it as one-time.
+- Lab login (gateway to loopback RDP, stored cred, NLA) is not measured
+  in this landing. No PASS is claimed. SAC enforce and WDAC remain
+  limitations for any future local binary; they are not bypassed.
+
 ### 1.5 Private file sync (replaces the public mirror)
 
 Pick ONE of the three based on the user's preference; all three keep files private
