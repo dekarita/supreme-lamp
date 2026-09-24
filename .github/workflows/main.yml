@@ -939,9 +939,9 @@ jobs:
       # [U5c / MIGRATION 1.10] Web desktop reintroduced ONLY in the password-required + tailnet-only
       # form. Credentials remain required (TightVNC control + view password from repo secret VNC_PASS,
       # never echoed to logs/summary), and exposure is limited to the tailnet via `tailscale serve` on
-      # 127.0.0.1:7333. No public port, no funnel, no anonymous access. VNC_PASS empty -> step skips
-      # cleanly and config.webdeskUrl stays '' so the dashboard button remains disabled. The banned
-      # posture (no-auth VNC on any interface) stays banned.
+      # 127.0.0.1:7333. No public port, no funnel, no anonymous access. Every skip is LOUD
+      # (step summary + config.webdeskReason, run never fails) so the dashboard button shows the
+      # exact reason instead of a silent empty URL. The banned posture (no-auth VNC) stays banned.
       - name: Web desktop (noVNC + TightVNC, tailnet-only via tailscale serve)
         env:
           VNC_PASS: ${{ secrets.VNC_PASS }}
@@ -951,14 +951,29 @@ jobs:
           $S = $env:GITHUB_STEP_SUMMARY
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $vp = [string]$env:VNC_PASS
+          # [F8c] LOUD skips: every early exit records config.webdeskReason so
+          # /api/native-status can explain the disabled button. Never fails run.
+          $cfgPathW = 'C:\ghrdp\config.json'
+          function Set-WebdeskCfg([string]$Url, [string]$Reason) {
+              try {
+                  if (-not (Test-Path -LiteralPath $cfgPathW)) { return }
+                  $encW = New-Object System.Text.UTF8Encoding($false)
+                  $cfgW = [System.IO.File]::ReadAllText($cfgPathW) | ConvertFrom-Json
+                  if ($cfgW.PSObject.Properties['webdeskUrl']) { $cfgW.webdeskUrl = $Url } else { $cfgW | Add-Member -NotePropertyName webdeskUrl -NotePropertyValue $Url -Force }
+                  if ($cfgW.PSObject.Properties['webdeskReason']) { $cfgW.webdeskReason = $Reason } else { $cfgW | Add-Member -NotePropertyName webdeskReason -NotePropertyValue $Reason -Force }
+                  [System.IO.File]::WriteAllText($cfgPathW, ($cfgW | ConvertTo-Json -Depth 10), $encW)
+              } catch { Write-Host ('[webdesk] config.json webdesk update failed: ' + $_.Exception.Message) }
+          }
           if (-not $vp) {
-              Write-Host '[webdesk] VNC_PASS secret not set; skipping (dashboard WEB DESKTOP stays disabled).'
-              if ($S) { '### Web desktop skipped (VNC_PASS not set)' | Add-Content -Path $S }
+              Write-Host '[webdesk] VNC_PASS secret not set; web desktop DISABLED (dashboard button stays disabled with reason).'
+              if ($S) { '### VNC_PASS not set - web desktop disabled' | Add-Content -Path $S }
+              Set-WebdeskCfg '' 'vnc-pass-missing'
               exit 0
           }
           if ($vp.Length -lt 8) {
               Write-Host '[webdesk] VNC_PASS shorter than 8 chars; refusing (weak passwords are not acceptable for a network-reachable service).'
-              if ($S) { '### Web desktop skipped (VNC_PASS too short; require >= 8 chars)' | Add-Content -Path $S }
+              if ($S) { '### VNC_PASS too short - web desktop disabled (require >= 8 chars)' | Add-Content -Path $S }
+              Set-WebdeskCfg '' 'vnc-pass-missing'
               exit 0
           }
           # Install TightVNC via chocolatey (preinstalled on windows-latest). Password is passed as
@@ -990,7 +1005,9 @@ jobs:
               try { Restart-Service -Name 'tvnserver' -Force -ErrorAction Stop; $inst = $true } catch { Write-Host ('[webdesk] tvnserver service restart failed: ' + $_.Exception.Message) }
           } catch { Write-Host ('[webdesk] TightVNC install error: ' + $_.Exception.Message) }
           if (-not $inst) {
-              if ($S) { '### Web desktop install failed (see workflow log; secret NOT leaked)' | Add-Content -Path $S }
+              Write-Host '[webdesk] TightVNC install failed; web desktop DISABLED.'
+              if ($S) { '### Web desktop DISABLED (TightVNC install failed; secret NOT leaked)' | Add-Content -Path $S }
+              Set-WebdeskCfg '' 'serve-failed'
               exit 0
           }
           # Install noVNC + websockify. Python is preinstalled on the runner.
@@ -1003,8 +1020,9 @@ jobs:
               & python -m pip install --disable-pip-version-check --quiet websockify 2>&1 | Select-Object -Last 3 | Out-Null
           } catch { Write-Host ('[webdesk] noVNC/websockify install error: ' + $_.Exception.Message) }
           if (-not (Test-Path -LiteralPath (Join-Path $novncDir 'vnc.html'))) {
-              Write-Host '[webdesk] noVNC assets missing; skipping serve'
-              if ($S) { '### Web desktop skipped (noVNC clone failed)' | Add-Content -Path $S }
+              Write-Host '[webdesk] noVNC assets missing; web desktop DISABLED.'
+              if ($S) { '### Web desktop DISABLED (noVNC clone failed)' | Add-Content -Path $S }
+              Set-WebdeskCfg '' 'serve-failed'
               exit 0
           }
           # Wait for VNC 5900 to be LISTENING on loopback before starting websockify.
@@ -1029,15 +1047,19 @@ jobs:
               Start-Sleep -Seconds 1
           }
           if (-not $wsUp) {
-              Write-Host '[webdesk] websockify 7333 did not reach LISTEN in 20s'
-              if ($S) { '### Web desktop skipped (websockify did not bind)' | Add-Content -Path $S }
+              Write-Host '[webdesk] websockify 7333 did not reach LISTEN in 20s; web desktop DISABLED.'
+              if ($S) { '### Web desktop DISABLED (websockify did not bind 7333)' | Add-Content -Path $S }
+              Set-WebdeskCfg '' 'serve-failed'
               exit 0
           }
           # Expose ONLY on the tailnet.
           $serveUrl = ''
           try {
               $serveLog = Join-Path $env:RUNNER_TEMP 'ts-serve-webdesk.log'
-              & $ts serve --bg https://127.0.0.1:7333 2>&1 | Tee-Object -FilePath $serveLog | Out-Null
+              # [F8c] Backend is plaintext HTTP (websockify has no TLS), so the target
+              # MUST be http:// - tailscaled terminates tailnet TLS itself; an
+              # https:// target means TLS-to-plaintext (502 on every hit).
+              & $ts serve --bg http://127.0.0.1:7333 2>&1 | Tee-Object -FilePath $serveLog | Out-Null
               $LASTEXITCODE = 0
               try {
                   $ss = (& $ts serve status --json 2>$null) | ConvertFrom-Json
@@ -1054,31 +1076,20 @@ jobs:
                       }
                   }
               } catch { }
-              if (-not $serveUrl) {
-                  try {
-                      $j = (& $ts status --json 2>$null) | ConvertFrom-Json
-                      $fq = ([string]$j.Self.DNSName).TrimEnd('.')
-                      if ($fq) { $serveUrl = 'https://' + $fq + '/' }
-                  } catch { }
-              }
+              # [F8c] NO fallback URL fabrication: without a real serve mapping
+              # there is no reachable URL, and guessing one is a false LIVE.
               if ($serveUrl -and -not ($serveUrl.EndsWith('/'))) { $serveUrl = $serveUrl + '/' }
               if ($serveUrl) { $serveUrl = $serveUrl + 'vnc.html?autoconnect=1&resize=remote' }
           } catch { Write-Host ('[webdesk] tailscale serve failed: ' + $_.Exception.Message) }
           if (-not $serveUrl) {
-              Write-Host '[webdesk] tailscale serve did not produce a URL'
-              if ($S) { '### Web desktop skipped (tailscale serve produced no URL)' | Add-Content -Path $S }
+              Write-Host '[webdesk] tailscale serve produced no mapping for 127.0.0.1:7333; web desktop DISABLED.'
+              if ($S) { '### Web desktop DISABLED (tailscale serve produced no URL)' | Add-Content -Path $S }
+              Set-WebdeskCfg '' 'serve-failed'
               exit 0
           }
-          # Write config.webdeskUrl (safe: no password anywhere in the URL).
-          try {
-              $cfgPath = 'C:\ghrdp\config.json'
-              if (Test-Path -LiteralPath $cfgPath) {
-                  $enc = New-Object System.Text.UTF8Encoding($false)
-                  $cfgJ = [System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json
-                  if ($cfgJ.PSObject.Properties['webdeskUrl']) { $cfgJ.webdeskUrl = $serveUrl } else { $cfgJ | Add-Member -NotePropertyName webdeskUrl -NotePropertyValue $serveUrl -Force }
-                  [System.IO.File]::WriteAllText($cfgPath, ($cfgJ | ConvertTo-Json -Depth 10), $enc)
-              }
-          } catch { Write-Host ('[webdesk] config.json update failed: ' + $_.Exception.Message) }
+          # Write config.webdeskUrl + clear webdeskReason (safe: no password in URL).
+          # Server re-reads config per request (F8a), so it sees this immediately.
+          Set-WebdeskCfg $serveUrl ''
           Write-Host ('[webdesk] serve URL = ' + $serveUrl)
           if ($S) {
               '### Web desktop LIVE (tailnet-only, VNC-password-gated)' | Add-Content -Path $S
