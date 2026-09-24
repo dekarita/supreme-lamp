@@ -13,6 +13,7 @@
 - F9b main.yml: opt-in auto-enable - TS_API_TOKEN+TS_TAILNET_NAME env (secrets) -> POST api.tailscale.com/api/v2/tailnet/<name>/dns/preferences {"magicDNSEnabled":true} (Bearer header, token never printed), sleep 5, re-read Self.DNSName; secrets absent -> silent skip.
 - F9c ghrdp-server.ps1 /api/native-status: +magicDnsAdminUrl field; probeReasons.fqdn text carries the admin URL (feeds the fqdn reasonsDisabled rendering).
 - F9d ui.html: fqdn reason linkified via <a target=_blank rel=noopener> (uses s.magicDnsAdminUrl); ephemeral+fqdn-missing yellow advisory row 'workflow halted until MagicDNS enabled - open the admin link, enable, re-dispatch'; row hidden once fqdn ok.
+- F9e MIGRATION.md sec 1.3+1.7: admin link, DNS->MagicDNS toggle path (ON, Save, re-run), optional API one-liner (TS_API_TOKEN+TS_TAILNET_NAME), halt-by-design statement.
 - Prior: 4812cdd5 remediation merged; 478d015b P1-P3 (cert script, FQDN discipline, POST-token/mutex/JSONL); 2252263e G3 provision; 053894c5 MIGRATION rewrite.
 - Prior: U1-U4 native-mstsc rewrite (ui/server/helper, AUTO-LOGIN contract); F6-F8 certBound honesty, hostKind reasons, advisory rows, webdesk honesty + self-test; PR#9 F9 HOLD variant superseded by F9a halt-by-design.
 
