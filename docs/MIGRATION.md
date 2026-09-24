@@ -37,6 +37,18 @@ stand up, no client-side trust manipulation.
 
 - Prerequisite: HTTPS enabled in the tailnet (Tailscale admin console → DNS
   → "Enable HTTPS…"). One-time toggle per tailnet.
+- Prerequisite: **MagicDNS ON — required, gated (F9)**. Until MagicDNS is
+  enabled the workflow halts by design at the *Wait for Tailscale connected*,
+  *Bind tailnet LE cert*, and *Stage files + write config.json* steps:
+  `Self.DNSName` must be a non-empty `*.ts.net` name or the run fails. Fix:
+  [Enable MagicDNS now (Tailscale admin → DNS)](https://login.tailscale.com/admin/dns) —
+  toggle **MagicDNS** ON, Save, then re-run the workflow. Runs stay halted
+  until enabled; the tailnet IP is never substituted. Optional unattended
+  enable (F9b): set the repo secrets `TS_API_TOKEN` + `TS_TAILNET_NAME` and
+  each gate first POSTs
+  `https://api.tailscale.com/api/v2/tailnet/${TS_TAILNET_NAME}/dns/preferences`
+  with `{"magicDNSEnabled":true}` (token in the `Authorization` header only,
+  never a URL parameter, never printed) before halting.
 - **[U5b] On an ephemeral GitHub Actions runner the workflow now binds the
   cert automatically on every run** — the step
   *"Bind tailnet LE cert to RDP-Tcp (U5b)"* runs right after
@@ -150,6 +162,18 @@ Unattended tailnet auth (still interactive password):
 
     $env:TS_AUTHKEY = 'tskey-auth-...'
     pwsh -ExecutionPolicy Bypass -File .\payloads\Provision-GhrdpVps.ps1
+
+MagicDNS prerequisite (F9): this script hard-fails — and the workflow's three
+DNS gates halt by design — until MagicDNS is enabled on the tailnet.
+[Enable MagicDNS now (Tailscale admin → DNS)](https://login.tailscale.com/admin/dns) —
+toggle **MagicDNS** ON, Save, then re-run. Runs stay halted until enabled.
+Optional API one-liner (same call the workflow's F9b opt-in makes when the
+repo secrets `TS_API_TOKEN` + `TS_TAILNET_NAME` are set; token in the
+`Authorization` header only, never printed):
+
+    curl -sS -X POST "https://api.tailscale.com/api/v2/tailnet/${TS_TAILNET_NAME}/dns/preferences" \
+      -H "Authorization: Bearer ${TS_API_TOKEN}" -H "Content-Type: application/json" \
+      -d '{"magicDNSEnabled":true}'
 
 ### 1.8 Secret rotation (execute BEFORE decommission and BEFORE §4)
 

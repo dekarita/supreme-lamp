@@ -8,57 +8,25 @@
 - Native mstsc target on Tailscale MagicDNS FQDN with Tailscale LE cert; benign UX (interactive cmdkey once, dashboard button, POST-token handler).
 
 ## Done ledger (sha-only; older shas prune to git log)
-- 4812cdd5 remediation branch merged + pushed to main
-- 478d015b P1 cert script + P2 FQDN discipline + P3 POST-token/mutex/JSONL (bundled in one commit)
-- 2252263e G3 payloads/Provision-GhrdpVps.ps1 (idempotent VPS bootstrap)
-- 053894c5 G1+G2+G3+G4 docs/MIGRATION.md +130 (rotation, bootstrap ref, sec 4 history rewrite)
-- U1 payloads/ui.html rewritten to native mstsc auto-login (sec-native-rdp); removed agent enrollment / DIAG / Parsec-push / install.bat helpers; contract: POST /api/rdp-token -> ghrdp://connect?server=&port=7331&t=<tok>; MIGRATION.md sec 1.9 added.
-- 5bf62e0 U2 Phase-1 landed: (a) ghrdp-server.ps1 +4 endpoints in 404-guard + bodies deleted; Remove-CredKeys rebuilds creds={fqdn,user,ip} & strips rentry/dashToken. (b) helper-ghrdp-connect.ps1 server= *.ts.net only. (c) ui.html launchProto -> window.location.href; bootstrapConfig() polls /api/config every 15s. (d) main.yml mirror + TightVNC + qBittorrent removed. (e) docs/AUTOLOGIN.md created.
-- 5563b0a U3 native-status contract landed: (a) ghrdp-server.ps1 GET /api/native-status {fqdn,certBound,nlaOn,handlerSeenAgeSec,reasonsDisabled}; POST /api/handler-hello writes {ts}. Both dash-token+tailnet gated. (b) ui.html sec-native-rdp Cert/NLA/Handler rows + reasonsDisabled row; nativeStatus() 15s poll. (c) helper-ghrdp-connect.ps1 fire-and-forget hello beacon after redeem.
-- U4 UX completion (this commit): (a) ghrdp-server.ps1 /api/native-status +webdeskUrl + lastHandlerVerb {verb,ok,details,ts}; /api/handler-hello body may carry {verb,ok,details}. (b) helper-ghrdp-connect.ps1 verb router: install (HKCU\Software\Classes\ghrdp reg + copy to %LOCALAPPDATA%\ghrdp\), setup (interactive cmdkey /generic:TERMSRV/<fqdn> /user:<user>; NO /pass:), check (reg + cmdkey + tailscale status; local MessageBox result), connect (unchanged). Send-Hello helper unifies beacon; all verbs POST verb+ok+details. (c) ui.html sec-native-rdp: 5-probe grid (FQDN/Cert/NLA/Handler/Credential, credential local via localStorage 90d), Last-handler-action row, one-click actions bar (RUN INSTALL/SETUP/CHECK/AUTO-LOGIN/WEB DESKTOP). AUTO-LOGIN enabled only when all 5 probes ✅; WEB DESKTOP enabled only when webdeskUrl non-empty. (d) docs/MIGRATION.md sec 1.10 (Guacamole via tailscale serve, decommission). No cred stashing tool-side (setup uses interactive cmdkey only); no /pass:; NLA/cert never toggled off; no Unblock-File; no secrets in URLs/logs.
+- F9f launch-gates: admin-link count >= 3 in main.yml + every Self.DNSName step must validate *.ts.net (no gate passes on empty/non-ts.net name); D/E + F8 gates kept untouched.
+- F9a main.yml: all 3 MagicDNS gates (ts-connect, cert-bind, stage) append 'halted by design' + [Enable MagicDNS now](admin/dns) + re-run line to GITHUB_STEP_SUMMARY, echo to log, throw with URL; 15-min HOLDs removed (halt immediate; re-dispatch after enabling).
+- F9b main.yml: opt-in auto-enable - TS_API_TOKEN+TS_TAILNET_NAME env (secrets) -> POST api.tailscale.com/api/v2/tailnet/<name>/dns/preferences {"magicDNSEnabled":true} (Bearer header, token never printed), sleep 5, re-read Self.DNSName; secrets absent -> silent skip.
+- F9c ghrdp-server.ps1 /api/native-status: +magicDnsAdminUrl field; probeReasons.fqdn text carries the admin URL (feeds the fqdn reasonsDisabled rendering).
+- F9d ui.html: fqdn reason linkified via <a target=_blank rel=noopener> (uses s.magicDnsAdminUrl); ephemeral+fqdn-missing yellow advisory row 'workflow halted until MagicDNS enabled - open the admin link, enable, re-dispatch'; row hidden once fqdn ok.
+- F9e MIGRATION.md sec 1.3+1.7: admin link, DNS->MagicDNS toggle path (ON, Save, re-run), optional API one-liner (TS_API_TOKEN+TS_TAILNET_NAME), halt-by-design statement.
+- Prior: 4812cdd5 remediation merged; 478d015b P1-P3 (cert script, FQDN discipline, POST-token/mutex/JSONL); 2252263e G3 provision; 053894c5 MIGRATION rewrite.
+- Prior: U1-U4 native-mstsc rewrite (ui/server/helper, AUTO-LOGIN contract); F6-F8 certBound honesty, hostKind reasons, advisory rows, webdesk honesty + self-test; PR#9 F9 HOLD variant superseded by F9a halt-by-design.
 
 ## Queue (production maintenance)
-- G1. Secret rotation (USER-driven, out of band): rentry pw, 6 mirror codes, TS auth keys, rdpuser pw, dashToken, GH PATs. Checklist = MIGRATION.md sec 1.8.
-- G2. Git history rewrite (USER-gated on 'history-rewrite-go'): git-filter-repo preferred, BFG alt. Plan = MIGRATION.md sec 4. Runs AFTER G1.
-- G3. VPS provision: user runs payloads\Provision-GhrdpVps.ps1 on target host (winget TS install, tailnet join, rdpuser interactive-pw, NLA=1, cert bind, tailnet-only fw). Client cmdkey once per sec 1.4.
-- G4. Actions decommission: after G3 verified via live client NLA-probe AND G1 done. Checklist = MIGRATION.md sec 2 (13 items).
-
-## Migration P1-P3 (bundled in 478d015b, live on main)
-- P1 payloads\Enable-RdpTlsCertificate.ps1 (tailscale cert -> LocalMachine\My -> SetSSLCertificateSHA1Hash + reg fallback; NLA=1 re-assert; idempotent; PS7+).
-- P2 helper-ghrdp-connect.ps1 + server /api/rdp-creds refuse non-*.ts.net; response fields host + fqdn (dropped hostip); no IP fallback.
-- P3 /api/rdp-creds POST-only (GET -> 410 Gone); Global\GHRDP-<fqdn> named mutex; startup stale-cred sweep (log-only); JSONL audit at %LOCALAPPDATA%\ghrdp\ghrdp-connect.log.
+- G1. Secret rotation (USER-driven, out of band): checklist = MIGRATION.md sec 1.8.
+- G2. Git history rewrite (USER-gated 'history-rewrite-go'): plan = MIGRATION.md sec 4. Runs AFTER G1.
+- G3. VPS provision: user runs payloads\Provision-GhrdpVps.ps1 (MIGRATION sec 1.7). Client cmdkey once per sec 1.4.
+- G4. Actions decommission after G3 verified live AND G1 done: checklist = MIGRATION.md sec 2 (13 items).
 
 ## Residual flags
-- payloads/ghrdp-uninstall.ps1 cmdkey /list + /delete kept for prior-stash cleanup (removes, does not stash - benign).
-- Rust main.rs edits audited by inspection; no local toolchain for cargo check (deferred to VPS/CI).
-- Runner workflow CANCELLED 2026-09-23 by user before M1-M3 push (zero race). Re-dispatch not planned; G4 permanently disables.
+- ghrdp-uninstall.ps1 cmdkey /list+/delete kept for prior-stash cleanup (removes, never stashes).
+- Rust main.rs audited by inspection; no local cargo toolchain (deferred to CI).
+- Main.yml runs 2026-09-23/24 cancelled by user pre-F9-verify; re-dispatch per F9 verify loop (MIGRATION 1.3).
 
 ## Anchors (re-derive by search)
-- main.yml: keepalive-heal (tscon block guard) ~:2087; Cleanup step ~:2224.
-- payloads/ghrdp-server.ps1: 404 guard array :253; /api/rdp-creds POST-only+FQDN-guard ~:268; 410-Gone GET ~:278; /webdesk-boot (neutered) :462.
-- payloads/main.rs: snapshot_payload creds :133-140; api_config secret-strip :283-300; sec-conn IP/user rows :1066-1069.
-- payloads/helper-ghrdp-connect.ps1: sweep ~:38; mutex acquire ~:105.
-- payloads/Enable-RdpTlsCertificate.ps1: tailscale cert -> LocalMachine\My ~:45; SetSSLCertificateSHA1Hash ~:78.
-- payloads/Provision-GhrdpVps.ps1: preflight ~:48; TS install ~:60; FQDN resolve ~:76; rdpuser ~:85; NLA ~:98; cert delegate ~:105; tailnet-only fw ~:112.
-- payloads/ui.html: sec-native-rdp block ~:310-355 (Target FQDN + 5-probe rows Cert/NLA/Handler/Credential + reasonsDisabled + last-handler + one-click actions bar RUN INSTALL/SETUP/CHECK/AUTO-LOGIN/WEB DESKTOP); nativeStatus() + button wiring IIFE ~:828-905; token-flow IIFE ~:906-940 (POST /api/rdp-token -> ghrdp://connect?server=&port=7331&t=<tok>).
-- payloads/ghrdp-server.ps1: /api/native-status ~:346-410 (fqdn, certBound, nlaOn, handlerSeenAgeSec, webdeskUrl, reasonsDisabled, lastHandlerVerb); /api/handler-hello ~:411-435 (accepts {verb,ok,details}). Both dash-token+tailnet gated via routing Test-ClientAllowed.
-- payloads/helper-ghrdp-connect.ps1: verb router ~:57-135 (install/setup/check/connect); Send-Hello helper ~:75-82 unifies POST /api/handler-hello.
-
-## Acceptance
-- [x] E5 secret prefixes: only STATE.md masked ledger + MIGRATION.md sec 4.2 STEP 3 grep-example.
-- [x] E6 client payloads: 0 live cred emissions.
-- [x] E7 mirror OFF (default false, DEPRECATED description).
-- [x] E8 P1-P3 markers present in HEAD.
-- [x] NLA=1 present; 0 live fPromptForPassword=0 setters.
-- [x] Parse: 17/17 payloads/*.ps1 (Provision-GhrdpVps.ps1 parse-OK).
-- [~] Rust build for main.rs deferred (no local toolchain).
-
-## Secrets ledger (masked; rotation = G1)
-- rentry pw RDP@... blanked in main.yml env. Mirror keys fJSJ.../WdX9.../E9RS.../YuKb.../FWXk.../tncr... purged from docs HEAD; still in pre-remediation git history + Pages caches until G2.
-
-## Last delta
-- 2026-09-24 U6 (reserved-env proof + PR + dispatch): (§A) ghrdp-lab bootstrap PR #1 merged as e79ad75; apply-patch.yml round-trip run [35987491292](https://github.com/dekarita/ghrdp-lab/actions/runs/35987491292) green through decode/am/push (1011-byte typo-fix patch applied cleanly); `gh pr create` step returned non-zero due to repo-level "Allow GitHub Actions to create and approve pull requests" being off (documented in ghrdp-lab STATE.md as a one-click user toggle; PR opened+closed from session as fallback). (§B) supreme-lamp PR #4 (claude/jolly-keller-panc5g -> main) merged as e9709a9 with merge_method=merge; U5f (675fb1b) is an ancestor of main. (§C) Dispatched main.yml on main; run [35988166990](https://github.com/dekarita/supreme-lamp/actions/runs/35988166990) with VNC_PASS confirmed set; step 10 "Bind tailnet LE cert to RDP-Tcp (U5b)" -> success (10:36:43-10:37:21Z), step 27 "Web desktop (noVNC + TightVNC, tailnet-only via tailscale serve)" -> success (10:37:30-10:37:31Z). Egress proxy denies productionresultssa18.blob.core.windows.net + github.io so raw log/summary bytes not extracted from this session; step-conclusion API is the ground truth (both success = bind + serve both went through; on failure the step would show `failure`, not `success`). Thumbprint + serve URL lines are in the run's GITHUB_STEP_SUMMARY on the run page.
-- 2026-09-24 U5a-f (unblock AUTO-LOGIN + WEB DESKTOP + RUN buttons): (a) ghrdp-server.ps1 /api/native-status now sources fqdnOk from config.dnsName (not config.rdpIp) — fixes the false blocker "VPS FQDN not *.ts.net" on every ephemeral runner. /api/rdp-resolve same fix. Adds probeReasons {fqdn,cert,nla,handler} (verbatim strings the UI renders), vpsPending advisory (does NOT block AUTO-LOGIN). (b) main.yml "Bind tailnet LE cert to RDP-Tcp (U5b)" step (tailscale cert -> LocalMachine\My -> WMI SetSSLCertificateSHA1Hash w/ reg fallback; TermService restart; thumbprint-only logging). (c) main.yml "Web desktop (noVNC + TightVNC, tailnet-only via tailscale serve)" step: TightVNC service w/ VNC_PASS (>=8 chars, never echoed), LoopbackOnly=1, websockify 127.0.0.1:7333 + noVNC clone, tailscale serve --bg -> config.webdeskUrl. (d) helper-ghrdp-connect.ps1 verb `direct` -> Start-Process mstsc /v:<fqdn> visible; POST /api/handler-hello on EVERY verb (install/setup/check/direct/connect). (e) ui.html RUN INSTALL/SETUP/CHECK/DIRECT/AUTO-LOGIN/WEB DESKTOP promoted to .primary; FQDN + cmdkey/mstsc fallback copy buttons demoted to small secondary underline links; handler-install fallback copy button kept ONLY while handler-not-seen (unavoidable one-time bootstrap, no download, no UAC); RUN INSTALL button hides itself once hello is seen; probeReasons rendered verbatim in Cert/NLA/Handler notes + aggregated "Blocked by" line; vpsPending shown as advisory yellow row that never blocks AUTO-LOGIN. (f) MIGRATION.md §1.3 (auto cert bind on every workflow run) and §1.10 (noVNC + TightVNC replacing Guacamole default, bright-line no-auth-VNC still banned) updated. §5 VERIFY: 0 live `pass=` / `cmdkey /pass:` / `Unblock-File` / `Zone.Identifier` / `AuthenticationLevelOverride` / `LocalDevices` / `PublisherBypass` in code (matches are all in forbidden-list comments). All .ps1 unchanged in structure (bracket balance preserved).
-- 2026-09-24 U4 finisher: added Handler-install copy-fallback snippet (§3 item 4) to sec-native-rdp. Row #nrInstallFallbackRow appears only when handlerOk===false (server handlerSeenAgeSec null OR >86400s); shows the one-time PowerShell bootstrap: Copy-Item helper -> %LOCALAPPDATA%\ghrdp\ + reg add HKCU\Software\Classes\ghrdp\shell\open\command. No admin, no network, no creds. Copy button retained ONLY on this row per directive. §5 VERIFY: pass=0, cmdkey /pass:=0, forbidden=0, braces 458/458, script tags 4/4, reasonsDisabled server↔ui 4↔4. Landing next.
-- 2026-09-24 U3 LANDED as 5563b0a (native-status contract + handler-hello beacon; rebased over 2 status-update commits then pushed). U4 UX completion applied on top: /api/native-status now returns webdeskUrl + lastHandlerVerb {verb,ok,details,ts}; /api/handler-hello now accepts {verb,ok,details}; helper-ghrdp-connect.ps1 routes install/setup/check verbs (HKCU reg-add + %LOCALAPPDATA%\ghrdp\ copy; interactive cmdkey, no /pass:; local MessageBox check summary); ui.html sec-native-rdp shows 5-probe grid (FQDN/Cert/NLA/Handler/Credential) + one-click actions bar (RUN INSTALL/SETUP/CHECK/AUTO-LOGIN/WEB DESKTOP). AUTO-LOGIN enabled only when all 5 probes ✅; WEB DESKTOP enabled only when config.webdeskUrl non-empty. docs/MIGRATION.md sec 1.10 (Guacamole via tailscale serve, decommission) added. Next: gh workflow run + live redeem test after VPS G3 provisioning.
-- 2026-09-24 U1 closed: payloads/ui.html rewritten (1108->833 lines, -275). New sec-native-rdp section replaces removed agent enrollment / DIAG / installer / Parsec-push surface. Native flow only: POST /api/rdp-token -> ghrdp://connect?server=&port=7331&t=<tok>; handler POST-redeems /api/rdp-creds, gets *.ts.net FQDN, runs mstsc /v:<fqdn> against stored TERMSRV cmdkey cred. Zero plaintext in URL/UI/logs. Matches shipped P2/P3 handler contract (helper-ghrdp-connect.ps1:3). MIGRATION.md sec 1.9 added.
+- main.yml: MagicDNS gates ~:316/:355/:845; Cleanup ~:2535. ghrdp-server.ps1: native-status ~:356; 404 guard :253. payloads/main.rs: api_config secret-strip ~:283. helper: mutex ~:105.

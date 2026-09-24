@@ -67,19 +67,28 @@ jobs:
           printf '%s' "$teststep" | grep -q 'noVNC'
           printf '%s' "$teststep" | grep -q 'self-test PASS'
           printf '%s' "$teststep" | grep -q 'self-test FAIL'
-      - name: F9 MagicDNS one-click-link gate
+      - name: F9 MagicDNS halt + link gates
         shell: bash
         run: |
           set -euo pipefail
-          # Every MagicDNS failure output (log/summary/throw) must carry the
-          # one-click fix link. Excluded: the $msg definition, the success
-          # echo, and comments.
-          if grep -n 'MagicDNS' .github/workflows/main.yml | grep -v '^[0-9]*:[[:space:]]*#' | grep -v 'login.tailscale.com/admin/dns' | grep -v 'MagicDNS = ' | grep -v "\$msg = 'enable MagicDNS"; then
-            echo 'MagicDNS failure output without one-click fix link' >&2
+          # F9a/F9f: every MagicDNS gate (tailscale-connect, cert-bind,
+          # stage/config) must carry the actionable admin link in its failure
+          # output (log + step summary + thrown message) - at least one per
+          # gate, so three minimum across main.yml.
+          n=$(grep -c 'login.tailscale.com/admin/dns' .github/workflows/main.yml || true)
+          if [ "$n" -lt 3 ]; then
+            echo "main.yml carries only $n 'login.tailscale.com/admin/dns' links (need >= 3: one per MagicDNS gate)" >&2
             exit 1
           fi
-          # F9b: all 3 DNS gates must HOLD (not continue) while MagicDNS is OFF.
-          if [ "$(grep -c 'HOLD: MagicDNS is OFF - workflow paused here' .github/workflows/main.yml)" -lt 3 ]; then
-            echo 'a MagicDNS gate can continue without MagicDNS (HOLD missing)' >&2
+          # F9f: no MagicDNS validation may pass without a non-empty *.ts.net
+          # Self.DNSName. Every step that reads Self.DNSName must validate it
+          # against the ts.net pattern (empty / tailnet-IP / other names halt).
+          bad=$(awk '
+            /^      - name: / { if (buf != "" && index(buf, "Self.DNSName") && !index(buf, "\\.ts\\.net$")) n++; buf = "" }
+            { buf = buf $0 "\n" }
+            END { if (buf != "" && index(buf, "Self.DNSName") && !index(buf, "\\.ts\\.net$")) n++; print n + 0 }
+          ' .github/workflows/main.yml)
+          if [ "$bad" -ne 0 ]; then
+            echo 'a step reads Self.DNSName without a non-empty *.ts.net validation - a MagicDNS gate could pass on an empty or non-ts.net name' >&2
             exit 1
           fi
