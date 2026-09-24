@@ -8,6 +8,7 @@
 - Native mstsc target on Tailscale MagicDNS FQDN with Tailscale LE cert; benign UX (interactive cmdkey once, dashboard button, POST-token handler).
 
 ## Done ledger (sha-only; older shas prune to git log)
+- F9h main.yml web-desktop step: VNC_PASS missing is now FAIL-CLOSED. Guard runs BEFORE any install command; writes ::error:: annotation + Step Summary card with a direct link to /settings/secrets/actions, stamps config.json webdeskReason='vnc-pass-missing' + vncPassAdminUrl, then throws (run fails by design). Supersedes the old loud `exit 0` skip, which reported a green run with the web desktop permanently absent. Short-but-present VNC_PASS (<8 chars) is unchanged: loud non-fatal skip. Belt block retained (also throws) so the two F8 launch-gate markers stay in the step region.
 - F9f launch-gates: admin-link count >= 3 in main.yml + every Self.DNSName step must validate *.ts.net (no gate passes on empty/non-ts.net name); D/E + F8 gates kept untouched.
 - F9a main.yml: all 3 MagicDNS gates (ts-connect, cert-bind, stage) append 'halted by design' + [Enable MagicDNS now](admin/dns) + re-run line to GITHUB_STEP_SUMMARY, echo to log, throw with URL; 15-min HOLDs removed (halt immediate; re-dispatch after enabling).
 - F9b main.yml: opt-in auto-enable - TS_API_TOKEN+TS_TAILNET_NAME env (secrets) -> POST api.tailscale.com/api/v2/tailnet/<name>/dns/preferences {"magicDNSEnabled":true} (Bearer header, token never printed), sleep 5, re-read Self.DNSName; secrets absent -> silent skip.
@@ -29,4 +30,4 @@
 - Main.yml runs 2026-09-23/24 cancelled by user pre-F9-verify; re-dispatch per F9 verify loop (MIGRATION 1.3).
 
 ## Anchors (re-derive by search)
-- main.yml: MagicDNS gates ~:316/:355/:845; Cleanup ~:2535. ghrdp-server.ps1: native-status ~:356; 404 guard :253. payloads/main.rs: api_config secret-strip ~:283. helper: mutex ~:105.
+- main.yml: MagicDNS gates ~:316/:355/:845; Cleanup ~:2535. main.yml F9h VNC_PASS guard ~:1055 (belt ~:1078), inside web-desktop step ~:1029. ghrdp-server.ps1: native-status ~:356; 404 guard :253. payloads/main.rs: api_config secret-strip ~:283. helper: mutex ~:105. MIGRATION.md: web desktop ~:285 (F9h bullet ~:290).
