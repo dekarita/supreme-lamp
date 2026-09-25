@@ -1260,54 +1260,48 @@ jobs:
               } catch { }
               return ''
           }
-          # [F9k] Tailscale Serve Syntax Fix & Fail-Closed Logic (supersedes the
-          # F9j foreach loop): the array-splatted serve forms hit
-          # 'Error: invalid argument format' on the Tailscale CLI versions
-          # currently shipping on windows-latest. Now: (1) PRIMARY passes the
-          # explicit port mapping as ONE concatenated argument string (string
-          # concatenation, NOT array expansion, so PowerShell cannot re-split
-          # or re-quote the tokens for the native CLI); (2) any primary failure
-          # drops to the FALLBACK, the explicit-443 form with bare literal
-          # arguments; (3) both attempts print their exit code (F9j contract);
-          # (4) the URL is still derived only from a VERIFIED
-          # `serve status --json` mapping - a serve that fails in BOTH forms
-          # fails closed in the single 'serve-mapping' block below (secret-free
-          # diagnostics, 5s settle re-check, config stamp, throw).
+          # [F9l] post-1.52 Tailscale serve syntax + version-tolerant VERIFIED
+          # cascade (supersedes the F9k two-form attempt). The live F9k run
+          # log proved BOTH F9k forms dead on the runner CLI:
+          #   - 'serve --bg http://127.0.0.1:7333' passed as ONE concatenated
+          #     argv token (F9k primary): exit 2, usage dump ("unknown flag") -
+          #     the CLI parses '--bg' as its own argument, not as part of a
+          #     concatenated blob.
+          #   - 'serve --bg 443 http://127.0.0.1:7333' (F9k fallback): exit 1,
+          #     "invalid argument format" - the pre-1.52 positional
+          #     '<listen-port> <target>' syntax was removed in Tailscale 1.52+.
+          # Current CLI contract (tailscale.com/docs/reference/tailscale-cli/
+          # serve, validated 2026-01-26): 'tailscale serve [flags] <target>',
+          # where <target> is a port number or an 'http://127.0.0.1:<port>'
+          # URL and the listen ports come from '--http=<port>' / '--https=<port>'
+          # (default 443). We therefore try a small set of known-valid forms
+          # and accept the FIRST one that produces a VERIFIED serve mapping
+          # (read back via Get-WebdeskServeUrl). The fail-closed contract is
+          # unchanged: no form ever invents a URL, and every path converges on
+          # the single 'serve-mapping' block below (secret-free diagnostics,
+          # 5s settle re-check, config stamp, one throw).
           $serveUrl = ''
           $serveLog = Join-Path $env:RUNNER_TEMP 'ts-serve-webdesk.log'
-          $serveExit = -1
-          $serveCmd = '--bg http://127.0.0.1:7333'
-          try {
-              & $ts serve $serveCmd 2>&1 | Tee-Object -FilePath $serveLog | Out-Null
-              $serveExit = $LASTEXITCODE
-              $LASTEXITCODE = 0
-              Write-Host ('[webdesk] tailscale serve {0} -> exit {1}' -f $serveCmd, $serveExit)
-              if ($serveExit -ne 0) {
-                  throw "Tailscale serve failed with exit code $serveExit. Log: $(Get-Content $serveLog -Tail 5)"
-              }
-              $serveUrl = Get-WebdeskServeUrl
-          } catch {
-              Write-Host "[webdesk] Primary serve attempt failed. Trying alternative syntax..."
-              try { Write-Host ('[webdesk] primary failure detail: ' + $_.Exception.Message) } catch { }
-              # Fallback: Explicit port definition (bare literal arguments -
-              # the form the Tailscale CLI argument parser accepts across
-              # versions; no array expansion, no embedded quotes).
-              Start-Sleep -Seconds 3
+          try { Write-Host ('[webdesk] tailscale version: ' + ((& $ts version 2>$null | Select-Object -First 1) -join ' ')) } catch { }
+          $serveForms = @(
+              @('--bg', 'http://127.0.0.1:7333'),                 # post-1.52: URL target, default https=443
+              @('--bg', '--https=443', 'http://127.0.0.1:7333'),  # post-1.52: explicit https listen port
+              @('--bg', '7333'),                                  # post-1.52: port-number target
+              @('--bg', '443', 'http://127.0.0.1:7333')           # pre-1.52 legacy form (kept; prints its exit code)
+          )
+          # [F9l] first VERIFIED mapping wins; otherwise the unchanged fail-closed
+          # 'serve-mapping' block below halts the run (contract unchanged).
+          foreach ($serveArgs in $serveForms) {
+              $serveExit = -1
               try {
-                  & $ts serve --bg 443 http://127.0.0.1:7333 2>&1 | Tee-Object -FilePath $serveLog | Out-Null
+                  & $ts serve @serveArgs 2>&1 | Tee-Object -FilePath $serveLog | Out-Null
                   $serveExit = $LASTEXITCODE
                   $LASTEXITCODE = 0
-              } catch { Write-Host ('[webdesk] tailscale serve fallback attempt error: ' + $_.Exception.Message) }
-              Write-Host ('[webdesk] tailscale serve {0} -> exit {1}' -f ('--bg', '443', 'http://127.0.0.1:7333' -join ' '), $serveExit)
-              if ($serveExit -ne 0) {
-                  # Fail-closed via the 'serve-mapping' block below: it prints
-                  # the secret-free diagnostics, stamps
-                  # webdeskReason='serve-failed' / webdeskDetail='serve-mapping'
-                  # on config.json, and throws - one fail-closed exit point for
-                  # every serve failure (no duplicate reason writes).
-                  Write-Host "Tailscale serve fallback also failed. Check logs for 'invalid argument format'."
-              }
+              } catch { Write-Host ('[webdesk] tailscale serve attempt error: ' + $_.Exception.Message) }
+              Write-Host ('[webdesk] tailscale serve {0} -> exit {1}' -f ($serveArgs -join ' '), $serveExit)
               $serveUrl = Get-WebdeskServeUrl
+              if ($serveUrl) { break }
+              Start-Sleep -Seconds 3
           }
           # [F8c] NO fallback URL fabrication: without a real serve mapping
           # there is no reachable URL, and guessing one is a false LIVE.
