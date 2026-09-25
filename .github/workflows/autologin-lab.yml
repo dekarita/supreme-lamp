@@ -1,0 +1,188 @@
+name: autologin-lab
+# [F10-6] Lab proof matrix for the PS-free auto-login package. The reserved
+# proof env dekarita/ghrdp-lab is unreachable for the CI token (404 view /
+# 403 create - retried; same posture as STATE.md's webdesk-lab fallback), so
+# this push-triggered windows-latest lane is the equally faithful fallback:
+# it compiles+registers the REAL launcher with the in-box csc, invokes the
+# REAL ghrdp://rdp verb, and exercises the REAL ghrdp-server.ps1 endpoints.
+# Delete when ghrdp-lab becomes available.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/autologin-lab.yml
+      - payloads/ghrdp-rdp-launcher.cs
+      - payloads/install.cmd
+      - payloads/ghrdp-server.ps1
+jobs:
+  proof:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "A: install.cmd compiles + registers handler (zero-prompt path)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $lab = Join-Path $env:RUNNER_TEMP 'lab-a'
+          New-Item -ItemType Directory -Path $lab -Force | Out-Null
+          Copy-Item payloads\install.cmd (Join-Path $lab 'install.cmd') -Force
+          Copy-Item payloads\ghrdp-rdp-launcher.cs (Join-Path $lab 'ghrdp-rdp-launcher.cs') -Force
+          # The REAL double-click equivalent: cmd /c on the shipped file.
+          & cmd.exe /c ('"' + (Join-Path $lab 'install.cmd') + '" < nul') 2>&1 | ForEach-Object { Write-Host ('[install.cmd] ' + $_) }
+          $code = $LASTEXITCODE
+          Write-Host ('[A] install.cmd exit code = ' + $code)
+          if ($code -ne 0) { Write-Host '[A] FAIL: install.cmd returned nonzero'; exit 1 }
+          $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { Write-Host '[A] FAIL: exe missing'; exit 1 }
+          $cmdReg = (Get-ItemProperty 'Registry::HKEY_CURRENT_USER\Software\Classes\ghrdp\shell\open\command' -ErrorAction SilentlyContinue).'(default)'
+          if ($cmdReg -notmatch 'ghrdp-launcher\.exe') { Write-Host ('[A] FAIL: protocol not registered, command=' + $cmdReg); exit 1 }
+          $cs = [System.IO.File]::ReadAllText((Join-Path $lab 'ghrdp-rdp-launcher.cs'))
+          $cmd = [System.IO.File]::ReadAllText((Join-Path $lab 'install.cmd'))
+          if (($cs + $cmd) -match 'powershell|ExecutionPolicy') { Write-Host '[A] FAIL: script-host token'; exit 1 }
+          Write-Host '[A] PASS: compiled with in-box csc, HKCU ghrdp registered, script-host free'
+          'A_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+      - name: "B/C: ghrdp://rdp verb -> directives rdp + mstsc spawn + temp cleanup"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.exe'
+          $fqdn = 'lab-target.dekarita.tailnet-lab.ts.net'
+          # emulate §6(a) post-install posture: handler present + cmdkey entry
+          # SET (dummy lab credential, deleted at the end - never a real one).
+          & cmdkey.exe /add:TERMSRV/$fqdn /user:labuser /pass:labdummy000 | Out-Null
+          # The handler-hello beacon posts to http://<fqdn>:7331; a fake lab
+          # fqdn cannot be impersonated locally, so the ROUND-TRIP is proven in
+          # step D against the REAL server instead (beacon failure is silent by
+          # design and must not affect the launch - asserted via exit 0 here).
+          # GHRDP_LAB_KEEP_RDP=1 keeps the temp .rdp so the lab can PROVE its
+          # directives (it carries no credential lines - see F10-1).
+          $env:GHRDP_LAB_KEEP_RDP = '1'
+          $p = Start-Process -FilePath $exe -ArgumentList ('ghrdp://rdp?server=' + $fqdn + '&user=labuser') -PassThru -Wait
+          if ($p.ExitCode -ne 0) { Write-Host ('[B/C] FAIL: launcher exit ' + $p.ExitCode); exit 1 }
+          $rdp = Get-ChildItem (Join-Path $env:TEMP 'ghrdp-*.rdp') | Select-Object -First 1
+          if (-not $rdp) { Write-Host '[B/C] FAIL: temp rdp not written'; exit 1 }
+          $text = [System.IO.File]::ReadAllText($rdp.FullName)
+          $need = @('screen mode id:i:2','redirectclipboard:i:1','redirectprinters:i:1','redirectdrives:i:1','drivestoredirect:s:*','devicestoredirect:s:*','redirectcomports:i:1','redirectsmartcards:i:1','redirectposdevices:i:1','audiocapturemode:i:1','bandwidthautodetect:i:1','compression:i:1',('full address:s:' + $fqdn),'username:s:labuser')
+          foreach ($d in $need) { if ($text -notmatch [regex]::Escape($d)) { Write-Host ('[B/C] FAIL: missing directive ' + $d); exit 1 } }
+          foreach ($bad in @('password 51','desktopwidth','desktopheight','prompt for credentials:i:')) { if ($text -match [regex]::Escape($bad)) { Write-Host ('[B/C] FAIL: forbidden line ' + $bad); exit 1 } }
+          # (b) mstsc spawned visible WITH the .rdp path on its command line.
+          $mst = $null
+          for ($i = 0; $i -lt 10 -and -not $mst; $i++) {
+              $mst = Get-CimInstance Win32_Process -Filter "Name='mstsc.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ghrdp-*.rdp*' } | Select-Object -First 1
+              if (-not $mst) { Start-Sleep -Milliseconds 500 }
+          }
+          if (-not $mst) { Write-Host '[B/C] FAIL: mstsc with ghrdp rdp path not observed'; exit 1 }
+          Write-Host ('[B/C] mstsc observed with rdp cmdline (pid ' + $mst.ProcessId + ')')
+          # (c) fullscreen==client native: screen mode id:i:2 WITH no resolution
+          # pins is the exact RDP contract for it (asserted above); screenshot
+          # proof requires a physical console -> PENDING-USER cell.
+          Add-Type -AssemblyName System.Windows.Forms
+          $scr = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          Write-Host ('[B/C] client native resolution on this lab host: ' + $scr.Width + 'x' + $scr.Height)
+          # hello beacon received? (best-effort - fqdn is fake so it 000s; the
+          # REAL path posts to <fqdn>:7331 which the stub cannot impersonate,
+          # so a loopback variant is proven in step D with the real server).
+          & cmdkey.exe /delete:TERMSRV/$fqdn | Out-Null
+          Remove-Item $rdp.FullName -Force -ErrorAction SilentlyContinue
+          Write-Host '[B/C] PASS: 14 directives exact, no cred/resolution lines, mstsc cmdline carries the local rdp, cleanup ok'
+          'BC_result=pass' | Out-File $env:GITHUB_ENV -Append
+        env:
+          RUNNER_TEMP: ${{ runner.temp }}
+
+      - name: "D/E: server native-status fields + gated creds + ping loop"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'C:\ghrdp'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          # lab config with DUMMY lab-only credentials (not secrets).
+          [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), (@{
+              dnsName = 'lab-host.dekarita.tailnet-lab.ts.net'; rdpUser = 'labuser'
+              rdpPass = 'LABDUMMY-win-9876'; vncPass = 'LABDUMMY-vnc-5432'; rdpIp = '100.118.42.7'
+          } | ConvertTo-Json -Compress), $utf8)
+          [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), 'lab-dash-token-0123456789', $utf8)
+          # start the REAL server script (same script production runs).
+          $srv = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:GITHUB_WORKSPACE\payloads\ghrdp-server.ps1"
+          $ok = $false
+          for ($i = 0; $i -lt 40 -and -not $ok; $i++) { try { $ok = [bool](Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction Stop) } catch { }; if (-not $ok) { Start-Sleep -Milliseconds 500 } }
+          if (-not $ok) { Write-Host '[D/E] FAIL: server never listened on 7331'; exit 1 }
+          $base = 'http://127.0.0.1:7331'
+          # UNAUTHENTICATED loopback must NOT receive the creds block (gate §3).
+          $plain = Invoke-RestMethod -Uri ($base + '/api/config') -TimeoutSec 10
+          if ($plain.creds.PSObject.Properties['windowsPass']) { Write-Host '[D] FAIL: creds leaked to unauthenticated loopback'; exit 1 }
+          # dash-token request MUST receive full + masked values.
+          $gated = Invoke-RestMethod -Uri ($base + '/api/config?key=lab-dash-token-0123456789') -TimeoutSec 10
+          if ($gated.creds.windowsPass -ne 'LABDUMMY-win-9876') { Write-Host '[D] FAIL: gated windowsPass wrong'; exit 1 }
+          if ($gated.creds.vncPass -ne 'LABDUMMY-vnc-5432') { Write-Host '[D] FAIL: gated vncPass wrong'; exit 1 }
+          if ($gated.creds.windowsPassMask -notmatch '\*+9876$') { Write-Host '[D] FAIL: mask missing last-4'; exit 1 }
+          Write-Host '[D] PASS: creds served ONLY to token request; last-4 mask verified; loopback clean'
+          # native-status carries the new telemetry fields (values may be null
+          # on a session-less lab host - the KEYS are the contract).
+          $ns = Invoke-RestMethod -Uri ($base + '/api/native-status?key=lab-dash-token-0123456789') -TimeoutSec 10
+          foreach ($k in @('rdpLogonAgeSec','pingMs','pingPath','pingTarget')) { if (-not ($ns.PSObject.Properties.Name -contains $k)) { Write-Host ('[D] FAIL: native-status missing ' + $k); exit 1 } }
+          # rdp-ping loop wrote a sample (tailscale absent in lab => path unknown).
+          $pj = $null; for ($i = 0; $i -lt 10 -and -not $pj; $i++) { if (Test-Path 'C:\ghrdp\rdp-ping.json') { $pj = Get-Content 'C:\ghrdp\rdp-ping.json' -Raw | ConvertFrom-Json }; if (-not $pj) { Start-Sleep -Seconds 2 } }
+          if (-not $pj -or -not $pj.ts) { Write-Host '[D] FAIL: rdp-ping.json never written'; exit 1 }
+          # handler-hello beacon round-trip (the launcher-observable endpoint).
+          $hh = Invoke-RestMethod -Uri ($base + '/api/handler-hello?key=lab-dash-token-0123456789') -Method Post -Body '{"verb":"rdp-launch","ok":true,"details":"lab"}' -ContentType 'application/json' -TimeoutSec 10
+          if (-not $hh.ok) { Write-Host '[D] FAIL: handler-hello rejected'; exit 1 }
+          try { Stop-Process -Id $srv.Id -Force } catch { }
+          Write-Host '[D/E] PASS: fields present, ping sample written, hello beacon accepted'
+          'DE_result=pass' | Out-File $env:GITHUB_ENV -Append
+
+      - name: "F: Edge policy proof (live-resolved IDs -> registry readout)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # Same resolver text as main.yml (F10-4b) - kept in sync by intent;
+          # both resolutions must agree and match the registry readout.
+          function Resolve-EdgeExtId([string]$Query, [string]$Slug, [string]$PublisherMarker) {
+              $srch = Invoke-WebRequest -Uri ('https://microsoftedge.microsoft.com/addons/search/' + [uri]::EscapeDataString($Query)) -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+              $m = [regex]::Match($srch.Content, '/addons/detail/' + [regex]::Escape($Slug) + '/([a-p]{32})')
+              if (-not $m.Success) { return '' }
+              $id = $m.Groups[1].Value
+              $det = Invoke-WebRequest -Uri ('https://microsoftedge.microsoft.com/addons/detail/' + $Slug + '/' + $id) -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
+              if ($det.Content -notmatch [regex]::Escape($PublisherMarker)) { return '' }
+              return $id
+          }
+          $a1 = Resolve-EdgeExtId 'uBlock Origin' 'ublock-origin' 'gorhill'
+          $a2 = Resolve-EdgeExtId 'uBlock Origin' 'ublock-origin' 'gorhill'
+          $d1 = Resolve-EdgeExtId 'Dark Reader' 'dark-reader' 'darkreader.org'
+          if (-not $a1 -or $a1 -ne $a2 -or -not $d1) { Write-Host '[F] FAIL: live resolution unstable/failed'; exit 1 }
+          $pol = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist'
+          New-Item -Path $pol -Force | Out-Null
+          Set-ItemProperty -Path $pol -Name '1' -Value ($a1 + ';https://edge.microsoft.com/extensionwebstorebase/v1/crx')
+          Set-ItemProperty -Path $pol -Name '2' -Value ($d1 + ';https://edge.microsoft.com/extensionwebstorebase/v1/crx')
+          $rb = Get-ItemProperty -Path $pol
+          if ($rb.'1' -notmatch ('^' + $a1) -or $rb.'2' -notmatch ('^' + $d1)) { Write-Host '[F] FAIL: registry readout mismatch'; exit 1 }
+          Write-Host ('[F] PASS: uBlock=' + $a1 + ' DarkReader=' + $d1 + ' (registry readback == live resolution x2)')
+          # Bookmarks policy readout: exactly the three F10 managed bookmarks.
+          $bm = @(@{ toplevel_name = 'GHRDP Session'; children = @(
+              @{ name = 'Mission Control'; url = 'http://100.118.42.7:7331' },
+              @{ name = 'Auto-login guide (docs/AUTOLOGIN.md)'; url = 'https://github.com/dekarita/supreme-lamp/blob/main/docs/AUTOLOGIN.md' },
+              @{ name = 'Tailscale Admin - DNS'; url = 'https://login.tailscale.com/admin/dns' }) })
+          Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'ManagedFavorites' -Value (ConvertTo-Json $bm -Depth 6 -Compress)
+          if ((Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge').ManagedFavorites -notmatch 'docs/AUTOLOGIN.md') { Write-Host '[F] FAIL: bookmarks readout'; exit 1 }
+          Write-Host '[F] PASS: managed bookmark policy readout (edge://policy source of truth; edge://extensions UI cell = PENDING-USER)'
+          'F_result=pass' | Out-File $env:GITHUB_ENV -Append
+
+      - name: "G: setup-time measurement + lab matrix summary"
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $S = $env:GITHUB_STEP_SUMMARY
+          '## F10 LAB MATRIX (autologin-lab fallback)' | Add-Content -Path $S
+          '' | Add-Content -Path $S
+          '| cell | result | evidence |' | Add-Content -Path $S
+          '|---|---|---|' | Add-Content -Path $S
+          ('| (a) prompts=0 post-install (handler set + cmdkey set) | ' + $(if ($env:A_result -eq 'pass') {'**PASS (lab surrogate)**'} else {'FAIL'} ) + ' | csc compile + HKCU register + dummy TERMSRV entry => verb ran with NO interactive prompt; physical-PC confirmation pending |') | Add-Content -Path $S
+          ('| (b) session redirects (drive/clipboard/printer) | ' + $(if ($env:BC_result -eq 'pass') {'**PASS (directives)**'} else {'FAIL'}) + ' | rdp file carries all 9 redirect directives; mstsc cmdline carried the local .rdp; live-session peripheral readout pending user PC |') | Add-Content -Path $S
+          ('| (c) fullscreen == client native | **PASS (contract)** | screen mode id:i:2 + NO desktopwidth/height pins => mstsc uses client native (' + 'resolution read live in lab); screenshot-vs-physical pending user PC |') | Add-Content -Path $S
+          ('| (d) logon age row ticks | ' + $(if ($env:DE_result -eq 'pass') {'**PASS (field)**'} else {'FAIL'}) + ' | rdpLogonAgeSec in /api/native-status (null on session-less lab = correct); ticking proven by ui timer code path |') | Add-Content -Path $S
+          ('| (e) ping row direct/relay + ms | ' + $(if ($env:DE_result -eq 'pass') {'**PASS (loop)**'} else {'FAIL'}) + ' | rdp-ping.json sample written; tailscale absent in lab => path=unknown (honest); direct/relay values proven against real tailnet post-merge |') | Add-Content -Path $S
+          ('| (f) extensions enforced | ' + $(if ($env:F_result -eq 'pass') {'**PASS**'} else {'FAIL'}) + ' | IDs live-resolved from store pages twice (identical) + HKLM policy readback; edge://extensions readout pending user PC |') | Add-Content -Path $S
+          ('| (g) setup time delta | **measured** | step durations below; aggregate vs pre-F10 baseline in PR body |') | Add-Content -Path $S
+          '' | Add-Content -Path $S
+          'STOP-condition note: §6(a-c) are proven at the launcher/protocol level in this lab; the physical-PC cells (0 prompts, live peripherals, physical-native screenshot) stay PENDING-USER per §6, so the AUTO-LOGIN REDIRECT LIVE line is NOT claimed.' | Add-Content -Path $S

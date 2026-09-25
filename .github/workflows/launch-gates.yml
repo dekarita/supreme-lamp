@@ -33,6 +33,54 @@ jobs:
             echo 'ghrdp-server.ps1 still builds a handler-hello reason' >&2
             exit 1
           fi
+      - name: F10 PS-free launch / gated creds / bookmark gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          # §1.3 launch-gate: no script-host launch anywhere in the page or the
+          # new launcher assets.
+          if grep -E -n 'powershell|-ExecutionPolicy' payloads/ui.html payloads/ghrdp-rdp-launcher.cs payloads/install.cmd; then
+            echo 'F10: script-host launch token found' >&2; exit 1
+          fi
+          # §1 install.cmd: in-box csc + HKCU ghrdp registration, nothing else.
+          grep -q 'Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe' payloads/install.cmd
+          grep -q 'HKCU\\Software\\Classes\\ghrdp' payloads/install.cmd
+          # §1.2 .rdp directive contract (+ no password/hash lines, no resolution pins).
+          for d in 'screen mode id:i:2' 'redirectclipboard:i:1' 'redirectprinters:i:1' 'redirectdrives:i:1' 'drivestoredirect:s:*' 'devicestoredirect:s:*' 'redirectcomports:i:1' 'redirectsmartcards:i:1' 'redirectposdevices:i:1' 'audiocapturemode:i:1' 'bandwidthautodetect:i:1' 'compression:i:1'; do
+            grep -qF "$d" payloads/ghrdp-rdp-launcher.cs || { echo "F10: missing rdp directive $d" >&2; exit 1; }
+          done
+          # (comments legitimately NAME the omitted directives - strip them)
+          if grep -v '^[[:space:]]*//' payloads/ghrdp-rdp-launcher.cs | grep -E -n 'password 51|desktopwidth|desktopheight|prompt for credentials'; then
+            echo 'F10: launcher writes a forbidden .rdp line' >&2; exit 1
+          fi
+          # §3 creds: served ONLY at the /api/config creds-block write site,
+          # gated by Test-CredsAllowed (token or tailnet source).
+          grep -q 'function Test-CredsAllowed' payloads/ghrdp-server.ps1
+          test "$(grep -c 'credsAllowed' payloads/ghrdp-server.ps1)" -ge 3
+          test "$(grep -cn 'windowsPass' payloads/ghrdp-server.ps1)" -eq 2
+          # §2 server fields + ping loop + client-peer capture.
+          grep -q 'rdpLogonAgeSec' payloads/ghrdp-server.ps1
+          grep -q 'pingPath' payloads/ghrdp-server.ps1
+          grep -q 'dash-client-ip.txt' payloads/ghrdp-server.ps1
+          grep -q 'LogonType=10' payloads/ghrdp-server.ps1
+          grep -q 'rdpLogonAgeSec' payloads/ui.html
+          grep -q 'UDP 41641' payloads/ui.html
+          grep -q 'compression=6' payloads/ui.html
+          grep -q 'credWinPass' payloads/ui.html
+          # §2.3 latency keys in the webdesk step.
+          grep -q 'PollUnderCursor' .github/workflows/main.yml
+          grep -q 'CompareFB' .github/workflows/main.yml
+          # §4.2 gate: no piracy-index bookmark strings anywhere in main.yml.
+          if grep -E -i -n 'fmhy|megathread|torrent' .github/workflows/main.yml; then
+            echo 'F10: piracy-index string in main.yml' >&2; exit 1
+          fi
+          grep -q 'ExtensionInstallForcelist' .github/workflows/main.yml
+          grep -q 'Resolve-EdgeExtId' .github/workflows/main.yml
+          grep -q 'login.tailscale.com/admin/dns' .github/workflows/main.yml
+          grep -q 'docs/AUTOLOGIN.md' .github/workflows/main.yml
+          # §5 setup caches present.
+          grep -q 'actions/cache@v4' .github/workflows/main.yml
+          echo 'F10 gates PASS'
       - name: F8 web-desktop honesty gates
         shell: bash
         run: |

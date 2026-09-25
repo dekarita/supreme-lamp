@@ -123,6 +123,20 @@ function Test-ClientAllowed {
     if ($Query -and $Query.ContainsKey('key') -and ([string]$Query['key'] -eq [string]$Token)) { return $true }
     return $false
 }
+function Test-CredsAllowed {
+    # [F10-2 §3] STRICTER than Test-ClientAllowed: passwords may leave this
+    # host only for (a) a request carrying the dash token, or (b) a source IP
+    # inside the tailnet CGNAT range (the operator's own device). Bare
+    # loopback (self-tests, local probes) never receives the creds block.
+    param($Client, $Query, $Token)
+    try {
+        $ip = $Client.Client.RemoteEndPoint.Address
+        $oct = $ip.GetAddressBytes()
+        if ($oct.Length -eq 4 -and $oct[0] -eq 100 -and $oct[1] -ge 64 -and $oct[1] -le 127) { return $true }
+    } catch { }
+    if (-not [string]::IsNullOrEmpty($Token) -and $Query -and $Query.ContainsKey('key') -and ([string]$Query['key'] -eq [string]$Token)) { return $true }
+    return $false
+}
 function Read-ClientRequest {
 param($Stream)
 $acc = New-Object System.Text.StringBuilder
@@ -195,8 +209,11 @@ function Remove-CredKeys {
     #   fqdn = config.dnsName only (*.ts.net). Never the tailnet IP.
     #   user = config.rdpUser  (a username, not a secret; the password is never here).
     #   ip   = config.rdpIp    (the same value as fqdn under P2).
-    # Everything else that could carry a secret (rdpPass, mirrorKey,
+    # Everything else that could carry a secret (rdpPass, vncPass, mirrorKey,
     # legacyDecryptKey, rentryEditCode, rentryEditCookie, dashToken) is removed.
+    # [F10-2 §3] passwords reach a response ONLY at the single /api/config
+    # creds-block write site, only when the request is dash-token or tailnet
+    # authenticated (see Test-CredsAllowed + the /api/config route).
     param($Obj)
     if (-not $Obj) { return $Obj }
     $fqdn = ''; $user = ''; $ip = ''
@@ -204,7 +221,7 @@ function Remove-CredKeys {
     try { if ($Obj.PSObject.Properties['rdpUser']) { $user = [string]$Obj.rdpUser } } catch { }
     try { if ($Obj.PSObject.Properties['rdpIp'])   { $ip   = [string]$Obj.rdpIp   } } catch { }
     # dnsName only. Never present the tailnet IP as the FQDN.
-    foreach ($k in @('rdpUser','rdpPass','mirrorKey','legacyDecryptKey','creds','rentryEditCode','rentryEditCookie','dashToken')) {
+    foreach ($k in @('rdpUser','rdpPass','vncPass','mirrorKey','legacyDecryptKey','creds','rentryEditCode','rentryEditCookie','dashToken')) {
         try { if ($Obj.PSObject.Properties[$k]) { $Obj.PSObject.Properties.Remove($k) } } catch { }
     }
     try {
@@ -232,6 +249,28 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 401 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('unauthorized'))
             return
         }
+        # [F10-2 §2.2] dash-token source peer capture: the rdp-ping loop targets
+        # THIS client ip (the operator's device), not an arbitrary first peer.
+        # RemoteEndPoint covers the direct tailnet-HTTP path; X-Forwarded-For
+        # covers the tailscale-serve proxy path. Write only on change.
+        try {
+            $raC = $Client.Client.RemoteEndPoint.Address
+            $octC = $raC.GetAddressBytes()
+            $cand = ''
+            if ($octC.Length -eq 4 -and $octC[0] -eq 100 -and $octC[1] -ge 64 -and $octC[1] -le 127) { $cand = $raC.ToString() }
+            elseif ($parts.headers.ContainsKey('x-forwarded-for')) {
+                $xf = ([string]$parts.headers['x-forwarded-for']).Split(',')[0].Trim()
+                if ($xf -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$') { $cand = $xf }
+            }
+            if ($cand) {
+                $cipFile = Join-Path $Root 'dash-client-ip.txt'
+                $prev = ''
+                try { if (Test-Path -LiteralPath $cipFile) { $prev = ([System.IO.File]::ReadAllText($cipFile)).Trim() } } catch { }
+                if ($prev -ne $cand) { [System.IO.File]::WriteAllText($cipFile, $cand, $script:NoBom) }
+            }
+        } catch { }
+        # [F10-2 §3] per-request creds authorization (strict subset of access).
+        $credsAllowed = Test-CredsAllowed -Client $Client -Query $parts.query -Token $Token
         $cfg = Read-JsonFile -Path $script:CfgPath
         # [remediation 8A] /rentrydiag removed: no public-mirror editing
         if ($path -eq '/rentrydiag') {
@@ -531,6 +570,35 @@ function Invoke-ClientRequest {
             }
             # [F9o] No URL => no auth mode (a blanked URL must not keep a stale 'vnc').
             if (-not $wd) { $wda = '' }
+            # [F10-2 §2.1] RDP LOGON AGE: newest LogonType 10 (RemoteInteractive)
+            # Win32_LogonSession StartTime -> age in seconds ($null = no RDP
+            # session; the UI keeps --:--:-- until the first non-null value).
+            $rdpLogonAgeSec = $null
+            try {
+                $ls = Get-CimInstance -ClassName Win32_LogonSession -Filter 'LogonType=10' -ErrorAction Stop
+                if ($ls) {
+                    $newest = ($ls | Sort-Object StartTime -Descending | Select-Object -First 1).StartTime
+                    if ($newest) {
+                        $rdpLogonAgeSec = [int]((Get-Date) - $newest).TotalSeconds
+                        if ($rdpLogonAgeSec -lt 0) { $rdpLogonAgeSec = 0 }
+                    }
+                }
+            } catch { $rdpLogonAgeSec = $null }
+            # [F10-2 §2.2] real path latency to the dashboard client, measured by
+            # the rdp-ping loop (tailscale ping every 15s against the dash-token
+            # source peer); surfaced only when the sample is fresh (<45s).
+            $rdpPingMs = $null; $rdpPingPath = ''; $rdpPingTarget = ''
+            try {
+                $rpFile = Join-Path $Root 'rdp-ping.json'
+                if (Test-Path -LiteralPath $rpFile) {
+                    $pj = [System.IO.File]::ReadAllText($rpFile) | ConvertFrom-Json
+                    if ($pj -and $pj.ts -and (([datetime]::UtcNow - [datetime]$pj.ts).TotalSeconds -lt 45)) {
+                        if ($null -ne $pj.ms) { $rdpPingMs = [int]$pj.ms }
+                        if ($pj.path -and ([string]$pj.path -in @('direct','relay','unknown'))) { $rdpPingPath = [string]$pj.path }
+                        if ($pj.target -and ([string]$pj.target -match '^100\.')) { $rdpPingTarget = [string]$pj.target }
+                    }
+                }
+            } catch { }
             $ns = [ordered]@{
                 fqdn = $fqdnN
                 hostKind = $hostKind
@@ -546,6 +614,10 @@ function Invoke-ClientRequest {
                 tsReason = $tsr
                 tsAuthAdminUrl = $tsAdmin
                 vpsPending = $vpsPending
+                rdpLogonAgeSec = $rdpLogonAgeSec
+                pingMs = $rdpPingMs
+                pingPath = $rdpPingPath
+                pingTarget = $rdpPingTarget
                 # [F9c] actionable MagicDNS admin link: the dashboard linkifies
                 # it whenever the fqdn reason renders (fqdn missing) and hides
                 # it once the FQDN resolves. Carries no credentials.
@@ -1161,7 +1233,25 @@ boot();
             return
         }
         if ($path -eq '/api/config') {
-            $cfgOut = Remove-CredKeys (Read-JsonFile -Path $script:CfgPath)
+            # [F10-2 §3] capture password fields BEFORE Remove-CredKeys strips
+            # them; they are re-attached ONLY when $credsAllowed (dash-token or
+            # tailnet source). Masked siblings (last 4) feed the UI display;
+            # the raw values feed only the UI copy buttons. Never logged.
+            $cfgRaw = Read-JsonFile -Path $script:CfgPath
+            $rawU = ''; $rawP = ''; $rawV = ''
+            try { if ($cfgRaw -and $cfgRaw.PSObject.Properties['rdpUser']) { $rawU = [string]$cfgRaw.rdpUser } } catch { }
+            try { if ($cfgRaw -and $cfgRaw.PSObject.Properties['rdpPass']) { $rawP = [string]$cfgRaw.rdpPass } } catch { }
+            try { if ($cfgRaw -and $cfgRaw.PSObject.Properties['vncPass']) { $rawV = [string]$cfgRaw.vncPass } } catch { }
+            $cfgOut = Remove-CredKeys $cfgRaw
+            if ($cfgOut -and $credsAllowed) {
+                $maskU = { param($v) if (-not $v) { '' } elseif ([string]$v.Length -le 4) { '****' } else { ('*' * ([string]$v.Length - 4)) + [string]$v.Substring([string]$v.Length - 4) } }
+                try {
+                    $cfgOut.creds | Add-Member -MemberType NoteProperty -Name 'windowsPass' -Value ([string]$rawP) -Force
+                    $cfgOut.creds | Add-Member -MemberType NoteProperty -Name 'windowsPassMask' -Value ([string](& $maskU $rawP)) -Force
+                    $cfgOut.creds | Add-Member -MemberType NoteProperty -Name 'vncPass' -Value ([string]$rawV) -Force
+                    $cfgOut.creds | Add-Member -MemberType NoteProperty -Name 'vncPassMask' -Value ([string](& $maskU $rawV)) -Force
+                } catch { }
+            }
             if ($cfgOut) { Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $cfgOut) } else { Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('config missing')) }
             return
         }
@@ -1239,6 +1329,39 @@ while ($true) {
 '@
 [System.IO.File]::WriteAllText((Join-Path $Root 'wire-probe.ps1'), $wireProbeScript, $script:NoBom)
 try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $Root 'wire-probe.ps1') -WindowStyle Hidden } catch { }
+# [F10-2 §2.2] rdp-ping loop: every 15s, `tailscale ping -c 1 -timeout 3s`
+# against the dash-token SOURCE PEER (dash-client-ip.txt, captured per request);
+# falls back to the first online tailnet peer until a dashboard visit records
+# the client. Parses RTT + direct/DERP path into rdp-ping.json (consumed by
+# /api/native-status -> CONNECTIVITY row).
+$rdpPingScript = @'
+$ErrorActionPreference = 'Continue'
+$ts = 'C:\Program Files\Tailscale\tailscale.exe'
+$out = 'C:\ghrdp\rdp-ping.json'
+while ($true) {
+  $obj = @{ ts = (Get-Date).ToUniversalTime().ToString('o'); ms = $null; path = 'unknown'; target = '' }
+  try {
+    $target = ''
+    if (Test-Path 'C:\ghrdp\dash-client-ip.txt') { $target = ([System.IO.File]::ReadAllText('C:\ghrdp\dash-client-ip.txt')).Trim() }
+    if ($target -notmatch '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$') { $target = '' }
+    if (-not $target) {
+      $j = (& $ts status --json 2>$null) | ConvertFrom-Json
+      if ($j -and $j.Peer) { foreach ($p in $j.Peer.PSObject.Properties) { if ($p.Value.Online) { $target = @($p.Value.TailscaleIPs)[0]; break } } }
+    }
+    if ($target) {
+      $obj.target = $target
+      $o = (& $ts ping -c 1 -timeout 3s $target 2>$null) -join ' '
+      if ($o -match 'in ([0-9]+)ms') { $obj.ms = [int]$Matches[1] }
+      if ($o -match 'via DERP') { $obj.path = 'relay' }
+      elseif ($o -match 'via [0-9][0-9.:]+') { $obj.path = 'direct' }
+    }
+  } catch { }
+  try { [System.IO.File]::WriteAllText($out, ($obj | ConvertTo-Json -Compress)) } catch { }
+  Start-Sleep -Seconds 15
+}
+'@
+[System.IO.File]::WriteAllText((Join-Path $Root 'rdp-ping.ps1'), $rdpPingScript, $script:NoBom)
+try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $Root 'rdp-ping.ps1') -WindowStyle Hidden } catch { }
 $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse($Bind), $Port)
 try { $listener.Start() } catch {
     try { [System.IO.File]::WriteAllText($script:OkFile, 'LISTEN_FAIL: ' + $_.Exception.Message, $script:NoBom) } catch { }

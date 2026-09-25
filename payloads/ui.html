@@ -292,9 +292,16 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">Tailscale IP</span><span class="v" id="credIp">__IP__</span><button onclick="copyById('credIp',this)">copy</button></div>
   <div class="row"><span class="k">RDP username</span><span class="v" id="credUser">__USER__</span><button onclick="copyById('credUser',this)">copy</button></div>
   <div class="row"><span class="k">mstsc command</span><span class="v" id="mstscVal">mstsc /v:__IP__</span><button onclick="copyById('mstscVal',this)">copy</button></div>
+  <!-- [F10-3 §3] token-gated host creds: values arrive only via the
+       dash-token/tailnet-authenticated /api/config creds block; the screen
+       shows last-4 masks, the copy button copies the real value. They are
+       never placed in URLs, logs, summaries, or artifacts. -->
+  <div class="row"><span class="k">Windows password</span><span class="v" id="credWinPass">(host-only)</span><button onclick="copyById('credWinPass',this)">copy</button><span class="note">masked (last 4); served only to your token-authenticated dashboard</span></div>
+  <div class="row"><span class="k">VNC password</span><span class="v" id="credVncPass">(host-only)</span><button onclick="copyById('credVncPass',this)">copy</button><span class="note">the VNC_PASS secret set at dispatch; masked (last 4), token-gated</span></div>
   <div class="row"><span class="k">Connectivity</span><span class="timer" id="connRtt" style="font-size:18px">-- ms</span><span class="badge" id="connBadge">path: --</span><span class="badge" id="connFps">-- fps</span><span class="badge" id="connJit">jit -- ms</span><canvas id="connSpark" width="220" height="34" style="width:220px;height:34px"></canvas></div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
-  <div class="row"><span class="k">RDP logon age</span><span class="timer" id="timerRdpAge">--:--:--</span></div>
+  <div class="row"><span class="k">RDP logon age</span><span class="timer" id="timerRdpAge">--:--:--</span><span class="badge" id="c2Srv">srv --</span></div>
+  <div class="row" id="connUdpAdv" style="display:none"><span class="k">Latency</span><span class="v" id="connUdpAdvText" style="color:#f5d9b7">direct WireGuard not established - check client firewall UDP 41641</span></div>
   <div class="row"><span class="k">Remaining (5h30 session)</span><span class="timer" id="timerRemaining">--:--:--</span></div>
   <div class="banner ended" id="endedBanner" style="display:none;">SESSION EXPIRED - GitHub hard cap reached. Runner termination imminent.</div>
 </section>
@@ -306,6 +313,22 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
 <section class="glass" id="sec-native-rdp">
   <div class="row" id="nrBuildWarn" style="display:none"><span class="k">Deploy</span><span class="v" id="nrBuildWarnText" style="color:#f5d9b7"></span></div>
   <h2>Native mstsc auto-login</h2>
+  <!-- [F10-3 §1.3] PS-FREE primary path: ghrdp://rdp?server=<fqdn>&user=<u>
+       handled by the install.cmd-registered launcher (in-box csc compile,
+       HKCU registration; no script host, no admin). If no handler answers,
+       the copy-once install hint + WEB DESKTOP zero-install path are shown. -->
+  <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="primary" id="btnWinAuto" type="button" disabled>WINDOWS AUTO-LOGIN</button>
+      <span class="note" id="winAutoNote">fullscreen native mstsc, silent after a one-time Windows prompts for your password (cmdkey)</span>
+    </div>
+    <div class="note" id="winAutoInstall" style="display:none;color:#f5d9b7">
+      One-time handler setup (no script host, no admin, no download of binaries): copy
+      <code id="winAutoFiles">payloads\install.cmd + payloads\ghrdp-rdp-launcher.cs</code>
+      <a href="javascript:void(0)" onclick="copyById('winAutoFiles',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
+      from the repo into one folder on your PC and double-click <b>install.cmd</b> - or use WEB DESKTOP below (zero install).
+    </div>
+  </div>
   <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>
   <div class="row"><span class="k">Cert bound</span><span class="v" id="nrCert">...</span><span class="note" id="nrCertReason">RDP-Tcp SSLCertificateSHA1Hash present (from /api/native-status).</span></div>
   <div class="row"><span class="k">NLA</span><span class="v" id="nrNla">...</span><span class="note" id="nrNlaReason">UserAuthentication == 1 on the RDP-Tcp listener.</span></div>
@@ -838,7 +861,11 @@ populateFqdn('__IP__','rdpuser');
 // cells (server no longer substitutes __USER__).
 async function bootstrapConfig(){
  try{
-  var r=await fetch(apiBase()+'/api/config',{cache:'no-store'});
+  var key=getKey();
+  // [F10-3 §3] key param: the creds block (windowsPass/vncPass) is served ONLY
+  // to token/tailnet-authenticated requests; unauthenticated fetches get the
+  // same response as before (fqdn/user/ip only).
+  var r=await fetch(apiBase()+'/api/config'+(key?('?key='+encodeURIComponent(key)):''),{cache:'no-store'});
   if(!r.ok)return;
   var cf=await r.json();
   var cr=(cf&&cf.creds)||{};
@@ -846,6 +873,15 @@ async function bootstrapConfig(){
   var uEl=document.getElementById('credUser');if(uEl&&user)uEl.textContent=user;
   var iEl=document.getElementById('credIp');if(iEl&&ip)iEl.textContent=ip;
   var mv=document.getElementById('mstscVal');if(mv&&fqdn)mv.textContent='mstsc /v:'+fqdn;
+  // [F10-3 §3] KEYS rows: masked (last 4) on screen; copy button (copyById
+  // prefers data-full) carries the real value. Values never enter URLs/logs.
+  function fillSecret(id, val, mask){
+   var el=document.getElementById(id);if(!el)return;
+   if(val){ el.textContent=mask||'\u2022\u2022\u2022\u2022'; el.setAttribute('data-full',val); }
+   else { el.textContent='(host-only)'; el.removeAttribute('data-full'); }
+  }
+  fillSecret('credWinPass', cr.windowsPass, cr.windowsPassMask);
+  fillSecret('credVncPass', cr.vncPass, cr.vncPassMask);
   populateFqdn(fqdn,user);
  }catch(_){}
 }
@@ -894,6 +930,19 @@ async function nativeStatus(){
   var r=await fetch(apiBase()+'/api/native-status'+(key?('?key='+encodeURIComponent(key)):''),{cache:'no-store'});
   if(!r.ok)return;
   var s=await r.json();
+  // [F10-3 §2.1] RDP LOGON AGE: server samples the newest LogonType-10
+  // session; the row ticks locally from the first non-null sample (no more
+  // permanent --:--:-- once an RDP session exists).
+  if(s&&s.rdpLogonAgeSec!=null){window.__rdpLogon={sec:Number(s.rdpLogonAgeSec)||0,at:Date.now()};}
+  // [F10-3 §2.2] server-side tailscale ping to THIS client (dash-token source
+  // peer): shows ms + direct|relay; relay raises the UDP-41641 advisory.
+  var sp=document.getElementById('c2Srv');
+  if(sp){
+    if(s&&s.pingMs!=null){sp.textContent='srv '+s.pingMs+' ms '+(s.pingPath||'unknown');sp.className='badge '+(s.pingPath==='direct'?'ok':'warn');}
+    else if(s&&s.pingPath){sp.textContent='srv -- '+(s.pingPath||'unknown');sp.className='badge warn';}
+  }
+  var ua=document.getElementById('connUdpAdv');
+  if(ua){ua.style.display=(s&&s.pingPath==='relay')?'':'none';}
   var pr=(s&&s.probeReasons)||{};
   var ADMIN=(s&&s.magicDnsAdminUrl)||'https://login.tailscale.com/admin/dns';
   function setReason(id, txt){ var el=document.getElementById(id); if(el&&txt){ el.textContent=txt; } }
@@ -1125,7 +1174,11 @@ async function nativeStatus(){
   if(authAdv){ authAdv.style.display=authHtml?'':'none'; if(authAdvTxt)authAdvTxt.textContent=authHtml; }
   var wb=$('btnWebDesk');
   if(wb){
-   if(webdeskUrl){ wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(webdeskUrl,'_blank','noopener');}; wb.title=webdeskUrl; }
+   if(webdeskUrl){ // [F10-3 §2.3] open noVNC with autoconnect + zlib-compressed stream (compression=6) for lower LAN-latency frames
+    var openUrl=webdeskUrl;
+    try{var u2=new URL(webdeskUrl);if(!u2.pathname||u2.pathname==='/'){u2.pathname='/vnc.html';u2.search='autoconnect=true&compression=6';openUrl=u2.href;}}catch(_){}
+    wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(openUrl,'_blank','noopener');}; wb.title=openUrl;
+   }
    else { wb.disabled=true; wb.style.opacity='0.5'; wb.style.cursor='not-allowed'; wb.onclick=null; wb.title='web desktop not deployed: '+deskReason; }
   }
  }catch(_){}
@@ -1143,6 +1196,44 @@ fetch('https://api.github.com/repos/dekarita/supreme-lamp/commits/main',{cache:'
   }
 }).catch(function(){});
 
+// [F10-3 §1.3] WINDOWS AUTO-LOGIN (primary, PS-free): fires
+// ghrdp://rdp?server=<fqdn>&user=<u> at the install.cmd-registered launcher.
+// Enabled whenever the target FQDN is valid and a real (non-placeholder) user
+// is known; the launcher itself handles a missing TERMSRV entry with ONE
+// interactive cmdkey prompt.
+function syncWinAuto(){
+ var b=$('btnWinAuto');if(!b)return;
+ var fqdn=($('rdpFqdn')||{}).textContent||'';
+ var user=($('credUser')||{}).textContent||'';
+ var ok=FQDN_RE.test(fqdn)&&/^[A-Za-z0-9_\-\.\\]{1,104}$/.test(user)&&user!=='__USER__';
+ b.disabled=!ok;b.style.opacity=ok?'':'0.5';b.style.cursor=ok?'':'not-allowed';
+}
+setInterval(syncWinAuto,2000);syncWinAuto();
+var waBtn=$('btnWinAuto');
+if(waBtn) waBtn.onclick=function(ev){
+ if(ev&&ev.preventDefault)ev.preventDefault();
+ var fqdn=($('rdpFqdn')||{}).textContent||'';
+ var user=($('credUser')||{}).textContent||'rdpuser';
+ if(waBtn.disabled||!FQDN_RE.test(fqdn))return;
+ var wasFocused=true;
+ var lost=function(){wasFocused=false;};
+ var vis=function(){if(document.hidden)wasFocused=false;};
+ window.addEventListener('blur',lost);
+ document.addEventListener('visibilitychange',vis);
+ launchProto('ghrdp://rdp?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user));
+ var note=$('winAutoNote');
+ if(note)note.textContent='protocol dispatched - mstsc should open fullscreen shortly';
+ setTimeout(function(){
+  window.removeEventListener('blur',lost);
+  document.removeEventListener('visibilitychange',vis);
+  if(wasFocused){
+   var ins=$('winAutoInstall');if(ins)ins.style.display='';
+   if(note)note.textContent='handler not detected - one-time install below, or use WEB DESKTOP';
+  }else{
+   var ins2=$('winAutoInstall');if(ins2)ins2.style.display='none';
+  }
+ },900);
+};
 var btn=$('autoLoginNative');
 if(btn) btn.onclick=function(ev){
  if(ev&&ev.preventDefault)ev.preventDefault();
@@ -1176,6 +1267,20 @@ if(btn) btn.onclick=function(ev){
   },900);
  })();
 };
+})();
+</script>
+<script>
+(function(){
+// [F10-3 §2.1] LOGON AGE ticker: starts ticking from the FIRST non-null
+// server sample (window.__rdpLogon, set by nativeStatus); stays --:--:--
+// while no RDP session exists or the server has not sampled one yet.
+function fmt(sec){var h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=Math.floor(sec%60);
+ return (h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(s<10?'0':'')+s;}
+setInterval(function(){
+ var el=document.getElementById('timerRdpAge');if(!el)return;
+ var b=window.__rdpLogon;if(!b)return;
+ el.textContent=fmt(b.sec+(Date.now()-b.at)/1000);
+},1000);
 })();
 </script>
 </body>
