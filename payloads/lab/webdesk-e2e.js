@@ -78,7 +78,25 @@ async function getState() {
         await new Promise((r) => setTimeout(r, 500));
     }
     if (!st || !st.connected) {
-        fail(20, 'handoff flow did not reach connected; state=' + JSON.stringify(st));
+        let diag = 'state=' + JSON.stringify(st);
+        try {
+            diag += ' popupUrl=' + popup.url();
+            diag += ' title=' + (await popup.title());
+            diag += ' page=' + await popup.evaluate(() => {
+                const cp = document.getElementById('noVNC_connect_panel');
+                const dlg = document.getElementById('noVNC_credentials_dlg');
+                return JSON.stringify({
+                    readyState: document.readyState,
+                    connectPanelOpen: !!(cp && cp.classList && cp.classList.contains('noVNC_open')),
+                    credDlgOpen: !!(dlg && dlg.classList && dlg.classList.contains('noVNC_open')),
+                    statusText: (document.getElementById('noVNC_status_text') || {}).textContent || ''
+                });
+            });
+            const shot = process.env.H2_SHOT || 'h2-shot.png';
+            await popup.screenshot({ path: shot });
+            diag += ' screenshot=' + shot;
+        } catch (e) { diag += ' diagErr=' + (e && e.message ? e.message : e); }
+        fail(20, diag);
     }
     const keys = await popup.evaluate(() => window.__ghrdpKeys);
     if (keys !== 0) { fail(21, 'keyboard events reached the popup: ' + keys); }

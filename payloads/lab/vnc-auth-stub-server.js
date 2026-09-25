@@ -41,12 +41,19 @@ const state = {
 const rfb = net.createServer((sock) => {
     state.sockets++;
     let phase = 'version';
+    // [F13-6 fix] In the RFB handshake the SERVER speaks FIRST: noVNC's
+    // client waits for the server version string before sending its own
+    // (rfb.js _negotiateProtocolVersion -> rQwait("version", 12)). A stub
+    // that waited for the client deadlocked with zero bytes either way -
+    // exactly what lab run 3 showed (sockets=1, helloReceived=false).
+    sock.write(Buffer.from('RFB 003.008\n'));
+    state.serverVersionSent = true;
     sock.on('data', (d) => {
         state.received.push(d.toString('latin1'));   // byte-faithful, JSON-serializable
         if (phase === 'version') {
-            // client -> "RFB 003.008\n"
+            // client -> "RFB 003.008\n" (12 bytes)
             state.helloReceived = true;
-            sock.write(Buffer.from('RFB 003.008\n'));
+            sock.write(Buffer.from([1, 2]));   // one security type offered: 2 = VNC auth
             phase = 'types';
             return;
         }

@@ -366,6 +366,7 @@ jobs:
           # [F13-diag] capture the driver output so a failure is classifiable
           # from the artifact/annotation even when the job log is unreachable.
           $e2eOut = Join-Path $root 'e2e-out.txt'
+          $env:H2_SHOT = Join-Path $root 'e2e-shot.png'   # lands in the h2-diag artifact
           & node.exe (Join-Path $env:GITHUB_WORKSPACE 'payloads\lab\webdesk-e2e.js') 'http://127.0.0.1:7333' 'http://127.0.0.1:5902/state' 2>&1 | Tee-Object -FilePath $e2eOut
           $e2e = $LASTEXITCODE
           foreach ($lf in @('websockify.log','ws.err','stub.log','stub.err')) {
