@@ -202,10 +202,11 @@ namespace Ghrdp
             try
             {
                 if (!CredEnumerateW(null, 0, out count, out list) || count <= 0) { return false; }
-                int size = Marshal.SizeOf(typeof(Credential));
                 for (int i = 0; i < count; i++)
                 {
-                    IntPtr p = new IntPtr(list.ToInt64() + (long)i * size);
+                    // pCred is PCREDENTIAL* - an array of POINTERS to structs.
+                    IntPtr p = Marshal.ReadIntPtr(list, i * IntPtr.Size);
+                    if (p == IntPtr.Zero) { continue; }
                     Credential c = (Credential)Marshal.PtrToStructure(p, typeof(Credential));
                     string name = Marshal.PtrToStringUni(c.TargetName);
                     if (name != null && string.Equals(name, target, StringComparison.OrdinalIgnoreCase))
