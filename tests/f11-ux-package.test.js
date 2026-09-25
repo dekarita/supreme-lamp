@@ -162,3 +162,25 @@ test('F11-6 setup-time: single merged start/cache step, event wait, minutes repo
   assert.match(wf2, /::notice title=Setup time::provisioning finished in /);
   assert.match(wf2, /target <= 6/);
 });
+
+// ------------------------------------------------------- §4 connectivity ---
+test('F11-4 connectivity: 15s ping loop with direct/relay, fps + WS RTT in the UI', () => {
+  assert.match(server, /tailscale ping -c 1 -timeout 3s/);
+  assert.match(server, /Start-Sleep -Seconds 15/);
+  assert.match(server, /path = 'relay'/);
+  assert.match(server, /path = 'direct'/);
+  assert.match(ui, /UDP 41641/);
+  assert.match(ui, /wire\.rtt/);
+  assert.match(ui, /connFps/);
+  assert.match(ui, /compression=6/);
+  const wf2 = fs.readFileSync('.github/workflows/main.yml', 'utf8');
+  assert.match(wf2, /PollUnderCursor/);
+  assert.match(wf2, /CompareFB/);
+  const lab = fs.readFileSync('.github/workflows/autologin-lab.yml', 'utf8');
+  // §7 cells: the lab proves the shim and the usage timer for real.
+  assert.match(lab, /H: VNC cred shim auto-fill/);
+  assert.match(lab, /I: RDP USAGE timer ticks \/ freezes \/ resumes/);
+  assert.match(lab, /J: qBittorrent planted as a plain app/);
+  assert.match(lab, /F11 LAB MATRIX/);
+  assert.match(lab, /no console window in the interactive session/);
+});

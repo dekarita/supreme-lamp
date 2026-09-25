@@ -179,6 +179,24 @@ jobs:
           grep -q 'window.__rdpUsage' payloads/ui.html
           grep -q 'window.__rdpLogon' payloads/ui.html
           echo 'F11-3 gates PASS'
+      - name: F11-4 connectivity gates (15s ping loop, direct/relay, compression=6)
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'tailscale ping -c 1 -timeout 3s' payloads/ghrdp-server.ps1
+          grep -q 'Start-Sleep -Seconds 15' payloads/ghrdp-server.ps1
+          grep -q "path = 'relay'" payloads/ghrdp-server.ps1
+          grep -q "path = 'direct'" payloads/ghrdp-server.ps1
+          grep -q 'pingMs' payloads/ghrdp-server.ps1
+          grep -q 'pingPath' payloads/ui.html
+          grep -q 'UDP 41641' payloads/ui.html
+          grep -q 'srv .*ms' payloads/ui.html
+          grep -q 'connFps' payloads/ui.html
+          grep -q 'wire.rtt' payloads/ui.html
+          grep -q 'compression=6' payloads/ui.html
+          grep -q 'PollUnderCursor' .github/workflows/main.yml
+          grep -q 'CompareFB' .github/workflows/main.yml
+          echo 'F11-4 gates PASS'
       - name: F11-5/6 provisioning + setup-time gates (hidden helpers, no mirror)
         shell: bash
         run: |

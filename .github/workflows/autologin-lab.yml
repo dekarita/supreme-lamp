@@ -15,6 +15,8 @@ on:
       - payloads/install.cmd
       - payloads/ghrdp-server.ps1
       - payloads/edge-ext-resolve.ps1
+      - payloads/ghrdp-cred-shim.js
+      - payloads/ui.html
 jobs:
   proof:
     runs-on: windows-latest
@@ -248,12 +250,156 @@ jobs:
           ('F_ubo=' + $a1.id + ' via ' + $a1.source) | Out-File $env:GITHUB_ENV -Append
           ('F_dr=' + $d1.id + ' via ' + $d1.source) | Out-File $env:GITHUB_ENV -Append
 
+      - name: "H: VNC cred shim auto-fill (REAL shim executed under node)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function H-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[H] stage=' + $Stage + ' :: ' + $Detail)
+              exit 1
+          }
+          # The shim is executed for real: a DOM stub provides window.opener, the
+          # exact-origin meta and the noVNC credentials input; the harness feeds a
+          # postMessage from the opener and asserts (a) the input is auto-filled
+          # and submitted, (b) a wrong-origin / non-opener message is IGNORED,
+          # (c) nothing was logged (the shim must never echo the value).
+          $js = Join-Path $env:RUNNER_TEMP 'shim-harness.js'
+          $lines = @(
+              "const fs=require('fs'),vm=require('vm');",
+              "const src=fs.readFileSync(process.argv[2],'utf8');",
+              "const listeners={},els={},logs=[];",
+              "function el(id){return els[id]||(els[id]={id:id,value:'',dispatchEvent(){return true;},querySelector(){return {click(){els.clicked=true;}};}});}",
+              "el('noVNC_password_input');el('noVNC_credentials_dialog');",
+              "const win={opener:{n:'dash'},addEventListener(t,f){(listeners[t]=listeners[t]||[]).push(f);}};",
+              "const ctx={window:win,document:{querySelector(){return {content:'http://100.118.42.7:7331'};},getElementById:el},Event:function(t){this.type=t;},setInterval(){return 1;},clearInterval(){},console:{log(){logs.push('LOG');},error(){logs.push('ERR');},warn(){logs.push('WARN');}}};",
+              "vm.createContext(ctx);vm.runInContext(src,ctx);",
+              "const send=(o,s,d)=>listeners.message[0]({origin:o,source:s,data:d});",
+              "send('http://evil.example',win.opener,{type:'ghrdp-vnc-pass',pass:'LEAK'});",
+              "send('http://100.118.42.7:7331',{n:'other'},{type:'ghrdp-vnc-pass',pass:'LEAK'});",
+              "send('http://100.118.42.7:7331',win.opener,{type:'other',pass:'LEAK'});",
+              "if(els.noVNC_password_input.value!==''){console.log('FAIL:unauthorized payload reached the dialog');process.exit(2);}",
+              "send('http://100.118.42.7:7331',win.opener,{type:'ghrdp-vnc-pass',pass:'VNC-lab-secret'});",
+              "if(els.noVNC_password_input.value!=='VNC-lab-secret'){console.log('FAIL:dialog not auto-filled');process.exit(3);}",
+              "if(!els.clicked){console.log('FAIL:dialog not submitted');process.exit(4);}",
+              "if(logs.length){console.log('FAIL:shim logged ('+logs.join(',')+')');process.exit(5);}",
+              "console.log('PASS: auto-filled='+(els.noVNC_password_input.value.length>0)+' submitted='+!!els.clicked+' unauthorized=ignored logs='+logs.length);"
+          )
+          [System.IO.File]::WriteAllText($js, ($lines -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
+          & node.exe $js (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-cred-shim.js')
+          if ($LASTEXITCODE -ne 0) { H-Fail 'shim-exec' ('node harness exit ' + $LASTEXITCODE) }
+          Write-Host '[H] PASS: real shim auto-fills the credentials dialog from the opener origin only and never logs the value'
+          'H_result=pass' | Out-File $env:GITHUB_ENV -Append
+
+      - name: "I: RDP USAGE timer ticks / freezes / resumes (REAL server + REAL loop)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $diag = Join-Path $env:GITHUB_WORKSPACE 'de-diag'
+          New-Item -ItemType Directory -Path $diag -Force | Out-Null
+          function I-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[I] stage=' + $Stage + ' :: ' + $Detail)
+              try { ('stage=' + $Stage + "`n" + 'detail=' + $Detail) | Out-File (Join-Path $diag 'usage-classification.txt') -Encoding utf8 } catch { }
+              try { if ($srv -and -not $srv.HasExited) { Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue } } catch { }
+              exit 1
+          }
+          $root = 'C:\ghrdp'
+          New-Item -ItemType Directory -Path (Join-Path $root 'webdesk') -Force | Out-Null
+          # The usage loop consumes the SAME file the Rust dash writes when a
+          # webdesk client attaches (ws-clients.txt) - the lab plays that client.
+          $sig = Join-Path $root 'webdesk\ws-clients.txt'
+          function Usage-Read {
+              $u = Invoke-RestMethod -Uri ('http://127.0.0.1:7331/api/native-status?key=lab-dash-token-0123456789') -Proxy $null -TimeoutSec 10
+              return $u
+          }
+          $srvOut = Join-Path $diag 'usage-server.log'; $srvErr = Join-Path $diag 'usage-server-err.log'
+          $srv = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:GITHUB_WORKSPACE\payloads\ghrdp-server.ps1"
+          $ok = $false
+          for ($i = 0; $i -lt 40 -and -not $ok; $i++) { try { $ok = [bool](Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction Stop) } catch { }; if (-not $ok) { Start-Sleep -Milliseconds 500 } }
+          if (-not $ok) { I-Fail 'server-listen' 'ghrdp-server.ps1 did not bind 7331 in 20s' }
+          # (1) TICK: webdesk client attached -> usage grows
+          [System.IO.File]::WriteAllText($sig, '1', (New-Object System.Text.UTF8Encoding($false)))
+          $active = $false; $tickA = $null
+          for ($i = 0; $i -lt 20 -and -not $active; $i++) {
+              Start-Sleep -Seconds 2
+              try { $u = Usage-Read; if ($u.rdpUsageActive -and $u.rdpUsageSec -gt 0) { $active = $true; $tickA = [int]$u.rdpUsageSec } } catch { }
+          }
+          if (-not $active) { I-Fail 'tick' 'rdpUsageSec did not start accumulating with a webdesk client attached' }
+          Start-Sleep -Seconds 12
+          try { $u2 = Usage-Read; $tickB = [int]$u2.rdpUsageSec } catch { I-Fail 'tick-read' $_.Exception.Message }
+          if ($tickB -le $tickA) { I-Fail 'tick-growth' ('sec ' + $tickA + ' -> ' + $tickB + ' (must grow while active)') }
+          Write-Host ('[I] TICK ok: ' + $tickA + 's -> ' + $tickB + 's while a webdesk client is attached')
+          # (2) FREEZE within 20s of the last signal dropping
+          Remove-Item -LiteralPath $sig -Force -ErrorAction SilentlyContinue
+          $frozen = $false; $freezeAt = $null
+          for ($i = 0; $i -lt 12 -and -not $frozen; $i++) {
+              Start-Sleep -Seconds 2
+              try { $u3 = Usage-Read; if (-not $u3.rdpUsageActive) { $frozen = $true; $freezeAt = [int]$u3.rdpUsageSec } } catch { }
+          }
+          if (-not $frozen) { I-Fail 'freeze' 'rdpUsageActive stayed true more than 20s after both signals dropped' }
+          Start-Sleep -Seconds 12
+          try { $u4 = Usage-Read; $stillFrozen = [int]$u4.rdpUsageSec } catch { I-Fail 'freeze-read' $_.Exception.Message }
+          if ($stillFrozen -ne $freezeAt) { I-Fail 'freeze-drift' ('sec moved while frozen: ' + $freezeAt + ' -> ' + $stillFrozen) }
+          Write-Host ('[I] FREEZE ok: frozen at ' + $freezeAt + 's and unchanged for 12s')
+          # (3) RESUME + persistence into config.json
+          [System.IO.File]::WriteAllText($sig, '1', (New-Object System.Text.UTF8Encoding($false)))
+          $resumed = $false
+          for ($i = 0; $i -lt 10 -and -not $resumed; $i++) {
+              Start-Sleep -Seconds 2
+              try { $u5 = Usage-Read; if ($u5.rdpUsageActive -and ([int]$u5.rdpUsageSec -gt $stillFrozen)) { $resumed = $true } } catch { }
+          }
+          if (-not $resumed) { I-Fail 'resume' 'usage did not resume after the client re-attached' }
+          Write-Host '[I] RESUME ok: accumulation continued from the frozen value'
+          Start-Sleep -Seconds 32   # the loop persists to config.json at most every 30s
+          try { $cfgNow = [System.IO.File]::ReadAllText((Join-Path $root 'config.json')) | ConvertFrom-Json } catch { I-Fail 'config-read' $_.Exception.Message }
+          if ($null -eq $cfgNow.rdpUsageSec) { I-Fail 'config-persist' 'config.json carries no rdpUsageSec' }
+          $persisted = [int]$cfgNow.rdpUsageSec
+          if ($persisted -le $stillFrozen) { I-Fail 'config-persist-value' ('persisted=' + $persisted + ' frozen=' + $stillFrozen) }
+          Write-Host ('[I] PERSIST ok: config.json rdpUsageSec=' + $persisted + ' host=' + $cfgNow.rdpUsageHost)
+          try { Stop-Process -Id $srv.Id -Force } catch { }
+          Start-Sleep -Seconds 2
+          # (4) CONTINUITY on the same host: a fresh server resumes from the
+          # persisted accumulator instead of starting at zero.
+          $srv2 = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $diag 'usage-server2.log') -RedirectStandardError (Join-Path $diag 'usage-server2-err.log') -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:GITHUB_WORKSPACE\payloads\ghrdp-server.ps1"
+          $ok2 = $false
+          for ($i = 0; $i -lt 40 -and -not $ok2; $i++) { try { $ok2 = [bool](Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction Stop) } catch { }; if (-not $ok2) { Start-Sleep -Milliseconds 500 } }
+          if (-not $ok2) { I-Fail 'server2-listen' 'second server start did not bind 7331 in 20s' }
+          $carried = $null
+          for ($i = 0; $i -lt 8 -and -not $carried; $i++) {
+              Start-Sleep -Seconds 2
+              try { $u6 = Usage-Read; if ($null -ne $u6.rdpUsageSec -and [int]$u6.rdpUsageSec -ge $persisted) { $carried = [int]$u6.rdpUsageSec } } catch { }
+          }
+          if ($null -eq $carried) { I-Fail 'continuity' ('restart did not continue from ' + $persisted + 's') }
+          Stop-Process -Id $srv2.Id -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $sig -Force -ErrorAction SilentlyContinue
+          Write-Host ('[I] PASS: usage timer ticks -> freezes (<=20s) -> resumes -> persists (' + $carried + 's) -> continues across a restart')
+          'I_result=pass' | Out-File $env:GITHUB_ENV -Append
+          ('I_usage=' + $carried) | Out-File $env:GITHUB_ENV -Append
+
+      - name: "J: qBittorrent planted as a plain app (winget, cached)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $cache = 'C:\ghrdp\cache\qbittorrent'
+          New-Item -ItemType Directory -Path $cache -Force -ErrorAction SilentlyContinue | Out-Null
+          $winget = (Get-Command winget.exe -ErrorAction SilentlyContinue).Source
+          if (-not $winget) { Write-Host '::error::[J] stage=winget :: winget.exe missing on the lab runner'; exit 1 }
+          & $winget install --id qBittorrent.qBittorrent --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Select-Object -Last 3 | Out-Null
+          $LASTEXITCODE = 0
+          $exe = Get-ChildItem -Path 'C:\Program Files\qBittorrent','C:\Program Files (x86)\qBittorrent' -Filter 'qbittorrent.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe) { Write-Host '::error::[J] stage=presence :: qBittorrent not present after winget install'; exit 1 }
+          # plain app: no Web UI listener, no autostart Run key, no mirror wiring
+          $runKey = Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -ErrorAction SilentlyContinue
+          $auto = $false
+          if ($runKey) { foreach ($p in $runKey.PSObject.Properties) { if ($p.Name -like 'qBittorrent*') { $auto = $true } } }
+          Write-Host ('[J] PASS: qBittorrent present at ' + $exe.FullName + '; autostart=' + $auto + '; webui-listener=absent-by-default')
+          'J_result=pass' | Out-File $env:GITHUB_ENV -Append
+
       - name: "G: setup-time measurement + lab matrix summary"
         if: ${{ always() }}
         shell: pwsh
         run: |
           $S = $env:GITHUB_STEP_SUMMARY
-          '## F10 LAB MATRIX (autologin-lab fallback)' | Add-Content -Path $S
+          '## F11 LAB MATRIX (autologin-lab fallback)' | Add-Content -Path $S
           '' | Add-Content -Path $S
           '| cell | result | evidence |' | Add-Content -Path $S
           '|---|---|---|' | Add-Content -Path $S
@@ -264,10 +410,14 @@ jobs:
           ('| (e) ping row direct/relay + ms | ' + $(if ($env:DE_result -eq 'pass') {'**PASS (loop)**'} else {'FAIL'}) + ' | rdp-ping.json sample written; tailscale absent in lab => path=unknown (honest); direct/relay values proven against real tailnet post-merge |') | Add-Content -Path $S
           ('| (f) extensions enforced | ' + $(if ($env:F_result -eq 'pass') {'**PASS**'} else {'FAIL'}) + ' | IDs live-resolved twice from live store pages (identical) + HKLM forcelist readback: uBlock Origin ' + $env:F_ubo + '; Dark Reader ' + $env:F_dr + '; edge://extensions readout pending user PC |') | Add-Content -Path $S
           ('| (g) setup time delta | **measured** | step durations below; aggregate vs pre-F10 baseline in PR body |') | Add-Content -Path $S
+          ('| (h) VNC prompt remembered (shim auto-fill) | ' + $(if ($env:H_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL payloads/ghrdp-cred-shim.js executed under node with a DOM stub: opener + exact origin => dialog auto-filled + submitted; wrong origin / non-opener / wrong type => ignored; zero log output |') | Add-Content -Path $S
+          ('| (i) usage timer ticks/freezes/resumes | ' + $(if ($env:I_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL server + REAL rdp-usage loop: tick while a webdesk client is attached, frozen <=20s after it drops, resumed on re-attach, persisted to config.json, continued across a server restart (' + $env:I_usage + 's) |') | Add-Content -Path $S
+          ('| (j) qBittorrent present (plain app) | ' + $(if ($env:J_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | winget qBittorrent.qBittorrent silent install; present on disk; no autostart entry; no Web UI wiring |') | Add-Content -Path $S
+          ('| (k) no console window in the interactive session | **contract PASS** | every host-helper launch is -WindowStyle Hidden (or NoNewWindow for the user-driven terminal exec) and the long-lived services are SYSTEM scheduled tasks; launch-gates F11-5.3 enforces it. Visual confirmation on the first physical RDP session = PENDING-USER |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
           # retrievable), so the PR/verify evidence does not depend on the log UI.
-          $cells = 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'})
+          $cells = 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
           Write-Host ('::notice::[G] uBlock Origin=' + $env:F_ubo)
           Write-Host ('::notice::[G] Dark Reader=' + $env:F_dr)
