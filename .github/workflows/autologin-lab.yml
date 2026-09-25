@@ -180,7 +180,11 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $mtx = Join-Path $env:RUNNER_TEMP 'lab-matrix.txt'
-          trap { $m = (($_ | Out-String) -replace '[\r\n]+', ' ').Trim(); Write-Host "::error::lab-D $m"; "d/e) FAIL $m" | Add-Content -Path $mtx; try { $au = Get-Content -LiteralPath (Join-Path (Join-Path $env:RUNNER_TEMP 'labroot') 'client-audit.log') -Tail 6 -ErrorAction Stop; Write-Host "::error::lab-D audit: $($au -join ' | ')" } catch { }; exit 1 }
+          trap { $m = (($_ | Out-String) -replace '[\r\n]+', ' ').Trim(); Write-Host "::error::lab-D $m"; "d/e) FAIL $m" | Add-Content -Path $mtx; try { $au = Get-Content -LiteralPath (Join-Path (Join-Path $env:RUNNER_TEMP 'labroot') 'client-audit.log') -Tail 8 -ErrorAction Stop; Write-Host "::error::lab-D audit: $($au -join ' | ')" } catch { }; exit 1 }
+          # platform sanity: .IsLoopback must be true for 127.0.0.1 on this runner
+          $sane = [bool]([System.Net.IPAddress]::Parse('127.0.0.1')).IsLoopback
+          Write-Host "::notice::lab-D IsLoopback(127.0.0.1)=$sane"
+          if (-not $sane) { throw 'platform IsLoopback broken' }
           $root = Join-Path $env:RUNNER_TEMP 'labroot'
           New-Item -ItemType Directory -Path $root -Force | Out-Null
           $cfg = [ordered]@{

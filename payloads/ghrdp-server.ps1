@@ -120,24 +120,43 @@ function Test-ClientAllowed {
     param($Client, $Query, $Token)
     $why = ''
     $ip = $null
+    $ra0 = ''
     try {
         $ra = $Client.Client.RemoteEndPoint
-        if ($ra) { $ip = $ra.Address }
+        if ($ra) { $ra0 = [string]$ra.ToString(); $ip = $ra.Address }
         if ($ip -and $ip.IsIPv6MappedToIPv4) { $ip = $ip.MapToIPv4() }
     } catch { $why = 'ip-resolve:' + $_.Exception.Message }
     try {
-        if ($ip -and $ip.IsLoopback) { return $true }
+        # String-first loopback check (whole 127.0.0.0/8) - cannot fail via member quirks.
+        if ($ra0 -like '127.*' -or $ra0 -eq '::1' -or $ra0 -eq '::1:0:0:0:0:0:0:1') {
+            Write-ClientAudit ('gate-allow-loopback-str ra=' + $ra0)
+            return $true
+        }
+        if ($ip -and $ip.IsLoopback) {
+            Write-ClientAudit ('gate-allow-loopback-obj ra=' + $ra0 + ' loop=True')
+            return $true
+        }
         if ($ip) {
             $oct = $ip.GetAddressBytes()
-            if ($oct.Length -eq 4 -and $oct[0] -eq 100 -and $oct[1] -ge 64 -and $oct[1] -le 127) { return $true }
+            if ($oct.Length -eq 4 -and $oct[0] -eq 100 -and $oct[1] -ge 64 -and $oct[1] -le 127) {
+                Write-ClientAudit ('gate-allow-cgnat ra=' + $ra0)
+                return $true
+            }
         }
         if (-not $ip) { $why = 'ip-empty' }
     } catch { $why = 'ip-check:' + $_.Exception.Message }
     if ([string]::IsNullOrEmpty($Token)) { return $true }
-    if ($Query -and $Query.ContainsKey('key') -and ([string]$Query['key'] -eq [string]$Token)) { return $true }
+    if ($Query -and $Query.ContainsKey('key') -and ([string]$Query['key'] -eq [string]$Token)) {
+        Write-ClientAudit ('gate-allow-key ra=' + $ra0)
+        return $true
+    }
     $ipTxt = 'unknown'
     try { if ($ip) { $ipTxt = $ip.ToString() } } catch { }
-    Write-ClientAudit ('gate-deny ip=' + $ipTxt + ' why=' + $why)
+    $loopTxt = 'E'
+    try { $loopTxt = [string][bool]$ip.IsLoopback } catch { }
+    $typTxt = 'E'
+    try { if ($ip) { $typTxt = $ip.GetType().FullName } } catch { }
+    Write-ClientAudit ('gate-deny ip=' + $ipTxt + ' ra=' + $ra0 + ' loop=' + $loopTxt + ' typ=' + $typTxt + ' why=' + $why)
     return $false
 }
 function Read-ClientRequest {
