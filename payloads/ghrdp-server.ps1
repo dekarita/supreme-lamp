@@ -118,14 +118,26 @@ function Get-RequestParts {
 }
 function Test-ClientAllowed {
     param($Client, $Query, $Token)
+    $why = ''
+    $ip = $null
     try {
-        $ip = $Client.Client.RemoteEndPoint.Address
-        if ($ip.IsLoopback) { return $true }
-        $oct = $ip.GetAddressBytes()
-        if ($oct.Length -eq 4 -and $oct[0] -eq 100 -and $oct[1] -ge 64 -and $oct[1] -le 127) { return $true }
-    } catch { }
+        $ra = $Client.Client.RemoteEndPoint
+        if ($ra) { $ip = $ra.Address }
+        if ($ip -and $ip.IsIPv6MappedToIPv4) { $ip = $ip.MapToIPv4() }
+    } catch { $why = 'ip-resolve:' + $_.Exception.Message }
+    try {
+        if ($ip -and $ip.IsLoopback) { return $true }
+        if ($ip) {
+            $oct = $ip.GetAddressBytes()
+            if ($oct.Length -eq 4 -and $oct[0] -eq 100 -and $oct[1] -ge 64 -and $oct[1] -le 127) { return $true }
+        }
+        if (-not $ip) { $why = 'ip-empty' }
+    } catch { $why = 'ip-check:' + $_.Exception.Message }
     if ([string]::IsNullOrEmpty($Token)) { return $true }
     if ($Query -and $Query.ContainsKey('key') -and ([string]$Query['key'] -eq [string]$Token)) { return $true }
+    $ipTxt = 'unknown'
+    try { if ($ip) { $ipTxt = $ip.ToString() } } catch { }
+    Write-ClientAudit ('gate-deny ip=' + $ipTxt + ' why=' + $why)
     return $false
 }
 function Read-ClientRequest {
