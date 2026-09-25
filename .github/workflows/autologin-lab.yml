@@ -21,20 +21,27 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: "A: install.cmd compiles + registers handler (zero-prompt path)"
-        shell: cmd
+        shell: pwsh
         run: |
-          set LAB=%RUNNER_TEMP%\lab-a
-          mkdir "%LAB%"
-          copy /y payloads\install.cmd "%LAB%\install.cmd" >nul
-          copy /y payloads\ghrdp-rdp-launcher.cs "%LAB%\ghrdp-rdp-launcher.cs" >nul
-          cd /d "%LAB%"
-          call install.cmd < nul
-          if not exist "%LOCALAPPDATA%\ghrdp\ghrdp-launcher.exe" ( echo [A] FAIL: exe missing & exit /b 1 )
-          reg query "HKCU\Software\Classes\ghrdp\shell\open\command" | find "ghrdp-launcher.exe" || ( echo [A] FAIL: protocol not registered & exit /b 1 )
-          findstr /i /c:"powershell" /c:"ExecutionPolicy" install.cmd ghrdp-rdp-launcher.cs && ( echo [A] FAIL: script-host token & exit /b 1 )
-          echo [A] PASS: compiled with in-box csc, HKCU ghrdp registered, script-host free
-          echo A_result=pass>>"%GITHUB_ENV%"
-
+          $ErrorActionPreference = 'Continue'
+          $lab = Join-Path $env:RUNNER_TEMP 'lab-a'
+          New-Item -ItemType Directory -Path $lab -Force | Out-Null
+          Copy-Item payloads\install.cmd (Join-Path $lab 'install.cmd') -Force
+          Copy-Item payloads\ghrdp-rdp-launcher.cs (Join-Path $lab 'ghrdp-rdp-launcher.cs') -Force
+          # The REAL double-click equivalent: cmd /c on the shipped file.
+          & cmd.exe /c ('"' + (Join-Path $lab 'install.cmd') + '" < nul') 2>&1 | ForEach-Object { Write-Host ('[install.cmd] ' + $_) }
+          $code = $LASTEXITCODE
+          Write-Host ('[A] install.cmd exit code = ' + $code)
+          if ($code -ne 0) { Write-Host '[A] FAIL: install.cmd returned nonzero'; exit 1 }
+          $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { Write-Host '[A] FAIL: exe missing'; exit 1 }
+          $cmdReg = (Get-ItemProperty 'Registry::HKEY_CURRENT_USER\Software\Classes\ghrdp\shell\open\command' -ErrorAction SilentlyContinue).'(default)'
+          if ($cmdReg -notmatch 'ghrdp-launcher\.exe') { Write-Host ('[A] FAIL: protocol not registered, command=' + $cmdReg); exit 1 }
+          $cs = [System.IO.File]::ReadAllText((Join-Path $lab 'ghrdp-rdp-launcher.cs'))
+          $cmd = [System.IO.File]::ReadAllText((Join-Path $lab 'install.cmd'))
+          if (($cs + $cmd) -match 'powershell|ExecutionPolicy') { Write-Host '[A] FAIL: script-host token'; exit 1 }
+          Write-Host '[A] PASS: compiled with in-box csc, HKCU ghrdp registered, script-host free'
+          'A_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
       - name: "B/C: ghrdp://rdp verb -> directives rdp + mstsc spawn + temp cleanup"
         shell: pwsh
         run: |
