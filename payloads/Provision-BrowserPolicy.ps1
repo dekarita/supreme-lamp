@@ -29,6 +29,7 @@ function Get-StoreExtensionId {
             ('https://microsoftedge.microsoft.com/addons/search/' + $q + '?form=QBRE'),
             ('https://microsoftedge.microsoft.com/addons/search/' + $qPlus)
         )
+        $detailBase = 'https://microsoftedge.microsoft.com/addons/detail/'
         $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0'
     } else {
         $candidates = @(
@@ -36,7 +37,12 @@ function Get-StoreExtensionId {
             ('https://chromewebstore.google.com/search/' + $qPlus),
             ('https://chrome.google.com/webstore/search/' + $q)
         )
+        $detailBase = 'https://chromewebstore.google.com/detail/'
         $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
+    }
+    # slug-only detail probes (a redirect to <slug>/<id> yields the live ID from the final URI)
+    foreach ($h in $SlugHints) {
+        $candidates += ($detailBase + $h)
     }
     $rx = [regex]('/detail/[a-z0-9][a-z0-9\-]*/([a-z]{32})')
     $rxUri = [regex]('/addons/detail/[a-z0-9][a-z0-9\-]*/([a-p]{32})')
@@ -79,7 +85,7 @@ function Get-StoreExtensionId {
                 if ($hintOk -and -not $found.ContainsKey($mU.Groups[1].Value)) { $found[$mU.Groups[1].Value] = $seg }
             }
         }
-        # 2) body scan (server-rendered search results)
+        # 2) body scan (server-rendered links, embedded state JSON, any ID near a slug hint)
         if ($html) {
             foreach ($m in $rx.Matches($html)) {
                 $id = $m.Groups[1].Value
@@ -89,17 +95,44 @@ function Get-StoreExtensionId {
                 foreach ($h in $SlugHints) { if ($seg -notlike ('*' + $h + '*')) { $hintOk = $false; break } }
                 if ($hintOk -and -not $found.ContainsKey($id)) { $found[$id] = $seg }
             }
+            # embedded state: any 32-char a-p ID token whose +-400-char window
+            # contains one of the slug hints (case-insensitive) and a slug/id-ish key
+            if ($found.Count -eq 0) {
+                $rxId = [regex]('([a-p]{32})')
+                foreach ($m in $rxId.Matches($html)) {
+                    if ($m.Length -ne 32) { continue }
+                    $id = $m.Value
+                    # reject substrings of a longer a-p run (truncated/shifted ids)
+                    $preOk = ($m.Index -eq 0) -or (-not ([string]$html[$m.Index - 1] -match '[a-p]'))
+                    $postIdx = $m.Index + 32
+                    $postOk = ($postIdx -ge $html.Length) -or (-not ([string]$html[$postIdx] -match '[a-p]'))
+                    if (-not ($preOk -and $postOk)) { continue }
+                    $lo = [Math]::Max(0, $m.Index - 400)
+                    $hi = [Math]::Min($html.Length, $m.Index + $m.Length + 400)
+                    $win = $html.Substring($lo, $hi - $lo).ToLowerInvariant()
+                    $hintOk = $false
+                    foreach ($h in $SlugHints) { if ($win.Contains($h)) { $hintOk = $true; break } }
+                    if ($hintOk -and -not $found.ContainsKey($id)) { $found[$id] = 'state:' + $id }
+                }
+            }
         }
         if ($found.Count -gt 0) { break }
     }
     if ($found.Count -eq 0) {
         $hits = 0
-        try { if ($html) { $hits = [regex]::Matches($html, '/addons/detail/').Count } } catch { }
-        Write-Host ('::error title=Extension ID resolution failed::' + $Store + ' store did not return a /detail/<slug>/<32-char> id for "' + $Query + '". last=' + $lastStat + ' detailHits=' + $hits + '. Re-dispatch once (transient store outage); IDs are never hardcoded.')
-        if ($html -and $html.Length -gt 0) {
-            $samp = $html.Substring(0, [Math]::Min(360, $html.Length)) -replace '[\r\n]+', ' '
-            Write-Host ('[store-sample] ' + $samp)
-        }
+        $idTokens = 0
+        try {
+            if ($html) {
+                $hits = [regex]::Matches($html, '/addons/detail/').Count
+                $idTokens = [regex]::Matches($html, '[a-p]{32}').Count
+            }
+        } catch { }
+        $samp = ''
+        if ($html -and $html.Length -gt 0) { $samp = $html.Substring(0, [Math]::Min(1200, $html.Length)) -replace '[\r\n]+', ' ' }
+        $diag = 'STORE-DIAG store=' + $Store + ' query=' + $Query + ' last=' + $lastStat + ' len=' + $html.Length + ' detailHits=' + $hits + ' id32Tokens=' + $idTokens + ' sample=' + $samp
+        try { [System.IO.File]::AppendAllText((Join-Path $env:RUNNER_TEMP 'store-diag.txt'), ($diag + "`r`n`r`n")) } catch { }
+        Write-Host ('::error title=Extension ID resolution failed::' + $Store + ' "' + $Query + '" last=' + $lastStat + ' detailHits=' + $hits + ' id32Tokens=' + $idTokens + ' - see store-diag.txt artifact')
+        if ($samp) { Write-Host ('[store-sample] ' + $samp.Substring(0, [Math]::Min(700, $samp.Length))) }
         throw ('STORE-ID-RESOLVE-FAILED store=' + $Store + ' query=' + $Query + ' last=' + $lastStat)
     }
     $idOut = @($found.Keys)[0]

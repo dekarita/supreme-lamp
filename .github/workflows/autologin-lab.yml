@@ -324,7 +324,7 @@ jobs:
           '```' | Add-Content -Path $S
           New-Item -ItemType Directory -Path (Join-Path $env:GITHUB_WORKSPACE 'autologin-lab-matrix') -Force | Out-Null
           Copy-Item -LiteralPath $mtx -Destination (Join-Path $env:GITHUB_WORKSPACE 'autologin-lab-matrix\lab-matrix.txt') -Force -ErrorAction SilentlyContinue
-          foreach ($extra in @('hello-capture.txt', 'seen-procs.txt', 'edge-policy-dump.txt', 'install.cmd.log')) {
+          foreach ($extra in @('hello-capture.txt', 'seen-procs.txt', 'edge-policy-dump.txt', 'install.cmd.log', 'store-diag.txt')) {
               $src = Join-Path $env:RUNNER_TEMP $extra
               if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination (Join-Path $env:GITHUB_WORKSPACE 'autologin-lab-matrix') -Force -ErrorAction SilentlyContinue }
           }
