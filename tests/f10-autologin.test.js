@@ -107,6 +107,18 @@ test('F10-4 workflow: gated vncPass stamp, latency keys, live ext resolution, cl
   assert.ok(!/fmhy|megathread|torrent/i.test(wf), 'no piracy-index strings');
 });
 
+test('F10-16 server: last-4 mask is computed numerically, loopback via static API', () => {
+  const raw = fs.readFileSync('payloads/ghrdp-server.ps1', 'utf8');
+  // comments legitimately name the broken form; assert on executable lines only
+  const srv = raw.split('\n').filter(l => !/^\s*#/.test(l)).join('\n');
+  assert.match(srv, /function Get-CredsMask/);
+  assert.match(srv, /\$s\.Length -le 4/, 'length compare must operate on a length, not a string');
+  assert.ok(!/\[string\]\$v\.Length/.test(srv), 'the string-comparison mask bug must stay fixed');
+  assert.match(srv, /Test-IsLoopbackAddr/);
+  assert.match(srv, /\[System\.Net\.IPAddress\]::IsLoopback\(\$Ip\)/);
+  assert.ok(!/\$ip\.IsLoopback\)/.test(srv), 'IPAddress.IsLoopback property is null in PowerShell');
+});
+
 test('F10-9 lab harness never blocks on the mstsc descendant (run 36147990362 wedge)', () => {
   const lab = fs.readFileSync('.github/workflows/autologin-lab.yml', 'utf8');
   assert.ok(!/-PassThru -Wait/.test(lab), 'Start-Process -Wait also waits for mstsc and wedges the runner');

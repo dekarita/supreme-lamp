@@ -1260,12 +1260,21 @@ boot();
             try { if ($cfgRaw -and $cfgRaw.PSObject.Properties['vncPass']) { $rawV = [string]$cfgRaw.vncPass } } catch { }
             $cfgOut = Remove-CredKeys $cfgRaw
             if ($cfgOut -and $credsAllowed) {
-                $maskU = { param($v) if (-not $v) { '' } elseif ([string]$v.Length -le 4) { '****' } else { ('*' * ([string]$v.Length - 4)) + [string]$v.Substring([string]$v.Length - 4) } }
+                # [F10-16] last-4 mask. The previous one-liner compared
+                # '[string]$v.Length -le 4', which PowerShell evaluates as a
+                # STRING comparison ('17' -le '4' is true), so every password
+                # rendered as '****' (lab annotation stage=gated-mask mask=[****]).
+                # Bounded by length explicitly now.
+                function Get-CredsMask([string]$s) {
+                    if ([string]::IsNullOrEmpty($s)) { return '' }
+                    if ($s.Length -le 4) { return '****' }
+                    return (('*' * ($s.Length - 4)) + $s.Substring($s.Length - 4))
+                }
                 try {
                     $cfgOut.creds | Add-Member -MemberType NoteProperty -Name 'windowsPass' -Value ([string]$rawP) -Force
-                    $cfgOut.creds | Add-Member -MemberType NoteProperty -Name 'windowsPassMask' -Value ([string](& $maskU $rawP)) -Force
+                    $cfgOut.creds | Add-Member -MemberType NoteProperty -Name 'windowsPassMask' -Value ([string](Get-CredsMask $rawP)) -Force
                     $cfgOut.creds | Add-Member -MemberType NoteProperty -Name 'vncPass' -Value ([string]$rawV) -Force
-                    $cfgOut.creds | Add-Member -MemberType NoteProperty -Name 'vncPassMask' -Value ([string](& $maskU $rawV)) -Force
+                    $cfgOut.creds | Add-Member -MemberType NoteProperty -Name 'vncPassMask' -Value ([string](Get-CredsMask $rawV)) -Force
                 } catch { }
             }
             if ($cfgOut) { Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $cfgOut) } else { Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('config missing')) }
