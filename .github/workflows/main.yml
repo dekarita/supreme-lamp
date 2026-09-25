@@ -1173,6 +1173,17 @@ jobs:
               Set-WebdeskCfg '' 'vnc-pass-too-short'
               exit 0
           }
+          # [F10-4a §3] stamp the dispatch-time VNC secret into config.json so
+          # the dash-token-gated /api/config creds block can serve it to the
+          # operator's own dashboard (masked on screen + copy). The value is
+          # never printed, logged, or written to summaries/artifacts.
+          try {
+              $cfgV = [System.IO.File]::ReadAllText($cfgPathW) | ConvertFrom-Json
+              $cfgV | Add-Member -MemberType NoteProperty -Name 'vncPass' -Value ([string]$vp) -Force
+              $encV = New-Object System.Text.UTF8Encoding($false)
+              [System.IO.File]::WriteAllText($cfgPathW, ($cfgV | ConvertTo-Json -Depth 10), $encV)
+              Write-Host '[webdesk] config.json vncPass stamped (value never printed)'
+          } catch { Write-Host ('[webdesk] config.json vncPass stamp failed: ' + $_.Exception.Message) }
           # [F9n] Tailnet IP source: config.json .rdpIp ONLY (written pre-lock by
           # the stage step). The step-context tailscale CLI is locked out post-connect
           # (401: node owned by NT AUTHORITY\SYSTEM), so `tailscale ip` is never
@@ -1283,6 +1294,16 @@ jobs:
                   Set-ItemProperty -Path $tvKey -Name 'AlwaysShared' -Value 1 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'RemoveWallpaper' -Value 0 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'SecurityTypes' -Value 'VncAuth' -Type String -ErrorAction SilentlyContinue
+                  # [F10-4a §2.3] latency tuning: poll the window under the
+                  # cursor + foreground only (skip pricey full-screen polls),
+                  # framebuffer compare on. TightVNC 2.8 has no server-side
+                  # 'PreferZlib' key - the zlib preference is enforced
+                  # client-side via the noVNC URL (compression=6, F10-3).
+                  Set-ItemProperty -Path $tvKey -Name 'PollUnderCursor' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'PollForeground' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'PollFullScreen' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'PollConsoleOnly' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'CompareFB' -Value 1 -Type DWord -ErrorAction SilentlyContinue
               }
               try { Restart-Service -Name 'tvnserver' -Force -ErrorAction Stop; $inst = $true } catch { Write-Host ('[webdesk] tvnserver service restart failed: ' + $_.Exception.Message) }
               try {
