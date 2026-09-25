@@ -264,5 +264,13 @@ jobs:
           ('| (e) ping row direct/relay + ms | ' + $(if ($env:DE_result -eq 'pass') {'**PASS (loop)**'} else {'FAIL'}) + ' | rdp-ping.json sample written; tailscale absent in lab => path=unknown (honest); direct/relay values proven against real tailnet post-merge |') | Add-Content -Path $S
           ('| (f) extensions enforced | ' + $(if ($env:F_result -eq 'pass') {'**PASS**'} else {'FAIL'}) + ' | IDs live-resolved twice from live store pages (identical) + HKLM forcelist readback: uBlock Origin ' + $env:F_ubo + '; Dark Reader ' + $env:F_dr + '; edge://extensions readout pending user PC |') | Add-Content -Path $S
           ('| (g) setup time delta | **measured** | step durations below; aggregate vs pre-F10 baseline in PR body |') | Add-Content -Path $S
+          # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
+          # ids readable from the Checks API (runner logs are not always
+          # retrievable), so the PR/verify evidence does not depend on the log UI.
+          $cells = 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'})
+          Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
+          Write-Host ('::notice::[G] uBlock Origin=' + $env:F_ubo)
+          Write-Host ('::notice::[G] Dark Reader=' + $env:F_dr)
+          Write-Host ('::notice::[G] physical-PC cells (0 prompts, live peripherals, screenshot-native) remain PENDING-USER per §6; no LIVE claim is made here')
           '' | Add-Content -Path $S
           'STOP-condition note: §6(a-c) are proven at the launcher/protocol level in this lab; the physical-PC cells (0 prompts, live peripherals, physical-native screenshot) stay PENDING-USER per §6, so the AUTO-LOGIN REDIRECT LIVE line is NOT claimed.' | Add-Content -Path $S
