@@ -64,6 +64,15 @@ jobs:
               $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Content))
               $sha = $null
               try { $g = Invoke-RestMethod -Uri ($api + '?ref=main') -Headers $H -ErrorAction Stop; $sha = $g.sha } catch { }
+              # [F10-4c §5] skip the Pages-affecting PUT entirely when the
+              # remote docs content is byte-identical (no commit => no Pages
+              # rebuild for unchanged docs).
+              if ($sha -and $g.PSObject.Properties['content']) {
+                  try {
+                      $remote = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($g.content -replace "`n",'')))
+                      if ($remote -eq $Content) { Write-Host "[deploy] Unchanged ${RelPath} - skipped (no Pages redeploy)"; return }
+                  } catch { }
+              }
               $body = @{ message = ($Msg + ' ' + (Get-Date -Format o)); content = $b64; branch = 'main' }
               if ($sha) { $body.sha = $sha }
               try {
@@ -130,6 +139,30 @@ jobs:
           Write-Host '[deploy] auto-deploy complete'
           exit 0
 
+      # [F10-4c §5] setup-phase caches: TightVNC MSI, noVNC tree, pip wheel
+      # cache (websockify/vncdotool), cargo target (Rust dash). Keep-alive is
+      # untouched. One composite key; Cargo.toml changes bust the whole set by
+      # design (simple, conservative). First run warms the caches; subsequent
+      # dispatches skip ~1-2 min of downloads/compiles.
+      - uses: actions/cache@v4
+        name: Setup-phase caches (F10-4c)
+        with:
+          path: |
+            C:\ghrdp\cache
+            C:\ghrdp\novnc
+            ~\AppData\Local\pip\Cache
+            ${{ runner.temp }}\ghrdp-rust\target
+          key: f10-setup-${{ runner.os }}-${{ hashFiles('payloads/Cargo.toml') }}-v1
+          restore-keys: |
+            f10-setup-${{ runner.os }}-
+      - name: Pre-create cache directories (F10-4c)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path 'C:\ghrdp\cache' -Force | Out-Null
+          New-Item -ItemType Directory -Path 'C:\ghrdp\novnc' -Force | Out-Null
+          New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\pip\Cache" -Force | Out-Null
+          New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'ghrdp-rust\target') -Force | Out-Null
+          Write-Host '[cache] setup-phase cache dirs ensured'
       - name: Validate required secret (RENTRY_EDIT_PASSWORD) - fail fast, NO bypass
         env:
           RENTRY_EDIT_PASSWORD: ${{ secrets.RENTRY_EDIT_PASSWORD }}
@@ -788,66 +821,41 @@ jobs:
           }
           exit 0
 
-      - name: Write mirror library (AES-256, gofile+fallbacks, telegraph+rentry myurl0, progress)
+      # [F10-4c §5] ten adjacent bash stage/write steps merged into ONE
+      # (saves ~10 shell startups on every dispatch; bodies unchanged, in
+      # original order). Neither launch-gates nor tests pinned the old step
+      # names (verified).
+      - name: Write deploy payloads (10 stage steps merged - F10-4c)
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-lib.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-lib.ps1"
           echo '[lib] ghrdp-lib.ps1 written'
-
-      - name: Write PowerShell HTTP server (7331, startedAt, legacy/egress fields)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-server.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-server.ps1"
           echo '[ps-server] ghrdp-server.ps1 written'
-      - name: Write dashboard UI (ui.html)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ui.html" "$RUNNER_TEMP/ghrdp-stage/ui.html"
           sed -i "s/__BUILD_SHA__/${GITHUB_SHA}/g" "$RUNNER_TEMP/ghrdp-stage/ui.html"
           echo "[ui] ui.html written sha=${GITHUB_SHA}"
-
-      - name: Write Unified Fluent Explorer (replaces search.html + explorer.html)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/explorer.html" "$RUNNER_TEMP/ghrdp-stage/explorer.html"
           echo '[explorer] unified fluent explorer written'
-
-      - name: Write GitHub Pages control-center template (docs/index.html source)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/web-index-template.html" "$RUNNER_TEMP/ghrdp-stage/web-index-template.html"
           echo '[web] web-index-template.html written'
-
-      - name: Write webdesk capture engine (payloads → stage)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp -f payloads/ghrdp-pub2.ps1 "$RUNNER_TEMP/ghrdp-stage/ghrdp-pub2.ps1"
           echo '[webdesk] payload staged'
-      - name: Write webdesk UI (payloads → stage)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp -f payloads/webdesk-ui.html "$RUNNER_TEMP/ghrdp-stage/webdesk-ui.html"
           echo '[webdesk-ui] staged'
-      - name: Write watcher (mutex, heartbeat, egress, legacy scrape, guarded success path, no .ghenc display name)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-watcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-watcher.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-pub2.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-pub2.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-bootstrap-session.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-bootstrap-session.ps1"
           echo '[watcher] ghrdp-watcher.ps1 written'
           echo '[webdesk] ghrdp-pub2.ps1 + ghrdp-bootstrap-session.ps1 staged'
-
-      - name: Write launcher + ghrdp:// connector (cmdkey 500ms fix) + DEBUG tools
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-launcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-launcher.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-client-install.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-client-install.ps1"
@@ -862,16 +870,10 @@ jobs:
           # [remediation] agent + enroll + accept payload staging removed (C2 client + acceptance-of-agent gone)
           # [remediation] acceptance + diag staging removed (agent-dependent probes deleted)
           ls -la "$RUNNER_TEMP/ghrdp-stage"
-
-
-      - name: Write Rust dashboard source (Cargo.toml + src/main.rs, StatusCode import fixed)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-rust/src"
           cp "$GITHUB_WORKSPACE/payloads/Cargo.toml" "$RUNNER_TEMP/ghrdp-rust/Cargo.toml"
           cp "$GITHUB_WORKSPACE/payloads/main.rs" "$RUNNER_TEMP/ghrdp-rust/src/main.rs"
           ls -la "$RUNNER_TEMP/ghrdp-rust" "$RUNNER_TEMP/ghrdp-rust/src"
-
       - name: Stage files + write config.json (UTF8 no BOM, Rentry secrets + provided edit code, token, ACLs)
         env:
           RENTRY_EDIT_PASSWORD: ${{ secrets.RENTRY_EDIT_PASSWORD }}
@@ -1214,7 +1216,9 @@ jobs:
           $webdeskAuth = ''
           $vncProbeCodes = @()
           $msiUrl = 'https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi'
-          $msi = Join-Path $env:RUNNER_TEMP 'tightvnc.msi'
+          # [F10-4c §5] MSI lives in the actions/cache-backed dir so subsequent
+          # dispatches skip the download entirely (validated by size below).
+          $msi = 'C:\ghrdp\cache\tightvnc-2.8.85.msi'
           # [F9o] VNC auth probe: vncdotool capture against 127.0.0.1:5900.
           # THE SAME TEXT IS DEFINED IN THE DEPLOY STEP AND IN THE SELF-TEST
           # STEP - keep both copies in sync (like Start-Websockify).
@@ -1278,8 +1282,22 @@ jobs:
           }
           $inst = $false
           try {
-              Invoke-WebRequest -Uri $msiUrl -OutFile $msi -UseBasicParsing -TimeoutSec 120
+              # [F10-4c §5] MSI download runs as a background job in PARALLEL
+              # with the pip installs (independent); cache hit skips it.
+              $msiJob = $null
+              $needMsi = $true
+              try { if ((Test-Path -LiteralPath $msi) -and ((Get-Item -LiteralPath $msi).Length -gt 1MB)) { $needMsi = $false; Write-Host ('[webdesk] tightvnc msi cache hit (' + (Get-Item -LiteralPath $msi).Length + ' bytes)') } } catch { }
+              if ($needMsi) {
+                  $msiJob = Start-Job -ScriptBlock { param($u,$o) Invoke-WebRequest -Uri $u -OutFile $o -UseBasicParsing -TimeoutSec 120 } -ArgumentList $msiUrl, $msi
+              }
               & python -m pip install --disable-pip-version-check --quiet vncdotool 2>&1 | Select-Object -Last 3 | Out-Null
+              if ($msiJob) {
+                  [void](Wait-Job $msiJob -Timeout 150)
+                  if ($msiJob.State -eq 'Failed') { throw ('tightvnc msi download job failed') }
+                  Receive-Job $msiJob | Out-Null; Remove-Job $msiJob -Force
+                  if (-not (Test-Path -LiteralPath $msi) -or ((Get-Item -LiteralPath $msi).Length -le 1MB)) { throw ('tightvnc msi download invalid after job wait') }
+                  Write-Host '[webdesk] tightvnc msi downloaded (parallel job joined)'
+              }
               [void](Install-TightVncMsi -MsiPath $msi -Password $vp -ForceFresh $false)
               # [F9o L2] Restart + registry: VNC loopback-only, auth ON,
               # SecurityTypes pinned to VncAuth, then verify the Password blob
@@ -1329,7 +1347,12 @@ jobs:
           try {
               if (-not (Test-Path -LiteralPath (Join-Path $novncDir 'vnc.html'))) {
                   New-Item -ItemType Directory -Path 'C:\ghrdp' -Force -ErrorAction SilentlyContinue | Out-Null
-                  & git.exe clone --depth 1 https://github.com/novnc/noVNC.git $novncDir 2>&1 | Select-Object -Last 3 | Out-Null
+                  # [F10-4c §5] noVNC tree is cache-backed; on a cache MISS the
+                  # pre-created empty dir breaks `git clone $dir` (dir must not
+                  # exist) - clone into a temp dir and move the contents in.
+                  $novncTmp = Join-Path $env:RUNNER_TEMP ('novnc-clone-' + [guid]::NewGuid().ToString('N'))
+                  & git.exe clone --depth 1 https://github.com/novnc/noVNC.git $novncTmp 2>&1 | Select-Object -Last 3 | Out-Null
+                  if (Test-Path -LiteralPath (Join-Path $novncTmp 'vnc.html')) { Copy-Item -Path (Join-Path $novncTmp '*') -Destination $novncDir -Recurse -Force; Remove-Item -LiteralPath $novncTmp -Recurse -Force -ErrorAction SilentlyContinue }
               }
               & python -m pip install --disable-pip-version-check --quiet websockify 2>&1 | Select-Object -Last 3 | Out-Null
           } catch { Write-Host ('[webdesk] noVNC/websockify install error: ' + $_.Exception.Message) }
