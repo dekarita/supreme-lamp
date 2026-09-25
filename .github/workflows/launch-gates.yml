@@ -67,6 +67,92 @@ jobs:
           printf '%s' "$teststep" | grep -q 'noVNC'
           printf '%s' "$teststep" | grep -q 'self-test PASS'
           printf '%s' "$teststep" | grep -q 'self-test FAIL'
+      - name: F9l web-desktop self-heal + diagnostics gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          WF=.github/workflows/main.yml
+          # Region = the self-test step through the diagnostics steps (ends at
+          # the dashboard step, exactly like the F8 gate).
+          teststep=$(awk '/^      - name: Web desktop self-test/{f=1} /Start Mission Control dashboard EARLY/{f=0} f' "$WF")
+          # Assert against CODE, never against prose: comment text must not be
+          # able to satisfy (or mask) a gate.
+          code=$(printf '%s' "$teststep" | grep -vE '^[[:space:]]*#')
+          # A) The self-test must probe the BACKEND directly. A serve-URL-only
+          #    test cannot distinguish a dead websockify from a 502 proxy leg
+          #    (the F9l post-mortem failed exactly this way).
+          if ! printf '%s' "$code" | grep -q 'http://127\.0\.0\.1:7333/vnc.html'; then
+            echo 'self-test lacks the direct backend curl (http://127.0.0.1:7333/vnc.html)' >&2
+            exit 1
+          fi
+          # B) Dead backend must be healed by CALLING the idempotent launcher
+          #    (the function definition alone proves nothing).
+          if ! printf '%s' "$teststep" | grep -qF '$started = Start-Websockify'; then
+            echo 'self-test cannot heal the backend leg ($started = Start-Websockify missing)' >&2
+            exit 1
+          fi
+          # C) A 502 with a healthy backend must reset the serve mapping with the
+          #    documented (F9m-verified) form.
+          if ! printf '%s' "$code" | grep -qF -- "'--bg', 'http://127.0.0.1:7333'"; then
+            echo 'self-test does not reset the tailscale serve mapping on 502' >&2
+            exit 1
+          fi
+          # D) The classification tokens must exist (diagnosis, not guessing).
+          for tok in backend-dead proxy-502 dns-tls; do
+            if ! printf '%s' "$code" | grep -q "$tok"; then
+              echo "self-test cannot classify: '$tok' missing" >&2
+              exit 1
+            fi
+          done
+          # E) Fail-closed: the halt must still write the locked codes + throw.
+          if ! printf '%s' "$code" | grep -q "\$cfgF.webdeskReason = 'serve-failed'"; then
+            echo 'self-test halt no longer writes webdeskReason=serve-failed' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$code" | grep -q "throw ('Web desktop self-test FAILED"; then
+            echo 'self-test halt no longer throws (fail-closed)' >&2
+            exit 1
+          fi
+          # F) The F9l-1 launcher must exist in BOTH steps as byte-identical text
+          #    (a divergent copy silently changes recovery behaviour).
+          n=$(grep -c '^          function Start-Websockify(' "$WF" || true)
+          if [ "$n" -ne 2 ]; then
+            echo "expected 2 Start-Websockify copies (deploy + self-test), found $n" >&2
+            exit 1
+          fi
+          h1=$(awk '/^          function Start-Websockify\(/{f=1} f{print} f && /^          \}$/{exit}' "$WF" | sha256sum | cut -d' ' -f1)
+          h2=$(awk 'BEGIN{c=0} /^          function Start-Websockify\(/{c++} c==2{f=1} f{print} f && /^          \}$/{if (c==2) exit}' "$WF" | sha256sum | cut -d' ' -f1)
+          if [ "$h1" != "$h2" ]; then
+            echo 'the two Start-Websockify copies diverged - edit both or neither' >&2
+            exit 1
+          fi
+          # G) Survivable diagnostics: the webdesk steps must stage + upload the
+          #    'webdesk-diag' artifact, and the upload path must stay inside the
+          #    workspace - upload-artifact v4 rejects absolute host paths
+          #    (proven by the first lab run: 'rootDirectory ... is not a parent
+          #    directory of the file C:\ghrdp\webdesk\websockify.log').
+          webdesk_all=$(awk '/Web desktop \(noVNC/{f=1} /Start Mission Control dashboard EARLY/{f=0} f' "$WF" | grep -vE '^[[:space:]]*#')
+          if ! printf '%s' "$webdesk_all" | grep -q 'actions/upload-artifact'; then
+            echo 'web-desktop steps do not upload the diagnostics artifact' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$webdesk_all" | grep -qE '^[[:space:]]+name: webdesk-diag[[:space:]]*$'; then
+            echo "web-desktop steps do not upload the 'webdesk-diag' artifact" >&2
+            exit 1
+          fi
+          upload=$(awk '/Web desktop diagnostics artifact/{f=1} f && /^      - name: / && !/Web desktop diagnostics artifact/{exit} f' "$WF")
+          if ! printf '%s' "$upload" | grep -q 'if: always()'; then
+            echo 'the diagnostics upload must use if: always() (it must survive a halt)' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$upload" | grep -qE '^[[:space:]]+path: webdesk-diag[[:space:]]*$'; then
+            echo 'the diagnostics upload must use the workspace-relative staging dir' >&2
+            exit 1
+          fi
+          if printf '%s' "$upload" | grep -qE 'C:\\+ghrdp|runner\.temp'; then
+            echo 'diagnostics upload uses absolute paths - upload-artifact v4 will fail (stage inside the workspace instead)' >&2
+            exit 1
+          fi
       - name: F9 MagicDNS halt + link gates
         shell: bash
         run: |

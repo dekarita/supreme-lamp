@@ -173,3 +173,104 @@ test('F9j: watcher websockify auto-heal is loopback-only (no 0.0.0.0:7333)', () 
   assert.doesNotMatch(wf, /0\.0\.0\.0:7333/);
   assert.match(wf, /'--web','C:\\ghrdp\\novnc','127\.0\.0\.1:7333','127\.0\.0\.1:5900'/);
 });
+
+// [F9l-1] Idempotent websockify launcher: kill stale + paired redirects +
+// wait for a LISTEN socket on 127.0.0.1:7333 specifically, returning a bool.
+test('F9l-1: Start-Websockify is idempotent, paired-redirect and loopback-exact', () => {
+  assert.match(webdesk, /function Start-Websockify\(/);
+  const from = webdesk.indexOf('function Start-Websockify(');
+  const rest = webdesk.slice(from);
+  // bound the slice to the function body (the step continues with unrelated code)
+  const fn = rest.slice(0, rest.indexOf('\n          }\n'));
+  assert.match(fn, /Stop-Process/, 'stale websockify processes must be killed (idempotent re-entry)');
+  assert.match(fn, /RedirectStandardOutput \$wsLog/);
+  assert.match(fn, /RedirectStandardError \$wsErr/);
+  const waits = fn.match(/-LocalAddress '127\.0\.0\.1' -LocalPort 7333 -State Listen/g) || [];
+  assert.ok(waits.length >= 2, 'must wait for the loopback listener before and after starting');
+  assert.match(fn, /return \$false/);
+  assert.match(fn, /return \$true/);
+  assert.match(webdesk, /\$wsUp = Start-Websockify/, 'the deploy step must call the function');
+  // the launcher must not carry the VNC password anywhere
+  assert.doesNotMatch(fn, /\$vp\b|VNC_PASS/);
+});
+
+// [F9l-2] Classified, self-healing self-test: the backend leg (loopback:7333)
+// is probed directly, healed with the SAME launcher, and only then is the
+// advertised tailnet URL curled - with status, headers and body bytes kept.
+test('F9l-2: self-test probes the backend directly and can self-heal it', () => {
+  assert.match(selftest, /\[F9l-2\]/);
+  assert.match(selftest, /http:\/\/127\.0\.0\.1:7333\/vnc\.html/, 'direct backend curl missing');
+  assert.match(selftest, /\$backendOk = \(\$probeB\.Code -eq '200'/, 'backend health must be a 200 check');
+  assert.match(selftest, /\$started = Start-Websockify/, 'backend-dead must call the F9l-1 launcher');
+  assert.match(selftest, /backend re-probe/, 'the backend must be re-probed after healing');
+  // the launcher copy in the self-test must be the same text as the deploy copy
+  const all = fs.readFileSync('.github/workflows/main.yml', 'utf8');
+  const copies = all.match(/^          function Start-Websockify\(.*?^          \}\n/gms) || [];
+  assert.equal(copies.length, 2, 'expected exactly two Start-Websockify copies');
+  assert.equal(copies[0], copies[1], 'the two Start-Websockify copies must be identical');
+});
+
+test('F9l-2: serve leg records status/headers/body and resets the mapping on 502', () => {
+  assert.match(selftest, /first200=/, 'first 200 body bytes must be captured');
+  assert.match(selftest, /headers=/, 'response headers must be captured');
+  assert.match(selftest, /'--bg', 'http:\/\/127\.0\.0\.1:7333'/, 'mapping reset must use the documented form');
+  assert.match(selftest, /reset attempt/, 'each reset attempt must be logged');
+  assert.match(selftest, /Start-Sleep -Seconds 5/, 'a 5s settle wait must precede the re-curl');
+  assert.match(selftest, /serve re-probe/);
+});
+
+test('F9l-2: failures are classified (backend-dead | proxy-502 | dns-tls) and fail-closed', () => {
+  assert.match(selftest, /backend-dead/);
+  assert.match(selftest, /proxy-502/);
+  assert.match(selftest, /dns-tls/);
+  const failIdx = selftest.indexOf('self-test FAIL');
+  const tail = selftest.slice(failIdx);
+  assert.match(selftest, /\$evLines \+= \('classification=' \+ \$verdict\)/, 'classification must reach the artifact payload');
+  assert.match(tail, /classification\.txt/, 'the summary must name the diagnostics payload');
+  assert.match(tail, /\bthrow\b/, 'classified halt must throw (fail-closed)');
+  // the classification must never be written into config.json (F9l-4 contract)
+  assert.doesNotMatch(tail, /webdeskDetail.*(backend-dead|proxy-502|dns-tls)/);
+  // no password reference anywhere in the classifier
+  assert.doesNotMatch(selftest, /\$vp\b|VNC_PASS/);
+});
+
+// [F9l-3] Survivable diagnostics: the payload is staged INSIDE the workspace
+// (upload-artifact v4 rejects absolute paths outside its root directory -
+// observed in the lab) and uploaded with `if: always()` so a halt in either
+// web-desktop step still leaves evidence behind.
+test('F9l-3: webdesk-diag is staged in the workspace and uploaded on halt', () => {
+  assert.match(selftest, /Web desktop diagnostics staging/);
+  assert.match(selftest, /Web desktop diagnostics artifact/);
+  assert.match(selftest, /actions\/upload-artifact@v4/);
+  assert.match(selftest, /name: webdesk-diag/);
+  const upload = selftest.slice(selftest.indexOf('Web desktop diagnostics artifact'));
+  assert.match(upload, /if: always\(\)/, 'the upload must run even when a previous step halted');
+  assert.match(upload, /path: webdesk-diag/, 'upload must use the workspace-relative staging dir');
+  assert.doesNotMatch(upload, /[A-Z]:\\\\ghrdp/, 'absolute host paths cannot be uploaded by upload-artifact v4');
+  assert.doesNotMatch(upload, /runner\.temp/);
+  // staging copies the host-side websockify logs and the self-test payload
+  const stage = selftest.slice(selftest.indexOf('Web desktop diagnostics staging'), selftest.indexOf('Web desktop diagnostics artifact'));
+  assert.match(stage, /websockify\.log/);
+  assert.match(stage, /websockify\.err\.log/);
+  assert.match(stage, /MANIFEST\.txt/);
+  assert.match(stage, /serve status --json/);
+  assert.match(webdesk, /Diagnostics artifact: webdesk-diag/);
+  assert.match(webdesk, /deploy-verbose\.txt/);
+});
+
+// [F9l-4] Fail-closed contract preserved: the classification is diagnostic
+// only - config keeps the locked serve-failed / self-test-failed codes that
+// /api/native-status and ui.html already render. No dashboard messaging
+// change, no URL left behind on a failure.
+test('F9l-4: config keeps serve-failed/self-test-failed and the UI contract is untouched', () => {
+  const tail = selftest.slice(selftest.indexOf('self-test FAIL'));
+  assert.match(tail, /\$cfgF\.webdeskReason = 'serve-failed'/);
+  assert.match(tail, /\$cfgF\.webdeskDetail = 'self-test-failed'/);
+  assert.match(tail, /\$cfgF\.webdeskUrl = ''/, 'the advertised URL must be cleared on failure');
+  assert.match(tail, /\$cfgF\.webdeskUrl = ''/);
+  const ui = fs.readFileSync('payloads/ui.html', 'utf8');
+  assert.match(ui, /'self-test-failed':'the advertised URL did not serve the noVNC page \(self-test failed\)'/);
+  assert.match(ui, /deskReason==='serve-failed'/);
+  assert.match(ui, /host-side startup\/serve failure - this is NOT a missing VNC_PASS; do not re-add the secret\./);
+  assert.match(ui, /textContent='WEB DESKTOP ready'/);
+});
