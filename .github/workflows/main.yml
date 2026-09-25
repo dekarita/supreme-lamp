@@ -1260,48 +1260,111 @@ jobs:
               } catch { }
               return ''
           }
-          # [F9l] post-1.52 Tailscale serve syntax + version-tolerant VERIFIED
-          # cascade (supersedes the F9k two-form attempt). The live F9k run
-          # log proved BOTH F9k forms dead on the runner CLI:
-          #   - 'serve --bg http://127.0.0.1:7333' passed as ONE concatenated
-          #     argv token (F9k primary): exit 2, usage dump ("unknown flag") -
-          #     the CLI parses '--bg' as its own argument, not as part of a
-          #     concatenated blob.
-          #   - 'serve --bg 443 http://127.0.0.1:7333' (F9k fallback): exit 1,
-          #     "invalid argument format" - the pre-1.52 positional
-          #     '<listen-port> <target>' syntax was removed in Tailscale 1.52+.
-          # Current CLI contract (tailscale.com/docs/reference/tailscale-cli/
-          # serve, validated 2026-01-26): 'tailscale serve [flags] <target>',
-          # where <target> is a port number or an 'http://127.0.0.1:<port>'
-          # URL and the listen ports come from '--http=<port>' / '--https=<port>'
-          # (default 443). We therefore try a small set of known-valid forms
-          # and accept the FIRST one that produces a VERIFIED serve mapping
-          # (read back via Get-WebdeskServeUrl). The fail-closed contract is
-          # unchanged: no form ever invents a URL, and every path converges on
-          # the single 'serve-mapping' block below (secret-free diagnostics,
-          # 5s settle re-check, config stamp, one throw).
+          # [F9m] serve root-cause instrumentation + documented-form cascade.
+          # Evidence from the F9l live run (Tailscale 1.102.4, verbatim):
+          #   [webdesk] tailscale serve --bg http://127.0.0.1:7333 -> exit 1
+          #   [webdesk] tailscale serve --bg --https=443 http://127.0.0.1:7333 -> exit 1
+          #   [webdesk] tailscale serve --bg 7333 -> exit 1
+          #   [webdesk] tailscale serve --bg 443 http://127.0.0.1:7333 -> exit 1
+          #   [webdesk] serve output tail: Error: invalid argument format |
+          #   try `tailscale serve --help` for usage info
+          # F9l reused ONE log file across attempts, so only the LAST attempt's
+          # output survived - the first three failures were invisible. The CLI
+          # source (cmd/tailscale/cli/serve_v2.go @ v1.102.4, validateArgs) has
+          # exactly two emitters of that string:
+          #   - 'e.tun && len(args) > 1' (not our case), and
+          #   - 'len(args) == 2 && args[len(args)-1] != "off"' - the modern CLI
+          #     accepts ONE positional target (plus an optional literal 'off'),
+          #     so the pre-1.52 legacy pair ('443 <url>') can NEVER work here and
+          #     its message is a red herring. Per-attempt output is mandatory.
+          # Documented contract (docs validated 2026-01-26 + the v1.102.4
+          # source): 'tailscale serve [flags] <target>' with --bg, --https=<port>
+          # (default 443), --http=<port>, --set-path, --tcp, --yes ("update
+          # without interactive prompts") and a target that may be a port
+          # ('7333'), a partial URL ('localhost:7333') or a full URL
+          # ('http://127.0.0.1:7333' - tailscaled terminates tailnet TLS, so the
+          # backend stays plaintext HTTP). Every form below is documented; the
+          # legacy pair stays LAST so pre-1.52 runner CLIs are still covered.
+          # (Supersedes the [F9l] 4-form cascade: same verified-mapping contract,
+          # plus per-attempt output, the documented --yes / partial-URL forms and
+          # the set-raw last resort.) No URL is ever invented: every path still
+          # converges on the single fail-closed 'serve-mapping' block below, and
+          # VNC_PASS is never passed to tailscale.
           $serveUrl = ''
           $serveLog = Join-Path $env:RUNNER_TEMP 'ts-serve-webdesk.log'
           try { Write-Host ('[webdesk] tailscale version: ' + ((& $ts version 2>$null | Select-Object -First 1) -join ' ')) } catch { }
+          try {
+              Set-Content -LiteralPath $serveLog -Value '' -ErrorAction SilentlyContinue
+              $helpTxt = (& $ts serve --help 2>&1 | Select-Object -First 40 | ForEach-Object { [string]$_ }) -join ' | '
+              Write-Host ('[webdesk] serve --help: ' + $helpTxt)
+          } catch { Write-Host ('[webdesk] serve --help probe failed: ' + $_.Exception.Message) }
           $serveForms = @(
-              @('--bg', 'http://127.0.0.1:7333'),                 # post-1.52: URL target, default https=443
-              @('--bg', '--https=443', 'http://127.0.0.1:7333'),  # post-1.52: explicit https listen port
-              @('--bg', '7333'),                                  # post-1.52: port-number target
-              @('--bg', '443', 'http://127.0.0.1:7333')           # pre-1.52 legacy form (kept; prints its exit code)
+              @('--bg', 'http://127.0.0.1:7333'),                         # post-1.52: URL target, default https=443
+              @('--bg', '--yes', 'http://127.0.0.1:7333'),                # post-1.52: non-interactive (CI has no TTY)
+              @('--bg', '--https=443', 'http://127.0.0.1:7333'),          # post-1.52: explicit https listen port
+              @('--bg', '--yes', '--https=443', 'http://127.0.0.1:7333'), # post-1.52: explicit port + non-interactive
+              @('--bg', 'localhost:7333'),                                # post-1.52: documented partial-URL target
+              @('--bg', '7333'),                                          # post-1.52: documented port-number target
+              @('--bg', '443', 'http://127.0.0.1:7333')                   # pre-1.52 legacy (DEAD on 1.52+; kept last)
           )
-          # [F9l] first VERIFIED mapping wins; otherwise the unchanged fail-closed
-          # 'serve-mapping' block below halts the run (contract unchanged).
+          $serveAttempt = 0
           foreach ($serveArgs in $serveForms) {
+              $serveAttempt++
               $serveExit = -1
+              $attemptOut = ''
               try {
-                  & $ts serve @serveArgs 2>&1 | Tee-Object -FilePath $serveLog | Out-Null
+                  $attemptOut = (& $ts serve @serveArgs 2>&1 | ForEach-Object { [string]$_ }) -join ' | '
                   $serveExit = $LASTEXITCODE
                   $LASTEXITCODE = 0
-              } catch { Write-Host ('[webdesk] tailscale serve attempt error: ' + $_.Exception.Message) }
+              } catch { $attemptOut = 'attempt error: ' + $_.Exception.Message }
+              if ($vp) { $attemptOut = $attemptOut -replace [regex]::Escape($vp), '[redacted]' }
               Write-Host ('[webdesk] tailscale serve {0} -> exit {1}' -f ($serveArgs -join ' '), $serveExit)
+              if ($attemptOut) { Write-Host ('[webdesk] serve output: ' + $attemptOut) }
+              try {
+                  Add-Content -LiteralPath $serveLog -Value ('=== attempt {0}: tailscale serve {1} -> exit {2}' -f $serveAttempt, ($serveArgs -join ' '), $serveExit) -ErrorAction SilentlyContinue
+                  if ($attemptOut) { Add-Content -LiteralPath $serveLog -Value $attemptOut -ErrorAction SilentlyContinue }
+              } catch { }
               $serveUrl = Get-WebdeskServeUrl
               if ($serveUrl) { break }
               Start-Sleep -Seconds 3
+          }
+          # [F9m] last resort: the CLI's own raw-config path (serve_v2.go
+          # runServeCombined: 'serve set-raw' reads an ipn.ServeConfig JSON from
+          # stdin and calls SetServeConfig, bypassing flag parsing). Still only
+          # an ATTEMPT - the mapping is re-read from the CLI and a wrong schema
+          # yields no mapping, so this can never fabricate a LIVE URL.
+          if (-not $serveUrl) {
+              try {
+                  $stRaw = ((& $ts status --json 2>$null) -join "`n") | ConvertFrom-Json
+                  $rawDns = [string]$stRaw.Self.DNSName
+                  $rawDns = $rawDns.TrimEnd('.')
+                  if ($rawDns -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
+                      $rawJson = @{
+                          TCP = @{ '443' = @{ HTTPS = $true } }
+                          Web = @{ ($rawDns + ':443') = @{ Handlers = @{ '/' = @{ Proxy = 'http://127.0.0.1:7333' } } } }
+                      } | ConvertTo-Json -Depth 10 -Compress
+                      $rawOut = ($rawJson | & $ts serve set-raw 2>&1 | ForEach-Object { [string]$_ }) -join ' | '
+                      if ($vp) { $rawOut = $rawOut -replace [regex]::Escape($vp), '[redacted]' }
+                      Write-Host ('[webdesk] serve set-raw output: ' + $rawOut)
+                      try { Add-Content -LiteralPath $serveLog -Value ('=== serve set-raw output: ' + $rawOut) -ErrorAction SilentlyContinue } catch { }
+                  } else {
+                      Write-Host '[webdesk] serve set-raw skipped: Self.DNSName is not a *.ts.net name'
+                  }
+              } catch { Write-Host ('[webdesk] serve set-raw attempt error: ' + $_.Exception.Message) }
+              Start-Sleep -Seconds 3
+              $serveUrl = Get-WebdeskServeUrl
+          }
+          # [F9m] actionable hint: serve's HTTPS modes call enableFeatureInteractive
+          # first, and tailnet HTTPS certificate provisioning is a SEPARATE toggle
+          # from MagicDNS (admin console -> DNS -> HTTPS Certificates).
+          if (-not $serveUrl) {
+              try {
+                  $trTxt = (Get-Content -LiteralPath $serveLog -ErrorAction SilentlyContinue) -join ' '
+                  if ($trTxt -match '(?i)(https|tls)[^|]{0,40}(enabl|cert|provision|not set)|cert[^|]{0,20}provision') {
+                      Write-Host '[webdesk] HINT: serve reports a tailnet HTTPS/certificate problem - open https://login.tailscale.com/admin/dns, enable HTTPS Certificates, then re-dispatch.'
+                      if ($S) { 'Web desktop serve hint: enable HTTPS Certificates at https://login.tailscale.com/admin/dns, then re-dispatch.' | Add-Content -Path $S }
+                  }
+              } catch { }
           }
           # [F8c] NO fallback URL fabrication: without a real serve mapping
           # there is no reachable URL, and guessing one is a false LIVE.

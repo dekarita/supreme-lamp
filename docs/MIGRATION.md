@@ -407,7 +407,8 @@ The dashboard's WEB DESKTOP button is enabled only when
   format` (exit 1). Kept as history only — the shipped behaviour is the
   [F9l] cascade below.
 - **[F9l] post-1.52 `tailscale serve` syntax + version-tolerant VERIFIED
-  cascade (supersedes F9k).** The web-desktop step logs the CLI version and
+  cascade (supersedes F9k; upgraded by [F9m] below, which fixes its
+  diagnostics and target coverage).** The web-desktop step logs the CLI version and
   then tries, in order:
   1. `tailscale serve --bg http://127.0.0.1:7333` (post-1.52: URL target,
      listen port defaults to https/443),
@@ -429,6 +430,40 @@ The dashboard's WEB DESKTOP button is enabled only when
   - *Tests:* `tests/workflow-webdesk.test.js` pins the exit-code print, the
     legacy-`443` literal, the verified-mapping URL rules, the fail-closed
     diagnostics, and the loopback-only auto-heal.
+- **[F9m] serve root-cause instrumentation + documented-form cascade.**
+  The F9l live run (Tailscale 1.102.4) returned `exit 1` for all four forms
+  and the only captured text was `Error: invalid argument format | try
+  \`tailscale serve --help\` for usage info`. Two gaps were fixed:
+  - *Blind diagnostics:* F9l reused ONE log file across attempts, so only the
+    last attempt's output survived and the first three failures were
+    invisible. Every attempt's combined stdout+stderr is now captured,
+    redacted and printed to the run log (and appended to the transcript file
+    that the fail-closed diagnostics still read), so the next run names each
+    failure precisely instead of repeating one tail line. The CLI version and
+    the CLI's own `serve --help` usage text are logged up-front too.
+  - *Red-herring message:* the CLI source
+    (`cmd/tailscale/cli/serve_v2.go` `validateArgs`, verified at tag
+    v1.102.4) emits that string in exactly two cases: `--tun` with more than
+    one positional, and **exactly two positionals whose last is not the
+    literal `off`**. The modern CLI accepts ONE positional target, so the
+    pre-1.52 legacy pair (`443 http://127.0.0.1:7333`) can never work on
+    1.52+ and its error was masking the real (still unknown) cause of the
+    first attempts' failures.
+  - *Documented targets that had never been tried:* the cascade now covers
+    the documented `--yes` (non-interactive — CI has no TTY) and partial-URL
+    (`localhost:7333`) forms, in addition to the URL/port/explicit-port and
+    legacy forms.
+  - *Last resort:* if every documented form fails, the step attempts the
+    CLI's own raw-config path (`tailscale serve set-raw` with an
+    `ipn.ServeConfig` JSON built from `Self.DNSName`), then re-reads the
+    mapping through `Get-WebdeskServeUrl`. It is still only an attempt: a
+    wrong schema yields no mapping, so no URL can ever be fabricated and the
+    single fail-closed `serve-mapping` block still halts the run.
+  - *Actionable hint:* serve's HTTPS modes call `enableFeatureInteractive`
+    first, and tailnet HTTPS certificate provisioning is a SEPARATE toggle
+    from MagicDNS (admin console → DNS → HTTPS Certificates). When the
+    captured output indicates an HTTPS/certificate problem, the step logs the
+    hint and writes it to the Step Summary.
 - **Persistent Windows VPS (post-§1.7)**: §1.7 does NOT provision a web
   desktop. The operator must separately deploy authenticated TightVNC
   bound to loopback, websockify/noVNC on loopback, and `tailscale serve`
