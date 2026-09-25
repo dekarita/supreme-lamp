@@ -25,13 +25,16 @@ download**:
 
 A pre-F2 install registered `ghrdp://` at the old **script host**. Your PC keeps
 that HKCU value until something overwrites it, so Windows shows the old prompt
-even though the server side is clean. `install.cmd` (F12-1) now:
+even though the server side is clean. `install.cmd` (F13: byte-faithful to the
+file you hold) does, in order:
 
-* prints the handler value **BEFORE** it touches anything,
-* writes `HKCU\Software\Classes\ghrdp\shell\open\command` = `"<exe>" "%1"`,
-* prints the value **AFTER**, and
-* verifies the readback points at the compiled launcher (non-zero exit + a
-  message otherwise).
+* prints `BEFORE:` with the current handler value (whatever a previous install
+  left there),
+* compiles `ghrdp-rdp-launcher.cs` with the in-box `csc.exe`
+  (`/target:winexe` — the handler never opens a console window),
+* writes `HKCU\Software\Classes\ghrdp\shell\open\command` = `"<exe>" "%1"`, and
+* prints `AFTER:` — the AFTER line **must** show
+  `%LOCALAPPDATA%\ghrdp\ghrdp-rdp-launcher.exe`, NOT powershell.
 
 Mission Control also watches for the launcher's `/api/handler-hello` beacon for
 **20 s after the click**: no beacon -> notice *"If Windows offered to open
