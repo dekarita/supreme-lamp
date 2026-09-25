@@ -78,11 +78,12 @@ jobs:
           # Assert against CODE, never against prose: comment text must not be
           # able to satisfy (or mask) a gate.
           code=$(printf '%s' "$teststep" | grep -vE '^[[:space:]]*#')
-          # A) The self-test must probe the BACKEND directly. A serve-URL-only
-          #    test cannot distinguish a dead websockify from a 502 proxy leg
-          #    (the F9l post-mortem failed exactly this way).
-          if ! printf '%s' "$code" | grep -q 'http://127\.0\.0\.1:7333/vnc.html'; then
-            echo 'self-test lacks the direct backend curl (http://127.0.0.1:7333/vnc.html)' >&2
+          # A) The self-test must probe the BACKEND root directly on the tailnet
+          #    bind address. An advertised-URL-only test cannot distinguish a dead
+          #    websockify from a dropped tailnet path (the pre-F9n post-mortems
+          #    failed exactly this way).
+          if ! printf '%s' "$code" | grep -qF "'http://' + \$bindIp + ':7333/'"; then
+            echo 'self-test lacks the direct backend root curl on the tailnet address' >&2
             exit 1
           fi
           # B) Dead backend must be healed by CALLING the idempotent launcher
@@ -91,14 +92,15 @@ jobs:
             echo 'self-test cannot heal the backend leg ($started = Start-Websockify missing)' >&2
             exit 1
           fi
-          # C) A 502 with a healthy backend must reset the serve mapping with the
-          #    documented (F9m-verified) form.
-          if ! printf '%s' "$code" | grep -qF -- "'--bg', 'http://127.0.0.1:7333'"; then
-            echo 'self-test does not reset the tailscale serve mapping on 502' >&2
+          # C) A failing advertised URL with a live listener must re-assert the
+          #    CGNAT-only firewall rule (the leg that makes 7333 reachable from
+          #    the tailnet at all).
+          if ! printf '%s' "$code" | grep -qF -- '$fwHeal = Set-WebdeskFirewall'; then
+            echo 'self-test does not re-assert the GHRDP-Webdesk firewall rule when healing' >&2
             exit 1
           fi
           # D) The classification tokens must exist (diagnosis, not guessing).
-          for tok in backend-dead proxy-502 dns-tls; do
+          for tok in backend-dead firewall marker-missing; do
             if ! printf '%s' "$code" | grep -q "$tok"; then
               echo "self-test cannot classify: '$tok' missing" >&2
               exit 1
@@ -131,6 +133,31 @@ jobs:
             echo 'Start-Websockify must not hide the websockify process window' >&2
             exit 1
           fi
+          # F2) The CGNAT-only firewall helper must also exist twice, identically.
+          nfw=$(grep -c '^          function Set-WebdeskFirewall {' "$WF" || true)
+          if [ "$nfw" -ne 2 ]; then
+            echo "expected 2 Set-WebdeskFirewall copies (deploy + self-test), found $nfw" >&2
+            exit 1
+          fi
+          fw1=$(awk '/^          function Set-WebdeskFirewall \{/{f=1} f{print} f && /^          \}$/{exit}' "$WF" | sha256sum | cut -d' ' -f1)
+          fw2=$(awk 'BEGIN{c=0} /^          function Set-WebdeskFirewall \{/{c++} c==2{f=1} f{print} f && /^          \}$/{if (c==2) exit}' "$WF" | sha256sum | cut -d' ' -f1)
+          if [ "$fw1" != "$fw2" ]; then
+            echo 'the two Set-WebdeskFirewall copies diverged - edit both or neither' >&2
+            exit 1
+          fi
+          # F3) The launcher must bind the tailnet address and refuse everything else.
+          if ! printf '%s' "$launcher" | grep -qF -- "(\$BindIp + ':7333')"; then
+            echo 'Start-Websockify does not bind <tailnet ip>:7333' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$launcher" | grep -qF -- '100\.(6[4-9]'; then
+            echo 'Start-Websockify does not refuse non-CGNAT bind addresses' >&2
+            exit 1
+          fi
+          if printf '%s' "$launcher" | grep -qF -- "'127.0.0.1:7333'"; then
+            echo 'Start-Websockify still binds loopback:7333 - the advertised tailnet URL would be dead' >&2
+            exit 1
+          fi
           # G) Survivable diagnostics: the webdesk steps must stage + upload the
           #    'webdesk-diag' artifact, and the upload path must stay inside the
           #    workspace - upload-artifact v4 rejects absolute host paths
@@ -156,6 +183,128 @@ jobs:
           fi
           if printf '%s' "$upload" | grep -qE 'C:\\+ghrdp|runner\.temp'; then
             echo 'diagnostics upload uses absolute paths - upload-artifact v4 will fail (stage inside the workspace instead)' >&2
+            exit 1
+          fi
+      - name: F9n tailnet-HTTP webdesk transport gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          WF=.github/workflows/main.yml
+          SRV=payloads/ghrdp-server.ps1
+          UI=payloads/ui.html
+          # Region = the deploy step through the diagnostics steps (the same
+          # bounds the F8 and F9l gates use).
+          region=$(awk '/Web desktop \(noVNC/{f=1} /Start Mission Control dashboard EARLY/{f=0} f' "$WF")
+          code=$(printf '%s' "$region" | grep -vE '^[[:space:]]*#')
+          # 1) The serve proxy is RETIRED from the web desktop path (Windows SYSTEM
+          #    operator lock => 401 on every post-connect LocalAPI call). The one
+          #    permitted mention is the mandated transport note that documents WHY
+          #    it was retired; every other occurrence - a CLI invocation, a status
+          #    dump, a mapping helper - fails the gate.
+          if printf '%s' "$code" | grep -v 'transport: tailnet HTTP' | grep -qi 'tailscale serve'; then
+            echo 'webdesk step still invokes the retired tailscale serve transport' >&2
+            exit 1
+          fi
+          for banned in '$ts serve' 'serve set-raw' 'serve status' 'Get-WebdeskServeUrl' 'serve --help' "'--bg'"; do
+            if printf '%s' "$code" | grep -qF -- "$banned"; then
+              echo "webdesk step still carries serve-path code: $banned" >&2
+              exit 1
+            fi
+          done
+          # 2) The tailnet-only firewall rule must exist, be CGNAT-scoped and be
+          #    idempotent (same-name rule removed first).
+          if ! printf '%s' "$code" | grep -qF -- "New-NetFirewallRule -DisplayName \$fwName -Direction Inbound -Protocol TCP -LocalPort 7333 -RemoteAddress '100.64.0.0/10' -Action Allow"; then
+            echo 'webdesk step lacks the GHRDP-Webdesk inbound TCP 7333 rule scoped to 100.64.0.0/10' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$code" | grep -qF -- "Remove-NetFirewallRule -DisplayName \$fwName"; then
+            echo 'GHRDP-Webdesk rule is not idempotent (the same-name rule must be removed first)' >&2
+            exit 1
+          fi
+          # 3) 7333 may never be exposed beyond the tailnet (no 0.0.0.0 bind, no
+          #    any-remote rule, no funnel).
+          if printf '%s' "$WF" | grep -qE '0\.0\.0\.0:7333'; then
+            echo 'websockify is bound to 0.0.0.0:7333 - public exposure of the bridge' >&2
+            exit 1
+          fi
+          if printf '%s' "$region" | grep -qE 'RemoteAddress +(Any|0\.0\.0\.0)'; then
+            echo 'the 7333 firewall rule admits more than 100.64.0.0/10' >&2
+            exit 1
+          fi
+          if printf '%s' "$region" | grep -qiE 'remoteip=(any|0\.0\.0\.0)'; then
+            echo 'the netsh firewall fallback admits more than 100.64.0.0/10' >&2
+            exit 1
+          fi
+          if printf '%s' "$code" | grep -qF 'netsh.exe advfirewall firewall add rule' && ! printf '%s' "$code" | grep -qF 'remoteip=100.64.0.0/10'; then
+            echo 'the netsh firewall fallback is not scoped to the tailnet' >&2
+            exit 1
+          fi
+          # 4) The bind address must be read from config.json .rdpIp, validated
+          #    against 100.64.0.0/10, and an invalid value must fail closed -
+          #    never a fabricated URL.
+          if ! printf '%s' "$code" | grep -qF -- '$cW.rdpIp'; then
+            echo 'webdesk step does not read the tailnet address from config.json .rdpIp' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$code" | grep -qF -- '100\.(6[4-9]'; then
+            echo 'webdesk step does not validate the bind address against 100.64.0.0/10' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$code" | grep -qF -- "Set-WebdeskCfg '' 'serve-failed' 'tailnet-ip-unavailable'"; then
+            echo 'webdesk step does not record tailnet-ip-unavailable' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$code" | grep -qF -- "throw 'tailnet-ip-unavailable"; then
+            echo 'tailnet-ip-unavailable is not fail-closed' >&2
+            exit 1
+          fi
+          # 5) The advertised URL must be built from the validated bind address.
+          if ! printf '%s' "$code" | grep -qF -- "'http://' + \$bindIp + ':7333/' + 'vnc.html?autoconnect=1&resize=remote'"; then
+            echo 'webdeskUrl is not built from the validated tailnet bind address' >&2
+            exit 1
+          fi
+          # 6) The mandated transport note must reach the Step Summary.
+          if ! printf '%s' "$region" | grep -qF -- 'transport: tailnet HTTP (WireGuard-encrypted path) + VNC password gate; tailscale serve retired due to Windows SYSTEM operator lock (401)'; then
+            echo 'the webdesk summary lacks the mandated transport note' >&2
+            exit 1
+          fi
+          # 7) Server + UI acceptance allowlist. Assert against CODE (the lines
+          #    that actually test $wd / define the UI regexes), never against the
+          #    prose comments that document them.
+          srvcode=$(grep -F '$wd -match' "$SRV" || true)
+          if [ -z "$srvcode" ]; then
+            echo "$SRV has no webdeskUrl acceptance test at all" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$srvcode" | grep -qF '^http://100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}:7333/'; then
+            echo 'the server allowlist does not accept the tailnet-HTTP (100.64.0.0/10:7333) shape' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$srvcode" | grep -qF '^https://[a-z0-9.-]+\.ts\.net/'; then
+            echo 'the server allowlist does not accept the tailnet *.ts.net shape' >&2
+            exit 1
+          fi
+          if ! grep -qF "invalid-webdesk-url" "$SRV"; then
+            echo 'the server does not report a rejected webdeskUrl as invalid-webdesk-url' >&2
+            exit 1
+          fi
+          uicode=$(grep -E 'WEBDESK_TAILNET_HTTP_RE=|WEBDESK_TSNET_HTTPS_RE=|deskAllowed=' "$UI" || true)
+          if ! printf '%s' "$uicode" | grep -qF '100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.'; then
+            echo 'ui.html does not apply the tailnet-HTTP (100.64.0.0/10:7333) allowlist' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$uicode" | grep -qF 'ts\.net\/'; then
+            echo 'ui.html does not apply the tailnet *.ts.net allowlist' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$uicode" | grep -qF 'WEBDESK_TAILNET_HTTP_RE.test(rawDesk)||WEBDESK_TSNET_HTTPS_RE.test(rawDesk)'; then
+            echo 'ui.html does not gate the WEB DESKTOP button on both allowlist shapes' >&2
+            exit 1
+          fi
+          # 8) The watcher auto-heal must rebind the tailnet address (a loopback
+          #    rebind would silently kill the advertised URL).
+          if ! grep -qF "(\$ipWd + ':7333')" "$WF"; then
+            echo 'watcher websockify auto-heal does not rebind the tailnet address' >&2
             exit 1
           fi
       - name: F9 MagicDNS halt + link gates
@@ -223,6 +372,41 @@ jobs:
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
               if ($errors) { throw "$file has $($errors.Count) PowerShell syntax error(s): $($errors[0].Message)" }
           }
+      - name: Parse web-desktop inline PowerShell from main.yml (real parser)
+        shell: pwsh
+        run: |
+          # The web-desktop steps and the keep-alive watcher keep their PowerShell
+          # INLINE in main.yml, so nothing else in CI ever parses them: a syntax
+          # error there only surfaces as a failed production run. Extract each
+          # `run: |` block and run it through the PowerShell parser.
+          $lines = Get-Content -LiteralPath '.github/workflows/main.yml'
+          $names = @('Web desktop (noVNC', 'Web desktop self-test', 'Web desktop diagnostics staging', 'Keep-alive 5h30')
+          $checked = 0
+          foreach ($n in $names) {
+              $start = -1
+              for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match ('^      - name: ' + [regex]::Escape($n))) { $start = $i; break } }
+              if ($start -lt 0) { throw ("step '" + $n + "' not found in main.yml") }
+              $end = $lines.Count
+              for ($i = $start + 1; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^      - name: ') { $end = $i; break } }
+              $runLine = -1
+              for ($i = $start; $i -lt $end; $i++) { if ($lines[$i] -match '^        run: \|') { $runLine = $i; break } }
+              if ($runLine -lt 0) { throw ("step '" + $n + "' has no block run script") }
+              $script = @()
+              for ($i = $runLine + 1; $i -lt $end; $i++) {
+                  $l = $lines[$i]
+                  if ($l.Trim() -eq '') { $script += ''; continue }
+                  if ($l -notmatch '^          ') { break }
+                  $script += $l.Substring(10)
+              }
+              $errors = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseInput(($script -join "`n"), [ref]$null, [ref]$errors)
+              if ($errors -and $errors.Count -gt 0) {
+                  throw ("main.yml step '" + $n + "' has " + $errors.Count + ' PowerShell syntax error(s): ' + $errors[0].Message)
+              }
+              $checked++
+              Write-Host ('[parse] ' + $n + ' OK (' + $script.Count + ' lines)')
+          }
+          if ($checked -ne $names.Count) { throw 'not every webdesk/watcher script was parsed' }
       - name: Smoke-test VPS ACL helper in temporary files only
         shell: pwsh
         run: |
