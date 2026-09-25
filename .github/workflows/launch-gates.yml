@@ -222,6 +222,64 @@ jobs:
             echo 'server allowlist lacks the legacy https ts.net alternative' >&2
             exit 1
           fi
+      - name: F9o VNC password-application ladder gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          WF=.github/workflows/main.yml
+          webdesk_all=$(awk '/Web desktop \(noVNC/{f=1} /Start Mission Control dashboard EARLY/{f=0} f' "$WF")
+          code=$(printf '%s' "$webdesk_all" | grep -vE '^[[:space:]]*#')
+          deploy=$(awk '/Web desktop \(noVNC/{f=1} /Web desktop self-test/{f=0} f' "$WF" | grep -vE '^[[:space:]]*#')
+          teststep=$(awk '/^      - name: Web desktop self-test/{f=1} /Start Mission Control dashboard EARLY/{f=0} f' "$WF" | grep -vE '^[[:space:]]*#')
+          # 1) the choco install path (the VALUE_OF_PASSWORD mangler) is REMOVED.
+          if printf '%s' "$webdesk_all" | grep -q 'choco install tightvnc'; then
+            echo 'webdesk steps still contain choco install tightvnc (the VALUE_OF_PASSWORD mangler)' >&2
+            exit 1
+          fi
+          # 2) the L1-L5 ladder exists in the deploy step (msiexec property list,
+          #    REINSTALL form, registry verify, probes, labeled degrade, fail-closed).
+          for tok in 'function Invoke-TvnPasswordLadder' 'REINSTALLMODE=omus' 'VALUE_OF_PASSWORD=' 'Test-TvnPasswordBlob' "SecurityTypes' -Value 'VncAuth'" 'none-tailnet-only' 'vnc-auth-unverifiable'; do
+            if ! printf '%s' "$deploy" | grep -qF -- "$tok"; then
+              echo "deploy ladder missing: $tok" >&2
+              exit 1
+            fi
+          done
+          # 3) the REAL vncdotool auth probe gates BOTH the deploy step and the
+          #    self-test step (the latter matched to webdeskAuth).
+          if ! printf '%s' "$deploy" | grep -qF 'vncdotool'; then
+            echo 'webdesk deploy step lacks the vncdotool probe' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$teststep" | grep -qF 'vncdotool'; then
+            echo 'webdesk self-test lacks the vncdotool probe' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$teststep" | grep -qF 'webdeskAuth'; then
+            echo 'self-test probe is not matched to webdeskAuth' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$teststep" | grep -qF 'VNC_PASS: ${{ secrets.VNC_PASS }}'; then
+            echo 'self-test step lacks the VNC_PASS env (probe cannot match mode vnc)' >&2
+            exit 1
+          fi
+          # 4) the L5 degrade path carries the exact summary WARNING string
+          #    (never silent), in code - not just in a comment.
+          if ! printf '%s' "$code" | grep -qF 'rotate VNC_PASS and re-dispatch to restore the gate'; then
+            echo 'L5 degrade path lacks the summary WARNING string' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$code" | grep -qF "'### WARNING: VNC password gate could not be applied (LABELED DEGRADE)'"; then
+            echo 'L5 degrade path lacks the Step Summary WARNING heading' >&2
+            exit 1
+          fi
+          # 5) the verified mode flows to the dashboard via config + server + UI.
+          if ! printf '%s' "$deploy" | grep -qF 'webdeskAuth'; then
+            echo 'deploy step does not stamp webdeskAuth' >&2
+            exit 1
+          fi
+          grep -q 'webdeskAuth = \$wdAuth' payloads/ghrdp-server.ps1 || { echo 'native-status does not expose webdeskAuth' >&2; exit 1; }
+          grep -q 'VNC auth mode' payloads/ui.html || { echo 'ui.html lacks the VNC auth mode row' >&2; exit 1; }
+          grep -q 'none-tailnet-only' payloads/ui.html || { echo 'ui.html lacks the degrade advisory handling' >&2; exit 1; }
       - name: F9 MagicDNS halt + link gates
         shell: bash
         run: |

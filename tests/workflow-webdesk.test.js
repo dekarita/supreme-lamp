@@ -28,9 +28,9 @@ const selftest = lines.slice(selftestStart, nextStepAfterSelftest).join('\n');
 
 test('F9h guard runs before any installer and is fail-closed', () => {
   const guard = lineIndex(l => l.includes("::error::VNC_PASS secret missing"), webdeskStart);
-  const installer = lineIndex(l => l.includes('choco install tightvnc'), webdeskStart);
+  const installer = lineIndex(l => l.includes('Invoke-TvnPasswordLadder -Pass'), webdeskStart);
   assert.ok(guard > 0, 'F9h ::error:: guard missing');
-  assert.ok(installer > 0, 'TightVNC installer missing');
+  assert.ok(installer > 0, 'TightVNC installer (F9o ladder call) missing');
   assert.ok(guard < installer, 'F9h guard must run BEFORE the installer');
   assert.match(webdesk, /throw "VNC_PASS missing\. Halted by design/);
   assert.match(webdesk, /settings\/secrets\/actions/);
@@ -70,7 +70,7 @@ test('every serve-failed path is fail-closed (throw, never exit 0)', () => {
   webdesk.split('\n').forEach((l, i) => {
     if (l.includes("Set-WebdeskCfg '' 'serve-failed'")) idxs.push(i);
   });
-  assert.equal(idxs.length, 5, 'expected 5 serve-failed reason writes (tailnet-ip, tightvnc, novnc, websockify, firewall)');
+  assert.equal(idxs.length, 6, 'expected 6 serve-failed reason writes (tailnet-ip, vnc-auth-unverifiable, tightvnc, novnc, websockify, firewall)');
   const webdeskLines = webdesk.split('\n');
   for (const i of idxs) {
     const tail = webdeskLines.slice(i, i + 8).join('\n');
@@ -81,6 +81,7 @@ test('every serve-failed path is fail-closed (throw, never exit 0)', () => {
 
 test('serve-failed paths carry fixed, secret-free detail codes', () => {
   assert.match(webdesk, /Set-WebdeskCfg '' 'serve-failed' 'tailnet-ip-unavailable'/);
+  assert.match(webdesk, /Set-WebdeskCfg '' 'serve-failed' 'vnc-auth-unverifiable'/);
   assert.match(webdesk, /Set-WebdeskCfg '' 'serve-failed' 'tightvnc-install'/);
   assert.match(webdesk, /Set-WebdeskCfg '' 'serve-failed' 'novnc-assets'/);
   assert.match(webdesk, /Set-WebdeskCfg '' 'serve-failed' 'websockify-bind'/);
@@ -91,7 +92,7 @@ test('serve-failed paths carry fixed, secret-free detail codes', () => {
 
 test('present-but-short VNC_PASS is vnc-pass-too-short, never vnc-pass-missing', () => {
   const shortBlock = webdesk.slice(webdesk.indexOf('$vp.Length -lt 8'));
-  const installerTail = shortBlock.slice(0, shortBlock.indexOf('choco install tightvnc'));
+  const installerTail = shortBlock.slice(0, shortBlock.indexOf('Invoke-TvnPasswordLadder -Pass'));
   assert.match(installerTail, /Set-WebdeskCfg '' 'vnc-pass-too-short'/);
   assert.doesNotMatch(installerTail, /Set-WebdeskCfg '' 'vnc-pass-missing'/, 'short-but-present secret must not be reported as missing');
   // the missing-secret reason appears only in the single F9h belt line
@@ -119,8 +120,13 @@ test('self-test FAIL is fail-closed and records self-test-failed', () => {
 
 test('no fabricated serve URL; no secret-bearing installer output', () => {
   assert.doesNotMatch(webdesk, /serveUrl = 'https:\/\/' \+ \$fq/);
-  // installer output is still filtered for the password value
-  assert.match(webdesk, /Where-Object \{ \$_ -notmatch \[regex\]::Escape\(\$vp\) \}/);
+  // [F9o] probe/installer output can never leak the password: every native call
+  // with secret-bearing args runs through Invoke-Redacted (output filtered for
+  // $Pass before printing), and the vncdotool probes redirect stdin from an
+  // empty file + stdout/stderr to temp files so only the exit code is evidence.
+  assert.match(webdesk, /Where-Object \{ \$_ -notmatch \[regex\]::Escape\(\$Pass\) \}/);
+  assert.match(webdesk, /RedirectStandardInput \$emptyIn/);
+  assert.doesNotMatch(webdesk, /choco install tightvnc/);
   // websockify args carry no password (only dir + loopback ports)
   const procLine = webdesk.split('\n').find(l => l.includes('Start-Process -FilePath python'));
   assert.doesNotMatch(procLine, /\$vp|VNC_PASS/);
@@ -129,6 +135,35 @@ test('no fabricated serve URL; no secret-bearing installer output', () => {
 test('web-desktop step still records >= 6 reason writes (launch-gate F8)', () => {
   const n = webdesk.split("Set-WebdeskCfg ''").length - 1;
   assert.ok(n >= 6, 'only ' + n + ' reason writes (need >= 6)');
+});
+
+// [F9o] The choco password-mangler path is replaced by the L1-L5 ladder:
+// always msiexec with the full property list, registry blob verification,
+// REAL vncdotool auth probes, a labeled L5 degrade, and a fail-closed
+// 'vnc-auth-unverifiable' halt. The self-test must re-probe matched to the
+// stamped webdeskAuth mode.
+test('F9o ladder contract: no choco install, msiexec ladder, real probes, labeled degrade', () => {
+  assert.doesNotMatch(webdesk, /choco install tightvnc/, 'the VALUE_OF_PASSWORD mangler must be gone');
+  assert.match(webdesk, /function Invoke-TvnPasswordLadder\(\[string\]\$Pass, \[string\]\$DiagDir\)/);
+  assert.match(webdesk, /REINSTALL=Server', 'REINSTALLMODE=omus/);
+  assert.match(webdesk, /'VALUE_OF_PASSWORD=' \+ \$Pass/);
+  assert.match(webdesk, /Test-TvnPasswordBlob/);
+  assert.match(webdesk, /SecurityTypes' -Value 'VncAuth/);
+  assert.match(webdesk, /vncdotool/);
+  assert.match(webdesk, /none-tailnet-only/);
+  assert.match(webdesk, /vnc-auth-unverifiable/);
+  assert.match(webdesk, /rotate VNC_PASS and re-dispatch to restore the gate/);
+  assert.match(webdesk, /webdeskAuth/);
+});
+
+test('F9o self-test carries the mode-matching vncdotool probe', () => {
+  assert.match(selftest, /VNC_PASS: \$\{\{ secrets\.VNC_PASS \}\}/);
+  assert.match(selftest, /vncdotool/);
+  assert.match(selftest, /webdeskAuth/);
+  assert.match(selftest, /none-tailnet-only/);
+  assert.match(selftest, /classified: vnc-auth/);
+  // fail-closed on probe failure, with the locked config codes
+  assert.match(selftest, /auth-probe FAILED/);
 });
 
 // [F9n] tailscale serve is retired from the webdesk path (Windows SYSTEM
@@ -281,8 +316,20 @@ test('F9n: failures are classified (backend-dead | firewall | marker-missing) an
   assert.match(tail, /\bthrow\b/, 'classified halt must throw (fail-closed)');
   // the classification must never be written into config.json (F9l-4 contract)
   assert.doesNotMatch(tail, /webdeskDetail.*(backend-dead|firewall|marker-missing)/);
-  // no password reference anywhere in the classifier
-  assert.doesNotMatch(selftest, /\$vp\b|VNC_PASS/);
+  // [F9o] the password may ONLY reach the mode-matching vncdotool probe as a
+  // process argument (env-referenced, output redirected to temp files). Any
+  // other reference (logs, files, config, URLs) is a leak vector and banned.
+  const vpLines = selftest.split('\n').filter(l => (/VNC_PASS|\$vp\b/.test(l)) && !/^\s*#/.test(l));
+  const allowed = [
+    'VNC_PASS: ${{ secrets.VNC_PASS }}',   // step env (probe input only)
+    "-not $env:VNC_PASS",                  // missing-env guard (avoids a TTY prompt)
+    'VNC_PASS env empty',                  // the guard's VLog line
+    "@('-p', [string]$env:VNC_PASS)",      // the probe argument itself
+    'rotate VNC_PASS'                      // fixed remediation string (names the secret, never its value)
+  ];
+  for (const l of vpLines) {
+    assert.ok(allowed.some(a => l.includes(a)), 'non-probe password reference in the self-test: ' + l);
+  }
 });
 
 // [F9l-3] Survivable diagnostics: the payload is staged INSIDE the workspace

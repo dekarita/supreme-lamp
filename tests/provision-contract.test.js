@@ -49,7 +49,7 @@ test('VNC_PASS missing fails closed before install, with summary/link and config
   assert.ok(start >= 0 && end > start);
   const step = workflow.slice(start, end);
   const guard = step.indexOf('if (-not $env:VNC_PASS)');
-  assert.ok(guard >= 0 && guard < step.indexOf('choco install tightvnc'));
+  assert.ok(guard >= 0 && guard < step.indexOf('Invoke-TvnPasswordLadder -Pass'));
   assert.match(step, /https:\/\/github\.com\/dekarita\/supreme-lamp\/settings\/secrets\/actions/);
   assert.match(step, /GITHUB_STEP_SUMMARY/);
   assert.match(step, /webdeskReason' -NotePropertyValue 'vnc-pass-missing'/);

@@ -30,7 +30,27 @@
 #   backend-dead, write the diagnostics payload, clear the URL with the
 #   locked serve-failed/self-test-failed codes, and throw (fail-closed).
 #
-# LAB_REV=5 (F9n: tailnet-HTTP proof; serve retired from the webdesk path).
+# LAB_REV=6 (F9o: TightVNC password-application ladder proof added). The
+# reserved lab env `dekarita/ghrdp-lab` was re-probed on 2026-09-25 with this
+# tooling: `gh repo view dekarita/ghrdp-lab` still 404 (token cannot read
+# repos outside the installation allow-list), intent stated once + retried
+# once - the in-repo fallback lab stands until the reserved env is reachable.
+#
+# NEW (F9o): after the host layout is seeded, the production
+# Invoke-TvnPasswordLadder function is EXTRACTED VERBATIM from main.yml and
+# proven THREE times with a lab-only random password (never printed):
+#   PROOF A (L1-L3): fresh MSI property install must return mode 'vnc'
+#     (registry Password blob >= 8 bytes + real vncdotool probe exit 0).
+#   PROOF B (L5 drill): the extracted code is given a deliberately WRONG
+#     VALUE_OF_PASSWORD (exactly the failure the choco mangler produced), so
+#     L1/L4 cannot verify and the ladder MUST take the LABELED degrade:
+#     mode 'none-tailnet-only' + the summary WARNING string +
+#     UseVncAuthentication=0.
+#   PROOF C (restore): the unpatched ladder run again must re-apply the real
+#     password via REINSTALL and return 'vnc' (gate restored).
+# VNC_PASS (= the lab password) is exported through GITHUB_ENV so the
+# extracted production SELF-TEST (which now carries the mode-matching
+# vncdotool probe, F9o) runs exactly as in production.
 # Evidence channel: run logs/artifacts live on the results blob host, which is
 # not always reachable from the tooling that drives this lab, so every probe
 # also emits a ::warning::/::notice:: annotation - annotations are readable
@@ -158,6 +178,92 @@ jobs:
           [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), ($cfg | ConvertTo-Json -Depth 6), $enc)
           Write-Host ('[lab] seeded config.rdpIp = ' + $labIp)
           Write-Host ('[lab] seeded config.webdeskUrl = ' + $url)
+          exit 0
+
+      - name: F9o LADDER PROOF - extracted production TightVNC ladder (fresh, drill, restore)
+        id: ladder
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # Lab-only password: generated fresh per run, NEVER printed (it is not
+          # the repo secret; the production ladder is proven against it).
+          $chars = 'abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+          $labPass = -join (1..12 | ForEach-Object { $chars[(Get-Random -Maximum $chars.Length)] })
+          if ($labPass.Length -lt 8) { throw '[lab] internal: generated password too short' }
+          Add-Content -Path $env:GITHUB_ENV -Value ('VNC_PASS=' + $labPass)
+          # Extract the production ladder verbatim from main.yml (same scheme as
+          # the F9n launcher/self-test extractions: 10-space indent + closing
+          # brace contract).
+          $all = Get-Content -LiteralPath '.github/workflows/main.yml'
+          $start = -1
+          for ($i = 0; $i -lt $all.Count; $i++) { if ($all[$i] -match '^          function Invoke-TvnPasswordLadder\(') { $start = $i; break } }
+          if ($start -lt 0) { throw '[lab] production Invoke-TvnPasswordLadder not found in main.yml' }
+          $end = $start
+          while ($end -lt $all.Count -and $all[$end] -ne '          }') { $end++ }
+          if ($end -ge $all.Count) { throw '[lab] ladder function end not found (indentation contract broken)' }
+          $fnText = ($all[$start..$end] -join "`n")
+          foreach ($tok in @('VALUE_OF_PASSWORD=', 'REINSTALLMODE=omus', 'vncdotool', 'Test-TvnPasswordBlob', 'none-tailnet-only', 'vnc-auth-unverifiable')) {
+              if ($fnText -notmatch [regex]::Escape($tok)) { throw ('[lab] extracted ladder is not the F9o form - missing: ' + $tok + ' (prod/lab skew)') }
+          }
+          Write-Host ('[lab] extracted production Invoke-TvnPasswordLadder: ' + ($end - $start + 1) + ' lines')
+          $diagDir = Join-Path $env:RUNNER_TEMP 'webdesk-diag'
+          New-Item -ItemType Directory -Path $diagDir -Force -ErrorAction SilentlyContinue | Out-Null
+          # ---- PROOF A (L1-L3): clean runner, fresh MSI property install must
+          # apply the password and return 'vnc'. This is the F9o section-4 proof.
+          . ([scriptblock]::Create($fnText))
+          $modeA = Invoke-TvnPasswordLadder -Pass $labPass -DiagDir $diagDir
+          Write-Host ('[lab] PROOF A (L1-L3 fresh install): mode=' + $modeA)
+          if ($modeA -ne 'vnc') { throw ('[lab] L1-L3 FAILED on a clean runner: mode=' + $modeA) }
+          $blob = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\TightVNC\Server' -Name 'Password').Password
+          if (-not ($blob -and $blob.Count -ge 8)) { throw '[lab] registry Password blob missing/short after L1-L3' }
+          $uvA = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\TightVNC\Server' -Name 'UseVncAuthentication').UseVncAuthentication
+          Write-Host ('[lab] PROOF A OK: Password blob >= 8 bytes, UseVncAuthentication=' + $uvA + ', vncdotool probe exit 0')
+          # ---- PROOF B (L5 drill): TEXTUALLY patch the extracted code so the
+          # MSI applies a deliberately WRONG password (exactly the failure the
+          # choco --params mangler produced in production). L1(REINSTALL) and L4
+          # both install the wrong password, so the mode-matching probes with
+          # the REAL password must fail and the ladder MUST take the LABELED
+          # degrade. The production code path is exercised verbatim otherwise.
+          $drill = $fnText -replace [regex]::Escape("('VALUE_OF_PASSWORD=' + `$Pass)"), "('VALUE_OF_PASSWORD=' + 'LabDrillWrong1')"
+          if ($drill -eq $fnText) { throw '[lab] drill patch did not apply (ladder text skew; extraction/patch contract broken)' }
+          . ([scriptblock]::Create($drill))
+          $summaryProbe = Join-Path $env:RUNNER_TEMP 'drill-summary.md'
+          $realSummary = $env:GITHUB_STEP_SUMMARY
+          $env:GITHUB_STEP_SUMMARY = $summaryProbe
+          $modeB = Invoke-TvnPasswordLadder -Pass $labPass -DiagDir $diagDir
+          $env:GITHUB_STEP_SUMMARY = $realSummary
+          Write-Host ('[lab] PROOF B (L5 forced-degrade drill): mode=' + $modeB)
+          if ($modeB -ne 'none-tailnet-only') { throw ('[lab] L5 drill FAILED: expected none-tailnet-only, got ' + $modeB) }
+          $sumTxt = ''
+          if (Test-Path -LiteralPath $summaryProbe) { $sumTxt = [System.IO.File]::ReadAllText($summaryProbe) }
+          if ($sumTxt -notmatch 'rotate VNC_PASS and re-dispatch to restore the gate') { throw '[lab] L5 degrade lacked the summary WARNING string' }
+          if ($sumTxt -notmatch 'LABELED DEGRADE') { throw '[lab] L5 degrade lacked the LABELED DEGRADE heading' }
+          $uvB = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\TightVNC\Server' -Name 'UseVncAuthentication').UseVncAuthentication
+          if ($uvB -ne 0) { throw '[lab] L5 degrade did not set UseVncAuthentication=0' }
+          Write-Host '[lab] PROOF B OK: LABELED degrade returned none-tailnet-only + WARNING string + UseVncAuthentication=0'
+          # ---- PROOF C (restore): unpatched ladder again. REINSTALL must
+          # re-apply the real password and re-arm the gate.
+          . ([scriptblock]::Create($fnText))
+          $modeC = Invoke-TvnPasswordLadder -Pass $labPass -DiagDir $diagDir
+          Write-Host ('[lab] PROOF C (restore after degrade): mode=' + $modeC)
+          if ($modeC -ne 'vnc') { throw ('[lab] restore FAILED: expected vnc, got ' + $modeC) }
+          $uvC = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\TightVNC\Server' -Name 'UseVncAuthentication').UseVncAuthentication
+          if ($uvC -ne 1) { throw '[lab] restore did not re-arm UseVncAuthentication=1' }
+          # Stamp the lab config so the extracted production SELF-TEST (below)
+          # probes in the same mode production would.
+          try {
+              $cfgPath = 'C:\ghrdp\config.json'
+              $cfgL = [System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json
+              $cfgL | Add-Member -NotePropertyName 'webdeskAuth' -NotePropertyValue 'vnc' -Force
+              [System.IO.File]::WriteAllText($cfgPath, ($cfgL | ConvertTo-Json -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+          } catch { Write-Host ('[lab] config webdeskAuth stamp failed: ' + $_.Exception.Message) }
+          # Evidence (secret-free): ladder log + TightVNC log tail + results.
+          try {
+              $tvLog = 'C:\Program Files\TightVNC\tvnserver.log'
+              if (Test-Path -LiteralPath $tvLog) { (Get-Content -LiteralPath $tvLog -Tail 40) -join "`n" | Set-Content -LiteralPath (Join-Path $diagDir 'tvnserver-tail.txt') }
+          } catch { }
+          @('PROOF A (L1-L3 fresh): vnc', 'PROOF B (L5 drill): none-tailnet-only (+ WARNING string)', 'PROOF C (restore): vnc') | Set-Content -LiteralPath (Join-Path $diagDir 'lab-ladder-results.txt')
+          Write-Host '::notice title=lab F9o LADDER PROOF::PROOF A L1-L3=vnc ; PROOF B L5 drill=none-tailnet-only (+WARNING) ; PROOF C restore=vnc'
           exit 0
 
       - name: F9n BIND PROOF - production launcher + firewall + marker curl
@@ -345,9 +451,14 @@ jobs:
           retention-days: 14
           path: webdesk-diag
 
-      - name: Lab teardown (logout lab node)
+      - name: Lab teardown (logout lab node + remove lab TightVNC)
         if: always()
         shell: pwsh
         run: |
           try { & 'C:\Program Files\Tailscale\tailscale.exe' logout 2>&1 | Select-Object -First 3 | ForEach-Object { Write-Host ('[lab] ' + $_) } } catch { }
+          # Best-effort hygiene: the lab installed TightVNC via the ladder proof.
+          try {
+              $msi = Join-Path $env:RUNNER_TEMP 'tightvnc.msi'
+              if (Test-Path -LiteralPath $msi) { Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/x', $msi, '/quiet', '/norestart') -Wait -WindowStyle Hidden | Out-Null }
+          } catch { }
           exit 0
