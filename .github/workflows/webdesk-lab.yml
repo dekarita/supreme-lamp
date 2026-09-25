@@ -277,7 +277,8 @@ jobs:
 
       - name: F9n NEGATIVE PROOF - classified halt on unroutable IP (expect halt)
         if: always()
-        continue-on-error: true
+        # NOTE: NO continue-on-error here - a failed negative proof must fail
+        # the job (a green run is the proof; masking it would be vacuous).
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
