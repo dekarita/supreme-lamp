@@ -467,6 +467,39 @@ jobs:
             echo "F9k guard count ($guards) != ghrdp-lib dot-source count ($dotsrc)" >&2
             exit 1
           fi
+      - name: F11 UX-package gates (VNC memory + usage timer + shim deploy)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # §2 VNC password memory: shim file exists with origin guard + no logging
+          test -f payloads/ghrdp-cred-shim.js
+          grep -q 'ghrdp-vnc-pass' payloads/ghrdp-cred-shim.js
+          grep -q 'isAllowedOrigin' payloads/ghrdp-cred-shim.js
+          # Shim must NOT log or echo the password value
+          if grep -E 'console\.(log|warn|error|info)\(.*pass' payloads/ghrdp-cred-shim.js; then
+            echo 'F11: shim logs the password' >&2; exit 1
+          fi
+          # §2 workflow deploys shim into noVNC directory
+          grep -q 'ghrdp-cred-shim.js' .github/workflows/main.yml
+          grep -q 'injected into noVNC vnc.html' .github/workflows/main.yml
+          # §2 ui.html stores VNC pass in localStorage on copy
+          grep -q "localStorage.setItem('ghrdp:vnc-pass'" payloads/ui.html
+          # §2 ui.html postMessage VNC pass on WEB DESKTOP click
+          grep -q 'ghrdp-vnc-pass' payloads/ui.html
+          grep -q "localStorage.getItem('ghrdp:vnc-pass')" payloads/ui.html
+          # §2 password= URL gate in the UI
+          grep -q "indexOf('password=')" payloads/ui.html
+          # §3 usage timer: label + server accumulator
+          grep -q 'RDP USAGE' payloads/ui.html
+          grep -q 'rdpUsageSec' payloads/ghrdp-server.ps1
+          grep -q 'rdpUsageLastTick' payloads/ghrdp-server.ps1
+          grep -q 'rdpSessionActive' payloads/ghrdp-server.ps1
+          grep -q 'wsClientsActive' payloads/ghrdp-server.ps1
+          # §9 no piracy-index strings
+          if grep -E -i -n 'fmhy|megathread|torrent' payloads/ui.html payloads/ghrdp-cred-shim.js; then
+            echo 'F11: piracy-index string found' >&2; exit 1
+          fi
+          echo 'F11 gates PASS'
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:

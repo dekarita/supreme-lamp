@@ -600,6 +600,51 @@ function Invoke-ClientRequest {
                     }
                 }
             } catch { $rdpLogonAgeSec = $null }
+            # [F11 §3] RDP USAGE TIMER: server-side accumulator that ticks ONLY
+            # while (a) an RDP LogonType-10 session is connected OR (b) websockify
+            # has >=1 active client on port 7333. Freezes when both drop, resumes
+            # on reconnect. Persisted in config.json so re-dispatch within the
+            # same host continues from the last value.
+            $rdpUsageSec = 0
+            try {
+                $cfgU = $cfgN
+                if (-not $cfgU) { $cfgU = Read-JsonFile -Path $script:CfgPath }
+                if ($cfgU -and $cfgU.PSObject.Properties['rdpUsageSec']) { $rdpUsageSec = [int]$cfgU.rdpUsageSec }
+            } catch { $rdpUsageSec = 0 }
+            $rdpSessionActive = ($null -ne $rdpLogonAgeSec -and $rdpLogonAgeSec -ge 0)
+            $wsClientsActive = $false
+            try {
+                $wsFile = Join-Path $Root 'webdesk\ws-clients.txt'
+                if (Test-Path -LiteralPath $wsFile) {
+                    $wsN = [int](([System.IO.File]::ReadAllText($wsFile)).Trim())
+                    if ($wsN -gt 0) { $wsClientsActive = $true }
+                }
+                if (-not $wsClientsActive) {
+                    # Fallback: check for established connections on 7333
+                    $tcp7333 = Get-NetTCPConnection -LocalPort 7333 -State Established -ErrorAction SilentlyContinue
+                    if ($tcp7333) { $wsClientsActive = $true }
+                }
+            } catch { }
+            if ($rdpSessionActive -or $wsClientsActive) {
+                # Accumulate: elapsed since last tick (stored in rdpUsageLastTick)
+                $lastTick = 0
+                try {
+                    if ($cfgN -and $cfgN.PSObject.Properties['rdpUsageLastTick']) { $lastTick = [long]$cfgN.rdpUsageLastTick }
+                } catch { }
+                $nowTicks = [long]([datetime]::UtcNow - [datetime]::new(1970,1,1,0,0,0,[System.DateTimeKind]::Utc)).TotalSeconds
+                if ($lastTick -gt 0) {
+                    $delta = [int]($nowTicks - $lastTick)
+                    if ($delta -gt 0 -and $delta -lt 120) { $rdpUsageSec += $delta }
+                }
+                try {
+                    $cfgN2 = Read-JsonFile -Path $script:CfgPath
+                    if ($cfgN2) {
+                        if ($cfgN2.PSObject.Properties['rdpUsageSec']) { $cfgN2.rdpUsageSec = $rdpUsageSec } else { $cfgN2 | Add-Member -NotePropertyName rdpUsageSec -NotePropertyValue $rdpUsageSec -Force }
+                        if ($cfgN2.PSObject.Properties['rdpUsageLastTick']) { $cfgN2.rdpUsageLastTick = $nowTicks } else { $cfgN2 | Add-Member -NotePropertyName rdpUsageLastTick -NotePropertyValue $nowTicks -Force }
+                        [System.IO.File]::WriteAllText($script:CfgPath, ($cfgN2 | ConvertTo-Json -Depth 10), $script:NoBom)
+                    }
+                } catch { }
+            }
             # [F10-2 §2.2] real path latency to the dashboard client, measured by
             # the rdp-ping loop (tailscale ping every 15s against the dash-token
             # source peer); surfaced only when the sample is fresh (<45s).
@@ -631,6 +676,7 @@ function Invoke-ClientRequest {
                 tsAuthAdminUrl = $tsAdmin
                 vpsPending = $vpsPending
                 rdpLogonAgeSec = $rdpLogonAgeSec
+                rdpUsageSec = $rdpUsageSec
                 pingMs = $rdpPingMs
                 pingPath = $rdpPingPath
                 pingTarget = $rdpPingTarget
