@@ -58,7 +58,16 @@ jobs:
           # GHRDP_LAB_KEEP_RDP=1 keeps the temp .rdp so the lab can PROVE its
           # directives (it carries no credential lines - see F10-1).
           $env:GHRDP_LAB_KEEP_RDP = '1'
-          $p = Start-Process -FilePath $exe -ArgumentList ('ghrdp://rdp?server=' + $fqdn + '&user=labuser') -PassThru -Wait
+          # [F10-9] Start-Process -Wait waits for DESCENDANTS too: the launcher
+          # spawns mstsc, and mstsc has no console on a headless runner, so -Wait
+          # blocked forever (run 36147990362 wedged in this step). Wait on the
+          # LAUNCHER PID with a bounded timeout instead, then reap mstsc here.
+          $p = Start-Process -FilePath $exe -ArgumentList ('ghrdp://rdp?server=' + $fqdn + '&user=labuser') -PassThru
+          if (-not $p.WaitForExit(90000)) {
+              Write-Host '[B/C] FAIL: launcher did not exit within 90s'
+              try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }
+              exit 1
+          }
           if ($p.ExitCode -ne 0) { Write-Host ('[B/C] FAIL: launcher exit ' + $p.ExitCode); exit 1 }
           $rdp = Get-ChildItem (Join-Path $env:TEMP 'ghrdp-*.rdp') | Select-Object -First 1
           if (-not $rdp) { Write-Host '[B/C] FAIL: temp rdp not written'; exit 1 }
@@ -84,6 +93,14 @@ jobs:
           # REAL path posts to <fqdn>:7331 which the stub cannot impersonate,
           # so a loopback variant is proven in step D with the real server).
           & cmdkey.exe /delete:TERMSRV/$fqdn | Out-Null
+          # [F10-9] reap the headless mstsc we spawned (it can never connect to
+          # the fake lab fqdn) so the step cannot wedge and no orphan holds the
+          # runner; the proof above already captured its command line.
+          $reaped = 0
+          foreach ($mp in (Get-CimInstance Win32_Process -Filter "Name='mstsc.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ghrdp-*.rdp*' })) {
+              try { Stop-Process -Id $mp.ProcessId -Force -ErrorAction Stop; $reaped++ } catch { }
+          }
+          Write-Host ('[B/C] mstsc reaped: ' + $reaped)
           Remove-Item $rdp.FullName -Force -ErrorAction SilentlyContinue
           Write-Host '[B/C] PASS: 14 directives exact, no cred/resolution lines, mstsc cmdline carries the local rdp, cleanup ok'
           'BC_result=pass' | Out-File $env:GITHUB_ENV -Append
