@@ -145,6 +145,12 @@ jobs:
           #    (proven by the first lab run: 'rootDirectory ... is not a parent
           #    directory of the file C:\ghrdp\webdesk\websockify.log').
           webdesk_all=$(awk '/Web desktop \(noVNC/{f=1} /Start Mission Control dashboard EARLY/{f=0} f' "$WF" | grep -vE '^[[:space:]]*#')
+          echo "::notice::F9n-DBG lines=$(printf '%s' "$webdesk_all" | wc -l)"
+          echo "::notice::F9n-DBG newnet=$(printf '%s' "$webdesk_all" | grep -c 'New-NetFirewallRule' || true)"
+          echo "::notice::F9n-DBG ghrdp=$(printf '%s' "$webdesk_all" | grep -c 'GHRDP-Webdesk' || true)"
+          echo "::notice::F9n-DBG reasonw=$(printf '%s' "$webdesk_all" | grep -c "Set-WebdeskCfg ''" || true)"
+          echo "::notice::F9n-DBG filelines=$(wc -l < .github/workflows/main.yml)"
+          echo "::notice::F9n-DBG filenewnet=$(grep -c 'New-NetFirewallRule' .github/workflows/main.yml || true)"
           if ! printf '%s' "$webdesk_all" | grep -q 'actions/upload-artifact'; then
             echo 'web-desktop steps do not upload the diagnostics artifact' >&2
             exit 1
