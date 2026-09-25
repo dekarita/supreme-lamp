@@ -1065,33 +1065,44 @@ jobs:
       #
       # [U5c / MIGRATION 1.10] Web desktop reintroduced ONLY in the password-required + tailnet-only
       # form. Credentials remain required (TightVNC control + view password from repo secret VNC_PASS,
-      # never echoed to logs/summary), and exposure is limited to the tailnet via `tailscale serve` on
-      # 127.0.0.1:7333. No public port, no funnel, no anonymous access. Every skip is LOUD
+      # never echoed to logs/summary), and exposure is limited to the tailnet: websockify binds
+      # the tailnet IP on 7333 (firewall CGNAT-only). No public port, no funnel, no anonymous access. Every skip is LOUD
       # (step summary + config.webdeskReason) so the dashboard button shows the
       # exact reason instead of a silent empty URL. The banned posture (no-auth VNC) stays banned.
+      #
+      # [F9n] `tailscale serve` is RETIRED from the web desktop path (repo-wide for webdesk, see
+      # MIGRATION section 1.10). Root cause, Tailscale 1.102.4, 2026-09-25: every post-connect LocalAPI
+      # call from the step context returns `401 Unauthorized: Tailscale already in use by
+      # NT AUTHORITY\SYSTEM` (the Windows SYSTEM service owns the connected node; the step-context CLI
+      # is locked out), so no serve mapping can ever be created or verified from this step. The web
+      # desktop is now plain tailnet HTTP: websockify on <rdpIp>:7333 (WireGuard-encrypted path) +
+      # the VNC password gate. This step makes ZERO tailscale CLI calls, so the 401 cannot recur here.
       #
       # [F9h] EXCEPTION to "run never fails": a MISSING VNC_PASS secret is now fail-CLOSED.
       # The step throws before any install command, so the run fails by design with a direct
       # link to the secrets page instead of silently deploying a run whose web desktop can
-      # never come up. Operational skips below (install/clone/bind/serve failures) remain
-      # non-fatal loud skips — those are runtime conditions, not a misconfigured repo.
-      - name: Web desktop (noVNC + TightVNC, tailnet-only via tailscale serve)
+      # never come up. Operational failures below (install/clone/bind/firewall) throw
+      # fail-closed — a green run with a dead web desktop is a false-LIVE (F9i).
+      - name: Web desktop (noVNC + TightVNC, tailnet-only HTTP on the tailnet IP)
         env:
           VNC_PASS: ${{ secrets.VNC_PASS }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
           $S = $env:GITHUB_STEP_SUMMARY
-          $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+          # [F9n] No tailscale CLI handle: this step reads the tailnet IP from
+          # config.json (written pre-lock by the stage step) and never shells
+          # out to tailscale, so the SYSTEM-operator 401 cannot recur here.
           $vp = [string]$env:VNC_PASS
           # [F8c] LOUD skips: every early exit records config.webdeskReason so
           # /api/native-status can explain the disabled button. [F9i] A
-          # present-but-short secret is a non-fatal skip (U5c); a startup/serve
+          # present-but-short secret is a non-fatal skip (U5c); a startup
           # failure THROWS (fail-closed) - a green run with a dead web desktop
           # is a false-LIVE.
           $cfgPathW = 'C:\ghrdp\config.json'
           # [F9i] $Detail is a fixed, secret-free sub-cause code (tightvnc-install,
-          # novnc-assets, websockify-bind, serve-mapping, self-test-failed) so the
+          # novnc-assets, websockify-bind, tailnet-ip-unavailable, firewall-rule,
+          # self-test-failed) so the
           # dashboard can name the exact failure. Never installer args, never
           # exception text - those may carry the secret.
           function Set-WebdeskCfg([string]$Url, [string]$Reason, [string]$Detail = '') {
@@ -1156,6 +1167,23 @@ jobs:
               Set-WebdeskCfg '' 'vnc-pass-too-short'
               exit 0
           }
+          # [F9n] Tailnet IP source: config.json .rdpIp ONLY (written pre-lock by
+          # the stage step). The step-context tailscale CLI is locked out post-connect
+          # (401: node owned by NT AUTHORITY\SYSTEM), so `tailscale ip` is never
+          # called here. No valid CGNAT address => fail closed (no fabrication).
+          $rdpIp = ''
+          try {
+              $cfgR = [System.IO.File]::ReadAllText($cfgPathW) | ConvertFrom-Json
+              if ($cfgR -and $cfgR.rdpIp) { $rdpIp = ([string]$cfgR.rdpIp).Trim() }
+          } catch { $rdpIp = '' }
+          if ($rdpIp -notmatch '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') {
+              Write-Host '[webdesk] tailnet IP unavailable in config.json (expected CGNAT 100.64-127.x.x); refusing to fabricate a URL. Halted by design.'
+              if ($S) { '### Web desktop DISABLED (tailnet IP unavailable - no URL fabricated)' | Add-Content -Path $S }
+              if ($S) { 'config.json .rdpIp is missing or not a tailnet address. Re-dispatch the workflow for a fresh ephemeral host.' | Add-Content -Path $S }
+              Set-WebdeskCfg '' 'serve-failed' 'tailnet-ip-unavailable'
+              throw 'Web desktop not deployed: tailnet-ip-unavailable. Halted by design. See Step Summary.'
+          }
+          Write-Host ('[webdesk] tailnet IP from config.json = ' + $rdpIp)
           # Install TightVNC via chocolatey (preinstalled on windows-latest). Password is passed as
           # an installer package parameter that goes to msiexec briefly and never touches our logs.
           $inst = $false
@@ -1220,24 +1248,30 @@ jobs:
               Start-Sleep -Seconds 1
           }
           if (-not $vncUp) { Write-Host '[webdesk] VNC 5900 did not reach LISTEN in 30s' }
-          # Start websockify on 127.0.0.1:7333, bridging to 127.0.0.1:5900, serving noVNC.
-          # [F9l-1] Idempotent websockify launcher. THE SAME TEXT IS DEFINED IN
-          # THE DEPLOY STEP AND IN THE SELF-TEST STEP - the F9l-5 launch gate
-          # diffs the two copies, so edit both or neither.
+          # Start websockify on <rdpIp>:7333, bridging to 127.0.0.1:5900, serving noVNC.
+          # [F9n] Idempotent websockify launcher (tailnet-IP bind; serve retired).
+          # THE SAME TEXT IS DEFINED IN THE DEPLOY STEP AND IN THE SELF-TEST STEP -
+          # the launch gate diffs the two copies, so edit both or neither.
           # Contract: kill any stale python process serving/targeting 7333, start
-          # websockify on 127.0.0.1:7333 (noVNC dir -> VNC 127.0.0.1:5900) with
+          # websockify on <BindIp>:7333 (noVNC dir -> VNC 127.0.0.1:5900) with
           # PAIRED redirect files, then wait up to $TimeoutSec for a LISTEN socket
-          # on LocalAddress 127.0.0.1 + LocalPort 7333 SPECIFICALLY (an
-          # all-interfaces or IPv6 listener is NOT this backend). Returns [bool]
-          # $true only when that loopback listener is up.
+          # on LocalAddress <BindIp> + LocalPort 7333 SPECIFICALLY (any other
+          # interface, including loopback or 0.0.0.0, is NOT this backend).
+          # Returns [bool] $true only when that tailnet listener is up.
+          # $BindIp MUST be a CGNAT tailnet address (100.64-127.x.x): loopback,
+          # wildcard and public binds are refused (fail-closed $false).
           # [F9i] -RedirectStandardOutput and -RedirectStandardError MUST name two
           # DIFFERENT files: Windows opens each redirect target exclusively
           # (FileShare.None), so pointing both at one file makes Start-Process
           # throw BEFORE python starts - websockify then never binds 7333 and the
           # run degrades to 'serve-failed'. websockify never receives the VNC
-          # password, so neither log can carry it (argument list = dir + loopback
-          # ports + module name only).
-          function Start-Websockify([int]$TimeoutSec = 20, [string]$NoVncDir = 'C:\ghrdp\novnc') {
+          # password, so neither log can carry it (argument list = dir + tailnet
+          # bind + loopback VNC target + module name only).
+          function Start-Websockify([int]$TimeoutSec = 20, [string]$NoVncDir = 'C:\ghrdp\novnc', [string]$BindIp = '') {
+              if ($BindIp -notmatch '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') {
+                  Write-Host '[webdesk] Start-Websockify: refusing to bind a non-tailnet address.'
+                  return $false
+              }
               $wsDir = 'C:\ghrdp\webdesk'
               $wsLog = Join-Path $wsDir 'websockify.log'
               $wsErr = Join-Path $wsDir 'websockify.err.log'
@@ -1250,27 +1284,27 @@ jobs:
                       ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
               } catch { }
               for ($i = 0; $i -lt 10; $i++) {
-                  $still = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+                  $still = Get-NetTCPConnection -LocalAddress $BindIp -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
                   if (-not $still) { break }
                   Start-Sleep -Milliseconds 500
               }
               # 2) start (paired redirect files - never the same file twice).
               try {
-                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, '127.0.0.1:7333', '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
+                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, ($BindIp + ':7333'), '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
               } catch {
                   Write-Host ('[webdesk] websockify start failed: ' + $_.Exception.Message)
                   return $false
               }
-              # 3) wait for LISTEN on 127.0.0.1:7333 specifically.
+              # 3) wait for LISTEN on <BindIp>:7333 specifically.
               for ($i = 0; $i -lt $TimeoutSec; $i++) {
-                  $c = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+                  $c = Get-NetTCPConnection -LocalAddress $BindIp -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
                   if ($c) { return $true }
                   Start-Sleep -Seconds 1
               }
               return $false
           }
-          $wsUp = Start-Websockify
-          Write-Host ('[webdesk] websockify 127.0.0.1:7333 LISTEN after Start-Websockify: ' + $wsUp)
+          $wsUp = Start-Websockify -BindIp $rdpIp
+          Write-Host ('[webdesk] websockify ' + $rdpIp + ':7333 LISTEN after Start-Websockify: ' + $wsUp)
           if (-not $wsUp) {
               # [F9i] fail-closed (see tightvnc-install block above). The
               # .log/.err files under C:\ghrdp\webdesk are host-local only and
@@ -1280,223 +1314,47 @@ jobs:
               if ($S) { '### Web desktop DISABLED (websockify did not bind 7333)' | Add-Content -Path $S }
               if ($S) { 'Inspect C:\ghrdp\webdesk\websockify.log and websockify.err.log on the host for the websockify error, then re-dispatch the workflow.' | Add-Content -Path $S }
               Set-WebdeskCfg '' 'serve-failed' 'websockify-bind'
-              throw 'Web desktop not deployed: websockify did not bind 127.0.0.1:7333. Halted by design. See Step Summary.'
+              throw ('Web desktop not deployed: websockify did not bind ' + $rdpIp + ':7333. Halted by design. See Step Summary.')
           }
-          # Expose ONLY on the tailnet.
-          # [F8c] Backend is plaintext HTTP (websockify has no TLS), so the target
-          # MUST be http:// - tailscaled terminates tailnet TLS itself; an
-          # https:// target means TLS-to-plaintext (502 on every hit).
-          # [F9j] serve-mapping hardening (failed-run post-mortem): the old code
-          # swallowed the serve command's exit code and output, and built the
-          # URL from the RAW `serve status --json` Web key. Current Tailscale
-          # keys Web by '<host>.ts.net:<port>', so the advertised URL carried
-          # ':443' - which the dashboard's port-less URL validator rejects
-          # (green run, dead WEB DESKTOP button = false LIVE). Now: (1) the URL
-          # is derived only from a VERIFIED mapping and normalized to the
-          # default port (no ':443'); (2) the serve command is retried once in
-          # explicit-port form and its exit code is printed; (3) on failure the
-          # serve log tail and raw serve status are printed - all secret-free
-          # (VNC_PASS is never passed to tailscale) - so the next re-dispatch
-          # is diagnosable from the log alone.
-          function Get-WebdeskServeUrl {
-              # Returns 'https://<host>.ts.net[/<path>]' (default port, no
-              # explicit ':443') for the REAL serve mapping whose proxy targets
-              # 127.0.0.1:7333, or '' when none exists. Handles both Web key
-              # schemas: '<host>.ts.net:<port>' (current releases) and bare
-              # '<port>' (older releases; host resolved from Self.DNSName).
-              try {
-                  $ss = ((& $ts serve status --json 2>$null) -join "`n") | ConvertFrom-Json
-                  if ($ss -and $ss.Web) {
-                      foreach ($k in $ss.Web.PSObject.Properties.Name) {
-                          $entry = $ss.Web.$k
-                          if ($entry -and $entry.Handlers) {
-                              foreach ($hk in $entry.Handlers.PSObject.Properties.Name) {
-                                  $h = $entry.Handlers.$hk
-                                  if ($h.Proxy -and ([string]$h.Proxy -match '127\.0\.0\.1:7333')) {
-                                      $hostPart = [string]$k
-                                      $portPart = ''
-                                      if ($hostPart -match '^([a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)*\.ts\.net):([0-9]+)$') {
-                                          $hostPart = $Matches[1]; $portPart = $Matches[3]
-                                      } elseif ($hostPart -match '^([0-9]+)$') {
-                                          $portPart = $Matches[1]
-                                          try { $hostPart = ([string](((& $ts status --json 2>$null) -join "`n") | ConvertFrom-Json).Self.DNSName).TrimEnd('.') } catch { $hostPart = '' }
-                                      }
-                                      # The dashboard accepts only https URLs on the default
-                                      # port (explicit ports fail its validation), and a host
-                                      # that is not the node's *.ts.net name is not
-                                      # advertisable - both are treated as NO mapping
-                                      # (no false LIVE, no fabricated URL).
-                                      if ($portPart -and $portPart -ne '443') { return '' }
-                                      if ($hostPart -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') { return '' }
-                                      $p = [string]$hk
-                                      if ($p -eq '') { $p = '/' } elseif ($p -notlike '/%') { $p = '/' + $p }
-                                      return 'https://' + $hostPart + $p
-                                  }
-                              }
-                          }
-                      }
-                  }
-              } catch { }
-              return ''
-          }
-          # [F9m] serve root-cause instrumentation + documented-form cascade.
-          # Evidence from the F9l live run (Tailscale 1.102.4, verbatim):
-          #   [webdesk] tailscale serve --bg http://127.0.0.1:7333 -> exit 1
-          #   [webdesk] tailscale serve --bg --https=443 http://127.0.0.1:7333 -> exit 1
-          #   [webdesk] tailscale serve --bg 7333 -> exit 1
-          #   [webdesk] tailscale serve --bg 443 http://127.0.0.1:7333 -> exit 1
-          #   [webdesk] serve output tail: Error: invalid argument format |
-          #   try `tailscale serve --help` for usage info
-          # F9l reused ONE log file across attempts, so only the LAST attempt's
-          # output survived - the first three failures were invisible. The CLI
-          # source (cmd/tailscale/cli/serve_v2.go @ v1.102.4, validateArgs) has
-          # exactly two emitters of that string:
-          #   - 'e.tun && len(args) > 1' (not our case), and
-          #   - 'len(args) == 2 && args[len(args)-1] != "off"' - the modern CLI
-          #     accepts ONE positional target (plus an optional literal 'off'),
-          #     so the pre-1.52 legacy pair ('443 <url>') can NEVER work here and
-          #     its message is a red herring. Per-attempt output is mandatory.
-          # Documented contract (docs validated 2026-01-26 + the v1.102.4
-          # source): 'tailscale serve [flags] <target>' with --bg, --https=<port>
-          # (default 443), --http=<port>, --set-path, --tcp, --yes ("update
-          # without interactive prompts") and a target that may be a port
-          # ('7333'), a partial URL ('localhost:7333') or a full URL
-          # ('http://127.0.0.1:7333' - tailscaled terminates tailnet TLS, so the
-          # backend stays plaintext HTTP). Every form below is documented; the
-          # legacy pair stays LAST so pre-1.52 runner CLIs are still covered.
-          # (Supersedes the [F9l] 4-form cascade: same verified-mapping contract,
-          # plus per-attempt output, the documented --yes / partial-URL forms and
-          # the set-raw last resort.) No URL is ever invented: every path still
-          # converges on the single fail-closed 'serve-mapping' block below, and
-          # VNC_PASS is never passed to tailscale.
-          $serveUrl = ''
-          $serveLog = Join-Path $env:RUNNER_TEMP 'ts-serve-webdesk.log'
-          try { Write-Host ('[webdesk] tailscale version: ' + ((& $ts version 2>$null | Select-Object -First 1) -join ' ')) } catch { }
+          # [F9n] Tailnet-only exposure WITHOUT serve: websockify already binds
+          # the tailnet address; Windows Firewall scopes inbound TCP 7333 to the
+          # CGNAT range so only tailnet peers can reach it. Idempotent: the
+          # same-name rule is removed first (re-dispatch on a warm host).
           try {
-              Set-Content -LiteralPath $serveLog -Value '' -ErrorAction SilentlyContinue
-              $helpTxt = (& $ts serve --help 2>&1 | Select-Object -First 40 | ForEach-Object { [string]$_ }) -join ' | '
-              Write-Host ('[webdesk] serve --help: ' + $helpTxt)
-          } catch { Write-Host ('[webdesk] serve --help probe failed: ' + $_.Exception.Message) }
-          $serveForms = @(
-              @('--bg', 'http://127.0.0.1:7333'),                         # post-1.52: URL target, default https=443
-              @('--bg', '--yes', 'http://127.0.0.1:7333'),                # post-1.52: non-interactive (CI has no TTY)
-              @('--bg', '--https=443', 'http://127.0.0.1:7333'),          # post-1.52: explicit https listen port
-              @('--bg', '--yes', '--https=443', 'http://127.0.0.1:7333'), # post-1.52: explicit port + non-interactive
-              @('--bg', 'localhost:7333'),                                # post-1.52: documented partial-URL target
-              @('--bg', '7333'),                                          # post-1.52: documented port-number target
-              @('--bg', '443', 'http://127.0.0.1:7333')                   # pre-1.52 legacy (DEAD on 1.52+; kept last)
-          )
-          $serveAttempt = 0
-          foreach ($serveArgs in $serveForms) {
-              $serveAttempt++
-              $serveExit = -1
-              $attemptOut = ''
-              try {
-                  $attemptOut = (& $ts serve @serveArgs 2>&1 | ForEach-Object { [string]$_ }) -join ' | '
-                  $serveExit = $LASTEXITCODE
-                  $LASTEXITCODE = 0
-              } catch { $attemptOut = 'attempt error: ' + $_.Exception.Message }
-              if ($vp) { $attemptOut = $attemptOut -replace [regex]::Escape($vp), '[redacted]' }
-              Write-Host ('[webdesk] tailscale serve {0} -> exit {1}' -f ($serveArgs -join ' '), $serveExit)
-              if ($attemptOut) { Write-Host ('[webdesk] serve output: ' + $attemptOut) }
-              try {
-                  Add-Content -LiteralPath $serveLog -Value ('=== attempt {0}: tailscale serve {1} -> exit {2}' -f $serveAttempt, ($serveArgs -join ' '), $serveExit) -ErrorAction SilentlyContinue
-                  if ($attemptOut) { Add-Content -LiteralPath $serveLog -Value $attemptOut -ErrorAction SilentlyContinue }
-              } catch { }
-              $serveUrl = Get-WebdeskServeUrl
-              if ($serveUrl) { break }
-              Start-Sleep -Seconds 3
+              Get-NetFirewallRule -DisplayName 'GHRDP-Webdesk' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+              New-NetFirewallRule -DisplayName 'GHRDP-Webdesk' -Direction Inbound -Protocol TCP -LocalPort 7333 -RemoteAddress '100.64.0.0/10' -Action Allow -Profile Any -Enabled True -ErrorAction Stop | Out-Null
+              Write-Host '[webdesk] firewall: GHRDP-Webdesk inbound TCP 7333 from 100.64.0.0/10 ALLOW'
+          } catch {
+              Write-Host ('[webdesk] firewall rule failed: ' + $_.Exception.Message)
+              if ($S) { '### Web desktop DISABLED (firewall rule failed)' | Add-Content -Path $S }
+              if ($S) { 'Re-dispatch the workflow for a fresh ephemeral host.' | Add-Content -Path $S }
+              Set-WebdeskCfg '' 'serve-failed' 'firewall-rule'
+              throw 'Web desktop not deployed: firewall-rule. Halted by design. See Step Summary.'
           }
-          # [F9m] last resort: the CLI's own raw-config path (serve_v2.go
-          # runServeCombined: 'serve set-raw' reads an ipn.ServeConfig JSON from
-          # stdin and calls SetServeConfig, bypassing flag parsing). Still only
-          # an ATTEMPT - the mapping is re-read from the CLI and a wrong schema
-          # yields no mapping, so this can never fabricate a LIVE URL.
-          if (-not $serveUrl) {
-              try {
-                  $stRaw = ((& $ts status --json 2>$null) -join "`n") | ConvertFrom-Json
-                  $rawDns = [string]$stRaw.Self.DNSName
-                  $rawDns = $rawDns.TrimEnd('.')
-                  if ($rawDns -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
-                      $rawJson = @{
-                          TCP = @{ '443' = @{ HTTPS = $true } }
-                          Web = @{ ($rawDns + ':443') = @{ Handlers = @{ '/' = @{ Proxy = 'http://127.0.0.1:7333' } } } }
-                      } | ConvertTo-Json -Depth 10 -Compress
-                      $rawOut = ($rawJson | & $ts serve set-raw 2>&1 | ForEach-Object { [string]$_ }) -join ' | '
-                      if ($vp) { $rawOut = $rawOut -replace [regex]::Escape($vp), '[redacted]' }
-                      Write-Host ('[webdesk] serve set-raw output: ' + $rawOut)
-                      try { Add-Content -LiteralPath $serveLog -Value ('=== serve set-raw output: ' + $rawOut) -ErrorAction SilentlyContinue } catch { }
-                  } else {
-                      Write-Host '[webdesk] serve set-raw skipped: Self.DNSName is not a *.ts.net name'
-                  }
-              } catch { Write-Host ('[webdesk] serve set-raw attempt error: ' + $_.Exception.Message) }
-              Start-Sleep -Seconds 3
-              $serveUrl = Get-WebdeskServeUrl
-          }
-          # [F9m] actionable hint: serve's HTTPS modes call enableFeatureInteractive
-          # first, and tailnet HTTPS certificate provisioning is a SEPARATE toggle
-          # from MagicDNS (admin console -> DNS -> HTTPS Certificates).
-          if (-not $serveUrl) {
-              try {
-                  $trTxt = (Get-Content -LiteralPath $serveLog -ErrorAction SilentlyContinue) -join ' '
-                  if ($trTxt -match '(?i)(https|tls)[^|]{0,40}(enabl|cert|provision|not set)|cert[^|]{0,20}provision') {
-                      Write-Host '[webdesk] HINT: serve reports a tailnet HTTPS/certificate problem - open https://login.tailscale.com/admin/dns, enable HTTPS Certificates, then re-dispatch.'
-                      if ($S) { 'Web desktop serve hint: enable HTTPS Certificates at https://login.tailscale.com/admin/dns, then re-dispatch.' | Add-Content -Path $S }
-                  }
-              } catch { }
-          }
-          # [F8c] NO fallback URL fabrication: without a real serve mapping
-          # there is no reachable URL, and guessing one is a false LIVE.
-          if ($serveUrl -and -not ($serveUrl.EndsWith('/'))) { $serveUrl = $serveUrl + '/' }
-          if ($serveUrl) { $serveUrl = $serveUrl + 'vnc.html?autoconnect=1&resize=remote' }
-          if (-not $serveUrl) {
-              # [F9j] diagnostics BEFORE halting (secret-free: tailscale's own
-              # output; VNC_PASS is never passed to tailscale).
-              try {
-                  $diagTail = (Get-Content -LiteralPath $serveLog -ErrorAction SilentlyContinue | Select-Object -Last 25) -join ' | '
-                  if ($diagTail) {
-                      if ($vp) { $diagTail = $diagTail -replace [regex]::Escape($vp), '[redacted]' }
-                      Write-Host ('[webdesk] serve output tail: ' + $diagTail)
-                  }
-              } catch { }
-              try { Write-Host ('[webdesk] serve status: ' + ((& $ts serve status 2>$null) -join ' ')) } catch { }
-              try { Write-Host ('[webdesk] serve status --json: ' + ((& $ts serve status --json 2>$null) -join ' ')) } catch { }
-              try { Write-Host ('[webdesk] tailscale state: ' + ((& $ts status 2>$null | Select-Object -First 3) -join ' ')) } catch { }
-              # [F9i] fail-closed (see tightvnc-install block above). The
-              # serve status JSON is re-checked once after a 5s settle before
-              # halting, so a slow serve registration cannot false-fail the
-              # step; if it still has no mapping the run halts by design.
-              try {
-                  Start-Sleep -Seconds 5
-                  $settle = Get-WebdeskServeUrl
-                  if ($settle -and -not ($settle.EndsWith('/'))) { $settle = $settle + '/' }
-                  if ($settle) { $serveUrl = $settle + 'vnc.html?autoconnect=1&resize=remote' }
-              } catch { }
-              if (-not $serveUrl) {
-                  Write-Host '[webdesk] tailscale serve produced no mapping for 127.0.0.1:7333; web desktop DISABLED. Halted by design. See [webdesk] diagnostics above.'
-                  if ($S) { '### Web desktop DISABLED (tailscale serve produced no URL)' | Add-Content -Path $S }
-                  if ($S) { 'Serve exit code, output and status are printed in this step log above (secret-free). Re-dispatch the workflow for a fresh ephemeral host.' | Add-Content -Path $S }
-                  Set-WebdeskCfg '' 'serve-failed' 'serve-mapping'
-                  throw 'Web desktop not deployed: tailscale serve produced no tailnet mapping. Halted by design. See Step Summary.'
-              }
-          }
+          # [F9n] The advertised URL is built directly from the validated tailnet
+          # IP - no serve mapping to verify, no fabrication beyond the validated
+          # config value. The VNC password gate stays: the browser must still
+          # authenticate to TightVNC through this URL.
+          $webdeskUrl = 'http://' + $rdpIp + ':7333/vnc.html?autoconnect=1&resize=remote'
           # Write config.webdeskUrl + clear webdeskReason (safe: no password in URL).
           # Server re-reads config per request (F8a), so it sees this immediately.
-          Set-WebdeskCfg $serveUrl ''
-          Write-Host ('[webdesk] serve URL = ' + $serveUrl)
-          # [F9l-3] diagnostics payload (secret-free) for the 'webdesk-diag'
-          # artifact: the served mapping as the host sees it, plus a one-line
-          # deploy record. VNC_PASS is never passed to tailscale.
+          Set-WebdeskCfg $webdeskUrl ''
+          Write-Host ('[webdesk] web desktop URL = ' + $webdeskUrl)
+          # [F9n] diagnostics payload (secret-free) for the 'webdesk-diag'
+          # artifact: the advertised URL, the bind result and the firewall rule
+          # as the host sees them, plus a one-line deploy record.
           try {
               $diagDir = Join-Path $env:RUNNER_TEMP 'webdesk-diag'
               New-Item -ItemType Directory -Path $diagDir -Force -ErrorAction SilentlyContinue | Out-Null
-              Add-Content -LiteralPath (Join-Path $diagDir 'deploy-verbose.txt') -Value ('serveUrl=' + $serveUrl + ' websockifyListen1333=' + $wsUp) -ErrorAction SilentlyContinue
-              ((& $ts serve status --json 2>$null) -join "`n") | Set-Content -LiteralPath (Join-Path $diagDir 'serve-status.json') -ErrorAction SilentlyContinue
+              Add-Content -LiteralPath (Join-Path $diagDir 'deploy-verbose.txt') -Value ('webdeskUrl=' + $webdeskUrl + ' websockifyListen7333=' + $wsUp) -ErrorAction SilentlyContinue
+              try { (Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction Stop | ForEach-Object { $_.LocalAddress + ':' + $_.LocalPort + '/' + $_.OwningProcess } | Out-String) | Set-Content -LiteralPath (Join-Path $diagDir 'listener.txt') -ErrorAction SilentlyContinue } catch { }
+              try { (Get-NetFirewallRule -DisplayName 'GHRDP-Webdesk' -ErrorAction Stop | Out-String) | Set-Content -LiteralPath (Join-Path $diagDir 'firewall.txt') -ErrorAction SilentlyContinue } catch { }
           } catch { }
-          Write-Host ('::notice title=Webdesk deploy::websockify 127.0.0.1:7333 LISTEN=' + $wsUp + '; tailnet serve mapping verified: ' + [bool]$serveUrl)
+          Write-Host ('::notice title=Webdesk deploy::websockify ' + $rdpIp + ':7333 LISTEN=' + $wsUp + '; tailnet HTTP URL advertised: ' + [bool]$webdeskUrl)
           if ($S) {
               '### Web desktop LIVE (tailnet-only, VNC-password-gated)' | Add-Content -Path $S
-              ('URL: ' + $serveUrl) | Add-Content -Path $S
+              ('URL: ' + $webdeskUrl) | Add-Content -Path $S
+              'transport: tailnet HTTP (WireGuard-encrypted path) + VNC password gate; tailscale serve retired due to Windows SYSTEM operator lock (401)' | Add-Content -Path $S
               'Credentials: VNC password from repo secret VNC_PASS (never printed).' | Add-Content -Path $S
               'Diagnostics artifact: webdesk-diag (staged in the workspace + uploaded after the self-test; survives a halt).' | Add-Content -Path $S
           }
@@ -1545,23 +1403,29 @@ jobs:
               Write-Host $m
               try { Add-Content -LiteralPath $verbosePath -Value (((Get-Date).ToUniversalTime().ToString('o')) + ' ' + $m) -ErrorAction SilentlyContinue } catch { }
           }
-          # [F9l-1] Idempotent websockify launcher. THE SAME TEXT IS DEFINED IN
-          # THE DEPLOY STEP AND IN THE SELF-TEST STEP - the F9l-5 launch gate
-          # diffs the two copies, so edit both or neither.
+          # [F9n] Idempotent websockify launcher (tailnet-IP bind; serve retired).
+          # THE SAME TEXT IS DEFINED IN THE DEPLOY STEP AND IN THE SELF-TEST STEP -
+          # the launch gate diffs the two copies, so edit both or neither.
           # Contract: kill any stale python process serving/targeting 7333, start
-          # websockify on 127.0.0.1:7333 (noVNC dir -> VNC 127.0.0.1:5900) with
+          # websockify on <BindIp>:7333 (noVNC dir -> VNC 127.0.0.1:5900) with
           # PAIRED redirect files, then wait up to $TimeoutSec for a LISTEN socket
-          # on LocalAddress 127.0.0.1 + LocalPort 7333 SPECIFICALLY (an
-          # all-interfaces or IPv6 listener is NOT this backend). Returns [bool]
-          # $true only when that loopback listener is up.
+          # on LocalAddress <BindIp> + LocalPort 7333 SPECIFICALLY (any other
+          # interface, including loopback or 0.0.0.0, is NOT this backend).
+          # Returns [bool] $true only when that tailnet listener is up.
+          # $BindIp MUST be a CGNAT tailnet address (100.64-127.x.x): loopback,
+          # wildcard and public binds are refused (fail-closed $false).
           # [F9i] -RedirectStandardOutput and -RedirectStandardError MUST name two
           # DIFFERENT files: Windows opens each redirect target exclusively
           # (FileShare.None), so pointing both at one file makes Start-Process
           # throw BEFORE python starts - websockify then never binds 7333 and the
           # run degrades to 'serve-failed'. websockify never receives the VNC
-          # password, so neither log can carry it (argument list = dir + loopback
-          # ports + module name only).
-          function Start-Websockify([int]$TimeoutSec = 20, [string]$NoVncDir = 'C:\ghrdp\novnc') {
+          # password, so neither log can carry it (argument list = dir + tailnet
+          # bind + loopback VNC target + module name only).
+          function Start-Websockify([int]$TimeoutSec = 20, [string]$NoVncDir = 'C:\ghrdp\novnc', [string]$BindIp = '') {
+              if ($BindIp -notmatch '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') {
+                  Write-Host '[webdesk] Start-Websockify: refusing to bind a non-tailnet address.'
+                  return $false
+              }
               $wsDir = 'C:\ghrdp\webdesk'
               $wsLog = Join-Path $wsDir 'websockify.log'
               $wsErr = Join-Path $wsDir 'websockify.err.log'
@@ -1574,20 +1438,20 @@ jobs:
                       ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
               } catch { }
               for ($i = 0; $i -lt 10; $i++) {
-                  $still = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+                  $still = Get-NetTCPConnection -LocalAddress $BindIp -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
                   if (-not $still) { break }
                   Start-Sleep -Milliseconds 500
               }
               # 2) start (paired redirect files - never the same file twice).
               try {
-                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, '127.0.0.1:7333', '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
+                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, ($BindIp + ':7333'), '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
               } catch {
                   Write-Host ('[webdesk] websockify start failed: ' + $_.Exception.Message)
                   return $false
               }
-              # 3) wait for LISTEN on 127.0.0.1:7333 specifically.
+              # 3) wait for LISTEN on <BindIp>:7333 specifically.
               for ($i = 0; $i -lt $TimeoutSec; $i++) {
-                  $c = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+                  $c = Get-NetTCPConnection -LocalAddress $BindIp -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
                   if ($c) { return $true }
                   Start-Sleep -Seconds 1
               }
