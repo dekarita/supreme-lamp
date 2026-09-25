@@ -36,10 +36,14 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $mtx = Join-Path $env:RUNNER_TEMP 'lab-matrix.txt'
+          trap { $m = (($_ | Out-String) -replace '[\r\n]+', ' ').Trim(); Write-Host "::error::lab-A $m"; "a) FAIL $m" | Add-Content -Path $mtx; exit 1 }
           $t0 = Get-Date
           # Double-click simulation: cmd /c with piped stdin for the final pause.
-          & cmd.exe /c "echo.| call payloads\install.cmd"
-          if ($LASTEXITCODE -ne 0) { throw "install.cmd exited $LASTEXITCODE" }
+          $instLog = Join-Path $env:RUNNER_TEMP 'install.cmd.log'
+          & cmd.exe /c "echo.| call payloads\install.cmd" *> $instLog
+          $instCode = $LASTEXITCODE
+          if (Test-Path -LiteralPath $instLog) { Get-Content -LiteralPath $instLog | ForEach-Object { Write-Host "[install.cmd] $_" } }
+          if ($instCode -ne 0) { throw "install.cmd exited $instCode (csc/reg output above)" }
           $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
           if (-not (Test-Path -LiteralPath $exe)) { throw 'compiled launcher missing' }
           if ((Get-Item -LiteralPath $exe).Length -lt 10000) { throw 'compiled launcher too small' }
@@ -61,6 +65,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $mtx = Join-Path $env:RUNNER_TEMP 'lab-matrix.txt'
+          trap { $m = (($_ | Out-String) -replace '[\r\n]+', ' ').Trim(); Write-Host "::error::lab-B $m"; "b/c) FAIL $m" | Add-Content -Path $mtx; exit 1 }
           $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
           $helloFile = Join-Path $env:RUNNER_TEMP 'hello-capture.txt'
           Remove-Item -LiteralPath $helloFile -Force -ErrorAction SilentlyContinue
@@ -161,6 +166,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $mtx = Join-Path $env:RUNNER_TEMP 'lab-matrix.txt'
+          trap { $m = (($_ | Out-String) -replace '[\r\n]+', ' ').Trim(); Write-Host "::error::lab-D $m"; "d/e) FAIL $m" | Add-Content -Path $mtx; exit 1 }
           $root = Join-Path $env:RUNNER_TEMP 'labroot'
           New-Item -ItemType Directory -Path $root -Force | Out-Null
           $cfg = [ordered]@{
@@ -217,6 +223,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $mtx = Join-Path $env:RUNNER_TEMP 'lab-matrix.txt'
+          trap { $m = (($_ | Out-String) -replace '[\r\n]+', ' ').Trim(); Write-Host "::error::lab-F $m"; "f) FAIL $m" | Add-Content -Path $mtx; exit 1 }
           & 'payloads\Provision-BrowserPolicy.ps1' -MissionControlUrl 'http://127.0.0.1:7331' -Repo 'dekarita/supreme-lamp'
           if ($LASTEXITCODE -ne 0) { throw "Provision-BrowserPolicy.ps1 exited $LASTEXITCODE" }
           $v1 = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist' -Name '1' -ErrorAction Stop).'1'
