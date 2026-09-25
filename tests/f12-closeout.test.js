@@ -15,13 +15,14 @@ const resolver = fs.readFileSync('payloads/edge-ext-resolve.ps1', 'utf8');
 const apps = fs.readFileSync('payloads/ghrdp-provision-apps.ps1', 'utf8');
 const server = fs.readFileSync('payloads/ghrdp-server.ps1', 'utf8');
 
-test('F12-1 install.cmd: prints BEFORE/AFTER and verifies the overwrite', () => {
-  assert.match(installCmd, /handler BEFORE/);
-  assert.match(installCmd, /handler AFTER/);
-  assert.match(installCmd, /reg query "%KEY%" \/ve/);
-  assert.match(installCmd, /find \/i "%EXE%"/);           // readback verification
+test('F12-1/F13-1 install.cmd: user-held text prints BEFORE:/AFTER: and registers the exe', () => {
+  // [F13] the payload is now byte-faithful to the text the user holds.
+  assert.match(installCmd, /echo BEFORE: & reg query "HKCU\\Software\\Classes\\ghrdp\\shell\\open\\command" \/ve 2>nul/);
+  assert.match(installCmd, /echo AFTER: & reg query "HKCU\\Software\\Classes\\ghrdp\\shell\\open\\command" \/ve/);
   assert.match(installCmd, /HKCU\\Software\\Classes\\ghrdp/);
-  assert.match(installCmd, /ghrdp-launcher\.exe/);
+  assert.match(installCmd, /ghrdp-rdp-launcher\.exe/);
+  assert.match(installCmd, /\/target:winexe/);
+  assert.match(installCmd, /%%1/);                        // "<exe>" "%1" registration
   // no script-host EXECUTION token (the notice may NAME the old handler)
   assert.ok(!/powershell\.exe|-ExecutionPolicy|Invoke-Expression|-EncodedCommand/i.test(installCmd));
 });
