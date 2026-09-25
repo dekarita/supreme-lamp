@@ -1204,62 +1204,108 @@ jobs:
               throw 'Web desktop not deployed: websockify did not bind 127.0.0.1:7333. Halted by design. See Step Summary.'
           }
           # Expose ONLY on the tailnet.
-          $serveUrl = ''
-          try {
-              $serveLog = Join-Path $env:RUNNER_TEMP 'ts-serve-webdesk.log'
-              # [F8c] Backend is plaintext HTTP (websockify has no TLS), so the target
-              # MUST be http:// - tailscaled terminates tailnet TLS itself; an
-              # https:// target means TLS-to-plaintext (502 on every hit).
-              & $ts serve --bg http://127.0.0.1:7333 2>&1 | Tee-Object -FilePath $serveLog | Out-Null
-              $LASTEXITCODE = 0
+          # [F8c] Backend is plaintext HTTP (websockify has no TLS), so the target
+          # MUST be http:// - tailscaled terminates tailnet TLS itself; an
+          # https:// target means TLS-to-plaintext (502 on every hit).
+          # [F9j] serve-mapping hardening (failed-run post-mortem): the old code
+          # swallowed the serve command's exit code and output, and built the
+          # URL from the RAW `serve status --json` Web key. Current Tailscale
+          # keys Web by '<host>.ts.net:<port>', so the advertised URL carried
+          # ':443' - which the dashboard's port-less URL validator rejects
+          # (green run, dead WEB DESKTOP button = false LIVE). Now: (1) the URL
+          # is derived only from a VERIFIED mapping and normalized to the
+          # default port (no ':443'); (2) the serve command is retried once in
+          # explicit-port form and its exit code is printed; (3) on failure the
+          # serve log tail and raw serve status are printed - all secret-free
+          # (VNC_PASS is never passed to tailscale) - so the next re-dispatch
+          # is diagnosable from the log alone.
+          function Get-WebdeskServeUrl {
+              # Returns 'https://<host>.ts.net[/<path>]' (default port, no
+              # explicit ':443') for the REAL serve mapping whose proxy targets
+              # 127.0.0.1:7333, or '' when none exists. Handles both Web key
+              # schemas: '<host>.ts.net:<port>' (current releases) and bare
+              # '<port>' (older releases; host resolved from Self.DNSName).
               try {
-                  $ss = (& $ts serve status --json 2>$null) | ConvertFrom-Json
+                  $ss = ((& $ts serve status --json 2>$null) -join "`n") | ConvertFrom-Json
                   if ($ss -and $ss.Web) {
                       foreach ($k in $ss.Web.PSObject.Properties.Name) {
                           $entry = $ss.Web.$k
                           if ($entry -and $entry.Handlers) {
                               foreach ($hk in $entry.Handlers.PSObject.Properties.Name) {
                                   $h = $entry.Handlers.$hk
-                                  if ($h.Proxy -and ($h.Proxy -match '127\.0\.0\.1:7333')) { $serveUrl = 'https://' + $k + $hk; break }
+                                  if ($h.Proxy -and ([string]$h.Proxy -match '127\.0\.0\.1:7333')) {
+                                      $hostPart = [string]$k
+                                      $portPart = ''
+                                      if ($hostPart -match '^([a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)*\.ts\.net):([0-9]+)$') {
+                                          $hostPart = $Matches[1]; $portPart = $Matches[3]
+                                      } elseif ($hostPart -match '^([0-9]+)$') {
+                                          $portPart = $Matches[1]
+                                          try { $hostPart = ([string](((& $ts status --json 2>$null) -join "`n") | ConvertFrom-Json).Self.DNSName).TrimEnd('.') } catch { $hostPart = '' }
+                                      }
+                                      # The dashboard accepts only https URLs on the default
+                                      # port (explicit ports fail its validation), and a host
+                                      # that is not the node's *.ts.net name is not
+                                      # advertisable - both are treated as NO mapping
+                                      # (no false LIVE, no fabricated URL).
+                                      if ($portPart -and $portPart -ne '443') { return '' }
+                                      if ($hostPart -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') { return '' }
+                                      $p = [string]$hk
+                                      if ($p -eq '') { $p = '/' } elseif ($p -notlike '/%') { $p = '/' + $p }
+                                      return 'https://' + $hostPart + $p
+                                  }
                               }
                           }
-                          if ($serveUrl) { break }
                       }
                   }
               } catch { }
-              # [F8c] NO fallback URL fabrication: without a real serve mapping
-              # there is no reachable URL, and guessing one is a false LIVE.
-              if ($serveUrl -and -not ($serveUrl.EndsWith('/'))) { $serveUrl = $serveUrl + '/' }
-              if ($serveUrl) { $serveUrl = $serveUrl + 'vnc.html?autoconnect=1&resize=remote' }
-          } catch { Write-Host ('[webdesk] tailscale serve failed: ' + $_.Exception.Message) }
+              return ''
+          }
+          $serveUrl = ''
+          $serveLog = Join-Path $env:RUNNER_TEMP 'ts-serve-webdesk.log'
+          # Two CLI forms of the same 443 mapping (implicit default port, then
+          # explicit '443'): one covers an arg-parsing quirk the other way.
+          foreach ($serveArgs in @(@('--bg', 'http://127.0.0.1:7333'), @('--bg', '443', 'http://127.0.0.1:7333'))) {
+              try {
+                  & $ts serve @serveArgs 2>&1 | Tee-Object -FilePath $serveLog | Out-Null
+                  $serveExit = $LASTEXITCODE
+                  $LASTEXITCODE = 0
+                  Write-Host ('[webdesk] tailscale serve {0} -> exit {1}' -f ($serveArgs -join ' '), $serveExit)
+              } catch { Write-Host ('[webdesk] tailscale serve attempt error: ' + $_.Exception.Message) }
+              $serveUrl = Get-WebdeskServeUrl
+              if ($serveUrl) { break }
+              Start-Sleep -Seconds 3
+          }
+          # [F8c] NO fallback URL fabrication: without a real serve mapping
+          # there is no reachable URL, and guessing one is a false LIVE.
+          if ($serveUrl -and -not ($serveUrl.EndsWith('/'))) { $serveUrl = $serveUrl + '/' }
+          if ($serveUrl) { $serveUrl = $serveUrl + 'vnc.html?autoconnect=1&resize=remote' }
           if (-not $serveUrl) {
+              # [F9j] diagnostics BEFORE halting (secret-free: tailscale's own
+              # output; VNC_PASS is never passed to tailscale).
+              try {
+                  $diagTail = (Get-Content -LiteralPath $serveLog -ErrorAction SilentlyContinue | Select-Object -Last 25) -join ' | '
+                  if ($diagTail) {
+                      if ($vp) { $diagTail = $diagTail -replace [regex]::Escape($vp), '[redacted]' }
+                      Write-Host ('[webdesk] serve output tail: ' + $diagTail)
+                  }
+              } catch { }
+              try { Write-Host ('[webdesk] serve status: ' + ((& $ts serve status 2>$null) -join ' ')) } catch { }
+              try { Write-Host ('[webdesk] serve status --json: ' + ((& $ts serve status --json 2>$null) -join ' ')) } catch { }
+              try { Write-Host ('[webdesk] tailscale state: ' + ((& $ts status 2>$null | Select-Object -First 3) -join ' ')) } catch { }
               # [F9i] fail-closed (see tightvnc-install block above). The
               # serve status JSON is re-checked once after a 5s settle before
               # halting, so a slow serve registration cannot false-fail the
               # step; if it still has no mapping the run halts by design.
-              $serveUrl = ''
               try {
                   Start-Sleep -Seconds 5
-                  $ss2 = (& $ts serve status --json 2>$null) | ConvertFrom-Json
-                  if ($ss2 -and $ss2.Web) {
-                      foreach ($k2 in $ss2.Web.PSObject.Properties.Name) {
-                          $entry2 = $ss2.Web.$k2
-                          if ($entry2 -and $entry2.Handlers) {
-                              foreach ($hk2 in $entry2.Handlers.PSObject.Properties.Name) {
-                                  $h2 = $entry2.Handlers.$hk2
-                                  if ($h2.Proxy -and ($h2.Proxy -match '127\.0\.0\.1:7333')) { $serveUrl = 'https://' + $k2 + $hk2; break }
-                              }
-                          }
-                          if ($serveUrl) { break }
-                      }
-                  }
+                  $settle = Get-WebdeskServeUrl
+                  if ($settle -and -not ($settle.EndsWith('/'))) { $settle = $settle + '/' }
+                  if ($settle) { $serveUrl = $settle + 'vnc.html?autoconnect=1&resize=remote' }
               } catch { }
-              if ($serveUrl -and -not ($serveUrl.EndsWith('/'))) { $serveUrl = $serveUrl + '/' }
-              if ($serveUrl) { $serveUrl = $serveUrl + 'vnc.html?autoconnect=1&resize=remote' }
               if (-not $serveUrl) {
-                  Write-Host '[webdesk] tailscale serve produced no mapping for 127.0.0.1:7333; web desktop DISABLED. Halted by design.'
+                  Write-Host '[webdesk] tailscale serve produced no mapping for 127.0.0.1:7333; web desktop DISABLED. Halted by design. See [webdesk] diagnostics above.'
                   if ($S) { '### Web desktop DISABLED (tailscale serve produced no URL)' | Add-Content -Path $S }
-                  if ($S) { 'Re-dispatch the workflow for a fresh ephemeral host.' | Add-Content -Path $S }
+                  if ($S) { 'Serve exit code, output and status are printed in this step log above (secret-free). Re-dispatch the workflow for a fresh ephemeral host.' | Add-Content -Path $S }
                   Set-WebdeskCfg '' 'serve-failed' 'serve-mapping'
                   throw 'Web desktop not deployed: tailscale serve produced no tailnet mapping. Halted by design. See Step Summary.'
               }
@@ -2429,7 +2475,10 @@ jobs:
                   $lastVncFix = Get-Date
                   Write-Host ($icons.wrench + ' ' + $stamp + ' web desktop backend down (vnc=' + $vncOk + ' bridge=' + $brOk + ') - restarting')
                   if (-not $vncOk) { try { Start-Service -Name tvnserver -ErrorAction Stop } catch { } }
-                  if (-not $brOk) { try { Start-Process -FilePath python -ArgumentList '-m','websockify','0.0.0.0:7333','127.0.0.1:5900' -WindowStyle Hidden } catch { } }
+                  # [F9j] loopback-only + serve noVNC assets: the old all-
+                  # interfaces bind on 7333 exposed the bridge on the Tailscale
+                  # interface without tailnet TLS, bypassing the serve mapping.
+                  if (-not $brOk) { try { Start-Process -FilePath python -ArgumentList '-m','websockify','--web','C:\ghrdp\novnc','127.0.0.1:7333','127.0.0.1:5900' -WindowStyle Hidden } catch { } }
               }
               $rustStr = 'OFF'
               if ($rustProbeOn) {
