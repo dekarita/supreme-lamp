@@ -364,10 +364,14 @@ jobs:
           grep -q 'K2: policy pages readback via playwright' "$lab"
           grep -q 'H2_result=pass' "$lab"
           grep -q 'K2_result=pass' "$lab"
-          grep -q 'webdesk-e2e.js' payloads/lab/webdesk-e2e.js
-          grep -q 'vnc-auth-stub-server' payloads/lab/vnc-auth-stub-server.js
-          grep -q 'dash-stub.html' payloads/lab/dash-stub.html
-          grep -q 'policy-readback.js' payloads/lab/policy-readback.js
+          test -f payloads/lab/webdesk-e2e.js
+          test -f payloads/lab/vnc-auth-stub-server.js
+          test -f payloads/lab/dash-stub.html
+          test -f payloads/lab/policy-readback.js
+          grep -q 'ZERO manual typing' payloads/lab/webdesk-e2e.js
+          grep -q 'RFB 003' payloads/lab/vnc-auth-stub-server.js
+          grep -q 'ghrdp-vnc-pass' payloads/lab/dash-stub.html
+          grep -q 'Reload policies' payloads/lab/policy-readback.js
           echo 'F12 gates PASS'
 
       - name: F8 web-desktop honesty gates

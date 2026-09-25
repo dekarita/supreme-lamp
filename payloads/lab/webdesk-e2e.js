@@ -18,7 +18,15 @@
  * Exit 0 = all three proofs hold; any other exit code = classified failure.
  */
 'use strict';
-const { chromium } = require('playwright-core');
+// Every failure ALSO emits a ::error:: workflow annotation so the classified
+// reason is readable from the Checks API even when the job log is not.
+let chromium;
+try {
+    chromium = require('playwright-core').chromium;
+} catch (e) {
+    console.log('::error::E2E-FAIL(2): playwright-core not resolvable from ' + __dirname + ' (cwd=' + process.cwd() + '): ' + e.message);
+    process.exit(2);
+}
 
 const ORIGIN = process.argv[2] || 'http://127.0.0.1:7333';
 const STATE = process.argv[3] || 'http://127.0.0.1:5902/state';
@@ -26,6 +34,7 @@ const PASSWORD = 'vnclab7';
 
 function fail(code, msg) {
     console.log('E2E-FAIL(' + code + '): ' + msg);
+    console.log('::error::E2E-FAIL(' + code + '): ' + String(msg).split('\n')[0]);
     process.exit(code);
 }
 

@@ -350,8 +350,12 @@ jobs:
               H2-Fail 'listen' 'websockify(7333)/stub(5901,5902) did not listen'
           }
           & npm.exe install --no-save --no-package-lock --no-audit --no-fund --silent playwright-core 2>&1 | Select-Object -Last 1 | Out-Null
-          if ($LASTEXITCODE -ne 0) { H2-Fail 'npm' 'playwright-core install failed' }
-          & node.exe (Join-Path $env:GITHUB_WORKSPACE 'payloads\lab\webdesk-e2e.js') 'http://127.0.0.1:7333' 'http://127.0.0.1:5902/state'
+          if ($LASTEXITCODE -ne 0) { H2-Fail 'npm' ('playwright-core install failed, exit ' + $LASTEXITCODE) }
+          if (-not (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'node_modules\playwright-core'))) { H2-Fail 'npm' 'node_modules\playwright-core missing after install' }
+          # [F13-diag] capture the driver output so a failure is classifiable
+          # from the artifact/annotation even when the job log is unreachable.
+          $e2eOut = Join-Path $root 'e2e-out.txt'
+          & node.exe (Join-Path $env:GITHUB_WORKSPACE 'payloads\lab\webdesk-e2e.js') 'http://127.0.0.1:7333' 'http://127.0.0.1:5902/state' 2>&1 | Tee-Object -FilePath $e2eOut
           $e2e = $LASTEXITCODE
           foreach ($lf in @('websockify.log','ws.err','stub.log','stub.err')) {
               $f = Join-Path $root $lf
@@ -365,6 +369,14 @@ jobs:
           if ($e2e -ne 0) { H2-Fail 'e2e' ('webdesk-e2e.js exit ' + $e2e) }
           Write-Host '[H2] PASS: opener handoff -> shim auto-fill -> VNC-auth completed -> connected with ZERO manual typing; no password in any URL, wire byte or log'
           'H2_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+
+      - name: "H2 diag artifact (always)"
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: h2-diag
+          path: ${{ runner.temp }}\h2\
+          if-no-files-found: ignore
 
       - name: "I: RDP USAGE timer ticks / freezes / resumes (REAL server + REAL loop)"
         shell: pwsh
@@ -721,15 +733,14 @@ jobs:
           # retrievable), so the PR/verify evidence does not depend on the log UI.
           $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' h2=' + $(if ($env:H2_result -eq 'pass') {'pass'} else {'fail'}) + ' k3=' + $(if ($env:K2_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
-          Write-Host ('::notice::[I] usage timer: ticks -> freezes <=20s -> resumes -> persists/continues at ' + $env:I_usage + 's (cell i)')
-          Write-Host ('::notice::[H] cred shim: opener+exact-origin auto-fill, wrong origin/non-opener ignored, zero log output (cell h)')
-          Write-Host ('::notice::[N] handler overwrite: stale registration printed+overwritten+verified by the REAL install.cmd (cell n)')
-          Write-Host ('::notice::[K] browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions (cell k2)')
-          Write-Host ('::notice::[H2] webdesk E2E: opener handoff -> shim auto-fill -> VNC-auth completed -> connected, zero manual typing, zero password leaks (cell h2)')
-          Write-Host ('::notice::[K2] policy UIs: edge://policy + edge://extensions + chrome://policy render the enforced extensions (cell k3)')
-          Write-Host ('::notice::[L] qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok (cell l)')
-          Write-Host ('::notice::[G] uBlock Origin=' + $env:F_ubo)
-          Write-Host ('::notice::[G] Dark Reader=' + $env:F_dr)
+          if ($env:I_result -eq 'pass') { Write-Host ('::notice::[I] usage timer: ticks -> freezes <=20s -> resumes -> persists/continues at ' + $env:I_usage + 's (cell i)') }
+          if ($env:H_result -eq 'pass') { Write-Host ('::notice::[H] cred shim: opener+exact-origin auto-fill, wrong origin/non-opener ignored, zero log output (cell h)') }
+          if ($env:N_result -eq 'pass') { Write-Host ('::notice::[N] handler overwrite: stale registration printed+overwritten+verified by the REAL install.cmd (cell n)') }
+          if ($env:K_result -eq 'pass') { Write-Host ('::notice::[K] browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions (cell k2)') }
+          if ($env:H2_result -eq 'pass') { Write-Host ('::notice::[H2] webdesk E2E: opener handoff -> shim auto-fill -> VNC-auth completed -> connected, zero manual typing, zero password leaks (cell h2)') }
+          if ($env:K2_result -eq 'pass') { Write-Host ('::notice::[K2] policy UIs: edge://policy + edge://extensions + chrome://policy render the enforced extensions (cell k3)') }
+          if ($env:L_result -eq 'pass') { Write-Host ('::notice::[L] qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok (cell l)') }
+          if ($env:F_result -eq 'pass') { Write-Host ('::notice::[G] uBlock Origin=' + $env:F_ubo); Write-Host ('::notice::[G] Dark Reader=' + $env:F_dr) }
           Write-Host ('::notice::[G] physical-PC cells (0 prompts, live peripherals, screenshot-native) remain PENDING-USER per §6; no LIVE claim is made here')
           '' | Add-Content -Path $S
           'STOP-condition note: §6(a-c) are proven at the launcher/protocol level in this lab; the physical-PC cells (0 prompts, live peripherals, physical-native screenshot) stay PENDING-USER per §6, so the AUTO-LOGIN REDIRECT LIVE line is NOT claimed.' | Add-Content -Path $S

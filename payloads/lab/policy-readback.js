@@ -14,7 +14,13 @@
  * Exit 0 = all needles render on the page; other = classified failure.
  */
 'use strict';
-const { chromium } = require('playwright-core');
+let chromium;
+try {
+    chromium = require('playwright-core').chromium;
+} catch (e) {
+    console.log('::error::POLICY-FAIL(2): playwright-core not resolvable from ' + __dirname + ' (cwd=' + process.cwd() + '): ' + e.message);
+    process.exit(2);
+}
 
 const channel = process.argv[2];
 const kind = process.argv[3];
@@ -24,6 +30,7 @@ const needles = process.argv.slice(6);
 
 function fail(code, msg) {
     console.log('POLICY-FAIL(' + code + '): ' + msg);
+    console.log('::error::POLICY-FAIL(' + code + '): ' + String(msg).split('\n')[0]);
     process.exit(code);
 }
 if (!channel || !kind || !pageUrl || needles.length === 0) {
