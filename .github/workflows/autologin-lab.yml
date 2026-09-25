@@ -516,9 +516,10 @@ jobs:
           $out | ForEach-Object { Write-Host ('[N install.cmd] ' + $_) }
           $after = [string](Get-Item -LiteralPath 'HKCU:\Software\Classes\ghrdp\shell\open\command').GetValue('')
           $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
-          # [F13-1] the byte-faithful install.cmd prints 'BEFORE: &' / 'AFTER: &' lines.
-          $printedBefore = [bool](($out -join "`n") -match 'BEFORE: &')
-          $printedAfter  = [bool](($out -join "`n") -match 'AFTER: &')
+          # [F13-1] the byte-faithful install.cmd prints 'BEFORE:' / 'AFTER:'
+          # echo lines (the & is a cmd OPERATOR - it never appears in output).
+          $printedBefore = [bool](($out -join "`n") -match 'BEFORE:')
+          $printedAfter  = [bool](($out -join "`n") -match 'AFTER:')
           $overwritten   = ($after -match 'ghrdp-rdp-launcher\.exe') -and ($after -notmatch 'cmd\.exe')
           $ok = ($code -eq 0) -and $printedBefore -and $printedAfter -and $overwritten -and (Test-Path -LiteralPath $exe)
           Write-Host ('[N] exit=' + $code + ' printedBefore=' + $printedBefore + ' printedAfter=' + $printedAfter + ' overwritten=' + $overwritten + ' after=' + $after)
