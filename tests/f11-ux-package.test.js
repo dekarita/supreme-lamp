@@ -21,10 +21,12 @@ function harness() {
       dispatchEvent() { return true; },
       querySelector() { return els.__btn || (els.__btn = { click() { els.__btnClicked = true; } }); },
       getAttribute() { return null; },
+      // [F13-3] noVNC v1.7.0 opens the credentials dialog with .noVNC_open
+      classList: { contains(c) { return c === 'noVNC_open'; } },
     });
   }
   el('noVNC_password_input');
-  el('noVNC_credentials_dialog');
+  el('noVNC_credentials_dlg');   // [F13-3] v1.7.0 dialog id (was ..._dialog in <=1.3)
   const window = {
     opener: { name: 'dashboard' },
     addEventListener(t, fn) { (listeners[t] = listeners[t] || []).push(fn); },
@@ -69,6 +71,25 @@ test('F11-2 shim source: no logging/echo path, purge + opener drop present', () 
   assert.ok(!/console\.|alert\(|document\.title/.test(code), 'no logging/echo call may exist in shim CODE');
   assert.match(shimSrc, /pending = null/);
   assert.match(shimSrc, /window\.opener = null/);
+});
+test('F13-3 shim: selectors pinned to the deployed noVNC v1.7.0 + fresh retry per handoff', () => {
+  // v1.7.0: dialog noVNC_credentials_dlg, opens with .noVNC_open, submit is
+  // <input id="noVNC_credentials_button" type="submit">; ui.js is an ES module
+  // so the DOM path (not window.UI.rfb) is the live one.
+  assert.match(shimSrc, /noVNC_credentials_dlg/);
+  assert.match(shimSrc, /noVNC_password_input/);
+  assert.match(shimSrc, /#noVNC_credentials_button/);
+  assert.match(shimSrc, /noVNC_open/);
+  assert.match(shimSrc, /RETRY_CAP = 5/);
+  assert.match(shimSrc, /tries = 0;.*fresh 5x500ms budget per accepted handoff/);
+  // retry-cap exhaustion purges ONLY the value - the opener stays alive for
+  // its repeat handoffs (ui.html posts 6x500ms).
+  assert.match(shimSrc, /function purgeValue\(\)/);
+  // main.yml must pin the noVNC clone to v1.7.0 and keep the f13 cache prefix
+  // (an old f10 cache must never restore an unpinned master tree).
+  assert.match(wf, /--branch v1\.7\.0 https:\/\/github\.com\/novnc\/noVNC\.git/);
+  assert.match(wf, /f13-setup-/);
+  assert.ok(!/key: f10-setup-/.test(wf), 'the f10 cache key must be retired');
 });
 
 test('F11-2 dashboard: localStorage memory + exact-targetOrigin postMessage, no URL creds', () => {

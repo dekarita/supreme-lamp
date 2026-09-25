@@ -144,9 +144,9 @@ jobs:
             C:\ghrdp\novnc
             ~\AppData\Local\pip\Cache
             ${{ runner.temp }}\ghrdp-rust\target
-          key: f10-setup-${{ runner.os }}-${{ hashFiles('payloads/Cargo.toml') }}-v1
+          key: f13-setup-${{ runner.os }}-${{ hashFiles('payloads/Cargo.toml') }}-novnc1.7.0-v1
           restore-keys: |
-            f10-setup-${{ runner.os }}-
+            f13-setup-${{ runner.os }}-
       - name: Record job start + pre-create cache directories (F10-4c/F11-6)
         shell: pwsh
         run: |
@@ -1441,8 +1441,21 @@ jobs:
                   # pre-created empty dir breaks `git clone $dir` (dir must not
                   # exist) - clone into a temp dir and move the contents in.
                   $novncTmp = Join-Path $env:RUNNER_TEMP ('novnc-clone-' + [guid]::NewGuid().ToString('N'))
-                  & git.exe clone --depth 1 https://github.com/novnc/noVNC.git $novncTmp 2>&1 | Select-Object -Last 3 | Out-Null
+                  # [F13-3] PINNED to the v1.7.0 release tag: the cred-shim selectors
+                  # (noVNC_credentials_dlg / noVNC_password_input /
+                  # noVNC_credentials_button input[type=submit] / .noVNC_open)
+                  # are pinned to this exact version. A moving master clone
+                  # once drifted (dialog id + ES-module UI) and the VNC
+                  # password dialog stopped auto-submitting - never again.
+                  & git.exe clone --depth 1 --branch v1.7.0 https://github.com/novnc/noVNC.git $novncTmp 2>&1 | Select-Object -Last 3 | Out-Null
                   if (Test-Path -LiteralPath (Join-Path $novncTmp 'vnc.html')) { Copy-Item -Path (Join-Path $novncTmp '*') -Destination $novncDir -Recurse -Force; Remove-Item -LiteralPath $novncTmp -Recurse -Force -ErrorAction SilentlyContinue }
+              # [F13-3] the deployed noVNC tree must be exactly v1.7.0.
+              $novncPkg = Join-Path $novncDir 'package.json'
+              if (Test-Path -LiteralPath $novncPkg) {
+                  $novncVer = ([System.IO.File]::ReadAllText($novncPkg) | ConvertFrom-Json).version
+                  if ("$novncVer" -ne '1.7.0') { Write-Host ('::error::[webdesk] noVNC tree is ' + $novncVer + ', expected 1.7.0 (shim selectors are pinned)') }
+                  else { Write-Host '[webdesk] noVNC v1.7.0 deployed (pinned; shim selectors match)' }
+              }
               }
               & python -m pip install --disable-pip-version-check --quiet websockify 2>&1 | Select-Object -Last 3 | Out-Null
           } catch { Write-Host ('[webdesk] noVNC/websockify install error: ' + $_.Exception.Message) }

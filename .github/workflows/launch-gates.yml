@@ -324,6 +324,17 @@ jobs:
           if grep -nE 'magnet[^\n]*(webui|--webui|8080)' "$wf"; then
             echo 'F12-3: magnet wiring must not touch a torrent Web UI' >&2; exit 1
           fi
+          # --- §3 [F13-3] noVNC pin + shim selectors pinned to v1.7.0 --------
+          grep -q -- '--branch v1.7.0 https://github.com/novnc/noVNC.git' "$wf"
+          grep -q 'f13-setup-' "$wf"
+          if grep -q 'key: f10-setup-' "$wf"; then
+            echo 'F13-3: the f10 cache key survived (an unpinned noVNC tree could be restored)' >&2; exit 1
+          fi
+          grep -q 'noVNC_credentials_dlg' "$shim"
+          grep -q 'noVNC_password_input' "$shim"
+          grep -q '#noVNC_credentials_button' "$shim"
+          grep -q 'noVNC_open' "$shim"
+          grep -q 'purgeValue' "$shim"
           # --- §4 VNC memory: 5x500ms retry + purge, no password in any URL ----
           grep -q 'RETRY_CAP = 5' "$shim"
           grep -q 'pending = null' "$shim"
