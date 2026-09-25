@@ -291,7 +291,7 @@ parses PowerShell scripts and self-tests/publishes the compiled handler.
 None of these tests establishes a successful live RDP login on the user's
 Windows PC.
 
-### 1.10 Web desktop (noVNC + TightVNC via `tailscale serve`)
+### 1.10 Web desktop (noVNC + TightVNC via tailnet HTTP; `tailscale serve` retired)
 
 The dashboard's WEB DESKTOP button is enabled only when
 `config.webdeskUrl` is set.
@@ -464,29 +464,71 @@ The dashboard's WEB DESKTOP button is enabled only when
     from MagicDNS (admin console → DNS → HTTPS Certificates). When the
     captured output indicates an HTTPS/certificate problem, the step logs the
     hint and writes it to the Step Summary.
+- **[F9n] `tailscale serve` RETIRED repo-wide for the web desktop (supersedes
+  the F9k/F9l/F9m serve cascade, kept above as history).**
+  - *Root cause, verbatim (2026-09-25, Tailscale 1.102.4):* every
+    post-connect LocalAPI call from the webdesk step context returns
+    `401 Unauthorized: Tailscale already in use by NT AUTHORITY\SYSTEM`.
+    The Windows SYSTEM service owns the connected node, so the
+    step-context CLI is locked out: no serve mapping can be created or
+    verified, and argument syntax was never the cause (the lone
+    `invalid argument format` was the pre-1.52 legacy form, last in the
+    cascade). serve is therefore removed from the web desktop path
+    permanently — no oscillation.
+  - *New transport:* websockify binds `<rdpIp>:7333` (the tailnet IP read
+    from `C:\ghrdp\config.json` `.rdpIp`, CGNAT-validated
+    `100.64-127.x.x`, fail-closed `tailnet-ip-unavailable`, never
+    `tailscale ip`), VNC stays loopback-only (`LoopbackOnly`), Windows
+    Firewall allows inbound TCP 7333 from `100.64.0.0/10` only
+    (idempotent `GHRDP-Webdesk` rule), and the advertised URL is
+    `http://<rdpIp>:7333/vnc.html?autoconnect=1&resize=remote` —
+    WireGuard-encrypted below the socket + the VNC password gate. The web
+    desktop steps make ZERO tailscale CLI calls, so the 401 cannot recur.
+  - *Self-test:* curls the EXACT advertised URL 3x5s for the noVNC marker,
+    heals a missing listener via the production launcher, probes the
+    backend root, then classifies `backend-dead | firewall |
+    marker-missing` (diagnostic-only; config keeps the locked
+    `serve-failed` / `self-test-failed` codes). The `webdesk-diag`
+    artifact carries `listener.txt` + `firewall.txt` snapshots instead of
+    serve status.
+  - *Dashboard:* `/api/native-status` enforces the webdeskUrl acceptance
+    allowlist (`http://100.64-127.x.x:7333/` or legacy
+    `https://*.ts.net/`, reject everything else); `ui.html` accepts the
+    same two forms. Legacy `https://*.ts.net/` URLs are still honored
+    for older configs/VPS.
+  - *Proof order:* the `webdesk-lab` fallback job (reserved env
+    `dekarita/ghrdp-lab` unreachable) proves bind + firewall + marker +
+    the verbatim-extracted production self-test green BEFORE any
+    production dispatch; production Proof C still requires a real VNC
+    login and a visible desktop.
 - **Persistent Windows VPS (post-§1.7)**: §1.7 does NOT provision a web
   desktop. The operator must separately deploy authenticated TightVNC
-  bound to loopback, websockify/noVNC on loopback, and `tailscale serve`
-  (tailnet HTTPS, **not** Funnel); verify the gateway requires a VNC password
-  before setting the protected VPS `config.webdeskUrl`. No local client
-  installation is required. This VPS web gateway has **not** been deployed
-  or tested in this session; do not claim Proof C or disable Actions yet.
+  bound to loopback, websockify/noVNC bound to the tailnet IP on 7333,
+  and the CGNAT-only `GHRDP-Webdesk` firewall rule (inbound TCP 7333
+  from `100.64.0.0/10`, **no** public exposure, **not** Funnel);
+  verify the gateway requires a VNC password before setting the
+  protected VPS `config.webdeskUrl`. No local client installation is
+  required. This VPS web gateway has **not** been deployed or tested in
+  this session; do not claim Proof C or disable Actions yet.
 
 **Security posture (bright lines)**:
 - Credentials are ALWAYS required (VNC password). The prior banned
   posture — *no-auth VNC on any interface, even tailnet-gated* — remains
   banned.
-- Exposure is ALWAYS tailnet-only via `tailscale serve`. No public port,
-  no funnel, no anonymous reverse proxy.
+- Exposure is ALWAYS tailnet-only: websockify on the tailnet IP + the
+  CGNAT-only firewall rule. No public port, no funnel, no anonymous
+  reverse proxy, no `tailscale serve` (retired, see [F9n] above).
 - On Actions the VNC password is supplied by the repository secret to the
   installer; the installer-error message is withheld because it might contain
   that value. On a VPS it must be configured locally by the operator. Neither
   path logs the password or includes it in `config.webdeskUrl`.
 
 Decommission note: uninstalling TightVNC is `choco uninstall tightvnc -y`
-(or the vendor uninstaller) followed by `tailscale serve reset`.
-Clearing `config.webdeskUrl` disables the button on the next poll;
-removing TightVNC + resetting serve closes the tailnet listener.
+(or the vendor uninstaller), stopping websockify, and removing the
+`GHRDP-Webdesk` firewall rule (`Remove-NetFirewallRule -DisplayName
+'GHRDP-Webdesk'`). Clearing `config.webdeskUrl` disables the button on
+the next poll; removing TightVNC + websockify + the rule closes the
+tailnet listener.
 
 ## 2. Decommission checklist (Actions-as-RDP teardown)
 
