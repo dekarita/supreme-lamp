@@ -26,6 +26,12 @@
 #   and proves the failure path writes the classification + 'webdesk-diag'
 #   payload and still halts fail-closed.
 #
+# LAB_REV=3 (bump to re-trigger the lab: the push trigger watches this file).
+# Evidence channel: run logs/artifacts live on the results blob host, which is
+# not always reachable from the tooling that drives this lab, so every probe
+# also emits a ::warning::/::notice:: annotation - annotations are readable
+# through the ordinary GitHub API (GET /check-runs/<id>/annotations).
+#
 # Artifacts are secret-free by construction: websockify never receives
 # VNC_PASS (its argument list is dir + loopback ports only), and Tailscale
 # credentials never appear in the files this job uploads.
@@ -179,6 +185,7 @@ jobs:
           try { $lines += ('probe=REPRO-B serve-status-json=' + (((& $ts serve status --json 2>$null) -join ' '))) } catch { }
           $lines | ForEach-Object { Write-Host ('[lab] ' + $_) }
           Add-Content -LiteralPath (Join-Path $diagDir 'lab-repro.txt') -Value ($lines -join "`n")
+          Write-Host ('::warning title=lab REPRO (legacy start, next step)::' + ($lines -join ' ; '))
           Exit 0
 
       - name: FIX - extracted production self-test (verbatim from main.yml)
@@ -239,6 +246,7 @@ jobs:
           try { $lines += ('probe=FIX-PROBE serve-status-json=' + (((& $ts serve status --json 2>$null) -join ' '))) } catch { }
           $lines | ForEach-Object { Write-Host ('[lab] ' + $_) }
           Add-Content -LiteralPath (Join-Path $diagDir 'lab-fix-probe.txt') -Value ($lines -join "`n")
+          Write-Host ('::notice title=lab FIX PROBE (after extracted self-test)::' + ($lines -join ' ; '))
           exit 0
 
       - name: E PROOF - classification path (unresolvable ts.net URL, expect halt)
@@ -264,9 +272,29 @@ jobs:
           $p = Start-Process -FilePath pwsh -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $out) -Wait -PassThru -NoNewWindow
           Write-Host ('[lab] Phase 3: extracted self-test exit code = ' + $p.ExitCode + ' (non-zero = fail-closed halt, as designed)')
           $cl = Join-Path $env:RUNNER_TEMP 'webdesk-diag\classification.txt'
-          if (Test-Path -LiteralPath $cl) { Write-Host ('[lab] Phase 3 classification.txt: ' + (([System.IO.File]::ReadAllText($cl)) -replace "`r?`n", ' | ')) }
-          else { Write-Host '[lab] Phase 3: classification.txt MISSING (F9l-3 payload incomplete)' }
+          $clTxt = ''
+          if (Test-Path -LiteralPath $cl) { $clTxt = (([System.IO.File]::ReadAllText($cl)) -replace "`r?`n", ' | ') }
+          else { $clTxt = 'classification.txt MISSING (F9l-3 payload incomplete)' }
+          Write-Host ('[lab] Phase 3 classification.txt: ' + $clTxt)
+          $cfgAfter = ''
+          try { $cfgAfter = ([System.IO.File]::ReadAllText($cfgPath) -replace '\s+', ' ') } catch { }
+          Write-Host ('::warning title=lab Phase 3 (classification proof)::exit=' + $p.ExitCode + ' ; ' + $clTxt + ' ; config.json=' + $cfgAfter)
           exit 0
+
+      - name: Stage diagnostics inside the workspace (upload-artifact v4 root)
+        if: always()
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:GITHUB_WORKSPACE 'webdesk-diag'
+          New-Item -ItemType Directory -Path $stage -Force -ErrorAction SilentlyContinue | Out-Null
+          try {
+              Copy-Item -Path (Join-Path $env:RUNNER_TEMP 'webdesk-diag\*') -Destination $stage -Force -Recurse -ErrorAction SilentlyContinue
+          } catch { }
+          foreach ($f in @('C:\ghrdp\webdesk\websockify.log', 'C:\ghrdp\webdesk\websockify.err.log')) {
+              if (Test-Path -LiteralPath $f) { Copy-Item -LiteralPath $f -Destination (Join-Path $stage ([System.IO.Path]::GetFileName($f))) -Force -ErrorAction SilentlyContinue }
+          }
+          Add-Content -LiteralPath (Join-Path $stage 'MANIFEST.txt') -Value ('lab staged at ' + (Get-Date).ToUniversalTime().ToString('o'))
+          Write-Host ('[lab] staged ' + (Get-ChildItem -LiteralPath $stage -ErrorAction SilentlyContinue).Count + ' file(s)')
 
       - name: Upload webdesk-diag artifact
         if: always()
@@ -275,10 +303,7 @@ jobs:
           name: webdesk-diag
           if-no-files-found: warn
           retention-days: 14
-          path: |
-            C:\ghrdp\webdesk\websockify.log
-            C:\ghrdp\webdesk\websockify.err.log
-            ${{ runner.temp }}\webdesk-diag\**
+          path: webdesk-diag
 
       - name: Lab teardown (logout lab node)
         if: always()
