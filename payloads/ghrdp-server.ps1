@@ -20,6 +20,11 @@ try {
 } catch { }
 $script:RdpTokens = @{}
 $script:LauncherSeen = $false
+# [F10 s2] telemetry state: dash-token source peer (ping target) + cached
+# newest LogonType 10 session age (rdpLogonAgeSec).
+$script:DashPeerIp = ''
+$script:LogonAge = $null
+$script:LogonAgeTs = [datetime]::MinValue
 $script:DeviceTokens = @{}
 $script:DeviceTokensPath = Join-Path $Root 'device-tokens.json'
 $script:ClientAuditLog = Join-Path $Root 'client-audit.log'
@@ -204,7 +209,7 @@ function Remove-CredKeys {
     try { if ($Obj.PSObject.Properties['rdpUser']) { $user = [string]$Obj.rdpUser } } catch { }
     try { if ($Obj.PSObject.Properties['rdpIp'])   { $ip   = [string]$Obj.rdpIp   } } catch { }
     # dnsName only. Never present the tailnet IP as the FQDN.
-    foreach ($k in @('rdpUser','rdpPass','mirrorKey','legacyDecryptKey','creds','rentryEditCode','rentryEditCookie','dashToken')) {
+    foreach ($k in @('rdpUser','rdpPass','mirrorKey','legacyDecryptKey','creds','rentryEditCode','rentryEditCookie','dashToken','vncPass')) {
         try { if ($Obj.PSObject.Properties[$k]) { $Obj.PSObject.Properties.Remove($k) } } catch { }
     }
     try {
@@ -232,6 +237,36 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 401 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('unauthorized'))
             return
         }
+        # [F10 s2.2] dash-token source peer: when a request carries the exact
+        # dashboard token (query key= or Authorization: Bearer, constant-time
+        # compare), remember the caller's tailnet IPv4 as the target for the
+        # runner-side 15s tailscale ping. ONLY the IP is written - the token
+        # itself never reaches disk here.
+        try {
+            $qkF10 = ''
+            if ($parts.query -and $parts.query.ContainsKey('key')) { $qkF10 = [string]$parts.query['key'] }
+            $ahF10 = ''
+            try { $ahF10 = [string]$parts.headers['authorization'] } catch { }
+            $hasTokF10 = $false
+            if ($Token -and $qkF10 -and $qkF10.Length -eq ([string]$Token).Length) {
+                $b1 = [System.Text.Encoding]::UTF8.GetBytes($qkF10)
+                $b2 = [System.Text.Encoding]::UTF8.GetBytes([string]$Token)
+                if ([System.Security.Cryptography.CryptographicOperations]::FixedTimeEquals($b1, $b2)) { $hasTokF10 = $true }
+            }
+            if (-not $hasTokF10 -and $Token -and $ahF10 -and $ahF10.Length -eq (([string]$Token).Length + 7)) {
+                $b1 = [System.Text.Encoding]::UTF8.GetBytes($ahF10)
+                $b2 = [System.Text.Encoding]::UTF8.GetBytes('Bearer ' + [string]$Token)
+                if ([System.Security.Cryptography.CryptographicOperations]::FixedTimeEquals($b1, $b2)) { $hasTokF10 = $true }
+            }
+            if ($hasTokF10) {
+                $ripF10 = ''
+                try { $ripF10 = $Client.Client.RemoteEndPoint.Address.ToString() } catch { }
+                if ($ripF10 -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$') {
+                    $script:DashPeerIp = $ripF10
+                    [System.IO.File]::WriteAllText((Join-Path $Root 'dash-peer.txt'), $ripF10, $script:NoBom)
+                }
+            }
+        } catch { }
         $cfg = Read-JsonFile -Path $script:CfgPath
         # [remediation 8A] /rentrydiag removed: no public-mirror editing
         if ($path -eq '/rentrydiag') {
@@ -531,6 +566,46 @@ function Invoke-ClientRequest {
             }
             # [F9o] No URL => no auth mode (a blanked URL must not keep a stale 'vnc').
             if (-not $wd) { $wda = '' }
+            # [F10 s2.1] newest interactive RDP session (LogonType 10) age,
+            # cached for 10s so the UI poll cadence never hammers CIM. Null =
+            # no interactive session yet (the row keeps --:--:-- until one
+            # exists; the UI anchors at the first non-null value).
+            $rdpAgeSec = $null
+            try {
+                if (([datetime]::UtcNow - $script:LogonAgeTs).TotalSeconds -ge 10) {
+                    $newestStart = $null
+                    foreach ($ls in (Get-CimInstance Win32_LogonSession -Filter 'LogonType = 10' -ErrorAction SilentlyContinue)) {
+                        if ($ls.StartTime) {
+                            $st = [datetime]$ls.StartTime
+                            if (($null -eq $newestStart) -or ($st -gt $newestStart)) { $newestStart = $st }
+                        }
+                    }
+                    if ($newestStart) {
+                        $age0 = [int]((Get-Date) - $newestStart).TotalSeconds
+                        if ($age0 -ge 0 -and $age0 -lt 604800) { $script:LogonAge = $age0 } else { $script:LogonAge = $null }
+                    } else { $script:LogonAge = $null }
+                    $script:LogonAgeTs = [datetime]::UtcNow
+                }
+                if ($null -ne $script:LogonAge) { $rdpAgeSec = [int]$script:LogonAge }
+            } catch { }
+            # [F10 s2.2] runner-side tailscale ping probe result (15s cadence,
+            # spawned below as ping-probe.ps1). Only fresh results (<45s) are
+            # exposed so the UI can age out a dead probe honestly.
+            $pingMs = $null
+            $pingPath = ''
+            try {
+                $ppFile = Join-Path $Root 'ping-probe.json'
+                if (Test-Path -LiteralPath $ppFile) {
+                    $pp = [System.IO.File]::ReadAllText($ppFile) | ConvertFrom-Json
+                    if ($pp -and $pp.ts) {
+                        $ppAge = ([datetime]::UtcNow - ([datetime]$pp.ts).ToUniversalTime()).TotalSeconds
+                        if ($ppAge -ge 0 -and $ppAge -le 45) {
+                            if ($null -ne $pp.ms) { $pingMs = [math]::Round([double]$pp.ms, 1) }
+                            if ([string]$pp.path -in @('direct', 'relay')) { $pingPath = [string]$pp.path } else { $pingPath = 'unknown' }
+                        }
+                    }
+                }
+            } catch { }
             $ns = [ordered]@{
                 fqdn = $fqdnN
                 hostKind = $hostKind
@@ -538,6 +613,11 @@ function Invoke-ClientRequest {
                 certBound = $certBound
                 nlaOn = $nlaOn
                 handlerSeenAgeSec = $handlerAge
+                # [F10 s2] real telemetry: interactive-logon age (null until a
+                # LogonType 10 session exists) + runner-side tailscale ping.
+                rdpLogonAgeSec = $rdpAgeSec
+                pingMs = $pingMs
+                pingPath = $pingPath
                 webdeskUrl = $wd
                 webdeskReason = $wdr
                 webdeskDetail = $wdDetail
@@ -1162,6 +1242,34 @@ boot();
         }
         if ($path -eq '/api/config') {
             $cfgOut = Remove-CredKeys (Read-JsonFile -Path $script:CfgPath)
+            # [F10 s3] dash-token-gated creds block: the FULL Windows and VNC
+            # passwords are attached to creds ONLY when this request carries
+            # the exact dashboard token in ?key= (constant-time compare).
+            # Every other caller - tailnet IP alone is NOT enough - receives
+            # the stripped object (fqdn/user/ip only). Nothing is logged.
+            $gatedF10 = $false
+            try {
+                $qkF10 = ''
+                if ($parts.query -and $parts.query.ContainsKey('key')) { $qkF10 = [string]$parts.query['key'] }
+                if ($Token -and $qkF10 -and $qkF10.Length -eq ([string]$Token).Length) {
+                    $b1 = [System.Text.Encoding]::UTF8.GetBytes($qkF10)
+                    $b2 = [System.Text.Encoding]::UTF8.GetBytes([string]$Token)
+                    if ([System.Security.Cryptography.CryptographicOperations]::FixedTimeEquals($b1, $b2)) { $gatedF10 = $true }
+                }
+            } catch { }
+            if ($gatedF10 -and $cfgOut) {
+                $cfgIn = Read-JsonFile -Path $script:CfgPath
+                $pRdp = ''; $pVnc = ''
+                try { if ($cfgIn -and $cfgIn.PSObject.Properties['rdpPass']) { $pRdp = [string]$cfgIn.rdpPass } } catch { }
+                try { if ($cfgIn -and $cfgIn.PSObject.Properties['vncPass']) { $pVnc = [string]$cfgIn.vncPass } } catch { }
+                try {
+                    if (-not $cfgOut.PSObject.Properties['creds']) {
+                        $cfgOut | Add-Member -MemberType NoteProperty -Name 'creds' -Value ([pscustomobject]@{ fqdn = ''; user = ''; ip = '' }) -Force
+                    }
+                    $cfgOut.creds | Add-Member -MemberType NoteProperty -Name 'pass' -Value $pRdp -Force
+                    $cfgOut.creds | Add-Member -MemberType NoteProperty -Name 'vncPass' -Value $pVnc -Force
+                } catch { }
+            }
             if ($cfgOut) { Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $cfgOut) } else { Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('config missing')) }
             return
         }
@@ -1239,6 +1347,45 @@ while ($true) {
 '@
 [System.IO.File]::WriteAllText((Join-Path $Root 'wire-probe.ps1'), $wireProbeScript, $script:NoBom)
 try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $Root 'wire-probe.ps1') -WindowStyle Hidden } catch { }
+# [F10 s2.2] runner-side ping probe: every 15s run `tailscale ping -c 1
+# -timeout 3s <dash-token source peer>` and parse RTT + direct/DERP path to
+# ping-probe.json (native-status exposes fresh results as pingMs/pingPath).
+$pingProbeScript = @'
+$ErrorActionPreference = 'Continue'
+$ts = 'C:\Program Files\Tailscale\tailscale.exe'
+$out = 'C:\ghrdp\ping-probe.json'
+$peerFile = 'C:\ghrdp\dash-peer.txt'
+try {
+  $others = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like '*ping-probe.ps1*' -and $_.ProcessId -ne $PID }
+  if ($others) { exit 0 }
+} catch { }
+while ($true) {
+  $obj = @{ ts = (Get-Date).ToUniversalTime().ToString('o'); target = ''; ms = $null; path = 'unknown' }
+  try {
+    if (Test-Path -LiteralPath $peerFile) {
+      $t0 = ([System.IO.File]::ReadAllText($peerFile)).Trim()
+      if ($t0 -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$') { $obj.target = $t0 }
+    }
+  } catch { }
+  if ($obj.target) {
+    try {
+      $o = (& $ts ping -c 1 -timeout 3s $obj.target 2>&1) -join ' '
+      if ($o -match 'in ([0-9.]+)\s*ms') { $obj.ms = [double]$Matches[1] }
+      if ($o -match 'timeout|no peers|Unknown host|Bad arguments') { $obj.ms = $null }
+      if ($null -ne $obj.ms) {
+        if ($o -match 'via DERP') { $obj.path = 'relay' }
+        elseif ($o -match 'via ') { $obj.path = 'direct' }
+        else { $obj.path = 'unknown' }
+      }
+    } catch { }
+  }
+  try { [System.IO.File]::WriteAllText($out, ($obj | ConvertTo-Json -Compress)) } catch { }
+  Start-Sleep -Seconds 15
+}
+'@
+[System.IO.File]::WriteAllText((Join-Path $Root 'ping-probe.ps1'), $pingProbeScript, $script:NoBom)
+try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $Root 'ping-probe.ps1') -WindowStyle Hidden } catch { }
 $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse($Bind), $Port)
 try { $listener.Start() } catch {
     try { [System.IO.File]::WriteAllText($script:OkFile, 'LISTEN_FAIL: ' + $_.Exception.Message, $script:NoBom) } catch { }

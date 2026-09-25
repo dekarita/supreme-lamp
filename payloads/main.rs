@@ -289,7 +289,7 @@ async fn api_config(State(state): State<SharedState>) -> Response {
         // [remediation 8G] filter secrets out of /api/config response.
         Some(mut value) => {
             if let Some(obj) = value.as_object_mut() {
-                for k in ["rdpPass", "mirrorKey", "rentryEditCode", "legacyDecryptKey"] {
+                for k in ["rdpPass", "vncPass", "mirrorKey", "rentryEditCode", "legacyDecryptKey"] {
                     obj.remove(k);
                 }
             }
