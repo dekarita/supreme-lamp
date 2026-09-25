@@ -260,11 +260,13 @@ jobs:
           lab=.github/workflows/autologin-lab.yml
           shim=payloads/ghrdp-cred-shim.js
           # --- §1.1 stale-handler overwrite (exe wins over any prior value) -----
-          grep -q 'handler BEFORE' payloads/install.cmd
-          grep -q 'handler AFTER' payloads/install.cmd
+          # [F13] anchors follow the user-held install.cmd shipped in F13-1:
+          # literal BEFORE:/AFTER: echo lines + the full-key reg query.
+          grep -q 'echo BEFORE: & reg query "HKCU\\Software\\Classes\\ghrdp\\shell\\open\\command" /ve 2>nul' payloads/install.cmd
+          grep -q 'echo AFTER: & reg query "HKCU\\Software\\Classes\\ghrdp\\shell\\open\\command" /ve' payloads/install.cmd
           grep -q 'HKCU\\Software\\Classes\\ghrdp' payloads/install.cmd
-          grep -q 'reg query "%KEY%" /ve 2>nul' payloads/install.cmd
-          grep -q 'find /i "%EXE%"' payloads/install.cmd
+          grep -q 'ghrdp-rdp-launcher.exe' payloads/install.cmd
+          grep -q '%%1' payloads/install.cmd
           # --- §1.4 stale-registration notice (20s hello-beacon watch) ----------
           grep -q 'id="winAutoStale"' payloads/ui.html
           grep -q 'stale ghrdp registration' payloads/ui.html
@@ -336,6 +338,45 @@ jobs:
           grep -q 'M: zero console windows' "$lab"
           grep -q 'N: handler overwrite (stale value planted)' "$lab"
           echo 'F12 gates PASS'
+
+      - name: F13 close-out gates (byte-faithful install.cmd, PS-free, no .rdp password, vnc-auto)
+        shell: bash
+        run: |
+          set -euo pipefail
+          lab=.github/workflows/autologin-lab.yml
+          # --- §1 byte-faithful user-held install.cmd (pinned anchors) --------
+          grep -q '@echo off' payloads/install.cmd
+          grep -q 'setlocal EnableExtensions' payloads/install.cmd
+          grep -q 'set "EXE=%DIR%\\ghrdp-rdp-launcher.exe"' payloads/install.cmd
+          grep -q '%SystemRoot%\\Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe' payloads/install.cmd
+          grep -q '/target:winexe /out:"%EXE%" /r:System.dll /r:System.Windows.Forms.dll "%SRC%"' payloads/install.cmd
+          grep -q 'URL:ghrdp Protocol' payloads/install.cmd
+          grep -q 'echo DONE - the AFTER line must show ghrdp-rdp-launcher.exe, NOT powershell.' payloads/install.cmd
+          # --- §1 gate: no script-host EXECUTION token in the client payloads.
+          # Naming the old handler in a rem/echo is legitimate; invoking one is
+          # banned (powershell.exe/-ExecutionPolicy/IEX/EncodedCommand/hosts).
+          if grep -E -n 'powershell\.exe|-ExecutionPolicy|Invoke-Expression|-EncodedCommand|mshta|wscript|cscript' payloads/install.cmd payloads/ghrdp-rdp-launcher.cs; then
+            echo 'F13-1: script-host invocation token in install.cmd or launcher' >&2; exit 1
+          fi
+          # --- §1 gate: the .rdp writer can emit NO password line, ever -------
+          if grep -v '^[[:space:]]*//' payloads/ghrdp-rdp-launcher.cs | grep -E -n 'password 51|password=|"password'; then
+            echo 'F13-1: launcher .rdp writer can emit a password line' >&2; exit 1
+          fi
+          # --- §3 gate: no launch URL carries password= -----------------------
+          if grep -n 'password=' payloads/ui.html .github/workflows/main.yml | grep -v 'no launch URL ever carries'; then
+            echo 'F13-3: a launch URL carries password=' >&2; exit 1
+          fi
+          # --- §3 deploy: shim + exact-origin meta injected into vnc.html -----
+          grep -q 'ghrdp-cred-shim.js' .github/workflows/main.yml
+          grep -q 'ghrdp-cred-origin' .github/workflows/main.yml
+          # --- §4 telemetry: usage accumulator + freeze contract --------------
+          grep -q 'rdpUsageActive' payloads/ghrdp-server.ps1
+          grep -q 'rdpUsageSec' payloads/ghrdp-server.ps1
+          # --- §6 lab matrix rows for the F13 cells ---------------------------
+          grep -q 'ghrdp-rdp-launcher.exe' "$lab"
+          grep -q 'prompts-after-first' "$lab"
+          grep -q 'AFTER readback equals ghrdp-rdp-launcher.exe' "$lab"
+          echo 'F13 gates PASS'
 
       - name: F8 web-desktop honesty gates
         shell: bash
