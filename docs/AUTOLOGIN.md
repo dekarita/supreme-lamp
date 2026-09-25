@@ -1,5 +1,43 @@
 # GHRDP native auto-login (VPS only)
 
+## 0. WINDOWS AUTO-LOGIN redirect (F10, zero script host)
+
+The dashboard button **[WINDOWS AUTO-LOGIN]** fires
+`ghrdp://rdp?server=<*.ts.net>&user=<name>&hello=<dashboard-origin>` - no
+password, hash, or token ever travels in the URI. The handler ships in this
+repo as `payloads/ghrdp-rdp-launcher.cs` plus `payloads/install.cmd`:
+
+1. Double-click `install.cmd` once on your Windows PC (keep it next to the
+   `.cs` file). It compiles the launcher with the **in-box** .NET Framework
+   `csc.exe` into `%LOCALAPPDATA%\ghrdp\` and registers the **current-user**
+   `ghrdp:` protocol. No download, no admin/UAC, no script host.
+2. On the first click, if `TERMSRV/<fqdn>` is absent, the launcher opens an
+   interactive `cmdkey` window - Windows prompts for the password once and
+   stores it itself. Later clicks are fully silent (NLA/CredSSP unchanged).
+3. The launcher writes a **local** `%TEMP%\ghrdp-<hash>.rdp` (local write: no
+   Mark-of-the-Web, no SmartScreen) containing fullscreen
+   (`screen mode id:2`, width/height omitted = client native resolution) and
+   clipboard/printers/drives/COM/smart-card/POS/audio redirection. It never
+   contains a password or hash; `mstsc` consumes it, and it is deleted
+   best-effort right after.
+4. The launcher POSTs `/api/handler-hello` so the dashboard can show the
+   handler as seen. If the handler is absent, the dashboard shows the
+   copy-once `install.cmd` path and points to **WEB DESKTOP** as the
+   zero-install path.
+
+Latency expectations: direct tailnet path should stay **under ~80 ms**
+browser RTT; the CONNECTIVITY row shows the runner-side `tailscale ping`
+(`pingMs` + `path direct|relay`). A `relay` path means direct WireGuard is
+not established - check the client firewall for UDP 41641 before anything
+else. noVNC opens with `compression=6`, the TightVNC server polls with
+`PollUnderCursor=0` + `CompareFB=1`, and the generated `.rdp` uses
+`bandwidthautodetect:i:1`.
+
+Credentials (Windows user + password, VNC password) are shown masked
+(last 4) with copy buttons in the KEYS section, served **only** to requests
+carrying the dashboard token via `/api/config`. No other endpoint returns
+them; none of them ever appear in URLs, logs, summaries, or artifacts.
+
 WEB DESKTOP is the primary dashboard action for both VPS and ephemeral hosts.
 Native AUTO-LOGIN is offered **only** when the server reports `hostKind=vps`
 and its FQDN, certificate and NLA checks pass. The fallback is a normal

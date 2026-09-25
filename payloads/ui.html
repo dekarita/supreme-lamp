@@ -293,6 +293,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">RDP username</span><span class="v" id="credUser">__USER__</span><button onclick="copyById('credUser',this)">copy</button></div>
   <div class="row"><span class="k">mstsc command</span><span class="v" id="mstscVal">mstsc /v:__IP__</span><button onclick="copyById('mstscVal',this)">copy</button></div>
   <div class="row"><span class="k">Connectivity</span><span class="timer" id="connRtt" style="font-size:18px">-- ms</span><span class="badge" id="connBadge">path: --</span><span class="badge" id="connFps">-- fps</span><span class="badge" id="connJit">jit -- ms</span><canvas id="connSpark" width="220" height="34" style="width:220px;height:34px"></canvas></div>
+  <div class="row" id="pingRelayRow" style="display:none"><span class="k">Advisory</span><span class="v" style="color:#f5d9b7">direct WireGuard not established - check client firewall UDP 41641</span></div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
   <div class="row"><span class="k">RDP logon age</span><span class="timer" id="timerRdpAge">--:--:--</span></div>
   <div class="row"><span class="k">Remaining (5h30 session)</span><span class="timer" id="timerRemaining">--:--:--</span></div>
@@ -325,6 +326,21 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row" id="nrMagicDnsRow" style="display:none"><span class="k">MagicDNS</span><span class="v" id="nrMagicDns" style="color:#f5d9b7"></span></div>
   <div class="row" id="nrReasonsRow" style="display:none"><span class="k">Blocked by</span><span class="v" id="nrReasons" style="color:#f5b7b7"></span></div>
   <div class="row" id="nrVpsPendingRow" style="display:none"><span class="k">VPS status</span><span class="v" id="nrVpsPending" style="color:#f5d9b7">provisioning pending (advisory)</span></div>
+  <div class="row" id="nrWinAutoRow" style="flex-direction:column;align-items:stretch;gap:6px">
+    <span class="k" style="font-weight:600">Windows native redirect (one-time local handler)</span>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="primary" id="btnWinAutoLogin" type="button" disabled>[WINDOWS AUTO-LOGIN]</button>
+      <span class="note" id="winAutoStatus"></span>
+    </div>
+    <span class="note">Fires the local <code>ghrdp://rdp</code> handler: fullscreen mstsc at your client's native resolution with clipboard/drives/printers redirected. No script host is ever launched by this page; NLA/CredSSP stay on; no password travels in any URI. First time? Install the handler once (below), then click.</span>
+    <div id="winAutoInstallBox" style="display:none;flex-direction:column;gap:6px;border:1px solid rgba(245,217,183,.35);border-radius:10px;padding:8px 10px;background:rgba(245,217,183,.06)">
+      <span class="note" style="color:#f5d9b7">Handler not seen - install once (double-click, no admin, no download): run <b>payloads\install.cmd</b> from this repository (keep it next to <b>ghrdp-rdp-launcher.cs</b>), then click [WINDOWS AUTO-LOGIN] again. Zero-install alternative: use <b>WEB DESKTOP</b> below.</span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <code id="winAutoInstallPath" style="flex:1;padding:6px 8px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:11px ui-monospace,Consolas,monospace;overflow-x:auto">payloads\install.cmd</code>
+        <button type="button" onclick="copyById('winAutoInstallPath',this)">copy</button>
+      </div>
+    </div>
+  </div>
   <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
     <span class="k" style="font-weight:600">WEB DESKTOP (primary)</span>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
@@ -371,6 +387,8 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">Mirror (github.io)</span><a id="pagesLink" href="javascript:void(0)">(pages base)</a><button onclick="copyText(document.getElementById('pagesLink').textContent,this)">copy</button></div>
   <div class="row"><span class="k">Legacy Rentry (frozen)</span><a id="legacyLink" href="https://rentry.co/myurl0">https://rentry.co/myurl0</a><button onclick="copyText(document.getElementById('legacyLink').textContent,this)">copy</button></div>
   <div class="row"><span class="k">LEGACY key</span><span class="v" id="legacyKey">...</span><button onclick="copyById('legacyKey',this)">copy</button><span class="note">decrypt key for files uploaded before this run</span></div>
+  <div class="row"><span class="k">Windows user + password</span><span class="v" id="keysWinVal">(loading...)</span><button type="button" onclick="copyGhrdpCred('user',this)">copy user</button><button type="button" onclick="copyGhrdpCred('pass',this)">copy pass</button><span class="note">masked (last 4); full values only via the dash-token-gated /api/config creds block</span></div>
+  <div class="row"><span class="k">VNC password</span><span class="v" id="keysVncVal">(loading...)</span><button type="button" onclick="copyGhrdpCred('vnc',this)">copy</button><span class="note">masked (last 4); never in URLs, logs or summaries</span></div>
 <div id="termRow" style="display:flex;gap:10px;align-items:center;padding:10px 14px;border:1px solid rgba(255,255,255,.14);border-radius:16px;background:rgba(255,255,255,.07);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);box-shadow:0 6px 24px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.1)">
   <span style="font-weight:600">Terminal</span>
   <span style="opacity:.6;font-size:12px">runner · audit-logged · SYSTEM / INTERACTIVE</span>
@@ -677,7 +695,7 @@ function tickTimers(){
     var eb2=$('endedBanner');if(eb2)eb2.classList.remove('show');
     document.body.classList.remove('expired');
   }
-  if(ta){if(sessionStartedAtMs){ta.textContent=fmtHMS(Math.max(0,(now-sessionStartedAtMs)/1000));}else{ta.textContent='--:--:--';}}
+  if(ta){var anc=window.__rdpAgeAnchor;if(anc){ta.textContent=fmtHMS(Math.max(0,anc.ageSec+(Date.now()-anc.wallMs)/1000));}else{ta.textContent='--:--:--';}}
 }
 setInterval(tickTimers,1000);tickTimers();
 (function(){
@@ -689,6 +707,8 @@ var I18N={
 'Tailscale IP':'Tailscale IP',
 'RDP username':'RDP පරිශීලක නාමය',
 'RDP password':'RDP මුරපදය',
+'Windows user + password':'වින්ඩෝස් පරිශීලකයා සහ මුරපදය',
+'VNC password':'VNC මුරපදය',
 'mstsc command':'mstsc විධානය',
 'One-click RDP':'එක-ක්ලික් RDP',
 'Files':'ගොනු','Speed':'වීගය','Scans':'ස්කැන්','ETA':'ETA','Overall':'සමස්ත'
@@ -767,9 +787,12 @@ requestAnimationFrame(raf);
 var wire=null,webRtt=null;
 function paint(){
  var r=cr('c2Rtt'),v=cr('c2Via'),f=cr('c2Fps'),j=cr('c2Jit'),cv=cr('c2Spark');
- var showRtt=(wire&&wire.rtt!=null)?wire.rtt:webRtt;
- if(r){r.textContent=(showRtt==null?'--':Math.round(showRtt))+' ms';r.style.color=showRtt==null?'var(--bad)':(showRtt<100?'var(--ok)':(showRtt<200?'var(--warn)':'var(--bad)'));}
- if(v){v.textContent=wire?('path: '+wire.via+(wire.direct?' (direct)':' (relay)')):'path: --';v.style.color=wire&&wire.direct?'var(--ok)':'var(--warn)';}
+ // [F10 s2] server-side tailscale ping (pingMs/pingPath, 60s fresh) beats
+ // browser RTT; otherwise fall back to the rust wire probe / HTTP timing.
+ var sp=(window.__srvPing&&(Date.now()-window.__srvPing.wallMs)<60000)?window.__srvPing:null;
+ var showRtt=sp?sp.ms:((wire&&wire.rtt!=null)?wire.rtt:webRtt);
+ if(r){r.textContent=(showRtt==null?'--':Math.round(showRtt))+' ms';r.style.color=showRtt==null?'var(--bad)':(showRtt<80?'var(--ok)':(showRtt<200?'var(--warn)':'var(--bad)'));}
+ if(v){v.textContent=sp?('path: '+sp.path):(wire?('path: '+wire.via+(wire.direct?' (direct)':' (relay)')):'path: --');v.style.color=sp?(sp.path==='direct'?'var(--ok)':'var(--warn)'):(wire&&wire.direct?'var(--ok)':'var(--warn)');}
  if(f)f.textContent=fps+' fps';
  if(j)j.textContent='jit '+((wire&&wire.jit!=null)?wire.jit:'--')+' ms';
  if(cv&&wire&&wire.hist&&wire.hist.length){var ctx=cv.getContext('2d');ctx.clearRect(0,0,cv.width,cv.height);var mx=Math.max.apply(null,wire.hist.concat([50]));ctx.strokeStyle='#22d3ee';ctx.beginPath();for(var i=0;i<wire.hist.length;i++){var x=i*(cv.width/19);var y=cv.height-(wire.hist[i]/mx)*(cv.height-4)-2;if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);}ctx.stroke();}
@@ -804,6 +827,9 @@ function launchProto(url){
 // Status, host kind and the user's explicit local confirmation gate the button.
 var FQDN_RE=/^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$/i;
 var nativeHostKind='ephemeral', nativeReady=false, nativeReadyFqdn='';
+// [F10 s1] shared seed for the [WINDOWS AUTO-LOGIN] button block (defined
+// later; this IIFE writes state unconditionally, the later block consumes it).
+window.__winAutoState={fqdn:'',user:'',hard:-1,age:'pending'};
 function syncNativeButton(){
  var btn=$('autoLoginNative');if(!btn)return;
  var fqdn=($('rdpFqdn')||{}).textContent||'';
@@ -815,6 +841,7 @@ function populateFqdn(fqdn, user){
  var el=$('rdpFqdn'), line=$('cmdkeyLine'), mst=$('mstscFallback'), btn=$('autoLoginNative');
  var okFqdn=FQDN_RE.test(fqdn||'');
  var okUser=(typeof user==='string'&&user.length>0);
+ if(window.__winAutoState){window.__winAutoState.fqdn=okFqdn?fqdn:'';window.__winAutoState.user=okUser?user:'';}
  if(!okFqdn){
   if(el){el.textContent=fqdn||'(not set)';el.style.color='#f5b7b7';}
   if(line)line.textContent='(fqdn missing - provision the VPS per docs/MIGRATION.md sec 1.7)';
@@ -838,7 +865,8 @@ populateFqdn('__IP__','rdpuser');
 // cells (server no longer substitutes __USER__).
 async function bootstrapConfig(){
  try{
-  var r=await fetch(apiBase()+'/api/config',{cache:'no-store'});
+  var key=getKey();
+  var r=await fetch(apiBase()+'/api/config'+(key?('?key='+encodeURIComponent(key)):''),{cache:'no-store'});
   if(!r.ok)return;
   var cf=await r.json();
   var cr=(cf&&cf.creds)||{};
@@ -846,9 +874,39 @@ async function bootstrapConfig(){
   var uEl=document.getElementById('credUser');if(uEl&&user)uEl.textContent=user;
   var iEl=document.getElementById('credIp');if(iEl&&ip)iEl.textContent=ip;
   var mv=document.getElementById('mstscVal');if(mv&&fqdn)mv.textContent='mstsc /v:'+fqdn;
+  updateGhrdpCreds(cr,!!key);
   populateFqdn(fqdn,user);
  }catch(_){}
 }
+// [F10 s3] KEYS credentials: masked display (last 4) + copy buttons. The
+// full values only ever arrive from the dash-token-gated /api/config creds
+// block and are kept in JS memory - never written into the DOM, URLs, logs
+// or storage. No key -> honest "dashboard key required" placeholder.
+function mask4(v){v=String(v==null?'':v);if(!v)return '';return v.length<=4?'\u2022\u2022\u2022\u2022':'\u2022\u2022\u2022\u2022'+v.slice(-4);}
+function updateGhrdpCreds(cr,keyed){
+ var st=window.__credStore||(window.__credStore={user:'',pass:'',vnc:''});
+ var wv=document.getElementById('keysWinVal'),vv=document.getElementById('keysVncVal');
+ if(!keyed){
+  if(wv){wv.textContent='(dashboard key required - open your authenticated link)';wv.style.color='#f5d9b7';}
+  if(vv){vv.textContent='(dashboard key required - open your authenticated link)';vv.style.color='#f5d9b7';}
+  st.user='';st.pass='';st.vnc='';
+  return;
+ }
+ st.user=cr.user||'';st.pass=cr.pass||'';st.vnc=cr.vncPass||'';
+ if(wv){wv.textContent=(st.user||'?')+'  '+(st.pass?mask4(st.pass):'(pass n/a)');wv.style.color='';}
+ if(vv){vv.textContent=st.vnc?mask4(st.vnc):'(not set)';vv.style.color=st.vnc?'':'#f5d9b7';}
+}
+window.copyGhrdpCred=function(what,btn){
+ var st=window.__credStore||{};
+ var v=(what==='user')?st.user:((what==='pass')?st.pass:st.vnc);
+ if(!v)return;
+ var ta=document.createElement('textarea');ta.value=v;ta.setAttribute('readonly','');
+ ta.style.position='fixed';ta.style.top='-1000px';ta.style.opacity='0';
+ document.body.appendChild(ta);ta.select();
+ try{document.execCommand('copy');}catch(_){}
+ try{document.body.removeChild(ta);}catch(_){}
+ if(btn){var old=btn.textContent;btn.textContent='copied';setTimeout(function(){btn.textContent=old;},1200);}
+};
 bootstrapConfig();
 setInterval(bootstrapConfig,15000);
 // [U3b] /api/native-status: server-side snapshot of fqdn/cert/nla/handler.
@@ -902,6 +960,32 @@ async function nativeStatus(){
   var ne=document.getElementById('nrNla');if(ne){ne.textContent=s.nlaOn?'ON':'OFF';ne.style.color=s.nlaOn?'':'#f5b7b7';}
   if(!s.nlaOn && pr.nla) setReason('nrNlaReason','BLOCKED: '+pr.nla);
   var srvReasons=(s.reasonsDisabled||[]).slice();
+  // [F10 s1/s2] seed the WINDOWS AUTO-LOGIN button + install-hint + timers:
+  // hard = hard blockers (cmdkey assertion does not gate this path - the
+  // local handler prompts interactively itself); age = handler-hello seconds
+  // (null = never seen => install box shown).
+  if(window.__winAutoState){
+    window.__winAutoState.hard=(s.reasonsDisabled||[]).filter(function(x){return x!=='no-cmdkey-entry';}).length;
+    window.__winAutoState.age=(s&&typeof s.handlerSeenAgeSec==='number')?s.handlerSeenAgeSec:null;
+  }
+  // [F10 s2] rdpLogonAgeSec: anchor the ticking RDP logon-age row at the
+  // first non-null value (fixes the permanent --:--:--); re-anchor only on a
+  // server-vs-timer drift > 10s (e.g. a new RDP session replaced the old).
+  if(s&&typeof s.rdpLogonAgeSec==='number'&&s.rdpLogonAgeSec>=0){
+    var nowMs=Date.now(), anc=window.__rdpAgeAnchor;
+    if(!anc||Math.abs((s.rdpLogonAgeSec-(nowMs-anc.wallMs)/1000)-anc.ageSec)>10){
+      window.__rdpAgeAnchor={ageSec:s.rdpLogonAgeSec,wallMs:nowMs};
+    }
+  }
+  // [F10 s2] REAL ping: server-side tailscale ping (15s cadence) takes
+  // precedence over browser RTT for the CONNECTIVITY row.
+  if(s&&typeof s.pingMs==='number'&&s.pingMs>=0){
+    window.__srvPing={ms:s.pingMs,path:(s.pingPath==='direct'||s.pingPath==='relay')?s.pingPath:'unknown',wallMs:Date.now()};
+  } else if(window.__srvPing&&(Date.now()-window.__srvPing.wallMs)>60000){
+    window.__srvPing=null;
+  }
+  var prRow=document.getElementById('pingRelayRow');
+  if(prRow){prRow.style.display=(window.__srvPing&&window.__srvPing.path==='relay')?'':'none';}
   // [F7] Server can't verify client-PC cmdkey state; the user marks it locally
   // by copying the cmdkey line (see markCredSet). Filter out the reason when set.
   if(credOk()){ srvReasons=srvReasons.filter(function(x){return x!=='no-cmdkey-entry';}); }
@@ -1125,7 +1209,7 @@ async function nativeStatus(){
   if(authAdv){ authAdv.style.display=authHtml?'':'none'; if(authAdvTxt)authAdvTxt.textContent=authHtml; }
   var wb=$('btnWebDesk');
   if(wb){
-   if(webdeskUrl){ wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(webdeskUrl,'_blank','noopener');}; wb.title=webdeskUrl; }
+   if(webdeskUrl){ wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){var u=webdeskUrl;try{var uu=new URL(u);if(!uu.searchParams.has('compression'))uu.searchParams.set('compression','6');u=uu.href;}catch(_){}window.open(u,'_blank','noopener');}; wb.title=webdeskUrl; }
    else { wb.disabled=true; wb.style.opacity='0.5'; wb.style.cursor='not-allowed'; wb.onclick=null; wb.title='web desktop not deployed: '+deskReason; }
   }
  }catch(_){}
@@ -1175,6 +1259,50 @@ if(btn) btn.onclick=function(ev){
    }
   },900);
  })();
+};
+})(); 
+</script>
+<script>
+(function(){
+// [F10 s1] WINDOWS AUTO-LOGIN - fires the local ghrdp://rdp handler:
+//   ghrdp://rdp?server=<*.ts.net>&user=<name>&hello=<dashboard origin>
+// Never carries a password, hash or dashboard token in the URI. The local
+// handler (payloads/install.cmd, double-click once) prompts interactively
+// via Windows Credential UI ONLY when no TERMSRV entry exists yet, then
+// opens mstsc fullscreen at the client's native resolution.
+function $(id){return document.getElementById(id);}
+function seed(){return window.__winAutoState||{fqdn:'',user:'',hard:-1,age:'pending'};}
+function paint(t,c){var el=$('winAutoStatus');if(!el)return;el.style.color=c||'';el.textContent=t||'';}
+function sync(){
+  var st=seed();
+  var ok=/^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$/i.test(st.fqdn||'')&&!!st.user&&st.hard===0;
+  var btn=$('btnWinAutoLogin');
+  if(btn){btn.disabled=!ok;btn.style.opacity=ok?'':'0.5';btn.style.cursor=ok?'':'not-allowed';}
+  var box=$('winAutoInstallBox');
+  if(box){box.style.display=(st.age===null)?'flex':'none';}
+}
+setInterval(sync,1000);sync();
+var btn=$('btnWinAutoLogin');
+if(btn)btn.onclick=function(){
+  var st=seed();
+  if(btn.disabled||!st.fqdn||!st.user)return;
+  var origin='http://'+location.hostname+':7331';
+  var qs='',m=location.search.match(/[?&]key=([^&]+)/);
+  if(m)qs='?key='+encodeURIComponent(m[1]);
+  var uri='ghrdp://rdp?server='+encodeURIComponent(st.fqdn)+'&user='+encodeURIComponent(st.user)+'&hello='+encodeURIComponent(origin);
+  paint('dispatching local handler...','#b7e3f5');
+  try{window.location.href=uri;}catch(_){}
+  setTimeout(function(){
+    fetch(origin+'/api/native-status'+qs,{cache:'no-store'}).then(function(r){return r.ok?r.json():null;}).then(function(s){
+      var age=(s&&typeof s.handlerSeenAgeSec==='number')?s.handlerSeenAgeSec:null;
+      window.__winAutoState.age=age;sync();
+      if(age!==null&&age<90){paint('handler detected - mstsc opening fullscreen','#b7f5c9');}
+      else{paint('handler not detected - install once (copy the path above), or use WEB DESKTOP (zero-install)','#f5d9b7');}
+    }).catch(function(){
+      window.__winAutoState.age=null;sync();
+      paint('handler not detected - install once (copy the path above), or use WEB DESKTOP (zero-install)','#f5d9b7');
+    });
+  },1400);
 };
 })();
 </script>
