@@ -1,4 +1,35 @@
-# GHRDP native auto-login (VPS only)
+# GHRDP native auto-login
+
+## 0. PS-free WINDOWS AUTO-LOGIN (primary path, F10+)
+
+One-time, on your own Windows PC — **no script host, no admin, no binary
+download**:
+
+1. Copy `payloads\install.cmd` and `payloads\ghrdp-rdp-launcher.cs` from the
+   repo into one folder (use "Download raw file" in the GitHub UI, twice).
+2. Double-click `install.cmd`. It compiles the launcher with the in-box
+   .NET Framework 4.x C# compiler (`csc.exe` — part of Windows) and registers
+   the `ghrdp://` protocol under HKCU only. No UAC prompt appears.
+3. On Mission Control, press **WINDOWS AUTO-LOGIN**. mstsc opens fullscreen
+   (your monitor's native resolution, exact aspect) with drive, clipboard,
+   printer, COM, smart-card, POS and microphone redirection, bitmap cache and
+   bandwidth autodetect.
+4. The FIRST time for a new `<fqdn>`, Windows itself asks once for the
+   password (interactive `cmdkey` window). After that there are **0 prompts**.
+   Neither the page nor the launcher ever sees the password; the temporary
+   `.rdp` file is written locally (no MOTW, no SmartScreen) and deleted
+   after mstsc loads it. It never contains a password or hash. NLA and
+   CredSSP stay at Windows defaults.
+
+If the button reports a missing handler, the install hint with the file path
+appears under it; **WEB DESKTOP** remains the zero-install path.
+Expected latency: **< 80 ms round-trip on a direct WireGuard path**. The
+CONNECTIVITY row shows the server-side `tailscale ping` to your PC
+(ms + `direct` | `relay`). On `relay` (DERP) an advisory appears:
+"direct WireGuard not established - check client firewall UDP 41641" —
+allow outbound UDP 41641 on your PC's firewall/router.
+
+## 1. Native auto-login (VPS compiled-handler path, pre-F10)
 
 WEB DESKTOP is the primary dashboard action for both VPS and ephemeral hosts.
 Native AUTO-LOGIN is offered **only** when the server reports `hostKind=vps`
