@@ -349,9 +349,15 @@ jobs:
               foreach ($lf in @('stub.err','ws.err')) { $f = Join-Path $root $lf; if (Test-Path $f) { Get-Content $f -Tail 5 | ForEach-Object { Write-Host ('[H2] ' + $lf + ': ' + $_) } } }
               H2-Fail 'listen' 'websockify(7333)/stub(5901,5902) did not listen'
           }
-          & npm.exe install --no-save --no-package-lock --no-audit --no-fund --silent playwright-core 2>&1 | Select-Object -Last 1 | Out-Null
+          # [F13-diag] --prefix install: the runner's npm exited 0 without
+          # populating <workspace>\node_modules (root-detection quirk with no
+          # package.json). A dedicated prefix + NODE_PATH is deterministic.
+          $pwRoot = Join-Path $env:RUNNER_TEMP 'pw'
+          New-Item -ItemType Directory -Path $pwRoot -Force | Out-Null
+          & npm.exe install --prefix $pwRoot --no-save --no-package-lock --no-audit --no-fund --silent playwright-core 2>&1 | Select-Object -Last 2 | ForEach-Object { Write-Host ('[H2 npm] ' + $_) }
           if ($LASTEXITCODE -ne 0) { H2-Fail 'npm' ('playwright-core install failed, exit ' + $LASTEXITCODE) }
-          if (-not (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'node_modules\playwright-core'))) { H2-Fail 'npm' 'node_modules\playwright-core missing after install' }
+          if (-not (Test-Path -LiteralPath (Join-Path $pwRoot 'node_modules\playwright-core'))) { H2-Fail 'npm' ('playwright-core missing after --prefix install into ' + $pwRoot) }
+          $env:NODE_PATH = Join-Path $pwRoot 'node_modules'
           # [F13-diag] capture the driver output so a failure is classifiable
           # from the artifact/annotation even when the job log is unreachable.
           $e2eOut = Join-Path $root 'e2e-out.txt'
@@ -597,8 +603,14 @@ jobs:
           # Cell K wrote the SAME HKLM forcelist keys main.yml writes and
           # exported the live-resolved ids.
           if (-not $env:K_ubo -or -not $env:K_dr) { K2-Fail 'pre' 'cell K did not export the resolved extension ids' }
-          & npm.exe install --no-save --no-package-lock --no-audit --no-fund --silent playwright-core 2>&1 | Select-Object -Last 1 | Out-Null
-          if ($LASTEXITCODE -ne 0) { K2-Fail 'npm' 'playwright-core install failed' }
+          $pwRoot = Join-Path $env:RUNNER_TEMP 'pw'
+          if (-not (Test-Path -LiteralPath (Join-Path $pwRoot 'node_modules\playwright-core'))) {
+              New-Item -ItemType Directory -Path $pwRoot -Force | Out-Null
+              & npm.exe install --prefix $pwRoot --no-save --no-package-lock --no-audit --no-fund --silent playwright-core 2>&1 | Select-Object -Last 2 | ForEach-Object { Write-Host ('[K2 npm] ' + $_) }
+              if ($LASTEXITCODE -ne 0) { K2-Fail 'npm' ('playwright-core install failed, exit ' + $LASTEXITCODE) }
+              if (-not (Test-Path -LiteralPath (Join-Path $pwRoot 'node_modules\playwright-core'))) { K2-Fail 'npm' 'playwright-core missing after --prefix install' }
+          }
+          $env:NODE_PATH = Join-Path $pwRoot 'node_modules'
           # (1) edge://policy - the forced-extension policy must RENDER there.
           & node.exe (Join-Path $env:GITHUB_WORKSPACE 'payloads\lab\policy-readback.js') msedge policy 'edge://policy' - $env:K_ubo $env:K_dr
           if ($LASTEXITCODE -ne 0) { K2-Fail 'edge-policy' ('edge://policy readback exit ' + $LASTEXITCODE) }
