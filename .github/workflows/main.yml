@@ -1260,20 +1260,54 @@ jobs:
               } catch { }
               return ''
           }
+          # [F9k] Tailscale Serve Syntax Fix & Fail-Closed Logic (supersedes the
+          # F9j foreach loop): the array-splatted serve forms hit
+          # 'Error: invalid argument format' on the Tailscale CLI versions
+          # currently shipping on windows-latest. Now: (1) PRIMARY passes the
+          # explicit port mapping as ONE concatenated argument string (string
+          # concatenation, NOT array expansion, so PowerShell cannot re-split
+          # or re-quote the tokens for the native CLI); (2) any primary failure
+          # drops to the FALLBACK, the explicit-443 form with bare literal
+          # arguments; (3) both attempts print their exit code (F9j contract);
+          # (4) the URL is still derived only from a VERIFIED
+          # `serve status --json` mapping - a serve that fails in BOTH forms
+          # fails closed in the single 'serve-mapping' block below (secret-free
+          # diagnostics, 5s settle re-check, config stamp, throw).
           $serveUrl = ''
           $serveLog = Join-Path $env:RUNNER_TEMP 'ts-serve-webdesk.log'
-          # Two CLI forms of the same 443 mapping (implicit default port, then
-          # explicit '443'): one covers an arg-parsing quirk the other way.
-          foreach ($serveArgs in @(@('--bg', 'http://127.0.0.1:7333'), @('--bg', '443', 'http://127.0.0.1:7333'))) {
+          $serveExit = -1
+          $serveCmd = '--bg http://127.0.0.1:7333'
+          try {
+              & $ts serve $serveCmd 2>&1 | Tee-Object -FilePath $serveLog | Out-Null
+              $serveExit = $LASTEXITCODE
+              $LASTEXITCODE = 0
+              Write-Host ('[webdesk] tailscale serve {0} -> exit {1}' -f $serveCmd, $serveExit)
+              if ($serveExit -ne 0) {
+                  throw "Tailscale serve failed with exit code $serveExit. Log: $(Get-Content $serveLog -Tail 5)"
+              }
+              $serveUrl = Get-WebdeskServeUrl
+          } catch {
+              Write-Host "[webdesk] Primary serve attempt failed. Trying alternative syntax..."
+              try { Write-Host ('[webdesk] primary failure detail: ' + $_.Exception.Message) } catch { }
+              # Fallback: Explicit port definition (bare literal arguments -
+              # the form the Tailscale CLI argument parser accepts across
+              # versions; no array expansion, no embedded quotes).
+              Start-Sleep -Seconds 3
               try {
-                  & $ts serve @serveArgs 2>&1 | Tee-Object -FilePath $serveLog | Out-Null
+                  & $ts serve --bg 443 http://127.0.0.1:7333 2>&1 | Tee-Object -FilePath $serveLog | Out-Null
                   $serveExit = $LASTEXITCODE
                   $LASTEXITCODE = 0
-                  Write-Host ('[webdesk] tailscale serve {0} -> exit {1}' -f ($serveArgs -join ' '), $serveExit)
-              } catch { Write-Host ('[webdesk] tailscale serve attempt error: ' + $_.Exception.Message) }
+              } catch { Write-Host ('[webdesk] tailscale serve fallback attempt error: ' + $_.Exception.Message) }
+              Write-Host ('[webdesk] tailscale serve {0} -> exit {1}' -f ('--bg', '443', 'http://127.0.0.1:7333' -join ' '), $serveExit)
+              if ($serveExit -ne 0) {
+                  # Fail-closed via the 'serve-mapping' block below: it prints
+                  # the secret-free diagnostics, stamps
+                  # webdeskReason='serve-failed' / webdeskDetail='serve-mapping'
+                  # on config.json, and throws - one fail-closed exit point for
+                  # every serve failure (no duplicate reason writes).
+                  Write-Host "Tailscale serve fallback also failed. Check logs for 'invalid argument format'."
+              }
               $serveUrl = Get-WebdeskServeUrl
-              if ($serveUrl) { break }
-              Start-Sleep -Seconds 3
           }
           # [F8c] NO fallback URL fabrication: without a real serve mapping
           # there is no reachable URL, and guessing one is a false LIVE.

@@ -397,6 +397,31 @@ The dashboard's WEB DESKTOP button is enabled only when
   - *Tests:* `tests/workflow-webdesk.test.js` F9j block pins the exit-code
     print, the explicit-443 retry, the no-raw-key-URL / port / host-anchor
     rules, the fail-closed diagnostics, and the loopback-only auto-heal.
+- **[F9k] `tailscale serve` syntax fix + fail-closed serve logic.**
+  A serve-failed run's log showed `Error: invalid argument format` from
+  the array-splatted `tailscale serve --bg …` invocations - the Tailscale
+  CLI argument parser on the runner's current version rejects the
+  per-token form. The web-desktop step now uses a two-form, fail-closed
+  serve:
+  - *Primary:* the explicit port mapping is passed as ONE concatenated
+    argument string (`tailscale serve '--bg http://127.0.0.1:7333'`) -
+    string concatenation, NOT array expansion, so PowerShell cannot
+    re-split or re-quote the tokens for the native CLI.
+  - *Fallback:* the explicit-`443` form with bare literal arguments
+    (`tailscale serve --bg 443 http://127.0.0.1:7333`).
+  - *Fail-closed:* both attempts print their exit code to the step log
+    (F9j contract unchanged). If the mapping is still missing after the
+    fallback the step goes through the single `serve-mapping` block -
+    secret-free diagnostics (serve log tail, `serve status`,
+    `serve status --json`, `tailscale status`), one 5s-settle re-read of
+    `serve status --json`, `config.webdeskReason='serve-failed'` /
+    `webdeskDetail='serve-mapping'` stamped on `config.json`, and a
+    `throw`. No run can report green with a dead web desktop; the URL is
+    still derived only from a VERIFIED mapping (no fabricated URLs), and
+    `VNC_PASS` is never passed to tailscale.
+  - *Tests:* `tests/workflow-webdesk.test.js` (33 Node tests) pin the
+    exit-code print, the explicit-443 form, the verified-mapping URL
+    rules, the fail-closed diagnostics, and the loopback-only auto-heal.
 - **Persistent Windows VPS (post-§1.7)**: §1.7 does NOT provision a web
   desktop. The operator must separately deploy authenticated TightVNC
   bound to loopback, websockify/noVNC on loopback, and `tailscale serve`
