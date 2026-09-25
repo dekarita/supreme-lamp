@@ -74,6 +74,12 @@ jobs:
           }
           if (-not $mst) { Write-Host '[B/C] FAIL: mstsc with ghrdp rdp path not observed'; exit 1 }
           Write-Host ('[B/C] mstsc observed with rdp cmdline (pid ' + $mst.ProcessId + ')')
+          # Kill the observed GUI process: mstsc keeps the CI step's stdout
+          # pipe open while its (expected) unreachable-target dialog is up,
+          # which hangs the step forever.
+          Get-CimInstance Win32_Process -Filter "Name='mstsc.exe'" -ErrorAction SilentlyContinue |
+              Where-Object { $_.CommandLine -like '*ghrdp-*.rdp*' } |
+              ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction Stop; Write-Host ('[B/C] mstsc pid ' + $_.ProcessId + ' stopped after cmdline proof') } catch { } }
           # (c) fullscreen==client native: screen mode id:i:2 WITH no resolution
           # pins is the exact RDP contract for it (asserted above); screenshot
           # proof requires a physical console -> PENDING-USER cell.
