@@ -119,8 +119,12 @@ test('F9o UI: VNC auth mode row + degraded advisory + new detail text', () => {
   assert.match(ui, /id="webdeskAuthAdvisory"/);
   assert.match(ui, /'vnc-auth-unverifiable':'VNC authentication could not be verified/);
   assert.ok(ui.includes(WARN), 'UI advisory must carry the rotate+re-dispatch instruction');
-  // WEB DESKTOP button logic unchanged (opens any valid URL).
-  assert.match(ui, /window\.open\(webdeskUrl,'_blank','noopener'\)/);
+  // WEB DESKTOP button logic (F10-3): opens openUrl, which must be DERIVED
+  // from the validated webdeskUrl and adds autoconnect+compression=6 (§2.3);
+  // a non-root path passes through untouched.
+  assert.match(ui, /var openUrl=webdeskUrl;/);
+  assert.match(ui, /u2\.search='autoconnect=true&compression=6'/);
+  assert.match(ui, /window\.open\(openUrl,'_blank','noopener'\)/);
 });
 
 test('F9o gates: launch-gates enforce the ladder', () => {
