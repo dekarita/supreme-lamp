@@ -51,7 +51,12 @@ jobs:
           grep -q 'webdeskReason' .github/workflows/main.yml
           grep -q 'VNC_PASS not set - web desktop disabled' .github/workflows/main.yml
           step=$(awk '/Web desktop \(noVNC/{f=1} /Start Mission Control dashboard EARLY/{f=0} f' .github/workflows/main.yml)
-          n=$(printf '%s' "$step" | grep -c "Set-WebdeskCfg ''" || true)
+          # NOTE (all gates in this file): grep the shell variables via
+          # herestring, NEVER via `printf '%s' "$var" | grep -q`. Under
+          # `set -o pipefail`, grep -q's early exit SIGPIPEs printf (141),
+          # which pipefail propagates, so `if ! ...` fails DESPITE the match.
+          # It is scheduler-dependent (flaky across identical runs).
+          n=$(grep -c "Set-WebdeskCfg ''" <<< "$step" || true)
           if [ "$n" -lt 6 ]; then
             echo "web-desktop step has silent skip paths (only $n reason writes)" >&2
             exit 1
@@ -64,9 +69,9 @@ jobs:
           # Self-test step must exist and gate on the noVNC marker.
           grep -q 'Web desktop self-test' .github/workflows/main.yml
           teststep=$(awk '/Web desktop self-test/{f=1} /Start Mission Control dashboard EARLY/{f=0} f' .github/workflows/main.yml)
-          printf '%s' "$teststep" | grep -q 'noVNC'
-          printf '%s' "$teststep" | grep -q 'self-test PASS'
-          printf '%s' "$teststep" | grep -q 'self-test FAIL'
+          grep -q 'noVNC' <<< "$teststep"
+          grep -q 'self-test PASS' <<< "$teststep"
+          grep -q 'self-test FAIL' <<< "$teststep"
       - name: F9l web-desktop self-heal + diagnostics gates
         shell: bash
         run: |
@@ -77,47 +82,47 @@ jobs:
           teststep=$(awk '/^      - name: Web desktop self-test/{f=1} /Start Mission Control dashboard EARLY/{f=0} f' "$WF")
           # Assert against CODE, never against prose: comment text must not be
           # able to satisfy (or mask) a gate.
-          code=$(printf '%s' "$teststep" | grep -vE '^[[:space:]]*#')
+          code=$(grep -vE '^[[:space:]]*#' <<< "$teststep")
           # A) [F9n] The self-test must curl the EXACT advertised URL (the value
           #    the dashboard opens) plus the backend root on the tailnet IP.
-          if ! printf '%s' "$code" | grep -qF 'Invoke-Probe $url'; then
+          if ! grep -qF 'Invoke-Probe $url' <<< "$code"; then
             echo 'self-test does not curl the exact advertised URL (Invoke-Probe $url missing)' >&2
             exit 1
           fi
-          if ! printf '%s' "$code" | grep -qF -- "'backend-root'"; then
+          if ! grep -qF -- "'backend-root'" <<< "$code"; then
             echo 'self-test lacks the backend-root probe' >&2
             exit 1
           fi
           # B) Dead backend must be healed by CALLING the idempotent launcher
           #    (the function definition alone proves nothing).
-          if ! printf '%s' "$teststep" | grep -qF '$started = Start-Websockify'; then
+          if ! grep -qF '$started = Start-Websockify' <<< "$teststep"; then
             echo 'self-test cannot heal the backend leg ($started = Start-Websockify missing)' >&2
             exit 1
           fi
           # C) [F9n] serve is retired: no mapping reset may survive, and the
           #    classifier must capture firewall evidence (the GHRDP-Webdesk
           #    rule state) instead of serve status.
-          if printf '%s' "$code" | grep -qF -- "'--bg'"; then
+          if grep -qF -- "'--bg'" <<< "$code"; then
             echo 'self-test still carries a retired serve reset form' >&2
             exit 1
           fi
-          if ! printf '%s' "$code" | grep -q 'GHRDP-Webdesk'; then
+          if ! grep -q 'GHRDP-Webdesk' <<< "$code"; then
             echo 'self-test does not capture GHRDP-Webdesk firewall evidence' >&2
             exit 1
           fi
           # D) [F9n] The classification tokens must exist (diagnosis, not guessing).
           for tok in backend-dead firewall marker-missing; do
-            if ! printf '%s' "$code" | grep -q "verdict = '$tok'"; then
+            if ! grep -q "verdict = '$tok'" <<< "$code"; then
               echo "self-test cannot classify: '$tok' missing" >&2
               exit 1
             fi
           done
           # E) Fail-closed: the halt must still write the locked codes + throw.
-          if ! printf '%s' "$code" | grep -q "\$cfgF.webdeskReason = 'serve-failed'"; then
+          if ! grep -q "\$cfgF.webdeskReason = 'serve-failed'" <<< "$code"; then
             echo 'self-test halt no longer writes webdeskReason=serve-failed' >&2
             exit 1
           fi
-          if ! printf '%s' "$code" | grep -q "throw ('Web desktop self-test FAILED"; then
+          if ! grep -q "throw ('Web desktop self-test FAILED" <<< "$code"; then
             echo 'self-test halt no longer throws (fail-closed)' >&2
             exit 1
           fi
@@ -135,7 +140,7 @@ jobs:
             exit 1
           fi
           launcher=$(awk '/^          function Start-Websockify\(/{f=1} f{print} f && /^          \}$/{exit}' "$WF")
-          if printf '%s' "$launcher" | grep -Fq -- '-WindowStyle Hidden'; then
+          if grep -Fq -- '-WindowStyle Hidden' <<< "$launcher"; then
             echo 'Start-Websockify must not hide the websockify process window' >&2
             exit 1
           fi
@@ -145,24 +150,24 @@ jobs:
           #    (proven by the first lab run: 'rootDirectory ... is not a parent
           #    directory of the file C:\ghrdp\webdesk\websockify.log').
           webdesk_all=$(awk '/Web desktop \(noVNC/{f=1} /Start Mission Control dashboard EARLY/{f=0} f' "$WF" | grep -vE '^[[:space:]]*#')
-          if ! printf '%s' "$webdesk_all" | grep -q 'actions/upload-artifact'; then
+          if ! grep -q 'actions/upload-artifact' <<< "$webdesk_all"; then
             echo 'web-desktop steps do not upload the diagnostics artifact' >&2
             exit 1
           fi
-          if ! printf '%s' "$webdesk_all" | grep -qE '^[[:space:]]+name: webdesk-diag[[:space:]]*$'; then
+          if ! grep -qE '^[[:space:]]+name: webdesk-diag[[:space:]]*$' <<< "$webdesk_all"; then
             echo "web-desktop steps do not upload the 'webdesk-diag' artifact" >&2
             exit 1
           fi
           upload=$(awk '/Web desktop diagnostics artifact/{f=1} f && /^      - name: / && !/Web desktop diagnostics artifact/{exit} f' "$WF")
-          if ! printf '%s' "$upload" | grep -q 'if: always()'; then
+          if ! grep -q 'if: always()' <<< "$upload"; then
             echo 'the diagnostics upload must use if: always() (it must survive a halt)' >&2
             exit 1
           fi
-          if ! printf '%s' "$upload" | grep -qE '^[[:space:]]+path: webdesk-diag[[:space:]]*$'; then
+          if ! grep -qE '^[[:space:]]+path: webdesk-diag[[:space:]]*$' <<< "$upload"; then
             echo 'the diagnostics upload must use the workspace-relative staging dir' >&2
             exit 1
           fi
-          if printf '%s' "$upload" | grep -qE 'C:\\+ghrdp|runner\.temp'; then
+          if grep -qE 'C:\\+ghrdp|runner\.temp' <<< "$upload"; then
             echo 'diagnostics upload uses absolute paths - upload-artifact v4 will fail (stage inside the workspace instead)' >&2
             exit 1
           fi
@@ -175,37 +180,37 @@ jobs:
           # 1) tailscale serve is retired in the webdesk path: no invocation or
           #    serve machinery may survive. The single allowed mention is the
           #    mandated retirement transport note in the deploy summary.
-          rest=$(printf '%s' "$webdesk_all" | grep -v 'tailscale serve retired')
-          if printf '%s' "$rest" | grep -q 'tailscale serve'; then
+          rest=$(grep -v 'tailscale serve retired' <<< "$webdesk_all")
+          if grep -q 'tailscale serve' <<< "$rest"; then
             echo "webdesk steps still use 'tailscale serve' (retired: Windows SYSTEM operator lock 401)" >&2
             exit 1
           fi
           for tok in 'serve status' 'set-raw' 'Get-WebdeskServeUrl' "'--bg'"; do
-            if printf '%s' "$webdesk_all" | grep -qF -- "$tok"; then
+            if grep -qF -- "$tok" <<< "$webdesk_all"; then
               echo "webdesk steps still carry retired serve machinery: $tok" >&2
               exit 1
             fi
           done
           # 2) the CGNAT-only firewall rule must be created (idempotent) + evidenced.
-          if ! printf '%s' "$webdesk_all" | grep -q "New-NetFirewallRule.*GHRDP-Webdesk"; then
+          if ! grep -q "New-NetFirewallRule.*GHRDP-Webdesk" <<< "$webdesk_all"; then
             echo 'webdesk deploy step lacks the GHRDP-Webdesk firewall rule' >&2
             exit 1
           fi
-          if ! printf '%s' "$webdesk_all" | grep -q "RemoteAddress '100.64.0.0/10'"; then
+          if ! grep -q "RemoteAddress '100.64.0.0/10'" <<< "$webdesk_all"; then
             echo 'GHRDP-Webdesk rule is not scoped to 100.64.0.0/10' >&2
             exit 1
           fi
-          if ! printf '%s' "$webdesk_all" | grep -q "LocalPort 7333"; then
+          if ! grep -q "LocalPort 7333" <<< "$webdesk_all"; then
             echo 'GHRDP-Webdesk rule does not target port 7333' >&2
             exit 1
           fi
           # 3) the tailnet IP must come from config.rdpIp with CGNAT validation
           #    (fail-closed, no fabrication, no `tailscale ip` fallback).
-          if ! printf '%s' "$webdesk_all" | grep -q 'cfgR.rdpIp'; then
+          if ! grep -q 'cfgR.rdpIp' <<< "$webdesk_all"; then
             echo 'webdesk deploy step does not read config.rdpIp' >&2
             exit 1
           fi
-          if ! printf '%s' "$webdesk_all" | grep -q 'tailnet-ip-unavailable'; then
+          if ! grep -q 'tailnet-ip-unavailable' <<< "$webdesk_all"; then
             echo 'webdesk deploy step lacks the tailnet-ip-unavailable fail-closed path' >&2
             exit 1
           fi
@@ -232,83 +237,83 @@ jobs:
           # 1) the password mangler must be gone: no package-manager install of
           #    TightVNC may survive in EITHER webdesk step (deploy or self-test).
           for region in deploy teststep; do
-            if eval "printf '%s' \"\$$region\"" | grep -q 'choco install tightvnc'; then
+            if grep -q 'choco install tightvnc' <<< "${!region}"; then
               echo "webdesk $region still carries the password-mangling install path" >&2
               exit 1
             fi
           done
           # 2) L1: ALWAYS direct msiexec with the full property list (download
           #    first; REINSTALL pair when the uninstall key exists).
-          if ! printf '%s' "$deploy" | grep -q 'tightvnc-2.8.85-gpl-setup-64bit.msi'; then
+          if ! grep -q 'tightvnc-2.8.85-gpl-setup-64bit.msi' <<< "$deploy"; then
             echo 'deploy step does not download the TightVNC MSI first (L1)' >&2
             exit 1
           fi
           for prop in 'VALUE_OF_PASSWORD=' 'VALUE_OF_CONTROLPASSWORD=' 'SET_PASSWORD=1' 'SET_CONTROLPASSWORD=1' 'REINSTALL=Server' 'REINSTALLMODE=omus'; do
-            if ! printf '%s' "$deploy" | grep -qF -- "$prop"; then
+            if ! grep -qF -- "$prop" <<< "$deploy"; then
               echo "L1 msiexec property missing: $prop" >&2
               exit 1
             fi
           done
           # 3) L2: restart + registry pin (SecurityTypes=VncAuth) + Password blob check.
-          if ! printf '%s' "$deploy" | grep -q "SecurityTypes.*VncAuth"; then
+          if ! grep -q "SecurityTypes.*VncAuth" <<< "$deploy"; then
             echo 'L2 must pin SecurityTypes to VncAuth' >&2
             exit 1
           fi
-          if ! printf '%s' "$deploy" | grep -q 'Password.*Length.*-ge 8\|\$pwdLen -ge 8\|-ge 8'; then
+          if ! grep -q 'Password.*Length.*-ge 8\|\$pwdLen -ge 8\|-ge 8' <<< "$deploy"; then
             echo 'L2 must verify the Password blob length >= 8' >&2
             exit 1
           fi
           # 4) L3/L4: the REAL auth probe (vncdotool vs 127.0.0.1:5900) must exist
           #    in the deploy step, with redaction and a reinstall retry.
-          if ! printf '%s' "$deploy" | grep -q 'vncdotool'; then
+          if ! grep -q 'vncdotool' <<< "$deploy"; then
             echo 'deploy step lacks the vncdotool auth probe (L3)' >&2
             exit 1
           fi
-          if ! printf '%s' "$deploy" | grep -q '127.0.0.1::5900'; then
+          if ! grep -q '127.0.0.1::5900' <<< "$deploy"; then
             echo 'auth probe must target 127.0.0.1::5900' >&2
             exit 1
           fi
-          if ! printf '%s' "$deploy" | grep -q '\[redacted\]'; then
+          if ! grep -q '\[redacted\]' <<< "$deploy"; then
             echo 'auth probe lacks password redaction' >&2
             exit 1
           fi
-          if ! printf '%s' "$deploy" | grep -q 'choco uninstall tightvnc'; then
+          if ! grep -q 'choco uninstall tightvnc' <<< "$deploy"; then
             echo 'L4 retry lacks the manager-held uninstall + fresh msiexec path' >&2
             exit 1
           fi
           # 5) L5: LABELED degrade - the exact WARNING string + the auth stamp +
           #    the fail-closed unverifiable detail. Never silent, never hidden.
-          if ! printf '%s' "$deploy" | grep -qF 'VNC password gate could not be applied; access limited to tailnet firewall 100.64.0.0/10; rotate VNC_PASS and re-dispatch to restore the gate'; then
+          if ! grep -qF 'VNC password gate could not be applied; access limited to tailnet firewall 100.64.0.0/10; rotate VNC_PASS and re-dispatch to restore the gate' <<< "$deploy"; then
             echo 'L5 degrade path lacks the mandated summary WARNING string' >&2
             exit 1
           fi
-          if ! printf '%s' "$deploy" | grep -q "none-tailnet-only"; then
+          if ! grep -q "none-tailnet-only" <<< "$deploy"; then
             echo "L5 must stamp webdeskAuth='none-tailnet-only'" >&2
             exit 1
           fi
-          if ! printf '%s' "$deploy" | grep -q 'vnc-auth-unverifiable'; then
+          if ! grep -q 'vnc-auth-unverifiable' <<< "$deploy"; then
             echo 'deploy step lacks the vnc-auth-unverifiable fail-closed path' >&2
             exit 1
           fi
           # 6) self-test: HTTP marker AND the mode-matching VNC probe (vnc-auth
           #    verdict on mismatch), with probe codes in the artifact payload.
-          if ! printf '%s' "$teststep" | grep -q 'vncdotool'; then
+          if ! grep -q 'vncdotool' <<< "$teststep"; then
             echo 'self-test lacks the vncdotool probe' >&2
             exit 1
           fi
-          if ! printf '%s' "$teststep" | grep -q 'webdeskAuth'; then
+          if ! grep -q 'webdeskAuth' <<< "$teststep"; then
             echo 'self-test lacks mode-matching (webdeskAuth)' >&2
             exit 1
           fi
-          if ! printf '%s' "$teststep" | grep -q "verdict = 'vnc-auth'"; then
+          if ! grep -q "verdict = 'vnc-auth'" <<< "$teststep"; then
             echo "self-test lacks the 'vnc-auth' verdict" >&2
             exit 1
           fi
-          if ! printf '%s' "$teststep" | grep -q 'vncprobe-codes.txt'; then
+          if ! grep -q 'vncprobe-codes.txt' <<< "$teststep"; then
             echo 'self-test does not record vncprobe-codes.txt' >&2
             exit 1
           fi
-          if ! printf '%s' "$teststep" | grep -q 'tightvnc-tail.txt'; then
+          if ! grep -q 'tightvnc-tail.txt' <<< "$teststep"; then
             echo 'artifact payload lacks tightvnc-tail.txt' >&2
             exit 1
           fi
