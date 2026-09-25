@@ -124,7 +124,10 @@ jobs:
           # (b) lab-only: keep the temp .rdp for content inspection
           $env:GHRDP_KEEP_RDP = '1'
           $uri = 'ghrdp://rdp?server=lab-rdp.test.ts.net&user=labuser&hello=http://127.0.0.1:7331'
-          $p = Start-Process -FilePath $exe -ArgumentList $uri -Wait -PassThru
+          # NOTE: never Start-Process -Wait here - it waits on the whole tree and
+          # mstsc stays alive (error dialog). Wait on the launcher PID only.
+          $p = Start-Process -FilePath $exe -ArgumentList $uri -PassThru
+          if (-not $p.WaitForExit(30000)) { try { $p.Kill($true) } catch { }; throw 'launcher did not exit within 30s (stuck?)' }
           $code = $p.ExitCode
           # capture mstsc cmdline evidence while it may still be alive
           $msCmd = ''
@@ -160,7 +163,8 @@ jobs:
           if ($hello -notmatch 'rdp-launch') { throw 'handler hello beacon missing rdp-launch verb' }
           # default path cleanup behavior (best-effort delete after mstsc holds it)
           Remove-Item Env:\GHRDP_KEEP_RDP -ErrorAction SilentlyContinue
-          $p2 = Start-Process -FilePath $exe -ArgumentList $uri -Wait -PassThru
+          $p2 = Start-Process -FilePath $exe -ArgumentList $uri -PassThru
+          if (-not $p2.WaitForExit(20000)) { try { $p2.Kill($true) } catch { }; throw 'launcher (2nd run) did not exit within 20s' }
           $delNote = 'deleted'
           if (Test-Path -LiteralPath $rdpPath) { $delNote = 'deferred (mstsc held the file; best-effort contract)'; Remove-Item -LiteralPath $rdpPath -Force -ErrorAction SilentlyContinue }
           Stop-Process -Name mstsc -Force -ErrorAction SilentlyContinue
