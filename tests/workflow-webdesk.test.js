@@ -172,6 +172,9 @@ test('F9j: watcher websockify auto-heal is loopback-only (no 0.0.0.0:7333)', () 
   // tailnet TLS, bypassing the serve mapping entirely.
   assert.doesNotMatch(wf, /0\.0\.0\.0:7333/);
   assert.match(wf, /'--web','C:\\ghrdp\\novnc','127\.0\.0\.1:7333','127\.0\.0\.1:5900'/);
+  const autoheal = wf.split('\n').find(line => line.includes("'127.0.0.1:7333','127.0.0.1:5900'"));
+  assert.ok(autoheal, 'watcher websockify auto-heal launch must exist');
+  assert.doesNotMatch(autoheal, /-WindowStyle Hidden/, 'websockify auto-heal must not hide its process window');
 });
 
 // [F9l-1] Idempotent websockify launcher: kill stale + paired redirects +
@@ -185,6 +188,7 @@ test('F9l-1: Start-Websockify is idempotent, paired-redirect and loopback-exact'
   assert.match(fn, /Stop-Process/, 'stale websockify processes must be killed (idempotent re-entry)');
   assert.match(fn, /RedirectStandardOutput \$wsLog/);
   assert.match(fn, /RedirectStandardError \$wsErr/);
+  assert.doesNotMatch(fn, /-WindowStyle Hidden/, 'websockify must not be launched with a hidden window');
   const waits = fn.match(/-LocalAddress '127\.0\.0\.1' -LocalPort 7333 -State Listen/g) || [];
   assert.ok(waits.length >= 2, 'must wait for the loopback listener before and after starting');
   assert.match(fn, /return \$false/);
@@ -192,6 +196,10 @@ test('F9l-1: Start-Websockify is idempotent, paired-redirect and loopback-exact'
   assert.match(webdesk, /\$wsUp = Start-Websockify/, 'the deploy step must call the function');
   // the launcher must not carry the VNC password anywhere
   assert.doesNotMatch(fn, /\$vp\b|VNC_PASS/);
+  const lab = fs.readFileSync('.github/workflows/webdesk-lab.yml', 'utf8');
+  const labStart = lab.split('\n').find(line => line.includes('Start-Process -FilePath python'));
+  assert.ok(labStart, 'fallback lab must still seed websockify');
+  assert.doesNotMatch(labStart, /-WindowStyle Hidden/, 'fallback lab must not hide websockify');
 });
 
 // [F9l-2] Classified, self-healing self-test: the backend leg (loopback:7333)

@@ -26,7 +26,7 @@
 #   and proves the failure path writes the classification + 'webdesk-diag'
 #   payload and still halts fail-closed.
 #
-# LAB_REV=3 (bump to re-trigger the lab: the push trigger watches this file).
+# LAB_REV=4 (F9l follow-up: no hidden websockify process window; push trigger reruns proof).
 # Evidence channel: run logs/artifacts live on the results blob host, which is
 # not always reachable from the tooling that drives this lab, so every probe
 # also emits a ::warning::/::notice:: annotation - annotations are readable
@@ -139,7 +139,7 @@ jobs:
           # Exactly the pre-F9l deploy-step shape: kill stale, Start-Process with
           # paired redirect files, wait for LISTEN, then map the tailnet.
           try { Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*websockify*7333*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
-          Start-Process -FilePath python -ArgumentList @('-m','websockify','--web','C:\ghrdp\novnc','127.0.0.1:7333','127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr -WindowStyle Hidden | Out-Null
+          Start-Process -FilePath python -ArgumentList @('-m','websockify','--web','C:\ghrdp\novnc','127.0.0.1:7333','127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
           $up = $false
           for ($i = 0; $i -lt 20; $i++) {
               $c = Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue

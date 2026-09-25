@@ -126,6 +126,11 @@ jobs:
             echo 'the two Start-Websockify copies diverged - edit both or neither' >&2
             exit 1
           fi
+          launcher=$(awk '/^          function Start-Websockify\(/{f=1} f{print} f && /^          \}$/{exit}' "$WF")
+          if printf '%s' "$launcher" | grep -Fq -- '-WindowStyle Hidden'; then
+            echo 'Start-Websockify must not hide the websockify process window' >&2
+            exit 1
+          fi
           # G) Survivable diagnostics: the webdesk steps must stage + upload the
           #    'webdesk-diag' artifact, and the upload path must stay inside the
           #    workspace - upload-artifact v4 rejects absolute host paths

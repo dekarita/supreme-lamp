@@ -1256,7 +1256,7 @@ jobs:
               }
               # 2) start (paired redirect files - never the same file twice).
               try {
-                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, '127.0.0.1:7333', '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr -WindowStyle Hidden | Out-Null
+                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, '127.0.0.1:7333', '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
               } catch {
                   Write-Host ('[webdesk] websockify start failed: ' + $_.Exception.Message)
                   return $false
@@ -1580,7 +1580,7 @@ jobs:
               }
               # 2) start (paired redirect files - never the same file twice).
               try {
-                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, '127.0.0.1:7333', '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr -WindowStyle Hidden | Out-Null
+                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, '127.0.0.1:7333', '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
               } catch {
                   Write-Host ('[webdesk] websockify start failed: ' + $_.Exception.Message)
                   return $false
@@ -2958,7 +2958,7 @@ jobs:
                   # [F9j] loopback-only + serve noVNC assets: the old all-
                   # interfaces bind on 7333 exposed the bridge on the Tailscale
                   # interface without tailnet TLS, bypassing the serve mapping.
-                  if (-not $brOk) { try { Start-Process -FilePath python -ArgumentList '-m','websockify','--web','C:\ghrdp\novnc','127.0.0.1:7333','127.0.0.1:5900' -WindowStyle Hidden } catch { } }
+                  if (-not $brOk) { try { Start-Process -FilePath python -ArgumentList '-m','websockify','--web','C:\ghrdp\novnc','127.0.0.1:7333','127.0.0.1:5900' } catch { } }
               }
               $rustStr = 'OFF'
               if ($rustProbeOn) {
