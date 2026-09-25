@@ -71,8 +71,13 @@ jobs:
           grep -q 'PollUnderCursor' .github/workflows/main.yml
           grep -q 'CompareFB' .github/workflows/main.yml
           # §4.2 gate: no piracy-index bookmark strings anywhere in main.yml.
-          if grep -E -i -n 'fmhy|megathread|torrent' .github/workflows/main.yml; then
-            echo 'F10: piracy-index string in main.yml' >&2; exit 1
+          # [F11-5.2] narrowed: the plain qBittorrent app is allowed, piracy
+          # INDEX strings/URLs and torrent bookmarks stay banned.
+          if grep -E -i -n 'fmhy|megathread|1337x|thepiratebay|pirate ?bay|rarbg|torrentz|kickass' .github/workflows/main.yml; then
+            echo 'F10/F11: piracy-index string in main.yml' >&2; exit 1
+          fi
+          if grep -nE "name = '[^']*[Tt]orrent[^']*'" .github/workflows/main.yml; then
+            echo 'F11: a torrent bookmark reappeared' >&2; exit 1
           fi
           grep -q 'ExtensionInstallForcelist' .github/workflows/main.yml
           # F10-11: ONE live resolver, dot-sourced by both the provisioning
@@ -174,6 +179,59 @@ jobs:
           grep -q 'window.__rdpUsage' payloads/ui.html
           grep -q 'window.__rdpLogon' payloads/ui.html
           echo 'F11-3 gates PASS'
+      - name: F11-5/6 provisioning + setup-time gates (hidden helpers, no mirror)
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          # §5.3 every host-helper launch is hidden (or NoNewWindow for the
+          # user-driven terminal exec / msiexec probes): no bare Start-Process.
+          if grep -n 'Start-Process' "$wf" | grep -v '^\s*[0-9]*:\s*#' | grep -vE 'WindowStyle Hidden|NoNewWindow'; then
+            echo 'F11-5.3: a host-helper launch lacks the hidden/SYSTEM form' >&2
+            exit 1
+          fi
+          # background loops in the server always launch hidden
+          for helper in wire-probe.ps1 rdp-ping.ps1 rdp-usage.ps1; do
+            grep -q "'-File',(Join-Path \$Root '$helper') -WindowStyle Hidden" payloads/ghrdp-server.ps1 || {
+              echo "F11-5.3: $helper is not launched hidden" >&2; exit 1; }
+          done
+          # SYSTEM scheduled tasks for the long-lived services (dashboard,
+          # rust dash) + hidden background helpers in the server itself.
+          grep -q "UserId 'SYSTEM'" "$wf"
+          grep -q "LogonType ServiceAccount" "$wf"
+          if grep -n 'Start-Process' payloads/ghrdp-server.ps1 | grep -v 'NoNewWindow' | grep -v 'WindowStyle Hidden'; then
+            echo 'F11-5.3: a server-launched helper lacks the hidden form' >&2
+            exit 1
+          fi
+          # §5.2 qBittorrent is a plain cached app and NEVER wired to a mirror.
+          grep -q 'qBittorrent.qBittorrent' "$wf"
+          grep -q 'winget download --id qBittorrent.qBittorrent' "$wf"
+          grep -q 'cache\\qbittorrent' "$wf"
+          if grep -nE 'qBittorrent[^\n]*(Web UI|webui|--webui|8080)' "$wf"; then
+            echo 'F11-5.2: qBittorrent must stay a plain app (no Web UI wiring)' >&2
+            exit 1
+          fi
+          # Mirror stays OFF: MIRROR_INPUT only ever compared to 'true', no
+          # mirror input in workflow_dispatch, no reintroduced publish step.
+          grep -q "MIRROR_INPUT -eq 'true'" "$wf"
+          if grep -nE "MIRROR_INPUT'? *(-ne|-eq) *'?(true|false)'?" "$wf" | grep -v "MIRROR_INPUT -eq 'true'"; then
+            echo 'F11-5.2: mirror default must stay OFF (only -eq true)' >&2
+            exit 1
+          fi
+          if awk '/^on:/{f=1} /^permissions:/{f=0} f' "$wf" | grep -qE '^\s+mirror:'; then
+            echo 'F11-5.2: a mirror dispatch input reappeared' >&2
+            exit 1
+          fi
+          if grep -nE '^\s*Publish-AllIndexes' "$wf" | grep -v 'try {'; then
+            echo 'F11-5.2: a mirror publish step reappeared outside the disabled path' >&2
+            exit 1
+          fi
+          # §6 setup-time report + merged start/cache step + event wait.
+          grep -q 'Setup time report (F11-6)' "$wf"
+          grep -q 'provisioning finished in' "$wf"
+          grep -q 'Record job start + pre-create cache directories' "$wf"
+          grep -q 'service registered=' "$wf"
+          echo 'F11-5/6 gates PASS'
       - name: F8 web-desktop honesty gates
         shell: bash
         run: |

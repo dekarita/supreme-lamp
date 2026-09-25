@@ -125,3 +125,40 @@ test('F11-3 ui: RDP USAGE row ticks live, freezes on inactive sample', () => {
   // frozen = the accumulated value is shown as-is (no local extrapolation)
   assert.match(ui, /frozen/);
 });
+
+// -------------------------------------------------- §5 provisioning / §6 setup ---
+test('F11-5.3 every host-helper launch in main.yml is hidden (no console window)', () => {
+  const wf2 = fs.readFileSync('.github/workflows/main.yml', 'utf8');
+  const bare = wf2.split('\n').filter((l) => !/^\s*#/.test(l) && /Start-Process/.test(l))
+    .filter((l) => !/WindowStyle Hidden/.test(l) && !/NoNewWindow/.test(l));
+  assert.deepEqual(bare, [], 'bare Start-Process launches would pop a console window');
+  for (const helper of ['wire-probe.ps1', 'rdp-ping.ps1', 'rdp-usage.ps1']) {
+    assert.ok(new RegExp("'-File',\\(Join-Path \\$Root '" + helper.replace('.', '\\.') + "'\\) -WindowStyle Hidden").test(server),
+      helper + ' must be launched hidden from ghrdp-server.ps1');
+  }
+  assert.match(wf2, /UserId 'SYSTEM'/);
+  assert.match(wf2, /LogonType ServiceAccount/);
+});
+
+test('F11-5.2 qBittorrent is a plain cached winget app; the mirror pipeline stays OFF', () => {
+  const wf2 = fs.readFileSync('.github/workflows/main.yml', 'utf8');
+  assert.match(wf2, /qBittorrent\.qBittorrent/);
+  assert.match(wf2, /winget download --id qBittorrent\.qBittorrent/);
+  assert.match(wf2, /cache\\qbittorrent/);
+  assert.ok(!/qBittorrent[^\n]*(Web UI|webui|--webui|8080)/.test(wf2), 'no qBittorrent web-UI wiring');
+  assert.match(wf2, /MIRROR_INPUT -eq 'true'/);
+  const onBlock = wf2.slice(wf2.indexOf('on:'), wf2.indexOf('permissions:'));
+  assert.ok(!/^\s+mirror:/m.test(onBlock), 'no mirror dispatch input may exist');
+  const publishes = wf2.split('\n').filter((l) => /^\s*Publish-AllIndexes/.test(l));
+  assert.deepEqual(publishes, [], 'mirror publish steps must not reappear');
+});
+
+test('F11-6 setup-time: single merged start/cache step, event wait, minutes report', () => {
+  const wf2 = fs.readFileSync('.github/workflows/main.yml', 'utf8');
+  assert.ok(!/name: Record job start time\n/.test(wf2), 'start-time step must be merged (step count)');
+  assert.match(wf2, /Record job start \+ pre-create cache directories/);
+  assert.match(wf2, /service registered=/);
+  assert.match(wf2, /Setup time report \(F11-6\)/);
+  assert.match(wf2, /::notice title=Setup time::provisioning finished in /);
+  assert.match(wf2, /target <= 6/);
+});

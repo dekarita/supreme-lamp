@@ -104,7 +104,10 @@ test('F10-4 workflow: gated vncPass stamp, latency keys, live ext resolution, cl
   assert.match(wf, /docs\/AUTOLOGIN\.md/);
   assert.match(wf, /login\.tailscale\.com\/admin\/dns/);
   assert.match(wf, /actions\/cache@v4/);
-  assert.ok(!/fmhy|megathread|torrent/i.test(wf), 'no piracy-index strings');
+  // [F11-5.2] narrowed: the plain qBittorrent app is allowed; piracy INDEX
+  // strings and torrent bookmarks remain banned.
+  assert.ok(!/fmhy|megathread|1337x|thepiratebay|rarbg|torrentz|kickass/i.test(wf), 'no piracy-index strings');
+  assert.ok(!/name = '[^']*[Tt]orrent[^']*'/.test(wf), 'no torrent bookmark');
 });
 
 test('F10-16 server: last-4 mask is computed numerically, loopback via static API', () => {
@@ -137,7 +140,9 @@ test('F10-5 launch-gates carry the F10 block', () => {
   const gates = fs.readFileSync('.github/workflows/launch-gates.yml', 'utf8');
   assert.match(gates, /F10 PS-free launch \/ gated creds \/ bookmark gates/);
   assert.match(gates, /ghrdp-rdp-launcher\.cs/);
-  assert.match(gates, /fmhy\|megathread\|torrent/);
+  // [F11-5.2] the gate string was narrowed (bare 'torrent' now only appears for
+  // the plain qBittorrent app; index strings/URLs stay banned).
+  assert.match(gates, /fmhy\|megathread\|1337x/);
   assert.match(gates, /Test-CredsAllowed/);
   assert.match(gates, /edge-ext-resolve\.ps1/);
 });

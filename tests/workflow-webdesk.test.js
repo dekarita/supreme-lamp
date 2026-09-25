@@ -214,7 +214,10 @@ test('F9n: keepalive websockify auto-heal binds the tailnet IP (no loopback rebi
   assert.doesNotMatch(wf, /'127\.0\.0\.1:7333'/, 'loopback websockify bind survives');
   const autoheal = wf.split('\n').find(line => line.includes("($ipNow + ':7333'),'127.0.0.1:5900'"));
   assert.ok(autoheal, 'keepalive websockify auto-heal launch must exist');
-  assert.doesNotMatch(autoheal, /-WindowStyle Hidden/, 'websockify auto-heal must not hide its process window');
+  // [F11-5.3] SUPERSEDES the F9n no-hidden form: every host helper (websockify
+  // included) must run hidden so the first interactive RDP session shows no
+  // stray console windows. Launch-gates F11 enforces the hidden form.
+  assert.match(autoheal, /-WindowStyle Hidden/, 'websockify auto-heal must run hidden (F11-5.3)');
   assert.match(wf, /refusing loopback rebind/, 'heal must refuse without a valid tailnet IP');
 });
 
@@ -233,7 +236,7 @@ test('F9n: Start-Websockify is idempotent, paired-redirect and tailnet-exact', (
   assert.match(fn, /Stop-Process/, 'stale websockify processes must be killed (idempotent re-entry)');
   assert.match(fn, /RedirectStandardOutput \$wsLog/);
   assert.match(fn, /RedirectStandardError \$wsErr/);
-  assert.doesNotMatch(fn, /-WindowStyle Hidden/, 'websockify must not be launched with a hidden window');
+  assert.match(fn, /-WindowStyle Hidden/, 'websockify must run hidden (F11-5.3 supersedes F9n)');
   const waits = fn.match(/-LocalAddress \$BindIp -LocalPort 7333 -State Listen/g) || [];
   assert.ok(waits.length >= 2, 'must wait for the tailnet listener before and after starting');
   assert.match(fn, /return \$false/);
@@ -244,7 +247,7 @@ test('F9n: Start-Websockify is idempotent, paired-redirect and tailnet-exact', (
   const lab = fs.readFileSync('.github/workflows/webdesk-lab.yml', 'utf8');
   assert.ok(lab.includes('function Start-Websockify'), 'fallback lab must exercise the production launcher');
   const labStart = lab.split('\n').find(line => line.includes('Start-Process -FilePath python'));
-  if (labStart) assert.doesNotMatch(labStart, /-WindowStyle Hidden/, 'fallback lab must not hide websockify');
+  if (labStart) assert.match(labStart, /-WindowStyle Hidden/, 'fallback lab mirrors the F11-5.3 hidden websockify form');
 });
 
 // [F9n] Classified, self-healing self-test: the EXACT advertised URL is
