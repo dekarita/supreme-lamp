@@ -1,0 +1,39 @@
+# [F9k §6] Durable fallback for applying a format-patch series when PR tooling
+# is unavailable in the agent environment. Usage: git format-patch --stdout |
+# base64 -w0, then dispatch with branch + patch_b64. `git am --3way` is the
+# definitive application path; a PR is opened best-effort afterwards.
+name: apply-patch
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to apply the patch onto (created or reset from the default branch)'
+        required: true
+        default: feat/f9k
+      patch_b64:
+        description: 'git format-patch --stdout output, base64-encoded'
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply patch, push branch, open PR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "${{ inputs.patch_b64 }}" | base64 -d > "$RUNNER_TEMP/change.patch"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "${{ inputs.branch }}"
+          git am --3way < "$RUNNER_TEMP/change.patch"
+          git push -u origin "${{ inputs.branch }}"
+          gh pr create --fill || true

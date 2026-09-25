@@ -92,6 +92,32 @@ jobs:
             echo 'a step reads Self.DNSName without a non-empty *.ts.net validation - a MagicDNS gate could pass on an empty or non-ts.net name' >&2
             exit 1
           fi
+      - name: F9k secret-halt + cascade gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          # The TS_AUTHKEY halt must carry the clickable Tailscale admin keys link.
+          if ! grep -q 'login.tailscale.com/admin/settings/keys' .github/workflows/main.yml; then
+            echo "main.yml lacks 'login.tailscale.com/admin/settings/keys' (TS_AUTHKEY halt link)" >&2
+            exit 1
+          fi
+          # Secret fix instructions must link the repo secrets settings page.
+          if ! grep -q 'settings/secrets/actions' .github/workflows/main.yml; then
+            echo "main.yml lacks 'settings/secrets/actions' (repo secrets settings link)" >&2
+            exit 1
+          fi
+          # Every ghrdp-lib.ps1 dot-source must carry exactly one '# [F9k-guard]'
+          # cascade guard, and the gate must not be vacuous.
+          guards=$(grep -cF '# [F9k-guard]' .github/workflows/main.yml || true)
+          dotsrc=$(grep -c "\. (Join-Path \$root 'ghrdp-lib.ps1')" .github/workflows/main.yml || true)
+          if [ "$dotsrc" -lt 1 ]; then
+            echo 'no ghrdp-lib.ps1 dot-sources found - gate would be vacuous' >&2
+            exit 1
+          fi
+          if [ "$guards" -ne "$dotsrc" ]; then
+            echo "F9k guard count ($guards) != ghrdp-lib dot-source count ($dotsrc)" >&2
+            exit 1
+          fi
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:
