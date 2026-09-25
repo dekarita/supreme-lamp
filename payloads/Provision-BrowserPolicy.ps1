@@ -97,12 +97,22 @@ function Get-StoreExtensionId {
                 if ($hintOk -and -not $found.ContainsKey($mU.Groups[1].Value)) { $found[$mU.Groups[1].Value] = $seg }
             }
         }
-        # 2) body scan (server-rendered links, embedded state JSON, any ID near a slug hint)
+        # 2) body scan: literal links, URL-decoded text, Bing /ck/a?u=a1 base64
+        # targets, embedded state - every form + a hint-gated 32-char state scan.
         if ($html) {
             $scanTexts = @($html)
             try {
                 $dec = [uri]::UnescapeDataString($html)
                 if ($dec -and ($dec -ne $html)) { $scanTexts += $dec }
+            } catch { }
+            try {
+                $rxU = [regex]('u=a1([A-Za-z0-9_\-]+)')
+                foreach ($mU2 in $rxU.Matches($html)) {
+                    $b64 = $mU2.Groups[1].Value -replace '_', '/' -replace '-', '+'
+                    while (($b64.Length % 4) -ne 0) { $b64 += '=' }
+                    $u2 = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($b64))
+                    if ($u2 -like 'http*') { $scanTexts += $u2 }
+                }
             } catch { }
             foreach ($txt in $scanTexts) {
                 foreach ($m in $rx.Matches($txt)) {
@@ -115,23 +125,25 @@ function Get-StoreExtensionId {
                 }
             }
             # embedded state: any 32-char a-p ID token whose +-400-char window
-            # contains one of the slug hints (case-insensitive) and a slug/id-ish key
+            # contains one of the slug hints (case-insensitive)
             if ($found.Count -eq 0) {
                 $rxId = [regex]('(?i)([a-p]{32})')
-                foreach ($m in $rxId.Matches($html)) {
-                    if ($m.Length -ne 32) { continue }
-                    $id = $m.Value.ToLowerInvariant()
-                    # reject substrings of a longer a-p run (truncated/shifted ids)
-                    $preOk = ($m.Index -eq 0) -or (-not ([string]$html[$m.Index - 1] -match '(?i)[a-p]'))
-                    $postIdx = $m.Index + 32
-                    $postOk = ($postIdx -ge $html.Length) -or (-not ([string]$html[$postIdx] -match '(?i)[a-p]'))
-                    if (-not ($preOk -and $postOk)) { continue }
-                    $lo = [Math]::Max(0, $m.Index - 400)
-                    $hi = [Math]::Min($html.Length, $m.Index + $m.Length + 400)
-                    $win = $html.Substring($lo, $hi - $lo).ToLowerInvariant()
-                    $hintOk = $false
-                    foreach ($h in $SlugHints) { if ($win.Contains($h)) { $hintOk = $true; break } }
-                    if ($hintOk -and -not $found.ContainsKey($id)) { $found[$id] = 'state:' + $id }
+                foreach ($txt in $scanTexts) {
+                    foreach ($m in $rxId.Matches($txt)) {
+                        if ($m.Length -ne 32) { continue }
+                        $id = $m.Value.ToLowerInvariant()
+                        # reject substrings of a longer a-p run (truncated/shifted ids)
+                        $preOk = ($m.Index -eq 0) -or (-not ([string]$txt[$m.Index - 1] -match '(?i)[a-p]'))
+                        $postIdx = $m.Index + 32
+                        $postOk = ($postIdx -ge $txt.Length) -or (-not ([string]$txt[$postIdx] -match '(?i)[a-p]'))
+                        if (-not ($preOk -and $postOk)) { continue }
+                        $lo = [Math]::Max(0, $m.Index - 400)
+                        $hi = [Math]::Min($txt.Length, $m.Index + $m.Length + 400)
+                        $win = $txt.Substring($lo, $hi - $lo).ToLowerInvariant()
+                        $hintOk = $false
+                        foreach ($h in $SlugHints) { if ($win.Contains($h)) { $hintOk = $true; break } }
+                        if ($hintOk -and -not $found.ContainsKey($id)) { $found[$id] = 'state:' + $id }
+                    }
                 }
             }
             $goodHtml = $html
