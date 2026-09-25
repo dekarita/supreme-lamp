@@ -237,10 +237,18 @@ test('F9n: Start-Websockify is idempotent, paired-redirect and tailnet-exact', (
   assert.match(webdesk, /\$wsUp = Start-Websockify \$bindIp/, 'the deploy step must call the function with the bind address');
   // the launcher must not carry the VNC password anywhere
   assert.doesNotMatch(fn, /\$vp\b|VNC_PASS/);
+  // [F9n] the lab must exercise the SHIPPED code, never a re-implementation: it
+  // extracts both helpers verbatim from main.yml and calls them.
   const lab = fs.readFileSync('.github/workflows/webdesk-lab.yml', 'utf8');
-  const labStart = lab.split('\n').find(line => line.includes('Start-Process -FilePath python'));
-  assert.ok(labStart, 'fallback lab must still seed websockify');
-  assert.doesNotMatch(labStart, /-WindowStyle Hidden/, 'fallback lab must not hide websockify');
+  assert.match(lab, /extracted-webdesk-helpers\.ps1/, 'the lab must extract the production helpers from main.yml');
+  assert.match(lab, /\$up = Start-Websockify \$ip/, 'the lab must call the extracted launcher with the tailnet address');
+  assert.match(lab, /\$fw = Set-WebdeskFirewall/, 'the lab must call the extracted firewall helper');
+  assert.match(lab, /RemoteAddress '100\.64\.0\.0\/10'/, 'the lab must assert the CGNAT scope of the extracted rule');
+  assert.match(lab, /noVNC/, 'the lab must require the noVNC marker');
+  assert.match(lab, /extracted-selftest\.ps1/, 'the lab must run the extracted production self-test');
+  assert.doesNotMatch(lab, /Start-Process -FilePath python/, 'the lab must not re-implement the websockify launch');
+  assert.doesNotMatch(lab, /tailscale serve/, 'the lab must not exercise the retired serve transport');
+  assert.doesNotMatch(lab, /0\.0\.0\.0:7333/, 'the lab must not bind all interfaces');
 });
 
 // [F9n] Classified, self-healing self-test: the EXACT advertised URL is curled
