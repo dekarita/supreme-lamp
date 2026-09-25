@@ -347,6 +347,8 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     After re-dispatch, this button will enable automatically.
   </div>
   <div class="row" id="webdeskVncAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" id="webdeskVncAdvisoryText" style="color:#f5d9b7">Web desktop unavailable: set <code>VNC_PASS</code> in <a href="https://github.com/dekarita/supreme-lamp/settings/secrets/actions" target="_blank" rel="noopener">GitHub Actions secrets</a>, then re-run.</span></div>
+  <div class="note" id="tsAuthGuidance" style="display:none;color:#f5d9b7;margin:4px 0 10px 130px"></div>
+  <div class="row" id="tsAuthAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" id="tsAuthAdvisoryText" style="color:#f5d9b7"></span></div>
   <div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
     <span class="k" style="font-weight:600">Shortcut text (copy only; VPS one-time cmdkey)</span>
     <div style="display:flex;gap:8px;align-items:center">
@@ -1058,6 +1060,40 @@ async function nativeStatus(){
   }
   if(vncGuide){ vncGuide.innerHTML=guideHtml; vncGuide.style.display=guideHtml?'block':'none'; }
   if(vncAdvice){ vncAdvice.style.display=adviceHtml?'':'none'; if(vncAdviceTxt) vncAdviceTxt.innerHTML=adviceHtml; }
+  // [F9k] Second conditional yellow box (same VNC_PASS box pattern): the run
+  // halted fail-closed at "Tailscale up" because the TS_AUTHKEY secret is
+  // missing or was rejected. tsReason comes from config.json via native-status
+  // (stamped by Emit-SecretHalt); a ts-authkey-* value in webdeskReason is
+  // accepted too, so either writer lights the box. Clickable admin-keys link +
+  // the 5-step regeneration procedure; no credentials in any link.
+  var tsGuide=document.getElementById('tsAuthGuidance');
+  var tsAdvice=document.getElementById('tsAuthAdvisory');
+  var tsAdviceTxt=document.getElementById('tsAuthAdvisoryText');
+  var tsReason=(s&&s.tsReason)?String(s.tsReason):'';
+  if(!tsReason&&/^ts-authkey-/.test(deskReason))tsReason=deskReason;
+  var TS_KEYS_URL='https://login.tailscale.com/admin/settings/keys';
+  if(s&&s.tsAuthAdminUrl&&/^https:\/\/login\.tailscale\.com\/admin\//.test(String(s.tsAuthAdminUrl)))TS_KEYS_URL=String(s.tsAuthAdminUrl);
+  var tsHtml='';
+  if(tsReason==='ts-authkey-missing'||tsReason==='ts-authkey-invalid'){
+    tsHtml=(tsReason==='ts-authkey-missing'
+      ?'<code>TS_AUTHKEY</code> secret is missing. The workflow halts fail-closed at the &ldquo;Tailscale up&rdquo; step until it is set. To fix:'
+      :'<code>TS_AUTHKEY</code> secret is invalid, expired or revoked. The workflow halts fail-closed at the &ldquo;Tailscale up&rdquo; step until it is replaced. To fix:')+
+      '<ol style="margin:6px 0 0 20px">'+
+      '<li>Open <a href="'+TS_KEYS_URL+'" target="_blank" rel="noopener">Tailscale Admin &rarr; Settings &rarr; Keys</a></li>'+
+      '<li>Click &ldquo;Generate auth key&rdquo; with <strong>Reusable</strong> on and expiry <strong>90 days</strong></li>'+
+      '<li>Copy the generated <code>tskey-auth-…</code> value</li>'+
+      '<li>Set repo secret <code>TS_AUTHKEY</code> in <a href="'+SECRETS_URL+'" target="_blank" rel="noopener">GitHub Secrets Settings</a></li>'+
+      '<li>Re-dispatch the workflow (Actions &rarr; Windows RDP &rarr; Run workflow)</li>'+
+      '</ol>'+
+      'There is no interactive sign-in fallback; the key value is never shown in logs, links or this page.';
+  }
+  if(tsGuide){ tsGuide.innerHTML=tsHtml; tsGuide.style.display=tsHtml?'block':'none'; }
+  if(tsAdvice){
+    tsAdvice.style.display=tsHtml?'':'none';
+    if(tsAdviceTxt)tsAdviceTxt.innerHTML=tsHtml?(tsReason==='ts-authkey-missing'
+      ?'Workflow halted: <code>TS_AUTHKEY</code> secret missing - <a href="'+TS_KEYS_URL+'" target="_blank" rel="noopener">generate a reusable key</a>, then update the repo secret and re-run.'
+      :'Workflow halted: <code>TS_AUTHKEY</code> rejected (invalid/expired/revoked) - <a href="'+TS_KEYS_URL+'" target="_blank" rel="noopener">regenerate a reusable key</a>, then update the repo secret and re-run.'):'';
+  }
   var wb=$('btnWebDesk');
   if(wb){
    if(webdeskUrl){ wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(webdeskUrl,'_blank','noopener');}; wb.title=webdeskUrl; }

@@ -492,6 +492,16 @@ function Invoke-ClientRequest {
             # hardcoding it in the page.
             $vncAdmin = 'https://github.com/dekarita/supreme-lamp/settings/secrets/actions'
             if ($cfgN -and $cfgN.PSObject.Properties['vncPassAdminUrl'] -and $cfgN.vncPassAdminUrl -match '^https://github\.com/') { $vncAdmin = [string]$cfgN.vncPassAdminUrl }
+            # [F9k] tsReason + tsAuthAdminUrl: stamped into config.json by the
+            # workflow's Emit-SecretHalt when TS_AUTHKEY is missing or rejected
+            # (ts-authkey-missing|ts-authkey-invalid|ts-authkey-ratelimited|
+            # ts-authkey-unknown). The dashboard renders the keys-page link as
+            # a second conditional box. Admin URL is allowlist-validated;
+            # nothing here ever carries key material.
+            $tsr = ''
+            if ($cfgN -and $cfgN.PSObject.Properties['tsReason'] -and [string]$cfgN.tsReason -match '^ts-[a-z-]+$') { $tsr = ([string]$cfgN.tsReason).Substring(0, [Math]::Min(64, ([string]$cfgN.tsReason).Length)) }
+            $tsAdmin = 'https://login.tailscale.com/admin/settings/keys'
+            if ($cfgN -and $cfgN.PSObject.Properties['tsAuthAdminUrl'] -and [string]$cfgN.tsAuthAdminUrl -match '^https://login\.tailscale\.com/admin/') { $tsAdmin = [string]$cfgN.tsAuthAdminUrl }
             if ($wd) { $wdr = ''; $wdDetail = '' } elseif (-not $wdr) { $wdr = 'step-not-run' }
             # [F8a] config-stale: URL advertised but nothing listens on
             # 127.0.0.1:7333 (websockify died after the step wrote config).
@@ -513,6 +523,8 @@ function Invoke-ClientRequest {
                 webdeskReason = $wdr
                 webdeskDetail = $wdDetail
                 vncPassAdminUrl = $vncAdmin
+                tsReason = $tsr
+                tsAuthAdminUrl = $tsAdmin
                 vpsPending = $vpsPending
                 # [F9c] actionable MagicDNS admin link: the dashboard linkifies
                 # it whenever the fqdn reason renders (fqdn missing) and hides
