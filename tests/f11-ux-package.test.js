@@ -7,6 +7,7 @@ const vm = require('node:vm');
 
 const shimSrc = fs.readFileSync('payloads/ghrdp-cred-shim.js', 'utf8');
 const ui = fs.readFileSync('payloads/ui.html', 'utf8');
+const server = fs.readFileSync('payloads/ghrdp-server.ps1', 'utf8');
 const wf = fs.readFileSync('.github/workflows/main.yml', 'utf8');
 const gates = fs.readFileSync('.github/workflows/launch-gates.yml', 'utf8');
 
@@ -86,4 +87,41 @@ test('F11-2 deploy: shim injected into the served noVNC copy with the exact orig
   assert.match(wf, /mmc|meta name="ghrdp-cred-origin"/);
   assert.match(wf, /http:\/\/' \+ \$rdpIp \+ ':7331'/);
   assert.match(gates, /F11-2 VNC password memory gates/);
+});
+
+// ---------------------------------------------------------------- §3 usage ---
+test('F11-3 server: usage accumulator loop, dual activity signal, 5s tick', () => {
+  assert.match(server, /rdp-usage\.ps1/);
+  assert.match(server, /function Test-RdpConnected/);
+  assert.match(server, /function Test-WebdeskClient/);
+  assert.match(server, /qwinsta\.exe/);
+  assert.match(server, /ws-clients\.txt/);
+  assert.match(server, /websockify\.log/);
+  assert.match(server, /\$sec = \$sec \+ 5/, 'accumulator must add one 5s tick while active');
+  assert.match(server, /Start-Sleep -Seconds 5/);
+  // persist to config on stop + at most every 30s while running
+  assert.match(server, /rdpUsageSec', \$sec/);
+  assert.match(server, /rdpUsageHost', \[string\]\$c\.dnsName/);
+  assert.match(server, /rdpUsageActive = \$rdpUsageActive/);
+  assert.match(server, /rdpUsageAgeSec/);
+  // loop must be hidden (no console window in the interactive session)
+  const launch = server.split('\n').find((l) => l.includes('rdp-usage.ps1') && l.includes('Start-Process'));
+  assert.ok(launch && launch.includes('-WindowStyle Hidden'), 'usage loop must launch hidden');
+});
+
+test('F11-3 workflow: accumulator carried across a same-host re-dispatch only', () => {
+  const wf2 = fs.readFileSync('.github/workflows/main.yml', 'utf8');
+  assert.match(wf2, /rdpUsageSec carried forward/);
+  assert.match(wf2, /\$oldHost -eq \$env:COMPUTERNAME -or \$oldHost -eq \$dns/);
+  assert.match(wf2, /rdpUsageSec = \$carryUsage/);
+  assert.match(wf2, /rdpUsageHost = \$ghName/);
+});
+
+test('F11-3 ui: RDP USAGE row ticks live, freezes on inactive sample', () => {
+  assert.match(ui, /RDP USAGE/);
+  assert.match(ui, /id="timerRdpUsage"/);
+  assert.match(ui, /window\.__rdpUsage=\{sec:Number\(s\.rdpUsageSec\)/);
+  assert.match(ui, /u\.active\?\(Date\.now\(\)-u\.at\)\/1000:0/, 'the tick must stop when frozen');
+  // frozen = the accumulated value is shown as-is (no local extrapolation)
+  assert.match(ui, /frozen/);
 });

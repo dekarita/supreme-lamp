@@ -148,6 +148,32 @@ jobs:
             exit 1
           fi
           echo 'F11-2 gates PASS'
+      - name: F11-3 RDP usage timer gates (accumulator, freeze, persistence)
+        shell: bash
+        run: |
+          set -euo pipefail
+          srv=payloads/ghrdp-server.ps1
+          grep -q 'rdp-usage.ps1' "$srv"
+          grep -q 'rdp-usage.json' "$srv"
+          grep -q 'Test-RdpConnected' "$srv"
+          grep -q 'Test-WebdeskClient' "$srv"
+          grep -q 'qwinsta.exe' "$srv"
+          grep -q 'ws-clients.txt' "$srv"
+          grep -q 'websockify.log' "$srv"
+          grep -q '\$sec = \$sec + 5' "$srv"
+          grep -q 'Start-Sleep -Seconds 5' "$srv"
+          # accumulator persists into config.json on stop + every 30s while live
+          grep -q "rdpUsageSec', \$sec" "$srv"
+          grep -q 'rdpUsageHost' "$srv"
+          grep -q 'rdpUsageActive' "$srv"
+          grep -q 'rdpUsageSec = \$carryUsage' .github/workflows/main.yml
+          grep -q 'rdpUsageSec carried forward' .github/workflows/main.yml
+          # UI headline is RDP USAGE (logon age kept only as a fallback)
+          grep -q 'RDP USAGE' payloads/ui.html
+          grep -q 'id="timerRdpUsage"' payloads/ui.html
+          grep -q 'window.__rdpUsage' payloads/ui.html
+          grep -q 'window.__rdpLogon' payloads/ui.html
+          echo 'F11-3 gates PASS'
       - name: F8 web-desktop honesty gates
         shell: bash
         run: |

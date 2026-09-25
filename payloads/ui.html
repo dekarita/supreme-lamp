@@ -300,7 +300,11 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">VNC password</span><span class="v" id="credVncPass">(host-only)</span><button onclick="copyById('credVncPass',this)">copy</button><a href="javascript:void(0)" onclick="rememberVncFromKeys(this)" style="font-size:11px;opacity:.6;text-decoration:underline">remember for WEB DESKTOP</a><span class="note">the VNC_PASS secret set at dispatch; masked (last 4), token-gated. "remember" stores it in THIS browser only (never in a URL)</span></div>
   <div class="row"><span class="k">Connectivity</span><span class="timer" id="connRtt" style="font-size:18px">-- ms</span><span class="badge" id="connBadge">path: --</span><span class="badge" id="connFps">-- fps</span><span class="badge" id="connJit">jit -- ms</span><canvas id="connSpark" width="220" height="34" style="width:220px;height:34px"></canvas></div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
-  <div class="row"><span class="k">RDP logon age</span><span class="timer" id="timerRdpAge">--:--:--</span><span class="badge" id="c2Srv">srv --</span></div>
+  <!-- [F11-3 §3] RDP USAGE replaces logon age as the headline timer: seconds
+       accumulated ONLY while an RDP session is connected OR a webdesk client is
+       attached; it freezes within one server tick (<=20s) after both drop and
+       resumes on reconnect. Falls back to the logon age until the first sample. -->
+  <div class="row"><span class="k">RDP USAGE</span><span class="timer" id="timerRdpUsage">--:--:--</span><span class="badge" id="usageState">--</span><span class="badge" id="c2Srv">srv --</span></div>
   <div class="row" id="connUdpAdv" style="display:none"><span class="k">Latency</span><span class="v" id="connUdpAdvText" style="color:#f5d9b7">direct WireGuard not established - check client firewall UDP 41641</span></div>
   <div class="row"><span class="k">Remaining (5h30 session)</span><span class="timer" id="timerRemaining">--:--:--</span></div>
   <div class="banner ended" id="endedBanner" style="display:none;">SESSION EXPIRED - GitHub hard cap reached. Runner termination imminent.</div>
@@ -954,6 +958,14 @@ async function nativeStatus(){
   // session; the row ticks locally from the first non-null sample (no more
   // permanent --:--:-- once an RDP session exists).
   if(s&&s.rdpLogonAgeSec!=null){window.__rdpLogon={sec:Number(s.rdpLogonAgeSec)||0,at:Date.now()};}
+  // [F11-3 §3] RDP USAGE sample: sec accumulates server-side ONLY while an RDP
+  // session is connected or a webdesk client is attached. active => the row
+  // ticks locally; inactive/stale => it shows the frozen accumulated value.
+  if(s&&s.rdpUsageSec!=null){
+   window.__rdpUsage={sec:Number(s.rdpUsageSec)||0,at:Date.now(),active:!!s.rdpUsageActive,age:(s.rdpUsageAgeSec==null?null:Number(s.rdpUsageAgeSec))};
+   var us=document.getElementById('usageState');
+   if(us){us.textContent=(window.__rdpUsage.active?'live (connected)':'frozen');us.className='badge '+(window.__rdpUsage.active?'ok':'warn');}
+  }
   // [F10-3 §2.2] server-side tailscale ping to THIS client (dash-token source
   // peer): shows ms + direct|relay; relay raises the UDP-41641 advisory.
   var sp=document.getElementById('c2Srv');
@@ -1358,15 +1370,19 @@ if(btn) btn.onclick=function(ev){
 </script>
 <script>
 (function(){
-// [F10-3 §2.1] LOGON AGE ticker: starts ticking from the FIRST non-null
-// server sample (window.__rdpLogon, set by nativeStatus); stays --:--:--
-// while no RDP session exists or the server has not sampled one yet.
+// [F11-3 §3] RDP USAGE ticker (replaces the logon-age headline): ticks only
+// while the server reports an ACTIVE usage window (RDP session connected or a
+// webdesk client attached), freezes at the accumulated value the moment the
+// sample says frozen, and resumes on the next live sample. window.__rdpLogon is
+// kept as an honest fallback while no usage sample exists yet.
 function fmt(sec){var h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=Math.floor(sec%60);
  return (h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(s<10?'0':'')+s;}
 setInterval(function(){
- var el=document.getElementById('timerRdpAge');if(!el)return;
- var b=window.__rdpLogon;if(!b)return;
- el.textContent=fmt(b.sec+(Date.now()-b.at)/1000);
+ var el=document.getElementById('timerRdpUsage');if(!el)return;
+ var u=window.__rdpUsage;
+ if(u){var sec=u.sec+(u.active?(Date.now()-u.at)/1000:0);el.textContent=fmt(sec);el.style.color=u.active?'#7dffc9':'';return;}
+ var b=window.__rdpLogon;
+ if(b){el.textContent=fmt(b.sec+(Date.now()-b.at)/1000);el.style.color='';}
 },1000);
 })();
 </script>

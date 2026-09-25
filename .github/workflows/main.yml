@@ -963,6 +963,25 @@ jobs:
               Write-Host '[stage] FATAL: mirror enabled but RENTRY_EDIT_PASSWORD missing - refusing to stage a bypass config.'
               Write-Host '[stage] RENTRY_EDIT_PASSWORD not set - OK (myurl0 is frozen; github.io is the primary index).'
           }
+          # [F11-3 §3] Carry the RDP USAGE accumulator across a re-dispatch on the
+          # SAME host: an existing config.json whose rdpUsageHost matches this
+          # host name (or this run's MagicDNS name) keeps its rdpUsageSec. A host
+          # mismatch (fresh ephemeral runner) restarts at 0.
+          $carryUsage = 0
+          try {
+              $cfgOldPath = Join-Path $root 'config.json'
+              if (Test-Path -LiteralPath $cfgOldPath) {
+                  $cfgOld = [System.IO.File]::ReadAllText($cfgOldPath) | ConvertFrom-Json
+                  if ($null -ne $cfgOld.rdpUsageSec) {
+                      $oldHost = [string]$cfgOld.rdpUsageHost
+                      if (-not $oldHost) { $oldHost = [string]$cfgOld.dnsName }
+                      if ($oldHost -and ($oldHost -eq $env:COMPUTERNAME -or $oldHost -eq $dns)) {
+                          $carryUsage = [int]$cfgOld.rdpUsageSec
+                          Write-Host ('[stage] rdpUsageSec carried forward from ' + $oldHost + ': ' + $carryUsage + 's')
+                      }
+                  }
+              }
+          } catch { Write-Host ('[stage] rdpUsageSec carry-over skipped: ' + $_.Exception.Message) }
           $cfg = [ordered]@{
               rdpIp = $ip
               rdpUser = [string]$env:RDP_USER
@@ -1000,6 +1019,9 @@ jobs:
               sessionId = ('s-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
               pagesBase = ('https://' + (([string]$env:GITHUB_REPOSITORY -split '/')[0]) + '.github.io/' + (([string]$env:GITHUB_REPOSITORY -split '/')[1]))
               searchUrl = (('https://' + (([string]$env:GITHUB_REPOSITORY -split '/')[0]) + '.github.io/' + (([string]$env:GITHUB_REPOSITORY -split '/')[1]) + '/explorer.html'))
+              rdpUsageSec = $carryUsage
+              rdpUsageAt = ''
+              rdpUsageHost = $ghName
           }
           [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), ($cfg | ConvertTo-Json -Depth 10), $global:GhrdpEncNoBom)
           [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), $tok, $global:GhrdpEncNoBom)
