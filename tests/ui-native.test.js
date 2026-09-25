@@ -71,7 +71,8 @@ test('all inline scripts parse; forbidden UI surfaces are absent', () => {
   assert.ok(native);
   for (const script of scripts) new vm.Script(script);
   assert.doesNotMatch(html, /enroll|agent[- ]?diag|\/api\/client-status|\/api\/agent|\/api\/enroll|showEnrollOverlay|agentPillPaint|LocalDevices|AuthenticationLevelOverride|__PASS__|ghrdp:\/\/.*pass=|install\.bat|install\.ps1|parsec-push/i);
-  assert.doesNotMatch(html, /powershell|-ExecutionPolicy/i);
+  // [F12-1] execution tokens only (see tests/f10-autologin.test.js).
+  assert.doesNotMatch(html, /powershell\.exe|-ExecutionPolicy|Invoke-Expression|-EncodedCommand|\bmshta\b|\bwscript\b|\bcscript\b/i);
   assert.match(html, /id="autoLoginNative"/);
   assert.match(html, /id="webdeskVncAdvisory"[\s\S]*?settings\/secrets\/actions/);
   assert.doesNotMatch(html, /ghrdp\.credSet/);

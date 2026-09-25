@@ -9,6 +9,10 @@ const ui = fs.readFileSync('payloads/ui.html', 'utf8');
 const wf = fs.readFileSync('.github/workflows/main.yml', 'utf8');
 const launcher = fs.readFileSync('payloads/ghrdp-rdp-launcher.cs', 'utf8');
 const installer = fs.readFileSync('payloads/install.cmd', 'utf8');
+// [F12-1] Script-host EXECUTION tokens only: the F12-1 stale-registration
+// notice has to be able to NAME the pre-F2 handler ("If Windows offered to open
+// PowerShell...") - naming it is the fix, running a script host stays banned.
+const SCRIPT_HOST_LAUNCH = /powershell\.exe|-ExecutionPolicy|Invoke-Expression|-EncodedCommand|\bmshta\b|\bwscript\b|\bcscript\b/i;
 
 test('F10-1 launcher: required .rdp directives, no password/resolution lines', () => {
   for (const d of [
@@ -35,7 +39,7 @@ test('F10-1 install.cmd: in-box csc + HKCU registration, script-host free', () =
   assert.match(installer, /HKCU\\Software\\Classes\\ghrdp/);
   assert.match(installer, /URL:ghrdp Protocol/);
   assert.match(installer, /ghrdp-launcher\.exe/);
-  assert.ok(!/powershell|-ExecutionPolicy/i.test(installer), 'install.cmd must stay script-host free');
+  assert.ok(!SCRIPT_HOST_LAUNCH.test(installer), 'install.cmd must stay script-host free');
 });
 
 test('F10-2 server: rdpLogonAgeSec + ping fields + rdp-ping loop + client capture', () => {
@@ -81,7 +85,7 @@ test('F10-3 ui: WINDOWS AUTO-LOGIN + gated KEYS + logon age + ping row', () => {
   assert.match(ui, /id="connUdpAdv"/);
   assert.match(ui, /UDP 41641/);
   assert.match(ui, /srv '\+s\.pingMs/);
-  assert.ok(!/powershell|-ExecutionPolicy/i.test(ui), 'ui must stay script-host free');
+  assert.ok(!SCRIPT_HOST_LAUNCH.test(ui), 'ui must stay script-host free');
 });
 
 test('F10-4 workflow: gated vncPass stamp, latency keys, live ext resolution, clean bookmarks', () => {

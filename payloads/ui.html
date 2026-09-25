@@ -326,11 +326,20 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
       <button class="primary" id="btnWinAuto" type="button" disabled>WINDOWS AUTO-LOGIN</button>
       <span class="note" id="winAutoNote">fullscreen native mstsc, silent after a one-time Windows prompts for your password (cmdkey)</span>
     </div>
+    <!-- [F12-1 §1.4] Stale-registration notice: shown when the launcher's
+         /api/handler-hello beacon does NOT arrive within 20s of the click. The
+         pre-F2 registration ran the old script host, which is exactly the
+         "Open ... PowerShell?" prompt; one install.cmd run overwrites it. -->
+    <div class="note" id="winAutoStale" style="display:none;color:#f5d9b7">
+      If Windows offered to open <b>PowerShell</b>, your PC has a stale ghrdp registration - run
+      <b>install.cmd</b> once (text below).
+    </div>
     <div class="note" id="winAutoInstall" style="display:none;color:#f5d9b7">
       One-time handler setup (no script host, no admin, no download of binaries): copy
       <code id="winAutoFiles">payloads\install.cmd + payloads\ghrdp-rdp-launcher.cs</code>
       <a href="javascript:void(0)" onclick="copyById('winAutoFiles',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
       from the repo into one folder on your PC and double-click <b>install.cmd</b> - or use WEB DESKTOP below (zero install).
+      install.cmd prints the handler value BEFORE and AFTER and verifies it points at the compiled exe.
     </div>
   </div>
   <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>
@@ -954,6 +963,21 @@ async function nativeStatus(){
   var r=await fetch(apiBase()+'/api/native-status'+(key?('?key='+encodeURIComponent(key)):''),{cache:'no-store'});
   if(!r.ok)return;
   var s=await r.json();
+  // [F12-1 §1.4] handler-hello beacon input: the launcher POSTs
+  // /api/handler-hello right after handing the local .rdp to mstsc, and
+  // native-status echoes the last beacon. A beacon newer than the click proves
+  // the exe handler ran; a stale script-host registration never posts one.
+  if(s&&s.lastHandlerVerb&&s.lastHandlerVerb.ts){
+   var hv=String(s.lastHandlerVerb.ts);
+   if(window.__helloWatchArmed){
+    var hts=Date.parse(hv);
+    if(!isNaN(hts)&&hts>=(window.__helloWatchArmedAt-10000)){
+     window.__helloWatchSeen=true;
+     var stEl=$('winAutoStale');if(stEl)stEl.style.display='none';
+    }
+   }
+   window.__helloTs=hv;
+  }
   // [F10-3 §2.1] RDP LOGON AGE: server samples the newest LogonType-10
   // session; the row ticks locally from the first non-null sample (no more
   // permanent --:--:-- once an RDP session exists).
@@ -1322,6 +1346,22 @@ if(waBtn) waBtn.onclick=function(ev){
  launchProto('ghrdp://rdp?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user));
  var note=$('winAutoNote');
  if(note)note.textContent='protocol dispatched - mstsc should open fullscreen shortly';
+ // [F12-1 §1.4] hello-beacon watch: 20s window, native-status polled every 3s
+ // (the launcher's bounded beacon lands within ~5s of the dispatch). No fresh
+ // beacon => the registration is stale (the pre-F2 script-host handler) and
+ // the user gets the notice + the install.cmd text below.
+ window.__helloWatchArmed=true;window.__helloWatchSeen=false;window.__helloWatchArmedAt=Date.now();
+ var staleEl=$('winAutoStale');if(staleEl)staleEl.style.display='none';
+ var helloPoll=setInterval(function(){try{nativeStatus();}catch(_){}} ,3000);
+ setTimeout(function(){
+  clearInterval(helloPoll);
+  if(window.__helloWatchArmed&&!window.__helloWatchSeen){
+   var sEl=$('winAutoStale');if(sEl)sEl.style.display='';
+   var ins1=$('winAutoInstall');if(ins1)ins1.style.display='';
+   if(note)note.textContent='no handler beacon in 20s - the ghrdp registration may still be stale';
+  }
+  window.__helloWatchArmed=false;
+ },20000);
  setTimeout(function(){
   window.removeEventListener('blur',lost);
   document.removeEventListener('visibilitychange',vis);

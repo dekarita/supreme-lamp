@@ -40,7 +40,6 @@
 
     var applied = false;
     var pending = null;      // transient; purged as soon as it is handed over
-    var tries = 0;
 
     function originAllowed(origin) {
         for (var i = 0; i < ALLOWED.length; i++) {
@@ -87,12 +86,25 @@
         if (submit(pending)) { purge(); }
     }, false);
 
-    // The credentials dialog only exists once the RFB object reaches
-    // 'credentialsrequired'; if the handoff lands first, retry briefly (5s cap).
+    // [F12-4 §4] The credentials dialog only exists once the RFB object reaches
+    // 'credentialsrequired'; if the handoff lands first, retry 5 times at 500ms
+    // (2.5s) and then PURGE the transient variable - the password is never kept
+    // in this window waiting for a dialog that may never appear. The idle cap
+    // (40 ticks = 20s without any handoff) only stops the timer itself, it
+    // never retains a value.
+    var RETRY_CAP = 5;
+    var IDLE_CAP = 40;
+    var tries = 0;
+    var idle = 0;
     var timer = setInterval(function () {
-        tries++;
         if (applied) { purge(); clearInterval(timer); return; }
-        if (tries > 10) { purge(); clearInterval(timer); return; }
-        if (pending && submit(pending)) { purge(); clearInterval(timer); }
+        if (!pending) {
+            idle++;
+            if (idle > IDLE_CAP) { purge(); clearInterval(timer); }
+            return;
+        }
+        tries++;
+        if (tries > RETRY_CAP) { purge(); clearInterval(timer); return; }
+        if (submit(pending)) { purge(); clearInterval(timer); }
     }, 500);
 })();

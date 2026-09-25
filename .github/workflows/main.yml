@@ -419,6 +419,11 @@ jobs:
               throw 'enable MagicDNS in tailnet DNS settings (https://login.tailscale.com/admin/dns)'
           }
           Write-Host ('[ts] MagicDNS = ' + $dnsName)
+          # [F12-2 §2] Hand the PROVEN FQDN to the cert-bind step. The cert step
+          # refuses to run without it, which makes the required ordering (DNS
+          # gate -> cert bind) explicit and enforced instead of implicit.
+          if ($env:GITHUB_ENV) { Add-Content -Path $env:GITHUB_ENV -Value ('TS_MAGICDNS_FQDN=' + $dnsName) }
+          Write-Host ('[ts] exported TS_MAGICDNS_FQDN=' + $dnsName + ' (cert bind runs only after this DNS gate)')
           exit 0
 
       # [U5b / MIGRATION 1.3] Bind the tailnet Let's Encrypt cert to the
@@ -438,6 +443,22 @@ jobs:
               $j = (& $ts status --json 2>$null) | ConvertFrom-Json
               $fqdn = ([string]$j.Self.DNSName).TrimEnd('.')
           } catch { }
+          # [F12-2 §2] ORDERING PROOF + FQDN SOURCE. The "Wait for Tailscale
+          # connected" step is the DNS gate: it verifies Self.DNSName is
+          # *.ts.net and exports TS_MAGICDNS_FQDN. If that value is missing the
+          # cert step ran before (or without) the gate - the ordering regression
+          # behind run ghrdp-c40a94 - so we halt instead of certing a guess.
+          $gateFqdn = [string]$env:TS_MAGICDNS_FQDN
+          if ($gateFqdn -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
+              Write-Host '::error::[cert] TS_MAGICDNS_FQDN missing/invalid - cert bind must run AFTER the "Wait for Tailscale connected" DNS gate'
+              if ($S) {
+                  '### RDP cert bind FAILED - reason cert-not-bound' | Add-Content -Path $S
+                  'Ordering: the MagicDNS/DNS gate step must run before cert bind (it exports TS_MAGICDNS_FQDN).' | Add-Content -Path $S
+                  'Thumbprint: none - no certificate was requested for an unproven FQDN.' | Add-Content -Path $S
+              }
+              throw 'cert bind halted by design: DNS gate value TS_MAGICDNS_FQDN absent (reason cert-not-bound)'
+          }
+          $fqdn = $gateFqdn
           # [F9b] opt-in auto-enable: only when BOTH TS_API_TOKEN and
           # TS_TAILNET_NAME are set. The token travels in the Authorization
           # header only and is never printed. Secrets absent -> silent skip.
@@ -472,15 +493,40 @@ jobs:
           try { icacls.exe $workDir /inheritance:r 2>&1 | Out-Null; icacls.exe $workDir /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' 'NETWORK SERVICE:(OI)(CI)R' 2>&1 | Out-Null; $LASTEXITCODE=0 } catch { }
           $certLog = Join-Path $env:RUNNER_TEMP 'ts-cert.log'
           $certErr = Join-Path $env:RUNNER_TEMP 'ts-cert.err'
-          $p = Start-Process -FilePath $ts -ArgumentList @('cert', '--cert-file', $crtPath, '--key-file', $keyPath, $fqdn) -RedirectStandardOutput $certLog -RedirectStandardError $certErr -WindowStyle Hidden -PassThru
-          try { $p.WaitForExit(120000) | Out-Null } catch { }
-          $certOk = ($p.HasExited -and $p.ExitCode -eq 0 -and (Test-Path -LiteralPath $crtPath) -and (Test-Path -LiteralPath $keyPath))
+          # [F12-2 §2] `tailscale cert` fetch: 3 attempts, 10s apart. The
+          # regression run (F12 ground truth, ghrdp-c40a94) let ONE transient
+          # fetch failure fall through the old `exit 0`, so the step looked green
+          # while /api/native-status reported certBound = NO for the whole run.
+          # Every attempt prints its own exit code + file presence; no key
+          # material is ever printed.
+          $certOk = $false
+          $certErrText = ''
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+              Remove-Item -LiteralPath $crtPath -Force -ErrorAction SilentlyContinue
+              Remove-Item -LiteralPath $keyPath -Force -ErrorAction SilentlyContinue
+              $p = Start-Process -FilePath $ts -ArgumentList @('cert', '--cert-file', $crtPath, '--key-file', $keyPath, $fqdn) -RedirectStandardOutput $certLog -RedirectStandardError $certErr -WindowStyle Hidden -PassThru
+              try { $p.WaitForExit(120000) | Out-Null } catch { }
+              $certOk = ($p.HasExited -and $p.ExitCode -eq 0 -and (Test-Path -LiteralPath $crtPath) -and (Test-Path -LiteralPath $keyPath))
+              Write-Host ('[cert] attempt ' + $attempt + '/3: exit=' + $p.ExitCode + ' crt=' + (Test-Path -LiteralPath $crtPath) + ' key=' + (Test-Path -LiteralPath $keyPath) + ' ok=' + $certOk)
+              if ($certOk) { break }
+              if ($attempt -lt 3) { Start-Sleep -Seconds 10 }
+          }
           if (-not $certOk) {
               $tail = ''
               try { if (Test-Path $certErr) { $tail = [System.IO.File]::ReadAllText($certErr) } } catch { }
-              Write-Host ('[cert] tailscale cert failed (exit=' + $p.ExitCode + '); check HTTPS is ENABLED in tailnet admin -> DNS. err: ' + ($tail -replace "`r?`n", ' ' | Select-Object -First 1))
-              if ($S) { '### RDP cert bind skipped (tailscale cert failed)' | Add-Content -Path $S; 'Fix: Tailscale admin console -> DNS -> "Enable HTTPS...". Then re-run.' | Add-Content -Path $S }
-              exit 0
+              $certErrText = (($tail -replace "`r?`n", ' ')).Trim()
+              if ($certErrText.Length -gt 300) { $certErrText = $certErrText.Substring(0, 300) }
+              if (-not $certErrText) { $certErrText = 'no stderr captured (fetch produced no output)' }
+              $certErrSafe = ($certErrText -replace 'tskey-[A-Za-z0-9\-]+', 'tskey-[redacted]' -replace 'ghp_[A-Za-z0-9]+', 'ghp_[redacted]')
+              # FAIL-CLOSED [F12-2]: never leave a run that reports certBound=NO.
+              Write-Host ('::error::[cert] tailscale cert failed after 3 attempts; reason=cert-not-bound; error=' + $certErrSafe)
+              Write-Host ('[cert] tailscale cert failed (3 attempts); fix: Tailscale admin console -> DNS -> "Enable HTTPS...". err: ' + $certErrSafe)
+              if ($S) {
+                  '### RDP cert bind FAILED - reason cert-not-bound' | Add-Content -Path $S
+                  ('Thumbprint: none - certificate fetch failed after 3 attempts (error: ' + $certErrSafe + ')') | Add-Content -Path $S
+                  'Fix: Tailscale admin console -> DNS -> "Enable HTTPS...". Then re-run this workflow. Halted by design: a green run with certBound=NO is a false-LIVE.' | Add-Content -Path $S
+              }
+              throw 'cert bind halted by design: tailscale cert fetch failed 3x (reason cert-not-bound)'
           }
           $thumb = ''
           try {
@@ -507,7 +553,13 @@ jobs:
                       }
                   }
               } catch { Write-Host ('[cert] key ACL step skipped: ' + $_.Exception.Message) }
-          } catch { Write-Host ('[cert] import failed: ' + $_.Exception.Message); exit 0 }
+          } catch {
+              # [F12-2] fail-closed: an import failure used to exit 0 and leave
+              # certBound = NO on a green run.
+              Write-Host ('::error::[cert] PFX import failed; reason=cert-not-bound; error=' + $_.Exception.Message)
+              if ($S) { '### RDP cert bind FAILED - reason cert-not-bound' | Add-Content -Path $S; ('Thumbprint: none - PFX import into LocalMachine\My failed: ' + $_.Exception.Message) | Add-Content -Path $S }
+              throw 'cert bind halted by design: PFX import failed (reason cert-not-bound)'
+          }
           try {
               $tsSetting = Get-CimInstance -Namespace 'root/cimv2/TerminalServices' -ClassName 'Win32_TSGeneralSetting' -Filter "TerminalName='RDP-Tcp'" -ErrorAction Stop
               $bindResult = Invoke-CimMethod -InputObject $tsSetting -MethodName 'SetSSLCertificateSHA1Hash' -Arguments @{ SSLCertificateSHA1Hash = $thumb } -ErrorAction Stop
@@ -521,7 +573,11 @@ jobs:
               try {
                   $hashBytes = -split ($thumb -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
                   New-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hashBytes -Force | Out-Null
-              } catch { Write-Host ('[cert] registry fallback failed: ' + $_.Exception.Message); exit 0 }
+              } catch {
+                  Write-Host ('::error::[cert] registry fallback failed; reason=cert-not-bound; error=' + $_.Exception.Message)
+                  if ($S) { '### RDP cert bind FAILED - reason cert-not-bound' | Add-Content -Path $S; ('Thumbprint: none - neither WMI nor the RDP-Tcp registry write succeeded: ' + $_.Exception.Message) | Add-Content -Path $S }
+                  throw 'cert bind halted by design: RDP-Tcp SSLCertificateSHA1Hash write failed (reason cert-not-bound)'
+              }
           }
           $boundHex = ''
           try { $bound = (Get-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -ErrorAction Stop).SSLCertificateSHA1Hash; $boundHex = ($bound | ForEach-Object { $_.ToString('X2') }) -join '' } catch { }
@@ -530,8 +586,12 @@ jobs:
               try { Restart-Service TermService -Force -ErrorAction SilentlyContinue; Write-Host '[cert] TermService restarted' } catch { }
               if ($S) { '### RDP cert bind OK' | Add-Content -Path $S; ('Thumbprint: `' + $thumb + '`') | Add-Content -Path $S }
           } else {
-              Write-Host ('[cert] bind verification mismatch: registry=' + $boundHex + ' expected=' + $thumb)
-              if ($S) { '### RDP cert bind mismatch (see workflow log)' | Add-Content -Path $S }
+              # [F12-2] A verification mismatch is a FAILED bind, not a notice:
+              # the old branch wrote a summary line and exited 0, which is how a
+              # run reported "cert bind success" while certBound read NO.
+              Write-Host ('::error::[cert] bind verification mismatch; reason=cert-not-bound; registry=' + $boundHex + ' expected=' + $thumb)
+              if ($S) { '### RDP cert bind FAILED - reason cert-not-bound' | Add-Content -Path $S; ('Thumbprint: fetched `' + $thumb + '` but RDP-Tcp reports `' + $boundHex + '` after the write.') | Add-Content -Path $S; 'Halted by design so certBound can never read NO on a green run.' | Add-Content -Path $S }
+              throw 'cert bind halted by design: RDP-Tcp thumbprint mismatch after write (reason cert-not-bound)'
           }
           exit 0
 
@@ -1336,16 +1396,22 @@ jobs:
                   Set-ItemProperty -Path $tvKey -Name 'AlwaysShared' -Value 1 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'RemoveWallpaper' -Value 0 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'SecurityTypes' -Value 'VncAuth' -Type String -ErrorAction SilentlyContinue
-                  # [F10-4a §2.3] latency tuning: poll the window under the
-                  # cursor + foreground only (skip pricey full-screen polls),
-                  # framebuffer compare on. TightVNC 2.8 has no server-side
-                  # 'PreferZlib' key - the zlib preference is enforced
-                  # client-side via the noVNC URL (compression=6, F10-3).
+                  # [F10-4a §2.3][F12-5 §5] latency tuning: poll the window
+                  # under the cursor + foreground only (skip pricey full-screen
+                  # polls), framebuffer compare on, and PreferZlib written for
+                  # builds that honour it. TightVNC 2.8.85 itself has no
+                  # server-side 'PreferZlib' key, so the zlib preference is
+                  # ALSO enforced client-side via the noVNC URL
+                  # (compression=6, F10-3) - the write is harmless there and
+                  # becomes effective on any build that does support it.
                   Set-ItemProperty -Path $tvKey -Name 'PollUnderCursor' -Value 1 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'PollForeground' -Value 1 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'PollFullScreen' -Value 0 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'PollConsoleOnly' -Value 1 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'CompareFB' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  # [F12-5 §5] write it for builds that honour it; 2.8.85 simply
+                  # ignores the unknown value (noVNC compression=6 carries zlib).
+                  Set-ItemProperty -Path $tvKey -Name 'PreferZlib' -Value 1 -Type DWord -ErrorAction SilentlyContinue
               }
               try { Restart-Service -Name 'tvnserver' -Force -ErrorAction Stop; $inst = $true } catch { Write-Host ('[webdesk] tvnserver service restart failed: ' + $_.Exception.Message) }
               try {
@@ -2807,29 +2873,67 @@ jobs:
                   New-Item -ItemType Directory -Path $dist -Force -ErrorAction SilentlyContinue | Out-Null
                   $bm = @()
                   foreach ($b in $allBookmarks) { $bm += @{ URL = [string]$b.url; Title = [string]$b.name; Placement = 'toolbar' } }
-                  $ffExt = @{
-                      Install = @(
-                          'https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi',
-                          'https://addons.mozilla.org/firefox/downloads/latest/darkreader/latest.xpi'
-                      )
-                  }
+                  # [F12-3 §3.2] Firefox force-install: BOTH the extension id
+                  # (guid) and the xpi URL are resolved LIVE from the AMO API at
+                  # build time (Resolve-AmoAddon in the shared resolver
+                  # payloads/edge-ext-resolve.ps1, dot-sourced above). No add-on
+                  # id and no download URL is carried in this repo - a store-side
+                  # rename can no longer force-install a stale or wrong add-on,
+                  # and an unresolvable slug is skipped LOUDLY (never guessed).
+                  $ffUbo = Resolve-AmoAddon -Slug 'ublock-origin' -Markers @('uBlock Origin', 'gorhill', 'Raymond Hill')
+                  $ffDr  = Resolve-AmoAddon -Slug 'darkreader'  -Markers @('Dark Reader', 'darkreader')
+                  $ffExtSettings = [ordered]@{}
+                  if ($ffUbo) { $ffExtSettings[[string]$ffUbo.id] = @{ installation_mode = 'force_installed'; install_url = [string]$ffUbo.url } }
+                  else { Write-Host '::warning::[firefox] uBlock Origin unresolved live on addons.mozilla.org - skipped (never guessed)' }
+                  if ($ffDr) { $ffExtSettings[[string]$ffDr.id] = @{ installation_mode = 'force_installed'; install_url = [string]$ffDr.url } }
+                  else { Write-Host '::warning::[firefox] Dark Reader unresolved live on addons.mozilla.org - skipped (never guessed)' }
                   $pol = [ordered]@{ policies = [ordered]@{
                       Bookmarks = $bm
-                      ExtensionSettings = [ordered]@{
-                          'uBlock0@raymondhill.net' = @{ installation_mode = 'force_installed'; install_url = $ffExt.Install[0] }
-                          'addon@darkreader.org' = @{ installation_mode = 'force_installed'; install_url = $ffExt.Install[1] }
-                      }
+                      ExtensionSettings = $ffExtSettings
                   } }
                   [System.IO.File]::WriteAllText((Join-Path $dist 'policies.json'), (ConvertTo-Json -InputObject $pol -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
                   $okFF = $false
-                  try { $null = Get-Content -LiteralPath (Join-Path $dist 'policies.json') -Raw | ConvertFrom-Json; $okFF = $true } catch { }
-                  Write-Host ('[firefox] policies.json written with extensions + bookmarks (valid=' + $okFF + ')')
+                  $ffRead = 0
+                  try {
+                      $ffJson = Get-Content -LiteralPath (Join-Path $dist 'policies.json') -Raw | ConvertFrom-Json
+                      $okFF = $true
+                      try { $ffRead = @($ffJson.policies.ExtensionSettings.PSObject.Properties).Count } catch { $ffRead = 0 }
+                  } catch { }
+                  Write-Host ('[firefox] policies.json written: forced extensions=' + $ffRead + ' of 2, bookmarks=' + $bm.Count + ' (valid=' + $okFF + ')')
+                  if ($ffRead -lt 2) { Write-Host '::warning::[firefox] fewer than 2 extensions in policies.json - check the AMO resolver warnings above' }
               } catch {
                   Write-Host ('[firefox] policies failed: ' + $_.Exception.Message)
               }
           } else {
               Write-Host '[firefox] not installed; skipping'
           }
+          # [F12-3 §3.1] POLICY READBACK for the lab's edge://policy and
+          # chrome://policy cells: what was written above must be visible in the
+          # registry the browsers read. The helper is the SHARED one
+          # (payloads/ghrdp-provision-apps.ps1) that autologin-lab.yml cell K
+          # dot-sources too - one definition, exercised by the lab. A readback
+          # mismatch is a loud warning (the extension pages are the lab check).
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-provision-apps.ps1')
+          $edgeBack = Get-ForcedEntryCount $extPath
+          $cwsBack  = Get-ForcedEntryCount $chromeExt
+          Write-Host ('[policy] readback: Edge ExtensionInstallForcelist=' + $edgeBack + ' (wrote ' + $extN + '); Chrome ExtensionInstallForcelist=' + $cwsBack + ' (wrote ' + $cwsN + ')')
+          if ($edgeBack -ne $extN -or $cwsBack -ne $cwsN) { Write-Host '::warning::[policy] forcelist readback mismatch - a browser may not see the policy until gpupdate/relaunch' }
+          # [F12-3 §3.1] every written value must have the browser-accepted
+          # "<32-char id>;<update url>" shape - a malformed value is ignored by
+          # the browser while the registry still looks populated.
+          try {
+              foreach ($v in @((Get-Item -LiteralPath $extPath -ErrorAction Stop).GetValueNames())) {
+                  if ($v -notmatch '^\d+$') { continue }
+                  $val = [string](Get-ItemProperty -Path $extPath -Name $v -ErrorAction Stop).$v
+                  if (-not (Test-ForcedEntryShape $val)) { Write-Host ('::warning::[policy] Edge forcelist value ' + $v + ' has a non-standard shape (skipped by the browser?)') }
+              }
+          } catch { Write-Host '::warning::[policy] Edge forcelist shape check failed' }
+          try {
+              $mfBack = [string](Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'ManagedFavorites' -ErrorAction Stop).ManagedFavorites
+              $mfNames = @()
+              try { $mfNames = @((($mfBack | ConvertFrom-Json) | ForEach-Object { $_.toplevel_name })) } catch { }
+              Write-Host ('[policy] readback: Edge ManagedFavorites ' + $mfBack.Length + ' bytes, toplevel=' + ($mfNames -join ','))
+          } catch { Write-Host '::warning::[policy] ManagedFavorites readback failed' }
           try {
               Get-Process -Name msedge, firefox, chrome -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
               Write-Host '[browsers] stopped running browsers so policies reload on next launch'
@@ -2925,6 +3029,22 @@ jobs:
               $exe = Get-ChildItem -Path 'C:\Program Files\qBittorrent','C:\Program Files (x86)\qBittorrent' -Filter 'qbittorrent.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
               Write-Host ('[qbittorrent] present=' + [bool]$exe)
           } catch { }
+          # [F12-3 §3.4] DEFAULT HANDLER for .torrent + magnet, via the SHARED
+          # helper (payloads/ghrdp-provision-apps.ps1) that autologin-lab.yml
+          # cell L dot-sources as well. The ProgId is DISCOVERED from the
+          # installed shell registration (never a hardcoded vendor string) and
+          # both associations are read back. This wires a file type to the
+          # ALREADY-INSTALLED plain app: no download automation, no index, no
+          # mirror, no Web UI anywhere in this step.
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-provision-apps.ps1')
+          $qbExe = ''
+          try { $qbExe = (Get-ChildItem -Path 'C:\Program Files\qBittorrent','C:\Program Files (x86)\qBittorrent' -Filter 'qbittorrent.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName } catch { }
+          if (-not $qbExe) { Write-Host '[qbittorrent] exe not found - .torrent/magnet association skipped (advisory)' }
+          else {
+              $assoc = Set-QbittorrentDefaultHandler -ExePath $qbExe
+              Write-Host ('[qbittorrent] association ok=' + $assoc.ok + ' progId=' + $assoc.progId + ' .torrent=' + $assoc.torrent + ' magnet=' + $assoc.magnet + ' error=' + $assoc.error)
+              if (-not $assoc.ok) { Write-Host ('::warning::[qbittorrent] association incomplete (' + $assoc.error + ') - advisory, never fatal') }
+          }
           exit 0
 
       # [F11-6 §6] Setup-time report: provisioning minutes from JOB_STARTED_AT,

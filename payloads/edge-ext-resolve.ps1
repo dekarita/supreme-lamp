@@ -142,3 +142,50 @@ function Get-ExtForceListValue {
     $u = if ($Resolved.store -eq 'cws') { 'https://clients2.google.com/service/update2/crx' } else { 'https://edge.microsoft.com/extensionwebstorebase/v1/crx' }
     return ($Resolved.id + ';' + $u)
 }
+
+function Resolve-AmoAddon {
+    # [F12-3 §3.2] LIVE Firefox add-on resolution from addons.mozilla.org.
+    # The repo carries only the add-on SLUG (a human-readable name) - never an
+    # id and never a download URL. Both the extension id (guid) and the current
+    # xpi URL come from the AMO API at build time and are verified against live
+    # markers (name/summary/author), so a store-side rename can never silently
+    # force-install the wrong add-on.
+    #
+    # Contract: returns $null or
+    #   @{ id = '<guid>'; url = '<https://addons.mozilla.org/...xpi>'; source = '<api url>'; name = '<display name>' }
+    param(
+        [string]$Slug,
+        [string[]]$Markers
+    )
+    $api = 'https://addons.mozilla.org/api/v5/addons/addon/' + $Slug + '/'
+    $text = Get-ExtPageText -Url $api
+    if (-not $text) {
+        Write-Host ('::warning::[amo] API unreachable for ' + $Slug + ' - Firefox entry skipped (never guessed)')
+        return $null
+    }
+    $j = $null
+    try { $j = $text | ConvertFrom-Json } catch { }
+    if (-not $j) {
+        Write-Host ('::warning::[amo] API JSON parse failed for ' + $Slug + ' - entry skipped (never guessed)')
+        return $null
+    }
+    $guid = ([string]$j.guid).Trim()
+    $xpi = ''
+    try { $xpi = [string]$j.current_version.file.url } catch { }
+    $name = ''
+    try { $name = [string]$j.name.'en-US' } catch { }
+    if (-not $name) { try { $name = [string]$j.name } catch { } }
+    $sum = ''
+    try { $sum = [string]$j.summary.'en-US' } catch { }
+    $author = ''
+    try { $author = [string]$j.authors[0].name } catch { }
+    $blob = ($name + ' ' + $sum + ' ' + $author + ' ' + [string]$j.slug)
+    $verified = $false
+    foreach ($mk in $Markers) { if ($mk -and ($blob -match [regex]::Escape($mk))) { $verified = $true; break } }
+    if (-not $guid -or ($xpi -notmatch '^https://addons\.mozilla\.org/') -or (-not $verified)) {
+        Write-Host ('::warning::[amo] candidate rejected for ' + $Slug + ' (guid=' + $guid + ', xpi-ok=' + [bool]($xpi -match '^https://addons\.mozilla\.org/') + ', marker-ok=' + $verified + ')')
+        return $null
+    }
+    Write-Host ('[amo] resolved ' + $Slug + ' -> guid=' + $guid + ' xpi=' + $xpi + ' (verified live on ' + $api + ')')
+    return @{ id = $guid; url = $xpi; source = $api; name = $name }
+}

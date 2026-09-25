@@ -42,7 +42,7 @@ jobs:
           if ($cmdReg -notmatch 'ghrdp-launcher\.exe') { Write-Host ('[A] FAIL: protocol not registered, command=' + $cmdReg); exit 1 }
           $cs = [System.IO.File]::ReadAllText((Join-Path $lab 'ghrdp-rdp-launcher.cs'))
           $cmd = [System.IO.File]::ReadAllText((Join-Path $lab 'install.cmd'))
-          if (($cs + $cmd) -match 'powershell|ExecutionPolicy') { Write-Host '[A] FAIL: script-host token'; exit 1 }
+          if (($cs + $cmd) -match 'powershell\.exe|ExecutionPolicy|Invoke-Expression|EncodedCommand') { Write-Host '[A] FAIL: script-host token'; exit 1 }
           Write-Host '[A] PASS: compiled with in-box csc, HKCU ghrdp registered, script-host free'
           'A_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
       - name: "B/C: ghrdp://rdp verb -> directives rdp + mstsc spawn + temp cleanup"
@@ -394,6 +394,153 @@ jobs:
           Write-Host ('[J] PASS: qBittorrent present at ' + $exe.FullName + '; autostart=' + $auto + '; webui-listener=absent-by-default')
           'J_result=pass' | Out-File $env:GITHUB_ENV -Append
 
+      - name: "N: handler overwrite (stale value planted)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # [F12-1 §1.1] Plant the exact class of stale value the client PC had
+          # (a pre-F2 registration pointing at a script host), then run the REAL
+          # install.cmd and prove it OVERWRITES it, prints before/after and
+          # verifies the readback.
+          $stale = '"C:\Windows\System32\cmd.exe" /c echo stale "%1"'
+          New-Item -Path 'HKCU:\Software\Classes\ghrdp\shell\open\command' -Force | Out-Null
+          Set-Item -LiteralPath 'HKCU:\Software\Classes\ghrdp\shell\open\command' -Value $stale
+          $before = [string](Get-Item -LiteralPath 'HKCU:\Software\Classes\ghrdp\shell\open\command').GetValue('')
+          Write-Host ('[N] planted stale value: ' + $before)
+          $lab = Join-Path $env:RUNNER_TEMP 'lab-n'
+          New-Item -ItemType Directory -Path $lab -Force | Out-Null
+          Copy-Item payloads\install.cmd (Join-Path $lab 'install.cmd') -Force
+          Copy-Item payloads\ghrdp-rdp-launcher.cs (Join-Path $lab 'ghrdp-rdp-launcher.cs') -Force
+          $out = & cmd.exe /c ('"' + (Join-Path $lab 'install.cmd') + '" < nul') 2>&1
+          $code = $LASTEXITCODE
+          $out | ForEach-Object { Write-Host ('[N install.cmd] ' + $_) }
+          $after = [string](Get-Item -LiteralPath 'HKCU:\Software\Classes\ghrdp\shell\open\command').GetValue('')
+          $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.exe'
+          $printedBefore = [bool](($out -join "`n") -match 'handler BEFORE')
+          $printedAfter  = [bool](($out -join "`n") -match 'handler AFTER')
+          $overwritten   = ($after -match 'ghrdp-launcher\.exe') -and ($after -notmatch 'cmd\.exe')
+          $ok = ($code -eq 0) -and $printedBefore -and $printedAfter -and $overwritten -and (Test-Path -LiteralPath $exe)
+          Write-Host ('[N] exit=' + $code + ' printedBefore=' + $printedBefore + ' printedAfter=' + $printedAfter + ' overwritten=' + $overwritten + ' after=' + $after)
+          if (-not $ok) { Write-Host '::error::[N] stage=overwrite :: install.cmd did not overwrite the stale registration'; exit 1 }
+          Write-Host '[N] PASS: stale value printed, overwritten and verified by install.cmd'
+          'N_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+
+      - name: "K: browser policies + extensions readback"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # [F12-3 §3.1/§3.2] The REAL live resolver populates the REAL policy
+          # keys; the SHARED readback helper (payloads/ghrdp-provision-apps.ps1)
+          # reports what edge://policy and chrome://policy will render; Edge is
+          # then launched so the forced extension is actually downloaded and
+          # unpacked into the profile (the extensions-page equivalent for CI).
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads\edge-ext-resolve.ps1')
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-provision-apps.ps1')
+          $ubo = Resolve-StoreExtId -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('gorhill', 'uBlock Origin') -VendorPages @('https://raw.githubusercontent.com/gorhill/uBlock/master/README.md')
+          $dr  = Resolve-StoreExtId -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('darkreader.org', 'Dark Reader') -VendorPages @('https://raw.githubusercontent.com/darkreader/darkreader/main/README.md')
+          $cubo = Resolve-StoreExtId -Store 'cws' -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('uBlock Origin', 'gorhill')
+          $cdr  = Resolve-StoreExtId -Store 'cws' -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('Dark Reader', 'darkreader.org')
+          foreach ($pair in @(@('edge', $ubo, 'uBlock Origin'), @('edge', $dr, 'Dark Reader'), @('cws', $cubo, 'uBlock Origin'), @('cws', $cdr, 'Dark Reader'))) {
+              if (-not $pair[1]) { Write-Host ('::error::[K] stage=resolve :: ' + $pair[0] + ' ' + $pair[2] + ' could not be resolved from a live store page'); exit 1 }
+          }
+          $edgePol = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist'
+          $cwsPol  = 'HKLM:\SOFTWARE\Policies\Google\Chrome\ExtensionInstallForcelist'
+          New-Item -Path $edgePol -Force | Out-Null
+          New-Item -Path $cwsPol -Force | Out-Null
+          Remove-Item -Path ($edgePol + '\*') -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path ($cwsPol + '\*') -Force -ErrorAction SilentlyContinue
+          New-ItemProperty -Path $edgePol -Name '1' -Value (Get-ExtForceListValue -Resolved $ubo) -PropertyType String -Force | Out-Null
+          New-ItemProperty -Path $edgePol -Name '2' -Value (Get-ExtForceListValue -Resolved $dr)  -PropertyType String -Force | Out-Null
+          New-ItemProperty -Path $cwsPol  -Name '1' -Value (Get-ExtForceListValue -Resolved $cubo) -PropertyType String -Force | Out-Null
+          New-ItemProperty -Path $cwsPol  -Name '2' -Value (Get-ExtForceListValue -Resolved $cdr)  -PropertyType String -Force | Out-Null
+          $edgeBack = Get-ForcedEntryCount $edgePol
+          $cwsBack  = Get-ForcedEntryCount $cwsPol
+          $edgeShape = @()
+          foreach ($v in @((Get-Item -LiteralPath $edgePol).GetValueNames())) {
+              if ($v -notmatch '^\d+$') { continue }
+              $val = [string](Get-ItemProperty -Path $edgePol -Name $v).$v
+              if (-not (Test-ForcedEntryShape $val)) { Write-Host ('::error::[K] stage=shape :: Edge forcelist value ' + $v + ' is malformed'); exit 1 }
+              $edgeShape += $val
+          }
+          Write-Host ('[K] policy readback: Edge=' + $edgeBack + ' Chrome=' + $cwsBack + ' edge-ids=' + $ubo.id + ',' + $dr.id + ' chrome-ids=' + $cubo.id + ',' + $cdr.id)
+          if ($edgeBack -ne 2 -or $cwsBack -ne 2) { Write-Host '::error::[K] stage=readback :: forcelist keys do not hold 2 entries each'; exit 1 }
+          $edgeExe = @('C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe','C:\Program Files\Microsoft\Edge\Application\msedge.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1
+          $loaded = @()
+          if (-not $edgeExe) { Write-Host '::warning::[K] Edge binary not found - profile-unpack check skipped (policy readback still proven)' }
+          else {
+              $profile = Join-Path $env:RUNNER_TEMP ('edge-lab-' + [guid]::NewGuid().ToString('N'))
+              # headless Edge still unpacks force-installed extensions into the profile
+              Start-Process -FilePath $edgeExe -ArgumentList @('--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check',('--user-data-dir=' + $profile),'about:blank') -WindowStyle Hidden | Out-Null
+              for ($i = 0; $i -lt 24; $i++) {
+                  Start-Sleep -Seconds 5
+                  $extRoot = Join-Path $profile 'Default\Extensions'
+                  if (Test-Path -LiteralPath $extRoot) {
+                      $loaded = @(Get-ChildItem -LiteralPath $extRoot -Directory -ErrorAction SilentlyContinue | ForEach-Object { $_.Name })
+                      if (($loaded -contains $ubo.id) -and ($loaded -contains $dr.id)) { break }
+                  }
+              }
+              try { Get-Process -Name msedge -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch { }
+              Write-Host ('[K] Edge profile extension dirs: ' + ($loaded -join ', '))
+              if (-not (($loaded -contains $ubo.id) -and ($loaded -contains $dr.id))) {
+                  Write-Host '::error::[K] stage=extensions :: the forced Edge extensions were not unpacked into the profile (store fetch blocked?)'; exit 1
+              }
+          }
+          Write-Host ('[K] PASS: live-resolved ids -> policy keys -> readback (' + $edgeBack + '/' + $cwsBack + ') -> Edge unpacked ' + ($loaded -join ','))
+          'K_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+          ('K_edge=' + $edgeBack) | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+
+      - name: "L: qBittorrent .torrent/magnet default"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # [F12-3 §3.4] The REAL shared helper (payloads/ghrdp-provision-apps.ps1)
+          # discovers the ProgId from the installed shell registration and points
+          # .torrent + magnet at the plain app. No download/index automation.
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-provision-apps.ps1')
+          $winget = (Get-Command winget.exe -ErrorAction SilentlyContinue).Source
+          $exe = Get-ChildItem -Path 'C:\Program Files\qBittorrent','C:\Program Files (x86)\qBittorrent' -Filter 'qbittorrent.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $exe -and $winget) {
+              & $winget install --id qBittorrent.qBittorrent --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Select-Object -Last 3 | Out-Null
+              $exe = Get-ChildItem -Path 'C:\Program Files\qBittorrent','C:\Program Files (x86)\qBittorrent' -Filter 'qbittorrent.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          }
+          if (-not $exe) { Write-Host '::error::[L] stage=presence :: qBittorrent is not installed in this lab (winget unavailable?)'; exit 1 }
+          $assoc = Set-QbittorrentDefaultHandler -ExePath $exe.FullName
+          Write-Host ('[L] ok=' + $assoc.ok + ' progId=' + $assoc.progId + ' .torrent=' + $assoc.torrent + ' magnet=' + $assoc.magnet + ' error=' + $assoc.error)
+          if (-not $assoc.ok) { Write-Host '::error::[L] stage=association :: .torrent/magnet readback mismatch'; exit 1 }
+          $magnetCmd = [string](Get-ItemProperty -LiteralPath 'Registry::HKEY_CLASSES_ROOT\magnet\shell\open\command').'(default)'
+          $urlProto = [string](Get-Item -LiteralPath 'Registry::HKEY_CLASSES_ROOT\magnet').GetValue('URL Protocol')
+          $torDefault = [string](Get-Item -LiteralPath 'Registry::HKEY_CLASSES_ROOT\.torrent').GetValue('')
+          if (($magnetCmd -notmatch 'qbittorrent\.exe') -or ($torDefault -ne $assoc.progId)) { Write-Host '::error::[L] stage=readback :: association readback failed'; exit 1 }
+          Write-Host ('[L] PASS: .torrent -> ' + $torDefault + ' ; magnet -> ' + $magnetCmd + ' ; URL Protocol declared=' + ($urlProto -ne $null))
+          'L_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+
+      - name: "M: zero console windows"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # [F12-5 §5] Contract: every host-helper launch in the shipped
+          # workflows is hidden or a SYSTEM scheduled task. Runtime sweep: no
+          # VISIBLE console window may belong to a ghrdp helper right now.
+          $wf = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE '.github\workflows\main.yml'))
+          $bad = @()
+          foreach ($line in ($wf -split "`n")) {
+              if ($line -match 'Start-Process' -and ($line -notmatch 'WindowStyle Hidden|NoNewWindow') -and ($line -notmatch '^\s*#')) { $bad += $line.Trim() }
+          }
+          if ($bad.Count -gt 0) { Write-Host ('::error::[M] stage=static :: unhidden Start-Process in main.yml: ' + ($bad -join ' | ')); exit 1 }
+          $visible = @()
+          try {
+              $visible = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+                  $_.Name -match '^(cmd|powershell|pwsh|conhost|wscript|cscript)\.exe$' -and $_.CommandLine -match 'ghrdp|websockify'
+              })
+          } catch { }
+          $win = @()
+          foreach ($p in $visible) {
+              try { if ((Get-Process -Id $p.ProcessId -ErrorAction Stop).MainWindowHandle -ne 0) { $win += ($p.Name + ' pid=' + $p.ProcessId) } } catch { }
+          }
+          Write-Host ('[M] ghrdp console-class processes=' + $visible.Count + ' with a VISIBLE window=' + $win.Count)
+          if ($win.Count -gt 0) { Write-Host ('::error::[M] stage=runtime :: visible console window from a ghrdp helper: ' + ($win -join ', ')); exit 1 }
+          Write-Host '[M] PASS: helpers are hidden/SYSTEM and no visible console window exists (first-session visual check stays PENDING-USER)'
+          'M_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
       - name: "G: setup-time measurement + lab matrix summary"
         if: ${{ always() }}
         shell: pwsh
@@ -413,14 +560,21 @@ jobs:
           ('| (h) VNC prompt remembered (shim auto-fill) | ' + $(if ($env:H_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL payloads/ghrdp-cred-shim.js executed under node with a DOM stub: opener + exact origin => dialog auto-filled + submitted; wrong origin / non-opener / wrong type => ignored; zero log output |') | Add-Content -Path $S
           ('| (i) usage timer ticks/freezes/resumes | ' + $(if ($env:I_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL server + REAL rdp-usage loop: tick while a webdesk client is attached, frozen <=20s after it drops, resumed on re-attach, persisted to config.json, continued across a server restart (' + $env:I_usage + 's) |') | Add-Content -Path $S
           ('| (j) qBittorrent present (plain app) | ' + $(if ($env:J_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | winget qBittorrent.qBittorrent silent install; present on disk; no autostart entry; no Web UI wiring |') | Add-Content -Path $S
+          ('| (n) stale handler overwritten | ' + $(if ($env:N_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL install.cmd against a PLANTED pre-F2 style script-host registration: before value printed, value overwritten to "<exe>" "%1", readback verified |') | Add-Content -Path $S
+          ('| (k2) browser policies + extensions | ' + $(if ($env:K_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | live-resolved Edge+CWS ids -> HKLM forcelist readback (' + $env:K_edge + ' entries) -> malformed-shape check -> Edge actually unpacked the forced extensions into a fresh profile; edge://policy + edge://extensions visual readout stays PENDING-USER |') | Add-Content -Path $S
+          ('| (l) qBittorrent default .torrent + magnet | ' + $(if ($env:L_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL shared helper: HKCR ProgId discovery + .torrent default + magnet\shell\open\command readback; no download automation, mirror untouched |') | Add-Content -Path $S
+          ('| (m) zero console windows | ' + $(if ($env:M_result -eq 'pass') {'**PASS (lab contract+runtime)**'} else {'FAIL'}) + ' | every Start-Process hidden (static) + runtime sweep: no ghrdp helper owns a visible console window; first-session visual check stays PENDING-USER |') | Add-Content -Path $S
           ('| (k) no console window in the interactive session | **contract PASS** | every host-helper launch is -WindowStyle Hidden (or NoNewWindow for the user-driven terminal exec) and the long-lived services are SYSTEM scheduled tasks; launch-gates F11-5.3 enforces it. Visual confirmation on the first physical RDP session = PENDING-USER |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
           # retrievable), so the PR/verify evidence does not depend on the log UI.
-          $cells = 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'})
+          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
           Write-Host ('::notice::[I] usage timer: ticks -> freezes <=20s -> resumes -> persists/continues at ' + $env:I_usage + 's (cell i)')
           Write-Host ('::notice::[H] cred shim: opener+exact-origin auto-fill, wrong origin/non-opener ignored, zero log output (cell h)')
+          Write-Host ('::notice::[N] handler overwrite: stale registration printed+overwritten+verified by the REAL install.cmd (cell n)')
+          Write-Host ('::notice::[K] browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions (cell k2)')
+          Write-Host ('::notice::[L] qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok (cell l)')
           Write-Host ('::notice::[G] uBlock Origin=' + $env:F_ubo)
           Write-Host ('::notice::[G] Dark Reader=' + $env:F_dr)
           Write-Host ('::notice::[G] physical-PC cells (0 prompts, live peripherals, screenshot-native) remain PENDING-USER per §6; no LIVE claim is made here')
