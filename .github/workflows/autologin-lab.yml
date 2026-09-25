@@ -215,21 +215,25 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          function F-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[F] stage=' + $Stage + ' :: ' + $Detail)
+              exit 1
+          }
           # [F10-11] SAME resolver text as production: dot-sourced from the
           # repo checkout - the lab can never drift from what the runner runs.
           . (Join-Path $env:GITHUB_WORKSPACE 'payloads\edge-ext-resolve.ps1')
           $a1 = Resolve-StoreExtId -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('gorhill','uBlock Origin') -VendorPages @('https://raw.githubusercontent.com/gorhill/uBlock/master/README.md')
-          if (-not $a1) { Write-Host '[F] FAIL: uBlock Origin id not resolvable from live pages'; exit 1 }
+          if (-not $a1) { F-Fail 'resolve-ublock' 'no live page yielded a verifiable uBlock Origin id (see [ext] warnings above)' }
           $a2 = Resolve-StoreExtId -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('gorhill','uBlock Origin') -VendorPages @('https://raw.githubusercontent.com/gorhill/uBlock/master/README.md')
           $d1 = Resolve-StoreExtId -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('darkreader.org','Dark Reader') -VendorPages @('https://raw.githubusercontent.com/darkreader/darkreader/main/README.md')
-          if (-not $d1) { Write-Host '[F] FAIL: Dark Reader id not resolvable from live pages'; exit 1 }
-          if (-not $a2 -or $a1.id -ne $a2.id) { Write-Host '[F] FAIL: resolution unstable across two live runs'; exit 1 }
+          if (-not $d1) { F-Fail 'resolve-darkreader' 'no live page yielded a verifiable Dark Reader id (see [ext] warnings above)' }
+          if (-not $a2 -or $a1.id -ne $a2.id) { F-Fail 'unstable' ('first=' + $(if ($a1) { $a1.id } else { '' }) + ' second=' + $(if ($a2) { $a2.id } else { '' })) }
           $pol = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist'
           New-Item -Path $pol -Force | Out-Null
           Set-ItemProperty -Path $pol -Name '1' -Value (Get-ExtForceListValue -Resolved $a1)
           Set-ItemProperty -Path $pol -Name '2' -Value (Get-ExtForceListValue -Resolved $d1)
           $rb = Get-ItemProperty -Path $pol
-          if ($rb.'1' -notmatch ('^' + $a1.id) -or $rb.'2' -notmatch ('^' + $d1.id)) { Write-Host '[F] FAIL: registry readout mismatch'; exit 1 }
+          if ($rb.'1' -notmatch ('^' + $a1.id) -or $rb.'2' -notmatch ('^' + $d1.id)) { F-Fail 'registry-readback' ('got 1=[' + $rb.'1' + '] 2=[' + $rb.'2' + ']') }
           Write-Host ('[F] PASS: uBlock Origin=' + $a1.id + ' [' + $a1.store + ' via ' + $a1.source + ']')
           Write-Host ('[F] PASS: Dark Reader=' + $d1.id + ' [' + $d1.store + ' via ' + $d1.source + ']')
           # Bookmarks policy readout: exactly the three F10 managed bookmarks.

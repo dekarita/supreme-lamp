@@ -25,7 +25,9 @@ function Get-ExtPageText {
         $r = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 25 -UserAgent $script:ExtResolveUa -ErrorAction Stop
         return [string]$r.Content
     } catch {
-        Write-Host ('[ext] fetch failed: ' + $Url + ' :: ' + $_.Exception.Message)
+        # ::warning:: so the failure is retrievable from the Checks API even when
+        # runner logs are unavailable (see F10-13).
+        Write-Host ('::warning::[ext] fetch failed: ' + $Url + ' :: ' + $_.Exception.Message)
         return $null
     }
 }
@@ -33,10 +35,20 @@ function Get-ExtPageText {
 function Find-ExtIdInText {
     param([string]$Text, [string]$Slug)
     if ([string]::IsNullOrEmpty($Text)) { return '' }
-    # /detail/<slug>/<32 chars a-p> - the canonical store URL shape for both
-    # front-ends; the slug anchor is what keeps a SERP hit honest.
+    # Preferred: /detail/<slug>/<32 chars a-p> - the canonical store URL shape
+    # for both front-ends; the slug anchor is what keeps a SERP hit honest.
     $m = [regex]::Match($Text, '/detail/' + [regex]::Escape($Slug) + '/([a-p]{32})')
     if ($m.Success) { return $m.Groups[1].Value }
+    # [F10-17] Store SPA pages sometimes carry the slug and the crx id in
+    # separate fields (the page still NAMES this extension). Accept a bare id
+    # ONLY when the same page contains the canonical slug, and never as the
+    # final word: the caller always re-verifies the id by fetching the store
+    # detail page for <slug>/<id> and matching a publisher/title marker, so a
+    # wrong id cannot survive.
+    if ($Text -match [regex]::Escape($Slug)) {
+        $m2 = [regex]::Match($Text, '([a-p]{32})')
+        if ($m2.Success) { return $m2.Groups[1].Value }
+    }
     return ''
 }
 
@@ -64,6 +76,7 @@ function Resolve-StoreExtId {
         $t = Get-ExtPageText -Url $s.url
         $id = Find-ExtIdInText -Text $t -Slug $Slug
         if ($id) { $src = ($s.label + '::' + $s.url); Write-Host ('[ext] ' + $Slug + ' candidate ' + $id + ' discovered on ' + $src); break }
+        Write-Host ('::warning::[ext] no id on ' + $s.label + ' (' + $s.url + '), bytes=' + $(if ($t) { $t.Length } else { 0 }) + ', slug-present=' + [string]($t -and ($t -match [regex]::Escape($Slug))))
     }
     if (-not $id) {
         Write-Host ('::warning::[ext] live ID discovery FAILED for ' + $Slug + ' - no store link on any live page; entry skipped (never guessed)')
