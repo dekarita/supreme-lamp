@@ -1762,6 +1762,14 @@ jobs:
               'Diagnostics artifact: webdesk-diag (websockify.log, websockify.err.log, serve-status.json, selftest-verbose.txt, classification.txt)' | Add-Content -Path $S
               'Advertised URL cleared; reason=serve-failed, detail=self-test-failed. Halted by design - fix the classified leg and re-dispatch.' | Add-Content -Path $S
           }
+          # [F9l-4] LOCKED contract - fail-closed, and the classification stays
+          # OUT of the dashboard-facing codes: config.webdeskReason is exactly
+          # 'serve-failed' and config.webdeskDetail is exactly 'self-test-failed'
+          # (the codes /api/native-status and ui.html already render). The new
+          # backend-dead | proxy-502 | dns-tls classification is diagnostic
+          # only - it lives in the Step Summary, the annotation and the
+          # 'webdesk-diag' artifact, never in config.json, so the dashboard
+          # messaging does not oscillate.
           Write-Host ('[webdesk-test] FAIL (classified: ' + $verdict + '): advertised URL did not serve noVNC after self-heal; clearing advertised URL. Halted by design.')
           # Annotation channel for the classification (survives the missing
           # runner-log zip and is visible in the Checks tab next to the run).

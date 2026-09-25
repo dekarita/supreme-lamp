@@ -257,3 +257,20 @@ test('F9l-3: webdesk-diag is staged in the workspace and uploaded on halt', () =
   assert.match(webdesk, /Diagnostics artifact: webdesk-diag/);
   assert.match(webdesk, /deploy-verbose\.txt/);
 });
+
+// [F9l-4] Fail-closed contract preserved: the classification is diagnostic
+// only - config keeps the locked serve-failed / self-test-failed codes that
+// /api/native-status and ui.html already render. No dashboard messaging
+// change, no URL left behind on a failure.
+test('F9l-4: config keeps serve-failed/self-test-failed and the UI contract is untouched', () => {
+  const tail = selftest.slice(selftest.indexOf('self-test FAIL'));
+  assert.match(tail, /\$cfgF\.webdeskReason = 'serve-failed'/);
+  assert.match(tail, /\$cfgF\.webdeskDetail = 'self-test-failed'/);
+  assert.match(tail, /\$cfgF\.webdeskUrl = ''/, 'the advertised URL must be cleared on failure');
+  assert.match(tail, /\$cfgF\.webdeskUrl = ''/);
+  const ui = fs.readFileSync('payloads/ui.html', 'utf8');
+  assert.match(ui, /'self-test-failed':'the advertised URL did not serve the noVNC page \(self-test failed\)'/);
+  assert.match(ui, /deskReason==='serve-failed'/);
+  assert.match(ui, /host-side startup\/serve failure - this is NOT a missing VNC_PASS; do not re-add the secret\./);
+  assert.match(ui, /textContent='WEB DESKTOP ready'/);
+});
