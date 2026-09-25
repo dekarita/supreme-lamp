@@ -1,21 +1,26 @@
 # [F10-11 §4.1] LIVE extension-ID resolution for the force-install policies.
 #
 # No extension ID is ever hardcoded in this repo. Every ID is DISCOVERED at
-# build time from a live page (the store search page, a live SERP that indexes
-# the store detail pages, or the vendor's own repository page) and then
-# RE-VERIFIED by fetching the store detail page for that exact id with the
-# canonical slug in its URL and matching a publisher/title marker. A candidate
-# that cannot be discovered + verified is reported LOUDLY and skipped - a wrong
-# or guessed ID would silently install the wrong extension.
+# build time from a live page (store search page, a live SERP that indexes the
+# store detail pages, or the vendor's own repository/site) and then RE-VERIFIED
+# by fetching the store detail page for that exact id with the canonical slug in
+# its URL and matching a publisher/title marker. A candidate that cannot be
+# discovered + verified is reported LOUDLY and skipped - a wrong or guessed ID
+# would silently install the wrong extension.
+#
+# Candidates are classified by the STORE OF THE LINK THEY CAME FROM
+# (microsoftedge.microsoft.com vs chromewebstore.google.com), because the two
+# stores use different ids for the same extension; the requested store is
+# preferred and the other store is only used as a verified fallback (its own
+# update URL then applies).
 #
 # Dot-sourced by BOTH .github/workflows/main.yml (runner provisioning) and
 # .github/workflows/autologin-lab.yml (proof matrix F), so the resolver text has
 # exactly one definition (launch-gates checks the dot-source in both files).
 #
-# Callback/return contract: Resolve-StoreExtId returns $null or a hashtable
+# Contract: Resolve-StoreExtId returns $null or a hashtable
 #   @{ id = '<32 chars a-p>'; store = 'edge' | 'cws'; source = '<label>::<url>' }
-# The caller picks the update URL: edge -> edge.microsoft.com/extensionwebstorebase
-# /v1/crx, cws -> clients2.google.com/service/update2/crx.
+# Caller picks the update URL via Get-ExtForceListValue.
 
 $script:ExtResolveUa = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36 Edg/126.0.0.0'
 
@@ -32,24 +37,27 @@ function Get-ExtPageText {
     }
 }
 
-function Find-ExtIdInText {
-    param([string]$Text, [string]$Slug)
-    if ([string]::IsNullOrEmpty($Text)) { return '' }
-    # Preferred: /detail/<slug>/<32 chars a-p> - the canonical store URL shape
-    # for both front-ends; the slug anchor is what keeps a SERP hit honest.
-    $m = [regex]::Match($Text, '/detail/' + [regex]::Escape($Slug) + '/([a-p]{32})')
-    if ($m.Success) { return $m.Groups[1].Value }
-    # [F10-17] Store SPA pages sometimes carry the slug and the crx id in
-    # separate fields (the page still NAMES this extension). Accept a bare id
-    # ONLY when the same page contains the canonical slug, and never as the
-    # final word: the caller always re-verifies the id by fetching the store
-    # detail page for <slug>/<id> and matching a publisher/title marker, so a
-    # wrong id cannot survive.
-    if ($Text -match [regex]::Escape($Slug)) {
-        $m2 = [regex]::Match($Text, '([a-p]{32})')
-        if ($m2.Success) { return $m2.Groups[1].Value }
-    }
+function Get-ExtStoreOfUrl {
+    param([string]$Url)
+    if (-not $Url) { return '' }
+    if ($Url -match 'microsoftedge\.microsoft\.com') { return 'edge' }
+    if ($Url -match 'chromewebstore\.google\.com|chrome\.google\.com') { return 'cws' }
     return ''
+}
+
+function Find-ExtStoreLinks {
+    # Every <store-url>/detail/<slug>/<32 a-p id> link on a live page (the slug
+    # anchor is what keeps a SERP or vendor-page hit honest), plus - only when the
+    # page itself carries the slug and its host is the store - a bare id that the
+    # caller will still have to prove on the store detail page.
+    param([string]$Text, [string]$Slug)
+    $out = New-Object System.Collections.ArrayList
+    if ([string]::IsNullOrEmpty($Text)) { return $out }
+    $re = 'https?://[A-Za-z0-9.\-]*(?:microsoftedge\.microsoft\.com|chromewebstore\.google\.com|chrome\.google\.com)/[A-Za-z0-9\-/]*detail/' + [regex]::Escape($Slug) + '/([a-p]{32})'
+    foreach ($m in [regex]::Matches($Text, $re)) {
+        [void]$out.Add(@{ id = $m.Groups[1].Value; url = $m.Value })
+    }
+    return $out
 }
 
 function Resolve-StoreExtId {
@@ -71,31 +79,60 @@ function Resolve-StoreExtId {
     [void]$sources.Add(@{ label = 'serp'; url = ('https://www.bing.com/search?q=' + [uri]::EscapeDataString('site:microsoftedge.microsoft.com/addons/detail ' + $Query)) })
     [void]$sources.Add(@{ label = 'cws-search'; url = ('https://chromewebstore.google.com/search/' + $q) })
 
-    $id = ''; $src = ''
+    $cands = New-Object System.Collections.ArrayList
+    $seen = @{}
     foreach ($s in $sources) {
         $t = Get-ExtPageText -Url $s.url
-        $id = Find-ExtIdInText -Text $t -Slug $Slug
-        if ($id) { $src = ($s.label + '::' + $s.url); Write-Host ('[ext] ' + $Slug + ' candidate ' + $id + ' discovered on ' + $src); break }
-        Write-Host ('::warning::[ext] no id on ' + $s.label + ' (' + $s.url + '), bytes=' + $(if ($t) { $t.Length } else { 0 }) + ', slug-present=' + [string]($t -and ($t -match [regex]::Escape($Slug))))
+        $links = Find-ExtStoreLinks -Text $t -Slug $Slug
+        foreach ($l in $links) {
+            $st = Get-ExtStoreOfUrl -Url $l.url
+            if (-not $st) { continue }
+            $k = $st + ':' + $l.id
+            if ($seen.ContainsKey($k)) { continue }
+            $seen[$k] = $true
+            [void]$cands.Add(@{ id = $l.id; store = $st; source = ($s.label + '::' + $l.url) })
+        }
+        if ($links.Count -eq 0) {
+            # Bare-id fallback: page names the slug but the store URL pattern is
+            # split across fields. Only usable when the SOURCE host is a store.
+            $srcStore = Get-ExtStoreOfUrl -Url $s.url
+            if ($srcStore -and $t -and ($t -match [regex]::Escape($Slug))) {
+                $m2 = [regex]::Match($t, '([a-p]{32})')
+                if ($m2.Success) {
+                    $k = $srcStore + ':' + $m2.Groups[1].Value
+                    if (-not $seen.ContainsKey($k)) {
+                        $seen[$k] = $true
+                        [void]$cands.Add(@{ id = $m2.Groups[1].Value; store = $srcStore; source = ($s.label + '::bare-id') })
+                    }
+                }
+            }
+            Write-Host ('::warning::[ext] no live store link on ' + $s.label + ' (' + $s.url + '), bytes=' + $(if ($t) { $t.Length } else { 0 }) + ', slug-present=' + [string]($t -and ($t -match [regex]::Escape($Slug))))
+        }
     }
-    if (-not $id) {
+    if ($cands.Count -eq 0) {
         Write-Host ('::warning::[ext] live ID discovery FAILED for ' + $Slug + ' - no store link on any live page; entry skipped (never guessed)')
         return $null
     }
-    $detail = if ($src -like 'cws-search*') { 'https://chromewebstore.google.com/detail/' + $Slug + '/' + $id } else { 'https://microsoftedge.microsoft.com/addons/detail/' + $Slug + '/' + $id }
-    $det = Get-ExtPageText -Url $detail
-    if (-not $det) {
-        Write-Host ('::warning::[ext] detail page unreachable for ' + $Slug + ' id ' + $id + ' - entry skipped (unverified)')
-        return $null
+    # Preferred store first (Edge forcelist wants Edge ids), other store second.
+    $ordered = @($cands | Where-Object { $_.store -eq $Store }) + @($cands | Where-Object { $_.store -ne $Store })
+    foreach ($c in $ordered) {
+        $detail = if ($c.store -eq 'cws') { 'https://chromewebstore.google.com/detail/' + $Slug + '/' + $c.id } else { 'https://microsoftedge.microsoft.com/addons/detail/' + $Slug + '/' + $c.id }
+        $det = Get-ExtPageText -Url $detail
+        if (-not $det) {
+            Write-Host ('::warning::[ext] detail page unreachable for ' + $Slug + ' id ' + $c.id + ' (' + $detail + ')')
+            continue
+        }
+        $ok = $false
+        foreach ($mk in $Markers) { if ($mk -and ($det -match [regex]::Escape($mk))) { $ok = $true; break } }
+        if (-not $ok) {
+            Write-Host ('::warning::[ext] publisher/title marker missing on ' + $detail + ' - candidate rejected (unverified id)')
+            continue
+        }
+        Write-Host ('[ext] resolved ' + $Slug + ' -> ' + $c.id + ' (store=' + $c.store + ', verified via ' + $detail + ', discovered on ' + $c.source + ')')
+        return @{ id = $c.id; store = $c.store; source = $c.source }
     }
-    $ok = $false
-    foreach ($mk in $Markers) { if ($mk -and ($det -match [regex]::Escape($mk))) { $ok = $true; break } }
-    if (-not $ok) {
-        Write-Host ('::warning::[ext] publisher/title marker missing on ' + $detail + ' - entry skipped (unverified id)')
-        return $null
-    }
-    Write-Host ('[ext] resolved ' + $Slug + ' -> ' + $id + ' (store=' + $(if ($src -like 'cws-search*') { 'cws' } else { 'edge' }) + ', live-verified via ' + $src + ')')
-    return @{ id = $id; store = $(if ($src -like 'cws-search*') { 'cws' } else { 'edge' }); source = $src }
+    Write-Host ('::warning::[ext] no VERIFIED candidate for ' + $Slug + ' (' + $cands.Count + ' discovered) - entry skipped (never guessed)')
+    return $null
 }
 
 function Get-ExtForceListValue {
