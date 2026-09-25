@@ -233,3 +233,27 @@ test('F9l-2: failures are classified (backend-dead | proxy-502 | dns-tls) and fa
   // no password reference anywhere in the classifier
   assert.doesNotMatch(selftest, /\$vp\b|VNC_PASS/);
 });
+
+// [F9l-3] Survivable diagnostics: the payload is staged INSIDE the workspace
+// (upload-artifact v4 rejects absolute paths outside its root directory -
+// observed in the lab) and uploaded with `if: always()` so a halt in either
+// web-desktop step still leaves evidence behind.
+test('F9l-3: webdesk-diag is staged in the workspace and uploaded on halt', () => {
+  assert.match(selftest, /Web desktop diagnostics staging/);
+  assert.match(selftest, /Web desktop diagnostics artifact/);
+  assert.match(selftest, /actions\/upload-artifact@v4/);
+  assert.match(selftest, /name: webdesk-diag/);
+  const upload = selftest.slice(selftest.indexOf('Web desktop diagnostics artifact'));
+  assert.match(upload, /if: always\(\)/, 'the upload must run even when a previous step halted');
+  assert.match(upload, /path: webdesk-diag/, 'upload must use the workspace-relative staging dir');
+  assert.doesNotMatch(upload, /[A-Z]:\\\\ghrdp/, 'absolute host paths cannot be uploaded by upload-artifact v4');
+  assert.doesNotMatch(upload, /runner\.temp/);
+  // staging copies the host-side websockify logs and the self-test payload
+  const stage = selftest.slice(selftest.indexOf('Web desktop diagnostics staging'), selftest.indexOf('Web desktop diagnostics artifact'));
+  assert.match(stage, /websockify\.log/);
+  assert.match(stage, /websockify\.err\.log/);
+  assert.match(stage, /MANIFEST\.txt/);
+  assert.match(stage, /serve status --json/);
+  assert.match(webdesk, /Diagnostics artifact: webdesk-diag/);
+  assert.match(webdesk, /deploy-verbose\.txt/);
+});

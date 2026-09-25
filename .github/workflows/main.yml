@@ -1484,10 +1484,21 @@ jobs:
           # Server re-reads config per request (F8a), so it sees this immediately.
           Set-WebdeskCfg $serveUrl ''
           Write-Host ('[webdesk] serve URL = ' + $serveUrl)
+          # [F9l-3] diagnostics payload (secret-free) for the 'webdesk-diag'
+          # artifact: the served mapping as the host sees it, plus a one-line
+          # deploy record. VNC_PASS is never passed to tailscale.
+          try {
+              $diagDir = Join-Path $env:RUNNER_TEMP 'webdesk-diag'
+              New-Item -ItemType Directory -Path $diagDir -Force -ErrorAction SilentlyContinue | Out-Null
+              Add-Content -LiteralPath (Join-Path $diagDir 'deploy-verbose.txt') -Value ('serveUrl=' + $serveUrl + ' websockifyListen1333=' + $wsUp) -ErrorAction SilentlyContinue
+              ((& $ts serve status --json 2>$null) -join "`n") | Set-Content -LiteralPath (Join-Path $diagDir 'serve-status.json') -ErrorAction SilentlyContinue
+          } catch { }
+          Write-Host ('::notice title=Webdesk deploy::websockify 127.0.0.1:7333 LISTEN=' + $wsUp + '; tailnet serve mapping verified: ' + [bool]$serveUrl)
           if ($S) {
               '### Web desktop LIVE (tailnet-only, VNC-password-gated)' | Add-Content -Path $S
               ('URL: ' + $serveUrl) | Add-Content -Path $S
               'Credentials: VNC password from repo secret VNC_PASS (never printed).' | Add-Content -Path $S
+              'Diagnostics artifact: webdesk-diag (staged in the workspace + uploaded after the self-test; survives a halt).' | Add-Content -Path $S
           }
           exit 0
 
@@ -1765,6 +1776,57 @@ jobs:
           } catch { Write-Host ('[webdesk-test] config clear failed: ' + $_.Exception.Message) }
           $null = Get-ServeMappingPresent
           throw ('Web desktop self-test FAILED (classified: ' + $verdict + '): advertised URL did not return the noVNC page. Halted by design. See Step Summary + webdesk-diag artifact.')
+      # [F9l-3] Survivable diagnostics. Two steps: stage the payload inside the
+      # WORKSPACE (upload-artifact v4 refuses absolute paths outside its root
+      # directory - proven by the lab: "rootDirectory D:\a\... is not a parent
+      # directory of the file C:\ghrdp\webdesk\websockify.log"), then upload it
+      # with `if: always()` so it exists even when the deploy step or the
+      # self-test halts the run (the F9l post-mortem was blind precisely
+      # because the ephemeral VM took its logs with it and nothing was
+      # uploaded). Secret-free by construction: websockify never receives the
+      # VNC password, and every staged file is produced by code that prints
+      # only redacted/plaintext diagnostics (URLs, HTTP codes, curl exits,
+      # serve status JSON).
+      - name: Web desktop diagnostics staging (workspace-relative)
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $stage = Join-Path $env:GITHUB_WORKSPACE 'webdesk-diag'
+          New-Item -ItemType Directory -Path $stage -Force -ErrorAction SilentlyContinue | Out-Null
+          $manifest = @()
+          $manifest += ('staged-at=' + (Get-Date).ToUniversalTime().ToString('o'))
+          foreach ($f in @('C:\ghrdp\webdesk\websockify.log', 'C:\ghrdp\webdesk\websockify.err.log')) {
+              try {
+                  if (Test-Path -LiteralPath $f) {
+                      $dest = Join-Path $stage ([System.IO.Path]::GetFileName($f))
+                      Copy-Item -LiteralPath $f -Destination $dest -Force -ErrorAction Stop
+                      $manifest += ('host-file=' + $f + ' bytes=' + (Get-Item -LiteralPath $dest).Length)
+                  } else { $manifest += ('host-file=' + $f + ' MISSING') }
+              } catch { $manifest += ('host-file=' + $f + ' copy-error=' + $_.Exception.Message) }
+          }
+          try {
+              if (Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'webdesk-diag')) {
+                  Copy-Item -Path (Join-Path $env:RUNNER_TEMP 'webdesk-diag\*') -Destination $stage -Force -Recurse -ErrorAction SilentlyContinue
+              }
+          } catch { }
+          try {
+              $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+              ((& $ts serve status --json 2>$null) -join "`n") | Set-Content -LiteralPath (Join-Path $stage 'serve-status.json') -ErrorAction SilentlyContinue
+              $manifest += 'serve-status=refreshed'
+          } catch { $manifest += 'serve-status=unavailable' }
+          Set-Content -LiteralPath (Join-Path $stage 'MANIFEST.txt') -Value ($manifest -join "`n") -ErrorAction SilentlyContinue
+          Write-Host ('[webdesk-diag] staged ' + (Get-ChildItem -LiteralPath $stage -ErrorAction SilentlyContinue).Count + ' file(s) in ' + $stage)
+
+      - name: Web desktop diagnostics artifact (survives halts)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: webdesk-diag
+          if-no-files-found: warn
+          retention-days: 14
+          path: webdesk-diag
+
       - name: Start Mission Control dashboard EARLY (PS 7331, SYSTEM task, confirm LISTENING)
         shell: pwsh
         run: |
