@@ -28,7 +28,8 @@ const selftest = lines.slice(selftestStart, nextStepAfterSelftest).join('\n');
 
 test('F9h guard runs before any installer and is fail-closed', () => {
   const guard = lineIndex(l => l.includes("::error::VNC_PASS secret missing"), webdeskStart);
-  const installer = lineIndex(l => l.includes('choco install tightvnc'), webdeskStart);
+  // [F9o] direct-msiexec ladder (L1): the installer entry is the MSI download.
+  const installer = lineIndex(l => l.includes('tightvnc-2.8.85-gpl-setup-64bit.msi'), webdeskStart);
   assert.ok(guard > 0, 'F9h ::error:: guard missing');
   assert.ok(installer > 0, 'TightVNC installer missing');
   assert.ok(guard < installer, 'F9h guard must run BEFORE the installer');
@@ -44,7 +45,9 @@ test('F9h-belt marker retained (launch-gate dependency)', () => {
 });
 
 test('websockify Start-Process uses DIFFERENT files for stdout and stderr', () => {
-  const procLines = webdesk.split('\n').filter(l => l.includes('Start-Process -FilePath python'));
+  // [F9o] the vncdotool fallback also uses Start-Process -FilePath python, so
+  // scope to the websockify launcher line (contains 'websockify').
+  const procLines = webdesk.split('\n').filter(l => l.includes('Start-Process -FilePath python') && l.includes('websockify'));
   assert.equal(procLines.length, 1, 'expected exactly one python (websockify) Start-Process');
   const line = procLines[0];
   const out = line.match(/-RedirectStandardOutput\s+(\S+)/);
@@ -70,7 +73,7 @@ test('every serve-failed path is fail-closed (throw, never exit 0)', () => {
   webdesk.split('\n').forEach((l, i) => {
     if (l.includes("Set-WebdeskCfg '' 'serve-failed'")) idxs.push(i);
   });
-  assert.equal(idxs.length, 5, 'expected 5 serve-failed reason writes (tailnet-ip, tightvnc, novnc, websockify, firewall)');
+  assert.equal(idxs.length, 6, 'expected 6 serve-failed reason writes (tailnet-ip, tightvnc, novnc, websockify, firewall, vnc-auth-unverifiable)');
   const webdeskLines = webdesk.split('\n');
   for (const i of idxs) {
     const tail = webdeskLines.slice(i, i + 8).join('\n');
@@ -85,13 +88,14 @@ test('serve-failed paths carry fixed, secret-free detail codes', () => {
   assert.match(webdesk, /Set-WebdeskCfg '' 'serve-failed' 'novnc-assets'/);
   assert.match(webdesk, /Set-WebdeskCfg '' 'serve-failed' 'websockify-bind'/);
   assert.match(webdesk, /Set-WebdeskCfg '' 'serve-failed' 'firewall-rule'/);
+  assert.match(webdesk, /Set-WebdeskCfg '' 'serve-failed' 'vnc-auth-unverifiable'/);
   // serve-mapping is retired with serve: no deploy path may stamp it.
   assert.doesNotMatch(webdesk, /serve-mapping/);
 });
 
 test('present-but-short VNC_PASS is vnc-pass-too-short, never vnc-pass-missing', () => {
   const shortBlock = webdesk.slice(webdesk.indexOf('$vp.Length -lt 8'));
-  const installerTail = shortBlock.slice(0, shortBlock.indexOf('choco install tightvnc'));
+  const installerTail = shortBlock.slice(0, shortBlock.indexOf('tightvnc-2.8.85-gpl-setup-64bit.msi'));
   assert.match(installerTail, /Set-WebdeskCfg '' 'vnc-pass-too-short'/);
   assert.doesNotMatch(installerTail, /Set-WebdeskCfg '' 'vnc-pass-missing'/, 'short-but-present secret must not be reported as missing');
   // the missing-secret reason appears only in the single F9h belt line
@@ -119,8 +123,13 @@ test('self-test FAIL is fail-closed and records self-test-failed', () => {
 
 test('no fabricated serve URL; no secret-bearing installer output', () => {
   assert.doesNotMatch(webdesk, /serveUrl = 'https:\/\/' \+ \$fq/);
-  // installer output is still filtered for the password value
-  assert.match(webdesk, /Where-Object \{ \$_ -notmatch \[regex\]::Escape\(\$vp\) \}/);
+  // [F9o] probe/installer outputs are redacted in place; only exit codes log.
+  assert.match(webdesk, /\.Replace\(\$Password, '\[redacted\]'\)/);
+  assert.match(webdesk, /\.Replace\(\$vp, '\[redacted\]'\)/);
+  assert.match(webdesk, /vnc-auth-probe tag=.*exit=/);
+  // installer argument lists are never printed (only the msiexec exit code).
+  assert.doesNotMatch(webdesk, /Write-Host.*\$margs/);
+  assert.doesNotMatch(webdesk, /Write-Host.*\$vpArg/);
   // websockify args carry no password (only dir + loopback ports)
   const procLine = webdesk.split('\n').find(l => l.includes('Start-Process -FilePath python'));
   assert.doesNotMatch(procLine, /\$vp|VNC_PASS/);
@@ -280,9 +289,12 @@ test('F9n: failures are classified (backend-dead | firewall | marker-missing) an
   assert.match(tail, /classification\.txt/, 'the summary must name the diagnostics payload');
   assert.match(tail, /\bthrow\b/, 'classified halt must throw (fail-closed)');
   // the classification must never be written into config.json (F9l-4 contract)
-  assert.doesNotMatch(tail, /webdeskDetail.*(backend-dead|firewall|marker-missing)/);
-  // no password reference anywhere in the classifier
-  assert.doesNotMatch(selftest, /\$vp\b|VNC_PASS/);
+  assert.doesNotMatch(tail, /webdeskDetail.*(backend-dead|firewall|marker-missing|vnc-auth)/);
+  // [F9o] VNC_PASS is referenced ONLY for the mode-matching probe (redacted);
+  // the classifier itself never interpolates it into output.
+  assert.match(selftest, /\$vpSelf = \[string\]\$env:VNC_PASS/);
+  assert.match(selftest, /\.Replace\(\$Password, '\[redacted\]'\)/);
+  assert.doesNotMatch(selftest, /Write-Host.*\$vpSelf/);
 });
 
 // [F9l-3] Survivable diagnostics: the payload is staged INSIDE the workspace
@@ -306,6 +318,8 @@ test('F9l-3: webdesk-diag is staged in the workspace and uploaded on halt', () =
   assert.match(stage, /MANIFEST\.txt/);
   assert.match(stage, /listener\.txt/, 'listener snapshot missing');
   assert.match(stage, /firewall\.txt/, 'firewall snapshot missing');
+  assert.match(stage, /vncprobe-codes\.txt/, 'vncdotool probe codes missing from manifest');
+  assert.match(stage, /tightvnc-tail\.txt/, 'TightVNC tail missing from manifest');
   assert.doesNotMatch(selftest, /serve-status\.json/, 'retired serve-status payload survives');
   assert.match(webdesk, /Diagnostics artifact: webdesk-diag/);
   assert.match(webdesk, /deploy-verbose\.txt/);
