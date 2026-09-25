@@ -20,7 +20,7 @@ try {
     if ($tsess -eq 'interactive') {
         $ttask = 'GhrdpTerm-' + $tid
         $twrap = '& ' + [char]39 + $tscript + [char]39 + ' *> ' + [char]39 + $toutF + [char]39 + '; exit $LASTEXITCODE'
-        $targ = '-NoProfile -ExecutionPolicy Bypass -Command "' + $twrap + '"'
+        $targ = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "' + $twrap + '"'
         $tact = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $targ
         $activeU = $null
         foreach ($ln2 in (@(& quser.exe 2>$null))) { if ($ln2 -match '^\s*>?\s*(\S+)\s+\S+\s+\d+\s+Active') { $activeU = $Matches[1] } }

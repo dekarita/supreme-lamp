@@ -139,21 +139,23 @@ jobs:
           Write-Host '[deploy] auto-deploy complete'
           exit 0
 
-      # [F10-4c §5] setup-phase caches: TightVNC MSI, noVNC tree, pip wheel
-      # cache (websockify/vncdotool), cargo target (Rust dash). Keep-alive is
-      # untouched. One composite key; Cargo.toml changes bust the whole set by
-      # design (simple, conservative). First run warms the caches; subsequent
-      # dispatches skip ~1-2 min of downloads/compiles.
+      # [F10-4c §5 / F11 §6] setup-phase caches: TightVNC MSI, noVNC tree, pip
+      # wheel cache (websockify/vncdotool), cargo target (Rust dash), qBittorrent
+      # installer. Keep-alive is untouched. One composite key; Cargo.toml changes
+      # bust the whole set by design (simple, conservative). First run warms the
+      # caches; subsequent dispatches skip downloads/compiles (target <=6 min).
       - uses: actions/cache@v4
-        name: Setup-phase caches (F10-4c)
+        name: Setup-phase caches (F10-4c + F11 qBittorrent)
         with:
           path: |
             C:\ghrdp\cache
             C:\ghrdp\novnc
             ~\AppData\Local\pip\Cache
             ${{ runner.temp }}\ghrdp-rust\target
-          key: f10-setup-${{ runner.os }}-${{ hashFiles('payloads/Cargo.toml') }}-v1
+            cache\qbt-installer
+          key: f11-setup-${{ runner.os }}-${{ hashFiles('payloads/Cargo.toml') }}-v1
           restore-keys: |
+            f11-setup-${{ runner.os }}-
             f10-setup-${{ runner.os }}-
       - name: Pre-create cache directories (F10-4c)
         shell: pwsh
@@ -954,6 +956,16 @@ jobs:
           }
           if (-not $ip) { Write-Host '[stage] WARNING: no Tailscale IP resolved yet' }
           $mirrorOn = ($env:MIRROR_INPUT -eq 'true')
+          # [F11 §3] usage-timer accumulator survives re-dispatch on the SAME
+          # host: carry the previous rdpUsageSec forward (0 on a fresh VM).
+          $prevUsage = 0
+          try {
+              $prevCfgPath = Join-Path $root 'config.json'
+              if (Test-Path -LiteralPath $prevCfgPath) {
+                  $prevCfg = Get-Content -LiteralPath $prevCfgPath -Raw | ConvertFrom-Json
+                  if ($prevCfg.PSObject.Properties['rdpUsageSec']) { $prevUsage = [int]$prevCfg.rdpUsageSec }
+              }
+          } catch { $prevUsage = 0 }
           $tokSet = 'abcdefghijklmnopqrstuvwxyz0123456789'
           $tok = ''
           for ($i = 0; $i -lt 32; $i++) { $tok = $tok + (Pick-Char -Set $tokSet) }
@@ -994,6 +1006,7 @@ jobs:
               runnerEgressIp = ''
               githubDeadline = $(try { (([datetime]$(if ($env:JOB_STARTED_AT) { $env:JOB_STARTED_AT } else { (Get-Date -Format o) })).AddMinutes(357)).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } catch { (Get-Date).AddMinutes(357).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') })
               keepAliveDeadline = ''
+              rdpUsageSec = $prevUsage
               keepAlivePhase = 'idle-wait'
               watcherDeadline = ''
               hiddenFiles = @()
@@ -1364,6 +1377,29 @@ jobs:
               Set-WebdeskCfg '' 'serve-failed' 'novnc-assets'
               throw 'Web desktop not deployed: noVNC/websockify assets unavailable. Halted by design. See Step Summary.'
           }
+          # [F11 §2.1] VNC password memory: copy ghrdp-cred-shim.js into the
+          # served noVNC tree and stamp the exact dashboard origin
+          # (http://<tailnet-ip>:7331) into vnc.html. Client-side only - the
+          # shim accepts the password postMessage from that origin via its
+          # opener window only, auto-fills the Credentials dialog, and never
+          # logs, echoes, or URL-encodes the value (launch-gates F11).
+          try {
+              Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-cred-shim.js') -Destination (Join-Path $novncDir 'ghrdp-cred-shim.js') -Force -ErrorAction Stop
+              $vncHtmlPath = Join-Path $novncDir 'vnc.html'
+              $wantOrigin = 'http://' + $rdpIp + ':7331'
+              $html = [System.IO.File]::ReadAllText($vncHtmlPath)
+              if ($html -match 'ghrdp-cred-shim\.js') {
+                  # cache-restored tree: re-stamp the CURRENT tailnet origin
+                  $html = [regex]::Replace($html, 'window\.__GHRDP_DASH_ORIGIN__="[^"]*"', ('window.__GHRDP_DASH_ORIGIN__="' + $wantOrigin + '"'))
+              } else {
+                  $inject = '<script>window.__GHRDP_DASH_ORIGIN__="' + $wantOrigin + '";</script><script src="ghrdp-cred-shim.js"></script>'
+                  $html = $html -replace '(?i)</body>', ($inject + '</body>')
+              }
+              [System.IO.File]::WriteAllText($vncHtmlPath, $html)
+              Write-Host ('[webdesk] F11 cred shim deployed; dashboard origin stamped: ' + $wantOrigin)
+          } catch {
+              Write-Host ('::warning title=F11 cred shim::deploy failed - VNC password memory unavailable this run: ' + $_.Exception.Message)
+          }
           # Wait for VNC 5900 to be LISTENING on loopback before starting websockify.
           $vncUp = $false
           for ($i = 0; $i -lt 30; $i++) {
@@ -1527,7 +1563,7 @@ jobs:
               }
               # 2) start (paired redirect files - never the same file twice).
               try {
-                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, ($BindIp + ':7333'), '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
+                  Start-Process -FilePath pythonw -ArgumentList @('-m','websockify','--web', $NoVncDir, ($BindIp + ':7333'), '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
               } catch {
                   Write-Host ('[webdesk] websockify start failed: ' + $_.Exception.Message)
                   return $false
@@ -1690,7 +1726,7 @@ jobs:
               }
               # 2) start (paired redirect files - never the same file twice).
               try {
-                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, ($BindIp + ':7333'), '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
+                  Start-Process -FilePath pythonw -ArgumentList @('-m','websockify','--web', $NoVncDir, ($BindIp + ':7333'), '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
               } catch {
                   Write-Host ('[webdesk] websockify start failed: ' + $_.Exception.Message)
                   return $false
@@ -2791,8 +2827,36 @@ jobs:
               $LASTEXITCODE = 0
               Write-Host '[browsers] gpupdate /force executed'
           } catch { }
-          # [U1 / #7D] P2P client winget block removed. P2P-index software is not part of the native
-          # RDP auto-login architecture and its presence widened the runner attack surface.
+          # [F11 §5.2] qBittorrent: plain winget app, installer cached in the
+          # workspace actions/cache dir, silent NSIS install. No piracy-index
+          # bookmark strings anywhere (the F11 launch gate fails on them after
+          # stripping this product name), no index integration, and the
+          # mirror/publish pipeline stays OFF.
+          try {
+              $qbtCache = Join-Path $env:GITHUB_WORKSPACE 'cache\qbt-installer'
+              New-Item -ItemType Directory -Path $qbtCache -Force | Out-Null
+              $qbtExe = 'C:\Program Files\qBittorrent\qbittorrent.exe'
+              if (-not (Test-Path -LiteralPath $qbtExe)) {
+                  $inst = Get-ChildItem -LiteralPath $qbtCache -Filter '*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+                  if (-not $inst) {
+                      & winget.exe download --id qBittorrent.qBittorrent --exact --download-directory $qbtCache --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Select-Object -Last 5 | ForEach-Object { Write-Host ('[qbittorrent] ' + $_) }
+                      $LASTEXITCODE = 0
+                      $inst = Get-ChildItem -LiteralPath $qbtCache -Filter '*.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+                  }
+                  if ($inst) {
+                      $qp = Start-Process -FilePath $inst.FullName -ArgumentList '/S' -Wait -PassThru -WindowStyle Hidden
+                      Write-Host ('[qbittorrent] cached installer exit=' + $qp.ExitCode)
+                  } else {
+                      & winget.exe install --id qBittorrent.qBittorrent --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Select-Object -Last 5 | ForEach-Object { Write-Host ('[qbittorrent] ' + $_) }
+                      $LASTEXITCODE = 0
+                  }
+              }
+              if ((Test-Path -LiteralPath $qbtExe) -or (Test-Path -LiteralPath (Join-Path $env:LOCALAPPDATA 'Programs\qBittorrent\qbittorrent.exe'))) {
+                  Write-Host '::notice title=qBittorrent::present (plain app, silent install, installer cached)'
+              } else {
+                  Write-Host '::error::[qbittorrent] not present after install attempts - see [qbittorrent] log lines'
+              }
+          } catch { Write-Host ('[qbittorrent] error: ' + $_.Exception.Message) }
           Write-Host '[parsec] skipped - new Parsec requires email OTP (token pairing deprecated); RDP with CredSSP-disabled .rdp is the primary path'
           try {
               $vcUrl = 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Setup_x64.exe'
@@ -3187,7 +3251,7 @@ jobs:
                   if (-not $brOk) {
                       try {
                           if ($ipNow -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') {
-                              Start-Process -FilePath python -ArgumentList '-m','websockify','--web','C:\ghrdp\novnc',($ipNow + ':7333'),'127.0.0.1:5900'
+                              Start-Process -FilePath pythonw -ArgumentList '-m','websockify','--web','C:\ghrdp\novnc',($ipNow + ':7333'),'127.0.0.1:5900'
                           } else {
                               Write-Host ($icons.warn + ' ' + $stamp + ' websockify heal skipped: no valid tailnet IP in config (refusing loopback rebind)')
                           }

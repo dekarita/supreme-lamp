@@ -15,6 +15,9 @@ on:
       - payloads/install.cmd
       - payloads/ghrdp-server.ps1
       - payloads/edge-ext-resolve.ps1
+      # [F11 §7] proof cells for VNC memory, usage timer, provisioning
+      - payloads/ghrdp-cred-shim.js
+      - payloads/ui.html
 jobs:
   proof:
     runs-on: windows-latest
@@ -248,6 +251,233 @@ jobs:
           ('F_ubo=' + $a1.id + ' via ' + $a1.source) | Out-File $env:GITHUB_ENV -Append
           ('F_dr=' + $d1.id + ' via ' + $d1.source) | Out-File $env:GITHUB_ENV -Append
 
+      # ================================================================ [F11 §7]
+      - name: "H: usage timer (carry-in / ticks / freezes <=20s / resumes / persists)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'C:\ghrdp'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          function H-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[H] stage=' + $Stage + ' :: ' + $Detail)
+              exit 1
+          }
+          # Reap helper loops from step D/E so THIS run owns the usage mutex
+          # (a surviving loop would double-count or hold the stale accumulator).
+          $anc = @(); $cur = $PID
+          for ($a = 0; $a -lt 8 -and $cur; $a++) {
+              $anc += $cur
+              try { $cur = [int](Get-CimInstance Win32_Process -Filter ('ProcessId=' + $cur)).ParentProcessId } catch { $cur = 0 }
+              if ($cur -le 0) { break }
+          }
+          foreach ($pp in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue)) {
+              if ($pp.ProcessId -notin $anc -and $pp.CommandLine -and ($pp.CommandLine -match 'rdp-usage\.ps1|rdp-ping\.ps1|wire-probe\.ps1|conn-probe\.ps1')) {
+                  try { Stop-Process -Id $pp.ProcessId -Force -ErrorAction Stop; Write-Host ('[H] reaped stray loop pid ' + $pp.ProcessId) } catch { }
+              }
+          }
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          # Carry-IN proof: seed rdpUsageSec=100 (a previous same-host dispatch).
+          [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), (@{
+              dnsName = 'lab-host.dekarita.tailnet-lab.ts.net'; rdpUser = 'labuser'
+              rdpPass = 'LABDUMMY-win-9876'; vncPass = 'LABDUMMY-vnc-5432'; rdpIp = '100.118.42.7'
+              rdpUsageSec = 100
+          } | ConvertTo-Json -Compress), $utf8)
+          [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), 'lab-dash-token-0123456789', $utf8)
+          $srvOut = Join-Path $env:RUNNER_TEMP 'h-server-out.log'; $srvErr = Join-Path $env:RUNNER_TEMP 'h-server-err.log'
+          $srv = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:GITHUB_WORKSPACE\payloads\ghrdp-server.ps1"
+          $ru = Join-Path $root 'rdp-usage.json'
+          $uj = $null
+          for ($i = 0; $i -lt 40 -and -not $uj; $i++) {
+              if (Test-Path $ru) { try { $uj = Get-Content $ru -Raw | ConvertFrom-Json } catch { $uj = $null } }
+              if (-not $uj) { Start-Sleep -Seconds 1 }
+          }
+          if (-not $uj) { H-Fail 'loop-start' 'rdp-usage.json never appeared' }
+          $s1 = [int]$uj.sec
+          if ($s1 -lt 100) { H-Fail 'carry-in' ('expected >=100 from config seed, got ' + $s1) }
+          if ($uj.active) { H-Fail 'idle-active' 'active=true with no session and no 7333 client' }
+          Start-Sleep -Seconds 8
+          $s2 = [int]((Get-Content $ru -Raw | ConvertFrom-Json).sec)
+          if ($s2 -ne $s1) { H-Fail 'freeze-idle' ('accumulator moved while idle: ' + $s1 + ' -> ' + $s2) }
+          # (b) established client on 7333 => tick
+          $lst = $null; $cli = $null; $accepted = @()
+          try {
+              $lst = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse('127.0.0.1'), 7333)
+              $lst.Start()
+              $cli = New-Object System.Net.Sockets.TcpClient
+              $cli.Connect('127.0.0.1', 7333)
+              while ($lst.Pending()) { $accepted += $lst.AcceptTcpClient() }
+              $est = @(Get-NetTCPConnection -LocalPort 7333 -State Established -ErrorAction SilentlyContinue)
+              if ($est.Count -lt 1) { H-Fail 'established' 'no established 7333 connection after client connect' }
+              Start-Sleep -Seconds 14
+              $s3 = [int]((Get-Content $ru -Raw | ConvertFrom-Json).sec)
+              if ($s3 -le $s2) { H-Fail 'tick' ('did not tick while connected: ' + $s2 + ' -> ' + $s3) }
+              $a3 = [bool]((Get-Content $ru -Raw | ConvertFrom-Json).active)
+              if (-not $a3) { H-Fail 'active-flag' 'rdpUsageActive=false while a client is connected' }
+          } finally {
+              try { if ($cli) { $cli.Close() } } catch { }
+              try { foreach ($x in $accepted) { $x.Close() } } catch { }
+              try { if ($lst) { $lst.Stop() } } catch { }
+          }
+          # Freeze: samples at +12s and +22s after disconnect must be equal
+          # (no growth => frozen well within the 20s contract).
+          Start-Sleep -Seconds 12
+          $s4 = [int]((Get-Content $ru -Raw | ConvertFrom-Json).sec)
+          Start-Sleep -Seconds 10
+          $s5 = [int]((Get-Content $ru -Raw | ConvertFrom-Json).sec)
+          if ($s5 -ne $s4) { H-Fail 'freeze-20s' ('accumulator kept growing with no client: ' + $s4 + ' -> ' + $s5) }
+          # Reconnect => resume
+          $lst2 = $null; $cli2 = $null; $acc2 = @()
+          try {
+              $lst2 = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse('127.0.0.1'), 7333)
+              $lst2.Start()
+              $cli2 = New-Object System.Net.Sockets.TcpClient
+              $cli2.Connect('127.0.0.1', 7333)
+              while ($lst2.Pending()) { $acc2 += $lst2.AcceptTcpClient() }
+              Start-Sleep -Seconds 14
+              $s6 = [int]((Get-Content $ru -Raw | ConvertFrom-Json).sec)
+              if ($s6 -le $s5) { H-Fail 'resume' ('did not resume on reconnect: ' + $s5 + ' -> ' + $s6) }
+          } finally {
+              try { if ($cli2) { $cli2.Close() } } catch { }
+              try { foreach ($x in $acc2) { $x.Close() } } catch { }
+              try { if ($lst2) { $lst2.Stop() } } catch { }
+          }
+          # Persistence: config.json carries the accumulator (>= carry-in seed).
+          $cfgU = $null
+          try { $cfgU = [int](Get-Content (Join-Path $root 'config.json') -Raw | ConvertFrom-Json).rdpUsageSec } catch { }
+          if ($cfgU -lt 100) { H-Fail 'persist' ('config.json rdpUsageSec missing/stale: [' + $cfgU + ']') }
+          try { Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue } catch { }
+          Write-Host ('[H] PASS carry-in=' + $s1 + ' idle=' + $s2 + ' tick=' + $s3 + ' frozen=' + $s4 + '/' + $s5 + ' resumed=' + $s6 + ' config=' + $cfgU)
+          ('H_result=pass H_tick=' + $s3 + ' H_resume=' + $s6) | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+
+      - name: "I: cred shim auto-fills the REAL noVNC dialog via origin-gated postMessage"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function I-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[I] stage=' + $Stage + ' :: ' + $Detail)
+              exit 1
+          }
+          $novnc = Join-Path $env:RUNNER_TEMP 'novnc-f11'
+          if (Test-Path $novnc) { Remove-Item $novnc -Recurse -Force }
+          & git.exe clone --depth 1 https://github.com/novnc/noVNC.git $novnc 2>&1 | Select-Object -Last 2 | Write-Host
+          if (-not (Test-Path (Join-Path $novnc 'vnc.html'))) { I-Fail 'clone' 'noVNC clone failed' }
+          $vncHtmlPath = Join-Path $novnc 'vnc.html'
+          $html = [System.IO.File]::ReadAllText($vncHtmlPath)
+          # The dialog IDs the shim targets must exist in REAL noVNC.
+          foreach ($id in @('noVNC_credentials_dlg', 'noVNC_password_input', 'noVNC_credentials_button')) {
+              if (-not $html.Contains('id="' + $id + '"')) { I-Fail 'dialog-id' ('real vnc.html lacks ' + $id) }
+          }
+          # ui.html <-> shim postMessage contract (same tokens the gates check).
+          $uiTxt = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ui.html'))
+          if (-not $uiTxt.Contains('ghrdp-vnc-pass')) { I-Fail 'ui-contract' 'ui.html lacks the gh rdp vnc-pass postMessage contract' }
+          # Deploy EXACTLY like main.yml: copy shim + stamp origin + inject tag.
+          $wantOrigin = 'http://127.0.0.1:7331'
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-cred-shim.js') (Join-Path $novnc 'ghrdp-cred-shim.js') -Force
+          $inject = '<script>window.__GHRDP_DASH_ORIGIN__="' + $wantOrigin + '";</script><script src="ghrdp-cred-shim.js"></script>'
+          $html = $html -replace '(?i)</body>', ($inject + '</body>')
+          [System.IO.File]::WriteAllText($vncHtmlPath, $html)
+          if (-not ([System.IO.File]::ReadAllText($vncHtmlPath)).Contains('ghrdp-cred-shim.js')) { I-Fail 'inject' 'script tag missing after injection' }
+          # Harness: REAL credentials dialog markup from vnc.html (hidden, then
+          # shown at 700ms like noVNC does on credentialsrequired) + the shim.
+          $ci = $html.IndexOf('<!-- Password dialog -->')
+          if ($ci -lt 0) { I-Fail 'dialog-markup' 'Password dialog marker missing in vnc.html' }
+          $cs = $html.IndexOf('<div class="noVNC_center noVNC_connect_layer">', $ci)
+          $ce = $html.IndexOf('</form></div>', $ci)
+          if ($cs -lt 0 -or $ce -lt 0) { I-Fail 'dialog-markup' 'credentials dialog block not found' }
+          $ce += '</form></div>'.Length
+          $dlg = $html.Substring($cs, $ce - $cs)
+          $hHead = @'
+          <!DOCTYPE html><html><head><meta charset="utf-8"><title>harness</title></head><body>
+          <div id="stage" style="display:none">
+          '@
+          $hTail = @'
+          </div>
+          <script>window.__GHRDP_DASH_ORIGIN__="http://127.0.0.1:7331";</script>
+          <script src="ghrdp-cred-shim.js"></script>
+          <script>document.addEventListener('submit',function(ev){ev.preventDefault();},true);
+          setTimeout(function(){document.getElementById('stage').style.display='';},700);</script>
+          </body></html>
+          '@
+          [System.IO.File]::WriteAllText((Join-Path $novnc 'harness.html'), ($hHead.TrimStart() + $dlg + $hTail), (New-Object System.Text.UTF8Encoding($false)))
+          # Dashboard page (the embedder/parent) on 7331.
+          $dash = Join-Path $env:RUNNER_TEMP 'f11-dash'
+          New-Item -ItemType Directory -Path $dash -Force | Out-Null
+          $dashHtml = @'
+          <!DOCTYPE html><html><head><meta charset="utf-8"><title>dash</title></head><body>
+          <iframe id="f" src="http://127.0.0.1:7333/harness.html" style="width:900px;height:700px"></iframe>
+          <pre id="r">SHIM_RESULT=PENDING</pre>
+          <script>
+          var gotReady = false, done = false;
+          window.addEventListener('message', function (ev) {
+            if (ev.origin !== 'http://127.0.0.1:7333') return;
+            var d = ev.data || {};
+            if (d.type === 'ghrdp-cred-shim-ready') { gotReady = true; ev.source.postMessage({ type: 'ghrdp-vnc-pass', pass: 'LABDUMMY-shim-31415' }, 'http://127.0.0.1:7333'); }
+            if (d.type === 'ghrdp-vnc-pass-ok') { done = true; document.getElementById('r').textContent = 'SHIM_RESULT=PASS ready=' + gotReady; }
+          });
+          setTimeout(function () { if (!done) { document.getElementById('r').textContent = 'SHIM_RESULT=FAIL ready=' + gotReady; } }, 12000);
+          </script>
+          </body></html>
+          '@
+          [System.IO.File]::WriteAllText((Join-Path $dash 'dash.html'), $dashHtml, (New-Object System.Text.UTF8Encoding($false)))
+          # Two static servers (windowless pythonw - no stray consoles).
+          $d1o = Join-Path $env:RUNNER_TEMP 'd1.out'; $d1e = Join-Path $env:RUNNER_TEMP 'd1.err'
+          $d2o = Join-Path $env:RUNNER_TEMP 'd2.out'; $d2e = Join-Path $env:RUNNER_TEMP 'd2.err'
+          Start-Process -FilePath pythonw -ArgumentList @('-m','http.server','7331','--bind','127.0.0.1','--directory',$dash) -WindowStyle Hidden -RedirectStandardOutput $d1o -RedirectStandardError $d1e | Out-Null
+          Start-Process -FilePath pythonw -ArgumentList @('-m','http.server','7333','--bind','127.0.0.1','--directory',$novnc) -WindowStyle Hidden -RedirectStandardOutput $d2o -RedirectStandardError $d2e | Out-Null
+          foreach ($port in @(7331, 7333)) {
+              $ok = $false
+              for ($i = 0; $i -lt 20 -and -not $ok; $i++) { try { $ok = [bool](Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction Stop) } catch { }; if (-not $ok) { Start-Sleep -Milliseconds 500 } }
+              if (-not $ok) { I-Fail 'serve' ('port ' + $port + ' not listening') }
+          }
+          & curl.exe -sS -o $null 'http://127.0.0.1:7331/dash.html'
+          & curl.exe -sS -o $null 'http://127.0.0.1:7333/harness.html'
+          $edge = @('C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe', 'C:\Program Files\Microsoft\Edge\Application\msedge.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $edge) { I-Fail 'edge' 'msedge.exe not found' }
+          $dump = ''
+          foreach ($try in @(1, 2)) {
+              $dump = (& $edge --headless=new --disable-gpu --no-first-run --no-default-browser-check --disable-extensions --virtual-time-budget=20000 --dump-dom 'http://127.0.0.1:7331/dash.html' 2>$null | Out-String)
+              if ($dump -match 'SHIM_RESULT=PASS') { break }
+              Start-Sleep -Seconds 2
+          }
+          if ($dump -notmatch 'SHIM_RESULT=PASS') { I-Fail 'auto-fill' ('harness did not report PASS; tail: ' + (($dump -split "`n" | Select-Object -Last 6) -join ' | ')) }
+          Get-CimInstance Win32_Process -Filter "Name='pythonw.exe'" | Where-Object { $_.CommandLine -like '*http.server*' } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch { } }
+          Write-Host '[I] PASS: real dialog IDs + deployed shim + origin-gated postMessage => auto-fill + ack (no value echoed)'
+          'I_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+
+      - name: "J: windowless helpers (pythonw, MainWindowHandle=0) + qBittorrent present"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function J-Fail([string]$Stage, [string]$Detail) { Write-Host ('::error::[J] stage=' + $Stage + ' :: ' + $Detail); exit 1 }
+          # 1) The production websockify launch form: pythonw, paired redirects,
+          #    binds, runs - and owns NO window (MainWindowHandle == 0).
+          $o = Join-Path $env:RUNNER_TEMP 'j-ws.out'; $e = Join-Path $env:RUNNER_TEMP 'j-ws.err'
+          $p = $null
+          try { $p = Start-Process -FilePath pythonw -ArgumentList @('-m','websockify','127.0.0.1:7341','127.0.0.1:5909') -PassThru -RedirectStandardOutput $o -RedirectStandardError $e }
+          catch { J-Fail 'pythonw-launch' $_.Exception.Message }
+          $bound = $false
+          for ($i = 0; $i -lt 20 -and -not $bound; $i++) { try { $bound = [bool](Get-NetTCPConnection -LocalPort 7341 -State Listen -ErrorAction Stop) } catch { }; if (-not $bound) { Start-Sleep -Milliseconds 500 } }
+          if (-not $bound) { J-Fail 'pythonw-bind' ('7341 not listening; err=' + $(if (Test-Path $e) { Get-Content $e -Raw } else { '(none)' })) }
+          $gp = Get-Process -Id $p.Id -ErrorAction SilentlyContinue
+          if (-not $gp) { J-Fail 'pythonw-dead' 'websockify exited' }
+          if ($gp.MainWindowHandle -ne 0) { J-Fail 'window' ('visible window handle=' + $gp.MainWindowHandle) }
+          if (-not (Test-Path $o)) { J-Fail 'redirect' 'stdout redirect file missing (pythonw+redirect contract)' }
+          # 2) Every ghrdp helper powershell runs with NO visible window.
+          foreach ($pp in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue)) {
+              if ($pp.CommandLine -and ($pp.CommandLine -match 'ghrdp|rdp-usage|rdp-ping|wire-probe|conn-probe')) {
+                  $h = (Get-Process -Id $pp.ProcessId -ErrorAction SilentlyContinue).MainWindowHandle
+                  if ($h -and $h -ne 0) { J-Fail 'helper-window' ('pid ' + $pp.ProcessId + ' handle=' + $h) }
+              }
+          }
+          try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }
+          # 3) qBittorrent present (§7) - plain winget install (lab has no cache).
+          & winget.exe install --id qBittorrent.qBittorrent --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Select-Object -Last 4 | Write-Host
+          $LASTEXITCODE = 0
+          $qbt = @('C:\Program Files\qBittorrent\qbittorrent.exe', (Join-Path $env:LOCALAPPDATA 'Programs\qBittorrent\qbittorrent.exe')) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $qbt) { J-Fail 'qbittorrent' 'qbittorrent.exe not present after winget install' }
+          Write-Host ('[J] PASS: websockify windowless+listening, helpers windowless, qBittorrent at ' + $qbt)
+          'J_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+
       - name: "G: setup-time measurement + lab matrix summary"
         if: ${{ always() }}
         shell: pwsh
@@ -264,10 +494,15 @@ jobs:
           ('| (e) ping row direct/relay + ms | ' + $(if ($env:DE_result -eq 'pass') {'**PASS (loop)**'} else {'FAIL'}) + ' | rdp-ping.json sample written; tailscale absent in lab => path=unknown (honest); direct/relay values proven against real tailnet post-merge |') | Add-Content -Path $S
           ('| (f) extensions enforced | ' + $(if ($env:F_result -eq 'pass') {'**PASS**'} else {'FAIL'}) + ' | IDs live-resolved twice from live store pages (identical) + HKLM forcelist readback: uBlock Origin ' + $env:F_ubo + '; Dark Reader ' + $env:F_dr + '; edge://extensions readout pending user PC |') | Add-Content -Path $S
           ('| (g) setup time delta | **measured** | step durations below; aggregate vs pre-F10 baseline in PR body |') | Add-Content -Path $S
+          # [F11 §7] final UX package rows.
+          ('| (h) usage timer: carry-in, ticks, freezes <=20s, resumes, persists | ' + $(if ($env:H_result -eq 'pass') {'**PASS**'} else {'FAIL'}) + ' | rdp-usage.json samples: tick=' + $env:H_tick + ' resumed=' + $env:H_resume + '; config.json rdpUsageSec >=100 carry-in |') | Add-Content -Path $S
+          ('| (i) VNC memory: shim auto-fills dialog (postMessage path) | ' + $(if ($env:I_result -eq 'pass') {'**PASS**'} else {'FAIL'}) + ' | REAL noVNC dialog markup + deployed shim; origin-gated (http://127.0.0.1:7331); SHIM_RESULT=PASS via headless Edge; value never echoed |') | Add-Content -Path $S
+          ('| (j) no console windows + qBittorrent present | ' + $(if ($env:J_result -eq 'pass') {'**PASS**'} else {'FAIL'}) + ' | pythonw websockify binds with MainWindowHandle=0; ghrdp helpers handle=0; qbittorrent.exe present |') | Add-Content -Path $S
+          ('| (k) prompts-after-first / redirects / fullscreen / ping (physical cells) | PENDING-USER | launcher-level cells A/B/C/D/E remain the evidence; live client confirmation per §8 |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
           # retrievable), so the PR/verify evidence does not depend on the log UI.
-          $cells = 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'})
+          $cells = 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
           Write-Host ('::notice::[G] uBlock Origin=' + $env:F_ubo)
           Write-Host ('::notice::[G] Dark Reader=' + $env:F_dr)

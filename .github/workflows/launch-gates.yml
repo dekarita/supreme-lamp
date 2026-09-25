@@ -70,9 +70,12 @@ jobs:
           # §2.3 latency keys in the webdesk step.
           grep -q 'PollUnderCursor' .github/workflows/main.yml
           grep -q 'CompareFB' .github/workflows/main.yml
-          # §4.2 gate: no piracy-index bookmark strings anywhere in main.yml.
-          if grep -E -i -n 'fmhy|megathread|torrent' .github/workflows/main.yml; then
-            echo 'F10: piracy-index string in main.yml' >&2; exit 1
+          # §4.2/F11 §5.1 gate: no piracy-index bookmark strings anywhere in
+          # main.yml or ui.html (qBittorrent the plain app is allowed - its
+          # product name is stripped before the check).
+          if grep -E -i -n 'fmhy|megathread|torrent' .github/workflows/main.yml payloads/ui.html \
+               | grep -v -i 'qbittorrent'; then
+            echo 'F11: piracy-index string in main.yml/ui.html' >&2; exit 1
           fi
           grep -q 'ExtensionInstallForcelist' .github/workflows/main.yml
           # F10-11: ONE live resolver, dot-sourced by both the provisioning
@@ -476,7 +479,7 @@ jobs:
       - name: Parse native PowerShell scripts
         shell: pwsh
         run: |
-          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1')) {
+          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/term-runner.ps1')) {
               $errors = $null
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
               if ($errors) { throw "$file has $($errors.Count) PowerShell syntax error(s): $($errors[0].Message)" }
