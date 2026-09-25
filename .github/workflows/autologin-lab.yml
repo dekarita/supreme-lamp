@@ -419,6 +419,8 @@ jobs:
           # retrievable), so the PR/verify evidence does not depend on the log UI.
           $cells = 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
+          Write-Host ('::notice::[I] usage timer: ticks -> freezes <=20s -> resumes -> persists/continues at ' + $env:I_usage + 's (cell i)')
+          Write-Host ('::notice::[H] cred shim: opener+exact-origin auto-fill, wrong origin/non-opener ignored, zero log output (cell h)')
           Write-Host ('::notice::[G] uBlock Origin=' + $env:F_ubo)
           Write-Host ('::notice::[G] Dark Reader=' + $env:F_dr)
           Write-Host ('::notice::[G] physical-PC cells (0 prompts, live peripherals, screenshot-native) remain PENDING-USER per §6; no LIVE claim is made here')
