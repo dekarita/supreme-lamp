@@ -145,12 +145,6 @@ jobs:
           #    (proven by the first lab run: 'rootDirectory ... is not a parent
           #    directory of the file C:\ghrdp\webdesk\websockify.log').
           webdesk_all=$(awk '/Web desktop \(noVNC/{f=1} /Start Mission Control dashboard EARLY/{f=0} f' "$WF" | grep -vE '^[[:space:]]*#')
-          echo "::notice::F9n-DBG lines=$(printf '%s' "$webdesk_all" | wc -l)"
-          echo "::notice::F9n-DBG newnet=$(printf '%s' "$webdesk_all" | grep -c 'New-NetFirewallRule' || true)"
-          echo "::notice::F9n-DBG ghrdp=$(printf '%s' "$webdesk_all" | grep -c 'GHRDP-Webdesk' || true)"
-          echo "::notice::F9n-DBG reasonw=$(printf '%s' "$webdesk_all" | grep -c "Set-WebdeskCfg ''" || true)"
-          echo "::notice::F9n-DBG filelines=$(wc -l < .github/workflows/main.yml)"
-          echo "::notice::F9n-DBG filenewnet=$(grep -c 'New-NetFirewallRule' .github/workflows/main.yml || true)"
           if ! printf '%s' "$webdesk_all" | grep -q 'actions/upload-artifact'; then
             echo 'web-desktop steps do not upload the diagnostics artifact' >&2
             exit 1
@@ -176,7 +170,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "::notice::F9n-DBG start"
           WF=.github/workflows/main.yml
           webdesk_all=$(awk '/Web desktop \(noVNC/{f=1} /Start Mission Control dashboard EARLY/{f=0} f' "$WF" | grep -vE '^[[:space:]]*#')
           # 1) tailscale serve is retired in the webdesk path: no invocation or
@@ -185,58 +178,48 @@ jobs:
           rest=$(printf '%s' "$webdesk_all" | grep -v 'tailscale serve retired')
           if printf '%s' "$rest" | grep -q 'tailscale serve'; then
             echo "webdesk steps still use 'tailscale serve' (retired: Windows SYSTEM operator lock 401)" >&2
-            echo "::error::F9n-DBG FAIL: webdesk steps still use 'tailscale serve' (retired: Windows SYSTEM operator lock 401)"
             exit 1
           fi
           for tok in 'serve status' 'set-raw' 'Get-WebdeskServeUrl' "'--bg'"; do
             if printf '%s' "$webdesk_all" | grep -qF -- "$tok"; then
               echo "webdesk steps still carry retired serve machinery: $tok" >&2
-              echo "::error::F9n-DBG FAIL: webdesk steps still carry retired serve machinery: $tok"
               exit 1
             fi
           done
           # 2) the CGNAT-only firewall rule must be created (idempotent) + evidenced.
           if ! printf '%s' "$webdesk_all" | grep -q "New-NetFirewallRule.*GHRDP-Webdesk"; then
             echo 'webdesk deploy step lacks the GHRDP-Webdesk firewall rule' >&2
-            echo "::error::F9n-DBG FAIL: webdesk deploy step lacks the GHRDP-Webdesk firewall rule"
             exit 1
           fi
           if ! printf '%s' "$webdesk_all" | grep -q "RemoteAddress '100.64.0.0/10'"; then
             echo 'GHRDP-Webdesk rule is not scoped to 100.64.0.0/10' >&2
-            echo "::error::F9n-DBG FAIL: GHRDP-Webdesk rule is not scoped to 100.64.0.0/10"
             exit 1
           fi
           if ! printf '%s' "$webdesk_all" | grep -q "LocalPort 7333"; then
             echo 'GHRDP-Webdesk rule does not target port 7333' >&2
-            echo "::error::F9n-DBG FAIL: GHRDP-Webdesk rule does not target port 7333"
             exit 1
           fi
           # 3) the tailnet IP must come from config.rdpIp with CGNAT validation
           #    (fail-closed, no fabrication, no `tailscale ip` fallback).
           if ! printf '%s' "$webdesk_all" | grep -q 'cfgR.rdpIp'; then
             echo 'webdesk deploy step does not read config.rdpIp' >&2
-            echo "::error::F9n-DBG FAIL: webdesk deploy step does not read config.rdpIp"
             exit 1
           fi
           if ! printf '%s' "$webdesk_all" | grep -q 'tailnet-ip-unavailable'; then
             echo 'webdesk deploy step lacks the tailnet-ip-unavailable fail-closed path' >&2
-            echo "::error::F9n-DBG FAIL: webdesk deploy step lacks the tailnet-ip-unavailable fail-closed path"
             exit 1
           fi
           # 4) the server must enforce the webdeskUrl acceptance allowlist.
           if ! grep -q 'F9n] webdeskUrl acceptance allowlist' payloads/ghrdp-server.ps1; then
             echo 'ghrdp-server.ps1 lacks the F9n webdeskUrl acceptance allowlist' >&2
-            echo "::error::F9n-DBG FAIL: ghrdp-server.ps1 lacks the F9n webdeskUrl acceptance allowlist"
             exit 1
           fi
           if ! grep -q "6\[4-9\]" payloads/ghrdp-server.ps1; then
             echo 'server allowlist lacks the CGNAT 100.64-127 pattern' >&2
-            echo "::error::F9n-DBG FAIL: server allowlist lacks the CGNAT 100.64-127 pattern"
             exit 1
           fi
           if ! grep -q 'ts\\.net/' payloads/ghrdp-server.ps1; then
             echo 'server allowlist lacks the legacy https ts.net alternative' >&2
-            echo "::error::F9n-DBG FAIL: server allowlist lacks the legacy https ts.net alternative"
             exit 1
           fi
       - name: F9o TightVNC password-ladder gates (auth probe + labeled degrade)
