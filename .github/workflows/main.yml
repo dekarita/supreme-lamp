@@ -1102,10 +1102,13 @@ jobs:
           $cfgPathW = 'C:\ghrdp\config.json'
           # [F9i] $Detail is a fixed, secret-free sub-cause code (tightvnc-install,
           # novnc-assets, websockify-bind, tailnet-ip-unavailable, firewall-rule,
-          # self-test-failed) so the
+          # vnc-auth-unverifiable, self-test-failed) so the
           # dashboard can name the exact failure. Never installer args, never
           # exception text - those may carry the secret.
-          function Set-WebdeskCfg([string]$Url, [string]$Reason, [string]$Detail = '') {
+          # [F9o] $Auth stamps the VERIFIED VNC mode ('vnc' = password gate
+          # proven by vncdotool exit 0 | 'none-tailnet-only' = LABELED degrade,
+          # tailnet firewall only). Secret-free enum, never the password.
+          function Set-WebdeskCfg([string]$Url, [string]$Reason, [string]$Detail = '', [string]$Auth = '') {
               try {
                   if (-not (Test-Path -LiteralPath $cfgPathW)) { return }
                   $encW = New-Object System.Text.UTF8Encoding($false)
@@ -1113,6 +1116,9 @@ jobs:
                   if ($cfgW.PSObject.Properties['webdeskUrl']) { $cfgW.webdeskUrl = $Url } else { $cfgW | Add-Member -NotePropertyName webdeskUrl -NotePropertyValue $Url -Force }
                   if ($cfgW.PSObject.Properties['webdeskReason']) { $cfgW.webdeskReason = $Reason } else { $cfgW | Add-Member -NotePropertyName webdeskReason -NotePropertyValue $Reason -Force }
                   if ($cfgW.PSObject.Properties['webdeskDetail']) { $cfgW.webdeskDetail = $Detail } else { $cfgW | Add-Member -NotePropertyName webdeskDetail -NotePropertyValue $Detail -Force }
+                  if ($Auth -in @('vnc', 'none-tailnet-only')) {
+                      if ($cfgW.PSObject.Properties['webdeskAuth']) { $cfgW.webdeskAuth = $Auth } else { $cfgW | Add-Member -NotePropertyName webdeskAuth -NotePropertyValue $Auth -Force }
+                  }
                   [System.IO.File]::WriteAllText($cfgPathW, ($cfgW | ConvertTo-Json -Depth 10), $encW)
               } catch { Write-Host ('[webdesk] config.json webdesk update failed: ' + $_.Exception.Message) }
           }
@@ -1184,33 +1190,107 @@ jobs:
               throw 'Web desktop not deployed: tailnet-ip-unavailable. Halted by design. See Step Summary.'
           }
           Write-Host ('[webdesk] tailnet IP from config.json = ' + $rdpIp)
-          # Install TightVNC via chocolatey (preinstalled on windows-latest). Password is passed as
-          # an installer package parameter that goes to msiexec briefly and never touches our logs.
+          # [F9o L1] TightVNC install: ALWAYS direct msiexec with the full property
+          # list (the package-manager params path mangles VALUE_OF_PASSWORD -
+          # quoting bug, F9o evidence - and is REMOVED; no manager-based
+          # install line may survive in this step). The MSI downloads first;
+          # when a TightVNC uninstall key exists the run uses REINSTALL=Server
+          # REINSTALLMODE=omus so the password properties re-apply to the
+          # existing service, otherwise plain /i. Installer arguments carry
+          # VNC_PASS and are NEVER printed (only the msiexec exit code).
+          $diagDir = Join-Path $env:RUNNER_TEMP 'webdesk-diag'
+          New-Item -ItemType Directory -Path $diagDir -Force -ErrorAction SilentlyContinue | Out-Null
+          $webdeskAuth = ''
+          $vncProbeCodes = @()
+          $msiUrl = 'https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi'
+          $msi = Join-Path $env:RUNNER_TEMP 'tightvnc.msi'
+          # [F9o] VNC auth probe: vncdotool capture against 127.0.0.1:5900.
+          # THE SAME TEXT IS DEFINED IN THE DEPLOY STEP AND IN THE SELF-TEST
+          # STEP - keep both copies in sync (like Start-Websockify).
+          # Contract: capture one frame via vncdotool; return the process exit
+          # code as [int] (0 = auth verified). $Password carries VNC_PASS and
+          # is NEVER printed: argument lists are not logged, captured
+          # stdout/stderr files are redacted in place, and only tag + exit code
+          # reach the log. Empty $Password = no -p flag (degraded-mode probe).
+          # A 60s Wait-Process timeout prevents hangs (124 on timeout).
+          function Invoke-VncAuthProbe([string]$Password, [string]$Tag) {
+              $png = Join-Path $env:RUNNER_TEMP ('vncprobe-' + $Tag + '.png')
+              $outF = Join-Path $env:RUNNER_TEMP ('vncprobe-' + $Tag + '.out')
+              $errF = Join-Path $env:RUNNER_TEMP ('vncprobe-' + $Tag + '.err')
+              Remove-Item -LiteralPath $png, $outF, $errF -Force -ErrorAction SilentlyContinue
+              $code = -1
+              try {
+                  $vncExe = $null
+                  try { $vncExe = (Get-Command vncdotool -ErrorAction Stop).Source } catch { }
+                  if (-not $vncExe) { try { $vncExe = (Get-Command vncdo -ErrorAction Stop).Source } catch { } }
+                  if ($vncExe) {
+                      if ($Password) { $a = @('-s', '127.0.0.1::5900', '-p', $Password, 'capture', $png) }
+                      else { $a = @('-s', '127.0.0.1::5900', 'capture', $png) }
+                      $pr = Start-Process -FilePath $vncExe -ArgumentList $a -PassThru -NoNewWindow -RedirectStandardOutput $outF -RedirectStandardError $errF
+                      try { $pr | Wait-Process -Timeout 60 -ErrorAction Stop; $code = [int]$pr.ExitCode } catch { try { $pr.Kill() } catch { }; $code = 124 }
+                  } else {
+                      try {
+                          if ($Password) { $a = @('-m', 'vncdotool', '-s', '127.0.0.1::5900', '-p', $Password, 'capture', $png) }
+                          else { $a = @('-m', 'vncdotool', '-s', '127.0.0.1::5900', 'capture', $png) }
+                          $pr2 = Start-Process -FilePath python -ArgumentList $a -PassThru -NoNewWindow -RedirectStandardOutput $outF -RedirectStandardError $errF
+                          try { $pr2 | Wait-Process -Timeout 60 -ErrorAction Stop; $code = [int]$pr2.ExitCode } catch { try { $pr2.Kill() } catch { }; $code = 124 }
+                      } catch { $code = -1 }
+                  }
+              } catch { $code = -1 }
+              try {
+                  if ($Password) {
+                      foreach ($f in @($outF, $errF)) {
+                          if (Test-Path -LiteralPath $f) {
+                              $t = [System.IO.File]::ReadAllText($f)
+                              if ($t.Contains($Password)) { [System.IO.File]::WriteAllText($f, $t.Replace($Password, '[redacted]')) }
+                          }
+                      }
+                  }
+              } catch { }
+              Write-Host ('[webdesk] vnc-auth-probe tag=' + $Tag + ' exit=' + $code)
+              return [int]$code
+          }
+          function Install-TightVncMsi([string]$MsiPath, [string]$Password, [bool]$ForceFresh) {
+              $props = @('ADDLOCAL=Server', 'SERVER_REGISTER_AS_SERVICE=1', 'SERVER_ADD_FIREWALL_EXCEPTION=0', 'SET_USEVNCAUTHENTICATION=1', 'VALUE_OF_USEVNCAUTHENTICATION=1', 'SET_PASSWORD=1', ('VALUE_OF_PASSWORD=' + $Password), 'SET_USECONTROLAUTHENTICATION=1', 'VALUE_OF_USECONTROLAUTHENTICATION=1', 'SET_CONTROLPASSWORD=1', ('VALUE_OF_CONTROLPASSWORD=' + $Password))
+              $reinstall = $false
+              if (-not $ForceFresh) {
+                  try {
+                      $un = Get-ChildItem 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall' -ErrorAction SilentlyContinue | Get-ItemProperty -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like '*TightVNC*' }
+                      if ($un) { $reinstall = $true }
+                  } catch { }
+              }
+              if ($reinstall) { $margs = @('/i', $MsiPath, '/quiet', '/norestart', 'REINSTALL=Server', 'REINSTALLMODE=omus') + $props }
+              else { $margs = @('/i', $MsiPath, '/quiet', '/norestart') + $props }
+              $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList $margs -Wait -PassThru -NoNewWindow
+              Write-Host ('[webdesk] tightvnc msiexec exit=' + $p.ExitCode + ' reinstall=' + $reinstall)
+              return [int]$p.ExitCode
+          }
           $inst = $false
           try {
-              $vpArg = 'ADDLOCAL=Server SERVER_REGISTER_AS_SERVICE=1 SERVER_ADD_FIREWALL_EXCEPTION=0 SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=' + $vp + ' SET_USECONTROLAUTHENTICATION=1 VALUE_OF_USECONTROLAUTHENTICATION=1 SET_CONTROLPASSWORD=1 VALUE_OF_CONTROLPASSWORD=' + $vp + ' SET_REMOVEWALLPAPER=0'
-              & choco install tightvnc --no-progress --limit-output -y --install-arguments="/quiet /norestart ADDDEFAULT=Server" --params="'/SET:'$vpArg'" 2>&1 | Where-Object { $_ -notmatch [regex]::Escape($vp) } | Select-Object -Last 20 | Out-Null
-              # Fallback: direct msiexec if chocolatey did not bring the service up
-              $svc = Get-Service -Name 'tvnserver' -ErrorAction SilentlyContinue
-              if (-not $svc) {
-                  $msi = Join-Path $env:RUNNER_TEMP 'tightvnc.msi'
-                  Invoke-WebRequest -Uri 'https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi' -OutFile $msi -UseBasicParsing -TimeoutSec 60
-                  $p = Start-Process -FilePath 'msiexec.exe' -ArgumentList @('/i', $msi, '/quiet', '/norestart', 'ADDLOCAL=Server', 'SERVER_REGISTER_AS_SERVICE=1', 'SERVER_ADD_FIREWALL_EXCEPTION=0', 'SET_USEVNCAUTHENTICATION=1', 'VALUE_OF_USEVNCAUTHENTICATION=1', 'SET_PASSWORD=1', ('VALUE_OF_PASSWORD=' + $vp), 'SET_USECONTROLAUTHENTICATION=1', 'VALUE_OF_USECONTROLAUTHENTICATION=1', 'SET_CONTROLPASSWORD=1', ('VALUE_OF_CONTROLPASSWORD=' + $vp)) -Wait -PassThru -WindowStyle Hidden
-                  Write-Host ('[webdesk] tightvnc msi exit=' + $p.ExitCode)
-              }
-              # Reassert password via registry (belt-and-braces; TightVNC uses DES-encrypted format from
-              # the installer, so we rely on the installer's own encoding; we do NOT compute or log the
-              # hash here). Then bind VNC to loopback only so nothing but websockify can reach 5900.
+              Invoke-WebRequest -Uri $msiUrl -OutFile $msi -UseBasicParsing -TimeoutSec 120
+              & python -m pip install --disable-pip-version-check --quiet vncdotool 2>&1 | Select-Object -Last 3 | Out-Null
+              [void](Install-TightVncMsi -MsiPath $msi -Password $vp -ForceFresh $false)
+              # [F9o L2] Restart + registry: VNC loopback-only, auth ON,
+              # SecurityTypes pinned to VncAuth, then verify the Password blob
+              # the installer must have written (>=8 bytes). The blob VALUE is
+              # never printed (only its length + ok as bool).
               $tvKey = 'HKLM:\SOFTWARE\TightVNC\Server'
               if (Test-Path -LiteralPath $tvKey) {
                   Set-ItemProperty -Path $tvKey -Name 'AcceptRfbConnections' -Value 1 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'UseVncAuthentication' -Value 1 -Type DWord -ErrorAction SilentlyContinue
-                  Set-ItemProperty -Path $tvKey -Name 'AllowLoopback'     -Value 1 -Type DWord -ErrorAction SilentlyContinue
-                  Set-ItemProperty -Path $tvKey -Name 'LoopbackOnly'      -Value 1 -Type DWord -ErrorAction SilentlyContinue
-                  Set-ItemProperty -Path $tvKey -Name 'AlwaysShared'      -Value 1 -Type DWord -ErrorAction SilentlyContinue
-                  Set-ItemProperty -Path $tvKey -Name 'RemoveWallpaper'   -Value 0 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'AllowLoopback' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'LoopbackOnly' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'AlwaysShared' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'RemoveWallpaper' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'SecurityTypes' -Value 'VncAuth' -Type String -ErrorAction SilentlyContinue
               }
               try { Restart-Service -Name 'tvnserver' -Force -ErrorAction Stop; $inst = $true } catch { Write-Host ('[webdesk] tvnserver service restart failed: ' + $_.Exception.Message) }
+              try {
+                  $pwdBlob = (Get-ItemProperty -Path $tvKey -Name 'Password' -ErrorAction SilentlyContinue).Password
+                  $pwdLen = 0
+                  if ($null -ne $pwdBlob) { $pwdLen = [int]$pwdBlob.Length }
+                  Write-Host ('[webdesk] tightvnc Password blob length=' + $pwdLen + ' ok=' + ($pwdLen -ge 8))
+              } catch { Write-Host '[webdesk] tightvnc Password blob read failed' }
           } catch { Write-Host '[webdesk] TightVNC install error (details withheld: installer arguments may contain VNC_PASS).' }
           if (-not $inst) {
               # [F9i] fail-closed: a GREEN run with a dead web desktop is a
@@ -1248,6 +1328,119 @@ jobs:
               Start-Sleep -Seconds 1
           }
           if (-not $vncUp) { Write-Host '[webdesk] VNC 5900 did not reach LISTEN in 30s' }
+          # [F9o L3] AUTH PROBE: real RFB login via vncdotool. Exit 0 = the VNC
+          # password gate is VERIFIED (noVNC will prompt and accept VNC_PASS).
+          # Only exit codes are logged; VNC_PASS never appears in any output.
+          $probeL3 = Invoke-VncAuthProbe -Password $vp -Tag 'l3'
+          $vncProbeCodes += ('l3=' + $probeL3)
+          $vncAuthVerified = ($probeL3 -eq 0)
+          Write-Host ('[webdesk] L3 auth probe verified=' + $vncAuthVerified)
+          if (-not $vncAuthVerified) {
+              # [F9o L4] Probe failed: remove any manager-held TightVNC (if
+              # present), fresh plain-/i msiexec with the full property list,
+              # restart, re-pin registry, wait, probe again.
+              Write-Host '[webdesk] L3 probe failed; L4 fresh reinstall + re-probe'
+              try { & choco uninstall tightvnc -y --no-progress --limit-output 2>&1 | Select-Object -Last 5 | Out-Null } catch { }
+              $LASTEXITCODE = 0
+              try {
+                  [void](Install-TightVncMsi -MsiPath $msi -Password $vp -ForceFresh $true)
+                  $tvKey4 = 'HKLM:\SOFTWARE\TightVNC\Server'
+                  if (Test-Path -LiteralPath $tvKey4) {
+                      Set-ItemProperty -Path $tvKey4 -Name 'UseVncAuthentication' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                      Set-ItemProperty -Path $tvKey4 -Name 'SecurityTypes' -Value 'VncAuth' -Type String -ErrorAction SilentlyContinue
+                      Set-ItemProperty -Path $tvKey4 -Name 'LoopbackOnly' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  }
+                  try { Restart-Service -Name 'tvnserver' -Force -ErrorAction Stop } catch { Write-Host ('[webdesk] L4 tvnserver restart failed: ' + $_.Exception.Message) }
+                  for ($i = 0; $i -lt 30; $i++) {
+                      $c4 = Get-NetTCPConnection -LocalPort 5900 -State Listen -ErrorAction SilentlyContinue
+                      if ($c4) { break }
+                      Start-Sleep -Seconds 1
+                  }
+              } catch { Write-Host '[webdesk] L4 reinstall error (details withheld: installer arguments may contain VNC_PASS).' }
+              $probeL4 = Invoke-VncAuthProbe -Password $vp -Tag 'l4'
+              $vncProbeCodes += ('l4=' + $probeL4)
+              $vncAuthVerified = ($probeL4 -eq 0)
+              Write-Host ('[webdesk] L4 re-probe verified=' + $vncAuthVerified)
+          }
+          if ($vncAuthVerified) { $webdeskAuth = 'vnc' }
+          else {
+              # [F9o L5] LABELED DEGRADE (never silent): the password gate could
+              # not be applied after a fresh reinstall. Disable VNC auth,
+              # restart, and probe WITHOUT a password. Success stamps
+              # webdeskAuth='none-tailnet-only' + a Step Summary WARNING; the
+              # tailnet firewall (100.64.0.0/10) remains the ONLY gate. If even
+              # the no-password probe fails, fail closed (vnc-auth-unverifiable).
+              Write-Host '[webdesk] L5 labeled degrade: disabling VNC auth, probing without password'
+              try {
+                  $tvKey5 = 'HKLM:\SOFTWARE\TightVNC\Server'
+                  if (Test-Path -LiteralPath $tvKey5) {
+                      Set-ItemProperty -Path $tvKey5 -Name 'UseVncAuthentication' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+                      Set-ItemProperty -Path $tvKey5 -Name 'SecurityTypes' -Value 'None' -Type String -ErrorAction SilentlyContinue
+                  }
+                  try { Restart-Service -Name 'tvnserver' -Force -ErrorAction Stop } catch { Write-Host ('[webdesk] L5 tvnserver restart failed: ' + $_.Exception.Message) }
+                  for ($i = 0; $i -lt 30; $i++) {
+                      $c5 = Get-NetTCPConnection -LocalPort 5900 -State Listen -ErrorAction SilentlyContinue
+                      if ($c5) { break }
+                      Start-Sleep -Seconds 1
+                  }
+              } catch { Write-Host '[webdesk] L5 degrade error (details withheld).' }
+              $probeL5 = Invoke-VncAuthProbe -Password '' -Tag 'l5-none'
+              $vncProbeCodes += ('l5-none=' + $probeL5)
+              if ($probeL5 -eq 0) {
+                  $webdeskAuth = 'none-tailnet-only'
+                  Write-Host '::warning::VNC password gate could not be applied; access limited to tailnet firewall 100.64.0.0/10; rotate VNC_PASS and re-dispatch to restore the gate'
+                  if ($S) { '### WARNING: VNC password gate could not be applied; access limited to tailnet firewall 100.64.0.0/10; rotate VNC_PASS and re-dispatch to restore the gate' | Add-Content -Path $S }
+                  Write-Host '[webdesk] L5 degraded mode verified (no-password probe exit 0); continuing tailnet-only'
+              } else {
+                  Write-Host '[webdesk] VNC auth unverifiable in either mode; web desktop DISABLED. Halted by design.'
+                  if ($S) { '### Web desktop DISABLED (VNC auth unverifiable; secret NOT leaked)' | Add-Content -Path $S }
+                  if ($S) { 'Re-dispatch the workflow for a fresh ephemeral host.' | Add-Content -Path $S }
+                  try { Set-Content -LiteralPath (Join-Path $diagDir 'vncprobe-codes.txt') -Value ($vncProbeCodes -join ' ') -ErrorAction SilentlyContinue } catch { }
+                  Set-WebdeskCfg '' 'serve-failed' 'vnc-auth-unverifiable'
+                  throw 'Web desktop not deployed: VNC auth unverifiable. Halted by design. See Step Summary.'
+              }
+          }
+          try { Set-Content -LiteralPath (Join-Path $diagDir 'vncprobe-codes.txt') -Value ($vncProbeCodes -join ' ') -ErrorAction SilentlyContinue } catch { }
+          # [F9o] TightVNC evidence tail (secret-free: service state + registry
+          # presence/length only, never the Password VALUE; any VNC_PASS
+          # occurrence redacted before writing).
+          try {
+              $tvEv = @()
+              try { $tvSvc = Get-Service -Name 'tvnserver' -ErrorAction Stop; $tvEv += ('service=' + $tvSvc.Status + '/' + $tvSvc.StartType) } catch { $tvEv += 'service=(missing)' }
+              try {
+                  $tvP = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\TightVNC\Server' -ErrorAction Stop)
+                  $tvEv += ('UseVncAuthentication=' + $tvP.UseVncAuthentication)
+                  $tvEv += ('SecurityTypes=' + $tvP.SecurityTypes)
+                  $tvEv += ('LoopbackOnly=' + $tvP.LoopbackOnly)
+                  $pl = 0; if ($null -ne $tvP.Password) { $pl = [int]$tvP.Password.Length }
+                  $tvEv += ('PasswordBlobLength=' + $pl)
+              } catch { $tvEv += 'registry=(unreadable)' }
+              try {
+                  $logFiles = @('C:\Program Files\TightVNC\tvnserver.log', 'C:\Program Files (x86)\TightVNC\tvnserver.log')
+                  $found = $false
+                  foreach ($lf in $logFiles) {
+                      if (Test-Path -LiteralPath $lf) {
+                          $found = $true
+                          $tlines = [System.IO.File]::ReadAllLines($lf) | Select-Object -Last 25
+                          $tvEv += ('logfile=' + $lf)
+                          foreach ($ln in $tlines) { $tvEv += ('log|' + $ln) }
+                      }
+                  }
+                  if (-not $found) { $tvEv += 'logfile=(none found under Program Files TightVNC)' }
+              } catch { $tvEv += 'logfile=(read error)' }
+              try {
+                  $evts = Get-WinEvent -LogName Application -MaxEvents 60 -ErrorAction Stop | Where-Object { $_.ProviderName -like '*ightVNC*' -or $_.ProviderName -like '*tvnserver*' } | Select-Object -First 8
+                  foreach ($e in $evts) {
+                      $m = ([string]$e.Message -replace '\s+', ' ').Trim()
+                      if ($m.Length -gt 200) { $m = $m.Substring(0, 200) }
+                      $tvEv += ('event|' + $m)
+                  }
+                  if (-not $evts) { $tvEv += 'event=(no TightVNC provider events in last 60 Application records)' }
+              } catch { $tvEv += 'event=(unavailable)' }
+              $tvTxt = ($tvEv -join "`n")
+              if ($vp -and $tvTxt.Contains($vp)) { $tvTxt = $tvTxt.Replace($vp, '[redacted]') }
+              Set-Content -LiteralPath (Join-Path $diagDir 'tightvnc-tail.txt') -Value $tvTxt -ErrorAction SilentlyContinue
+          } catch { }
           # Start websockify on <rdpIp>:7333, bridging to 127.0.0.1:5900, serving noVNC.
           # [F9n] Idempotent websockify launcher (tailnet-IP bind; serve retired).
           # THE SAME TEXT IS DEFINED IN THE DEPLOY STEP AND IN THE SELF-TEST STEP -
@@ -1333,61 +1526,74 @@ jobs:
           }
           # [F9n] The advertised URL is built directly from the validated tailnet
           # IP - no serve mapping to verify, no fabrication beyond the validated
-          # config value. The VNC password gate stays: the browser must still
-          # authenticate to TightVNC through this URL.
+          # config value. [F9o] The auth mode ($webdeskAuth) was VERIFIED by the
+          # ladder above: 'vnc' = password gate proven, 'none-tailnet-only' =
+          # labeled degrade (firewall only, WARNING already in the summary).
           $webdeskUrl = 'http://' + $rdpIp + ':7333/vnc.html?autoconnect=1&resize=remote'
           # Write config.webdeskUrl + clear webdeskReason (safe: no password in URL).
           # Server re-reads config per request (F8a), so it sees this immediately.
-          Set-WebdeskCfg $webdeskUrl ''
-          Write-Host ('[webdesk] web desktop URL = ' + $webdeskUrl)
+          # [F9o] Stamp the VERIFIED auth mode alongside the URL.
+          if (-not $webdeskAuth) { $webdeskAuth = 'vnc' }
+          Set-WebdeskCfg $webdeskUrl '' '' $webdeskAuth
+          Write-Host ('[webdesk] web desktop URL = ' + $webdeskUrl + ' auth=' + $webdeskAuth)
           # [F9n] diagnostics payload (secret-free) for the 'webdesk-diag'
           # artifact: the advertised URL, the bind result and the firewall rule
           # as the host sees them, plus a one-line deploy record.
+          # [F9o] vncprobe-codes.txt + tightvnc-tail.txt were written by the
+          # ladder above and ride along via the staging step.
           try {
               $diagDir = Join-Path $env:RUNNER_TEMP 'webdesk-diag'
               New-Item -ItemType Directory -Path $diagDir -Force -ErrorAction SilentlyContinue | Out-Null
-              Add-Content -LiteralPath (Join-Path $diagDir 'deploy-verbose.txt') -Value ('webdeskUrl=' + $webdeskUrl + ' websockifyListen7333=' + $wsUp) -ErrorAction SilentlyContinue
+              Add-Content -LiteralPath (Join-Path $diagDir 'deploy-verbose.txt') -Value ('webdeskUrl=' + $webdeskUrl + ' websockifyListen7333=' + $wsUp + ' webdeskAuth=' + $webdeskAuth + ' vncprobes=' + ($vncProbeCodes -join ',')) -ErrorAction SilentlyContinue
               try { (Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction Stop | ForEach-Object { $_.LocalAddress + ':' + $_.LocalPort + '/' + $_.OwningProcess } | Out-String) | Set-Content -LiteralPath (Join-Path $diagDir 'listener.txt') -ErrorAction SilentlyContinue } catch { }
               try { (Get-NetFirewallRule -DisplayName 'GHRDP-Webdesk' -ErrorAction Stop | Out-String) | Set-Content -LiteralPath (Join-Path $diagDir 'firewall.txt') -ErrorAction SilentlyContinue } catch { }
           } catch { }
-          Write-Host ('::notice title=Webdesk deploy::websockify ' + $rdpIp + ':7333 LISTEN=' + $wsUp + '; tailnet HTTP URL advertised: ' + [bool]$webdeskUrl)
+          Write-Host ('::notice title=Webdesk deploy::websockify ' + $rdpIp + ':7333 LISTEN=' + $wsUp + '; tailnet HTTP URL advertised: ' + [bool]$webdeskUrl + '; webdeskAuth=' + $webdeskAuth + '; vncprobes=' + ($vncProbeCodes -join ','))
           if ($S) {
-              '### Web desktop LIVE (tailnet-only, VNC-password-gated)' | Add-Content -Path $S
+              if ($webdeskAuth -eq 'none-tailnet-only') { '### Web desktop LIVE (tailnet-only, PASSWORD GATE DEGRADED - see WARNING above)' | Add-Content -Path $S }
+              else { '### Web desktop LIVE (tailnet-only, VNC-password-gated)' | Add-Content -Path $S }
               ('URL: ' + $webdeskUrl) | Add-Content -Path $S
+              ('Auth mode: ' + $webdeskAuth + ' (vncdotool probe exit 0)') | Add-Content -Path $S
               'transport: tailnet HTTP (WireGuard-encrypted path) + VNC password gate; tailscale serve retired due to Windows SYSTEM operator lock (401)' | Add-Content -Path $S
               'Credentials: VNC password from repo secret VNC_PASS (never printed).' | Add-Content -Path $S
               'Diagnostics artifact: webdesk-diag (staged in the workspace + uploaded after the self-test; survives a halt).' | Add-Content -Path $S
           }
           exit 0
 
-      # [F8d] Web desktop self-test: prove the advertised tailnet-HTTP URL returns noVNC HTML.
-      # Reads config.webdeskUrl (written by the previous step), curls the EXACT advertised URL,
-      # and expects the 'noVNC' marker. PASS/FAIL + HTTP code go to the step
+      # [F8d] Web desktop self-test: prove the advertised tailnet-HTTP URL returns noVNC HTML
+      # AND the VNC leg authenticates (F9o). Reads config.webdeskUrl (written by
+      # the previous step), curls the EXACT advertised URL expecting 'noVNC',
+      # then requires the mode-matching vncdotool probe (VNC_PASS in mode vnc,
+      # no password in mode none-tailnet-only). PASS/FAIL + codes go to the
       # summary. FAIL clears config.webdeskUrl and sets webdeskReason=
       # serve-failed (detail self-test-failed) so the dashboard cannot claim
       # ready on a dead URL, then halts the run by design (F9i fail-closed).
-      # VNC_PASS is never referenced here and can never leak.
       # [F9n] Classified, self-healing web-desktop self-test (serve retired).
       #  A: curl the ADVERTISED URL 3x5s, capturing status code, headers
-      #     and the first 200 body bytes. PASS = HTTP 200 + noVNC marker.
+      #     and the first 200 body bytes. HTTP-PASS = 200 + noVNC marker, then
+      #     the F9o mode-matching VNC probe must ALSO exit 0 (PROOF C leg).
       #  B: advertised URL failed -> check LISTEN on <rdpIp>:7333; if the
       #     listener is gone, Start-Websockify (identical function text)
-      #     rebinds it -> re-curl the advertised URL once.
+      #     rebinds it -> re-curl the advertised URL once (-> VNC probe on HTTP-PASS).
       #  C: still failing -> curl the backend ROOT http://<rdpIp>:7333/ once
       #     (same socket, evidence for the classifier).
-      #  D: classify (backend-dead | firewall | marker-missing), write the
-      #     classification + secret-free tails to the Step Summary, write the
-      #     'webdesk-diag' payload, then halt fail-closed with
+      #  D: classify (backend-dead | firewall | marker-missing | vnc-auth),
+      #     write the classification + secret-free tails to the Step Summary,
+      #     write the 'webdesk-diag' payload, then halt fail-closed with
       #     webdeskReason='serve-failed' / webdeskDetail='self-test-failed'
       #     (F9l-4: the dashboard contract is unchanged - it was already right;
       #     the classification stays diagnostic-only).
-      # The VNC password is never referenced in this step and can never leak.
+      # [F9o] VNC_PASS IS referenced here (mode-matching probe) but NEVER
+      # printed: probe args are not logged and outputs are redacted in place.
       # No tailscale CLI calls anywhere in this step: the 401 SYSTEM-operator lock cannot recur here.
       - name: Web desktop self-test (classified - tailnet HTTP, self-heal)
+        env:
+          VNC_PASS: ${{ secrets.VNC_PASS }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
           # [F9n] Classified advertised-URL -> backend-root self-test with self-heal (A/B/C/D above).
+          # [F9o] Mode-matching VNC probe required on every HTTP-PASS path.
           $S = $env:GITHUB_STEP_SUMMARY
           $cfgPath = 'C:\ghrdp\config.json'
           $novncDir = 'C:\ghrdp\novnc'
@@ -1485,9 +1691,60 @@ jobs:
               try { if (Test-Path -LiteralPath $errF) { $err = (([System.IO.File]::ReadAllText($errF)) -replace '\s+', ' ').Trim() } } catch { }
               return [pscustomobject]@{ Code = [string]$code; Head = [string]$head; First = [string]$first; Err = [string]$err; Rc = [int]$rc }
           }
+          # [F9o] VNC auth probe: vncdotool capture against 127.0.0.1:5900.
+          # THE SAME TEXT IS DEFINED IN THE DEPLOY STEP AND IN THE SELF-TEST
+          # STEP - keep both copies in sync (like Start-Websockify).
+          # Contract: capture one frame via vncdotool; return the process exit
+          # code as [int] (0 = auth verified). $Password carries VNC_PASS and
+          # is NEVER printed: argument lists are not logged, captured
+          # stdout/stderr files are redacted in place, and only tag + exit code
+          # reach the log. Empty $Password = no -p flag (degraded-mode probe).
+          # A 60s Wait-Process timeout prevents hangs (124 on timeout).
+          function Invoke-VncAuthProbe([string]$Password, [string]$Tag) {
+              $png = Join-Path $env:RUNNER_TEMP ('vncprobe-' + $Tag + '.png')
+              $outF = Join-Path $env:RUNNER_TEMP ('vncprobe-' + $Tag + '.out')
+              $errF = Join-Path $env:RUNNER_TEMP ('vncprobe-' + $Tag + '.err')
+              Remove-Item -LiteralPath $png, $outF, $errF -Force -ErrorAction SilentlyContinue
+              $code = -1
+              try {
+                  $vncExe = $null
+                  try { $vncExe = (Get-Command vncdotool -ErrorAction Stop).Source } catch { }
+                  if (-not $vncExe) { try { $vncExe = (Get-Command vncdo -ErrorAction Stop).Source } catch { } }
+                  if ($vncExe) {
+                      if ($Password) { $a = @('-s', '127.0.0.1::5900', '-p', $Password, 'capture', $png) }
+                      else { $a = @('-s', '127.0.0.1::5900', 'capture', $png) }
+                      $pr = Start-Process -FilePath $vncExe -ArgumentList $a -PassThru -NoNewWindow -RedirectStandardOutput $outF -RedirectStandardError $errF
+                      try { $pr | Wait-Process -Timeout 60 -ErrorAction Stop; $code = [int]$pr.ExitCode } catch { try { $pr.Kill() } catch { }; $code = 124 }
+                  } else {
+                      try {
+                          if ($Password) { $a = @('-m', 'vncdotool', '-s', '127.0.0.1::5900', '-p', $Password, 'capture', $png) }
+                          else { $a = @('-m', 'vncdotool', '-s', '127.0.0.1::5900', 'capture', $png) }
+                          $pr2 = Start-Process -FilePath python -ArgumentList $a -PassThru -NoNewWindow -RedirectStandardOutput $outF -RedirectStandardError $errF
+                          try { $pr2 | Wait-Process -Timeout 60 -ErrorAction Stop; $code = [int]$pr2.ExitCode } catch { try { $pr2.Kill() } catch { }; $code = 124 }
+                      } catch { $code = -1 }
+                  }
+              } catch { $code = -1 }
+              try {
+                  if ($Password) {
+                      foreach ($f in @($outF, $errF)) {
+                          if (Test-Path -LiteralPath $f) {
+                              $t = [System.IO.File]::ReadAllText($f)
+                              if ($t.Contains($Password)) { [System.IO.File]::WriteAllText($f, $t.Replace($Password, '[redacted]')) }
+                          }
+                      }
+                  }
+              } catch { }
+              Write-Host ('[webdesk] vnc-auth-probe tag=' + $Tag + ' exit=' + $code)
+              return [int]$code
+          }
           $url = ''
           $rdpIp = ''
-          try { $cfgT = [System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json; if ($cfgT -and $cfgT.webdeskUrl) { $url = [string]$cfgT.webdeskUrl }; if ($cfgT -and $cfgT.rdpIp) { $rdpIp = ([string]$cfgT.rdpIp).Trim() } } catch { }
+          $authMode = ''
+          $vpSelf = [string]$env:VNC_PASS
+          $verdictOverride = ''
+          $selfVncCodes = @()
+          try { & python -m pip install --disable-pip-version-check --quiet vncdotool 2>&1 | Select-Object -Last 2 | Out-Null } catch { }
+          try { $cfgT = [System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json; if ($cfgT -and $cfgT.webdeskUrl) { $url = [string]$cfgT.webdeskUrl }; if ($cfgT -and $cfgT.rdpIp) { $rdpIp = ([string]$cfgT.rdpIp).Trim() }; if ($cfgT -and $cfgT.webdeskAuth) { $authMode = [string]$cfgT.webdeskAuth } } catch { }
           if (-not $url) {
               Write-Host '[webdesk-test] SKIP: config.webdeskUrl empty (web-desktop step skipped; see its summary).'
               if ($S) { '### Web desktop self-test SKIP (no URL advertised)' | Add-Content -Path $S }
@@ -1524,13 +1781,28 @@ jobs:
               Start-Sleep -Seconds 5
           }
           if ($advertisedCode -eq '200' -and $probeS.First -match 'noVNC') {
-              Write-Host ('[webdesk-test] PASS: advertised URL HTTP ' + $advertisedCode + ' with noVNC marker')
-              if ($S) { '### Web desktop self-test PASS (advertised URL HTTP 200, noVNC marker present)' | Add-Content -Path $S }
-              # Annotation channel: the check-run annotations are readable through
-              # the GitHub API even when the runner log zip is not, so a green
-              # self-test is provable without downloading logs.
-              Write-Host ('::notice title=Webdesk self-test PASS::advertised URL HTTP ' + $advertisedCode + ' with noVNC marker; tailnet listener on ' + $checkIp + ':7333 present: ' + $listenNow)
-              exit 0
+              # [F9o] HTTP marker OK - now require the mode-matching VNC probe
+              # (F9o evidence: the page can load while RFB auth fails, so the
+              # marker alone is NOT proof). vnc mode => VNC_PASS, degraded
+              # mode => no password. Only the exit code is logged.
+              $pwA = $vpSelf
+              $tagA = 'selftest-vnc'
+              if ($authMode -eq 'none-tailnet-only') { $pwA = ''; $tagA = 'selftest-none' }
+              $codeA = Invoke-VncAuthProbe -Password $pwA -Tag $tagA
+              $selfVncCodes += ($tagA + '=' + $codeA)
+              try { Add-Content -LiteralPath (Join-Path $diagDir 'vncprobe-codes.txt') -Value (' ' + $tagA + '=' + $codeA) -ErrorAction SilentlyContinue } catch { }
+              VLog ('[webdesk-test] A vnc-probe tag=' + $tagA + ' exit=' + $codeA + ' mode=' + $authMode)
+              if ($codeA -eq 0) {
+                  Write-Host ('[webdesk-test] PASS: advertised URL HTTP ' + $advertisedCode + ' with noVNC marker + VNC probe exit 0 (mode ' + $authMode + ')')
+                  if ($S) { '### Web desktop self-test PASS (advertised URL HTTP 200, noVNC marker present, VNC probe exit 0)' | Add-Content -Path $S }
+                  # Annotation channel: the check-run annotations are readable through
+                  # the GitHub API even when the runner log zip is not, so a green
+                  # self-test is provable without downloading logs.
+                  Write-Host ('::notice title=Webdesk self-test PASS::advertised URL HTTP ' + $advertisedCode + ' with noVNC marker + VNC probe exit 0; tailnet listener on ' + $checkIp + ':7333 present: ' + $listenNow)
+                  exit 0
+              }
+              $verdictOverride = 'vnc-auth'
+              VLog ('[webdesk-test] A HTTP marker OK but VNC probe failed; falling through to D as vnc-auth')
           }
           # B - self-heal: listener gone -> rebind with the production launcher.
           $listenAfter = $listenNow
@@ -1545,10 +1817,22 @@ jobs:
                   $advertisedCode = $probeS.Code
                   VLog ('[webdesk-test] B advertised re-probe HTTP [' + $advertisedCode + '] curl-exit=' + $probeS.Rc + ' first200=' + $probeS.First)
                   if ($advertisedCode -eq '200' -and $probeS.First -match 'noVNC') {
-                      Write-Host ('[webdesk-test] PASS after websockify rebind: HTTP ' + $advertisedCode + ' + noVNC marker')
-                      if ($S) { '### Web desktop self-test PASS after websockify rebind (HTTP 200, noVNC marker present)' | Add-Content -Path $S }
-                      Write-Host ('::notice title=Webdesk self-test PASS (self-healed)::advertised URL HTTP ' + $advertisedCode + ' with noVNC marker after the websockify rebind')
-                      exit 0
+                      # [F9o] Healed HTTP marker OK - the VNC probe is still required.
+                      $pwB = $vpSelf
+                      $tagB = 'selftest-vnc-healed'
+                      if ($authMode -eq 'none-tailnet-only') { $pwB = ''; $tagB = 'selftest-none-healed' }
+                      $codeB = Invoke-VncAuthProbe -Password $pwB -Tag $tagB
+                      $selfVncCodes += ($tagB + '=' + $codeB)
+                      try { Add-Content -LiteralPath (Join-Path $diagDir 'vncprobe-codes.txt') -Value (' ' + $tagB + '=' + $codeB) -ErrorAction SilentlyContinue } catch { }
+                      VLog ('[webdesk-test] B vnc-probe tag=' + $tagB + ' exit=' + $codeB + ' mode=' + $authMode)
+                      if ($codeB -eq 0) {
+                          Write-Host ('[webdesk-test] PASS after websockify rebind: HTTP ' + $advertisedCode + ' + noVNC marker + VNC probe exit 0')
+                          if ($S) { '### Web desktop self-test PASS after websockify rebind (HTTP 200, noVNC marker present, VNC probe exit 0)' | Add-Content -Path $S }
+                          Write-Host ('::notice title=Webdesk self-test PASS (self-healed)::advertised URL HTTP ' + $advertisedCode + ' with noVNC marker + VNC probe exit 0 after the websockify rebind')
+                          exit 0
+                      }
+                      $verdictOverride = 'vnc-auth'
+                      VLog '[webdesk-test] B healed HTTP marker OK but VNC probe failed; falling through to D as vnc-auth'
                   }
               }
           }
@@ -1567,7 +1851,8 @@ jobs:
           $verdict = 'marker-missing'
           if (-not $listenAfter) { $verdict = 'backend-dead' }
           elseif ($rcS -in @(7, 28) -or $advertisedCode -eq '') { $verdict = 'firewall' }
-          VLog ('[webdesk-test] D classification = ' + $verdict + ' (advertisedHttp=[' + $advertisedCode + '] advertisedCurlExit=' + $rcS + ' listenAfterHeal=' + $listenAfter + ' checkIp=' + $checkIp + ')')
+          if ($verdictOverride -eq 'vnc-auth') { $verdict = 'vnc-auth' }
+          VLog ('[webdesk-test] D classification = ' + $verdict + ' (advertisedHttp=[' + $advertisedCode + '] advertisedCurlExit=' + $rcS + ' listenAfterHeal=' + $listenAfter + ' checkIp=' + $checkIp + ' authMode=' + $authMode + ')')
           $evLines = @()
           $evLines += ('classification=' + $verdict)
           $evLines += ('advertisedUrl=' + $url)
@@ -1577,6 +1862,8 @@ jobs:
           $evLines += ('checkIp=' + $checkIp)
           $evLines += ('tailnetListenPre=' + $listenNow)
           $evLines += ('websockifyPidsPre=' + ($pidsNow -join ','))
+          $evLines += ('webdeskAuthMode=' + $authMode)
+          $evLines += ('selftestVnc=' + ($selfVncCodes -join ','))
           if ($probeS) {
               $evLines += ('advertisedProbeHeaders=' + $probeS.Head)
               $evLines += ('advertisedProbeFirst200=' + $probeS.First)
@@ -1598,22 +1885,27 @@ jobs:
           if ($errTail.Length -gt 160) { $errTail = $errTail.Substring(0, 160) }
           if ($S) {
               ('### Web desktop self-test FAIL (classified: ' + $verdict + ')') | Add-Content -Path $S
-              ('Advertised URL: ' + $url + ' -> HTTP [' + $advertisedCode + '] (curl exit ' + $rcS + ')') | Add-Content -Path $S
-              ('Backend root: ' + $backendRoot + ' (listener on ' + $checkIp + ':7333 after heal: ' + $listenAfter + ')') | Add-Content -Path $S
+              if ($verdict -eq 'vnc-auth') {
+                  ('VNC probe failed in mode [' + $authMode + '] although the HTTP marker was OK (selftestVnc=' + ($selfVncCodes -join ',') + '). See vncprobe-codes.txt + tightvnc-tail.txt in webdesk-diag.') | Add-Content -Path $S
+              } else {
+                  ('Advertised URL: ' + $url + ' -> HTTP [' + $advertisedCode + '] (curl exit ' + $rcS + ')') | Add-Content -Path $S
+                  ('Backend root: ' + $backendRoot + ' (listener on ' + $checkIp + ':7333 after heal: ' + $listenAfter + ')') | Add-Content -Path $S
+              }
               ('Firewall rule GHRDP-Webdesk present: ' + ([bool](Get-NetFirewallRule -DisplayName 'GHRDP-Webdesk' -ErrorAction SilentlyContinue))) | Add-Content -Path $S
               ('Tail (secret-free): ' + $errTail) | Add-Content -Path $S
-              'Diagnostics artifact: webdesk-diag (websockify.log, websockify.err.log, selftest-verbose.txt, classification.txt, listener.txt, firewall.txt)' | Add-Content -Path $S
+              'Diagnostics artifact: webdesk-diag (websockify.log, websockify.err.log, selftest-verbose.txt, classification.txt, listener.txt, firewall.txt, vncprobe-codes.txt, tightvnc-tail.txt)' | Add-Content -Path $S
               'Advertised URL cleared; reason=serve-failed, detail=self-test-failed. Halted by design - fix the classified leg and re-dispatch.' | Add-Content -Path $S
           }
           # [F9l-4] LOCKED contract - fail-closed, and the classification stays
           # OUT of the dashboard-facing codes: config.webdeskReason is exactly
           # 'serve-failed' and config.webdeskDetail is exactly 'self-test-failed'
-          # (the codes /api/native-status and ui.html already render). The new
-          # backend-dead | firewall | marker-missing classification is diagnostic
-          # only - it lives in the Step Summary, the annotation and the
-          # 'webdesk-diag' artifact, never in config.json, so the dashboard
-          # messaging does not oscillate.
-          Write-Host ('[webdesk-test] FAIL (classified: ' + $verdict + '): advertised URL did not serve noVNC after self-heal; clearing advertised URL. Halted by design.')
+          # (the codes /api/native-status and ui.html already render). The
+          # backend-dead | firewall | marker-missing | vnc-auth classification
+          # is diagnostic only - it lives in the Step Summary, the annotation
+          # and the 'webdesk-diag' artifact, never in config.json, so the
+          # dashboard messaging does not oscillate.
+          if ($verdict -eq 'vnc-auth') { Write-Host '[webdesk-test] FAIL (classified: vnc-auth): HTTP marker OK but the mode-matching VNC probe failed; clearing advertised URL. Halted by design.' }
+          else { Write-Host ('[webdesk-test] FAIL (classified: ' + $verdict + '): advertised URL did not serve noVNC after self-heal; clearing advertised URL. Halted by design.') }
           # Annotation channel for the classification (survives the missing
           # runner-log zip and is visible in the Checks tab next to the run).
           Write-Host ('::error title=Webdesk self-test FAIL (classified: ' + $verdict + ')::' + ($evLines -join ' | '))
@@ -1623,12 +1915,19 @@ jobs:
               if ($cfgF.PSObject.Properties['webdeskUrl']) { $cfgF.webdeskUrl = '' } else { $cfgF | Add-Member -NotePropertyName webdeskUrl -NotePropertyValue '' -Force }
               if ($cfgF.PSObject.Properties['webdeskReason']) { $cfgF.webdeskReason = 'serve-failed' } else { $cfgF | Add-Member -NotePropertyName webdeskReason -NotePropertyValue 'serve-failed' -Force }
               if ($cfgF.PSObject.Properties['webdeskDetail']) { $cfgF.webdeskDetail = 'self-test-failed' } else { $cfgF | Add-Member -NotePropertyName webdeskDetail -NotePropertyValue 'self-test-failed' -Force }
+              if ($cfgF.PSObject.Properties['webdeskAuth']) { $cfgF.webdeskAuth = '' }
               [System.IO.File]::WriteAllText($cfgPath, ($cfgF | ConvertTo-Json -Depth 10), $encT)
           } catch { Write-Host ('[webdesk-test] config clear failed: ' + $_.Exception.Message) }
           # [F9n] listener snapshot into the artifact payload (replaces the retired
           # serve-status refresh: no tailscale CLI calls anywhere in this step).
           try { (Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction Stop | ForEach-Object { $_.LocalAddress + ':' + $_.LocalPort + '/' + $_.OwningProcess } | Out-String) | Set-Content -LiteralPath (Join-Path $diagDir 'listener.txt') -ErrorAction SilentlyContinue } catch { }
-          throw ('Web desktop self-test FAILED (classified: ' + $verdict + '): advertised URL did not return the noVNC page. Halted by design. See Step Summary + webdesk-diag artifact.')
+          # [F9o] TightVNC service snapshot on the FAIL path (secret-free).
+          try {
+              $tvS = ''
+              try { $s9 = Get-Service -Name 'tvnserver' -ErrorAction Stop; $tvS = ('tvnserver=' + $s9.Status) } catch { $tvS = 'tvnserver=(missing)' }
+              Add-Content -LiteralPath (Join-Path $diagDir 'classification.txt') -Value $tvS -ErrorAction SilentlyContinue
+          } catch { }
+          throw ('Web desktop self-test FAILED (classified: ' + $verdict + '): advertised URL did not verify (HTTP marker + mode-matching VNC probe). Halted by design. See Step Summary + webdesk-diag artifact.')
       # [F9l-3] Survivable diagnostics. Two steps: stage the payload inside the
       # WORKSPACE (upload-artifact v4 refuses absolute paths outside its root
       # directory - proven by the lab: "rootDirectory D:\a\... is not a parent
@@ -1639,7 +1938,7 @@ jobs:
       # uploaded). Secret-free by construction: websockify never receives the
       # VNC password, and every staged file is produced by code that prints
       # only redacted/plaintext diagnostics (URLs, HTTP codes, curl exits,
-      # listener + firewall snapshots).
+      # listener + firewall snapshots, vncdotool exit codes, TightVNC tails).
       - name: Web desktop diagnostics staging (workspace-relative)
         if: always()
         shell: pwsh
@@ -1664,6 +1963,11 @@ jobs:
               }
           } catch { }
           # [F9n] listener + firewall snapshots (serve retired: no tailscale CLI).
+          # [F9o] vncprobe-codes.txt + tightvnc-tail.txt ride along from RUNNER_TEMP.
+          foreach ($vf in @('vncprobe-codes.txt', 'tightvnc-tail.txt')) {
+              if (Test-Path -LiteralPath (Join-Path $stage $vf)) { $manifest += ($vf + '=present') }
+              else { $manifest += ($vf + '=missing') }
+          }
           try {
               (Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction Stop | ForEach-Object { $_.LocalAddress + ':' + $_.LocalPort + '/' + $_.OwningProcess } | Out-String) | Set-Content -LiteralPath (Join-Path $stage 'listener.txt') -ErrorAction SilentlyContinue
               $manifest += 'listener=refreshed'
