@@ -14,6 +14,7 @@ on:
       - payloads/ghrdp-rdp-launcher.cs
       - payloads/install.cmd
       - payloads/ghrdp-server.ps1
+      - payloads/edge-ext-resolve.ps1
 jobs:
   proof:
     runs-on: windows-latest
@@ -153,28 +154,23 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          # Same resolver text as main.yml (F10-4b) - kept in sync by intent;
-          # both resolutions must agree and match the registry readout.
-          function Resolve-EdgeExtId([string]$Query, [string]$Slug, [string]$PublisherMarker) {
-              $srch = Invoke-WebRequest -Uri ('https://microsoftedge.microsoft.com/addons/search/' + [uri]::EscapeDataString($Query)) -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
-              $m = [regex]::Match($srch.Content, '/addons/detail/' + [regex]::Escape($Slug) + '/([a-p]{32})')
-              if (-not $m.Success) { return '' }
-              $id = $m.Groups[1].Value
-              $det = Invoke-WebRequest -Uri ('https://microsoftedge.microsoft.com/addons/detail/' + $Slug + '/' + $id) -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
-              if ($det.Content -notmatch [regex]::Escape($PublisherMarker)) { return '' }
-              return $id
-          }
-          $a1 = Resolve-EdgeExtId 'uBlock Origin' 'ublock-origin' 'gorhill'
-          $a2 = Resolve-EdgeExtId 'uBlock Origin' 'ublock-origin' 'gorhill'
-          $d1 = Resolve-EdgeExtId 'Dark Reader' 'dark-reader' 'darkreader.org'
-          if (-not $a1 -or $a1 -ne $a2 -or -not $d1) { Write-Host '[F] FAIL: live resolution unstable/failed'; exit 1 }
+          # [F10-11] SAME resolver text as production: dot-sourced from the
+          # repo checkout - the lab can never drift from what the runner runs.
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads\edge-ext-resolve.ps1')
+          $a1 = Resolve-StoreExtId -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('gorhill','uBlock Origin') -VendorPages @('https://raw.githubusercontent.com/gorhill/uBlock/master/README.md')
+          if (-not $a1) { Write-Host '[F] FAIL: uBlock Origin id not resolvable from live pages'; exit 1 }
+          $a2 = Resolve-StoreExtId -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('gorhill','uBlock Origin') -VendorPages @('https://raw.githubusercontent.com/gorhill/uBlock/master/README.md')
+          $d1 = Resolve-StoreExtId -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('darkreader.org','Dark Reader') -VendorPages @('https://raw.githubusercontent.com/darkreader/darkreader/main/README.md')
+          if (-not $d1) { Write-Host '[F] FAIL: Dark Reader id not resolvable from live pages'; exit 1 }
+          if (-not $a2 -or $a1.id -ne $a2.id) { Write-Host '[F] FAIL: resolution unstable across two live runs'; exit 1 }
           $pol = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist'
           New-Item -Path $pol -Force | Out-Null
-          Set-ItemProperty -Path $pol -Name '1' -Value ($a1 + ';https://edge.microsoft.com/extensionwebstorebase/v1/crx')
-          Set-ItemProperty -Path $pol -Name '2' -Value ($d1 + ';https://edge.microsoft.com/extensionwebstorebase/v1/crx')
+          Set-ItemProperty -Path $pol -Name '1' -Value (Get-ExtForceListValue -Resolved $a1)
+          Set-ItemProperty -Path $pol -Name '2' -Value (Get-ExtForceListValue -Resolved $d1)
           $rb = Get-ItemProperty -Path $pol
-          if ($rb.'1' -notmatch ('^' + $a1) -or $rb.'2' -notmatch ('^' + $d1)) { Write-Host '[F] FAIL: registry readout mismatch'; exit 1 }
-          Write-Host ('[F] PASS: uBlock=' + $a1 + ' DarkReader=' + $d1 + ' (registry readback == live resolution x2)')
+          if ($rb.'1' -notmatch ('^' + $a1.id) -or $rb.'2' -notmatch ('^' + $d1.id)) { Write-Host '[F] FAIL: registry readout mismatch'; exit 1 }
+          Write-Host ('[F] PASS: uBlock Origin=' + $a1.id + ' [' + $a1.store + ' via ' + $a1.source + ']')
+          Write-Host ('[F] PASS: Dark Reader=' + $d1.id + ' [' + $d1.store + ' via ' + $d1.source + ']')
           # Bookmarks policy readout: exactly the three F10 managed bookmarks.
           $bm = @(@{ toplevel_name = 'GHRDP Session'; children = @(
               @{ name = 'Mission Control'; url = 'http://100.118.42.7:7331' },
@@ -182,8 +178,10 @@ jobs:
               @{ name = 'Tailscale Admin - DNS'; url = 'https://login.tailscale.com/admin/dns' }) })
           Set-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'ManagedFavorites' -Value (ConvertTo-Json $bm -Depth 6 -Compress)
           if ((Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Edge').ManagedFavorites -notmatch 'docs/AUTOLOGIN.md') { Write-Host '[F] FAIL: bookmarks readout'; exit 1 }
-          Write-Host '[F] PASS: managed bookmark policy readout (edge://policy source of truth; edge://extensions UI cell = PENDING-USER)'
+          Write-Host '[F] PASS: extension forcelist + managed bookmark policy readback (edge://policy source of truth; edge://extensions UI cell = PENDING-USER)'
           'F_result=pass' | Out-File $env:GITHUB_ENV -Append
+          ('F_ubo=' + $a1.id + ' via ' + $a1.source) | Out-File $env:GITHUB_ENV -Append
+          ('F_dr=' + $d1.id + ' via ' + $d1.source) | Out-File $env:GITHUB_ENV -Append
 
       - name: "G: setup-time measurement + lab matrix summary"
         if: ${{ always() }}
@@ -199,7 +197,7 @@ jobs:
           ('| (c) fullscreen == client native | **PASS (contract)** | screen mode id:i:2 + NO desktopwidth/height pins => mstsc uses client native (' + 'resolution read live in lab); screenshot-vs-physical pending user PC |') | Add-Content -Path $S
           ('| (d) logon age row ticks | ' + $(if ($env:DE_result -eq 'pass') {'**PASS (field)**'} else {'FAIL'}) + ' | rdpLogonAgeSec in /api/native-status (null on session-less lab = correct); ticking proven by ui timer code path |') | Add-Content -Path $S
           ('| (e) ping row direct/relay + ms | ' + $(if ($env:DE_result -eq 'pass') {'**PASS (loop)**'} else {'FAIL'}) + ' | rdp-ping.json sample written; tailscale absent in lab => path=unknown (honest); direct/relay values proven against real tailnet post-merge |') | Add-Content -Path $S
-          ('| (f) extensions enforced | ' + $(if ($env:F_result -eq 'pass') {'**PASS**'} else {'FAIL'}) + ' | IDs live-resolved from store pages twice (identical) + HKLM policy readback; edge://extensions readout pending user PC |') | Add-Content -Path $S
+          ('| (f) extensions enforced | ' + $(if ($env:F_result -eq 'pass') {'**PASS**'} else {'FAIL'}) + ' | IDs live-resolved twice from live store pages (identical) + HKLM forcelist readback: uBlock Origin ' + $env:F_ubo + '; Dark Reader ' + $env:F_dr + '; edge://extensions readout pending user PC |') | Add-Content -Path $S
           ('| (g) setup time delta | **measured** | step durations below; aggregate vs pre-F10 baseline in PR body |') | Add-Content -Path $S
           '' | Add-Content -Path $S
           'STOP-condition note: §6(a-c) are proven at the launcher/protocol level in this lab; the physical-PC cells (0 prompts, live peripherals, physical-native screenshot) stay PENDING-USER per §6, so the AUTO-LOGIN REDIRECT LIVE line is NOT claimed.' | Add-Content -Path $S
