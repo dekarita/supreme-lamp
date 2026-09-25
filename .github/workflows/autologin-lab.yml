@@ -1,0 +1,310 @@
+# autologin-lab - [F10 s6] PS-free auto-login redirect proof matrix.
+# ghrdp-lab (dekarita/ghrdp-lab) is unreachable from CI tooling (gh repo view
+# 404 / gh repo create 403 "Resource not accessible by integration" - intent
+# once + retried once), so the F9 webdesk-lab fallback pattern repeats here:
+# an in-repo, push-triggered windows-latest lab running THE SAME payload code
+# main.yml runs. Cells: a install/handler/cmdkey/prompts, b .rdp redirects +
+# mstsc cmdline, c fullscreen structure, d rdpLogonAgeSec plumbing, e ping
+# plumbing (+ optional live tailscale ping), f Edge policy enforcement,
+# g phase timings (setup <= 6 min target in main.yml).
+# LOCKS: no NLA/CredSSP change, no PowerShell launched by page buttons, no
+# real credentials anywhere (the cmdkey fixture password below is a synthetic
+# lab value on an ephemeral VM - it is not a secret and never leaves it).
+name: autologin-lab (F10 proof matrix)
+on:
+  push:
+    branches: [arena/01a0d7e5-supreme-lamp, main]
+    paths:
+      - '.github/workflows/autologin-lab.yml'
+      - 'payloads/ghrdp-rdp-launcher.cs'
+      - 'payloads/install.cmd'
+      - 'payloads/ui.html'
+      - 'payloads/ghrdp-server.ps1'
+      - 'payloads/Provision-BrowserPolicy.ps1'
+      - '.github/workflows/main.yml'
+  workflow_dispatch:
+
+jobs:
+  lab:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "A) install.cmd double-click: compile + handler + cmdkey fixture"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mtx = Join-Path $env:RUNNER_TEMP 'lab-matrix.txt'
+          $t0 = Get-Date
+          # Double-click simulation: cmd /c with piped stdin for the final pause.
+          & cmd.exe /c "echo.| call payloads\install.cmd"
+          if ($LASTEXITCODE -ne 0) { throw "install.cmd exited $LASTEXITCODE" }
+          $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw 'compiled launcher missing' }
+          if ((Get-Item -LiteralPath $exe).Length -lt 10000) { throw 'compiled launcher too small' }
+          $cmd = (Get-ItemProperty -Path 'HKCU:\Software\Classes\ghrdp\shell\open\command' -ErrorAction Stop).'(default)'
+          Write-Host "[lab-a] registered command = $cmd"
+          if ($cmd -notlike ('*' + $exe + '*')) { throw 'ghrdp:// not registered to the compiled launcher' }
+          if ($cmd -notlike '*%1*') { throw 'ghrdp:// registration missing %1 passthrough' }
+          # Synthetic fixture = a user who ALREADY completed the interactive
+          # cmdkey prompt on their PC. Not a secret; ephemeral VM only.
+          & cmdkey.exe /generic:TERMSRV/lab-rdp.test.ts.net /user:labuser /pass:Lab-Fixture-Passw0rd!
+          if ($LASTEXITCODE -ne 0) { throw 'cmdkey fixture failed' }
+          $listOut = (& cmdkey.exe /list:TERMSRV/lab-rdp.test.ts.net) -join "`n"
+          if ($listOut -notmatch 'TERMSRV/lab-rdp\.test\.ts\.net') { throw 'cmdkey fixture not stored' }
+          $dt = [math]::Round(((Get-Date) - $t0).TotalSeconds, 1)
+          "a) install+handler+cmdkey=PASS prompts=0-setup (${dt}s) cmd=$cmd" | Add-Content -Path $mtx
+
+      - name: "B/C) launcher verb: prompts=0, .rdp redirects, fullscreen, hello"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mtx = Join-Path $env:RUNNER_TEMP 'lab-matrix.txt'
+          $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
+          $helloFile = Join-Path $env:RUNNER_TEMP 'hello-capture.txt'
+          Remove-Item -LiteralPath $helloFile -Force -ErrorAction SilentlyContinue
+          Remove-Item -Path (Join-Path $env:TEMP 'ghrdp-*.rdp') -Force -ErrorAction SilentlyContinue
+          # hello beacon listener (captures (e) POST /api/handler-hello)
+          $pyFile = Join-Path $env:RUNNER_TEMP 'hello-capture.py'
+          $pySrc = @"
+          from http.server import BaseHTTPRequestHandler, HTTPServer
+          import sys
+          CAP = r'$helloFile'
+          class H(BaseHTTPRequestHandler):
+              def do_POST(self):
+                  n = int(self.headers.get('Content-Length', '0'))
+                  body = self.rfile.read(n)
+                  open(CAP, 'ab').write(self.path.encode() + b' ' + body + b'\n')
+                  self.send_response(200); self.send_header('Content-Length', '2')
+                  self.end_headers(); self.wfile.write(b'{}')
+              def log_message(self, *a): pass
+          HTTPServer(('127.0.0.1', 7331), H).serve_forever()
+          "@
+          [System.IO.File]::WriteAllText($pyFile, $pySrc)
+          $py = Start-Process -FilePath python -ArgumentList $pyFile -PassThru -WindowStyle Hidden
+          $ready = $false
+          for ($i = 0; $i -lt 40; $i++) {
+              $t = New-Object Net.Sockets.TcpClient
+              try { $t.Connect('127.0.0.1', 7331); $ready = $true; $t.Close(); break } catch { } finally { try { $t.Close() } catch { } }
+              Start-Sleep -Milliseconds 250
+          }
+          if (-not $ready) { throw 'hello listener never bound 127.0.0.1:7331' }
+          # prompt monitor: samples cmdkey/mstsc processes every 100ms
+          $seenFile = Join-Path $env:RUNNER_TEMP 'seen-procs.txt'
+          Remove-Item -LiteralPath $seenFile -Force -ErrorAction SilentlyContinue
+          $monFile = Join-Path $env:RUNNER_TEMP 'prompt-monitor.ps1'
+          $monSrc = @'
+          $deadline = (Get-Date).AddSeconds(90)
+          while ((Get-Date) -lt $deadline) {
+              foreach ($n in @('cmdkey', 'mstsc')) {
+                  if (Get-Process -Name $n -ErrorAction SilentlyContinue) { Add-Content -LiteralPath $env:SEEN_FILE -Value $n }
+              }
+              Start-Sleep -Milliseconds 100
+          }
+          '@
+          [System.IO.File]::WriteAllText($monFile, $monSrc)
+          $env:SEEN_FILE = $seenFile
+          $mon = Start-Process -FilePath pwsh -ArgumentList @('-NoProfile', '-File', $monFile) -PassThru -WindowStyle Hidden
+          # (b) lab-only: keep the temp .rdp for content inspection
+          $env:GHRDP_KEEP_RDP = '1'
+          $uri = 'ghrdp://rdp?server=lab-rdp.test.ts.net&user=labuser&hello=http://127.0.0.1:7331'
+          $p = Start-Process -FilePath $exe -ArgumentList $uri -Wait -PassThru
+          $code = $p.ExitCode
+          # capture mstsc cmdline evidence while it may still be alive
+          $msCmd = ''
+          try {
+              $ms = Get-CimInstance Win32_Process -Filter "Name = 'mstsc.exe'" -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($ms) { $msCmd = [string]$ms.CommandLine }
+          } catch { }
+          if ($code -ne 0) { throw "launcher exit=$code (expected 0)" }
+          $seen = @()
+          if (Test-Path -LiteralPath $seenFile) { $seen = @(Get-Content -LiteralPath $seenFile) }
+          if ($seen -contains 'cmdkey') { throw 'launcher spawned cmdkey although TERMSRV was set - prompts != 0' }
+          $rdp = @(Get-ChildItem -Path (Join-Path $env:TEMP 'ghrdp-*.rdp') -ErrorAction SilentlyContinue)
+          if ($rdp.Count -lt 1) { throw 'temp .rdp missing after launch' }
+          $rdpPath = $rdp[0].FullName
+          $txt = [System.IO.File]::ReadAllText($rdpPath)
+          Write-Host "[lab-b] .rdp = $rdpPath"
+          Write-Host "[lab-b] mstsc cmdline = $msCmd"
+          $required = @(
+            'full address:s:lab-rdp.test.ts.net', 'username:s:labuser', 'screen mode id:i:2',
+            'redirectclipboard:i:1', 'redirectprinters:i:1', 'redirectdrives:i:1',
+            'drivestoredirect:s:*', 'devicestoredirect:s:*', 'redirectcomports:i:1',
+            'redirectsmartcards:i:1', 'redirectposdevices:i:1', 'audiocapturemode:i:1',
+            'bandwidthautodetect:i:1', 'persistenceorder:i:1', 'compression:i:1')
+          foreach ($f in $required) { if (-not $txt.Contains($f)) { throw ".rdp missing field: $f" } }
+          if ($txt -match 'password|hash|/pass') { throw '.rdp carries credential material' }
+          if ($txt -match 'desktopwidth|desktopheight') { throw '.rdp pins desktop size (fullscreen must follow client)' }
+          if ($msCmd -and ($msCmd -notlike ('*' + $rdp[0].Name + '*'))) { throw 'mstsc cmdline does not reference the temp .rdp' }
+          # (e) hello beacon
+          Start-Sleep -Seconds 2
+          $hello = ''
+          if (Test-Path -LiteralPath $helloFile) { $hello = [System.IO.File]::ReadAllText($helloFile) }
+          if ($hello -notmatch '/api/handler-hello') { throw 'handler hello beacon missing' }
+          if ($hello -notmatch 'rdp-launch') { throw 'handler hello beacon missing rdp-launch verb' }
+          # default path cleanup behavior (best-effort delete after mstsc holds it)
+          Remove-Item Env:\GHRDP_KEEP_RDP -ErrorAction SilentlyContinue
+          $p2 = Start-Process -FilePath $exe -ArgumentList $uri -Wait -PassThru
+          $delNote = 'deleted'
+          if (Test-Path -LiteralPath $rdpPath) { $delNote = 'deferred (mstsc held the file; best-effort contract)'; Remove-Item -LiteralPath $rdpPath -Force -ErrorAction SilentlyContinue }
+          Stop-Process -Name mstsc -Force -ErrorAction SilentlyContinue
+          Stop-Process -Id $mon.Id -Force -ErrorAction SilentlyContinue
+          Stop-Process -Id $py.Id -Force -ErrorAction SilentlyContinue
+          $mstscSeen = $seen -contains 'mstsc'
+          "b) redirects=PASS mstsc-cmdline=$(if ($msCmd) { 'PASS' } else { 'structural (mstsc exited early on headless VM)' }) prompts=0 delete=$delNote" | Add-Content -Path $mtx
+          "c) fullscreen=STRUCTURAL-PASS screen-mode=2 no-fixed-dimensions screenshot-pending-live-client" | Add-Content -Path $mtx
+          "hello-beacon=PASS mstsc-process-seen=$mstscSeen" | Add-Content -Path $mtx
+
+      - name: "D/E) server harness: rdpLogonAgeSec + ping plumbing + creds gate"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mtx = Join-Path $env:RUNNER_TEMP 'lab-matrix.txt'
+          $root = Join-Path $env:RUNNER_TEMP 'labroot'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $cfg = [ordered]@{
+              dnsName = 'lab-rdp.test.ts.net'; hostKind = 'ephemeral'
+              rdpUser = 'labuser'; rdpPass = 'fixture-not-a-secret'; vncPass = 'fixture-not-a-secret'
+              rdpIp = '100.64.0.9'; buildSha = 'lab'; dashToken = 'lab-dash-token'
+          }
+          [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), ($cfg | ConvertTo-Json -Depth 5))
+          [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), 'lab-dash-token')
+          # dash-peer.txt drives the ping-probe spawn (name<TAB>ip), as Mission Control writes it
+          [System.IO.File]::WriteAllText((Join-Path $root 'dash-peer.txt'), "lab-peer`t100.64.0.9`n")
+          $srv = Start-Process -FilePath pwsh -ArgumentList @('-NoProfile', '-File', 'payloads\ghrdp-server.ps1', '-Port', '17331', '-Root', $root) -PassThru -WindowStyle Hidden
+          $up = $false
+          for ($i = 0; $i -lt 40; $i++) { if (Test-Path -LiteralPath (Join-Path $root 'server-ok.txt')) { $up = $true; break }; Start-Sleep -Milliseconds 500 }
+          if (-not $up) { throw 'server never wrote server-ok.txt' }
+          try {
+              $ns = Invoke-RestMethod -Uri 'http://127.0.0.1:17331/api/native-status?key=lab-dash-token'
+              foreach ($fld in @('rdpLogonAgeSec', 'pingMs', 'pingPath')) {
+                  if (-not ($ns.PSObject.Properties.Name -contains $fld)) { throw "native-status missing $fld" }
+              }
+              $newest = $null
+              foreach ($ls in (Get-CimInstance Win32_LogonSession -Filter 'LogonType = 10')) {
+                  if ($ls.StartTime -and (-not $newest -or $ls.StartTime -gt $newest.StartTime)) { $newest = $ls }
+              }
+              $ageNote = if ($newest) { [string][int]((Get-Date) - $newest.StartTime).TotalSeconds } else { 'none (no LogonType 10 session on this VM; row stays --:--:-- until a live RDP logon)' }
+              # ping plumbing: seed fresh probe results, expect them to surface
+              $ts = (Get-Date).ToUniversalTime().ToString('o')
+              [System.IO.File]::WriteAllText((Join-Path $root 'ping-probe.json'), (@{ ts = $ts; target = '100.64.0.2'; ms = 42.5; path = 'direct' } | ConvertTo-Json))
+              $ns2 = Invoke-RestMethod -Uri 'http://127.0.0.1:17331/api/native-status?key=lab-dash-token'
+              if ([double]$ns2.pingMs -ne 42.5 -or $ns2.pingPath -ne 'direct') { throw 'pingMs/pingPath direct not surfaced' }
+              [System.IO.File]::WriteAllText((Join-Path $root 'ping-probe.json'), (@{ ts = $ts; target = '100.64.0.2'; ms = 130.0; path = 'relay' } | ConvertTo-Json))
+              $ns3 = Invoke-RestMethod -Uri 'http://127.0.0.1:17331/api/native-status?key=lab-dash-token'
+              if ($ns3.pingPath -ne 'relay') { throw 'pingPath relay not surfaced' }
+              if (-not (Test-Path -LiteralPath (Join-Path $root 'ping-probe.ps1'))) { throw 'ping-probe.ps1 was not spawned by the server' }
+              # creds gate: stripped WITHOUT the dash token, full WITH it
+              $plain = (Invoke-RestMethod -Uri 'http://127.0.0.1:17331/api/config') | ConvertTo-Json -Depth 10
+              if ($plain -match 'fixture-not-a-secret') { throw 'creds leaked via ungated /api/config' }
+              $gated = Invoke-RestMethod -Uri 'http://127.0.0.1:17331/api/config?key=lab-dash-token'
+              if (-not ($gated.creds.PSObject.Properties.Name -contains 'pass')) { throw 'gated creds block missing pass' }
+              if (-not ($gated.creds.PSObject.Properties.Name -contains 'vncPass')) { throw 'gated creds block missing vncPass' }
+              if ($gated.creds.pass -ne 'fixture-not-a-secret' -or $gated.creds.vncPass -ne 'fixture-not-a-secret') { throw 'gated creds values wrong' }
+              "d) rdpLogonAgeSec=PASS newest-logon10-age=$ageNote ui-anchor=gated-node-test" | Add-Content -Path $mtx
+              "e) ping-plumbing=PASS direct+relay surfaced probe-spawn=PASS" | Add-Content -Path $mtx
+              "s3) creds-gate=PASS ungated=stripped gated=full" | Add-Content -Path $mtx
+          } finally {
+              Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue
+              Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue |
+                  Where-Object { $_.CommandLine -like "*$root*" } |
+                  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          }
+
+      - name: "F) Edge policy: live-store IDs + mandated managed bookmarks"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mtx = Join-Path $env:RUNNER_TEMP 'lab-matrix.txt'
+          & 'payloads\Provision-BrowserPolicy.ps1' -MissionControlUrl 'http://127.0.0.1:7331' -Repo 'dekarita/supreme-lamp'
+          if ($LASTEXITCODE -ne 0) { throw "Provision-BrowserPolicy.ps1 exited $LASTEXITCODE" }
+          $v1 = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist' -Name '1' -ErrorAction Stop).'1'
+          $v2 = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist' -Name '2' -ErrorAction Stop).'2'
+          foreach ($v in @($v1, $v2)) {
+              if ($v -notmatch '^[a-p]{32};https://edge\.microsoft\.com/extensionwebstorebase/v1/crx$') { throw "bad Edge forcelist value: $v" }
+          }
+          $bmRaw = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'ManagedBookmarks' -ErrorAction Stop).ManagedBookmarks
+          $bm = $bmRaw | ConvertFrom-Json
+          if (@($bm).Count -ne 3) { throw "expected exactly 3 managed bookmarks, got $(@($bm).Count): $bmRaw" }
+          $names = @($bm | ForEach-Object { $_.name })
+          foreach ($n in @('Mission Control', 'docs/AUTOLOGIN.md', 'Tailscale admin DNS')) {
+              if ($names -notcontains $n) { throw "managed bookmarks missing: $n" }
+          }
+          $urls = (@($bm | ForEach-Object { $_.url }) -join ' ')
+          if ($urls -match 'fmhy|megathread|torrent') { throw 'piracy-index bookmark present' }
+          if ($urls -notmatch 'login\.tailscale\.com/admin/dns') { throw 'Tailscale admin DNS url missing' }
+          if ($urls -notmatch 'github\.com/.+/docs/AUTOLOGIN\.md') { throw 'AUTOLOGIN.md repo page missing' }
+          # best-effort edge://policy readout (registry above is authoritative)
+          $polDump = Join-Path $env:RUNNER_TEMP 'edge-policy-dump.txt'
+          $edge = Start-Process -FilePath 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe' -ArgumentList @('--headless=new', '--dump-dom', 'edge://policy') -PassThru -WindowStyle Hidden -RedirectStandardOutput $polDump -ErrorAction SilentlyContinue
+          if ($edge) { try { $edge.WaitForExit(30000) | Out-Null } catch { }; if (-not $edge.HasExited) { try { $edge.Kill() } catch { } } }
+          $dumpOk = $false
+          if (Test-Path -LiteralPath $polDump) { $dumpOk = ((Get-Item -LiteralPath $polDump).Length -gt 100) }
+          "f) extensions=PASS forcelist=$v1;$v2 bookmarks=3 edge-policy-dump=$dumpOk" | Add-Content -Path $mtx
+
+      - name: E-live) optional real tailscale ping proof (TS_AUTHKEY)
+        shell: pwsh
+        env:
+          TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
+        run: |
+          $mtx = Join-Path $env:RUNNER_TEMP 'lab-matrix.txt'
+          if (-not $env:TS_AUTHKEY) { 'e-live) tailscale ping=PENDING (TS_AUTHKEY secret not set)' | Add-Content -Path $mtx; exit 0 }
+          $ErrorActionPreference = 'Continue'
+          try {
+              $msi = Join-Path $env:RUNNER_TEMP 'ts.msi'
+              & curl.exe -fsSL --retry 3 -o $msi 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi' | Out-Null
+              if (-not (Test-Path -LiteralPath $msi)) { throw 'tailscale msi download failed' }
+              $p = Start-Process msiexec.exe -Wait -PassThru -ArgumentList '/i', $msi, '/quiet', '/norestart'
+              $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+              for ($i = 0; $i -lt 30; $i++) { if (Test-Path -LiteralPath $ts) { break }; Start-Sleep -Seconds 1 }
+              if (-not (Test-Path -LiteralPath $ts)) { throw 'tailscale binary missing after install' }
+              $upArgs = @('up', ('--auth-key=' + $env:TS_AUTHKEY), '--accept-dns=false', '--accept-routes=false')
+              & $ts @upArgs 2>&1 | Out-Null
+              $peer = $null
+              for ($i = 0; $i -lt 18; $i++) {
+                  try {
+                      $j = (& $ts status --json 2>$null) | ConvertFrom-Json
+                      if ($j -and $j.Peer) { foreach ($p2 in $j.Peer.PSObject.Properties) { if ($p2.Value.Online -and -not $p2.Value.Self) { $peer = @($p2.Value.TailscaleIPs)[0]; break } } }
+                  } catch { }
+                  if ($peer) { break }
+                  Start-Sleep -Seconds 5
+              }
+              if (-not $peer) { 'e-live) tailscale ping=PENDING (no online peer to ping from this lab VM)' | Add-Content -Path $mtx; exit 0 }
+              $o = (& $ts ping -c 1 -timeout 3s $peer 2>&1) -join ' '
+              $ms = $null; $path = 'unknown'
+              if ($o -match 'in ([0-9.]+)\s*ms') { $ms = [double]$Matches[1] }
+              if ($o -match 'via DERP') { $path = 'relay' } elseif ($o -match 'via ') { $path = 'direct' }
+              $line = "e-live) tailscale ping peer=$peer ms=$(if ($null -ne $ms) { $ms } else { 'timeout' }) path=$path"
+              $line | Add-Content -Path $mtx
+              if ($null -eq $ms) { throw "tailscale ping produced no RTT: $o" }
+          } catch {
+              "e-live) tailscale ping=FAIL $($_.Exception.Message -replace '[\r\n]+',' ')" | Add-Content -Path $mtx
+              throw
+          }
+
+      - name: G) assemble proof matrix (summary + artifact)
+        if: always()
+        shell: pwsh
+        run: |
+          $mtx = Join-Path $env:RUNNER_TEMP 'lab-matrix.txt'
+          $lines = @()
+          if (Test-Path -LiteralPath $mtx) { $lines = @(Get-Content -LiteralPath $mtx) }
+          $S = $env:GITHUB_STEP_SUMMARY
+          '### F10 autologin-lab proof matrix' | Add-Content -Path $S
+          '```' | Add-Content -Path $S
+          if ($lines.Count) { $lines | Add-Content -Path $S } else { '(no cells recorded - earlier step failed)' | Add-Content -Path $S }
+          '```' | Add-Content -Path $S
+          New-Item -ItemType Directory -Path (Join-Path $env:GITHUB_WORKSPACE 'autologin-lab-matrix') -Force | Out-Null
+          Copy-Item -LiteralPath $mtx -Destination (Join-Path $env:GITHUB_WORKSPACE 'autologin-lab-matrix\lab-matrix.txt') -Force -ErrorAction SilentlyContinue
+          foreach ($extra in @('hello-capture.txt', 'seen-procs.txt', 'edge-policy-dump.txt')) {
+              $src = Join-Path $env:RUNNER_TEMP $extra
+              if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination (Join-Path $env:GITHUB_WORKSPACE 'autologin-lab-matrix') -Force -ErrorAction SilentlyContinue }
+          }
+          exit 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: autologin-lab-matrix
+          path: autologin-lab-matrix
+          if-no-files-found: ignore
