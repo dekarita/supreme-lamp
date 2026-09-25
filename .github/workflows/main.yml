@@ -1221,26 +1221,56 @@ jobs:
           }
           if (-not $vncUp) { Write-Host '[webdesk] VNC 5900 did not reach LISTEN in 30s' }
           # Start websockify on 127.0.0.1:7333, bridging to 127.0.0.1:5900, serving noVNC.
-          try { Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*websockify*7333*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
-          try {
-              New-Item -ItemType Directory -Path 'C:\ghrdp\webdesk' -Force -ErrorAction SilentlyContinue | Out-Null
-              # [F9i] ROOT-CAUSE FIX: -RedirectStandardOutput and -RedirectStandardError
-              # MUST name two DIFFERENT files. Windows opens each redirect target
-              # exclusively (FileShare.None), so pointing both at the same file makes
-              # Start-Process throw BEFORE python starts at all - websockify then never
-              # binds 127.0.0.1:7333 and every run degraded to 'serve-failed'. (The
-              # other Start-Process calls in this workflow already use paired files.)
-              # websockify never receives the VNC password, so neither log can carry it.
-              $wsLog = 'C:\ghrdp\webdesk\websockify.log'
-              $wsErr = 'C:\ghrdp\webdesk\websockify.err.log'
-              Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $novncDir, '127.0.0.1:7333', '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr -WindowStyle Hidden | Out-Null
-          } catch { Write-Host ('[webdesk] websockify start failed: ' + $_.Exception.Message) }
-          $wsUp = $false
-          for ($i = 0; $i -lt 20; $i++) {
-              $c = Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue
-              if ($c) { $wsUp = $true; break }
-              Start-Sleep -Seconds 1
+          # [F9l-1] Idempotent websockify launcher. THE SAME TEXT IS DEFINED IN
+          # THE DEPLOY STEP AND IN THE SELF-TEST STEP - the F9l-5 launch gate
+          # diffs the two copies, so edit both or neither.
+          # Contract: kill any stale python process serving/targeting 7333, start
+          # websockify on 127.0.0.1:7333 (noVNC dir -> VNC 127.0.0.1:5900) with
+          # PAIRED redirect files, then wait up to $TimeoutSec for a LISTEN socket
+          # on LocalAddress 127.0.0.1 + LocalPort 7333 SPECIFICALLY (an
+          # all-interfaces or IPv6 listener is NOT this backend). Returns [bool]
+          # $true only when that loopback listener is up.
+          # [F9i] -RedirectStandardOutput and -RedirectStandardError MUST name two
+          # DIFFERENT files: Windows opens each redirect target exclusively
+          # (FileShare.None), so pointing both at one file makes Start-Process
+          # throw BEFORE python starts - websockify then never binds 7333 and the
+          # run degrades to 'serve-failed'. websockify never receives the VNC
+          # password, so neither log can carry it (argument list = dir + loopback
+          # ports + module name only).
+          function Start-Websockify([int]$TimeoutSec = 20, [string]$NoVncDir = 'C:\ghrdp\novnc') {
+              $wsDir = 'C:\ghrdp\webdesk'
+              $wsLog = Join-Path $wsDir 'websockify.log'
+              $wsErr = Join-Path $wsDir 'websockify.err.log'
+              New-Item -ItemType Directory -Path $wsDir -Force -ErrorAction SilentlyContinue | Out-Null
+              # 1) stale-process cleanup: idempotent re-entry (deploy step, self-test
+              #    recovery, re-dispatch on a warm host).
+              try {
+                  Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+                      Where-Object { $_.CommandLine -like '*websockify*7333*' } |
+                      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+              } catch { }
+              for ($i = 0; $i -lt 10; $i++) {
+                  $still = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+                  if (-not $still) { break }
+                  Start-Sleep -Milliseconds 500
+              }
+              # 2) start (paired redirect files - never the same file twice).
+              try {
+                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, '127.0.0.1:7333', '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr -WindowStyle Hidden | Out-Null
+              } catch {
+                  Write-Host ('[webdesk] websockify start failed: ' + $_.Exception.Message)
+                  return $false
+              }
+              # 3) wait for LISTEN on 127.0.0.1:7333 specifically.
+              for ($i = 0; $i -lt $TimeoutSec; $i++) {
+                  $c = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+                  if ($c) { return $true }
+                  Start-Sleep -Seconds 1
+              }
+              return $false
           }
+          $wsUp = Start-Websockify
+          Write-Host ('[webdesk] websockify 127.0.0.1:7333 LISTEN after Start-Websockify: ' + $wsUp)
           if (-not $wsUp) {
               # [F9i] fail-closed (see tightvnc-install block above). The
               # .log/.err files under C:\ghrdp\webdesk are host-local only and

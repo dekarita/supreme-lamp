@@ -173,3 +173,23 @@ test('F9j: watcher websockify auto-heal is loopback-only (no 0.0.0.0:7333)', () 
   assert.doesNotMatch(wf, /0\.0\.0\.0:7333/);
   assert.match(wf, /'--web','C:\\ghrdp\\novnc','127\.0\.0\.1:7333','127\.0\.0\.1:5900'/);
 });
+
+// [F9l-1] Idempotent websockify launcher: kill stale + paired redirects +
+// wait for a LISTEN socket on 127.0.0.1:7333 specifically, returning a bool.
+test('F9l-1: Start-Websockify is idempotent, paired-redirect and loopback-exact', () => {
+  assert.match(webdesk, /function Start-Websockify\(/);
+  const from = webdesk.indexOf('function Start-Websockify(');
+  const rest = webdesk.slice(from);
+  // bound the slice to the function body (the step continues with unrelated code)
+  const fn = rest.slice(0, rest.indexOf('\n          }\n'));
+  assert.match(fn, /Stop-Process/, 'stale websockify processes must be killed (idempotent re-entry)');
+  assert.match(fn, /RedirectStandardOutput \$wsLog/);
+  assert.match(fn, /RedirectStandardError \$wsErr/);
+  const waits = fn.match(/-LocalAddress '127\.0\.0\.1' -LocalPort 7333 -State Listen/g) || [];
+  assert.ok(waits.length >= 2, 'must wait for the loopback listener before and after starting');
+  assert.match(fn, /return \$false/);
+  assert.match(fn, /return \$true/);
+  assert.match(webdesk, /\$wsUp = Start-Websockify/, 'the deploy step must call the function');
+  // the launcher must not carry the VNC password anywhere
+  assert.doesNotMatch(fn, /\$vp\b|VNC_PASS/);
+});
