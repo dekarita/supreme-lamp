@@ -71,8 +71,12 @@ test('autologin-lab: fail-closed cells (throws, not cosmetic logs)', () => {
 
 test('autologin-lab: locks - no NLA weakening, exe launch, fixture-only creds', () => {
   assert.doesNotMatch(lab, /DisableCredSSP|Enable-WSMan|AllowUnencrypted|Set-ExecutionPolicy\s+Unrestricted/i);
-  // launcher must be started as the compiled exe, never via PowerShell wrapper
-  assert.match(lab, /Start-Process -FilePath \$exe -ArgumentList \$uri -Wait/);
+  // launcher must be started as the compiled exe, never via PowerShell wrapper,
+  // and waited on by PID only (Start-Process -Wait would hang on the mstsc child tree)
+  assert.match(lab, /Start-Process -FilePath \$exe -ArgumentList \$uri -PassThru/);
+  assert.doesNotMatch(lab, /Start-Process -FilePath \$exe -ArgumentList \$uri -Wait/);
+  assert.match(lab, /\$p\.WaitForExit\(30000\)/);
+  assert.match(lab, /\$p2\.WaitForExit\(20000\)/);
   // every /pass: usage is the documented synthetic fixture
   for (const line of lab.split('\n')) {
     if (line.includes('/pass:')) {
