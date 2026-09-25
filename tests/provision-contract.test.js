@@ -49,7 +49,8 @@ test('VNC_PASS missing fails closed before install, with summary/link and config
   assert.ok(start >= 0 && end > start);
   const step = workflow.slice(start, end);
   const guard = step.indexOf('if (-not $env:VNC_PASS)');
-  assert.ok(guard >= 0 && guard < step.indexOf('choco install tightvnc'));
+  // [F9o] direct-msiexec ladder (L1): the installer entry is the MSI download.
+  assert.ok(guard >= 0 && guard < step.indexOf('tightvnc-2.8.85-gpl-setup-64bit.msi'));
   assert.match(step, /https:\/\/github\.com\/dekarita\/supreme-lamp\/settings\/secrets\/actions/);
   assert.match(step, /GITHUB_STEP_SUMMARY/);
   assert.match(step, /webdeskReason' -NotePropertyValue 'vnc-pass-missing'/);

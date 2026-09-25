@@ -469,7 +469,7 @@ function Invoke-ClientRequest {
             } elseif ($hostKind -eq 'vps') {
                 $advisory += 'run the cmdkey line once (current user), then pin the mstsc shortcut'
             }
-            $wd = ''; $wdr = ''; $wdDetail = ''
+            $wd = ''; $wdr = ''; $wdDetail = ''; $wda = ''
             # [F8a] webdeskReason explains an EMPTY webdeskUrl. Enum:
             # vnc-pass-missing | vnc-pass-too-short | serve-failed | config-stale
             # | step-not-run | invalid-webdesk-url. (A PRESENT-but-short VNC_PASS is 'vnc-pass-too-short',
@@ -481,11 +481,16 @@ function Invoke-ClientRequest {
             if ($cfgN -and $cfgN.webdeskUrl) { $wd = [string]$cfgN.webdeskUrl }
             if ($cfgN -and $cfgN.PSObject.Properties['webdeskReason'] -and $cfgN.webdeskReason) { $wdr = [string]$cfgN.webdeskReason }
             if ($cfgN -and $cfgN.PSObject.Properties['webdeskDetail'] -and $cfgN.webdeskDetail) { $wdDetail = [string]$cfgN.webdeskDetail }
+            # [F9o] webdeskAuth: the VERIFIED VNC mode stamped by the deploy
+            # ladder ('vnc' | 'none-tailnet-only'). Strict allowlist: any other
+            # value (including tampered config) reads as '' (unknown).
+            if ($cfgN -and $cfgN.PSObject.Properties['webdeskAuth'] -and ([string]$cfgN.webdeskAuth -in @('vnc', 'none-tailnet-only'))) { $wda = [string]$cfgN.webdeskAuth }
             # [F9i] webdeskDetail is a fixed, secret-free sub-cause code written
             # only by the workflow (tightvnc-install | novnc-assets |
             # websockify-bind | tailnet-ip-unavailable | firewall-rule |
-            # serve-mapping | self-test-failed). Cap length so
-            # a tampered config cannot bloat the response; never carries secrets.
+            # vnc-auth-unverifiable | serve-mapping | self-test-failed). Cap
+            # length so a tampered config cannot bloat the response; never
+            # carries secrets.
             if ($wdDetail.Length -gt 64) { $wdDetail = $wdDetail.Substring(0, 64) }
             # [F9i] vncPassAdminUrl: the direct secrets-settings link the F9h
             # guard writes into config.json; default is the repo's fixed URL.
@@ -524,6 +529,8 @@ function Invoke-ClientRequest {
                     if (-not $wsConn) { $wd = ''; $wdr = 'config-stale'; $wdDetail = 'listener-gone' }
                 } catch { }
             }
+            # [F9o] No URL => no auth mode (a blanked URL must not keep a stale 'vnc').
+            if (-not $wd) { $wda = '' }
             $ns = [ordered]@{
                 fqdn = $fqdnN
                 hostKind = $hostKind
@@ -534,6 +541,7 @@ function Invoke-ClientRequest {
                 webdeskUrl = $wd
                 webdeskReason = $wdr
                 webdeskDetail = $wdDetail
+                webdeskAuth = $wda
                 vncPassAdminUrl = $vncAdmin
                 tsReason = $tsr
                 tsAuthAdminUrl = $tsAdmin

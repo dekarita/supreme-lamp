@@ -334,6 +334,8 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <span class="note">tailnet-only HTTP over WireGuard + VNC password; nothing installed on client. NLA on the Windows listener stays on.</span>
   </div>
   <div class="row"><span class="k">Web desktop URL</span><span class="v" id="webdeskUrlVal">(not set)</span><a href="javascript:void(0)" onclick="copyById('webdeskUrlVal',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">VNC password = the VNC_PASS secret set at dispatch; this page never stores or shows it.</span></div>
+  <div class="row"><span class="k">VNC auth mode</span><span class="v" id="webdeskAuthVal">(unknown)</span></div>
+  <div class="row" id="webdeskAuthAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" id="webdeskAuthAdvisoryText" style="color:#f5d9b7"></span></div>
   <div class="note" id="webdeskVncGuidance" style="display:none;color:#f5d9b7;margin:4px 0 10px 130px">
     VNC_PASS secret is missing. To enable web desktop:
     <ol style="margin:6px 0 0 20px">
@@ -1012,6 +1014,7 @@ async function nativeStatus(){
     'firewall-rule':'the tailnet-only firewall rule for TCP 7333 could not be created',
     'serve-mapping':'tailscale serve produced no tailnet mapping for the websockify port',
     'self-test-failed':'the advertised URL did not serve the noVNC page (self-test failed)',
+    'vnc-auth-unverifiable':'VNC authentication could not be verified in either mode (password gate and tailnet-only probe both failed)',
     'listener-gone':'the websockify listener on tailnet-IP:7333 is no longer present'
   };
   var guideHtml='';
@@ -1101,6 +1104,25 @@ async function nativeStatus(){
       ?'Workflow halted: <code>TS_AUTHKEY</code> secret missing - <a href="'+TS_KEYS_URL+'" target="_blank" rel="noopener">generate a reusable key</a>, then update the repo secret and re-run.'
       :'Workflow halted: <code>TS_AUTHKEY</code> rejected (invalid/expired/revoked) - <a href="'+TS_KEYS_URL+'" target="_blank" rel="noopener">regenerate a reusable key</a>, then update the repo secret and re-run.'):'';
   }
+  // [F9o] VNC auth mode row + degraded-mode advisory. webdeskAuth comes from
+  // config.json via native-status ('vnc' = password gate verified by the
+  // vncdotool ladder | 'none-tailnet-only' = labeled degrade, firewall only).
+  // The WEB DESKTOP button logic below is UNCHANGED (it opens any valid URL).
+  var authEl=document.getElementById('webdeskAuthVal');
+  var authAdv=document.getElementById('webdeskAuthAdvisory');
+  var authAdvTxt=document.getElementById('webdeskAuthAdvisoryText');
+  var wda=(s&&s.webdeskAuth)?String(s.webdeskAuth):'';
+  if(authEl){
+    if(webdeskUrl&&wda==='vnc'){ authEl.textContent='vnc (password gate verified)'; authEl.style.color='#7dffc9'; }
+    else if(webdeskUrl&&wda==='none-tailnet-only'){ authEl.textContent='none-tailnet-only (password gate NOT applied - tailnet firewall only)'; authEl.style.color='#f5d9b7'; }
+    else if(webdeskUrl){ authEl.textContent='(unknown - pre-F9o config)'; authEl.style.color='#f5d9b7'; }
+    else { authEl.textContent='(not deployed)'; authEl.style.color=''; }
+  }
+  var authHtml='';
+  if(webdeskUrl&&wda==='none-tailnet-only'){
+    authHtml='VNC password gate could not be applied; access limited to tailnet firewall 100.64.0.0/10; rotate VNC_PASS and re-dispatch to restore the gate.';
+  }
+  if(authAdv){ authAdv.style.display=authHtml?'':'none'; if(authAdvTxt)authAdvTxt.textContent=authHtml; }
   var wb=$('btnWebDesk');
   if(wb){
    if(webdeskUrl){ wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(webdeskUrl,'_blank','noopener');}; wb.title=webdeskUrl; }

@@ -1,22 +1,30 @@
-# [F9n-lab] RESERVED-ENV FALLBACK LAB (tailnet-HTTP web desktop proof).
+# [F9o-lab] RESERVED-ENV FALLBACK LAB (VNC-auth ladder + tailnet-HTTP proof).
 #
 # Intent (stated once): the reserved lab env `dekarita/ghrdp-lab` is the
 # intended home for this job (see PR body / session notes). It is NOT
 # reachable from CI tooling: `gh repo view dekarita/ghrdp-lab` -> 404
 # (the token cannot read repos outside the installation's allow-list).
-# Retried, then this in-repo fallback is used so the F9n proof is not
+# Retried, then this in-repo fallback is used so the F9o proof is not
 # blocked:
 #
 #   * same runner class (windows-latest, Azure, ephemeral) as main.yml's rdp job
 #   * REAL Tailscale login (repo secret TS_AUTHKEY)
 #   * NO `tailscale serve` anywhere (retired: Windows SYSTEM operator lock 401)
+#   * REAL TightVNC MSI install (repo secret VNC_PASS) + REAL vncdotool probe:
+#     the production Install-TightVncMsi + Invoke-VncAuthProbe functions are
+#     EXTRACTED VERBATIM from .github/workflows/main.yml and executed, so the
+#     lab proves the exact L1-L3 ladder (msiexec props + registry + RFB login)
 #   * REAL noVNC clone + REAL websockify bound to the lab runner tailnet IP
 #   * the production Start-Websockify launcher is EXTRACTED VERBATIM from
 #     .github/workflows/main.yml and executed, so the lab exercises the exact
 #     production code (CGNAT guard + stale-kill + paired redirects + LISTEN wait)
-#   * the F9n self-test is EXTRACTED VERBATIM from main.yml and executed with
+#   * the F9o self-test is EXTRACTED VERBATIM from main.yml and executed with
 #     `pwsh -File`, so the lab proves the exact production classifier
 #
+# Phase 0 (VNC-AUTH): extract the production TightVNC functions, install the
+#   MSI with VNC_PASS (L1), pin registry + restart + verify the Password blob
+#   (L2), then vncdotool-capture against 127.0.0.1:5900 (L3). Expect exit 0.
+#   Only exit codes + blob length are logged; VNC_PASS never appears.
 # Phase 1 (BIND):   extract the production launcher, read config rdpIp (the
 #   ONLY tailnet-IP source - no `tailscale ip` fallback), create the
 #   GHRDP-Webdesk CGNAT-only firewall rule, bind <rdpIp>:7333, curl the
@@ -24,13 +32,14 @@
 #   `tailscale ip -4` probe is logged first: whether it 401s (SYSTEM lock)
 #   or succeeds, the verdict must not depend on it.
 # Phase 2 (SELFTEST): run the extracted production self-test verbatim against
-#   the Phase-1 backend; expect exit 0 + noVNC marker + PASS annotation.
+#   the Phase-1 backend; expect exit 0 + noVNC marker + VNC probe exit 0 +
+#   PASS annotation.
 # Phase 3 (NEGATIVE): point config at an unroutable CGNAT address, kill
 #   websockify, run the SAME extracted self-test: it must classify
 #   backend-dead, write the diagnostics payload, clear the URL with the
 #   locked serve-failed/self-test-failed codes, and throw (fail-closed).
 #
-# LAB_REV=5 (F9n: tailnet-HTTP proof; serve retired from the webdesk path).
+# LAB_REV=6 (F9o: VNC-auth ladder proof + tailnet-HTTP proof).
 # Evidence channel: run logs/artifacts live on the results blob host, which is
 # not always reachable from the tooling that drives this lab, so every probe
 # also emits a ::warning::/::notice:: annotation - annotations are readable
@@ -39,7 +48,7 @@
 # Artifacts are secret-free by construction: websockify never receives
 # VNC_PASS (its argument list is dir + tailnet bind + loopback VNC target
 # only), and Tailscale credentials never appear in the files this job uploads.
-name: webdesk-lab (F9n tailnet-HTTP proof)
+name: webdesk-lab (F9o VNC-auth + tailnet-HTTP proof)
 
 on:
   workflow_dispatch:
@@ -153,12 +162,77 @@ jobs:
           $labIp = [string]$env:LAB_IP
           if ($labIp -notmatch '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') { throw '[lab] LAB_IP is not a CGNAT address; refusing to seed (fail-closed input contract)' }
           $url = 'http://' + $labIp + ':7333/vnc.html?autoconnect=1&resize=remote'
-          $cfg = [ordered]@{ hostKind = 'ephemeral'; hostname = $env:LAB_HOST; rdpIp = $labIp; webdeskUrl = $url; webdeskReason = ''; webdeskDetail = '' }
+          $cfg = [ordered]@{ hostKind = 'ephemeral'; hostname = $env:LAB_HOST; rdpIp = $labIp; webdeskUrl = $url; webdeskReason = ''; webdeskDetail = ''; webdeskAuth = 'vnc' }
           $enc = New-Object System.Text.UTF8Encoding($false)
           [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), ($cfg | ConvertTo-Json -Depth 6), $enc)
           Write-Host ('[lab] seeded config.rdpIp = ' + $labIp)
           Write-Host ('[lab] seeded config.webdeskUrl = ' + $url)
           exit 0
+
+      - name: F9o VNC AUTH PROOF - production TightVNC ladder L1-L3 (MSI + probe)
+        shell: pwsh
+        env:
+          VNC_PASS: ${{ secrets.VNC_PASS }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $vp = [string]$env:VNC_PASS
+          if (-not $vp -or $vp.Length -lt 8) { throw '[lab] VNC_PASS secret missing or shorter than 8 chars - lab cannot prove the password ladder.' }
+          # Extract the production TightVNC functions VERBATIM from main.yml
+          # (first copies: deploy step), so the lab proves the exact L1-L3 code.
+          $all = Get-Content -LiteralPath '.github/workflows/main.yml'
+          function Extract-LabFn([string]$Name) {
+              $start = -1
+              for ($i = 0; $i -lt $all.Count; $i++) { if ($all[$i] -match ('^          function ' + $Name + '\(')) { $start = $i; break } }
+              if ($start -lt 0) { throw ('[lab] production ' + $Name + ' not found in main.yml') }
+              $end = $start
+              while ($end -lt $all.Count -and $all[$end] -ne '          }') { $end++ }
+              if ($end -ge $all.Count) { throw ('[lab] production ' + $Name + ' end not found') }
+              return ($all[$start..$end] -join "`n")
+          }
+          $fnProbe = Extract-LabFn 'Invoke-VncAuthProbe'
+          $fnInst = Extract-LabFn 'Install-TightVncMsi'
+          if ($fnProbe -notmatch '127\.0\.0\.1::5900') { throw '[lab] extracted probe is not the F9o form (prod/lab skew)' }
+          if ($fnInst -notmatch 'REINSTALLMODE=omus') { throw '[lab] extracted installer is not the F9o form (prod/lab skew)' }
+          . ([scriptblock]::Create($fnProbe))
+          . ([scriptblock]::Create($fnInst))
+          Write-Host '[lab] extracted production Invoke-VncAuthProbe + Install-TightVncMsi'
+          # L1: download + production msiexec (REINSTALL logic inside).
+          $msi = Join-Path $env:RUNNER_TEMP 'tightvnc.msi'
+          Invoke-WebRequest -Uri 'https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi' -OutFile $msi -UseBasicParsing -TimeoutSec 120
+          if (-not (Test-Path -LiteralPath $msi)) { throw '[lab] TightVNC MSI download failed' }
+          & python -m pip install --disable-pip-version-check --quiet vncdotool 2>&1 | Select-Object -Last 2 | Out-Null
+          $msiExit = Install-TightVncMsi -MsiPath $msi -Password $vp -ForceFresh $false
+          # L2: registry pin + restart + Password blob check (length only).
+          $tvKey = 'HKLM:\SOFTWARE\TightVNC\Server'
+          if (Test-Path -LiteralPath $tvKey) {
+              Set-ItemProperty -Path $tvKey -Name 'AcceptRfbConnections' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+              Set-ItemProperty -Path $tvKey -Name 'UseVncAuthentication' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+              Set-ItemProperty -Path $tvKey -Name 'AllowLoopback' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+              Set-ItemProperty -Path $tvKey -Name 'LoopbackOnly' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+              Set-ItemProperty -Path $tvKey -Name 'AlwaysShared' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+              Set-ItemProperty -Path $tvKey -Name 'RemoveWallpaper' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+              Set-ItemProperty -Path $tvKey -Name 'SecurityTypes' -Value 'VncAuth' -Type String -ErrorAction SilentlyContinue
+          }
+          try { Restart-Service -Name 'tvnserver' -Force -ErrorAction Stop } catch { throw ('[lab] L2 tvnserver restart failed: ' + $_.Exception.Message) }
+          $pwdLen = 0
+          try { $pb = (Get-ItemProperty -Path $tvKey -Name 'Password' -ErrorAction Stop).Password; if ($null -ne $pb) { $pwdLen = [int]$pb.Length } } catch { }
+          Write-Host ('[lab] L2 Password blob length=' + $pwdLen + ' ok=' + ($pwdLen -ge 8))
+          if ($pwdLen -lt 8) { throw '[lab] L2 Password blob missing (<8 bytes): the MSI did not apply VALUE_OF_PASSWORD' }
+          $vncUp = $false
+          for ($i = 0; $i -lt 30; $i++) {
+              if (Get-NetTCPConnection -LocalPort 5900 -State Listen -ErrorAction SilentlyContinue) { $vncUp = $true; break }
+              Start-Sleep -Seconds 1
+          }
+          if (-not $vncUp) { throw '[lab] VNC 5900 never reached LISTEN after L1-L2' }
+          # L3: REAL RFB login with VNC_PASS; exit 0 = verified (only the code logs).
+          $code = Invoke-VncAuthProbe -Password $vp -Tag 'lab-l3'
+          if ($code -eq 0) {
+              Write-Host ('::notice title=lab VNC AUTH PROOF (L1-L3)::msiexec exit=' + $msiExit + ' blob=' + $pwdLen + ' probe exit=0 (password gate VERIFIED)')
+              exit 0
+          } else {
+              Write-Host ('::warning title=lab VNC AUTH PROOF FAILED::msiexec exit=' + $msiExit + ' blob=' + $pwdLen + ' probe exit=' + $code)
+              throw ('[lab] L3 auth probe FAILED with exit ' + $code + ' (iterate the ladder in lab only)')
+          }
 
       - name: F9n BIND PROOF - production launcher + firewall + marker curl
         shell: pwsh
@@ -220,6 +294,8 @@ jobs:
       - name: F9n SELFTEST PROOF - extracted production self-test (verbatim from main.yml)
         id: selftest
         shell: pwsh
+        env:
+          VNC_PASS: ${{ secrets.VNC_PASS }}
         run: |
           $ErrorActionPreference = 'Continue'
           $all = Get-Content -LiteralPath '.github/workflows/main.yml'
@@ -239,6 +315,8 @@ jobs:
               $script += $l.Substring(10)
           }
           if (($script -join "`n") -notmatch "'backend-root'") { throw '[lab] extracted self-test is not the F9n form (prod/lab skew)' }
+          if (($script -join "`n") -notmatch 'Invoke-VncAuthProbe') { throw '[lab] extracted self-test lacks the F9o VNC probe (prod/lab skew)' }
+          if (($script -join "`n") -notmatch 'webdeskAuth') { throw '[lab] extracted self-test lacks F9o mode-matching (prod/lab skew)' }
           $out = Join-Path $env:RUNNER_TEMP 'extracted-selftest.ps1'
           [System.IO.File]::WriteAllLines($out, $script, (New-Object System.Text.UTF8Encoding($false)))
           Write-Host ('[lab] extracted self-test: ' + $script.Count + ' lines -> ' + $out)
