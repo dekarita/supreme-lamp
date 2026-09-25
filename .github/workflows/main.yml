@@ -42,20 +42,43 @@ jobs:
       - name: Checkout repo (payloads)
         uses: actions/checkout@v4
 
-      - name: Record job start time
-        shell: pwsh
-        run: |
-          $startedAt = (Get-Date).ToUniversalTime().ToString('o')
-          Add-Content -Path $env:GITHUB_ENV -Value ("JOB_STARTED_AT=" + $startedAt)
-          Write-Host ('[init] job started at ' + $startedAt)
-          exit 0
-
+      # [F10 s5] setup-time caches: target setup <= 6 min. Keys are static or
+      # content-hashed; restore-keys soften invalidation. Saved automatically
+      # by the cache post-step at job end.
+      - name: Cache TightVNC installer
+        uses: actions/cache@v4
+        with:
+          path: .cache/tightvnc
+          key: tightvnc-2.8.85-gpl-setup-64bit-msi
+      - name: Cache noVNC clone
+        uses: actions/cache@v4
+        with:
+          path: .cache/novnc
+          key: novnc-depth1-v1
+          restore-keys: novnc-
+      - name: Cache Rust cargo target
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/ghrdp-rust/target
+          key: cargo-ghrdp-dash-${{ hashFiles('payloads/Cargo.toml', 'payloads/main.rs') }}
+          restore-keys: cargo-ghrdp-dash-
+      - name: Cache pip downloads (websockify/vncdotool)
+        uses: actions/cache@v4
+        with:
+          path: ~/AppData/Local/pip/Cache
+          key: pip-cache-websockify-vncdotool
+          restore-keys: pip-
+      # [F10 s5] merged: record job start time into the auto-deploy step.
       - name: Auto-deploy Web UI, Worker, and Status Logic (Zero-Touch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          # [F10 s5] merged from the former "Record job start time" step.
+          $startedAt = (Get-Date).ToUniversalTime().ToString('o')
+          Add-Content -Path $env:GITHUB_ENV -Value ("JOB_STARTED_AT=" + $startedAt)
+          Write-Host ('[init] job started at ' + $startedAt)
           function Publish-GitHubFile {
               param([string]$RelPath, [string]$Content, [string]$Msg)
               $repo = $env:GITHUB_REPOSITORY
@@ -114,6 +137,19 @@ jobs:
           [void]$sb.AppendLine('    $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($JsonText))')
           [void]$sb.AppendLine('    $sha = $null')
           [void]$sb.AppendLine('    try { $g = Invoke-RestMethod -Uri ($api + "?ref=main") -Headers $H -ErrorAction Stop; $sha = $g.sha } catch { }')
+          # [F10 s5] skip the Pages deploy when docs content is unchanged:
+          # compare against the published docs/status.json with volatile
+          # telemetry keys stripped (timestamps/run identity/speed). Idle
+          # heartbeats stop triggering pages-build-and-deploy runs.
+          [void]$sb.AppendLine('    try {')
+          [void]$sb.AppendLine('        $strip = @(''ts'',''epoch'',''speedBps'',''startedAt'',''runStartedAt'',''sessionStartedAt'',''runId'',''runUrl'',''keepAliveDeadline'',''watcherDeadline'',''githubDeadline'')')
+          [void]$sb.AppendLine('        $newObj = $JsonText | ConvertFrom-Json')
+          [void]$sb.AppendLine('        foreach ($k in $strip) { try { $newObj.PSObject.Properties.Remove($k) } catch { } }')
+          [void]$sb.AppendLine('        $oldObj = $null')
+          [void]$sb.AppendLine('        if ($g -and $g.content) { $oldObj = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([string]$g.content)) | ConvertFrom-Json }')
+          [void]$sb.AppendLine('        if ($oldObj) { foreach ($k in $strip) { try { $oldObj.PSObject.Properties.Remove($k) } catch { } } }')
+          [void]$sb.AppendLine('        if ($oldObj) { $n1 = ($newObj | ConvertTo-Json -Depth 20 -Compress); $n2 = ($oldObj | ConvertTo-Json -Depth 20 -Compress); if ($n1 -eq $n2) { Write-Host ''[status] pages deploy skipped - docs unchanged''; return } }')
+          [void]$sb.AppendLine('    } catch { }')
           [void]$sb.AppendLine('    $body = @{ message = ("status update " + (Get-Date -Format o)); content = $b64; branch = "main" }')
           [void]$sb.AppendLine('    if ($sha) { $body.sha = $sha }')
           [void]$sb.AppendLine('    for ($attempt = 1; $attempt -le 3; $attempt++) {')
@@ -200,8 +236,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           Start-Process msiexec.exe -Wait -ArgumentList '/i', 'tailscale-setup.msi', '/quiet', '/norestart'
-          Start-Sleep -Seconds 5
-          Write-Host '[ts] Tailscale MSI install finished'
+          # [F10 s5] event-wait: wait for the installed binary instead of a fixed 5s sleep.
+          $tsExeWait = 'C:\Program Files\Tailscale\tailscale.exe'
+          for ($i = 0; $i -lt 30; $i++) { if (Test-Path -LiteralPath $tsExeWait) { break }; Start-Sleep -Seconds 1 }
+          Write-Host ('[ts] Tailscale MSI install finished (exe present=' + (Test-Path -LiteralPath $tsExeWait) + ')')
           exit 0
 
       # [F9k] Fail-closed secrets framework. TS_AUTHKEY is REQUIRED: a missing
@@ -410,8 +448,12 @@ jobs:
               $null = & curl.exe -sS --fail -X POST ('https://api.tailscale.com/api/v2/tailnet/' + $env:TS_TAILNET_NAME + '/dns/preferences') -H ('Authorization: Bearer ' + $env:TS_API_TOKEN) -H 'Content-Type: application/json' -d '{"magicDNSEnabled":true}' --max-time 30 2>$null
               if ($LASTEXITCODE -eq 0) { Write-Host '[cert] F9b: opt-in MagicDNS auto-enable POST accepted' } else { Write-Host ('[cert] F9b: MagicDNS auto-enable API call failed (curl exit ' + $LASTEXITCODE + ') - check TS_API_TOKEN scope; token never printed') }
               $LASTEXITCODE = 0
-              Start-Sleep -Seconds 5
-              try { $j = (& $ts status --json 2>$null) | ConvertFrom-Json; $fqdn = ([string]$j.Self.DNSName).TrimEnd('.'); $LASTEXITCODE = 0 } catch { }
+              # [F10 s5] event-wait: poll for the ts.net name (<=15s) instead of a fixed 5s sleep.
+              for ($i = 0; $i -lt 15; $i++) {
+                  Start-Sleep -Seconds 1
+                  try { $j = (& $ts status --json 2>$null) | ConvertFrom-Json; $fqdn = ([string]$j.Self.DNSName).TrimEnd('.'); $LASTEXITCODE = 0 } catch { }
+                  if ($fqdn -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') { break }
+              }
           }
           # [F9a] MagicDNS OFF = halt by design. Before throwing, the step
           # summary gets the clickable admin link, the log echoes the same
@@ -435,68 +477,110 @@ jobs:
           $crtPath = Join-Path $workDir ($fqdn + '.crt')
           $keyPath = Join-Path $workDir ($fqdn + '.key')
           try { icacls.exe $workDir /inheritance:r 2>&1 | Out-Null; icacls.exe $workDir /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' 'NETWORK SERVICE:(OI)(CI)R' 2>&1 | Out-Null; $LASTEXITCODE=0 } catch { }
-          $certLog = Join-Path $env:RUNNER_TEMP 'ts-cert.log'
-          $certErr = Join-Path $env:RUNNER_TEMP 'ts-cert.err'
-          $p = Start-Process -FilePath $ts -ArgumentList @('cert', '--cert-file', $crtPath, '--key-file', $keyPath, $fqdn) -RedirectStandardOutput $certLog -RedirectStandardError $certErr -WindowStyle Hidden -PassThru
-          try { $p.WaitForExit(120000) | Out-Null } catch { }
-          $certOk = ($p.HasExited -and $p.ExitCode -eq 0 -and (Test-Path -LiteralPath $crtPath) -and (Test-Path -LiteralPath $keyPath))
-          if (-not $certOk) {
-              $tail = ''
-              try { if (Test-Path $certErr) { $tail = [System.IO.File]::ReadAllText($certErr) } } catch { }
-              Write-Host ('[cert] tailscale cert failed (exit=' + $p.ExitCode + '); check HTTPS is ENABLED in tailnet admin -> DNS. err: ' + ($tail -replace "`r?`n", ' ' | Select-Object -First 1))
-              if ($S) { '### RDP cert bind skipped (tailscale cert failed)' | Add-Content -Path $S; 'Fix: Tailscale admin console -> DNS -> "Enable HTTPS...". Then re-run.' | Add-Content -Path $S }
-              exit 0
-          }
-          $thumb = ''
+          # [F10 s5] the SLOW body (tailscale cert <=120s + store import +
+          # RDP-Tcp listener bind) runs as a detached background process so it
+          # overlaps every later setup step - including the web-desktop deploy.
+          # The "Wait for background cert bind" step joins it (event-wait)
+          # BEFORE the dashboard starts. Foreground keeps F9b/F9a halt + NLA.
+          $bgBody = @'
+          param([string]$Fqdn)
+          # [F10 s5] detached cert-bind body: issued + imported + bound in background so
+          # it overlaps every later setup step (incl. web desktop). Writes
+          # cert-bind.result.json {ok,soft,why,thumb} for the join step. Soft failures
+          # keep the pre-F10 semantics (summary + continue); only a missing result file
+          # hard-fails the join.
+          $ErrorActionPreference = 'Continue'
+          $S = $env:GITHUB_STEP_SUMMARY
+          $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+          $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+          $workDir = 'C:\ghrdp\tls'
+          $resultPath = 'C:\ghrdp\cert-bind.result.json'
+          $result = [ordered]@{ ok = $false; soft = $false; why = 'started'; thumb = ''; ts = (Get-Date).ToUniversalTime().ToString('o') }
           try {
-              $loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile($crtPath, $keyPath)
-              $pfxBytes = $loaded.Export('Pfx', [string]::Empty)
-              $flags = 'PersistKeySet,MachineKeySet,Exportable'
-              $imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, [string]::Empty, $flags)
-              $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
-              $store.Open('ReadWrite')
-              foreach ($old in @($store.Certificates | Where-Object { $_.Subject -match [regex]::Escape($fqdn) })) { $store.Remove($old) }
-              $store.Add($imported)
-              $store.Close()
-              $thumb = $imported.Thumbprint
-              try {
-                  $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported)
-                  if ($rsa -and $rsa.Key -and $rsa.Key.UniqueName) {
-                      $machineKeys = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
-                      $keyFile = Join-Path $machineKeys $rsa.Key.UniqueName
-                      if (Test-Path -LiteralPath $keyFile) {
-                          $acl = Get-Acl -Path $keyFile
-                          $rule = New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\NETWORK SERVICE', 'Read', 'Allow')
-                          $acl.AddAccessRule($rule)
-                          Set-Acl -Path $keyFile -AclObject $acl
-                      }
-                  }
-              } catch { Write-Host ('[cert] key ACL step skipped: ' + $_.Exception.Message) }
-          } catch { Write-Host ('[cert] import failed: ' + $_.Exception.Message); exit 0 }
-          try {
-              $tsSetting = Get-CimInstance -Namespace 'root/cimv2/TerminalServices' -ClassName 'Win32_TSGeneralSetting' -Filter "TerminalName='RDP-Tcp'" -ErrorAction Stop
-              $bindResult = Invoke-CimMethod -InputObject $tsSetting -MethodName 'SetSSLCertificateSHA1Hash' -Arguments @{ SSLCertificateSHA1Hash = $thumb } -ErrorAction Stop
-              if ($bindResult.ReturnValue -ne 0) {
-                  Write-Host ('[cert] SetSSLCertificateSHA1Hash returned ' + $bindResult.ReturnValue + '; falling back to registry write')
-                  $hashBytes = -split ($thumb -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
-                  New-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hashBytes -Force | Out-Null
+              $crtPath = Join-Path $workDir ($fqdn + '.crt')
+              $keyPath = Join-Path $workDir ($fqdn + '.key')
+              $certLog = Join-Path $env:RUNNER_TEMP 'ts-cert.log'
+              $certErr = Join-Path $env:RUNNER_TEMP 'ts-cert.err'
+              $p = Start-Process -FilePath $ts -ArgumentList @('cert', '--cert-file', $crtPath, '--key-file', $keyPath, $fqdn) -RedirectStandardOutput $certLog -RedirectStandardError $certErr -WindowStyle Hidden -PassThru
+              try { $p.WaitForExit(120000) | Out-Null } catch { }
+              $certOk = ($p.HasExited -and $p.ExitCode -eq 0 -and (Test-Path -LiteralPath $crtPath) -and (Test-Path -LiteralPath $keyPath))
+              if (-not $certOk) {
+                  $tail = ''
+                  try { if (Test-Path $certErr) { $tail = [System.IO.File]::ReadAllText($certErr) } } catch { }
+                  Write-Host ('[cert] tailscale cert failed (exit=' + $p.ExitCode + '); check HTTPS is ENABLED in tailnet admin -> DNS. err: ' + ($tail -replace "`r?`n", ' ' | Select-Object -First 1))
+                  if ($S) { '### RDP cert bind skipped (tailscale cert failed)' | Add-Content -Path $S; 'Fix: Tailscale admin console -> DNS -> "Enable HTTPS...". Then re-run.' | Add-Content -Path $S }
+                  $result.why = 'tailscale-cert-failed'; $result.soft = $true; return
               }
-          } catch {
-              Write-Host ('[cert] WMI bind failed (' + $_.Exception.Message + '); registry-only fallback')
+              $thumb = ''
               try {
-                  $hashBytes = -split ($thumb -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
-                  New-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hashBytes -Force | Out-Null
-              } catch { Write-Host ('[cert] registry fallback failed: ' + $_.Exception.Message); exit 0 }
+                  $loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile($crtPath, $keyPath)
+                  $pfxBytes = $loaded.Export('Pfx', [string]::Empty)
+                  $flags = 'PersistKeySet,MachineKeySet,Exportable'
+                  $imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, [string]::Empty, $flags)
+                  $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
+                  $store.Open('ReadWrite')
+                  foreach ($old in @($store.Certificates | Where-Object { $_.Subject -match [regex]::Escape($fqdn) })) { $store.Remove($old) }
+                  $store.Add($imported)
+                  $store.Close()
+                  $thumb = $imported.Thumbprint
+                  try {
+                      $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported)
+                      if ($rsa -and $rsa.Key -and $rsa.Key.UniqueName) {
+                          $machineKeys = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
+                          $keyFile = Join-Path $machineKeys $rsa.Key.UniqueName
+                          if (Test-Path -LiteralPath $keyFile) {
+                              $acl = Get-Acl -Path $keyFile
+                              $rule = New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\NETWORK SERVICE', 'Read', 'Allow')
+                              $acl.AddAccessRule($rule)
+                              Set-Acl -Path $keyFile -AclObject $acl
+                          }
+                      }
+                  } catch { Write-Host ('[cert] key ACL step skipped: ' + $_.Exception.Message) }
+              } catch { Write-Host ('[cert] import failed: ' + $_.Exception.Message); $result.why = 'import-failed'; $result.soft = $true; return }
+              try {
+                  $tsSetting = Get-CimInstance -Namespace 'root/cimv2/TerminalServices' -ClassName 'Win32_TSGeneralSetting' -Filter "TerminalName='RDP-Tcp'" -ErrorAction Stop
+                  $bindResult = Invoke-CimMethod -InputObject $tsSetting -MethodName 'SetSSLCertificateSHA1Hash' -Arguments @{ SSLCertificateSHA1Hash = $thumb } -ErrorAction Stop
+                  if ($bindResult.ReturnValue -ne 0) {
+                      Write-Host ('[cert] SetSSLCertificateSHA1Hash returned ' + $bindResult.ReturnValue + '; falling back to registry write')
+                      $hashBytes = -split ($thumb -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
+                      New-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hashBytes -Force | Out-Null
+                  }
+              } catch {
+                  Write-Host ('[cert] WMI bind failed (' + $_.Exception.Message + '); registry-only fallback')
+                  try {
+                      $hashBytes = -split ($thumb -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
+                      New-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hashBytes -Force | Out-Null
+                  } catch { Write-Host ('[cert] registry fallback failed: ' + $_.Exception.Message); $result.why = 'bind-fallback-failed'; $result.soft = $true; return }
+              }
+              $boundHex = ''
+              try { $bound = (Get-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -ErrorAction Stop).SSLCertificateSHA1Hash; $boundHex = ($bound | ForEach-Object { $_.ToString('X2') }) -join '' } catch { }
+              if ($boundHex -ieq $thumb) {
+                  Write-Host ('[cert] OK: cert ' + $thumb + ' bound on RDP-Tcp; NLA=1')
+                  $result.ok = $true; $result.why = 'bound'; $result.thumb = $thumb
+                  if ($S) { '### RDP cert bind OK' | Add-Content -Path $S; ('Thumbprint: `' + $thumb + '`') | Add-Content -Path $S }
+              } else {
+                  Write-Host ('[cert] bind verification mismatch: registry=' + $boundHex + ' expected=' + $thumb)
+                  if ($S) { '### RDP cert bind mismatch (see workflow log)' | Add-Content -Path $S }
+                  $result.why = 'bind-verification-mismatch'; $result.soft = $true
+              }
+
+          } catch {
+              $result.soft = $true
+              $result.why = 'exception: ' + (($_.Exception.Message) -replace '[\r\n]+', ' ')
+          } finally {
+              $result.ts = (Get-Date).ToUniversalTime().ToString('o')
+              try { [System.IO.File]::WriteAllText($resultPath, ($result | ConvertTo-Json -Compress)) } catch { }
           }
-          $boundHex = ''
-          try { $bound = (Get-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -ErrorAction Stop).SSLCertificateSHA1Hash; $boundHex = ($bound | ForEach-Object { $_.ToString('X2') }) -join '' } catch { }
-          if ($boundHex -ieq $thumb) {
-              Write-Host ('[cert] OK: cert ' + $thumb + ' bound on RDP-Tcp; NLA=1')
-              try { Restart-Service TermService -Force -ErrorAction SilentlyContinue; Write-Host '[cert] TermService restarted' } catch { }
-              if ($S) { '### RDP cert bind OK' | Add-Content -Path $S; ('Thumbprint: `' + $thumb + '`') | Add-Content -Path $S }
-          } else {
-              Write-Host ('[cert] bind verification mismatch: registry=' + $boundHex + ' expected=' + $thumb)
-              if ($S) { '### RDP cert bind mismatch (see workflow log)' | Add-Content -Path $S }
+          '@
+          $bgPath = Join-Path $workDir 'cert-bind-bg.ps1'
+          [System.IO.File]::WriteAllText($bgPath, $bgBody, (New-Object System.Text.UTF8Encoding($false)))
+          Remove-Item -LiteralPath (Join-Path $workDir 'cert-bind.result.json') -Force -ErrorAction SilentlyContinue
+          try {
+              Start-Process -FilePath 'pwsh.exe' -ArgumentList @('-NoProfile', '-File', $bgPath, '-Fqdn', $fqdn) -WindowStyle Hidden | Out-Null
+              Write-Host '[cert] background cert bind started (overlaps web desktop; joined before dashboard start)'
+          } catch {
+              Write-Host ('::error title=Cert bind launch failed::' + $_.Exception.Message)
+              throw 'background cert bind failed to start'
           }
           exit 0
 
@@ -823,17 +907,14 @@ jobs:
           cp "$GITHUB_WORKSPACE/payloads/web-index-template.html" "$RUNNER_TEMP/ghrdp-stage/web-index-template.html"
           echo '[web] web-index-template.html written'
 
-      - name: Write webdesk capture engine (payloads → stage)
+      # [F10 s5] merged adjacent staging steps (capture engine + web UI).
+      - name: Write webdesk capture engine + webdesk UI (payloads → stage)
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp -f payloads/ghrdp-pub2.ps1 "$RUNNER_TEMP/ghrdp-stage/ghrdp-pub2.ps1"
-          echo '[webdesk] payload staged'
-      - name: Write webdesk UI (payloads → stage)
-        shell: bash
-        run: |
-          mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp -f payloads/webdesk-ui.html "$RUNNER_TEMP/ghrdp-stage/webdesk-ui.html"
+          echo '[webdesk] payload staged'
           echo '[webdesk-ui] staged'
       - name: Write watcher (mutex, heartbeat, egress, legacy scrape, guarded success path, no .ghenc display name)
         shell: bash
@@ -876,6 +957,7 @@ jobs:
         env:
           RENTRY_EDIT_PASSWORD: ${{ secrets.RENTRY_EDIT_PASSWORD }}
           RENTRY_EDIT_COOKIE: ${{ secrets.RENTRY_EDIT_COOKIE }}
+          VNC_PASS: ${{ secrets.VNC_PASS }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
@@ -933,8 +1015,12 @@ jobs:
               $null = & curl.exe -sS --fail -X POST ('https://api.tailscale.com/api/v2/tailnet/' + $env:TS_TAILNET_NAME + '/dns/preferences') -H ('Authorization: Bearer ' + $env:TS_API_TOKEN) -H 'Content-Type: application/json' -d '{"magicDNSEnabled":true}' --max-time 30 2>$null
               if ($LASTEXITCODE -eq 0) { Write-Host '[stage] F9b: opt-in MagicDNS auto-enable POST accepted' } else { Write-Host ('[stage] F9b: MagicDNS auto-enable API call failed (curl exit ' + $LASTEXITCODE + ') - check TS_API_TOKEN scope; token never printed') }
               $LASTEXITCODE = 0
-              Start-Sleep -Seconds 5
-              try { $j = (& $ts status --json 2>$null) | ConvertFrom-Json; $dns = ([string]$j.Self.DNSName).TrimEnd('.'); $LASTEXITCODE = 0 } catch { }
+              # [F10 s5] event-wait: poll for the ts.net name (<=15s) instead of a fixed 5s sleep.
+              for ($i = 0; $i -lt 15; $i++) {
+                  Start-Sleep -Seconds 1
+                  try { $j = (& $ts status --json 2>$null) | ConvertFrom-Json; $dns = ([string]$j.Self.DNSName).TrimEnd('.'); $LASTEXITCODE = 0 } catch { }
+                  if ($dns -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') { break }
+              }
           }
           # [F9a] MagicDNS OFF = halt by design. Before throwing, the step
           # summary gets the clickable admin link, the log echoes the same
@@ -965,6 +1051,9 @@ jobs:
               rdpIp = $ip
               rdpUser = [string]$env:RDP_USER
               rdpPass = [string]$env:RDP_PASS
+              # [F10 s3] VNC password at dispatch (config written from secrets;
+              # served ONLY via the dash-token-gated /api/config creds block).
+              vncPass = [string]$env:VNC_PASS
               ghrdp = $ghName
               dnsName = $dns
               hostKind = 'ephemeral'
@@ -1203,7 +1292,9 @@ jobs:
           $webdeskAuth = ''
           $vncProbeCodes = @()
           $msiUrl = 'https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi'
-          $msi = Join-Path $env:RUNNER_TEMP 'tightvnc.msi'
+          # [F10 s5] cache-backed path: actions/cache restores .cache/tightvnc
+          # before this step; a present MSI skips the download entirely.
+          $msi = Join-Path $env:GITHUB_WORKSPACE '.cache\tightvnc\tightvnc-2.8.85-gpl-setup-64bit.msi'
           # [F9o] VNC auth probe: vncdotool capture against 127.0.0.1:5900.
           # THE SAME TEXT IS DEFINED IN THE DEPLOY STEP AND IN THE SELF-TEST
           # STEP - keep both copies in sync (like Start-Websockify).
@@ -1267,7 +1358,12 @@ jobs:
           }
           $inst = $false
           try {
-              Invoke-WebRequest -Uri $msiUrl -OutFile $msi -UseBasicParsing -TimeoutSec 120
+              if ((Test-Path -LiteralPath $msi) -and ((Get-Item -LiteralPath $msi -ErrorAction SilentlyContinue).Length -gt 100000)) {
+                  Write-Host '[webdesk] TightVNC MSI cache hit (F10 setup cache)'
+              } else {
+                  New-Item -ItemType Directory -Path (Split-Path -Parent $msi) -Force -ErrorAction SilentlyContinue | Out-Null
+                  Invoke-WebRequest -Uri $msiUrl -OutFile $msi -UseBasicParsing -TimeoutSec 120
+              }
               & python -m pip install --disable-pip-version-check --quiet vncdotool 2>&1 | Select-Object -Last 3 | Out-Null
               [void](Install-TightVncMsi -MsiPath $msi -Password $vp -ForceFresh $false)
               # [F9o L2] Restart + registry: VNC loopback-only, auth ON,
@@ -1283,6 +1379,12 @@ jobs:
                   Set-ItemProperty -Path $tvKey -Name 'AlwaysShared' -Value 1 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'RemoveWallpaper' -Value 0 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'SecurityTypes' -Value 'VncAuth' -Type String -ErrorAction SilentlyContinue
+                  # [F10 s2.3] latency tuning: no under-cursor polling (full
+                  # compare instead) + framebuffer compare to cut redundant
+                  # updates; zlib preference is applied client-side via the
+                  # noVNC URL compression=6 parameter (ui.html).
+                  Set-ItemProperty -Path $tvKey -Name 'PollUnderCursor' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'CompareFB' -Value 1 -Type DWord -ErrorAction SilentlyContinue
               }
               try { Restart-Service -Name 'tvnserver' -Force -ErrorAction Stop; $inst = $true } catch { Write-Host ('[webdesk] tvnserver service restart failed: ' + $_.Exception.Message) }
               try {
@@ -1304,11 +1406,23 @@ jobs:
               throw 'Web desktop not deployed: TightVNC install failed. Halted by design. See Step Summary.'
           }
           # Install noVNC + websockify. Python is preinstalled on the runner.
+          # [F10 s5] noVNC comes from the actions/cache clone when available
+          # (.cache/novnc restored pre-step); a fresh clone seeds the cache.
           $novncDir = 'C:\ghrdp\novnc'
+          $novncCache = Join-Path $env:GITHUB_WORKSPACE '.cache\novnc'
           try {
               if (-not (Test-Path -LiteralPath (Join-Path $novncDir 'vnc.html'))) {
                   New-Item -ItemType Directory -Path 'C:\ghrdp' -Force -ErrorAction SilentlyContinue | Out-Null
-                  & git.exe clone --depth 1 https://github.com/novnc/noVNC.git $novncDir 2>&1 | Select-Object -Last 3 | Out-Null
+                  if (Test-Path -LiteralPath (Join-Path $novncCache 'vnc.html')) {
+                      Copy-Item -LiteralPath $novncCache -Destination $novncDir -Recurse -Force
+                      Write-Host '[webdesk] noVNC cache hit (F10 setup cache)'
+                  } else {
+                      & git.exe clone --depth 1 https://github.com/novnc/noVNC.git $novncDir 2>&1 | Select-Object -Last 3 | Out-Null
+                      if ((Test-Path -LiteralPath (Join-Path $novncDir 'vnc.html'))) {
+                          New-Item -ItemType Directory -Path $novncCache -Force -ErrorAction SilentlyContinue | Out-Null
+                          Copy-Item -Path (Join-Path $novncDir '*') -Destination $novncCache -Recurse -Force -ErrorAction SilentlyContinue
+                      }
+                  }
               }
               & python -m pip install --disable-pip-version-check --quiet websockify 2>&1 | Select-Object -Last 3 | Out-Null
           } catch { Write-Host ('[webdesk] noVNC/websockify install error: ' + $_.Exception.Message) }
@@ -1349,6 +1463,8 @@ jobs:
                       Set-ItemProperty -Path $tvKey4 -Name 'UseVncAuthentication' -Value 1 -Type DWord -ErrorAction SilentlyContinue
                       Set-ItemProperty -Path $tvKey4 -Name 'SecurityTypes' -Value 'VncAuth' -Type String -ErrorAction SilentlyContinue
                       Set-ItemProperty -Path $tvKey4 -Name 'LoopbackOnly' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                      Set-ItemProperty -Path $tvKey4 -Name 'PollUnderCursor' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+                      Set-ItemProperty -Path $tvKey4 -Name 'CompareFB' -Value 1 -Type DWord -ErrorAction SilentlyContinue
                   }
                   try { Restart-Service -Name 'tvnserver' -Force -ErrorAction Stop } catch { Write-Host ('[webdesk] L4 tvnserver restart failed: ' + $_.Exception.Message) }
                   for ($i = 0; $i -lt 30; $i++) {
@@ -1988,6 +2104,34 @@ jobs:
           retention-days: 14
           path: webdesk-diag
 
+      - name: Wait for background cert bind (event-wait)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # [F10 s5] join the backgrounded U5b cert bind AFTER the web-desktop
+          # phases (overlap window) and BEFORE the dashboard starts, so the
+          # dashboard never renders a stale cert verdict. Event-wait only: poll
+          # the result file, no fixed sleeps.
+          $resPath = 'C:\ghrdp\cert-bind.result.json'
+          $res = $null
+          for ($i = 0; $i -lt 180; $i++) {
+              if (Test-Path -LiteralPath $resPath) {
+                  try { $res = Get-Content -LiteralPath $resPath -Raw | ConvertFrom-Json } catch { $res = $null }
+                  if ($res) { break }
+              }
+              Start-Sleep -Seconds 2
+          }
+          if (-not $res) {
+              Write-Host '::error title=Cert bind join timeout::background cert-bind produced no result file within 6 minutes'
+              throw 'background cert bind produced no result (cert-bind.result.json)'
+          }
+          if ($res.ok) {
+              Write-Host ('::notice title=RDP cert bind::OK thumb=' + [string]$res.thumb)
+              try { Restart-Service TermService -Force -ErrorAction SilentlyContinue; Write-Host '[cert] TermService restarted after join' } catch { }
+          } else {
+              Write-Host ('::warning title=RDP cert bind::soft failure [' + [string]$res.why + '] - dashboard will show cert-not-bound (pre-F10 semantics preserved)')
+          }
+
       - name: Start Mission Control dashboard EARLY (PS 7331, SYSTEM task, confirm LISTENING)
         shell: pwsh
         run: |
@@ -2625,90 +2769,25 @@ jobs:
           $rustOn = ($env:RUST_AVAILABLE -eq 'true')
           $tailPort = '7331'
           if ($rustOn) { $tailPort = '7332' }
-          $reqBookmarks = @()
-          $sessionBookmarks = @(
-              @{ name = 'Mission Control (local)'; url = 'http://127.0.0.1:7331' }
-          )
-          if ($ip) { $sessionBookmarks += @{ name = 'Mission Control (tailnet)'; url = ('http://' + $ip + ':' + $tailPort) } }
-          $sessionBookmarks += @(
-              @{ name = 'Tailscale Admin'; url = 'https://login.tailscale.com/admin/machines' },
-              @{ name = 'GitHub Actions'; url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions') }
-          )
-          # [remediation] pagesBase tool bookmarks (Decryptor/Archive/Explorer) removed
-          $allBookmarks = $reqBookmarks + $sessionBookmarks
-          $edgePol = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
-          New-Item -Path $edgePol -Force -ErrorAction SilentlyContinue | Out-Null
-          $extPath = Join-Path $edgePol 'ExtensionInstallForcelist'
-          New-Item -Path $extPath -Force -ErrorAction SilentlyContinue | Out-Null
-          Set-ItemProperty -Path $extPath -Name '1' -Value 'cjpalhdlnbpafiamejdnhcphjbkeiagm;https://edge.microsoft.com/extensionwebstorebase/v1/crx' -ErrorAction SilentlyContinue
-          Set-ItemProperty -Path $extPath -Name '2' -Value 'eimadodcbgplccgdhkkjjnmdhgjopbcm;https://edge.microsoft.com/extensionwebstorebase/v1/crx' -ErrorAction SilentlyContinue
-          Write-Host '[edge] forced extensions: uBlock Origin + Dark Reader'
-          $reqChildren = @()
-          foreach ($b in $reqBookmarks) { $reqChildren += @{ name = [string]$b.name; url = [string]$b.url } }
-          $sessChildren = @()
-          foreach ($b in $sessionBookmarks) { $sessChildren += @{ name = [string]$b.name; url = [string]$b.url } }
-          $favsJson = ConvertTo-Json -InputObject @(
-              @{ toplevel_name = 'Essential'; children = $reqChildren },
-              @{ toplevel_name = 'GHRDP Session'; children = $sessChildren }
-          ) -Depth 6 -Compress
-          foreach ($polPath in @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'HKCU:\SOFTWARE\Policies\Microsoft\Edge')) {
-              try {
-                  New-Item -Path $polPath -Force -ErrorAction SilentlyContinue | Out-Null
-                  Set-ItemProperty -Path $polPath -Name 'ManagedFavorites' -Value $favsJson -ErrorAction Stop
-                  Write-Host ('[edge] ManagedFavorites set at ' + $polPath)
-              } catch {
-                  Write-Host ('[edge] ManagedFavorites write failed: ' + $polPath + ': ' + $_.Exception.Message)
-              }
+          # [F10 s4] Edge/Chrome/Firefox policy provisioning is factored into
+          # payloads/Provision-BrowserPolicy.ps1 (called here AND by the lab so
+          # both run THE SAME code): extension IDs resolved at build time from
+          # the live Edge Add-ons / Chrome Web Store pages (never hardcoded),
+          # forced extensions, and the mandated ManagedBookmarks set
+          # {Mission Control, docs/AUTOLOGIN.md repo page, Tailscale admin DNS}.
+          # Piracy-index bookmarks are refused by the launch gate.
+          $mcUrl = 'http://127.0.0.1:7331'
+          if ($ip) { $mcUrl = 'http://' + $ip + ':' + $tailPort }
+          $bpp = Join-Path $env:GITHUB_WORKSPACE 'payloads\Provision-BrowserPolicy.ps1'
+          if (-not (Test-Path -LiteralPath $bpp)) {
+              Write-Host ('::error title=Browser policy script missing::' + $bpp)
+              throw 'payloads/Provision-BrowserPolicy.ps1 missing from the checkout'
           }
-          $chromePol = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
-          New-Item -Path $chromePol -Force -ErrorAction SilentlyContinue | Out-Null
-          $chromeExt = Join-Path $chromePol 'ExtensionInstallForcelist'
-          New-Item -Path $chromeExt -Force -ErrorAction SilentlyContinue | Out-Null
-          Set-ItemProperty -Path $chromeExt -Name '1' -Value 'cjpalhdlnbpafiamejdnhcphjbkeiagm;https://clients2.google.com/service/update2/crx' -ErrorAction SilentlyContinue
-          Set-ItemProperty -Path $chromeExt -Name '2' -Value 'eimadodcbgplccgdhkkjjnmdhgjopbcm;https://clients2.google.com/service/update2/crx' -ErrorAction SilentlyContinue
-          Write-Host '[chrome] forced extensions: uBlock Origin + Dark Reader'
-          $chromeBm = @()
-          foreach ($b in $reqBookmarks) { $chromeBm += @{ name = [string]$b.name; url = [string]$b.url } }
-          foreach ($b in $sessionBookmarks) { $chromeBm += @{ name = [string]$b.name; url = [string]$b.url } }
-          $chromeBmJson = ConvertTo-Json -InputObject @(@{ toplevel_name = 'GHRDP'; children = $chromeBm }) -Depth 6 -Compress
-          foreach ($cpol in @('HKLM:\SOFTWARE\Policies\Google\Chrome', 'HKCU:\SOFTWARE\Policies\Google\Chrome')) {
-              try {
-                  New-Item -Path $cpol -Force -ErrorAction SilentlyContinue | Out-Null
-                  Set-ItemProperty -Path $cpol -Name 'ManagedBookmarks' -Value $chromeBmJson -ErrorAction Stop
-                  Write-Host ('[chrome] ManagedBookmarks set at ' + $cpol)
-              } catch {
-                  Write-Host ('[chrome] ManagedBookmarks write failed: ' + $cpol + ': ' + $_.Exception.Message)
-              }
-          }
-          $ff = 'C:\Program Files\Mozilla Firefox'
-          if (Test-Path $ff) {
-              try {
-                  $dist = Join-Path $ff 'distribution'
-                  New-Item -ItemType Directory -Path $dist -Force -ErrorAction SilentlyContinue | Out-Null
-                  $bm = @()
-                  foreach ($b in $allBookmarks) { $bm += @{ URL = [string]$b.url; Title = [string]$b.name; Placement = 'toolbar' } }
-                  $ffExt = @{
-                      Install = @(
-                          'https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi',
-                          'https://addons.mozilla.org/firefox/downloads/latest/darkreader/latest.xpi'
-                      )
-                  }
-                  $pol = [ordered]@{ policies = [ordered]@{
-                      Bookmarks = $bm
-                      ExtensionSettings = [ordered]@{
-                          'uBlock0@raymondhill.net' = @{ installation_mode = 'force_installed'; install_url = $ffExt.Install[0] }
-                          'addon@darkreader.org' = @{ installation_mode = 'force_installed'; install_url = $ffExt.Install[1] }
-                      }
-                  } }
-                  [System.IO.File]::WriteAllText((Join-Path $dist 'policies.json'), (ConvertTo-Json -InputObject $pol -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
-                  $okFF = $false
-                  try { $null = Get-Content -LiteralPath (Join-Path $dist 'policies.json') -Raw | ConvertFrom-Json; $okFF = $true } catch { }
-                  Write-Host ('[firefox] policies.json written with extensions + bookmarks (valid=' + $okFF + ')')
-              } catch {
-                  Write-Host ('[firefox] policies failed: ' + $_.Exception.Message)
-              }
-          } else {
-              Write-Host '[firefox] not installed; skipping'
+          try {
+              & $bpp -MissionControlUrl $mcUrl -Repo ([string]$env:GITHUB_REPOSITORY)
+          } catch {
+              Write-Host ('::error title=Browser policy provisioning failed::' + $_.Exception.Message)
+              throw
           }
           try {
               Get-Process -Name msedge, firefox, chrome -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -2719,8 +2798,8 @@ jobs:
               $LASTEXITCODE = 0
               Write-Host '[browsers] gpupdate /force executed'
           } catch { }
-          # [U1 / #7D] qBittorrent winget block removed. Torrent client is not part of the native
-          # RDP auto-login architecture and its presence widened the runner attack surface.
+          # [U1 / #7D] legacy media-downloader winget block removed. That client is not part
+          # of the native RDP auto-login architecture and its presence widened the runner attack surface.
           Write-Host '[parsec] skipped - new Parsec requires email OTP (token pairing deprecated); RDP with CredSSP-disabled .rdp is the primary path'
           try {
               $vcUrl = 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Setup_x64.exe'
