@@ -481,6 +481,22 @@ function Invoke-ClientRequest {
             if ($cfgN -and $cfgN.webdeskUrl) { $wd = [string]$cfgN.webdeskUrl }
             if ($cfgN -and $cfgN.PSObject.Properties['webdeskReason'] -and $cfgN.webdeskReason) { $wdr = [string]$cfgN.webdeskReason }
             if ($cfgN -and $cfgN.PSObject.Properties['webdeskDetail'] -and $cfgN.webdeskDetail) { $wdDetail = [string]$cfgN.webdeskDetail }
+            # [F9n] webdeskUrl ACCEPTANCE ALLOWLIST - reject everything else.
+            # Only two shapes are ever advertisable through the dashboard:
+            #   ^http://100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}:7333/
+            #       tailnet-HTTP websockify (the F9n transport: WireGuard-
+            #       encrypted path, CGNAT-only firewall rule, VNC password gate), or
+            #   ^https://[a-z0-9.-]+\.ts\.net/
+            #       tailnet HTTPS on the node's MagicDNS name.
+            # A public URL, another port, another scheme or credentials in the URL
+            # are NOT published: the value is cleared and webdeskReason becomes
+            # 'invalid-webdesk-url', so the WEB DESKTOP button can never be
+            # pointed at a non-tailnet destination by a tampered config.json.
+            if ($wd -and -not (($wd -match '^http://100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}:7333/') -or ($wd -match '^https://[a-z0-9.-]+\.ts\.net/'))) {
+                $wd = ''
+                $wdr = 'invalid-webdesk-url'
+                $wdDetail = ''
+            }
             # [F9i] webdeskDetail is a fixed, secret-free sub-cause code written
             # only by the workflow (tightvnc-install | novnc-assets |
             # websockify-bind | serve-mapping | self-test-failed). Cap length so
