@@ -331,7 +331,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
       <button class="primary" id="btnWebDesk" type="button" disabled>WEB DESKTOP (primary)</button>
       <span class="note" id="autoLoginStatus"></span>
     </div>
-    <span class="note">Opens the tailnet web desktop already served by this host. Nothing is installed on the client. NLA on the Windows listener stays on.</span>
+    <span class="note">tailnet-only HTTP over WireGuard + VNC password; nothing installed on client. NLA on the Windows listener stays on.</span>
   </div>
   <div class="row"><span class="k">Web desktop URL</span><span class="v" id="webdeskUrlVal">(not set)</span><a href="javascript:void(0)" onclick="copyById('webdeskUrlVal',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">VNC password = the VNC_PASS secret set at dispatch; this page never stores or shows it.</span></div>
   <div class="note" id="webdeskVncGuidance" style="display:none;color:#f5d9b7;margin:4px 0 10px 130px">
@@ -962,11 +962,16 @@ async function nativeStatus(){
     linkifyInto(mdEl,'workflow halted until MagicDNS enabled - open the admin link, enable, re-dispatch: '+ADMIN,ADMIN);
    } else { mdRow.style.display='none'; mdEl.textContent=''; }
   }
-  // Open only a valid tailnet HTTPS desktop URL supplied by config.json.
+  // Open only a valid tailnet desktop URL supplied by config.json: F9n
+  // tailnet HTTP (http://100.64-127.x.x:7333/...) or a legacy serve URL
+  // (https://<name>.ts.net/ with no port). Anything else stays disabled.
   var webdeskUrl='';
+  var TAILHTTP_RE=/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/;
   try{
    var desk=new URL(String(s.webdeskUrl||''));
-   if(desk.protocol==='https:'&&FQDN_RE.test(desk.hostname)&&!desk.username&&!desk.password&&!desk.port)webdeskUrl=desk.href;
+   var tailHttp=desk.protocol==='http:'&&TAILHTTP_RE.test(desk.hostname)&&desk.port==='7333'&&!desk.username&&!desk.password;
+   var legacyServe=desk.protocol==='https:'&&FQDN_RE.test(desk.hostname)&&!desk.username&&!desk.password&&!desk.port;
+   if(tailHttp||legacyServe)webdeskUrl=desk.href;
   }catch(_){}
   var deskReason=s.webdeskUrl?'invalid-webdesk-url':(s.webdeskReason||'step-not-run');
   // An empty or invalid desktop URL never displays a ready state.
@@ -1002,10 +1007,12 @@ async function nativeStatus(){
   var DETAIL_TEXT={
     'tightvnc-install':'TightVNC server installation failed on the host',
     'novnc-assets':'noVNC/websockify assets could not be prepared on the host',
-    'websockify-bind':'websockify did not start on loopback:7333',
+    'websockify-bind':'websockify did not start on tailnet-IP:7333',
+    'tailnet-ip-unavailable':'no valid tailnet IP was available, so no URL was advertised',
+    'firewall-rule':'the tailnet-only firewall rule for TCP 7333 could not be created',
     'serve-mapping':'tailscale serve produced no tailnet mapping for the websockify port',
     'self-test-failed':'the advertised URL did not serve the noVNC page (self-test failed)',
-    'listener-gone':'the websockify listener on loopback:7333 is no longer present'
+    'listener-gone':'the websockify listener on tailnet-IP:7333 is no longer present'
   };
   var guideHtml='';
   var adviceHtml='';
@@ -1033,7 +1040,7 @@ async function nativeStatus(){
     } else if(deskReason==='serve-failed'){
       var dCode=(s&&s.webdeskDetail)?String(s.webdeskDetail):'';
       var dTxt=DETAIL_TEXT[dCode]||'';
-      adviceHtml='Web desktop not deployed: host-side startup/serve failure - this is NOT a missing VNC_PASS; do not re-add the secret.';
+      adviceHtml='Web desktop not deployed: host-side startup failure - this is NOT a missing VNC_PASS; do not re-add the secret.';
       guideHtml='The web desktop backend failed to start on this host'+(dTxt?' ('+dTxt+')':'')+'. Re-adding VNC_PASS will not fix this.'+
         '<ol style="margin:6px 0 0 20px">'+
         '<li>Open <a href="'+ACTIONS_URL+'" target="_blank" rel="noopener">GitHub Actions</a> and read the &ldquo;Web desktop (noVNC + TightVNC&hellip;)&rdquo; step and its Step Summary for the specific sub-failure</li>'+
@@ -1041,18 +1048,18 @@ async function nativeStatus(){
         '</ol>';
     } else if(deskReason==='config-stale'){
       adviceHtml='Web desktop stopped responding after deployment: the websockify listener on this host is gone.';
-      guideHtml='The web desktop URL was valid when this host was provisioned, but the websockify listener on loopback:7333 is no longer present.'+
+      guideHtml='The web desktop URL was valid when this host was provisioned, but the websockify listener on tailnet-IP:7333 is no longer present.'+
         (kind==='vps'
           ? 'Check websockify on the VPS, or re-run the provisioning, then verify the URL again.'
           : '<ol style="margin:6px 0 0 20px"><li>Re-dispatch the workflow for a fresh ephemeral host</li></ol>');
     } else if(deskReason==='step-not-run'){
       adviceHtml='Web desktop not deployed yet for this host.';
       guideHtml=kind==='vps'
-        ? 'This VPS host has no operator-deployed web desktop yet. Deploy authenticated TightVNC (loopback) + websockify + tailscale serve per MIGRATION.md &sect;1.10, then set the protected config.webdeskUrl.'
+        ? 'This VPS host has no operator-deployed web desktop yet. Deploy authenticated TightVNC (loopback) + websockify on the tailnet IP + the CGNAT-only firewall rule per MIGRATION.md &sect;1.10, then set the protected config.webdeskUrl.'
         : 'The web desktop step has not completed for this run yet (it runs early in the workflow). Check the run in <a href="'+ACTIONS_URL+'" target="_blank" rel="noopener">GitHub Actions</a>; if it failed, re-dispatch.';
     } else if(deskReason==='invalid-webdesk-url'){
-      adviceHtml='The configured web desktop URL failed validation (must be a tailnet https URL with no credentials or port).';
-      guideHtml='config.webdeskUrl is set but is not a valid tailnet HTTPS URL, so the value is hidden. Fix the web desktop step in the workflow and re-dispatch.';
+      adviceHtml='The configured web desktop URL failed validation (must be tailnet http://100.64-127.x.x:7333/ or https://*.ts.net/ with no credentials).';
+      guideHtml='config.webdeskUrl is set but is not a valid tailnet URL (http://100.64-127.x.x:7333/ or https://*.ts.net/), so the value is hidden. Fix the web desktop step in the workflow and re-dispatch.';
     } else {
       adviceHtml='Web desktop not deployed (reason: '+escWd(deskReason)+').';
       guideHtml='This web-desktop reason has no specific guidance. Open <a href="'+ACTIONS_URL+'" target="_blank" rel="noopener">GitHub Actions</a>, check the &ldquo;Web desktop&rdquo; step of the run that started this host, and re-dispatch.';
