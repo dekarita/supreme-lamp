@@ -259,12 +259,25 @@ jobs:
           wf=.github/workflows/main.yml
           lab=.github/workflows/autologin-lab.yml
           shim=payloads/ghrdp-cred-shim.js
-          # --- §1.1 stale-handler overwrite (exe wins over any prior value) -----
-          grep -q 'handler BEFORE' payloads/install.cmd
-          grep -q 'handler AFTER' payloads/install.cmd
+          # --- §1.1 byte-faithful install.cmd (F13: the exact text the user
+          # holds) + stale-handler overwrite (exe wins over any prior value) --
+          grep -q 'BEFORE: & reg query' payloads/install.cmd
+          grep -q 'AFTER: & reg query' payloads/install.cmd
           grep -q 'HKCU\\Software\\Classes\\ghrdp' payloads/install.cmd
-          grep -q 'reg query "%KEY%" /ve 2>nul' payloads/install.cmd
-          grep -q 'find /i "%EXE%"' payloads/install.cmd
+          grep -q 'ghrdp-rdp-launcher.exe' payloads/install.cmd
+          grep -q '/target:winexe' payloads/install.cmd
+          grep -q '/r:System.dll /r:System.Windows.Forms.dll' payloads/install.cmd
+          # PS-free EXECUTION tokens banned in BOTH files; the DONE notice may
+          # NAME the old handler in prose (rem/echo lines stripped first).
+          for f in payloads/install.cmd payloads/ghrdp-rdp-launcher.cs; do
+            if sed 's/^[[:space:]]*\(rem\|echo\).*//' "$f" | grep -nEqi 'powershell(\.exe)?[[:space:]]+[-/]|-ExecutionPolicy|Invoke-Expression|-EncodedCommand'; then
+              echo "F13-1: script-host execution token in $f" >&2; exit 1
+            fi
+          done
+          # [F13-1 gate] the .rdp writer must never emit password 51:b:/password:s:
+          if grep -nEqi 'password[[:space:]]*51:b:|password:s:' payloads/ghrdp-rdp-launcher.cs; then
+            echo 'F13-1: launcher can emit a .rdp password line' >&2; exit 1
+          fi
           # --- §1.4 stale-registration notice (20s hello-beacon watch) ----------
           grep -q 'id="winAutoStale"' payloads/ui.html
           grep -q 'stale ghrdp registration' payloads/ui.html

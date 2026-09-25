@@ -15,15 +15,29 @@ const resolver = fs.readFileSync('payloads/edge-ext-resolve.ps1', 'utf8');
 const apps = fs.readFileSync('payloads/ghrdp-provision-apps.ps1', 'utf8');
 const server = fs.readFileSync('payloads/ghrdp-server.ps1', 'utf8');
 
-test('F12-1 install.cmd: prints BEFORE/AFTER and verifies the overwrite', () => {
-  assert.match(installCmd, /handler BEFORE/);
-  assert.match(installCmd, /handler AFTER/);
-  assert.match(installCmd, /reg query "%KEY%" \/ve/);
-  assert.match(installCmd, /find \/i "%EXE%"/);           // readback verification
-  assert.match(installCmd, /HKCU\\Software\\Classes\\ghrdp/);
-  assert.match(installCmd, /ghrdp-launcher\.exe/);
-  // no script-host EXECUTION token (the notice may NAME the old handler)
-  assert.ok(!/powershell\.exe|-ExecutionPolicy|Invoke-Expression|-EncodedCommand/i.test(installCmd));
+// [F13-1] install.cmd is BYTE-FAITHFUL to the exact text the client user holds
+// (csc /target:winexe + /r:System.dll /r:System.Windows.Forms.dll, HKCU
+// overwrite, BEFORE/AFTER print of the handler value). The ONLY 'powershell'
+// occurrence allowed is the prose DONE notice naming the old handler.
+test('F12-1 install.cmd: byte-faithful ship text, BEFORE/AFTER print, PS-free execution', () => {
+  assert.match(installCmd, /set "EXE=%DIR%\\ghrdp-rdp-launcher\.exe"/);
+  assert.match(installCmd, /echo BEFORE: & reg query "HKCU\\Software\\Classes\\ghrdp\\shell\\open\\command" \/ve 2>nul/);
+  assert.match(installCmd, /echo AFTER: & reg query "HKCU\\Software\\Classes\\ghrdp\\shell\\open\\command" \/ve/);
+  assert.match(installCmd, /\/target:winexe/);
+  assert.match(installCmd, /\/r:System\.dll \/r:System\.Windows\.Forms\.dll/);
+  assert.match(installCmd, /mkdir "%DIR%" 2>nul/);
+  assert.match(installCmd, /\/d "\\"%EXE%\\" \\"%%1\\""/);      // handler = "<exe>" "%1"
+  assert.match(installCmd, /Now click WINDOWS AUTO-LOGIN on the dashboard\./);
+  assert.ok(installCmd.includes('ghrdp-rdp-launcher.exe, NOT powershell.'));
+  // no script-host EXECUTION token in install.cmd OR the launcher source
+  // (the DONE notice may NAME the old handler in prose).
+  const launcher = fs.readFileSync('payloads/ghrdp-rdp-launcher.cs', 'utf8');
+  for (const src of [installCmd, launcher]) {
+    assert.ok(!/powershell(\.exe)?\s+-|-ExecutionPolicy|Invoke-Expression|-EncodedCommand/i.test(src.replace(/echo DONE[^\r\n]*/i, '')),
+      'no PowerShell execution token');
+  }
+  // [F13-1 gate] the .rdp writer can never emit a password line.
+  assert.ok(!/password(\s+51:b:|:s:)/i.test(launcher), 'launcher must not write password 51:b:/password:s: lines');
 });
 
 test('F12-1 ui: 20s handler-hello watch drives the stale-registration notice', () => {

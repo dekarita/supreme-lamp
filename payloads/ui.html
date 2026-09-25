@@ -339,7 +339,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
       <code id="winAutoFiles">payloads\install.cmd + payloads\ghrdp-rdp-launcher.cs</code>
       <a href="javascript:void(0)" onclick="copyById('winAutoFiles',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
       from the repo into one folder on your PC and double-click <b>install.cmd</b> - or use WEB DESKTOP below (zero install).
-      install.cmd prints the handler value BEFORE and AFTER and verifies it points at the compiled exe.
+      install.cmd prints the handler value BEFORE and AFTER - the AFTER line must show ghrdp-rdp-launcher.exe, NOT powershell.
     </div>
   </div>
   <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>

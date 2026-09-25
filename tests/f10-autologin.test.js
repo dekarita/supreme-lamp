@@ -38,7 +38,8 @@ test('F10-1 install.cmd: in-box csc + HKCU registration, script-host free', () =
   assert.match(installer, /Framework64\\v4\.0\.30319\\csc\.exe/);
   assert.match(installer, /HKCU\\Software\\Classes\\ghrdp/);
   assert.match(installer, /URL:ghrdp Protocol/);
-  assert.match(installer, /ghrdp-launcher\.exe/);
+  // [F13-1] byte-faithful ship text: the exe is ghrdp-rdp-launcher.exe.
+  assert.match(installer, /ghrdp-rdp-launcher\.exe/);
   assert.ok(!SCRIPT_HOST_LAUNCH.test(installer), 'install.cmd must stay script-host free');
 });
 
