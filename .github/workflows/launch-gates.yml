@@ -357,8 +357,12 @@ jobs:
             exit 1
           fi
           launcher=$(awk '/^          function Start-Websockify\(/{f=1} f{print} f && /^          \}$/{exit}' "$WF")
-          if grep -Fq -- '-WindowStyle Hidden' <<< "$launcher"; then
-            echo 'Start-Websockify must not hide the websockify process window' >&2
+          # [F11-5.3] SUPERSEDES the F9n 'must not hide' rule: websockify is a
+          # host helper, so it MUST launch hidden - the first interactive RDP
+          # session must show no stray console window. The byte-identical
+          # two-copy contract above is unchanged.
+          if ! grep -Fq -- '-WindowStyle Hidden' <<< "$launcher"; then
+            echo 'Start-Websockify must launch hidden (F11-5.3: no console window in the interactive session)' >&2
             exit 1
           fi
           # G) Survivable diagnostics: the webdesk steps must stage + upload the
