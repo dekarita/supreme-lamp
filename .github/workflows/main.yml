@@ -1396,16 +1396,22 @@ jobs:
                   Set-ItemProperty -Path $tvKey -Name 'AlwaysShared' -Value 1 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'RemoveWallpaper' -Value 0 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'SecurityTypes' -Value 'VncAuth' -Type String -ErrorAction SilentlyContinue
-                  # [F10-4a §2.3] latency tuning: poll the window under the
-                  # cursor + foreground only (skip pricey full-screen polls),
-                  # framebuffer compare on. TightVNC 2.8 has no server-side
-                  # 'PreferZlib' key - the zlib preference is enforced
-                  # client-side via the noVNC URL (compression=6, F10-3).
+                  # [F10-4a §2.3][F12-5 §5] latency tuning: poll the window
+                  # under the cursor + foreground only (skip pricey full-screen
+                  # polls), framebuffer compare on, and PreferZlib written for
+                  # builds that honour it. TightVNC 2.8.85 itself has no
+                  # server-side 'PreferZlib' key, so the zlib preference is
+                  # ALSO enforced client-side via the noVNC URL
+                  # (compression=6, F10-3) - the write is harmless there and
+                  # becomes effective on any build that does support it.
                   Set-ItemProperty -Path $tvKey -Name 'PollUnderCursor' -Value 1 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'PollForeground' -Value 1 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'PollFullScreen' -Value 0 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'PollConsoleOnly' -Value 1 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'CompareFB' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  # [F12-5 §5] write it for builds that honour it; 2.8.85 simply
+                  # ignores the unknown value (noVNC compression=6 carries zlib).
+                  Set-ItemProperty -Path $tvKey -Name 'PreferZlib' -Value 1 -Type DWord -ErrorAction SilentlyContinue
               }
               try { Restart-Service -Name 'tvnserver' -Force -ErrorAction Stop; $inst = $true } catch { Write-Host ('[webdesk] tvnserver service restart failed: ' + $_.Exception.Message) }
               try {
@@ -2903,15 +2909,25 @@ jobs:
           }
           # [F12-3 §3.1] POLICY READBACK for the lab's edge://policy and
           # chrome://policy cells: what was written above must be visible in the
-          # registry the browsers read. A readback mismatch is a loud warning
-          # (the extension pages are the authoritative lab check).
-          function Get-ForcedEntryCount([string]$Path) {
-              try { return @((Get-Item -LiteralPath $Path -ErrorAction Stop).GetValueNames() | Where-Object { $_ -match '^\d+$' }).Count } catch { return -1 }
-          }
+          # registry the browsers read. The helper is the SHARED one
+          # (payloads/ghrdp-provision-apps.ps1) that autologin-lab.yml cell K
+          # dot-sources too - one definition, exercised by the lab. A readback
+          # mismatch is a loud warning (the extension pages are the lab check).
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-provision-apps.ps1')
           $edgeBack = Get-ForcedEntryCount $extPath
           $cwsBack  = Get-ForcedEntryCount $chromeExt
           Write-Host ('[policy] readback: Edge ExtensionInstallForcelist=' + $edgeBack + ' (wrote ' + $extN + '); Chrome ExtensionInstallForcelist=' + $cwsBack + ' (wrote ' + $cwsN + ')')
           if ($edgeBack -ne $extN -or $cwsBack -ne $cwsN) { Write-Host '::warning::[policy] forcelist readback mismatch - a browser may not see the policy until gpupdate/relaunch' }
+          # [F12-3 §3.1] every written value must have the browser-accepted
+          # "<32-char id>;<update url>" shape - a malformed value is ignored by
+          # the browser while the registry still looks populated.
+          try {
+              foreach ($v in @((Get-Item -LiteralPath $extPath -ErrorAction Stop).GetValueNames())) {
+                  if ($v -notmatch '^\d+$') { continue }
+                  $val = [string](Get-ItemProperty -Path $extPath -Name $v -ErrorAction Stop).$v
+                  if (-not (Test-ForcedEntryShape $val)) { Write-Host ('::warning::[policy] Edge forcelist value ' + $v + ' has a non-standard shape (skipped by the browser?)') }
+              }
+          } catch { Write-Host '::warning::[policy] Edge forcelist shape check failed' }
           try {
               $mfBack = [string](Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'ManagedFavorites' -ErrorAction Stop).ManagedFavorites
               $mfNames = @()
@@ -3013,49 +3029,22 @@ jobs:
               $exe = Get-ChildItem -Path 'C:\Program Files\qBittorrent','C:\Program Files (x86)\qBittorrent' -Filter 'qbittorrent.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
               Write-Host ('[qbittorrent] present=' + [bool]$exe)
           } catch { }
-          # [F12-3 §3.4] DEFAULT HANDLER for .torrent + magnet. The ProgId is
-          # DISCOVERED from the installed shell registration (never a hardcoded
-          # vendor string): every HKCR ProgId whose shell\open\command runs
-          # qbittorrent.exe is a candidate, qBittorrent's own id is preferred,
-          # then .torrent points at it and magnet\shell\open\command is written
-          # explicitly. This wires a file type to the ALREADY-INSTALLED plain
-          # app - there is no download automation, no index, no mirror and no
-          # Web UI anywhere in this step.
-          try {
-              $exe2 = Get-ChildItem -Path 'C:\Program Files\qBittorrent','C:\Program Files (x86)\qBittorrent' -Filter 'qbittorrent.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-              if (-not $exe2) { Write-Host '[qbittorrent] exe not found - association skipped (advisory)' }
-              else {
-                  $exePath = $exe2.FullName
-                  $progId = ''
-                  foreach ($k in @(Get-ChildItem 'Registry::HKEY_CLASSES_ROOT' -ErrorAction SilentlyContinue)) {
-                      $n = ''
-                      try { $n = [string]$k.PSChildName } catch { }
-                      if (-not $n -or ($n -notmatch '^[Qq]\.?[Bb]ittorrent')) { continue }
-                      $cmd = ''
-                      try { $cmd = [string](Get-ItemProperty -LiteralPath ($k.PSPath + '\shell\open\command') -ErrorAction Stop).'(default)' } catch { }
-                      if ($cmd -and ($cmd -match 'qbittorrent\.exe')) { $progId = $n; if ($n -match 'torrent') { break } }
-                  }
-                  if (-not $progId) { Write-Host '::warning::[qbittorrent] no qBittorrent ProgId under HKCR - .torrent/magnet association skipped (advisory, never fatal)' }
-                  else {
-                      $torKey = 'Registry::HKEY_CLASSES_ROOT\.torrent'
-                      New-Item -Path $torKey -Force -ErrorAction SilentlyContinue | Out-Null
-                      try { Set-Item -LiteralPath $torKey -Value $progId -ErrorAction Stop } catch { Write-Host ('[qbittorrent] .torrent default write failed: ' + $_.Exception.Message) }
-                      New-Item -Path 'Registry::HKEY_CLASSES_ROOT\.torrent\OpenWithProgids' -Force -ErrorAction SilentlyContinue | Out-Null
-                      try { New-ItemProperty -Path 'Registry::HKEY_CLASSES_ROOT\.torrent\OpenWithProgids' -Name $progId -Value ([byte[]]@()) -PropertyType Binary -Force | Out-Null } catch { }
-                      New-Item -Path 'Registry::HKEY_CLASSES_ROOT\magnet' -Force -ErrorAction SilentlyContinue | Out-Null
-                      try { New-ItemProperty -Path 'Registry::HKEY_CLASSES_ROOT\magnet' -Name 'URL Protocol' -Value '' -PropertyType String -Force | Out-Null } catch { }
-                      New-Item -Path 'Registry::HKEY_CLASSES_ROOT\magnet\shell\open\command' -Force -ErrorAction SilentlyContinue | Out-Null
-                      try { Set-Item -LiteralPath 'Registry::HKEY_CLASSES_ROOT\magnet\shell\open\command' -Value ('"' + $exePath + '" "%1"') -ErrorAction Stop } catch { Write-Host ('[qbittorrent] magnet command write failed: ' + $_.Exception.Message) }
-                      $torRead = ''
-                      try { $torRead = [string](Get-Item -LiteralPath $torKey -ErrorAction Stop).GetValue('') } catch { }
-                      $magRead = ''
-                      try { $magRead = [string](Get-ItemProperty -LiteralPath 'Registry::HKEY_CLASSES_ROOT\magnet\shell\open\command' -ErrorAction Stop).'(default)' } catch { }
-                      Write-Host ('[qbittorrent] association: .torrent -> ' + $torRead + ' ; magnet -> ' + $magRead + ' ; progId=' + $progId)
-                      if ($torRead -ne $progId) { Write-Host '::warning::[qbittorrent] .torrent association readback mismatch (advisory)' }
-                      if ($magRead -notmatch 'qbittorrent\.exe') { Write-Host '::warning::[qbittorrent] magnet association readback mismatch (advisory)' }
-                  }
-              }
-          } catch { Write-Host ('[qbittorrent] association step error (advisory): ' + $_.Exception.Message) }
+          # [F12-3 §3.4] DEFAULT HANDLER for .torrent + magnet, via the SHARED
+          # helper (payloads/ghrdp-provision-apps.ps1) that autologin-lab.yml
+          # cell L dot-sources as well. The ProgId is DISCOVERED from the
+          # installed shell registration (never a hardcoded vendor string) and
+          # both associations are read back. This wires a file type to the
+          # ALREADY-INSTALLED plain app: no download automation, no index, no
+          # mirror, no Web UI anywhere in this step.
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-provision-apps.ps1')
+          $qbExe = ''
+          try { $qbExe = (Get-ChildItem -Path 'C:\Program Files\qBittorrent','C:\Program Files (x86)\qBittorrent' -Filter 'qbittorrent.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1).FullName } catch { }
+          if (-not $qbExe) { Write-Host '[qbittorrent] exe not found - .torrent/magnet association skipped (advisory)' }
+          else {
+              $assoc = Set-QbittorrentDefaultHandler -ExePath $qbExe
+              Write-Host ('[qbittorrent] association ok=' + $assoc.ok + ' progId=' + $assoc.progId + ' .torrent=' + $assoc.torrent + ' magnet=' + $assoc.magnet + ' error=' + $assoc.error)
+              if (-not $assoc.ok) { Write-Host ('::warning::[qbittorrent] association incomplete (' + $assoc.error + ') - advisory, never fatal') }
+          }
           exit 0
 
       # [F11-6 §6] Setup-time report: provisioning minutes from JOB_STARTED_AT,

@@ -5,8 +5,8 @@ rem .NET Framework 4.x C# compiler that ships with Windows 8/10/11.
 rem Place this file NEXT TO ghrdp-rdp-launcher.cs, then double-click.
 rem
 rem [F12-1] This installer OVERWRITES whatever HKCU\Software\Classes\ghrdp
-rem currently points at - the pre-F2 registration was powershell.exe, which is
-rem why Windows asked "Open Windows PowerShell?" for ghrdp:// links. The
+rem currently points at - the pre-F2 registration ran the old script host,
+rem which is why Windows asked "Open ... PowerShell?" for ghrdp:// links. The
 rem BEFORE value is printed so that stale registration is visible, and the
 rem AFTER value is read back and verified (nonzero exit + message when the
 rem write did not take). HKLM registrations lose to HKCU for this user, so an

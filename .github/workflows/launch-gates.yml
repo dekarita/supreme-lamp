@@ -11,7 +11,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if grep -E -n 'powershell|-ExecutionPolicy' payloads/ui.html; then
+          # [F12-1] ban script-host EXECUTION tokens, not the mere word: the
+          # §1.4 stale-registration notice must be able to name the old handler.
+          if grep -E -n 'powershell\.exe|-ExecutionPolicy|Invoke-Expression|-EncodedCommand|mshta|wscript|cscript' payloads/ui.html; then
             echo 'ui.html still contains a script-host launch' >&2
             exit 1
           fi
@@ -39,7 +41,7 @@ jobs:
           set -euo pipefail
           # §1.3 launch-gate: no script-host launch anywhere in the page or the
           # new launcher assets.
-          if grep -E -n 'powershell|-ExecutionPolicy' payloads/ui.html payloads/ghrdp-rdp-launcher.cs payloads/install.cmd; then
+          if grep -E -n 'powershell\.exe|-ExecutionPolicy|Invoke-Expression|-EncodedCommand|mshta|wscript|cscript' payloads/ui.html payloads/ghrdp-rdp-launcher.cs payloads/install.cmd; then
             echo 'F10: script-host launch token found' >&2; exit 1
           fi
           # §1 install.cmd: in-box csc + HKCU ghrdp registration, nothing else.
@@ -250,6 +252,91 @@ jobs:
           grep -q 'Record job start + pre-create cache directories' "$wf"
           grep -q 'service registered=' "$wf"
           echo 'F11-5/6 gates PASS'
+      - name: F12 close-out gates (handler overwrite, cert fail-closed, all-browser, qb assoc, vnc memory)
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          lab=.github/workflows/autologin-lab.yml
+          shim=payloads/ghrdp-cred-shim.js
+          # --- §1.1 stale-handler overwrite (exe wins over any prior value) -----
+          grep -q 'handler BEFORE' payloads/install.cmd
+          grep -q 'handler AFTER' payloads/install.cmd
+          grep -q 'HKCU\\Software\\Classes\\ghrdp' payloads/install.cmd
+          grep -q 'reg query "%KEY%" /ve 2>nul' payloads/install.cmd
+          grep -q 'find /i "%EXE%"' payloads/install.cmd
+          # --- §1.4 stale-registration notice (20s hello-beacon watch) ----------
+          grep -q 'id="winAutoStale"' payloads/ui.html
+          grep -q 'stale ghrdp registration' payloads/ui.html
+          grep -q '__helloWatchArmedAt' payloads/ui.html
+          grep -q 'lastHandlerVerb' payloads/ui.html
+          grep -q '20000);' payloads/ui.html
+          # --- §2 cert bind: ordering proof + 3x10s retry + fail-closed ---------
+          dns_line=$(grep -n 'name: Wait for Tailscale connected' "$wf" | head -1 | cut -d: -f1)
+          cert_line=$(grep -n 'name: Bind tailnet LE cert to RDP-Tcp' "$wf" | head -1 | cut -d: -f1)
+          test -n "$dns_line"
+          test -n "$cert_line"
+          test "$dns_line" -lt "$cert_line"
+          grep -q "TS_MAGICDNS_FQDN=' + \$dnsName" "$wf"
+          cert_body=$(awk '/name: Bind tailnet LE cert to RDP-Tcp/,/name: Optimize Tailscale path/' "$wf")
+          echo "$cert_body" | grep -q 'TS_MAGICDNS_FQDN'
+          echo "$cert_body" | grep -q 'for ($attempt = 1; $attempt -le 3; $attempt++)'
+          echo "$cert_body" | grep -q 'Start-Sleep -Seconds 10'
+          echo "$cert_body" | grep -q 'reason cert-not-bound'
+          echo "$cert_body" | grep -q 'Thumbprint:'
+          # only ONE exit 0 may survive in the cert step: the success path.
+          test "$(echo "$cert_body" | grep -cE '^[[:space:]]*exit 0[[:space:]]*$')" -eq 1
+          # --- §3.1/§3.2 all-browser provisioning (live ids at build time) ------
+          grep -q 'ExtensionInstallForcelist' "$wf"
+          grep -q 'Resolve-AmoAddon' payloads/edge-ext-resolve.ps1
+          grep -q 'Resolve-AmoAddon -Slug' "$wf"
+          grep -q "Resolve-AmoAddon -Slug 'ublock-origin'" "$wf"
+          grep -q "Resolve-AmoAddon -Slug 'darkreader'" "$wf"
+          if grep -nE 'uBlock0@raymondhill|addon@darkreader|addons\.mozilla\.org/firefox/downloads' "$wf"; then
+            echo 'F12-3: a hardcoded Firefox add-on id or download URL reappeared' >&2; exit 1
+          fi
+          grep -q 'Get-ForcedEntryCount' "$wf"
+          grep -q 'ExtensionSettings' "$wf"
+          # --- §3.3/§3.4 bookmarks untouched + qBittorrent default handler ------
+          grep -q 'ghrdp-provision-apps.ps1' "$wf"
+          grep -q 'ghrdp-provision-apps.ps1' "$lab"
+          grep -q 'Set-QbittorrentDefaultHandler' payloads/ghrdp-provision-apps.ps1
+          grep -q 'Set-QbittorrentDefaultHandler' "$wf"
+          grep -q 'Set-QbittorrentDefaultHandler' "$lab"
+          grep -q 'HKEY_CLASSES_ROOT\\magnet\\shell\\open\\command' payloads/ghrdp-provision-apps.ps1
+          grep -q 'HKEY_CLASSES_ROOT\\.torrent' payloads/ghrdp-provision-apps.ps1
+          grep -q 'URL Protocol' payloads/ghrdp-provision-apps.ps1
+          grep -q 'Get-ForcedEntryCount' payloads/ghrdp-provision-apps.ps1
+          grep -q 'Test-ForcedEntryShape' payloads/ghrdp-provision-apps.ps1
+          if grep -nE 'magnet[^\n]*(webui|--webui|8080)' "$wf"; then
+            echo 'F12-3: magnet wiring must not touch a torrent Web UI' >&2; exit 1
+          fi
+          # --- §4 VNC memory: 5x500ms retry + purge, no password in any URL ----
+          grep -q 'RETRY_CAP = 5' "$shim"
+          grep -q 'pending = null' "$shim"
+          grep -q 'window.opener = null' "$shim"
+          if grep -n 'password=' payloads/ui.html "$wf" | grep -v 'no launch URL ever carries'; then
+            echo 'F12-4: a launch URL carries password=' >&2; exit 1
+          fi
+          grep -q 'compression=6' payloads/ui.html
+          grep -q "postMessage({type:'ghrdp-vnc-pass',pass:pass},origin)" payloads/ui.html
+          # --- §5 timer / latency / hidden console -----------------------------
+          grep -q 'PreferZlib' "$wf"
+          grep -q 'rdpUsageActive' payloads/ghrdp-server.ps1
+          grep -q "UserId 'SYSTEM'" "$wf"
+          grep -q 'UDP 41641' payloads/ui.html
+          # --- §6 setup minutes + setup-phase caches ---------------------------
+          grep -q 'Setup time report (F11-6)' "$wf"
+          grep -q 'C:\\ghrdp\\novnc' "$wf"
+          grep -q 'ghrdp-rust\\target' "$wf"
+          grep -q 'tightvnc-2.8.85.msi' "$wf"
+          # --- §7 lab proof-matrix cells exist ---------------------------------
+          grep -q 'K: browser policies + extensions readback' "$lab"
+          grep -q 'L: qBittorrent .torrent/magnet default' "$lab"
+          grep -q 'M: zero console windows' "$lab"
+          grep -q 'N: handler overwrite (stale value planted)' "$lab"
+          echo 'F12 gates PASS'
+
       - name: F8 web-desktop honesty gates
         shell: bash
         run: |

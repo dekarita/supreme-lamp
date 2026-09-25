@@ -21,6 +21,41 @@ download**:
    after mstsc loads it. It never contains a password or hash. NLA and
    CredSSP stay at Windows defaults.
 
+### 0.1 If Windows asked "Open Windows PowerShell?" (stale registration, F12)
+
+A pre-F2 install registered `ghrdp://` at the old **script host**. Your PC keeps
+that HKCU value until something overwrites it, so Windows shows the old prompt
+even though the server side is clean. `install.cmd` (F12-1) now:
+
+* prints the handler value **BEFORE** it touches anything,
+* writes `HKCU\Software\Classes\ghrdp\shell\open\command` = `"<exe>" "%1"`,
+* prints the value **AFTER**, and
+* verifies the readback points at the compiled launcher (non-zero exit + a
+  message otherwise).
+
+Mission Control also watches for the launcher's `/api/handler-hello` beacon for
+**20 s after the click**: no beacon -> notice *"If Windows offered to open
+PowerShell, your PC has a stale ghrdp registration - run `install.cmd` once"*
+plus the copy-once install text. An HKCU registration always wins over an old
+machine-wide (HKLM) entry for your user, so one run is enough.
+
+### 0.2 Why a password can never be embedded in the .rdp (fallback B)
+
+mstsc accepts a password in an `.rdp` file only as a `password 51:b:` blob that
+is **DPAPI-encrypted with the CLIENT machine's key** (`CryptProtectData`, user
+scope). A file generated on the server (or in CI) therefore can never carry a
+usable password — the blob would be undecryptable on your PC, and a plaintext
+password is refused by NLA/CredSSP. That is a property of mstsc, not a policy
+choice, so this repository never embeds a password anywhere: not in `.rdp`
+files, not in URLs, not in query strings, logs, artifacts or step summaries.
+
+**Fallback B (measured, not preferred).** If you cannot run `install.cmd`, the
+dashboard's KEYS row gives you the `mstsc /v:<fqdn>` fallback line to paste
+locally: mstsc then prompts once for the credential (or uses the one you stored
+once with `cmdkey /generic:TERMSRV/<fqdn> /user:<user> /pass`). Expect exactly
+one extra interactive prompt for path B versus **0** for path A after the first
+connection; path A stays primary.
+
 If the button reports a missing handler, the install hint with the file path
 appears under it; **WEB DESKTOP** remains the zero-install path.
 Expected latency: **< 80 ms round-trip on a direct WireGuard path**. The
@@ -137,3 +172,50 @@ truth on the runner.
 the `docs/AUTOLOGIN.md` page and the Tailscale admin DNS page. No third-party
 index, torrent or piracy site is ever added (launch-gates fails the build if
 such a string appears in the workflow).
+
+## 4. F12 close-out behaviour (provisioning, VNC memory, timers)
+
+**Cert bind is fail-closed.** The `Bind tailnet LE cert to RDP-Tcp` step runs
+**only after** the MagicDNS gate (it consumes the `TS_MAGICDNS_FQDN` value that
+step proved), retries `tailscale cert` **3 times, 10 s apart**, and every failure
+path (fetch, PFX import, registry fallback, thumbprint mismatch) now throws with
+`reason cert-not-bound` plus the error text in the step summary — a green run can
+no longer report `cert bound = NO`. On success the summary carries the
+`Thumbprint:` line. `/api/native-status` is unchanged.
+
+**All-browser provisioning.** Edge and Chrome get uBlock Origin + Dark Reader
+through `ExtensionInstallForcelist`; Firefox (when installed) gets the same two
+extensions via `distribution\policies.json`, where **both** the add-on id
+(`guid`) and the xpi URL are resolved live from the AMO API at build time
+(`Resolve-AmoAddon`) — no extension id and no download URL is carried in this
+repo, and an unresolvable slug is skipped loudly instead of guessed. After the
+writes, the workflow reads the policy keys back (`Get-ForcedEntryCount`) and
+checks each value has the browser-accepted `<32-char id>;<update url>` shape;
+the lab (cell K) additionally launches Edge so the forced extensions are really
+unpacked into a profile. Managed bookmarks stay at exactly Mission Control,
+`docs/AUTOLOGIN.md` and the Tailscale admin DNS page — repository automation
+never adds index/torrent bookmarks.
+
+**qBittorrent.** Installed as a **plain cached app** (`winget`, installer reused
+from the cache dir) and set as the default handler for `.torrent` and `magnet:`.
+The ProgId is *discovered* from the installed shell registration
+(`payloads/ghrdp-provision-apps.ps1`), then `HKCR\.torrent` and
+`HKCR\magnet\shell\open\command` are written and read back. There is **no**
+download automation, no index, no mirror and no torrent Web UI anywhere in the
+pipeline (launch-gates fails the build if any of that reappears).
+
+**VNC password memory.** The dashboard stores the VNC password on
+`remember`/first entry and hands it to the noVNC tab with a
+`postMessage(..., exact-origin)`; the shim injected into the served `vnc.html`
+accepts it only from `window.opener` at that exact origin, fills the Credentials
+dialog, retries **5 × 500 ms**, then purges the variable and drops the opener.
+The password never appears in a URL (`password=` is gated out), a log or an
+artifact; websockify logs stay clean.
+
+**Timers, latency, clean session.** RDP USAGE accumulates server-side (5 s tick)
+while an RDP session or a webdesk client is attached, freezes within 20 s after
+both drop and resumes on reconnect (lab cell I). noVNC runs with
+`compression=6`, TightVNC gets `PollUnderCursor`/`PollForeground`/`CompareFB`
+plus a `PreferZlib` write for builds that honour it, and every host helper is
+launched hidden under a SYSTEM scheduled task — zero console windows in the
+interactive session.

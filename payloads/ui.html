@@ -328,8 +328,8 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     </div>
     <!-- [F12-1 §1.4] Stale-registration notice: shown when the launcher's
          /api/handler-hello beacon does NOT arrive within 20s of the click. The
-         pre-F2 registration pointed at powershell.exe, which is exactly the
-         "Open Windows PowerShell?" prompt; one install.cmd run overwrites it. -->
+         pre-F2 registration ran the old script host, which is exactly the
+         "Open ... PowerShell?" prompt; one install.cmd run overwrites it. -->
     <div class="note" id="winAutoStale" style="display:none;color:#f5d9b7">
       If Windows offered to open <b>PowerShell</b>, your PC has a stale ghrdp registration - run
       <b>install.cmd</b> once (text below).
@@ -966,7 +966,7 @@ async function nativeStatus(){
   // [F12-1 §1.4] handler-hello beacon input: the launcher POSTs
   // /api/handler-hello right after handing the local .rdp to mstsc, and
   // native-status echoes the last beacon. A beacon newer than the click proves
-  // the exe handler ran; a stale powershell.exe registration never posts one.
+  // the exe handler ran; a stale script-host registration never posts one.
   if(s&&s.lastHandlerVerb&&s.lastHandlerVerb.ts){
    var hv=String(s.lastHandlerVerb.ts);
    if(window.__helloWatchArmed){
@@ -1348,7 +1348,7 @@ if(waBtn) waBtn.onclick=function(ev){
  if(note)note.textContent='protocol dispatched - mstsc should open fullscreen shortly';
  // [F12-1 §1.4] hello-beacon watch: 20s window, native-status polled every 3s
  // (the launcher's bounded beacon lands within ~5s of the dispatch). No fresh
- // beacon => the registration is stale (the pre-F2 powershell.exe handler) and
+ // beacon => the registration is stale (the pre-F2 script-host handler) and
  // the user gets the notice + the install.cmd text below.
  window.__helloWatchArmed=true;window.__helloWatchSeen=false;window.__helloWatchArmedAt=Date.now();
  var staleEl=$('winAutoStale');if(staleEl)staleEl.style.display='none';
