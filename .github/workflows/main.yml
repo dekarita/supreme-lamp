@@ -2867,29 +2867,57 @@ jobs:
                   New-Item -ItemType Directory -Path $dist -Force -ErrorAction SilentlyContinue | Out-Null
                   $bm = @()
                   foreach ($b in $allBookmarks) { $bm += @{ URL = [string]$b.url; Title = [string]$b.name; Placement = 'toolbar' } }
-                  $ffExt = @{
-                      Install = @(
-                          'https://addons.mozilla.org/firefox/downloads/latest/ublock-origin/latest.xpi',
-                          'https://addons.mozilla.org/firefox/downloads/latest/darkreader/latest.xpi'
-                      )
-                  }
+                  # [F12-3 §3.2] Firefox force-install: BOTH the extension id
+                  # (guid) and the xpi URL are resolved LIVE from the AMO API at
+                  # build time (Resolve-AmoAddon in the shared resolver
+                  # payloads/edge-ext-resolve.ps1, dot-sourced above). No add-on
+                  # id and no download URL is carried in this repo - a store-side
+                  # rename can no longer force-install a stale or wrong add-on,
+                  # and an unresolvable slug is skipped LOUDLY (never guessed).
+                  $ffUbo = Resolve-AmoAddon -Slug 'ublock-origin' -Markers @('uBlock Origin', 'gorhill', 'Raymond Hill')
+                  $ffDr  = Resolve-AmoAddon -Slug 'darkreader'  -Markers @('Dark Reader', 'darkreader')
+                  $ffExtSettings = [ordered]@{}
+                  if ($ffUbo) { $ffExtSettings[[string]$ffUbo.id] = @{ installation_mode = 'force_installed'; install_url = [string]$ffUbo.url } }
+                  else { Write-Host '::warning::[firefox] uBlock Origin unresolved live on addons.mozilla.org - skipped (never guessed)' }
+                  if ($ffDr) { $ffExtSettings[[string]$ffDr.id] = @{ installation_mode = 'force_installed'; install_url = [string]$ffDr.url } }
+                  else { Write-Host '::warning::[firefox] Dark Reader unresolved live on addons.mozilla.org - skipped (never guessed)' }
                   $pol = [ordered]@{ policies = [ordered]@{
                       Bookmarks = $bm
-                      ExtensionSettings = [ordered]@{
-                          'uBlock0@raymondhill.net' = @{ installation_mode = 'force_installed'; install_url = $ffExt.Install[0] }
-                          'addon@darkreader.org' = @{ installation_mode = 'force_installed'; install_url = $ffExt.Install[1] }
-                      }
+                      ExtensionSettings = $ffExtSettings
                   } }
                   [System.IO.File]::WriteAllText((Join-Path $dist 'policies.json'), (ConvertTo-Json -InputObject $pol -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
                   $okFF = $false
-                  try { $null = Get-Content -LiteralPath (Join-Path $dist 'policies.json') -Raw | ConvertFrom-Json; $okFF = $true } catch { }
-                  Write-Host ('[firefox] policies.json written with extensions + bookmarks (valid=' + $okFF + ')')
+                  $ffRead = 0
+                  try {
+                      $ffJson = Get-Content -LiteralPath (Join-Path $dist 'policies.json') -Raw | ConvertFrom-Json
+                      $okFF = $true
+                      try { $ffRead = @($ffJson.policies.ExtensionSettings.PSObject.Properties).Count } catch { $ffRead = 0 }
+                  } catch { }
+                  Write-Host ('[firefox] policies.json written: forced extensions=' + $ffRead + ' of 2, bookmarks=' + $bm.Count + ' (valid=' + $okFF + ')')
+                  if ($ffRead -lt 2) { Write-Host '::warning::[firefox] fewer than 2 extensions in policies.json - check the AMO resolver warnings above' }
               } catch {
                   Write-Host ('[firefox] policies failed: ' + $_.Exception.Message)
               }
           } else {
               Write-Host '[firefox] not installed; skipping'
           }
+          # [F12-3 §3.1] POLICY READBACK for the lab's edge://policy and
+          # chrome://policy cells: what was written above must be visible in the
+          # registry the browsers read. A readback mismatch is a loud warning
+          # (the extension pages are the authoritative lab check).
+          function Get-ForcedEntryCount([string]$Path) {
+              try { return @((Get-Item -LiteralPath $Path -ErrorAction Stop).GetValueNames() | Where-Object { $_ -match '^\d+$' }).Count } catch { return -1 }
+          }
+          $edgeBack = Get-ForcedEntryCount $extPath
+          $cwsBack  = Get-ForcedEntryCount $chromeExt
+          Write-Host ('[policy] readback: Edge ExtensionInstallForcelist=' + $edgeBack + ' (wrote ' + $extN + '); Chrome ExtensionInstallForcelist=' + $cwsBack + ' (wrote ' + $cwsN + ')')
+          if ($edgeBack -ne $extN -or $cwsBack -ne $cwsN) { Write-Host '::warning::[policy] forcelist readback mismatch - a browser may not see the policy until gpupdate/relaunch' }
+          try {
+              $mfBack = [string](Get-ItemProperty -Path 'HKLM:\SOFTWARE\Policies\Microsoft\Edge' -Name 'ManagedFavorites' -ErrorAction Stop).ManagedFavorites
+              $mfNames = @()
+              try { $mfNames = @((($mfBack | ConvertFrom-Json) | ForEach-Object { $_.toplevel_name })) } catch { }
+              Write-Host ('[policy] readback: Edge ManagedFavorites ' + $mfBack.Length + ' bytes, toplevel=' + ($mfNames -join ','))
+          } catch { Write-Host '::warning::[policy] ManagedFavorites readback failed' }
           try {
               Get-Process -Name msedge, firefox, chrome -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
               Write-Host '[browsers] stopped running browsers so policies reload on next launch'
@@ -2985,6 +3013,49 @@ jobs:
               $exe = Get-ChildItem -Path 'C:\Program Files\qBittorrent','C:\Program Files (x86)\qBittorrent' -Filter 'qbittorrent.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
               Write-Host ('[qbittorrent] present=' + [bool]$exe)
           } catch { }
+          # [F12-3 §3.4] DEFAULT HANDLER for .torrent + magnet. The ProgId is
+          # DISCOVERED from the installed shell registration (never a hardcoded
+          # vendor string): every HKCR ProgId whose shell\open\command runs
+          # qbittorrent.exe is a candidate, qBittorrent's own id is preferred,
+          # then .torrent points at it and magnet\shell\open\command is written
+          # explicitly. This wires a file type to the ALREADY-INSTALLED plain
+          # app - there is no download automation, no index, no mirror and no
+          # Web UI anywhere in this step.
+          try {
+              $exe2 = Get-ChildItem -Path 'C:\Program Files\qBittorrent','C:\Program Files (x86)\qBittorrent' -Filter 'qbittorrent.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              if (-not $exe2) { Write-Host '[qbittorrent] exe not found - association skipped (advisory)' }
+              else {
+                  $exePath = $exe2.FullName
+                  $progId = ''
+                  foreach ($k in @(Get-ChildItem 'Registry::HKEY_CLASSES_ROOT' -ErrorAction SilentlyContinue)) {
+                      $n = ''
+                      try { $n = [string]$k.PSChildName } catch { }
+                      if (-not $n -or ($n -notmatch '^[Qq]\.?[Bb]ittorrent')) { continue }
+                      $cmd = ''
+                      try { $cmd = [string](Get-ItemProperty -LiteralPath ($k.PSPath + '\shell\open\command') -ErrorAction Stop).'(default)' } catch { }
+                      if ($cmd -and ($cmd -match 'qbittorrent\.exe')) { $progId = $n; if ($n -match 'torrent') { break } }
+                  }
+                  if (-not $progId) { Write-Host '::warning::[qbittorrent] no qBittorrent ProgId under HKCR - .torrent/magnet association skipped (advisory, never fatal)' }
+                  else {
+                      $torKey = 'Registry::HKEY_CLASSES_ROOT\.torrent'
+                      New-Item -Path $torKey -Force -ErrorAction SilentlyContinue | Out-Null
+                      try { Set-Item -LiteralPath $torKey -Value $progId -ErrorAction Stop } catch { Write-Host ('[qbittorrent] .torrent default write failed: ' + $_.Exception.Message) }
+                      New-Item -Path 'Registry::HKEY_CLASSES_ROOT\.torrent\OpenWithProgids' -Force -ErrorAction SilentlyContinue | Out-Null
+                      try { New-ItemProperty -Path 'Registry::HKEY_CLASSES_ROOT\.torrent\OpenWithProgids' -Name $progId -Value ([byte[]]@()) -PropertyType Binary -Force | Out-Null } catch { }
+                      New-Item -Path 'Registry::HKEY_CLASSES_ROOT\magnet' -Force -ErrorAction SilentlyContinue | Out-Null
+                      try { New-ItemProperty -Path 'Registry::HKEY_CLASSES_ROOT\magnet' -Name 'URL Protocol' -Value '' -PropertyType String -Force | Out-Null } catch { }
+                      New-Item -Path 'Registry::HKEY_CLASSES_ROOT\magnet\shell\open\command' -Force -ErrorAction SilentlyContinue | Out-Null
+                      try { Set-Item -LiteralPath 'Registry::HKEY_CLASSES_ROOT\magnet\shell\open\command' -Value ('"' + $exePath + '" "%1"') -ErrorAction Stop } catch { Write-Host ('[qbittorrent] magnet command write failed: ' + $_.Exception.Message) }
+                      $torRead = ''
+                      try { $torRead = [string](Get-Item -LiteralPath $torKey -ErrorAction Stop).GetValue('') } catch { }
+                      $magRead = ''
+                      try { $magRead = [string](Get-ItemProperty -LiteralPath 'Registry::HKEY_CLASSES_ROOT\magnet\shell\open\command' -ErrorAction Stop).'(default)' } catch { }
+                      Write-Host ('[qbittorrent] association: .torrent -> ' + $torRead + ' ; magnet -> ' + $magRead + ' ; progId=' + $progId)
+                      if ($torRead -ne $progId) { Write-Host '::warning::[qbittorrent] .torrent association readback mismatch (advisory)' }
+                      if ($magRead -notmatch 'qbittorrent\.exe') { Write-Host '::warning::[qbittorrent] magnet association readback mismatch (advisory)' }
+                  }
+              }
+          } catch { Write-Host ('[qbittorrent] association step error (advisory): ' + $_.Exception.Message) }
           exit 0
 
       # [F11-6 §6] Setup-time report: provisioning minutes from JOB_STARTED_AT,
