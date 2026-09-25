@@ -354,7 +354,12 @@ jobs:
           # package.json). A dedicated prefix + NODE_PATH is deterministic.
           $pwRoot = Join-Path $env:RUNNER_TEMP 'pw'
           New-Item -ItemType Directory -Path $pwRoot -Force | Out-Null
-          & npm.exe install --prefix $pwRoot --no-save --no-package-lock --no-audit --no-fund --silent playwright-core 2>&1 | Select-Object -Last 2 | ForEach-Object { Write-Host ('[H2 npm] ' + $_) }
+          # npm on Windows is npm.CMD (never npm.exe - that invocation throws
+          # and leaves a stale $LASTEXITCODE from the previous native command).
+          $npmCmd = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
+          if (-not $npmCmd) { $npmCmd = (Get-Command npm -ErrorAction SilentlyContinue).Source }
+          if (-not $npmCmd) { H2-Fail 'npm' 'npm.cmd not found on PATH' }
+          & $npmCmd install --prefix $pwRoot --no-save --no-package-lock --no-audit --no-fund --silent playwright-core 2>&1 | Select-Object -Last 2 | ForEach-Object { Write-Host ('[H2 npm] ' + $_) }
           if ($LASTEXITCODE -ne 0) { H2-Fail 'npm' ('playwright-core install failed, exit ' + $LASTEXITCODE) }
           if (-not (Test-Path -LiteralPath (Join-Path $pwRoot 'node_modules\playwright-core'))) { H2-Fail 'npm' ('playwright-core missing after --prefix install into ' + $pwRoot) }
           $env:NODE_PATH = Join-Path $pwRoot 'node_modules'
@@ -606,7 +611,10 @@ jobs:
           $pwRoot = Join-Path $env:RUNNER_TEMP 'pw'
           if (-not (Test-Path -LiteralPath (Join-Path $pwRoot 'node_modules\playwright-core'))) {
               New-Item -ItemType Directory -Path $pwRoot -Force | Out-Null
-              & npm.exe install --prefix $pwRoot --no-save --no-package-lock --no-audit --no-fund --silent playwright-core 2>&1 | Select-Object -Last 2 | ForEach-Object { Write-Host ('[K2 npm] ' + $_) }
+              $npmCmd = (Get-Command npm.cmd -ErrorAction SilentlyContinue).Source
+              if (-not $npmCmd) { $npmCmd = (Get-Command npm -ErrorAction SilentlyContinue).Source }
+              if (-not $npmCmd) { K2-Fail 'npm' 'npm.cmd not found on PATH' }
+              & $npmCmd install --prefix $pwRoot --no-save --no-package-lock --no-audit --no-fund --silent playwright-core 2>&1 | Select-Object -Last 2 | ForEach-Object { Write-Host ('[K2 npm] ' + $_) }
               if ($LASTEXITCODE -ne 0) { K2-Fail 'npm' ('playwright-core install failed, exit ' + $LASTEXITCODE) }
               if (-not (Test-Path -LiteralPath (Join-Path $pwRoot 'node_modules\playwright-core'))) { K2-Fail 'npm' 'playwright-core missing after --prefix install' }
           }
