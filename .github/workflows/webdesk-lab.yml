@@ -208,11 +208,38 @@ jobs:
           Write-Host ('[lab] extracted production Invoke-TvnPasswordLadder: ' + ($end - $start + 1) + ' lines')
           $diagDir = Join-Path $env:RUNNER_TEMP 'webdesk-diag'
           New-Item -ItemType Directory -Path $diagDir -Force -ErrorAction SilentlyContinue | Out-Null
+          # Evidence channel: the run-log zip and artifact blob hosts are not
+          # always reachable from the tooling, so EVERY phase emits an
+          # annotation (readable via the check-runs API). The ladder log tail is
+          # secret-free by construction (arg lists withheld, probe output in
+          # temp files), so it is safe to quote in annotations.
+          function Lab-LadderTail([int]$n = 6) {
+              try {
+                  $f = Join-Path $env:RUNNER_TEMP 'webdesk-diag\vnc-ladder.txt'
+                  if (Test-Path -LiteralPath $f) { return ((Get-Content -LiteralPath $f -Tail $n) -join ' | ') }
+              } catch { }
+              return '(no vnc-ladder.txt)'
+          }
+          # Preflight: is the probe tool present in BOTH invocation forms?
+          & python -m pip install --disable-pip-version-check vncdotool 2>&1 | Select-Object -Last 1 | ForEach-Object { Write-Host ('[lab] pip tail: ' + $_) }
+          $LASTEXITCODE = 0
+          $exeForm = [bool](Get-Command vncdotool -ErrorAction SilentlyContinue)
+          & python -c "import vncdotool.command" 2>$null
+          $modForm = ($LASTEXITCODE -eq 0)
+          Write-Host ('::notice title=lab preflight::vncdotool-exe=' + $exeForm + ' ; python-module=' + $modForm + ' ; python=' + (& python --version 2>&1))
           # ---- PROOF A (L1-L3): clean runner, fresh MSI property install must
           # apply the password and return 'vnc'. This is the F9o section-4 proof.
-          . ([scriptblock]::Create($fnText))
-          $modeA = Invoke-TvnPasswordLadder -Pass $labPass -DiagDir $diagDir
-          Write-Host ('[lab] PROOF A (L1-L3 fresh install): mode=' + $modeA)
+          try { . ([scriptblock]::Create($fnText)) } catch {
+              Write-Host ('::error title=lab ladder PARSE FAIL::' + (([string]$_.Exception.Message) -replace "`r?`n", ' | '))
+              throw '[lab] production ladder does not parse (see annotation)'
+          }
+          Write-Host '[lab] dot-source OK'
+          $modeA = ''
+          try { $modeA = [string](Invoke-TvnPasswordLadder -Pass $labPass -DiagDir $diagDir) } catch {
+              Write-Host ('::error title=lab PROOF A THREW::' + (([string]$_.Exception.Message) -replace "`r?`n", ' | ') + ' :: ladder-tail: ' + (Lab-LadderTail 8))
+              throw '[lab] L1-L3 threw on a clean runner (see annotation)'
+          }
+          Write-Host ('::notice title=lab PROOF A (L1-L3 fresh)::mode=' + $modeA + ' :: ladder-tail: ' + (Lab-LadderTail 6))
           if ($modeA -ne 'vnc') { throw ('[lab] L1-L3 FAILED on a clean runner: mode=' + $modeA) }
           $blob = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\TightVNC\Server' -Name 'Password').Password
           if (-not ($blob -and $blob.Count -ge 8)) { throw '[lab] registry Password blob missing/short after L1-L3' }
@@ -230,9 +257,14 @@ jobs:
           $summaryProbe = Join-Path $env:RUNNER_TEMP 'drill-summary.md'
           $realSummary = $env:GITHUB_STEP_SUMMARY
           $env:GITHUB_STEP_SUMMARY = $summaryProbe
-          $modeB = Invoke-TvnPasswordLadder -Pass $labPass -DiagDir $diagDir
+          $modeB = ''
+          try { $modeB = [string](Invoke-TvnPasswordLadder -Pass $labPass -DiagDir $diagDir) } catch {
+              $env:GITHUB_STEP_SUMMARY = $realSummary
+              Write-Host ('::error title=lab PROOF B THREW::' + (([string]$_.Exception.Message) -replace "`r?`n", ' | ') + ' :: ladder-tail: ' + (Lab-LadderTail 8))
+              throw '[lab] L5 drill threw (see annotation)'
+          }
           $env:GITHUB_STEP_SUMMARY = $realSummary
-          Write-Host ('[lab] PROOF B (L5 forced-degrade drill): mode=' + $modeB)
+          Write-Host ('::notice title=lab PROOF B (L5 drill)::mode=' + $modeB + ' :: ladder-tail: ' + (Lab-LadderTail 6))
           if ($modeB -ne 'none-tailnet-only') { throw ('[lab] L5 drill FAILED: expected none-tailnet-only, got ' + $modeB) }
           $sumTxt = ''
           if (Test-Path -LiteralPath $summaryProbe) { $sumTxt = [System.IO.File]::ReadAllText($summaryProbe) }
@@ -244,8 +276,12 @@ jobs:
           # ---- PROOF C (restore): unpatched ladder again. REINSTALL must
           # re-apply the real password and re-arm the gate.
           . ([scriptblock]::Create($fnText))
-          $modeC = Invoke-TvnPasswordLadder -Pass $labPass -DiagDir $diagDir
-          Write-Host ('[lab] PROOF C (restore after degrade): mode=' + $modeC)
+          $modeC = ''
+          try { $modeC = [string](Invoke-TvnPasswordLadder -Pass $labPass -DiagDir $diagDir) } catch {
+              Write-Host ('::error title=lab PROOF C THREW::' + (([string]$_.Exception.Message) -replace "`r?`n", ' | ') + ' :: ladder-tail: ' + (Lab-LadderTail 8))
+              throw '[lab] restore threw (see annotation)'
+          }
+          Write-Host ('::notice title=lab PROOF C (restore)::mode=' + $modeC + ' :: ladder-tail: ' + (Lab-LadderTail 6))
           if ($modeC -ne 'vnc') { throw ('[lab] restore FAILED: expected vnc, got ' + $modeC) }
           $uvC = (Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\TightVNC\Server' -Name 'UseVncAuthentication').UseVncAuthentication
           if ($uvC -ne 1) { throw '[lab] restore did not re-arm UseVncAuthentication=1' }
