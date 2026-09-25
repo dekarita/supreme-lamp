@@ -603,6 +603,23 @@ function Invoke-ClientRequest {
             # [F10-2 §2.2] real path latency to the dashboard client, measured by
             # the rdp-ping loop (tailscale ping every 15s against the dash-token
             # source peer); surfaced only when the sample is fresh (<45s).
+            # [F11-3 §3] RDP USAGE accumulator sample (rdp-usage.ps1 loop, 5s
+            # tick, only while an RDP session is CONNECTED or a webdesk client is
+            # attached). rdpUsageActive drives the UI's live tick; rdpUsageAgeSec
+            # says how old the sample is (stale => frozen, never re-opened).
+            $rdpUsageSec = $null; $rdpUsageActive = $false; $rdpUsageAgeSec = $null
+            try {
+                $uf = Join-Path $Root 'rdp-usage.json'
+                if (Test-Path -LiteralPath $uf) {
+                    $uj = [System.IO.File]::ReadAllText($uf) | ConvertFrom-Json
+                    if ($uj -and $null -ne $uj.sec) {
+                        $rdpUsageSec = [int]$uj.sec
+                        $rdpUsageActive = [bool]$uj.active
+                        if ($uj.ts) { $rdpUsageAgeSec = [int](([datetime]::UtcNow - [datetime]$uj.ts).TotalSeconds) }
+                        if ($rdpUsageAgeSec -gt 45) { $rdpUsageActive = $false }
+                    }
+                }
+            } catch { }
             $rdpPingMs = $null; $rdpPingPath = ''; $rdpPingTarget = ''
             try {
                 $rpFile = Join-Path $Root 'rdp-ping.json'
@@ -631,6 +648,9 @@ function Invoke-ClientRequest {
                 tsAuthAdminUrl = $tsAdmin
                 vpsPending = $vpsPending
                 rdpLogonAgeSec = $rdpLogonAgeSec
+                rdpUsageSec = $rdpUsageSec
+                rdpUsageActive = $rdpUsageActive
+                rdpUsageAgeSec = $rdpUsageAgeSec
                 pingMs = $rdpPingMs
                 pingPath = $rdpPingPath
                 pingTarget = $rdpPingTarget
@@ -1387,6 +1407,85 @@ while ($true) {
 '@
 [System.IO.File]::WriteAllText((Join-Path $Root 'rdp-ping.ps1'), $rdpPingScript, $script:NoBom)
 try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $Root 'rdp-ping.ps1') -WindowStyle Hidden } catch { }
+# [F11-3 §3] RDP USAGE accumulator (replaces logon age as the headline timer).
+# rdpUsageSec grows ONLY while (a) an RDP logon-type-10 session is CONNECTED
+# (qwinsta 'Active' rdp-tcp line) OR (b) at least one webdesk client is attached
+# (Rust dash ws-clients.txt, an Established non-loopback TCP connection on 7333,
+# or a websockify log 'connect' newer than its last 'disconnect'). It freezes
+# within one 5s tick after both signals drop and resumes on reconnect. The
+# accumulator is persisted into config.json (rdpUsageSec/rdpUsageAt/rdpUsageHost)
+# so a re-dispatch on the SAME host continues instead of restarting at zero.
+$usageScript = @'
+$ErrorActionPreference = 'Continue'
+$root = 'C:\ghrdp'
+$state = Join-Path $root 'rdp-usage.json'
+$cfg = Join-Path $root 'config.json'
+$enc = New-Object System.Text.UTF8Encoding($false)
+$sec = 0
+try {
+  if (Test-Path -LiteralPath $state) {
+    $sj = [System.IO.File]::ReadAllText($state) | ConvertFrom-Json
+    if ($null -ne $sj.sec) { $sec = [int]$sj.sec }
+  } elseif (Test-Path -LiteralPath $cfg) {
+    $cj = [System.IO.File]::ReadAllText($cfg) | ConvertFrom-Json
+    if ($null -ne $cj.rdpUsageSec) { $sec = [int]$cj.rdpUsageSec }
+  }
+} catch { $sec = 0 }
+$lastPersist = [datetime]::MinValue
+function Test-RdpConnected {
+  try {
+    $q = ((& qwinsta.exe 2>$null) -join "`n")
+    if ($q -match '(?im)rdp-tcp#\d+\s+\S.*?\sActive') { return $true }
+    if ($q -match '(?im)rdp-tcp') { return $false }
+  } catch { }
+  try { return [bool](Get-CimInstance -ClassName Win32_LogonSession -Filter 'LogonType=10' -ErrorAction Stop) } catch { return $false }
+}
+function Test-WebdeskClient {
+  try {
+    $f = Join-Path $root 'webdesk\ws-clients.txt'
+    if (Test-Path -LiteralPath $f) {
+      $n = 0
+      if ([int]::TryParse(([System.IO.File]::ReadAllText($f)).Trim(), [ref]$n) -and $n -gt 0) { return $true }
+    }
+  } catch { }
+  try {
+    foreach ($c in @(Get-NetTCPConnection -LocalPort 7333 -State Established -ErrorAction Stop)) { return $true }
+  } catch { }
+  try {
+    $lg = Join-Path $root 'webdesk\websockify.log'
+    if (Test-Path -LiteralPath $lg) {
+      $t = [System.IO.File]::ReadAllText($lg)
+      $ci = $t.LastIndexOf('connect'); $di = $t.LastIndexOf('disconnect')
+      if ($ci -ge 0 -and $ci -gt $di) { return $true }
+    }
+  } catch { }
+  return $false
+}
+while ($true) {
+  $rdp = Test-RdpConnected
+  $web = Test-WebdeskClient
+  $active = ($rdp -or $web)
+  if ($active) { $sec = $sec + 5 }
+  $obj = @{ ts = (Get-Date).ToUniversalTime().ToString('o'); sec = $sec; active = $active; rdp = $rdp; webdesk = $web }
+  try { [System.IO.File]::WriteAllText($state, ($obj | ConvertTo-Json -Compress), $enc) } catch { }
+  # Persist on every STOP (durable freeze) and at most every 30s while running.
+  if ((-not $active) -or (([datetime]::UtcNow - $lastPersist).TotalSeconds -ge 30)) {
+    try {
+      if (Test-Path -LiteralPath $cfg) {
+        $c = [System.IO.File]::ReadAllText($cfg) | ConvertFrom-Json
+        foreach ($kv in @(@('rdpUsageSec', $sec), @('rdpUsageAt', (Get-Date).ToUniversalTime().ToString('o')), @('rdpUsageHost', [string]$c.dnsName))) {
+          $c | Add-Member -MemberType NoteProperty -Name $kv[0] -Value $kv[1] -Force
+        }
+        [System.IO.File]::WriteAllText($cfg, ($c | ConvertTo-Json -Depth 10), $enc)
+        $lastPersist = [datetime]::UtcNow
+      }
+    } catch { }
+  }
+  Start-Sleep -Seconds 5
+}
+'@
+[System.IO.File]::WriteAllText((Join-Path $Root 'rdp-usage.ps1'), $usageScript, $script:NoBom)
+try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $Root 'rdp-usage.ps1') -WindowStyle Hidden } catch { }
 $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse($Bind), $Port)
 try { $listener.Start() } catch {
     try { [System.IO.File]::WriteAllText($script:OkFile, 'LISTEN_FAIL: ' + $_.Exception.Message, $script:NoBom) } catch { }

@@ -71,8 +71,13 @@ jobs:
           grep -q 'PollUnderCursor' .github/workflows/main.yml
           grep -q 'CompareFB' .github/workflows/main.yml
           # §4.2 gate: no piracy-index bookmark strings anywhere in main.yml.
-          if grep -E -i -n 'fmhy|megathread|torrent' .github/workflows/main.yml; then
-            echo 'F10: piracy-index string in main.yml' >&2; exit 1
+          # [F11-5.2] narrowed: the plain qBittorrent app is allowed, piracy
+          # INDEX strings/URLs and torrent bookmarks stay banned.
+          if grep -E -i -n 'fmhy|megathread|1337x|thepiratebay|pirate ?bay|rarbg|torrentz|kickass' .github/workflows/main.yml; then
+            echo 'F10/F11: piracy-index string in main.yml' >&2; exit 1
+          fi
+          if grep -nE "name = '[^']*[Tt]orrent[^']*'" .github/workflows/main.yml; then
+            echo 'F11: a torrent bookmark reappeared' >&2; exit 1
           fi
           grep -q 'ExtensionInstallForcelist' .github/workflows/main.yml
           # F10-11: ONE live resolver, dot-sourced by both the provisioning
@@ -103,6 +108,148 @@ jobs:
           # §5 setup caches present.
           grep -q 'actions/cache@v4' .github/workflows/main.yml
           echo 'F10 gates PASS'
+      - name: F11-2 VNC password memory gates (shim + postMessage, no URL creds)
+        shell: bash
+        run: |
+          set -euo pipefail
+          shim=payloads/ghrdp-cred-shim.js
+          test -f "$shim"
+          # §2.1 shim: opener + exact-origin gate, auto-submit, purge.
+          grep -q "type !== 'ghrdp-vnc-pass'" "$shim"
+          grep -q 'ev.source !== window.opener' "$shim"
+          grep -q 'originAllowed(ev.origin)' "$shim"
+          grep -q 'sendCredentials' "$shim"
+          grep -q 'noVNC_password_input' "$shim"
+          grep -q 'noVNC_credentials_dialog' "$shim"
+          grep -q 'pending = null' "$shim"
+          grep -q 'window.opener = null' "$shim"
+          grep -q 'ghrdp-cred-origin' "$shim"
+          # §2.2 never logs/echoes the value: no console/log/alert/document.title.
+          if grep -vE '^[[:space:]]*(/\*|\*|//)' "$shim" | grep -nE 'console\.|alert\(|document\.title|innerHTML'; then
+            echo 'F11-2: the shim must never log or echo the VNC password' >&2
+            exit 1
+          fi
+          # §2 deploy: the shim is copied INTO the served noVNC copy and the
+          # script tag + exact origin meta are injected, idempotently.
+          grep -q "payloads\\\\ghrdp-cred-shim.js" .github/workflows/main.yml
+          grep -q 'ghrdp-cred-shim.js' .github/workflows/main.yml
+          grep -qF 'meta name="ghrdp-cred-origin"' .github/workflows/main.yml
+          grep -q "http://' + \$rdpIp + ':7331'" .github/workflows/main.yml
+          # §2.3 dashboard: localStorage memory + postMessage with EXACT
+          # targetOrigin; the launch URL itself must never carry a password.
+          grep -q 'ghrdp.vncPass' payloads/ui.html
+          grep -q 'ghrdp-vnc-pass' payloads/ui.html
+          grep -q 'origin=new URL(url).origin' payloads/ui.html
+          grep -q "w.postMessage({type:'ghrdp-vnc-pass',pass:pass},origin)" payloads/ui.html
+          grep -q 'targetOrigin' payloads/ui.html
+          if grep -nE "vnc\.html[^\"']*(password|pass)=|(password|pass)=[^\"']*vnc\.html" payloads/ui.html .github/workflows/main.yml; then
+            echo 'F11-2: a noVNC launch URL carries a credential parameter' >&2
+            exit 1
+          fi
+          # The dashboard must NOT use rel/noopener for the webdesk launch (the
+          # shim authenticates window.opener), and the shim must drop the opener.
+          if grep -nE "window\.open\(openUrl,'_blank','noopener'\)" payloads/ui.html; then
+            echo 'F11-2: webdesk launch must keep window.opener for the shim handoff' >&2
+            exit 1
+          fi
+          echo 'F11-2 gates PASS'
+      - name: F11-3 RDP usage timer gates (accumulator, freeze, persistence)
+        shell: bash
+        run: |
+          set -euo pipefail
+          srv=payloads/ghrdp-server.ps1
+          grep -q 'rdp-usage.ps1' "$srv"
+          grep -q 'rdp-usage.json' "$srv"
+          grep -q 'Test-RdpConnected' "$srv"
+          grep -q 'Test-WebdeskClient' "$srv"
+          grep -q 'qwinsta.exe' "$srv"
+          grep -q 'ws-clients.txt' "$srv"
+          grep -q 'websockify.log' "$srv"
+          grep -q '\$sec = \$sec + 5' "$srv"
+          grep -q 'Start-Sleep -Seconds 5' "$srv"
+          # accumulator persists into config.json on stop + every 30s while live
+          grep -q "rdpUsageSec', \$sec" "$srv"
+          grep -q 'rdpUsageHost' "$srv"
+          grep -q 'rdpUsageActive' "$srv"
+          grep -q 'rdpUsageSec = \$carryUsage' .github/workflows/main.yml
+          grep -q 'rdpUsageSec carried forward' .github/workflows/main.yml
+          # UI headline is RDP USAGE (logon age kept only as a fallback)
+          grep -q 'RDP USAGE' payloads/ui.html
+          grep -q 'id="timerRdpUsage"' payloads/ui.html
+          grep -q 'window.__rdpUsage' payloads/ui.html
+          grep -q 'window.__rdpLogon' payloads/ui.html
+          echo 'F11-3 gates PASS'
+      - name: F11-4 connectivity gates (15s ping loop, direct/relay, compression=6)
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'tailscale ping -c 1 -timeout 3s' payloads/ghrdp-server.ps1
+          grep -q 'Start-Sleep -Seconds 15' payloads/ghrdp-server.ps1
+          grep -q "path = 'relay'" payloads/ghrdp-server.ps1
+          grep -q "path = 'direct'" payloads/ghrdp-server.ps1
+          grep -q 'pingMs' payloads/ghrdp-server.ps1
+          grep -q 'pingPath' payloads/ui.html
+          grep -q 'UDP 41641' payloads/ui.html
+          grep -q 'srv .*ms' payloads/ui.html
+          grep -q 'connFps' payloads/ui.html
+          grep -q 'wire.rtt' payloads/ui.html
+          grep -q 'compression=6' payloads/ui.html
+          grep -q 'PollUnderCursor' .github/workflows/main.yml
+          grep -q 'CompareFB' .github/workflows/main.yml
+          echo 'F11-4 gates PASS'
+      - name: F11-5/6 provisioning + setup-time gates (hidden helpers, no mirror)
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          # §5.3 every host-helper launch is hidden (or NoNewWindow for the
+          # user-driven terminal exec / msiexec probes): no bare Start-Process.
+          if grep -n 'Start-Process' "$wf" | grep -v '^\s*[0-9]*:\s*#' | grep -vE 'WindowStyle Hidden|NoNewWindow'; then
+            echo 'F11-5.3: a host-helper launch lacks the hidden/SYSTEM form' >&2
+            exit 1
+          fi
+          # background loops in the server always launch hidden
+          for helper in wire-probe.ps1 rdp-ping.ps1 rdp-usage.ps1; do
+            grep -q "'-File',(Join-Path \$Root '$helper') -WindowStyle Hidden" payloads/ghrdp-server.ps1 || {
+              echo "F11-5.3: $helper is not launched hidden" >&2; exit 1; }
+          done
+          # SYSTEM scheduled tasks for the long-lived services (dashboard,
+          # rust dash) + hidden background helpers in the server itself.
+          grep -q "UserId 'SYSTEM'" "$wf"
+          grep -q "LogonType ServiceAccount" "$wf"
+          if grep -n 'Start-Process' payloads/ghrdp-server.ps1 | grep -v 'NoNewWindow' | grep -v 'WindowStyle Hidden'; then
+            echo 'F11-5.3: a server-launched helper lacks the hidden form' >&2
+            exit 1
+          fi
+          # §5.2 qBittorrent is a plain cached app and NEVER wired to a mirror.
+          grep -q 'qBittorrent.qBittorrent' "$wf"
+          grep -q 'winget download --id qBittorrent.qBittorrent' "$wf"
+          grep -q 'cache\\qbittorrent' "$wf"
+          if grep -nE 'qBittorrent[^\n]*(Web UI|webui|--webui|8080)' "$wf"; then
+            echo 'F11-5.2: qBittorrent must stay a plain app (no Web UI wiring)' >&2
+            exit 1
+          fi
+          # Mirror stays OFF: MIRROR_INPUT only ever compared to 'true', no
+          # mirror input in workflow_dispatch, no reintroduced publish step.
+          grep -q "MIRROR_INPUT -eq 'true'" "$wf"
+          if grep -nE "MIRROR_INPUT'? *(-ne|-eq) *'?(true|false)'?" "$wf" | grep -v "MIRROR_INPUT -eq 'true'"; then
+            echo 'F11-5.2: mirror default must stay OFF (only -eq true)' >&2
+            exit 1
+          fi
+          if awk '/^on:/{f=1} /^permissions:/{f=0} f' "$wf" | grep -qE '^\s+mirror:'; then
+            echo 'F11-5.2: a mirror dispatch input reappeared' >&2
+            exit 1
+          fi
+          if grep -nE '^\s*Publish-AllIndexes' "$wf" | grep -v 'try {'; then
+            echo 'F11-5.2: a mirror publish step reappeared outside the disabled path' >&2
+            exit 1
+          fi
+          # §6 setup-time report + merged start/cache step + event wait.
+          grep -q 'Setup time report (F11-6)' "$wf"
+          grep -q 'provisioning finished in' "$wf"
+          grep -q 'Record job start + pre-create cache directories' "$wf"
+          grep -q 'service registered=' "$wf"
+          echo 'F11-5/6 gates PASS'
       - name: F8 web-desktop honesty gates
         shell: bash
         run: |
@@ -210,8 +357,12 @@ jobs:
             exit 1
           fi
           launcher=$(awk '/^          function Start-Websockify\(/{f=1} f{print} f && /^          \}$/{exit}' "$WF")
-          if grep -Fq -- '-WindowStyle Hidden' <<< "$launcher"; then
-            echo 'Start-Websockify must not hide the websockify process window' >&2
+          # [F11-5.3] SUPERSEDES the F9n 'must not hide' rule: websockify is a
+          # host helper, so it MUST launch hidden - the first interactive RDP
+          # session must show no stray console window. The byte-identical
+          # two-copy contract above is unchanged.
+          if ! grep -Fq -- '-WindowStyle Hidden' <<< "$launcher"; then
+            echo 'Start-Websockify must launch hidden (F11-5.3: no console window in the interactive session)' >&2
             exit 1
           fi
           # G) Survivable diagnostics: the webdesk steps must stage + upload the

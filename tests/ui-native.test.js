@@ -109,7 +109,10 @@ test('ephemeral: only web desktop opens; missing or unsafe URL disables it', asy
   assert.equal(view.node('btnWebDesk').disabled, false);
   view.node('btnWebDesk').onclick();
   assert.equal(view.opens[0][0], view.status.webdeskUrl);
-  assert.equal(view.opens[0][2], 'noopener');
+  // [F11-2] the webdesk launch keeps window.opener: the noVNC cred shim
+  // accepts the password handoff ONLY from the opener at the exact origin and
+  // drops its own opener handle after the one handoff.
+  assert.notEqual(view.opens[0][2], 'noopener');
   const absent = page({ hostKind: 'ephemeral', reasonsDisabled: [], webdeskUrl: '', webdeskReason: 'vnc-pass-missing' });
   await refresh(absent);
   assert.equal(absent.node('btnWebDesk').disabled, true);

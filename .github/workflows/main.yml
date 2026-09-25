@@ -42,14 +42,6 @@ jobs:
       - name: Checkout repo (payloads)
         uses: actions/checkout@v4
 
-      - name: Record job start time
-        shell: pwsh
-        run: |
-          $startedAt = (Get-Date).ToUniversalTime().ToString('o')
-          Add-Content -Path $env:GITHUB_ENV -Value ("JOB_STARTED_AT=" + $startedAt)
-          Write-Host ('[init] job started at ' + $startedAt)
-          exit 0
-
       - name: Auto-deploy Web UI, Worker, and Status Logic (Zero-Touch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -155,9 +147,13 @@ jobs:
           key: f10-setup-${{ runner.os }}-${{ hashFiles('payloads/Cargo.toml') }}-v1
           restore-keys: |
             f10-setup-${{ runner.os }}-
-      - name: Pre-create cache directories (F10-4c)
+      - name: Record job start + pre-create cache directories (F10-4c/F11-6)
         shell: pwsh
         run: |
+          # [F11-6 §6] merged with the cache-dir prep (one fewer runner step).
+          $startedAt = (Get-Date).ToUniversalTime().ToString('o')
+          Add-Content -Path $env:GITHUB_ENV -Value ("JOB_STARTED_AT=" + $startedAt)
+          Write-Host ('[init] job started at ' + $startedAt)
           New-Item -ItemType Directory -Path 'C:\ghrdp\cache' -Force | Out-Null
           New-Item -ItemType Directory -Path 'C:\ghrdp\novnc' -Force | Out-Null
           New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\pip\Cache" -Force | Out-Null
@@ -232,9 +228,15 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          Start-Process msiexec.exe -Wait -ArgumentList '/i', 'tailscale-setup.msi', '/quiet', '/norestart'
-          Start-Sleep -Seconds 5
-          Write-Host '[ts] Tailscale MSI install finished'
+          Start-Process msiexec.exe -Wait -WindowStyle Hidden -ArgumentList '/i', 'tailscale-setup.msi', '/quiet', '/norestart'
+          # [F11-6 §6] EVENT WAIT instead of a fixed sleep: poll until the
+          # Tailscale service is registered (bounded 30s), then continue.
+          $svcSeen = $false
+          for ($sw = 1; $sw -le 30; $sw++) {
+              try { if (Get-Service -Name Tailscale -ErrorAction Stop) { $svcSeen = $true; break } } catch { }
+              Start-Sleep -Seconds 1
+          }
+          Write-Host ('[ts] Tailscale MSI install finished (service registered=' + $svcSeen + ')')
           exit 0
 
       # [F9k] Fail-closed secrets framework. TS_AUTHKEY is REQUIRED: a missing
@@ -963,6 +965,25 @@ jobs:
               Write-Host '[stage] FATAL: mirror enabled but RENTRY_EDIT_PASSWORD missing - refusing to stage a bypass config.'
               Write-Host '[stage] RENTRY_EDIT_PASSWORD not set - OK (myurl0 is frozen; github.io is the primary index).'
           }
+          # [F11-3 §3] Carry the RDP USAGE accumulator across a re-dispatch on the
+          # SAME host: an existing config.json whose rdpUsageHost matches this
+          # host name (or this run's MagicDNS name) keeps its rdpUsageSec. A host
+          # mismatch (fresh ephemeral runner) restarts at 0.
+          $carryUsage = 0
+          try {
+              $cfgOldPath = Join-Path $root 'config.json'
+              if (Test-Path -LiteralPath $cfgOldPath) {
+                  $cfgOld = [System.IO.File]::ReadAllText($cfgOldPath) | ConvertFrom-Json
+                  if ($null -ne $cfgOld.rdpUsageSec) {
+                      $oldHost = [string]$cfgOld.rdpUsageHost
+                      if (-not $oldHost) { $oldHost = [string]$cfgOld.dnsName }
+                      if ($oldHost -and ($oldHost -eq $env:COMPUTERNAME -or $oldHost -eq $dns)) {
+                          $carryUsage = [int]$cfgOld.rdpUsageSec
+                          Write-Host ('[stage] rdpUsageSec carried forward from ' + $oldHost + ': ' + $carryUsage + 's')
+                      }
+                  }
+              }
+          } catch { Write-Host ('[stage] rdpUsageSec carry-over skipped: ' + $_.Exception.Message) }
           $cfg = [ordered]@{
               rdpIp = $ip
               rdpUser = [string]$env:RDP_USER
@@ -1000,6 +1021,9 @@ jobs:
               sessionId = ('s-' + (Get-Date -Format 'yyyyMMdd-HHmmss'))
               pagesBase = ('https://' + (([string]$env:GITHUB_REPOSITORY -split '/')[0]) + '.github.io/' + (([string]$env:GITHUB_REPOSITORY -split '/')[1]))
               searchUrl = (('https://' + (([string]$env:GITHUB_REPOSITORY -split '/')[0]) + '.github.io/' + (([string]$env:GITHUB_REPOSITORY -split '/')[1]) + '/explorer.html'))
+              rdpUsageSec = $carryUsage
+              rdpUsageAt = ''
+              rdpUsageHost = $ghName
           }
           [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), ($cfg | ConvertTo-Json -Depth 10), $global:GhrdpEncNoBom)
           [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), $tok, $global:GhrdpEncNoBom)
@@ -1364,6 +1388,30 @@ jobs:
               Set-WebdeskCfg '' 'serve-failed' 'novnc-assets'
               throw 'Web desktop not deployed: noVNC/websockify assets unavailable. Halted by design. See Step Summary.'
           }
+          # [F11-2 §2.1] Deploy the VNC password shim INTO the served noVNC copy.
+          # The shim is written verbatim from payloads/ghrdp-cred-shim.js and a
+          # single <script src> tag plus the EXACT dashboard origin (as a meta
+          # tag) are injected before </body> of vnc.html. Idempotent (the marker
+          # is skipped when present). No password is part of the injection, and
+          # no launch URL ever carries 'password=' (launch-gates F11 enforces
+          # both). The shim only accepts postMessage from that exact origin with
+          # window.opener as the source.
+          try {
+              $shimSrc = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-cred-shim.js'
+              $shimDst = Join-Path $novncDir 'ghrdp-cred-shim.js'
+              Copy-Item -LiteralPath $shimSrc -Destination $shimDst -Force
+              $credOrigin = ('http://' + $rdpIp + ':7331')
+              $inject = ('<meta name="ghrdp-cred-origin" content="' + $credOrigin + '"><script src="ghrdp-cred-shim.js"></script>')
+              foreach ($page in @('vnc.html', 'vnc_lite.html')) {
+                  $pg = Join-Path $novncDir $page
+                  if (-not (Test-Path -LiteralPath $pg)) { continue }
+                  $html = [System.IO.File]::ReadAllText($pg)
+                  if ($html.Contains('ghrdp-cred-shim.js')) { continue }
+                  if ($html.Contains('</body>')) { $html = $html.Replace('</body>', ($inject + '</body>')) } else { $html = $html + $inject }
+                  [System.IO.File]::WriteAllText($pg, $html, (New-Object System.Text.UTF8Encoding($false)))
+              }
+              Write-Host ('[webdesk] cred shim injected: script=' + (Test-Path -LiteralPath $shimDst) + '; allowed origin=' + $credOrigin)
+          } catch { Write-Host ('[webdesk] cred shim injection failed: ' + $_.Exception.Message) }
           # Wait for VNC 5900 to be LISTENING on loopback before starting websockify.
           $vncUp = $false
           for ($i = 0; $i -lt 30; $i++) {
@@ -1527,7 +1575,7 @@ jobs:
               }
               # 2) start (paired redirect files - never the same file twice).
               try {
-                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, ($BindIp + ':7333'), '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
+                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, ($BindIp + ':7333'), '127.0.0.1:5900') -WindowStyle Hidden -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
               } catch {
                   Write-Host ('[webdesk] websockify start failed: ' + $_.Exception.Message)
                   return $false
@@ -1690,7 +1738,7 @@ jobs:
               }
               # 2) start (paired redirect files - never the same file twice).
               try {
-                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, ($BindIp + ':7333'), '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
+                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, ($BindIp + ':7333'), '127.0.0.1:5900') -WindowStyle Hidden -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
               } catch {
                   Write-Host ('[webdesk] websockify start failed: ' + $_.Exception.Message)
                   return $false
@@ -2834,6 +2882,66 @@ jobs:
       # [remediation #7D] prior tailnet-agent gate step removed - it drove
       # the C2 enroll/client-cmd/agent-status flow whose endpoints are now 404.
 
+      # [F11-5.2 §5.2] qBittorrent as a PLAIN APP (no mirror/index wiring, no
+      # autostart, no Web UI enablement). Cache-backed: a previous run's
+      # installer in C:\ghrdp\cache\qbittorrent (already on the setup cache
+      # path) is reused, otherwise `winget download` seeds it and `winget
+      # install` remains the fallback. The Bittorrent-related publish/mirror
+      # pipeline stays OFF - launch-gates F11 asserts MIRROR_INPUT is only ever
+      # compared to 'true' and that no index bookmark or publish step returns.
+      - name: App - qBittorrent (plain app, cached, no mirror wiring)
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $cache = 'C:\ghrdp\cache\qbittorrent'
+          New-Item -ItemType Directory -Path $cache -Force -ErrorAction SilentlyContinue | Out-Null
+          $present = $false
+          try {
+              foreach ($k in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*')) {
+                  $hit = Get-ItemProperty $k -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'qBittorrent*' } | Select-Object -First 1
+                  if ($hit) { $present = $true; break }
+              }
+          } catch { }
+          if (-not $present) {
+              $cached = Get-ChildItem -Path $cache -Filter '*setup*.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              $winget = (Get-Command winget.exe -ErrorAction SilentlyContinue).Source
+              if (-not $cached -and $winget) {
+                  Write-Host ('[qbittorrent] winget download -> ' + $cache)
+                  & $winget download --id qBittorrent.qBittorrent --exact --accept-package-agreements --accept-source-agreements --disable-interactivity --download-directory $cache 2>&1 | Select-Object -Last 3 | Out-Null
+                  $LASTEXITCODE = 0
+                  $cached = Get-ChildItem -Path $cache -Filter '*setup*.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              }
+              if ($cached) {
+                  Write-Host ('[qbittorrent] installing from cache: ' + $cached.Name)
+                  Start-Process -FilePath $cached.FullName -ArgumentList '/S' -WindowStyle Hidden -Wait
+              } elseif ($winget) {
+                  Write-Host '[qbittorrent] cache miss - winget install (silent)'
+                  & $winget install --id qBittorrent.qBittorrent --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Select-Object -Last 3 | Out-Null
+                  $LASTEXITCODE = 0
+              } else { Write-Host '[qbittorrent] winget unavailable - skipped (advisory, never fatal)' }
+          } else { Write-Host '[qbittorrent] already present on this host' }
+          try {
+              $exe = Get-ChildItem -Path 'C:\Program Files\qBittorrent','C:\Program Files (x86)\qBittorrent' -Filter 'qbittorrent.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              Write-Host ('[qbittorrent] present=' + [bool]$exe)
+          } catch { }
+          exit 0
+
+      # [F11-6 §6] Setup-time report: provisioning minutes from JOB_STARTED_AT,
+      # printed as an annotation + summary so the <=6 min target is verifiable
+      # without parsing runner logs.
+      - name: Setup time report (F11-6)
+        if: ${{ always() }}
+        shell: pwsh
+        run: |
+          $start = $null
+          try { if ($env:JOB_STARTED_AT) { $start = ([datetime]$env:JOB_STARTED_AT).ToUniversalTime() } } catch { }
+          if (-not $start) { Write-Host '[setup] JOB_STARTED_AT missing - report skipped'; exit 0 }
+          $mins = [math]::Round(((Get-Date).ToUniversalTime() - $start).TotalMinutes, 2)
+          Write-Host ('::notice title=Setup time::provisioning finished in ' + $mins + ' minutes (target <= 6 on a warm cache)')
+          if ($env:GITHUB_STEP_SUMMARY) { ('### Setup time: ' + $mins + ' minutes (target <= 6; keep-alive window untouched)') | Add-Content -Path $env:GITHUB_STEP_SUMMARY }
+          exit 0
+
       - name: Keep-alive 5h30 (60s heartbeat, rust probe, auto-restart, banners)
         if: ${{ always() }}
         shell: pwsh
@@ -3187,7 +3295,7 @@ jobs:
                   if (-not $brOk) {
                       try {
                           if ($ipNow -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') {
-                              Start-Process -FilePath python -ArgumentList '-m','websockify','--web','C:\ghrdp\novnc',($ipNow + ':7333'),'127.0.0.1:5900'
+                              Start-Process -FilePath python -ArgumentList '-m','websockify','--web','C:\ghrdp\novnc',($ipNow + ':7333'),'127.0.0.1:5900' -WindowStyle Hidden
                           } else {
                               Write-Host ($icons.warn + ' ' + $stamp + ' websockify heal skipped: no valid tailnet IP in config (refusing loopback rebind)')
                           }
