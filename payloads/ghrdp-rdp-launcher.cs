@@ -94,12 +94,28 @@ internal static class GhrdpRdpLauncher
             req.Method = "POST";
             req.ContentType = "application/json";
             req.Timeout = 3000;
+            req.ReadWriteTimeout = 3000;
+            req.KeepAlive = false;
+            req.Proxy = null;   // no proxy autodetect stall inside the launcher
             byte[] buf = Encoding.UTF8.GetBytes(body);
             req.ContentLength = buf.Length;
             using (Stream s = req.GetRequestStream()) { s.Write(buf, 0, buf.Length); }
             using (req.GetResponse()) { }
         }
         catch { }
+    }
+
+    // [F10-10] Telemetry must never wedge the launcher: DNS/proxy stalls can
+    // outlive HttpWebRequest.Timeout, so the POST runs on a background thread
+    // with a hard 5s join. The beacon is advisory (the dashboard reads it best
+    // effort) - a dead or unreachable target is a no-op, never a hang.
+    private static void HelloBounded(string fqdn, string verb, bool ok, string details)
+    {
+        System.Threading.Thread t = new System.Threading.Thread(
+            delegate() { Hello(fqdn, verb, ok, details); });
+        t.IsBackground = true;
+        t.Start();
+        t.Join(5000);
     }
 
     private static int Main(string[] args)
@@ -155,9 +171,9 @@ internal static class GhrdpRdpLauncher
         };
         File.WriteAllLines(rdp, lines);   // local write: no MOTW, no SmartScreen
         try { Process.Start("mstsc.exe", "\"" + rdp + "\""); }
-        catch { Hello(server, "rdp-launch", false, "mstsc-start-failed"); return 4; }
+        catch { HelloBounded(server, "rdp-launch", false, "mstsc-start-failed"); return 4; }
 
-        Hello(server, "rdp-launch", true,
+        HelloBounded(server, "rdp-launch", true,
             "server=" + server + " user=" + user + " credEntry=" + (had ? "present" : (keyNow ? "created" : "skipped")));
 
         if (Environment.GetEnvironmentVariable("GHRDP_LAB_KEEP_RDP") != "1")
