@@ -859,6 +859,8 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-launcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-launcher.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-client-install.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-client-install.ps1"
+          # [F11 §2] VNC cred shim: injected into the noVNC directory at deploy time
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-cred-shim.js" "$RUNNER_TEMP/ghrdp-stage/ghrdp-cred-shim.js"
           # [remediation] ghrdp-launch.ps1 staging removed (banned old-helper duplicate deleted; superseded by helper-ghrdp-connect.ps1)
           cp "$GITHUB_WORKSPACE/payloads/helper-ghrdp-connect.ps1" "$RUNNER_TEMP/ghrdp-stage/helper-ghrdp-connect.ps1"
           B64=$(base64 -w0 "$RUNNER_TEMP/ghrdp-stage/helper-ghrdp-connect.ps1")
@@ -1364,6 +1366,22 @@ jobs:
               Set-WebdeskCfg '' 'serve-failed' 'novnc-assets'
               throw 'Web desktop not deployed: noVNC/websockify assets unavailable. Halted by design. See Step Summary.'
           }
+          # [F11 §2] VNC PASSWORD MEMORY: inject ghrdp-cred-shim.js into the
+          # served noVNC copy. The shim listens for postMessage from the
+          # dashboard and auto-fills the VNC Credentials dialog (the password
+          # is stored in localStorage after the operator copies it once).
+          $shimSrc = Join-Path $env:RUNNER_TEMP 'ghrdp-stage\ghrdp-cred-shim.js'
+          $shimDst = Join-Path $novncDir 'ghrdp-cred-shim.js'
+          if (Test-Path -LiteralPath $shimSrc) {
+              Copy-Item -LiteralPath $shimSrc -Destination $shimDst -Force
+              $vncHtml = Join-Path $novncDir 'vnc.html'
+              $vncContent = [System.IO.File]::ReadAllText($vncHtml)
+              if (-not $vncContent.Contains('ghrdp-cred-shim.js')) {
+                  $vncContent = $vncContent -replace '</head>', '<script src="ghrdp-cred-shim.js"></script></head>'
+                  [System.IO.File]::WriteAllText($vncHtml, $vncContent, (New-Object System.Text.UTF8Encoding($false)))
+                  Write-Host '[shim] ghrdp-cred-shim.js injected into noVNC vnc.html'
+              } else { Write-Host '[shim] ghrdp-cred-shim.js already present in vnc.html' }
+          } else { Write-Host '[shim] WARNING: ghrdp-cred-shim.js not staged - VNC password memory unavailable' }
           # Wait for VNC 5900 to be LISTENING on loopback before starting websockify.
           $vncUp = $false
           for ($i = 0; $i -lt 30; $i++) {

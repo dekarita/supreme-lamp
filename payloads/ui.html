@@ -300,7 +300,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">VNC password</span><span class="v" id="credVncPass">(host-only)</span><button onclick="copyById('credVncPass',this)">copy</button><span class="note">the VNC_PASS secret set at dispatch; masked (last 4), token-gated</span></div>
   <div class="row"><span class="k">Connectivity</span><span class="timer" id="connRtt" style="font-size:18px">-- ms</span><span class="badge" id="connBadge">path: --</span><span class="badge" id="connFps">-- fps</span><span class="badge" id="connJit">jit -- ms</span><canvas id="connSpark" width="220" height="34" style="width:220px;height:34px"></canvas></div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
-  <div class="row"><span class="k">RDP logon age</span><span class="timer" id="timerRdpAge">--:--:--</span><span class="badge" id="c2Srv">srv --</span></div>
+  <div class="row"><span class="k">RDP USAGE</span><span class="timer" id="timerRdpAge">--:--:--</span><span class="badge" id="c2Srv">srv --</span></div>
   <div class="row" id="connUdpAdv" style="display:none"><span class="k">Latency</span><span class="v" id="connUdpAdvText" style="color:#f5d9b7">direct WireGuard not established - check client firewall UDP 41641</span></div>
   <div class="row"><span class="k">Remaining (5h30 session)</span><span class="timer" id="timerRemaining">--:--:--</span></div>
   <div class="banner ended" id="endedBanner" style="display:none;">SESSION EXPIRED - GitHub hard cap reached. Runner termination imminent.</div>
@@ -491,7 +491,12 @@ function toast(msg,kind){var t=document.createElement('div');t.className='toast 
 function flashBtn(btn,msg){if(!btn)return;if(!btn.getAttribute('data-orig'))btn.setAttribute('data-orig',btn.textContent);btn.textContent=msg;btn.classList.add('copied');setTimeout(function(){btn.textContent=btn.getAttribute('data-orig');btn.classList.remove('copied')},1400)}
 function legacyCopy(text,btn){var ok=false;try{var ta=document.createElement('textarea');ta.value=text;ta.setAttribute('readonly','readonly');ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.focus();ta.select();ok=document.execCommand('copy');document.body.removeChild(ta)}catch(e){ok=false}if(ok){flashBtn(btn,'copied');toast('Copied','ok')}else{flashBtn(btn,'copy manually');window.prompt('Clipboard blocked - copy with Ctrl+C:',text);toast('Copy fallback opened','warn')}}
 function copyText(text,btn){text=String(text||'');if(!text){flashBtn(btn,'nothing');toast('Nothing to copy','warn');return}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(function(){flashBtn(btn,'copied');toast('Copied','ok')},function(){legacyCopy(text,btn)});return}legacyCopy(text,btn)}
-function copyById(id,btn){var el=$(id);if(el)copyText((el.getAttribute&&el.getAttribute('data-full'))||el.textContent,btn)}
+function copyById(id,btn){var el=$(id);if(el)copyText((el.getAttribute&&el.getAttribute('data-full'))||el.textContent,btn);
+ // [F11 §2] VNC PASSWORD MEMORY: when the operator copies the VNC password
+ // from the KEYS row, stash it in localStorage so the WEB DESKTOP click can
+ // postMessage it to the noVNC shim (auto-fills the Credentials dialog).
+ // Never stored in URLs, query strings, or logs.
+ if(id==='credVncPass'&&el){var realVal=(el.getAttribute&&el.getAttribute('data-full'))||'';if(realVal&&realVal!=='(host-only)'){try{localStorage.setItem('ghrdp:vnc-pass',realVal);}catch(_){}}}}
 function copyLog(btn){copyText($('logBox').textContent,btn)}
 function copyAllLinks(btn){var out=[];if(lastData){if(lastData.legacyIndexUrl)out.push('LEGACY RENTRY: '+lastData.legacyIndexUrl);if(lastData.rentryNewUrl)out.push('NEW RENTRY: '+lastData.rentryNewUrl);if(lastData.mirrorIndexUrl)out.push('TELEGRAPH: '+lastData.mirrorIndexUrl);var fl=lastData.files||[];for(var i=0;i<fl.length;i++){if(fl[i].link)out.push(fl[i].name+': '+fl[i].link)}}if(out.length===0){flashBtn(btn,'no links yet');toast('No links yet','warn');return}copyText(out.join('\n'),btn)}
 async function getJson(url){try{var r=await fetch(url,{cache:'no-store'});if(!r.ok)return null;return await r.json()}catch(e){return null}}
@@ -706,7 +711,7 @@ setInterval(tickTimers,1000);tickTimers();
 (function(){
 var I18N={
 'Runner elapsed':'ධාවක ගත වූ කාලය',
-'RDP logon age':'RDP පිවිසුම් වයස',
+'RDP USAGE':'RDP භාවිතය',
 'Remaining (5h30 session)':'ඉතිරි (පැය 5:30 සැසිය)',
 'Connection':'සම්බන්ධතාවය',
 'Tailscale IP':'Tailscale IP',
@@ -933,7 +938,8 @@ async function nativeStatus(){
   // [F10-3 §2.1] RDP LOGON AGE: server samples the newest LogonType-10
   // session; the row ticks locally from the first non-null sample (no more
   // permanent --:--:-- once an RDP session exists).
-  if(s&&s.rdpLogonAgeSec!=null){window.__rdpLogon={sec:Number(s.rdpLogonAgeSec)||0,at:Date.now()};}
+  if(s&&s.rdpUsageSec!=null){window.__rdpLogon={sec:Number(s.rdpUsageSec)||0,at:Date.now()};}
+  else if(s&&s.rdpLogonAgeSec!=null){window.__rdpLogon={sec:Number(s.rdpLogonAgeSec)||0,at:Date.now()};}
   // [F10-3 §2.2] server-side tailscale ping to THIS client (dash-token source
   // peer): shows ms + direct|relay; relay raises the UDP-41641 advisory.
   var sp=document.getElementById('c2Srv');
@@ -1177,7 +1183,28 @@ async function nativeStatus(){
    if(webdeskUrl){ // [F10-3 §2.3] open noVNC with autoconnect + zlib-compressed stream (compression=6) for lower LAN-latency frames
     var openUrl=webdeskUrl;
     try{var u2=new URL(webdeskUrl);if(!u2.pathname||u2.pathname==='/'){u2.pathname='/vnc.html';u2.search='autoconnect=true&compression=6';openUrl=u2.href;}}catch(_){}
-    wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(openUrl,'_blank','noopener');}; wb.title=openUrl;
+    // [F11 §2] Gate: noVNC URL must never carry the VNC password.
+    if(openUrl.indexOf('password=')>=0){wb.disabled=true;wb.title='VNC password must not be in URL';return;}
+    wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){
+     var vncWin=window.open(openUrl,'_blank','noopener');
+     // [F11 §2] VNC PASSWORD MEMORY: postMessage the stored VNC password to the
+     // noVNC window (shim auto-fills the Credentials dialog). The password is
+     // retrieved from localStorage (set when the user copies from the KEYS row).
+     // targetOrigin is the exact noVNC origin (same host, port 7333).
+     try{
+      var storedPass='';
+      try{storedPass=localStorage.getItem('ghrdp:vnc-pass')||'';}catch(_){}
+      if(storedPass&&vncWin){
+       var targetOrigin='';
+       try{var ou=new URL(openUrl);targetOrigin=ou.origin;}catch(_){}
+       if(targetOrigin){
+        // Delay postMessage slightly so the noVNC page + shim load first.
+        setTimeout(function(){try{vncWin.postMessage({type:'ghrdp-vnc-pass',pass:storedPass},targetOrigin);}catch(_){}},2500);
+        setTimeout(function(){try{vncWin.postMessage({type:'ghrdp-vnc-pass',pass:storedPass},targetOrigin);}catch(_){}},6000);
+       }
+      }
+     }catch(_){}
+    }; wb.title=openUrl;
    }
    else { wb.disabled=true; wb.style.opacity='0.5'; wb.style.cursor='not-allowed'; wb.onclick=null; wb.title='web desktop not deployed: '+deskReason; }
   }
