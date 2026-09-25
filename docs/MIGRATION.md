@@ -372,6 +372,31 @@ The dashboard's WEB DESKTOP button is enabled only when
     `step-not-run` and `invalid-webdesk-url` each have their own text.
     WEB DESKTOP stays the primary ephemeral action and stays enabled only
     for a valid configured tailnet HTTPS URL.
+- **[F9j] serve-mapping hardening + URL normalization + loopback auto-heal.**
+  A run whose websockify bound fine still failed with
+  `webdeskReason='serve-failed'` / `webdeskDetail='serve-mapping'`, and the
+  step logged **nothing** about why. Three gaps, all fixed:
+  - *Swallowed serve failure:* `tailscale serve --bg …` output went only to
+    a `RUNNER_TEMP` file and its exit code was discarded, so a failed serve
+    was undiagnosable. Now the exit code is printed, the command is retried
+    once in explicit-`443` form, and — before the fail-closed `throw` — the
+    serve log tail, `tailscale serve status`, `serve status --json`, and
+    `tailscale status` are all printed (secret-free: `VNC_PASS` is never
+    passed to tailscale).
+  - *False-LIVE URL:* current Tailscale keys `serve status --json` Web entries
+    as `'<host>.ts.net:<port>'`, so the old raw-key URL carried `:443`. The
+    dashboard's URL validator rejects any explicit port (`!desk.port`), so a
+    green run left the WEB DESKTOP button dead. The URL is now derived only
+    from a VERIFIED mapping, the host is re-validated against the `*.ts.net`
+    pattern, and the default port is normalized away (a mapping on any
+    non-default port is treated as NO mapping, never advertised).
+  - *Auto-heal bind:* the staged watcher's websockify restart used an
+    all-interfaces bind on 7333, exposing the bridge on the Tailscale
+    interface without tailnet TLS (bypassing the serve mapping). It now
+    rebinds `127.0.0.1:7333` and serves the noVNC assets again.
+  - *Tests:* `tests/workflow-webdesk.test.js` F9j block pins the exit-code
+    print, the explicit-443 retry, the no-raw-key-URL / port / host-anchor
+    rules, the fail-closed diagnostics, and the loopback-only auto-heal.
 - **Persistent Windows VPS (post-§1.7)**: §1.7 does NOT provision a web
   desktop. The operator must separately deploy authenticated TightVNC
   bound to loopback, websockify/noVNC on loopback, and `tailscale serve`

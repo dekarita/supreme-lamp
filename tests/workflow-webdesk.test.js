@@ -127,3 +127,49 @@ test('web-desktop step still records >= 6 reason writes (launch-gate F8)', () =>
   const n = webdesk.split("Set-WebdeskCfg ''").length - 1;
   assert.ok(n >= 6, 'only ' + n + ' reason writes (need >= 6)');
 });
+
+test('F9j: serve exit code is printed (no more swallowed serve failures)', () => {
+  // The old code reset $LASTEXITCODE without ever printing it, so a failed
+  // `tailscale serve` was undiagnosable from the run log.
+  assert.match(webdesk, /tailscale serve \{0\} -> exit \{1\}/);
+  // An explicit-443 retry form covers the implicit-default-port form.
+  assert.match(webdesk, /'--bg', '443', 'http:\/\/127\.0\.0\.1:7333'/);
+});
+
+test('F9j: URL is derived from a verified mapping, normalized to the default port', () => {
+  // The raw `serve status --json` Web key ('<host>.ts.net:<port>' on current
+  // tailscale) must never be concatenated verbatim into the URL - that
+  // produced 'https://host.ts.net:443/...' which the dashboard's port-less
+  // URL validator rejects (green run, dead button).
+  assert.doesNotMatch(webdesk, /'https:\/\/' \+ \$k(?![a-zA-Z0-9_])/);
+  // A mapping on any non-default port is treated as NO mapping (no false LIVE).
+  assert.match(webdesk, /portPart -ne '443'/);
+  // The derived host must be validated against an anchored *.ts.net pattern
+  // before any URL is derived (checked by shape, not by backslash-escaping,
+  // so the assertion is stable across editor/CI text handling).
+  const hostCheck = webdesk.split('\n').find(l => l.includes('hostPart -notmatch'));
+  assert.ok(hostCheck, 'hostPart ts.net validation line missing');
+  assert.ok(hostCheck.includes('ts'), 'hostPart pattern must reference ts.net');
+  assert.ok(hostCheck.trimEnd().endsWith("net$') { return '' }"), 'hostPart must be anchored with .net$ : ' + hostCheck.trim());
+  // Bare-port Web keys (older tailscale) resolve the host from Self.DNSName.
+  assert.match(webdesk, /Self\.DNSName/);
+});
+
+test('F9j: serve-mapping failure prints secret-free diagnostics before halting', () => {
+  const failIdx = webdesk.indexOf("Set-WebdeskCfg '' 'serve-failed' 'serve-mapping'");
+  assert.ok(failIdx > 0, 'serve-mapping failure write missing');
+  const serveBlock = webdesk.slice(webdesk.indexOf('# Expose ONLY on the tailnet.'), failIdx);
+  assert.match(serveBlock, /serve output tail/);
+  assert.match(serveBlock, /serve status: /);
+  assert.match(serveBlock, /serve status --json: /);
+  assert.match(serveBlock, /tailscale state: /);
+  // 5s settle re-check still guards against slow serve registration.
+  assert.match(serveBlock, /Start-Sleep -Seconds 5/);
+});
+
+test('F9j: watcher websockify auto-heal is loopback-only (no 0.0.0.0:7333)', () => {
+  // A 0.0.0.0 bind exposes the bridge on the Tailscale interface without
+  // tailnet TLS, bypassing the serve mapping entirely.
+  assert.doesNotMatch(wf, /0\.0\.0\.0:7333/);
+  assert.match(wf, /'--web','C:\\ghrdp\\novnc','127\.0\.0\.1:7333','127\.0\.0\.1:5900'/);
+});
