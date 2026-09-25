@@ -397,31 +397,38 @@ The dashboard's WEB DESKTOP button is enabled only when
   - *Tests:* `tests/workflow-webdesk.test.js` F9j block pins the exit-code
     print, the explicit-443 retry, the no-raw-key-URL / port / host-anchor
     rules, the fail-closed diagnostics, and the loopback-only auto-heal.
-- **[F9k] `tailscale serve` syntax fix + fail-closed serve logic.**
-  A serve-failed run's log showed `Error: invalid argument format` from
-  the array-splatted `tailscale serve --bg …` invocations - the Tailscale
-  CLI argument parser on the runner's current version rejects the
-  per-token form. The web-desktop step now uses a two-form, fail-closed
-  serve:
-  - *Primary:* the explicit port mapping is passed as ONE concatenated
-    argument string (`tailscale serve '--bg http://127.0.0.1:7333'`) -
-    string concatenation, NOT array expansion, so PowerShell cannot
-    re-split or re-quote the tokens for the native CLI.
-  - *Fallback:* the explicit-`443` form with bare literal arguments
-    (`tailscale serve --bg 443 http://127.0.0.1:7333`).
-  - *Fail-closed:* both attempts print their exit code to the step log
-    (F9j contract unchanged). If the mapping is still missing after the
-    fallback the step goes through the single `serve-mapping` block -
-    secret-free diagnostics (serve log tail, `serve status`,
-    `serve status --json`, `tailscale status`), one 5s-settle re-read of
-    `serve status --json`, `config.webdeskReason='serve-failed'` /
-    `webdeskDetail='serve-mapping'` stamped on `config.json`, and a
-    `throw`. No run can report green with a dead web desktop; the URL is
-    still derived only from a VERIFIED mapping (no fabricated URLs), and
-    `VNC_PASS` is never passed to tailscale.
-  - *Tests:* `tests/workflow-webdesk.test.js` (33 Node tests) pin the
-    exit-code print, the explicit-443 form, the verified-mapping URL
-    rules, the fail-closed diagnostics, and the loopback-only auto-heal.
+- **[F9k] `tailscale serve` syntax fix + fail-closed serve logic** —
+  **SUPERSEDED by [F9l] below.** The two-form attempt (primary = the whole
+  mapping passed as ONE concatenated argv token, `tailscale serve '--bg
+  http://127.0.0.1:7333'`; fallback = the pre-1.52 positional form
+  `tailscale serve --bg 443 http://127.0.0.1:7333`) is dead on the live
+  runner CLI (Tailscale 1.52+): the one-token blob produced a usage dump
+  (exit 2) and the positional form produced `Error: invalid argument
+  format` (exit 1). Kept as history only — the shipped behaviour is the
+  [F9l] cascade below.
+- **[F9l] post-1.52 `tailscale serve` syntax + version-tolerant VERIFIED
+  cascade (supersedes F9k).** The web-desktop step logs the CLI version and
+  then tries, in order:
+  1. `tailscale serve --bg http://127.0.0.1:7333` (post-1.52: URL target,
+     listen port defaults to https/443),
+  2. `tailscale serve --bg --https=443 http://127.0.0.1:7333` (post-1.52:
+     explicit https listen port),
+  3. `tailscale serve --bg 7333` (post-1.52: port-number target),
+  4. `tailscale serve --bg 443 http://127.0.0.1:7333` (pre-1.52 legacy form,
+     kept for older runner CLIs; on 1.52+ it simply prints its exit code).
+  After each attempt the serve mapping is read back through the F9j
+  `Get-WebdeskServeUrl` helper; the first form that yields a REAL
+  `https://<node>.<tailnet>.ts.net` mapping wins and the cascade stops. If
+  no form verifies, the unchanged single fail-closed `serve-mapping` block
+  runs: secret-free diagnostics (serve log tail, `serve status`,
+  `serve status --json`, `tailscale status`), one 5s-settle re-read, one
+  `config.webdeskReason='serve-failed'` / `webdeskDetail='serve-mapping'`
+  stamp on `config.json`, then a `throw`. No URL is ever fabricated, every
+  attempt's exit code is printed (F9j contract), and `VNC_PASS` is never
+  passed to tailscale.
+  - *Tests:* `tests/workflow-webdesk.test.js` pins the exit-code print, the
+    legacy-`443` literal, the verified-mapping URL rules, the fail-closed
+    diagnostics, and the loopback-only auto-heal.
 - **Persistent Windows VPS (post-§1.7)**: §1.7 does NOT provision a web
   desktop. The operator must separately deploy authenticated TightVNC
   bound to loopback, websockify/noVNC on loopback, and `tailscale serve`
