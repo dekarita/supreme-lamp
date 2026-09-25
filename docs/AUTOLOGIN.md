@@ -1,4 +1,35 @@
-# GHRDP native auto-login (VPS only)
+# GHRDP native auto-login
+
+## 0. PS-free WINDOWS AUTO-LOGIN (primary path, F10+)
+
+One-time, on your own Windows PC — **no script host, no admin, no binary
+download**:
+
+1. Copy `payloads\install.cmd` and `payloads\ghrdp-rdp-launcher.cs` from the
+   repo into one folder (use "Download raw file" in the GitHub UI, twice).
+2. Double-click `install.cmd`. It compiles the launcher with the in-box
+   .NET Framework 4.x C# compiler (`csc.exe` — part of Windows) and registers
+   the `ghrdp://` protocol under HKCU only. No UAC prompt appears.
+3. On Mission Control, press **WINDOWS AUTO-LOGIN**. mstsc opens fullscreen
+   (your monitor's native resolution, exact aspect) with drive, clipboard,
+   printer, COM, smart-card, POS and microphone redirection, bitmap cache and
+   bandwidth autodetect.
+4. The FIRST time for a new `<fqdn>`, Windows itself asks once for the
+   password (interactive `cmdkey` window). After that there are **0 prompts**.
+   Neither the page nor the launcher ever sees the password; the temporary
+   `.rdp` file is written locally (no MOTW, no SmartScreen) and deleted
+   after mstsc loads it. It never contains a password or hash. NLA and
+   CredSSP stay at Windows defaults.
+
+If the button reports a missing handler, the install hint with the file path
+appears under it; **WEB DESKTOP** remains the zero-install path.
+Expected latency: **< 80 ms round-trip on a direct WireGuard path**. The
+CONNECTIVITY row shows the server-side `tailscale ping` to your PC
+(ms + `direct` | `relay`). On `relay` (DERP) an advisory appears:
+"direct WireGuard not established - check client firewall UDP 41641" —
+allow outbound UDP 41641 on your PC's firewall/router.
+
+## 1. Legacy path (VPS compiled handler, pre-F10)
 
 WEB DESKTOP is the primary dashboard action for both VPS and ephemeral hosts.
 Native AUTO-LOGIN is offered **only** when the server reports `hostKind=vps`
@@ -8,7 +39,7 @@ gateway or dashboard service; the operator must do that separately before
 WEB DESKTOP can open. The user performs both one-time steps below on their
 own Windows PC; nothing installs or stores a credential from the page.
 
-## 1. Store the credential interactively
+### 1.1 Store the credential interactively
 
 Replace `<fqdn>` with the exact `*.ts.net` name from the VPS dashboard:
 
@@ -22,7 +53,7 @@ RDP-Tcp Let's Encrypt certificate. In the dashboard, tick **I ran cmdkey**
 only *after* running it; copying the line does not create a credential.
 The tick is a local assertion, not a test of Credential Manager.
 
-## 2. Register the compiled protocol handler (optional)
+### 1.2 Register the compiled protocol handler (optional)
 
 Download the `ghrdp-handler-win-x64` artifact from a successful
 **launch-gates** run for the reviewed revision. Keep `GhrdpHandler.exe` in a
@@ -80,3 +111,29 @@ To remove access on your PC, delete the current-user `ghrdp:` protocol key,
 `%LOCALAPPDATA%\ghrdp\handler-fqdn.txt`, and your own TERMSRV entry with
 `cmdkey /delete:TERMSRV/<fqdn>` if no longer needed. Do not put a password
 into the deletion command.
+
+## 2. Dashboard credentials and runner browser policy (F10+)
+
+**Credential rows (gated).** Mission Control's *Indexes & keys* section shows
+the Windows user, the Windows password and the VNC password. They are served
+**only** by the dash-token-gated `/api/config` `creds` block to a
+token-authenticated or in-tailnet dashboard request; the screen shows a
+last-4 mask and the copy button copies the real value. Bare loopback (host-side
+self-tests) never receives them. They are never placed in URLs, logs, workflow
+summaries, artifacts or pull requests. `VNC_PASS` is stamped into the host
+config at dispatch for exactly this purpose and is never printed.
+
+**Extensions (enforced).** When Edge first starts on the runner, uBlock Origin
+and Dark Reader are force-installed via
+`HKLM\SOFTWARE\Policies\Microsoft\Edge\ExtensionInstallForcelist`. The
+extension IDs are **resolved at build time from live store pages** by
+`payloads/edge-ext-resolve.ps1` (store search page -> vendor page -> SERP ->
+store search page, then a detail-page publisher/title check) and never carried
+in the repository; an ID that cannot be discovered *and* verified is skipped
+with a loud warning rather than guessed. `edge://policy` is the source of
+truth on the runner.
+
+**Bookmarks (managed).** `ManagedFavorites` contains exactly Mission Control,
+the `docs/AUTOLOGIN.md` page and the Tailscale admin DNS page. No third-party
+index, torrent or piracy site is ever added (launch-gates fails the build if
+such a string appears in the workflow).

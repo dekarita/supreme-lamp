@@ -64,6 +64,15 @@ jobs:
               $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes($Content))
               $sha = $null
               try { $g = Invoke-RestMethod -Uri ($api + '?ref=main') -Headers $H -ErrorAction Stop; $sha = $g.sha } catch { }
+              # [F10-4c §5] skip the Pages-affecting PUT entirely when the
+              # remote docs content is byte-identical (no commit => no Pages
+              # rebuild for unchanged docs).
+              if ($sha -and $g.PSObject.Properties['content']) {
+                  try {
+                      $remote = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($g.content -replace "`n",'')))
+                      if ($remote -eq $Content) { Write-Host "[deploy] Unchanged ${RelPath} - skipped (no Pages redeploy)"; return }
+                  } catch { }
+              }
               $body = @{ message = ($Msg + ' ' + (Get-Date -Format o)); content = $b64; branch = 'main' }
               if ($sha) { $body.sha = $sha }
               try {
@@ -130,6 +139,30 @@ jobs:
           Write-Host '[deploy] auto-deploy complete'
           exit 0
 
+      # [F10-4c §5] setup-phase caches: TightVNC MSI, noVNC tree, pip wheel
+      # cache (websockify/vncdotool), cargo target (Rust dash). Keep-alive is
+      # untouched. One composite key; Cargo.toml changes bust the whole set by
+      # design (simple, conservative). First run warms the caches; subsequent
+      # dispatches skip ~1-2 min of downloads/compiles.
+      - uses: actions/cache@v4
+        name: Setup-phase caches (F10-4c)
+        with:
+          path: |
+            C:\ghrdp\cache
+            C:\ghrdp\novnc
+            ~\AppData\Local\pip\Cache
+            ${{ runner.temp }}\ghrdp-rust\target
+          key: f10-setup-${{ runner.os }}-${{ hashFiles('payloads/Cargo.toml') }}-v1
+          restore-keys: |
+            f10-setup-${{ runner.os }}-
+      - name: Pre-create cache directories (F10-4c)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path 'C:\ghrdp\cache' -Force | Out-Null
+          New-Item -ItemType Directory -Path 'C:\ghrdp\novnc' -Force | Out-Null
+          New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\pip\Cache" -Force | Out-Null
+          New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'ghrdp-rust\target') -Force | Out-Null
+          Write-Host '[cache] setup-phase cache dirs ensured'
       - name: Validate required secret (RENTRY_EDIT_PASSWORD) - fail fast, NO bypass
         env:
           RENTRY_EDIT_PASSWORD: ${{ secrets.RENTRY_EDIT_PASSWORD }}
@@ -788,66 +821,41 @@ jobs:
           }
           exit 0
 
-      - name: Write mirror library (AES-256, gofile+fallbacks, telegraph+rentry myurl0, progress)
+      # [F10-4c §5] ten adjacent bash stage/write steps merged into ONE
+      # (saves ~10 shell startups on every dispatch; bodies unchanged, in
+      # original order). Neither launch-gates nor tests pinned the old step
+      # names (verified).
+      - name: Write deploy payloads (10 stage steps merged - F10-4c)
         shell: bash
         run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-lib.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-lib.ps1"
           echo '[lib] ghrdp-lib.ps1 written'
-
-      - name: Write PowerShell HTTP server (7331, startedAt, legacy/egress fields)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-server.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-server.ps1"
           echo '[ps-server] ghrdp-server.ps1 written'
-      - name: Write dashboard UI (ui.html)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ui.html" "$RUNNER_TEMP/ghrdp-stage/ui.html"
           sed -i "s/__BUILD_SHA__/${GITHUB_SHA}/g" "$RUNNER_TEMP/ghrdp-stage/ui.html"
           echo "[ui] ui.html written sha=${GITHUB_SHA}"
-
-      - name: Write Unified Fluent Explorer (replaces search.html + explorer.html)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/explorer.html" "$RUNNER_TEMP/ghrdp-stage/explorer.html"
           echo '[explorer] unified fluent explorer written'
-
-      - name: Write GitHub Pages control-center template (docs/index.html source)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/web-index-template.html" "$RUNNER_TEMP/ghrdp-stage/web-index-template.html"
           echo '[web] web-index-template.html written'
-
-      - name: Write webdesk capture engine (payloads → stage)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp -f payloads/ghrdp-pub2.ps1 "$RUNNER_TEMP/ghrdp-stage/ghrdp-pub2.ps1"
           echo '[webdesk] payload staged'
-      - name: Write webdesk UI (payloads → stage)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp -f payloads/webdesk-ui.html "$RUNNER_TEMP/ghrdp-stage/webdesk-ui.html"
           echo '[webdesk-ui] staged'
-      - name: Write watcher (mutex, heartbeat, egress, legacy scrape, guarded success path, no .ghenc display name)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-watcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-watcher.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-pub2.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-pub2.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-bootstrap-session.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-bootstrap-session.ps1"
           echo '[watcher] ghrdp-watcher.ps1 written'
           echo '[webdesk] ghrdp-pub2.ps1 + ghrdp-bootstrap-session.ps1 staged'
-
-      - name: Write launcher + ghrdp:// connector (cmdkey 500ms fix) + DEBUG tools
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-launcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-launcher.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-client-install.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-client-install.ps1"
@@ -862,16 +870,10 @@ jobs:
           # [remediation] agent + enroll + accept payload staging removed (C2 client + acceptance-of-agent gone)
           # [remediation] acceptance + diag staging removed (agent-dependent probes deleted)
           ls -la "$RUNNER_TEMP/ghrdp-stage"
-
-
-      - name: Write Rust dashboard source (Cargo.toml + src/main.rs, StatusCode import fixed)
-        shell: bash
-        run: |
           mkdir -p "$RUNNER_TEMP/ghrdp-rust/src"
           cp "$GITHUB_WORKSPACE/payloads/Cargo.toml" "$RUNNER_TEMP/ghrdp-rust/Cargo.toml"
           cp "$GITHUB_WORKSPACE/payloads/main.rs" "$RUNNER_TEMP/ghrdp-rust/src/main.rs"
           ls -la "$RUNNER_TEMP/ghrdp-rust" "$RUNNER_TEMP/ghrdp-rust/src"
-
       - name: Stage files + write config.json (UTF8 no BOM, Rentry secrets + provided edit code, token, ACLs)
         env:
           RENTRY_EDIT_PASSWORD: ${{ secrets.RENTRY_EDIT_PASSWORD }}
@@ -1173,6 +1175,17 @@ jobs:
               Set-WebdeskCfg '' 'vnc-pass-too-short'
               exit 0
           }
+          # [F10-4a §3] stamp the dispatch-time VNC secret into config.json so
+          # the dash-token-gated /api/config creds block can serve it to the
+          # operator's own dashboard (masked on screen + copy). The value is
+          # never printed, logged, or written to summaries/artifacts.
+          try {
+              $cfgV = [System.IO.File]::ReadAllText($cfgPathW) | ConvertFrom-Json
+              $cfgV | Add-Member -MemberType NoteProperty -Name 'vncPass' -Value ([string]$vp) -Force
+              $encV = New-Object System.Text.UTF8Encoding($false)
+              [System.IO.File]::WriteAllText($cfgPathW, ($cfgV | ConvertTo-Json -Depth 10), $encV)
+              Write-Host '[webdesk] config.json vncPass stamped (value never printed)'
+          } catch { Write-Host ('[webdesk] config.json vncPass stamp failed: ' + $_.Exception.Message) }
           # [F9n] Tailnet IP source: config.json .rdpIp ONLY (written pre-lock by
           # the stage step). The step-context tailscale CLI is locked out post-connect
           # (401: node owned by NT AUTHORITY\SYSTEM), so `tailscale ip` is never
@@ -1203,7 +1216,9 @@ jobs:
           $webdeskAuth = ''
           $vncProbeCodes = @()
           $msiUrl = 'https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi'
-          $msi = Join-Path $env:RUNNER_TEMP 'tightvnc.msi'
+          # [F10-4c §5] MSI lives in the actions/cache-backed dir so subsequent
+          # dispatches skip the download entirely (validated by size below).
+          $msi = 'C:\ghrdp\cache\tightvnc-2.8.85.msi'
           # [F9o] VNC auth probe: vncdotool capture against 127.0.0.1:5900.
           # THE SAME TEXT IS DEFINED IN THE DEPLOY STEP AND IN THE SELF-TEST
           # STEP - keep both copies in sync (like Start-Websockify).
@@ -1267,8 +1282,22 @@ jobs:
           }
           $inst = $false
           try {
-              Invoke-WebRequest -Uri $msiUrl -OutFile $msi -UseBasicParsing -TimeoutSec 120
+              # [F10-4c §5] MSI download runs as a background job in PARALLEL
+              # with the pip installs (independent); cache hit skips it.
+              $msiJob = $null
+              $needMsi = $true
+              try { if ((Test-Path -LiteralPath $msi) -and ((Get-Item -LiteralPath $msi).Length -gt 1MB)) { $needMsi = $false; Write-Host ('[webdesk] tightvnc msi cache hit (' + (Get-Item -LiteralPath $msi).Length + ' bytes)') } } catch { }
+              if ($needMsi) {
+                  $msiJob = Start-Job -ScriptBlock { param($u,$o) Invoke-WebRequest -Uri $u -OutFile $o -UseBasicParsing -TimeoutSec 120 } -ArgumentList $msiUrl, $msi
+              }
               & python -m pip install --disable-pip-version-check --quiet vncdotool 2>&1 | Select-Object -Last 3 | Out-Null
+              if ($msiJob) {
+                  [void](Wait-Job $msiJob -Timeout 150)
+                  if ($msiJob.State -eq 'Failed') { throw ('tightvnc msi download job failed') }
+                  Receive-Job $msiJob | Out-Null; Remove-Job $msiJob -Force
+                  if (-not (Test-Path -LiteralPath $msi) -or ((Get-Item -LiteralPath $msi).Length -le 1MB)) { throw ('tightvnc msi download invalid after job wait') }
+                  Write-Host '[webdesk] tightvnc msi downloaded (parallel job joined)'
+              }
               [void](Install-TightVncMsi -MsiPath $msi -Password $vp -ForceFresh $false)
               # [F9o L2] Restart + registry: VNC loopback-only, auth ON,
               # SecurityTypes pinned to VncAuth, then verify the Password blob
@@ -1283,6 +1312,16 @@ jobs:
                   Set-ItemProperty -Path $tvKey -Name 'AlwaysShared' -Value 1 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'RemoveWallpaper' -Value 0 -Type DWord -ErrorAction SilentlyContinue
                   Set-ItemProperty -Path $tvKey -Name 'SecurityTypes' -Value 'VncAuth' -Type String -ErrorAction SilentlyContinue
+                  # [F10-4a §2.3] latency tuning: poll the window under the
+                  # cursor + foreground only (skip pricey full-screen polls),
+                  # framebuffer compare on. TightVNC 2.8 has no server-side
+                  # 'PreferZlib' key - the zlib preference is enforced
+                  # client-side via the noVNC URL (compression=6, F10-3).
+                  Set-ItemProperty -Path $tvKey -Name 'PollUnderCursor' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'PollForeground' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'PollFullScreen' -Value 0 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'PollConsoleOnly' -Value 1 -Type DWord -ErrorAction SilentlyContinue
+                  Set-ItemProperty -Path $tvKey -Name 'CompareFB' -Value 1 -Type DWord -ErrorAction SilentlyContinue
               }
               try { Restart-Service -Name 'tvnserver' -Force -ErrorAction Stop; $inst = $true } catch { Write-Host ('[webdesk] tvnserver service restart failed: ' + $_.Exception.Message) }
               try {
@@ -1308,7 +1347,12 @@ jobs:
           try {
               if (-not (Test-Path -LiteralPath (Join-Path $novncDir 'vnc.html'))) {
                   New-Item -ItemType Directory -Path 'C:\ghrdp' -Force -ErrorAction SilentlyContinue | Out-Null
-                  & git.exe clone --depth 1 https://github.com/novnc/noVNC.git $novncDir 2>&1 | Select-Object -Last 3 | Out-Null
+                  # [F10-4c §5] noVNC tree is cache-backed; on a cache MISS the
+                  # pre-created empty dir breaks `git clone $dir` (dir must not
+                  # exist) - clone into a temp dir and move the contents in.
+                  $novncTmp = Join-Path $env:RUNNER_TEMP ('novnc-clone-' + [guid]::NewGuid().ToString('N'))
+                  & git.exe clone --depth 1 https://github.com/novnc/noVNC.git $novncTmp 2>&1 | Select-Object -Last 3 | Out-Null
+                  if (Test-Path -LiteralPath (Join-Path $novncTmp 'vnc.html')) { Copy-Item -Path (Join-Path $novncTmp '*') -Destination $novncDir -Recurse -Force; Remove-Item -LiteralPath $novncTmp -Recurse -Force -ErrorAction SilentlyContinue }
               }
               & python -m pip install --disable-pip-version-check --quiet websockify 2>&1 | Select-Object -Last 3 | Out-Null
           } catch { Write-Host ('[webdesk] noVNC/websockify install error: ' + $_.Exception.Message) }
@@ -2625,24 +2669,46 @@ jobs:
           $rustOn = ($env:RUST_AVAILABLE -eq 'true')
           $tailPort = '7331'
           if ($rustOn) { $tailPort = '7332' }
+          # [F10-4b §4.2] managed bookmark policy = exactly {Mission Control,
+          # docs/AUTOLOGIN.md repo page, Tailscale admin-DNS}. No third-party
+          # indexes are ever placed here (launch-gate F10 fails on any match).
           $reqBookmarks = @()
-          $sessionBookmarks = @(
-              @{ name = 'Mission Control (local)'; url = 'http://127.0.0.1:7331' }
-          )
-          if ($ip) { $sessionBookmarks += @{ name = 'Mission Control (tailnet)'; url = ('http://' + $ip + ':' + $tailPort) } }
+          $sessionBookmarks = @()
+          if ($ip) { $sessionBookmarks += @{ name = 'Mission Control'; url = ('http://' + $ip + ':' + $tailPort) } }
+          else     { $sessionBookmarks += @{ name = 'Mission Control'; url = 'http://127.0.0.1:7331' } }
           $sessionBookmarks += @(
-              @{ name = 'Tailscale Admin'; url = 'https://login.tailscale.com/admin/machines' },
-              @{ name = 'GitHub Actions'; url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions') }
+              @{ name = 'Auto-login guide (docs/AUTOLOGIN.md)'; url = 'https://github.com/dekarita/supreme-lamp/blob/main/docs/AUTOLOGIN.md' },
+              @{ name = 'Tailscale Admin - DNS'; url = 'https://login.tailscale.com/admin/dns' }
           )
           # [remediation] pagesBase tool bookmarks (Decryptor/Archive/Explorer) removed
           $allBookmarks = $reqBookmarks + $sessionBookmarks
+          # [F10-11 §4.1] Edge extension IDs: resolved AT BUILD TIME from live
+          # pages only - never from memory. The resolver lives in exactly ONE
+          # place (payloads/edge-ext-resolve.ps1) and is dot-sourced here and in
+          # autologin-lab.yml (launch-gates enforces both dot-sources + that the
+          # file contains no literal 32-char id). Discovery cascade = store
+          # search page -> vendor repo page -> store-indexing SERP -> CWS search
+          # page, then the store DETAIL page for that id must carry the
+          # canonical slug in its URL and a publisher/title marker. Unresolvable
+          # or unverified => skipped LOUDLY (a guessed id could install the
+          # wrong extension).
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads\edge-ext-resolve.ps1')
+          $ubo = Resolve-StoreExtId -Query 'uBlock Origin' -Slug 'ublock-origin' `
+              -Markers @('gorhill', 'uBlock Origin') `
+              -VendorPages @('https://raw.githubusercontent.com/gorhill/uBlock/master/README.md')
+          $dr  = Resolve-StoreExtId -Query 'Dark Reader' -Slug 'dark-reader' `
+              -Markers @('darkreader.org', 'Dark Reader') `
+              -VendorPages @('https://raw.githubusercontent.com/darkreader/darkreader/main/README.md')
+          $uboId = if ($ubo) { $ubo.id } else { '' }
+          $drId  = if ($dr)  { $dr.id }  else { '' }
           $edgePol = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
           New-Item -Path $edgePol -Force -ErrorAction SilentlyContinue | Out-Null
           $extPath = Join-Path $edgePol 'ExtensionInstallForcelist'
           New-Item -Path $extPath -Force -ErrorAction SilentlyContinue | Out-Null
-          Set-ItemProperty -Path $extPath -Name '1' -Value 'cjpalhdlnbpafiamejdnhcphjbkeiagm;https://edge.microsoft.com/extensionwebstorebase/v1/crx' -ErrorAction SilentlyContinue
-          Set-ItemProperty -Path $extPath -Name '2' -Value 'eimadodcbgplccgdhkkjjnmdhgjopbcm;https://edge.microsoft.com/extensionwebstorebase/v1/crx' -ErrorAction SilentlyContinue
-          Write-Host '[edge] forced extensions: uBlock Origin + Dark Reader'
+          $extN = 0
+          if ($ubo) { $extN++; Set-ItemProperty -Path $extPath -Name ([string]$extN) -Value (Get-ExtForceListValue -Resolved $ubo) -ErrorAction SilentlyContinue }
+          if ($dr)  { $extN++; Set-ItemProperty -Path $extPath -Name ([string]$extN) -Value (Get-ExtForceListValue -Resolved $dr) -ErrorAction SilentlyContinue }
+          Write-Host ('[edge] forced extensions written: ' + $extN + ' of 2 (uBlock Origin + Dark Reader, live-resolved at build time)')
           $reqChildren = @()
           foreach ($b in $reqBookmarks) { $reqChildren += @{ name = [string]$b.name; url = [string]$b.url } }
           $sessChildren = @()
@@ -2664,9 +2730,15 @@ jobs:
           New-Item -Path $chromePol -Force -ErrorAction SilentlyContinue | Out-Null
           $chromeExt = Join-Path $chromePol 'ExtensionInstallForcelist'
           New-Item -Path $chromeExt -Force -ErrorAction SilentlyContinue | Out-Null
-          Set-ItemProperty -Path $chromeExt -Name '1' -Value 'cjpalhdlnbpafiamejdnhcphjbkeiagm;https://clients2.google.com/service/update2/crx' -ErrorAction SilentlyContinue
-          Set-ItemProperty -Path $chromeExt -Name '2' -Value 'eimadodcbgplccgdhkkjjnmdhgjopbcm;https://clients2.google.com/service/update2/crx' -ErrorAction SilentlyContinue
-          Write-Host '[chrome] forced extensions: uBlock Origin + Dark Reader'
+          # [F10-11 §4.1] Chrome-side entries use the SAME live resolver against
+          # the Chrome Web Store (no id is carried in the repo, so the previous
+          # authoring-time constants are gone entirely).
+          $cwsN = 0
+          $cubo = Resolve-StoreExtId -Store 'cws' -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('uBlock Origin', 'gorhill')
+          $cdr  = Resolve-StoreExtId -Store 'cws' -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('Dark Reader', 'darkreader.org')
+          if ($cubo) { $cwsN++; Set-ItemProperty -Path $chromeExt -Name ([string]$cwsN) -Value (Get-ExtForceListValue -Resolved $cubo) -ErrorAction SilentlyContinue } else { Write-Host '::warning::[chrome] uBlock CWS id unresolved live - skipped (never guessed)' }
+          if ($cdr)  { $cwsN++; Set-ItemProperty -Path $chromeExt -Name ([string]$cwsN) -Value (Get-ExtForceListValue -Resolved $cdr) -ErrorAction SilentlyContinue } else { Write-Host '::warning::[chrome] Dark Reader CWS id unresolved live - skipped (never guessed)' }
+          Write-Host ('[chrome] forced extensions written: ' + $cwsN + ' of 2 (live-resolved from Chrome Web Store pages)')
           $chromeBm = @()
           foreach ($b in $reqBookmarks) { $chromeBm += @{ name = [string]$b.name; url = [string]$b.url } }
           foreach ($b in $sessionBookmarks) { $chromeBm += @{ name = [string]$b.name; url = [string]$b.url } }
@@ -2719,7 +2791,7 @@ jobs:
               $LASTEXITCODE = 0
               Write-Host '[browsers] gpupdate /force executed'
           } catch { }
-          # [U1 / #7D] qBittorrent winget block removed. Torrent client is not part of the native
+          # [U1 / #7D] P2P client winget block removed. P2P-index software is not part of the native
           # RDP auto-login architecture and its presence widened the runner attack surface.
           Write-Host '[parsec] skipped - new Parsec requires email OTP (token pairing deprecated); RDP with CredSSP-disabled .rdp is the primary path'
           try {
