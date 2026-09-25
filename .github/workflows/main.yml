@@ -204,7 +204,13 @@ jobs:
           Write-Host '[ts] Tailscale MSI install finished'
           exit 0
 
-      - name: Tailscale up (TS_AUTHKEY auto-login, else clickable sign-in link)
+      # [F9k] Fail-closed secrets framework. TS_AUTHKEY is REQUIRED: a missing
+      # or rejected key HALTS the run here with a clickable admin-keys link and
+      # numbered fix steps (::error:: + step summary + config.json tsReason).
+      # There is NO interactive sign-in fallback anymore - the old silent
+      # 'no sign-in link' throw is replaced by a classified, actionable halt.
+      # The raw key is never printed: every emitted line passes the redactor.
+      - name: Tailscale up (TS_AUTHKEY fail-closed, halt-with-link)
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         shell: pwsh
@@ -212,6 +218,49 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $S = $env:GITHUB_STEP_SUMMARY
+          $keysUrl = 'https://login.tailscale.com/admin/settings/keys'
+          # [F9k] Redactor: strips the injected secret VALUE(s) plus any
+          # tskey-*/ghp_*/github_pat_* token shape from every printed line.
+          function ConvertTo-Redacted([string]$Text) {
+              $t = [string]$Text
+              foreach ($v in @($env:TS_AUTHKEY, $env:VNC_PASS)) {
+                  if ($v -and $v.Length -ge 4) { $t = $t.Replace($v, '<redacted>') }
+              }
+              $t = [regex]::Replace($t, 'tskey-[A-Za-z0-9][A-Za-z0-9\-]*', 'tskey-<redacted>')
+              $t = [regex]::Replace($t, '(ghp_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,})', '<redacted>')
+              return $t
+          }
+          # [F9k] Generic halt helper (reusable for TS_AUTHKEY / VNC_PASS /
+          # TS_API_TOKEN): writes '::error::', a step-summary card with a
+          # CLICKABLE admin link + numbered fix steps (+ optional redacted log
+          # tail), stamps config.json tsReason/tsAuthAdminUrl, then throws.
+          function Emit-SecretHalt([string]$What, [string]$AdminUrl, [string]$Reason, [string[]]$Steps, [string]$Detail = '') {
+              Write-Host (ConvertTo-Redacted ('::error::' + $What + ' - ' + $Reason + '. Fix: ' + $AdminUrl))
+              $md = @('### ' + $What + ' - halted by design', '', '**[' + $AdminUrl + '](' + $AdminUrl + ')**', '')
+              for ($si = 0; $si -lt $Steps.Count; $si++) { $md += ((($si + 1) -as [string]) + '. ' + $Steps[$si]) }
+              if ($Detail) { $md += @('', '```text', $Detail, '```') }
+              foreach ($line in $md) {
+                  $line = ConvertTo-Redacted $line
+                  Write-Host ('[halt] ' + $line)
+                  if ($S) { $line | Add-Content -Path $S }
+              }
+              try {
+                  $cfgPathH = 'C:\ghrdp\config.json'
+                  $encH = New-Object System.Text.UTF8Encoding($false)
+                  $cfgH = $null
+                  if (Test-Path -LiteralPath $cfgPathH) {
+                      $cfgH = [System.IO.File]::ReadAllText($cfgPathH) | ConvertFrom-Json
+                  } else {
+                      New-Item -ItemType Directory -Path 'C:\ghrdp' -Force | Out-Null
+                      $cfgH = [pscustomobject]@{}
+                  }
+                  $cfgH | Add-Member -NotePropertyName tsReason -NotePropertyValue $Reason -Force
+                  $cfgH | Add-Member -NotePropertyName tsAuthAdminUrl -NotePropertyValue $AdminUrl -Force
+                  [System.IO.File]::WriteAllText($cfgPathH, ($cfgH | ConvertTo-Json -Depth 10), $encH)
+              } catch { Write-Host ('[halt] config.json stamp failed: ' + $_.Exception.Message) }
+              throw (ConvertTo-Redacted ($What + ' (' + $Reason + ') - halted by design. Open ' + $AdminUrl))
+          }
+
           $daemonOk = $false
           for ($i = 0; $i -lt 30; $i++) {
               try {
@@ -223,82 +272,73 @@ jobs:
           }
           if (-not $daemonOk) { throw 'tailscaled did not start; check the Tailscale install step.' }
           $hostname = 'ghrdp-' + ([guid]::NewGuid().ToString('N').Substring(0, 6))
-          $state = ''
-          try { $state = [string](((& $ts status --json 2>$null) | ConvertFrom-Json).BackendState) } catch { }
 
-          if ($env:TS_AUTHKEY) {
-              Write-Host '[ts] TS_AUTHKEY secret found - attempting automatic login'
-              $upLog = Join-Path $env:RUNNER_TEMP 'ts-up.log'
-              $upErr = Join-Path $env:RUNNER_TEMP 'ts-up.err'
+          # One fixed, numbered regeneration procedure reused by every halt
+          # below (missing / invalid / ratelimited / unknown).
+          $authSteps = @(
+              ('Open the Tailscale admin keys page (link above): ' + $keysUrl)
+              'Click "Generate auth key" with Reusable = ON and Expiry = 90 days'
+              'Copy the generated tskey-auth-... value'
+              'Set repo secret TS_AUTHKEY to that value (GitHub repo -> Settings -> Secrets and variables -> Actions: https://github.com/dekarita/supreme-lamp/settings/secrets/actions)'
+              'Re-dispatch this workflow (Actions -> Windows RDP -> Run workflow)'
+          )
+
+          # [F9k] Missing key = halt by design. No interactive fallback.
+          if (-not $env:TS_AUTHKEY) {
+              Emit-SecretHalt 'TS_AUTHKEY missing' $keysUrl 'ts-authkey-missing' $authSteps
+          }
+
+          Write-Host '[ts] TS_AUTHKEY secret found - attempting automatic login (key value is never printed)'
+          $upLog = Join-Path $env:RUNNER_TEMP 'ts-up.log'
+          $upErr = Join-Path $env:RUNNER_TEMP 'ts-up.err'
+          $ok = $false
+          for ($attempt = 1; $attempt -le 2 -and -not $ok; $attempt++) {
+              Remove-Item $upLog, $upErr -Force -ErrorAction SilentlyContinue
               Start-Process -FilePath $ts -ArgumentList @('up', ('--authkey=' + $env:TS_AUTHKEY), '--accept-dns=true', ('--hostname=' + $hostname)) -RedirectStandardOutput $upLog -RedirectStandardError $upErr -WindowStyle Hidden | Out-Null
-              $ok = $false; $badReason = ''
+              $fatalHit = $false
+              # Poll status --json <= 90 s for Running; break EARLY on a fatal
+              # authkey rejection (no need to burn the full window).
               for ($i = 0; $i -lt 45; $i++) {
                   try {
                       $j = (& $ts status --json 2>$null) | ConvertFrom-Json -ErrorAction Stop
                       if ($j -and ($j.BackendState -eq 'Running')) { $ok = $true; break }
                   } catch { }
-                  $all = ''
-                  try { if (Test-Path $upErr) { $all += [System.IO.File]::ReadAllText($upErr) } } catch { }
-                  try { if (Test-Path $upLog) { $all += "`n" + [System.IO.File]::ReadAllText($upLog) } } catch { }
-                  if ($all -match 'invalid|expired|not valid|unauthorized|forbidden|already been used') {
-                      $badReason = (@($all -split "`n" | Where-Object { $_ -match 'invalid|expired|not valid|unauthorized|forbidden|already been used' }) | Select-Object -First 1)
-                      Write-Host ('[ts] AUTHKEY REJECTED: ' + $badReason)
-                      break
-                  }
+                  $allNow = ''
+                  try { if (Test-Path -LiteralPath $upErr) { $allNow += [System.IO.File]::ReadAllText($upErr) } } catch { }
+                  try { if (Test-Path -LiteralPath $upLog) { $allNow += "`n" + [System.IO.File]::ReadAllText($upLog) } } catch { }
+                  if ($allNow -match 'invalid|expired|revoked|not a valid|unauthorized|forbidden|already been used|consumed') { $fatalHit = $true; break }
                   Start-Sleep -Seconds 2
               }
-              if ($ok) {
-                  Write-Host '[ts] auto-login OK via TS_AUTHKEY'
-                  if ($S) { '### Tailscale: auto-logged-in via TS_AUTHKEY' | Add-Content -Path $S }
-              } else {
-                  Write-Host ('[ts] WARNING: TS_AUTHKEY did not reach Running' + $(if ($badReason) { ' (' + $badReason + ')' } else { '' }) + ' - falling back to interactive sign-in')
-                  if ($S) {
-                      '### Tailscale auth key rejected or expired' | Add-Content -Path $S
-                      ('Reason: ' + $(if ($badReason) { $badReason } else { 'timeout' })) | Add-Content -Path $S
-                      'Fix: Tailscale admin > Settings > Keys > generate a REUSABLE key (no expiry, no approval), then update repo secret TS_AUTHKEY.' | Add-Content -Path $S
-                  }
-              }
-              try { $state = [string](((& $ts status --json 2>$null) | ConvertFrom-Json).BackendState) } catch { }
+              if ($ok -or $fatalHit) { break }
+              # ONE retry, after 10 s, for transient control-plane errors only.
+              $transientNow = ''
+              try { if (Test-Path -LiteralPath $upErr) { $transientNow = [System.IO.File]::ReadAllText($upErr) } } catch { }
+              if ($attempt -eq 1 -and $transientNow -match 'timeout|timed out|temporar|unavailable|connection (refused|reset)|EOF|50[0-9]|try again') {
+                  Write-Host '[ts] transient control-plane error - retrying once after 10 s'
+                  Start-Sleep -Seconds 10
+              } else { break }
+          }
+          if ($ok) {
+              Write-Host '[ts] auto-login OK via TS_AUTHKEY'
+              if ($S) { '### Tailscale: auto-logged-in via TS_AUTHKEY' | Add-Content -Path $S }
+              exit 0
           }
 
-          if ($state -ne 'Running') {
-              $upLog2 = Join-Path $env:RUNNER_TEMP 'ts-up-manual.log'
-              $upErr2 = Join-Path $env:RUNNER_TEMP 'ts-up-manual.err'
-              Start-Process -FilePath $ts -ArgumentList @('up', '--accept-dns=true', ('--hostname=' + $hostname)) -RedirectStandardOutput $upLog2 -RedirectStandardError $upErr2 -WindowStyle Hidden | Out-Null
-              $url = $null
-              $txt = ''
-              for ($i = 0; $i -lt 90; $i++) {
-                  $txt = ''
-                  foreach ($f in @($upLog2, $upErr2)) {
-                      if (Test-Path $f) {
-                          try {
-                              $fs = [System.IO.File]::Open($f, 'Open', 'Read', 'ReadWrite')
-                              $sr = New-Object System.IO.StreamReader($fs)
-                              $txt += $sr.ReadToEnd()
-                              $sr.Close()
-                              $fs.Close()
-                          } catch { }
-                      }
-                  }
-                  if ($txt -match 'https://login\.tailscale\.com/[A-Za-z0-9_/\-]+') { $url = $Matches[0]; break }
-                  Start-Sleep -Seconds 2
-              }
-              if (-not $url) {
-                  Write-Host '[ts] no sign-in link produced; raw output follows:'
-                  Write-Host $txt
-                  throw 'Tailscale sign-in link not found.'
-              }
-              Write-Host '============================================================'
-              Write-Host '  TAILSCALE SIGN-IN LINK (click now in your browser):'
-              Write-Host ('  ' + $url)
-              Write-Host '  Approve it; the workflow then continues automatically.'
-              Write-Host '============================================================'
-              if ($S) {
-                  '### Tailscale sign-in (click now)' | Add-Content -Path $S
-                  ('**[' + $url + '](' + $url + ')**') | Add-Content -Path $S
-              }
+          # Failure: read the last 25 lines of the PAIRED logs, redact, then
+          # classify per F9k before halting with the same 5 fix steps.
+          $tail = @()
+          foreach ($f in @($upLog, $upErr)) {
+              try { if (Test-Path -LiteralPath $f) { $tail += ([System.IO.File]::ReadAllText($f) -split "`r?`n") } } catch { }
           }
-          exit 0
+          $tail = @($tail | Where-Object { $_ } | Select-Object -Last 25 | ForEach-Object { ConvertTo-Redacted $_ })
+          $tailText = ($tail -join "`n")
+          Write-Host '[ts] tailscale up failed - last 25 log lines (redacted):'
+          foreach ($l in $tail) { Write-Host ('[ts]   ' + $l) }
+          $reason = 'ts-authkey-unknown'
+          if ($tailText -match 'invalid|expired|revoked|not a valid') { $reason = 'ts-authkey-invalid' }
+          elseif ($tailText -match 'rate|limit') { $reason = 'ts-authkey-ratelimited' }
+          if ($reason -eq 'ts-authkey-unknown' -and -not $tailText) { Write-Host '[ts] note: tailscale up produced no log output; treating as unclassified failure.' }
+          Emit-SecretHalt 'TS_AUTHKEY login failed' $keysUrl $reason $authSteps $tailText
 
       - name: Wait for Tailscale connected
         shell: pwsh
@@ -844,6 +884,15 @@ jobs:
           $root = 'C:\ghrdp'
           New-Item -ItemType Directory -Path $root -Force | Out-Null
           Copy-Item -Path (Join-Path $stage '*') -Destination $root -Recurse -Force -ErrorAction SilentlyContinue
+          # [F9k-guard] cascade guard: ghrdp-lib.ps1 is staged by an EARLIER step.
+          # If it is absent, that earlier step halted this run - this step is the
+          # cascade, not the cause. Read the FIRST failed step above.
+          $lib = Join-Path $root 'ghrdp-lib.ps1'
+          if (-not (Test-Path -LiteralPath $lib)) {
+              Write-Host '::error::ghrdp-lib.ps1 missing - an EARLIER step halted this run. Read the FIRST failed step above; this step is a cascade, not the cause.'
+              if ($env:GITHUB_STEP_SUMMARY) { '### Upstream halt: lib never staged - fix the first failed step.' | Add-Content -Path $env:GITHUB_STEP_SUMMARY }
+              exit 1
+          }
           . (Join-Path $root 'ghrdp-lib.ps1')
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $ip = ''
@@ -1660,6 +1709,15 @@ jobs:
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $S = $env:GITHUB_STEP_SUMMARY
           $root = 'C:\ghrdp'
+          # [F9k-guard] cascade guard: ghrdp-lib.ps1 is staged by an EARLIER step.
+          # If it is absent, that earlier step halted this run - this step is the
+          # cascade, not the cause. Read the FIRST failed step above.
+          $lib = Join-Path $root 'ghrdp-lib.ps1'
+          if (-not (Test-Path -LiteralPath $lib)) {
+              Write-Host '::error::ghrdp-lib.ps1 missing - an EARLIER step halted this run. Read the FIRST failed step above; this step is a cascade, not the cause.'
+              if ($env:GITHUB_STEP_SUMMARY) { '### Upstream halt: lib never staged - fix the first failed step.' | Add-Content -Path $env:GITHUB_STEP_SUMMARY }
+              exit 1
+          }
           . (Join-Path $root 'ghrdp-lib.ps1')
           $cfg = Read-MirrorCfg -Path (Join-Path $root 'config.json')
           $ip = [string]$cfg.rdpIp
@@ -2249,6 +2307,15 @@ jobs:
           $idleCap = $jobStart.AddMinutes(350)
           $sessionWindowMinutes = 330
           $deadline = $idleCap
+          # [F9k-guard] cascade guard: ghrdp-lib.ps1 is staged by an EARLIER step.
+          # If it is absent, that earlier step halted this run - this step is the
+          # cascade, not the cause. Read the FIRST failed step above.
+          $lib = Join-Path $root 'ghrdp-lib.ps1'
+          if (-not (Test-Path -LiteralPath $lib)) {
+              Write-Host '::error::ghrdp-lib.ps1 missing - an EARLIER step halted this run. Read the FIRST failed step above; this step is a cascade, not the cause.'
+              if ($env:GITHUB_STEP_SUMMARY) { '### Upstream halt: lib never staged - fix the first failed step.' | Add-Content -Path $env:GITHUB_STEP_SUMMARY }
+              exit 1
+          }
           . (Join-Path $root 'ghrdp-lib.ps1')
           $cfgKa = Read-MirrorCfg -Path $cfgPath
           if ($cfgKa -and -not [string]$cfgKa.rdpIp) {
