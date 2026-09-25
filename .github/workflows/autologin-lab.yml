@@ -126,29 +126,6 @@ jobs:
               rdpPass = 'LABDUMMY-win-9876'; vncPass = 'LABDUMMY-vnc-5432'; rdpIp = '100.118.42.7'
           } | ConvertTo-Json -Compress), $utf8)
           [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), 'lab-dash-token-0123456789', $utf8)
-          # [F10-14b] PROBE (temporary): reproduce Test-ClientAllowed's loopback
-          # branch on this host and surface any swallowed exception, because the
-          # 401 body 'unauthorized' proves the server rejected a 127.0.0.1 client.
-          try {
-              function Test-ProbeAllowed { param($Client, $Query, $Token)
-                  try {
-                      $ip = $Client.Client.RemoteEndPoint.Address
-                      if ($ip.IsLoopback) { return $true }
-                      $oct = $ip.GetAddressBytes()
-                      if ($oct.Length -eq 4 -and $oct[0] -eq 100 -and $oct[1] -ge 64 -and $oct[1] -le 127) { return $true }
-                  } catch { Write-Host ('::warning::[probe] inner throw: ' + $_.Exception.GetType().Name + ': ' + $_.Exception.Message) }
-                  return $false
-              }
-              $tl = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse('0.0.0.0'), 7399)
-              $tl.Start()
-              $cli = New-Object System.Net.Sockets.TcpClient
-              $cli.Connect('127.0.0.1', 7399)
-              $acc = $tl.AcceptTcpClient()
-              $ra = $acc.Client.RemoteEndPoint
-              $ipx = $ra.Address
-              Write-Host ('::warning::[probe] endpoint=' + $ra.ToString() + ' type=' + $ipx.GetType().FullName + ' staticloop=' + [string]([System.Net.IPAddress]::IsLoopback($ipx)) + ' prop=' + [string]($ipx.IsLoopback) + ' bytes=' + [string]((($ipx.GetAddressBytes()) | ForEach-Object { $_.ToString() }) -join '.') + ' verdict=' + [string](Test-ProbeAllowed -Client $acc -Query $null -Token 'lab-dash-token-0123456789'))
-              $acc.Close(); $cli.Close(); $tl.Stop()
-          } catch { Write-Host ('::warning::[probe] setup failed: ' + $_.Exception.Message) }
           $srv = $null
           function DE-Fail([string]$Stage, [string]$Detail) {
               Write-Host ('::error::[D/E] stage=' + $Stage + ' :: ' + $Detail)
