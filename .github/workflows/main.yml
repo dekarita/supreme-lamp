@@ -1272,12 +1272,21 @@ jobs:
           # 100.64.0.0/10 ONLY - never 0.0.0.0/0, never a public range, no funnel.
           function Set-WebdeskFirewall {
               $fwName = 'GHRDP-Webdesk'
+              # idempotent: remove any same-name rule first (cmdlet + netsh views).
               try { Remove-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue } catch { }
+              try { & netsh.exe advfirewall firewall delete rule name="$fwName" 2>$null | Out-Null } catch { }
+              $LASTEXITCODE = 0
               try {
                   New-NetFirewallRule -DisplayName $fwName -Direction Inbound -Protocol TCP -LocalPort 7333 -RemoteAddress '100.64.0.0/10' -Action Allow -Profile Any -Description 'GHRDP web desktop: tailnet-only noVNC/websockify (7333)' -ErrorAction Stop | Out-Null
               } catch {
-                  Write-Host ('[webdesk] firewall rule creation failed: ' + $_.Exception.Message)
-                  return $false
+                  # netsh fallback (same precedent as the RDP firewall step): a
+                  # missing cmdlet must not cost the run, but the scope stays
+                  # 100.64.0.0/10 - never 'any'.
+                  Write-Host ('[webdesk] New-NetFirewallRule failed: ' + $_.Exception.Message + ' - falling back to netsh')
+                  try {
+                      & netsh.exe advfirewall firewall add rule name="$fwName" dir=in action=allow protocol=tcp localport=7333 remoteip=100.64.0.0/10 enable=yes 2>$null | Out-Null
+                      $LASTEXITCODE = 0
+                  } catch { Write-Host ('[webdesk] netsh fallback failed: ' + $_.Exception.Message) }
               }
               return [bool](Get-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue)
           }
@@ -1436,12 +1445,21 @@ jobs:
           }
           function Set-WebdeskFirewall {
               $fwName = 'GHRDP-Webdesk'
+              # idempotent: remove any same-name rule first (cmdlet + netsh views).
               try { Remove-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue } catch { }
+              try { & netsh.exe advfirewall firewall delete rule name="$fwName" 2>$null | Out-Null } catch { }
+              $LASTEXITCODE = 0
               try {
                   New-NetFirewallRule -DisplayName $fwName -Direction Inbound -Protocol TCP -LocalPort 7333 -RemoteAddress '100.64.0.0/10' -Action Allow -Profile Any -Description 'GHRDP web desktop: tailnet-only noVNC/websockify (7333)' -ErrorAction Stop | Out-Null
               } catch {
-                  Write-Host ('[webdesk] firewall rule creation failed: ' + $_.Exception.Message)
-                  return $false
+                  # netsh fallback (same precedent as the RDP firewall step): a
+                  # missing cmdlet must not cost the run, but the scope stays
+                  # 100.64.0.0/10 - never 'any'.
+                  Write-Host ('[webdesk] New-NetFirewallRule failed: ' + $_.Exception.Message + ' - falling back to netsh')
+                  try {
+                      & netsh.exe advfirewall firewall add rule name="$fwName" dir=in action=allow protocol=tcp localport=7333 remoteip=100.64.0.0/10 enable=yes 2>$null | Out-Null
+                      $LASTEXITCODE = 0
+                  } catch { Write-Host ('[webdesk] netsh fallback failed: ' + $_.Exception.Message) }
               }
               return [bool](Get-NetFirewallRule -DisplayName $fwName -ErrorAction SilentlyContinue)
           }
