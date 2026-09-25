@@ -124,7 +124,9 @@ test('F9o UI: VNC auth mode row + degraded advisory + new detail text', () => {
   // a non-root path passes through untouched.
   assert.match(ui, /var openUrl=webdeskUrl;/);
   assert.match(ui, /u2\.search='autoconnect=true&compression=6'/);
-  assert.match(ui, /window\.open\(openUrl,'_blank','noopener'\)/);
+  // [F11-2] supersedes the F9o 'noopener' form - see tests/f11-ux-package.test.js.
+  assert.match(ui, /window\.open\(url,'_blank'\)/);
+  assert.ok(!/window\.open\(openUrl,'_blank','noopener'\)/.test(ui));
 });
 
 test('F9o gates: launch-gates enforce the ladder', () => {

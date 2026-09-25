@@ -1364,6 +1364,30 @@ jobs:
               Set-WebdeskCfg '' 'serve-failed' 'novnc-assets'
               throw 'Web desktop not deployed: noVNC/websockify assets unavailable. Halted by design. See Step Summary.'
           }
+          # [F11-2 §2.1] Deploy the VNC password shim INTO the served noVNC copy.
+          # The shim is written verbatim from payloads/ghrdp-cred-shim.js and a
+          # single <script src> tag plus the EXACT dashboard origin (as a meta
+          # tag) are injected before </body> of vnc.html. Idempotent (the marker
+          # is skipped when present). No password is part of the injection, and
+          # no launch URL ever carries 'password=' (launch-gates F11 enforces
+          # both). The shim only accepts postMessage from that exact origin with
+          # window.opener as the source.
+          try {
+              $shimSrc = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-cred-shim.js'
+              $shimDst = Join-Path $novncDir 'ghrdp-cred-shim.js'
+              Copy-Item -LiteralPath $shimSrc -Destination $shimDst -Force
+              $credOrigin = ('http://' + $rdpIp + ':7331')
+              $inject = ('<meta name="ghrdp-cred-origin" content="' + $credOrigin + '"><script src="ghrdp-cred-shim.js"></script>')
+              foreach ($page in @('vnc.html', 'vnc_lite.html')) {
+                  $pg = Join-Path $novncDir $page
+                  if (-not (Test-Path -LiteralPath $pg)) { continue }
+                  $html = [System.IO.File]::ReadAllText($pg)
+                  if ($html.Contains('ghrdp-cred-shim.js')) { continue }
+                  if ($html.Contains('</body>')) { $html = $html.Replace('</body>', ($inject + '</body>')) } else { $html = $html + $inject }
+                  [System.IO.File]::WriteAllText($pg, $html, (New-Object System.Text.UTF8Encoding($false)))
+              }
+              Write-Host ('[webdesk] cred shim injected: script=' + (Test-Path -LiteralPath $shimDst) + '; allowed origin=' + $credOrigin)
+          } catch { Write-Host ('[webdesk] cred shim injection failed: ' + $_.Exception.Message) }
           # Wait for VNC 5900 to be LISTENING on loopback before starting websockify.
           $vncUp = $false
           for ($i = 0; $i -lt 30; $i++) {

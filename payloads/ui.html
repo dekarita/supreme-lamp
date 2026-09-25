@@ -297,7 +297,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
        shows last-4 masks, the copy button copies the real value. They are
        never placed in URLs, logs, summaries, or artifacts. -->
   <div class="row"><span class="k">Windows password</span><span class="v" id="credWinPass">(host-only)</span><button onclick="copyById('credWinPass',this)">copy</button><span class="note">masked (last 4); served only to your token-authenticated dashboard</span></div>
-  <div class="row"><span class="k">VNC password</span><span class="v" id="credVncPass">(host-only)</span><button onclick="copyById('credVncPass',this)">copy</button><span class="note">the VNC_PASS secret set at dispatch; masked (last 4), token-gated</span></div>
+  <div class="row"><span class="k">VNC password</span><span class="v" id="credVncPass">(host-only)</span><button onclick="copyById('credVncPass',this)">copy</button><a href="javascript:void(0)" onclick="rememberVncFromKeys(this)" style="font-size:11px;opacity:.6;text-decoration:underline">remember for WEB DESKTOP</a><span class="note">the VNC_PASS secret set at dispatch; masked (last 4), token-gated. "remember" stores it in THIS browser only (never in a URL)</span></div>
   <div class="row"><span class="k">Connectivity</span><span class="timer" id="connRtt" style="font-size:18px">-- ms</span><span class="badge" id="connBadge">path: --</span><span class="badge" id="connFps">-- fps</span><span class="badge" id="connJit">jit -- ms</span><canvas id="connSpark" width="220" height="34" style="width:220px;height:34px"></canvas></div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
   <div class="row"><span class="k">RDP logon age</span><span class="timer" id="timerRdpAge">--:--:--</span><span class="badge" id="c2Srv">srv --</span></div>
@@ -355,6 +355,20 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
       <span class="note" id="autoLoginStatus"></span>
     </div>
     <span class="note">tailnet-only HTTP over WireGuard + VNC password; nothing installed on client. NLA on the Windows listener stays on.</span>
+  </div>
+  <!-- [F11-2 §2.2] VNC password memory: typed ONCE (or pulled from the gated
+       KEYS row), kept in this browser's localStorage, and handed to the noVNC
+       tab over postMessage (exact targetOrigin) - never inside the launch URL,
+       never in a query string, never in a log. -->
+  <div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
+    <span class="k" style="font-weight:600">VNC password memory (this device)</span>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <input id="vncPassInput" type="password" autocomplete="off" spellcheck="false" placeholder="type the VNC_PASS once" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.18);color:inherit;border-radius:8px;padding:6px 10px;min-width:220px">
+      <label class="note"><input type="checkbox" id="vncPassRemember"> remember on this device (localStorage)</label>
+      <button type="button" id="vncPassForget">forget</button>
+      <span class="note" id="vncPassState">not stored</span>
+    </div>
+    <span class="note">After the first entry, WEB DESKTOP auto-fills the noVNC Credentials dialog via postMessage from this page's origin only. The value never appears in a URL, query string, artifact, or log.</span>
   </div>
   <div class="row"><span class="k">Web desktop URL</span><span class="v" id="webdeskUrlVal">(not set)</span><a href="javascript:void(0)" onclick="copyById('webdeskUrlVal',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">VNC password = the VNC_PASS secret set at dispatch; this page never stores or shows it.</span></div>
   <div class="row"><span class="k">VNC auth mode</span><span class="v" id="webdeskAuthVal">(unknown)</span></div>
@@ -882,6 +896,12 @@ async function bootstrapConfig(){
   }
   fillSecret('credWinPass', cr.windowsPass, cr.windowsPassMask);
   fillSecret('credVncPass', cr.vncPass, cr.vncPassMask);
+  // [F11-2 §2.2] gated VNC value is held only in this page's closure so the
+  // "remember for WEB DESKTOP" link can move it into localStorage on user
+  // action; it is never written to a URL, a log, or any DOM attribute except
+  // data-full on the KEYS row (existing F10 contract).
+  gatedVncPass=cr.vncPass?String(cr.vncPass):'';
+  if(gatedVncPass){var rst=document.getElementById('vncPassState');if(rst&&!vncPassNow())rst.textContent='gated password available - click "remember for WEB DESKTOP" or type it once';}
   populateFqdn(fqdn,user);
  }catch(_){}
 }
@@ -1177,12 +1197,79 @@ async function nativeStatus(){
    if(webdeskUrl){ // [F10-3 §2.3] open noVNC with autoconnect + zlib-compressed stream (compression=6) for lower LAN-latency frames
     var openUrl=webdeskUrl;
     try{var u2=new URL(webdeskUrl);if(!u2.pathname||u2.pathname==='/'){u2.pathname='/vnc.html';u2.search='autoconnect=true&compression=6';openUrl=u2.href;}}catch(_){}
-    wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(openUrl,'_blank','noopener');}; wb.title=openUrl;
+    wb.disabled=false; wb.style.opacity=''; wb.style.cursor='';
+    wb.onclick=function(){openWebDesk(openUrl);}; wb.title=openUrl;
    }
    else { wb.disabled=true; wb.style.opacity='0.5'; wb.style.cursor='not-allowed'; wb.onclick=null; wb.title='web desktop not deployed: '+deskReason; }
   }
  }catch(_){}
 }
+// [F11-2 §2.2] VNC password memory + postMessage handoff. The password lives
+// only in this browser (localStorage 'ghrdp.vncPass' when the user ticks
+// "remember"; otherwise in a page-lifetime variable). It is NEVER appended to
+// the noVNC URL - the shim inside the served noVNC copy receives it through
+// postMessage with an EXACT targetOrigin (the noVNC page's own origin).
+var VNC_LS_KEY='ghrdp.vncPass', vncPassSession='', gatedVncPass='';
+function vncPassNow(){
+ var s='';
+ try{var i=document.getElementById('vncPassInput'); if(i&&i.value){s=String(i.value);}}catch(_){}
+ if(!s){try{s=localStorage.getItem(VNC_LS_KEY)||'';}catch(_){s='';}}
+ return s||vncPassSession||'';
+}
+function vncPaintState(){
+ var st=document.getElementById('vncPassState'); if(!st)return;
+ var remembered='';
+ try{remembered=localStorage.getItem(VNC_LS_KEY)||'';}catch(_){remembered='';}
+ st.textContent=remembered?('remembered on this device ('+remembered.length+' chars, never shown)'):(vncPassNow()?'in memory for this page only - tick "remember" to keep it':'not stored');
+ st.style.color=remembered?'#7dffc9':'';
+}
+function vncRemember(pass){
+ if(!pass)return;
+ vncPassSession=pass;
+ var cb=document.getElementById('vncPassRemember');
+ var wantRemember=cb?!!cb.checked:true;
+ try{ if(wantRemember){localStorage.setItem(VNC_LS_KEY,pass);} }catch(_){}
+ vncPaintState();
+}
+function rememberVncFromKeys(){
+ var v='';
+ try{v=(document.getElementById('credVncPass')||{}).getAttribute('data-full')||'';}catch(_){v='';}
+ if(!v){ try{v=gatedVncPass||'';}catch(_){v='';} }
+ if(!v){ var st=document.getElementById('vncPassState'); if(st)st.textContent='no gated VNC password available yet - type it once instead'; return; }
+ var cb=document.getElementById('vncPassRemember'); if(cb)cb.checked=true;
+ var i=document.getElementById('vncPassInput'); if(i)i.value=v;
+ vncRemember(v);
+}
+function openWebDesk(url){
+ var pass=vncPassNow();
+ var w=null;
+ // NOTE: deliberately NOT 'noopener' - the shim requires window.opener to be
+ // the dashboard; it drops its own opener handle immediately after the handoff.
+ try{w=window.open(url,'_blank');}catch(_){w=null;}
+ if(!pass){vncPaintState();return;}
+ if(!w){var st=document.getElementById('vncPassState'); if(st)st.textContent='popup blocked - allow popups to auto-fill the VNC password'; return;}
+ var origin=''; try{origin=new URL(url).origin;}catch(_){origin='';}
+ if(!origin)return;
+ var n=0;
+ var t=setInterval(function(){
+  n++;
+  try{ w.postMessage({type:'ghrdp-vnc-pass',pass:pass},origin); }catch(_){}
+  if(n>=6)clearInterval(t);
+ },500);
+}
+(function(){
+ var i=document.getElementById('vncPassInput');
+ var cb=document.getElementById('vncPassRemember');
+ var fg=document.getElementById('vncPassForget');
+ var remembered='';
+ try{remembered=localStorage.getItem(VNC_LS_KEY)||'';}catch(_){remembered='';}
+ if(cb)cb.checked=!!remembered;
+ if(i&&typeof i.addEventListener==='function')i.addEventListener('input',function(){vncPassSession=String(i.value||'');if(cb&&cb.checked)vncRemember(i.value);else vncPaintState();},false);
+ if(cb&&typeof cb.addEventListener==='function')cb.addEventListener('change',function(){if(cb.checked)vncRemember(vncPassNow());else{try{localStorage.removeItem(VNC_LS_KEY);}catch(_){}vncPaintState();}},false);
+ if(i&&!i.value&&remembered)i.value=remembered;
+ if(fg)fg.onclick=function(){vncPassSession='';try{localStorage.removeItem(VNC_LS_KEY);}catch(_){}var x=document.getElementById('vncPassInput');if(x)x.value='';if(cb)cb.checked=false;vncPaintState();};
+ vncPaintState();
+})();
 // WEB DESKTOP is the only launch button on ephemeral runners. VPS users may
 // use the pinned executable after the interactive cmdkey prerequisite.
 nativeStatus();

@@ -103,6 +103,51 @@ jobs:
           # §5 setup caches present.
           grep -q 'actions/cache@v4' .github/workflows/main.yml
           echo 'F10 gates PASS'
+      - name: F11-2 VNC password memory gates (shim + postMessage, no URL creds)
+        shell: bash
+        run: |
+          set -euo pipefail
+          shim=payloads/ghrdp-cred-shim.js
+          test -f "$shim"
+          # §2.1 shim: opener + exact-origin gate, auto-submit, purge.
+          grep -q "type !== 'ghrdp-vnc-pass'" "$shim"
+          grep -q 'ev.source !== window.opener' "$shim"
+          grep -q 'originAllowed(ev.origin)' "$shim"
+          grep -q 'sendCredentials' "$shim"
+          grep -q 'noVNC_password_input' "$shim"
+          grep -q 'noVNC_credentials_dialog' "$shim"
+          grep -q 'pending = null' "$shim"
+          grep -q 'window.opener = null' "$shim"
+          grep -q 'ghrdp-cred-origin' "$shim"
+          # §2.2 never logs/echoes the value: no console/log/alert/document.title.
+          if grep -vE '^[[:space:]]*(/\*|\*|//)' "$shim" | grep -nE 'console\.|alert\(|document\.title|innerHTML'; then
+            echo 'F11-2: the shim must never log or echo the VNC password' >&2
+            exit 1
+          fi
+          # §2 deploy: the shim is copied INTO the served noVNC copy and the
+          # script tag + exact origin meta are injected, idempotently.
+          grep -q "payloads\\\\ghrdp-cred-shim.js" .github/workflows/main.yml
+          grep -q 'ghrdp-cred-shim.js' .github/workflows/main.yml
+          grep -qF 'meta name="ghrdp-cred-origin"' .github/workflows/main.yml
+          grep -q "http://' + \$rdpIp + ':7331'" .github/workflows/main.yml
+          # §2.3 dashboard: localStorage memory + postMessage with EXACT
+          # targetOrigin; the launch URL itself must never carry a password.
+          grep -q 'ghrdp.vncPass' payloads/ui.html
+          grep -q 'ghrdp-vnc-pass' payloads/ui.html
+          grep -q 'origin=new URL(url).origin' payloads/ui.html
+          grep -q "w.postMessage({type:'ghrdp-vnc-pass',pass:pass},origin)" payloads/ui.html
+          grep -q 'targetOrigin' payloads/ui.html
+          if grep -nE "vnc\.html[^\"']*(password|pass)=|(password|pass)=[^\"']*vnc\.html" payloads/ui.html .github/workflows/main.yml; then
+            echo 'F11-2: a noVNC launch URL carries a credential parameter' >&2
+            exit 1
+          fi
+          # The dashboard must NOT use rel/noopener for the webdesk launch (the
+          # shim authenticates window.opener), and the shim must drop the opener.
+          if grep -nE "window\.open\(openUrl,'_blank','noopener'\)" payloads/ui.html; then
+            echo 'F11-2: webdesk launch must keep window.opener for the shim handoff' >&2
+            exit 1
+          fi
+          echo 'F11-2 gates PASS'
       - name: F8 web-desktop honesty gates
         shell: bash
         run: |
