@@ -44,6 +44,12 @@ function Get-StoreExtensionId {
     foreach ($h in $SlugHints) {
         $candidates += ($detailBase + $h)
     }
+    # search-engine discovery (static SERP HTML) - every hit is CONFIRMED on the
+    # live store detail page below, so nothing is trusted from the SERP alone.
+    $siteQ = if ($Store -eq 'edge') { 'site:microsoftedge.microsoft.com/addons/detail' } else { 'site:chromewebstore.google.com/detail' }
+    $serpQ = [uri]::EscapeDataString($siteQ + ' ' + $Query)
+    $candidates += ('https://html.duckduckgo.com/html/?q=' + $serpQ)
+    $candidates += ('https://www.bing.com/search?q=' + $serpQ)
     $rx = [regex]('/detail/[a-z0-9][a-z0-9\-]*/([a-z]{32})')
     $rxUri = [regex]('/addons/detail/[a-z0-9][a-z0-9\-]*/([a-p]{32})')
     $found = @{}
@@ -93,13 +99,20 @@ function Get-StoreExtensionId {
         }
         # 2) body scan (server-rendered links, embedded state JSON, any ID near a slug hint)
         if ($html) {
-            foreach ($m in $rx.Matches($html)) {
-                $id = $m.Groups[1].Value
-                if ($id -notmatch '^[a-p]{32}$') { continue }
-                $seg = $m.Value.ToLowerInvariant()
-                $hintOk = $true
-                foreach ($h in $SlugHints) { if ($seg -notlike ('*' + $h + '*')) { $hintOk = $false; break } }
-                if ($hintOk -and -not $found.ContainsKey($id)) { $found[$id] = $seg }
+            $scanTexts = @($html)
+            try {
+                $dec = [uri]::UnescapeDataString($html)
+                if ($dec -and ($dec -ne $html)) { $scanTexts += $dec }
+            } catch { }
+            foreach ($txt in $scanTexts) {
+                foreach ($m in $rx.Matches($txt)) {
+                    $id = $m.Groups[1].Value
+                    if ($id -notmatch '^[a-p]{32}$') { continue }
+                    $seg = $m.Value.ToLowerInvariant()
+                    $hintOk = $true
+                    foreach ($h in $SlugHints) { if ($seg -notlike ('*' + $h + '*')) { $hintOk = $false; break } }
+                    if ($hintOk -and -not $found.ContainsKey($id)) { $found[$id] = $seg }
+                }
             }
             # embedded state: any 32-char a-p ID token whose +-400-char window
             # contains one of the slug hints (case-insensitive) and a slug/id-ish key
@@ -135,7 +148,44 @@ function Get-StoreExtensionId {
         Write-Host ('::notice title=store-candidate::' + $Store + ' ' + $url + ' ' + $lastStat + ' detailHits=' + $hitsNow + ' id32=' + $idNow + ' found=' + $found.Count)
         if ($found.Count -gt 0) { break }
     }
-    if ($found.Count -eq 0) {
+    # ---- confirm candidates against the LIVE store detail page (title must
+    # mention every query word). Discovery sources are never trusted alone. ----
+    $confirmedId = ''
+    $confirmedVia = ''
+    if ($found.Count -gt 0) {
+        $terms = @()
+        foreach ($w in ($Query.ToLowerInvariant() -split '\s+')) { if ($w.Length -ge 3) { $terms += $w } }
+        foreach ($k in @($found.Keys)) {
+            $seg2 = [string]$found[$k]
+            $detailUrl = ''
+            if ($seg2 -like 'state:*') {
+                if ($Store -eq 'edge') { $detailUrl = 'https://microsoftedge.microsoft.com/addons/detail/' + $k }
+                else { $detailUrl = 'https://chrome.google.com/webstore/detail/' + $k }
+            } elseif ($Store -eq 'edge') {
+                $detailUrl = 'https://microsoftedge.microsoft.com/addons' + $seg2
+            } else {
+                $detailUrl = 'https://chromewebstore.google.com' + $seg2
+            }
+            $okAll = $false
+            try {
+                $r2 = Invoke-WebRequest -Uri $detailUrl -UseBasicParsing -TimeoutSec 45 -MaximumRedirection 5 -Headers @{ 'User-Agent' = $ua; 'Accept' = 'text/html,application/xhtml+xml'; 'Accept-Language' = 'en-US,en;q=0.9' }
+                $b2 = [string]$r2.Content
+                $head2 = $b2
+                if ($head2.Length -gt 6000) { $head2 = $head2.Substring(0, 6000) }
+                $head2 = $head2.ToLowerInvariant()
+                $okAll = $true
+                foreach ($t in $terms) { if (-not $head2.Contains($t)) { $okAll = $false; break } }
+                Write-Host ('::notice title=store-confirm::' + $detailUrl + ' terms-ok=' + $okAll)
+            } catch {
+                $em2 = [string]$_.Exception.Message
+                if ($em2.Length -gt 140) { $em2 = $em2.Substring(0, 140) }
+                Write-Host ('::notice title=store-confirm::' + $detailUrl + ' ERR ' + ($em2 -replace '[\r\n]+', ' '))
+                $okAll = $false
+            }
+            if ($okAll) { $confirmedId = $k; $confirmedVia = $detailUrl; break }
+        }
+    }
+    if (-not $confirmedId) {
         $useHtml = $goodHtml
         $useStat = $goodStat
         if (-not $useHtml) { $useHtml = $html; $useStat = $lastStat }
@@ -160,13 +210,12 @@ function Get-StoreExtensionId {
                 [System.IO.File]::WriteAllText($env:GITHUB_STEP_SUMMARY, $prev)
             }
         } catch { }
-        Write-Host ('::error title=Extension ID resolution failed::' + $Store + ' "' + $Query + '" last=' + $lastStat + ' detailHits=' + $hits + ' id32Tokens=' + $idTokens + ' - see store-diag in step summary/artifact')
+        Write-Host ('::error title=Extension ID resolution failed::' + $Store + ' "' + $Query + '" last=' + $lastStat + ' detailHits=' + $hits + ' id32Tokens=' + $idTokens + ' foundButUnconfirmed=' + $found.Count + ' - see store-diag in step summary/artifact')
         if ($samp) { Write-Host ('[store-sample] ' + $samp.Substring(0, [Math]::Min(700, $samp.Length))) }
-        throw ('STORE-ID-RESOLVE-FAILED store=' + $Store + ' query=' + $Query + ' last=' + $lastStat)
+        throw ('STORE-ID-RESOLVE-FAILED store=' + $Store + ' query=' + $Query + ' last=' + $lastStat + ' foundButUnconfirmed=' + $found.Count)
     }
-    $idOut = @($found.Keys)[0]
-    Write-Host ('[browser] resolved ' + $Query + ' on ' + $Store + ' -> ' + $idOut + ' seg=' + $found[$idOut] + ' (live store, build time)')
-    return $idOut
+    Write-Host ('[browser] resolved ' + $Query + ' on ' + $Store + ' -> ' + $confirmedId + ' via ' + $confirmedVia + ' (live store page confirmed, build time)')
+    return $confirmedId
 }
 
 # ---- live store resolution (build time) ----
