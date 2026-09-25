@@ -49,6 +49,8 @@ function Get-StoreExtensionId {
     $found = @{}
     $lastStat = 'no-candidate-attempted'
     $html = ''
+    $goodHtml = ''
+    $goodStat = ''
     # attempt 1-2 = crawler UA (stores serve pre-rendered SSR to crawlers for
     # indexing), attempt 3 = real browser UA.
     $crawlerUa = if ($Store -eq 'edge') { 'Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)' } else { 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bingbot.htm)' }
@@ -107,9 +109,9 @@ function Get-StoreExtensionId {
                     if ($m.Length -ne 32) { continue }
                     $id = $m.Value.ToLowerInvariant()
                     # reject substrings of a longer a-p run (truncated/shifted ids)
-                    $preOk = ($m.Index -eq 0) -or (-not ([string]$html[$m.Index - 1] -match '[a-p]'))
+                    $preOk = ($m.Index -eq 0) -or (-not ([string]$html[$m.Index - 1] -match '(?i)[a-p]'))
                     $postIdx = $m.Index + 32
-                    $postOk = ($postIdx -ge $html.Length) -or (-not ([string]$html[$postIdx] -match '[a-p]'))
+                    $postOk = ($postIdx -ge $html.Length) -or (-not ([string]$html[$postIdx] -match '(?i)[a-p]'))
                     if (-not ($preOk -and $postOk)) { continue }
                     $lo = [Math]::Max(0, $m.Index - 400)
                     $hi = [Math]::Min($html.Length, $m.Index + $m.Length + 400)
@@ -119,21 +121,35 @@ function Get-StoreExtensionId {
                     if ($hintOk -and -not $found.ContainsKey($id)) { $found[$id] = 'state:' + $id }
                 }
             }
+            $goodHtml = $html
+            $goodStat = $lastStat
         }
+        $hitsNow = 0
+        $idNow = 0
+        try {
+            if ($html) {
+                $hitsNow = [regex]::Matches($html, '(?i)/addons/detail/').Count
+                $idNow = [regex]::Matches($html, '(?i)[a-p]{32}').Count
+            }
+        } catch { }
+        Write-Host ('::notice title=store-candidate::' + $Store + ' ' + $url + ' ' + $lastStat + ' detailHits=' + $hitsNow + ' id32=' + $idNow + ' found=' + $found.Count)
         if ($found.Count -gt 0) { break }
     }
     if ($found.Count -eq 0) {
+        $useHtml = $goodHtml
+        $useStat = $goodStat
+        if (-not $useHtml) { $useHtml = $html; $useStat = $lastStat }
         $hits = 0
         $idTokens = 0
         try {
-            if ($html) {
-                $hits = [regex]::Matches($html, '(?i)/addons/detail/').Count
-                $idTokens = [regex]::Matches($html, '(?i)[a-p]{32}').Count
+            if ($useHtml) {
+                $hits = [regex]::Matches($useHtml, '(?i)/addons/detail/').Count
+                $idTokens = [regex]::Matches($useHtml, '(?i)[a-p]{32}').Count
             }
         } catch { }
         $samp = ''
-        if ($html -and $html.Length -gt 0) { $samp = $html.Substring(0, [Math]::Min(1200, $html.Length)) -replace '[\r\n]+', ' ' }
-        $diag = 'STORE-DIAG store=' + $Store + ' query=' + $Query + ' last=' + $lastStat + ' len=' + $html.Length + ' detailHits=' + $hits + ' id32Tokens=' + $idTokens + ' sample=' + $samp
+        if ($useHtml -and $useHtml.Length -gt 0) { $samp = $useHtml.Substring(0, [Math]::Min(1200, $useHtml.Length)) -replace '[\r\n]+', ' ' }
+        $diag = 'STORE-DIAG store=' + $Store + ' query=' + $Query + ' last=' + $useStat + ' len=' + $useHtml.Length + ' detailHits=' + $hits + ' id32Tokens=' + $idTokens + ' sample=' + $samp
         try { [System.IO.File]::AppendAllText((Join-Path $env:RUNNER_TEMP 'store-diag.txt'), ($diag + "`r`n`r`n")) } catch { }
         try {
             if ($env:GITHUB_STEP_SUMMARY) {
