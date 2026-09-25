@@ -29,7 +29,7 @@ CONNECTIVITY row shows the server-side `tailscale ping` to your PC
 "direct WireGuard not established - check client firewall UDP 41641" —
 allow outbound UDP 41641 on your PC's firewall/router.
 
-## 1. Native auto-login (VPS compiled-handler path, pre-F10)
+## 1. Legacy path (VPS compiled handler, pre-F10)
 
 WEB DESKTOP is the primary dashboard action for both VPS and ephemeral hosts.
 Native AUTO-LOGIN is offered **only** when the server reports `hostKind=vps`
@@ -39,7 +39,7 @@ gateway or dashboard service; the operator must do that separately before
 WEB DESKTOP can open. The user performs both one-time steps below on their
 own Windows PC; nothing installs or stores a credential from the page.
 
-## 1. Store the credential interactively
+### 1.1 Store the credential interactively
 
 Replace `<fqdn>` with the exact `*.ts.net` name from the VPS dashboard:
 
@@ -53,7 +53,7 @@ RDP-Tcp Let's Encrypt certificate. In the dashboard, tick **I ran cmdkey**
 only *after* running it; copying the line does not create a credential.
 The tick is a local assertion, not a test of Credential Manager.
 
-## 2. Register the compiled protocol handler (optional)
+### 1.2 Register the compiled protocol handler (optional)
 
 Download the `ghrdp-handler-win-x64` artifact from a successful
 **launch-gates** run for the reviewed revision. Keep `GhrdpHandler.exe` in a
