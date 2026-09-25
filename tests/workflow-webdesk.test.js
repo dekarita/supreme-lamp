@@ -9,6 +9,16 @@ const fs = require('node:fs');
 //    websockify never bound 7333 and every run degraded to 'serve-failed')
 //  - every serve-failed path is fail-closed (throw, not exit 0)
 //  - present-but-short VNC_PASS is 'vnc-pass-too-short', never 'vnc-pass-missing'
+// [F9n] Transport contracts (the serve proxy is retired - Windows SYSTEM
+// operator lock returns 401 for every post-connect LocalAPI call):
+//  - no serve-path code anywhere in the web-desktop steps
+//  - bind address = config.json .rdpIp, validated against 100.64.0.0/10,
+//    invalid => fail-closed 'tailnet-ip-unavailable' BEFORE any install
+//  - CGNAT-only GHRDP-Webdesk firewall rule (idempotent, netsh fallback scoped)
+//  - webdeskUrl = http://<rdpIp>:7333/vnc.html?autoconnect=1&resize=remote
+//  - self-test curls the exact advertised URL, classifies
+//    backend-dead | firewall | marker-missing, and stays fail-closed
+//  - server + UI publish only allowlisted webdeskUrl shapes
 const wf = fs.readFileSync('.github/workflows/main.yml', 'utf8');
 const lines = wf.split('\n');
 
@@ -70,7 +80,7 @@ test('every serve-failed path is fail-closed (throw, never exit 0)', () => {
   webdesk.split('\n').forEach((l, i) => {
     if (l.includes("Set-WebdeskCfg '' 'serve-failed'")) idxs.push(i);
   });
-  assert.equal(idxs.length, 4, 'expected 4 serve-failed reason writes (tightvnc, novnc, websockify, serve)');
+  assert.equal(idxs.length, 5, 'expected 5 serve-failed reason writes (tailnet-ip, tightvnc, novnc, firewall, websockify)');
   const webdeskLines = webdesk.split('\n');
   for (const i of idxs) {
     const tail = webdeskLines.slice(i, i + 8).join('\n');
@@ -80,10 +90,11 @@ test('every serve-failed path is fail-closed (throw, never exit 0)', () => {
 });
 
 test('serve-failed paths carry fixed, secret-free detail codes', () => {
+  assert.match(webdesk, /Set-WebdeskCfg '' 'serve-failed' 'tailnet-ip-unavailable'/);
   assert.match(webdesk, /Set-WebdeskCfg '' 'serve-failed' 'tightvnc-install'/);
   assert.match(webdesk, /Set-WebdeskCfg '' 'serve-failed' 'novnc-assets'/);
+  assert.match(webdesk, /Set-WebdeskCfg '' 'serve-failed' 'firewall-rule'/);
   assert.match(webdesk, /Set-WebdeskCfg '' 'serve-failed' 'websockify-bind'/);
-  assert.match(webdesk, /Set-WebdeskCfg '' 'serve-failed' 'serve-mapping'/);
 });
 
 test('present-but-short VNC_PASS is vnc-pass-too-short, never vnc-pass-missing', () => {
@@ -128,58 +139,85 @@ test('web-desktop step still records >= 6 reason writes (launch-gate F8)', () =>
   assert.ok(n >= 6, 'only ' + n + ' reason writes (need >= 6)');
 });
 
-test('F9j: serve exit code is printed (no more swallowed serve failures)', () => {
-  // The old code reset $LASTEXITCODE without ever printing it, so a failed
-  // `tailscale serve` was undiagnosable from the run log.
-  assert.match(webdesk, /tailscale serve \{0\} -> exit \{1\}/);
-  // An explicit-443 retry form covers the implicit-default-port form.
-  assert.match(webdesk, /'--bg', '443', 'http:\/\/127\.0\.0\.1:7333'/);
+// [F9n] Transport contracts. The serve proxy is retired from the web desktop
+// path: every post-connect LocalAPI call from the step returned
+// '401 Unauthorized: Tailscale already in use by NT AUTHORITY\SYSTEM, pid <n>'
+// (Windows operator lock - SYSTEM owns the connected node, the step-context CLI
+// is locked out). The transport is now websockify bound to the node's own
+// tailnet address on 7333, admitted by a CGNAT-only firewall rule.
+test('F9n: no serve-path code remains in the web-desktop steps', () => {
+  const region = lines.slice(webdeskStart, lines.findIndex(l => /^      - name: Start Mission Control/.test(l))).join('\n');
+  const code = region.split('\n').filter(l => !/^\s*#/.test(l));
+  for (const banned of ['$ts serve', 'serve set-raw', 'serve status', 'Get-WebdeskServeUrl', 'serve --help', "'--bg'"]) {
+    assert.ok(!code.some(l => l.includes(banned)), 'serve-path code still present: ' + banned);
+  }
+  // the ONLY permitted mention is the mandated transport note that documents
+  // why the transport was retired (it is required in the Step Summary).
+  const mentions = code.filter(l => /tailscale serve/i.test(l));
+  assert.ok(mentions.length > 0, 'the mandated transport note is missing');
+  for (const m of mentions) assert.match(m, /transport: tailnet HTTP \(WireGuard-encrypted path\) \+ VNC password gate; tailscale serve retired due to Windows SYSTEM operator lock \(401\)/);
 });
 
-test('F9j: URL is derived from a verified mapping, normalized to the default port', () => {
-  // The raw `serve status --json` Web key ('<host>.ts.net:<port>' on current
-  // tailscale) must never be concatenated verbatim into the URL - that
-  // produced 'https://host.ts.net:443/...' which the dashboard's port-less
-  // URL validator rejects (green run, dead button).
-  assert.doesNotMatch(webdesk, /'https:\/\/' \+ \$k(?![a-zA-Z0-9_])/);
-  // A mapping on any non-default port is treated as NO mapping (no false LIVE).
-  assert.match(webdesk, /portPart -ne '443'/);
-  // The derived host must be validated against an anchored *.ts.net pattern
-  // before any URL is derived (checked by shape, not by backslash-escaping,
-  // so the assertion is stable across editor/CI text handling).
-  const hostCheck = webdesk.split('\n').find(l => l.includes('hostPart -notmatch'));
-  assert.ok(hostCheck, 'hostPart ts.net validation line missing');
-  assert.ok(hostCheck.includes('ts'), 'hostPart pattern must reference ts.net');
-  assert.ok(hostCheck.trimEnd().endsWith("net$') { return '' }"), 'hostPart must be anchored with .net$ : ' + hostCheck.trim());
-  // Bare-port Web keys (older tailscale) resolve the host from Self.DNSName.
-  assert.match(webdesk, /Self\.DNSName/);
+test('F9n: bind address comes from config.json .rdpIp and is CGNAT-validated', () => {
+  assert.match(webdesk, /\$cW\.rdpIp/, 'the bind address must be read from config.json .rdpIp');
+  assert.ok(webdesk.includes("^100\\.(6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\.\\d{1,3}\\.\\d{1,3}$"), 'bind address must be validated against 100.64.0.0/10');
+  // invalid => fail-closed, and BEFORE any install work
+  const ipGuard = lineIndex(l => l.includes("'serve-failed' 'tailnet-ip-unavailable'"), webdeskStart);
+  const installer = lineIndex(l => l.includes('choco install tightvnc'), webdeskStart);
+  assert.ok(ipGuard > 0, 'tailnet-ip-unavailable reason write missing');
+  assert.ok(ipGuard < installer, 'the tailnet-IP guard must run BEFORE the installer');
+  const tail = lines.slice(ipGuard, ipGuard + 4).join('\n');
+  assert.match(tail, /throw 'tailnet-ip-unavailable/);
+  assert.doesNotMatch(tail, /exit 0/);
 });
 
-test('F9j: serve-mapping failure prints secret-free diagnostics before halting', () => {
-  const failIdx = webdesk.indexOf("Set-WebdeskCfg '' 'serve-failed' 'serve-mapping'");
-  assert.ok(failIdx > 0, 'serve-mapping failure write missing');
-  const serveBlock = webdesk.slice(webdesk.indexOf('# Expose ONLY on the tailnet.'), failIdx);
-  assert.match(serveBlock, /serve output tail/);
-  assert.match(serveBlock, /serve status: /);
-  assert.match(serveBlock, /serve status --json: /);
-  assert.match(serveBlock, /tailscale state: /);
-  // 5s settle re-check still guards against slow serve registration.
-  assert.match(serveBlock, /Start-Sleep -Seconds 5/);
-});
-
-test('F9j: watcher websockify auto-heal is loopback-only (no 0.0.0.0:7333)', () => {
-  // A 0.0.0.0 bind exposes the bridge on the Tailscale interface without
-  // tailnet TLS, bypassing the serve mapping entirely.
+test('F9n: tailnet-only firewall rule for 7333 is created, CGNAT-scoped, idempotent', () => {
+  assert.match(webdesk, /New-NetFirewallRule -DisplayName \$fwName -Direction Inbound -Protocol TCP -LocalPort 7333 -RemoteAddress '100\.64\.0\.0\/10' -Action Allow/);
+  assert.match(webdesk, /Remove-NetFirewallRule -DisplayName \$fwName/, 'the rule must be idempotent (same-name rule removed first)');
+  assert.match(webdesk, /remoteip=100\.64\.0\.0\/10/, 'the netsh fallback must stay CGNAT-scoped');
+  assert.doesNotMatch(webdesk, /RemoteAddress +(Any|0\.0\.0\.0)/);
   assert.doesNotMatch(wf, /0\.0\.0\.0:7333/);
-  assert.match(wf, /'--web','C:\\ghrdp\\novnc','127\.0\.0\.1:7333','127\.0\.0\.1:5900'/);
-  const autoheal = wf.split('\n').find(line => line.includes("'127.0.0.1:7333','127.0.0.1:5900'"));
-  assert.ok(autoheal, 'watcher websockify auto-heal launch must exist');
-  assert.doesNotMatch(autoheal, /-WindowStyle Hidden/, 'websockify auto-heal must not hide its process window');
+  assert.doesNotMatch(webdesk, /remoteip=(any|0\.0\.0\.0)/i);
+  // a missing rule is fail-closed (no false LIVE behind a denied port)
+  const fwIdx = webdesk.indexOf("Set-WebdeskCfg '' 'serve-failed' 'firewall-rule'");
+  assert.ok(fwIdx > 0, 'firewall-rule reason write missing');
+  assert.match(webdesk.slice(fwIdx, fwIdx + 400), /throw 'Web desktop not deployed: tailnet-only firewall rule/);
 });
 
-// [F9l-1] Idempotent websockify launcher: kill stale + paired redirects +
-// wait for a LISTEN socket on 127.0.0.1:7333 specifically, returning a bool.
-test('F9l-1: Start-Websockify is idempotent, paired-redirect and loopback-exact', () => {
+test('F9n: advertised URL is built only from the validated bind address', () => {
+  assert.match(webdesk, /\$webdeskUrl = 'http:\/\/' \+ \$bindIp \+ ':7333\/' \+ 'vnc\.html\?autoconnect=1&resize=remote'/);
+  assert.match(webdesk, /Set-WebdeskCfg \$webdeskUrl ''/);
+  // no fabricated host, no https-to-plaintext, no explicit ts.net concatenation
+  assert.doesNotMatch(webdesk, /serveUrl = 'https:\/\/' \+ \$/);
+  assert.doesNotMatch(webdesk, /'https:\/\/' \+ \$/);
+});
+
+test('F9n: summary carries the URL and the mandated transport note', () => {
+  assert.match(webdesk, /'### Web desktop LIVE \(tailnet-only, VNC-password-gated\)'/);
+  assert.match(webdesk, /\('URL: ' \+ \$webdeskUrl\)/);
+  assert.match(webdesk, /transport: tailnet HTTP \(WireGuard-encrypted path\) \+ VNC password gate; tailscale serve retired due to Windows SYSTEM operator lock \(401\)/);
+  assert.match(selftest, /transport: tailnet HTTP \(WireGuard-encrypted path\) \+ VNC password gate; tailscale serve retired due to Windows SYSTEM operator lock \(401\)/);
+});
+
+test('F9n: server + UI publish only allowlisted webdeskUrl shapes', () => {
+  const srv = fs.readFileSync('payloads/ghrdp-server.ps1', 'utf8');
+  const codeLines = srv.split('\n').filter(l => l.includes('$wd -match'));
+  assert.ok(codeLines.length >= 1, 'the server must test $wd against an allowlist');
+  assert.ok(codeLines.some(l => l.includes('^http://100\\.(6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\.\\d{1,3}\\.\\d{1,3}:7333/')), 'tailnet-HTTP shape missing from the server allowlist');
+  assert.ok(codeLines.some(l => l.includes('^https://[a-z0-9.-]+\\.ts\\.net/')), 'tailnet *.ts.net shape missing from the server allowlist');
+  assert.match(srv, /invalid-webdesk-url/, 'a rejected URL must be reported as invalid-webdesk-url');
+  const ui = fs.readFileSync('payloads/ui.html', 'utf8');
+  const uiLines = ui.split('\n').filter(l => /WEBDESK_TAILNET_HTTP_RE=|WEBDESK_TSNET_HTTPS_RE=|deskAllowed=/.test(l));
+  assert.ok(uiLines.some(l => l.includes('100\\.(6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\.')), 'tailnet-HTTP shape missing from the UI allowlist');
+  assert.ok(uiLines.some(l => l.includes('ts\\.net\\/')), 'tailnet *.ts.net shape missing from the UI allowlist');
+  assert.ok(uiLines.some(l => l.includes('WEBDESK_TAILNET_HTTP_RE.test(rawDesk)||WEBDESK_TSNET_HTTPS_RE.test(rawDesk)')), 'the UI must gate on both shapes');
+  assert.match(ui, /tailnet-only HTTP over WireGuard \+ VNC password; nothing installed on client/);
+});
+
+// [F9n] Idempotent websockify launcher: kill stale + paired redirects + wait
+// for a LISTEN socket on <tailnet ip>:7333 specifically, returning a bool, and
+// REFUSING any bind address outside 100.64.0.0/10.
+test('F9n: Start-Websockify is idempotent, paired-redirect and tailnet-exact', () => {
   assert.match(webdesk, /function Start-Websockify\(/);
   const from = webdesk.indexOf('function Start-Websockify(');
   const rest = webdesk.slice(from);
@@ -189,11 +227,14 @@ test('F9l-1: Start-Websockify is idempotent, paired-redirect and loopback-exact'
   assert.match(fn, /RedirectStandardOutput \$wsLog/);
   assert.match(fn, /RedirectStandardError \$wsErr/);
   assert.doesNotMatch(fn, /-WindowStyle Hidden/, 'websockify must not be launched with a hidden window');
-  const waits = fn.match(/-LocalAddress '127\.0\.0\.1' -LocalPort 7333 -State Listen/g) || [];
-  assert.ok(waits.length >= 2, 'must wait for the loopback listener before and after starting');
+  const waits = fn.match(/-LocalAddress \$BindIp -LocalPort 7333 -State Listen/g) || [];
+  assert.ok(waits.length >= 2, 'must wait for the tailnet-address listener before and after starting');
+  assert.match(fn, /\(\$BindIp \+ ':7333'\)/, 'websockify must bind <tailnet ip>:7333');
+  assert.doesNotMatch(fn, /'127\.0\.0\.1:7333'/, 'a loopback bind would leave the advertised tailnet URL dead');
+  assert.match(fn, /100\\\.\(6\[4-9\]/, 'the launcher must refuse non-CGNAT bind addresses');
   assert.match(fn, /return \$false/);
   assert.match(fn, /return \$true/);
-  assert.match(webdesk, /\$wsUp = Start-Websockify/, 'the deploy step must call the function');
+  assert.match(webdesk, /\$wsUp = Start-Websockify \$bindIp/, 'the deploy step must call the function with the bind address');
   // the launcher must not carry the VNC password anywhere
   assert.doesNotMatch(fn, /\$vp\b|VNC_PASS/);
   const lab = fs.readFileSync('.github/workflows/webdesk-lab.yml', 'utf8');
@@ -202,35 +243,40 @@ test('F9l-1: Start-Websockify is idempotent, paired-redirect and loopback-exact'
   assert.doesNotMatch(labStart, /-WindowStyle Hidden/, 'fallback lab must not hide websockify');
 });
 
-// [F9l-2] Classified, self-healing self-test: the backend leg (loopback:7333)
-// is probed directly, healed with the SAME launcher, and only then is the
-// advertised tailnet URL curled - with status, headers and body bytes kept.
-test('F9l-2: self-test probes the backend directly and can self-heal it', () => {
-  assert.match(selftest, /\[F9l-2\]/);
-  assert.match(selftest, /http:\/\/127\.0\.0\.1:7333\/vnc\.html/, 'direct backend curl missing');
-  assert.match(selftest, /\$backendOk = \(\$probeB\.Code -eq '200'/, 'backend health must be a 200 check');
-  assert.match(selftest, /\$started = Start-Websockify/, 'backend-dead must call the F9l-1 launcher');
-  assert.match(selftest, /backend re-probe/, 'the backend must be re-probed after healing');
-  // the launcher copy in the self-test must be the same text as the deploy copy
+// [F9n] Classified, self-healing self-test: the EXACT advertised URL is curled
+// first (3x5s); on failure the backend root on the tailnet address is probed,
+// the transport is healed (firewall rule + the SAME launcher), and everything
+// is classified - with status, headers and body bytes kept.
+test('F9n: self-test curls the exact advertised URL, then the backend root', () => {
+  assert.match(selftest, /\$probeA = Invoke-Probe \$url \('adv-' \+ \$i\)/, 'the advertised URL must be probed exactly as advertised');
+  assert.match(selftest, /\$backendUrl = 'http:\/\/' \+ \$bindIp \+ ':7333\/'/, 'backend root probe on the tailnet address missing');
+  assert.match(selftest, /\$backendOk = \(\$probeB\.Code -eq '200'\)/, 'backend health must be a 200 check');
+  assert.match(selftest, /\$started = Start-Websockify \$bindIp/, 'a dead backend must call the launcher');
+  assert.match(selftest, /\$fwHeal = Set-WebdeskFirewall/, 'the heal must re-assert the CGNAT-only firewall rule');
+  assert.match(selftest, /backend re-probe/, 'the backend must be re-probe after healing');
+  // both helper copies in the self-test must be the same text as the deploy copies
   const all = fs.readFileSync('.github/workflows/main.yml', 'utf8');
   const copies = all.match(/^          function Start-Websockify\(.*?^          \}\n/gms) || [];
   assert.equal(copies.length, 2, 'expected exactly two Start-Websockify copies');
   assert.equal(copies[0], copies[1], 'the two Start-Websockify copies must be identical');
+  const fw = all.match(/^          function Set-WebdeskFirewall \{.*?^          \}\n/gms) || [];
+  assert.equal(fw.length, 2, 'expected exactly two Set-WebdeskFirewall copies');
+  assert.equal(fw[0], fw[1], 'the two Set-WebdeskFirewall copies must be identical');
 });
 
-test('F9l-2: serve leg records status/headers/body and resets the mapping on 502', () => {
+test('F9n: advertised-URL leg records status/headers/body and retries 3x5s', () => {
   assert.match(selftest, /first200=/, 'first 200 body bytes must be captured');
   assert.match(selftest, /headers=/, 'response headers must be captured');
-  assert.match(selftest, /'--bg', 'http:\/\/127\.0\.0\.1:7333'/, 'mapping reset must use the documented form');
-  assert.match(selftest, /reset attempt/, 'each reset attempt must be logged');
-  assert.match(selftest, /Start-Sleep -Seconds 5/, 'a 5s settle wait must precede the re-curl');
-  assert.match(selftest, /serve re-probe/);
+  assert.match(selftest, /for \(\$i = 1; \$i -le 3; \$i\+\+\)/, 'the advertised URL must be probed 3 times');
+  assert.match(selftest, /Start-Sleep -Seconds 5/, 'a 5s wait must separate the advertised-URL attempts');
+  assert.match(selftest, /advertised re-probe/);
+  assert.match(selftest, /noVNC/, 'the self-test must require the noVNC marker');
 });
 
-test('F9l-2: failures are classified (backend-dead | proxy-502 | dns-tls) and fail-closed', () => {
+test('F9n: failures are classified (backend-dead | firewall | marker-missing) and fail-closed', () => {
   assert.match(selftest, /backend-dead/);
-  assert.match(selftest, /proxy-502/);
-  assert.match(selftest, /dns-tls/);
+  assert.match(selftest, /'firewall'/);
+  assert.match(selftest, /marker-missing/);
   const failIdx = selftest.indexOf('self-test FAIL');
   const tail = selftest.slice(failIdx);
   assert.match(selftest, /\$evLines \+= \('classification=' \+ \$verdict\)/, 'classification must reach the artifact payload');
@@ -261,7 +307,9 @@ test('F9l-3: webdesk-diag is staged in the workspace and uploaded on halt', () =
   assert.match(stage, /websockify\.log/);
   assert.match(stage, /websockify\.err\.log/);
   assert.match(stage, /MANIFEST\.txt/);
-  assert.match(stage, /serve status --json/);
+  assert.match(stage, /transport-state\.txt/, 'the transport snapshot (listener + firewall rule) must be staged');
+  assert.match(stage, /firewallRuleGHRDP-Webdesk=/);
+  assert.doesNotMatch(stage, /serve status --json/, 'no serve diagnostics may remain');
   assert.match(webdesk, /Diagnostics artifact: webdesk-diag/);
   assert.match(webdesk, /deploy-verbose\.txt/);
 });
@@ -279,6 +327,6 @@ test('F9l-4: config keeps serve-failed/self-test-failed and the UI contract is u
   const ui = fs.readFileSync('payloads/ui.html', 'utf8');
   assert.match(ui, /'self-test-failed':'the advertised URL did not serve the noVNC page \(self-test failed\)'/);
   assert.match(ui, /deskReason==='serve-failed'/);
-  assert.match(ui, /host-side startup\/serve failure - this is NOT a missing VNC_PASS; do not re-add the secret\./);
+  assert.match(ui, /host-side startup\/transport failure - this is NOT a missing VNC_PASS; do not re-add the secret\./);
   assert.match(ui, /textContent='WEB DESKTOP ready'/);
 });

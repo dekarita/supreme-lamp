@@ -107,7 +107,7 @@ test('serve-failed: honest startup-failure guidance, NEVER missing-secret advice
   assert.match(g, /NOT a missing VNC_PASS|will not fix this/i);
   assert.match(g, /Re-dispatch/);
   // the specific sub-cause code is mapped to human text
-  assert.match(g, /loopback:7333/);
+  assert.match(g, /tailnet address on 7333/);
   const a = view.node('webdeskVncAdvisoryText').innerHTML;
   assert.doesNotMatch(a, /New repository secret/);
   assert.match(a, /NOT a missing VNC_PASS/i);
@@ -167,8 +167,61 @@ test('invalid URL: button disabled, invalid-URL message, never ready', async () 
   assert.equal(view.node('webdeskUrlVal').textContent, '(invalid URL)');
   const g = view.node('webdeskVncGuidance').innerHTML;
   assert.doesNotMatch(g, /New repository secret/);
-  assert.match(g, /not a valid tailnet HTTPS URL/);
+  assert.match(g, /not a valid tailnet URL/);
   assert.match(view.node('webdeskVncAdvisoryText').innerHTML, /failed validation/);
+});
+
+// [F9n] webdeskUrl acceptance allowlist - the transport is tailnet-HTTP
+// websockify on <rdpIp>:7333; the legacy tailnet HTTPS *.ts.net shape stays
+// accepted. Everything else (public host, other port, other scheme) is
+// rejected client-side even when the server were to publish it.
+test('tailnet-HTTP form is accepted and opens (F9n transport)', async () => {
+  const url = 'http://100.71.2.3:7333/vnc.html?autoconnect=1&resize=remote';
+  const view = page({ webdeskUrl: url, webdeskReason: '' });
+  await refresh(view);
+  assert.equal(view.node('btnWebDesk').disabled, false);
+  assert.equal(view.node('nrReady').textContent, 'WEB DESKTOP ready');
+  view.node('btnWebDesk').onclick();
+  assert.equal(view.opens[0][0], url);
+  assert.equal(view.opens[0][2], 'noopener');
+  assert.equal(view.node('webdeskUrlVal').textContent, '100.71.2.3:7333');
+  assert.equal(view.node('webdeskVncGuidance').style.display, 'none');
+});
+
+test('public host on 7333 is rejected (no public exposure)', async () => {
+  const view = page({ webdeskUrl: 'http://203.0.113.9:7333/vnc.html?autoconnect=1', webdeskReason: '' });
+  await refresh(view);
+  assert.equal(view.node('btnWebDesk').disabled, true);
+  assert.notEqual(view.node('nrReady').textContent, 'WEB DESKTOP ready');
+  assert.equal(view.node('webdeskUrlVal').textContent, '(invalid URL)');
+  assert.match(view.node('webdeskVncGuidance').innerHTML, /not a valid tailnet URL/);
+});
+
+test('non-100.64/10 tailnet-looking IP and wrong ports are rejected', async () => {
+  for (const bad of ['http://10.0.0.5:7333/vnc.html', 'http://100.11.2.3:7333/vnc.html', 'http://100.71.2.3:8443/vnc.html', 'https://vps.example.ts.net:8443/vnc.html', 'http://100.71.2.3:7333@evil.example/vnc.html']) {
+    const view = page({ webdeskUrl: bad, webdeskReason: '' });
+    await refresh(view);
+    assert.equal(view.node('btnWebDesk').disabled, true, 'must reject ' + bad);
+    assert.notEqual(view.node('nrReady').textContent, 'WEB DESKTOP ready', 'must not claim ready for ' + bad);
+  }
+});
+
+test('legacy tailnet HTTPS *.ts.net shape is still accepted', async () => {
+  const view = page({ webdeskUrl: 'https://vps.example.ts.net/vnc.html?autoconnect=1&resize=remote', webdeskReason: '' });
+  await refresh(view);
+  assert.equal(view.node('btnWebDesk').disabled, false);
+  assert.equal(view.node('nrReady').textContent, 'WEB DESKTOP ready');
+});
+
+test('F9n detail codes map to text: firewall-rule and tailnet-ip-unavailable', async () => {
+  const fw = page({ webdeskUrl: '', webdeskReason: 'serve-failed', webdeskDetail: 'firewall-rule' });
+  await refresh(fw);
+  assert.match(fw.node('webdeskVncGuidance').innerHTML, /100\.64\.0\.0\/10/);
+  assert.match(fw.node('webdeskVncGuidance').innerHTML, /TCP 7333/);
+  const ip = page({ webdeskUrl: '', webdeskReason: 'serve-failed', webdeskDetail: 'tailnet-ip-unavailable' });
+  await refresh(ip);
+  assert.match(ip.node('webdeskVncGuidance').innerHTML, /config\.rdpIp holds no tailnet/);
+  assert.doesNotMatch(ip.node('webdeskVncGuidance').innerHTML, /New repository secret/);
 });
 
 test('unknown reason: generic guidance, no fabricated missing-secret diagnosis', async () => {
