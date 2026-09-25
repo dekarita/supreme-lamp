@@ -75,9 +75,31 @@ jobs:
             echo 'F10: piracy-index string in main.yml' >&2; exit 1
           fi
           grep -q 'ExtensionInstallForcelist' .github/workflows/main.yml
-          grep -q 'Resolve-EdgeExtId' .github/workflows/main.yml
+          # F10-11: ONE live resolver, dot-sourced by both the provisioning
+          # workflow and the proof lane, with no literal 32-char id in the repo
+          # (a hardcoded id is exactly what §4.1 forbids).
+          grep -q 'edge-ext-resolve.ps1' .github/workflows/main.yml
+          grep -q 'edge-ext-resolve.ps1' .github/workflows/autologin-lab.yml
+          grep -q 'Resolve-StoreExtId' .github/workflows/main.yml
+          test -f payloads/edge-ext-resolve.ps1
+          grep -q 'Get-ExtForceListValue' payloads/edge-ext-resolve.ps1
+          if grep -nE '[a-p]{32}' payloads/edge-ext-resolve.ps1; then
+            echo 'F10: literal extension id in the resolver (must be discovered live)' >&2; exit 1
+          fi
+          if grep -nE '[a-p]{32}' .github/workflows/main.yml; then
+            echo 'F10: literal extension id in main.yml' >&2; exit 1
+          fi
           grep -q 'login.tailscale.com/admin/dns' .github/workflows/main.yml
           grep -q 'docs/AUTOLOGIN.md' .github/workflows/main.yml
+          # F10-9: the lab harness must never block on the mstsc descendant
+          # (Start-Process -Wait wedged proof step B/C in run 36147990362).
+          if grep -q -- '-PassThru -Wait' .github/workflows/autologin-lab.yml; then
+            echo 'F10: lab harness waits on the mstsc descendant (wedges the runner)' >&2; exit 1
+          fi
+          grep -q 'WaitForExit(90000)' .github/workflows/autologin-lab.yml
+          grep -q 'mstsc reaped' .github/workflows/autologin-lab.yml
+          # F10-10: the launcher beacon is bounded (never a wedge).
+          grep -q 'HelloBounded' payloads/ghrdp-rdp-launcher.cs
           # §5 setup caches present.
           grep -q 'actions/cache@v4' .github/workflows/main.yml
           echo 'F10 gates PASS'

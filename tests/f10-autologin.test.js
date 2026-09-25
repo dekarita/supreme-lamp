@@ -89,12 +89,36 @@ test('F10-4 workflow: gated vncPass stamp, latency keys, live ext resolution, cl
   assert.ok(!/Write-Host[^\n]*\$vp[^a-zA-Z]/.test(wf), 'vncPass never printed');
   assert.match(wf, /PollUnderCursor/);
   assert.match(wf, /CompareFB/);
-  assert.match(wf, /Resolve-EdgeExtId/);
+  // [F10-11] one shared live resolver, dot-sourced by main.yml + the lab;
+  // no extension id may be carried in the repo (discovered live only).
+  assert.match(wf, /edge-ext-resolve\.ps1/);
+  assert.match(wf, /Resolve-StoreExtId/);
+  assert.match(wf, /Get-ExtForceListValue/);
   assert.match(wf, /ExtensionInstallForcelist/);
+  const resolver = fs.readFileSync('payloads/edge-ext-resolve.ps1', 'utf8');
+  assert.match(resolver, /\/detail\//);
+  assert.match(resolver, /\(\[a-p\]\{32\}\)/);
+  assert.ok(!/[a-p]{32}/.test(resolver), 'no literal extension id may be hardcoded');
+  const lab = fs.readFileSync('.github/workflows/autologin-lab.yml', 'utf8');
+  assert.match(lab, /edge-ext-resolve\.ps1/);
   assert.match(wf, /docs\/AUTOLOGIN\.md/);
   assert.match(wf, /login\.tailscale\.com\/admin\/dns/);
   assert.match(wf, /actions\/cache@v4/);
   assert.ok(!/fmhy|megathread|torrent/i.test(wf), 'no piracy-index strings');
+});
+
+test('F10-9 lab harness never blocks on the mstsc descendant (run 36147990362 wedge)', () => {
+  const lab = fs.readFileSync('.github/workflows/autologin-lab.yml', 'utf8');
+  assert.ok(!/-PassThru -Wait/.test(lab), 'Start-Process -Wait also waits for mstsc and wedges the runner');
+  assert.match(lab, /WaitForExit\(90000\)/, 'launcher wait must be bounded');
+  assert.match(lab, /mstsc reaped/, 'headless mstsc must be reaped');
+});
+
+test('F10-10 launcher: handler-hello beacon is bounded (no wedge on a dead target)', () => {
+  const cs = fs.readFileSync('payloads/ghrdp-rdp-launcher.cs', 'utf8');
+  assert.match(cs, /HelloBounded/);
+  assert.match(cs, /t\.Join\(5000\)/);
+  assert.match(cs, /IsBackground = true/);
 });
 
 test('F10-5 launch-gates carry the F10 block', () => {
@@ -103,4 +127,5 @@ test('F10-5 launch-gates carry the F10 block', () => {
   assert.match(gates, /ghrdp-rdp-launcher\.cs/);
   assert.match(gates, /fmhy\|megathread\|torrent/);
   assert.match(gates, /Test-CredsAllowed/);
+  assert.match(gates, /edge-ext-resolve\.ps1/);
 });
