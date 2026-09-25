@@ -1,0 +1,31 @@
+<!doctype html>
+<!-- ghrdp lab asset [F13-6 §3]: dashboard stub for the webdesk E2E proof.
+     Served from the SAME origin as the noVNC tree (websockify --web), so the
+     shim's <meta name="ghrdp-cred-origin"> can list this page's origin -
+     exactly the posture the real Mission Control dashboard has. The button
+     replicates ui.html's openWebDesk(): window.open (NOT noopener) then the
+     password handoff via postMessage to the exact origin, repeated 6x500ms. -->
+<html>
+<head><meta charset="utf-8"><title>ghrdp lab dashboard stub</title></head>
+<body>
+<h3>ghrdp lab dashboard stub</h3>
+<button id="btnWebDesk" type="button" onclick="openWebDesk()">WEB DESKTOP</button>
+<script>
+function openWebDesk(){
+  var pass='vnclab7';
+  var url='vnc.html?autoconnect=true&compression=6';
+  var w=null;
+  try{w=window.open(url,'_blank');}catch(e){w=null;}
+  if(!w){document.title='popup blocked';return;}
+  var origin=location.origin;
+  var n=0;
+  var t=setInterval(function(){
+    n++;
+    try{ w.postMessage({type:'ghrdp-vnc-pass',pass:pass},origin); }catch(e){}
+    if(n>=6)clearInterval(t);
+  },500);
+  document.title='posted';
+}
+</script>
+</body>
+</html>

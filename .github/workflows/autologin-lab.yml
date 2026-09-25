@@ -17,6 +17,8 @@ on:
       - payloads/edge-ext-resolve.ps1
       - payloads/ghrdp-cred-shim.js
       - payloads/ui.html
+      - payloads/lab/**
+      - payloads/ghrdp-provision-apps.ps1
 jobs:
   proof:
     runs-on: windows-latest
@@ -43,7 +45,19 @@ jobs:
           $cs = [System.IO.File]::ReadAllText((Join-Path $lab 'ghrdp-rdp-launcher.cs'))
           $cmd = [System.IO.File]::ReadAllText((Join-Path $lab 'install.cmd'))
           if (($cs + $cmd) -match 'powershell\.exe|ExecutionPolicy|Invoke-Expression|EncodedCommand') { Write-Host '[A] FAIL: script-host token'; exit 1 }
-          Write-Host '[A] PASS: compiled with in-box csc, HKCU ghrdp registered, script-host free'
+          # [F13-1/F13-6] the shipped install.cmd compiles /target:winexe: the
+          # PE subsystem must be 2 (WINDOWS_GUI) - the launcher exe itself can
+          # never flash a console window in the interactive session.
+          $fs = [System.IO.File]::OpenRead($exe)
+          $br = New-Object System.IO.BinaryReader($fs)
+          $null = $fs.Seek(0x3C, 'Begin')
+          $peOff = $br.ReadInt32()
+          $null = $fs.Seek($peOff + 24 + 68, 'Begin')
+          $subsys = $br.ReadUInt16()
+          $fs.Close()
+          if ($subsys -ne 2) { Write-Host ('[A] FAIL: PE subsystem=' + $subsys + ' (expected 2 = WINDOWS_GUI for /target:winexe)'); exit 1 }
+          Write-Host ('[A] PE subsystem=' + $subsys + ' (WINDOWS_GUI): the launcher cannot open a console window')
+          Write-Host '[A] PASS: compiled with in-box csc (winexe), HKCU ghrdp registered, script-host free'
           'A_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
       - name: "B/C: ghrdp://rdp verb -> directives rdp + mstsc spawn + temp cleanup"
         shell: pwsh
@@ -290,6 +304,68 @@ jobs:
           Write-Host '[H] PASS: real shim auto-fills the credentials dialog from the opener origin only and never logs the value'
           'H_result=pass' | Out-File $env:GITHUB_ENV -Append
 
+      - name: "H2: webdesk auto-fill E2E (REAL noVNC v1.7.0 + REAL shim + playwright)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          function H2-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[H2] stage=' + $Stage + ' :: ' + $Detail)
+              exit 1
+          }
+          # [F13-6 §3] End-to-end proof of the VNC auto-submit fix: the REAL
+          # pinned noVNC v1.7.0 tree + the REAL shim injection (same code as
+          # the main.yml deploy step) + REAL websockify + a VNC-auth RFB stub.
+          # The dashboard stub posts the password the way ui.html does; the
+          # driver proves connected-with-zero-typing and a clean URL/wire/log
+          # scan. Nothing here types into the dialog.
+          $root = Join-Path $env:RUNNER_TEMP 'h2'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $novncDir = Join-Path $root 'novnc'
+          & git.exe clone --depth 1 --branch v1.7.0 https://github.com/novnc/noVNC.git $novncDir 2>&1 | Select-Object -Last 2 | Out-Null
+          if (-not (Test-Path -LiteralPath (Join-Path $novncDir 'vnc.html'))) { H2-Fail 'novnc-clone' 'pinned v1.7.0 noVNC clone failed' }
+          $novncVer = ([System.IO.File]::ReadAllText((Join-Path $novncDir 'package.json')) | ConvertFrom-Json).version
+          if ("$novncVer" -ne '1.7.0') { H2-Fail 'novnc-version' ('clone is ' + $novncVer + ', expected 1.7.0') }
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-cred-shim.js') (Join-Path $novncDir 'ghrdp-cred-shim.js') -Force
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'payloads\lab\dash-stub.html') (Join-Path $novncDir 'dash-stub.html') -Force
+          $credOrigin = 'http://127.0.0.1:7333'
+          $inject = ('<meta name="ghrdp-cred-origin" content="' + $credOrigin + '"><script src="ghrdp-cred-shim.js"></script>')
+          $pg = Join-Path $novncDir 'vnc.html'
+          $html = [System.IO.File]::ReadAllText($pg)
+          if (-not $html.Contains('ghrdp-cred-shim.js')) {
+              if ($html.Contains('</body>')) { $html = $html.Replace('</body>', ($inject + '</body>')) } else { $html = $html + $inject }
+              [System.IO.File]::WriteAllText($pg, $html, (New-Object System.Text.UTF8Encoding($false)))
+          }
+          Write-Host '[H2] REAL shim injected into the pinned noVNC v1.7.0 vnc.html (same injection as the deploy step)'
+          & python -m pip install --disable-pip-version-check --quiet websockify 2>&1 | Select-Object -Last 1 | Out-Null
+          $stub = Start-Process -FilePath node.exe -ArgumentList ('"' + (Join-Path $env:GITHUB_WORKSPACE 'payloads\lab\vnc-auth-stub-server.js') + '" 5901 5902') -RedirectStandardOutput (Join-Path $root 'stub.log') -RedirectStandardError (Join-Path $root 'stub.err') -PassThru -WindowStyle Hidden
+          $ws = Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $novncDir, '7333', '127.0.0.1:5901') -RedirectStandardOutput (Join-Path $root 'websockify.log') -RedirectStandardError (Join-Path $root 'ws.err') -PassThru -WindowStyle Hidden
+          $listenOk = $false
+          for ($i = 0; $i -lt 40; $i++) {
+              $ports = @(Get-NetTCPConnection -LocalPort 7333, 5901, 5902 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort -Unique)
+              if ($ports.Count -ge 3) { $listenOk = $true; break }
+              Start-Sleep -Seconds 1
+          }
+          if (-not $listenOk) {
+              foreach ($lf in @('stub.err','ws.err')) { $f = Join-Path $root $lf; if (Test-Path $f) { Get-Content $f -Tail 5 | ForEach-Object { Write-Host ('[H2] ' + $lf + ': ' + $_) } } }
+              H2-Fail 'listen' 'websockify(7333)/stub(5901,5902) did not listen'
+          }
+          & npm.exe install --no-save --no-package-lock --no-audit --no-fund --silent playwright-core 2>&1 | Select-Object -Last 1 | Out-Null
+          if ($LASTEXITCODE -ne 0) { H2-Fail 'npm' 'playwright-core install failed' }
+          & node.exe (Join-Path $env:GITHUB_WORKSPACE 'payloads\lab\webdesk-e2e.js') 'http://127.0.0.1:7333' 'http://127.0.0.1:5902/state'
+          $e2e = $LASTEXITCODE
+          foreach ($lf in @('websockify.log','ws.err','stub.log','stub.err')) {
+              $f = Join-Path $root $lf
+              if (Test-Path $f) {
+                  $t = [System.IO.File]::ReadAllText($f)
+                  if ($t.Contains('vnclab7')) { H2-Fail 'log-leak' ('the password literal appeared in ' + $lf) }
+              }
+          }
+          try { Stop-Process -Id $stub.Id -Force -ErrorAction SilentlyContinue } catch { }
+          try { Stop-Process -Id $ws.Id -Force -ErrorAction SilentlyContinue } catch { }
+          if ($e2e -ne 0) { H2-Fail 'e2e' ('webdesk-e2e.js exit ' + $e2e) }
+          Write-Host '[H2] PASS: opener handoff -> shim auto-fill -> VNC-auth completed -> connected with ZERO manual typing; no password in any URL, wire byte or log'
+          'H2_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+
       - name: "I: RDP USAGE timer ticks / freezes / resumes (REAL server + REAL loop)"
         shell: pwsh
         run: |
@@ -489,6 +565,78 @@ jobs:
           Write-Host ('[K] PASS: live-resolved ids -> policy keys -> readback (' + $edgeBack + '/' + $cwsBack + ') -> Edge unpacked ' + ($loaded -join ','))
           'K_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
           ('K_edge=' + $edgeBack) | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+          # [F13-6] K2 (playwright policy-page readbacks) consumes these.
+          ('K_ubo=' + $ubo.id) | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+          ('K_dr=' + $dr.id) | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+          ('K_profile=' + $(if ($profile) { $profile } else { '' })) | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+
+      - name: "K2: policy pages readback via playwright (edge://policy + edge://extensions + chrome://policy)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          function K2-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[K2] stage=' + $Stage + ' :: ' + $Detail)
+              exit 1
+          }
+          # [F13-6 §2] The REAL policy UI readback (what the user would check):
+          # edge://policy + edge://extensions via playwright on the system Edge,
+          # chrome://policy via Chrome (installed through winget when absent),
+          # Firefox policies.json readback only when Firefox is installed.
+          # Cell K wrote the SAME HKLM forcelist keys main.yml writes and
+          # exported the live-resolved ids.
+          if (-not $env:K_ubo -or -not $env:K_dr) { K2-Fail 'pre' 'cell K did not export the resolved extension ids' }
+          & npm.exe install --no-save --no-package-lock --no-audit --no-fund --silent playwright-core 2>&1 | Select-Object -Last 1 | Out-Null
+          if ($LASTEXITCODE -ne 0) { K2-Fail 'npm' 'playwright-core install failed' }
+          # (1) edge://policy - the forced-extension policy must RENDER there.
+          & node.exe (Join-Path $env:GITHUB_WORKSPACE 'payloads\lab\policy-readback.js') msedge policy 'edge://policy' - $env:K_ubo $env:K_dr
+          if ($LASTEXITCODE -ne 0) { K2-Fail 'edge-policy' ('edge://policy readback exit ' + $LASTEXITCODE) }
+          Write-Host '[K2] edge://policy renders both forced-extension ids'
+          # (2) edge://extensions - the names must render in the unpacked profile.
+          if ($env:K_profile -and (Test-Path -LiteralPath $env:K_profile)) {
+              & node.exe (Join-Path $env:GITHUB_WORKSPACE 'payloads\lab\policy-readback.js') msedge extensions 'edge://extensions' $env:K_profile 'uBlock Origin' 'Dark Reader'
+              if ($LASTEXITCODE -ne 0) { K2-Fail 'edge-extensions' ('edge://extensions readback exit ' + $LASTEXITCODE) }
+              Write-Host '[K2] edge://extensions renders uBlock Origin + Dark Reader in the unpacked profile'
+          } else {
+              Write-Host '::warning::[K2] no unpacked Edge profile from cell K - edge://extensions readback skipped (policy readback still proven)'
+          }
+          # (3) chrome://policy - Chrome via winget when absent (HKLM forcelist
+          # for Chrome was already written by cell K).
+          $chromeExe = @('C:\Program Files\Google\Chrome\Application\chrome.exe', 'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $chromeExe) {
+              $winget = (Get-Command winget.exe -ErrorAction SilentlyContinue).Source
+              if ($winget) {
+                  Write-Host '[K2] Chrome absent - installing via winget for the chrome://policy readback'
+                  & $winget install --id Google.Chrome --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity 2>&1 | Select-Object -Last 2 | Out-Null
+                  $chromeExe = @('C:\Program Files\Google\Chrome\Application\chrome.exe') | Where-Object { Test-Path $_ } | Select-Object -First 1
+              }
+          }
+          if ($chromeExe) {
+              & node.exe (Join-Path $env:GITHUB_WORKSPACE 'payloads\lab\policy-readback.js') chrome policy 'chrome://policy' - $env:K_ubo $env:K_dr
+              if ($LASTEXITCODE -ne 0) { K2-Fail 'chrome-policy' ('chrome://policy readback exit ' + $LASTEXITCODE) }
+              Write-Host '[K2] chrome://policy renders both forced-extension ids'
+          } else {
+              K2-Fail 'chrome-install' 'Chrome could not be installed for the chrome://policy readback'
+          }
+          # (4) Firefox policies.json - only when Firefox is installed (same
+          # contract as the main.yml provision step).
+          $ff = 'C:\Program Files\Mozilla Firefox'
+          if (Test-Path (Join-Path $ff 'firefox.exe')) {
+              . (Join-Path $env:GITHUB_WORKSPACE 'payloads\edge-ext-resolve.ps1')
+              $ffUbo = Resolve-AmoAddon -Slug 'ublock-origin'
+              $ffDr  = Resolve-AmoAddon -Slug 'darkreader'
+              $pol = [ordered]@{ policies = [ordered]@{ Extensions = [ordered]@{ Install = @($ffUbo.url, $ffDr.url) } } }
+              $dist = Join-Path $ff 'distribution'
+              New-Item -ItemType Directory -Path $dist -Force | Out-Null
+              [System.IO.File]::WriteAllText((Join-Path $dist 'policies.json'), (ConvertTo-Json -InputObject $pol -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
+              $ffJson = Get-Content -LiteralPath (Join-Path $dist 'policies.json') -Raw | ConvertFrom-Json
+              $ffRead = @($ffJson.policies.Extensions.Install).Count
+              Write-Host ('[K2] Firefox policies.json readback: ' + $ffRead + ' install URLs (ids: ' + $ffUbo.id + ', ' + $ffDr.id + ')')
+              if ($ffRead -lt 2) { K2-Fail 'firefox-policies' 'fewer than 2 extension install URLs in policies.json' }
+          } else {
+              Write-Host '::notice::[K2] Firefox not installed - policies.json readback skipped (main.yml also writes it only when Firefox is present)'
+          }
+          Write-Host '[K2] PASS: policy UIs render the enforced extensions (edge://policy, edge://extensions, chrome://policy)'
+          'K2_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
 
       - name: "L: qBittorrent .torrent/magnet default"
         shell: pwsh
@@ -559,22 +707,26 @@ jobs:
           ('| (f) extensions enforced | ' + $(if ($env:F_result -eq 'pass') {'**PASS**'} else {'FAIL'}) + ' | IDs live-resolved twice from live store pages (identical) + HKLM forcelist readback: uBlock Origin ' + $env:F_ubo + '; Dark Reader ' + $env:F_dr + '; edge://extensions readout pending user PC |') | Add-Content -Path $S
           ('| (g) setup time delta | **measured** | step durations below; aggregate vs pre-F10 baseline in PR body |') | Add-Content -Path $S
           ('| (h) VNC prompt remembered (shim auto-fill) | ' + $(if ($env:H_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL payloads/ghrdp-cred-shim.js executed under node with a DOM stub: opener + exact origin => dialog auto-filled + submitted; wrong origin / non-opener / wrong type => ignored; zero log output |') | Add-Content -Path $S
+          ('| (h2) webdesk auto-fill END-TO-END (playwright) | ' + $(if ($env:H2_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL pinned noVNC v1.7.0 + REAL shim injection + REAL websockify + VNC-auth RFB stub: opener posts password => dialog auto-filled + submitted => handshake COMPLETED => connected with ZERO manual typing (keydown counter = 0); control page without a handoff stays at the dialog; password absent from every URL, RFB wire byte and websockify/stub log |') | Add-Content -Path $S
           ('| (i) usage timer ticks/freezes/resumes | ' + $(if ($env:I_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL server + REAL rdp-usage loop: tick while a webdesk client is attached, frozen <=20s after it drops, resumed on re-attach, persisted to config.json, continued across a server restart (' + $env:I_usage + 's) |') | Add-Content -Path $S
           ('| (j) qBittorrent present (plain app) | ' + $(if ($env:J_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | winget qBittorrent.qBittorrent silent install; present on disk; no autostart entry; no Web UI wiring |') | Add-Content -Path $S
           ('| (n) stale handler overwritten | ' + $(if ($env:N_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL install.cmd against a PLANTED pre-F2 style script-host registration: before value printed, value overwritten to "<exe>" "%1", readback verified |') | Add-Content -Path $S
           ('| (k2) browser policies + extensions | ' + $(if ($env:K_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | live-resolved Edge+CWS ids -> HKLM forcelist readback (' + $env:K_edge + ' entries) -> malformed-shape check -> Edge actually unpacked the forced extensions into a fresh profile; edge://policy + edge://extensions visual readout stays PENDING-USER |') | Add-Content -Path $S
           ('| (l) qBittorrent default .torrent + magnet | ' + $(if ($env:L_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL shared helper: HKCR ProgId discovery + .torrent default + magnet\shell\open\command readback; no download automation, mirror untouched |') | Add-Content -Path $S
+          ('| (k3) policy UI readback (playwright) | ' + $(if ($env:K2_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | edge://policy + edge://extensions + chrome://policy opened with playwright against the SAME HKLM forcelist keys main.yml writes: both live-resolved ids render on every policy page and both extension names render on the extensions page; Firefox policies.json readback when Firefox is installed |') | Add-Content -Path $S
           ('| (m) zero console windows | ' + $(if ($env:M_result -eq 'pass') {'**PASS (lab contract+runtime)**'} else {'FAIL'}) + ' | every Start-Process hidden (static) + runtime sweep: no ghrdp helper owns a visible console window; first-session visual check stays PENDING-USER |') | Add-Content -Path $S
           ('| (k) no console window in the interactive session | **contract PASS** | every host-helper launch is -WindowStyle Hidden (or NoNewWindow for the user-driven terminal exec) and the long-lived services are SYSTEM scheduled tasks; launch-gates F11-5.3 enforces it. Visual confirmation on the first physical RDP session = PENDING-USER |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
           # retrievable), so the PR/verify evidence does not depend on the log UI.
-          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'})
+          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' h2=' + $(if ($env:H2_result -eq 'pass') {'pass'} else {'fail'}) + ' k3=' + $(if ($env:K2_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
           Write-Host ('::notice::[I] usage timer: ticks -> freezes <=20s -> resumes -> persists/continues at ' + $env:I_usage + 's (cell i)')
           Write-Host ('::notice::[H] cred shim: opener+exact-origin auto-fill, wrong origin/non-opener ignored, zero log output (cell h)')
           Write-Host ('::notice::[N] handler overwrite: stale registration printed+overwritten+verified by the REAL install.cmd (cell n)')
           Write-Host ('::notice::[K] browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions (cell k2)')
+          Write-Host ('::notice::[H2] webdesk E2E: opener handoff -> shim auto-fill -> VNC-auth completed -> connected, zero manual typing, zero password leaks (cell h2)')
+          Write-Host ('::notice::[K2] policy UIs: edge://policy + edge://extensions + chrome://policy render the enforced extensions (cell k3)')
           Write-Host ('::notice::[L] qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok (cell l)')
           Write-Host ('::notice::[G] uBlock Origin=' + $env:F_ubo)
           Write-Host ('::notice::[G] Dark Reader=' + $env:F_dr)

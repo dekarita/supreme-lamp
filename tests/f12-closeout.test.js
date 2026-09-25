@@ -132,3 +132,21 @@ test('F12-7 lab proof matrix: K/L/M/N cells present and wired to the summary', (
   assert.match(lab, /edge:\/\/policy/);
   assert.match(lab, /edge:\/\/extensions|profile-unpack/);
 });
+
+// [F13-6] the playwright lab cells: webdesk auto-fill E2E against the REAL
+// pinned noVNC v1.7.0 + REAL shim, and the policy-UI readbacks.
+test('F13-6 lab proof matrix: H2 webdesk E2E + K2 policy-UI cells wired', () => {
+  assert.match(lab, /H2: webdesk auto-fill E2E \(REAL noVNC v1\.7\.0 \+ REAL shim \+ playwright\)/);
+  assert.match(lab, /K2: policy pages readback via playwright/);
+  assert.match(lab, /H2_result=pass/);
+  assert.match(lab, /K2_result=pass/);
+  assert.match(lab, /--branch v1\.7\.0 https:\/\/github\.com\/novnc\/noVNC\.git/);
+  assert.match(lab, /chrome:\/\/policy/);
+  // lab assets exist and carry their contracts
+  const e2e = fs.readFileSync('payloads/lab/webdesk-e2e.js', 'utf8');
+  const stub = fs.readFileSync('payloads/lab/vnc-auth-stub-server.js', 'utf8');
+  assert.match(e2e, /__ghrdpKeys/);                      // ZERO manual typing proof
+  assert.match(e2e, /password=/);                        // URL leak scan
+  assert.match(stub, /RFB 003\.008/);                    // real VNC-auth handshake
+  assert.match(stub, /received/);                        // wire capture for the leak scan
+});

@@ -359,6 +359,15 @@ jobs:
           grep -q 'L: qBittorrent .torrent/magnet default' "$lab"
           grep -q 'M: zero console windows' "$lab"
           grep -q 'N: handler overwrite (stale value planted)' "$lab"
+          # --- §6 [F13-6] playwright lab cells: webdesk E2E + policy UIs ----
+          grep -q 'H2: webdesk auto-fill E2E (REAL noVNC v1.7.0 + REAL shim + playwright)' "$lab"
+          grep -q 'K2: policy pages readback via playwright' "$lab"
+          grep -q 'H2_result=pass' "$lab"
+          grep -q 'K2_result=pass' "$lab"
+          grep -q 'webdesk-e2e.js' payloads/lab/webdesk-e2e.js
+          grep -q 'vnc-auth-stub-server' payloads/lab/vnc-auth-stub-server.js
+          grep -q 'dash-stub.html' payloads/lab/dash-stub.html
+          grep -q 'policy-readback.js' payloads/lab/policy-readback.js
           echo 'F12 gates PASS'
 
       - name: F8 web-desktop honesty gates
