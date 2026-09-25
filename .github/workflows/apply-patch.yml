@@ -1,16 +1,18 @@
+# [F9k §6] Durable fallback for applying a format-patch series when PR tooling
+# is unavailable in the agent environment. Usage: git format-patch --stdout |
+# base64 -w0, then dispatch with branch + patch_b64. `git am --3way` is the
+# definitive application path; a PR is opened best-effort afterwards.
 name: apply-patch
 on:
   workflow_dispatch:
     inputs:
       branch:
-        description: 'Target branch to apply patch onto'
-        required: false
-        default: 'feat/f9k'
-        type: string
-      patch_b64:
-        description: 'Base64-encoded git patch (from git format-patch)'
+        description: 'Branch to apply the patch onto (created or reset from the default branch)'
         required: true
-        type: string
+        default: feat/f9k
+      patch_b64:
+        description: 'git format-patch --stdout output, base64-encoded'
+        required: true
 
 permissions:
   contents: write
@@ -23,31 +25,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Apply patch and open PR
+      - name: Apply patch, push branch, open PR
         env:
-          BRANCH: ${{ inputs.branch }}
-          PATCH_B64: ${{ inputs.patch_b64 }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        shell: bash
         run: |
           set -euo pipefail
-          branch="${BRANCH:-feat/f9k}"
-          if [ -z "$branch" ]; then branch="feat/f9k"; fi
-          echo "$PATCH_B64" | base64 -d > /tmp/patch.diff
-          echo "[apply-patch] patch decoded, size=$(wc -c < /tmp/patch.diff) bytes"
-          # Ensure we have the branch checked out or create it
-          git config user.email "ghrdp-bot@local"
-          git config user.name "ghrdp-bot"
-          if git show-ref --verify --quiet "refs/heads/$branch"; then
-            git checkout "$branch"
-          elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-            git checkout -b "$branch" "origin/$branch"
-          else
-            git checkout -b "$branch"
-          fi
-          # Apply with 3-way merge as definitive path
-          git am --3way /tmp/patch.diff
-          # Push
-          git push -u origin "$branch"
-          # Create PR if not exists
-          gh pr create --fill --base main --head "$branch" || true
+          echo "${{ inputs.patch_b64 }}" | base64 -d > "$RUNNER_TEMP/change.patch"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "${{ inputs.branch }}"
+          git am --3way < "$RUNNER_TEMP/change.patch"
+          git push -u origin "${{ inputs.branch }}"
+          gh pr create --fill || true

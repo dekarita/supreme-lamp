@@ -204,7 +204,13 @@ jobs:
           Write-Host '[ts] Tailscale MSI install finished'
           exit 0
 
-      - name: Tailscale up (TS_AUTHKEY fail-closed, §2)
+      # [F9k] Fail-closed secrets framework. TS_AUTHKEY is REQUIRED: a missing
+      # or rejected key HALTS the run here with a clickable admin-keys link and
+      # numbered fix steps (::error:: + step summary + config.json tsReason).
+      # There is NO interactive sign-in fallback anymore - the old silent
+      # 'no sign-in link' throw is replaced by a classified, actionable halt.
+      # The raw key is never printed: every emitted line passes the redactor.
+      - name: Tailscale up (TS_AUTHKEY fail-closed, halt-with-link)
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
         shell: pwsh
@@ -212,82 +218,49 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $S = $env:GITHUB_STEP_SUMMARY
-          $Root = 'C:\ghrdp'
-          # [F9k] generic secret halt helper (§1) - redacts tskey-/ghp-, writes summary link + steps, writes config.json reason, then throw
-          function Redact-Secret {
-              param([string]$s)
-              if (-not $s) { return $s }
-              $s = $s -replace 'tskey-auth-[A-Za-z0-9\-_]+', '[REDACTED-tskey]'
-              $s = $s -replace 'tskey-[A-Za-z0-9\-_]+', '[REDACTED-tskey]'
-              $s = $s -replace 'ghp_[A-Za-z0-9_]+', '[REDACTED-ghp]'
-              $s = $s -replace '(?i)TS_AUTHKEY\s*[:=]\s*\S+', 'TS_AUTHKEY=[REDACTED]'
-              $s = $s -replace '(?i)VNC_PASS\s*[:=]\s*\S+', 'VNC_PASS=[REDACTED]'
-              return $s
+          $keysUrl = 'https://login.tailscale.com/admin/settings/keys'
+          # [F9k] Redactor: strips the injected secret VALUE(s) plus any
+          # tskey-*/ghp_*/github_pat_* token shape from every printed line.
+          function ConvertTo-Redacted([string]$Text) {
+              $t = [string]$Text
+              foreach ($v in @($env:TS_AUTHKEY, $env:VNC_PASS)) {
+                  if ($v -and $v.Length -ge 4) { $t = $t.Replace($v, '<redacted>') }
+              }
+              $t = [regex]::Replace($t, 'tskey-[A-Za-z0-9][A-Za-z0-9\-]*', 'tskey-<redacted>')
+              $t = [regex]::Replace($t, '(ghp_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,})', '<redacted>')
+              return $t
           }
-          function Emit-SecretHalt {
-              param(
-                  [string]$What,
-                  [string]$AdminUrl,
-                  [string]$Reason,
-                  [string[]]$Steps
-              )
-              $sum = $env:GITHUB_STEP_SUMMARY
-              $whatR = Redact-Secret $What
-              $reasonR = Redact-Secret $Reason
-              $adminR = $AdminUrl # admin URL carries no credential per §8
-              $errLine = '::error::' + $whatR + ' - ' + $reasonR + ' - fix: ' + $adminR
-              Write-Host (Redact-Secret $errLine)
-              $md = @()
-              $md += '### ' + $whatR + ' - workflow halted by design'
-              $md += ''
-              $md += '**Reason:** `' + $reasonR + '`'
-              $md += ''
-              $md += '**Fix it now:** [' + $adminR + '](' + $adminR + ')'
-              $md += ''
-              $md += '**Steps:**'
-              $i = 1
-              foreach ($st in $Steps) {
-                  $stR = Redact-Secret $st
-                  $md += ('{0}. {1}' -f $i, $stR)
-                  $i++
-              }
-              $md += ''
-              $md += 'After fixing, re-dispatch the workflow.'
-              if ($global:F9kTail -and $global:F9kTail.Count -gt 0) {
-                  $md += ''
-                  $md += '**Log tail (redacted, last 25 lines each):**'
-                  $md += '```'
-                  foreach ($ln in $global:F9kTail) { $md += (Redact-Secret $ln) }
-                  $md += '```'
-              }
-              foreach ($l in $md) {
-                  $lr = Redact-Secret $l
-                  Write-Host ('[F9k] ' + $lr)
-                  if ($sum) { $lr | Add-Content -Path $sum }
+          # [F9k] Generic halt helper (reusable for TS_AUTHKEY / VNC_PASS /
+          # TS_API_TOKEN): writes '::error::', a step-summary card with a
+          # CLICKABLE admin link + numbered fix steps (+ optional redacted log
+          # tail), stamps config.json tsReason/tsAuthAdminUrl, then throws.
+          function Emit-SecretHalt([string]$What, [string]$AdminUrl, [string]$Reason, [string[]]$Steps, [string]$Detail = '') {
+              Write-Host (ConvertTo-Redacted ('::error::' + $What + ' - ' + $Reason + '. Fix: ' + $AdminUrl))
+              $md = @('### ' + $What + ' - halted by design', '', '**[' + $AdminUrl + '](' + $AdminUrl + ')**', '')
+              for ($si = 0; $si -lt $Steps.Count; $si++) { $md += ((($si + 1) -as [string]) + '. ' + $Steps[$si]) }
+              if ($Detail) { $md += @('', '```text', $Detail, '```') }
+              foreach ($line in $md) {
+                  $line = ConvertTo-Redacted $line
+                  Write-Host ('[halt] ' + $line)
+                  if ($S) { $line | Add-Content -Path $S }
               }
               try {
-                  $enc = New-Object System.Text.UTF8Encoding($false)
-                  $markerDir = 'C:\ghrdp'
-                  if (-not (Test-Path -LiteralPath $markerDir)) { New-Item -ItemType Directory -Path $markerDir -Force | Out-Null }
-                  $marker = Join-Path $markerDir 'ts-auth-halt.json'
-                  $haltObj = @{ what = $What; reason = $Reason; adminUrl = $AdminUrl; steps = $Steps; ts = (Get-Date -Format o) }
-                  [System.IO.File]::WriteAllText($marker, ($haltObj | ConvertTo-Json -Depth 5), $enc)
-                  $cfgPaths = @('C:\ghrdp\config.json')
-                  foreach ($cp in $cfgPaths) {
-                      if (Test-Path -LiteralPath $cp) {
-                          $cfg = [System.IO.File]::ReadAllText($cp) | ConvertFrom-Json
-                          if ($cfg.PSObject.Properties['tsReason']) { $cfg.tsReason = $Reason } else { $cfg | Add-Member -NotePropertyName tsReason -NotePropertyValue $Reason -Force }
-                          if ($cfg.PSObject.Properties['webdeskReason'] -and ($Reason -like 'ts-authkey-*')) {
-                              # keep webdeskReason for dashboard that only looks at webdeskReason
-                              if ($cfg.webdeskReason -notlike 'ts-authkey*') { $cfg.webdeskReason = $Reason }
-                          }
-                          if ($cfg.PSObject.Properties['reason']) { $cfg.reason = $Reason } else { $cfg | Add-Member -NotePropertyName reason -NotePropertyValue $Reason -Force }
-                          [System.IO.File]::WriteAllText($cp, ($cfg | ConvertTo-Json -Depth 10), $enc)
-                      }
+                  $cfgPathH = 'C:\ghrdp\config.json'
+                  $encH = New-Object System.Text.UTF8Encoding($false)
+                  $cfgH = $null
+                  if (Test-Path -LiteralPath $cfgPathH) {
+                      $cfgH = [System.IO.File]::ReadAllText($cfgPathH) | ConvertFrom-Json
+                  } else {
+                      New-Item -ItemType Directory -Path 'C:\ghrdp' -Force | Out-Null
+                      $cfgH = [pscustomobject]@{}
                   }
-              } catch { Write-Host ('[F9k] config write failed: ' + $_.Exception.Message) }
-              throw ($whatR + ' halted by design (' + $reasonR + '). Fix: ' + $adminR)
+                  $cfgH | Add-Member -NotePropertyName tsReason -NotePropertyValue $Reason -Force
+                  $cfgH | Add-Member -NotePropertyName tsAuthAdminUrl -NotePropertyValue $AdminUrl -Force
+                  [System.IO.File]::WriteAllText($cfgPathH, ($cfgH | ConvertTo-Json -Depth 10), $encH)
+              } catch { Write-Host ('[halt] config.json stamp failed: ' + $_.Exception.Message) }
+              throw (ConvertTo-Redacted ($What + ' (' + $Reason + ') - halted by design. Open ' + $AdminUrl))
           }
+
           $daemonOk = $false
           for ($i = 0; $i -lt 30; $i++) {
               try {
@@ -299,97 +272,73 @@ jobs:
           }
           if (-not $daemonOk) { throw 'tailscaled did not start; check the Tailscale install step.' }
           $hostname = 'ghrdp-' + ([guid]::NewGuid().ToString('N').Substring(0, 6))
-          $keysUrl = 'https://login.tailscale.com/admin/settings/keys'
-          $secretsUrl = 'https://github.com/dekarita/supreme-lamp/settings/secrets/actions'
-          $tsSteps = @(
-              'Open https://login.tailscale.com/admin/settings/keys and click Generate auth key',
-              'Select Reusable, set Expiry to 90 days, enable all recommended options',
-              'Copy the generated key starting with tskey-auth-...',
-              'Open https://github.com/dekarita/supreme-lamp/settings/secrets/actions and set/replace TS_AUTHKEY secret with the copied key',
-              'Re-dispatch the workflow from Actions → Windows RDP → Run workflow → main → Run'
+
+          # One fixed, numbered regeneration procedure reused by every halt
+          # below (missing / invalid / ratelimited / unknown).
+          $authSteps = @(
+              ('Open the Tailscale admin keys page (link above): ' + $keysUrl)
+              'Click "Generate auth key" with Reusable = ON and Expiry = 90 days'
+              'Copy the generated tskey-auth-... value'
+              'Set repo secret TS_AUTHKEY to that value (GitHub repo -> Settings -> Secrets and variables -> Actions: https://github.com/dekarita/supreme-lamp/settings/secrets/actions)'
+              'Re-dispatch this workflow (Actions -> Windows RDP -> Run workflow)'
           )
+
+          # [F9k] Missing key = halt by design. No interactive fallback.
           if (-not $env:TS_AUTHKEY) {
-              Emit-SecretHalt -What 'TS_AUTHKEY missing' -AdminUrl $keysUrl -Reason 'ts-authkey-missing' -Steps $tsSteps
+              Emit-SecretHalt 'TS_AUTHKEY missing' $keysUrl 'ts-authkey-missing' $authSteps
           }
-          function Invoke-TsUpAttempt {
-              param([string]$Key, [string]$HostName, [string]$LogOut, [string]$LogErr)
-              Remove-Item -LiteralPath $LogOut -Force -ErrorAction SilentlyContinue
-              Remove-Item -LiteralPath $LogErr -Force -ErrorAction SilentlyContinue
-              $tsExe = 'C:\Program Files\Tailscale\tailscale.exe'
-              $proc = Start-Process -FilePath $tsExe -ArgumentList @('up', ('--authkey=' + $Key), '--accept-dns=true', ('--hostname=' + $HostName)) -RedirectStandardOutput $LogOut -RedirectStandardError $LogErr -WindowStyle Hidden -PassThru
-              return $proc
-          }
-          function Get-TsRunning {
-              try {
-                  $j = (& $ts status --json 2>$null) | ConvertFrom-Json -ErrorAction Stop
-                  if ($j -and $j.BackendState -eq 'Running') { return $true }
-              } catch { }
-              return $false
-          }
-          function Read-TailRedacted {
-              param([string]$Path, [int]$Lines = 25)
-              $out = @()
-              try {
-                  if (Test-Path -LiteralPath $Path) {
-                      $all = Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue | Select-Object -Last $Lines
-                      foreach ($l in $all) { $out += (Redact-Secret $l) }
-                  }
-              } catch { }
-              return $out
-          }
+
+          Write-Host '[ts] TS_AUTHKEY secret found - attempting automatic login (key value is never printed)'
           $upLog = Join-Path $env:RUNNER_TEMP 'ts-up.log'
           $upErr = Join-Path $env:RUNNER_TEMP 'ts-up.err'
-          $attempt = 1
-          $maxAttempts = 2
-          $success = $false
-          while ($attempt -le $maxAttempts) {
-              Write-Host ("[ts] Attempt $attempt/$maxAttempts : tailscale up --authkey=[REDACTED] --hostname=$hostname")
-              $proc = Invoke-TsUpAttempt -Key $env:TS_AUTHKEY -HostName $hostname -LogOut $upLog -LogErr $upErr
-              $ok = $false
+          $ok = $false
+          for ($attempt = 1; $attempt -le 2 -and -not $ok; $attempt++) {
+              Remove-Item $upLog, $upErr -Force -ErrorAction SilentlyContinue
+              Start-Process -FilePath $ts -ArgumentList @('up', ('--authkey=' + $env:TS_AUTHKEY), '--accept-dns=true', ('--hostname=' + $hostname)) -RedirectStandardOutput $upLog -RedirectStandardError $upErr -WindowStyle Hidden | Out-Null
+              $fatalHit = $false
+              # Poll status --json <= 90 s for Running; break EARLY on a fatal
+              # authkey rejection (no need to burn the full window).
               for ($i = 0; $i -lt 45; $i++) {
-                  if (Get-TsRunning) { $ok = $true; break }
+                  try {
+                      $j = (& $ts status --json 2>$null) | ConvertFrom-Json -ErrorAction Stop
+                      if ($j -and ($j.BackendState -eq 'Running')) { $ok = $true; break }
+                  } catch { }
+                  $allNow = ''
+                  try { if (Test-Path -LiteralPath $upErr) { $allNow += [System.IO.File]::ReadAllText($upErr) } } catch { }
+                  try { if (Test-Path -LiteralPath $upLog) { $allNow += "`n" + [System.IO.File]::ReadAllText($upLog) } } catch { }
+                  if ($allNow -match 'invalid|expired|revoked|not a valid|unauthorized|forbidden|already been used|consumed') { $fatalHit = $true; break }
                   Start-Sleep -Seconds 2
               }
-              if ($ok) { $success = $true; break }
-              $tailOut = Read-TailRedacted -Path $upLog -Lines 25
-              $tailErr = Read-TailRedacted -Path $upErr -Lines 25
-              $combinedRaw = ''
-              try {
-                  if (Test-Path $upLog) { $combinedRaw += [System.IO.File]::ReadAllText($upLog) }
-                  if (Test-Path $upErr) { $combinedRaw += "`n" + [System.IO.File]::ReadAllText($upErr) }
-              } catch { }
-              $reason = 'ts-authkey-unknown'
-              $lc = $combinedRaw.ToLower()
-              if ($lc -match 'invalid|expired|revoked|not a valid|not valid|already.*used|unauthorized|forbidden') {
-                  $reason = 'ts-authkey-invalid'
-              } elseif ($lc -match 'rate|limit|too many') {
-                  $reason = 'ts-authkey-ratelimited'
-              }
-              $global:F9kTail = @()
-              $global:F9kTail += '--- stdout tail (redacted) ---'
-              $global:F9kTail += $tailOut
-              $global:F9kTail += '--- stderr tail (redacted) ---'
-              $global:F9kTail += $tailErr
-              $global:F9kTail += "--- classified as $reason ---"
-              if ($reason -eq 'ts-authkey-invalid' -or $reason -eq 'ts-authkey-ratelimited') {
-                  Emit-SecretHalt -What 'TS_AUTHKEY rejected' -AdminUrl $keysUrl -Reason $reason -Steps $tsSteps
-              }
-              if ($attempt -lt $maxAttempts) {
-                  Write-Host "[ts] Transient failure ($reason), retrying after 10s..."
+              if ($ok -or $fatalHit) { break }
+              # ONE retry, after 10 s, for transient control-plane errors only.
+              $transientNow = ''
+              try { if (Test-Path -LiteralPath $upErr) { $transientNow = [System.IO.File]::ReadAllText($upErr) } } catch { }
+              if ($attempt -eq 1 -and $transientNow -match 'timeout|timed out|temporar|unavailable|connection (refused|reset)|EOF|50[0-9]|try again') {
+                  Write-Host '[ts] transient control-plane error - retrying once after 10 s'
                   Start-Sleep -Seconds 10
-                  $attempt++
-                  continue
-              } else {
-                  Emit-SecretHalt -What 'TS_AUTHKEY failed' -AdminUrl $keysUrl -Reason $reason -Steps $tsSteps
-              }
+              } else { break }
           }
-          if ($success) {
+          if ($ok) {
               Write-Host '[ts] auto-login OK via TS_AUTHKEY'
               if ($S) { '### Tailscale: auto-logged-in via TS_AUTHKEY' | Add-Content -Path $S }
-          } else {
-              throw 'TS_AUTHKEY up failed (should have halted)'
+              exit 0
           }
-          exit 0
+
+          # Failure: read the last 25 lines of the PAIRED logs, redact, then
+          # classify per F9k before halting with the same 5 fix steps.
+          $tail = @()
+          foreach ($f in @($upLog, $upErr)) {
+              try { if (Test-Path -LiteralPath $f) { $tail += ([System.IO.File]::ReadAllText($f) -split "`r?`n") } } catch { }
+          }
+          $tail = @($tail | Where-Object { $_ } | Select-Object -Last 25 | ForEach-Object { ConvertTo-Redacted $_ })
+          $tailText = ($tail -join "`n")
+          Write-Host '[ts] tailscale up failed - last 25 log lines (redacted):'
+          foreach ($l in $tail) { Write-Host ('[ts]   ' + $l) }
+          $reason = 'ts-authkey-unknown'
+          if ($tailText -match 'invalid|expired|revoked|not a valid') { $reason = 'ts-authkey-invalid' }
+          elseif ($tailText -match 'rate|limit') { $reason = 'ts-authkey-ratelimited' }
+          if ($reason -eq 'ts-authkey-unknown' -and -not $tailText) { Write-Host '[ts] note: tailscale up produced no log output; treating as unclassified failure.' }
+          Emit-SecretHalt 'TS_AUTHKEY login failed' $keysUrl $reason $authSteps $tailText
 
       - name: Wait for Tailscale connected
         shell: pwsh
@@ -935,8 +884,10 @@ jobs:
           $root = 'C:\ghrdp'
           New-Item -ItemType Directory -Path $root -Force | Out-Null
           Copy-Item -Path (Join-Path $stage '*') -Destination $root -Recurse -Force -ErrorAction SilentlyContinue
+          # [F9k-guard] cascade guard: ghrdp-lib.ps1 is staged by an EARLIER step.
+          # If it is absent, that earlier step halted this run - this step is the
+          # cascade, not the cause. Read the FIRST failed step above.
           $lib = Join-Path $root 'ghrdp-lib.ps1'
-          # [F9k-guard]
           if (-not (Test-Path -LiteralPath $lib)) {
               Write-Host '::error::ghrdp-lib.ps1 missing - an EARLIER step halted this run. Read the FIRST failed step above; this step is a cascade, not the cause.'
               if ($env:GITHUB_STEP_SUMMARY) { '### Upstream halt: lib never staged - fix the first failed step.' | Add-Content -Path $env:GITHUB_STEP_SUMMARY }
@@ -1028,12 +979,6 @@ jobs:
               mirrorIndexUrl = ''
               serveUrl = ''
               funnelUrl = ''
-              webdeskUrl = ''
-              webdeskReason = ''
-              webdeskDetail = ''
-              tsReason = ''
-              vncPassAdminUrl = 'https://github.com/dekarita/supreme-lamp/settings/secrets/actions'
-              tsAuthKeysUrl = 'https://login.tailscale.com/admin/settings/keys'
               startedAt = $(try { if ($env:JOB_STARTED_AT) { ([datetime]$env:JOB_STARTED_AT).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } else { (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } } catch { (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') })
               runStartedAt = $(try { if ($env:RUN_STARTED_AT) { ([datetime]$env:RUN_STARTED_AT).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } elseif ($env:JOB_STARTED_AT) { ([datetime]$env:JOB_STARTED_AT).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } else { (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } } catch { (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') })
               sessionStartedAt = ''
@@ -1139,59 +1084,16 @@ jobs:
           $S = $env:GITHUB_STEP_SUMMARY
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $vp = [string]$env:VNC_PASS
+          # [F8c] LOUD skips: every early exit records config.webdeskReason so
+          # /api/native-status can explain the disabled button. [F9i] A
+          # present-but-short secret is a non-fatal skip (U5c); a startup/serve
+          # failure THROWS (fail-closed) - a green run with a dead web desktop
+          # is a false-LIVE.
           $cfgPathW = 'C:\ghrdp\config.json'
-          $Root = 'C:\ghrdp'
-          # [F9k] generic secret halt helper (§1) - same as in Tailscale up step, reused for VNC_PASS + TS_AUTHKEY
-          function Redact-Secret {
-              param([string]$s)
-              if (-not $s) { return $s }
-              $s = $s -replace 'tskey-auth-[A-Za-z0-9\-_]+', '[REDACTED-tskey]'
-              $s = $s -replace 'tskey-[A-Za-z0-9\-_]+', '[REDACTED-tskey]'
-              $s = $s -replace 'ghp_[A-Za-z0-9_]+', '[REDACTED-ghp]'
-              $s = $s -replace '(?i)TS_AUTHKEY\s*[:=]\s*\S+', 'TS_AUTHKEY=[REDACTED]'
-              $s = $s -replace '(?i)VNC_PASS\s*[:=]\s*\S+', 'VNC_PASS=[REDACTED]'
-              return $s
-          }
-          function Emit-SecretHalt {
-              param([string]$What,[string]$AdminUrl,[string]$Reason,[string[]]$Steps)
-              $sum = $env:GITHUB_STEP_SUMMARY
-              $whatR = Redact-Secret $What
-              $reasonR = Redact-Secret $Reason
-              $adminR = $AdminUrl
-              Write-Host (Redact-Secret ('::error::' + $whatR + ' - ' + $reasonR + ' - fix: ' + $adminR))
-              $md = @()
-              $md += '### ' + $whatR + ' - workflow halted by design'
-              $md += ''
-              $md += '**Reason:** `' + $reasonR + '`'
-              $md += ''
-              $md += '**Fix it now:** [' + $adminR + '](' + $adminR + ')'
-              $md += ''
-              $md += '**Steps:**'
-              $i=1; foreach ($st in $Steps) { $md += ('{0}. {1}' -f $i, (Redact-Secret $st)); $i++ }
-              $md += ''
-              $md += 'After fixing, re-dispatch the workflow.'
-              if ($global:F9kTail -and $global:F9kTail.Count -gt 0) {
-                  $md += ''; $md += '**Log tail (redacted):**'; $md += '```'
-                  foreach ($ln in $global:F9kTail) { $md += (Redact-Secret $ln) }
-                  $md += '```'
-              }
-              foreach ($l in $md) { $lr=Redact-Secret $l; Write-Host ('[F9k] '+$lr); if ($sum) { $lr | Add-Content -Path $sum } }
-              try {
-                  $enc = New-Object System.Text.UTF8Encoding($false)
-                  $markerDir='C:\ghrdp'; if (-not (Test-Path $markerDir)) { New-Item -ItemType Directory -Path $markerDir -Force | Out-Null }
-                  $cfgPath = Join-Path $Root 'config.json'
-                  if (Test-Path $cfgPath) {
-                      $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
-                      $cfg | Add-Member -NotePropertyName 'webdeskUrl' -NotePropertyValue '' -Force
-                      $cfg | Add-Member -NotePropertyName 'webdeskReason' -NotePropertyValue $Reason -Force
-                      $cfg | Add-Member -NotePropertyName 'vncPassAdminUrl' -NotePropertyValue $AdminUrl -Force
-                      $cfg | Add-Member -NotePropertyName 'reason' -NotePropertyValue $Reason -Force
-                      if ($cfg.PSObject.Properties['tsReason'] -and $Reason -like 'ts-authkey*') { $cfg.tsReason = $Reason } elseif ($Reason -like 'ts-authkey*') { $cfg | Add-Member -NotePropertyName tsReason -NotePropertyValue $Reason -Force }
-                      $cfg | ConvertTo-Json -Depth 8 | Set-Content $cfgPath
-                  }
-              } catch { Write-Host ('[F9k] config write failed: '+$_.Exception.Message) }
-              throw ($whatR + ' halted by design (' + $reasonR + '). Fix: ' + $adminR)
-          }
+          # [F9i] $Detail is a fixed, secret-free sub-cause code (tightvnc-install,
+          # novnc-assets, websockify-bind, serve-mapping, self-test-failed) so the
+          # dashboard can name the exact failure. Never installer args, never
+          # exception text - those may carry the secret.
           function Set-WebdeskCfg([string]$Url, [string]$Reason, [string]$Detail = '') {
               try {
                   if (-not (Test-Path -LiteralPath $cfgPathW)) { return }
@@ -1203,25 +1105,34 @@ jobs:
                   [System.IO.File]::WriteAllText($cfgPathW, ($cfgW | ConvertTo-Json -Depth 10), $encW)
               } catch { Write-Host ('[webdesk] config.json webdesk update failed: ' + $_.Exception.Message) }
           }
-          # [F9h] VNC_PASS fail-closed with direct admin link - now via Emit-SecretHalt (§1 + F9k)
+          # Validate the dispatch-time repository secret before installing TightVNC.
+          # [F9h] $Root is not otherwise defined in this step; the fail-closed guard
+          # below writes config.json through it, so bind it to the deploy root here.
+          $Root = 'C:\ghrdp'
+          # [F9h] VNC_PASS fail-closed with direct admin link
           if (-not $env:VNC_PASS) {
               $link = 'https://github.com/dekarita/supreme-lamp/settings/secrets/actions'
-              $vncSteps = @(
-                  'Open https://github.com/dekarita/supreme-lamp/settings/secrets/actions',
-                  'Click New repository secret',
-                  'Name: VNC_PASS',
-                  'Value: any strong password (min 8 chars, e.g. MySecureVNC2026!)',
-                  'Click Add secret, then re-dispatch the workflow (Actions → Windows RDP → Run workflow → main → Run)'
-              )
-              # [F9h] marker for workflow-webdesk.test.js - must be before installer
               Write-Host '::error::VNC_PASS secret missing — web desktop cannot be deployed'
-              Emit-SecretHalt -What 'VNC_PASS missing' -AdminUrl $link -Reason 'vnc-pass-missing' -Steps $vncSteps
+              '### ⚠ VNC_PASS Secret Missing' | Add-Content $env:GITHUB_STEP_SUMMARY
+              'Web desktop deployment halted by design.' | Add-Content $env:GITHUB_STEP_SUMMARY
+              '' | Add-Content $env:GITHUB_STEP_SUMMARY
+              '**Fix (takes 30 seconds):**' | Add-Content $env:GITHUB_STEP_SUMMARY
+              "1. [Click here to open GitHub Secrets Settings ↗]($link)" | Add-Content $env:GITHUB_STEP_SUMMARY
+              '2. Click **New repository secret**' | Add-Content $env:GITHUB_STEP_SUMMARY
+              '3. Name: `VNC_PASS`' | Add-Content $env:GITHUB_STEP_SUMMARY
+              '4. Value: Any strong password (e.g., `MyVNC2026!`)' | Add-Content $env:GITHUB_STEP_SUMMARY
+              '5. Click **Add secret**, then re-dispatch this workflow.' | Add-Content $env:GITHUB_STEP_SUMMARY
+
+              $cfgPath = Join-Path $Root 'config.json'
+              if (Test-Path $cfgPath) {
+                  $cfg = Get-Content $cfgPath -Raw | ConvertFrom-Json
+                  $cfg | Add-Member -NotePropertyName 'webdeskUrl' -NotePropertyValue '' -Force
+                  $cfg | Add-Member -NotePropertyName 'webdeskReason' -NotePropertyValue 'vnc-pass-missing' -Force
+                  $cfg | Add-Member -NotePropertyName 'vncPassAdminUrl' -NotePropertyValue $link -Force
+                  $cfg | ConvertTo-Json -Depth 8 | Set-Content $cfgPath
+              }
+              throw "VNC_PASS missing. Halted by design. See Step Summary for instructions."
           }
-          # [F9h-test-contract] keep provision-contract.test.js markers (literal strings required by tests, not secret-bearing)
-          # webdeskReason' -NotePropertyValue 'vnc-pass-missing'
-          # vncPassAdminUrl' -NotePropertyValue $link
-          # webdeskUrl' -NotePropertyValue ''
-          # throw "VNC_PASS missing. Halted by design
           # [F9h-belt] Unreachable while the F9h guard above stands. Deliberately kept,
           # and deliberately fail-CLOSED (throw, not the old 'exit 0' loud skip) so no
           # fail-open path survives here if the guard is ever reordered or removed.
@@ -1798,8 +1709,10 @@ jobs:
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $S = $env:GITHUB_STEP_SUMMARY
           $root = 'C:\ghrdp'
+          # [F9k-guard] cascade guard: ghrdp-lib.ps1 is staged by an EARLIER step.
+          # If it is absent, that earlier step halted this run - this step is the
+          # cascade, not the cause. Read the FIRST failed step above.
           $lib = Join-Path $root 'ghrdp-lib.ps1'
-          # [F9k-guard]
           if (-not (Test-Path -LiteralPath $lib)) {
               Write-Host '::error::ghrdp-lib.ps1 missing - an EARLIER step halted this run. Read the FIRST failed step above; this step is a cascade, not the cause.'
               if ($env:GITHUB_STEP_SUMMARY) { '### Upstream halt: lib never staged - fix the first failed step.' | Add-Content -Path $env:GITHUB_STEP_SUMMARY }
@@ -2394,8 +2307,10 @@ jobs:
           $idleCap = $jobStart.AddMinutes(350)
           $sessionWindowMinutes = 330
           $deadline = $idleCap
+          # [F9k-guard] cascade guard: ghrdp-lib.ps1 is staged by an EARLIER step.
+          # If it is absent, that earlier step halted this run - this step is the
+          # cascade, not the cause. Read the FIRST failed step above.
           $lib = Join-Path $root 'ghrdp-lib.ps1'
-          # [F9k-guard]
           if (-not (Test-Path -LiteralPath $lib)) {
               Write-Host '::error::ghrdp-lib.ps1 missing - an EARLIER step halted this run. Read the FIRST failed step above; this step is a cascade, not the cause.'
               if ($env:GITHUB_STEP_SUMMARY) { '### Upstream halt: lib never staged - fix the first failed step.' | Add-Content -Path $env:GITHUB_STEP_SUMMARY }

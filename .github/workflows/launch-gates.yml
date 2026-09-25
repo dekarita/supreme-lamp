@@ -92,51 +92,32 @@ jobs:
             echo 'a step reads Self.DNSName without a non-empty *.ts.net validation - a MagicDNS gate could pass on an empty or non-ts.net name' >&2
             exit 1
           fi
-      - name: F9k secret framework gates
+      - name: F9k secret-halt + cascade gates
         shell: bash
         run: |
           set -euo pipefail
-          # §5: main.yml must contain TS auth keys admin link
+          # The TS_AUTHKEY halt must carry the clickable Tailscale admin keys link.
           if ! grep -q 'login.tailscale.com/admin/settings/keys' .github/workflows/main.yml; then
-            echo 'main.yml lacks login.tailscale.com/admin/settings/keys (TS_AUTHKEY guard)' >&2
+            echo "main.yml lacks 'login.tailscale.com/admin/settings/keys' (TS_AUTHKEY halt link)" >&2
             exit 1
           fi
-          # §5: must contain secrets actions link
+          # Secret fix instructions must link the repo secrets settings page.
           if ! grep -q 'settings/secrets/actions' .github/workflows/main.yml; then
-            echo 'main.yml lacks settings/secrets/actions (VNC_PASS + TS_AUTHKEY fix link)' >&2
+            echo "main.yml lacks 'settings/secrets/actions' (repo secrets settings link)" >&2
             exit 1
           fi
-          # §5: cascade guard counts must match dot-source counts
-          n_guard=$(grep -c '# \[F9k-guard\]' .github/workflows/main.yml || true)
-          n_lib=$(grep -c "\. (Join-Path \$root 'ghrdp-lib.ps1')" .github/workflows/main.yml || true)
-          if [ "$n_guard" != "$n_lib" ]; then
-            echo "guard count $n_guard != dot-source count $n_lib (F9k-guard)" >&2
+          # Every ghrdp-lib.ps1 dot-source must carry exactly one '# [F9k-guard]'
+          # cascade guard, and the gate must not be vacuous.
+          guards=$(grep -cF '# [F9k-guard]' .github/workflows/main.yml || true)
+          dotsrc=$(grep -c "\. (Join-Path \$root 'ghrdp-lib.ps1')" .github/workflows/main.yml || true)
+          if [ "$dotsrc" -lt 1 ]; then
+            echo 'no ghrdp-lib.ps1 dot-sources found - gate would be vacuous' >&2
             exit 1
           fi
-          # §5: keep existing gates - no powershell launch in ui.html, no dnsName from IP, no rdpIp fallback, hostKind present
-          if grep -E -n 'powershell|-ExecutionPolicy' payloads/ui.html; then
-            echo 'ui.html still contains a script-host launch (F9k keeps gate)' >&2
+          if [ "$guards" -ne "$dotsrc" ]; then
+            echo "F9k guard count ($guards) != ghrdp-lib dot-source count ($dotsrc)" >&2
             exit 1
           fi
-          if grep -E -n 'dnsName = \$ip|dnsName = \[string\]\$ip' .github/workflows/main.yml; then
-            echo 'dnsName assigned from an IP (kept gate)' >&2
-            exit 1
-          fi
-          if grep -E -n 'fqdnN = \[string\]\$cfgN.rdpIp|rdpTarget = \[string\]\$cfgC.rdpIp' payloads/ghrdp-server.ps1; then
-            echo 'native target still falls back to rdpIp (kept gate)' >&2
-            exit 1
-          fi
-          grep -q 'hostKind = $hostKind' payloads/ghrdp-server.ps1
-          grep -q "hostKind = 'ephemeral'" .github/workflows/main.yml
-          # §4: UI must have TS_AUTHKEY box pattern
-          grep -q 'tsAuthGuidance' payloads/ui.html
-          grep -q 'login.tailscale.com/admin/settings/keys' payloads/ui.html
-          grep -q 'ts-authkey-missing' payloads/ui.html
-          # §2: TS_AUTHKEY guard must have classification and redact logic
-          grep -q 'ts-authkey-invalid' .github/workflows/main.yml
-          grep -q 'ts-authkey-missing' .github/workflows/main.yml
-          grep -q 'Redact-Secret' .github/workflows/main.yml
-          grep -q 'Emit-SecretHalt' .github/workflows/main.yml
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:

@@ -469,7 +469,7 @@ function Invoke-ClientRequest {
             } elseif ($hostKind -eq 'vps') {
                 $advisory += 'run the cmdkey line once (current user), then pin the mstsc shortcut'
             }
-            $wd = ''; $wdr = ''; $wdDetail = ''; $tsReason = ''; $tsAuthUrl = 'https://login.tailscale.com/admin/settings/keys'
+            $wd = ''; $wdr = ''; $wdDetail = ''
             # [F8a] webdeskReason explains an EMPTY webdeskUrl. Enum:
             # vnc-pass-missing | vnc-pass-too-short | serve-failed | config-stale
             # | step-not-run. (A PRESENT-but-short VNC_PASS is 'vnc-pass-too-short',
@@ -481,20 +481,27 @@ function Invoke-ClientRequest {
             if ($cfgN -and $cfgN.webdeskUrl) { $wd = [string]$cfgN.webdeskUrl }
             if ($cfgN -and $cfgN.PSObject.Properties['webdeskReason'] -and $cfgN.webdeskReason) { $wdr = [string]$cfgN.webdeskReason }
             if ($cfgN -and $cfgN.PSObject.Properties['webdeskDetail'] -and $cfgN.webdeskDetail) { $wdDetail = [string]$cfgN.webdeskDetail }
-            if ($cfgN -and $cfgN.PSObject.Properties['tsReason'] -and $cfgN.tsReason) { $tsReason = [string]$cfgN.tsReason }
-            if ((-not $tsReason) -and $wdr -like 'ts-authkey*') { $tsReason = $wdr }
             # [F9i] webdeskDetail is a fixed, secret-free sub-cause code written
             # only by the workflow (tightvnc-install | novnc-assets |
-            # websockify-bind | serve-mapping | self-test-failed | ts-authkey-*). Cap length so
+            # websockify-bind | serve-mapping | self-test-failed). Cap length so
             # a tampered config cannot bloat the response; never carries secrets.
             if ($wdDetail.Length -gt 64) { $wdDetail = $wdDetail.Substring(0, 64) }
-            if ($tsReason.Length -gt 64) { $tsReason = $tsReason.Substring(0, 64) }
             # [F9i] vncPassAdminUrl: the direct secrets-settings link the F9h
             # guard writes into config.json; default is the repo's fixed URL.
             # Exposed so the dashboard links the verified location instead of
             # hardcoding it in the page.
             $vncAdmin = 'https://github.com/dekarita/supreme-lamp/settings/secrets/actions'
             if ($cfgN -and $cfgN.PSObject.Properties['vncPassAdminUrl'] -and $cfgN.vncPassAdminUrl -match '^https://github\.com/') { $vncAdmin = [string]$cfgN.vncPassAdminUrl }
+            # [F9k] tsReason + tsAuthAdminUrl: stamped into config.json by the
+            # workflow's Emit-SecretHalt when TS_AUTHKEY is missing or rejected
+            # (ts-authkey-missing|ts-authkey-invalid|ts-authkey-ratelimited|
+            # ts-authkey-unknown). The dashboard renders the keys-page link as
+            # a second conditional box. Admin URL is allowlist-validated;
+            # nothing here ever carries key material.
+            $tsr = ''
+            if ($cfgN -and $cfgN.PSObject.Properties['tsReason'] -and [string]$cfgN.tsReason -match '^ts-[a-z-]+$') { $tsr = ([string]$cfgN.tsReason).Substring(0, [Math]::Min(64, ([string]$cfgN.tsReason).Length)) }
+            $tsAdmin = 'https://login.tailscale.com/admin/settings/keys'
+            if ($cfgN -and $cfgN.PSObject.Properties['tsAuthAdminUrl'] -and [string]$cfgN.tsAuthAdminUrl -match '^https://login\.tailscale\.com/admin/') { $tsAdmin = [string]$cfgN.tsAuthAdminUrl }
             if ($wd) { $wdr = ''; $wdDetail = '' } elseif (-not $wdr) { $wdr = 'step-not-run' }
             # [F8a] config-stale: URL advertised but nothing listens on
             # 127.0.0.1:7333 (websockify died after the step wrote config).
@@ -515,16 +522,14 @@ function Invoke-ClientRequest {
                 webdeskUrl = $wd
                 webdeskReason = $wdr
                 webdeskDetail = $wdDetail
-                tsReason = $tsReason
-                tsAuthKeysUrl = $tsAuthUrl
                 vncPassAdminUrl = $vncAdmin
+                tsReason = $tsr
+                tsAuthAdminUrl = $tsAdmin
                 vpsPending = $vpsPending
                 # [F9c] actionable MagicDNS admin link: the dashboard linkifies
                 # it whenever the fqdn reason renders (fqdn missing) and hides
                 # it once the FQDN resolves. Carries no credentials.
                 magicDnsAdminUrl = 'https://login.tailscale.com/admin/dns'
-                # [F9k] TS auth keys admin link for UI box
-                tsAuthAdminUrl = $tsAuthUrl
                 probeReasons = $probeReasons
                 reasonsDisabled = @($reasons)
                 advisory = @($advisory)
