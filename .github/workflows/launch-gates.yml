@@ -222,6 +222,125 @@ jobs:
             echo 'server allowlist lacks the legacy https ts.net alternative' >&2
             exit 1
           fi
+      - name: F9o TightVNC password-ladder gates (auth probe + labeled degrade)
+        shell: bash
+        run: |
+          set -euo pipefail
+          WF=.github/workflows/main.yml
+          deploy=$(awk '/Web desktop \(noVNC/{f=1} /^      - name: Web desktop self-test/{f=0} f' "$WF" | grep -vE '^[[:space:]]*#')
+          teststep=$(awk '/^      - name: Web desktop self-test/{f=1} /Start Mission Control dashboard EARLY/{f=0} f' "$WF" | grep -vE '^[[:space:]]*#')
+          # 1) the password mangler must be gone: no package-manager install of
+          #    TightVNC may survive in EITHER webdesk step (deploy or self-test).
+          for region in deploy teststep; do
+            if eval "printf '%s' \"\$$region\"" | grep -q 'choco install tightvnc'; then
+              echo "webdesk $region still carries the password-mangling install path" >&2
+              exit 1
+            fi
+          done
+          # 2) L1: ALWAYS direct msiexec with the full property list (download
+          #    first; REINSTALL pair when the uninstall key exists).
+          if ! printf '%s' "$deploy" | grep -q 'tightvnc-2.8.85-gpl-setup-64bit.msi'; then
+            echo 'deploy step does not download the TightVNC MSI first (L1)' >&2
+            exit 1
+          fi
+          for prop in 'VALUE_OF_PASSWORD=' 'VALUE_OF_CONTROLPASSWORD=' 'SET_PASSWORD=1' 'SET_CONTROLPASSWORD=1' 'REINSTALL=Server' 'REINSTALLMODE=omus'; do
+            if ! printf '%s' "$deploy" | grep -qF -- "$prop"; then
+              echo "L1 msiexec property missing: $prop" >&2
+              exit 1
+            fi
+          done
+          # 3) L2: restart + registry pin (SecurityTypes=VncAuth) + Password blob check.
+          if ! printf '%s' "$deploy" | grep -q "SecurityTypes.*VncAuth"; then
+            echo 'L2 must pin SecurityTypes to VncAuth' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$deploy" | grep -q 'Password.*Length.*-ge 8\|\$pwdLen -ge 8\|-ge 8'; then
+            echo 'L2 must verify the Password blob length >= 8' >&2
+            exit 1
+          fi
+          # 4) L3/L4: the REAL auth probe (vncdotool vs 127.0.0.1:5900) must exist
+          #    in the deploy step, with redaction and a reinstall retry.
+          if ! printf '%s' "$deploy" | grep -q 'vncdotool'; then
+            echo 'deploy step lacks the vncdotool auth probe (L3)' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$deploy" | grep -q '127.0.0.1::5900'; then
+            echo 'auth probe must target 127.0.0.1::5900' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$deploy" | grep -q '\[redacted\]'; then
+            echo 'auth probe lacks password redaction' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$deploy" | grep -q 'choco uninstall tightvnc'; then
+            echo 'L4 retry lacks the manager-held uninstall + fresh msiexec path' >&2
+            exit 1
+          fi
+          # 5) L5: LABELED degrade - the exact WARNING string + the auth stamp +
+          #    the fail-closed unverifiable detail. Never silent, never hidden.
+          if ! printf '%s' "$deploy" | grep -qF 'VNC password gate could not be applied; access limited to tailnet firewall 100.64.0.0/10; rotate VNC_PASS and re-dispatch to restore the gate'; then
+            echo 'L5 degrade path lacks the mandated summary WARNING string' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$deploy" | grep -q "none-tailnet-only"; then
+            echo "L5 must stamp webdeskAuth='none-tailnet-only'" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$deploy" | grep -q 'vnc-auth-unverifiable'; then
+            echo 'deploy step lacks the vnc-auth-unverifiable fail-closed path' >&2
+            exit 1
+          fi
+          # 6) self-test: HTTP marker AND the mode-matching VNC probe (vnc-auth
+          #    verdict on mismatch), with probe codes in the artifact payload.
+          if ! printf '%s' "$teststep" | grep -q 'vncdotool'; then
+            echo 'self-test lacks the vncdotool probe' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$teststep" | grep -q 'webdeskAuth'; then
+            echo 'self-test lacks mode-matching (webdeskAuth)' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$teststep" | grep -q "verdict = 'vnc-auth'"; then
+            echo "self-test lacks the 'vnc-auth' verdict" >&2
+            exit 1
+          fi
+          if ! printf '%s' "$teststep" | grep -q 'vncprobe-codes.txt'; then
+            echo 'self-test does not record vncprobe-codes.txt' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$teststep" | grep -q 'tightvnc-tail.txt'; then
+            echo 'artifact payload lacks tightvnc-tail.txt' >&2
+            exit 1
+          fi
+          # 7) the two probe copies must be byte-identical (like Start-Websockify).
+          n=$(grep -c '^          function Invoke-VncAuthProbe(' "$WF" || true)
+          if [ "$n" -ne 2 ]; then
+            echo "expected 2 Invoke-VncAuthProbe copies (deploy + self-test), found $n" >&2
+            exit 1
+          fi
+          h1=$(awk '/^          function Invoke-VncAuthProbe\(/{f=1} f{print} f && /^          \}$/{exit}' "$WF" | sha256sum | cut -d' ' -f1)
+          h2=$(awk 'BEGIN{c=0} /^          function Invoke-VncAuthProbe\(/{c++} c==2{f=1} f{print} f && /^          \}$/{if (c==2) exit}' "$WF" | sha256sum | cut -d' ' -f1)
+          if [ "$h1" != "$h2" ]; then
+            echo 'the two Invoke-VncAuthProbe copies diverged - edit both or neither' >&2
+            exit 1
+          fi
+          # 8) server + UI must expose the verified auth mode.
+          if ! grep -q 'webdeskAuth' payloads/ghrdp-server.ps1; then
+            echo 'ghrdp-server.ps1 does not expose webdeskAuth' >&2
+            exit 1
+          fi
+          if ! grep -q "webdeskAuth = \$wda" payloads/ghrdp-server.ps1; then
+            echo 'native-status does not return webdeskAuth' >&2
+            exit 1
+          fi
+          if ! grep -q 'VNC auth mode' payloads/ui.html; then
+            echo 'ui.html lacks the VNC auth mode row' >&2
+            exit 1
+          fi
+          if ! grep -q 'webdeskAuthAdvisory' payloads/ui.html; then
+            echo 'ui.html lacks the degraded-mode advisory' >&2
+            exit 1
+          fi
       - name: F9 MagicDNS halt + link gates
         shell: bash
         run: |
