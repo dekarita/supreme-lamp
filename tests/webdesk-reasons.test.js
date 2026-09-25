@@ -107,7 +107,7 @@ test('serve-failed: honest startup-failure guidance, NEVER missing-secret advice
   assert.match(g, /NOT a missing VNC_PASS|will not fix this/i);
   assert.match(g, /Re-dispatch/);
   // the specific sub-cause code is mapped to human text
-  assert.match(g, /loopback:7333/);
+  assert.match(g, /tailnet-IP:7333/);
   const a = view.node('webdeskVncAdvisoryText').innerHTML;
   assert.doesNotMatch(a, /New repository secret/);
   assert.match(a, /NOT a missing VNC_PASS/i);
@@ -118,7 +118,7 @@ test('serve-failed without detail: still honest, no fabricated sub-cause', async
   await refresh(view);
   const g = view.node('webdeskVncGuidance').innerHTML;
   assert.doesNotMatch(g, /VNC_PASS secret is missing/);
-  assert.doesNotMatch(g, /tightvnc-install|novnc-assets|websockify-bind|serve-mapping/);
+  assert.doesNotMatch(g, /tightvnc-install|novnc-assets|websockify-bind|tailnet-ip-unavailable|firewall-rule|serve-mapping/);
   assert.match(g, /Re-dispatch/);
 });
 
@@ -167,8 +167,36 @@ test('invalid URL: button disabled, invalid-URL message, never ready', async () 
   assert.equal(view.node('webdeskUrlVal').textContent, '(invalid URL)');
   const g = view.node('webdeskVncGuidance').innerHTML;
   assert.doesNotMatch(g, /New repository secret/);
-  assert.match(g, /not a valid tailnet HTTPS URL/);
+  assert.match(g, /not a valid tailnet URL/);
   assert.match(view.node('webdeskVncAdvisoryText').innerHTML, /failed validation/);
+});
+
+test('F9n tailnet HTTP URL: WEB DESKTOP enabled, opens the exact URL', async () => {
+  const tailUrl = 'http://100.89.1.7:7333/vnc.html?autoconnect=1&resize=remote';
+  const view = page({ webdeskUrl: tailUrl, webdeskReason: '' });
+  await refresh(view);
+  assert.equal(view.node('btnWebDesk').disabled, false);
+  view.node('btnWebDesk').onclick();
+  assert.equal(view.opens[0][0], tailUrl);
+  assert.equal(view.node('nrReady').textContent, 'WEB DESKTOP ready');
+  assert.equal(view.node('webdeskVncGuidance').style.display, 'none');
+});
+
+test('F9n URL rejections: public hosts, wrong ports and credentials stay disabled', async () => {
+  for (const bad of [
+    'http://93.184.216.34:7333/vnc.html',      // public IP, not CGNAT
+    'http://100.89.1.7:8080/vnc.html',         // CGNAT IP but wrong port
+    'http://100.89.1.7/vnc.html',              // CGNAT IP but no port
+    'http://user:pass@100.89.1.7:7333/vnc.html', // credentials in URL
+    'https://vps.example.ts.net:8443/vnc.html', // legacy host but explicit port
+    'https://evil.com/vnc.html',             // not a ts.net host
+  ]) {
+    const view = page({ webdeskUrl: bad, webdeskReason: '' });
+    await refresh(view);
+    assert.equal(view.node('btnWebDesk').disabled, true, 'must stay disabled: ' + bad);
+    assert.notEqual(view.node('nrReady').textContent, 'WEB DESKTOP ready', 'must never claim ready: ' + bad);
+    assert.equal(view.node('webdeskUrlVal').textContent, '(invalid URL)', 'must hide value: ' + bad);
+  }
 });
 
 test('unknown reason: generic guidance, no fabricated missing-secret diagnosis', async () => {
