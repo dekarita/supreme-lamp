@@ -114,6 +114,11 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $root = 'C:\ghrdp'
           New-Item -ItemType Directory -Path $root -Force | Out-Null
+          # [F10-13] every D/E failure is classified + captured here so the next
+          # red run is diagnosable from an artifact/annotation alone (runner logs
+          # were unreachable for 36149313677/36149471496).
+          $diag = Join-Path $env:GITHUB_WORKSPACE 'de-diag'
+          New-Item -ItemType Directory -Path $diag -Force | Out-Null
           $utf8 = New-Object System.Text.UTF8Encoding($false)
           # lab config with DUMMY lab-only credentials (not secrets).
           [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), (@{
@@ -121,34 +126,59 @@ jobs:
               rdpPass = 'LABDUMMY-win-9876'; vncPass = 'LABDUMMY-vnc-5432'; rdpIp = '100.118.42.7'
           } | ConvertTo-Json -Compress), $utf8)
           [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), 'lab-dash-token-0123456789', $utf8)
+          $srv = $null
+          function DE-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[D/E] stage=' + $Stage + ' :: ' + $Detail)
+              try { ('stage=' + $Stage + "`n" + 'detail=' + $Detail) | Out-File (Join-Path $diag 'classification.txt') -Encoding utf8 } catch { }
+              try { if ($srv -and -not $srv.HasExited) { Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue } } catch { }
+              exit 1
+          }
           # start the REAL server script (same script production runs).
-          $srv = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:GITHUB_WORKSPACE\payloads\ghrdp-server.ps1"
+          $srvOut = Join-Path $diag 'server-out.log'; $srvErr = Join-Path $diag 'server-err.log'
+          $srv = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:GITHUB_WORKSPACE\payloads\ghrdp-server.ps1"
           $ok = $false
           for ($i = 0; $i -lt 40 -and -not $ok; $i++) { try { $ok = [bool](Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction Stop) } catch { }; if (-not $ok) { Start-Sleep -Milliseconds 500 } }
-          if (-not $ok) { Write-Host '[D/E] FAIL: server never listened on 7331'; exit 1 }
+          if (-not $ok) {
+              $okTxt = ''; try { $okTxt = ([System.IO.File]::ReadAllText((Join-Path $root 'server-ok.txt'))).Trim() } catch { }
+              $errTail = ''; try { $errTail = ((Get-Content $srvErr -Tail 6 -ErrorAction SilentlyContinue) -join ' | ') } catch { }
+              DE-Fail 'listen' ('server never listened on 7331; exited=' + $(if ($srv.HasExited) { $srv.ExitCode } else { 'no' }) + '; server-ok=[' + $okTxt + ']; stderr=[' + $errTail + ']')
+          }
           $base = 'http://127.0.0.1:7331'
-          # UNAUTHENTICATED loopback must NOT receive the creds block (gate §3).
-          $plain = Invoke-RestMethod -Uri ($base + '/api/config') -TimeoutSec 10
-          if ($plain.creds.PSObject.Properties['windowsPass']) { Write-Host '[D] FAIL: creds leaked to unauthenticated loopback'; exit 1 }
-          # dash-token request MUST receive full + masked values.
-          $gated = Invoke-RestMethod -Uri ($base + '/api/config?key=lab-dash-token-0123456789') -TimeoutSec 10
-          if ($gated.creds.windowsPass -ne 'LABDUMMY-win-9876') { Write-Host '[D] FAIL: gated windowsPass wrong'; exit 1 }
-          if ($gated.creds.vncPass -ne 'LABDUMMY-vnc-5432') { Write-Host '[D] FAIL: gated vncPass wrong'; exit 1 }
-          if ($gated.creds.windowsPassMask -notmatch '\*+9876$') { Write-Host '[D] FAIL: mask missing last-4'; exit 1 }
+          try { $plain = Invoke-RestMethod -Uri ($base + '/api/config') -TimeoutSec 10 }
+          catch { DE-Fail 'config-unauth' ($_.Exception.Message) }
+          try {
+              if ($plain.creds.PSObject.Properties['windowsPass']) { DE-Fail 'creds-leak' 'unauthenticated loopback received windowsPass' }
+          } catch { DE-Fail 'config-shape' ($_.Exception.Message + ' :: body=' + ($plain | ConvertTo-Json -Compress -Depth 4)) }
+          try { $gated = Invoke-RestMethod -Uri ($base + '/api/config?key=lab-dash-token-0123456789') -TimeoutSec 10 }
+          catch { DE-Fail 'config-gated' $_.Exception.Message }
+          if ($gated.creds.windowsPass -ne 'LABDUMMY-win-9876') { DE-Fail 'gated-windowsPass' ('got=[' + [string]$gated.creds.windowsPass + ']') }
+          if ($gated.creds.vncPass -ne 'LABDUMMY-vnc-5432') { DE-Fail 'gated-vncPass' ('got=[' + [string]$gated.creds.vncPass + ']') }
+          if ($gated.creds.windowsPassMask -notmatch '\*+9876$') { DE-Fail 'gated-mask' ('mask=[' + [string]$gated.creds.windowsPassMask + ']') }
           Write-Host '[D] PASS: creds served ONLY to token request; last-4 mask verified; loopback clean'
           # native-status carries the new telemetry fields (values may be null
           # on a session-less lab host - the KEYS are the contract).
-          $ns = Invoke-RestMethod -Uri ($base + '/api/native-status?key=lab-dash-token-0123456789') -TimeoutSec 10
-          foreach ($k in @('rdpLogonAgeSec','pingMs','pingPath','pingTarget')) { if (-not ($ns.PSObject.Properties.Name -contains $k)) { Write-Host ('[D] FAIL: native-status missing ' + $k); exit 1 } }
+          try { $ns = Invoke-RestMethod -Uri ($base + '/api/native-status?key=lab-dash-token-0123456789') -TimeoutSec 10 }
+          catch { DE-Fail 'native-status' $_.Exception.Message }
+          foreach ($k in @('rdpLogonAgeSec','pingMs','pingPath','pingTarget')) { if (-not ($ns.PSObject.Properties.Name -contains $k)) { DE-Fail 'native-status-field' ('missing ' + $k) } }
           # rdp-ping loop wrote a sample (tailscale absent in lab => path unknown).
-          $pj = $null; for ($i = 0; $i -lt 10 -and -not $pj; $i++) { if (Test-Path 'C:\ghrdp\rdp-ping.json') { $pj = Get-Content 'C:\ghrdp\rdp-ping.json' -Raw | ConvertFrom-Json }; if (-not $pj) { Start-Sleep -Seconds 2 } }
-          if (-not $pj -or -not $pj.ts) { Write-Host '[D] FAIL: rdp-ping.json never written'; exit 1 }
+          $pj = $null
+          for ($i = 0; $i -lt 10 -and -not $pj; $i++) { if (Test-Path 'C:\ghrdp\rdp-ping.json') { try { $pj = Get-Content 'C:\ghrdp\rdp-ping.json' -Raw | ConvertFrom-Json } catch { } }; if (-not $pj) { Start-Sleep -Seconds 2 } }
+          if (-not $pj -or -not $pj.ts) { DE-Fail 'rdp-ping' ('rdp-ping.json missing/empty; dir=' + ((Get-ChildItem $root -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join ',')) }
           # handler-hello beacon round-trip (the launcher-observable endpoint).
-          $hh = Invoke-RestMethod -Uri ($base + '/api/handler-hello?key=lab-dash-token-0123456789') -Method Post -Body '{"verb":"rdp-launch","ok":true,"details":"lab"}' -ContentType 'application/json' -TimeoutSec 10
-          if (-not $hh.ok) { Write-Host '[D] FAIL: handler-hello rejected'; exit 1 }
+          try { $hh = Invoke-RestMethod -Uri ($base + '/api/handler-hello?key=lab-dash-token-0123456789') -Method Post -Body '{"verb":"rdp-launch","ok":true,"details":"lab"}' -ContentType 'application/json' -TimeoutSec 10 }
+          catch { DE-Fail 'handler-hello' $_.Exception.Message }
+          if (-not $hh.ok) { DE-Fail 'handler-hello-shape' ($hh | ConvertTo-Json -Compress) }
           try { Stop-Process -Id $srv.Id -Force } catch { }
           Write-Host '[D/E] PASS: fields present, ping sample written, hello beacon accepted'
           'DE_result=pass' | Out-File $env:GITHUB_ENV -Append
+
+      - name: "D/E diagnostics artifact (survives halts)"
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: autologin-lab-de-diag
+          path: de-diag
+          if-no-files-found: ignore
 
       - name: "F: Edge policy proof (live-resolved IDs -> registry readout)"
         shell: pwsh
