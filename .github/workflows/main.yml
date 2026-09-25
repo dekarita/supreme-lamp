@@ -2682,36 +2682,32 @@ jobs:
           )
           # [remediation] pagesBase tool bookmarks (Decryptor/Archive/Explorer) removed
           $allBookmarks = $reqBookmarks + $sessionBookmarks
-          # [F10-4b §4.1] Edge extension IDs are resolved AT BUILD TIME from
-          # the live Edge Add-ons pages - never taken from memory: fetch the
-          # add-ons search page, extract the canonical <slug>/<32-char a-p id>
-          # link, then verify the publisher marker on the detail page itself.
-          # Unresolvable/unverified => that entry is skipped LOUDLY (no guessed
-          # IDs ever reach policy). The lab re-runs this resolver and compares
-          # registry readout against a second live resolution.
-          function Resolve-EdgeExtId([string]$Query, [string]$Slug, [string]$PublisherMarker) {
-              try {
-                  $srch = Invoke-WebRequest -Uri ('https://microsoftedge.microsoft.com/addons/search/' + [uri]::EscapeDataString($Query)) -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
-                  $m = [regex]::Match($srch.Content, '/addons/detail/' + [regex]::Escape($Slug) + '/([a-p]{32})')
-                  if (-not $m.Success) { Write-Host ('::warning::[edge] live ID resolution failed for ' + $Slug + ' (search page had no canonical link)'); return '' }
-                  $id = $m.Groups[1].Value
-                  $det = Invoke-WebRequest -Uri ('https://microsoftedge.microsoft.com/addons/detail/' + $Slug + '/' + $id) -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
-                  if ($PublisherMarker -and $det.Content -notmatch [regex]::Escape($PublisherMarker)) {
-                      Write-Host ('::warning::[edge] publisher marker missing for ' + $Slug + ' id ' + $id + ' - refusing unverified ID'); return ''
-                  }
-                  Write-Host ('[edge] resolved ' + $Slug + ' -> ' + $id + ' (live store pages, publisher verified)')
-                  return $id
-              } catch { Write-Host ('::warning::[edge] store page fetch failed for ' + $Slug + ': ' + $_.Exception.Message); return '' }
-          }
-          $uboId = Resolve-EdgeExtId 'uBlock Origin' 'ublock-origin' 'gorhill'
-          $drId  = Resolve-EdgeExtId 'Dark Reader' 'dark-reader' 'darkreader.org'
+          # [F10-11 §4.1] Edge extension IDs: resolved AT BUILD TIME from live
+          # pages only - never from memory. The resolver lives in exactly ONE
+          # place (payloads/edge-ext-resolve.ps1) and is dot-sourced here and in
+          # autologin-lab.yml (launch-gates enforces both dot-sources + that the
+          # file contains no literal 32-char id). Discovery cascade = store
+          # search page -> vendor repo page -> store-indexing SERP -> CWS search
+          # page, then the store DETAIL page for that id must carry the
+          # canonical slug in its URL and a publisher/title marker. Unresolvable
+          # or unverified => skipped LOUDLY (a guessed id could install the
+          # wrong extension).
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads\edge-ext-resolve.ps1')
+          $ubo = Resolve-StoreExtId -Query 'uBlock Origin' -Slug 'ublock-origin' `
+              -Markers @('gorhill', 'uBlock Origin') `
+              -VendorPages @('https://raw.githubusercontent.com/gorhill/uBlock/master/README.md')
+          $dr  = Resolve-StoreExtId -Query 'Dark Reader' -Slug 'dark-reader' `
+              -Markers @('darkreader.org', 'Dark Reader') `
+              -VendorPages @('https://raw.githubusercontent.com/darkreader/darkreader/main/README.md')
+          $uboId = if ($ubo) { $ubo.id } else { '' }
+          $drId  = if ($dr)  { $dr.id }  else { '' }
           $edgePol = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
           New-Item -Path $edgePol -Force -ErrorAction SilentlyContinue | Out-Null
           $extPath = Join-Path $edgePol 'ExtensionInstallForcelist'
           New-Item -Path $extPath -Force -ErrorAction SilentlyContinue | Out-Null
           $extN = 0
-          if ($uboId) { $extN++; Set-ItemProperty -Path $extPath -Name ([string]$extN) -Value ($uboId + ';https://edge.microsoft.com/extensionwebstorebase/v1/crx') -ErrorAction SilentlyContinue }
-          if ($drId)  { $extN++; Set-ItemProperty -Path $extPath -Name ([string]$extN) -Value ($drId + ';https://edge.microsoft.com/extensionwebstorebase/v1/crx') -ErrorAction SilentlyContinue }
+          if ($ubo) { $extN++; Set-ItemProperty -Path $extPath -Name ([string]$extN) -Value (Get-ExtForceListValue -Resolved $ubo) -ErrorAction SilentlyContinue }
+          if ($dr)  { $extN++; Set-ItemProperty -Path $extPath -Name ([string]$extN) -Value (Get-ExtForceListValue -Resolved $dr) -ErrorAction SilentlyContinue }
           Write-Host ('[edge] forced extensions written: ' + $extN + ' of 2 (uBlock Origin + Dark Reader, live-resolved at build time)')
           $reqChildren = @()
           foreach ($b in $reqBookmarks) { $reqChildren += @{ name = [string]$b.name; url = [string]$b.url } }
@@ -2734,23 +2730,15 @@ jobs:
           New-Item -Path $chromePol -Force -ErrorAction SilentlyContinue | Out-Null
           $chromeExt = Join-Path $chromePol 'ExtensionInstallForcelist'
           New-Item -Path $chromeExt -Force -ErrorAction SilentlyContinue | Out-Null
-          # [F10-4b §4.1] CWS IDs were resolved from the LIVE Chrome Web Store
-          # detail pages when authoring (uBlock Origin cjpalhdlnbpafiamejdnhcphjbkeiagm,
-          # Dark Reader eimadpbcbfnmbkopoojfekhnkhdbieeh - Dark Reader Ltd) and are
-          # RE-VERIFIED at build time by title-checking the live detail pages;
-          # an entry that fails verification is skipped, never written blindly.
-          # (The pre-F10 value 'eimadodcbgplccgdhkkjjnmdhgjopbcm' was NOT Dark
-          # Reader - dropped.)
-          function Test-CwsExtId([string]$Id, [string]$TitleMarker) {
-              try {
-                  $r = Invoke-WebRequest -Uri ('https://chromewebstore.google.com/detail/' + $Id) -UseBasicParsing -TimeoutSec 30 -ErrorAction Stop
-                  return ($r.Content -match [regex]::Escape($TitleMarker))
-              } catch { return $false }
-          }
+          # [F10-11 §4.1] Chrome-side entries use the SAME live resolver against
+          # the Chrome Web Store (no id is carried in the repo, so the previous
+          # authoring-time constants are gone entirely).
           $cwsN = 0
-          if (Test-CwsExtId 'cjpalhdlnbpafiamejdnhcphjbkeiagm' 'uBlock Origin') { $cwsN++; Set-ItemProperty -Path $chromeExt -Name ([string]$cwsN) -Value 'cjpalhdlnbpafiamejdnhcphjbkeiagm;https://clients2.google.com/service/update2/crx' -ErrorAction SilentlyContinue } else { Write-Host '::warning::[chrome] uBlock CWS id failed live title verification - skipped' }
-          if (Test-CwsExtId 'eimadpbcbfnmbkopoojfekhnkhdbieeh' 'Dark Reader') { $cwsN++; Set-ItemProperty -Path $chromeExt -Name ([string]$cwsN) -Value 'eimadpbcbfnmbkopoojfekhnkhdbieeh;https://clients2.google.com/service/update2/crx' -ErrorAction SilentlyContinue } else { Write-Host '::warning::[chrome] Dark Reader CWS id failed live title verification - skipped' }
-          Write-Host ('[chrome] forced extensions written: ' + $cwsN + ' of 2 (live-verified from Chrome Web Store pages)')
+          $cubo = Resolve-StoreExtId -Store 'cws' -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('uBlock Origin', 'gorhill')
+          $cdr  = Resolve-StoreExtId -Store 'cws' -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('Dark Reader', 'darkreader.org')
+          if ($cubo) { $cwsN++; Set-ItemProperty -Path $chromeExt -Name ([string]$cwsN) -Value (Get-ExtForceListValue -Resolved $cubo) -ErrorAction SilentlyContinue } else { Write-Host '::warning::[chrome] uBlock CWS id unresolved live - skipped (never guessed)' }
+          if ($cdr)  { $cwsN++; Set-ItemProperty -Path $chromeExt -Name ([string]$cwsN) -Value (Get-ExtForceListValue -Resolved $cdr) -ErrorAction SilentlyContinue } else { Write-Host '::warning::[chrome] Dark Reader CWS id unresolved live - skipped (never guessed)' }
+          Write-Host ('[chrome] forced extensions written: ' + $cwsN + ' of 2 (live-resolved from Chrome Web Store pages)')
           $chromeBm = @()
           foreach ($b in $reqBookmarks) { $chromeBm += @{ name = [string]$b.name; url = [string]$b.url } }
           foreach ($b in $sessionBookmarks) { $chromeBm += @{ name = [string]$b.name; url = [string]$b.url } }
