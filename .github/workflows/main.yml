@@ -145,8 +145,13 @@ jobs:
             ~\AppData\Local\pip\Cache
             ${{ runner.temp }}\ghrdp-rust\target
           key: f13-setup-${{ runner.os }}-${{ hashFiles('payloads/Cargo.toml') }}-novnc1.7.0-v1
+          # [F13-3] the f10 fallback keeps the MSI/pip/cargo caches warm on the
+          # first f13 run; a restored f10 noVNC tree is unpinned master and is
+          # DELETED by the deploy step's version self-heal before the pinned
+          # v1.7.0 clone re-runs.
           restore-keys: |
             f13-setup-${{ runner.os }}-
+            f10-setup-${{ runner.os }}-
       - name: Record job start + pre-create cache directories (F10-4c/F11-6)
         shell: pwsh
         run: |
@@ -1435,6 +1440,22 @@ jobs:
           # Install noVNC + websockify. Python is preinstalled on the runner.
           $novncDir = 'C:\ghrdp\novnc'
           try {
+              # [F13-3] SELF-HEAL the pin: a cache-restored tree that is not
+              # exactly v1.7.0 (e.g. an old f10-setup cache holding a moving
+              # master clone) is DELETED so the pinned clone below re-runs.
+              # The shim selectors are pinned to v1.7.0; a drifted tree broke
+              # the VNC auto-submit once - never again.
+              try {
+                  $novncPkgNow = Join-Path $novncDir 'package.json'
+                  if ((Test-Path -LiteralPath (Join-Path $novncDir 'vnc.html')) -and (Test-Path -LiteralPath $novncPkgNow)) {
+                      $novncVerNow = ([System.IO.File]::ReadAllText($novncPkgNow) | ConvertFrom-Json).version
+                      if ("$novncVerNow" -ne '1.7.0') {
+                          Write-Host ('[webdesk] cached noVNC tree is ' + $novncVerNow + ', not the pinned 1.7.0 - replacing with the pinned clone')
+                          Remove-Item -LiteralPath $novncDir -Recurse -Force -ErrorAction SilentlyContinue
+                          New-Item -ItemType Directory -Path $novncDir -Force | Out-Null
+                      }
+                  }
+              } catch { Write-Host ('[webdesk] noVNC pin self-heal check failed (will re-clone): ' + $_.Exception.Message); try { Remove-Item -LiteralPath $novncDir -Recurse -Force -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Path $novncDir -Force | Out-Null } catch { } }
               if (-not (Test-Path -LiteralPath (Join-Path $novncDir 'vnc.html'))) {
                   New-Item -ItemType Directory -Path 'C:\ghrdp' -Force -ErrorAction SilentlyContinue | Out-Null
                   # [F10-4c §5] noVNC tree is cache-backed; on a cache MISS the
@@ -1449,13 +1470,13 @@ jobs:
                   # password dialog stopped auto-submitting - never again.
                   & git.exe clone --depth 1 --branch v1.7.0 https://github.com/novnc/noVNC.git $novncTmp 2>&1 | Select-Object -Last 3 | Out-Null
                   if (Test-Path -LiteralPath (Join-Path $novncTmp 'vnc.html')) { Copy-Item -Path (Join-Path $novncTmp '*') -Destination $novncDir -Recurse -Force; Remove-Item -LiteralPath $novncTmp -Recurse -Force -ErrorAction SilentlyContinue }
-              # [F13-3] the deployed noVNC tree must be exactly v1.7.0.
+              }
+              # [F13-3] belt: whatever is deployed now, it must BE v1.7.0.
               $novncPkg = Join-Path $novncDir 'package.json'
               if (Test-Path -LiteralPath $novncPkg) {
                   $novncVer = ([System.IO.File]::ReadAllText($novncPkg) | ConvertFrom-Json).version
                   if ("$novncVer" -ne '1.7.0') { Write-Host ('::error::[webdesk] noVNC tree is ' + $novncVer + ', expected 1.7.0 (shim selectors are pinned)') }
                   else { Write-Host '[webdesk] noVNC v1.7.0 deployed (pinned; shim selectors match)' }
-              }
               }
               & python -m pip install --disable-pip-version-check --quiet websockify 2>&1 | Select-Object -Last 3 | Out-Null
           } catch { Write-Host ('[webdesk] noVNC/websockify install error: ' + $_.Exception.Message) }
