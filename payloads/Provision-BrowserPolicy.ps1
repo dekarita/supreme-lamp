@@ -49,6 +49,9 @@ function Get-StoreExtensionId {
     $found = @{}
     $lastStat = 'no-candidate-attempted'
     $html = ''
+    # attempt 1-2 = crawler UA (stores serve pre-rendered SSR to crawlers for
+    # indexing), attempt 3 = real browser UA.
+    $crawlerUa = if ($Store -eq 'edge') { 'Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)' } else { 'Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bingbot.htm)' }
     $hdrs = @{
         'User-Agent'      = $ua
         'Accept'          = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
@@ -59,12 +62,13 @@ function Get-StoreExtensionId {
         $finalUri = ''
         for ($attempt = 1; $attempt -le 3; $attempt++) {
             try {
+                $hdrs['User-Agent'] = $(if ($attempt -le 2) { $crawlerUa } else { $ua })
                 $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 45 -MaximumRedirection 5 -Headers $hdrs
                 $html = [string]$r.Content
                 try { $finalUri = [string]$r.BaseResponse.RequestMessage.RequestUri.AbsoluteUri } catch {
                     try { $finalUri = [string]$r.BaseResponse.ResponseUri.AbsoluteUri } catch { }
                 }
-                $lastStat = 'ok http=' + [int]$r.StatusCode + ' len=' + $html.Length + ' final=' + $finalUri
+                $lastStat = 'ok http=' + [int]$r.StatusCode + ' len=' + $html.Length + ' ua=' + $hdrs['User-Agent'].Substring(0, 12) + ' final=' + $finalUri
                 if ($html) { break }
             } catch {
                 $errMsg = [string]$_.Exception.Message
@@ -98,10 +102,10 @@ function Get-StoreExtensionId {
             # embedded state: any 32-char a-p ID token whose +-400-char window
             # contains one of the slug hints (case-insensitive) and a slug/id-ish key
             if ($found.Count -eq 0) {
-                $rxId = [regex]('([a-p]{32})')
+                $rxId = [regex]('(?i)([a-p]{32})')
                 foreach ($m in $rxId.Matches($html)) {
                     if ($m.Length -ne 32) { continue }
-                    $id = $m.Value
+                    $id = $m.Value.ToLowerInvariant()
                     # reject substrings of a longer a-p run (truncated/shifted ids)
                     $preOk = ($m.Index -eq 0) -or (-not ([string]$html[$m.Index - 1] -match '[a-p]'))
                     $postIdx = $m.Index + 32
@@ -123,15 +127,24 @@ function Get-StoreExtensionId {
         $idTokens = 0
         try {
             if ($html) {
-                $hits = [regex]::Matches($html, '/addons/detail/').Count
-                $idTokens = [regex]::Matches($html, '[a-p]{32}').Count
+                $hits = [regex]::Matches($html, '(?i)/addons/detail/').Count
+                $idTokens = [regex]::Matches($html, '(?i)[a-p]{32}').Count
             }
         } catch { }
         $samp = ''
         if ($html -and $html.Length -gt 0) { $samp = $html.Substring(0, [Math]::Min(1200, $html.Length)) -replace '[\r\n]+', ' ' }
         $diag = 'STORE-DIAG store=' + $Store + ' query=' + $Query + ' last=' + $lastStat + ' len=' + $html.Length + ' detailHits=' + $hits + ' id32Tokens=' + $idTokens + ' sample=' + $samp
         try { [System.IO.File]::AppendAllText((Join-Path $env:RUNNER_TEMP 'store-diag.txt'), ($diag + "`r`n`r`n")) } catch { }
-        Write-Host ('::error title=Extension ID resolution failed::' + $Store + ' "' + $Query + '" last=' + $lastStat + ' detailHits=' + $hits + ' id32Tokens=' + $idTokens + ' - see store-diag.txt artifact')
+        try {
+            if ($env:GITHUB_STEP_SUMMARY) {
+                $prev = ''
+                try { $prev = [System.IO.File]::ReadAllText($env:GITHUB_STEP_SUMMARY) } catch { }
+                if (-not $prev) { $prev = "### F10 autologin-lab proof matrix`n" }
+                $prev += "`n#### store-diag ($Store / $Query)`n```````n" + $diag + "`n```````n"
+                [System.IO.File]::WriteAllText($env:GITHUB_STEP_SUMMARY, $prev)
+            }
+        } catch { }
+        Write-Host ('::error title=Extension ID resolution failed::' + $Store + ' "' + $Query + '" last=' + $lastStat + ' detailHits=' + $hits + ' id32Tokens=' + $idTokens + ' - see store-diag in step summary/artifact')
         if ($samp) { Write-Host ('[store-sample] ' + $samp.Substring(0, [Math]::Min(700, $samp.Length))) }
         throw ('STORE-ID-RESOLVE-FAILED store=' + $Store + ' query=' + $Query + ' last=' + $lastStat)
     }
