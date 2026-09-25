@@ -137,3 +137,24 @@ truth on the runner.
 the `docs/AUTOLOGIN.md` page and the Tailscale admin DNS page. No third-party
 index, torrent or piracy site is ever added (launch-gates fails the build if
 such a string appears in the workflow).
+
+**VNC password memory (F11, client-side only).** The noVNC copy served by the
+runner carries `ghrdp-cred-shim.js`. Copying the gated *VNC password* KEYS row
+(or typing the password once in the noVNC Credentials dialog) stores it in
+**this browser's `localStorage`**; clicking WEB DESKTOP opens noVNC and the
+dashboard delivers the value with a `postMessage` whose target is the exact
+webdesk origin. The shim accepts it only from its embedder/opener when the
+origin equals the deploy-stamped `http://<tailnet-ip>:7331`, auto-fills the
+real `noVNC_credentials_dlg`, and purges the variable - it is never logged,
+echoed, or placed in a URL (no noVNC launch URL may contain `password=`).
+Clearing site data removes it.
+
+**RDP USAGE timer (F11).** The Connection section's *RDP USAGE* row shows an
+accumulator that ticks only while (a) an RDP LogonType-10 session is Active or
+(b) websockify holds at least one established client on 7333; it freezes
+within seconds of the last client dropping, resumes on reconnect, and persists
+in `config.json` (`rdpUsageSec`) so a same-host re-dispatch continues.
+
+**qBittorrent (F11).** Installed as a plain winget app (installer cached via
+actions/cache, silent NSIS install) - no index integration and no
+piracy-index bookmarks anywhere in the pipeline.
