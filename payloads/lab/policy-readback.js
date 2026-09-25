@@ -67,9 +67,13 @@ if (!channel || !kind || !pageUrl || needles.length === 0) {
         }
         await page.waitForTimeout(2500);
     } else {
-        await page.waitForTimeout(3000);
+        // extensions page: give the extension service time to populate, then
+        // RELOAD once (first paint often precedes the list) and wait again.
+        await page.waitForTimeout(4000);
+        try { await page.reload({ timeout: 30000 }); } catch (e) { }
+        await page.waitForTimeout(4000);
     }
-    const bodyText = await page.evaluate(() => document.body.innerText).catch(() => '');
+    let bodyText = await page.evaluate(() => document.body.innerText).catch(() => '');
     let ok = true;
     for (const n of needles) {
         const byText = await page.getByText(n, { exact: false }).count();
@@ -77,9 +81,16 @@ if (!channel || !kind || !pageUrl || needles.length === 0) {
         console.log('POLICY-NEEDLE ' + n + ': locator=' + byText + ' body=' + inBody);
         if (byText === 0 && !inBody) { ok = false; }
     }
+    if (!ok) {
+        // [F13-diag] include an innerText excerpt so the next failure is
+        // classifiable from the annotation alone.
+        const excerpt = bodyText.replace(/\s+/g, ' ').slice(0, 400);
+        await context.close();
+        if (browser) { await browser.close(); }
+        fail(20, 'a needle did not render on ' + pageUrl + '; bodyText=~"' + excerpt + '"');
+    }
     await context.close();
     if (browser) { await browser.close(); }
-    if (!ok) { fail(20, 'a needle did not render on ' + pageUrl); }
     console.log('POLICY-PASS: ' + needles.length + ' needle(s) render on ' + pageUrl + ' (channel ' + channel + ')');
     process.exit(0);
 })().catch((e) => fail(99, e && e.message ? e.message : String(e)));

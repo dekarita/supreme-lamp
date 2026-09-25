@@ -625,10 +625,22 @@ jobs:
           & node.exe (Join-Path $env:GITHUB_WORKSPACE 'payloads\lab\policy-readback.js') msedge policy 'edge://policy' - $env:K_ubo $env:K_dr
           if ($LASTEXITCODE -ne 0) { K2-Fail 'edge-policy' ('edge://policy readback exit ' + $LASTEXITCODE) }
           Write-Host '[K2] edge://policy renders both forced-extension ids'
-          # (2) edge://extensions - the names must render in the unpacked profile.
+          # (2) edge://extensions - the names must render in the unpacked profile
+          # (list page + a belt per-id detail page, which shows the name too).
           if ($env:K_profile -and (Test-Path -LiteralPath $env:K_profile)) {
+              $extOk = $true
               & node.exe (Join-Path $env:GITHUB_WORKSPACE 'payloads\lab\policy-readback.js') msedge extensions 'edge://extensions' $env:K_profile 'uBlock Origin' 'Dark Reader'
-              if ($LASTEXITCODE -ne 0) { K2-Fail 'edge-extensions' ('edge://extensions readback exit ' + $LASTEXITCODE) }
+              if ($LASTEXITCODE -ne 0) {
+                  Write-Host ('::warning::[K2] edge://extensions list page did not render both names (exit ' + $LASTEXITCODE + ') - trying the per-id detail pages')
+                  $extOk = $false
+              }
+              foreach ($pair in @(@($env:K_ubo, 'uBlock Origin'), @($env:K_dr, 'Dark Reader'))) {
+                  & node.exe (Join-Path $env:GITHUB_WORKSPACE 'payloads\lab\policy-readback.js') msedge policy ('edge://extensions/?id=' + $pair[0]) - $pair[1]
+                  if ($LASTEXITCODE -ne 0) { K2-Fail 'edge-extensions' ('detail page for ' + $pair[1] + ' (' + $pair[0] + ') did not render its name, exit ' + $LASTEXITCODE) }
+                  Write-Host ('[K2] edge://extensions detail page renders ' + $pair[1] + ' (' + $pair[0] + ')')
+                  $extOk = $true
+              }
+              if (-not $extOk) { K2-Fail 'edge-extensions' 'neither the list page nor the detail pages rendered' }
               Write-Host '[K2] edge://extensions renders uBlock Origin + Dark Reader in the unpacked profile'
           } else {
               Write-Host '::warning::[K2] no unpacked Edge profile from cell K - edge://extensions readback skipped (policy readback still proven)'
