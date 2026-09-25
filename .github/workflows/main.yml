@@ -1498,12 +1498,132 @@ jobs:
       # serve-failed (detail self-test-failed) so the dashboard cannot claim
       # ready on a dead URL, then halts the run by design (F9i fail-closed).
       # VNC_PASS is never referenced here and can never leak.
-      - name: Web desktop self-test (curl serve URL, expect noVNC marker)
+      # [F9l-2] Classified, self-healing web-desktop self-test.
+      #  A: direct BACKEND probe - curl http://127.0.0.1:7333/vnc.html. This is
+      #     the leg the advertised tailnet URL cannot distinguish: a 502 there
+      #     proves nothing about websockify itself.
+      #  B: backend dead -> Start-Websockify (F9l-1, identical function text)
+      #     -> re-probe the backend.
+      #  C: curl the ADVERTISED serve URL 3x5s, capturing status code, headers
+      #     and the first 200 body bytes (evidence the failed F9l run never kept).
+      #  D: backend healthy BUT the advertised URL failed (502 = tailscaled
+      #     could not reach the backend) -> reset the mapping with
+      #     `tailscale serve --bg http://127.0.0.1:7333`, then the legacy
+      #     explicit form; wait 5s; re-curl the serve URL 3x5s.
+      #  E: still failing -> classify (backend-dead | proxy-502 | dns-tls),
+      #     write the classification + secret-free tails to the Step Summary,
+      #     write the F9l-3 'webdesk-diag' payload, then halt fail-closed with
+      #     webdeskReason='serve-failed' / webdeskDetail='self-test-failed'
+      #     (F9l-4: the dashboard contract is unchanged - it was already right).
+      # The VNC password is never referenced in this step and can never leak.
+      - name: Web desktop self-test (classified - backend, serve, self-heal)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          # [F9l-2] Classified backend -> serve self-test with self-heal (A/B/C/D/E above).
           $S = $env:GITHUB_STEP_SUMMARY
           $cfgPath = 'C:\ghrdp\config.json'
+          $ts = 'C:\Program Files\Tailscale\tailscale.exe'
+          $novncDir = 'C:\ghrdp\novnc'
+          $backendUrl = 'http://127.0.0.1:7333/vnc.html'
+          $diagDir = Join-Path $env:RUNNER_TEMP 'webdesk-diag'
+          New-Item -ItemType Directory -Path $diagDir -Force -ErrorAction SilentlyContinue | Out-Null
+          $verbosePath = Join-Path $diagDir 'selftest-verbose.txt'
+          Set-Content -LiteralPath $verbosePath -Value ('# webdesk self-test verbose log (secret-free) ' + (Get-Date).ToUniversalTime().ToString('o')) -ErrorAction SilentlyContinue
+          function VLog([string]$m) {
+              Write-Host $m
+              try { Add-Content -LiteralPath $verbosePath -Value (((Get-Date).ToUniversalTime().ToString('o')) + ' ' + $m) -ErrorAction SilentlyContinue } catch { }
+          }
+          # [F9l-1] Idempotent websockify launcher. THE SAME TEXT IS DEFINED IN
+          # THE DEPLOY STEP AND IN THE SELF-TEST STEP - the F9l-5 launch gate
+          # diffs the two copies, so edit both or neither.
+          # Contract: kill any stale python process serving/targeting 7333, start
+          # websockify on 127.0.0.1:7333 (noVNC dir -> VNC 127.0.0.1:5900) with
+          # PAIRED redirect files, then wait up to $TimeoutSec for a LISTEN socket
+          # on LocalAddress 127.0.0.1 + LocalPort 7333 SPECIFICALLY (an
+          # all-interfaces or IPv6 listener is NOT this backend). Returns [bool]
+          # $true only when that loopback listener is up.
+          # [F9i] -RedirectStandardOutput and -RedirectStandardError MUST name two
+          # DIFFERENT files: Windows opens each redirect target exclusively
+          # (FileShare.None), so pointing both at one file makes Start-Process
+          # throw BEFORE python starts - websockify then never binds 7333 and the
+          # run degrades to 'serve-failed'. websockify never receives the VNC
+          # password, so neither log can carry it (argument list = dir + loopback
+          # ports + module name only).
+          function Start-Websockify([int]$TimeoutSec = 20, [string]$NoVncDir = 'C:\ghrdp\novnc') {
+              $wsDir = 'C:\ghrdp\webdesk'
+              $wsLog = Join-Path $wsDir 'websockify.log'
+              $wsErr = Join-Path $wsDir 'websockify.err.log'
+              New-Item -ItemType Directory -Path $wsDir -Force -ErrorAction SilentlyContinue | Out-Null
+              # 1) stale-process cleanup: idempotent re-entry (deploy step, self-test
+              #    recovery, re-dispatch on a warm host).
+              try {
+                  Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
+                      Where-Object { $_.CommandLine -like '*websockify*7333*' } |
+                      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+              } catch { }
+              for ($i = 0; $i -lt 10; $i++) {
+                  $still = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+                  if (-not $still) { break }
+                  Start-Sleep -Milliseconds 500
+              }
+              # 2) start (paired redirect files - never the same file twice).
+              try {
+                  Start-Process -FilePath python -ArgumentList @('-m','websockify','--web', $NoVncDir, '127.0.0.1:7333', '127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr -WindowStyle Hidden | Out-Null
+              } catch {
+                  Write-Host ('[webdesk] websockify start failed: ' + $_.Exception.Message)
+                  return $false
+              }
+              # 3) wait for LISTEN on 127.0.0.1:7333 specifically.
+              for ($i = 0; $i -lt $TimeoutSec; $i++) {
+                  $c = Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+                  if ($c) { return $true }
+                  Start-Sleep -Seconds 1
+              }
+              return $false
+          }
+          # [F9l-3] diagnostics refresh helper: persists the raw `tailscale serve
+          # status --json` into the artifact payload and reports whether a
+          # mapping for 127.0.0.1:7333 exists (a missing mapping is itself
+          # evidence - the leg the F9l run could not name).
+          function Get-ServeMappingPresent {
+              $raw = ''
+              try { $raw = ((& $ts serve status --json 2>$null) -join "`n") } catch { }
+              try { if ($raw) { Set-Content -LiteralPath (Join-Path $diagDir 'serve-status.json') -Value $raw -ErrorAction SilentlyContinue } } catch { }
+              if (-not $raw) { return $false }
+              return ([bool]($raw -match '127\.0\.0\.1:7333'))
+          }
+          # curl probe: returns status code, headers, first 200 body bytes,
+          # curl stderr and curl's own exit code (6 = resolve failure,
+          # 35/60/90 = TLS, 7/28 = connect/timeout) - all secret-free.
+          function Invoke-Probe([string]$Target, [string]$Tag) {
+              $body = Join-Path $env:RUNNER_TEMP ('ws-probe-' + $Tag + '.body')
+              $hdr = Join-Path $env:RUNNER_TEMP ('ws-probe-' + $Tag + '.hdr')
+              $codeF = Join-Path $env:RUNNER_TEMP ('ws-probe-' + $Tag + '.code')
+              $errF = Join-Path $env:RUNNER_TEMP ('ws-probe-' + $Tag + '.err')
+              Remove-Item -LiteralPath $body, $hdr, $codeF, $errF -Force -ErrorAction SilentlyContinue
+              $rc = -1
+              try {
+                  & curl.exe -sk --max-time 20 -D $hdr -o $body -w '%{http_code}' $Target 1> $codeF 2> $errF
+                  $rc = $LASTEXITCODE
+                  $LASTEXITCODE = 0
+              } catch { }
+              $code = ''
+              try { if (Test-Path -LiteralPath $codeF) { $code = ([System.IO.File]::ReadAllText($codeF)).Trim() } } catch { }
+              $head = ''
+              try { if (Test-Path -LiteralPath $hdr) { $head = ((([System.IO.File]::ReadAllLines($hdr)) | Select-Object -First 6) -join ' | ') } } catch { }
+              $first = ''
+              try {
+                  if (Test-Path -LiteralPath $body) {
+                      $t = [System.IO.File]::ReadAllText($body)
+                      if ($t.Length -gt 200) { $t = $t.Substring(0, 200) }
+                      $first = ($t -replace '\s+', ' ')
+                  }
+              } catch { }
+              $err = ''
+              try { if (Test-Path -LiteralPath $errF) { $err = (([System.IO.File]::ReadAllText($errF)) -replace '\s+', ' ').Trim() } } catch { }
+              return [pscustomobject]@{ Code = [string]$code; Head = [string]$head; First = [string]$first; Err = [string]$err; Rc = [int]$rc }
+          }
           $url = ''
           try { $cfgT = [System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json; if ($cfgT -and $cfgT.webdeskUrl) { $url = [string]$cfgT.webdeskUrl } } catch { }
           if (-not $url) {
@@ -1511,28 +1631,130 @@ jobs:
               if ($S) { '### Web desktop self-test SKIP (no URL advertised)' | Add-Content -Path $S }
               exit 0
           }
-          $code = ''; $body = ''; $ok = $false
-          for ($i = 1; $i -le 3; $i++) {
-              try {
-                  $tmpOut = Join-Path $env:RUNNER_TEMP ('webdesk-test-' + $i + '.html')
-                  $code = ((& curl.exe -sk --max-time 20 -o $tmpOut -w '%{http_code}' $url 2>$null) -join '').Trim()
-                  if (Test-Path -LiteralPath $tmpOut) { $body = [System.IO.File]::ReadAllText($tmpOut); Remove-Item -LiteralPath $tmpOut -Force -ErrorAction SilentlyContinue }
-                  if ($code -eq '200' -and $body -match 'noVNC') { $ok = $true; break }
-              } catch { }
-              Start-Sleep -Seconds 3
+          VLog ('[webdesk-test] advertised URL = ' + $url)
+          $listenNow = [bool](Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1)
+          $pidsNow = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*websockify*7333*' } | Select-Object -ExpandProperty ProcessId)
+          VLog ('[webdesk-test] pre-check: loopback-listen-7333=' + $listenNow + ' websockify-pids=' + ($pidsNow -join ','))
+          # A - backend leg.
+          $probeB = Invoke-Probe $backendUrl 'backend-1'
+          $backendOk = ($probeB.Code -eq '200' -and $probeB.First -match 'noVNC')
+          VLog ('[webdesk-test] A backend probe HTTP [' + $probeB.Code + '] curl-exit=' + $probeB.Rc + ' noVNC=' + $backendOk + ' err=' + $probeB.Err)
+          # B - self-heal the backend leg.
+          if (-not $backendOk) {
+              VLog '[webdesk-test] B backend did not serve noVNC - calling Start-Websockify (F9l-1)'
+              $started = Start-Websockify
+              VLog ('[webdesk-test] B Start-Websockify returned ' + $started)
+              $probeB = Invoke-Probe $backendUrl 'backend-2'
+              $backendOk = ($probeB.Code -eq '200' -and $probeB.First -match 'noVNC')
+              VLog ('[webdesk-test] B backend re-probe HTTP [' + $probeB.Code + '] curl-exit=' + $probeB.Rc + ' noVNC=' + $backendOk + ' err=' + $probeB.Err)
           }
-          if ($ok) {
-              Write-Host ('[webdesk-test] PASS: HTTP ' + $code + ' + noVNC marker')
-              if ($S) { ('### Web desktop self-test PASS (HTTP ' + $code + ', noVNC marker present)') | Add-Content -Path $S }
+          if ($backendOk) { VLog '[webdesk-test] backend HEALTHY (websockify serves noVNC on 127.0.0.1:7333)' }
+          # C - advertised serve URL, 3 tries x 5s.
+          $serveCode = ''
+          $probeS = $null
+          if ($backendOk) {
+              for ($i = 1; $i -le 3; $i++) {
+                  $probeS = Invoke-Probe $url ('serve-' + $i)
+                  $serveCode = $probeS.Code
+                  VLog ('[webdesk-test] C serve probe ' + $i + ' HTTP [' + $serveCode + '] curl-exit=' + $probeS.Rc + ' headers=' + $probeS.Head)
+                  VLog ('[webdesk-test] C serve probe ' + $i + ' first200=' + $probeS.First)
+                  if ($serveCode -eq '200' -and $probeS.First -match 'noVNC') { break }
+                  Start-Sleep -Seconds 5
+              }
+          }
+          if ($backendOk -and $serveCode -eq '200' -and $probeS.First -match 'noVNC') {
+              Write-Host ('[webdesk-test] PASS: backend noVNC + advertised URL HTTP ' + $serveCode + ' with noVNC marker')
+              if ($S) { '### Web desktop self-test PASS (backend noVNC + advertised URL HTTP 200, noVNC marker present)' | Add-Content -Path $S }
+              $mpPass = Get-ServeMappingPresent
+              # Annotation channel: the check-run annotations are readable through
+              # the GitHub API even when the runner log zip is not, so a green
+              # self-test is provable without downloading logs.
+              Write-Host ('::notice title=Webdesk self-test PASS::backend HTTP ' + $probeB.Code + ' noVNC; advertised URL HTTP ' + $serveCode + ' with noVNC marker; serve mapping for 127.0.0.1:7333 present: ' + $mpPass)
               exit 0
           }
-          # [F9i] fail-closed: an advertised URL that does not serve the noVNC
-          # page must not leave a GREEN run behind. Clear the URL + record the
-          # reason/detail, then halt by design (the dashboard then shows the
-          # honest serve-failure guidance, not a dead 'ready' button).
-          Write-Host ('[webdesk-test] FAIL: HTTP [' + $code + '] no noVNC marker after 3 tries; clearing advertised URL. Halted by design.')
-          if ($S) { ('### Web desktop self-test FAIL (HTTP ' + $code + '; advertised URL cleared, reason=serve-failed)') | Add-Content -Path $S }
-          if ($S) { 'Re-dispatch the workflow for a fresh ephemeral host.' | Add-Content -Path $S }
+          $mappingPresent = Get-ServeMappingPresent
+          VLog ('[webdesk-test] serve mapping for 127.0.0.1:7333 present: ' + $mappingPresent)
+          # D - backend healthy but the advertised URL failed: reset the mapping.
+          if ($backendOk) {
+              VLog '[webdesk-test] D resetting tailnet serve mapping (backend healthy, advertised URL failing)'
+              $resetForms = @(
+                  @('--bg', 'http://127.0.0.1:7333'),
+                  @('--bg', '--yes', 'http://127.0.0.1:7333'),
+                  @('--bg', '443', 'http://127.0.0.1:7333')
+              )
+              $resetAttempt = 0
+              foreach ($r in $resetForms) {
+                  $resetAttempt++
+                  $rOut = ''
+                  $rExit = -1
+                  try {
+                      $rOut = ((& $ts serve @r 2>&1 | ForEach-Object { [string]$_ }) -join ' | ')
+                      $rExit = $LASTEXITCODE
+                      $LASTEXITCODE = 0
+                  } catch { $rOut = 'reset error: ' + $_.Exception.Message }
+                  Write-Host ('[webdesk-test] D reset attempt ' + $resetAttempt + ' (tailscale serve ' + ($r -join ' ') + ') -> exit ' + $rExit)
+                  if ($rOut) { VLog ('[webdesk-test] D reset output: ' + $rOut) }
+                  if ($rExit -eq 0) { break }
+                  Start-Sleep -Seconds 2
+              }
+              Start-Sleep -Seconds 5
+              $mappingPresent = Get-ServeMappingPresent
+              VLog ('[webdesk-test] D mapping present after reset: ' + $mappingPresent)
+              for ($i = 1; $i -le 3; $i++) {
+                  $probeS = Invoke-Probe $url ('serve-reset-' + $i)
+                  $serveCode = $probeS.Code
+                  VLog ('[webdesk-test] D serve re-probe ' + $i + ' HTTP [' + $serveCode + '] curl-exit=' + $probeS.Rc + ' first200=' + $probeS.First)
+                  if ($serveCode -eq '200' -and $probeS.First -match 'noVNC') { break }
+                  Start-Sleep -Seconds 5
+              }
+              if ($serveCode -eq '200' -and $probeS.First -match 'noVNC') {
+                  Write-Host ('[webdesk-test] PASS after serve-mapping reset: HTTP ' + $serveCode + ' + noVNC marker')
+                  if ($S) { '### Web desktop self-test PASS after serve-mapping reset (HTTP 200, noVNC marker present)' | Add-Content -Path $S }
+                  Write-Host ('::notice title=Webdesk self-test PASS (self-healed)::backend HTTP ' + $probeB.Code + ' noVNC; advertised URL HTTP ' + $serveCode + ' with noVNC marker after the serve-mapping reset')
+                  exit 0
+              }
+          }
+          # E - classify, record, then halt fail-closed.
+          $rcS = -1
+          $errS = ''
+          if ($probeS) { $rcS = [int]$probeS.Rc; $errS = [string]$probeS.Err }
+          $verdict = 'proxy-502'
+          if (-not $backendOk) { $verdict = 'backend-dead' }
+          elseif (($rcS -in @(6, 35, 60, 90)) -or ($errS -match '(?i)could not resolve|resolve host|SSL|certificate')) { $verdict = 'dns-tls' }
+          VLog ('[webdesk-test] E classification = ' + $verdict + ' (backendOk=' + $backendOk + ' serveHttp=[' + $serveCode + '] serveCurlExit=' + $rcS + ' mappingPresent=' + $mappingPresent + ')')
+          $evLines = @()
+          $evLines += ('classification=' + $verdict)
+          $evLines += ('advertisedUrl=' + $url)
+          $evLines += ('advertisedHttpCode=' + $serveCode)
+          $evLines += ('backendUrl=' + $backendUrl)
+          $evLines += ('backendHttpCode=' + $probeB.Code)
+          $evLines += ('backendCurlExit=' + $probeB.Rc)
+          $evLines += ('backendHealthyAfterHeal=' + $backendOk)
+          $evLines += ('serveMappingPresent=' + $mappingPresent)
+          $evLines += ('loopbackListenPre=' + $listenNow)
+          $evLines += ('websockifyPidsPre=' + ($pidsNow -join ','))
+          if ($probeS) {
+              $evLines += ('serveProbeHeaders=' + $probeS.Head)
+              $evLines += ('serveProbeFirst200=' + $probeS.First)
+              $evLines += ('serveProbeCurlExit=' + $probeS.Rc)
+              $evLines += ('serveProbeErr=' + $probeS.Err)
+          }
+          try { Set-Content -LiteralPath (Join-Path $diagDir 'classification.txt') -Value ($evLines -join "`n") -ErrorAction SilentlyContinue } catch { }
+          $errTail = $errS
+          if ($errTail.Length -gt 160) { $errTail = $errTail.Substring(0, 160) }
+          if ($S) {
+              ('### Web desktop self-test FAIL (classified: ' + $verdict + ')') | Add-Content -Path $S
+              ('Advertised URL: ' + $url + ' -> HTTP [' + $serveCode + '] (curl exit ' + $rcS + ')') | Add-Content -Path $S
+              ('Backend: ' + $backendUrl + ' -> HTTP [' + $probeB.Code + '] (curl exit ' + $probeB.Rc + '); healed backend healthy: ' + $backendOk) | Add-Content -Path $S
+              ('Serve mapping for 127.0.0.1:7333 present: ' + $mappingPresent) | Add-Content -Path $S
+              ('Tail (secret-free): ' + $errTail) | Add-Content -Path $S
+              'Diagnostics artifact: webdesk-diag (websockify.log, websockify.err.log, serve-status.json, selftest-verbose.txt, classification.txt)' | Add-Content -Path $S
+              'Advertised URL cleared; reason=serve-failed, detail=self-test-failed. Halted by design - fix the classified leg and re-dispatch.' | Add-Content -Path $S
+          }
+          Write-Host ('[webdesk-test] FAIL (classified: ' + $verdict + '): advertised URL did not serve noVNC after self-heal; clearing advertised URL. Halted by design.')
+          # Annotation channel for the classification (survives the missing
+          # runner-log zip and is visible in the Checks tab next to the run).
+          Write-Host ('::error title=Webdesk self-test FAIL (classified: ' + $verdict + ')::' + ($evLines -join ' | '))
           try {
               $encT = New-Object System.Text.UTF8Encoding($false)
               $cfgF = [System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json
@@ -1541,8 +1763,8 @@ jobs:
               if ($cfgF.PSObject.Properties['webdeskDetail']) { $cfgF.webdeskDetail = 'self-test-failed' } else { $cfgF | Add-Member -NotePropertyName webdeskDetail -NotePropertyValue 'self-test-failed' -Force }
               [System.IO.File]::WriteAllText($cfgPath, ($cfgF | ConvertTo-Json -Depth 10), $encT)
           } catch { Write-Host ('[webdesk-test] config clear failed: ' + $_.Exception.Message) }
-          throw 'Web desktop self-test FAILED: advertised URL did not return the noVNC page. Halted by design. See Step Summary.'
-
+          $null = Get-ServeMappingPresent
+          throw ('Web desktop self-test FAILED (classified: ' + $verdict + '): advertised URL did not return the noVNC page. Halted by design. See Step Summary + webdesk-diag artifact.')
       - name: Start Mission Control dashboard EARLY (PS 7331, SYSTEM task, confirm LISTENING)
         shell: pwsh
         run: |

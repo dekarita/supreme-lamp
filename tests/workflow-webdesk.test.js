@@ -193,3 +193,43 @@ test('F9l-1: Start-Websockify is idempotent, paired-redirect and loopback-exact'
   // the launcher must not carry the VNC password anywhere
   assert.doesNotMatch(fn, /\$vp\b|VNC_PASS/);
 });
+
+// [F9l-2] Classified, self-healing self-test: the backend leg (loopback:7333)
+// is probed directly, healed with the SAME launcher, and only then is the
+// advertised tailnet URL curled - with status, headers and body bytes kept.
+test('F9l-2: self-test probes the backend directly and can self-heal it', () => {
+  assert.match(selftest, /\[F9l-2\]/);
+  assert.match(selftest, /http:\/\/127\.0\.0\.1:7333\/vnc\.html/, 'direct backend curl missing');
+  assert.match(selftest, /\$backendOk = \(\$probeB\.Code -eq '200'/, 'backend health must be a 200 check');
+  assert.match(selftest, /\$started = Start-Websockify/, 'backend-dead must call the F9l-1 launcher');
+  assert.match(selftest, /backend re-probe/, 'the backend must be re-probed after healing');
+  // the launcher copy in the self-test must be the same text as the deploy copy
+  const all = fs.readFileSync('.github/workflows/main.yml', 'utf8');
+  const copies = all.match(/^          function Start-Websockify\(.*?^          \}\n/gms) || [];
+  assert.equal(copies.length, 2, 'expected exactly two Start-Websockify copies');
+  assert.equal(copies[0], copies[1], 'the two Start-Websockify copies must be identical');
+});
+
+test('F9l-2: serve leg records status/headers/body and resets the mapping on 502', () => {
+  assert.match(selftest, /first200=/, 'first 200 body bytes must be captured');
+  assert.match(selftest, /headers=/, 'response headers must be captured');
+  assert.match(selftest, /'--bg', 'http:\/\/127\.0\.0\.1:7333'/, 'mapping reset must use the documented form');
+  assert.match(selftest, /reset attempt/, 'each reset attempt must be logged');
+  assert.match(selftest, /Start-Sleep -Seconds 5/, 'a 5s settle wait must precede the re-curl');
+  assert.match(selftest, /serve re-probe/);
+});
+
+test('F9l-2: failures are classified (backend-dead | proxy-502 | dns-tls) and fail-closed', () => {
+  assert.match(selftest, /backend-dead/);
+  assert.match(selftest, /proxy-502/);
+  assert.match(selftest, /dns-tls/);
+  const failIdx = selftest.indexOf('self-test FAIL');
+  const tail = selftest.slice(failIdx);
+  assert.match(selftest, /\$evLines \+= \('classification=' \+ \$verdict\)/, 'classification must reach the artifact payload');
+  assert.match(tail, /classification\.txt/, 'the summary must name the diagnostics payload');
+  assert.match(tail, /\bthrow\b/, 'classified halt must throw (fail-closed)');
+  // the classification must never be written into config.json (F9l-4 contract)
+  assert.doesNotMatch(tail, /webdeskDetail.*(backend-dead|proxy-502|dns-tls)/);
+  // no password reference anywhere in the classifier
+  assert.doesNotMatch(selftest, /\$vp\b|VNC_PASS/);
+});
