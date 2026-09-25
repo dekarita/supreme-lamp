@@ -1,0 +1,53 @@
+name: apply-patch
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Target branch to apply patch onto'
+        required: false
+        default: 'feat/f9k'
+        type: string
+      patch_b64:
+        description: 'Base64-encoded git patch (from git format-patch)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Apply patch and open PR
+        env:
+          BRANCH: ${{ inputs.branch }}
+          PATCH_B64: ${{ inputs.patch_b64 }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          branch="${BRANCH:-feat/f9k}"
+          if [ -z "$branch" ]; then branch="feat/f9k"; fi
+          echo "$PATCH_B64" | base64 -d > /tmp/patch.diff
+          echo "[apply-patch] patch decoded, size=$(wc -c < /tmp/patch.diff) bytes"
+          # Ensure we have the branch checked out or create it
+          git config user.email "ghrdp-bot@local"
+          git config user.name "ghrdp-bot"
+          if git show-ref --verify --quiet "refs/heads/$branch"; then
+            git checkout "$branch"
+          elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+            git checkout -b "$branch" "origin/$branch"
+          else
+            git checkout -b "$branch"
+          fi
+          # Apply with 3-way merge as definitive path
+          git am --3way /tmp/patch.diff
+          # Push
+          git push -u origin "$branch"
+          # Create PR if not exists
+          gh pr create --fill --base main --head "$branch" || true
