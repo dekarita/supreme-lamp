@@ -146,7 +146,7 @@ jobs:
               $acc = $tl.AcceptTcpClient()
               $ra = $acc.Client.RemoteEndPoint
               $ipx = $ra.Address
-              Write-Host ('::warning::[probe] endpoint=' + $ra.ToString() + ' addr=' + $ipx.ToString() + ' family=' + [string]$ipx.AddressFamily + ' isloopback=' + [string]$ipx.IsLoopback + ' verdict=' + [string](Test-ProbeAllowed -Client $acc -Query $null -Token 'lab-dash-token-0123456789'))
+              Write-Host ('::warning::[probe] endpoint=' + $ra.ToString() + ' type=' + $ipx.GetType().FullName + ' staticloop=' + [string]([System.Net.IPAddress]::IsLoopback($ipx)) + ' prop=' + [string]($ipx.IsLoopback) + ' bytes=' + [string]((($ipx.GetAddressBytes()) | ForEach-Object { $_.ToString() }) -join '.') + ' verdict=' + [string](Test-ProbeAllowed -Client $acc -Query $null -Token 'lab-dash-token-0123456789'))
               $acc.Close(); $cli.Close(); $tl.Stop()
           } catch { Write-Host ('::warning::[probe] setup failed: ' + $_.Exception.Message) }
           $srv = $null

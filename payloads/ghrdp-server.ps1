@@ -111,11 +111,27 @@ function Get-RequestParts {
     if ($lines.Count -gt 0 -and $lines[0]) { $tok0 = ($lines[0].Trim() -split ' ')[0]; if ($tok0) { $method = $tok0.ToUpper() } }
     return @{ path = $path; headers = $headers; query = $query; method = $method }
 }
+function Test-IsLoopbackAddr {
+    # [F10-15] `$ip.IsLoopback` resolved to $false for a genuine 127.0.0.1
+    # remote endpoint on the Windows lab host (probe annotation: addr=127.0.0.1
+    # family=InterNetwork isloopback=<empty> verdict=False), so loopback clients
+    # were silently 401'd by Test-ClientAllowed. Use the static API plus an
+    # explicit 127.0.0.0/8 byte check; both are valid on every PowerShell.
+    param($Ip)
+    try {
+        if ($Ip) {
+            if ([System.Net.IPAddress]::IsLoopback($Ip)) { return $true }
+            $ob = $Ip.GetAddressBytes()
+            if ($ob.Length -eq 4 -and $ob[0] -eq 127) { return $true }
+        }
+    } catch { }
+    return $false
+}
 function Test-ClientAllowed {
     param($Client, $Query, $Token)
     try {
         $ip = $Client.Client.RemoteEndPoint.Address
-        if ($ip.IsLoopback) { return $true }
+        if (Test-IsLoopbackAddr $ip) { return $true }
         $oct = $ip.GetAddressBytes()
         if ($oct.Length -eq 4 -and $oct[0] -eq 100 -and $oct[1] -ge 64 -and $oct[1] -le 127) { return $true }
     } catch { }
