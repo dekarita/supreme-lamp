@@ -1,41 +1,45 @@
-# [F9l-lab] RESERVED-ENV FALLBACK LAB (web desktop 502 reproduction + proof).
+# [F9n-lab] RESERVED-ENV FALLBACK LAB (tailnet-HTTP web desktop proof).
 #
 # Intent (stated once): the reserved lab env `dekarita/ghrdp-lab` is the
 # intended home for this job (see PR body / session notes). It is NOT
-# reachable from CI tooling right now: `gh repo view dekarita/ghrdp-lab` ->
-# 404 and `gh repo create dekarita/ghrdp-lab` -> 403 "Resource not accessible
-# by integration" (the token cannot read or create repos outside the
-# installation's allow-list). Retried once, then this in-repo fallback is
-# used so the F9l proof is not blocked:
+# reachable from CI tooling: `gh repo view dekarita/ghrdp-lab` -> 404
+# (the token cannot read repos outside the installation's allow-list).
+# Retried, then this in-repo fallback is used so the F9n proof is not
+# blocked:
 #
 #   * same runner class (windows-latest, Azure, ephemeral) as main.yml's rdp job
-#   * REAL Tailscale login (repo secret TS_AUTHKEY) + REAL `tailscale serve`
-#   * REAL noVNC clone + REAL websockify on 127.0.0.1:7333
-#   * the F9l-2 self-test is NOT re-implemented here: it is EXTRACTED VERBATIM
-#     from .github/workflows/main.yml and executed with `pwsh -File`, so the
-#     lab exercises the exact production code (including the F9l-1
-#     Start-Websockify function and the F9l-3 diagnostics payload).
+#   * REAL Tailscale login (repo secret TS_AUTHKEY)
+#   * NO `tailscale serve` anywhere (retired: Windows SYSTEM operator lock 401)
+#   * REAL noVNC clone + REAL websockify bound to the lab runner tailnet IP
+#   * the production Start-Websockify launcher is EXTRACTED VERBATIM from
+#     .github/workflows/main.yml and executed, so the lab exercises the exact
+#     production code (CGNAT guard + stale-kill + paired redirects + LISTEN wait)
+#   * the F9n self-test is EXTRACTED VERBATIM from main.yml and executed with
+#     `pwsh -File`, so the lab proves the exact production classifier
 #
-# Phase 1 (REPRO): legacy-style start (plain Start-Process) in one step, then
-#   probe from the NEXT step - this reproduces the observed "deploy green,
-#   self-test 502" leg and answers whether the websockify process survives a
-#   GitHub Actions step boundary.
-# Phase 2 (FIX):   runs the extracted production self-test and proves the
-#   classified self-heal (backend restart + serve-mapping reset) ends green.
-# Phase 3 (E):     points config.webdeskUrl at a non-resolvable tailnet name
-#   and proves the failure path writes the classification + 'webdesk-diag'
-#   payload and still halts fail-closed.
+# Phase 1 (BIND):   extract the production launcher, read config rdpIp (the
+#   ONLY tailnet-IP source - no `tailscale ip` fallback), create the
+#   GHRDP-Webdesk CGNAT-only firewall rule, bind <rdpIp>:7333, curl the
+#   advertised URL 3x5s expecting the noVNC marker. An evidence-only
+#   `tailscale ip -4` probe is logged first: whether it 401s (SYSTEM lock)
+#   or succeeds, the verdict must not depend on it.
+# Phase 2 (SELFTEST): run the extracted production self-test verbatim against
+#   the Phase-1 backend; expect exit 0 + noVNC marker + PASS annotation.
+# Phase 3 (NEGATIVE): point config at an unroutable CGNAT address, kill
+#   websockify, run the SAME extracted self-test: it must classify
+#   backend-dead, write the diagnostics payload, clear the URL with the
+#   locked serve-failed/self-test-failed codes, and throw (fail-closed).
 #
-# LAB_REV=4 (F9l follow-up: no hidden websockify process window; push trigger reruns proof).
+# LAB_REV=5 (F9n: tailnet-HTTP proof; serve retired from the webdesk path).
 # Evidence channel: run logs/artifacts live on the results blob host, which is
 # not always reachable from the tooling that drives this lab, so every probe
 # also emits a ::warning::/::notice:: annotation - annotations are readable
 # through the ordinary GitHub API (GET /check-runs/<id>/annotations).
 #
 # Artifacts are secret-free by construction: websockify never receives
-# VNC_PASS (its argument list is dir + loopback ports only), and Tailscale
-# credentials never appear in the files this job uploads.
-name: webdesk-lab (F9l 502 reproduction + proof)
+# VNC_PASS (its argument list is dir + tailnet bind + loopback VNC target
+# only), and Tailscale credentials never appear in the files this job uploads.
+name: webdesk-lab (F9n tailnet-HTTP proof)
 
 on:
   workflow_dispatch:
@@ -79,7 +83,7 @@ jobs:
           Write-Host ('[lab] tailscale installed: ' + ((& 'C:\Program Files\Tailscale\tailscale.exe' version 2>$null | Select-Object -First 1) -join ' '))
           exit 0
 
-      - name: Tailscale up (lab node)
+      - name: Tailscale up (lab node) + capture LAB_IP
         shell: pwsh
         env:
           TS_AUTHKEY: ${{ secrets.TS_AUTHKEY }}
@@ -109,6 +113,30 @@ jobs:
           $dns = $dns.TrimEnd('.')
           Add-Content -Path $env:GITHUB_ENV -Value ('LAB_DNS=' + $dns)
           Write-Host ('[lab] tailscale Running as ' + $dns)
+          # LAB_IP capture (this step is the ONLY lab step allowed CLI calls;
+          # the F9n proof steps below must use config rdpIp only, by design).
+          $labIp = ''
+          $ipProbe = ''
+          try {
+              $ipProbe = ((& $ts ip -4 2>&1 | ForEach-Object { [string]$_ }) -join ' | ')
+              $LASTEXITCODE = 0
+              $cand = ($ipProbe -split '\s+' | Where-Object { $_ -match '^100\.' } | Select-Object -First 1)
+              if ($cand -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') { $labIp = ([string]$cand).Trim() }
+          } catch { }
+          Write-Host ('[lab] tailscale ip -4 probe: ' + $ipProbe)
+          if (-not $labIp) {
+              try {
+                  $js = ((& $ts status --json 2>$null) -join "`n") | ConvertFrom-Json
+                  $LASTEXITCODE = 0
+                  foreach ($a in @($js.Self.TailscaleIPs)) {
+                      if ([string]$a -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') { $labIp = [string]$a; break }
+                  }
+              } catch { Write-Host ('[lab] status --json fallback failed: ' + $_.Exception.Message) }
+          }
+          if ($ipProbe -match '401|already in use') { Write-Host '[lab] NOTE: step-context CLI shows the 401 SYSTEM-operator lock; the F9n proof uses config rdpIp only.' }
+          if (-not $labIp) { throw '[lab] no tailnet IPv4 for the lab node (ip -4 + status fallback both failed)' }
+          Add-Content -Path $env:GITHUB_ENV -Value ('LAB_IP=' + $labIp)
+          Write-Host ('[lab] LAB_IP = ' + $labIp)
           exit 0
 
       - name: Seed host layout (noVNC + websockify + config.json)
@@ -122,82 +150,79 @@ jobs:
           }
           & python -m pip install --disable-pip-version-check --quiet websockify 2>&1 | Select-Object -Last 2 | Out-Null
           if (-not (Test-Path -LiteralPath (Join-Path $novnc 'vnc.html'))) { throw '[lab] noVNC assets missing' }
-          $url = 'https://' + $env:LAB_DNS + '/vnc.html?autoconnect=1&resize=remote'
-          $cfg = [ordered]@{ hostKind = 'ephemeral'; hostname = $env:LAB_HOST; webdeskUrl = $url; webdeskReason = ''; webdeskDetail = '' }
+          $labIp = [string]$env:LAB_IP
+          if ($labIp -notmatch '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') { throw '[lab] LAB_IP is not a CGNAT address; refusing to seed (fail-closed input contract)' }
+          $url = 'http://' + $labIp + ':7333/vnc.html?autoconnect=1&resize=remote'
+          $cfg = [ordered]@{ hostKind = 'ephemeral'; hostname = $env:LAB_HOST; rdpIp = $labIp; webdeskUrl = $url; webdeskReason = ''; webdeskDetail = '' }
           $enc = New-Object System.Text.UTF8Encoding($false)
           [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), ($cfg | ConvertTo-Json -Depth 6), $enc)
+          Write-Host ('[lab] seeded config.rdpIp = ' + $labIp)
           Write-Host ('[lab] seeded config.webdeskUrl = ' + $url)
           exit 0
 
-      - name: REPRO A - legacy-style websockify start + tailscale serve mapping
+      - name: F9n BIND PROOF - production launcher + firewall + marker curl
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          # EVIDENCE-ONLY: does the step-context CLI 401 on this host? This probe
+          # never fails the step; the verdict below must not depend on it (F9n design).
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
-          $wsLog = 'C:\ghrdp\webdesk\websockify.log'
-          $wsErr = 'C:\ghrdp\webdesk\websockify.err.log'
-          # Exactly the pre-F9l deploy-step shape: kill stale, Start-Process with
-          # paired redirect files, wait for LISTEN, then map the tailnet.
-          try { Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*websockify*7333*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
-          Start-Process -FilePath python -ArgumentList @('-m','websockify','--web','C:\ghrdp\novnc','127.0.0.1:7333','127.0.0.1:5900') -RedirectStandardOutput $wsLog -RedirectStandardError $wsErr | Out-Null
-          $up = $false
-          for ($i = 0; $i -lt 20; $i++) {
-              $c = Get-NetTCPConnection -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue
-              if ($c) { $up = $true; break }
-              Start-Sleep -Seconds 1
+          try {
+              $probe401 = ((& $ts ip -4 2>&1 | ForEach-Object { [string]$_ }) -join ' | ')
+              $LASTEXITCODE = 0
+              Write-Host ('[lab] evidence: `tailscale ip -4` in bind-proof context says: ' + $probe401)
+              if ($probe401 -match '401|already in use') { Write-Host '[lab] evidence: 401 SYSTEM-operator lock CONFIRMED in this context; proceeding via config rdpIp (F9n design)' }
+          } catch { Write-Host ('[lab] evidence probe error: ' + $_.Exception.Message) }
+          # Extract the production launcher verbatim from main.yml (first copy).
+          $all = Get-Content -LiteralPath '.github/workflows/main.yml'
+          $start = -1
+          for ($i = 0; $i -lt $all.Count; $i++) { if ($all[$i] -match '^          function Start-Websockify\(') { $start = $i; break } }
+          if ($start -lt 0) { throw '[lab] production Start-Websockify not found in main.yml' }
+          $end = $start
+          while ($end -lt $all.Count -and $all[$end] -ne '          }') { $end++ }
+          if ($end -ge $all.Count) { throw '[lab] production launcher end not found' }
+          $fnText = ($all[$start..$end] -join "`n")
+          if ($fnText -notmatch '\$BindIp') { throw '[lab] extracted launcher is not the F9n BindIp form (prod/lab skew)' }
+          . ([scriptblock]::Create($fnText))
+          Write-Host ('[lab] extracted production Start-Websockify: ' + ($end - $start + 1) + ' lines')
+          # F9n section 1: config rdpIp -> validate -> firewall -> bind -> curl marker.
+          $cfgPath = 'C:\ghrdp\config.json'
+          $rdpIp = ([string](([System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json).rdpIp)).Trim()
+          if ($rdpIp -notmatch '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') { throw '[lab] config rdpIp invalid; refusing to fabricate (tailnet-ip-unavailable)' }
+          Get-NetFirewallRule -DisplayName 'GHRDP-Webdesk' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+          New-NetFirewallRule -DisplayName 'GHRDP-Webdesk' -Direction Inbound -Protocol TCP -LocalPort 7333 -RemoteAddress '100.64.0.0/10' -Action Allow -Profile Any -Enabled True -ErrorAction Stop | Out-Null
+          Write-Host '[lab] firewall: GHRDP-Webdesk inbound TCP 7333 from 100.64.0.0/10 ALLOW'
+          $wsUp = Start-Websockify -BindIp $rdpIp
+          Write-Host ('[lab] websockify ' + $rdpIp + ':7333 LISTEN: ' + $wsUp)
+          if (-not $wsUp) { throw '[lab] production launcher failed to bind the tailnet IP' }
+          $url = 'http://' + $rdpIp + ':7333/vnc.html?autoconnect=1&resize=remote'
+          $pass = $false
+          for ($i = 1; $i -le 3; $i++) {
+              $bf = Join-Path $env:RUNNER_TEMP ('lab-bind-' + $i + '.html')
+              $code = ((& curl.exe -s --max-time 20 -o $bf -w '%{http_code}' $url 2>$null) -join '').Trim()
+              $LASTEXITCODE = 0
+              $marker = $false
+              try { if ((Test-Path -LiteralPath $bf) -and ([System.IO.File]::ReadAllText($bf) -match 'noVNC')) { $marker = $true } } catch { }
+              Write-Host ('[lab] bind proof curl ' + $i + ' HTTP [' + $code + '] noVNC=' + $marker)
+              if ($code -eq '200' -and $marker) { $pass = $true; break }
+              Start-Sleep -Seconds 5
           }
-          $pids = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*websockify*7333*' } | Select-Object -ExpandProperty ProcessId)
-          Write-Host ('[lab] REPRO A: websockify LISTEN=' + $up + ' pids=' + ($pids -join ','))
-          $serveOut = ((& $ts serve --bg http://127.0.0.1:7333 2>&1 | ForEach-Object { [string]$_ }) -join ' | ')
-          Write-Host ('[lab] REPRO A: serve exit=' + $LASTEXITCODE + ' out=' + $serveOut)
-          $LASTEXITCODE = 0
-          Start-Sleep -Seconds 3
-          $st = ((& $ts serve status --json 2>$null) -join "`n")
-          Write-Host ('[lab] REPRO A: serve status = ' + $st)
-          $b = Join-Path $env:RUNNER_TEMP 'repro-a-backend.html'
-          $bc = ((& curl.exe -sk --max-time 20 -o $b -w '%{http_code}' 'http://127.0.0.1:7333/vnc.html' 2>$null) -join '').Trim()
-          $LASTEXITCODE = 0
-          Write-Host ('[lab] REPRO A: backend curl HTTP ' + $bc)
-          exit 0
+          $fwPresent = [bool](Get-NetFirewallRule -DisplayName 'GHRDP-Webdesk' -ErrorAction SilentlyContinue)
+          $listen = [bool](Get-NetTCPConnection -LocalAddress $rdpIp -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue)
+          if ($pass) {
+              Write-Host ('::notice title=lab BIND PROOF (tailnet HTTP)::url=' + $url + ' ; HTTP 200 + noVNC marker ; listen=' + $listen + ' ; firewall=' + $fwPresent)
+              exit 0
+          } else {
+              Write-Host ('::warning title=lab BIND PROOF FAILED::url=' + $url + ' ; listen=' + $listen + ' ; firewall=' + $fwPresent)
+              throw '[lab] bind proof FAILED: advertised URL did not serve the noVNC marker'
+          }
 
-      - name: REPRO B - next-step probe (step-boundary survival + serve leg)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $ts = 'C:\Program Files\Tailscale\tailscale.exe'
-          $diagDir = Join-Path $env:RUNNER_TEMP 'webdesk-diag'
-          New-Item -ItemType Directory -Path $diagDir -Force | Out-Null
-          $lines = @()
-          $pids = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*websockify*7333*' } | Select-Object -ExpandProperty ProcessId)
-          $listen = [bool](Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue)
-          $lines += ('probe=REPRO-B step=2 python-websockify-pids=' + ($pids -join ',') + ' loopback-listen-7333=' + $listen)
-          $bf = Join-Path $env:RUNNER_TEMP 'repro-b-backend.html'
-          $bc = ((& curl.exe -sk --max-time 20 -o $bf -w '%{http_code}' 'http://127.0.0.1:7333/vnc.html' 2>$null) -join '').Trim()
-          $LASTEXITCODE = 0
-          $lines += ('probe=REPRO-B backend-http=' + $bc)
-          $url = 'https://' + $env:LAB_DNS + '/vnc.html?autoconnect=1&resize=remote'
-          $sf = Join-Path $env:RUNNER_TEMP 'repro-b-serve.html'
-          $sh = Join-Path $env:RUNNER_TEMP 'repro-b-serve.hdr'
-          $sc = ((& curl.exe -sk --max-time 25 -D $sh -o $sf -w '%{http_code}' $url 2>$null) -join '').Trim()
-          $LASTEXITCODE = 0
-          $lines += ('probe=REPRO-B serve-http=' + $sc + ' url=' + $url)
-          if (Test-Path -LiteralPath $sh) { $lines += ('probe=REPRO-B serve-headers=' + (((Get-Content -LiteralPath $sh | Select-Object -First 5) -join ' | '))) }
-          try { $lines += ('probe=REPRO-B serve-status-json=' + (((& $ts serve status --json 2>$null) -join ' '))) } catch { }
-          $lines | ForEach-Object { Write-Host ('[lab] ' + $_) }
-          Add-Content -LiteralPath (Join-Path $diagDir 'lab-repro.txt') -Value ($lines -join "`n")
-          Write-Host ('::warning title=lab REPRO (legacy start, next step)::' + ($lines -join ' ; '))
-          Exit 0
-
-      - name: FIX - extracted production self-test (verbatim from main.yml)
-        id: fix
+      - name: F9n SELFTEST PROOF - extracted production self-test (verbatim from main.yml)
+        id: selftest
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
           $all = Get-Content -LiteralPath '.github/workflows/main.yml'
-          if (-not ($all -match '\[F9l-2\]')) {
-              Write-Host '[lab] Phase 2 PENDING: main.yml does not carry the [F9l-2] self-test yet; skipping the extracted run.'
-              exit 0
-          }
           $start = -1
           for ($i = 0; $i -lt $all.Count; $i++) { if ($all[$i] -match '^      - name: Web desktop self-test') { $start = $i; break } }
           if ($start -lt 0) { throw '[lab] self-test step not found in main.yml' }
@@ -213,72 +238,86 @@ jobs:
               if ($l -notmatch '^          ') { break }
               $script += $l.Substring(10)
           }
+          if (($script -join "`n") -notmatch "'backend-root'") { throw '[lab] extracted self-test is not the F9n form (prod/lab skew)' }
           $out = Join-Path $env:RUNNER_TEMP 'extracted-selftest.ps1'
           [System.IO.File]::WriteAllLines($out, $script, (New-Object System.Text.UTF8Encoding($false)))
           Write-Host ('[lab] extracted self-test: ' + $script.Count + ' lines -> ' + $out)
-          Add-Content -Path $env:GITHUB_ENV -Value ('LAB_EXTRACTED=' + $out)
           & pwsh -NoProfile -ExecutionPolicy Bypass -File $out
           $rc = $LASTEXITCODE
-          Write-Host ('[lab] extracted self-test exit code = ' + $rc)
+          Write-Host ('[lab] extracted self-test exit code = ' + $rc + ' (0 = PASS, as designed)')
           exit $rc
 
-      - name: FIX PROBE - survival + serve status after the self-test
+      - name: SELFTEST PROBE - survival + listener + firewall after the self-test
         if: always()
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $diagDir = Join-Path $env:RUNNER_TEMP 'webdesk-diag'
           New-Item -ItemType Directory -Path $diagDir -Force | Out-Null
           $lines = @()
           $pids = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*websockify*7333*' } | Select-Object -ExpandProperty ProcessId)
-          $listen = [bool](Get-NetTCPConnection -LocalAddress '127.0.0.1' -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue)
-          $lines += ('probe=FIX-PROBE step=' + $env:GITHUB_JOB + ' python-websockify-pids=' + ($pids -join ',') + ' loopback-listen-7333=' + $listen)
+          $labIp = [string]$env:LAB_IP
+          $listen = $false
+          if ($labIp) { $listen = [bool](Get-NetTCPConnection -LocalAddress $labIp -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue) }
+          $lines += ('probe=SELFTEST-PROBE python-websockify-pids=' + ($pids -join ',') + ' tailnet-listen-7333=' + $listen)
           $cfg = ''
           try { $cfg = [System.IO.File]::ReadAllText('C:\ghrdp\config.json') } catch { }
-          $lines += ('probe=FIX-PROBE config=' + (($cfg -replace '\s+', ' ')))
-          $url = 'https://' + $env:LAB_DNS + '/vnc.html?autoconnect=1&resize=remote'
-          $sf = Join-Path $env:RUNNER_TEMP 'fix-probe-serve.html'
-          $sc = ((& curl.exe -sk --max-time 25 -o $sf -w '%{http_code}' $url 2>$null) -join '').Trim()
+          $lines += ('probe=SELFTEST-PROBE config=' + (($cfg -replace '\s+', ' ')))
+          $url = 'http://' + $labIp + ':7333/vnc.html?autoconnect=1&resize=remote'
+          $sf = Join-Path $env:RUNNER_TEMP 'selftest-probe.html'
+          $sc = ((& curl.exe -s --max-time 25 -o $sf -w '%{http_code}' $url 2>$null) -join '').Trim()
           $LASTEXITCODE = 0
-          $lines += ('probe=FIX-PROBE serve-http=' + $sc)
-          if (Test-Path -LiteralPath $sf) { $body = [System.IO.File]::ReadAllText($sf); if ($body.Length -gt 120) { $body = $body.Substring(0, 120) }; $lines += ('probe=FIX-PROBE serve-first120=' + ($body -replace '\s+', ' ')) }
-          try { $lines += ('probe=FIX-PROBE serve-status-json=' + (((& $ts serve status --json 2>$null) -join ' '))) } catch { }
+          $lines += ('probe=SELFTEST-PROBE advertised-http=' + $sc)
+          if (Test-Path -LiteralPath $sf) { $body = [System.IO.File]::ReadAllText($sf); if ($body.Length -gt 120) { $body = $body.Substring(0, 120) }; $lines += ('probe=SELFTEST-PROBE first120=' + ($body -replace '\s+', ' ')) }
+          $lines += ('probe=SELFTEST-PROBE firewall=' + ([bool](Get-NetFirewallRule -DisplayName 'GHRDP-Webdesk' -ErrorAction SilentlyContinue)))
           $lines | ForEach-Object { Write-Host ('[lab] ' + $_) }
-          Add-Content -LiteralPath (Join-Path $diagDir 'lab-fix-probe.txt') -Value ($lines -join "`n")
-          Write-Host ('::notice title=lab FIX PROBE (after extracted self-test)::' + ($lines -join ' ; '))
+          Add-Content -LiteralPath (Join-Path $diagDir 'lab-selftest-probe.txt') -Value ($lines -join "`n")
+          Write-Host ('::notice title=lab SELFTEST PROBE (after extracted self-test)::' + ($lines -join ' ; '))
           exit 0
 
-      - name: E PROOF - classification path (unresolvable ts.net URL, expect halt)
+      - name: F9n NEGATIVE PROOF - classified halt on unroutable IP (expect halt)
         if: always()
         continue-on-error: true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
           if (-not (Test-Path -LiteralPath (Join-Path $env:RUNNER_TEMP 'extracted-selftest.ps1'))) {
-              Write-Host '[lab] Phase 3 SKIPPED: no extracted self-test (Phase 2 pending).'
+              Write-Host '[lab] negative proof SKIPPED: no extracted self-test.'
               exit 0
           }
-          # Point the advertised URL at a tailnet name that cannot resolve, then
-          # run the SAME extracted self-test: it must classify dns-tls, write the
-          # diagnostics payload, clear the URL and throw (fail-closed).
+          # Point config at an unroutable CGNAT address (bind must fail: not a
+          # local address), kill websockify, then run the SAME extracted
+          # self-test: it must classify backend-dead, write the diagnostics
+          # payload, clear the URL with the locked codes, and throw (fail-closed).
           $cfgPath = 'C:\ghrdp\config.json'
           $enc = New-Object System.Text.UTF8Encoding($false)
-          $cfg = [System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json
-          $cfg.webdeskUrl = 'https://webdesk-lab-nonexistent-name.ts.net/vnc.html?autoconnect=1&resize=remote'
-          [System.IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 6), $enc)
-          Write-Host '[lab] Phase 3: config.webdeskUrl pointed at an unresolvable ts.net name'
-          $out = Join-Path $env:RUNNER_TEMP 'extracted-selftest.ps1'
-          $p = Start-Process -FilePath pwsh -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $out) -Wait -PassThru -NoNewWindow
-          Write-Host ('[lab] Phase 3: extracted self-test exit code = ' + $p.ExitCode + ' (non-zero = fail-closed halt, as designed)')
-          $cl = Join-Path $env:RUNNER_TEMP 'webdesk-diag\classification.txt'
-          $clTxt = ''
-          if (Test-Path -LiteralPath $cl) { $clTxt = (([System.IO.File]::ReadAllText($cl)) -replace "`r?`n", ' | ') }
-          else { $clTxt = 'classification.txt MISSING (F9l-3 payload incomplete)' }
-          Write-Host ('[lab] Phase 3 classification.txt: ' + $clTxt)
-          $cfgAfter = ''
-          try { $cfgAfter = ([System.IO.File]::ReadAllText($cfgPath) -replace '\s+', ' ') } catch { }
-          Write-Host ('::warning title=lab Phase 3 (classification proof)::exit=' + $p.ExitCode + ' ; ' + $clTxt + ' ; config.json=' + $cfgAfter)
+          $orig = [System.IO.File]::ReadAllText($cfgPath)
+          try {
+              $cfg = $orig | ConvertFrom-Json
+              $cfg.rdpIp = '100.127.255.250'
+              $cfg.webdeskUrl = 'http://100.127.255.250:7333/vnc.html?autoconnect=1&resize=remote'
+              [System.IO.File]::WriteAllText($cfgPath, ($cfg | ConvertTo-Json -Depth 6), $enc)
+              try { Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*websockify*7333*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } } catch { }
+              Write-Host '[lab] negative: config pointed at unroutable 100.127.255.250, websockify killed'
+              $out = Join-Path $env:RUNNER_TEMP 'extracted-selftest.ps1'
+              $p = Start-Process -FilePath pwsh -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $out) -Wait -PassThru -NoNewWindow
+              Write-Host ('[lab] negative: extracted self-test exit = ' + $p.ExitCode + ' (non-zero = fail-closed halt, as designed)')
+              $cl = Join-Path $env:RUNNER_TEMP 'webdesk-diag\classification.txt'
+              $clTxt = ''
+              if (Test-Path -LiteralPath $cl) { $clTxt = (([System.IO.File]::ReadAllText($cl)) -replace "`r?`n", ' | ') }
+              else { $clTxt = 'classification.txt MISSING (payload incomplete)' }
+              Write-Host ('[lab] negative classification.txt: ' + $clTxt)
+              $cfgCheck = [System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json
+              $cfgAfter = (([System.IO.File]::ReadAllText($cfgPath)) -replace '\s+', ' ')
+              Write-Host ('::warning title=lab NEGATIVE proof (classified halt)::exit=' + $p.ExitCode + ' ; ' + $clTxt + ' ; config=' + $cfgAfter)
+              if ($p.ExitCode -eq 0) { throw '[lab] NEGATIVE PROOF FAILED: self-test exited 0 on an unroutable URL (fail-open)' }
+              if ($clTxt -notmatch 'backend-dead') { throw '[lab] NEGATIVE PROOF FAILED: expected backend-dead classification' }
+              if ([string]$cfgCheck.webdeskUrl -ne '') { throw '[lab] NEGATIVE PROOF FAILED: advertised URL not cleared' }
+              if ([string]$cfgCheck.webdeskReason -ne 'serve-failed' -or [string]$cfgCheck.webdeskDetail -ne 'self-test-failed') { throw '[lab] NEGATIVE PROOF FAILED: locked codes not stamped' }
+              Write-Host '[lab] negative proof VERIFIED: backend-dead + URL cleared + locked codes + halt'
+          } finally {
+              [System.IO.File]::WriteAllText($cfgPath, $orig, $enc)
+          }
           exit 0
 
       - name: Stage diagnostics inside the workspace (upload-artifact v4 root)
