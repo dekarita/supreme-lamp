@@ -144,12 +144,43 @@ jobs:
               DE-Fail 'listen' ('server never listened on 7331; exited=' + $(if ($srv.HasExited) { $srv.ExitCode } else { 'no' }) + '; server-ok=[' + $okTxt + ']; stderr=[' + $errTail + ']')
           }
           $base = 'http://127.0.0.1:7331'
-          try { $plain = Invoke-RestMethod -Uri ($base + '/api/config') -TimeoutSec 10 }
-          catch { DE-Fail 'config-unauth' ($_.Exception.Message) }
+          # [F10-14] LOOPBACK CALLS MUST BYPASS ANY PROXY: the first D/E failure
+          # (annotation stage=config-unauth, 401) came from Invoke-RestMethod
+          # honouring a system/env proxy for 127.0.0.1 instead of talking to the
+          # server. Raw HttpWebRequest with Proxy = $null + body capture on error
+          # (so the next failure names the HTTP status AND the response body).
+          Write-Host ('[D/E] proxy diag: HTTP_PROXY=[' + [string]$env:HTTP_PROXY + '] HTTPS_PROXY=[' + [string]$env:HTTPS_PROXY + '] NO_PROXY=[' + [string]$env:NO_PROXY + '] DefaultWebProxy=[' + [string]([System.Net.WebRequest]::DefaultWebProxy) + ']')
+          function Invoke-LabJson([string]$Url, [string]$Method = 'GET', [string]$Body = '') {
+              $req = [System.Net.HttpWebRequest]::Create($Url)
+              $req.Method = $Method
+              $req.Proxy = $null
+              $req.Timeout = 10000
+              $req.ReadWriteTimeout = 10000
+              $req.KeepAlive = $false
+              $req.UserAgent = 'ghrdp-lab'
+              if ($Body) {
+                  $b = [System.Text.Encoding]::UTF8.GetBytes($Body)
+                  $req.ContentType = 'application/json'
+                  $req.ContentLength = $b.Length
+                  $st = $req.GetRequestStream(); $st.Write($b, 0, $b.Length); $st.Close()
+              }
+              try { $resp = $req.GetResponse() }
+              catch [System.Net.WebException] {
+                  $r = $_.Exception.Response
+                  $code = 0; $txt = ''
+                  if ($r) { $code = [int]$r.StatusCode; try { $sr = New-Object System.IO.StreamReader($r.GetResponseStream()); $txt = $sr.ReadToEnd(); $sr.Close() } catch { } }
+                  throw ('HTTP ' + $code + ' body=[' + $txt.Substring(0, [Math]::Min(200, $txt.Length)) + '] ' + $Url)
+              }
+              $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
+              $t = $sr.ReadToEnd(); $sr.Close(); $resp.Close()
+              return ($t | ConvertFrom-Json)
+          }
+          try { $plain = Invoke-LabJson ($base + '/api/config') }
+          catch { DE-Fail 'config-unauth' $_.Exception.Message }
           try {
               if ($plain.creds.PSObject.Properties['windowsPass']) { DE-Fail 'creds-leak' 'unauthenticated loopback received windowsPass' }
           } catch { DE-Fail 'config-shape' ($_.Exception.Message + ' :: body=' + ($plain | ConvertTo-Json -Compress -Depth 4)) }
-          try { $gated = Invoke-RestMethod -Uri ($base + '/api/config?key=lab-dash-token-0123456789') -TimeoutSec 10 }
+          try { $gated = Invoke-LabJson ($base + '/api/config?key=lab-dash-token-0123456789') }
           catch { DE-Fail 'config-gated' $_.Exception.Message }
           if ($gated.creds.windowsPass -ne 'LABDUMMY-win-9876') { DE-Fail 'gated-windowsPass' ('got=[' + [string]$gated.creds.windowsPass + ']') }
           if ($gated.creds.vncPass -ne 'LABDUMMY-vnc-5432') { DE-Fail 'gated-vncPass' ('got=[' + [string]$gated.creds.vncPass + ']') }
@@ -157,7 +188,7 @@ jobs:
           Write-Host '[D] PASS: creds served ONLY to token request; last-4 mask verified; loopback clean'
           # native-status carries the new telemetry fields (values may be null
           # on a session-less lab host - the KEYS are the contract).
-          try { $ns = Invoke-RestMethod -Uri ($base + '/api/native-status?key=lab-dash-token-0123456789') -TimeoutSec 10 }
+          try { $ns = Invoke-LabJson ($base + '/api/native-status?key=lab-dash-token-0123456789') }
           catch { DE-Fail 'native-status' $_.Exception.Message }
           foreach ($k in @('rdpLogonAgeSec','pingMs','pingPath','pingTarget')) { if (-not ($ns.PSObject.Properties.Name -contains $k)) { DE-Fail 'native-status-field' ('missing ' + $k) } }
           # rdp-ping loop wrote a sample (tailscale absent in lab => path unknown).
@@ -165,7 +196,7 @@ jobs:
           for ($i = 0; $i -lt 10 -and -not $pj; $i++) { if (Test-Path 'C:\ghrdp\rdp-ping.json') { try { $pj = Get-Content 'C:\ghrdp\rdp-ping.json' -Raw | ConvertFrom-Json } catch { } }; if (-not $pj) { Start-Sleep -Seconds 2 } }
           if (-not $pj -or -not $pj.ts) { DE-Fail 'rdp-ping' ('rdp-ping.json missing/empty; dir=' + ((Get-ChildItem $root -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name) -join ',')) }
           # handler-hello beacon round-trip (the launcher-observable endpoint).
-          try { $hh = Invoke-RestMethod -Uri ($base + '/api/handler-hello?key=lab-dash-token-0123456789') -Method Post -Body '{"verb":"rdp-launch","ok":true,"details":"lab"}' -ContentType 'application/json' -TimeoutSec 10 }
+          try { $hh = Invoke-LabJson ($base + '/api/handler-hello?key=lab-dash-token-0123456789') 'POST' '{"verb":"rdp-launch","ok":true,"details":"lab"}' }
           catch { DE-Fail 'handler-hello' $_.Exception.Message }
           if (-not $hh.ok) { DE-Fail 'handler-hello-shape' ($hh | ConvertTo-Json -Compress) }
           try { Stop-Process -Id $srv.Id -Force } catch { }
