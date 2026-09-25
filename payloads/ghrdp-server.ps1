@@ -524,6 +524,13 @@ function Invoke-ClientRequest {
                     if (-not $wsConn) { $wd = ''; $wdr = 'config-stale'; $wdDetail = 'listener-gone' }
                 } catch { }
             }
+            # [F9o] webdeskAuth: the ladder-VERIFIED VNC gateway mode stamped into
+            # config.json by the web-desktop step ('vnc' | 'none-tailnet-only').
+            # Allowlist-validated, and forced empty when no URL is advertised
+            # (the mode is meaningless without a live gateway), so a tampered or
+            # stale config can never make the dashboard claim an auth mode.
+            $wdAuth = ''
+            if ($wd -and $cfgN -and $cfgN.PSObject.Properties['webdeskAuth'] -and ([string]$cfgN.webdeskAuth -match '^(vnc|none-tailnet-only)$')) { $wdAuth = [string]$cfgN.webdeskAuth }
             $ns = [ordered]@{
                 fqdn = $fqdnN
                 hostKind = $hostKind
@@ -534,6 +541,7 @@ function Invoke-ClientRequest {
                 webdeskUrl = $wd
                 webdeskReason = $wdr
                 webdeskDetail = $wdDetail
+                webdeskAuth = $wdAuth
                 vncPassAdminUrl = $vncAdmin
                 tsReason = $tsr
                 tsAuthAdminUrl = $tsAdmin

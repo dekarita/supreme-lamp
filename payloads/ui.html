@@ -347,6 +347,8 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     After re-dispatch, this button will enable automatically.
   </div>
   <div class="row" id="webdeskVncAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" id="webdeskVncAdvisoryText" style="color:#f5d9b7">Web desktop unavailable: set <code>VNC_PASS</code> in <a href="https://github.com/dekarita/supreme-lamp/settings/secrets/actions" target="_blank" rel="noopener">GitHub Actions secrets</a>, then re-run.</span></div>
+  <div class="row" id="webdeskVncAuthRow" style="display:none"><span class="k">VNC auth mode</span><span class="v" id="webdeskVncAuthVal">&hellip;</span></div>
+  <div class="row" id="webdeskVncAuthAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" id="webdeskVncAuthAdvisoryText" style="color:#f5d9b7"></span></div>
   <div class="note" id="tsAuthGuidance" style="display:none;color:#f5d9b7;margin:4px 0 10px 130px"></div>
   <div class="row" id="tsAuthAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" id="tsAuthAdvisoryText" style="color:#f5d9b7"></span></div>
   <div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
@@ -1067,6 +1069,31 @@ async function nativeStatus(){
   }
   if(vncGuide){ vncGuide.innerHTML=guideHtml; vncGuide.style.display=guideHtml?'block':'none'; }
   if(vncAdvice){ vncAdvice.style.display=adviceHtml?'':'none'; if(vncAdviceTxt) vncAdviceTxt.innerHTML=adviceHtml; }
+  // [F9o] 'VNC auth mode' row + degrade advisory. webdeskAuth comes from
+  // /api/native-status (the ladder-verified mode in config.json, allowlist-
+  // validated server-side). 'vnc' = password gate green. 'none-tailnet-only' =
+  // LABELED DEGRADE: the password gate could not be applied on this host, so
+  // the row turns yellow and the advisory tells the operator to rotate
+  // VNC_PASS and re-dispatch to restore the gate. The WEB DESKTOP button
+  // itself is unchanged. The page never stores or shows the password.
+  var wAuthRow=document.getElementById('webdeskVncAuthRow');
+  var wAuthVal=document.getElementById('webdeskVncAuthVal');
+  var wAuthAdv=document.getElementById('webdeskVncAuthAdvisory');
+  var wAuthAdvTxt=document.getElementById('webdeskVncAuthAdvisoryText');
+  var wAuth=(s&&s.webdeskAuth&&(s.webdeskAuth==='vnc'||s.webdeskAuth==='none-tailnet-only'))?String(s.webdeskAuth):'';
+  if(wAuthRow){
+   if(webdeskUrl&&wAuth){
+    wAuthRow.style.display='';
+    if(wAuth==='vnc'){ wAuthVal.textContent='vnc (password-gated)'; wAuthVal.style.color='#7dffc9'; }
+    else { wAuthVal.textContent='none - tailnet only (LABELED DEGRADE)'; wAuthVal.style.color='#f5d9b7'; }
+   } else { wAuthRow.style.display='none'; }
+  }
+  if(wAuthAdv&&wAuthAdvTxt){
+   if(webdeskUrl&&wAuth==='none-tailnet-only'){
+    wAuthAdv.style.display='';
+    wAuthAdvTxt.innerHTML='VNC password gate not applied on this host; access is limited to the tailnet firewall (100.64.0.0/10). Rotate the <code>VNC_PASS</code> secret in <a href="'+SECRETS_URL+'" target="_blank" rel="noopener">GitHub Actions secrets</a> and re-dispatch to restore the gate.';
+   } else { wAuthAdv.style.display='none'; wAuthAdvTxt.innerHTML=''; }
+  }
   // [F9k] Second conditional yellow box (same VNC_PASS box pattern): the run
   // halted fail-closed at "Tailscale up" because the TS_AUTHKEY secret is
   // missing or was rejected. tsReason comes from config.json via native-status

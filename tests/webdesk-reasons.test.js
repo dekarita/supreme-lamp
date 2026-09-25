@@ -217,3 +217,29 @@ test('unknown detail code: never interpolated, no XSS', async () => {
   assert.doesNotMatch(g, /<img src=x/);
   assert.doesNotMatch(g, /onerror/);
 });
+
+// [F9o] The 'VNC auth mode' row renders the ladder-verified mode; the degrade
+// mode shows the yellow advisory with the rotate + re-dispatch instruction.
+test('F9o VNC auth mode row: vnc green, none-tailnet-only advisory', async () => {
+  const vnc = page({ webdeskAuth: 'vnc' });
+  await refresh(vnc);
+  assert.equal(vnc.node('webdeskVncAuthRow').style.display, '');
+  assert.equal(vnc.node('webdeskVncAuthVal').textContent, 'vnc (password-gated)');
+  assert.equal(vnc.node('webdeskVncAuthAdvisory').style.display, 'none');
+  const deg = page({ webdeskAuth: 'none-tailnet-only' });
+  await refresh(deg);
+  assert.equal(deg.node('webdeskVncAuthRow').style.display, '');
+  assert.match(deg.node('webdeskVncAuthVal').textContent, /none - tailnet only/);
+  assert.equal(deg.node('webdeskVncAuthAdvisory').style.display, '');
+  const a = deg.node('webdeskVncAuthAdvisoryText').innerHTML;
+  assert.match(a, /Rotate the <code>VNC_PASS<\/code> secret/);
+  assert.match(a, /re-dispatch to restore the gate/);
+  assert.match(a, /settings\/secrets\/actions/);
+  // no URL or no mode -> row hidden (a stale config cannot claim a mode)
+  const noUrl = page({ webdeskUrl: '', webdeskReason: 'vnc-pass-missing', webdeskAuth: 'vnc' });
+  await refresh(noUrl);
+  assert.equal(noUrl.node('webdeskVncAuthRow').style.display, 'none');
+  const noMode = page({});
+  await refresh(noMode);
+  assert.equal(noMode.node('webdeskVncAuthRow').style.display, 'none');
+});
