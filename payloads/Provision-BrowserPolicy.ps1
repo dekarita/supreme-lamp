@@ -22,58 +22,107 @@ function Get-StoreExtensionId {
         [string[]]$SlugHints
     )
     $q = [uri]::EscapeDataString($Query)
+    $qPlus = $q -replace '%20', '+'
     if ($Store -eq 'edge') {
         $candidates = @(
             ('https://microsoftedge.microsoft.com/addons/search/' + $q),
-            ('https://microsoftedge.microsoft.com/addons/search/' + $q + '?form=QBRE')
+            ('https://microsoftedge.microsoft.com/addons/search/' + $q + '?form=QBRE'),
+            ('https://microsoftedge.microsoft.com/addons/search/' + $qPlus)
         )
         $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0'
     } else {
         $candidates = @(
             ('https://chromewebstore.google.com/search/' + $q),
+            ('https://chromewebstore.google.com/search/' + $qPlus),
             ('https://chrome.google.com/webstore/search/' + $q)
         )
         $ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36'
     }
     $rx = [regex]('/detail/[a-z0-9][a-z0-9\-]*/([a-z]{32})')
+    $rxUri = [regex]('/addons/detail/[a-z0-9][a-z0-9\-]*/([a-p]{32})')
     $found = @{}
+    $lastStat = 'no-candidate-attempted'
+    $html = ''
+    $hdrs = @{
+        'User-Agent'      = $ua
+        'Accept'          = 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+        'Accept-Language' = 'en-US,en;q=0.9'
+    }
     foreach ($url in $candidates) {
         $html = ''
-        for ($attempt = 1; $attempt -le 2; $attempt++) {
+        $finalUri = ''
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
             try {
-                $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 45 -MaximumRedirection 5 -Headers @{ 'User-Agent' = $ua }
+                $r = Invoke-WebRequest -Uri $url -UseBasicParsing -TimeoutSec 45 -MaximumRedirection 5 -Headers $hdrs
                 $html = [string]$r.Content
+                try { $finalUri = [string]$r.BaseResponse.RequestMessage.RequestUri.AbsoluteUri } catch {
+                    try { $finalUri = [string]$r.BaseResponse.ResponseUri.AbsoluteUri } catch { }
+                }
+                $lastStat = 'ok http=' + [int]$r.StatusCode + ' len=' + $html.Length + ' final=' + $finalUri
                 if ($html) { break }
             } catch {
+                $errMsg = [string]$_.Exception.Message
+                if ($errMsg.Length -gt 160) { $errMsg = $errMsg.Substring(0, 160) }
+                $errMsg = $errMsg -replace '[\r\n]+', ' '
+                $lastStat = 'ERR ' + $url + ' try' + $attempt + ': ' + $errMsg
                 $html = ''
-                Start-Sleep -Seconds 2
+                Start-Sleep -Seconds 3
             }
         }
-        if (-not $html) { continue }
-        foreach ($m in $rx.Matches($html)) {
-            $id = $m.Groups[1].Value
-            if ($id -notmatch '^[a-p]{32}$') { continue }
-            $seg = $m.Value.ToLowerInvariant()
-            $hintOk = $true
-            foreach ($h in $SlugHints) { if ($seg -notlike ('*' + $h + '*')) { $hintOk = $false; break } }
-            if ($hintOk -and -not $found.ContainsKey($id)) { $found[$id] = $seg }
+        # 1) redirect/landing URL itself may already carry the ID
+        if ($finalUri) {
+            $mU = $rxUri.Match($finalUri)
+            if ($mU.Success) {
+                $seg = $mU.Value.ToLowerInvariant()
+                $hintOk = $true
+                foreach ($h in $SlugHints) { if ($seg -notlike ('*' + $h + '*')) { $hintOk = $false; break } }
+                if ($hintOk -and -not $found.ContainsKey($mU.Groups[1].Value)) { $found[$mU.Groups[1].Value] = $seg }
+            }
+        }
+        # 2) body scan (server-rendered search results)
+        if ($html) {
+            foreach ($m in $rx.Matches($html)) {
+                $id = $m.Groups[1].Value
+                if ($id -notmatch '^[a-p]{32}$') { continue }
+                $seg = $m.Value.ToLowerInvariant()
+                $hintOk = $true
+                foreach ($h in $SlugHints) { if ($seg -notlike ('*' + $h + '*')) { $hintOk = $false; break } }
+                if ($hintOk -and -not $found.ContainsKey($id)) { $found[$id] = $seg }
+            }
         }
         if ($found.Count -gt 0) { break }
     }
     if ($found.Count -eq 0) {
-        Write-Host ('::error title=Extension ID resolution failed::' + $Store + ' store did not return a /detail/<slug>/<32-char> id for "' + $Query + '". Re-dispatch once (transient store outage); IDs are never hardcoded.')
-        throw ('STORE-ID-RESOLVE-FAILED store=' + $Store + ' query=' + $Query)
+        $hits = 0
+        try { if ($html) { $hits = [regex]::Matches($html, '/addons/detail/').Count } } catch { }
+        Write-Host ('::error title=Extension ID resolution failed::' + $Store + ' store did not return a /detail/<slug>/<32-char> id for "' + $Query + '". last=' + $lastStat + ' detailHits=' + $hits + '. Re-dispatch once (transient store outage); IDs are never hardcoded.')
+        if ($html -and $html.Length -gt 0) {
+            $samp = $html.Substring(0, [Math]::Min(360, $html.Length)) -replace '[\r\n]+', ' '
+            Write-Host ('[store-sample] ' + $samp)
+        }
+        throw ('STORE-ID-RESOLVE-FAILED store=' + $Store + ' query=' + $Query + ' last=' + $lastStat)
     }
     $idOut = @($found.Keys)[0]
-    Write-Host ('[browser] resolved ' + $Query + ' on ' + $Store + ' -> ' + $idOut + ' (live store, build time)')
+    Write-Host ('[browser] resolved ' + $Query + ' on ' + $Store + ' -> ' + $idOut + ' seg=' + $found[$idOut] + ' (live store, build time)')
     return $idOut
 }
 
-# ---- live store resolution (build time; fail-closed) ----
+# ---- live store resolution (build time) ----
+# Edge = fail-closed (force-install contract + launch-gates). Chrome = best-effort
+# (its search page is client-rendered; if the live ID cannot be resolved the
+# Chrome forcelist is skipped and the run continues - never hardcoded).
 $ublockEdge  = Get-StoreExtensionId -Store edge   -Query 'uBlock Origin' -SlugHints @('ublock')
 $darkEdge    = Get-StoreExtensionId -Store edge   -Query 'Dark Reader'   -SlugHints @('dark-reader', 'darkreader')
-$ublockChrome = Get-StoreExtensionId -Store chrome -Query 'uBlock Origin' -SlugHints @('ublock')
-$darkChrome   = Get-StoreExtensionId -Store chrome -Query 'Dark Reader'   -SlugHints @('dark-reader', 'darkreader')
+$ublockChrome = ''
+$darkChrome   = ''
+try {
+    $ublockChrome = Get-StoreExtensionId -Store chrome -Query 'uBlock Origin' -SlugHints @('ublock')
+    $darkChrome   = Get-StoreExtensionId -Store chrome -Query 'Dark Reader'   -SlugHints @('dark-reader', 'darkreader')
+} catch {
+    Write-Host ('[browser] chrome store resolution failed (best-effort, forcelist skipped): ' + $_.Exception.Message)
+    $ublockChrome = ''
+    $darkChrome = ''
+}
 
 # ---- mandated managed bookmarks set (no other entries) ----
 $managed = @(
@@ -106,10 +155,15 @@ foreach ($polPath in @('HKLM:\SOFTWARE\Policies\Microsoft\Edge', 'HKCU:\SOFTWARE
 try {
     $chromePol = 'HKLM:\SOFTWARE\Policies\Google\Chrome'
     New-Item -Path $chromePol -Force -ErrorAction Stop | Out-Null
-    $chromeExt = Join-Path $chromePol 'ExtensionInstallForcelist'
-    New-Item -Path $chromeExt -Force -ErrorAction Stop | Out-Null
-    Set-ItemProperty -Path $chromeExt -Name '1' -Value ($ublockChrome + ';https://clients2.google.com/service/update2/crx') -ErrorAction Stop
-    Set-ItemProperty -Path $chromeExt -Name '2' -Value ($darkChrome + ';https://clients2.google.com/service/update2/crx') -ErrorAction Stop
+    if ($ublockChrome -and $darkChrome) {
+        $chromeExt = Join-Path $chromePol 'ExtensionInstallForcelist'
+        New-Item -Path $chromeExt -Force -ErrorAction Stop | Out-Null
+        Set-ItemProperty -Path $chromeExt -Name '1' -Value ($ublockChrome + ';https://clients2.google.com/service/update2/crx') -ErrorAction Stop
+        Set-ItemProperty -Path $chromeExt -Name '2' -Value ($darkChrome + ';https://clients2.google.com/service/update2/crx') -ErrorAction Stop
+        Write-Host ('[chrome] forced extensions (live IDs): uBlock Origin=' + $ublockChrome + ' Dark Reader=' + $darkChrome)
+    } else {
+        Write-Host '[chrome] ExtensionInstallForcelist skipped (live IDs unresolved - best-effort; never hardcoded)'
+    }
     $chromeManaged = @(
         @{ name = 'Mission Control';    url = $ChromeMissionControlUrl },
         @{ name = 'docs/AUTOLOGIN.md';  url = ('https://github.com/' + $Repo + '/blob/main/docs/AUTOLOGIN.md') },
@@ -120,7 +174,6 @@ try {
         New-Item -Path $cpol -Force -ErrorAction SilentlyContinue | Out-Null
         Set-ItemProperty -Path $cpol -Name 'ManagedBookmarks' -Value $chromeManagedJson -ErrorAction Stop
     }
-    Write-Host ('[chrome] forced extensions (live IDs): uBlock Origin=' + $ublockChrome + ' Dark Reader=' + $darkChrome)
 } catch {
     Write-Host ('[chrome] policy write failed (best-effort): ' + $_.Exception.Message)
 }
