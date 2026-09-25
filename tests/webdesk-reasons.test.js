@@ -75,7 +75,7 @@ test('valid URL: WEB DESKTOP enabled, all VNC_PASS guidance hidden', async () =>
   await refresh(view);
   assert.equal(view.node('btnWebDesk').disabled, false);
   view.node('btnWebDesk').onclick();
-  assert.equal(view.opens[0][0], view.status.webdeskUrl);
+  assert.equal(view.opens[0][0], view.status.webdeskUrl + '&compression=6'); // [F10 s2.3]
   assert.equal(view.node('nrReady').textContent, 'WEB DESKTOP ready');
   assert.equal(view.node('webdeskVncGuidance').style.display, 'none');
   assert.equal(view.node('webdeskVncGuidance').innerHTML, '');
@@ -177,7 +177,7 @@ test('F9n tailnet HTTP URL: WEB DESKTOP enabled, opens the exact URL', async () 
   await refresh(view);
   assert.equal(view.node('btnWebDesk').disabled, false);
   view.node('btnWebDesk').onclick();
-  assert.equal(view.opens[0][0], tailUrl);
+  assert.equal(view.opens[0][0], tailUrl + '&compression=6'); // [F10 s2.3]
   assert.equal(view.node('nrReady').textContent, 'WEB DESKTOP ready');
   assert.equal(view.node('webdeskVncGuidance').style.display, 'none');
 });

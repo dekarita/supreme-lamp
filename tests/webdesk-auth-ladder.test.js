@@ -120,7 +120,7 @@ test('F9o UI: VNC auth mode row + degraded advisory + new detail text', () => {
   assert.match(ui, /'vnc-auth-unverifiable':'VNC authentication could not be verified/);
   assert.ok(ui.includes(WARN), 'UI advisory must carry the rotate+re-dispatch instruction');
   // WEB DESKTOP button logic unchanged (opens any valid URL).
-  assert.match(ui, /window\.open\(webdeskUrl,'_blank','noopener'\)/);
+  assert.match(ui, /window\.open\(u,'_blank','noopener'\)/); // [F10 s2.3] compression added before open
 });
 
 test('F9o gates: launch-gates enforce the ladder', () => {

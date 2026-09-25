@@ -45,7 +45,7 @@ function page(overrides = {}) {
   };
   const fetch = async (url, options) => {
     requests.push({ url, options });
-    if (url.includes('/api/config')) return { ok: true, json: async () => ({ creds: { fqdn, user: 'rdpuser', ip: '100.64.0.1' } }) };
+    if (url.includes('/api/config')) return { ok: true, json: async () => ({ creds: { fqdn, user: 'rdpuser', ip: '100.64.0.1', ...(overrides.__configCreds || {}) } }) };
     if (url.includes('/api/native-status')) return { ok: true, json: async () => status };
     if (url.includes('/api/rdp-token')) return { ok: true, json: async () => ({ rid, ttl: 60 }) };
     return { ok: true, json: async () => ({ sha: 'sha' }) };
@@ -59,7 +59,7 @@ function page(overrides = {}) {
     document, window, location, localStorage, fetch, URL, setInterval: fn => intervals.push(fn),
     setTimeout() {}, console
   }, { filename: 'ui-native.js' });
-  return { node, values, requests, status, opens, location, intervals };
+  return { node, values, requests, status, opens, location, intervals, window };
 }
 
 async function refresh(view) {
@@ -108,7 +108,8 @@ test('ephemeral: only web desktop opens; missing or unsafe URL disables it', asy
   assert.equal(view.node('autoLoginNative').disabled, true);
   assert.equal(view.node('btnWebDesk').disabled, false);
   view.node('btnWebDesk').onclick();
-  assert.equal(view.opens[0][0], view.status.webdeskUrl);
+  // [F10 s2.3] noVNC opens with compression=6 appended client-side.
+  assert.equal(view.opens[0][0], view.status.webdeskUrl + '&compression=6');
   assert.equal(view.opens[0][2], 'noopener');
   const absent = page({ hostKind: 'ephemeral', reasonsDisabled: [], webdeskUrl: '', webdeskReason: 'vnc-pass-missing' });
   await refresh(absent);
@@ -118,4 +119,38 @@ test('ephemeral: only web desktop opens; missing or unsafe URL disables it', asy
   await refresh(unsafe);
   assert.equal(unsafe.node('btnWebDesk').disabled, true);
   assert.notEqual(unsafe.node('nrReady').textContent, 'WEB DESKTOP ready');
+});
+
+test('F10 s2: RDP logon age anchors at first non-null; relay shows advisory', async () => {
+  const view = page({ rdpLogonAgeSec: 42, pingMs: 12.3, pingPath: 'relay' });
+  await refresh(view);
+  assert.equal(view.window.__rdpAgeAnchor.ageSec, 42);
+  assert.equal(typeof view.window.__rdpAgeAnchor.wallMs, 'number');
+  assert.equal(view.window.__srvPing.ms, 12.3);
+  assert.equal(view.window.__srvPing.path, 'relay');
+  assert.equal(view.node('pingRelayRow').style.display, '',
+    'relay path must show the UDP 41641 advisory');
+  const direct = page({ rdpLogonAgeSec: 5, pingMs: 7, pingPath: 'direct' });
+  await refresh(direct);
+  assert.equal(direct.window.__srvPing.path, 'direct');
+  assert.equal(direct.node('pingRelayRow').style.display, 'none');
+  const none = page({ rdpLogonAgeSec: null, pingMs: null, pingPath: '' });
+  await refresh(none);
+  assert.equal(none.window.__rdpAgeAnchor, undefined,
+    'no anchor until the first non-null rdpLogonAgeSec (row stays --:--:--)');
+});
+
+test('F10 s3: KEYS rows show masked last-4 only; full values stay in JS memory', async () => {
+  const view = page({ __configCreds: { pass: 'AbcSecret1234', vncPass: 'VncSecret5678' } });
+  await refresh(view);
+  const win = view.node('keysWinVal').textContent;
+  const vnc = view.node('keysVncVal').textContent;
+  assert.match(win, /rdpuser/);
+  assert.match(win, /\u2022\u2022\u2022\u20221234/);
+  assert.match(vnc, /\u2022\u2022\u2022\u20225678/);
+  assert.ok(!win.includes('AbcSecret1234'), 'full RDP password must never reach the DOM');
+  assert.ok(!vnc.includes('VncSecret5678'), 'full VNC password must never reach the DOM');
+  assert.equal(view.window.__credStore.pass, 'AbcSecret1234',
+    'copy buttons read the in-memory store, not the DOM');
+  assert.equal(view.window.__credStore.vnc, 'VncSecret5678');
 });

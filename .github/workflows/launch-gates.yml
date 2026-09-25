@@ -11,10 +11,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if grep -E -n 'powershell|-ExecutionPolicy' payloads/ui.html; then
-            echo 'ui.html still contains a script-host launch' >&2
-            exit 1
-          fi
+          # [F10 s1] no script host anywhere the user double-clicks or the
+          # page fires: ui.html + the C# launcher source + install.cmd.
+          for f in payloads/ui.html payloads/ghrdp-rdp-launcher.cs payloads/install.cmd; do
+            if grep -E -n 'powershell|-ExecutionPolicy' "$f"; then
+              echo "$f still contains a script-host launch" >&2
+              exit 1
+            fi
+          done
           if grep -E -n 'dnsName = \$ip|dnsName = \[string\]\$ip' .github/workflows/main.yml; then
             echo 'dnsName assigned from an IP' >&2
             exit 1
@@ -397,6 +401,73 @@ jobs:
             echo "F9k guard count ($guards) != ghrdp-lib dot-source count ($dotsrc)" >&2
             exit 1
           fi
+      - name: F10 PS-free redirect + telemetry + creds + policy gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          # s1: the PS-free redirect contract must exist and stay credential-free.
+          grep -q 'ghrdp://rdp?' payloads/ui.html
+          grep -q '\[WINDOWS AUTO-LOGIN\]' payloads/ui.html
+          grep -q 'winAutoInstall' payloads/ui.html
+          grep -q 'screen mode id:i:2' payloads/ghrdp-rdp-launcher.cs
+          grep -q 'drivestoredirect:s:\*' payloads/ghrdp-rdp-launcher.cs
+          grep -q 'HKCU\\Software\\Classes\\ghrdp' payloads/install.cmd
+          grep -q 'csc.exe' payloads/install.cmd
+          if grep -E -n 'Password:s:|passwordhash|/pass:|desktopwidth:(s|i):|desktopheight:(s|i):' payloads/ghrdp-rdp-launcher.cs; then
+            echo 'launcher .rdp template carries a password/hash or fixed desktop size' >&2
+            exit 1
+          fi
+          if grep -E -n 'pass=|password=|&hash' payloads/ui.html | grep -i 'ghrdp://'; then
+            echo 'ui.html puts credential material in a ghrdp:// URI' >&2
+            exit 1
+          fi
+          # s2: logon age + real ping telemetry must flow server -> UI.
+          grep -q 'rdpLogonAgeSec' payloads/ghrdp-server.ps1
+          grep -q 'rdpLogonAgeSec' payloads/ui.html
+          grep -q 'LogonType = 10' payloads/ghrdp-server.ps1
+          grep -q 'pingMs' payloads/ghrdp-server.ps1
+          grep -q 'pingPath' payloads/ghrdp-server.ps1
+          grep -q 'ping-probe' payloads/ghrdp-server.ps1
+          grep -q '__srvPing' payloads/ui.html
+          grep -q 'direct WireGuard not established - check client firewall UDP 41641' payloads/ui.html
+          # s3: creds block is dash-token-gated and stripped everywhere else.
+          grep -q "vncPass" payloads/ghrdp-server.ps1
+          grep -q "'rdpPass','mirrorKey'" payloads/ghrdp-server.ps1
+          # s4: Edge extension IDs resolved at build time, never hardcoded;
+          # managed bookmarks carry the mandated set and no piracy indexes.
+          if grep -E -n 'cjpalhdlnbpafiamejdnhcphjbkeiagm|eimadodcbgplccgdhkkjjnmdhgjopbcm' .github/workflows/main.yml; then
+            echo 'main.yml hardcodes a store extension ID from memory' >&2
+            exit 1
+          fi
+          if grep -E -in 'fmhy|megathread|torrent' .github/workflows/main.yml; then
+            echo 'main.yml matches a forbidden bookmark/piracy string' >&2
+            exit 1
+          fi
+          grep -q 'Provision-BrowserPolicy.ps1' .github/workflows/main.yml
+          grep -q 'docs/AUTOLOGIN.md' payloads/Provision-BrowserPolicy.ps1
+          grep -q 'ManagedBookmarks' payloads/Provision-BrowserPolicy.ps1
+          grep -q 'login.tailscale.com/admin/dns' payloads/Provision-BrowserPolicy.ps1
+          grep -q 'Get-StoreExtensionId' payloads/Provision-BrowserPolicy.ps1
+          if grep -E -n 'cjpalhdlnbpafiamejdnhcphjbkeiagm|eimadodcbgplccgdhkkjjnmdhgjopbcm' payloads/Provision-BrowserPolicy.ps1; then
+            echo 'Provision-BrowserPolicy.ps1 hardcodes a store extension ID from memory' >&2
+            exit 1
+          fi
+          # s5: setup-time caches must be wired (TightVNC MSI, noVNC, cargo, pip).
+          for tok in 'tightvnc-2.8.85-gpl-setup-64bit.msi' 'novnc' 'ghrdp-rust/target' 'pip-cache'; do
+            grep -q "$tok" .github/workflows/main.yml
+          done
+          grep -q 'actions/cache@v4' .github/workflows/main.yml
+          # s5: cert-bind overlaps webdesk (bg + join) and Pages deploy skips
+          # unchanged docs.
+          grep -q 'cert-bind-bg.ps1' .github/workflows/main.yml
+          grep -q 'Wait for background cert bind' .github/workflows/main.yml
+          grep -q 'pages deploy skipped - docs unchanged' .github/workflows/main.yml
+          cjoin=$(grep -n 'Wait for background cert bind (event-wait)' .github/workflows/main.yml | head -1 | cut -d: -f1)
+          cdash=$(grep -n 'Start Mission Control dashboard EARLY' .github/workflows/main.yml | head -1 | cut -d: -f1)
+          if [ -z "$cjoin" ] || [ -z "$cdash" ] || [ "$cjoin" -ge "$cdash" ]; then
+            echo "cert-bind join must precede the dashboard start (join=$cjoin dash=$cdash)" >&2
+            exit 1
+          fi
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:
@@ -406,7 +477,7 @@ jobs:
       - name: Parse native PowerShell scripts
         shell: pwsh
         run: |
-          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1')) {
+          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/Provision-BrowserPolicy.ps1')) {
               $errors = $null
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
               if ($errors) { throw "$file has $($errors.Count) PowerShell syntax error(s): $($errors[0].Message)" }
