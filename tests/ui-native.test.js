@@ -109,7 +109,11 @@ test('ephemeral: only web desktop opens; missing or unsafe URL disables it', asy
   assert.equal(view.node('btnWebDesk').disabled, false);
   view.node('btnWebDesk').onclick();
   assert.equal(view.opens[0][0], view.status.webdeskUrl);
-  assert.equal(view.opens[0][2], 'noopener');
+  // [F11 §2.2] NO noopener: the cred shim must reach its opener window, so the
+  // popup opens as a named window ('ghrdp-webdesk') and the password travels
+  // via postMessage with an exact targetOrigin (never in the URL).
+  assert.equal(view.opens[0][1], 'ghrdp-webdesk');
+  assert.equal(view.opens[0][2], undefined);
   const absent = page({ hostKind: 'ephemeral', reasonsDisabled: [], webdeskUrl: '', webdeskReason: 'vnc-pass-missing' });
   await refresh(absent);
   assert.equal(absent.node('btnWebDesk').disabled, true);

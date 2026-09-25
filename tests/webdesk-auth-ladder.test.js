@@ -124,7 +124,9 @@ test('F9o UI: VNC auth mode row + degraded advisory + new detail text', () => {
   // a non-root path passes through untouched.
   assert.match(ui, /var openUrl=webdeskUrl;/);
   assert.match(ui, /u2\.search='autoconnect=true&compression=6'/);
-  assert.match(ui, /window\.open\(openUrl,'_blank','noopener'\)/);
+  // [F11 §2.2] opens a NAMED window (no noopener - the cred shim needs its
+  // opener); the password is delivered by postMessage, never the URL.
+  assert.match(ui, /window\.open\(openUrl,'ghrdp-webdesk'\)/);
 });
 
 test('F9o gates: launch-gates enforce the ladder', () => {

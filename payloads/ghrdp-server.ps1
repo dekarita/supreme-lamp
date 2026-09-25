@@ -615,6 +615,18 @@ function Invoke-ClientRequest {
                     }
                 }
             } catch { }
+            # [F11 §3] USAGE TIMER (replaces logon age in the UI): live feed
+            # from the rdp-usage loop (rdp-usage.json), config.json is only the
+            # cross-re-dispatch persistence fallback.
+            $rdpUsageSec = $null; $rdpUsageActive = $false
+            try {
+                $ruFile = Join-Path $Root 'rdp-usage.json'
+                if (Test-Path -LiteralPath $ruFile) {
+                    $uj = [System.IO.File]::ReadAllText($ruFile) | ConvertFrom-Json
+                    if ($uj) { $rdpUsageSec = [int]$uj.sec; $rdpUsageActive = [bool]$uj.active }
+                }
+                elseif ($cfgN -and $cfgN.PSObject.Properties['rdpUsageSec']) { $rdpUsageSec = [int]$cfgN.rdpUsageSec }
+            } catch { }
             $ns = [ordered]@{
                 fqdn = $fqdnN
                 hostKind = $hostKind
@@ -631,6 +643,8 @@ function Invoke-ClientRequest {
                 tsAuthAdminUrl = $tsAdmin
                 vpsPending = $vpsPending
                 rdpLogonAgeSec = $rdpLogonAgeSec
+                rdpUsageSec = $rdpUsageSec
+                rdpUsageActive = $rdpUsageActive
                 pingMs = $rdpPingMs
                 pingPath = $rdpPingPath
                 pingTarget = $rdpPingTarget
@@ -986,7 +1000,7 @@ document.getElementById('bCopy').onclick=function(){navigator.clipboard.writeTex
                               $wrap = 'param($sp,$op,$ep2)' + "`r`n" + '$p = Start-Process -FilePath ''powershell.exe'' -ArgumentList @(''-NoProfile'',''-ExecutionPolicy'',''Bypass'',''-File'',([char]34 + $sp + [char]34)) -RedirectStandardOutput $op -RedirectStandardError $ep2 -NoNewWindow -Wait -PassThru' + "`r`n" + 'exit $p.ExitCode'
                               [System.IO.File]::WriteAllText($wrapPath, $wrap)
                               try {
-                                  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -File "' + $wrapPath + '" "' + $tscript + '" "' + $toutF + '" "' + $terrF + '"')
+                                  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $wrapPath + '" "' + $tscript + '" "' + $toutF + '" "' + $terrF + '"')
                                   $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(1)
                                   $principal = New-ScheduledTaskPrincipal -UserId $activeUser -LogonType Interactive -RunLevel Highest
                                   $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::FromMilliseconds($timeoutMs))
@@ -1387,6 +1401,79 @@ while ($true) {
 '@
 [System.IO.File]::WriteAllText((Join-Path $Root 'rdp-ping.ps1'), $rdpPingScript, $script:NoBom)
 try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $Root 'rdp-ping.ps1') -WindowStyle Hidden } catch { }
+# [F11 §3] rdp-usage loop: accumulates ACTIVE seconds only while (a) an RDP
+# LogonType-10 session is connected (LogonType-10 present AND an rdp-tcp#
+# session is Active - freezes on disconnect/logoff) OR (b) websockify has >=1
+# established client on 7333. Frozen the moment both drop; resumes on either.
+# Persists the accumulator into config.json (rdpUsageSec) so a same-host
+# re-dispatch continues; rdp-usage.json is the live feed for /api/native-status.
+# Single-instance via a Global mutex so a server restart never double-counts.
+$rdpUsageScript = @'
+$ErrorActionPreference = 'Continue'
+$out = 'C:\ghrdp\rdp-usage.json'
+$cfgPath = 'C:\ghrdp\config.json'
+$mtx = $null
+try { $mtx = New-Object System.Threading.Mutex($false, 'Global\GhrdpUsageLoop') } catch { }
+if ($mtx) {
+  $owned = $false
+  # AbandonedMutexException (previous loop was killed) still grants ownership.
+  try { $owned = $mtx.WaitOne(0) } catch { $owned = $true }
+  if (-not $owned) { try { $mtx.Dispose() } catch { }; exit 0 }
+}
+$secF = 0.0
+try {
+  if (Test-Path -LiteralPath $cfgPath) {
+    $c0 = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json
+    if ($c0 -and $c0.PSObject.Properties['rdpUsageSec'] -and $null -ne $c0.rdpUsageSec) { $secF = [double]$c0.rdpUsageSec }
+  }
+} catch { }
+function Test-GhrdpActive {
+  $a = $false
+  try {
+    $ls = Get-CimInstance -ClassName Win32_LogonSession -Filter 'LogonType=10' -ErrorAction Stop
+    if ($ls) {
+      $q = & qwinsta.exe 2>$null
+      foreach ($l in @($q)) { if ($l -match 'rdp-tcp#\d+' -and $l -match '\bActive\b') { $a = $true; break } }
+    }
+  } catch { }
+  if (-not $a) {
+    try { $e = @(Get-NetTCPConnection -LocalPort 7333 -State Established -ErrorAction SilentlyContinue); if ($e.Count -ge 1) { $a = $true } } catch { }
+  }
+  return $a
+}
+$last = Get-Date
+$lastActive = $false
+$lastPersist = [datetime]::MinValue
+while ($true) {
+  $now = Get-Date
+  $active = $false
+  try { $active = [bool](Test-GhrdpActive) } catch { }
+  $dt = ($now - $last).TotalSeconds
+  if ($dt -gt 0 -and $dt -lt 120) { if ($active) { $secF += $dt } }
+  $last = $now
+  # persist to config on state change + every tick while active (freeze is
+  # already exact in memory; config is only the cross-re-dispatch store)
+  if (($active -ne $lastActive) -or ($active -and (($now - $lastPersist).TotalSeconds -ge 5))) {
+    try {
+      $c = $null
+      try { if (Test-Path -LiteralPath $cfgPath) { $c = Get-Content -LiteralPath $cfgPath -Raw | ConvertFrom-Json } } catch { }
+      if (-not $c) { $c = New-Object PSObject }
+      $iv = [int][Math]::Floor($secF)
+      if ($c.PSObject.Properties['rdpUsageSec']) { $c.rdpUsageSec = $iv } else { $c | Add-Member -NotePropertyName rdpUsageSec -NotePropertyValue $iv -Force }
+      $tmp = $cfgPath + '.usage.tmp'
+      [System.IO.File]::WriteAllText($tmp, ($c | ConvertTo-Json -Depth 20 -Compress))
+      Move-Item -LiteralPath $tmp -Destination $cfgPath -Force
+      $lastPersist = $now
+    } catch { }
+  }
+  $lastActive = $active
+  $obj = @{ ts = (Get-Date).ToUniversalTime().ToString('o'); sec = [int][Math]::Floor($secF); active = $active }
+  try { [System.IO.File]::WriteAllText($out, ($obj | ConvertTo-Json -Compress)) } catch { }
+  Start-Sleep -Seconds 5
+}
+'@
+[System.IO.File]::WriteAllText((Join-Path $Root 'rdp-usage.ps1'), $rdpUsageScript, $script:NoBom)
+try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $Root 'rdp-usage.ps1') -WindowStyle Hidden } catch { }
 $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse($Bind), $Port)
 try { $listener.Start() } catch {
     try { [System.IO.File]::WriteAllText($script:OkFile, 'LISTEN_FAIL: ' + $_.Exception.Message, $script:NoBom) } catch { }

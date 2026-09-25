@@ -104,7 +104,9 @@ test('F10-4 workflow: gated vncPass stamp, latency keys, live ext resolution, cl
   assert.match(wf, /docs\/AUTOLOGIN\.md/);
   assert.match(wf, /login\.tailscale\.com\/admin\/dns/);
   assert.match(wf, /actions\/cache@v4/);
-  assert.ok(!/fmhy|megathread|torrent/i.test(wf), 'no piracy-index strings');
+  // [F11 §5.2] qBittorrent is now a required plain app; its product name
+  // legitimately contains 'torrent' - strip it before the piracy-index check.
+  assert.ok(!/fmhy|megathread|torrent/i.test(wf.replace(/qbittorrent/gi, '')), 'no piracy-index strings');
 });
 
 test('F10-16 server: last-4 mask is computed numerically, loopback via static API', () => {

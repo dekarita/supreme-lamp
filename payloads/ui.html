@@ -297,10 +297,10 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
        shows last-4 masks, the copy button copies the real value. They are
        never placed in URLs, logs, summaries, or artifacts. -->
   <div class="row"><span class="k">Windows password</span><span class="v" id="credWinPass">(host-only)</span><button onclick="copyById('credWinPass',this)">copy</button><span class="note">masked (last 4); served only to your token-authenticated dashboard</span></div>
-  <div class="row"><span class="k">VNC password</span><span class="v" id="credVncPass">(host-only)</span><button onclick="copyById('credVncPass',this)">copy</button><span class="note">the VNC_PASS secret set at dispatch; masked (last 4), token-gated</span></div>
+  <div class="row"><span class="k">VNC password</span><span class="v" id="credVncPass">(host-only)</span><button onclick="copyById('credVncPass',this);window.rememberVncPassFromKey&&window.rememberVncPassFromKey()">copy</button><span class="note">the VNC_PASS secret set at dispatch; masked (last 4), token-gated - copying it also remembers it in THIS browser only (localStorage) so WEB DESKTOP can auto-fill</span></div>
   <div class="row"><span class="k">Connectivity</span><span class="timer" id="connRtt" style="font-size:18px">-- ms</span><span class="badge" id="connBadge">path: --</span><span class="badge" id="connFps">-- fps</span><span class="badge" id="connJit">jit -- ms</span><canvas id="connSpark" width="220" height="34" style="width:220px;height:34px"></canvas></div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
-  <div class="row"><span class="k">RDP logon age</span><span class="timer" id="timerRdpAge">--:--:--</span><span class="badge" id="c2Srv">srv --</span></div>
+  <div class="row"><span class="k">RDP USAGE</span><span class="timer" id="timerRdpAge">--:--:--</span><span class="note">active time only - freezes while disconnected (server-side accumulator)</span></div>
   <div class="row" id="connUdpAdv" style="display:none"><span class="k">Latency</span><span class="v" id="connUdpAdvText" style="color:#f5d9b7">direct WireGuard not established - check client firewall UDP 41641</span></div>
   <div class="row"><span class="k">Remaining (5h30 session)</span><span class="timer" id="timerRemaining">--:--:--</span></div>
   <div class="banner ended" id="endedBanner" style="display:none;">SESSION EXPIRED - GitHub hard cap reached. Runner termination imminent.</div>
@@ -356,7 +356,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     </div>
     <span class="note">tailnet-only HTTP over WireGuard + VNC password; nothing installed on client. NLA on the Windows listener stays on.</span>
   </div>
-  <div class="row"><span class="k">Web desktop URL</span><span class="v" id="webdeskUrlVal">(not set)</span><a href="javascript:void(0)" onclick="copyById('webdeskUrlVal',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">VNC password = the VNC_PASS secret set at dispatch; this page never stores or shows it.</span></div>
+  <div class="row"><span class="k">Web desktop URL</span><span class="v" id="webdeskUrlVal">(not set)</span><a href="javascript:void(0)" onclick="copyById('webdeskUrlVal',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">VNC password = the VNC_PASS secret set at dispatch; never placed in this URL - it is remembered in this browser's localStorage only (after you copy the KEYS row or type it once in noVNC) and delivered to noVNC via postMessage</span></div>
   <div class="row"><span class="k">VNC auth mode</span><span class="v" id="webdeskAuthVal">(unknown)</span></div>
   <div class="row" id="webdeskAuthAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" id="webdeskAuthAdvisoryText" style="color:#f5d9b7"></span></div>
   <div class="note" id="webdeskVncGuidance" style="display:none;color:#f5d9b7;margin:4px 0 10px 130px">
@@ -706,7 +706,7 @@ setInterval(tickTimers,1000);tickTimers();
 (function(){
 var I18N={
 'Runner elapsed':'ධාවක ගත වූ කාලය',
-'RDP logon age':'RDP පිවිසුම් වයස',
+'RDP USAGE':'RDP භාවිත කාලය',
 'Remaining (5h30 session)':'ඉතිරි (පැය 5:30 සැසිය)',
 'Connection':'සම්බන්ධතාවය',
 'Tailscale IP':'Tailscale IP',
@@ -783,7 +783,7 @@ setInterval(function(){
 (function(){
 function cr(id){return document.getElementById(id)}
 ['connRtt','connVia','connBadge','connFps','connJit','connSpark'].forEach(function(id){var e=cr(id);if(e){var r=e.closest('.row');if(r)r.style.display='none';}});
-var mstsc=cr('mstscVal');if(mstsc){var row=mstsc.closest('.row');if(row){var nr=document.createElement('div');nr.className='row';nr.innerHTML='<span class="k">Connectivity</span><span class="timer" id="c2Rtt" style="font-size:20px">-- ms</span><span class="badge" id="c2Via">path: --</span><span class="badge" id="c2Fps">-- fps</span><span class="badge" id="c2Jit">jit -- ms</span><canvas id="c2Spark" width="220" height="34" style="width:220px;height:34px"></canvas>';row.insertAdjacentElement('afterend',nr);}}
+var mstsc=cr('mstscVal');if(mstsc){var row=mstsc.closest('.row');if(row){var nr=document.createElement('div');nr.className='row';nr.innerHTML='<span class="k">Connectivity</span><span class="timer" id="c2Rtt" style="font-size:20px">-- ms</span><span class="badge" id="c2Via">path: --</span><span class="badge" id="c2Fps">-- fps</span><span class="badge" id="c2Jit">jit -- ms</span><span class="badge" id="c2Srv">srv --</span><canvas id="c2Spark" width="220" height="34" style="width:220px;height:34px"></canvas>';row.insertAdjacentElement('afterend',nr);}}
 var frames=0,fps=0,lastT=performance.now();
 function raf(t){frames++;if(t-lastT>=1000){fps=Math.round(frames*1000/(t-lastT));frames=0;lastT=t;}requestAnimationFrame(raf);}
 requestAnimationFrame(raf);
@@ -924,16 +924,48 @@ if(confirmBox)confirmBox.onchange=function(){
  syncNativeButton();nativeStatus();
 };
 var BUILD_SHA='__BUILD_SHA__';
+// [F11 §2.2] VNC PASSWORD MEMORY - client-side only (localStorage +
+// postMessage; never in URLs, query strings, logs, or the server). The shim
+// in the served noVNC copy (payloads/ghrdp-cred-shim.js) receives the value
+// with an EXACT targetOrigin: the webdesk origin opened below; the user's
+// one-time typed password (or a copy from the gated KEYS row) is stored here.
+var VNC_STORE_KEY='ghrdp:vncPass';
+function vncPassGet(){try{return localStorage.getItem(VNC_STORE_KEY)||'';}catch(_){return '';}}
+function vncPassSet(v){try{if(v)localStorage.setItem(VNC_STORE_KEY,v);}catch(_){}}
+window.__ghrdpVnc={origin:'',win:null};
+function sendVncPassNow(){
+ try{
+  var st=window.__ghrdpVnc;var pass=vncPassGet();
+  if(!pass||!st.origin||!st.win||st.win.closed)return;
+  // exact targetOrigin - the value is only ever sent to the webdesk origin
+  st.win.postMessage({type:'ghrdp-vnc-pass',pass:pass},st.origin);
+ }catch(_){}
+}
+window.addEventListener('message',function(ev){
+ try{
+  var st=window.__ghrdpVnc;
+  if(!st.origin||ev.origin!==st.origin)return;
+  var d=ev.data||{};
+  if(d.type==='ghrdp-cred-shim-ready'){sendVncPassNow();}
+  else if(d.type==='ghrdp-vnc-pass-store'&&typeof d.pass==='string'){vncPassSet(d.pass);}
+ }catch(_){}
+});
+window.rememberVncPassFromKey=function(){
+ try{var el=document.getElementById('credVncPass');var v=el?el.getAttribute('data-full'):'';if(v)vncPassSet(v);}catch(_){}
+};
 async function nativeStatus(){
  try{
   var key=getKey();
   var r=await fetch(apiBase()+'/api/native-status'+(key?('?key='+encodeURIComponent(key)):''),{cache:'no-store'});
   if(!r.ok)return;
   var s=await r.json();
-  // [F10-3 §2.1] RDP LOGON AGE: server samples the newest LogonType-10
-  // session; the row ticks locally from the first non-null sample (no more
-  // permanent --:--:-- once an RDP session exists).
+  // [F10-3 §2.1] legacy logon-age field (kept for F10 contract; the UI row
+  // now renders the F11 usage accumulator below).
   if(s&&s.rdpLogonAgeSec!=null){window.__rdpLogon={sec:Number(s.rdpLogonAgeSec)||0,at:Date.now()};}
+  // [F11 §3] RDP USAGE: server-side accumulator (ticks only while an RDP
+  // session is connected or a websockify client exists); mirror drift locally
+  // while active, stay frozen when the server reports inactive.
+  if(s&&s.rdpUsageSec!=null){window.__rdpUsage={sec:Number(s.rdpUsageSec)||0,active:!!s.rdpUsageActive,at:Date.now()};}
   // [F10-3 §2.2] server-side tailscale ping to THIS client (dash-token source
   // peer): shows ms + direct|relay; relay raises the UDP-41641 advisory.
   var sp=document.getElementById('c2Srv');
@@ -1176,8 +1208,18 @@ async function nativeStatus(){
   if(wb){
    if(webdeskUrl){ // [F10-3 §2.3] open noVNC with autoconnect + zlib-compressed stream (compression=6) for lower LAN-latency frames
     var openUrl=webdeskUrl;
-    try{var u2=new URL(webdeskUrl);if(!u2.pathname||u2.pathname==='/'){u2.pathname='/vnc.html';u2.search='autoconnect=true&compression=6';openUrl=u2.href;}}catch(_){}
-    wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){window.open(openUrl,'_blank','noopener');}; wb.title=openUrl;
+    try{var u2=new URL(webdeskUrl);if(!u2.pathname||u2.pathname==='/'){u2.pathname='/vnc.html';u2.search='autoconnect=true&compression=6';openUrl=u2.href;}window.__ghrdpVnc.origin=u2.origin;}catch(_){}
+    wb.disabled=false; wb.style.opacity=''; wb.style.cursor=''; wb.onclick=function(){
+      // [F11 §2.2] keep a window handle (NO noopener - the F11 cred shim must
+      // see its opener) and postMessage the remembered VNC password with the
+      // exact webdesk origin once the shim announces ready.
+      var win=null;
+      try{win=window.open(openUrl,'ghrdp-webdesk');}catch(_){}
+      window.__ghrdpVnc.win=win;
+      sendVncPassNow();
+      setTimeout(sendVncPassNow,600);
+      setTimeout(sendVncPassNow,1600);
+    }; wb.title=openUrl;
    }
    else { wb.disabled=true; wb.style.opacity='0.5'; wb.style.cursor='not-allowed'; wb.onclick=null; wb.title='web desktop not deployed: '+deskReason; }
   }
@@ -1271,15 +1313,16 @@ if(btn) btn.onclick=function(ev){
 </script>
 <script>
 (function(){
-// [F10-3 §2.1] LOGON AGE ticker: starts ticking from the FIRST non-null
-// server sample (window.__rdpLogon, set by nativeStatus); stays --:--:--
-// while no RDP session exists or the server has not sampled one yet.
+// [F11 §3] RDP USAGE ticker (replaces F10 logon age): mirrors the server
+// accumulator in hh:mm:ss. Local drift is added ONLY while the server says
+// active (rdpUsageActive); when both RDP and websockify clients drop, the
+// server freezes the accumulator and this display freezes with it.
 function fmt(sec){var h=Math.floor(sec/3600),m=Math.floor((sec%3600)/60),s=Math.floor(sec%60);
  return (h<10?'0':'')+h+':'+(m<10?'0':'')+m+':'+(s<10?'0':'')+s;}
 setInterval(function(){
  var el=document.getElementById('timerRdpAge');if(!el)return;
- var b=window.__rdpLogon;if(!b)return;
- el.textContent=fmt(b.sec+(Date.now()-b.at)/1000);
+ var b=window.__rdpUsage;if(!b)return;
+ el.textContent=fmt(Math.floor(b.active?b.sec+(Date.now()-b.at)/1000:b.sec));
 },1000);
 })();
 </script>
