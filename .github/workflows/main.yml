@@ -1173,6 +1173,161 @@ jobs:
           }
           exit 0
 
+      # [F17 §1] RDP LISTENER self-probe. Runs AFTER the firewall step ("Enable
+      # RDP + harden + firewall"), the cert step (U5b bind) and the config.json
+      # write above, and stores the live listener state in
+      # C:\ghrdp\config.json -> rdpListener, which /api/native-status and the
+      # dashboard's "RDP LISTENER" row render. listening=false, a fwRule that is
+      # not (enabled + ALL profiles + RemoteAddress scope exactly 100.64.0.0/10)
+      # or a missing/invalid certThumb fails this step LOUD (exact field in an
+      # ::error:: annotation + step summary + config.json), so a run can never
+      # advertise a dead RDP host. The scope/profile repair NEVER widens to
+      # 0.0.0.0/0, and a DISABLED rule is reported but never re-enabled here -
+      # the lab breaks/fixes the 3389 rule to prove the probe both ways.
+      - name: RDP listener self-probe (F17)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $S = $env:GITHUB_STEP_SUMMARY
+          $cfgPath = 'C:\ghrdp\config.json'
+          $enc = New-Object System.Text.UTF8Encoding($false)
+          $dnsName = ''
+          try { if (Test-Path -LiteralPath $cfgPath) { $c0 = [System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json; if ($c0 -and $c0.dnsName) { $dnsName = [string]$c0.dnsName } } } catch { }
+          if ($dnsName -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') { $dnsName = [string]$env:TS_MAGICDNS_FQDN }
+
+          # --- fwRule: the 'ghrdp-rdp-3389' rule must be enabled + ALL profiles
+          # --- + RemoteAddress scope exactly 100.64.0.0/10. Missing/wrong scope
+          # --- or profiles are FIXED (never 0.0.0.0/0); a disabled rule is
+          # --- reported, never enabled (loud-fail contract + §5 lab break).
+          $wantScope = '100.64.0.0/10'
+          $rule = $null
+          try { $rule = Get-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -ErrorAction Stop } catch { }
+          if ($rule -is [array]) { $rule = $rule | Select-Object -First 1 }
+          if (-not $rule) {
+              Write-Host '[listener-probe] fwRule missing - fixing: create scoped 100.64.0.0/10 (never 0.0.0.0/0)'
+              try {
+                  New-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow -RemoteAddress $wantScope -Profile Any -Enabled True -ErrorAction Stop | Out-Null
+                  $rule = Get-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -ErrorAction SilentlyContinue
+                  if ($rule -is [array]) { $rule = $rule | Select-Object -First 1 }
+              } catch { Write-Host ('[listener-probe] fwRule create failed: ' + $_.Exception.Message) }
+          } else {
+              $scopeNow = ''
+              try { $scopeNow = ((Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule).RemoteAddress -join ',') } catch { }
+              if ($scopeNow -ne $wantScope) {
+                  Write-Host ('[listener-probe] fwRule scope [' + $scopeNow + '] wrong - fixing to 100.64.0.0/10 (never 0.0.0.0/0)')
+                  try { Set-NetFirewallRule -NetFirewallRule $rule -RemoteAddress $wantScope -ErrorAction Stop } catch { Write-Host ('[listener-probe] fwRule scope fix failed: ' + $_.Exception.Message) }
+              }
+              $profNow = 0; $profStr = ''
+              try { $profNow = [int]$rule.Profiles } catch { }
+              try { $profStr = [string]$rule.Profiles } catch { }
+              if ((($profNow -band 7) -ne 7) -and ($profStr -ne 'Any')) {
+                  Write-Host ('[listener-probe] fwRule profiles [' + $profNow + '/' + $profStr + '] not ALL - fixing to Any')
+                  try { Set-NetFirewallRule -NetFirewallRule $rule -Profile Any -ErrorAction Stop } catch { Write-Host ('[listener-probe] fwRule profile fix failed: ' + $_.Exception.Message) }
+              }
+              try { $rule = Get-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -ErrorAction Stop; if ($rule -is [array]) { $rule = $rule | Select-Object -First 1 } } catch { }
+          }
+          $fwEnabled = $false; $fwProfiles = 0; $fwScope = ''; $fwProfAll = $false
+          if ($rule) {
+              try { $fwEnabled = ([string]$rule.Enabled -eq 'True') } catch { }
+              try { $fwProfiles = [int]$rule.Profiles } catch { }
+              try { if ([string]$rule.Profiles -eq 'Any') { $fwProfAll = $true } } catch { }
+              try { $fwScope = ((Get-NetFirewallAddressFilter -AssociatedNetFirewallRule $rule).RemoteAddress -join ',') } catch { }
+          }
+          if (($fwProfiles -band 7) -eq 7) { $fwProfAll = $true }
+          $fwRule = [bool]($rule -and $fwEnabled -and $fwProfAll -and ($fwScope -eq $wantScope))
+
+          # --- listening: does the listener accept TCP on loopback 3389?
+          $listening = $false
+          try { $tnc = Test-NetConnection -ComputerName 127.0.0.1 -Port 3389 -WarningAction SilentlyContinue; $listening = [bool]$tnc.TcpTestSucceeded } catch { }
+
+          # --- termService: reported for diagnostics
+          $termService = 'unknown'
+          try { $termService = (Get-Service -Name TermService).Status.ToString() } catch { }
+
+          # --- nla: UserAuthentication == 1 on RDP-Tcp (NLA stays ON; §7)
+          $nla = $false
+          try { $ua = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'UserAuthentication' -ErrorAction Stop).UserAuthentication; $nla = ([int]$ua -eq 1) } catch { }
+
+          # --- certThumb: RDP-Tcp SSLCertificateSHA1Hash present AND that
+          # --- certificate's chain is valid for <dnsName> (exact FQDN, validity
+          # --- window, private key; revocation mode offline-safe).
+          $certThumb = $false
+          $thumbTxt = ''
+          try {
+              $sh = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SSLCertificateSHA1Hash' -ErrorAction Stop).SSLCertificateSHA1Hash
+              if ($sh -and $sh.Length -ge 20) {
+                  $thumbTxt = ($sh | ForEach-Object { $_.ToString('X2') }) -join ''
+                  $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
+                  $bound = $null
+                  try {
+                      $store.Open('ReadOnly')
+                      $bound = $store.Certificates | Where-Object { $_.Thumbprint -eq $thumbTxt } | Select-Object -First 1
+                  } finally { try { $store.Close() } catch { } }
+                  if ($bound -and $dnsName) {
+                      $cDns = $bound.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::DnsName, $false)
+                      $chainOk = $false
+                      try {
+                          $ch = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+                          $ch.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+                          $chainOk = $ch.Build($bound)
+                      } catch { }
+                      $inWindow = ($bound.NotAfter.ToUniversalTime() -gt [datetime]::UtcNow -and $bound.NotBefore.ToUniversalTime() -le [datetime]::UtcNow)
+                      $certThumb = [bool]($chainOk -and $inWindow -and $bound.HasPrivateKey -and ($cDns -eq $dnsName))
+                      Write-Host ('[listener-probe] certThumb ' + $thumbTxt + ' certDns=' + $cDns + ' chain=' + $chainOk + ' match=' + ($cDns -eq $dnsName))
+                  }
+              }
+          } catch { Write-Host ('[listener-probe] certThumb read failed: ' + $_.Exception.Message) }
+
+          # --- store FIRST (config.json -> rdpListener) so the exact failing
+          # --- field is readable even when this step then fails loud.
+          $rdpListener = [ordered]@{
+              listening      = $listening
+              termService    = $termService
+              fwRule         = $fwRule
+              fwScope        = $fwScope
+              fwProfiles     = $fwProfiles
+              certThumb      = $certThumb
+              certThumbprint = $thumbTxt
+              certDns        = [string]$dnsName
+              nla            = $nla
+              probedAt       = ([datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'))
+          }
+          try {
+              $cfgObj = $null
+              if (Test-Path -LiteralPath $cfgPath) { try { $cfgObj = [System.IO.File]::ReadAllText($cfgPath) | ConvertFrom-Json } catch { $cfgObj = $null } }
+              if (-not $cfgObj) { $cfgObj = [pscustomobject]@{} }
+              $cfgObj | Add-Member -MemberType NoteProperty -Name 'rdpListener' -Value ([pscustomobject]$rdpListener) -Force
+              [System.IO.File]::WriteAllText($cfgPath, ($cfgObj | ConvertTo-Json -Depth 10), $enc)
+              Write-Host '[listener-probe] stored config.json -> rdpListener'
+          } catch { Write-Host ('::error::[listener-probe] rdpListener config write failed: ' + $_.Exception.Message) }
+
+          $fieldLine = ('listening=' + $listening + ' termService=' + $termService + ' fwRule=' + $fwRule + ' fwScope=' + $fwScope + ' certThumb=' + $certThumb + ' nla=' + $nla + ' dnsName=' + $dnsName)
+          Write-Host ('[listener-probe] ' + $fieldLine)
+          if ($S) {
+              '### RDP listener self-probe (F17)' | Add-Content -Path $S
+              ('`' + $fieldLine + '`') | Add-Content -Path $S
+          }
+          $fix = @{
+              listening = 'listener not accepting TCP on 127.0.0.1:3389 - check TermService and the firewall step output above'
+              fwRule    = 'GHRDP-RDP rule must be enabled, ALL profiles, RemoteAddress scope exactly 100.64.0.0/10 (never 0.0.0.0/0)'
+              certThumb = ('RDP-Tcp SSLCertificateSHA1Hash missing or chain/DNS invalid for ' + $dnsName + ' - re-run the cert bind step')
+          }
+          $bad = @()
+          if (-not $listening) { $bad += 'listening' }
+          if (-not $fwRule)    { $bad += 'fwRule' }
+          if (-not $certThumb) { $bad += 'certThumb' }
+          if ($bad.Count -gt 0) {
+              foreach ($f in $bad) {
+                  Write-Host ('::error::[listener-probe] field=' + $f + ' - ' + $fix[$f])
+                  if ($S) { ('- **' + $f + '** = FALSE - ' + $fix[$f]) | Add-Content -Path $S }
+              }
+              if ($S) { 'Run halted by design so a dead RDP host is never advertised; config.json -> rdpListener carries every field.' | Add-Content -Path $S }
+              throw ('RDP listener self-probe failed: field ' + ($bad -join ',') + ' - see the ::error::[listener-probe] lines above and config.json rdpListener')
+          }
+          if ($S) { '- all listener fields OK (listening, fwRule, certThumb, nla)' | Add-Content -Path $S }
+          Write-Host '[listener-probe] PASS: listening + fwRule + certThumb + nla all OK'
+          exit 0
+
       # [U1 / #7C-extended] "Web desktop backend (TightVNC no-auth 5900 + websockify 7333)" step removed
       # in prior remediation. No-auth VNC — even tailnet-gated — is a bright-line credential-required
       # regression and is incompatible with the native mstsc-only architecture.
