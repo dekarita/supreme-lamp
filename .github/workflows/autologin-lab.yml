@@ -83,6 +83,7 @@ jobs:
           # the notice + launches ghrdp://check, and the launcher logs its dialog
           # BEFORE showing it (suppressed here by GHRDP_LAB_NOMSG; the physical
           # MessageBox stays PENDING-USER). No log => the exe never ran.
+          $csSrcA = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs'))
           $lLog = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.log'
           $lTxt = ''
           for ($i = 0; $i -lt 20 -and $lTxt -notmatch 'ghrdp launcher check'; $i++) {
@@ -91,7 +92,13 @@ jobs:
           }
           Write-Host '[A] launcher log (F15 fail-visible JSONL):'
           foreach ($l in ($lTxt -split "`r?`n")) { if ($l.Trim()) { Write-Host ('  ' + $l) } }
-          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', 'ghrdp-rdp-launcher 2.1.0.0', 'HKCU')) {
+          # [F19 §2] the launcher version is a REPO CONSTANT: read it from the
+          # shipped source instead of hardcoding it (a version bump must never
+          # break this cell again).
+          $verM = [regex]::Match($csSrcA, 'private const string Ver = "(\d+(\.\d+){1,3})"')
+          if (-not $verM.Success) { A-Fail 'version-constant' 'payloads/ghrdp-rdp-launcher.cs has no Ver constant' }
+          $launcherStamp = 'ghrdp-rdp-launcher ' + $verM.Groups[1].Value
+          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', $launcherStamp, 'HKCU')) {
               if ($lTxt -notmatch [regex]::Escape($need)) { A-Fail 'self-test-log' ('launcher log ' + $lLog + ' lacks ' + $need + ' :: tail=[' + (($lTxt -split "`r?`n" | Select-Object -Last 6) -join ' | ') + ']') }
           }
           $cs = [System.IO.File]::ReadAllText((Join-Path $lab 'ghrdp-rdp-launcher.cs'))
@@ -256,7 +263,10 @@ jobs:
           if (-not $p.WaitForExit(60000)) { P-Fail 'check-wait' 'ghrdp://check did not exit within 60s' }
           if ($p.ExitCode -ne 0) { P-Fail 'check-exit' ('ghrdp://check exit code ' + $p.ExitCode) }
           $logTxt = Log-Text
-          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', 'ghrdp-rdp-launcher 2.1.0.0', 'HKCU')) {
+          $verP = [regex]::Match([System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')), 'private const string Ver = "(\d+(\.\d+){1,3})"')
+          if (-not $verP.Success) { P-Fail 'version-constant' 'payloads/ghrdp-rdp-launcher.cs has no Ver constant' }
+          $launcherStampP = 'ghrdp-rdp-launcher ' + $verP.Groups[1].Value
+          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', $launcherStampP, 'HKCU')) {
               if ($logTxt -notmatch [regex]::Escape($need)) { P-Fail 'check-log' ('launcher log lacks ' + $need) }
           }
           if ((Cap-Lines).Count -ne $n0) { P-Fail 'check-beacon' 'a server-less ghrdp://check must not post a beacon' }

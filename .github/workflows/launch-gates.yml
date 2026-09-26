@@ -1068,30 +1068,44 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-          if (-not (Test-Path -LiteralPath $csc)) { $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
-          if (-not (Test-Path -LiteralPath $csc)) { throw 'F19: in-box csc.exe not found' }
-          $exe = Join-Path $env:RUNNER_TEMP 'ghrdp-rdp-launcher-f19.exe'
-          $out = Join-Path $env:RUNNER_TEMP 'ghrdp-dns-selftest.txt'
-          if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Force }
-          & $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll 'payloads\ghrdp-rdp-launcher.cs'
-          if ($LASTEXITCODE -ne 0) { throw 'F19: launcher csc compile failed (the shipped launcher must compile with the in-box csc)' }
-          $env:GHRDP_LAB_OUT = $out
-          $env:GHRDP_LAB_NOMSG = '1'
-          & $exe '--dns-selftest' 'lab-target.dekarita.tailnet-lab.ts.net' '100.64.0.7'
-          if ($LASTEXITCODE -ne 0) { throw 'F19: launcher --dns-selftest reported a FAIL verdict' }
-          if (-not (Test-Path -LiteralPath $out)) { throw 'F19: --dns-selftest wrote no matrix file' }
-          $txt = Get-Content -LiteralPath $out -Raw
-          Write-Host $txt
-          foreach ($want in @(
-            'injectedDns=fail injectedTcp=open ip=100.64.0.7 decision=client-dns-off expected=client-dns-off verdict=pass',
-            'injectedDns=fail injectedTcp=closed ip=100.64.0.7 decision=dns-fail expected=dns-fail verdict=pass',
-            'injectedDns=ok injectedTcp=open ip=100.64.0.7 decision=mstsc expected=mstsc verdict=pass',
-            'injectedDns=fail injectedTcp=open ip=(none) decision=dns-fail expected=dns-fail verdict=pass',
-            'injectedDns=notailnet injectedTcp=open ip=100.64.0.7 decision=client-dns-off expected=client-dns-off verdict=pass'
-          )) { if ($txt -notlike ('*' + $want + '*')) { throw ('F19: launcher matrix missing case: ' + $want) } }
-          if ($txt -notlike '*mstscLaunched=0 cmdkeyCalled=0*') { throw 'F19: the DNS-guard selftest must never launch mstsc or call cmdkey' }
-          if ($txt -notlike '*verdict=FAIL*') { Write-Host '[F19] launcher DNS-guard matrix: 5/5 pass (no mstsc, no cmdkey)' } else { throw 'F19: a matrix case reported FAIL' }
+          $matrixTxt = ''
+          try {
+            $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+            if (-not (Test-Path -LiteralPath $csc)) { $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
+            if (-not (Test-Path -LiteralPath $csc)) { throw 'the in-box csc.exe is missing (install.cmd depends on it too)' }
+            $exe = Join-Path $env:RUNNER_TEMP 'ghrdp-rdp-launcher-f19.exe'
+            $out = Join-Path $env:RUNNER_TEMP 'ghrdp-dns-selftest.txt'
+            if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Force }
+            $cs = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs'
+            Write-Host ('[F19] csc=' + $csc)
+            $cscOut = (& $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll $cs 2>&1 | Out-String)
+            $cscRc = $LASTEXITCODE
+            Write-Host ('[F19] csc exit=' + $cscRc + ' output=' + $cscOut.Trim())
+            if ($cscRc -ne 0) { throw ('csc exit ' + $cscRc + ' :: ' + $cscOut.Trim()) }
+            $env:GHRDP_LAB_OUT = $out
+            $env:GHRDP_LAB_NOMSG = '1'
+            $runOut = (& $exe '--dns-selftest' 'lab-target.dekarita.tailnet-lab.ts.net' '100.64.0.7' 2>&1 | Out-String)
+            $runRc = $LASTEXITCODE
+            Write-Host ('[F19] selftest exit=' + $runRc + ' stdout=' + $runOut.Trim())
+            if ($runRc -ne 0) { throw ('--dns-selftest exit ' + $runRc) }
+            if (-not (Test-Path -LiteralPath $out)) { throw '--dns-selftest wrote no matrix file' }
+            $matrixTxt = Get-Content -LiteralPath $out -Raw
+            Write-Host $matrixTxt
+            foreach ($want in @(
+              'injectedDns=fail injectedTcp=open ip=100.64.0.7 decision=client-dns-off expected=client-dns-off verdict=pass',
+              'injectedDns=fail injectedTcp=closed ip=100.64.0.7 decision=dns-fail expected=dns-fail verdict=pass',
+              'injectedDns=ok injectedTcp=open ip=100.64.0.7 decision=mstsc expected=mstsc verdict=pass',
+              'injectedDns=fail injectedTcp=open ip=(none) decision=dns-fail expected=dns-fail verdict=pass',
+              'injectedDns=notailnet injectedTcp=open ip=100.64.0.7 decision=client-dns-off expected=client-dns-off verdict=pass'
+            )) { if ($matrixTxt -notlike ('*' + $want + '*')) { throw ('matrix case missing: ' + $want) } }
+            if ($matrixTxt -notlike '*mstscLaunched=0 cmdkeyCalled=0*') { throw 'the selftest touched mstsc/cmdkey' }
+            if ($matrixTxt -like '*verdict=FAIL*') { throw 'a matrix case reported FAIL' }
+            Write-Host '[F19] launcher DNS-guard matrix: 5/5 pass (no mstsc, no cmdkey)'
+          } catch {
+            Write-Host ('::error::[F19] launcher DNS-guard matrix stage failed :: ' + $_.Exception.Message)
+            Write-Host ('::error::[F19] matrix file=[' + $matrixTxt.Replace("`r", ' ').Replace("`n", ' | ') + ']')
+            exit 1
+          }
       - name: Parse native PowerShell scripts
         shell: pwsh
         run: |
