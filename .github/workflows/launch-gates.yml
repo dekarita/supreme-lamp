@@ -1666,6 +1666,18 @@ jobs:
           grep -qF 'NotePropertyName connLog' "$wf" || { echo 'F30: config.rlpListener.connLog is never written' >&2; exit 1; }
           grep -qF '[F30] SERVER CONN LOG: ' "$wf" || { echo 'F30: the run log never prints the conn-log reason codes' >&2; exit 1; }
           grep -qF 'id="srvConnLogRow"' "$ui" || { echo 'F30: the SERVER CONN LOG row is missing' >&2; exit 1; }
+          # --- F11-3 §3 usage loop is a SINGLETON -------------------------------
+          # The loop is a DETACHED child: stopping the server orphans it, and two
+          # loops interleave their own counters into one state file (observed as
+          # the accumulator going BACKWARDS 15 -> 10). Both halves are gated: the
+          # loop steps aside when a live owner exists, and a server start reaps
+          # any live loop for THIS Root BEFORE launching the fresh one.
+          grep -qF '[F11-3 §3 loop-owner]' "$srv" || { echo 'F30: the usage-loop owner guard is missing' >&2; exit 1; }
+          grep -qF 'pid = $PID }' "$srv" || { echo 'F30: usage samples carry no owner pid (the guard cannot identify a live owner)' >&2; exit 1; }
+          grep -qF '[F11-3 §3 loop-reap]' "$srv" || { echo 'F30: a server start does not reap orphaned usage loops' >&2; exit 1; }
+          reap_ln=$(grep -n 'F11-3 §3 loop-reap' "$srv" | head -1 | cut -d: -f1)
+          ulp_ln=$(grep -n "'-File',(Join-Path \$Root 'rdp-usage.ps1') -WindowStyle Hidden" "$srv" | head -1 | cut -d: -f1)
+          test -n "$reap_ln" && test -n "$ulp_ln" && test "$reap_ln" -lt "$ulp_ln" || { echo 'F30: the reap must run BEFORE the singleton loop is launched' >&2; exit 1; }
           grep -qF '// [F30 §3 connlog-render-begin]' "$ui" || { echo 'F30: the row renderer block is missing' >&2; exit 1; }
           # --- §4 client copy-lines (copy-only; nothing executes) ---------------
           grep -qF 'id="connDiagPurgeAll"' "$ui" || { echo 'F30: the nuclear purge copy-line is missing' >&2; exit 1; }

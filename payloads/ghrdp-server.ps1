@@ -2077,6 +2077,20 @@ $root = 'C:\ghrdp'
 $state = Join-Path $root 'rdp-usage.json'
 $cfg = Join-Path $root 'config.json'
 $enc = New-Object System.Text.UTF8Encoding($false)
+# [F11-3 §3 loop-owner] ONE loop per Root. This child is detached, so stopping
+# the server orphans it; a second loop would interleave its OWN counter into the
+# same state file - which is exactly how the accumulator was observed going
+# BACKWARDS (15 -> 10). If a live rdp-usage.ps1 for this Root already owns the
+# file, step aside without writing a single sample.
+try {
+  if (Test-Path -LiteralPath $state) {
+    $own = [System.IO.File]::ReadAllText($state) | ConvertFrom-Json
+    if ($own -and $null -ne $own.pid -and [int]$own.pid -ne $PID) {
+      $op = Get-CimInstance Win32_Process -Filter ('ProcessId=' + [int]$own.pid) -ErrorAction SilentlyContinue
+      if ($op -and ([string]$op.CommandLine) -match 'rdp-usage\.ps1') { exit 0 }
+    }
+  }
+} catch { }
 $sec = 0
 try {
   if (Test-Path -LiteralPath $state) {
@@ -2122,7 +2136,7 @@ while ($true) {
   $web = Test-WebdeskClient
   $active = ($rdp -or $web)
   if ($active) { $sec = $sec + 5 }
-  $obj = @{ ts = (Get-Date).ToUniversalTime().ToString('o'); sec = $sec; active = $active; rdp = $rdp; webdesk = $web }
+  $obj = @{ ts = (Get-Date).ToUniversalTime().ToString('o'); sec = $sec; active = $active; rdp = $rdp; webdesk = $web; pid = $PID }
   try { [System.IO.File]::WriteAllText($state, ($obj | ConvertTo-Json -Compress), $enc) } catch { }
   # Persist on every STOP (durable freeze) and at most every 30s while running.
   if ((-not $active) -or (([datetime]::UtcNow - $lastPersist).TotalSeconds -ge 30)) {
@@ -2141,6 +2155,15 @@ while ($true) {
 }
 '@
 [System.IO.File]::WriteAllText((Join-Path $Root 'rdp-usage.ps1'), $usageScript, $script:NoBom)
+# [F11-3 §3 loop-reap] A server stop/update kills THIS process and never the
+# detached loop it started, so reap any live loop for THIS Root before launching
+# the singleton: exactly one writer may own rdp-usage.json / config.json.
+try {
+    $us = Join-Path $Root 'rdp-usage.ps1'
+    foreach ($lp in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue)) {
+        if ($lp.CommandLine -and ([string]$lp.CommandLine).IndexOf($us, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { try { Stop-Process -Id $lp.ProcessId -Force -ErrorAction SilentlyContinue } catch { } }
+    }
+} catch { }
 try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $Root 'rdp-usage.ps1') -WindowStyle Hidden } catch { }
 # [F28 §1] STARTUP SCAN: the first stamp lands before the first client can
 # poll, so /api/native-status never has to guess "not reported yet" when the

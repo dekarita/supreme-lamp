@@ -1207,10 +1207,20 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $diag = Join-Path $env:GITHUB_WORKSPACE 'de-diag'
           New-Item -ItemType Directory -Path $diag -Force | Out-Null
+          function I-ReapUsageLoops {
+              # The loop is a DETACHED child: killing the server never kills it.
+              # Leaving one alive would let a second writer interleave counters.
+              try {
+                  foreach ($lp in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue)) {
+                      if ($lp.CommandLine -and $lp.CommandLine -like '*rdp-usage.ps1*') { try { Stop-Process -Id $lp.ProcessId -Force -ErrorAction SilentlyContinue } catch { } }
+                  }
+              } catch { }
+          }
           function I-Fail([string]$Stage, [string]$Detail) {
               Write-Host ('::error::[I] stage=' + $Stage + ' :: ' + $Detail)
               try { ('stage=' + $Stage + "`n" + 'detail=' + $Detail) | Out-File (Join-Path $diag 'usage-classification.txt') -Encoding utf8 } catch { }
               try { if ($srv -and -not $srv.HasExited) { Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue } } catch { }
+              I-ReapUsageLoops
               exit 1
           }
           $root = 'C:\ghrdp'
@@ -1239,6 +1249,15 @@ jobs:
           try { $u2 = Usage-Read; $tickB = [int]$u2.rdpUsageSec } catch { I-Fail 'tick-read' $_.Exception.Message }
           if ($tickB -le $tickA) { I-Fail 'tick-growth' ('sec ' + $tickA + ' -> ' + $tickB + ' (must grow while active)') }
           Write-Host ('[I] TICK ok: ' + $tickA + 's -> ' + $tickB + 's while a webdesk client is attached')
+          # (1b) SINGLETON: the loop is a DETACHED child, so a server stop orphans
+          # it; a second instance must step aside (exit) instead of interleaving
+          # its OWN counter into the same state file - two writers are exactly how
+          # the accumulator was observed going BACKWARDS.
+          $dup = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $diag 'usage-dup.log') -RedirectStandardError (Join-Path $diag 'usage-dup-err.log') -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $root 'rdp-usage.ps1')
+          $dupGone = $false
+          for ($i = 0; $i -lt 24 -and -not $dupGone; $i++) { Start-Sleep -Milliseconds 500; $dupGone = [bool]$dup.HasExited }
+          if (-not $dupGone) { try { Stop-Process -Id $dup.Id -Force -ErrorAction SilentlyContinue } catch { }; I-Fail 'singleton' 'a second rdp-usage.ps1 kept running against the same Root instead of stepping aside' }
+          Write-Host '[I] SINGLETON ok: a duplicate loop process exited; exactly one writer owns rdp-usage.json'
           # (2) FREEZE: once the synthetic client drops, the accumulator must
           # stop growing on any tick that sees BOTH signals absent. A shared
           # runner can legitimately carry an environmental RDP logon session, so
@@ -1248,12 +1267,15 @@ jobs:
           # with no signal, which is the bug this timer must never have.
           Remove-Item -LiteralPath $sig -Force -ErrorAction SilentlyContinue
           $uFile = Join-Path $root 'rdp-usage.json'
-          $sawQuiescent = $false; $freezeAt = $null
+          $sawQuiescent = $false; $freezeAt = $null; $freezePid = $null
           for ($i = 0; $i -lt 30 -and -not $sawQuiescent; $i++) {
               Start-Sleep -Seconds 2
               try {
                   $uj = [System.IO.File]::ReadAllText($uFile) | ConvertFrom-Json
-                  if ($null -ne $uj -and $uj.webdesk -eq $false -and $uj.rdp -eq $false) { $sawQuiescent = $true; $freezeAt = [int]$uj.sec }
+                  if ($null -ne $uj -and $uj.webdesk -eq $false -and $uj.rdp -eq $false) {
+                      if ($null -eq $uj.pid) { I-Fail 'freeze-owner' 'the sample carries no owner pid (the singleton guard cannot identify a live owner)' }
+                      $sawQuiescent = $true; $freezeAt = [int]$uj.sec; $freezePid = [int]$uj.pid
+                  }
               } catch { }
           }
           if (-not $sawQuiescent) { I-Fail 'freeze' 'the loop never reported BOTH signals absent within 60s of the client dropping' }
@@ -1264,12 +1286,14 @@ jobs:
               try {
                   $uj2 = [System.IO.File]::ReadAllText($uFile) | ConvertFrom-Json
                   if ($null -ne $uj2 -and $uj2.webdesk -eq $false -and $uj2.rdp -eq $false) {
+                      if ($null -ne $uj2.pid -and [int]$uj2.pid -ne $freezePid) { I-Fail 'freeze-owner' ('a SECOND usage loop wrote the state file: pid ' + $freezePid + ' -> ' + [int]$uj2.pid) }
                       $v = [int]$uj2.sec
                       if ($v -gt $lastQuiescent) { I-Fail 'freeze-drift' ('a signal-less tick advanced the accumulator: ' + $lastQuiescent + ' -> ' + $v + ' ts=' + $uj2.ts) }
                       $lastQuiescent = $v
                   }
               } catch { }
           }
+          Write-Host ('[I] OWNER ok: every sample came from pid ' + $freezePid + ' (no interleaved writer)')
           $stillFrozen = $lastQuiescent
           Write-Host ('[I] FREEZE ok: quiescent at ' + $freezeAt + 's, and NO signal-less tick advanced it across a 20s window (last=' + $stillFrozen + 's)')
           # (3) RESUME + persistence into config.json
@@ -1302,6 +1326,7 @@ jobs:
           }
           if ($null -eq $carried) { I-Fail 'continuity' ('restart did not continue from ' + $persisted + 's') }
           Stop-Process -Id $srv2.Id -Force -ErrorAction SilentlyContinue
+          I-ReapUsageLoops
           Remove-Item -LiteralPath $sig -Force -ErrorAction SilentlyContinue
           Write-Host ('[I] PASS: usage timer ticks -> freezes (<=20s) -> resumes -> persists (' + $carried + 's) -> continues across a restart')
           'I_result=pass' | Out-File $env:GITHUB_ENV -Append
@@ -1986,7 +2011,7 @@ jobs:
           ('| (f) extensions enforced | ' + $(if ($env:F_result -eq 'pass') {'**PASS**'} else {'FAIL'}) + ' | IDs live-resolved twice from live store pages (identical) + HKLM forcelist readback: uBlock Origin ' + $env:F_ubo + '; Dark Reader ' + $env:F_dr + '; edge://extensions readout pending user PC |') | Add-Content -Path $S
           ('| (g) setup time delta | **measured** | step durations below; aggregate vs pre-F10 baseline in PR body |') | Add-Content -Path $S
           ('| (h) VNC prompt remembered (shim auto-fill) | ' + $(if ($env:H_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL payloads/ghrdp-cred-shim.js executed under node with a DOM stub: opener + exact origin => dialog auto-filled + submitted; wrong origin / non-opener / wrong type => ignored; zero log output |') | Add-Content -Path $S
-          ('| (i) usage timer ticks/freezes/resumes | ' + $(if ($env:I_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL server + REAL rdp-usage loop: tick while a webdesk client is attached, frozen <=20s after it drops, resumed on re-attach, persisted to config.json, continued across a server restart (' + $env:I_usage + 's) |') | Add-Content -Path $S
+          ('| (i) usage timer ticks/freezes/resumes | ' + $(if ($env:I_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL server + REAL rdp-usage loop: tick while a webdesk client is attached, frozen <=20s after it drops, resumed on re-attach, persisted to config.json, continued across a server restart, and the loop is a SINGLETON (a duplicate loop process exits instead of interleaving counters; every state sample in the freeze window carries the SAME owner pid - the detached loop used to be orphaned by a server stop, which is how the accumulator was seen going backwards 15 -> 10) (' + $env:I_usage + 's) |') | Add-Content -Path $S
           ('| (j) qBittorrent present (plain app) | ' + $(if ($env:J_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | winget qBittorrent.qBittorrent silent install; present on disk; no autostart entry; no Web UI wiring |') | Add-Content -Path $S
           ('| (n) stale handler overwritten | ' + $(if ($env:N_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL install.cmd against a PLANTED pre-F2 style script-host registration: before value printed, value overwritten to "<exe>" "%1", readback verified |') | Add-Content -Path $S
           ('| (k2) browser policies + extensions | ' + $(if ($env:K_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | live-resolved Edge+CWS ids -> HKLM forcelist readback (' + $env:K_edge + ' entries) -> malformed-shape check -> Edge actually unpacked the forced extensions into a fresh profile; edge://policy + edge://extensions visual readout stays PENDING-USER |') | Add-Content -Path $S
