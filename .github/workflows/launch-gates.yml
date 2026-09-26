@@ -280,7 +280,10 @@ jobs:
           test -n "$cert_line"
           test "$dns_line" -lt "$cert_line"
           grep -q "TS_MAGICDNS_FQDN=' + \$dnsName" "$wf"
-          cert_body=$(awk '/name: Bind tailnet LE cert to RDP-Tcp/,/name: Optimize Tailscale path/' "$wf")
+          # [F21] terminate cert body at the next step (CredSSP verification,
+          # added in F21) OR at the Optimize Tailscale path step, whichever
+          # comes first - F21's own exit 0 must not be counted here.
+          cert_body=$(awk '/name: Bind tailnet LE cert to RDP-Tcp/{f=1;next} f && (/^      - name: CredSSP\/NLA handshake verification/ || /^      - name: Optimize Tailscale path/){exit} f' "$wf")
           echo "$cert_body" | grep -q 'TS_MAGICDNS_FQDN'
           echo "$cert_body" | grep -q 'for ($attempt = 1; $attempt -le 3; $attempt++)'
           echo "$cert_body" | grep -q 'Start-Sleep -Seconds 10'
