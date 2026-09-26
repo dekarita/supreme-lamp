@@ -1239,18 +1239,22 @@ jobs:
           try { $u2 = Usage-Read; $tickB = [int]$u2.rdpUsageSec } catch { I-Fail 'tick-read' $_.Exception.Message }
           if ($tickB -le $tickA) { I-Fail 'tick-growth' ('sec ' + $tickA + ' -> ' + $tickB + ' (must grow while active)') }
           Write-Host ('[I] TICK ok: ' + $tickA + 's -> ' + $tickB + 's while a webdesk client is attached')
-          # (2) FREEZE within 20s of the last signal dropping
+          # (2) FREEZE within 20s of the last signal dropping. Sample only
+          # AFTER the 20s bound: the loop's 5s tick plus its attached-grace may
+          # legitimately land one last +5 INSIDE the bound (a lingering
+          # Established socket is exactly that case), so a sample taken as soon
+          # as the flag flips would race the loop's final tick and read as drift.
+          # The contract is asserted where it exists: no growth after 20s.
           Remove-Item -LiteralPath $sig -Force -ErrorAction SilentlyContinue
-          $frozen = $false; $freezeAt = $null
-          for ($i = 0; $i -lt 12 -and -not $frozen; $i++) {
-              Start-Sleep -Seconds 2
-              try { $u3 = Usage-Read; if (-not $u3.rdpUsageActive) { $frozen = $true; $freezeAt = [int]$u3.rdpUsageSec } } catch { }
-          }
-          if (-not $frozen) { I-Fail 'freeze' 'rdpUsageActive stayed true more than 20s after both signals dropped' }
+          Start-Sleep -Seconds 22
+          try { $u3 = Usage-Read } catch { I-Fail 'freeze-read' $_.Exception.Message }
+          if ($u3.rdpUsageActive) { I-Fail 'freeze' 'rdpUsageActive stayed true more than 20s after both signals dropped' }
+          $freezeAt = [int]$u3.rdpUsageSec
           Start-Sleep -Seconds 12
           try { $u4 = Usage-Read; $stillFrozen = [int]$u4.rdpUsageSec } catch { I-Fail 'freeze-read' $_.Exception.Message }
           if ($stillFrozen -ne $freezeAt) { I-Fail 'freeze-drift' ('sec moved while frozen: ' + $freezeAt + ' -> ' + $stillFrozen) }
-          Write-Host ('[I] FREEZE ok: frozen at ' + $freezeAt + 's and unchanged for 12s')
+          if ($stillFrozen -lt $tickB) { I-Fail 'freeze-monotonic' ('the frozen value went backwards: ' + $tickB + ' -> ' + $stillFrozen) }
+          Write-Host ('[I] FREEZE ok: frozen at ' + $freezeAt + 's (>=' + $tickB + 's seen while active), unchanged for 12s')
           # (3) RESUME + persistence into config.json
           [System.IO.File]::WriteAllText($sig, '1', (New-Object System.Text.UTF8Encoding($false)))
           $resumed = $false
