@@ -647,7 +647,9 @@ jobs:
           $nl6 = New-Lines $before6
           if ($rc6 -ne 5) { R-Fail 'guard-not-blocked' ('rc=' + $rc6 + ' (expected 5)') }
           if (-not (($nl6 | Out-String) -match 'dns-guard blocked launch')) { R-Fail 'guard-log' 'no dns-guard blocked-launch log line' }
-          if (($nl6 | Out-String) -match 'cmdkey-shown|mstsc-started') { R-Fail 'guard-leak' 'cmdkey/mstsc ran despite the DNS guard' }
+          # the LOG strings are 'prompt shown' / 'started pid=' (mstsc-started /
+          # cmdkey-shown are the BEACON details, not JSONL lines).
+          if (($nl6 | Out-String) -match 'prompt shown|started pid=') { R-Fail 'guard-leak' 'cmdkey/mstsc ran despite the DNS guard' }
           Write-Host '[R] (7) PASS: non-tailnet resolution => rc=5, dns-guard logged, mstsc NOT started'
           Set-HostAlias '127.0.0.1'
           $env:GHRDP_LAB_DNS_ALLOW_LOOPBACK = '1'
@@ -658,7 +660,9 @@ jobs:
           $nl7 = New-Lines $before7
           if ($rc7 -ne 0) { R-Fail 'guard-not-allowed' ('rc=' + $rc7) }
           if (-not (($nl7 | Out-String) -match 'dns-guard ok')) { R-Fail 'guard-allow-log' 'no dns-guard ok line with the lab switch' }
-          if (-not (($nl7 | Out-String) -match 'mstsc-started')) { R-Fail 'guard-allow-mstsc' 'mstsc not started on the allowed alias' }
+          # mstsc-started is the beacon detail; the JSONL log line is
+          # level=mstsc details='started pid=N' - assert THAT.
+          if (-not (($nl7 | Out-String) -match 'started pid=')) { R-Fail 'guard-allow-mstsc' 'mstsc not started on the allowed alias' }
           try { & cmdkey.exe /delete:TERMSRV/$fqdn | Out-Null } catch { }
           Set-HostAlias ''
           Write-Host '[R] (8) PASS: loopback alias + GHRDP_LAB_DNS_ALLOW_LOOPBACK=1 => dns-guard ok + mstsc-started (lab-only path)'
