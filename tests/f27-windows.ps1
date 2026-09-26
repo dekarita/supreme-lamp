@@ -84,7 +84,8 @@ try {
 
     $stage = 'collector mapping'
     $wf = [IO.File]::ReadAllText((Join-Path $repo '.github/workflows/main.yml'))
-    $a = $wf.IndexOf('# [F24 §2 collector-begin]'); $b=$wf.IndexOf('# [F24 §2 collector-end]', $a)
+    $a = $wf.IndexOf('collector-begin]'); $a = $wf.LastIndexOf('# ', $a)
+    $b = $wf.IndexOf('collector-end]', $a); $b = $wf.LastIndexOf('# ', $b)
     $col = ($wf.Substring($a,$b-$a) -split "`r?`n" | ForEach-Object { $_ -replace '^          ','' }) -join "`n"
     Import-Functions $col @('Get-RdpAuthEventFields','Get-RdpAuthCodeMeaning','Get-RdpAuthEventSummary')
     function Event-F27($Id,$Type,$Time) {
@@ -139,7 +140,7 @@ public static class F27Read {
     Write-Host 'F27 PASS: real CredWrite/Read overwrite, identical RDP target, fallback reason, redaction; live NLA not tested'
 } catch {
     # Never print exception messages/bodies/fixtures; stage alone maps failures.
-    Write-Host ('::error::F27 mechanical proof failed at stage=' + $stage + ' type=' + $_.Exception.GetType().Name)
+    Write-Host ('::error::F27 mechanical proof failed at stage=' + $stage + ' type=' + $_.Exception.GetType().Name + ' line=' + $_.InvocationInfo.ScriptLineNumber)
     if ($_.Exception.Message -like 'F27 assertion:*') { Write-Host $_.Exception.Message }
     exit 1
 } finally {
