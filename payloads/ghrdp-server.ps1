@@ -16,6 +16,11 @@ $script:DlNames = @('ghrdp-handler-kit.zip', 'install.cmd', 'ghrdp-rdp-launcher.
 $script:OkFile = Join-Path $Root 'server-ok.txt'
 $script:FlushFlag = Join-Path $Root 'flush.flag'
 $script:NoBom = New-Object System.Text.UTF8Encoding($false)
+# [F17 §2] The beacon store is PER-RUN: the previous dispatch's handler beacon
+# must never render as a fresh row for this run (stale + mis-parsed timestamps
+# were the 19805s beacon-age bug class). Reset on every server start; the
+# launcher re-POSTs 'invoked' the moment it runs again.
+try { Remove-Item -LiteralPath (Join-Path $Root 'handler-hello-last.json') -Force -ErrorAction SilentlyContinue } catch { }
 $script:WebDeskHtml = ''
 $script:Token = ''
 try {
@@ -532,7 +537,19 @@ function Invoke-ClientRequest {
                 $hhFile = Join-Path $Root 'handler-hello-last.json'
                 if (Test-Path -LiteralPath $hhFile) {
                     $hh = [System.IO.File]::ReadAllText($hhFile) | ConvertFrom-Json
-                    if ($hh -and $hh.ts) { $handlerAge = [int]([datetime]::UtcNow - [datetime]$hh.ts).TotalSeconds }
+                    if ($hh -and $hh.ts) {
+                        # [F17 §2] Parse the beacon ts as UTC. RoundtripKind
+                        # keeps a Z/offset designator exact; a bare
+                        # 'yyyy-MM-ddTHH:mm:ss' (old writers, no designator)
+                        # was written in UTC, so AssumeUniversal. NEVER the
+                        # machine-local timezone (that produced the +05:30 /
+                        # 19805s beacon-age offset).
+                        $tsStr = [string]$hh.ts
+                        $tsStyle = [System.Globalization.DateTimeStyles]::RoundtripKind
+                        if ($tsStr -notmatch '[Zz]$|[+-]\d{2}:?\d{2}$') { $tsStyle = ($tsStyle -bor [System.Globalization.DateTimeStyles]::AssumeUniversal) }
+                        $tsDt = [datetime]::Parse($tsStr, [System.Globalization.CultureInfo]::InvariantCulture, $tsStyle)
+                        $handlerAge = [int](([datetime]::UtcNow - $tsDt.ToUniversalTime()).TotalSeconds)
+                    }
                 }
             } catch { }
             $vpsPending = $false
@@ -679,6 +696,33 @@ function Invoke-ClientRequest {
                     }
                 }
             } catch { }
+            # [F17 §2] rdpListener: the runner-side self-probe result (main.yml
+            # "RDP listener self-probe" step -> rdp-listener.json -> carried
+            # into config.json by the stage step). Strict boolean pass-through:
+            # a tampered or absent value reads false. The dashboard renders the
+            # RDP LISTENER row from these fields and gates AUTO-LOGIN on
+            # listening+fwRule+certThumb+nla.
+            $rdpListenerOut = $null
+            try {
+                if ($cfgN -and $cfgN.PSObject.Properties['rdpListener'] -and $cfgN.rdpListener) {
+                    $rl = $cfgN.rdpListener
+                    $cap = { param([string]$x) if ($x.Length -gt 240) { $x.Substring(0, 240) } else { $x } }
+                    $rdpListenerOut = [ordered]@{
+                        listening = [bool]$rl.listening
+                        listeningDetail = (& $cap ([string]$rl.listeningDetail))
+                        termService = [bool]$rl.termService
+                        termServiceDetail = (& $cap ([string]$rl.termServiceDetail))
+                        fwRule = [bool]$rl.fwRule
+                        fwRuleDetail = (& $cap ([string]$rl.fwRuleDetail))
+                        certThumb = [bool]$rl.certThumb
+                        certThumbDetail = (& $cap ([string]$rl.certThumbDetail))
+                        nla = [bool]$rl.nla
+                        nlaDetail = (& $cap ([string]$rl.nlaDetail))
+                        probedAt = [string]$rl.probedAt
+                        dnsName = [string]$rl.dnsName
+                    }
+                }
+            } catch { }
             $ns = [ordered]@{
                 fqdn = $fqdnN
                 hostKind = $hostKind
@@ -708,6 +752,7 @@ function Invoke-ClientRequest {
                 probeReasons = $probeReasons
                 reasonsDisabled = @($reasons)
                 advisory = @($advisory)
+                rdpListener = $rdpListenerOut
             }
             # [U4] lastHandlerVerb: verb + result of the most recent /api/handler-hello,
             # so the dashboard can show "last: install ok" / "last: setup skipped" without
