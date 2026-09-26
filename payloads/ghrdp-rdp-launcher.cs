@@ -38,6 +38,11 @@
 //     5. Start mstsc VISIBLE, WaitForExit(2000): still running => beacon
 //        'mstsc-started pid=N'; already exited => MessageBox with the exit code
 //        + the last 5 log lines (a silently dying mstsc is impossible).
+//   ghrdp://recred?server=<fqdn>&user=<user>&t=<ticket>[&ip=<tailnet-ipv4>]
+//     [F28 §2] one-click recovery (retype WITHOUT typing): redeem MUST succeed
+//     (no cmdkey fallback, no silent mstsc with a stale credential), CredWrite
+//     OVERWRITE, then rdp-written -> mstsc-started. Any failure ends in a
+//     visible error with mstsc NOT started.
 //   ghrdp://check[?server=<fqdn>]
 //     install-time / user-triggered self test: MessageBox with the registered
 //     reg command, TERMSRV presence, the log path and the exe version stamp.
@@ -77,14 +82,15 @@ using System.Threading;
 // [F20 §2] 2.4.0.0: the immediate-mstsc-exit dialog now points at the
 // dashboard's evidence-based 0x904/0x7 fallback (CONNECTION DIAGNOSTICS ->
 // "if mstsc still fails") instead of leaving the user with a bare exit code.
-[assembly: AssemblyVersion("2.4.0.0")]
-[assembly: AssemblyFileVersion("2.4.0.0")]
+// [F28] 2.5.0.0: one-click recred recovery + fallback native-prompt gap fix.
+[assembly: AssemblyVersion("2.5.0.0")]
+[assembly: AssemblyFileVersion("2.5.0.0")]
 [assembly: AssemblyTitle("ghrdp-rdp-launcher")]
 
 internal static class GhrdpRdpLauncher
 {
-    private const string Ver = "2.4.0.0";
-    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F27 ticket-CredWrite)";
+    private const string Ver = "2.5.0.0";
+    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F28 logon-loop+recovery+fallback-gap)";
     private const int DefaultPort = 7331;
     // [F19 §2] the RDP TCP port used ONLY for the client-DNS diagnosis probe
     // (the mstsc target itself always stays the MagicDNS FQDN).
@@ -668,7 +674,9 @@ internal static class GhrdpRdpLauncher
     }
     // Only redemption errors permit interactive fallback. A bad reply or
     // failed CredWrite aborts, rather than using a potentially poisoned entry.
-    private static string RedeemAndStore(string uri, string server, string user, string host, int port)
+    // [F28 §2] isRecred switches the success beacon to recred-redeemed (the
+    // recovery chain); the store path (CredWrite overwrite) is identical.
+    private static string RedeemAndStore(string uri, string server, string user, string host, int port, bool isRecred = false)
     {
         string ticket = TicketFromUri(uri);
         if (ticket.Length == 0) { return "ticket-missing"; }
@@ -727,7 +735,7 @@ internal static class GhrdpRdpLauncher
             pass = (string)reply["pass"];
             if (pass.Length == 0 || Encoding.Unicode.GetByteCount(pass) > 2560)
             { throw new InvalidOperationException("redeem-credential-invalid"); }
-            HandoffStep(host, port, "ticket-redeemed", true);
+            HandoffStep(host, port, isRecred ? "recred-redeemed" : "ticket-redeemed", true);
             try { WriteCredential(server, user, pass); }
             catch { HandoffStep(host, port, "credwrite-failed", false); throw; }
             HandoffStep(host, port, "credwrite-ok", true);
@@ -790,12 +798,121 @@ internal static class GhrdpRdpLauncher
         HelloBounded(host, port, "rdp", stored, "cmdkey-stored=" + (stored ? "true" : "false"));
         if (!stored)
         {
-            ShowBox("ghrdp: credential not stored",
-                "The cmdkey prompt closed without a stored TERMSRV/" + server + " entry.\n\n" +
-                "OK opens mstsc anyway - mstsc will then ask for the password itself" +
-                " (its own visible prompt).\n\nlog: " + LogPath());
+            // [F28 §3] stored==false MUST NOT silently proceed to mstsc (the
+            // old 0x6A poison path). Return 7 so DoWork retries the ticket
+            // redeem once, then launches WITH the native mstsc credential
+            // prompt (beaconed fallback-mstsc-native-prompt) - never silent.
+            return 7;
         }
         return 0;
+    }
+
+    // [F28 §3] The stored==false path: retry the ticket redeem ONCE (a
+    // transient network failure may have cleared), then - if the retry still
+    // fails or there was no ticket - launch mstsc WITH its native credential
+    // prompt. That prompt is mstsc's own visible dialog, which appears when
+    // no TERMSRV entry exists; no .rdp directive is added (F10 lock: the
+    // default .rdp already prompts natively when the store is empty). The
+    // fallback-mstsc-native-prompt beacon BEFORE the launch distinguishes this
+    // path from a silent launch with a valid stored credential.
+    private static int FallbackNativePrompt(string uri, string server, string user, string host, int port, bool hadTicket)
+    {
+        if (hadTicket)
+        {
+            HandoffStep(host, port, "fallback-retry-redeem", false);
+            string retry = null;
+            try { retry = RedeemAndStore(uri, server, user, host, port); }
+            catch { retry = "redeem-threw"; }
+            if (retry == null)
+            {
+                return MstscStep(server, user, host, port);
+            }
+            LogJson("handoff", "rdp", "fallback retry redeem failed reason=" + retry + " - native prompt");
+        }
+        HandoffStep(host, port, "fallback-mstsc-native-prompt", false);
+        ShowBox("ghrdp: credential not stored - native prompt",
+            "The credential prompt closed without a stored TERMSRV/" + server + " entry.\n\n" +
+            "mstsc will now ask for the password itself (its own visible prompt).\n" +
+            "Type it at the mstsc dialog - this launcher never types it.\n\nlog: " + LogPath());
+        return MstscStep(server, user, host, port);
+    }
+
+    // [F28 §2] ghrdp://recred?server=<fqdn>&user=<u>&t=<ticket>[&ip=][&port=]:
+    // one-click recovery (retype WITHOUT typing). Redeem MUST succeed - there
+    // is no cmdkey fallback and no silent mstsc with a stale credential. On
+    // success the chain is recred-redeemed -> credwrite-ok -> rdp-written ->
+    // mstsc-started. On ANY failure: beacon + visible error, mstsc NOT started.
+    private static int RunRecred(string uri, string verb, string host, int port)
+    {
+        string server; string user; string portRaw;
+        ParseQuery(uri, out server, out user, out portRaw);
+        if (!FqdnRe.IsMatch(server) || !UserRe.IsMatch(user))
+        {
+            LogJson("error", verb, "invalid target server='" + Redact(server) + "' user='" + Redact(user) + "'");
+            HelloBounded(host, port, verb, false, "invalid-target");
+            ShowBox("ghrdp launcher: invalid target",
+                "server must be a *.ts.net FQDN (got '" + server + "') and user must be a plain account name.\n\n" +
+                "log: " + LogPath());
+            return 3;
+        }
+        string dnsProblem = DnsGuardReason(server);
+        string dnsIp = TailnetIpFromUri(uri);
+        bool dnsIpReachable = (dnsProblem != null) && IpReachable(dnsIp, RdpPort);
+        string dnsDecision = DnsDecision(dnsProblem, dnsIp, dnsIpReachable);
+        if (dnsDecision == "client-dns-off")
+        {
+            LogJson("error", verb, "client-dns-off: name did not resolve but the tailnet IP is reachable on " + RdpPort +
+                " - client Tailscale DNS is off; fix: tailscale set --accept-dns=true; server=" + server + " ip=" + dnsIp);
+            HelloBounded(host, port, verb, false, "client-dns-off");
+            ShowBox("Tailscale DNS is off",
+                ClientDnsOffText(server, dnsIp, dnsProblem));
+            return 5;
+        }
+        if (dnsProblem != null)
+        {
+            LogJson("error", verb, "dns-guard blocked launch: " + dnsProblem + " server=" + server);
+            HelloBounded(host, port, verb, false, "dns-guard: " + dnsProblem);
+            string boxTitle = dnsProblem.IndexOf("non-tailnet") >= 0 ? "ghrdp: DNS returned non-tailnet IP" : "ghrdp: DNS resolution failed";
+            ShowBox(boxTitle,
+                "DNS stale/blocked - flushdns or check Tailscale.\n\n" +
+                dnsProblem + "\n\n" +
+                "FQDN: " + server + "\n" +
+                "Run ipconfig /flushdns and confirm Tailscale connected.\n\n" +
+                "mstsc was NOT started.\n\n" +
+                "log: " + LogPath());
+            return 5;
+        }
+        LogJson("rdp", verb, "DNS resolved " + server + " (dns-guard ok)");
+        if (TicketFromUri(uri).Length == 0)
+        {
+            LogJson("error", verb, "recred ticket missing - mstsc NOT started");
+            HelloBounded(host, port, verb, false, "recred-failed-ticket-missing");
+            ShowBox("ghrdp: recovery ticket missing",
+                "The recovery link carried no ticket. Click FIX & RECONNECT again on the dashboard.\n\nNothing was stored and mstsc was NOT started.\n\nlog: " + LogPath());
+            return 7;
+        }
+        string fail = null;
+        try { fail = RedeemAndStore(uri, server, user, host, port, true); }
+        catch (Exception ex)
+        {
+            LogJson("error", verb, "recred redeem threw " + ex.GetType().Name + " - mstsc NOT started");
+            HelloBounded(host, port, verb, false, "recred-failed-credwrite");
+            ShowBox("ghrdp: recovery failed",
+                "The recovery ticket could not be redeemed (" + ex.GetType().Name + ").\n\nNothing was stored and mstsc was NOT started. Click FIX & RECONNECT again.\n\nlog: " + LogPath());
+            return 1;
+        }
+        if (fail != null)
+        {
+            string beacon = "recred-failed-unreachable";
+            if (fail == "ticket-missing") { beacon = "recred-failed-ticket-missing"; }
+            else if (fail == "ticket-invalid-or-expired") { beacon = "recred-failed-ticket-invalid-or-expired"; }
+            LogJson("error", verb, "recred redeem failed reason=" + fail + " - mstsc NOT started");
+            HelloBounded(host, port, verb, false, beacon);
+            ShowBox("ghrdp: recovery failed",
+                "The recovery ticket was rejected (" + fail + ").\n\nNothing was stored and mstsc was NOT started. Click FIX & RECONNECT again for a fresh ticket.\n\nlog: " + LogPath());
+            return 1;
+        }
+        return MstscStep(server, user, host, port);
     }
 
     private static string Sha1Hex8(string s)
@@ -915,12 +1032,14 @@ internal static class GhrdpRdpLauncher
 
         if (verb == "check") { return RunCheck(uri, host, port); }
 
+        if (verb == "recred") { return RunRecred(uri, verb, host, port); }
+
         if (verb != "rdp")
         {
-            LogJson("error", verb, "unknown verb '" + verb + "' - no rdp/check work done");
+            LogJson("error", verb, "unknown verb '" + verb + "' - no rdp/recred/check work done");
             ShowBox("ghrdp launcher: unknown verb",
-                "verb '" + (verb.Length == 0 ? "(none)" : verb) + "' is neither 'rdp' nor 'check'.\n\n" +
-                "Use:  ghrdp://rdp?server=<fqdn>&user=<user>\n   or  ghrdp://check\n   or  ghrdp://check?server=<fqdn>\n\n" +
+                "verb '" + (verb.Length == 0 ? "(none)" : verb) + "' is not 'rdp', 'recred' or 'check'.\n\n" +
+                "Use:  ghrdp://rdp?server=<fqdn>&user=<user>\n   or  ghrdp://recred?server=<fqdn>&user=<user>&t=<ticket>\n   or  ghrdp://check\n   or  ghrdp://check?server=<fqdn>\n\n" +
                 "log: " + LogPath());
             return 2;
         }
@@ -992,6 +1111,7 @@ internal static class GhrdpRdpLauncher
         // only why it was blocked ([F17/R] cell asserts "dns-guard ok").
         LogJson("rdp", verb, "DNS resolved " + server + " -> " + resolvedLog + " (dns-guard ok)");
 
+        bool hadTicket = TicketFromUri(uri).Length != 0;
         string fallback = RedeemAndStore(uri, server, user, host, port);
         if (fallback != null)
         {
@@ -1001,11 +1121,15 @@ internal static class GhrdpRdpLauncher
                 // Compatibility for old ticket-less links only. The dashboard
                 // always issues t; failed redemptions must not reuse poison.
                 int rc = CmdkeyStep(server, user, host, port);
+                if (rc == 1) { return rc; }
+                if (rc == 7) { return FallbackNativePrompt(uri, server, user, host, port, hadTicket); }
                 if (rc != 0) { return rc; }
             }
             else
             {
                 int rc = CmdkeyStep(server, user, host, port, true);
+                if (rc == 1) { return rc; }
+                if (rc == 7) { return FallbackNativePrompt(uri, server, user, host, port, hadTicket); }
                 if (rc != 0) { return rc; }
             }
         }     // a timed-out prompt already produced its MessageBox
