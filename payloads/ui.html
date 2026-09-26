@@ -299,6 +299,15 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">Windows password</span><span class="v" id="credWinPass">(host-only)</span><button onclick="copyById('credWinPass',this)">copy</button><span class="note">masked (last 4); served only to your token-authenticated dashboard</span></div>
   <div class="row"><span class="k">VNC password</span><span class="v" id="credVncPass">(host-only)</span><button onclick="copyById('credVncPass',this)">copy</button><a href="javascript:void(0)" onclick="rememberVncFromKeys(this)" style="font-size:11px;opacity:.6;text-decoration:underline">remember for WEB DESKTOP</a><span class="note">the VNC_PASS secret set at dispatch; masked (last 4), token-gated. "remember" stores it in THIS browser only (never in a URL)</span></div>
   <div class="row"><span class="k">Connectivity</span><span class="timer" id="connRtt" style="font-size:18px">-- ms</span><span class="badge" id="connBadge">path: --</span><span class="badge" id="connFps">-- fps</span><span class="badge" id="connJit">jit -- ms</span><canvas id="connSpark" width="220" height="34" style="width:220px;height:34px"></canvas></div>
+  <!-- [F17 §2] COPY-ONLY diagnostics for the mstsc 0x904/0x7 class: when the
+       FQDN will not resolve on YOUR PC, these two lines pinpoint it (DNS dead
+       vs listener dead). No buttons, no scripts - you run them yourself. -->
+  <div class="row" id="connDiagRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
+    <span class="k" style="font-weight:600">CONNECTION diagnostics - run on YOUR PC (copy only; nothing here executes)</span>
+    <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagPing" style="font-size:12px">ping &lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('connDiagPing',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+    <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagTnc" style="font-size:12px">Test-NetConnection &lt;fqdn&gt; -Port 3389</code><a href="javascript:void(0)" onclick="copyById('connDiagTnc',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+    <span class="note" style="margin:0">"could not find host" / name resolution failed = Tailscale is down or MagicDNS is off on this PC (ipconfig /flushdns, reconnect Tailscale) - the 0x904/0x7 mstsc error is this, not credentials.</span>
+  </div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
   <!-- [F11-3 §3] RDP USAGE replaces logon age as the headline timer: seconds
        accumulated ONLY while an RDP session is connected OR a webdesk client is
@@ -377,6 +386,16 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
       </ol>
       <span class="note" id="kitPathB"><b>Path B (repo clone)</b>: <code>git pull</code> then double-click <code>payloads\install.cmd</code> - zero warnings, because clone files carry no Mark-of-the-Web. WEB DESKTOP below stays the zero-install primary.</span>
     </div>
+  </div>
+  <!-- [F17 §2] RDP LISTENER row: the runner-side self-probe (main.yml step
+       'RDP listener self-probe (F17)') writes config.json -> rdpListener and
+       /api/native-status serves it. Each field renders ✅/❌ with the exact
+       fix text; WINDOWS AUTO-LOGIN stays disabled until listening + fw + cert
+       + nla are ALL ✅ (a dead listener is never advertised). -->
+  <div class="row" id="rdpListenerRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
+    <span class="k" style="font-weight:600">RDP LISTENER</span>
+    <span class="note" id="rdpListenerLine" style="margin:0">probe not reported yet</span>
+    <span class="note" id="rdpListenerAge" style="margin:0"></span>
   </div>
   <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>
   <div class="row"><span class="k">Cert bound</span><span class="v" id="nrCert">...</span><span class="note" id="nrCertReason">RDP-Tcp SSLCertificateSHA1Hash present (from /api/native-status).</span></div>
@@ -546,6 +565,12 @@ function $(id){return document.getElementById(id)}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];})}
 function nowMs(){return (new Date()).getTime()}
 function parseTs(s){if(!s)return NaN;s=String(s).trim();if(/Z$|[+-]\d{2}:\d{2}$/.test(s))return Date.parse(s);var m=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})[ T](\d{1,2}):(\d{2}):(\d{2})/);if(m)return Date.UTC(+m[3],+m[1]-1,+m[2],+m[4],+m[5],+m[6]);var t=Date.parse(s+'Z');return isNaN(t)?Date.parse(s):t;}
+// [F17 §2] beacon-age UTC fix (+05:30 bug, age inflated by 19800s): the server
+// writes every ts with DateTime.UtcNow 'o', so a ts WITHOUT an explicit offset
+// is UTC - never this PC's local time. Mirrors the server's
+// DateTime.Parse(..., RoundtripKind) contract: an explicit Z/offset is honored
+// as-is, a bare ts is read as UTC by appending Z.
+function parseTsUtc(s){if(!s)return NaN;var t=String(s).trim();var v=Date.parse(t);if(!isNaN(v)&&(/[Zz]$/.test(t)||/[+-]\d{2}:?\d{2}$/.test(t)))return v;var u=Date.parse(t+'Z');return isNaN(u)?(isNaN(v)?NaN:v):u;}
 function fmtBytes(n){n=Number(n)||0;if(n<1024)return n.toFixed(0)+' B';var u=['KB','MB','GB','TB','PB'],i=-1;do{n=n/1024;i++;}while(n>=1024&&i<u.length-1);return n.toFixed(n>=100?0:(n>=10?1:2))+' '+u[i]}
 function fmtSpeed(n){return fmtBytes(n)+'/s'}
 function fmtDurShort(s){s=Math.max(0,Math.floor(Number(s)||0));if(s<60)return s+'s';var m=Math.floor(s/60),ss=s%60;if(m<60)return m+'m '+ss+'s';var h=Math.floor(m/60);m=m%60;if(h<24)return h+'h '+m+'m';var d=Math.floor(h/24);h=h%24;return d+'d '+h+'h'}
@@ -1006,7 +1031,8 @@ async function nativeStatus(){
   if(s&&s.lastHandlerVerb&&s.lastHandlerVerb.ts){
    var hv=String(s.lastHandlerVerb.ts);
    if(window.__helloWatchArmed){
-    var hts=Date.parse(hv);
+    // [F17 §2] UTC/RoundtripKind parse - the beacon ts is server-UTC.
+    var hts=parseTsUtc(hv);
     if(!isNaN(hts)&&hts>=(window.__helloWatchArmedAt-10000)){
      window.__helloWatchSeen=true;
      var stEl=$('winAutoStale');if(stEl)stEl.style.display='none';
@@ -1045,6 +1071,21 @@ async function nativeStatus(){
   if(!s.certBound && pr.cert) setReason('nrCertReason','BLOCKED: '+pr.cert);
   var ne=document.getElementById('nrNla');if(ne){ne.textContent=s.nlaOn?'ON':'OFF';ne.style.color=s.nlaOn?'':'#f5b7b7';}
   if(!s.nlaOn && pr.nla) setReason('nrNlaReason','BLOCKED: '+pr.nla);
+  // [F17 §2] RDP LISTENER: runner-side probe fields drive the row AND the
+  // WINDOWS AUTO-LOGIN gate - listening + fw + cert + nla must ALL be ✅.
+  var rl=(s&&s.rdpListener)||null;
+  window.__listenerOk=!!(rl&&rl.listening===true&&rl.fwRule===true&&rl.certOk===true&&rl.nla===true);
+  paintRdpListener(rl,s?s.rdpListenerAgeSec:null);
+  // [F17 §2] CONNECTION diagnostics lines (copy-only) follow the live FQDN.
+  var diagF=(s&&s.fqdn)||'';
+  var diagRow=document.getElementById('connDiagRow');
+  if(diagRow){
+   if(diagF){
+    diagRow.style.display='';
+    var dp=document.getElementById('connDiagPing');if(dp)dp.textContent='ping '+diagF;
+    var dt=document.getElementById('connDiagTnc');if(dt)dt.textContent='Test-NetConnection '+diagF+' -Port 3389';
+   } else { diagRow.style.display='none'; }
+  }
   var srvReasons=(s.reasonsDisabled||[]).slice();
   // [F7] Server can't verify client-PC cmdkey state; the user marks it locally
   // by copying the cmdkey line (see markCredSet). Filter out the reason when set.
@@ -1357,12 +1398,38 @@ setInterval(nativeStatus,15000);
 var BEACON_STALL_MS=45000;
 var LAUNCHER_LOG='%LOCALAPPDATA%\\ghrdp\\ghrdp-launcher.log';
 window.__beaconInvokedAt=0;
+// [F17 §2] RDP LISTENER row renderer: one ✅/❌ per probed field + the exact
+// fix text on every ❌, so a red dashboard names the dead component.
+function paintRdpListener(rl,ageSec){
+ var row=document.getElementById('rdpListenerRow'),line=document.getElementById('rdpListenerLine'),ageEl=document.getElementById('rdpListenerAge');
+ if(!row||!line)return;
+ if(!rl||typeof rl!=='object'){
+  row.style.display='';
+  line.textContent='probe not reported yet - re-dispatch (main.yml step "RDP listener self-probe (F17)")';
+  line.style.color='#f5d9b7';
+  if(ageEl)ageEl.textContent='';
+  return;
+ }
+ var marks=[];
+ function m17(ok,label,fix){marks.push((ok?'✅ ':'❌ ')+label+(ok?'':' - '+fix));}
+ m17(rl.listening===true,'listening',rl.termServiceOk===false?('TermService='+(rl.termService||'?')+' - fix: Start-Service TermService'):'fix: nothing accepts 127.0.0.1:3389 - re-run "Enable RDP + harden + firewall"');
+ m17(rl.termServiceOk===true,'termService','fix: Start-Service TermService (StartupType Automatic)');
+ m17(rl.fwRule===true,'fw '+(rl.fwScope||'100.64.0.0/10'),'fix: rule GHRDP-RDP must be enabled, ALL profiles, RemoteAddress 100.64.0.0/10');
+ m17(rl.certOk===true,'cert','fix: re-run "Bind tailnet LE cert" (tailscale cert <fqdn>)'+(rl.certWhy?' - '+rl.certWhy:''));
+ m17(rl.nla===true,'nla','fix: set UserAuthentication=1 on RDP-Tcp (NLA on)');
+ line.textContent=marks.join('  |  ');
+ line.style.color=(window.__listenerOk===true)?'':'#f5b7b7';
+ if(ageEl)ageEl.textContent=(typeof ageSec==='number'&&!isNaN(ageSec))?('probe age: '+ageSec+'s'):'';
+ row.style.display='';
+}
 function paintBeacon(){
  var el=$('winBeacon');var b=window.__beacon;
  if(el){
   if(!b||!b.ts){el.textContent='(none yet - click WINDOWS AUTO-LOGIN; a stale registration posts no beacon)';el.style.color='';}
   else{
-   var t=Date.parse(b.ts);
+   // [F17 §2] UTC/RoundtripKind parse: bare ts values are server-UTC, never
+   // this PC's local time (the +05:30 / 19805s beacon-age bug).
+   var t=parseTsUtc(b.ts);
    var age=isNaN(t)?null:Math.max(0,Math.round((Date.now()-t)/1000));
    el.textContent='verb='+(b.verb||'?')+' details='+(b.details||'(none)')+' ok='+(b.ok?'true':'false')+' age='+(age===null?'?':age)+'s';
    el.style.color=(b.ok===false)?'#f5b7b7':'';
@@ -1371,7 +1438,7 @@ function paintBeacon(){
  var se=$('winBeaconStall');if(!se)return;
  var det=(b&&b.details)?String(b.details):'';
  if(det==='invoked'){
-  if(!window.__beaconInvokedAt){var t2=Date.parse(b.ts);window.__beaconInvokedAt=(isNaN(t2)?Date.now():t2);}
+  if(!window.__beaconInvokedAt){var t2=parseTsUtc(b.ts);window.__beaconInvokedAt=(isNaN(t2)?Date.now():t2);}
   if(Date.now()-window.__beaconInvokedAt>=BEACON_STALL_MS){
    se.style.display='';
    se.textContent='launcher stalled at: '+det+' - open '+LAUNCHER_LOG;
@@ -1401,7 +1468,14 @@ function syncWinAuto(){
  var fqdn=($('rdpFqdn')||{}).textContent||'';
  var user=($('credUser')||{}).textContent||'';
  var ok=FQDN_RE.test(fqdn)&&/^[A-Za-z0-9_\-\.\\]{1,104}$/.test(user)&&user!=='__USER__';
- b.disabled=!ok;b.style.opacity=ok?'':'0.5';b.style.cursor=ok?'':'not-allowed';
+ // [F17 §2] AUTO-LOGIN stays disabled unless the runner-side rdpListener probe
+ // reports listening + fw + cert + nla ALL ✅ (a dead listener is never a
+ // launch target; a missing probe is never a ✅).
+ var lOK=window.__listenerOk===true;
+ var all=ok&&lOK;
+ b.disabled=!all;b.style.opacity=all?'':'0.5';b.style.cursor=all?'':'not-allowed';
+ var note=$('winAutoNote');
+ if(note)note.textContent=all?'fullscreen native mstsc, silent after a one-time Windows prompts for your password (cmdkey)':(ok?'RDP LISTENER probe not all ✅ (listening/fw/cert/nla) - fix the ❌ field in the RDP LISTENER row; AUTO-LOGIN stays disabled':'fullscreen native mstsc, silent after a one-time Windows prompts for your password (cmdkey)');
 }
 setInterval(syncWinAuto,2000);syncWinAuto();
 var waBtn=$('btnWinAuto');
