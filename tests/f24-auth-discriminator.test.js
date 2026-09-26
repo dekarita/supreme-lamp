@@ -185,18 +185,20 @@ test('F24-D credsspStatus pending/warn is rendered verbatim - never a bare "FAIL
   });
   await refresh(pending);
   assert.ok(!/FAIL/.test(pending.node('nrCredssp').textContent), 'an unreported credsspStatus must not render as FAIL');
-  assert.match(pending.node('nrCredssp').textContent, /not reported yet \(F21 step: CredSSP\/NLA handshake verification\)/);
+  // [F28 §4] the row renders the LIVE verdict (stored-absent reads OK, same as
+  // the listener gate) with the config stamp secondary - never bare pending.
+  assert.equal(pending.node('nrCredssp').textContent, 'OK (live probe; stamp: not reported yet - F21 step: CredSSP/NLA handshake verification)');
   assert.match(pending.node('rdpAuthVerdict').textContent, /not reported yet - the F24 step "Server-side credential proof" has not run/);
 
   const warn = page({ rdpListener: listener({ credValid: true, credsspStatus: 'ok-with-cipher-warn', credsspWhy: 'cipher-probe-failed' }) });
   await refresh(warn);
-  assert.equal(warn.node('nrCredssp').textContent, 'OK (cipher probe warn)');
+  assert.equal(warn.node('nrCredssp').textContent, 'OK (cipher probe warn) (stamp: ok-with-cipher-warn)');
   assert.match(warn.node('rdpAuthDetail').textContent, /CredSSP: OK \(cipher probe warn\) - cipher-probe-failed/,
     'the discriminator shows the credssp status verbatim');
 
   const failed = page({ rdpListener: listener({ credValid: true, credsspStatus: 'failed-nla-off', credsspWhy: 'nla-off (UserAuthentication=0)' }) });
   await refresh(failed);
-  assert.match(failed.node('nrCredssp').textContent, /^FAIL \(failed-nla-off\)$/);
+  assert.equal(failed.node('nrCredssp').textContent, 'FAIL (live probe; stamp: failed-nla-off)');
   assert.match(failed.node('rdpAuthDetail').textContent, /CredSSP: FAIL \(failed-nla-off\) - nla-off/);
 });
 
