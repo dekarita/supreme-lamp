@@ -1103,8 +1103,8 @@ jobs:
               'injectedDns=ok injectedTcp=open ip=100.64.0.7 decision=mstsc expected=mstsc verdict=pass',
               'injectedDns=fail injectedTcp=open ip=(none) decision=dns-fail expected=dns-fail verdict=pass',
               'injectedDns=notailnet injectedTcp=open ip=100.64.0.7 decision=client-dns-off expected=client-dns-off verdict=pass'
-            )) { if ($matrixTxt -notlike ('*' + $want + '*')) { throw ('matrix case missing: ' + $want) } }
-            if ($matrixTxt -notlike '*mstscLaunched=0 cmdkeyCalled=0*') { throw 'the selftest touched mstsc/cmdkey' }
+            )) { if (-not $matrixTxt.Contains($want)) { throw ('matrix case missing: ' + $want) } }
+            if (-not $matrixTxt.Contains('mstscLaunched=0 cmdkeyCalled=0')) { throw 'the selftest touched mstsc/cmdkey' }
             if ($matrixTxt -like '*verdict=FAIL*') { throw 'a matrix case reported FAIL' }
             Write-Host '[F19] launcher DNS-guard matrix: 5/5 pass (no mstsc, no cmdkey)'
           } catch {

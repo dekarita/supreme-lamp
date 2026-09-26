@@ -762,7 +762,7 @@ jobs:
             ('injectedDns=fail injectedTcp=closed ip=' + $labIp + ' decision=dns-fail expected=dns-fail verdict=pass'),
             ('injectedDns=ok injectedTcp=open ip=' + $labIp + ' decision=mstsc expected=mstsc verdict=pass'),
             'injectedDns=fail injectedTcp=open ip=(none) decision=dns-fail expected=dns-fail verdict=pass')) {
-              if ($txt -notlike ('*' + $want + '*')) { S-Fail 'matrix-case' ('missing case: ' + $want) }
+              if (-not $txt.Contains($want)) { S-Fail 'matrix-case' ('missing case: ' + $want) }
           }
           if ($txt -notmatch 'mstscLaunched=0 cmdkeyCalled=0') { S-Fail 'matrix-side-effects' 'a selftest case launched mstsc or called cmdkey' }
           if ($txt -match 'verdict=FAIL') { S-Fail 'matrix-verdict' 'at least one matrix case reported FAIL' }
@@ -837,7 +837,10 @@ jobs:
             'Use Tailscale DNS', 'mode:''no-cors''', 'CDNS_PERIOD_MS=30000',
             'id="nrLauncherOutdatedRow"', 'launcher outdated - re-run install.cmd once',
             'function ghrdpRdpUrl(fqdn,user,ip)', "[F19 §1 client-DNS probe-begin]")) {
-              if ($ui -notlike ('*' + $tok + '*')) { S-Fail 'ui-token' ('ui.html lacks ' + $tok) }
+              # .Contains, never -like: the probe markers carry [ ] which are
+              # wildcard metacharacters (WildcardPatternException killed this
+              # step before the fix).
+              if (-not $ui.Contains($tok)) { S-Fail 'ui-token' ('ui.html lacks ' + $tok) }
           }
           if ($ui -notmatch "u\+='&ip='") { S-Fail 'ui-ip-param' 'the ghrdp:// builder never appends the tailnet IP' }
           $tplCount = ([regex]::Matches($ui, [regex]::Escape("'ghrdp://rdp?server='+encodeURIComponent(fqdn)"))).Count
