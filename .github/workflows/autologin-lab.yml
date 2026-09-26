@@ -2010,33 +2010,33 @@ jobs:
               
               $hasKey = if ($cert) { $cert.HasPrivateKey } else { 'null' }
               $d1 = "DUMP: HasPrivateKey=$hasKey"
-              Write-Host $d1; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d1 }
+              Write-Host "::error::$d1"; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d1 }
               
               $cngDir = Join-Path $env:ProgramData 'Microsoft\Crypto\Keys'
               $legacyDir = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
               $d2 = "DUMP: Checked key container paths: $cngDir AND $legacyDir (active: $keyPath)"
-              Write-Host $d2; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d2 }
+              Write-Host "::error::$d2"; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d2 }
               
               if ($keyPath -and (Test-Path -LiteralPath $keyPath)) {
                   try {
                       $acls = (Get-Acl -LiteralPath $keyPath).Access | ForEach-Object { $_.IdentityReference.Value + '=>' + $_.FileSystemRights }
                       $d3 = "DUMP: Key ACLs: " + ($acls -join ' | ')
-                      Write-Host $d3; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d3 }
-                  } catch { $d3 = "DUMP: Key ACL read failed: " + $_.Exception.Message; Write-Host $d3; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d3 } }
-              } else { $d3 = "DUMP: Key path does not exist"; Write-Host $d3; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d3 } }
+                      Write-Host "::error::$d3"; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d3 }
+                  } catch { $d3 = "DUMP: Key ACL read failed: " + $_.Exception.Message; Write-Host "::error::$d3"; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d3 } }
+              } else { $d3 = "DUMP: Key path does not exist"; Write-Host "::error::$d3"; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d3 } }
               
               $d4 = "DUMP: Probe inner-exception: $probeError"
-              Write-Host $d4; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d4 }
+              Write-Host "::error::$d4"; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d4 }
               
               try {
                   $scEvents = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Schannel' } -MaxEvents 5 -ErrorAction SilentlyContinue
                   if ($scEvents) {
                       foreach ($ev in $scEvents) {
                           $d5 = "DUMP: Schannel Event ID=" + $ev.Id + " Time=" + $ev.TimeCreated.ToString('o') + " Msg=" + ($ev.Message -replace "`r`n", " ")
-                          Write-Host $d5; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d5 }
+                          Write-Host "::error::$d5"; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d5 }
                       }
-                  } else { $d5 = "DUMP: Schannel Events: none"; Write-Host $d5; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d5 } }
-              } catch { $d5 = "DUMP: Schannel query error: $_"; Write-Host $d5; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d5 } }
+                  } else { $d5 = "DUMP: Schannel Events: none"; Write-Host "::error::$d5"; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d5 } }
+              } catch { $d5 = "DUMP: Schannel query error: $_"; Write-Host "::error::$d5"; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d5 } }
           }
 
           function Report-Cell([string]$name, [string]$expect, [string]$observed, [bool]$pass, [string]$reasonCode, [object]$cert, [string]$keyPath, [string]$probeErr) {
@@ -2052,16 +2052,21 @@ jobs:
 
           $allPass = $true
 
-          # Generate pfx file for lab test using CreateFromPem
-          $pfxPath = Join-Path $env:RUNNER_TEMP 'f31-lab.pfx'
-          $eScript = '$rsa = [System.Security.Cryptography.RSA]::Create(2048); ' +
-                     '$req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new("CN=localhost", $rsa, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1); ' +
-                     '$cert = $req.CreateSelfSigned([datetime]::UtcNow.AddDays(-1), [datetime]::UtcNow.AddDays(1)); ' +
-                     '$certPem = $cert.ExportCertificatePem(); ' +
-                     '$keyPem = $rsa.ExportPkcs8PrivateKeyPem(); ' +
-                     '$loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem($certPem, $keyPem); ' +
-                     '$pfxBytes = $loaded.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, ""); ' +
-                     '[System.IO.File]::WriteAllBytes("' + $pfxPath.Replace('\', '\\') + '", $pfxBytes)'
+          # Generate distinct PFX files for negative and positive cells
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'f31-lab-neg.pfx'
+          $posPfxPath = Join-Path $env:RUNNER_TEMP 'f31-lab-pos.pfx'
+          $eScript = 'function MakePfx([string]$Path, [string]$Subject) { ' +
+                     '  $rsa = [System.Security.Cryptography.RSA]::Create(2048); ' +
+                     '  $req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new($Subject, $rsa, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1); ' +
+                     '  $cert = $req.CreateSelfSigned([datetime]::UtcNow.AddDays(-1), [datetime]::UtcNow.AddDays(1)); ' +
+                     '  $certPem = $cert.ExportCertificatePem(); ' +
+                     '  $keyPem = $rsa.ExportPkcs8PrivateKeyPem(); ' +
+                     '  $loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem($certPem, $keyPem); ' +
+                     '  $pfxBytes = $loaded.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, ""); ' +
+                     '  [System.IO.File]::WriteAllBytes($Path, $pfxBytes) ' +
+                     '}; ' +
+                     'MakePfx "' + $pfxPath.Replace('\', '\\') + '" "CN=localhost-neg"; ' +
+                     'MakePfx "' + $posPfxPath.Replace('\', '\\') + '" "CN=localhost-pos"'
           pwsh -Command $eScript
 
           # --- CELL 1: Negative case (DefaultKeySet imported in CHILD pwsh process) ---
@@ -2116,7 +2121,7 @@ jobs:
               $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet -bor `
                        [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor `
                        [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
-              $pfxBytes = [System.IO.File]::ReadAllBytes($pfxPath)
+              $pfxBytes = [System.IO.File]::ReadAllBytes($posPfxPath)
               $posCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, '', $flags)
               if (-not $posCert.HasPrivateKey) { throw 'cert-imported-without-persisted-key' }
 
