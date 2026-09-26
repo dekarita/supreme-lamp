@@ -4,15 +4,27 @@
 // Registers nothing itself; install.cmd writes HKCU\Software\Classes\ghrdp.
 //
 // Verbs:
-//   ghrdp://rdp?server=<fqdn>&user=<user>[&port=<1-65535>]
+//   ghrdp://rdp?server=<fqdn>&user=<user>[&port=<1-65535>][&ip=<tailnet-ipv4>]
 //     1. Beacon FIRST (JSONL log line + POST /api/handler-hello, details
 //        'invoked') before any other work, so a dashboard sees the click even
-//        if everything below fails.
+//        if everything below fails. The beacon carries the exe version stamp
+//        ("exe" field) so /api/native-status can flag an outdated client
+//        launcher [F19 §2].
 //     2. [F17 §3] CLIENT-DNS GUARD: resolve <fqdn>; if resolution fails or the
 //        name does not resolve to a tailnet address (100.64.0.0/10, or the
 //        fd7a:115c:a1e0::/48 tailnet ULA IPv6), show the "DNS stale/blocked -
 //        flushdns or check Tailscale" MessageBox, beacon ok:false, and NEVER
 //        launch mstsc into a dead or poisoned name (mstsc 0x904/0x7 class).
+//        [F19 §2] If the caller passed ip=<tailnet-ipv4> (the dashboard does;
+//        an address is NOT a credential) and that address answers on 3389
+//        while the NAME does not resolve, the diagnosis is exact - "Your
+//        Tailscale DNS is off..." with the one-line fix, beacon ok:false
+//        details='client-dns-off'. The mstsc target STAYS the FQDN; the IP is
+//        used for DIAGNOSIS ONLY (cert-name trust).
+//        [F19 §2] A URL carrying any credential-ish parameter
+//        (pass|password|passwd|pwd|token|key|secret|apikey|authkey|cred...) is
+//        REFUSED outright - beacon ok:false details='cred-param-rejected' and
+//        no cmdkey/mstsc work (this launcher never accepts secrets in a URL).
 //     3. If TERMSRV/<fqdn> is absent from the user's Credential Manager, launch
 //        INTERACTIVE cmdkey ONCE in a VISIBLE Normal window (Windows itself
 //        prompts for the password - this process never sees, reads, or writes
@@ -28,6 +40,13 @@
 //   ghrdp://check[?server=<fqdn>]
 //     install-time / user-triggered self test: MessageBox with the registered
 //     reg command, TERMSRV presence, the log path and the exe version stamp.
+//   ghrdp-rdp-launcher.exe --dns-selftest [<fqdn> <ip>]
+//     [F19 §5] LAB/CI ONLY harness (never reachable from a ghrdp:// URI): runs
+//     the DNS-guard DECISION matrix with injected resolver/TCP results
+//     (GHRDP_LAB_DNS_RESULT=fail|notailnet|ok, GHRDP_LAB_TCP_RESULT=open|closed)
+//     and writes one 'decision=' line per case to GHRDP_LAB_OUT (default: the
+//     JSONL log). It never shows a dialog, never calls cmdkey and never starts
+//     mstsc - so a headless CI runner can prove the guard logic itself.
 //
 // FAIL-VISIBLE CONTRACT (F15 §1.4): every exit path ends in a visible surface -
 // an mstsc window, the visible cmdkey console, or a MessageBox - and every one
@@ -51,15 +70,19 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 
-[assembly: AssemblyVersion("2.0.0.0")]
-[assembly: AssemblyFileVersion("2.0.0.0")]
+[assembly: AssemblyVersion("2.2.0.0")]
+[assembly: AssemblyFileVersion("2.2.0.0")]
 [assembly: AssemblyTitle("ghrdp-rdp-launcher")]
 
 internal static class GhrdpRdpLauncher
 {
-    private const string Ver = "2.1.0.0";
-    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F17 dns-guard)";
+    private const string Ver = "2.2.0.0";
+    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F19 dns-remediation+ver-guard)";
     private const int DefaultPort = 7331;
+    // [F19 §2] the RDP TCP port used ONLY for the client-DNS diagnosis probe
+    // (the mstsc target itself always stays the MagicDNS FQDN).
+    private const int RdpPort = 3389;
+    private const int DiagConnectMs = 2000;
     // [F15 §1.2] mandated bound for the interactive credential prompt. The
     // lab-only GHRDP_LAB_CMDKEY_TIMEOUT_MS switch may only SHORTEN it (a
     // headless runner cannot type a password); production always uses 180000.
@@ -95,6 +118,9 @@ internal static class GhrdpRdpLauncher
         // '/pass' with a VALUE must never survive into the log (this tooling
         // always uses the valueless form so Windows does the prompting).
         r = Regex.Replace(r, @"/pass\s*:\s*\S+", "/pass=[redacted]");
+        // [F19 §2] a credential-ish QUERY PARAM is REFUSED before any work, and
+        // its value must never reach the log even in the refusal line.
+        r = Regex.Replace(r, @"(?i)\b(pass|password|passwd|pwd|token|key|secret|apikey|authkey|cred)\s*=\s*[^\s&""]+", "$1=[redacted]");
         r = Regex.Replace(r, @"(?i)(tskey-[A-Za-z0-9_\-]+|ghp_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+)", "[redacted]");
         return r;
     }
@@ -174,8 +200,12 @@ internal static class GhrdpRdpLauncher
     {
         try
         {
+            // [F19 §2] the beacon carries the exe version stamp: the server
+            // compares it against config.launcherVersion (the repo constant)
+            // and flags an outdated client launcher. Version string only -
+            // never a credential, path or user.
             string body = "{\"verb\":\"" + J(verb) + "\",\"ok\":" + (ok ? "true" : "false") +
-                ",\"details\":\"" + J(Redact(details)) + "\"}";
+                ",\"details\":\"" + J(Redact(details)) + "\",\"exe\":\"" + J(Stamp) + "\"}";
             HttpWebRequest req = (HttpWebRequest)WebRequest.Create(
                 "http://" + host + ":" + port + "/api/handler-hello");
             req.Method = "POST";
@@ -278,6 +308,25 @@ internal static class GhrdpRdpLauncher
 
     private static string DnsGuardReason(string server)
     {
+        // [F19 §5] LAB/CI-ONLY injection so the guard decision can be unit
+        // tested headlessly. It REPLACES the resolver result for this call;
+        // production never sets it and always resolves for real.
+        string labDns = Environment.GetEnvironmentVariable("GHRDP_LAB_DNS_RESULT");
+        if (labDns == "fail")
+        {
+            LogJson("dns-guard", "rdp", "GHRDP_LAB_DNS_RESULT=fail: resolver result injected (lab-only switch, never a production default)");
+            return "DNS resolution failed: " + server + " (injected lab resolver result). Run ipconfig /flushdns and confirm Tailscale connected.";
+        }
+        if (labDns == "notailnet")
+        {
+            LogJson("dns-guard", "rdp", "GHRDP_LAB_DNS_RESULT=notailnet: resolver result injected (lab-only switch, never a production default)");
+            return "DNS returned non-tailnet IP: 203.0.113.9 (injected lab resolver result). Flush DNS and retry. (every answer must be in 100.64.0.0/10)";
+        }
+        if (labDns == "ok")
+        {
+            LogJson("dns-guard", "rdp", "GHRDP_LAB_DNS_RESULT=ok: resolver result injected as tailnet-valid (lab-only switch, never a production default)");
+            return null;
+        }
         IPAddress[] addrs;
         try { addrs = Dns.GetHostAddresses(server); }
         catch (Exception ex) { return "DNS resolution failed: " + server + " (" + ex.GetType().Name + "). Run ipconfig /flushdns and confirm Tailscale connected."; }
@@ -303,6 +352,153 @@ internal static class GhrdpRdpLauncher
             return null;
         }
         return "DNS returned non-tailnet IP: " + rejected.ToString() + ". Flush DNS and retry. (every answer must be in 100.64.0.0/10)";
+    }
+
+    // ------------------------------------------------------------------
+    // [F19 §2] CLIENT-DNS-OFF DIAGNOSIS (IP is not a credential).
+    // The dashboard appends &ip=<runner tailnet IPv4> to the ghrdp://rdp URL.
+    // When the NAME does not resolve but that ADDRESS answers on 3389, the
+    // client resolver is the fault - not the runner, not the credential - and
+    // the user gets the exact one-line fix. The mstsc target stays the FQDN.
+    // ------------------------------------------------------------------
+    private static string TailnetIpFromUri(string uri)
+    {
+        if (string.IsNullOrEmpty(uri)) { return ""; }
+        int q = uri.IndexOf('?');
+        if (q < 0) { return ""; }
+        foreach (string pair in uri.Substring(q + 1).Split('&', ';'))
+        {
+            int eq = pair.IndexOf('=');
+            if (eq < 1) { continue; }
+            if (pair.Substring(0, eq).Trim().ToLowerInvariant() != "ip") { continue; }
+            string v = Decode(pair.Substring(eq + 1).Trim());
+            IPAddress parsed;
+            if (!IPAddress.TryParse(v, out parsed)) { return ""; }
+            if (!IsTailnetAddress(parsed)) { return ""; }
+            return v;   // only a well-formed 100.64.0.0/10 dotted quad survives
+        }
+        return "";
+    }
+
+    // [F19 §2] REFUSAL: a ghrdp:// URL may NEVER carry a secret. Any
+    // credential-ish parameter name is rejected before cmdkey/mstsc, and the
+    // value is redacted out of the log by Redact().
+    private static readonly Regex CredParamRe = new Regex(
+        @"(^|(?<=[?&;]))(pass|password|passwd|pwd|token|key|secret|apikey|authkey|cred|creds)(?==)",
+        RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static string CredentialParamName(string uri)
+    {
+        if (string.IsNullOrEmpty(uri)) { return ""; }
+        int q = uri.IndexOf('?');
+        if (q < 0) { return ""; }
+        foreach (string pair in uri.Substring(q + 1).Split('&', ';'))
+        {
+            int eq = pair.IndexOf('=');
+            if (eq < 1) { continue; }
+            string k = pair.Substring(0, eq).Trim();
+            if (CredParamRe.IsMatch("?" + k + "=")) { return k.ToLowerInvariant(); }
+        }
+        return "";
+    }
+
+    // Is the tailnet address reachable on the RDP port? DIAGNOSIS ONLY - a
+    // positive answer never becomes the mstsc target (cert-name trust).
+    // GHRDP_LAB_TCP_RESULT=open|closed is the documented LAB-ONLY injection
+    // (headless runners cannot open a real RDP socket); production never sets
+    // it and always performs the real bounded TCP connect.
+    private static bool IpReachable(string ip, int port)
+    {
+        if (string.IsNullOrEmpty(ip)) { return false; }
+        string lab = Environment.GetEnvironmentVariable("GHRDP_LAB_TCP_RESULT");
+        if (lab == "open") { LogJson("dns-guard", "rdp", "GHRDP_LAB_TCP_RESULT=open: TCP probe injected as reachable for " + ip + ":" + port + " (lab-only switch, never a production default)"); return true; }
+        if (lab == "closed") { LogJson("dns-guard", "rdp", "GHRDP_LAB_TCP_RESULT=closed: TCP probe injected as unreachable for " + ip + ":" + port + " (lab-only switch, never a production default)"); return false; }
+        System.Net.Sockets.TcpClient c = null;
+        try
+        {
+            c = new System.Net.Sockets.TcpClient();
+            IAsyncResult ar = c.BeginConnect(ip, port, null, null);
+            if (!ar.AsyncWaitHandle.WaitOne(DiagConnectMs, false)) { return false; }
+            c.EndConnect(ar);
+            return c.Connected;
+        }
+        catch { return false; }
+        finally { try { if (c != null) { c.Close(); } } catch { } }
+    }
+
+    // [F19 §2] The DECISION - pure, no I/O, so the lab harness can drive every
+    // case with injected results:
+    //   "mstsc"           - the name resolved to tailnet addresses: launch.
+    //   "client-dns-off"  - name unreachable BUT the tailnet IP answers on the
+    //                       RDP port: client Tailscale DNS is off. ONE fix.
+    //   "dns-fail"        - anything else: the F17 DNS stale/blocked box.
+    private static string DnsDecision(string dnsReason, string ip, bool ipReachable)
+    {
+        if (dnsReason == null) { return "mstsc"; }
+        if (!string.IsNullOrEmpty(ip) && ipReachable) { return "client-dns-off"; }
+        return "dns-fail";
+    }
+
+    private static string ClientDnsOffText(string server, string ip, string dnsProblem)
+    {
+        return "Your Tailscale DNS is off. Run once: tailscale set --accept-dns=true" +
+            " (or tray -> Use Tailscale DNS), then ipconfig /flushdns, then retry." +
+            "\n\nDiagnosis: the name " + server + " does NOT resolve on this PC," +
+            " but the tailnet address " + ip + ":" + RdpPort + " IS reachable." +
+            "\nSo the runner and the network are fine - only this PC's DNS view of the" +
+            " tailnet is missing (Tailscale -> Use Tailscale DNS, or" +
+            " `tailscale set --accept-dns=true` once, then `ipconfig /flushdns`)." +
+            "\n\nResolver detail: " + dnsProblem +
+            "\n\nmstsc was NOT started. mstsc will still target " + server +
+            " (the certificate name) - never the IP." +
+            "\n\nlog: " + LogPath();
+    }
+
+    // [F19 §5] LAB/CI-ONLY harness: run the guard decision matrix with injected
+    // resolver/TCP results. No dialog, no cmdkey, no mstsc, no real network.
+    private static bool IsDnsSelfTest(string[] args)
+    {
+        return args != null && args.Length > 0 && args[0] == "--dns-selftest";
+    }
+
+    private static int DnsSelfTestMain(string[] args)
+    {
+        string server = args.Length > 1 ? args[1] : "lab-target.dekarita.tailnet-lab.ts.net";
+        string ip = args.Length > 2 ? args[2] : "100.64.0.7";
+        string[,] cases = new string[,] {
+            { "fail",     "open",   ip,  "client-dns-off" },
+            { "fail",     "closed", ip,  "dns-fail" },
+            { "ok",       "open",   ip,  "mstsc" },
+            { "fail",     "open",   "",  "dns-fail" },
+            { "notailnet","open",   ip,  "client-dns-off" }
+        };
+        StringBuilder sb = new StringBuilder();
+        string outPath = Environment.GetEnvironmentVariable("GHRDP_LAB_OUT");
+        if (string.IsNullOrEmpty(outPath)) { outPath = Path.Combine(Path.GetTempPath(), "ghrdp-dns-selftest.txt"); }
+        for (int i = 0; i < cases.GetLength(0); i++)
+        {
+            string injDns = cases[i, 0];
+            string injTcp = cases[i, 1];
+            string caseIp = cases[i, 2];
+            string expected = cases[i, 3];
+            Environment.SetEnvironmentVariable("GHRDP_LAB_DNS_RESULT", injDns);
+            Environment.SetEnvironmentVariable("GHRDP_LAB_TCP_RESULT", injTcp);
+            string dnsReason = DnsGuardReason(server);
+            bool reach = (dnsReason != null) && IpReachable(caseIp, RdpPort);
+            string decision = DnsDecision(dnsReason, caseIp, reach);
+            string line = "case=" + i + " injectedDns=" + injDns + " injectedTcp=" + injTcp +
+                " ip=" + (caseIp.Length == 0 ? "(none)" : caseIp) +
+                " decision=" + decision + " expected=" + expected +
+                " verdict=" + (decision == expected ? "pass" : "FAIL") +
+                " mstscLaunched=0 cmdkeyCalled=0";
+            sb.AppendLine(line);
+            LogJson("dns-selftest", "dns-selftest", line);
+        }
+        Environment.SetEnvironmentVariable("GHRDP_LAB_DNS_RESULT", null);
+        Environment.SetEnvironmentVariable("GHRDP_LAB_TCP_RESULT", null);
+        try { File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false)); } catch { }
+        LogJson("dns-selftest", "dns-selftest", "matrix written to " + outPath + " verdicts=" + (sb.ToString().IndexOf("FAIL") < 0 ? "all-pass" : "SEE-FAIL"));
+        return sb.ToString().IndexOf("verdict=FAIL") < 0 ? 0 : 1;
     }
 
     // ------------------------------------------------------------------
@@ -511,6 +707,24 @@ internal static class GhrdpRdpLauncher
     // ------------------------------------------------------------------
     private static int DoWork(string uri, string verb, string host, int port)
     {
+        // [F19 §2] REFUSAL FIRST: no ghrdp:// URL may carry a credential. The
+        // launcher never needs one (Windows/cmdkey owns the only password
+        // surface), so ANY credential-ish parameter aborts before the verb
+        // dispatch - no cmdkey, no mstsc, no .rdp.
+        string credParam = CredentialParamName(uri);
+        if (credParam.Length > 0)
+        {
+            LogJson("error", verb, "cred-param-rejected: URL carried a credential-ish parameter '" + credParam + "' (value redacted) - no cmdkey/mstsc work");
+            HelloBounded(host, port, verb, false, "cred-param-rejected");
+            ShowBox("ghrdp launcher: refused credential in URL",
+                "This launcher never accepts a password, token or key inside a URL" +
+                " (parameter '" + credParam + "').\n\nNothing was stored and mstsc was NOT started." +
+                "\n\nUse:  ghrdp://rdp?server=<fqdn>&user=<user>\n" +
+                "Windows prompts for the password itself (cmdkey, once per PC)." +
+                "\n\nlog: " + LogPath());
+            return 6;
+        }
+
         if (verb == "check") { return RunCheck(uri, host, port); }
 
         if (verb != "rdp")
@@ -540,6 +754,20 @@ internal static class GhrdpRdpLauncher
         // the client PC could not resolve at all (Tailscale down / MagicDNS
         // off / stale resolver cache). mstsc must never be launched into it.
         string dnsProblem = DnsGuardReason(server);
+        // [F19 §2] IP-based diagnosis (never a launch target): the dashboard's
+        // &ip= tailnet address + the RDP port decide WHICH failure this is.
+        string dnsIp = TailnetIpFromUri(uri);
+        bool dnsIpReachable = (dnsProblem != null) && IpReachable(dnsIp, RdpPort);
+        string dnsDecision = DnsDecision(dnsProblem, dnsIp, dnsIpReachable);
+        if (dnsDecision == "client-dns-off")
+        {
+            LogJson("error", verb, "client-dns-off: name did not resolve but the tailnet IP is reachable on " + RdpPort +
+                " - client Tailscale DNS is off; fix: tailscale set --accept-dns=true; server=" + server + " ip=" + dnsIp);
+            HelloBounded(host, port, verb, false, "client-dns-off");
+            ShowBox("Tailscale DNS is off",
+                ClientDnsOffText(server, dnsIp, dnsProblem));
+            return 5;
+        }
         if (dnsProblem != null)
         {
             LogJson("error", verb, "dns-guard blocked launch: " + dnsProblem + " server=" + server);
@@ -580,6 +808,12 @@ internal static class GhrdpRdpLauncher
 
     private static int Main(string[] args)
     {
+        // [F19 §5] LAB/CI-ONLY: '--dns-selftest' is not a URI verb (a ghrdp://
+        // URI can never produce it) and it is a pure argument check - no I/O -
+        // so the 'invoked' beacon below is still the first work of every real
+        // invocation.
+        if (IsDnsSelfTest(args)) { return DnsSelfTestMain(args); }
+
         // [F15 §1.1 hello-before-work] FIRST instruction of the process: JSONL
         // log line + POST /api/handler-hello {verb, ok:true, details:'invoked'} -
         // BEFORE any cmdkey/mstsc/file work, and with every POST failure caught.
