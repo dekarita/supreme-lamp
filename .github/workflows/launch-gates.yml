@@ -912,6 +912,56 @@ jobs:
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
               if ($errors) { throw "$file has $($errors.Count) PowerShell syntax error(s): $($errors[0].Message)" }
           }
+      - name: Parse F17 PowerShell blocks (main.yml probe + listener-lab run blocks)
+        shell: pwsh
+        run: |
+          # [F17] AST-parse every PowerShell block F17 ships, so a syntax error
+          # fails launch-gates instead of a lab/production run.
+          $names = New-Object System.Collections.Generic.List[string]
+          $texts = New-Object System.Collections.Generic.List[string]
+          $lines = Get-Content '.github/workflows/main.yml'
+          $start = -1
+          for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -eq '      - name: RDP listener self-probe (F17)') { $start = $i; break } }
+          if ($start -lt 0) { throw 'F17 probe step not found in main.yml' }
+          $runIdx = -1
+          for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+              if ($lines[$i] -match '^\s{6}- ') { break }
+              if ($lines[$i] -eq '        run: |') { $runIdx = $i; break }
+          }
+          if ($runIdx -lt 0) { throw 'F17 probe run block not found' }
+          $body = New-Object System.Collections.Generic.List[string]
+          for ($i = $runIdx + 1; $i -lt $lines.Count; $i++) {
+              $l = $lines[$i]
+              if ($l -eq '') { $body.Add(''); continue }
+              if ($l.StartsWith('          ')) { $body.Add($l.Substring(10)); continue }
+              break
+          }
+          $names.Add('main.yml:RDP listener self-probe (F17)')
+          $texts.Add(($body -join "`n"))
+          $labLines = Get-Content '.github/workflows/listener-lab.yml'
+          for ($i = 0; $i -lt $labLines.Count; $i++) {
+              if ($labLines[$i] -eq '        run: |') {
+                  $b2 = New-Object System.Collections.Generic.List[string]
+                  for ($j = $i + 1; $j -lt $labLines.Count; $j++) {
+                      $l = $labLines[$j]
+                      if ($l -eq '') { $b2.Add(''); continue }
+                      if ($l.StartsWith('          ')) { $b2.Add($l.Substring(10)); continue }
+                      break
+                  }
+                  $names.Add(('listener-lab.yml:run@line ' + ($i + 1)))
+                  $texts.Add(($b2 -join "`n"))
+              }
+          }
+          if ($names.Count -lt 5) { throw ('F17 parse gate expected >=5 blocks, found ' + $names.Count + ' - extraction would be vacuous') }
+          for ($k = 0; $k -lt $names.Count; $k++) {
+              $errors = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseInput($texts[$k], [ref]$null, [ref]$errors)
+              if ($errors -and $errors.Count) {
+                  $e = $errors[0]
+                  throw ("$($names[$k]) has $($errors.Count) PowerShell syntax error(s): $($e.Message) (line $($e.Extent.StartLineNumber))")
+              }
+          }
+          Write-Host ('F17 PowerShell parse OK: ' + $names.Count + ' blocks (probe + listener-lab)')
       - name: Smoke-test VPS ACL helper in temporary files only
         shell: pwsh
         run: |

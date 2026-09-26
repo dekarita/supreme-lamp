@@ -1,0 +1,305 @@
+name: listener-lab
+# [F17 §5] RDP listener self-probe proof lane. The reserved proof env
+# dekarita/ghrdp-lab is unreachable for the CI token (404 view / 403 create -
+# retried this session; same posture as autologin-lab.yml), so this
+# push-triggered windows-latest lane is the equally faithful fallback:
+#   A. extract the §1 probe step AND the firewall step VERBATIM from main.yml,
+#      bind a lab cert for <lab-f17.ts.net>, run the baseline => all OK
+#   B. BREAK: disable the 3389 rule => probe reports fwRule=false and the step
+#      FAILS LOUD (field=fwRule), and the probe must NOT re-enable the rule
+#   C. FIX: re-enable => probe passes, every rdpListener field ✅
+#   D. the REAL ghrdp-server.ps1: /api/native-status renders the rdpListener
+#      fields, the stale (previous-run) beacon store is reset at server start,
+#      and a check-verb beacon ages <60s in ISO-Z/UTC right after the POST
+# Delete this file when ghrdp-lab becomes available.
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/listener-lab.yml
+      - .github/workflows/main.yml
+      - payloads/ghrdp-server.ps1
+      - payloads/ui.html
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: "A: extract VERBATIM firewall+probe steps, lab cert, baseline all OK"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          function A-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[A] stage=' + $Stage + ' :: ' + $Detail)
+              exit 1
+          }
+          $lab = Join-Path $env:RUNNER_TEMP 'f17-lab'
+          New-Item -ItemType Directory -Path $lab -Force | Out-Null
+          $enc = New-Object System.Text.UTF8Encoding($false)
+          # --- extract the two production steps VERBATIM (byte-identical run
+          # --- blocks: the lab can never drift from what main.yml runs).
+          $lines = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE '.github\workflows\main.yml')
+          function Save-StepRun([string]$StepName, [string]$OutPath) {
+              $start = -1
+              for ($i = 0; $i -lt $lines.Count; $i++) {
+                  if ($lines[$i] -match '^\s{6}- name: ' -and $lines[$i].Contains($StepName)) { $start = $i; break }
+              }
+              if ($start -lt 0) { throw ('step not found in main.yml: ' + $StepName) }
+              $runIdx = -1
+              for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+                  if ($lines[$i] -match '^\s{6}- ') { break }
+                  if ($lines[$i] -match '^        run: \|\s*$') { $runIdx = $i; break }
+              }
+              if ($runIdx -lt 0) { throw ('run: | block not found for: ' + $StepName) }
+              $body = New-Object System.Collections.Generic.List[string]
+              for ($i = $runIdx + 1; $i -lt $lines.Count; $i++) {
+                  $l = $lines[$i]
+                  if ($l -eq '') { $body.Add(''); continue }
+                  if ($l.StartsWith('          ')) { $body.Add($l.Substring(10)); continue }
+                  break
+              }
+              if ($body.Count -lt 20) { throw ('run body too short (' + $body.Count + ' lines) for: ' + $StepName) }
+              [System.IO.File]::WriteAllLines($OutPath, $body, $enc)
+              Write-Host ('[A] extracted "' + $StepName + '" -> ' + $OutPath + ' (' + $body.Count + ' lines)')
+          }
+          try {
+              Save-StepRun 'Enable RDP + harden + firewall (3389+7331+7332, netsh fallback, verify)' (Join-Path $lab 'fw-step.ps1')
+              Save-StepRun 'RDP listener self-probe (F17)' (Join-Path $lab 'probe.ps1')
+          } catch { A-Fail 'extract' $_.Exception.Message }
+
+          # --- run the extracted firewall step (enables RDP, NLA=1, creates
+          # --- ghrdp-rdp-3389 scoped 100.64.0.0/10).
+          pwsh -NoProfile -File (Join-Path $lab 'fw-step.ps1') *> (Join-Path $lab 'fw-out.txt')
+          if ($LASTEXITCODE -ne 0) {
+              A-Fail 'firewall-step' ('exit=' + $LASTEXITCODE + ' :: ' + ((Get-Content (Join-Path $lab 'fw-out.txt') -Tail 20) -join ' | '))
+          }
+          # --- TermService up + listening (poll, never assume).
+          try { Set-Service -Name TermService -StartupType Automatic -ErrorAction SilentlyContinue } catch { }
+          try { Start-Service -Name TermService -ErrorAction SilentlyContinue } catch { }
+          $listenOk = $false
+          for ($i = 0; $i -lt 30 -and -not $listenOk; $i++) {
+              try { $tnc = Test-NetConnection -ComputerName 127.0.0.1 -Port 3389 -WarningAction SilentlyContinue; $listenOk = [bool]$tnc.TcpTestSucceeded } catch { }
+              if (-not $listenOk) { Start-Sleep -Seconds 2 }
+          }
+          if (-not $listenOk) { A-Fail 'listen-prep' 'loopback 3389 never accepted after the firewall step + TermService start' }
+
+          # --- lab cert for <lab-f17.ts.net>, trusted as its own root so the
+          # --- probe's X509Chain.Build validates (lab-only trust, throwaway VM).
+          $labDns = 'lab-f17.ts.net'
+          $leaf = $null
+          try {
+              $leaf = New-SelfSignedCertificate -DnsName $labDns -CertStoreLocation 'Cert:\LocalMachine\My' -KeyExportPolicy Exportable -NotAfter (Get-Date).AddDays(60) -ErrorAction Stop
+              $pubBytes = $leaf.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Cert)
+              $pub = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pubBytes)
+              $rs = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine')
+              $rs.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
+              $rs.Add($pub)
+              $rs.Close()
+          } catch { A-Fail 'cert' $_.Exception.Message }
+          # --- bind thumbprint to RDP-Tcp (same WMI + registry shape as U5b).
+          $thumb = $leaf.Thumbprint
+          $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+          try {
+              $tsSetting = Get-CimInstance -Namespace 'root/cimv2/TerminalServices' -ClassName 'Win32_TSGeneralSetting' -Filter "TerminalName='RDP-Tcp'" -ErrorAction Stop
+              $bindResult = Invoke-CimMethod -InputObject $tsSetting -MethodName 'SetSSLCertificateSHA1Hash' -Arguments @{ SSLCertificateSHA1Hash = $thumb } -ErrorAction Stop
+              Write-Host ('[A] WMI SetSSLCertificateSHA1Hash rc=' + $bindResult.ReturnValue)
+          } catch { Write-Host ('[A] WMI bind skipped: ' + $_.Exception.Message) }
+          try {
+              $hashBytes = -split ($thumb -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
+              New-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hashBytes -Force | Out-Null
+          } catch { A-Fail 'bind-registry' $_.Exception.Message }
+          $boundHex = ''
+          try { $bound = (Get-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash').SSLCertificateSHA1Hash; $boundHex = ($bound | ForEach-Object { $_.ToString('X2') }) -join '' } catch { }
+          if ($boundHex -ine $thumb) { A-Fail 'bind-verify' ('registry=' + $boundHex + ' expected=' + $thumb) }
+
+          # --- seed config.json (the probe reads dnsName from it).
+          $root = 'C:\ghrdp'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), (@{ dnsName = $labDns; rdpUser = 'labuser'; rdpIp = '100.118.42.7' } | ConvertTo-Json -Compress), $enc)
+
+          # --- BASELINE: the extracted probe must pass with every field OK.
+          pwsh -NoProfile -File (Join-Path $lab 'probe.ps1') *> (Join-Path $lab 'probe-a.txt')
+          $rcA = $LASTEXITCODE
+          if ($rcA -ne 0) {
+              A-Fail 'baseline-probe' ('exit=' + $rcA + ' :: ' + ((Get-Content (Join-Path $lab 'probe-a.txt')) -join ' | '))
+          }
+          $rl = $null
+          try { $rl = (Get-Content (Join-Path $root 'config.json') -Raw | ConvertFrom-Json).rdpListener } catch { }
+          if (-not $rl) { A-Fail 'rdpListener' 'config.json rdpListener missing after baseline probe' }
+          foreach ($f in @('listening', 'fwRule', 'certThumb', 'nla')) {
+              if (-not [bool]$rl.$f) { A-Fail $f ('baseline false: ' + ($rl | ConvertTo-Json -Compress)) }
+          }
+          if ([string]$rl.termService -ne 'Running') { A-Fail 'termService' ([string]$rl.termService) }
+          if ([string]$rl.fwScope -ne '100.64.0.0/10') { A-Fail 'fwScope' ([string]$rl.fwScope) }
+          Write-Host ('[A] PASS: baseline all OK - ' + ($rl | ConvertTo-Json -Compress))
+
+      - name: "B: BREAK - disable the 3389 rule => fwRule=false + step fails LOUD"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          function B-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[B] stage=' + $Stage + ' :: ' + $Detail)
+              exit 1
+          }
+          $lab = Join-Path $env:RUNNER_TEMP 'f17-lab'
+          # --- BREAK on purpose (§5): the rule exists but is disabled.
+          try { Disable-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -ErrorAction Stop } catch { B-Fail 'disable' $_.Exception.Message }
+          pwsh -NoProfile -File (Join-Path $lab 'probe.ps1') *> (Join-Path $lab 'probe-b.txt')
+          $rc = $LASTEXITCODE
+          $out = Get-Content (Join-Path $lab 'probe-b.txt') -Raw
+          if ($rc -eq 0) { B-Fail 'no-fail' ('probe must FAIL loud while the rule is disabled; output=' + $out) }
+          if ($out -notmatch [regex]::Escape('::error::[listener-probe] field=fwRule')) { B-Fail 'field-fwRule' ('expected field=fwRule annotation: ' + $out) }
+          if ($out -notmatch [regex]::Escape('RDP listener self-probe failed: field')) { B-Fail 'loud-throw' ('expected loud throw text: ' + $out) }
+          $rl = $null
+          try { $rl = (Get-Content 'C:\ghrdp\config.json' -Raw | ConvertFrom-Json).rdpListener } catch { }
+          if (-not $rl) { B-Fail 'rdpListener' 'config rdpListener missing after failed probe' }
+          if ($rl.fwRule -ne $false) { B-Fail 'fwRule-config' ('fwRule must be false in config: ' + ($rl | ConvertTo-Json -Compress)) }
+          # --- the probe must REPORT the disabled rule, never re-enable it.
+          $r = Get-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -ErrorAction SilentlyContinue
+          if (-not $r) { B-Fail 'rule-gone' 'ghrdp-rdp-3389 disappeared' }
+          if ([string]$r.Enabled -ne 'False') { B-Fail 'reenabled' 'the probe must never enable a disabled rule (break must stay broken)' }
+          Write-Host '[B] PASS: disabled rule => fwRule=false + loud fail + rule still disabled'
+
+      - name: "C: FIX - re-enable => probe passes, every rdpListener field OK"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          function C-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[C] stage=' + $Stage + ' :: ' + $Detail)
+              exit 1
+          }
+          $lab = Join-Path $env:RUNNER_TEMP 'f17-lab'
+          try { Enable-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -ErrorAction Stop } catch { C-Fail 'enable' $_.Exception.Message }
+          pwsh -NoProfile -File (Join-Path $lab 'probe.ps1') *> (Join-Path $lab 'probe-c.txt')
+          $rc = $LASTEXITCODE
+          if ($rc -ne 0) {
+              C-Fail 'probe' ('exit=' + $rc + ' :: ' + ((Get-Content (Join-Path $lab 'probe-c.txt')) -join ' | '))
+          }
+          $rl = $null
+          try { $rl = (Get-Content 'C:\ghrdp\config.json' -Raw | ConvertFrom-Json).rdpListener } catch { }
+          if (-not $rl) { C-Fail 'rdpListener' 'config rdpListener missing after fix probe' }
+          foreach ($f in @('listening', 'fwRule', 'certThumb', 'nla')) {
+              if (-not [bool]$rl.$f) { C-Fail $f ('after fix, field must be ✅: ' + ($rl | ConvertTo-Json -Compress)) }
+          }
+          if ([string]$rl.termService -ne 'Running') { C-Fail 'termService' ([string]$rl.termService) }
+          if ([string]$rl.fwScope -ne '100.64.0.0/10') { C-Fail 'fwScope' ([string]$rl.fwScope) }
+          if (-not (Select-String -Path (Join-Path $lab 'probe-c.txt') -SimpleMatch 'PASS: listening + fwRule + certThumb + nla all OK')) { C-Fail 'pass-line' 'probe PASS line missing' }
+          Write-Host '[C] PASS: re-enabled => probe green, all rdpListener fields OK'
+
+      - name: "D: native-status renders rdpListener + beacon age <60s after check verb"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $root = 'C:\ghrdp'
+          $diag = Join-Path $env:GITHUB_WORKSPACE 'f17-diag'
+          New-Item -ItemType Directory -Path $diag -Force | Out-Null
+          $srv = $null
+          function D-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[D] stage=' + $Stage + ' :: ' + $Detail)
+              try { ('stage=' + $Stage + "`n" + 'detail=' + $Detail) | Out-File (Join-Path $diag 'classification.txt') -Encoding utf8 } catch { }
+              try { if ($srv -and -not $srv.HasExited) { Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue } } catch { }
+              exit 1
+          }
+          # --- seed the REAL server inputs + a STALE previous-run beacon store.
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'payloads\ui.html') (Join-Path $root 'ui.html') -Force
+          $enc = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), 'lab-dash-token-0123456789', $enc)
+          [System.IO.File]::WriteAllText((Join-Path $root 'handler-hello-last.json'), '{"ts":"2020-01-01T00:00:00Z","verb":"rdp","ok":true,"details":"stale-previous-run"}', $enc)
+          $srvOut = Join-Path $diag 'server-out.log'; $srvErr = Join-Path $diag 'server-err.log'
+          $srv = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:GITHUB_WORKSPACE\payloads\ghrdp-server.ps1"
+          $ok = $false
+          for ($i = 0; $i -lt 40 -and -not $ok; $i++) { try { $ok = [bool](Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction Stop) } catch { }; if (-not $ok) { Start-Sleep -Milliseconds 500 } }
+          if (-not $ok) {
+              $errTail = ''; try { $errTail = ((Get-Content $srvErr -Tail 6 -ErrorAction SilentlyContinue) -join ' | ') } catch { }
+              D-Fail 'listen' ('server never listened on 7331; exited=' + $(if ($srv.HasExited) { $srv.ExitCode } else { 'no' }) + '; stderr=[' + $errTail + ']')
+          }
+          $owner = Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($owner -and $owner.OwningProcess -ne $srv.Id) { D-Fail 'port-stuck' ('7331 bound by pid=' + $owner.OwningProcess + ' not ' + $srv.Id) }
+          $base = 'http://127.0.0.1:7331'
+          # --- loopback calls bypass any proxy (F10-14 pattern).
+          function Invoke-LabJson([string]$Url, [string]$Method = 'GET', [string]$Body = '') {
+              $req = [System.Net.HttpWebRequest]::Create($Url)
+              $req.Method = $Method
+              $req.Proxy = $null
+              $req.Timeout = 10000
+              $req.ReadWriteTimeout = 10000
+              $req.KeepAlive = $false
+              $req.UserAgent = 'ghrdp-lab'
+              if ($Body) {
+                  $b = [System.Text.Encoding]::UTF8.GetBytes($Body)
+                  $req.ContentType = 'application/json'
+                  $req.ContentLength = $b.Length
+                  $st = $req.GetRequestStream(); $st.Write($b, 0, $b.Length); $st.Close()
+              }
+              try { $resp = $req.GetResponse() }
+              catch [System.Net.WebException] {
+                  $r = $_.Exception.Response
+                  $code = 0; $txt = ''
+                  if ($r) { $code = [int]$r.StatusCode; try { $sr0 = New-Object System.IO.StreamReader($r.GetResponseStream()); $txt = $sr0.ReadToEnd(); $sr0.Close() } catch { } }
+                  throw ('HTTP ' + $code + ' body=[' + $txt.Substring(0, [Math]::Min(200, $txt.Length)) + '] ' + $Url)
+              }
+              $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
+              $t = $sr.ReadToEnd(); $sr.Close(); $resp.Close()
+              return $t
+          }
+          $key = '?key=lab-dash-token-0123456789'
+          # --- (1) native-status renders the rdpListener fields (§5 "render").
+          $nsRaw = ''; try { $nsRaw = Invoke-LabJson ($base + '/api/native-status' + $key) } catch { D-Fail 'native-status' $_.Exception.Message }
+          try { $ns = $nsRaw | ConvertFrom-Json } catch { D-Fail 'native-status-json' $_.Exception.Message }
+          if (-not ($ns.PSObject.Properties.Name -contains 'rdpListener')) { D-Fail 'field-missing' 'rdpListener key absent from native-status' }
+          if (-not $ns.rdpListener) { D-Fail 'field-null' 'rdpListener is null - probe result did not reach the API' }
+          foreach ($f in @('listening', 'fwRule', 'certThumb', 'nla')) {
+              if (-not [bool]$ns.rdpListener.$f) { D-Fail ('field-' + $f) ('rdpListener.' + $f + ' not true: ' + ($ns.rdpListener | ConvertTo-Json -Compress)) }
+          }
+          if ([string]$ns.rdpListener.termService -ne 'Running') { D-Fail 'field-termService' ([string]$ns.rdpListener.termService) }
+          if ([string]$ns.rdpListener.fwScope -ne '100.64.0.0/10') { D-Fail 'field-fwScope' ([string]$ns.rdpListener.fwScope) }
+          # --- (2) per-run beacon store: the stale previous-run beacon must be
+          # --- gone (reset at server start) BEFORE any new hello arrives.
+          if ($ns.PSObject.Properties.Name -contains 'lastHandlerVerb') { D-Fail 'stale-beacon' ('stale store was not reset: ' + ($ns.lastHandlerVerb | ConvertTo-Json -Compress)) }
+          # --- (3) the served page carries the RDP LISTENER row + copy-only
+          # --- diagnostics (render contract; no run buttons/scripts).
+          $page = ''; try { $page = Invoke-LabJson ($base + '/') } catch { D-Fail 'page' $_.Exception.Message }
+          foreach ($tok in @('RDP LISTENER', 'id="nrListener"', 'nrListenerFix', 'id="diagPing"', 'id="diagTnc"', 'Test-NetConnection ')) {
+              if (-not $page.Contains($tok)) { D-Fail 'page-token' ('served ui.html lacks: ' + $tok) }
+          }
+          if ($page -match 'powershell\.exe|-ExecutionPolicy|Invoke-Expression') { D-Fail 'page-script-host' 'served ui.html contains a script-host launch token' }
+          # --- (4) check verb => beacon age <60s right after the POST, in
+          # --- ISO-Z/UTC (so Date.parse in ANY browser tz agrees).
+          $hh = $null
+          try { $hh = Invoke-LabJson ($base + '/api/handler-hello' + $key) 'POST' '{"verb":"check","ok":true,"details":"check-shown"}' } catch { D-Fail 'handler-hello' $_.Exception.Message }
+          $ns2Raw = ''; try { $ns2Raw = Invoke-LabJson ($base + '/api/native-status' + $key) } catch { D-Fail 'native-status-2' $_.Exception.Message }
+          $ns2 = $ns2Raw | ConvertFrom-Json
+          if (-not ($ns2.PSObject.Properties.Name -contains 'lastHandlerVerb')) { D-Fail 'beacon-missing' 'no lastHandlerVerb after the check-verb hello' }
+          if ([string]$ns2.lastHandlerVerb.verb -ne 'check') { D-Fail 'beacon-verb' ([string]$ns2.lastHandlerVerb.verb) }
+          $ts = [string]$ns2.lastHandlerVerb.ts
+          if ($ts -notmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$') { D-Fail 'beacon-ts-format' ('ts must be ISO-Z (Date.parse = UTC in any browser tz): [' + $ts + ']') }
+          $age = -1
+          try {
+              $dt = [datetime]::Parse($ts, [cultureinfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+              if ($dt.Kind -eq [System.DateTimeKind]::Local) { $dt = $dt.ToUniversalTime() }
+              $age = [int]([datetime]::UtcNow - $dt).TotalSeconds
+          } catch { D-Fail 'beacon-parse' $_.Exception.Message }
+          if ($age -lt 0 -or $age -ge 60) { D-Fail 'beacon-age' ('age=' + $age + 's (must be 0..59 right after the check verb); ts=' + $ts) }
+          # --- (5) browser-side agreement: node's Date.parse on the ISO-Z ts
+          # --- must yield the same <60s age regardless of the local tz.
+          $nodeOut = ''
+          try {
+              $nodeOut = (& node -e ('const ts=JSON.parse(process.argv[1]);const age=(Date.now()-Date.parse(ts))/1000;if(!(age>=0&&age<60)){console.log("age="+age);process.exit(1)}console.log("age="+age.toFixed(1))' , ($ts | ConvertTo-Json)) 2>&1) -join ' '
+              if ($LASTEXITCODE -ne 0) { D-Fail 'beacon-node-age' ('node Date.parse age out of range: ' + $nodeOut + ' ts=' + $ts) }
+          } catch { D-Fail 'beacon-node' $_.Exception.Message }
+          try { Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue } catch { }
+          Write-Host ('[D] PASS: rdpListener rendered, stale store reset, check-beacon ISO-Z age=' + $age + 's (node ' + $nodeOut + ')')
+
+      - name: "D diagnostics artifact (survives halts)"
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: f17-listener-lab-diag
+          path: f17-diag
+          if-no-files-found: ignore
