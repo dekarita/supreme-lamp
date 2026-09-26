@@ -1680,7 +1680,7 @@ function paintSrvConnLog(s){
  var tls=document.getElementById('srvConnLogTls');
  row.style.display='';
  if(!cl){
-  if(st){st.textContent='collector not reported yet - the server 30s tick reads Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational + Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational';st.style.color='#f5d9b7';}
+  if(st){st.textContent='collector not reported yet - the server 30s tick reads RdpCoreTS + RemoteConnectionManager + System/Schannel (36870 => private-key/ACL; 36871 => cipher; 12018 => no-cred)';st.style.color='#f5d9b7';}
   if(lines)lines.textContent='';
   if(tls)tls.textContent='';
   return;

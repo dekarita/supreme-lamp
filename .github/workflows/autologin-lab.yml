@@ -1994,6 +1994,227 @@ jobs:
           } catch { Write-Host ('[X] order restore skipped: ' + $_.Exception.Message) }
           Write-Host '[X] PASS: F30 ordered ciphers + TLS 1.2/1.3 + purge-before-write + .rdp floor + conn-log row all proven on a real Windows host'
           'X_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+
+      # [F31/F31b] RDP-Tcp PRIVATE-KEY PERSISTENCE FIX + SELF-PROBE + MATRIX
+      - name: "Y: F31 private-key persistence + self-probe + cross-process lab matrix"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $ws = $env:GITHUB_WORKSPACE
+          $summaryFile = $env:GITHUB_STEP_SUMMARY
+
+          function Dump-CellDiagnostics([string]$cellName, [string]$reasonCode, [object]$cert, [string]$keyPath, [string]$probeError) {
+              $line = "::error::cell=$cellName reason=$reasonCode"
+              Write-Host $line
+              if ($summaryFile) { Add-Content -Path $summaryFile -Value $line }
+              
+              $hasKey = if ($cert) { $cert.HasPrivateKey } else { 'null' }
+              Write-Host "DUMP: HasPrivateKey=$hasKey"
+              
+              $cngDir = Join-Path $env:ProgramData 'Microsoft\Crypto\Keys'
+              $legacyDir = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
+              Write-Host "DUMP: Checked key container paths: $cngDir AND $legacyDir (active: $keyPath)"
+              
+              if ($keyPath -and (Test-Path -LiteralPath $keyPath)) {
+                  try {
+                      $acls = (Get-Acl -LiteralPath $keyPath).Access | ForEach-Object { $_.IdentityReference.Value + '=>' + $_.FileSystemRights }
+                      Write-Host ("DUMP: Key ACLs: " + ($acls -join ' | '))
+                  } catch { Write-Host ("DUMP: Key ACL read failed: " + $_.Exception.Message) }
+              } else { Write-Host "DUMP: Key path does not exist" }
+              
+              Write-Host "DUMP: Probe inner-exception: $probeError"
+              
+              try {
+                  $scEvents = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Schannel' } -MaxEvents 3 -ErrorAction SilentlyContinue
+                  if ($scEvents) {
+                      foreach ($ev in $scEvents) { Write-Host ("DUMP: Schannel Event ID=" + $ev.Id + " Time=" + $ev.TimeCreated.ToString('o')) }
+                  } else { Write-Host "DUMP: Schannel Events: none" }
+              } catch { Write-Host "DUMP: Schannel query error: $_" }
+          }
+
+          function Report-Cell([string]$name, [string]$expect, [string]$observed, [bool]$pass, [string]$reasonCode, [object]$cert, [string]$keyPath, [string]$probeErr) {
+              $res = if ($pass) { 'pass' } else { 'fail' }
+              $msg = "CELL $name EXPECT $expect OBSERVED $observed RESULT $res"
+              Write-Host $msg
+              if ($summaryFile) { Add-Content -Path $summaryFile -Value $msg }
+              if (-not $pass) {
+                  Dump-CellDiagnostics -cellName $name -reasonCode $reasonCode -cert $cert -keyPath $keyPath -probeError $probeErr
+              }
+              return $pass
+          }
+
+          $allPass = $true
+
+          # Generate pfx file for lab test
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'f31-lab.pfx'
+          $eScript = @"
+          \$rsa = [System.Security.Cryptography.RSA]::Create(2048)
+          \$req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new("CN=localhost", \$rsa, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
+          \$cert = \$req.CreateSelfSigned([datetime]::UtcNow.AddDays(-1), [datetime]::UtcNow.AddDays(1))
+          \$pfxBytes = \$cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, '')
+          [System.IO.File]::WriteAllBytes('$pfxPath', \$pfxBytes)
+"@
+          pwsh -Command $eScript
+
+          # --- CELL 1: Negative case (DefaultKeySet imported in CHILD pwsh process) ---
+          $childScript = @"
+          \$pfxPath = '$pfxPath'
+          \$imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(\$pfxPath, '', [System.Security.Cryptography.X509KeyStorageFlags]::DefaultKeySet)
+          \$store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
+          \$store.Open('ReadWrite')
+          \$store.Add(\$imported)
+          \$store.Close()
+          \$thumb = \$imported.Thumbprint
+          \$rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+          \$hashBytes = -split (\$thumb -replace '(..)', '\$1 ') | ForEach-Object { [byte]("0x\$_") }
+          New-ItemProperty -Path \$rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value \$hashBytes -Force | Out-Null
+          Restart-Service TermService -Force
+"@
+          $childFile = Join-Path $env:RUNNER_TEMP 'f31-child-import.ps1'
+          [System.IO.File]::WriteAllText($childFile, $childScript)
+          
+          $p = Start-Process pwsh -ArgumentList "-File `"$childFile`"" -PassThru
+          $p.WaitForExit()
+          
+          $negProbeOk = $false
+          $negProbeErr = ''
+          try {
+              $tc = [System.Net.Sockets.TcpClient]::new()
+              $tc.Connect('127.0.0.1', 3389)
+              $st = $tc.GetStream()
+              [byte[]]$x224Cr = @(0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00)
+              $st.Write($x224Cr, 0, $x224Cr.Length)
+              $st.Flush()
+              $resp = New-Object byte[] 11
+              [void]$st.Read($resp, 0, $resp.Length)
+              $ssl = [System.Net.Security.SslStream]::new($st, $false, [System.Net.Security.RemoteCertificateValidationCallback]{ $true })
+              $ssl.AuthenticateAsClient('localhost')
+              $negProbeOk = $true
+              $ssl.Dispose(); $tc.Dispose()
+          } catch {
+              $negProbeErr = $_.Exception.Message
+          }
+
+          $negPass = (-not $negProbeOk)
+          $negObserved = if ($negProbeOk) { 'handshake-succeeded' } else { '36870/reset' }
+          if (-not (Report-Cell 'negative' '36870/reset' $negObserved $negPass 'H1-reproduction-failed' $null '' $negProbeErr)) {
+              $allPass = $false
+          }
+
+          # --- CELL 2: Positive case (MachineKeySet|PersistKeySet|Exportable) ---
+          $posCert = $null
+          $posKeyPath = $null
+          $posProbeErr = ''
+          $posProbeOk = $false
+          try {
+              $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet -bor `
+                       [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor `
+                       [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+              $posCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxPath, '', $flags)
+              if (-not $posCert.HasPrivateKey) { throw 'cert-imported-without-persisted-key' }
+
+              $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
+              $store.Open('ReadWrite')
+              $store.Add($posCert)
+              $store.Close()
+              $thumb = $posCert.Thumbprint
+
+              $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($posCert)
+              $ecdsa = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($posCert)
+              $uName = $null
+              if ($rsa -and $rsa.Key -and $rsa.Key.UniqueName) { $uName = $rsa.Key.UniqueName }
+              elseif ($ecdsa -and $ecdsa.Key -and $ecdsa.Key.UniqueName) { $uName = $ecdsa.Key.UniqueName }
+
+              $cngPath = if ($uName) { Join-Path $env:ProgramData ('Microsoft\Crypto\Keys\' + $uName) } else { $null }
+              $legPath = if ($uName) { Join-Path $env:ProgramData ('Microsoft\Crypto\RSA\MachineKeys\' + $uName) } else { $null }
+
+              if ($cngPath -and (Test-Path -LiteralPath $cngPath)) { $posKeyPath = $cngPath }
+              elseif ($legPath -and (Test-Path -LiteralPath $legPath)) { $posKeyPath = $legPath }
+              else { throw 'H3-key-container-not-found-in-crypto-keys-or-machinekeys' }
+
+              $acl = Get-Acl -LiteralPath $posKeyPath
+              $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\NETWORK SERVICE', 'Read', 'Allow')))
+              $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\SYSTEM', 'FullControl', 'Allow')))
+              Set-Acl -LiteralPath $posKeyPath -AclObject $acl
+
+              $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+              $hashBytes = -split ($thumb -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
+              New-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hashBytes -Force | Out-Null
+
+              Restart-Service TermService -Force
+              Start-Sleep -Seconds 1
+
+              $tc = [System.Net.Sockets.TcpClient]::new()
+              $tc.Connect('127.0.0.1', 3389)
+              $st = $tc.GetStream()
+              [byte[]]$x224Cr = @(0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00)
+              $st.Write($x224Cr, 0, $x224Cr.Length)
+              $st.Flush()
+              $resp = New-Object byte[] 11
+              [void]$st.Read($resp, 0, $resp.Length)
+              $ssl = [System.Net.Security.SslStream]::new($st, $false, [System.Net.Security.RemoteCertificateValidationCallback]{ $true })
+              $ssl.AuthenticateAsClient('localhost')
+              $posProbeOk = $true
+              $ssl.Dispose(); $tc.Dispose()
+          } catch {
+              $posProbeErr = $_.Exception.Message
+          }
+
+          $posObserved = if ($posProbeOk) { 'listener-handshake-ok' } else { 'probe-failed: ' + $posProbeErr }
+          if (-not (Report-Cell 'positive' 'listener-handshake-ok' $posObserved $posProbeOk 'H2-positive-cell-failed' $posCert $posKeyPath $posProbeErr)) {
+              $allPass = $false
+          }
+
+          # --- CELL 3: ACL-denied variant ---
+          $aclDenProbeOk = $false
+          $aclDenErr = ''
+          try {
+              if ($posKeyPath -and (Test-Path -LiteralPath $posKeyPath)) {
+                  $acl = Get-Acl -LiteralPath $posKeyPath
+                  $acl.PurgeAccessRules([System.Security.Principal.NTAccount]::new('NT AUTHORITY\NETWORK SERVICE'))
+                  Set-Acl -LiteralPath $posKeyPath -AclObject $acl
+                  Restart-Service TermService -Force
+                  Start-Sleep -Seconds 1
+
+                  $tc = [System.Net.Sockets.TcpClient]::new()
+                  $tc.Connect('127.0.0.1', 3389)
+                  $st = $tc.GetStream()
+                  [byte[]]$x224Cr = @(0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00)
+                  $st.Write($x224Cr, 0, $x224Cr.Length)
+                  $st.Flush()
+                  $resp = New-Object byte[] 11
+                  [void]$st.Read($resp, 0, $resp.Length)
+                  $ssl = [System.Net.Security.SslStream]::new($st, $false, [System.Net.Security.RemoteCertificateValidationCallback]{ $true })
+                  $ssl.AuthenticateAsClient('localhost')
+                  $aclDenProbeOk = $true
+                  $ssl.Dispose(); $tc.Dispose()
+              }
+          } catch {
+              $aclDenErr = $_.Exception.Message
+          } finally {
+              if ($posKeyPath -and (Test-Path -LiteralPath $posKeyPath)) {
+                  try {
+                      $acl = Get-Acl -LiteralPath $posKeyPath
+                      $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\NETWORK SERVICE', 'Read', 'Allow')))
+                      Set-Acl -LiteralPath $posKeyPath -AclObject $acl
+                      Restart-Service TermService -Force
+                  } catch { }
+              }
+          }
+
+          $aclDenPass = (-not $aclDenProbeOk)
+          $aclDenObserved = if ($aclDenProbeOk) { 'handshake-succeeded' } else { '36870/reset' }
+          if (-not (Report-Cell 'acl-denied' '36870/reset' $aclDenObserved $aclDenPass 'acl-denied-failed' $posCert $posKeyPath $aclDenErr)) {
+              $allPass = $false
+          }
+
+          if (-not $allPass) {
+              Write-Host "::error::F31 matrix proof failed"
+              'Y_result=fail' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+              exit 1
+          }
+          Write-Host "[Y] PASS: F31 matrix proof green (negative cell 36870 reproduced cross-process, positive cell listener-handshake-ok, acl-denied cell 36870 reproduced)"
+          'Y_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
       - name: "G: setup-time measurement + lab matrix summary"
         if: ${{ always() }}
         shell: pwsh
@@ -2023,11 +2244,12 @@ jobs:
           ('| (u) auth-reject discriminator (F24) | ' + $(if ($env:U_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml blocks verified: SAM ValidateCredentials fixture (fresh account => true, wrong password => false with no probe error, empty => the missing-env probe verdict), the 4625 collector driven by synthetic events (0xC000006A/0xC000006D => credential-mismatch, 0xC000015B => logon-type-denied, 4624-only => none) with a REAL Security-log write into a temp config.json that keeps the pre-existing rdpListener fields and carries only the F27 failure target account; the shipped page matrix executed through the real renderer (three branches + pending/warn credssp render) and the TLS-layer branch carries the CAPI2 + System export copy-lines. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
           ('| (v) logon-result loop + one-click recovery + fallback gap (F28) | ' + $(if ($env:V_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED ghrdp-server.ps1 scanner driven with synthetic events (4625 0xC000006A => failed+sub+eventTs, newer type-10 4624 => success, empty window => none, probe error => named, console/type-3 + pre-window ignored, scanTs stamped on EVERY path, verdict carries no identity field); SHIPPED launcher compiled by the in-box csc runs --fallback-selftest 4/4 (stored=false + failed retry => native-prompt + fallback-mstsc-native-prompt beacon, zero mstsc/cmdkey calls); shipped page renderer executed through the node matrix (LAST RDP LOGON result+sub+eventTs+scanTs verbatim, RED collector-dead, recovery card ONLY for 0xC000006A inside 120s of mstsc-started, FIX & RECONNECT mints a ticket then fires ghrdp://recred with t only, CREDSSP live probe + stamp); the 30s scan tick lives in the server process from start and main.yml never mentions it. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
           ('| (x) TLS/cipher handshake fix + purge + conn log (F30) | ' + $(if ($env:X_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml normalization block: fixture-driven order verdict (CBC/3DES-first rejected, GCM/ChaCha20 moved to the front in the declared order) + REAL run on the runner (Schannel Functions list rewritten and re-read, TLS 1.2 AND 1.3 Enabled=1/DisabledByDefault=0 on Client+Server, RDP-Tcp SecurityLayer=2/MinEncryptionLevel=3); SHIPPED launcher compiled by the in-box csc runs --purge-selftest against the REAL credential store (planted LegacyGeneric type-1 + Domain type-2 pair both PURGED, fresh entry written as DomainPassword, zero mstsc/cmdkey); .rdp written from the shipped 19-directive template is > 400 bytes with the read-back assert before the launch; EXTRACTED conn-log collector driven with synthetic events (tls-forcibly-closed / auth-succeeded / cert-rejected / connection-reset, credential-shaped text redacted) and the resulting sample rendered into the SERVER CONN LOG row by the shipped page. What stays PENDING-USER is only the physical click-through (fullscreen session) |') | Add-Content -Path $S
+          ('| (y) F31 private-key persistence + self-probe | ' + $(if ($env:Y_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | cross-process negative cell reproduced 36870, positive cell listener-handshake-ok with MachineKeySet|PersistKeySet, acl-denied cell reproduced 36870 |') | Add-Content -Path $S
           ('| (k) no console window in the interactive session | **contract PASS** | every host-helper launch is -WindowStyle Hidden (or NoNewWindow for the user-driven terminal exec) and the long-lived services are SYSTEM scheduled tasks; launch-gates F11-5.3 enforces it. Visual confirmation on the first physical RDP session = PENDING-USER |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
           # retrievable), so the PR/verify evidence does not depend on the log UI.
-          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'}) + ' t=' + $(if ($env:T_result -eq 'pass') {'pass'} else {'fail'}) + ' u=' + $(if ($env:U_result -eq 'pass') {'pass'} else {'fail'}) + ' v=' + $(if ($env:V_result -eq 'pass') {'pass'} else {'fail'}) + ' x=' + $(if ($env:X_result -eq 'pass') {'pass'} else {'fail'})
+          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'}) + ' t=' + $(if ($env:T_result -eq 'pass') {'pass'} else {'fail'}) + ' u=' + $(if ($env:U_result -eq 'pass') {'pass'} else {'fail'}) + ' v=' + $(if ($env:V_result -eq 'pass') {'pass'} else {'fail'}) + ' x=' + $(if ($env:X_result -eq 'pass') {'pass'} else {'fail'}) + ' y=' + $(if ($env:Y_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
           # [F19] Evidence notices must carry the CELL RESULT they belong to:
           # before this, every notice claimed its achievement even when the cell

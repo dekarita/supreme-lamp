@@ -7,7 +7,7 @@
 #
 # Runs on the RDP HOST (VPS / persistent runner), NOT on the client. Requires:
 #   - Tailscale installed, node up, HTTPS enabled in the tailnet (admin console).
-#   - PowerShell 7+ (uses X509Certificate2::CreateFromPemFile).
+#   - PowerShell 7+ (uses X509Certificate2::CreateFromPem).
 #   - Administrator.
 #
 # Idempotent: safe to re-run when the cert renews (~every 90 days for LE).
@@ -55,7 +55,10 @@ foreach ($pem in @($crtPath, $keyPath)) {
 }
 
 # --- 4. Load PEM into X509 with private key, import to LocalMachine\My ----------
-$loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile($crtPath, $keyPath)
+$crtText = [System.IO.File]::ReadAllText($crtPath)
+$keyText = [System.IO.File]::ReadAllText($keyPath)
+$loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem($crtText, $keyText)
+
 $dns = $loaded.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::DnsName, $false)
 if ($dns -ne $Fqdn -or -not $loaded.HasPrivateKey -or $loaded.NotAfter.ToUniversalTime() -le [datetime]::UtcNow -or
     $loaded.Issuer -notmatch "Let'?s Encrypt") {
@@ -64,36 +67,74 @@ if ($dns -ne $Fqdn -or -not $loaded.HasPrivateKey -or $loaded.NotAfter.ToUnivers
 $chain = [System.Security.Cryptography.X509Certificates.X509Chain]::new()
 try { if (-not $chain.Build($loaded)) { throw 'Tailscale LE certificate chain is not trusted on this host.' } }
 finally { $chain.Dispose() }
-# Re-export/import to persist the key with MachineKeySet + PersistKeySet.
-$pfxBytes = $loaded.Export('Pfx', [string]::Empty)
-$flags = 'PersistKeySet,MachineKeySet'
+
+# Re-export to pfx in-memory and re-import with flags: MachineKeySet | PersistKeySet | Exportable
+$pfxBytes = $loaded.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, [string]::Empty)
+$flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet -bor `
+         [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor `
+         [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+
 $imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, [string]::Empty, $flags)
 
+# Assert HasPrivateKey
+if (-not $imported.HasPrivateKey) {
+    throw 'cert-imported-without-persisted-key'
+}
+
 $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
-try { $store.Open('ReadWrite'); $store.Add($imported) }
-finally { $store.Close() }
+try {
+    $store.Open('ReadWrite')
+    foreach ($old in @($store.Certificates | Where-Object { $_.Subject -match [regex]::Escape($Fqdn) })) {
+        try { $store.Remove($old) } catch { }
+    }
+    $store.Add($imported)
+} finally { $store.Close() }
 $thumb = $imported.Thumbprint
 Write-Host "Imported thumbprint: $thumb"
 
-# --- 5. Grant NETWORK SERVICE read on the actual persisted key container -----
-$privateKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported)
-if (-not $privateKey) {
-    $privateKey = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($imported)
+# --- 5. Grant NETWORK SERVICE Read + SYSTEM FullControl on the key container file -----
+$keyFile = $null
+try {
+    $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported)
+    $ecdsa = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($imported)
+    $uniqueName = $null
+    if ($rsa -and $rsa.Key -and $rsa.Key.UniqueName) { $uniqueName = $rsa.Key.UniqueName }
+    elseif ($ecdsa -and $ecdsa.Key -and $ecdsa.Key.UniqueName) { $uniqueName = $ecdsa.Key.UniqueName }
+
+    if ($uniqueName) {
+        $cngPath = Join-Path $env:ProgramData ('Microsoft\Crypto\Keys\' + $uniqueName)
+        $legacyPath = Join-Path $env:ProgramData ('Microsoft\Crypto\RSA\MachineKeys\' + $uniqueName)
+        if (Test-Path -LiteralPath $cngPath) { $keyFile = $cngPath }
+        elseif (Test-Path -LiteralPath $legacyPath) { $keyFile = $legacyPath }
+    }
+} catch { }
+
+if (-not $keyFile -or -not (Test-Path -LiteralPath $keyFile)) {
+    throw 'Persisted machine key not found: checked Crypto\Keys and RSA\MachineKeys'
 }
-if ($privateKey -is [System.Security.Cryptography.RSACng] -or
-    $privateKey -is [System.Security.Cryptography.ECDsaCng]) {
-    $keyFile = Join-Path (Join-Path $env:ProgramData 'Microsoft\Crypto\Keys') $privateKey.Key.UniqueName
-} elseif ($privateKey -is [System.Security.Cryptography.RSACryptoServiceProvider]) {
-    $keyFile = Join-Path (Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys') $privateKey.CspKeyContainerInfo.UniqueKeyContainerName
-} else { throw 'Imported certificate private key has no supported machine key container.' }
-if (-not (Test-Path -LiteralPath $keyFile)) { throw 'Persisted machine key not found; refusing to bind an unreadable RDP certificate.' }
+
 $keyAcl = Get-Acl -LiteralPath $keyFile -ErrorAction Stop
 $keyAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
     [System.Security.Principal.SecurityIdentifier]::new('S-1-5-20'),
     [System.Security.AccessControl.FileSystemRights]::Read,
     [System.Security.AccessControl.AccessControlType]::Allow))
+$keyAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
+    [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18'),
+    [System.Security.AccessControl.FileSystemRights]::FullControl,
+    [System.Security.AccessControl.AccessControlType]::Allow))
 Set-Acl -LiteralPath $keyFile -AclObject $keyAcl -ErrorAction Stop
-Write-Host 'NETWORK SERVICE can read the listener private key'
+
+# Assert ACE present after write
+$aclAfter = Get-Acl -LiteralPath $keyFile
+$hasNs = $false; $hasSys = $false
+foreach ($access in $aclAfter.Access) {
+    if ($access.IdentityReference.Value -match 'NETWORK SERVICE' -and ($access.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Read)) { $hasNs = $true }
+    if ($access.IdentityReference.Value -match 'SYSTEM' -and ($access.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::FullControl)) { $hasSys = $true }
+}
+if (-not $hasNs -or -not $hasSys) {
+    throw 'key-container-acl-verification-failed'
+}
+Write-Host 'NETWORK SERVICE Read and SYSTEM FullControl verified on listener private key'
 
 # --- 6. Bind on RDP-Tcp listener ------------------------------------------------
 $tsSetting = Get-CimInstance -Namespace 'root/cimv2/TerminalServices' `
@@ -107,14 +148,61 @@ if ($bindResult.ReturnValue -ne 0) {
         -Value $hashBytes -Force | Out-Null
 }
 
-# --- 7. Verify bind + reassert NLA still 1 -------------------------------------
+# --- 7. Verify bind + restart TermService + LOCAL TLS SELF-PROBE ------------------
 $bound = (Get-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash').SSLCertificateSHA1Hash
 $boundHex = ($bound | ForEach-Object { $_.ToString('X2') }) -join ''
 if ($boundHex -ne $thumb) { throw "bind verification failed: registry=$boundHex, expected=$thumb" }
 $nlaAfter = (Get-ItemProperty -Path $rdpKey -Name 'UserAuthentication').UserAuthentication
 if ($nlaAfter -ne 1) { throw "NLA flipped to $nlaAfter during operation; aborting." }
 
-Write-Host "OK: NLA=1, cert $thumb bound on RDP-Tcp for $Fqdn."
-Write-Host "Restart TermService for the new cert to take effect:"
-Write-Host "  Restart-Service TermService -Force"
-Write-Host "(Kicks any active session; schedule during a maintenance window.)"
+Write-Host "Restarting TermService to activate new bound cert..."
+Restart-Service TermService -Force
+
+# Assert listener LISTEN
+$listenOk = $false
+for ($i = 0; $i -lt 10; $i++) {
+    try {
+        $tc = [System.Net.Sockets.TcpClient]::new()
+        $tc.Connect('127.0.0.1', 3389)
+        if ($tc.Connected) { $tc.Close(); $listenOk = $true; break }
+    } catch { Start-Sleep -Milliseconds 500 }
+}
+if (-not $listenOk) { throw 'TermService listener not active on 127.0.0.1:3389 after restart' }
+
+# Local TLS self-probe
+try {
+    $probeClient = [System.Net.Sockets.TcpClient]::new()
+    $probeClient.Connect('127.0.0.1', 3389)
+    $probeStream = $probeClient.GetStream()
+    [byte[]]$x224Cr = @(0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00)
+    $probeStream.Write($x224Cr, 0, $x224Cr.Length)
+    $probeStream.Flush()
+    $x224Cc = New-Object byte[] 11
+    [void]$probeStream.Read($x224Cc, 0, $x224Cc.Length)
+
+    $sslStream = [System.Net.Security.SslStream]::new(
+        $probeStream,
+        $false,
+        [System.Net.Security.RemoteCertificateValidationCallback]{ $true }
+    )
+    $sslStream.AuthenticateAsClient('localhost')
+    Write-Host 'listener-handshake-ok'
+    $sslStream.Dispose()
+    $probeClient.Dispose()
+} catch {
+    $probeErr = $_.Exception.Message
+    Write-Host "self-probe failed: $probeErr"
+    try {
+        $events = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Schannel'; Id = 36870 } -MaxEvents 3 -ErrorAction SilentlyContinue
+        foreach ($ev in $events) { Write-Host ("Schannel 36870: " + $ev.TimeCreated.ToString('o') + ' ' + $ev.Message) }
+    } catch { }
+    if ($keyFile -and (Test-Path -LiteralPath $keyFile)) {
+        try {
+            $aclDump = (Get-Acl -LiteralPath $keyFile).Access | ForEach-Object { $_.IdentityReference.Value + ':' + $_.FileSystemRights }
+            Write-Host ("keyFile ACL: " + ($aclDump -join ', '))
+        } catch { }
+    }
+    throw "rdp-tls-credential-unusable: $probeErr"
+}
+
+Write-Host "OK: NLA=1, cert $thumb bound on RDP-Tcp for $Fqdn, self-probe listener-handshake-ok."

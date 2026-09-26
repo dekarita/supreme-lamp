@@ -440,7 +440,8 @@ $script:F30ConnLogPerLog = 10
 $script:F30ConnLogMaxItems = 12
 $script:F30ConnLogSources = @(
     'Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational',
-    'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational'
+    'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational',
+    'System'
 )
 $script:F30ConnLogScans = 0
 $script:F30ConnLogLastProbeError = ''
@@ -480,13 +481,17 @@ function Get-RdpConnLogEventFields {
 }
 function Get-RdpConnLogReason {
     # reason codes, derived from the stored fields only (never a guess about a
-    # host we cannot see): tls-forcibly-closed | tls-handshake-failed |
-    # cert-rejected | connection-reset | auth-succeeded | auth-failed |
-    # listener-lifecycle | session-state | event-<id> | other
+    # host we cannot see): private-key/ACL | cipher | no-cred |
+    # tls-forcibly-closed | tls-handshake-failed | cert-rejected | connection-reset |
+    # auth-succeeded | auth-failed | listener-lifecycle | session-state | event-<id> | other
     param([string]$Provider, [string]$Id, [string]$Level, [string]$Text)
     $t = ([string]$Text).ToLowerInvariant()
     $p = ([string]$Provider).ToLowerInvariant()
     $evt = ([string]$Id).Trim()
+    if ($evt -eq '36870' -or $t -match '36870|access the tls server credential private key|0x8009030d') { return 'private-key/ACL' }
+    if ($evt -eq '36871' -or $t -match '36871') { return 'cipher' }
+    if ($evt -eq '12018' -or $t -match '12018') { return 'no-cred' }
+    if ($evt -eq '12017' -or $t -match '12017') { return 'tls-handshake-failed' }
     if ($t -match 'forcibly closed') { return 'tls-forcibly-closed' }
     # certificate FIRST: a cert failure message also says "TLS ... failed", and
     # 'cert-rejected' is the actionable reason code for it.
@@ -544,7 +549,7 @@ function Get-RdpConnLogWindowStart {
     return $ScanStartedUtc.AddSeconds(-1 * $script:F30ConnLogIntervalSec).ToString('o')
 }
 function Update-RdpConnLog {
-    # The tick body: read the last 10 events of BOTH RDP Operational logs, stamp,
+    # The tick body: read the last 10 events of BOTH RDP Operational logs and System Schannel events, stamp,
     # persist. Never throws (a dead probe stamps probeError + scanTs).
     param([string]$StatePath, [datetime]$ScanStartedUtc)
     $items = @()
@@ -552,10 +557,19 @@ function Update-RdpConnLog {
     foreach ($logName in $script:F30ConnLogSources) {
         try {
             $since = (Get-Date).ToLocalTime().AddSeconds(-300)
-            $raw = @(Get-WinEvent -FilterHashtable @{ LogName = $logName; StartTime = $since } -MaxEvents $script:F30ConnLogPerLog -ErrorAction Stop)
-            foreach ($e in $raw) {
-                $prov = $logName.Split('/')[0] -replace '^Microsoft-Windows-', ''
-                $items += (Get-RdpConnLogEventFields -Xml ([xml]$e.ToXml()) -Provider $prov)
+            if ($logName -eq 'System') {
+                try {
+                    $raw = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Schannel'; StartTime = $since; Id = @(36870,36871,12017,12018) } -MaxEvents 5 -ErrorAction Stop)
+                    foreach ($e in $raw) {
+                        $items += (Get-RdpConnLogEventFields -Xml ([xml]$e.ToXml()) -Provider 'Schannel')
+                    }
+                } catch { }
+            } else {
+                $raw = @(Get-WinEvent -FilterHashtable @{ LogName = $logName; StartTime = $since } -MaxEvents $script:F30ConnLogPerLog -ErrorAction Stop)
+                foreach ($e in $raw) {
+                    $prov = $logName.Split('/')[0] -replace '^Microsoft-Windows-', ''
+                    $items += (Get-RdpConnLogEventFields -Xml ([xml]$e.ToXml()) -Provider $prov)
+                }
             }
         } catch { $failed += $logName }
     }

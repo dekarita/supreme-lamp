@@ -1693,6 +1693,37 @@ jobs:
           test -f tests/f30-tls-cipher.test.js || { echo 'F30: the node matrix is missing' >&2; exit 1; }
           node --test tests/f30-tls-cipher.test.js
           echo 'F30 gates PASS'
+      - name: F31 RDP-Tcp private-key persistence + self-probe gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          main=.github/workflows/main.yml
+          script=payloads/Enable-RdpTlsCertificate.ps1
+          srv=payloads/ghrdp-server.ps1
+          lab=.github/workflows/autologin-lab.yml
+          grep -qF 'CreateFromPem' "$main" || { echo 'F31: main.yml lacks CreateFromPem' >&2; exit 1; }
+          grep -qF 'CreateFromPem' "$script" || { echo 'F31: script lacks CreateFromPem' >&2; exit 1; }
+          grep -qF 'HasPrivateKey' "$main" || { echo 'F31: main.yml lacks HasPrivateKey assertion' >&2; exit 1; }
+          grep -qF 'HasPrivateKey' "$script" || { echo 'F31: script lacks HasPrivateKey assertion' >&2; exit 1; }
+          grep -qF 'cert-imported-without-persisted-key' "$main" || { echo 'F31: main.yml lacks cert-imported-without-persisted-key exception' >&2; exit 1; }
+          grep -qF 'cert-imported-without-persisted-key' "$script" || { echo 'F31: script lacks cert-imported-without-persisted-key exception' >&2; exit 1; }
+          grep -qF 'Crypto\Keys' "$main" || { echo 'F31: main.yml lacks Crypto\Keys path' >&2; exit 1; }
+          grep -qF 'RSA\MachineKeys' "$main" || { echo 'F31: main.yml lacks RSA\MachineKeys path' >&2; exit 1; }
+          grep -qF 'Crypto\Keys' "$script" || { echo 'F31: script lacks Crypto\Keys path' >&2; exit 1; }
+          grep -qF 'RSA\MachineKeys' "$script" || { echo 'F31: script lacks RSA\MachineKeys path' >&2; exit 1; }
+          grep -qF 'AuthenticateAsClient' "$main" || { echo 'F31: main.yml lacks AuthenticateAsClient self-probe' >&2; exit 1; }
+          grep -qF 'listener-handshake-ok' "$main" || { echo 'F31: main.yml lacks listener-handshake-ok log' >&2; exit 1; }
+          grep -qF 'rdp-tls-credential-unusable' "$main" || { echo 'F31: main.yml lacks rdp-tls-credential-unusable exception' >&2; exit 1; }
+          grep -qF 'listener-handshake-ok' "$script" || { echo 'F31: script lacks listener-handshake-ok log' >&2; exit 1; }
+          grep -qF '36870' "$srv" || { echo 'F31: ghrdp-server.ps1 lacks 36870 event handling' >&2; exit 1; }
+          grep -qF 'private-key/ACL' "$srv" || { echo 'F31: ghrdp-server.ps1 lacks private-key/ACL reason code' >&2; exit 1; }
+          grep -qF 'CELL ' "$lab" || { echo 'F31: autologin-lab.yml lacks CELL summary lines' >&2; exit 1; }
+          grep -qF 'EXPECT ' "$lab" || { echo 'F31: autologin-lab.yml lacks EXPECT summary lines' >&2; exit 1; }
+          grep -qF 'OBSERVED ' "$lab" || { echo 'F31: autologin-lab.yml lacks OBSERVED summary lines' >&2; exit 1; }
+          grep -qF 'RESULT ' "$lab" || { echo 'F31: autologin-lab.yml lacks RESULT summary lines' >&2; exit 1; }
+          test -f tests/f31-tls-private-key.test.js || { echo 'F31: node test matrix is missing' >&2; exit 1; }
+          node --test tests/f31-tls-private-key.test.js
+          echo 'F31 gates PASS'
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:
