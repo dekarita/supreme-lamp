@@ -751,6 +751,8 @@ function Invoke-ClientRequest {
                 rdpListenerAgeSec = $(if ($cfgN -and $cfgN.PSObject.Properties['rdpListener'] -and $cfgN.rdpListener) { Get-UtcAgeSeconds $cfgN.rdpListener.ts } else { $null })
                 # [F18 §4] runnerResolvedIP: the F18 runner FQDN self-test result
                 # (100.64.0.0/10 only). Empty/invalid => AUTO-LOGIN stays disabled.
+                launcherVersion = '2.2.0.0'
+                launcherOutdated = $false
                 runnerResolvedIP = $(if ($cfgN -and $cfgN.PSObject.Properties['runnerResolvedIP'] -and ([string]$cfgN.runnerResolvedIP -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.')) { [string]$cfgN.runnerResolvedIP } else { '' })
                 certBound = $certBound
                 nlaOn = $nlaOn
@@ -790,6 +792,10 @@ function Invoke-ClientRequest {
                         # (with Z). The old `[string]$lv.ts` emitted the
                         # server-LOCAL Z-less form, which the visitor's browser
                         # parsed as local (+05:30 => beacon age +19800s).
+                        $currentVersion = [version]'2.2.0.0'
+                        if ($lv.exe -match '^ghrdp-rdp-launcher ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+) ') {
+                            try { $ns.launcherOutdated = ([version]$Matches[1] -lt $currentVersion) } catch { }
+                        } else { $ns.launcherOutdated = $true }
                         $ns.lastHandlerVerb = @{ verb = [string]$lv.verb; ok = [bool]$lv.ok; details = [string]$lv.details; ts = (ConvertTo-UtcIso (Get-RawJsonTs $lvFile)) }
                     }
                 }
@@ -809,6 +815,7 @@ function Invoke-ClientRequest {
                     $bTxt = [System.Text.Encoding]::UTF8.GetString([byte[]]$bodyRaw)
                     $bj = $bTxt | ConvertFrom-Json -ErrorAction SilentlyContinue
                     if ($bj) {
+                        if ($bj.exe -and ([string]$bj.exe -match '^ghrdp-rdp-launcher [0-9]+\.[0-9]+\.[0-9]+\.[0-9]+ ')) { $hh.exe = [string]$bj.exe }
                         if ($bj.verb)    { $hh.verb    = [string]$bj.verb }
                         if ($null -ne $bj.ok) { $hh.ok = [bool]$bj.ok }
                         if ($bj.details) { $hh.details = ([string]$bj.details).Substring(0, [Math]::Min(280, ([string]$bj.details).Length)) }

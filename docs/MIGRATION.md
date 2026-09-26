@@ -678,3 +678,11 @@ BFG requires a `--mirror` bare clone:
 
 The STEP 4 confirmation gate and STEP 6 post-rewrite items apply
 identically.
+
+### 1.11 Optional future: signed RDP launch file
+
+The unsigned `.rdp` file with drive/clipboard/port redirection prompts an
+expected “Unknown publisher” consent dialog. A future opt-in could issue a
+self-signed CodeSigning certificate, install its trust on the client once, and
+sign the RDP file with `rdpsign` to pre-authorize redirection. This is **not**
+implemented; do not bypass certificate validation or automate the consent UI.
