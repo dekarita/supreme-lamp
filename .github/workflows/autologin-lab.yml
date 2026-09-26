@@ -2106,7 +2106,8 @@ jobs:
               $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet -bor `
                        [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor `
                        [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
-              $posCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxPath, '', $flags)
+              $pfxBytes = [System.IO.File]::ReadAllBytes($pfxPath)
+              $posCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, '', $flags)
               if (-not $posCert.HasPrivateKey) { throw 'cert-imported-without-persisted-key' }
 
               $posStage = 'store-add'
@@ -2116,6 +2117,8 @@ jobs:
                   try { $store.Remove($old) } catch { }
               }
               $store.Add($posCert)
+              $posCertFromStore = @($store.Certificates | Where-Object { $_.Subject -match 'CN=localhost' }) | Select-Object -First 1
+              if ($posCertFromStore) { $posCert = $posCertFromStore }
               $store.Close()
               $thumb = $posCert.Thumbprint
 
