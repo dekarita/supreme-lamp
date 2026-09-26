@@ -822,3 +822,49 @@ It never creates a new generic entry when absent, never deletes credentials,
 and never reads/exports the old blob. Failure to inspect or refresh stops launch.
 The Windows proof seeds both types and verifies both metadata records change;
 the secret itself remains absent from every proof output.
+
+## F28: logon-result loop, one-click recovery, closed fallback gap (2026-09-26)
+
+**Why:** F27 proved the credential handoff (ticket → CredWrite → `mstsc-started`)
+but nothing reported the OUTCOME. The dashboard's LAST RDP LOGON row read a
+keep-alive collector that never stamped, so a rejected password and a dead
+collector looked identical; and a cmdkey prompt that stored nothing still fell
+through to a silent `mstsc`.
+
+**What changed**
+
+1. **Server-side logon loop.** `payloads/ghrdp-server.ps1` runs its own 30s tick
+   from process start (never dependent on the workflow keep-alive step) and
+   stamps `rdp-logon.json` → served as `rdpListener.authLast = {result, sub,
+   eventTs, scanTs}` with `rdpListener.logonCollector = {intervalSec, staleSec,
+   scans, alive, uptimeSec, lastScanAgeSec, probeError}`. Only event id,
+   LogonType, Status/SubStatus/FailureReason and TargetUserName of 4624
+   (LogonType 10) / 4625 are read; `scanTs` is stamped on every scan. A 4624
+   newer than the newest 4625 ⇒ `success`; otherwise the newest 4625 ⇒ `failed`
+   with its sub-status; nothing in the window ⇒ `none`.
+2. **One-click recovery.** When `authLast.result=failed` with sub `0xC000006A`
+   inside 120s of the last `mstsc-started` beacon, the page shows the RECOVERY
+   card. `FIX & RECONNECT` mints a FRESH single-use ticket (POST
+   `/api/rdp-token`) and fires `ghrdp://recred?server=<fqdn>&user=<u>&t=<ticket>`
+   — the same F27 ticket contract (t only; any credential-ish parameter is
+   refused). The launcher redeems, OVERWRITES the stored TERMSRV entry via
+   CredWrite (type 2 plus an existing type 1) and reopens mstsc; the beacon
+   chain is `recred-redeemed → credwrite-ok → rdp-written → mstsc-started`. The
+   manual valueless `/pass` cmdkey line stays a copy-only user-run escape hatch.
+3. **Fallback gap closed.** `CmdkeyStep` now returns an outcome
+   (`stored | missing | abort`). On `missing` the launcher retries the ticket
+   redemption ONCE; if that fails, `CredentialFallbackDecision()` (the single
+   decision function, proven by `--fallback-selftest`) selects the native-prompt
+   path: the `fallback-mstsc-native-prompt` beacon is emitted immediately before
+   `mstsc` is started with `/prompt`. No path launches mstsc against a
+   known-absent credential, and a timed-out prompt still aborts without a launch.
+4. **CREDSSP row consistency.** The row (and the RDP LISTENER checkbox) render
+   one `credsspVerdict()`: the live probe (`rdpListener.credsspLive`, read by the
+   server at request time from NLA / bound-cert trust / AllowEncryptionOracle /
+   SecurityLayer / MinEncryptionLevel) first, the F21 config stamp as secondary
+   `(stamp: …)`. `not reported yet` is only rendered when neither exists.
+
+**Unchanged locks:** no typing/UI automation, no password in any URL/log/
+artifact, `t=`-only ticket links, NLA/CredSSP/cert validation untouched,
+no credential deletion by tooling, no public exposure. The physical
+click-through (fullscreen + usage ticking) stays user-verified.
