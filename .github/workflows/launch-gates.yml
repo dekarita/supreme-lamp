@@ -260,11 +260,13 @@ jobs:
           lab=.github/workflows/autologin-lab.yml
           shim=payloads/ghrdp-cred-shim.js
           # --- §1.1 stale-handler overwrite (exe wins over any prior value) -----
-          grep -q 'handler BEFORE' payloads/install.cmd
-          grep -q 'handler AFTER' payloads/install.cmd
+          # [F14] tokens re-pinned to the byte-faithful F14 install.cmd text
+          # (BEFORE/AFTER printed + HKCU overwrite; no find-based readback).
+          grep -q 'echo BEFORE: & reg query' payloads/install.cmd
+          grep -q 'echo AFTER: & reg query' payloads/install.cmd
           grep -q 'HKCU\\Software\\Classes\\ghrdp' payloads/install.cmd
-          grep -q 'reg query "%KEY%" /ve 2>nul' payloads/install.cmd
-          grep -q 'find /i "%EXE%"' payloads/install.cmd
+          grep -qF 'reg query "HKCU\Software\Classes\ghrdp\shell\open\command" /ve 2>nul' payloads/install.cmd
+          grep -qF 'reg add "HKCU\Software\Classes\ghrdp\shell\open\command"' payloads/install.cmd
           # --- §1.4 stale-registration notice (20s hello-beacon watch) ----------
           grep -q 'id="winAutoStale"' payloads/ui.html
           grep -q 'stale ghrdp registration' payloads/ui.html
@@ -336,6 +338,57 @@ jobs:
           grep -q 'M: zero console windows' "$lab"
           grep -q 'N: handler overwrite (stale value planted)' "$lab"
           echo 'F12 gates PASS'
+
+      - name: F14 one-click kit gates (dl allowlist, PS-free install.cmd, 2-file zip, on-page guide)
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          srv=payloads/ghrdp-server.ps1
+          # §2 allowlist stays EXACTLY the three kit objects - any wider list fails.
+          test "$(grep -cF 'script:DlNames = @(' "$srv")" -eq 1
+          al=$(grep -F 'script:DlNames = @(' "$srv")
+          test "$(grep -oE "'[^']+'" <<< "$al" | wc -l)" -eq 3
+          for n in 'ghrdp-handler-kit.zip' 'install.cmd' 'ghrdp-rdp-launcher.cs'; do
+            grep -q "'$n'" <<< "$al"
+          done
+          grep -qF 'script:DlNames -notcontains $dlName' "$srv"
+          grep -qF 'Content-Disposition: attachment; filename=' "$srv"
+          # §2/§7 no secrets object on /dl: config/dash-token names must never
+          # appear in the allowlist line.
+          if grep -Eiq 'config|token|pass|key' <<< "$al"; then
+            echo 'F14: /dl allowlist must never name a secrets-bearing file' >&2; exit 1
+          fi
+          # §4 install.cmd: byte-faithful F14 text has NO powershell invocation.
+          # The mandated DONE line must print literally "NOT powershell.", so
+          # the gate bans INVOCATION forms (command position / .exe / -flag),
+          # not the bare word naming the old handler.
+          if grep -Eiq '(^|[&|( ])powershell([ "]|$)|powershell\.exe|-ExecutionPolicy' payloads/install.cmd; then
+            echo 'F14: install.cmd runs a script host' >&2; exit 1
+          fi
+          # §1/§4 zip build lists EXACTLY the two payloads - never a third file.
+          kit=$(awk '/name: Build ghrdp-handler-kit.zip \(F14\)/{f=1;next} /^      - name: /{f=0} f' "$wf")
+          test -n "$kit"
+          test "$(grep -c 'Copy-Item' <<< "$kit")" -eq 2
+          ca=$(grep 'Compress-Archive' <<< "$kit")
+          test "$(grep -oE "Join-Path \\\$stage '[^']+'" <<< "$ca" | wc -l)" -eq 2
+          grep -qF "Join-Path \$stage 'install.cmd'" <<< "$ca"
+          grep -qF "Join-Path \$stage 'ghrdp-rdp-launcher.cs'" <<< "$ca"
+          grep -qF 'ghrdp-handler-kit.zip' <<< "$kit"
+          grep -qF -- '-ne 2' <<< "$kit"     # entry-count readback fails closed
+          # §3 on-page one-click button + ordered guide + Path B note.
+          grep -qF 'href="/dl/ghrdp-handler-kit.zip"' payloads/ui.html
+          grep -q 'DOWNLOAD INSTALL KIT' payloads/ui.html
+          grep -q 'id="btnKitDl"' payloads/ui.html
+          grep -q 'id="kitGuideA"' payloads/ui.html
+          grep -q 'id="kitPathB"' payloads/ui.html
+          grep -q 'Security Warning' payloads/ui.html
+          grep -q 'Mark-of-the-Web' payloads/ui.html
+          grep -q 'ghrdp-rdp-launcher.exe</code>, NOT powershell' payloads/ui.html
+          # WEB DESKTOP stays the zero-install primary; stale notice untouched.
+          grep -qF 'WEB DESKTOP (primary)' payloads/ui.html
+          grep -q 'id="winAutoStale"' payloads/ui.html
+          echo 'F14 gates PASS'
 
       - name: F8 web-desktop honesty gates
         shell: bash
