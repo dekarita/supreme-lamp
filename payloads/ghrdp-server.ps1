@@ -601,7 +601,13 @@ function Invoke-ClientRequest {
             # [F7] handler-hello reason removed. This page never launches a ghrdp:// handler
             # post-F2, so absence of a handler beacon can no longer block AUTO-LOGIN readiness.
             $reasons = @()
+            $runnerResolvedIP = ''
+            try {
+                if ($cfgN -and $cfgN.PSObject.Properties['runnerResolvedIP']) { $runnerResolvedIP = [string]$cfgN.runnerResolvedIP }
+            } catch { }
+            $runnerDnsOk = ($runnerResolvedIP -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.')
             if (-not $fqdnOk)   { $reasons += 'fqdn-not-tsnet' }
+            if (-not $runnerDnsOk) { $reasons += 'runner-dns-broken' }
             if (-not $certBound){ $reasons += 'cert-not-bound' }
             if (-not $nlaOn)    { $reasons += 'nla-off' }
             if ($hostKind -eq 'vps') { $reasons += 'no-cmdkey-entry' }
@@ -743,6 +749,9 @@ function Invoke-ClientRequest {
                 # WINDOWS AUTO-LOGIN disabled - a missing probe is never a ✅).
                 rdpListener = $(if ($cfgN -and $cfgN.PSObject.Properties['rdpListener'] -and $cfgN.rdpListener) { $cfgN.rdpListener } else { $null })
                 rdpListenerAgeSec = $(if ($cfgN -and $cfgN.PSObject.Properties['rdpListener'] -and $cfgN.rdpListener) { Get-UtcAgeSeconds $cfgN.rdpListener.ts } else { $null })
+                # [F18 §4] runnerResolvedIP: the F18 runner FQDN self-test result
+                # (100.64.0.0/10 only). Empty/invalid => AUTO-LOGIN stays disabled.
+                runnerResolvedIP = $(if ($cfgN -and $cfgN.PSObject.Properties['runnerResolvedIP'] -and ([string]$cfgN.runnerResolvedIP -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.')) { [string]$cfgN.runnerResolvedIP } else { '' })
                 certBound = $certBound
                 nlaOn = $nlaOn
                 handlerSeenAgeSec = $handlerAge

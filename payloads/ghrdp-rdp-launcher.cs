@@ -280,8 +280,8 @@ internal static class GhrdpRdpLauncher
     {
         IPAddress[] addrs;
         try { addrs = Dns.GetHostAddresses(server); }
-        catch (Exception ex) { return "dns-resolve-failed (" + ex.GetType().Name + ")"; }
-        if (addrs == null || addrs.Length == 0) { return "dns-resolve-failed (0 addresses)"; }
+        catch (Exception ex) { return "DNS resolution failed: " + server + " (" + ex.GetType().Name + "). Run ipconfig /flushdns and confirm Tailscale connected."; }
+        if (addrs == null || addrs.Length == 0) { return "DNS resolution failed: " + server + ". Run ipconfig /flushdns and confirm Tailscale connected."; }
         bool allTailnet = true;
         bool allLoopback = true;
         StringBuilder rejected = new StringBuilder();
@@ -302,7 +302,7 @@ internal static class GhrdpRdpLauncher
             LogJson("warn", "rdp", "GHRDP_LAB_DNS_ALLOW_LOOPBACK=1: loopback hosts-alias accepted for " + server + " (lab-only switch, never a production default)");
             return null;
         }
-        return "dns-not-tailnet (rejected answers: " + rejected.ToString() + "; every answer must be in 100.64.0.0/10)";
+        return "DNS returned non-tailnet IP: " + rejected.ToString() + ". Flush DNS and retry. (every answer must be in 100.64.0.0/10)";
     }
 
     // ------------------------------------------------------------------
@@ -544,17 +544,34 @@ internal static class GhrdpRdpLauncher
         {
             LogJson("error", verb, "dns-guard blocked launch: " + dnsProblem + " server=" + server);
             HelloBounded(host, port, verb, false, "dns-guard: " + dnsProblem);
-            ShowBox("ghrdp: DNS stale or blocked",
+            string boxTitle = dnsProblem.IndexOf("non-tailnet") >= 0 ? "ghrdp: DNS returned non-tailnet IP" : "ghrdp: DNS resolution failed";
+            ShowBox(boxTitle,
                 "DNS stale/blocked - flushdns or check Tailscale.\n\n" +
-                "'" + server + "' did not resolve to a tailnet (100.64.0.0/10) address:\n" +
                 dnsProblem + "\n\n" +
-                "On THIS PC run:  ipconfig /flushdns\n" +
-                "then confirm Tailscale is connected (its icon must be green), and click WINDOWS AUTO-LOGIN again.\n\n" +
+                "FQDN: " + server + "\n" +
+                "Run ipconfig /flushdns and confirm Tailscale connected.\n\n" +
                 "mstsc was NOT started.\n\n" +
                 "log: " + LogPath());
             return 5;
         }
-        LogJson("rdp", verb, "dns-guard ok: " + server + " resolved to a tailnet address");
+        string resolvedLog = "";
+        try
+        {
+            IPAddress[] okAddrs = Dns.GetHostAddresses(server);
+            if (okAddrs != null)
+            {
+                foreach (IPAddress a in okAddrs)
+                {
+                    if (IsTailnetAddress(a))
+                    {
+                        if (resolvedLog.Length > 0) { resolvedLog += ","; }
+                        resolvedLog += a.ToString();
+                    }
+                }
+            }
+        }
+        catch { resolvedLog = "(ok)"; }
+        LogJson("rdp", verb, "DNS resolved " + server + " -> " + resolvedLog);
 
         int rc = CmdkeyStep(server, user, host, port);
         if (rc != 0) { return rc; }     // a timed-out prompt already produced its MessageBox

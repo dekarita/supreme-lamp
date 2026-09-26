@@ -544,6 +544,35 @@ jobs:
           fi
           echo 'F17 gates PASS'
 
+      - name: F18 runner FQDN self-test + client DNS diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          ui=payloads/ui.html
+          srv=payloads/ghrdp-server.ps1
+          cs=payloads/ghrdp-rdp-launcher.cs
+          step=$(awk '/name: Runner FQDN self-test \\(F18/{f=1;next} f && /^      - name: /{exit} f' "$wf")
+          test -n "$step" || { echo 'F18: main.yml lacks Runner FQDN self-test' >&2; exit 1; }
+          grep -qF 'Resolve-DnsName' <<< "$step"
+          grep -qF "Runner cannot resolve own FQDN" <<< "$step"
+          grep -qF 'throw' <<< "$step"
+          grep -qF 'Runner FQDN resolves to' <<< "$step"
+          grep -qF 'RUNNER_RESOLVED_IP=' <<< "$step"
+          grep -qF 'runnerResolvedIP' "$wf"
+          grep -qF 'runnerResolvedIP' "$srv"
+          grep -qF "reasons += 'runner-dns-broken'" "$srv"
+          grep -qF 'CONNECTION DIAGNOSTICS' "$ui"
+          grep -qF 'id="connDiagNs"' "$ui"
+          grep -qF 'id="connDiagResolved"' "$ui"
+          grep -qF 'Runner DNS broken' "$ui"
+          grep -qF '__runnerDnsOk' "$ui"
+          grep -qF 'Dns.GetHostAddresses' "$cs"
+          grep -qF 'DNS resolution failed' "$cs"
+          grep -qF 'DNS returned non-tailnet IP' "$cs"
+          grep -qF 'DNS resolved ' "$cs"
+          echo 'F18 gates PASS'
+
       - name: F8 web-desktop honesty gates
         shell: bash
         run: |

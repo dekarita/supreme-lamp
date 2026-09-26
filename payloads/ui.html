@@ -303,10 +303,12 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
        FQDN will not resolve on YOUR PC, these two lines pinpoint it (DNS dead
        vs listener dead). No buttons, no scripts - you run them yourself. -->
   <div class="row" id="connDiagRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
-    <span class="k" style="font-weight:600">CONNECTION diagnostics - run on YOUR PC (copy only; nothing here executes)</span>
+    <span class="k" style="font-weight:600">CONNECTION DIAGNOSTICS - run on YOUR PC (copy only; nothing here executes)</span>
+    <span class="note" style="margin:0">Runner FQDN: <code id="connDiagFqdn">-</code> &nbsp; runnerResolvedIP: <code id="connDiagResolved">-</code></span>
     <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagPing" style="font-size:12px">ping &lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('connDiagPing',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
     <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagTnc" style="font-size:12px">Test-NetConnection &lt;fqdn&gt; -Port 3389</code><a href="javascript:void(0)" onclick="copyById('connDiagTnc',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
-    <span class="note" style="margin:0">"could not find host" / name resolution failed = Tailscale is down or MagicDNS is off on this PC (ipconfig /flushdns, reconnect Tailscale) - the 0x904/0x7 mstsc error is this, not credentials.</span>
+    <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagNs" style="font-size:12px">nslookup &lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('connDiagNs',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+    <span class="note" style="margin:0">If ping fails: run ipconfig /flushdns, confirm Tailscale connected, retry. If still failing: Tailscale admin -&gt; DNS -&gt; enable MagicDNS + HTTPS Certificates, re-dispatch.</span>
   </div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
   <!-- [F11-3 §3] RDP USAGE replaces logon age as the headline timer: seconds
@@ -989,7 +991,8 @@ var REASON_TEXT={
  'fqdn-not-tsnet':'FQDN not *.ts.net - if MagicDNS is off, enable it: https://login.tailscale.com/admin/dns (workflow halts until enabled); VPS: provision per docs/MIGRATION.md sec 1.7',
  'cert-not-bound':'LE cert not bound on RDP-Tcp - run Enable-RdpTlsCertificate.ps1 on host',
  'nla-off':'NLA off on host - set UserAuthentication=1 on RDP-Tcp',
- 'no-cmdkey-entry':'no cmdkey entry for TERMSRV/<fqdn> on this PC - run the cmdkey line once (current user)'
+ 'no-cmdkey-entry':'no cmdkey entry for TERMSRV/<fqdn> on this PC - run the cmdkey line once (current user)',
+ 'runner-dns-broken':'Runner DNS broken'
 };
 // [F9d] Render a reason string with the MagicDNS admin URL as a real link
 // (target=_blank rel=noopener). Only the fqdn reason carries the URL, so the
@@ -1078,12 +1081,17 @@ async function nativeStatus(){
   paintRdpListener(rl,s?s.rdpListenerAgeSec:null);
   // [F17 §2] CONNECTION diagnostics lines (copy-only) follow the live FQDN.
   var diagF=(s&&s.fqdn)||'';
+  var diagIP=(s&&s.runnerResolvedIP)||'';
+  window.__runnerDnsOk=/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(diagIP);
   var diagRow=document.getElementById('connDiagRow');
   if(diagRow){
    if(diagF){
     diagRow.style.display='';
+    var df=document.getElementById('connDiagFqdn');if(df)df.textContent=diagF;
+    var di=document.getElementById('connDiagResolved');if(di)di.textContent=diagIP||'(missing)';
     var dp=document.getElementById('connDiagPing');if(dp)dp.textContent='ping '+diagF;
     var dt=document.getElementById('connDiagTnc');if(dt)dt.textContent='Test-NetConnection '+diagF+' -Port 3389';
+    var dn=document.getElementById('connDiagNs');if(dn)dn.textContent='nslookup '+diagF;
    } else { diagRow.style.display='none'; }
   }
   var srvReasons=(s.reasonsDisabled||[]).slice();
@@ -1472,10 +1480,11 @@ function syncWinAuto(){
  // reports listening + fw + cert + nla ALL ✅ (a dead listener is never a
  // launch target; a missing probe is never a ✅).
  var lOK=window.__listenerOk===true;
- var all=ok&&lOK;
+ var dOK=window.__runnerDnsOk===true;
+ var all=ok&&lOK&&dOK;
  b.disabled=!all;b.style.opacity=all?'':'0.5';b.style.cursor=all?'':'not-allowed';
  var note=$('winAutoNote');
- if(note)note.textContent=all?'fullscreen native mstsc, silent after a one-time Windows prompts for your password (cmdkey)':(ok?'RDP LISTENER probe not all ✅ (listening/fw/cert/nla) - fix the ❌ field in the RDP LISTENER row; AUTO-LOGIN stays disabled':'fullscreen native mstsc, silent after a one-time Windows prompts for your password (cmdkey)');
+ if(note)note.textContent=all?'fullscreen native mstsc, silent after a one-time Windows prompts for your password (cmdkey)':(!dOK?'Runner DNS broken':(ok?'RDP LISTENER probe not all ✅ (listening/fw/cert/nla) - fix the ❌ field in the RDP LISTENER row; AUTO-LOGIN stays disabled':'fullscreen native mstsc, silent after a one-time Windows prompts for your password (cmdkey)'));
 }
 setInterval(syncWinAuto,2000);syncWinAuto();
 var waBtn=$('btnWinAuto');
