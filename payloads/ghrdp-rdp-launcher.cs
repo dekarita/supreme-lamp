@@ -31,6 +31,14 @@
 //        prompts for the password - this process never sees, reads, or writes
 //        any password or hash), WaitForExit(180000), then VERIFY the entry with
 //        a cmdkey /list parse.
+//        [F28 §3] FALLBACK GAP CLOSED: a cmdkey prompt that closes WITHOUT a
+//        stored entry (stored=false) never proceeds silently to mstsc. The
+//        ticket redemption is retried ONCE; if that also fails, mstsc is
+//        launched ONLY WITH the visible native credential prompt and the
+//        'fallback-mstsc-native-prompt' beacon is emitted immediately before
+//        the launch. CredentialFallbackDecision() is the single decision
+//        function for every path (proven side-effect-free by
+//        --fallback-selftest).
 //     4. Write %TEMP%\ghrdp-<sha1-8>.rdp LOCALLY (local write = no MOTW, no
 //        SmartScreen prompt) with fullscreen (screen mode id:i:2) + redirection
 //        directives. NO password/hash lines, NO desktopwidth/desktopheight
@@ -38,6 +46,23 @@
 //     5. Start mstsc VISIBLE, WaitForExit(2000): still running => beacon
 //        'mstsc-started pid=N'; already exited => MessageBox with the exit code
 //        + the last 5 log lines (a silently dying mstsc is impossible).
+//   ghrdp://recred?server=<fqdn>&user=<user>&t=<ticket>
+//     [F28 §2] ONE-CLICK RECOVERY (the dashboard's FIX & RECONNECT button).
+//     Same target validation + DNS guard as the rdp verb, then redeem the
+//     fresh single-use ticket and OVERWRITE the stored TERMSRV entry through
+//     CredWrite (DOMAIN_PASSWORD, plus the GENERIC entry when one exists) -
+//     exactly the F27 store path, no typing and no clipboard. Beacon chain:
+//     recred-redeemed -> credwrite-ok -> rdp-written -> mstsc-started. A
+//     failed redemption is retried ONCE and then falls back to the native
+//     credential prompt (never a silent launch). The verb accepts the SAME
+//     t-only ticket contract: any credential-ish parameter is refused.
+//   ghrdp-rdp-launcher.exe --fallback-selftest
+//     [F28 §3] LAB/CI ONLY harness (never reachable from a ghrdp:// URI):
+//     runs CredentialFallbackDecision through the full matrix (stored=true =>
+//     mstsc; stored=false + retry-redeem-ok => mstsc; stored=false + retry
+//     failed => native-prompt, with and without a ticket) and writes one
+//     'decision=' line per case to GHRDP_LAB_OUT (default: the JSONL log). It
+//     never shows a dialog, never calls cmdkey and never starts mstsc.
 //   ghrdp://check[?server=<fqdn>]
 //     install-time / user-triggered self test: MessageBox with the registered
 //     reg command, TERMSRV presence, the log path and the exe version stamp.
@@ -77,14 +102,19 @@ using System.Threading;
 // [F20 §2] 2.4.0.0: the immediate-mstsc-exit dialog now points at the
 // dashboard's evidence-based 0x904/0x7 fallback (CONNECTION DIAGNOSTICS ->
 // "if mstsc still fails") instead of leaving the user with a bare exit code.
-[assembly: AssemblyVersion("2.4.0.0")]
-[assembly: AssemblyFileVersion("2.4.0.0")]
+// [F28 §2] 2.5.0.0: the recred verb (one-click recovery: fresh ticket ->
+// CredWrite overwrite -> mstsc) plus the closed fallback gap: a cmdkey prompt
+// that stored nothing can no longer reach a silent mstsc - the ticket is
+// retried once and the launch then carries the native credential prompt with
+// the 'fallback-mstsc-native-prompt' beacon.
+[assembly: AssemblyVersion("2.5.0.0")]
+[assembly: AssemblyFileVersion("2.5.0.0")]
 [assembly: AssemblyTitle("ghrdp-rdp-launcher")]
 
 internal static class GhrdpRdpLauncher
 {
-    private const string Ver = "2.4.0.0";
-    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F27 ticket-CredWrite)";
+    private const string Ver = "2.5.0.0";
+    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F28 recred+fallback-gap)";
     private const int DefaultPort = 7331;
     // [F19 §2] the RDP TCP port used ONLY for the client-DNS diagnosis probe
     // (the mstsc target itself always stays the MagicDNS FQDN).
@@ -509,6 +539,48 @@ internal static class GhrdpRdpLauncher
         return sb.ToString().IndexOf("verdict=FAIL") < 0 ? 0 : 1;
     }
 
+    // [F28 §3] LAB/CI ONLY: '--fallback-selftest' is not a URI verb (a
+    // ghrdp:// URI can never produce it) and it is a PURE decision matrix - no
+    // I/O, no dialog, no cmdkey, no mstsc - so it proves the shipped
+    // fallback-gap rule without a credential store. Cases: stored=true (no
+    // prompt needed), stored=false + retry-redeem-ok (the retry recovered),
+    // stored=false with the retry failing with and without a ticket (both MUST
+    // end in the native-prompt path - the closed gap).
+    private static bool IsFallbackSelfTest(string[] args)
+    {
+        return args != null && args.Length > 0 && args[0] == "--fallback-selftest";
+    }
+
+    private static int FallbackSelfTestMain()
+    {
+        bool[] storeMissing = new bool[] { false, true, true, true };
+        bool[] ticketPresent = new bool[] { false, true, true, false };
+        bool[] retryOk = new bool[] { false, false, true, false };
+        string[] expected = new string[] { "mstsc", "native-prompt", "mstsc", "native-prompt" };
+        StringBuilder sb = new StringBuilder();
+        string outPath = Environment.GetEnvironmentVariable("GHRDP_LAB_OUT");
+        if (string.IsNullOrEmpty(outPath)) { outPath = Path.Combine(Path.GetTempPath(), "ghrdp-fallback-selftest.txt"); }
+        for (int i = 0; i < expected.Length; i++)
+        {
+            string decision = CredentialFallbackDecision(storeMissing[i], ticketPresent[i], retryOk[i]);
+            string line = "case=" + i +
+                " storeMissing=" + (storeMissing[i] ? "true" : "false") +
+                " ticketPresent=" + (ticketPresent[i] ? "true" : "false") +
+                " retryRedeemOk=" + (retryOk[i] ? "true" : "false") +
+                " decision=" + decision + " expected=" + expected[i] +
+                " nativePrompt=" + (decision == "native-prompt" ? "true" : "false") +
+                " beacon=" + (decision == "native-prompt" ? "fallback-mstsc-native-prompt" : "(none)") +
+                " verdict=" + (decision == expected[i] ? "pass" : "FAIL") +
+                " mstscLaunched=0 cmdkeyCalled=0";
+            sb.AppendLine(line);
+            LogJson("fallback-selftest", "fallback-selftest", line);
+        }
+        try { File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false)); } catch { }
+        LogJson("fallback-selftest", "fallback-selftest", "matrix written to " + outPath +
+            " verdicts=" + (sb.ToString().IndexOf("verdict=FAIL") < 0 ? "all-pass" : "SEE-FAIL"));
+        return sb.ToString().IndexOf("verdict=FAIL") < 0 ? 0 : 1;
+    }
+
     // ------------------------------------------------------------------
     // Credential Manager READ-ONLY probe: cmdkey /list, stdout captured,
     // bounded. Never prompts, never writes.
@@ -670,6 +742,13 @@ internal static class GhrdpRdpLauncher
     // failed CredWrite aborts, rather than using a potentially poisoned entry.
     private static string RedeemAndStore(string uri, string server, string user, string host, int port)
     {
+        return RedeemAndStoreStep(uri, server, user, host, port, "ticket-redeemed");
+    }
+    // [F28 §2] redeemStep names the FIRST beacon of the handoff chain: the
+    // one-click recovery verb reports 'recred-redeemed' so the dashboard can
+    // tell a recovery redemption from a first-launch redemption.
+    private static string RedeemAndStoreStep(string uri, string server, string user, string host, int port, string redeemStep)
+    {
         string ticket = TicketFromUri(uri);
         if (ticket.Length == 0) { return "ticket-missing"; }
         if (port != DefaultPort) { throw new InvalidOperationException("ticket-port-invalid"); }
@@ -727,7 +806,7 @@ internal static class GhrdpRdpLauncher
             pass = (string)reply["pass"];
             if (pass.Length == 0 || Encoding.Unicode.GetByteCount(pass) > 2560)
             { throw new InvalidOperationException("redeem-credential-invalid"); }
-            HandoffStep(host, port, "ticket-redeemed", true);
+            HandoffStep(host, port, redeemStep, true);
             try { WriteCredential(server, user, pass); }
             catch { HandoffStep(host, port, "credwrite-failed", false); throw; }
             HandoffStep(host, port, "credwrite-ok", true);
@@ -744,15 +823,35 @@ internal static class GhrdpRdpLauncher
         }
     }
     private static string FallbackBeacon(string reason) { return "fallback-cmdkey reason=" + reason; }
+    // [F28 §3 fallback-gap-begin] The ONE decision every launch path uses.
+    // storeMissing: the credential step ended WITHOUT a stored TERMSRV entry
+    //   (a cmdkey prompt that closed storing nothing, or a failed first
+    //   redemption). retryOk: the single retry redemption SUCCEEDED (CredWrite
+    //   overwrite already emitted credwrite-ok). A "native-prompt" verdict
+    //   means: emit the fallback-mstsc-native-prompt beacon immediately before
+    //   starting mstsc WITH the visible native credential prompt. No path may
+    //   launch mstsc with a known-absent credential without that beacon.
+    // Pure function (no I/O) so --fallback-selftest can prove the whole table.
+    private static string CredentialFallbackDecision(bool storeMissing, bool ticketPresent, bool retryOk)
+    {
+        if (!storeMissing) { return "mstsc"; }
+        if (ticketPresent && retryOk) { return "mstsc"; }
+        return "native-prompt";
+    }
+    // [F28 §3 fallback-gap-end]
     // [F27 handoff-end]
 
-    private static int CmdkeyStep(string server, string user, string host, int port, bool forcePrompt = false)
+    // [F28 §3] Outcome contract: "stored" (TERMSRV entry verified), "missing"
+    // (a prompt ran and closed with nothing stored - the caller must NOT go
+    // straight to mstsc), "abort" (timeout / could not start - already handled
+    // visibly, the caller returns without launching anything).
+    private static string CmdkeyStep(string server, string user, string host, int port, bool forcePrompt = false)
     {
         if (!forcePrompt && HasCredEntry(server))
         {
             LogJson("cmdkey", "rdp", "TERMSRV/" + server + " already present (cmdkey /list parse) - no prompt");
             HelloBounded(host, port, "rdp", true, "cmdkey-stored=true");
-            return 0;
+            return "stored";
         }
         ProcessStartInfo psi = new ProcessStartInfo("cmdkey.exe",
             "/generic:TERMSRV/" + server + " /user:" + user + " /pass");
@@ -782,7 +881,7 @@ internal static class GhrdpRdpLauncher
                 "cmdkey prompt timed out\n\nThe Windows password prompt stayed open for 180 seconds" +
                 " (or never appeared at all).\nNothing was stored and mstsc was NOT started.\n\n" +
                 "log: " + LogPath());
-            return 1;
+            return "abort";
         }
         bool stored = HasCredEntry(server);
         LogJson("cmdkey", "rdp", "prompt exited code=" + p.ExitCode +
@@ -790,12 +889,20 @@ internal static class GhrdpRdpLauncher
         HelloBounded(host, port, "rdp", stored, "cmdkey-stored=" + (stored ? "true" : "false"));
         if (!stored)
         {
+            // [F28 §3] The old path showed "OK opens mstsc anyway". That is the
+            // gap: mstsc then ran with a KNOWN-ABSENT credential (or a stale
+            // one) and the 0x904/0x6A poison class came back. The caller now
+            // retries the ticket redemption once and otherwise launches ONLY
+            // with the native credential prompt (+ its beacon).
+            LogJson("error", "rdp", "credential not stored - mstsc must NOT start silently; the caller retries the ticket once, else the native-prompt path runs");
             ShowBox("ghrdp: credential not stored",
                 "The cmdkey prompt closed without a stored TERMSRV/" + server + " entry.\n\n" +
-                "OK opens mstsc anyway - mstsc will then ask for the password itself" +
-                " (its own visible prompt).\n\nlog: " + LogPath());
+                "mstsc is NOT started into an empty credential. The launcher retries the" +
+                " one-time ticket once; if that fails, mstsc opens WITH its own visible" +
+                " password prompt instead.\n\nlog: " + LogPath());
+            return "missing";
         }
-        return 0;
+        return "stored";
     }
 
     private static string Sha1Hex8(string s)
@@ -838,7 +945,13 @@ internal static class GhrdpRdpLauncher
         };
     }
 
-    private static int MstscStep(string server, string user, string host, int port)
+    // [F28 §3] nativePrompt=true is the closed-gap launch: the credential store
+    // is known to hold nothing usable for this target (the retry redemption
+    // failed too), so mstsc is started WITH its own visible credential prompt
+    // (/prompt never suppresses or automates anything) and the
+    // 'fallback-mstsc-native-prompt' beacon is emitted IMMEDIATELY BEFORE the
+    // launch - a silent launch with a known-absent credential is impossible.
+    private static int MstscStep(string server, string user, string host, int port, bool nativePrompt = false)
     {
         string rdp = Path.Combine(Path.GetTempPath(), "ghrdp-" + Sha1Hex8(server + "|" + user) + ".rdp");
         string[] lines = RdpLines(server, user);
@@ -849,7 +962,16 @@ internal static class GhrdpRdpLauncher
             " directives, no credential lines)");
 
         HandoffStep(host, port, "rdp-written", true);
-        ProcessStartInfo msi = new ProcessStartInfo("mstsc.exe", "\"" + rdp + "\"");
+        if (nativePrompt)
+        {
+            // No stored credential is known-good: the user types it into WINDOWS'
+            // OWN prompt (this process never sees it), and the beacon names the
+            // reason before the window exists.
+            LogJson("mstsc", "rdp", "native credential prompt path: no stored TERMSRV/" + server +
+                " entry could be established (ticket retry failed); mstsc starts with /prompt");
+            HandoffStep(host, port, "fallback-mstsc-native-prompt", false);
+        }
+        ProcessStartInfo msi = new ProcessStartInfo("mstsc.exe", nativePrompt ? ("\"" + rdp + "\" /prompt") : ("\"" + rdp + "\""));
         msi.UseShellExecute = true;
         msi.WindowStyle = ProcessWindowStyle.Normal;   // the client window is the visible surface
         Process m = Process.Start(msi);
@@ -915,12 +1037,15 @@ internal static class GhrdpRdpLauncher
 
         if (verb == "check") { return RunCheck(uri, host, port); }
 
-        if (verb != "rdp")
+        // [F28 §2] 'recred' (one-click recovery) shares every target validation
+        // below; only the redemption/fallback policy differs.
+        if (verb != "rdp" && verb != "recred")
         {
-            LogJson("error", verb, "unknown verb '" + verb + "' - no rdp/check work done");
+            LogJson("error", verb, "unknown verb '" + verb + "' - no rdp/recred/check work done");
             ShowBox("ghrdp launcher: unknown verb",
-                "verb '" + (verb.Length == 0 ? "(none)" : verb) + "' is neither 'rdp' nor 'check'.\n\n" +
-                "Use:  ghrdp://rdp?server=<fqdn>&user=<user>\n   or  ghrdp://check\n   or  ghrdp://check?server=<fqdn>\n\n" +
+                "verb '" + (verb.Length == 0 ? "(none)" : verb) + "' is none of 'rdp', 'recred' or 'check'.\n\n" +
+                "Use:  ghrdp://rdp?server=<fqdn>&user=<user>\n   or  ghrdp://recred?server=<fqdn>&user=<user>&t=<ticket>\n" +
+                "   or  ghrdp://check\n   or  ghrdp://check?server=<fqdn>\n\n" +
                 "log: " + LogPath());
             return 2;
         }
@@ -992,23 +1117,71 @@ internal static class GhrdpRdpLauncher
         // only why it was blocked ([F17/R] cell asserts "dns-guard ok").
         LogJson("rdp", verb, "DNS resolved " + server + " -> " + resolvedLog + " (dns-guard ok)");
 
+        if (verb == "recred") { return RecredStep(uri, server, user, host, port); }
+
         string fallback = RedeemAndStore(uri, server, user, host, port);
-        if (fallback != null)
+        if (fallback == null) { return MstscStep(server, user, host, port); }
+
+        HandoffStep(host, port, FallbackBeacon(fallback), false);
+        // A ticket-less link (the legacy interactive path) must not force a
+        // prompt when a TERMSRV entry is already present.
+        bool forcePrompt = (fallback != "ticket-missing");
+        string storeOutcome;
+        if (forcePrompt) { storeOutcome = CmdkeyStep(server, user, host, port, true); }
+        else { storeOutcome = CmdkeyStep(server, user, host, port); }
+        if (storeOutcome == "abort") { return 1; }   // the timeout already produced its MessageBox
+        if (storeOutcome == "stored") { return MstscStep(server, user, host, port); }
+
+        // [F28 §3] stored=false: retry the ONE-TIME ticket redemption ONCE
+        // (a fresh CredWrite overwrite is the only sanctioned silent store
+        // path), then decide between the normal launch and the visible native
+        // credential prompt. Nothing here ever launches mstsc silently with a
+        // known-absent credential.
+        bool ticketPresent = (TicketFromUri(uri).Length > 0);
+        bool retryOk = false;
+        if (ticketPresent)
         {
-            HandoffStep(host, port, FallbackBeacon(fallback), false);
-            if (fallback == "ticket-missing")
-            {
-                // Compatibility for old ticket-less links only. The dashboard
-                // always issues t; failed redemptions must not reuse poison.
-                int rc = CmdkeyStep(server, user, host, port);
-                if (rc != 0) { return rc; }
-            }
-            else
-            {
-                int rc = CmdkeyStep(server, user, host, port, true);
-                if (rc != 0) { return rc; }
-            }
-        }     // a timed-out prompt already produced its MessageBox
+            LogJson("cmdkey", "rdp", "no TERMSRV entry after the prompt - retrying the one-time ticket redemption ONCE (F28 fallback-gap)");
+            string retry = RedeemAndStore(uri, server, user, host, port);
+            retryOk = (retry == null);
+            if (!retryOk) { LogJson("error", "rdp", "ticket retry failed (" + retry + ") - native credential prompt path next"); }
+        }
+        string decision = CredentialFallbackDecision(true, ticketPresent, retryOk);
+        LogJson("cmdkey", "rdp", "fallback decision=" + decision +
+            " (stored=false ticketPresent=" + (ticketPresent ? "true" : "false") +
+            " retryRedeemOk=" + (retryOk ? "true" : "false") + ")");
+        if (decision == "native-prompt") { return MstscStep(server, user, host, port, true); }
+        return MstscStep(server, user, host, port);
+    }
+
+    // [F28 §2] ONE-CLICK RECOVERY (ghrdp://recred). The dashboard mints a
+    // fresh single-use 60s ticket from the same bearer-gated endpoint as the
+    // first launch; this verb redeems it and OVERWRITES the stored TERMSRV
+    // entry through CredWrite (type 2 + the legacy type-1 entry when present) -
+    // no typing, no clipboard, no credential beyond the ticket ever in a URL.
+    // A first redemption failure is retried ONCE (tickets are single-use, so
+    // the dashboard issues a brand new one for the click); if both fail the
+    // launch falls back to the visible native credential prompt.
+    private static int RecredStep(string uri, string server, string user, string host, int port)
+    {
+        LogJson("recred", "rdp", "one-click recovery: redeem a fresh ticket and overwrite TERMSRV/" + server +
+            " via CredWrite (no typing, no clipboard)");
+        bool ticketPresent = (TicketFromUri(uri).Length > 0);
+        string first = RedeemAndStoreStep(uri, server, user, host, port, "recred-redeemed");
+        if (first == null) { return MstscStep(server, user, host, port); }
+        HandoffStep(host, port, FallbackBeacon(first), false);
+        bool retryOk = false;
+        if (ticketPresent)
+        {
+            LogJson("recred", "rdp", "recovery redemption failed (" + first + ") - retrying ONCE");
+            string second = RedeemAndStore(uri, server, user, host, port);
+            retryOk = (second == null);
+            if (!retryOk) { LogJson("error", "recred", "retry failed (" + second + ") - native credential prompt path next"); }
+        }
+        string decision = CredentialFallbackDecision(true, ticketPresent, retryOk);
+        LogJson("recred", "rdp", "recovery fallback decision=" + decision +
+            " (ticketPresent=" + (ticketPresent ? "true" : "false") + " retryRedeemOk=" + (retryOk ? "true" : "false") + ")");
+        if (decision == "native-prompt") { return MstscStep(server, user, host, port, true); }
         return MstscStep(server, user, host, port);
     }
 
@@ -1019,6 +1192,10 @@ internal static class GhrdpRdpLauncher
         // so the 'invoked' beacon below is still the first work of every real
         // invocation.
         if (IsDnsSelfTest(args)) { return DnsSelfTestMain(args); }
+        // [F28 §3] LAB/CI-ONLY: '--fallback-selftest' is not a URI verb and is a
+        // pure argument check - no I/O - so the 'invoked' beacon below is still
+        // the first work of every real invocation.
+        if (IsFallbackSelfTest(args)) { return FallbackSelfTestMain(); }
 
         // [F15 §1.1 hello-before-work] FIRST instruction of the process: JSONL
         // log line + POST /api/handler-hello {verb, ok:true, details:'invoked'} -

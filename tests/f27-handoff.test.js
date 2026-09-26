@@ -55,12 +55,19 @@ test('F27 WINDOWS click gets bearer ticket before dispatch, never reads password
  assert.match(els.winAutoNote.textContent,/ticket-issue failed/);
 });
 test('F27 status row: no synthetic success; shows independently dated success/failure and hops',()=>{
+ // [F28 §1] SUPERSEDED for the LAST RDP LOGON row only: it now renders the
+ // server's own 30s logon scan (rdpListener.authLast: result + sub + eventTs +
+ // scanTs) instead of the keep-alive authEvents counts. The no-synthetic-
+ // success contract is unchanged and is asserted here against the new source.
  const els={};const ctx={$:id=>els[id]||(els[id]={})};vm.createContext(ctx);
  vm.runInContext(block(ui,'// [F27 status-render-begin]','// [F27 status-render-end]'),ctx);
- ctx.paintHandoffStatus({},{});assert.match(els.lastRdpLogon.textContent,/success not reported/);
- ctx.paintHandoffStatus({authEvents:{last4624At:'later',last4625At:'earlier',lastSubStatus:'0XC000006A'}},{ticketAudit:{issued:2,redeemed:1,rejected:1},handlerChain:[{ts:'now',details:'credwrite-ok'}]});
- assert.equal(els.lastRdpLogon.textContent,'success later | failed earlier sub=0XC000006A');
+ ctx.paintHandoffStatus({},{});
+ assert.match(els.lastRdpLogon.textContent,/scanning|not running/,'an unscanned collector must never render a success');
+ ctx.paintHandoffStatus({authLast:{result:'success',eventTs:'2026-09-26T16:00:00.0000000Z',scanTs:'2026-09-26T16:00:30.0000000Z',sub:''},logonCollector:{alive:true,uptimeSec:200}},{ticketAudit:{issued:2,redeemed:1,rejected:1},handlerChain:[{ts:'now',details:'credwrite-ok'}]});
+ assert.equal(els.lastRdpLogon.textContent,'success at 2026-09-26T16:00:00.0000000Z - scanned 2026-09-26T16:00:30.0000000Z');
  assert.equal(els.ticketAudit.textContent,'issued=2 redeemed=1 rejected=1');assert.equal(els.handoffChain.textContent,'now credwrite-ok');
+ ctx.paintHandoffStatus({authLast:{result:'failed',sub:'0xC000006A',subMeaning:'wrong-password',eventTs:'2026-09-26T16:01:00.0000000Z',scanTs:'2026-09-26T16:01:30.0000000Z'},logonCollector:{alive:true,uptimeSec:200}},{handlerChain:[]});
+ assert.equal(els.lastRdpLogon.textContent,'failed sub=0xC000006A (wrong-password) at 2026-09-26T16:01:00.0000000Z - scanned 2026-09-26T16:01:30.0000000Z');
 });
 test('F27 collector maps remote-interactive successes and allowlisted failure fields',()=>{
  const col=block(read('.github/workflows/main.yml'),'# [F24 §2 collector-begin]','# [F24 §2 collector-end]');

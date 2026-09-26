@@ -64,7 +64,8 @@ test('F18-3 launcher: DNS guard MessageBox + log resolved IP, no mstsc on fail',
   assert.ok(launcher.includes('DNS resolved '), 'success log missing');
   assert.ok(launcher.includes('hello ok') || launcher.includes('HelloBounded(host, port, verb, false'), 'hello ok:false on fail');
   const gw = launcher.indexOf('string dnsProblem = DnsGuardReason(server);');
-  const ck = launcher.indexOf('int rc = CmdkeyStep(server, user, host, port);');
+  // [F28 §3] CmdkeyStep now returns a store OUTCOME string.
+  const ck = launcher.indexOf('CmdkeyStep(server, user, host, port)');
   assert.ok(gw > 0 && ck > gw, 'DNS guard must run before cmdkey/mstsc');
 });
 

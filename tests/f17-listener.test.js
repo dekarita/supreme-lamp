@@ -76,7 +76,13 @@ test('F17-3 server: RoundtripKind UTC ts parse + per-run beacon store reset + rd
   assert.ok(server.includes('function Get-RawJsonTs'), 'raw-ts extractor missing');
   assert.ok(server.includes('[F17 §2] per-run beacon store'), 'beacon store reset marker missing');
   assert.ok(server.includes("'handler-hello-last.json'"), 'beacon store file not reset');
-  assert.ok(server.includes('rdpListener = $(if ($cfgN'), 'native-status must serve rdpListener');
+  // [F28 §1/§4] rdpListener is served from $rlOut (config stamp + the live
+  // authLast/logonCollector/credsspLive additions) - the contract is that the
+  // object is served with its age, not which local variable built it.
+  assert.ok(server.includes("rdpListener = $rlOut"), 'native-status must serve rdpListener');
+  for (const tok of ['authLast', 'logonCollector', 'credsspLive']) {
+    assert.ok(server.includes(tok), 'native-status rdpListener must carry ' + tok);
+  }
   assert.ok(server.includes('rdpListenerAgeSec'), 'rdpListenerAgeSec missing');
   // the old local-shifted computations are gone.
   assert.ok(!server.includes('[datetime]::UtcNow - [datetime]$hh.ts'), 'beacon age still parsed via ConvertFrom-Json datetime');
@@ -147,9 +153,11 @@ test('F17-7 launcher: DNS guard runs BEFORE any cmdkey/mstsc work and blocks dea
   assert.ok(code.includes('mstsc was NOT started'), 'the not-started verdict missing');
   // guard call precedes CmdkeyStep/MstscStep in DoWork.
   const gw = launcher.indexOf('string dnsProblem = DnsGuardReason(server);');
-  const ck = launcher.indexOf('private static int CmdkeyStep');
+  const ck = launcher.indexOf('private static string CmdkeyStep');
   assert.ok(gw > 0 && ck > 0 && gw > ck, 'guard must be defined before use');
-  const callAt = launcher.slice(gw).indexOf('int rc = CmdkeyStep(server, user, host, port);');
+  // [F28 §3] the store step now returns an OUTCOME (stored | missing | abort)
+  // instead of an exit code, so the pinned call shape changed with it.
+  const callAt = launcher.slice(gw).indexOf('CmdkeyStep(server, user, host, port)');
   assert.ok(callAt > 0, 'cmdkey must come after the guard in the rdp path');
   // rc 5 exit path + beacon ok:false.
   assert.ok(code.includes('return 5;'), 'dns-guard exit code missing');

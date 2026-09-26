@@ -10,6 +10,7 @@ $script:TicketAudit = [ordered]@{ issued=0; redeemed=0; rejected=0 }
 $script:HandlerChain = @()
 $stage = 'initialization'
 function Assert-F27([bool]$Condition, [string]$Label) { if (-not $Condition) { throw ('F27 assertion: ' + $Label) } }
+function Assert-F28([bool]$Condition, [string]$Label) { if (-not $Condition) { throw ('F28 assertion: ' + $Label) } }
 function Import-Functions([string]$Text, [string[]]$Names) {
     $tokens = $null; $errors = $null
     $ast = [Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$errors)
@@ -144,11 +145,84 @@ public static class F27Read {
     # URL context is intentional: the real logger never logs raw URI input.
     $redacted = Call-F27 'Redact' @('?t=' + $ticket + '&password=' + $fixture)
     Assert-F27 (-not $redacted.Contains($ticket) -and -not $redacted.Contains($fixture)) 'redaction'
-    Write-Host 'F27 PASS: real CredWrite/Read overwrite, identical RDP target, fallback reason, redaction; live NLA not tested'
+    # [F28-1] The SHIPPED server-side logon scanner (extracted verbatim from
+    # payloads/ghrdp-server.ps1) driven with synthetic 4624/4625 events: the
+    # logon RESULT (not just counts), the wrong-password sub-status and the
+    # always-present scanTs the dashboard's LAST RDP LOGON row renders.
+    # ASCII-ONLY marker substrings: this file runs under Windows PowerShell 5.1
+    # (shell: powershell), which decodes a BOM-less UTF-8 script as ANSI - a
+    # non-ASCII literal here would silently never match the read-back source.
+    $stage = 'F28 logon scanner (synthetic events)'
+    $srvText = [IO.File]::ReadAllText((Join-Path $repo 'payloads/ghrdp-server.ps1'))
+    $bAt = $srvText.IndexOf('scanner-begin]')
+    $eAt = $srvText.IndexOf('scanner-end]', [Math]::Max($bAt, 0))
+    # the extracted text must START at the beginning of the marker line and END
+    # before the closing marker line: a substring that begins mid-comment would
+    # turn '# [F28 ... scanner-begin] ...' into a bogus command.
+    $sa = -1; $sb = -1
+    if ($bAt -gt 0) { $sa = $srvText.LastIndexOf("`n", $bAt) + 1 }
+    if ($eAt -gt 0) { $sb = $srvText.LastIndexOf("`n", $eAt) }
+    Assert-F28 ($sa -gt 0 -and $sb -gt $sa) ('the F28 scanner markers are missing in ghrdp-server.ps1 (bAt=' + $bAt + ' eAt=' + $eAt + ' sa=' + $sa + ' sb=' + $sb + ')')
+    . ([scriptblock]::Create($srvText.Substring($sa, $sb - $sa)))
+    Assert-F28 ($null -ne (Get-Command Get-RdpLogonAuthLast -ErrorAction SilentlyContinue)) 'the extracted block did not define the scanner'
+    $startF28 = (Get-Date).ToUniversalTime()
+    function New-F28Event([int]$Id, [string]$TimeUtc, [string]$LogonType, [string]$Status, [string]$SubStatus) {
+        $tpl = '<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><EventID>{ID}</EventID><TimeCreated SystemTime="{T}"/></System><EventData><Data Name="LogonType">{LT}</Data><Data Name="Status">{ST}</Data><Data Name="SubStatus">{SUB}</Data><Data Name="FailureReason">%%2313</Data><Data Name="TargetUserName">f28-decoy</Data><Data Name="SubjectUserName">must-not-leak</Data></EventData></Event>'
+        $xml = $tpl.Replace('{ID}', [string]$Id).Replace('{T}', $TimeUtc).Replace('{LT}', $LogonType).Replace('{ST}', $Status).Replace('{SUB}', $SubStatus)
+        return (Get-RdpLogonEventFields -Xml ([xml]$xml))
+    }
+    $iso28 = { param([int]$d) $startF28.AddSeconds($d).ToString('o') }
+    $failEv = New-F28Event 4625 (& $iso28 -30) '3' '0xC000006D' '0xC000006A'
+    $okEv = New-F28Event 4624 (& $iso28 -10) '10' '' ''
+    $consoleEv = New-F28Event 4624 (& $iso28 -5) '3' '' ''
+    $staleEv = New-F28Event 4625 (& $iso28 -4000) '3' '0xC000006D' '0xC000006A'
+    $r1 = Get-RdpLogonAuthLast -Items @($failEv) -ScanStartedUtc $startF28
+    Assert-F28 ($r1.result -eq 'failed') ('a rejected password must stamp failed, got ' + $r1.result + ' (scanTs=' + $r1.scanTs + ' evt=' + $r1.eventTs + ' 4625=' + $r1.count4625 + ')')
+    Assert-F28 ($r1.sub -eq '0XC000006A' -and $r1.subMeaning -eq 'wrong-password') ('the wrong-password sub-status mapping, got ' + $r1.sub + '/' + $r1.subMeaning)
+    Assert-F28 (([string]$r1.scanTs).Length -gt 0 -and ([string]$r1.eventTs).Length -gt 0) 'scanTs/eventTs are always stamped'
+    $r2 = Get-RdpLogonAuthLast -Items @($failEv, $okEv) -ScanStartedUtc $startF28
+    Assert-F28 ($r2.result -eq 'success') ('a newer type-10 logon must supersede the failure, got ' + $r2.result + ' 4624=' + $r2.count4624 + ' 4625=' + $r2.count4625)
+    $r3 = Get-RdpLogonAuthLast -Items @() -ScanStartedUtc $startF28
+    Assert-F28 ($r3.result -eq 'none' -and ([string]$r3.scanTs).Length -gt 0) ('an empty window still stamps scanTs, got ' + $r3.result + ' scanTs=[' + $r3.scanTs + ']')
+    $r5 = Get-RdpLogonAuthLast -Items @($consoleEv) -ScanStartedUtc $startF28
+    Assert-F28 ($r5.result -eq 'none') ('a type-3 console logon is never an RDP success, got ' + $r5.result + ' 4624=' + $r5.count4624)
+    $r6 = Get-RdpLogonAuthLast -Items @($staleEv) -ScanStartedUtc $startF28
+    Assert-F28 ($r6.result -eq 'none') ('a pre-window failure leaked into the verdict: ' + $r6.result)
+    Assert-F28 (-not (($r1 | ConvertTo-Json -Depth 5).Contains('must-not-leak'))) 'the verdict carries a subject identity'
+    Write-Host 'F28 PASS: shipped logon scanner - failed(0xC000006A)/success/empty verdicts, scanTs on every path, no identity fields'
+
+    # [F28-3] The shipped C# decision function (reflection on the compiled exe)
+    # plus the real --fallback-selftest harness: stored=false can only ever end
+    # in the native-prompt path with its beacon - never a silent mstsc launch.
+    $stage = 'F28 fallback-gap decision (shipped C#)'
+    Assert-F28 ((Call-F27 'CredentialFallbackDecision' @($false, $false, $false)) -eq 'mstsc') 'a stored credential must launch normally'
+    Assert-F28 ((Call-F27 'CredentialFallbackDecision' @($true, $true, $true)) -eq 'mstsc') 'a successful retry redemption launches normally'
+    Assert-F28 ((Call-F27 'CredentialFallbackDecision' @($true, $true, $false)) -eq 'native-prompt') 'a failed retry must use the native credential prompt'
+    Assert-F28 ((Call-F27 'CredentialFallbackDecision' @($true, $false, $false)) -eq 'native-prompt') 'a ticket-less miss must use the native credential prompt'
+    $csText = [IO.File]::ReadAllText((Join-Path $repo 'payloads/ghrdp-rdp-launcher.cs'))
+    $ms0 = $csText.IndexOf('private static int MstscStep'); $ms1 = $csText.IndexOf('private static int DoWork')
+    Assert-F28 ($ms0 -gt 0 -and $ms1 -gt $ms0) 'the MstscStep region could not be extracted'
+    $msText = $csText.Substring($ms0, $ms1 - $ms0)
+    $beaconAt = $msText.IndexOf('fallback-mstsc-native-prompt'); $launchAt = $msText.IndexOf('new ProcessStartInfo("mstsc.exe"')
+    Assert-F28 ($beaconAt -gt 0 -and $launchAt -gt $beaconAt) 'the native-prompt beacon must precede the mstsc launch'
+    Assert-F28 ($csText.Contains('"recred-redeemed"')) 'the recred redemption beacon is missing'
+    $fbOut = Join-Path $Root 'f28-fallback.txt'
+    $env:GHRDP_LAB_OUT = $fbOut
+    $env:GHRDP_LAB_NOMSG = '1'
+    $fp = Start-Process -FilePath $exe -ArgumentList '--fallback-selftest' -PassThru
+    $fp.WaitForExit()
+    Assert-F28 ($fp.ExitCode -eq 0) ('--fallback-selftest exit ' + $fp.ExitCode)
+    Assert-F28 (Test-Path -LiteralPath $fbOut) '--fallback-selftest wrote no matrix file'
+    $fbTxt = [IO.File]::ReadAllText($fbOut)
+    Assert-F28 ($fbTxt.Contains('storeMissing=true ticketPresent=true retryRedeemOk=false decision=native-prompt expected=native-prompt nativePrompt=true beacon=fallback-mstsc-native-prompt verdict=pass')) 'the closed-gap case is not in the matrix'
+    Assert-F28 ($fbTxt.Contains('storeMissing=true ticketPresent=false retryRedeemOk=false decision=native-prompt expected=native-prompt nativePrompt=true beacon=fallback-mstsc-native-prompt verdict=pass')) 'the ticket-less case is not in the matrix'
+    Assert-F28 (-not ($fbTxt -like '*verdict=FAIL*')) 'a fallback matrix case reported FAIL'
+    Assert-F28 ($fbTxt.Contains('mstscLaunched=0 cmdkeyCalled=0')) 'the fallback selftest touched mstsc/cmdkey'
+    Write-Host 'F28 PASS: shipped fallback-gap decision (4/4) + native-prompt beacon ordering; stored=false never reaches a silent mstsc'
 } catch {
     # Never print exception messages/bodies/fixtures; stage alone maps failures.
     Write-Host ('::error::F27 mechanical proof failed at stage=' + $stage + ' type=' + $_.Exception.GetType().Name + ' line=' + $_.InvocationInfo.ScriptLineNumber)
-    if ($_.Exception.Message -like 'F27 assertion:*') { Write-Host $_.Exception.Message }
+    if ($_.Exception.Message -like 'F27 assertion:*' -or $_.Exception.Message -like 'F28 assertion:*') { Write-Host $_.Exception.Message }
     exit 1
 } finally {
     Remove-Item -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue
