@@ -388,6 +388,29 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">LAST RDP LOGON</span><span class="v" id="lastRdpLogon">not reported yet</span></div>
   <div class="row"><span class="k">Ticket audit</span><span class="v" id="ticketAudit">not reported yet</span></div>
   <div class="row"><span class="k">Launcher chain</span><span class="v" id="handoffChain">not reported yet</span></div>
+  <!-- [F28 §2] ONE-CLICK RECOVERY. Rendered only when the correlator proves the
+       host REFUSED the password (authLast.result=failed with sub=0xC000006A,
+       inside 120s of the last mstsc-started beacon): the launch reached the
+       host, the host rejected the credential, so the stored TERMSRV entry is
+       stale. [FIX & RECONNECT] mints a FRESH single-use ticket (POST
+       /api/rdp-token), then fires ghrdp://recred -> launcher redeems ->
+       CredWrite OVERWRITE -> rdp-written -> mstsc-started (beacons
+       recred-redeemed -> credwrite-ok -> mstsc-started). No password, no
+       clipboard, no typing. The cmdkey line below is a COPY-ONLY manual escape
+       hatch for the user to run themselves - this page never types it. -->
+  <div class="row" id="recoveryRow" style="display:none;flex-direction:column;align-items:stretch;gap:6px">
+    <span class="k" style="font-weight:600;color:#f5b7b7">RECOVERY - password rejected by the host</span>
+    <span class="note" id="recoveryText" style="margin:0"></span>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="primary" id="btnFixReconnect" type="button">FIX &amp; RECONNECT</button>
+      <span class="note" id="recoveryNote" style="margin:0">fresh ticket -&gt; stored credential overwritten -&gt; mstsc reopens; no typing, no clipboard</span>
+    </div>
+    <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0">
+      <code id="recoveryCmdkey" style="font-size:12px">cmdkey /generic:TERMSRV/&lt;fqdn&gt; /user:&lt;user&gt; /pass</code>
+      <a href="javascript:void(0)" onclick="copyById('recoveryCmdkey',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
+      <span style="font-size:11px">manual escape hatch only (visible Windows prompt, valueless /pass) - you run it once on YOUR PC; nothing here types it</span>
+    </span>
+  </div>
   <!-- [F10-3 §1.3] PS-FREE primary path: ghrdp://rdp?server=<fqdn>&user=<u>
        handled by the install.cmd-registered launcher (in-box csc compile,
        HKCU registration; no script host, no admin). If no handler answers,
@@ -1158,21 +1181,27 @@ async function nativeStatus(){
   if(!s.certBound && pr.cert) setReason('nrCertReason','BLOCKED: '+pr.cert);
   var ne=document.getElementById('nrNla');if(ne){ne.textContent=s.nlaOn?'ON':'OFF';ne.style.color=s.nlaOn?'':'#f5b7b7';}
   if(!s.nlaOn && pr.nla) setReason('nrNlaReason','BLOCKED: '+pr.nla);
-  // [F21 §4] CredSSP status row (from rdpListener.credsspStatus)
+  // [F21 §4][F28 §4] CredSSP row: the LIVE probe (rdpListener.credsspLive, the
+  // exact value the RDP LISTENER credssp checkbox renders - not a config stamp)
+  // is the primary text; the F21 config stamp follows as secondary. The legacy
+  // stamp-only renders are kept VERBATIM for pre-F28 configs (no live probe):
   // [F23] 'ok-with-cipher-warn' = every handshake determinant (NLA/cert/CredSSP)
   // verified; only the cipher PROBE could not enumerate (cmdlet+registry). That is
   // a probe failure, not a weak config - render OK-with-warning, never FAIL.
+  // [F24 §3] A status that was never reported is NOT a failure: "not reported
+  // yet (F21 step: ...)" is only for the case where NEITHER a live probe NOR a
+  // stamp exists - a bare pending render must never sit next to a live ✅.
   var cse=document.getElementById('nrCredssp');
   if(cse){
-    // [F24 §3] A status that was never reported is NOT a failure. Before this,
-    // a pre-F24 config (credsspStatus absent - e.g. the F17 listener probe used
-    // to rebuild rdpListener and drop the F21 stamp) rendered a bare
-    // "FAIL: pending", which read like a verification failure. Now: OK /
-    // OK (cipher probe warn) / FAIL (<status> + why) / "not reported yet" with
-    // the exact F21 step name that writes the field.
+    var csLive=(s&&s.rdpListener&&s.rdpListener.credsspLive)?String(s.rdpListener.credsspLive):'';
+    var csLiveWhy=(s&&s.rdpListener&&s.rdpListener.credsspLiveWhy)?String(s.rdpListener.credsspLiveWhy):'';
+    var csStamp=(s&&s.rdpListener&&s.rdpListener.credsspStatus)?String(s.rdpListener.credsspStatus):'';
+    var stampTxt=' (stamp: '+(csStamp||'none')+')';
     var cs=(s&&s.rdpListener&&s.rdpListener.credsspStatus)?String(s.rdpListener.credsspStatus):'';
     var csGood=(cs==='ok'||cs==='ok-with-cipher-warn');
-    if(csGood){ cse.textContent=(cs==='ok')?'OK':'OK (cipher probe warn)'; cse.style.color=''; }
+    if(csLive==='ok'){ cse.textContent='OK (live probe)'+stampTxt; cse.style.color=''; }
+    else if(csLive==='warn'){ cse.textContent='WARN (live probe: '+(csLiveWhy||'warn')+')'+stampTxt; cse.style.color='#f5d9b7'; }
+    else if(csGood){ cse.textContent=((cs==='ok')?'OK':'OK (cipher probe warn)'); cse.style.color=''; }
     else if(!cs){ cse.textContent='not reported yet (F21 step: CredSSP/NLA handshake verification)'; cse.style.color='#f5d9b7'; }
     else { cse.textContent='FAIL ('+cs+')'; cse.style.color='#f5b7b7'; }
   }
@@ -1180,12 +1209,17 @@ async function nativeStatus(){
     if(s.rdpListener.credsspStatus==='ok-with-cipher-warn') setReason('nrCredsspReason','WARN: '+s.rdpListener.credsspWhy+' - cipher probe could not enumerate (cmdlet+registry failed); Windows defaults include AES-256-GCM. NLA/cert/CredSSP verified OK.');
     else setReason('nrCredsspReason','BLOCKED: '+s.rdpListener.credsspWhy);
   }
+  // [F28 §4] the LIVE probe's own reason (request-time read of NLA / bound cert
+  // / CredSSP policy / RDP security layer) takes precedence when it warns.
+  if(s&&s.rdpListener&&s.rdpListener.credsspLive==='warn'){
+    setReason('nrCredsspReason','LIVE PROBE WARN: '+(s.rdpListener.credsspLiveWhy||'credssp determinant out of policy')+' - this is read from the runner at request time (registry + bound cert), not from a stale stamp.');
+  }
   // [F17 §2] RDP LISTENER: runner-side probe fields drive the row AND the
   // WINDOWS AUTO-LOGIN gate - listening + fw + cert + nla must ALL be ✅.
   var rl=(s&&s.rdpListener)||null;
   // [F21 §4] CredSSP/NLA status must also be 'ok' (or absent pre-F21 for back-compat);
   // [F23] 'ok-with-cipher-warn' passes too (cipher-probe failure, determinants verified).
-  var credsspOk=(!rl||rl.credsspStatus===undefined||rl.credsspStatus==='ok'||rl.credsspStatus==='ok-with-cipher-warn');
+  var credsspOk=credsspVerdict(rl).ok;
   window.__listenerOk=!!(rl&&rl.listening===true&&rl.fwRule===true&&rl.certOk===true&&rl.nla===true&&credsspOk);
   paintRdpListener(rl,s?s.rdpListenerAgeSec:null);
   // [F24 §3] ONE decision row from rdpListener {credValid, authEvents, credsspStatus}.
@@ -1531,6 +1565,22 @@ var LAUNCHER_LOG='%LOCALAPPDATA%\\ghrdp\\ghrdp-launcher.log';
 window.__beaconInvokedAt=0;
 // [F17 §2] RDP LISTENER row renderer: one ✅/❌ per probed field + the exact
 // fix text on every ❌, so a red dashboard names the dead component.
+// [F28 §4 row-source-begin] credsspVerdict: the SINGLE source both the
+// CREDSSP row and the RDP LISTENER credssp checkbox render. Live probe first
+// (rdpListener.credsspLive, computed by the server at request time), then the
+// F21 config stamp with its historic semantics: absent = pre-F21 back-compat
+// (never a fail), 'ok-with-cipher-warn' [F23] = determinants verified.
+function credsspVerdict(rl){
+ var live=(rl&&rl.credsspLive)?String(rl.credsspLive):'';
+ var liveWhy=(rl&&rl.credsspLiveWhy)?String(rl.credsspLiveWhy):'';
+ var stamp=(rl&&rl.credsspStatus!==undefined&&rl.credsspStatus!==null)?String(rl.credsspStatus):'';
+ if(live==='ok'){ return {ok:true,label:'credssp (live probe)',why:'',source:'live'}; }
+ if(live==='warn'){ return {ok:false,label:'credssp (live probe: '+(liveWhy||'warn')+')',why:(liveWhy||'live probe warn'),source:'live'}; }
+ var stampOk=(!stamp||stamp==='ok'||(rl&&rl.credsspStatus==='ok-with-cipher-warn'));
+ if(stampOk){ return {ok:true,label:'credssp'+(stamp?(' (stamp: '+stamp+')'):''),why:'',source:'stamp'}; }
+ return {ok:false,label:'credssp (stamp: '+stamp+')',why:((rl&&rl.credsspWhy)||stamp),source:'stamp'};
+}
+// [F28 §4 row-source-end]
 function paintRdpListener(rl,ageSec){
  var row=document.getElementById('rdpListenerRow'),line=document.getElementById('rdpListenerLine'),ageEl=document.getElementById('rdpListenerAge');
  if(!row||!line)return;
@@ -1549,9 +1599,11 @@ function paintRdpListener(rl,ageSec){
  m17(rl.certOk===true,'cert','fix: re-run "Bind tailnet LE cert" (tailscale cert <fqdn>)'+(rl.certWhy?' - '+rl.certWhy:''));
  m17(rl.nla===true,'nla','fix: set UserAuthentication=1 on RDP-Tcp (NLA on)');
  // [F21 §4] CredSSP/NLA handshake status (ok | ok-with-cipher-warn [F23] | failed-<reason>)
- var csOk=(!rl.credsspStatus||rl.credsspStatus==='ok'||rl.credsspStatus==='ok-with-cipher-warn');
- var csWhy=rl.credsspWhy||(rl.credsspStatus?('status='+rl.credsspStatus):'');
- m17(csOk,'credssp','fix: F21 CredSSP/NLA verification failed - '+csWhy+' (check CredSSP policy, cert trust, cipher suites; see CONNECTION DIAGNOSTICS)');
+ // [F28 §4] ONE verdict function for the row AND the checkbox: the live probe
+ // wins, the F21 config stamp is the fallback (pre-F28 configs keep the exact
+ // historic semantics, including 'ok-with-cipher-warn' [F23]).
+ var csv=credsspVerdict(rl);
+ m17(csv.ok,csv.label,'fix: F21 CredSSP/NLA verification failed - '+csv.why+' (check CredSSP policy, cert trust, cipher suites; see CONNECTION DIAGNOSTICS)');
  line.textContent=marks.join('  |  ');
  line.style.color=(window.__listenerOk===true)?'':'#f5b7b7';
  if(ageEl)ageEl.textContent=(typeof ageSec==='number'&&!isNaN(ageSec))?('probe age: '+ageSec+'s'):'';
@@ -1728,21 +1780,110 @@ try{clientDnsProbe();setInterval(clientDnsProbe,CDNS_PERIOD_MS);}catch(_){}
 // is known; the launcher itself handles a missing TERMSRV entry with ONE
 // interactive fallback only on failed redemption.
 // [F27 status-render-begin]
+// [F28 §1 logon-row-begin] logonRowText: the LAST RDP LOGON row is rendered from
+// rdpListener.authLast (the server's OWN 30s logon scan) with result + sub +
+// eventTs + scanTs VERBATIM. scanTs is written on every scan, so: no authLast
+// while the server has been up >90s, or an authLast without scanTs, means the
+// collector is NOT running - red. "scanned <ts>, nothing yet" is the honest
+// empty-window state. Details of the last failure come from the F24 field set
+// (never a password, never a stored credential).
+function logonRowText(authLast,collector,nowMs){
+ var c=collector||{};
+ var up=(typeof c.uptimeSec==='number')?c.uptimeSec:null;
+ var dead=(c.alive===false)||(up!==null&&up>90&&!authLast);
+ if(!authLast){
+  if(dead){ return {text:'logon collector not running (server up '+((up===null)?'?':up)+'s, no scan yet - the 30s server-side tick never stamped)',red:true,dead:true}; }
+  return {text:'scanning... (server up '+((up===null)?'?':up)+'s, first scan pending)',red:false};
+ }
+ var pe=authLast.probeError?(' | collector='+authLast.probeError):'';
+ if(!authLast.scanTs){ return {text:'logon collector not running (the last scan carried no scanTs)',red:true,dead:true}; }
+ var scanned='scanned '+authLast.scanTs;
+ var sub=authLast.sub?(' sub='+authLast.sub+(authLast.subMeaning?(' ('+authLast.subMeaning+')'):'')):'';
+ if(authLast.result==='success'){
+  return {text:'success at '+(authLast.eventTs||'?')+' - '+scanned+pe,red:false,result:'success',eventTs:authLast.eventTs||'',scanTs:authLast.scanTs,sub:authLast.sub||''};
+ }
+ if(authLast.result==='failed'){
+  return {text:'failed'+sub+' at '+(authLast.eventTs||'?')+' - '+scanned+pe,red:true,result:'failed',eventTs:authLast.eventTs||'',scanTs:authLast.scanTs,sub:authLast.sub||''};
+ }
+ return {text:'none yet - '+scanned+' (no type-10 4624 and no 4625 since '+(authLast.windowStart||'the scan window start')+')'+pe,red:false,result:'none',eventTs:'',scanTs:authLast.scanTs,sub:''};
+}
+// [F28 §1 logon-row-end]
+// [F28 §2 recovery-correlator-begin] recoveryDecision: PURE correlator. The
+// recovery card is offered ONLY when the host itself refused the password:
+// authLast.result=failed AND sub=0xC000006A AND the failure landed within 120s
+// of the LAST mstsc-started beacon in the launcher chain (that beacon is the
+// proof the click actually reached mstsc, so a stale pre-run 4625 can never
+// trigger a recovery prompt).
+function recoveryDecision(authLast,chain,nowMs){
+ if(!authLast||String(authLast.result)!=='failed'){ return {show:false,why:'no-failed-logon'}; }
+ if(String(authLast.sub||'').toUpperCase()!=='0XC000006A'){ return {show:false,why:'sub-not-wrong-password',sub:String(authLast.sub||'')}; }
+ var beacon=null;
+ (chain||[]).forEach(function(e){ if(e&&/^mstsc-started/.test(String(e.details||''))){ beacon=e; } });
+ if(!beacon){ return {show:false,why:'no-mstsc-started-beacon'}; }
+ var beaconMs=Date.parse(beacon.ts);
+ var logonMs=Date.parse(authLast.eventTs||authLast.scanTs||'');
+ if(!isFinite(beaconMs)||!isFinite(logonMs)){ return {show:false,why:'timestamp-unparsable'}; }
+ var dtSec=(logonMs-beaconMs)/1000;
+ if(dtSec<-120){ return {show:false,why:'failure-predates-the-launch',dtSec:Math.round(dtSec)}; }
+ if(dtSec>120){ return {show:false,why:'failure-more-than-120s-after-the-launch',dtSec:Math.round(dtSec)}; }
+ return {show:true,why:'password-rejected-by-host',dtSec:Math.round(dtSec),beaconTs:String(beacon.ts||'')};
+}
+// [F28 §2 recovery-correlator-end]
 function paintHandoffStatus(rl,s){
- var ae=(rl&&rl.authEvents)||{};
  var el=$('lastRdpLogon');
- if(el)el.textContent='success '+(ae.last4624At||'not reported')+' | failed '+(ae.last4625At||'not reported')+' sub='+(ae.lastSubStatus||'none')+(ae.probeError?' | collector='+ae.probeError:'');
+ var row=logonRowText((rl&&rl.authLast)||null,(rl&&rl.logonCollector)||(s&&s.logonCollector)||null,Date.now());
+ if(el){
+  el.textContent=row.text;
+  if(el.style){ el.style.color=row.dead?'#f5b7b7':(row.result==='failed'?'#f5d9b7':(row.result==='success'?'#7dffc9':'')); }
+  try{ window.__lastRdpLogon=row; }catch(_){}
+ }
  var audit=(s&&s.ticketAudit)||{};
  el=$('ticketAudit');if(el)el.textContent='issued='+(audit.issued||0)+' redeemed='+(audit.redeemed||0)+' rejected='+(audit.rejected||0);
  var chain=(s&&s.handlerChain)||[];
  el=$('handoffChain');if(el)el.textContent=chain.length?chain.map(function(e){return e.ts+' '+e.details;}).join(' → '):'no launcher steps yet';
+ paintRecovery(rl,s,null);
 }
+// [F28 §2 recovery-card-begin] paintRecovery: shows/hides the one-click recovery
+// card from recoveryDecision. Every control in the card is copy-only except the
+// single [FIX & RECONNECT] button (whose handler mints the ticket and fires the
+// recred URL - see the click wiring below); the manual cmdkey line is text.
+function paintRecovery(rl,s,nowMs){
+ var row=$('recoveryRow');
+ var d=recoveryDecision((rl&&rl.authLast)||null,(s&&s.handlerChain)||[],(nowMs==null?Date.now():nowMs));
+ try{ window.__recovery={show:!!d.show,why:d.why}; }catch(_){}
+ if(!row||!row.style)return;
+ if(!d.show){ row.style.display='none'; return; }
+ row.style.display='flex';
+ var fqdn=($('rdpFqdn')||{}).textContent||'';
+ var user=($('credUser')||{}).textContent||'';
+ var txt=$('recoveryText');
+ if(txt)txt.textContent='Password rejected by the host (wrong-password sub-status 0xC000006A, '+
+  (d.dtSec>=0?(d.dtSec+'s after the last mstsc launch'):(Math.abs(d.dtSec)+'s before the last mstsc launch'))+
+  '). One click re-issues a fresh ticket and overwrites the stored credential - no typing, no clipboard.';
+ var ck=$('recoveryCmdkey');
+ if(ck)ck.textContent='cmdkey /generic:TERMSRV/'+(fqdn||'<fqdn>')+' /user:'+(user||'<user>')+' /pass';
+ var btn=$('btnFixReconnect');
+ if(btn){
+  var ok=FQDN_RE.test(fqdn)&&/^[A-Za-z0-9_\-\.\\]{1,104}$/.test(user)&&user!=='__USER__';
+  btn.disabled=!ok; btn.style.opacity=ok?'':'0.5'; btn.style.cursor=ok?'':'not-allowed';
+ }
+}
+// [F28 §2 recovery-card-end]
 // [F27 status-render-end]
 function ghrdpRdpUrl(fqdn,user,ip){
  var u='ghrdp://rdp?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user);
  if(ip&&/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(ip)){u+='&ip='+encodeURIComponent(ip);}
  return u;
 }
+// [F28 §2 recovery-url-begin] Recovery URL: the ONE-CLICK recovery verb. The
+// server-side ticket is the ONLY secret this URL may ever carry (t); server and
+// user are identity, never credentials. ghrdpRdpUrl above keeps its &ip=
+// diagnosis parameter - recovery deliberately does not need it (the launcher's
+// DNS guard still runs and reports 'dns-guard failed' on its own).
+function ghrdpRecredUrl(fqdn,user){
+ return 'ghrdp://recred?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user);
+}
+// [F28 §2 recovery-url-end]
 function syncWinAuto(){
  var b=$('btnWinAuto');if(!b)return;
  var fqdn=($('rdpFqdn')||{}).textContent||'';
@@ -1814,6 +1955,40 @@ if(waBtn) waBtn.onclick=async function(ev){
   }
   },900);
 };
+// [F28 §2 recovery-click-begin] [FIX & RECONNECT]: the recovery card's ONLY
+// action. It mints a FRESH single-use ticket through the same bearer-gated
+// POST /api/rdp-token the first launch uses, then fires
+// ghrdp://recred?server=<fqdn>&user=<u>&t=<ticket>. The launcher redeems it,
+// OVERWRITES the stored TERMSRV entry via CredWrite and reopens mstsc - the
+// beacon chain recred-redeemed -> credwrite-ok -> mstsc-started proves each
+// hop. No password is ever read, typed or put in the URL: t is a ticket.
+var frBtn=$('btnFixReconnect');
+if(frBtn) frBtn.onclick=async function(ev){
+ if(ev&&ev.preventDefault)ev.preventDefault();
+ var fqdn=($('rdpFqdn')||{}).textContent||'';
+ var user=($('credUser')||{}).textContent||'rdpuser';
+ var note=$('recoveryNote');
+ if(frBtn.disabled||!FQDN_RE.test(fqdn)){
+  if(note)note.textContent='recovery blocked: no valid MagicDNS FQDN yet (fix the fqdn field first)';
+  return;
+ }
+ var ticket='';
+ try{
+  var key=getKey();if(!key)throw new Error('dashboard authorization missing');
+  var r=await fetch(apiBase()+'/api/rdp-token',{method:'POST',headers:{Authorization:'Bearer '+key},cache:'no-store'});
+  if(!r.ok)throw new Error('ticket issue HTTP '+r.status);
+  var j=await r.json();ticket=String(j.rid||'');
+  if(!/^[0-9a-f]{32}$/.test(ticket))throw new Error('invalid ticket response');
+ }catch(e){
+  if(note)note.textContent='recovery ticket-issue failed - check dashboard authorization and direct tailnet access';
+  return;
+ }
+ window.__recoveryDispatchedAt=Date.now();
+ launchProto(ghrdpRecredUrl(fqdn,user)+'&t='+encodeURIComponent(ticket));
+ ticket='';
+ if(note)note.textContent='recovery dispatched - the launcher redeems the fresh ticket, overwrites the stored credential and reopens mstsc (watch the chain: recred-redeemed -> credwrite-ok -> mstsc-started)';
+};
+// [F28 §2 recovery-click-end]
 // [F15 §3] [RUN CHECK] - fires the launcher's own self test (ghrdp://check): it
 // needs no server and ends in a MessageBox on the PC showing the registered reg
 // command, the TERMSRV credential state, the log path and the exe stamp. With a
