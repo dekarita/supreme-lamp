@@ -15,14 +15,16 @@ const resolver = fs.readFileSync('payloads/edge-ext-resolve.ps1', 'utf8');
 const apps = fs.readFileSync('payloads/ghrdp-provision-apps.ps1', 'utf8');
 const server = fs.readFileSync('payloads/ghrdp-server.ps1', 'utf8');
 
-test('F12-1 install.cmd: prints BEFORE/AFTER and verifies the overwrite', () => {
-  assert.match(installCmd, /handler BEFORE/);
-  assert.match(installCmd, /handler AFTER/);
-  assert.match(installCmd, /reg query "%KEY%" \/ve/);
-  assert.match(installCmd, /find \/i "%EXE%"/);           // readback verification
+test('F12-1 install.cmd: prints BEFORE/AFTER and overwrites the stale registration', () => {
+  // [F14 §1] tokens re-pinned to the byte-faithful F14 text (it supersedes the
+  // F12-era wording; AFTER is printed and read back, no find-based verify).
+  assert.match(installCmd, /echo BEFORE: & reg query/);
+  assert.match(installCmd, /echo AFTER: & reg query/);
+  assert.match(installCmd, /reg query "HKCU\\Software\\Classes\\ghrdp\\shell\\open\\command" \/ve 2>nul/);
+  assert.match(installCmd, /reg add "HKCU\\Software\\Classes\\ghrdp\\shell\\open\\command"/);
   assert.match(installCmd, /HKCU\\Software\\Classes\\ghrdp/);
-  assert.match(installCmd, /ghrdp-launcher\.exe/);
-  // no script-host EXECUTION token (the notice may NAME the old handler)
+  assert.match(installCmd, /ghrdp-rdp-launcher\.exe/);
+  // no script-host EXECUTION token (the DONE line may NAME the old handler)
   assert.ok(!/powershell\.exe|-ExecutionPolicy|Invoke-Expression|-EncodedCommand/i.test(installCmd));
 });
 

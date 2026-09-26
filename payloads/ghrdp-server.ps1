@@ -9,6 +9,10 @@ $script:CfgPath = Join-Path $Root 'config.json'
 $script:ProgPath = Join-Path $Root 'progress.json'
 $script:UiPath = Join-Path $Root 'ui.html'
 $script:InstPath = Join-Path $Root 'ghrdp-install.ps1'
+# [F14 §2] the ONLY files GET /dl/<name> may serve. Exactly these three, never
+# more: they carry no secrets, so no dash token is required for them. Anything
+# else under /dl (including every other file in $Root) is a 404.
+$script:DlNames = @('ghrdp-handler-kit.zip', 'install.cmd', 'ghrdp-rdp-launcher.cs')
 $script:OkFile = Join-Path $Root 'server-ok.txt'
 $script:FlushFlag = Join-Path $Root 'flush.flag'
 $script:NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -191,7 +195,10 @@ if ($idx -ge 0) { $head = $head.Substring(0, $idx + 4) }
 return @{ head = $head; body = $bodyBytes.ToArray() }
 }
 function Send-ClientResponse {
-    param($Stream, [int]$Code, [string]$CType, [byte[]]$Body)
+    # [F14 §2] $ExtraHeaders carries EXTRA raw header lines (CRLF-less; one per
+    # line, appended verbatim). Empty by default, so every existing call site
+    # emits byte-identical headers. Cache-Control: no-store is always set.
+    param($Stream, [int]$Code, [string]$CType, [byte[]]$Body, [string]$ExtraHeaders = '')
     $status = 'OK'
     if ($Code -eq 401) { $status = 'Unauthorized' }
     if ($Code -eq 204) { $status = 'No Content' }
@@ -199,7 +206,7 @@ function Send-ClientResponse {
     if ($Code -eq 404) { $status = 'Not Found' }
     if ($Code -eq 409) { $status = 'Conflict' }
     if ($Code -eq 500) { $status = 'Server Error' }
-    $hdr = "HTTP/1.1 $Code $status`r`nContent-Type: $CType`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`nCache-Control: no-store`r`nAccess-Control-Allow-Origin: *`r`nAccess-Control-Allow-Headers: Content-Type, Authorization`r`nAccess-Control-Allow-Methods: GET,POST,OPTIONS`r`n`r`n"
+    $hdr = "HTTP/1.1 $Code $status`r`nContent-Type: $CType`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`nCache-Control: no-store`r`nAccess-Control-Allow-Origin: *`r`nAccess-Control-Allow-Headers: Content-Type, Authorization`r`nAccess-Control-Allow-Methods: GET,POST,OPTIONS`r`n$ExtraHeaders`r`n"
     $hb = [System.Text.Encoding]::ASCII.GetBytes($hdr)
     $Stream.Write($hb, 0, $hb.Length)
     if ($Body.Length -gt 0) { $Stream.Write($Body, 0, $Body.Length) }
@@ -330,6 +337,46 @@ function Invoke-ClientRequest {
         # (no enrollment, no command queue, no agent hello/status, no diag up/download, no served payloads/bat)
         if ($path -in @('/install.bat','/connect-now.bat','/install.ps1','/client-install.ps1','/api/enroll.ps1','/api/launch.ps1','/launcher.ps1','/api/launcher-hello','/api/agent.ps1','/api/agent-hash','/api/accept.ps1','/api/acceptance.ps1','/api/device-enroll','/api/client-cmd','/api/agent-hello','/api/agent-status','/api/client-status','/api/diag-upload','/api/diag-file')) {
             Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('endpoint removed per remediation'))
+            return
+        }
+        # [F14 §2] GET /dl/<name> - one-click install-kit download. Tailnet-only
+        # (CGNAT 100.64/10 source; loopback allowed for the lab self-test). NO
+        # dash token: the allowlisted files carry no secrets. Allowlist is EXACT
+        # ($script:DlNames): no directory listing (/dl and /dl/ 404), no
+        # traversal, no other file in $Root reachable; everything else 404.
+        if ($path -eq '/dl' -or $path.StartsWith('/dl/')) {
+            $dlName = ''
+            if ($path.Length -gt 4) { $dlName = $path.Substring(4) }
+            $dlAllowed = $false
+            try {
+                $dlIp = $Client.Client.RemoteEndPoint.Address
+                if (Test-IsLoopbackAddr $dlIp) { $dlAllowed = $true }
+                else {
+                    $dlOct = $dlIp.GetAddressBytes()
+                    if ($dlOct.Length -eq 4 -and $dlOct[0] -eq 100 -and $dlOct[1] -ge 64 -and $dlOct[1] -le 127) { $dlAllowed = $true }
+                }
+            } catch { }
+            if (-not $dlAllowed -or ($script:DlNames -notcontains $dlName)) {
+                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('not found'))
+                return
+            }
+            $dlBytes = $null
+            try { $dlBytes = [System.IO.File]::ReadAllBytes((Join-Path $Root $dlName)) } catch { $dlBytes = $null }
+            if (-not $dlBytes) {
+                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('not found'))
+                return
+            }
+            $dlType = 'application/octet-stream'
+            if ($dlName -like '*.zip') { $dlType = 'application/zip' }
+            # single combined write: headers + binary body in ONE buffer so the
+            # socket never interleaves the ASCII head with the file bytes.
+            $dlHead = "HTTP/1.1 200 OK`r`nContent-Type: $dlType`r`nContent-Length: $($dlBytes.Length)`r`nConnection: close`r`nCache-Control: no-store`r`nAccess-Control-Allow-Origin: *`r`nContent-Disposition: attachment; filename=`"$dlName`"`r`n`r`n"
+            $dlHeadB = [System.Text.Encoding]::ASCII.GetBytes($dlHead)
+            $dlResp = New-Object byte[] ($dlHeadB.Length + $dlBytes.Length)
+            [Array]::Copy($dlHeadB, 0, $dlResp, 0, $dlHeadB.Length)
+            [Array]::Copy($dlBytes, 0, $dlResp, $dlHeadB.Length, $dlBytes.Length)
+            $stream.Write($dlResp, 0, $dlResp.Length)
+            $stream.Flush()
             return
         }
         # [remediation 8C-extended] /install.bat + /connect-now.bat bodies deleted; unreachable due to 404 guard above. /connect-now.bat body was serving a .bat with cmdkey /generic:TERMSRV/<ip> /pass:<plaintext> - direct violation of the no-plaintext-transit decision.
@@ -1538,3 +1585,4 @@ while (((Get-Date) - $start) -lt $limit) {
     Start-Sleep -Milliseconds 50
 }
 try { $listener.Stop() } catch { }
+ry { $listener.Stop() } catch { }

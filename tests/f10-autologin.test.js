@@ -35,10 +35,14 @@ test('F10-1 launcher: required .rdp directives, no password/resolution lines', (
 });
 
 test('F10-1 install.cmd: in-box csc + HKCU registration, script-host free', () => {
+  // [F14 §1] install.cmd is byte-faithful to the F14 text: quoted-set vars,
+  // winexe + Forms refs, BEFORE/AFTER printed, exe = ghrdp-rdp-launcher.exe.
   assert.match(installer, /Framework64\\v4\.0\.30319\\csc\.exe/);
   assert.match(installer, /HKCU\\Software\\Classes\\ghrdp/);
   assert.match(installer, /URL:ghrdp Protocol/);
-  assert.match(installer, /ghrdp-launcher\.exe/);
+  assert.match(installer, /ghrdp-rdp-launcher\.exe/);
+  assert.match(installer, /echo BEFORE: & reg query/);
+  assert.match(installer, /echo AFTER: & reg query/);
   assert.ok(!SCRIPT_HOST_LAUNCH.test(installer), 'install.cmd must stay script-host free');
 });
 
