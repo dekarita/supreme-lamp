@@ -809,6 +809,309 @@ jobs:
           throw ('F21 CredSSP/NLA loud-fail: ' + $failText)
           # [F21 §1 probe-end]
 
+      # [F30 §1] SERVER-SIDE TLS/CIPHER NORMALIZATION. Ground truth 2026-09-26:
+      # the client connection is dropped DURING the TLS handshake ("connection
+      # forcibly closed by remote host") BEFORE any credential is sent, while
+      # TCP 3389 / DNS / firewall all probe green - i.e. a pre-LSA Schannel
+      # negotiation failure, not a logon failure (4624/4625 never fire, so no
+      # logon-side evidence can ever explain it). This step exists so the server
+      # never depends on OS defaults: (1) the modern AES-GCM + ChaCha20 suites
+      # are enabled explicitly AND moved to the FRONT of the suite list (a CBC
+      # suite offered first is what a client we drop at handshake can trip on);
+      # (2) TLS 1.2 Client+Server stay Enabled=1 (never disabled - many clients
+      # still default to 1.2) and TLS 1.3 is enabled; (3) RDP keeps
+      # SecurityLayer=2 (TLS only) with MinEncryptionLevel=3; (4) TermService,
+      # WinRM and the RDP session services are restarted so the listener
+      # re-reads Schannel. NOTHING here weakens NLA, CredSSP or certificate
+      # validation - no auth-level override, no cert bypass, no cipher downgrade.
+      - name: TLS/cipher normalization (F30 - ordered GCM/ChaCha20 + TLS 1.2/1.3)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $S = $env:GITHUB_STEP_SUMMARY
+          New-Item -ItemType Directory -Path 'C:\ghrdp\tls' -Force -ErrorAction SilentlyContinue | Out-Null
+          # [F30 §1 normalize-begin] Secret-free, extractable block: PURE helpers
+          # (order/reorder decision) + one applier. The Windows lab lane extracts
+          # THIS block verbatim and drives it with fixtures AND for real, so the
+          # order proof never depends on a live Windows Server inside CI.
+          $script:F30Suites = @(
+              'TLS_AES_256_GCM_SHA384',
+              'TLS_CHACHA20_POLY1305_SHA256',
+              'TLS_AES_128_GCM_SHA256',
+              'TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384',
+              'TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256'
+          )
+          # Schannel cipher-suite priority list (REG_MULTI_SZ 'Functions').
+          $script:F30FunctionsKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Cryptography\Configuration\Local\SSL\00010002'
+          $script:F30SchannelRoot = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols'
+          function Get-F30SuiteNames {
+              # Names out of cmdlet objects / strings, tolerating both shapes
+              # (the F23 L1 lesson: an object-shape quirk must not look like an
+              # empty suite list).
+              param([object[]]$Items)
+              $names = @()
+              foreach ($o in @($Items)) {
+                  $nm = ''
+                  if ($o -is [string]) { $nm = [string]$o }
+                  else {
+                      try { if ($null -ne $o.Name) { $nm = [string]$o.Name } } catch { }
+                      if (-not $nm) { try { $p = $o.PSObject.Properties['Name']; if ($p -and $null -ne $p.Value) { $nm = [string]$p.Value } } catch { } }
+                  }
+                  $nm = $nm.Trim()
+                  if ($nm) { $names += $nm }
+              }
+              return $names
+          }
+          function Test-F30SuiteIn {
+              # Exact, trimmed membership: an object-shape / whitespace / casing
+              # quirk in a cmdlet view must never masquerade as "suite missing"
+              # (the F23 L1 lesson, applied to the cipher list).
+              param([object[]]$Items, [string]$Suite)
+              $want = ([string]$Suite).Trim()
+              if (-not $want) { return $false }
+              foreach ($i in @($Items)) { if (([string]$i).Trim() -eq $want) { return $true } }
+              return $false
+          }
+          function Get-F30OrderedFunctions {
+              # PURE: the $Suites list FIRST, in the declared order, then every
+              # other suite in its existing relative order (deduplicated).
+              param([string[]]$Current, [string[]]$Suites)
+              $rest = @()
+              foreach ($e in @($Current)) {
+                  if ($null -eq $e) { continue }
+                  $s = ([string]$e).Trim()
+                  if (-not $s) { continue }
+                  if ($Suites -contains $s) { continue }
+                  if ($rest -contains $s) { continue }
+                  $rest += $s
+              }
+              return @($Suites + $rest)
+          }
+          function Test-F30Order {
+              # PURE verdict: every suite present AND no CBC/3DES/RC4/NULL suite
+              # ahead of the last modern suite. This is the "GCM/ChaCha20 first"
+              # invariant, not merely "present somewhere".
+              param([string[]]$List, [string[]]$Suites)
+              $items = @()
+              foreach ($e in @($List)) { $s = ([string]$e).Trim(); if ($s) { $items += $s } }
+              if ($items.Count -eq 0) { return $false }
+              foreach ($s in $Suites) { if ($items -notcontains $s) { return $false } }
+              $lastIdx = -1
+              foreach ($s in $Suites) {
+                  for ($i = 0; $i -lt $items.Count; $i++) { if ($items[$i] -eq $s -and $i -gt $lastIdx) { $lastIdx = $i } }
+              }
+              for ($i = 0; $i -lt $lastIdx; $i++) {
+                  if ($Suites -contains $items[$i]) { continue }
+                  if ($items[$i] -match '(?i)_(CBC|3DES|RC4|NULL)_') { return $false }
+              }
+              return $true
+          }
+          function Set-F30CipherOrder {
+              # Writes the ordered list back to the Schannel Functions value,
+              # after backing the original up once (idempotent re-run safe).
+              param([string]$Key, [string[]]$Suites, [string]$BackupPath = '')
+              $before = @()
+              try {
+                  $raw = (Get-ItemProperty -Path $Key -Name 'Functions' -ErrorAction Stop).Functions
+                  $before = @(Get-F30SuiteNames -Items @($raw))
+              } catch { $before = @() }
+              if ($BackupPath -and $before.Count -gt 0 -and -not (Test-Path -LiteralPath $BackupPath)) {
+                  try { [System.IO.File]::WriteAllLines($BackupPath, $before, (New-Object System.Text.UTF8Encoding($false))) } catch { }
+              }
+              $after = @(Get-F30OrderedFunctions -Current $before -Suites $Suites)
+              try {
+                  New-ItemProperty -Path $Key -Name 'Functions' -PropertyType MultiString -Value $after -Force -ErrorAction Stop | Out-Null
+              } catch {
+                  return [pscustomobject]@{ ok = $false; before = ($before -join ','); after = ($after -join ','); why = ('write-failed: ' + $_.Exception.Message) }
+              }
+              $reread = @()
+              try { $reread = @(Get-F30SuiteNames -Items @((Get-ItemProperty -Path $Key -Name 'Functions' -ErrorAction Stop).Functions)) } catch { }
+              $ok = (Test-F30Order -List $reread -Suites $Suites)
+              return [pscustomobject]@{ ok = $ok; before = ($before -join ','); after = ($reread -join ','); why = $(if ($ok) { '' } else { 'order-not-verified-after-write' }) }
+          }
+          function Set-F30TlsProtocols {
+              # TLS 1.2 stays enabled on BOTH sides (never disabled: some clients
+              # still default to it); TLS 1.3 is enabled so a 1.3-capable client
+              # negotiates instead of being downgraded.
+              param([string]$SchannelRoot)
+              $rows = @()
+              foreach ($proto in @('TLS 1.2', 'TLS 1.3')) {
+                  foreach ($side in @('Client', 'Server')) {
+                      $p = Join-Path $SchannelRoot ($proto + '\' + $side)
+                      $ok = $false; $why = ''
+                      try {
+                          if (-not (Test-Path -LiteralPath $p)) { New-Item -Path $p -Force -ErrorAction Stop | Out-Null }
+                          # Set-ItemProperty THROWS on an absent value and a fresh
+                          # (e.g. TLS 1.3) key has none: create-if-missing first,
+                          # then the explicit DWord writes below.
+                          if ($null -eq (Get-ItemProperty -Path $p -Name 'Enabled' -ErrorAction SilentlyContinue)) { New-ItemProperty -Path $p -Name 'Enabled' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null }
+                          if ($null -eq (Get-ItemProperty -Path $p -Name 'DisabledByDefault' -ErrorAction SilentlyContinue)) { New-ItemProperty -Path $p -Name 'DisabledByDefault' -PropertyType DWord -Value 0 -Force -ErrorAction SilentlyContinue | Out-Null }
+                          Set-ItemProperty -Path $p -Name 'Enabled' -Value 1 -Type DWord -ErrorAction Stop
+                          Set-ItemProperty -Path $p -Name 'DisabledByDefault' -Value 0 -Type DWord -ErrorAction Stop
+                          $ok = ((Get-ItemProperty -Path $p -Name 'Enabled' -ErrorAction Stop).Enabled -eq 1)
+                      } catch { $why = $_.Exception.Message }
+                      $rows += [pscustomobject]@{ protocol = $proto; side = $side; enabled = $ok; why = $why }
+                  }
+              }
+              return $rows
+          }
+          function Invoke-F30TlsNormalize {
+              # The applier: enable suites, enforce order, protocols, RDP security
+              # layer, restart the services that re-read Schannel, stamp state.
+              param(
+                  [string[]]$Suites,
+                  [string]$FunctionsKey = $script:F30FunctionsKey,
+                  [string]$SchannelRoot = $script:F30SchannelRoot,
+                  [string]$StatePath = 'C:\ghrdp\tls-norm.json',
+                  [string]$BackupPath = 'C:\ghrdp\tls\f30-cipher-functions-original.txt',
+                  [switch]$SkipServiceRestart
+              )
+              $applied = @(); $failed = @()
+              foreach ($s in $Suites) {
+                  try { Enable-TlsCipherSuite -Name $s -ErrorAction Stop; $applied += $s }
+                  catch { $failed += ($s + ': ' + $_.Exception.Message) }
+              }
+              $order = Set-F30CipherOrder -Key $FunctionsKey -Suites $Suites -BackupPath $BackupPath
+              $protocols = @(Set-F30TlsProtocols -SchannelRoot $SchannelRoot)
+              # RDP-Tcp security layer: keep TLS-only (2) + HIGH min encryption (3).
+              $secLayer = $null; $minEnc = $null; $rdpWhy = ''
+              try {
+                  $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+                  if ($null -eq (Get-ItemProperty -Path $rdpKey -Name 'SecurityLayer' -ErrorAction SilentlyContinue)) { New-ItemProperty -Path $rdpKey -Name 'SecurityLayer' -PropertyType DWord -Value 2 -Force -ErrorAction SilentlyContinue | Out-Null }
+                  if ($null -eq (Get-ItemProperty -Path $rdpKey -Name 'MinEncryptionLevel' -ErrorAction SilentlyContinue)) { New-ItemProperty -Path $rdpKey -Name 'MinEncryptionLevel' -PropertyType DWord -Value 3 -Force -ErrorAction SilentlyContinue | Out-Null }
+                  Set-ItemProperty -Path $rdpKey -Name 'SecurityLayer' -Value 2 -Type DWord -ErrorAction Stop
+                  Set-ItemProperty -Path $rdpKey -Name 'MinEncryptionLevel' -Value 3 -Type DWord -ErrorAction Stop
+                  $secLayer = (Get-ItemProperty -Path $rdpKey -Name 'SecurityLayer' -ErrorAction Stop).SecurityLayer
+                  $minEnc = (Get-ItemProperty -Path $rdpKey -Name 'MinEncryptionLevel' -ErrorAction Stop).MinEncryptionLevel
+              } catch { $rdpWhy = $_.Exception.Message }
+              $restarted = @()
+              if (-not $SkipServiceRestart) {
+                  foreach ($svc in @('TermService', 'WinRM')) {
+                      try { Restart-Service -Name $svc -Force -ErrorAction Stop; $restarted += $svc } catch { $restarted += ($svc + ':' + $_.Exception.Message) }
+                  }
+                  # RDP session services re-read the listener config next start;
+                  # Schannel itself is a kernel driver (no restartable service) -
+                  # the TermService restart is what makes the listener re-read it.
+                  foreach ($svc in @('SessionEnv', 'UmRdpService')) {
+                      try { Restart-Service -Name $svc -Force -ErrorAction Stop; $restarted += $svc } catch { }
+                  }
+                  Start-Sleep -Seconds 5
+              }
+              $tls12 = @($protocols | Where-Object { $_.protocol -eq 'TLS 1.2' -and $_.enabled }).Count
+              $tls13 = @($protocols | Where-Object { $_.protocol -eq 'TLS 1.3' -and $_.enabled }).Count
+              $state = [ordered]@{
+                  ts                 = (Get-Date).ToUniversalTime().ToString('o')
+                  suites             = $Suites
+                  suitesEnabled      = $applied
+                  suitesFailed       = $failed
+                  orderOk            = [bool]$order.ok
+                  orderFunctions     = [string]$order.after
+                  tls12Sides         = [int]$tls12
+                  tls13Sides         = [int]$tls13
+                  securityLayer      = $secLayer
+                  minEncryptionLevel = $minEnc
+                  rdpWhy             = $rdpWhy
+                  restarted          = $restarted
+              }
+              try {
+                  $dir = Split-Path -Parent $StatePath
+                  if ($dir) { New-Item -ItemType Directory -Path $dir -Force -ErrorAction SilentlyContinue | Out-Null }
+                  [System.IO.File]::WriteAllText($StatePath, ($state | ConvertTo-Json -Depth 6 -Compress), (New-Object System.Text.UTF8Encoding($false)))
+              } catch { }
+              return [pscustomobject]@{
+                  enabled    = $applied
+                  failed     = $failed
+                  order      = $order
+                  protocols  = $protocols
+                  securityLayer = $secLayer
+                  minEncryptionLevel = $minEnc
+                  rdpWhy     = $rdpWhy
+                  restarted  = $restarted
+                  tls12Sides = $tls12
+                  tls13Sides = $tls13
+                  state      = $state
+              }
+          }
+          # [F30 §1 normalize-end]
+          $f30 = Invoke-F30TlsNormalize -Suites $script:F30Suites
+          # Guard the applier's contract LOUDLY before any live read (a throw here
+          # is the same failure class the F30 step exists to prevent: a
+          # half-normalized Schannel must never be advertised as ordered).
+          if (-not $f30.order.ok) {
+              Write-Host ('::error::[F30] Schannel cipher order not enforced; reason=' + $f30.order.why + '; after=' + $f30.order.after)
+              throw 'F30 halted by design: the Schannel Functions list is not in the declared order (reason cipher-order-not-enforced)'
+          }
+          if ($null -eq $f30.securityLayer -or $null -eq $f30.minEncryptionLevel) {
+              Write-Host ('::error::[F30] RDP-Tcp security layer unreadable; reason=' + $f30.rdpWhy)
+              throw 'F30 halted by design: RDP-Tcp SecurityLayer/MinEncryptionLevel could not be written+read back (reason rdp-layer-not-enforced)'
+          }
+          if ([int]$f30.securityLayer -ne 2 -or [int]$f30.minEncryptionLevel -lt 3) {
+              Write-Host ('::error::[F30] RDP-Tcp weakened: SecurityLayer=' + $f30.securityLayer + ' MinEncryptionLevel=' + $f30.minEncryptionLevel)
+              throw 'F30 halted by design: SecurityLayer must stay 2 (TLS only) and MinEncryptionLevel >= 3 (reason rdp-layer-weakened)'
+          }
+          if ([int]$f30.tls12Sides -lt 2) {
+              Write-Host '::error::[F30] TLS 1.2 is not Enabled on BOTH sides; reason tls12-not-enabled'
+              throw 'F30 halted by design: TLS 1.2 must stay enabled on Client and Server (never disable it) (reason tls12-not-enabled)'
+          }
+          # Read the LIVE suite order back through the cmdlet as well (the registry
+          # reread alone would not prove what Schannel actually offers).
+          $f30Live = @()
+          try { $f30Live = @(Get-F30SuiteNames -Items @(Get-TlsCipherSuite -ErrorAction Stop)) } catch { }
+          $f30LiveHead = @($f30Live | Select-Object -First 8)
+          # The cmdlet view is host-dependent: a build that does not expose a
+          # suite (typically the TLS 1.3 set) omits it from Get-TlsCipherSuite
+          # entirely, so "absent from the cmdlet" is NOT "not normalized" - the
+          # Schannel Functions read-back is the definitive ordered list. A
+          # suite the cmdlet DOES know must have been enabled, or the applier
+          # promise is broken -> hard error below.
+          $f30Known = @()
+          $f30Unsupported = @()
+          foreach ($s in $script:F30Suites) {
+              if (Test-F30SuiteIn -Items $f30Live -Suite $s) { $f30Known += $s } else { $f30Unsupported += $s }
+          }
+          $f30KnownFailed = @($f30.failed | Where-Object { $n = ([string]$_ -split ':')[0]; $f30Known -contains $n })
+          Write-Host ('[F30] suites enabled=' + $f30.enabled.Count + ' failed=' + $f30.failed.Count + ' orderOk=' + $f30.order.ok + ' tls12Sides=' + $f30.tls12Sides + ' tls13Sides=' + $f30.tls13Sides + ' securityLayer=' + $f30.securityLayer + ' minEncryption=' + $f30.minEncryptionLevel)
+          Write-Host ('[F30] live suite head: ' + ($f30LiveHead -join ' | '))
+          Write-Host ('[F30] ordered Functions head: ' + ((@($f30.order.after -split ',') | Select-Object -First 8) -join ' | '))
+          Write-Host ('[F30] services: ' + ($f30.restarted -join ', '))
+          if ($f30.failed.Count -gt 0) { Write-Host ('::warning::[F30] cipher suites not enabled by cmdlet (registry order still enforced): ' + ($f30.failed -join ' ; ') + ' | not exposed by Get-TlsCipherSuite on this build: ' + (@($f30Unsupported) -join ', ')) }
+          if ($f30KnownFailed.Count -gt 0) {
+              Write-Host ('::error::[F30] a suite this build DOES expose could not be enabled; reason cipher-enable-failed: ' + ($f30KnownFailed -join ' ; '))
+              if ($S) { ('### F30 cipher enable FAILED - reason cipher-enable-failed: ' + ($f30KnownFailed -join ' ; ')) | Add-Content -Path $S }
+              throw 'F30 halted by design: Enable-TlsCipherSuite failed for a suite the host exposes (reason cipher-enable-failed)'
+          }
+          # Stamp the honest cmdlet-vs-registry split so the dashboard reports
+          # the order it can prove without pretending every suite is visible.
+          try {
+              $st = Get-Content -LiteralPath 'C:\ghrdp\tls-norm.json' -Raw | ConvertFrom-Json
+              $st | Add-Member -NotePropertyName 'suitesUnsupportedByCmdlet' -NotePropertyValue @($f30Unsupported) -Force
+              $st | Add-Member -NotePropertyName 'liveSuiteCount' -NotePropertyValue ([int]$f30Live.Count) -Force
+              [System.IO.File]::WriteAllText('C:\ghrdp\tls-norm.json', ($st | ConvertTo-Json -Depth 6 -Compress), (New-Object System.Text.UTF8Encoding($false)))
+          } catch { }
+          # Fail LOUD when the host cannot be normalized at all: an un-ordered /
+          # un-enableable Schannel is exactly the state that drops the client at
+          # handshake, and a green run must never advertise it as LIVE.
+          if (-not $f30.order.ok -and $f30.enabled.Count -eq 0) {
+              Write-Host ('::error::[F30] TLS normalization failed; reason cipher-normalization-failed; order=' + $f30.order.why + '; rdp=' + $f30.rdpWhy)
+              if ($S) { '### F30 TLS/cipher normalization FAILED - reason cipher-normalization-failed' | Add-Content -Path $S; ('Suites enabled: ' + $f30.enabled.Count + '; order: ' + $f30.order.why + '; orderFunctions: ' + $f30.order.after) | Add-Content -Path $S }
+              throw 'F30 halted by design: Schannel cipher order not enforced and no suite could be enabled (reason cipher-normalization-failed)'
+          }
+          if (-not $f30.order.ok) {
+              # The cmdlet path worked but the priority list did not: the suites
+              # are available (handshake can succeed) yet a CBC suite could still
+              # be offered first - loud warning, order still reported to the UI.
+              Write-Host ('::warning::[F30] cipher order NOT verified (' + $f30.order.why + '); suites are present - handshake can succeed, order is reported in the dashboard')
+          }
+          if ($f30.tls12Sides -lt 2) { Write-Host '::warning::[F30] TLS 1.2 registry writes are not both verified (Client+Server)' }
+          if ($S) {
+              '### F30 TLS/cipher normalization' | Add-Content -Path $S
+              ('- ordered suites (first): ' + (($script:F30Suites | Select-Object -First 5) -join ', ')) | Add-Content -Path $S
+              ('- enabled=' + $f30.enabled.Count + ' failed=' + $f30.failed.Count + ' orderOk=' + $f30.order.ok + ' tls12Sides=' + $f30.tls12Sides + ' tls13Sides=' + $f30.tls13Sides) | Add-Content -Path $S
+              ('- RDP-Tcp SecurityLayer=' + $f30.securityLayer + ' MinEncryptionLevel=' + $f30.minEncryptionLevel + ' (TLS only, high encryption - NLA/CredSSP untouched)') | Add-Content -Path $S
+              ('- restarted: ' + ($f30.restarted -join ', ')) | Add-Content -Path $S
+          }
+          exit 0
+
       - name: Optimize Tailscale path (direct-connection hunter, every 5 min)
         shell: pwsh
         run: |
@@ -4117,11 +4420,49 @@ jobs:
           }
           # [F24 §2 collector-end] (marker last: the lab cell extracts the
           # COMPLETE collector verbatim)
+          # [F30 §3 keepalive-begin] SERVER CONN-LOG MIRROR. The server process
+          # samples BOTH RDP Operational logs on its own 30s tick (that is the only
+          # surface that can see a TLS/CredSSP-layer drop: 4624/4625 never fire for
+          # a connection killed before LSA). This step mirrors the newest sample
+          # into config.json rdpListener.connLog - so the field the F30 spec names
+          # exists in the config too - and prints the newest 3 reason codes to the
+          # run log. Read-only for the state file the server owns.
+          function Update-ConnLogMirror {
+              param([string]$CfgPath, [string]$StatePath)
+              if (-not (Test-Path -LiteralPath $StatePath)) { return $null }
+              $raw = ''
+              try { $raw = [System.IO.File]::ReadAllText($StatePath) } catch { return $null }
+              if (-not $raw) { return $null }
+              $state = $null
+              try { $state = $raw | ConvertFrom-Json } catch { return $null }
+              if (-not $state) { return $null }
+              $cfg = Read-GhrdpJson -Path $CfgPath
+              if (-not $cfg) { return $state }
+              $rl = $null
+              if ($cfg.PSObject.Properties['rdpListener'] -and $cfg.rdpListener) { $rl = $cfg.rdpListener } else { $rl = New-Object psobject }
+              $rl | Add-Member -NotePropertyName connLog -NotePropertyValue $state -Force
+              $cfg | Add-Member -NotePropertyName rdpListener -NotePropertyValue $rl -Force
+              try { [System.IO.File]::WriteAllText($CfgPath, ($cfg | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false))) } catch { }
+              return $state
+          }
+          # [F30 §3 keepalive-end]
           while ((Get-Date) -lt $deadline) {
               Start-Sleep -Seconds 60
               $beat++
               # [F24 §2] 60s auth-event tick: counts + status codes only.
               try { Update-RdpAuthEvents -CfgPath $cfgPath | Out-Null } catch { Write-Host ('[F24] collector tick failed: ' + $_.Exception.Message) }
+              # [F30 §3] mirror the server's 30s conn-log sample into config.json
+              # rdpListener.connLog and print the newest 3 reason codes: a
+              # tls-forcibly-closed / tls-handshake-failed / cert-rejected reason
+              # here is the pre-logon TLS drop the Security log cannot show.
+              try {
+                  $cl = Update-ConnLogMirror -CfgPath $cfgPath -StatePath (Join-Path $root 'rdp-connlog.json')
+                  if ($cl) {
+                      $clTxt = ''
+                      if ($cl.items -and @($cl.items).Count -gt 0) { $clTxt = (@($cl.items | Select-Object -First 3 | ForEach-Object { ('#' + [string]$_.id + ' ' + [string]$_.reason) }) -join ' ') }
+                      Write-Host ('[F30] SERVER CONN LOG: ' + $(if ($clTxt) { $clTxt } else { 'no events yet' }) + ' probeError=' + [string]$cl.probeError)
+                  }
+              } catch { Write-Host ('[F30] conn-log mirror tick failed: ' + $_.Exception.Message) }
               $stamp = Get-Date -Format 'HH:mm:ss'
               $cfgNow = Read-GhrdpJson -Path $cfgPath
               $ipNow = ''

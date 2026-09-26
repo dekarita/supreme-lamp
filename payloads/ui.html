@@ -345,6 +345,25 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
         <span class="note" style="margin:0;color:#f87171">NEVER weaken NLA/CredSSP (auth-level overrides, credssp-support-off .rdp flags) or bypass cert validation as a workaround - those are the failure class, not the fix.</span>
       </div>
     </details>
+    <!-- [F30 §2.2/§4] TLS/CIPHER HANDSHAKE DROP KIT. Ground truth 2026-09-26:
+         "connection forcibly closed by remote host" DURING the TLS handshake,
+         before any credential is sent, with TCP/DNS/firewall all green. These are
+         COPY-ONLY lines - this page never runs, types or automates anything, and
+         nothing here weakens NLA/CredSSP/cert validation. -->
+    <details id="connDiagTlsBox" style="margin:0">
+      <summary style="cursor:pointer;font-size:11px;opacity:.75">TLS/cipher handshake drop ("forcibly closed by remote host") - purge + cipher checks</summary>
+      <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px">
+        <span class="note" style="margin:0;font-weight:600">1. Purge ALL stale TERMSRV credentials on YOUR PC (nuclear option)</span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagPurgeAll" style="font-size:12px">cmdkey /list | Select-String TERMSRV | ForEach-Object { $t=($_ -split 'target=')[1]; if ($t) { cmdkey "/delete:$t" } }</code><a href="javascript:void(0)" onclick="copyById('connDiagPurgeAll',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- deletes EVERY TERMSRV entry (both the <b>Domain:</b> and <b>LegacyGeneric:</b> shapes); mstsc then stores the current one on its next launch. cmdkey labels the target as <code>Target: LegacyGeneric:target=TERMSRV/&lt;fqdn&gt;</code>, which is why this splits on <code>target=</code> - a split on ':' would delete nothing useful.</span></span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagServerPurge" style="font-size:12px">(age-aware purge: loading the server-generated 7-day command...)</code><a href="javascript:void(0)" onclick="copyById('connDiagServerPurge',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- the same purge AGED: only entries whose LastWritten is older than 7 days, using the credential-store API. Requires the dashboard secret (this page fetches it for you; the server never runs it - YOU run it on YOUR PC).</span></span>
+        <span class="note" style="margin:0;font-weight:600">2. Check the cipher suites this PC can offer</span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagCiphers" style="font-size:12px">Get-TlsCipherSuite | Select-Object Name, CipherLength | Format-Table</code><a href="javascript:void(0)" onclick="copyById('connDiagCiphers',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- compare with the SERVER CONN LOG row's <code>server TLS:</code> line; the runner offers TLS_AES_256_GCM_SHA384 / TLS_CHACHA20_POLY1305_SHA256 / TLS_AES_128_GCM_SHA256 first.</span></span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagTls13" style="font-size:12px">mstsc /v:&lt;fqdn&gt; /admin /tls13</code><a href="javascript:void(0)" onclick="copyById('connDiagTls13',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- some mstsc builds reject <code>/tls13</code> ("parameter is incorrect"); if yours does, run <code>mstsc /v:&lt;fqdn&gt;</code> instead - TLS 1.3 is still attempted first, and TLS 1.2 stays enabled on the runner for clients that default to it.</span></span>
+        <span class="note" style="margin:0;font-weight:600">3. Capture the handshake (only if Wireshark/tshark is installed)</span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagTshark" style="font-size:12px">tshark -i "Tailscale" -f "tcp port 3389" -w %TEMP%\rdp-tls.pcap -a duration:30</code><a href="javascript:void(0)" onclick="copyById('connDiagTshark',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- start it, then launch mstsc; a ClientHello with no ServerHello (or an immediate RST right after it) is the server-side drop, not a credential problem.</span></span>
+        <span class="note" style="margin:0">If the SERVER CONN LOG shows <code>tls-forcibly-closed</code> / <code>tls-handshake-failed</code> / <code>cert-rejected</code>, paste that line plus the cipher table into this session: ONE targeted fix (cipher order | TLS version | cert trust) - never an NLA/CredSSP weakening.</span>
+      </div>
+    </details>
   </div>
   <!-- [F24 §3] AUTH-REJECT DISCRIMINATOR (F24): ONE decision row built from
        rdpListener {credValid, authEvents, credsspStatus}. It replaces the
@@ -499,6 +518,19 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <span class="k" style="font-weight:600">RDP LISTENER</span>
     <span class="note" id="rdpListenerLine" style="margin:0">probe not reported yet</span>
     <span class="note" id="rdpListenerAge" style="margin:0"></span>
+  </div>
+  <!-- [F30 §3] SERVER CONN LOG: the runner's own 30s read of BOTH RDP
+       Operational logs (RdpCoreTS + TerminalServices-RemoteConnectionManager).
+       This is the ONLY surface that can see a TLS/CertSSP-layer drop: a
+       connection killed during the handshake never reaches LSA and therefore
+       never writes 4624/4625. Newest 3 with reason codes; a stale collector is
+       rendered as such, never as a clean log. -->
+  <div class="row" id="srvConnLogRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
+    <span class="k" style="font-weight:600">SERVER CONN LOG</span>
+    <span class="note" id="srvConnLogState" style="margin:0">collector not reported yet (server 30s tick reads both RDP Operational logs)</span>
+    <span class="note" id="srvConnLogLines" style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace"></span>
+    <span class="note" id="srvConnLogTls" style="margin:0"></span>
+    <span class="note" style="margin:0">reason codes: tls-forcibly-closed | tls-handshake-failed | cert-rejected | connection-reset | auth-succeeded | auth-failed | listener-lifecycle | session-state. A "forcibly closed"/handshake/reset reason here IS the pre-logon TLS drop the Security log cannot show - run the purge + cipher copy-lines under CONNECTION DIAGNOSTICS.</span>
   </div>
   <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>
   <div class="row"><span class="k">Cert bound</span><span class="v" id="nrCert">...</span><span class="note" id="nrCertReason">RDP-Tcp SSLCertificateSHA1Hash present (from /api/native-status).</span></div>
@@ -1222,6 +1254,11 @@ async function nativeStatus(){
   var credsspOk=credsspVerdict(rl).ok;
   window.__listenerOk=!!(rl&&rl.listening===true&&rl.fwRule===true&&rl.certOk===true&&rl.nla===true&&credsspOk);
   paintRdpListener(rl,s?s.rdpListenerAgeSec:null);
+  // [F30 §3] SERVER CONN LOG row (RDP Operational logs; handshake drops live here).
+  paintSrvConnLog(s);
+  // [F30 §2.2] the age-aware purge command is fetched once (dash-token) and
+  // rendered copy-only - the page never runs it.
+  try { var f30p=loadServerPurgeCmd(); if(f30p&&f30p.catch)f30p.catch(function(){}); } catch(_){ }
   // [F24 §3] ONE decision row from rdpListener {credValid, authEvents, credsspStatus}.
   paintAuthDiscriminator(rl,s);
   paintHandoffStatus(rl,s);
@@ -1609,6 +1646,79 @@ function paintRdpListener(rl,ageSec){
  if(ageEl)ageEl.textContent=(typeof ageSec==='number'&&!isNaN(ageSec))?('probe age: '+ageSec+'s'):'';
  row.style.display='';
 }
+
+// [F30 §2.2] The server hands out an AGE-AWARE purge command (only TERMSRV
+// entries whose LastWritten is older than 7 days) behind the same dash-token
+// gate as /api/rdp-token. This page only FETCHES and DISPLAYS it: nothing here
+// executes it, nothing types a credential, and no credential value is involved.
+var __f30PurgeCmd='';
+async function loadServerPurgeCmd(){
+ var el=document.getElementById('connDiagServerPurge');
+ if(!el||__f30PurgeCmd)return;
+ if(typeof fetch!=='function'){el.textContent='(no fetch available - run the plain purge line above)';return;}
+ var key=getKey();
+ if(!key){el.textContent='(open this dashboard with ?key=... to load the server-generated 7-day purge command; the plain purge line above works without it)';return;}
+ var r=await fetch(apiBase()+'/api/purge-stale-creds',{headers:{Authorization:'Bearer '+key},cache:'no-store'});
+ if(!r||!r.ok){el.textContent='(server refused the purge command: HTTP '+((r&&r.status)||'?')+')';return;}
+ var j=await r.json();
+ if(j&&j.command){__f30PurgeCmd=String(j.command);el.textContent=__f30PurgeCmd;}
+ else{el.textContent='(server returned no purge command)';}
+}
+// [F30 §3] SERVER CONN LOG row: the runner's two RDP Operational logs (the only
+// place a pre-LSA TLS drop appears). Newest 3 events + reason codes; the
+// collector's own liveness is rendered, so a dead collector can never read as a
+// clean log. Copy-only elsewhere: nothing on this page executes anything.
+// [F30 §3 connlog-render-begin]
+function paintSrvConnLog(s){
+ var row=document.getElementById('srvConnLogRow');
+ if(!row)return;
+ var rl=(s&&s.rdpListener)||{};
+ var cl=(rl&&rl.connLog)?rl.connLog:((s&&s.connLog)?s.connLog:null);
+ var col=(rl&&rl.connLogCollector)?rl.connLogCollector:((s&&s.connLogCollector)?s.connLogCollector:null);
+ var st=document.getElementById('srvConnLogState');
+ var lines=document.getElementById('srvConnLogLines');
+ var tls=document.getElementById('srvConnLogTls');
+ row.style.display='';
+ if(!cl){
+  if(st){st.textContent='collector not reported yet - the server 30s tick reads Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational + Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational';st.style.color='#f5d9b7';}
+  if(lines)lines.textContent='';
+  if(tls)tls.textContent='';
+  return;
+ }
+ var items=(cl.items&&cl.items.length)?cl.items:((cl.newest)||[]);
+ var newest=items.slice(0,3);
+ if(st){
+  var alive=!!(col&&col.alive===true);
+  var probe=(col&&col.probeError)?(' probeError='+col.probeError):'';
+  var cnt=(typeof cl.count==='number')?cl.count:items.length;
+  st.textContent=alive?('collector alive (30s) - '+cnt+' event(s) in window; newest 3 below'+probe)
+                     :('collector STALE (no sample within 90s) - reason codes are NOT live'+probe);
+  st.style.color=alive?'':'#f5d9b7';
+ }
+ if(lines){
+  if(!newest.length){lines.textContent='no events yet - nothing reached the RDP stack';}
+  else{
+   lines.textContent=newest.map(function(e){
+    var ts=String(e.timeUtc||'').replace('T',' ').replace(/\..*/,'');
+    return ts+' #'+e.id+' '+e.provider+' reason='+e.reason+((e.level)?(' level='+e.level):'')+((e.desc)?(' - '+e.desc):'');
+   }).join('\n');
+  }
+ }
+ if(tls){
+  var tn=rl&&rl.tlsNorm?rl.tlsNorm:null;
+  if(!tn){tls.textContent='server TLS/cipher stamp: not reported yet (main.yml step TLS/cipher normalization (F30))';tls.style.color='#f5d9b7';}
+  else{
+   var bad=[];if(tn.orderOk!==true)bad.push('cipher order not verified');
+   if(Number(tn.tls12Sides)<2)bad.push('TLS 1.2 not enabled on both sides');
+   if(Number(tn.securityLayer)!==2||Number(tn.minEncryptionLevel)<3)bad.push('RDP security layer/encryption below policy');
+   tls.textContent='server TLS: ordered='+(tn.orderOk===true?'yes':'NO')+' tls12Sides='+tn.tls12Sides+' tls13Sides='+tn.tls13Sides+
+    ' securityLayer='+tn.securityLayer+' minEncryptionLevel='+tn.minEncryptionLevel+(bad.length?(' - '+bad.join('; ')):'')+
+    (typeof tn.ageSec==='number'?(' (stamp age '+tn.ageSec+'s)'):'');
+   tls.style.color=bad.length?'#f5d9b7':'';
+  }
+ }
+}
+// [F30 §3 connlog-render-end]
 // [F24 §3] AUTH-REJECT DISCRIMINATOR: ONE decision row rendered from
 // rdpListener {credValid, authEvents, credsspStatus} - the three branches that
 // separate a 0x904/0x7 TcpStateFrontAuth reject into an actionable cause:

@@ -196,7 +196,11 @@ test('F20-5 launcher: mstsc exit code logged (dec + hex) and the dialog sends th
   // stamp names the CURRENT build (F28 = recred + closed fallback gap).
   const vq = ver[1].replace(/\./g, '\\.');
   assert.match(launcher, new RegExp('assembly: AssemblyVersion\\("' + vq + '"\\)'), 'the assembly version must match the repo constant');
-  assert.match(launcher, /\(F28 recred\+fallback-gap\)/, 'the beacon stamp must name the F28 build');
+  // [F30 §2] the stamp must name the CURRENT build (F30 adds the
+  // credential purge + .rdp completeness assert) and keep naming the F28
+  // behaviours the launcher still implements.
+  assert.match(launcher, /F30 purge\+rdp-assert/, 'the beacon stamp must name the F30 build');
+  assert.match(launcher, /F28 recred\+fallback-gap/, 'the stamp must keep naming the F28 behaviours');
 });
 
 // ---------------------------------------------------------------------------
