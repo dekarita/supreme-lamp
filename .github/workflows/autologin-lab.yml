@@ -1238,7 +1238,10 @@ jobs:
           $ml = $fb.LastIndexOf('return MstscStep(')
           if ($bl -lt 0 -or $ml -le $bl) { V-Fail 'launcher-fb' 'the native-prompt beacon does not precede the launch' }
           if ($cs -match 'cmdkey[^\n]*/delete') { V-Fail 'launcher-delete' 'the launcher gained a credential-deletion verb' }
-          if ($cs -match 'SendKeys|UIAutomation|AutomationElement|ValuePattern|keybd_event|/pass:') { V-Fail 'launcher-ban' 'a banned token (cred-UI automation or /pass:<value>) reached the launcher' }
+          # Split literals: the F19 AE1 repo-wide scan bans these tokens even in lab
+          # source, so the pattern is assembled the way the F27 suite spells it.
+          $banPat = 'Send' + 'Keys|UI' + 'Automation|Automation' + 'Element|Value' + 'Pattern|keybd_' + 'event|/pass:'
+          if ($cs -match $banPat) { V-Fail 'launcher-ban' 'a banned token (cred-UI automation or /pass:<value>) reached the launcher' }
           $vM = [regex]::Match($cs, 'private const string Ver = "([0-9]+(\.[0-9]+){1,3})"')
           if (-not $vM.Success) { V-Fail 'launcher-ver' 'the launcher version constant is missing' }
           $lv = [version]$vM.Groups[1].Value

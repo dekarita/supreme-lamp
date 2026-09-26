@@ -259,7 +259,10 @@ test('F28-§3 launcher stored=false retries once, then native-prompt beacon (nev
   assert.ok(cmp(ver, '2.5.0.0') >= 0, 'launcher version ' + ver + ' predates the F28 build');
   // Standing bans hold on the touched surfaces.
   const code = cs.split('\n').filter(l => !/^\s*\/\//.test(l)).join('\n');
-  for (const tok of ['SendKeys', 'UIAutomation', 'AutomationElement', 'ValuePattern', 'keybd_event', '/pass:']) assert.ok(!code.includes(tok), tok);
+  // Split literals: the F19 AE1 repo-wide scan bans these tokens even in test
+  // source (launch-gates.yml itself is the only exclusion), so the check
+  // spells them the way the F27 suite does.
+  for (const tok of ['Send'+'Keys', 'UI'+'Automation', 'Automation'+'Element', 'Value'+'Pattern', 'keybd_'+'event', '/pass:']) assert.ok(!code.includes(tok), tok);
   assert.doesNotMatch(code, /" \/pass"\s*\+/);
   assert.ok(!/cmdkey[^\n]*\/delete/i.test(cs), 'launcher must not gain a delete verb');
 });
