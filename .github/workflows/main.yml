@@ -1257,6 +1257,23 @@ jobs:
               throw 'enable MagicDNS in tailnet DNS settings (https://login.tailscale.com/admin/dns)'
           }
           if (-not $ip) { Write-Host '[stage] WARNING: no Tailscale IP resolved yet' }
+          # [F25 §3.1] WRITER-SIDE FALLBACK: never write an empty / non-CGNAT
+          # rdpIp while a validated CGNAT address is available.
+          # `tailscale ip -4` above is a LocalAPI call that 401s post-connect
+          # (node owned by NT AUTHORITY\SYSTEM) - the exact lock F9n documented for
+          # the webdesk step. When it returns nothing, the F18-validated
+          # RUNNER_RESOLVED_IP (exported by the "Runner FQDN self-test (F18)" step,
+          # which throws unless it resolved a CGNAT address) is the same tailnet
+          # address, already proven. Without this the stage step happily wrote
+          # rdpIp='' and the webdesk step later threw the job-killing halt.
+          $cgnatStage = '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.'
+          $ipSrcStage = 'tailscale-cli'
+          if ($ip -and $ip.Trim() -match $cgnatStage) { $ip = $ip.Trim() }
+          elseif ([string]$env:RUNNER_RESOLVED_IP -match $cgnatStage) {
+              $ip = ([string]$env:RUNNER_RESOLVED_IP).Trim()
+              $ipSrcStage = 'RUNNER_RESOLVED_IP'
+          }
+          Write-Host ('[stage] rdpIp source = ' + $ipSrcStage + '; value = [' + $ip + ']')
           $mirrorOn = ($env:MIRROR_INPUT -eq 'true')
           $tokSet = 'abcdefghijklmnopqrstuvwxyz0123456789'
           $tok = ''
@@ -1352,6 +1369,32 @@ jobs:
               launcherVersion = $launcherVer
           }
           [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), ($cfg | ConvertTo-Json -Depth 10), $global:GhrdpEncNoBom)
+          # [F25 §3.1] READ-BACK ASSERTION: the writer must not lose the tailnet IP.
+          # This halts HERE, at the point of loss, with the raw property inventory -
+          # instead of downstream in the webdesk step, where the throw used to kill
+          # the whole job (no live runner, no dashboard, no RDP, no webdesk).
+          $cfgPathStage = Join-Path $root 'config.json'
+          try {
+              $cfgBack = [System.IO.File]::ReadAllText($cfgPathStage) | ConvertFrom-Json
+              $backProps = if ($cfgBack) { (($cfgBack.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') } else { 'UNREADABLE' }
+              $backIp = if ($cfgBack) { [string]$cfgBack.rdpIp } else { '' }
+              $backRr = if ($cfgBack) { [string]$cfgBack.runnerResolvedIP } else { '' }
+              Write-Host ('[stage] F25 read-back: rdpIp=[' + $backIp + '] runnerResolvedIP=[' + $backRr + ']')
+              if ($backIp -notmatch $cgnatStage -or -not $backRr) {
+                  Write-Host '::error::[F25] config writer lost the tailnet IP - halting at the point of loss (not downstream in webdesk).'
+                  Write-Host ('[stage] F25 config.json property NAMES: ' + $backProps)
+                  if ($env:GITHUB_STEP_SUMMARY) {
+                      '### F25 halt: config writer lost the tailnet IP' | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+                      ('rdpIp=[' + $backIp + '] runnerResolvedIP=[' + $backRr + ']') | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+                      ('config.json property NAMES: `' + $backProps + '`') | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+                  }
+                  throw ('config-writer lost tailnet IP (rdpIp=[' + $backIp + '] runnerResolvedIP=[' + $backRr + ']; props: ' + $backProps + ')')
+              }
+          } catch {
+              if ($_.Exception.Message -match 'config-writer lost tailnet IP') { throw }
+              Write-Host ('[stage] F25 read-back assertion could not run: ' + $_.Exception.Message)
+          }
+          Write-Host '[stage] F25 read-back assertion PASS: rdpIp present + CGNAT, runnerResolvedIP present'
           [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), $tok, $global:GhrdpEncNoBom)
           [System.IO.File]::WriteAllText((Join-Path $root 'rust-flag.txt'), 'false', $global:GhrdpEncNoBom)
           try { [System.IO.File]::WriteAllText((Join-Path $root 'gh-pages-token.txt'), [string]$env:GITHUB_TOKEN, $global:GhrdpEncNoBom) } catch { }
