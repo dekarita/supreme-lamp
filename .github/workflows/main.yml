@@ -1795,23 +1795,89 @@ jobs:
               [System.IO.File]::WriteAllText($cfgPathW, ($cfgV | ConvertTo-Json -Depth 10), $encV)
               Write-Host '[webdesk] config.json vncPass stamped (value never printed)'
           } catch { Write-Host ('[webdesk] config.json vncPass stamp failed: ' + $_.Exception.Message) }
-          # [F9n] Tailnet IP source: config.json .rdpIp ONLY (written pre-lock by
-          # the stage step). The step-context tailscale CLI is locked out post-connect
-          # (401: node owned by NT AUTHORITY\SYSTEM), so `tailscale ip` is never
-          # called here. No valid CGNAT address => fail closed (no fabrication).
+          # [F25 §2] Tailnet IP LADDER: L1 -> L2 -> L3, each CGNAT-validated,
+          # first VALID source wins.
+          #
+          # [F9n] is PRESERVED: config.json .rdpIp is still L1 and still the
+          # preferred source, and `tailscale ip` is STILL never called here
+          # (post-connect LocalAPI returns 401 - node owned by NT AUTHORITY\SYSTEM).
+          #
+          # [F25] WHY a ladder: `tailscale ip -4` in the STAGE step is that same
+          # locked LocalAPI call, so .rdpIp can legitimately be written empty (or
+          # stale / non-CGNAT) while a perfectly good, F18-validated CGNAT address
+          # sits ONE property away (.runnerResolvedIP) and in this step's own env
+          # (RUNNER_RESOLVED_IP). F9n's single-source read turned that recoverable
+          # condition into a throw that killed the whole job - no live runner, no
+          # dashboard, no RDP, no webdesk. A ladder makes the READ recoverable;
+          # it does NOT weaken validation.
+          #
+          # [F25 §6] No fabrication, ever: a candidate is used ONLY if it matches
+          # 100.64.0.0/10. An all-sources-empty run still throws the SAME
+          # classified 'tailnet-ip-unavailable' halt as F9n - it now also prints
+          # WHICH source was empty, with raw values.
+          $cgnat = '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.'
           $rdpIp = ''
+          $ipSrc = ''
+          # Per-source RAW values for the diagnostic dump. rdpIp / dnsName are
+          # non-secret diagnostics (S6); no credential is ever read or printed.
+          $ipDiag = [ordered]@{
+              L1 = 'rdpIp=ABSENT'
+              L2 = 'runnerResolvedIP=ABSENT dns=ABSENT'
+              L3 = 'env=ABSENT'
+          }
+          $ipProps = 'config.json ABSENT-or-unreadable'
           try {
               $cfgR = [System.IO.File]::ReadAllText($cfgPathW) | ConvertFrom-Json
-              if ($cfgR -and $cfgR.rdpIp) { $rdpIp = ([string]$cfgR.rdpIp).Trim() }
-          } catch { $rdpIp = '' }
-          if ($rdpIp -notmatch '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') {
-              Write-Host '[webdesk] tailnet IP unavailable in config.json (expected CGNAT 100.64-127.x.x); refusing to fabricate a URL. Halted by design.'
+              if ($cfgR) {
+                  # Property NAMES (inventory) + the two non-secret VALUES.
+                  $ipProps = (($cfgR.PSObject.Properties | ForEach-Object { $_.Name }) -join ',')
+                  $rawL1 = [string]$cfgR.rdpIp
+                  $rawDns = [string]$cfgR.dnsName
+                  $ipDiag.L1 = ('rdpIp=' + $(if ($rawL1) { $rawL1 } else { 'ABSENT' }))
+                  # L1 - config.json .rdpIp (the F9n source; still first, still preferred).
+                  if ($rawL1.Trim() -match $cgnat) { $rdpIp = $rawL1.Trim(); $ipSrc = 'L1' }
+                  # L2a - config.json .runnerResolvedIP (F18: the runner resolving its
+                  # own MagicDNS FQDN to a CGNAT address).
+                  $rawL2 = [string]$cfgR.runnerResolvedIP
+                  if (-not $rdpIp -and $rawL2.Trim() -match $cgnat) { $rdpIp = $rawL2.Trim(); $ipSrc = 'L2' }
+                  # L2b - only if L2a missed: Resolve-DnsName(config.dnsName), first A record.
+                  $dnsCand = ''
+                  if (-not $rdpIp -and $rawDns) {
+                      try {
+                          $dnsHits = @(Resolve-DnsName -Name $rawDns -ErrorAction Stop | Where-Object { $_.IPAddress -match '^\d+\.\d+\.\d+\.\d+$' })
+                          if ($dnsHits.Count -gt 0) { $dnsCand = [string]$dnsHits[0].IPAddress }
+                      } catch { $dnsCand = '' }
+                  }
+                  $ipDiag.L2 = ('runnerResolvedIP=' + $(if ($rawL2) { $rawL2 } else { 'ABSENT' }) + ' dns=' + $(if ($rawDns) { ($rawDns + '->' + $(if ($dnsCand) { $dnsCand } else { 'no-A' })) } else { 'ABSENT' }))
+                  if (-not $rdpIp -and $dnsCand -match $cgnat) { $rdpIp = $dnsCand; $ipSrc = 'L2' }
+              }
+          } catch { Write-Host ('[webdesk] config.json read failed inside the IP ladder: ' + $_.Exception.Message) }
+          # L3 - this step's own env (F18 exports RUNNER_RESOLVED_IP before the stage step).
+          $rawL3 = [string]$env:RUNNER_RESOLVED_IP
+          $ipDiag.L3 = ('env=' + $(if ($rawL3) { $rawL3 } else { 'ABSENT' }))
+          if (-not $rdpIp -and $rawL3.Trim() -match $cgnat) { $rdpIp = $rawL3.Trim(); $ipSrc = 'L3' }
+          # [F25 §2] Per-source dump lands in the webdesk-diag artifact on EVERY
+          # run (success and halt), so the artifact always explains the winner.
+          $ipDump = ('L1 ' + $ipDiag.L1 + ' | L2 ' + $ipDiag.L2 + ' | L3 ' + $ipDiag.L3)
+          try {
+              $ipDiagDir = Join-Path $env:RUNNER_TEMP 'webdesk-diag'
+              New-Item -ItemType Directory -Path $ipDiagDir -Force -ErrorAction SilentlyContinue | Out-Null
+              ($ipDump + "`nconfig.json property NAMES: " + $ipProps + "`nwinner=" + $(if ($ipSrc) { $ipSrc } else { 'NONE' })) | Set-Content -LiteralPath (Join-Path $ipDiagDir 'tailnet-ip-sources.txt') -ErrorAction SilentlyContinue
+          } catch { }
+          if (-not $rdpIp) {
+              Write-Host '[webdesk] tailnet IP unavailable from EVERY source (expected CGNAT 100.64-127.x.x); refusing to fabricate a URL. Halted by design.'
+              Write-Host ('[webdesk] tailnet-ip-source-dump: ' + $ipDump)
+              Write-Host ('[webdesk] config.json property NAMES: ' + $ipProps)
               if ($S) { '### Web desktop DISABLED (tailnet IP unavailable - no URL fabricated)' | Add-Content -Path $S }
+              if ($S) { ('per-source: `' + $ipDump + '`') | Add-Content -Path $S }
+              if ($S) { ('config.json property NAMES: `' + $ipProps + '`') | Add-Content -Path $S }
               if ($S) { 'config.json .rdpIp is missing or not a tailnet address. Re-dispatch the workflow for a fresh ephemeral host.' | Add-Content -Path $S }
               Set-WebdeskCfg '' 'serve-failed' 'tailnet-ip-unavailable'
               throw 'Web desktop not deployed: tailnet-ip-unavailable. Halted by design. See Step Summary.'
           }
-          Write-Host ('[webdesk] tailnet IP from config.json = ' + $rdpIp)
+          # [F25 §5] The verify-loop line: proves which source actually won.
+          Write-Host ('[webdesk] tailnet IP source = ' + $ipSrc)
+          Write-Host ('[webdesk] tailnet IP = ' + $rdpIp)
           # [F9o L1] TightVNC install: ALWAYS direct msiexec with the full property
           # list (the package-manager params path mangles VALUE_OF_PASSWORD -
           # quoting bug, F9o evidence - and is REMOVED; no manager-based
