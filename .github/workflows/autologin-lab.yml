@@ -1143,6 +1143,11 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          trap {
+              Write-Host ('::error::[V] stage=unhandled :: ' + $_.Exception.GetType().FullName + ' :: ' + $_.Exception.Message)
+              try { if ($script:vsrv -and -not $script:vsrv.HasExited) { Stop-Process -Id $script:vsrv.Id -Force -ErrorAction SilentlyContinue } } catch { }
+              exit 1
+          }
           function V-Fail([string]$Stage, [string]$Detail) {
               Write-Host ('::error::[V] stage=' + $Stage + ' :: ' + $Detail)
               try { if ($script:vsrv -and -not $script:vsrv.HasExited) { Stop-Process -Id $script:vsrv.Id -Force -ErrorAction SilentlyContinue } } catch { }
@@ -1155,7 +1160,10 @@ jobs:
           $b0 = $srvSrc.IndexOf('[F28 §1 authlast-begin]')
           $b1 = $srvSrc.IndexOf('[F28 §1 authlast-end]')
           if ($b0 -lt 0 -or $b1 -le $b0) { V-Fail 'extract' 'the F28 authlast block could not be extracted from the shipped server' }
-          $col = $srvSrc.Substring($b0, $b1 - $b0)
+          # Strip the marker LINES (cell-U style): the substring starts mid-line
+          # inside the begin comment, so without this the dot-sourced text would
+          # start with a bare '[F28 ...]' fragment and fail to parse.
+          $col = (($srvSrc.Substring($b0, $b1 - $b0) -split "`r?`n") | Where-Object { $_ -notmatch 'authlast-begin|authlast-end' }) -join "`n"
           foreach ($tok in @('Get-RdpLogonResultFields', 'Get-RdpLogonResultSummary', 'Update-AuthLast', "'LogonType', 'FailureReason', 'SubStatus', 'TargetUserName'", "logonType -eq '10'", "$script:ServerStartUtc", '4624', '4625')) {
               if (-not $col.Contains($tok)) { V-Fail 'extract-token' ('collector lacks ' + $tok) }
           }
