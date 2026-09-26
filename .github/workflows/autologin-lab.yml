@@ -2009,27 +2009,34 @@ jobs:
               if ($summaryFile) { Add-Content -Path $summaryFile -Value $line }
               
               $hasKey = if ($cert) { $cert.HasPrivateKey } else { 'null' }
-              Write-Host "DUMP: HasPrivateKey=$hasKey"
+              $d1 = "DUMP: HasPrivateKey=$hasKey"
+              Write-Host $d1; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d1 }
               
               $cngDir = Join-Path $env:ProgramData 'Microsoft\Crypto\Keys'
               $legacyDir = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
-              Write-Host "DUMP: Checked key container paths: $cngDir AND $legacyDir (active: $keyPath)"
+              $d2 = "DUMP: Checked key container paths: $cngDir AND $legacyDir (active: $keyPath)"
+              Write-Host $d2; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d2 }
               
               if ($keyPath -and (Test-Path -LiteralPath $keyPath)) {
                   try {
                       $acls = (Get-Acl -LiteralPath $keyPath).Access | ForEach-Object { $_.IdentityReference.Value + '=>' + $_.FileSystemRights }
-                      Write-Host ("DUMP: Key ACLs: " + ($acls -join ' | '))
-                  } catch { Write-Host ("DUMP: Key ACL read failed: " + $_.Exception.Message) }
-              } else { Write-Host "DUMP: Key path does not exist" }
+                      $d3 = "DUMP: Key ACLs: " + ($acls -join ' | ')
+                      Write-Host $d3; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d3 }
+                  } catch { $d3 = "DUMP: Key ACL read failed: " + $_.Exception.Message; Write-Host $d3; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d3 } }
+              } else { $d3 = "DUMP: Key path does not exist"; Write-Host $d3; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d3 } }
               
-              Write-Host "DUMP: Probe inner-exception: $probeError"
+              $d4 = "DUMP: Probe inner-exception: $probeError"
+              Write-Host $d4; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d4 }
               
               try {
-                  $scEvents = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Schannel' } -MaxEvents 3 -ErrorAction SilentlyContinue
+                  $scEvents = Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Schannel' } -MaxEvents 5 -ErrorAction SilentlyContinue
                   if ($scEvents) {
-                      foreach ($ev in $scEvents) { Write-Host ("DUMP: Schannel Event ID=" + $ev.Id + " Time=" + $ev.TimeCreated.ToString('o')) }
-                  } else { Write-Host "DUMP: Schannel Events: none" }
-              } catch { Write-Host "DUMP: Schannel query error: $_" }
+                      foreach ($ev in $scEvents) {
+                          $d5 = "DUMP: Schannel Event ID=" + $ev.Id + " Time=" + $ev.TimeCreated.ToString('o') + " Msg=" + ($ev.Message -replace "`r`n", " ")
+                          Write-Host $d5; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d5 }
+                      }
+                  } else { $d5 = "DUMP: Schannel Events: none"; Write-Host $d5; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d5 } }
+              } catch { $d5 = "DUMP: Schannel query error: $_"; Write-Host $d5; if ($summaryFile) { Add-Content -Path $summaryFile -Value $d5 } }
           }
 
           function Report-Cell([string]$name, [string]$expect, [string]$observed, [bool]$pass, [string]$reasonCode, [object]$cert, [string]$keyPath, [string]$probeErr) {
@@ -2135,13 +2142,22 @@ jobs:
               }
               $cngDir = Join-Path $env:ProgramData 'Microsoft\Crypto\Keys'
               $legacyDir = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
+              $cryptoRoot = Join-Path $env:ProgramData 'Microsoft\Crypto'
               if ($cngUniqueName -and (Test-Path -LiteralPath (Join-Path $cngDir $cngUniqueName))) { $posKeyPath = Join-Path $cngDir $cngUniqueName }
               elseif ($cspUniqueName -and (Test-Path -LiteralPath (Join-Path $legacyDir $cspUniqueName))) { $posKeyPath = Join-Path $legacyDir $cspUniqueName }
               elseif ($cngUniqueName -and (Test-Path -LiteralPath (Join-Path $legacyDir $cngUniqueName))) { $posKeyPath = Join-Path $legacyDir $cngUniqueName }
               elseif ($cspUniqueName -and (Test-Path -LiteralPath (Join-Path $cngDir $cspUniqueName))) { $posKeyPath = Join-Path $cngDir $cspUniqueName }
+              elseif ($cngUniqueName) {
+                  $found = Get-ChildItem -Path $cryptoRoot -Filter $cngUniqueName -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                  if ($found) { $posKeyPath = $found.FullName }
+              }
+              if (-not $posKeyPath -and $cspUniqueName) {
+                  $found = Get-ChildItem -Path $cryptoRoot -Filter $cspUniqueName -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                  if ($found) { $posKeyPath = $found.FullName }
+              }
 
               if (-not $posKeyPath -or -not (Test-Path -LiteralPath $posKeyPath)) {
-                  throw 'H3-key-container-not-found-in-crypto-keys-or-machinekeys'
+                  throw "H3-key-container-not-found cngName=$cngUniqueName cspName=$cspUniqueName"
               }
 
               $posStage = 'acl-set'
