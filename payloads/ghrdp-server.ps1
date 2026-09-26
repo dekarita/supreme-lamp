@@ -25,6 +25,99 @@ try {
 $script:RdpTokens = @{}
 $script:LauncherSeen = $false
 $script:HandlerChain = @()
+# [F28 §1 authlast-begin] LOGON-RESULT LOOP (independent 30s tick from START).
+# Reads the runner's OWN Security 4624 (type 10 only) + 4625 and stamps
+# rdpListener.authLast = {result,sub,eventTs,scanTs}. scanTs is ALWAYS written
+# (even on an unreadable log) so the dashboard can distinguish "scanned <ts>,
+# nothing yet" from a dead collector. Secret-free: ONLY FailureReason +
+# SubStatus + TargetUserName are extracted (plus LogonType/TimeCreated/EventID
+# for filtering/dating); no credential material beyond those four fields.
+# Extracted VERBATIM by autologin-lab cell V and driven with synthetic events.
+$script:ServerStartUtc = [datetime]::UtcNow
+$script:AuthLast = [ordered]@{ result = 'none'; sub = ''; eventTs = ''; scanTs = '' }
+$script:LastAuthScan = [datetime]::MinValue
+$script:AuthLastWindowSec = 3600
+function Get-RdpLogonResultFields {
+    param([xml]$Xml)
+    $id = ''
+    $t = ''
+    $name = @{}
+    try { $id = [string]($Xml.SelectSingleNode("//*[local-name()='EventID']")).InnerText } catch { }
+    try { $t = [string]($Xml.SelectSingleNode("//*[local-name()='TimeCreated']").GetAttribute('SystemTime')) } catch { }
+    try {
+        foreach ($d in @($Xml.SelectNodes("//*[local-name()='Data']"))) {
+            $n = [string]$d.GetAttribute('Name')
+            if ($n -in @('LogonType', 'FailureReason', 'SubStatus', 'TargetUserName')) { $name[$n] = [string]$d.InnerText }
+        }
+    } catch { }
+    return [pscustomobject]@{
+        id             = $id.Trim()
+        timeUtc        = $t
+        logonType      = ([string]$name['LogonType']).Trim()
+        reason         = ([string]$name['FailureReason']).Trim()
+        subStatus      = ([string]$name['SubStatus']).Trim().ToUpperInvariant()
+        targetUserName = ([string]$name['TargetUserName']).Trim()
+    }
+}
+function Get-RdpLogonResultSummary {
+    param($Items, [string]$ScanTs = '')
+    if (-not $ScanTs) { $ScanTs = [datetime]::UtcNow.ToString('o') }
+    $lastSuccess = ''
+    $lastFail = ''
+    $lastSub = ''
+    foreach ($it in @($Items | Sort-Object timeUtc)) {
+        if (-not $it) { continue }
+        if ([string]$it.id -eq '4624') {
+            if ([string]$it.logonType -eq '10' -and [string]$it.timeUtc) { $lastSuccess = [string]$it.timeUtc }
+            continue
+        }
+        if ([string]$it.id -ne '4625') { continue }
+        if ([string]$it.timeUtc) { $lastFail = [string]$it.timeUtc; $lastSub = [string]$it.subStatus }
+    }
+    $result = 'none'
+    $eventTs = ''
+    if ($lastSuccess -and $lastFail) {
+        if ($lastSuccess -gt $lastFail) { $result = 'success'; $eventTs = $lastSuccess }
+        else { $result = 'failed'; $eventTs = $lastFail }
+    } elseif ($lastSuccess) { $result = 'success'; $eventTs = $lastSuccess }
+    elseif ($lastFail) { $result = 'failed'; $eventTs = $lastFail }
+    $subOut = ''
+    if ($result -eq 'failed') { $subOut = $lastSub }
+    return [pscustomobject]@{
+        result  = $result
+        sub     = $subOut
+        eventTs = $eventTs
+        scanTs  = $ScanTs
+    }
+}
+function Update-AuthLast {
+    $scan = [datetime]::UtcNow.ToString('o')
+    $items = @()
+    try {
+        $since = (Get-Date).ToUniversalTime().AddSeconds(-1 * $script:AuthLastWindowSec)
+        $raw = @(Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = @(4624, 4625); StartTime = $since } -MaxEvents 400 -ErrorAction Stop)
+        foreach ($e in $raw) { $items += (Get-RdpLogonResultFields -Xml ([xml]$e.ToXml())) }
+    } catch {
+        $items = @()
+    }
+    try {
+        $sum = Get-RdpLogonResultSummary -Items $items -ScanTs $scan
+        $script:AuthLast = [ordered]@{ result = [string]$sum.result; sub = [string]$sum.sub; eventTs = [string]$sum.eventTs; scanTs = [string]$sum.scanTs }
+    } catch {
+        $script:AuthLast = [ordered]@{ result = 'none'; sub = ''; eventTs = ''; scanTs = $scan }
+    }
+    try {
+        if (Test-Path -LiteralPath $script:CfgPath) {
+            $cfgA = [System.IO.File]::ReadAllText($script:CfgPath) | ConvertFrom-Json
+            $rdpL = $null
+            if ($cfgA.PSObject.Properties['rdpListener']) { $rdpL = $cfgA.rdpListener } else { $rdpL = [pscustomobject]@{} }
+            $rdpL | Add-Member -NotePropertyName authLast -NotePropertyValue ([pscustomobject]@{ result = $script:AuthLast.result; sub = $script:AuthLast.sub; eventTs = $script:AuthLast.eventTs; scanTs = $script:AuthLast.scanTs }) -Force
+            $cfgA | Add-Member -NotePropertyName rdpListener -NotePropertyValue $rdpL -Force
+            [System.IO.File]::WriteAllText($script:CfgPath, ($cfgA | ConvertTo-Json -Depth 10), $script:NoBom)
+        }
+    } catch { }
+}
+# [F28 §1 authlast-end]
 $script:DeviceTokens = @{}
 $script:DeviceTokensPath = Join-Path $Root 'device-tokens.json'
 $script:ClientAuditLog = Join-Path $Root 'client-audit.log'
@@ -812,6 +905,16 @@ function Invoke-ClientRequest {
                 reasonsDisabled = @($reasons)
                 advisory = @($advisory)
             }
+            # [F28 §1] authLast is served freshest-first: the in-memory 30s tick
+            # wins; the config.json copy persists across server restarts.
+            try {
+                if ($script:AuthLast -and $script:AuthLast.scanTs) {
+                    if ($null -eq $ns.rdpListener) { $ns.rdpListener = [pscustomobject]@{} }
+                    $ns.rdpListener | Add-Member -NotePropertyName authLast -NotePropertyValue ([pscustomobject]@{ result = [string]$script:AuthLast.result; sub = [string]$script:AuthLast.sub; eventTs = [string]$script:AuthLast.eventTs; scanTs = [string]$script:AuthLast.scanTs }) -Force
+                }
+            } catch { }
+            try { $ns.serverStartUtc = $script:ServerStartUtc.ToString('o') } catch { $ns.serverStartUtc = '' }
+            try { $ns.serverUptimeSec = [int]([datetime]::UtcNow - $script:ServerStartUtc).TotalSeconds } catch { $ns.serverUptimeSec = 0 }
             $ns.ticketAudit = $script:TicketAudit
             $ns.handlerChain = @($script:HandlerChain)
             # [U4] lastHandlerVerb: verb + result of the most recent /api/handler-hello,
@@ -847,11 +950,12 @@ function Invoke-ClientRequest {
                     $bTxt = [System.Text.Encoding]::UTF8.GetString([byte[]]$bodyRaw)
                     $bj = $bTxt | ConvertFrom-Json -ErrorAction SilentlyContinue
                     if ($bj) {
-                        if ([string]$bj.verb -in @('rdp','check','setup','install','connect')) { $hh.verb = [string]$bj.verb } else { $hh.verb = 'other' }
+                        if ([string]$bj.verb -in @('rdp','recred','check','setup','install','connect')) { $hh.verb = [string]$bj.verb } else { $hh.verb = 'other' }
                         if ($null -ne $bj.ok) { $hh.ok = [bool]$bj.ok }
                         # F27: reject arbitrary telemetry strings rather than redact guesses.
+                        # F28: + recred one-click recovery + fallback native-prompt beacons.
                         $detail = [string]$bj.details
-                        if ($detail -match '^(invoked|ticket-redeemed|credwrite-ok|credwrite-failed|rdp-written|mstsc-started( pid=[0-9]+)?|mstsc-exited=-?[0-9]+|check-shown|cmdkey-shown|cmdkey-timeout|cmdkey-stored=(true|false)|client-dns-off|cred-param-rejected|invalid-target|fallback-cmdkey reason=(ticket-missing|unreachable|ticket-invalid-or-expired))$') { $hh.details = $detail }
+                        if ($detail -match '^(invoked|ticket-redeemed|recred-redeemed|recred-failed-(ticket-missing|unreachable|ticket-invalid-or-expired|credwrite)|credwrite-ok|credwrite-failed|rdp-written|mstsc-started( pid=[0-9]+)?|mstsc-exited=-?[0-9]+|check-shown|cmdkey-shown|cmdkey-timeout|cmdkey-stored=(true|false)|client-dns-off|cred-param-rejected|invalid-target|fallback-cmdkey reason=(ticket-missing|unreachable|ticket-invalid-or-expired)|fallback-retry-redeem|fallback-mstsc-native-prompt)$') { $hh.details = $detail }
                         elseif ($detail -like 'dns-guard:*') { $hh.details = 'dns-guard-failed' }
                         else { $hh.details = 'launcher-error' }
                         # [F19 §2] exe: the launcher's version stamp, used by the
@@ -1699,11 +1803,20 @@ try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-Exec
 $start = Get-Date
 $limit = New-TimeSpan -Minutes $LimitMinutes
 $lastHeal = Get-Date
+# [F28 §1] FIRST scan at START (not keep-alive-dependent): scanTs exists from
+# the first tick so the dashboard never mistakes boot for a dead collector.
+try { Update-AuthLast } catch { }
+$script:LastAuthScan = Get-Date
 while (((Get-Date) - $start) -lt $limit) {
     while ($listener.Pending()) {
         $client = $null
         try { $client = $listener.AcceptTcpClient() } catch { }
         if ($client) { Invoke-ClientRequest -Client $client -Token $script:Token }
+    }
+    # [F28 §1] independent 30s logon-result tick (never gated on keep-alive).
+    if (((Get-Date) - $script:LastAuthScan).TotalSeconds -ge 30) {
+        $script:LastAuthScan = Get-Date
+        try { Update-AuthLast } catch { }
     }
     if (((Get-Date) - $lastHeal).TotalSeconds -ge 60) {
         $lastHeal = Get-Date

@@ -55,7 +55,7 @@ test('F27 WINDOWS click gets bearer ticket before dispatch, never reads password
  assert.match(els.winAutoNote.textContent,/ticket-issue failed/);
 });
 test('F27 status row: no synthetic success; shows independently dated success/failure and hops',()=>{
- const els={};const ctx={$:id=>els[id]||(els[id]={})};vm.createContext(ctx);
+ const els={};const ctx={$:id=>els[id]||(els[id]={style:{}})};vm.createContext(ctx);
  vm.runInContext(block(ui,'// [F27 status-render-begin]','// [F27 status-render-end]'),ctx);
  ctx.paintHandoffStatus({},{});assert.match(els.lastRdpLogon.textContent,/success not reported/);
  ctx.paintHandoffStatus({authEvents:{last4624At:'later',last4625At:'earlier',lastSubStatus:'0XC000006A'}},{ticketAudit:{issued:2,redeemed:1,rejected:1},handlerChain:[{ts:'now',details:'credwrite-ok'}]});

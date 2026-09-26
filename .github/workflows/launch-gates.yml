@@ -1440,6 +1440,98 @@ jobs:
         run: |
           set -euo pipefail
           node --test tests/f27-copy.test.js tests/f27-handoff.test.js
+      - name: F28 logon-result loop + one-click recovery + fallback gap gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          ui=payloads/ui.html
+          cs=payloads/ghrdp-rdp-launcher.cs
+          srv=payloads/ghrdp-server.ps1
+          # --- §1 server collector: independent tick from START, always stamps scanTs
+          col=$(awk '/\[F28 §1 authlast-begin\]/{f=1;next} /\[F28 §1 authlast-end\]/{exit} f' "$srv")
+          test -n "$col" || { echo 'F28: server lacks the F28 §1 authlast block (markers)' >&2; exit 1; }
+          for tok in "ServerStartUtc" "Get-RdpLogonResultFields" "Get-RdpLogonResultSummary -Items \$items -ScanTs \$scan" "Update-AuthLast" "LogName = 'Security'" "'LogonType', 'FailureReason', 'SubStatus', 'TargetUserName'" "logonType -eq '10'" "authLast" "scanTs"; do
+            grep -qF -- "$tok" <<< "$col" || { echo "F28: collector missing token: $tok" >&2; exit 1; }
+          done
+          for leak in "SubjectUserName" "IpAddress" "Password" "RDP_PASS" "RDP_USER"; do
+            if grep -qF -- "$leak" <<< "$col"; then
+              echo "F28: collector references banned material: $leak" >&2; exit 1
+            fi
+          done
+          grep -qF 'scanTs = [string]$sum.scanTs' <<< "$col" || { echo 'F28: collector success path does not stamp scanTs' >&2; exit 1; }
+          grep -qF 'scanTs = $scan' <<< "$col" || { echo 'F28: collector failure path does not stamp scanTs' >&2; exit 1; }
+          grep -qF '# [F28 §1] FIRST scan at START' "$srv" || { echo 'F28: START scan marker missing' >&2; exit 1; }
+          test "$(grep -cF 'try { Update-AuthLast } catch { }' "$srv")" -eq 2 || { echo 'F28: expected the START scan plus the guarded tick' >&2; exit 1; }
+          grep -qF '# [F28 §1] independent 30s logon-result tick' "$srv" || { echo 'F28: 30s tick marker missing' >&2; exit 1; }
+          grep -qF 'LastAuthScan' "$srv" || { echo 'F28: tick state missing' >&2; exit 1; }
+          if grep -qi 'keep-alive' <<< "$col"; then
+            echo 'F28: collector must not depend on keep-alive' >&2; exit 1
+          fi
+          grep -qF 'serverStartUtc' "$srv" || { echo 'F28: native-status lacks serverStartUtc' >&2; exit 1; }
+          grep -qF 'serverUptimeSec' "$srv" || { echo 'F28: native-status lacks serverUptimeSec' >&2; exit 1; }
+          grep -qF "'recred'" "$srv" || { echo 'F28: handler-hello lacks the recred verb' >&2; exit 1; }
+          for tok in "recred-redeemed" "recred-failed-" "fallback-mstsc-native-prompt" "fallback-retry-redeem"; do
+            grep -qF -- "$tok" "$srv" || { echo "F28: beacon allowlist missing: $tok" >&2; exit 1; }
+          done
+          # --- §1 UI logon row: verbatim render + collector-dead + boot grace --
+          grep -qF 'id="lastRdpLogon"' "$ui"
+          grep -qF 'logon collector not running' "$ui" || { echo 'F28: UI lacks the collector-dead render' >&2; exit 1; }
+          grep -qF 'scanned ' "$ui" || { echo 'F28: UI does not render scanTs' >&2; exit 1; }
+          grep -qF 'waiting for first scan' "$ui" || { echo 'F28: UI lacks the boot-grace render' >&2; exit 1; }
+          # --- §2 recovery card + correlator + FIX button ----------------------
+          grep -qF 'id="recoveryCard"' "$ui" || { echo 'F28: UI lacks the recovery card' >&2; exit 1; }
+          grep -qF 'Password rejected by the host (wrong-password sub-status). One click re-issues a fresh ticket and overwrites the stored credential - no typing, no clipboard.' "$ui" || { echo 'F28: recovery text mismatch' >&2; exit 1; }
+          grep -qF 'id="btnFixReconnect"' "$ui" || { echo 'F28: UI lacks FIX & RECONNECT' >&2; exit 1; }
+          grep -qF 'FIX &amp; RECONNECT' "$ui"
+          grep -qF 'id="recoveryCmdkey"' "$ui" || { echo 'F28: recovery lacks the manual escape hatch' >&2; exit 1; }
+          grep -qF 'function ghrdpRecredUrl(fqdn,user,ip,ticket)' "$ui" || { echo 'F28: UI lacks the recred builder' >&2; exit 1; }
+          builder=$(awk '/^function ghrdpRecredUrl\(/{f=1} f{print} f && /^}$/{exit}' "$ui")
+          test -n "$builder" || { echo 'F28: recred builder body missing' >&2; exit 1; }
+          grep -qF 'ghrdp://recred?server=' <<< "$builder"
+          grep -qF "&t='+encodeURIComponent(ticket)" <<< "$builder" || { echo 'F28: recred builder does not append t' >&2; exit 1; }
+          creds=$(grep -Ei '(pass|pwd|password|token|secret|apikey|authkey)=' <<< "$builder" || true)
+          if [ -n "$creds" ]; then
+            echo 'F28: recred builder can emit a credential parameter' >&2; exit 1
+          fi
+          grep -qF "String(al.sub||'').toUpperCase()==='0XC000006A'" "$ui" || { echo 'F28: correlator lacks the 0x6A check' >&2; exit 1; }
+          grep -qF 'mstsc-started' "$ui"
+          grep -qF '<=120000' "$ui" || { echo 'F28: correlator lacks the 120s window' >&2; exit 1; }
+          # --- §4 CredSSP row: live verdict with stamp secondary ----------------
+          grep -qF 'OK (live probe; stamp: not reported yet' "$ui" || { echo 'F28: CredSSP row lacks the live-probe render' >&2; exit 1; }
+          grep -qF "(stamp: '+cs+')" "$ui" || { echo 'F28: CredSSP row lacks the stamp secondary' >&2; exit 1; }
+          if grep -qF "'FAIL: '+cs" "$ui"; then
+            echo 'F28: bare FAIL render reappeared' >&2; exit 1
+          fi
+          # --- §3 launcher: recred verb + fallback gap --------------------------
+          grep -qF 'if (verb == "recred") { return RunRecred(uri, verb, host, port); }' "$cs" || { echo 'F28: launcher lacks the recred dispatch' >&2; exit 1; }
+          grep -qF 'private static int RunRecred(string uri, string verb, string host, int port)' "$cs"
+          grep -qF 'recred-redeemed' "$cs" || { echo 'F28: launcher lacks recred-redeemed' >&2; exit 1; }
+          grep -qF 'fallback-mstsc-native-prompt' "$cs" || { echo 'F28: launcher lacks the native-prompt beacon' >&2; exit 1; }
+          grep -qF 'fallback-retry-redeem' "$cs"
+          grep -qF 'return 7;' "$cs" || { echo 'F28: launcher does not signal stored==false' >&2; exit 1; }
+          test "$(grep -cF 'if (rc == 7) { return FallbackNativePrompt(' "$cs")" -eq 2 || { echo 'F28: stored==false is not handled on both fallback branches' >&2; exit 1; }
+          fb=$(awk '/private static int FallbackNativePrompt/{f=1} /private static int RunRecred/{exit} f' "$cs")
+          bl=$(grep -nF 'fallback-mstsc-native-prompt' <<< "$fb" | head -1 | cut -d: -f1)
+          ml=$(grep -nF 'return MstscStep(' <<< "$fb" | tail -1 | cut -d: -f1)
+          test -n "$bl" && test -n "$ml" && test "$bl" -lt "$ml" || { echo 'F28: native-prompt beacon does not precede the launch' >&2; exit 1; }
+          ver=$(grep -oE 'private const string Ver = "[0-9]+(\.[0-9]+){1,3}"' "$cs" | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -1)
+          test -n "$ver" || { echo 'F28: launcher version constant missing' >&2; exit 1; }
+          test "$(printf '2.5.0.0\n%s\n' "$ver" | sort -V | head -1)" = '2.5.0.0' || { echo "F28: launcher version $ver predates the F28 build" >&2; exit 1; }
+          # --- standing bans on the touched surfaces ---------------------------
+          if grep -v '^[[:space:]]*//' "$cs" | grep -nE 'SendKeys|UIAutomation|AutomationElement|ValuePattern|keybd_event|/pass:'; then
+            echo 'F28: banned token in launcher code' >&2; exit 1
+          fi
+          if grep -nE 'cmdkey[^"]*/delete' "$cs"; then
+            echo 'F28: launcher gained a delete verb' >&2; exit 1
+          fi
+          if grep -nE "ghrdp://recred\?[^']*(pass|pwd|token|secret|apikey|authkey)[=:]" "$ui"; then
+            echo 'F28: recovery URL carries a credential parameter' >&2; exit 1
+          fi
+          if grep -n 'password=' "$ui" | grep -v 'no launch URL ever carries' | grep .; then
+            echo 'F28: a launch URL carries password=' >&2; exit 1
+          fi
+          node --test tests/f28-logon-loop.test.js
+          echo 'F28 gates PASS'
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:
