@@ -83,6 +83,7 @@ jobs:
           # the notice + launches ghrdp://check, and the launcher logs its dialog
           # BEFORE showing it (suppressed here by GHRDP_LAB_NOMSG; the physical
           # MessageBox stays PENDING-USER). No log => the exe never ran.
+          $csSrcA = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs'))
           $lLog = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.log'
           $lTxt = ''
           for ($i = 0; $i -lt 20 -and $lTxt -notmatch 'ghrdp launcher check'; $i++) {
@@ -91,7 +92,13 @@ jobs:
           }
           Write-Host '[A] launcher log (F15 fail-visible JSONL):'
           foreach ($l in ($lTxt -split "`r?`n")) { if ($l.Trim()) { Write-Host ('  ' + $l) } }
-          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', 'ghrdp-rdp-launcher 2.2.0.0', 'HKCU')) {
+          # [F19 §2] the launcher version is a REPO CONSTANT: read it from the
+          # shipped source instead of hardcoding it (a version bump must never
+          # break this cell again).
+          $verM = [regex]::Match($csSrcA, 'private const string Ver = "(\d+(\.\d+){1,3})"')
+          if (-not $verM.Success) { A-Fail 'version-constant' 'payloads/ghrdp-rdp-launcher.cs has no Ver constant' }
+          $launcherStamp = 'ghrdp-rdp-launcher ' + $verM.Groups[1].Value
+          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', $launcherStamp, 'HKCU')) {
               if ($lTxt -notmatch [regex]::Escape($need)) { A-Fail 'self-test-log' ('launcher log ' + $lLog + ' lacks ' + $need + ' :: tail=[' + (($lTxt -split "`r?`n" | Select-Object -Last 6) -join ' | ') + ']') }
           }
           $cs = [System.IO.File]::ReadAllText((Join-Path $lab 'ghrdp-rdp-launcher.cs'))
@@ -256,7 +263,10 @@ jobs:
           if (-not $p.WaitForExit(60000)) { P-Fail 'check-wait' 'ghrdp://check did not exit within 60s' }
           if ($p.ExitCode -ne 0) { P-Fail 'check-exit' ('ghrdp://check exit code ' + $p.ExitCode) }
           $logTxt = Log-Text
-          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', 'ghrdp-rdp-launcher 2.2.0.0', 'HKCU')) {
+          $verP = [regex]::Match([System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')), 'private const string Ver = "(\d+(\.\d+){1,3})"')
+          if (-not $verP.Success) { P-Fail 'version-constant' 'payloads/ghrdp-rdp-launcher.cs has no Ver constant' }
+          $launcherStampP = 'ghrdp-rdp-launcher ' + $verP.Groups[1].Value
+          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', $launcherStampP, 'HKCU')) {
               if ($logTxt -notmatch [regex]::Escape($need)) { P-Fail 'check-log' ('launcher log lacks ' + $need) }
           }
           if ((Cap-Lines).Count -ne $n0) { P-Fail 'check-beacon' 'a server-less ghrdp://check must not post a beacon' }
@@ -683,6 +693,162 @@ jobs:
           Write-Host '[R] (9) PASS: loopback alias + GHRDP_LAB_DNS_ALLOW_LOOPBACK=1 => dns-guard ok + mstsc-started (lab-only path)'
           Write-Host '[R] PASS: F17 listener probe break/fix + native-status render + beacon age + dns-guard'
           'R_result=pass' | Out-File $env:GITHUB_ENV -Append
+
+      # [F19 §5] LAB PROOF for the client-DNS self-diagnosis + launcher version
+      # guard. ghrdp-lab is still 404, so the reserved-lab cells run here (the
+      # fallback lane) exactly like F14/F15/F17 did. Three parts:
+      #   (1) the SHIPPED launcher, compiled by the in-box csc, runs its
+      #       --dns-selftest decision matrix with INJECTED resolver/TCP results
+      #       (fail-name+reach-ip => client-dns-off remediation path;
+      #        both-ok => mstsc path; no-ip/closed => dns-fail) and provably
+      #       never launches mstsc or cmdkey;
+      #   (2) the REAL server compares the beacon's exe stamp against
+      #       config.launcherVersion: old stamp => launcherOutdated=true,
+      #       current stamp => false (the version guard is not vacuous);
+      #   (3) the shipped page really carries the §1 probe card, the §2
+      #       outdated row and the single ghrdp:// URL builder that appends
+      #       &ip= only for a CGNAT address.
+      - name: "S: F19 client-DNS probe + launcher version guard (csc matrix + real server)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # [F19] every failure must be readable from the Checks API: an
+          # unhandled terminating error (a missing property with EAP=Stop, a
+          # native-command error) would otherwise leave this step with no
+          # annotation at all, and runner logs/artifacts are not retrievable
+          # from this environment.
+          trap {
+              Write-Host ('::error::[S] stage=unhandled :: ' + $_.Exception.GetType().FullName + ' :: ' + $_.Exception.Message + ' @ ' + (($_.InvocationInfo.PositionMessage) -replace "`r?`n", ' | '))
+              exit 1
+          }
+          function J([object]$o, [string]$n) { if ($o -and ($o.PSObject.Properties.Name -contains $n)) { return $o.$n } return $null }
+          $diag = Join-Path $env:GITHUB_WORKSPACE 'de-diag'
+          New-Item -ItemType Directory -Path $diag -Force | Out-Null
+          function S-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[S] stage=' + $Stage + ' :: ' + $Detail)
+              try { ('stage=' + $Stage + "`n" + 'detail=' + $Detail) | Out-File (Join-Path $diag 'f19-classification.txt') -Encoding utf8 } catch { }
+              exit 1
+          }
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          $labIp = '100.118.42.7'
+          $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          if (-not (Test-Path -LiteralPath $csc)) { $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
+          if (-not (Test-Path -LiteralPath $csc)) { S-Fail 'csc' 'the in-box csc.exe is missing - install.cmd depends on it too' }
+          $exe = Join-Path $env:RUNNER_TEMP 'ghrdp-rdp-launcher-lab19.exe'
+          $matrix = Join-Path $env:RUNNER_TEMP 'f19-dns-selftest.txt'
+          if (Test-Path -LiteralPath $matrix) { Remove-Item -LiteralPath $matrix -Force }
+          & $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')
+          if ($LASTEXITCODE -ne 0) { S-Fail 'compile' 'the SHIPPED launcher does not compile with the in-box csc' }
+          Write-Host '::notice::[S] phase=compile ok'
+          $env:GHRDP_LAB_OUT = $matrix
+          $env:GHRDP_LAB_NOMSG = '1'
+          # [F19] the launcher is /target:winexe. Two traps here: '& $exe'
+          # returns WITHOUT waiting (no console handle), and piping its output
+          # with -Stop can turn a native-command record into a terminating error.
+          # Start-Process -PassThru plus an explicit WaitForExit() on THIS
+          # process is the unambiguous construct here: -Wait would also wait for
+          # the process tree (the F10-9 wedge), and WaitForExit() waits only for
+          # the selftest process while still yielding its real exit code.
+          $p = Start-Process -FilePath $exe -ArgumentList '--dns-selftest','lab-target.dekarita.tailnet-lab.ts.net',$labIp -PassThru
+          $p.WaitForExit()
+          $runRc = $p.ExitCode
+          if ($runRc -ne 0) { S-Fail 'matrix-exit' ('launcher --dns-selftest exit ' + $runRc) }
+          for ($i = 0; $i -lt 20 -and -not (Test-Path -LiteralPath $matrix); $i++) { Start-Sleep -Milliseconds 250 }
+          if (-not (Test-Path -LiteralPath $matrix)) { S-Fail 'matrix-file' ('no matrix file at ' + $matrix + ' (exit=' + $runRc + ')') }
+          $txt = Get-Content -LiteralPath $matrix -Raw
+          Write-Host $txt
+          foreach ($want in @(
+            ('injectedDns=fail injectedTcp=open ip=' + $labIp + ' decision=client-dns-off expected=client-dns-off verdict=pass'),
+            ('injectedDns=fail injectedTcp=closed ip=' + $labIp + ' decision=dns-fail expected=dns-fail verdict=pass'),
+            ('injectedDns=ok injectedTcp=open ip=' + $labIp + ' decision=mstsc expected=mstsc verdict=pass'),
+            'injectedDns=fail injectedTcp=open ip=(none) decision=dns-fail expected=dns-fail verdict=pass')) {
+              if (-not $txt.Contains($want)) { S-Fail 'matrix-case' ('missing case: ' + $want) }
+          }
+          if ($txt -notmatch 'mstscLaunched=0 cmdkeyCalled=0') { S-Fail 'matrix-side-effects' 'a selftest case launched mstsc or called cmdkey' }
+          if ($txt -match 'verdict=FAIL') { S-Fail 'matrix-verdict' 'at least one matrix case reported FAIL' }
+          Write-Host '[S] (1) PASS: shipped launcher DNS-guard matrix 5/5 (injected resolver/TCP; no mstsc, no cmdkey)'
+          Write-Host '::notice::[S] phase=matrix ok'
+          # --- (2) REAL server: beacon exe stamp vs config.launcherVersion -------
+          $root = 'C:\ghrdp-lab-f19'
+          try { Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue } catch { }
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), (@{
+              dnsName = 'lab-host.dekarita.tailnet-lab.ts.net'; rdpUser = 'labuser'; rdpIp = $labIp
+              launcherVersion = '2.2.0.0'
+          } | ConvertTo-Json -Compress), $utf8)
+          [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), 'lab-dash-token-0123456789', $utf8)
+          $srv = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $diag 'f19-server-out.log') -RedirectStandardError (Join-Path $diag 'f19-server-err.log') -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:GITHUB_WORKSPACE\payloads\ghrdp-server.ps1",'-Port','7393','-Root',$root
+          $up = $false
+          for ($i = 0; $i -lt 40 -and -not $up; $i++) { try { $up = [bool](Get-NetTCPConnection -LocalPort 7393 -State Listen -ErrorAction Stop) } catch { }; if (-not $up) { Start-Sleep -Milliseconds 500 } }
+          if (-not $up) {
+              $errTail = ''; try { $errTail = ((Get-Content (Join-Path $diag 'f19-server-err.log') -Tail 6 -ErrorAction SilentlyContinue) -join ' | ') } catch { }
+              S-Fail 'server-listen' ('the lab server never listened on 7393; stderr=[' + $errTail + ']')
+          }
+          Write-Host '::notice::[S] phase=server-listen ok'
+          function Invoke-S19Json([string]$Url, [string]$Method = 'GET', [string]$Body = '') {
+              $req = [System.Net.HttpWebRequest]::Create($Url)
+              $req.Method = $Method
+              $req.Proxy = $null
+              $req.Timeout = 10000
+              $req.ReadWriteTimeout = 10000
+              $req.KeepAlive = $false
+              $req.UserAgent = 'ghrdp-lab'
+              if ($Body) {
+                  $b = [System.Text.Encoding]::UTF8.GetBytes($Body)
+                  $req.ContentType = 'application/json'
+                  $req.ContentLength = $b.Length
+                  $st = $req.GetRequestStream(); $st.Write($b, 0, $b.Length); $st.Close()
+              }
+              try { $resp = $req.GetResponse() } catch [System.Net.WebException] {
+                  $r = $_.Exception.Response; $code = 0
+                  if ($r) { $code = [int]$r.StatusCode }
+                  throw ('HTTP ' + $code + ' ' + $Url)
+              }
+              $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
+              $t = $sr.ReadToEnd(); $sr.Close(); $resp.Close()
+              return ($t | ConvertFrom-Json)
+          }
+          $base = 'http://127.0.0.1:7393'
+          $key = 'key=lab-dash-token-0123456789'
+          try { $ns0 = Invoke-S19Json ($base + '/api/native-status?' + $key) } catch { S-Fail 'native-status' $_.Exception.Message }
+          foreach ($k in @('launcherVersion','launcherSeenVersion','launcherOutdated')) {
+              if (-not ($ns0.PSObject.Properties.Name -contains $k)) { S-Fail 'field-missing' ('native-status lacks ' + $k) }
+          }
+          if ([string](J $ns0 'launcherVersion') -ne '2.2.0.0') { S-Fail 'const-served' ('launcherVersion=[' + [string](J $ns0 'launcherVersion') + ']') }
+          if ([bool](J $ns0 'launcherOutdated') -ne $false) { S-Fail 'no-false-alarm' 'an outdated flag was raised before any beacon' }
+          try { $null = Invoke-S19Json ($base + '/api/handler-hello?' + $key) 'POST' '{"verb":"rdp","ok":true,"details":"lab-old-exe","exe":"ghrdp-rdp-launcher 2.1.0.0 (F17 dns-guard)"}' } catch { S-Fail 'beacon-old' $_.Exception.Message }
+          try { $nsOld = Invoke-S19Json ($base + '/api/native-status?' + $key) } catch { S-Fail 'native-status-old' $_.Exception.Message }
+          if ([string](J $nsOld 'launcherSeenVersion') -ne '2.1.0.0') { S-Fail 'seen-old' ('launcherSeenVersion=[' + [string](J $nsOld 'launcherSeenVersion') + ']') }
+          if ([bool](J $nsOld 'launcherOutdated') -ne $true) { S-Fail 'outdated-not-flagged' 'a 2.1.0.0 beacon against a 2.2.0.0 repo constant must set launcherOutdated=true' }
+          try { $null = Invoke-S19Json ($base + '/api/handler-hello?' + $key) 'POST' '{"verb":"rdp","ok":true,"details":"lab-current-exe","exe":"ghrdp-rdp-launcher 2.2.0.0 (F19 dns-remediation+ver-guard)"}' } catch { S-Fail 'beacon-new' $_.Exception.Message }
+          try { $nsNew = Invoke-S19Json ($base + '/api/native-status?' + $key) } catch { S-Fail 'native-status-new' $_.Exception.Message }
+          if ([bool](J $nsNew 'launcherOutdated') -ne $false) { S-Fail 'outdated-stuck' 'the CURRENT exe stamp must clear launcherOutdated' }
+          if ([string](J $nsNew 'launcherSeenVersion') -ne '2.2.0.0') { S-Fail 'seen-new' ('launcherSeenVersion=[' + [string](J $nsNew 'launcherSeenVersion') + ']') }
+          $vh = J $nsNew 'lastHandlerVerb'
+          if ([string](J $vh 'exe') -notmatch '2\.2\.0\.0') { S-Fail 'beacon-exe-echo' ('lastHandlerVerb.exe=[' + [string](J $vh 'exe') + ']') }
+          try { Stop-Process -Id $srv.Id -Force } catch { }
+          Write-Host '[S] (2) PASS: beacon 2.1.0.0 => launcherOutdated=true; 2.2.0.0 => false; constant served from config.json'
+          Write-Host '::notice::[S] phase=version-guard ok'
+          # --- (3) shipped page: probe card + outdated row + ONE URL builder -----
+          $ui = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ui.html'))
+          foreach ($tok in @(
+            'id="clientDnsRow"', 'id="clientDnsFix1"', 'function clientDnsCore(fqdn,ip,scheme,aOk,bOk)',
+            "YOUR PC's Tailscale DNS is off (name not resolvable, IP reachable)", 'tailscale set --accept-dns=true',
+            'Use Tailscale DNS', 'mode:''no-cors''', 'CDNS_PERIOD_MS=30000',
+            'id="nrLauncherOutdatedRow"', 'launcher outdated - re-run install.cmd once',
+            'function ghrdpRdpUrl(fqdn,user,ip)', "[F19 §1 client-DNS probe-begin]")) {
+              # .Contains, never -like: the probe markers carry [ ] which are
+              # wildcard metacharacters (WildcardPatternException killed this
+              # step before the fix).
+              if (-not $ui.Contains($tok)) { S-Fail 'ui-token' ('ui.html lacks ' + $tok) }
+          }
+          if ($ui -notmatch "u\+='&ip='") { S-Fail 'ui-ip-param' 'the ghrdp:// builder never appends the tailnet IP' }
+          $tplCount = ([regex]::Matches($ui, [regex]::Escape("'ghrdp://rdp?server='+encodeURIComponent(fqdn)"))).Count
+          if ($tplCount -ne 1) { S-Fail 'ui-url-templates' ('expected exactly 1 executable ghrdp://rdp template, found ' + $tplCount) }
+          if ($ui -match "ghrdp://rdp[^']*(pass|pwd|token|secret)=") { S-Fail 'ui-url-secret' 'a ghrdp:// URL template carries a credential-ish parameter' }
+          Write-Host '[S] (3) PASS: probe card + version row + single credential-free ghrdp:// builder present in the shipped page'
+          Write-Host '[S] PASS: F19 client-DNS probe + launcher version guard (ghrdp-lab fallback lane)'
+          'S_result=pass' | Out-File $env:GITHUB_ENV -Append
 
       - name: "F: Edge policy proof (live-resolved IDs -> registry readout)"
         shell: pwsh
@@ -1188,21 +1354,33 @@ jobs:
           ('| (l) qBittorrent default .torrent + magnet | ' + $(if ($env:L_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL shared helper: HKCR ProgId discovery + .torrent default + magnet\shell\open\command readback; no download automation, mirror untouched |') | Add-Content -Path $S
           ('| (m) zero console windows | ' + $(if ($env:M_result -eq 'pass') {'**PASS (lab contract+runtime)**'} else {'FAIL'}) + ' | every Start-Process hidden (static) + runtime sweep: no ghrdp helper owns a visible console window; first-session visual check stays PENDING-USER |') | Add-Content -Path $S
           ('| (p) fail-visible launcher (F15) | ' + $(if ($env:P_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL launcher vs a LOCAL python hello-listener: check verb logs its dialog and posts check-shown; stored-credential rdp = ' + $env:P_seq + '; no-credential rdp = ' + $env:P_timeout + '; JSONL log redaction verified. The physical MessageBox itself stays PENDING-USER (a runner cannot show or click it) |') | Add-Content -Path $S
+          ('| (s) client-DNS probe + launcher version guard (F19) | ' + $(if ($env:S_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | SHIPPED launcher compiled by the in-box csc runs --dns-selftest: fail-name+reach-ip => client-dns-off remediation, both-ok => mstsc, no-ip/closed => dns-fail, with 0 mstsc/cmdkey calls; REAL server: beacon exe 2.1.0.0 vs config constant 2.2.0.0 => launcherOutdated=true, 2.2.0.0 => false; shipped page carries the probe card, the yellow outdated row and the single credential-free ghrdp:// builder that appends &ip= only for a CGNAT address. The live client-PC DNS state stays PENDING-USER |') | Add-Content -Path $S
           ('| (k) no console window in the interactive session | **contract PASS** | every host-helper launch is -WindowStyle Hidden (or NoNewWindow for the user-driven terminal exec) and the long-lived services are SYSTEM scheduled tasks; launch-gates F11-5.3 enforces it. Visual confirmation on the first physical RDP session = PENDING-USER |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
           # retrievable), so the PR/verify evidence does not depend on the log UI.
-          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'})
+          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
-          Write-Host ('::notice::[O] F14 kit download: /dl 3/3 sha-identical + decoys 404 + guide rendered (cell o)')
-          Write-Host ('::notice::[I] usage timer: ticks -> freezes <=20s -> resumes -> persists/continues at ' + $env:I_usage + 's (cell i)')
-          Write-Host ('::notice::[H] cred shim: opener+exact-origin auto-fill, wrong origin/non-opener ignored, zero log output (cell h)')
-          Write-Host ('::notice::[N] handler overwrite: stale registration printed+overwritten+verified by the REAL install.cmd (cell n)')
-          Write-Host ('::notice::[P] fail-visible launcher: check dialog logged + no server-less beacon; stored-cred rdp = ' + $env:P_seq + '; no-cred rdp = ' + $env:P_timeout + ' (cell p)')
-          Write-Host ('::notice::[K] browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions (cell k2)')
-          Write-Host ('::notice::[L] qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok (cell l)')
-          Write-Host ('::notice::[G] uBlock Origin=' + $env:F_ubo)
-          Write-Host ('::notice::[G] Dark Reader=' + $env:F_dr)
+          # [F19] Evidence notices must carry the CELL RESULT they belong to:
+          # before this, every notice claimed its achievement even when the cell
+          # had failed or been skipped, so a red lab run read green at a glance.
+          function Nt([string]$cell, [string]$flag, [string]$text) {
+              $v = [string](Get-Item ('env:' + $flag) -ErrorAction SilentlyContinue).Value
+              $mark = 'NOT VERIFIED (cell did not run) - '
+              if (-not [string]::IsNullOrWhiteSpace($v)) { $mark = 'NOT VERIFIED (result=' + $v + ') - ' }
+              if ($v -eq 'pass') { $mark = 'PASS - ' }
+              Write-Host ('::notice::[' + $cell + '] ' + $mark + $text)
+          }
+          Nt 'O' 'O_result' 'F14 kit download: /dl 3/3 sha-identical + decoys 404 + guide rendered'
+          Nt 'I' 'I_result' ('usage timer: ticks -> freezes <=20s -> resumes -> persists/continues at ' + $env:I_usage + 's')
+          Nt 'H' 'H_result' 'cred shim: opener+exact-origin auto-fill, wrong origin/non-opener ignored, zero log output'
+          Nt 'N' 'N_result' 'handler overwrite: stale registration printed+overwritten+verified by the REAL install.cmd'
+          Nt 'P' 'P_result' ('fail-visible launcher: check dialog logged + no server-less beacon; stored-cred rdp = ' + $env:P_seq + '; no-cred rdp = ' + $env:P_timeout)
+          Nt 'S' 'S_result' 'F19: shipped launcher DNS-guard matrix 5/5 with injected resolver/TCP (client-dns-off | dns-fail | mstsc, zero mstsc/cmdkey), REAL server version guard 2.1.0.0=>outdated / 2.2.0.0=>current, UI probe card + &ip= builder present'
+          Nt 'K' 'K_result' 'browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions'
+          Nt 'L' 'L_result' 'qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok'
+          Nt 'G' 'F_result' ('uBlock Origin=' + $env:F_ubo)
+          Nt 'G' 'F_result' ('Dark Reader=' + $env:F_dr)
           Write-Host ('::notice::[G] physical-PC cells (0 prompts, live peripherals, screenshot-native) remain PENDING-USER per §6; no LIVE claim is made here')
           '' | Add-Content -Path $S
           'STOP-condition note: §6(a-c) are proven at the launcher/protocol level in this lab; the physical-PC cells (0 prompts, live peripherals, physical-native screenshot) stay PENDING-USER per §6, so the AUTO-LOGIN REDIRECT LIVE line is NOT claimed.' | Add-Content -Path $S

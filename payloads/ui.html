@@ -349,7 +349,6 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
       <span class="k">Launcher beacon</span>
       <span class="v" id="winBeacon" style="font-family:ui-monospace,Consolas,monospace;font-size:12px">(none yet - click WINDOWS AUTO-LOGIN)</span>
       <button id="btnRunCheck" type="button" title="fires ghrdp://check - a MessageBox on this PC proves the launcher exe runs (no server needed)">RUN CHECK</button>
-      <div class="row" id="launcherVersionRow" style="display:none;flex-basis:100%;color:#ffd36a"><span class="k">Launcher version</span><span class="v" id="launcherVersionText">launcher outdated - re-run install.cmd once</span><a class="btn" href="/dl/ghrdp-handler-kit.zip">DOWNLOAD INSTALL KIT</a></div>
       <span class="note">launcher log <code id="winBeaconLog">%LOCALAPPDATA%\ghrdp\ghrdp-launcher.log</code>
         <a href="javascript:void(0)" onclick="copyById('winBeaconLog',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
     </div>
@@ -390,17 +389,29 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
       <span class="note" id="kitPathB"><b>Path B (repo clone)</b>: <code>git pull</code> then double-click <code>payloads\install.cmd</code> - zero warnings, because clone files carry no Mark-of-the-Web. WEB DESKTOP below stays the zero-install primary.</span>
     </div>
   </div>
-  <div class="row" id="clientDnsRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px;border:1px solid #555;padding:8px">
-    <span class="k" id="clientDnsStatus">Checking client Tailscale DNS…</span>
-    <pre class="note" id="clientDnsCommands" style="margin:0;white-space:pre-wrap"></pre>
-    <button type="button" onclick="copyById('clientDnsCommands',this)">COPY DNS FIX LINES</button>
-    <span class="note" id="clientDnsTray" style="margin:0">Tailscale tray -> Use Tailscale DNS.</span>
-  </div>
   <!-- [F17 §2] RDP LISTENER row: the runner-side self-probe (main.yml step
        'RDP listener self-probe (F17)') writes config.json -> rdpListener and
        /api/native-status serves it. Each field renders ✅/❌ with the exact
        fix text; WINDOWS AUTO-LOGIN stays disabled until listening + fw + cert
        + nla are ALL ✅ (a dead listener is never advertised). -->
+  <!-- [F19 §2] LAUNCHER VERSION GUARD row (yellow, never blocks): the beacon
+       carries the client exe version stamp; /api/native-status compares it with
+       config.launcherVersion (the repo constant from ghrdp-rdp-launcher.cs) and
+       sets launcherOutdated=true when the installed client exe is older. -->
+  <div class="row" id="nrLauncherOutdatedRow" style="display:none"><span class="k">Launcher</span><span class="v" id="nrLauncherOutdated" style="color:#f5d9b7">launcher outdated - re-run install.cmd once (<a href="/dl/ghrdp-handler-kit.zip" style="color:#8fd3ff">DOWNLOAD INSTALL KIT</a>)</span><span class="note" id="nrLauncherVersions">installed: - / current: -</span></div>
+  <!-- [F19 §1] CLIENT-DNS PROBE (in-page, zero native code): two no-cors fetches
+       with a 3s abort - A = the runner tailnet IP, B = the MagicDNS FQDN. If A
+       answers and B does not, the failure is on THIS PC's resolver, and the card
+       says so with the one-line fix. Copy-only lines; nothing here executes. -->
+  <div class="row" id="clientDnsRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
+    <span class="k" style="font-weight:600">YOUR PC - CLIENT DNS PROBE</span>
+    <span class="note" id="clientDnsText" style="margin:0"></span>
+    <span class="note" id="clientDnsCmds" style="display:none;flex-direction:column;gap:4px;margin:0">
+      <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><code id="clientDnsFix1" style="font-size:12px">tailscale set --accept-dns=true</code><a href="javascript:void(0)" onclick="copyById('clientDnsFix1',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- or Tailscale tray menu -&gt; Use Tailscale DNS</span></span>
+      <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><code id="clientDnsFix2" style="font-size:12px">ipconfig /flushdns</code><a href="javascript:void(0)" onclick="copyById('clientDnsFix2',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+      <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><code id="clientDnsFix3" style="font-size:12px">ping &lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('clientDnsFix3',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- must answer 100.x.y.z; if it does not, run the two lines above and reload</span></span>
+    </span>
+  </div>
   <div class="row" id="rdpListenerRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
     <span class="k" style="font-weight:600">RDP LISTENER</span>
     <span class="note" id="rdpListenerLine" style="margin:0">probe not reported yet</span>
@@ -580,38 +591,6 @@ function parseTs(s){if(!s)return NaN;s=String(s).trim();if(/Z$|[+-]\d{2}:\d{2}$/
 // DateTime.Parse(..., RoundtripKind) contract: an explicit Z/offset is honored
 // as-is, a bare ts is read as UTC by appending Z.
 function parseTsUtc(s){if(!s)return NaN;var t=String(s).trim();var v=Date.parse(t);if(!isNaN(v)&&(/[Zz]$/.test(t)||/[+-]\d{2}:?\d{2}$/.test(t)))return v;var u=Date.parse(t+'Z');return isNaN(u)?(isNaN(v)?NaN:v):u;}
-// [F19 §1] Browser-side A/B DNS probe. no-cors opaque responses count as
-// reachable; reject/network timeout means fail. Kept injectable for unit tests.
-async function f19ProbeOne(url, fetchImpl){
- var ctl=(typeof AbortController!=='undefined')?new AbortController():null, timer;
- try{
-  var req=(fetchImpl||fetch)(url,{mode:'no-cors',cache:'no-store',signal:ctl?ctl.signal:undefined});
-  var timed=new Promise(function(_,reject){timer=setTimeout(function(){if(ctl)ctl.abort();reject(new Error('timeout'));},3000);});
-  await Promise.race([req,timed]);return true;
- }catch(_){return false;}finally{clearTimeout(timer);}
-}
-async function f19ProbeMatrix(ip,fqdn,fetchImpl){
- var r=await Promise.all([f19ProbeOne('http://'+ip+':7331/',fetchImpl),f19ProbeOne('http://'+fqdn+':7331/',fetchImpl)]);
- return {ipOk:r[0],nameOk:r[1]};
-}
-window.__f19ClientDnsProbe=f19ProbeMatrix;
-var f19ProbeTarget='',f19ProbeTimer=0;
-function showF19ProbeResult(result,fqdn){
- var row=$('clientDnsRow'),title=$('clientDnsStatus'),lines=$('clientDnsCommands');if(!row||!title||!lines)return;
- row.style.display='';
- lines.textContent='tailscale set --accept-dns=true\nipconfig /flushdns\nping '+fqdn;
- if(result.ipOk&&!result.nameOk){title.textContent="YOUR PC's Tailscale DNS is off (name not resolvable, IP reachable)";title.style.color='#ff6b6b';row.style.borderColor='#ff6b6b';}
- else if(result.nameOk){title.textContent='client DNS ok';title.style.color='#86e3a1';row.style.borderColor='#55a879';}
- else{title.textContent='Client DNS probe inconclusive (IP and FQDN were not both reachable)';title.style.color='#ffd36a';row.style.borderColor='#8c7438';}
-}
-function scheduleF19Probe(ip,fqdn){
- if(!/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip)||! /^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$/i.test(fqdn))return;
- var target=ip+'|'+fqdn;if(target===f19ProbeTarget)return;f19ProbeTarget=target;
- if(f19ProbeTimer)clearInterval(f19ProbeTimer);
- var run=function(){f19ProbeMatrix(ip,fqdn).then(function(r){showF19ProbeResult(r,fqdn);});};
- run();f19ProbeTimer=setInterval(run,30000);
-}
-
 function fmtBytes(n){n=Number(n)||0;if(n<1024)return n.toFixed(0)+' B';var u=['KB','MB','GB','TB','PB'],i=-1;do{n=n/1024;i++;}while(n>=1024&&i<u.length-1);return n.toFixed(n>=100?0:(n>=10?1:2))+' '+u[i]}
 function fmtSpeed(n){return fmtBytes(n)+'/s'}
 function fmtDurShort(s){s=Math.max(0,Math.floor(Number(s)||0));if(s<60)return s+'s';var m=Math.floor(s/60),ss=s%60;if(m<60)return m+'m '+ss+'s';var h=Math.floor(m/60);m=m%60;if(h<24)return h+'h '+m+'m';var d=Math.floor(h/24);h=h%24;return d+'d '+h+'h'}
@@ -1066,10 +1045,6 @@ async function nativeStatus(){
   var r=await fetch(apiBase()+'/api/native-status'+(key?('?key='+encodeURIComponent(key)):''),{cache:'no-store'});
   if(!r.ok)return;
   var s=await r.json();
-  // [F19 §2] only an older reported client binary is marked outdated.
-  var vr=$('launcherVersionRow');if(vr){vr.style.display=s&&s.launcherOutdated===true?'':'none';}
-  var vt=$('launcherVersionText');if(vt&&s&&s.launcherOutdated===true)vt.textContent='launcher outdated - re-run install.cmd once (server '+(s.launcherVersion||'?')+', client '+(s.clientLauncherVersion||'unknown')+')';
-  if(typeof scheduleF19Probe==='function')scheduleF19Probe((s&&s.runnerResolvedIP)||'',(s&&s.fqdn)||'');
   // [F12-1 §1.4] handler-hello beacon input: the launcher POSTs
   // /api/handler-hello right after handing the local .rdp to mstsc, and
   // native-status echoes the last beacon. A beacon newer than the click proves
@@ -1125,8 +1100,16 @@ async function nativeStatus(){
   // [F17 §2] CONNECTION diagnostics lines (copy-only) follow the live FQDN.
   var diagF=(s&&s.fqdn)||'';
   var diagIP=(s&&s.runnerResolvedIP)||'';
-  window.__runnerResolvedIP=diagIP;
   window.__runnerDnsOk=/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(diagIP);
+  // [F19 §2] the same tailnet IP rides the ghrdp://rdp URL as &ip= (diagnosis
+  // only - the launcher keeps the FQDN as the mstsc target).
+  window.__runnerResolvedIP=diagIP;
+  // [F19 §2] LAUNCHER VERSION GUARD: yellow row when the installed client exe
+  // is older than the repo launcher constant (beacon exe stamp vs config).
+  var loRow=document.getElementById('nrLauncherOutdatedRow');
+  if(loRow) loRow.style.display=(s&&s.launcherOutdated===true)?'':'none';
+  var loV=$('nrLauncherVersions');
+  if(loV) loV.textContent='installed: '+((s&&s.launcherSeenVersion)||'(no beacon yet)')+' / current: '+((s&&s.launcherVersion)||'(unknown)');
   var diagRow=document.getElementById('connDiagRow');
   if(diagRow){
    if(diagF){
@@ -1510,11 +1493,77 @@ fetch('https://api.github.com/repos/dekarita/supreme-lamp/commits/main',{cache:'
   }
 }).catch(function(){});
 
+/* [F19 §1 client-DNS probe-begin] */
+// Pure decision core - no DOM, no fetch, no side effects (the node test suite
+// extracts this block and drives the full A/B matrix):
+//   A = http://<runnerResolvedIP>:7331/   (the tailnet ADDRESS)
+//   B = http://<fqdn>:7331/               (the MagicDNS NAME)
+// A ok + B fail  => "YOUR PC's Tailscale DNS is off" (name not resolvable, IP
+// reachable) with the one-line fix; B ok => client DNS ok.
+function clientDnsCore(fqdn,ip,scheme,aOk,bOk){
+ if(scheme!=='http:'){return {verdict:'skipped',why:'probe skipped: this page is not plain http, so the browser blocks the http probes (mixed content)'};}
+ if(!/^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$/i.test(fqdn||'')){return {verdict:'unknown',why:'client DNS probe pending: no MagicDNS FQDN reported by the server yet'};}
+ if(!/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip||'')){return {verdict:'unknown',why:'client DNS probe pending: no runner tailnet IP reported by the server yet'};}
+ if(bOk){return {verdict:'ok',why:'client DNS ok - the MagicDNS name resolves on THIS PC'};}
+ if(aOk){return {verdict:'client-dns-off',why:"YOUR PC's Tailscale DNS is off (name not resolvable, IP reachable)"};}
+ return {verdict:'unreachable',why:'neither the tailnet IP nor the MagicDNS name answered from THIS PC - check that Tailscale is running and connected here'};
+}
+function clientDnsProbeUrls(fqdn,ip){
+ return {a:(ip?('http://'+ip+':7331/'):''),b:(fqdn?('http://'+fqdn+':7331/'):'')};
+}
+/* [F19 §1 client-DNS probe-end] */
+var CDNS_TIMEOUT_MS=3000, CDNS_PERIOD_MS=30000;
+function clientDnsProbeOne(url){
+ return new Promise(function(res){
+  if(!url){res(false);return;}
+  var done=false;
+  var ctl=(typeof AbortController!=='undefined')?new AbortController():null;
+  var t=setTimeout(function(){done=true;try{if(ctl)ctl.abort();}catch(_){}res(false);},CDNS_TIMEOUT_MS);
+  fetch(url,{mode:'no-cors',cache:'no-store',credentials:'omit',signal:ctl?ctl.signal:undefined}).then(function(){
+   if(!done){done=true;clearTimeout(t);res(true);}
+  }).catch(function(){if(!done){done=true;clearTimeout(t);res(false);}});
+ });
+}
+function paintClientDns(r){
+ var row=document.getElementById('clientDnsRow');if(!row)return;
+ var t=document.getElementById('clientDnsText'), c=document.getElementById('clientDnsCmds');
+ if(!t||!c)return;
+ row.style.display='';
+ t.textContent=r.why;
+ t.style.color=(r.verdict==='client-dns-off')?'#f5b7b7':((r.verdict==='ok')?'#7dffc9':'#f5d9b7');
+ c.style.display=(r.verdict==='client-dns-off')?'flex':'none';
+ var fq=($('rdpFqdn')||{}).textContent||'<fqdn>';
+ var el=document.getElementById('clientDnsFix3');if(el)el.textContent='ping '+fq;
+}
+async function clientDnsProbe(){
+ try{
+  var fqdn=($('rdpFqdn')||{}).textContent||'';
+  var ip=(typeof window.__runnerResolvedIP==='string')?window.__runnerResolvedIP:'';
+  var u=clientDnsProbeUrls(fqdn,ip);
+  var aOk=false,bOk=false;
+  if(location.protocol==='http:'){
+   var rr=await Promise.all([clientDnsProbeOne(u.a),clientDnsProbeOne(u.b)]);
+   aOk=rr[0]===true;bOk=rr[1]===true;
+  }
+  paintClientDns(clientDnsCore(fqdn,ip,location.protocol,aOk,bOk));
+ }catch(_){}
+}
+try{clientDnsProbe();setInterval(clientDnsProbe,CDNS_PERIOD_MS);}catch(_){}
+
 // [F10-3 §1.3] WINDOWS AUTO-LOGIN (primary, PS-free): fires
-// ghrdp://rdp?server=<fqdn>&user=<u> at the install.cmd-registered launcher.
+// ghrdp://rdp?server=<fqdn>&user=<u>[&ip=<tailnet-ip>] at the
+// install.cmd-registered launcher. The ip= argument is for DIAGNOSIS ONLY
+// (client-DNS-off detection): mstsc always targets the FQDN - never the IP.
+// [F19 §2] this builder may emit server|user|ip and NOTHING else: no
+// password, token, key or secret parameter can ever enter a ghrdp:// URL.
 // Enabled whenever the target FQDN is valid and a real (non-placeholder) user
 // is known; the launcher itself handles a missing TERMSRV entry with ONE
 // interactive cmdkey prompt.
+function ghrdpRdpUrl(fqdn,user,ip){
+ var u='ghrdp://rdp?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user);
+ if(ip&&/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(ip)){u+='&ip='+encodeURIComponent(ip);}
+ return u;
+}
 function syncWinAuto(){
  var b=$('btnWinAuto');if(!b)return;
  var fqdn=($('rdpFqdn')||{}).textContent||'';
@@ -1542,8 +1591,7 @@ if(waBtn) waBtn.onclick=function(ev){
  var vis=function(){if(document.hidden)wasFocused=false;};
  window.addEventListener('blur',lost);
  document.addEventListener('visibilitychange',vis);
- var rip=window.__runnerResolvedIP||'';if(!/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(rip))return;
- launchProto('ghrdp://rdp?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user)+'&ip='+encodeURIComponent(rip));
+ launchProto(ghrdpRdpUrl(fqdn,user,(typeof window.__runnerResolvedIP==='string'?window.__runnerResolvedIP:'')));
  var note=$('winAutoNote');
  if(note)note.textContent='protocol dispatched - mstsc should open fullscreen shortly';
  // [F12-1 §1.4] hello-beacon watch: 20s window, native-status polled every 3s

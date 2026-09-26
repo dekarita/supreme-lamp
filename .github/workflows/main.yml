@@ -1100,10 +1100,29 @@ jobs:
                   }
               }
           } catch { Write-Host ('[stage] rdpUsageSec carry-over skipped: ' + $_.Exception.Message) }
-          # [F19] Must match AssemblyFileVersion / launcher Stamp in the shipped C# source.
-          $launcherRepoVersion = '2.2.0.0'
+          # [F19 §2] launcherVersion = the REPO CONSTANT, read out of the shipped
+          # launcher source (never hand-typed, never from an env override): the
+          # server compares the client's beacon exe stamp against it and shows a
+          # yellow "launcher outdated - re-run install.cmd once" row. Fail-closed:
+          # a missing/unparseable constant halts the run instead of serving a
+          # config that can never flag an outdated client.
+          $launcherVer = ''
+          try {
+              $lcsPath = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs'
+              if (-not (Test-Path -LiteralPath $lcsPath)) { $lcsPath = Join-Path $root 'ghrdp-rdp-launcher.cs' }
+              if (Test-Path -LiteralPath $lcsPath) {
+                  $lcsTxt = [System.IO.File]::ReadAllText($lcsPath)
+                  $lcsM = [regex]::Match($lcsTxt, 'private const string Ver = "(\d+(\.\d+){1,3})"')
+                  if ($lcsM.Success) { $launcherVer = $lcsM.Groups[1].Value }
+              }
+          } catch { Write-Host ('[stage] launcher version read failed: ' + $_.Exception.Message) }
+          if ($launcherVer -notmatch '^\d+(\.\d+){1,3}$') {
+              Write-Host '::error::[F19] launcherVersion constant not found in payloads/ghrdp-rdp-launcher.cs - refusing to serve a config that cannot flag an outdated client launcher.'
+              if ($env:GITHUB_STEP_SUMMARY) { '### F19 halt: `private const string Ver` missing from the launcher source' | Add-Content -Path $env:GITHUB_STEP_SUMMARY }
+              throw 'F19: launcher version constant missing (payloads/ghrdp-rdp-launcher.cs)'
+          }
+          Write-Host ('[stage] F19 launcherVersion (repo constant) = ' + $launcherVer)
           $cfg = [ordered]@{
-              launcherVersion = $launcherRepoVersion
               rdpIp = $ip
               rdpUser = [string]$env:RDP_USER
               rdpPass = [string]$env:RDP_PASS
@@ -1144,6 +1163,7 @@ jobs:
               rdpUsageAt = ''
               rdpUsageHost = $ghName
               runnerResolvedIP = $(if ($env:RUNNER_RESOLVED_IP -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') { [string]$env:RUNNER_RESOLVED_IP } else { '' })
+              launcherVersion = $launcherVer
           }
           [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), ($cfg | ConvertTo-Json -Depth 10), $global:GhrdpEncNoBom)
           [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), $tok, $global:GhrdpEncNoBom)
