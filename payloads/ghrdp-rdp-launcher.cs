@@ -107,14 +107,27 @@ using System.Threading;
 // that stored nothing can no longer reach a silent mstsc - the ticket is
 // retried once and the launch then carries the native credential prompt with
 // the 'fallback-mstsc-native-prompt' beacon.
-[assembly: AssemblyVersion("2.5.0.0")]
-[assembly: AssemblyFileVersion("2.5.0.0")]
+// [F30 §2] 2.6.0.0: CREDENTIAL TYPE NORMALIZATION + STALE PURGE. Ground truth
+// (2026-09-26): 100+ stale TERMSRV entries for old tailnet IPs sat in the
+// store as a mix of Domain: and LegacyGeneric: types, and CredWrite keys by
+// (target,type) so the wrong-type leftovers were NEVER replaced. Every store
+// now PURGES all same-target variants via CredEnumerate+CredDelete BEFORE the
+// write (the F28 'no delete' pin is superseded for THIS purge ONLY - same
+// *current* fqdn, both type-1 and type-2 variants; never other targets,
+// never a URL/request-driven delete, still no ghrdp:// delete verb), then
+// writes the fresh credential as CRED_TYPE_DOMAIN_PASSWORD - beacon 'purged n
+// stale entries, wrote new as Domain'. [F30 §2.3] the shipped .rdp is read
+// back after every write and must be > 400 bytes with 19+ directives (the
+// 165-169 byte files measured on the client are truncated writes): a short
+// read-back throws LOUD instead of starting mstsc into a broken session.
+[assembly: AssemblyVersion("2.6.0.0")]
+[assembly: AssemblyFileVersion("2.6.0.0")]
 [assembly: AssemblyTitle("ghrdp-rdp-launcher")]
 
 internal static class GhrdpRdpLauncher
 {
-    private const string Ver = "2.5.0.0";
-    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F28 recred+fallback-gap)";
+    private const string Ver = "2.6.0.0";
+    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F30 purge+cred-type+rdp-size)";
     private const int DefaultPort = 7331;
     // [F19 §2] the RDP TCP port used ONLY for the client-DNS diagnosis probe
     // (the mstsc target itself always stays the MagicDNS FQDN).
@@ -581,6 +594,121 @@ internal static class GhrdpRdpLauncher
         return sb.ToString().IndexOf("verdict=FAIL") < 0 ? 0 : 1;
     }
 
+    // [F30 §2/§6-c,d] LAB/CI ONLY: '--purge-selftest' is not a URI verb (a
+    // ghrdp:// URI can never produce it). It seeds the store with BOTH a
+    // LegacyGeneric (type 1) and a Domain (type 2) entry for a LAB-ONLY
+    // target (junk material, never a real password), then runs the REAL
+    // production WriteCredential path and asserts: exactly 2 purged, the
+    // legacy entry gone, the fresh type-2 blob surviving, an UNRELATED target
+    // untouched - plus the read-back truncation guard (real template > 400
+    // bytes; a 19-tiny-line file and a 3-line file both throw). No mstsc, no
+    // cmdkey, no network. Every seeded entry is deleted again at the end.
+    private static bool IsPurgeSelfTest(string[] args)
+    {
+        return args != null && args.Length > 0 && args[0] == "--purge-selftest";
+    }
+
+    private static bool StoreRawLabCred(string fqdn, uint type, string pass)
+    {
+        byte[] blob = Encoding.Unicode.GetBytes(pass);
+        IntPtr raw = Marshal.AllocHGlobal(blob.Length);
+        try
+        {
+            Marshal.Copy(blob, 0, raw, blob.Length);
+            Credential c = new Credential();
+            c.Type = type;
+            c.TargetName = "TERMSRV/" + fqdn;
+            c.UserName = "labF30seed";
+            c.CredentialBlobSize = (uint)blob.Length;
+            c.CredentialBlob = raw;
+            c.Persist = 2;
+            return CredWrite(ref c, 0);
+        }
+        finally
+        {
+            for (int n = 0; n < blob.Length; n++) { Marshal.WriteByte(raw, n, 0); }
+            Marshal.FreeHGlobal(raw);
+            Array.Clear(blob, 0, blob.Length);
+        }
+    }
+
+    private static string ReadCredBlobText(string fqdn, uint type)
+    {
+        IntPtr p = IntPtr.Zero;
+        if (!CredRead("TERMSRV/" + fqdn, type, 0, out p)) { return null; }
+        try
+        {
+            Credential c = (Credential)Marshal.PtrToStructure(p, typeof(Credential));
+            if (c.CredentialBlob == IntPtr.Zero || c.CredentialBlobSize < 2) { return ""; }
+            byte[] b = new byte[(int)c.CredentialBlobSize];
+            Marshal.Copy(c.CredentialBlob, b, 0, b.Length);
+            string s = Encoding.Unicode.GetString(b);
+            Array.Clear(b, 0, b.Length);
+            return s;
+        }
+        finally { if (p != IntPtr.Zero) { CredFree(p); } }
+    }
+
+    private static int PurgeSelfTestMain()
+    {
+        string target = "lab-f30-purge.dekarita.tailnet-lab.ts.net";
+        string other = "lab-f30-unrelated.dekarita.tailnet-lab.ts.net";
+        string freshPass = "LaB!f30-fresh-not-a-real-password";
+        StringBuilder sb = new StringBuilder();
+        string outPath = Environment.GetEnvironmentVariable("GHRDP_LAB_OUT");
+        if (string.IsNullOrEmpty(outPath)) { outPath = Path.Combine(Path.GetTempPath(), "ghrdp-purge-selftest.txt"); }
+        // (c) mixed LegacyGeneric + Domain cycle through the production write
+        bool s1 = StoreRawLabCred(target, 1, "stale-generic");
+        bool s2 = StoreRawLabCred(target, 2, "stale-domain");
+        bool s3 = StoreRawLabCred(other, 1, "unrelated-stale");
+        sb.AppendLine("seed generic=" + s1 + " domain=" + s2 + " unrelated=" + s3 + " target=TERMSRV/" + target);
+        bool preG = ReadCredBlobText(target, 1) != null;
+        bool preD = ReadCredBlobText(target, 2) != null;
+        sb.AppendLine("preStore genericPresent=" + preG + " domainPresent=" + preD);
+        int purged = WriteCredential(target, "labF30user", freshPass);
+        sb.AppendLine("case=purge purged=" + purged + " expected=2 verdict=" + (purged == 2 ? "pass" : "FAIL"));
+        bool legacyGone = ReadCredBlobText(target, 1) == null;
+        sb.AppendLine("postRead legacyGenericGone=" + legacyGone + " verdict=" + (legacyGone ? "pass" : "FAIL"));
+        string afterBlob = ReadCredBlobText(target, 2);
+        bool blobMatch = afterBlob != null && afterBlob == freshPass;
+        sb.AppendLine("postRead domainBlobMatch=" + blobMatch + " finalEntryType=2 expected=2 verdict=" + (blobMatch ? "pass" : "FAIL"));
+        string afterSelftestBlob = null; // ensure no logging of the blob itself
+        bool otherSurvived = ReadCredBlobText(other, 1) != null;
+        sb.AppendLine("unrelatedSurvived=" + otherSurvived + " verdict=" + (otherSurvived ? "pass" : "FAIL"));
+        // thorough cleanup: nothing seeded may remain after the harness exits
+        try { CredDelete("TERMSRV/" + target, 2, 0); CredDelete("TERMSRV/" + target, 1, 0); CredDelete("TERMSRV/" + other, 1, 0); } catch { }
+        bool cleanupOk = ReadCredBlobText(target, 2) == null && ReadCredBlobText(target, 1) == null && ReadCredBlobText(other, 1) == null;
+        sb.AppendLine("cleanup purgedAllSeeded=" + cleanupOk + " verdict=" + (cleanupOk ? "pass" : "FAIL"));
+        // (d) the .rdp read-back truncation guard, on the real template
+        string rdpReal = Path.Combine(Path.GetTempPath(), "ghrdp-lab-f30-rdpsize.rdp");
+        string[] realLines = RdpLines(target, "labF30user");
+        File.WriteAllLines(rdpReal, realLines);
+        long realBytes = 0;
+        bool realThrew = false;
+        try { AssertRdpFileHealthy(realLines, rdpReal); realBytes = new FileInfo(rdpReal).Length; }
+        catch { realThrew = true; }
+        sb.AppendLine("case=rdp-real directives=" + realLines.Length + " bytes=" + realBytes +
+            " threshold=400 verdict=" + (!realThrew && realLines.Length >= 19 && realBytes > 400 ? "pass" : "FAIL"));
+        string[] tiny19 = new string[19];
+        for (int n = 0; n < tiny19.Length; n++) { tiny19[n] = "x:i"; }
+        File.WriteAllLines(rdpReal, tiny19);
+        string tinyKind = "";
+        try { AssertRdpFileHealthy(tiny19, rdpReal); } catch (InvalidOperationException ex) { tinyKind = ex.Message.Split(' ')[0]; }
+        sb.AppendLine("case=rdp-19-tiny guardThrew=" + (tinyKind.Length > 0) + " kind=" + tinyKind +
+            " verdict=" + (tinyKind == "rdp-truncated" ? "pass" : "FAIL"));
+        File.WriteAllLines(rdpReal, new string[] { "a", "b", "c" });
+        string incKind = "";
+        try { AssertRdpFileHealthy(new string[] { "a", "b", "c" }, rdpReal); } catch (InvalidOperationException ex) { incKind = ex.Message.Split(' ')[0]; }
+        sb.AppendLine("case=rdp-3-lines guardThrew=" + (incKind.Length > 0) + " kind=" + incKind +
+            " verdict=" + (incKind == "rdp-template-incomplete" ? "pass" : "FAIL"));
+        try { File.Delete(rdpReal); } catch { }
+        sb.AppendLine("mstscLaunched=0 cmdkeyCalled=0 (no network, lab-only targets, blobs never logged)" + (afterSelftestBlob ?? ""));
+        try { File.WriteAllText(outPath, sb.ToString(), new UTF8Encoding(false)); } catch { }
+        LogJson("purge-selftest", "purge-selftest", "matrix written to " + outPath +
+            " verdicts=" + (sb.ToString().IndexOf("verdict=FAIL") < 0 ? "all-pass" : "SEE-FAIL"));
+        return sb.ToString().IndexOf("verdict=FAIL") < 0 ? 0 : 1;
+    }
+
     // ------------------------------------------------------------------
     // Credential Manager READ-ONLY probe: cmdkey /list, stdout captured,
     // bounded. Never prompts, never writes.
@@ -674,6 +802,54 @@ internal static class GhrdpRdpLauncher
     private static extern bool CredRead(string target, uint type, uint flags, out IntPtr credential);
     [DllImport("advapi32.dll")]
     private static extern void CredFree(IntPtr credential);
+    // [F30 §2] CredEnumerate + CredDelete: the ONLY deletion surface the
+    // launcher has - an internal same-target purge that runs immediately
+    // before the sanctioned write. There is no request-driven or verb-driven
+    // delete anywhere.
+    [DllImport("advapi32.dll", EntryPoint = "CredEnumerateW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CredEnumerate(string filter, uint flags, out uint count, out IntPtr credentialsPtr);
+    [DllImport("advapi32.dll", EntryPoint = "CredDeleteW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CredDelete(string target, uint type, uint flags);
+
+    // [F30 §2.1] ENUMERATE-AND-PURGE: delete every existing entry whose target
+    // is EXACTLY TERMSRV/<fqdn> - the type-2 (CRED_TYPE_DOMAIN_PASSWORD, shown
+    // by cmdkey as 'Domain:') AND the type-1 (CRED_TYPE_GENERIC, 'Legacy
+    // Generic:') variants - so the fresh CRED_TYPE_DOMAIN_PASSWORD write below
+    // can never be poisoned by a stale same-target leftover of the other type.
+    // Other targets (old tailnet IPs) are untouched here: the dashboard's
+    // /api/purge-stale-creds one-liner is the user-run 7-day sweep for those.
+    // Returns the number of purged entries (0 is a normal first-run answer).
+    private static int PurgeStaleTargetCredentials(string fqdn)
+    {
+        string exact = "TERMSRV/" + fqdn;
+        int purged = 0;
+        uint count = 0;
+        IntPtr buffer = IntPtr.Zero;
+        try
+        {
+            // flags=1 (CRED_ENUMERATE_ALL_CREDENTIALS): the wildcard filter is
+            // unsupported with it, so the target match happens in code.
+            if (!CredEnumerate(null, 1, out count, out buffer)) { return 0; }
+            try
+            {
+                for (int n = 0; n < (int)count; n++)
+                {
+                    IntPtr entry = Marshal.ReadIntPtr(buffer, n * IntPtr.Size);
+                    if (entry == IntPtr.Zero) { continue; }
+                    Credential found = (Credential)Marshal.PtrToStructure(entry, typeof(Credential));
+                    if (found.TargetName == null) { continue; }
+                    if (!found.TargetName.Equals(exact, StringComparison.OrdinalIgnoreCase)) { continue; }
+                    if (found.Type != 1 && found.Type != 2) { continue; } // Domain + LegacyGeneric variants only
+                    if (CredDelete(found.TargetName, found.Type, 0)) { purged++; }
+                }
+            }
+            finally { if (buffer != IntPtr.Zero) { CredFree(buffer); } }
+        }
+        catch { LogJson("creds", "purge", "purge probe failed (treated as 0 stale entries)"); }
+        return purged;
+    }
 
     private static string TicketFromUri(string uri)
     {
@@ -694,8 +870,12 @@ internal static class GhrdpRdpLauncher
         LogJson("handoff", "rdp", step);
         HelloBounded(host, port, "rdp", ok, step);
     }
-    private static void WriteCredential(string fqdn, string user, string pass)
+    // [F30 §2.1] The write path now PURGES first (same-target Domain: and
+    // LegacyGeneric: variants) and returns the purged-entry count so the
+    // caller can beacon it: 'purged <n> stale entries, wrote new as Domain'.
+    private static int WriteCredential(string fqdn, string user, string pass)
     {
+        int purged = PurgeStaleTargetCredentials(fqdn);
         byte[] blob = Encoding.Unicode.GetBytes(pass);
         IntPtr buffer = IntPtr.Zero;
         try
@@ -713,8 +893,10 @@ internal static class GhrdpRdpLauncher
             { throw new InvalidOperationException("credwrite-failed code=" + Marshal.GetLastWin32Error()); }
             // Pre-F27 interactive /generic created a separate type-1 entry.
             // CredWrite keys by (target,type): writing type 2 cannot replace it.
-            // Refresh it ONLY when present, via the same sanctioned store API.
-            // No deletion, no reading/exporting its old credential blob.
+            // The F30 purge above already deleted it when present, so this
+            // refresh is normally a no-op; it stays as defense against a
+            // same-type rewrite between the purge and the write. No reading or
+            // exporting of any old credential blob happens anywhere.
             IntPtr old = IntPtr.Zero;
             bool genericPresent = CredRead(c.TargetName, 1, 0, out old);
             int readError = Marshal.GetLastWin32Error();
@@ -737,6 +919,7 @@ internal static class GhrdpRdpLauncher
             }
             Array.Clear(blob, 0, blob.Length);
         }
+        return purged;
     }
     // Only redemption errors permit interactive fallback. A bad reply or
     // failed CredWrite aborts, rather than using a potentially poisoned entry.
@@ -807,8 +990,13 @@ internal static class GhrdpRdpLauncher
             if (pass.Length == 0 || Encoding.Unicode.GetByteCount(pass) > 2560)
             { throw new InvalidOperationException("redeem-credential-invalid"); }
             HandoffStep(host, port, redeemStep, true);
-            try { WriteCredential(server, user, pass); }
+            int purged = 0;
+            try { purged = WriteCredential(server, user, pass); }
             catch { HandoffStep(host, port, "credwrite-failed", false); throw; }
+            // [F30 §2.1] the purge+normalize beacon NEVER carries the
+            // credential - only the stale count and the type of the new
+            // entry. Emitted for every store, so a '0' proves the purge ran.
+            HandoffStep(host, port, "purged " + purged + " stale entries, wrote new as Domain", true);
             HandoffStep(host, port, "credwrite-ok", true);
             return null;
         }
@@ -945,6 +1133,22 @@ internal static class GhrdpRdpLauncher
         };
     }
 
+    // [F30 §2.3] THE truncation guard MstscStep runs after every write. Ground
+    // truth: 96 temp .rdp files at 165-169 bytes = silently truncated
+    // templates. A healthy file (19+ directives + the live fqdn/user) always
+    // exceeds 400 bytes, so a short read-back throws LOUD - mstsc is never
+    // started on a file that cannot represent the session.
+    private static void AssertRdpFileHealthy(string[] lines, string rdp)
+    {
+        if (lines.Length < 19)
+        { throw new InvalidOperationException("rdp-template-incomplete directives=" + lines.Length + " (expected 19+)"); }
+        string readBack = File.ReadAllText(rdp);   // read back what actually landed
+        long bytes = 0;
+        try { bytes = new FileInfo(rdp).Length; } catch { }
+        if (bytes < 400 || readBack.Length < 400)
+        { throw new InvalidOperationException("rdp-truncated bytes=" + bytes + " directives=" + lines.Length + " (expected > 400; 165-169 bytes is a truncated write)"); }
+    }
+
     // [F28 §3] nativePrompt=true is the closed-gap launch: the credential store
     // is known to hold nothing usable for this target (the retry redemption
     // failed too), so mstsc is started WITH its own visible credential prompt
@@ -956,8 +1160,8 @@ internal static class GhrdpRdpLauncher
         string rdp = Path.Combine(Path.GetTempPath(), "ghrdp-" + Sha1Hex8(server + "|" + user) + ".rdp");
         string[] lines = RdpLines(server, user);
         File.WriteAllLines(rdp, lines);   // local write: no MOTW, no SmartScreen
-        long bytes = 0;
-        try { bytes = new FileInfo(rdp).Length; } catch { }
+        AssertRdpFileHealthy(lines, rdp); // [F30 §2.3] read-back size assert (>400 bytes, 19+ directives)
+        long bytes = new FileInfo(rdp).Length;
         LogJson("rdp", "rdp", "wrote " + rdp + " (" + bytes + " bytes, " + lines.Length +
             " directives, no credential lines)");
 
@@ -1196,6 +1400,9 @@ internal static class GhrdpRdpLauncher
         // pure argument check - no I/O - so the 'invoked' beacon below is still
         // the first work of every real invocation.
         if (IsFallbackSelfTest(args)) { return FallbackSelfTestMain(); }
+        // [F30 §2] LAB/CI-ONLY: '--purge-selftest' is not a URI verb; it
+        // drives the real purge+write and the .rdp guard on LAB-ONLY targets.
+        if (IsPurgeSelfTest(args)) { return PurgeSelfTestMain(); }
 
         // [F15 §1.1 hello-before-work] FIRST instruction of the process: JSONL
         // log line + POST /api/handler-hello {verb, ok:true, details:'invoked'} -
