@@ -108,6 +108,9 @@ try {
     $flags = [Reflection.BindingFlags]'Static,NonPublic'
     function Call-F27([string]$Name, [object[]]$Arguments) { return $type.GetMethod($Name,$flags).Invoke($null,$Arguments) }
     $stage = 'CredWrite overwrite and exact target'
+    # Domain-password blobs are opaque to ordinary CredRead callers. Verify
+    # overwrite via changed username + exact target/type/persist, not blob export.
+    # Only the user's live 4624 can prove the stored password authenticates.
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -117,16 +120,16 @@ public static class F27Read {
  [DllImport("advapi32.dll",EntryPoint="CredReadW",CharSet=CharSet.Unicode,SetLastError=true)] public static extern bool Read(string t,uint type,uint f,out IntPtr p);
  [DllImport("advapi32.dll")] public static extern void CredFree(IntPtr p);
  [DllImport("advapi32.dll",EntryPoint="CredDeleteW",CharSet=CharSet.Unicode)] public static extern bool Delete(string t,uint type,uint f);
- public static bool Matches(string target,string user,string pass) { IntPtr p; if(!Read(target,2,0,out p))return false; try { C c=(C)Marshal.PtrToStructure(p,typeof(C)); return c.Target==target && c.User==user && c.Type==2 && c.Persist==2 && Marshal.PtrToStringUni(c.Blob,(int)c.Size/2)==pass; } finally { CredFree(p); } }
+ public static bool Matches(string target,string user) { IntPtr p; if(!Read(target,2,0,out p))return false; try { C c=(C)Marshal.PtrToStructure(p,typeof(C)); return c.Target==target && c.User==user && c.Type==2 && c.Persist==2; } finally { CredFree(p); } }
 }
 '@
     $fqdn = 'f27-' + [guid]::NewGuid().ToString('N') + '.tail.ts.net'
     $target = 'TERMSRV/' + $fqdn
     try {
-        $null = Call-F27 'WriteCredential' @($fqdn,'fixture-user','poisoned-fixture')
-        Assert-F27 ([F27Read]::Matches($target,'fixture-user','poisoned-fixture')) 'initial entry exists'
+        $null = Call-F27 'WriteCredential' @($fqdn,'fixture-old-user','poisoned-fixture')
+        Assert-F27 ([F27Read]::Matches($target,'fixture-old-user')) 'initial entry exists'
         $null = Call-F27 'WriteCredential' @($fqdn,'fixture-user',$fixture)
-        Assert-F27 ([F27Read]::Matches($target,'fixture-user',$fixture)) 'CredWrite overwrites exact domain target'
+        Assert-F27 ([F27Read]::Matches($target,'fixture-user')) 'CredWrite overwrites exact domain target'
         $lines = Call-F27 'RdpLines' @($fqdn,'fixture-user')
         Assert-F27 ($lines -contains ('full address:s:' + $target.Substring(8))) 'RDP full address exactly matches credential target suffix'
         Assert-F27 (($lines -contains 'screen mode id:i:2') -and -not (($lines -join "`n") -match 'password|credential|authentication level')) 'options only, no weakening'
