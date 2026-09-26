@@ -623,6 +623,65 @@ jobs:
           }
           exit 0
 
+      # [F30 §1] TLS/CIPHER NORMALIZATION (after cert bind, before the F21/NLA
+      # verification). Ground truth (diagnostic-verified 2026-09-26): the
+      # client reads "connection forcibly closed by remote host" - the server
+      # drops the connection DURING the TLS handshake, BEFORE any credential is
+      # sent (TCP 3389 OK, DNS OK, firewall OK). This step enables every
+      # modern cipher suite (GCM/ChaCha20 FIRST - invocation order is the
+      # enable order SChannel falls back to when no policy list exists),
+      # writes TLS 1.2 AND 1.3 Enabled=1 on Client AND Server (TLS 1.2 is
+      # NEVER disabled - some mstsc builds still default to it), reasserts
+      # SecurityLayer=2 (TLS only) with MinEncryptionLevel=3 (high), and
+      # restarts the handshake-serving services so the changes are picked up.
+      - name: TLS/cipher normalization (F30 - modern suites + TLS 1.2/1.3)
+        shell: pwsh
+        run: |
+          # [F30 §1 tls-cipher-begin]
+          $ErrorActionPreference = 'Continue'
+          $S = $env:GITHUB_STEP_SUMMARY
+          # (1) modern cipher suites - GCM/ChaCha20 FIRST, then the ECDHE-RSA
+          #     fallbacks. Enable-TlsCipherSuite is additive; nothing is
+          #     disabled here.
+          Enable-TlsCipherSuite TLS_AES_256_GCM_SHA384
+          Enable-TlsCipherSuite TLS_CHACHA20_POLY1305_SHA256
+          Enable-TlsCipherSuite TLS_AES_128_GCM_SHA256
+          Enable-TlsCipherSuite TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+          Enable-TlsCipherSuite TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256
+          Write-Host '[F30] cipher suites enabled (AES-256-GCM / ChaCha20 first)'
+          # (2) TLS 1.2 AND 1.3, Enabled=1, Client AND Server. Keys are created
+          #     first so the 1.2 writes can never fail on a fresh box; 1.3
+          #     keeps the spec's SilentlyContinue for older SChannel builds.
+          foreach ($f30Proto in @(
+              'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Client',
+              'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Server',
+              'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Client',
+              'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Server')) {
+              try { New-Item -Path $f30Proto -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
+          }
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Client' -Name Enabled -Value 1 -Type DWord
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.2\Server' -Name Enabled -Value 1 -Type DWord
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Client' -Name Enabled -Value 1 -Type DWord -ErrorAction SilentlyContinue
+          Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\TLS 1.3\Server' -Name Enabled -Value 1 -Type DWord -ErrorAction SilentlyContinue
+          foreach ($f30Proto in @('TLS 1.2\Client','TLS 1.2\Server','TLS 1.3\Client','TLS 1.3\Server')) {
+              $f30Val = $null
+              try { $f30Val = (Get-ItemProperty -Path ('HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL\Protocols\' + $f30Proto) -Name Enabled -ErrorAction Stop).Enabled } catch { }
+              Write-Host ('[F30] SCHANNEL\' + $f30Proto + ' Enabled=' + $f30Val)
+          }
+          # (3) RDP security layer: TLS only (2), high encryption (3). Never
+          #     weakened here or anywhere else.
+          $rdpKeyF30 = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+          try { Set-ItemProperty -Path $rdpKeyF30 -Name 'SecurityLayer' -Value 2 -Type DWord -ErrorAction Stop } catch { }
+          try { Set-ItemProperty -Path $rdpKeyF30 -Name 'MinEncryptionLevel' -Value 3 -Type DWord -ErrorAction Stop } catch { }
+          Write-Host ('[F30] RDP-Tcp SecurityLayer=' + (Get-ItemProperty -Path $rdpKeyF30 -Name SecurityLayer).SecurityLayer + ' MinEncryptionLevel=' + (Get-ItemProperty -Path $rdpKeyF30 -Name MinEncryptionLevel).MinEncryptionLevel)
+          # (4) restart the handshake-serving services: SChannel settings are
+          #     read per-process, so TermService (RDP) + WinRM must cycle to
+          #     pick up the suite/protocol writes.
+          try { Restart-Service TermService -Force -ErrorAction SilentlyContinue; Write-Host '[F30] TermService restarted' } catch { }
+          try { Restart-Service WinRM -Force -ErrorAction SilentlyContinue; Write-Host '[F30] WinRM restarted' } catch { }
+          if ($S) { '### TLS/cipher normalization (F30)' | Add-Content -Path $S; 'Suites enabled in order: TLS_AES_256_GCM_SHA384, TLS_CHACHA20_POLY1305_SHA256, TLS_AES_128_GCM_SHA256, TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384, TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256. TLS 1.2 + 1.3 Enabled=1 (Client+Server). SecurityLayer=2, MinEncryptionLevel=3. TermService + WinRM restarted.' | Add-Content -Path $S }
+          # [F30 §1 tls-cipher-end]
+
       # [F21 §1] CredSSP/NLA handshake verification (after cert bind, before
       # advertising the RDP host). Checks NLA setting, cert chain, CredSSP
       # server policy, and Schannel cipher suites. If ANY handshake determinant
