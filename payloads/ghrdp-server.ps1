@@ -22,6 +22,17 @@ try {
     $tp = Join-Path $Root 'dash-token.txt'
     if (Test-Path -LiteralPath $tp) { $script:Token = ([System.IO.File]::ReadAllText($tp)).Trim() }
 } catch { }
+# [F17 §2] Reset the beacon store at server start: the dashboard's launcher-
+# beacon rows are PER-RUN, so a previous run's handler-hello beacon can never
+# render as a stale age on this run's dashboard. The next /api/handler-hello
+# re-creates the file.
+try {
+    $hhInit = Join-Path $Root 'handler-hello-last.json'
+    if (Test-Path -LiteralPath $hhInit) {
+        Remove-Item -LiteralPath $hhInit -Force -ErrorAction Stop
+        Write-Host '[beacon] store reset at server start (rows are per-run only)'
+    }
+} catch { Write-Host ('[beacon] store reset failed: ' + $_.Exception.Message) }
 $script:RdpTokens = @{}
 $script:LauncherSeen = $false
 $script:DeviceTokens = @{}
@@ -45,6 +56,19 @@ function Save-DeviceTokens {
 function Write-ClientAudit {
     param([string]$Line)
     try { [System.IO.File]::AppendAllText($script:ClientAuditLog, ((Get-Date).ToUniversalTime().ToString('o') + ' ' + $Line + "`n")) } catch { }
+}
+function ConvertFrom-UtcTs {
+    # [F17 §2] Parse a stored hello/beacon timestamp AS UTC, never as local
+    # time: RoundtripKind keeps 'Z'/'±hh:mm' inputs honest, and a zoneless
+    # value is taken as UTC ticks - so an age can never carry a +05:30-style
+    # client/host offset (the beacon-age bug F17 fixes).
+    param([string]$s)
+    if ([string]::IsNullOrWhiteSpace($s)) { return $null }
+    try {
+        $dt = [datetime]::Parse($s, [cultureinfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+        if ($dt.Kind -eq [System.DateTimeKind]::Local) { $dt = $dt.ToUniversalTime() }
+        return $dt
+    } catch { return $null }
 }
 function Get-TailnetIp {
     try {
@@ -532,7 +556,13 @@ function Invoke-ClientRequest {
                 $hhFile = Join-Path $Root 'handler-hello-last.json'
                 if (Test-Path -LiteralPath $hhFile) {
                     $hh = [System.IO.File]::ReadAllText($hhFile) | ConvertFrom-Json
-                    if ($hh -and $hh.ts) { $handlerAge = [int]([datetime]::UtcNow - [datetime]$hh.ts).TotalSeconds }
+                    # [F17 §2] RoundtripKind/UTC parse - a zoneless or offset
+                    # value can never be read as local time here.
+                    $hhDt = ConvertFrom-UtcTs ([string]$hh.ts)
+                    if ($hh -and ($null -ne $hhDt)) {
+                        $handlerAge = [int]([datetime]::UtcNow - $hhDt).TotalSeconds
+                        if ($handlerAge -lt 0) { $handlerAge = 0 }
+                    }
                 }
             } catch { }
             $vpsPending = $false
@@ -695,6 +725,9 @@ function Invoke-ClientRequest {
                 tsAuthAdminUrl = $tsAdmin
                 vpsPending = $vpsPending
                 rdpLogonAgeSec = $rdpLogonAgeSec
+                # [F17 §2] runner self-probe snapshot (config.json rdpListener):
+                # the dashboard's RDP LISTENER row + AUTO-LOGIN gate read it.
+                rdpListener = $null
                 rdpUsageSec = $rdpUsageSec
                 rdpUsageActive = $rdpUsageActive
                 rdpUsageAgeSec = $rdpUsageAgeSec
@@ -716,7 +749,25 @@ function Invoke-ClientRequest {
                 $lvFile = Join-Path $Root 'handler-hello-last.json'
                 if (Test-Path -LiteralPath $lvFile) {
                     $lv = [System.IO.File]::ReadAllText($lvFile) | ConvertFrom-Json
-                    if ($lv -and $lv.verb) { $ns.lastHandlerVerb = @{ verb = [string]$lv.verb; ok = [bool]$lv.ok; details = [string]$lv.details; ts = [string]$lv.ts } }
+                    if ($lv -and $lv.verb) {
+                        # [F17 §2] echo ts normalized to ISO-Z (UTC): the UI
+                        # then runs Date.parse on ISO-Z and the beacon age can
+                        # never pick up the client's tz offset.
+                        $lvTs = [string]$lv.ts
+                        try {
+                            $lvDt = ConvertFrom-UtcTs $lvTs
+                            if ($null -ne $lvDt) { $lvTs = $lvDt.ToString('yyyy-MM-ddTHH:mm:ssZ') }
+                        } catch { }
+                        $ns.lastHandlerVerb = @{ verb = [string]$lv.verb; ok = [bool]$lv.ok; details = [string]$lv.details; ts = $lvTs }
+                    }
+                }
+            } catch { }
+            # [F17 §2] rdpListener: the runner self-probe snapshot stored by
+            # main.yml into config.json -> rdpListener (listening/termService/
+            # fwRule/certThumb/nla). Absent = the probe never ran this run.
+            try {
+                if ($cfgN -and $cfgN.PSObject.Properties['rdpListener'] -and $cfgN.rdpListener) {
+                    $ns.rdpListener = $cfgN.rdpListener
                 }
             } catch { }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $ns)
@@ -752,7 +803,10 @@ function Invoke-ClientRequest {
                 $lhFile = Join-Path $Root 'launcher-hello-last.json'
                 if (Test-Path -LiteralPath $lhFile) {
                     $lh = [System.IO.File]::ReadAllText($lhFile) | ConvertFrom-Json
-                    $age = [int]([datetime]::UtcNow - [datetime]$lh.ts).TotalSeconds
+                    # [F17 §2] UTC/RoundtripKind parse - never local time.
+                    $lhAge = ConvertFrom-UtcTs ([string]$lh.ts)
+                    $age = -1
+                    if ($null -ne $lhAge) { $age = [int]([datetime]::UtcNow - $lhAge).TotalSeconds; if ($age -lt 0) { $age = 0 } }
                     $body = '{"ver":' + [int]$lh.ver + ',"build":"' + [string]$lh.build + '","ts":"' + [string]$lh.ts + '","ageSeconds":' + $age + '}'
                 }
             } catch { }
