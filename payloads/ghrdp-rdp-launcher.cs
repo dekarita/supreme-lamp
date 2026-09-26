@@ -8,6 +8,11 @@
 //     1. Beacon FIRST (JSONL log line + POST /api/handler-hello, details
 //        'invoked') before any other work, so a dashboard sees the click even
 //        if everything below fails.
+//     1b. [F17 §3] CLIENT-DNS GUARD: Dns.GetHostAddresses(<fqdn>) must yield a
+//        100.64.0.0/10 tailnet address. Failed resolution or a non-tailnet
+//        answer = stale/blocked client DNS -> MessageBox "DNS stale/blocked -
+//        flushdns or check tailscale" + ok:false beacon + rc5; mstsc is NEVER
+//        launched into a dead name.
 //     2. If TERMSRV/<fqdn> is absent from the user's Credential Manager, launch
 //        INTERACTIVE cmdkey ONCE in a VISIBLE Normal window (Windows itself
 //        prompts for the password - this process never sees, reads, or writes
@@ -452,6 +457,63 @@ internal static class GhrdpRdpLauncher
     }
 
     // ------------------------------------------------------------------
+    // [F17 §3] CLIENT-DNS GUARD: resolve the target BEFORE any cmdkey/mstsc
+    // work. MagicDNS must answer with a tailnet CGNAT address (100.64.0.0/10);
+    // failed resolution or a name that resolves outside the tailnet (stale or
+    // blocked client DNS - "could not find host") ends in a visible MessageBox
+    // + an ok:false beacon - mstsc is NEVER launched into a dead name.
+    // ------------------------------------------------------------------
+    private static int DnsGuardStep(string server, string host, int port)
+    {
+        IPAddress[] addrs = null;
+        string err = "";
+        try { addrs = Dns.GetHostAddresses(server); }
+        catch (Exception ex) { err = ex.GetType().Name; }
+        if (addrs == null || addrs.Length == 0)
+        {
+            LogJson("error", "rdp", "DNS guard: '" + server + "' did not resolve (" + (err.Length > 0 ? err : "no addresses") + ") - mstsc NOT started");
+            HelloBounded(host, port, "rdp", false, "dns-unresolved");
+            ShowBox("ghrdp: DNS stale/blocked",
+                "DNS stale/blocked - flushdns or check tailscale\n\n" +
+                "'" + server + "' did not resolve on this PC" +
+                (err.Length > 0 ? " (" + err + ")" : "") + ".\n" +
+                "mstsc was NOT started.\n\n" +
+                "Run on this PC:\n  ipconfig /flushdns\n  ping " + server + "\n\n" +
+                "Tailscale must be running with MagicDNS enabled.\n" +
+                "log: " + LogPath());
+            return 5;
+        }
+        bool tailnet = false;
+        string seen = "";
+        foreach (IPAddress a in addrs)
+        {
+            byte[] b = a.GetAddressBytes();
+            bool cgnat = (a.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
+                b.Length == 4 && b[0] == 100 && b[1] >= 64 && b[1] <= 127);
+            if (cgnat) { tailnet = true; }
+            if (seen.Length > 0) { seen += ","; }
+            seen += a.ToString();
+        }
+        if (!tailnet)
+        {
+            // Every answer is outside 100.64.0.0/10 -> stale/hijacked/blocked
+            // name on THIS PC; do not hand it to mstsc.
+            LogJson("error", "rdp", "DNS guard: '" + server + "' resolved outside 100.64.0.0/10 (" + seen + ") - mstsc NOT started");
+            HelloBounded(host, port, "rdp", false, "dns-not-tailnet");
+            ShowBox("ghrdp: DNS stale/blocked",
+                "DNS stale/blocked - flushdns or check tailscale\n\n" +
+                "'" + server + "' resolved to " + seen + " - no 100.64.0.0/10 tailnet address.\n" +
+                "mstsc was NOT started.\n\n" +
+                "Run on this PC:\n  ipconfig /flushdns\n  ping " + server + "\n\n" +
+                "Tailscale must be running with MagicDNS enabled.\n" +
+                "log: " + LogPath());
+            return 5;
+        }
+        LogJson("dns", "rdp", "DNS guard OK: '" + server + "' -> " + seen + " (tailnet 100.64.0.0/10)");
+        return 0;
+    }
+
+    // ------------------------------------------------------------------
     // Work: everything that touches cmdkey/mstsc/disk lives here, strictly
     // AFTER Main's first instruction (the 'invoked' log + beacon).
     // 'host' is the ALREADY-CLAMPED beacon host ("" when the URL server arg is
@@ -484,7 +546,9 @@ internal static class GhrdpRdpLauncher
             return 3;
         }
 
-        int rc = CmdkeyStep(server, user, host, port);
+        int rc = DnsGuardStep(server, host, port);
+        if (rc != 0) { return rc; }     // MessageBox + ok:false beacon already sent
+        rc = CmdkeyStep(server, user, host, port);
         if (rc != 0) { return rc; }     // a timed-out prompt already produced its MessageBox
         return MstscStep(server, user, host, port);
     }
