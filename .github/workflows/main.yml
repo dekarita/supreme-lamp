@@ -1858,7 +1858,14 @@ jobs:
           # 100.64.0.0/10. An all-sources-empty run still throws the SAME
           # classified 'tailnet-ip-unavailable' halt as F9n - it now also prints
           # WHICH source was empty, with raw values.
-          $cgnat = '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.'
+          # The §2 CGNAT pattern, anchored end-to-end: ^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.
+          # plus the two trailing octets and $. The spec's bare prefix form also
+          # accepts "100.83.13.45evil" or "100.83.13.45.attacker.tld", and this is
+          # the one place where the accepted value is pasted straight into the
+          # advertised webdesk URL and the websockify BindIp - so it is anchored
+          # here (§6: no URL fabrication). Every legitimate CGNAT address still
+          # matches; this only ever accepts strictly less.
+          $cgnat = '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.(\d{1,3})\.(\d{1,3})$'
           $rdpIp = ''
           $ipSrc = ''
           # Per-source RAW values for the diagnostic dump. rdpIp / dnsName are
