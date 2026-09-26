@@ -771,3 +771,32 @@ NEVER weaken NLA/CredSSP (auth-level overrides, credssp-support-off
 failure class, not the fix. Credential-UI automation / keyboard-injection
 primitives are refused (cmdkey already supplies credentials; typing them
 does not fix a handshake rejection).
+
+## F27: zero-typing ticket → Windows Credential Manager (2026-09-26)
+
+**Explicit, narrow relaxation of the no-transit/no-stashing lock:** the
+Windows button may mint a dashboard-bearer-authorized, random 128-bit ticket
+(60 seconds, single use). Issuance AND redemption require a direct socket peer
+in the WireGuard-encrypted tailnet; loopback, forwarded headers and public
+sources are not accepted. Tickets are bound to the issuing source IP and held
+only in the server process; restart invalidates them. `/api/rdp-creds` accepts
+POST JSON only and consumes the ticket before returning `{fqdn,user,pass}`.
+No redirects/proxies are followed by the client; no secrets enter logs or files.
+Audit contains only timestamp, source IP and cumulative issue/redeem/reject counts.
+
+Rationale: the reported runner proof (`userExists=True`, `credValid=True`, five
+4625 sub-status `0xC000006A`) places the fault on the client-supplied credential,
+not password generation. This replaces the leakier clipboard/manual transfer;
+it does not claim the precise masked/stale clipboard cause has been proven.
+CredWrite overwrites the domain-password `TERMSRV/<fqdn>` entry on every successful
+redemption. The .rdp target uses the identical FQDN. Memory buffers are cleared
+and references released as soon as possible; managed-runtime copies cannot be
+guaranteed to be erased. Credentials never enter the .rdp file, process arguments,
+URLs, logs, summaries or artifacts. Only the short-lived ticket uses `t=`.
+Interactive cmdkey is a fallback for failed redemption, never for a store failure.
+All other locks remain: NLA/CredSSP, certificate validation, visible mstsc,
+no credential-UI automation, no Defender/SAC/WDAC changes, no public creds route.
+
+Use the direct tailnet HTTP dashboard on port 7331 with its dashboard token;
+a reverse-proxied/loopback source fails closed. Reinstall the source handler kit
+for F27 before the live click. Lab fixtures prove mechanics, not live NLA success.
