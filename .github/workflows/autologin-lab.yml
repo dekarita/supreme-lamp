@@ -300,10 +300,12 @@ jobs:
           if ($p.ExitCode -ne 0) { P-Fail 'rdp-exit' ('rdp verb exit ' + $p.ExitCode) }
           $seq = @((Cap-Lines) | Select-Object -Skip $n2)
           Write-Host ('[P] rdp beacon sequence: ' + ($seq -join ' | '))
-          if ($seq.Count -lt 3) { P-Fail 'rdp-seq' ('expected >=3 beacons, got ' + $seq.Count) }
+          if ($seq.Count -lt 5) { P-Fail 'rdp-seq' ('expected >=5 beacons, got ' + $seq.Count) }
           if ($seq[0] -notmatch '"details":"invoked"') { P-Fail 'rdp-seq0' $seq[0] }
-          if ($seq[1] -notmatch '"details":"cmdkey-stored=true"') { P-Fail 'rdp-seq1' $seq[1] }
-          if ($seq[2] -notmatch '"details":"mstsc-started pid=') { P-Fail 'rdp-seq2' $seq[2] }
+          if ($seq[1] -notmatch '"details":"fallback-cmdkey reason=ticket-missing"') { P-Fail 'rdp-fallback' $seq[1] }
+          if ($seq[2] -notmatch '"details":"cmdkey-stored=true"') { P-Fail 'rdp-seq1' $seq[2] }
+          if ($seq[3] -notmatch '"details":"rdp-written"') { P-Fail 'rdp-written' $seq[3] }
+          if ($seq[4] -notmatch '"details":"mstsc-started"') { P-Fail 'rdp-seq2' $seq[4] }
           $rdp = Get-ChildItem (Join-Path $env:TEMP 'ghrdp-*.rdp') -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $rdp) { P-Fail 'rdp-file' 'no ghrdp-*.rdp was written by the rdp verb' }
           $rdpTxt = [System.IO.File]::ReadAllText($rdp.FullName)
@@ -332,10 +334,11 @@ jobs:
           if ($p.ExitCode -ne 1) { P-Fail 'timeout-exit' ('expected exit 1 (cmdkey prompt timed out), got ' + $p.ExitCode) }
           $seq2 = @((Cap-Lines) | Select-Object -Skip $n3)
           Write-Host ('[P] timeout beacon sequence: ' + ($seq2 -join ' | '))
-          if ($seq2.Count -lt 3) { P-Fail 'timeout-seq' ('expected >=3 beacons, got ' + $seq2.Count) }
+          if ($seq2.Count -lt 4) { P-Fail 'timeout-seq' ('expected >=4 beacons, got ' + $seq2.Count) }
           if ($seq2[0] -notmatch '"details":"invoked"') { P-Fail 'timeout-seq0' $seq2[0] }
-          if ($seq2[1] -notmatch '"details":"cmdkey-shown"') { P-Fail 'timeout-seq1' $seq2[1] }
-          if ($seq2[2] -notmatch '"details":"cmdkey-timeout"' -or $seq2[2] -notmatch '"ok":false') { P-Fail 'timeout-seq2' $seq2[2] }
+          if ($seq2[1] -notmatch '"details":"fallback-cmdkey reason=ticket-missing"') { P-Fail 'timeout-fallback' $seq2[1] }
+          if ($seq2[2] -notmatch '"details":"cmdkey-shown"') { P-Fail 'timeout-seq1' $seq2[2] }
+          if ($seq2[3] -notmatch '"details":"cmdkey-timeout"' -or $seq2[3] -notmatch '"ok":false') { P-Fail 'timeout-seq2' $seq2[3] }
           if (($seq2 -join ' ') -match 'mstsc-started') { P-Fail 'timeout-mstsc' 'a timed-out credential prompt must NOT start mstsc' }
           if ((Log-Text) -notmatch [regex]::Escape('cmdkey prompt timed out')) { P-Fail 'timeout-msgbox' 'the cmdkey-timeout MessageBox was not logged' }
           Write-Host '[P] PASS timeout: invoked -> cmdkey-shown -> cmdkey-timeout (ok:false, rc 1), dialog logged, mstsc NOT started'
