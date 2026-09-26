@@ -599,6 +599,7 @@ internal static class GhrdpRdpLauncher
                 "mstsc was NOT started.\n\nlog: " + LogPath());
             return 5;
         }
+        LogJson("info", verb, "dns-guard ok: FQDN resolved to a tailnet address");
         string resolvedLog = "";
         try
         {
