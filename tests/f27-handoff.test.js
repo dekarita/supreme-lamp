@@ -33,7 +33,9 @@ test('F27 gate: store target, options, buffer cleanup, no unsafe launch APIs or 
  const code=cs.split('\n').filter(l=>!/^\s*\/\//.test(l)).join('\n');
  const denied=['Send'+'Keys','UI'+'Automation','Clipboard.Get','/pass:'];
  for(const token of denied)assert.ok(!code.includes(token),token);
- assert.doesNotMatch(code,/new ProcessStartInfo\("cmdkey\.exe",[^;]*\/pass/s);
+ // User-approved exception: valueless switch ONLY for interactive fallback.
+ assert.match(code,/" \/user:" \+ user \+ " \/pass"\)/);
+ assert.doesNotMatch(code,/" \/pass"\s*\+/);
  assert.doesNotMatch(handoff,/\b(?:LogJson|HelloBounded|HandoffStep|File\.\w+)\([^;]*(?:\bpass\b|\bticket\b|\bjson\b|responseBody)\s*[,\)]/s);
  assert.match(cs,/LogJson\("invoked", verb, "protocol invocation log="/);
  assert.ok(cs.indexOf('HandoffStep(host, port, "rdp-written"')<cs.indexOf('new ProcessStartInfo("mstsc.exe"'));

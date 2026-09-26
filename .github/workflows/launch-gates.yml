@@ -424,7 +424,7 @@ jobs:
           grep -q 'psi.WorkingDirectory = Environment.SystemDirectory' "$cs"
           grep -q 'CmdkeyTimeoutMs = 180000' "$cs"
           grep -q 'WaitForExit(waitMs)' "$cs"
-          grep -qF '" /user:" + user)' "$cs"
+          grep -qF '/pass")' "$cs"
           grep -q 'cmdkey.exe", "/list"' "$cs"
           grep -q 'm.WaitForExit(2000)' "$cs"
           # --- §1.1 hello-before-work inside Main ------------------------------

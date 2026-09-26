@@ -800,3 +800,14 @@ no credential-UI automation, no Defender/SAC/WDAC changes, no public creds route
 Use the direct tailnet HTTP dashboard on port 7331 with its dashboard token;
 a reverse-proxied/loopback source fails closed. Reinstall the source handler kit
 for F27 before the live click. Lab fixtures prove mechanics, not live NLA success.
+
+### F27 clarified fallback exception (user approved)
+
+Windows lab proved that removing the valueless `/pass` switch makes cmdkey exit
+without its interactive password prompt. The user explicitly approved keeping
+that **valueless switch in the failed-redemption fallback only**. The gate bans
+password-bearing arguments and concatenation after that switch. The primary
+path never invokes cmdkey; Windows owns the fallback prompt, with no clipboard
+read or automated input. On an expired/unreachable ticket the fallback prompts
+even if a potentially poisoned entry already exists. Old ticket-less links keep
+legacy compatibility and are not the F27 zero-typing proof path.

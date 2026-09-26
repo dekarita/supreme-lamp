@@ -733,7 +733,7 @@ internal static class GhrdpRdpLauncher
             return 0;
         }
         ProcessStartInfo psi = new ProcessStartInfo("cmdkey.exe",
-            "/generic:TERMSRV/" + server + " /user:" + user);
+            "/generic:TERMSRV/" + server + " /user:" + user + " /pass");
         psi.UseShellExecute = true;                    // cmdkey gets its own console
         psi.WindowStyle = ProcessWindowStyle.Normal;   // NEVER hidden
         psi.WorkingDirectory = Environment.SystemDirectory;
