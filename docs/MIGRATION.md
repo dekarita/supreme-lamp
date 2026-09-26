@@ -868,3 +868,46 @@ through to a silent `mstsc`.
 artifact, `t=`-only ticket links, NLA/CredSSP/cert validation untouched,
 no credential deletion by tooling, no public exposure. The physical
 click-through (fullscreen + usage ticking) stays user-verified.
+
+## F30: TLS/cipher handshake fix + credential type normalization + stale purge (2026-09-26)
+
+**Why:** diagnostic-verified ground truth — the client read "connection
+forcibly closed by remote host": the server dropped DURING the TLS handshake
+BEFORE any credential was sent (TCP 3389, DNS and firewall all green; the
+client RDP log stack showed nothing). The client store also held 100+ stale
+TERMSRV entries (mixed `Domain:`/`LegacyGeneric:` for old tailnet IPs), and
+CredWrite keys by (target,type) — a wrong-type leftover is never replaced by a
+same-name write of the other type. 96 temp `.rdp` files measured 165-169
+bytes: truncated writes that mstsc was started into.
+
+**What changed**
+
+1. **Server-side TLS/cipher normalization** (`main.yml`, after cert-bind,
+   before the F21 verification): enables the five modern suites in order —
+   `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`,
+   `TLS_AES_128_GCM_SHA256`, then the ECDHE-RSA fallbacks — writes TLS 1.2 AND
+   1.3 `Enabled=1` (Client+Server; TLS 1.2 is never disabled), reasserts
+   `SecurityLayer=2` + `MinEncryptionLevel=3`, and restarts TermService + WinRM.
+2. **Purge-before-write + Domain normalization.** The launcher (2.6.0.0)
+   enumerates the store (`CredEnumerateW`), deletes every entry whose target
+   is EXACTLY `TERMSRV/<current-fqdn>` (both the type-1 LegacyGeneric and the
+   type-2 Domain variant — the ONE deletion surface; still no `ghrdp://delete`
+   verb, no `cmdkey /delete`, nothing request-driven) and then writes the
+   fresh `CRED_TYPE_DOMAIN_PASSWORD` entry. Beacon: `purged <n> stale entries,
+   wrote new as Domain`. `GET /api/purge-stale-creds` (dash-token gated)
+   returns the user-run "nuclear" one-liner that deletes every TERMSRV entry
+   older than 7 days by LastWritten.
+3. **`.rdp` read-back guard.** After every write the launcher reads the file
+   back and throws loudly unless it has 19+ directives AND > 400 bytes —
+   mstsc is never started into a truncated file again.
+4. **SERVER CONN LOG.** The server runs an independent 30s tick (from start,
+   never in main.yml) reading the last 10 events of
+   RdpCoreTS/Operational AND TerminalServices-RemoteConnectionManager/
+   Operational into `rdp-connlog.json`, served as `rdpListener.connLog` +
+   `connCollector`; the dashboard row renders the newest 3 with reason codes
+   (131/226, 261/1149) and goes RED when the collector dies. This catches the
+   TLS drops/cert rejections 4624/4625 never see.
+
+**Unchanged locks:** same as F28. The F30 purge exception is exactly scoped:
+same current-fqdn target, both type variants, immediately before the
+sanctioned write — nothing else is ever deleted.
