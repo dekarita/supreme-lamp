@@ -716,3 +716,42 @@ BFG requires a `--mirror` bare clone:
 
 The STEP 4 confirmation gate and STEP 6 post-rewrite items apply
 identically.
+
+### 1.13 [F21] CredSSP/NLA handshake diagnosis + compatible cipher suites
+
+The runner now runs an explicit CredSSP/NLA verification step (F21) after
+binding the Let's Encrypt cert. It checks:
+
+1. UserAuthentication=1 (NLA required).
+2. Bound cert thumbprint matches a cert in LocalMachine\My or
+   LocalMachine\Remote Desktop; X509Chain.Build() returns true; Issuer is a
+   trusted CA (Let's Encrypt, DigiCert, GlobalSign, Sectigo, Comodo, GeoTrust,
+   RapidSSL, Amazon, Microsoft).
+3. CredSSP `AllowEncryptionOracle` (if present) is 0 (strict CVE-2018-0886
+   mode); auto-fixed to 0 when wrong.
+4. At least one TLS cipher suite of AES-256-GCM or ChaCha20-Poly1305 strength
+   is enabled (Get-TlsCipherSuite).
+
+Schannel cipher suites are OS-level: there is NO auto-fix (§3 D). If the F21
+step reports `schannel-cipher-weak`, the runner OS lacks strong AES-GCM or
+ChaCha20 suites. On a fresh Windows Server 2022 / windows-latest runner the
+following suites are present by default and satisfy the check:
+
+- TLS_AES_256_GCM_SHA384
+- TLS_AES_128_GCM_SHA256
+- TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384
+- TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+
+Client-side diagnostic commands (copy-only, see ui.html CONNECTION
+DIAGNOSTICS → CredSSP box):
+
+- Check CredSSP `AllowEncryptionOracle`: must be 0 (strict) or absent.
+- Check `LmCompatibilityLevel`: 3 (NTLMv2 only) recommended.
+- Connect with `mstsc /v:<fqdn> /admin /prompt` for verbose error.
+- Export `Microsoft-Windows-TerminalServices-ClientActiveXCore/Operational`.
+
+NEVER weaken NLA/CredSSP (AuthenticationLevelOverride,
+enablecredsspsupport:i:0) or bypass cert validation as a workaround - those
+are the failure class, not the fix. Password auto-type / SendKeys /
+UIAutomation is refused (cmdkey already supplies credentials; typing them
+does not fix a handshake rejection).

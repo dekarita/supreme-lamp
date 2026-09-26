@@ -119,8 +119,9 @@ test('F17-5 ui: RDP LISTENER row renders ✅/❌ + fix text and gates WINDOWS AU
     'fix: re-run "Bind tailnet LE cert"',
     'fix: set UserAuthentication=1 on RDP-Tcp (NLA on)',
   ]) assert.ok(ui.includes(fix), 'exact fix text missing: ' + fix);
-  assert.ok(ui.includes('window.__listenerOk=!!(rl&&rl.listening===true&&rl.fwRule===true&&rl.certOk===true&&rl.nla===true)'),
-    'AUTO-LOGIN gate must require listening+fw+cert+nla all ✅');
+  // [F21 §4] AUTO-LOGIN gate requires listening+fw+cert+nla+credssp all ✅.
+  assert.ok(ui.includes('window.__listenerOk=!!(rl&&rl.listening===true&&rl.fwRule===true&&rl.certOk===true&&rl.nla===true&&credsspOk)'),
+    'AUTO-LOGIN gate must require listening+fw+cert+nla+credssp all ✅');
   assert.ok(ui.includes("var all=ok&&lOK&&dOK;"), 'syncWinAuto must AND the listener + runner DNS gates');
   assert.ok(ui.includes('RDP LISTENER probe not all ✅'), 'disabled-state note missing');
 });

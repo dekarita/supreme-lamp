@@ -47,8 +47,11 @@ test('F12-2 cert bind: DNS gate first, 3x10s retry, fail-closed, thumbprint on s
   assert.match(wf, /Start-Sleep -Seconds 10/);
   assert.match(wf, /reason=cert-not-bound/);
   assert.match(wf, /Thumbprint:/);
-  // only the success path may still exit 0 inside the cert step
-  const body = wf.split('name: Bind tailnet LE cert to RDP-Tcp')[1].split('name: Optimize Tailscale path')[0];
+  // only the success path may still exit 0 inside the cert step.
+  // [F21] The next step after cert bind is now CredSSP/NLA verification (F21);
+  // terminate the extraction at that step so F21's exit 0 is not counted here.
+  const afterCert = wf.split('name: Bind tailnet LE cert to RDP-Tcp')[1];
+  const body = afterCert.split(/name: CredSSP\/NLA handshake verification|name: Optimize Tailscale path/)[0];
   const exits = body.split('\n').filter(l => /^\s*exit 0\s*$/.test(l));
   assert.equal(exits.length, 1, 'cert step must not silently exit 0 on failure');
   assert.ok((body.match(/throw /g) || []).length >= 4, 'every cert failure path must throw');

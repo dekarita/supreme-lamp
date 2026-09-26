@@ -332,6 +332,19 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
         <span class="note" style="margin:0">Paste the exports into this session. The failure is then mapped from the logged event (cert chain / CredSSP / NLA / transport) - never guessed, and nothing here weakens NLA, CredSSP or certificate validation.</span>
       </div>
     </details>
+    <!-- [F21 §2] CredSSP/NLA HANDSHAKE DIAGNOSTICS (copy-only; nothing here executes) -->
+    <details id="connCredsspBox" style="margin:0">
+      <summary style="cursor:pointer;font-size:11px;opacity:.75">If TcpStateFrontAuth / NLA handshake failures persist - CredSSP/cert/encryption checks</summary>
+      <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px">
+        <span class="note" style="margin:0;font-weight:600">On YOUR PC (client-side CredSSP policy + encryption level):</span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagCredsspPol" style="font-size:12px">Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters' -EA SilentlyContinue</code><a href="javascript:void(0)" onclick="copyById('connDiagCredsspPol',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- check AllowEncryptionOracle (0=strict; 1/2=vulnerable, blocks NLA)</span></span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagLmCompat" style="font-size:12px">Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name 'LmCompatibilityLevel' -EA SilentlyContinue</code><a href="javascript:void(0)" onclick="copyById('connDiagLmCompat',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- check LmCompatibilityLevel (3=NTLMv2 only, recommended)</span></span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagMstscVerbose" style="font-size:12px">mstsc /v:&lt;fqdn&gt; /admin /prompt</code><a href="javascript:void(0)" onclick="copyById('connDiagMstscVerbose',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- connects with verbose prompt; observe exact error</span></span>
+        <span class="note" style="margin:0;font-weight:600">Advisory:</span>
+        <span class="note" style="margin:0">If TcpStateFrontAuth failures persist: (1) client+server CredSSP policies must match (AllowEncryptionOracle=0 strict on both sides); (2) server cert must be trusted (Let's Encrypt, not self-signed); (3) minimum encryption levels must align (LmCompatibilityLevel=3 recommended). Paste client .evtx exports + runner credsspStatus field into this session for log-mapped diagnosis.</span>
+        <span class="note" style="margin:0;color:#f87171">NEVER weaken NLA/CredSSP (auth-level overrides, credssp-support-off .rdp flags) or bypass cert validation as a workaround - those are the failure class, not the fix.</span>
+      </div>
+    </details>
   </div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
   <!-- [F11-3 §3] RDP USAGE replaces logon age as the headline timer: seconds
@@ -443,6 +456,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>
   <div class="row"><span class="k">Cert bound</span><span class="v" id="nrCert">...</span><span class="note" id="nrCertReason">RDP-Tcp SSLCertificateSHA1Hash present (from /api/native-status).</span></div>
   <div class="row"><span class="k">NLA</span><span class="v" id="nrNla">...</span><span class="note" id="nrNlaReason">UserAuthentication == 1 on the RDP-Tcp listener.</span></div>
+  <div class="row"><span class="k">CredSSP</span><span class="v" id="nrCredssp">...</span><span class="note" id="nrCredsspReason">F21 verification: NLA=1, cert trusted, policy strict, strong cipher (see CONNECTION DIAGNOSTICS for client-side checks).</span></div>
   <div class="row"><span class="k">Host</span><span class="v" id="nrHostKind">...</span><span class="note" id="nrHostKindNote">ephemeral runners change name every run. A one-time TERMSRV entry is VPS-only.</span></div>
   <div class="row" id="nrEphemeralRow" style="display:none;flex-direction:column;align-items:stretch;gap:6px">
     <span class="k" style="font-weight:600">WEB DESKTOP (primary) + shortcut instructions</span>
@@ -1115,10 +1129,20 @@ async function nativeStatus(){
   if(!s.certBound && pr.cert) setReason('nrCertReason','BLOCKED: '+pr.cert);
   var ne=document.getElementById('nrNla');if(ne){ne.textContent=s.nlaOn?'ON':'OFF';ne.style.color=s.nlaOn?'':'#f5b7b7';}
   if(!s.nlaOn && pr.nla) setReason('nrNlaReason','BLOCKED: '+pr.nla);
+  // [F21 §4] CredSSP status row (from rdpListener.credsspStatus)
+  var cse=document.getElementById('nrCredssp');
+  if(cse){
+    var cs=(s&&s.rdpListener&&s.rdpListener.credsspStatus)||'pending';
+    cse.textContent=(cs==='ok')?'OK':('FAIL: '+cs);
+    cse.style.color=(cs==='ok')?'':'#f5b7b7';
+  }
+  if(s&&s.rdpListener&&s.rdpListener.credsspWhy) setReason('nrCredsspReason','BLOCKED: '+s.rdpListener.credsspWhy);
   // [F17 §2] RDP LISTENER: runner-side probe fields drive the row AND the
   // WINDOWS AUTO-LOGIN gate - listening + fw + cert + nla must ALL be ✅.
   var rl=(s&&s.rdpListener)||null;
-  window.__listenerOk=!!(rl&&rl.listening===true&&rl.fwRule===true&&rl.certOk===true&&rl.nla===true);
+  // [F21 §4] CredSSP/NLA status must also be 'ok' (or absent pre-F21 for back-compat)
+  var credsspOk=(!rl||rl.credsspStatus===undefined||rl.credsspStatus==='ok');
+  window.__listenerOk=!!(rl&&rl.listening===true&&rl.fwRule===true&&rl.certOk===true&&rl.nla===true&&credsspOk);
   paintRdpListener(rl,s?s.rdpListenerAgeSec:null);
   // [F17 §2] CONNECTION diagnostics lines (copy-only) follow the live FQDN.
   var diagF=(s&&s.fqdn)||'';
@@ -1477,6 +1501,10 @@ function paintRdpListener(rl,ageSec){
  m17(rl.fwRule===true,'fw '+(rl.fwScope||'100.64.0.0/10'),'fix: rule GHRDP-RDP must be enabled, ALL profiles, RemoteAddress 100.64.0.0/10');
  m17(rl.certOk===true,'cert','fix: re-run "Bind tailnet LE cert" (tailscale cert <fqdn>)'+(rl.certWhy?' - '+rl.certWhy:''));
  m17(rl.nla===true,'nla','fix: set UserAuthentication=1 on RDP-Tcp (NLA on)');
+ // [F21 §4] CredSSP/NLA handshake status (ok | failed-<reason>)
+ var csOk=(!rl.credsspStatus||rl.credsspStatus==='ok');
+ var csWhy=rl.credsspWhy||(rl.credsspStatus?('status='+rl.credsspStatus):'');
+ m17(csOk,'credssp','fix: F21 CredSSP/NLA verification failed - '+csWhy+' (check CredSSP policy, cert trust, cipher suites; see CONNECTION DIAGNOSTICS)');
  line.textContent=marks.join('  |  ');
  line.style.color=(window.__listenerOk===true)?'':'#f5b7b7';
  if(ageEl)ageEl.textContent=(typeof ageSec==='number'&&!isNaN(ageSec))?('probe age: '+ageSec+'s'):'';

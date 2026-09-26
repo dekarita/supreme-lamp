@@ -779,6 +779,60 @@ jobs:
           fi
           echo 'F20 gates PASS'
 
+      - name: F21 CredSSP/NLA handshake verification gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          ui=payloads/ui.html
+          cs=payloads/ghrdp-rdp-launcher.cs
+          srv=payloads/ghrdp-server.ps1
+          # --- §1 main.yml must carry the F21 CredSSP/NLA verification step ---
+          step=$(awk '/name: CredSSP\/NLA handshake verification \\(F21/{f=1;next} f && /^      - name: /{exit} f' "$wf")
+          test -n "$step" || { echo 'F21: main.yml lacks CredSSP/NLA handshake verification step' >&2; exit 1; }
+          for tok in 'UserAuthentication' 'SSLCertificateSHA1Hash' 'AllowEncryptionOracle' 'Get-TlsCipherSuite' 'AES_256_GCM' 'credsspStatus' 'failed-' '::error::[F21]' 'throw' '[F21 §1 probe-end]'; do
+            grep -qF "$tok" <<< "$step" || { echo "F21: verification step missing token: $tok" >&2; exit 1; }
+          done
+          # credsspStatus must be written BEFORE the loud fail (like F17 pattern)
+          wl=$(grep -nF 'Write-CredsspStatus' <<< "$step" | head -1 | cut -d: -f1)
+          wf2=$(grep -nF '::error::[F21]' <<< "$step" | head -1 | cut -d: -f1)
+          test -n "$wl" && test -n "$wf2" && test "$wl" -lt "$wf2"
+          # §4(a) the step must NOT proceed if credsspStatus is failed -
+          # AUTO-LOGIN must stay disabled (gated in ui.html __listenerOk).
+          grep -qF 'credsspStatus===' "$ui" || { echo 'F21: ui.html does not gate WINDOWS AUTO-LOGIN on credsspStatus' >&2; exit 1; }
+          grep -qF "__listenerOk=!!(rl&&rl.listening===true&&rl.fwRule===true&&rl.certOk===true&&rl.nla===true&&credsspOk)" "$ui" || { echo 'F21: ui.html __listenerOk does not include credsspOk' >&2; exit 1; }
+          # --- §2 client-side CredSSP diagnostics must exist (copy-only) ------
+          grep -qF 'id="connCredsspBox"' "$ui" || { echo 'F21: ui.html lacks CredSSP diagnostics box' >&2; exit 1; }
+          for tok in 'connDiagCredsspPol' 'connDiagLmCompat' 'connDiagMstscVerbose' 'Get-ItemProperty' 'CredSSP\\Parameters' 'LmCompatibilityLevel' 'mstsc /v:' 'TcpStateFrontAuth' 'AllowEncryptionOracle=0' 'NEVER weaken NLA' 'credssp-support-off' 'auth-level overrides'; do
+            grep -qF "$tok" <<< "$(awk '/id="connCredsspBox"/,/<\/div>[[:space:]]*<\/div>/' "$ui")" || { echo "F21: CredSSP diagnostics missing token: $tok" >&2; exit 1; }
+          done
+          # --- §4(b) NO password auto-type / SendKeys / UIAutomation -----------
+          # (F19 already scans repo-wide; verify no new tokens introduced near credssp)
+          if grep -rInE 'SendKeys|UIAutomation|keybd_event|mouse_event' payloads/ui.html .github/workflows/main.yml | grep -i 'cred'; then
+            echo 'F21: credential-UI automation token found near CredSSP code' >&2
+            exit 1
+          fi
+          # --- §4(c) NO NLA/CredSSP weakening suggestions anywhere ------------
+          # The warning line (line 345) may NAME the banned strings as part of
+          # the prohibition ("NEVER weaken NLA/CredSSP (X, Y, Z)"); executable
+          # suggestions (anywhere else in non-comment code) must not appear.
+          weak=$(grep -nEi 'authentication level|enablecredsspsupport|authlvloverride|authenticationleveloverride|certificate.*bypass|bypass.*cert' "$ui" | grep -v 'NEVER weaken NLA' || true)
+          if [ -n "$weak" ]; then
+            echo "F21: ui.html suggests weakening NLA/CredSSP/cert validation (outside the mandated warning line): $weak" >&2
+            exit 1
+          fi
+          # --- §4(d) no cert validation bypass in the F21 step itself ---------
+          if grep -nEi 'ServerCertificateValidationCallback|TrustAllCerts|SslPolicyErrors|callback.*true' <<< "$step"; then
+            echo 'F21: verification step contains a cert-validation bypass' >&2
+            exit 1
+          fi
+          # --- §3 AUTO-FIX A allowed (AllowEncryptionOracle=0 strict mode) ----
+          grep -qF 'AUTO-FIX A applied' <<< "$step" || { echo 'F21: step lacks auto-fix A for AllowEncryptionOracle strict mode' >&2; exit 1; }
+          # --- CredSSP status row exists in the UI ----------------------------
+          grep -qF 'id="nrCredssp"' "$ui" || { echo 'F21: ui.html lacks CredSSP status row (id=nrCredssp)' >&2; exit 1; }
+          grep -qF "cs==='ok'" "$ui" || { echo 'F21: ui.html does not render credssp ok/fail' >&2; exit 1; }
+          echo 'F21 gates PASS'
+
       - name: F8 web-desktop honesty gates
         shell: bash
         run: |
