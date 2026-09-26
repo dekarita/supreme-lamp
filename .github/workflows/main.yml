@@ -1532,6 +1532,24 @@ jobs:
               nla = $nla
               ok = ($listening -and $fwRuleOk -and $certOk)
           }
+          # [F24 §3b] PRESERVE the auth-verdict fields across this rebuild. The
+          # F21 step runs EARLIER and stamps credsspStatus onto rdpListener, but
+          # this probe rebuilt the object from scratch and silently dropped it -
+          # which is exactly why the dashboard showed a bare "FAIL: pending"
+          # CredSSP row on runs whose CredSSP verification had PASSED. Merge the
+          # verdict fields forward instead of dropping them (never carries a
+          # secret: every field below is a status/flag).
+          try {
+              if (Test-Path -LiteralPath $cfgPathF17) {
+                  $cfgPrevF24 = [System.IO.File]::ReadAllText($cfgPathF17) | ConvertFrom-Json
+                  if ($cfgPrevF24 -and $cfgPrevF24.PSObject.Properties['rdpListener'] -and $cfgPrevF24.rdpListener) {
+                      $prevL = $cfgPrevF24.rdpListener
+                      foreach ($k in @('credsspStatus', 'credsspWhy', 'credValid', 'credValidAt', 'credValidWhy', 'credValidProbeError', 'authEvents')) {
+                          if ($prevL.PSObject.Properties[$k]) { $rdpListener[$k] = $prevL.$k }
+                      }
+                  }
+              }
+          } catch { Write-Host ('[F24] rdpListener carry-forward skipped: ' + $_.Exception.Message) }
           try {
               $cfgW = [System.IO.File]::ReadAllText($cfgPathF17) | ConvertFrom-Json
               $cfgW | Add-Member -NotePropertyName rdpListener -NotePropertyValue $rdpListener -Force
@@ -1560,67 +1578,96 @@ jobs:
           # [F17 §1 probe-end] (marker last: the lab cell extracts the COMPLETE
           # step body verbatim)
 
-      # [F24 §1] SERVER-SIDE CREDENTIAL PROOF: validate the dispatched password
-      # against this runner's own local SAM BEFORE the dashboard advertises the
-      # connection. ValidateCredentials(user, pass) at ContextType Machine is the
-      # only authoritative "is the per-run password actually valid" answer - the
-      # "Password for <user>" dialog proves existence, not correctness, and a
-      # stale/wrong stored TERMSRV password for the current FQDN produces exactly
-      # the observed 0x904/0x7 + TcpStateFrontAuth -> TcpStateFailure signature.
-      # Only a BOOL is written to config (rdpListener.credValid = true|false) -
-      # the password itself never touches config, logs or the summary. false =>
-      # this step FAILS LOUD: a dead credential is never advertised.
-      - name: Server-side credential proof (F24 - ValidateCredentials vs local SAM)
+      # [F24 §1] SERVER-SIDE CREDENTIAL PROOF. The dispatch password is
+      # validated against the runner's OWN local SAM before the run advertises
+      # the host: if ValidateCredentials says false, the credential the
+      # dashboard is about to hand the user is DEAD (a user-creation bug), and
+      # the run halts loudly instead. config.json gets
+      # rdpListener.credValid = true|false (+ credValidAt) - NEVER the password,
+      # never the username. This step runs AFTER the F17 listener probe because
+      # that probe rebuilds rdpListener (it now carries the F21 verdict fields
+      # forward - see [F24 §3b]).
+      - name: Server-side credential proof (F24 - ValidateCredentials against local SAM)
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
           $S = $env:GITHUB_STEP_SUMMARY
+          $utf8F24 = New-Object System.Text.UTF8Encoding($false)
           $cfgPathF24 = 'C:\ghrdp\config.json'
-          # [F24 §1 proof-begin] Extracted VERBATIM by autologin-lab cell U.
-          $credValid = $false
-          $credWhy = ''
-          if (-not $env:RDP_USER -or -not $env:RDP_PASS) {
-              $credWhy = 'dispatch credential environment missing (the user-creation step did not complete)'
-          } else {
+          # [F24 §1 cred-proof-begin] Extracted VERBATIM by autologin-lab cell U
+          # (ghrdp-lab remains 404). Self-contained: no config, no env writes,
+          # no logging of either argument - it returns a verdict only.
+          function Test-LocalSamCredential {
+              param([string]$UserName, [string]$Password)
+              $valid = $false
+              $probeError = ''
+              if (-not $UserName -or -not $Password) {
+                  return [pscustomobject]@{ valid = $false; probeError = 'missing-user-or-password-env' }
+              }
               try {
-                  Add-Type -AssemblyName System.DirectoryServices.AccountManagement
-                  $pcF24 = New-Object System.DirectoryServices.AccountManagement.PrincipalContext([System.DirectoryServices.AccountManagement.ContextType]::Machine)
-                  $credValid = [bool]$pcF24.ValidateCredentials([string]$env:RDP_USER, [string]$env:RDP_PASS)
-                  try { $pcF24.Dispose() } catch { }
-                  if (-not $credValid) { $credWhy = 'ValidateCredentials returned false for the dispatched password' }
+                  Add-Type -AssemblyName System.DirectoryServices.AccountManagement -ErrorAction Stop
+                  $ctx = New-Object System.DirectoryServices.AccountManagement.PrincipalContext('Machine')
+                  try {
+                      $valid = [bool]$ctx.ValidateCredentials($UserName, $Password)
+                  } catch {
+                      # SDAM THROWS on a wrong password ("The user name or
+                      # password is incorrect"). An exception here is a FALSE
+                      # verdict, never a pass - and the exception text is never
+                      # logged, only its type.
+                      $valid = $false
+                  } finally {
+                      try { $ctx.Dispose() } catch { }
+                  }
               } catch {
-                  $credValid = $false
-                  $credWhy = ('probe error: ' + $_.Exception.Message)
+                  # The probe itself could not run (assembly/context failure).
+                  # That is NOT a credential verdict - it is reported as such so
+                  # the dashboard never blames the credential for a probe fault.
+                  $probeError = 'sdam-unavailable'
               }
+              return [pscustomobject]@{ valid = $valid; probeError = $probeError }
           }
-          Write-Host ('[F24] server-side credential proof: rdpListener.credValid=' + $credValid)
-          # [F24 §1 proof-end]
-          # Merge credValid into rdpListener (config write BEFORE any loud fail,
-          # so the dashboard names the failing field even on a red run). The
-          # value is a BOOL - the password never enters config or logs.
-          try {
-              $utf8F24 = New-Object System.Text.UTF8Encoding($false)
-              $cfgW = [System.IO.File]::ReadAllText($cfgPathF24) | ConvertFrom-Json
-              $rdpL = $null
-              if ($cfgW.PSObject.Properties['rdpListener'] -and $cfgW.rdpListener) { $rdpL = $cfgW.rdpListener } else { $rdpL = [pscustomobject]@{} }
-              $rdpL | Add-Member -NotePropertyName credValid -NotePropertyValue $credValid -Force
-              $rdpL | Add-Member -NotePropertyName credValidTs -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
-              if ($credWhy) { $rdpL | Add-Member -NotePropertyName credValidWhy -NotePropertyValue $credWhy -Force }
-              $cfgW | Add-Member -NotePropertyName rdpListener -NotePropertyValue $rdpL -Force
-              [System.IO.File]::WriteAllText($cfgPathF24, ($cfgW | ConvertTo-Json -Depth 12), $utf8F24)
-              Write-Host '[F24] credValid stamped into rdpListener (served by /api/native-status)'
-          } catch { Write-Host ('[F24] config write failed: ' + $_.Exception.Message) }
-          if (-not $credValid) {
-              Write-Host ('::error::[F24] server-side credential invalid - user creation bug (' + $credWhy + ')')
+          # [F24 §1 cred-proof-end] (marker last: the lab cell extracts the
+          # COMPLETE function verbatim)
+          function Write-CredValid([bool]$Valid, [string]$ProbeError = '', [string]$Why = '') {
+              try {
+                  if (-not (Test-Path -LiteralPath $cfgPathF24)) { return }
+                  $cfgW = [System.IO.File]::ReadAllText($cfgPathF24) | ConvertFrom-Json
+                  $rdpL = $null
+                  if ($cfgW.PSObject.Properties['rdpListener']) { $rdpL = $cfgW.rdpListener } else { $rdpL = [pscustomobject]@{} }
+                  $rdpL | Add-Member -NotePropertyName credValid -NotePropertyValue $Valid -Force
+                  $rdpL | Add-Member -NotePropertyName credValidAt -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+                  if ($Why) { $rdpL | Add-Member -NotePropertyName credValidWhy -NotePropertyValue $Why -Force }
+                  if ($ProbeError) { $rdpL | Add-Member -NotePropertyName credValidProbeError -NotePropertyValue $ProbeError -Force }
+                  $cfgW | Add-Member -NotePropertyName rdpListener -NotePropertyValue $rdpL -Force
+                  [System.IO.File]::WriteAllText($cfgPathF24, ($cfgW | ConvertTo-Json -Depth 10), $utf8F24)
+              } catch { Write-Host ('[F24] config stamp failed: ' + $_.Exception.Message) }
+          }
+          $res = Test-LocalSamCredential -UserName $env:RDP_USER -Password $env:RDP_PASS
+          $valid = [bool]$res.valid
+          $probeError = [string]$res.probeError
+          # The verdict is written BEFORE any loud fail: the dashboard must see
+          # the field even on a red run (same pattern as F17/F21).
+          Write-CredValid -Valid $valid -ProbeError $probeError -Why $(if ($valid) { '' } else { 'server-side SAM validation failed' })
+          Write-Host ('[F24] credValid=' + $valid + $(if ($probeError) { ' probeError=' + $probeError } else { '' }) + ' (password never logged)')
+          if ($probeError) {
+              Write-Host ('::error::[F24] credential probe could not run (' + $probeError + ') - without a proven credential the run must not advertise the host')
               if ($S) {
-                  '### Server-side credential proof FAILED (F24 §1) - halted by design: a dead credential is never advertised' | Add-Content -Path $S
-                  ('- ❌ server-side credential invalid - user creation bug (' + $credWhy + ')') | Add-Content -Path $S
-                  '- Fix: re-dispatch (fresh user creation). The run refuses to advertise an RDP host whose password does not validate against the local SAM.' | Add-Content -Path $S
+                  '### Server-side credential proof FAILED (F24) - probe could not run' | Add-Content -Path $S
+                  ('- probeError=' + $probeError + '; this is a PROBE fault, not a credential verdict. Re-dispatch.') | Add-Content -Path $S
               }
-              throw 'F24 server-side credential invalid - user creation bug'
+              throw ('F24 credential probe failed: ' + $probeError)
           }
-          Write-Host '[F24] credential proof PASS: the dispatched password validates against the local SAM'
-          if ($S) { '- ✅ F24 §1 ValidateCredentials: credValid=true (server-side credential proof passed)' | Add-Content -Path $S }
+          if (-not $valid) {
+              Write-Host '::error::[F24] server-side credential invalid - user creation bug'
+              if ($S) {
+                  '### Server-side credential proof FAILED (F24) - halted by design' | Add-Content -Path $S
+                  '- The dispatch password did NOT validate against the runner''s own local SAM (ValidateCredentials => false).' | Add-Content -Path $S
+                  '- server-side credential invalid - user creation bug: a dead credential is never advertised (the 0x904/0x7 TcpStateFrontAuth class). Re-dispatch so a fresh user+password pair is generated. This step never logs the password or the username.' | Add-Content -Path $S
+              }
+              throw 'server-side credential invalid - user creation bug'
+          }
+          Write-Host '[F24] server-side credential proof OK: Local SAM ValidateCredentials => true (credValid=true, no secret logged)'
+          if ($S) { '### Server-side credential proof PASS (F24): credValid=true (Local SAM ValidateCredentials)' | Add-Content -Path $S }
           exit 0
 
       # [U1 / #7C-extended] "Web desktop backend (TightVNC no-auth 5900 + websockify 7333)" step removed
@@ -3777,65 +3824,6 @@ jobs:
               Write-Host '====================================================================='
               Write-Host ''
           }
-          # [F24 §2 collector-fn-begin] AUTH-FAILURE EVIDENCE COLLECTOR for the
-          # keep-alive tick + autologin-lab cell U (the lab injects a synthetic
-          # Get-WinEvent and executes THIS block verbatim). Output is
-          # SECRET-FREE by construction: event IDs, hex status codes, static
-          # reason labels and counts ONLY - account-name/user fields are never
-          # read (launch-gates fails if this block mentions UserName).
-          $F24StatusMap = @{
-              '0xc0000064' = 'unknown-user'
-              '0xc000006a' = 'wrong-password'
-              '0xc000006d' = 'unknown-user-or-wrong-password'
-              '0xc000006e' = 'account-restriction'
-              '0xc0000070' = 'too-many-logon-attempts'
-              '0xc000015b' = 'logon-type-denied'
-              '0xc0000234' = 'account-lockout'
-          }
-          function Get-F24AuthEvidence {
-              param([int]$WindowMinutes = 10)
-              $evF24 = [ordered]@{
-                  ts        = (Get-Date).ToUniversalTime().ToString('o')
-                  windowMin = [Math]::Abs($WindowMinutes)
-                  ok4624    = 0
-                  bad4625   = 0
-                  statuses  = @()
-                  reasons   = @()
-                  notes     = ''
-              }
-              $since = (Get-Date).AddMinutes(-1 * [Math]::Abs($WindowMinutes))
-              $found = @()
-              try {
-                  $found = @(Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 4624, 4625; StartTime = $since } -ErrorAction Stop)
-              } catch {
-                  $evF24.notes = 'event-query-unavailable: ' + $_.Exception.Message
-                  return [pscustomobject]$evF24
-              }
-              $seen = New-Object System.Collections.Specialized.OrderedDictionary
-              foreach ($e in $found) {
-                  $idv = $null
-                  try { $idv = [int]$e.Id } catch { continue }
-                  if ($idv -eq 4624) { $evF24.ok4624 += 1; continue }
-                  if ($idv -ne 4625) { continue }
-                  $evF24.bad4625 += 1
-                  $st = ''
-                  try {
-                      foreach ($p in @($e.Properties)) {
-                          if ($p -and [string]$p.Name -eq 'Status') { $st = ([string]$p.Value).Trim().ToLower(); break }
-                      }
-                  } catch { }
-                  if ($st -notmatch '^0x[0-9a-f]{6,8}$') { $st = 'unknown-status' }
-                  if (-not $seen.Contains($st)) { $seen[$st] = $true }
-              }
-              $evF24.statuses = @($seen.Keys | ForEach-Object { [string]$_ })
-              $rs = @()
-              foreach ($k in $evF24.statuses) { $rs += [string]$(if ($F24StatusMap.ContainsKey($k)) { $F24StatusMap[$k] } else { 'unmapped:' + $k }) }
-              $evF24.reasons = $rs
-              return [pscustomobject]$evF24
-          }
-          # [F24 §2 collector-fn-end]
-          $script:f24LastBad = $null
-          $script:f24SummaryWritten = $false
           if ([bool]$cfgKa.mirror -and -not [string]$cfgKa.mirrorIndexUrl) {
           Write-Host '[index] publishing initial (zero-file) index so Telegraph + Rentry links exist from t0'
           try { Publish-AllIndexes -Cfg $cfgKa -IndexList (Get-MirrorIndexList -IdxFile $idxPath) } catch { Write-Host '[keepalive] mirror publish disabled per remediation' }
@@ -3878,9 +3866,135 @@ jobs:
               ('- Emergency stop: open the run page and click Cancel workflow, or run `' + $cancelCli + '`') | Add-Content -Path $summary
               '- The job log prints a status heartbeat every 60s and the full resource banner every 10 min.' | Add-Content -Path $summary
           }
+          # [F24 §2 collector-begin] AUTH-FAILURE EVIDENCE COLLECTOR (secret-free).
+          # Every keep-alive tick (60s) reads the runner's OWN Security log for
+          # 4624/4625 and records ONLY counts + Status/SubStatus/FailureReason
+          # codes into config.json -> rdpListener.authEvents. It NEVER records a
+          # username, a password, a domain, or an address: the dashboard's
+          # discriminator needs the status code (4625 0xC000006A/0xC000006D =>
+          # wrong password; 0xC000015B => logon type denied) and nothing else.
+          # Extracted VERBATIM by autologin-lab cell U and driven with synthetic
+          # events - the parse path is proven without a live Security log.
+          $script:F24WindowSec = 3600
+          $script:F24LastVerdict = ''
+          function Get-RdpAuthEventFields {
+              param([xml]$Xml)
+              $id = ''
+              $t = ''
+              $name = @{}
+              try { $id = [string]($Xml.SelectSingleNode("//*[local-name()='EventID']")).InnerText } catch { }
+              try { $t = [string]($Xml.SelectSingleNode("//*[local-name()='TimeCreated']").GetAttribute('SystemTime')) } catch { }
+              try {
+                  foreach ($d in @($Xml.SelectNodes("//*[local-name()='Data']"))) {
+                      $n = [string]$d.GetAttribute('Name')
+                      if ($n) { $name[$n] = [string]$d.InnerText }
+                  }
+              } catch { }
+              return [pscustomobject]@{
+                  id        = $id.Trim()
+                  timeUtc   = $t
+                  status    = ([string]$name['Status']).Trim().ToUpperInvariant()
+                  subStatus = ([string]$name['SubStatus']).Trim().ToUpperInvariant()
+                  reason    = ([string]$name['FailureReason']).Trim()
+              }
+          }
+          function Get-RdpAuthCodeMeaning {
+              param([string]$Code)
+              switch (([string]$Code).Trim().ToUpperInvariant()) {
+                  '0XC000006A' { return 'wrong-password' }
+                  '0XC000006D' { return 'bad-user-or-password' }
+                  '0XC0000064' { return 'no-such-user' }
+                  '0XC000015B' { return 'logon-type-denied' }
+                  '0XC0000234' { return 'account-locked' }
+                  '0XC0000072' { return 'account-disabled' }
+                  '0XC000006E' { return 'account-restriction' }
+                  '0XC000006F' { return 'time-restriction' }
+                  '0XC0000070' { return 'workstation-restriction' }
+                  '0XC0000071' { return 'credential-expired' }
+                  default { if ($Code) { return 'other' } return '' }
+              }
+          }
+          function Get-RdpAuthEventSummary {
+              param($Items, [int]$WindowSec = 3600, [string]$ProbeError = '')
+              $c4624 = 0; $c4625 = 0; $last4625 = ''
+              $codes = [ordered]@{}
+              foreach ($it in @($Items)) {
+                  if (-not $it) { continue }
+                  if ([string]$it.id -eq '4624') { $c4624++; continue }
+                  if ([string]$it.id -ne '4625') { continue }
+                  $c4625++
+                  if ([string]$it.timeUtc) { $last4625 = [string]$it.timeUtc }
+                  foreach ($c in @([string]$it.status, [string]$it.subStatus)) {
+                      if (-not $c) { continue }
+                      if (-not $codes.Contains($c)) { $codes[$c] = 0 }
+                      $codes[$c] = [int]$codes[$c] + 1
+                  }
+              }
+              $codeList = @()
+              foreach ($k in @($codes.Keys)) {
+                  $codeList += [pscustomobject]@{ code = [string]$k; count = [int]$codes[$k]; meaning = (Get-RdpAuthCodeMeaning -Code ([string]$k)) }
+              }
+              $meanings = @($codeList | ForEach-Object { [string]$_.meaning })
+              $verdict = 'none'
+              if ($c4625 -gt 0) {
+                  if (($meanings -contains 'wrong-password') -or ($meanings -contains 'bad-user-or-password')) { $verdict = 'credential-mismatch' }
+                  elseif ($meanings -contains 'no-such-user') { $verdict = 'no-such-user' }
+                  elseif ($meanings -contains 'logon-type-denied') { $verdict = 'logon-type-denied' }
+                  else { $verdict = 'unclassified' }
+              }
+              return [pscustomobject]@{
+                  ts         = (Get-Date).ToUniversalTime().ToString('o')
+                  windowSec  = $WindowSec
+                  count4624  = $c4624
+                  count4625  = $c4625
+                  codes      = $codeList
+                  last4625At = $last4625
+                  verdict    = $verdict
+                  probeError = $ProbeError
+              }
+          }
+          function Update-RdpAuthEvents {
+              param([string]$CfgPath)
+              $items = @()
+              $probeErr = ''
+              try {
+                  $since = (Get-Date).ToUniversalTime().AddSeconds(-1 * $script:F24WindowSec)
+                  $raw = @(Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = @(4624, 4625); StartTime = $since } -MaxEvents 400 -ErrorAction Stop)
+                  foreach ($e in $raw) { $items += (Get-RdpAuthEventFields -Xml ([xml]$e.ToXml())) }
+              } catch { $probeErr = 'security-log-unreadable' }
+              $sum = Get-RdpAuthEventSummary -Items $items -WindowSec $script:F24WindowSec -ProbeError $probeErr
+              try {
+                  if ($CfgPath -and (Test-Path -LiteralPath $CfgPath)) {
+                      $cfgA = [System.IO.File]::ReadAllText($CfgPath) | ConvertFrom-Json
+                      $rdpL = $null
+                      if ($cfgA.PSObject.Properties['rdpListener']) { $rdpL = $cfgA.rdpListener } else { $rdpL = [pscustomobject]@{} }
+                      $rdpL | Add-Member -NotePropertyName authEvents -NotePropertyValue $sum -Force
+                      $cfgA | Add-Member -NotePropertyName rdpListener -NotePropertyValue $rdpL -Force
+                      [System.IO.File]::WriteAllText($CfgPath, ($cfgA | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+                  }
+              } catch {
+                  Write-Host ('[F24] authEvents config write failed: ' + $_.Exception.Message)
+              }
+              $codeTxt = (@($sum.codes | ForEach-Object { [string]$_.code + ':' + [string]$_.count }) -join ',')
+              Write-Host ('[F24] authEvents: 4624=' + $sum.count4624 + ' 4625=' + $sum.count4625 + ' verdict=' + $sum.verdict + ' codes=[' + $codeTxt + ']' + $(if ($sum.probeError) { ' probeError=' + $sum.probeError } else { '' }))
+              # Step summary only when the picture CHANGES (never once per tick).
+              if ($sum.verdict -ne $script:F24LastVerdict) {
+                  $script:F24LastVerdict = $sum.verdict
+                  $f24S = $env:GITHUB_STEP_SUMMARY
+                  if ($f24S) {
+                      ('### F24 auth events (Security log, window ' + [int]($sum.windowSec / 60) + ' min): verdict=' + $sum.verdict) | Add-Content -Path $f24S
+                      ('- 4624=' + $sum.count4624 + ' 4625=' + $sum.count4625 + ' codes=[' + $codeTxt + ']' + $(if ($sum.probeError) { ' probeError=' + $sum.probeError } else { '' })) | Add-Content -Path $f24S
+                  }
+              }
+              return $sum
+          }
+          # [F24 §2 collector-end] (marker last: the lab cell extracts the
+          # COMPLETE collector verbatim)
           while ((Get-Date) -lt $deadline) {
               Start-Sleep -Seconds 60
               $beat++
+              # [F24 §2] 60s auth-event tick: counts + status codes only.
+              try { Update-RdpAuthEvents -CfgPath $cfgPath | Out-Null } catch { Write-Host ('[F24] collector tick failed: ' + $_.Exception.Message) }
               $stamp = Get-Date -Format 'HH:mm:ss'
               $cfgNow = Read-GhrdpJson -Path $cfgPath
               $ipNow = ''
@@ -3895,38 +4009,6 @@ jobs:
                   [System.IO.File]::WriteAllText($cfgPath, ($cfgNow | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
                 }
               } catch { }
-              # [F24 §2 tick-begin] Every 60s beat: Security 4624/4625 evidence ->
-              # rdpListener.authEvents in config.json; /api/native-status serves it
-              # verbatim, so the dashboard's AUTH DECISION row (ui.html F24 §3) can
-              # separate "stale stored password" from "server credential bug" from
-              # "TLS-layer reject" by LOG, not guess. Counts + hex status codes only
-              # - names/passwords are never collected. Log/summary lines appear only
-              # when the failure count CHANGES, so the heartbeat stays readable.
-              try {
-                  $f24ev = Get-F24AuthEvidence -WindowMinutes 10
-                  $cfgF24 = Read-GhrdpJson -Path $cfgPath
-                  if ($cfgF24) {
-                      $rdpLF24 = $null
-                      if ($cfgF24.PSObject.Properties['rdpListener'] -and $cfgF24.rdpListener) { $rdpLF24 = $cfgF24.rdpListener } else { $rdpLF24 = [pscustomobject]@{} }
-                      $rdpLF24 | Add-Member -NotePropertyName authEvents -NotePropertyValue $f24ev -Force
-                      $cfgF24 | Add-Member -NotePropertyName rdpListener -NotePropertyValue $rdpLF24 -Force
-                      [System.IO.File]::WriteAllText($cfgPath, ($cfgF24 | ConvertTo-Json -Depth 12), (New-Object System.Text.UTF8Encoding($false)))
-                  }
-                  $f24Bad = [int]$f24ev.bad4625
-                  if ($f24Bad -ne $script:f24LastBad) {
-                      $script:f24LastBad = $f24Bad
-                      $f24Detail = ''
-                      if (@($f24ev.statuses).Count -gt 0) { $f24Detail = ' statuses=' + (@($f24ev.statuses) -join ',') + ' reasons=' + (@($f24ev.reasons) -join ',') }
-                      if ($f24ev.notes) { $f24Detail += ' notes=' + $f24ev.notes }
-                      Write-Host ('[F24] auth evidence (10m): 4624=' + [int]$f24ev.ok4624 + ' 4625=' + $f24Bad + $f24Detail)
-                      if ($f24Bad -gt 0 -and $summary -and -not $script:f24SummaryWritten) {
-                          $script:f24SummaryWritten = $true
-                          ('### RDP auth failures observed (F24 §2)' | Add-Content -Path $summary)
-                          ('- 4624 ok=' + [int]$f24ev.ok4624 + ' | 4625 fail=' + $f24Bad + $f24Detail + ' - see the dashboard AUTH DECISION row for the mapped remediation branch') | Add-Content -Path $summary
-                      }
-                  }
-              } catch { Write-Host ('[F24] auth collector tick failed (ignored, will retry next beat): ' + $_.Exception.Message) }
-              # [F24 §2 tick-end]
               $tsOk = Test-TsRunning
               if (-not $tsOk) {
                   if (((Get-Date) - $lastTsFix).TotalMinutes -ge 2) {
