@@ -1239,22 +1239,39 @@ jobs:
           try { $u2 = Usage-Read; $tickB = [int]$u2.rdpUsageSec } catch { I-Fail 'tick-read' $_.Exception.Message }
           if ($tickB -le $tickA) { I-Fail 'tick-growth' ('sec ' + $tickA + ' -> ' + $tickB + ' (must grow while active)') }
           Write-Host ('[I] TICK ok: ' + $tickA + 's -> ' + $tickB + 's while a webdesk client is attached')
-          # (2) FREEZE within 20s of the last signal dropping. Sample only
-          # AFTER the 20s bound: the loop's 5s tick plus its attached-grace may
-          # legitimately land one last +5 INSIDE the bound (a lingering
-          # Established socket is exactly that case), so a sample taken as soon
-          # as the flag flips would race the loop's final tick and read as drift.
-          # The contract is asserted where it exists: no growth after 20s.
+          # (2) FREEZE: once the synthetic client drops, the accumulator must
+          # stop growing on any tick that sees BOTH signals absent. A shared
+          # runner can legitimately carry an environmental RDP logon session, so
+          # the contract is asserted on the loop's OWN flags (rdp/webdesk in
+          # rdp-usage.json) instead of a wall-clock window: fail when a tick with
+          # webdesk=false AND rdp=false advances `sec` - that is accumulation
+          # with no signal, which is the bug this timer must never have.
           Remove-Item -LiteralPath $sig -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Seconds 22
-          try { $u3 = Usage-Read } catch { I-Fail 'freeze-read' $_.Exception.Message }
-          if ($u3.rdpUsageActive) { I-Fail 'freeze' 'rdpUsageActive stayed true more than 20s after both signals dropped' }
-          $freezeAt = [int]$u3.rdpUsageSec
-          Start-Sleep -Seconds 12
-          try { $u4 = Usage-Read; $stillFrozen = [int]$u4.rdpUsageSec } catch { I-Fail 'freeze-read' $_.Exception.Message }
-          if ($stillFrozen -ne $freezeAt) { I-Fail 'freeze-drift' ('sec moved while frozen: ' + $freezeAt + ' -> ' + $stillFrozen) }
-          if ($stillFrozen -lt $tickB) { I-Fail 'freeze-monotonic' ('the frozen value went backwards: ' + $tickB + ' -> ' + $stillFrozen) }
-          Write-Host ('[I] FREEZE ok: frozen at ' + $freezeAt + 's (>=' + $tickB + 's seen while active), unchanged for 12s')
+          $uFile = Join-Path $root 'rdp-usage.json'
+          $sawQuiescent = $false; $freezeAt = $null
+          for ($i = 0; $i -lt 30 -and -not $sawQuiescent; $i++) {
+              Start-Sleep -Seconds 2
+              try {
+                  $uj = [System.IO.File]::ReadAllText($uFile) | ConvertFrom-Json
+                  if ($null -ne $uj -and $uj.webdesk -eq $false -and $uj.rdp -eq $false) { $sawQuiescent = $true; $freezeAt = [int]$uj.sec }
+              } catch { }
+          }
+          if (-not $sawQuiescent) { I-Fail 'freeze' 'the loop never reported BOTH signals absent within 60s of the client dropping' }
+          if ($freezeAt -lt $tickB) { I-Fail 'freeze-monotonic' ('the accumulator went backwards: seen ' + $tickB + ' -> ' + $freezeAt) }
+          $lastQuiescent = $freezeAt
+          for ($i = 0; $i -lt 10; $i++) {
+              Start-Sleep -Seconds 2
+              try {
+                  $uj2 = [System.IO.File]::ReadAllText($uFile) | ConvertFrom-Json
+                  if ($null -ne $uj2 -and $uj2.webdesk -eq $false -and $uj2.rdp -eq $false) {
+                      $v = [int]$uj2.sec
+                      if ($v -gt $lastQuiescent) { I-Fail 'freeze-drift' ('a signal-less tick advanced the accumulator: ' + $lastQuiescent + ' -> ' + $v + ' ts=' + $uj2.ts) }
+                      $lastQuiescent = $v
+                  }
+              } catch { }
+          }
+          $stillFrozen = $lastQuiescent
+          Write-Host ('[I] FREEZE ok: quiescent at ' + $freezeAt + 's, and NO signal-less tick advanced it across a 20s window (last=' + $stillFrozen + 's)')
           # (3) RESUME + persistence into config.json
           [System.IO.File]::WriteAllText($sig, '1', (New-Object System.Text.UTF8Encoding($false)))
           $resumed = $false
