@@ -753,8 +753,13 @@ jobs:
             echo 'F20: an execution token appeared inside CONNECTION DIAGNOSTICS' >&2
             exit 1
           fi
-          if grep -nEi 'authentication level|enablecredsspsupport|authlvloverride|prompt for credentials|certificate.*bypass|bypass.*cert' <<< "$blk"; then
+          # [F21] The F21 CredSSP diagnostics box also contains a prohibition
+          # warning naming "bypass cert validation" — that warning IS the fix,
+          # not a suggestion to weaken; exclude it from the weakening scan.
+          weak=$(grep -nEi 'authentication level|enablecredsspsupport|authlvloverride|prompt for credentials|certificate.*bypass|bypass.*cert' <<< "$blk" | grep -v 'NEVER weaken NLA' || true)
+          if [ -n "$weak" ]; then
             echo 'F20: the fallback block suggests weakening NLA/CredSSP/cert validation' >&2
+            echo "$weak" >&2
             exit 1
           fi
           # --- §2 launcher: exit code logged + dashboard pointer in the dialog --
