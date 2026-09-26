@@ -1154,7 +1154,10 @@ jobs:
             exit 1
           fi
           # 3) the tailnet IP must come from config.rdpIp with CGNAT validation
-          #    (fail-closed, no fabrication, no `tailscale ip` fallback).
+          #    (fail-closed, no fabrication). [F25] The read is now a L1/L2/L3
+          #    ladder over config.json + step env (see the F25 gate below); the
+          #    `tailscale ip` LocalAPI fallback is still banned, so the 401 the
+          #    F9n evidence documents cannot recur here.
           if ! grep -q 'cfgR.rdpIp' <<< "$webdesk_all"; then
             echo 'webdesk deploy step does not read config.rdpIp' >&2
             exit 1
@@ -1176,6 +1179,92 @@ jobs:
             echo 'server allowlist lacks the legacy https ts.net alternative' >&2
             exit 1
           fi
+      - name: F25 tailnet IP ladder + writer assertion gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          WF=.github/workflows/main.yml
+          # The two steps F25 changes, isolated as regions so a marker found in
+          # some other step cannot satisfy a gate.
+          webdesk=$(awk '/^      - name: Web desktop \(noVNC/{f=1} /^      - name: Web desktop self-test/{f=0} f' "$WF")
+          stage=$(awk '/^      - name: Stage files \+ write config\.json/{f=1} /^      - name: RDP listener self-probe/{f=0} f' "$WF")
+          if [ -z "$webdesk" ]; then echo 'webdesk deploy step not found' >&2; exit 1; fi
+          if [ -z "$stage" ]; then echo 'stage config writer step not found' >&2; exit 1; fi
+
+          # --- 1) the L1/L2/L3 ladder exists and every rung is CGNAT-validated --
+          for tok in 'cfgR.rdpIp' 'cfgR.runnerResolvedIP' 'env:RUNNER_RESOLVED_IP' 'Resolve-DnsName'; do
+            if ! grep -qF -- "$tok" <<< "$webdesk"; then
+              echo "webdesk step lacks ladder source: $tok" >&2; exit 1
+            fi
+          done
+          # Each rung is gated on the ONE shared CGNAT pattern AND on "not already
+          # won", which is what makes this an ordered, first-valid-wins ladder.
+          for tok in 'if ($rawL1.Trim() -match $cgnat)' \
+                     '-not $rdpIp -and $rawL2.Trim() -match $cgnat' \
+                     '-not $rdpIp -and $dnsCand -match $cgnat' \
+                     '-not $rdpIp -and $rawL3.Trim() -match $cgnat'; do
+            if ! grep -qF -- "$tok" <<< "$webdesk"; then
+              echo "webdesk IP rung missing or not CGNAT-validated: $tok" >&2; exit 1
+            fi
+          done
+          if ! grep -qF -- '100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.' <<< "$webdesk"; then
+            echo 'webdesk ladder lost the CGNAT 100.64.0.0/10 pattern' >&2; exit 1
+          fi
+          # Anchored at BOTH ends. The bare §2 prefix form also accepts
+          # "100.83.13.45evil" / "100.83.13.45.attacker.tld", and this is the one
+          # place where the accepted value is pasted into the advertised webdesk
+          # URL and the websockify BindIp (§6: no URL fabrication).
+          if ! grep -qE "\\\$cgnat = '\^100.*\\\$'" <<< "$webdesk"; then
+            echo 'the ladder CGNAT pattern must be anchored at both ends (^...$)' >&2; exit 1
+          fi
+          # [F9n] preserved: `tailscale ip` must STILL never be CALLED in this step
+          # (post-connect LocalAPI returns 401 - node owned by NT AUTHORITY\SYSTEM).
+          # Comments may still discuss the command, so strip them before checking.
+          webdesk_code=$(grep -vE '^[[:space:]]*#' <<< "$webdesk")
+          if grep -qE 'tailscale(\.exe)? ip' <<< "$webdesk_code"; then
+            echo 'webdesk step calls `tailscale ip` (F9n SYSTEM-operator 401 lock)' >&2; exit 1
+          fi
+
+          # --- 2) the per-source diagnostic dump on the fail-closed path --------
+          # The dump string is composed at runtime, so pin the CONSTRUCTION:
+          # the 'L1 .. | L2 .. | L3 ..' assembly plus each per-source raw label.
+          for tok in 'tailnet-ip-source-dump' \
+                     "\$ipDump = ('L1 ' + \$ipDiag.L1 + ' | L2 ' + \$ipDiag.L2 + ' | L3 ' + \$ipDiag.L3)" \
+                     "('rdpIp=' + \$(if (\$rawL1)" \
+                     "('runnerResolvedIP=' + \$(if (\$rawL2)" \
+                     "('env=' + \$(if (\$rawL3)" \
+                     'PSObject.Properties' 'tailnet-ip-unavailable' \
+                     'tailnet-ip-sources.txt'; do
+            if ! grep -qF -- "$tok" <<< "$webdesk"; then
+              echo "webdesk step lacks the per-source diagnostic dump token: $tok" >&2; exit 1
+            fi
+          done
+          # The dump must be printed BEFORE the throw, so a halting run still
+          # shows which source was empty (the F25 post-mortem requirement).
+          dump_line=$(grep -nF -- 'tailnet-ip-source-dump' <<< "$webdesk" | head -1 | cut -d: -f1)
+          throw_line=$(grep -nF -- "throw 'Web desktop not deployed: tailnet-ip-unavailable" <<< "$webdesk" | head -1 | cut -d: -f1)
+          if [ -z "$dump_line" ] || [ -z "$throw_line" ] || [ "$dump_line" -ge "$throw_line" ]; then
+            echo 'per-source dump must be emitted before the tailnet-ip-unavailable throw' >&2; exit 1
+          fi
+
+          # --- 3) the stage step READS BACK what it wrote -----------------------
+          for tok in 'config-writer lost tailnet IP' 'F25 read-back assertion PASS' \
+                     'ReadAllText($cfgPathStage)' 'runnerResolvedIP'; do
+            if ! grep -qF -- "$tok" <<< "$stage"; then
+              echo "stage step lacks the F25 read-back assertion token: $tok" >&2; exit 1
+            fi
+          done
+          wr_line=$(grep -nF -- "WriteAllText((Join-Path \$root 'config.json')" <<< "$stage" | head -1 | cut -d: -f1)
+          rd_line=$(grep -nF -- 'ReadAllText($cfgPathStage)' <<< "$stage" | head -1 | cut -d: -f1)
+          if [ -z "$wr_line" ] || [ -z "$rd_line" ] || [ "$rd_line" -le "$wr_line" ]; then
+            echo 'stage read-back must read config.json AFTER the write' >&2; exit 1
+          fi
+
+          # --- 4) no overwrite-style config.json writer (§3.2/§3.3) -------------
+          # Every step region that WRITES config.json must also READ it in the
+          # same region. An overwrite-style writer rebuilds config.json from a
+          # partial object and drops properties - the F25 failure class.
+          python3 tests/config-writer-audit.py "$WF"
       - name: F9o TightVNC password-ladder gates (auth probe + labeled degrade)
         shell: bash
         run: |

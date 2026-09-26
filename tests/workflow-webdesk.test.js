@@ -157,12 +157,21 @@ test('F9n: no tailscale serve machinery survives in the webdesk steps', () => {
   assert.equal(notes, 1, 'expected exactly one retirement transport note');
 });
 
-// [F9n] The tailnet IP comes ONLY from config.json .rdpIp (written pre-lock
-// by the stage step): the step-context CLI is 401-locked, so `tailscale ip`
-// must never be called here. CGNAT-validated, fail-closed, no fabrication.
-test('F9n: tailnet IP comes from config.rdpIp with CGNAT validation (fail-closed)', () => {
-  assert.ok(webdesk.includes('$cfgR.rdpIp'), 'config.rdpIp read missing');
-  assert.match(webdesk, /rdpIp -notmatch/);
+// [F9n] The tailnet IP comes from config.json (written pre-lock by the stage
+// step): the step-context CLI is 401-locked, so `tailscale ip` must never be
+// called here. CGNAT-validated, fail-closed, no fabrication.
+// [F25] The single .rdpIp read became an ordered L1/L2/L3 ladder over
+// config.json + step env. `tailscale ip` is STILL never called, the CGNAT
+// validation is unchanged, and the fail-closed throw below is unchanged.
+test('F9n/F25: tailnet IP is CGNAT-validated and fail-closed (ladder, no `tailscale ip`)', () => {
+  assert.ok(webdesk.includes('$cfgR.rdpIp'), 'config.rdpIp read missing (L1)');
+  assert.ok(webdesk.includes('$cfgR.runnerResolvedIP'), 'F25 L2 source missing');
+  assert.ok(webdesk.includes('$env:RUNNER_RESOLVED_IP'), 'F25 L3 source missing');
+  for (const rung of ['if ($rawL1.Trim() -match $cgnat)',
+                      '-not $rdpIp -and $rawL2.Trim() -match $cgnat',
+                      '-not $rdpIp -and $rawL3.Trim() -match $cgnat']) {
+    assert.ok(webdesk.includes(rung), 'ladder rung missing or not CGNAT-validated: ' + rung);
+  }
   assert.match(webdesk, /6\[4-9\]/, 'CGNAT 100.64-127 pattern missing');
   const webdeskCode = webdesk.split('\n').filter(l => !/^\s*#/.test(l)).join('\n');
   assert.doesNotMatch(webdeskCode, /tailscale ip/, 'must never call `tailscale ip` (401-locked)');
