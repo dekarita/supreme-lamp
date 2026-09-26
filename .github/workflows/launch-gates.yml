@@ -1435,6 +1435,11 @@ jobs:
             echo "F9k guard count ($guards) != ghrdp-lib dot-source count ($dotsrc)" >&2
             exit 1
           fi
+      - name: F27 ticket and password-sink gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/f27-copy.test.js tests/f27-handoff.test.js
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:
@@ -1553,3 +1558,7 @@ jobs:
         with:
           name: ghrdp-handler-win-x64
           path: ${{ runner.temp }}\ghrdp-handler\GhrdpHandler.exe
+
+      - name: F27 Windows credential handoff mechanics (not live NLA)
+        shell: powershell
+        run: ./tests/f27-windows.ps1

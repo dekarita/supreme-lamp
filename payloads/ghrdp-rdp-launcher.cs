@@ -791,10 +791,9 @@ internal static class GhrdpRdpLauncher
     // [F15 §1.3] .rdp write + VISIBLE mstsc; an immediate exit is a visible
     // failure (exit code + last log lines), never a silent nothing.
     // ------------------------------------------------------------------
-    private static int MstscStep(string server, string user, string host, int port)
+    private static string[] RdpLines(string server, string user)
     {
-        string rdp = Path.Combine(Path.GetTempPath(), "ghrdp-" + Sha1Hex8(server + "|" + user) + ".rdp");
-        string[] lines = new string[] {
+        return new string[] {
             "full address:s:" + server,
             "username:s:" + user,
             "screen mode id:i:2",          // fullscreen = client native resolution (exact aspect)
@@ -815,6 +814,12 @@ internal static class GhrdpRdpLauncher
             "bitmapcachepersistenable:i:1",
             "autoreconnection enabled:i:1"
         };
+    }
+
+    private static int MstscStep(string server, string user, string host, int port)
+    {
+        string rdp = Path.Combine(Path.GetTempPath(), "ghrdp-" + Sha1Hex8(server + "|" + user) + ".rdp");
+        string[] lines = RdpLines(server, user);
         File.WriteAllLines(rdp, lines);   // local write: no MOTW, no SmartScreen
         long bytes = 0;
         try { bytes = new FileInfo(rdp).Length; } catch { }

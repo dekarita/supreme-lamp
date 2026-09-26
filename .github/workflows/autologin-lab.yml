@@ -18,6 +18,9 @@ on:
       - payloads/edge-ext-resolve.ps1
       - payloads/ghrdp-cred-shim.js
       - payloads/ui.html
+      - tests/f27-windows.ps1
+      - tests/f27-handoff.test.js
+      - tests/f27-copy.test.js
 jobs:
   proof:
     runs-on: windows-latest
@@ -36,6 +39,10 @@ jobs:
       GHRDP_LAB_DNS_ALLOW_LOOPBACK: '1'
     steps:
       - uses: actions/checkout@v4
+
+      - name: "F27: ticket + CredWrite + collector mechanics (not live NLA)"
+        shell: powershell
+        run: ./tests/f27-windows.ps1
 
       - name: "A: install.cmd compiles + registers handler (zero-prompt path)"
         shell: pwsh

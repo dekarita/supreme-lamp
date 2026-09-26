@@ -210,6 +210,12 @@ function Test-CredsAllowed {
 }
 # [F27 ticket-core-begin] Direct socket source only; never trust forwarded headers.
 $script:TicketAudit = [ordered]@{ issued = 0; redeemed = 0; rejected = 0 }
+function Test-TicketBearer([byte[]]$Received, [byte[]]$Expected) {
+    if ($Received.Length -ne $Expected.Length) { return $false }
+    $diff = 0
+    for ($i = 0; $i -lt $Expected.Length; $i++) { $diff = $diff -bor ($Received[$i] -bxor $Expected[$i]) }
+    return ($diff -eq 0)
+}
 function Test-TicketSource([System.Net.IPAddress]$Ip) {
     if (-not $Ip) { return $false }
     if ($Ip.IsIPv4MappedToIPv6) { $Ip = $Ip.MapToIPv4() }
@@ -463,7 +469,7 @@ function Invoke-ClientRequest {
             $expected = [System.Text.Encoding]::UTF8.GetBytes('Bearer ' + $Token)
             $received = [System.Text.Encoding]::UTF8.GetBytes($auth)
             if (-not $Token -or $received.Length -ne $expected.Length -or
-                -not [System.Security.Cryptography.CryptographicOperations]::FixedTimeEquals($received, $expected)) {
+                -not (Test-TicketBearer $received $expected)) {
                 Send-ClientResponse -Stream $stream -Code 401 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('dashboard authorization required'))
                 return
             }
@@ -481,8 +487,9 @@ function Invoke-ClientRequest {
             $expired = @($script:RdpTokens.Keys | Where-Object { ($now - $script:RdpTokens[$_].created).TotalSeconds -ge 60 })
             foreach ($ek in $expired) { $script:RdpTokens.Remove($ek) }
             $random = New-Object byte[] 16
-            [System.Security.Cryptography.RandomNumberGenerator]::Fill($random)
-            $newTok = [Convert]::ToHexString($random).ToLowerInvariant()
+            $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+            try { $rng.GetBytes($random) } finally { $rng.Dispose() }
+            $newTok = ([BitConverter]::ToString($random)).Replace('-', '').ToLowerInvariant()
             $script:RdpTokens[$newTok] = @{ created = $now; source = $source.ToString() }
             Write-TicketAudit 'issued' $source.ToString()
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ rid = $newTok; ttl = 60 })
@@ -1503,7 +1510,7 @@ boot();
         }
         Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('not found'))
     } catch {
-        try { Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json' -Body (ConvertTo-JsonBytes @{ serverTs = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); handlerError = $_.Exception.Message }) } catch { }
+        try { Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json' -Body (ConvertTo-JsonBytes @{ serverTs = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); handlerError = $_.Exception.GetType().Name }) } catch { }
     } finally {
         try { if ($stream) { $stream.Dispose() } } catch { }
         try { $Client.Close() } catch { }
