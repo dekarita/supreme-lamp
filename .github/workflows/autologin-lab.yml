@@ -1827,7 +1827,7 @@ jobs:
           } elseif ($missingLive.Count -eq 0) {
               Write-Host ('::notice::[X] (a2) live Get-TlsCipherSuite carries all 5 ordered suites (head: ' + ((@($live | Select-Object -First 5)) -join ', ') + ')')
           } else {
-              Write-Host ('::notice::[X] (a2) Get-TlsCipherSuite omits ' + ($missingLive -join ', ') + ' on this build; the Schannel Functions read-back carries all 5 in the declared order (normalize enabled=' + $r.enabled.Count + ' failed=' + $r.failed.Count + ')')
+              Write-Host ('::notice::[X] (a2) Get-TlsCipherSuite omits ' + ($missingLive -join ', ') + ' on this build; the Schannel Functions read-back carries all 5 in the declared order (normalize enabled=' + $r.enabled.Count + ' failed=' + $r.failed.Count + '; cmdlet head: ' + ((@($live | Select-Object -First 8)) -join ', ') + ')')
           }
           if (-not (Test-Path -LiteralPath $statePath)) { X-Fail 'state' 'the normalization state file was not written' }
           # (b) TLS 1.2 AND 1.3, Client + Server, Enabled=1, DisabledByDefault=0
@@ -1857,15 +1857,15 @@ jobs:
           $env:GHRDP_LAB_OUT = $purgeOut
           $pp2 = Start-Process -FilePath $exe -ArgumentList '--purge-selftest' -PassThru
           $pp2.WaitForExit()
-          if ($pp2.ExitCode -ne 0) { X-Fail 'purge-selftest' ('--purge-selftest exit ' + $pp2.ExitCode) }
           for ($i = 0; $i -lt 20 -and -not (Test-Path -LiteralPath $purgeOut); $i++) { Start-Sleep -Milliseconds 250 }
-          if (-not (Test-Path -LiteralPath $purgeOut)) { X-Fail 'purge-selftest' '--purge-selftest wrote no matrix file' }
-          $pTxt = Get-Content -LiteralPath $purgeOut -Raw
+          if (-not (Test-Path -LiteralPath $purgeOut)) { X-Fail 'purge-selftest' ('--purge-selftest exit ' + $pp2.ExitCode + ' and it wrote no matrix file') }
+          $pTxt = (Get-Content -LiteralPath $purgeOut -Raw).Trim()
           Write-Host $pTxt
-          foreach ($want in @('mixedPlanted=true', 'before=domain:1+generic:1', 'purgeStale=2', 'afterPurge=domain:0+generic:0',
-                             'final=domain:1+generic:1', 'domainUser=f30-fresh-user', 'genericUser=f30-fresh-user',
+          if ($pp2.ExitCode -ne 0) { X-Fail 'purge-selftest' ('--purge-selftest exit ' + $pp2.ExitCode + ' :: ' + $pTxt) }
+          foreach ($want in @('mixedPlanted=true', 'replanted=true', 'before=domain:1+generic:1', 'purgeStale=2', 'afterPurge=domain:0+generic:0',
+                             'purgeInWrite=1', 'final=domain:1+generic:1', 'domainUser=f30-fresh-user', 'genericUser=f30-fresh-user',
                              'beacon="purged 2 stale entries, wrote new as Domain"', 'verdict=pass', 'mstscLaunched=0 cmdkeyCalled=0')) {
-              if (-not $pTxt.Contains($want)) { X-Fail 'purge-selftest' ('purge matrix line missing: ' + $want) }
+              if (-not $pTxt.Contains($want)) { X-Fail 'purge-selftest' ('purge matrix line missing: ' + $want + ' :: ' + $pTxt) }
           }
           Write-Host '[X] (c) PASS: a LegacyGeneric(type 1) + Domain(type 2) pair planted for one fqdn was PURGED (2/2, nothing of either type left) and the fresh entry is DomainPassword with the new user; no mstsc, no cmdkey'
           # --- (d) the SHIPPED .rdp template, written the way the launcher does

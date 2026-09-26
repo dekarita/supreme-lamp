@@ -797,16 +797,22 @@ internal static class GhrdpRdpLauncher
             int purgedByPurge = PurgeStaleTermsvr(fqdn);
             int afterPurgeDomain = CountTermsvrEntries(target, 2);
             int afterPurgeGeneric = CountTermsvrEntries(target, 1);
+            // The REAL production state this must cover: a stale LegacyGeneric
+            // twin sits in the store WHEN the fresh credential is written (the
+            // ground truth's 100+ stale entries). WriteCredential's own purge
+            // must delete it, write DomainPassword, and re-create the
+            // compatibility twin from the FRESH blob - never from the stale one.
+            bool replanted = SeedCredential(target, 1, "f30-stale-user", "f30-stale-generic-value");
             int purgedByWrite = WriteCredential(fqdn, "f30-fresh-user", "f30-fresh-value");
             string domainUser = ReadCredUserName(target, 2);
             string genericUser = ReadCredUserName(target, 1);
             int finalDomain = CountTermsvrEntries(target, 2);
             int finalGeneric = CountTermsvrEntries(target, 1);
-            bool all = mixed && beforeDomain == 1 && beforeGeneric == 1 &&
+            bool all = mixed && replanted && beforeDomain == 1 && beforeGeneric == 1 &&
                         purgedByPurge == 2 && afterPurgeDomain == 0 && afterPurgeGeneric == 0 &&
-                        purgedByWrite == 0 && finalDomain == 1 && domainUser == "f30-fresh-user" &&
+                        purgedByWrite == 1 && finalDomain == 1 && domainUser == "f30-fresh-user" &&
                         finalGeneric == 1 && genericUser == "f30-fresh-user";
-            sb.AppendLine("mixedPlanted=" + (mixed ? "true" : "false") +
+            sb.AppendLine("mixedPlanted=" + (mixed ? "true" : "false") + " replanted=" + (replanted ? "true" : "false") +
                 " before=domain:" + beforeDomain + "+generic:" + beforeGeneric +
                 " purgeStale=2 expected=2 got=" + purgedByPurge +
                 " afterPurge=domain:" + afterPurgeDomain + "+generic:" + afterPurgeGeneric +
