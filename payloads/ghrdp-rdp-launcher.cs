@@ -8,16 +8,21 @@
 //     1. Beacon FIRST (JSONL log line + POST /api/handler-hello, details
 //        'invoked') before any other work, so a dashboard sees the click even
 //        if everything below fails.
-//     2. If TERMSRV/<fqdn> is absent from the user's Credential Manager, launch
+//     2. [F17 §3] CLIENT-DNS GUARD: resolve <fqdn>; if resolution fails or the
+//        name does not resolve to a tailnet address (100.64.0.0/10, or the
+//        fd7a:115c:a1e0::/48 tailnet ULA IPv6), show the "DNS stale/blocked -
+//        flushdns or check Tailscale" MessageBox, beacon ok:false, and NEVER
+//        launch mstsc into a dead or poisoned name (mstsc 0x904/0x7 class).
+//     3. If TERMSRV/<fqdn> is absent from the user's Credential Manager, launch
 //        INTERACTIVE cmdkey ONCE in a VISIBLE Normal window (Windows itself
 //        prompts for the password - this process never sees, reads, or writes
 //        any password or hash), WaitForExit(180000), then VERIFY the entry with
 //        a cmdkey /list parse.
-//     3. Write %TEMP%\ghrdp-<sha1-8>.rdp LOCALLY (local write = no MOTW, no
+//     4. Write %TEMP%\ghrdp-<sha1-8>.rdp LOCALLY (local write = no MOTW, no
 //        SmartScreen prompt) with fullscreen (screen mode id:i:2) + redirection
 //        directives. NO password/hash lines, NO desktopwidth/desktopheight
 //        (fullscreen follows the client's native resolution = exact aspect).
-//     4. Start mstsc VISIBLE, WaitForExit(2000): still running => beacon
+//     5. Start mstsc VISIBLE, WaitForExit(2000): still running => beacon
 //        'mstsc-started pid=N'; already exited => MessageBox with the exit code
 //        + the last 5 log lines (a silently dying mstsc is impossible).
 //   ghrdp://check[?server=<fqdn>]
@@ -52,8 +57,8 @@ using System.Threading;
 
 internal static class GhrdpRdpLauncher
 {
-    private const string Ver = "2.0.0.0";
-    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F15 fail-visible)";
+    private const string Ver = "2.1.0.0";
+    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F17 dns-guard)";
     private const int DefaultPort = 7331;
     // [F15 §1.2] mandated bound for the interactive credential prompt. The
     // lab-only GHRDP_LAB_CMDKEY_TIMEOUT_MS switch may only SHORTEN it (a
@@ -252,6 +257,47 @@ internal static class GhrdpRdpLauncher
             else { sb.Append(c); }
         }
         return sb.ToString();
+    }
+
+    // ------------------------------------------------------------------
+    // [F17 §3] CLIENT-DNS GUARD: never launch mstsc into a dead or poisoned
+    // name (the mstsc 0x904 / 0x7 transport failure class). The MagicDNS FQDN
+    // must RESOLVE, and to a TAILNET address only: 100.64.0.0/10 IPv4, or the
+    // fd7a:115c:a1e0::/48 Tailscale ULA IPv6. Resolver failure, zero
+    // addresses, or a public/other address => reason string; null = safe.
+    // GHRDP_LAB_DNS_ALLOW_LOOPBACK=1 is the documented LAB-ONLY relaxation
+    // (headless CI runners reach the launcher through a hosts-file loopback
+    // alias); production never sets it.
+    // ------------------------------------------------------------------
+    private static bool IsTailnetAddress(IPAddress a)
+    {
+        byte[] b;
+        try { b = a.GetAddressBytes(); } catch { return false; }
+        if (b.Length == 4) { return b[0] == 100 && b[1] >= 64 && b[1] <= 127; }
+        if (b.Length == 16) { return b[0] == 0xfd && b[1] == 0x7a && b[2] == 0x11 && b[3] == 0x5c && b[4] == 0xa1 && b[5] == 0xe0; }
+        return false;
+    }
+
+    private static string DnsGuardReason(string server)
+    {
+        IPAddress[] addrs;
+        try { addrs = Dns.GetHostAddresses(server); }
+        catch (Exception ex) { return "dns-resolve-failed (" + ex.GetType().Name + ")"; }
+        if (addrs == null || addrs.Length == 0) { return "dns-resolve-failed (0 addresses)"; }
+        foreach (IPAddress a in addrs) { if (IsTailnetAddress(a)) { return null; } }
+        string lab = Environment.GetEnvironmentVariable("GHRDP_LAB_DNS_ALLOW_LOOPBACK");
+        if (lab == "1")
+        {
+            foreach (IPAddress a in addrs)
+            {
+                if (a.Equals(IPAddress.Loopback))
+                {
+                    LogJson("warn", "rdp", "GHRDP_LAB_DNS_ALLOW_LOOPBACK=1: loopback hosts-alias accepted for " + server + " (lab-only switch, never a production default)");
+                    return null;
+                }
+            }
+        }
+        return "dns-not-tailnet (" + addrs[0].ToString() + " outside 100.64.0.0/10)";
     }
 
     // ------------------------------------------------------------------
@@ -483,6 +529,27 @@ internal static class GhrdpRdpLauncher
                 "log: " + LogPath());
             return 3;
         }
+
+        // [F17 §3] DNS guard BEFORE any credential or mstsc work: the exact
+        // failure behind mstsc Error 0x904 / extended 0x7 was a target name
+        // the client PC could not resolve at all (Tailscale down / MagicDNS
+        // off / stale resolver cache). mstsc must never be launched into it.
+        string dnsProblem = DnsGuardReason(server);
+        if (dnsProblem != null)
+        {
+            LogJson("error", verb, "dns-guard blocked launch: " + dnsProblem + " server=" + server);
+            HelloBounded(host, port, verb, false, "dns-guard: " + dnsProblem);
+            ShowBox("ghrdp: DNS stale or blocked",
+                "DNS stale/blocked - flushdns or check Tailscale.\n\n" +
+                "'" + server + "' did not resolve to a tailnet (100.64.0.0/10) address:\n" +
+                dnsProblem + "\n\n" +
+                "On THIS PC run:  ipconfig /flushdns\n" +
+                "then confirm Tailscale is connected (its icon must be green), and click WINDOWS AUTO-LOGIN again.\n\n" +
+                "mstsc was NOT started.\n\n" +
+                "log: " + LogPath());
+            return 5;
+        }
+        LogJson("rdp", verb, "dns-guard ok: " + server + " resolved to a tailnet address");
 
         int rc = CmdkeyStep(server, user, host, port);
         if (rc != 0) { return rc; }     // a timed-out prompt already produced its MessageBox

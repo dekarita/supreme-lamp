@@ -46,6 +46,55 @@ function Write-ClientAudit {
     param([string]$Line)
     try { [System.IO.File]::AppendAllText($script:ClientAuditLog, ((Get-Date).ToUniversalTime().ToString('o') + ' ' + $Line + "`n")) } catch { }
 }
+# [F17 §2] ROOT CAUSE of the +05:30 beacon-age bug (19805s): stored ISO ts
+# strings were read back through ConvertFrom-Json, which converts "…Z" into a
+# [datetime] in the SERVER'S LOCAL timezone and then [string] renders it
+# WITHOUT the Z - the dashboard parsed that bare ts as the VISITOR'S local
+# time and inflated the beacon age by the local-UTC offset. Contract now:
+# every stored ts is re-extracted from the RAW file text and parsed with
+# DateTime.Parse(..., RoundtripKind) - an explicit offset is honored, a bare
+# ts is UTC, never local.
+function Get-RawJsonTs {
+    param([string]$Path)
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { return '' }
+        $raw = [System.IO.File]::ReadAllText($Path)
+        if ($raw -match '"ts"\s*:\s*"([^"]+)"') { return $Matches[1] }
+    } catch { }
+    return ''
+}
+function ConvertTo-UtcDateTime {
+    param($Ts)
+    try {
+        if ($null -eq $Ts) { return $null }
+        if ($Ts -isnot [datetime]) {
+            $s = [string]$Ts
+            if (-not $s) { return $null }
+            $Ts = [datetime]::Parse($s, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+        }
+        if ($Ts.Kind -eq [System.DateTimeKind]::Unspecified) { $Ts = New-Object System.DateTime($Ts.Ticks, [System.DateTimeKind]::Utc) }
+        return $Ts.ToUniversalTime()
+    } catch { return $null }
+}
+function Get-UtcAgeSeconds {
+    param($Ts)
+    $dt = ConvertTo-UtcDateTime $Ts
+    if ($null -eq $dt) { return $null }
+    return [int]([datetime]::UtcNow - $dt).TotalSeconds
+}
+function ConvertTo-UtcIso {
+    param($Ts)
+    $dt = ConvertTo-UtcDateTime $Ts
+    if ($null -eq $dt) { return '' }
+    return $dt.ToString('o')
+}
+# [F17 §2] per-run beacon store: a handler-hello-last.json left over from a
+# PRIOR run (re-dispatch on the same host, or a VPS) would render a stale
+# beacon row as if THIS run's launcher had reported. Reset at server start so
+# every beacon row is per-run only.
+foreach ($f17bf in @('handler-hello-last.json', 'launcher-hello-last.json')) {
+    try { Remove-Item -LiteralPath (Join-Path $Root $f17bf) -Force -ErrorAction SilentlyContinue } catch { }
+}
 function Get-TailnetIp {
     try {
         $addrs = [System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName())
@@ -529,11 +578,10 @@ function Invoke-ClientRequest {
             } catch { }
             $handlerAge = $null
             try {
+                # [F17 §2] raw-ts + RoundtripKind parse (the ConvertFrom-Json
+                # [datetime] conversion loses the Z and shifts by local offset).
                 $hhFile = Join-Path $Root 'handler-hello-last.json'
-                if (Test-Path -LiteralPath $hhFile) {
-                    $hh = [System.IO.File]::ReadAllText($hhFile) | ConvertFrom-Json
-                    if ($hh -and $hh.ts) { $handlerAge = [int]([datetime]::UtcNow - [datetime]$hh.ts).TotalSeconds }
-                }
+                $handlerAge = Get-UtcAgeSeconds (Get-RawJsonTs $hhFile)
             } catch { }
             $vpsPending = $false
             try {
@@ -662,7 +710,9 @@ function Invoke-ClientRequest {
                     if ($uj -and $null -ne $uj.sec) {
                         $rdpUsageSec = [int]$uj.sec
                         $rdpUsageActive = [bool]$uj.active
-                        if ($uj.ts) { $rdpUsageAgeSec = [int](([datetime]::UtcNow - [datetime]$uj.ts).TotalSeconds) }
+                        # [F17 §2] raw-ts + RoundtripKind age (never local-shifted).
+                        $rdpUsageAgeSec = Get-UtcAgeSeconds (Get-RawJsonTs $uf)
+                        if ($null -eq $rdpUsageAgeSec) { $rdpUsageAgeSec = Get-UtcAgeSeconds $uj.ts }
                         if ($rdpUsageAgeSec -gt 45) { $rdpUsageActive = $false }
                     }
                 }
@@ -672,7 +722,10 @@ function Invoke-ClientRequest {
                 $rpFile = Join-Path $Root 'rdp-ping.json'
                 if (Test-Path -LiteralPath $rpFile) {
                     $pj = [System.IO.File]::ReadAllText($rpFile) | ConvertFrom-Json
-                    if ($pj -and $pj.ts -and (([datetime]::UtcNow - [datetime]$pj.ts).TotalSeconds -lt 45)) {
+                    # [F17 §2] raw-ts + RoundtripKind freshness check.
+                    $pingAge = Get-UtcAgeSeconds (Get-RawJsonTs $rpFile)
+                    if ($null -eq $pingAge) { $pingAge = Get-UtcAgeSeconds $pj.ts }
+                    if ($pj -and $pj.ts -and ($null -ne $pingAge) -and ($pingAge -lt 45)) {
                         if ($null -ne $pj.ms) { $rdpPingMs = [int]$pj.ms }
                         if ($pj.path -and ([string]$pj.path -in @('direct','relay','unknown'))) { $rdpPingPath = [string]$pj.path }
                         if ($pj.target -and ([string]$pj.target -match '^100\.')) { $rdpPingTarget = [string]$pj.target }
@@ -683,6 +736,13 @@ function Invoke-ClientRequest {
                 fqdn = $fqdnN
                 hostKind = $hostKind
                 buildSha = $(if ($cfgN -and $cfgN.PSObject.Properties['buildSha']) { [string]$cfgN.buildSha } else { '' })
+                # [F17 §2] rdpListener: the runner-side self-probe (main.yml step
+                # 'RDP listener self-probe (F17)') stores listening/termService/
+                # fwRule/fwScope/certThumb/nla into config.json; served verbatim
+                # + age. $null => probe never ran (the UI says so and keeps
+                # WINDOWS AUTO-LOGIN disabled - a missing probe is never a ✅).
+                rdpListener = $(if ($cfgN -and $cfgN.PSObject.Properties['rdpListener'] -and $cfgN.rdpListener) { $cfgN.rdpListener } else { $null })
+                rdpListenerAgeSec = $(if ($cfgN -and $cfgN.PSObject.Properties['rdpListener'] -and $cfgN.rdpListener) { Get-UtcAgeSeconds $cfgN.rdpListener.ts } else { $null })
                 certBound = $certBound
                 nlaOn = $nlaOn
                 handlerSeenAgeSec = $handlerAge
@@ -716,7 +776,13 @@ function Invoke-ClientRequest {
                 $lvFile = Join-Path $Root 'handler-hello-last.json'
                 if (Test-Path -LiteralPath $lvFile) {
                     $lv = [System.IO.File]::ReadAllText($lvFile) | ConvertFrom-Json
-                    if ($lv -and $lv.verb) { $ns.lastHandlerVerb = @{ verb = [string]$lv.verb; ok = [bool]$lv.ok; details = [string]$lv.details; ts = [string]$lv.ts } }
+                    if ($lv -and $lv.verb) {
+                        # [F17 §2] ts is re-serialized as explicit UTC ISO 'o'
+                        # (with Z). The old `[string]$lv.ts` emitted the
+                        # server-LOCAL Z-less form, which the visitor's browser
+                        # parsed as local (+05:30 => beacon age +19800s).
+                        $ns.lastHandlerVerb = @{ verb = [string]$lv.verb; ok = [bool]$lv.ok; details = [string]$lv.details; ts = (ConvertTo-UtcIso (Get-RawJsonTs $lvFile)) }
+                    }
                 }
             } catch { }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $ns)
@@ -749,11 +815,14 @@ function Invoke-ClientRequest {
         if ($path -eq '/api/launcher-status') {
             $body = '{"ver":0,"ts":"","ageSeconds":-1}'
             try {
+                # [F17 §2] raw-ts + RoundtripKind age; the echoed ts is explicit
+                # UTC ISO (with Z), never the local Z-less form.
                 $lhFile = Join-Path $Root 'launcher-hello-last.json'
                 if (Test-Path -LiteralPath $lhFile) {
                     $lh = [System.IO.File]::ReadAllText($lhFile) | ConvertFrom-Json
-                    $age = [int]([datetime]::UtcNow - [datetime]$lh.ts).TotalSeconds
-                    $body = '{"ver":' + [int]$lh.ver + ',"build":"' + [string]$lh.build + '","ts":"' + [string]$lh.ts + '","ageSeconds":' + $age + '}'
+                    $age = Get-UtcAgeSeconds (Get-RawJsonTs $lhFile)
+                    if ($null -eq $age) { $age = -1 }
+                    $body = '{"ver":' + [int]$lh.ver + ',"build":"' + [string]$lh.build + '","ts":"' + (ConvertTo-UtcIso (Get-RawJsonTs $lhFile)) + '","ageSeconds":' + $age + '}'
                 }
             } catch { }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
@@ -1585,4 +1654,3 @@ while (((Get-Date) - $start) -lt $limit) {
     Start-Sleep -Milliseconds 50
 }
 try { $listener.Stop() } catch { }
-ry { $listener.Stop() } catch { }
