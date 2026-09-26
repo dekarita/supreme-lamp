@@ -1231,7 +1231,11 @@ jobs:
               $vNodeOut = (@(& node --test tests/f28-logon-loop.test.js 2>&1) | Out-String)
               $vNodeRc = $LASTEXITCODE
           } finally { Pop-Location }
-          if ($vNodeRc -ne 0) { V-Fail 'node-matrix' ('the F28 renderer matrix test failed: ' + ($vNodeOut.Substring([Math]::Max(0, $vNodeOut.Length - 600)))) }
+          if ($vNodeRc -ne 0) {
+              $vFails = @($vNodeOut -split "`r?`n" | Where-Object { $_ -match '^not ok' })
+              if ($vFails.Count -eq 0) { $vFails = @($vNodeOut.Substring([Math]::Max(0, $vNodeOut.Length - 300))) }
+              V-Fail 'node-matrix' ('the F28 renderer matrix test failed: ' + ($vFails -join ' | '))
+          }
           if ($vNodeOut -notmatch '# fail 0') { V-Fail 'node-matrix' 'the F28 node matrix did not report 0 failures' }
           Write-Host '[V] (3) PASS: shipped ui.html logon + recovery renderers executed through node - all F28 branches render as specified'
           # --- (4) fallback-gap contracts on the SHIPPED launcher + compile ----

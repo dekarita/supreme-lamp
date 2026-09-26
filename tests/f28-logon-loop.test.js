@@ -11,7 +11,9 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const vm = require('node:vm');
 
-const read = p => fs.readFileSync(p, 'utf8');
+// Normalize CRLF: the lab checks out on Windows, and multi-line anchors must
+// match identically there - line endings are not what's under test.
+const read = p => fs.readFileSync(p, 'utf8').replace(/\r\n/g, '\n');
 const server = read('payloads/ghrdp-server.ps1');
 const cs = read('payloads/ghrdp-rdp-launcher.cs');
 const ui = read('payloads/ui.html');
