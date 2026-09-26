@@ -292,6 +292,11 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">Tailscale IP</span><span class="v" id="credIp">__IP__</span><button onclick="copyById('credIp',this)">copy</button></div>
   <div class="row"><span class="k">RDP username</span><span class="v" id="credUser">__USER__</span><button onclick="copyById('credUser',this)">copy</button></div>
   <div class="row"><span class="k">mstsc command</span><span class="v" id="mstscVal">mstsc /v:__IP__</span><button onclick="copyById('mstscVal',this)">copy</button></div>
+  <!-- [F17 §2] copy-only client diagnostics: NO buttons, NO scripts - you copy
+       the line and run it on your PC to separate "name will not resolve" from
+       "3389 unreachable". populateFqdn() fills in the live FQDN. -->
+  <div class="row"><span class="k">Diag ping</span><code id="diagPing" style="flex:1;padding:6px 8px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:11px ui-monospace,Consolas,monospace;overflow-x:auto">ping __IP__</code><a href="javascript:void(0)" onclick="copyById('diagPing',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">copy + run manually on your PC - "could not find host" = client DNS/MagicDNS</span></div>
+  <div class="row"><span class="k">Diag 3389</span><code id="diagTnc" style="flex:1;padding:6px 8px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:11px ui-monospace,Consolas,monospace;overflow-x:auto">Test-NetConnection __IP__ -Port 3389</code><a href="javascript:void(0)" onclick="copyById('diagTnc',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">copy + run manually; RemoteAddress must be a 100.64-127.x tailnet address</span></div>
   <!-- [F10-3 §3] token-gated host creds: values arrive only via the
        dash-token/tailnet-authenticated /api/config creds block; the screen
        shows last-4 masks, the copy button copies the real value. They are
@@ -381,6 +386,11 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>
   <div class="row"><span class="k">Cert bound</span><span class="v" id="nrCert">...</span><span class="note" id="nrCertReason">RDP-Tcp SSLCertificateSHA1Hash present (from /api/native-status).</span></div>
   <div class="row"><span class="k">NLA</span><span class="v" id="nrNla">...</span><span class="note" id="nrNlaReason">UserAuthentication == 1 on the RDP-Tcp listener.</span></div>
+  <!-- [F17 §2] RDP LISTENER row: config.json rdpListener (the main.yml runner
+       self-probe, echoed by /api/native-status) rendered per field with the
+       exact fix text; WINDOWS AUTO-LOGIN stays disabled unless listening +
+       fwScope + cert + nla are ALL ✅ (nativeStatus sets __listenerOk). -->
+  <div class="row" id="nrListenerRow"><span class="k">RDP LISTENER</span><span class="v" id="nrListener" style="font-family:ui-monospace,Consolas,monospace;font-size:12px">...</span><span class="note" id="nrListenerFix">config.json rdpListener via /api/native-status (runner self-probe, F17).</span></div>
   <div class="row"><span class="k">Host</span><span class="v" id="nrHostKind">...</span><span class="note" id="nrHostKindNote">ephemeral runners change name every run. A one-time TERMSRV entry is VPS-only.</span></div>
   <div class="row" id="nrEphemeralRow" style="display:none;flex-direction:column;align-items:stretch;gap:6px">
     <span class="k" style="font-weight:600">WEB DESKTOP (primary) + shortcut instructions</span>
@@ -545,6 +555,9 @@ var speedHist=[],logPaused=false,firstRenderDone=false,ghrdpUrl='';
 function $(id){return document.getElementById(id)}
 function esc(s){return String(s==null?'':s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c];})}
 function nowMs(){return (new Date()).getTime()}
+// [F17 §2] ts -> ms, ALWAYS as UTC: ISO-Z/offset via Date.parse (already an
+// absolute instant), a zoneless ISO value parsed as UTC (+'Z'), never local -
+// this is what keeps the beacon age free of the client's tz offset (+05:30).
 function parseTs(s){if(!s)return NaN;s=String(s).trim();if(/Z$|[+-]\d{2}:\d{2}$/.test(s))return Date.parse(s);var m=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})[ T](\d{1,2}):(\d{2}):(\d{2})/);if(m)return Date.UTC(+m[3],+m[1]-1,+m[2],+m[4],+m[5],+m[6]);var t=Date.parse(s+'Z');return isNaN(t)?Date.parse(s):t;}
 function fmtBytes(n){n=Number(n)||0;if(n<1024)return n.toFixed(0)+' B';var u=['KB','MB','GB','TB','PB'],i=-1;do{n=n/1024;i++;}while(n>=1024&&i<u.length-1);return n.toFixed(n>=100?0:(n>=10?1:2))+' '+u[i]}
 function fmtSpeed(n){return fmtBytes(n)+'/s'}
@@ -905,6 +918,9 @@ function populateFqdn(fqdn, user){
   if(el){el.textContent=fqdn||'(not set)';el.style.color='#f5b7b7';}
   if(line)line.textContent='(fqdn missing - provision the VPS per docs/MIGRATION.md sec 1.7)';
   if(mst)mst.textContent='(fqdn missing)';
+  var dp0=$('diagPing'),dt0=$('diagTnc');
+  if(dp0)dp0.textContent='ping (fqdn missing)';
+  if(dt0)dt0.textContent='Test-NetConnection (fqdn missing) -Port 3389';
   if(btn)syncNativeButton();
   paint('server config.dnsName is not a *.ts.net FQDN - cannot auto-login','#f5b7b7');
   return;
@@ -912,6 +928,10 @@ function populateFqdn(fqdn, user){
  if(el){el.textContent=fqdn;el.style.color='';}
  if(line)line.textContent='cmdkey /generic:TERMSRV/'+fqdn+' /user:'+(okUser?user:'rdpuser');
  if(mst)mst.textContent='mstsc /v:'+fqdn;
+ // [F17 §2] copy-only diagnostics lines follow the live FQDN.
+ var dp=$('diagPing'),dt=$('diagTnc');
+ if(dp)dp.textContent='ping '+fqdn;
+ if(dt)dt.textContent='Test-NetConnection '+fqdn+' -Port 3389';
  var cb=$('nrCmdkeyConfirmed');
  if(cb){try{cb.checked=localStorage.getItem('ghrdp.cmdkeyConfirmedFqdn')===fqdn;}catch(_){cb.checked=false;}}
  syncNativeButton();
@@ -1006,7 +1026,7 @@ async function nativeStatus(){
   if(s&&s.lastHandlerVerb&&s.lastHandlerVerb.ts){
    var hv=String(s.lastHandlerVerb.ts);
    if(window.__helloWatchArmed){
-    var hts=Date.parse(hv);
+    var hts=parseTs(hv); // [F17 §2] UTC parse (Date.parse on ISO-Z) - never local
     if(!isNaN(hts)&&hts>=(window.__helloWatchArmedAt-10000)){
      window.__helloWatchSeen=true;
      var stEl=$('winAutoStale');if(stEl)stEl.style.display='none';
@@ -1045,6 +1065,30 @@ async function nativeStatus(){
   if(!s.certBound && pr.cert) setReason('nrCertReason','BLOCKED: '+pr.cert);
   var ne=document.getElementById('nrNla');if(ne){ne.textContent=s.nlaOn?'ON':'OFF';ne.style.color=s.nlaOn?'':'#f5b7b7';}
   if(!s.nlaOn && pr.nla) setReason('nrNlaReason','BLOCKED: '+pr.nla);
+  // [F17 §2] RDP LISTENER row: the runner self-probe (config.json rdpListener)
+  // rendered per field with the exact fix text; WINDOWS AUTO-LOGIN stays
+  // disabled unless listening+fwScope+cert+nla are ALL ✅ (window.__listenerOk).
+  var rl=(s&&s.rdpListener)||null;
+  var rlEl=document.getElementById('nrListener'), rlFix=document.getElementById('nrListenerFix');
+  var rlOk=false;
+  if(rl){
+    var fList=!!rl.listening, fTerm=String(rl.termService||'').toLowerCase()==='running';
+    var fFw=!!rl.fwRule, fCert=!!rl.certThumb, fNla=!!rl.nla;
+    var rlBad=[];
+    if(!fList)rlBad.push('listening ❌ - listener not accepting TCP on 127.0.0.1:3389 (check TermService + the firewall step)');
+    if(!fTerm)rlBad.push('termService ❌ - TermService is "'+(rl.termService||'?')+'" (Restart-Service TermService)');
+    if(!fFw)rlBad.push('fwScope ❌ - GHRDP-RDP rule must be enabled, ALL profiles, RemoteAddress scope exactly 100.64.0.0/10 (never 0.0.0.0/0)');
+    if(!fCert)rlBad.push('cert ❌ - RDP-Tcp SSLCertificateSHA1Hash missing/chain invalid for '+(rl.certDns||'this FQDN')+' (re-run the cert bind step)');
+    if(!fNla)rlBad.push('nla ❌ - UserAuthentication must be 1 on RDP-Tcp');
+    rlOk=fList&&fFw&&fCert&&fNla;
+    if(rlEl)rlEl.textContent='listening '+(fList?'✅':'❌')+' | termService '+(fTerm?'✅':'❌')+' | fwScope '+(fFw?'✅':'❌')+' | cert '+(fCert?'✅':'❌')+' | nla '+(fNla?'✅':'❌');
+    if(rlFix){rlFix.textContent=rlBad.length?rlBad.join(' '):'self-probe all ✅ (config.json rdpListener).';rlFix.style.color=rlBad.length?'#f5b7b7':'';}
+  }else{
+    if(rlEl)rlEl.textContent='(self-probe did not run - no rdpListener in config)';
+    if(rlFix){rlFix.textContent='re-dispatch the workflow - the F17 self-probe writes config.json rdpListener before this dashboard starts.';rlFix.style.color='#f5d9b7';}
+  }
+  window.__listenerOk=rlOk;
+  syncWinAuto();
   var srvReasons=(s.reasonsDisabled||[]).slice();
   // [F7] Server can't verify client-PC cmdkey state; the user marks it locally
   // by copying the cmdkey line (see markCredSet). Filter out the reason when set.
@@ -1362,7 +1406,9 @@ function paintBeacon(){
  if(el){
   if(!b||!b.ts){el.textContent='(none yet - click WINDOWS AUTO-LOGIN; a stale registration posts no beacon)';el.style.color='';}
   else{
-   var t=Date.parse(b.ts);
+   // [F17 §2] parseTs: the beacon age is computed from a UTC parse - a
+   // zoneless ts is NEVER interpreted as the browser's local time.
+   var t=parseTs(b.ts);
    var age=isNaN(t)?null:Math.max(0,Math.round((Date.now()-t)/1000));
    el.textContent='verb='+(b.verb||'?')+' details='+(b.details||'(none)')+' ok='+(b.ok?'true':'false')+' age='+(age===null?'?':age)+'s';
    el.style.color=(b.ok===false)?'#f5b7b7':'';
@@ -1371,7 +1417,7 @@ function paintBeacon(){
  var se=$('winBeaconStall');if(!se)return;
  var det=(b&&b.details)?String(b.details):'';
  if(det==='invoked'){
-  if(!window.__beaconInvokedAt){var t2=Date.parse(b.ts);window.__beaconInvokedAt=(isNaN(t2)?Date.now():t2);}
+  if(!window.__beaconInvokedAt){var t2=parseTs(b.ts);window.__beaconInvokedAt=(isNaN(t2)?Date.now():t2);}
   if(Date.now()-window.__beaconInvokedAt>=BEACON_STALL_MS){
    se.style.display='';
    se.textContent='launcher stalled at: '+det+' - open '+LAUNCHER_LOG;
@@ -1400,7 +1446,10 @@ function syncWinAuto(){
  var b=$('btnWinAuto');if(!b)return;
  var fqdn=($('rdpFqdn')||{}).textContent||'';
  var user=($('credUser')||{}).textContent||'';
- var ok=FQDN_RE.test(fqdn)&&/^[A-Za-z0-9_\-\.\\]{1,104}$/.test(user)&&user!=='__USER__';
+ // [F17 §2] AUTO-LOGIN is disabled unless the runner self-probe reports
+ // listening+fw+cert+nla ALL ✅ (window.__listenerOk set by nativeStatus()).
+ var listenerOk=(window.__listenerOk===true);
+ var ok=FQDN_RE.test(fqdn)&&/^[A-Za-z0-9_\-\.\\]{1,104}$/.test(user)&&user!=='__USER__'&&listenerOk;
  b.disabled=!ok;b.style.opacity=ok?'':'0.5';b.style.cursor=ok?'':'not-allowed';
 }
 setInterval(syncWinAuto,2000);syncWinAuto();
