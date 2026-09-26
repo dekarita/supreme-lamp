@@ -135,6 +135,12 @@ test('F28-1 collector-dead is RED and never a silent "not reported yet"', async 
   view.status.rdpListener.authLast = { result: 'success', eventTs: '2026-09-26T16:00:00.0000000Z' };
   await refresh(view);
   assert.match(view.node('lastRdpLogon').textContent, /logon collector not running/);
+  // A valid but stale stamp is not proof that the collector is still running.
+  view.status.rdpListener.authLast.scanTs = '2026-09-26T16:00:30Z';
+  view.status.rdpListener.logonCollector = { alive: false, uptimeSec: 400, lastScanAgeSec: 200 };
+  await refresh(view);
+  assert.match(view.node('lastRdpLogon').textContent, /logon collector not running/);
+  assert.equal(view.node('lastRdpLogon').style.color, '#f5b7b7');
 });
 
 test('F28-1 server-side tick is independent of the keep-alive step', () => {

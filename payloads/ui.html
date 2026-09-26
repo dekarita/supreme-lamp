@@ -1797,6 +1797,10 @@ function logonRowText(authLast,collector,nowMs){
  }
  var pe=authLast.probeError?(' | collector='+authLast.probeError):'';
  if(!authLast.scanTs){ return {text:'logon collector not running (the last scan carried no scanTs)',red:true,dead:true}; }
+ // A previously healthy scan must not mask a collector that subsequently stopped.
+ if(c.alive===false || (typeof c.lastScanAgeSec==='number' && c.lastScanAgeSec>90)){
+  return {text:'logon collector not running (last scanned '+authLast.scanTs+')',red:true,dead:true};
+ }
  var scanned='scanned '+authLast.scanTs;
  var sub=authLast.sub?(' sub='+authLast.sub+(authLast.subMeaning?(' ('+authLast.subMeaning+')'):'')):'';
  if(authLast.result==='success'){
