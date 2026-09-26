@@ -623,6 +623,135 @@ jobs:
           }
           exit 0
 
+      # [F21 §1] CredSSP/NLA handshake verification (after cert bind, before
+      # advertising the RDP host). Checks NLA setting, cert chain, CredSSP
+      # server policy, and Schannel cipher suites. If ANY check fails, the step
+      # FAILS LOUD with the exact field + remediation text; config.json gets
+      # rdpListener.credsspStatus = 'failed-<reason>'; the run never proceeds to
+      # advertise a host that will reject the NLA handshake (TcpStateFrontAuth
+      # -> TcpStateFailure class, verified 2026-09-25). F19 gates enforce no
+      # credential-UI automation (password auto-type, keyboard injection)
+      # anywhere in the repo.
+      - name: CredSSP/NLA handshake verification (F21 - fail loud on mismatch)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $S = $env:GITHUB_STEP_SUMMARY
+          $utf8F21 = New-Object System.Text.UTF8Encoding($false)
+          $cfgPathF21 = 'C:\ghrdp\config.json'
+          $rdpKeyF21 = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+          $credsspKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters'
+          function Write-CredsspStatus([string]$Status, [string]$Detail = '') {
+              try {
+                  if (-not (Test-Path -LiteralPath $cfgPathF21)) { return }
+                  $cfgW = [System.IO.File]::ReadAllText($cfgPathF21) | ConvertFrom-Json
+                  $rdpL = $null
+                  if ($cfgW.PSObject.Properties['rdpListener']) { $rdpL = $cfgW.rdpListener } else { $rdpL = [pscustomobject]@{} }
+                  $rdpL | Add-Member -NotePropertyName credsspStatus -NotePropertyValue $Status -Force
+                  if ($Detail) { $rdpL | Add-Member -NotePropertyName credsspWhy -NotePropertyValue $Detail -Force }
+                  $cfgW | Add-Member -NotePropertyName rdpListener -NotePropertyValue $rdpL -Force
+                  [System.IO.File]::WriteAllText($cfgPathF21, ($cfgW | ConvertTo-Json -Depth 10), $utf8F21)
+              } catch { Write-Host ('[F21] config stamp failed: ' + $_.Exception.Message) }
+          }
+          $failReasons = @()
+          # (1) NLA: UserAuthentication must = 1
+          $nlaOk = $false; $nlaVal = $null
+          try { $nlaVal = (Get-ItemProperty -Path $rdpKeyF21 -Name 'UserAuthentication' -ErrorAction Stop).UserAuthentication; $nlaOk = ($nlaVal -eq 1) } catch { }
+          if (-not $nlaOk) { $failReasons += ('nla-off (UserAuthentication=' + $nlaVal + '; remediation: set to 1 for NLA)') }
+          else { Write-Host '[F21] NLA OK: UserAuthentication=1' }
+          # (2) SSLCertificateSHA1Hash must match a cert in LocalMachine cert store; chain must verify
+          $certChainOk = $false; $certIssuer = ''; $certSubject = ''; $certWhy = ''
+          try {
+              $sh = (Get-ItemProperty -Path $rdpKeyF21 -Name 'SSLCertificateSHA1Hash' -ErrorAction Stop).SSLCertificateSHA1Hash
+              if ($sh -and $sh.Length -ge 20) {
+                  $certThumb = ($sh | ForEach-Object { $_.ToString('X2') }) -join ''
+                  # [F21 §1.2] check BOTH LocalMachine\My (U5b bind target) and
+                  # LocalMachine\Remote Desktop per spec (verbatim from user cmd).
+                  $boundF21 = $null
+                  foreach ($storeName in @('My', 'Remote Desktop')) {
+                      try {
+                          $storeF21 = New-Object System.Security.Cryptography.X509Certificates.X509Store($storeName, 'LocalMachine')
+                          $storeF21.Open('ReadOnly')
+                          $found = $storeF21.Certificates | Where-Object { $_.Thumbprint -eq $certThumb } | Select-Object -First 1
+                          $storeF21.Close()
+                          if ($found) { $boundF21 = $found; break }
+                      } catch { }
+                  }
+                  if ($boundF21) {
+                      $certSubject = $boundF21.Subject
+                      $certIssuer = $boundF21.Issuer
+                      $chainF21 = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+                      try {
+                          $chainF21.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+                          $certChainOk = [bool]$chainF21.Build($boundF21)
+                          $chainStatus = (@($chainF21.ChainStatus | ForEach-Object { [string]$_.Status }) -join ',')
+                      } finally { $chainF21.Dispose() }
+                      # Issuer must reference Let's Encrypt or a trusted CA (not self-signed)
+                      $issuerTrusted = ($certIssuer -match 'Let''s Encrypt|DigiCert|GlobalSign|Sectigo|Comodo|GeoTrust|RapidSSL|Amazon|Microsoft')
+                      if (-not $certChainOk) { $certWhy = ('cert chain invalid: ' + $chainStatus) }
+                      elseif (-not $issuerTrusted) { $certWhy = ('cert issuer not trusted (self-signed?): ' + $certIssuer) }
+                      elseif ($boundF21.NotAfter.ToUniversalTime() -le [datetime]::UtcNow) { $certWhy = ('cert expired ' + $boundF21.NotAfter.ToUniversalTime().ToString('o')) }
+                  } else { $certWhy = 'thumbprint not found in LocalMachine\My' }
+              } else { $certWhy = 'no SSLCertificateSHA1Hash on RDP-Tcp' }
+          } catch { $certWhy = 'cert probe failed: ' + $_.Exception.Message }
+          if ($certChainOk -and -not $certWhy) { Write-Host ('[F21] Cert chain OK: subject=' + $certSubject + ' issuer=' + $certIssuer) }
+          else { $failReasons += ('cert-untrusted (' + $certWhy + '; remediation: bind a Let''s Encrypt cert via U5b/F17)') }
+          # (3) CredSSP server policy: AllowEncryptionOracle must be 0 (strict, CVE-2018-0886) if present
+          $credsspOk = $true; $credsspVal = $null; $credsspWhy = ''
+          try {
+              $cp = Get-ItemProperty -Path $credsspKey -Name 'AllowEncryptionOracle' -ErrorAction SilentlyContinue
+              if ($null -ne $cp) {
+                  $credsspVal = $cp.AllowEncryptionOracle
+                  if ($credsspVal -ne 0) { $credsspOk = $false; $credsspWhy = ('AllowEncryptionOracle=' + $credsspVal + ' (must be 0 for strict CVE-2018-0886 mode); remediation: set to 0') }
+              } else { Write-Host '[F21] CredSSP AllowEncryptionOracle not set (default strict mode - OK)' }
+          } catch { $credsspOk = $false; $credsspWhy = 'CredSSP Parameters key unreadable: ' + $_.Exception.Message }
+          if ($credsspOk -and -not $credsspWhy) { Write-Host '[F21] CredSSP policy OK (strict mode)' }
+          else { $failReasons += ('credssp-policy-mismatch (' + $credsspWhy + ')') }
+          # (4) Schannel cipher suites: at least one AES-256-GCM or ChaCha20-Poly1305 must be present
+          $cipherOk = $false; $cipherDetail = ''
+          try {
+              $suites = Get-TlsCipherSuite -ErrorAction Stop | Select-Object -ExpandProperty Name
+              $strong = @($suites | Where-Object { $_ -match 'AES_256_GCM|CHACHA20_POLY1305' })
+              if ($strong.Count -gt 0) { $cipherOk = $true; $cipherDetail = ($strong -join ', ') }
+              else { $cipherDetail = ('available suites: ' + ($suites -join ', ')) }
+          } catch { $cipherDetail = 'Get-TlsCipherSuite failed: ' + $_.Exception.Message }
+          if ($cipherOk) { Write-Host ('[F21] Schannel cipher OK: strong suites present (' + $cipherDetail + ')') }
+          else { $failReasons += ('schannel-cipher-weak (no AES-256-GCM/ChaCha20-Poly1305; ' + $cipherDetail + '; remediation: enable strong cipher suites at OS level - see MIGRATION.md)') }
+          # NLA reassert (belt-and-suspenders): also set MinEncryptionLevel=3 + SecurityLayer=2
+          try {
+              Set-ItemProperty -Path $rdpKeyF21 -Name 'SecurityLayer' -Value 2 -Type DWord -ErrorAction SilentlyContinue
+              Set-ItemProperty -Path $rdpKeyF21 -Name 'MinEncryptionLevel' -Value 3 -Type DWord -ErrorAction SilentlyContinue
+              # AUTO-FIX A: if AllowEncryptionOracle exists and is wrong, correct it to 0 (strict)
+              if ((-not $credsspOk) -and $credsspVal -and $credsspVal -ne 0) {
+                  New-Item -Path $credsspKey -Force -ErrorAction SilentlyContinue | Out-Null
+                  Set-ItemProperty -Path $credsspKey -Name 'AllowEncryptionOracle' -Value 0 -Type DWord -Force -ErrorAction SilentlyContinue
+                  Write-Host '[F21] AUTO-FIX A applied: AllowEncryptionOracle set to 0 (strict CVE-2018-0886)'
+                  $credsspOk = $true; $failReasons = @($failReasons | Where-Object { $_ -notmatch '^credssp-policy-mismatch' })
+              }
+          } catch { Write-Host ('[F21] policy reassert failed: ' + $_.Exception.Message) }
+          # Restart TermService to pick up any policy fixes
+          if ($credsspOk -and $failReasons.Count -eq 0) {
+              try { Restart-Service TermService -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 3; Write-Host '[F21] TermService restarted after policy verification' } catch { }
+          }
+          # Write credsspStatus BEFORE any loud fail (dashboard must see the field)
+          if ($failReasons.Count -eq 0) {
+              Write-CredsspStatus -Status 'ok'
+              Write-Host '[F21] CredSSP/NLA handshake verification PASS: NLA=1, cert=trusted, policy=strict, cipher=strong'
+              if ($S) { '### CredSSP/NLA verification PASS (F21)' | Add-Content -Path $S; '- NLA=1, cert chain trusted, CredSSP strict mode, AES-256-GCM/ChaCha20 present' | Add-Content -Path $S }
+              exit 0
+          }
+          $failText = ($failReasons -join ' | ')
+          Write-CredsspStatus -Status ('failed-' + ($failReasons[0] -replace '\s.*','')) -Detail $failText
+          Write-Host ('::error::[F21] CredSSP/NLA handshake verification FAILED: ' + $failText)
+          if ($S) {
+              '### CredSSP/NLA verification FAILED (F21) - halted by design' | Add-Content -Path $S
+              foreach ($fr in $failReasons) { ('- ❌ ' + $fr) | Add-Content -Path $S }
+              'Halted by design so the run never advertises an RDP host that rejects the NLA handshake (TcpStateFrontAuth -> TcpStateFailure).' | Add-Content -Path $S
+              'NO password auto-type / credential-UI automation is performed - cmdkey already supplies credentials; the fix is policy alignment.' | Add-Content -Path $S
+          }
+          throw ('F21 CredSSP/NLA loud-fail: ' + $failText)
+          # [F21 §1 probe-end]
+
       - name: Optimize Tailscale path (direct-connection hunter, every 5 min)
         shell: pwsh
         run: |
