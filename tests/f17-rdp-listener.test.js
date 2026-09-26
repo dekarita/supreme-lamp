@@ -54,9 +54,18 @@ test('F17-2 probe: firewall rule is GHRDP-RDP, all profiles, exactly 100.64.0.0/
   assert.match(p, /Get-NetFirewallRule -DisplayName 'GHRDP-RDP'/);
   assert.match(p, /New-NetFirewallRule -DisplayName 'GHRDP-RDP'.*RemoteAddress '100\.64\.0\.0\/10'/);
   assert.match(p, /\$rule \| Set-NetFirewallRule -RemoteAddress '100\.64\.0\.0\/10'/);
-  // scope equality is EXACT and all profiles are required
-  assert.match(p, /\$fwScopeNow -eq '100\.64\.0\.0\/10'/);
-  assert.match(p, /-match 'Domain' -and \$profiles -match 'Private' -and \$profiles -match 'Public'/);
+  // scope equality is EXACT (repair trigger + final verdict) and all profiles
+  // are required ('Any' counts as all profiles)
+  assert.match(p, /if \(\$fwScopeNow -ne '100\.64\.0\.0\/10'\)/);
+  assert.match(p, /elseif \(\$fwScopeNow -ne '100\.64\.0\.0\/10'\)/);
+  assert.match(p, /\$profiles -eq 'Any' -or \(\$profiles -match 'Domain' -and \$profiles -match 'Private' -and \$profiles -match 'Public'\)/);
+  // the scope read is strategy-chained (property -> cmdlet -> netsh) and an
+  // unreadable scope is reported, never silently repaired into a false OK
+  assert.match(p, /function Read-FwScope/);
+  assert.match(p, /Select-Object -ExpandProperty RemoteAddress/);
+  assert.match(p, /Get-NetFirewallAddressFilter -ErrorAction Stop/);
+  assert.match(p, /advfirewall firewall show rule name='GHRDP-RDP'/);
+  assert.match(p, /GHRDP-RDP scope could not be read/);
   // the repair path never WRITES a wider scope (naming it inside fix text is
   // allowed; a firewall write carrying it is not)
   const writes = p.split('\n').filter((l) => /-RemoteAddress[^\r\n]*0\.0\.0\.0\/0|remoteip=0\.0\.0\.0\/0/.test(l));

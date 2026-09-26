@@ -512,7 +512,7 @@ jobs:
             grep -rn -E 'RemoteAddress|remoteip=' "$@" 2>/dev/null \
               | grep -v '^[^:]*:[0-9]*:[[:space:]]*#' \
               | grep -v 'ExpandProperty RemoteAddress' \
-              | grep -v 'Get-NetFirewallAddressFilter).RemoteAddress' || true
+              | grep -v 'Get-NetFirewallAddressFilter' || true
           }
           scopes=$(scan "$wf" .github/workflows/webdesk-lab.yml .github/workflows/autologin-lab.yml payloads)
           test -n "$scopes"
@@ -522,6 +522,13 @@ jobs:
             echo "$bad" >&2
             exit 1
           fi
+          # the probe must read the scope through the strategy chain and must
+          # treat an unreadable scope as FAIL (never a silent OK), and its
+          # repair must have be--tried forms
+          grep -q 'function Read-FwScope' <<< "$probe"
+          grep -q 'GHRDP-RDP scope could not be read' <<< "$probe"
+          grep -q "if (\$fwScopeNow -ne '100\.64\.0\.0/10')" <<< "$probe"
+          grep -q "\$profiles -eq 'Any' -or" <<< "$probe"
           # the probe may never WRITE a wider scope than the tailnet range (a
           # mention inside a fix-text string is allowed; a write is not).
           if echo "$probe" | grep -n -E -- '-RemoteAddress[[:space:]]*[^\r\n]*0\.0\.0\.0/0|remoteip=0\.0\.0\.0/0'; then

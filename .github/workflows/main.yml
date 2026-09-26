@@ -811,33 +811,69 @@ jobs:
           $fwOk = $false
           $fwDetail = ''
           $fwScopeNow = ''
+          # A probe must never report a WRONG scope just because one PowerShell
+          # binding form cannot resolve its parameter set on this host (the
+          # first live run hit exactly that), so the scope is read through three
+          # strategies: rule property projection -> address-filter cmdlet ->
+          # netsh text (the runner is en-US; the value is compared exactly).
+          function Read-FwScope([object]$Rule) {
+              $sc = ''
+              try { $sc = ((@($Rule | Select-Object -ExpandProperty RemoteAddress -ErrorAction Stop)) -join ',') } catch { }
+              if (-not $sc) {
+                  try { $sc = ((@($Rule | Get-NetFirewallAddressFilter -ErrorAction Stop).RemoteAddress) -join ',') } catch { }
+              }
+              if (-not $sc) {
+                  try {
+                      $txt = ((& netsh.exe advfirewall firewall show rule name='GHRDP-RDP' 2>$null) | ForEach-Object { [string]$_ }) -join "`n"
+                      $m = [regex]::Match($txt, '(?im)^\s*RemoteIP:\s*(.+?)\s*$')
+                      if ($m.Success) { $sc = ($m.Groups[1].Value -replace '\s*,\s*', ',') }
+                  } catch { }
+              }
+              return $sc
+          }
+          function Get-FwRule {
+              return (Get-NetFirewallRule -DisplayName 'GHRDP-RDP' -ErrorAction SilentlyContinue | Select-Object -First 1)
+          }
           try {
-              $rule = Get-NetFirewallRule -DisplayName 'GHRDP-RDP' -Direction Inbound -ErrorAction SilentlyContinue | Select-Object -First 1
+              $rule = Get-FwRule
               if (-not $rule) {
                   $null = New-NetFirewallRule -DisplayName 'GHRDP-RDP' -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow -RemoteAddress '100.64.0.0/10' -Profile Any -Enabled True -ErrorAction Stop
                   Write-Host '[probe] GHRDP-RDP rule missing - created (inbound TCP/3389, all profiles, scope 100.64.0.0/10)'
-                  $rule = Get-NetFirewallRule -DisplayName 'GHRDP-RDP' -Direction Inbound -ErrorAction SilentlyContinue | Select-Object -First 1
+                  $rule = Get-FwRule
               }
               if ($rule) {
-                  $fwScopeNow = ((@($rule | Get-NetFirewallAddressFilter).RemoteAddress) -join ',')
                   $profiles = [string]$rule.Profile
                   $enabled = [string]$rule.Enabled
                   # 'Any' IS all profiles (the canonical rule is created with -Profile Any)
                   $allProfiles = ($profiles -eq 'Any' -or ($profiles -match 'Domain' -and $profiles -match 'Private' -and $profiles -match 'Public'))
+                  $fwScopeNow = Read-FwScope $rule
                   if ($fwScopeNow -ne '100.64.0.0/10') {
-                      Write-Host ('[probe] GHRDP-RDP scope wrong (' + $fwScopeNow + ') - repairing to 100.64.0.0/10')
-                      $rule | Set-NetFirewallRule -RemoteAddress '100.64.0.0/10' -ErrorAction Stop
-                      $rule = Get-NetFirewallRule -DisplayName 'GHRDP-RDP' -Direction Inbound -ErrorAction SilentlyContinue | Select-Object -First 1
-                      $fwScopeNow = ((@($rule | Get-NetFirewallAddressFilter).RemoteAddress) -join ',')
+                      Write-Host ('[probe] GHRDP-RDP scope reads as "' + $fwScopeNow + '" - setting it to 100.64.0.0/10')
+                      try { Set-NetFirewallRule -DisplayName 'GHRDP-RDP' -RemoteAddress '100.64.0.0/10' -ErrorAction Stop }
+                      catch {
+                          Write-Host ('[probe] Set-NetFirewallRule -DisplayName failed (' + $_.Exception.Message + '); trying the pipeline form')
+                          $rule | Set-NetFirewallRule -RemoteAddress '100.64.0.0/10' -ErrorAction Stop
+                      }
+                      $rule = Get-FwRule
+                      $profiles = [string]$rule.Profile
+                      $enabled = [string]$rule.Enabled
+                      $allProfiles = ($profiles -eq 'Any' -or ($profiles -match 'Domain' -and $profiles -match 'Private' -and $profiles -match 'Public'))
+                      $fwScopeNow = Read-FwScope $rule
                   }
-                  $fwOk = ($enabled -eq 'True' -and $allProfiles -and $fwScopeNow -eq '100.64.0.0/10')
-                  if ($fwOk) { $fwDetail = 'GHRDP-RDP enabled, all profiles, scope 100.64.0.0/10' }
-                  elseif ($enabled -ne 'True') { $fwDetail = 'GHRDP-RDP rule DISABLED - fix: Enable-NetFirewallRule -DisplayName GHRDP-RDP' }
-                  elseif (-not $allProfiles) { $fwDetail = 'GHRDP-RDP profiles=' + $profiles + ' - fix: rule must cover all profiles (-Profile Any)' }
-                  else { $fwDetail = 'GHRDP-RDP scope=' + $fwScopeNow + ' - fix: scope must equal the tailnet range 100.64.0.0/10 - never a wider scope' }
+                  if (-not $fwScopeNow) {
+                      $fwDetail = 'GHRDP-RDP scope could not be read (property, address-filter and netsh all failed) - firewall state unknown'
+                  } elseif ($enabled -ne 'True') {
+                      $fwDetail = 'GHRDP-RDP rule DISABLED - fix: Enable-NetFirewallRule -DisplayName GHRDP-RDP'
+                  } elseif (-not $allProfiles) {
+                      $fwDetail = 'GHRDP-RDP profiles=' + $profiles + ' - fix: rule must cover all profiles (-Profile Any)'
+                  } elseif ($fwScopeNow -ne '100.64.0.0/10') {
+                      $fwDetail = 'GHRDP-RDP scope=' + $fwScopeNow + ' - fix: scope must equal the tailnet range 100.64.0.0/10 - never a wider scope'
+                  } else {
+                      $fwOk = $true
+                      $fwDetail = 'GHRDP-RDP enabled, all profiles, scope 100.64.0.0/10'
+                  }
               } else { $fwDetail = 'GHRDP-RDP rule could not be created (firewall API failed)' }
           } catch { $fwDetail = 'firewall probe failed: ' + $_.Exception.Message }
-          $fields['fwRule'] = $fwOk
           $fields['fwRuleDetail'] = $fwDetail
           # --- certThumb: bound RDP cert present + chain valid for FQDN -------
           $certOk = $false

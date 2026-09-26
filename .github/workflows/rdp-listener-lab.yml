@@ -94,7 +94,9 @@ jobs:
           Set-Service -Name TermService -StartupType Automatic -ErrorAction SilentlyContinue
           Start-Service TermService -ErrorAction SilentlyContinue
           # FQDN env the probe needs for the cert-name check (gate value).
-          $fqdn = $env:COMPUTERNAME.ToLower() + '.ts.net'
+          # production MagicDNS names are <host>.<tailnet>.ts.net (the probe's
+          # FQDN regex requires that shape, exactly as a real tailnet node has)
+          $fqdn = $env:COMPUTERNAME.ToLower() + '.dekarita.tailnet-lab.ts.net'
           Add-Content -Path $env:GITHUB_ENV -Value ('TS_MAGICDNS_FQDN=' + $fqdn)
           $env:TS_MAGICDNS_FQDN = $fqdn
           # REAL GHRDP-RDP rule exactly as production creates it, plus the same
