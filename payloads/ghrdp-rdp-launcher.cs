@@ -46,14 +46,14 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 
-[assembly: AssemblyVersion("2.0.0.0")]
-[assembly: AssemblyFileVersion("2.0.0.0")]
+[assembly: AssemblyVersion("2.1.0.0")]
+[assembly: AssemblyFileVersion("2.1.0.0")]
 [assembly: AssemblyTitle("ghrdp-rdp-launcher")]
 
 internal static class GhrdpRdpLauncher
 {
-    private const string Ver = "2.0.0.0";
-    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F15 fail-visible)";
+    private const string Ver = "2.1.0.0";
+    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F17 dns-guard)";
     private const int DefaultPort = 7331;
     // [F15 §1.2] mandated bound for the interactive credential prompt. The
     // lab-only GHRDP_LAB_CMDKEY_TIMEOUT_MS switch may only SHORTEN it (a
@@ -458,6 +458,48 @@ internal static class GhrdpRdpLauncher
     // not a *.ts.net FQDN); the rdp target itself is re-parsed and validated
     // below, so a bad target still ends in a MessageBox, never silence.
     // ------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // [F17 §3] CLIENT-DNS GUARD. Before mstsc - and before any credential
+    // prompt - the FQDN must resolve to a Tailscale CGNAT address
+    // (100.64/10). A stale or blocked name (client tailscale down, stale node
+    // from a previous dispatch, flushdns needed) used to surface inside mstsc
+    // as Error 0x904 / Extended 0x7 with no actionable text; now the launcher
+    // says exactly what to run, beacons ok:false, and never launches mstsc
+    // into a dead name.
+    // ------------------------------------------------------------------
+    private static bool DnsGuard(string fqdn, string host, int port, out string why)
+    {
+        why = "";
+        try
+        {
+            IPAddress[] addrs = Dns.GetHostAddresses(fqdn);
+            bool tailnet = false;
+            string first = "";
+            foreach (IPAddress a in addrs)
+            {
+                if (a.AddressFamily != System.Net.Sockets.AddressFamily.InterNetwork) { continue; }
+                if (first.Length == 0) { first = a.ToString(); }
+                byte[] b = a.GetAddressBytes();
+                if (b[0] == 100 && b[1] >= 64 && b[1] <= 127) { tailnet = true; }
+            }
+            if (tailnet) { return true; }
+            why = (first.Length == 0) ? "no IPv4 address returned" : "resolves to " + first + " (not in 100.64/10)";
+        }
+        catch (Exception ex)
+        {
+            why = "unresolvable (" + ex.GetType().Name + ")";
+        }
+        LogJson("error", "rdp", "dns-guard: " + why + " for " + fqdn);
+        HelloBounded(host, port, "rdp", false, "dns-guard: " + why);
+        ShowBox("GHRDP - RDP not launched",
+            "DNS stale/blocked - flushdns or check tailscale.\n\n" +
+            "name:   " + fqdn + "\nreason: " + why + "\n\n" +
+            "On THIS PC run:\n  ipconfig /flushdns\n  tailscale status\n" +
+            "(the RDP host must appear as a peer, and the name must match the current run).\n\n" +
+            "mstsc was NOT started - never launching into a dead name.\n\nlog: " + LogPath());
+        return false;
+    }
+
     private static int DoWork(string uri, string verb, string host, int port)
     {
         if (verb == "check") { return RunCheck(uri, host, port); }
@@ -483,6 +525,13 @@ internal static class GhrdpRdpLauncher
                 "log: " + LogPath());
             return 3;
         }
+
+        // [F17 §3] client DNS guard: a dead or stale name must fail HERE with
+        // actionable text (and an ok:false beacon), not inside mstsc as
+        // Error 0x904 / Extended 0x7. Runs before the credential prompt so a
+        // user is never asked for a password against a name mstsc cannot use.
+        string dnsWhy;
+        if (!DnsGuard(server, host, port, out dnsWhy)) { return 4; }
 
         int rc = CmdkeyStep(server, user, host, port);
         if (rc != 0) { return rc; }     // a timed-out prompt already produced its MessageBox
