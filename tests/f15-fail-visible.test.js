@@ -71,7 +71,7 @@ test('F15-1 Main: the invoked log line + beacon are the FIRST work in the proces
   assert.ok(beacon < work, 'cmdkey/mstsc/file work runs before the beacon');
   // the beacon POST target comes from the URL args and every failure is caught
   assert.match(launcher, /int DefaultPort = 7331;/);
-  assert.match(launcher, /ParseQuery\(uri, out server, out user, out portRaw, out ipRaw\)/);
+  assert.match(launcher, /ParseQuery\(uri, out server, out user, out portRaw\)/);
   assert.match(launcher, /catch \{ \}/);
 });
 

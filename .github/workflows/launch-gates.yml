@@ -608,6 +608,14 @@ jobs:
               exit 1
             fi
           done
+          # Repo-wide denylist: retired/debug launchers and docs must not reintroduce
+          # credential-ish query parameters either (the current UI gets stricter
+          # single-builder checks below; launch-gates.yml itself is excluded).
+          url_sources=(payloads docs tests .github/workflows/main.yml .github/workflows/autologin-lab.yml .github/workflows/webdesk-lab.yml .github/workflows/apply-patch.yml)
+          if git grep -nE 'ghrdp://' -- "${url_sources[@]}" | grep -Ei '[?&](password|passwd|pwd|token|secret|authkey|api[_-]?key)='; then
+            echo 'F19: repository contains a ghrdp:// URL with a credential or token parameter' >&2
+            exit 1
+          fi
           # --- §4(b) a ghrdp:// URL can NEVER carry a password/token -----------
           if grep -nE "ghrdp://rdp\?[^'\"]*(pass|pwd|token|secret|apikey|authkey)[=:]" "$ui"; then
             echo 'F19: a ghrdp:// URL template carries a credential-ish parameter' >&2
