@@ -2047,29 +2047,23 @@ jobs:
 
           # Generate pfx file for lab test
           $pfxPath = Join-Path $env:RUNNER_TEMP 'f31-lab.pfx'
-          $eScript = @"
-          \$rsa = [System.Security.Cryptography.RSA]::Create(2048)
-          \$req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new("CN=localhost", \$rsa, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1)
-          \$cert = \$req.CreateSelfSigned([datetime]::UtcNow.AddDays(-1), [datetime]::UtcNow.AddDays(1))
-          \$pfxBytes = \$cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, '')
-          [System.IO.File]::WriteAllBytes('$pfxPath', \$pfxBytes)
-"@
+          $eScript = '$rsa = [System.Security.Cryptography.RSA]::Create(2048); ' +
+                     '$req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new("CN=localhost", $rsa, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1); ' +
+                     '$cert = $req.CreateSelfSigned([datetime]::UtcNow.AddDays(-1), [datetime]::UtcNow.AddDays(1)); ' +
+                     '$pfxBytes = $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, ""); ' +
+                     '[System.IO.File]::WriteAllBytes("' + $pfxPath.Replace('\', '\\') + '", $pfxBytes)'
           pwsh -Command $eScript
 
           # --- CELL 1: Negative case (DefaultKeySet imported in CHILD pwsh process) ---
-          $childScript = @"
-          \$pfxPath = '$pfxPath'
-          \$imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new(\$pfxPath, '', [System.Security.Cryptography.X509KeyStorageFlags]::DefaultKeySet)
-          \$store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
-          \$store.Open('ReadWrite')
-          \$store.Add(\$imported)
-          \$store.Close()
-          \$thumb = \$imported.Thumbprint
-          \$rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
-          \$hashBytes = -split (\$thumb -replace '(..)', '\$1 ') | ForEach-Object { [byte]("0x\$_") }
-          New-ItemProperty -Path \$rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value \$hashBytes -Force | Out-Null
-          Restart-Service TermService -Force
-"@
+          $childScript = '$pfxPath = "' + $pfxPath.Replace('\', '\\') + '"; ' +
+                         '$imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxPath, "", [System.Security.Cryptography.X509KeyStorageFlags]::DefaultKeySet); ' +
+                         '$store = New-Object System.Security.Cryptography.X509Certificates.X509Store("My", "LocalMachine"); ' +
+                         '$store.Open("ReadWrite"); $store.Add($imported); $store.Close(); ' +
+                         '$thumb = $imported.Thumbprint; ' +
+                         '$rdpKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"; ' +
+                         '$hashBytes = -split ($thumb -replace "(..)", "\$1 ") | ForEach-Object { [byte]("0x\$_") }; ' +
+                         'New-ItemProperty -Path $rdpKey -Name "SSLCertificateSHA1Hash" -PropertyType Binary -Value $hashBytes -Force | Out-Null; ' +
+                         'Restart-Service TermService -Force'
           $childFile = Join-Path $env:RUNNER_TEMP 'f31-child-import.ps1'
           [System.IO.File]::WriteAllText($childFile, $childScript)
           
