@@ -2052,12 +2052,16 @@ jobs:
 
           $allPass = $true
 
-          # Generate distinct PFX files for negative and positive cells
+          # Generate distinct PFX files with Server Authentication EKU for negative and positive cells
           $pfxPath = Join-Path $env:RUNNER_TEMP 'f31-lab-neg.pfx'
           $posPfxPath = Join-Path $env:RUNNER_TEMP 'f31-lab-pos.pfx'
           $eScript = 'function MakePfx([string]$Path, [string]$Subject) { ' +
                      '  $rsa = [System.Security.Cryptography.RSA]::Create(2048); ' +
                      '  $req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new($Subject, $rsa, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1); ' +
+                     '  $oids = New-Object System.Security.Cryptography.OidCollection; ' +
+                     '  $oids.Add((New-Object System.Security.Cryptography.Oid("1.3.6.1.5.5.7.3.1"))) | Out-Null; ' +
+                     '  $eku = New-Object System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension($oids, $false); ' +
+                     '  $req.CertificateExtensions.Add($eku) | Out-Null; ' +
                      '  $cert = $req.CreateSelfSigned([datetime]::UtcNow.AddDays(-1), [datetime]::UtcNow.AddDays(1)); ' +
                      '  $certPem = $cert.ExportCertificatePem(); ' +
                      '  $keyPem = $rsa.ExportPkcs8PrivateKeyPem(); ' +
