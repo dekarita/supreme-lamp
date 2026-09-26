@@ -345,6 +345,23 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
         <span class="note" style="margin:0;color:#f87171">NEVER weaken NLA/CredSSP (auth-level overrides, credssp-support-off .rdp flags) or bypass cert validation as a workaround - those are the failure class, not the fix.</span>
       </div>
     </details>
+    <!-- [F30 §4] TLS-HANDSHAKE DIAGNOSTICS (copy-only; nothing here executes):
+         the "connection forcibly closed by remote host" class dies during the
+         TLS handshake BEFORE any credential is sent, so the client-side work
+         is: purge the stale TERMSRV pile once (nuclear option - it deletes
+         them ALL), read the client's enabled cipher suites, force TLS 1.3 on
+         the next attempt, or capture the handshake to read the exact alert. -->
+    <details id="connTlsBox" style="margin:0">
+      <summary style="cursor:pointer;font-size:11px;opacity:.75">"connection forcibly closed" during the TLS handshake - stale-cred purge + cipher/TLS checks</summary>
+      <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px">
+        <span class="note" style="margin:0;font-weight:600">On YOUR PC:</span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagPurgeAll" style="font-size:12px">cmdkey /list | findstr TERMSRV | ForEach-Object { cmdkey /delete:($_ -split ':')[1].Trim() }</code><a href="javascript:void(0)" onclick="copyById('connDiagPurgeAll',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- Purge ALL stale TERMSRV credentials (nuclear option)</span></span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagTlsSuites" style="font-size:12px">Get-TlsCipherSuite | Select-Object Name, CipherLength | Format-Table</code><a href="javascript:void(0)" onclick="copyById('connDiagTlsSuites',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- Check enabled cipher suites on client</span></span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagMstscTls13" style="font-size:12px">mstsc /v:&lt;fqdn&gt; /admin /tls13</code><a href="javascript:void(0)" onclick="copyById('connDiagMstscTls13',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- Force TLS 1.3 in next connection</span></span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagTshark" style="font-size:12px">tshark -i "Tailscale" -f "tcp port 3389" -w %TEMP%\rdp-tls.pcap -a duration:30</code><a href="javascript:void(0)" onclick="copyById('connDiagTshark',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- Capture TLS handshake with Wireshark (if installed)</span></span>
+        <span class="note" style="margin:0">The server-equivalent 7-day sweep lives behind GET /api/purge-stale-creds (dash-token gated, returns the LastWritten-based nuclear one-liner); the lane's own purge-before-write already handles the CURRENT fqdn entries.</span>
+      </div>
+    </details>
   </div>
   <!-- [F24 §3] AUTH-REJECT DISCRIMINATOR (F24): ONE decision row built from
        rdpListener {credValid, authEvents, credsspStatus}. It replaces the
@@ -386,6 +403,11 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row" id="nrBuildWarn" style="display:none"><span class="k">Deploy</span><span class="v" id="nrBuildWarnText" style="color:#f5d9b7"></span></div>
   <h2>Native mstsc auto-login</h2>
   <div class="row"><span class="k">LAST RDP LOGON</span><span class="v" id="lastRdpLogon">not reported yet</span></div>
+  <!-- [F30 §3] SERVER CONN LOG: the runner's OWN 30s pull of the RdpCoreTS +
+       RemoteConnectionManager channel logs (newest 3 with reason codes) -
+       the TLS-drop / cert-reject / connection-reset leg that 4624/4625 never
+       see. Latest scan stamp included; a stale/missing scan renders RED. -->
+  <div class="row"><span class="k">SERVER CONN LOG</span><span class="v" id="serverConnLog">not reported yet</span></div>
   <div class="row"><span class="k">Ticket audit</span><span class="v" id="ticketAudit">not reported yet</span></div>
   <div class="row"><span class="k">Launcher chain</span><span class="v" id="handoffChain">not reported yet</span></div>
   <!-- [F28 §2] ONE-CLICK RECOVERY. Rendered only when the correlator proves the
@@ -1249,6 +1271,8 @@ async function nativeStatus(){
     // [F20 §1] Resolve-DnsName (DNS client service, so Tailscale NRPT applies)
     // replaces nslookup, which bypasses split-DNS and times out by design.
     var dn=document.getElementById('connDiagRd');if(dn)dn.textContent='Resolve-DnsName '+diagF;
+    // [F30 §4] the force-TLS-1.3 copy-line takes the live FQDN too.
+    var d13=document.getElementById('connDiagMstscTls13');if(d13)d13.textContent='mstsc /v:'+diagF+' /admin /tls13';
    } else { diagRow.style.display='none'; }
   }
   var srvReasons=(s.reasonsDisabled||[]).slice();
@@ -1829,6 +1853,32 @@ function recoveryDecision(authLast,chain,nowMs){
  return {show:true,why:'password-rejected-by-host',dtSec:Math.round(dtSec),beaconTs:String(beacon.ts||'')};
 }
 // [F28 §2 recovery-correlator-end]
+// [F30 §3 connlog-row-begin] connLogRowText: the SERVER CONN LOG row renders
+// rdpListener.connLog (the server's OWN 30s RdpCoreTS + RemoteConnectionManager
+// event pull) VERBATIM - newest 3, each with its reason code, capped at the
+// same 200 description chars. Exactly the F28 honesty contract: no connLog
+// while the server has been up >90s, or a connLog without scanTs, renders RED
+// 'conn-log collector not running' - 'scanning...' only inside the 90s window.
+function connLogRowText(connLog,collector){
+ var c=collector||{};
+ var up=(typeof c.uptimeSec==='number')?c.uptimeSec:null;
+ var dead=(c.alive===false)||(up!==null&&up>90&&!connLog);
+ if(!connLog){
+  return {text:dead?'conn-log collector not running (no conn-log scan since server start)':'scanning... (first conn-log scan lands within 30s of server start)',red:dead,dead:dead,events:0};
+ }
+ if(!connLog.scanTs){ return {text:'conn-log collector not running (the last conn-log scan carried no scanTs)',red:true,dead:true,events:0}; }
+ var pe=connLog.probeError?(' | collector='+connLog.probeError):'';
+ var evs=connLog.events||[];
+ if(evs.length===0){
+  return {text:'none yet - scanned '+connLog.scanTs+' (no RdpCoreTS/RemoteConnectionManager events)'+pe,red:false,events:0,scanTs:connLog.scanTs};
+ }
+ var lines=evs.slice(0,3).map(function(e){
+  var d=String(e.desc||'');if(d.length>200){d=d.slice(0,200);}
+  return '['+String(e.logShort||'rdp')+' '+String(e.id||'?')+'] '+String(e.reason||'-')+' '+String(e.timeUtc||'?')+(d?' '+d:'');
+ });
+ return {text:lines.join(' | ')+' - scanned '+connLog.scanTs+pe,red:false,events:evs.length,scanTs:connLog.scanTs};
+}
+// [F30 §3 connlog-row-end]
 function paintHandoffStatus(rl,s){
  var el=$('lastRdpLogon');
  var row=logonRowText((rl&&rl.authLast)||null,(rl&&rl.logonCollector)||(s&&s.logonCollector)||null,Date.now());
@@ -1836,6 +1886,15 @@ function paintHandoffStatus(rl,s){
   el.textContent=row.text;
   if(el.style){ el.style.color=row.dead?'#f5b7b7':(row.result==='failed'?'#f5d9b7':(row.result==='success'?'#7dffc9':'')); }
   try{ window.__lastRdpLogon=row; }catch(_){}
+ }
+ // [F30 §3] SERVER CONN LOG row (newest 3 with reason codes; RED when the
+ // collector is dead - same honesty contract as the logon row above).
+ var cel=$('serverConnLog');
+ if(cel){
+  var crow=connLogRowText((rl&&rl.connLog)||null,(rl&&rl.connCollector)||(s&&s.connCollector)||null);
+  cel.textContent=crow.text;
+  if(cel.style){ cel.style.color=crow.red?'#f5b7b7':''; }
+  try{ window.__serverConnLog=crow; }catch(_){}
  }
  var audit=(s&&s.ticketAudit)||{};
  el=$('ticketAudit');if(el)el.textContent='issued='+(audit.issued||0)+' redeemed='+(audit.redeemed||0)+' rejected='+(audit.rejected||0);
