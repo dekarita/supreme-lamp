@@ -2179,11 +2179,13 @@ jobs:
               Set-Acl -LiteralPath $posKeyPath -AclObject $acl
 
               $posStage = 'bind'
+              $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+              Set-ItemProperty -Path $rdpKey -Name 'SecurityLayer' -Value 2 -Type DWord -Force | Out-Null
+              Set-ItemProperty -Path $rdpKey -Name 'UserAuthentication' -Value 1 -Type DWord -Force | Out-Null
               try {
                   $tsSetting = Get-CimInstance -Namespace 'root/cimv2/TerminalServices' -ClassName 'Win32_TSGeneralSetting' -Filter "TerminalName='RDP-Tcp'" -ErrorAction Stop
                   Invoke-CimMethod -InputObject $tsSetting -MethodName 'SetSSLCertificateSHA1Hash' -Arguments @{ SSLCertificateSHA1Hash = $thumb } -ErrorAction Stop | Out-Null
               } catch { }
-              $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
               $hashBytes = -split ($thumb -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
               New-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hashBytes -Force | Out-Null
 
@@ -2217,6 +2219,7 @@ jobs:
                   $totalRead += $r
               }
               if ($totalRead -lt 11) { throw ("x224-response-truncated: read " + $totalRead + " bytes") }
+              if ($resp[10] -eq 0) { throw ("x224-neg-rejected-ssl: selectedProtocol=" + $resp[10] + " (RDP_LEGACY)") }
 
               $ssl = [System.Net.Security.SslStream]::new($st, $false, [System.Net.Security.RemoteCertificateValidationCallback]{ $true })
               $ssl.AuthenticateAsClient('localhost')
