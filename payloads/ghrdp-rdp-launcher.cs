@@ -674,6 +674,52 @@ internal static class GhrdpRdpLauncher
     private static extern bool CredRead(string target, uint type, uint flags, out IntPtr credential);
     [DllImport("advapi32.dll")]
     private static extern void CredFree(IntPtr credential);
+    // [F30 §2.1 purge-begin] Enumerate + delete EVERY existing TERMSRV entry for
+    // THIS fqdn before the fresh write (command-line ground truth 2026-09-26:
+    // 100+ stale cmdkey entries exist as a MIX of "Domain:" (type 2) and
+    // "LegacyGeneric:" (type 1) targets for old tailnet IPs - mstsc then
+    // reuses a stale one and the host rejects it). CredEnumerate is filtered to
+    // "TERMSRV/*", and only an EXACT "TERMSRV/<fqdn>" target (case-insensitive)
+    // of type 2/1 is deleted: nothing here reads, exports or touches another
+    // host's credential, and no credential value is ever logged.
+    [DllImport("advapi32.dll", EntryPoint = "CredEnumerateW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CredEnumerate(string filter, uint flags, out uint count, out IntPtr credentials);
+    [DllImport("advapi32.dll", EntryPoint = "CredDeleteW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CredDelete(string target, uint type, uint flags);
+    private static int PurgeStaleTermsvr(string fqdn)
+    {
+        string want = "TERMSRV/" + fqdn;
+        int purged = 0;
+        IntPtr array = IntPtr.Zero;
+        uint count = 0;
+        try
+        {
+            // No entries at all (ERROR_NOT_FOUND) is the normal first-launch case.
+            if (!CredEnumerate("TERMSRV/*", 0, out count, out array)) { return 0; }
+            for (uint i = 0; i < count; i++)
+            {
+                IntPtr item = Marshal.ReadIntPtr(array, (int)i * IntPtr.Size);
+                if (item == IntPtr.Zero) { continue; }
+                Credential c = (Credential)Marshal.PtrToStructure(item, typeof(Credential));
+                string target = (c.TargetName == null) ? "" : c.TargetName;
+                if (!target.Equals(want, StringComparison.OrdinalIgnoreCase)) { continue; }
+                // CRED_TYPE_DOMAIN_PASSWORD (2) + the legacy CRED_TYPE_GENERIC
+                // (1) cmdkey /generic created. Any other type is left alone.
+                if (c.Type != 2 && c.Type != 1) { continue; }
+                if (CredDelete(target, c.Type, 0)) { purged++; }
+            }
+        }
+        catch { }
+        finally { if (array != IntPtr.Zero) { CredFree(array); } }
+        return purged;
+    }
+    private static string PurgeBeacon(int purged)
+    {
+        return "purged " + purged + " stale entries, wrote new as Domain";
+    }
+    // [F30 §2.1 purge-end]
 
     private static string TicketFromUri(string uri)
     {
@@ -694,7 +740,7 @@ internal static class GhrdpRdpLauncher
         LogJson("handoff", "rdp", step);
         HelloBounded(host, port, "rdp", ok, step);
     }
-    private static void WriteCredential(string fqdn, string user, string pass)
+    private static int WriteCredential(string fqdn, string user, string pass)
     {
         byte[] blob = Encoding.Unicode.GetBytes(pass);
         IntPtr buffer = IntPtr.Zero;
@@ -709,24 +755,32 @@ internal static class GhrdpRdpLauncher
             c.CredentialBlobSize = (uint)blob.Length;
             c.CredentialBlob = buffer;
             c.Persist = 2; // CRED_PERSIST_LOCAL_MACHINE, current user's store
-            if (!CredWrite(ref c, 0))
-            { throw new InvalidOperationException("credwrite-failed code=" + Marshal.GetLastWin32Error()); }
-            // Pre-F27 interactive /generic created a separate type-1 entry.
-            // CredWrite keys by (target,type): writing type 2 cannot replace it.
-            // Refresh it ONLY when present, via the same sanctioned store API.
-            // No deletion, no reading/exporting its old credential blob.
+            // [F30 §2.1] Is a legacy GENERIC entry present? Decide BEFORE the
+            // purge, because the purge DELETES it (a stale value must never be
+            // refreshed or kept) - and its fresh twin is re-created below.
             IntPtr old = IntPtr.Zero;
             bool genericPresent = CredRead(c.TargetName, 1, 0, out old);
             int readError = Marshal.GetLastWin32Error();
             if (old != IntPtr.Zero) { CredFree(old); }
+            if (!genericPresent && readError != 1168) // ERROR_NOT_FOUND is the only expected miss
+            { throw new InvalidOperationException("credwrite-legacy-inspection-failed"); }
+            // [F30 §2.1] PURGE BEFORE WRITE: every existing TERMSRV/<fqdn> entry
+            // (Domain type 2 AND LegacyGeneric type 1) is deleted through
+            // CredDelete, so no stale value can survive into this connection.
+            int purged = PurgeStaleTermsvr(fqdn);
+            if (!CredWrite(ref c, 0))
+            { throw new InvalidOperationException("credwrite-failed code=" + Marshal.GetLastWin32Error()); }
+            // The pre-F27 interactive /generic created a separate type-1 entry.
+            // CredWrite keys by (target,type): writing type 2 cannot replace it,
+            // so when one existed it is RE-CREATED from the fresh blob (never
+            // refreshed from the stale one the purge just removed).
             if (genericPresent)
             {
                 c.Type = 1; // existing CRED_TYPE_GENERIC compatibility entry
                 if (!CredWrite(ref c, 0))
                 { throw new InvalidOperationException("credwrite-legacy-failed code=" + Marshal.GetLastWin32Error()); }
             }
-            else if (readError != 1168) // ERROR_NOT_FOUND is the only expected miss
-            { throw new InvalidOperationException("credwrite-legacy-inspection-failed"); }
+            return purged;
         }
         finally
         {
@@ -807,9 +861,15 @@ internal static class GhrdpRdpLauncher
             if (pass.Length == 0 || Encoding.Unicode.GetByteCount(pass) > 2560)
             { throw new InvalidOperationException("redeem-credential-invalid"); }
             HandoffStep(host, port, redeemStep, true);
-            try { WriteCredential(server, user, pass); }
+            int purgedCreds = 0;
+            try { purgedCreds = WriteCredential(server, user, pass); }
             catch { HandoffStep(host, port, "credwrite-failed", false); throw; }
             HandoffStep(host, port, "credwrite-ok", true);
+            // [F30 §2.1] The purge count is VISIBLE evidence: "purged 0 stale
+            // entries, wrote new as Domain" on a clean PC, "purged 2 ..." when
+            // the Domain + LegacyGeneric twins for this fqdn both existed.
+            LogJson("handoff", "rdp", PurgeBeacon(purgedCreds));
+            HandoffStep(host, port, PurgeBeacon(purgedCreds), true);
             return null;
         }
         finally
