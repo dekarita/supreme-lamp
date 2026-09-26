@@ -51,14 +51,14 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 
-[assembly: AssemblyVersion("2.0.0.0")]
-[assembly: AssemblyFileVersion("2.0.0.0")]
+[assembly: AssemblyVersion("2.2.0.0")]
+[assembly: AssemblyFileVersion("2.2.0.0")]
 [assembly: AssemblyTitle("ghrdp-rdp-launcher")]
 
 internal static class GhrdpRdpLauncher
 {
-    private const string Ver = "2.1.0.0";
-    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F17 dns-guard)";
+    private const string Ver = "2.2.0.0";
+    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F19 client-dns)";
     private const int DefaultPort = 7331;
     // [F15 §1.2] mandated bound for the interactive credential prompt. The
     // lab-only GHRDP_LAB_CMDKEY_TIMEOUT_MS switch may only SHORTEN it (a
@@ -175,7 +175,7 @@ internal static class GhrdpRdpLauncher
         try
         {
             string body = "{\"verb\":\"" + J(verb) + "\",\"ok\":" + (ok ? "true" : "false") +
-                ",\"details\":\"" + J(Redact(details)) + "\"}";
+                ",\"details\":\"" + J(Redact(details)) + "\",\"exe\":\"" + J(Stamp) + "\"}";
             HttpWebRequest req = (HttpWebRequest)WebRequest.Create(
                 "http://" + host + ":" + port + "/api/handler-hello");
             req.Method = "POST";
@@ -212,9 +212,9 @@ internal static class GhrdpRdpLauncher
         return rest.Trim('/', ' ').ToLowerInvariant();
     }
 
-    private static void ParseQuery(string uri, out string server, out string user, out string portRaw)
+    private static void ParseQuery(string uri, out string server, out string user, out string portRaw, out string ipRaw)
     {
-        server = ""; user = ""; portRaw = "";
+        server = ""; user = ""; portRaw = ""; ipRaw = "";
         int q = uri == null ? -1 : uri.IndexOf('?');
         if (q < 0) { return; }
         foreach (string pair in uri.Substring(q + 1).Split('&', ';'))
@@ -226,6 +226,7 @@ internal static class GhrdpRdpLauncher
             if (k == "server") { server = v; }
             else if (k == "user") { user = v; }
             else if (k == "port") { portRaw = v; }
+            else if (k == "ip") { ipRaw = v; }
         }
     }
 
@@ -305,6 +306,41 @@ internal static class GhrdpRdpLauncher
         return "DNS returned non-tailnet IP: " + rejected.ToString() + ". Flush DNS and retry. (every answer must be in 100.64.0.0/10)";
     }
 
+    // [F19] A failed MagicDNS lookup is distinguishable from a dead RDP route:
+    // the dashboard supplies only the runner tailnet IP, and this bounded TCP
+    // probe determines whether the client's DNS acceptance is the missing link.
+    private static bool IsTailnetIpv4(string value)
+    {
+        IPAddress ip;
+        if (!IPAddress.TryParse(value, out ip)) { return false; }
+        byte[] b = ip.GetAddressBytes();
+        return b.Length == 4 && b[0] == 100 && b[1] >= 64 && b[1] <= 127;
+    }
+
+    private static bool CanReachRdpIp(string ip)
+    {
+        if (!IsTailnetIpv4(ip)) { return false; }
+        try
+        {
+            using (System.Net.Sockets.TcpClient client = new System.Net.Sockets.TcpClient())
+            {
+                IAsyncResult ar = client.BeginConnect(ip, 3389, null, null);
+                using (WaitHandle done = ar.AsyncWaitHandle)
+                {
+                    if (!done.WaitOne(2500)) { return false; }
+                    client.EndConnect(ar);
+                    return client.Connected;
+                }
+            }
+        }
+        catch { return false; }
+    }
+
+    private static bool ShouldShowClientDnsRemediation(bool nameResolutionFailed, bool ipReachable)
+    {
+        return nameResolutionFailed && ipReachable;
+    }
+
     // ------------------------------------------------------------------
     // Credential Manager READ-ONLY probe: cmdkey /list, stdout captured,
     // bounded. Never prompts, never writes.
@@ -349,8 +385,8 @@ internal static class GhrdpRdpLauncher
     // ------------------------------------------------------------------
     private static int RunCheck(string uri, string host, int port)
     {
-        string server; string user; string portRaw;
-        ParseQuery(uri, out server, out user, out portRaw);
+        string server; string user; string portRaw; string ipRaw;
+        ParseQuery(uri, out server, out user, out portRaw, out ipRaw);
         string cred = "(no server arg)";
         if (FqdnRe.IsMatch(server))
         {
@@ -523,8 +559,8 @@ internal static class GhrdpRdpLauncher
             return 2;
         }
 
-        string server; string user; string portRaw;
-        ParseQuery(uri, out server, out user, out portRaw);
+        string server; string user; string portRaw; string ipRaw;
+        ParseQuery(uri, out server, out user, out portRaw, out ipRaw);
         if (!FqdnRe.IsMatch(server) || !UserRe.IsMatch(user))
         {
             LogJson("error", verb, "invalid target server='" + Redact(server) + "' user='" + Redact(user) + "'");
@@ -542,16 +578,25 @@ internal static class GhrdpRdpLauncher
         string dnsProblem = DnsGuardReason(server);
         if (dnsProblem != null)
         {
+            bool nameFailed = dnsProblem.StartsWith("DNS resolution failed:", StringComparison.Ordinal);
+            bool ipReachable = nameFailed && CanReachRdpIp(ipRaw);
+            if (ShouldShowClientDnsRemediation(nameFailed, ipReachable))
+            {
+                const string remediation = "Your Tailscale DNS is off. Run once: tailscale set --accept-dns=true (or tray -> Use Tailscale DNS), then ipconfig /flushdns, then retry.";
+                LogJson("error", verb, "dns-guard blocked launch: client-dns-off; runner IP reachable on TCP 3389");
+                HelloBounded(host, port, verb, false, "client-dns-off");
+                ShowBox("ghrdp: client Tailscale DNS is off",
+                    remediation + "\n\nFQDN: " + server + "\nIP diagnosis: TCP 3389 reachable; mstsc target remains the FQDN.\n\n" +
+                    "mstsc was NOT started.\n\nlog: " + LogPath());
+                return 5;
+            }
             LogJson("error", verb, "dns-guard blocked launch: " + dnsProblem + " server=" + server);
             HelloBounded(host, port, verb, false, "dns-guard: " + dnsProblem);
             string boxTitle = dnsProblem.IndexOf("non-tailnet") >= 0 ? "ghrdp: DNS returned non-tailnet IP" : "ghrdp: DNS resolution failed";
             ShowBox(boxTitle,
-                "DNS stale/blocked - flushdns or check Tailscale.\n\n" +
-                dnsProblem + "\n\n" +
-                "FQDN: " + server + "\n" +
-                "Run ipconfig /flushdns and confirm Tailscale connected.\n\n" +
-                "mstsc was NOT started.\n\n" +
-                "log: " + LogPath());
+                "DNS stale/blocked - flushdns or check Tailscale.\n\n" + dnsProblem + "\n\n" +
+                "FQDN: " + server + "\nRun ipconfig /flushdns and confirm Tailscale connected.\n\n" +
+                "mstsc was NOT started.\n\nlog: " + LogPath());
             return 5;
         }
         string resolvedLog = "";
@@ -585,8 +630,8 @@ internal static class GhrdpRdpLauncher
         // BEFORE any cmdkey/mstsc/file work, and with every POST failure caught.
         string uri = JoinArgs(args);
         string verb = PickVerb(uri);
-        string server; string user; string portRaw;
-        ParseQuery(uri, out server, out user, out portRaw);
+        string server; string user; string portRaw; string ipRaw;
+        ParseQuery(uri, out server, out user, out portRaw, out ipRaw);
         int port = PickPort(portRaw);
         // [F15 §1.1 + §7] The beacon target is the URL server arg, but ONLY when
         // it is a legitimate *.ts.net FQDN: an arbitrary URI (any web page can

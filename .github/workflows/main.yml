@@ -1100,7 +1100,10 @@ jobs:
                   }
               }
           } catch { Write-Host ('[stage] rdpUsageSec carry-over skipped: ' + $_.Exception.Message) }
+          # [F19] Must match AssemblyFileVersion / launcher Stamp in the shipped C# source.
+          $launcherRepoVersion = '2.2.0.0'
           $cfg = [ordered]@{
+              launcherVersion = $launcherRepoVersion
               rdpIp = $ip
               rdpUser = [string]$env:RDP_USER
               rdpPass = [string]$env:RDP_PASS

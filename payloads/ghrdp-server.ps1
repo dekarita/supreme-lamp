@@ -577,6 +577,19 @@ function Invoke-ClientRequest {
                 if ([int]$ua -eq 1) { $nlaOn = $true }
             } catch { }
             $handlerAge = $null
+            $launcherVersion = '0.0.0.0'; $clientLauncherExe = ''; $clientLauncherVersion = ''; $launcherOutdated = $false
+            try {
+                if ($cfgN -and $cfgN.PSObject.Properties['launcherVersion'] -and [string]$cfgN.launcherVersion -match '^\d+\.\d+\.\d+\.\d+$') { $launcherVersion = [string]$cfgN.launcherVersion }
+                $hhFile = Join-Path $Root 'handler-hello-last.json'
+                if (Test-Path -LiteralPath $hhFile) {
+                    $hhVersion = [System.IO.File]::ReadAllText($hhFile) | ConvertFrom-Json
+                    if ($hhVersion -and $hhVersion.exe -and ([string]$hhVersion.exe).Length -le 120 -and [string]$hhVersion.exe -match '^ghrdp-rdp-launcher (\d+\.\d+\.\d+\.\d+) \([A-Za-z0-9 -]+\)$') {
+                        $clientLauncherExe = [string]$hhVersion.exe
+                        $clientLauncherVersion = $Matches[1]
+                        if ([version]$clientLauncherVersion -lt [version]$launcherVersion) { $launcherOutdated = $true }
+                    }
+                }
+            } catch { $launcherOutdated = $false }
             try {
                 # [F17 §2] raw-ts + RoundtripKind parse (the ConvertFrom-Json
                 # [datetime] conversion loses the Z and shifts by local offset).
@@ -742,6 +755,9 @@ function Invoke-ClientRequest {
                 fqdn = $fqdnN
                 hostKind = $hostKind
                 buildSha = $(if ($cfgN -and $cfgN.PSObject.Properties['buildSha']) { [string]$cfgN.buildSha } else { '' })
+                launcherVersion = $launcherVersion
+                clientLauncherVersion = $clientLauncherVersion
+                launcherOutdated = $launcherOutdated
                 # [F17 §2] rdpListener: the runner-side self-probe (main.yml step
                 # 'RDP listener self-probe (F17)') stores listening/termService/
                 # fwRule/fwScope/certThumb/nla into config.json; served verbatim
@@ -790,7 +806,7 @@ function Invoke-ClientRequest {
                         # (with Z). The old `[string]$lv.ts` emitted the
                         # server-LOCAL Z-less form, which the visitor's browser
                         # parsed as local (+05:30 => beacon age +19800s).
-                        $ns.lastHandlerVerb = @{ verb = [string]$lv.verb; ok = [bool]$lv.ok; details = [string]$lv.details; ts = (ConvertTo-UtcIso (Get-RawJsonTs $lvFile)) }
+                        $ns.lastHandlerVerb = @{ verb = [string]$lv.verb; ok = [bool]$lv.ok; details = [string]$lv.details; exe = [string]$lv.exe; ts = (ConvertTo-UtcIso (Get-RawJsonTs $lvFile)) }
                     }
                 }
             } catch { }
@@ -812,6 +828,7 @@ function Invoke-ClientRequest {
                         if ($bj.verb)    { $hh.verb    = [string]$bj.verb }
                         if ($null -ne $bj.ok) { $hh.ok = [bool]$bj.ok }
                         if ($bj.details) { $hh.details = ([string]$bj.details).Substring(0, [Math]::Min(280, ([string]$bj.details).Length)) }
+                        if ($bj.exe -and ([string]$bj.exe).Length -le 120 -and [string]$bj.exe -match '^ghrdp-rdp-launcher \d+\.\d+\.\d+\.\d+ \([A-Za-z0-9 -]+\)$') { $hh.exe = [string]$bj.exe }
                     }
                 }
             } catch { }

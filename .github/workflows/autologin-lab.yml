@@ -91,7 +91,7 @@ jobs:
           }
           Write-Host '[A] launcher log (F15 fail-visible JSONL):'
           foreach ($l in ($lTxt -split "`r?`n")) { if ($l.Trim()) { Write-Host ('  ' + $l) } }
-          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', 'ghrdp-rdp-launcher 2.1.0.0', 'HKCU')) {
+          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', 'ghrdp-rdp-launcher 2.2.0.0', 'HKCU')) {
               if ($lTxt -notmatch [regex]::Escape($need)) { A-Fail 'self-test-log' ('launcher log ' + $lLog + ' lacks ' + $need + ' :: tail=[' + (($lTxt -split "`r?`n" | Select-Object -Last 6) -join ' | ') + ']') }
           }
           $cs = [System.IO.File]::ReadAllText((Join-Path $lab 'ghrdp-rdp-launcher.cs'))
@@ -256,7 +256,7 @@ jobs:
           if (-not $p.WaitForExit(60000)) { P-Fail 'check-wait' 'ghrdp://check did not exit within 60s' }
           if ($p.ExitCode -ne 0) { P-Fail 'check-exit' ('ghrdp://check exit code ' + $p.ExitCode) }
           $logTxt = Log-Text
-          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', 'ghrdp-rdp-launcher 2.1.0.0', 'HKCU')) {
+          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', 'ghrdp-rdp-launcher 2.2.0.0', 'HKCU')) {
               if ($logTxt -notmatch [regex]::Escape($need)) { P-Fail 'check-log' ('launcher log lacks ' + $need) }
           }
           if ((Cap-Lines).Count -ne $n0) { P-Fail 'check-beacon' 'a server-less ghrdp://check must not post a beacon' }

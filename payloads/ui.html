@@ -349,6 +349,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
       <span class="k">Launcher beacon</span>
       <span class="v" id="winBeacon" style="font-family:ui-monospace,Consolas,monospace;font-size:12px">(none yet - click WINDOWS AUTO-LOGIN)</span>
       <button id="btnRunCheck" type="button" title="fires ghrdp://check - a MessageBox on this PC proves the launcher exe runs (no server needed)">RUN CHECK</button>
+      <div class="row" id="launcherVersionRow" style="display:none;flex-basis:100%;color:#ffd36a"><span class="k">Launcher version</span><span class="v" id="launcherVersionText">launcher outdated - re-run install.cmd once</span><a class="btn" href="/dl/ghrdp-handler-kit.zip">DOWNLOAD INSTALL KIT</a></div>
       <span class="note">launcher log <code id="winBeaconLog">%LOCALAPPDATA%\ghrdp\ghrdp-launcher.log</code>
         <a href="javascript:void(0)" onclick="copyById('winBeaconLog',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
     </div>
@@ -388,6 +389,12 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
       </ol>
       <span class="note" id="kitPathB"><b>Path B (repo clone)</b>: <code>git pull</code> then double-click <code>payloads\install.cmd</code> - zero warnings, because clone files carry no Mark-of-the-Web. WEB DESKTOP below stays the zero-install primary.</span>
     </div>
+  </div>
+  <div class="row" id="clientDnsRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px;border:1px solid #555;padding:8px">
+    <span class="k" id="clientDnsStatus">Checking client Tailscale DNS…</span>
+    <pre class="note" id="clientDnsCommands" style="margin:0;white-space:pre-wrap"></pre>
+    <button type="button" onclick="copyById('clientDnsCommands',this)">COPY DNS FIX LINES</button>
+    <span class="note" id="clientDnsTray" style="margin:0">Tailscale tray -> Use Tailscale DNS.</span>
   </div>
   <!-- [F17 §2] RDP LISTENER row: the runner-side self-probe (main.yml step
        'RDP listener self-probe (F17)') writes config.json -> rdpListener and
@@ -573,6 +580,38 @@ function parseTs(s){if(!s)return NaN;s=String(s).trim();if(/Z$|[+-]\d{2}:\d{2}$/
 // DateTime.Parse(..., RoundtripKind) contract: an explicit Z/offset is honored
 // as-is, a bare ts is read as UTC by appending Z.
 function parseTsUtc(s){if(!s)return NaN;var t=String(s).trim();var v=Date.parse(t);if(!isNaN(v)&&(/[Zz]$/.test(t)||/[+-]\d{2}:?\d{2}$/.test(t)))return v;var u=Date.parse(t+'Z');return isNaN(u)?(isNaN(v)?NaN:v):u;}
+// [F19 §1] Browser-side A/B DNS probe. no-cors opaque responses count as
+// reachable; reject/network timeout means fail. Kept injectable for unit tests.
+async function f19ProbeOne(url, fetchImpl){
+ var ctl=(typeof AbortController!=='undefined')?new AbortController():null, timer;
+ try{
+  var req=(fetchImpl||fetch)(url,{mode:'no-cors',cache:'no-store',signal:ctl?ctl.signal:undefined});
+  var timed=new Promise(function(_,reject){timer=setTimeout(function(){if(ctl)ctl.abort();reject(new Error('timeout'));},3000);});
+  await Promise.race([req,timed]);return true;
+ }catch(_){return false;}finally{clearTimeout(timer);}
+}
+async function f19ProbeMatrix(ip,fqdn,fetchImpl){
+ var r=await Promise.all([f19ProbeOne('http://'+ip+':7331/',fetchImpl),f19ProbeOne('http://'+fqdn+':7331/',fetchImpl)]);
+ return {ipOk:r[0],nameOk:r[1]};
+}
+window.__f19ClientDnsProbe=f19ProbeMatrix;
+var f19ProbeTarget='',f19ProbeTimer=0;
+function showF19ProbeResult(result,fqdn){
+ var row=$('clientDnsRow'),title=$('clientDnsStatus'),lines=$('clientDnsCommands');if(!row||!title||!lines)return;
+ row.style.display='';
+ lines.textContent='tailscale set --accept-dns=true\nipconfig /flushdns\nping '+fqdn;
+ if(result.ipOk&&!result.nameOk){title.textContent="YOUR PC's Tailscale DNS is off (name not resolvable, IP reachable)";title.style.color='#ff6b6b';row.style.borderColor='#ff6b6b';}
+ else if(result.nameOk){title.textContent='client DNS ok';title.style.color='#86e3a1';row.style.borderColor='#55a879';}
+ else{title.textContent='Client DNS probe inconclusive (IP and FQDN were not both reachable)';title.style.color='#ffd36a';row.style.borderColor='#8c7438';}
+}
+function scheduleF19Probe(ip,fqdn){
+ if(!/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip)||! /^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$/i.test(fqdn))return;
+ var target=ip+'|'+fqdn;if(target===f19ProbeTarget)return;f19ProbeTarget=target;
+ if(f19ProbeTimer)clearInterval(f19ProbeTimer);
+ var run=function(){f19ProbeMatrix(ip,fqdn).then(function(r){showF19ProbeResult(r,fqdn);});};
+ run();f19ProbeTimer=setInterval(run,30000);
+}
+
 function fmtBytes(n){n=Number(n)||0;if(n<1024)return n.toFixed(0)+' B';var u=['KB','MB','GB','TB','PB'],i=-1;do{n=n/1024;i++;}while(n>=1024&&i<u.length-1);return n.toFixed(n>=100?0:(n>=10?1:2))+' '+u[i]}
 function fmtSpeed(n){return fmtBytes(n)+'/s'}
 function fmtDurShort(s){s=Math.max(0,Math.floor(Number(s)||0));if(s<60)return s+'s';var m=Math.floor(s/60),ss=s%60;if(m<60)return m+'m '+ss+'s';var h=Math.floor(m/60);m=m%60;if(h<24)return h+'h '+m+'m';var d=Math.floor(h/24);h=h%24;return d+'d '+h+'h'}
@@ -1027,6 +1066,10 @@ async function nativeStatus(){
   var r=await fetch(apiBase()+'/api/native-status'+(key?('?key='+encodeURIComponent(key)):''),{cache:'no-store'});
   if(!r.ok)return;
   var s=await r.json();
+  // [F19 §2] only an older reported client binary is marked outdated.
+  var vr=$('launcherVersionRow');if(vr){vr.style.display=s&&s.launcherOutdated===true?'':'none';}
+  var vt=$('launcherVersionText');if(vt&&s&&s.launcherOutdated===true)vt.textContent='launcher outdated - re-run install.cmd once (server '+(s.launcherVersion||'?')+', client '+(s.clientLauncherVersion||'unknown')+')';
+  if(typeof scheduleF19Probe==='function')scheduleF19Probe((s&&s.runnerResolvedIP)||'',(s&&s.fqdn)||'');
   // [F12-1 §1.4] handler-hello beacon input: the launcher POSTs
   // /api/handler-hello right after handing the local .rdp to mstsc, and
   // native-status echoes the last beacon. A beacon newer than the click proves
@@ -1082,6 +1125,7 @@ async function nativeStatus(){
   // [F17 §2] CONNECTION diagnostics lines (copy-only) follow the live FQDN.
   var diagF=(s&&s.fqdn)||'';
   var diagIP=(s&&s.runnerResolvedIP)||'';
+  window.__runnerResolvedIP=diagIP;
   window.__runnerDnsOk=/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(diagIP);
   var diagRow=document.getElementById('connDiagRow');
   if(diagRow){
@@ -1498,7 +1542,8 @@ if(waBtn) waBtn.onclick=function(ev){
  var vis=function(){if(document.hidden)wasFocused=false;};
  window.addEventListener('blur',lost);
  document.addEventListener('visibilitychange',vis);
- launchProto('ghrdp://rdp?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user));
+ var rip=window.__runnerResolvedIP||'';if(!/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(rip))return;
+ launchProto('ghrdp://rdp?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user)+'&ip='+encodeURIComponent(rip));
  var note=$('winAutoNote');
  if(note)note.textContent='protocol dispatched - mstsc should open fullscreen shortly';
  // [F12-1 §1.4] hello-beacon watch: 20s window, native-status polled every 3s

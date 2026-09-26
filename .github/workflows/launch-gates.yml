@@ -941,6 +941,33 @@ jobs:
             echo "F9k guard count ($guards) != ghrdp-lib dot-source count ($dotsrc)" >&2
             exit 1
           fi
+      - name: F19 client DNS + launcher version + safe URL gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Assemble the banned tokens so this guard cannot match itself.
+          forbidden_ui="$(printf 'Send')$(printf 'Keys')|$(printf 'UI')$(printf 'Automation')|password.{0,30}(auto.?type|type.?password)"
+          if git grep -nEi "$forbidden_ui" -- .; then
+            echo 'F19: credential-UI automation pattern found' >&2; exit 1
+          fi
+          url_secret='[?&](password|passwd|pwd|token|secret|authkey|api[_-]?key)='
+          if git grep -nE 'ghrdp://' -- '*.html' '*.js' '*.cs' '*.ps1' '*.cmd' '*.md' | grep -Ei "$url_secret"; then
+            echo 'F19: ghrdp URL may carry a credential or token parameter' >&2; exit 1
+          fi
+          grep -q "mode:'no-cors'" payloads/ui.html
+          grep -q 'f19ProbeMatrix' payloads/ui.html
+          grep -q 'setInterval(run,30000)' payloads/ui.html
+          grep -q 'launcherVersion = \$launcherRepoVersion' .github/workflows/main.yml
+          grep -Fq "\$launcherRepoVersion = '2.2.0.0'" .github/workflows/main.yml
+          grep -q 'launcherOutdated = \$launcherOutdated' payloads/ghrdp-server.ps1
+          grep -Fq '[version]$clientLauncherVersion -lt [version]$launcherVersion' payloads/ghrdp-server.ps1
+          grep -q '&ip=' payloads/ui.html
+          grep -q 'CanReachRdpIp(ipRaw)' payloads/ghrdp-rdp-launcher.cs
+          grep -q 'hello ok:false details' payloads/ghrdp-rdp-launcher.cs || grep -q 'false, "client-dns-off"' payloads/ghrdp-rdp-launcher.cs
+          grep -q 'ShouldShowClientDnsRemediation(nameFailed, ipReachable)' payloads/ghrdp-rdp-launcher.cs
+          grep -q 'Your Tailscale DNS is off' payloads/ghrdp-rdp-launcher.cs
+          grep -q 'f19-client-dns' payloads/ghrdp-rdp-launcher.cs
+          grep -q '2.2.0.0' payloads/ghrdp-rdp-launcher.cs
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:

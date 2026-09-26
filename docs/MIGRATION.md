@@ -530,6 +530,10 @@ Decommission note: uninstalling TightVNC is `choco uninstall tightvnc -y`
 the next poll; removing TightVNC + websockify + the rule closes the
 tailnet listener.
 
+### 1.11 Optional future: code-signed `.rdp` files
+
+The unsigned `.rdp` warning is expected when redirection directives are present; review Drives, Clipboard, and Ports, then choose **Connect** on each launch. Optional future work may sign the file with a CodeSigning certificate (including a self-signed certificate), establish one-time client trust, and run `rdpsign` to reduce that consent UI. Do not treat signing as implemented, and do not suppress or automate the warning in this change.
+
 ## 2. Decommission checklist (Actions-as-RDP teardown)
 
 > Prerequisites: §1.7 VPS provisioned and client NLA-probe verified;
