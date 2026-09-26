@@ -108,6 +108,17 @@ jobs:
           # emulate §6(a) post-install posture: handler present + cmdkey entry
           # SET (dummy lab credential, deleted at the end - never a real one).
           & cmdkey.exe /add:TERMSRV/$fqdn /user:labuser /pass:labdummy000 | Out-Null
+          # [F17 §3] the client-DNS guard refuses to launch mstsc into an
+          # unresolvable name (rc5, by design), so this cell resolves its fake
+          # FQDN through the same hosts-file loopback alias cell P uses; the
+          # job-level GHRDP_LAB_DNS_ALLOW_LOOPBACK=1 relaxation lets the REAL
+          # launcher accept it (production PCs resolve real tailnet names).
+          $hostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+          try { $hTxt = [System.IO.File]::ReadAllText($hostsPath) } catch { $hTxt = '' }
+          if ($hTxt -notmatch [regex]::Escape($fqdn)) {
+              try { [System.IO.File]::AppendAllText($hostsPath, ("`r`n127.0.0.1 " + $fqdn + "`r`n")) } catch { Write-Host ('[B/C] hosts write failed: ' + $_.Exception.Message) }
+              Write-Host ('[B/C] hosts: 127.0.0.1 ' + $fqdn)
+          }
           # The handler-hello beacon posts to http://<fqdn>:7331; a fake lab
           # fqdn cannot be impersonated locally, so the ROUND-TRIP is proven in
           # step D against the REAL server instead (beacon failure is silent by
