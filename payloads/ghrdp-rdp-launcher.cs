@@ -1,96 +1,178 @@
-// ghrdp-rdp-launcher.cs  [F10-1]  PS-FREE Windows auto-login protocol launcher.
+// ghrdp-rdp-launcher.cs  [F15]  FAIL-VISIBLE Windows auto-login protocol launcher.
 // Compiled on the CLIENT PC by install.cmd with the in-box .NET Framework 4.x
 // csc (C# 5 - keep syntax C#5: no interpolation, no nameof, no ?./?.[]).
 // Registers nothing itself; install.cmd writes HKCU\Software\Classes\ghrdp.
 //
-// Verb:  ghrdp://rdp?server=<fqdn>&user=<user>
-//   1. If TERMSRV/<fqdn> is absent from the user's Credential Manager, launch
-//      INTERACTIVE cmdkey ONCE (Windows itself prompts for the password -
-//      this process never sees, reads, or writes any password or hash).
-//   2. Write %TEMP%\ghrdp-<sha1-16>.rdp LOCALLY (local write = no MOTW, no
-//      SmartScreen prompt) with fullscreen (screen mode id:i:2) + redirection
-//      directives. NO password/hash lines, NO desktopwidth/desktopheight
-//      (fullscreen follows the client's native resolution = exact aspect).
-//   3. Start mstsc <rdp> visible; delete the temp .rdp best-effort after
-//      mstsc has loaded it; POST /api/handler-hello telemetry (no creds).
+// Verbs:
+//   ghrdp://rdp?server=<fqdn>&user=<user>[&port=<1-65535>]
+//     1. Beacon FIRST (JSONL log line + POST /api/handler-hello, details
+//        'invoked') before any other work, so a dashboard sees the click even
+//        if everything below fails.
+//     2. If TERMSRV/<fqdn> is absent from the user's Credential Manager, launch
+//        INTERACTIVE cmdkey ONCE in a VISIBLE Normal window (Windows itself
+//        prompts for the password - this process never sees, reads, or writes
+//        any password or hash), WaitForExit(180000), then VERIFY the entry with
+//        a cmdkey /list parse.
+//     3. Write %TEMP%\ghrdp-<sha1-8>.rdp LOCALLY (local write = no MOTW, no
+//        SmartScreen prompt) with fullscreen (screen mode id:i:2) + redirection
+//        directives. NO password/hash lines, NO desktopwidth/desktopheight
+//        (fullscreen follows the client's native resolution = exact aspect).
+//     4. Start mstsc VISIBLE, WaitForExit(2000): still running => beacon
+//        'mstsc-started pid=N'; already exited => MessageBox with the exit code
+//        + the last 5 log lines (a silently dying mstsc is impossible).
+//   ghrdp://check[?server=<fqdn>]
+//     install-time / user-triggered self test: MessageBox with the registered
+//     reg command, TERMSRV presence, the log path and the exe version stamp.
 //
-// NLA/CredSSP stay at Windows defaults: this file deliberately OMITS
-// 'authentication level', 'prompt for credentials', and 'enablecredsspsupport'.
+// FAIL-VISIBLE CONTRACT (F15 §1.4): every exit path ends in a visible surface -
+// an mstsc window, the visible cmdkey console, or a MessageBox - and every one
+// of them is JSONL-logged. There is NO windowless/hidden process flag anywhere
+// in this file: the credential prompt and mstsc must never be hidden.
+// Telemetry is best effort: a dead beacon target never blocks or hides a
+// failure (bounded background POST, 5s join).
+//
+// Log: %LOCALAPPDATA%\ghrdp\ghrdp-launcher.log (JSONL, token/password strings
+// redacted). NLA/CredSSP stay at Windows defaults: this file deliberately
+// OMITS 'authentication level', 'prompt for credentials', and
+// 'enablecredsspsupport'.
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Net;
+using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
+
+[assembly: AssemblyVersion("2.0.0.0")]
+[assembly: AssemblyFileVersion("2.0.0.0")]
+[assembly: AssemblyTitle("ghrdp-rdp-launcher")]
 
 internal static class GhrdpRdpLauncher
 {
+    private const string Ver = "2.0.0.0";
+    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F15 fail-visible)";
+    private const int DefaultPort = 7331;
+    // [F15 §1.2] mandated bound for the interactive credential prompt. The
+    // lab-only GHRDP_LAB_CMDKEY_TIMEOUT_MS switch may only SHORTEN it (a
+    // headless runner cannot type a password); production always uses 180000.
+    private const int CmdkeyTimeoutMs = 180000;
     private static readonly Regex FqdnRe = new Regex(
         @"^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$",
         RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
     private static readonly Regex UserRe = new Regex(
         @"^[A-Za-z0-9_\-\.\\]{1,104}$", RegexOptions.CultureInvariant);
+    private static string logPathCache;
 
-    private static string Decode(string s)
+    // ------------------------------------------------------------------
+    // [F15 §1.6] JSONL log with token/password redaction.
+    // ------------------------------------------------------------------
+    private static string LogPath()
+    {
+        if (logPathCache != null) { return logPathCache; }
+        string dir = null;
+        try { dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ghrdp"); }
+        catch { }
+        if (string.IsNullOrEmpty(dir)) { dir = Path.Combine(Path.GetTempPath(), "ghrdp"); }
+        try { Directory.CreateDirectory(dir); } catch { }
+        logPathCache = Path.Combine(dir, "ghrdp-launcher.log");
+        return logPathCache;
+    }
+
+    private static string Redact(string s)
     {
         if (s == null) { return ""; }
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < s.Length; i++)
-        {
-            char c = s[i];
-            if (c == '+') { sb.Append(' '); }
-            else if (c == '%' && i + 2 < s.Length)
-            {
-                int v;
-                if (int.TryParse(s.Substring(i + 1, 2),
-                    System.Globalization.NumberStyles.HexNumber,
-                    System.Globalization.CultureInfo.InvariantCulture, out v))
-                { sb.Append((char)v); i += 2; }
-                else { sb.Append(c); }
-            }
-            else { sb.Append(c); }
-        }
-        return sb.ToString();
+        string r = Regex.Replace(s,
+            @"(?i)(password|passwd|pwd|secret|token|apikey|authkey)\s*[=:]\s*[^\s&\""]+",
+            "$1=[redacted]");
+        // '/pass' with a VALUE must never survive into the log (this tooling
+        // always uses the valueless form so Windows does the prompting).
+        r = Regex.Replace(r, @"/pass\s*:\s*\S+", "/pass=[redacted]");
+        r = Regex.Replace(r, @"(?i)(tskey-[A-Za-z0-9_\-]+|ghp_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+)", "[redacted]");
+        return r;
     }
 
-    private static bool HasCredEntry(string fqdn)
+    private static string J(string s)
+    {
+        if (s == null) { return ""; }
+        return s.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", " ").Replace("\n", " ");
+    }
+
+    private static void LogJson(string level, string verb, string details)
     {
         try
         {
-            ProcessStartInfo psi = new ProcessStartInfo("cmdkey.exe", "/list");
-            psi.RedirectStandardOutput = true;
-            psi.UseShellExecute = false;
-            psi.CreateNoWindow = true;
-            Process p = Process.Start(psi);
-            string outp = p.StandardOutput.ReadToEnd();
-            p.WaitForExit(15000);
-            return outp.IndexOf("TERMSRV/" + fqdn, StringComparison.OrdinalIgnoreCase) >= 0;
-        }
-        catch { return false; }
-    }
-
-    private static void EnsureCredEntry(string fqdn, string user)
-    {
-        // Interactive, exactly once: /pass with no value makes cmdkey itself
-        // prompt "Type the password:" in its own console window.
-        try
-        {
-            Process p = Process.Start("cmdkey.exe",
-                "/generic:TERMSRV/" + fqdn + " /user:" + user + " /pass");
-            if (p != null) { p.WaitForExit(240000); }
+            int pid = -1;
+            try { pid = Process.GetCurrentProcess().Id; } catch { }
+            string line = "{\"ts\":\"" + DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture) +
+                "\",\"level\":\"" + J(level) + "\",\"verb\":\"" + J(verb) + "\",\"details\":\"" +
+                J(Redact(details)) + "\",\"exe\":\"" + Stamp + "\",\"pid\":" + pid + "}";
+            File.AppendAllText(LogPath(), line + Environment.NewLine, new UTF8Encoding(false));
         }
         catch { }
     }
 
-    private static void Hello(string fqdn, string verb, bool ok, string details)
+    private static string TailLines(int n)
     {
         try
         {
-            string body = "{\"verb\":\"" + verb + "\",\"ok\":" + (ok ? "true" : "false") +
-                ",\"details\":\"" + details.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"}";
+            string[] all = File.ReadAllLines(LogPath());
+            int start = all.Length > n ? all.Length - n : 0;
+            StringBuilder sb = new StringBuilder();
+            for (int i = start; i < all.Length; i++) { sb.AppendLine(all[i]); }
+            return sb.ToString();
+        }
+        catch (Exception ex) { return "(log unreadable: " + ex.GetType().Name + ")"; }
+    }
+
+    // ------------------------------------------------------------------
+    // [F15 §1.4] The single visible-surface primitive: everything the launcher
+    // wants the user to see goes through here and is logged FIRST, so the log
+    // always names the dialog even if MessageBox itself fails. The only
+    // suppression is the lab switch (headless runners cannot click OK);
+    // production always shows the dialog.
+    // ------------------------------------------------------------------
+    private static void ShowBox(string title, string text)
+    {
+        LogJson("msgbox", "", title + " :: " + text);
+        if (Environment.GetEnvironmentVariable("GHRDP_LAB_NOMSG") == "1")
+        {
+            LogJson("msgbox-suppressed", "", "GHRDP_LAB_NOMSG=1 (lab only - production always shows this dialog)");
+            return;
+        }
+        try
+        {
+            System.Windows.Forms.MessageBox.Show(text, title,
+                System.Windows.Forms.MessageBoxButtons.OK, System.Windows.Forms.MessageBoxIcon.Warning);
+        }
+        catch (Exception ex)
+        {
+            LogJson("error", "", "MessageBox itself failed: " + ex.GetType().Name + ": " + ex.Message);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Telemetry: bounded POST (never a wedge) - see [F10-10].
+    // ------------------------------------------------------------------
+    private static void HelloBounded(string host, int port, string verb, bool ok, string details)
+    {
+        if (string.IsNullOrEmpty(host)) { return; }   // §1.5: POST only with a server arg
+        Thread t = new Thread(delegate() { Hello(host, port, verb, ok, details); });
+        t.IsBackground = true;
+        t.Start();
+        t.Join(5000);
+    }
+
+    private static void Hello(string host, int port, string verb, bool ok, string details)
+    {
+        try
+        {
+            string body = "{\"verb\":\"" + J(verb) + "\",\"ok\":" + (ok ? "true" : "false") +
+                ",\"details\":\"" + J(Redact(details)) + "\"}";
             HttpWebRequest req = (HttpWebRequest)WebRequest.Create(
-                "http://" + fqdn + ":7331/api/handler-hello");
+                "http://" + host + ":" + port + "/api/handler-hello");
             req.Method = "POST";
             req.ContentType = "application/json";
             req.Timeout = 3000;
@@ -105,26 +187,32 @@ internal static class GhrdpRdpLauncher
         catch { }
     }
 
-    // [F10-10] Telemetry must never wedge the launcher: DNS/proxy stalls can
-    // outlive HttpWebRequest.Timeout, so the POST runs on a background thread
-    // with a hard 5s join. The beacon is advisory (the dashboard reads it best
-    // effort) - a dead or unreachable target is a no-op, never a hang.
-    private static void HelloBounded(string fqdn, string verb, bool ok, string details)
+    // ------------------------------------------------------------------
+    // URI parsing (no I/O, no process work: safe before the first beacon).
+    // ------------------------------------------------------------------
+    private static string JoinArgs(string[] args)
     {
-        System.Threading.Thread t = new System.Threading.Thread(
-            delegate() { Hello(fqdn, verb, ok, details); });
-        t.IsBackground = true;
-        t.Start();
-        t.Join(5000);
+        if (args == null || args.Length == 0) { return ""; }
+        return string.Join(" ", args).Trim().Trim('"');
     }
 
-    private static int Main(string[] args)
+    private static string PickVerb(string uri)
     {
-        string uri = string.Join(" ", args).Trim().Trim('"');
-        int qi = uri.IndexOf("rdp?", StringComparison.OrdinalIgnoreCase);
-        if (qi < 0) { return 2; }
-        string server = "", user = "";
-        foreach (string pair in uri.Substring(qi + 4).Split('&', ';'))
+        if (string.IsNullOrEmpty(uri)) { return ""; }
+        string rest = uri;
+        int sep = rest.IndexOf("://", StringComparison.Ordinal);
+        if (sep >= 0) { rest = rest.Substring(sep + 3); }
+        int q = rest.IndexOf('?');
+        if (q >= 0) { rest = rest.Substring(0, q); }
+        return rest.Trim('/', ' ').ToLowerInvariant();
+    }
+
+    private static void ParseQuery(string uri, out string server, out string user, out string portRaw)
+    {
+        server = ""; user = ""; portRaw = "";
+        int q = uri == null ? -1 : uri.IndexOf('?');
+        if (q < 0) { return; }
+        foreach (string pair in uri.Substring(q + 1).Split('&', ';'))
         {
             int eq = pair.IndexOf('=');
             if (eq < 1) { continue; }
@@ -132,22 +220,181 @@ internal static class GhrdpRdpLauncher
             string v = Decode(pair.Substring(eq + 1).Trim());
             if (k == "server") { server = v; }
             else if (k == "user") { user = v; }
+            else if (k == "port") { portRaw = v; }
         }
-        if (!FqdnRe.IsMatch(server) || !UserRe.IsMatch(user)) { return 3; }
+    }
 
-        bool had = HasCredEntry(server);
-        if (!had) { EnsureCredEntry(server, user); }
-        bool keyNow = had || HasCredEntry(server);
+    private static int PickPort(string portRaw)
+    {
+        int p;
+        if (!string.IsNullOrEmpty(portRaw) &&
+            int.TryParse(portRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out p) &&
+            p >= 1 && p <= 65535) { return p; }
+        return DefaultPort;
+    }
 
-        string hash;
+    private static string Decode(string s)
+    {
+        if (s == null) { return ""; }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c == '+') { sb.Append(' '); }
+            else if (c == '%' && i + 2 < s.Length)
+            {
+                int v;
+                if (int.TryParse(s.Substring(i + 1, 2),
+                    NumberStyles.HexNumber, CultureInfo.InvariantCulture, out v))
+                { sb.Append((char)v); i += 2; }
+                else { sb.Append(c); }
+            }
+            else { sb.Append(c); }
+        }
+        return sb.ToString();
+    }
+
+    // ------------------------------------------------------------------
+    // Credential Manager READ-ONLY probe: cmdkey /list, stdout captured,
+    // bounded. Never prompts, never writes.
+    // ------------------------------------------------------------------
+    private static bool HasCredEntry(string fqdn)
+    {
+        try
+        {
+            ProcessStartInfo psi = new ProcessStartInfo("cmdkey.exe", "/list");
+            psi.UseShellExecute = false;             // capture stdout
+            psi.RedirectStandardOutput = true;
+            Process p = Process.Start(psi);
+            if (p == null) { return false; }
+            string outp = p.StandardOutput.ReadToEnd();
+            p.WaitForExit(15000);
+            return outp.IndexOf("TERMSRV/" + fqdn, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+        catch { return false; }
+    }
+
+    private static string RegCommand()
+    {
+        try
+        {
+            using (Microsoft.Win32.RegistryKey k =
+                Microsoft.Win32.Registry.CurrentUser.OpenSubKey(@"Software\Classes\ghrdp\shell\open\command"))
+            {
+                if (k != null)
+                {
+                    object v = k.GetValue("");
+                    if (v != null) { return Convert.ToString(v); }
+                }
+            }
+            return "(not registered - run install.cmd)";
+        }
+        catch (Exception ex) { return "(unreadable: " + ex.GetType().Name + ")"; }
+    }
+
+    // ------------------------------------------------------------------
+    // [F15 §1.5] ghrdp://check - verb self test, no server required: the user
+    // (or install.cmd) must SEE a MessageBox proving the exe runs.
+    // ------------------------------------------------------------------
+    private static int RunCheck(string uri, string host, int port)
+    {
+        string server; string user; string portRaw;
+        ParseQuery(uri, out server, out user, out portRaw);
+        string cred = "(no server arg)";
+        if (FqdnRe.IsMatch(server))
+        {
+            cred = HasCredEntry(server)
+                ? "present (TERMSRV/" + server + ")"
+                : "absent (Windows will prompt once on the first rdp launch)";
+        }
+        string reg = RegCommand();
+        string text = Stamp + "\n\n" +
+            "reg  HKCU\\Software\\Classes\\ghrdp\\shell\\open\\command\n     " + reg + "\n\n" +
+            "TERMSRV credential: " + cred + "\n\n" +
+            "log: " + LogPath() + "\n\n" +
+            "You are reading this dialog, so the exe RAN. If it never appears, Defender" +
+            " or policy blocked the exe - read the log above.";
+        LogJson("check", "check", "reg=" + reg + " cred=" + cred);
+        HelloBounded(host, port, "check", true, "check-shown");
+        ShowBox("ghrdp launcher check", text);
+        return 0;
+    }
+
+    // ------------------------------------------------------------------
+    // [F15 §1.2] The credential step. cmdkey itself owns the only window that
+    // can ask for the password; it is created VISIBLE, in Normal style, with
+    // the system directory as CWD, and we NEVER touch stdout/stderr of it.
+    // ------------------------------------------------------------------
+    private static int CmdkeyStep(string server, string user, string host, int port)
+    {
+        if (HasCredEntry(server))
+        {
+            LogJson("cmdkey", "rdp", "TERMSRV/" + server + " already present (cmdkey /list parse) - no prompt");
+            HelloBounded(host, port, "rdp", true, "cmdkey-stored=true");
+            return 0;
+        }
+        ProcessStartInfo psi = new ProcessStartInfo("cmdkey.exe",
+            "/generic:TERMSRV/" + server + " /user:" + user + " /pass");
+        psi.UseShellExecute = true;                    // cmdkey gets its own console
+        psi.WindowStyle = ProcessWindowStyle.Normal;   // NEVER hidden
+        psi.WorkingDirectory = Environment.SystemDirectory;
+        LogJson("cmdkey", "rdp", "interactive cmdkey prompt shown (generic TERMSRV/" + server + ", user " + user + ")");
+        HelloBounded(host, port, "rdp", true, "cmdkey-shown");
+        Process p = Process.Start(psi);
+        if (p == null) { throw new InvalidOperationException("cmdkey.exe did not start"); }
+        int waitMs = CmdkeyTimeoutMs;
+        string labMs = Environment.GetEnvironmentVariable("GHRDP_LAB_CMDKEY_TIMEOUT_MS");
+        int parsedMs;
+        if (!string.IsNullOrEmpty(labMs) &&
+            int.TryParse(labMs, NumberStyles.Integer, CultureInfo.InvariantCulture, out parsedMs) &&
+            parsedMs >= 1000 && parsedMs < CmdkeyTimeoutMs)
+        {
+            waitMs = parsedMs;
+            LogJson("cmdkey", "rdp", "lab-only prompt bound active: " + waitMs + "ms (production = " + CmdkeyTimeoutMs + "ms)");
+        }
+        if (!p.WaitForExit(waitMs))
+        {
+            try { p.Kill(); } catch { }
+            LogJson("error", "rdp", "cmdkey prompt timed out after 180s - killed, mstsc NOT started");
+            HelloBounded(host, port, "rdp", false, "cmdkey-timeout");
+            ShowBox("ghrdp: cmdkey prompt timed out",
+                "cmdkey prompt timed out\n\nThe Windows password prompt stayed open for 180 seconds" +
+                " (or never appeared at all).\nNothing was stored and mstsc was NOT started.\n\n" +
+                "log: " + LogPath());
+            return 1;
+        }
+        bool stored = HasCredEntry(server);
+        LogJson("cmdkey", "rdp", "prompt exited code=" + p.ExitCode +
+            " verify(TERMSRV/" + server + ")=" + (stored ? "stored" : "absent"));
+        HelloBounded(host, port, "rdp", stored, "cmdkey-stored=" + (stored ? "true" : "false"));
+        if (!stored)
+        {
+            ShowBox("ghrdp: credential not stored",
+                "The cmdkey prompt closed without a stored TERMSRV/" + server + " entry.\n\n" +
+                "OK opens mstsc anyway - mstsc will then ask for the password itself" +
+                " (its own visible prompt).\n\nlog: " + LogPath());
+        }
+        return 0;
+    }
+
+    private static string Sha1Hex8(string s)
+    {
         using (SHA1 sha = SHA1.Create())
         {
-            byte[] h = sha.ComputeHash(Encoding.UTF8.GetBytes(server + "|" + user));
+            byte[] h = sha.ComputeHash(Encoding.UTF8.GetBytes(s));
             StringBuilder hx = new StringBuilder();
             for (int i = 0; i < 8; i++) { hx.Append(h[i].ToString("x2")); }
-            hash = hx.ToString();
+            return hx.ToString();
         }
-        string rdp = Path.Combine(Path.GetTempPath(), "ghrdp-" + hash + ".rdp");
+    }
+
+    // ------------------------------------------------------------------
+    // [F15 §1.3] .rdp write + VISIBLE mstsc; an immediate exit is a visible
+    // failure (exit code + last log lines), never a silent nothing.
+    // ------------------------------------------------------------------
+    private static int MstscStep(string server, string user, string host, int port)
+    {
+        string rdp = Path.Combine(Path.GetTempPath(), "ghrdp-" + Sha1Hex8(server + "|" + user) + ".rdp");
         string[] lines = new string[] {
             "full address:s:" + server,
             "username:s:" + user,
@@ -170,21 +417,101 @@ internal static class GhrdpRdpLauncher
             "autoreconnection enabled:i:1"
         };
         File.WriteAllLines(rdp, lines);   // local write: no MOTW, no SmartScreen
-        try { Process.Start("mstsc.exe", "\"" + rdp + "\""); }
-        catch { HelloBounded(server, "rdp-launch", false, "mstsc-start-failed"); return 4; }
+        long bytes = 0;
+        try { bytes = new FileInfo(rdp).Length; } catch { }
+        LogJson("rdp", "rdp", "wrote " + rdp + " (" + bytes + " bytes, " + lines.Length +
+            " directives, no credential lines)");
 
-        HelloBounded(server, "rdp-launch", true,
-            "server=" + server + " user=" + user + " credEntry=" + (had ? "present" : (keyNow ? "created" : "skipped")));
+        ProcessStartInfo msi = new ProcessStartInfo("mstsc.exe", "\"" + rdp + "\"");
+        msi.UseShellExecute = true;
+        msi.WindowStyle = ProcessWindowStyle.Normal;   // the client window is the visible surface
+        Process m = Process.Start(msi);
+        if (m == null) { throw new InvalidOperationException("mstsc.exe did not start"); }
+        LogJson("mstsc", "rdp", "started pid=" + m.Id + " rdp=" + rdp);
+        if (m.WaitForExit(2000))
+        {
+            int code = m.ExitCode;
+            LogJson("error", "rdp", "mstsc exited within 2s, code=" + code);
+            HelloBounded(host, port, "rdp", false, "mstsc-exited=" + code);
+            ShowBox("ghrdp: mstsc exited immediately",
+                "mstsc exit code " + code + "\n\nlast 5 log lines (" + LogPath() + "):\n\n" + TailLines(5));
+            return 4;
+        }
+        HelloBounded(host, port, "rdp", true, "mstsc-started pid=" + m.Id);
 
         if (Environment.GetEnvironmentVariable("GHRDP_LAB_KEEP_RDP") != "1")
         {
-            System.Threading.Thread.Sleep(8000);
+            Thread.Sleep(8000);
             for (int i = 0; i < 6; i++)
             {
                 try { File.Delete(rdp); break; }
-                catch { System.Threading.Thread.Sleep(5000); }
+                catch { Thread.Sleep(5000); }
             }
         }
         return 0;
+    }
+
+    // ------------------------------------------------------------------
+    // Work: everything that touches cmdkey/mstsc/disk lives here, strictly
+    // AFTER Main's first instruction (the 'invoked' log + beacon).
+    // ------------------------------------------------------------------
+    private static int DoWork(string uri, string verb, string host, int port)
+    {
+        if (verb == "check") { return RunCheck(uri, host, port); }
+
+        if (verb != "rdp")
+        {
+            LogJson("error", verb, "unknown verb '" + verb + "' - no rdp/check work done");
+            ShowBox("ghrdp launcher: unknown verb",
+                "verb '" + (verb.Length == 0 ? "(none)" : verb) + "' is neither 'rdp' nor 'check'.\n\n" +
+                "Use:  ghrdp://rdp?server=<fqdn>&user=<user>\n   or  ghrdp://check\n   or  ghrdp://check?server=<fqdn>\n\n" +
+                "log: " + LogPath());
+            return 2;
+        }
+
+        string server; string user; string portRaw;
+        ParseQuery(uri, out server, out user, out portRaw);
+        if (!FqdnRe.IsMatch(server) || !UserRe.IsMatch(user))
+        {
+            LogJson("error", verb, "invalid target server='" + Redact(server) + "' user='" + Redact(user) + "'");
+            HelloBounded(host, port, verb, false, "invalid-target");
+            ShowBox("ghrdp launcher: invalid target",
+                "server must be a *.ts.net FQDN (got '" + server + "') and user must be a plain account name.\n\n" +
+                "log: " + LogPath());
+            return 3;
+        }
+
+        int rc = CmdkeyStep(server, user, host, port);
+        if (rc != 0) { return rc; }     // a timed-out prompt already produced its MessageBox
+        return MstscStep(server, user, host, port);
+    }
+
+    private static int Main(string[] args)
+    {
+        // [F15 §1.1 hello-before-work] FIRST instruction of the process: JSONL
+        // log line + POST /api/handler-hello {verb, ok:true, details:'invoked'} -
+        // BEFORE any cmdkey/mstsc/file work, and with every POST failure caught.
+        string uri = JoinArgs(args);
+        string verb = PickVerb(uri);
+        string server; string user; string portRaw;
+        ParseQuery(uri, out server, out user, out portRaw);
+        int port = PickPort(portRaw);
+        LogJson("invoked", verb, "uri=" + Redact(uri) + " log=" + LogPath());
+        HelloBounded(server, port, verb, true, "invoked");
+
+        // [F15 §1.4] global catch: an escaping exception is reported through the
+        // SAME two surfaces (log + MessageBox + beacon) - never a silent exit.
+        try
+        {
+            return DoWork(uri, verb, server, port);
+        }
+        catch (Exception ex)
+        {
+            LogJson("error", verb, "unhandled " + ex.GetType().Name + ": " + ex.Message);
+            HelloBounded(server, port, verb, false, ex.GetType().Name);
+            ShowBox("ghrdp launcher error",
+                ex.GetType().Name + ": " + ex.Message + "\n\n" + Stamp + "\nlog: " + LogPath());
+            return 1;
+        }
     }
 }
