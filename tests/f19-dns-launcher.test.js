@@ -269,8 +269,18 @@ test('F19-13 lab fallback lane: cell S proves matrix + version guard against the
   assert.match(lab, /name: "S: F19 client-DNS probe \+ launcher version guard \(csc matrix \+ real server\)"/);
   for (const tok of [
     "'--dns-selftest'", 'GHRDP_LAB_OUT', 'launcherOutdated', 'launcherSeenVersion',
-    'ghrdp-rdp-launcher 2.1.0.0 (F17 dns-guard)', 'ghrdp-rdp-launcher 2.2.0.0 (F19 dns-remediation+ver-guard)',
+    'ghrdp-rdp-launcher 2.1.0.0 (F17 dns-guard)',
+    // [F20] the CURRENT stamp is READ out of the shipped launcher source
+    // (Ver + Stamp suffix), never hand-typed: the launcher moved to 2.3.0.0
+    // with the F20 dialog and a hardcoded version here would silently unpin
+    // the guard (and would have gone stale on every later bump).
+    'private const string Ver = "(\\d+(\\.\\d+){1,3})"',
+    'private const string Stamp = "ghrdp-rdp-launcher " \\+ Ver \\+ " \\(([^)]*)\\)"',
+    "'ghrdp-rdp-launcher ' + $sVer", 'launcherVersion = $sVer',
     'outdated-not-flagged', 'S_result=pass',
   ]) assert.ok(lab.includes(tok), 'lab cell S does not prove: ' + tok);
+  // ...and the old hand-typed constants are really gone (they would pin the
+  // lab to a version the repo no longer ships).
+  assert.ok(!/launcherVersion = '2\.2\.0\.0'/.test(lab), 'cell S still hand-types the repo constant');
   assert.ok(lab.includes("' s=' + $(if ($env:S_result -eq 'pass')"), 'cell s is not in the lab matrix readout');
 });

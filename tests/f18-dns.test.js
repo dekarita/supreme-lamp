@@ -42,7 +42,13 @@ test('F18-2 server + UI: runnerResolvedIP + AUTO-LOGIN gate + CONNECTION DIAGNOS
   assert.ok(server.includes('runnerResolvedIP'), 'native-status must return runnerResolvedIP');
   assert.ok(server.includes("reasons += 'runner-dns-broken'"), 'must disable when runner DNS is broken');
   assert.ok(ui.includes('CONNECTION DIAGNOSTICS'), 'diagnostics heading missing');
-  assert.ok(ui.includes('id="connDiagNs"'), 'nslookup copy line missing');
+  // [F20 §1] nslookup is RETIRED as a diagnostic (it bypasses the DNS client
+  // service, so Tailscale NRPT split-DNS never applies and its timeout is a
+  // false alarm). Resolve-DnsName uses the DNS client service.
+  assert.ok(ui.includes('id="connDiagRd"'), 'Resolve-DnsName copy line missing');
+  assert.ok(ui.includes("dn.textContent='Resolve-DnsName '+diagF"), 'the copy line is not wired to the live FQDN');
+  assert.ok(!/<code[^>]*>[^<]*nslookup/.test(ui), 'ui.html still offers nslookup as a copy-line diagnostic');
+  assert.ok(ui.includes('nslookup bypasses Tailscale split-DNS'), 'the false-alarm note is missing');
   assert.ok(ui.includes('id="connDiagResolved"'), 'runnerResolvedIP display missing');
   assert.ok(ui.includes('Runner DNS broken'), 'disabled AUTO-LOGIN copy missing');
   assert.ok(ui.includes('__runnerDnsOk'), 'UI DNS gate missing');

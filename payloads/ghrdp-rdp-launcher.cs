@@ -70,14 +70,17 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 
-[assembly: AssemblyVersion("2.2.0.0")]
-[assembly: AssemblyFileVersion("2.2.0.0")]
+// [F20 §2] 2.3.0.0: the immediate-mstsc-exit dialog now points at the
+// dashboard's evidence-based 0x904/0x7 fallback (CONNECTION DIAGNOSTICS ->
+// "if mstsc still fails") instead of leaving the user with a bare exit code.
+[assembly: AssemblyVersion("2.3.0.0")]
+[assembly: AssemblyFileVersion("2.3.0.0")]
 [assembly: AssemblyTitle("ghrdp-rdp-launcher")]
 
 internal static class GhrdpRdpLauncher
 {
-    private const string Ver = "2.2.0.0";
-    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F19 dns-remediation+ver-guard)";
+    private const string Ver = "2.3.0.0";
+    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F20 evidence-fallback+nslookup-kill)";
     private const int DefaultPort = 7331;
     // [F19 §2] the RDP TCP port used ONLY for the client-DNS diagnosis probe
     // (the mstsc target itself always stays the MagicDNS FQDN).
@@ -678,10 +681,18 @@ internal static class GhrdpRdpLauncher
         if (m.WaitForExit(2000))
         {
             int code = m.ExitCode;
-            LogJson("error", "rdp", "mstsc exited within 2s, code=" + code);
+            // [F20 §2] the exit code is logged in BOTH forms (mstsc reports the
+            // 0x904/0x7 class in hex), and the dialog now sends the user to the
+            // dashboard's evidence-based fallback: export the client + runner
+            // event logs and map the failure from them - never guess, and never
+            // weaken NLA, CredSSP or certificate validation to "make it work".
+            LogJson("error", "rdp", "mstsc exited within 2s, code=" + code + " (0x" +
+                code.ToString("X", CultureInfo.InvariantCulture) + ")");
             HelloBounded(host, port, "rdp", false, "mstsc-exited=" + code);
             ShowBox("ghrdp: mstsc exited immediately",
-                "mstsc exit code " + code + "\n\nlast 5 log lines (" + LogPath() + "):\n\n" + TailLines(5));
+                "mstsc exit code " + code + " (0x" + code.ToString("X", CultureInfo.InvariantCulture) + ")" +
+                "\n\nsee dashboard -> CONNECTION DIAGNOSTICS -> \"if mstsc still fails\" and send the exports" +
+                "\n\nlast 5 log lines (" + LogPath() + "):\n\n" + TailLines(5));
             return 4;
         }
         HelloBounded(host, port, "rdp", true, "mstsc-started pid=" + m.Id);

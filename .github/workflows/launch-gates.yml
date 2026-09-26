@@ -563,7 +563,9 @@ jobs:
           grep -qF 'runnerResolvedIP' "$srv"
           grep -qF "reasons += 'runner-dns-broken'" "$srv"
           grep -qF 'CONNECTION DIAGNOSTICS' "$ui"
-          grep -qF 'id="connDiagNs"' "$ui"
+          # [F20 §1] the DNS copy-line is Resolve-DnsName (DNS client service, so
+          # Tailscale NRPT split-DNS applies); nslookup is retired as a diagnostic.
+          grep -qF 'id="connDiagRd"' "$ui"
           grep -qF 'id="connDiagResolved"' "$ui"
           grep -qF 'Runner DNS broken' "$ui"
           grep -qF '__runnerDnsOk' "$ui"
@@ -693,6 +695,89 @@ jobs:
           grep -qF -- "-ArgumentList '--dns-selftest'" .github/workflows/launch-gates.yml
           grep -qF -- '$p.WaitForExit()' .github/workflows/launch-gates.yml
           echo 'F19 gates PASS'
+
+      - name: F20 nslookup false alarm killed + evidence-based 0x904 fallback
+        shell: bash
+        run: |
+          set -euo pipefail
+          ui=payloads/ui.html
+          cs=payloads/ghrdp-rdp-launcher.cs
+          # --- §1 nslookup is no longer OFFERED as a diagnostic ----------------
+          # The correction note may NAME nslookup (that note IS the fix); the
+          # command must never appear inside a <code> copy-line the user is told
+          # to run, and the retired element id must not come back.
+          if grep -nE '<code[^>]*>[^<]*nslookup' "$ui"; then
+            echo 'F20: ui.html still offers nslookup as a diagnostic copy-line' >&2
+            exit 1
+          fi
+          if grep -qF 'id="connDiagNs"' "$ui"; then
+            echo 'F20: the retired nslookup copy-line element survived' >&2
+            exit 1
+          fi
+          grep -qF 'id="connDiagRd"' "$ui" || { echo 'F20: Resolve-DnsName copy-line missing' >&2; exit 1; }
+          grep -qF 'Resolve-DnsName &lt;fqdn&gt;' "$ui"
+          grep -qF "dn.textContent='Resolve-DnsName '+diagF" "$ui" || { echo 'F20: the copy-line is not wired to the live FQDN' >&2; exit 1; }
+          grep -qF 'nslookup bypasses Tailscale split-DNS' "$ui" || { echo 'F20: the nslookup false-alarm note is missing' >&2; exit 1; }
+          grep -qF 'a nslookup timeout while ping works is EXPECTED and not a fault' "$ui"
+          # ping + Test-NetConnection stay exactly as they were.
+          grep -qF 'id="connDiagPing"' "$ui"
+          grep -qF 'id="connDiagTnc"' "$ui"
+          # --- §2 evidence-based 0x904/0x7 fallback ----------------------------
+          grep -qF 'if mstsc still fails (0x904/0x7)' "$ui" || { echo 'F20: the 0x904/0x7 fallback block is missing' >&2; exit 1; }
+          # collapsed by default (never the first thing to try) + copy-only.
+          grep -qF '<details id="connDiagFailBox"' "$ui" || { echo 'F20: the fallback block is not collapsed' >&2; exit 1; }
+          grep -qF '<summary' "$ui"
+          blk=$(awk '/id="connDiagRow"/{f=1} f{print} f && /^  <\/div>$/{exit}' "$ui")
+          test -n "$blk" || { echo 'F20: the CONNECTION DIAGNOSTICS row could not be extracted' >&2; exit 1; }
+          grep -qF 'if mstsc still fails (0x904/0x7)' <<< "$blk" || { echo 'F20: the fallback block is not inside CONNECTION DIAGNOSTICS' >&2; exit 1; }
+          for tok in \
+            'wevtutil epl Microsoft-Windows-TerminalServices-ClientActiveXCore/Operational %TEMP%\rdp-client.evtx' \
+            'wevtutil el | findstr /i "terminal credssp schannel"' \
+            'wevtutil epl Security %TEMP%\rdp-security.evtx /q:"*[System[(EventID=4624 or EventID=4625)]]"' \
+            "wevtutil epl System %TEMP%\rdp-system.evtx /q:\"*[System[Provider[@Name='Schannel']]]\"" \
+            'wevtutil epl Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational %TEMP%\rdp-termgr.evtx' \
+            'Paste the exports into this session'
+          do
+            grep -qF "$tok" <<< "$blk" || { echo "F20: fallback block missing export line: $tok" >&2; exit 1; }
+          done
+          # copy-only + no execution token (the page never runs anything) + no
+          # NLA/CredSSP/cert weakening suggestion anywhere in the row.
+          if grep -oE 'onclick="[^"]*"' <<< "$blk" | grep -v '^onclick="copyById' | grep .; then
+            echo 'F20: a non-copy control appeared inside CONNECTION DIAGNOSTICS' >&2
+            exit 1
+          fi
+          if grep -nEi 'powershell|mshta|wscript|cscript|Invoke-Expression|iex ' <<< "$blk"; then
+            echo 'F20: an execution token appeared inside CONNECTION DIAGNOSTICS' >&2
+            exit 1
+          fi
+          if grep -nEi 'authentication level|enablecredsspsupport|authlvloverride|prompt for credentials|certificate.*bypass|bypass.*cert' <<< "$blk"; then
+            echo 'F20: the fallback block suggests weakening NLA/CredSSP/cert validation' >&2
+            exit 1
+          fi
+          # --- §2 launcher: exit code logged + dashboard pointer in the dialog --
+          grep -qF 'mstsc exited within 2s, code=' "$cs" || { echo 'F20: the mstsc exit code is not logged' >&2; exit 1; }
+          # (the C# source carries the escaped form \"if mstsc still fails\").
+          grep -qF 'see dashboard -> CONNECTION DIAGNOSTICS -> \"if mstsc still fails\" and send the exports' "$cs" || { echo 'F20: the launcher dialog lacks the dashboard pointer' >&2; exit 1; }
+          grep -qF 'mstsc exit code ' "$cs"
+          # the exe changed, so the repo constant it stamps into every beacon
+          # MUST be at least the F20 build (else no client is ever told to update).
+          ver=$(grep -oE 'private const string Ver = "[0-9]+(\.[0-9]+){1,3}"' "$cs" | grep -oE '[0-9]+(\.[0-9]+){1,3}' | head -1)
+          test -n "$ver" || { echo 'F20: the launcher version constant is missing' >&2; exit 1; }
+          test "$(printf '2.3.0.0\n%s\n' "$ver" | sort -V | head -1)" = '2.3.0.0' || { echo "F20: launcher version $ver predates the F20 build" >&2; exit 1; }
+          # --- §3 the standing bans still hold on the touched surfaces ----------
+          if grep -InE 'SendKeys|UIAutomation|AutomationElement|ValuePattern|keybd_event' "$ui" "$cs"; then
+            echo 'F20: credential-UI automation token found' >&2
+            exit 1
+          fi
+          if grep -nE "ghrdp://rdp\?[^'\"]*(pass|pwd|token|secret|apikey|authkey)[=:]" "$ui"; then
+            echo 'F20: a ghrdp:// URL carries a credential parameter' >&2
+            exit 1
+          fi
+          if grep -nE 'powershell\.exe|-ExecutionPolicy|Invoke-Expression|-EncodedCommand' "$ui"; then
+            echo 'F20: a script-host launch token reached the page' >&2
+            exit 1
+          fi
+          echo 'F20 gates PASS'
 
       - name: F8 web-desktop honesty gates
         shell: bash
