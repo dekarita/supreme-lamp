@@ -1204,16 +1204,28 @@ jobs:
           $termOk = ($termStatus -eq 'Running')
           # (3) fwRule: 'ghrdp-rdp-3389' must be enabled + ALL profiles + scope
           # EXACTLY 100.64.0.0/10. Missing/wrong is FIXED in place (never
-          # 0.0.0.0/0, never unscoped) and re-read back.
+          # 0.0.0.0/0, never unscoped) and re-read back. NOTE: Windows stores
+          # the /10 in netmask form ('100.64.0.0/255.192.0.0') - Normalize-
+          # FwScope folds both spellings so the comparison stays exact-scoped.
+          function Normalize-FwScope([string]$s) {
+              $t = ([string]$s).Trim()
+              if ($t -ieq '100.64.0.0/255.192.0.0') { return '100.64.0.0/10' }
+              return $t
+          }
           $fwRuleOk = $false; $fwScope = ''; $fwProfiles = ''; $fwFixed = $false; $fwWhy = ''
           try {
               $rule = Get-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -ErrorAction SilentlyContinue | Select-Object -First 1
               if ($rule) {
                   $fwProfiles = [string]$rule.Profile
-                  try { $fwScope = (@($rule | Get-NetFirewallAddressFilter).RemoteAddress) -join ',' } catch { $fwScope = '' }
-                  if (([string]$rule.Enabled -ne 'True') -or ($fwProfiles -ne 'Any') -or ($fwScope -ne '100.64.0.0/10')) {
-                      Write-Host ('[F17] fw rule wrong (enabled=' + $rule.Enabled + ' profile=' + $fwProfiles + ' scope=' + $fwScope + ') - fixing to enabled/Any/100.64.0.0/10 (never unscoped)')
-                      Set-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -Enabled True -Profile Any -RemoteAddress '100.64.0.0/10' -ErrorAction Stop
+                  try { $fwScope = (@($rule | Get-NetFirewallAddressFilter).RemoteAddress | ForEach-Object { Normalize-FwScope $_ }) -join ',' } catch { $fwScope = '' }
+                  # A DISABLED rule is the break signature (F17 §5): report it
+                  # and fail loud - the probe never silently re-enables ingress.
+                  # A WRONG SCOPE/PROFILE is fixed in place (still never widened).
+                  if ([string]$rule.Enabled -ne 'True') {
+                      $fwWhy = 'rule ghrdp-rdp-3389 is DISABLED - re-enable it (the probe reports, never silently re-enables)'
+                  } elseif (($fwProfiles -ne 'Any') -or ($fwScope -ne '100.64.0.0/10')) {
+                      Write-Host ('[F17] fw rule wrong (enabled=' + $rule.Enabled + ' profile=' + $fwProfiles + ' scope=' + $fwScope + ') - fixing scope/profile to Any/100.64.0.0/10 (never unscoped)')
+                      Set-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -Profile Any -RemoteAddress '100.64.0.0/10' -ErrorAction Stop
                       $fwFixed = $true
                   }
               } else {
@@ -1226,7 +1238,7 @@ jobs:
               $rule2 = Get-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -ErrorAction SilentlyContinue | Select-Object -First 1
               if ($rule2) {
                   $fwProfiles = [string]$rule2.Profile
-                  try { $fwScope = (@($rule2 | Get-NetFirewallAddressFilter).RemoteAddress) -join ',' } catch { $fwScope = '' }
+                  try { $fwScope = (@($rule2 | Get-NetFirewallAddressFilter).RemoteAddress | ForEach-Object { Normalize-FwScope $_ }) -join ',' } catch { $fwScope = '' }
                   $fwRuleOk = (([string]$rule2.Enabled -eq 'True') -and ($fwProfiles -eq 'Any') -and ($fwScope -eq '100.64.0.0/10'))
               }
           } catch { $fwWhy = $_.Exception.Message }
