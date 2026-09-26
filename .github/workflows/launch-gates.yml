@@ -526,8 +526,11 @@ jobs:
           # treat an unreadable scope as FAIL (never a silent OK), and its
           # repair must have be--tried forms
           grep -q 'function Read-FwScope' <<< "$probe"
+          grep -q 'function Normalize-FwScope' <<< "$probe"
+          grep -q '(Normalize-FwScope \$fwScopeNow) -ne' <<< "$probe"
           grep -q 'GHRDP-RDP scope could not be read' <<< "$probe"
-          grep -q "if (\$fwScopeNow -ne '100\.64\.0\.0/10')" <<< "$probe"
+          grep -q "(Normalize-FwScope \$fwScopeNow) -ne '100\.64\.0\.0/10'" <<< "$probe"
+          grep -q "\$scopeNorm -ne '100\.64\.0\.0/10'" <<< "$probe"
           grep -q "\$profiles -eq 'Any' -or" <<< "$probe"
           # the probe may never WRITE a wider scope than the tailnet range (a
           # mention inside a fix-text string is allowed; a write is not).

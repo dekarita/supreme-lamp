@@ -834,6 +834,24 @@ jobs:
           function Get-FwRule {
               return (Get-NetFirewallRule -DisplayName 'GHRDP-RDP' -ErrorAction SilentlyContinue | Select-Object -First 1)
           }
+          function Normalize-FwScope([string]$sc) {
+              # Windows reports the same address filter either as CIDR
+              # ('100.64.0.0/10') or as address+mask ('100.64.0.0/255.192.0.0' -
+              # what the first live run returned); both mean the tailnet range,
+              # so every entry is normalized to CIDR before any comparison.
+              $out = @()
+              foreach ($part in ($sc -split ',')) {
+                  $t = ($part -replace '\s+', '')
+                  if ($t -match '^(\d{1,3}(?:\.\d{1,3}){3})/(\d{1,3}(?:\.\d{1,3}){3})$') {
+                      $mask = [System.Net.IPAddress]::Parse($Matches[2]).GetAddressBytes()
+                      $bits = 0
+                      foreach ($b in $mask) { $v = [int]$b; while ($v -gt 0) { $bits += ($v -band 1); $v = $v -shr 1 } }
+                      $t = $Matches[1] + '/' + $bits
+                  }
+                  if ($t) { $out += $t }
+              }
+              return ($out -join ',')
+          }
           try {
               $rule = Get-FwRule
               if (-not $rule) {
@@ -847,7 +865,7 @@ jobs:
                   # 'Any' IS all profiles (the canonical rule is created with -Profile Any)
                   $allProfiles = ($profiles -eq 'Any' -or ($profiles -match 'Domain' -and $profiles -match 'Private' -and $profiles -match 'Public'))
                   $fwScopeNow = Read-FwScope $rule
-                  if ($fwScopeNow -ne '100.64.0.0/10') {
+                  if ((Normalize-FwScope $fwScopeNow) -ne '100.64.0.0/10') {
                       Write-Host ('[probe] GHRDP-RDP scope reads as "' + $fwScopeNow + '" - setting it to 100.64.0.0/10')
                       try { Set-NetFirewallRule -DisplayName 'GHRDP-RDP' -RemoteAddress '100.64.0.0/10' -ErrorAction Stop }
                       catch {
@@ -860,17 +878,18 @@ jobs:
                       $allProfiles = ($profiles -eq 'Any' -or ($profiles -match 'Domain' -and $profiles -match 'Private' -and $profiles -match 'Public'))
                       $fwScopeNow = Read-FwScope $rule
                   }
+                  $scopeNorm = Normalize-FwScope $fwScopeNow
                   if (-not $fwScopeNow) {
                       $fwDetail = 'GHRDP-RDP scope could not be read (property, address-filter and netsh all failed) - firewall state unknown'
                   } elseif ($enabled -ne 'True') {
                       $fwDetail = 'GHRDP-RDP rule DISABLED - fix: Enable-NetFirewallRule -DisplayName GHRDP-RDP'
                   } elseif (-not $allProfiles) {
                       $fwDetail = 'GHRDP-RDP profiles=' + $profiles + ' - fix: rule must cover all profiles (-Profile Any)'
-                  } elseif ($fwScopeNow -ne '100.64.0.0/10') {
-                      $fwDetail = 'GHRDP-RDP scope=' + $fwScopeNow + ' - fix: scope must equal the tailnet range 100.64.0.0/10 - never a wider scope'
+                  } elseif ($scopeNorm -ne '100.64.0.0/10') {
+                      $fwDetail = 'GHRDP-RDP scope=' + $fwScopeNow + ' (normalized ' + $scopeNorm + ') - fix: scope must equal the tailnet range 100.64.0.0/10 - never a wider scope'
                   } else {
                       $fwOk = $true
-                      $fwDetail = 'GHRDP-RDP enabled, all profiles, scope 100.64.0.0/10'
+                      $fwDetail = 'GHRDP-RDP enabled, all profiles, scope ' + $fwScopeNow + ' (=100.64.0.0/10)'
                   }
               } else { $fwDetail = 'GHRDP-RDP rule could not be created (firewall API failed)' }
           } catch { $fwDetail = 'firewall probe failed: ' + $_.Exception.Message }
