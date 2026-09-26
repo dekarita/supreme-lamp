@@ -36,10 +36,10 @@ jobs:
           $code = $LASTEXITCODE
           Write-Host ('[A] install.cmd exit code = ' + $code)
           if ($code -ne 0) { Write-Host '[A] FAIL: install.cmd returned nonzero'; exit 1 }
-          $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.exe'
+          $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
           if (-not (Test-Path -LiteralPath $exe)) { Write-Host '[A] FAIL: exe missing'; exit 1 }
           $cmdReg = (Get-ItemProperty 'Registry::HKEY_CURRENT_USER\Software\Classes\ghrdp\shell\open\command' -ErrorAction SilentlyContinue).'(default)'
-          if ($cmdReg -notmatch 'ghrdp-launcher\.exe') { Write-Host ('[A] FAIL: protocol not registered, command=' + $cmdReg); exit 1 }
+          if ($cmdReg -notmatch 'ghrdp-rdp-launcher\.exe') { Write-Host ('[A] FAIL: protocol not registered, command=' + $cmdReg); exit 1 }
           $cs = [System.IO.File]::ReadAllText((Join-Path $lab 'ghrdp-rdp-launcher.cs'))
           $cmd = [System.IO.File]::ReadAllText((Join-Path $lab 'install.cmd'))
           if (($cs + $cmd) -match 'powershell\.exe|ExecutionPolicy|Invoke-Expression|EncodedCommand') { Write-Host '[A] FAIL: script-host token'; exit 1 }
@@ -49,7 +49,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.exe'
+          $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
           $fqdn = 'lab-target.dekarita.tailnet-lab.ts.net'
           # emulate §6(a) post-install posture: handler present + cmdkey entry
           # SET (dummy lab credential, deleted at the end - never a real one).
@@ -415,15 +415,87 @@ jobs:
           $code = $LASTEXITCODE
           $out | ForEach-Object { Write-Host ('[N install.cmd] ' + $_) }
           $after = [string](Get-Item -LiteralPath 'HKCU:\Software\Classes\ghrdp\shell\open\command').GetValue('')
-          $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.exe'
-          $printedBefore = [bool](($out -join "`n") -match 'handler BEFORE')
-          $printedAfter  = [bool](($out -join "`n") -match 'handler AFTER')
-          $overwritten   = ($after -match 'ghrdp-launcher\.exe') -and ($after -notmatch 'cmd\.exe')
+          $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
+          $printedBefore = [bool](($out -join "`n") -match 'BEFORE:')
+          $printedAfter  = [bool](($out -join "`n") -match 'AFTER:')
+          $overwritten   = ($after -match 'ghrdp-rdp-launcher\.exe') -and ($after -notmatch 'cmd\.exe')
           $ok = ($code -eq 0) -and $printedBefore -and $printedAfter -and $overwritten -and (Test-Path -LiteralPath $exe)
           Write-Host ('[N] exit=' + $code + ' printedBefore=' + $printedBefore + ' printedAfter=' + $printedAfter + ' overwritten=' + $overwritten + ' after=' + $after)
           if (-not $ok) { Write-Host '::error::[N] stage=overwrite :: install.cmd did not overwrite the stale registration'; exit 1 }
           Write-Host '[N] PASS: stale value printed, overwritten and verified by install.cmd'
           'N_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+
+      - name: "O: one-click kit /dl route (zip sha-compare, allowlist 404s, on-page guide)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # [F14 §5] stage + serve + download proof on the REAL server: build the
+          # kit EXACTLY like the F14 main.yml step, serve it via GET /dl, download
+          # all three allowlisted objects and sha-compare them vs source, prove
+          # every non-allowlisted file 404s, and prove the button href + guide
+          # are rendered on the dashboard page.
+          $root = 'C:\ghrdp'
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), (@{ dnsName = 'lab-host.dekarita.tailnet-lab.ts.net'; rdpUser = 'labuser'; rdpIp = '100.118.42.7' } | ConvertTo-Json -Compress), $utf8)
+          [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), 'lab-dash-token-0123456789', $utf8)
+          $stage = Join-Path $env:RUNNER_TEMP 'ghrdp-stage-f14'
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item payloads\install.cmd (Join-Path $stage 'install.cmd') -Force
+          Copy-Item payloads\ghrdp-rdp-launcher.cs (Join-Path $stage 'ghrdp-rdp-launcher.cs') -Force
+          # decoys: real files that sit next to the kit in $root - /dl must 404 them
+          Copy-Item payloads\ui.html (Join-Path $root 'ui.html') -Force
+          Copy-Item payloads\ghrdp-server.ps1 (Join-Path $root 'ghrdp-server.ps1') -Force
+          $zip = Join-Path $root 'ghrdp-handler-kit.zip'
+          if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+          Compress-Archive -Path (Join-Path $stage 'install.cmd'),(Join-Path $stage 'ghrdp-rdp-launcher.cs') -DestinationPath $zip -Force
+          try { Add-Type -AssemblyName System.IO.Compression.FileSystem } catch { }
+          $zv = [System.IO.Compression.ZipFile]::OpenRead($zip)
+          $entryCount = @($zv.Entries).Count
+          $zv.Dispose()
+          if ($entryCount -ne 2) { Write-Host ('::error::[O] stage=zip :: kit holds ' + $entryCount + ' entries (must be 2)'); exit 1 }
+          function O-Fail([string]$Stage, [string]$Detail) { Write-Host ('::error::[O] stage=' + $Stage + ' :: ' + $Detail); exit 1 }
+          try { $old = Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction Stop; foreach ($o in $old) { try { Stop-Process -Id $o.OwningProcess -Force -ErrorAction SilentlyContinue } catch { } }; Start-Sleep -Seconds 1 } catch { }
+          $srvOut = Join-Path $env:RUNNER_TEMP 'f14-server-out.log'; $srvErr = Join-Path $env:RUNNER_TEMP 'f14-server-err.log'
+          $srv = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:GITHUB_WORKSPACE\payloads\ghrdp-server.ps1"
+          $ok = $false
+          for ($i = 0; $i -lt 40 -and -not $ok; $i++) { try { $ok = [bool](Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction Stop) } catch { }; if (-not $ok) { Start-Sleep -Milliseconds 500 } }
+          if (-not $ok) { O-Fail 'listen' 'server never bound 7331' }
+          $dl = 'http://127.0.0.1:7331/dl'
+          $dlDir = Join-Path $env:RUNNER_TEMP 'f14-dl'
+          New-Item -ItemType Directory -Path $dlDir -Force | Out-Null
+          foreach ($pair in @(@('ghrdp-handler-kit.zip', $zip), @('install.cmd', (Join-Path $env:GITHUB_WORKSPACE 'payloads\install.cmd')), @('ghrdp-rdp-launcher.cs', (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')))) {
+              $out = Join-Path $dlDir $pair[0]
+              $code = & curl.exe --noproxy '*' -sS -o $out -w '%{http_code}' -D (Join-Path $dlDir ($pair[0] + '.hdr')) ($dl + '/' + $pair[0])
+              if ($code -ne '200') { O-Fail 'download' ($pair[0] + ' HTTP ' + $code) }
+              $got = (Get-FileHash $out -Algorithm SHA256).Hash
+              $want = (Get-FileHash $pair[1] -Algorithm SHA256).Hash
+              if ($got -ne $want) { O-Fail 'sha' ($pair[0] + ' sha mismatch got=' + $got + ' want=' + $want) }
+          }
+          $zh = [System.IO.File]::ReadAllText((Join-Path $dlDir 'ghrdp-handler-kit.zip.hdr'))
+          if ($zh -notmatch 'Content-Disposition: attachment; filename="ghrdp-handler-kit\.zip"') { O-Fail 'disposition' ($zh.Trim()) }
+          if ($zh -notmatch 'Cache-Control: no-store') { O-Fail 'cache' ($zh.Trim()) }
+          Expand-Archive -Path (Join-Path $dlDir 'ghrdp-handler-kit.zip') -DestinationPath (Join-Path $dlDir 'unzipped') -Force
+          foreach ($n in @('install.cmd', 'ghrdp-rdp-launcher.cs')) {
+              $a = (Get-FileHash (Join-Path $dlDir ('unzipped\' + $n)) -Algorithm SHA256).Hash
+              $b = (Get-FileHash (Join-Path $env:GITHUB_WORKSPACE ('payloads\' + $n)) -Algorithm SHA256).Hash
+              if ($a -ne $b) { O-Fail 'zip-member-sha' ($n + ' differs inside the kit zip') }
+          }
+          foreach ($bad in @('ui.html', 'ghrdp-server.ps1', 'config.json', 'dash-token.txt', 'ghrdp-install.ps1')) {
+              $code = & curl.exe --noproxy '*' -s -o NUL -w '%{http_code}' ($dl + '/' + $bad)
+              if ($code -ne '404') { O-Fail 'allowlist' ('/dl/' + $bad + ' returned ' + $code + ' - NOT 404') }
+          }
+          foreach ($bare in @($dl, ($dl + '/'))) {
+              $code = & curl.exe --noproxy '*' -s -o NUL -w '%{http_code}' $bare
+              if ($code -ne '404') { O-Fail 'listing' ($bare + ' returned ' + $code + ' - no directory listing allowed') }
+          }
+          $page = & curl.exe --noproxy '*' -sS http://127.0.0.1:7331/
+          foreach ($mark in @('href="/dl/ghrdp-handler-kit.zip"', 'DOWNLOAD INSTALL KIT', 'id="kitGuideA"', 'id="kitPathB"')) {
+              if (($page -join "`n") -notmatch [regex]::Escape($mark)) { O-Fail 'guide' ('dashboard page missing ' + $mark) }
+          }
+          try { Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue } catch { }
+          Write-Host '[O] PASS: 3/3 objects downloaded + sha-identical (zip members too), attachment+no-store headers, 5 decoys + 2 bare /dl = 404, button href + guide rendered'
+          'O_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
 
       - name: "K: browser policies + extensions readback"
         shell: pwsh
@@ -568,8 +640,9 @@ jobs:
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
           # retrievable), so the PR/verify evidence does not depend on the log UI.
-          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'})
+          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
+          Write-Host ('::notice::[O] F14 kit download: /dl 3/3 sha-identical + decoys 404 + guide rendered (cell o)')
           Write-Host ('::notice::[I] usage timer: ticks -> freezes <=20s -> resumes -> persists/continues at ' + $env:I_usage + 's (cell i)')
           Write-Host ('::notice::[H] cred shim: opener+exact-origin auto-fill, wrong origin/non-opener ignored, zero log output (cell h)')
           Write-Host ('::notice::[N] handler overwrite: stale registration printed+overwritten+verified by the REAL install.cmd (cell n)')
