@@ -583,6 +583,36 @@ function Invoke-ClientRequest {
                 $hhFile = Join-Path $Root 'handler-hello-last.json'
                 $handlerAge = Get-UtcAgeSeconds (Get-RawJsonTs $hhFile)
             } catch { }
+            # [F19 §2] LAUNCHER VERSION GUARD. launcherVersion is the REPO
+            # CONSTANT: main.yml reads `private const string Ver = "<x>"` out of
+            # payloads/ghrdp-rdp-launcher.cs and writes it into config.json. The
+            # beacon carries the client's exe stamp; the version inside it is
+            # compared numerically. Client older => launcherOutdated=true (a
+            # YELLOW row in the UI - never an AUTO-LOGIN blocker: the installed
+            # exe still works, it just lacks the F19 client-DNS remediation).
+            $launcherVersion = ''
+            try {
+                if ($cfgN -and $cfgN.PSObject.Properties['launcherVersion']) { $launcherVersion = ([string]$cfgN.launcherVersion).Trim() }
+            } catch { }
+            if ($launcherVersion -notmatch '^\d+(\.\d+){1,3}$') { $launcherVersion = '' }
+            $launcherSeenVersion = ''
+            try {
+                $hvFile = Join-Path $Root 'handler-hello-last.json'
+                if (Test-Path -LiteralPath $hvFile) {
+                    # Raw-text scan: the exe stamp lives inside a JSON string and
+                    # never needs property binding (no [datetime] conversion risk).
+                    $hvRaw = [System.IO.File]::ReadAllText($hvFile)
+                    $hvExe = [regex]::Match($hvRaw, '"exe"\s*:\s*"([^"]{0,200})"').Groups[1].Value
+                    $hvVer = [regex]::Match($hvExe, '(\d+(\.\d+){1,3})').Groups[1].Value
+                    if ($hvVer -match '^\d+(\.\d+){1,3}$') { $launcherSeenVersion = $hvVer }
+                }
+            } catch { }
+            # Numeric compare; unknown on either side => NOT outdated (never a
+            # false alarm from a missing beacon or a pre-F19 config).
+            $launcherOutdated = $false
+            if ($launcherVersion -and $launcherSeenVersion) {
+                try { $launcherOutdated = ([version]$launcherSeenVersion -lt [version]$launcherVersion) } catch { $launcherOutdated = $false }
+            }
             $vpsPending = $false
             try {
                 if ($cfgN -and $cfgN.PSObject.Properties['vpsPending']) { $vpsPending = [bool]$cfgN.vpsPending }
@@ -752,6 +782,11 @@ function Invoke-ClientRequest {
                 # [F18 §4] runnerResolvedIP: the F18 runner FQDN self-test result
                 # (100.64.0.0/10 only). Empty/invalid => AUTO-LOGIN stays disabled.
                 runnerResolvedIP = $(if ($cfgN -and $cfgN.PSObject.Properties['runnerResolvedIP'] -and ([string]$cfgN.runnerResolvedIP -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.')) { [string]$cfgN.runnerResolvedIP } else { '' })
+                # [F19 §2] launcher version guard: config constant + the version
+                # found in the last beacon's exe stamp + the outdated verdict.
+                launcherVersion = $launcherVersion
+                launcherSeenVersion = $launcherSeenVersion
+                launcherOutdated = $launcherOutdated
                 certBound = $certBound
                 nlaOn = $nlaOn
                 handlerSeenAgeSec = $handlerAge
@@ -790,7 +825,9 @@ function Invoke-ClientRequest {
                         # (with Z). The old `[string]$lv.ts` emitted the
                         # server-LOCAL Z-less form, which the visitor's browser
                         # parsed as local (+05:30 => beacon age +19800s).
-                        $ns.lastHandlerVerb = @{ verb = [string]$lv.verb; ok = [bool]$lv.ok; details = [string]$lv.details; ts = (ConvertTo-UtcIso (Get-RawJsonTs $lvFile)) }
+                        # [F19 §2] exe: the client's launcher version stamp from
+                        # the beacon (string only, never a path/credential).
+                        $ns.lastHandlerVerb = @{ verb = [string]$lv.verb; ok = [bool]$lv.ok; details = [string]$lv.details; exe = $(if ($lv.PSObject.Properties['exe']) { ([string]$lv.exe).Substring(0, [Math]::Min(120, ([string]$lv.exe).Length)) } else { '' }); ts = (ConvertTo-UtcIso (Get-RawJsonTs $lvFile)) }
                     }
                 }
             } catch { }
@@ -812,6 +849,11 @@ function Invoke-ClientRequest {
                         if ($bj.verb)    { $hh.verb    = [string]$bj.verb }
                         if ($null -ne $bj.ok) { $hh.ok = [bool]$bj.ok }
                         if ($bj.details) { $hh.details = ([string]$bj.details).Substring(0, [Math]::Min(280, ([string]$bj.details).Length)) }
+                        # [F19 §2] exe: the launcher's version stamp, used by the
+                        # version guard below. Length-capped, string only - the
+                        # beacon never carries a credential and this store never
+                        # carries a path or a user.
+                        if ($bj.PSObject.Properties['exe'] -and $bj.exe) { $hh.exe = ([string]$bj.exe).Substring(0, [Math]::Min(120, ([string]$bj.exe).Length)) }
                     }
                 }
             } catch { }
