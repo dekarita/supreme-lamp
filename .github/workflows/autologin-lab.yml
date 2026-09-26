@@ -1007,7 +1007,7 @@ jobs:
               for ($k = 0; $k -le ($lowU.Length - 3); $k++) { if ($lowC.Contains($lowU.Substring($k, 3))) { $bad = $true } }
               if ($bad) { continue }
               try {
-                  New-LocalUser -Name $labUser -Password (ConvertTo-SecureString $cand -AsPlainText -Force) -Description 'F24 lab fixture (ephemeral, removed by this cell)' -PasswordNeverExpires -ErrorAction Stop | Out-Null
+                  New-LocalUser -Name $labUser -Password (ConvertTo-SecureString $cand -AsPlainText -Force) -Description 'F24 lab fixture' -PasswordNeverExpires -ErrorAction Stop | Out-Null
                   $created = $true; $labPass = $cand
               } catch { $createErr = $_.Exception.Message }
           }
