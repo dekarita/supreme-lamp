@@ -556,31 +556,163 @@ jobs:
               }
               throw 'cert bind halted by design: tailscale cert fetch failed 3x (reason cert-not-bound)'
           }
-          $thumb = ''
-          try {
-              $loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile($crtPath, $keyPath)
+          # [F31 §1 import-begin] PERSISTED-MACHINE-KEY IMPORT + ACL. Extracted
+          # VERBATIM by autologin-lab cell Y. Ground truth 2026-09-26: Schannel
+          # 36870 x2 at the exact mstsc attempt timestamps - TermService could
+          # not open the bound cert's private key (the old import ACL'd only an
+          # RSA path that never exists for CNG keys and never touched ECDSA, so
+          # NETWORK SERVICE could read nothing) => RST every ClientHello =>
+          # client 0x904/0x7, zero 4624/4625. This function persists the
+          # tailscale PEM pair as a MACHINE key, ACLs the REAL container file
+          # (RSA CNG + ECDSA CNG + legacy CSP) for NETWORK SERVICE Read +
+          # SYSTEM FullControl, and ASSERTS each step. Returns
+          # @{ thumbprint, keyFile }. Throws
+          # 'cert-imported-without-persisted-key...' on ANY failure. Self-
+          # contained given CrtPath/KeyPath/Fqdn only.
+          function Import-F31PersistedCert {
+              param([string]$CrtPath, [string]$KeyPath, [string]$Fqdn)
+              $crtPem = [System.IO.File]::ReadAllText($CrtPath)
+              $keyPem = [System.IO.File]::ReadAllText($KeyPath)
+              $loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem($crtPem, $keyPem)
+              if (-not $loaded.HasPrivateKey) { throw 'cert-imported-without-persisted-key (the PEM pair yielded no private key)' }
               $pfxBytes = $loaded.Export('Pfx', [string]::Empty)
-              $flags = 'PersistKeySet,MachineKeySet,Exportable'
-              $imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, [string]::Empty, $flags)
+              # MachineKeySet|Persistable(PersistKeySet)|Exportable - NEVER
+              # default/ephemeral flags: anything else leaves TermService with
+              # a thumbprint it cannot open (the 36870 class).
+              $f31flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
+              $imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, [string]::Empty, $f31flags)
+              if (-not $imported.HasPrivateKey) { throw 'cert-imported-without-persisted-key' }
               $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
-              $store.Open('ReadWrite')
-              foreach ($old in @($store.Certificates | Where-Object { $_.Subject -match [regex]::Escape($fqdn) })) { $store.Remove($old) }
-              $store.Add($imported)
-              $store.Close()
-              $thumb = $imported.Thumbprint
               try {
-                  $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported)
-                  if ($rsa -and $rsa.Key -and $rsa.Key.UniqueName) {
-                      $machineKeys = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
-                      $keyFile = Join-Path $machineKeys $rsa.Key.UniqueName
-                      if (Test-Path -LiteralPath $keyFile) {
-                          $acl = Get-Acl -Path $keyFile
-                          $rule = New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\NETWORK SERVICE', 'Read', 'Allow')
-                          $acl.AddAccessRule($rule)
-                          Set-Acl -Path $keyFile -AclObject $acl
+                  $store.Open('ReadWrite')
+                  foreach ($old in @($store.Certificates | Where-Object { $_.Subject -match [regex]::Escape($Fqdn) })) { try { $store.Remove($old) } catch { } }
+                  $store.Add($imported)
+              } finally { try { $store.Close() } catch { } }
+              $privKey = $null
+              try { $privKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported) } catch { }
+              if (-not $privKey) { try { $privKey = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($imported) } catch { } }
+              if (-not $privKey) { throw 'cert-imported-without-persisted-key (no RSA/ECDSA private key on the imported cert)' }
+              $keyFile = ''
+              if (($privKey -is [System.Security.Cryptography.RSACng]) -or ($privKey -is [System.Security.Cryptography.ECDsaCng])) {
+                  $keyFile = Join-Path (Join-Path $env:ProgramData 'Microsoft\Crypto\Keys') $privKey.Key.UniqueName
+              } elseif ($privKey -is [System.Security.Cryptography.RSACryptoServiceProvider]) {
+                  $keyFile = Join-Path (Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys') $privKey.CspKeyContainerInfo.UniqueKeyContainerName
+              } else {
+                  $un = ''
+                  try { $un = [string]$privKey.Key.UniqueName } catch { }
+                  if ($un) { $keyFile = Join-Path (Join-Path $env:ProgramData 'Microsoft\Crypto\Keys') $un }
+                  else { throw 'cert-imported-without-persisted-key (unsupported private-key container type)' }
+              }
+              if (-not $keyFile -or -not (Test-Path -LiteralPath $keyFile)) { throw 'cert-imported-without-persisted-key (persisted machine key file not found)' }
+              $acl = Get-Acl -LiteralPath $keyFile -ErrorAction Stop
+              $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\NETWORK SERVICE', 'Read', 'Allow')))
+              $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\SYSTEM', 'FullControl', 'Allow')))
+              Set-Acl -LiteralPath $keyFile -AclObject $acl -ErrorAction Stop
+              $aceOk = @((Get-Acl -LiteralPath $keyFile -ErrorAction Stop).Access | Where-Object { ([string]$_.IdentityReference -match 'NETWORK SERVICE') -and ($_.AccessControlType -eq 'Allow') -and (([string]$_.FileSystemRights -match 'Read') -or ([string]$_.FileSystemRights -match 'FullControl')) })
+              if ($aceOk.Count -eq 0) { throw 'cert-imported-without-persisted-key (NETWORK SERVICE Read ACE missing after write)' }
+              return [pscustomobject]@{ thumbprint = $imported.Thumbprint; keyFile = $keyFile }
+          }
+          # [F31 §1 import-end]
+          # [F31 §1 probe-begin] LOCAL TLS SELF-PROBE. Extracted VERBATIM by
+          # autologin-lab cell Y. Self-contained given KeyFile only: it opens
+          # TCP 127.0.0.1:3389, speaks the RDP X.224 Connection Request
+          # (requestedProtocols SSL|HYBRID) so the listener enters TLS, then
+          # runs the TLS handshake with a permissive remote-callback (the probe
+          # proves the listener can OPEN its bound private key, not the chain).
+          # Success returns the negotiated protocol and logs
+          # 'listener-handshake-ok'. ANY failure dumps the last Schannel 36870
+          # + the key-file ACL (secret-free) and throws
+          # 'rdp-tls-credential-unusable'. Never carries a credential.
+          function Test-F31RdpTlsHandshake {
+              param([string]$KeyFile)
+              $tcpProbe = $null
+              $netProbe = $null
+              $sslProbe = $null
+              try {
+                  # Wait for the listener (a TermService restart precedes us).
+                  $tcpProbe = New-Object System.Net.Sockets.TcpClient
+                  $connected = $false
+                  for ($w = 0; $w -lt 15 -and -not $connected; $w++) {
+                      try {
+                          $iarP = $tcpProbe.BeginConnect('127.0.0.1', 3389, $null, $null)
+                          if ($iarP.AsyncWaitHandle.WaitOne(2000)) {
+                              $tcpProbe.EndConnect($iarP)
+                              $connected = $tcpProbe.Connected
+                          }
+                      } catch { }
+                      if (-not $connected) {
+                          try { $tcpProbe.Close() } catch { }
+                          Start-Sleep -Seconds 2
+                          $tcpProbe = New-Object System.Net.Sockets.TcpClient
                       }
                   }
-              } catch { Write-Host ('[cert] key ACL step skipped: ' + $_.Exception.Message) }
+                  if (-not $connected) { throw 'TCP 127.0.0.1:3389 refused after 30s (the RDP listener did not start)' }
+                  $netProbe = $tcpProbe.GetStream()
+                  $netProbe.ReadTimeout = 10000
+                  $netProbe.WriteTimeout = 10000
+                  # X.224 Connection Request + RDP Negotiation Request
+                  # (type=1, len=8, requestedProtocols=SSL|HYBRID).
+                  $x224Probe = [byte[]]@(0x03,0x00,0x00,0x13,0x0E,0xE0,0x00,0x00,0x00,0x00,0x00,0x01,0x00,0x08,0x00,0x03,0x00,0x00,0x00)
+                  $netProbe.Write($x224Probe, 0, $x224Probe.Length)
+                  $netProbe.Flush()
+                  # Connection Confirm is 19 bytes; read exactly (loopback never
+                  # fragments, but a short read must not parse as a Confirm).
+                  $ccProbe = New-Object byte[] 64
+                  $ccGot = 0
+                  while ($ccGot -lt 19) {
+                      $nProbe = $netProbe.Read($ccProbe, $ccGot, 19 - $ccGot)
+                      if ($nProbe -le 0) { break }
+                      $ccGot += $nProbe
+                  }
+                  if ($ccGot -lt 19) { throw ('no X.224 Connection Confirm from 127.0.0.1:3389 (got ' + $ccGot + ' bytes)') }
+                  if ($ccProbe[11] -ne 0x02) { throw 'RDP negotiation rejected the TLS request (not a Connection Confirm)' }
+                  if ($ccProbe[15] -eq 0x00) { throw 'the listener selected PROTOCOL_RDP, not TLS (the cert bind is not active)' }
+                  $cbProbe = { param($snd,$crt,$chn,$err) return $true }
+                  $sslProbe = [System.Net.Security.SslStream]::new($netProbe, $false, $cbProbe)
+                  $sslProbe.AuthenticateAsClient('localhost')
+                  $protoProbe = [string]$sslProbe.SslProtocol
+                  Write-Host ('listener-handshake-ok: TLS to 127.0.0.1:3389 negotiated ' + $protoProbe + ' with the bound RDP-Tcp cert')
+                  return $protoProbe
+              } catch {
+                  $probeErr = $_.Exception.Message
+                  if (-not $probeErr) { $probeErr = [string]$_ }
+                  $schDump = '(no Schannel 36870 in the System log)'
+                  try {
+                      $ev36870 = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Schannel'; Id = 36870 } -MaxEvents 1 -ErrorAction Stop)
+                      if ($ev36870.Count -gt 0) {
+                          $m36870 = (([string]$ev36870[0].Message -replace '\s+', ' ').Trim())
+                          if ($m36870.Length -gt 300) { $m36870 = $m36870.Substring(0, 300) }
+                          $m36870 = ($m36870 -replace '(?i)(password|passwd|pwd)(\s*[=:]\s*)\S+', '$1$2[redacted]')
+                          $schDump = ('36870 @ ' + [string]$ev36870[0].TimeCreated + ' :: ' + $m36870)
+                      }
+                  } catch {
+                      if ([string]$_.Exception.Message -match 'No events were found') { $schDump = '(no Schannel 36870 in the System log)' }
+                      else { $schDump = '(Schannel 36870 query failed: ' + $_.Exception.Message + ')' }
+                  }
+                  $aclDump = '(no persisted key file recorded)'
+                  try {
+                      if ($KeyFile -and (Test-Path -LiteralPath $KeyFile)) {
+                          $aclDump = (((Get-Acl -LiteralPath $KeyFile -ErrorAction Stop).Access | ForEach-Object { ([string]$_.IdentityReference + ':' + [string]$_.FileSystemRights + ':' + [string]$_.AccessControlType) }) -join ' | ')
+                          if (-not $aclDump) { $aclDump = '(key file has no ACEs)' }
+                      } elseif ($KeyFile) { $aclDump = '(persisted key file not found: ' + $KeyFile + ')' }
+                  } catch { $aclDump = '(key ACL read failed: ' + $_.Exception.Message + ')' }
+                  Write-Host ('::error::[cert] RDP TLS self-probe FAILED (' + $probeErr + '); last-36870=[' + $schDump + ']; keyACL=[' + $aclDump + ']')
+                  throw 'rdp-tls-credential-unusable'
+              } finally {
+                  try { if ($sslProbe) { $sslProbe.Close() } } catch { }
+                  try { if ($netProbe) { $netProbe.Close() } } catch { }
+                  try { if ($tcpProbe) { $tcpProbe.Close() } } catch { }
+              }
+          }
+          # [F31 §1 probe-end]
+          $thumb = ''
+          $keyFile = ''
+          try {
+              $f31cert = Import-F31PersistedCert -CrtPath $crtPath -KeyPath $keyPath -Fqdn $fqdn
+              $thumb = [string]$f31cert.thumbprint
+              $keyFile = [string]$f31cert.keyFile
+              if (-not $thumb) { throw 'cert-imported-without-persisted-key (empty thumbprint after persisted import)' }
+              Write-Host ('[cert] F31: persisted machine cert ' + $thumb + ' key=' + $keyFile)
           } catch {
               # [F12-2] fail-closed: an import failure used to exit 0 and leave
               # certBound = NO on a green run.
@@ -611,7 +743,21 @@ jobs:
           try { $bound = (Get-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -ErrorAction Stop).SSLCertificateSHA1Hash; $boundHex = ($bound | ForEach-Object { $_.ToString('X2') }) -join '' } catch { }
           if ($boundHex -ieq $thumb) {
               Write-Host ('[cert] OK: cert ' + $thumb + ' bound on RDP-Tcp; NLA=1')
+              # [F31] the self-probe needs a LISTENING RDP-Tcp, but this step
+              # runs BEFORE the Enable-RDP step: enable the listener now. This
+              # is idempotent (that step re-asserts it) and safe: loopback is
+              # what the probe uses, and non-loopback 3389 stays firewalled
+              # until the scoped tailnet rule lands later.
+              try { Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Type DWord -Force -ErrorAction Stop; Write-Host '[cert] F31: RDP listener enabled for the self-probe (fDenyTSConnections=0)' } catch { Write-Host ('[cert] F31: listener enable failed: ' + $_.Exception.Message) }
               try { Restart-Service TermService -Force -ErrorAction SilentlyContinue; Write-Host '[cert] TermService restarted' } catch { }
+              try {
+                  $f31proto = Test-F31RdpTlsHandshake -KeyFile $keyFile
+                  Write-Host ('[cert] F31 self-probe PASS: listener-handshake-ok (' + $f31proto + ')')
+              } catch {
+                  Write-Host ('::error::[cert] F31 TLS self-probe failed; reason=rdp-tls-credential-unusable; error=' + $_.Exception.Message)
+                  if ($S) { '### RDP TLS self-probe FAILED (F31) - reason rdp-tls-credential-unusable' | Add-Content -Path $S; ('Thumbprint: `' + $thumb + '`') | Add-Content -Path $S; 'The listener could not complete a TLS handshake with the bound cert (the 36870 + key-ACL dump is in the step log). Halted by design before the host is advertised.' | Add-Content -Path $S }
+                  throw 'rdp-tls-credential-unusable'
+              }
               if ($S) { '### RDP cert bind OK' | Add-Content -Path $S; ('Thumbprint: `' + $thumb + '`') | Add-Content -Path $S }
           } else {
               # [F12-2] A verification mismatch is a FAILED bind, not a notice:

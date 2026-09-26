@@ -520,7 +520,9 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <span class="note" id="rdpListenerAge" style="margin:0"></span>
   </div>
   <!-- [F30 §3] SERVER CONN LOG: the runner's own 30s read of BOTH RDP
-       Operational logs (RdpCoreTS + TerminalServices-RemoteConnectionManager).
+       Operational logs (RdpCoreTS + TerminalServices-RemoteConnectionManager)
+       [F31 §2] plus the System-log Schannel/TLS-credential IDs
+       36870/36871/12017/12018 (last 5).
        This is the ONLY surface that can see a TLS/CertSSP-layer drop: a
        connection killed during the handshake never reaches LSA and therefore
        never writes 4624/4625. Newest 3 with reason codes; a stale collector is
@@ -530,7 +532,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <span class="note" id="srvConnLogState" style="margin:0">collector not reported yet (server 30s tick reads both RDP Operational logs)</span>
     <span class="note" id="srvConnLogLines" style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace"></span>
     <span class="note" id="srvConnLogTls" style="margin:0"></span>
-    <span class="note" style="margin:0">reason codes: tls-forcibly-closed | tls-handshake-failed | cert-rejected | connection-reset | auth-succeeded | auth-failed | listener-lifecycle | session-state. A "forcibly closed"/handshake/reset reason here IS the pre-logon TLS drop the Security log cannot show - run the purge + cipher copy-lines under CONNECTION DIAGNOSTICS.</span>
+    <span class="note" style="margin:0">reason codes: tls-forcibly-closed | tls-handshake-failed | cert-rejected | connection-reset | auth-succeeded | auth-failed | listener-lifecycle | session-state | schannel-private-key (36870 private-key/ACL) | schannel-cipher (36871 cipher) | schannel-no-cred (12017/12018 no cred). A "forcibly closed"/handshake/reset reason here IS the pre-logon TLS drop the Security log cannot show - run the purge + cipher copy-lines under CONNECTION DIAGNOSTICS. A schannel-private-key (36870) line means the listener cannot open the bound cert key (key container/ACL) - re-dispatch; the F31 self-probe fails the run before it can advertise.</span>
   </div>
   <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>
   <div class="row"><span class="k">Cert bound</span><span class="v" id="nrCert">...</span><span class="note" id="nrCertReason">RDP-Tcp SSLCertificateSHA1Hash present (from /api/native-status).</span></div>
@@ -1680,7 +1682,7 @@ function paintSrvConnLog(s){
  var tls=document.getElementById('srvConnLogTls');
  row.style.display='';
  if(!cl){
-  if(st){st.textContent='collector not reported yet - the server 30s tick reads Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational + Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational';st.style.color='#f5d9b7';}
+  if(st){st.textContent='collector not reported yet - the server 30s tick reads Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational + Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational + System Schannel 36870/36871/12017/12018';st.style.color='#f5d9b7';}
   if(lines)lines.textContent='';
   if(tls)tls.textContent='';
   return;
@@ -1700,7 +1702,13 @@ function paintSrvConnLog(s){
   else{
    lines.textContent=newest.map(function(e){
     var ts=String(e.timeUtc||'').replace('T',' ').replace(/\..*/,'');
-    return ts+' #'+e.id+' '+e.provider+' reason='+e.reason+((e.level)?(' level='+e.level):'')+((e.desc)?(' - '+e.desc):'');
+    // [F31 §2] Schannel IDs render with their human cause (36870 =>
+    // private-key/ACL; 36871 => cipher; 12017/12018 => no cred).
+    var hint='';
+    if(e.reason==='schannel-private-key')hint=' (private-key/ACL)';
+    else if(e.reason==='schannel-cipher')hint=' (cipher)';
+    else if(e.reason==='schannel-no-cred')hint=' (no cred)';
+    return ts+' #'+e.id+' '+e.provider+' reason='+e.reason+hint+((e.level)?(' level='+e.level):'')+((e.desc)?(' - '+e.desc):'');
    }).join('\n');
   }
  }

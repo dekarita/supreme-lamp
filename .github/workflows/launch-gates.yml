@@ -1693,6 +1693,71 @@ jobs:
           test -f tests/f30-tls-cipher.test.js || { echo 'F30: the node matrix is missing' >&2; exit 1; }
           node --test tests/f30-tls-cipher.test.js
           echo 'F30 gates PASS'
+      # [F31] RDP-Tcp private-key persistence + TLS self-probe + Schannel
+      # connlog. Ground truth 2026-09-26: Schannel 36870 x2 at the exact mstsc
+      # attempt timestamps (svchost TermService cannot open the bound cert
+      # private key) => RST every ClientHello => client 0x904/0x7, zero
+      # 4624/4625. The cert was imported without a persisted MACHINE key
+      # (RSA-only ACL on a container path that never exists for CNG keys,
+      # ECDSA never ACL'd, no HasPrivateKey assert, no handshake proof).
+      # Every assertion below is on a SHIPPED surface; lab cell Y then drives
+      # the same code against a real TermService.
+      - name: F31 private-key persistence + TLS self-probe + Schannel connlog gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          srv=payloads/ghrdp-server.ps1
+          ui=payloads/ui.html
+          # --- §1 cert-bind step: persisted machine key + ACL + self-probe ----
+          cert=$(awk '/name: Bind tailnet LE cert to RDP-Tcp/{f=1;next} f && (/^      - name: CredSSP\/NLA handshake verification/ || /^      - name: Optimize Tailscale path/){exit} f' "$wf")
+          test -n "$cert" || { echo 'F31: cert-bind step not found' >&2; exit 1; }
+          for tok in 'CreateFromPem' "Export('Pfx'" 'MachineKeySet' 'PersistKeySet' 'Persistable' 'Exportable' \
+                       'HasPrivateKey' 'cert-imported-without-persisted-key' \
+                       'GetRSAPrivateKey' 'GetECDsaPrivateKey' 'UniqueName' 'NETWORK SERVICE' 'AddAccessRule' \
+                       'TcpClient' 'SslStream' 'AuthenticateAsClient' 'listener-handshake-ok' \
+                       'rdp-tls-credential-unusable' '36870' '127.0.0.1'; do
+            grep -qF -- "$tok" <<< "$cert" || { echo "F31: cert step missing token: $tok" >&2; exit 1; }
+          done
+          # the extractable F31 blocks must exist (lab cell Y drives them verbatim)
+          for tok in '# [F31 §1 import-begin]' '# [F31 §1 import-end]' '# [F31 §1 probe-begin]' '# [F31 §1 probe-end]' \
+                       'function Import-F31PersistedCert' 'function Test-F31RdpTlsHandshake'; do
+            grep -qF -- "$tok" <<< "$cert" || { echo "F31: cert step missing block: $tok" >&2; exit 1; }
+          done
+          # the HasPrivateKey assert must guard the bind (assert before SetSSLCertificateSHA1Hash)
+          hk=$(grep -nF 'cert-imported-without-persisted-key' <<< "$cert" | head -1 | cut -d: -f1)
+          bd=$(grep -nF 'SetSSLCertificateSHA1Hash' <<< "$cert" | head -1 | cut -d: -f1)
+          test -n "$hk" && test -n "$bd" && test "$hk" -lt "$bd" || { echo 'F31: the HasPrivateKey assert must precede the RDP-Tcp bind' >&2; exit 1; }
+          # the self-probe call must run after the TermService restart (the
+          # listener must reload the bound cert before the handshake proves it)
+          rs=$(grep -nF 'Restart-Service TermService' <<< "$cert" | head -1 | cut -d: -f1)
+          sp=$(grep -nF 'Test-F31RdpTlsHandshake -KeyFile' <<< "$cert" | head -1 | cut -d: -f1)
+          test -n "$rs" && test -n "$sp" && test "$rs" -lt "$sp" || { echo 'F31: the TLS self-probe must run after the TermService restart' >&2; exit 1; }
+          # the ACE must be asserted AFTER the write (a silent ACL drop is the 36870 class)
+          grep -qF 'missing after write' <<< "$cert" || { echo 'F31: the key-ACL assert-after-write is missing' >&2; exit 1; }
+          # NEVER default/ephemeral persistence on the import flags line
+          flags=$(grep -n 'X509KeyStorageFlags]::' <<< "$cert" || true)
+          if grep -Ei 'DefaultKeySet|EphemeralKeySet' <<< "$flags"; then
+            echo 'F31: the persisted import must never use default/ephemeral flags' >&2; exit 1
+          fi
+          # --- §2 connLog: System Schannel 36870/36871/12017/12018 ------------
+          for tok in '36870' '36871' '12017' '12018' 'schannel-private-key' 'schannel-cipher' 'schannel-no-cred' \
+                       "LogName = 'System'" 'F31SchannelIds' 'F31SchannelMax'; do
+            grep -qF -- "$tok" "$srv" || { echo "F31: connLog missing token: $tok" >&2; exit 1; }
+          done
+          # the Schannel reason branches must precede the generic text matches
+          # (a 36870 message also says "TLS ... failed" - the ID wins)
+          idl=$(grep -nF "evt -eq '36870'" "$srv" | head -1 | cut -d: -f1)
+          txt=$(grep -nF "t -match 'forcibly closed'" "$srv" | head -1 | cut -d: -f1)
+          test -n "$idl" && test -n "$txt" && test "$idl" -lt "$txt" || { echo 'F31: the 36870 ID branch must precede the generic text matches' >&2; exit 1; }
+          # renderer maps the Schannel reasons to their human causes
+          for tok in 'schannel-private-key' 'private-key/ACL' 'schannel-cipher' 'schannel-no-cred' 'no cred'; do
+            grep -qF -- "$tok" "$ui" || { echo "F31: dashboard missing token: $tok" >&2; exit 1; }
+          done
+          # --- §4 the F31 matrix must be part of the Node run ------------------
+          test -f tests/f31-private-key.test.js || { echo 'F31: the node matrix is missing' >&2; exit 1; }
+          node --test tests/f31-private-key.test.js
+          echo 'F31 gates PASS'
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:
@@ -1779,6 +1844,27 @@ jobs:
               $null = [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$errors)
               if ($errors -and $errors.Count -gt 0) { throw ($pair[0] + ' has ' + $errors.Count + ' PowerShell syntax error(s): ' + $errors[0].Message) }
               Write-Host ('[F24] extracted block parses OK: ' + $pair[0] + ' (' + $text.Length + ' chars)')
+          }
+      # [F31 §1] The persisted-import + self-probe blocks live INSIDE main.yml
+      # (inline pwsh) and are extracted verbatim by lab cell Y + the F31 gate.
+      # Parse them here with the PowerShell language parser so a syntax error
+      # is caught in ~1 min instead of after a 20-minute lab run.
+      - name: Parse the F31 extracted blocks (main.yml inline PowerShell)
+        shell: pwsh
+        run: |
+          $wf = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE '.github/workflows/main.yml'))
+          function Get-Block([string]$Begin, [string]$End) {
+              $a = $wf.IndexOf($Begin)
+              $b = $wf.IndexOf($End, [Math]::Max($a, 0))
+              if ($a -lt 0 -or $b -lt 0 -or $b -le $a) { throw ('F31 marker missing in main.yml: ' + $Begin) }
+              return ((($wf.Substring($a, $b - $a)) -split "`r?`n") | Where-Object { $_ -notmatch 'begin\]|end\]' } | ForEach-Object { $_ -replace '^\s+', '' }) -join "`n"
+          }
+          foreach ($pair in @(@('# [F31 §1 import-begin]', '# [F31 §1 import-end]'), @('# [F31 §1 probe-begin]', '# [F31 §1 probe-end]'))) {
+              $text = Get-Block $pair[0] $pair[1]
+              $errors = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$errors)
+              if ($errors -and $errors.Count -gt 0) { throw ($pair[0] + ' has ' + $errors.Count + ' PowerShell syntax error(s): ' + $errors[0].Message) }
+              Write-Host ('[F31] extracted block parses OK: ' + $pair[0] + ' (' + $text.Length + ' chars)')
           }
       # [F28 §1] The logon scanner lives inside payloads/ghrdp-server.ps1 and is
       # extracted VERBATIM, parsed by the PowerShell language parser and driven

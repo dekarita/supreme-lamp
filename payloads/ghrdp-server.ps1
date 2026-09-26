@@ -442,6 +442,11 @@ $script:F30ConnLogSources = @(
     'Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational',
     'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational'
 )
+# [F31 §2] System-log Schannel/TLS-credential IDs: the 36870 class (the
+# listener cannot open the bound cert's private key) never touches the RDP
+# Operational logs - it lands in System. Last 5, reason text only.
+$script:F31SchannelIds = @(36870, 36871, 12017, 12018)
+$script:F31SchannelMax = 5
 $script:F30ConnLogScans = 0
 $script:F30ConnLogLastProbeError = ''
 # The lab dot-sources THIS block alone, so the shared no-BOM encoder may not
@@ -487,6 +492,12 @@ function Get-RdpConnLogReason {
     $t = ([string]$Text).ToLowerInvariant()
     $p = ([string]$Provider).ToLowerInvariant()
     $evt = ([string]$Id).Trim()
+    # [F31 §2] System-log Schannel/TLS-credential IDs FIRST: a 36870 message
+    # also says "TLS ... failed", and the ID is the actionable mapping
+    # (36870 => private-key/ACL; 36871 => cipher; 12017/12018 => no cred).
+    if ($evt -eq '36870') { return 'schannel-private-key' }
+    if ($evt -eq '36871') { return 'schannel-cipher' }
+    if ($evt -eq '12017' -or $evt -eq '12018') { return 'schannel-no-cred' }
     if ($t -match 'forcibly closed') { return 'tls-forcibly-closed' }
     # certificate FIRST: a cert failure message also says "TLS ... failed", and
     # 'cert-rejected' is the actionable reason code for it.
@@ -559,8 +570,24 @@ function Update-RdpConnLog {
             }
         } catch { $failed += $logName }
     }
+    # [F31 §2] System-log Schannel/TLS-credential sweep (last 5): 36870 is the
+    # private-key/ACL class, 36871 the cipher class, 12017/12018 the no-cred
+    # class. A healthy host has NO such events - "no events" is a clean sweep,
+    # never a probe failure.
+    try {
+        $schSince = (Get-Date).ToLocalTime().AddSeconds(-300)
+        $schRaw = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = $script:F31SchannelIds; StartTime = $schSince } -MaxEvents $script:F31SchannelMax -ErrorAction Stop)
+        foreach ($e in $schRaw) {
+            $provSch = [string]$e.ProviderName
+            if (-not $provSch) { $provSch = 'Schannel' }
+            $items += (Get-RdpConnLogEventFields -Xml ([xml]$e.ToXml()) -Provider $provSch)
+        }
+    } catch {
+        if ([string]$_.Exception.Message -match 'No events were found') { }
+        else { $failed += 'System' }
+    }
     $probeErr = ''
-    if ($failed.Count -eq $script:F30ConnLogSources.Count) { $probeErr = 'conn-logs-unreadable' }
+    if ($failed.Count -ge ($script:F30ConnLogSources.Count + 1)) { $probeErr = 'conn-logs-unreadable' }
     elseif ($failed.Count -gt 0) { $probeErr = 'partial:' + (($failed | ForEach-Object { $_.Split('/')[0] -replace '^Microsoft-Windows-', '' }) -join '+') }
     $sum = Get-RdpConnLog -Items $items -ScanStartedUtc $ScanStartedUtc -ProbeError $probeErr
     try { [System.IO.File]::WriteAllText($StatePath, ($sum | ConvertTo-Json -Depth 6 -Compress), $script:NoBom) }
