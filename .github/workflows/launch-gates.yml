@@ -390,6 +390,95 @@ jobs:
           grep -q 'id="winAutoStale"' payloads/ui.html
           echo 'F14 gates PASS'
 
+      - name: F15 fail-visible launcher gates (visible cmdkey/mstsc, hello-before-work, check self-test)
+        shell: bash
+        run: |
+          set -euo pipefail
+          cs=payloads/ghrdp-rdp-launcher.cs
+          cmd=payloads/install.cmd
+          # --- §1.2/§1.3/§7 no hidden window may wrap cmdkey or mstsc ---------
+          # (a) no executable line may carry a hidden-window process flag at all;
+          #     the bans may be NAMED in comments only.
+          if grep -v '^[[:space:]]*//' "$cs" | grep -n 'CreateNoWindow\|WindowStyle\.Hidden'; then
+            echo 'F15: a hidden-window process flag survives in launcher code' >&2; exit 1
+          fi
+          # (b) and no mention of one - comment or code - may sit next to the
+          #     credential or client code (±4 lines of cmdkey/mstsc): the gate
+          #     must never be satisfiable by a well-commented hidden launch.
+          adj=$(awk '{ l[NR]=$0 } END {
+            for (n=1; n<=NR; n++) {
+              if (l[n] ~ /CreateNoWindow|WindowStyle\.Hidden/) {
+                for (i=n-4; i<=n+4; i++) if (i in l && l[i] ~ /cmdkey|mstsc/ && l[i] !~ /^[[:space:]]*\/\//) { print n; break }
+              }
+            }
+          }' "$cs")
+          if [ -n "$adj" ]; then
+            echo "F15: hidden-window flag adjacent to cmdkey/mstsc (line $adj)" >&2; exit 1
+          fi
+          # (c) the credential prompt and the client are launched VISIBLY.
+          grep -q 'ProcessWindowStyle.Normal' "$cs"
+          test "$(grep -c 'UseShellExecute = true' "$cs")" -ge 2
+          grep -q 'psi.WorkingDirectory = Environment.SystemDirectory' "$cs"
+          grep -q 'CmdkeyTimeoutMs = 180000' "$cs"
+          grep -q 'WaitForExit(waitMs)' "$cs"
+          grep -qF '/pass")' "$cs"
+          grep -q 'cmdkey.exe", "/list"' "$cs"
+          grep -q 'm.WaitForExit(2000)' "$cs"
+          # --- §1.1 hello-before-work inside Main ------------------------------
+          main_body=$(awk '
+            /private static int Main\(/ { f=1 }
+            f { line=$0; o=gsub(/\{/,"{",line); c=gsub(/\}/,"}",line); d+=o-c; print; if (d>0) started=1; if (started && d==0) exit }
+          ' "$cs")
+          test -n "$main_body"
+          grep -q 'hello-before-work' <<< "$main_body"
+          grep -q 'LogJson("invoked"' <<< "$main_body"
+          grep -q 'HelloBounded(beaconHost, port, verb, true, "invoked")' <<< "$main_body"
+          # [F15 §1.1+§7] the beacon host is the URL server arg CLAMPED to a *.ts.net
+          # FQDN (pure string check, so it still precedes all work): a random URI
+          # must not turn the launcher into a POST-to-anywhere primitive.
+          grep -qF 'string beaconHost = FqdnRe.IsMatch(server) ? server : "";' <<< "$main_body"
+          grep -qF 'DoWork(uri, verb, beaconHost, port)' <<< "$main_body"
+          beacon=$(awk '/LogJson\("invoked"/{print NR; exit}' <<< "$main_body")
+          work=$(awk '/DoWork\(|CmdkeyStep\(|MstscStep\(|RunCheck\(|File\./ {print NR; exit}' <<< "$main_body")
+          test -n "$beacon"
+          test -n "$work"
+          test "$beacon" -lt "$work"
+          # --- §1.4 global catch: the ONLY visible-surface primitive, logged ----
+          test "$(grep -c 'MessageBox.Show' "$cs")" -eq 1
+          grep -q 'catch (Exception ex)' <<< "$main_body"
+          grep -q 'ShowBox("ghrdp launcher error"' <<< "$main_body"
+          grep -q 'ex.GetType().Name' <<< "$main_body"
+          # every dialog is logged before it is shown, and the only suppression
+          # is the lab-named headless switch (production always shows it).
+          grep -q 'LogJson("msgbox"' "$cs"
+          grep -q 'GHRDP_LAB_NOMSG' "$cs"
+          if grep -n 'NOMSG' "$cs" | grep -v 'GHRDP_LAB_NOMSG'; then
+            echo 'F15: an unnamed headless dialog switch appeared' >&2; exit 1
+          fi
+          # --- §1.6 JSONL log + redaction + mstsc-exit diagnosis ---------------
+          grep -q 'ghrdp-launcher.log' "$cs"
+          grep -q 'File.AppendAllText(LogPath()' "$cs"
+          grep -q '\[redacted\]' "$cs"
+          grep -q 'mstsc-exited=' "$cs"
+          grep -q 'TailLines(5)' "$cs"
+          grep -q 'cmdkey-stored=' "$cs"
+          grep -q 'cmdkey-shown' "$cs"
+          grep -q 'mstsc-started pid=' "$cs"
+          # --- §2 install.cmd self test: a MessageBox MUST appear ---------------
+          grep -qF 'start "" "%EXE%" "ghrdp://check"' "$cmd"
+          grep -qi 'if no MessageBox appeared, Defender or policy blocked the exe' "$cmd"
+          grep -qF 'ghrdp-launcher.log' "$cmd"
+          # --- §3 dashboard: beacon row + 45s stall verdict + [RUN CHECK] -------
+          grep -q 'id="winBeacon"' payloads/ui.html
+          grep -q 'id="winBeaconStall"' payloads/ui.html
+          grep -q 'BEACON_STALL_MS=45000' payloads/ui.html
+          grep -qF "det==='invoked'" payloads/ui.html
+          grep -q "launcher stalled at: " payloads/ui.html
+          grep -q "LAUNCHER_LOG='%LOCALAPPDATA%" payloads/ui.html
+          grep -q 'id="btnRunCheck"' payloads/ui.html
+          grep -qF "'ghrdp://check'" payloads/ui.html
+          echo 'F15 gates PASS'
+
       - name: F8 web-desktop honesty gates
         shell: bash
         run: |
