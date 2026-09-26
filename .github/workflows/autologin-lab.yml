@@ -946,6 +946,100 @@ jobs:
           Write-Host '[T] PASS: F20 nslookup false alarm killed + evidence-based 0x904/0x7 fallback (ghrdp-lab fallback lane)'
           'T_result=pass' | Out-File $env:GITHUB_ENV -Append
 
+      # [F24 §6] AUTH-REJECT DISCRIMINATOR proof: (1) the ValidateCredentials
+      # mechanism executed against a REAL local account on this runner (fresh
+      # password => true, wrong password => false), (2) the SHIPPED 4625
+      # collector block extracted VERBATIM from main.yml and executed against
+      # synthetic events with a secret-fish fixture (the output must map status
+      # codes AND never carry the account fields), (3) the shipped node suite
+      # (which executes the ui.html authDecision core verbatim) run on Windows.
+      - name: "U: F24 cred proof + 4625 collector parse + matrix render"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          trap {
+              Write-Host ('::error::[U] stage=unhandled :: ' + $_.Exception.GetType().FullName + ' :: ' + $_.Exception.Message)
+              exit 1
+          }
+          function U-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[U] stage=' + $Stage + ' :: ' + $Detail)
+              exit 1
+          }
+          $wf = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE '.github\workflows\main.yml'))
+          # --- (1) the credential-proof mechanism on a REAL local account ------
+          $labU = 'ghrdplabu' + [guid]::NewGuid().ToString('N').Substring(0, 6)
+          $labP = 'Lab!' + [guid]::NewGuid().ToString('N') + '9a'
+          try {
+              New-LocalUser -Name $labU -Password (ConvertTo-SecureString $labP -AsPlainText -Force) -PasswordNeverExpires -ErrorAction Stop | Out-Null
+              Add-Type -AssemblyName System.DirectoryServices.AccountManagement
+              $ctxU = New-Object System.DirectoryServices.AccountManagement.PrincipalContext([System.DirectoryServices.AccountManagement.ContextType]::Machine)
+              $good = [bool]$ctxU.ValidateCredentials($labU, $labP)
+              $wrong = [bool]$ctxU.ValidateCredentials($labU, 'Nope!' + $labP)
+              try { $ctxU.Dispose() } catch { }
+          } finally {
+              Remove-LocalUser -Name $labU -ErrorAction SilentlyContinue
+          }
+          if (-not $good) { U-Fail 'validate-true' 'ValidateCredentials rejected a freshly created correct password - the F24 §1 probe would false-FAIL healthy runs' }
+          if ($wrong) { U-Fail 'validate-false' 'ValidateCredentials ACCEPTED a wrong password - a dead credential would be advertised' }
+          # the shipped §1 probe is the same call shape and loud-fails; it must
+          # never interpolate the password into the log (only $credValid/$credWhy).
+          $a1 = $wf.IndexOf('# [F24 §1 proof-begin]')
+          $b1 = $wf.IndexOf('# [F24 §1 proof-end]')
+          if ($a1 -lt 0 -or $b1 -lt $a1) { U-Fail 'proof-markers' 'F24 §1 proof markers missing in main.yml' }
+          $proof = $wf.Substring($a1, $b1 - $a1)
+          foreach ($tok in @(
+            'Add-Type -AssemblyName System.DirectoryServices.AccountManagement',
+            'PrincipalContext([System.DirectoryServices.AccountManagement.ContextType]::Machine)',
+            '$env:RDP_USER', '$env:RDP_PASS', 'ValidateCredentials', 'rdpListener.credValid=')) {
+              if (-not $proof.Contains($tok)) { U-Fail 'proof-token' ('shipped §1 probe body lacks: ' + $tok) }
+          }
+          foreach ($line in ($proof -split "`r?`n")) {
+              if ($line -match '^\s*#' -or $line -match 'ValidateCredentials\(') { continue }
+              if ($line -match 'RDP_PASS') { U-Fail 'proof-secret' ('§1 probe handles RDP_PASS outside ValidateCredentials: ' + $line.Trim()) }
+          }
+          if (-not $wf.Contains('server-side credential invalid - user creation bug')) { U-Fail 'proof-loudfail' 'main.yml lost the loud-fail text for a dead credential' }
+          if (-not $wf.Contains("throw 'F24 server-side credential invalid - user creation bug'")) { U-Fail 'proof-throw' 'main.yml F24 §1 must THROW on credValid=false' }
+          Write-Host '[U] (1) PASS: ValidateCredentials true/false on a real local account; shipped probe = same call, secret-free, loud-fails'
+          # --- (2) the SHIPPED collector vs synthetic 4625 events --------------
+          $a2 = $wf.IndexOf('# [F24 §2 collector-fn-begin]')
+          $b2 = $wf.IndexOf('# [F24 §2 collector-fn-end]')
+          if ($a2 -lt 0 -or $b2 -lt $a2) { U-Fail 'collector-markers' 'F24 §2 collector markers missing in main.yml' }
+          $fnSrc = $wf.Substring($a2, $b2 - $a2)
+          $fish = 'LABSECRET-' + [guid]::NewGuid().ToString('N')
+          $script:synthetic = @(
+              [pscustomobject]@{ Id = 4624; Properties = @([pscustomobject]@{ Name = 'Status'; Value = '0x0' }, [pscustomobject]@{ Name = 'TargetUserName'; Value = $fish }) },
+              [pscustomobject]@{ Id = 4625; Properties = @([pscustomobject]@{ Name = 'Status'; Value = '0xC000006A' }, [pscustomobject]@{ Name = 'TargetUserName'; Value = $fish }) },
+              [pscustomobject]@{ Id = 4625; Properties = @([pscustomobject]@{ Name = 'Status'; Value = '0xC000015B' }, [pscustomobject]@{ Name = 'SubStatus'; Value = '0x0' }) },
+              [pscustomobject]@{ Id = 4624; Properties = @() }
+          )
+          function Get-WinEvent { param($FilterHashtable, $ErrorAction) return $script:synthetic }
+          Invoke-Expression $fnSrc
+          $evU = Get-F24AuthEvidence -WindowMinutes 5
+          if ([int]$evU.ok4624 -ne 2) { U-Fail 'collector-4624' ('expected 2 successes, got ' + [string]$evU.ok4624) }
+          if ([int]$evU.bad4625 -ne 2) { U-Fail 'collector-4625' ('expected 2 failures, got ' + [string]$evU.bad4625) }
+          if (@($evU.statuses) -notcontains '0xc000006a') { U-Fail 'collector-status' ('missing mapped status: ' + (@($evU.statuses) -join ',')) }
+          if (@($evU.reasons) -notcontains 'wrong-password') { U-Fail 'collector-reason-6a' ('0xC000006A did not map to wrong-password: ' + (@($evU.reasons) -join ',')) }
+          if (@($evU.reasons) -notcontains 'logon-type-denied') { U-Fail 'collector-reason-15b' ('0xC000015B did not map to logon-type-denied: ' + (@($evU.reasons) -join ',')) }
+          $evJson = $evU | ConvertTo-Json -Compress -Depth 6
+          if ($evJson.Contains($fish)) { U-Fail 'collector-secret' 'collector output carried the planted account-name fixture - NOT secret-free' }
+          if ($evJson -match 'TargetUserName|SubStatus') { U-Fail 'collector-fields' 'collector surfaced non-Status event fields' }
+          # event-query failure must degrade to notes, never throw
+          function Get-WinEvent { param($FilterHashtable, $ErrorAction) throw 'Access is denied' }
+          $evD = Get-F24AuthEvidence -WindowMinutes 5
+          if (-not ([string]$evD.notes).StartsWith('event-query-unavailable')) { U-Fail 'collector-degrade' 'a failing Security query did not degrade to notes=' + [string]$evD.notes }
+          if ([int]$evD.bad4625 -ne 0) { U-Fail 'collector-degrade2' 'degraded path reported failures without events' }
+          Write-Host ('[U] (2) PASS: shipped collector parsed synthetic 4625s - ' + $evJson)
+          # --- (3) AUTH DECISION matrix: the shipped node suite on Windows -------
+          Push-Location $env:GITHUB_WORKSPACE
+          try {
+              & node --test tests/f24-auth-reject.test.js
+              $rc = $LASTEXITCODE
+          } finally { Pop-Location }
+          if ($rc -ne 0) { U-Fail 'matrix' ('tests/f24-auth-reject.test.js (authDecision executed against the shipped ui.html) failed with exit ' + $rc) }
+          Write-Host '[U] (3) PASS: F24 node suite green on Windows (credValid=false red, stale 6A/6D yellow + cmdkey/KEYS copy-lines, no-4625 CAPI2 exports, verbatim codes, never bare FAIL: pending)'
+          Write-Host '[U] PASS: F24 auth-reject discriminator - server cred proof + 4625 evidence + lab matrix'
+          'U_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+
       - name: "F: Edge policy proof (live-resolved IDs -> registry readout)"
         shell: pwsh
         run: |
@@ -1452,11 +1546,12 @@ jobs:
           ('| (p) fail-visible launcher (F15) | ' + $(if ($env:P_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL launcher vs a LOCAL python hello-listener: check verb logs its dialog and posts check-shown; stored-credential rdp = ' + $env:P_seq + '; no-credential rdp = ' + $env:P_timeout + '; JSONL log redaction verified. The physical MessageBox itself stays PENDING-USER (a runner cannot show or click it) |') | Add-Content -Path $S
           ('| (s) client-DNS probe + launcher version guard (F19) | ' + $(if ($env:S_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | SHIPPED launcher compiled by the in-box csc runs --dns-selftest: fail-name+reach-ip => client-dns-off remediation, both-ok => mstsc, no-ip/closed => dns-fail, with 0 mstsc/cmdkey calls; REAL server: beacon exe 2.1.0.0 vs the repo constant read from the launcher source => launcherOutdated=true, current stamp => false; shipped page carries the probe card, the yellow outdated row and the single credential-free ghrdp:// builder that appends &ip= only for a CGNAT address. The live client-PC DNS state stays PENDING-USER |') | Add-Content -Path $S
           ('| (t) nslookup false alarm + 0x904/0x7 evidence fallback (F20) | ' + $(if ($env:T_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | shipped page: nslookup is no copy-line any more (Resolve-DnsName + false-alarm note), the collapsed "if mstsc still fails (0x904/0x7)" block carries the client ClientActiveXCore export + the runner Security 4624/4625, Schannel and RemoteConnectionManager exports and stays copy-only; SHIPPED launcher compiles with the in-box csc, logs the mstsc exit code (dec+hex) and its dialog points at that block. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
+          ('| (u) auth-reject discriminator: cred proof + 4625 collector + matrix (F24) | ' + $(if ($env:U_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | ValidateCredentials executed on a REAL fresh local account (correct=>true, wrong=>false) + shipped §1 probe is the same call, secret-free and loud-failing; SHIPPED collector block run against synthetic 4624/4625 fixtures (counts + status->reason mapping, degrade-to-notes, zero secret carry); F24 node suite green on Windows. The live click-through stays PENDING-USER |') | Add-Content -Path $S
           ('| (k) no console window in the interactive session | **contract PASS** | every host-helper launch is -WindowStyle Hidden (or NoNewWindow for the user-driven terminal exec) and the long-lived services are SYSTEM scheduled tasks; launch-gates F11-5.3 enforces it. Visual confirmation on the first physical RDP session = PENDING-USER |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
           # retrievable), so the PR/verify evidence does not depend on the log UI.
-          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'}) + ' t=' + $(if ($env:T_result -eq 'pass') {'pass'} else {'fail'})
+          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'}) + ' t=' + $(if ($env:T_result -eq 'pass') {'pass'} else {'fail'}) + ' u=' + $(if ($env:U_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
           # [F19] Evidence notices must carry the CELL RESULT they belong to:
           # before this, every notice claimed its achievement even when the cell
@@ -1475,6 +1570,7 @@ jobs:
           Nt 'P' 'P_result' ('fail-visible launcher: check dialog logged + no server-less beacon; stored-cred rdp = ' + $env:P_seq + '; no-cred rdp = ' + $env:P_timeout)
           Nt 'S' 'S_result' 'F19: shipped launcher DNS-guard matrix 5/5 with injected resolver/TCP (client-dns-off | dns-fail | mstsc, zero mstsc/cmdkey), REAL server version guard 2.1.0.0=>outdated / repo constant=>current, UI probe card + &ip= builder present'
           Nt 'T' 'T_result' 'F20: nslookup retired as a diagnostic (Resolve-DnsName + false-alarm note), collapsed 0x904/0x7 block carries the client+runner wevtutil exports and stays copy-only, shipped launcher compiles and its immediate-exit dialog points at it'
+          Nt 'U' 'U_result' 'F24: ValidateCredentials proven on a real account, shipped 4625 collector executed against synthetic events (secret-free, degrade-to-notes), AUTH DECISION matrix suite green on Windows'
           Nt 'K' 'K_result' 'browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions'
           Nt 'L' 'L_result' 'qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok'
           Nt 'G' 'F_result' ('uBlock Origin=' + $env:F_ubo)

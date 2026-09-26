@@ -908,6 +908,71 @@ jobs:
           fi
           echo 'F23 gates PASS'
 
+      - name: F24 auth-reject discriminator gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          ui=payloads/ui.html
+          cs=payloads/ghrdp-rdp-launcher.cs
+          # --- §1 server-side credential proof: step + ValidateCredentials + loud fail ---
+          step=$(awk '/name: Server-side credential proof/{f=1;next} f && /^      - name: /{exit} f' "$wf")
+          test -n "$step" || { echo 'F24 §1: main.yml lacks the server-side credential proof step' >&2; exit 1; }
+          for tok in 'System.DirectoryServices.AccountManagement' 'ValidateCredentials' '$env:RDP_USER' '$env:RDP_PASS' 'ContextType]::Machine' 'Add-Member -NotePropertyName credValid' 'server-side credential invalid - user creation bug' 'throw'; do
+            grep -qF -- "$tok" <<< "$step" || { echo "F24 §1: proof step missing token: $tok" >&2; exit 1; }
+          done
+          # the password must NEVER reach the log: in NON-comment lines of the
+          # step, RDP_PASS may appear ONLY inside the ValidateCredentials call.
+          passlines=$(grep -vE '^[[:space:]]*#' <<< "$step" | grep -nE 'Write-Host.*RDP_PASS|Write-Host.*\$pass|Add-Content.*RDP_PASS' || true)
+          test -z "$passlines" || { echo "F24 §1: password echoed to log/summary: $passlines" >&2; exit 1; }
+          if grep -vE '^[[:space:]]*#' <<< "$step" | grep -nE '\$pass\b' | grep -vF 'ValidateCredentials' >/dev/null; then
+            echo 'F24 §1: a $pass variable circulates outside the ValidateCredentials call (use $env:RDP_PASS inline only)' >&2; exit 1
+          fi
+          # --- §2 auth-failure evidence collector ---
+          fn=$(awk '/\[F24 §2 collector-fn-begin\]/{f=1;next} /\[F24 §2 collector-fn-end\]/{exit} f' "$wf")
+          test -n "$fn" || { echo 'F24 §2: collector function block (F24 §2 markers) not found in main.yml' >&2; exit 1; }
+          for tok in "LogName = 'Security'" 'Id = 4624, 4625' "Name -eq 'Status'" "0xc000006a' = 'wrong-password'" "0xc000015b' = 'logon-type-denied'" 'event-query-unavailable' 'bad4625' 'unknown-status'; do
+            grep -qF -- "$tok" <<< "$fn" || { echo "F24 §2: collector missing token: $tok" >&2; exit 1; }
+          done
+          # secret-free: the ONLY event property the collector may read is the
+          # Status code (label prose like 'wrong-password' names a STATUS, never
+          # an account field). Any other Name -eq '...' comparison fails the gate,
+          # as does any mention of the account-name fields.
+          props=$(grep -vE '^[[:space:]]*#' <<< "$fn" | grep -oE "Name -eq '[^']*'" | sort -u || true)
+          [ "$props" = "Name -eq 'Status'" ] || { echo "F24 §2: collector reads non-Status event properties: [$props]" >&2; exit 1; }
+          if grep -vE '^[[:space:]]*#' <<< "$fn" | grep -nEi 'TargetUserName|TargetDomainName|SubjectUserName|SubjectLogonId|LogonGuid' >/dev/null; then
+            echo 'F24 §2: collector touches account event fields (only IDs + status codes are allowed)' >&2; exit 1
+          fi
+          tick=$(awk '/\[F24 §2 tick-begin\]/{f=1;next} /\[F24 §2 tick-end\]/{exit} f' "$wf")
+          test -n "$tick" || { echo 'F24 §2: keep-alive tick block (F24 §2 markers) not found' >&2; exit 1; }
+          for tok in 'Get-F24AuthEvidence' 'Add-Member -NotePropertyName authEvents -NotePropertyValue $f24ev -Force' 'Add-Member -NotePropertyName rdpListener' 'WriteAllText($cfgPath' 'bad4625'; do
+            grep -qF -- "$tok" <<< "$tick" || { echo "F24 §2: tick block missing token: $tok" >&2; exit 1; }
+          done
+          if grep -vE '^[[:space:]]*#' <<< "$tick" | grep -nE 'RDP_PASS|\$pass\b' >/dev/null; then
+            echo 'F24 §2: tick prints or handles a password' >&2; exit 1
+          fi
+          # --- §3 dashboard remediation matrix: the THREE branches + verbatim pending ---
+          for tok in 'function authDecision(rl, fqdn)' 'SERVER credential bug - re-dispatch' 'YOUR stored password is stale' 'TLS-layer suspect (CAPI2/Schannel)' 'cmdkey /delete:TERMSRV:' 'copyFrom:'"'"'credWinPass'"'"'' 'wevtutil epl Microsoft-Windows-CAPI2/Operational %TEMP%\\capi2.evtx' 'wevtutil epl System %TEMP%\\system.evtx' 'id="nrAuthRow"' 'id="nrAuthVerdict"' 'paintAuthDecision(rl,diagF)'; do
+            grep -qF -- "$tok" "$ui" || { echo "F24 §3: ui.html matrix missing token: $tok" >&2; exit 1; }
+          done
+          # the pending render must be verbatim-with-step-pointer, never a bare
+          # FAIL. The FAIL render may only be REACHED through the pending guard,
+          # i.e. the guard line comes BEFORE the 'FAIL: '+cs line in the file.
+          grep -qF "PENDING - F21 not stamped yet" "$ui" || { echo 'F24 §3: ui.html has no explicit pending render (must never read as a bare FAIL: pending)' >&2; exit 1; }
+          pg=$(grep -nF "if(cs==='pending')" "$ui" | head -1 | cut -d: -f1 || true)
+          fl=$(grep -nF "('FAIL: '+cs)" "$ui" | head -1 | cut -d: -f1 || true)
+          test -n "$pg" || { echo 'F24 §3: credssp row has no pending guard' >&2; exit 1; }
+          test -n "$fl" && test "$pg" -lt "$fl" || { echo 'F24 §3: FAIL render is not guarded by the pending check' >&2; exit 1; }
+          # matrix branches must map the 4625 status codes (§2 codes feed §3)
+          for tok in '0xc000006a' '0xc000006d' '0xc000015b'; do
+            grep -qF "$tok" "$ui" || { echo "F24 §3: ui.html matrix lacks 4625 status $tok" >&2; exit 1; }
+          done
+          # --- §4 locked rule: launcher gains NO delete verb ---
+          if grep -vE '^[[:space:]]*//' "$cs" | grep -nE 'cmdkey[^/]*delete|/delete' >/dev/null; then
+            echo 'F24 §4: the launcher contains a credential-DELETE verb (only dashboard copy-lines, user-executed, may reset)' >&2; exit 1
+          fi
+          echo 'F24 gates PASS'
+
       - name: F8 web-desktop honesty gates
         shell: bash
         run: |
