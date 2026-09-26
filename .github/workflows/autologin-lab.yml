@@ -34,32 +34,37 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          function A-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[A] stage=' + $Stage + ' :: ' + $Detail)
+              Write-Host ('[A] FAIL (' + $Stage + '): ' + $Detail)
+              exit 1
+          }
           $lab = Join-Path $env:RUNNER_TEMP 'lab-a'
           New-Item -ItemType Directory -Path $lab -Force | Out-Null
           Copy-Item payloads\install.cmd (Join-Path $lab 'install.cmd') -Force
           Copy-Item payloads\ghrdp-rdp-launcher.cs (Join-Path $lab 'ghrdp-rdp-launcher.cs') -Force
-          # The REAL double-click equivalent: cmd /c on the shipped file. Output
-          # goes to a FILE, not a pipe: the [F15 §2] self test inside install.cmd
-          # starts the launcher, and an inherited pipe handle would keep this
-          # step - and the lane - open until that process exited.
+          # The REAL double-click equivalent: cmd /c on the shipped file, with
+          # stdout+stderr redirected to a FILE by cmd itself (never a pipe): the
+          # [F15 §2] self test inside install.cmd starts the launcher, and a GUI
+          # child holding an inherited pipe handle would keep this step open.
           $aOut = Join-Path $lab 'install-out.txt'
-          $aErr = Join-Path $lab 'install-err.txt'
-          $p = Start-Process -FilePath 'cmd.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput $aOut -RedirectStandardError $aErr -ArgumentList '/c', ('"' + (Join-Path $lab 'install.cmd') + '" < nul')
-          if (-not $p.WaitForExit(120000)) { Write-Host '[A] FAIL: install.cmd did not finish in 120s'; try { Stop-Process -Id $p.Id -Force } catch { }; exit 1 }
-          $code = $p.ExitCode
+          & cmd.exe /c ('"' + (Join-Path $lab 'install.cmd') + '" < nul > "' + $aOut + '" 2>&1')
+          $code = $LASTEXITCODE
           $aTxt = ''
           try { $aTxt = [System.IO.File]::ReadAllText($aOut) } catch { }
           foreach ($l in ($aTxt -split "`r?`n")) { if ($l.Trim()) { Write-Host ('[install.cmd] ' + $l) } }
           Write-Host ('[A] install.cmd exit code = ' + $code)
-          if ($code -ne 0) { Write-Host '[A] FAIL: install.cmd returned nonzero'; exit 1 }
+          if ($code -ne 0) { A-Fail 'exit' ('install.cmd exit ' + $code + ' :: out=[' + (($aTxt -split "`r?`n" | Select-Object -Last 12) -join ' | ') + ']') }
+          if ($aTxt -notmatch 'SELF-TEST') { A-Fail 'self-test-notice' ('install.cmd did not print the ghrdp://check self-test notice :: out=[' + (($aTxt -split "`r?`n" | Select-Object -Last 12) -join ' | ') + ']') }
           $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
-          if (-not (Test-Path -LiteralPath $exe)) { Write-Host '[A] FAIL: exe missing'; exit 1 }
+          if (-not (Test-Path -LiteralPath $exe)) { A-Fail 'exe' ('the compiled launcher is missing at ' + $exe) }
           $cmdReg = (Get-ItemProperty 'Registry::HKEY_CURRENT_USER\Software\Classes\ghrdp\shell\open\command' -ErrorAction SilentlyContinue).'(default)'
-          if ($cmdReg -notmatch 'ghrdp-rdp-launcher\.exe') { Write-Host ('[A] FAIL: protocol not registered, command=' + $cmdReg); exit 1 }
+          if ($cmdReg -notmatch 'ghrdp-rdp-launcher\.exe') { A-Fail 'registry' ('the ghrdp protocol does not point at the launcher, command=' + $cmdReg) }
+          Write-Host ('[A] exe=' + $exe + ' (' + (Get-Item -LiteralPath $exe).Length + ' bytes); HKCU command=' + $cmdReg)
           # [F15 §2] the install-time self test must have RUN: install.cmd prints
-          # the notice + launches ghrdp://check, and the launcher logs the check
-          # dialog before showing it (suppressed here by GHRDP_LAB_NOMSG; the
-          # physical MessageBox stays PENDING-USER). No log => the exe never ran.
+          # the notice + launches ghrdp://check, and the launcher logs its dialog
+          # BEFORE showing it (suppressed here by GHRDP_LAB_NOMSG; the physical
+          # MessageBox stays PENDING-USER). No log => the exe never ran.
           $lLog = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.log'
           $lTxt = ''
           for ($i = 0; $i -lt 20 -and $lTxt -notmatch 'ghrdp launcher check'; $i++) {
@@ -68,13 +73,12 @@ jobs:
           }
           Write-Host '[A] launcher log (F15 fail-visible JSONL):'
           foreach ($l in ($lTxt -split "`r?`n")) { if ($l.Trim()) { Write-Host ('  ' + $l) } }
-          if ($aTxt -notmatch 'SELF-TEST') { Write-Host '[A] FAIL: install.cmd did not print the ghrdp://check self-test notice'; exit 1 }
           foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', 'ghrdp-rdp-launcher 2.0.0.0', 'HKCU')) {
-              if ($lTxt -notmatch [regex]::Escape($need)) { Write-Host ('[A] FAIL: self-test log lacks ' + $need); exit 1 }
+              if ($lTxt -notmatch [regex]::Escape($need)) { A-Fail 'self-test-log' ('launcher log ' + $lLog + ' lacks ' + $need + ' :: tail=[' + (($lTxt -split "`r?`n" | Select-Object -Last 6) -join ' | ') + ']') }
           }
           $cs = [System.IO.File]::ReadAllText((Join-Path $lab 'ghrdp-rdp-launcher.cs'))
           $cmd = [System.IO.File]::ReadAllText((Join-Path $lab 'install.cmd'))
-          if (($cs + $cmd) -match 'powershell\.exe|ExecutionPolicy|Invoke-Expression|EncodedCommand') { Write-Host '[A] FAIL: script-host token'; exit 1 }
+          if (($cs + $cmd) -match 'powershell\.exe|ExecutionPolicy|Invoke-Expression|EncodedCommand') { A-Fail 'script-host' 'script-host token found' }
           Write-Host '[A] PASS: compiled with in-box csc, HKCU ghrdp registered, ghrdp://check self test RAN (dialog logged), script-host free'
           'A_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
       - name: "B/C: ghrdp://rdp verb -> directives rdp + mstsc spawn + temp cleanup"
@@ -618,9 +622,8 @@ jobs:
           # its ghrdp://check self test, and a GUI child holding an inherited
           # pipe handle would keep this step open until the launcher exited.
           $nOut = Join-Path $lab 'install-out.txt'
-          $np = Start-Process -FilePath 'cmd.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput $nOut -RedirectStandardError (Join-Path $lab 'install-err.txt') -ArgumentList '/c', ('"' + (Join-Path $lab 'install.cmd') + '" < nul')
-          if (-not $np.WaitForExit(120000)) { Write-Host '::error::[N] stage=wait :: install.cmd did not finish in 120s'; try { Stop-Process -Id $np.Id -Force } catch { }; exit 1 }
-          $code = $np.ExitCode
+          & cmd.exe /c ('"' + (Join-Path $lab 'install.cmd') + '" < nul > "' + $nOut + '" 2>&1')
+          $code = $LASTEXITCODE
           $out = @()
           try { $out = @([System.IO.File]::ReadAllLines($nOut)) } catch { }
           $out | ForEach-Object { Write-Host ('[N install.cmd] ' + $_) }
