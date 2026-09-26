@@ -994,9 +994,24 @@ jobs:
           if (-not (Get-Command Get-RdpAuthEventSummary -ErrorAction SilentlyContinue)) { U-Fail 'extract-collector' 'Get-RdpAuthEventSummary was not defined by the extracted block' }
           # --- (a) ValidateCredentials fixture (real local SAM) -----------------
           $labUser = 'rdpF24' + ([guid]::NewGuid().ToString('N').Substring(0, 6))
-          $labPass = 'F24!' + ([guid]::NewGuid().ToString('N').Substring(0, 16)) + 'aA9#'
-          try { New-LocalUser -Name $labUser -Password (ConvertTo-SecureString $labPass -AsPlainText -Force) -FullName 'F24 lab fixture' -PasswordNeverExpires -ErrorAction Stop | Out-Null }
-          catch { U-Fail 'fixture-create' $_.Exception.Message }
+          # Mirror production's New-RdpPassword guard: the local password policy
+          # REJECTS a password containing a 3-char substring of the account name
+          # (invalid_password). The first cell-U run failed exactly there.
+          $created = $false
+          $labPass = ''
+          $createErr = ''
+          for ($try = 1; $try -le 20 -and -not $created; $try++) {
+              $cand = ('Rt7!Wp9@Kd2#' + [guid]::NewGuid().ToString('N').Substring(0, 12))
+              $lowU = $labUser.ToLowerInvariant(); $lowC = $cand.ToLowerInvariant()
+              $bad = $false
+              for ($k = 0; $k -le ($lowU.Length - 3); $k++) { if ($lowC.Contains($lowU.Substring($k, 3))) { $bad = $true } }
+              if ($bad) { continue }
+              try {
+                  New-LocalUser -Name $labUser -Password (ConvertTo-SecureString $cand -AsPlainText -Force) -Description 'F24 lab fixture (ephemeral, removed by this cell)' -PasswordNeverExpires -ErrorAction Stop | Out-Null
+                  $created = $true; $labPass = $cand
+              } catch { $createErr = $_.Exception.Message }
+          }
+          if (-not $created) { U-Fail 'fixture-create' ('could not create a policy-safe lab user after 20 attempts: ' + $createErr) }
           try {
               $ok = Test-LocalSamCredential -UserName $labUser -Password $labPass
               if (-not $ok.valid) { U-Fail 'fixture-valid' 'a just-created local account FAILED ValidateCredentials (the real one exists)' }
