@@ -15,6 +15,11 @@ $script:InstPath = Join-Path $Root 'ghrdp-install.ps1'
 $script:DlNames = @('ghrdp-handler-kit.zip', 'install.cmd', 'ghrdp-rdp-launcher.cs')
 $script:OkFile = Join-Path $Root 'server-ok.txt'
 $script:FlushFlag = Join-Path $Root 'flush.flag'
+# [F28 §1] Server start clock + the logon-result state file. The 30s scan tick
+# runs in THIS process from start (see the listener loop), so the logon verdict
+# exists even when no keep-alive step ever runs.
+$script:ServerStartedUtc = (Get-Date).ToUniversalTime()
+$script:LogonStatePath = Join-Path $Root 'rdp-logon.json'
 $script:NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:WebDeskHtml = ''
 $script:Token = ''
@@ -239,6 +244,170 @@ function Use-RdpTicket([string]$Ticket, [System.Net.IPAddress]$Source, [datetime
     return ($age -ge 0 -and $age -lt 60)
 }
 # [F27 ticket-core-end]
+
+# [F28 §1 scanner-begin] SERVER-SIDE LOGON-RESULT SCANNER (secret-free).
+# The dashboard could only show 4624/4625 COUNTS from the workflow's keep-alive
+# tick (F24), so nobody could see whether an mstsc attempt actually LOGGED ON.
+# This scanner runs as an INDEPENDENT 30s tick inside the server process - from
+# SERVER START, never dependent on the keep-alive step - and stamps
+# rdpListener.authLast = {result: success|failed|none, sub, eventTs, scanTs}.
+# scanTs is written on EVERY scan (success, failure, empty window AND a
+# security-log-unreadable probe error), so the dashboard can distinguish
+# "scanned <ts>, nothing yet" from a dead collector. Reads ONLY the event id,
+# LogonType, Status/SubStatus/FailureReason codes and TargetUserName of 4624
+# (LogonType 10) / 4625: never a password, a domain or an address. Extracted
+# VERBATIM by the F28 gate + lab cell and driven with synthetic event XML.
+$script:F28IntervalSec = 30
+$script:F28WindowSec = 3600
+$script:F28StaleSec = 90
+$script:F28Scans = 0
+$script:F28LastProbeError = ''
+function Get-RdpLogonEventFields {
+    param([xml]$Xml)
+    $id = ''
+    $t = ''
+    $name = @{}
+    try { $id = [string]($Xml.SelectSingleNode("//*[local-name()='EventID']")).InnerText } catch { }
+    try { $t = [string]($Xml.SelectSingleNode("//*[local-name()='TimeCreated']").GetAttribute('SystemTime')) } catch { }
+    try {
+        foreach ($d in @($Xml.SelectNodes("//*[local-name()='Data']"))) {
+            $n = [string]$d.GetAttribute('Name')
+            if ($n) { $name[$n] = [string]$d.InnerText }
+        }
+    } catch { }
+    return [pscustomobject]@{
+        id        = $id.Trim()
+        timeUtc   = $t
+        status    = ([string]$name['Status']).Trim().ToUpperInvariant()
+        subStatus = ([string]$name['SubStatus']).Trim().ToUpperInvariant()
+        reason    = ([string]$name['FailureReason']).Trim()
+        logonType = ([string]$name['LogonType']).Trim()
+        targetUserName = ([string]$name['TargetUserName']).Trim()
+    }
+}
+function Get-RdpLogonSubMeaning {
+    param([string]$Code)
+    switch (([string]$Code).Trim().ToUpperInvariant()) {
+        '0XC000006A' { return 'wrong-password' }
+        '0XC000006D' { return 'bad-user-or-password' }
+        '0XC0000064' { return 'no-such-user' }
+        '0XC000015B' { return 'logon-type-denied' }
+        '0XC0000234' { return 'account-locked' }
+        '0XC0000072' { return 'account-disabled' }
+        '0XC000006E' { return 'account-restriction' }
+        '0XC000006F' { return 'time-restriction' }
+        '0XC0000070' { return 'workstation-restriction' }
+        '0XC0000071' { return 'credential-expired' }
+        default { if ($Code) { return 'other' } return '' }
+    }
+}
+function Get-RdpLogonAuthLast {
+    # Pure: items in, verdict out. scanTs is ALWAYS stamped - the only way the
+    # dashboard can tell "scanned, nothing yet" from "collector not running".
+    param($Items, [datetime]$ScanStartedUtc, [string]$ProbeError = '')
+    $scanTs = (Get-Date).ToUniversalTime().ToString('o')
+    $nowUtc = (Get-Date).ToUniversalTime()
+    $windowStart = $ScanStartedUtc.AddSeconds(-120)
+    $floor = $nowUtc.AddSeconds(-1 * $script:F28WindowSec)
+    if ($windowStart -lt $floor) { $windowStart = $floor }
+    $okWhen = $null; $okTs = ''
+    $failWhen = $null; $failTs = ''; $failSub = ''
+    $c4624 = 0; $c4625 = 0
+    foreach ($it in @($Items)) {
+        if (-not $it) { continue }
+        if ([string]$it.logonType -ne '10' -and [string]$it.id -eq '4624') { continue }
+        $when = $null
+        try {
+            $when = [datetime]::Parse([string]$it.timeUtc, [System.Globalization.CultureInfo]::InvariantCulture,
+                ([System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal))
+        } catch { $when = $null }
+        if ($null -ne $when) {
+            if ($when -lt $windowStart) { continue }
+            if ($when -gt $nowUtc.AddSeconds(120)) { continue }
+        }
+        if ([string]$it.id -eq '4624') {
+            # LogonType 10 (RemoteInteractive) only: a console/service logon is
+            # never an RDP success.
+            if ([string]$it.logonType -eq '10') {
+                $c4624++
+                if (($null -eq $okWhen) -or ($null -eq $when) -or ($when -ge $okWhen)) { $okWhen = $when; $okTs = [string]$it.timeUtc }
+            }
+            continue
+        }
+        if ([string]$it.id -ne '4625') { continue }
+        $c4625++
+        if (($null -eq $failWhen) -or ($null -eq $when) -or ($when -ge $failWhen)) {
+            $failWhen = $when; $failTs = [string]$it.timeUtc; $failSub = ([string]$it.subStatus).ToUpperInvariant()
+        }
+    }
+    $result = 'none'; $eventTs = ''; $sub = ''
+    if ($null -ne $okWhen -and ($null -eq $failWhen -or $okWhen -ge $failWhen)) {
+        $result = 'success'; $eventTs = $okTs
+    } elseif ($null -ne $failWhen) {
+        $result = 'failed'; $eventTs = $failTs; $sub = $failSub
+    }
+    return [pscustomobject]@{
+        result      = $result
+        sub         = $sub
+        eventTs     = $eventTs
+        scanTs      = $scanTs
+        windowSec   = $script:F28WindowSec
+        windowStart = $windowStart.ToString('o')
+        count4624   = $c4624
+        count4625   = $c4625
+        subMeaning  = (Get-RdpLogonSubMeaning -Code $sub)
+        probeError  = $ProbeError
+    }
+}
+function Update-RdpLogonAuthLast {
+    # The tick body: read the runner's OWN Security log, stamp, persist. It
+    # never throws (a dead probe stamps result=none + probeError + scanTs) and
+    # writes ONLY the allowlisted fields above.
+    param([string]$StatePath, [datetime]$ScanStartedUtc)
+    $items = @()
+    $probeErr = ''
+    try {
+        $since = $ScanStartedUtc.AddSeconds(-120)
+        $raw = @(Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = @(4624, 4625); StartTime = $since.ToLocalTime() } -MaxEvents 400 -ErrorAction Stop)
+        foreach ($e in $raw) { $items += (Get-RdpLogonEventFields -Xml ([xml]$e.ToXml())) }
+    } catch { $probeErr = 'security-log-unreadable' }
+    $sum = Get-RdpLogonAuthLast -Items $items -ScanStartedUtc $ScanStartedUtc -ProbeError $probeErr
+    try { [System.IO.File]::WriteAllText($StatePath, ($sum | ConvertTo-Json -Depth 5 -Compress), $script:NoBom) } catch { }
+    $script:F28Scans = [int]$script:F28Scans + 1
+    $script:F28LastProbeError = $probeErr
+    Write-Host ('[F28] logon scan #' + $script:F28Scans + ' result=' + $sum.result +
+        ' sub=' + $(if ($sum.sub) { $sum.sub } else { '-' }) +
+        ' eventTs=' + $(if ($sum.eventTs) { $sum.eventTs } else { '-' }) +
+        ' 4624=' + $sum.count4624 + ' 4625=' + $sum.count4625 +
+        ' scanTs=' + $sum.scanTs + $(if ($probeErr) { ' probeError=' + $probeErr } else { '' }))
+    return $sum
+}
+function Get-RdpLogonCollectorState {
+    # Read-back for /api/native-status: authLast plus the collector's own
+    # liveness (a missing or >90s stale state file is NOT a green collector).
+    param([string]$StatePath, [datetime]$ServerStartedUtc)
+    $authLast = $null
+    $ageSec = $null
+    if (Test-Path -LiteralPath $StatePath) {
+        $authLast = Read-JsonFile -Path $StatePath
+        try { $ageSec = [int]((Get-Date) - (Get-Item -LiteralPath $StatePath).LastWriteTime).TotalSeconds } catch { $ageSec = $null }
+    }
+    $uptime = [int]((Get-Date).ToUniversalTime() - $ServerStartedUtc).TotalSeconds
+    $alive = $false
+    if ($null -ne $ageSec) { $alive = ($ageSec -le $script:F28StaleSec) } else { $alive = ($uptime -le $script:F28StaleSec) }
+    $collector = [ordered]@{
+        intervalSec = $script:F28IntervalSec
+        staleSec    = $script:F28StaleSec
+        scans       = [int]$script:F28Scans
+        alive       = $alive
+        startedAt   = $ServerStartedUtc.ToString('o')
+        uptimeSec   = $uptime
+        lastScanAgeSec = $ageSec
+        probeError  = [string]$script:F28LastProbeError
+    }
+    return [pscustomobject]@{ authLast = $authLast; logonCollector = $collector }
+}
+# [F28 §1 scanner-end]
 function Read-ClientRequest {
 param($Stream)
 $acc = New-Object System.Text.StringBuilder
@@ -767,6 +936,40 @@ function Invoke-ClientRequest {
                     }
                 }
             } catch { }
+            # [F28 §4] LIVE CredSSP probe: the SAME determinants the listener
+            # checkbox asserts (NLA on, bound trusted cert, strict CredSSP
+            # policy, TLS security layer, high min encryption) are re-probed
+            # HERE, at request time, so the row can never read a stale config
+            # stamp while the listener renders a live ✅. Never weakens
+            # anything; it only reads.
+            $csLive = 'unknown'; $csLiveWhy = ''
+            try {
+                $oracle = $null
+                try { $oracle = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters' -Name 'AllowEncryptionOracle' -ErrorAction SilentlyContinue).AllowEncryptionOracle } catch { $oracle = $null }
+                $secLayer = $null; $minEnc = $null
+                try { $secLayer = (Get-ItemProperty -Path $rdpKey -Name 'SecurityLayer' -ErrorAction SilentlyContinue).SecurityLayer } catch { $secLayer = $null }
+                try { $minEnc = (Get-ItemProperty -Path $rdpKey -Name 'MinEncryptionLevel' -ErrorAction SilentlyContinue).MinEncryptionLevel } catch { $minEnc = $null }
+                if (-not $nlaOn) { $csLive = 'warn'; $csLiveWhy = 'nla-off (UserAuthentication != 1)' }
+                elseif (-not $certBound) { $csLive = 'warn'; $csLiveWhy = 'cert-not-bound' }
+                elseif ($null -ne $oracle -and [int]$oracle -ne 0) { $csLive = 'warn'; $csLiveWhy = ('credssp-allow-encryption-oracle=' + [int]$oracle) }
+                elseif ($null -ne $secLayer -and [int]$secLayer -ne 2) { $csLive = 'warn'; $csLiveWhy = ('rdp-security-layer=' + [int]$secLayer) }
+                elseif ($null -ne $minEnc -and [int]$minEnc -lt 3) { $csLive = 'warn'; $csLiveWhy = ('rdp-min-encryption-level=' + [int]$minEnc) }
+                else { $csLive = 'ok' }
+            } catch { $csLive = 'unknown'; $csLiveWhy = 'credssp-probe-failed' }
+            # [F28 §1] logon verdict + collector liveness (own state file, never
+            # written into config.json - no writer race with the workflow).
+            $logonState = [pscustomobject]@{ authLast = $null; logonCollector = $null }
+            try { $logonState = Get-RdpLogonCollectorState -StatePath $script:LogonStatePath -ServerStartedUtc $script:ServerStartedUtc } catch { }
+            $rlOut = $null
+            if ($cfgN -and $cfgN.PSObject.Properties['rdpListener'] -and $cfgN.rdpListener) { $rlOut = $cfgN.rdpListener }
+            if ($null -eq $rlOut) { $rlOut = New-Object psobject }
+            try {
+                $rlOut | Add-Member -NotePropertyName authLast -NotePropertyValue $logonState.authLast -Force
+                $rlOut | Add-Member -NotePropertyName logonCollector -NotePropertyValue $logonState.logonCollector -Force
+                $rlOut | Add-Member -NotePropertyName credsspLive -NotePropertyValue $csLive -Force
+                $rlOut | Add-Member -NotePropertyName credsspLiveWhy -NotePropertyValue $csLiveWhy -Force
+                $rlOut | Add-Member -NotePropertyName credsspLiveTs -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
+            } catch { }
             $ns = [ordered]@{
                 fqdn = $fqdnN
                 hostKind = $hostKind
@@ -776,8 +979,13 @@ function Invoke-ClientRequest {
                 # fwRule/fwScope/certThumb/nla into config.json; served verbatim
                 # + age. $null => probe never ran (the UI says so and keeps
                 # WINDOWS AUTO-LOGIN disabled - a missing probe is never a ✅).
-                rdpListener = $(if ($cfgN -and $cfgN.PSObject.Properties['rdpListener'] -and $cfgN.rdpListener) { $cfgN.rdpListener } else { $null })
+                # [F28 §1/§4] rdpListener (config stamp) + authLast (the live
+                # 30s logon scan) + logonCollector (its liveness) + credsspLive
+                # (request-time probe). The config object itself is never
+                # written back from this route.
+                rdpListener = $rlOut
                 rdpListenerAgeSec = $(if ($cfgN -and $cfgN.PSObject.Properties['rdpListener'] -and $cfgN.rdpListener) { Get-UtcAgeSeconds $cfgN.rdpListener.ts } else { $null })
+                logonCollector = $logonState.logonCollector
                 # [F18 §4] runnerResolvedIP: the F18 runner FQDN self-test result
                 # (100.64.0.0/10 only). Empty/invalid => AUTO-LOGIN stays disabled.
                 runnerResolvedIP = $(if ($cfgN -and $cfgN.PSObject.Properties['runnerResolvedIP'] -and ([string]$cfgN.runnerResolvedIP -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.')) { [string]$cfgN.runnerResolvedIP } else { '' })
@@ -851,7 +1059,10 @@ function Invoke-ClientRequest {
                         if ($null -ne $bj.ok) { $hh.ok = [bool]$bj.ok }
                         # F27: reject arbitrary telemetry strings rather than redact guesses.
                         $detail = [string]$bj.details
-                        if ($detail -match '^(invoked|ticket-redeemed|credwrite-ok|credwrite-failed|rdp-written|mstsc-started( pid=[0-9]+)?|mstsc-exited=-?[0-9]+|check-shown|cmdkey-shown|cmdkey-timeout|cmdkey-stored=(true|false)|client-dns-off|cred-param-rejected|invalid-target|fallback-cmdkey reason=(ticket-missing|unreachable|ticket-invalid-or-expired))$') { $hh.details = $detail }
+                        # [F28 §2/§3] recred-redeemed = the recovery redemption;
+                        # fallback-mstsc-native-prompt = the closed fallback gap
+                        # (the beacon immediately preceding a /prompt launch).
+                        if ($detail -match '^(invoked|ticket-redeemed|recred-redeemed|credwrite-ok|credwrite-failed|rdp-written|mstsc-started( pid=[0-9]+)?|mstsc-exited=-?[0-9]+|check-shown|cmdkey-shown|cmdkey-timeout|cmdkey-stored=(true|false)|client-dns-off|cred-param-rejected|invalid-target|fallback-mstsc-native-prompt|fallback-cmdkey reason=(ticket-missing|unreachable|ticket-invalid-or-expired))$') { $hh.details = $detail }
                         elseif ($detail -like 'dns-guard:*') { $hh.details = 'dns-guard-failed' }
                         else { $hh.details = 'launcher-error' }
                         # [F19 §2] exe: the launcher's version stamp, used by the
@@ -1660,6 +1871,12 @@ while ($true) {
 '@
 [System.IO.File]::WriteAllText((Join-Path $Root 'rdp-usage.ps1'), $usageScript, $script:NoBom)
 try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $Root 'rdp-usage.ps1') -WindowStyle Hidden } catch { }
+# [F28 §1] STARTUP SCAN: the first stamp lands before the first client can
+# poll, so /api/native-status never has to guess "not reported yet" when the
+# collector is actually alive. Failure is contained (the function stamps
+# probeError + scanTs instead of throwing).
+try { Update-RdpLogonAuthLast -StatePath $script:LogonStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
+$lastLogonScan = Get-Date
 $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse($Bind), $Port)
 try { $listener.Start() } catch {
     try { [System.IO.File]::WriteAllText($script:OkFile, 'LISTEN_FAIL: ' + $_.Exception.Message, $script:NoBom) } catch { }
@@ -1704,6 +1921,13 @@ while (((Get-Date) - $start) -lt $limit) {
         $client = $null
         try { $client = $listener.AcceptTcpClient() } catch { }
         if ($client) { Invoke-ClientRequest -Client $client -Token $script:Token }
+    }
+    # [F28 §1] INDEPENDENT 30s logon-result tick (server start, not the
+    # workflow's keep-alive step). The accept loop sleeps 50ms, so this costs
+    # nothing and the verdict is never older than ~30s.
+    if (((Get-Date) - $lastLogonScan).TotalSeconds -ge $script:F28IntervalSec) {
+        $lastLogonScan = Get-Date
+        try { Update-RdpLogonAuthLast -StatePath $script:LogonStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
     }
     if (((Get-Date) - $lastHeal).TotalSeconds -ge 60) {
         $lastHeal = Get-Date
