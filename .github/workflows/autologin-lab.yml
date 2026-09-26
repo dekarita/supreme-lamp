@@ -1067,8 +1067,12 @@ jobs:
           # only in the synthetic XML and must not survive the parse.
           $sumJson = ($s1 | ConvertTo-Json -Depth 6)
           if ($sumJson -match 'rdpF24DECOY') { U-Fail 'secret-free' 'the collector summary carried the target user name' }
+          # FIELD-level scan: a banned credential FIELD must never appear as a JSON
+          # key. Reason slugs such as 'wrong-password' (0xC000006A) are status-code
+          # descriptions - the F24 evidence contract - not credentials, so match on
+          # keys, not on raw substrings. The run that taught us this failed here.
           foreach ($banned in @('TargetUserName', 'SubjectUserName', 'IpAddress', 'Password')) {
-              if ($sumJson -match $banned) { U-Fail 'secret-free' ('the collector summary carries a ' + $banned + ' field') }
+              if ($sumJson -match ('"' + $banned + '"\s*:')) { U-Fail 'secret-free' ('the collector summary carries a ' + $banned + ' field') }
           }
           # the REAL write path against the REAL Security log
           $tmpCfg = Join-Path $env:RUNNER_TEMP 'f24-config.json'
