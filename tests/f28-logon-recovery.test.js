@@ -255,10 +255,20 @@ test('F28-2 launcher implements recred: redeem -> CredWrite overwrite -> mstsc, 
   assert.ok(step.indexOf('RedeemAndStoreStep') < step.indexOf('MstscStep'), 'redeem must precede the launch');
   assert.ok(step.includes('CredentialFallbackDecision'), 'the recovery path must use the shared decision function');
   assert.ok(step.includes('MstscStep(server, user, host, port, true)'), 'the recovery fallback must be the native prompt');
-  // the store path is the F27 one: CredWrite overwrite of both entry types.
+  // the store path is the F27 one, normalised by F30: same-target purge of
+  // BOTH entry variants, then the CRED_TYPE_DOMAIN_PASSWORD write.
   const handoff = launcher.slice(launcher.indexOf('// [F27 handoff-begin]'), launcher.indexOf('// [F27 handoff-end]'));
   assert.ok(handoff.includes('CredWriteW') && handoff.includes('c.Type = 2') && handoff.includes('c.Type = 1'));
-  assert.doesNotMatch(handoff, /CredDelete|cmdkey[^\n]*\/delete/i);
+  // [F30 §2.1] SUPERSEDED (was: no CredDelete token anywhere): the purge IS
+  // the point now - CredEnumerate+CredDelete of the EXACT same target, both
+  // type variants, immediately before the write. Still banned: a cmdkey
+  // /delete invocation and any verb/request-driven deletion surface.
+  assert.ok(handoff.includes('CredEnumerateW') && handoff.includes('CredDeleteW'),
+    'F30: the purge must enumerate and delete same-target stale entries');
+  const purgeAt = handoff.indexOf('int purged = PurgeStaleTargetCredentials(fqdn);');
+  const writeAt = handoff.indexOf('if (!CredWrite(ref c, 0))');
+  assert.ok(purgeAt > 0 && writeAt > purgeAt, 'F30: the purge must run before the write');
+  assert.doesNotMatch(handoff, /cmdkey[^\n]*\/delete/i, 'a cmdkey /delete invocation stays banned');
   // server-side beacon allowlist accepts both new details verbatim
   assert.ok(server.includes('recred-redeemed'), 'the beacon allowlist lacks recred-redeemed');
   assert.ok(server.includes('fallback-mstsc-native-prompt'), 'the beacon allowlist lacks fallback-mstsc-native-prompt');

@@ -130,11 +130,18 @@ public static class F27Read {
     $target = 'TERMSRV/' + $fqdn
     try {
         Assert-F27 ([F27Read]::SeedGeneric($target)) 'legacy generic entry seeded'
-        $null = Call-F27 'WriteCredential' @($fqdn,'fixture-old-user','poisoned-fixture')
+        # [F30 §2.1] SUPERSEDED (was: 'legacy generic entry also refreshed'):
+        # the write path now PURGES every same-target variant (type-1 AND
+        # type-2) BEFORE the Domain write and returns the purge count, so a
+        # wrong-type stale leftover can never poison the fresh credential.
+        $p1 = Call-F27 'WriteCredential' @($fqdn,'fixture-old-user','poisoned-fixture')
         Assert-F27 ([F27Read]::Matches($target,'fixture-old-user',2)) 'initial entry exists'
-        $null = Call-F27 'WriteCredential' @($fqdn,'fixture-user',$fixture)
+        Assert-F27 ($p1 -eq 1) 'F30 purge removed the seeded legacy entry before the write'
+        Assert-F27 (-not ([F27Read]::Matches($target,'fixture-old-user',1))) 'F30: the legacy type-1 variant is purged, not refreshed'
+        $p2 = Call-F27 'WriteCredential' @($fqdn,'fixture-user',$fixture)
         Assert-F27 ([F27Read]::Matches($target,'fixture-user',2)) 'CredWrite overwrites exact domain target'
-        Assert-F27 ([F27Read]::Matches($target,'fixture-user',1)) 'legacy generic entry also refreshed'
+        Assert-F27 ($p2 -eq 1) 'F30 purge removed the previous domain entry before the rewrite'
+        Assert-F27 (-not ([F27Read]::Matches($target,'fixture-user',1))) 'F30: no legacy type-1 entry survives the purge'
         $lines = Call-F27 'RdpLines' @($fqdn,'fixture-user')
         Assert-F27 ($lines -contains ('full address:s:' + $target.Substring(8))) 'RDP full address exactly matches credential target suffix'
         Assert-F27 (($lines -contains 'screen mode id:i:2') -and -not (($lines -join "`n") -match 'password|credential|authentication level')) 'options only, no weakening'

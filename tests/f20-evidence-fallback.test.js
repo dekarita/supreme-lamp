@@ -194,9 +194,11 @@ test('F20-5 launcher: mstsc exit code logged (dec + hex) and the dialog sends th
   assert.ok(cmp(ver[1], '2.3.0.0') >= 0, 'the launcher still stamps a pre-F20 version (' + ver[1] + ')');
   // [F28 §2] the assembly versions track the repo constant and the beacon
   // stamp names the CURRENT build (F28 = recred + closed fallback gap).
+  // [F30 §2] SUPERSEDED: the current build is F30 (same-target stale purge +
+  // credential type normalization + the .rdp read-back size guard).
   const vq = ver[1].replace(/\./g, '\\.');
   assert.match(launcher, new RegExp('assembly: AssemblyVersion\\("' + vq + '"\\)'), 'the assembly version must match the repo constant');
-  assert.match(launcher, /\(F28 recred\+fallback-gap\)/, 'the beacon stamp must name the F28 build');
+  assert.match(launcher, /\(F30 purge\+cred-type\+rdp-size\)/, 'the beacon stamp must name the F30 build');
 });
 
 // ---------------------------------------------------------------------------

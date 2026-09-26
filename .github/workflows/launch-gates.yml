@@ -1568,6 +1568,126 @@ jobs:
           # node matrix (F28-4) drives a live probe and asserts it can never print.
           grep -qF "if(csLive==='ok')" "$ui" || { echo 'F28: the live branch is not first' >&2; exit 1; }
           echo 'F28 gates PASS'
+      # [F30] TLS/cipher handshake fix + credential type normalization + stale
+      # purge + the server conn-log. §5: fail if the cipher enable commands are
+      # missing or out of order; fail if the TLS 1.2/1.3 registry writes are
+      # missing; fail if the launcher doesn't purge stale before the write;
+      # fail if the .rdp size guard is absent; fail if the connLog collector
+      # is absent. ALL existing gates above run first and stay passing.
+      - name: F30 TLS handshake + credential normalization + conn-log gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          srv=payloads/ghrdp-server.ps1
+          ui=payloads/ui.html
+          cs=payloads/ghrdp-rdp-launcher.cs
+          wf=.github/workflows/main.yml
+          blk() { awk -v b="$2" -v e="$3" 'index($0,b){f=1} f{print} f&&index($0,e){exit}' "$1"; }
+          # --- §1 cipher suites present AND in order (GCM/ChaCha20 first) -----
+          tls=$(blk "$wf" '# [F30 §1 tls-cipher-begin]' '# [F30 §1 tls-cipher-end]')
+          test -n "$tls" || { echo 'F30: the TLS/cipher normalization step is missing from main.yml' >&2; exit 1; }
+          cert_at=$(grep -nF 'Bind tailnet LE cert to RDP-Tcp (U5b)' "$wf" | cut -d: -f1)
+          tls_at=$(grep -nF 'TLS/cipher normalization (F30 - modern suites + TLS 1.2/1.3)' "$wf" | cut -d: -f1)
+          f21_at=$(grep -nF 'CredSSP/NLA handshake verification (F21 - fail loud on mismatch)' "$wf" | cut -d: -f1)
+          test -n "$cert_at" && test -n "$tls_at" && test -n "$f21_at" && \
+            test "$tls_at" -gt "$cert_at" && test "$tls_at" -lt "$f21_at" || \
+            { echo 'F30: the step must sit after cert-bind and before the F21 verification' >&2; exit 1; }
+          prev=0
+          for suite in TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 \
+                       TLS_AES_128_GCM_SHA256 TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 \
+                       TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256; do
+            line=$(grep -nF "Enable-TlsCipherSuite $suite" <<< "$tls" | head -1 | cut -d: -f1)
+            test -n "$line" || { echo "F30: cipher enable missing for $suite" >&2; exit 1; }
+            test "$line" -gt "$prev" || { echo "F30: cipher enables are out of order at $suite" >&2; exit 1; }
+            prev=$line
+          done
+          # --- §1 TLS 1.2 + 1.3 registry writes (never disable 1.2) -----------
+          # (bash double quotes: \\ => the single backslash the workflow carries)
+          for tok in "Protocols\\TLS 1.2\\Client' -Name Enabled -Value 1 -Type DWord" \
+                     "Protocols\\TLS 1.2\\Server' -Name Enabled -Value 1 -Type DWord" \
+                     "Protocols\\TLS 1.3\\Client' -Name Enabled -Value 1 -Type DWord -ErrorAction SilentlyContinue" \
+                     "Protocols\\TLS 1.3\\Server' -Name Enabled -Value 1 -Type DWord -ErrorAction SilentlyContinue" \
+                     "-Name 'SecurityLayer' -Value 2" "-Name 'MinEncryptionLevel' -Value 3" \
+                     'Restart-Service TermService' 'Restart-Service WinRM'; do
+            grep -qF -- "$tok" <<< "$tls" || { echo "F30: the step lacks: $tok" >&2; exit 1; }
+          done
+          if grep -E "TLS 1\.2[^']*' -Name Disabled -Value 1" <<< "$tls"; then
+            echo 'F30: TLS 1.2 must never be disabled' >&2; exit 1
+          fi
+          # --- §2 launcher: purge BEFORE the write, Domain write, beacon ------
+          hand=$(blk "$cs" '// [F27 handoff-begin]' '// [F27 handoff-end]')
+          test -n "$hand" || { echo 'F30: the handoff region is missing' >&2; exit 1; }
+          for tok in 'CredEnumerateW' 'CredDeleteW' 'int WriteCredential(string fqdn, string user, string pass)' \
+                     'int purged = PurgeStaleTargetCredentials(fqdn);' \
+                     'c.Type = 2; // CRED_TYPE_DOMAIN_PASSWORD' 'return purged;'; do
+            grep -qF -- "$tok" <<< "$hand" || { echo "F30: the handoff lacks: $tok" >&2; exit 1; }
+          done
+          purge_line=$(grep -nF 'int purged = PurgeStaleTargetCredentials(fqdn);' <<< "$hand" | cut -d: -f1)
+          write_line=$(grep -nF 'if (!CredWrite(ref c, 0))' <<< "$hand" | head -1 | cut -d: -f1)
+          test -n "$purge_line" && test -n "$write_line" && test "$purge_line" -lt "$write_line" || \
+            { echo 'F30: the launcher does not purge stale entries before the write' >&2; exit 1; }
+          grep -qF 'HandoffStep(host, port, "purged " + purged + " stale entries, wrote new as Domain", true);' "$cs" || \
+            { echo 'F30: the purge beacon is missing' >&2; exit 1; }
+          grep -qF 'purged [0-9]+ stale entries, wrote new as Domain' "$srv" || \
+            { echo 'F30: the beacon allowlist rejects the purge beacon' >&2; exit 1; }
+          grep -qF 'if (IsPurgeSelfTest(args)) { return PurgeSelfTestMain(); }' "$cs" || \
+            { echo 'F30: the --purge-selftest lab harness is not dispatched' >&2; exit 1; }
+          # refusals stay refused: no cmdkey delete verb; no value-bearing /pass:
+          if grep -nE 'cmdkey[^\"]*/delete' "$cs"; then echo 'F30: a cmdkey /delete verb appeared' >&2; exit 1; fi
+          if grep -nE '/pass:[^[:space:]\"]' "$cs"; then echo 'F30: a value-bearing /pass: switch appeared' >&2; exit 1; fi
+          # --- §2.3 the .rdp read-back size guard ------------------------------
+          grep -qF 'File.ReadAllText(rdp);' "$cs" || { echo 'F30: the .rdp is not read back after the write' >&2; exit 1; }
+          grep -qF 'bytes < 400' "$cs" || { echo 'F30: the >400 byte size assert is missing' >&2; exit 1; }
+          grep -qF 'lines.Length < 19' "$cs" || { echo 'F30: the 19+ directive assert is missing' >&2; exit 1; }
+          grep -qF 'rdp-truncated' "$cs" || { echo 'F30: the rdpTrun (truncation) guard reason is missing' >&2; exit 1; }
+          grep -qF 'AssertRdpFileHealthy(lines, rdp);' "$cs" || { echo 'F30: MstscStep does not call the guard' >&2; exit 1; }
+          # --- §2.2 the purge-stale-creds endpoint ------------------------------
+          route=$(blk "$srv" '# [F30 §2.2 purge-route-begin]' '# [F30 §2.2 purge-route-end]')
+          test -n "$route" || { echo 'F30: the /api/purge-stale-creds route is missing' >&2; exit 1; }
+          for tok in '/api/purge-stale-creds' 'Test-TicketBearer' 'dashboard authorization required' \
+                     '$script:PurgeCredsOneLiner'; do
+            grep -qF -- "$tok" <<< "$route" || { echo "F30: the purge route lacks: $tok" >&2; exit 1; }
+          done
+          cblk=$(blk "$srv" '# [F30 §3 connlog-begin]' '# [F30 §3 connlog-end]')
+          test -n "$cblk" || { echo 'F30: the connlog collector block is missing' >&2; exit 1; }
+          for tok in 'CredEnumerateW' 'CredDeleteW' 'AddDays(-7)'; do
+            grep -qF -- "$tok" <<< "$cblk" || { echo "F30: the 7-day sweep one-liner lacks: $tok" >&2; exit 1; }
+          done
+          # --- §3 the connLog collector ---------------------------------------
+          grep -qF "\$script:ConnLogStatePath = Join-Path \$Root 'rdp-connlog.json'" "$srv" || \
+            { echo 'F30: the connlog state path is missing' >&2; exit 1; }
+          for tok in '$script:F30ConnIntervalSec = 30' '$script:F30ConnStaleSec = 90' \
+                     'Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational' \
+                     'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational' \
+                     'function Get-RdpConnReason' 'function Get-RdpConnLogLast' \
+                     'function Update-RdpConnLog' 'function Get-RdpConnCollectorState' \
+                     "'RdpCoreTS|131'" "'RdpCoreTS|226'" "'RemoteConnMgr|261'" "'RemoteConnMgr|1149'"; do
+            grep -qF -- "$tok" <<< "$cblk" || { echo "F30: the connlog block lacks: $tok" >&2; exit 1; }
+          done
+          grep -qF 'try { Update-RdpConnLog -StatePath $script:ConnLogStatePath | Out-Null } catch { }' "$srv" || \
+            { echo 'F30: the connlog startup scan is missing' >&2; exit 1; }
+          grep -qF 'if (((Get-Date) - $lastConnScan).TotalSeconds -ge $script:F30ConnIntervalSec)' "$srv" || \
+            { echo 'F30: the connlog 30s tick is missing from the accept loop' >&2; exit 1; }
+          if grep -qF 'Update-RdpConnLog' "$wf"; then
+            echo 'F30: the conn-log scan leaked into the keep-alive workflow (must be server-side only)' >&2; exit 1
+          fi
+          for tok in '-NotePropertyName connLog' '-NotePropertyName connCollector' \
+                     'connCollector = $connState.connCollector'; do
+            grep -qF -- "$tok" "$srv" || { echo "F30: native-status wiring lacks: $tok" >&2; exit 1; }
+          done
+          # --- §3/§4 the dashboard surface ------------------------------------
+          grep -qF '<span class="k">SERVER CONN LOG</span>' "$ui" || { echo 'F30: the SERVER CONN LOG row is missing' >&2; exit 1; }
+          grep -qF 'id="serverConnLog"' "$ui" || { echo 'F30: the row value cell is missing' >&2; exit 1; }
+          grep -qF 'function connLogRowText(connLog,collector)' "$ui" || { echo 'F30: connLogRowText is missing' >&2; exit 1; }
+          grep -qF 'conn-log collector not running' "$ui" || { echo 'F30: the collector-dead render is missing' >&2; exit 1; }
+          grep -qF 'evs.slice(0,3)' "$ui" || { echo 'F30: the row must render only the newest 3' >&2; exit 1; }
+          for tok in 'id="connDiagPurgeAll"' 'cmdkey /list | findstr TERMSRV | ForEach-Object { cmdkey /delete:($_ -split' \
+                     'id="connDiagTlsSuites"' 'Get-TlsCipherSuite | Select-Object Name, CipherLength | Format-Table' \
+                     'id="connDiagMstscTls13"' '/admin /tls13' \
+                     'id="connDiagTshark"' 'tshark -i "Tailscale" -f "tcp port 3389"'; do
+            grep -qF -- "$tok" "$ui" || { echo "F30: ui.html lacks: $tok" >&2; exit 1; }
+          done
+          echo 'F30 gates PASS'
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:
@@ -1740,6 +1860,52 @@ jobs:
           if (-not $txt.Contains('mstscLaunched=0 cmdkeyCalled=0')) { throw 'F28: the selftest touched mstsc/cmdkey' }
           if ($txt -like '*verdict=FAIL*') { throw 'F28: a fallback matrix case reported FAIL' }
           Write-Host '[F28] fallback-gap decision matrix: 4/4 pass (stored=false can never reach a silent mstsc; no mstsc, no cmdkey)'
+
+      # [F30 §2] The purge+write cycle and the .rdp truncation guard, EXECUTED:
+      # the SHIPPED launcher compiled by the in-box csc runs --purge-selftest,
+      # which seeds a LegacyGeneric (type 1) + a Domain (type 2) entry for a
+      # LAB-ONLY target, runs the production WriteCredential, and asserts the
+      # purge count, the surviving fresh type-2 blob, the unrelated-target
+      # survival, plus the >400-byte read-back guard (real template passes;
+      # 19-tiny and 3-line files throw). Lab-only targets only; every seeded
+      # entry is deleted by the harness itself.
+      - name: F30 launcher purge+rdp-guard matrix (csc compile + --purge-selftest)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $csc = Join-Path $env:SystemRoot 'Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe'
+          if (-not (Test-Path -LiteralPath $csc)) { $csc = Join-Path $env:SystemRoot 'Microsoft.NET\\Framework\\v4.0.30319\\csc.exe' }
+          if (-not (Test-Path -LiteralPath $csc)) { throw 'the in-box csc.exe is missing (install.cmd depends on it too)' }
+          $exe = Join-Path $env:RUNNER_TEMP 'ghrdp-rdp-launcher-f30.exe'
+          $out = Join-Path $env:RUNNER_TEMP 'ghrdp-f30-purge.txt'
+          if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Force }
+          $cs = Join-Path $env:GITHUB_WORKSPACE 'payloads\\ghrdp-rdp-launcher.cs'
+          $cscOut = (& $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll $cs 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw ('csc exit ' + $LASTEXITCODE + ' :: ' + $cscOut.Trim()) }
+          $env:GHRDP_LAB_OUT = $out
+          $env:GHRDP_LAB_NOMSG = '1'
+          $p = Start-Process -FilePath $exe -ArgumentList '--purge-selftest' -PassThru
+          $p.WaitForExit()
+          if ($p.ExitCode -ne 0) { throw ('--purge-selftest exit ' + $p.ExitCode) }
+          for ($i = 0; $i -lt 20 -and -not (Test-Path -LiteralPath $out); $i++) { Start-Sleep -Milliseconds 250 }
+          if (-not (Test-Path -LiteralPath $out)) { throw '--purge-selftest wrote no matrix file' }
+          $txt = Get-Content -LiteralPath $out -Raw
+          Write-Host $txt
+          foreach ($want in @(
+              'case=purge purged=2 expected=2 verdict=pass',
+              'postRead legacyGenericGone=True verdict=pass',
+              'postRead domainBlobMatch=True finalEntryType=2 expected=2 verdict=pass',
+              'unrelatedSurvived=True verdict=pass',
+              'cleanup purgedAllSeeded=True verdict=pass',
+              'case=rdp-19-tiny guardThrew=True kind=rdp-truncated verdict=pass',
+              'case=rdp-3-lines guardThrew=True kind=rdp-template-incomplete verdict=pass'
+          )) { if (-not $txt.Contains($want)) { throw ('F30 matrix case missing: ' + $want) } }
+          if ($txt -notmatch 'case=rdp-real directives=19 bytes=([0-9]+) threshold=400') { throw 'F30: the real-template size case is missing' }
+          if ([int]$Matches[1] -le 400) { throw ('F30: the real .rdp template is only ' + $Matches[1] + ' bytes') }
+          if ($txt -notmatch 'case=rdp-real[^\n]*verdict=pass') { throw 'F30: the real-template case did not pass' }
+          if (-not $txt.Contains('mstscLaunched=0 cmdkeyCalled=0')) { throw 'F30: the selftest touched mstsc/cmdkey' }
+          if ($txt -like '*verdict=FAIL*') { throw 'F30: a purge matrix case reported FAIL' }
+          Write-Host '[F30] purge+normalize matrix: domain/legacy purge -> fresh Domain write survives, unrelated untouched, .rdp guard 3/3 (no mstsc, no cmdkey)'
 
       - name: Smoke-test VPS ACL helper in temporary files only
         shell: pwsh
