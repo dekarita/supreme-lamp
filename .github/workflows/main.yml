@@ -4359,11 +4359,49 @@ jobs:
           }
           # [F24 §2 collector-end] (marker last: the lab cell extracts the
           # COMPLETE collector verbatim)
+          # [F30 §3 keepalive-begin] SERVER CONN-LOG MIRROR. The server process
+          # samples BOTH RDP Operational logs on its own 30s tick (that is the only
+          # surface that can see a TLS/CredSSP-layer drop: 4624/4625 never fire for
+          # a connection killed before LSA). This step mirrors the newest sample
+          # into config.json rdpListener.connLog - so the field the F30 spec names
+          # exists in the config too - and prints the newest 3 reason codes to the
+          # run log. Read-only for the state file the server owns.
+          function Update-ConnLogMirror {
+              param([string]$CfgPath, [string]$StatePath)
+              if (-not (Test-Path -LiteralPath $StatePath)) { return $null }
+              $raw = ''
+              try { $raw = [System.IO.File]::ReadAllText($StatePath) } catch { return $null }
+              if (-not $raw) { return $null }
+              $state = $null
+              try { $state = $raw | ConvertFrom-Json } catch { return $null }
+              if (-not $state) { return $null }
+              $cfg = Read-GhrdpJson -Path $CfgPath
+              if (-not $cfg) { return $state }
+              $rl = $null
+              if ($cfg.PSObject.Properties['rdpListener'] -and $cfg.rdpListener) { $rl = $cfg.rdpListener } else { $rl = New-Object psobject }
+              $rl | Add-Member -NotePropertyName connLog -NotePropertyValue $state -Force
+              $cfg | Add-Member -NotePropertyName rdpListener -NotePropertyValue $rl -Force
+              try { [System.IO.File]::WriteAllText($CfgPath, ($cfg | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false))) } catch { }
+              return $state
+          }
+          # [F30 §3 keepalive-end]
           while ((Get-Date) -lt $deadline) {
               Start-Sleep -Seconds 60
               $beat++
               # [F24 §2] 60s auth-event tick: counts + status codes only.
               try { Update-RdpAuthEvents -CfgPath $cfgPath | Out-Null } catch { Write-Host ('[F24] collector tick failed: ' + $_.Exception.Message) }
+              # [F30 §3] mirror the server's 30s conn-log sample into config.json
+              # rdpListener.connLog and print the newest 3 reason codes: a
+              # tls-forcibly-closed / tls-handshake-failed / cert-rejected reason
+              # here is the pre-logon TLS drop the Security log cannot show.
+              try {
+                  $cl = Update-ConnLogMirror -CfgPath $cfgPath -StatePath (Join-Path $root 'rdp-connlog.json')
+                  if ($cl) {
+                      $clTxt = ''
+                      if ($cl.items -and @($cl.items).Count -gt 0) { $clTxt = (@($cl.items | Select-Object -First 3 | ForEach-Object { ('#' + [string]$_.id + ' ' + [string]$_.reason) }) -join ' ') }
+                      Write-Host ('[F30] SERVER CONN LOG: ' + $(if ($clTxt) { $clTxt } else { 'no events yet' }) + ' probeError=' + [string]$cl.probeError)
+                  }
+              } catch { Write-Host ('[F30] conn-log mirror tick failed: ' + $_.Exception.Message) }
               $stamp = Get-Date -Format 'HH:mm:ss'
               $cfgNow = Read-GhrdpJson -Path $cfgPath
               $ipNow = ''
