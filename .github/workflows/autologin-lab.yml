@@ -2248,6 +2248,7 @@ jobs:
           # genuine 36870s, so the tick must surface at least one.
           $tickY = Join-Path $env:RUNNER_TEMP 'f31-schannel-tick.json'
           $tickRes = Update-RdpConnLog -StatePath $tickY -ScanStartedUtc $start
+          Write-Host ('::notice::[Y] (d) tick: items=' + $tickRes.count + ' probeError=' + $tickRes.probeError + ' ids=' + ((@($tickRes.items | ForEach-Object { [string]$_.id }) -join ',')))
           if (-not (Test-Path -LiteralPath $tickY)) { Y-Fail 'connlog-tick' 'the tick did not write a state file' }
           $real70 = @($tickRes.items | Where-Object { [string]$_.id -eq '36870' })
           if ($real70.Count -eq 0) { Y-Fail 'connlog-real' 'the REAL tick surfaced no lab 36870 (the System-log sweep is blind)' }

@@ -112,6 +112,10 @@ test('F31-4 the connLog collector adds System Schannel 36870/36871/12017/12018 (
     'the 36870 ID branch must precede the generic text matches');
   // a healthy host (no Schannel errors) is NOT a probe failure
   assert.match(blk, /No events were found/, 'an empty Schannel window must not set probeError');
+  // one scalar-Id query per ID: an ARRAY Id in the FilterHashtable is silently
+  // unsatisfiable (lab-proven blind sweep)
+  assert.ok(blk.includes('Id = $schId'), 'the sweep must query one scalar Id at a time');
+  assert.ok(!blk.includes('Id = $script:F31SchannelIds'), 'the sweep must not pass an array Id to the FilterHashtable');
   // F30 shape preserved
   for (const tok of ['tls-forcibly-closed', 'cert-rejected', '$script:F30ConnLogIntervalSec = 30']) {
     assert.ok(blk.includes(tok), 'F30 token lost: ' + tok);

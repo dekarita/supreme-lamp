@@ -1752,6 +1752,10 @@ jobs:
           idl=$(grep -nF "evt -eq '36870'" "$srv" | head -1 | cut -d: -f1)
           txt=$(grep -nF "t -match 'forcibly closed'" "$srv" | head -1 | cut -d: -f1)
           test -n "$idl" && test -n "$txt" && test "$idl" -lt "$txt" || { echo 'F31: the 36870 ID branch must precede the generic text matches' >&2; exit 1; }
+          # one scalar-Id query per ID: an ARRAY Id in the FilterHashtable is
+          # silently unsatisfiable (lab-proven blind sweep)
+          grep -qF 'Id = $schId' "$srv" || { echo 'F31: the Schannel sweep must query one scalar Id at a time' >&2; exit 1; }
+          grep -qF 'Id = $script:F31SchannelIds' "$srv" && { echo 'F31: the Schannel sweep must not pass an array Id to the FilterHashtable' >&2; exit 1; } || true
           # renderer maps the Schannel reasons to their human causes
           for tok in 'schannel-private-key' 'private-key/ACL' 'schannel-cipher' 'schannel-no-cred' 'no cred'; do
             grep -qF -- "$tok" "$ui" || { echo "F31: dashboard missing token: $tok" >&2; exit 1; }

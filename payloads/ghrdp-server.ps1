@@ -574,9 +574,20 @@ function Update-RdpConnLog {
     # private-key/ACL class, 36871 the cipher class, 12017/12018 the no-cred
     # class. A healthy host has NO such events - "no events" is a clean sweep,
     # never a probe failure.
+    # ONE scalar-Id query per ID: a FilterHashtable with an ARRAY Id is
+    # silently unsatisfiable (the query returns nothing, the sweep goes blind
+    # and the missing 36870 looks like a clean host). Lab-proven shape.
     try {
         $schSince = (Get-Date).ToLocalTime().AddSeconds(-300)
-        $schRaw = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = $script:F31SchannelIds; StartTime = $schSince } -MaxEvents $script:F31SchannelMax -ErrorAction Stop)
+        $schRaw = @()
+        foreach ($schId in $script:F31SchannelIds) {
+            try {
+                $schRaw += @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = $schId; StartTime = $schSince } -MaxEvents $script:F31SchannelMax -ErrorAction Stop)
+            } catch {
+                if ([string]$_.Exception.Message -match 'No events were found') { } else { throw }
+            }
+        }
+        $schRaw = @($schRaw | Sort-Object -Property TimeCreated -Descending | Select-Object -First $script:F31SchannelMax)
         foreach ($e in $schRaw) {
             $provSch = [string]$e.ProviderName
             if (-not $provSch) { $provSch = 'Schannel' }
