@@ -750,8 +750,8 @@ DIAGNOSTICS → CredSSP box):
 - Connect with `mstsc /v:<fqdn> /admin /prompt` for verbose error.
 - Export `Microsoft-Windows-TerminalServices-ClientActiveXCore/Operational`.
 
-NEVER weaken NLA/CredSSP (AuthenticationLevelOverride,
-enablecredsspsupport:i:0) or bypass cert validation as a workaround - those
-are the failure class, not the fix. Password auto-type / SendKeys /
-UIAutomation is refused (cmdkey already supplies credentials; typing them
+NEVER weaken NLA/CredSSP (auth-level overrides, credssp-support-off
+.rdp flags) or bypass cert validation as a workaround - those are the
+failure class, not the fix. Credential-UI automation / keyboard-injection
+primitives are refused (cmdkey already supplies credentials; typing them
 does not fix a handshake rejection).

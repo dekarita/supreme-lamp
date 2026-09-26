@@ -629,8 +629,9 @@ jobs:
       # FAILS LOUD with the exact field + remediation text; config.json gets
       # rdpListener.credsspStatus = 'failed-<reason>'; the run never proceeds to
       # advertise a host that will reject the NLA handshake (TcpStateFrontAuth
-      # -> TcpStateFailure class, verified 2026-09-25). NO password auto-type
-      # / SendKeys / credential-UI automation anywhere (F19 gates enforce).
+      # -> TcpStateFailure class, verified 2026-09-25). F19 gates enforce no
+      # credential-UI automation (password auto-type, keyboard injection)
+      # anywhere in the repo.
       - name: CredSSP/NLA handshake verification (F21 - fail loud on mismatch)
         shell: pwsh
         run: |
