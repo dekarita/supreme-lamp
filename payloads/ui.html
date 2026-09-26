@@ -388,6 +388,21 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">LAST RDP LOGON</span><span class="v" id="lastRdpLogon">not reported yet</span></div>
   <div class="row"><span class="k">Ticket audit</span><span class="v" id="ticketAudit">not reported yet</span></div>
   <div class="row"><span class="k">Launcher chain</span><span class="v" id="handoffChain">not reported yet</span></div>
+  <!-- [F28 §2] ONE-CLICK RECOVERY (retype WITHOUT typing). Shown ONLY when the
+       correlator fires: authLast failed + sub 0xC000006A + within 120s of the
+       last mstsc-started beacon. FIX & RECONNECT mints a fresh single-use
+       ticket and fires ghrdp://recred (ticket param ONLY - never a password);
+       the manual cmdkey line below is a copy-only escape hatch, never typed. -->
+  <div class="row" id="recoveryCard" style="display:none;flex-direction:column;align-items:stretch;gap:6px;border:1px solid rgba(248,113,113,.4);border-radius:12px;padding:10px 12px;background:rgba(248,113,113,.07)">
+    <span class="k" style="font-weight:600;color:#f5b7b7">RECOVERY - password rejected (0xC000006A)</span>
+    <span class="note" id="recoveryText" style="margin:0">Password rejected by the host (wrong-password sub-status). One click re-issues a fresh ticket and overwrites the stored credential - no typing, no clipboard.</span>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button class="primary" id="btnFixReconnect" type="button">FIX &amp; RECONNECT</button>
+      <span class="note" id="recoveryNote" style="margin:0"></span>
+    </div>
+    <span class="note" style="margin:0">Manual escape hatch (run yourself if one-click fails; this page never types it):</span>
+    <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="recoveryCmdkey" style="font-size:12px">cmdkey /generic:TERMSRV/&lt;fqdn&gt; /user:&lt;user&gt; /pass</code><a href="javascript:void(0)" onclick="copyById('recoveryCmdkey',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- visible Windows prompt (valueless /pass); never auto-typed</span></span>
+  </div>
   <!-- [F10-3 §1.3] PS-FREE primary path: ghrdp://rdp?server=<fqdn>&user=<u>
        handled by the install.cmd-registered launcher (in-box csc compile,
        HKCU registration; no script host, no admin). If no handler answers,
@@ -1170,11 +1185,18 @@ async function nativeStatus(){
     // "FAIL: pending", which read like a verification failure. Now: OK /
     // OK (cipher probe warn) / FAIL (<status> + why) / "not reported yet" with
     // the exact F21 step name that writes the field.
+    // [F28 §4] The row renders the LIVE verdict (same source as the listener
+    // credssp checkbox: stored-absent reads OK for back-compat) + the config
+    // stamp as secondary "(stamp: ...)". A bare "not reported yet" is rendered
+    // ONLY when the live verdict is also missing - never while it reads OK.
     var cs=(s&&s.rdpListener&&s.rdpListener.credsspStatus)?String(s.rdpListener.credsspStatus):'';
     var csGood=(cs==='ok'||cs==='ok-with-cipher-warn');
-    if(csGood){ cse.textContent=(cs==='ok')?'OK':'OK (cipher probe warn)'; cse.style.color=''; }
+    var rlLive=(s&&s.rdpListener)||null;
+    var liveOk=(!rlLive||!rlLive.credsspStatus||rlLive.credsspStatus==='ok'||rlLive.credsspStatus==='ok-with-cipher-warn');
+    if(csGood){ cse.textContent=((cs==='ok')?'OK':'OK (cipher probe warn)')+' (stamp: '+cs+')'; cse.style.color=''; }
+    else if(!cs&&liveOk){ cse.textContent='OK (live probe; stamp: not reported yet - F21 step: CredSSP/NLA handshake verification)'; cse.style.color=''; }
     else if(!cs){ cse.textContent='not reported yet (F21 step: CredSSP/NLA handshake verification)'; cse.style.color='#f5d9b7'; }
-    else { cse.textContent='FAIL ('+cs+')'; cse.style.color='#f5b7b7'; }
+    else { cse.textContent='FAIL (live probe; stamp: '+cs+')'; cse.style.color='#f5b7b7'; }
   }
   if(s&&s.rdpListener&&s.rdpListener.credsspWhy){
     if(s.rdpListener.credsspStatus==='ok-with-cipher-warn') setReason('nrCredsspReason','WARN: '+s.rdpListener.credsspWhy+' - cipher probe could not enumerate (cmdlet+registry failed); Windows defaults include AES-256-GCM. NLA/cert/CredSSP verified OK.');
@@ -1728,16 +1750,71 @@ try{clientDnsProbe();setInterval(clientDnsProbe,CDNS_PERIOD_MS);}catch(_){}
 // is known; the launcher itself handles a missing TERMSRV entry with ONE
 // interactive fallback only on failed redemption.
 // [F27 status-render-begin]
+// [F28 §1 logon-render-begin] LAST RDP LOGON renders rdpListener.authLast
+// {result,sub,eventTs,scanTs} verbatim. scanTs empty + server uptime >90s =>
+// red "logon collector not running" (collector-dead); scanTs empty + uptime
+// <=90s => boot grace ("waiting for first scan"); scanTs present + none =>
+// "scanned <ts>, nothing yet". Pre-F28 runs without authLast fall back to the
+// F27 authEvents render (keeps old runs readable; F27 node test still green).
 function paintHandoffStatus(rl,s){
- var ae=(rl&&rl.authEvents)||{};
+ var al=(rl&&rl.authLast)||null;
  var el=$('lastRdpLogon');
- if(el)el.textContent='success '+(ae.last4624At||'not reported')+' | failed '+(ae.last4625At||'not reported')+' sub='+(ae.lastSubStatus||'none')+(ae.probeError?' | collector='+ae.probeError:'');
+ if(el){
+  if(al&&al.scanTs){
+   var res=String(al.result||'none'),sub=String(al.sub||''),ev=String(al.eventTs||''),sc=String(al.scanTs||'');
+   if(res==='success'){el.textContent='success '+ev+' (scanned '+sc+')';el.style.color='#7dffc9';}
+   else if(res==='failed'){el.textContent='failed sub='+(sub||'none')+' '+ev+' (scanned '+sc+')';el.style.color='#f5b7b7';}
+   else{el.textContent='scanned '+sc+', nothing yet';el.style.color='';}
+  }else{
+   var up=(s&&s.serverUptimeSec!=null)?Number(s.serverUptimeSec):null;
+   if(up==null&&s&&s.serverStartUtc&&typeof parseTsUtc==='function'){var st=parseTsUtc(s.serverStartUtc);if(!isNaN(st))up=Math.max(0,Math.round((Date.now()-st)/1000));}
+   if(up!=null&&up>90){el.textContent='logon collector not running';el.style.color='#f5b7b7';}
+   else if(up!=null){el.textContent='waiting for first scan (server uptime '+up+'s)';el.style.color='#f5d9b7';}
+   else{
+    var ae=(rl&&rl.authEvents)||{};
+    el.textContent='success '+(ae.last4624At||'not reported')+' | failed '+(ae.last4625At||'not reported')+' sub='+(ae.lastSubStatus||'none')+(ae.probeError?' | collector='+ae.probeError:'');
+    el.style.color='';
+   }
+  }
+ }
  var audit=(s&&s.ticketAudit)||{};
  el=$('ticketAudit');if(el)el.textContent='issued='+(audit.issued||0)+' redeemed='+(audit.redeemed||0)+' rejected='+(audit.rejected||0);
  var chain=(s&&s.handlerChain)||[];
  el=$('handoffChain');if(el)el.textContent=chain.length?chain.map(function(e){return e.ts+' '+e.details;}).join(' → '):'no launcher steps yet';
+ if(typeof paintRecovery==='function')paintRecovery(rl,s);
 }
+// [F28 §1 logon-render-end]
 // [F27 status-render-end]
+// [F28 §2 recovery-begin] Correlator: authLast failed + sub 0xC000006A + within
+// 120s of the last mstsc-started beacon => show the RECOVERY card. The Fix
+// button mints a FRESH single-use ticket and fires ghrdp://recred (t ONLY).
+function paintRecovery(rl,s){
+ var card=$('recoveryCard');
+ if(!card)return;
+ var al=(rl&&rl.authLast)||{};
+ var chain=(s&&s.handlerChain)||[];
+ var lastMstsc=null;
+ for(var i=chain.length-1;i>=0;i--){var d=String((chain[i]&&chain[i].details)||'');if(d.indexOf('mstsc-started')===0){lastMstsc=chain[i].ts;break;}}
+ var show=false;
+ if(String(al.result||'')==='failed'&&String(al.sub||'').toUpperCase()==='0XC000006A'&&lastMstsc){
+  var ms=parseTsUtc(lastMstsc);
+  if(!isNaN(ms)&&(Date.now()-ms)<=120000)show=true;
+ }
+ card.style.display=show?'':'none';
+ if(show){
+  var fqdn=(($('rdpFqdn')||{}).textContent)||'';
+  var user=(($('credUser')||{}).textContent)||'';
+  var rc=$('recoveryCmdkey');
+  if(rc)rc.textContent='cmdkey /generic:TERMSRV/'+(fqdn||'<fqdn>')+' /user:'+(user||'<user>')+' /pass';
+ }
+}
+function ghrdpRecredUrl(fqdn,user,ip,ticket){
+ var u='ghrdp://recred?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user);
+ if(ip&&/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(ip)){u+='&ip='+encodeURIComponent(ip);}
+ u+='&t='+encodeURIComponent(ticket);
+ return u;
+}
+// [F28 §2 recovery-end]
 function ghrdpRdpUrl(fqdn,user,ip){
  var u='ghrdp://rdp?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user);
  if(ip&&/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(ip)){u+='&ip='+encodeURIComponent(ip);}
@@ -1819,6 +1896,33 @@ if(waBtn) waBtn.onclick=async function(ev){
 // command, the TERMSRV credential state, the log path and the exe stamp. With a
 // valid *.ts.net FQDN the check also beacons, so the diagnostics row above
 // fills in and a missing handler stays visible instead of silent.
+// [F28 §2] FIX & RECONNECT: fresh ticket + ghrdp://recred (t ONLY - never a
+// password). The launcher redeems, overwrites TERMSRV via CredWrite, and
+// reconnects. No typing, no clipboard, no cred-UI automation.
+var fixBtn=$('btnFixReconnect');
+if(fixBtn) fixBtn.onclick=async function(ev){
+ if(ev&&ev.preventDefault)ev.preventDefault();
+ var fqdn=($('rdpFqdn')||{}).textContent||'';
+ var user=($('credUser')||{}).textContent||'rdpuser';
+ var note=$('recoveryNote');
+ if(!FQDN_RE.test(fqdn)){if(note)note.textContent='target FQDN missing';return;}
+ if(note)note.textContent='issuing a fresh ticket...';
+ var ticket='';
+ try{
+  var key=getKey();if(!key)throw new Error('dashboard authorization missing');
+  var r=await fetch(apiBase()+'/api/rdp-token',{method:'POST',headers:{Authorization:'Bearer '+key},cache:'no-store'});
+  if(!r.ok)throw new Error('ticket issue HTTP '+r.status);
+  var j=await r.json();ticket=String(j.rid||'');
+  if(!/^[0-9a-f]{32}$/.test(ticket))throw new Error('invalid ticket response');
+ }catch(e){
+  if(note)note.textContent='ticket-issue failed - check dashboard authorization and direct tailnet access';
+  return;
+ }
+ launchProto(ghrdpRecredUrl(fqdn,user,(typeof window.__runnerResolvedIP==='string'?window.__runnerResolvedIP:''),ticket));
+ ticket='';
+ if(note)note.textContent='recovery dispatched - mstsc should reconnect shortly';
+ try{nativeStatus();}catch(_){}
+};
 var rcBtn=$('btnRunCheck');
 if(rcBtn) rcBtn.onclick=function(ev){
  if(ev&&ev.preventDefault)ev.preventDefault();
