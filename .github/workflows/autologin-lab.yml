@@ -20,6 +20,13 @@ on:
 jobs:
   proof:
     runs-on: windows-latest
+    # [F15] Headless-safe launcher invocations: a runner cannot show OR dismiss
+    # a MessageBox, so the launcher logs the dialog first and suppresses it only
+    # when this LAB-named switch is set (production always shows the dialog).
+    # Every F15 assertion below is therefore on the JSONL msgbox line + the
+    # beacon sequence + the exit code - never on a human click.
+    env:
+      GHRDP_LAB_NOMSG: '1'
     steps:
       - uses: actions/checkout@v4
 
@@ -31,19 +38,44 @@ jobs:
           New-Item -ItemType Directory -Path $lab -Force | Out-Null
           Copy-Item payloads\install.cmd (Join-Path $lab 'install.cmd') -Force
           Copy-Item payloads\ghrdp-rdp-launcher.cs (Join-Path $lab 'ghrdp-rdp-launcher.cs') -Force
-          # The REAL double-click equivalent: cmd /c on the shipped file.
-          & cmd.exe /c ('"' + (Join-Path $lab 'install.cmd') + '" < nul') 2>&1 | ForEach-Object { Write-Host ('[install.cmd] ' + $_) }
-          $code = $LASTEXITCODE
+          # The REAL double-click equivalent: cmd /c on the shipped file. Output
+          # goes to a FILE, not a pipe: the [F15 §2] self test inside install.cmd
+          # starts the launcher, and an inherited pipe handle would keep this
+          # step - and the lane - open until that process exited.
+          $aOut = Join-Path $lab 'install-out.txt'
+          $aErr = Join-Path $lab 'install-err.txt'
+          $p = Start-Process -FilePath 'cmd.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput $aOut -RedirectStandardError $aErr -ArgumentList '/c', ('"' + (Join-Path $lab 'install.cmd') + '" < nul')
+          if (-not $p.WaitForExit(120000)) { Write-Host '[A] FAIL: install.cmd did not finish in 120s'; try { Stop-Process -Id $p.Id -Force } catch { }; exit 1 }
+          $code = $p.ExitCode
+          $aTxt = ''
+          try { $aTxt = [System.IO.File]::ReadAllText($aOut) } catch { }
+          foreach ($l in ($aTxt -split "`r?`n")) { if ($l.Trim()) { Write-Host ('[install.cmd] ' + $l) } }
           Write-Host ('[A] install.cmd exit code = ' + $code)
           if ($code -ne 0) { Write-Host '[A] FAIL: install.cmd returned nonzero'; exit 1 }
           $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
           if (-not (Test-Path -LiteralPath $exe)) { Write-Host '[A] FAIL: exe missing'; exit 1 }
           $cmdReg = (Get-ItemProperty 'Registry::HKEY_CURRENT_USER\Software\Classes\ghrdp\shell\open\command' -ErrorAction SilentlyContinue).'(default)'
           if ($cmdReg -notmatch 'ghrdp-rdp-launcher\.exe') { Write-Host ('[A] FAIL: protocol not registered, command=' + $cmdReg); exit 1 }
+          # [F15 §2] the install-time self test must have RUN: install.cmd prints
+          # the notice + launches ghrdp://check, and the launcher logs the check
+          # dialog before showing it (suppressed here by GHRDP_LAB_NOMSG; the
+          # physical MessageBox stays PENDING-USER). No log => the exe never ran.
+          $lLog = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.log'
+          $lTxt = ''
+          for ($i = 0; $i -lt 20 -and $lTxt -notmatch 'ghrdp launcher check'; $i++) {
+              try { $lTxt = [System.IO.File]::ReadAllText($lLog) } catch { }
+              if ($lTxt -notmatch 'ghrdp launcher check') { Start-Sleep -Milliseconds 500 }
+          }
+          Write-Host '[A] launcher log (F15 fail-visible JSONL):'
+          foreach ($l in ($lTxt -split "`r?`n")) { if ($l.Trim()) { Write-Host ('  ' + $l) } }
+          if ($aTxt -notmatch 'SELF-TEST') { Write-Host '[A] FAIL: install.cmd did not print the ghrdp://check self-test notice'; exit 1 }
+          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', 'ghrdp-rdp-launcher 2.0.0.0', 'HKCU')) {
+              if ($lTxt -notmatch [regex]::Escape($need)) { Write-Host ('[A] FAIL: self-test log lacks ' + $need); exit 1 }
+          }
           $cs = [System.IO.File]::ReadAllText((Join-Path $lab 'ghrdp-rdp-launcher.cs'))
           $cmd = [System.IO.File]::ReadAllText((Join-Path $lab 'install.cmd'))
           if (($cs + $cmd) -match 'powershell\.exe|ExecutionPolicy|Invoke-Expression|EncodedCommand') { Write-Host '[A] FAIL: script-host token'; exit 1 }
-          Write-Host '[A] PASS: compiled with in-box csc, HKCU ghrdp registered, script-host free'
+          Write-Host '[A] PASS: compiled with in-box csc, HKCU ghrdp registered, ghrdp://check self test RAN (dialog logged), script-host free'
           'A_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
       - name: "B/C: ghrdp://rdp verb -> directives rdp + mstsc spawn + temp cleanup"
         shell: pwsh
@@ -109,6 +141,177 @@ jobs:
           'BC_result=pass' | Out-File $env:GITHUB_ENV -Append
         env:
           RUNNER_TEMP: ${{ runner.temp }}
+
+      - name: "P: fail-visible launcher (beacon sequence, check verb, cmdkey timeout)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $diag = Join-Path $env:GITHUB_WORKSPACE 'de-diag'
+          New-Item -ItemType Directory -Path $diag -Force | Out-Null
+          function P-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[P] stage=' + $Stage + ' :: ' + $Detail)
+              try { ('stage=' + $Stage + "`n" + 'detail=' + $Detail) | Out-File (Join-Path $diag 'f15-classification.txt') -Encoding utf8 } catch { }
+              try { if ($lst -and -not $lst.HasExited) { Stop-Process -Id $lst.Id -Force -ErrorAction SilentlyContinue } } catch { }
+              exit 1
+          }
+          $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { P-Fail 'exe' 'launcher exe missing - cell A must have compiled it' }
+          $log = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.log'
+          $fqdn = 'lab-target.dekarita.tailnet-lab.ts.net'
+          $cap = Join-Path $env:RUNNER_TEMP 'handler-hello-capture.jsonl'
+          Remove-Item $cap -Force -ErrorAction SilentlyContinue
+          $lst = $null
+          function Cap-Lines { if (-not (Test-Path -LiteralPath $cap)) { return @() }; return @([System.IO.File]::ReadAllLines($cap) | Where-Object { $_ -and $_.Trim() }) }
+          function Log-Text { try { return [System.IO.File]::ReadAllText($log) } catch { return '' } }
+          # --- (1) the beacon target is the URL server arg: point that FQDN at
+          # loopback so the REAL launcher POSTs land on the local listener.
+          # hosts entry 127.0.0.1 lab-target.dekarita.tailnet-lab.ts.net -> the
+          # launcher's real beacon target (http://<fqdn>:7331) reaches the listener.
+          $hosts = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+          try { $hTxt = [System.IO.File]::ReadAllText($hosts) } catch { P-Fail 'hosts-read' $_.Exception.Message }
+          if ($hTxt -notmatch [regex]::Escape($fqdn)) {
+              try { [System.IO.File]::AppendAllText($hosts, ("`r`n127.0.0.1 " + $fqdn + "`r`n")) } catch { P-Fail 'hosts-write' $_.Exception.Message }
+              Write-Host ('[P] hosts: 127.0.0.1 ' + $fqdn)
+          }
+          # --- (2) python hello-listener on 127.0.0.1:7331 (the real port; a
+          # file-capture server - one verbatim POST body per line).
+          $pyExe = (Get-Command python -ErrorAction SilentlyContinue)
+          if (-not $pyExe) { $pyExe = (Get-Command py -ErrorAction SilentlyContinue) }
+          if (-not $pyExe) { P-Fail 'python' 'no python interpreter available for the hello-listener' }
+          $py = Join-Path $env:RUNNER_TEMP 'handler-hello-listener.py'
+          $pyLines = @(
+              "import sys, threading",
+              "from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer",
+              "cap = sys.argv[1]",
+              "lock = threading.Lock()",
+              "class H(BaseHTTPRequestHandler):",
+              "    protocol_version = 'HTTP/1.1'",
+              "    def do_POST(self):",
+              "        n = int(self.headers.get('Content-Length') or 0)",
+              "        body = self.rfile.read(n).decode('utf-8', 'replace') if n else ''",
+              "        with lock:",
+              "            with open(cap, 'a', encoding='utf-8') as f:",
+              "                f.write(self.path + ' ' + body + '\n')",
+              "        out = b'{""ok"":true}'",
+              "        self.send_response(200)",
+              "        self.send_header('Content-Type', 'application/json')",
+              "        self.send_header('Content-Length', str(len(out)))",
+              "        self.end_headers()",
+              "        self.wfile.write(out)",
+              "    def log_message(self, *a):",
+              "        pass",
+              "ThreadingHTTPServer(('127.0.0.1', 7331), H).serve_forever()"
+          )
+          [System.IO.File]::WriteAllText($py, ($pyLines -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
+          $lst = Start-Process -FilePath $pyExe.Source -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $diag 'f15-listener.log') -RedirectStandardError (Join-Path $diag 'f15-listener-err.log') -ArgumentList ('-u "' + $py + '" "' + $cap + '"')
+          $up = $false
+          for ($i = 0; $i -lt 30 -and -not $up; $i++) { try { $up = [bool](Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction Stop) } catch { }; if (-not $up) { Start-Sleep -Milliseconds 500 } }
+          if (-not $up) {
+              $errTxt = ''; try { $errTxt = ([System.IO.File]::ReadAllText((Join-Path $diag 'f15-listener-err.log'))).Trim() } catch { }
+              P-Fail 'listener-listen' ('the python hello-listener never bound 127.0.0.1:7331; stderr=[' + $errTxt + ']')
+          }
+          Write-Host ('[P] python hello-listener up on 127.0.0.1:7331 (capture ' + $cap + ')')
+          # --- (3) ghrdp://check with NO server arg: the MessageBox path is
+          # taken (and logged) and NO beacon may be posted (§1.5).
+          $n0 = (Cap-Lines).Count
+          $p = Start-Process -FilePath $exe -ArgumentList 'ghrdp://check' -PassThru
+          if (-not $p.WaitForExit(60000)) { P-Fail 'check-wait' 'ghrdp://check did not exit within 60s' }
+          if ($p.ExitCode -ne 0) { P-Fail 'check-exit' ('ghrdp://check exit code ' + $p.ExitCode) }
+          $logTxt = Log-Text
+          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', 'ghrdp-rdp-launcher 2.0.0.0', 'HKCU')) {
+              if ($logTxt -notmatch [regex]::Escape($need)) { P-Fail 'check-log' ('launcher log lacks ' + $need) }
+          }
+          if ((Cap-Lines).Count -ne $n0) { P-Fail 'check-beacon' 'a server-less ghrdp://check must not post a beacon' }
+          Write-Host '[P] PASS check(no server): dialog logged (msgbox + lab suppression), no beacon'
+          # --- (4) ghrdp://check?server=<fqdn>: the check beacon IS posted.
+          $n1 = (Cap-Lines).Count
+          $p = Start-Process -FilePath $exe -ArgumentList ('ghrdp://check?server=' + $fqdn) -PassThru
+          if (-not $p.WaitForExit(60000)) { P-Fail 'check2-wait' 'ghrdp://check?server= did not exit within 60s' }
+          if ($p.ExitCode -ne 0) { P-Fail 'check2-exit' ('ghrdp://check exit code ' + $p.ExitCode) }
+          $c2 = @(Cap-Lines)
+          if ($c2.Count -le $n1) { P-Fail 'check2-beacon' 'no beacon posted for ghrdp://check?server=<fqdn>' }
+          $last = $c2[$c2.Count - 1]
+          foreach ($need in @('"verb":"check"', '"details":"check-shown"', '"ok":true')) {
+              if ($last -notmatch [regex]::Escape($need)) { P-Fail 'check2-body' ('last beacon lacks ' + $need + ' :: ' + $last) }
+          }
+          Write-Host ('[P] PASS check(server): beacon ' + $last)
+          # --- (5) rdp verb, credential stored: invoked -> cmdkey-stored=true ->
+          # mstsc-started pid=N (the silent-after-first-launch contract).
+          & cmdkey.exe /add:TERMSRV/$fqdn /user:labuser /pass:labdummy000 | Out-Null
+          $n2 = (Cap-Lines).Count
+          $env:GHRDP_LAB_KEEP_RDP = '1'
+          $p = Start-Process -FilePath $exe -ArgumentList ('ghrdp://rdp?server=' + $fqdn + '&user=labuser') -PassThru
+          if (-not $p.WaitForExit(150000)) { try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }; P-Fail 'rdp-wait' 'the rdp verb did not exit within 150s' }
+          if ($p.ExitCode -ne 0) { P-Fail 'rdp-exit' ('rdp verb exit ' + $p.ExitCode) }
+          $seq = @((Cap-Lines) | Select-Object -Skip $n2)
+          Write-Host ('[P] rdp beacon sequence: ' + ($seq -join ' | '))
+          if ($seq.Count -lt 3) { P-Fail 'rdp-seq' ('expected >=3 beacons, got ' + $seq.Count) }
+          if ($seq[0] -notmatch '"details":"invoked"') { P-Fail 'rdp-seq0' $seq[0] }
+          if ($seq[1] -notmatch '"details":"cmdkey-stored=true"') { P-Fail 'rdp-seq1' $seq[1] }
+          if ($seq[2] -notmatch '"details":"mstsc-started pid=') { P-Fail 'rdp-seq2' $seq[2] }
+          $rdp = Get-ChildItem (Join-Path $env:TEMP 'ghrdp-*.rdp') -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          if (-not $rdp) { P-Fail 'rdp-file' 'no ghrdp-*.rdp was written by the rdp verb' }
+          $rdpTxt = [System.IO.File]::ReadAllText($rdp.FullName)
+          if ($rdpTxt -notmatch 'screen mode id:i:2') { P-Fail 'rdp-fullscreen' 'the temp .rdp lacks fullscreen' }
+          foreach ($bad in @('password', 'prompt for credentials')) { if ($rdpTxt -match [regex]::Escape($bad)) { P-Fail 'rdp-cred' ('the temp .rdp carries ' + $bad) } }
+          $mst = $null
+          for ($i = 0; $i -lt 10 -and -not $mst; $i++) {
+              $mst = Get-CimInstance Win32_Process -Filter "Name='mstsc.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like ('*' + $rdp.Name + '*') } | Select-Object -First 1
+              if (-not $mst) { Start-Sleep -Milliseconds 500 }
+          }
+          if ($mst) {
+              Write-Host ('[P] mstsc observed pid=' + $mst.ProcessId + ' with the local ghrdp rdp on its command line')
+              foreach ($mp in (Get-CimInstance Win32_Process -Filter "Name='mstsc.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*ghrdp-*.rdp*' })) { try { Stop-Process -Id $mp.ProcessId -Force -ErrorAction Stop } catch { } }
+          } else {
+              Write-Host '[P] note: mstsc had already exited the 2s probe window; the mstsc-started beacon above is the launch proof (cell B/C observes the cmdline)'
+          }
+          Write-Host '[P] PASS rdp(stored): invoked -> cmdkey-stored=true -> mstsc-started pid=N, .rdp directives verified, no credential line'
+          # --- (6) rdp verb, NO credential + a lab-shortened prompt bound: the
+          # timeout branch must be VISIBLE (dialog logged, ok:false, rc 1) and
+          # mstsc must NOT start.
+          & cmdkey.exe /delete:TERMSRV/$fqdn | Out-Null
+          $n3 = (Cap-Lines).Count
+          $env:GHRDP_LAB_CMDKEY_TIMEOUT_MS = '8000'
+          $p = Start-Process -FilePath $exe -ArgumentList ('ghrdp://rdp?server=' + $fqdn + '&user=labuser') -PassThru
+          if (-not $p.WaitForExit(150000)) { try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }; P-Fail 'timeout-wait' 'the timeout branch did not exit within 150s' }
+          if ($p.ExitCode -ne 1) { P-Fail 'timeout-exit' ('expected exit 1 (cmdkey prompt timed out), got ' + $p.ExitCode) }
+          $seq2 = @((Cap-Lines) | Select-Object -Skip $n3)
+          Write-Host ('[P] timeout beacon sequence: ' + ($seq2 -join ' | '))
+          if ($seq2.Count -lt 3) { P-Fail 'timeout-seq' ('expected >=3 beacons, got ' + $seq2.Count) }
+          if ($seq2[0] -notmatch '"details":"invoked"') { P-Fail 'timeout-seq0' $seq2[0] }
+          if ($seq2[1] -notmatch '"details":"cmdkey-shown"') { P-Fail 'timeout-seq1' $seq2[1] }
+          if ($seq2[2] -notmatch '"details":"cmdkey-timeout"' -or $seq2[2] -notmatch '"ok":false') { P-Fail 'timeout-seq2' $seq2[2] }
+          if (($seq2 -join ' ') -match 'mstsc-started') { P-Fail 'timeout-mstsc' 'a timed-out credential prompt must NOT start mstsc' }
+          if ((Log-Text) -notmatch [regex]::Escape('cmdkey prompt timed out')) { P-Fail 'timeout-msgbox' 'the cmdkey-timeout MessageBox was not logged' }
+          Write-Host '[P] PASS timeout: invoked -> cmdkey-shown -> cmdkey-timeout (ok:false, rc 1), dialog logged, mstsc NOT started'
+          Remove-Item Env:GHRDP_LAB_CMDKEY_TIMEOUT_MS -ErrorAction SilentlyContinue
+          # --- (7) JSONL log contract: one object per line, dialogs logged, and
+          # no credential-looking value anywhere (redaction).
+          $lines = @([System.IO.File]::ReadAllLines($log) | Where-Object { $_ -and $_.Trim() })
+          if ($lines.Count -lt 12) { P-Fail 'log-lines' ('launcher log only has ' + $lines.Count + ' lines') }
+          $msgbox = 0
+          foreach ($l in $lines) {
+              if ($l -notmatch '^\{"ts":"') { P-Fail 'log-jsonl' ('not a JSONL line: ' + $l) }
+              if ($l -match '"level":"msgbox"') { $msgbox++ }
+          }
+          if ($msgbox -lt 2) { P-Fail 'log-msgbox' ('expected >=2 logged dialogs, saw ' + $msgbox) }
+          $redact = @($lines | Where-Object { $_ -match '/pass:[^"]|passwd[=:]|password[=:][^ ]' }).Count
+          if ($redact -ne 0) { P-Fail 'log-redaction' 'a credential-looking value survived into the launcher log' }
+          Write-Host ('[P] PASS log: ' + $lines.Count + ' JSONL lines, ' + $msgbox + ' logged dialogs, zero credential-looking tokens')
+          # --- (8) cleanup: listener, hosts entry, temp rdp, dummy cmdkey entry.
+          try { Stop-Process -Id $lst.Id -Force -ErrorAction Stop } catch { }
+          try {
+              $h3 = (([System.IO.File]::ReadAllText($hosts)) -split "`r?`n" | Where-Object { $_ -notmatch [regex]::Escape($fqdn) }) -join "`r`n"
+              [System.IO.File]::WriteAllText($hosts, $h3)
+          } catch { }
+          Remove-Item (Join-Path $env:TEMP 'ghrdp-*.rdp') -Force -ErrorAction SilentlyContinue
+          & cmdkey.exe /delete:TERMSRV/$fqdn | Out-Null
+          Write-Host ('::notice::[P] fail-visible launcher: ' + ($seq -join ' -> '))
+          Write-Host ('::notice::[P] timeout branch: ' + ($seq2 -join ' -> '))
+          Write-Host ('::notice::[P] check verb dialog logged, no server-less beacon, JSONL ' + $lines.Count + ' lines with ' + $msgbox + ' dialogs')
+          'P_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+          ('P_seq=' + ($seq -join ' -> ')) | Out-File $env:GITHUB_ENV -Append
+          ('P_timeout=' + ($seq2 -join ' -> ')) | Out-File $env:GITHUB_ENV -Append
 
       - name: "D/E: server native-status fields + gated creds + ping loop"
         shell: pwsh
@@ -411,8 +614,15 @@ jobs:
           New-Item -ItemType Directory -Path $lab -Force | Out-Null
           Copy-Item payloads\install.cmd (Join-Path $lab 'install.cmd') -Force
           Copy-Item payloads\ghrdp-rdp-launcher.cs (Join-Path $lab 'ghrdp-rdp-launcher.cs') -Force
-          $out = & cmd.exe /c ('"' + (Join-Path $lab 'install.cmd') + '" < nul') 2>&1
-          $code = $LASTEXITCODE
+          # [F15] file redirect (never a pipe): the shipped install.cmd now runs
+          # its ghrdp://check self test, and a GUI child holding an inherited
+          # pipe handle would keep this step open until the launcher exited.
+          $nOut = Join-Path $lab 'install-out.txt'
+          $np = Start-Process -FilePath 'cmd.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput $nOut -RedirectStandardError (Join-Path $lab 'install-err.txt') -ArgumentList '/c', ('"' + (Join-Path $lab 'install.cmd') + '" < nul')
+          if (-not $np.WaitForExit(120000)) { Write-Host '::error::[N] stage=wait :: install.cmd did not finish in 120s'; try { Stop-Process -Id $np.Id -Force } catch { }; exit 1 }
+          $code = $np.ExitCode
+          $out = @()
+          try { $out = @([System.IO.File]::ReadAllLines($nOut)) } catch { }
           $out | ForEach-Object { Write-Host ('[N install.cmd] ' + $_) }
           $after = [string](Get-Item -LiteralPath 'HKCU:\Software\Classes\ghrdp\shell\open\command').GetValue('')
           $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
@@ -700,16 +910,18 @@ jobs:
           ('| (k2) browser policies + extensions | ' + $(if ($env:K_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | live-resolved Edge+CWS ids -> HKLM forcelist readback (' + $env:K_edge + ' entries) -> malformed-shape check -> Edge actually unpacked the forced extensions into a fresh profile; edge://policy + edge://extensions visual readout stays PENDING-USER |') | Add-Content -Path $S
           ('| (l) qBittorrent default .torrent + magnet | ' + $(if ($env:L_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL shared helper: HKCR ProgId discovery + .torrent default + magnet\shell\open\command readback; no download automation, mirror untouched |') | Add-Content -Path $S
           ('| (m) zero console windows | ' + $(if ($env:M_result -eq 'pass') {'**PASS (lab contract+runtime)**'} else {'FAIL'}) + ' | every Start-Process hidden (static) + runtime sweep: no ghrdp helper owns a visible console window; first-session visual check stays PENDING-USER |') | Add-Content -Path $S
+          ('| (p) fail-visible launcher (F15) | ' + $(if ($env:P_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL launcher vs a LOCAL python hello-listener: check verb logs its dialog and posts check-shown; stored-credential rdp = ' + $env:P_seq + '; no-credential rdp = ' + $env:P_timeout + '; JSONL log redaction verified. The physical MessageBox itself stays PENDING-USER (a runner cannot show or click it) |') | Add-Content -Path $S
           ('| (k) no console window in the interactive session | **contract PASS** | every host-helper launch is -WindowStyle Hidden (or NoNewWindow for the user-driven terminal exec) and the long-lived services are SYSTEM scheduled tasks; launch-gates F11-5.3 enforces it. Visual confirmation on the first physical RDP session = PENDING-USER |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
           # retrievable), so the PR/verify evidence does not depend on the log UI.
-          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'})
+          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
           Write-Host ('::notice::[O] F14 kit download: /dl 3/3 sha-identical + decoys 404 + guide rendered (cell o)')
           Write-Host ('::notice::[I] usage timer: ticks -> freezes <=20s -> resumes -> persists/continues at ' + $env:I_usage + 's (cell i)')
           Write-Host ('::notice::[H] cred shim: opener+exact-origin auto-fill, wrong origin/non-opener ignored, zero log output (cell h)')
           Write-Host ('::notice::[N] handler overwrite: stale registration printed+overwritten+verified by the REAL install.cmd (cell n)')
+          Write-Host ('::notice::[P] fail-visible launcher: check dialog logged + no server-less beacon; stored-cred rdp = ' + $env:P_seq + '; no-cred rdp = ' + $env:P_timeout + ' (cell p)')
           Write-Host ('::notice::[K] browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions (cell k2)')
           Write-Host ('::notice::[L] qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok (cell l)')
           Write-Host ('::notice::[G] uBlock Origin=' + $env:F_ubo)
