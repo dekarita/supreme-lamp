@@ -1412,6 +1412,27 @@ jobs:
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
               if ($errors) { throw "$file has $($errors.Count) PowerShell syntax error(s): $($errors[0].Message)" }
           }
+      # [F24] The F24 blocks live INSIDE main.yml (inline pwsh) and are extracted
+      # verbatim by the lab cell U + the F24 gate. Parse them here with the
+      # PowerShell language parser so a syntax error is caught in ~1 min instead
+      # of after a 20-minute lab run. This step never executes them.
+      - name: Parse the F24 extracted blocks (main.yml inline PowerShell)
+        shell: pwsh
+        run: |
+          $wf = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE '.github/workflows/main.yml'))
+          function Get-Block([string]$Begin, [string]$End) {
+              $a = $wf.IndexOf($Begin)
+              $b = $wf.IndexOf($End, [Math]::Max($a, 0))
+              if ($a -lt 0 -or $b -lt 0 -or $b -le $a) { throw ('F24 marker missing in main.yml: ' + $Begin) }
+              return ((($wf.Substring($a, $b - $a)) -split "`r?`n") | Where-Object { $_ -notmatch 'begin\]|end\]' } | ForEach-Object { $_ -replace '^\s+', '' }) -join "`n"
+          }
+          foreach ($pair in @(@('# [F24 §1 cred-proof-begin]', '# [F24 §1 cred-proof-end]'), @('# [F24 §2 collector-begin]', '# [F24 §2 collector-end]'))) {
+              $text = Get-Block $pair[0] $pair[1]
+              $errors = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$errors)
+              if ($errors -and $errors.Count -gt 0) { throw ($pair[0] + ' has ' + $errors.Count + ' PowerShell syntax error(s): ' + $errors[0].Message) }
+              Write-Host ('[F24] extracted block parses OK: ' + $pair[0] + ' (' + $text.Length + ' chars)')
+          }
       - name: Smoke-test VPS ACL helper in temporary files only
         shell: pwsh
         run: |
