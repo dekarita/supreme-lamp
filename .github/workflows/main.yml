@@ -426,6 +426,34 @@ jobs:
           Write-Host ('[ts] exported TS_MAGICDNS_FQDN=' + $dnsName + ' (cert bind runs only after this DNS gate)')
           exit 0
 
+      # [F18 §1] Runner FQDN self-test: MagicDNS name MUST resolve on the
+      # runner itself to a 100.64.0.0/10 address. Fail LOUD before cert-bind
+      # or webdesk if the runner cannot resolve its own FQDN.
+      - name: Runner FQDN self-test (F18)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $dnsName = [string]$env:TS_MAGICDNS_FQDN
+          if ($dnsName -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
+              Write-Host '::error::[F18] TS_MAGICDNS_FQDN missing/invalid - FQDN self-test cannot run'
+              throw 'Runner cannot resolve own FQDN: (missing) -> FAILED. Check MagicDNS in Tailscale admin.'
+          }
+          $resolvedIP = 'FAILED'
+          try {
+              $hits = Resolve-DnsName -Name $dnsName -ErrorAction Stop | Where-Object { $_.IPAddress }
+              $v4 = @($hits | Where-Object { $_.IPAddress -match '^\d+\.\d+\.\d+\.\d+$' } | Select-Object -ExpandProperty IPAddress)
+              if ($v4.Count -gt 0) { $resolvedIP = [string]$v4[0] }
+          } catch {
+              $resolvedIP = 'FAILED'
+          }
+          if ($resolvedIP -notmatch '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') {
+              Write-Host ('::error::[F18] Runner cannot resolve own FQDN: ' + $dnsName + ' -> ' + $resolvedIP + '. Check MagicDNS in Tailscale admin.')
+              throw ('Runner cannot resolve own FQDN: ' + $dnsName + ' -> ' + $resolvedIP + '. Check MagicDNS in Tailscale admin.')
+          }
+          Write-Host ('Runner FQDN resolves to ' + $resolvedIP)
+          if ($env:GITHUB_ENV) { Add-Content -Path $env:GITHUB_ENV -Value ('RUNNER_RESOLVED_IP=' + $resolvedIP) }
+          exit 0
+
       # [U5b / MIGRATION 1.3] Bind the tailnet Let's Encrypt cert to the
       # RDP-Tcp listener automatically at every run, so certBound reads YES
       # on /api/native-status without any manual step. NLA stays ON, no
@@ -1112,6 +1140,7 @@ jobs:
               rdpUsageSec = $carryUsage
               rdpUsageAt = ''
               rdpUsageHost = $ghName
+              runnerResolvedIP = $(if ($env:RUNNER_RESOLVED_IP -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.') { [string]$env:RUNNER_RESOLVED_IP } else { '' })
           }
           [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), ($cfg | ConvertTo-Json -Depth 10), $global:GhrdpEncNoBom)
           [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), $tok, $global:GhrdpEncNoBom)
