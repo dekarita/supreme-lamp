@@ -95,18 +95,22 @@ Write-Host "Imported thumbprint: $thumb"
 # --- 5. Grant NETWORK SERVICE Read + SYSTEM FullControl on the key container file -----
 $keyFile = $null
 try {
-    $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported)
-    $ecdsa = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($imported)
-    $uniqueName = $null
-    if ($rsa -and $rsa.Key -and $rsa.Key.UniqueName) { $uniqueName = $rsa.Key.UniqueName }
-    elseif ($ecdsa -and $ecdsa.Key -and $ecdsa.Key.UniqueName) { $uniqueName = $ecdsa.Key.UniqueName }
-
-    if ($uniqueName) {
-        $cngPath = Join-Path $env:ProgramData ('Microsoft\Crypto\Keys\' + $uniqueName)
-        $legacyPath = Join-Path $env:ProgramData ('Microsoft\Crypto\RSA\MachineKeys\' + $uniqueName)
-        if (Test-Path -LiteralPath $cngPath) { $keyFile = $cngPath }
-        elseif (Test-Path -LiteralPath $legacyPath) { $keyFile = $legacyPath }
+    $privKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported)
+    if (-not $privKey) { $privKey = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($imported) }
+    $cngUniqueName = $null
+    $cspUniqueName = $null
+    try { if ($privKey -is [System.Security.Cryptography.RSACng] -or $privKey -is [System.Security.Cryptography.ECDsaCng]) { $cngUniqueName = $privKey.Key.UniqueName } } catch { }
+    try { if ($privKey -is [System.Security.Cryptography.RSACryptoServiceProvider]) { $cspUniqueName = $privKey.CspKeyContainerInfo.UniqueKeyContainerName } } catch { }
+    if (-not $cngUniqueName -and -not $cspUniqueName) {
+        try { if ($privKey.Key -and $privKey.Key.UniqueName) { $cngUniqueName = $privKey.Key.UniqueName } } catch { }
+        try { if ($privKey.CspKeyContainerInfo -and $privKey.CspKeyContainerInfo.UniqueKeyContainerName) { $cspUniqueName = $privKey.CspKeyContainerInfo.UniqueKeyContainerName } } catch { }
     }
+    $cngDir = Join-Path $env:ProgramData 'Microsoft\Crypto\Keys'
+    $legacyDir = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
+    if ($cngUniqueName -and (Test-Path -LiteralPath (Join-Path $cngDir $cngUniqueName))) { $keyFile = Join-Path $cngDir $cngUniqueName }
+    elseif ($cspUniqueName -and (Test-Path -LiteralPath (Join-Path $legacyDir $cspUniqueName))) { $keyFile = Join-Path $legacyDir $cspUniqueName }
+    elseif ($cngUniqueName -and (Test-Path -LiteralPath (Join-Path $legacyDir $cngUniqueName))) { $keyFile = Join-Path $legacyDir $cngUniqueName }
+    elseif ($cspUniqueName -and (Test-Path -LiteralPath (Join-Path $cngDir $cspUniqueName))) { $keyFile = Join-Path $cngDir $cspUniqueName }
 } catch { }
 
 if (-not $keyFile -or -not (Test-Path -LiteralPath $keyFile)) {

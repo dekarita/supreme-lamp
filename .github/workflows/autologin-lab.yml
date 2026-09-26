@@ -2058,7 +2058,7 @@ jobs:
           $childScript = '$pfxPath = "' + $pfxPath.Replace('\', '\\') + '"; ' +
                          '$imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxPath, "", [System.Security.Cryptography.X509KeyStorageFlags]::DefaultKeySet); ' +
                          '$store = New-Object System.Security.Cryptography.X509Certificates.X509Store("My", "LocalMachine"); ' +
-                         '$store.Open("ReadWrite"); $store.Add($imported); $store.Close(); ' +
+                         '$store.Open("ReadWrite"); foreach ($old in @($store.Certificates | Where-Object { $_.Subject -match "CN=localhost" })) { try { $store.Remove($old) } catch { } }; $store.Add($imported); $store.Close(); ' +
                          '$thumb = $imported.Thumbprint; ' +
                          '$rdpKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp"; ' +
                          '$hashBytes = -split ($thumb -replace "(..)", "\$1 ") | ForEach-Object { [byte]("0x\$_") }; ' +
@@ -2109,20 +2109,33 @@ jobs:
 
               $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
               $store.Open('ReadWrite')
+              foreach ($old in @($store.Certificates | Where-Object { $_.Subject -match 'CN=localhost' })) {
+                  try { $store.Remove($old) } catch { }
+              }
               $store.Add($posCert)
               $store.Close()
               $thumb = $posCert.Thumbprint
 
-              $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($posCert)
-              $ecdsa = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($posCert)
-              $uName = $null
-              if ($rsa -and $rsa.Key -and $rsa.Key.UniqueName) { $uName = $rsa.Key.UniqueName }
-              elseif ($ecdsa -and $ecdsa.Key -and $ecdsa.Key.UniqueName) { $uName = $ecdsa.Key.UniqueName }
+              $privKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($posCert)
+              if (-not $privKey) { $privKey = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($posCert) }
+              $cngUniqueName = $null
+              $cspUniqueName = $null
+              try { if ($privKey -is [System.Security.Cryptography.RSACng] -or $privKey -is [System.Security.Cryptography.ECDsaCng]) { $cngUniqueName = $privKey.Key.UniqueName } } catch { }
+              try { if ($privKey -is [System.Security.Cryptography.RSACryptoServiceProvider]) { $cspUniqueName = $privKey.CspKeyContainerInfo.UniqueKeyContainerName } } catch { }
+              if (-not $cngUniqueName -and -not $cspUniqueName) {
+                  try { if ($privKey.Key -and $privKey.Key.UniqueName) { $cngUniqueName = $privKey.Key.UniqueName } } catch { }
+                  try { if ($privKey.CspKeyContainerInfo -and $privKey.CspKeyContainerInfo.UniqueKeyContainerName) { $cspUniqueName = $privKey.CspKeyContainerInfo.UniqueKeyContainerName } } catch { }
+              }
+              $cngDir = Join-Path $env:ProgramData 'Microsoft\Crypto\Keys'
+              $legacyDir = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
+              if ($cngUniqueName -and (Test-Path -LiteralPath (Join-Path $cngDir $cngUniqueName))) { $posKeyPath = Join-Path $cngDir $cngUniqueName }
+              elseif ($cspUniqueName -and (Test-Path -LiteralPath (Join-Path $legacyDir $cspUniqueName))) { $posKeyPath = Join-Path $legacyDir $cspUniqueName }
+              elseif ($cngUniqueName -and (Test-Path -LiteralPath (Join-Path $legacyDir $cngUniqueName))) { $posKeyPath = Join-Path $legacyDir $cngUniqueName }
+              elseif ($cspUniqueName -and (Test-Path -LiteralPath (Join-Path $cngDir $cspUniqueName))) { $posKeyPath = Join-Path $cngDir $cspUniqueName }
 
-              $cngPath = if ($uName) { Join-Path $env:ProgramData ('Microsoft\Crypto\Keys\' + $uName) } else { $null }
-              $legPath = if ($uName) { Join-Path $env:ProgramData ('Microsoft\Crypto\RSA\MachineKeys\' + $uName) } else { $null }
-
-              if ($cngPath -and (Test-Path -LiteralPath $cngPath)) { $posKeyPath = $cngPath }
+              if (-not $posKeyPath -or -not (Test-Path -LiteralPath $posKeyPath)) {
+                  throw 'H3-key-container-not-found-in-crypto-keys-or-machinekeys'
+              }
               elseif ($legPath -and (Test-Path -LiteralPath $legPath)) { $posKeyPath = $legPath }
               else { throw 'H3-key-container-not-found-in-crypto-keys-or-machinekeys' }
 
