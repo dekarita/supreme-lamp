@@ -1123,6 +1123,148 @@ jobs:
           Write-Host '[U] PASS: F24 auth-reject discriminator (server cred proof fixture + 4625 collector parse + CAPI2 matrix)'
           'U_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
 
+      # V: F28 logon-result loop + one-click recovery + fallback gap. A runner
+      # cannot feel a password prompt (the typed-password-vs-stored question is
+      # physical), so the lab proves at the mechanism level:
+      #   (1) the EXTRACTED F28 collector (byte-faithful from the shipped
+      #       server) parses synthetic 4624/4625 XML and always stamps scanTs;
+      #   (2) the REAL server's /api/native-status carries authLast with a
+      #       scanTs plus serverStartUtc/serverUptimeSec after one start, with
+      #       no client keep-alive (independence);
+      #   (3) the SHIPPED page's logon + recovery renderers are driven through
+      #       the real node matrix (tests/f28-logon-loop.test.js);
+      #   (4) the fallback-gap contracts on the SHIPPED launcher (recred verb,
+      #       stored==false => retry-once => native-prompt beacon) plus a csc
+      #       compile of the F28 code;
+      #   (5) the ticket single-use core is re-verified (consume-before-response
+      #       still in the source; ./tests/f27-windows.ps1 runs the mechanical
+      #       proof at the top of this same lab run).
+      - name: "V: F28 logon-result loop + recovery + fallback gap (collector + real server + renderer + launcher)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function V-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[V] stage=' + $Stage + ' :: ' + $Detail)
+              try { if ($script:vsrv -and -not $script:vsrv.HasExited) { Stop-Process -Id $script:vsrv.Id -Force -ErrorAction SilentlyContinue } } catch { }
+              exit 1
+          }
+          $srvSrc = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\\ghrdp-server.ps1'))
+          $ui = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\\ui.html'))
+          $cs = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\\ghrdp-rdp-launcher.cs'))
+          # --- (1) EXTRACTED collector driven by synthetic events ---------------
+          $b0 = $srvSrc.IndexOf('[F28 §1 authlast-begin]')
+          $b1 = $srvSrc.IndexOf('[F28 §1 authlast-end]')
+          if ($b0 -lt 0 -or $b1 -le $b0) { V-Fail 'extract' 'the F28 authlast block could not be extracted from the shipped server' }
+          $col = $srvSrc.Substring($b0, $b1 - $b0)
+          foreach ($tok in @('Get-RdpLogonResultFields', 'Get-RdpLogonResultSummary', 'Update-AuthLast', "'LogonType', 'FailureReason', 'SubStatus', 'TargetUserName'", "logonType -eq '10'", "$script:ServerStartUtc", '4624', '4625')) {
+              if (-not $col.Contains($tok)) { V-Fail 'extract-token' ('collector lacks ' + $tok) }
+          }
+          foreach ($leak in @('SubjectUserName', 'IpAddress', 'Password', 'RDP_PASS', 'RDP_USER')) {
+              if ($col.Contains($leak)) { V-Fail 'secret-scan' ('the collector references ' + $leak) }
+          }
+          $vPath = Join-Path $env:RUNNER_TEMP 'f28-collector.ps1'
+          [System.IO.File]::WriteAllText($vPath, $col, (New-Object System.Text.UTF8Encoding($false)))
+          . $vPath
+          if (-not (Get-Command Get-RdpLogonResultFields -ErrorAction SilentlyContinue)) { V-Fail 'extract-fn' 'Get-RdpLogonResultFields was not defined by the extracted block' }
+          if (-not (Get-Command Get-RdpLogonResultSummary -ErrorAction SilentlyContinue)) { V-Fail 'extract-fn' 'Get-RdpLogonResultSummary was not defined by the extracted block' }
+          $script:AuthLast = $null
+          function New-F28Xml([int]$Id, [string]$Ts, [string]$Type, [string]$Reason, [string]$Sub) {
+              $tpl = '<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><EventID>{ID}</EventID><TimeCreated SystemTime="{TS}"/></System><EventData><Data Name="LogonType">{TY}</Data><Data Name="TargetUserName">rdpF28DECOY</Data><Data Name="FailureReason">{RS}</Data><Data Name="SubStatus">{SUB}</Data></EventData></Event>'
+              return ([xml]($tpl.Replace('{ID}', [string]$Id).Replace('{TS}', $Ts).Replace('{TY}', $Type).Replace('{RS}', $Reason).Replace('{SUB}', $Sub)))
+          }
+          $f28scan = '2026-09-26T07:00:00Z'
+          $eFail = Get-RdpLogonResultFields -Xml (New-F28Xml 4625 '2026-09-26T06:58:00.0000000Z' '10' '%%2313' '0xC000006A')
+          if ($eFail.id -ne '4625' -or $eFail.logonType -ne '10') { V-Fail 'parse-fail' ('4625 fields parsed as id=[' + $eFail.id + '] type=[' + $eFail.logonType + ']') }
+          if ($eFail.subStatus -ne '0XC000006A' -or $eFail.reason -ne '%%2313') { V-Fail 'parse-fail' ('4625 sub/reason parsed as [' + $eFail.subStatus + '/' + $eFail.reason + ']') }
+          $eOk = Get-RdpLogonResultFields -Xml (New-F28Xml 4624 '2026-09-26T06:59:30.0000000Z' '10' '' '')
+          $eNoise = Get-RdpLogonResultFields -Xml (New-F28Xml 4624 '2026-09-26T06:59:45.0000000Z' '3' '' '')
+          $sFail = Get-RdpLogonResultSummary -Items @($eFail, $eOk, $eNoise) -ScanTs $f28scan
+          if ($sFail.result -ne 'failed' -or $sFail.sub -ne '0XC000006A') { V-Fail 'summary-fail' ('failure summary = [' + $sFail.result + '/' + $sFail.sub + ']') }
+          if ($sFail.eventTs -ne '2026-09-26T06:58:00.0000000Z') { V-Fail 'summary-fail' ('failure eventTs = [' + $sFail.eventTs + ']') }
+          if ($sFail.scanTs -ne $f28scan) { V-Fail 'summary-fail' ('failure scanTs = [' + $sFail.scanTs + ']') }
+          $sOk = Get-RdpLogonResultSummary -Items @($eNoise, $eOk) -ScanTs $f28scan
+          if ($sOk.result -ne 'success') { V-Fail 'summary-ok' ('a type-10 4624 with a type-3 noisemaker produced [' + $sOk.result + ']') }
+          if ($sOk.eventTs -ne '2026-09-26T06:59:30.0000000Z') { V-Fail 'summary-ok' ('success eventTs = [' + $sOk.eventTs + ']') }
+          if ($sOk.scanTs -ne $f28scan) { V-Fail 'summary-ok' 'success path dropped scanTs' }
+          $sNone = Get-RdpLogonResultSummary -Items @($eNoise) -ScanTs $f28scan
+          if ($sNone.result -ne 'none') { V-Fail 'summary-none' ('a type-3-only window produced [' + $sNone.result + '] (must be none)') }
+          if ($sNone.scanTs -ne $f28scan) { V-Fail 'summary-none' 'empty path dropped scanTs' }
+          $sJson = ($sFail | ConvertTo-Json -Depth 6)
+          foreach ($pat in @('"\s*logonType\s*"', '"\s*reason\s*"', '"\s*targetUserName\s*"', 'rdpF28DECOY')) {
+              if ($sJson -match $pat) { V-Fail 'secret-summary' ('the summary leaks ' + $pat) }
+          }
+          # In-window summary re-checked via Update-AuthLast's window math.
+          if (-not $col.Contains('AuthLastWindowSec')) { V-Fail 'extract-token' 'the 3600s window constant left the collector' }
+          Write-Host '[V] (1) PASS: extracted F28 collector - 4625 0x6A => failed+sub, type-10 4624 => success, type-3-only => none, scanTs on all paths, summary secret-free'
+          # --- (2) REAL server: authLast + start/uptime after one start --------
+          $vDiag = Join-Path $env:GITHUB_WORKSPACE 'v-diag'
+          New-Item -ItemType Directory -Path $vDiag -Force | Out-Null
+          $script:vsrv = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $vDiag 'v-server.log') -RedirectStandardError (Join-Path $vDiag 'v-server-err.log') -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:GITHUB_WORKSPACE\\payloads\\ghrdp-server.ps1"
+          $vok = $false
+          for ($i = 0; $i -lt 40 -and -not $vok; $i++) { try { $vok = [bool](Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction Stop) } catch { }; if (-not $vok) { Start-Sleep -Milliseconds 500 } }
+          if (-not $vok) { V-Fail 'server-listen' 'ghrdp-server.ps1 did not bind 7331 in 20s' }
+          Start-Sleep -Seconds 2
+          try {
+              $ns = Invoke-RestMethod -Uri 'http://127.0.0.1:7331/api/native-status?key=lab-dash-token-0123456789' -Proxy $null -TimeoutSec 15
+          } catch { V-Fail 'native-status' $_.Exception.Message }
+          if ($null -eq $ns.authLast) { V-Fail 'authlast' 'native-status carries no authLast (the START scan did not run)' }
+          if ([string]::IsNullOrWhiteSpace([string]$ns.authLast.scanTs)) { V-Fail 'authlast' 'authLast carries no scanTs' }
+          if (@('success','failed','none') -notcontains [string]$ns.authLast.result) { V-Fail 'authlast' ('authLast.result = [' + $ns.authLast.result + ']') }
+          if ([string]::IsNullOrWhiteSpace([string]$ns.serverStartUtc)) { V-Fail 'uptime' 'native-status carries no serverStartUtc' }
+          if ($null -eq $ns.serverUptimeSec -or [int]$ns.serverUptimeSec -lt 0) { V-Fail 'uptime' 'native-status carries no serverUptimeSec' }
+          try { Stop-Process -Id $script:vsrv.Id -Force } catch { }
+          $script:vsrv = $null
+          Write-Host ('[V] (2) PASS: real server native-status carries authLast.result=' + $ns.authLast.result + ' scanTs + start/uptime after one boot, with no client keep-alive (' + [int]$ns.serverUptimeSec + 's)')
+          # --- (3) SHIPPED renderer matrix through the real node test ----------
+          Push-Location $env:GITHUB_WORKSPACE
+          try {
+              $vNodeOut = (@(& node --test tests/f28-logon-loop.test.js 2>&1) | Out-String)
+              $vNodeRc = $LASTEXITCODE
+          } finally { Pop-Location }
+          if ($vNodeRc -ne 0) { V-Fail 'node-matrix' ('the F28 renderer matrix test failed: ' + ($vNodeOut.Substring([Math]::Max(0, $vNodeOut.Length - 600)))) }
+          if ($vNodeOut -notmatch '# fail 0') { V-Fail 'node-matrix' 'the F28 node matrix did not report 0 failures' }
+          Write-Host '[V] (3) PASS: shipped ui.html logon + recovery renderers executed through node - all F28 branches render as specified'
+          # --- (4) fallback-gap contracts on the SHIPPED launcher + compile ----
+          foreach ($tok in @('if (verb == "recred") { return RunRecred(uri, verb, host, port); }', 'private static int RunRecred(string uri, string verb, string host, int port)', 'recred-redeemed', 'recred-failed-', 'fallback-mstsc-native-prompt', 'fallback-retry-redeem', 'return 7;')) {
+              if (-not $cs.Contains($tok)) { V-Fail 'launcher-token' ('launcher lacks ' + $tok) }
+          }
+          $rc7 = @([regex]::Matches($cs, 'if \(rc == 7\) \{ return FallbackNativePrompt\('))
+          if ($rc7.Count -ne 2) { V-Fail 'launcher-rc7' ('stored==false reaches the native-prompt path on ' + $rc7.Count + ' branches, not both') }
+          $fbA = $cs.IndexOf('private static int FallbackNativePrompt')
+          $fbB = $cs.IndexOf('private static int RunRecred')
+          if ($fbA -lt 0 -or $fbB -le $fbA) { V-Fail 'launcher-fb' 'FallbackNativePrompt could not be extracted' }
+          $fb = $cs.Substring($fbA, $fbB - $fbA)
+          $bl = $fb.IndexOf('fallback-mstsc-native-prompt')
+          $ml = $fb.LastIndexOf('return MstscStep(')
+          if ($bl -lt 0 -or $ml -le $bl) { V-Fail 'launcher-fb' 'the native-prompt beacon does not precede the launch' }
+          if ($cs -match 'cmdkey[^\n]*/delete') { V-Fail 'launcher-delete' 'the launcher gained a credential-deletion verb' }
+          if ($cs -match 'SendKeys|UIAutomation|AutomationElement|ValuePattern|keybd_event|/pass:') { V-Fail 'launcher-ban' 'a banned token (cred-UI automation or /pass:<value>) reached the launcher' }
+          $vM = [regex]::Match($cs, 'private const string Ver = "([0-9]+(\.[0-9]+){1,3})"')
+          if (-not $vM.Success) { V-Fail 'launcher-ver' 'the launcher version constant is missing' }
+          $lv = [version]$vM.Groups[1].Value
+          if ($lv -lt [version]'2.5.0.0') { V-Fail 'launcher-ver' ('launcher ' + $lv + ' predates the F28 build') }
+          $csc = Join-Path $env:SystemRoot 'Microsoft.NET\\Framework64\\v4.0.30319\\csc.exe'
+          if (-not (Test-Path -LiteralPath $csc)) { $csc = Join-Path $env:SystemRoot 'Microsoft.NET\\Framework\\v4.0.30319\\csc.exe' }
+          if (-not (Test-Path -LiteralPath $csc)) { V-Fail 'csc' 'the in-box csc.exe is missing - install.cmd depends on it too' }
+          $vExe = Join-Path $env:RUNNER_TEMP 'ghrdp-rdp-launcher-f28.exe'
+          & $csc /nologo /target:winexe /out:$vExe /r:System.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll (Join-Path $env:GITHUB_WORKSPACE 'payloads\\ghrdp-rdp-launcher.cs')
+          if ($LASTEXITCODE -ne 0) { V-Fail 'compile' 'the SHIPPED launcher does not compile with the in-box csc' }
+          Write-Host ('[V] (4) PASS: shipped launcher compiles (in-box csc), Ver=' + $lv + ', recred dispatch + retry-once + native-prompt beacon pinned, no delete verb, no cred-UI automation')
+          # --- (5) ticket single-use core re-verified ---------------------------
+          $rdpIdx = $srvSrc.IndexOf('function Use-RdpTicket')
+          if ($rdpIdx -lt 0) { V-Fail 'ticket' 'Use-RdpTicket left the shipped server' }
+          $rdpBody = $srvSrc.Substring($rdpIdx, [Math]::Min(2400, $srvSrc.Length - $rdpIdx))
+          foreach ($tok in @('$script:RdpTokens.Remove($Ticket)', 'consume before response', '$age -lt 60')) {
+              if (-not $rdpBody.Contains($tok)) { V-Fail 'ticket' ('ticket single-use core lost: ' + $tok) }
+          }
+          # Recovery URLs stay ticket-only: no credential parameter anywhere near
+          # a launch URL, and the valueless cmdkey line keeps its /pass shape.
+          if ($ui -match "ghrdp://recred\?[^'\""]*(pass|pwd|token|secret|apikey|authkey)[=:]") { V-Fail 'ticket-url' 'a recovery URL carries a credential parameter' }
+          if (-not $ui.Contains("cmdkey /generic:TERMSRV/'+(fqdn||'<fqdn>')+' /user:'+(user||'<user>')+' /pass")) { V-Fail 'manual-line' 'the valueless manual cmdkey line changed shape' }
+          Write-Host '[V] (5) PASS: ticket single-use core (consume-before-response, 60s TTL) still in place; recovery URLs ticket-only; manual line valueless'
+          Write-Host '[V] PASS: F28 logon-result loop + one-click recovery + fallback gap'
+          'V_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+
       - name: "F: Edge policy proof (live-resolved IDs -> registry readout)"
         shell: pwsh
         run: |
@@ -1630,11 +1772,12 @@ jobs:
           ('| (s) client-DNS probe + launcher version guard (F19) | ' + $(if ($env:S_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | SHIPPED launcher compiled by the in-box csc runs --dns-selftest: fail-name+reach-ip => client-dns-off remediation, both-ok => mstsc, no-ip/closed => dns-fail, with 0 mstsc/cmdkey calls; REAL server: beacon exe 2.1.0.0 vs the repo constant read from the launcher source => launcherOutdated=true, current stamp => false; shipped page carries the probe card, the yellow outdated row and the single credential-free ghrdp:// builder that appends &ip= only for a CGNAT address. The live client-PC DNS state stays PENDING-USER |') | Add-Content -Path $S
           ('| (t) nslookup false alarm + 0x904/0x7 evidence fallback (F20) | ' + $(if ($env:T_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | shipped page: nslookup is no copy-line any more (Resolve-DnsName + false-alarm note), the collapsed "if mstsc still fails (0x904/0x7)" block carries the client ClientActiveXCore export + the runner Security 4624/4625, Schannel and RemoteConnectionManager exports and stays copy-only; SHIPPED launcher compiles with the in-box csc, logs the mstsc exit code (dec+hex) and its dialog points at that block. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
           ('| (u) auth-reject discriminator (F24) | ' + $(if ($env:U_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml blocks verified: SAM ValidateCredentials fixture (fresh account => true, wrong password => false with no probe error, empty => the missing-env probe verdict), the 4625 collector driven by synthetic events (0xC000006A/0xC000006D => credential-mismatch, 0xC000015B => logon-type-denied, 4624-only => none) with a REAL Security-log write into a temp config.json that keeps the pre-existing rdpListener fields and carries only the F27 failure target account; the shipped page matrix executed through the real renderer (three branches + pending/warn credssp render) and the TLS-layer branch carries the CAPI2 + System export copy-lines. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
+          ('| (v) logon-result loop + recovery + fallback gap (F28) | ' + $(if ($env:V_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED F28 collector from the shipped server driven by synthetic 4624/4625 XML (0x6A => failed+sub, type-10 4624 => success, type-3-only => none) with scanTs on every path and a secret-free summary; REAL server native-status carries authLast + scanTs + start/uptime after one boot with no keep-alive; the shipped page logon + recovery renderers executed through the F28 node matrix; SHIPPED launcher compiles (in-box csc), recred dispatch + retry-once + native-prompt beacon pinned, no delete verb, no cred-UI automation; ticket single-use core re-verified. The physical prompt-vs-stored confirmation stays PENDING-USER |') | Add-Content -Path $S
           ('| (k) no console window in the interactive session | **contract PASS** | every host-helper launch is -WindowStyle Hidden (or NoNewWindow for the user-driven terminal exec) and the long-lived services are SYSTEM scheduled tasks; launch-gates F11-5.3 enforces it. Visual confirmation on the first physical RDP session = PENDING-USER |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
           # retrievable), so the PR/verify evidence does not depend on the log UI.
-          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'}) + ' t=' + $(if ($env:T_result -eq 'pass') {'pass'} else {'fail'}) + ' u=' + $(if ($env:U_result -eq 'pass') {'pass'} else {'fail'})
+          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'}) + ' t=' + $(if ($env:T_result -eq 'pass') {'pass'} else {'fail'}) + ' u=' + $(if ($env:U_result -eq 'pass') {'pass'} else {'fail'}) + ' v=' + $(if ($env:V_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
           # [F19] Evidence notices must carry the CELL RESULT they belong to:
           # before this, every notice claimed its achievement even when the cell
@@ -1654,6 +1797,7 @@ jobs:
           Nt 'S' 'S_result' 'F19: shipped launcher DNS-guard matrix 5/5 with injected resolver/TCP (client-dns-off | dns-fail | mstsc, zero mstsc/cmdkey), REAL server version guard 2.1.0.0=>outdated / repo constant=>current, UI probe card + &ip= builder present'
           Nt 'T' 'T_result' 'F20: nslookup retired as a diagnostic (Resolve-DnsName + false-alarm note), collapsed 0x904/0x7 block carries the client+runner wevtutil exports and stays copy-only, shipped launcher compiles and its immediate-exit dialog points at it'
           Nt 'U' 'U_result' 'F24: SAM credential fixture (valid => true, stale => false), 4625 collector parse (6A/6D => credential-mismatch, 15B => logon-type-denied, 4624-only => none, F27 target account only), three-branch renderer matrix + CAPI2/System copy-lines'
+          Nt 'V' 'V_result' 'F28: extracted collector parse (6A => failed+sub, type-10 4624 => success, type-3-only => none, scanTs always, summary secret-free), real server authLast+start/uptime with no keep-alive, F28 node renderer matrix, shipped launcher compiles with recred + retry-once + native-prompt beacon, ticket single-use re-verified'
           Nt 'K' 'K_result' 'browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions'
           Nt 'L' 'L_result' 'qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok'
           Nt 'G' 'F_result' ('uBlock Origin=' + $env:F_ubo)
