@@ -657,7 +657,12 @@ function toast(msg,kind){var t=document.createElement('div');t.className='toast 
 function flashBtn(btn,msg){if(!btn)return;if(!btn.getAttribute('data-orig'))btn.setAttribute('data-orig',btn.textContent);btn.textContent=msg;btn.classList.add('copied');setTimeout(function(){btn.textContent=btn.getAttribute('data-orig');btn.classList.remove('copied')},1400)}
 function legacyCopy(text,btn){var ok=false;try{var ta=document.createElement('textarea');ta.value=text;ta.setAttribute('readonly','readonly');ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.focus();ta.select();ok=document.execCommand('copy');document.body.removeChild(ta)}catch(e){ok=false}if(ok){flashBtn(btn,'copied');toast('Copied','ok')}else{flashBtn(btn,'copy manually');window.prompt('Clipboard blocked - copy with Ctrl+C:',text);toast('Copy fallback opened','warn')}}
 function copyText(text,btn){text=String(text||'');if(!text){flashBtn(btn,'nothing');toast('Nothing to copy','warn');return}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(function(){flashBtn(btn,'copied');toast('Copied','ok')},function(){legacyCopy(text,btn)});return}legacyCopy(text,btn)}
-function copyById(id,btn){var el=$(id);if(el)copyText((el.getAttribute&&el.getAttribute('data-full'))||el.textContent,btn)}
+// F27: secret copy payloads come only from the authenticated config state.
+var keySecrets={credWinPass:'',credVncPass:''};
+function copyById(id,btn){
+ if(Object.prototype.hasOwnProperty.call(keySecrets,id)){copyText(keySecrets[id],btn);return;}
+ var el=$(id);if(el)copyText((el.getAttribute&&el.getAttribute('data-full'))||el.textContent,btn);
+}
 function copyLog(btn){copyText($('logBox').textContent,btn)}
 function copyAllLinks(btn){var out=[];if(lastData){if(lastData.legacyIndexUrl)out.push('LEGACY RENTRY: '+lastData.legacyIndexUrl);if(lastData.rentryNewUrl)out.push('NEW RENTRY: '+lastData.rentryNewUrl);if(lastData.mirrorIndexUrl)out.push('TELEGRAPH: '+lastData.mirrorIndexUrl);var fl=lastData.files||[];for(var i=0;i<fl.length;i++){if(fl[i].link)out.push(fl[i].name+': '+fl[i].link)}}if(out.length===0){flashBtn(btn,'no links yet');toast('No links yet','warn');return}copyText(out.join('\n'),btn)}
 async function getJson(url){try{var r=await fetch(url,{cache:'no-store'});if(!r.ok)return null;return await r.json()}catch(e){return null}}
@@ -1032,26 +1037,26 @@ async function bootstrapConfig(){
   // to token/tailnet-authenticated requests; unauthenticated fetches get the
   // same response as before (fqdn/user/ip only).
   var r=await fetch(apiBase()+'/api/config'+(key?('?key='+encodeURIComponent(key)):''),{cache:'no-store'});
-  if(!r.ok)return;
+  if(!r.ok){keySecrets.credWinPass='';keySecrets.credVncPass='';return;}
   var cf=await r.json();
   var cr=(cf&&cf.creds)||{};
   var fqdn=cr.fqdn||'', user=cr.user||'', ip=cr.ip||'';
   var uEl=document.getElementById('credUser');if(uEl&&user)uEl.textContent=user;
   var iEl=document.getElementById('credIp');if(iEl&&ip)iEl.textContent=ip;
   var mv=document.getElementById('mstscVal');if(mv&&fqdn)mv.textContent='mstsc /v:'+fqdn;
-  // [F10-3 §3] KEYS rows: masked (last 4) on screen; copy button (copyById
-  // prefers data-full) carries the real value. Values never enter URLs/logs.
+  // F27: keep full values in JS state, never in the masked DOM.
   function fillSecret(id, val, mask){
+   keySecrets[id]=val?String(val):'';
    var el=document.getElementById(id);if(!el)return;
-   if(val){ el.textContent=mask||'\u2022\u2022\u2022\u2022'; el.setAttribute('data-full',val); }
+   el.removeAttribute('data-full');
+   if(val){ el.textContent=mask||'\u2022\u2022\u2022\u2022'; }
    else { el.textContent='(host-only)'; el.removeAttribute('data-full'); }
   }
   fillSecret('credWinPass', cr.windowsPass, cr.windowsPassMask);
   fillSecret('credVncPass', cr.vncPass, cr.vncPassMask);
   // [F11-2 §2.2] gated VNC value is held only in this page's closure so the
   // "remember for WEB DESKTOP" link can move it into localStorage on user
-  // action; it is never written to a URL, a log, or any DOM attribute except
-  // data-full on the KEYS row (existing F10 contract).
+  // action; it is never written to a URL, a log, or any DOM attribute.
   gatedVncPass=cr.vncPass?String(cr.vncPass):'';
   if(gatedVncPass){var rst=document.getElementById('vncPassState');if(rst&&!vncPassNow())rst.textContent='gated password available - click "remember for WEB DESKTOP" or type it once';}
   populateFqdn(fqdn,user);
