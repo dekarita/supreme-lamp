@@ -393,6 +393,26 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <button id="autoLoginNative" type="button" disabled>AUTO-LOGIN (VPS only)</button>
   </div>
   <div class="row" id="nrReadyRow" style="display:none"><span class="k">Status</span><span class="v" id="nrReady" style="color:#7dffc9"></span></div>
+  <!-- [F17 §2] RDP LISTENER: the runner-side self-probe (main.yml "RDP
+       listener self-probe" step -> config.json -> rdpListener, passed through
+       /api/native-status). Each of the five fields renders OK/FAIL with the
+       EXACT fix text; WINDOWS AUTO-LOGIN stays disabled until listening,
+       fwScope, cert and nla are all OK (fail-closed when not probed). -->
+  <div class="row" id="nrRdpListenerRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
+    <span class="k">RDP LISTENER</span>
+    <span class="v" id="nrRdpListener" style="font-family:ui-monospace,Consolas,monospace;font-size:12px">--</span>
+  </div>
+  <!-- [F17 §2] CONNECTION: copy-only manual diagnostics. No buttons, no
+       scripts - the user selects the lines and runs them THEMSELVES in cmd /
+       PowerShell on their own PC. The lines name the live FQDN from the
+       server config. -->
+  <div class="row" id="nrConnDiagRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
+    <span class="k">CONNECTION</span>
+    <span class="note">if RDP fails: copy these lines and run them MANUALLY in cmd / PowerShell on THIS PC (select + copy):</span>
+    <span class="v" id="nrConnDiag1" style="font-family:ui-monospace,Consolas,monospace;font-size:12px;cursor:text">ping &lt;fqdn&gt;</span>
+    <span class="v" id="nrConnDiag2" style="font-family:ui-monospace,Consolas,monospace;font-size:12px;cursor:text">Test-NetConnection &lt;fqdn&gt; -Port 3389</span>
+    <span class="note">if the name does not resolve at all: ipconfig /flushdns, then tailscale status (the RDP host must appear as a peer; verify the FQDN matches THIS run - runner names change per dispatch).</span>
+  </div>
   <div class="row" id="nrAdvisoryRow" style="display:none"><span class="k">Advisory</span><span class="v" id="nrAdvisory" style="color:#f5d9b7"></span></div>
   <div class="row" id="nrMagicDnsRow" style="display:none"><span class="k">MagicDNS</span><span class="v" id="nrMagicDns" style="color:#f5d9b7"></span></div>
   <div class="row" id="nrReasonsRow" style="display:none"><span class="k">Blocked by</span><span class="v" id="nrReasons" style="color:#f5b7b7"></span></div>
@@ -1006,7 +1026,9 @@ async function nativeStatus(){
   if(s&&s.lastHandlerVerb&&s.lastHandlerVerb.ts){
    var hv=String(s.lastHandlerVerb.ts);
    if(window.__helloWatchArmed){
-    var hts=Date.parse(hv);
+    // [F17 §2] UTC-aware parse: a bare ISO ts (no Z/offset) is UTC, never the
+    // viewer's local timezone (the +05:30 beacon-age offset).
+    var hts=parseTs(hv);
     if(!isNaN(hts)&&hts>=(window.__helloWatchArmedAt-10000)){
      window.__helloWatchSeen=true;
      var stEl=$('winAutoStale');if(stEl)stEl.style.display='none';
@@ -1108,6 +1130,10 @@ async function nativeStatus(){
     linkifyInto(mdEl,'workflow halted until MagicDNS enabled - open the admin link, enable, re-dispatch: '+ADMIN,ADMIN);
    } else { mdRow.style.display='none'; mdEl.textContent=''; }
   }
+  // [F17 §2] RDP LISTENER + CONNECTION rows (self-contained renderers so the
+  // exact OK/FAIL text is unit-testable): fail-closed on missing probe data.
+  renderRdpListener((s&&s.rdpListener)||null);
+  renderConnDiag((s&&s.fqdn)||'');
   // Open only a valid tailnet desktop URL supplied by config.json: F9n
   // tailnet HTTP (http://100.64-127.x.x:7333/...) or a legacy serve URL
   // (https://<name>.ts.net/ with no port). Anything else stays disabled.
@@ -1356,13 +1382,62 @@ setInterval(nativeStatus,15000);
 // row turns red with the stall point and the exact local log path.
 var BEACON_STALL_MS=45000;
 var LAUNCHER_LOG='%LOCALAPPDATA%\\ghrdp\\ghrdp-launcher.log';
+// [F17 §2] RDP LISTENER row renderer. rl = native-status .rdpListener (or
+// null when the runner-side probe never ran). Five fields; every failing field
+// prints the probe's EXACT fix text. window.__rdpListenerOk gates AUTO-LOGIN
+// (fail-closed: null data => false).
+function renderRdpListener(rl){
+ window.__rdpListenerOk=(rl!==null&&rl!==undefined)?!!(rl.listening&&rl.fwRule&&rl.certThumb&&rl.nla):false;
+ window.__rdpListenerTxt='';
+ var row=document.getElementById('nrRdpListenerRow'), el=document.getElementById('nrRdpListener');
+ if(!row||!el)return;
+ row.style.display='';
+ el.textContent='';
+ if(rl===null||rl===undefined){
+  el.textContent='(not probed - re-dispatch the workflow or re-run VPS provisioning)';
+  el.style.color='#f5b7b7';
+  return;
+ }
+ el.style.color='';
+ var parts=[['listening',rl.listening,rl.listeningDetail],['termService',rl.termService,rl.termServiceDetail],['fwScope',rl.fwRule,rl.fwRuleDetail],['cert',rl.certThumb,rl.certThumbDetail],['nla',rl.nla,rl.nlaDetail]];
+ var failed=[];
+ parts.forEach(function(p,i){
+  var good=!!p[1];
+  var sp=document.createElement('span');
+  sp.textContent=(good?'\u2705':'\u274C')+' '+p[0]+' ';
+  sp.style.color=good?'':'#f5b7b7';
+  el.appendChild(sp);
+  if(!good){
+   failed.push(p[0]);
+   var d=document.createElement('span');
+   d.textContent='('+String(p[2]||'failed')+')';
+   d.style.color='#f5b7b7';d.style.fontSize='11px';
+   el.appendChild(d);
+  }
+  if(i<parts.length-1){ el.appendChild(document.createTextNode('  |  ')); }
+ });
+ window.__rdpListenerTxt=failed.join(', ');
+}
+// [F17 §2] CONNECTION row: copy-only manual diagnostics for a live FQDN (no
+// buttons, no handlers - the user selects and runs the lines themselves).
+function renderConnDiag(fqdn){
+ var row=document.getElementById('nrConnDiagRow'), l1=document.getElementById('nrConnDiag1'), l2=document.getElementById('nrConnDiag2');
+ if(!row||!l1||!l2)return;
+ if(FQDN_RE.test(fqdn)){
+  l1.textContent='ping '+fqdn;
+  l2.textContent='Test-NetConnection '+fqdn+' -Port 3389';
+  row.style.display='';
+ } else { row.style.display='none'; }
+}
 window.__beaconInvokedAt=0;
 function paintBeacon(){
  var el=$('winBeacon');var b=window.__beacon;
  if(el){
   if(!b||!b.ts){el.textContent='(none yet - click WINDOWS AUTO-LOGIN; a stale registration posts no beacon)';el.style.color='';}
   else{
-   var t=Date.parse(b.ts);
+   // [F17 §2] UTC-aware parse (parseTs): the beacon ts is written in UTC; a
+   // bare ISO string must never read as the viewer's local timezone.
+   var t=parseTs(b.ts);
    var age=isNaN(t)?null:Math.max(0,Math.round((Date.now()-t)/1000));
    el.textContent='verb='+(b.verb||'?')+' details='+(b.details||'(none)')+' ok='+(b.ok?'true':'false')+' age='+(age===null?'?':age)+'s';
    el.style.color=(b.ok===false)?'#f5b7b7':'';
@@ -1371,7 +1446,7 @@ function paintBeacon(){
  var se=$('winBeaconStall');if(!se)return;
  var det=(b&&b.details)?String(b.details):'';
  if(det==='invoked'){
-  if(!window.__beaconInvokedAt){var t2=Date.parse(b.ts);window.__beaconInvokedAt=(isNaN(t2)?Date.now():t2);}
+  if(!window.__beaconInvokedAt){var t2=parseTs(b.ts);window.__beaconInvokedAt=(isNaN(t2)?Date.now():t2);}
   if(Date.now()-window.__beaconInvokedAt>=BEACON_STALL_MS){
    se.style.display='';
    se.textContent='launcher stalled at: '+det+' - open '+LAUNCHER_LOG;
@@ -1400,8 +1475,12 @@ function syncWinAuto(){
  var b=$('btnWinAuto');if(!b)return;
  var fqdn=($('rdpFqdn')||{}).textContent||'';
  var user=($('credUser')||{}).textContent||'';
- var ok=FQDN_RE.test(fqdn)&&/^[A-Za-z0-9_\-\.\\]{1,104}$/.test(user)&&user!=='__USER__';
+ // [F17 §2] the host's self-probe must be all-OK before we offer a click that
+ // would land on a dead RDP listener (fail-closed: no probe data => disabled).
+ var rlGate=(window.__rdpListenerOk===true);
+ var ok=FQDN_RE.test(fqdn)&&/^[A-Za-z0-9_\-\.\\]{1,104}$/.test(user)&&user!=='__USER__'&&rlGate;
  b.disabled=!ok;b.style.opacity=ok?'':'0.5';b.style.cursor=ok?'':'not-allowed';
+ if(!rlGate){ b.title='RDP LISTENER not all OK: '+(window.__rdpListenerTxt||'not probed - re-dispatch'); } else { b.title=''; }
 }
 setInterval(syncWinAuto,2000);syncWinAuto();
 var waBtn=$('btnWinAuto');
