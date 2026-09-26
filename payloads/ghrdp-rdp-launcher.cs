@@ -799,7 +799,10 @@ internal static class GhrdpRdpLauncher
             }
         }
         catch { resolvedLog = "(ok)"; }
-        LogJson("rdp", verb, "DNS resolved " + server + " -> " + resolvedLog);
+        // The guard's ALLOW decision is logged too: a fail-visible log must
+        // show why the launch was permitted (tailnet address(es) found), not
+        // only why it was blocked ([F17/R] cell asserts "dns-guard ok").
+        LogJson("rdp", verb, "DNS resolved " + server + " -> " + resolvedLog + " (dns-guard ok)");
 
         int rc = CmdkeyStep(server, user, host, port);
         if (rc != 0) { return rc; }     // a timed-out prompt already produced its MessageBox

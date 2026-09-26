@@ -1333,16 +1333,26 @@ jobs:
           # retrievable), so the PR/verify evidence does not depend on the log UI.
           $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
-          Write-Host ('::notice::[O] F14 kit download: /dl 3/3 sha-identical + decoys 404 + guide rendered (cell o)')
-          Write-Host ('::notice::[I] usage timer: ticks -> freezes <=20s -> resumes -> persists/continues at ' + $env:I_usage + 's (cell i)')
-          Write-Host ('::notice::[H] cred shim: opener+exact-origin auto-fill, wrong origin/non-opener ignored, zero log output (cell h)')
-          Write-Host ('::notice::[N] handler overwrite: stale registration printed+overwritten+verified by the REAL install.cmd (cell n)')
-          Write-Host ('::notice::[P] fail-visible launcher: check dialog logged + no server-less beacon; stored-cred rdp = ' + $env:P_seq + '; no-cred rdp = ' + $env:P_timeout + ' (cell p)')
-          Write-Host ('::notice::[S] F19: shipped launcher DNS-guard matrix 5/5 with injected resolver/TCP (client-dns-off | dns-fail | mstsc, zero mstsc/cmdkey), REAL server version guard 2.1.0.0=>outdated / 2.2.0.0=>current, UI probe card + &ip= builder present (cell s)')
-          Write-Host ('::notice::[K] browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions (cell k2)')
-          Write-Host ('::notice::[L] qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok (cell l)')
-          Write-Host ('::notice::[G] uBlock Origin=' + $env:F_ubo)
-          Write-Host ('::notice::[G] Dark Reader=' + $env:F_dr)
+          # [F19] Evidence notices must carry the CELL RESULT they belong to:
+          # before this, every notice claimed its achievement even when the cell
+          # had failed or been skipped, so a red lab run read green at a glance.
+          function Nt([string]$cell, [string]$flag, [string]$text) {
+              $v = [string](Get-Item ('env:' + $flag) -ErrorAction SilentlyContinue).Value
+              $mark = 'NOT VERIFIED (cell did not run) - '
+              if (-not [string]::IsNullOrWhiteSpace($v)) { $mark = 'NOT VERIFIED (result=' + $v + ') - ' }
+              if ($v -eq 'pass') { $mark = 'PASS - ' }
+              Write-Host ('::notice::[' + $cell + '] ' + $mark + $text)
+          }
+          Nt 'O' 'O_result' 'F14 kit download: /dl 3/3 sha-identical + decoys 404 + guide rendered'
+          Nt 'I' 'I_result' ('usage timer: ticks -> freezes <=20s -> resumes -> persists/continues at ' + $env:I_usage + 's')
+          Nt 'H' 'H_result' 'cred shim: opener+exact-origin auto-fill, wrong origin/non-opener ignored, zero log output'
+          Nt 'N' 'N_result' 'handler overwrite: stale registration printed+overwritten+verified by the REAL install.cmd'
+          Nt 'P' 'P_result' ('fail-visible launcher: check dialog logged + no server-less beacon; stored-cred rdp = ' + $env:P_seq + '; no-cred rdp = ' + $env:P_timeout)
+          Nt 'S' 'S_result' 'F19: shipped launcher DNS-guard matrix 5/5 with injected resolver/TCP (client-dns-off | dns-fail | mstsc, zero mstsc/cmdkey), REAL server version guard 2.1.0.0=>outdated / 2.2.0.0=>current, UI probe card + &ip= builder present'
+          Nt 'K' 'K_result' 'browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions'
+          Nt 'L' 'L_result' 'qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok'
+          Nt 'G' 'F_result' ('uBlock Origin=' + $env:F_ubo)
+          Nt 'G' 'F_result' ('Dark Reader=' + $env:F_dr)
           Write-Host ('::notice::[G] physical-PC cells (0 prompts, live peripherals, screenshot-native) remain PENDING-USER per §6; no LIVE claim is made here')
           '' | Add-Content -Path $S
           'STOP-condition note: §6(a-c) are proven at the launcher/protocol level in this lab; the physical-PC cells (0 prompts, live peripherals, physical-native screenshot) stay PENDING-USER per §6, so the AUTO-LOGIN REDIRECT LIVE line is NOT claimed.' | Add-Content -Path $S
