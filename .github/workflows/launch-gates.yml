@@ -796,7 +796,7 @@ jobs:
           cs=payloads/ghrdp-rdp-launcher.cs
           srv=payloads/ghrdp-server.ps1
           # --- §1 main.yml must carry the F21 CredSSP/NLA verification step ---
-          step=$(awk '/name: CredSSP\/NLA handshake verification \\(F21/{f=1;next} f && /^      - name: /{exit} f' "$wf")
+          step=$(awk '/name: CredSSP\/NLA handshake verification.*F21/{f=1;next} f && /^      - name: /{exit} f' "$wf")
           test -n "$step" || { echo 'F21: main.yml lacks CredSSP/NLA handshake verification step' >&2; exit 1; }
           for tok in 'UserAuthentication' 'SSLCertificateSHA1Hash' 'AllowEncryptionOracle' 'Get-TlsCipherSuite' 'AES_256_GCM' 'credsspStatus' 'failed-' '::error::[F21]' 'throw' '[F21 §1 probe-end]'; do
             grep -qF "$tok" <<< "$step" || { echo "F21: verification step missing token: $tok" >&2; exit 1; }
