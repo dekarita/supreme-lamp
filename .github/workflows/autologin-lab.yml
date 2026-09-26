@@ -1181,14 +1181,16 @@ jobs:
               return ([xml]($tpl.Replace('{ID}', [string]$Id).Replace('{TS}', $Ts).Replace('{TY}', $Type).Replace('{RS}', $Reason).Replace('{SUB}', $Sub)))
           }
           $f28scan = '2026-09-26T07:00:00Z'
-          $eFail = Get-RdpLogonResultFields -Xml (New-F28Xml 4625 '2026-09-26T06:58:00.0000000Z' '10' '%%2313' '0xC000006A')
+          $eFail = Get-RdpLogonResultFields -Xml (New-F28Xml 4625 '2026-09-26T06:59:50.0000000Z' '10' '%%2313' '0xC000006A')
           if ($eFail.id -ne '4625' -or $eFail.logonType -ne '10') { V-Fail 'parse-fail' ('4625 fields parsed as id=[' + $eFail.id + '] type=[' + $eFail.logonType + ']') }
           if ($eFail.subStatus -ne '0XC000006A' -or $eFail.reason -ne '%%2313') { V-Fail 'parse-fail' ('4625 sub/reason parsed as [' + $eFail.subStatus + '/' + $eFail.reason + ']') }
           $eOk = Get-RdpLogonResultFields -Xml (New-F28Xml 4624 '2026-09-26T06:59:30.0000000Z' '10' '' '')
           $eNoise = Get-RdpLogonResultFields -Xml (New-F28Xml 4624 '2026-09-26T06:59:45.0000000Z' '3' '' '')
+          # Newest-wins: the 4625 is the latest event, so the summary must read
+          # failed even with a type-10 success (and type-3 noise) in the window.
           $sFail = Get-RdpLogonResultSummary -Items @($eFail, $eOk, $eNoise) -ScanTs $f28scan
           if ($sFail.result -ne 'failed' -or $sFail.sub -ne '0XC000006A') { V-Fail 'summary-fail' ('failure summary = [' + $sFail.result + '/' + $sFail.sub + ']') }
-          if ($sFail.eventTs -ne '2026-09-26T06:58:00.0000000Z') { V-Fail 'summary-fail' ('failure eventTs = [' + $sFail.eventTs + ']') }
+          if ($sFail.eventTs -ne '2026-09-26T06:59:50.0000000Z') { V-Fail 'summary-fail' ('failure eventTs = [' + $sFail.eventTs + ']') }
           if ($sFail.scanTs -ne $f28scan) { V-Fail 'summary-fail' ('failure scanTs = [' + $sFail.scanTs + ']') }
           $sOk = Get-RdpLogonResultSummary -Items @($eNoise, $eOk) -ScanTs $f28scan
           if ($sOk.result -ne 'success') { V-Fail 'summary-ok' ('a type-10 4624 with a type-3 noisemaker produced [' + $sOk.result + ']') }
