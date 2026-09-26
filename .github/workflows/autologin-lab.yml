@@ -2100,13 +2100,16 @@ jobs:
           $posKeyPath = $null
           $posProbeErr = ''
           $posProbeOk = $false
+          $posStage = 'init'
           try {
+              $posStage = 'pfx-import'
               $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet -bor `
                        [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor `
                        [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
               $posCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxPath, '', $flags)
               if (-not $posCert.HasPrivateKey) { throw 'cert-imported-without-persisted-key' }
 
+              $posStage = 'store-add'
               $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
               $store.Open('ReadWrite')
               foreach ($old in @($store.Certificates | Where-Object { $_.Subject -match 'CN=localhost' })) {
@@ -2116,6 +2119,7 @@ jobs:
               $store.Close()
               $thumb = $posCert.Thumbprint
 
+              $posStage = 'key-lookup'
               $privKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($posCert)
               if (-not $privKey) { $privKey = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($posCert) }
               $cngUniqueName = $null
@@ -2136,6 +2140,60 @@ jobs:
               if (-not $posKeyPath -or -not (Test-Path -LiteralPath $posKeyPath)) {
                   throw 'H3-key-container-not-found-in-crypto-keys-or-machinekeys'
               }
+
+              $posStage = 'acl-set'
+              $acl = Get-Acl -LiteralPath $posKeyPath
+              $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\NETWORK SERVICE', 'Read', 'Allow')))
+              $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\SYSTEM', 'FullControl', 'Allow')))
+              Set-Acl -LiteralPath $posKeyPath -AclObject $acl
+
+              $posStage = 'bind'
+              try {
+                  $tsSetting = Get-CimInstance -Namespace 'root/cimv2/TerminalServices' -ClassName 'Win32_TSGeneralSetting' -Filter "TerminalName='RDP-Tcp'" -ErrorAction Stop
+                  Invoke-CimMethod -InputObject $tsSetting -MethodName 'SetSSLCertificateSHA1Hash' -Arguments @{ SSLCertificateSHA1Hash = $thumb } -ErrorAction Stop | Out-Null
+              } catch { }
+              $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+              $hashBytes = -split ($thumb -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
+              New-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hashBytes -Force | Out-Null
+
+              $posStage = 'restart-service'
+              Restart-Service TermService -Force
+
+              $posStage = 'wait-listen'
+              $listenOk = $false
+              for ($i = 0; $i -lt 20; $i++) {
+                  try {
+                      $tcCheck = [System.Net.Sockets.TcpClient]::new()
+                      $tcCheck.Connect('127.0.0.1', 3389)
+                      if ($tcCheck.Connected) { $tcCheck.Close(); $listenOk = $true; break }
+                  } catch { Start-Sleep -Milliseconds 500 }
+              }
+              if (-not $listenOk) { throw 'H2-listener-not-listening-on-3389' }
+
+              $posStage = 'tls-probe'
+              $tc = [System.Net.Sockets.TcpClient]::new()
+              $tc.Connect('127.0.0.1', 3389)
+              $st = $tc.GetStream()
+              [byte[]]$x224Cr = @(0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00)
+              $st.Write($x224Cr, 0, $x224Cr.Length)
+              $st.Flush()
+
+              $resp = New-Object byte[] 11
+              $totalRead = 0
+              while ($totalRead -lt 11) {
+                  $r = $st.Read($resp, $totalRead, 11 - $totalRead)
+                  if ($r -le 0) { break }
+                  $totalRead += $r
+              }
+              if ($totalRead -lt 11) { throw ("x224-response-truncated: read " + $totalRead + " bytes") }
+
+              $ssl = [System.Net.Security.SslStream]::new($st, $false, [System.Net.Security.RemoteCertificateValidationCallback]{ $true })
+              $ssl.AuthenticateAsClient('localhost')
+              $posProbeOk = $true
+              $ssl.Dispose(); $tc.Dispose()
+          } catch {
+              $posProbeErr = "[$posStage] " + $_.Exception.Message
+          }
               elseif ($legPath -and (Test-Path -LiteralPath $legPath)) { $posKeyPath = $legPath }
               else { throw 'H3-key-container-not-found-in-crypto-keys-or-machinekeys' }
 
