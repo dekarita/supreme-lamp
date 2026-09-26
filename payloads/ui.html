@@ -307,8 +307,31 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <span class="note" style="margin:0">Runner FQDN: <code id="connDiagFqdn">-</code> &nbsp; runnerResolvedIP: <code id="connDiagResolved">-</code></span>
     <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagPing" style="font-size:12px">ping &lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('connDiagPing',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
     <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagTnc" style="font-size:12px">Test-NetConnection &lt;fqdn&gt; -Port 3389</code><a href="javascript:void(0)" onclick="copyById('connDiagTnc',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
-    <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagNs" style="font-size:12px">nslookup &lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('connDiagNs',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+    <!-- [F20 §1] Resolve-DnsName goes through the Windows DNS client service,
+         so Tailscale's NRPT split-DNS applies. nslookup BYPASSES that service
+         (queries the router directly) and its timeout here is a false alarm -
+         it is no longer offered as a diagnostic anywhere on this page. -->
+    <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagRd" style="font-size:12px">Resolve-DnsName &lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('connDiagRd',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+    <span class="note" style="margin:0">nslookup bypasses Tailscale split-DNS and queries your router directly; a nslookup timeout while ping works is EXPECTED and not a fault.</span>
     <span class="note" style="margin:0">If ping fails: run ipconfig /flushdns, confirm Tailscale connected, retry. If still failing: Tailscale admin -&gt; DNS -&gt; enable MagicDNS + HTTPS Certificates, re-dispatch.</span>
+    <!-- [F20 §2] EVIDENCE-BASED 0x904/0x7 FALLBACK - only for the case where
+         every probe above is green and mstsc still fails. Collapsed by default
+         (it is never the first thing to try), copy-only like the rest of the
+         row: export the logs, paste them into the session, and map the error
+         from the logs - never guess. Nothing here executes. -->
+    <details id="connDiagFailBox" style="margin:0">
+      <summary style="cursor:pointer;font-size:11px;opacity:.75">if mstsc still fails (0x904/0x7) - export the logs</summary>
+      <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px">
+        <span class="note" style="margin:0;font-weight:600">On YOUR PC (client events):</span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagEvtClient" style="font-size:12px">wevtutil epl Microsoft-Windows-TerminalServices-ClientActiveXCore/Operational %TEMP%\rdp-client.evtx</code><a href="javascript:void(0)" onclick="copyById('connDiagEvtClient',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagEvtList" style="font-size:12px">wevtutil el | findstr /i "terminal credssp schannel"</code><a href="javascript:void(0)" onclick="copyById('connDiagEvtList',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+        <span class="note" style="margin:0;font-weight:600">On the RUNNER (ask this session to collect these - you cannot RDP in yet):</span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagEvtSec" style="font-size:12px">wevtutil epl Security %TEMP%\rdp-security.evtx /q:"*[System[(EventID=4624 or EventID=4625)]]"</code><a href="javascript:void(0)" onclick="copyById('connDiagEvtSec',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagEvtSch" style="font-size:12px">wevtutil epl System %TEMP%\rdp-system.evtx /q:"*[System[Provider[@Name='Schannel']]]"</code><a href="javascript:void(0)" onclick="copyById('connDiagEvtSch',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagEvtTerm" style="font-size:12px">wevtutil epl Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational %TEMP%\rdp-termgr.evtx</code><a href="javascript:void(0)" onclick="copyById('connDiagEvtTerm',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+        <span class="note" style="margin:0">Paste the exports into this session. The failure is then mapped from the logged event (cert chain / CredSSP / NLA / transport) - never guessed, and nothing here weakens NLA, CredSSP or certificate validation.</span>
+      </div>
+    </details>
   </div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
   <!-- [F11-3 §3] RDP USAGE replaces logon age as the headline timer: seconds
@@ -1118,7 +1141,9 @@ async function nativeStatus(){
     var di=document.getElementById('connDiagResolved');if(di)di.textContent=diagIP||'(missing)';
     var dp=document.getElementById('connDiagPing');if(dp)dp.textContent='ping '+diagF;
     var dt=document.getElementById('connDiagTnc');if(dt)dt.textContent='Test-NetConnection '+diagF+' -Port 3389';
-    var dn=document.getElementById('connDiagNs');if(dn)dn.textContent='nslookup '+diagF;
+    // [F20 §1] Resolve-DnsName (DNS client service, so Tailscale NRPT applies)
+    // replaces nslookup, which bypasses split-DNS and times out by design.
+    var dn=document.getElementById('connDiagRd');if(dn)dn.textContent='Resolve-DnsName '+diagF;
    } else { diagRow.style.display='none'; }
   }
   var srvReasons=(s.reasonsDisabled||[]).slice();

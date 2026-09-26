@@ -772,9 +772,22 @@ jobs:
           $root = 'C:\ghrdp-lab-f19'
           try { Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue } catch { }
           New-Item -ItemType Directory -Path $root -Force | Out-Null
+          # [F20] the repo constant is READ out of the shipped source (never
+          # hand-typed): the launcher moved to 2.3.0.0 with the F20 dialog, and a
+          # hand-typed version here would silently unpin the guard. The beacon's
+          # exe stamp is rebuilt from the same source, so a version bump can
+          # never break this cell again.
+          $csText = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs'))
+          $sVerM = [regex]::Match($csText, 'private const string Ver = "(\d+(\.\d+){1,3})"')
+          if (-not $sVerM.Success) { S-Fail 'const-missing' 'payloads/ghrdp-rdp-launcher.cs has no Ver constant' }
+          $sVer = $sVerM.Groups[1].Value
+          $sStampM = [regex]::Match($csText, 'private const string Stamp = "ghrdp-rdp-launcher " \+ Ver \+ " \(([^)]*)\)"')
+          if (-not $sStampM.Success) { S-Fail 'stamp-missing' 'payloads/ghrdp-rdp-launcher.cs has no Stamp suffix' }
+          $sStamp = 'ghrdp-rdp-launcher ' + $sVer + ' (' + $sStampM.Groups[1].Value + ')'
+          Write-Host ('[S] repo constant read from source: Ver=' + $sVer + ' stamp=[' + $sStamp + ']')
           [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), (@{
               dnsName = 'lab-host.dekarita.tailnet-lab.ts.net'; rdpUser = 'labuser'; rdpIp = $labIp
-              launcherVersion = '2.2.0.0'
+              launcherVersion = $sVer
           } | ConvertTo-Json -Compress), $utf8)
           [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), 'lab-dash-token-0123456789', $utf8)
           $srv = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $diag 'f19-server-out.log') -RedirectStandardError (Join-Path $diag 'f19-server-err.log') -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:GITHUB_WORKSPACE\payloads\ghrdp-server.ps1",'-Port','7393','-Root',$root
@@ -814,20 +827,21 @@ jobs:
           foreach ($k in @('launcherVersion','launcherSeenVersion','launcherOutdated')) {
               if (-not ($ns0.PSObject.Properties.Name -contains $k)) { S-Fail 'field-missing' ('native-status lacks ' + $k) }
           }
-          if ([string](J $ns0 'launcherVersion') -ne '2.2.0.0') { S-Fail 'const-served' ('launcherVersion=[' + [string](J $ns0 'launcherVersion') + ']') }
+          if ([string](J $ns0 'launcherVersion') -ne $sVer) { S-Fail 'const-served' ('launcherVersion=[' + [string](J $ns0 'launcherVersion') + '] expected [' + $sVer + ']') }
           if ([bool](J $ns0 'launcherOutdated') -ne $false) { S-Fail 'no-false-alarm' 'an outdated flag was raised before any beacon' }
           try { $null = Invoke-S19Json ($base + '/api/handler-hello?' + $key) 'POST' '{"verb":"rdp","ok":true,"details":"lab-old-exe","exe":"ghrdp-rdp-launcher 2.1.0.0 (F17 dns-guard)"}' } catch { S-Fail 'beacon-old' $_.Exception.Message }
           try { $nsOld = Invoke-S19Json ($base + '/api/native-status?' + $key) } catch { S-Fail 'native-status-old' $_.Exception.Message }
           if ([string](J $nsOld 'launcherSeenVersion') -ne '2.1.0.0') { S-Fail 'seen-old' ('launcherSeenVersion=[' + [string](J $nsOld 'launcherSeenVersion') + ']') }
-          if ([bool](J $nsOld 'launcherOutdated') -ne $true) { S-Fail 'outdated-not-flagged' 'a 2.1.0.0 beacon against a 2.2.0.0 repo constant must set launcherOutdated=true' }
-          try { $null = Invoke-S19Json ($base + '/api/handler-hello?' + $key) 'POST' '{"verb":"rdp","ok":true,"details":"lab-current-exe","exe":"ghrdp-rdp-launcher 2.2.0.0 (F19 dns-remediation+ver-guard)"}' } catch { S-Fail 'beacon-new' $_.Exception.Message }
+          if ([bool](J $nsOld 'launcherOutdated') -ne $true) { S-Fail 'outdated-not-flagged' ('a 2.1.0.0 beacon against the ' + $sVer + ' repo constant must set launcherOutdated=true') }
+          $beaconNew = '{"verb":"rdp","ok":true,"details":"lab-current-exe","exe":"' + $sStamp + '"}'
+          try { $null = Invoke-S19Json ($base + '/api/handler-hello?' + $key) 'POST' $beaconNew } catch { S-Fail 'beacon-new' $_.Exception.Message }
           try { $nsNew = Invoke-S19Json ($base + '/api/native-status?' + $key) } catch { S-Fail 'native-status-new' $_.Exception.Message }
           if ([bool](J $nsNew 'launcherOutdated') -ne $false) { S-Fail 'outdated-stuck' 'the CURRENT exe stamp must clear launcherOutdated' }
-          if ([string](J $nsNew 'launcherSeenVersion') -ne '2.2.0.0') { S-Fail 'seen-new' ('launcherSeenVersion=[' + [string](J $nsNew 'launcherSeenVersion') + ']') }
+          if ([string](J $nsNew 'launcherSeenVersion') -ne $sVer) { S-Fail 'seen-new' ('launcherSeenVersion=[' + [string](J $nsNew 'launcherSeenVersion') + '] expected [' + $sVer + ']') }
           $vh = J $nsNew 'lastHandlerVerb'
-          if ([string](J $vh 'exe') -notmatch '2\.2\.0\.0') { S-Fail 'beacon-exe-echo' ('lastHandlerVerb.exe=[' + [string](J $vh 'exe') + ']') }
+          if ([string](J $vh 'exe') -notmatch [regex]::Escape($sVer)) { S-Fail 'beacon-exe-echo' ('lastHandlerVerb.exe=[' + [string](J $vh 'exe') + ']') }
           try { Stop-Process -Id $srv.Id -Force } catch { }
-          Write-Host '[S] (2) PASS: beacon 2.1.0.0 => launcherOutdated=true; 2.2.0.0 => false; constant served from config.json'
+          Write-Host ('[S] (2) PASS: beacon 2.1.0.0 => launcherOutdated=true; ' + $sVer + ' => false; constant served from config.json')
           Write-Host '::notice::[S] phase=version-guard ok'
           # --- (3) shipped page: probe card + outdated row + ONE URL builder -----
           $ui = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ui.html'))
@@ -849,6 +863,88 @@ jobs:
           Write-Host '[S] (3) PASS: probe card + version row + single credential-free ghrdp:// builder present in the shipped page'
           Write-Host '[S] PASS: F19 client-DNS probe + launcher version guard (ghrdp-lab fallback lane)'
           'S_result=pass' | Out-File $env:GITHUB_ENV -Append
+
+      # [F20 §4] T proves the CORRECTED diagnostics against the SHIPPED files:
+      #   (1) nslookup is no longer offered as a copy-line anywhere on the page
+      #       (it bypasses the Windows DNS client service, so Tailscale's NRPT
+      #       split-DNS never applies and its timeout against the router is a
+      #       false alarm); Resolve-DnsName took its place, is wired to the live
+      #       FQDN, and the false-alarm note explains the nslookup timeout;
+      #   (2) the collapsed "if mstsc still fails (0x904/0x7)" block inside
+      #       CONNECTION DIAGNOSTICS carries the client + runner wevtutil export
+      #       lines and stays copy-only (no exec control, no weakening advice);
+      #   (3) the SHIPPED launcher still compiles with the in-box csc, logs the
+      #       mstsc exit code (decimal + hex) and its immediate-exit dialog
+      #       points the user at that dashboard block.
+      - name: "T: F20 nslookup false alarm + evidence-based 0x904 fallback"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          trap {
+              Write-Host ('::error::[T] stage=unhandled :: ' + $_.Exception.GetType().FullName + ' :: ' + $_.Exception.Message)
+              exit 1
+          }
+          function T-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[T] stage=' + $Stage + ' :: ' + $Detail)
+              exit 1
+          }
+          $ui = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ui.html'))
+          $cs = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs'))
+          # --- (1) nslookup retired, Resolve-DnsName offered -------------------
+          if ($ui -match '<code[^>]*>[^<]*nslookup') { T-Fail 'nslookup-copy-line' 'the page still offers nslookup as a copy-line diagnostic' }
+          if ($ui.Contains('id="connDiagNs"')) { T-Fail 'nslookup-element' 'the retired nslookup copy-line element survived' }
+          foreach ($tok in @(
+            'id="connDiagRd"', 'Resolve-DnsName &lt;fqdn&gt;', "dn.textContent='Resolve-DnsName '+diagF",
+            'nslookup bypasses Tailscale split-DNS', 'a nslookup timeout while ping works is EXPECTED and not a fault',
+            'id="connDiagPing"', 'id="connDiagTnc"')) {
+              # .Contains, never -like: several of these carry [ ] wildcards.
+              if (-not $ui.Contains($tok)) { T-Fail 'ui-token' ('ui.html lacks ' + $tok) }
+          }
+          # --- (2) the collapsed 0x904/0x7 evidence block ----------------------
+          $a = $ui.IndexOf('<details id="connDiagFailBox"')
+          $b = $ui.IndexOf('</details>', $a)
+          if ($a -lt 0 -or $b -lt $a) { T-Fail 'fallback-block' 'the collapsed 0x904/0x7 block is missing from ui.html' }
+          $blk = $ui.Substring($a, $b - $a)
+          if (-not $blk.Contains('if mstsc still fails (0x904/0x7)')) { T-Fail 'fallback-summary' 'the block does not name the case it covers' }
+          foreach ($tok in @(
+            'wevtutil epl Microsoft-Windows-TerminalServices-ClientActiveXCore/Operational %TEMP%\rdp-client.evtx',
+            'wevtutil el | findstr /i "terminal credssp schannel"',
+            'wevtutil epl Security %TEMP%\rdp-security.evtx /q:"*[System[(EventID=4624 or EventID=4625)]]"',
+            "wevtutil epl System %TEMP%\rdp-system.evtx /q:""*[System[Provider[@Name='Schannel']]]""",
+            'wevtutil epl Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational %TEMP%\rdp-termgr.evtx',
+            'Paste the exports into this session')) {
+              if (-not $blk.Contains($tok)) { T-Fail 'fallback-export' ('the block lacks the export line: ' + $tok) }
+          }
+          $handlers = [regex]::Matches($blk, 'onclick="([^"]*)"')
+          if ($handlers.Count -lt 5) { T-Fail 'fallback-copy-count' ('expected a copy control per export line, found ' + $handlers.Count) }
+          foreach ($h in $handlers) {
+              if (-not $h.Groups[1].Value.StartsWith('copyById(')) { T-Fail 'fallback-exec' ('a non-copy control reached the block: ' + $h.Groups[1].Value) }
+          }
+          if ($blk -match 'authentication level|enablecredsspsupport|authlvloverride|prompt for credentials') {
+              T-Fail 'fallback-weakening' 'the block suggests weakening NLA / CredSSP / cert validation'
+          }
+          Write-Host '[T] (1-2) PASS: nslookup retired (Resolve-DnsName + false-alarm note); collapsed 0x904/0x7 export block is copy-only'
+          # --- (3) the shipped launcher compiles + points at the block ---------
+          $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          if (-not (Test-Path -LiteralPath $csc)) { $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
+          if (-not (Test-Path -LiteralPath $csc)) { T-Fail 'csc' 'the in-box csc.exe is missing - install.cmd depends on it too' }
+          $exe = Join-Path $env:RUNNER_TEMP 'ghrdp-rdp-launcher-lab20.exe'
+          & $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')
+          if ($LASTEXITCODE -ne 0) { T-Fail 'compile' 'the SHIPPED launcher does not compile with the in-box csc' }
+          if (-not (Test-Path -LiteralPath $exe)) { T-Fail 'compile-output' ('no exe at ' + $exe) }
+          $vM = [regex]::Match($cs, 'private const string Ver = "(\d+(\.\d+){1,3})"')
+          if (-not $vM.Success) { T-Fail 'ver-missing' 'the launcher has no Ver constant' }
+          if ([version]$vM.Groups[1].Value -lt [version]'2.3.0.0') { T-Fail 'ver-stale' ('launcher version ' + $vM.Groups[1].Value + ' predates the F20 build (clients would never be told to update)') }
+          foreach ($tok in @(
+            'mstsc exited within 2s, code=',
+            'code.ToString("X", CultureInfo.InvariantCulture)',
+            'see dashboard -> CONNECTION DIAGNOSTICS -> \"if mstsc still fails\" and send the exports',
+            'mstsc-exited=')) {
+              if (-not $cs.Contains($tok)) { T-Fail 'launcher-token' ('the launcher lacks ' + $tok) }
+          }
+          Write-Host ('[T] (3) PASS: shipped launcher compiles (in-box csc), Ver=' + $vM.Groups[1].Value + ', exit code logged dec+hex, dialog points at the dashboard fallback')
+          Write-Host '[T] PASS: F20 nslookup false alarm killed + evidence-based 0x904/0x7 fallback (ghrdp-lab fallback lane)'
+          'T_result=pass' | Out-File $env:GITHUB_ENV -Append
 
       - name: "F: Edge policy proof (live-resolved IDs -> registry readout)"
         shell: pwsh
@@ -1354,12 +1450,13 @@ jobs:
           ('| (l) qBittorrent default .torrent + magnet | ' + $(if ($env:L_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL shared helper: HKCR ProgId discovery + .torrent default + magnet\shell\open\command readback; no download automation, mirror untouched |') | Add-Content -Path $S
           ('| (m) zero console windows | ' + $(if ($env:M_result -eq 'pass') {'**PASS (lab contract+runtime)**'} else {'FAIL'}) + ' | every Start-Process hidden (static) + runtime sweep: no ghrdp helper owns a visible console window; first-session visual check stays PENDING-USER |') | Add-Content -Path $S
           ('| (p) fail-visible launcher (F15) | ' + $(if ($env:P_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL launcher vs a LOCAL python hello-listener: check verb logs its dialog and posts check-shown; stored-credential rdp = ' + $env:P_seq + '; no-credential rdp = ' + $env:P_timeout + '; JSONL log redaction verified. The physical MessageBox itself stays PENDING-USER (a runner cannot show or click it) |') | Add-Content -Path $S
-          ('| (s) client-DNS probe + launcher version guard (F19) | ' + $(if ($env:S_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | SHIPPED launcher compiled by the in-box csc runs --dns-selftest: fail-name+reach-ip => client-dns-off remediation, both-ok => mstsc, no-ip/closed => dns-fail, with 0 mstsc/cmdkey calls; REAL server: beacon exe 2.1.0.0 vs config constant 2.2.0.0 => launcherOutdated=true, 2.2.0.0 => false; shipped page carries the probe card, the yellow outdated row and the single credential-free ghrdp:// builder that appends &ip= only for a CGNAT address. The live client-PC DNS state stays PENDING-USER |') | Add-Content -Path $S
+          ('| (s) client-DNS probe + launcher version guard (F19) | ' + $(if ($env:S_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | SHIPPED launcher compiled by the in-box csc runs --dns-selftest: fail-name+reach-ip => client-dns-off remediation, both-ok => mstsc, no-ip/closed => dns-fail, with 0 mstsc/cmdkey calls; REAL server: beacon exe 2.1.0.0 vs the repo constant read from the launcher source => launcherOutdated=true, current stamp => false; shipped page carries the probe card, the yellow outdated row and the single credential-free ghrdp:// builder that appends &ip= only for a CGNAT address. The live client-PC DNS state stays PENDING-USER |') | Add-Content -Path $S
+          ('| (t) nslookup false alarm + 0x904/0x7 evidence fallback (F20) | ' + $(if ($env:T_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | shipped page: nslookup is no copy-line any more (Resolve-DnsName + false-alarm note), the collapsed "if mstsc still fails (0x904/0x7)" block carries the client ClientActiveXCore export + the runner Security 4624/4625, Schannel and RemoteConnectionManager exports and stays copy-only; SHIPPED launcher compiles with the in-box csc, logs the mstsc exit code (dec+hex) and its dialog points at that block. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
           ('| (k) no console window in the interactive session | **contract PASS** | every host-helper launch is -WindowStyle Hidden (or NoNewWindow for the user-driven terminal exec) and the long-lived services are SYSTEM scheduled tasks; launch-gates F11-5.3 enforces it. Visual confirmation on the first physical RDP session = PENDING-USER |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
           # retrievable), so the PR/verify evidence does not depend on the log UI.
-          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'})
+          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'}) + ' t=' + $(if ($env:T_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
           # [F19] Evidence notices must carry the CELL RESULT they belong to:
           # before this, every notice claimed its achievement even when the cell
@@ -1376,7 +1473,8 @@ jobs:
           Nt 'H' 'H_result' 'cred shim: opener+exact-origin auto-fill, wrong origin/non-opener ignored, zero log output'
           Nt 'N' 'N_result' 'handler overwrite: stale registration printed+overwritten+verified by the REAL install.cmd'
           Nt 'P' 'P_result' ('fail-visible launcher: check dialog logged + no server-less beacon; stored-cred rdp = ' + $env:P_seq + '; no-cred rdp = ' + $env:P_timeout)
-          Nt 'S' 'S_result' 'F19: shipped launcher DNS-guard matrix 5/5 with injected resolver/TCP (client-dns-off | dns-fail | mstsc, zero mstsc/cmdkey), REAL server version guard 2.1.0.0=>outdated / 2.2.0.0=>current, UI probe card + &ip= builder present'
+          Nt 'S' 'S_result' 'F19: shipped launcher DNS-guard matrix 5/5 with injected resolver/TCP (client-dns-off | dns-fail | mstsc, zero mstsc/cmdkey), REAL server version guard 2.1.0.0=>outdated / repo constant=>current, UI probe card + &ip= builder present'
+          Nt 'T' 'T_result' 'F20: nslookup retired as a diagnostic (Resolve-DnsName + false-alarm note), collapsed 0x904/0x7 block carries the client+runner wevtutil exports and stays copy-only, shipped launcher compiles and its immediate-exit dialog points at it'
           Nt 'K' 'K_result' 'browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions'
           Nt 'L' 'L_result' 'qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok'
           Nt 'G' 'F_result' ('uBlock Origin=' + $env:F_ubo)
