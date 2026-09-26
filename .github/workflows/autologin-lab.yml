@@ -591,6 +591,20 @@ jobs:
               $t = $sr.ReadToEnd(); $sr.Close(); $resp.Close()
               return ($t | ConvertFrom-Json)
           }
+          function Invoke-LabRaw([string]$Url) {
+              # [F17] raw body: ConvertFrom-Json converts ISO ts strings into
+              # LOCAL [datetime] objects (the exact bug F17 fixes server-side),
+              # so UTC-wire-format assertions read the RAW text.
+              $req = [System.Net.HttpWebRequest]::Create($Url)
+              $req.Method = 'GET'
+              $req.Proxy = $null
+              $req.Timeout = 10000
+              $req.ReadWriteTimeout = 10000
+              $resp = $req.GetResponse()
+              $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
+              $t = $sr.ReadToEnd(); $sr.Close(); $resp.Close()
+              return $t
+          }
           try { $ns = Invoke-LabJson ('http://127.0.0.1:7392/api/native-status?key=lab-dash-token-f17-0123456789') }
           catch { R-Fail 'native-status' $_.Exception.Message }
           if (-not $ns.rdpListener) { R-Fail 'native-status-field' 'rdpListener missing from /api/native-status' }
@@ -607,7 +621,8 @@ jobs:
           catch { R-Fail 'native-status-2' $_.Exception.Message }
           if ($null -eq $ns2.handlerSeenAgeSec -or $ns2.handlerSeenAgeSec -lt 0 -or $ns2.handlerSeenAgeSec -ge 60) { R-Fail 'beacon-age' ('handlerSeenAgeSec=[' + $ns2.handlerSeenAgeSec + '] - not <60s right after a check verb') }
           if (-not $ns2.lastHandlerVerb -or $ns2.lastHandlerVerb.verb -ne 'check') { R-Fail 'beacon-verb' ('verb=[' + $ns2.lastHandlerVerb.verb + ']') }
-          if ($ns2.lastHandlerVerb.ts -notmatch 'Z$') { R-Fail 'beacon-ts-utc' ('ts=[' + $ns2.lastHandlerVerb.ts + '] - not explicit UTC (the +05:30 regression)') }
+          $raw2 = Invoke-LabRaw ('http://127.0.0.1:7392/api/native-status?key=lab-dash-token-f17-0123456789')
+          if ($raw2 -notmatch '"ts":"\d{4}-\d{2}-\d{2}T[0-9:.]+Z"') { R-Fail 'beacon-ts-utc' ('wire ts not explicit UTC ISO-Z in [' + $raw2.Substring(0, [Math]::Min(300, $raw2.Length)) + ']') }
           Write-Host ('[R] (6) PASS: beacon age ' + $ns2.handlerSeenAgeSec + 's <60s right after the check verb; ts ends with Z')
           try { Stop-Process -Id $srv.Id -Force } catch { }
           # (7) client-DNS guard, REAL launcher: a NON-tailnet resolution is
@@ -636,7 +651,7 @@ jobs:
           Write-Host '[R] (7) PASS: non-tailnet resolution => rc=5, dns-guard logged, mstsc NOT started'
           Set-HostAlias '127.0.0.1'
           $env:GHRDP_LAB_DNS_ALLOW_LOOPBACK = '1'
-          & cmdkey.exe /generic:("TERMSRV/" + $fqdn) /user:labuser /pass:LABDUMMY-win-9876 | Out-Null
+          & cmdkey.exe /generic:TERMSRV/$fqdn /user:labuser /pass:LABDUMMY-win-9876 | Out-Null
           $before7 = [int](Log-Lines 0)
           & $exe ("ghrdp://rdp?server=" + $fqdn + "&user=labuser") | Out-Null
           $rc7 = $LASTEXITCODE
@@ -644,7 +659,7 @@ jobs:
           if ($rc7 -ne 0) { R-Fail 'guard-not-allowed' ('rc=' + $rc7) }
           if (-not (($nl7 | Out-String) -match 'dns-guard ok')) { R-Fail 'guard-allow-log' 'no dns-guard ok line with the lab switch' }
           if (-not (($nl7 | Out-String) -match 'mstsc-started')) { R-Fail 'guard-allow-mstsc' 'mstsc not started on the allowed alias' }
-          try { & cmdkey.exe /delete:("TERMSRV/" + $fqdn) | Out-Null } catch { }
+          try { & cmdkey.exe /delete:TERMSRV/$fqdn | Out-Null } catch { }
           Set-HostAlias ''
           Write-Host '[R] (8) PASS: loopback alias + GHRDP_LAB_DNS_ALLOW_LOOPBACK=1 => dns-guard ok + mstsc-started (lab-only path)'
           Write-Host '[R] PASS: F17 listener probe break/fix + native-status render + beacon age + dns-guard'
