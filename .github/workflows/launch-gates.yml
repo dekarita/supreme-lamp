@@ -682,7 +682,8 @@ jobs:
           # --- §5 the launcher guard is really EXECUTED (csc + injected matrix) --
           grep -qF 'name: F19 launcher DNS-guard decision matrix (csc compile + injected resolver)' .github/workflows/launch-gates.yml \
             || { echo 'F19: the launcher decision matrix step is missing from windows-native' >&2; exit 1; }
-          grep -qF "& \$exe '--dns-selftest'" .github/workflows/launch-gates.yml
+          grep -qF -- "-ArgumentList '--dns-selftest'" .github/workflows/launch-gates.yml
+          grep -qF -- '$p.WaitForExit()' .github/workflows/launch-gates.yml
           echo 'F19 gates PASS'
 
       - name: F8 web-desktop honesty gates
@@ -1084,10 +1085,15 @@ jobs:
             if ($cscRc -ne 0) { throw ('csc exit ' + $cscRc + ' :: ' + $cscOut.Trim()) }
             $env:GHRDP_LAB_OUT = $out
             $env:GHRDP_LAB_NOMSG = '1'
-            $runOut = (& $exe '--dns-selftest' 'lab-target.dekarita.tailnet-lab.ts.net' '100.64.0.7' 2>&1 | Out-String)
-            $runRc = $LASTEXITCODE
-            Write-Host ('[F19] selftest exit=' + $runRc + ' stdout=' + $runOut.Trim())
+            # the launcher is /target:winexe: '& $exe' would return without
+            # waiting (that race is what made this step flaky), so wait on the
+            # process object explicitly.
+            $p = Start-Process -FilePath $exe -ArgumentList '--dns-selftest','lab-target.dekarita.tailnet-lab.ts.net','100.64.0.7' -PassThru
+            $p.WaitForExit()    # waits for the selftest process only, never the tree
+            $runRc = $p.ExitCode
+            Write-Host ('[F19] selftest exit=' + $runRc)
             if ($runRc -ne 0) { throw ('--dns-selftest exit ' + $runRc) }
+            for ($i = 0; $i -lt 20 -and -not (Test-Path -LiteralPath $out); $i++) { Start-Sleep -Milliseconds 250 }
             if (-not (Test-Path -LiteralPath $out)) { throw '--dns-selftest wrote no matrix file' }
             $matrixTxt = Get-Content -LiteralPath $out -Raw
             Write-Host $matrixTxt

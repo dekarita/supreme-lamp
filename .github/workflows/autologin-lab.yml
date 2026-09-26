@@ -712,6 +712,16 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          # [F19] every failure must be readable from the Checks API: an
+          # unhandled terminating error (a missing property with EAP=Stop, a
+          # native-command error) would otherwise leave this step with no
+          # annotation at all, and runner logs/artifacts are not retrievable
+          # from this environment.
+          trap {
+              Write-Host ('::error::[S] stage=unhandled :: ' + $_.Exception.GetType().FullName + ' :: ' + $_.Exception.Message + ' @ ' + (($_.InvocationInfo.PositionMessage) -replace "`r?`n", ' | '))
+              exit 1
+          }
+          function J([object]$o, [string]$n) { if ($o -and ($o.PSObject.Properties.Name -contains $n)) { return $o.$n } return $null }
           $diag = Join-Path $env:GITHUB_WORKSPACE 'de-diag'
           New-Item -ItemType Directory -Path $diag -Force | Out-Null
           function S-Fail([string]$Stage, [string]$Detail) {
@@ -729,18 +739,22 @@ jobs:
           if (Test-Path -LiteralPath $matrix) { Remove-Item -LiteralPath $matrix -Force }
           & $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')
           if ($LASTEXITCODE -ne 0) { S-Fail 'compile' 'the SHIPPED launcher does not compile with the in-box csc' }
+          Write-Host '::notice::[S] phase=compile ok'
           $env:GHRDP_LAB_OUT = $matrix
           $env:GHRDP_LAB_NOMSG = '1'
-          # [F19] the launcher is a winexe: without a pipeline PowerShell does
-          # not wait for it and the matrix-file check races the process (this is
-          # also why the windows-native gate step was flaky until it captured the
-          # output the same way). Pipe the output to force the wait, then give
-          # the file a moment.
-          $runOut = (& $exe '--dns-selftest' 'lab-target.dekarita.tailnet-lab.ts.net' $labIp 2>&1 | Out-String)
-          $runRc = $LASTEXITCODE
-          if ($runRc -ne 0) { S-Fail 'matrix-exit' ('launcher --dns-selftest exit ' + $runRc + ' out=' + $runOut.Trim()) }
+          # [F19] the launcher is /target:winexe. Two traps here: '& $exe'
+          # returns WITHOUT waiting (no console handle), and piping its output
+          # with -Stop can turn a native-command record into a terminating error.
+          # Start-Process -PassThru plus an explicit WaitForExit() on THIS
+          # process is the unambiguous construct here: -Wait would also wait for
+          # the process tree (the F10-9 wedge), and WaitForExit() waits only for
+          # the selftest process while still yielding its real exit code.
+          $p = Start-Process -FilePath $exe -ArgumentList '--dns-selftest','lab-target.dekarita.tailnet-lab.ts.net',$labIp -PassThru
+          $p.WaitForExit()
+          $runRc = $p.ExitCode
+          if ($runRc -ne 0) { S-Fail 'matrix-exit' ('launcher --dns-selftest exit ' + $runRc) }
           for ($i = 0; $i -lt 20 -and -not (Test-Path -LiteralPath $matrix); $i++) { Start-Sleep -Milliseconds 250 }
-          if (-not (Test-Path -LiteralPath $matrix)) { S-Fail 'matrix-file' ('no matrix file at ' + $matrix + ' (exit=' + $runRc + ' out=' + $runOut.Trim() + ')') }
+          if (-not (Test-Path -LiteralPath $matrix)) { S-Fail 'matrix-file' ('no matrix file at ' + $matrix + ' (exit=' + $runRc + ')') }
           $txt = Get-Content -LiteralPath $matrix -Raw
           Write-Host $txt
           foreach ($want in @(
@@ -753,6 +767,7 @@ jobs:
           if ($txt -notmatch 'mstscLaunched=0 cmdkeyCalled=0') { S-Fail 'matrix-side-effects' 'a selftest case launched mstsc or called cmdkey' }
           if ($txt -match 'verdict=FAIL') { S-Fail 'matrix-verdict' 'at least one matrix case reported FAIL' }
           Write-Host '[S] (1) PASS: shipped launcher DNS-guard matrix 5/5 (injected resolver/TCP; no mstsc, no cmdkey)'
+          Write-Host '::notice::[S] phase=matrix ok'
           # --- (2) REAL server: beacon exe stamp vs config.launcherVersion -------
           $root = 'C:\ghrdp-lab-f19'
           try { Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue } catch { }
@@ -769,6 +784,7 @@ jobs:
               $errTail = ''; try { $errTail = ((Get-Content (Join-Path $diag 'f19-server-err.log') -Tail 6 -ErrorAction SilentlyContinue) -join ' | ') } catch { }
               S-Fail 'server-listen' ('the lab server never listened on 7393; stderr=[' + $errTail + ']')
           }
+          Write-Host '::notice::[S] phase=server-listen ok'
           function Invoke-S19Json([string]$Url, [string]$Method = 'GET', [string]$Body = '') {
               $req = [System.Net.HttpWebRequest]::Create($Url)
               $req.Method = $Method
@@ -798,19 +814,21 @@ jobs:
           foreach ($k in @('launcherVersion','launcherSeenVersion','launcherOutdated')) {
               if (-not ($ns0.PSObject.Properties.Name -contains $k)) { S-Fail 'field-missing' ('native-status lacks ' + $k) }
           }
-          if ([string]$ns0.launcherVersion -ne '2.2.0.0') { S-Fail 'const-served' ('launcherVersion=[' + [string]$ns0.launcherVersion + ']') }
-          if ([bool]$ns0.launcherOutdated -ne $false) { S-Fail 'no-false-alarm' 'an outdated flag was raised before any beacon' }
+          if ([string](J $ns0 'launcherVersion') -ne '2.2.0.0') { S-Fail 'const-served' ('launcherVersion=[' + [string](J $ns0 'launcherVersion') + ']') }
+          if ([bool](J $ns0 'launcherOutdated') -ne $false) { S-Fail 'no-false-alarm' 'an outdated flag was raised before any beacon' }
           try { $null = Invoke-S19Json ($base + '/api/handler-hello?' + $key) 'POST' '{"verb":"rdp","ok":true,"details":"lab-old-exe","exe":"ghrdp-rdp-launcher 2.1.0.0 (F17 dns-guard)"}' } catch { S-Fail 'beacon-old' $_.Exception.Message }
           try { $nsOld = Invoke-S19Json ($base + '/api/native-status?' + $key) } catch { S-Fail 'native-status-old' $_.Exception.Message }
-          if ([string]$nsOld.launcherSeenVersion -ne '2.1.0.0') { S-Fail 'seen-old' ('launcherSeenVersion=[' + [string]$nsOld.launcherSeenVersion + ']') }
-          if ([bool]$nsOld.launcherOutdated -ne $true) { S-Fail 'outdated-not-flagged' 'a 2.1.0.0 beacon against a 2.2.0.0 repo constant must set launcherOutdated=true' }
+          if ([string](J $nsOld 'launcherSeenVersion') -ne '2.1.0.0') { S-Fail 'seen-old' ('launcherSeenVersion=[' + [string](J $nsOld 'launcherSeenVersion') + ']') }
+          if ([bool](J $nsOld 'launcherOutdated') -ne $true) { S-Fail 'outdated-not-flagged' 'a 2.1.0.0 beacon against a 2.2.0.0 repo constant must set launcherOutdated=true' }
           try { $null = Invoke-S19Json ($base + '/api/handler-hello?' + $key) 'POST' '{"verb":"rdp","ok":true,"details":"lab-current-exe","exe":"ghrdp-rdp-launcher 2.2.0.0 (F19 dns-remediation+ver-guard)"}' } catch { S-Fail 'beacon-new' $_.Exception.Message }
           try { $nsNew = Invoke-S19Json ($base + '/api/native-status?' + $key) } catch { S-Fail 'native-status-new' $_.Exception.Message }
-          if ([bool]$nsNew.launcherOutdated -ne $false) { S-Fail 'outdated-stuck' 'the CURRENT exe stamp must clear launcherOutdated' }
-          if ([string]$nsNew.launcherSeenVersion -ne '2.2.0.0') { S-Fail 'seen-new' ('launcherSeenVersion=[' + [string]$nsNew.launcherSeenVersion + ']') }
-          if ([string]$nsNew.lastHandlerVerb.exe -notmatch '2\.2\.0\.0') { S-Fail 'beacon-exe-echo' ('lastHandlerVerb.exe=[' + [string]$nsNew.lastHandlerVerb.exe + ']') }
+          if ([bool](J $nsNew 'launcherOutdated') -ne $false) { S-Fail 'outdated-stuck' 'the CURRENT exe stamp must clear launcherOutdated' }
+          if ([string](J $nsNew 'launcherSeenVersion') -ne '2.2.0.0') { S-Fail 'seen-new' ('launcherSeenVersion=[' + [string](J $nsNew 'launcherSeenVersion') + ']') }
+          $vh = J $nsNew 'lastHandlerVerb'
+          if ([string](J $vh 'exe') -notmatch '2\.2\.0\.0') { S-Fail 'beacon-exe-echo' ('lastHandlerVerb.exe=[' + [string](J $vh 'exe') + ']') }
           try { Stop-Process -Id $srv.Id -Force } catch { }
           Write-Host '[S] (2) PASS: beacon 2.1.0.0 => launcherOutdated=true; 2.2.0.0 => false; constant served from config.json'
+          Write-Host '::notice::[S] phase=version-guard ok'
           # --- (3) shipped page: probe card + outdated row + ONE URL builder -----
           $ui = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ui.html'))
           foreach ($tok in @(
