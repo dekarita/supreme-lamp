@@ -2123,12 +2123,11 @@ jobs:
           } catch { }
           $haskeyA = 'not-in-store'
           if ($reloadedA -and $reloadedA.Count -gt 0) { $haskeyA = [string]([bool]$reloadedA[0].HasPrivateKey) }
-          $servedA = ([regex]::Match($outA, 'cert=([0-9A-Fa-f]{40})').Groups[1].Value)
-          if (-not $servedA) { $servedA = ([regex]::Match($outA, 'served ([0-9A-Fa-f]{40})').Groups[1].Value) }
-          if (-not $servedA) { $servedA = '(uncaptured)' }
+          $servedA = [string]$script:F31ServedThumbprint
+          if (-not $servedA) { $servedA = '(none: no cert arrived before the failure)' }
           Start-Sleep -Seconds 3
           $evA = @(Y-SchannelSince $phaseA)
-          Write-Host ('::notice::[Y] (a) diag: expected=' + $thumbA + ' served=' + $servedA + ' reloadedHaskey=' + $haskeyA + ' failed=' + $failedA + ' new36870=' + $evA.Count)
+          Write-Host ('::notice::[Y] (a) diag: expected=' + $thumbA + ' served=' + $servedA + ' reloadedHaskey=' + $haskeyA + ' failed=' + $failedA + ' new36870=' + $evA.Count + ' dumpLen=' + ([string]$script:F31LastProbeDump).Length)
           if (-not $failedA) { Y-Fail 'bug-repro' 'the shipped probe PASSED against a default-flags import (the bug class did not reproduce)' }
           if ($msgA -ne 'rdp-tls-credential-unusable') { Y-Fail 'bug-repro' ('wrong failure code: ' + $msgA) }
           Write-Host ('[Y] (a) PASS: default-flags import => probe threw rdp-tls-credential-unusable (served=' + $servedA + ', reloadedHaskey=' + $haskeyA + ', new36870=' + $evA.Count + ')')
@@ -2194,8 +2193,12 @@ jobs:
           try { $outC = (Test-F31RdpTlsHandshake -KeyFile $keyEc -ExpectedThumbprint ([string]$gotEc.thumbprint) 6>&1 | Out-String) } catch { $failedC = $true; $outC += (' THROW:' + $_.Exception.Message) }
           if (-not $failedC) { Y-Fail 'acl-deny' 'the shipped probe PASSED with the NETWORK SERVICE ACE removed from the key file' }
           if ($outC -notmatch 'rdp-tls-credential-unusable') { Y-Fail 'acl-deny' ('wrong failure code :: ' + $outC) }
-          if ($outC -notmatch 'keyACL=\[') { Y-Fail 'acl-dump' 'the failure carried no key-ACL dump' }
-          if ($outC -match 'NETWORK SERVICE[^|\]]*:Allow') { Y-Fail 'acl-dump' 'the dump still shows a NETWORK SERVICE Allow ACE after removal' }
+          # NOTE: a throwing call cannot be captured with 6>&1 (the
+          # assignment never runs), so the dump is read from the
+          # probe's script-scope variable, not $outC.
+          $dumpC = [string]$script:F31LastProbeDump
+          if ($dumpC -notmatch 'keyACL=\[') { Y-Fail 'acl-dump' 'the failure carried no key-ACL dump' }
+          if ($dumpC -match 'NETWORK SERVICE[^|\]]*:Allow') { Y-Fail 'acl-dump' 'the dump still shows a NETWORK SERVICE Allow ACE after removal' }
           Start-Sleep -Seconds 3
           $evC = @(Y-SchannelSince $phaseC)
           if ($evC.Count -eq 0) { Y-Fail 'acl-36870' 'no NEW Schannel 36870 since the ACE-removed probe' }

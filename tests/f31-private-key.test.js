@@ -73,12 +73,17 @@ test('F31-3 the local TLS self-probe handshakes 127.0.0.1:3389 after the restart
   const cert = certBody();
   for (const tok of ['TcpClient', '127.0.0.1', '3389', 'SslStream', 'AuthenticateAsClient', 'localhost',
       'listener-handshake-ok', 'rdp-tls-credential-unusable', '36870',
-      'ExpectedThumbprint', 'F31ServedThumbprint', 'not the bound']) {
+      'ExpectedThumbprint', 'F31ServedThumbprint', 'not the bound',
+      'F31LastProbeDump']) {
     assert.ok(cert.includes(tok), 'self-probe token missing: ' + tok);
   }
   // the handshake must present THE BOUND cert (a fallback self-signed cert is not a pass)
   assert.match(cert, /servedProbe -ne \$ExpectedThumbprint/,
     'the probe must compare the served cert to the bound thumbprint');
+  // a throwing call cannot be captured with 6>&1, so the dump line must be
+  // recorded in a script-scope variable for the caller to read
+  assert.match(cert, /\$script:F31LastProbeDump = \$dumpLine/,
+    'the probe must record its dump line in F31LastProbeDump');
   // permissive remote-callback (the probe proves the PRIVATE KEY, not the chain)
   assert.match(cert, /param\(\$snd,\$crt,\$chn,\$err\)[\s\S]{0,300}return \$true/,
     'the probe SslStream lacks the permissive remote-callback');

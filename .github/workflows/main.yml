@@ -622,13 +622,17 @@ jobs:
           # Success returns the negotiated protocol and logs
           # 'listener-handshake-ok'. ANY failure dumps the last Schannel 36870
           # + the key-file ACL (secret-free) and throws
-          # 'rdp-tls-credential-unusable'. Never carries a credential.
+          # 'rdp-tls-credential-unusable'. Never carries a credential. The dump
+          # line is ALSO recorded in $script:F31LastProbeDump: a call that
+          # throws cannot be captured with 6>&1 (the assignment never runs),
+          # so callers must read the variable, not the merged stream.
           function Test-F31RdpTlsHandshake {
               param([string]$KeyFile, [string]$ExpectedThumbprint)
               $tcpProbe = $null
               $netProbe = $null
               $sslProbe = $null
               $script:F31ServedThumbprint = ''
+              $script:F31LastProbeDump = ''
               try {
                   # Wait for the listener (a TermService restart precedes us).
                   $tcpProbe = New-Object System.Net.Sockets.TcpClient
@@ -707,7 +711,9 @@ jobs:
                           if (-not $aclDump) { $aclDump = '(key file has no ACEs)' }
                       } elseif ($KeyFile) { $aclDump = '(persisted key file not found: ' + $KeyFile + ')' }
                   } catch { $aclDump = '(key ACL read failed: ' + $_.Exception.Message + ')' }
-                  Write-Host ('::error::[cert] RDP TLS self-probe FAILED (' + $probeErr + '); last-36870=[' + $schDump + ']; keyACL=[' + $aclDump + ']')
+                  $dumpLine = ('::error::[cert] RDP TLS self-probe FAILED (' + $probeErr + '); last-36870=[' + $schDump + ']; keyACL=[' + $aclDump + ']')
+                  $script:F31LastProbeDump = $dumpLine
+                  Write-Host $dumpLine
                   throw 'rdp-tls-credential-unusable'
               } finally {
                   try { if ($sslProbe) { $sslProbe.Close() } } catch { }
