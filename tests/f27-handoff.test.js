@@ -28,6 +28,8 @@ test('F27 gate: store target, options, buffer cleanup, no unsafe launch APIs or 
  for(const text of ['CredWriteW','c.Type = 2','c.TargetName = "TERMSRV/" + fqdn','c.Persist = 2','Marshal.FreeHGlobal','Array.Clear(blob','req.Proxy = null','req.AllowAutoRedirect = false','IsTailnetAddress(a)','ticket-redeemed','credwrite-ok','fallback-cmdkey reason='])assert.ok(handoff.includes(text),text);
  assert.match(cs,/"full address:s:" \+ server/);
  assert.match(cs,/WriteCredential\(server, user, pass\)/);
+ assert.match(cs,/!forcePrompt && HasCredEntry\(server\)/);
+ assert.match(cs,/CmdkeyStep\(server, user, host, port, true\)/);
  const code=cs.split('\n').filter(l=>!/^\s*\/\//.test(l)).join('\n');
  const denied=['Send'+'Keys','UI'+'Automation','Clipboard.Get','/pass:'];
  for(const token of denied)assert.ok(!code.includes(token),token);

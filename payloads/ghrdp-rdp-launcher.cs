@@ -724,9 +724,9 @@ internal static class GhrdpRdpLauncher
     private static string FallbackBeacon(string reason) { return "fallback-cmdkey reason=" + reason; }
     // [F27 handoff-end]
 
-    private static int CmdkeyStep(string server, string user, string host, int port)
+    private static int CmdkeyStep(string server, string user, string host, int port, bool forcePrompt = false)
     {
-        if (HasCredEntry(server))
+        if (!forcePrompt && HasCredEntry(server))
         {
             LogJson("cmdkey", "rdp", "TERMSRV/" + server + " already present (cmdkey /list parse) - no prompt");
             HelloBounded(host, port, "rdp", true, "cmdkey-stored=true");
@@ -974,8 +974,18 @@ internal static class GhrdpRdpLauncher
         if (fallback != null)
         {
             HandoffStep(host, port, FallbackBeacon(fallback), false);
-            int rc = CmdkeyStep(server, user, host, port);
-            if (rc != 0) { return rc; }
+            if (fallback == "ticket-missing")
+            {
+                // Compatibility for old ticket-less links only. The dashboard
+                // always issues t; failed redemptions must not reuse poison.
+                int rc = CmdkeyStep(server, user, host, port);
+                if (rc != 0) { return rc; }
+            }
+            else
+            {
+                int rc = CmdkeyStep(server, user, host, port, true);
+                if (rc != 0) { return rc; }
+            }
         }     // a timed-out prompt already produced its MessageBox
         return MstscStep(server, user, host, port);
     }
