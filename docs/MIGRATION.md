@@ -530,6 +530,44 @@ Decommission note: uninstalling TightVNC is `choco uninstall tightvnc -y`
 the next poll; removing TightVNC + websockify + the rule closes the
 tailnet listener.
 
+### 1.11 [F19 §3] Code-signed `.rdp` - OPTIONAL FUTURE, NOT IMPLEMENTED
+
+**Documented only. Nothing in this repository signs, installs or trusts a
+certificate today.** This section exists so the idea is not reinvented
+later with a worse design.
+
+The one visible prompt in the native mstsc path is the Windows consent
+dialog for an *unsigned* `.rdp` file that requests redirection
+("Unknown publisher" / "Windows protected your PC" class). It appears
+per launch, after the Security dialog, and it is expected consent UI -
+not a failure, and never something the tooling may suppress with
+automation.
+
+A future, opt-in option - only if the user explicitly wants the dialog
+gone and accepts the trust trade-off:
+
+- Generate a **self-signed `CodeSigning` certificate** on the client
+  (or import one the operator created), with a long validity and an
+  EKU of Code Signing.
+- Trust exactly that one certificate on the client (`Cert:\CurrentUser\
+  TrustedPublishers` + `TrustedPeople`), nothing broader - no
+  "trust any publisher", no disabling SmartScreen, no Defender/SAC/WDAC
+  changes.
+- Sign the generated `.rdp` with the in-box `rdpsign.exe`
+  (`rdpsign /sha256 <thumbprint> <file.rdp>`), then hand the signed file
+  to `mstsc`. A signed `.rdp` also expresses the redirection intent, so
+  the consent dialog is skipped rather than bypassed.
+- Record the thumbprint in the dashboard diagnostics row; a rotated or
+  missing cert means "unsigned again", never "silently fail".
+
+Constraints that stay in force regardless: no credential-UI automation
+(no keyboard-injection or UI-automation API may ever be named in a
+shipped payload - the launch-gates F19 block fails the build on the
+identifiers themselves), no NLA/CredSSP weakening, no
+certificate-validation bypass, no SmartScreen/Defender changes, no
+public exposure, and no password or token anywhere in a URL, log,
+beacon or `.rdp`.
+
 ## 2. Decommission checklist (Actions-as-RDP teardown)
 
 > Prerequisites: §1.7 VPS provisioned and client NLA-probe verified;

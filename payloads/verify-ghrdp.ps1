@@ -63,23 +63,26 @@ if ($tok) {
     Add-Result 'mstsc-spawned' ([bool]$mstsc) ("mstsc PID=$($mstsc.Id) in ${elapsedMs}ms")
     Add-Result 'sub-3s' ($elapsedMs -le 3000) "${elapsedMs}ms <= 3000ms budget"
 
-    # A1 - UIAutomation: no warning dialog with "I understand" or blank Computer
+    # A1 - READ-ONLY window-title scan: no warning dialog with "I understand" or
+    # a blank Computer field. [F19 §4] This intentionally uses NO UI-automation
+    # library and NO keyboard injection at all (the F19 launch gate bans those
+    # identifiers repo-wide, including comments - see launch-gates.yml): reading
+    # window titles cannot touch a credential field, automation cannot be
+    # mistaken for a human login, and no password is ever typed by tooling.
     Start-Sleep -Seconds 2
     $badDialog = $false
     try {
-        Add-Type -AssemblyName UIAutomationClient
-        $root = [System.Windows.Automation.AutomationElement]::RootElement
-        $condDialog = New-Object System.Windows.Automation.PropertyCondition ([System.Windows.Automation.AutomationElement]::ControlTypeProperty), ([System.Windows.Automation.ControlType]::Window)
-        $wins = $root.FindAll([System.Windows.Automation.TreeScope]::Children, $condDialog)
-        foreach ($w in $wins) {
-            $nm = $w.Current.Name
-            if ($nm -match 'I understand' -or $nm -match 'Publisher .*could not be verified' -or $nm -match 'Windows Security' -or $nm -match 'Remote Desktop Connection' -and $nm -match 'accept') {
+        foreach ($proc in @(Get-Process -ErrorAction SilentlyContinue)) {
+            $nm = ''
+            try { $nm = [string]$proc.MainWindowTitle } catch { $nm = '' }
+            if (-not $nm) { continue }
+            if ($nm -match 'I understand' -or $nm -match 'Publisher .*could not be verified' -or $nm -match 'Windows Security' -or ($nm -match 'Remote Desktop Connection' -and $nm -match 'accept')) {
                 $badDialog = $true
                 break
             }
         }
     } catch { }
-    Add-Result 'no-warning-dialog' (-not $badDialog) 'UIAutomation scan for I-understand/publisher/security prompts'
+    Add-Result 'no-warning-dialog' (-not $badDialog) 'read-only window-title scan for I-understand/publisher/security prompts'
 
     # A2 - cmdkey entry exists
     $ck = & cmdkey /list 2>$null | Select-String "TERMSRV/$RunnerIp"
