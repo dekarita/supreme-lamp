@@ -138,7 +138,9 @@ public static class F27Read {
         Assert-F27 ($lines -contains ('full address:s:' + $target.Substring(8))) 'RDP full address exactly matches credential target suffix'
         Assert-F27 (($lines -contains 'screen mode id:i:2') -and -not (($lines -join "`n") -match 'password|credential|authentication level')) 'options only, no weakening'
     } finally { $null = [F27Read]::Delete($target,2,0); $null = [F27Read]::Delete($target,1,0) }
-    $reason = Call-F27 'RedeemAndStore' @('ghrdp://rdp?server=fixture.tail.ts.net','fixture.tail.ts.net','fixture-user','',7331)
+    # [F28] MethodBase.Invoke does not apply C# optional-parameter defaults, so
+    # the reflective call passes isRecred explicitly ($false = rdp-verb path).
+    $reason = Call-F27 'RedeemAndStore' @('ghrdp://rdp?server=fixture.tail.ts.net','fixture.tail.ts.net','fixture-user','',7331,$false)
     Assert-F27 ($reason -eq 'ticket-missing') 'missing ticket fallback'
     Assert-F27 ((Call-F27 'FallbackBeacon' @($reason)) -eq 'fallback-cmdkey reason=ticket-missing') 'fallback beacon reason'
     # URL context is intentional: the real logger never logs raw URI input.
