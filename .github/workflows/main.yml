@@ -1244,9 +1244,9 @@ jobs:
           } catch { $fwWhy = $_.Exception.Message }
           if (-not $fwRuleOk -and -not $fwWhy) { $fwWhy = 'rule ghrdp-rdp-3389 not verifiable as enabled/Any/100.64.0.0/10 after fix' }
           # (4) certThumb: RDP-Tcp SSLCertificateSHA1Hash present + the bound
-          # certificate is found in LocalMachine\My, still valid, and covers
-          # the MagicDNS FQDN (config.dnsName).
-          $certOk = $false; $certThumb = ''; $certDns = ''; $certWhy = ''
+          # certificate chain is trusted, still valid, and covers the MagicDNS
+          # FQDN (config.dnsName).
+          $certOk = $false; $certChainOk = $false; $certChainStatus = ''; $certThumb = ''; $certDns = ''; $certWhy = ''
           try {
               $rdpKeyF17 = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
               $sh = (Get-ItemProperty -Path $rdpKeyF17 -Name 'SSLCertificateSHA1Hash' -ErrorAction Stop).SSLCertificateSHA1Hash
@@ -1258,8 +1258,15 @@ jobs:
                   $storeF17.Close()
                   if ($boundF17) {
                       $certDns = $boundF17.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::DnsName, $false)
+                      $chainF17 = New-Object System.Security.Cryptography.X509Certificates.X509Chain
+                      try {
+                          $chainF17.ChainPolicy.RevocationMode = [System.Security.Cryptography.X509Certificates.X509RevocationMode]::NoCheck
+                          $certChainOk = [bool]$chainF17.Build($boundF17)
+                          $certChainStatus = (@($chainF17.ChainStatus | ForEach-Object { [string]$_.Status }) -join ',')
+                      } finally { $chainF17.Dispose() }
                       if ($dnsName -and $certDns -ne $dnsName) { $certWhy = ('bound cert covers ' + $certDns + ' not ' + $dnsName) }
                       elseif ($boundF17.NotAfter.ToUniversalTime() -le [datetime]::UtcNow) { $certWhy = ('bound cert expired ' + $boundF17.NotAfter.ToUniversalTime().ToString('o')) }
+                      elseif (-not $certChainOk) { $certWhy = ('certificate chain invalid: ' + $certChainStatus) }
                       else { $certOk = $true }
                   } else { $certWhy = 'thumbprint not found in LocalMachine\My' }
               } else { $certWhy = 'no SSLCertificateSHA1Hash on RDP-Tcp' }
@@ -1280,6 +1287,8 @@ jobs:
               fwProfiles = $fwProfiles
               fwFixed = $fwFixed
               certThumb = $certThumb
+              certChainOk = $certChainOk
+              certChainStatus = $certChainStatus
               certOk = $certOk
               certWhy = $certWhy
               nla = $nla
@@ -1291,7 +1300,7 @@ jobs:
               [System.IO.File]::WriteAllText($cfgPathF17, ($cfgW | ConvertTo-Json -Depth 10), $utf8F17)
               Write-Host '[F17] rdpListener written to config.json (served by /api/native-status)'
           } catch { Write-Host ('[F17] config write failed: ' + $_.Exception.Message) }
-          Write-Host ('[F17] rdpListener: listening=' + $listening + ' termService=' + $termStatus + ' fwRule=' + $fwRuleOk + ' fwScope=' + $fwScope + ' certOk=' + $certOk + ' certWhy=' + $certWhy + ' nla=' + $nla)
+          Write-Host ('[F17] rdpListener: listening=' + $listening + ' termService=' + $termStatus + ' fwRule=' + $fwRuleOk + ' fwScope=' + $fwScope + ' certChainOk=' + $certChainOk + ' certOk=' + $certOk + ' certWhy=' + $certWhy + ' nla=' + $nla)
           # [F17 §1] LOUD FAIL: listening=false | fwRule wrong | certThumb
           # missing/invalid => the step fails with the EXACT field so a red run
           # names the dead component instead of advertising it.

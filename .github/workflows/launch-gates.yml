@@ -491,7 +491,7 @@ jobs:
           # --- §1/§4 main.yml must carry the §1 probe step AND its loud fail --
           probe=$(awk '/name: RDP listener self-probe \(F17/{f=1;next} f && /^      - name: /{exit} f' "$wf")
           test -n "$probe" || { echo 'F17: main.yml lacks the RDP listener self-probe step' >&2; exit 1; }
-          for tok in 'rdpListener' 'Test-NetConnection 127.0.0.1 -Port 3389' 'Get-NetFirewallRule' 'SSLCertificateSHA1Hash' 'UserAuthentication' 'TermService' '[F17 §1 probe-begin]' '[F17 §1 probe-end]' '::error::[F17]' 'throw'; do
+          for tok in 'rdpListener' 'Test-NetConnection 127.0.0.1 -Port 3389' 'Get-NetFirewallRule' 'SSLCertificateSHA1Hash' 'X509Chain' 'certChainOk' 'UserAuthentication' 'TermService' '[F17 §1 probe-begin]' '[F17 §1 probe-end]' '::error::[F17]' 'throw'; do
             grep -qF "$tok" <<< "$probe" || { echo "F17: probe step missing: $tok" >&2; exit 1; }
           done
           # the probe must write config BEFORE the loud fail (dashboard must see
@@ -527,6 +527,8 @@ jobs:
           # --- §3 launcher DNS guard BEFORE any cmdkey/mstsc work ------------
           grep -qF 'Dns.GetHostAddresses' "$cs" || { echo 'F17: launcher lacks the DNS guard' >&2; exit 1; }
           grep -qF 'IsTailnetAddress' "$cs"
+          grep -qF 'if (allTailnet) { return null; }' "$cs" || { echo 'F17: mixed DNS answers must be blocked' >&2; exit 1; }
+          grep -qF 'every answer must be in 100.64.0.0/10' "$cs"
           grep -qF 'dns-guard' "$cs"
           grep -qF 'flushdns' "$cs"
           grep -qF '100.64.0.0/10' "$cs"
