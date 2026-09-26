@@ -138,6 +138,7 @@ jobs:
           if ([string]$rl.termService -ne 'Running') { A-Fail 'termService' ([string]$rl.termService) }
           if ([string]$rl.fwScope -notin @('100.64.0.0/10', '100.64.0.0/255.192.0.0')) { A-Fail 'fwScope' ([string]$rl.fwScope) }
           Write-Host ('[A] PASS: baseline all OK - ' + ($rl | ConvertTo-Json -Compress))
+          exit 0
 
       - name: "B: BREAK - disable the 3389 rule => fwRule=false + step fails LOUD"
         shell: pwsh
@@ -165,6 +166,7 @@ jobs:
           if (-not $r) { B-Fail 'rule-gone' 'ghrdp-rdp-3389 disappeared' }
           if ([string]$r.Enabled -ne 'False') { B-Fail 'reenabled' 'the probe must never enable a disabled rule (break must stay broken)' }
           Write-Host '[B] PASS: disabled rule => fwRule=false + loud fail + rule still disabled'
+          exit 0
 
       - name: "C: FIX - re-enable => probe passes, every rdpListener field OK"
         shell: pwsh
@@ -191,6 +193,7 @@ jobs:
           if ([string]$rl.fwScope -notin @('100.64.0.0/10', '100.64.0.0/255.192.0.0')) { C-Fail 'fwScope' ([string]$rl.fwScope) }
           if (-not (Select-String -Path (Join-Path $lab 'probe-c.txt') -SimpleMatch 'PASS: listening + fwRule + certThumb + nla all OK')) { C-Fail 'pass-line' 'probe PASS line missing' }
           Write-Host '[C] PASS: re-enabled => probe green, all rdpListener fields OK'
+          exit 0
 
       - name: "D: native-status renders rdpListener + beacon age <60s after check verb"
         shell: pwsh
@@ -295,6 +298,7 @@ jobs:
           } catch { D-Fail 'beacon-node' $_.Exception.Message }
           try { Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue } catch { }
           Write-Host ('[D] PASS: rdpListener rendered, stale store reset, check-beacon ISO-Z age=' + $age + 's (node ' + $nodeOut + ')')
+          exit 0
 
       - name: "D diagnostics artifact (survives halts)"
         if: ${{ always() }}
