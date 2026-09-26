@@ -994,9 +994,12 @@ jobs:
               if (-not $proof.Contains($tok)) { U-Fail 'proof-token' ('shipped §1 probe body lacks: ' + $tok) }
           }
           foreach ($line in ($proof -split "`r?`n")) {
-              if ($line -match '^\s*#' -or $line -match 'ValidateCredentials\(') { continue }
+              # Allowed RDP_PASS mentions: the ValidateCredentials call itself and
+              # existence guards (-not $env:RDP_PASS). PRINTING/assigning it is the ban.
+              if ($line -match '^\s*#' -or $line -match 'ValidateCredentials\(' -or $line -match '-not \$env:RDP_PASS\b') { continue }
               if ($line -match 'RDP_PASS') { U-Fail 'proof-secret' ('§1 probe handles RDP_PASS outside ValidateCredentials: ' + $line.Trim()) }
           }
+          if ($proof -match "Write-Host.*RDP_PASS|Add-Content.*RDP_PASS") { U-Fail 'proof-echo' '§1 probe prints the credential environment' }
           if (-not $wf.Contains('server-side credential invalid - user creation bug')) { U-Fail 'proof-loudfail' 'main.yml lost the loud-fail text for a dead credential' }
           if (-not $wf.Contains("throw 'F24 server-side credential invalid - user creation bug'")) { U-Fail 'proof-throw' 'main.yml F24 §1 must THROW on credValid=false' }
           Write-Host '[U] (1) PASS: ValidateCredentials true/false on a real local account; shipped probe = same call, secret-free, loud-fails'
