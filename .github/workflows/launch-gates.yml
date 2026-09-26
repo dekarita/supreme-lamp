@@ -552,7 +552,7 @@ jobs:
           ui=payloads/ui.html
           srv=payloads/ghrdp-server.ps1
           cs=payloads/ghrdp-rdp-launcher.cs
-          step=$(awk '/name: Runner FQDN self-test \\(F18/{f=1;next} f && /^      - name: /{exit} f' "$wf")
+          step=$(awk '/name: Runner FQDN self-test \(F18/{f=1;next} f && /^      - name: /{exit} f' "$wf")
           test -n "$step" || { echo 'F18: main.yml lacks Runner FQDN self-test' >&2; exit 1; }
           grep -qF 'Resolve-DnsName' <<< "$step"
           grep -qF "Runner cannot resolve own FQDN" <<< "$step"
@@ -572,6 +572,118 @@ jobs:
           grep -qF 'DNS returned non-tailnet IP' "$cs"
           grep -qF 'DNS resolved ' "$cs"
           echo 'F18 gates PASS'
+
+      - name: F19 client-DNS probe + launcher version guard + no-credential-automation gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          ui=payloads/ui.html
+          cs=payloads/ghrdp-rdp-launcher.cs
+          srv=payloads/ghrdp-server.ps1
+          wf=.github/workflows/main.yml
+          mig=docs/MIGRATION.md
+          # --- §4(a) NO CREDENTIAL-UI AUTOMATION, repo-wide -------------------
+          # AE1: keyboard/UI-automation primitives have NO legitimate use here
+          # and are banned outright, comments included (scan scope excludes THIS
+          # file, which must be able to name what it bans).
+          if grep -rInE 'SendKeys|UIAutomation|AutomationElement|ValuePattern|keybd_event|mouse_event|SetCursorPos|AppActivate' payloads docs tests .github/workflows/main.yml .github/workflows/autologin-lab.yml .github/workflows/webdesk-lab.yml .github/workflows/apply-patch.yml; then
+            echo 'F19: credential-UI automation token found (no password typing, no credential-dialog automation anywhere)' >&2
+            exit 1
+          fi
+          # AE2: PASSWORD AUTO-TYPE PATTERN - an injection primitive within 40
+          # chars of a credential target (either order) is banned in every
+          # shipped payload/workflow/test. Human-facing copy such as "type the
+          # password at the Windows prompt" is legitimate and NOT matched: only
+          # the API identifiers are, so nothing here can ever type a password.
+          if grep -rInEi '(password|passwd|pwd|credential|cmdkey|windowspass).{0,40}(sendinput|keybd_event|mouse_event|setcursorpos|valuepattern|uiautomation|automationelement|sendkeys)|(sendinput|keybd_event|mouse_event|setcursorpos|valuepattern|uiautomation|automationelement|sendkeys).{0,40}(password|passwd|pwd|credential|cmdkey|windowspass)' payloads tests .github/workflows/main.yml .github/workflows/autologin-lab.yml .github/workflows/webdesk-lab.yml .github/workflows/apply-patch.yml; then
+            echo 'F19: password auto-type pattern found (injection primitive next to a credential target)' >&2
+            exit 1
+          fi
+          # AE3: the ONE input-injection primitive left in the tree (SendInput,
+          # used by the WEB DESKTOP remote-control path) must stay credential-
+          # and cmdkey-free: remote input may never be aimed at a credential UI.
+          for f in $(grep -rlE 'SendInput' payloads tests .github/workflows --exclude=launch-gates.yml 2>/dev/null || true); do
+            if grep -qEi 'password|passwd|pwd|credential|cmdkey|windowsPass' "$f"; then
+              echo "F19: $f mixes SendInput with a credential/cmdkey reference - remote input must never target a credential UI" >&2
+              exit 1
+            fi
+          done
+          # --- §4(b) a ghrdp:// URL can NEVER carry a password/token -----------
+          if grep -nE "ghrdp://rdp\?[^'\"]*(pass|pwd|token|secret|apikey|authkey)[=:]" "$ui"; then
+            echo 'F19: a ghrdp:// URL template carries a credential-ish parameter' >&2
+            exit 1
+          fi
+          grep -qF 'function ghrdpRdpUrl(fqdn,user,ip)' "$ui" || { echo 'F19: ui.html lacks the single ghrdp:// URL builder' >&2; exit 1; }
+          builder=$(awk '/^function ghrdpRdpUrl\(/{f=1} f{print} f && /^}$/{exit}' "$ui")
+          test -n "$builder" || { echo 'F19: the ghrdp:// builder body could not be extracted' >&2; exit 1; }
+          grep -qF "u+='&ip='" <<< "$builder" || { echo 'F19: the builder never appends the tailnet IP' >&2; exit 1; }
+          if grep -qEi '(pass|pwd|token|secret|apikey|authkey)=' <<< "$builder"; then
+            echo 'F19: the ghrdp:// builder can emit a credential-ish parameter' >&2; exit 1
+          fi
+          # the builder may emit server|user|ip only - the launcher refuses the rest.
+          grep -qF 'CredentialParamName' "$cs" || { echo 'F19: launcher does not refuse credential URL params' >&2; exit 1; }
+          grep -qF 'cred-param-rejected' "$cs"
+          grep -qF 'pass|password|passwd|pwd|token|key|secret|apikey|authkey|cred' "$cs"
+          # exactly ONE executable template (comments may show the shape).
+          test "$(grep -cF "'ghrdp://rdp?server='+encodeURIComponent(fqdn)" "$ui")" -eq 1 || { echo 'F19: ui.html must carry exactly one ghrdp://rdp URL template' >&2; exit 1; }
+          # --- §1 the client-DNS probe exists, is copy-only and bounded --------
+          grep -qF '[F19 §1 client-DNS probe-begin]' "$ui" || { echo 'F19: ui.html lacks the client-DNS probe block' >&2; exit 1; }
+          grep -qF '[F19 §1 client-DNS probe-end]' "$ui"
+          grep -qF 'function clientDnsCore(fqdn,ip,scheme,aOk,bOk)' "$ui"
+          grep -qF "verdict:'client-dns-off'" "$ui" || { echo 'F19: the probe core never returns the client-dns-off verdict' >&2; exit 1; }
+          grep -qF "YOUR PC's Tailscale DNS is off (name not resolvable, IP reachable)" "$ui"
+          grep -qF 'client DNS ok' "$ui"
+          grep -qF "mode:'no-cors'" "$ui"
+          grep -qF 'CDNS_TIMEOUT_MS=3000' "$ui"
+          grep -qF 'CDNS_PERIOD_MS=30000' "$ui"
+          grep -qF 'clientDnsProbeUrls' "$ui"
+          grep -qF "tailscale set --accept-dns=true" "$ui"
+          grep -qF "ipconfig /flushdns" "$ui"
+          grep -qF 'Use Tailscale DNS' "$ui"
+          grep -qF 'id="clientDnsRow"' "$ui"
+          grep -qF 'id="clientDnsFix1"' "$ui"
+          # --- §2 launcher version guard: repo constant -> config -> status ----
+          grep -qF 'private const string Ver = ' "$cs" || { echo 'F19: launcher version constant missing' >&2; exit 1; }
+          grep -qF 'launcherVersion = $launcherVer' "$wf" || { echo 'F19: main.yml does not write config.launcherVersion from the launcher source' >&2; exit 1; }
+          grep -qF "private const string Ver = " "$wf"
+          grep -qF 'launcherVersion' "$srv"
+          grep -qF 'launcherOutdated' "$srv"
+          grep -qF 'launcherSeenVersion' "$srv"
+          grep -qF '"exe"' "$srv"
+          grep -qF "(s&&s.launcherOutdated===true)?'':'none'" "$ui" || { echo 'F19: the UI does not drive the outdated row from launcherOutdated' >&2; exit 1; }
+          grep -qF 'id="nrLauncherOutdatedRow"' "$ui"
+          grep -qF 'launcher outdated - re-run install.cmd once' "$ui"
+          # the beacon carries the exe stamp and the server compares NUMERICALLY.
+          grep -qF ',\"exe\":\"' "$cs" || { echo 'F19: launcher beacon does not carry the exe version stamp' >&2; exit 1; }
+          grep -qF "[version]\$launcherSeenVersion -lt [version]\$launcherVersion" "$srv" || { echo 'F19: server does not compare launcher versions numerically' >&2; exit 1; }
+          # --- §2 launcher DNS-off remediation (IP diagnosis, FQDN target) -----
+          grep -qF 'return "client-dns-off";' "$cs" || { echo 'F19: launcher lacks the client-dns-off verdict' >&2; exit 1; }
+          grep -qF 'false, "client-dns-off"' "$cs" || { echo 'F19: the client-dns-off beacon detail is missing' >&2; exit 1; }
+          grep -qF 'DnsDecision' "$cs"
+          grep -qF 'TailnetIpFromUri' "$cs"
+          grep -qF 'Your Tailscale DNS is off. Run once: tailscale set --accept-dns=true' "$cs"
+          grep -qF 'RdpPort = 3389' "$cs"
+          grep -qF 'GHRDP_LAB_TCP_RESULT' "$cs"
+          grep -qF 'GHRDP_LAB_DNS_RESULT' "$cs"
+          grep -qF -- '--dns-selftest' "$cs"
+          # the mstsc target MUST stay the FQDN: the IP may only be diagnosed.
+          grep -qF 'return MstscStep(server, user, host, port);' "$cs" || { echo 'F19: mstsc target must stay the FQDN' >&2; exit 1; }
+          if grep -nE 'ProcessStartInfo\("mstsc\.exe", *"\\"?" *\+ *dnsIp' "$cs"; then
+            echo 'F19: mstsc was pointed at the diagnosis IP' >&2; exit 1
+          fi
+          # --- §3 the code-signed .rdp plan stays DOCUMENTED, never implemented
+          grep -qF '### 1.11 [F19 §3] Code-signed' "$mig" || { echo 'F19: MIGRATION.md lacks the §1.11 code-signed .rdp note' >&2; exit 1; }
+          grep -qF 'OPTIONAL FUTURE, NOT IMPLEMENTED' "$mig"
+          grep -qF 'rdpsign' "$mig"
+          # --- lab switches stay lab-only ---------------------------------------
+          if grep -q 'GHRDP_LAB_' "$wf"; then
+            echo 'F19: a lab-only GHRDP_LAB_ switch leaked into production main.yml' >&2; exit 1
+          fi
+          # --- §5 the launcher guard is really EXECUTED (csc + injected matrix) --
+          grep -qF 'name: F19 launcher DNS-guard decision matrix (csc compile + injected resolver)' .github/workflows/launch-gates.yml \
+            || { echo 'F19: the launcher decision matrix step is missing from windows-native' >&2; exit 1; }
+          grep -qF "& \$exe '--dns-selftest'" .github/workflows/launch-gates.yml
+          echo 'F19 gates PASS'
 
       - name: F8 web-desktop honesty gates
         shell: bash
@@ -947,6 +1059,39 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      # [F19 §5] REAL unit test of the shipped launcher's DNS-guard decision:
+      # compile payloads/ghrdp-rdp-launcher.cs with the same in-box csc that
+      # install.cmd uses, run --dns-selftest (injected resolver/TCP results) and
+      # require the full matrix - fail-name+reach-ip => client-dns-off,
+      # both-ok => mstsc, no-ip/closed => dns-fail - with ZERO mstsc/cmdkey calls.
+      - name: F19 launcher DNS-guard decision matrix (csc compile + injected resolver)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          if (-not (Test-Path -LiteralPath $csc)) { $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
+          if (-not (Test-Path -LiteralPath $csc)) { throw 'F19: in-box csc.exe not found' }
+          $exe = Join-Path $env:RUNNER_TEMP 'ghrdp-rdp-launcher-f19.exe'
+          $out = Join-Path $env:RUNNER_TEMP 'ghrdp-dns-selftest.txt'
+          if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Force }
+          & $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll 'payloads\ghrdp-rdp-launcher.cs'
+          if ($LASTEXITCODE -ne 0) { throw 'F19: launcher csc compile failed (the shipped launcher must compile with the in-box csc)' }
+          $env:GHRDP_LAB_OUT = $out
+          $env:GHRDP_LAB_NOMSG = '1'
+          & $exe '--dns-selftest' 'lab-target.dekarita.tailnet-lab.ts.net' '100.64.0.7'
+          if ($LASTEXITCODE -ne 0) { throw 'F19: launcher --dns-selftest reported a FAIL verdict' }
+          if (-not (Test-Path -LiteralPath $out)) { throw 'F19: --dns-selftest wrote no matrix file' }
+          $txt = Get-Content -LiteralPath $out -Raw
+          Write-Host $txt
+          foreach ($want in @(
+            'injectedDns=fail injectedTcp=open ip=100.64.0.7 decision=client-dns-off expected=client-dns-off verdict=pass',
+            'injectedDns=fail injectedTcp=closed ip=100.64.0.7 decision=dns-fail expected=dns-fail verdict=pass',
+            'injectedDns=ok injectedTcp=open ip=100.64.0.7 decision=mstsc expected=mstsc verdict=pass',
+            'injectedDns=fail injectedTcp=open ip=(none) decision=dns-fail expected=dns-fail verdict=pass',
+            'injectedDns=notailnet injectedTcp=open ip=100.64.0.7 decision=client-dns-off expected=client-dns-off verdict=pass'
+          )) { if ($txt -notlike ('*' + $want + '*')) { throw ('F19: launcher matrix missing case: ' + $want) } }
+          if ($txt -notlike '*mstscLaunched=0 cmdkeyCalled=0*') { throw 'F19: the DNS-guard selftest must never launch mstsc or call cmdkey' }
+          if ($txt -notlike '*verdict=FAIL*') { Write-Host '[F19] launcher DNS-guard matrix: 5/5 pass (no mstsc, no cmdkey)' } else { throw 'F19: a matrix case reported FAIL' }
       - name: Parse native PowerShell scripts
         shell: pwsh
         run: |
