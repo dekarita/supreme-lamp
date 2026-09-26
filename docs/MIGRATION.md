@@ -730,12 +730,28 @@ binding the Let's Encrypt cert. It checks:
 3. CredSSP `AllowEncryptionOracle` (if present) is 0 (strict CVE-2018-0886
    mode); auto-fixed to 0 when wrong.
 4. At least one TLS cipher suite of AES-256-GCM or ChaCha20-Poly1305 strength
-   is enabled (Get-TlsCipherSuite).
+   is enabled, enumerated by the [F23] 3-layer probe: L1 runs
+   `Get-TlsCipherSuite` per object and reads `Name` via the direct property,
+   the PSObject property bag, then a Format-List parse (a pwsh7 object-shape
+   quirk can make `Select-Object -ExpandProperty Name` throw "Property 'Name'
+   cannot be found"); L2 falls back to the Schannel registry `Functions` value
+   under
+   `HKLM:\SYSTEM\CurrentControlSet\Control\Cryptography\Configuration\Local\SSL\00010002`
+   (then the `HKLM:\SOFTWARE\Policies\Microsoft\Cryptography\Configuration\SSL\00010002`
+   override key), split on `,`; L3 treats BOTH layers empty as a PROBE
+   failure - not a weak config - emitting `::warning::` and stamping
+   `rdpListener.credsspStatus = 'ok-with-cipher-warn'`
+   (`credsspWhy = 'cipher-probe-failed'`); the run proceeds.
 
 Schannel cipher suites are OS-level: there is NO auto-fix (§3 D). If the F21
-step reports `schannel-cipher-weak`, the runner OS lacks strong AES-GCM or
-ChaCha20 suites. On a fresh Windows Server 2022 / windows-latest runner the
-following suites are present by default and satisfy the check:
+step reports `schannel-cipher-weak`, suites WERE enumerated (L1 or L2) with
+zero AES-256-GCM/ChaCha20-Poly1305 - the runner OS genuinely lacks strong
+suites and the step halts by design. `ok-with-cipher-warn` is the opposite
+case: the probe could not enumerate anything (2026-09-26 false-halt
+postmortem - the probe lied, the config was fine), so the run proceeds with a
+warning because Windows defaults include the strong suites below. On a fresh
+Windows Server 2022 / windows-latest runner the following suites are present
+by default and satisfy the check:
 
 - TLS_AES_256_GCM_SHA384
 - TLS_AES_128_GCM_SHA256

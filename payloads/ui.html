@@ -1130,18 +1130,26 @@ async function nativeStatus(){
   var ne=document.getElementById('nrNla');if(ne){ne.textContent=s.nlaOn?'ON':'OFF';ne.style.color=s.nlaOn?'':'#f5b7b7';}
   if(!s.nlaOn && pr.nla) setReason('nrNlaReason','BLOCKED: '+pr.nla);
   // [F21 §4] CredSSP status row (from rdpListener.credsspStatus)
+  // [F23] 'ok-with-cipher-warn' = every handshake determinant (NLA/cert/CredSSP)
+  // verified; only the cipher PROBE could not enumerate (cmdlet+registry). That is
+  // a probe failure, not a weak config - render OK-with-warning, never FAIL.
   var cse=document.getElementById('nrCredssp');
   if(cse){
     var cs=(s&&s.rdpListener&&s.rdpListener.credsspStatus)||'pending';
-    cse.textContent=(cs==='ok')?'OK':('FAIL: '+cs);
-    cse.style.color=(cs==='ok')?'':'#f5b7b7';
+    var csGood=(cs==='ok'||cs==='ok-with-cipher-warn');
+    cse.textContent=csGood?((cs==='ok')?'OK':'OK (cipher probe warn)'):('FAIL: '+cs);
+    cse.style.color=csGood?'':'#f5b7b7';
   }
-  if(s&&s.rdpListener&&s.rdpListener.credsspWhy) setReason('nrCredsspReason','BLOCKED: '+s.rdpListener.credsspWhy);
+  if(s&&s.rdpListener&&s.rdpListener.credsspWhy){
+    if(s.rdpListener.credsspStatus==='ok-with-cipher-warn') setReason('nrCredsspReason','WARN: '+s.rdpListener.credsspWhy+' - cipher probe could not enumerate (cmdlet+registry failed); Windows defaults include AES-256-GCM. NLA/cert/CredSSP verified OK.');
+    else setReason('nrCredsspReason','BLOCKED: '+s.rdpListener.credsspWhy);
+  }
   // [F17 §2] RDP LISTENER: runner-side probe fields drive the row AND the
   // WINDOWS AUTO-LOGIN gate - listening + fw + cert + nla must ALL be ✅.
   var rl=(s&&s.rdpListener)||null;
-  // [F21 §4] CredSSP/NLA status must also be 'ok' (or absent pre-F21 for back-compat)
-  var credsspOk=(!rl||rl.credsspStatus===undefined||rl.credsspStatus==='ok');
+  // [F21 §4] CredSSP/NLA status must also be 'ok' (or absent pre-F21 for back-compat);
+  // [F23] 'ok-with-cipher-warn' passes too (cipher-probe failure, determinants verified).
+  var credsspOk=(!rl||rl.credsspStatus===undefined||rl.credsspStatus==='ok'||rl.credsspStatus==='ok-with-cipher-warn');
   window.__listenerOk=!!(rl&&rl.listening===true&&rl.fwRule===true&&rl.certOk===true&&rl.nla===true&&credsspOk);
   paintRdpListener(rl,s?s.rdpListenerAgeSec:null);
   // [F17 §2] CONNECTION diagnostics lines (copy-only) follow the live FQDN.
@@ -1501,8 +1509,8 @@ function paintRdpListener(rl,ageSec){
  m17(rl.fwRule===true,'fw '+(rl.fwScope||'100.64.0.0/10'),'fix: rule GHRDP-RDP must be enabled, ALL profiles, RemoteAddress 100.64.0.0/10');
  m17(rl.certOk===true,'cert','fix: re-run "Bind tailnet LE cert" (tailscale cert <fqdn>)'+(rl.certWhy?' - '+rl.certWhy:''));
  m17(rl.nla===true,'nla','fix: set UserAuthentication=1 on RDP-Tcp (NLA on)');
- // [F21 §4] CredSSP/NLA handshake status (ok | failed-<reason>)
- var csOk=(!rl.credsspStatus||rl.credsspStatus==='ok');
+ // [F21 §4] CredSSP/NLA handshake status (ok | ok-with-cipher-warn [F23] | failed-<reason>)
+ var csOk=(!rl.credsspStatus||rl.credsspStatus==='ok'||rl.credsspStatus==='ok-with-cipher-warn');
  var csWhy=rl.credsspWhy||(rl.credsspStatus?('status='+rl.credsspStatus):'');
  m17(csOk,'credssp','fix: F21 CredSSP/NLA verification failed - '+csWhy+' (check CredSSP policy, cert trust, cipher suites; see CONNECTION DIAGNOSTICS)');
  line.textContent=marks.join('  |  ');
