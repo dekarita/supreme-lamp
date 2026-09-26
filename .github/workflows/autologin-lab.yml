@@ -321,12 +321,18 @@ jobs:
           } catch { }
           Remove-Item (Join-Path $env:TEMP 'ghrdp-*.rdp') -Force -ErrorAction SilentlyContinue
           & cmdkey.exe /delete:TERMSRV/$fqdn | Out-Null
+          # cmdkey /delete leaves a non-zero $LASTEXITCODE behind when the dummy
+          # entry was already gone; the runner wrapper exits with $LASTEXITCODE,
+          # so an all-green P step would look failed. Clamp it.
+          $global:LASTEXITCODE = 0
           Write-Host ('::notice::[P] fail-visible launcher: ' + ($seq -join ' -> '))
           Write-Host ('::notice::[P] timeout branch: ' + ($seq2 -join ' -> '))
           Write-Host ('::notice::[P] check verb dialog logged, no server-less beacon, JSONL ' + $lines.Count + ' lines with ' + $msgbox + ' dialogs')
           'P_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
           ('P_seq=' + ($seq -join ' -> ')) | Out-File $env:GITHUB_ENV -Append
           ('P_timeout=' + ($seq2 -join ' -> ')) | Out-File $env:GITHUB_ENV -Append
+          $global:LASTEXITCODE = 0
+          exit 0
 
       - name: "D/E: server native-status fields + gated creds + ping loop"
         shell: pwsh
