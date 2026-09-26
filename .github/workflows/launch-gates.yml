@@ -531,9 +531,9 @@ jobs:
           grep -qF 'flushdns' "$cs"
           grep -qF '100.64.0.0/10' "$cs"
           grep -qF 'GHRDP_LAB_DNS_ALLOW_LOOPBACK' "$cs"
-          guard=$(grep -nF 'DnsGuardReason(server)' "$cs" | head -1 | cut -d: -f1)
-          cred=$(grep -nF 'private static int CmdkeyStep' "$cs" | head -1 | cut -d: -f1)
-          test -n "$guard" && test -n "$cred" && test "$guard" -lt "$cred"
+          guard=$(grep -nF 'string dnsProblem = DnsGuardReason(server);' "$cs" | head -1 | cut -d: -f1)
+          call=$(grep -nF 'int rc = CmdkeyStep(server, user, host, port);' "$cs" | head -1 | cut -d: -f1)
+          test -n "$guard" && test -n "$call" && test "$guard" -lt "$call"
           # lab switches stay lab-only: the lab sets the relaxation, production
           # never carries ANY GHRDP_LAB_ switch.
           grep -qF 'GHRDP_LAB_DNS_ALLOW_LOOPBACK' "$lab"
