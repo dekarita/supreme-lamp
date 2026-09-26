@@ -941,6 +941,18 @@ jobs:
             echo "F9k guard count ($guards) != ghrdp-lib dot-source count ($dotsrc)" >&2
             exit 1
           fi
+      - name: F19 client DNS and version safety
+        shell: bash
+        run: |
+          set -euo pipefail
+          ! grep -Ein 'SendKeys|UIAutomation|auto.?type.{0,30}password' payloads/ghrdp-rdp-launcher.cs payloads/ui.html
+          ! grep -Ein "ghrdp://[^'" ]*[?&](password|passwd|pwd|token)=" payloads/ui.html payloads/ghrdp-rdp-launcher.cs
+          grep -q 'setInterval(clientDnsProbe,30000)' payloads/ui.html
+          grep -q 'mode:'no-cors'' payloads/ui.html
+          grep -q 'launcherOutdated' payloads/ui.html
+          grep -q 'launcherOutdated' payloads/ghrdp-server.ps1
+          grep -q 'client-dns-off' payloads/ghrdp-rdp-launcher.cs
+          node --test tests/f19-client-dns.test.js
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:

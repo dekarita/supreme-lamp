@@ -57,8 +57,8 @@ using System.Threading;
 
 internal static class GhrdpRdpLauncher
 {
-    private const string Ver = "2.1.0.0";
-    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F17 dns-guard)";
+    private const string Ver = "2.2.0.0";
+    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F19 client-dns)";
     private const int DefaultPort = 7331;
     // [F15 §1.2] mandated bound for the interactive credential prompt. The
     // lab-only GHRDP_LAB_CMDKEY_TIMEOUT_MS switch may only SHORTEN it (a
@@ -175,7 +175,7 @@ internal static class GhrdpRdpLauncher
         try
         {
             string body = "{\"verb\":\"" + J(verb) + "\",\"ok\":" + (ok ? "true" : "false") +
-                ",\"details\":\"" + J(Redact(details)) + "\"}";
+                ",\"details\":\"" + J(Redact(details)) + "\",\"exe\":\"" + Stamp + "\"}";
             HttpWebRequest req = (HttpWebRequest)WebRequest.Create(
                 "http://" + host + ":" + port + "/api/handler-hello");
             req.Method = "POST";
@@ -274,6 +274,37 @@ internal static class GhrdpRdpLauncher
         byte[] b;
         try { b = a.GetAddressBytes(); } catch { return false; }
         return b.Length == 4 && b[0] == 100 && b[1] >= 64 && b[1] <= 127;
+    }
+
+    private static string QueryValue(string uri, string name)
+    {
+        int q = uri == null ? -1 : uri.IndexOf('?');
+        if (q < 0) return "";
+        foreach (string pair in uri.Substring(q + 1).Split('&', ';'))
+        {
+            int eq = pair.IndexOf('=');
+            if (eq > 0 && pair.Substring(0, eq).Equals(name, StringComparison.OrdinalIgnoreCase)) return Decode(pair.Substring(eq + 1));
+        }
+        return "";
+    }
+
+    private static bool CanReachRdp(string ip)
+    {
+        try
+        {
+            using (System.Net.Sockets.TcpClient client = new System.Net.Sockets.TcpClient())
+            {
+                IAsyncResult ar = client.BeginConnect(ip, 3389, null, null);
+                return ar.AsyncWaitHandle.WaitOne(3000) && ReachConnected(client, ar);
+            }
+        }
+        catch { return false; }
+    }
+
+    private static bool ReachConnected(System.Net.Sockets.TcpClient client, IAsyncResult ar)
+    {
+        client.EndConnect(ar);
+        return client.Connected;
     }
 
     private static string DnsGuardReason(string server)
@@ -539,10 +570,20 @@ internal static class GhrdpRdpLauncher
         // failure behind mstsc Error 0x904 / extended 0x7 was a target name
         // the client PC could not resolve at all (Tailscale down / MagicDNS
         // off / stale resolver cache). mstsc must never be launched into it.
+        // Diagnostic IP is never an mstsc target or a credential destination.
+        string diagnosticIp = QueryValue(uri, "ip");
+        IPAddress parsedIp;
+        if (!IPAddress.TryParse(diagnosticIp, out parsedIp) || !IsTailnetAddress(parsedIp)) diagnosticIp = "";
         string dnsProblem = DnsGuardReason(server);
         if (dnsProblem != null)
         {
             LogJson("error", verb, "dns-guard blocked launch: " + dnsProblem + " server=" + server);
+            if (dnsProblem.StartsWith("DNS resolution failed") && diagnosticIp.Length > 0 && CanReachRdp(diagnosticIp))
+            {
+                HelloBounded(diagnosticIp, port, verb, false, "client-dns-off");
+                ShowBox("ghrdp: client DNS off", "Your Tailscale DNS is off. Run once: tailscale set --accept-dns=true (or tray -> Use Tailscale DNS), then ipconfig /flushdns, then retry.\n\nmstsc was NOT started.");
+                return 5;
+            }
             HelloBounded(host, port, verb, false, "dns-guard: " + dnsProblem);
             string boxTitle = dnsProblem.IndexOf("non-tailnet") >= 0 ? "ghrdp: DNS returned non-tailnet IP" : "ghrdp: DNS resolution failed";
             ShowBox(boxTitle,
