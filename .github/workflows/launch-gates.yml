@@ -583,6 +583,22 @@ jobs:
           grep -q 'handler-hello-last.json' "$lab"
           grep -q '2019-01-01T00:00:00' "$lab"
           grep -q 'api/native-status' "$lab"
+          # --- §3 the fallback launcher lab proves the client DNS guard and ----
+          # ---- derives the launcher version instead of pinning it ------------
+          al=.github/workflows/autologin-lab.yml
+          grep -q 'LAB_TARGET_FQDN' "$al"
+          grep -q '100.64.123.45' "$al"
+          grep -q 'LAB_STALE_FQDN' "$al"
+          grep -q 'expected exit 4 (dns guard blocked the launch)' "$al"
+          grep -q 'dns-guard:' "$al"
+          grep -q 'no mstsc, no .rdp' "$al"
+          grep -q 'derive' "$al"
+          if grep -n "ghrdp-rdp-launcher 2\.0\.0\.0" "$al"; then
+            echo 'F17: the launcher version is pinned by hand in the lab again' >&2; exit 1
+          fi
+          # the lab-net step is what makes a name resolve into 100.64/10
+          grep -q 'New-NetIPAddress' "$al"
+          grep -q 'GetHostAddresses' "$al"
           echo 'F17 gates PASS'
 
       - name: F8 web-desktop honesty gates

@@ -51,15 +51,24 @@ jobs:
               if ($lines[$i] -match 'name: RDP listener self-probe \(F17, fail-loud\)') { $start = $i; break }
           }
           if ($start -lt 0) { throw '[lab] production F17 probe step not found in main.yml' }
-          # body runs until the next step's "- name:" line
-          $end = $lines.Count - 1
+          # body starts AFTER the step's own 'run: |' line (not at the '- name:'
+          # line: the shell:/run: scaffolding is YAML, not PowerShell) and runs
+          # until the next step's '- name:' line.
+          $runAt = -1
           for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+              if ($lines[$i] -match '^        run: \|') { $runAt = $i; break }
+              if ($lines[$i] -match '^      - name: ') { break }
+          }
+          if ($runAt -lt 0) { throw '[lab] the F17 probe step has no run: | block' }
+          $end = $lines.Count - 1
+          for ($i = $runAt + 1; $i -lt $lines.Count; $i++) {
               if ($lines[$i] -match '^      - name: ') { $end = $i - 1; break }
           }
           $body = @()
-          for ($i = $start + 1; $i -le $end; $i++) { $body += $lines[$i] }
+          for ($i = $runAt + 1; $i -le $end; $i++) { $body += $lines[$i] }
           $indent = 10
           $script = ($body | ForEach-Object { if ($_.Length -gt $indent) { $_.Substring($indent) } else { $_ } }) -join "`n"
+          if (-not $script.TrimStart().StartsWith('$ErrorActionPreference')) { throw ('[lab] extracted body does not start with the probe script: ' + $script.Substring(0, [Math]::Min(120, $script.Length))) }
           if ($script -notmatch 'Test-NetConnection 127\.0\.0\.1 -Port 3389') { throw '[lab] extracted step is not the probe' }
           if ($script -notmatch 'RDP listener self-probe FAILED') { throw '[lab] extracted step misses the loud fail' }
           $dir = Join-Path $env:RUNNER_TEMP 'f17-lab'
@@ -113,6 +122,11 @@ jobs:
           if ($mcert) {
               $hashBytes = -split ($mcert.Thumbprint -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
               New-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hashBytes -Force | Out-Null
+          }
+          # bounded wait for the REAL listener (TermService needs a moment)
+          for ($i = 0; $i -lt 30; $i++) {
+              if (Get-NetTCPConnection -LocalPort 3389 -State Listen -ErrorAction SilentlyContinue) { break }
+              Start-Sleep -Seconds 2
           }
           & pwsh -NoProfile -File $env:F17_PROBE
           $rc = $LASTEXITCODE

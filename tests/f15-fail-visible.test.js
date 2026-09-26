@@ -153,7 +153,13 @@ test('F15-4 launch-gates carry the F15 block (and keep F10/F12/F14)', () => {
 test('F15-5 lab: fail-visible cell asserts the REAL beacon sequence', () => {
   assert.match(lab, /P: fail-visible launcher \(beacon sequence, check verb, cmdkey timeout\)/);
   assert.match(lab, /handler-hello-listener\.py/);
-  assert.match(lab, /127\.0\.0\.1 lab-target\.dekarita\.tailnet-lab\.ts\.net/);
+  // [F17 §3] supersedes the plain 127.0.0.1 mapping: the launcher's DNS guard
+  // requires the target to resolve into 100.64/10, so the lab maps the target
+  // to a LOCAL tailnet-range address (and keeps 127.0.0.1 only for the
+  // deliberately stale name the guard must block).
+  assert.match(lab, /LAB_TARGET_FQDN/);
+  assert.match(lab, /100\.64\.123\.45/);
+  assert.match(lab, /127\.0\.0\.1 " \+ \$stale/);
   assert.match(lab, /GHRDP_LAB_CMDKEY_TIMEOUT_MS/);
   assert.match(lab, /P_result=pass/);
   assert.match(lab, /cmdkey-shown/);

@@ -84,7 +84,14 @@ jobs:
           }
           Write-Host '[A] launcher log (F15 fail-visible JSONL):'
           foreach ($l in ($lTxt -split "`r?`n")) { if ($l.Trim()) { Write-Host ('  ' + $l) } }
-          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', 'ghrdp-rdp-launcher 2.0.0.0', 'HKCU')) {
+          # [F17 §3] the expected launcher version is DERIVED from the shipped
+          # source, so a routine version bump never needs a pin edit here.
+          $csA = [System.IO.File]::ReadAllText((Join-Path $lab 'ghrdp-rdp-launcher.cs'))
+          $verM = [regex]::Match($csA, 'private const string Ver = "([0-9.]+)"')
+          if (-not $verM.Success) { A-Fail 'version' 'could not read the launcher version from ghrdp-rdp-launcher.cs' }
+          $verPin = 'ghrdp-rdp-launcher ' + $verM.Groups[1].Value
+          Write-Host ('[A] launcher version pin (derived) = ' + $verPin)
+          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', $verPin, 'HKCU')) {
               if ($lTxt -notmatch [regex]::Escape($need)) { A-Fail 'self-test-log' ('launcher log ' + $lLog + ' lacks ' + $need + ' :: tail=[' + (($lTxt -split "`r?`n" | Select-Object -Last 6) -join ' | ') + ']') }
           }
           $cs = [System.IO.File]::ReadAllText((Join-Path $lab 'ghrdp-rdp-launcher.cs'))
@@ -92,12 +99,68 @@ jobs:
           if (($cs + $cmd) -match 'powershell\.exe|ExecutionPolicy|Invoke-Expression|EncodedCommand') { A-Fail 'script-host' 'script-host token found' }
           Write-Host '[A] PASS: compiled with in-box csc, HKCU ghrdp registered, ghrdp://check self test RAN (dialog logged), script-host free'
           'A_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+      - name: "F17 lab-net: local tailnet-range address + hosts names (DNS guard)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          function N-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[N] stage=' + $Stage + ' :: ' + $Detail)
+              exit 1
+          }
+          # [F17 §3] The launcher now refuses to start mstsc for a name that does
+          # not resolve into the Tailscale CGNAT range (100.64/10), so the lab
+          # needs a name that DOES: assign a CGNAT address to the loopback
+          # interface and point the target FQDN at it. Two more names stay broken
+          # on purpose - a stale one (127.0.0.1) and an unresolvable one - so cell
+          # P can prove the guard blocks both instead of launching mstsc.
+          $tailIp = '100.64.123.45'
+          $hosts = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+          $target = 'lab-target.dekarita.tailnet-lab.ts.net'
+          $stale = 'lab-stale.dekarita.tailnet-lab.ts.net'
+          $missing = 'lab-missing.dekarita.tailnet-lab.ts.net'
+          $have = $false
+          try { $have = [bool](Get-NetIPAddress -IPAddress $tailIp -ErrorAction SilentlyContinue) } catch { }
+          if (-not $have) {
+              try {
+                  New-NetIPAddress -InterfaceAlias 'Loopback Pseudo-Interface 1' -IPAddress $tailIp -PrefixLength 32 -ErrorAction Stop | Out-Null
+                  $have = $true
+                  Write-Host ('[lab-net] assigned ' + $tailIp + '/32 to the loopback interface')
+              } catch { Write-Host ('[lab-net] New-NetIPAddress failed: ' + $_.Exception.Message) }
+          }
+          if (-not $have) {
+              try {
+                  $o = ((& netsh.exe interface ipv4 add address 'Loopback Pseudo-Interface 1' $tailIp 255.255.255.255 2>&1) | ForEach-Object { [string]$_ }) -join ' '
+                  Write-Host ('[lab-net] netsh: ' + $o)
+                  if ($o -match 'Ok\.|already') { $have = $true }
+              } catch { }
+          }
+          if (-not $have) { N-Fail 'tailnet-address' ('could not assign ' + $tailIp + ' locally - the DNS-guard success path cannot be exercised') }
+          try { $hTxt = [System.IO.File]::ReadAllText($hosts) } catch { N-Fail 'hosts-read' $_.Exception.Message }
+          $add = ''
+          if ($hTxt -notmatch [regex]::Escape($target)) { $add += ("`r`n" + $tailIp + ' ' + $target) }
+          if ($hTxt -notmatch [regex]::Escape($stale)) { $add += ("`r`n127.0.0.1 " + $stale) }
+          if ($add) { try { [System.IO.File]::AppendAllText($hosts, ($add + "`r`n")) } catch { N-Fail 'hosts-write' $_.Exception.Message } }
+          # resolution readback: exactly what the launcher's DnsGuard sees
+          $res = @([System.Net.Dns]::GetHostAddresses($target) | ForEach-Object { $_.IPAddressToString })
+          Write-Host ('[lab-net] ' + $target + ' -> ' + ($res -join ', '))
+          if (-not ($res | Where-Object { $_ -like '100.64.*' })) { N-Fail 'resolve' ('the lab target does not resolve into 100.64/10: ' + ($res -join ', ')) }
+          $res2 = @([System.Net.Dns]::GetHostAddresses($stale) | ForEach-Object { $_.IPAddressToString })
+          Write-Host ('[lab-net] ' + $stale + ' -> ' + ($res2 -join ', ') + ' (must NOT be 100.64/10)')
+          if (@($res2 | Where-Object { $_ -like '100.64.*' }).Count) { N-Fail 'stale' 'the deliberately stale name resolves into the tailnet range' }
+          foreach ($kv in @(@('LAB_TAIL_IP', $tailIp), @('LAB_TARGET_FQDN', $target), @('LAB_STALE_FQDN', $stale), @('LAB_MISSING_FQDN', $missing))) {
+              Add-Content -Path $env:GITHUB_ENV -Value ($kv[0] + '=' + $kv[1])
+          }
+          Write-Host '::notice title=F17 lab::lab-net ready - tailnet-range target + deliberately broken names for the DNS-guard proof'
       - name: "B/C: ghrdp://rdp verb -> directives rdp + mstsc spawn + temp cleanup"
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
-          $fqdn = 'lab-target.dekarita.tailnet-lab.ts.net'
+          $fqdn = [string]$env:LAB_TARGET_FQDN
+          if (-not $fqdn) { $fqdn = 'lab-target.dekarita.tailnet-lab.ts.net' }
+          # [F17 §3] the F17 lab-net step points this name at a LOCAL
+          # tailnet-range address so the launcher's DNS guard passes (it refuses
+          # to start mstsc for a name that does not resolve into 100.64/10).
           # emulate §6(a) post-install posture: handler present + cmdkey entry
           # SET (dummy lab credential, deleted at the end - never a real one).
           & cmdkey.exe /add:TERMSRV/$fqdn /user:labuser /pass:labdummy000 | Out-Null
@@ -172,25 +235,34 @@ jobs:
           $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
           if (-not (Test-Path -LiteralPath $exe)) { P-Fail 'exe' 'launcher exe missing - cell A must have compiled it' }
           $log = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.log'
-          $fqdn = 'lab-target.dekarita.tailnet-lab.ts.net'
+          $fqdn = [string]$env:LAB_TARGET_FQDN
+          if (-not $fqdn) { $fqdn = 'lab-target.dekarita.tailnet-lab.ts.net' }
           $cap = Join-Path $env:RUNNER_TEMP 'handler-hello-capture.jsonl'
           Remove-Item $cap -Force -ErrorAction SilentlyContinue
           $lst = $null
           function Cap-Lines { if (-not (Test-Path -LiteralPath $cap)) { return @() }; return @([System.IO.File]::ReadAllLines($cap) | Where-Object { $_ -and $_.Trim() }) }
           function Log-Text { try { return [System.IO.File]::ReadAllText($log) } catch { return '' } }
-          # --- (1) the beacon target is the URL server arg: point that FQDN at
-          # loopback so the REAL launcher POSTs land on the local listener.
-          # hosts entry 127.0.0.1 lab-target.dekarita.tailnet-lab.ts.net -> the
-          # launcher's real beacon target (http://<fqdn>:<lab port>) reaches the
-          # listener. The listener gets its OWN port (7391), NOT the production
-          # 7331: python's ThreadingHTTPServer sets SO_REUSEADDR, and on Windows
-          # that lets two sockets bind the same port - the later D/E step must be
+          # --- (1) the beacon target is the URL server arg: that FQDN must
+          # resolve into 100.64/10 (F17 §3 DNS guard) AND be locally reachable,
+          # so the F17 lab-net step mapped it to the local tailnet-range address
+          # and the python listener binds THAT address - the REAL launcher's
+          # POST to http://<fqdn>:<lab port> therefore lands on the listener.
+          # The listener gets its OWN port (7391), NOT the production 7331:
+          # python's ThreadingHTTPServer sets SO_REUSEADDR, and on Windows that
+          # lets two sockets bind the same port - the later D/E step must be
           # free to bind the REAL server on 7331 with no zombie listener in it.
+          # It binds 0.0.0.0 so BOTH names can post: the tailnet-range target and
+          # the deliberately stale name (127.0.0.1), whose blocked launch still
+          # sends its ok:false dns-guard beacon (F17 §3).
           $hosts = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+          $tailIp = [string]$env:LAB_TAIL_IP
+          $staleFqdn = [string]$env:LAB_STALE_FQDN
+          $missingFqdn = [string]$env:LAB_MISSING_FQDN
+          if (-not $tailIp -or -not $staleFqdn -or -not $missingFqdn) { P-Fail 'lab-net' 'the F17 lab-net step did not export its lab names' }
           try { $hTxt = [System.IO.File]::ReadAllText($hosts) } catch { P-Fail 'hosts-read' $_.Exception.Message }
           if ($hTxt -notmatch [regex]::Escape($fqdn)) {
-              try { [System.IO.File]::AppendAllText($hosts, ("`r`n127.0.0.1 " + $fqdn + "`r`n")) } catch { P-Fail 'hosts-write' $_.Exception.Message }
-              Write-Host ('[P] hosts: 127.0.0.1 ' + $fqdn)
+              try { [System.IO.File]::AppendAllText($hosts, ("`r`n" + $tailIp + " " + $fqdn + "`r`n")) } catch { P-Fail 'hosts-write' $_.Exception.Message }
+              Write-Host ('[P] hosts re-asserted: ' + $tailIp + ' ' + $fqdn)
           }
           # --- (2) python hello-listener on 127.0.0.1:7391 (a lab-only port; a
           # file-capture server - one verbatim POST body per line).
@@ -219,7 +291,7 @@ jobs:
               "        self.wfile.write(out)",
               "    def log_message(self, *a):",
               "        pass",
-              "ThreadingHTTPServer(('127.0.0.1', 7391), H).serve_forever()"
+              ("ThreadingHTTPServer(('0.0.0.0', 7391), H).serve_forever()")
           )
           [System.IO.File]::WriteAllText($py, ($pyLines -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
           $lst = Start-Process -FilePath $pyExe.Source -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $diag 'f15-listener.log') -RedirectStandardError (Join-Path $diag 'f15-listener-err.log') -ArgumentList ('-u "' + $py + '" "' + $cap + '"')
@@ -238,7 +310,8 @@ jobs:
           if (-not $p.WaitForExit(60000)) { P-Fail 'check-wait' 'ghrdp://check did not exit within 60s' }
           if ($p.ExitCode -ne 0) { P-Fail 'check-exit' ('ghrdp://check exit code ' + $p.ExitCode) }
           $logTxt = Log-Text
-          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', 'ghrdp-rdp-launcher 2.0.0.0', 'HKCU')) {
+          $verPin = 'ghrdp-rdp-launcher ' + ([regex]::Match([System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')), 'private const string Ver = "([0-9.]+)"').Groups[1].Value)
+          foreach ($need in @('"verb":"check"', 'ghrdp launcher check', 'msgbox', 'msgbox-suppressed', $verPin, 'HKCU')) {
               if ($logTxt -notmatch [regex]::Escape($need)) { P-Fail 'check-log' ('launcher log lacks ' + $need) }
           }
           if ((Cap-Lines).Count -ne $n0) { P-Fail 'check-beacon' 'a server-less ghrdp://check must not post a beacon' }
@@ -286,6 +359,38 @@ jobs:
               Write-Host '[P] note: mstsc had already exited the 2s probe window; the mstsc-started beacon above is the launch proof (cell B/C observes the cmdline)'
           }
           Write-Host '[P] PASS rdp(stored): invoked -> cmdkey-stored=true -> mstsc-started pid=N, .rdp directives verified, no credential line'
+          # --- (5b) [F17 §3] CLIENT-DNS GUARD: a target that does not resolve
+          # into 100.64/10 must NEVER reach cmdkey or mstsc. Two deliberately
+          # broken names are proven here - a stale one (hosts -> 127.0.0.1, the
+          # real-world 0x904 posture where the name resolves to something that is
+          # not the tailnet) and an unresolvable one - each must return rc 4,
+          # beacon an ok:false dns-guard reason (the stale one, whose name still
+          # resolves, so its POST lands), log the "DNS stale/blocked" dialog,
+          # start NO mstsc and write NO temp .rdp.
+          $rdpBefore = @(Get-ChildItem (Join-Path $env:TEMP 'ghrdp-*.rdp') -ErrorAction SilentlyContinue).Count
+          $guardSeen = 0
+          foreach ($case in @(@('stale', $staleFqdn), @('unresolvable', $missingFqdn))) {
+              $nm = $case[0]; $badHost = $case[1]
+              $n4 = (Cap-Lines).Count
+              $p = Start-Process -FilePath $exe -ArgumentList ('ghrdp://rdp?server=' + $badHost + '&user=labuser&port=' + $labPort) -PassThru
+              if (-not $p.WaitForExit(60000)) { try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }; P-Fail ('guard-' + $nm) 'the DNS guard did not exit within 60s' }
+              if ($p.ExitCode -ne 4) { P-Fail ('guard-' + $nm) ('expected exit 4 (dns guard blocked the launch), got ' + $p.ExitCode) }
+              $gSeq = @((Cap-Lines) | Select-Object -Skip $n4)
+              if (($gSeq -join ' ') -match '"details":"cmdkey-|"details":"mstsc-started') { P-Fail ('guard-' + $nm) 'the guard let cmdkey/mstsc work through' }
+              if ($nm -eq 'stale') {
+                  if (-not $gSeq -or ($gSeq[$gSeq.Count - 1] -notmatch '"ok":false')) { P-Fail 'guard-stale' ('no ok:false beacon: ' + ($gSeq -join ' | ')) }
+                  if ($gSeq[$gSeq.Count - 1] -notmatch '"details":"dns-guard:') { P-Fail 'guard-stale' ('last beacon is not a dns-guard beacon: ' + $gSeq[$gSeq.Count - 1]) }
+              }
+              if ((Log-Text) -notmatch [regex]::Escape('dns-guard:')) { P-Fail ('guard-' + $nm) 'the guard reason was not logged (no dns-guard: line)' }
+              if ((Log-Text) -notmatch [regex]::Escape('DNS stale/blocked - flushdns or check tailscale')) { P-Fail ('guard-' + $nm) 'the guard dialog text was not logged' }
+              $guardSeen++
+              if ($gSeq.Count) { Write-Host ('[P] guard(' + $nm + ') blocked with ' + $gSeq[$gSeq.Count - 1]) } else { Write-Host ('[P] guard(' + $nm + ') blocked (unresolvable name - no beacon possible)') }
+          }
+          $rdpAfter = @(Get-ChildItem (Join-Path $env:TEMP 'ghrdp-*.rdp') -ErrorAction SilentlyContinue).Count
+          if ($rdpAfter -gt $rdpBefore) { P-Fail 'guard-rdp' 'the guard wrote a temp .rdp for a dead name' }
+          $mstGuard = @(Get-CimInstance Win32_Process -Filter "Name='mstsc.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like ('*' + $staleFqdn + '*') -or $_.CommandLine -like ('*' + $missingFqdn + '*') }).Count
+          if ($mstGuard) { P-Fail 'guard-mstsc' 'mstsc was started for a name outside 100.64/10' }
+          Write-Host ('[P] PASS dns-guard: ' + $guardSeen + ' broken names blocked (rc 4, dns-guard beacon/dialog logged, no mstsc, no .rdp)')
           # --- (6) rdp verb, NO credential + a lab-shortened prompt bound: the
           # timeout branch must be VISIBLE (dialog logged, ok:false, rc 1) and
           # mstsc must NOT start.
@@ -306,7 +411,8 @@ jobs:
           Write-Host '[P] PASS timeout: invoked -> cmdkey-shown -> cmdkey-timeout (ok:false, rc 1), dialog logged, mstsc NOT started'
           Remove-Item Env:GHRDP_LAB_CMDKEY_TIMEOUT_MS -ErrorAction SilentlyContinue
           # --- (7) JSONL log contract: one object per line, dialogs logged, and
-          # no credential-looking value anywhere (redaction).
+          # no credential-looking value anywhere (redaction). The F17 §3 guard
+          # adds its own error + dialog lines per blocked target.
           $lines = @([System.IO.File]::ReadAllLines($log) | Where-Object { $_ -and $_.Trim() })
           if ($lines.Count -lt 12) { P-Fail 'log-lines' ('launcher log only has ' + $lines.Count + ' lines') }
           $msgbox = 0
@@ -326,7 +432,7 @@ jobs:
           for ($i = 0; $i -lt 20; $i++) { if (-not (Get-NetTCPConnection -LocalPort $labPort -State Listen -ErrorAction SilentlyContinue)) { break }; Start-Sleep -Milliseconds 500 }
           if (Get-NetTCPConnection -LocalPort $labPort -State Listen -ErrorAction SilentlyContinue) { P-Fail 'listener-zombie' ('port ' + $labPort + ' still listening after the cleanup kill') }
           try {
-              $h3 = (([System.IO.File]::ReadAllText($hosts)) -split "`r?`n" | Where-Object { $_ -notmatch [regex]::Escape($fqdn) }) -join "`r`n"
+              $h3 = (([System.IO.File]::ReadAllText($hosts)) -split "`r?`n" | Where-Object { $_ -notmatch [regex]::Escape($fqdn) -and $_ -notmatch [regex]::Escape($staleFqdn) }) -join "`r`n"
               [System.IO.File]::WriteAllText($hosts, $h3)
           } catch { }
           Remove-Item (Join-Path $env:TEMP 'ghrdp-*.rdp') -Force -ErrorAction SilentlyContinue
@@ -338,6 +444,7 @@ jobs:
           Write-Host ('::notice::[P] fail-visible launcher: ' + ($seq -join ' -> '))
           Write-Host ('::notice::[P] timeout branch: ' + ($seq2 -join ' -> '))
           Write-Host ('::notice::[P] check verb dialog logged, no server-less beacon, JSONL ' + $lines.Count + ' lines with ' + $msgbox + ' dialogs')
+          Write-Host ('::notice::[P] dns-guard blocked ' + $guardSeen + ' broken target names before cmdkey/mstsc (F17 §3)')
           'P_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
           ('P_seq=' + ($seq -join ' -> ')) | Out-File $env:GITHUB_ENV -Append
           ('P_timeout=' + ($seq2 -join ' -> ')) | Out-File $env:GITHUB_ENV -Append
