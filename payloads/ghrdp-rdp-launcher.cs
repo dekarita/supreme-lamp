@@ -454,6 +454,9 @@ internal static class GhrdpRdpLauncher
     // ------------------------------------------------------------------
     // Work: everything that touches cmdkey/mstsc/disk lives here, strictly
     // AFTER Main's first instruction (the 'invoked' log + beacon).
+    // 'host' is the ALREADY-CLAMPED beacon host ("" when the URL server arg is
+    // not a *.ts.net FQDN); the rdp target itself is re-parsed and validated
+    // below, so a bad target still ends in a MessageBox, never silence.
     // ------------------------------------------------------------------
     private static int DoWork(string uri, string verb, string host, int port)
     {
@@ -496,19 +499,25 @@ internal static class GhrdpRdpLauncher
         string server; string user; string portRaw;
         ParseQuery(uri, out server, out user, out portRaw);
         int port = PickPort(portRaw);
+        // [F15 §1.1 + §7] The beacon target is the URL server arg, but ONLY when
+        // it is a legitimate *.ts.net FQDN: an arbitrary URI (any web page can
+        // fire ghrdp://) must not turn the launcher into a POST-to-anywhere
+        // primitive. Pure string check - no I/O - so the beacon still goes out
+        // before any cmdkey/mstsc/file work.
+        string beaconHost = FqdnRe.IsMatch(server) ? server : "";
         LogJson("invoked", verb, "uri=" + Redact(uri) + " log=" + LogPath());
-        HelloBounded(server, port, verb, true, "invoked");
+        HelloBounded(beaconHost, port, verb, true, "invoked");
 
         // [F15 §1.4] global catch: an escaping exception is reported through the
         // SAME two surfaces (log + MessageBox + beacon) - never a silent exit.
         try
         {
-            return DoWork(uri, verb, server, port);
+            return DoWork(uri, verb, beaconHost, port);
         }
         catch (Exception ex)
         {
             LogJson("error", verb, "unhandled " + ex.GetType().Name + ": " + ex.Message);
-            HelloBounded(server, port, verb, false, ex.GetType().Name);
+            HelloBounded(beaconHost, port, verb, false, ex.GetType().Name);
             ShowBox("ghrdp launcher error",
                 ex.GetType().Name + ": " + ex.Message + "\n\n" + Stamp + "\nlog: " + LogPath());
             return 1;

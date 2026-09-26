@@ -432,7 +432,12 @@ jobs:
           test -n "$main_body"
           grep -q 'hello-before-work' <<< "$main_body"
           grep -q 'LogJson("invoked"' <<< "$main_body"
-          grep -q 'HelloBounded(server, port, verb, true, "invoked")' <<< "$main_body"
+          grep -q 'HelloBounded(beaconHost, port, verb, true, "invoked")' <<< "$main_body"
+          # [F15 §1.1+§7] the beacon host is the URL server arg CLAMPED to a *.ts.net
+          # FQDN (pure string check, so it still precedes all work): a random URI
+          # must not turn the launcher into a POST-to-anywhere primitive.
+          grep -qF 'string beaconHost = FqdnRe.IsMatch(server) ? server : "";' <<< "$main_body"
+          grep -qF 'DoWork(uri, verb, beaconHost, port)' <<< "$main_body"
           beacon=$(awk '/LogJson\("invoked"/{print NR; exit}' <<< "$main_body")
           work=$(awk '/DoWork\(|CmdkeyStep\(|MstscStep\(|RunCheck\(|File\./ {print NR; exit}' <<< "$main_body")
           test -n "$beacon"

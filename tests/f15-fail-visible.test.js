@@ -60,7 +60,11 @@ test('F15-1 Main: the invoked log line + beacon are the FIRST work in the proces
   const main = mainBody(launcher);
   assert.match(main, /hello-before-work/);
   assert.match(main, /LogJson\("invoked"/);
-  assert.match(main, /HelloBounded\(server, port, verb, true, "invoked"\)/);
+  assert.match(main, /HelloBounded\(beaconHost, port, verb, true, "invoked"\)/);
+  // [F15 §1.1+§7] the beacon host is the URL server arg CLAMPED to a *.ts.net
+  // FQDN - pure string validation, so the beacon still precedes all work.
+  assert.match(main, /string beaconHost = FqdnRe\.IsMatch\(server\) \? server : "";/);
+  assert.match(main, /DoWork\(uri, verb, beaconHost, port\)/);
   const beacon = main.split('\n').findIndex((l) => l.includes('LogJson("invoked"'));
   const work = main.split('\n').findIndex((l) => /DoWork\(|CmdkeyStep\(|MstscStep\(|RunCheck\(|File\./.test(l));
   assert.ok(beacon > 0 && work > 0, 'beacon/work markers missing');
