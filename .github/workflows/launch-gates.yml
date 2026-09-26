@@ -515,7 +515,12 @@ jobs:
           grep -qF 'function Get-RawJsonTs' "$srv"
           grep -qF '[F17 §2] per-run beacon store' "$srv"
           grep -qF 'handler-hello-last.json' "$srv"
-          grep -qF 'rdpListener = $(if ($cfgN' "$srv"
+          # [F28 §1/§4] rdpListener is served from $rlOut (the config stamp plus
+          # the live authLast/logonCollector/credsspLive additions).
+          grep -qF 'rdpListener = $rlOut' "$srv"
+          for tok28 in '-NotePropertyName authLast' '-NotePropertyName logonCollector' '-NotePropertyName credsspLive'; do
+            grep -qF -- "$tok28" "$srv"
+          done
           # --- §2 UI: UTC beacon-age parse + RDP LISTENER row + gate + diag ---
           grep -qF 'function parseTsUtc' "$ui" || { echo 'F17: ui.html beacon age parse lacks UTC handling' >&2; exit 1; }
           grep -qF 'parseTsUtc(b.ts)' "$ui"
@@ -537,7 +542,9 @@ jobs:
           grep -qF '100.64.0.0/10' "$cs"
           grep -qF 'GHRDP_LAB_DNS_ALLOW_LOOPBACK' "$cs"
           guard=$(grep -nF 'string dnsProblem = DnsGuardReason(server);' "$cs" | head -1 | cut -d: -f1)
-          call=$(grep -nF 'int rc = CmdkeyStep(server, user, host, port);' "$cs" | head -1 | cut -d: -f1)
+          # [F28 §3] CmdkeyStep now returns the store OUTCOME (stored | missing |
+          # abort) instead of an exit code; the pinned call shape moved with it.
+          call=$(grep -nF 'CmdkeyStep(server, user, host, port);' "$cs" | head -1 | cut -d: -f1)
           test -n "$guard" && test -n "$call" && test "$guard" -lt "$call"
           # lab switches stay lab-only: the lab sets the relaxation, production
           # never carries ANY GHRDP_LAB_ switch.
@@ -900,8 +907,18 @@ jobs:
           # than one gate, so a token grep would miss a single-line rollback)
           grep -qF "cs==='ok-with-cipher-warn'" "$ui" || { echo 'F23: ui.html status row does not accept ok-with-cipher-warn' >&2; exit 1; }
           grep -qF 'OK (cipher probe warn)' "$ui" || { echo 'F23: ui.html lacks the OK (cipher probe warn) render' >&2; exit 1; }
-          grep -qF "var credsspOk=(!rl||rl.credsspStatus===undefined||rl.credsspStatus==='ok'||rl.credsspStatus==='ok-with-cipher-warn');" "$ui" || { echo 'F23: ui.html AUTO-LOGIN gate (credsspOk) does not accept ok-with-cipher-warn' >&2; exit 1; }
-          grep -qF "var csOk=(!rl.credsspStatus||rl.credsspStatus==='ok'||rl.credsspStatus==='ok-with-cipher-warn');" "$ui" || { echo 'F23: ui.html listener marks (csOk) do not accept ok-with-cipher-warn' >&2; exit 1; }
+          # [F28 §4] the inline expression moved into credsspVerdict(), which
+          # keeps the F23 stamp semantics verbatim ('ok-with-cipher-warn' = the
+          # determinants verified, only the cipher PROBE failed) and adds the
+          # live probe as the primary source. The gate now pins BOTH halves.
+          grep -qF "var credsspOk=credsspVerdict(rl).ok;" "$ui" || { echo 'F23: ui.html AUTO-LOGIN gate does not use the shared credssp verdict' >&2; exit 1; }
+          grep -qF "function credsspVerdict(rl)" "$ui" || { echo 'F23/F28: credsspVerdict is missing' >&2; exit 1; }
+          grep -qF "rl.credsspStatus==='ok-with-cipher-warn'" "$ui" || { echo 'F23: ui.html AUTO-LOGIN gate (credsspOk) does not accept ok-with-cipher-warn' >&2; exit 1; }
+          # [F28 §4] the listener marks now render credsspVerdict(rl) - the same
+          # function the CREDSSP row uses; the 'ok-with-cipher-warn' stamp stays
+          # an accepted OK (probe failure, not a config verdict).
+          grep -qF "var csv=credsspVerdict(rl);" "$ui" || { echo 'F23: ui.html listener marks do not use the shared credssp verdict' >&2; exit 1; }
+          grep -qF "rl.credsspStatus==='ok-with-cipher-warn'" "$ui" || { echo 'F23: ui.html listener marks (csOk) do not accept ok-with-cipher-warn' >&2; exit 1; }
           # the warn render must never read as FAIL/BLOCKED
           if grep -qF "'FAIL: '+cs" "$ui" && ! grep -qF "csGood?((cs==='ok')?'OK':'OK (cipher probe warn)'):('FAIL: '+cs)" "$ui"; then
             echo 'F23: ui.html status row no longer routes the warn status to the OK render' >&2; exit 1
@@ -1440,6 +1457,117 @@ jobs:
         run: |
           set -euo pipefail
           node --test tests/f27-copy.test.js tests/f27-handoff.test.js
+      # [F28] Close the logon-result loop + one-click recovery + the fallback gap.
+      # Every assertion below is on a SHIPPED surface (server, page, launcher) and
+      # fails on the specific regression it names - the lab cell V + the Windows
+      # lane then drive the same code with synthetic events / real csc.
+      - name: F28 logon-result loop + one-click recovery + fallback-gap gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          srv=payloads/ghrdp-server.ps1
+          ui=payloads/ui.html
+          cs=payloads/ghrdp-rdp-launcher.cs
+          wf=.github/workflows/main.yml
+          blk() { awk -v b="$2" -v e="$3" 'index($0,b){f=1} f{print} f&&index($0,e){exit}' "$1"; }
+          # --- §1 server-side 30s logon scanner (from SERVER START) -------------
+          scan=$(blk "$srv" '# [F28 §1 scanner-begin]' '# [F28 §1 scanner-end]')
+          test -n "$scan" || { echo 'F28: the server-side logon scanner block is missing' >&2; exit 1; }
+          for tok in '$script:F28IntervalSec = 30' '$script:F28StaleSec = 90' \
+                     'function Get-RdpLogonEventFields' 'function Get-RdpLogonAuthLast' \
+                     'function Update-RdpLogonAuthLast' 'function Get-RdpLogonCollectorState' \
+                     "Id = @(4624, 4625)" 'LogonType 10' "'security-log-unreadable'" \
+                     'result      = $result' 'sub         = $sub' 'eventTs     = $eventTs' \
+                     'scanTs      = $scanTs' 'windowStart' 'count4624' 'subMeaning'; do
+            grep -qF -- "$tok" <<< "$scan" || { echo "F28: scanner block missing token: $tok" >&2; exit 1; }
+          done
+          # scanTs is stamped BEFORE any verdict branch: every path carries it, so
+          # "no scanTs" can only ever mean a dead collector - never a quiet window.
+          s_scan=$(grep -nF '$scanTs = (Get-Date)' <<< "$scan" | head -1 | cut -d: -f1)
+          s_res=$(grep -nF "\$result = 'none'" <<< "$scan" | head -1 | cut -d: -f1)
+          test -n "$s_scan" && test -n "$s_res" && test "$s_scan" -lt "$s_res" || { echo 'F28: scanTs is not stamped before the verdict branches' >&2; exit 1; }
+          # secret-free: the scanner may carry codes/target account only.
+          if grep -Eq 'SubjectUserName|IpAddress|"Password"|ChangePassword' <<< "$scan"; then
+            echo 'F28: the logon scanner references subject/address/password fields' >&2; exit 1
+          fi
+          # the tick is IN the server process (start + 30s interval), never in the
+          # workflow keep-alive step - that dependency is the F24 defect this closes.
+          grep -qF '$script:ServerStartedUtc = (Get-Date).ToUniversalTime()' "$srv" || { echo 'F28: the server start clock is missing' >&2; exit 1; }
+          grep -qF 'try { Update-RdpLogonAuthLast -StatePath $script:LogonStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }' "$srv" || { echo 'F28: the startup scan is missing' >&2; exit 1; }
+          grep -qF 'if (((Get-Date) - $lastLogonScan).TotalSeconds -ge $script:F28IntervalSec)' "$srv" || { echo 'F28: the 30s tick is missing from the accept loop' >&2; exit 1; }
+          if grep -q 'Update-RdpLogonAuthLast' "$wf"; then
+            echo 'F28: the logon scan leaked into the keep-alive workflow (must be server-side only)' >&2; exit 1
+          fi
+          # served surface + the collector liveness the page needs
+          for tok in 'rdpListener = $rlOut' '-NotePropertyName authLast' '-NotePropertyName logonCollector' \
+                     '-NotePropertyName credsspLive' '$logonState.authLast' '$logonState.logonCollector' \
+                     'alive       = $alive' 'uptimeSec   = $uptime' 'lastScanAgeSec = $ageSec'; do
+            grep -qF -- "$tok" "$srv" || { echo "F28: native-status wiring missing: $tok" >&2; exit 1; }
+          done
+          # --- §1.2 page: verbatim row + RED collector-dead ---------------------
+          grep -qF 'logon collector not running' "$ui" || { echo 'F28: the collector-dead render is missing' >&2; exit 1; }
+          grep -qF "scanned '+authLast.scanTs" "$ui" || { echo 'F28: the LAST RDP LOGON row does not render scanTs' >&2; exit 1; }
+          grep -qF "if(!authLast.scanTs){ return {text:'logon collector not running" "$ui" || { echo 'F28: a missing scanTs must render as collector-dead' >&2; exit 1; }
+          grep -qF 'function logonRowText(authLast,collector,nowMs)' "$ui" || { echo 'F28: logonRowText is missing' >&2; exit 1; }
+          # --- §1.3/§2 correlator + one-click recovery --------------------------
+          grep -qF 'function recoveryDecision(authLast,chain,nowMs)' "$ui" || { echo 'F28: the recovery correlator is missing' >&2; exit 1; }
+          grep -qF "String(authLast.sub||'').toUpperCase()!=='0XC000006A'" "$ui" || { echo 'F28: the recovery correlator does not gate on the wrong-password sub-status' >&2; exit 1; }
+          grep -qF '/^mstsc-started/' "$ui" || { echo 'F28: the recovery correlator does not require an mstsc-started beacon' >&2; exit 1; }
+          grep -qF 'if(dtSec>120)' "$ui" || { echo 'F28: the recovery correlator has no 120s window' >&2; exit 1; }
+          grep -qF 'id="recoveryRow"' "$ui" || { echo 'F28: the RECOVERY card is missing' >&2; exit 1; }
+          grep -qF 'id="btnFixReconnect"' "$ui" || { echo 'F28: the FIX & RECONNECT button is missing' >&2; exit 1; }
+          grep -qF 'FIX &amp; RECONNECT' "$ui" || { echo 'F28: the button label is not FIX & RECONNECT' >&2; exit 1; }
+          grep -qF 'Password rejected by the host' "$ui" || { echo 'F28: the recovery card text is missing' >&2; exit 1; }
+          grep -qF "POST /api/rdp-token" "$ui" && grep -qF "apiBase()+'/api/rdp-token'" "$ui" || { echo 'F28: the recovery click does not mint a fresh ticket' >&2; exit 1; }
+          # the recovery URL: ticket + identity ONLY, and the click appends t.
+          ru=$(blk "$ui" '[F28 §2 recovery-url-begin]' '[F28 §2 recovery-url-end]')
+          test -n "$ru" || { echo 'F28: the recovery URL region is missing' >&2; exit 1; }
+          grep -qF "ghrdp://recred?server=" <<< "$ru" || { echo 'F28: the recovery URL is not ghrdp://recred' >&2; exit 1; }
+          grep -qF "&user=" <<< "$ru" || { echo 'F28: the recovery URL drops the user' >&2; exit 1; }
+          if grep -Eq "pass=|password=|pwd=|passwd=|key=|token=|secret=|apikey=" <<< "$ru"; then
+            echo 'F28: the recovery URL can carry a password (tickets only)' >&2; exit 1
+          fi
+          grep -qF "ghrdpRecredUrl(fqdn,user)+'&t='" "$ui" || { echo 'F28: the recovery click does not append the ticket' >&2; exit 1; }
+          # the card is copy-only apart from the single button (handler attached in JS)
+          card=$(awk '/id="recoveryRow"/{f=1} f{print} f&&/id="btnFixReconnect"/{exit}' "$ui")
+          handlers=$(grep -o 'onclick="[^"]*"' <<< "$card" || true)
+          if [ -n "$handlers" ] && grep -qv 'onclick="copyById(' <<< "$handlers"; then
+            echo 'F28: a non-copy control appeared in the recovery card' >&2; exit 1
+          fi
+          grep -qF "copyById('recoveryCmdkey'" "$ui" || { echo 'F28: the manual cmdkey escape hatch copy-line is missing' >&2; exit 1; }
+          grep -qF "cmdkey /generic:TERMSRV/" "$ui" || { echo 'F28: the valueless cmdkey prompt line is missing' >&2; exit 1; }
+          # --- §3 launcher: recred + the closed fallback gap --------------------
+          grep -qF 'if (verb == "recred") { return RecredStep(' "$cs" || { echo 'F28: the recred verb is not implemented' >&2; exit 1; }
+          grep -qF '"recred-redeemed"' "$cs" || { echo 'F28: the recovery beacon chain start is missing' >&2; exit 1; }
+          grep -qF 'private static string CredentialFallbackDecision(bool storeMissing, bool ticketPresent, bool retryOk)' "$cs" || { echo 'F28: the shared fallback decision function is missing' >&2; exit 1; }
+          grep -qF 'if (storeOutcome == "stored") { return MstscStep(server, user, host, port); }' "$cs" || { echo 'F28: the stored-path launch is missing' >&2; exit 1; }
+          grep -qF 'if (storeOutcome == "abort") { return 1; }' "$cs" || { echo 'F28: an aborted credential prompt must not launch mstsc' >&2; exit 1; }
+          grep -qF 'CredentialFallbackDecision(true, ticketPresent, retryOk)' "$cs" || { echo 'F28: the stored=false path does not use the decision function' >&2; exit 1; }
+          grep -qF 'retrying the one-time ticket redemption ONCE (F28 fallback-gap)' "$cs" || { echo 'F28: the single ticket retry is missing' >&2; exit 1; }
+          # the native-prompt BEACON must precede the launch it announces
+          ms=$(awk '/private static int MstscStep/{f=1} f{print} /private static int DoWork/{exit}' "$cs")
+          b=$(grep -nF 'fallback-mstsc-native-prompt' <<< "$ms" | head -1 | cut -d: -f1)
+          l=$(grep -nF 'new ProcessStartInfo("mstsc.exe"' <<< "$ms" | head -1 | cut -d: -f1)
+          test -n "$b" && test -n "$l" && test "$b" -lt "$l" || { echo 'F28: the native-prompt beacon is not emitted before the mstsc launch' >&2; exit 1; }
+          grep -qF 'process.ArgumentList' "$cs" 2>/dev/null || true
+          grep -qF '/prompt' "$cs" || { echo 'F28: the native credential prompt launch flag is missing' >&2; exit 1; }
+          grep -qF 'private static int FallbackSelfTestMain()' "$cs" || { echo 'F28: the decision selftest harness is missing' >&2; exit 1; }
+          # beacon allowlist on the server side accepts both new details
+          grep -qF 'recred-redeemed' "$srv" || { echo 'F28: the beacon allowlist lacks recred-redeemed' >&2; exit 1; }
+          grep -qF 'fallback-mstsc-native-prompt' "$srv" || { echo 'F28: the beacon allowlist lacks fallback-mstsc-native-prompt' >&2; exit 1; }
+          # refusals stay refused (re-asserted here so an F28 edit cannot reopen them)
+          if grep -nE '/pass:[^[:space:]"]' "$cs"; then echo 'F28: a value-bearing /pass: switch appeared' >&2; exit 1; fi
+          if grep -nE 'cmdkey[^"]*/delete' "$cs"; then echo 'F28: the launcher gained a credential-deletion verb' >&2; exit 1; fi
+          # --- §4 CREDSSP row: live probe primary, stamp secondary ---------------
+          grep -qF 'function credsspVerdict(rl)' "$ui" || { echo 'F28: the shared CredSSP verdict function is missing' >&2; exit 1; }
+          grep -qF 'var credsspOk=credsspVerdict(rl).ok;' "$ui" || { echo 'F28: the listener gate does not use the shared verdict' >&2; exit 1; }
+          grep -qF "cse.textContent='OK (live probe)'+stampTxt" "$ui" || { echo 'F28: the CREDSSP row does not render the live probe' >&2; exit 1; }
+          grep -qF "stampTxt=' (stamp: '+(csStamp||'none')+')'" "$ui" || { echo 'F28: the CREDSSP row does not show the config stamp as secondary' >&2; exit 1; }
+          grep -qF "rdpListener.credsspLive==='warn'" "$ui" || { echo 'F28: the live-probe warn branch is missing' >&2; exit 1; }
+          # the pending render survives ONLY for the no-probe-no-stamp case: the
+          # node matrix (F28-4) drives a live probe and asserts it can never print.
+          grep -qF "if(csLive==='ok')" "$ui" || { echo 'F28: the live branch is not first' >&2; exit 1; }
+          echo 'F28 gates PASS'
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:
@@ -1527,6 +1655,92 @@ jobs:
               if ($errors -and $errors.Count -gt 0) { throw ($pair[0] + ' has ' + $errors.Count + ' PowerShell syntax error(s): ' + $errors[0].Message) }
               Write-Host ('[F24] extracted block parses OK: ' + $pair[0] + ' (' + $text.Length + ' chars)')
           }
+      # [F28 §1] The logon scanner lives inside payloads/ghrdp-server.ps1 and is
+      # extracted VERBATIM, parsed by the PowerShell language parser and driven
+      # with synthetic 4624/4625 events - the parse path is proven without a
+      # live Security log and without any credential material.
+      - name: F28 server-side logon scanner (extract + synthetic events)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $srv = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-server.ps1'))
+          $a = $srv.IndexOf('# [F28 §1 scanner-begin]')
+          $b = $srv.IndexOf('# [F28 §1 scanner-end]', [Math]::Max($a, 0))
+          if ($a -lt 0 -or $b -le $a) { throw 'F28: the scanner markers are missing from ghrdp-server.ps1' }
+          $block = $srv.Substring($a, $b - $a)
+          $errors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseInput($block, [ref]$null, [ref]$errors)
+          if ($errors -and $errors.Count -gt 0) { throw ('F28 scanner block has ' + $errors.Count + ' syntax error(s): ' + $errors[0].Message) }
+          . ([scriptblock]::Create($block))
+          if (-not (Get-Command Get-RdpLogonAuthLast -ErrorAction SilentlyContinue)) { throw 'F28: Get-RdpLogonAuthLast was not defined by the extracted block' }
+          $start = (Get-Date).ToUniversalTime()
+          function New-F28Event([int]$Id, [string]$TimeUtc, [string]$LogonType, [string]$Status, [string]$SubStatus, [string]$Target) {
+              $tpl = '<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><EventID>{ID}</EventID><TimeCreated SystemTime="{T}"/></System><EventData><Data Name="LogonType">{LT}</Data><Data Name="Status">{ST}</Data><Data Name="SubStatus">{SUB}</Data><Data Name="FailureReason">%%2313</Data><Data Name="TargetUserName">{TU}</Data><Data Name="SubjectUserName">must-not-leak</Data></EventData></Event>'
+              $xml = $tpl.Replace('{ID}', [string]$Id).Replace('{T}', $TimeUtc).Replace('{LT}', $LogonType).Replace('{ST}', $Status).Replace('{SUB}', $SubStatus).Replace('{TU}', $Target)
+              return (Get-RdpLogonEventFields -Xml ([xml]$xml))
+          }
+          function Iso([int]$DeltaSec) { return $start.AddSeconds($DeltaSec).ToString('o') }
+          $fail = New-F28Event 4625 (Iso -30) '3' '0xC000006D' '0xC000006A' 'decoy-user'
+          $ok = New-F28Event 4624 (Iso -10) '10' '' '' 'decoy-user'
+          $console = New-F28Event 4624 (Iso -5) '3' '' '' 'decoy-user'
+          $stale = New-F28Event 4625 (Iso -4000) '3' '0xC000006D' '0xC000006A' 'decoy-user'
+          $a1 = Get-RdpLogonAuthLast -Items @($fail) -ScanStartedUtc $start
+          if ($a1.result -ne 'failed') { throw ('F28: a rejected password must stamp failed, got ' + $a1.result) }
+          if ($a1.sub -ne '0XC000006A' -or $a1.subMeaning -ne 'wrong-password') { throw ('F28: sub/subMeaning wrong: ' + $a1.sub + '/' + $a1.subMeaning) }
+          if (-not $a1.scanTs -or -not $a1.eventTs) { throw 'F28: a failed verdict without scanTs/eventTs' }
+          if (-not ([string]$a1.scanTs).EndsWith('Z')) { throw ('F28: scanTs is not a Z-suffixed UTC stamp: ' + $a1.scanTs) }
+          $a2 = Get-RdpLogonAuthLast -Items @($fail, $ok) -ScanStartedUtc $start
+          if ($a2.result -ne 'success') { throw ('F28: a NEWER type-10 logon must supersede the failure, got ' + $a2.result) }
+          if ($a2.count4624 -ne 1 -or $a2.count4625 -ne 1) { throw 'F28: event counts are wrong' }
+          $a3 = Get-RdpLogonAuthLast -Items @() -ScanStartedUtc $start
+          if ($a3.result -ne 'none' -or -not $a3.scanTs) { throw 'F28: an empty window must still stamp scanTs (never a dead-collector reading)' }
+          $a4 = Get-RdpLogonAuthLast -Items @() -ScanStartedUtc $start -ProbeError 'security-log-unreadable'
+          if ($a4.probeError -ne 'security-log-unreadable' -or -not $a4.scanTs) { throw 'F28: a probe error must be reported AND still stamp scanTs' }
+          $a5 = Get-RdpLogonAuthLast -Items @($console) -ScanStartedUtc $start
+          if ($a5.result -ne 'none' -or $a5.count4624 -ne 0) { throw ('F28: a type-3 (console) logon counted as an RDP success: ' + $a5.result) }
+          $a6 = Get-RdpLogonAuthLast -Items @($stale) -ScanStartedUtc $start
+          if ($a6.result -ne 'none') { throw 'F28: a pre-window failure leaked into the verdict' }
+          if ((($a1 | ConvertTo-Json -Depth 5)) -match '"SubjectUserName"') { throw 'F28: the verdict carries a subject identity field' }
+          if (-not $block.Contains('$script:F28IntervalSec = 30')) { throw 'F28: the 30s interval is not declared in the scanner block' }
+          Write-Host ('[F28] scanner PASS: 0xC000006A => ' + $a1.result + ' sub=' + $a1.sub + ' scanTs=' + $a1.scanTs + ' | newer type-10 => ' + $a2.result + ' | empty => ' + $a3.result + ' | probeError => ' + $a4.probeError + ' | console-type3 ignored, pre-window ignored')
+
+      # [F28 §3] The closed fallback gap, executed: the SHIPPED launcher is
+      # compiled by the same in-box csc install.cmd uses and its
+      # --fallback-selftest runs the production decision function (the one
+      # DoWork/RecredStep call) through the full matrix - with zero mstsc and
+      # zero cmdkey calls.
+      - name: F28 launcher fallback-gap decision matrix (csc compile + --fallback-selftest)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+          if (-not (Test-Path -LiteralPath $csc)) { $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
+          if (-not (Test-Path -LiteralPath $csc)) { throw 'the in-box csc.exe is missing (install.cmd depends on it too)' }
+          $exe = Join-Path $env:RUNNER_TEMP 'ghrdp-rdp-launcher-f28.exe'
+          $out = Join-Path $env:RUNNER_TEMP 'ghrdp-f28-fallback.txt'
+          if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Force }
+          $cs = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs'
+          $cscOut = (& $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll $cs 2>&1 | Out-String)
+          if ($LASTEXITCODE -ne 0) { throw ('csc exit ' + $LASTEXITCODE + ' :: ' + $cscOut.Trim()) }
+          $env:GHRDP_LAB_OUT = $out
+          $env:GHRDP_LAB_NOMSG = '1'
+          $p = Start-Process -FilePath $exe -ArgumentList '--fallback-selftest' -PassThru
+          $p.WaitForExit()
+          if ($p.ExitCode -ne 0) { throw ('--fallback-selftest exit ' + $p.ExitCode) }
+          for ($i = 0; $i -lt 20 -and -not (Test-Path -LiteralPath $out); $i++) { Start-Sleep -Milliseconds 250 }
+          if (-not (Test-Path -LiteralPath $out)) { throw '--fallback-selftest wrote no matrix file' }
+          $txt = Get-Content -LiteralPath $out -Raw
+          Write-Host $txt
+          foreach ($want in @(
+              'storeMissing=false ticketPresent=false retryRedeemOk=false decision=mstsc expected=mstsc nativePrompt=false beacon=(none) verdict=pass',
+              'storeMissing=true ticketPresent=true retryRedeemOk=false decision=native-prompt expected=native-prompt nativePrompt=true beacon=fallback-mstsc-native-prompt verdict=pass',
+              'storeMissing=true ticketPresent=true retryRedeemOk=true decision=mstsc expected=mstsc nativePrompt=false beacon=(none) verdict=pass',
+              'storeMissing=true ticketPresent=false retryRedeemOk=false decision=native-prompt expected=native-prompt nativePrompt=true beacon=fallback-mstsc-native-prompt verdict=pass'
+          )) { if (-not $txt.Contains($want)) { throw ('F28 matrix case missing: ' + $want) } }
+          if (-not $txt.Contains('mstscLaunched=0 cmdkeyCalled=0')) { throw 'F28: the selftest touched mstsc/cmdkey' }
+          if ($txt -like '*verdict=FAIL*') { throw 'F28: a fallback matrix case reported FAIL' }
+          Write-Host '[F28] fallback-gap decision matrix: 4/4 pass (stored=false can never reach a silent mstsc; no mstsc, no cmdkey)'
+
       - name: Smoke-test VPS ACL helper in temporary files only
         shell: pwsh
         run: |
