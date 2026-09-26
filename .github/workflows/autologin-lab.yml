@@ -2052,12 +2052,15 @@ jobs:
 
           $allPass = $true
 
-          # Generate pfx file for lab test
+          # Generate pfx file for lab test using CreateFromPem
           $pfxPath = Join-Path $env:RUNNER_TEMP 'f31-lab.pfx'
           $eScript = '$rsa = [System.Security.Cryptography.RSA]::Create(2048); ' +
                      '$req = [System.Security.Cryptography.X509Certificates.CertificateRequest]::new("CN=localhost", $rsa, [System.Security.Cryptography.HashAlgorithmName]::SHA256, [System.Security.Cryptography.RSASignaturePadding]::Pkcs1); ' +
                      '$cert = $req.CreateSelfSigned([datetime]::UtcNow.AddDays(-1), [datetime]::UtcNow.AddDays(1)); ' +
-                     '$pfxBytes = $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, ""); ' +
+                     '$certPem = $cert.ExportCertificatePem(); ' +
+                     '$keyPem = $rsa.ExportPkcs8PrivateKeyPem(); ' +
+                     '$loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem($certPem, $keyPem); ' +
+                     '$pfxBytes = $loaded.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx, ""); ' +
                      '[System.IO.File]::WriteAllBytes("' + $pfxPath.Replace('\', '\\') + '", $pfxBytes)'
           pwsh -Command $eScript
 
