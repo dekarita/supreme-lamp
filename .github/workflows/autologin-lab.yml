@@ -2194,36 +2194,6 @@ jobs:
           } catch {
               $posProbeErr = "[$posStage] " + $_.Exception.Message
           }
-              elseif ($legPath -and (Test-Path -LiteralPath $legPath)) { $posKeyPath = $legPath }
-              else { throw 'H3-key-container-not-found-in-crypto-keys-or-machinekeys' }
-
-              $acl = Get-Acl -LiteralPath $posKeyPath
-              $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\NETWORK SERVICE', 'Read', 'Allow')))
-              $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\SYSTEM', 'FullControl', 'Allow')))
-              Set-Acl -LiteralPath $posKeyPath -AclObject $acl
-
-              $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
-              $hashBytes = -split ($thumb -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
-              New-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hashBytes -Force | Out-Null
-
-              Restart-Service TermService -Force
-              Start-Sleep -Seconds 1
-
-              $tc = [System.Net.Sockets.TcpClient]::new()
-              $tc.Connect('127.0.0.1', 3389)
-              $st = $tc.GetStream()
-              [byte[]]$x224Cr = @(0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00)
-              $st.Write($x224Cr, 0, $x224Cr.Length)
-              $st.Flush()
-              $resp = New-Object byte[] 11
-              [void]$st.Read($resp, 0, $resp.Length)
-              $ssl = [System.Net.Security.SslStream]::new($st, $false, [System.Net.Security.RemoteCertificateValidationCallback]{ $true })
-              $ssl.AuthenticateAsClient('localhost')
-              $posProbeOk = $true
-              $ssl.Dispose(); $tc.Dispose()
-          } catch {
-              $posProbeErr = $_.Exception.Message
-          }
 
           $posObserved = if ($posProbeOk) { 'listener-handshake-ok' } else { 'probe-failed: ' + $posProbeErr }
           if (-not (Report-Cell 'positive' 'listener-handshake-ok' $posObserved $posProbeOk 'H2-positive-cell-failed' $posCert $posKeyPath $posProbeErr)) {
