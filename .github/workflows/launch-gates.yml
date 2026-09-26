@@ -908,6 +908,76 @@ jobs:
           fi
           echo 'F23 gates PASS'
 
+      - name: F24 auth-reject discriminator gates (server cred proof + 4625/CAPI2 matrix)
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          ui=payloads/ui.html
+          cs=payloads/ghrdp-rdp-launcher.cs
+          # --- §1 SERVER-SIDE CREDENTIAL PROOF (ValidateCredentials + loud fail) --
+          step=$(awk '/name: Server-side credential proof \(F24/{f=1;next} f && /^      - name: /{exit} f' "$wf")
+          test -n "$step" || { echo 'F24: main.yml lacks the server-side credential proof step' >&2; exit 1; }
+          for tok in 'ValidateCredentials' 'System.DirectoryServices.AccountManagement' "PrincipalContext('Machine')" 'credValid' 'credValidProbeError' 'Write-CredValid' '::error::[F24]' 'server-side credential invalid - user creation bug' 'throw'; do
+            grep -qF -- "$tok" <<< "$step" || { echo "F24: credential proof step missing token: $tok" >&2; exit 1; }
+          done
+          # the PROBE itself (not just a mention): the SDAM context + the exact
+          # credential-validation call must be there.
+          grep -qF "\$ctx = New-Object System.DirectoryServices.AccountManagement.PrincipalContext('Machine')" <<< "$step" || { echo 'F24: the SDAM PrincipalContext(machine) probe is missing' >&2; exit 1; }
+          grep -qF '$valid = [bool]$ctx.ValidateCredentials($UserName, $Password)' <<< "$step" || { echo 'F24: the ValidateCredentials call is missing' >&2; exit 1; }
+          # the verdict is stamped BEFORE the loud fail (the dashboard must see it)
+          wl=$(grep -nF 'Write-CredValid -Valid $valid' <<< "$step" | head -1 | cut -d: -f1)
+          ff=$(grep -nF 'server-side credential invalid - user creation bug' <<< "$step" | head -1 | cut -d: -f1)
+          test -n "$wl" && test -n "$ff" && test "$wl" -lt "$ff" || { echo 'F24: credValid is not written before the loud fail' >&2; exit 1; }
+          # the proof never prints credential material (field names only)
+          if grep -nE '(Write-Host|Add-Content)[^$]*(RDP_PASS|RDP_USER)' <<< "$step"; then
+            echo 'F24: the credential proof prints credential material' >&2; exit 1
+          fi
+          # --- §2 THE SECRET-FREE 60s 4625 COLLECTOR -----------------------------
+          col=$(awk '/\[F24 §2 collector-begin\]/{f=1;next} /\[F24 §2 collector-end\]/{exit} f' "$wf")
+          test -n "$col" || { echo 'F24: main.yml lacks the F24 §2 collector block (markers)' >&2; exit 1; }
+          for tok in 'Get-WinEvent' "LogName = 'Security'" '4624' '4625' '0XC000006A' '0XC000006D' '0XC000015B' 'wrong-password' 'authEvents' 'Get-RdpAuthEventSummary' 'Get-RdpAuthEventFields'; do
+            grep -qF -- "$tok" <<< "$col" || { echo "F24: collector missing token: $tok" >&2; exit 1; }
+          done
+          for leak in 'RDP_PASS' 'RDP_USER' 'env:RDP_' 'TargetUserName' 'SubjectUserName' 'Password' 'IpAddress'; do
+            if grep -qF -- "$leak" <<< "$col"; then
+              echo "F24: collector references credential/identity material: $leak" >&2; exit 1
+            fi
+          done
+          grep -qF 'Update-RdpAuthEvents -CfgPath $cfgPath' "$wf" || { echo 'F24: the collector never ticks in the keep-alive loop' >&2; exit 1; }
+          # --- §3b the F17 rebuild carries the verdict fields forward -----------
+          grep -qF '[F24 §3b]' "$wf" || { echo 'F24: the F17 probe does not carry the F21 verdict fields forward' >&2; exit 1; }
+          grep -qF "foreach (\$k in @('credsspStatus', 'credsspWhy', 'credValid', 'credValidAt', 'credValidWhy', 'credValidProbeError', 'authEvents'))" "$wf" || { echo 'F24: the carry-forward field list is wrong' >&2; exit 1; }
+          # --- §3 ONE decision row with the three branches -----------------------
+          grep -qF 'id="rdpAuthRow"' "$ui" || { echo 'F24: ui.html lacks the auth-reject discriminator row' >&2; exit 1; }
+          for tok in 'SERVER credential bug - re-dispatch' 'YOUR stored password is stale' 'copy CURRENT password from KEYS' 'TLS-layer suspect' 'cmdkey /delete:TERMSRV/' 'capi2.evtx' 'system.evtx' 'authEvents' 'credValid' 'credValidProbeError' 'PROBE FAILED' 'paste the copied password EXACTLY' 'no tooling deletes credentials'; do
+            grep -qF -- "$tok" "$ui" || { echo "F24: ui.html matrix missing token: $tok" >&2; exit 1; }
+          done
+          grep -qF "kd.textContent='cmdkey /delete:TERMSRV/'+(fqdn||'<fqdn>')" "$ui" || { echo 'F24: the cmdkey copy-line is not wired to the live FQDN' >&2; exit 1; }
+          grep -qF "onclick=\"copyById('credWinPass',this)\"" "$ui" || { echo 'F24: the stale-password branch lacks the KEYS password copy-line' >&2; exit 1; }
+          # the bare "FAIL: pending" credssp render must never come back
+          if grep -qF "'FAIL: '+cs" "$ui"; then
+            echo 'F24: ui.html renders a bare FAIL for an unreported credsspStatus' >&2; exit 1
+          fi
+          grep -qF 'not reported yet (F21 step: CredSSP/NLA handshake verification)' "$ui" || { echo 'F24: the pending CredSSP render is missing' >&2; exit 1; }
+          # copy-only + no execution/automation + no weakening advice in the row
+          blk=$(awk '/id="rdpAuthRow"/{f=1} f{print} f && /^  <\/div>$/{exit}' "$ui")
+          test -n "$blk" || { echo 'F24: the discriminator row could not be extracted' >&2; exit 1; }
+          if grep -oE 'onclick="[^"]*"' <<< "$blk" | grep -v '^onclick="copyById' | grep .; then
+            echo 'F24: a non-copy control appeared in the discriminator row' >&2; exit 1
+          fi
+          if grep -nEi 'powershell|mshta|wscript|cscript|Invoke-Expression|SendKeys|UIAutomation|keybd_event' <<< "$blk"; then
+            echo 'F24: an execution/automation token appeared in the discriminator row' >&2; exit 1
+          fi
+          if grep -nEi 'authentication level|enablecredsspsupport|authlvloverride|prompt for credentials|certificate.*bypass|bypass.*cert' <<< "$blk" | grep -v 'NEVER weaken NLA' | grep .; then
+            echo 'F24: the discriminator row suggests weakening NLA/CredSSP/cert validation' >&2; exit 1
+          fi
+          # --- §4 locked rule: the launcher gains NO delete verb -----------------
+          if grep -nE 'cmdkey[^"]*/delete' "$cs"; then
+            echo 'F24: the launcher gained a credential-deletion verb (the dashboard copy-lines are the only reset path)' >&2; exit 1
+          fi
+          echo 'F24 gates PASS'
+
       - name: F8 web-desktop honesty gates
         shell: bash
         run: |
@@ -1341,6 +1411,27 @@ jobs:
               $errors = $null
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
               if ($errors) { throw "$file has $($errors.Count) PowerShell syntax error(s): $($errors[0].Message)" }
+          }
+      # [F24] The F24 blocks live INSIDE main.yml (inline pwsh) and are extracted
+      # verbatim by the lab cell U + the F24 gate. Parse them here with the
+      # PowerShell language parser so a syntax error is caught in ~1 min instead
+      # of after a 20-minute lab run. This step never executes them.
+      - name: Parse the F24 extracted blocks (main.yml inline PowerShell)
+        shell: pwsh
+        run: |
+          $wf = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE '.github/workflows/main.yml'))
+          function Get-Block([string]$Begin, [string]$End) {
+              $a = $wf.IndexOf($Begin)
+              $b = $wf.IndexOf($End, [Math]::Max($a, 0))
+              if ($a -lt 0 -or $b -lt 0 -or $b -le $a) { throw ('F24 marker missing in main.yml: ' + $Begin) }
+              return ((($wf.Substring($a, $b - $a)) -split "`r?`n") | Where-Object { $_ -notmatch 'begin\]|end\]' } | ForEach-Object { $_ -replace '^\s+', '' }) -join "`n"
+          }
+          foreach ($pair in @(@('# [F24 §1 cred-proof-begin]', '# [F24 §1 cred-proof-end]'), @('# [F24 §2 collector-begin]', '# [F24 §2 collector-end]'))) {
+              $text = Get-Block $pair[0] $pair[1]
+              $errors = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseInput($text, [ref]$null, [ref]$errors)
+              if ($errors -and $errors.Count -gt 0) { throw ($pair[0] + ' has ' + $errors.Count + ' PowerShell syntax error(s): ' + $errors[0].Message) }
+              Write-Host ('[F24] extracted block parses OK: ' + $pair[0] + ' (' + $text.Length + ' chars)')
           }
       - name: Smoke-test VPS ACL helper in temporary files only
         shell: pwsh

@@ -946,6 +946,173 @@ jobs:
           Write-Host '[T] PASS: F20 nslookup false alarm killed + evidence-based 0x904/0x7 fallback (ghrdp-lab fallback lane)'
           'T_result=pass' | Out-File $env:GITHUB_ENV -Append
 
+      # [F24 §6] U proves the auth-reject discriminator against the SHIPPED files:
+      #   (a) the extracted ValidateCredentials fixture: a freshly created local
+      #       account validates true with its real password and FALSE with a
+      #       wrong one (so a stale stored password can be told apart from a
+      #       dead server credential), and the shipped page's decision row is
+      #       driven through the real renderer by the node matrix test;
+      #   (b) the extracted 4625 collector, driven with SYNTHETIC events
+      #       (0xC000006A/0xC000006D => credential-mismatch, 0xC000015B =>
+      #       logon-type-denied, 4624-only => none) plus a real Security-log
+      #       write into a temp config - and the summary must never carry a
+      #       username;
+      #   (c) the CAPI2 + System export copy-lines of the TLS-layer branch.
+      - name: "U: F24 auth-reject discriminator (SAM cred fixture + 4625 parse + CAPI2 lines)"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          trap {
+              Write-Host ('::error::[U] stage=unhandled :: ' + $_.Exception.GetType().FullName + ' :: ' + $_.Exception.Message)
+              exit 1
+          }
+          function U-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[U] stage=' + $Stage + ' :: ' + $Detail)
+              exit 1
+          }
+          $utf8U = New-Object System.Text.UTF8Encoding($false)
+          $wf = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE '.github\workflows\main.yml'))
+          $ui = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ui.html'))
+          $cs = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs'))
+          $lab = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE '.github\workflows\autologin-lab.yml'))
+          # --- extraction (byte-faithful; launch-gates F24 pins the markers) ----
+          function Get-F24Block([string]$Begin, [string]$End) {
+              $a = $wf.IndexOf($Begin)
+              $b = $wf.IndexOf($End, [Math]::Max($a, 0))
+              if ($a -lt 0 -or $b -lt 0 -or $b -le $a) { U-Fail 'extract' ('markers missing in main.yml: ' + $Begin) }
+              return (($wf.Substring($a, $b - $a) -split "`r?`n") | Where-Object { $_ -notmatch 'collector-begin|collector-end|cred-proof-begin|cred-proof-end' } | ForEach-Object { $_ -replace '^          ', '' }) -join "`n"
+          }
+          $credFn = Get-F24Block '# [F24 §1 cred-proof-begin]' '# [F24 §1 cred-proof-end]'
+          $colFn = Get-F24Block '# [F24 §2 collector-begin]' '# [F24 §2 collector-end]'
+          $credPath = Join-Path $env:RUNNER_TEMP 'f24-cred.ps1'
+          $colPath = Join-Path $env:RUNNER_TEMP 'f24-collector.ps1'
+          [System.IO.File]::WriteAllText($credPath, $credFn, $utf8U)
+          [System.IO.File]::WriteAllText($colPath, $colFn, $utf8U)
+          . $credPath
+          . $colPath
+          if (-not (Get-Command Test-LocalSamCredential -ErrorAction SilentlyContinue)) { U-Fail 'extract-cred' 'Test-LocalSamCredential was not defined by the extracted block' }
+          if (-not (Get-Command Get-RdpAuthEventSummary -ErrorAction SilentlyContinue)) { U-Fail 'extract-collector' 'Get-RdpAuthEventSummary was not defined by the extracted block' }
+          # --- (a) ValidateCredentials fixture (real local SAM) -----------------
+          $labUser = 'rdpF24' + ([guid]::NewGuid().ToString('N').Substring(0, 6))
+          # Mirror production's New-RdpPassword guard: the local password policy
+          # REJECTS a password containing a 3-char substring of the account name
+          # (invalid_password). The first cell-U run failed exactly there.
+          $created = $false
+          $labPass = ''
+          $createErr = ''
+          for ($try = 1; $try -le 20 -and -not $created; $try++) {
+              $cand = ('Rt7!Wp9@Kd2#' + [guid]::NewGuid().ToString('N').Substring(0, 12))
+              $lowU = $labUser.ToLowerInvariant(); $lowC = $cand.ToLowerInvariant()
+              $bad = $false
+              for ($k = 0; $k -le ($lowU.Length - 3); $k++) { if ($lowC.Contains($lowU.Substring($k, 3))) { $bad = $true } }
+              if ($bad) { continue }
+              try {
+                  New-LocalUser -Name $labUser -Password (ConvertTo-SecureString $cand -AsPlainText -Force) -Description 'F24 lab fixture' -PasswordNeverExpires -ErrorAction Stop | Out-Null
+                  $created = $true; $labPass = $cand
+              } catch { $createErr = $_.Exception.Message }
+          }
+          if (-not $created) { U-Fail 'fixture-create' ('could not create a policy-safe lab user after 20 attempts: ' + $createErr) }
+          try {
+              $ok = Test-LocalSamCredential -UserName $labUser -Password $labPass
+              if (-not $ok.valid) { U-Fail 'fixture-valid' 'a just-created local account FAILED ValidateCredentials (the real one exists)' }
+              if ($ok.probeError) { U-Fail 'fixture-probe' ('valid credential reported a probe error: ' + $ok.probeError) }
+              $bad = Test-LocalSamCredential -UserName $labUser -Password ($labPass + 'X')
+              if ($bad.valid) { U-Fail 'fixture-invalid' 'a WRONG password validated TRUE - the discriminator would blame the server' }
+              if ($bad.probeError) { U-Fail 'fixture-invalid-probe' ('a wrong password must be a verdict, not a probe error: ' + $bad.probeError) }
+              $ghost = Test-LocalSamCredential -UserName $labUser -Password ''
+              if ($ghost.valid) { U-Fail 'fixture-empty' 'an empty password validated TRUE' }
+              if ($ghost.probeError -ne 'missing-user-or-password-env') { U-Fail 'fixture-empty' ('an empty password must report the missing-env verdict, got [' + $ghost.probeError + ']') }
+          } finally {
+              Remove-LocalUser -Name $labUser -ErrorAction SilentlyContinue
+          }
+          # the shipped step stamps the verdict BEFORE its loud fail
+          $wIx = $wf.IndexOf('Write-CredValid -Valid $valid')
+          $fIx = $wf.IndexOf('server-side credential invalid - user creation bug')
+          if ($wIx -lt 0 -or $fIx -lt 0 -or $wIx -gt $fIx) { U-Fail 'loud-fail-order' 'credValid is not written before the loud fail' }
+          Write-Host '[U] (a) PASS: extracted SAM fixture - real password => valid=true, wrong password => valid=false (no probe error), credValid written before the loud fail'
+          # --- (a2) the SHIPPED page's matrix is driven through the real renderer
+          Push-Location $env:GITHUB_WORKSPACE
+          try {
+              $nodeOut = (@(& node --test tests/f24-auth-discriminator.test.js 2>&1) | Out-String)
+              $nodeRc = $LASTEXITCODE
+          } finally { Pop-Location }
+          if ($nodeRc -ne 0) { U-Fail 'node-matrix' ('the F24 renderer matrix test failed: ' + ($nodeOut.Substring([Math]::Max(0, $nodeOut.Length - 600)))) }
+          if ($nodeOut -notmatch '# fail 0') { U-Fail 'node-matrix' 'the F24 node matrix did not report 0 failures' }
+          Write-Host '[U] (a2) PASS: shipped ui.html renderer executed through node - all three discriminator branches render as specified'
+          # --- (b) 4625 collector parse with SYNTHETIC events -------------------
+          function New-F24EventXml([int]$Id, [string]$Status, [string]$SubStatus, [string]$Reason) {
+              $tpl = '<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><EventID>{ID}</EventID><TimeCreated SystemTime="2026-09-26T12:00:00.0000000Z"/></System><EventData><Data Name="TargetUserName">rdpF24DECOY</Data><Data Name="Status">{ST}</Data><Data Name="SubStatus">{SUB}</Data><Data Name="FailureReason">{RS}</Data></EventData></Event>'
+              return $tpl.Replace('{ID}', [string]$Id).Replace('{ST}', [string]$Status).Replace('{SUB}', [string]$SubStatus).Replace('{RS}', [string]$Reason)
+          }
+          $eWrong = Get-RdpAuthEventFields -Xml ([xml](New-F24EventXml 4625 '0xC000006D' '0xC000006A' '%%2313'))
+          if ($eWrong.id -ne '4625') { U-Fail 'parse-id' ('event id parsed as [' + $eWrong.id + ']') }
+          if ($eWrong.status -ne '0XC000006D' -or $eWrong.subStatus -ne '0XC000006A') { U-Fail 'parse-status' ('status/subStatus parsed as [' + $eWrong.status + '/' + $eWrong.subStatus + ']') }
+          if ($eWrong.reason -ne '%%2313') { U-Fail 'parse-reason' ('FailureReason parsed as [' + $eWrong.reason + ']') }
+          $eType = Get-RdpAuthEventFields -Xml ([xml](New-F24EventXml 4625 '0xC000015B' '0xC000015B' '%%2313'))
+          $eOk = Get-RdpAuthEventFields -Xml ([xml](New-F24EventXml 4624 '' '' ''))
+          $s1 = Get-RdpAuthEventSummary -Items @($eWrong, $eType, $eOk) -WindowSec 3600
+          if ($s1.count4624 -ne 1 -or $s1.count4625 -ne 2) { U-Fail 'summary-counts' ('4624/4625 counted as ' + $s1.count4624 + '/' + $s1.count4625) }
+          if ($s1.verdict -ne 'credential-mismatch') { U-Fail 'summary-verdict' ('wrong-password events produced verdict [' + $s1.verdict + ']') }
+          $codeSet = @($s1.codes | ForEach-Object { [string]$_.code })
+          foreach ($c in @('0XC000006A', '0XC000006D', '0XC000015B')) {
+              if ($codeSet -notcontains $c) { U-Fail 'summary-codes' ('code ' + $c + ' missing from [' + ($codeSet -join ',') + ']') }
+          }
+          $s2 = Get-RdpAuthEventSummary -Items @($eOk) -WindowSec 3600
+          if ($s2.verdict -ne 'none' -or $s2.count4625 -ne 0) { U-Fail 'summary-none' ('a logon-only window produced [' + $s2.verdict + '] with 4625=' + $s2.count4625) }
+          $s3 = Get-RdpAuthEventSummary -Items @($eType, $eOk) -WindowSec 3600
+          if ($s3.verdict -ne 'logon-type-denied') { U-Fail 'summary-type' ('0xC000015B produced verdict [' + $s3.verdict + ']') }
+          $s4 = Get-RdpAuthEventSummary -Items @() -WindowSec 3600 -ProbeError 'security-log-unreadable'
+          if ($s4.probeError -ne 'security-log-unreadable' -or $s4.verdict -ne 'none') { U-Fail 'summary-probe' 'the probe-error path is not distinguishable from a clean window' }
+          # secret-free: the summary is counts + codes; the decoy user name lives
+          # only in the synthetic XML and must not survive the parse.
+          $sumJson = ($s1 | ConvertTo-Json -Depth 6)
+          if ($sumJson -match 'rdpF24DECOY') { U-Fail 'secret-free' 'the collector summary carried the target user name' }
+          # FIELD-level scan: a banned credential FIELD must never appear as a JSON
+          # key. Reason slugs such as 'wrong-password' (0xC000006A) are status-code
+          # descriptions - the F24 evidence contract - not credentials, so match on
+          # keys, not on raw substrings. The run that taught us this failed here.
+          foreach ($banned in @('TargetUserName', 'SubjectUserName', 'IpAddress', 'Password')) {
+              if ($sumJson -match ('"' + $banned + '"\s*:')) { U-Fail 'secret-free' ('the collector summary carries a ' + $banned + ' field') }
+          }
+          # the REAL write path against the REAL Security log
+          $tmpCfg = Join-Path $env:RUNNER_TEMP 'f24-config.json'
+          [System.IO.File]::WriteAllText($tmpCfg, '{"rdpListener":{"listening":true,"nla":true}}', $utf8U)
+          $prevSummary = $env:GITHUB_STEP_SUMMARY
+          $env:GITHUB_STEP_SUMMARY = Join-Path $env:RUNNER_TEMP 'f24-step-summary.md'
+          try { $real = Update-RdpAuthEvents -CfgPath $tmpCfg } finally { $env:GITHUB_STEP_SUMMARY = $prevSummary }
+          $written = ([System.IO.File]::ReadAllText($tmpCfg) | ConvertFrom-Json).rdpListener.authEvents
+          if (-not $written) { U-Fail 'collector-write' 'Update-RdpAuthEvents did not write rdpListener.authEvents into config.json' }
+          if ($null -eq $written.count4625 -or $null -eq $written.count4624) { U-Fail 'collector-write' 'authEvents lacks the 4624/4625 counts' }
+          if ([string]$written.verdict -notin @('none', 'credential-mismatch', 'no-such-user', 'logon-type-denied', 'unclassified')) { U-Fail 'collector-verdict' ('unexpected verdict [' + $written.verdict + ']') }
+          if (([System.IO.File]::ReadAllText($tmpCfg)) -match 'TargetUserName') { U-Fail 'collector-leak' 'the written authEvents carries a user-name field' }
+          if (([System.IO.File]::ReadAllText($tmpCfg) | ConvertFrom-Json).rdpListener.listening -ne $true) { U-Fail 'collector-merge' 'the collector rebuild dropped the existing rdpListener fields instead of merging' }
+          Write-Host ('[U] (b) PASS: 4625 parse 4624=' + $real.count4624 + ' 4625=' + $real.count4625 + ' verdict=' + $real.verdict + ' (synthetic 6A/6D => credential-mismatch, 15B => logon-type-denied, 4624-only => none; summary carries codes only)')
+          # --- (c) the TLS-layer branch copy-lines ------------------------------
+          foreach ($tok in @(
+            'id="rdpAuthRow"',
+            'SERVER credential bug - re-dispatch',
+            'YOUR stored password is stale',
+            'TLS-layer suspect',
+            'cmdkey /delete:TERMSRV/',
+            'wevtutil epl Microsoft-Windows-CAPI2/Operational %TEMP%\capi2.evtx',
+            'wevtutil epl System %TEMP%\system.evtx',
+            "kd.textContent='cmdkey /delete:TERMSRV/'+(fqdn||'<fqdn>')",
+            'copy CURRENT password from KEYS')) {
+              if (-not $ui.Contains($tok)) { U-Fail 'ui-token' ('ui.html lacks ' + $tok) }
+          }
+          $ra = $ui.IndexOf('<div class="row" id="rdpAuthRow"')
+          $rb = $ui.IndexOf("`n  </div>", $ra)
+          if ($ra -lt 0 -or $rb -le $ra) { U-Fail 'ui-row' 'the F24 row could not be extracted' }
+          $row = $ui.Substring($ra, $rb - $ra)
+          $rowHandlers = [regex]::Matches($row, 'onclick="([^"]*)"')
+          if ($rowHandlers.Count -lt 4) { U-Fail 'ui-copy-count' ('expected a copy control per command line, found ' + $rowHandlers.Count) }
+          foreach ($h in $rowHandlers) { if (-not $h.Groups[1].Value.StartsWith('copyById(')) { U-Fail 'ui-exec' ('a non-copy control reached the F24 row: ' + $h.Groups[1].Value) } }
+          # §4 locked rule: the launcher never deletes a stored credential.
+          if ($cs -match 'cmdkey[^\n]*/delete') { U-Fail 'launcher-delete' 'the launcher gained a credential-deletion verb' }
+          Write-Host '[U] (c) PASS: TLS-layer branch carries the CAPI2 + System export copy-lines; the row is copy-only; the launcher has no delete verb'
+          Write-Host '[U] PASS: F24 auth-reject discriminator (server cred proof fixture + 4625 collector parse + CAPI2 matrix)'
+          'U_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+
       - name: "F: Edge policy proof (live-resolved IDs -> registry readout)"
         shell: pwsh
         run: |
@@ -1452,11 +1619,12 @@ jobs:
           ('| (p) fail-visible launcher (F15) | ' + $(if ($env:P_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL launcher vs a LOCAL python hello-listener: check verb logs its dialog and posts check-shown; stored-credential rdp = ' + $env:P_seq + '; no-credential rdp = ' + $env:P_timeout + '; JSONL log redaction verified. The physical MessageBox itself stays PENDING-USER (a runner cannot show or click it) |') | Add-Content -Path $S
           ('| (s) client-DNS probe + launcher version guard (F19) | ' + $(if ($env:S_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | SHIPPED launcher compiled by the in-box csc runs --dns-selftest: fail-name+reach-ip => client-dns-off remediation, both-ok => mstsc, no-ip/closed => dns-fail, with 0 mstsc/cmdkey calls; REAL server: beacon exe 2.1.0.0 vs the repo constant read from the launcher source => launcherOutdated=true, current stamp => false; shipped page carries the probe card, the yellow outdated row and the single credential-free ghrdp:// builder that appends &ip= only for a CGNAT address. The live client-PC DNS state stays PENDING-USER |') | Add-Content -Path $S
           ('| (t) nslookup false alarm + 0x904/0x7 evidence fallback (F20) | ' + $(if ($env:T_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | shipped page: nslookup is no copy-line any more (Resolve-DnsName + false-alarm note), the collapsed "if mstsc still fails (0x904/0x7)" block carries the client ClientActiveXCore export + the runner Security 4624/4625, Schannel and RemoteConnectionManager exports and stays copy-only; SHIPPED launcher compiles with the in-box csc, logs the mstsc exit code (dec+hex) and its dialog points at that block. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
+          ('| (u) auth-reject discriminator (F24) | ' + $(if ($env:U_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml blocks verified: SAM ValidateCredentials fixture (fresh account => true, wrong password => false with no probe error, empty => the missing-env probe verdict), the 4625 collector driven by synthetic events (0xC000006A/0xC000006D => credential-mismatch, 0xC000015B => logon-type-denied, 4624-only => none) with a REAL Security-log write into a temp config.json that keeps the pre-existing rdpListener fields and carries NO user name; the shipped page matrix executed through the real renderer (three branches + pending/warn credssp render) and the TLS-layer branch carries the CAPI2 + System export copy-lines. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
           ('| (k) no console window in the interactive session | **contract PASS** | every host-helper launch is -WindowStyle Hidden (or NoNewWindow for the user-driven terminal exec) and the long-lived services are SYSTEM scheduled tasks; launch-gates F11-5.3 enforces it. Visual confirmation on the first physical RDP session = PENDING-USER |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
           # retrievable), so the PR/verify evidence does not depend on the log UI.
-          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'}) + ' t=' + $(if ($env:T_result -eq 'pass') {'pass'} else {'fail'})
+          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'}) + ' t=' + $(if ($env:T_result -eq 'pass') {'pass'} else {'fail'}) + ' u=' + $(if ($env:U_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
           # [F19] Evidence notices must carry the CELL RESULT they belong to:
           # before this, every notice claimed its achievement even when the cell
@@ -1475,6 +1643,7 @@ jobs:
           Nt 'P' 'P_result' ('fail-visible launcher: check dialog logged + no server-less beacon; stored-cred rdp = ' + $env:P_seq + '; no-cred rdp = ' + $env:P_timeout)
           Nt 'S' 'S_result' 'F19: shipped launcher DNS-guard matrix 5/5 with injected resolver/TCP (client-dns-off | dns-fail | mstsc, zero mstsc/cmdkey), REAL server version guard 2.1.0.0=>outdated / repo constant=>current, UI probe card + &ip= builder present'
           Nt 'T' 'T_result' 'F20: nslookup retired as a diagnostic (Resolve-DnsName + false-alarm note), collapsed 0x904/0x7 block carries the client+runner wevtutil exports and stays copy-only, shipped launcher compiles and its immediate-exit dialog points at it'
+          Nt 'U' 'U_result' 'F24: SAM credential fixture (valid => true, stale => false), 4625 collector parse (6A/6D => credential-mismatch, 15B => logon-type-denied, 4624-only => none, no user name in the summary), three-branch renderer matrix + CAPI2/System copy-lines'
           Nt 'K' 'K_result' 'browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions'
           Nt 'L' 'L_result' 'qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok'
           Nt 'G' 'F_result' ('uBlock Origin=' + $env:F_ubo)
