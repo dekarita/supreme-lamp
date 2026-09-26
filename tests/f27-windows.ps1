@@ -120,20 +120,24 @@ public static class F27Read {
  [DllImport("advapi32.dll",EntryPoint="CredReadW",CharSet=CharSet.Unicode,SetLastError=true)] public static extern bool Read(string t,uint type,uint f,out IntPtr p);
  [DllImport("advapi32.dll")] public static extern void CredFree(IntPtr p);
  [DllImport("advapi32.dll",EntryPoint="CredDeleteW",CharSet=CharSet.Unicode)] public static extern bool Delete(string t,uint type,uint f);
- public static bool Matches(string target,string user) { IntPtr p; if(!Read(target,2,0,out p))return false; try { C c=(C)Marshal.PtrToStructure(p,typeof(C)); return c.Target==target && c.User==user && c.Type==2 && c.Persist==2; } finally { CredFree(p); } }
+ [DllImport("advapi32.dll",EntryPoint="CredWriteW",CharSet=CharSet.Unicode,SetLastError=true)] public static extern bool Write(ref C c,uint flags);
+ public static bool SeedGeneric(string target) { string fixture="synthetic-stale"; IntPtr p=Marshal.StringToCoTaskMemUni(fixture); try { C c=new C(); c.Type=1; c.Target=target; c.User="fixture-old-user"; c.Persist=2; c.Size=(uint)(fixture.Length*2); c.Blob=p; return Write(ref c,0); } finally { Marshal.ZeroFreeCoTaskMemUnicode(p); } }
+ public static bool Matches(string target,string user,uint type) { IntPtr p; if(!Read(target,type,0,out p))return false; try { C c=(C)Marshal.PtrToStructure(p,typeof(C)); return c.Target==target && c.User==user && c.Type==type && c.Persist==2; } finally { CredFree(p); } }
 }
 '@
     $fqdn = 'f27-' + [guid]::NewGuid().ToString('N') + '.tail.ts.net'
     $target = 'TERMSRV/' + $fqdn
     try {
+        Assert-F27 ([F27Read]::SeedGeneric($target)) 'legacy generic entry seeded'
         $null = Call-F27 'WriteCredential' @($fqdn,'fixture-old-user','poisoned-fixture')
-        Assert-F27 ([F27Read]::Matches($target,'fixture-old-user')) 'initial entry exists'
+        Assert-F27 ([F27Read]::Matches($target,'fixture-old-user',2)) 'initial entry exists'
         $null = Call-F27 'WriteCredential' @($fqdn,'fixture-user',$fixture)
-        Assert-F27 ([F27Read]::Matches($target,'fixture-user')) 'CredWrite overwrites exact domain target'
+        Assert-F27 ([F27Read]::Matches($target,'fixture-user',2)) 'CredWrite overwrites exact domain target'
+        Assert-F27 ([F27Read]::Matches($target,'fixture-user',1)) 'legacy generic entry also refreshed'
         $lines = Call-F27 'RdpLines' @($fqdn,'fixture-user')
         Assert-F27 ($lines -contains ('full address:s:' + $target.Substring(8))) 'RDP full address exactly matches credential target suffix'
         Assert-F27 (($lines -contains 'screen mode id:i:2') -and -not (($lines -join "`n") -match 'password|credential|authentication level')) 'options only, no weakening'
-    } finally { $null = [F27Read]::Delete($target,2,0) }
+    } finally { $null = [F27Read]::Delete($target,2,0); $null = [F27Read]::Delete($target,1,0) }
     $reason = Call-F27 'RedeemAndStore' @('ghrdp://rdp?server=fixture.tail.ts.net','fixture.tail.ts.net','fixture-user','',7331)
     Assert-F27 ($reason -eq 'ticket-missing') 'missing ticket fallback'
     Assert-F27 ((Call-F27 'FallbackBeacon' @($reason)) -eq 'fallback-cmdkey reason=ticket-missing') 'fallback beacon reason'

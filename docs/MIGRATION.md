@@ -811,3 +811,14 @@ path never invokes cmdkey; Windows owns the fallback prompt, with no clipboard
 read or automated input. On an expired/unreachable ticket the fallback prompts
 even if a potentially poisoned entry already exists. Old ticket-less links keep
 legacy compatibility and are not the F27 zero-typing proof path.
+
+### Existing generic-entry compatibility
+
+The old interactive cmdkey path used `/generic`, creating type 1. CredWrite keys
+entries by `(target,type)`, so writing the required type-2 domain password alone
+cannot overwrite that earlier entry. F27 additionally refreshes an **existing**
+type-1 entry for the identical target using CredWrite and the redeemed value.
+It never creates a new generic entry when absent, never deletes credentials,
+and never reads/exports the old blob. Failure to inspect or refresh stops launch.
+The Windows proof seeds both types and verifies both metadata records change;
+the secret itself remains absent from every proof output.

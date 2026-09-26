@@ -25,7 +25,7 @@ test('F27 gate: ticket is source-bound, consumed before credentials; routes fail
 });
 test('F27 gate: store target, options, buffer cleanup, no unsafe launch APIs or sinks',()=>{
  const handoff=block(cs,'// [F27 handoff-begin]','// [F27 handoff-end]');
- for(const text of ['CredWriteW','c.Type = 2','c.TargetName = "TERMSRV/" + fqdn','c.Persist = 2','Marshal.FreeHGlobal','Array.Clear(blob','req.Proxy = null','req.AllowAutoRedirect = false','IsTailnetAddress(a)','ticket-redeemed','credwrite-ok','fallback-cmdkey reason='])assert.ok(handoff.includes(text),text);
+ for(const text of ['CredWriteW','c.Type = 2','CredRead(c.TargetName, 1, 0, out old)','c.Type = 1','CredFree(old)','c.TargetName = "TERMSRV/" + fqdn','c.Persist = 2','Marshal.FreeHGlobal','Array.Clear(blob','req.Proxy = null','req.AllowAutoRedirect = false','IsTailnetAddress(a)','ticket-redeemed','credwrite-ok','fallback-cmdkey reason='])assert.ok(handoff.includes(text),text);
  assert.match(cs,/"full address:s:" \+ server/);
  assert.match(cs,/WriteCredential\(server, user, pass\)/);
  assert.match(cs,/!forcePrompt && HasCredEntry\(server\)/);

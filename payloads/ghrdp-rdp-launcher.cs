@@ -597,6 +597,12 @@ internal static class GhrdpRdpLauncher
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CredWrite(ref Credential credential, uint flags);
 
+    [DllImport("advapi32.dll", EntryPoint = "CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CredRead(string target, uint type, uint flags, out IntPtr credential);
+    [DllImport("advapi32.dll")]
+    private static extern void CredFree(IntPtr credential);
+
     private static string TicketFromUri(string uri)
     {
         string found = "";
@@ -633,6 +639,22 @@ internal static class GhrdpRdpLauncher
             c.Persist = 2; // CRED_PERSIST_LOCAL_MACHINE, current user's store
             if (!CredWrite(ref c, 0))
             { throw new InvalidOperationException("credwrite-failed code=" + Marshal.GetLastWin32Error()); }
+            // Pre-F27 interactive /generic created a separate type-1 entry.
+            // CredWrite keys by (target,type): writing type 2 cannot replace it.
+            // Refresh it ONLY when present, via the same sanctioned store API.
+            // No deletion, no reading/exporting its old credential blob.
+            IntPtr old = IntPtr.Zero;
+            bool genericPresent = CredRead(c.TargetName, 1, 0, out old);
+            int readError = Marshal.GetLastWin32Error();
+            if (old != IntPtr.Zero) { CredFree(old); }
+            if (genericPresent)
+            {
+                c.Type = 1; // existing CRED_TYPE_GENERIC compatibility entry
+                if (!CredWrite(ref c, 0))
+                { throw new InvalidOperationException("credwrite-legacy-failed code=" + Marshal.GetLastWin32Error()); }
+            }
+            else if (readError != 1168) // ERROR_NOT_FOUND is the only expected miss
+            { throw new InvalidOperationException("credwrite-legacy-inspection-failed"); }
         }
         finally
         {
