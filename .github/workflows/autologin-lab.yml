@@ -27,6 +27,10 @@ jobs:
     # beacon sequence + the exit code - never on a human click.
     env:
       GHRDP_LAB_NOMSG: '1'
+      # [F17 §3] the lab resolves the lab FQDN to 127.0.0.1 via a hosts alias;
+      # the production DNS guard would (correctly) block it, so the proof lane
+      # uses the lab-only bypass. Production main.yml never sets this.
+      GHRDP_LAB_DNS_BYPASS: '1'
     steps:
       - uses: actions/checkout@v4
 

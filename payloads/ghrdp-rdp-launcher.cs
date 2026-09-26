@@ -465,6 +465,15 @@ internal static class GhrdpRdpLauncher
     // ------------------------------------------------------------------
     private static int DnsGuardStep(string server, string host, int port)
     {
+        // [F17 §3] LAB-ONLY escape hatch (same class as GHRDP_LAB_NOMSG /
+        // GHRDP_LAB_CMDKEY_TIMEOUT_MS): the proof lane resolves the lab FQDN
+        // to 127.0.0.1 through a hosts alias, which production MUST block.
+        // Production never sets this env, so the guard always runs there.
+        if (Environment.GetEnvironmentVariable("GHRDP_LAB_DNS_BYPASS") == "1")
+        {
+            LogJson("dns", "rdp", "GHRDP_LAB_DNS_BYPASS=1 (lab only - production always guards DNS)");
+            return 0;
+        }
         IPAddress[] addrs = null;
         string err = "";
         try { addrs = Dns.GetHostAddresses(server); }
