@@ -1606,8 +1606,12 @@ function paintAuthDiscriminator(rl,s){
   setTxt('rdpAuthVerdict','SERVER credential bug - re-dispatch','#f5b7b7');
   setTxt('rdpAuthDetail','rdpListener.credValid=false: the dispatch password FAILED validation against the runner\u2019s own local SAM, so the password on the KEYS row is already dead and no client-side action can fix it. Re-dispatch - a fresh user+password pair is generated every run. '+aeTxt+'. '+csTxt);
   showCmds(false);
+ }else if(cv===true&&ae&&ae.last4624At&&!ae.probeError&&(!ae.last4625At||Date.parse(ae.last4624At)>Date.parse(ae.last4625At))){
+  setTxt('rdpAuthVerdict','RDP authentication succeeded (4624, logon type 10)','#7dffc9');
+  setTxt('rdpAuthDetail','Latest remote-interactive success: '+ae.last4624At+'. Older failures remain in the evidence window. Fullscreen and usage still need client confirmation. '+aeTxt+'. '+csTxt);
+  showCmds(false);
  }else if(cv===true&&stale){
-  setTxt('rdpAuthVerdict','YOUR stored password is stale: copy CURRENT password from KEYS','#f5d9b7');
+  setTxt('rdpAuthVerdict','YOUR stored password is stale: use WINDOWS AUTO-LOGIN; copy CURRENT password from KEYS only for fallback','#f5d9b7');
   setTxt('rdpAuthDetail','rdpListener.credValid=true (the server credential is VALID) BUT the runner logged failed logons 4625 with '+(codeUp.join(','))+' (wrong password / bad user or password): the credential Windows has STORED for this target on YOUR PC does not match this run. Click WINDOWS AUTO-LOGIN: the F27 ticket path overwrites the poisoned entry. Only if fallback-cmdkey is reported: copy CURRENT password from KEYS and paste the copied password EXACTLY at the Windows prompt. The manual reset below is optional; no tooling deletes credentials. '+aeTxt+'. '+csTxt);
   showCmds(true);showLine('rdpAuthCmdKeyDelWrap',true);showLine('rdpAuthPassWrap',true);showLine('rdpAuthCmdCapi2Wrap',false);showLine('rdpAuthCmdSystemWrap',false);
  }else if(cv===true){
@@ -1718,11 +1722,11 @@ try{clientDnsProbe();setInterval(clientDnsProbe,CDNS_PERIOD_MS);}catch(_){}
 // ghrdp://rdp?server=<fqdn>&user=<u>[&ip=<tailnet-ip>] at the
 // install.cmd-registered launcher. The ip= argument is for DIAGNOSIS ONLY
 // (client-DNS-off detection): mstsc always targets the FQDN - never the IP.
-// [F19 §2] this builder may emit server|user|ip and NOTHING else: no
-// password, token, key or secret parameter can ever enter a ghrdp:// URL.
+// [F27] base builder emits server|user|ip; the click appends only t.
+// Password/key parameters remain forbidden. A ticket is not the password.
 // Enabled whenever the target FQDN is valid and a real (non-placeholder) user
 // is known; the launcher itself handles a missing TERMSRV entry with ONE
-// interactive cmdkey prompt.
+// interactive fallback only on failed redemption.
 // [F27 status-render-begin]
 function paintHandoffStatus(rl,s){
  var ae=(rl&&rl.authEvents)||{};

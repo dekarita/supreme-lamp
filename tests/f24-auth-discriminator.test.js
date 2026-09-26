@@ -313,3 +313,15 @@ test('F24-I the gate step and the lab cell exist and pin the three branches', ()
   assert.ok(lab.includes('U_result=pass'), 'the lab cell U never reports a result');
   assert.ok(lab.includes("Nt 'U' 'U_result'"), 'the lab cell U is not announced in the evidence notices');
 });
+
+
+test('F27 newer type-10 success supersedes historic mismatch, never a newer failure', async () => {
+  const ae = { count4624: 1, count4625: 5, last4624At: '2026-09-26T16:00:00Z', last4625At: '2026-09-26T15:00:00Z', codes: [{code:'0xC000006A'}] };
+  const view = page({rdpListener:listener({credValid:true,authEvents:ae})});
+  await refresh(view);
+  assert.match(view.node('rdpAuthVerdict').textContent,/authentication succeeded/);
+  assert.equal(view.node('rdpAuthCmds').style.display,'none');
+  ae.last4625At='2026-09-26T17:00:00Z';
+  await refresh(view);
+  assert.match(view.node('rdpAuthVerdict').textContent,/YOUR stored password is stale/);
+});
