@@ -966,7 +966,7 @@ jobs:
           grep -q 'hello ok:false details' payloads/ghrdp-rdp-launcher.cs || grep -q 'false, "client-dns-off"' payloads/ghrdp-rdp-launcher.cs
           grep -q 'ShouldShowClientDnsRemediation(nameFailed, ipReachable)' payloads/ghrdp-rdp-launcher.cs
           grep -q 'Your Tailscale DNS is off' payloads/ghrdp-rdp-launcher.cs
-          grep -q 'f19-client-dns' payloads/ghrdp-rdp-launcher.cs
+          grep -q 'F19 client-dns' payloads/ghrdp-rdp-launcher.cs
           grep -q '2.2.0.0' payloads/ghrdp-rdp-launcher.cs
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
