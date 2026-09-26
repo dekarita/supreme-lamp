@@ -40,6 +40,15 @@ jobs:
               exit 1
           }
           $lab = Join-Path $env:RUNNER_TEMP 'lab-a'
+          function Read-Share([string]$Path) {
+              # The launched launcher may still hold the redirected handle: read with
+              # FileShare.ReadWrite so the capture is never blocked by a live child.
+              try {
+                  $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                  $sr = New-Object System.IO.StreamReader($fs)
+                  $t = $sr.ReadToEnd(); $sr.Dispose(); $fs.Dispose(); return $t
+              } catch { return '' }
+          }
           New-Item -ItemType Directory -Path $lab -Force | Out-Null
           Copy-Item payloads\install.cmd (Join-Path $lab 'install.cmd') -Force
           Copy-Item payloads\ghrdp-rdp-launcher.cs (Join-Path $lab 'ghrdp-rdp-launcher.cs') -Force
@@ -53,7 +62,7 @@ jobs:
           & cmd.exe /c $aWrap
           $code = $LASTEXITCODE
           $aTxt = ''
-          try { $aTxt = [System.IO.File]::ReadAllText($aOut) } catch { }
+          $aTxt = Read-Share $aOut
           foreach ($l in ($aTxt -split "`r?`n")) { if ($l.Trim()) { Write-Host ('[install.cmd] ' + $l) } }
           Write-Host ('[A] install.cmd exit code = ' + $code)
           if ($code -ne 0) { A-Fail 'exit' ('install.cmd exit ' + $code + ' :: out=[' + (($aTxt -split "`r?`n" | Select-Object -Last 12) -join ' | ') + ']') }
@@ -70,7 +79,7 @@ jobs:
           $lLog = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.log'
           $lTxt = ''
           for ($i = 0; $i -lt 20 -and $lTxt -notmatch 'ghrdp launcher check'; $i++) {
-              try { $lTxt = [System.IO.File]::ReadAllText($lLog) } catch { }
+              $lTxt = Read-Share $lLog
               if ($lTxt -notmatch 'ghrdp launcher check') { Start-Sleep -Milliseconds 500 }
           }
           Write-Host '[A] launcher log (F15 fail-visible JSONL):'
@@ -617,6 +626,15 @@ jobs:
           $before = [string](Get-Item -LiteralPath 'HKCU:\Software\Classes\ghrdp\shell\open\command').GetValue('')
           Write-Host ('[N] planted stale value: ' + $before)
           $lab = Join-Path $env:RUNNER_TEMP 'lab-n'
+          function Read-Share([string]$Path) {
+              # The launched launcher may still hold the redirected handle: read with
+              # FileShare.ReadWrite so the capture is never blocked by a live child.
+              try {
+                  $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                  $sr = New-Object System.IO.StreamReader($fs)
+                  $t = $sr.ReadToEnd(); $sr.Dispose(); $fs.Dispose(); return $t
+              } catch { return '' }
+          }
           New-Item -ItemType Directory -Path $lab -Force | Out-Null
           Copy-Item payloads\install.cmd (Join-Path $lab 'install.cmd') -Force
           Copy-Item payloads\ghrdp-rdp-launcher.cs (Join-Path $lab 'ghrdp-rdp-launcher.cs') -Force
@@ -628,8 +646,7 @@ jobs:
           [System.IO.File]::WriteAllText($nWrap, "@echo off`r`ncd /d ""%~dp0""`r`ncall ""%~dp0install.cmd"" < nul > ""%~dp0install-out.txt"" 2>&1`r`nexit /b %ERRORLEVEL%`r`n", [System.Text.Encoding]::ASCII)
           & cmd.exe /c $nWrap
           $code = $LASTEXITCODE
-          $out = @()
-          try { $out = @([System.IO.File]::ReadAllLines($nOut)) } catch { }
+          $out = @((Read-Share $nOut) -split "`r?`n")
           $out | ForEach-Object { Write-Host ('[N install.cmd] ' + $_) }
           $after = [string](Get-Item -LiteralPath 'HKCU:\Software\Classes\ghrdp\shell\open\command').GetValue('')
           $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
