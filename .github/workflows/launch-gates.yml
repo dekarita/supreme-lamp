@@ -849,6 +849,57 @@ jobs:
           fi
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
+      - name: F17 RDP listener probe gates (probe + loud fail, scope 100.64.0.0/10, UTC beacon age, DNS guard)
+        shell: bash
+        run: |
+          set -euo pipefail
+          main=.github/workflows/main.yml
+          ui=payloads/ui.html
+          srv=payloads/ghrdp-server.ps1
+          launcher=payloads/ghrdp-rdp-launcher.cs
+          # [F17 §1] the probe step AND its loud fail must exist (non-vacuous).
+          grep -qF -- '- name: RDP listener self-probe (F17)' "$main" || { echo 'F17: probe step missing from main.yml' >&2; exit 1; }
+          grep -qF '::error::[listener-probe] field=' "$main" || { echo 'F17: probe loud-fail annotation missing' >&2; exit 1; }
+          grep -qF 'RDP listener self-probe failed: field ' "$main" || { echo 'F17: probe loud-fail throw missing' >&2; exit 1; }
+          grep -qF 'rdpListener' "$main" || { echo 'F17: probe does not store config rdpListener' >&2; exit 1; }
+          grep -qF 'Test-NetConnection -ComputerName 127.0.0.1 -Port 3389' "$main" || { echo 'F17: loopback 3389 probe missing' >&2; exit 1; }
+          grep -qF "\$bad += 'listening'" "$main" || { echo 'F17: listening loud-fail missing' >&2; exit 1; }
+          grep -qF "\$bad += 'fwRule'" "$main" || { echo 'F17: fwRule loud-fail missing' >&2; exit 1; }
+          grep -qF "\$bad += 'certThumb'" "$main" || { echo 'F17: certThumb loud-fail missing' >&2; exit 1; }
+          # [F17 §1/§4] a firewall scope literal ANYWHERE must equal
+          # 100.64.0.0/10 (never anything wider - 0.0.0.0/0 included).
+          # (this gate file is excluded so its own patterns cannot self-match)
+          bad1=$(grep -rhoE --exclude=launch-gates.yml "RemoteAddress '[^']*'" .github payloads 2>/dev/null | sort -u | grep -vF '100.64.0.0/10' || true)
+          bad2=$(grep -rhoE --exclude=launch-gates.yml 'remoteip=[^[:space:]]+' .github payloads 2>/dev/null | sort -u | grep -vF '100.64.0.0/10' || true)
+          bad3=$(grep -rhoE --exclude=launch-gates.yml 'RemoteAddress "[^"]*"' .github payloads 2>/dev/null | sort -u | grep -vF '100.64.0.0/10' || true)
+          bad=$(printf '%s\n%s\n%s\n' "$bad1" "$bad2" "$bad3" | grep -v '^$' | sort -u || true)
+          if [ -n "$bad" ]; then echo "F17: firewall scope literal differs from 100.64.0.0/10: $bad" >&2; exit 1; fi
+          # [F17 §2] ui beacon age parse must be UTC-aware AND actually used
+          # (zoneless timestamps parse as UTC, never the browser's local tz).
+          grep -qF 'function parseTs' "$ui" || { echo 'F17: parseTs missing from ui.html' >&2; exit 1; }
+          grep -qF "Date.parse(s+'Z')" "$ui" || { echo 'F17: zoneless-as-UTC branch missing in parseTs' >&2; exit 1; }
+          grep -qF 'var t=parseTs(b.ts);' "$ui" || { echo 'F17: paintBeacon age does not use the UTC parse' >&2; exit 1; }
+          grep -qF 'var t2=parseTs(b.ts);' "$ui" || { echo 'F17: beacon stall timer does not use the UTC parse' >&2; exit 1; }
+          grep -qF 'var hts=parseTs(hv);' "$ui" || { echo 'F17: hello watch does not use the UTC parse' >&2; exit 1; }
+          # [F17 §2] server: rdpListener in native-status, per-run beacon reset,
+          # RoundtripKind/UTC parsing + ISO-Z echo.
+          grep -qF 'rdpListener = $null' "$srv" || { echo 'F17: native-status rdpListener field missing' >&2; exit 1; }
+          grep -qF 'store reset at server start' "$srv" || { echo 'F17: beacon store reset at server start missing' >&2; exit 1; }
+          grep -qF 'RoundtripKind' "$srv" || { echo 'F17: RoundtripKind UTC parse missing in server' >&2; exit 1; }
+          grep -qF 'yyyy-MM-ddTHH:mm:ssZ' "$srv" || { echo 'F17: ISO-Z echo normalization missing in server' >&2; exit 1; }
+          # [F17 §2] UI: RDP LISTENER row, AUTO-LOGIN gate, copy-only diagnostics.
+          grep -qF 'id="nrListener"' "$ui" || { echo 'F17: RDP LISTENER row missing from ui.html' >&2; exit 1; }
+          grep -qF 'RDP LISTENER' "$ui" || { echo 'F17: RDP LISTENER label missing from ui.html' >&2; exit 1; }
+          grep -qF 'window.__listenerOk===true' "$ui" || { echo 'F17: AUTO-LOGIN rdpListener gate missing' >&2; exit 1; }
+          grep -qF 'id="diagPing"' "$ui" || { echo 'F17: copy-only ping diagnostics line missing' >&2; exit 1; }
+          grep -qF 'Test-NetConnection ' "$ui" || { echo 'F17: copy-only Test-NetConnection line missing' >&2; exit 1; }
+          # [F17 §3] client-DNS guard in the launcher, called before cmdkey/mstsc.
+          grep -qF 'Dns.GetHostAddresses(server)' "$launcher" || { echo 'F17: DNS guard resolve call missing' >&2; exit 1; }
+          grep -qF 'DNS stale/blocked - flushdns or check tailscale' "$launcher" || { echo 'F17: DNS guard MessageBox text missing' >&2; exit 1; }
+          grep -qF 'dns-unresolved' "$launcher" || { echo 'F17: dns-unresolved ok:false beacon missing' >&2; exit 1; }
+          grep -qF 'dns-not-tailnet' "$launcher" || { echo 'F17: dns-not-tailnet ok:false beacon missing' >&2; exit 1; }
+          grep -qF 'int rc = DnsGuardStep(server, host, port);' "$launcher" || { echo 'F17: DNS guard not called before cmdkey/mstsc' >&2; exit 1; }
+          echo 'F17 gates PASS'
   windows-native:
     runs-on: windows-latest
     steps:
