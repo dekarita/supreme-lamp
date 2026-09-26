@@ -1802,17 +1802,32 @@ jobs:
           $statePath = Join-Path $env:RUNNER_TEMP 'f30-tls-norm.json'
           $backupPath = Join-Path $env:RUNNER_TEMP 'f30-cipher-functions-original.txt'
           $r = Invoke-F30TlsNormalize -Suites $script:F30Suites -StatePath $statePath -BackupPath $backupPath -SkipServiceRestart
-          Write-Host ('[X] normalize: enabled=' + $r.enabled.Count + ' failed=' + $r.failed.Count + ' orderOk=' + $r.order.ok + ' tls12Sides=' + $r.tls12Sides + ' tls13Sides=' + $r.tls13Sides + ' securityLayer=' + $r.securityLayer + ' minEncryptionLevel=' + $r.minEncryptionLevel)
+          Write-Host ('::notice::[X] normalize: enabled=' + $r.enabled.Count + ' failed=' + $r.failed.Count + ' orderOk=' + $r.order.ok + ' tls12Sides=' + $r.tls12Sides + ' tls13Sides=' + $r.tls13Sides + ' securityLayer=' + $r.securityLayer + ' minEncryptionLevel=' + $r.minEncryptionLevel)
           if (-not $r.order.ok) { X-Fail 'cipher-order' ('the live Schannel Functions list is not ordered: ' + $r.order.why + ' :: ' + $r.order.after) }
           $live = @()
           try { $live = @(Get-F30SuiteNames -Items @(Get-TlsCipherSuite -ErrorAction Stop)) } catch { }
-          if ($live.Count -gt 0) {
-              foreach ($suite in $script:F30Suites) {
-                  if ($live -notcontains $suite) { X-Fail 'cipher-live' ('the live suite list lacks ' + $suite) }
-              }
-              Write-Host ('[X] (a2) live Get-TlsCipherSuite carries all 5 ordered suites (head: ' + ((@($live | Select-Object -First 5)) -join ', ') + ')')
+          # The cmdlet view is HOST-DEPENDENT: a build that does not expose a
+          # suite (typically the TLS 1.3 set) omits it from Get-TlsCipherSuite
+          # entirely, so "absent from the cmdlet" is NOT "not normalized". The
+          # DEFINITIVE ordered list is the Schannel Functions value this cell
+          # just wrote and re-read; the cmdlet is an ADDITIONAL witness. A suite
+          # the cmdlet DOES know must have been enabled, or the applier promise
+          # is broken and the cell fails.
+          $fnLive = @()
+          try { $fnLive = @(Get-F30SuiteNames -Items @((Get-ItemProperty -Path $script:F30FunctionsKey -Name 'Functions' -ErrorAction Stop).Functions)) } catch { }
+          $missingFn = @($script:F30Suites | Where-Object { $fnLive -notcontains $_ })
+          if ($fnLive.Count -eq 0 -or $missingFn.Count -gt 0) { X-Fail 'cipher-live' ('the Schannel Functions list lacks ' + ($missingFn -join ', ') + ' (read back ' + $fnLive.Count + ' entries)') }
+          if (-not (Test-F30Order -List $fnLive -Suites $script:F30Suites)) { X-Fail 'cipher-live' 'the Schannel Functions list is not in the declared GCM/ChaCha20-first order' }
+          $missingLive = @($script:F30Suites | Where-Object { $live -notcontains $_ })
+          foreach ($suite in $script:F30Suites) {
+              if ($live -contains $suite -and ($r.enabled -notcontains $suite)) { X-Fail 'cipher-enable' ('the cmdlet knows ' + $suite + ' but enabling it failed :: ' + ($r.failed -join ' ; ')) }
+          }
+          if ($live.Count -eq 0) {
+              Write-Host '::notice::[X] (a2) Get-TlsCipherSuite enumerated NOTHING on this host - the Schannel Functions read-back carries all 5 suites in the declared order'
+          } elseif ($missingLive.Count -eq 0) {
+              Write-Host ('::notice::[X] (a2) live Get-TlsCipherSuite carries all 5 ordered suites (head: ' + ((@($live | Select-Object -First 5)) -join ', ') + ')')
           } else {
-              Write-Host '[X] (a2) WARN: Get-TlsCipherSuite enumerated nothing on this host - the registry order verdict above is the proof'
+              Write-Host ('::notice::[X] (a2) Get-TlsCipherSuite omits ' + ($missingLive -join ', ') + ' on this build; the Schannel Functions read-back carries all 5 in the declared order (normalize enabled=' + $r.enabled.Count + ' failed=' + $r.failed.Count + ')')
           }
           if (-not (Test-Path -LiteralPath $statePath)) { X-Fail 'state' 'the normalization state file was not written' }
           # (b) TLS 1.2 AND 1.3, Client + Server, Enabled=1, DisabledByDefault=0

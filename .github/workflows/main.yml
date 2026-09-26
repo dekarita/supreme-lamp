@@ -931,6 +931,11 @@ jobs:
                       $ok = $false; $why = ''
                       try {
                           if (-not (Test-Path -LiteralPath $p)) { New-Item -Path $p -Force -ErrorAction Stop | Out-Null }
+                          # Set-ItemProperty THROWS on an absent value and a fresh
+                          # (e.g. TLS 1.3) key has none: create-if-missing first,
+                          # then the explicit DWord writes below.
+                          if ($null -eq (Get-ItemProperty -Path $p -Name 'Enabled' -ErrorAction SilentlyContinue)) { New-ItemProperty -Path $p -Name 'Enabled' -PropertyType DWord -Value 1 -Force -ErrorAction SilentlyContinue | Out-Null }
+                          if ($null -eq (Get-ItemProperty -Path $p -Name 'DisabledByDefault' -ErrorAction SilentlyContinue)) { New-ItemProperty -Path $p -Name 'DisabledByDefault' -PropertyType DWord -Value 0 -Force -ErrorAction SilentlyContinue | Out-Null }
                           Set-ItemProperty -Path $p -Name 'Enabled' -Value 1 -Type DWord -ErrorAction Stop
                           Set-ItemProperty -Path $p -Name 'DisabledByDefault' -Value 0 -Type DWord -ErrorAction Stop
                           $ok = ((Get-ItemProperty -Path $p -Name 'Enabled' -ErrorAction Stop).Enabled -eq 1)
@@ -962,6 +967,8 @@ jobs:
               $secLayer = $null; $minEnc = $null; $rdpWhy = ''
               try {
                   $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+                  if ($null -eq (Get-ItemProperty -Path $rdpKey -Name 'SecurityLayer' -ErrorAction SilentlyContinue)) { New-ItemProperty -Path $rdpKey -Name 'SecurityLayer' -PropertyType DWord -Value 2 -Force -ErrorAction SilentlyContinue | Out-Null }
+                  if ($null -eq (Get-ItemProperty -Path $rdpKey -Name 'MinEncryptionLevel' -ErrorAction SilentlyContinue)) { New-ItemProperty -Path $rdpKey -Name 'MinEncryptionLevel' -PropertyType DWord -Value 3 -Force -ErrorAction SilentlyContinue | Out-Null }
                   Set-ItemProperty -Path $rdpKey -Name 'SecurityLayer' -Value 2 -Type DWord -ErrorAction Stop
                   Set-ItemProperty -Path $rdpKey -Name 'MinEncryptionLevel' -Value 3 -Type DWord -ErrorAction Stop
                   $secLayer = (Get-ItemProperty -Path $rdpKey -Name 'SecurityLayer' -ErrorAction Stop).SecurityLayer
@@ -1022,11 +1029,36 @@ jobs:
           $f30Live = @()
           try { $f30Live = @(Get-F30SuiteNames -Items @(Get-TlsCipherSuite -ErrorAction Stop)) } catch { }
           $f30LiveHead = @($f30Live | Select-Object -First 8)
+          # The cmdlet view is host-dependent: a build that does not expose a
+          # suite (typically the TLS 1.3 set) omits it from Get-TlsCipherSuite
+          # entirely, so "absent from the cmdlet" is NOT "not normalized" - the
+          # Schannel Functions read-back is the definitive ordered list. A
+          # suite the cmdlet DOES know must have been enabled, or the applier
+          # promise is broken -> hard error below.
+          $f30Known = @()
+          $f30Unsupported = @()
+          foreach ($s in $script:F30Suites) {
+              if ($f30Live -contains $s) { $f30Known += $s } else { $f30Unsupported += $s }
+          }
+          $f30KnownFailed = @($f30.failed | Where-Object { $n = ([string]$_ -split ':')[0]; $f30Known -contains $n })
           Write-Host ('[F30] suites enabled=' + $f30.enabled.Count + ' failed=' + $f30.failed.Count + ' orderOk=' + $f30.order.ok + ' tls12Sides=' + $f30.tls12Sides + ' tls13Sides=' + $f30.tls13Sides + ' securityLayer=' + $f30.securityLayer + ' minEncryption=' + $f30.minEncryptionLevel)
           Write-Host ('[F30] live suite head: ' + ($f30LiveHead -join ' | '))
           Write-Host ('[F30] ordered Functions head: ' + ((@($f30.order.after -split ',') | Select-Object -First 8) -join ' | '))
           Write-Host ('[F30] services: ' + ($f30.restarted -join ', '))
-          if ($f30.failed.Count -gt 0) { Write-Host ('::warning::[F30] cipher suites not enabled by cmdlet (registry order still enforced): ' + ($f30.failed -join ' ; ')) }
+          if ($f30.failed.Count -gt 0) { Write-Host ('::warning::[F30] cipher suites not enabled by cmdlet (registry order still enforced): ' + ($f30.failed -join ' ; ') + ' | not exposed by Get-TlsCipherSuite on this build: ' + (@($f30Unsupported) -join ', ')) }
+          if ($f30KnownFailed.Count -gt 0) {
+              Write-Host ('::error::[F30] a suite this build DOES expose could not be enabled; reason cipher-enable-failed: ' + ($f30KnownFailed -join ' ; '))
+              if ($S) { ('### F30 cipher enable FAILED - reason cipher-enable-failed: ' + ($f30KnownFailed -join ' ; ')) | Add-Content -Path $S }
+              throw 'F30 halted by design: Enable-TlsCipherSuite failed for a suite the host exposes (reason cipher-enable-failed)'
+          }
+          # Stamp the honest cmdlet-vs-registry split so the dashboard reports
+          # the order it can prove without pretending every suite is visible.
+          try {
+              $st = Get-Content -LiteralPath 'C:\ghrdp\tls-norm.json' -Raw | ConvertFrom-Json
+              $st | Add-Member -NotePropertyName 'suitesUnsupportedByCmdlet' -NotePropertyValue @($f30Unsupported) -Force
+              $st | Add-Member -NotePropertyName 'liveSuiteCount' -NotePropertyValue ([int]$f30Live.Count) -Force
+              [System.IO.File]::WriteAllText('C:\ghrdp\tls-norm.json', ($st | ConvertTo-Json -Depth 6 -Compress), (New-Object System.Text.UTF8Encoding($false)))
+          } catch { }
           # Fail LOUD when the host cannot be normalized at all: an un-ordered /
           # un-enableable Schannel is exactly the state that drops the client at
           # handshake, and a green run must never advertise it as LIVE.
