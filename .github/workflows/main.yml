@@ -558,29 +558,25 @@ jobs:
           }
           $thumb = ''
           try {
-              $loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile($crtPath, $keyPath)
+              . "$env:GITHUB_WORKSPACE\payloads\rdp-key-probe.ps1"
+              $loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPem([IO.File]::ReadAllText($crtPath), [IO.File]::ReadAllText($keyPath))
               $pfxBytes = $loaded.Export('Pfx', [string]::Empty)
-              $flags = 'PersistKeySet,MachineKeySet,Exportable'
+              # PersistKeySet is the .NET persistence flag; there is no Persistable member.
+              $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
               $imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, [string]::Empty, $flags)
+              if ($imported.HasPrivateKey -ne $true) { throw 'cert-imported-without-persisted-key' }
+              $loaded.Dispose()
+              [Array]::Clear($pfxBytes, 0, $pfxBytes.Length)
               $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
               $store.Open('ReadWrite')
               foreach ($old in @($store.Certificates | Where-Object { $_.Subject -match [regex]::Escape($fqdn) })) { $store.Remove($old) }
               $store.Add($imported)
               $store.Close()
               $thumb = $imported.Thumbprint
-              try {
-                  $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported)
-                  if ($rsa -and $rsa.Key -and $rsa.Key.UniqueName) {
-                      $machineKeys = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
-                      $keyFile = Join-Path $machineKeys $rsa.Key.UniqueName
-                      if (Test-Path -LiteralPath $keyFile) {
-                          $acl = Get-Acl -Path $keyFile
-                          $rule = New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\NETWORK SERVICE', 'Read', 'Allow')
-                          $acl.AddAccessRule($rule)
-                          Set-Acl -Path $keyFile -AclObject $acl
-                      }
-                  }
-              } catch { Write-Host ('[cert] key ACL step skipped: ' + $_.Exception.Message) }
+              $keyFile = Get-RdpKeyFile $imported
+              Set-RdpKeyAcl $keyFile
+              Write-Host ('[cert] haskey=' + $imported.HasPrivateKey)
+              $imported.Dispose()
           } catch {
               # [F12-2] fail-closed: an import failure used to exit 0 and leave
               # certBound = NO on a green run.
@@ -611,7 +607,9 @@ jobs:
           try { $bound = (Get-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -ErrorAction Stop).SSLCertificateSHA1Hash; $boundHex = ($bound | ForEach-Object { $_.ToString('X2') }) -join '' } catch { }
           if ($boundHex -ieq $thumb) {
               Write-Host ('[cert] OK: cert ' + $thumb + ' bound on RDP-Tcp; NLA=1')
-              try { Restart-Service TermService -Force -ErrorAction SilentlyContinue; Write-Host '[cert] TermService restarted' } catch { }
+              Restart-Service TermService -Force -ErrorAction Stop
+              (Get-Service TermService).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+              Test-RdpListenerTls -Thumbprint $thumb -KeyFile $keyFile
               if ($S) { '### RDP cert bind OK' | Add-Content -Path $S; ('Thumbprint: `' + $thumb + '`') | Add-Content -Path $S }
           } else {
               # [F12-2] A verification mismatch is a FAILED bind, not a notice:

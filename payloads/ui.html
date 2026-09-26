@@ -530,7 +530,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <span class="note" id="srvConnLogState" style="margin:0">collector not reported yet (server 30s tick reads both RDP Operational logs)</span>
     <span class="note" id="srvConnLogLines" style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace"></span>
     <span class="note" id="srvConnLogTls" style="margin:0"></span>
-    <span class="note" style="margin:0">reason codes: tls-forcibly-closed | tls-handshake-failed | cert-rejected | connection-reset | auth-succeeded | auth-failed | listener-lifecycle | session-state. A "forcibly closed"/handshake/reset reason here IS the pre-logon TLS drop the Security log cannot show - run the purge + cipher copy-lines under CONNECTION DIAGNOSTICS.</span>
+    <span class="note" style="margin:0">Schannel: 36870 = private-key/ACL; 36871 = cipher; 12017 = credential-event; 12018 = no-cred. reason codes: tls-forcibly-closed | tls-handshake-failed | cert-rejected | connection-reset | auth-succeeded | auth-failed | listener-lifecycle | session-state. A "forcibly closed"/handshake/reset reason here IS the pre-logon TLS drop the Security log cannot show - run the purge + cipher copy-lines under CONNECTION DIAGNOSTICS.</span>
   </div>
   <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>
   <div class="row"><span class="k">Cert bound</span><span class="v" id="nrCert">...</span><span class="note" id="nrCertReason">RDP-Tcp SSLCertificateSHA1Hash present (from /api/native-status).</span></div>
@@ -1687,6 +1687,10 @@ function paintSrvConnLog(s){
  }
  var items=(cl.items&&cl.items.length)?cl.items:((cl.newest)||[]);
  var newest=items.slice(0,3);
+ // Keep the last five Schannel reasons visible even when Operational logs are busy.
+ (cl.schannel||[]).slice(0,5).forEach(function(e){
+  if(!newest.some(function(n){return n.id===e.id&&n.timeUtc===e.timeUtc&&n.provider===e.provider;}))newest.push(e);
+ });
  if(st){
   var alive=!!(col&&col.alive===true);
   var probe=(col&&col.probeError)?(' probeError='+col.probeError):'';

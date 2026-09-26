@@ -1573,6 +1573,10 @@ jobs:
       # checks here are the static half, and tests/f30-tls-cipher.test.js EXECUTES
       # the shipped renderer + bounded surfaces (then the Windows lane + lab cell
       # X drive the same code with real cipher suites / credential store / events).
+      - name: F31 persisted key and self-probe gates
+        shell: bash
+        run: node --test tests/f31-private-key.test.js
+
       - name: F30 TLS/cipher + purge + connlog gates
         shell: bash
         run: |

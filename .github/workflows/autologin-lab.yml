@@ -18,6 +18,8 @@ on:
       - payloads/edge-ext-resolve.ps1
       - payloads/ghrdp-cred-shim.js
       - payloads/ui.html
+      - payloads/rdp-key-probe.ps1
+      - tests/f31-private-key.ps1
       - tests/f27-windows.ps1
       - tests/f27-handoff.test.js
       - tests/f27-copy.test.js
@@ -2055,3 +2057,12 @@ jobs:
           Write-Host ('::notice::[G] physical-PC cells (0 prompts, live peripherals, screenshot-native) remain PENDING-USER per §6; no LIVE claim is made here')
           '' | Add-Content -Path $S
           'STOP-condition note: §6(a-c) are proven at the launcher/protocol level in this lab; the physical-PC cells (0 prompts, live peripherals, physical-native screenshot) stay PENDING-USER per §6, so the AUTO-LOGIN REDIRECT LIVE line is NOT claimed.' | Add-Content -Path $S
+
+  f31-private-key:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: F31 real RDP private-key persistence and ACL matrix
+        shell: pwsh
+        run: ./tests/f31-private-key.ps1
