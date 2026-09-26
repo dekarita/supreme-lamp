@@ -326,6 +326,22 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
       <button class="primary" id="btnWinAuto" type="button" disabled>WINDOWS AUTO-LOGIN</button>
       <span class="note" id="winAutoNote">fullscreen native mstsc, silent after a one-time Windows prompts for your password (cmdkey)</span>
     </div>
+    <!-- [F15 §3] FAIL-VISIBLE launcher diagnostics. The launcher beacons BEFORE
+         any work (details='invoked'), then cmdkey-shown / cmdkey-stored=... /
+         mstsc-started pid=N / mstsc-exited=... . The row below renders the last
+         beacon {verb, details, ok, ageSec}; if the last beacon is still
+         'invoked' 45s later, no surface will ever appear -> red stall row
+         naming the exact stall point and the local launcher log. [RUN CHECK]
+         fires ghrdp://check (the same self test install.cmd runs): it needs no
+         server and always ends in a MessageBox on the PC. -->
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span class="k">Launcher beacon</span>
+      <span class="v" id="winBeacon" style="font-family:ui-monospace,Consolas,monospace;font-size:12px">(none yet - click WINDOWS AUTO-LOGIN)</span>
+      <button id="btnRunCheck" type="button" title="fires ghrdp://check - a MessageBox on this PC proves the launcher exe runs (no server needed)">RUN CHECK</button>
+      <span class="note">launcher log <code id="winBeaconLog">%LOCALAPPDATA%\ghrdp\ghrdp-launcher.log</code>
+        <a href="javascript:void(0)" onclick="copyById('winBeaconLog',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+    </div>
+    <div class="note" id="winBeaconStall" style="display:none;color:#f5b7b7"></div>
     <!-- [F12-1 §1.4] Stale-registration notice: shown when the launcher's
          /api/handler-hello beacon does NOT arrive within 20s of the click. The
          pre-F2 registration ran the old script host, which is exactly the
@@ -997,6 +1013,9 @@ async function nativeStatus(){
     }
    }
    window.__helloTs=hv;
+   // [F15 §3] ... and into the fail-visible diagnostics row: verb/details/ok/age.
+   window.__beacon={verb:s.lastHandlerVerb.verb,details:s.lastHandlerVerb.details,ok:s.lastHandlerVerb.ok,ts:hv};
+   paintBeacon();
   }
   // [F10-3 §2.1] RDP LOGON AGE: server samples the newest LogonType-10
   // session; the row ticks locally from the first non-null sample (no more
@@ -1330,6 +1349,39 @@ function openWebDesk(url){
 // use the pinned executable after the interactive cmdkey prerequisite.
 nativeStatus();
 setInterval(nativeStatus,15000);
+// [F15 §3] Launcher beacon row + stall verdict. The launcher's beacon sequence
+// is invoked -> cmdkey-shown|cmdkey-stored=... -> mstsc-started pid=N (or a
+// mstsc-exited=/<ExceptionType> failure, which is red on its own). If the LAST
+// beacon is still 'invoked' 45s later nothing visible will ever appear, so the
+// row turns red with the stall point and the exact local log path.
+var BEACON_STALL_MS=45000;
+var LAUNCHER_LOG='%LOCALAPPDATA%\\ghrdp\\ghrdp-launcher.log';
+window.__beaconInvokedAt=0;
+function paintBeacon(){
+ var el=$('winBeacon');var b=window.__beacon;
+ if(el){
+  if(!b||!b.ts){el.textContent='(none yet - click WINDOWS AUTO-LOGIN; a stale registration posts no beacon)';el.style.color='';}
+  else{
+   var t=Date.parse(b.ts);
+   var age=isNaN(t)?null:Math.max(0,Math.round((Date.now()-t)/1000));
+   el.textContent='verb='+(b.verb||'?')+' details='+(b.details||'(none)')+' ok='+(b.ok?'true':'false')+' age='+(age===null?'?':age)+'s';
+   el.style.color=(b.ok===false)?'#f5b7b7':'';
+  }
+ }
+ var se=$('winBeaconStall');if(!se)return;
+ var det=(b&&b.details)?String(b.details):'';
+ if(det==='invoked'){
+  if(!window.__beaconInvokedAt){var t2=Date.parse(b.ts);window.__beaconInvokedAt=(isNaN(t2)?Date.now():t2);}
+  if(Date.now()-window.__beaconInvokedAt>=BEACON_STALL_MS){
+   se.style.display='';
+   se.textContent='launcher stalled at: '+det+' - open '+LAUNCHER_LOG;
+   return;
+  }
+ }else{window.__beaconInvokedAt=0;}
+ se.style.display='none';se.textContent='';
+}
+paintBeacon();
+setInterval(paintBeacon,1000);
 fetch('https://api.github.com/repos/dekarita/supreme-lamp/commits/main',{cache:'no-store'}).then(function(r){return r.json();}).then(function(j){
   var main=j&&j.sha;
   if(main && typeof BUILD_SHA==='string' && BUILD_SHA!=='__BUILD_SHA__' && BUILD_SHA!==main){
@@ -1391,7 +1443,20 @@ if(waBtn) waBtn.onclick=function(ev){
   }else{
    var ins2=$('winAutoInstall');if(ins2)ins2.style.display='none';
   }
- },900);
+  },900);
+};
+// [F15 §3] [RUN CHECK] - fires the launcher's own self test (ghrdp://check): it
+// needs no server and ends in a MessageBox on the PC showing the registered reg
+// command, the TERMSRV credential state, the log path and the exe stamp. With a
+// valid *.ts.net FQDN the check also beacons, so the diagnostics row above
+// fills in and a missing handler stays visible instead of silent.
+var rcBtn=$('btnRunCheck');
+if(rcBtn) rcBtn.onclick=function(ev){
+ if(ev&&ev.preventDefault)ev.preventDefault();
+ var fqdn=($('rdpFqdn')||{}).textContent||'';
+ launchProto('ghrdp://check'+(FQDN_RE.test(fqdn)?('?server='+encodeURIComponent(fqdn)):''));
+ var note=$('winAutoNote');
+ if(note)note.textContent='ghrdp://check dispatched - a "ghrdp launcher check" MessageBox must appear on this PC (no MessageBox => read the launcher log: Defender or policy may have blocked the exe)';
 };
 var btn=$('autoLoginNative');
 if(btn) btn.onclick=function(ev){
