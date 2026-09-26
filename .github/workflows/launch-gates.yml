@@ -479,6 +479,69 @@ jobs:
           grep -qF "'ghrdp://check'" payloads/ui.html
           echo 'F15 gates PASS'
 
+      - name: F17 RDP listener probe + client-DNS guard gates (0x904/0x7)
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          ui=payloads/ui.html
+          srv=payloads/ghrdp-server.ps1
+          cs=payloads/ghrdp-rdp-launcher.cs
+          lab=.github/workflows/autologin-lab.yml
+          # --- §1/§4 main.yml must carry the §1 probe step AND its loud fail --
+          probe=$(awk '/name: RDP listener self-probe \(F17/{f=1;next} f && /^      - name: /{exit} f' "$wf")
+          test -n "$probe" || { echo 'F17: main.yml lacks the RDP listener self-probe step' >&2; exit 1; }
+          for tok in 'rdpListener' 'Test-NetConnection 127.0.0.1 -Port 3389' 'Get-NetFirewallRule' 'SSLCertificateSHA1Hash' 'UserAuthentication' 'TermService' '[F17 §1 probe-begin]' '[F17 §1 probe-end]' '::error::[F17]' 'throw'; do
+            grep -qF "$tok" <<< "$probe" || { echo "F17: probe step missing: $tok" >&2; exit 1; }
+          done
+          # the probe must write config BEFORE the loud fail (dashboard must see
+          # the exact ❌ field on a red run).
+          wl=$(grep -nF 'Add-Member -NotePropertyName rdpListener' <<< "$probe" | head -1 | cut -d: -f1)
+          wf2=$(grep -nF '::error::[F17]' <<< "$probe" | head -1 | cut -d: -f1)
+          test -n "$wl" && test -n "$wf2" && test "$wl" -lt "$wf2"
+          # --- §4 fwRule scope: 100.64.0.0/10 EXACTLY, anywhere --------------
+          if grep -v '^[[:space:]]*#' "$wf" | grep -n '0\.0\.0\.0/0'; then
+            echo 'F17: 0.0.0.0/0 on an executable main.yml line (comments may name the ban only)' >&2; exit 1
+          fi
+          bad=$(grep -hoE "RemoteAddress '[^']+'" "$wf" payloads/Provision-GhrdpVps.ps1 | sort -u | grep -vF "RemoteAddress '100.64.0.0/10'" || true)
+          if [ -n "$bad" ]; then echo "F17: fwRule scope differs from 100.64.0.0/10: $bad" >&2; exit 1; fi
+          bad2=$(grep -hoE 'remoteip=[0-9A-Za-z./]+' "$wf" | sort -u | grep -vF 'remoteip=100.64.0.0/10' || true)
+          if [ -n "$bad2" ]; then echo "F17: netsh remoteip scope differs from 100.64.0.0/10: $bad2" >&2; exit 1; fi
+          # --- §2 server: RoundtripKind UTC parse + per-run reset + rdpListener
+          grep -q 'RoundtripKind' "$srv" || { echo 'F17: server lacks the RoundtripKind UTC ts parse' >&2; exit 1; }
+          grep -qF 'function Get-RawJsonTs' "$srv"
+          grep -qF '[F17 §2] per-run beacon store' "$srv"
+          grep -qF 'handler-hello-last.json' "$srv"
+          grep -qF 'rdpListener = $(if ($cfgN' "$srv"
+          # --- §2 UI: UTC beacon-age parse + RDP LISTENER row + gate + diag ---
+          grep -qF 'function parseTsUtc' "$ui" || { echo 'F17: ui.html beacon age parse lacks UTC handling' >&2; exit 1; }
+          grep -qF 'parseTsUtc(b.ts)' "$ui"
+          grep -qF 'parseTsUtc(hv)' "$ui"
+          grep -qF 'id="rdpListenerRow"' "$ui"
+          grep -qF 'RDP LISTENER' "$ui"
+          grep -qF '__listenerOk' "$ui"
+          grep -qF 'id="connDiagPing"' "$ui"
+          grep -qF 'id="connDiagTnc"' "$ui"
+          grep -qF "Test-NetConnection '+" "$ui"
+          grep -qF "' -Port 3389'" "$ui"
+          # --- §3 launcher DNS guard BEFORE any cmdkey/mstsc work ------------
+          grep -qF 'Dns.GetHostAddresses' "$cs" || { echo 'F17: launcher lacks the DNS guard' >&2; exit 1; }
+          grep -qF 'IsTailnetAddress' "$cs"
+          grep -qF 'dns-guard' "$cs"
+          grep -qF 'flushdns' "$cs"
+          grep -qF '100.64.0.0/10' "$cs"
+          grep -qF 'GHRDP_LAB_DNS_ALLOW_LOOPBACK' "$cs"
+          guard=$(grep -nF 'DnsGuardReason(server)' "$cs" | head -1 | cut -d: -f1)
+          cred=$(grep -nF 'private static int CmdkeyStep' "$cs" | head -1 | cut -d: -f1)
+          test -n "$guard" && test -n "$cred" && test "$guard" -lt "$cred"
+          # lab switches stay lab-only: the lab sets the relaxation, production
+          # never carries ANY GHRDP_LAB_ switch.
+          grep -qF 'GHRDP_LAB_DNS_ALLOW_LOOPBACK' "$lab"
+          if grep -q 'GHRDP_LAB_' "$wf"; then
+            echo 'F17: a lab-only GHRDP_LAB_ switch leaked into production main.yml' >&2; exit 1
+          fi
+          echo 'F17 gates PASS'
+
       - name: F8 web-desktop honesty gates
         shell: bash
         run: |
