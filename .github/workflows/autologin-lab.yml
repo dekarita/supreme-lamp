@@ -434,15 +434,35 @@ jobs:
           # all three allowlisted objects and sha-compare them vs source, prove
           # every non-allowlisted file 404s, and prove the button href + guide
           # are rendered on the dashboard page.
+          # [F10-13 pattern] EVERY failure is classified (::error::[O] stage=...)
+          # + captured into the f14-diag artifact; an uncaught throw is re-armed
+          # as stage=unclassified so the next red run is never blind.
+          $diag = Join-Path $env:GITHUB_WORKSPACE 'f14-diag'
+          New-Item -ItemType Directory -Path $diag -Force | Out-Null
+          $phase = 'setup'
+          $srv = $null
+          function O-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[O] stage=' + $Stage + ' :: ' + $Detail)
+              try { ('stage=' + $Stage + "`n" + 'phase=' + $phase + "`n" + 'detail=' + $Detail) | Out-File (Join-Path $diag 'o-classification.txt') -Encoding utf8 } catch { }
+              try { if ($srv -and -not $srv.HasExited) { Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue } } catch { }
+              exit 1
+          }
+          try {
+          $phase = 'stage'
           $root = 'C:\ghrdp'
           New-Item -ItemType Directory -Path $root -Force | Out-Null
           $utf8 = New-Object System.Text.UTF8Encoding($false)
           [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), (@{ dnsName = 'lab-host.dekarita.tailnet-lab.ts.net'; rdpUser = 'labuser'; rdpIp = '100.118.42.7' } | ConvertTo-Json -Compress), $utf8)
           [System.IO.File]::WriteAllText((Join-Path $root 'dash-token.txt'), 'lab-dash-token-0123456789', $utf8)
+          # mirror the production flow: payloads -> stage dir -> $root (main.yml
+          # copies stage\* into C:\ghrdp; the kit zip + both payloads must sit in
+          # $root for /dl to serve them).
           $stage = Join-Path $env:RUNNER_TEMP 'ghrdp-stage-f14'
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
           Copy-Item payloads\install.cmd (Join-Path $stage 'install.cmd') -Force
           Copy-Item payloads\ghrdp-rdp-launcher.cs (Join-Path $stage 'ghrdp-rdp-launcher.cs') -Force
+          Copy-Item (Join-Path $stage 'install.cmd') (Join-Path $root 'install.cmd') -Force
+          Copy-Item (Join-Path $stage 'ghrdp-rdp-launcher.cs') (Join-Path $root 'ghrdp-rdp-launcher.cs') -Force
           # decoys: real files that sit next to the kit in $root - /dl must 404 them
           Copy-Item payloads\ui.html (Join-Path $root 'ui.html') -Force
           Copy-Item payloads\ghrdp-server.ps1 (Join-Path $root 'ghrdp-server.ps1') -Force
@@ -453,20 +473,27 @@ jobs:
           $zv = [System.IO.Compression.ZipFile]::OpenRead($zip)
           $entryCount = @($zv.Entries).Count
           $zv.Dispose()
-          if ($entryCount -ne 2) { Write-Host ('::error::[O] stage=zip :: kit holds ' + $entryCount + ' entries (must be 2)'); exit 1 }
-          function O-Fail([string]$Stage, [string]$Detail) { Write-Host ('::error::[O] stage=' + $Stage + ' :: ' + $Detail); exit 1 }
+          if ($entryCount -ne 2) { O-Fail 'zip' ('kit holds ' + $entryCount + ' entries (must be 2)') }
+          $phase = 'serve'
           try { $old = Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction Stop; foreach ($o in $old) { try { Stop-Process -Id $o.OwningProcess -Force -ErrorAction SilentlyContinue } catch { } }; Start-Sleep -Seconds 1 } catch { }
-          $srvOut = Join-Path $env:RUNNER_TEMP 'f14-server-out.log'; $srvErr = Join-Path $env:RUNNER_TEMP 'f14-server-err.log'
+          $srvOut = Join-Path $diag 'server-out.log'; $srvErr = Join-Path $diag 'server-err.log'
           $srv = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput $srvOut -RedirectStandardError $srvErr -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',"$env:GITHUB_WORKSPACE\payloads\ghrdp-server.ps1"
           $ok = $false
           for ($i = 0; $i -lt 40 -and -not $ok; $i++) { try { $ok = [bool](Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction Stop) } catch { }; if (-not $ok) { Start-Sleep -Milliseconds 500 } }
-          if (-not $ok) { O-Fail 'listen' 'server never bound 7331' }
+          if (-not $ok) { O-Fail 'listen' ('server never bound 7331; exited=' + $(if ($srv.HasExited) { $srv.ExitCode } else { 'no' }) + '; stderr=[' + ((Get-Content $srvErr -Tail 5 -ErrorAction SilentlyContinue) -join ' | ') + ']') }
+          function O-Get([string]$Url, [string]$Out, [string]$Hdr) {
+              $errF = Join-Path $diag 'curl-err.txt'
+              $code = [string](& curl.exe --noproxy '*' -sS -o $Out -w '%{http_code}' -D $Hdr $Url 2> $errF)
+              if (-not (Test-Path -LiteralPath $Out)) { O-Fail 'curl' ('no body for ' + $Url + ' code=[' + $code + '] err=[' + ((Get-Content $errF -ErrorAction SilentlyContinue) -join ' ') + ']') }
+              return $code
+          }
+          $phase = 'download+sha'
           $dl = 'http://127.0.0.1:7331/dl'
           $dlDir = Join-Path $env:RUNNER_TEMP 'f14-dl'
           New-Item -ItemType Directory -Path $dlDir -Force | Out-Null
           foreach ($pair in @(@('ghrdp-handler-kit.zip', $zip), @('install.cmd', (Join-Path $env:GITHUB_WORKSPACE 'payloads\install.cmd')), @('ghrdp-rdp-launcher.cs', (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')))) {
               $out = Join-Path $dlDir $pair[0]
-              $code = & curl.exe --noproxy '*' -sS -o $out -w '%{http_code}' -D (Join-Path $dlDir ($pair[0] + '.hdr')) ($dl + '/' + $pair[0])
+              $code = O-Get ($dl + '/' + $pair[0]) $out (Join-Path $dlDir ($pair[0] + '.hdr'))
               if ($code -ne '200') { O-Fail 'download' ($pair[0] + ' HTTP ' + $code) }
               $got = (Get-FileHash $out -Algorithm SHA256).Hash
               $want = (Get-FileHash $pair[1] -Algorithm SHA256).Hash
@@ -481,21 +508,34 @@ jobs:
               $b = (Get-FileHash (Join-Path $env:GITHUB_WORKSPACE ('payloads\' + $n)) -Algorithm SHA256).Hash
               if ($a -ne $b) { O-Fail 'zip-member-sha' ($n + ' differs inside the kit zip') }
           }
+          $phase = 'allowlist-404'
           foreach ($bad in @('ui.html', 'ghrdp-server.ps1', 'config.json', 'dash-token.txt', 'ghrdp-install.ps1')) {
-              $code = & curl.exe --noproxy '*' -s -o NUL -w '%{http_code}' ($dl + '/' + $bad)
+              $code = O-Get ($dl + '/' + $bad) (Join-Path $dlDir 'x.bin') (Join-Path $dlDir 'x.hdr')
               if ($code -ne '404') { O-Fail 'allowlist' ('/dl/' + $bad + ' returned ' + $code + ' - NOT 404') }
           }
-          foreach ($bare in @($dl, ($dl + '/'))) {
-              $code = & curl.exe --noproxy '*' -s -o NUL -w '%{http_code}' $bare
+          foreach ($bare in @(($dl + '/'), $dl)) {
+              $code = [string](& curl.exe --noproxy '*' -s -o NUL -w '%{http_code}' $bare 2> $null)
               if ($code -ne '404') { O-Fail 'listing' ($bare + ' returned ' + $code + ' - no directory listing allowed') }
           }
-          $page = & curl.exe --noproxy '*' -sS http://127.0.0.1:7331/
+          $phase = 'guide-render'
+          $page = [string](& curl.exe --noproxy '*' -sS http://127.0.0.1:7331/ 2> $null)
           foreach ($mark in @('href="/dl/ghrdp-handler-kit.zip"', 'DOWNLOAD INSTALL KIT', 'id="kitGuideA"', 'id="kitPathB"')) {
-              if (($page -join "`n") -notmatch [regex]::Escape($mark)) { O-Fail 'guide' ('dashboard page missing ' + $mark) }
+              if ($page -notmatch [regex]::Escape($mark)) { O-Fail 'guide' ('dashboard page missing ' + $mark) }
           }
+          $phase = 'cleanup'
           try { Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue } catch { }
           Write-Host '[O] PASS: 3/3 objects downloaded + sha-identical (zip members too), attachment+no-store headers, 5 decoys + 2 bare /dl = 404, button href + guide rendered'
           'O_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+          } catch { O-Fail 'unclassified' ($phase + ' :: ' + $_.Exception.Message + ' :: ' + $_.InvocationInfo.PositionMessage) }
+
+      - name: "O diagnostics artifact (survives halts)"
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: f14-diag
+          path: f14-diag
+          if-no-files-found: ignore
+
 
       - name: "K: browser policies + extensions readback"
         shell: pwsh
