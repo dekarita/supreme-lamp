@@ -811,8 +811,10 @@ jobs:
           grep -qF "__listenerOk=!!(rl&&rl.listening===true&&rl.fwRule===true&&rl.certOk===true&&rl.nla===true&&credsspOk)" "$ui" || { echo 'F21: ui.html __listenerOk does not include credsspOk' >&2; exit 1; }
           # --- §2 client-side CredSSP diagnostics must exist (copy-only) ------
           grep -qF 'id="connCredsspBox"' "$ui" || { echo 'F21: ui.html lacks CredSSP diagnostics box' >&2; exit 1; }
-          for tok in 'connDiagCredsspPol' 'connDiagLmCompat' 'connDiagMstscVerbose' 'Get-ItemProperty' 'CredSSP\\Parameters' 'LmCompatibilityLevel' 'mstsc /v:' 'TcpStateFrontAuth' 'AllowEncryptionOracle=0' 'NEVER weaken NLA' 'credssp-support-off' 'auth-level overrides'; do
-            grep -qF "$tok" <<< "$(awk '/id="connCredsspBox"/,/<\/div>[[:space:]]*<\/div>/' "$ui")" || { echo "F21: CredSSP diagnostics missing token: $tok" >&2; exit 1; }
+          # [F21 §2] CredSSP diagnostics box (copy-only) block ends at its </details>
+          blk2=$(awk '/id="connCredsspBox"/{f=1} f && /<\/details>/{print; exit} f{print}' "$ui")
+          for tok in 'connDiagCredsspPol' 'connDiagLmCompat' 'connDiagMstscVerbose' 'Get-ItemProperty' 'CredSSP\Parameters' 'LmCompatibilityLevel' 'mstsc /v:' 'TcpStateFrontAuth' 'AllowEncryptionOracle=0' 'NEVER weaken NLA' 'credssp-support-off' 'auth-level overrides'; do
+            grep -qF "$tok" <<< "$blk2" || { echo "F21: CredSSP diagnostics missing token: $tok" >&2; exit 1; }
           done
           # --- §4(b) NO password auto-type / SendKeys / UIAutomation -----------
           # (F19 already scans repo-wide; verify no new tokens introduced near credssp)
