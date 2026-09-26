@@ -192,7 +192,7 @@ test('F20-5 launcher: mstsc exit code logged (dec + hex) and the dialog sends th
     return 0;
   };
   assert.ok(cmp(ver[1], '2.3.0.0') >= 0, 'the launcher still stamps a pre-F20 version (' + ver[1] + ')');
-  assert.match(launcher, /assembly: AssemblyVersion\("2\.3\.0\.0"\)/);
+  assert.match(launcher, /assembly: AssemblyVersion\("2\.4\.0\.0"\)/);
   assert.match(launcher, /\(F20 evidence-fallback\+nslookup-kill\)/, 'the beacon stamp must name the F20 build');
 });
 

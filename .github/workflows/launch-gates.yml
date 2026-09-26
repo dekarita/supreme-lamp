@@ -424,7 +424,7 @@ jobs:
           grep -q 'psi.WorkingDirectory = Environment.SystemDirectory' "$cs"
           grep -q 'CmdkeyTimeoutMs = 180000' "$cs"
           grep -q 'WaitForExit(waitMs)' "$cs"
-          grep -qF '/pass")' "$cs"
+          grep -qF '" /user:" + user)' "$cs"
           grep -q 'cmdkey.exe", "/list"' "$cs"
           grep -q 'm.WaitForExit(2000)' "$cs"
           # --- §1.1 hello-before-work inside Main ------------------------------
@@ -1460,7 +1460,7 @@ jobs:
             if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Force }
             $cs = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs'
             Write-Host ('[F19] csc=' + $csc)
-            $cscOut = (& $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll $cs 2>&1 | Out-String)
+            $cscOut = (& $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll $cs 2>&1 | Out-String)
             $cscRc = $LASTEXITCODE
             Write-Host ('[F19] csc exit=' + $cscRc + ' output=' + $cscOut.Trim())
             if ($cscRc -ne 0) { throw ('csc exit ' + $cscRc + ' :: ' + $cscOut.Trim()) }

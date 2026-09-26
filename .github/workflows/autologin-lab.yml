@@ -737,7 +737,7 @@ jobs:
           $exe = Join-Path $env:RUNNER_TEMP 'ghrdp-rdp-launcher-lab19.exe'
           $matrix = Join-Path $env:RUNNER_TEMP 'f19-dns-selftest.txt'
           if (Test-Path -LiteralPath $matrix) { Remove-Item -LiteralPath $matrix -Force }
-          & $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')
+          & $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')
           if ($LASTEXITCODE -ne 0) { S-Fail 'compile' 'the SHIPPED launcher does not compile with the in-box csc' }
           Write-Host '::notice::[S] phase=compile ok'
           $env:GHRDP_LAB_OUT = $matrix
@@ -929,7 +929,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $csc)) { $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
           if (-not (Test-Path -LiteralPath $csc)) { T-Fail 'csc' 'the in-box csc.exe is missing - install.cmd depends on it too' }
           $exe = Join-Path $env:RUNNER_TEMP 'ghrdp-rdp-launcher-lab20.exe'
-          & $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')
+          & $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')
           if ($LASTEXITCODE -ne 0) { T-Fail 'compile' 'the SHIPPED launcher does not compile with the in-box csc' }
           if (-not (Test-Path -LiteralPath $exe)) { T-Fail 'compile-output' ('no exe at ' + $exe) }
           $vM = [regex]::Match($cs, 'private const string Ver = "(\d+(\.\d+){1,3})"')

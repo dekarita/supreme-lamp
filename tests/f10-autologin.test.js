@@ -28,7 +28,7 @@ test('F10-1 launcher: required .rdp directives, no password/resolution lines', (
   assert.match(launcher, /\\\.ts\\\.net\$/);
   // interactive cmdkey, never scripted: /pass with NO value.
   assert.match(launcher, /cmdkey\.exe/);
-  assert.match(launcher, /\/pass"\)/);
+  assert.match(launcher, /" \/user:" \+ user\)/);
   assert.ok(!launcher.includes('/pass:'), 'never embeds a password');
   // telemetry beacon, no creds.
   assert.match(launcher, /\/api\/handler-hello/);

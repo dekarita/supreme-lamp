@@ -56,7 +56,7 @@ function page(overrides = {}) {
     removeItem: key => values.delete(key)
   };
   vm.runInNewContext(native, {
-    document, window, location, localStorage, fetch, URL, setInterval: fn => intervals.push(fn),
+    keySecrets: {credWinPass:"",credVncPass:""}, document, window, location, localStorage, fetch, URL, setInterval: fn => intervals.push(fn),
     setTimeout() {}, console
   }, { filename: 'ui-native.js' });
   return { node, values, requests, status, opens, location, intervals };

@@ -392,7 +392,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button class="primary" id="btnWinAuto" type="button" disabled>WINDOWS AUTO-LOGIN</button>
-      <span class="note" id="winAutoNote">fullscreen native mstsc, silent after a one-time Windows prompts for your password (cmdkey)</span>
+      <span class="note" id="winAutoNote">fullscreen native mstsc via one-time ticket; Windows prompts for your password (cmdkey) only if redemption fails</span>
     </div>
     <!-- [F15 §3] FAIL-VISIBLE launcher diagnostics. The launcher beacons BEFORE
          any work (details='invoked'), then cmdkey-shown / cmdkey-stored=... /
@@ -1737,11 +1737,11 @@ function syncWinAuto(){
  var all=ok&&lOK&&dOK;
  b.disabled=!all;b.style.opacity=all?'':'0.5';b.style.cursor=all?'':'not-allowed';
  var note=$('winAutoNote');
- if(note)note.textContent=all?'fullscreen native mstsc, silent after a one-time Windows prompts for your password (cmdkey)':(!dOK?'Runner DNS broken':(ok?'RDP LISTENER probe not all ✅ (listening/fw/cert/nla) - fix the ❌ field in the RDP LISTENER row; AUTO-LOGIN stays disabled':'fullscreen native mstsc, silent after a one-time Windows prompts for your password (cmdkey)'));
+ if(note)note.textContent=all?'fullscreen native mstsc via one-time ticket; Windows prompts for your password (cmdkey) only if redemption fails':(!dOK?'Runner DNS broken':(ok?'RDP LISTENER probe not all ✅ (listening/fw/cert/nla) - fix the ❌ field in the RDP LISTENER row; AUTO-LOGIN stays disabled':'fullscreen native mstsc via one-time ticket; Windows prompts for your password (cmdkey) only if redemption fails'));
 }
 setInterval(syncWinAuto,2000);syncWinAuto();
 var waBtn=$('btnWinAuto');
-if(waBtn) waBtn.onclick=function(ev){
+if(waBtn) waBtn.onclick=async function(ev){
  if(ev&&ev.preventDefault)ev.preventDefault();
  var fqdn=($('rdpFqdn')||{}).textContent||'';
  var user=($('credUser')||{}).textContent||'rdpuser';
@@ -1751,7 +1751,21 @@ if(waBtn) waBtn.onclick=function(ev){
  var vis=function(){if(document.hidden)wasFocused=false;};
  window.addEventListener('blur',lost);
  document.addEventListener('visibilitychange',vis);
- launchProto(ghrdpRdpUrl(fqdn,user,(typeof window.__runnerResolvedIP==='string'?window.__runnerResolvedIP:'')));
+ // F27: issue a ticket first; no password is ever read by this launch path.
+ var ticket='';
+ try{
+  var key=getKey();if(!key)throw new Error('dashboard authorization missing');
+  var r=await fetch(apiBase()+'/api/rdp-token',{method:'POST',headers:{Authorization:'Bearer '+key},cache:'no-store'});
+  if(!r.ok)throw new Error('ticket issue HTTP '+r.status);
+  var j=await r.json();ticket=String(j.rid||'');
+  if(!/^[0-9a-f]{32}$/.test(ticket))throw new Error('invalid ticket response');
+ }catch(e){
+  window.removeEventListener('blur',lost);document.removeEventListener('visibilitychange',vis);
+  var failure=$('winAutoNote');if(failure)failure.textContent='ticket-issue failed - check dashboard authorization and direct tailnet access';
+  return;
+ }
+ launchProto(ghrdpRdpUrl(fqdn,user,(typeof window.__runnerResolvedIP==='string'?window.__runnerResolvedIP:''))+'&t='+encodeURIComponent(ticket));
+ ticket='';
  var note=$('winAutoNote');
  if(note)note.textContent='protocol dispatched - mstsc should open fullscreen shortly';
  // [F12-1 §1.4] hello-beacon watch: 20s window, native-status polled every 3s
