@@ -368,7 +368,15 @@ function Invoke-ClientRequest {
             }
             $dlType = 'application/octet-stream'
             if ($dlName -like '*.zip') { $dlType = 'application/zip' }
-            Send-ClientResponse -Stream $stream -Code 200 -CType $dlType -Body $dlBytes -ExtraHeaders ('Content-Disposition: attachment; filename="' + $dlName + '"')
+            # single combined write: headers + binary body in ONE buffer so the
+            # socket never interleaves the ASCII head with the file bytes.
+            $dlHead = "HTTP/1.1 200 OK`r`nContent-Type: $dlType`r`nContent-Length: $($dlBytes.Length)`r`nConnection: close`r`nCache-Control: no-store`r`nAccess-Control-Allow-Origin: *`r`nContent-Disposition: attachment; filename=`"$dlName`"`r`n`r`n"
+            $dlHeadB = [System.Text.Encoding]::ASCII.GetBytes($dlHead)
+            $dlResp = New-Object byte[] ($dlHeadB.Length + $dlBytes.Length)
+            [Array]::Copy($dlHeadB, 0, $dlResp, 0, $dlHeadB.Length)
+            [Array]::Copy($dlBytes, 0, $dlResp, $dlHeadB.Length, $dlBytes.Length)
+            $stream.Write($dlResp, 0, $dlResp.Length)
+            $stream.Flush()
             return
         }
         # [remediation 8C-extended] /install.bat + /connect-now.bat bodies deleted; unreachable due to 404 guard above. /connect-now.bat body was serving a .bat with cmdkey /generic:TERMSRV/<ip> /pass:<plaintext> - direct violation of the no-plaintext-transit decision.
