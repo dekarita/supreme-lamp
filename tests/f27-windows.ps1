@@ -154,9 +154,15 @@ public static class F27Read {
     # non-ASCII literal here would silently never match the read-back source.
     $stage = 'F28 logon scanner (synthetic events)'
     $srvText = [IO.File]::ReadAllText((Join-Path $repo 'payloads/ghrdp-server.ps1'))
-    $sa = $srvText.IndexOf('scanner-begin]')
-    $sb = $srvText.IndexOf('scanner-end]', [Math]::Max($sa, 0))
-    Assert-F28 ($sa -gt 0 -and $sb -gt $sa) ('the F28 scanner markers are missing in ghrdp-server.ps1 (sa=' + $sa + ' sb=' + $sb + ')')
+    $bAt = $srvText.IndexOf('scanner-begin]')
+    $eAt = $srvText.IndexOf('scanner-end]', [Math]::Max($bAt, 0))
+    # the extracted text must START at the beginning of the marker line and END
+    # before the closing marker line: a substring that begins mid-comment would
+    # turn '# [F28 ... scanner-begin] ...' into a bogus command.
+    $sa = -1; $sb = -1
+    if ($bAt -gt 0) { $sa = $srvText.LastIndexOf("`n", $bAt) + 1 }
+    if ($eAt -gt 0) { $sb = $srvText.LastIndexOf("`n", $eAt) }
+    Assert-F28 ($sa -gt 0 -and $sb -gt $sa) ('the F28 scanner markers are missing in ghrdp-server.ps1 (bAt=' + $bAt + ' eAt=' + $eAt + ' sa=' + $sa + ' sb=' + $sb + ')')
     . ([scriptblock]::Create($srvText.Substring($sa, $sb - $sa)))
     Assert-F28 ($null -ne (Get-Command Get-RdpLogonAuthLast -ErrorAction SilentlyContinue)) 'the extracted block did not define the scanner'
     $startF28 = (Get-Date).ToUniversalTime()

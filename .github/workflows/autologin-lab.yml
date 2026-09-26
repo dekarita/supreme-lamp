@@ -1638,10 +1638,12 @@ jobs:
           $ui = [System.IO.File]::ReadAllText((Join-Path $ws 'payloads\ui.html'))
           $cs = [System.IO.File]::ReadAllText((Join-Path $ws 'payloads\ghrdp-rdp-launcher.cs'))
           # --- (a) the shipped scanner with synthetic events -------------------
-          $a0 = $srv.IndexOf('# [F28 §1 scanner-begin]')
-          $b0 = $srv.IndexOf('# [F28 §1 scanner-end]', [Math]::Max($a0, 0))
-          if ($a0 -lt 0 -or $b0 -le $a0) { V-Fail 'extract-scanner' 'the F28 scanner markers are missing from ghrdp-server.ps1' }
-          $block = $srv.Substring($a0, $b0 - $a0)
+          $aAt = $srv.IndexOf('scanner-begin]')
+          $bAt2 = $srv.IndexOf('scanner-end]', [Math]::Max($aAt, 0))
+          if ($aAt -lt 0 -or $bAt2 -le $aAt) { V-Fail 'extract-scanner' 'the F28 scanner markers are missing from ghrdp-server.ps1' }
+          # line-exact extraction: start at the beginning of the marker line and
+          # stop before the closing marker line, so the block parses as-is.
+          $block = $srv.Substring($srv.LastIndexOf("`n", $aAt) + 1, ($srv.LastIndexOf("`n", $bAt2)) - ($srv.LastIndexOf("`n", $aAt) + 1))
           $errors = $null
           $null = [System.Management.Automation.Language.Parser]::ParseInput($block, [ref]$null, [ref]$errors)
           if ($errors -and $errors.Count -gt 0) { V-Fail 'parse-scanner' ('the extracted scanner has ' + $errors.Count + ' syntax error(s): ' + $errors[0].Message) }
