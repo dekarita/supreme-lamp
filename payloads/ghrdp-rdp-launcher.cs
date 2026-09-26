@@ -1128,8 +1128,27 @@ internal static class GhrdpRdpLauncher
         File.WriteAllLines(rdp, lines);   // local write: no MOTW, no SmartScreen
         long bytes = 0;
         try { bytes = new FileInfo(rdp).Length; } catch { }
+        // [F30 §2.3] READ BACK + ASSERT. Ground truth 2026-09-26: the client's
+        // temp .rdp files were 165-169 bytes - a TRUNCATED directive set (mstsc
+        // silently ignores every option it never got, and 'screen mode id:i:2'
+        // is the fullscreen contract). The floor is the byte length of the
+        // 19-directive template; below it mstsc is NOT started from a partial
+        // file and the failure is loud (log + beacon + dialog), never silent.
+        string readBack = "";
+        try { readBack = File.ReadAllText(rdp); } catch { }
+        bool templateComplete = readBack.IndexOf("screen mode id:i:2", StringComparison.Ordinal) >= 0 &&
+                                readBack.IndexOf("full address:s:" + server, StringComparison.Ordinal) >= 0 &&
+                                readBack.IndexOf("username:s:" + user, StringComparison.Ordinal) >= 0;
         LogJson("rdp", "rdp", "wrote " + rdp + " (" + bytes + " bytes, " + lines.Length +
-            " directives, no credential lines)");
+            " directives, templateComplete=" + (templateComplete ? "true" : "false") + ", no credential lines)");
+        if (bytes <= RdpMinBytes || !templateComplete)
+        {
+            LogJson("error", "rdp", "rdp-file-truncated bytes=" + bytes + " floor=" + RdpMinBytes +
+                " directives=" + lines.Length + " templateComplete=" + (templateComplete ? "true" : "false"));
+            HandoffStep(host, port, "rdp-truncated", false);
+            throw new InvalidOperationException("rdp-file-truncated bytes=" + bytes + " floor=" + RdpMinBytes +
+                " directives=" + lines.Length);
+        }
 
         HandoffStep(host, port, "rdp-written", true);
         if (nativePrompt)
