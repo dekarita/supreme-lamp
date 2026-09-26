@@ -460,7 +460,7 @@ function Get-RdpConnLogEventFields {
         $desc = ($msg -replace '\s+', ' ').Trim()
         # Defensive redaction: this line is DISPLAYED, so a credential-shaped
         # token in prose can never reach it (event messages carry none today).
-        $desc = $desc -replace '(?i)(password|passwd|pwd)(\s*[=:]\s*)\S+', '$1$2[redacted]'
+        $desc = $desc -replace '(?i)(password|passwd|pwd|subjectusername|targetusername|subjectdomainname)(\s*[=:]\s*)\S+', '$1$2[redacted]'
         if ($desc.Length -gt 200) { $desc = $desc.Substring(0, 200) }
     }
     return [pscustomobject]@{
@@ -482,9 +482,11 @@ function Get-RdpConnLogReason {
     $p = ([string]$Provider).ToLowerInvariant()
     $evt = ([string]$Id).Trim()
     if ($t -match 'forcibly closed') { return 'tls-forcibly-closed' }
+    # certificate FIRST: a cert failure message also says "TLS ... failed", and
+    # 'cert-rejected' is the actionable reason code for it.
+    if ($t -match 'certificat') { return 'cert-rejected' }
     if ($t -match 'handshake' -and ($t -match 'fail|error|abort|denied')) { return 'tls-handshake-failed' }
     if ($t -match 'schannel|tls' -and ($t -match 'fail|error|fatal')) { return 'tls-handshake-failed' }
-    if ($t -match 'certificat') { return 'cert-rejected' }
     if ($t -match 'reset' -and $t -match 'connection|peer|transport') { return 'connection-reset' }
     if ($t -match 'authenticat' -and $t -match 'succeed|success') { return 'auth-succeeded' }
     if ($t -match 'authenticat' -and $t -match 'fail|denied|reject') { return 'auth-failed' }

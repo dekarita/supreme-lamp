@@ -1568,6 +1568,119 @@ jobs:
           # node matrix (F28-4) drives a live probe and asserts it can never print.
           grep -qF "if(csLive==='ok')" "$ui" || { echo 'F28: the live branch is not first' >&2; exit 1; }
           echo 'F28 gates PASS'
+      # [F30] TLS/CIPHER HANDSHAKE FIX + CREDENTIAL TYPE NORMALIZATION + STALE
+      # ENTRY PURGE. Every assertion names the regression it blocks; the §5
+      # checks here are the static half, and tests/f30-tls-cipher.test.js EXECUTES
+      # the shipped renderer + bounded surfaces (then the Windows lane + lab cell
+      # X drive the same code with real cipher suites / credential store / events).
+      - name: F30 TLS/cipher + purge + connlog gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          cs=payloads/ghrdp-rdp-launcher.cs
+          srv=payloads/ghrdp-server.ps1
+          ui=payloads/ui.html
+          # --- §1 the normalization step sits after cert bind, before advertise --
+          cert_line=$(grep -n 'name: Bind tailnet LE cert to RDP-Tcp' "$wf" | head -1 | cut -d: -f1)
+          f30_line=$(grep -n 'name: TLS/cipher normalization (F30' "$wf" | head -1 | cut -d: -f1)
+          adv_line=$(grep -n 'name: RDP listener self-probe (F17' "$wf" | head -1 | cut -d: -f1)
+          test -n "$cert_line" && test -n "$f30_line" && test -n "$adv_line" || { echo 'F30: a required main.yml step is missing' >&2; exit 1; }
+          test "$cert_line" -lt "$f30_line" || { echo 'F30: normalization must run AFTER cert bind' >&2; exit 1; }
+          test "$f30_line" -lt "$adv_line" || { echo 'F30: normalization must run BEFORE the host is advertised' >&2; exit 1; }
+          # the ordered suite list is declared verbatim AND in the spec order -
+          # a reordered list is the exact regression this gate exists for.
+          blk() { awk -v b="$2" -v e="$3" 'index($0,b){f=1} f{print} f&&index($0,e){exit}' "$1"; }
+          nb=$(blk "$wf" '# [F30 §1 normalize-begin]' '# [F30 §1 normalize-end]')
+          test -n "$nb" || { echo 'F30: the extractable normalize block is missing' >&2; exit 1; }
+          prev=0
+          for suite in TLS_AES_256_GCM_SHA384 TLS_CHACHA20_POLY1305_SHA256 TLS_AES_128_GCM_SHA256 TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256; do
+            ln=$(grep -n "'$suite'" <<< "$nb" | head -1 | cut -d: -f1)
+            test -n "$ln" || { echo "F30: cipher suite missing from the ordered list: $suite" >&2; exit 1; }
+            test "$ln" -gt "$prev" || { echo "F30: cipher suite OUT OF ORDER: $suite" >&2; exit 1; }
+            prev=$ln
+          done
+          grep -qF 'Enable-TlsCipherSuite' <<< "$nb" || { echo 'F30: no cipher suite is ever enabled' >&2; exit 1; }
+          grep -qF 'Set-F30CipherOrder' <<< "$nb" || { echo 'F30: the suite ORDER is never enforced' >&2; exit 1; }
+          grep -qF 'Test-F30Order' <<< "$nb" || { echo 'F30: the order verdict is missing' >&2; exit 1; }
+          grep -qF "HKLM:\SYSTEM\CurrentControlSet\Control\Cryptography\Configuration\Local\SSL\00010002" <<< "$nb" || { echo 'F30: the Schannel Functions key is not addressed' >&2; exit 1; }
+          grep -qF "PropertyType MultiString" <<< "$nb" || { echo 'F30: the ordered Functions list is never written back' >&2; exit 1; }
+          # --- §1 TLS 1.2 AND 1.3 registry writes (Client + Server) --------------
+          grep -qF "foreach (\$proto in @('TLS 1.2', 'TLS 1.3'))" <<< "$nb" || { echo 'F30: TLS 1.2 + 1.3 are not both written' >&2; exit 1; }
+          grep -qF "foreach (\$side in @('Client', 'Server'))" <<< "$nb" || { echo 'F30: Client/Server writes are missing' >&2; exit 1; }
+          grep -qF "Set-ItemProperty -Path \$p -Name 'Enabled' -Value 1 -Type DWord -ErrorAction Stop" <<< "$nb" || { echo 'F30: Enabled=1 write missing' >&2; exit 1; }
+          grep -qF "Set-ItemProperty -Path \$p -Name 'DisabledByDefault' -Value 0 -Type DWord -ErrorAction Stop" <<< "$nb" || { echo 'F30: DisabledByDefault=0 write missing' >&2; exit 1; }
+          grep -qF "SecurityLayer' -Value 2 -Type DWord" <<< "$nb" || { echo 'F30: RDP SecurityLayer=2 (TLS only) write missing' >&2; exit 1; }
+          grep -qF "MinEncryptionLevel' -Value 3 -Type DWord" <<< "$nb" || { echo 'F30: MinEncryptionLevel=3 write missing' >&2; exit 1; }
+          grep -qF "foreach (\$svc in @('TermService', 'WinRM'))" <<< "$nb" || { echo 'F30: TermService/WinRM restart missing' >&2; exit 1; }
+          # no weakening anywhere in the normalize block (NLA/CredSSP/cert bypass)
+          if grep -nEi 'AuthenticationLevelOverride|AllowEncryptionOracle.{0,10}(1|2)|EnableCredSspSupport.{0,5}0|UserAuthentication.{0,6}0|bypass' <<< "$nb"; then
+            echo 'F30: the normalization block weakens NLA/CredSSP/cert validation' >&2; exit 1
+          fi
+          # --- §2.1 launcher: purge BEFORE write, store API only -----------------
+          pb=$(blk "$cs" '// [F30 §2.1 purge-begin]' '// [F30 §2.1 purge-end]')
+          test -n "$pb" || { echo 'F30: the launcher purge block is missing' >&2; exit 1; }
+          grep -qF 'CredEnumerateW' <<< "$pb" || { echo 'F30: CredEnumerate is not used' >&2; exit 1; }
+          grep -qF 'CredDeleteW' <<< "$pb" || { echo 'F30: CredDelete is not used' >&2; exit 1; }
+          grep -qF 'CredEnumerate("TERMSRV/*", 0, out count, out array)' <<< "$pb" || { echo 'F30: the TERMSRV filter is missing' >&2; exit 1; }
+          grep -qF 'CredDelete(target, c.Type, 0)' <<< "$pb" || { echo 'F30: the purge does not delete the enumerated entry type' >&2; exit 1; }
+          grep -qF 'c.Type != 2 && c.Type != 1' <<< "$pb" || { echo 'F30: only Domain+LegacyGeneric shapes may be purged' >&2; exit 1; }
+          grep -qF 'OrdinalIgnoreCase' <<< "$pb" || { echo 'F30: the target match must be case-insensitive' >&2; exit 1; }
+          wcblk=$(awk '/private static int WriteCredential/{f=1} f{print} /\/\/ Only redemption errors/{exit}' "$cs")
+          p_ln=$(grep -n 'PurgeStaleTermsvr(fqdn)' <<< "$wcblk" | head -1 | cut -d: -f1)
+          w_ln=$(grep -n 'CredWrite(ref c, 0)' <<< "$wcblk" | head -1 | cut -d: -f1)
+          test -n "$p_ln" && test -n "$w_ln" && test "$p_ln" -lt "$w_ln" || { echo 'F30: the purge must run BEFORE the fresh CredWrite' >&2; exit 1; }
+          grep -qF 'c.Type = 2; // CRED_TYPE_DOMAIN_PASSWORD' <<< "$wcblk" || { echo 'F30: the fresh entry must be DomainPassword type' >&2; exit 1; }
+          grep -qF 'return "purged " + purged + " stale entries, wrote new as Domain"' "$cs" || { echo 'F30: the purge beacon text is missing' >&2; exit 1; }
+          if grep -nE 'cmdkey[^\\n]*/delete' "$cs"; then echo 'F30: the launcher must never shell out a cmdkey delete' >&2; exit 1; fi
+          grep -qF 'purged [0-9]+ stale entries, wrote new as Domain' "$srv" || { echo 'F30: the server beacon allowlist rejects the purge beacon' >&2; exit 1; }
+          grep -qF 'rdp-truncated' "$srv" || { echo 'F30: the server beacon allowlist rejects rdp-truncated' >&2; exit 1; }
+          # --- §2.2 server purge endpoint (dash-token gated, one line) -----------
+          grep -qF '# [F30 §2.2 purge-cmd-begin]' "$srv" || { echo 'F30: the purge-command block is missing' >&2; exit 1; }
+          grep -qF "-eq '/api/purge-stale-creds')" "$srv" || { echo 'F30: the purge endpoint is missing' >&2; exit 1; }
+          grep -qF 'DateTime.FromFileTimeUtc(c.LastWritten)' "$srv" || { echo 'F30: the 7-day filter does not use LastWritten' >&2; exit 1; }
+          grep -qF 'olderThanDays = 7' "$srv" || { echo 'F30: the 7-day window is not reported' >&2; exit 1; }
+          purgeroute=$(grep -A 25 -F "-eq '/api/purge-stale-creds')" "$srv")
+          grep -qF 'Test-TicketBearer' <<< "$purgeroute" || { echo 'F30: the purge endpoint is not dash-token gated' >&2; exit 1; }
+          grep -qF 'Code 401' <<< "$purgeroute" || { echo 'F30: the purge endpoint has no 401 branch' >&2; exit 1; }
+          # --- §2.3 .rdp completeness -------------------------------------------
+          grep -qF 'private const int RdpMinBytes = 400;' "$cs" || { echo 'F30: the .rdp byte floor constant is missing' >&2; exit 1; }
+          grep -qF 'File.ReadAllText(rdp)' "$cs" || { echo 'F30: the .rdp is never read back' >&2; exit 1; }
+          grep -qF 'bytes <= RdpMinBytes' "$cs" || { echo 'F30: the byte floor is never asserted' >&2; exit 1; }
+          grep -qF 'rdp-file-truncated' "$cs" || { echo 'F30: a truncated .rdp must be named' >&2; exit 1; }
+          for d in 'screen mode id:i:2' 'redirectclipboard:i:1' 'drivestoredirect:s:*' 'audiocapturemode:i:1' 'compression:i:1' 'autoreconnection enabled:i:1'; do
+            grep -qF "$d" "$cs" || { echo "F30: the rdp template lost a directive: $d" >&2; exit 1; }
+          done
+          # --- §3 conn-log collector + row --------------------------------------
+          grep -qF '# [F30 §3 connlog-begin]' "$srv" || { echo 'F30: the conn-log collector block is missing' >&2; exit 1; }
+          grep -qF '$script:F30ConnLogIntervalSec = 30' "$srv" || { echo 'F30: the collector is not a 30s tick' >&2; exit 1; }
+          grep -qF 'Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational' "$srv" || { echo 'F30: RdpCoreTS log not collected' >&2; exit 1; }
+          grep -qF 'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational' "$srv" || { echo 'F30: RemoteConnectionManager log not collected' >&2; exit 1; }
+          grep -qF 'Get-WinEvent -FilterHashtable' "$srv" || { echo 'F30: no Get-WinEvent read' >&2; exit 1; }
+          for rc in tls-forcibly-closed tls-handshake-failed cert-rejected connection-reset auth-succeeded auth-failed listener-lifecycle session-state; do
+            grep -qF "'$rc'" "$srv" || { echo "F30: reason code missing: $rc" >&2; exit 1; }
+          done
+          grep -qF 'Update-RdpConnLog -StatePath $script:ConnLogStatePath' "$srv" || { echo 'F30: the collector tick is not wired into the server loop' >&2; exit 1; }
+          grep -qF 'NotePropertyName connLog -NotePropertyValue $connState.connLog' "$srv" || { echo 'F30: connLog is not served by /api/native-status' >&2; exit 1; }
+          grep -qF '# [F30 §3 keepalive-begin]' "$wf" || { echo 'F30: the keep-alive conn-log mirror is missing' >&2; exit 1; }
+          grep -qF 'NotePropertyName connLog' "$wf" || { echo 'F30: config.rlpListener.connLog is never written' >&2; exit 1; }
+          grep -qF '[F30] SERVER CONN LOG: ' "$wf" || { echo 'F30: the run log never prints the conn-log reason codes' >&2; exit 1; }
+          grep -qF 'id="srvConnLogRow"' "$ui" || { echo 'F30: the SERVER CONN LOG row is missing' >&2; exit 1; }
+          grep -qF '// [F30 §3 connlog-render-begin]' "$ui" || { echo 'F30: the row renderer block is missing' >&2; exit 1; }
+          # --- §4 client copy-lines (copy-only; nothing executes) ---------------
+          grep -qF 'id="connDiagPurgeAll"' "$ui" || { echo 'F30: the nuclear purge copy-line is missing' >&2; exit 1; }
+          grep -qF 'id="connDiagServerPurge"' "$ui" || { echo 'F30: the server purge copy-line slot is missing' >&2; exit 1; }
+          grep -qF 'id="connDiagCiphers"' "$ui" || { echo 'F30: the cipher copy-line is missing' >&2; exit 1; }
+          grep -qF 'id="connDiagTls13"' "$ui" || { echo 'F30: the TLS1.3 copy-line is missing' >&2; exit 1; }
+          grep -qF 'id="connDiagTshark"' "$ui" || { echo 'F30: the capture copy-line is missing' >&2; exit 1; }
+          grep -qF 'cmdkey "/delete:$t"' "$ui" || { echo 'F30: the purge copy-line does not delete the parsed target' >&2; exit 1; }
+          grep -qF "cmdkey /list | Select-String TERMSRV" "$ui" || { echo 'F30: the purge copy-line parses target= (a : split deletes the label)' >&2; exit 1; }
+          grep -qF "loadServerPurgeCmd" "$ui" || { echo 'F30: the server purge command is never fetched' >&2; exit 1; }
+          if grep -nE 'purge-stale-creds[^ ]*[?]key=' "$ui"; then echo 'F30: the dash token must never ride the purge URL' >&2; exit 1; fi
+          # the F30 matrix must be part of the Node run (it EXECUTES the row).
+          test -f tests/f30-tls-cipher.test.js || { echo 'F30: the node matrix is missing' >&2; exit 1; }
+          node --test tests/f30-tls-cipher.test.js
+          echo 'F30 gates PASS'
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:
