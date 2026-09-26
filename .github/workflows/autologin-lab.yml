@@ -181,14 +181,18 @@ jobs:
           # --- (1) the beacon target is the URL server arg: point that FQDN at
           # loopback so the REAL launcher POSTs land on the local listener.
           # hosts entry 127.0.0.1 lab-target.dekarita.tailnet-lab.ts.net -> the
-          # launcher's real beacon target (http://<fqdn>:7331) reaches the listener.
+          # launcher's real beacon target (http://<fqdn>:<lab port>) reaches the
+          # listener. The listener gets its OWN port (7391), NOT the production
+          # 7331: python's ThreadingHTTPServer sets SO_REUSEADDR, and on Windows
+          # that lets two sockets bind the same port - the later D/E step must be
+          # free to bind the REAL server on 7331 with no zombie listener in it.
           $hosts = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
           try { $hTxt = [System.IO.File]::ReadAllText($hosts) } catch { P-Fail 'hosts-read' $_.Exception.Message }
           if ($hTxt -notmatch [regex]::Escape($fqdn)) {
               try { [System.IO.File]::AppendAllText($hosts, ("`r`n127.0.0.1 " + $fqdn + "`r`n")) } catch { P-Fail 'hosts-write' $_.Exception.Message }
               Write-Host ('[P] hosts: 127.0.0.1 ' + $fqdn)
           }
-          # --- (2) python hello-listener on 127.0.0.1:7331 (the real port; a
+          # --- (2) python hello-listener on 127.0.0.1:7391 (a lab-only port; a
           # file-capture server - one verbatim POST body per line).
           $pyExe = (Get-Command python -ErrorAction SilentlyContinue)
           if (-not $pyExe) { $pyExe = (Get-Command py -ErrorAction SilentlyContinue) }
@@ -215,17 +219,18 @@ jobs:
               "        self.wfile.write(out)",
               "    def log_message(self, *a):",
               "        pass",
-              "ThreadingHTTPServer(('127.0.0.1', 7331), H).serve_forever()"
+              "ThreadingHTTPServer(('127.0.0.1', 7391), H).serve_forever()"
           )
           [System.IO.File]::WriteAllText($py, ($pyLines -join "`n"), (New-Object System.Text.UTF8Encoding($false)))
           $lst = Start-Process -FilePath $pyExe.Source -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $diag 'f15-listener.log') -RedirectStandardError (Join-Path $diag 'f15-listener-err.log') -ArgumentList ('-u "' + $py + '" "' + $cap + '"')
           $up = $false
-          for ($i = 0; $i -lt 30 -and -not $up; $i++) { try { $up = [bool](Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction Stop) } catch { }; if (-not $up) { Start-Sleep -Milliseconds 500 } }
+          $labPort = 7391
+          for ($i = 0; $i -lt 30 -and -not $up; $i++) { try { $up = [bool](Get-NetTCPConnection -LocalPort $labPort -State Listen -ErrorAction Stop) } catch { }; if (-not $up) { Start-Sleep -Milliseconds 500 } }
           if (-not $up) {
               $errTxt = ''; try { $errTxt = ([System.IO.File]::ReadAllText((Join-Path $diag 'f15-listener-err.log'))).Trim() } catch { }
               P-Fail 'listener-listen' ('the python hello-listener never bound 127.0.0.1:7331; stderr=[' + $errTxt + ']')
           }
-          Write-Host ('[P] python hello-listener up on 127.0.0.1:7331 (capture ' + $cap + ')')
+          Write-Host ('[P] python hello-listener up on 127.0.0.1:' + $labPort + ' (capture ' + $cap + ')')
           # --- (3) ghrdp://check with NO server arg: the MessageBox path is
           # taken (and logged) and NO beacon may be posted (§1.5).
           $n0 = (Cap-Lines).Count
@@ -240,7 +245,7 @@ jobs:
           Write-Host '[P] PASS check(no server): dialog logged (msgbox + lab suppression), no beacon'
           # --- (4) ghrdp://check?server=<fqdn>: the check beacon IS posted.
           $n1 = (Cap-Lines).Count
-          $p = Start-Process -FilePath $exe -ArgumentList ('ghrdp://check?server=' + $fqdn) -PassThru
+          $p = Start-Process -FilePath $exe -ArgumentList ('ghrdp://check?server=' + $fqdn + '&port=' + $labPort) -PassThru
           if (-not $p.WaitForExit(60000)) { P-Fail 'check2-wait' 'ghrdp://check?server= did not exit within 60s' }
           if ($p.ExitCode -ne 0) { P-Fail 'check2-exit' ('ghrdp://check exit code ' + $p.ExitCode) }
           $c2 = @(Cap-Lines)
@@ -255,7 +260,7 @@ jobs:
           & cmdkey.exe /add:TERMSRV/$fqdn /user:labuser /pass:labdummy000 | Out-Null
           $n2 = (Cap-Lines).Count
           $env:GHRDP_LAB_KEEP_RDP = '1'
-          $p = Start-Process -FilePath $exe -ArgumentList ('ghrdp://rdp?server=' + $fqdn + '&user=labuser') -PassThru
+          $p = Start-Process -FilePath $exe -ArgumentList ('ghrdp://rdp?server=' + $fqdn + '&user=labuser&port=' + $labPort) -PassThru
           if (-not $p.WaitForExit(150000)) { try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }; P-Fail 'rdp-wait' 'the rdp verb did not exit within 150s' }
           if ($p.ExitCode -ne 0) { P-Fail 'rdp-exit' ('rdp verb exit ' + $p.ExitCode) }
           $seq = @((Cap-Lines) | Select-Object -Skip $n2)
@@ -287,7 +292,7 @@ jobs:
           & cmdkey.exe /delete:TERMSRV/$fqdn | Out-Null
           $n3 = (Cap-Lines).Count
           $env:GHRDP_LAB_CMDKEY_TIMEOUT_MS = '8000'
-          $p = Start-Process -FilePath $exe -ArgumentList ('ghrdp://rdp?server=' + $fqdn + '&user=labuser') -PassThru
+          $p = Start-Process -FilePath $exe -ArgumentList ('ghrdp://rdp?server=' + $fqdn + '&user=labuser&port=' + $labPort) -PassThru
           if (-not $p.WaitForExit(150000)) { try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }; P-Fail 'timeout-wait' 'the timeout branch did not exit within 150s' }
           if ($p.ExitCode -ne 1) { P-Fail 'timeout-exit' ('expected exit 1 (cmdkey prompt timed out), got ' + $p.ExitCode) }
           $seq2 = @((Cap-Lines) | Select-Object -Skip $n3)
@@ -315,6 +320,11 @@ jobs:
           Write-Host ('[P] PASS log: ' + $lines.Count + ' JSONL lines, ' + $msgbox + ' logged dialogs, zero credential-looking tokens')
           # --- (8) cleanup: listener, hosts entry, temp rdp, dummy cmdkey entry.
           try { Stop-Process -Id $lst.Id -Force -ErrorAction Stop } catch { }
+          # the lab listener must be GONE (and its port free) before later cells
+          # start the real server: never leave a zombie socket on a lab port.
+          for ($i = 0; $i -lt 20 -and $lst -and -not $lst.HasExited; $i++) { Start-Sleep -Milliseconds 500 }
+          for ($i = 0; $i -lt 20; $i++) { if (-not (Get-NetTCPConnection -LocalPort $labPort -State Listen -ErrorAction SilentlyContinue)) { break }; Start-Sleep -Milliseconds 500 }
+          if (Get-NetTCPConnection -LocalPort $labPort -State Listen -ErrorAction SilentlyContinue) { P-Fail 'listener-zombie' ('port ' + $labPort + ' still listening after the cleanup kill') }
           try {
               $h3 = (([System.IO.File]::ReadAllText($hosts)) -split "`r?`n" | Where-Object { $_ -notmatch [regex]::Escape($fqdn) }) -join "`r`n"
               [System.IO.File]::WriteAllText($hosts, $h3)
@@ -368,6 +378,11 @@ jobs:
               $okTxt = ''; try { $okTxt = ([System.IO.File]::ReadAllText((Join-Path $root 'server-ok.txt'))).Trim() } catch { }
               $errTail = ''; try { $errTail = ((Get-Content $srvErr -Tail 6 -ErrorAction SilentlyContinue) -join ' | ') } catch { }
               DE-Fail 'listen' ('server never listened on 7331; exited=' + $(if ($srv.HasExited) { $srv.ExitCode } else { 'no' }) + '; server-ok=[' + $okTxt + ']; stderr=[' + $errTail + ']')
+          }
+          $owner = Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($owner -and $owner.OwningProcess -ne $srv.Id) {
+              $op = Get-Process -Id $owner.OwningProcess -ErrorAction SilentlyContinue
+              DE-Fail 'port-stuck' ('7331 is bound by pid=' + $owner.OwningProcess + ' (' + $(if ($op) { $op.ProcessName } else { 'gone' }) + '), not the lab server pid=' + $srv.Id)
           }
           $base = 'http://127.0.0.1:7331'
           # [F10-14] LOOPBACK CALLS MUST BYPASS ANY PROXY: the first D/E failure
