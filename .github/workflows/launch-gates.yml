@@ -552,7 +552,7 @@ jobs:
           ui=payloads/ui.html
           srv=payloads/ghrdp-server.ps1
           cs=payloads/ghrdp-rdp-launcher.cs
-          step=$(awk '/name: Runner FQDN self-test \\(F18/{f=1;next} f && /^      - name: /{exit} f' "$wf")
+          step=$(awk 'index($0, "name: Runner FQDN self-test (F18"){f=1;next} f && /^      - name: /{exit} f' "$wf")
           test -n "$step" || { echo 'F18: main.yml lacks Runner FQDN self-test' >&2; exit 1; }
           grep -qF 'Resolve-DnsName' <<< "$step"
           grep -qF "Runner cannot resolve own FQDN" <<< "$step"
