@@ -1585,4 +1585,3 @@ while (((Get-Date) - $start) -lt $limit) {
     Start-Sleep -Milliseconds 50
 }
 try { $listener.Stop() } catch { }
-ry { $listener.Stop() } catch { }
