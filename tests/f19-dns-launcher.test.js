@@ -199,7 +199,7 @@ test('F19-8 version compare semantics (mirror; real proof in lab cell S)', () =>
   assert.ok(server.includes('launcherOutdated = $launcherOutdated'), 'native-status does not serve launcherOutdated');
   assert.ok(server.includes('launcherSeenVersion = $launcherSeenVersion'), 'native-status does not serve launcherSeenVersion');
   assert.ok(server.includes('launcherVersion = $launcherVersion'), 'native-status does not serve launcherVersion');
-  assert.ok(server.includes('$hh.exe = ([string]$bj.exe)'), 'the beacon handler does not persist the exe stamp');
+  assert.ok(server.includes("$hh.exe = 'ghrdp-rdp-launcher ' + $Matches[1]"), 'the beacon handler does not persist the exe stamp');
   assert.ok(server.includes("$ns.lastHandlerVerb = @{ verb = [string]$lv.verb"), 'lastHandlerVerb must echo the beacon');
 });
 

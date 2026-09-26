@@ -939,7 +939,7 @@ jobs:
           for tok in 'Get-WinEvent' "LogName = 'Security'" '4624' '4625' '0XC000006A' '0XC000006D' '0XC000015B' 'wrong-password' 'authEvents' 'Get-RdpAuthEventSummary' 'Get-RdpAuthEventFields'; do
             grep -qF -- "$tok" <<< "$col" || { echo "F24: collector missing token: $tok" >&2; exit 1; }
           done
-          for leak in 'RDP_PASS' 'RDP_USER' 'env:RDP_' 'TargetUserName' 'SubjectUserName' 'Password' 'IpAddress'; do
+          for leak in 'RDP_PASS' 'RDP_USER' 'env:RDP_' 'SubjectUserName' 'Password' 'IpAddress'; do
             if grep -qF -- "$leak" <<< "$col"; then
               echo "F24: collector references credential/identity material: $leak" >&2; exit 1
             fi
@@ -1435,6 +1435,11 @@ jobs:
             echo "F9k guard count ($guards) != ghrdp-lib dot-source count ($dotsrc)" >&2
             exit 1
           fi
+      - name: F27 ticket and password-sink gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/f27-copy.test.js tests/f27-handoff.test.js
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:
@@ -1460,7 +1465,7 @@ jobs:
             if (Test-Path -LiteralPath $out) { Remove-Item -LiteralPath $out -Force }
             $cs = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs'
             Write-Host ('[F19] csc=' + $csc)
-            $cscOut = (& $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll $cs 2>&1 | Out-String)
+            $cscOut = (& $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll $cs 2>&1 | Out-String)
             $cscRc = $LASTEXITCODE
             Write-Host ('[F19] csc exit=' + $cscRc + ' output=' + $cscOut.Trim())
             if ($cscRc -ne 0) { throw ('csc exit ' + $cscRc + ' :: ' + $cscOut.Trim()) }
@@ -1553,3 +1558,7 @@ jobs:
         with:
           name: ghrdp-handler-win-x64
           path: ${{ runner.temp }}\ghrdp-handler\GhrdpHandler.exe
+
+      - name: F27 Windows credential handoff mechanics (not live NLA)
+        shell: powershell
+        run: ./tests/f27-windows.ps1

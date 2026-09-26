@@ -362,7 +362,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <span class="note" id="rdpAuthDetail" style="margin:0"></span>
     <span class="note" id="rdpAuthCmds" style="display:none;flex-direction:column;gap:4px;margin:0">
       <span id="rdpAuthCmdKeyDelWrap" style="display:none;gap:8px;align-items:center;flex-wrap:wrap"><code id="rdpAuthCmdKeyDel" style="font-size:12px">cmdkey /delete:TERMSRV/&lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('rdpAuthCmdKeyDel',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- run once on YOUR PC: removes the STALE stored credential for this target (no tooling deletes credentials for you)</span></span>
-      <span id="rdpAuthPassWrap" style="display:none;gap:8px;align-items:center;flex-wrap:wrap"><a href="javascript:void(0)" id="rdpAuthPassCopy" onclick="copyById('credWinPass',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy CURRENT password from KEYS</a><span style="font-size:11px">- then click WINDOWS AUTO-LOGIN and paste the copied password exactly at the Windows prompt (this page never types it)</span></span>
+      <span id="rdpAuthPassWrap" style="display:none;gap:8px;align-items:center;flex-wrap:wrap"><a href="javascript:void(0)" id="rdpAuthPassCopy" onclick="copyById('credWinPass',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy CURRENT password from KEYS</a><span style="font-size:11px">- fallback only: paste at the Windows prompt if the launcher reports failed ticket redemption (this page never types it)</span></span>
       <span id="rdpAuthCmdCapi2Wrap" style="display:none;gap:8px;align-items:center;flex-wrap:wrap"><code id="rdpAuthCmdCapi2" style="font-size:12px">wevtutil epl Microsoft-Windows-CAPI2/Operational %TEMP%\capi2.evtx</code><a href="javascript:void(0)" onclick="copyById('rdpAuthCmdCapi2',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
       <span id="rdpAuthCmdSystemWrap" style="display:none;gap:8px;align-items:center;flex-wrap:wrap"><code id="rdpAuthCmdSystem" style="font-size:12px">wevtutil epl System %TEMP%\system.evtx</code><a href="javascript:void(0)" onclick="copyById('rdpAuthCmdSystem',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- CAPI2 + Schannel providers; paste both exports into this session</span></span>
     </span>
@@ -385,6 +385,9 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
 <section class="glass" id="sec-native-rdp">
   <div class="row" id="nrBuildWarn" style="display:none"><span class="k">Deploy</span><span class="v" id="nrBuildWarnText" style="color:#f5d9b7"></span></div>
   <h2>Native mstsc auto-login</h2>
+  <div class="row"><span class="k">LAST RDP LOGON</span><span class="v" id="lastRdpLogon">not reported yet</span></div>
+  <div class="row"><span class="k">Ticket audit</span><span class="v" id="ticketAudit">not reported yet</span></div>
+  <div class="row"><span class="k">Launcher chain</span><span class="v" id="handoffChain">not reported yet</span></div>
   <!-- [F10-3 §1.3] PS-FREE primary path: ghrdp://rdp?server=<fqdn>&user=<u>
        handled by the install.cmd-registered launcher (in-box csc compile,
        HKCU registration; no script host, no admin). If no handler answers,
@@ -392,7 +395,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <button class="primary" id="btnWinAuto" type="button" disabled>WINDOWS AUTO-LOGIN</button>
-      <span class="note" id="winAutoNote">fullscreen native mstsc, silent after a one-time Windows prompts for your password (cmdkey)</span>
+      <span class="note" id="winAutoNote">fullscreen native mstsc via one-time ticket; Windows prompts for your password (cmdkey) only if redemption fails</span>
     </div>
     <!-- [F15 §3] FAIL-VISIBLE launcher diagnostics. The launcher beacons BEFORE
          any work (details='invoked'), then cmdkey-shown / cmdkey-stored=... /
@@ -657,7 +660,12 @@ function toast(msg,kind){var t=document.createElement('div');t.className='toast 
 function flashBtn(btn,msg){if(!btn)return;if(!btn.getAttribute('data-orig'))btn.setAttribute('data-orig',btn.textContent);btn.textContent=msg;btn.classList.add('copied');setTimeout(function(){btn.textContent=btn.getAttribute('data-orig');btn.classList.remove('copied')},1400)}
 function legacyCopy(text,btn){var ok=false;try{var ta=document.createElement('textarea');ta.value=text;ta.setAttribute('readonly','readonly');ta.style.position='fixed';ta.style.left='-9999px';document.body.appendChild(ta);ta.focus();ta.select();ok=document.execCommand('copy');document.body.removeChild(ta)}catch(e){ok=false}if(ok){flashBtn(btn,'copied');toast('Copied','ok')}else{flashBtn(btn,'copy manually');window.prompt('Clipboard blocked - copy with Ctrl+C:',text);toast('Copy fallback opened','warn')}}
 function copyText(text,btn){text=String(text||'');if(!text){flashBtn(btn,'nothing');toast('Nothing to copy','warn');return}if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(text).then(function(){flashBtn(btn,'copied');toast('Copied','ok')},function(){legacyCopy(text,btn)});return}legacyCopy(text,btn)}
-function copyById(id,btn){var el=$(id);if(el)copyText((el.getAttribute&&el.getAttribute('data-full'))||el.textContent,btn)}
+// F27: secret copy payloads come only from the authenticated config state.
+var keySecrets={credWinPass:'',credVncPass:''};
+function copyById(id,btn){
+ if(Object.prototype.hasOwnProperty.call(keySecrets,id)){copyText(keySecrets[id],btn);return;}
+ var el=$(id);if(el)copyText((el.getAttribute&&el.getAttribute('data-full'))||el.textContent,btn);
+}
 function copyLog(btn){copyText($('logBox').textContent,btn)}
 function copyAllLinks(btn){var out=[];if(lastData){if(lastData.legacyIndexUrl)out.push('LEGACY RENTRY: '+lastData.legacyIndexUrl);if(lastData.rentryNewUrl)out.push('NEW RENTRY: '+lastData.rentryNewUrl);if(lastData.mirrorIndexUrl)out.push('TELEGRAPH: '+lastData.mirrorIndexUrl);var fl=lastData.files||[];for(var i=0;i<fl.length;i++){if(fl[i].link)out.push(fl[i].name+': '+fl[i].link)}}if(out.length===0){flashBtn(btn,'no links yet');toast('No links yet','warn');return}copyText(out.join('\n'),btn)}
 async function getJson(url){try{var r=await fetch(url,{cache:'no-store'});if(!r.ok)return null;return await r.json()}catch(e){return null}}
@@ -1032,26 +1040,26 @@ async function bootstrapConfig(){
   // to token/tailnet-authenticated requests; unauthenticated fetches get the
   // same response as before (fqdn/user/ip only).
   var r=await fetch(apiBase()+'/api/config'+(key?('?key='+encodeURIComponent(key)):''),{cache:'no-store'});
-  if(!r.ok)return;
+  if(!r.ok){keySecrets.credWinPass='';keySecrets.credVncPass='';return;}
   var cf=await r.json();
   var cr=(cf&&cf.creds)||{};
   var fqdn=cr.fqdn||'', user=cr.user||'', ip=cr.ip||'';
   var uEl=document.getElementById('credUser');if(uEl&&user)uEl.textContent=user;
   var iEl=document.getElementById('credIp');if(iEl&&ip)iEl.textContent=ip;
   var mv=document.getElementById('mstscVal');if(mv&&fqdn)mv.textContent='mstsc /v:'+fqdn;
-  // [F10-3 §3] KEYS rows: masked (last 4) on screen; copy button (copyById
-  // prefers data-full) carries the real value. Values never enter URLs/logs.
+  // F27: keep full values in JS state, never in the masked DOM.
   function fillSecret(id, val, mask){
+   keySecrets[id]=val?String(val):'';
    var el=document.getElementById(id);if(!el)return;
-   if(val){ el.textContent=mask||'\u2022\u2022\u2022\u2022'; el.setAttribute('data-full',val); }
+   el.removeAttribute('data-full');
+   if(val){ el.textContent=mask||'\u2022\u2022\u2022\u2022'; }
    else { el.textContent='(host-only)'; el.removeAttribute('data-full'); }
   }
   fillSecret('credWinPass', cr.windowsPass, cr.windowsPassMask);
   fillSecret('credVncPass', cr.vncPass, cr.vncPassMask);
   // [F11-2 §2.2] gated VNC value is held only in this page's closure so the
   // "remember for WEB DESKTOP" link can move it into localStorage on user
-  // action; it is never written to a URL, a log, or any DOM attribute except
-  // data-full on the KEYS row (existing F10 contract).
+  // action; it is never written to a URL, a log, or any DOM attribute.
   gatedVncPass=cr.vncPass?String(cr.vncPass):'';
   if(gatedVncPass){var rst=document.getElementById('vncPassState');if(rst&&!vncPassNow())rst.textContent='gated password available - click "remember for WEB DESKTOP" or type it once';}
   populateFqdn(fqdn,user);
@@ -1182,6 +1190,7 @@ async function nativeStatus(){
   paintRdpListener(rl,s?s.rdpListenerAgeSec:null);
   // [F24 §3] ONE decision row from rdpListener {credValid, authEvents, credsspStatus}.
   paintAuthDiscriminator(rl,s);
+  paintHandoffStatus(rl,s);
   // [F17 §2] CONNECTION diagnostics lines (copy-only) follow the live FQDN.
   var diagF=(s&&s.fqdn)||'';
   var diagIP=(s&&s.runnerResolvedIP)||'';
@@ -1597,9 +1606,13 @@ function paintAuthDiscriminator(rl,s){
   setTxt('rdpAuthVerdict','SERVER credential bug - re-dispatch','#f5b7b7');
   setTxt('rdpAuthDetail','rdpListener.credValid=false: the dispatch password FAILED validation against the runner\u2019s own local SAM, so the password on the KEYS row is already dead and no client-side action can fix it. Re-dispatch - a fresh user+password pair is generated every run. '+aeTxt+'. '+csTxt);
   showCmds(false);
+ }else if(cv===true&&ae&&ae.last4624At&&!ae.probeError&&(!ae.last4625At||Date.parse(ae.last4624At)>Date.parse(ae.last4625At))){
+  setTxt('rdpAuthVerdict','RDP authentication succeeded (4624, logon type 10)','#7dffc9');
+  setTxt('rdpAuthDetail','Latest remote-interactive success: '+ae.last4624At+'. Older failures remain in the evidence window. Fullscreen and usage still need client confirmation. '+aeTxt+'. '+csTxt);
+  showCmds(false);
  }else if(cv===true&&stale){
-  setTxt('rdpAuthVerdict','YOUR stored password is stale: copy CURRENT password from KEYS','#f5d9b7');
-  setTxt('rdpAuthDetail','rdpListener.credValid=true (the server credential is VALID) BUT the runner logged failed logons 4625 with '+(codeUp.join(','))+' (wrong password / bad user or password): the credential Windows has STORED for this target on YOUR PC does not match this run. In order: (1) run the cmdkey /delete copy-line below on YOUR PC (user-executed - no tooling deletes credentials), (2) copy the CURRENT password from the KEYS row, (3) click WINDOWS AUTO-LOGIN and paste the copied password EXACTLY at the Windows prompt. '+aeTxt+'. '+csTxt);
+  setTxt('rdpAuthVerdict','YOUR stored password is stale: use WINDOWS AUTO-LOGIN; copy CURRENT password from KEYS only for fallback','#f5d9b7');
+  setTxt('rdpAuthDetail','rdpListener.credValid=true (the server credential is VALID) BUT the runner logged failed logons 4625 with '+(codeUp.join(','))+' (wrong password / bad user or password): the credential Windows has STORED for this target on YOUR PC does not match this run. Click WINDOWS AUTO-LOGIN: the F27 ticket path overwrites the poisoned entry. Only if fallback-cmdkey is reported: copy CURRENT password from KEYS and paste the copied password EXACTLY at the Windows prompt. The manual reset below is optional; no tooling deletes credentials. '+aeTxt+'. '+csTxt);
   showCmds(true);showLine('rdpAuthCmdKeyDelWrap',true);showLine('rdpAuthPassWrap',true);showLine('rdpAuthCmdCapi2Wrap',false);showLine('rdpAuthCmdSystemWrap',false);
  }else if(cv===true){
   setTxt('rdpAuthVerdict','TLS-layer suspect (no 4625 logged on the runner)','#f5d9b7');
@@ -1709,11 +1722,22 @@ try{clientDnsProbe();setInterval(clientDnsProbe,CDNS_PERIOD_MS);}catch(_){}
 // ghrdp://rdp?server=<fqdn>&user=<u>[&ip=<tailnet-ip>] at the
 // install.cmd-registered launcher. The ip= argument is for DIAGNOSIS ONLY
 // (client-DNS-off detection): mstsc always targets the FQDN - never the IP.
-// [F19 §2] this builder may emit server|user|ip and NOTHING else: no
-// password, token, key or secret parameter can ever enter a ghrdp:// URL.
+// [F27] base builder emits server|user|ip; the click appends only t.
+// Password/key parameters remain forbidden. A ticket is not the password.
 // Enabled whenever the target FQDN is valid and a real (non-placeholder) user
 // is known; the launcher itself handles a missing TERMSRV entry with ONE
-// interactive cmdkey prompt.
+// interactive fallback only on failed redemption.
+// [F27 status-render-begin]
+function paintHandoffStatus(rl,s){
+ var ae=(rl&&rl.authEvents)||{};
+ var el=$('lastRdpLogon');
+ if(el)el.textContent='success '+(ae.last4624At||'not reported')+' | failed '+(ae.last4625At||'not reported')+' sub='+(ae.lastSubStatus||'none')+(ae.probeError?' | collector='+ae.probeError:'');
+ var audit=(s&&s.ticketAudit)||{};
+ el=$('ticketAudit');if(el)el.textContent='issued='+(audit.issued||0)+' redeemed='+(audit.redeemed||0)+' rejected='+(audit.rejected||0);
+ var chain=(s&&s.handlerChain)||[];
+ el=$('handoffChain');if(el)el.textContent=chain.length?chain.map(function(e){return e.ts+' '+e.details;}).join(' → '):'no launcher steps yet';
+}
+// [F27 status-render-end]
 function ghrdpRdpUrl(fqdn,user,ip){
  var u='ghrdp://rdp?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user);
  if(ip&&/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(ip)){u+='&ip='+encodeURIComponent(ip);}
@@ -1732,11 +1756,11 @@ function syncWinAuto(){
  var all=ok&&lOK&&dOK;
  b.disabled=!all;b.style.opacity=all?'':'0.5';b.style.cursor=all?'':'not-allowed';
  var note=$('winAutoNote');
- if(note)note.textContent=all?'fullscreen native mstsc, silent after a one-time Windows prompts for your password (cmdkey)':(!dOK?'Runner DNS broken':(ok?'RDP LISTENER probe not all ✅ (listening/fw/cert/nla) - fix the ❌ field in the RDP LISTENER row; AUTO-LOGIN stays disabled':'fullscreen native mstsc, silent after a one-time Windows prompts for your password (cmdkey)'));
+ if(note)note.textContent=all?'fullscreen native mstsc via one-time ticket; Windows prompts for your password (cmdkey) only if redemption fails':(!dOK?'Runner DNS broken':(ok?'RDP LISTENER probe not all ✅ (listening/fw/cert/nla) - fix the ❌ field in the RDP LISTENER row; AUTO-LOGIN stays disabled':'fullscreen native mstsc via one-time ticket; Windows prompts for your password (cmdkey) only if redemption fails'));
 }
 setInterval(syncWinAuto,2000);syncWinAuto();
 var waBtn=$('btnWinAuto');
-if(waBtn) waBtn.onclick=function(ev){
+if(waBtn) waBtn.onclick=async function(ev){
  if(ev&&ev.preventDefault)ev.preventDefault();
  var fqdn=($('rdpFqdn')||{}).textContent||'';
  var user=($('credUser')||{}).textContent||'rdpuser';
@@ -1746,7 +1770,21 @@ if(waBtn) waBtn.onclick=function(ev){
  var vis=function(){if(document.hidden)wasFocused=false;};
  window.addEventListener('blur',lost);
  document.addEventListener('visibilitychange',vis);
- launchProto(ghrdpRdpUrl(fqdn,user,(typeof window.__runnerResolvedIP==='string'?window.__runnerResolvedIP:'')));
+ // F27: issue a ticket first; no password is ever read by this launch path.
+ var ticket='';
+ try{
+  var key=getKey();if(!key)throw new Error('dashboard authorization missing');
+  var r=await fetch(apiBase()+'/api/rdp-token',{method:'POST',headers:{Authorization:'Bearer '+key},cache:'no-store'});
+  if(!r.ok)throw new Error('ticket issue HTTP '+r.status);
+  var j=await r.json();ticket=String(j.rid||'');
+  if(!/^[0-9a-f]{32}$/.test(ticket))throw new Error('invalid ticket response');
+ }catch(e){
+  window.removeEventListener('blur',lost);document.removeEventListener('visibilitychange',vis);
+  var failure=$('winAutoNote');if(failure)failure.textContent='ticket-issue failed - check dashboard authorization and direct tailnet access';
+  return;
+ }
+ launchProto(ghrdpRdpUrl(fqdn,user,(typeof window.__runnerResolvedIP==='string'?window.__runnerResolvedIP:''))+'&t='+encodeURIComponent(ticket));
+ ticket='';
  var note=$('winAutoNote');
  if(note)note.textContent='protocol dispatched - mstsc should open fullscreen shortly';
  // [F12-1 §1.4] hello-beacon watch: 20s window, native-status polled every 3s

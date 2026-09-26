@@ -10,7 +10,7 @@ set "CSC=%SystemRoot%\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 if not exist "%CSC%" set "CSC=%SystemRoot%\Microsoft.NET\Framework\v4.0.30319\csc.exe"
 if not exist "%CSC%" ( echo ERROR: csc.exe not found. & pause & exit /b 1 )
 echo BEFORE: & reg query "HKCU\Software\Classes\ghrdp\shell\open\command" /ve 2>nul
-"%CSC%" /nologo /target:winexe /out:"%EXE%" /r:System.dll /r:System.Windows.Forms.dll "%SRC%"
+"%CSC%" /nologo /target:winexe /out:"%EXE%" /r:System.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll "%SRC%"
 if errorlevel 1 ( echo ERROR: compile failed. & pause & exit /b 1 )
 reg add "HKCU\Software\Classes\ghrdp" /ve /d "URL:ghrdp Protocol" /f >nul
 reg add "HKCU\Software\Classes\ghrdp" /v "URL Protocol" /d "" /f >nul

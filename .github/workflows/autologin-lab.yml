@@ -18,6 +18,9 @@ on:
       - payloads/edge-ext-resolve.ps1
       - payloads/ghrdp-cred-shim.js
       - payloads/ui.html
+      - tests/f27-windows.ps1
+      - tests/f27-handoff.test.js
+      - tests/f27-copy.test.js
 jobs:
   proof:
     runs-on: windows-latest
@@ -36,6 +39,10 @@ jobs:
       GHRDP_LAB_DNS_ALLOW_LOOPBACK: '1'
     steps:
       - uses: actions/checkout@v4
+
+      - name: "F27: ticket + CredWrite + collector mechanics (not live NLA)"
+        shell: powershell
+        run: ./tests/f27-windows.ps1
 
       - name: "A: install.cmd compiles + registers handler (zero-prompt path)"
         shell: pwsh
@@ -293,10 +300,12 @@ jobs:
           if ($p.ExitCode -ne 0) { P-Fail 'rdp-exit' ('rdp verb exit ' + $p.ExitCode) }
           $seq = @((Cap-Lines) | Select-Object -Skip $n2)
           Write-Host ('[P] rdp beacon sequence: ' + ($seq -join ' | '))
-          if ($seq.Count -lt 3) { P-Fail 'rdp-seq' ('expected >=3 beacons, got ' + $seq.Count) }
+          if ($seq.Count -lt 5) { P-Fail 'rdp-seq' ('expected >=5 beacons, got ' + $seq.Count) }
           if ($seq[0] -notmatch '"details":"invoked"') { P-Fail 'rdp-seq0' $seq[0] }
-          if ($seq[1] -notmatch '"details":"cmdkey-stored=true"') { P-Fail 'rdp-seq1' $seq[1] }
-          if ($seq[2] -notmatch '"details":"mstsc-started pid=') { P-Fail 'rdp-seq2' $seq[2] }
+          if ($seq[1] -notmatch '"details":"fallback-cmdkey reason=ticket-missing"') { P-Fail 'rdp-fallback' $seq[1] }
+          if ($seq[2] -notmatch '"details":"cmdkey-stored=true"') { P-Fail 'rdp-seq1' $seq[2] }
+          if ($seq[3] -notmatch '"details":"rdp-written"') { P-Fail 'rdp-written' $seq[3] }
+          if ($seq[4] -notmatch '"details":"mstsc-started"') { P-Fail 'rdp-seq2' $seq[4] }
           $rdp = Get-ChildItem (Join-Path $env:TEMP 'ghrdp-*.rdp') -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if (-not $rdp) { P-Fail 'rdp-file' 'no ghrdp-*.rdp was written by the rdp verb' }
           $rdpTxt = [System.IO.File]::ReadAllText($rdp.FullName)
@@ -325,10 +334,11 @@ jobs:
           if ($p.ExitCode -ne 1) { P-Fail 'timeout-exit' ('expected exit 1 (cmdkey prompt timed out), got ' + $p.ExitCode) }
           $seq2 = @((Cap-Lines) | Select-Object -Skip $n3)
           Write-Host ('[P] timeout beacon sequence: ' + ($seq2 -join ' | '))
-          if ($seq2.Count -lt 3) { P-Fail 'timeout-seq' ('expected >=3 beacons, got ' + $seq2.Count) }
+          if ($seq2.Count -lt 4) { P-Fail 'timeout-seq' ('expected >=4 beacons, got ' + $seq2.Count) }
           if ($seq2[0] -notmatch '"details":"invoked"') { P-Fail 'timeout-seq0' $seq2[0] }
-          if ($seq2[1] -notmatch '"details":"cmdkey-shown"') { P-Fail 'timeout-seq1' $seq2[1] }
-          if ($seq2[2] -notmatch '"details":"cmdkey-timeout"' -or $seq2[2] -notmatch '"ok":false') { P-Fail 'timeout-seq2' $seq2[2] }
+          if ($seq2[1] -notmatch '"details":"fallback-cmdkey reason=ticket-missing"') { P-Fail 'timeout-fallback' $seq2[1] }
+          if ($seq2[2] -notmatch '"details":"cmdkey-shown"') { P-Fail 'timeout-seq1' $seq2[2] }
+          if ($seq2[3] -notmatch '"details":"cmdkey-timeout"' -or $seq2[3] -notmatch '"ok":false') { P-Fail 'timeout-seq2' $seq2[3] }
           if (($seq2 -join ' ') -match 'mstsc-started') { P-Fail 'timeout-mstsc' 'a timed-out credential prompt must NOT start mstsc' }
           if ((Log-Text) -notmatch [regex]::Escape('cmdkey prompt timed out')) { P-Fail 'timeout-msgbox' 'the cmdkey-timeout MessageBox was not logged' }
           Write-Host '[P] PASS timeout: invoked -> cmdkey-shown -> cmdkey-timeout (ok:false, rc 1), dialog logged, mstsc NOT started'
@@ -737,7 +747,7 @@ jobs:
           $exe = Join-Path $env:RUNNER_TEMP 'ghrdp-rdp-launcher-lab19.exe'
           $matrix = Join-Path $env:RUNNER_TEMP 'f19-dns-selftest.txt'
           if (Test-Path -LiteralPath $matrix) { Remove-Item -LiteralPath $matrix -Force }
-          & $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')
+          & $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')
           if ($LASTEXITCODE -ne 0) { S-Fail 'compile' 'the SHIPPED launcher does not compile with the in-box csc' }
           Write-Host '::notice::[S] phase=compile ok'
           $env:GHRDP_LAB_OUT = $matrix
@@ -929,7 +939,7 @@ jobs:
           if (-not (Test-Path -LiteralPath $csc)) { $csc = Join-Path $env:SystemRoot 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
           if (-not (Test-Path -LiteralPath $csc)) { T-Fail 'csc' 'the in-box csc.exe is missing - install.cmd depends on it too' }
           $exe = Join-Path $env:RUNNER_TEMP 'ghrdp-rdp-launcher-lab20.exe'
-          & $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')
+          & $csc /nologo /target:winexe /out:$exe /r:System.dll /r:System.Windows.Forms.dll /r:System.Web.Extensions.dll (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-rdp-launcher.cs')
           if ($LASTEXITCODE -ne 0) { T-Fail 'compile' 'the SHIPPED launcher does not compile with the in-box csc' }
           if (-not (Test-Path -LiteralPath $exe)) { T-Fail 'compile-output' ('no exe at ' + $exe) }
           $vM = [regex]::Match($cs, 'private const string Ver = "(\d+(\.\d+){1,3})"')
@@ -1041,7 +1051,7 @@ jobs:
           Write-Host '[U] (a2) PASS: shipped ui.html renderer executed through node - all three discriminator branches render as specified'
           # --- (b) 4625 collector parse with SYNTHETIC events -------------------
           function New-F24EventXml([int]$Id, [string]$Status, [string]$SubStatus, [string]$Reason) {
-              $tpl = '<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><EventID>{ID}</EventID><TimeCreated SystemTime="2026-09-26T12:00:00.0000000Z"/></System><EventData><Data Name="TargetUserName">rdpF24DECOY</Data><Data Name="Status">{ST}</Data><Data Name="SubStatus">{SUB}</Data><Data Name="FailureReason">{RS}</Data></EventData></Event>'
+              $tpl = '<Event xmlns="http://schemas.microsoft.com/win/2004/08/events/event"><System><EventID>{ID}</EventID><TimeCreated SystemTime="2026-09-26T12:00:00.0000000Z"/></System><EventData><Data Name="LogonType">10</Data><Data Name="TargetUserName">rdpF24DECOY</Data><Data Name="Status">{ST}</Data><Data Name="SubStatus">{SUB}</Data><Data Name="FailureReason">{RS}</Data></EventData></Event>'
               return $tpl.Replace('{ID}', [string]$Id).Replace('{ST}', [string]$Status).Replace('{SUB}', [string]$SubStatus).Replace('{RS}', [string]$Reason)
           }
           $eWrong = Get-RdpAuthEventFields -Xml ([xml](New-F24EventXml 4625 '0xC000006D' '0xC000006A' '%%2313'))
@@ -1066,12 +1076,12 @@ jobs:
           # secret-free: the summary is counts + codes; the decoy user name lives
           # only in the synthetic XML and must not survive the parse.
           $sumJson = ($s1 | ConvertTo-Json -Depth 6)
-          if ($sumJson -match 'rdpF24DECOY') { U-Fail 'secret-free' 'the collector summary carried the target user name' }
+          if ($s1.failures[0].targetUserName -ne 'rdpF24DECOY') { U-Fail 'target-account' 'F27 failure target account missing' }
           # FIELD-level scan: a banned credential FIELD must never appear as a JSON
           # key. Reason slugs such as 'wrong-password' (0xC000006A) are status-code
           # descriptions - the F24 evidence contract - not credentials, so match on
           # keys, not on raw substrings. The run that taught us this failed here.
-          foreach ($banned in @('TargetUserName', 'SubjectUserName', 'IpAddress', 'Password')) {
+          foreach ($banned in @('SubjectUserName', 'IpAddress', 'Password')) {
               if ($sumJson -match ('"' + $banned + '"\s*:')) { U-Fail 'secret-free' ('the collector summary carries a ' + $banned + ' field') }
           }
           # the REAL write path against the REAL Security log
@@ -1084,7 +1094,7 @@ jobs:
           if (-not $written) { U-Fail 'collector-write' 'Update-RdpAuthEvents did not write rdpListener.authEvents into config.json' }
           if ($null -eq $written.count4625 -or $null -eq $written.count4624) { U-Fail 'collector-write' 'authEvents lacks the 4624/4625 counts' }
           if ([string]$written.verdict -notin @('none', 'credential-mismatch', 'no-such-user', 'logon-type-denied', 'unclassified')) { U-Fail 'collector-verdict' ('unexpected verdict [' + $written.verdict + ']') }
-          if (([System.IO.File]::ReadAllText($tmpCfg)) -match 'TargetUserName') { U-Fail 'collector-leak' 'the written authEvents carries a user-name field' }
+          if (([System.IO.File]::ReadAllText($tmpCfg)) -match 'SubjectUserName|IpAddress') { U-Fail 'collector-leak' 'the written authEvents carries an unapproved field' }
           if (([System.IO.File]::ReadAllText($tmpCfg) | ConvertFrom-Json).rdpListener.listening -ne $true) { U-Fail 'collector-merge' 'the collector rebuild dropped the existing rdpListener fields instead of merging' }
           Write-Host ('[U] (b) PASS: 4625 parse 4624=' + $real.count4624 + ' 4625=' + $real.count4625 + ' verdict=' + $real.verdict + ' (synthetic 6A/6D => credential-mismatch, 15B => logon-type-denied, 4624-only => none; summary carries codes only)')
           # --- (c) the TLS-layer branch copy-lines ------------------------------
@@ -1619,7 +1629,7 @@ jobs:
           ('| (p) fail-visible launcher (F15) | ' + $(if ($env:P_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | REAL launcher vs a LOCAL python hello-listener: check verb logs its dialog and posts check-shown; stored-credential rdp = ' + $env:P_seq + '; no-credential rdp = ' + $env:P_timeout + '; JSONL log redaction verified. The physical MessageBox itself stays PENDING-USER (a runner cannot show or click it) |') | Add-Content -Path $S
           ('| (s) client-DNS probe + launcher version guard (F19) | ' + $(if ($env:S_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | SHIPPED launcher compiled by the in-box csc runs --dns-selftest: fail-name+reach-ip => client-dns-off remediation, both-ok => mstsc, no-ip/closed => dns-fail, with 0 mstsc/cmdkey calls; REAL server: beacon exe 2.1.0.0 vs the repo constant read from the launcher source => launcherOutdated=true, current stamp => false; shipped page carries the probe card, the yellow outdated row and the single credential-free ghrdp:// builder that appends &ip= only for a CGNAT address. The live client-PC DNS state stays PENDING-USER |') | Add-Content -Path $S
           ('| (t) nslookup false alarm + 0x904/0x7 evidence fallback (F20) | ' + $(if ($env:T_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | shipped page: nslookup is no copy-line any more (Resolve-DnsName + false-alarm note), the collapsed "if mstsc still fails (0x904/0x7)" block carries the client ClientActiveXCore export + the runner Security 4624/4625, Schannel and RemoteConnectionManager exports and stays copy-only; SHIPPED launcher compiles with the in-box csc, logs the mstsc exit code (dec+hex) and its dialog points at that block. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
-          ('| (u) auth-reject discriminator (F24) | ' + $(if ($env:U_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml blocks verified: SAM ValidateCredentials fixture (fresh account => true, wrong password => false with no probe error, empty => the missing-env probe verdict), the 4625 collector driven by synthetic events (0xC000006A/0xC000006D => credential-mismatch, 0xC000015B => logon-type-denied, 4624-only => none) with a REAL Security-log write into a temp config.json that keeps the pre-existing rdpListener fields and carries NO user name; the shipped page matrix executed through the real renderer (three branches + pending/warn credssp render) and the TLS-layer branch carries the CAPI2 + System export copy-lines. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
+          ('| (u) auth-reject discriminator (F24) | ' + $(if ($env:U_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml blocks verified: SAM ValidateCredentials fixture (fresh account => true, wrong password => false with no probe error, empty => the missing-env probe verdict), the 4625 collector driven by synthetic events (0xC000006A/0xC000006D => credential-mismatch, 0xC000015B => logon-type-denied, 4624-only => none) with a REAL Security-log write into a temp config.json that keeps the pre-existing rdpListener fields and carries only the F27 failure target account; the shipped page matrix executed through the real renderer (three branches + pending/warn credssp render) and the TLS-layer branch carries the CAPI2 + System export copy-lines. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
           ('| (k) no console window in the interactive session | **contract PASS** | every host-helper launch is -WindowStyle Hidden (or NoNewWindow for the user-driven terminal exec) and the long-lived services are SYSTEM scheduled tasks; launch-gates F11-5.3 enforces it. Visual confirmation on the first physical RDP session = PENDING-USER |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
@@ -1643,7 +1653,7 @@ jobs:
           Nt 'P' 'P_result' ('fail-visible launcher: check dialog logged + no server-less beacon; stored-cred rdp = ' + $env:P_seq + '; no-cred rdp = ' + $env:P_timeout)
           Nt 'S' 'S_result' 'F19: shipped launcher DNS-guard matrix 5/5 with injected resolver/TCP (client-dns-off | dns-fail | mstsc, zero mstsc/cmdkey), REAL server version guard 2.1.0.0=>outdated / repo constant=>current, UI probe card + &ip= builder present'
           Nt 'T' 'T_result' 'F20: nslookup retired as a diagnostic (Resolve-DnsName + false-alarm note), collapsed 0x904/0x7 block carries the client+runner wevtutil exports and stays copy-only, shipped launcher compiles and its immediate-exit dialog points at it'
-          Nt 'U' 'U_result' 'F24: SAM credential fixture (valid => true, stale => false), 4625 collector parse (6A/6D => credential-mismatch, 15B => logon-type-denied, 4624-only => none, no user name in the summary), three-branch renderer matrix + CAPI2/System copy-lines'
+          Nt 'U' 'U_result' 'F24: SAM credential fixture (valid => true, stale => false), 4625 collector parse (6A/6D => credential-mismatch, 15B => logon-type-denied, 4624-only => none, F27 target account only), three-branch renderer matrix + CAPI2/System copy-lines'
           Nt 'K' 'K_result' 'browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions'
           Nt 'L' 'L_result' 'qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok'
           Nt 'G' 'F_result' ('uBlock Origin=' + $env:F_ubo)

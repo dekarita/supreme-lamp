@@ -14,12 +14,24 @@ download**:
    (your monitor's native resolution, exact aspect) with drive, clipboard,
    printer, COM, smart-card, POS and microphone redirection, bitmap cache and
    bandwidth autodetect.
-4. The FIRST time for a new `<fqdn>`, Windows itself asks once for the
-   password (interactive `cmdkey` window). After that there are **0 prompts**.
-   Neither the page nor the launcher ever sees the password; the temporary
-   `.rdp` file is written locally (no MOTW, no SmartScreen) and deleted
-   after mstsc loads it. It never contains a password or hash. NLA and
-   CredSSP stay at Windows defaults.
+4. F27 requests a dashboard-authorized ticket, then the launcher redeems it
+   directly over the encrypted tailnet and overwrites the domain-password
+   `TERMSRV/<fqdn>` entry via CredWrite. No typing or clipboard handoff is used.
+   The ticket expires in 60 seconds, is single use, and is bound to the issuing
+   tailnet source IP. Use the direct tailnet dashboard, not a reverse proxy.
+   Only failed redemption may use the interactive cmdkey fallback. An old
+   ticket-less link retains the legacy stored-entry path; use the dashboard
+   button and reinstall the handler kit to get F27.
+5. The local `.rdp` contains options only (no password/hash); it is deleted
+   after mstsc loads it. NLA, CredSSP and certificate validation are unchanged.
+   The dashboard shows the dated LAST RDP LOGON, ticket counts and beacon chain:
+   `ticket-redeemed -> credwrite-ok -> rdp-written -> mstsc-started`.
+   A launcher start is not NLA proof: only a later 4624 type 10, fullscreen
+   confirmation and ticking usage establish live acceptance.
+
+If a prompt appears, inspect `fallback-cmdkey reason=...`; do not guess or change
+security policy. The documented transit exception and managed-memory caveat are
+in [MIGRATION.md](MIGRATION.md#f27-zero-typing-ticket--windows-credential-manager-2026-09-26).
 
 ### 0.1 If Windows asked "Open Windows PowerShell?" (stale registration, F12)
 

@@ -3986,7 +3986,7 @@ jobs:
           # Every keep-alive tick (60s) reads the runner's OWN Security log for
           # 4624/4625 and records ONLY counts + Status/SubStatus/FailureReason
           # codes into config.json -> rdpListener.authEvents. It NEVER records a
-          # username, a password, a domain, or an address: the dashboard's
+          # password, a domain, or an address. F27 permits TargetUserName on failures; the dashboard's
           # discriminator needs the status code (4625 0xC000006A/0xC000006D =>
           # wrong password; 0xC000015B => logon type denied) and nothing else.
           # Extracted VERBATIM by autologin-lab cell U and driven with synthetic
@@ -4012,6 +4012,8 @@ jobs:
                   status    = ([string]$name['Status']).Trim().ToUpperInvariant()
                   subStatus = ([string]$name['SubStatus']).Trim().ToUpperInvariant()
                   reason    = ([string]$name['FailureReason']).Trim()
+                  logonType = ([string]$name['LogonType']).Trim()
+                  targetUserName = ([string]$name['TargetUserName']).Trim()
               }
           }
           function Get-RdpAuthCodeMeaning {
@@ -4032,14 +4034,20 @@ jobs:
           }
           function Get-RdpAuthEventSummary {
               param($Items, [int]$WindowSec = 3600, [string]$ProbeError = '')
-              $c4624 = 0; $c4625 = 0; $last4625 = ''
+              $c4624 = 0; $c4625 = 0; $last4625 = ''; $last4624 = ''; $lastSub = ''
+              $failures = @()
               $codes = [ordered]@{}
-              foreach ($it in @($Items)) {
+              foreach ($it in @($Items | Sort-Object timeUtc)) {
                   if (-not $it) { continue }
-                  if ([string]$it.id -eq '4624') { $c4624++; continue }
+                  if ([string]$it.id -eq '4624') {
+                      if ([string]$it.logonType -eq '10') { $c4624++; $last4624 = [string]$it.timeUtc }
+                      continue
+                  }
                   if ([string]$it.id -ne '4625') { continue }
                   $c4625++
-                  if ([string]$it.timeUtc) { $last4625 = [string]$it.timeUtc }
+                  if ([string]$it.timeUtc) { $last4625 = [string]$it.timeUtc; $lastSub = [string]$it.subStatus }
+                  # F27 allowlist: no raw XML, subject/domain/address or credential data.
+                  $failures += [pscustomobject]@{ ts = [string]$it.timeUtc; failureReason = [string]$it.reason; subStatus = [string]$it.subStatus; targetUserName = [string]$it.targetUserName }
                   foreach ($c in @([string]$it.status, [string]$it.subStatus)) {
                       if (-not $c) { continue }
                       if (-not $codes.Contains($c)) { $codes[$c] = 0 }
@@ -4065,6 +4073,9 @@ jobs:
                   count4625  = $c4625
                   codes      = $codeList
                   last4625At = $last4625
+                  last4624At = $last4624
+                  lastSubStatus = $lastSub
+                  failures = @($failures | Select-Object -Last 40)
                   verdict    = $verdict
                   probeError = $ProbeError
               }

@@ -1,0 +1,72 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const vm=require('node:vm');
+const read=p=>fs.readFileSync(p,'utf8');
+const server=read('payloads/ghrdp-server.ps1');
+const cs=read('payloads/ghrdp-rdp-launcher.cs');
+const ui=read('payloads/ui.html');
+const block=(s,a,b)=>{assert.ok(s.includes(a)&&s.includes(b));return s.slice(s.indexOf(a),s.indexOf(b,s.indexOf(a)));};
+test('F27 gate: ticket is source-bound, consumed before credentials; routes fail closed',()=>{
+ const core=block(server,'function Use-RdpTicket','# [F27 ticket-core-end]');
+ for(const text of ['Test-TicketSource $Source',"'^[0-9a-f]{32}$'",'$entry.source -ne $Source.ToString()','$script:RdpTokens.Remove($Ticket)','$age -lt 60','$age -ge 0'])assert.ok(core.includes(text),text);
+ const route=block(server,'# [F27 redeem-route-begin]','# [F27 redeem-route-end]');
+ assert.match(route,/\$parts.method -ne 'POST' -or -not \(Test-TicketSource \$source\)/);
+ const guard=route.indexOf('if (-not (Use-RdpTicket');
+ const pass=route.indexOf('pass = [string]$cfgC.rdpPass');
+ assert.ok(guard>0&&pass>guard);
+ assert.match(route.slice(guard,pass),/Code 401[^]*?return/);
+ assert.doesNotMatch(route,/forwarded|query\[/i);
+ const issue=block(server,"if ($path -eq '/api/rdp-token' -and $parts.method -eq 'POST')",'# [F27 redeem-route-begin]');
+ for(const text of ["headers['authorization']",'Test-TicketBearer','Test-TicketSource $source','RandomNumberGenerator','source = $source.ToString()','ttl = 60'])assert.ok(issue.includes(text),text);
+ const audit=block(server,'function Write-TicketAudit','function Use-RdpTicket');
+ assert.doesNotMatch(audit,/\$(?:Ticket|reqTok|newTok|pass|cfgC)\b/i);
+ assert.match(audit,/ts = .*source = \$Source; counts = \$script:TicketAudit/);
+});
+test('F27 gate: store target, options, buffer cleanup, no unsafe launch APIs or sinks',()=>{
+ const handoff=block(cs,'// [F27 handoff-begin]','// [F27 handoff-end]');
+ for(const text of ['CredWriteW','c.Type = 2','CredRead(c.TargetName, 1, 0, out old)','c.Type = 1','CredFree(old)','c.TargetName = "TERMSRV/" + fqdn','c.Persist = 2','Marshal.FreeHGlobal','Array.Clear(blob','req.Proxy = null','req.AllowAutoRedirect = false','IsTailnetAddress(a)','ticket-redeemed','credwrite-ok','fallback-cmdkey reason='])assert.ok(handoff.includes(text),text);
+ assert.match(cs,/"full address:s:" \+ server/);
+ assert.match(cs,/WriteCredential\(server, user, pass\)/);
+ assert.match(cs,/!forcePrompt && HasCredEntry\(server\)/);
+ assert.match(cs,/CmdkeyStep\(server, user, host, port, true\)/);
+ const code=cs.split('\n').filter(l=>!/^\s*\/\//.test(l)).join('\n');
+ const denied=['Send'+'Keys','UI'+'Automation','Clipboard.Get','/pass:'];
+ for(const token of denied)assert.ok(!code.includes(token),token);
+ // User-approved exception: valueless switch ONLY for interactive fallback.
+ assert.match(code,/" \/user:" \+ user \+ " \/pass"\)/);
+ assert.doesNotMatch(code,/" \/pass"\s*\+/);
+ assert.doesNotMatch(handoff,/\b(?:LogJson|HelloBounded|HandoffStep|File\.\w+)\([^;]*(?:\bpass\b|\bticket\b|\bjson\b|responseBody)\s*[,\)]/s);
+ assert.match(cs,/LogJson\("invoked", verb, "protocol invocation log="/);
+ assert.ok(cs.indexOf('HandoffStep(host, port, "rdp-written"')<cs.indexOf('new ProcessStartInfo("mstsc.exe"'));
+});
+test('F27 WINDOWS click gets bearer ticket before dispatch, never reads password state',async()=>{
+ const source=block(ui,'if(waBtn) waBtn.onclick=async','// [F15 §3] [RUN CHECK]');
+ const builder=block(ui,'function ghrdpRdpUrl','function syncWinAuto');
+ const launch=[], requests=[];
+ const els={rdpFqdn:{textContent:'fixture.tail.ts.net'},credUser:{textContent:'fixture'},winAutoNote:{},winAutoStale:{style:{}}};
+ const ctx={waBtn:{disabled:false},$:id=>els[id],FQDN_RE:/\.ts\.net$/,getKey:()=> 'fixture-bearer',apiBase:()=>'',window:{addEventListener(){},removeEventListener(){}},document:{addEventListener(){},removeEventListener(){}},fetch:async(url,opt)=>{requests.push({url,opt});return {ok:true,json:async()=>({rid:'a'.repeat(32)})}},launchProto:u=>launch.push(u),setInterval(){},setTimeout(){},clearInterval(){},encodeURIComponent,Date};
+ vm.createContext(ctx);vm.runInContext(builder+source,ctx);
+ await ctx.waBtn.onclick();
+ assert.equal(requests[0].url,'/api/rdp-token');assert.equal(requests[0].opt.headers.Authorization,'Bearer fixture-bearer');
+ assert.equal(launch[0],'ghrdp://rdp?server=fixture.tail.ts.net&user=fixture&t='+'a'.repeat(32));
+ assert.doesNotMatch(source,/windowsPass|keySecrets|credWinPass|textContent[^;]*pass/i);
+ ctx.fetch=async()=>({ok:false,status:401});await ctx.waBtn.onclick();assert.equal(launch.length,1);
+ assert.match(els.winAutoNote.textContent,/ticket-issue failed/);
+});
+test('F27 status row: no synthetic success; shows independently dated success/failure and hops',()=>{
+ const els={};const ctx={$:id=>els[id]||(els[id]={})};vm.createContext(ctx);
+ vm.runInContext(block(ui,'// [F27 status-render-begin]','// [F27 status-render-end]'),ctx);
+ ctx.paintHandoffStatus({},{});assert.match(els.lastRdpLogon.textContent,/success not reported/);
+ ctx.paintHandoffStatus({authEvents:{last4624At:'later',last4625At:'earlier',lastSubStatus:'0XC000006A'}},{ticketAudit:{issued:2,redeemed:1,rejected:1},handlerChain:[{ts:'now',details:'credwrite-ok'}]});
+ assert.equal(els.lastRdpLogon.textContent,'success later | failed earlier sub=0XC000006A');
+ assert.equal(els.ticketAudit.textContent,'issued=2 redeemed=1 rejected=1');assert.equal(els.handoffChain.textContent,'now credwrite-ok');
+});
+test('F27 collector maps remote-interactive successes and allowlisted failure fields',()=>{
+ const col=block(read('.github/workflows/main.yml'),'# [F24 §2 collector-begin]','# [F24 §2 collector-end]');
+ for(const text of ["$it.logonType -eq '10'",'last4624At = $last4624','lastSubStatus = $lastSub','Sort-Object timeUtc',"$name['TargetUserName']",'failureReason = [string]$it.reason'])assert.ok(col.includes(text),text);
+ assert.doesNotMatch(col,/SubjectUserName|IpAddress|RDP_PASS/);
+ const beacon=block(server,"if ($path -eq '/api/handler-hello'",'# [remediation 8C] /api/launch.ps1');
+ assert.match(beacon,/\$hh.details = 'launcher-error'/);assert.match(beacon,/Select-Object -Last 40/);
+ assert.doesNotMatch(beacon,/\$hh\.(?:details|exe) = \(\[string\]\$bj/);
+});

@@ -25,7 +25,8 @@
 //        (pass|password|passwd|pwd|token|key|secret|apikey|authkey|cred...) is
 //        REFUSED outright - beacon ok:false details='cred-param-rejected' and
 //        no cmdkey/mstsc work (this launcher never accepts secrets in a URL).
-//     3. If TERMSRV/<fqdn> is absent from the user's Credential Manager, launch
+//     3. F27: redeem t, overwrite TERMSRV via CredWrite; on redemption failure ONLY,
+//        use the legacy interactive fallback below. If TERMSRV/<fqdn> is absent from the user's Credential Manager, launch
 //        INTERACTIVE cmdkey ONCE in a VISIBLE Normal window (Windows itself
 //        prompts for the password - this process never sees, reads, or writes
 //        any password or hash), WaitForExit(180000), then VERIFY the entry with
@@ -60,6 +61,9 @@
 // OMITS 'authentication level', 'prompt for credentials', and
 // 'enablecredsspsupport'.
 using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Web.Script.Serialization;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
@@ -70,17 +74,17 @@ using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 
-// [F20 §2] 2.3.0.0: the immediate-mstsc-exit dialog now points at the
+// [F20 §2] 2.4.0.0: the immediate-mstsc-exit dialog now points at the
 // dashboard's evidence-based 0x904/0x7 fallback (CONNECTION DIAGNOSTICS ->
 // "if mstsc still fails") instead of leaving the user with a bare exit code.
-[assembly: AssemblyVersion("2.3.0.0")]
-[assembly: AssemblyFileVersion("2.3.0.0")]
+[assembly: AssemblyVersion("2.4.0.0")]
+[assembly: AssemblyFileVersion("2.4.0.0")]
 [assembly: AssemblyTitle("ghrdp-rdp-launcher")]
 
 internal static class GhrdpRdpLauncher
 {
-    private const string Ver = "2.3.0.0";
-    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F20 evidence-fallback+nslookup-kill)";
+    private const string Ver = "2.4.0.0";
+    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F27 ticket-CredWrite)";
     private const int DefaultPort = 7331;
     // [F19 §2] the RDP TCP port used ONLY for the client-DNS diagnosis probe
     // (the mstsc target itself always stays the MagicDNS FQDN).
@@ -124,6 +128,7 @@ internal static class GhrdpRdpLauncher
         // [F19 §2] a credential-ish QUERY PARAM is REFUSED before any work, and
         // its value must never reach the log even in the refusal line.
         r = Regex.Replace(r, @"(?i)\b(pass|password|passwd|pwd|token|key|secret|apikey|authkey|cred)\s*=\s*[^\s&""]+", "$1=[redacted]");
+        r = Regex.Replace(r, @"(?i)([?&;](?:t|%74)=)[^&;\s]+", "$1[redacted]");
         r = Regex.Replace(r, @"(?i)(tskey-[A-Za-z0-9_\-]+|ghp_[A-Za-z0-9]+|github_pat_[A-Za-z0-9_]+)", "[redacted]");
         return r;
     }
@@ -399,7 +404,7 @@ internal static class GhrdpRdpLauncher
         {
             int eq = pair.IndexOf('=');
             if (eq < 1) { continue; }
-            string k = pair.Substring(0, eq).Trim();
+            string k = Decode(pair.Substring(0, eq)).Trim();
             if (CredParamRe.IsMatch("?" + k + "=")) { return k.ToLowerInvariant(); }
         }
         return "";
@@ -575,9 +580,175 @@ internal static class GhrdpRdpLauncher
     // can ask for the password; it is created VISIBLE, in Normal style, with
     // the system directory as CWD, and we NEVER touch stdout/stderr of it.
     // ------------------------------------------------------------------
-    private static int CmdkeyStep(string server, string user, string host, int port)
+    // [F27 handoff-begin] Store API only; no credential UI interaction.
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct Credential
     {
-        if (HasCredEntry(server))
+        public uint Flags, Type;
+        public string TargetName, Comment;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+        public uint CredentialBlobSize;
+        public IntPtr CredentialBlob;
+        public uint Persist, AttributeCount;
+        public IntPtr Attributes;
+        public string TargetAlias, UserName;
+    }
+    [DllImport("advapi32.dll", EntryPoint = "CredWriteW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CredWrite(ref Credential credential, uint flags);
+
+    [DllImport("advapi32.dll", EntryPoint = "CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CredRead(string target, uint type, uint flags, out IntPtr credential);
+    [DllImport("advapi32.dll")]
+    private static extern void CredFree(IntPtr credential);
+
+    private static string TicketFromUri(string uri)
+    {
+        string found = "";
+        int q = uri.IndexOf('?');
+        if (q < 0) { return found; }
+        foreach (string pair in uri.Substring(q + 1).Split('&', ';'))
+        {
+            int eq = pair.IndexOf('=');
+            if (eq < 1 || Decode(pair.Substring(0, eq)).ToLowerInvariant() != "t") { continue; }
+            if (found.Length != 0) { return ""; }
+            found = Decode(pair.Substring(eq + 1));
+        }
+        return Regex.IsMatch(found, "^[0-9a-f]{32}$") ? found : "";
+    }
+    private static void HandoffStep(string host, int port, string step, bool ok)
+    {
+        LogJson("handoff", "rdp", step);
+        HelloBounded(host, port, "rdp", ok, step);
+    }
+    private static void WriteCredential(string fqdn, string user, string pass)
+    {
+        byte[] blob = Encoding.Unicode.GetBytes(pass);
+        IntPtr buffer = IntPtr.Zero;
+        try
+        {
+            buffer = Marshal.AllocHGlobal(blob.Length);
+            Marshal.Copy(blob, 0, buffer, blob.Length);
+            Credential c = new Credential();
+            c.Type = 2; // CRED_TYPE_DOMAIN_PASSWORD
+            c.TargetName = "TERMSRV/" + fqdn;
+            c.UserName = user;
+            c.CredentialBlobSize = (uint)blob.Length;
+            c.CredentialBlob = buffer;
+            c.Persist = 2; // CRED_PERSIST_LOCAL_MACHINE, current user's store
+            if (!CredWrite(ref c, 0))
+            { throw new InvalidOperationException("credwrite-failed code=" + Marshal.GetLastWin32Error()); }
+            // Pre-F27 interactive /generic created a separate type-1 entry.
+            // CredWrite keys by (target,type): writing type 2 cannot replace it.
+            // Refresh it ONLY when present, via the same sanctioned store API.
+            // No deletion, no reading/exporting its old credential blob.
+            IntPtr old = IntPtr.Zero;
+            bool genericPresent = CredRead(c.TargetName, 1, 0, out old);
+            int readError = Marshal.GetLastWin32Error();
+            if (old != IntPtr.Zero) { CredFree(old); }
+            if (genericPresent)
+            {
+                c.Type = 1; // existing CRED_TYPE_GENERIC compatibility entry
+                if (!CredWrite(ref c, 0))
+                { throw new InvalidOperationException("credwrite-legacy-failed code=" + Marshal.GetLastWin32Error()); }
+            }
+            else if (readError != 1168) // ERROR_NOT_FOUND is the only expected miss
+            { throw new InvalidOperationException("credwrite-legacy-inspection-failed"); }
+        }
+        finally
+        {
+            if (buffer != IntPtr.Zero)
+            {
+                for (int n = 0; n < blob.Length; n++) { Marshal.WriteByte(buffer, n, 0); }
+                Marshal.FreeHGlobal(buffer);
+            }
+            Array.Clear(blob, 0, blob.Length);
+        }
+    }
+    // Only redemption errors permit interactive fallback. A bad reply or
+    // failed CredWrite aborts, rather than using a potentially poisoned entry.
+    private static string RedeemAndStore(string uri, string server, string user, string host, int port)
+    {
+        string ticket = TicketFromUri(uri);
+        if (ticket.Length == 0) { return "ticket-missing"; }
+        if (port != DefaultPort) { throw new InvalidOperationException("ticket-port-invalid"); }
+        byte[] requestBody = Encoding.UTF8.GetBytes("{\"token\":\"" + ticket + "\"}");
+        byte[] responseBody = new byte[16384];
+        Dictionary<string, object> reply = null;
+        string json = null;
+        string pass = null;
+        try
+        {
+            // Pin the socket destination to a freshly validated tailnet IP.
+            // Disable OS proxies AND redirects: neither may receive the ticket.
+            IPAddress address = null;
+            foreach (IPAddress a in Dns.GetHostAddresses(server))
+            { if (IsTailnetAddress(a)) { address = a; break; } }
+            if (address == null) { return "unreachable"; }
+            string authority = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6
+                ? "[" + address.ToString() + "]" : address.ToString();
+            HttpWebRequest req = (HttpWebRequest)WebRequest.Create("http://" + authority + ":" + DefaultPort + "/api/rdp-creds");
+            req.Host = server + ":" + DefaultPort;
+            req.Proxy = null;
+            req.AllowAutoRedirect = false;
+            req.Timeout = 8000; req.ReadWriteTimeout = 8000;
+            req.Method = "POST"; req.ContentType = "application/json";
+            req.ContentLength = requestBody.Length;
+            int length = 0;
+            try
+            {
+                using (Stream output = req.GetRequestStream()) { output.Write(requestBody, 0, requestBody.Length); }
+                using (HttpWebResponse response = (HttpWebResponse)req.GetResponse())
+                {
+                    if (response.StatusCode != HttpStatusCode.OK) { throw new InvalidOperationException("redeem-status-invalid"); }
+                    using (Stream input = response.GetResponseStream())
+                    {
+                        int n;
+                        while (length < responseBody.Length && (n = input.Read(responseBody, length, responseBody.Length - length)) > 0) { length += n; }
+                        if (length == responseBody.Length) { throw new InvalidOperationException("redeem-response-too-large"); }
+                    }
+                }
+            }
+            catch (WebException ex)
+            {
+                using (HttpWebResponse response = ex.Response as HttpWebResponse)
+                {
+                    if (response != null && response.StatusCode == HttpStatusCode.Unauthorized) { return "ticket-invalid-or-expired"; }
+                    if (response != null) { throw new InvalidOperationException("redeem-rejected"); }
+                }
+                return "unreachable";
+            }
+            json = Encoding.UTF8.GetString(responseBody, 0, length);
+            reply = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(json);
+            if (reply == null || !reply.ContainsKey("fqdn") || !reply.ContainsKey("user") || !reply.ContainsKey("pass") ||
+                !(reply["pass"] is string) || (string)reply["fqdn"] != server || (string)reply["user"] != user)
+            { throw new InvalidOperationException("redeem-target-mismatch"); }
+            pass = (string)reply["pass"];
+            if (pass.Length == 0 || Encoding.Unicode.GetByteCount(pass) > 2560)
+            { throw new InvalidOperationException("redeem-credential-invalid"); }
+            HandoffStep(host, port, "ticket-redeemed", true);
+            try { WriteCredential(server, user, pass); }
+            catch { HandoffStep(host, port, "credwrite-failed", false); throw; }
+            HandoffStep(host, port, "credwrite-ok", true);
+            return null;
+        }
+        finally
+        {
+            Array.Clear(requestBody, 0, requestBody.Length);
+            Array.Clear(responseBody, 0, responseBody.Length);
+            if (reply != null) { reply.Clear(); }
+            // .NET immutable strings may have GC copies: release immediately;
+            // never promise deterministic erasure of managed-runtime copies.
+            pass = null; json = null; ticket = null;
+        }
+    }
+    private static string FallbackBeacon(string reason) { return "fallback-cmdkey reason=" + reason; }
+    // [F27 handoff-end]
+
+    private static int CmdkeyStep(string server, string user, string host, int port, bool forcePrompt = false)
+    {
+        if (!forcePrompt && HasCredEntry(server))
         {
             LogJson("cmdkey", "rdp", "TERMSRV/" + server + " already present (cmdkey /list parse) - no prompt");
             HelloBounded(host, port, "rdp", true, "cmdkey-stored=true");
@@ -642,10 +813,9 @@ internal static class GhrdpRdpLauncher
     // [F15 §1.3] .rdp write + VISIBLE mstsc; an immediate exit is a visible
     // failure (exit code + last log lines), never a silent nothing.
     // ------------------------------------------------------------------
-    private static int MstscStep(string server, string user, string host, int port)
+    private static string[] RdpLines(string server, string user)
     {
-        string rdp = Path.Combine(Path.GetTempPath(), "ghrdp-" + Sha1Hex8(server + "|" + user) + ".rdp");
-        string[] lines = new string[] {
+        return new string[] {
             "full address:s:" + server,
             "username:s:" + user,
             "screen mode id:i:2",          // fullscreen = client native resolution (exact aspect)
@@ -666,12 +836,19 @@ internal static class GhrdpRdpLauncher
             "bitmapcachepersistenable:i:1",
             "autoreconnection enabled:i:1"
         };
+    }
+
+    private static int MstscStep(string server, string user, string host, int port)
+    {
+        string rdp = Path.Combine(Path.GetTempPath(), "ghrdp-" + Sha1Hex8(server + "|" + user) + ".rdp");
+        string[] lines = RdpLines(server, user);
         File.WriteAllLines(rdp, lines);   // local write: no MOTW, no SmartScreen
         long bytes = 0;
         try { bytes = new FileInfo(rdp).Length; } catch { }
         LogJson("rdp", "rdp", "wrote " + rdp + " (" + bytes + " bytes, " + lines.Length +
             " directives, no credential lines)");
 
+        HandoffStep(host, port, "rdp-written", true);
         ProcessStartInfo msi = new ProcessStartInfo("mstsc.exe", "\"" + rdp + "\"");
         msi.UseShellExecute = true;
         msi.WindowStyle = ProcessWindowStyle.Normal;   // the client window is the visible surface
@@ -695,7 +872,7 @@ internal static class GhrdpRdpLauncher
                 "\n\nlast 5 log lines (" + LogPath() + "):\n\n" + TailLines(5));
             return 4;
         }
-        HelloBounded(host, port, "rdp", true, "mstsc-started pid=" + m.Id);
+        HandoffStep(host, port, "mstsc-started", true);
 
         if (Environment.GetEnvironmentVariable("GHRDP_LAB_KEEP_RDP") != "1")
         {
@@ -728,7 +905,7 @@ internal static class GhrdpRdpLauncher
             LogJson("error", verb, "cred-param-rejected: URL carried a credential-ish parameter '" + credParam + "' (value redacted) - no cmdkey/mstsc work");
             HelloBounded(host, port, verb, false, "cred-param-rejected");
             ShowBox("ghrdp launcher: refused credential in URL",
-                "This launcher never accepts a password, token or key inside a URL" +
+                "This launcher accepts only a short-lived t ticket, never a password or key inside a URL" +
                 " (parameter '" + credParam + "').\n\nNothing was stored and mstsc was NOT started." +
                 "\n\nUse:  ghrdp://rdp?server=<fqdn>&user=<user>\n" +
                 "Windows prompts for the password itself (cmdkey, once per PC)." +
@@ -815,8 +992,23 @@ internal static class GhrdpRdpLauncher
         // only why it was blocked ([F17/R] cell asserts "dns-guard ok").
         LogJson("rdp", verb, "DNS resolved " + server + " -> " + resolvedLog + " (dns-guard ok)");
 
-        int rc = CmdkeyStep(server, user, host, port);
-        if (rc != 0) { return rc; }     // a timed-out prompt already produced its MessageBox
+        string fallback = RedeemAndStore(uri, server, user, host, port);
+        if (fallback != null)
+        {
+            HandoffStep(host, port, FallbackBeacon(fallback), false);
+            if (fallback == "ticket-missing")
+            {
+                // Compatibility for old ticket-less links only. The dashboard
+                // always issues t; failed redemptions must not reuse poison.
+                int rc = CmdkeyStep(server, user, host, port);
+                if (rc != 0) { return rc; }
+            }
+            else
+            {
+                int rc = CmdkeyStep(server, user, host, port, true);
+                if (rc != 0) { return rc; }
+            }
+        }     // a timed-out prompt already produced its MessageBox
         return MstscStep(server, user, host, port);
     }
 
@@ -842,7 +1034,7 @@ internal static class GhrdpRdpLauncher
         // primitive. Pure string check - no I/O - so the beacon still goes out
         // before any cmdkey/mstsc/file work.
         string beaconHost = FqdnRe.IsMatch(server) ? server : "";
-        LogJson("invoked", verb, "uri=" + Redact(uri) + " log=" + LogPath());
+        LogJson("invoked", verb, "protocol invocation log=" + LogPath());
         HelloBounded(beaconHost, port, verb, true, "invoked");
 
         // [F15 §1.4] global catch: an escaping exception is reported through the
@@ -853,10 +1045,10 @@ internal static class GhrdpRdpLauncher
         }
         catch (Exception ex)
         {
-            LogJson("error", verb, "unhandled " + ex.GetType().Name + ": " + ex.Message);
+            LogJson("error", verb, "unhandled " + ex.GetType().Name);
             HelloBounded(beaconHost, port, verb, false, ex.GetType().Name);
             ShowBox("ghrdp launcher error",
-                ex.GetType().Name + ": " + ex.Message + "\n\n" + Stamp + "\nlog: " + LogPath());
+                ex.GetType().Name + " (details withheld)\n\n" + Stamp + "\nlog: " + LogPath());
             return 1;
         }
     }

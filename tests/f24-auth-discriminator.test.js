@@ -262,7 +262,7 @@ test('F24-F main.yml carries the ValidateCredentials proof and its loud fail', (
   }
 });
 
-test('F24-G the keep-alive collector records codes only (no user/password/address)', () => {
+test('F24-G the keep-alive collector records codes and F27 target account only (no password/address)', () => {
   const a = main.indexOf('[F24 §2 collector-begin]');
   const b = main.indexOf('[F24 §2 collector-end]', a);
   assert.ok(a > 0 && b > a, 'the F24 collector markers are missing from main.yml');
@@ -270,7 +270,7 @@ test('F24-G the keep-alive collector records codes only (no user/password/addres
   for (const tok of ['Get-WinEvent', "LogName = 'Security'", '4624', '4625', '0XC000006A', '0XC000006D', '0XC000015B', 'authEvents', 'Get-RdpAuthEventSummary', 'Get-RdpAuthEventFields', 'wrong-password']) {
     assert.ok(col.includes(tok), 'the F24 collector lacks ' + tok);
   }
-  for (const leak of ['RDP_PASS', 'RDP_USER', 'env:RDP_', 'TargetUserName', 'SubjectUserName', 'Password', 'IpAddress', 'Name = \'User\'']) {
+  for (const leak of ['RDP_PASS', 'RDP_USER', 'env:RDP_', 'SubjectUserName', 'Password', 'IpAddress', 'Name = \'User\'']) {
     assert.ok(!col.includes(leak), 'the F24 collector references credential/identity material: ' + leak);
   }
   // the collector actually ticks in the keep-alive loop.
@@ -312,4 +312,16 @@ test('F24-I the gate step and the lab cell exist and pin the three branches', ()
   assert.ok(lab.includes('U: F24 auth-reject discriminator'), 'the lab cell U is missing');
   assert.ok(lab.includes('U_result=pass'), 'the lab cell U never reports a result');
   assert.ok(lab.includes("Nt 'U' 'U_result'"), 'the lab cell U is not announced in the evidence notices');
+});
+
+
+test('F27 newer type-10 success supersedes historic mismatch, never a newer failure', async () => {
+  const ae = { count4624: 1, count4625: 5, last4624At: '2026-09-26T16:00:00Z', last4625At: '2026-09-26T15:00:00Z', codes: [{code:'0xC000006A'}] };
+  const view = page({rdpListener:listener({credValid:true,authEvents:ae})});
+  await refresh(view);
+  assert.match(view.node('rdpAuthVerdict').textContent,/authentication succeeded/);
+  assert.equal(view.node('rdpAuthCmds').style.display,'none');
+  ae.last4625At='2026-09-26T17:00:00Z';
+  await refresh(view);
+  assert.match(view.node('rdpAuthVerdict').textContent,/YOUR stored password is stale/);
 });
