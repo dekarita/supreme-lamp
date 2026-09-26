@@ -231,3 +231,50 @@ both drop and resumes on reconnect (lab cell I). noVNC runs with
 plus a `PreferZlib` write for builds that honour it, and every host helper is
 launched hidden under a SYSTEM scheduled task — zero console windows in the
 interactive session.
+
+## 5. F30: TLS/cipher handshake fix, credential purge, conn log
+
+**Why.** Ground truth 2026-09-26: the client was dropped DURING the TLS
+handshake ("connection forcibly closed by remote host") before any credential
+was sent, while TCP 3389, DNS and the firewall all probed green — and 100+
+stale `cmdkey` entries (a mix of `Domain:` and `LegacyGeneric:` targets for old
+tailnet IPs) sat in the client store, with 165-169 byte `.rdp` files (truncated
+directives) on disk.
+
+**Server side (main.yml "TLS/cipher normalization (F30)").** Explicitly enables
+the modern suites and moves them to the FRONT of Schannel's priority list
+(`TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`,
+`TLS_AES_128_GCM_SHA256`, `TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384`,
+`TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256`); re-asserts TLS 1.2 `Enabled=1`
+on Client and Server (never disabled — some clients default to 1.2) and enables
+TLS 1.3 on both; keeps RDP at `SecurityLayer=2` (TLS only) with
+`MinEncryptionLevel=3`; restarts TermService/WinRM (plus the RDP session
+services) so the listener re-reads Schannel; stamps `C:\ghrdp\tls-norm.json`.
+Nothing weakens NLA, CredSSP or certificate validation — no auth-level
+override, no cert bypass, no cipher downgrade, and the step halts loud
+(`reason cipher-normalization-failed`) when the host cannot be normalized.
+
+**Client side (launcher 2.6.0.0).** Before writing the fresh credential the
+launcher ENUMERATES the current user's `TERMSRV/*` entries and deletes every
+entry whose target is exactly `TERMSRV/<fqdn>` (case-insensitive, type 2
+`Domain` and the legacy type 1 `LegacyGeneric` cmdkey created) through
+`CredDelete`, then writes the new credential as `CRED_TYPE_DOMAIN_PASSWORD`;
+the dashboard chain shows `purged <n> stale entries, wrote new as Domain`. The
+`%TEMP%\ghrdp-<sha1_8>.rdp` is read back and must exceed 400 bytes and contain
+the fullscreen + target directives — a truncated template now throws loud
+instead of launching mstsc with every option silently lost. No password is
+typed, automated or placed in a URL/log/artifact.
+
+**Diagnostics.** The runner's server process reads
+`Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational` and
+`Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational` every
+30 s (last 10 each) and serves the newest 3 as `rdpListener.connLog` with
+reason codes (`tls-forcibly-closed`, `tls-handshake-failed`, `cert-rejected`,
+`connection-reset`, `auth-succeeded`, `auth-failed`, `listener-lifecycle`,
+`session-state`); the dashboard row is **SERVER CONN LOG**. This is the only
+surface that can see a pre-LSA TLS drop — 4624/4625 never fire for it.
+CONNECTION DIAGNOSTICS adds copy-only lines for the nuclear TERMSRV purge, the
+client cipher list, a TLS-1.3-forced mstsc attempt and an optional tshark
+capture, plus the dash-token-gated `/api/purge-stale-creds` one-liner that
+deletes only entries older than 7 days (by `LastWritten`). Nothing on the page
+executes anything: every command is yours to run.
