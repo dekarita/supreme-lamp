@@ -49,7 +49,7 @@ test('F15-1 launcher: no hidden-window flag can ever wrap cmdkey or mstsc', () =
   assert.match(code, /psi\.WorkingDirectory = Environment\.SystemDirectory;/);
   assert.match(code, /CmdkeyTimeoutMs = 180000;/);
   assert.match(code, /WaitForExit\(waitMs\)/);
-  assert.ok(code.includes('/pass\")'), 'the valueless /pass form must stay');
+  assert.ok(code.includes('" /user:" + user)'), 'fallback carries no password argument');
   assert.ok(!code.includes('/pass:'), 'cmdkey must never receive a password value');
   assert.match(code, /new ProcessStartInfo\("cmdkey\.exe", "\/list"\)/);
   assert.match(code, /msi\.WindowStyle = ProcessWindowStyle\.Normal;/);

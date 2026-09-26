@@ -24,6 +24,7 @@ try {
 } catch { }
 $script:RdpTokens = @{}
 $script:LauncherSeen = $false
+$script:HandlerChain = @()
 $script:DeviceTokens = @{}
 $script:DeviceTokensPath = Join-Path $Root 'device-tokens.json'
 $script:ClientAuditLog = Join-Path $Root 'client-audit.log'
@@ -804,6 +805,8 @@ function Invoke-ClientRequest {
                 reasonsDisabled = @($reasons)
                 advisory = @($advisory)
             }
+            $ns.ticketAudit = $script:TicketAudit
+            $ns.handlerChain = @($script:HandlerChain)
             # [U4] lastHandlerVerb: verb + result of the most recent /api/handler-hello,
             # so the dashboard can show "last: install ok" / "last: setup skipped" without
             # keeping any per-client state on the server. Optional (may be null).
@@ -837,17 +840,23 @@ function Invoke-ClientRequest {
                     $bTxt = [System.Text.Encoding]::UTF8.GetString([byte[]]$bodyRaw)
                     $bj = $bTxt | ConvertFrom-Json -ErrorAction SilentlyContinue
                     if ($bj) {
-                        if ($bj.verb)    { $hh.verb    = [string]$bj.verb }
+                        if ([string]$bj.verb -in @('rdp','check','setup','install','connect')) { $hh.verb = [string]$bj.verb } else { $hh.verb = 'other' }
                         if ($null -ne $bj.ok) { $hh.ok = [bool]$bj.ok }
-                        if ($bj.details) { $hh.details = ([string]$bj.details).Substring(0, [Math]::Min(280, ([string]$bj.details).Length)) }
+                        # F27: reject arbitrary telemetry strings rather than redact guesses.
+                        $detail = [string]$bj.details
+                        if ($detail -match '^(invoked|ticket-redeemed|credwrite-ok|credwrite-failed|rdp-written|mstsc-started( pid=[0-9]+)?|mstsc-exited=-?[0-9]+|check-shown|cmdkey-shown|cmdkey-timeout|cmdkey-stored=(true|false)|client-dns-off|cred-param-rejected|invalid-target|fallback-cmdkey reason=(ticket-missing|unreachable|ticket-invalid-or-expired))$') { $hh.details = $detail }
+                        elseif ($detail -like 'dns-guard:*') { $hh.details = 'dns-guard-failed' }
+                        else { $hh.details = 'launcher-error' }
                         # [F19 §2] exe: the launcher's version stamp, used by the
                         # version guard below. Length-capped, string only - the
                         # beacon never carries a credential and this store never
                         # carries a path or a user.
-                        if ($bj.PSObject.Properties['exe'] -and $bj.exe) { $hh.exe = ([string]$bj.exe).Substring(0, [Math]::Min(120, ([string]$bj.exe).Length)) }
+                        if ([string]$bj.exe -match '^ghrdp-rdp-launcher ([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)') { $hh.exe = 'ghrdp-rdp-launcher ' + $Matches[1] }
                     }
                 }
             } catch { }
+            $script:HandlerChain = @(@($script:HandlerChain) + @($hh) | Select-Object -Last 40)
+            try { [System.IO.File]::AppendAllText((Join-Path $Root 'handler-hello-chain.jsonl'), (($hh | ConvertTo-Json -Compress) + "`n"), $script:NoBom) } catch { }
             try { [System.IO.File]::WriteAllText((Join-Path $Root 'handler-hello-last.json'), ($hh | ConvertTo-Json -Compress), $script:NoBom) } catch { }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":true}'))
             return

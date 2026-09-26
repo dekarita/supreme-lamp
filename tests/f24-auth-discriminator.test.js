@@ -262,7 +262,7 @@ test('F24-F main.yml carries the ValidateCredentials proof and its loud fail', (
   }
 });
 
-test('F24-G the keep-alive collector records codes only (no user/password/address)', () => {
+test('F24-G the keep-alive collector records codes and F27 target account only (no password/address)', () => {
   const a = main.indexOf('[F24 §2 collector-begin]');
   const b = main.indexOf('[F24 §2 collector-end]', a);
   assert.ok(a > 0 && b > a, 'the F24 collector markers are missing from main.yml');
@@ -270,7 +270,7 @@ test('F24-G the keep-alive collector records codes only (no user/password/addres
   for (const tok of ['Get-WinEvent', "LogName = 'Security'", '4624', '4625', '0XC000006A', '0XC000006D', '0XC000015B', 'authEvents', 'Get-RdpAuthEventSummary', 'Get-RdpAuthEventFields', 'wrong-password']) {
     assert.ok(col.includes(tok), 'the F24 collector lacks ' + tok);
   }
-  for (const leak of ['RDP_PASS', 'RDP_USER', 'env:RDP_', 'TargetUserName', 'SubjectUserName', 'Password', 'IpAddress', 'Name = \'User\'']) {
+  for (const leak of ['RDP_PASS', 'RDP_USER', 'env:RDP_', 'SubjectUserName', 'Password', 'IpAddress', 'Name = \'User\'']) {
     assert.ok(!col.includes(leak), 'the F24 collector references credential/identity material: ' + leak);
   }
   // the collector actually ticks in the keep-alive loop.

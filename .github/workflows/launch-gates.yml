@@ -939,7 +939,7 @@ jobs:
           for tok in 'Get-WinEvent' "LogName = 'Security'" '4624' '4625' '0XC000006A' '0XC000006D' '0XC000015B' 'wrong-password' 'authEvents' 'Get-RdpAuthEventSummary' 'Get-RdpAuthEventFields'; do
             grep -qF -- "$tok" <<< "$col" || { echo "F24: collector missing token: $tok" >&2; exit 1; }
           done
-          for leak in 'RDP_PASS' 'RDP_USER' 'env:RDP_' 'TargetUserName' 'SubjectUserName' 'Password' 'IpAddress'; do
+          for leak in 'RDP_PASS' 'RDP_USER' 'env:RDP_' 'SubjectUserName' 'Password' 'IpAddress'; do
             if grep -qF -- "$leak" <<< "$col"; then
               echo "F24: collector references credential/identity material: $leak" >&2; exit 1
             fi
