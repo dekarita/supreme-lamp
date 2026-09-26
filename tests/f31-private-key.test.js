@@ -72,11 +72,15 @@ test('F31-2 the key ACL covers RSA CNG + ECDSA CNG + legacy CSP and is asserted 
 test('F31-3 the local TLS self-probe handshakes 127.0.0.1:3389 after the restart and fails closed with a 36870+ACL dump', () => {
   const cert = certBody();
   for (const tok of ['TcpClient', '127.0.0.1', '3389', 'SslStream', 'AuthenticateAsClient', 'localhost',
-      'listener-handshake-ok', 'rdp-tls-credential-unusable', '36870']) {
+      'listener-handshake-ok', 'rdp-tls-credential-unusable', '36870',
+      'ExpectedThumbprint', 'F31ServedThumbprint', 'not the bound']) {
     assert.ok(cert.includes(tok), 'self-probe token missing: ' + tok);
   }
+  // the handshake must present THE BOUND cert (a fallback self-signed cert is not a pass)
+  assert.match(cert, /servedProbe -ne \$ExpectedThumbprint/,
+    'the probe must compare the served cert to the bound thumbprint');
   // permissive remote-callback (the probe proves the PRIVATE KEY, not the chain)
-  assert.match(cert, /param\(\$snd,\$crt,\$chn,\$err\) return \$true/,
+  assert.match(cert, /param\(\$snd,\$crt,\$chn,\$err\)[\s\S]{0,300}return \$true/,
     'the probe SslStream lacks the permissive remote-callback');
   // the probe call runs after the TermService restart
   assert.ok(cert.indexOf('Restart-Service TermService') < cert.indexOf('Test-F31RdpTlsHandshake -KeyFile'),

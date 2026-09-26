@@ -1716,6 +1716,7 @@ jobs:
                        'HasPrivateKey' 'cert-imported-without-persisted-key' \
                        'GetRSAPrivateKey' 'GetECDsaPrivateKey' 'UniqueName' 'NETWORK SERVICE' 'AddAccessRule' \
                        'TcpClient' 'SslStream' 'AuthenticateAsClient' 'listener-handshake-ok' \
+                       'ExpectedThumbprint' 'F31ServedThumbprint' 'not the bound' \
                        'rdp-tls-credential-unusable' '36870' '127.0.0.1'; do
             grep -qF -- "$tok" <<< "$cert" || { echo "F31: cert step missing token: $tok" >&2; exit 1; }
           done

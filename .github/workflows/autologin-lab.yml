@@ -1999,8 +1999,8 @@ jobs:
       # The SHIPPED main.yml import + probe blocks are extracted verbatim and
       # driven against a REAL TermService/RDP-Tcp on this runner:
       #   (a) DEFAULT-flags PFX import in a FRESH process, exit, then the
-      #       shipped probe from this process => RST + a NEW Schannel 36870
-      #       (the bug class, reproduced);
+      #       shipped probe from this process => rdp-tls-credential-unusable
+      #       (RST or fallback-cert mismatch: the bound key is not servable);
       #   (b) shipped MachineKeySet|PersistKeySet import (RSA AND ECDSA) =>
       #       listener-handshake-ok;
       #   (c) NETWORK SERVICE ACE removed from the persisted key file => probe
@@ -2112,13 +2112,26 @@ jobs:
           Y-RestartRdp
           $failedA = $false
           $msgA = ''
-          try { $null = Test-F31RdpTlsHandshake -KeyFile '' } catch { $failedA = $true; $msgA = $_.Exception.Message }
-          if (-not $failedA) { Y-Fail 'bug-repro' 'the shipped probe PASSED against a default-flags import (the bug class did not reproduce)' }
-          if ($msgA -ne 'rdp-tls-credential-unusable') { Y-Fail 'bug-repro' ('wrong failure code: ' + $msgA) }
+          $outA = ''
+          try { $outA = (Test-F31RdpTlsHandshake -KeyFile '' -ExpectedThumbprint $thumbA 6>&1 | Out-String) } catch { $failedA = $true; $msgA = $_.Exception.Message; $outA += (' THROW:' + $msgA) }
+          $reloadedA = $null
+          try {
+              $lmA = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
+              $lmA.Open('ReadOnly')
+              $reloadedA = @($lmA.Certificates | Where-Object { $_.Thumbprint -eq $thumbA } | Select-Object -First 1)
+              $lmA.Close()
+          } catch { }
+          $haskeyA = 'not-in-store'
+          if ($reloadedA -and $reloadedA.Count -gt 0) { $haskeyA = [string]([bool]$reloadedA[0].HasPrivateKey) }
+          $servedA = ([regex]::Match($outA, 'cert=([0-9A-Fa-f]{40})').Groups[1].Value)
+          if (-not $servedA) { $servedA = ([regex]::Match($outA, 'served ([0-9A-Fa-f]{40})').Groups[1].Value) }
+          if (-not $servedA) { $servedA = '(uncaptured)' }
           Start-Sleep -Seconds 3
           $evA = @(Y-SchannelSince $phaseA)
-          if ($evA.Count -eq 0) { Y-Fail 'bug-36870' 'no NEW Schannel 36870 since the broken-cert probe (the decisive event is missing)' }
-          Write-Host ('[Y] (a) PASS: default-flags import => probe threw rdp-tls-credential-unusable + ' + $evA.Count + ' NEW 36870(s) (bug class reproduced)')
+          Write-Host ('::notice::[Y] (a) diag: expected=' + $thumbA + ' served=' + $servedA + ' reloadedHaskey=' + $haskeyA + ' failed=' + $failedA + ' new36870=' + $evA.Count)
+          if (-not $failedA) { Y-Fail 'bug-repro' 'the shipped probe PASSED against a default-flags import (the bug class did not reproduce)' }
+          if ($msgA -ne 'rdp-tls-credential-unusable') { Y-Fail 'bug-repro' ('wrong failure code: ' + $msgA) }
+          Write-Host ('[Y] (a) PASS: default-flags import => probe threw rdp-tls-credential-unusable (served=' + $servedA + ', reloadedHaskey=' + $haskeyA + ', new36870=' + $evA.Count + ')')
           try {
               $lm = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
               $lm.Open('ReadWrite')
@@ -2147,11 +2160,13 @@ jobs:
                   Y-BindThumb ([string]$got.thumbprint)
                   Y-RestartRdp
                   $outB = ''
-                  try { $outB = (Test-F31RdpTlsHandshake -KeyFile ([string]$got.keyFile) 6>&1 | Out-String) }
+                  try { $outB = (Test-F31RdpTlsHandshake -KeyFile ([string]$got.keyFile) -ExpectedThumbprint ([string]$got.thumbprint) 6>&1 | Out-String) }
                   catch { Y-Fail 'handshake-ok' ('the shipped probe threw for ' + $Dns + ': ' + $_.Exception.Message) }
                   if ($outB -notmatch 'listener-handshake-ok') { Y-Fail 'handshake-ok' ('no listener-handshake-ok for ' + $Dns + ' :: ' + $outB) }
                   $protoB = ([regex]::Match($outB, 'negotiated (\w+)').Groups[1].Value)
-                  Write-Host ('[Y] (b) PASS (' + $Algo + '): shipped persisted import => listener-handshake-ok (' + $protoB + '), key=' + $got.keyFile)
+                  $servedB = ([regex]::Match($outB, 'cert=([0-9A-Fa-f]{40})').Groups[1].Value)
+                  if ($servedB -and ($servedB -ne [string]$got.thumbprint)) { Y-Fail 'handshake-cert' ('the listener served ' + $servedB + ', not the bound ' + $got.thumbprint) }
+                  Write-Host ('[Y] (b) PASS (' + $Algo + '): shipped persisted import => listener-handshake-ok (' + $protoB + ' served=' + $servedB + '), key=' + $got.keyFile)
                   return $got
               } finally {
                   try {
@@ -2176,7 +2191,7 @@ jobs:
           Y-RestartRdp
           $failedC = $false
           $outC = ''
-          try { $outC = (Test-F31RdpTlsHandshake -KeyFile $keyEc 6>&1 | Out-String) } catch { $failedC = $true; $outC += (' THROW:' + $_.Exception.Message) }
+          try { $outC = (Test-F31RdpTlsHandshake -KeyFile $keyEc -ExpectedThumbprint ([string]$gotEc.thumbprint) 6>&1 | Out-String) } catch { $failedC = $true; $outC += (' THROW:' + $_.Exception.Message) }
           if (-not $failedC) { Y-Fail 'acl-deny' 'the shipped probe PASSED with the NETWORK SERVICE ACE removed from the key file' }
           if ($outC -notmatch 'rdp-tls-credential-unusable') { Y-Fail 'acl-deny' ('wrong failure code :: ' + $outC) }
           if ($outC -notmatch 'keyACL=\[') { Y-Fail 'acl-dump' 'the failure carried no key-ACL dump' }
@@ -2184,13 +2199,14 @@ jobs:
           Start-Sleep -Seconds 3
           $evC = @(Y-SchannelSince $phaseC)
           if ($evC.Count -eq 0) { Y-Fail 'acl-36870' 'no NEW Schannel 36870 since the ACE-removed probe' }
+          Write-Host ('::notice::[Y] (c) diag: failed=' + $failedC + ' new36870=' + $evC.Count)
           Write-Host ('[Y] (c) PASS: ACE removed => rdp-tls-credential-unusable + ACL dump + ' + $evC.Count + ' NEW 36870(s)')
           $restore = New-Object System.Security.AccessControl.FileSecurity
           $restore.SetSecurityDescriptorSddlForm($sddl)
           Set-Acl -LiteralPath $keyEc -AclObject $restore -ErrorAction Stop
           Y-RestartRdp
           $outCR = ''
-          try { $outCR = (Test-F31RdpTlsHandshake -KeyFile $keyEc 6>&1 | Out-String) }
+          try { $outCR = (Test-F31RdpTlsHandshake -KeyFile $keyEc -ExpectedThumbprint ([string]$gotEc.thumbprint) 6>&1 | Out-String) }
           catch { Y-Fail 'acl-restore' ('probe still throwing after ACL restore: ' + $_.Exception.Message) }
           if ($outCR -notmatch 'listener-handshake-ok') { Y-Fail 'acl-restore' ('probe still failing after ACL restore :: ' + $outCR) }
           Write-Host '[Y] (c) PASS: ACL restored => listener-handshake-ok again'
@@ -2278,7 +2294,7 @@ jobs:
           ('| (u) auth-reject discriminator (F24) | ' + $(if ($env:U_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml blocks verified: SAM ValidateCredentials fixture (fresh account => true, wrong password => false with no probe error, empty => the missing-env probe verdict), the 4625 collector driven by synthetic events (0xC000006A/0xC000006D => credential-mismatch, 0xC000015B => logon-type-denied, 4624-only => none) with a REAL Security-log write into a temp config.json that keeps the pre-existing rdpListener fields and carries only the F27 failure target account; the shipped page matrix executed through the real renderer (three branches + pending/warn credssp render) and the TLS-layer branch carries the CAPI2 + System export copy-lines. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
           ('| (v) logon-result loop + one-click recovery + fallback gap (F28) | ' + $(if ($env:V_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED ghrdp-server.ps1 scanner driven with synthetic events (4625 0xC000006A => failed+sub+eventTs, newer type-10 4624 => success, empty window => none, probe error => named, console/type-3 + pre-window ignored, scanTs stamped on EVERY path, verdict carries no identity field); SHIPPED launcher compiled by the in-box csc runs --fallback-selftest 4/4 (stored=false + failed retry => native-prompt + fallback-mstsc-native-prompt beacon, zero mstsc/cmdkey calls); shipped page renderer executed through the node matrix (LAST RDP LOGON result+sub+eventTs+scanTs verbatim, RED collector-dead, recovery card ONLY for 0xC000006A inside 120s of mstsc-started, FIX & RECONNECT mints a ticket then fires ghrdp://recred with t only, CREDSSP live probe + stamp); the 30s scan tick lives in the server process from start and main.yml never mentions it. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
           ('| (x) TLS/cipher handshake fix + purge + conn log (F30) | ' + $(if ($env:X_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml normalization block: fixture-driven order verdict (CBC/3DES-first rejected, GCM/ChaCha20 moved to the front in the declared order) + REAL run on the runner (Schannel Functions list rewritten and re-read, TLS 1.2 AND 1.3 Enabled=1/DisabledByDefault=0 on Client+Server, RDP-Tcp SecurityLayer=2/MinEncryptionLevel=3); SHIPPED launcher compiled by the in-box csc runs --purge-selftest against the REAL credential store (planted LegacyGeneric type-1 + Domain type-2 pair both PURGED, fresh entry written as DomainPassword, zero mstsc/cmdkey); .rdp written from the shipped 19-directive template is > 400 bytes with the read-back assert before the launch; EXTRACTED conn-log collector driven with synthetic events (tls-forcibly-closed / auth-succeeded / cert-rejected / connection-reset, credential-shaped text redacted) and the resulting sample rendered into the SERVER CONN LOG row by the shipped page. What stays PENDING-USER is only the physical click-through (fullscreen session) |') | Add-Content -Path $S
-          ('| (y) RDP-Tcp private-key persistence + self-probe + Schannel log (F31) | ' + $(if ($env:Y_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml import+probe blocks driven against REAL RDP-Tcp/TermService: (a) DEFAULT-flags import in a fresh process => second-process TLS probe fails rdp-tls-credential-unusable with NEW Schannel 36870(s) (the bug class); (b) shipped MachineKeySet|PersistKeySet import (RSA + ECDSA) => listener-handshake-ok; (c) NETWORK SERVICE ACE removed from the key file => probe fails with 36870 + ACL dump, restore => ok; (d) EXTRACTED connLog maps synthetic 36870/36871/12017/12018 to schannel-private-key/cipher/no-cred (redacted) and the REAL tick surfaces the lab 36870s into the SERVER CONN LOG row via the shipped renderer. What stays PENDING-USER is only the physical click-through (fullscreen session) |') | Add-Content -Path $S
+          ('| (y) RDP-Tcp private-key persistence + self-probe + Schannel log (F31) | ' + $(if ($env:Y_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml import+probe blocks driven against REAL RDP-Tcp/TermService: (a) DEFAULT-flags import in a fresh process => second-process TLS probe fails rdp-tls-credential-unusable (the bound key is not servable: RST or fallback-cert mismatch); (b) shipped MachineKeySet|PersistKeySet import (RSA + ECDSA) => listener-handshake-ok; (c) NETWORK SERVICE ACE removed from the key file => probe fails with 36870 + ACL dump, restore => ok; (d) EXTRACTED connLog maps synthetic 36870/36871/12017/12018 to schannel-private-key/cipher/no-cred (redacted) and the REAL tick surfaces the lab 36870s into the SERVER CONN LOG row via the shipped renderer. What stays PENDING-USER is only the physical click-through (fullscreen session) |') | Add-Content -Path $S
           ('| (k) no console window in the interactive session | **contract PASS** | every host-helper launch is -WindowStyle Hidden (or NoNewWindow for the user-driven terminal exec) and the long-lived services are SYSTEM scheduled tasks; launch-gates F11-5.3 enforces it. Visual confirmation on the first physical RDP session = PENDING-USER |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always

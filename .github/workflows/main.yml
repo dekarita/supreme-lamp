@@ -614,7 +614,7 @@ jobs:
           }
           # [F31 §1 import-end]
           # [F31 §1 probe-begin] LOCAL TLS SELF-PROBE. Extracted VERBATIM by
-          # autologin-lab cell Y. Self-contained given KeyFile only: it opens
+          # autologin-lab cell Y. Self-contained given KeyFile/ExpectedThumbprint: it opens
           # TCP 127.0.0.1:3389, speaks the RDP X.224 Connection Request
           # (requestedProtocols SSL|HYBRID) so the listener enters TLS, then
           # runs the TLS handshake with a permissive remote-callback (the probe
@@ -624,10 +624,11 @@ jobs:
           # + the key-file ACL (secret-free) and throws
           # 'rdp-tls-credential-unusable'. Never carries a credential.
           function Test-F31RdpTlsHandshake {
-              param([string]$KeyFile)
+              param([string]$KeyFile, [string]$ExpectedThumbprint)
               $tcpProbe = $null
               $netProbe = $null
               $sslProbe = $null
+              $script:F31ServedThumbprint = ''
               try {
                   # Wait for the listener (a TermService restart precedes us).
                   $tcpProbe = New-Object System.Net.Sockets.TcpClient
@@ -667,11 +668,21 @@ jobs:
                   if ($ccGot -lt 19) { throw ('no X.224 Connection Confirm from 127.0.0.1:3389 (got ' + $ccGot + ' bytes)') }
                   if ($ccProbe[11] -ne 0x02) { throw 'RDP negotiation rejected the TLS request (not a Connection Confirm)' }
                   if ($ccProbe[15] -eq 0x00) { throw 'the listener selected PROTOCOL_RDP, not TLS (the cert bind is not active)' }
-                  $cbProbe = { param($snd,$crt,$chn,$err) return $true }
+                  $cbProbe = { param($snd,$crt,$chn,$err)
+                      try { if ($null -ne $crt -and $crt.Thumbprint) { $script:F31ServedThumbprint = [string]$crt.Thumbprint } } catch { }
+                      return $true
+                  }
                   $sslProbe = [System.Net.Security.SslStream]::new($netProbe, $false, $cbProbe)
                   $sslProbe.AuthenticateAsClient('localhost')
                   $protoProbe = [string]$sslProbe.SslProtocol
-                  Write-Host ('listener-handshake-ok: TLS to 127.0.0.1:3389 negotiated ' + $protoProbe + ' with the bound RDP-Tcp cert')
+                  $servedProbe = [string]$script:F31ServedThumbprint
+                  # The handshake must present THE BOUND cert: if the bound key
+                  # is unusable the listener may fall back to a self-signed
+                  # cert and still handshake - that is NOT a pass.
+                  if ($ExpectedThumbprint -and $servedProbe -and ($servedProbe -ne $ExpectedThumbprint)) {
+                      throw ('the listener served ' + $servedProbe + ', not the bound ' + $ExpectedThumbprint + ' (fallback cert - the bound private key is unusable)')
+                  }
+                  Write-Host ('listener-handshake-ok: TLS to 127.0.0.1:3389 negotiated ' + $protoProbe + ' cert=' + $servedProbe + ' with the bound RDP-Tcp cert')
                   return $protoProbe
               } catch {
                   $probeErr = $_.Exception.Message
@@ -751,7 +762,7 @@ jobs:
               try { Set-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' -Name 'fDenyTSConnections' -Value 0 -Type DWord -Force -ErrorAction Stop; Write-Host '[cert] F31: RDP listener enabled for the self-probe (fDenyTSConnections=0)' } catch { Write-Host ('[cert] F31: listener enable failed: ' + $_.Exception.Message) }
               try { Restart-Service TermService -Force -ErrorAction SilentlyContinue; Write-Host '[cert] TermService restarted' } catch { }
               try {
-                  $f31proto = Test-F31RdpTlsHandshake -KeyFile $keyFile
+                  $f31proto = Test-F31RdpTlsHandshake -KeyFile $keyFile -ExpectedThumbprint $thumb
                   Write-Host ('[cert] F31 self-probe PASS: listener-handshake-ok (' + $f31proto + ')')
               } catch {
                   Write-Host ('::error::[cert] F31 TLS self-probe failed; reason=rdp-tls-credential-unusable; error=' + $_.Exception.Message)
