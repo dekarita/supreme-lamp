@@ -33,6 +33,8 @@ test('F17-1 main.yml: the §1 self-probe exists, writes rdpListener, fails LOUD 
     "Get-NetFirewallRule -DisplayName 'ghrdp-rdp-3389'",
     "RemoteAddress '100.64.0.0/10'",
     'SSLCertificateSHA1Hash',
+    'X509Chain',
+    'certChainOk',
     'UserAuthentication',
     '[F17 §1 probe-begin]',
     '[F17 §1 probe-end]',
@@ -136,6 +138,8 @@ test('F17-7 launcher: DNS guard runs BEFORE any cmdkey/mstsc work and blocks dea
   const code = launcher.split('\n').filter((l) => !/^\s*\/\//.test(l)).join('\n');
   assert.ok(code.includes('Dns.GetHostAddresses'), 'guard must resolve the fqdn');
   assert.ok(code.includes('IsTailnetAddress'), 'tailnet address check missing');
+  assert.ok(code.includes('if (allTailnet) { return null; }'), 'mixed/non-tailnet DNS answers must be rejected');
+  assert.ok(code.includes('every answer must be in 100.64.0.0/10'), 'DNS guard scope must be exact IPv4 tailnet range');
   assert.ok(code.includes('b[0] == 100 && b[1] >= 64 && b[1] <= 127'), '100.64.0.0/10 check missing');
   assert.ok(code.includes('dns-guard'), 'beacon reason missing');
   assert.ok(code.includes('DNS stale/blocked - flushdns or check Tailscale'), 'MessageBox text missing');
@@ -163,7 +167,7 @@ test('F17-8 lab switches stay lab-only (relaxation in the lab, never in producti
 
 test('F17-9 gates: the launch-gates F17 step exists and pins the contracts', () => {
   assert.match(gates, /name: F17 RDP listener probe \+ client-DNS guard gates/, 'gate step missing');
-  for (const tok of ['0.0.0.0/0', 'RoundtripKind', 'parseTsUtc', 'rdpListenerRow', 'Dns.GetHostAddresses', 'GHRDP_LAB_DNS_ALLOW_LOOPBACK']) {
+  for (const tok of ['0.0.0.0/0', 'RoundtripKind', 'parseTsUtc', 'rdpListenerRow', 'Dns.GetHostAddresses', 'GHRDP_LAB_DNS_ALLOW_LOOPBACK', 'X509Chain', 'every answer must be in 100.64.0.0/10']) {
     assert.ok(gates.includes(tok), 'gate does not pin: ' + tok);
   }
 });

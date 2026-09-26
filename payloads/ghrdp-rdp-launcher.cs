@@ -273,9 +273,7 @@ internal static class GhrdpRdpLauncher
     {
         byte[] b;
         try { b = a.GetAddressBytes(); } catch { return false; }
-        if (b.Length == 4) { return b[0] == 100 && b[1] >= 64 && b[1] <= 127; }
-        if (b.Length == 16) { return b[0] == 0xfd && b[1] == 0x7a && b[2] == 0x11 && b[3] == 0x5c && b[4] == 0xa1 && b[5] == 0xe0; }
-        return false;
+        return b.Length == 4 && b[0] == 100 && b[1] >= 64 && b[1] <= 127;
     }
 
     private static string DnsGuardReason(string server)
@@ -284,20 +282,27 @@ internal static class GhrdpRdpLauncher
         try { addrs = Dns.GetHostAddresses(server); }
         catch (Exception ex) { return "dns-resolve-failed (" + ex.GetType().Name + ")"; }
         if (addrs == null || addrs.Length == 0) { return "dns-resolve-failed (0 addresses)"; }
-        foreach (IPAddress a in addrs) { if (IsTailnetAddress(a)) { return null; } }
-        string lab = Environment.GetEnvironmentVariable("GHRDP_LAB_DNS_ALLOW_LOOPBACK");
-        if (lab == "1")
+        bool allTailnet = true;
+        bool allLoopback = true;
+        StringBuilder rejected = new StringBuilder();
+        foreach (IPAddress a in addrs)
         {
-            foreach (IPAddress a in addrs)
+            if (!IsTailnetAddress(a))
             {
-                if (a.Equals(IPAddress.Loopback))
-                {
-                    LogJson("warn", "rdp", "GHRDP_LAB_DNS_ALLOW_LOOPBACK=1: loopback hosts-alias accepted for " + server + " (lab-only switch, never a production default)");
-                    return null;
-                }
+                allTailnet = false;
+                if (rejected.Length > 0) { rejected.Append(", "); }
+                rejected.Append(a.ToString());
             }
+            if (!IPAddress.IsLoopback(a)) { allLoopback = false; }
         }
-        return "dns-not-tailnet (" + addrs[0].ToString() + " outside 100.64.0.0/10)";
+        if (allTailnet) { return null; }
+        string lab = Environment.GetEnvironmentVariable("GHRDP_LAB_DNS_ALLOW_LOOPBACK");
+        if (lab == "1" && allLoopback)
+        {
+            LogJson("warn", "rdp", "GHRDP_LAB_DNS_ALLOW_LOOPBACK=1: loopback hosts-alias accepted for " + server + " (lab-only switch, never a production default)");
+            return null;
+        }
+        return "dns-not-tailnet (rejected answers: " + rejected.ToString() + "; every answer must be in 100.64.0.0/10)";
     }
 
     // ------------------------------------------------------------------

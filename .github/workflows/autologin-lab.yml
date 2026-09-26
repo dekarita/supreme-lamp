@@ -497,6 +497,10 @@ jobs:
           Get-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
           New-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow -RemoteAddress '100.64.0.0/10' -Profile Any -Enabled True | Out-Null
           $lc = New-SelfSignedCertificate -DnsName $fqdn -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(2)
+          # Trust only this ephemeral lab cert so the production probe's full
+          # X509Chain.Build check is exercised without relaxing production.
+          $labRoot = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine')
+          try { $labRoot.Open('ReadWrite'); $labRoot.Add($lc) } finally { $labRoot.Close() }
           $hash = -split ($lc.Thumbprint -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
           New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hash -Force | Out-Null
           try { Restart-Service TermService -Force -ErrorAction SilentlyContinue } catch { }
@@ -527,7 +531,7 @@ jobs:
           $r1 = Invoke-Probe
           if ($r1.rc -ne 0) { R-Fail 'probe-baseline' ($r1.out.Substring(0, [Math]::Min(400, $r1.out.Length))) }
           $rl1 = Get-Rl
-          foreach ($kv in @(@('listening', $true), @('termServiceOk', $true), @('fwRule', $true), @('certOk', $true), @('nla', $true), @('ok', $true))) {
+          foreach ($kv in @(@('listening', $true), @('termServiceOk', $true), @('fwRule', $true), @('certChainOk', $true), @('certOk', $true), @('nla', $true), @('ok', $true))) {
               if ($rl1.($kv[0]) -ne $kv[1]) { R-Fail 'probe-baseline-field' ($kv[0] + ' expected ' + $kv[1] + ' got [' + $rl1.($kv[0]) + ']') }
           }
           if ($rl1.fwScope -ne '100.64.0.0/10') { R-Fail 'probe-scope' ('fwScope=[' + $rl1.fwScope + ']') }
@@ -651,6 +655,17 @@ jobs:
           # cmdkey-shown are the BEACON details, not JSONL lines).
           if (($nl6 | Out-String) -match 'prompt shown|started pid=') { R-Fail 'guard-leak' 'cmdkey/mstsc ran despite the DNS guard' }
           Write-Host '[R] (7) PASS: non-tailnet resolution => rc=5, dns-guard logged, mstsc NOT started'
+          # Mixed DNS answers are unsafe even if one answer is tailnet: prove
+          # the launcher blocks the full answer set before testing lab loopback.
+          Set-HostAlias '100.118.42.7'
+          Add-Content -LiteralPath (Join-Path $env:SystemRoot 'System32\drivers\etc\hosts') -Value "93.184.215.14 $fqdn"
+          $env:GHRDP_LAB_DNS_ALLOW_LOOPBACK = ''
+          $beforeMix = [int](Log-Lines 0)
+          & $exe ("ghrdp://rdp?server=" + $fqdn + "&user=labuser") | Out-Null
+          $mixLines = New-Lines $beforeMix
+          if ($LASTEXITCODE -ne 5 -or -not (($mixLines | Out-String) -match 'dns-guard blocked launch')) { R-Fail 'guard-mixed-answer' 'mixed tailnet/public answers were not blocked' }
+          if (($mixLines | Out-String) -match 'started pid=|prompt shown') { R-Fail 'guard-mixed-leak' 'cmdkey/mstsc ran with mixed DNS answers' }
+          Write-Host '[R] (8) PASS: mixed tailnet + public DNS answers => blocked (all answers must be tailnet)'
           Set-HostAlias '127.0.0.1'
           $env:GHRDP_LAB_DNS_ALLOW_LOOPBACK = '1'
           & cmdkey.exe /generic:TERMSRV/$fqdn /user:labuser /pass:LABDUMMY-win-9876 | Out-Null
@@ -665,7 +680,7 @@ jobs:
           if (-not (($nl7 | Out-String) -match 'started pid=')) { R-Fail 'guard-allow-mstsc' 'mstsc not started on the allowed alias' }
           try { & cmdkey.exe /delete:TERMSRV/$fqdn | Out-Null } catch { }
           Set-HostAlias ''
-          Write-Host '[R] (8) PASS: loopback alias + GHRDP_LAB_DNS_ALLOW_LOOPBACK=1 => dns-guard ok + mstsc-started (lab-only path)'
+          Write-Host '[R] (9) PASS: loopback alias + GHRDP_LAB_DNS_ALLOW_LOOPBACK=1 => dns-guard ok + mstsc-started (lab-only path)'
           Write-Host '[R] PASS: F17 listener probe break/fix + native-status render + beacon age + dns-guard'
           'R_result=pass' | Out-File $env:GITHUB_ENV -Append
 
