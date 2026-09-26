@@ -843,6 +843,71 @@ jobs:
           grep -qF "cs==='ok'" "$ui" || { echo 'F21: ui.html does not render credssp ok/fail' >&2; exit 1; }
           echo 'F21 gates PASS'
 
+      - name: F23 cipher-probe 3-layer robustness gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          ui=payloads/ui.html
+          step=$(awk '/name: CredSSP\/NLA handshake verification.*F21/{f=1;next} f && /^      - name: /{exit} f' "$wf")
+          test -n "$step" || { echo 'F23: main.yml lacks the F21 verification step' >&2; exit 1; }
+          # --- §1 cipher branch = section (4) up to the NLA reassert ----------
+          cipher=$(awk '/# \(4\) Schannel cipher suites/{f=1} /# NLA reassert/{exit} f' <<< "$step")
+          test -n "$cipher" || { echo 'F23: cipher branch (section 4) not found in the F21 step' >&2; exit 1; }
+          # L1: cmdlet enumeration with all three per-object Name-read strategies
+          for tok in 'foreach ($o in @(Get-TlsCipherSuite -ErrorAction Stop))' "PSObject.Properties['Name']" 'Format-List | Out-String'; do
+            grep -qF -- "$tok" <<< "$cipher" || { echo "F23: L1 cmdlet probe missing token: $tok" >&2; exit 1; }
+          done
+          # the brittle one-liner that false-halted the 2026-09-26 run must stay GONE
+          if grep -qF 'Get-TlsCipherSuite -ErrorAction Stop | Select-Object -ExpandProperty Name' "$wf"; then
+            echo 'F23: brittle Select-Object -ExpandProperty Name cipher probe reappeared' >&2; exit 1
+          fi
+          # L2: registry fallback with BOTH keys, the Functions value, comma split
+          for tok in 'HKLM:\SYSTEM\CurrentControlSet\Control\Cryptography\Configuration\Local\SSL\00010002' \
+                   'HKLM:\SOFTWARE\Policies\Microsoft\Cryptography\Configuration\SSL\00010002' \
+                   "-Name 'Functions'" "-split ','"; do
+            grep -qF -- "$tok" <<< "$cipher" || { echo "F23: L2 registry fallback missing token: $tok" >&2; exit 1; }
+          done
+          # L3: probe-failure path (between the F23 markers) warns + stamps and
+          # NEVER halts: no throw, no failReasons - a probe failure is not a
+          # weak-config verdict.
+          l3=$(awk '/\[F23 L3 probe-failure begin\]/{f=1;next} /\[F23 L3 probe-failure end\]/{exit} f' <<< "$step")
+          test -n "$l3" || { echo 'F23: L3 probe-failure block (F23 markers) not found' >&2; exit 1; }
+          for tok in '::warning::[F21] cipher probe could not enumerate (cmdlet+registry failed); Windows defaults include AES-256-GCM; proceeding with warning' \
+                   "Write-CredsspStatus -Status 'ok-with-cipher-warn' -Detail 'cipher-probe-failed'"; do
+            grep -qF -- "$tok" <<< "$l3" || { echo "F23: L3 probe-failure path missing token: $tok" >&2; exit 1; }
+          done
+          if grep -q 'throw' <<< "$l3"; then
+            echo 'F23: probe-failure path contains throw (must warn and proceed)' >&2; exit 1
+          fi
+          if grep -qF 'failReasons +=' <<< "$l3"; then
+            echo 'F23: probe-failure path adds a failReason (must not)' >&2; exit 1
+          fi
+          # a REAL weak config (suites enumerated, zero strong) still halts
+          grep -qF "failReasons += ('schannel-cipher-weak" <<< "$cipher" || { echo 'F23: weak-config verdict no longer feeds failReasons' >&2; exit 1; }
+          grep -qF "'AES_256_GCM|CHACHA20_POLY1305'" <<< "$cipher" || { echo 'F23: strong-suite match pattern missing' >&2; exit 1; }
+          # handshake determinants stay loud-fail (unchanged by F23)
+          for tok in "failReasons += ('nla-off" "failReasons += ('cert-untrusted" "failReasons += ('credssp-policy-mismatch" "throw ('F21 CredSSP/NLA loud-fail: ' + \$failText)"; do
+            grep -qF -- "$tok" <<< "$step" || { echo "F23: loud-fail determinant missing: $tok" >&2; exit 1; }
+          done
+          # the all-clear path re-stamps ok-with-cipher-warn (never plain ok) when the probe failed
+          okpath=$(awk '/if \(\$failReasons\.Count -eq 0\) \{/{f=1} f && /^[[:space:]]*exit 0[[:space:]]*$/{print; exit} f' <<< "$step")
+          grep -qF '$cipherProbeFailed' <<< "$okpath" || { echo 'F23: success path does not branch on the probe-failure flag' >&2; exit 1; }
+          grep -qF "Write-CredsspStatus -Status 'ok-with-cipher-warn' -Detail 'cipher-probe-failed'" <<< "$okpath" || { echo 'F23: success path does not stamp ok-with-cipher-warn' >&2; exit 1; }
+          grep -qF "Write-CredsspStatus -Status 'ok'" <<< "$okpath" || { echo 'F23: success path lost the plain ok stamp' >&2; exit 1; }
+          # --- §2 dashboard accepts the warn status: OK render + AUTO-LOGIN gate
+          # (pinned as FULL definition lines - the bare token appears in more
+          # than one gate, so a token grep would miss a single-line rollback)
+          grep -qF "cs==='ok-with-cipher-warn'" "$ui" || { echo 'F23: ui.html status row does not accept ok-with-cipher-warn' >&2; exit 1; }
+          grep -qF 'OK (cipher probe warn)' "$ui" || { echo 'F23: ui.html lacks the OK (cipher probe warn) render' >&2; exit 1; }
+          grep -qF "var credsspOk=(!rl||rl.credsspStatus===undefined||rl.credsspStatus==='ok'||rl.credsspStatus==='ok-with-cipher-warn');" "$ui" || { echo 'F23: ui.html AUTO-LOGIN gate (credsspOk) does not accept ok-with-cipher-warn' >&2; exit 1; }
+          grep -qF "var csOk=(!rl.credsspStatus||rl.credsspStatus==='ok'||rl.credsspStatus==='ok-with-cipher-warn');" "$ui" || { echo 'F23: ui.html listener marks (csOk) do not accept ok-with-cipher-warn' >&2; exit 1; }
+          # the warn render must never read as FAIL/BLOCKED
+          if grep -qF "'FAIL: '+cs" "$ui" && ! grep -qF "csGood?((cs==='ok')?'OK':'OK (cipher probe warn)'):('FAIL: '+cs)" "$ui"; then
+            echo 'F23: ui.html status row no longer routes the warn status to the OK render' >&2; exit 1
+          fi
+          echo 'F23 gates PASS'
+
       - name: F8 web-desktop honesty gates
         shell: bash
         run: |
