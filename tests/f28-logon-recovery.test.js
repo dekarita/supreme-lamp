@@ -258,7 +258,17 @@ test('F28-2 launcher implements recred: redeem -> CredWrite overwrite -> mstsc, 
   // the store path is the F27 one: CredWrite overwrite of both entry types.
   const handoff = launcher.slice(launcher.indexOf('// [F27 handoff-begin]'), launcher.indexOf('// [F27 handoff-end]'));
   assert.ok(handoff.includes('CredWriteW') && handoff.includes('c.Type = 2') && handoff.includes('c.Type = 1'));
-  assert.doesNotMatch(handoff, /CredDelete|cmdkey[^\n]*\/delete/i);
+  // [F30 §2.1] the F27 store contract is EXTENDED, never weakened: the
+  // launcher still never shells out to cmdkey to delete anything, and the ONE
+  // sanctioned deletion is the in-process CredDelete purge of THIS fqdn's stale
+  // entries (Domain + LegacyGeneric), which runs BEFORE the fresh write.
+  assert.doesNotMatch(handoff, /cmdkey[^\n]*\/delete/i, 'the launcher must never shell out a cmdkey delete');
+  assert.match(handoff, /CredDelete\(target, c\.Type, 0\)/, 'the F30 purge must go through CredDelete');
+  assert.match(handoff, /CredEnumerate\("TERMSRV\/\*", 0, out count, out array\)/, 'the purge must enumerate TERMSRV entries');
+  const wc = handoff.slice(handoff.indexOf('private static int WriteCredential'), handoff.indexOf('// Only redemption errors'));
+  assert.ok(wc.indexOf('PurgeStaleTermsvr(fqdn)') < wc.indexOf('CredWrite(ref c, 0)'),
+    'the purge must run BEFORE the fresh CredWrite');
+  assert.match(handoff, /purged " \+ purged \+ " stale entries, wrote new as Domain/, 'the purge beacon text is missing');
   // server-side beacon allowlist accepts both new details verbatim
   assert.ok(server.includes('recred-redeemed'), 'the beacon allowlist lacks recred-redeemed');
   assert.ok(server.includes('fallback-mstsc-native-prompt'), 'the beacon allowlist lacks fallback-mstsc-native-prompt');
