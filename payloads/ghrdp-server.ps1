@@ -444,6 +444,12 @@ $script:F30ConnLogSources = @(
 )
 $script:F30ConnLogScans = 0
 $script:F30ConnLogLastProbeError = ''
+# The lab dot-sources THIS block alone, so the shared no-BOM encoder may not
+# exist yet: create it if missing (an undefined encoding makes WriteAllText
+# throw and the state file would simply never appear - a silent blackout).
+if (-not (Get-Variable -Name NoBom -Scope Script -ErrorAction SilentlyContinue)) {
+    $script:NoBom = New-Object System.Text.UTF8Encoding($false)
+}
 function Get-RdpConnLogEventFields {
     param([xml]$Xml, [string]$Provider)
     $id = ''
@@ -557,7 +563,16 @@ function Update-RdpConnLog {
     if ($failed.Count -eq $script:F30ConnLogSources.Count) { $probeErr = 'conn-logs-unreadable' }
     elseif ($failed.Count -gt 0) { $probeErr = 'partial:' + (($failed | ForEach-Object { $_.Split('/')[0] -replace '^Microsoft-Windows-', '' }) -join '+') }
     $sum = Get-RdpConnLog -Items $items -ScanStartedUtc $ScanStartedUtc -ProbeError $probeErr
-    try { [System.IO.File]::WriteAllText($StatePath, ($sum | ConvertTo-Json -Depth 6 -Compress), $script:NoBom) } catch { }
+    try { [System.IO.File]::WriteAllText($StatePath, ($sum | ConvertTo-Json -Depth 6 -Compress), $script:NoBom) }
+    catch {
+        # A state file that never appears is a silent blackout: retry with the
+        # default encoding and, if even that fails, say so in probeError.
+        try { [System.IO.File]::WriteAllText($StatePath, ($sum | ConvertTo-Json -Depth 6 -Compress)) }
+        catch {
+            $probeErr = 'state-write-failed: ' + $_.Exception.Message
+            $sum | Add-Member -NotePropertyName probeError -NotePropertyValue $probeErr -Force
+        }
+    }
     $script:F30ConnLogScans = [int]$script:F30ConnLogScans + 1
     $script:F30ConnLogLastProbeError = $probeErr
     $head = ''

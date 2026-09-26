@@ -862,6 +862,16 @@ jobs:
               }
               return $names
           }
+          function Test-F30SuiteIn {
+              # Exact, trimmed membership: an object-shape / whitespace / casing
+              # quirk in a cmdlet view must never masquerade as "suite missing"
+              # (the F23 L1 lesson, applied to the cipher list).
+              param([object[]]$Items, [string]$Suite)
+              $want = ([string]$Suite).Trim()
+              if (-not $want) { return $false }
+              foreach ($i in @($Items)) { if (([string]$i).Trim() -eq $want) { return $true } }
+              return $false
+          }
           function Get-F30OrderedFunctions {
               # PURE: the $Suites list FIRST, in the declared order, then every
               # other suite in its existing relative order (deduplicated).
@@ -1024,6 +1034,25 @@ jobs:
           }
           # [F30 §1 normalize-end]
           $f30 = Invoke-F30TlsNormalize -Suites $script:F30Suites
+          # Guard the applier's contract LOUDLY before any live read (a throw here
+          # is the same failure class the F30 step exists to prevent: a
+          # half-normalized Schannel must never be advertised as ordered).
+          if (-not $f30.order.ok) {
+              Write-Host ('::error::[F30] Schannel cipher order not enforced; reason=' + $f30.order.why + '; after=' + $f30.order.after)
+              throw 'F30 halted by design: the Schannel Functions list is not in the declared order (reason cipher-order-not-enforced)'
+          }
+          if ($null -eq $f30.securityLayer -or $null -eq $f30.minEncryptionLevel) {
+              Write-Host ('::error::[F30] RDP-Tcp security layer unreadable; reason=' + $f30.rdpWhy)
+              throw 'F30 halted by design: RDP-Tcp SecurityLayer/MinEncryptionLevel could not be written+read back (reason rdp-layer-not-enforced)'
+          }
+          if ([int]$f30.securityLayer -ne 2 -or [int]$f30.minEncryptionLevel -lt 3) {
+              Write-Host ('::error::[F30] RDP-Tcp weakened: SecurityLayer=' + $f30.securityLayer + ' MinEncryptionLevel=' + $f30.minEncryptionLevel)
+              throw 'F30 halted by design: SecurityLayer must stay 2 (TLS only) and MinEncryptionLevel >= 3 (reason rdp-layer-weakened)'
+          }
+          if ([int]$f30.tls12Sides -lt 2) {
+              Write-Host '::error::[F30] TLS 1.2 is not Enabled on BOTH sides; reason tls12-not-enabled'
+              throw 'F30 halted by design: TLS 1.2 must stay enabled on Client and Server (never disable it) (reason tls12-not-enabled)'
+          }
           # Read the LIVE suite order back through the cmdlet as well (the registry
           # reread alone would not prove what Schannel actually offers).
           $f30Live = @()
@@ -1038,7 +1067,7 @@ jobs:
           $f30Known = @()
           $f30Unsupported = @()
           foreach ($s in $script:F30Suites) {
-              if ($f30Live -contains $s) { $f30Known += $s } else { $f30Unsupported += $s }
+              if (Test-F30SuiteIn -Items $f30Live -Suite $s) { $f30Known += $s } else { $f30Unsupported += $s }
           }
           $f30KnownFailed = @($f30.failed | Where-Object { $n = ([string]$_ -split ':')[0]; $f30Known -contains $n })
           Write-Host ('[F30] suites enabled=' + $f30.enabled.Count + ' failed=' + $f30.failed.Count + ' orderOk=' + $f30.order.ok + ' tls12Sides=' + $f30.tls12Sides + ' tls13Sides=' + $f30.tls13Sides + ' securityLayer=' + $f30.securityLayer + ' minEncryption=' + $f30.minEncryptionLevel)
