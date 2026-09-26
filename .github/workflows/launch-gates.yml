@@ -479,6 +479,112 @@ jobs:
           grep -qF "'ghrdp://check'" payloads/ui.html
           echo 'F15 gates PASS'
 
+      - name: F17 RDP listener self-report gates (probe step, fw scope, UTC beacon parse, DNS guard)
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          srv=payloads/ghrdp-server.ps1
+          ui=payloads/ui.html
+          cs=payloads/ghrdp-rdp-launcher.cs
+          # --- §1 the probe step exists with all five fields + loud fail -----
+          grep -q 'name: RDP listener self-probe (F17, fail-loud)' "$wf"
+          probe=$(awk '/name: RDP listener self-probe \(F17, fail-loud\)/{f=1;next} /^      - name: /{f=0} f' "$wf")
+          test -n "$probe"
+          for f in listening termService fwRule certThumb nla; do
+            grep -q "\$fields\['$f'\]" <<< "$probe" || { echo "F17: probe missing field $f" >&2; exit 1; }
+          done
+          # the loud fail fires on listening=false, fwRule wrong, certThumb missing
+          for f in listening fwRule certThumb; do
+            grep -q "if (-not \$fields\['$f'\])" <<< "$probe" || { echo "F17: probe does not fail loud on $f" >&2; exit 1; }
+          done
+          grep -q 'exit 1' <<< "$probe"
+          grep -q '::error::\[probe\]' <<< "$probe"
+          grep -q 'rdp-listener.json' <<< "$probe"
+          # the stage step carries the probe result into config.json
+          stage=$(awk '/name: Stage files \+ write config.json/{f=1;next} /^      - name: /{f=0} f' "$wf")
+          grep -q 'rdp-listener.json' <<< "$stage"
+          grep -q 'rdpListener = $rdpListener' <<< "$stage"
+          # --- §4 the fw scope string is 100.64.0.0/10 ANYWHERE in the repo ---
+          # (write intents: every RemoteAddress/remoteip= line must carry the
+          # exact scope; the two known read-only property reads are allowlisted).
+          scan() {
+            grep -rn -E 'RemoteAddress|remoteip=' "$@" 2>/dev/null \
+              | grep -v '^[^:]*:[0-9]*:[[:space:]]*#' \
+              | grep -v 'ExpandProperty RemoteAddress' \
+              | grep -v 'Get-NetFirewallAddressFilter).RemoteAddress' || true
+          }
+          scopes=$(scan "$wf" .github/workflows/webdesk-lab.yml .github/workflows/autologin-lab.yml payloads)
+          test -n "$scopes"
+          bad=$(echo "$scopes" | grep -v '100\.64\.0\.0/10' || true)
+          if [ -n "$bad" ]; then
+            echo 'F17: a firewall scope other than 100.64.0.0/10 appeared:' >&2
+            echo "$bad" >&2
+            exit 1
+          fi
+          # the probe may never WRITE a wider scope than the tailnet range (a
+          # mention inside a fix-text string is allowed; a write is not).
+          if echo "$probe" | grep -n -E -- '-RemoteAddress[[:space:]]*[^\r\n]*0\.0\.0\.0/0|remoteip=0\.0\.0\.0/0'; then
+            echo 'F17: the probe repair path writes a 0.0.0.0/0 scope' >&2; exit 1
+          fi
+          # --- §2 UI: beacon age parse is UTC-aware (parseTs), never a bare ---
+          # ---- Date.parse on the beacon ts; RDP LISTENER row + AUTO-LOGIN --
+          # ---- gate; CONNECTION copy-only diagnostics.
+          grep -q 'function parseTs' "$ui"
+          grep -q 'Date\.UTC(' "$ui"
+          if grep -n 'Date\.parse(b\.ts)\|Date\.parse(hv)\|Date\.parse( *b\.ts' "$ui"; then
+            echo 'F17: a bare Date.parse survived on the beacon timestamp' >&2; exit 1
+          fi
+          grep -q 'parseTs(b\.ts)' "$ui"
+          grep -q 'parseTs(hv)' "$ui"
+          grep -q 'id="nrRdpListenerRow"' "$ui"
+          grep -q 'id="nrRdpListener"' "$ui"
+          grep -q 'window.__rdpListenerOk' "$ui"
+          grep -q 'id="nrConnDiagRow"' "$ui"
+          grep -qF 'Test-NetConnection ' "$ui"
+          grep -qF 'ipconfig /flushdns' "$ui"
+          # no buttons/scripts on the CONNECTION lines: copy-only = plain text
+          if grep -n 'nrConnDiag' "$ui" | grep -v '^[0-9]*:[[:space:]]*//' | grep -q 'onclick\|button'; then
+            echo 'F17: the CONNECTION diagnostics carry buttons or handlers' >&2; exit 1
+          fi
+          # AUTO-LOGIN enable expression must include the listener gate
+          sync=$(awk '/function syncWinAuto\(\)/{f=1} f{print} /^setInterval\(syncWinAuto/{if(f)exit}' "$ui")
+          grep -q '__rdpListenerOk' <<< "$sync"
+          # --- §2 server: UTC/RoundtripKind beacon parse + per-run reset + ---
+          # ---- rdpListener pass-through on /api/native-status.
+          grep -q 'RoundtripKind' "$srv"
+          grep -q 'AssumeUniversal' "$srv"
+          grep -qF "Remove-Item -LiteralPath (Join-Path \$Root 'handler-hello-last.json')" "$srv"
+          grep -q 'rdpListenerOut' "$srv"
+          # --- §3 launcher: DNS guard before mstsc ---------------------------
+          grep -q 'private static bool DnsGuard' "$cs"
+          grep -q 'Dns.GetHostAddresses(fqdn)' "$cs"
+          grep -q 'b\[0\] == 100 && b\[1\] >= 64 && b\[1\] <= 127' "$cs"
+          grep -qF 'DNS stale/blocked - flushdns or check tailscale' "$cs"
+          grep -q 'dns-guard: ' "$cs"
+          # guard sits between target validation and the credential prompt
+          dw=$(awk '/private static int DoWork\(/{f=1} f{print} /^    \}$/{if(f)exit}' "$cs")
+          g0=$(grep -n 'invalid target' <<< "$dw" | head -1 | cut -d: -f1)
+          g1=$(grep -n 'DnsGuard(server, host, port, out dnsWhy)' <<< "$dw" | head -1 | cut -d: -f1)
+          g2=$(grep -n 'CmdkeyStep(server, user, host, port)' <<< "$dw" | head -1 | cut -d: -f1)
+          test -n "$g0"; test -n "$g1"; test -n "$g2"
+          test "$g0" -lt "$g1"; test "$g1" -lt "$g2"
+          # F15 invariants survive: exactly ONE MessageBox.Show call site
+          test "$(grep -c 'MessageBox.Show' "$cs")" -eq 1
+          # --- §5 the lab lane proves break -> detect -> repair -> green, with --
+          # ---- the probe step EXTRACTED from main.yml (never a copy) ----------
+          lab=.github/workflows/rdp-listener-lab.yml
+          test -f "$lab"
+          grep -q 'RDP listener self-probe' "$lab"
+          grep -qF "Get-Content -LiteralPath '.github/workflows/main.yml'" "$lab"
+          grep -q 'Disable-NetFirewallRule -DisplayName' "$lab"
+          grep -q "Set-NetFirewallRule -DisplayName 'GHRDP-RDP' -RemoteAddress '0.0.0.0/0'" "$lab"
+          grep -q '100.64.0.0/10' "$lab"
+          grep -q 'handler-hello-last.json' "$lab"
+          grep -q '2019-01-01T00:00:00' "$lab"
+          grep -q 'api/native-status' "$lab"
+          echo 'F17 gates PASS'
+
       - name: F8 web-desktop honesty gates
         shell: bash
         run: |
