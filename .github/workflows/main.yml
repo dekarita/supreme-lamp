@@ -936,6 +936,34 @@ jobs:
           cp "$GITHUB_WORKSPACE/payloads/Cargo.toml" "$RUNNER_TEMP/ghrdp-rust/Cargo.toml"
           cp "$GITHUB_WORKSPACE/payloads/main.rs" "$RUNNER_TEMP/ghrdp-rust/src/main.rs"
           ls -la "$RUNNER_TEMP/ghrdp-rust" "$RUNNER_TEMP/ghrdp-rust/src"
+      # [F14 §1] one-click install kit: copy the two payload files into the
+      # stage dir and Compress-Archive EXACTLY those two into
+      # ghrdp-handler-kit.zip (never a third file - the F14 gate + the
+      # entry-count readback below both fail-closed). The "Stage files" step
+      # then copies kit + payloads into C:\ghrdp where GET /dl/<name> (F14 §2)
+      # serves them tailnet-only.
+      - name: Build ghrdp-handler-kit.zip (F14)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $env:RUNNER_TEMP 'ghrdp-stage'
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item -Path 'payloads\install.cmd' -Destination (Join-Path $stage 'install.cmd') -Force
+          Copy-Item -Path 'payloads\ghrdp-rdp-launcher.cs' -Destination (Join-Path $stage 'ghrdp-rdp-launcher.cs') -Force
+          $zip = Join-Path $stage 'ghrdp-handler-kit.zip'
+          if (Test-Path -LiteralPath $zip) { Remove-Item -LiteralPath $zip -Force }
+          Compress-Archive -Path (Join-Path $stage 'install.cmd'),(Join-Path $stage 'ghrdp-rdp-launcher.cs') -DestinationPath $zip -Force
+          try { Add-Type -AssemblyName System.IO.Compression.FileSystem } catch { }
+          $zipView = [System.IO.Compression.ZipFile]::OpenRead($zip)
+          try {
+              $names = @($zipView.Entries | ForEach-Object { $_.FullName })
+              Write-Host ('[kit] zip entries (' + $names.Count + '): ' + ($names -join ', '))
+              if ($names.Count -ne 2) { throw ('F14: ghrdp-handler-kit.zip must hold EXACTLY 2 files, got ' + $names.Count + ': ' + ($names -join ', ')) }
+              foreach ($want in @('install.cmd', 'ghrdp-rdp-launcher.cs')) {
+                  if (@($names | Where-Object { $_ -eq $want }).Count -ne 1) { throw ('F14: ghrdp-handler-kit.zip missing entry ' + $want) }
+              }
+          } finally { $zipView.Dispose() }
+          Write-Host '[kit] ghrdp-handler-kit.zip built: install.cmd + ghrdp-rdp-launcher.cs ONLY'
       - name: Stage files + write config.json (UTF8 no BOM, Rentry secrets + provided edit code, token, ACLs)
         env:
           RENTRY_EDIT_PASSWORD: ${{ secrets.RENTRY_EDIT_PASSWORD }}
