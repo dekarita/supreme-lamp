@@ -899,6 +899,10 @@ jobs:
           grep -qF 'dns-unresolved' "$launcher" || { echo 'F17: dns-unresolved ok:false beacon missing' >&2; exit 1; }
           grep -qF 'dns-not-tailnet' "$launcher" || { echo 'F17: dns-not-tailnet ok:false beacon missing' >&2; exit 1; }
           grep -qF 'int rc = DnsGuardStep(server, host, port);' "$launcher" || { echo 'F17: DNS guard not called before cmdkey/mstsc' >&2; exit 1; }
+          # [F17 §3] the DNS bypass is a LAB-ONLY switch: never in production,
+          # always set by the hosts-alias proof lane.
+          if grep -qF 'GHRDP_LAB_DNS_BYPASS' "$main"; then echo 'F17: lab DNS bypass leaked into production main.yml' >&2; exit 1; fi
+          grep -qF 'GHRDP_LAB_DNS_BYPASS' .github/workflows/autologin-lab.yml || { echo 'F17: autologin-lab must set GHRDP_LAB_DNS_BYPASS (hosts-alias cells)' >&2; exit 1; }
           echo 'F17 gates PASS'
   windows-native:
     runs-on: windows-latest
