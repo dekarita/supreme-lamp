@@ -346,6 +346,27 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
       </div>
     </details>
   </div>
+  <!-- [F24 §3] AUTH-REJECT DISCRIMINATOR (F24): ONE decision row built from
+       rdpListener {credValid, authEvents, credsspStatus}. It replaces the
+       ambiguous "FAIL: pending" CredSSP semantics with the three branches that
+       actually distinguish a 0x904/0x7 TcpStateFrontAuth reject:
+         credValid=false              => SERVER credential bug - re-dispatch (red)
+         credValid=true + 4625 6A/6D  => YOUR stored password is stale (yellow)
+         credValid=true + no 4625     => TLS-layer suspect (yellow)
+       Every command below is a COPY-LINE the user runs themselves. Nothing on
+       this page executes anything, nothing here auto-types a password, and
+       nothing here weakens NLA/CredSSP/cert validation. -->
+  <div class="row" id="rdpAuthRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
+    <span class="k" style="font-weight:600">AUTH REJECT DISCRIMINATOR (F24 - why mstsc is rejected)</span>
+    <span class="note" id="rdpAuthVerdict" style="margin:0">waiting for the first /api/native-status sample...</span>
+    <span class="note" id="rdpAuthDetail" style="margin:0"></span>
+    <span class="note" id="rdpAuthCmds" style="display:none;flex-direction:column;gap:4px;margin:0">
+      <span id="rdpAuthCmdKeyDelWrap" style="display:none;gap:8px;align-items:center;flex-wrap:wrap"><code id="rdpAuthCmdKeyDel" style="font-size:12px">cmdkey /delete:TERMSRV/&lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('rdpAuthCmdKeyDel',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- run once on YOUR PC: removes the STALE stored credential for this target (no tooling deletes credentials for you)</span></span>
+      <span id="rdpAuthPassWrap" style="display:none;gap:8px;align-items:center;flex-wrap:wrap"><a href="javascript:void(0)" id="rdpAuthPassCopy" onclick="copyById('credWinPass',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy CURRENT password from KEYS</a><span style="font-size:11px">- then click WINDOWS AUTO-LOGIN and paste the copied password exactly at the Windows prompt (this page never types it)</span></span>
+      <span id="rdpAuthCmdCapi2Wrap" style="display:none;gap:8px;align-items:center;flex-wrap:wrap"><code id="rdpAuthCmdCapi2" style="font-size:12px">wevtutil epl Microsoft-Windows-CAPI2/Operational %TEMP%\capi2.evtx</code><a href="javascript:void(0)" onclick="copyById('rdpAuthCmdCapi2',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+      <span id="rdpAuthCmdSystemWrap" style="display:none;gap:8px;align-items:center;flex-wrap:wrap"><code id="rdpAuthCmdSystem" style="font-size:12px">wevtutil epl System %TEMP%\system.evtx</code><a href="javascript:void(0)" onclick="copyById('rdpAuthCmdSystem',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- CAPI2 + Schannel providers; paste both exports into this session</span></span>
+    </span>
+  </div>
   <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
   <!-- [F11-3 §3] RDP USAGE replaces logon age as the headline timer: seconds
        accumulated ONLY while an RDP session is connected OR a webdesk client is
@@ -1135,10 +1156,17 @@ async function nativeStatus(){
   // a probe failure, not a weak config - render OK-with-warning, never FAIL.
   var cse=document.getElementById('nrCredssp');
   if(cse){
-    var cs=(s&&s.rdpListener&&s.rdpListener.credsspStatus)||'pending';
+    // [F24 §3] A status that was never reported is NOT a failure. Before this,
+    // a pre-F24 config (credsspStatus absent - e.g. the F17 listener probe used
+    // to rebuild rdpListener and drop the F21 stamp) rendered a bare
+    // "FAIL: pending", which read like a verification failure. Now: OK /
+    // OK (cipher probe warn) / FAIL (<status> + why) / "not reported yet" with
+    // the exact F21 step name that writes the field.
+    var cs=(s&&s.rdpListener&&s.rdpListener.credsspStatus)?String(s.rdpListener.credsspStatus):'';
     var csGood=(cs==='ok'||cs==='ok-with-cipher-warn');
-    cse.textContent=csGood?((cs==='ok')?'OK':'OK (cipher probe warn)'):('FAIL: '+cs);
-    cse.style.color=csGood?'':'#f5b7b7';
+    if(csGood){ cse.textContent=(cs==='ok')?'OK':'OK (cipher probe warn)'; cse.style.color=''; }
+    else if(!cs){ cse.textContent='not reported yet (F21 step: CredSSP/NLA handshake verification)'; cse.style.color='#f5d9b7'; }
+    else { cse.textContent='FAIL ('+cs+')'; cse.style.color='#f5b7b7'; }
   }
   if(s&&s.rdpListener&&s.rdpListener.credsspWhy){
     if(s.rdpListener.credsspStatus==='ok-with-cipher-warn') setReason('nrCredsspReason','WARN: '+s.rdpListener.credsspWhy+' - cipher probe could not enumerate (cmdlet+registry failed); Windows defaults include AES-256-GCM. NLA/cert/CredSSP verified OK.');
@@ -1152,6 +1180,8 @@ async function nativeStatus(){
   var credsspOk=(!rl||rl.credsspStatus===undefined||rl.credsspStatus==='ok'||rl.credsspStatus==='ok-with-cipher-warn');
   window.__listenerOk=!!(rl&&rl.listening===true&&rl.fwRule===true&&rl.certOk===true&&rl.nla===true&&credsspOk);
   paintRdpListener(rl,s?s.rdpListenerAgeSec:null);
+  // [F24 §3] ONE decision row from rdpListener {credValid, authEvents, credsspStatus}.
+  paintAuthDiscriminator(rl,s);
   // [F17 §2] CONNECTION diagnostics lines (copy-only) follow the live FQDN.
   var diagF=(s&&s.fqdn)||'';
   var diagIP=(s&&s.runnerResolvedIP)||'';
@@ -1516,6 +1546,70 @@ function paintRdpListener(rl,ageSec){
  line.textContent=marks.join('  |  ');
  line.style.color=(window.__listenerOk===true)?'':'#f5b7b7';
  if(ageEl)ageEl.textContent=(typeof ageSec==='number'&&!isNaN(ageSec))?('probe age: '+ageSec+'s'):'';
+ row.style.display='';
+}
+// [F24 §3] AUTH-REJECT DISCRIMINATOR: ONE decision row rendered from
+// rdpListener {credValid, authEvents, credsspStatus} - the three branches that
+// separate a 0x904/0x7 TcpStateFrontAuth reject into an actionable cause:
+//   credValid=false             -> SERVER credential bug - re-dispatch (red)
+//   credValid=true  + 4625 6A/6D-> YOUR stored password is stale (yellow): the
+//      cmdkey /delete copy-line + "copy CURRENT password from KEYS", then
+//      WINDOWS AUTO-LOGIN and paste it exactly (user-executed; this page never
+//      types a password and never touches the credential store itself)
+//   credValid=true  + no 4625   -> TLS-layer suspect (yellow): the CAPI2 +
+//      System export copy-lines, pasted into the session for log-mapped triage
+// A warn/pending credsspStatus is shown VERBATIM next to these branches - never
+// as a bare "FAIL: pending". Pure DOM: no fetch, no execution, no weakening.
+function paintAuthDiscriminator(rl,s){
+ var row=document.getElementById('rdpAuthRow');
+ if(!row)return;
+ rl=rl||null;s=s||{};
+ function setTxt(id,txt,col){var e=document.getElementById(id);if(e){e.textContent=txt;if(col!==undefined)e.style.color=col;}}
+ function showCmds(on){var e=document.getElementById('rdpAuthCmds');if(e)e.style.display=on?'flex':'none';}
+ function showLine(id,on){var e=document.getElementById(id);if(e)e.style.display=on?'flex':'none';}
+ var cv=(rl&&typeof rl.credValid==='boolean')?rl.credValid:null;
+ var cvErr=(rl&&rl.credValidProbeError)?String(rl.credValidProbeError):'';
+ var ae=(rl&&rl.authEvents)||null;
+ var codes=[];
+ if(ae&&ae.codes){var rawCodes=ae.codes;if(rawCodes&&typeof rawCodes.length==='number'){codes=rawCodes;}else if(typeof rawCodes==='object'){codes=[rawCodes];}}
+ var codeUp=[];
+ for(var i=0;i<codes.length;i++){var cu=(codes[i]&&codes[i].code)?String(codes[i].code).toUpperCase():'';if(cu)codeUp.push(cu);}
+ var stale=(codeUp.indexOf('0XC000006A')>=0||codeUp.indexOf('0XC000006D')>=0);
+ var n4624=(ae&&ae.count4624!=null)?Number(ae.count4624):null;
+ var n4625=(ae&&ae.count4625!=null)?Number(ae.count4625):null;
+ var aeTxt=ae
+  ?('runner Security log ('+(ae.windowSec?Math.round(Number(ae.windowSec)/60):0)+' min window): 4624='+n4624+' 4625='+n4625+(ae.verdict?(' verdict='+ae.verdict):'')+(codeUp.length?(' codes='+codeUp.join(',')):'')+(ae.probeError?(' probeError='+ae.probeError):''))
+  :'runner Security-log counts: not collected yet (the F24 §2 collector ticks every 60s during keep-alive)';
+ var fqdn=String((s&&s.fqdn)||(rl&&rl.fqdn)||'');
+ var kd=document.getElementById('rdpAuthCmdKeyDel');
+ if(kd)kd.textContent='cmdkey /delete:TERMSRV/'+(fqdn||'<fqdn>');
+ var csSt=(rl&&rl.credsspStatus)?String(rl.credsspStatus):'';
+ var csWhy=(rl&&rl.credsspWhy)?String(rl.credsspWhy):'';
+ var csTxt=(csSt==='ok')?'CredSSP: OK - NLA=1, cert trusted, policy strict'
+  :((csSt==='ok-with-cipher-warn')?('CredSSP: OK (cipher probe warn) - '+(csWhy||'cipher probe could not enumerate; Windows defaults include AES-256-GCM'))
+  :(csSt?('CredSSP: FAIL ('+csSt+') - '+(csWhy||'no detail')+' - see the failed F21 step "CredSSP/NLA handshake verification"')
+  :'CredSSP: not reported yet - F21 step: CredSSP/NLA handshake verification'));
+ if(cv===false&&cvErr){
+  setTxt('rdpAuthVerdict','PROBE FAILED - the server-side credential proof could not run ('+cvErr+') - re-dispatch','#f5d9b7');
+  setTxt('rdpAuthDetail','This is NOT a credential verdict: ValidateCredentials could not execute on the runner (F24 §1 step). Re-dispatch and read that step. '+aeTxt+'. '+csTxt);
+  showCmds(false);
+ }else if(cv===false){
+  setTxt('rdpAuthVerdict','SERVER credential bug - re-dispatch','#f5b7b7');
+  setTxt('rdpAuthDetail','rdpListener.credValid=false: the dispatch password FAILED validation against the runner\u2019s own local SAM, so the password on the KEYS row is already dead and no client-side action can fix it. Re-dispatch - a fresh user+password pair is generated every run. '+aeTxt+'. '+csTxt);
+  showCmds(false);
+ }else if(cv===true&&stale){
+  setTxt('rdpAuthVerdict','YOUR stored password is stale: copy CURRENT password from KEYS','#f5d9b7');
+  setTxt('rdpAuthDetail','rdpListener.credValid=true (the server credential is VALID) BUT the runner logged failed logons 4625 with '+(codeUp.join(','))+' (wrong password / bad user or password): the credential Windows has STORED for this target on YOUR PC does not match this run. In order: (1) run the cmdkey /delete copy-line below on YOUR PC (user-executed - no tooling deletes credentials), (2) copy the CURRENT password from the KEYS row, (3) click WINDOWS AUTO-LOGIN and paste the copied password EXACTLY at the Windows prompt. '+aeTxt+'. '+csTxt);
+  showCmds(true);showLine('rdpAuthCmdKeyDelWrap',true);showLine('rdpAuthPassWrap',true);showLine('rdpAuthCmdCapi2Wrap',false);showLine('rdpAuthCmdSystemWrap',false);
+ }else if(cv===true){
+  setTxt('rdpAuthVerdict','TLS-layer suspect (no 4625 logged on the runner)','#f5d9b7');
+  setTxt('rdpAuthDetail','rdpListener.credValid=true and the runner logged NO failed logon (4625) in the window above, so the reject is NOT a credential mismatch - it is the TLS/CredSSP layer (client certificate chain, Schannel, CAPI2). Export the client logs with the two copy-lines below and paste them into this session: the cause is mapped from the logged event, never guessed. '+aeTxt+'. '+csTxt);
+  showCmds(true);showLine('rdpAuthCmdKeyDelWrap',false);showLine('rdpAuthPassWrap',false);showLine('rdpAuthCmdCapi2Wrap',true);showLine('rdpAuthCmdSystemWrap',true);
+ }else{
+  setTxt('rdpAuthVerdict','not reported yet - the F24 step "Server-side credential proof" has not run for this target','#f5d9b7');
+  setTxt('rdpAuthDetail','No credValid verdict in /api/native-status yet (a pre-F24 run, or the step has not executed). '+aeTxt+'. '+csTxt);
+  showCmds(false);
+ }
  row.style.display='';
 }
 function paintBeacon(){
