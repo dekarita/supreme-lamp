@@ -4,7 +4,7 @@ name: listener-lab
 # retried this session; same posture as autologin-lab.yml), so this
 # push-triggered windows-latest lane is the equally faithful fallback:
 #   A. extract the §1 probe step AND the firewall step VERBATIM from main.yml,
-#      bind a lab cert for <lab-f17.ts.net>, run the baseline => all OK
+#      bind a lab cert for <lab-f17.proof.ts.net>, run the baseline => all OK
 #   B. BREAK: disable the 3389 rule => probe reports fwRule=false and the step
 #      FAILS LOUD (field=fwRule), and the probe must NOT re-enable the rule
 #   C. FIX: re-enable => probe passes, every rdpListener field ✅
@@ -89,9 +89,9 @@ jobs:
           }
           if (-not $listenOk) { A-Fail 'listen-prep' 'loopback 3389 never accepted after the firewall step + TermService start' }
 
-          # --- lab cert for <lab-f17.ts.net>, trusted as its own root so the
+          # --- lab cert for <lab-f17.proof.ts.net>, trusted as its own root so the
           # --- probe's X509Chain.Build validates (lab-only trust, throwaway VM).
-          $labDns = 'lab-f17.ts.net'
+          $labDns = 'lab-f17.proof.ts.net'
           $leaf = $null
           try {
               $leaf = New-SelfSignedCertificate -DnsName $labDns -CertStoreLocation 'Cert:\LocalMachine\My' -KeyExportPolicy Exportable -NotAfter (Get-Date).AddDays(60) -ErrorAction Stop
@@ -136,7 +136,7 @@ jobs:
               if (-not [bool]$rl.$f) { A-Fail $f ('baseline false: ' + ($rl | ConvertTo-Json -Compress)) }
           }
           if ([string]$rl.termService -ne 'Running') { A-Fail 'termService' ([string]$rl.termService) }
-          if ([string]$rl.fwScope -ne '100.64.0.0/10') { A-Fail 'fwScope' ([string]$rl.fwScope) }
+          if ([string]$rl.fwScope -notin @('100.64.0.0/10', '100.64.0.0/255.192.0.0')) { A-Fail 'fwScope' ([string]$rl.fwScope) }
           Write-Host ('[A] PASS: baseline all OK - ' + ($rl | ConvertTo-Json -Compress))
 
       - name: "B: BREAK - disable the 3389 rule => fwRule=false + step fails LOUD"
@@ -188,7 +188,7 @@ jobs:
               if (-not [bool]$rl.$f) { C-Fail $f ('after fix, field must be ✅: ' + ($rl | ConvertTo-Json -Compress)) }
           }
           if ([string]$rl.termService -ne 'Running') { C-Fail 'termService' ([string]$rl.termService) }
-          if ([string]$rl.fwScope -ne '100.64.0.0/10') { C-Fail 'fwScope' ([string]$rl.fwScope) }
+          if ([string]$rl.fwScope -notin @('100.64.0.0/10', '100.64.0.0/255.192.0.0')) { C-Fail 'fwScope' ([string]$rl.fwScope) }
           if (-not (Select-String -Path (Join-Path $lab 'probe-c.txt') -SimpleMatch 'PASS: listening + fwRule + certThumb + nla all OK')) { C-Fail 'pass-line' 'probe PASS line missing' }
           Write-Host '[C] PASS: re-enabled => probe green, all rdpListener fields OK'
 
@@ -258,7 +258,7 @@ jobs:
               if (-not [bool]$ns.rdpListener.$f) { D-Fail ('field-' + $f) ('rdpListener.' + $f + ' not true: ' + ($ns.rdpListener | ConvertTo-Json -Compress)) }
           }
           if ([string]$ns.rdpListener.termService -ne 'Running') { D-Fail 'field-termService' ([string]$ns.rdpListener.termService) }
-          if ([string]$ns.rdpListener.fwScope -ne '100.64.0.0/10') { D-Fail 'field-fwScope' ([string]$ns.rdpListener.fwScope) }
+          if ([string]$ns.rdpListener.fwScope -notin @('100.64.0.0/10', '100.64.0.0/255.192.0.0')) { D-Fail 'field-fwScope' ([string]$ns.rdpListener.fwScope) }
           # --- (2) per-run beacon store: the stale previous-run beacon must be
           # --- gone (reset at server start) BEFORE any new hello arrives.
           if ($ns.PSObject.Properties.Name -contains 'lastHandlerVerb') { D-Fail 'stale-beacon' ('stale store was not reset: ' + ($ns.lastHandlerVerb | ConvertTo-Json -Compress)) }
