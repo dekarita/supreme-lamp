@@ -731,9 +731,16 @@ jobs:
           if ($LASTEXITCODE -ne 0) { S-Fail 'compile' 'the SHIPPED launcher does not compile with the in-box csc' }
           $env:GHRDP_LAB_OUT = $matrix
           $env:GHRDP_LAB_NOMSG = '1'
-          & $exe '--dns-selftest' 'lab-target.dekarita.tailnet-lab.ts.net' $labIp
-          if ($LASTEXITCODE -ne 0) { S-Fail 'matrix-exit' 'launcher --dns-selftest returned non-zero' }
-          if (-not (Test-Path -LiteralPath $matrix)) { S-Fail 'matrix-file' 'no matrix file was written' }
+          # [F19] the launcher is a winexe: without a pipeline PowerShell does
+          # not wait for it and the matrix-file check races the process (this is
+          # also why the windows-native gate step was flaky until it captured the
+          # output the same way). Pipe the output to force the wait, then give
+          # the file a moment.
+          $runOut = (& $exe '--dns-selftest' 'lab-target.dekarita.tailnet-lab.ts.net' $labIp 2>&1 | Out-String)
+          $runRc = $LASTEXITCODE
+          if ($runRc -ne 0) { S-Fail 'matrix-exit' ('launcher --dns-selftest exit ' + $runRc + ' out=' + $runOut.Trim()) }
+          for ($i = 0; $i -lt 20 -and -not (Test-Path -LiteralPath $matrix); $i++) { Start-Sleep -Milliseconds 250 }
+          if (-not (Test-Path -LiteralPath $matrix)) { S-Fail 'matrix-file' ('no matrix file at ' + $matrix + ' (exit=' + $runRc + ' out=' + $runOut.Trim() + ')') }
           $txt = Get-Content -LiteralPath $matrix -Raw
           Write-Host $txt
           foreach ($want in @(
