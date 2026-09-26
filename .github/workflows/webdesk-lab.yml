@@ -399,6 +399,115 @@ jobs:
           }
           exit 0
 
+      - name: F25 LADDER PROOF - extracted production ladder, 3 scenarios (verbatim from main.yml)
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # Extract the F25 ladder block VERBATIM out of the checked-out
+          # main.yml, so the lab exercises the shipped code rather than a copy.
+          $all = Get-Content -LiteralPath '.github/workflows/main.yml'
+          $start = -1
+          for ($i = 0; $i -lt $all.Count; $i++) { if ($all[$i] -match '^      - name: Web desktop \(noVNC') { $start = $i; break } }
+          if ($start -lt 0) { throw '[lab] webdesk deploy step not found in main.yml' }
+          $end = $all.Count
+          for ($i = $start + 1; $i -lt $all.Count; $i++) { if ($all[$i] -match '^      - name: ') { $end = $i; break } }
+          $from = -1; $to = -1
+          for ($i = $start; $i -lt $end; $i++) {
+              if ($from -lt 0 -and $all[$i] -match '\[F25 .2\] Tailnet IP LADDER') { $from = $i }
+              elseif ($from -ge 0 -and $all[$i] -match "^          Write-Host \('\[webdesk\] tailnet IP = '") { $to = $i; break }
+          }
+          if ($from -lt 0 -or $to -lt 0) { throw '[lab] F25 ladder block not found in main.yml (prod/lab skew)' }
+          $ladder = @()
+          for ($i = $from; $i -le $to; $i++) {
+              if ($all[$i] -notmatch '^          ') { throw ('[lab] ladder indentation changed at main.yml line ' + ($i + 1)) }
+              $ladder += $all[$i].Substring(10)
+          }
+          $ladderTxt = ($ladder -join "`n")
+          # prod/lab skew guards: the extracted block must still be the F25 form
+          foreach ($needle in @('cfgR.rdpIp', 'cfgR.runnerResolvedIP', 'env:RUNNER_RESOLVED_IP', 'Resolve-DnsName', 'tailnet-ip-source-dump', "throw 'Web desktop not deployed: tailnet-ip-unavailable")) {
+              if ($ladderTxt -notmatch [regex]::Escape($needle)) { throw ('[lab] extracted ladder is not the F25 form (missing ' + $needle + ')') }
+          }
+          $utf8 = New-Object System.Text.UTF8Encoding($false)
+          $ladderFile = Join-Path $env:RUNNER_TEMP 'extracted-f25-ladder.ps1'
+          [System.IO.File]::WriteAllLines($ladderFile, $ladder, $utf8)
+          Write-Host ('[lab] extracted F25 ladder: ' + $ladder.Count + ' lines -> ' + $ladderFile)
+
+          $dir = Join-Path $env:RUNNER_TEMP 'f25-lab'
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+          # the extracted ladder writes its per-source dump here on every run
+          $diagDir = Join-Path $env:RUNNER_TEMP 'webdesk-diag'
+          New-Item -ItemType Directory -Path $diagDir -Force | Out-Null
+          $diagFile = Join-Path $diagDir 'tailnet-ip-sources.txt'
+          $results = @()
+
+          function Invoke-F25Case([string]$Case, $CfgObj, [string]$EnvIp) {
+              $cfgFile = Join-Path $dir ($Case + '.json')
+              [System.IO.File]::WriteAllText($cfgFile, ($CfgObj | ConvertTo-Json -Depth 8), $utf8)
+              $sumFile = Join-Path $dir ($Case + '.summary.md')
+              $outFile = Join-Path $dir ($Case + '.result.txt')
+              Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue
+              $wrap = Join-Path $dir ($Case + '.ps1')
+              $w = @()
+              $w += '$ErrorActionPreference = ''Continue'''
+              $w += '$cfgPathW = $env:F25_CFG'
+              $w += '$S = $env:F25_SUM'
+              # stand-in for the production helper: record what would be stamped
+              $w += 'function Set-WebdeskCfg([string]$Url, [string]$Reason, [string]$Detail = "", [string]$Auth = "") { $script:wReason = $Reason; $script:wDetail = $Detail }'
+              $w += '$script:wReason = ""; $script:wDetail = ""'
+              $w += $ladder
+              $w += ('Set-Content -LiteralPath $env:F25_OUT -Value ("src=" + $ipSrc + "; ip=" + $rdpIp + "; reason=" + $script:wReason + "; detail=" + $script:wDetail)')
+              $w += 'exit 0'
+              [System.IO.File]::WriteAllLines($wrap, $w, $utf8)
+              $env:F25_CFG = $cfgFile
+              $env:F25_SUM = $sumFile
+              $env:F25_OUT = $outFile
+              $env:RUNNER_RESOLVED_IP = $EnvIp
+              $p = Start-Process -FilePath pwsh -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $wrap) -Wait -PassThru -NoNewWindow
+              $res = ''
+              if (Test-Path -LiteralPath $outFile) { $res = ([System.IO.File]::ReadAllText($outFile)).Trim() }
+              $dump = ''
+              if (Test-Path -LiteralPath $diagFile) { $dump = ((([System.IO.File]::ReadAllText($diagFile)) -replace "`r?`n", ' | ')).Trim() }
+              Write-Host ('[lab] F25 case ' + $Case + ': exit=' + $p.ExitCode + ' result=[' + $res + ']')
+              Write-Host ('[lab] F25 case ' + $Case + ': tailnet-ip-sources.txt -> ' + $dump)
+              return [pscustomobject]@{ Case = $Case; Exit = $p.ExitCode; Result = $res; Dump = $dump }
+          }
+
+          # ---- (a) config without rdpIp, env set -> must recover via L3 --------
+          $results += Invoke-F25Case 'a-no-rdpip-env-set' ([ordered]@{ rdpIp = ''; runnerResolvedIP = ''; dnsName = 'f25-no-such-host.dekarita.tailnet-lab.ts.net'; rdpUser = 'labuser' }) '100.83.13.45'
+          # ---- (b) rdpIp holds the dnsName string -> L1 skipped, L2 used -------
+          $results += Invoke-F25Case 'b-rdpip-is-dnsname' ([ordered]@{ rdpIp = 'f25-dns.example.ts.net'; runnerResolvedIP = '100.83.13.45'; dnsName = 'f25-dns.example.ts.net'; rdpUser = 'labuser' }) ''
+          # ---- (c) every source absent -> loud throw + per-source dump ---------
+          $results += Invoke-F25Case 'c-all-absent' ([ordered]@{ rdpIp = ''; runnerResolvedIP = ''; dnsName = ''; rdpUser = 'labuser' }) ''
+
+          $fail = @()
+          $a = $results | Where-Object { $_.Case -eq 'a-no-rdpip-env-set' }
+          $b = $results | Where-Object { $_.Case -eq 'b-rdpip-is-dnsname' }
+          $c = $results | Where-Object { $_.Case -eq 'c-all-absent' }
+
+          if ($a.Exit -ne 0) { $fail += '(a) expected exit 0 (recovered), got ' + $a.Exit }
+          if ($a.Result -notmatch 'src=L3') { $fail += '(a) expected src=L3, got [' + $a.Result + ']' }
+          if ($a.Result -notmatch 'ip=100\.83\.13\.45') { $fail += '(a) expected the CGNAT IP from the env, got [' + $a.Result + ']' }
+
+          if ($b.Exit -ne 0) { $fail += '(b) expected exit 0 (L1 skipped, L2 used), got ' + $b.Exit }
+          if ($b.Result -notmatch 'src=L2') { $fail += '(b) expected src=L2 (the dnsName in rdpIp must be skipped), got [' + $b.Result + ']' }
+          if ($b.Result -notmatch 'ip=100\.83\.13\.45') { $fail += '(b) expected the CGNAT IP from runnerResolvedIP, got [' + $b.Result + ']' }
+
+          if ($c.Exit -eq 0) { $fail += '(c) expected a NON-ZERO fail-closed halt, got 0 (fail-open)' }
+          if ($c.Result -ne '') { $fail += '(c) no result may be produced: ' + $c.Result }
+          if ($c.Dump -notmatch 'L1 rdpIp=ABSENT \| L2 runnerResolvedIP=ABSENT dns=ABSENT \| L3 env=ABSENT') { $fail += '(c) per-source dump wrong or missing: [' + $c.Dump + ']' }
+          if ($c.Dump -notmatch 'winner=NONE') { $fail += '(c) dump must record winner=NONE: [' + $c.Dump + ']' }
+          if ($c.Dump -notmatch 'config\.json property NAMES') { $fail += '(c) dump must list the config.json property NAMES: [' + $c.Dump + ']' }
+
+          foreach ($r in $results) { Add-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'webdesk-diag\f25-ladder-proof.txt') -Value ($r.Case + ' exit=' + $r.Exit + ' result=' + $r.Result + ' dump=' + $r.Dump) }
+          Write-Host ('::notice title=lab F25 LADDER PROOF::' + (($results | ForEach-Object { $_.Case + '=' + $_.Exit + ':' + $_.Result }) -join ' ; '))
+          if ($fail.Count -gt 0) {
+              foreach ($f in $fail) { Write-Host ('::error::[lab] F25 LADDER PROOF FAILED: ' + $f) }
+              throw ('[lab] F25 LADDER PROOF FAILED (' + $fail.Count + '): ' + ($fail -join ' | '))
+          }
+          Write-Host '[lab] F25 LADDER PROOF VERIFIED: (a) L3 recovery, (b) L1 skipped -> L2, (c) loud throw with the per-source dump'
+          exit 0
+
       - name: Stage diagnostics inside the workspace (upload-artifact v4 root)
         if: always()
         shell: pwsh
