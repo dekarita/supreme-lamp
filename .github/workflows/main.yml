@@ -1212,7 +1212,7 @@ jobs:
                   $fwProfiles = [string]$rule.Profile
                   try { $fwScope = (@($rule | Get-NetFirewallAddressFilter).RemoteAddress) -join ',' } catch { $fwScope = '' }
                   if (([string]$rule.Enabled -ne 'True') -or ($fwProfiles -ne 'Any') -or ($fwScope -ne '100.64.0.0/10')) {
-                      Write-Host ('[F17] fw rule wrong (enabled=' + $rule.Enabled + ' profile=' + $fwProfiles + ' scope=' + $fwScope + ') - fixing to enabled/Any/100.64.0.0/10 (never 0.0.0.0/0)')
+                      Write-Host ('[F17] fw rule wrong (enabled=' + $rule.Enabled + ' profile=' + $fwProfiles + ' scope=' + $fwScope + ') - fixing to enabled/Any/100.64.0.0/10 (never unscoped)')
                       Set-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -Enabled True -Profile Any -RemoteAddress '100.64.0.0/10' -ErrorAction Stop
                       $fwFixed = $true
                   }
@@ -1296,9 +1296,10 @@ jobs:
               }
               throw ('F17 rdpListener loud-fail: ' + ($dead -join ' | '))
           }
-          # [F17 §1 probe-end]
           Write-Host '[F17] RDP listener probe PASS: listening + fw 100.64.0.0/10 + cert + NLA reported to /api/native-status'
           exit 0
+          # [F17 §1 probe-end] (marker last: the lab cell extracts the COMPLETE
+          # step body verbatim)
 
       # [U1 / #7C-extended] "Web desktop backend (TightVNC no-auth 5900 + websockify 7333)" step removed
       # in prior remediation. No-auth VNC — even tailnet-gated — is a bright-line credential-required
