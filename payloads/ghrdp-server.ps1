@@ -20,6 +20,9 @@ $script:FlushFlag = Join-Path $Root 'flush.flag'
 # exists even when no keep-alive step ever runs.
 $script:ServerStartedUtc = (Get-Date).ToUniversalTime()
 $script:LogonStatePath = Join-Path $Root 'rdp-logon.json'
+# [F30 §3] the SERVER CONN LOG state file (RdpCoreTS + RemoteConnectionManager
+# last-10 events; the TLS-drop/cert-reject leg 4624/4625 never sees).
+$script:ConnLogStatePath = Join-Path $Root 'rdp-connlog.json'
 $script:NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:WebDeskHtml = ''
 $script:Token = ''
@@ -408,6 +411,139 @@ function Get-RdpLogonCollectorState {
     return [pscustomobject]@{ authLast = $authLast; logonCollector = $collector }
 }
 # [F28 §1 scanner-end]
+# [F30 §3 connlog-begin]
+# SERVER CONN LOG collector (independent 30s tick, from SERVER START - the
+# proof lane for "connection forcibly closed by remote host": TLS drops, cert
+# rejections and connection resets that 4624/4625 never see). Reads the LAST
+# 10 events of Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational
+# AND Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational,
+# keeps ONLY EventId/TimeCreated/a single-line <=200-char description + the
+# mapped reason code, and stamps scanTs on EVERY pass (success, empty log AND
+# unreadable log) into rdp-connlog.json - never written back into config.json
+# (served as rdpListener.connLog by /api/native-status, no writer race).
+# Extracted VERBATIM by the F30 gate + lab cell and driven with synthetic
+# events.
+$script:F30ConnIntervalSec = 30
+$script:F30ConnStaleSec = 90
+$script:F30ConnMaxEvents = 10
+$script:F30ConnDescChars = 200
+$script:F30ConnScans = 0
+$script:F30ConnLastProbeError = ''
+$script:F30ConnLogs = @(
+    'Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational',
+    'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational')
+function Get-RdpConnLogShort {
+    param([string]$LogName)
+    if ($LogName -like 'Microsoft-Windows-RemoteDesktopServices-RdpCoreTS*') { return 'RdpCoreTS' }
+    return 'RemoteConnMgr'
+}
+function Get-RdpConnReason {
+    # Reason codes for the dashboard row. Only well-documented ids are mapped;
+    # anything else keeps '-' and the verbatim description speaks.
+    param([string]$LogName, [string]$Id)
+    $short = Get-RdpConnLogShort -LogName $LogName
+    switch ("$short|$Id") {
+        'RdpCoreTS|131'      { return 'tcp-connection-accepted' }
+        'RdpCoreTS|226'      { return 'tcp-transition-error' }
+        'RemoteConnMgr|261'  { return 'listener-received-connection' }
+        'RemoteConnMgr|1149' { return 'user-auth-succeeded' }
+        default { return '-' }
+    }
+}
+function ConvertTo-RdpConnDesc {
+    # Single line, capped at F30ConnDescChars; never throws.
+    param([string]$Text)
+    $flat = ([string]$Text -replace '\s+', ' ').Trim()
+    if ($flat.Length -gt $script:F30ConnDescChars) { $flat = $flat.Substring(0, $script:F30ConnDescChars) }
+    return $flat
+}
+function Get-RdpConnLogLast {
+    # Pure: event items in, stamped summary out. scanTs is ALWAYS stamped so
+    # the dashboard can tell "scanned, nothing yet" from a dead collector (
+    # exactly the F28 authLast contract).
+    param($Items, [string]$ProbeError = '')
+    $scanTs = (Get-Date).ToUniversalTime().ToString('o')
+    $sorted = @($Items | Sort-Object -Property timeUtc -Descending | Select-Object -First $script:F30ConnMaxEvents)
+    return [pscustomobject]@{
+        events     = @($sorted)
+        scanTs     = $scanTs
+        probeError = $ProbeError
+    }
+}
+function Update-RdpConnLog {
+    # The tick body: read BOTH channel logs (last 10 each), stamp, persist.
+    # Never throws: an unreadable/empty log still stamps scanTs + probeError.
+    param([string]$StatePath)
+    $items = @()
+    $probeErr = ''
+    foreach ($log in $script:F30ConnLogs) {
+        $raw = @()
+        try {
+            $raw = @(Get-WinEvent -LogName $log -MaxEvents $script:F30ConnMaxEvents -ErrorAction Stop)
+        } catch {
+            if ($_.Exception.Message -notmatch 'No events were found') {
+                $shortErr = 'connlog-unreadable-' + (Get-RdpConnLogShort -LogName $log)
+                if ($probeErr) { $probeErr = $probeErr + ';' + $shortErr } else { $probeErr = $shortErr }
+            }
+        }
+        foreach ($e in $raw) {
+            $timeUtc = ''
+            try { $timeUtc = ([datetime]$e.TimeCreated).ToUniversalTime().ToString('o') } catch { }
+            $msg = ''
+            try { $msg = [string]$e.Message } catch { }
+            $items += [pscustomobject]@{
+                log      = $log
+                logShort = (Get-RdpConnLogShort -LogName $log)
+                id       = [string]$e.Id
+                reason   = (Get-RdpConnReason -LogName $log -Id ([string]$e.Id))
+                timeUtc  = $timeUtc
+                desc     = (ConvertTo-RdpConnDesc -Text $msg)
+            }
+        }
+    }
+    $sum = Get-RdpConnLogLast -Items $items -ProbeError $probeErr
+    try { [System.IO.File]::WriteAllText($StatePath, ($sum | ConvertTo-Json -Depth 5 -Compress), $script:NoBom) } catch { }
+    $script:F30ConnScans = [int]$script:F30ConnScans + 1
+    $script:F30ConnLastProbeError = $probeErr
+    $newest = @($sum.events)[0]
+    Write-Host ('[F30] conn-log scan #' + $script:F30ConnScans + ' events=' + @($sum.events).Count +
+        ' newest=' + $(if ($newest) { ($newest.logShort + ':' + $newest.id + ' ' + $newest.reason) } else { '-' }) +
+        ' scanTs=' + $sum.scanTs + $(if ($probeErr) { ' probeError=' + $probeErr } else { '' }))
+    return $sum
+}
+function Get-RdpConnCollectorState {
+    # Read-back for /api/native-status: connLog plus the collector's own
+    # liveness (a missing or >90s stale state file is NOT a green collector).
+    param([string]$StatePath, [datetime]$ServerStartedUtc)
+    $connLog = $null
+    $ageSec = $null
+    if (Test-Path -LiteralPath $StatePath) {
+        $connLog = Read-JsonFile -Path $StatePath
+        try { $ageSec = [int]((Get-Date) - (Get-Item -LiteralPath $StatePath).LastWriteTime).TotalSeconds } catch { $ageSec = $null }
+    }
+    $uptime = [int]((Get-Date).ToUniversalTime() - $ServerStartedUtc).TotalSeconds
+    $alive = $false
+    if ($null -ne $ageSec) { $alive = ($ageSec -le $script:F30ConnStaleSec) } else { $alive = ($uptime -le $script:F30ConnStaleSec) }
+    $collector = [ordered]@{
+        intervalSec = $script:F30ConnIntervalSec
+        staleSec    = $script:F30ConnStaleSec
+        scans       = [int]$script:F30ConnScans
+        alive       = $alive
+        startedAt   = $ServerStartedUtc.ToString('o')
+        uptimeSec   = $uptime
+        lastScanAgeSec = $ageSec
+        probeError  = [string]$script:F30ConnLastProbeError
+    }
+    return [pscustomobject]@{ connLog = $connLog; connCollector = $collector }
+}
+# [F30 §2.2] The "nuclear option" one-liner served by /api/purge-stale-creds:
+# the USER runs it on their PC to delete EVERY TERMSRV credential older than
+# 7 days (LastWritten timestamp) - the 100+ stale-IP sweep the launcher's
+# same-target purge cannot touch. Text response only; no credential in it.
+$script:PurgeCredsOneLiner = @'
+$d='[StructLayout(LayoutKind.Sequential,CharSet=CharSet.Unicode)] public struct C{public uint Flags;public uint Type;public string TargetName;public string Comment;public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;public uint BlobSize;public System.IntPtr Blob;public uint Persist;public uint AttrCount;public System.IntPtr Attrs;public string Alias;public string UserName;}[System.Runtime.InteropServices.DllImport("advapi32.dll",EntryPoint="CredEnumerateW",CharSet=CharSet.Unicode,SetLastError=true)]public static extern bool CredEnumerate(string f,uint fl,out uint c,out System.IntPtr r);[System.Runtime.InteropServices.DllImport("advapi32.dll",EntryPoint="CredDeleteW",CharSet=CharSet.Unicode,SetLastError=true)]public static extern bool CredDelete(string t,uint ty,uint fl);[System.Runtime.InteropServices.DllImport("advapi32.dll")]public static extern void CredFree(System.IntPtr b);'; $null=Add-Type -MemberDefinition $d -Name M -Namespace Q; [uint32]$n=0; [IntPtr]$r=[IntPtr]::Zero; $gone=0; $skip=0; if([Q.M]::CredEnumerate($null,1,[ref]$n,[ref]$r)){ try{ $cut=(Get-Date).AddDays(-7); for($i=0;$i -lt $n;$i++){ $p=[Runtime.InteropServices.Marshal]::ReadIntPtr($r,$i*[IntPtr]::Size); $c=[Runtime.InteropServices.Marshal]::PtrToStructure($p,[type][Q.M+C]); if($c.TargetName -and $c.TargetName.StartsWith('TERMSRV/')){ $wt=[DateTime]::FromFileTimeUtc(([int64]$c.LastWritten.dwHighDateTime -shl 32) + [uint32]$c.LastWritten.dwLowDateTime); if($wt -lt $cut){ if([Q.M]::CredDelete($c.TargetName,$c.Type,0)){ $gone++ } } else { $skip++ } } } } finally { [Q.M]::CredFree($r) } }; "purged $gone TERMSRV credential(s) older than 7 days (kept $skip newer)"
+'@
+# [F30 §3 connlog-end]
 function Read-ClientRequest {
 param($Stream)
 $acc = New-Object System.Text.StringBuilder
@@ -664,6 +800,24 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ rid = $newTok; ttl = 60 })
             return
         }
+        # [F30 §2.2 purge-route-begin] The user-run "nuclear option": a
+        # dash-token-gated GET that returns the PowerShell one-liner deleting
+        # EVERY TERMSRV credential older than 7 days (LastWritten) on the
+        # PC where it is pasted. The server never executes it; the response
+        # is plain text with no credential material.
+        if ($path -eq '/api/purge-stale-creds' -and $parts.method -eq 'GET') {
+            $auth = [string]$parts.headers['authorization']
+            $expected = [System.Text.Encoding]::UTF8.GetBytes('Bearer ' + $Token)
+            $received = [System.Text.Encoding]::UTF8.GetBytes($auth)
+            if (-not $Token -or $received.Length -ne $expected.Length -or
+                -not (Test-TicketBearer $received $expected)) {
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('dashboard authorization required'))
+                return
+            }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'text/plain; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($script:PurgeCredsOneLiner))
+            return
+        }
+        # [F30 §2.2 purge-route-end]
         # [F27 redeem-route-begin] No aliases, no GET/query ticket, no proxy exemption.
         if ($path -eq '/rdp-creds' -or $path -eq '/api/rdp-info') {
             Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([byte[]]@())
@@ -960,12 +1114,19 @@ function Invoke-ClientRequest {
             # written into config.json - no writer race with the workflow).
             $logonState = [pscustomobject]@{ authLast = $null; logonCollector = $null }
             try { $logonState = Get-RdpLogonCollectorState -StatePath $script:LogonStatePath -ServerStartedUtc $script:ServerStartedUtc } catch { }
+            # [F30 §3] SERVER CONN LOG (RdpCoreTS + RemoteConnectionManager
+            # last-10) + its collector liveness, same no-write-back pattern.
+            $connState = [pscustomobject]@{ connLog = $null; connCollector = $null }
+            try { $connState = Get-RdpConnCollectorState -StatePath $script:ConnLogStatePath -ServerStartedUtc $script:ServerStartedUtc } catch { }
             $rlOut = $null
             if ($cfgN -and $cfgN.PSObject.Properties['rdpListener'] -and $cfgN.rdpListener) { $rlOut = $cfgN.rdpListener }
             if ($null -eq $rlOut) { $rlOut = New-Object psobject }
             try {
                 $rlOut | Add-Member -NotePropertyName authLast -NotePropertyValue $logonState.authLast -Force
                 $rlOut | Add-Member -NotePropertyName logonCollector -NotePropertyValue $logonState.logonCollector -Force
+                # [F30 §3] rdpListener.connLog: the TLS-drop/cert-reject leg.
+                $rlOut | Add-Member -NotePropertyName connLog -NotePropertyValue $connState.connLog -Force
+                $rlOut | Add-Member -NotePropertyName connCollector -NotePropertyValue $connState.connCollector -Force
                 $rlOut | Add-Member -NotePropertyName credsspLive -NotePropertyValue $csLive -Force
                 $rlOut | Add-Member -NotePropertyName credsspLiveWhy -NotePropertyValue $csLiveWhy -Force
                 $rlOut | Add-Member -NotePropertyName credsspLiveTs -NotePropertyValue ((Get-Date).ToUniversalTime().ToString('o')) -Force
@@ -986,6 +1147,8 @@ function Invoke-ClientRequest {
                 rdpListener = $rlOut
                 rdpListenerAgeSec = $(if ($cfgN -and $cfgN.PSObject.Properties['rdpListener'] -and $cfgN.rdpListener) { Get-UtcAgeSeconds $cfgN.rdpListener.ts } else { $null })
                 logonCollector = $logonState.logonCollector
+                # [F30 §3] conn-log collector liveness, top-level like F28.
+                connCollector = $connState.connCollector
                 # [F18 §4] runnerResolvedIP: the F18 runner FQDN self-test result
                 # (100.64.0.0/10 only). Empty/invalid => AUTO-LOGIN stays disabled.
                 runnerResolvedIP = $(if ($cfgN -and $cfgN.PSObject.Properties['runnerResolvedIP'] -and ([string]$cfgN.runnerResolvedIP -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.')) { [string]$cfgN.runnerResolvedIP } else { '' })
@@ -1062,7 +1225,10 @@ function Invoke-ClientRequest {
                         # [F28 §2/§3] recred-redeemed = the recovery redemption;
                         # fallback-mstsc-native-prompt = the closed fallback gap
                         # (the beacon immediately preceding a /prompt launch).
-                        if ($detail -match '^(invoked|ticket-redeemed|recred-redeemed|credwrite-ok|credwrite-failed|rdp-written|mstsc-started( pid=[0-9]+)?|mstsc-exited=-?[0-9]+|check-shown|cmdkey-shown|cmdkey-timeout|cmdkey-stored=(true|false)|client-dns-off|cred-param-rejected|invalid-target|fallback-mstsc-native-prompt|fallback-cmdkey reason=(ticket-missing|unreachable|ticket-invalid-or-expired))$') { $hh.details = $detail }
+                        # [F30 §2.1] 'purged <n> stale entries, wrote new as
+                        # Domain' - the launcher's purge+normalize beacon (the
+                        # count only; never a credential).
+                        if ($detail -match '^(invoked|ticket-redeemed|recred-redeemed|credwrite-ok|credwrite-failed|rdp-written|mstsc-started( pid=[0-9]+)?|mstsc-exited=-?[0-9]+|check-shown|cmdkey-shown|cmdkey-timeout|cmdkey-stored=(true|false)|client-dns-off|cred-param-rejected|invalid-target|fallback-mstsc-native-prompt|fallback-cmdkey reason=(ticket-missing|unreachable|ticket-invalid-or-expired)|purged [0-9]+ stale entries, wrote new as Domain)$') { $hh.details = $detail }
                         elseif ($detail -like 'dns-guard:*') { $hh.details = 'dns-guard-failed' }
                         else { $hh.details = 'launcher-error' }
                         # [F19 §2] exe: the launcher's version stamp, used by the
@@ -1877,6 +2043,10 @@ try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-Exec
 # probeError + scanTs instead of throwing).
 try { Update-RdpLogonAuthLast -StatePath $script:LogonStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
 $lastLogonScan = Get-Date
+# [F30 §3] STARTUP SCAN for the conn-log collector too: rdpListener.connLog
+# has its first stamp before any client polls.
+try { Update-RdpConnLog -StatePath $script:ConnLogStatePath | Out-Null } catch { }
+$lastConnScan = Get-Date
 $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse($Bind), $Port)
 try { $listener.Start() } catch {
     try { [System.IO.File]::WriteAllText($script:OkFile, 'LISTEN_FAIL: ' + $_.Exception.Message, $script:NoBom) } catch { }
@@ -1928,6 +2098,12 @@ while (((Get-Date) - $start) -lt $limit) {
     if (((Get-Date) - $lastLogonScan).TotalSeconds -ge $script:F28IntervalSec) {
         $lastLogonScan = Get-Date
         try { Update-RdpLogonAuthLast -StatePath $script:LogonStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
+    }
+    # [F30 §3] INDEPENDENT 30s conn-log tick (server start, not the workflow's
+    # keep-alive step) - RdpCoreTS + RemoteConnectionManager last-10 events.
+    if (((Get-Date) - $lastConnScan).TotalSeconds -ge $script:F30ConnIntervalSec) {
+        $lastConnScan = Get-Date
+        try { Update-RdpConnLog -StatePath $script:ConnLogStatePath | Out-Null } catch { }
     }
     if (((Get-Date) - $lastHeal).TotalSeconds -ge 60) {
         $lastHeal = Get-Date
