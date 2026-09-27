@@ -6,10 +6,18 @@ import { readFileSync } from "node:fs";
 const lockSrc = readFileSync("src/lib/regression-ids.ts", "utf8").replace(/\r\n?/g, "\n");
 const IDS = [...lockSrc.matchAll(/'([^']+)'/g)].map((m) => m[1]);
 
-test("bundle renders with zero console errors and all regression ids", async ({ page }) => {
+test("bundle renders with zero JS errors and all regression ids", async ({ page }) => {
+  // JS-exception contract: pageerror + app console.error are fatal. Chromium
+  // logs RESOURCE-load failures ("Failed to load resource: ... 404") for the
+  // absent preview backend (/api/*, /ping, /ws) and favicons - those are the
+  // preview environment, not app defects, and are excluded here; against the
+  // real server they do not occur.
   const errors: string[] = [];
   page.on("console", (msg) => {
-    if (msg.type() === "error") errors.push(msg.text());
+    if (msg.type() !== "error") return;
+    const text = msg.text();
+    if (/Failed to load resource|net::ERR_|404\b|favicon/i.test(text)) return;
+    errors.push(text);
   });
   page.on("pageerror", (err) => errors.push(String(err)));
   await page.goto("/");

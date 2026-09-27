@@ -2088,7 +2088,14 @@ jobs:
           export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
           corepack enable
           pnpm exec playwright install --with-deps chromium
-          pnpm exec playwright test
+          # Failure bridge: the sandbox authoring this cannot read runner logs
+          # (blob storage blocked), so surface the report tail as ONE readable
+          # ::error:: annotation on the check run.
+          if ! out=$(pnpm exec playwright test 2>&1); then
+            echo "$out" | tail -40
+            echo "::error::E2E-FAIL::$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r')"
+            exit 1
+          fi
   windows-native:
     runs-on: windows-latest
     steps:
