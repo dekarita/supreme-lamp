@@ -9,11 +9,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: F19 gate with debug
-        id: f19
         shell: bash
         run: |
           set -euo pipefail
-          trap 'echo "FAILED at line $LINENO: $BASH_COMMAND" | tee -a /tmp/f19_full.log; echo "=== last 50 lines of log ==="; tail -n 50 /tmp/f19_full.log' ERR
+          trap 'echo "FAILED at line $LINENO: $BASH_COMMAND" | tee -a /tmp/f19_full.log' ERR
           ui=payloads/ui.html
           cs=payloads/ghrdp-rdp-launcher.cs
           srv=payloads/ghrdp-server.ps1
@@ -108,20 +107,21 @@ jobs:
           grep -qF -- "-ArgumentList '--dns-selftest'" .github/workflows/launch-gates.yml
           grep -qF -- '$p.WaitForExit()' .github/workflows/launch-gates.yml
           echo 'F19 gates PASS'
-        continue-on-error: false
-      - name: Show log on failure
-        if: failure()
-        shell: bash
-        run: |
-          echo "=== F19 FULL LOG ==="
-          cat /tmp/f19_full.log || echo "no log"
-          echo "## F19 Debug Log" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat /tmp/f19_full.log >> $GITHUB_STEP_SUMMARY || echo "no log" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-      - name: Upload debug
+      - name: Upload log as artifact (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: f19-debug
+          name: f19-log
           path: /tmp/f19_full.log
+      - name: Create gist with log on failure
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          LOG=$(cat /tmp/f19_full.log | tail -n 200)
+          echo "$LOG"
+          # create gist via API
+          PAYLOAD=$(jq -n --arg log "$LOG" '{description: "F19 debug log", public: false, files: {"f19.log": {content: $log}}}')
+          curl -s -X POST -H "Authorization: Bearer $GH_TOKEN" -H "Content-Type: application/json" -d "$PAYLOAD" https://api.github.com/gists | tee /tmp/gist.json
+          cat /tmp/gist.json
