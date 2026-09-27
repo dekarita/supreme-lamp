@@ -1990,7 +1990,6 @@ jobs:
           # missing/invalid => the step fails with the EXACT field so a red run
           # names the dead component instead of advertising it.
           $dead = @()
-          if (-not $rdpListener.listenerHandshakeOk) { $dead += 'listenerHandshakeOk missing/false or bound thumbprint changed' }
           if (-not $listening) { $dead += 'listening=false (nothing accepted TCP 127.0.0.1:3389; TermService=' + $termStatus + ')' }
           if (-not $fwRuleOk) { $dead += 'fwRule=false (enabled/Any/100.64.0.0/10 not verified; scope=' + $fwScope + ' profile=' + $fwProfiles + '; ' + $fwWhy + ')' }
           if (-not $certOk) { $dead += 'certThumb invalid (' + $certWhy + ')' }

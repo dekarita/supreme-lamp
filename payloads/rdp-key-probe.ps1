@@ -34,6 +34,9 @@ function Set-RdpKeyAcl([string]$KeyFile) {
 }
 function Write-F31Evidence([string]$Line) {
     Write-Host $Line
+    # Also reachable via Checks REST when the Actions blob log download fails.
+    $annotation = $Line.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+    Write-Host "::notice::$annotation"
     if ($env:GITHUB_STEP_SUMMARY) { $Line | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY }
 }
 function Write-RdpKeyDiagnostic([string]$KeyFile, [datetime]$Since, [string]$Thumbprint = '') {
@@ -107,10 +110,15 @@ function Test-RdpListenerTls([string]$Thumbprint, [string]$KeyFile) {
         if ($ssl.RemoteCertificate.GetCertHashString() -ine $Thumbprint) { throw 'rdp-probe-thumbprint-mismatch' }
         Write-Host 'listener-handshake-ok'
     } catch {
+        $failure = $_.Exception.Message
+        if ($failure -in @('rdp-connect-timeout','rdp-negotiation-forcibly-closed','rdp-negotiation-invalid-tpkt','rdp-negotiation-rejected','rdp-probe-thumbprint-mismatch')) {
+            Write-F31Evidence ('probe reason=' + $failure)
+        }
         $exception = $_.Exception
         while ($exception) {
             # Exception type/HRESULT survives wrappers without exposing arbitrary messages.
             Write-F31Evidence ('probe inner exception=' + $exception.GetType().FullName + ' HRESULT=' + $exception.HResult)
+            if ($exception -is [System.Net.Sockets.SocketException]) { Write-F31Evidence ('probe socket=' + $exception.SocketErrorCode) }
             $exception = $exception.InnerException
         }
         Write-RdpKeyDiagnostic -KeyFile $KeyFile -Since $since -Thumbprint $Thumbprint

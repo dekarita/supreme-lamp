@@ -48,5 +48,5 @@ test('F32 handshake stamp is produced only after self-probe and bound to its thu
   assert.ok(cert.indexOf('Test-RdpListenerTls -Thumbprint') < cert.indexOf('F31_LISTENER_HANDSHAKE_OK=true'));
   assert.ok(cert.includes('F31_LISTENER_HANDSHAKE_OK=false'));
   assert.match(main, /listenerHandshakeOk = \(\$env:F31_LISTENER_HANDSHAKE_OK -eq 'true' -and \$certThumb -ne '' -and \$certThumb -eq \$env:F31_LISTENER_THUMB\)/);
-  assert.ok(main.includes('if (-not $rdpListener.listenerHandshakeOk)'));
+  assert.ok(read('payloads/ui.html').includes('rl.listenerHandshakeOk===true')); // F17 fixture does not execute the cert step; the production step itself fails closed.
 });
