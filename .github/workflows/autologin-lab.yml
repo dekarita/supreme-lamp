@@ -22,6 +22,8 @@ on:
       - tests/f27-handoff.test.js
       - tests/f27-copy.test.js
       - tests/f28-logon-recovery.test.js
+      - tests/f31c-live-dispatch.test.js
+      - tests/f31c-git-shim.ps1
 jobs:
   proof:
     runs-on: windows-latest
@@ -1994,6 +1996,68 @@ jobs:
           } catch { Write-Host ('[X] order restore skipped: ' + $_.Exception.Message) }
           Write-Host '[X] PASS: F30 ordered ciphers + TLS 1.2/1.3 + purge-before-write + .rdp floor + conn-log row all proven on a real Windows host'
           'X_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+      # [F31c §5] (a) extracted token-diagnostic block + failing git shim must
+      # exit 1 with the reconnect message; (b) 36870 in connLog renders the
+      # present + ACL fix; (c) all-pass fixture renders all green. The card is
+      # the SHIPPED renderer (node matrix), not a copy of it.
+      - name: "Y: F31c token diagnostic fail-loud + live dispatch matrix"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $ws = $env:GITHUB_WORKSPACE
+          function Y-Fail([string]$Stage, [string]$Detail) {
+            Write-Host ('::error::[Y] stage=' + $Stage + ' :: ' + $Detail)
+            'Y_result=fail' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+            exit 1
+          }
+          $wfPath = Join-Path $ws '.github\workflows\main.yml'
+          $wf = [System.IO.File]::ReadAllText($wfPath)
+          $a = $wf.IndexOf('# [F31c §1 token-diag-begin]')
+          $b = $wf.IndexOf('# [F31c §1 token-diag-end]')
+          if ($a -lt 0 -or $b -le $a) { Y-Fail 'extract' 'the F31c token-diagnostic markers are missing from main.yml' }
+          # Build the needle at runtime. A contiguous Actions expression in this
+          # file would be expanded before pwsh runs, and the replace would miss.
+          $needle = '$' + '{{ github.ref }}'
+          $block = $wf.Substring($a, $b - $a).Replace($needle, 'refs/heads/f31c-lab')
+          $errors = $null
+          $null = [System.Management.Automation.Language.Parser]::ParseInput($block, [ref]$null, [ref]$errors)
+          if ($errors -and $errors.Count -gt 0) { Y-Fail 'parse' ('the diagnostic block has ' + $errors.Count + ' syntax error(s): ' + $errors[0].Message) }
+          $shim = Join-Path $ws 'tests\f31c-git-shim.ps1'
+          if (-not (Test-Path -LiteralPath $shim)) { Y-Fail 'shim' 'tests/f31c-git-shim.ps1 is missing' }
+          function Invoke-YDiag([string]$Mode) {
+            $file = Join-Path $env:RUNNER_TEMP ('f31c-diag-' + $Mode + '.ps1')
+            $out = Join-Path $env:RUNNER_TEMP ('f31c-diag-' + $Mode + '.out')
+            $err = Join-Path $env:RUNNER_TEMP ('f31c-diag-' + $Mode + '.err')
+            $body = '$env:F31C_GIT_MODE = ''' + $Mode + '''' + "`r`n" + '. ''' + $shim + '''' + "`r`n" + $block + "`r`n"
+            [System.IO.File]::WriteAllText($file, $body)
+            $pwsh = (Get-Command pwsh -ErrorAction Stop).Source
+            $p = Start-Process -FilePath $pwsh -ArgumentList @('-NoProfile','-File',$file) -Wait -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+            $txt = ''
+            if (Test-Path -LiteralPath $out) { $txt += [System.IO.File]::ReadAllText($out) }
+            if (Test-Path -LiteralPath $err) { $txt += [System.IO.File]::ReadAllText($err) }
+            return @{ code = $p.ExitCode; text = $txt }
+          }
+          $fail = Invoke-YDiag 'fail'
+          Write-Host ('[Y] (a) dry-run failure exit=' + $fail.code)
+          Write-Host $fail.text
+          if ($fail.code -ne 1) { Y-Fail 'dry-run-fail' ('expected exit 1, got ' + $fail.code + ' :: ' + $fail.text) }
+          foreach ($need in @('::error::git push failed', 'HTTP 401', 'Arena Settings -> GitHub Integration -> Reconnect', 'Windows Credential Manager -> git:github.com -> Remove')) {
+            if ($fail.text -notlike ('*' + $need + '*')) { Y-Fail 'dry-run-fail' ('actionable message missing [' + $need + '] :: ' + $fail.text) }
+          }
+          if ($fail.text -match 'ghp_|ghs_|github_pat_|tskey-') { Y-Fail 'secret' 'diagnostic output carried a token-shaped string' }
+          Write-Host '[Y] (a) PASS: git push --dry-run failure exits 1 with the reconnect / credential-manager message'
+          $okRun = Invoke-YDiag 'ok'
+          if ($okRun.code -ne 0 -or $okRun.text -notlike '*git push access confirmed*') { Y-Fail 'dry-run-ok' ('success path did not confirm push access: exit=' + $okRun.code + ' :: ' + $okRun.text) }
+          Write-Host '[Y] (a2) PASS: dry-run success confirms push access (the step is not fail-only)'
+          Push-Location $ws
+          try { $nodeOut = (@(& node --test tests/f31c-live-dispatch.test.js 2>&1) | Out-String); $nodeRc = $LASTEXITCODE } finally { Pop-Location }
+          if ($nodeRc -ne 0) { Y-Fail 'node-matrix' ('the F31c node matrix failed: ' + $nodeOut.Substring([Math]::Max(0, $nodeOut.Length - 800))) }
+          if ($nodeOut -notmatch '36870 present') { Y-Fail 'card-36870' 'the shipped card did not render 36870 present' }
+          if ($nodeOut -notmatch 'key ACL dump needed') { Y-Fail 'card-36870' 'the shipped card did not render the ACL fix hint' }
+          if ($nodeOut -notmatch 'ALL GREEN') { Y-Fail 'card-green' 'the all-pass fixture did not render all green' }
+          Write-Host '[Y] (b) PASS: 36870 in connLog renders "36870 present" + key ACL dump needed => copy-line to session'
+          Write-Host '[Y] (c) PASS: all 5 checks green'
+          'Y_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
       - name: "G: setup-time measurement + lab matrix summary"
         if: ${{ always() }}
         shell: pwsh
@@ -2023,11 +2087,12 @@ jobs:
           ('| (u) auth-reject discriminator (F24) | ' + $(if ($env:U_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml blocks verified: SAM ValidateCredentials fixture (fresh account => true, wrong password => false with no probe error, empty => the missing-env probe verdict), the 4625 collector driven by synthetic events (0xC000006A/0xC000006D => credential-mismatch, 0xC000015B => logon-type-denied, 4624-only => none) with a REAL Security-log write into a temp config.json that keeps the pre-existing rdpListener fields and carries only the F27 failure target account; the shipped page matrix executed through the real renderer (three branches + pending/warn credssp render) and the TLS-layer branch carries the CAPI2 + System export copy-lines. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
           ('| (v) logon-result loop + one-click recovery + fallback gap (F28) | ' + $(if ($env:V_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED ghrdp-server.ps1 scanner driven with synthetic events (4625 0xC000006A => failed+sub+eventTs, newer type-10 4624 => success, empty window => none, probe error => named, console/type-3 + pre-window ignored, scanTs stamped on EVERY path, verdict carries no identity field); SHIPPED launcher compiled by the in-box csc runs --fallback-selftest 4/4 (stored=false + failed retry => native-prompt + fallback-mstsc-native-prompt beacon, zero mstsc/cmdkey calls); shipped page renderer executed through the node matrix (LAST RDP LOGON result+sub+eventTs+scanTs verbatim, RED collector-dead, recovery card ONLY for 0xC000006A inside 120s of mstsc-started, FIX & RECONNECT mints a ticket then fires ghrdp://recred with t only, CREDSSP live probe + stamp); the 30s scan tick lives in the server process from start and main.yml never mentions it. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
           ('| (x) TLS/cipher handshake fix + purge + conn log (F30) | ' + $(if ($env:X_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml normalization block: fixture-driven order verdict (CBC/3DES-first rejected, GCM/ChaCha20 moved to the front in the declared order) + REAL run on the runner (Schannel Functions list rewritten and re-read, TLS 1.2 AND 1.3 Enabled=1/DisabledByDefault=0 on Client+Server, RDP-Tcp SecurityLayer=2/MinEncryptionLevel=3); SHIPPED launcher compiled by the in-box csc runs --purge-selftest against the REAL credential store (planted LegacyGeneric type-1 + Domain type-2 pair both PURGED, fresh entry written as DomainPassword, zero mstsc/cmdkey); .rdp written from the shipped 19-directive template is > 400 bytes with the read-back assert before the launch; EXTRACTED conn-log collector driven with synthetic events (tls-forcibly-closed / auth-succeeded / cert-rejected / connection-reset, credential-shaped text redacted) and the resulting sample rendered into the SERVER CONN LOG row by the shipped page. What stays PENDING-USER is only the physical click-through (fullscreen session) |') | Add-Content -Path $S
+          ('| (y) token diagnostic + live dispatch matrix (F31c) | ' + $(if ($env:Y_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml token-diagnostic block: simulated git push --dry-run failure exits 1 with the Arena reconnect + Windows Credential Manager message (no token printed); success dry-run confirms push access; SHIPPED card renders "36870 present" + key ACL dump hint for a connLog fixture and ALL GREEN when the 5 checks pass. Fullscreen stays PENDING-USER |') | Add-Content -Path $S
           ('| (k) no console window in the interactive session | **contract PASS** | every host-helper launch is -WindowStyle Hidden (or NoNewWindow for the user-driven terminal exec) and the long-lived services are SYSTEM scheduled tasks; launch-gates F11-5.3 enforces it. Visual confirmation on the first physical RDP session = PENDING-USER |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
           # retrievable), so the PR/verify evidence does not depend on the log UI.
-          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'}) + ' t=' + $(if ($env:T_result -eq 'pass') {'pass'} else {'fail'}) + ' u=' + $(if ($env:U_result -eq 'pass') {'pass'} else {'fail'}) + ' v=' + $(if ($env:V_result -eq 'pass') {'pass'} else {'fail'}) + ' x=' + $(if ($env:X_result -eq 'pass') {'pass'} else {'fail'})
+          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'}) + ' t=' + $(if ($env:T_result -eq 'pass') {'pass'} else {'fail'}) + ' u=' + $(if ($env:U_result -eq 'pass') {'pass'} else {'fail'}) + ' v=' + $(if ($env:V_result -eq 'pass') {'pass'} else {'fail'}) + ' x=' + $(if ($env:X_result -eq 'pass') {'pass'} else {'fail'}) + ' y=' + $(if ($env:Y_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
           # [F19] Evidence notices must carry the CELL RESULT they belong to:
           # before this, every notice claimed its achievement even when the cell
@@ -2048,6 +2113,7 @@ jobs:
           Nt 'T' 'T_result' 'F20: nslookup retired as a diagnostic (Resolve-DnsName + false-alarm note), collapsed 0x904/0x7 block carries the client+runner wevtutil exports and stays copy-only, shipped launcher compiles and its immediate-exit dialog points at it'
           Nt 'U' 'U_result' 'F24: SAM credential fixture (valid => true, stale => false), 4625 collector parse (6A/6D => credential-mismatch, 15B => logon-type-denied, 4624-only => none, F27 target account only), three-branch renderer matrix + CAPI2/System copy-lines'
           Nt 'V' 'V_result' 'F28: server-side 30s logon scan (failed/sub/eventTs/scanTs from synthetic events, always stamped), closed fallback gap (stored=false => retry once => native prompt + beacon, nothing launched), one-click recovery (ticket -> ghrdp://recred -> CredWrite overwrite) and the CREDSSP live-probe row'
+          Nt 'Y' 'Y_result' 'F31c: token diagnostic dry-run failure exits 1 with the reconnect message; 36870 fixture renders present + key ACL dump hint; all-pass fixture renders all green'
           Nt 'K' 'K_result' 'browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions'
           Nt 'L' 'L_result' 'qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok'
           Nt 'G' 'F_result' ('uBlock Origin=' + $env:F_ubo)

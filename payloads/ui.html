@@ -404,6 +404,28 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
 <section class="glass" id="sec-native-rdp">
   <div class="row" id="nrBuildWarn" style="display:none"><span class="k">Deploy</span><span class="v" id="nrBuildWarnText" style="color:#f5d9b7"></span></div>
   <h2>Native mstsc auto-login</h2>
+  <!-- [F31c §2 live-dispatch-card-begin] LIVE DISPATCH STATUS. Polls
+       /api/native-status every 10s. Each failing check renders the exact
+       condition and the single fix. Nothing here executes, types, or weakens
+       NLA/CredSSP/cert validation. -->
+  <div class="row" id="liveDispatchRow" style="display:flex;flex-direction:column;align-items:stretch;gap:4px">
+    <span class="k" style="font-weight:600">LIVE DISPATCH STATUS</span>
+    <span class="note" id="liveDispatchSummary" style="margin:0">waiting for the first /api/native-status sample...</span>
+    <span class="note" id="liveDispatchChecks" style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace"></span>
+    <span class="note" id="liveDispatchFix" style="margin:0"></span>
+    <span class="note" id="liveDispatchAcl" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="liveDispatchAclCmd" style="font-size:12px">wevtutil qe System /q:"*[System[Provider[@Name='Schannel']]]" /c:10 /f:text | findstr "36870 36871"</code><a href="javascript:void(0)" onclick="copyById('liveDispatchAclCmd',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">key ACL dump needed - copy this line and paste it to the session (nothing here executes)</span></span>
+  </div>
+  <!-- [F31c §2 live-dispatch-card-end] -->
+  <!-- [F31c §3 manual-verify-begin] Collapsed. Copy-only. The user runs these. -->
+  <details id="manualVerifySteps">
+    <summary style="cursor:pointer;font-size:12px;font-weight:600">MANUAL VERIFY STEPS</summary>
+    <ol id="manualVerifyList" style="margin:6px 0 0;padding-left:18px;font-size:12px;line-height:1.55">
+      <li id="manualVerifyBrowser">If WINDOWS AUTO-LOGIN opens a browser prompt, click OPEN and tick always-allow</li>
+      <li id="manualVerifyRdp">If RDP window appears but shows 0x904/0x7, run this in PowerShell on your PC: <code id="manualVerifyCmdkey" style="font-size:12px">cmdkey /delete:TERMSRV/&lt;current-fqdn&gt;</code> <a href="javascript:void(0)" onclick="copyById('manualVerifyCmdkey',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a> Then click WINDOWS AUTO-LOGIN again</li>
+      <li id="manualVerifyStill">If still failing, copy this and paste to the session: <code id="manualVerifySchannel" style="font-size:12px">wevtutil qe System /q:"*[System[Provider[@Name='Schannel']]]" /c:10 /f:text | findstr "36870 36871"</code> <a href="javascript:void(0)" onclick="copyById('manualVerifySchannel',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></li>
+    </ol>
+  </details>
+  <!-- [F31c §3 manual-verify-end] -->
   <div class="row"><span class="k">LAST RDP LOGON</span><span class="v" id="lastRdpLogon">not reported yet</span></div>
   <div class="row"><span class="k">Ticket audit</span><span class="v" id="ticketAudit">not reported yet</span></div>
   <div class="row"><span class="k">Launcher chain</span><span class="v" id="handoffChain">not reported yet</span></div>
@@ -1262,6 +1284,8 @@ async function nativeStatus(){
   // [F24 §3] ONE decision row from rdpListener {credValid, authEvents, credsspStatus}.
   paintAuthDiscriminator(rl,s);
   paintHandoffStatus(rl,s);
+  // [F31c §2] LIVE DISPATCH STATUS (5 checks; exact failing condition + one fix).
+  paintLiveDispatch(s);
   // [F17 §2] CONNECTION diagnostics lines (copy-only) follow the live FQDN.
   var diagF=(s&&s.fqdn)||'';
   var diagIP=(s&&s.runnerResolvedIP)||'';
@@ -1592,6 +1616,130 @@ function openWebDesk(url){
 // use the pinned executable after the interactive cmdkey prerequisite.
 nativeStatus();
 setInterval(nativeStatus,15000);
+// [F31c §2 live-dispatch-poll] LIVE DISPATCH STATUS polls /api/native-status every 10s.
+setInterval(function(){ try{ nativeStatus(); }catch(_){} }, 10000);
+// [F31c §2 live-dispatch-begin]
+function liveDispatchAsList(v){
+ if(!v) return [];
+ if(typeof v.length==='number' && typeof v!=='string') return v;
+ if(typeof v==='object') return [v];
+ return [];
+}
+function liveDispatchAgeMs(ts, now){
+ if(!ts) return null;
+ var t=Date.parse(String(ts));
+ if(isNaN(t)) return null;
+ return now-t;
+}
+function liveDispatchInWindow(ts, now, windowMs){
+ var age=liveDispatchAgeMs(ts, now);
+ if(age==null) return true;
+ return age<=windowMs;
+}
+function liveDispatchStatus(s, nowMs){
+ s=s||{};
+ var now=(nowMs==null)?Date.now():nowMs;
+ var rl=(s.rdpListener)||{};
+ var checks=[];
+ var ip=String(s.runnerResolvedIP||'');
+ var ping=(s.pingMs==null||s.pingMs==='')?null:Number(s.pingMs);
+ var ipOk=/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ip);
+ var pingOk=ping!=null&&!isNaN(ping)&&ping>=0&&ping<500;
+ var c1={id:'runner', name:'Runner reachable', ok:!!(ipOk&&pingOk), detail:'', fix:''};
+ if(!ip){ c1.detail='runnerResolvedIP absent'; c1.fix='runnerResolvedIP absent => re-dispatch main.yml (F18 runner FQDN self-test)'; }
+ else if(!ipOk){ c1.detail='runnerResolvedIP not a tailnet address'; c1.fix='runnerResolvedIP not a tailnet address => re-dispatch main.yml'; }
+ else if(ping==null||isNaN(ping)){ c1.detail='ping not reported'; c1.fix='ping not reported => wait for the 15s tailscale ping, or re-dispatch if the runner is down'; }
+ else if(!(ping<500)){ c1.detail='ping='+ping+'ms (>= 500ms)'; c1.fix='ping='+ping+'ms (>= 500ms) => check Tailscale direct path (UDP 41641)'; }
+ else { c1.detail='runnerResolvedIP='+ip+' ping='+ping+'ms'; }
+ checks.push(c1);
+ var hs=rl.listenerHandshakeOk===true;
+ checks.push({id:'f31', name:'F31 bound', ok:hs, detail:hs?'rdpListener.listenerHandshakeOk=true':'F31 not bound', fix:hs?'':'F31 not bound => re-dispatch main.yml'});
+ var cl=rl.connLog||s.connLog||null;
+ var items=cl?liveDispatchAsList(cl.items&&cl.items.length?cl.items:cl.newest):[];
+ var hit=null;
+ for(var i=0;i<items.length;i++){
+  var e=items[i]||{};
+  var eid=String(e.id==null?'':e.id);
+  var blob=eid+' '+String(e.reason||'')+' '+String(e.desc||'');
+  if(eid==='36870'||blob.indexOf('36870')>=0){
+   if(liveDispatchInWindow(e.timeUtc||e.ts||'', now, 5*60*1000)){ hit=e; break; }
+  }
+ }
+ var c3={id:'schannel', name:'36870 absent', ok:false, detail:'', fix:''};
+ if(!cl){ c3.detail='connLog not reported'; c3.fix='connLog not reported => 36870 absence not proven => re-dispatch main.yml'; }
+ else if(hit){ c3.detail='36870 present'; c3.fix='36870 present => key ACL dump needed => copy-line to session'; }
+ else if(cl.schannelProbeError){ c3.detail='System Schannel log unreadable'; c3.fix='System Schannel log unreadable => 36870 absence not proven => copy-line to session'; }
+ else { c3.ok=true; c3.detail='no 36870 events in last 5 minutes'; }
+ checks.push(c3);
+ var beacons=liveDispatchAsList(s.launcher&&s.launcher.beacons);
+ var texts=[];
+ for(var j=0;j<beacons.length;j++){
+  var b=beacons[j];
+  texts.push(b&&typeof b==='object'?String(b.details||b.detail||''):String(b||''));
+ }
+ var start=0;
+ for(var k=0;k<texts.length;k++){ if(/^(invoked|ticket-redeemed|recred-redeemed)$/.test(texts[k])) start=k; }
+ var attempt=texts.slice(start);
+ var stored=false;
+ if(texts.length){ for(var a=0;a<attempt.length;a++){ if(attempt[a].indexOf('credwrite-ok')>=0) stored=true; } }
+ checks.push({id:'cred', name:'Credential stored', ok:stored, detail:stored?'launcher.beacons contains credwrite-ok in last attempt':'credwrite-ok absent from last attempt', fix:stored?'':'credwrite-ok absent from last attempt => click WINDOWS AUTO-LOGIN (ticket -> CredWrite); read the launcher beacon row if the chain stops earlier'});
+ var ae=rl.authEvents||null;
+ var evs=ae?liveDispatchAsList(ae.events&&ae.events.length?ae.events:(ae.items||[])):[];
+ var logonHit=false;
+ var logonDetail='no 4624 type10 in last 10 minutes';
+ for(var n=0;n<evs.length;n++){
+  var ev=evs[n]||{};
+  var evid=String(ev.id||ev.eventId||'');
+  var lt=String(ev.logonType||ev.LogonType||ev.type||'');
+  if(evid==='4624'&&(lt==='10'||lt.toLowerCase()==='type10')){
+   var ets=ev.timeUtc||ev.ts||'';
+   if(ets&&liveDispatchAgeMs(ets, now)!=null&&liveDispatchAgeMs(ets, now)<=10*60*1000&&liveDispatchAgeMs(ets, now)>=-60000){
+    logonHit=true; logonDetail='4624 type10 at '+ets; break;
+   }
+  }
+ }
+ if(!logonHit&&ae){
+  var c4624=Number(ae.count4624);
+  var last=ae.last4624At||'';
+  var la=liveDispatchAgeMs(last, now);
+  if(c4624>0&&last&&la!=null&&la<=10*60*1000&&la>=-60000){ logonHit=true; logonDetail='4624 type10 at '+last+' (count4624='+c4624+')'; }
+ }
+ checks.push({id:'logon', name:'Logon success', ok:logonHit, detail:logonDetail, fix:logonHit?'':'no 4624 type10 in last 10 minutes => click WINDOWS AUTO-LOGIN; if the session never reaches LSA, read SERVER CONN LOG (a pre-logon drop never writes 4624)'});
+ var failed=[];
+ for(var f=0;f<checks.length;f++){ if(!checks[f].ok) failed.push(checks[f]); }
+ return {ok:failed.length===0, checks:checks, failed:failed, fix:failed.length?failed[0].fix:''};
+}
+function paintLiveDispatch(s, nowMs){
+ var row=document.getElementById('liveDispatchRow');
+ if(!row) return;
+ row.style.display='';
+ var d=liveDispatchStatus(s, (nowMs==null)?Date.now():nowMs);
+ var sum=document.getElementById('liveDispatchSummary');
+ var lines=document.getElementById('liveDispatchChecks');
+ var fix=document.getElementById('liveDispatchFix');
+ var acl=document.getElementById('liveDispatchAcl');
+ if(sum){
+  sum.textContent=d.ok?'ALL GREEN - runner reachable, F31 bound, 36870 absent, credential stored, logon success':('FAILING: '+d.failed[0].detail+' | '+d.failed[0].fix);
+  sum.style.color=d.ok?'#7dffc9':'#f5b7b7';
+ }
+ if(lines){
+  lines.textContent=d.checks.map(function(c){
+   return (c.ok?'✅ ':'❌ ')+c.name+': '+c.detail+(c.ok?'':' | '+c.fix);
+  }).join('\n');
+ }
+ if(fix){ fix.textContent=d.ok?'':d.fix; fix.style.color='#f5d9b7'; }
+ if(acl){
+  var showAcl=false;
+  for(var i=0;i<d.failed.length;i++){
+   if(d.failed[i].id==='schannel'&&(d.failed[i].detail==='36870 present'||d.failed[i].detail.indexOf('unreadable')>=0)) showAcl=true;
+  }
+  acl.style.display=showAcl?'flex':'none';
+ }
+ var fqdn=String((s&&s.fqdn)||'');
+ var mv=document.getElementById('manualVerifyCmdkey');
+ if(mv) mv.textContent='cmdkey /delete:TERMSRV/'+(fqdn||'<current-fqdn>');
+}
+// [F31c §2 live-dispatch-end]
 // [F15 §3] Launcher beacon row + stall verdict. The launcher's beacon sequence
 // is invoked -> cmdkey-shown|cmdkey-stored=... -> mstsc-started pid=N (or a
 // mstsc-exited=/<ExceptionType> failure, which is red on its own). If the LAST

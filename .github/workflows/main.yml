@@ -39,6 +39,86 @@ jobs:
       TS_TAILNET_NAME: ${{ secrets.TS_TAILNET_NAME }}
 
     steps:
+      # [F31c §1] FIRST step. A dead push credential fails HERE, before checkout
+      # or any Tailscale/RDP setup. The runner has no repo yet, so the dry-run
+      # uses a throwaway clone in RUNNER_TEMP (never the workspace, never a
+      # --global git config). The token is never printed; git output is
+      # redacted before it can reach the log. Nonzero is exit 1 - no bypass.
+      - name: GitHub Token Diagnostic
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $ref = '${{ github.ref }}'
+          if ([string]::IsNullOrWhiteSpace($ref)) { $ref = [string]$env:GITHUB_REF }
+          $ask = Join-Path $env:RUNNER_TEMP 'f31c-askpass.cmd'
+          if (-not (Test-Path -LiteralPath '.git')) {
+            $repo = [string]$env:GITHUB_REPOSITORY
+            $tok = [string]$env:GITHUB_TOKEN
+            if (-not $tok) { $tok = [string]$env:GH_TOKEN }
+            $probe = Join-Path $env:RUNNER_TEMP 'f31c-push-probe'
+            if (Test-Path -LiteralPath $probe) { Remove-Item -LiteralPath $probe -Recurse -Force -ErrorAction SilentlyContinue }
+            New-Item -ItemType Directory -Path $probe -Force | Out-Null
+            @('@echo off','echo %~1 | findstr /I "Username" >nul','if %ERRORLEVEL%==0 (echo x-access-token) else (echo %GITHUB_TOKEN%)') | Set-Content -LiteralPath $ask -Encoding ascii
+            $env:GIT_ASKPASS = $ask
+            $env:GIT_TERMINAL_PROMPT = '0'
+            $env:GCM_INTERACTIVE = 'Never'
+            $emptyCfg = Join-Path $env:RUNNER_TEMP 'f31c-empty-gitconfig'
+            Set-Content -LiteralPath $emptyCfg -Value '' -Encoding ascii
+            $env:GIT_CONFIG_GLOBAL = $emptyCfg
+            $env:GIT_CONFIG_NOSYSTEM = '1'
+            Push-Location $probe
+            $bootOk = $true
+            $bootErr = ''
+            & git init -q
+            if ($LASTEXITCODE -ne 0) { $bootOk = $false; $bootErr = 'git init failed' }
+            if ($bootOk) {
+              if (-not $repo -or -not $tok) { $bootOk = $false; $bootErr = 'missing GITHUB_TOKEN or GITHUB_REPOSITORY' }
+              else {
+                & git remote add origin ("https://github.com/" + $repo + ".git")
+                $fetched = $false
+                for ($i = 1; $i -le 3 -and -not $fetched; $i++) {
+                  & git -c credential.helper= fetch --depth=1 origin $ref
+                  if ($LASTEXITCODE -eq 0) { $fetched = $true } else { Start-Sleep -Seconds (2 * $i) }
+                }
+                if (-not $fetched) { $bootOk = $false; $bootErr = 'git fetch failed (push credential rejected or unreachable)' }
+                else {
+                  $branch = ($ref -replace '^refs/heads/','')
+                  if ($branch -eq $ref) { $branch = 'f31c-probe' }
+                  & git checkout -B $branch FETCH_HEAD
+                  if ($LASTEXITCODE -ne 0) { $bootOk = $false; $bootErr = 'git checkout of fetched ref failed' }
+                  elseif ($ref -like 'refs/heads/*') { & git update-ref $ref HEAD }
+                }
+              }
+            }
+            if (-not $bootOk) {
+              Pop-Location
+              Remove-Item -LiteralPath $ask -Force -ErrorAction SilentlyContinue
+              $result = [regex]::Replace([string]$bootErr, '(ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|tskey-)[A-Za-z0-9_\-]+', '[redacted]')
+              Write-Host "Testing git push access..."
+              Write-Host "::error::git push failed: $result"
+              Write-Host "User must: (1) Arena Settings -> GitHub Integration -> Reconnect, OR"
+              Write-Host "(2) Windows Credential Manager -> git:github.com -> Remove, then git push (browser auth)"
+              exit 1
+            }
+          }
+          # [F31c §1 token-diag-begin]
+          Write-Host "Testing git push access..."
+          $result = git push --dry-run origin ${{ github.ref }} 2>&1
+          if ($LASTEXITCODE -ne 0) {
+            $result = [regex]::Replace([string]$result, '(ghp_|gho_|ghu_|ghs_|ghr_|github_pat_|tskey-)[A-Za-z0-9_\-]+', '[redacted]')
+            if ($ask -and (Test-Path -LiteralPath $ask)) { Remove-Item -LiteralPath $ask -Force -ErrorAction SilentlyContinue }
+            Write-Host "::error::git push failed: $result"
+            Write-Host "User must: (1) Arena Settings -> GitHub Integration -> Reconnect, OR"
+            Write-Host "(2) Windows Credential Manager -> git:github.com -> Remove, then git push (browser auth)"
+            exit 1
+          }
+          Write-Host "✅ git push access confirmed"
+          if ($ask -and (Test-Path -LiteralPath $ask)) { Remove-Item -LiteralPath $ask -Force -ErrorAction SilentlyContinue }
+          # [F31c §1 token-diag-end]
+          if ((Get-Location).Path -ne $env:GITHUB_WORKSPACE) { Pop-Location }
+
       - name: Checkout repo (payloads)
         uses: actions/checkout@v4
 
