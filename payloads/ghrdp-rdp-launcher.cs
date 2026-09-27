@@ -122,6 +122,7 @@ internal static class GhrdpRdpLauncher
     private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F37 trace; F28 recred+fallback-gap; F30 purge+rdp-assert)";
     private static string TraceId = "";
     private static string TraceVerb = "rdp";
+    private static int TelescopePending = 0;
     private const int DefaultPort = 7331;
     // [F19 §2] the RDP TCP port used ONLY for the client-DNS diagnosis probe
     // (the mstsc target itself always stays the MagicDNS FQDN).
@@ -1234,7 +1235,8 @@ internal static class GhrdpRdpLauncher
         }
         string line = new JavaScriptSerializer().Serialize(row);
         try { File.AppendAllText(LogPath(), line + Environment.NewLine, new UTF8Encoding(false)); } catch { }
-        Thread post = new Thread(delegate() { HelloBounded(host, port, TraceVerb, ok, "telescope-" + stage + "-" + status); });
+        Interlocked.Increment(ref TelescopePending);
+        Thread post = new Thread(delegate() { try { HelloBounded(host, port, TraceVerb, ok, "telescope-" + stage + "-" + status); } finally { Interlocked.Decrement(ref TelescopePending); } });
         post.IsBackground = true; post.Start();
     }
     private static void RunClientTelescope(string server, string host, int beaconPort)
@@ -1280,6 +1282,9 @@ internal static class GhrdpRdpLauncher
         bool exists=domainCount+genericCount>0; string type=domainCount>0?"DomainPassword":(genericCount>0?"LegacyGeneric":"none");
         string user=domainCount>0?ReadCredUserName(target,2):(genericCount>0?ReadCredUserName(target,1):"");
         TelescopeStage(host,beaconPort,"cred",true,"targetExists="+exists+" type="+type+" user="+user);
+        // Drain best-effort stage beacons briefly so --diag can exit cleanly;
+        // unreachable dashboard never delays a launch by more than 1.5 seconds.
+        for(int wait=0;wait<15&&Interlocked.CompareExchange(ref TelescopePending,0,0)>0;wait++) Thread.Sleep(100);
     }
 
     // ------------------------------------------------------------------
@@ -1484,6 +1489,7 @@ internal static class GhrdpRdpLauncher
         // BEFORE any cmdkey/mstsc/file work, and with every POST failure caught.
         string uri = JoinArgs(args);
         TraceId = TraceFromUri(uri);
+        if (TraceId.Length == 0) { TraceId = Guid.NewGuid().ToString("N"); }
         string verb = PickVerb(uri);
         TraceVerb = verb;
         string server; string user; string portRaw;
