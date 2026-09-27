@@ -2353,6 +2353,24 @@ boot();
             Send-ClientResponse -Stream $stream -Code 200 -CType 'text/html; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($html))
             return
         }
+        # [F38] the same Root that serves ui.html also serves the staged Sinhala
+        # subset. Allowlist is exactly the two latin-free woff2 files. The page
+        # embeds the same bytes (tailnet-offline); this route is the static fetch.
+        if ($path -eq '/fonts/noto-sans-sinhala-400-latin-free.woff2' -or $path -eq '/fonts/noto-sans-sinhala-600-latin-free.woff2') {
+            $fontName = [System.IO.Path]::GetFileName($path)
+            $fp = Join-Path (Join-Path $Root 'fonts') $fontName
+            if (-not (Test-Path -LiteralPath $fp)) {
+                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('font not staged'))
+                return
+            }
+            try { $fontBytes = [System.IO.File]::ReadAllBytes($fp) } catch { $fontBytes = $null }
+            if (-not $fontBytes) {
+                Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('font unreadable'))
+                return
+            }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'font/woff2' -Body $fontBytes
+            return
+        }
         if ($path -eq '/rdp') {
             $rdpIp2 = ''; $rdpUser2 = ''
             if ($cfg) { $rdpIp2 = [string]$cfg.rdpIp; $rdpUser2 = [string]$cfg.rdpUser }

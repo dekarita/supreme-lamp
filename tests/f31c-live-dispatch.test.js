@@ -25,7 +25,7 @@ function between(src, begin, end) {
 function loadDispatch() {
   const fn = between(ui, '// [F31c §2 live-dispatch-begin]', '// [F31c §2 live-dispatch-end]');
   const ctx = {
-    document: { getElementById: id => (ctx.els[id] || (ctx.els[id] = { id, style: {}, textContent: '' })) },
+    document: { getElementById: id => (ctx.els[id] || (ctx.els[id] = { id, style: {}, textContent: '', innerHTML: '' })) },
     els: {},
     String, Number, RegExp, Date, Object, Math,
   };
@@ -115,8 +115,10 @@ test('F31c-b 36870 present => key ACL dump needed copy-line to session', () => {
   assert.equal(sch.detail, '36870 present');
   assert.equal(sch.fix, '36870 present => key ACL dump needed => copy-line to session');
   ctx.paintLiveDispatch(s, NOW);
-  assert.match(ctx.els.liveDispatchChecks.textContent, /36870 present/);
-  assert.match(ctx.els.liveDispatchChecks.textContent, /key ACL dump needed/);
+  // [F38] the checks card renders sprite marks (icon + text) via innerHTML.
+  assert.match(ctx.els.liveDispatchChecks.innerHTML, /36870 present/);
+  assert.match(ctx.els.liveDispatchChecks.innerHTML, /key ACL dump needed/);
+  assert.match(ctx.els.liveDispatchChecks.innerHTML, /class="ic mark mark-bad"[^>]*><use href="#i-x"/);
   assert.match(ctx.els.liveDispatchFix.textContent, /36870 present => key ACL dump needed => copy-line to session/);
   assert.equal(ctx.els.liveDispatchAcl.style.display, 'flex');
   console.log(ctx.els.liveDispatchChecks.textContent);
@@ -133,9 +135,11 @@ test('F31c-c ALL GREEN when all 5 checks pass', () => {
   for (const c of d.checks) assert.equal(c.ok, true, c.name);
   ctx.paintLiveDispatch(s, NOW);
   assert.match(ctx.els.liveDispatchSummary.textContent, /ALL GREEN - runner reachable, F31 bound, 36870 absent, credential stored, logon success/);
-  assert.doesNotMatch(ctx.els.liveDispatchChecks.textContent, /❌/);
+  assert.doesNotMatch(ctx.els.liveDispatchChecks.innerHTML, /❌/);
+  assert.doesNotMatch(ctx.els.liveDispatchChecks.innerHTML, /mark-bad/);
   for (const name of ['Runner reachable', 'F31 bound', '36870 absent', 'Credential stored', 'Logon success']) {
-    assert.match(ctx.els.liveDispatchChecks.textContent, new RegExp('✅ ' + name));
+    // [F38] each green check = aria-hidden check icon + the text label
+    assert.match(ctx.els.liveDispatchChecks.innerHTML, new RegExp('<svg class="ic mark mark-ok"[^>]*><use href="#i-check"/></svg> ' + name));
   }
   assert.equal(ctx.els.liveDispatchFix.textContent, '');
   assert.equal(ctx.els.liveDispatchAcl.style.display, 'none');
