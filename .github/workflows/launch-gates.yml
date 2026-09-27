@@ -2082,7 +2082,6 @@ jobs:
           grep -qF 'ui-v2.html' payloads/ghrdp-server.ps1
           grep -qF 'ui-v2.html' .github/workflows/main.yml
           grep -qF 'ui-v2.html staging failed - build artifact missing' .github/workflows/main.yml
-          grep -qF "-replace '\\?', '&'" payloads/ghrdp-server.ps1
           pnpm exec vitest run
       - name: F41 v2 e2e (playwright, real bundle)
         run: |
@@ -2098,6 +2097,45 @@ jobs:
             echo "::error::E2E-FAIL::$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r')"
             exit 1
           fi
+      # [F42] ?ui=v2 must ACTUALLY reach v2: normalised query, fail-visible
+      # missing-v2 banner, URLSearchParams link builder, loud staging assert.
+      - name: F42 ui=v2 reachability gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          srv=payloads/ghrdp-server.ps1
+          wf=.github/workflows/main.yml
+          ui=payloads/ui.html
+          # §1 normalise every literal '?' after the FIRST one, BEFORE the split
+          norm=$(grep -nF ".Replace('?', '&')" "$srv" | head -1 | cut -d: -f1)
+          split=$(grep -nF "(\$qNorm -split '&')" "$srv" | head -1 | cut -d: -f1)
+          test -n "$norm" && test -n "$split" && test "$norm" -lt "$split" || { echo 'F42: ?->& normalisation must precede the & split' >&2; exit 1; }
+          grep -qF 'Substring($qAt + 1)' "$srv"
+          decode=$(grep -nF 'UnescapeDataString' "$srv" | head -1 | cut -d: -f1)
+          test "$decode" -gt "$split" || { echo 'F42: pairs must be url-decoded after the split' >&2; exit 1; }
+          # §2 fail-VISIBLE v2 (200 + red banner + log line), never silent v1
+          grep -qF 'uiV2MissingBanner' "$srv"
+          grep -qF 'ui-v2.html not staged in this run - main.yml stage step failed; re-dispatch or check CI' "$srv"
+          grep -qF '[F42] V2-MISSING: ' "$srv"
+          grep -qF 'background:#7f1d1d' "$srv"
+          # §3 v1 link builder: URLSearchParams only, no literal ?ui= href
+          grep -qF 'id="v2PreviewLink"' "$ui"
+          grep -qF "u.searchParams.set('ui','v2')" "$ui"
+          grep -qF "a.setAttribute('href',v2PreviewHref())" "$ui"
+          if grep -qE "href=[\"']\?ui=v2" "$ui"; then echo 'F42: a literal ?ui=v2 href survives in v1' >&2; exit 1; fi
+          # §4 staging assert: loud halt, not a silent v1-forever
+          grep -qF 'ui-v2.html staging failed - build artifact missing' "$wf"
+          grep -qF 'Test-Path -LiteralPath $v2p' "$wf"
+          grep -qF 'if ($v2len -le 51200) { throw' "$wf"
+          # §5 tests exist; the 219-id lock is untouched
+          test -f tests/f42-ui-routing.test.js
+          test -f src/tests/e2e/f42-ui-routing.spec.ts
+          test -f src/tests/e2e/f42-fixture.ts
+          test -f src/tests/smoke/v2-preview-link.test.ts
+          grep -qF 'Get-RequestParts "GET /?key=K1?ui=v2 HTTP/1.1' tests/f27-windows.ps1
+          node scripts/check-regression-ids.mjs
+          test "$(grep -c 'const BASELINE_IDS' tests/f38-ui-glass.test.js)" -eq 1
+          echo 'F42 gates PASS: query=normalized, staging=fail-visible, links=correct'
   windows-native:
     runs-on: windows-latest
     steps:

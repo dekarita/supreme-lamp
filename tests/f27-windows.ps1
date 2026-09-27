@@ -43,6 +43,20 @@ try {
     $stage = 'server route extraction'
     $source = [IO.File]::ReadAllText((Join-Path $repo 'payloads/ghrdp-server.ps1'))
     Import-Functions $source @('Read-JsonFile','Get-RequestParts','Test-IsLoopbackAddr','Test-ClientAllowed','Test-CredsAllowed','Test-TicketBearer','Test-TicketSource','Write-TicketAudit','Use-RdpTicket','Read-ClientRequest','Send-ClientResponse','ConvertTo-JsonBytes','Invoke-ClientRequest')
+    # [F42 §1] REAL unit test of the shipped query parser: the live ticket link
+    # '?key=<token>?ui=v2' has a SECOND '?' that is not a separator. Both forms
+    # must yield ui=v2 AND a key carrying no leftover '?' / 'ui=' fragment.
+    $stage = 'F42 query normalisation (Get-RequestParts)'
+    $qpAmp = Get-RequestParts "GET /?key=K1&ui=v2 HTTP/1.1`r`nHost: fixture.ts.net`r`n`r`n"
+    Assert-F27 ($qpAmp.query['key'] -ceq 'K1' -and $qpAmp.query['ui'] -ceq 'v2') 'F42: & form parses ui=v2 with a clean key'
+    $qpQ = Get-RequestParts "GET /?key=K1?ui=v2 HTTP/1.1`r`nHost: fixture.ts.net`r`n`r`n"
+    Assert-F27 ($qpQ.query['key'] -ceq 'K1' -and $qpQ.query['ui'] -ceq 'v2') 'F42: double-? form normalises to ui=v2 with a clean key'
+    Assert-F27 (-not ([string]$qpQ.query['key']).Contains('?') -and -not ([string]$qpQ.query['key']).Contains('ui=')) 'F42: key is free of the glued ui fragment'
+    $qpEnc = Get-RequestParts "GET /?key=K%201?ui=v2&x=a%26b HTTP/1.1`r`nHost: fixture.ts.net`r`n`r`n"
+    Assert-F27 ($qpEnc.query['key'] -ceq 'K 1' -and $qpEnc.query['ui'] -ceq 'v2' -and $qpEnc.query['x'] -ceq 'a&b') 'F42: pairs are url-decoded AFTER normalisation/split'
+    Assert-F27 ($qpAmp.path -ceq '/' -and $qpQ.path -ceq '/' -and $qpEnc.path -ceq '/') 'F42: path stays clean in all three forms'
+    Assert-F27 ((Get-RequestParts "GET / HTTP/1.1`r`nHost: fixture.ts.net`r`n`r`n").query.Count -eq 0) 'F42: queryless request yields no params'
+    Write-Host 'F42 PASS: shipped query parser normalises ?->& before split (key clean, decoded after)'
     $fixture = 'F27!' + [guid]::NewGuid().ToString('N')
     $config = @{dnsName='fixture.tail.ts.net';rdpUser='fixture-user';rdpPass=$fixture;hostKind='ephemeral'}
     [IO.File]::WriteAllText($script:CfgPath,($config | ConvertTo-Json),$script:NoBom)

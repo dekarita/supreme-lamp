@@ -10,7 +10,8 @@ $script:ProgPath = Join-Path $Root 'progress.json'
 $script:UiPath = Join-Path $Root 'ui.html'
 # [F41 P1] v2 dashboard bundle, OPT-IN only. Default stays v1 until the operator
 # flips $script:UiV2Default (P4 cutover). Routing contract:
-#   /?ui=v2  -> serve ui-v2.html when staged, fall back to v1 when absent
+#   /?ui=v2  -> serve ui-v2.html when staged; when NOT staged serve v1 PLUS the
+#               red uiV2MissingBanner (F42 §2: silent v1 fallback is forbidden)
 #   /?ui=v1  -> always serve v1 ui.html (one-release fallback after cutover)
 #   default  -> v1 while $script:UiV2Default is $false
 $script:UiV2Path = Join-Path $Root 'ui-v2.html'
@@ -171,10 +172,14 @@ function Get-RequestParts {
             $qAt = $target.IndexOf('?')
             if ($qAt -ge 0) {
                 $path = $target.Substring(0, $qAt)
-                $rawQuery = $target.Substring($qAt + 1)
-                # [F42 §1] normalize second '?' (and any literal '?') to '&' before split
-                $rawQuery = $rawQuery -replace '\?', '&'
-                foreach ($kv in ($rawQuery -split '&')) {
+                # [F42 §1] the live ticket link was /?key=<token>?ui=v2: the
+                # SECOND '?' is not a separator, so a raw split on '&' left
+                # ui=v2 glued onto the key and the ui param was never parsed
+                # (v1 rendered). Normalise EVERY literal '?' after the FIRST
+                # one to '&' BEFORE splitting; url-decode per pair AFTER the
+                # split, so an encoded %3F inside a value stays a value.
+                $qNorm = ($target.Substring($qAt + 1)).Replace('?', '&')
+                foreach ($kv in ($qNorm -split '&')) {
                     $eq = $kv.IndexOf('=')
                     if ($eq -gt 0) {
                         $k = [uri]::UnescapeDataString($kv.Substring(0, $eq)).ToLower()
@@ -2352,34 +2357,38 @@ boot();
             return
         }
         if (($path -eq '/') -or ($path -eq '/index.html')) {
-            # [F41 P1] ui selection: default v1; ?ui=v2 opts into the v2 bundle
-            # (staged as ui-v2.html); ?ui=v1 pins v1. Missing v2 file falls back
-            # to v1 fail-closed. No other query value changes the default.
+            # [F41 P1 / F42 §2] ui selection: default v1; ?ui=v2 opts into the
+            # v2 bundle (staged as ui-v2.html); ?ui=v1 pins v1. A missing v2
+            # file is fail-VISIBLE: v1 + the red uiV2MissingBanner, never a
+            # silent v1. No other query value changes the default.
             $html = '<h1>Mission Control UI file missing</h1>'
             $uiSel = ''
             try { if ($parts.query -and $parts.query.ContainsKey('ui')) { $uiSel = [string]$parts.query['ui'] } } catch { }
             $wantV2 = $script:UiV2Default -or ($uiSel -eq 'v2')
             if ($uiSel -eq 'v1') { $wantV2 = $false }
             $uiFile = $script:UiPath
-            $banner = ''
-            $missingV2 = $false
+            # [F42 §2] fail-VISIBLE v2: a ui=v2 request with ui-v2.html NOT
+            # staged must never fall back to v1 silently. Serve v1 plus an
+            # injected top red banner (HTTP 200) and log the same text. The
+            # banner carries no key/token material.
+            $v2Missing = $false
             if ($wantV2) {
-                if (Test-Path -LiteralPath $script:UiV2Path) {
-                    $uiFile = $script:UiV2Path
-                } else {
-                    $missingV2 = $true
-                    $banner = '<div style="background:#b00;color:#fff;padding:12px;font-family:sans-serif;font-weight:bold;text-align:center;">ui-v2.html not staged in this run - main.yml stage step failed; re-dispatch or check CI</div>'
-                    Write-Host '[F42] ui-v2.html missing - banner injected; ui=v2 requested; main.yml stage step failed'
-                }
+                if (Test-Path -LiteralPath $script:UiV2Path) { $uiFile = $script:UiV2Path }
+                else { $v2Missing = $true }
             }
             try { $html = [System.IO.File]::ReadAllText($uiFile, [System.Text.Encoding]::UTF8) } catch { }
-            if ($missingV2 -and $html) { $html = $banner + $html }
             $ip = ''; $tg = ''
             if ($cfg) {
                 $ip = [string]$cfg.rdpIp
                 $tg = [string]$cfg.mirrorIndexUrl
             }
             $html = $html.Replace('__IP__', $ip).Replace('__TELEGRAPH__', $tg)
+            if ($v2Missing) {
+                $v2BannerText = 'ui-v2.html not staged in this run - main.yml stage step failed; re-dispatch or check CI'
+                $v2Banner = '<div id="uiV2MissingBanner" role="alert" style="position:sticky;top:0;z-index:99999;display:block;width:100%;box-sizing:border-box;background:#7f1d1d;color:#fff;font:600 13px/1.5 system-ui,sans-serif;text-align:center;padding:8px 12px">' + $v2BannerText + '</div>'
+                $html = $html -replace '(?i)(<body[^>]*>)', ('$1' + $v2Banner)
+                Write-Host ('[F42] V2-MISSING: ' + $v2BannerText + ' (v1 served with red banner; no key/token logged)')
+            }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'text/html; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes($html))
             return
         }

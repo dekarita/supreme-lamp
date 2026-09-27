@@ -471,7 +471,6 @@ main{max-width:1280px !important}
 <header class="topbar glass tier-bar" id="topbar">
   <div class="topbar-main">
     <div class="brand"><span class="brand-dot" aria-hidden="true"></span><svg class="ic brand-ic" aria-hidden="true"><use href="#i-activity"/></svg><h1>RDP Mission Control</h1></div>
-    <a id="v2Preview" href="#" style="display:inline-flex;align-items:center;padding:.35rem .7rem;border-radius:999px;background:var(--glass-bg);border:var(--glass-edge);color:var(--ink);font-size:.833rem;text-decoration:none;margin-left:.5rem;">Preview v2 UI</a>
     <div class="chip-row" role="status" aria-live="polite" id="topbarChips">
       <span class="chip" id="pillConn" data-ic="activity" title="Actual result of the last data fetch"><svg class="ic" aria-hidden="true"><use href="#i-activity"/></svg><i class="dot"></i><span>connection: live</span></span>
       <span class="chip" id="pillMirror" data-ic="database" title="Mirror ON only when mirroring was enabled AND the watcher heartbeat is under 15s old"><svg class="ic" aria-hidden="true"><use href="#i-database"/></svg><i class="dot"></i><span>mirror: ON</span></span>
@@ -480,6 +479,7 @@ main{max-width:1280px !important}
       <span class="chip" id="pillClock" data-ic="clock" title="Server-side timestamp of the data below"><svg class="ic" aria-hidden="true"><use href="#i-clock"/></svg><i class="dot"></i><span>clock: --</span></span>
     </div>
     <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+      <a id="v2PreviewLink" class="btn" href="#" rel="noopener" title="Preview the v2 dashboard (opt-in; v1 stays the default)" data-v2-preview="1"><svg class="ic" aria-hidden="true"><use href="#i-zap"/></svg>Preview v2 UI</a>
       <button id="themeToggle" class="theme-toggle" type="button" aria-pressed="false" aria-label="Toggle light/dark theme" title="Theme: dark or light"><svg class="ic" aria-hidden="true"><use href="#i-sun"/></svg><span id="themeLabel">dark</span></button>
       <button id="textScaleToggle" class="txt-toggle" type="button" aria-pressed="false" aria-label="Accessibility size" title="Accessibility size: Comfort (15px) / Large (17px)"><svg class="ic" aria-hidden="true"><use href="#i-type"/></svg><span id="textScaleLabel">Aa</span></button>
     </div>
@@ -2863,5 +2863,20 @@ try{
 })();
 </script>
 
-<script>(function(){var a=document.getElementById("v2Preview");if(a){try{var u=new URL(location.href);u.searchParams.set("ui","v2");a.href=u.toString();}catch(e){}}})();</script></body>
+<script>
+// [F42 §3] v2 preview link builder. NEVER hand-concatenate '?...ui=v2' onto a
+// location that may ALREADY carry a query - on '/?key=<token>' that produced
+// '/?key=<token>?ui=v2', whose second '?' is not a separator, so the ui param
+// was never parsed and v1 rendered. URLSearchParams.set inserts the correct
+// separator ('&' when a query exists, '?' otherwise) and keeps the dash key.
+function v2PreviewHref(base){try{var raw=String(base||location.href);var q=raw.indexOf('?');if(q>=0){raw=raw.slice(0,q+1)+raw.slice(q+1).replace(/\?/g,'&');}var u=new URL(raw);u.searchParams.set('ui','v2');return u.toString();}catch(_){return '?ui=v2';}}
+try{window.ghrdpV2PreviewHref=v2PreviewHref;}catch(_){}
+(function(){
+  var a=document.getElementById('v2PreviewLink');
+  if(!a)return;
+  try{a.setAttribute('href',v2PreviewHref());}catch(_){}
+})();
+</script>
+
+</body>
 </html>

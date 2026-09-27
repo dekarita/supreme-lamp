@@ -1678,6 +1678,15 @@ jobs:
               exit 1
           }
           . (Join-Path $root 'ghrdp-lib.ps1')
+          # [F42 §4] STAGING ASSERT: ui/dist/index.html must have landed as
+          # C:\ghrdp\ui-v2.html. A missing / truncated v2 artifact used to be a
+          # SILENT v1-forever (/?ui=v2 rendered v1 with no signal). Loud halt
+          # beats silent v1 forever - fail THIS dispatch instead of guessing.
+          $v2p = Join-Path $root 'ui-v2.html'
+          if (-not (Test-Path -LiteralPath $v2p)) { throw 'ui-v2.html staging failed - build artifact missing' }
+          $v2len = (Get-Item -LiteralPath $v2p).Length
+          if ($v2len -le 51200) { throw ('ui-v2.html staging failed - build artifact missing (only ' + $v2len + ' bytes, need > 50KB)') }
+          Write-Host ('[f42] ui-v2.html staged OK: ' + $v2len + ' bytes')
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $ip = ''
           $dns = ''
