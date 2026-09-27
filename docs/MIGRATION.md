@@ -874,3 +874,79 @@ through to a silent `mstsc`.
 artifact, `t=`-only ticket links, NLA/CredSSP/cert validation untouched,
 no credential deletion by tooling, no public exposure. The physical
 click-through (fullscreen + usage ticking) stays user-verified.
+
+## F37: RDP telescope — self-explaining observability (2026-09-27)
+
+One module, `payloads/rdp-telescope.ps1`, answers "why is RDP not up?" with
+evidence instead of interpretation. Every consumer (lab, server, launcher)
+renders the SAME fields, so a verdict cannot drift from the data that produced
+it.
+
+### Stages and what each one proves
+
+| stage | evidence | proves |
+| --- | --- | --- |
+| `dns` | ip, dnsSource | the tailnet name resolves to a routable address |
+| `tcp` | connected, rttMs | the RDP port is open at the network layer |
+| `x224`/`tls` | protocol, cipher, servedThumb, chainStatus | TLS actually negotiated and **which** cert answered |
+| `cred` | scope, targetFound, userName | the stored TERMSRV entry the handshake will use |
+| `logon` | authStatus, logonType, logonId | 4624/4625 says whether the session got in |
+| `schannel` | 36870/36871/36888/12018 with source/line | the OS's own TLS story for this handshake |
+| `listener` | boundThumb, inStore, hasKey, container, aclSids | the server side is capable of serving the pinned cert |
+
+The TLS probe uses a permissive validation callback that RECORDS the remote
+certificate — a chain failure is data, not a reason to see nothing — and never
+relaxes anything a real client enforces.
+
+### Death-point rule
+
+`failureAt` is derived once, in the module, from `fatalStages` (dns → tcp → tls →
+x224/tls-cert/tls-eku → cred → logon → listener): the first fatal stage is the
+one actionable fix the UI states. Observational reds (`schannel` events, a
+permissive-callback warning) travel as `probeWarn` and can never manufacture a
+death point. Nothing outside the module re-implements the mapping; the workflow
+only copies `$f37TelFields.deathPoint`.
+
+### Scope decision: what the telescope may NOT do
+
+* **Credentials are the client's property.** The server/runner face runs the
+  telescope with `-SkipCred`, the module stamps the skipped stage
+  `scope='client-only'`, and the launcher's `diag` verb reports the client-side
+  cred stage. The runner therefore never has a reason to read another user's
+  credential store, and the `cred` stage can never go red on the runner for a
+  reason the runner cannot fix. The telescope itself never touches password
+  bytes: read-back is metadata only (`credEnumerate` names, `cmdkey /list`
+  output), and a read-back failure on the runner face is reported
+  informationally rather than as a fatal stage.
+* **No credential-UI automation** (no typing, no clicking, no dialog driving) —
+  the telescope only observes what the OS already recorded.
+* **No NLA weakening, no client trust installs, no credentials in URLs/logs.**
+  `servedThumb`/`boundThumb` are hashes; nothing secret is ever emitted.
+* A logon window with **no** 4624/4625 at all is informational (audit policy may
+  not logon-log this session); a 4625 in the window stays fatal.
+
+### Windows PowerShell 5.1 hardening (runner reality)
+
+The runner server is started with `powershell.exe` (5.1), while the lab and the
+provisioning paths run pwsh 7. Two 5.1-only gaps were closed in the module:
+
+1. `System.Security.Cryptography.X509Certificates` / `.Cng` are not
+   type-loaded in 5.1, so `Initialize-RdpTelescopeKeyTypes` warms them with a
+   guarded `LoadWithPartialName` and records the loader outcome in
+   `listener.typesLoader`.
+2. Key resolution falls back to `certutil -store` (which prints the CNG/CAPICOM
+   container name) when the typed path yields nothing, so
+   `Resolve-RdpTelescopeKeyFile` still finds the file and `aclSids` still lists
+   the ACEs — including the NETWORK SERVICE grant the live host was missing.
+
+Failures are typed, never silent: `deriveError`, `listener.why`,
+`listener.keyTypedError` and `tls.why` name the exact reason, and the lab prints
+the decisive fields first (`[Z] …`) because GitHub caps error annotations.
+
+### Lab contract
+
+Cell Z passes only when the printed telescope shows `servedThumb == boundThumb`,
+an OK handshake, no fatal stage, and an ACL that includes the service account;
+the lab certificate must carry the ServerAuth EKU and SANs for `localhost` and
+the machine name. A red lab blocks the merge — the telescope's job is to say
+which single stage to fix.

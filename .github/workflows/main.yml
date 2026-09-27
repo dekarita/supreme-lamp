@@ -2029,7 +2029,10 @@ jobs:
           $f37TelFields = $null
           try {
               . (Join-Path $env:GITHUB_WORKSPACE 'payloads/rdp-telescope.ps1')
-              $f37Tel = Invoke-RdpTelescope -Fqdn $dnsName -Src 'live' -Local -Ip '127.0.0.1' -ExpectedThumb $certThumb -SkipLogon
+              # -SkipCred: this probe runs on the RUNNER (the listener face). The
+              # stored TERMSRV target is the CLIENT's stage - evaluating it here
+              # stamped a false deathPoint=credssp onto a healthy host.
+              $f37Tel = Invoke-RdpTelescope -Fqdn $dnsName -Src 'live' -Local -Ip '127.0.0.1' -ExpectedThumb $certThumb -SkipLogon -SkipCred
               $f37TelLines = @($f37Tel.lines)
               $f37TelFields = Get-RdpTelescopeFields -Telescope $f37Tel
               Write-RdpTelescopeSummary -Telescope $f37Tel -Title 'F37 telescope (live runner, listener face)' -SummaryPath $S | Out-Null
@@ -2079,6 +2082,32 @@ jobs:
                   container = $(if ($f37TelFields) { [string]$f37TelFields.container } else { '' })
                   schannelTail = $(if ($f37TelFields) { @($f37TelFields.schannelTail) } else { @() })
                   schannelWhy = $(if ($f37TelFields) { [string]$f37TelFields.schannelWhy } else { '' })
+                  # [F37 §4] the CAUSE fields the SERVER CONN LOG row renders:
+                  # without them the row could only say aclRead=NO with no name
+                  # for the key file, the EKU or the stage that is red.
+                  aclOk = $(if ($f37TelFields) { [bool]$f37TelFields.aclOk } else { $false })
+                  inStore = $(if ($f37TelFields) { [bool]$f37TelFields.inStore } else { $false })
+                  hasKey = $(if ($f37TelFields) { [bool]$f37TelFields.hasKey } else { $false })
+                  hasServerAuth = $(if ($f37TelFields) { [bool]$f37TelFields.hasServerAuth } else { $false })
+                  eku = $(if ($f37TelFields) { @($f37TelFields.eku) } else { @() })
+                  san = $(if ($f37TelFields) { @($f37TelFields.san) } else { @() })
+                  keyFileFound = $(if ($f37TelFields) { [bool]$f37TelFields.keyFileFound } else { $false })
+                  containerKind = $(if ($f37TelFields) { [string]$f37TelFields.containerKind } else { '' })
+                  containerPath = $(if ($f37TelFields) { [string]$f37TelFields.containerPath } else { '' })
+                  keyFilePathSource = $(if ($f37TelFields) { [string]$f37TelFields.keyFilePathSource } else { '' })
+                  keyDirHits = $(if ($f37TelFields) { @($f37TelFields.keyDirHits) } else { @() })
+                  keyDirSample = $(if ($f37TelFields) { @($f37TelFields.keyDirSample) } else { @() })
+                  keyTypedError = $(if ($f37TelFields) { [string]$f37TelFields.keyTypedError } else { '' })
+                  typesLoader = $(if ($f37TelFields) { [string]$f37TelFields.typesLoader } else { '' })
+                  protocol = $(if ($f37TelFields) { [string]$f37TelFields.protocol } else { '' })
+                  cipher = $(if ($f37TelFields) { [string]$f37TelFields.cipher } else { '' })
+                  failureAt = $(if ($f37TelFields) { [string]$f37TelFields.failureAt } else { '' })
+                  tlsWhy = $(if ($f37TelFields) { [string]$f37TelFields.tlsWhy } else { '' })
+                  listenerWhy = $(if ($f37TelFields) { [string]$f37TelFields.listenerWhy } else { '' })
+                  redStages = $(if ($f37TelFields) { @($f37TelFields.redStages) } else { @() })
+                  fatalStages = $(if ($f37TelFields) { @($f37TelFields.fatalStages) } else { @() })
+                  deriveError = $(if ($f37TelFields) { [string]$f37TelFields.deriveError } else { 'telescope failed before derivation' })
+                  credScope = 'client-only'
                   lines = @($f37TelLines)
               }
               nla = $nla
@@ -4651,6 +4680,29 @@ jobs:
                           container = [string]$f37F.container
                           schannelTail = @($f37F.schannelTail)
                           schannelWhy = [string]$f37F.schannelWhy
+                          aclOk = [bool]$f37F.aclOk
+                          inStore = [bool]$f37F.inStore
+                          hasKey = [bool]$f37F.hasKey
+                          hasServerAuth = [bool]$f37F.hasServerAuth
+                          eku = @($f37F.eku)
+                          san = @($f37F.san)
+                          keyFileFound = [bool]$f37F.keyFileFound
+                          containerKind = [string]$f37F.containerKind
+                          containerPath = [string]$f37F.containerPath
+                          keyFilePathSource = [string]$f37F.keyFilePathSource
+                          keyDirHits = @($f37F.keyDirHits)
+                          keyDirSample = @($f37F.keyDirSample)
+                          keyTypedError = [string]$f37F.keyTypedError
+                          typesLoader = [string]$f37F.typesLoader
+                          protocol = [string]$f37F.protocol
+                          cipher = [string]$f37F.cipher
+                          failureAt = [string]$f37F.failureAt
+                          tlsWhy = [string]$f37F.tlsWhy
+                          listenerWhy = [string]$f37F.listenerWhy
+                          redStages = @($f37F.redStages)
+                          fatalStages = @($f37F.fatalStages)
+                          deriveError = [string]$f37F.deriveError
+                          credScope = 'client-only'
                           lines = @($f37Tel.lines)
                       }
                       $cfgT = [System.IO.File]::ReadAllText($CfgPath) | ConvertFrom-Json
@@ -4659,7 +4711,7 @@ jobs:
                       $cfgT | Add-Member -NotePropertyName rdpListener -NotePropertyValue $rlT -Force
                       [System.IO.File]::WriteAllText($CfgPath, ($cfgT | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
                       $f37S = $env:GITHUB_STEP_SUMMARY
-                      Write-Host ('[F37] keep-alive telescope: deathPoint=' + $f37F.deathPoint + ' bound=' + $f37F.boundThumb + ' served=' + $f37F.servedThumb + ' aclRead=' + $f37F.aclRead + ' drift=' + $f37F.bindDrift)
+                      Write-Host ('[F37] keep-alive telescope: deathPoint=' + $f37F.deathPoint + ' bound=' + $f37F.boundThumb + ' served=' + $f37F.servedThumb + ' aclRead=' + $f37F.aclRead + ' drift=' + $f37F.bindDrift + ' fatal=[' + (@($f37F.fatalStages) -join ',') + '] red=[' + (@($f37F.redStages) -join ',') + ']' + $(if ([string]$f37F.deriveError) { ' deriveError=' + [string]$f37F.deriveError } else { '' }))
                       if ($f37S -and ($f37F.bindDrift -or $f37F.deathPoint -ne 'none')) {
                           # A red telescope prints ITSELF into the summary, first
                           # occurrence only (the tick runs every 60s).

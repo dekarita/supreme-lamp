@@ -583,6 +583,169 @@ test('F37-24 every runtime the SERVER loads stays Windows PowerShell 5.1 safe', 
   assert.ok(!/(pass|pwd|secret|ticket|token)/i.test(fn), 'the trace id must never be derived from a credential');
 });
 
+// ---------------------------------------------------------------------------
+// §4 SCOPE: the runner face must never be red for a client-owned fact
+// ---------------------------------------------------------------------------
+test('F37-25 the runner face skips the client-owned cred stage and SAYS why', () => {
+  const blk = srv.slice(srv.indexOf('# [F37 §4 telescope-begin]'), srv.indexOf('# [F37 §4 telescope-end]'));
+  assert.match(blk, /Invoke-RdpTelescope -Fqdn \$Fqdn -ExpectedThumb \$ExpectedThumb -Src \$Src -Local -Ip '127\.0\.0\.1' -SkipCred/,
+    'the live runner still evaluates the CLIENT-owned cred stage (a healthy host reads as credssp)');
+  assert.ok(blk.includes("credScope   = 'client-only'"), 'the runner sample does not state why it carries no cred line');
+  // the module makes the runner face informational even if a caller forgets
+  assert.ok(mod.includes('[switch]$Informational'), 'the cred stage has no runner-face (informational) mode');
+  assert.ok(mod.includes('runner face: no stored TERMSRV target'), 'an absent client credential on the runner is not named as a scope fact');
+  assert.ok(mod.includes('-Informational:$Local'), 'Invoke-RdpTelescope does not mark the runner face informational');
+  // EVERY runner-side caller is runner-scoped
+  assert.ok(main.includes("-ExpectedThumb $certThumb -SkipLogon -SkipCred"), 'the live F17 probe still evaluates the cred stage on the runner');
+  assert.ok(main.includes("-Src 'keepalive' -Local -Ip '127.0.0.1' -SkipLogon -SkipCred"), 'the keep-alive tick lost its runner scope');
+  // the lab proves the scope on the real runner, and keeps the client verdict real
+  const z = lab.slice(lab.indexOf('Z: F37 telescope - module fields'), lab.indexOf('# [F19 §5] LAB PROOF'));
+  assert.ok(z.includes("'module-scope'"), 'the lab never proves the runner/client cred scope split');
+  assert.ok(z.includes("credScope -ne 'client-only'"), 'the lab does not require the runner sample to name its scope');
+  assert.ok(z.includes('runner-scope'), 'the lab does not fail when a cred line reaches the runner sample');
+});
+
+test('F37-26 an absent RDP logon is INFORMATIONAL; only a rejection or an unreadable log is red', () => {
+  const lg = mod.slice(mod.indexOf('function Get-RdpTelescopeLogon'), mod.indexOf('function Get-RdpTelescopeSchannel'));
+  assert.ok(lg.includes('$newestReject'), 'the logon stage does not identify the newest event (a rejection is the only fault it owns)');
+  assert.ok(lg.includes('informational: nobody has logged on yet'), 'an empty logon window is not named as informational');
+  assert.ok(lg.includes('RDP logon rejected: newest event is a 4625'), 'a 4625 rejection is not named');
+  assert.ok(!lg.includes("-Ok ([bool]($id -eq '4624'))"), 'the logon stage still paints an empty window red (false deathPoint=logon on every healthy runner)');
+  assert.ok(lg.includes('Security log unreadable: '), 'an unreadable Security log must stay a named fault');
+  // the death-point vocabulary keeps logon reachable for a REAL rejection
+  assert.ok(DEATHS.includes('logon'), 'the logon death point disappeared');
+});
+
+test('F37-27 probeError is the LISTENER FACE; evidence travels as probeWarn (and neither hand-rolls the format)', () => {
+  const blk = srv.slice(srv.indexOf('# [F37 §4 telescope-begin]'), srv.indexOf('# [F37 §4 telescope-end]'));
+  assert.ok(blk.includes("'telescope red: '") && blk.includes("'telescope evidence: '"),
+    'the runner tick does not separate a fatal stage from evidence');
+  assert.match(blk, /@\('tcp', 'tls', 'listener'\) -contains \[string\]\$f37o\.stage/,
+    'the fatal-stage set is not the listener face');
+  assert.ok(blk.includes('ConvertFrom-Json'), 'the classification must read lines through JSON, never a hand-rolled match');
+  assert.ok(!blk.includes('"ok":false'), 'the runner block matches on the wire format by hand');
+  assert.ok(blk.includes('probeWarn   = [string]$script:F37TelLastWarn'), 'probeWarn never reaches the persisted sample');
+  const col = blk.slice(blk.indexOf('function Get-RdpListenerTelescopeState'));
+  assert.ok(col.includes('probeWarn'), 'native-status does not serve the evidence line');
+  assert.ok(ui.includes('tc.probeWarn'), 'the row cannot show the runner evidence line');
+});
+
+test('F37-28 a derivation fault NAMES itself and the cause fields reach every surface', () => {
+  assert.ok(mod.includes("$out.deriveError = ('field derivation failed: '"), 'the shared derivation swallows its own fault');
+  assert.ok(mod.includes('redStages = @(); fatalStages = @(); deriveError ='), 'the derivation does not report which stages are red');
+  const blk = srv.slice(srv.indexOf('# [F37 §4 telescope-begin]'), srv.indexOf('# [F37 §4 telescope-end]'));
+  for (const f of ['deriveError', 'redStages', 'fatalStages', 'keyFileFound', 'containerKind', 'keyFilePathSource', 'keyTypedError', 'typesLoader', 'hasServerAuth', 'inStore', 'hasKey', 'aclOk', 'listenerWhy']) {
+    assert.ok(blk.includes(f), 'the runner sample drops ' + f + ' (the row/annotation could not name the cause)');
+  }
+  assert.ok(blk.includes("$deriveThrown = ('derivation threw: '"), 'a thrown derivation is still silent');
+  for (const f of ['keyFileFound', 'containerKind', 'keyFilePathSource', 'hasServerAuth', 'deriveError', 'fatalStages', 'redStages', 'keyTypedError', 'typesLoader']) {
+    assert.ok(main.includes(f), 'the workflow telescope stamp drops ' + f);
+  }
+  for (const f of ['deriveError', 'keyTypedError', 'fatalStages', 'typesLoader']) {
+    assert.ok(ui.includes(f), 'the SERVER CONN LOG row cannot render ' + f);
+  }
+});
+
+test('F37-29 the key resolver survives Windows PowerShell 5.1 (assembly load + certutil fallback)', () => {
+  const res = mod.slice(mod.indexOf('function Resolve-RdpTelescopeKeyFile'), mod.indexOf('function Get-RdpTelescopeListener'));
+  assert.ok(mod.includes('function Initialize-RdpTelescopeCryptoTypes'), 'the 5.1 crypto-type loader is missing');
+  assert.ok(mod.includes("'System.Security.Cryptography.X509Certificates'") && mod.includes("'System.Security.Cryptography.Cng'"),
+    'the loader does not load the X509/Cng assemblies 5.1 leaves unloaded');
+  assert.ok(mod.includes('LoadWithPartialName'), 'the loader has no .NET Framework path');
+  assert.ok(res.includes('Initialize-RdpTelescopeCryptoTypes'), 'the resolver never calls the loader');
+  assert.ok(res.indexOf('Initialize-RdpTelescopeCryptoTypes') < res.indexOf('RSACertificateExtensions'),
+    'the loader runs AFTER the typed call it exists to make possible');
+  assert.ok(res.includes('certutil.exe -store -v My $Certificate.Thumbprint'), 'the resolver has no provider-independent container source');
+  assert.ok(res.includes("Key Container\\s*=") || res.includes('Key Container'), 'the certutil container name is not parsed');
+  assert.ok(res.includes("'certutil-candidate'"), 'a certutil-resolved path is not reported as such');
+  assert.ok(res.includes('$out.typedError'), 'a typed-resolution fault is not carried into the evidence');
+  assert.ok(mod.includes("'keyTypedError'") && mod.includes("'typesLoader'"), 'the listener allowlist drops the resolver evidence');
+  assert.ok(mod.includes('typedError='), 'the NOT FOUND message does not carry the resolver evidence');
+});
+
+test('F37-30 the death point cannot blame the EKU when nothing is bound', () => {
+  const dp = mod.slice(mod.indexOf('function Get-RdpTelescopeDeathPoint'), mod.indexOf('function Invoke-RdpTelescope'));
+  assert.match(dp, /\[bool\]\$listenerObj\.inStore -and \$listenerObj\.PSObject\.Properties\['hasServerAuth'\]/,
+    'a listener with NO certificate still resolves tls-eku (the cause is "nothing bound")');
+  assert.ok(dp.includes("if ($listenerObj -and $listenerObj.PSObject.Properties['boundThumb'] -and -not [string]$listenerObj.boundThumb) { return 'tls-cert' }"),
+    'an unbound listener does not name tls-cert');
+  assert.ok(dp.indexOf("return 'tls-eku'") < dp.indexOf("$listenerObj.boundThumb) { return 'tls-cert' }"),
+    'a served-certificate EKU fault must outrank the unbound-listener case');
+  assert.ok(dp.indexOf("return 'tls-cert' }") < dp.indexOf("return 'credssp'"), 'the listener verdict must outrank the client cred stage');
+  for (const d of ['dns', 'tcp', 'tls-cert', 'tls-chain', 'tls-eku', 'name-mismatch', 'credssp', 'logon', 'acl', 'none']) {
+    assert.ok(DEATHS.includes(d), 'the death-point vocabulary lost ' + d);
+  }
+});
+
+test('F37-31 a NEUTRALIZED client beacon is not a stage verdict (executed)', () => {
+  const ctx = timelineContext();
+  const s = sample({
+    client: [
+      { stage: 'dns', ok: true, slug: 'telescope-dns-ok' },
+      { stage: 'tcp', ok: true, slug: 'telescope-tcp-ok' },
+      { stage: 'tls', ok: false, slug: 'telescope-unparsed' },
+      { stage: 'cred', ok: true, slug: 'telescope-cred-ok' }
+    ]
+  });
+  const tl = ctx.telescopeTimeline(s, Date.now());
+  assert.strictEqual(tl.deathPoint, 'none', 'a beacon the allowlist neutralized became a death point');
+  const seg = tl.segments.find(x => x.src === 'client' && x.stage === 'tls');
+  assert.strictEqual(seg.ok, null, 'a neutralized beacon must render as unknown, not red');
+  assert.match(seg.detail, /neutralized by the server allowlist/);
+  ctx.paintTelescopeTimeline(s);
+  assert.match(ctx.els.telescopeSummary.textContent, /^ALL GREEN/);
+});
+
+test('F37-32 the lab gives the client diag a stored target and fixtures the CLEAN sample', () => {
+  const z = lab.slice(lab.indexOf('Z: F37 telescope - module fields'), lab.indexOf('# [F19 §5] LAB PROOF'));
+  assert.ok(z.includes('cmdkey.exe /generic:TERMSRV/$fqdn /user:labuser /pass:LABDUMMY-win-9876'),
+    'the client cred stage would be red on a healthy path (no stored target planted for the diag)');
+  assert.ok(z.includes('cmdkey.exe /delete:TERMSRV/$fqdn'), 'the lab leaves its dummy credential behind');
+  assert.ok(z.includes("'telescope-cred-ok'"), 'the lab does not require the client cred stage to be green');
+  assert.ok(z.includes('$nsClean'), 'the timeline fixture is not captured from a clean sample');
+  const cleanIdx = z.indexOf('f37-native-status.json');
+  const secretIdx = z.indexOf('P@ssw0rd-lab-SECRET-9876');
+  assert.ok(cleanIdx > 0 && secretIdx > 0 && cleanIdx < secretIdx,
+    'the fixture must be captured BEFORE the allowlist negative posts a neutralized beacon under the same trace');
+});
+
+test('F37-33 the forensics budget is spent on the DECISIVE evidence first (10-annotation cap)', () => {
+  const q = lab.slice(lab.indexOf('Q: failure forensics'), lab.indexOf('G: setup-time'));
+  assert.ok(q.includes('10-annotation cap') || q.includes('FIRST 10 ::error::'), 'the annotation cap is not documented where it is handled');
+  assert.ok(q.includes('Flush 9'), 'the forensics step can still exceed the cap and lose the decisive line');
+  const cls = q.indexOf('CLASSIFICATION:');
+  const sum = q.indexOf('RUNNER-SUMMARY:');
+  const now = q.indexOf("'telescope-now'");
+  assert.ok(cls > 0 && sum > 0 && now > 0, 'a forensics anchor is missing');
+  assert.ok(cls < sum && sum < now, 'the failing cell verdict must be emitted before the runner state, and both before the re-run');
+  for (const f of ['fatalStages', 'deriveError', 'keyTypedError', 'credScope', 'aclSids']) {
+    assert.ok(q.includes(f), 'the runner summary drops ' + f + ' (the decisive field would be invisible)');
+  }
+  assert.ok(q.includes('Format-RdpTelescopeDump'), 'forensics no longer re-prints every telescope field');
+});
+
+test('F37-34 every PowerShell surface the runner loads is PARSED in CI and audited locally', () => {
+  // The agent environment has no PowerShell interpreter, so a syntax error in
+  // the module used to cost a whole Windows lab run before it was visible. Two
+  // lanes now cover it: the windows-native parser list (real Parser::ParseFile)
+  // and a structural audit the ubuntu gate runs (braces/here-strings/dangling
+  // catch over the .ps1 files AND every workflow PowerShell block).
+  const parse = gates.slice(gates.indexOf('Parse native PowerShell scripts'));
+  const list = parse.slice(0, parse.indexOf('foreach ($file in') + 400);
+  for (const f of ['payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1', 'payloads/ghrdp-server.ps1']) {
+    assert.ok(list.includes("'" + f + "'"), 'the windows-native parse list dropped ' + f);
+  }
+  assert.ok(gates.includes('python3 tests/ps-balance-audit.py'), 'the F37 gate does not run the structural audit');
+  assert.ok(fs.existsSync('tests/ps-balance-audit.py'), 'the structural audit script is missing');
+  const audit = fs.readFileSync('tests/ps-balance-audit.py', 'utf8');
+  for (const tok of ['unterminated-here-string', 'dangling-', 'imbalance', 'workflow_blocks']) {
+    assert.ok(audit.includes(tok), 'the structural audit no longer checks ' + tok);
+  }
+  for (const f of ['payloads/rdp-telescope.ps1', 'payloads/ghrdp-server.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1']) {
+    assert.ok(audit.includes("'" + f + "'"), 'the audit does not cover ' + f);
+  }
+});
+
 test('F37-17 (lab fixture) the REAL native-status sample renders green through the shipped renderer', () => {
   const fx = process.env.F37_TEL_FIXTURE;
   if (!fx) { console.log('[F37] no F37_TEL_FIXTURE set - the lab-only live-sample cell is skipped'); return; }

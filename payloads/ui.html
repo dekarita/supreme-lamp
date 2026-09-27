@@ -1840,13 +1840,17 @@ function telescopeClientSegments(s){
   var det=String(it.details||'');
   // the slug carries the failure CLASS (rst-before-cert|chain|name-mismatch|
   // eku) - never guess the class from the human sentence.
+  // [F37 §3] telescope-unparsed means the server's allowlist NEUTRALIZED the
+  // beacon (unknown/secret-shaped details). That is not a stage verdict, so it
+  // must never become a death point - it renders as unknown with the reason.
+  var neutralized=(det==='telescope-unparsed');
   var cls='';
   if(det==='telescope-rst-before-cert') cls='rst-before-cert';
   else if(det==='telescope-chain') cls='chain';
   else if(det==='telescope-name-mismatch') cls='name-mismatch';
   else if(det==='telescope-eku') cls='eku';
-  segs.push({src:'client', stage:stage, label:String(stage), ok:(it.ok===true?true:(it.ok===false?false:null)),
-   detail:(TEL_CLIENT_DETAIL[det]||det||'(no detail)'), slug:det, failureAt:cls, ts:String(it.ts||''), trace:(t||trace)});
+  segs.push({src:'client', stage:stage, label:String(stage), ok:(neutralized?null:(it.ok===true?true:(it.ok===false?false:null))),
+   detail:(neutralized?'beacon neutralized by the server allowlist (not a stage verdict)':(TEL_CLIENT_DETAIL[det]||det||'(no detail)')), slug:det, failureAt:cls, ts:String(it.ts||''), trace:(t||trace)});
  }
  if(!segs.length) segs.push({src:'client', stage:'diag', label:'diag', ok:null, detail:'no client beacons yet - click [RUN DIAG] (read-only: dns/tcp/tls/cred)', ts:'', trace:trace});
  return {segments:segs, trace:trace};
@@ -2105,11 +2109,22 @@ function paintSrvConnLog(s){
    var keyDir=(tel.keyDirSample&&tel.keyDirSample.length)?(' dir='+String(tel.keyDirSample[0]).slice(0,80)):'';
    var keySrc=tel.keyFilePathSource?(' src='+String(tel.keyFilePathSource)):'';
    var keyTxt=(keyBad||keySrc)?((keyBad?' keyFile=NOT-FOUND':' keyFile=ok')+keyKind+keySrc+(keyBad?('('+String(tel.containerPath||tel.container||'?')+keyHits+keyDir+')'):'')):'';
+   // [F37 §4] the row NAMES the fault: which stage is red (fatalStages = the
+   // listener face), why the derivation may be empty (deriveError), and what the
+   // key resolver itself reported (keyTypedError/typesLoader) - so an empty
+   // aclSids can never again read as "nothing wrong" or as an unexplained red.
+   var fatal=(tel.fatalStages&&tel.fatalStages.length)?(' fatalStages='+tel.fatalStages.join(',')):'';
+   var reds=(tel.redStages&&tel.redStages.length)?(' redStages='+tel.redStages.join(',')):'';
+   var dErr=tel.deriveError?(' deriveError='+String(tel.deriveError).slice(0,120)):'';
+   var kErr=tel.keyTypedError?(' keyTypedError='+String(tel.keyTypedError).slice(0,120)):'';
+   var ldr=tel.typesLoader?(' loader='+String(tel.typesLoader).slice(0,60)):'';
+   var lWhy=(tel.listenerWhy&&!tel.aclOk)?(' listenerWhy='+String(tel.listenerWhy).slice(0,160)):'';
+   var warn=(tc&&tc.probeWarn)?(' | evidence: '+String(tc.probeWarn).slice(0,160)):'';
    tb.textContent='telescope['+String(tel.src||'live')+'] bound='+(bt||'(none)')+' served='+(st2||'(none)')+
     ' '+(drift?'DRIFT':'match')+' aclRead='+(tel.aclRead===true?'yes':'NO')+' aclSids='+sids+
-    ' schannel=['+sch+']'+(tel.schannelWhy?(' '+tel.schannelWhy):'')+ekuTxt+keyTxt+
-    ' deathPoint='+String(tel.deathPoint||'none')+(tc?(' (tick '+(tc.alive===true?'alive':'STALE')+')'):'');
-   tb.style.color=(drift||ekuBad||keyBad)?'#f5b7b7':((tel.deathPoint&&tel.deathPoint!=='none')?'#f5d9b7':'');
+    ' schannel=['+sch+']'+(tel.schannelWhy?(' '+tel.schannelWhy):'')+ekuTxt+keyTxt+fatal+reds+dErr+kErr+ldr+lWhy+
+    ' deathPoint='+String(tel.deathPoint||'none')+(tc?(' (tick '+(tc.alive===true?'alive':'STALE')+')'):'')+warn;
+   tb.style.color=(drift||ekuBad||keyBad||(tel.fatalStages&&tel.fatalStages.length)||tel.deriveError)?'#f5b7b7':((tel.deathPoint&&tel.deathPoint!=='none')?'#f5d9b7':'');
   }
  }
  if(tls){

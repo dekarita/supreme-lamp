@@ -877,6 +877,20 @@ jobs:
           foreach ($need in @('telescope-dns-ok', 'telescope-tcp-ok', 'telescope-tls-ok', 'telescope-rst-before-cert', 'telescope-chain', 'telescope-name-mismatch', 'telescope-eku', 'telescope-cred-missing')) {
               if (-not ($tokens.slugs -contains $need)) { Z-Fail 'module-slugs' ('beacon slug missing from the single source of truth: ' + $need) }
           }
+          # [F37 §4] SCOPE PROOF: on the runner face (-Local) a missing stored
+          # TERMSRV target is INFORMATIONAL, never a red path - the runner serves
+          # the listener, it is not the client. Without this the live runner row
+          # was permanently red with a false deathPoint=credssp.
+          $scopeProbe = Invoke-RdpTelescope -Fqdn $fqdn -Src 'lab' -Local -Ip '127.0.0.1' -SkipLogon
+          $scopeCred = @($scopeProbe.lines | Where-Object { $_ -match '"stage":"cred"' })
+          if ($scopeCred.Count -lt 1) { Z-Fail 'module-scope' ('the runner face emitted no cred line at all (it must emit an INFORMATIONAL one) :: ' + (Write-RdpTelescopeSummary -Telescope $scopeProbe -Title 'F37 scope probe')) }
+          $scopeCredOb = $scopeCred[0] | ConvertFrom-Json
+          if ($scopeCredOb.ok -ne $true) { Z-Fail 'module-scope' ('the runner face reports the client-owned cred stage as RED (false death point): ' + [string]$scopeCred) }
+          if ($scopeProbe.deathPoint -eq 'credssp') { Z-Fail 'module-scope' ('a healthy runner face resolved deathPoint=credssp from a client-owned stage') }
+          Write-Host ('[Z] (1a) scope PASS: runner-face cred line is informational (ok=true, credExists=' + [string]$scopeCredOb.credExists + '), deathPoint=' + $scopeProbe.deathPoint)
+          # the same absence on the CLIENT face (no -Local) stays a real verdict
+          $clientCred = (Get-RdpTelescopeCredReadback -Fqdn 'no-such-target-lab-f37.ts.net' -Src 'lab') | ConvertFrom-Json
+          if ($clientCred.ok -ne $false) { Z-Fail 'module-scope' ('the client face no longer reports a missing TERMSRV target as red (the credssp death point would be unreachable)') }
           $probe = Invoke-RdpTelescope -Fqdn $fqdn -Src 'lab' -Local -Ip '127.0.0.1' -SkipLogon -SkipCred
           $dump = Write-RdpTelescopeSummary -Telescope $probe -Title 'F37 lab telescope (module self-run, listener face)'
           $probeTxt = ($probe.lines -join "`n")
@@ -914,11 +928,37 @@ jobs:
           $nsTelTxt = ($ns.telescope | ConvertTo-Json -Compress -Depth 6)
           $nsCollectorTxt = ($ns.telescopeCollector | ConvertTo-Json -Compress -Depth 6)
           if (-not $ns.telescopeCollector.moduleLoaded) { Z-Fail 'runner-module' ('the server did not load the single-source module (module=' + [string]$ns.telescopeCollector.module + ' shell=' + [string]$ns.telescopeCollector.shell + ' probeError=' + [string]$ns.telescopeCollector.probeError + ')') }
-          if ($ns.telescopeCollector.probeError -and -not $ns.telescope.aclSids) { Z-Fail 'runner-telescope-error' ([string]$ns.telescopeCollector.probeError) }
-          if ($ns.telescope.boundThumb -ne $ns.telescope.servedThumb) { Z-Fail 'runner-bind-drift' ('telescope bound=' + $ns.telescope.boundThumb + ' served=' + $ns.telescope.servedThumb + ' - the row would render DRIFT; sample=' + $nsTelTxt) }
-          if (-not $ns.telescope.aclSids -or @($ns.telescope.aclSids).Count -lt 1) { Z-Fail 'runner-acl' ('the live telescope read no key ACL SIDs (aclRead would render NO); listenerLine=' + [string]$ns.telescope.listenerLine + '; tlsLine=' + [string]$ns.telescope.tlsLine + '; probeError=' + [string]$ns.telescopeCollector.probeError) }
+          # [F37 §4] ONE decisive line per failure: every field the row renders,
+          # so a red cell names its own cause from the Checks annotation alone
+          # (runner logs/artifacts are not retrievable from this environment).
+          function Z-Clip([string]$Text, [int]$Max) { if ($Text.Length -gt $Max) { return ($Text.Substring(0, $Max) + '~') } return $Text }
+          # decisive fields first: the annotation is capped at 900 chars, so the
+          # cause has to survive the clip (never the store listing).
+          $zSids = @($ns.telescope.aclSids)
+          $zWhy = ('bound=' + [string]$ns.telescope.boundThumb + ' served=' + [string]$ns.telescope.servedThumb +
+              ' deathPoint=' + [string]$ns.telescope.deathPoint +
+              ' fatal=[' + (@($ns.telescope.fatalStages) -join ',') + '] red=[' + (@($ns.telescope.redStages) -join ',') + ']' +
+              ' deriveError=' + (Z-Clip ([string]$ns.telescope.deriveError) 90) +
+              ' keyFileFound=' + [string]$ns.telescope.keyFileFound + ' kind=' + [string]$ns.telescope.containerKind +
+              ' pathSource=' + [string]$ns.telescope.keyFilePathSource + ' container=' + [string]$ns.telescope.container +
+              ' keyTypedError=' + (Z-Clip ([string]$ns.telescope.keyTypedError) 90) +
+              ' loader=' + (Z-Clip ([string]$ns.telescope.typesLoader) 40) +
+              ' aclRead=' + [string]$ns.telescope.aclRead + ' aclOk=' + [string]$ns.telescope.aclOk + ' aclSids=' + $zSids.Count + '[' + (Z-Clip (($zSids -join ',') ) 90) + ']' +
+              ' inStore=' + [string]$ns.telescope.inStore + ' hasKey=' + [string]$ns.telescope.hasKey + ' hasServerAuth=' + [string]$ns.telescope.hasServerAuth +
+              ' probeError=' + (Z-Clip ([string]$ns.telescopeCollector.probeError) 120) +
+              ' listenerWhy=' + (Z-Clip ([string]$ns.telescope.listenerWhy) 160) +
+              ' tlsWhy=' + (Z-Clip ([string]$ns.telescope.tlsWhy) 120) +
+              ' probeWarn=' + (Z-Clip ([string]$ns.telescopeCollector.probeWarn) 120))
+          if (@($ns.telescope.lines | Where-Object { $_ -match '"stage":"cred"' }).Count -gt 0) { Z-Fail 'runner-scope' ('the runner sample carries a CLIENT-owned cred line (credScope=' + [string]$ns.telescope.credScope + '): ' + $zWhy) }
+          if ($ns.telescope.credScope -ne 'client-only') { Z-Fail 'runner-scope' ('the runner sample does not say why it has no cred line (credScope=' + [string]$ns.telescope.credScope + ')') }
+          if (@($ns.telescope.fatalStages).Count -gt 0) { Z-Fail 'runner-telescope-error' ('a listener-face stage is red on the runner: ' + $zWhy) }
+          if ([string]$ns.telescope.deriveError) { Z-Fail 'runner-derive' ('the shared field derivation named a fault: ' + $zWhy) }
+          if ($ns.telescopeCollector.probeError) { Z-Fail 'runner-telescope-error' ([string]$ns.telescopeCollector.probeError + ' :: ' + $zWhy) }
+          if (-not [string]$ns.telescope.boundThumb) { Z-Fail 'runner-bind-empty' ('nothing is bound to RDP-Tcp in the runner sample (cell R must leave its lab cert bound): ' + $zWhy) }
+          if ($ns.telescope.boundThumb -ne $ns.telescope.servedThumb) { Z-Fail 'runner-bind-drift' ('the row would render DRIFT; ' + $zWhy) }
+          if (-not $ns.telescope.aclSids -or @($ns.telescope.aclSids).Count -lt 1) { Z-Fail 'runner-acl' ('the live telescope read no key ACL SIDs (aclRead would render NO); ' + $zWhy + '; listenerLine=' + [string]$ns.telescope.listenerLine) }
           if (-not $ns.telescopeCollector -or $ns.telescopeCollector.intervalSec -ne 10) { Z-Fail 'runner-tick' ('the lab-only tick shortening was not applied: ' + ($ns.telescopeCollector | ConvertTo-Json -Compress)) }
-          Write-Host ('[Z] (2) live runner row PASS: bound==served=' + $ns.telescope.boundThumb + ' serving=' + $ns.telescope.serving + ' aclRead=' + $ns.telescope.aclRead + ' deathPoint=' + $ns.telescope.deathPoint + ' tick=' + $ns.telescopeCollector.intervalSec + 's module=' + $ns.telescopeCollector.module)
+          Write-Host ('[Z] (2) live runner row PASS: bound==served=' + $ns.telescope.boundThumb + ' serving=' + $ns.telescope.serving + ' aclRead=' + $ns.telescope.aclRead + ' aclSids=' + (@($ns.telescope.aclSids) -join ',') + ' keyFileFound=' + [string]$ns.telescope.keyFileFound + ' kind=' + [string]$ns.telescope.containerKind + ' deathPoint=' + $ns.telescope.deathPoint + ' fatal=[] credScope=' + [string]$ns.telescope.credScope + ' tick=' + $ns.telescopeCollector.intervalSec + 's module=' + $ns.telescopeCollector.module + ' shell=' + [string]$ns.telescopeCollector.shell + $(if ([string]$ns.telescopeCollector.probeWarn) { ' evidence=' + [string]$ns.telescopeCollector.probeWarn } else { '' }))
           # --- (3) CLIENT TELESCOPE: the REAL verb diag beacons every stage --
           $exe = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-rdp-launcher.exe'
           $log = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.log'
@@ -927,6 +967,11 @@ jobs:
           $hostsTxt = ([System.IO.File]::ReadAllText($hostsPath) -split "`r?`n" | Where-Object { $_ -notmatch [regex]::Escape($fqdn) }) -join "`r`n"
           [System.IO.File]::WriteAllText($hostsPath, ($hostsTxt + "`r`n127.0.0.1 $fqdn`r`n"))
           $env:GHRDP_LAB_DNS_ALLOW_LOOPBACK = '1'
+          # [F37 §3] the client cred stage reads the STORED TARGET (metadata
+          # only). Cell R deletes its dummy entry, so plant one for the diag run
+          # and delete it straight after: without it the client timeline is red
+          # at cred on a path that is otherwise healthy (credssp death point).
+          try { & cmdkey.exe /generic:TERMSRV/$fqdn /user:labuser /pass:LABDUMMY-win-9876 | Out-Null } catch { }
           $beforeZ = (@(Get-Content $log -ErrorAction SilentlyContinue) | Measure-Object -Line).Lines
           $p = Start-Process -FilePath $exe -ArgumentList ('ghrdp://diag?server=' + $fqdn + '&user=labuser&port=' + $labPort + '&trace=' + $trace) -PassThru
           if (-not $p.WaitForExit(90000)) { try { Stop-Process -Id $p.Id -Force } catch { }; Z-Fail 'diag-wait' 'the diag verb did not exit within 90s' }
@@ -949,7 +994,16 @@ jobs:
           }
           if (-not (@($mine | Where-Object { $_.details -like 'telescope-dns-*' })).Count) { Z-Fail 'beacon-slug' 'no telescope-dns-* slug under the trace' }
           if (-not (@($mine | Where-Object { $_.details -eq 'telescope-tls-ok' })).Count) { Z-Fail 'beacon-tls' ('the client TLS stage is not green: ' + ($mine | ConvertTo-Json -Compress)) }
+          if (-not (@($mine | Where-Object { $_.stage -eq 'cred' -and $_.details -eq 'telescope-cred-ok' })).Count) { Z-Fail 'beacon-cred' ('the client cred stage is not green although a TERMSRV target is stored (the credssp death point would be a false red): ' + ($mine | ConvertTo-Json -Compress)) }
           Write-Host ('[Z] (3) client telescope PASS: trace=' + $trace + ' beacons=' + ($mine | ForEach-Object { $_.stage + '=' + $_.details } | Sort-Object) )
+          try { & cmdkey.exe /delete:TERMSRV/$fqdn | Out-Null } catch { }
+          # [F37 §5] the TIMELINE FIXTURE is captured BEFORE the allowlist
+          # negative below: that negative deliberately posts a red, neutralized
+          # beacon under the SAME trace, and a neutralized beacon is not a stage
+          # verdict (the renderer says so) - but the fixture must be the clean
+          # real sample the row would have shown a second earlier.
+          $nsClean = Z-Json ($base + '/api/native-status' + $key)
+          [System.IO.File]::WriteAllText((Join-Path $diag 'f37-native-status.json'), ($nsClean | ConvertTo-Json -Depth 12), $utf8)
           # --- (4) ALLOWLIST: a beacon can never carry a secret --------------
           $secret = 'P@ssw0rd-lab-SECRET-9876'
           $body = (@{ verb = 'diag'; trace = $trace; stage = 'tls'; ok = $false; details = ('telescope-tls-ok password=' + $secret) } | ConvertTo-Json -Compress)
@@ -959,7 +1013,8 @@ jobs:
           if (-not (@($nsC.telescopeClient.items | Where-Object { $_.details -eq 'telescope-unparsed' })).Count) { Z-Fail 'beacon-allowlist' 'the malformed beacon was not neutralized to telescope-unparsed' }
           Write-Host '[Z] (4) allowlist PASS: unknown/secret-shaped details => telescope-unparsed, the raw value is never stored or served'
           # --- (5) TIMELINE over the REAL sample (the shipped renderer) ------
-          [System.IO.File]::WriteAllText((Join-Path $diag 'f37-native-status.json'), ($nsC | ConvertTo-Json -Depth 12), $utf8)
+          $zLateCred = @($nsC.telescope.lines | Where-Object { $_ -match '"stage":"cred"' }).Count + @($nsC.rdpListener.telescopeLive.lines | Where-Object { $_ -match '"stage":"cred"' }).Count
+          if ($zLateCred -gt 0) { Z-Fail 'runner-scope-late' ('a cred line appeared in the RUNNER sample after the client diag (the runner face must never evaluate a client-owned stage): count=' + $zLateCred) }
           $env:F37_TEL_FIXTURE = Join-Path $diag 'f37-native-status.json'
           node --test tests/f37-telescope.test.js
           if ($LASTEXITCODE -ne 0) { Z-Fail 'timeline-fixture' 'the shipped timeline renderer did not render the REAL native-status sample green' }
@@ -2333,40 +2388,47 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          # [F37 §2] GitHub keeps only the FIRST 10 ::error:: annotations of a
+          # step, so the forensics budget is spent on purpose: the failing cell's
+          # own classification first, then the RUNNER telescope state that the
+          # dashboard row binds to, then the raw lines. A dropped annotation is
+          # the same red-without-why class this feature exists to kill.
+          $qEv = New-Object System.Collections.ArrayList
           function Emit([string]$Tag, [string]$Text) {
               if (-not $Text) { return }
               $one = ($Text -replace "`r?`n", ' / ')
               if ($one.Length -gt 900) { $one = $one.Substring(0, 900) + ' ...' }
-              Write-Host ('::error::[forensics] ' + $Tag + ' :: ' + $one)
+              [void]$qEv.Add(@{ tag = $Tag; text = $one })
+          }
+          function Flush([int]$Max) {
+              $n = 0
+              foreach ($e in $qEv) {
+                  if ($n -ge $Max) { break }
+                  Write-Host ('::error::[forensics] ' + $e.tag + ' :: ' + $e.text)
+                  $n++
+              }
+              if ($qEv.Count -gt $Max) { Write-Host ('[Q] ' + ($qEv.Count - $Max) + ' further evidence items were dropped by the 10-annotation cap (the decisive ones are above)') }
           }
           $diag = Join-Path $env:GITHUB_WORKSPACE 'de-diag'
+          # (1) the failing cell's own verdict: stage + detail, always first
           if (Test-Path -LiteralPath $diag) {
-              foreach ($f in @(Get-ChildItem -LiteralPath $diag -File -ErrorAction SilentlyContinue | Select-Object -First 12)) {
-                  Emit $f.Name ([System.IO.File]::ReadAllText($f.FullName))
+              foreach ($f in @(Get-ChildItem -LiteralPath $diag -File -Filter '*classification*' -ErrorAction SilentlyContinue)) {
+                  Emit ('CLASSIFICATION:' + $f.Name) ([System.IO.File]::ReadAllText($f.FullName))
               }
           }
-          foreach ($t in @(Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue | Select-Object -First 6)) {
-              $txt = [System.IO.File]::ReadAllText($t.FullName)
-              # the listener + tls lines are the diagnosis; everything else is noise
-              $key = @(($txt -split "`r?`n") | Where-Object { $_ -match '\"stage\":\"(listener|tls)\"' })
-              if ($key.Count -gt 0) { Emit ($t.Name + ':listener/tls') (($key | Select-Object -Last 4) -join ' // ') }
-              Emit $t.Name $txt
-          }
-          # the RUNNER's own persisted sample (the row the dashboard binds to)
-          foreach ($rootDir in @('C:\ghrdp', 'C:\ghrdp-lab-f17', 'C:\ghrdp-lab-f37', 'C:\ghrdp-lab-f19')) {
+          # (2) the RUNNER telescope state - the sample the row/timeline render
+          foreach ($rootDir in @('C:\ghrdp-lab-f37', 'C:\ghrdp-lab-f17', 'C:\ghrdp', 'C:\ghrdp-lab-f19')) {
               $stateFile = Join-Path $rootDir 'rdp-listener-telescope.json'
               if (-not (Test-Path -LiteralPath $stateFile)) { continue }
               try {
                   $st = (Get-Content -Raw -LiteralPath $stateFile) | ConvertFrom-Json
-                  # the DECISIVE fields first: the raw listener/tls lines are what
-                  # the row renders, and they survive the annotation length cap
+                  Emit ('RUNNER-SUMMARY:' + $rootDir) ('deathPoint=' + [string]$st.deathPoint + ' bound=' + [string]$st.boundThumb + ' served=' + [string]$st.servedThumb + ' aclRead=' + [string]$st.aclRead + ' aclOk=' + [string]$st.aclOk + ' aclSids=[' + (@($st.aclSids) -join ',') + '] inStore=' + [string]$st.inStore + ' hasKey=' + [string]$st.hasKey + ' hasServerAuth=' + [string]$st.hasServerAuth + ' keyFileFound=' + [string]$st.keyFileFound + ' kind=' + [string]$st.containerKind + ' pathSource=' + [string]$st.keyFilePathSource + ' container=' + [string]$st.container + ' fatal=[' + (@($st.fatalStages) -join ',') + '] red=[' + (@($st.redStages) -join ',') + '] deriveError=' + [string]$st.deriveError + ' keyTypedError=' + [string]$st.keyTypedError + ' loader=' + [string]$st.typesLoader + ' probeError=' + [string]$st.probeError + ' probeWarn=' + [string]$st.probeWarn + ' credScope=' + [string]$st.credScope + ' scans=' + [string]$st.scans)
                   Emit ('runner-listener:' + $rootDir) ([string]$st.listenerLine)
                   Emit ('runner-tls:' + $rootDir) ([string]$st.tlsLine)
-                  Emit ('runner-acl:' + $rootDir) ('deathPoint=' + [string]$st.deathPoint + ' aclSids=[' + (@($st.aclSids) -join ', ') + '] aclRead=' + [string]$st.aclRead + ' container=' + [string]$st.container + ' pathSource=' + [string]$st.keyFilePathSource + ' keyFileFound=' + [string]$st.keyFileFound)
-                  Emit ('runner-schannel:' + $rootDir) ('ids=[' + (@($st.schannelTail) -join ',') + '] ' + [string]$st.schannelWhy)
-                  Emit ('runner-state:' + $rootDir) ([System.IO.File]::ReadAllText($stateFile))
+                  Emit ('runner-schannel:' + $rootDir) ('ids=[' + (@($st.schannelTail) -join ',') + '] ' + [string]$st.schannelWhy + ' listenerWhy=' + [string]$st.listenerWhy)
               } catch { Emit ('runner-state-unparsed:' + $rootDir) ([System.IO.File]::ReadAllText($stateFile)) }
           }
+          # (3) the telescope as it is NOW (module re-run, every field printed)
           try {
               $mod = Join-Path $env:GITHUB_WORKSPACE 'payloads/rdp-telescope.ps1'
               if (Test-Path -LiteralPath $mod) {
@@ -2377,14 +2439,22 @@ jobs:
                   Emit 'telescope-now' (Format-RdpTelescopeDump -Telescope $tel)
               }
           } catch { Emit 'telescope-now-error' ([string]$_.Exception.Message) }
+          # (4) remaining evidence: cell artifacts, telescope JSONL, server logs
+          if (Test-Path -LiteralPath $diag) {
+              foreach ($f in @(Get-ChildItem -LiteralPath $diag -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -notlike '*classification*' } | Select-Object -First 8)) {
+                  Emit $f.Name ([System.IO.File]::ReadAllText($f.FullName))
+              }
+          }
+          foreach ($t in @(Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue | Select-Object -First 3)) {
+              $txt = [System.IO.File]::ReadAllText($t.FullName)
+              $key = @(($txt -split "`r?`n") | Where-Object { $_ -match '\"stage\":\"(listener|tls)\"' })
+              if ($key.Count -gt 0) { Emit ($t.Name + ':listener/tls') (($key | Select-Object -Last 2) -join ' // ') }
+          }
           try {
-              $ev = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Schannel'; StartTime = (Get-Date).AddMinutes(-30) } -MaxEvents 12 -ErrorAction SilentlyContinue | ForEach-Object { $_.TimeCreated.ToString('o') + ' id=' + $_.Id + ' ' + (($_.Message -split "`r?`n")[0]) })
+              $ev = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Schannel'; StartTime = (Get-Date).AddMinutes(-30) } -MaxEvents 6 -ErrorAction SilentlyContinue | ForEach-Object { $_.TimeCreated.ToString('o') + ' id=' + $_.Id + ' ' + (($_.Message -split "`r`n")[0]) })
               if ($ev.Count -gt 0) { Emit 'schannel-tail' ($ev -join ' // ') }
           } catch { }
-          try {
-              $raw = Get-Content -Raw -LiteralPath (Join-Path 'C:\ghrdp' 'config.json') -ErrorAction SilentlyContinue
-              if ($raw) { Emit 'lab-config' ([string]$raw) }
-          } catch { }
+          Flush 9
           Write-Host '[Q] forensics done'
       - name: "G: setup-time measurement + lab matrix summary"
         if: ${{ always() }}

@@ -662,6 +662,7 @@ $script:F37TelSlugRe = '^telescope-(dns|tcp)-(ok|fail)$|^telescope-tls-(ok|fail)
 $script:F37TelModule = ''
 $script:F37TelScans = 0
 $script:F37TelLastError = ''
+$script:F37TelLastWarn = ''
 $script:F37ClientBeacons = @()
 foreach ($f37cand in @((Join-Path $Root 'rdp-telescope.ps1'), (Join-Path $PSScriptRoot 'rdp-telescope.ps1'))) {
     try {
@@ -694,12 +695,30 @@ function Invoke-F37Telescope {
     }
     try {
         if (-not $Fqdn) { $Fqdn = 'localhost' }
-        $telOut = (Invoke-RdpTelescope -Fqdn $Fqdn -ExpectedThumb $ExpectedThumb -Src $Src -Local -Ip '127.0.0.1')
+        # [F37 §4] -SkipCred: the stored TERMSRV target is the CLIENT's stage.
+        # This host SERVES the listener, so "no stored credential here" is a
+        # scope fact - reporting it red painted every healthy runner sample with
+        # a false death point (credssp) and made the row unreadable.
+        $telOut = (Invoke-RdpTelescope -Fqdn $Fqdn -ExpectedThumb $ExpectedThumb -Src $Src -Local -Ip '127.0.0.1' -SkipCred)
         # Every degraded line must be readable from native-status, never only
-        # from a server log the session cannot fetch.
+        # from a server log the session cannot fetch. probeError is the
+        # LISTENER FACE (tcp/tls/listener): those are the stages that mean the
+        # path this host serves is broken. Schannel events and an informational
+        # logon line are EVIDENCE and travel as probeWarn instead, so a runner
+        # that is serving fine never reads as degraded.
         try {
-            $bad = @($telOut.lines | Where-Object { $_ -match '"ok":false' })
-            if ($bad.Count -gt 0) { $script:F37TelLastError = ('telescope red: ' + [string]$bad[0]) } else { $script:F37TelLastError = '' }
+            # Classified through ConvertFrom-Json (never a hand-rolled match on
+            # the wire format - the module owns the format, this only reads it).
+            $fatal = @(); $warn = @()
+            foreach ($f37l in @($telOut.lines)) {
+                $f37o = $null
+                try { $f37o = ([string]$f37l | ConvertFrom-Json) } catch { }
+                if (-not $f37o) { continue }
+                if ([bool]$f37o.ok) { continue }
+                if (@('tcp', 'tls', 'listener') -contains [string]$f37o.stage) { $fatal += [string]$f37l } else { $warn += [string]$f37l }
+            }
+            if ($fatal.Count -gt 0) { $script:F37TelLastError = ('telescope red: ' + [string]$fatal[0]) } else { $script:F37TelLastError = '' }
+            if ($warn.Count -gt 0) { $script:F37TelLastWarn = ('telescope evidence: ' + [string]$warn[0]) } else { $script:F37TelLastWarn = '' }
         } catch { }
         return $telOut
     } catch {
@@ -737,11 +756,28 @@ function Update-RdpListenerTelescope {
     $script:F37TelScans = [int]$script:F37TelScans + 1
     # ONE derivation, shared with the workflow stamp (module, not a copy).
     $derived = $null
+    $deriveThrown = ''
     if ($script:F37TelModule) {
-        try { $derived = Get-RdpTelescopeFields -Telescope $tel } catch { $derived = $null }
-    }
+        try { $derived = Get-RdpTelescopeFields -Telescope $tel } catch { $deriveThrown = ('derivation threw: ' + $_.Exception.Message) }
+    } else { $deriveThrown = 'module not loaded: no derivation possible' }
     if (-not $derived) {
-        $derived = [pscustomobject]@{ boundThumb = ''; servedThumb = ''; serving = $false; bindDrift = $false; aclRead = $false; aclSids = @(); container = ''; schannelTail = @(); schannelWhy = '' }
+        # A derivation fault is NAMED, never silent: an empty row that claims
+        # nothing is the red-without-why class this feature exists to kill. The
+        # fallback carries EVERY key the state reads, so a consumer can never
+        # mistake "derivation failed" for "the field is absent from the format".
+        if (-not $deriveThrown) { $deriveThrown = 'derivation returned nothing' }
+        $derived = [pscustomobject]@{
+            boundThumb = ''; servedThumb = ''; serving = $false; bindDrift = $false
+            inStore = $false; hasKey = $false; container = ''; aclRead = $false; aclOk = $false
+            hasServerAuth = $false; eku = @(); san = @()
+            keyFileFound = $false; containerKind = ''; keyDirHits = @(); keyDirSample = @(); keyFilePathSource = ''
+            containerPath = ''; keyTypedError = ''; typesLoader = ''
+            aclSids = @(); schannelTail = @(); schannelWhy = ''
+            tlsWhy = ''; listenerWhy = ''
+            logonEventId = ''; logonSub = ''; count4624 = 0; count4625 = 0; logonWhy = ''
+            redStages = @(); fatalStages = @(); deriveError = $deriveThrown
+            deathPoint = [string]$tel.deathPoint; trace = [string]$tel.trace; src = [string]$tel.src
+        }
     }
     $state = [ordered]@{
         ts          = $scanTs
@@ -768,6 +804,34 @@ function Update-RdpListenerTelescope {
         intervalSec = $script:F37TelIntervalSec
         scans       = [int]$script:F37TelScans
         probeError  = [string]$script:F37TelLastError
+        # [F37 §4] the rest of the derived verdict, served verbatim so the row
+        # and any annotation can NAME a fault (key file, EKU, ACL, stage) with
+        # evidence instead of an empty field list. credScope states why this
+        # sample carries no cred line: that stage belongs to the client.
+        probeWarn   = [string]$script:F37TelLastWarn
+        credScope   = 'client-only'
+        deriveError = $(if ([string]$derived.deriveError) { [string]$derived.deriveError } else { [string]$deriveThrown })
+        redStages   = @($derived.redStages)
+        fatalStages = @($derived.fatalStages)
+        inStore     = [bool]$derived.inStore
+        hasKey      = [bool]$derived.hasKey
+        hasServerAuth = [bool]$derived.hasServerAuth
+        eku         = @($derived.eku)
+        san         = @($derived.san)
+        aclOk       = [bool]$derived.aclOk
+        keyFileFound = [bool]$derived.keyFileFound
+        containerKind = [string]$derived.containerKind
+        containerPath = [string]$derived.containerPath
+        keyFilePathSource = [string]$derived.keyFilePathSource
+        keyDirHits  = @($derived.keyDirHits)
+        keyDirSample = @($derived.keyDirSample)
+        keyTypedError = [string]$derived.keyTypedError
+        typesLoader = [string]$derived.typesLoader
+        tlsWhy      = [string]$derived.tlsWhy
+        listenerWhy = [string]$derived.listenerWhy
+        logonEventId = [string]$derived.logonEventId
+        logonSub    = [string]$derived.logonSub
+        logonWhy    = [string]$derived.logonWhy
     }
     try { [System.IO.File]::WriteAllText($StatePath, ($state | ConvertTo-Json -Compress -Depth 6), $script:NoBom) } catch { }
     return $state
@@ -794,6 +858,7 @@ function Get-RdpListenerTelescopeState {
         lastScanAgeSec = $ageSec
         module      = $script:F37TelModule
         probeError  = [string]$script:F37TelLastError
+        probeWarn   = [string]$script:F37TelLastWarn
         shell       = [string]$PSVersionTable.PSVersion.ToString()
         listenerLine = $(if ($state -and $state.PSObject.Properties['listenerLine']) { [string]$state.listenerLine } else { '' })
         moduleLoaded = [bool]($script:F37TelModule)

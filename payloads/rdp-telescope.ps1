@@ -71,7 +71,7 @@ $script:F37TelFields = @{
     cred     = @('credTarget', 'credExists', 'credType', 'credUser')
     logon    = @('eventId', 'logonType', 'sub', 'eventTs', 'count4624', 'count4625')
     schannel = @('schannelIds', 'lastSchannelId', 'lastSchannelTs', 'schannelWhy', 'sinceSec')
-    listener = @('boundThumb', 'servedThumb', 'inStore', 'hasKey', 'container', 'containerKind', 'containerPath', 'keyFilePathSource', 'keyFileFound', 'keyFileCandidates', 'keyDirHits', 'keyDirSample', 'certutilContainer', 'aclSids', 'aclRead', 'aclOk', 'serving', 'hasServerAuth', 'eku', 'san')
+    listener = @('boundThumb', 'servedThumb', 'inStore', 'hasKey', 'container', 'containerKind', 'containerPath', 'keyFilePathSource', 'keyFileFound', 'keyFileCandidates', 'keyDirHits', 'keyDirSample', 'keyTypedError', 'typesLoader', 'certutilContainer', 'aclSids', 'aclRead', 'aclOk', 'serving', 'hasServerAuth', 'eku', 'san')
     beacon   = @('beacon')
 }
 function Get-RdpTelescopeFormatTokens {
@@ -420,7 +420,13 @@ function Get-RdpTelescopeCredReadback {
     # stage cred: does THIS machine hold a stored target for the listener, what
     # TYPE is it and for WHICH user. cmdkey /list prints metadata only - this
     # function never requests, parses or logs a credential blob.
-    param([Parameter(Mandatory)][string]$Fqdn, [string]$User = '', [string]$Trace = '', [string]$Src = '')
+    # [F37 §4] -Informational is the RUNNER FACE: the host that SERVES the
+    # listener is not the client, so "no stored TERMSRV target here" is a fact
+    # about scope, not a fault on the path. Without it every live runner sample
+    # was permanently red (deathPoint=credssp) on a healthy listener - a false
+    # death point is worse than no telescope. The CLIENT telescope (launcher
+    # verb diag) still reports telescope-cred-missing as a real death point.
+    param([Parameter(Mandatory)][string]$Fqdn, [string]$User = '', [string]$Trace = '', [string]$Src = '', [switch]$Informational)
     $target = 'TERMSRV/' + $Fqdn
     $type = ''; $user = $User; $exists = $false
     try {
@@ -431,8 +437,17 @@ function Get-RdpTelescopeCredReadback {
             if ($l -match '(?i)^\s*User:\s*(.+?)\s*$') { $user = $Matches[1] }
         }
         if ($type -match '(?i)generic|domain') { } elseif ($exists) { $type = 'unknown' }
+        if (-not $exists -and $Informational) {
+            return New-RdpTelescopeLine -Stage 'cred' -Ok $true -Why ('runner face: no stored TERMSRV target here (client-owned stage; the client telescope reports telescope-cred-missing) target=' + $target) -Fields @{ credTarget = $target; credExists = $false; credType = $type; credUser = $user } -Trace $Trace -Src $Src
+        }
         return New-RdpTelescopeLine -Stage 'cred' -Ok ([bool]$exists) -Why $(if ($exists) { '' } else { 'no stored target for ' + $target }) -Fields @{ credTarget = $target; credExists = [bool]$exists; credType = $type; credUser = $user } -Trace $Trace -Src $Src
     } catch {
+        # A read-back FAULT is named on both faces, but only the CLIENT face may
+        # go red for it: on the runner this stage is out of scope, and cmdkey
+        # writing to stderr must not be able to paint a healthy listener red.
+        if ($Informational) {
+            return New-RdpTelescopeLine -Stage 'cred' -Ok $true -Why ('runner face: credential read-back unavailable (' + $_.Exception.Message + ') - client-owned stage') -Fields @{ credTarget = $target; credExists = $false; credType = $type; credUser = $user } -Trace $Trace -Src $Src
+        }
         return New-RdpTelescopeLine -Stage 'cred' -Ok $false -Why ('credential read-back failed: ' + $_.Exception.Message) -Fields @{ credTarget = $target; credExists = $false; credType = $type; credUser = $user } -Trace $Trace -Src $Src
     }
 }
@@ -450,6 +465,8 @@ function Get-RdpTelescopeLogon {
             # An empty window is a named verdict ("no 4624 in window"), not an error.
             if (($_.Exception.Message -notmatch '(?i)no events') -and ($_.Exception.Message -notmatch '(?i)not found')) { throw }
         }
+        $newestReject = $false
+        $newestTs = $null
         foreach ($ev in $events) {
             $xml = [xml]$ev.ToXml()
             $lt = ''
@@ -461,8 +478,18 @@ function Get-RdpTelescopeLogon {
             if ($lt -eq '10' -and -not $ts) {
                 $id = [string]$ev.Id; $type = $lt; $ts = $ev.TimeCreated.ToUniversalTime().ToString('o')
             }
+            # Get-WinEvent returns newest-first: the FIRST record decides whether
+            # the last word in the window was a rejection.
+            if ($null -eq $newestTs) { $newestTs = $ev.TimeCreated; $newestReject = ([string]$ev.Id -eq '4625') }
         }
-        return New-RdpTelescopeLine -Stage 'logon' -Ok ([bool]($id -eq '4624')) -Why $(if ($id -eq '4624') { '' } elseif ($c25 -gt 0) { 'RDP logon rejected (4625 present)' } else { 'no 4624 logon type 10 in window' }) -Fields @{ eventId = $id; logonType = $type; sub = $sub; eventTs = $ts; count4624 = $c24; count4625 = $c25 } -Trace $Trace -Src $Src
+        # [F37 §4] "no logon in the window" is INFORMATIONAL on the runner face:
+        # a host nobody has logged into is not a broken path, and painting it red
+        # made every healthy runner sample carry deathPoint=logon. The fault this
+        # stage owns is a REJECTION (the newest event is a 4625) or a log that
+        # cannot be read at all - both stay red and both name themselves.
+        $okL = [bool](-not $newestReject)
+        $whyL = $(if ($id -eq '4624') { '' } elseif ($newestReject) { ('RDP logon rejected: newest event is a 4625 (sub=' + $sub + ')') } else { ('no 4624 logon type 10 in the last ' + $WindowSec + 's (informational: nobody has logged on yet)') })
+        return New-RdpTelescopeLine -Stage 'logon' -Ok $okL -Why $whyL -Fields @{ eventId = $id; logonType = $type; sub = $sub; eventTs = $ts; count4624 = $c24; count4625 = $c25 } -Trace $Trace -Src $Src
     } catch {
         return New-RdpTelescopeLine -Stage 'logon' -Ok $false -Why ('Security log unreadable: ' + $_.Exception.Message) -Fields @{ eventId = $id; logonType = $type; sub = $sub; eventTs = $ts; count4624 = $c24; count4625 = $c25 } -Trace $Trace -Src $Src
     }
@@ -496,6 +523,31 @@ function Get-RdpTelescopeSchannel {
         return New-RdpTelescopeLine -Stage 'schannel' -Ok $false -Why ('System Schannel log unavailable: ' + $_.Exception.Message) -Fields @{ schannelIds = @(); lastSchannelId = ''; lastSchannelTs = ''; schannelWhy = ''; sinceSec = $SinceSec } -Trace $Trace -Src $Src
     }
 }
+$script:F37TelTypesReady = $false
+function Initialize-RdpTelescopeCryptoTypes {
+    # [F37 §4] WINDOWS POWERSHELL 5.1 (.NET Framework) does NOT load
+    # System.Security.Cryptography.X509Certificates / .Cng by default, so
+    # RSACertificateExtensions is a TypeNotFound THERE - and the live runner is
+    # the ONE surface that always runs under 5.1 (ghrdp-server.ps1 is started
+    # with powershell.exe). The resolver then degraded every runner sample to
+    # "key file not found / ACL absent" while the listener was healthy: a red
+    # row that named nothing. Load the assemblies once, on both runtimes, and
+    # SAY which loader worked so a future degradation names itself.
+    if ($script:F37TelTypesReady) { return $script:F37TelTypesReady }
+    $loaded = @()
+    foreach ($a in @('System.Security.Cryptography.X509Certificates', 'System.Security.Cryptography.Cng', 'System.Security')) {
+        try { $null = [System.Reflection.Assembly]::LoadWithPartialName($a); $loaded += ($a + ':partial') } catch { }
+        try { Add-Type -AssemblyName $a -ErrorAction SilentlyContinue; $loaded += ($a + ':addtype') } catch { }
+    }
+    $script:F37TelTypesLoader = ($loaded -join ',')
+    try {
+        $null = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]
+        $script:F37TelTypesReady = 'extensions-resolved'
+    } catch {
+        $script:F37TelTypesReady = ('extensions-unresolved: ' + $_.Exception.Message)
+    }
+    return $script:F37TelTypesReady
+}
 function Resolve-RdpTelescopeKeyFile {
     # WHERE is the persisted private-key file? A provider-reported container name
     # is NOT proof that a file exists in the first directory you try: Windows has
@@ -505,7 +557,9 @@ function Resolve-RdpTelescopeKeyFile {
     # reports every candidate, which ones exist, any near-miss hit, and a bounded
     # listing of each store - so the environment explains itself next time.
     param([Parameter(Mandatory)]$Certificate)
-    $out = [ordered]@{ name = ''; kind = ''; provider = ''; candidates = @(); found = ''; hits = @(); dirSample = @(); roots = @(); pathSource = '' }
+    $out = [ordered]@{ name = ''; kind = ''; provider = ''; candidates = @(); found = ''; hits = @(); dirSample = @(); roots = @(); pathSource = ''; typedError = ''; typesLoader = '' }
+    # 5.1 first: without the extension assemblies the typed path below cannot run.
+    try { $out.typesLoader = [string](Initialize-RdpTelescopeCryptoTypes) } catch { $out.typesLoader = ('loader-threw: ' + $_.Exception.Message) }
     $key = $null
     try {
         $key = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
@@ -520,7 +574,22 @@ function Resolve-RdpTelescopeKeyFile {
             try { $out.provider = [string]$key.CspKeyContainerInfo.ProviderName } catch { }
             $out.name = [string]$key.CspKeyContainerInfo.UniqueKeyContainerName
         } else { $out.kind = ('unsupported:' + $key.GetType().Name) }
-    } catch { $out.kind = ('error:' + $_.Exception.Message) } finally { if ($key) { $key.Dispose() } }
+    } catch { $out.kind = ('error:' + $_.Exception.Message); $out.typedError = [string]$_.Exception.Message } finally { if ($key) { $key.Dispose() } }
+    # [F37 §4] CERTUTIL FALLBACK: when the typed provider path is unavailable
+    # (5.1 without the extension assemblies, an unsupported provider) the
+    # container name is still a FACT on the box - certutil prints it. Using it
+    # keeps the live runner's ACL evidence alive instead of degrading to
+    # "key file not found" with no name for the cause.
+    if (-not $out.name) {
+        try {
+            $cuName = ''
+            foreach ($l in @(certutil.exe -store -v My $Certificate.Thumbprint 2>&1 | ForEach-Object { [string]$_ })) {
+                if ($l -match '(?i)^\s*Key Container\s*=\s*(.+?)\s*$') { $cuName = $Matches[1]; break }
+                if ($l -match '(?i)^\s*Unique container name:\s*(.+?)\s*$') { $cuName = $Matches[1]; break }
+            }
+            if ($cuName) { $out.name = $cuName; if (-not $out.kind) { $out.kind = 'certutil' } }
+        } catch { $out.typedError = ([string]$out.typedError + ' certutil: ' + $_.Exception.Message).Trim() }
+    }
     if (-not $out.name -or $out.name -match '[\\/]') { return [pscustomobject]$out }
     $roots = @(
         (Join-Path $env:ProgramData 'Microsoft\Crypto\Keys'),
@@ -548,7 +617,7 @@ function Resolve-RdpTelescopeKeyFile {
         if (@($out.hits).Count -eq 1) { $out.found = [string](@($out.hits)[0]); $out.pathSource = 'stem-hit' }
         elseif (@($out.hits).Count -gt 1) { $out.pathSource = 'ambiguous-stem-hit' }
         else { $out.pathSource = 'none' }
-    } else { $out.pathSource = 'candidate' }
+    } else { $out.pathSource = $(if ($out.kind -eq 'certutil') { 'certutil-candidate' } else { 'candidate' }) }
     foreach ($r in @($roots)) {
         try {
             $names = @(Get-ChildItem -LiteralPath $r -File -ErrorAction SilentlyContinue | Select-Object -First 6 | ForEach-Object { $_.Name })
@@ -569,7 +638,7 @@ function Get-RdpTelescopeListener {
         [string]$Trace = '',
         [string]$Src = ''
     )
-    $fields = @{ boundThumb = ''; servedThumb = $ServedThumb; inStore = $false; hasKey = $false; container = ''; containerKind = ''; containerPath = ''; keyFilePathSource = ''; keyFileFound = $false; keyFileCandidates = @(); keyDirHits = @(); keyDirSample = @(); certutilContainer = ''; aclSids = @(); aclRead = $false; aclOk = $false; serving = $false; hasServerAuth = $false; eku = @(); san = @() }
+    $fields = @{ boundThumb = ''; servedThumb = $ServedThumb; inStore = $false; hasKey = $false; container = ''; containerKind = ''; containerPath = ''; keyFilePathSource = ''; keyFileFound = $false; keyFileCandidates = @(); keyDirHits = @(); keyDirSample = @(); keyTypedError = ''; typesLoader = ''; certutilContainer = ''; aclSids = @(); aclRead = $false; aclOk = $false; serving = $false; hasServerAuth = $false; eku = @(); san = @() }
     $why = @()
     try {
         $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
@@ -611,11 +680,13 @@ function Get-RdpTelescopeListener {
                 $fields.keyDirHits = @($kr.hits)
                 $fields.keyDirSample = @($kr.dirSample)
                 $fields.keyFilePathSource = [string]$kr.pathSource
+                $fields.keyTypedError = [string]$kr.typedError
+                $fields.typesLoader = [string]$kr.typesLoader
                 if ($kr.found) { $fields.containerPath = [string]$kr.found; $fields.keyFileFound = $true }
                 elseif (@($fields.keyFileCandidates).Count -gt 0) { $fields.containerPath = [string](@($fields.keyFileCandidates)[0]) }
                 if ($fields.keyFileFound) { }
                 elseif ($fields.containerPath) {
-                    $why += ('persisted key file NOT FOUND (name=' + $fields.container + ' tried=[' + (@($fields.keyFileCandidates) -join ',') + '] hits=[' + (@($fields.keyDirHits) -join ',') + '] source=' + $fields.keyFilePathSource + ' stores=[' + (@($fields.keyDirSample) -join ' | ') + ']')
+                    $why += ('persisted key file NOT FOUND (name=' + $fields.container + ' kind=' + $fields.containerKind + ' tried=[' + (@($fields.keyFileCandidates) -join ',') + '] hits=[' + (@($fields.keyDirHits) -join ',') + '] source=' + $fields.keyFilePathSource + ' typedError=' + $fields.keyTypedError + ' typesLoader=' + $fields.typesLoader + ' stores=[' + (@($fields.keyDirSample) -join ' | ') + ']')
                 }
             } catch { $why += ('key container resolution failed: ' + $_.Exception.Message) }
             if (-not $fields.container) { $why += 'no persisted key container name' }
@@ -668,16 +739,26 @@ function Get-RdpTelescopeFields {
     param([Parameter(Mandatory)]$Telescope)
     $out = [ordered]@{
         boundThumb = ''; servedThumb = ''; serving = $false; bindDrift = $false
-        inStore = $false; hasKey = $false; container = ''; aclRead = $false
+        inStore = $false; hasKey = $false; container = ''; aclRead = $false; aclOk = $false
         hasServerAuth = $false; eku = @(); san = @()
         keyFileFound = $false; containerKind = ''; keyDirHits = @(); keyDirSample = @(); keyFilePathSource = ''
+        containerPath = ''; keyTypedError = ''; typesLoader = ''
         aclSids = @(); schannelTail = @(); schannelWhy = ''
-        protocol = ''; cipher = ''; failureAt = ''
-        logonEventId = ''; logonSub = ''; count4624 = 0; count4625 = 0
+        protocol = ''; cipher = ''; failureAt = ''; tlsWhy = ''; listenerWhy = ''
+        logonEventId = ''; logonSub = ''; count4624 = 0; count4625 = 0; logonWhy = ''
+        # [F37 §4] redStages/fatalStages: WHICH stage is red, in the module's own
+        # vocabulary, so a consumer never has to re-parse lines (and can never
+        # invent a second format). fatalStages are the listener-face stages - the
+        # only ones that mean "the path this host serves is broken"; schannel and
+        # an informational logon/cred line are EVIDENCE, not a fatal verdict.
+        redStages = @(); fatalStages = @(); deriveError = ''
         deathPoint = [string]$Telescope.deathPoint
         trace = [string]$Telescope.trace
         src = [string]$Telescope.src
     }
+    # Never throw: a derivation fault must itself be a NAMED field, because a
+    # silently empty derivation is exactly the red-without-why class F37 kills.
+    try {
     foreach ($l in @($Telescope.lines)) {
         $o = $l
         if ($l -is [string]) { try { $o = ($l | ConvertFrom-Json) } catch { continue } }
@@ -688,6 +769,7 @@ function Get-RdpTelescopeFields {
                 if ($o.PSObject.Properties['failureAt']) { $out.failureAt = [string]$o.failureAt }
                 if ($o.PSObject.Properties['protocol']) { $out.protocol = [string]$o.protocol }
                 if ($o.PSObject.Properties['cipher']) { $out.cipher = [string]$o.cipher }
+                if ($o.PSObject.Properties['why']) { $out.tlsWhy = [string]$o.why }
             }
             'listener' {
                 if ($o.PSObject.Properties['boundThumb']) { $out.boundThumb = [string]$o.boundThumb }
@@ -705,6 +787,11 @@ function Get-RdpTelescopeFields {
                 if ($o.PSObject.Properties['eku']) { $out.eku = @($o.eku) }
                 if ($o.PSObject.Properties['san']) { $out.san = @($o.san) }
                 if ($o.PSObject.Properties['aclSids']) { $out.aclSids = @($o.aclSids) }
+                if ($o.PSObject.Properties['aclOk']) { $out.aclOk = [bool]$o.aclOk }
+                if ($o.PSObject.Properties['containerPath']) { $out.containerPath = [string]$o.containerPath }
+                if ($o.PSObject.Properties['keyTypedError']) { $out.keyTypedError = [string]$o.keyTypedError }
+                if ($o.PSObject.Properties['typesLoader']) { $out.typesLoader = [string]$o.typesLoader }
+                if ($o.PSObject.Properties['why']) { $out.listenerWhy = [string]$o.why }
             }
             'schannel' {
                 if ($o.PSObject.Properties['schannelIds']) { $out.schannelTail = @($o.schannelIds) }
@@ -715,8 +802,20 @@ function Get-RdpTelescopeFields {
                 if ($o.PSObject.Properties['sub']) { $out.logonSub = [string]$o.sub }
                 if ($o.PSObject.Properties['count4624']) { $out.count4624 = [int]$o.count4624 }
                 if ($o.PSObject.Properties['count4625']) { $out.count4625 = [int]$o.count4625 }
+                if ($o.PSObject.Properties['why']) { $out.logonWhy = [string]$o.why }
             }
         }
+    }
+    foreach ($l in @($Telescope.lines)) {
+        $r = $l
+        if ($l -is [string]) { try { $r = ($l | ConvertFrom-Json) } catch { continue } }
+        if (-not $r -or -not $r.stage) { continue }
+        if ([bool]$r.ok) { continue }
+        $out.redStages += [string]$r.stage
+        if (@('tcp', 'tls', 'listener') -contains [string]$r.stage) { $out.fatalStages += [string]$r.stage }
+    }
+    } catch {
+        $out.deriveError = ('field derivation failed: ' + $_.Exception.Message)
     }
     $out.bindDrift = [bool]($out.boundThumb -and $out.servedThumb -and ($out.boundThumb -ne $out.servedThumb))
     return [pscustomobject]$out
@@ -751,7 +850,10 @@ function Get-RdpTelescopeDeathPoint {
     if ($byStage.ContainsKey('tcp') -and -not $byStage['tcp'].ok) { return 'tcp' }
     $listenerObj = 0
     if ($byStage.ContainsKey('listener')) { $listenerObj = $byStage['listener'] }
-    if ($listenerObj -and $listenerObj.PSObject.Properties['hasServerAuth'] -and -not [bool]$listenerObj.hasServerAuth) { return 'tls-eku' }
+    # A missing ServerAuth EKU is only a CAUSE when a certificate is actually
+    # bound/in-store: with NOTHING bound the honest name is tls-cert (the old
+    # order reported tls-eku for a listener that had no certificate at all).
+    if ($listenerObj -and [bool]$listenerObj.inStore -and $listenerObj.PSObject.Properties['hasServerAuth'] -and -not [bool]$listenerObj.hasServerAuth) { return 'tls-eku' }
     if ($tlsFailure) {
         if ($tlsFailure -eq 'rst-before-cert') { return 'tls-cert' }
         if ($tlsFailure -eq 'name-mismatch') { return 'name-mismatch' }
@@ -759,6 +861,7 @@ function Get-RdpTelescopeDeathPoint {
         if ($tlsFailure -eq 'served!=bound') { return 'tls-cert' }
         return 'tls-chain'
     }
+    if ($listenerObj -and $listenerObj.PSObject.Properties['boundThumb'] -and -not [string]$listenerObj.boundThumb) { return 'tls-cert' }
     if ($byStage.ContainsKey('cred') -and -not $byStage['cred'].ok) { return 'credssp' }
     if ($byStage.ContainsKey('listener') -and -not $byStage['listener'].ok) { return 'acl' }
     if ($byStage.ContainsKey('logon') -and -not $byStage['logon'].ok) { return 'logon' }
@@ -809,7 +912,7 @@ function Invoke-RdpTelescope {
     }
     $lines += $tlsLine
     $tlsObj = $tlsLine | ConvertFrom-Json
-    if (-not $SkipCred) { $lines += (Get-RdpTelescopeCredReadback -Fqdn $Fqdn -User $User -Trace $Trace -Src $Src) }
+    if (-not $SkipCred) { $lines += (Get-RdpTelescopeCredReadback -Fqdn $Fqdn -User $User -Trace $Trace -Src $Src -Informational:$Local) }
     $lines += (Get-RdpTelescopeListener -ExpectedThumb $ExpectedThumb -ServedThumb ([string]$tlsObj.servedThumb) -Trace $Trace -Src $Src)
     $lines += (Get-RdpTelescopeSchannel -Trace $Trace -Src $Src)
     if (-not $SkipLogon) { $lines += (Get-RdpTelescopeLogon -Trace $Trace -Src $Src) }

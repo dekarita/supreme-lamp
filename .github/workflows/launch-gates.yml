@@ -1972,9 +1972,51 @@ jobs:
           if grep -nE 'UserAuthentication.*(Set-ItemProperty|= 0)' "$mod" "$cs"; then echo 'F37: the telescope touches NLA' >&2; exit 1; fi
           if grep -nE 'password=|passwd=|pwd=' "$ui" "$cs"; then echo 'F37: a password-shaped parameter exists in a launch URL' >&2; exit 1; fi
           if grep -nF 'GHRDP_LAB_TEL_INTERVAL_SEC' "$wf"; then echo 'F37: a lab-only switch reached production main.yml' >&2; exit 1; fi
+          # [F37 §4] SCOPE: the runner face (server tick + live probe) never
+          # evaluates the CLIENT-owned cred stage, and says why it carries none.
+          # A healthy host that reads as deathPoint=credssp is a false verdict.
+          grep -qF -e "-Ip '127.0.0.1' -SkipCred" "$srv" || { echo 'F37: the live runner evaluates the client-owned cred stage' >&2; exit 1; }
+          grep -qF "credScope   = 'client-only'" "$srv" || { echo 'F37: the runner sample does not name its own scope' >&2; exit 1; }
+          grep -qF -e '-ExpectedThumb $certThumb -SkipLogon -SkipCred' "$wf" || { echo 'F37: the live F17 probe is not runner-scoped' >&2; exit 1; }
+          grep -qF 'runner face: no stored TERMSRV target' "$mod" || { echo 'F37: an absent client credential on the runner is not a named scope fact' >&2; exit 1; }
+          grep -qF -e '-Informational:$Local' "$mod" || { echo 'F37: the runner face is not informational for client-owned stages' >&2; exit 1; }
+          # an absent logon window is INFORMATIONAL; only a rejection is a fault
+          grep -qF 'informational: nobody has logged on yet' "$mod" || { echo 'F37: an empty logon window still reads as a red path' >&2; exit 1; }
+          grep -qF 'RDP logon rejected: newest event is a 4625' "$mod" || { echo 'F37: a logon rejection is not named' >&2; exit 1; }
+          if grep -qF -e "-Ok ([bool](\$id -eq '4624'))" "$mod"; then echo 'F37: the logon stage paints an empty window red again' >&2; exit 1; fi
+          # probeError is the LISTENER FACE; evidence (schannel/logon) is probeWarn
+          grep -qF "'telescope evidence: '" "$srv" || { echo 'F37: the runner cannot separate a fatal stage from evidence' >&2; exit 1; }
+          grep -qF 'probeWarn' "$srv" && grep -qF 'probeWarn' "$ui" || { echo 'F37: the runner evidence line never reaches the row' >&2; exit 1; }
+          if grep -qF '"ok":false' "$srv"; then echo 'F37: the server hand-matches the wire format instead of reading it' >&2; exit 1; fi
+          # a derivation fault and the key-resolver cause are NAMED, end to end
+          for f in deriveError redStages fatalStages keyTypedError typesLoader; do
+            grep -qF "$f" "$mod" && grep -qF "$f" "$srv" && grep -qF "$f" "$wf" && grep -qF "$f" "$ui" || { echo "F37: $f does not travel module -> runner -> stamp -> row" >&2; exit 1; }
+          done
+          # the resolver must work on the runtime the SERVER actually uses (5.1)
+          grep -qF 'function Initialize-RdpTelescopeCryptoTypes' "$mod" || { echo 'F37: the 5.1 crypto-type loader is missing (the runner telescope degrades silently)' >&2; exit 1; }
+          grep -qF 'certutil.exe -store -v My $Certificate.Thumbprint' "$mod" || { echo 'F37: the key resolver has no provider-independent fallback' >&2; exit 1; }
+          grep -qF "'certutil-candidate'" "$mod" || { echo 'F37: a certutil-resolved key path is not reported as such' >&2; exit 1; }
+          # the death point cannot blame the EKU when NOTHING is bound
+          grep -qF "[bool]\$listenerObj.inStore -and \$listenerObj.PSObject.Properties['hasServerAuth']" "$mod" || { echo 'F37: an unbound listener still resolves tls-eku' >&2; exit 1; }
+          grep -qF "return 'tls-cert' }" "$mod" || { echo 'F37: an unbound listener has no death point' >&2; exit 1; }
+          # a beacon the allowlist neutralized is NOT a stage verdict
+          grep -qF 'telescope-unparsed' "$ui" || { echo 'F37: the timeline treats a neutralized beacon as a verdict' >&2; exit 1; }
+          # the lab proves the scope split, feeds the client diag, and spends its
+          # 10-annotation forensics budget on the decisive evidence first
+          grep -qF "'module-scope'" "$lab" || { echo 'F37: the lab never proves the runner/client cred scope split' >&2; exit 1; }
+          grep -qF 'cmdkey.exe /generic:TERMSRV/$fqdn /user:labuser /pass:LABDUMMY-win-9876' "$lab" || { echo 'F37: the client diag has no stored target (a healthy path would read credssp)' >&2; exit 1; }
+          grep -qF 'telescope-cred-ok' "$lab" || { echo 'F37: the lab does not require the client cred stage to be green' >&2; exit 1; }
+          grep -qF 'Flush 9' "$lab" || { echo 'F37: the forensics step can lose its decisive annotation to the cap' >&2; exit 1; }
+          grep -qF 'CLASSIFICATION:' "$lab" && grep -qF 'RUNNER-SUMMARY:' "$lab" || { echo 'F37: the forensics step does not lead with the cell verdict + runner state' >&2; exit 1; }
           # (8) the matrix is EXECUTED (the timeline runs the shipped renderer)
           test -f tests/f37-telescope.test.js || { echo 'F37: the node matrix is missing' >&2; exit 1; }
           node --test tests/f37-telescope.test.js
+          # (9) STRUCTURAL AUDIT: this lane has no PowerShell interpreter, so the
+          # edited .ps1 surfaces and every workflow PowerShell block are
+          # tokenized and checked for brace/here-string balance and a dangling
+          # catch - the failure class that otherwise costs a whole lab run.
+          test -f tests/ps-balance-audit.py || { echo 'F37: the PowerShell structural audit is missing' >&2; exit 1; }
+          python3 tests/ps-balance-audit.py
           echo 'F37 gates PASS'
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
@@ -2037,7 +2079,10 @@ jobs:
       - name: Parse native PowerShell scripts
         shell: pwsh
         run: |
-          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1')) {
+          # [F37] the telescope module + the F31 helpers are parsed here too: a
+          # syntax error in them used to surface only as a red Windows lab cell
+          # (an expensive loop), and the server DOT-SOURCES the module at start.
+          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1')) {
               $errors = $null
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
               if ($errors) { throw "$file has $($errors.Count) PowerShell syntax error(s): $($errors[0].Message)" }
