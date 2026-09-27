@@ -28,16 +28,19 @@ $rows = New-Object System.Collections.ArrayList
 $fails = 0
 function Add-Case {
     param([string]$Name, [scriptblock]$Run)
+    $line = ''
     try {
         $r = & $Run
         [void]$rows.Add(@{ case = $Name; detail = [string]$r; status = 'PASS' })
-        Write-Host ('F44MATRIX | ' + $Name + ' | PASS | ' + $r)
+        $line = 'F44MATRIX | ' + $Name + ' | PASS | ' + $r
     } catch {
         $script:fails = $script:fails + 1
         $msg = ($_.Exception.Message -replace '\s+', ' ').Trim()
         [void]$rows.Add(@{ case = $Name; detail = $msg; status = 'FAIL' })
-        Write-Host ('F44MATRIX | ' + $Name + ' | FAIL | ' + $msg)
+        $line = 'F44MATRIX | ' + $Name + ' | FAIL | ' + $msg
     }
+    Write-Host $line
+    if ($env:F44_MATRIX_FILE) { [System.IO.File]::AppendAllText([string]$env:F44_MATRIX_FILE, $line + "`r`n") }
 }
 function Cap([string]$Route) { return @{ name = ('mock' + $Route); url = ($MockBase + $Route); apiRoot = ($MockBase + $Route); formField = 'file'; extraFields = @(); parseKind = 'plain-url'; maxBytes = [long]268435456; deniedExt = @() } }
 function CapJson([string]$Route) { $c = Cap $Route; $c.parseKind = 'json-data-url'; return $c }

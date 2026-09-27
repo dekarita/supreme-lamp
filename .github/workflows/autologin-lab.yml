@@ -3000,22 +3000,43 @@ jobs:
       - uses: actions/checkout@v4
       - name: F44 mock matrix (mirror upload module vs mock hosts)
         run: |
-          $ErrorActionPreference = 'Stop'
-          $mock = Start-Process -PassThru -WindowStyle Hidden -FilePath 'node' -ArgumentList 'tests/mirror-mock-server.js'
+          $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
+          $node = (Get-Command node -ErrorAction Stop).Source
+          Write-Host ('[F44] node=' + $node)
+          $mockOut = Join-Path $env:RUNNER_TEMP 'f44-mock-out.txt'
+          $mockErr = Join-Path $env:RUNNER_TEMP 'f44-mock-err.txt'
+          $mock = Start-Process -PassThru -WindowStyle Hidden -FilePath $node -ArgumentList 'tests/mirror-mock-server.js' -WorkingDirectory $env:GITHUB_WORKSPACE -RedirectStandardOutput $mockOut -RedirectStandardError $mockErr
+          $up = $false
           try {
-              $up = $false
-              for ($i = 0; $i -lt 40 -and -not $up; $i++) {
-                  try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8787/health' -UseBasicParsing -TimeoutSec 2; if ($r -eq 'ok') { $up = $true } } catch { Start-Sleep -Milliseconds 500 }
+              for ($i = 0; $i -lt 60 -and -not $up; $i++) {
+                  try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8787/health' -TimeoutSec 2; if ($r -eq 'ok') { $up = $true } } catch { Start-Sleep -Seconds 1 }
               }
-              if (-not $up) { throw 'mock upload server did not start' }
+              if (-not $up) {
+                  Write-Host '::error::[F44] mock upload server did not start'
+                  Write-Host ('::notice::[F44] mock-out: ' + (((Get-Content -LiteralPath $mockOut -Raw -ErrorAction SilentlyContinue) -replace '[\r\n]+', ' | ')))
+                  Write-Host ('::notice::[F44] mock-err: ' + (((Get-Content -LiteralPath $mockErr -Raw -ErrorAction SilentlyContinue) -replace '[\r\n]+', ' | ')))
+                  exit 1
+              }
               $env:MIRROR_MOCK_BASE = 'http://127.0.0.1:8787'
+              $env:F44_MATRIX_FILE = Join-Path $env:RUNNER_TEMP 'f44-matrix.txt'
               & pwsh -NoProfile -File tests/f44-mirror-lab-driver.ps1
-              if ($LASTEXITCODE -ne 0) { throw 'F44 mirror-cell matrix red - see F44MATRIX lines above' }
+              $rc = $LASTEXITCODE
+              if ($rc -ne 0) {
+                  if (Test-Path -LiteralPath $env:F44_MATRIX_FILE) {
+                      Get-Content -LiteralPath $env:F44_MATRIX_FILE -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('::error::[F44 mirror-cell] ' + $_) }
+                  } else {
+                      Write-Host '::error::[F44 mirror-cell] matrix file missing - driver died before case 1'
+                  }
+                  exit 2
+              }
+              Write-Host '::notice::[F44 mirror-cell] matrix GREEN (see F44MATRIX lines)'
           } finally {
               try { Stop-Process -Id $mock.Id -Force -ErrorAction SilentlyContinue } catch { }
           }
       - name: F44 real-host read-only probe (no content upload; POLICY 403 documented, never evaded)
         run: |
           $ErrorActionPreference = 'Continue'
+          $PSNativeCommandUseErrorActionPreference = $false
           & pwsh -NoProfile -File tests/f44-host-probe.ps1
-          if ($LASTEXITCODE -ne 0) { throw 'F44 host probe failed to run' }
+          if ($LASTEXITCODE -ne 0) { Write-Host '::error::[F44] host probe failed to run'; exit 1 }
