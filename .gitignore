@@ -5,3 +5,9 @@ payloads/ghrdp-handler/obj/
 
 __pycache__/
 *.pyc
+
+# F41 v2 UI build output (CI artifact dist-ui)
+ui/dist/
+node_modules/
+playwright-report/
+test-results/

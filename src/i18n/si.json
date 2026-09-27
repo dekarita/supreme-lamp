@@ -1,0 +1,187 @@
+{
+  "app": {
+    "title": "RDP Mission Control",
+    "subtitle": "FQDN",
+    "skipToMain": "ප්‍රධාන අන්තර්ගතයට යන්න"
+  },
+  "nav": {
+    "overview": "දළ විශ්ලේෂණය",
+    "sessions": "සැසි",
+    "connections": "සම්බන්ධතා",
+    "keys": "යතුරු සහ රහස්",
+    "mirror": "දර්පණය",
+    "telemetry": "දුරමිතික",
+    "settings": "සැකසුම්"
+  },
+  "sidebar": {
+    "nav": "ප්‍රාථමික සංචලනය",
+    "expand": "පැති තීරුව විවෘත කරන්න",
+    "collapse": "පැති තීරුව හකුළන්න",
+    "menu": "සංචලනය විවෘත කරන්න"
+  },
+  "actions": {
+    "autoLogin": "Windows ස්වයංක්‍රීය පිවිසුම",
+    "webDesktop": "වෙබ් ඩෙස්ක්ටොප්",
+    "fixReconnect": "නිවැරදි කර යළි සම්බන්ධ වන්න",
+    "download": "බාගන්න",
+    "runCheck": "පරීක්ෂණය ධාවනය",
+    "runDiag": "[විනිශ්චය]"
+  },
+  "connection": {
+    "title": "සම්බන්ධතාව",
+    "tailscaleIp": "Tailscale IP",
+    "username": "RDP පරිශීලක නාමය",
+    "mstsc": "MSTSC විධානය",
+    "path": "මාර්ගය",
+    "connectivity": "සම්බන්ධතාවය"
+  },
+  "path": {
+    "direct": "සෘජු",
+    "relay": "ප්‍රතික්ෂේපිත"
+  },
+  "keys": {
+    "title": "යතුරු",
+    "windowsPassword": "Windows මුරපදය",
+    "vncPassword": "VNC මුරපදය"
+  },
+  "webDesktop": {
+    "title": "වෙබ් ඩෙස්ක්ටොප්",
+    "url": "noVNC URL",
+    "status": "තත්ත්වය",
+    "host": "ධාරකය",
+    "ticketAudit": "ටිකට් අගයකිරීම"
+  },
+  "mirror": {
+    "title": "දර්පණය",
+    "progress": "උඩුගත කිරීමේ ප්‍රගතිය",
+    "runnerEgress": "රනර් නික්මීම",
+    "overall": "සමස්ත",
+    "files": "ගොනු",
+    "failed": "අසාර්ථක",
+    "bytes": "බයිට",
+    "speed": "වේගය",
+    "scans": "ස්කෑන්",
+    "eta": "ETA"
+  },
+  "logs": {
+    "title": "සටහන්",
+    "logonEvents": "පිවිසුම් සිදුවීම්",
+    "schannel": "Schannel",
+    "telescope": "දුරදර්ශනය",
+    "launcher": "දියත්කාර ජීවක සංඥා"
+  },
+  "telescope": {
+    "dns": "DNS",
+    "tcp": "TCP",
+    "tls": "TLS",
+    "cred": "අක්තපත්‍ර",
+    "logon": "පිවිසුම"
+  },
+  "diagnostics": {
+    "title": "සම්බන්ධතා විනිශ්චය - පිටපත් පේළි",
+    "copyLine": "මෙම පේළිය පිටපත් කරන්න",
+    "noExecute": "පහත පේළි ඔබ අතින් ධාවනය කිරීමට වේ.",
+    "drawerTitle": "විනිශ්චය"
+  },
+  "manualVerify": {
+    "title": "අතින් සත්‍යාපන පියවර",
+    "drawerTitle": "අතින් සත්‍යාපන පියවර"
+  },
+  "installGuide": {
+    "title": "ස්ථාපන මාර්ගෝපදේශය - කට්ටලය + මාර්ග",
+    "downloadCmd": "install.cmd බාගන්න"
+  },
+  "launcher": {
+    "title": "දියත්කාරක - දාමය / ජීවකය / පරීක්ෂණ",
+    "liveDispatch": "සජීවී ඩිස්පැච් තත්ත්වය",
+    "chain": "දියත්කාරක දාමය",
+    "beacon": "දියත්කාරක ජීවකය",
+    "listener": "RDP සවන්දෙන්නා",
+    "connLog": "සර්වර් සම්බන්ධතා සටහන"
+  },
+  "status": {
+    "runnerElapsed": "රනර් ගත වූ",
+    "remaining": "ඉතිරි",
+    "rdpUsage": "RDP භාවිතය",
+    "lastLogon": "අවසාන පිවිසුම",
+    "clock": "ඔරලෝසුව"
+  },
+  "copy": {
+    "action": "පිටපත් කරන්න",
+    "copied": "පිටපත් විය"
+  },
+  "field": {
+    "reveal": "පෙන්වන්න",
+    "hide": "සඟවන්න",
+    "value": "අගය"
+  },
+  "table": {
+    "filter": "පෙරහන්…",
+    "density": {
+      "comfortable": "පහසු පේළි",
+      "compact": "සංක්ෂිප්ත පේළි"
+    },
+    "empty": "වාර්තා නැත.",
+    "sortAsc": "ආරෝහණව වර්ග කරන්න",
+    "sortDesc": "අවරෝහණව වර්ග කරන්න"
+  },
+  "toggle": {
+    "theme": {
+      "label": "තේමාව මාරු කරන්න",
+      "light": "සුදු",
+      "dark": "අඳුරු"
+    },
+    "scale": {
+      "label": "පෙළ ප්‍රමාණය",
+      "comfort": "පහසුව",
+      "large": "විශාල",
+      "a11y": "ප්‍රවේශ්‍යතාව"
+    },
+    "language": {
+      "label": "භාෂාව",
+      "en": "ඉංග්‍රීසි",
+      "si": "සිංහල"
+    }
+  },
+  "activity": {
+    "connection": "සම්බන්ධතාව",
+    "mirror": "දර්පණය",
+    "watcher": "නිරීක්ෂකයා",
+    "websocket": "WebSocket",
+    "clock": "ඔරලෝසුව"
+  },
+  "errors": {
+    "authFailure": "සත්‍යාපනය අසාර්ථකයි",
+    "networkDown": "ජාලය ළඟා විය නොහැක",
+    "certExpired": "සහතිකය කල් ඉකුත්"
+  },
+  "stat": {
+    "runnerIp": "රනර් IP",
+    "cert": "සහතික වලංගුතාවය",
+    "logonOk": "පිවිසුම් OK (24h)",
+    "usage": "භාවිතය (24h)"
+  },
+  "pages": {
+    "sessions": {
+      "title": "සැසි",
+      "activeRunner": "සක්‍රිය රනර්",
+      "ticketAudit": "ටිකට් අගයකිරීම"
+    },
+    "connections": {
+      "title": "සම්බන්ධතා"
+    },
+    "mirrorPage": {
+      "title": "දර්පණය"
+    },
+    "telemetryPage": {
+      "title": "දුරමිතික"
+    },
+    "settings": {
+      "title": "සැකසුම්",
+      "appearance": "පෙනුම",
+      "language": "භාෂාව",
+      "textScale": "පෙළ ප්‍රමාණය",
+      "theme": "තේමාව"
+    }
+  }
+}

@@ -1,0 +1,86 @@
+/* [F41 plan §1.5/§7] Global base + resets + reduced-motion + reduced-transparency.
+   The F38/F39 glass materials (aurora, blur tiers, 0 8px 32px shadows, 16px radii)
+   are RETIRED here: solid surfaces, enterprise geometry, 0-200ms transitions only. */
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html {
+  font-size: 16px;
+  -webkit-text-size-adjust: 100%;
+}
+html, body {
+  margin: 0;
+  padding: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+body {
+  font-family: var(--font-sans);
+  font-size: var(--body-size);
+  line-height: 1.5;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  background: var(--color-bg-base);
+  color: var(--color-text-primary);
+}
+
+/* WCAG 2.1 AA - 2.4.7 focus visible on every control */
+:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+/* [F38 §7 kept] prefers-reduced-motion: every animation/transition collapses to 0ms. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0ms !important;
+    animation-duration: 0ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* [F38 kept] prefers-reduced-transparency: solid surfaces only. */
+@media (prefers-reduced-transparency: reduce) {
+  *, *::before, *::after {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
+/* Legacy alias kept so the F38 sprite styles (.ic marks inside copied status
+   strings) render identically in v2 status rows. */
+svg.ic {
+  width: 1.05em;
+  height: 1.05em;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  flex: 0 0 auto;
+  vertical-align: -0.18em;
+  overflow: visible;
+}
+svg.ic.mark-ok { color: var(--color-success); }
+svg.ic.mark-bad { color: var(--color-danger); }
+
+/* Skip-link (WCAG 2.4.1 bypass blocks) */
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  z-index: 100;
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: var(--radius-md);
+}
+.skip-link:focus {
+  left: var(--space-2);
+  top: var(--space-2);
+}
