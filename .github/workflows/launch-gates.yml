@@ -7,6 +7,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: F31/F33 persisted-key ACL and served-certificate gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          acl=payloads/Grant-RdpKeyAccess.ps1
+          probe=payloads/Test-RdpListenerHandshake.ps1
+          for token in PersistKeySet MachineKeySet Exportable HasPrivateKey Grant-RdpKeyAccess.ps1 'Restart-Service TermService -Force -ErrorAction Stop'; do
+            grep -qF "$token" "$wf"
+          done
+          for token in 'GetRSAPrivateKey' 'GetECDsaPrivateKey' 'Crypto\Keys' 'RSA\MachineKeys' 'S-1-5-20' 'S-1-5-18' 'Set-Acl' 'GetAccessRules' 'Required ACE absent'; do
+            grep -qF "$token" "$acl"
+          done
+          for token in '0x03,0x00,0x00,0x13' '0x0e,0xe0' 'AuthenticateAsClientAsync' 'IsAuthenticated' 'SslPolicyErrors' '36870' 'key ACL:'; do
+            grep -qF "$token" "$probe"
+          done
+          grep -qF 'listenerHandshakeOk = $listenerHandshakeOk' "$wf"
+          grep -qF 'listenerHandshakeOk=false' "$wf"
+          grep -qF 'listener-handshake-ok' "$wf"
+          grep -qF 'F33 ACL-DENIED PASS' .github/workflows/autologin-lab.yml
+          grep -qF 'Id = @(36870, 36871, 36888)' payloads/ghrdp-server.ps1
+          grep -qF 'key-open-failed:' payloads/ghrdp-server.ps1
+          grep -qF 'tls-alert-sent:' payloads/ghrdp-server.ps1
+          if grep -E 'UserAuthentication -Value 0|SecurityLayer -Value 0|IgnoreCertificateErrors' "$wf" "$acl" "$probe"; then exit 1; fi
+
       - name: D/E launch gates
         shell: bash
         run: |
