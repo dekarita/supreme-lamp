@@ -1,0 +1,265 @@
+{
+  "app": {
+    "title": "RDP Mission Control",
+    "subtitle": "FQDN",
+    "skipToMain": "Skip to main content"
+  },
+  "nav": {
+    "overview": "Overview",
+    "sessions": "Sessions",
+    "connections": "Connections",
+    "keys": "Keys & Secrets",
+    "mirror": "Mirror",
+    "telemetry": "Telemetry",
+    "settings": "Settings"
+  },
+  "sidebar": {
+    "nav": "Primary navigation",
+    "expand": "Expand sidebar",
+    "collapse": "Collapse sidebar",
+    "menu": "Open navigation"
+  },
+  "actions": {
+    "autoLogin": "WINDOWS AUTO-LOGIN",
+    "webDesktop": "WEB DESKTOP",
+    "fixReconnect": "FIX & RECONNECT",
+    "download": "Download",
+    "runCheck": "RUN CHECK",
+    "runDiag": "[RUN DIAG]",
+    "refresh": "Refresh",
+    "close": "Close",
+    "copyLog": "copy",
+    "pauseLog": "pause",
+    "resumeLog": "resume",
+    "openTerminal": "Open Terminal",
+    "uploadNow": "Upload everything now",
+    "startWatcher": "Start watcher",
+    "diagnose": "Diagnose",
+    "copyAllLinks": "Copy all links",
+    "autoLoginVps": "AUTO-LOGIN (VPS only)"
+  },
+  "connection": {
+    "title": "Connection",
+    "tailscaleIp": "Tailscale IP",
+    "username": "RDP username",
+    "mstsc": "MSTSC command",
+    "path": "Path",
+    "connectivity": "Connectivity",
+    "latency": "Latency",
+    "rust": "Rust",
+    "primary": "primary",
+    "fallback": "fallback"
+  },
+  "path": {
+    "direct": "direct",
+    "relay": "relay"
+  },
+  "keys": {
+    "title": "Keys",
+    "windowsPassword": "Windows password",
+    "vncPassword": "VNC password",
+    "mirrorGithub": "Mirror (github.io)",
+    "legacyRentry": "Legacy Rentry (frozen)",
+    "legacyKey": "LEGACY key",
+    "currentKey": "Current key",
+    "telegraph": "Telegraph",
+    "decryptor": "Decryptor",
+    "archive": "Archive",
+    "fileSearch": "File Search",
+    "explorer": "Explorer (Win11)",
+    "terminal": "Terminal",
+    "hostOnly": "(host-only)",
+    "rememberVnc": "remember for WEB DESKTOP"
+  },
+  "webDesktop": {
+    "title": "WEB DESKTOP",
+    "url": "noVNC URL",
+    "status": "Status",
+    "ready": "Ready",
+    "advisory": "Advisory",
+    "magicDns": "MagicDNS",
+    "blockedBy": "Blocked by",
+    "vpsStatus": "VPS status",
+    "host": "Host",
+    "authMode": "VNC auth mode",
+    "ticketAudit": "Ticket audit",
+    "shortcutText": "Shortcut text (copy only; VPS one-time cmdkey)",
+    "cmdkeyLine": "cmdkey line:",
+    "mstscLine": "mstsc line:",
+    "vncMemory": "VNC password memory (this device)",
+    "vncPlaceholder": "type the VNC_PASS once",
+    "vncRemember": "remember on this device (localStorage)",
+    "vncForget": "forget",
+    "notStored": "not stored"
+  },
+  "mirror": {
+    "title": "Mirror",
+    "titleLong": "Mirror - AES-256 encrypted upload",
+    "progress": "Upload progress",
+    "runnerEgress": "Runner egress",
+    "overall": "overall",
+    "files": "files",
+    "failed": "failed",
+    "bytes": "bytes",
+    "speed": "speed",
+    "scans": "scans",
+    "eta": "eta",
+    "doneTotal": "done / total",
+    "afterTries": "after 5 tries",
+    "movingAvg": "moving avg",
+    "timeRemaining": "time remaining",
+    "speedHistory": "Speed history - last 90 samples (7.5 min @ 5s)",
+    "activeFile": "active file",
+    "perRoot": "per-root telemetry",
+    "root": "root:",
+    "publishStatus": "Publish status"
+  },
+  "logs": {
+    "title": "Logs",
+    "logonEvents": "Logon Events",
+    "schannel": "Schannel",
+    "telescope": "Telescope",
+    "launcher": "Launcher Beacons",
+    "liveLog": "Live log - last 200 lines"
+  },
+  "telescope": {
+    "title": "RDP TELESCOPE TIMELINE",
+    "dns": "DNS",
+    "tcp": "TCP",
+    "tls": "TLS",
+    "cred": "Credentials",
+    "logon": "Logon",
+    "waiting": "waiting for the first /api/native-status sample..."
+  },
+  "diagnostics": {
+    "title": "CONNECTION DIAGNOSTICS - copy-lines",
+    "copyLine": "copy",
+    "noExecute": "Lines below are for you to run manually.",
+    "drawerTitle": "Diagnostics",
+    "refreshHint": "click Refresh to run /diag on the server."
+  },
+  "manualVerify": {
+    "title": "MANUAL VERIFY STEPS",
+    "drawerTitle": "MANUAL VERIFY STEPS"
+  },
+  "installGuide": {
+    "title": "INSTALL GUIDE - kit + paths",
+    "downloadCmd": "DOWNLOAD INSTALL KIT",
+    "pathA": "Install guide - Path A (downloaded kit)",
+    "pathB": "Path B (repo clone)"
+  },
+  "launcher": {
+    "title": "LAUNCHER - chain / beacon / checks",
+    "liveDispatch": "LIVE DISPATCH STATUS",
+    "chain": "Launcher chain",
+    "beacon": "Launcher beacon",
+    "log": "launcher log",
+    "listener": "RDP LISTENER",
+    "connLog": "SERVER CONN LOG",
+    "noneYet": "(none yet - click WINDOWS AUTO-LOGIN)"
+  },
+  "status": {
+    "runnerElapsed": "RUNNER ELAPSED",
+    "remaining": "REMAINING",
+    "rdpUsage": "RDP USAGE",
+    "lastLogon": "LAST LOGON",
+    "clock": "CLOCK"
+  },
+  "copy": {
+    "action": "copy",
+    "copied": "Copied"
+  },
+  "field": {
+    "reveal": "Show",
+    "hide": "Hide",
+    "value": "value"
+  },
+  "table": {
+    "filter": "Filter…",
+    "density": {
+      "comfortable": "Comfortable rows",
+      "compact": "Compact rows"
+    },
+    "empty": "No records yet.",
+    "sortAsc": "Sort ascending",
+    "sortDesc": "Sort descending"
+  },
+  "toggle": {
+    "theme": {
+      "label": "Toggle theme",
+      "light": "light",
+      "dark": "dark"
+    },
+    "scale": {
+      "label": "Text size",
+      "comfort": "Comfort",
+      "large": "Large",
+      "a11y": "Accessibility",
+      "short": "Aa"
+    },
+    "language": {
+      "label": "Language",
+      "en": "English",
+      "si": "Sinhala",
+      "shortSi": "සිං",
+      "shortEn": "EN"
+    }
+  },
+  "activity": {
+    "connection": "connection",
+    "mirror": "mirror",
+    "watcher": "watcher",
+    "websocket": "ws",
+    "clock": "clock"
+  },
+  "errors": {
+    "authFailure": "Authentication failed",
+    "networkDown": "Network unreachable",
+    "certExpired": "Certificate expired",
+    "connLost": "connection lost - cannot reach the dashboard server. Values below are the LAST KNOWN data and may be stale. Retrying...",
+    "flushFailed": "Flush failed - server not reachable",
+    "flushOk": "Flush requested - watcher will upload everything",
+    "launchFailed": "Launch failed - server not reachable",
+    "launchOk": "Watcher start requested"
+  },
+  "stat": {
+    "runnerIp": "Runner IP",
+    "cert": "Cert validity",
+    "logonOk": "Logons OK (24h)",
+    "usage": "Usage (24h)"
+  },
+  "pages": {
+    "sessions": {
+      "title": "Sessions",
+      "activeRunner": "Active runner",
+      "ticketAudit": "Ticket audit"
+    },
+    "connections": {
+      "title": "Connections"
+    },
+    "mirrorPage": {
+      "title": "Mirror",
+      "history": "Upload history",
+      "egress": "Runner egress bandwidth (7-day rolling)"
+    },
+    "telemetryPage": {
+      "title": "Telemetry"
+    },
+    "settings": {
+      "title": "Settings",
+      "appearance": "Appearance",
+      "language": "Language",
+      "textScale": "Text scale",
+      "theme": "Theme",
+      "migration": "Migration notes (F38 → v2)"
+    }
+  },
+  "egress": {
+    "line": "Uploads execute ON THE RUNNER (egress IP {{ip}}) - your PC's connection is never used for uploads."
+  },
+  "banners": {
+    "ended": "SESSION EXPIRED - GitHub hard cap reached. Runner termination imminent.",
+    "recoveryTitle": "RECOVERY - password rejected by the host",
+    "recoveryNote": "fresh ticket -> stored credential overwritten -> mstsc reopens; no typing, no clipboard"
+  }
+}

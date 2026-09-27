@@ -8,6 +8,13 @@ $ErrorActionPreference = 'Continue'
 $script:CfgPath = Join-Path $Root 'config.json'
 $script:ProgPath = Join-Path $Root 'progress.json'
 $script:UiPath = Join-Path $Root 'ui.html'
+# [F41 P1] v2 dashboard bundle, OPT-IN only. Default stays v1 until the operator
+# flips $script:UiV2Default (P4 cutover). Routing contract:
+#   /?ui=v2  -> serve ui-v2.html when staged, fall back to v1 when absent
+#   /?ui=v1  -> always serve v1 ui.html (one-release fallback after cutover)
+#   default  -> v1 while $script:UiV2Default is $false
+$script:UiV2Path = Join-Path $Root 'ui-v2.html'
+$script:UiV2Default = $false
 $script:InstPath = Join-Path $Root 'ghrdp-install.ps1'
 # [F14 §2] the ONLY files GET /dl/<name> may serve. Exactly these three, never
 # more: they carry no secrets, so no dash token is required for them. Anything
@@ -2342,8 +2349,17 @@ boot();
             return
         }
         if (($path -eq '/') -or ($path -eq '/index.html')) {
+            # [F41 P1] ui selection: default v1; ?ui=v2 opts into the v2 bundle
+            # (staged as ui-v2.html); ?ui=v1 pins v1. Missing v2 file falls back
+            # to v1 fail-closed. No other query value changes the default.
             $html = '<h1>Mission Control UI file missing</h1>'
-            try { $html = [System.IO.File]::ReadAllText($script:UiPath, [System.Text.Encoding]::UTF8) } catch { }
+            $uiSel = ''
+            try { if ($parts.query -and $parts.query.ContainsKey('ui')) { $uiSel = [string]$parts.query['ui'] } } catch { }
+            $wantV2 = $script:UiV2Default -or ($uiSel -eq 'v2')
+            if ($uiSel -eq 'v1') { $wantV2 = $false }
+            $uiFile = $script:UiPath
+            if ($wantV2 -and (Test-Path -LiteralPath $script:UiV2Path)) { $uiFile = $script:UiV2Path }
+            try { $html = [System.IO.File]::ReadAllText($uiFile, [System.Text.Encoding]::UTF8) } catch { }
             $ip = ''; $tg = ''
             if ($cfg) {
                 $ip = [string]$cfg.rdpIp

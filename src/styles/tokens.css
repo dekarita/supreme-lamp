@@ -1,0 +1,100 @@
+/* [F41 plan §1] Design tokens - the SINGLE source of truth for color/spacing/
+   radius/shadow/motion/typography. Tailwind mirrors these in tailwind.config.ts.
+   Never hand-write hex outside this file (CI gate: no-neon-green).
+
+   Regression note: --color-success is the ONLY green allowed (plan §1.1);
+   #22c55e / #39ff14 / #00ff41 / #00ff00 are banned literals everywhere else. */
+
+:root {
+  /* 1.1 Color tokens - LIGHT theme defaults */
+  --color-bg-base: #f8fafc;            /* slate-50  body background */
+  --color-bg-surface: #ffffff;         /* cards, panels */
+  --color-bg-surface-raised: #f1f5f9;  /* slate-100 hover surfaces */
+  --color-bg-surface-sunken: #f1f5f9;  /* code blocks, log viewers */
+  --color-border-default: #e2e8f0;     /* slate-200 */
+  --color-border-strong: #cbd5e1;      /* slate-300 */
+  --color-text-primary: #0f172a;       /* slate-900 */
+  --color-text-secondary: #475569;     /* slate-600 */
+  --color-text-tertiary: #64748b;      /* slate-500 */
+  --color-text-mono: #334155;          /* slate-700 */
+  --color-accent: #0ea5e9;             /* sky-500 */
+  --color-accent-hover: #0284c7;       /* sky-600 */
+  --color-accent-fg: #ffffff;
+  --color-success: #059669;            /* emerald-600 - the ONLY green */
+  --color-warning: #d97706;            /* amber-600 */
+  --color-danger: #dc2626;             /* red-600 */
+  --color-danger-hover: #b91c1c;       /* red-700 */
+  --color-focus-ring: #0ea5e9;
+
+  /* 1.4 Shadow */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.10), 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.10), 0 1px 2px rgba(0, 0, 0, 0.06);
+}
+
+html[data-theme="dark"] {
+  --color-bg-base: #0f172a;            /* slate-900 */
+  --color-bg-surface: #1e293b;         /* slate-800 */
+  --color-bg-surface-raised: #273345;
+  --color-bg-surface-sunken: #0b1220;
+  --color-border-default: #334155;     /* slate-700 */
+  --color-border-strong: #475569;      /* slate-600 */
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #cbd5e1;     /* slate-300 */
+  --color-text-tertiary: #94a3b8;      /* slate-400 */
+  --color-text-mono: #e2e8f0;          /* slate-200 */
+  --color-accent: #0ea5e9;
+  --color-accent-hover: #38bdf8;       /* sky-400 */
+  --color-accent-fg: #ffffff;
+  --color-success: #10b981;            /* emerald-500 */
+  --color-warning: #f59e0b;            /* amber-500 */
+  --color-danger: #ef4444;             /* red-500 */
+  --color-danger-hover: #f87171;       /* red-400 */
+  --color-focus-ring: #38bdf8;
+}
+
+:root {
+  /* 1.5 Motion (no spring overshoot anywhere - F39 springs are retired) */
+  --motion-fast: 100ms cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-med: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --motion-slow: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  /* 1.6 Typography stacks */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+    "Segoe UI", "Noto Sans Sinhala", "Nirmala UI", "Iskoola Pota", sans-serif;
+  --font-mono: "JetBrains Mono", "Roboto Mono", "SF Mono", "Cascadia Mono",
+    "Consolas", ui-monospace, monospace;
+
+  /* 1.2 Spacing (4px grid) - exposed for non-Tailwind (inline adapter) styles */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* 1.3 Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  /* 1.7 Text scale (persisted html[data-scale]; rem utilities cascade).
+     comfort = Tailwind default root (1rem=16px -> body text-sm = 14px)
+     large   = 1rem = 17.1429px -> body text-sm = 15px
+     a11y    = 1rem = 18.2857px -> body text-sm = 16px */
+  --body-size: 14px;
+}
+
+html[data-scale="large"] { --body-size: 15px; font-size: 17.1429px; }
+html[data-scale="a11y"]  { --body-size: 16px; font-size: 18.2857px; }
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms linear;
+    --motion-med: 0ms linear;
+    --motion-slow: 0ms linear;
+  }
+}

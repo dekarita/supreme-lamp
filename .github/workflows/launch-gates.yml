@@ -2060,6 +2060,42 @@ jobs:
           bash tests/f40-ia-gate.sh
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
+      # [F41 P1] v2 dashboard gates: the built bundle must render all 219
+      # frozen regression ids (jsdom), pass the six smoke suites, carry no
+      # banned green tokens, keep the bottom-bar time contract, and mount in a
+      # real Chromium with zero console errors. Playwright browsers download
+      # from cdn.playwright.dev (allowed on runners; blocked in some sandboxes).
+      - name: F41 v2 build + smoke + regression-id gates
+        run: |
+          set -euo pipefail
+          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+          export VITE_BUILD_SHA="${GITHUB_SHA:-dev}"
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm run build
+          node scripts/check-regression-ids.mjs
+          node scripts/check-no-neon-green.mjs ui/dist/index.html
+          node scripts/check-bottom-bar-time.mjs
+          # F41 flag contract: default OFF, opt-in ?ui=v2, staged file ui-v2.html
+          grep -qF '$script:UiV2Default = $false' payloads/ghrdp-server.ps1
+          grep -qF '$script:UiV2Path' payloads/ghrdp-server.ps1
+          grep -qF 'ui-v2.html' payloads/ghrdp-server.ps1
+          grep -qF 'ui-v2.html' .github/workflows/main.yml
+          pnpm exec vitest run
+      - name: F41 v2 e2e (playwright, real bundle)
+        run: |
+          set -euo pipefail
+          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+          corepack enable
+          pnpm exec playwright install --with-deps chromium
+          # Failure bridge: the sandbox authoring this cannot read runner logs
+          # (blob storage blocked), so surface the report tail as ONE readable
+          # ::error:: annotation on the check run.
+          if ! out=$(pnpm exec playwright test 2>&1); then
+            echo "$out" | tail -40
+            echo "::error::E2E-FAIL::$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r')"
+            exit 1
+          fi
   windows-native:
     runs-on: windows-latest
     steps:

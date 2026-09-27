@@ -1604,6 +1604,22 @@ jobs:
           # [remediation] agent + enroll + accept payload staging removed (C2 client + acceptance-of-agent gone)
           # [remediation] acceptance + diag staging removed (agent-dependent probes deleted)
           ls -la "$RUNNER_TEMP/ghrdp-stage"
+          # [F41 P1] build the v2 dashboard single-file bundle and stage it as
+          # ui-v2.html NEXT TO ui.html (same tailnet-only surface, same config
+          # replacement - harmless, the v2 bundle reads /api/config instead).
+          # OPT-IN: GET /?ui=v2 serves it; the default stays v1 until the P4
+          # cutover flips $script:UiV2Default in ghrdp-server.ps1.
+          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+          export VITE_BUILD_SHA="${GITHUB_SHA}"
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm run build
+          node scripts/check-regression-ids.mjs
+          node scripts/check-no-neon-green.mjs ui/dist/index.html
+          node scripts/check-bottom-bar-time.mjs
+          grep -qF '$script:UiV2Default = $false' payloads/ghrdp-server.ps1
+          cp ui/dist/index.html "$RUNNER_TEMP/ghrdp-stage/ui-v2.html"
+          echo "[f41] ui-v2.html staged ($(wc -c < "$RUNNER_TEMP/ghrdp-stage/ui-v2.html") bytes)"
           mkdir -p "$RUNNER_TEMP/ghrdp-rust/src"
           cp "$GITHUB_WORKSPACE/payloads/Cargo.toml" "$RUNNER_TEMP/ghrdp-rust/Cargo.toml"
           cp "$GITHUB_WORKSPACE/payloads/main.rs" "$RUNNER_TEMP/ghrdp-rust/src/main.rs"
