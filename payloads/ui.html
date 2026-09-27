@@ -471,6 +471,7 @@ main{max-width:1280px !important}
 <header class="topbar glass tier-bar" id="topbar">
   <div class="topbar-main">
     <div class="brand"><span class="brand-dot" aria-hidden="true"></span><svg class="ic brand-ic" aria-hidden="true"><use href="#i-activity"/></svg><h1>RDP Mission Control</h1></div>
+    <a id="v2Preview" href="#" style="display:inline-flex;align-items:center;padding:.35rem .7rem;border-radius:999px;background:var(--glass-bg);border:var(--glass-edge);color:var(--ink);font-size:.833rem;text-decoration:none;margin-left:.5rem;">Preview v2 UI</a>
     <div class="chip-row" role="status" aria-live="polite" id="topbarChips">
       <span class="chip" id="pillConn" data-ic="activity" title="Actual result of the last data fetch"><svg class="ic" aria-hidden="true"><use href="#i-activity"/></svg><i class="dot"></i><span>connection: live</span></span>
       <span class="chip" id="pillMirror" data-ic="database" title="Mirror ON only when mirroring was enabled AND the watcher heartbeat is under 15s old"><svg class="ic" aria-hidden="true"><use href="#i-database"/></svg><i class="dot"></i><span>mirror: ON</span></span>
@@ -2862,5 +2863,5 @@ try{
 })();
 </script>
 
-</body>
+<script>(function(){var a=document.getElementById("v2Preview");if(a){try{var u=new URL(location.href);u.searchParams.set("ui","v2");a.href=u.toString();}catch(e){}}})();</script></body>
 </html>
