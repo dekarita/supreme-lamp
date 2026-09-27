@@ -996,6 +996,17 @@ jobs:
           }
           if (-not $nsB) { Z-Fail 'beacon-ring' 'the server never stored 4 client telescope beacons' }
           $mine = @($nsB.telescopeClient.items | Where-Object { $_.trace -eq $trace })
+          # [F37 §1 beacon-stage] the stage is not the client's word: every beacon
+          # with a shared slug must have been mapped to THAT slug's stage by the
+          # server (module token table). Anchoring on the derived stage - not only
+          # on the presence of the four rows - is what named the stage='other'
+          # class instead of hiding it behind a green presence check.
+          $unmapped = @($mine | Where-Object { $_.stage -eq 'other' })
+          if ($unmapped.Count -gt 0) {
+              Z-Fail 'beacon-stage-derivation' ('a beacon slug was not mapped to its stage: ' +
+                  (($unmapped | ForEach-Object { 'trace=' + [string]$_.trace + ' slug=' + [string]$_.details + ' stage=' + [string]$_.stage }) -join ' | ') +
+                  ' :: the module slug->stage table and the launcher slug must stay in step')
+          }
           foreach ($need in @('dns', 'tcp', 'tls', 'cred')) {
               $hit = @($mine | Where-Object { $_.stage -eq $need })
               if ($hit.Count -lt 1) { Z-Fail 'beacon-stage' ('no client beacon for stage ' + $need + ' under trace ' + $trace + ' :: ' + ($nsB.telescopeClient.items | ConvertTo-Json -Compress)) }

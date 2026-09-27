@@ -1868,6 +1868,17 @@ jobs:
           for slug in telescope-dns-ok telescope-tcp-ok telescope-tls-ok telescope-cred-missing; do
             grep -qE "telescope-(dns|tcp|tls|cred)|\\(rst-before-cert" <<< "$(grep -F 'F37TelSlugRe' "$srv")" || { echo 'F37: the server slug allowlist drifted' >&2; exit 1; }
           done
+          # [F37] the beacon STAGE is DERIVED from the shared slug: ONE table in
+          # the module, the client only DECLARES it, and the server neutralizes any
+          # disagreement - a mislabeled beacon can never become a timeline verdict
+          # (the class that made a live diag beacon render as stage 'other').
+          grep -qF '$slugStage = [ordered]@{' "$mod" || { echo 'F37: the module does not declare the slug -> stage table' >&2; exit 1; }
+          grep -qF 'function Get-RdpTelescopeBeaconStage' "$mod" || { echo 'F37: the module owns no slug -> stage accessor' >&2; exit 1; }
+          grep -qF 'Get-F37BeaconStageForSlug' "$srv" || { echo 'F37: the server does not derive the beacon stage' >&2; exit 1; }
+          grep -qF 'Get-RdpTelescopeBeaconStage -Slug $Slug' "$srv" || { echo 'F37: the server keeps a second slug -> stage mapping' >&2; exit 1; }
+          grep -qF 'if (-not $derivedT -or ($stT -and $stT -ne $derivedT))' "$srv" || { echo 'F37: a declared/derived stage mismatch is not neutralized' >&2; exit 1; }
+          grep -qF 'HelloBounded(host, port, "diag", ok, slug, trace, stage)' "$cs" || { echo 'F37: the diag beacon does not declare its stage' >&2; exit 1; }
+          grep -qF 'IsTelClientStage(stage)' "$cs" || { echo 'F37: the declared stage is not gated on the client token set' >&2; exit 1; }
           # (3) the failure point is NAMED on every surface
           for f in rst-before-cert name-mismatch eku; do
             grep -qF "$f" "$cs" || { echo "F37: the launcher cannot name the failure point $f" >&2; exit 1; }

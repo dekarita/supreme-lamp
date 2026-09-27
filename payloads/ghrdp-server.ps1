@@ -673,6 +673,29 @@ foreach ($f37cand in @((Join-Path $Root 'rdp-telescope.ps1'), (Join-Path $PSScri
         }
     } catch { $script:F37TelLastError = ('module load failed: ' + $_.Exception.Message) }
 }
+function Get-F37BeaconStageForSlug {
+    # [F37 §1 telescope-format beacon-stage] slug -> stage THROUGH THE MODULE (the
+    # one token table); the server never keeps a second mapping of its own. '' is
+    # the honest answer for a slug the format does not know, and the caller then
+    # stores no verdict. The structural fallback exists only for the case where
+    # the module is not deployed at all (the same condition that makes
+    # Invoke-F37Telescope return its self-explaining fallback line) - it reads the
+    # slug's SHAPE, so it cannot drift from a slug list.
+    param([string]$Slug)
+    if (-not $Slug) { return '' }
+    if ($script:F37TelModule) {
+        $st = ''
+        try { $st = [string](Get-RdpTelescopeBeaconStage -Slug $Slug) } catch { $st = '' }
+        return $st
+    }
+    switch -Regex ($Slug) {
+        '^telescope-dns-' { return 'dns' }
+        '^telescope-tcp-' { return 'tcp' }
+        '^telescope-cred-' { return 'cred' }
+        '^telescope-(tls|rst-before-cert|chain|name-mismatch|eku)' { return 'tls' }
+    }
+    return ''
+}
 function New-F37TelescopeFallback {
     # The telescope explains its own absence: same line shape, same keys.
     param([string]$Why, [string]$Src = 'live', [string]$Trace = '')
@@ -1782,10 +1805,22 @@ function Invoke-ClientRequest {
                         $trT = [string]$bjT.trace
                         if ($trT -match '^[A-Za-z0-9\-]{4,64}$') { $cb.trace = $trT }
                         $stT = [string]$bjT.stage
-                        if ($stT -in @('dns', 'tcp', 'tls', 'cred')) { $cb.stage = $stT }
                         if ($null -ne $bjT.ok) { $cb.ok = [bool]$bjT.ok }
                         $detT = [string]$bjT.details
                         if ($detT -match $script:F37TelSlugRe) { $cb.details = $detT }
+                        # [F37 §3 beacon-stage] the stage is DERIVED from the shared
+                        # slug through the module's token table, never taken on the
+                        # client's word: a beacon whose slug belongs to no stage, or
+                        # whose declared stage disagrees with its slug, is neutralized
+                        # (stage=other + telescope-unparsed) instead of being stored as
+                        # a verdict. The server encodes no stage of its own.
+                        $derivedT = Get-F37BeaconStageForSlug -Slug ([string]$cb.details)
+                        if (-not $derivedT -or ($stT -and $stT -ne $derivedT)) {
+                            $cb.stage = 'other'
+                            $cb.details = 'telescope-unparsed'
+                        } else {
+                            $cb.stage = $derivedT
+                        }
                     }
                 }
             } catch { }

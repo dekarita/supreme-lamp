@@ -256,8 +256,18 @@ internal static class GhrdpRdpLauncher
     // [F37 §3] the same bounded POST, carrying the click's trace id.
     private static void HelloBounded(string host, int port, string verb, bool ok, string details, string trace)
     {
+        HelloBounded(host, port, verb, ok, details, trace, "");
+    }
+
+    // [F37 §3 beacon-stage] the DIAG beacon also declares the STAGE the slug
+    // belongs to (dns|tcp|tls|cred - the module's token set). The server still
+    // DERIVES the stage from the slug (payloads/rdp-telescope.ps1 is the single
+    // source of truth) and neutralizes any disagreement, so this declaration can
+    // only ever agree or be ignored - it never becomes an authority.
+    private static void HelloBounded(string host, int port, string verb, bool ok, string details, string trace, string stage)
+    {
         if (string.IsNullOrEmpty(host)) { return; }   // §1.5: POST only with a server arg
-        Thread t = new Thread(delegate() { Hello(host, port, verb, ok, details, trace); });
+        Thread t = new Thread(delegate() { Hello(host, port, verb, ok, details, trace, stage); });
         t.IsBackground = true;
         t.Start();
         t.Join(5000);
@@ -270,6 +280,11 @@ internal static class GhrdpRdpLauncher
 
     private static void Hello(string host, int port, string verb, bool ok, string details, string trace)
     {
+        Hello(host, port, verb, ok, details, trace, "");
+    }
+
+    private static void Hello(string host, int port, string verb, bool ok, string details, string trace, string stage)
+    {
         try
         {
             // [F19 §2] the beacon carries the exe version stamp: the server
@@ -281,7 +296,11 @@ internal static class GhrdpRdpLauncher
             // telescope into ONE timeline.
             string body = "{\"verb\":\"" + J(verb) + "\",\"ok\":" + (ok ? "true" : "false") +
                 ",\"details\":\"" + J(Redact(details)) + "\",\"exe\":\"" + J(Stamp) + "\"" +
-                (trace.Length > 0 ? (",\"trace\":\"" + J(trace) + "\"") : "") + "}";
+                (trace.Length > 0 ? (",\"trace\":\"" + J(trace) + "\"") : "") +
+                // [F37 §3 beacon-stage] the DIAG beacon declares the stage its
+                // slug belongs to; every other verb stays exactly as it was
+                // (the handler-hello endpoint never receives a stage key).
+                (IsTelClientStage(stage) ? (",\"stage\":\"" + J(stage) + "\"") : "") + "}";
             string endpoint = (verb == "diag") ? "/api/rdp-telescope" : "/api/handler-hello";
             HttpWebRequest req = (HttpWebRequest)WebRequest.Create(
                 "http://" + host + ":" + port + endpoint);
@@ -1475,6 +1494,15 @@ internal static class GhrdpRdpLauncher
         return MintTraceId();
     }
 
+    // [F37 §1 telescope-format] the CLIENT-owned stages, token for token from
+    // the module (dns|tcp|tls|cred: the launcher is the client, it never speaks
+    // the runner-only logon|schannel|listener stages). A value outside this set
+    // is not emitted at all - the server derives the stage from the slug anyway.
+    private static bool IsTelClientStage(string stage)
+    {
+        return stage == "dns" || stage == "tcp" || stage == "tls" || stage == "cred";
+    }
+
     // One slug per stage verdict - the module's Get-RdpTelescopeBeaconSlug.
     private static string TelSlug(string stage, bool ok, string failureAt)
     {
@@ -1493,7 +1521,7 @@ internal static class GhrdpRdpLauncher
         string slug = TelSlug(stage, ok, failureAt);
         LogJson(ok ? "info" : "error", "diag", "trace=" + trace + " stage=" + stage + " verdict=" + slug +
             (string.IsNullOrEmpty(why) ? "" : (" why=" + Redact(why))));
-        HelloBounded(host, port, "diag", ok, slug, trace);
+        HelloBounded(host, port, "diag", ok, slug, trace, stage);
     }
 
     private static byte[] TelReadExact(Stream s, int n)

@@ -907,6 +907,31 @@ permissive-callback warning) travel as `probeWarn` and can never manufacture a
 death point. Nothing outside the module re-implements the mapping; the workflow
 only copies `$f37TelFields.deathPoint`.
 
+### Beacon stage: declared by the client, derived by the server
+
+A client beacon is one line of the timeline (`dns|tcp|tls|cred`), so the stage
+cannot be whatever the poster says it is. The module owns ONE table
+(`$slugStage` in `Get-RdpTelescopeFormatTokens`, read back through
+`Get-RdpTelescopeBeaconStage`) mapping every beacon slug to its stage:
+
+* the launcher DECLARES the stage on each `diag` beacon (gated by its own
+  client-stage allowlist, so it can never speak a runner-only stage),
+* `POST /api/rdp-telescope` DERIVES the stage from the slug through that same
+  table — never from the body's `stage` — and stores
+  `stage=other` + `details=telescope-unparsed` when the slug is unknown or the
+  declaration disagrees with the slug,
+* the server keeps no second mapping: with the module deployed it asks the
+  module, and the structural fallback (used only when the module is absent, the
+  same condition that makes the telescope emit its self-explaining fallback
+  line) reads the slug's SHAPE rather than a list.
+
+Why it exists: the first live lab run showed four healthy client beacons stored
+as `stage:"other"` with the slug in `details` — the timeline lost its client
+stage because the launcher declared no stage and the server trusted a field
+nobody sent. Deriving the stage from the shared slug makes a mislabeled beacon
+impossible on both sides, and the lab fails closed on any unmapped row
+(`Z: beacon-stage-derivation`).
+
 ### Scope decision: what the telescope may NOT do
 
 * **Credentials are the client's property.** The server/runner face runs the

@@ -31,6 +31,19 @@ const FAILURE_AT = psArray('failureAt');
 const SLUGS = psArray('slugs');
 const DEATHS = psArray('deathPoints');
 
+// [F37 §1 beacon-stage] slug -> stage, the module's ONE table. The client
+// declares the stage, the server DERIVES it from here - so the table must cover
+// the whole slug vocabulary and name only stages the format defines.
+function psSlugStage() {
+  const m = mod.match(/\$slugStage = \[ordered\]@\{([\s\S]*?)\n\s*\}/);
+  assert.ok(m, 'the module no longer declares $slugStage (slug -> stage is the contract)');
+  return new Map([...m[1].matchAll(/'([a-z0-9-]+)' = '([a-z]+)'/g)].map(x => [x[1], x[2]]));
+}
+const SLUG_STAGE = psSlugStage();
+// the stages a CLIENT beacon can belong to (the launcher is the client; the
+// runner-only logon|schannel|listener stages are never beacons)
+const CLIENT_STAGES = ['dns', 'tcp', 'tls', 'cred'];
+
 // ---------------------------------------------------------------------------
 // §1 the module IS the format
 // ---------------------------------------------------------------------------
@@ -58,6 +71,19 @@ test('F37-1 the telescope module declares the stage/failure/slug vocabulary', ()
     assert.ok(mod.includes("'" + d + "'"), 'death point missing: ' + d);
   }
   assert.ok(mod.includes('function Get-RdpTelescopeDeathPoint'), 'the death-point resolver is missing');
+  // [F37 §1 beacon-stage] slug -> stage is declared HERE and read back through
+  // the module's own accessor: exactly the shared slugs, only client stages.
+  assert.deepStrictEqual([...SLUG_STAGE.keys()].sort(), [...SLUGS].sort(),
+    'the slug -> stage table and the slug vocabulary disagree');
+  for (const [slug, stage] of SLUG_STAGE) {
+    assert.ok(STAGES.includes(stage), 'the slug -> stage table names a non-stage: ' + slug + '=' + stage);
+    assert.ok(CLIENT_STAGES.includes(stage), 'a beacon slug points at a runner-only stage: ' + slug + '=' + stage);
+  }
+  assert.ok(mod.includes('function Get-RdpTelescopeBeaconStage'), 'the slug -> stage accessor is missing');
+  assert.ok(mod.includes("Get-RdpTelescopeFormatTokens -Kind 'slugStage'"),
+    'the accessor must read the ONE token table, not a second mapping');
+  assert.ok(mod.includes("'slugStage' { return $slugStage }"),
+    'the slug -> stage table is not exported as a format token');
   assert.ok(mod.includes('function Get-RdpTelescopeFields'), 'the shared derivation helper is missing');
   assert.ok(mod.includes('function Format-RdpTelescopeDump'), 'the printed-field renderer is missing');
 });
@@ -134,6 +160,25 @@ test('F37-5 the diag verb is read-only and beacons per stage to /api/rdp-telesco
   const stage = cs.slice(cs.indexOf('private static void TelStage'), cs.indexOf('private static byte[] TelReadExact'));
   assert.ok(stage.includes('HelloBounded(host, port, "diag"'), 'the stage beacon is not a diag beacon');
   assert.ok(stage.includes('trace'), 'the stage beacon does not carry the trace id');
+  // [F37 §3 beacon-stage] the diag beacon DECLARES the stage its slug belongs
+  // to. The server derives the stage from the slug anyway, so a declaration can
+  // only agree with the format or be neutralized - never become the authority.
+  assert.ok(stage.includes('HelloBounded(host, port, "diag", ok, slug, trace, stage)'),
+    'the stage beacon does not declare the stage its slug belongs to');
+  const cliStage = cs.slice(cs.indexOf('private static bool IsTelClientStage'), cs.indexOf('// One slug per stage verdict'));
+  assert.ok(cliStage.length > 40, 'the client stage allowlist is missing');
+  for (const s of CLIENT_STAGES) {
+    assert.ok(cliStage.includes('"' + s + '"'), 'the client stage allowlist lost ' + s);
+  }
+  for (const s of ['logon', 'schannel', 'listener']) {
+    assert.ok(!cliStage.includes('"' + s + '"'), 'the client claims the runner-only stage ' + s);
+  }
+  const hello = cs.slice(cs.indexOf('private static void Hello(string host, int port, string verb, bool ok, string details, string trace, string stage)'),
+    cs.indexOf('private static string JoinArgs'));
+  assert.ok(hello.length > 200, 'the stage-carrying beacon writer is missing');
+  assert.ok(hello.includes('IsTelClientStage(stage)'),
+    'the declared stage is not gated on the client stage set');
+  assert.ok(hello.includes('J(stage)'), 'the declared stage never reaches the beacon body');
   assert.ok(cs.includes('endpoint = (verb == "diag") ? "/api/rdp-telescope" : "/api/handler-hello"'),
     'diag beacons must go to /api/rdp-telescope, never into the handler-hello chain');
   // the REAL launch path only telescopes when the click minted a trace, so the
@@ -200,6 +245,19 @@ test('F37-8 the client beacon endpoint allowlists stage/slug/trace (a secret can
   }
   assert.match(body, /\^\[A-Za-z0-9\\-\]\{4,64\}\$/, 'the endpoint does not validate the trace id');
   assert.ok(body.includes("telescope-unparsed"), 'an unknown slug must be neutralized, not stored');
+  // [F37 §3 beacon-stage] the stage is DERIVED from the shared slug through the
+  // module - the declared stage can only agree or be neutralized, so a
+  // mislabeled (or future) beacon can never become a timeline verdict.
+  assert.ok(body.includes('Get-F37BeaconStageForSlug'), 'the server trusts the declared stage instead of deriving it');
+  assert.ok(!/\$cb\.stage = \$stT\b/.test(body), 'the declared stage is stored verbatim (the client would be the authority)');
+  assert.ok(body.includes("$cb.stage = 'other'") && body.includes("$cb.details = 'telescope-unparsed'"),
+    'a slug/stage disagreement is not neutralized');
+  const helper = srv.slice(srv.indexOf('function Get-F37BeaconStageForSlug'), srv.indexOf('function New-F37TelescopeFallback'));
+  assert.ok(helper.length > 200, 'the server-side slug -> stage derivation is missing');
+  assert.ok(helper.includes('Get-RdpTelescopeBeaconStage -Slug $Slug'),
+    'the server keeps a second slug -> stage mapping instead of asking the module');
+  assert.ok(helper.includes('$script:F37TelModule'),
+    'the derivation does not say how it answers when the module is absent');
   // the SERVER's slug regex must accept exactly the module's slugs
   const m = srv.match(/\$script:F37TelSlugRe = '([^']+)'/);
   assert.ok(m, 'the server slug allowlist is missing');
