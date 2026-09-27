@@ -36,6 +36,13 @@ on:
       - payloads/Test-RdpListenerHandshake.ps1
       - payloads/rdp-telescope.ps1
       - tests/f37-telescope.test.js
+      - payloads/ghrdp-mirror-diag.ps1
+      - payloads/ghrdp-watcher.ps1
+      - payloads/ghrdp-lib.ps1
+      - tests/mirror-mock-server.js
+      - tests/f44-mirror-diag.test.js
+      - tests/f44-mirror-lab-driver.ps1
+      - tests/f44-host-probe.ps1
 jobs:
   proof:
     runs-on: windows-latest
@@ -2976,3 +2983,39 @@ jobs:
           Write-Host ('::notice::[G] physical-PC cells (0 prompts, live peripherals, screenshot-native) remain PENDING-USER per §6; no LIVE claim is made here')
           '' | Add-Content -Path $S
           'STOP-condition note: §6(a-c) are proven at the launcher/protocol level in this lab; the physical-PC cells (0 prompts, live peripherals, physical-native screenshot) stay PENDING-USER per §6, so the AUTO-LOGIN REDIRECT LIVE line is NOT claimed.' | Add-Content -Path $S
+
+  # [F44 §2 §3] MIRROR CELL (new, self-contained job; the proof job above is
+  # untouched). Runs the REAL payloads/ghrdp-mirror-diag.ps1 classifier +
+  # retry policy against the mock upload server, asserts phase + attempt
+  # counts (green matrix BEFORE PR), then does ONE read-only GET per real
+  # host api root (no content upload; a 403 is documented as POLICY, never
+  # evaded - no IP rotation, no UA spoofing, no proxy chains).
+  mirror-cell:
+    name: F44 mirror diagnostics cell (mock matrix + read-only host probe)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: F44 mock matrix (mirror upload module vs mock hosts)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $mock = Start-Process -PassThru -WindowStyle Hidden -FilePath 'node' -ArgumentList 'tests/mirror-mock-server.js'
+          try {
+              $up = $false
+              for ($i = 0; $i -lt 40 -and -not $up; $i++) {
+                  try { $r = Invoke-RestMethod -Uri 'http://127.0.0.1:8787/health' -UseBasicParsing -TimeoutSec 2; if ($r -eq 'ok') { $up = $true } } catch { Start-Sleep -Milliseconds 500 }
+              }
+              if (-not $up) { throw 'mock upload server did not start' }
+              $env:MIRROR_MOCK_BASE = 'http://127.0.0.1:8787'
+              & pwsh -NoProfile -File tests/f44-mirror-lab-driver.ps1
+              if ($LASTEXITCODE -ne 0) { throw 'F44 mirror-cell matrix red - see F44MATRIX lines above' }
+          } finally {
+              try { Stop-Process -Id $mock.Id -Force -ErrorAction SilentlyContinue } catch { }
+          }
+      - name: F44 real-host read-only probe (no content upload; POLICY 403 documented, never evaded)
+        run: |
+          $ErrorActionPreference = 'Continue'
+          & pwsh -NoProfile -File tests/f44-host-probe.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'F44 host probe failed to run' }

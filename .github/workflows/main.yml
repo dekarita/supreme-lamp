@@ -1620,6 +1620,8 @@ jobs:
           echo '[webdesk-ui] staged'
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-watcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-watcher.ps1"
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-mirror-diag.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-mirror-diag.ps1"
+          echo '[watcher] ghrdp-mirror-diag.ps1 staged (F44 classifier + retry policy)'
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-pub2.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-pub2.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-bootstrap-session.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-bootstrap-session.ps1"
           echo '[watcher] ghrdp-watcher.ps1 written'
@@ -1701,6 +1703,13 @@ jobs:
           if (-not (Test-Path -LiteralPath $lib)) {
               Write-Host '::error::ghrdp-lib.ps1 missing - an EARLIER step halted this run. Read the FIRST failed step above; this step is a cascade, not the cause.'
               if ($env:GITHUB_STEP_SUMMARY) { '### Upstream halt: lib never staged - fix the first failed step.' | Add-Content -Path $env:GITHUB_STEP_SUMMARY }
+              exit 1
+          }
+          # [F44] same fail-visible staging assert for the diagnostics module.
+          $diagMod = Join-Path $root 'ghrdp-mirror-diag.ps1'
+          if (-not (Test-Path -LiteralPath $diagMod)) {
+              Write-Host '::error::ghrdp-mirror-diag.ps1 missing - the F44 deploy-payloads step did not stage it. Read the FIRST failed step above.'
+              if ($env:GITHUB_STEP_SUMMARY) { '### Upstream halt: F44 diag module never staged.' | Add-Content -Path $env:GITHUB_STEP_SUMMARY }
               exit 1
           }
           . (Join-Path $root 'ghrdp-lib.ps1')
@@ -5195,6 +5204,31 @@ jobs:
           Write-Host '[keepalive] keep-alive window complete; the cleanup steps will run now'
           exit 0
 
+      # [F44 §1.2] mirror-diag artifact on EVERY run (always()): the full
+      # attempt ledger (progress.json incl. per-attempt phase/status/hostMessage)
+      # + index/done maps. Secret-free by construction: host messages are redacted
+      # at the source (Protect-MirrorText) and no key field lives in progress.json.
+      - name: Stage mirror-diag artifact (F44)
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $dst = Join-Path $env:GITHUB_WORKSPACE 'mirror-diag'
+          New-Item -ItemType Directory -Path $dst -Force | Out-Null
+          $n = 0
+          foreach ($src in @('C:\ghrdp\progress.json', 'C:\ghrdp\mirror-index.json', 'C:\ghrdp\mirror-done.txt')) {
+              if (Test-Path -LiteralPath $src) { Copy-Item -LiteralPath $src -Destination $dst -Force; $n++ }
+          }
+          if ($n -eq 0) { [System.IO.File]::WriteAllText((Join-Path $dst 'absent.txt'), ('mirror state files absent (mirror off or watcher pre-start) at ' + (Get-Date -Format o))) }
+          Write-Host ('[mirror-diag] staged ' + $n + ' mirror state file(s)')
+      - name: Upload mirror-diag artifact (F44)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirror-diag
+          path: mirror-diag
+          retention-days: 1
+          if-no-files-found: warn
       - name: Cleanup (wipe profiles/storage, reset funnel/serve) - no log-clear per remediation 8E
         if: ${{ always() && env.GHRDP_EPHEMERAL == 'true' }}
         shell: pwsh
