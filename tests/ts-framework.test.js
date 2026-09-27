@@ -46,9 +46,15 @@ test('no interactive sign-in fallback and the raw key is never printed', () => {
         'Write-Host line may not reference the key value: ' + l.trim());
     }
   }
-  // classification follows the spec pattern sets
-  assert.match(tsStep, /invalid\|expired\|revoked\|not a valid'\) \{ \$reason = 'ts-authkey-invalid'/);
-  assert.match(tsStep, /rate\|limit'\) \{ \$reason = 'ts-authkey-ratelimited'/);
+  // [F34-2] classification is an ORDERED TABLE - reason + its own remediation link
+  // (the old inline if/elseif chain sent every class to the keys page). The F34 node
+  // matrix executes the extracted patterns; here the shape is pinned.
+  for (const c of ['ts-authkey-invalid', 'ts-authkey-ratelimited', 'ts-control-plane']) {
+    assert.ok(tsStep.includes("Reason = '" + c + "'"), 'classifier class missing: ' + c);
+  }
+  assert.match(tsStep, /foreach \(\$cl in \$f34Classes\) \{/);
+  assert.match(tsStep, /Emit-SecretHalt 'TS_AUTHKEY login failed' \$haltUrl/);
+  assert.match(tsStep, /https:\/\/status\.tailscale\.com/);
 });
 
 test('one # [F9k-guard] cascade guard per ghrdp-lib.ps1 dot-source', () => {
