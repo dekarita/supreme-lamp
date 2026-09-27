@@ -2260,11 +2260,47 @@ jobs:
           const SIN = 'සිංහල සහය: මෙම පාලක පුවරුව සිංහල අකුරු නිවැරදිව පෙන්වයි';
           process.on('unhandledRejection', e => { fs.writeFileSync('f38-lab-error.txt', 'unhandledRejection: ' + (e && e.stack || e)); process.exit(1); });
           process.on('uncaughtException', e => { try { fs.writeFileSync('f38-lab-error.txt', 'uncaughtException: ' + (e && e.stack || e)); } catch (_) {} process.exit(1); });
+          // In-process server on an ephemeral port. Cell P owns 7391 and a
+          // separate Start-Process can exit before listen (run 36316833646:
+          // ERR_CONNECTION_REFUSED, zero screenshots).
+          const http = await import('node:http');
+          const uiFile = 'ui-live.html';
+          if (!fs.existsSync(uiFile)) fail('serve', 'ui-live.html missing in ' + process.cwd());
+          const server = http.createServer((req, res) => {
+            if (req.url === '/' || (req.url && req.url.startsWith('/?'))) {
+              const b = fs.readFileSync(uiFile);
+              res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': b.length });
+              res.end(b);
+              return;
+            }
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, path: req.url }));
+          });
+          await new Promise((resolve, reject) => {
+            server.once('error', reject);
+            server.listen(0, '127.0.0.1', resolve);
+          });
+          const origin = 'http://127.0.0.1:' + server.address().port + '/';
+          console.log('[W] ui served on ' + origin);
           const results = {};
           for (const width of [1280, 1600, 1920]) {
             const ctx = await browser.newContext({ viewport: { width, height: 900 } });
             const page = await ctx.newPage();
-            await page.goto('http://127.0.0.1:7391/', { waitUntil: 'domcontentloaded', timeout: 30000 });
+            let lastGoto = null;
+            for (let attempt = 1; attempt <= 3; attempt++) {
+              try {
+                await page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 20000 });
+                lastGoto = null;
+                break;
+              } catch (e) {
+                lastGoto = e;
+                console.log('[W] goto attempt ' + attempt + ' failed: ' + (e && e.message || e));
+                await page.waitForTimeout(500);
+              }
+            }
+            if (lastGoto) fail('goto', origin + ' :: ' + (lastGoto && lastGoto.message || lastGoto));
+            const hasToggle = await page.locator('#textScaleToggle').count();
+            if (!hasToggle) fail('page', 'served document is not ui.html (missing #textScaleToggle) url=' + page.url());
             const fss = await fontStatus(page);
             console.log('[W] fonts.status@' + width + '=' + fss);
             await page.waitForTimeout(400);
@@ -2358,18 +2394,14 @@ jobs:
             [System.IO.File]::WriteAllText((Join-Path $ws 'package.json'), $pkg, (New-Object System.Text.UTF8Encoding($false)))
             npm install playwright-core --no-audit --no-fund --loglevel=error 2>&1 | ForEach-Object { Write-Host "[W] npm: $_" }
             if ($LASTEXITCODE -ne 0) { W-Fail 'npm' 'playwright-core install failed' }
-            $srv = Start-Process node -ArgumentList ('"' + $srvPath + '"') -WorkingDirectory $ws -PassThru -WindowStyle Hidden
-            Start-Sleep -Seconds 2
-            try {
-              node $labPath
-              if ($LASTEXITCODE -ne 0) {
-                $errFile = Join-Path $ws 'f38-lab-error.txt'
-                $extra = ''
-                if (Test-Path -LiteralPath $errFile) { $extra = ' :: ' + (([System.IO.File]::ReadAllText($errFile)) -replace "`r?`n", ' / ') }
-                W-Fail 'lab-script' ("node f38-lab.mjs exited $LASTEXITCODE" + $extra)
-              }
-            } finally {
-              try { Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue } catch { }
+            # The lab script binds its own ephemeral port and serves ui-live.html.
+            # Do not reuse 7391: cell P's hello-listener owns that port.
+            node $labPath
+            if ($LASTEXITCODE -ne 0) {
+              $errFile = Join-Path $ws 'f38-lab-error.txt'
+              $extra = ''
+              if (Test-Path -LiteralPath $errFile) { $extra = ' :: ' + (([System.IO.File]::ReadAllText($errFile)) -replace "`r?`n", ' / ') }
+              W-Fail 'lab-script' ("node f38-lab.mjs exited $LASTEXITCODE" + $extra)
             }
           } finally { Pop-Location }
           # --- (4) jsdom-style smoke: the existing beacon/ticket DOM flows ---------
