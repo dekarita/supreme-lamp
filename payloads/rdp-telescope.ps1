@@ -194,6 +194,21 @@ function Get-RdpTelescopeTcp {
         return New-RdpTelescopeLine -Stage 'tcp' -Ok $false -Why ($_.Exception.Message) -Fields @{ ip = $Ip; port = $Port; rttMs = [int]$sw.ElapsedMilliseconds } -Trace $Trace -Src $Src
     } finally { if ($tcp) { $tcp.Dispose() } }
 }
+function Test-RdpTelescopeX224Confirm {
+    # [F37 §1] ONE implementation of the RESPONSE layout (TPKT already trimmed:
+    # X.224 connection confirm is 7 bytes - LI, 0xD0, dst-ref(2), src-ref(2),
+    # class - and the RDP_NEG_RSP follows: type=0x02, flags, length=0x0008
+    # LITTLE-ENDIAN, selectedProtocol(4). Byte offsets are the whole point: an
+    # off-by-one here reads "did not select TLS" from a healthy listener, which
+    # is exactly how a red cell hid a working handshake.
+    param([Parameter(Mandatory)][byte[]]$Response)
+    if ($Response.Length -lt 15) { throw ('X.224 response too short: ' + $Response.Length) }
+    if ($Response[1] -ne 0xd0) { throw 'X.224 is not a connection confirm' }
+    if ($Response[7] -ne 2 -or $Response[9] -ne 8 -or $Response[10] -ne 0) { throw 'RDP negotiation did not select TLS' }
+    $selected = [BitConverter]::ToUInt32($Response, 11)
+    if ($selected -ne 1 -and $selected -ne 2 -and $selected -ne 8) { throw ('RDP selected non-TLS protocol ' + $selected) }
+    return $selected
+}
 function Get-RdpTelescopeX224Request {
     return ,([byte[]](0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00))
@@ -314,10 +329,7 @@ function Get-RdpTelescopeTls {
             if ($n -le 0) { throw 'X.224 connection reset/EOF in negotiation' }
             $got += $n
         }
-        if ($response[1] -ne 0xd0) { throw 'X.224 is not a connection confirm' }
-        if ($response[7] -ne 2 -or $response[9] -ne 8 -or $response[10] -ne 0) { throw 'RDP negotiation did not select TLS' }
-        $protocol = [BitConverter]::ToUInt32($response, 11)
-        if ($protocol -ne 1 -and $protocol -ne 2 -and $protocol -ne 8) { throw ('RDP selected non-TLS protocol ' + $protocol) }
+        $protocol = Test-RdpTelescopeX224Confirm -Response $response
         # PERMISSIVE on purpose: read, never trust (no install, no override) -
         # through the COMPILED delegate, because a scriptblock cannot run on the
         # threadpool thread that completes the handshake.

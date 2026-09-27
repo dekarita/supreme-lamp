@@ -521,6 +521,36 @@ test('F37-22 the certificate callback is COMPILED (a scriptblock callback cannot
   assert.ok(probe.includes('GhrdpTelTls'), 'the probe does not read the shim result');
 });
 
+test('F37-23 the X.224 confirm / RDP_NEG_RSP layout is EXECUTED and single-sourced (no off-by-one)', () => {
+  const mod = fs.readFileSync('payloads/rdp-telescope.ps1', 'utf8');
+  const probe = fs.readFileSync('payloads/Test-RdpListenerHandshake.ps1', 'utf8');
+  // the canonical MS-RDPBCGR bytes: TPKT(4) trimmed off ->
+  //   06 d0 | dst-ref | src-ref | class | 02 | 00 | 08 00 | selectedProtocol(HYBRID=2)
+  const response = Buffer.from([0x06, 0xd0, 0x00, 0x00, 0x12, 0x34, 0x00, 0x02, 0x00, 0x08, 0x00, 0x02, 0x00, 0x00, 0x00]);
+  // the SHIPPED indices, executed here
+  assert.equal(response.length, 15, 'the canonical response must be 15 bytes after TPKT');
+  assert.equal(response[1], 0xd0, 'X.224 confirm class byte');
+  assert.equal(response[7], 0x02, 'RDP_NEG_RSP type at offset 7');
+  assert.equal(response[8], 0x00, 'RDP_NEG_RSP flags at offset 8');
+  assert.equal(response[9], 0x08, 'RDP_NEG_RSP length low byte at offset 9 (little-endian 8)');
+  assert.equal(response[10], 0x00, 'RDP_NEG_RSP length high byte at offset 10');
+  assert.equal(response.readUInt32LE(11), 2, 'selectedProtocol at offset 11');
+  // the module writes EXACTLY those indices...
+  for (const token of ['$Response[1] -ne 0xd0', '$Response[7] -ne 2', '$Response[9] -ne 8', '$Response[10] -ne 0', '[BitConverter]::ToUInt32($Response, 11)']) {
+    assert.ok(mod.includes(token), 'the shared X.224 validator lost: ' + token);
+  }
+  assert.ok(mod.includes('function Test-RdpTelescopeX224Confirm'), 'the shared X.224 validator is missing');
+  // ...and NO surface may hand-roll the layout again (the off-by-one that made
+  // a healthy listener read as "RDP negotiation did not select TLS")
+  for (const [name, text] of [['module', mod], ['probe', probe]]) {
+    for (const bad of ['[6] -ne 2', '[8] -ne 8', '[9] -ne 0', 'ToUInt32($response, 10)', 'ToUInt32($Response, 10)']) {
+      assert.ok(!text.includes(bad), name + ' re-implements the X.224 offsets (off-by-one): ' + bad);
+    }
+  }
+  assert.ok(probe.includes('Test-RdpTelescopeX224Confirm -Response $response'),
+    'the F31 probe does not use the shared X.224 validator');
+});
+
 test('F37-17 (lab fixture) the REAL native-status sample renders green through the shipped renderer', () => {
   const fx = process.env.F37_TEL_FIXTURE;
   if (!fx) { console.log('[F37] no F37_TEL_FIXTURE set - the lab-only live-sample cell is skipped'); return; }
