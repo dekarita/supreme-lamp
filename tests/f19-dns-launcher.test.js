@@ -265,6 +265,29 @@ test('F19-12 §3 code-signed .rdp stays DOCUMENTED ONLY (no implementation, no c
   }
 });
 
+test('F19-14 the version-guard regex ACTUALLY matches the shipped launcher (executed)', () => {
+  // Cell S reads the repo constant out of the shipped source with a SINGLE-LINE
+  // regex. A token check only proves the regex is present - it cannot see the
+  // constant drifting away from it (the F37 branch wrapped `Stamp` across two
+  // lines and cell S died in the lab with 'stamp-missing', undetected locally
+  // because no test ever MATCHED the regex against the source). So match it.
+  const verRe = /private const string Ver = "(\d+(\.\d+){1,3})"/;
+  const stampRe = /private const string Stamp = "ghrdp-rdp-launcher " \+ Ver \+ " \(([^)]*)\)"/;
+  assert.ok(lab.includes('private const string Ver = '), 'the lab does not read the Ver constant from the source');
+  assert.ok(lab.includes('private const string Stamp = '), 'the lab does not read the Stamp constant from the source');
+  const ver = launcher.match(verRe);
+  assert.ok(ver, 'the shipped launcher has no single-line Ver constant (cell S reads it with a single-line regex)');
+  const stamp = launcher.match(stampRe);
+  assert.ok(stamp,
+    'the shipped Stamp does not match the regex the lab reads it with (a wrapped or reworded Stamp fails cell S with "stamp-missing")');
+  // the stamp the server compares against config.launcherVersion is REBUILT
+  // from those two captures - assert the shape, not a hand-typed version.
+  const rebuilt = 'ghrdp-rdp-launcher ' + ver[1] + ' (' + stamp[1] + ')';
+  assert.match(rebuilt, /^ghrdp-rdp-launcher \d+\.\d+\.\d+\.\d+ \(.+\)$/,
+    'the rebuilt stamp is not the shape the dashboard compares: ' + rebuilt);
+  assert.ok(lab.includes("'ghrdp-rdp-launcher ' + $sVer"), 'the lab does not rebuild the stamp from the source constant');
+});
+
 test('F19-13 lab fallback lane: cell S proves matrix + version guard against the REAL server', () => {
   assert.match(lab, /name: "S: F19 client-DNS probe \+ launcher version guard \(csc matrix \+ real server\)"/);
   for (const tok of [

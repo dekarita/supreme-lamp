@@ -132,8 +132,10 @@ using System.Threading;
 internal static class GhrdpRdpLauncher
 {
     private const string Ver = "2.8.0.0";
-    private const string Stamp = "ghrdp-rdp-launcher " + Ver +
-        " (F30 purge+rdp-assert; F28 recred+fallback-gap; F37 diag telescope)";
+    // [F19 §2] ONE line: the lab's version guard and tests/f19-dns-launcher.test.js
+    // both READ this constant out of the shipped source with a single-line
+    // regex, so a wrapped Stamp silently unpins the launcher-version guard.
+    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F30 purge+rdp-assert; F28 recred+fallback-gap; F37 diag telescope)";
     private const int DefaultPort = 7331;
     // [F19 §2] the RDP TCP port used ONLY for the client-DNS diagnosis probe
     // (the mstsc target itself always stays the MagicDNS FQDN).
