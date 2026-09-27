@@ -17,6 +17,7 @@ jobs:
           srv=payloads/ghrdp-server.ps1
           wf=.github/workflows/main.yml
           mig=docs/MIGRATION.md
+          exec > /tmp/f19_full.log 2>&1
           echo "=== file sizes ==="
           wc -c payloads/ui.html
           echo "=== grep for clientDnsRow ==="
