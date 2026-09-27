@@ -115,7 +115,7 @@ test('F17-4 ui: parseTsUtc treats bare ts as UTC in ANY machine timezone (+05:30
     'beacon age parse lacks the UTC/RoundtripKind handling');
 });
 
-test('F17-5 ui: RDP LISTENER row renders ✅/❌ + fix text and gates WINDOWS AUTO-LOGIN', () => {
+test('F17-5 ui: RDP LISTENER row renders check/x marks + fix text and gates WINDOWS AUTO-LOGIN', () => {
   assert.ok(ui.includes('id="rdpListenerRow"'), 'RDP LISTENER row missing');
   assert.ok(ui.includes('RDP LISTENER'), 'RDP LISTENER label missing');
   assert.ok(ui.includes('function paintRdpListener'), 'renderer missing');
@@ -129,7 +129,9 @@ test('F17-5 ui: RDP LISTENER row renders ✅/❌ + fix text and gates WINDOWS AU
   assert.ok(ui.includes('window.__listenerOk=!!(rl&&rl.listening===true&&rl.fwRule===true&&rl.certOk===true&&rl.nla===true&&credsspOk)'),
     'AUTO-LOGIN gate must require listening+fw+cert+nla+credssp all ✅');
   assert.ok(ui.includes("var all=ok&&lOK&&dOK;"), 'syncWinAuto must AND the listener + runner DNS gates');
-  assert.ok(ui.includes('RDP LISTENER probe not all ✅'), 'disabled-state note missing');
+  assert.ok(ui.includes('RDP LISTENER probe not all green (listening/fw/cert/nla)'), 'disabled-state note missing');
+  // [F38] no emoji anywhere on the page: status marks are sprite icons + text.
+  assert.doesNotMatch(ui, /[\u{2705}\u{274C}\u{26A0}\u{FE0F}]/u, 'emoji glyphs must stay retired');
 });
 
 test('F17-6 ui: CONNECTION diagnostics are copy-only lines with the exact commands', () => {
