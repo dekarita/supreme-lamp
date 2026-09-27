@@ -694,9 +694,17 @@ function Invoke-F37Telescope {
     }
     try {
         if (-not $Fqdn) { $Fqdn = 'localhost' }
-        return (Invoke-RdpTelescope -Fqdn $Fqdn -ExpectedThumb $ExpectedThumb -Src $Src -Local -Ip '127.0.0.1')
+        $telOut = (Invoke-RdpTelescope -Fqdn $Fqdn -ExpectedThumb $ExpectedThumb -Src $Src -Local -Ip '127.0.0.1')
+        # Every degraded line must be readable from native-status, never only
+        # from a server log the session cannot fetch.
+        try {
+            $bad = @($telOut.lines | Where-Object { $_ -match '"ok":false' })
+            if ($bad.Count -gt 0) { $script:F37TelLastError = ('telescope red: ' + [string]$bad[0]) } else { $script:F37TelLastError = '' }
+        } catch { }
+        return $telOut
     } catch {
-        return (New-F37TelescopeFallback -Why ('telescope failed: ' + $_.Exception.Message) -Src $Src)
+        $script:F37TelLastError = ('telescope failed: ' + $_.Exception.Message)
+        return (New-F37TelescopeFallback -Why $script:F37TelLastError -Src $Src)
     }
 }
 function Get-F37LineField {
@@ -753,6 +761,10 @@ function Update-RdpListenerTelescope {
         schannelTail = @($derived.schannelTail)
         schannelWhy = [string]$derived.schannelWhy
         lines       = @($tel.lines)
+        listenerLine = $(if ($script:F37TelModule) { Get-RdpTelescopeStageLine -Lines $tel.lines -Stage 'listener' } else { '' })
+        tlsLine      = $(if ($script:F37TelModule) { Get-RdpTelescopeStageLine -Lines $tel.lines -Stage 'tls' } else { '' })
+        moduleLoaded = [bool]($script:F37TelModule)
+        lineCount    = @($tel.lines).Count
         intervalSec = $script:F37TelIntervalSec
         scans       = [int]$script:F37TelScans
         probeError  = [string]$script:F37TelLastError
@@ -782,6 +794,9 @@ function Get-RdpListenerTelescopeState {
         lastScanAgeSec = $ageSec
         module      = $script:F37TelModule
         probeError  = [string]$script:F37TelLastError
+        shell       = [string]$PSVersionTable.PSVersion.ToString()
+        listenerLine = $(if ($state -and $state.PSObject.Properties['listenerLine']) { [string]$state.listenerLine } else { '' })
+        moduleLoaded = [bool]($script:F37TelModule)
     }
     return [pscustomobject]@{ telescope = $state; telescopeCollector = $collector }
 }

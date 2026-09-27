@@ -911,8 +911,12 @@ jobs:
               if (-not $ns) { Start-Sleep -Seconds 3 }
           }
           if (-not $ns) { Z-Fail 'runner-telescope-absent' 'native-status never carried a telescope sample (the 60s runner tick is the row the SERVER CONN LOG binds to)' }
-          if ($ns.telescope.boundThumb -ne $ns.telescope.servedThumb) { Z-Fail 'runner-bind-drift' ('telescope bound=' + $ns.telescope.boundThumb + ' served=' + $ns.telescope.servedThumb + ' - the row would render DRIFT') }
-          if (-not $ns.telescope.aclSids -or @($ns.telescope.aclSids).Count -lt 1) { Z-Fail 'runner-acl' 'the live telescope read no key ACL SIDs (aclRead would render NO)' }
+          $nsTelTxt = ($ns.telescope | ConvertTo-Json -Compress -Depth 6)
+          $nsCollectorTxt = ($ns.telescopeCollector | ConvertTo-Json -Compress -Depth 6)
+          if (-not $ns.telescopeCollector.moduleLoaded) { Z-Fail 'runner-module' ('the server did not load the single-source module (module=' + [string]$ns.telescopeCollector.module + ' shell=' + [string]$ns.telescopeCollector.shell + ' probeError=' + [string]$ns.telescopeCollector.probeError + ')') }
+          if ($ns.telescopeCollector.probeError -and -not $ns.telescope.aclSids) { Z-Fail 'runner-telescope-error' ([string]$ns.telescopeCollector.probeError) }
+          if ($ns.telescope.boundThumb -ne $ns.telescope.servedThumb) { Z-Fail 'runner-bind-drift' ('telescope bound=' + $ns.telescope.boundThumb + ' served=' + $ns.telescope.servedThumb + ' - the row would render DRIFT; sample=' + $nsTelTxt) }
+          if (-not $ns.telescope.aclSids -or @($ns.telescope.aclSids).Count -lt 1) { Z-Fail 'runner-acl' ('the live telescope read no key ACL SIDs (aclRead would render NO); collector=' + $nsCollectorTxt + '; sample=' + $nsTelTxt + '; listenerLine=' + [string]$ns.telescope.listenerLine) }
           if (-not $ns.telescopeCollector -or $ns.telescopeCollector.intervalSec -ne 10) { Z-Fail 'runner-tick' ('the lab-only tick shortening was not applied: ' + ($ns.telescopeCollector | ConvertTo-Json -Compress)) }
           Write-Host ('[Z] (2) live runner row PASS: bound==served=' + $ns.telescope.boundThumb + ' serving=' + $ns.telescope.serving + ' aclRead=' + $ns.telescope.aclRead + ' deathPoint=' + $ns.telescope.deathPoint + ' tick=' + $ns.telescopeCollector.intervalSec + 's module=' + $ns.telescopeCollector.module)
           # --- (3) CLIENT TELESCOPE: the REAL verb diag beacons every stage --
@@ -2342,7 +2346,16 @@ jobs:
               }
           }
           foreach ($t in @(Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue | Select-Object -First 6)) {
-              Emit $t.Name ([System.IO.File]::ReadAllText($t.FullName))
+              $txt = [System.IO.File]::ReadAllText($t.FullName)
+              # the listener + tls lines are the diagnosis; everything else is noise
+              $key = @(($txt -split "`r?`n") | Where-Object { $_ -match '\"stage\":\"(listener|tls)\"' })
+              if ($key.Count -gt 0) { Emit ($t.Name + ':listener/tls') (($key | Select-Object -Last 4) -join ' // ') }
+              Emit $t.Name $txt
+          }
+          # the RUNNER's own persisted sample (the row the dashboard binds to)
+          foreach ($rootDir in @('C:\ghrdp', 'C:\ghrdp-lab-f17', 'C:\ghrdp-lab-f37', 'C:\ghrdp-lab-f19')) {
+              $stateFile = Join-Path $rootDir 'rdp-listener-telescope.json'
+              if (Test-Path -LiteralPath $stateFile) { Emit ('runner-state:' + $stateFile) ([System.IO.File]::ReadAllText($stateFile)) }
           }
           try {
               $mod = Join-Path $env:GITHUB_WORKSPACE 'payloads/rdp-telescope.ps1'

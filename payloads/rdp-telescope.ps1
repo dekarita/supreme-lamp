@@ -705,6 +705,18 @@ function Get-RdpTelescopeFields {
     $out.bindDrift = [bool]($out.boundThumb -and $out.servedThumb -and ($out.boundThumb -ne $out.servedThumb))
     return [pscustomobject]$out
 }
+function Get-RdpTelescopeStageLine {
+    # Select ONE stage's raw JSONL line out of a telescope result. Selection
+    # only: the module is still the only writer of the format, so a caller
+    # (server tick, workflow stamp, lab) can never invent a line.
+    param([Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Lines, [Parameter(Mandatory)][string]$Stage)
+    foreach ($l in @($Lines)) {
+        $o = $null
+        try { $o = ($l | ConvertFrom-Json) } catch { continue }
+        if ($o -and [string]$o.stage -eq $Stage) { return [string]$l }
+    }
+    return ''
+}
 function Get-RdpTelescopeDeathPoint {
     # The FIRST red segment of the path, named in the vocabulary the session
     # maps to a fix: dns|tcp|tls-cert|tls-chain|tls-eku|name-mismatch|credssp|

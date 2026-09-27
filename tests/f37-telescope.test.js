@@ -172,6 +172,7 @@ test('F37-7 the runner tick is 60s, uses the module, and never invents a format'
   assert.ok(blk.includes('. $f37cand'), 'the runner must DOT-SOURCE the module (never re-implement the format)');
   assert.ok(blk.includes('Invoke-RdpTelescope'), 'the runner never runs the telescope');
   assert.ok(blk.includes('Get-RdpTelescopeFields'), 'the runner does not use the shared field derivation');
+  assert.ok(blk.includes('Get-RdpTelescopeStageLine'), 'the runner does not SELECT stage lines through the module');
   // no second format implementation: the block must never build a telescope
   // line by hand (only the module may serialize stages)
   for (const dup of ['\"stage\":\"', 'chainStatus =', 'failureAt = ', "New-RdpTelescopeLine"]) {
