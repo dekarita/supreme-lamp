@@ -6,17 +6,12 @@ on:
 jobs:
   debug:
     runs-on: ubuntu-latest
-    permissions:
-      issues: write
-      pull-requests: write
-      contents: read
     steps:
       - uses: actions/checkout@v4
-      - name: F19 gate with debug
+      - name: F19 gate
         shell: bash
         run: |
           set -euo pipefail
-          trap 'echo "::error::FAILED at line $LINENO: $BASH_COMMAND"; echo "=== LOG ==="; cat /tmp/f19_full.log; echo "=== END LOG ==="; exit 1' ERR
           ui=payloads/ui.html
           cs=payloads/ghrdp-rdp-launcher.cs
           srv=payloads/ghrdp-server.ps1
@@ -24,9 +19,6 @@ jobs:
           mig=docs/MIGRATION.md
           exec > >(tee /tmp/f19_full.log) 2>&1
           set -x
-          echo "=== file sizes ==="
-          wc -c payloads/ui.html
-          echo "=== running F19 ==="
           if grep -rInE 'SendKeys|UIAutomation|AutomationElement|ValuePattern|keybd_event|mouse_event|SetCursorPos|AppActivate' payloads docs tests .github/workflows/main.yml .github/workflows/autologin-lab.yml .github/workflows/webdesk-lab.yml .github/workflows/apply-patch.yml; then
             echo 'F19: credential-UI automation token found' >&2
             exit 1
@@ -111,6 +103,18 @@ jobs:
           grep -qF -- "-ArgumentList '--dns-selftest'" .github/workflows/launch-gates.yml
           grep -qF -- '$p.WaitForExit()' .github/workflows/launch-gates.yml
           echo 'F19 gates PASS'
+      - name: Show log on failure
+        if: failure()
+        shell: bash
+        run: |
+          echo "=== LOG ==="
+          cat /tmp/f19_full.log || echo "no log"
+          echo "=== END ==="
+          # write to summary
+          echo "## F19 log" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/f19_full.log >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
       - name: Upload log
         if: always()
         uses: actions/upload-artifact@v4
