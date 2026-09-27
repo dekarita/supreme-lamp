@@ -66,10 +66,14 @@ public static class RdpTlsCapture {
         $task = $ssl.AuthenticateAsClientAsync($Fqdn)
         if (-not $task.Wait(7000)) { throw 'TLS handshake timeout' }
         $script:served = [RdpTlsCapture]::Served
-        if (-not $ssl.IsAuthenticated -or $script:served -ne $ExpectedThumb.ToUpperInvariant() -or [RdpTlsCapture]::Policy -ne [System.Net.Security.SslPolicyErrors]::None.ToString()) {
-            throw ('served certificate mismatch: served=' + $script:served + ' bound=' + $ExpectedThumb)
+        # Bind-effectiveness = the listener SERVES the bound cert over a completed
+        # handshake. Policy errors are EXPECTED here (self-signed lab certs are
+        # never chain-trusted) and stay as recorded evidence only - the TLS
+        # callback is permissive by design, so they must never fail the gate.
+        if (-not $ssl.IsAuthenticated -or $script:served -ne $ExpectedThumb.ToUpperInvariant()) {
+            throw ('served certificate mismatch: served=' + $script:served + ' bound=' + $ExpectedThumb + ' policy=' + [RdpTlsCapture]::Policy)
         }
-        Write-Host ('[F31] X.224 + TLS handshake OK, served==bound=' + $script:served)
+        Write-Host ('[F31] X.224 + TLS handshake OK, served==bound=' + $script:served + ' policy=' + [RdpTlsCapture]::Policy)
         return
     } catch {
         $lastError = $_.Exception.Message

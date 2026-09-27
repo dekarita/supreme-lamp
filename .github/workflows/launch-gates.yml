@@ -23,6 +23,9 @@ jobs:
           for token in '0x03,0x00,0x00,0x13' '0x0e,0xe0' 'AuthenticateAsClientAsync' 'IsAuthenticated' 'SslPolicyErrors' '36870' 'key ACL:'; do
             grep -qF "$token" "$probe"
           done
+          # the probe is permissive by design: self-signed lab certs ALWAYS
+          # carry chain errors, so gating on Policy==None fails a healthy bind.
+          if grep -qF 'Policy -ne' "$probe"; then echo 'F31: the listener probe must not gate on TLS policy errors' >&2; exit 1; fi
           grep -qF 'listenerHandshakeOk = $listenerHandshakeOk' "$wf"
           grep -qF 'listenerHandshakeOk=false' "$wf"
           grep -qF 'listener-handshake-ok' "$wf"

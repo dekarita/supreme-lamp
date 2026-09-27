@@ -564,14 +564,15 @@ jobs:
           Write-Host '::notice::[R] ckpt tcp-ok'
           # F31 bind-effectiveness pre-check gates this cert cell (<=30s, no TCP-only false pass).
           $effective = $false
+          $preErr = ''
           for ($i = 0; $i -lt 3 -and -not $effective; $i++) {
               try {
                   & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Test-RdpListenerHandshake.ps1') -Fqdn $fqdn -ExpectedThumb $lc.Thumbprint -KeyFile (& (Join-Path $env:GITHUB_WORKSPACE 'payloads/Grant-RdpKeyAccess.ps1') -Certificate $lc -VerifyOnly) | Out-Null
                   $effective = $true
-              } catch { if ($i -lt 2) { Start-Sleep -Seconds 3 } }
+              } catch { $preErr = $_.Exception.Message; if ($i -lt 2) { Start-Sleep -Seconds 3 } }
           }
           $telePost = Write-Telescope 'post-bind'
-          if (-not $effective) { R-Fail 'bind-effectiveness' ('BOUND != SERVED or TLS handshake failed after <=30s; telescope deathPoint=' + $telePost.deathPoint + ' served=' + $telePost.tls.servedThumb + ' bound=' + $telePost.listener.boundThumb + ' tls=' + $telePost.tls.failurePoint + ' why=' + $telePost.tls.why) }
+          if (-not $effective) { R-Fail 'bind-effectiveness' ('BOUND != SERVED or TLS handshake failed after <=30s; precheck=' + $preErr + '; telescope deathPoint=' + $telePost.deathPoint + ' served=' + $telePost.tls.servedThumb + ' bound=' + $telePost.listener.boundThumb + ' tls=' + $telePost.tls.failurePoint + ' why=' + $telePost.tls.why) }
           if ($telePost.tls.servedThumb -ine $lc.Thumbprint) { R-Fail 'bind-effectiveness' ('telescope servedThumb != boundThumb: served=' + $telePost.tls.servedThumb + ' bound=' + $lc.Thumbprint + ' deathPoint=' + $telePost.deathPoint) }
           if (-not $telePost.tls.ok) { R-Fail 'bind-effectiveness' ('telescope handshake not ok: failurePoint=' + $telePost.tls.failurePoint + ' why=' + $telePost.tls.why + ' deathPoint=' + $telePost.deathPoint) }
           Write-Host '::notice::[R] ckpt beff-ok'
