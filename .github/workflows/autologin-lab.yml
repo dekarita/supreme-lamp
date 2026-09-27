@@ -2218,12 +2218,15 @@ jobs:
           }
           console.log('[W] (a) PASS: fixed palette passes WCAG AA on bar/card/inset (worst-case aurora composite)');
           const SIN = 'සිංහල සහය: මෙම පාලක පුවරුව සිංහල අකුරු නිවැරදිව පෙන්වයි';
+          process.on('unhandledRejection', e => { fs.writeFileSync('f38-lab-error.txt', 'unhandledRejection: ' + (e && e.stack || e)); process.exit(1); });
+          process.on('uncaughtException', e => { try { fs.writeFileSync('f38-lab-error.txt', 'uncaughtException: ' + (e && e.stack || e)); } catch (_) {} process.exit(1); });
           const results = {};
           for (const width of [1280, 1600, 1920]) {
             const ctx = await browser.newContext({ viewport: { width, height: 900 } });
             const page = await ctx.newPage();
             await page.goto('http://127.0.0.1:7391/', { waitUntil: 'domcontentloaded', timeout: 30000 });
-            await page.evaluate(() => document.fonts.ready);
+            const fss = await page.evaluate(() => document.fonts.ready.then(fs => fs.status));
+            if (fss !== 'loaded') fail('fonts-ready', 'document.fonts.status=' + fss);
             await page.waitForTimeout(700);
             const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
             if (overflow > 1) fail('overflow', width + 'px viewport: horizontal overflow ' + overflow + 'px');
@@ -2250,7 +2253,7 @@ jobs:
               const after = await page.evaluate(() => ({ t: document.documentElement.getAttribute('data-text'), ls: localStorage.getItem('ghrdp:textScale') }));
               if (after.t !== 'large' || after.ls !== 'large') fail('toggle-click', JSON.stringify(after));
               await page.reload({ waitUntil: 'domcontentloaded' });
-              await page.evaluate(() => document.fonts.ready);
+              await page.evaluate(() => document.fonts.ready.then(fs => fs.status));
               const persisted = await page.evaluate(() => ({ t: document.documentElement.getAttribute('data-text'), fs: getComputedStyle(document.documentElement).fontSize }));
               if (persisted.t !== 'large' || persisted.fs !== '21px') fail('toggle-persist', JSON.stringify(persisted));
               console.log('[W] (d) PASS: Large text toggle persists across reload (html font-size 21px)');
@@ -2267,7 +2270,7 @@ jobs:
               if (sprite.emoji) fail('sprite-emoji', 'rendered text still contains emoji glyphs');
               console.log('[W] (e) PASS: sprite present (' + sprite.symbols + ' symbols, ' + sprite.uses + ' uses) and no emoji in rendered text');
             }
-            await page.screenshot({ path: 'ui-' + width + '.png', fullPage: true });
+            await page.screenshot({ path: 'ui-' + width + '.png', fullPage: true, animations: 'disabled' });
             results[width] = true;
             await ctx.close();
             console.log('[W] screenshot ui-' + width + '.png captured (no horizontal overflow, stack ok)');
@@ -2308,7 +2311,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: f38-ui-screenshots
-          path: ${{ runner.temp }}/f38-ui-lab/*.png
+          path: |
+            ${{ runner.temp }}/f38-ui-lab/*.png
+            ${{ runner.temp }}/f38-ui-lab/f38-lab-error.txt
           if-no-files-found: warn
       # [F30] TLS/CIPHER HANDSHAKE FIX + CREDENTIAL TYPE NORMALIZATION + STALE
       # ENTRY PURGE - the five lab cells the F30 spec names, proven on a real
