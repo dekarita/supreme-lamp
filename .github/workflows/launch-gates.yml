@@ -1921,6 +1921,18 @@ jobs:
           test "$(grep -c 'stage=unhandled' "$lab")" -ge 2 || { echo 'F37: the F37 lab cells do not trap unhandled errors' >&2; exit 1; }
           grep -qF '$f37one = ($Detail -replace' "$lab" || { echo 'F37: a lab fail helper can still emit a multi-line (dropped) annotation' >&2; exit 1; }
           grep -qF 'Q: failure forensics' "$lab" || { echo 'F37: the failure-forensics step is missing' >&2; exit 1; }
+          # [F37] the persisted KEY FILE is resolved, never assumed: one resolver
+          # in the module, shared by the listener and the F31 ACL helper, with
+          # store candidates + hits in every failure message.
+          acl=payloads/Grant-RdpKeyAccess.ps1
+          grep -qF 'function Resolve-RdpTelescopeKeyFile' "$mod" || { echo 'F37: the module does not own the key-file resolver' >&2; exit 1; }
+          grep -qF 'Resolve-RdpTelescopeKeyFile' "$acl" || { echo 'F37: the ACL helper assumes a key path instead of resolving it' >&2; exit 1; }
+          grep -qF 'persisted key file NOT FOUND at' "$mod" || { echo 'F37: a missing key file is not named with its evidence' >&2; exit 1; }
+          for f in keyFileFound keyDirHits keyDirSample containerKind; do
+            grep -qF "$f" "$mod" && grep -qF "$f" "$ui" || { echo "F37: $f never reaches the row" >&2; exit 1; }
+          done
+          grep -qF 'certutil.exe -repairstore My' "$lab" || { echo 'F37: the lab never forces key persistence' >&2; exit 1; }
+          grep -qF "R-Fail 'key-acl-grant'" "$lab" || { echo 'F37: the ACL grant can still die as an unhandled exit' >&2; exit 1; }
           grep -qF '::error::[forensics]' "$lab" || { echo 'F37: the forensics step emits no annotation' >&2; exit 1; }
           grep -qF 'Format-RdpTelescopeDump' "$lab" || { echo 'F37: the forensics step does not re-print the telescope' >&2; exit 1; }
           grep -qF 'Test-RdpListenerHandshake.ps1' "$lab" || { echo 'F37: the lab lost the strict F31 handshake gate' >&2; exit 1; }

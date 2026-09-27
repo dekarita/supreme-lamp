@@ -2095,13 +2095,20 @@ function paintSrvConnLog(s){
    // [F37 §4] the certificate's OWN acceptance: a bound cert without the
    // ServerAuth EKU is reset by Schannel before it is ever presented, which no
    // client-side handshake can say - the row says it here.
+   // [F37 §4] a key file the providers cannot point at is the same death class
+   // the lab hit (Schannel 36870 / 0x8009030D): say it, do not infer it.
+   var keyBad=(tel.keyFileFound===false);
    var ekuBad=(tel.hasServerAuth===false);
    var ekuTxt=ekuBad?(' EKU=NO-ServerAuth eku='+((tel.eku&&tel.eku.length)?tel.eku.join(','):'none')+' san='+((tel.san&&tel.san.length)?tel.san.join(','):'none')):'';
+   var keyHits=(tel.keyDirHits&&tel.keyDirHits.length)?('; hits='+tel.keyDirHits.slice(0,3).join(',')):'';
+   var keyKind=tel.containerKind?(' kind='+tel.containerKind):'';
+   var keyDir=(tel.keyDirSample&&tel.keyDirSample.length)?(' dir='+String(tel.keyDirSample[0]).slice(0,80)):'';
+   var keyTxt=keyBad?(' keyFile=NOT-FOUND'+keyKind+'('+String(tel.containerPath||tel.container||'?')+keyHits+keyDir+')'):'';
    tb.textContent='telescope['+String(tel.src||'live')+'] bound='+(bt||'(none)')+' served='+(st2||'(none)')+
     ' '+(drift?'DRIFT':'match')+' aclRead='+(tel.aclRead===true?'yes':'NO')+' aclSids='+sids+
-    ' schannel=['+sch+']'+(tel.schannelWhy?(' '+tel.schannelWhy):'')+ekuTxt+
+    ' schannel=['+sch+']'+(tel.schannelWhy?(' '+tel.schannelWhy):'')+ekuTxt+keyTxt+
     ' deathPoint='+String(tel.deathPoint||'none')+(tc?(' (tick '+(tc.alive===true?'alive':'STALE')+')'):'');
-   tb.style.color=(drift||ekuBad)?'#f5b7b7':((tel.deathPoint&&tel.deathPoint!=='none')?'#f5d9b7':'');
+   tb.style.color=(drift||ekuBad||keyBad)?'#f5b7b7':((tel.deathPoint&&tel.deathPoint!=='none')?'#f5d9b7':'');
   }
  }
  if(tls){

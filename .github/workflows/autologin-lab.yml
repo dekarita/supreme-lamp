@@ -566,16 +566,33 @@ jobs:
           $telModR = Join-Path $env:GITHUB_WORKSPACE 'payloads/rdp-telescope.ps1'
           if (-not (Test-Path -LiteralPath $telModR)) { R-Fail 'telescope-module' 'payloads/rdp-telescope.ps1 is missing (the module is the single source of truth for the format)' }
           . $telModR
-          $telBeforeR = Invoke-RdpTelescope -Fqdn $fqdn -Src 'lab' -Local -Ip '127.0.0.1' -SkipLogon -SkipCred
+          $telBeforeR = Invoke-RdpTelescope -Fqdn $fqdn -Src 'lab' -Local -Ip '127.0.0.1' -ExpectedThumb $lc.Thumbprint -SkipLogon -SkipCred
           $dumpBeforeR = Write-RdpTelescopeSummary -Telescope $telBeforeR -Title 'F37 lab telescope BEFORE bind (no cert bound yet)'
-          Write-Host ('[R] telescope BEFORE bind: deathPoint=' + $telBeforeR.deathPoint + ' bound=' + $telBeforeR.lines.Count)
+          # [F37 §2] THE KEY FILE IS THE DEATH POINT the last red run named: the
+          # certificate was in the store, HasPrivateKey was true, and the file
+          # Schannel needs was nowhere the providers reported. If it is missing,
+          # force the association (certutil -repairstore) and telescope again -
+          # the ACL can only be granted on a file that exists.
+          $telListenerPreR = @($telBeforeR.lines | Where-Object { $_ -match '"stage":"listener"' } | Select-Object -First 1)
+          $keyPreR = $(if ($telListenerPreR.Count -gt 0) { $telListenerPreR[0] | ConvertFrom-Json } else { $null })
+          Write-Host ('[R] telescope BEFORE bind: deathPoint=' + $telBeforeR.deathPoint + ' keyFileFound=' + $(if ($keyPreR) { [string]$keyPreR.keyFileFound } else { 'n/a' }) + ' container=' + $(if ($keyPreR) { [string]$keyPreR.container } else { '' }))
+          if ($keyPreR -and -not [bool]$keyPreR.keyFileFound) {
+              Write-Host '[R] persisted key file not on disk yet; forcing persistence with certutil -repairstore'
+              try { & certutil.exe -repairstore My $lc.Thumbprint 2>&1 | ForEach-Object { Write-Host ('[R] certutil: ' + [string]$_) } } catch { Write-Host ('[R] certutil -repairstore failed: ' + $_.Exception.Message) }
+              $telBeforeR = Invoke-RdpTelescope -Fqdn $fqdn -Src 'lab' -Local -Ip '127.0.0.1' -ExpectedThumb $lc.Thumbprint -SkipLogon -SkipCred
+              $dumpBeforeR = Write-RdpTelescopeSummary -Telescope $telBeforeR -Title 'F37 lab telescope BEFORE bind (after certutil -repairstore)'
+              $telListenerPreR = @($telBeforeR.lines | Where-Object { $_ -match '"stage":"listener"' } | Select-Object -First 1)
+              $keyPreR = $(if ($telListenerPreR.Count -gt 0) { $telListenerPreR[0] | ConvertFrom-Json } else { $null })
+              Write-Host ('[R] after repairstore: keyFileFound=' + $(if ($keyPreR) { [string]$keyPreR.keyFileFound } else { 'n/a' }) + ' path=' + $(if ($keyPreR) { [string]$keyPreR.containerPath } else { '' }))
+          }
           # Trust only this ephemeral lab cert so the production probe's full
           # X509Chain.Build check is exercised without relaxing production.
           $labRoot = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine')
           try { $labRoot.Open('ReadWrite'); $labRoot.Add($lc) } finally { $labRoot.Close() }
           $hash = -split ($lc.Thumbprint -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
           New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hash -Force | Out-Null
-          & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Grant-RdpKeyAccess.ps1') -Certificate $lc | Out-Null
+          try { & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Grant-RdpKeyAccess.ps1') -Certificate $lc | Out-Null }
+          catch { R-Fail 'key-acl-grant' ($_.Exception.Message + ' :: ' + $dumpBeforeR) }
           try { Restart-Service TermService -Force -ErrorAction SilentlyContinue } catch { }
           $up = $false
           for ($i = 0; $i -lt 30 -and -not $up; $i++) { try { $up = [bool](Test-NetConnection 127.0.0.1 -Port 3389 -WarningAction SilentlyContinue).TcpTestSucceeded } catch { }; if (-not $up) { Start-Sleep -Seconds 2 } }

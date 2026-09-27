@@ -453,6 +453,49 @@ test('F37-19 the lab cannot go red without a readable annotation (trap + collaps
   assert.ok(q.includes('de-diag'), 'the forensics step does not re-emit the cell classification files');
 });
 
+test('F37-20 the persisted key file is RESOLVED, not assumed (single source, with evidence)', () => {
+  const mod = fs.readFileSync('payloads/rdp-telescope.ps1', 'utf8');
+  const acl = fs.readFileSync('payloads/Grant-RdpKeyAccess.ps1', 'utf8');
+  // the module owns the resolver
+  assert.ok(mod.includes('function Resolve-RdpTelescopeKeyFile'), 'the module does not own the key-file resolver');
+  // it searches BOTH stores + the per-user variants and reports what it found
+  for (const token of ["Microsoft\\Crypto\\Keys", "Microsoft\\Crypto\\RSA\\MachineKeys", '$env:APPDATA', 'dirSample', 'hits']) {
+    assert.ok(mod.includes(token), 'the resolver does not cover ' + token);
+  }
+  // the listener carries the hunt into every dump / config stamp / row
+  for (const f of ['keyFileFound', 'keyFileCandidates', 'keyDirHits', 'keyDirSample', 'containerKind']) {
+    assert.ok(new RegExp("'" + f + "'").test(mod), 'the listener allowlist drops ' + f);
+  }
+  assert.ok(mod.includes("persisted key file NOT FOUND at"), 'a missing key file is not named with its search evidence');
+  // the BEFORE-bind telescope resolves the EXPECTED certificate (nothing is bound yet)
+  assert.ok(mod.includes('$lookupThumb = $(if ($want) { $want } else { $boundHex })'),
+    'the listener only looks at the BOUND thumb, so the before-bind evidence is empty');
+  // the F31 ACL helper uses the SAME resolver (never an assumed path) and keeps
+  // its own fallback + the search evidence in the thrown message
+  assert.ok(acl.includes("Resolve-RdpTelescopeKeyFile"), 'the ACL helper does not share the resolver');
+  assert.ok(acl.includes("Join-Path $PSScriptRoot 'rdp-telescope.ps1'"), 'the ACL helper does not load the module next to it');
+  for (const token of ['GetRSAPrivateKey', "Crypto\\Keys", "RSA\\MachineKeys", 'S-1-5-20', 'S-1-5-18', 'Set-Acl', 'GetAccessRules', 'Required ACE absent', 'Persisted machine key file missing']) {
+    assert.ok(acl.includes(token), 'the ACL helper lost a shipped token: ' + token);
+  }
+  assert.ok(acl.includes('stores=['), 'the ACL failure carries no store evidence');
+  assert.ok(fs.readFileSync('payloads/ui.html', 'utf8').includes('keyFile=NOT-FOUND'),
+    'the live row cannot render a missing key file');
+});
+
+test('F37-21 the lab forces key persistence and names the ACL stage (no red without evidence)', () => {
+  const lab = fs.readFileSync('.github/workflows/autologin-lab.yml', 'utf8');
+  assert.ok(lab.includes('certutil.exe -repairstore My'), 'the lab never forces the key association');
+  assert.ok(lab.includes("R-Fail 'key-acl-grant'"), 'the ACL grant can still fail as an unhandled exit');
+  assert.ok(new RegExp("Invoke-RdpTelescope -Fqdn \\$fqdn -Src 'lab' -Local -Ip '127.0.0.1' -ExpectedThumb \\$lc.Thumbprint").test(lab),
+    'the before-bind telescope does not carry the expected thumbprint');
+  assert.ok(lab.includes("telescope BEFORE bind: deathPoint="), 'the lab does not print the before-bind verdict');
+  assert.ok(lab.includes("keyFileFound="), 'the lab does not print the key-file verdict');
+  // the forensics channel keeps reading the telescope and the classification files
+  const q = lab.slice(lab.indexOf('Q: failure forensics'), lab.indexOf('G: setup-time'));
+  assert.ok(q.includes('telescope-now'), 'forensics no longer re-prints the telescope');
+  assert.ok(q.includes("'*.jsonl'"), 'forensics no longer re-emits the telescope artifacts');
+});
+
 test('F37-17 (lab fixture) the REAL native-status sample renders green through the shipped renderer', () => {
   const fx = process.env.F37_TEL_FIXTURE;
   if (!fx) { console.log('[F37] no F37_TEL_FIXTURE set - the lab-only live-sample cell is skipped'); return; }

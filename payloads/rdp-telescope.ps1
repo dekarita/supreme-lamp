@@ -71,7 +71,7 @@ $script:F37TelFields = @{
     cred     = @('credTarget', 'credExists', 'credType', 'credUser')
     logon    = @('eventId', 'logonType', 'sub', 'eventTs', 'count4624', 'count4625')
     schannel = @('schannelIds', 'lastSchannelId', 'lastSchannelTs', 'schannelWhy', 'sinceSec')
-    listener = @('boundThumb', 'servedThumb', 'inStore', 'hasKey', 'container', 'containerPath', 'certutilContainer', 'aclSids', 'aclRead', 'aclOk', 'serving', 'hasServerAuth', 'eku', 'san')
+    listener = @('boundThumb', 'servedThumb', 'inStore', 'hasKey', 'container', 'containerKind', 'containerPath', 'keyFileFound', 'keyFileCandidates', 'keyDirHits', 'keyDirSample', 'certutilContainer', 'aclSids', 'aclRead', 'aclOk', 'serving', 'hasServerAuth', 'eku', 'san')
     beacon   = @('beacon')
 }
 function Get-RdpTelescopeFormatTokens {
@@ -413,6 +413,59 @@ function Get-RdpTelescopeSchannel {
         return New-RdpTelescopeLine -Stage 'schannel' -Ok $false -Why ('System Schannel log unavailable: ' + $_.Exception.Message) -Fields @{ schannelIds = @(); lastSchannelId = ''; lastSchannelTs = ''; schannelWhy = ''; sinceSec = $SinceSec } -Trace $Trace -Src $Src
     }
 }
+function Resolve-RdpTelescopeKeyFile {
+    # WHERE is the persisted private-key file? A provider-reported container name
+    # is NOT proof that a file exists in the first directory you try: Windows has
+    # the CNG store (Crypto\Keys), the CAPI store (Crypto\RSA\MachineKeys) and
+    # per-user variants, and the lab died exactly there (Schannel 36870 /
+    # 0x8009030D on one side, "key file missing" on the other). This resolver
+    # reports every candidate, which ones exist, any near-miss hit, and a bounded
+    # listing of each store - so the environment explains itself next time.
+    param([Parameter(Mandatory)]$Certificate)
+    $out = [ordered]@{ name = ''; kind = ''; provider = ''; candidates = @(); found = ''; hits = @(); dirSample = @(); roots = @() }
+    $key = $null
+    try {
+        $key = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
+        if (-not $key) { $key = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($Certificate) }
+        if (-not $key) { $out.kind = 'no-key'; return [pscustomobject]$out }
+        if ($key -is [System.Security.Cryptography.RSACng] -or $key -is [System.Security.Cryptography.ECDsaCng]) {
+            $out.kind = 'cng'
+            try { $out.provider = [string]$key.Key.Provider.Provider } catch { }
+            $out.name = [string]$key.Key.UniqueName
+        } elseif ($key -is [System.Security.Cryptography.RSACryptoServiceProvider]) {
+            $out.kind = 'capi'
+            try { $out.provider = [string]$key.CspKeyContainerInfo.ProviderName } catch { }
+            $out.name = [string]$key.CspKeyContainerInfo.UniqueKeyContainerName
+        } else { $out.kind = ('unsupported:' + $key.GetType().Name) }
+    } catch { $out.kind = ('error:' + $_.Exception.Message) } finally { if ($key) { $key.Dispose() } }
+    if (-not $out.name -or $out.name -match '[\\/]') { return [pscustomobject]$out }
+    $roots = @(
+        (Join-Path $env:ProgramData 'Microsoft\Crypto\Keys'),
+        (Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'),
+        (Join-Path $env:APPDATA 'Microsoft\Crypto\Keys'),
+        (Join-Path $env:APPDATA 'Microsoft\Crypto\RSA\MachineKeys')
+    ) | Where-Object { $_ -and (Test-Path -LiteralPath $_ -PathType Container) }
+    $out.roots = @($roots)
+    foreach ($r in @($roots)) { $out.candidates += (Join-Path $r $out.name) }
+    foreach ($c in @($out.candidates)) { if ((-not $out.found) -and (Test-Path -LiteralPath $c -PathType Leaf)) { $out.found = $c } }
+    if (-not $out.found) {
+        $stem = [string]($out.name -split '_')[0]
+        foreach ($r in @($roots)) {
+            try {
+                foreach ($f in @(Get-ChildItem -LiteralPath $r -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $out.name -or ($stem.Length -ge 8 -and $_.Name -like ($stem + '*')) } | Select-Object -First 3)) {
+                    $out.hits += $f.FullName
+                }
+            } catch { }
+        }
+    }
+    foreach ($r in @($roots)) {
+        try {
+            $names = @(Get-ChildItem -LiteralPath $r -File -ErrorAction SilentlyContinue | Select-Object -First 6 | ForEach-Object { $_.Name })
+            $out.dirSample += ([string]$r + ' :: ' + ($names -join ','))
+        } catch { }
+    }
+    return [pscustomobject]$out
+}
 function Get-RdpTelescopeListener {
     # stage listener: BIND EFFECTIVENESS - boundThumb vs servedThumb, the store
     # entry, HasPrivateKey, the persisted container, its ACL SIDs and the
@@ -425,7 +478,7 @@ function Get-RdpTelescopeListener {
         [string]$Trace = '',
         [string]$Src = ''
     )
-    $fields = @{ boundThumb = ''; servedThumb = $ServedThumb; inStore = $false; hasKey = $false; container = ''; containerPath = ''; certutilContainer = ''; aclSids = @(); aclRead = $false; aclOk = $false; serving = $false; hasServerAuth = $false; eku = @(); san = @() }
+    $fields = @{ boundThumb = ''; servedThumb = $ServedThumb; inStore = $false; hasKey = $false; container = ''; containerKind = ''; containerPath = ''; keyFileFound = $false; keyFileCandidates = @(); keyDirHits = @(); keyDirSample = @(); certutilContainer = ''; aclSids = @(); aclRead = $false; aclOk = $false; serving = $false; hasServerAuth = $false; eku = @(); san = @() }
     $why = @()
     try {
         $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
@@ -441,32 +494,36 @@ function Get-RdpTelescopeListener {
         $fields.serving = ([bool]$fields.boundThumb -and $fields.boundThumb -eq $servedUp)
         if ($want -and $fields.boundThumb -and $fields.boundThumb -ne $want) { $why += ('bound ' + $fields.boundThumb + ' != expected ' + $want) }
         $cert = $null
-        if ($boundHex) {
+        # Resolve the EXPECTED certificate too: before the bind there is nothing
+        # in SSLCertificateSHA1Hash, and the whole point of the BEFORE telescope
+        # is to prove whether that certificate's key file is where Schannel will
+        # look for it.
+        $lookupThumb = $(if ($want) { $want } else { $boundHex })
+        if ($lookupThumb) {
             $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
             try {
                 $store.Open('ReadOnly')
-                $cert = @($store.Certificates | Where-Object { $_.Thumbprint -ieq $boundHex }) | Select-Object -First 1
+                $cert = @($store.Certificates | Where-Object { $_.Thumbprint -ieq $lookupThumb }) | Select-Object -First 1
             } finally { $store.Close() }
         }
         if (-not $cert) {
-            if ($boundHex) { $why += 'bound thumbprint not present in LocalMachine\My' }
+            if ($lookupThumb) { $why += ('thumbprint ' + $lookupThumb + ' not present in LocalMachine\My') }
         } else {
             $fields.inStore = $true
             $fields.hasKey = [bool]$cert.HasPrivateKey
             if (-not $fields.hasKey) { $why += 'store entry has NO private key' }
             try {
-                $key = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($cert)
-                if (-not $key) { $key = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($cert) }
-                if ($key) {
-                    try {
-                        if ($key -is [System.Security.Cryptography.RSACng] -or $key -is [System.Security.Cryptography.ECDsaCng]) {
-                            $fields.container = [string]$key.Key.UniqueName
-                            $fields.containerPath = Join-Path (Join-Path $env:ProgramData 'Microsoft\Crypto\Keys') $fields.container
-                        } elseif ($key -is [System.Security.Cryptography.RSACryptoServiceProvider]) {
-                            $fields.container = [string]$key.CspKeyContainerInfo.UniqueKeyContainerName
-                            $fields.containerPath = Join-Path (Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys') $fields.container
-                        }
-                    } finally { $key.Dispose() }
+                $kr = Resolve-RdpTelescopeKeyFile -Certificate $cert
+                $fields.container = [string]$kr.name
+                $fields.containerKind = [string]$kr.kind
+                $fields.keyFileCandidates = @($kr.candidates)
+                $fields.keyDirHits = @($kr.hits)
+                $fields.keyDirSample = @($kr.dirSample)
+                if ($kr.found) { $fields.containerPath = [string]$kr.found; $fields.keyFileFound = $true }
+                elseif (@($fields.keyFileCandidates).Count -gt 0) { $fields.containerPath = [string](@($fields.keyFileCandidates)[0]) }
+                if ($fields.keyFileFound) { }
+                elseif ($fields.containerPath) {
+                    $why += ('persisted key file NOT FOUND at ' + $fields.containerPath + '; hits=[' + (@($fields.keyDirHits) -join ',') + '] stores=[' + (@($fields.keyDirSample) -join ' | ') + ']')
                 }
             } catch { $why += ('key container resolution failed: ' + $_.Exception.Message) }
             if (-not $fields.container) { $why += 'no persisted key container name' }
@@ -488,7 +545,7 @@ function Get-RdpTelescopeListener {
                 } else { $why += 'bound cert has NO subject alternative name (name-mismatch on every client)' }
             } catch { $why += ('EKU/SAN read failed: ' + $_.Exception.Message) }
             try {
-                $cu = @(certutil.exe -store -v My $boundHex 2>&1 | ForEach-Object { [string]$_ })
+                $cu = @(certutil.exe -store -v My $lookupThumb 2>&1 | ForEach-Object { [string]$_ })
                 foreach ($l in $cu) { if ($l -match '(?i)container') { $fields.certutilContainer = $l.Trim(); break } }
             } catch { $fields.certutilContainer = '' }
         }
@@ -524,6 +581,7 @@ function Get-RdpTelescopeFields {
         boundThumb = ''; servedThumb = ''; serving = $false; bindDrift = $false
         inStore = $false; hasKey = $false; container = ''; aclRead = $false
         hasServerAuth = $false; eku = @(); san = @()
+        keyFileFound = $false; containerKind = ''; keyDirHits = @(); keyDirSample = @()
         aclSids = @(); schannelTail = @(); schannelWhy = ''
         protocol = ''; cipher = ''; failureAt = ''
         logonEventId = ''; logonSub = ''; count4624 = 0; count4625 = 0
@@ -550,6 +608,10 @@ function Get-RdpTelescopeFields {
                 if ($o.PSObject.Properties['container']) { $out.container = [string]$o.container }
                 if ($o.PSObject.Properties['aclRead']) { $out.aclRead = [bool]$o.aclRead }
                 if ($o.PSObject.Properties['hasServerAuth']) { $out.hasServerAuth = [bool]$o.hasServerAuth }
+                if ($o.PSObject.Properties['keyFileFound']) { $out.keyFileFound = [bool]$o.keyFileFound }
+                if ($o.PSObject.Properties['containerKind']) { $out.containerKind = [string]$o.containerKind }
+                if ($o.PSObject.Properties['keyDirHits']) { $out.keyDirHits = @($o.keyDirHits) }
+                if ($o.PSObject.Properties['keyDirSample']) { $out.keyDirSample = @($o.keyDirSample) }
                 if ($o.PSObject.Properties['eku']) { $out.eku = @($o.eku) }
                 if ($o.PSObject.Properties['san']) { $out.san = @($o.san) }
                 if ($o.PSObject.Properties['aclSids']) { $out.aclSids = @($o.aclSids) }
