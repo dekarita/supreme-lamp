@@ -509,10 +509,14 @@ jobs:
           }
           $root = 'C:\ghrdp-lab-f17'
           $utf8 = New-Object System.Text.UTF8Encoding($false)
-          $fqdn = 'lab-host.dekarita.tailnet-lab.ts.net'
+          # NOTE: the lab-fqdn variable below MUST keep its lab prefix:
+          # dot-sourcing rdp-telescope.ps1 runs its top-level param() block in
+          # THIS scope, which CLOBBERS any same-named caller variable with the
+          # default empty string. Never rename it back to the bare name.
+          $labFqdn = 'lab-host.dekarita.tailnet-lab.ts.net'
           try { Remove-Item -Recurse -Force $root -ErrorAction SilentlyContinue } catch { }
           New-Item -ItemType Directory -Path $root -Force | Out-Null
-          [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), (@{ dnsName = $fqdn; rdpUser = 'labuser'; rdpIp = '100.118.42.7' } | ConvertTo-Json -Compress), $utf8)
+          [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), (@{ dnsName = $labFqdn; rdpUser = 'labuser'; rdpIp = '100.118.42.7' } | ConvertTo-Json -Compress), $utf8)
           # --- baseline: mirror the production enablement so the §1 probe has a
           # REAL host to probe (3389 listening, NLA=1, rule ghrdp-rdp-3389
           # scoped to 100.64.0.0/10, a certificate valid for the FQDN).
@@ -526,7 +530,7 @@ jobs:
           # Schannel RSTs server certs without ServerAuth EKU (rst-before-cert),
           # which was the red-without-why bind-effectiveness class.
           try {
-              $lc = New-SelfSignedCertificate -DnsName $fqdn, 'localhost', $env:COMPUTERNAME -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(2) -KeyLength 2048 -KeyExportPolicy Exportable -KeyUsage DigitalSignature, KeyEncipherment -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.1')
+              $lc = New-SelfSignedCertificate -DnsName $labFqdn, 'localhost', $env:COMPUTERNAME -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(2) -KeyLength 2048 -KeyExportPolicy Exportable -KeyUsage DigitalSignature, KeyEncipherment -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.1')
           } catch { R-Fail 'cert-create' ('lab EKU/SAN cert creation threw: ' + $_.Exception.Message) }
           if (-not $lc -or -not $lc.Thumbprint) { R-Fail 'cert-create' 'lab cert object empty after New-SelfSignedCertificate' }
           Write-Host '::notice::[R] ckpt cert-ok'
@@ -542,7 +546,7 @@ jobs:
           Write-Host '::notice::[R] ckpt tele-import-ok'
           function Write-Telescope([string]$Label) {
               try {
-                  $t = Invoke-RdpTelescope -Name $fqdn -TargetHost '127.0.0.1' -Trace ('lab-R-' + $Label) -ScopeName 'server'
+                  $t = Invoke-RdpTelescope -Name $labFqdn -TargetHost '127.0.0.1' -Trace ('lab-R-' + $Label) -ScopeName 'server'
               } catch { R-Fail 'telescope-error' ('the telescope itself threw (no diagnosis possible): ' + $_.Exception.Message) }
               $txt = Format-RdpTelescopeSummary -T $t
               Write-Host ('[R] TELESCOPE ' + $Label + ":`n" + $txt)
@@ -567,7 +571,7 @@ jobs:
           $preErr = ''
           for ($i = 0; $i -lt 3 -and -not $effective; $i++) {
               try {
-                  & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Test-RdpListenerHandshake.ps1') -Fqdn $fqdn -ExpectedThumb $lc.Thumbprint -KeyFile (& (Join-Path $env:GITHUB_WORKSPACE 'payloads/Grant-RdpKeyAccess.ps1') -Certificate $lc -VerifyOnly) | Out-Null
+                  & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Test-RdpListenerHandshake.ps1') -Fqdn $labFqdn -ExpectedThumb $lc.Thumbprint -KeyFile (& (Join-Path $env:GITHUB_WORKSPACE 'payloads/Grant-RdpKeyAccess.ps1') -Certificate $lc -VerifyOnly) | Out-Null
                   $effective = $true
               } catch { $preErr = $_.Exception.Message; if ($i -lt 2) { Start-Sleep -Seconds 3 } }
           }
@@ -706,8 +710,8 @@ jobs:
           $log = Join-Path $env:LOCALAPPDATA 'ghrdp\ghrdp-launcher.log'
           function Set-HostAlias([string]$Ip) {
               $hostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
-              $txt = ([System.IO.File]::ReadAllText($hostsPath) -split "`r?`n" | Where-Object { $_ -notmatch [regex]::Escape($fqdn) }) -join "`r`n"
-              if ($Ip) { $txt += "`r`n$Ip $fqdn`r`n" }
+              $txt = ([System.IO.File]::ReadAllText($hostsPath) -split "`r?`n" | Where-Object { $_ -notmatch [regex]::Escape($labFqdn) }) -join "`r`n"
+              if ($Ip) { $txt += "`r`n$Ip $labFqdn`r`n" }
               [System.IO.File]::WriteAllText($hostsPath, $txt)
           }
           function New-Lines([int]$Skip) { @(Get-Content $log -ErrorAction SilentlyContinue | Select-Object -Skip $Skip) }
@@ -715,7 +719,7 @@ jobs:
           Set-HostAlias '93.184.215.14'
           $env:GHRDP_LAB_DNS_ALLOW_LOOPBACK = ''
           $before6 = [int](Log-Lines 0)
-          & $exe ("ghrdp://rdp?server=" + $fqdn + "&user=labuser") | Out-Null
+          & $exe ("ghrdp://rdp?server=" + $labFqdn + "&user=labuser") | Out-Null
           $rc6 = $LASTEXITCODE
           $nl6 = New-Lines $before6
           if ($rc6 -ne 5) { R-Fail 'guard-not-blocked' ('rc=' + $rc6 + ' (expected 5)') }
@@ -727,19 +731,19 @@ jobs:
           # Mixed DNS answers are unsafe even if one answer is tailnet: prove
           # the launcher blocks the full answer set before testing lab loopback.
           Set-HostAlias '100.118.42.7'
-          Add-Content -LiteralPath (Join-Path $env:SystemRoot 'System32\drivers\etc\hosts') -Value "93.184.215.14 $fqdn"
+          Add-Content -LiteralPath (Join-Path $env:SystemRoot 'System32\drivers\etc\hosts') -Value "93.184.215.14 $labFqdn"
           $env:GHRDP_LAB_DNS_ALLOW_LOOPBACK = ''
           $beforeMix = [int](Log-Lines 0)
-          & $exe ("ghrdp://rdp?server=" + $fqdn + "&user=labuser") | Out-Null
+          & $exe ("ghrdp://rdp?server=" + $labFqdn + "&user=labuser") | Out-Null
           $mixLines = New-Lines $beforeMix
           if ($LASTEXITCODE -ne 5 -or -not (($mixLines | Out-String) -match 'dns-guard blocked launch')) { R-Fail 'guard-mixed-answer' 'mixed tailnet/public answers were not blocked' }
           if (($mixLines | Out-String) -match 'started pid=|prompt shown') { R-Fail 'guard-mixed-leak' 'cmdkey/mstsc ran with mixed DNS answers' }
           Write-Host '[R] (8) PASS: mixed tailnet + public DNS answers => blocked (all answers must be tailnet)'
           Set-HostAlias '127.0.0.1'
           $env:GHRDP_LAB_DNS_ALLOW_LOOPBACK = '1'
-          & cmdkey.exe /generic:TERMSRV/$fqdn /user:labuser /pass:LABDUMMY-win-9876 | Out-Null
+          & cmdkey.exe /generic:TERMSRV/$labFqdn /user:labuser /pass:LABDUMMY-win-9876 | Out-Null
           $before7 = [int](Log-Lines 0)
-          & $exe ("ghrdp://rdp?server=" + $fqdn + "&user=labuser") | Out-Null
+          & $exe ("ghrdp://rdp?server=" + $labFqdn + "&user=labuser") | Out-Null
           $rc7 = $LASTEXITCODE
           $nl7 = New-Lines $before7
           if ($rc7 -ne 0) { R-Fail 'guard-not-allowed' ('rc=' + $rc7) }
@@ -747,7 +751,7 @@ jobs:
           # mstsc-started is the beacon detail; the JSONL log line is
           # level=mstsc details='started pid=N' - assert THAT.
           if (-not (($nl7 | Out-String) -match 'started pid=')) { R-Fail 'guard-allow-mstsc' 'mstsc not started on the allowed alias' }
-          try { & cmdkey.exe /delete:TERMSRV/$fqdn | Out-Null } catch { }
+          try { & cmdkey.exe /delete:TERMSRV/$labFqdn | Out-Null } catch { }
           Set-HostAlias ''
           Write-Host '[R] (9) PASS: loopback alias + GHRDP_LAB_DNS_ALLOW_LOOPBACK=1 => dns-guard ok + mstsc-started (lab-only path)'
           Write-Host '[R] PASS: F17 listener probe break/fix + native-status render + beacon age + dns-guard'
@@ -769,7 +773,7 @@ jobs:
               $negStartR = Get-Date
               Restart-Service TermService -Force -ErrorAction Stop
               $negOkR = $false
-              try { & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Test-RdpListenerHandshake.ps1') -Fqdn $fqdn -ExpectedThumb $lc.Thumbprint -KeyFile $keyPathR | Out-Null; $negOkR = $true } catch { Write-Host ('[R] ACL-DENIED: handshake-failed: ' + $_.Exception.Message) }
+              try { & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Test-RdpListenerHandshake.ps1') -Fqdn $labFqdn -ExpectedThumb $lc.Thumbprint -KeyFile $keyPathR | Out-Null; $negOkR = $true } catch { Write-Host ('[R] ACL-DENIED: handshake-failed: ' + $_.Exception.Message) }
               if ($negOkR) { R-Fail 'acl-negative' 'TLS succeeded with NETWORK SERVICE denied (key-open negative not effective)' }
               $schR = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 36870; StartTime = $negStartR } -ErrorAction SilentlyContinue)
               if ($schR.Count -lt 1) { R-Fail 'acl-negative' 'handshake failed but no 36870 event: cannot attribute failure to key ACL' }
@@ -781,14 +785,14 @@ jobs:
               else { Remove-ItemProperty -Path $schKeyR -Name EventLogging -ErrorAction SilentlyContinue }
               Restart-Service TermService -Force -ErrorAction Stop
           }
-          try { & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Test-RdpListenerHandshake.ps1') -Fqdn $fqdn -ExpectedThumb $lc.Thumbprint -KeyFile $keyPathR | Out-Null }
+          try { & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Test-RdpListenerHandshake.ps1') -Fqdn $labFqdn -ExpectedThumb $lc.Thumbprint -KeyFile $keyPathR | Out-Null }
           catch { R-Fail 'acl-restore' ('served!=bound after ACL restoration: ' + $_.Exception.Message) }
           Write-Host '[R] F33 restore PASS: served==bound after ACL restoration'
           # Cert-only negative: wrong expected thumb on a still-readable key must fail.
           # This is a cert mapping negative, not a false claim of server-side 36870.
           $wrongR = '0000000000000000000000000000000000000000'
           $certFailedR = $false
-          try { & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Test-RdpListenerHandshake.ps1') -Fqdn $fqdn -ExpectedThumb $wrongR -KeyFile $keyPathR | Out-Null } catch { $certFailedR = $true }
+          try { & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Test-RdpListenerHandshake.ps1') -Fqdn $labFqdn -ExpectedThumb $wrongR -KeyFile $keyPathR | Out-Null } catch { $certFailedR = $true }
           if (-not $certFailedR) { R-Fail 'cert-negative' 'served!=bound unexpectedly succeeded' }
           Write-Host '[R] F33 cert-only negative PASS: served!=bound => handshake-failed; classifier Schannel 36888 => tls-alert-sent:<state>'
           'R_result=pass' | Out-File $env:GITHUB_ENV -Append

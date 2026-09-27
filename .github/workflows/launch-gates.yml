@@ -1866,6 +1866,11 @@ jobs:
           grep -qF 'telescope servedThumb != boundThumb' "$lab" || { echo 'F37: lab lost the served==bound gate' >&2; exit 1; }
           grep -qF 'telescope handshake not ok' "$lab" || { echo 'F37: lab lost the handshake-ok gate' >&2; exit 1; }
           grep -qF -- '- payloads/rdp-telescope.ps1' "$lab" || { echo 'F37: lab trigger paths omit the telescope module' >&2; exit 1; }
+          # dot-source clobber guard: the module's top-level param() resets any
+          # same-named caller variable, so cell R must use a collision-free name.
+          rblk=$(blk "$lab" 'name: "R:' 'name: "S:')
+          grep -qF '$labFqdn' <<< "$rblk" || { echo 'F37: cell R lost its collision-free fqdn variable' >&2; exit 1; }
+          if grep -q -e '\$fqdn' -e '\$Fqdn' <<< "$rblk"; then echo 'F37: cell R uses a variable the telescope param() block clobbers' >&2; exit 1; fi
           # no cert cell may exit red without telescope fields: every
           # bind-effectiveness failure must carry the telescope diagnosis.
           if grep -F "R-Fail 'bind-effectiveness'" "$lab" | grep -vF 'telescope'; then

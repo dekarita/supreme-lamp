@@ -23,6 +23,10 @@ param(
 )
 # NOTE: no $ErrorActionPreference assignment at import time: dot-sourcing this
 # module must NEVER flip the caller's preference (lab cell + keep-alive loop).
+# DOT-SOURCE FOOTGUN: the param() block above runs in the CALLER's scope, so
+# every dot-sourcer's $fqdn/$target/$scope/$summary/$traceId/$keyFile/
+# $expectedThumb is reset to its default. Callers MUST use collision-free
+# names (lab: $labFqdn; prod keep-alive: $fqdnT read AFTER sourcing).
 # Fail-closed behavior comes from explicit -ErrorAction Stop on every probe.
 # (TLS capture lives in the static RdpTelescopeTlsCapture class below: the TLS
 # callback runs on a handshake thread with NO PowerShell runspace.)
