@@ -1885,10 +1885,30 @@ jobs:
           # unpacked into the profile (the extensions-page equivalent for CI).
           . (Join-Path $env:GITHUB_WORKSPACE 'payloads\edge-ext-resolve.ps1')
           . (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-provision-apps.ps1')
-          $ubo = Resolve-StoreExtId -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('gorhill', 'uBlock Origin') -VendorPages @('https://raw.githubusercontent.com/gorhill/uBlock/master/README.md')
-          $dr  = Resolve-StoreExtId -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('darkreader.org', 'Dark Reader') -VendorPages @('https://raw.githubusercontent.com/darkreader/darkreader/main/README.md')
-          $cubo = Resolve-StoreExtId -Store 'cws' -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('uBlock Origin', 'gorhill')
-          $cdr  = Resolve-StoreExtId -Store 'cws' -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('Dark Reader', 'darkreader.org')
+          # [F38] CWS search HTML is often a shell with no detail links (lab
+          # 36316421533: cws uBlock Origin unresolved while Edge resolved). The
+          # vendor README is a live page that carries the store detail URL; retry
+          # once because the store fetch is flaky. IDs stay discovered, never hardcoded.
+          function Resolve-KExt([string]$Store, [string]$Query, [string]$Slug, [string[]]$Markers, [string[]]$VendorPages) {
+              $resolved = $null
+              for ($try = 1; $try -le 2; $try++) {
+                  if ($Store -eq 'cws') {
+                      $resolved = Resolve-StoreExtId -Store 'cws' -Query $Query -Slug $Slug -Markers $Markers -VendorPages $VendorPages
+                  } else {
+                      $resolved = Resolve-StoreExtId -Query $Query -Slug $Slug -Markers $Markers -VendorPages $VendorPages
+                  }
+                  if ($resolved) { break }
+                  Write-Host ('[K] resolve empty ' + $Store + ' ' + $Query + ' try ' + $try + ' - retrying')
+                  Start-Sleep -Seconds 4
+              }
+              return $resolved
+          }
+          $uboPages = @('https://raw.githubusercontent.com/gorhill/uBlock/master/README.md')
+          $drPages = @('https://raw.githubusercontent.com/darkreader/darkreader/main/README.md')
+          $ubo = Resolve-KExt -Store 'edge' -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('gorhill', 'uBlock Origin') -VendorPages $uboPages
+          $dr  = Resolve-KExt -Store 'edge' -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('darkreader.org', 'Dark Reader') -VendorPages $drPages
+          $cubo = Resolve-KExt -Store 'cws' -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('uBlock Origin', 'gorhill') -VendorPages $uboPages
+          $cdr  = Resolve-KExt -Store 'cws' -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('Dark Reader', 'darkreader.org') -VendorPages $drPages
           foreach ($pair in @(@('edge', $ubo, 'uBlock Origin'), @('edge', $dr, 'Dark Reader'), @('cws', $cubo, 'uBlock Origin'), @('cws', $cdr, 'Dark Reader'))) {
               if (-not $pair[1]) { Write-Host ('::error::[K] stage=resolve :: ' + $pair[0] + ' ' + $pair[2] + ' could not be resolved from a live store page'); exit 1 }
           }
@@ -2154,6 +2174,7 @@ jobs:
       # still update (node --test jsdom-style smoke over the shipped sources).
       # Full-page screenshots at all three widths upload as an artifact.
       - name: "W: F38 UI glass lab (typography + icons + Sinhala + persisted toggle)"
+        if: always()
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'

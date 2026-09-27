@@ -77,6 +77,7 @@ function Resolve-StoreExtId {
     }
     foreach ($v in $VendorPages) { [void]$sources.Add(@{ label = 'vendor-page'; url = $v }) }
     [void]$sources.Add(@{ label = 'serp'; url = ('https://www.bing.com/search?q=' + [uri]::EscapeDataString('site:microsoftedge.microsoft.com/addons/detail ' + $Query)) })
+    [void]$sources.Add(@{ label = 'cws-serp'; url = ('https://www.bing.com/search?q=' + [uri]::EscapeDataString('site:chromewebstore.google.com/detail/' + $Slug + ' ' + $Query)) })
     [void]$sources.Add(@{ label = 'cws-search'; url = ('https://chromewebstore.google.com/search/' + $q) })
 
     $cands = New-Object System.Collections.ArrayList
