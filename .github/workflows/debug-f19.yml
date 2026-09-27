@@ -1,0 +1,119 @@
+name: debug-f19
+on:
+  push:
+    branches: [arena/01a0e323-supreme-lamp]
+  workflow_dispatch:
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: F19 gate with debug
+        shell: bash
+        run: |
+          set -euxo pipefail
+          ui=payloads/ui.html
+          cs=payloads/ghrdp-rdp-launcher.cs
+          srv=payloads/ghrdp-server.ps1
+          wf=.github/workflows/main.yml
+          mig=docs/MIGRATION.md
+          echo "=== file sizes ==="
+          wc -c payloads/ui.html
+          echo "=== grep for clientDnsRow ==="
+          grep -n "clientDnsRow" payloads/ui.html || echo "not found"
+          echo "=== grep for F19 markers ==="
+          grep -n "F19 §1" payloads/ui.html || echo "not found"
+          echo "=== running full F19 gate ==="
+          # copy-paste from launch-gates.yml F19
+          if grep -rInE 'SendKeys|UIAutomation|AutomationElement|ValuePattern|keybd_event|mouse_event|SetCursorPos|AppActivate' payloads docs tests .github/workflows/main.yml .github/workflows/autologin-lab.yml .github/workflows/webdesk-lab.yml .github/workflows/apply-patch.yml; then
+            echo 'F19: credential-UI automation token found' >&2
+            exit 1
+          fi
+          if grep -rInEi '(password|passwd|pwd|credential|cmdkey|windowspass).{0,40}(sendinput|keybd_event|mouse_event|setcursorpos|valuepattern|uiautomation|automationelement|sendkeys)|(sendinput|keybd_event|mouse_event|setcursorpos|valuepattern|uiautomation|automationelement|sendkeys).{0,40}(password|passwd|pwd|credential|cmdkey|windowspass)' payloads tests .github/workflows/main.yml .github/workflows/autologin-lab.yml .github/workflows/webdesk-lab.yml .github/workflows/apply-patch.yml; then
+            echo 'F19: password auto-type pattern found' >&2
+            exit 1
+          fi
+          for f in $(grep -rlE 'SendInput' payloads tests .github/workflows --exclude=launch-gates.yml 2>/dev/null || true); do
+            if grep -qEi 'password|passwd|pwd|credential|cmdkey|windowsPass' "$f"; then
+              echo "F19: $f mixes SendInput with a credential/cmdkey reference" >&2
+              exit 1
+            fi
+          done
+          url_sources=(payloads docs tests .github/workflows/main.yml .github/workflows/autologin-lab.yml .github/workflows/webdesk-lab.yml .github/workflows/apply-patch.yml)
+          if git grep -nE 'ghrdp://' -- "${url_sources[@]}" | grep -Ei '[?&](password|passwd|pwd|token|secret|authkey|api[_-]?key)='; then
+            echo 'F19: repository contains a ghrdp:// URL with a credential or token parameter' >&2
+            exit 1
+          fi
+          if grep -nE "ghrdp://rdp\?[^'\\\"]*(pass|pwd|token|secret|apikey|authkey)[=:]" "$ui"; then
+            echo 'F19: a ghrdp:// URL template carries a credential-ish parameter' >&2
+            exit 1
+          fi
+          grep -qF 'function ghrdpRdpUrl(fqdn,user,ip)' "$ui" || { echo 'F19: ui.html lacks the single ghrdp:// URL builder' >&2; exit 1; }
+          builder=$(awk '/^function ghrdpRdpUrl\(/{f=1} f{print} f && /^}$/{exit}' "$ui")
+          test -n "$builder" || { echo 'F19: the ghrdp:// builder body could not be extracted' >&2; exit 1; }
+          grep -qF "u+='&ip='" <<< "$builder" || { echo 'F19: the builder never appends the tailnet IP' >&2; exit 1; }
+          if grep -qEi '(pass|pwd|token|secret|apikey|authkey)=' <<< "$builder"; then
+            echo 'F19: the ghrdp:// builder can emit a credential-ish parameter' >&2; exit 1
+          fi
+          grep -qF 'CredentialParamName' "$cs" || { echo 'F19: launcher does not refuse credential URL params' >&2; exit 1; }
+          grep -qF 'cred-param-rejected' "$cs"
+          grep -qF 'pass|password|passwd|pwd|token|key|secret|apikey|authkey|cred' "$cs"
+          test "$(grep -cF "'ghrdp://rdp?server='+encodeURIComponent(fqdn)" "$ui")" -eq 1 || { echo 'F19: ui.html must carry exactly one ghrdp://rdp URL template' >&2; exit 1; }
+          grep -qF '[F19 §1 client-DNS probe-begin]' "$ui" || { echo 'F19: ui.html lacks the client-DNS probe block' >&2; exit 1; }
+          grep -qF '[F19 §1 client-DNS probe-end]' "$ui"
+          grep -qF 'function clientDnsCore(fqdn,ip,scheme,aOk,bOk)' "$ui"
+          grep -qF "verdict:'client-dns-off'" "$ui" || { echo 'F19: the probe core never returns the client-dns-off verdict' >&2; exit 1; }
+          grep -qF "YOUR PC's Tailscale DNS is off (name not resolvable, IP reachable)" "$ui"
+          grep -qF 'client DNS ok' "$ui"
+          grep -qF "mode:'no-cors'" "$ui"
+          grep -qF 'CDNS_TIMEOUT_MS=3000' "$ui"
+          grep -qF 'CDNS_PERIOD_MS=30000' "$ui"
+          grep -qF 'clientDnsProbeUrls' "$ui"
+          grep -qF "tailscale set --accept-dns=true" "$ui"
+          grep -qF "ipconfig /flushdns" "$ui"
+          grep -qF 'Use Tailscale DNS' "$ui"
+          grep -qF 'id="clientDnsRow"' "$ui"
+          grep -qF 'id="clientDnsFix1"' "$ui"
+          grep -qF 'private const string Ver = ' "$cs" || { echo 'F19: launcher version constant missing' >&2; exit 1; }
+          grep -qF 'launcherVersion = $launcherVer' "$wf" || { echo 'F19: main.yml does not write config.launcherVersion from the launcher source' >&2; exit 1; }
+          grep -qF "private const string Ver = " "$wf"
+          grep -qF 'launcherVersion' "$srv"
+          grep -qF 'launcherOutdated' "$srv"
+          grep -qF 'launcherSeenVersion' "$srv"
+          grep -qF '"exe"' "$srv"
+          grep -qF "(s&&s.launcherOutdated===true)?'':'none'" "$ui" || { echo 'F19: the UI does not drive the outdated row from launcherOutdated' >&2; exit 1; }
+          grep -qF 'id="nrLauncherOutdatedRow"' "$ui"
+          grep -qF 'launcher outdated - re-run install.cmd once' "$ui"
+          grep -qF ',\"exe\":\"' "$cs" || { echo 'F19: launcher beacon does not carry the exe version stamp' >&2; exit 1; }
+          grep -qF "[version]\$launcherSeenVersion -lt [version]\$launcherVersion" "$srv" || { echo 'F19: server does not compare launcher versions numerically' >&2; exit 1; }
+          grep -qF 'return "client-dns-off";' "$cs" || { echo 'F19: launcher lacks the client-dns-off verdict' >&2; exit 1; }
+          grep -qF 'false, "client-dns-off"' "$cs" || { echo 'F19: the client-dns-off beacon detail is missing' >&2; exit 1; }
+          grep -qF 'DnsDecision' "$cs"
+          grep -qF 'TailnetIpFromUri' "$cs"
+          grep -qF 'Your Tailscale DNS is off. Run once: tailscale set --accept-dns=true' "$cs"
+          grep -qF 'RdpPort = 3389' "$cs"
+          grep -qF 'GHRDP_LAB_TCP_RESULT' "$cs"
+          grep -qF 'GHRDP_LAB_DNS_RESULT' "$cs"
+          grep -qF -- '--dns-selftest' "$cs"
+          grep -qF 'return MstscStep(server, user, host, port);' "$cs" || { echo 'F19: mstsc target must stay the FQDN' >&2; exit 1; }
+          if grep -nE 'ProcessStartInfo\("mstsc\.exe", *"\"?" *\+ *dnsIp' "$cs"; then
+            echo 'F19: mstsc was pointed at the diagnosis IP' >&2; exit 1
+          fi
+          grep -qF '### 1.11 [F19 §3] Code-signed' "$mig" || { echo 'F19: MIGRATION.md lacks the §1.11 code-signed .rdp note' >&2; exit 1; }
+          grep -qF 'OPTIONAL FUTURE, NOT IMPLEMENTED' "$mig"
+          grep -qF 'rdpsign' "$mig"
+          if grep -q 'GHRDP_LAB_' "$wf"; then
+            echo 'F19: a lab-only GHRDP_LAB_ switch leaked into production main.yml' >&2; exit 1
+          fi
+          grep -qF 'name: F19 launcher DNS-guard decision matrix (csc compile + injected resolver)' .github/workflows/launch-gates.yml || { echo 'F19: the launcher decision matrix step is missing from windows-native' >&2; exit 1; }
+          grep -qF -- "-ArgumentList '--dns-selftest'" .github/workflows/launch-gates.yml
+          grep -qF -- '$p.WaitForExit()' .github/workflows/launch-gates.yml
+          echo 'F19 gates PASS'
+      - name: Upload debug
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: f19-debug
+          path: |
+            payloads/ui.html
+            /tmp/*.log
