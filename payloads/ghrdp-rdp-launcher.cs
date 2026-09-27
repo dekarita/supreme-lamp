@@ -56,6 +56,16 @@
 //     failed redemption is retried ONCE and then falls back to the native
 //     credential prompt (never a silent launch). The verb accepts the SAME
 //     t-only ticket contract: any credential-ish parameter is refused.
+//   ghrdp://diag?server=<fqdn>&user=<user>&trace=<trace-id>
+//     [F37] CLIENT TELESCOPE (the dashboard's RUN DIAG button; no ticket, no
+//     mstsc, no credential write): runs dns -> tcp(3389)+rtt -> X.224+TLS
+//     (servedThumb/protocol/cipher/failurePoint, permissive read so
+//     rst-before-cert and chain rejects are distinguishable) -> cred-readback
+//     (TERMSRV target exists+type+user, NEVER a secret) and beacons EACH
+//     stage with the trace-id, ending in diag-done death=<segment>. Stage
+//     names and the servedThumb/chainStatus/failurePoint/rst-before-cert
+//     /deathPoint format are shared with payloads/rdp-telescope.ps1 (single
+//     source); diag-done death=<segment> is that trace's deathPoint.
 //   ghrdp-rdp-launcher.exe --fallback-selftest
 //     [F28 §3] LAB/CI ONLY harness (never reachable from a ghrdp:// URI):
 //     runs CredentialFallbackDecision through the full matrix (stored=true =>
@@ -107,14 +117,14 @@ using System.Threading;
 // that stored nothing can no longer reach a silent mstsc - the ticket is
 // retried once and the launch then carries the native credential prompt with
 // the 'fallback-mstsc-native-prompt' beacon.
-[assembly: AssemblyVersion("2.6.0.0")]
-[assembly: AssemblyFileVersion("2.6.0.0")]
+[assembly: AssemblyVersion("2.7.0.0")]
+[assembly: AssemblyFileVersion("2.7.0.0")]
 [assembly: AssemblyTitle("ghrdp-rdp-launcher")]
 
 internal static class GhrdpRdpLauncher
 {
-    private const string Ver = "2.6.0.0";
-    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F28 recred+fallback-gap; F30 purge+rdp-assert)";
+    private const string Ver = "2.7.0.0";
+    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F28 recred+fallback-gap; F30 purge+rdp-assert; F37 diag-telescope)";
     private const int DefaultPort = 7331;
     // [F19 §2] the RDP TCP port used ONLY for the client-DNS diagnosis probe
     // (the mstsc target itself always stays the MagicDNS FQDN).
@@ -134,6 +144,43 @@ internal static class GhrdpRdpLauncher
     private static readonly Regex UserRe = new Regex(
         @"^[A-Za-z0-9_\-\.\\]{1,104}$", RegexOptions.CultureInvariant);
     private static string logPathCache;
+    // [F37] trace-id: the dashboard mints one per AUTO-LOGIN/RECONNECT click
+    // (&trace=) and every beacon of that click carries it, so the dashboard
+    // renders ONE timeline row merging client beacon + runner telescope +
+    // authEvents. Set once in Main before the 'invoked' beacon.
+    private static string TraceId = "";
+    private static string TracePrefix = "";
+    private static string TraceFromUri(string uri)
+    {
+        if (string.IsNullOrEmpty(uri)) { return ""; }
+        int q = uri.IndexOf('?');
+        if (q < 0) { return ""; }
+        foreach (string pair in uri.Substring(q + 1).Split('&', ';'))
+        {
+            int eq = pair.IndexOf('=');
+            if (eq < 1) { continue; }
+            if (pair.Substring(0, eq).Trim().ToLowerInvariant() != "trace") { continue; }
+            string v = Decode(pair.Substring(eq + 1).Trim());
+            if (v.Length >= 1 && v.Length <= 40 && Regex.IsMatch(v, @"^[A-Za-z0-9\-]+$")) { return v; }
+            return "";
+        }
+        return "";
+    }
+    // [F37] beacon-safe sanitizer: the server allowlist caps diag detail
+    // charsets, so anything outside is folded to '-'.
+    private static string SanitizeBeacon(string v, string extra, int max)
+    {
+        if (v == null) { return ""; }
+        StringBuilder sb = new StringBuilder();
+        foreach (char c in v)
+        {
+            bool ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+            if (!ok && extra != null) { ok = extra.IndexOf(c) >= 0; }
+            sb.Append(ok ? c : '-');
+            if (sb.Length >= max) { break; }
+        }
+        return sb.ToString();
+    }
 
     // ------------------------------------------------------------------
     // [F15 §1.6] JSONL log with token/password redaction.
@@ -246,8 +293,10 @@ internal static class GhrdpRdpLauncher
             // compares it against config.launcherVersion (the repo constant)
             // and flags an outdated client launcher. Version string only -
             // never a credential, path or user.
+            string tdetails = TracePrefix + details;
             string body = "{\"verb\":\"" + J(verb) + "\",\"ok\":" + (ok ? "true" : "false") +
-                ",\"details\":\"" + J(Redact(details)) + "\",\"exe\":\"" + J(Stamp) + "\"}";
+                ",\"details\":\"" + J(Redact(tdetails)) + "\",\"exe\":\"" + J(Stamp) + "\"" +
+                (TraceId.Length > 0 ? ",\"trace\":\"" + J(TraceId) + "\"" : "") + "}";
             HttpWebRequest req = (HttpWebRequest)WebRequest.Create(
                 "http://" + host + ":" + port + "/api/handler-hello");
             req.Method = "POST";
@@ -1210,6 +1259,272 @@ internal static class GhrdpRdpLauncher
     // not a *.ts.net FQDN); the rdp target itself is re-parsed and validated
     // below, so a bad target still ends in a MessageBox, never silence.
     // ------------------------------------------------------------------
+    // ------------------------------------------------------------------
+    // [F37] ghrdp://diag - CLIENT TELESCOPE. No ticket, no mstsc, no
+    // credential write: dns -> tcp(3389)+rtt -> X.224+TLS (servedThumb /
+    // protocol / cipher / failurePoint, permissive read so rst-before-cert
+    // and chain rejects are distinguishable) -> cred-readback (TERMSRV target
+    // exists+type+user, NEVER a secret). EACH stage is beaconed with the
+    // trace-id, ending in diag-done death=<segment>. Stage names and the
+    // servedThumb/chainStatus/failurePoint/rst-before-cert/deathPoint format
+    // are shared with payloads/rdp-telescope.ps1 (single source of truth).
+    // ------------------------------------------------------------------
+    private static void DiagCredMeta(string fqdn, out bool exists, out string typeName, out string userName)
+    {
+        exists = false; typeName = ""; userName = "";
+        // CredRead metadata ONLY: TargetName/Type/UserName. CredentialBlob is
+        // never touched, never logged, never beaconed.
+        foreach (uint t in new uint[] { 2, 1 })
+        {
+            IntPtr ptr = IntPtr.Zero;
+            try
+            {
+                if (!CredRead("TERMSRV/" + fqdn, t, 0, out ptr)) { continue; }
+                if (ptr == IntPtr.Zero) { continue; }
+                Credential c = (Credential)Marshal.PtrToStructure(ptr, typeof(Credential));
+                exists = true;
+                typeName = (t == 2) ? "Domain" : "Generic";
+                userName = c.UserName == null ? "" : c.UserName;
+                try { CredFree(ptr); } catch { }
+                return;
+            }
+            catch { try { if (ptr != IntPtr.Zero) { CredFree(ptr); } } catch { } }
+        }
+    }
+
+    private static string DiagChain;
+    private static string DiagPolicy;
+    private static string DiagServed;
+    private static bool DiagPermissive(object sender, System.Security.Cryptography.X509Certificates.X509Certificate cert,
+        System.Security.Cryptography.X509Certificates.X509Chain chain, System.Net.Security.SslPolicyErrors errors)
+    {
+        DiagPolicy = errors.ToString();
+        DiagChain = "";
+        DiagServed = "";
+        try
+        {
+            if (chain != null && chain.ChainStatus != null)
+            {
+                StringBuilder sb = new StringBuilder();
+                foreach (System.Security.Cryptography.X509Certificates.X509ChainStatus st in chain.ChainStatus)
+                {
+                    if (sb.Length > 0) { sb.Append(','); }
+                    sb.Append(st.Status.ToString());
+                }
+                DiagChain = sb.ToString();
+            }
+        }
+        catch { }
+        try { if (cert != null) { DiagServed = cert.GetCertHashString().ToUpperInvariant(); } } catch { }
+        return true;
+    }
+
+    private static byte[] DiagReadExact(System.Net.Sockets.NetworkStream stream, int length)
+    {
+        byte[] buf = new byte[length];
+        int pos = 0;
+        while (pos < length)
+        {
+            int n = stream.Read(buf, pos, length - pos);
+            if (n <= 0) { throw new System.IO.IOException("X.224 connection reset/EOF"); }
+            pos += n;
+        }
+        return buf;
+    }
+
+    private static void DiagTls(string ip, string sni, out bool ok, out string served, out string proto,
+        out string cipher, out string failPoint)
+    {
+        ok = false; served = ""; proto = ""; cipher = ""; failPoint = "tcp-failed";
+        DiagChain = ""; DiagPolicy = ""; DiagServed = "";
+        System.Net.Sockets.TcpClient tcp = null;
+        System.Net.Security.SslStream ssl = null;
+        try
+        {
+            tcp = new System.Net.Sockets.TcpClient();
+            IAsyncResult car = tcp.BeginConnect(ip, RdpPort, null, null);
+            if (!car.AsyncWaitHandle.WaitOne(5000, false)) { failPoint = "tcp-failed"; return; }
+            tcp.EndConnect(car);
+            if (!tcp.Connected) { failPoint = "tcp-failed"; return; }
+            tcp.ReceiveTimeout = 7000; tcp.SendTimeout = 7000;
+            System.Net.Sockets.NetworkStream stream = tcp.GetStream();
+            byte[] request = new byte[] { 0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00 };
+            try { stream.Write(request, 0, request.Length); }
+            catch { failPoint = "rst-before-cert"; return; }
+            try
+            {
+                byte[] header = DiagReadExact(stream, 4);
+                if (header[0] != 3 || header[1] != 0) { throw new System.IO.IOException("invalid TPKT header"); }
+                int length = (((int)header[2]) << 8) | ((int)header[3]);
+                if (length < 19 || length > 1024) { throw new System.IO.IOException("invalid X.224 length " + length); }
+                byte[] response = DiagReadExact(stream, length - 4);
+                if (response[1] != 0xd0) { throw new System.IO.IOException("X.224 is not a connection confirm"); }
+                // X.224 confirm fixed part is 7 bytes (after TPKT); the RDP
+                // negotiation response starts at index 7.
+                if (response[7] != 2 || response[9] != 8 || response[10] != 0) { throw new System.IO.IOException("RDP negotiation did not select TLS"); }
+                uint selected = BitConverter.ToUInt32(response, 11);
+                if (selected != 1 && selected != 2 && selected != 8) { throw new System.IO.IOException("RDP selected non-TLS protocol " + selected); }
+            }
+            catch (Exception ex)
+            {
+                failPoint = ex.Message.IndexOf("reset/EOF") >= 0 ? "rst-before-cert" : "x224-rejected";
+                return;
+            }
+            ssl = new System.Net.Security.SslStream(stream, false,
+                new System.Net.Security.RemoteCertificateValidationCallback(DiagPermissive));
+            try
+            {
+                // SslProtocols.None = OS-best (TLS 1.2/1.3); never weakens.
+                IAsyncResult aar = ssl.BeginAuthenticateAsClient(sni, null, System.Security.Authentication.SslProtocols.None, false, null, null);
+                if (!aar.AsyncWaitHandle.WaitOne(7000, false)) { failPoint = "tls-timeout"; served = DiagServed; return; }
+                ssl.EndAuthenticateAsClient(aar);
+            }
+            catch
+            {
+                served = DiagServed;
+                failPoint = DiagServed.Length == 0 ? "rst-before-cert" : "tls-alert";
+                return;
+            }
+            served = DiagServed;
+            try { proto = ssl.SslProtocol.ToString(); } catch { proto = "unknown"; }
+            try { cipher = ssl.CipherAlgorithm.ToString() + "/" + ssl.CipherStrength; } catch { cipher = "unknown"; }
+            if (served.Length == 0) { failPoint = "rst-before-cert"; return; }
+            if (DiagPolicy.IndexOf("RemoteCertificateNameMismatch") >= 0) { failPoint = "name-mismatch"; return; }
+            if (DiagPolicy.IndexOf("RemoteCertificateChainErrors") >= 0 || DiagChain.Length > 0)
+            {
+                failPoint = "chain=" + (DiagChain.Length > 0 ? DiagChain : "error");
+                return;
+            }
+            if (DiagPolicy.IndexOf("RemoteCertificateNotAvailable") >= 0) { failPoint = "rst-before-cert"; return; }
+            ok = true; failPoint = "none";
+        }
+        catch { if (failPoint == null || failPoint.Length == 0) { failPoint = "tls-alert"; } }
+        finally
+        {
+            try { if (ssl != null) { ssl.Close(); } } catch { }
+            try { if (tcp != null) { tcp.Close(); } } catch { }
+        }
+    }
+
+    private static int RunDiag(string uri, string host, int port)
+    {
+        string server; string user; string portRaw;
+        ParseQuery(uri, out server, out user, out portRaw);
+        if (!FqdnRe.IsMatch(server))
+        {
+            LogJson("error", "diag", "invalid target server='" + Redact(server) + "'");
+            HelloBounded(host, port, "diag", false, "invalid-target");
+            ShowBox("ghrdp diag: invalid target",
+                "server must be a *.ts.net FQDN (got '" + server + "').\n\nlog: " + LogPath());
+            return 3;
+        }
+        string ip = "";
+        string dnsWhy = "";
+        int dnsMs = 0;
+        bool dnsOk = false;
+        try
+        {
+            System.Diagnostics.Stopwatch sw = System.Diagnostics.Stopwatch.StartNew();
+            IPAddress[] addrs = Dns.GetHostAddresses(server);
+            sw.Stop();
+            dnsMs = (int)sw.ElapsedMilliseconds;
+            if (addrs != null)
+            {
+                foreach (IPAddress a in addrs)
+                {
+                    byte[] b = a.GetAddressBytes();
+                    if (b.Length == 4) { ip = a.ToString(); break; }
+                }
+            }
+            if (ip.Length == 0) { dnsWhy = "dns-no-ipv4-answer"; }
+            else { dnsOk = true; }
+        }
+        catch (Exception ex) { dnsWhy = "dns-failed-" + ex.GetType().Name; }
+        if (dnsOk)
+        {
+            LogJson("diag", "diag", "dns ok ip=" + ip + " ms=" + dnsMs);
+            HelloBounded(host, port, "diag", true, "diag-dns:ok ip=" + ip + " ms=" + dnsMs);
+        }
+        else
+        {
+            LogJson("diag", "diag", "dns fail " + dnsWhy);
+            HelloBounded(host, port, "diag", false, "diag-dns:fail " + SanitizeBeacon(dnsWhy, "_.:+=, -", 60));
+        }
+        string tcpWhy = "";
+        int rtt = -1;
+        bool tcpOk = false;
+        if (dnsOk)
+        {
+            try
+            {
+                System.Diagnostics.Stopwatch sw2 = System.Diagnostics.Stopwatch.StartNew();
+                tcpOk = IpReachable(ip, RdpPort);
+                sw2.Stop();
+                rtt = (int)sw2.ElapsedMilliseconds;
+                if (!tcpOk) { tcpWhy = "tcp-connect-failed"; }
+            }
+            catch { tcpWhy = "tcp-connect-failed"; }
+        }
+        else { tcpWhy = "tcp-skipped-no-target"; }
+        if (tcpOk)
+        {
+            LogJson("diag", "diag", "tcp ok rtt=" + rtt);
+            HelloBounded(host, port, "diag", true, "diag-tcp:ok rtt=" + rtt);
+        }
+        else
+        {
+            LogJson("diag", "diag", "tcp fail " + tcpWhy);
+            HelloBounded(host, port, "diag", false, "diag-tcp:fail " + SanitizeBeacon(tcpWhy, "_.:+=, -", 60));
+        }
+        bool tlsOk = false;
+        string served = "";
+        string tproto = "";
+        string tcipher = "";
+        string tfail = "tcp-failed";
+        if (tcpOk) { DiagTls(ip, server, out tlsOk, out served, out tproto, out tcipher, out tfail); }
+        else { tfail = "tcp-failed"; }
+        if (tlsOk)
+        {
+            LogJson("diag", "diag", "tls ok served=" + served + " proto=" + tproto + " cipher=" + tcipher);
+            HelloBounded(host, port, "diag", true, "diag-tls:ok served=" + served +
+                " proto=" + SanitizeBeacon(tproto, ".", 16) + " cipher=" + SanitizeBeacon(tcipher, "/.", 32));
+        }
+        else
+        {
+            LogJson("diag", "diag", "tls fail " + tfail + " served=" + served);
+            HelloBounded(host, port, "diag", false, "diag-tls:fail " + SanitizeBeacon(tfail, "=,.-", 60));
+        }
+        bool credExists;
+        string credType;
+        string credUser;
+        DiagCredMeta(server, out credExists, out credType, out credUser);
+        string credDetail = "diag-cred:exists=" + (credExists ? "true" : "false");
+        if (credExists)
+        {
+            credDetail += " type=" + SanitizeBeacon(credType, " ", 24) + " user=" + SanitizeBeacon(credUser, "_.\\-", 64);
+        }
+        LogJson("diag", "diag", "cred " + credDetail);
+        HelloBounded(host, port, "diag", credExists, credDetail);
+        string death = "none";
+        if (!dnsOk) { death = "dns"; }
+        else if (!tcpOk) { death = "tcp"; }
+        else if (!tlsOk) { death = tfail.IndexOf("chain=") == 0 ? "tls-chain" : "tls-cert"; }
+        else if (!credExists) { death = "credssp"; }
+        HelloBounded(host, port, "diag", death == "none", "diag-done death=" + death);
+        string summary = Stamp + "\n\n" +
+            "server: " + server + "\n" +
+            "trace: " + (TraceId.Length > 0 ? TraceId : "(none)") + "\n\n" +
+            "dns: " + (dnsOk ? ("ok ip=" + ip + " ms=" + dnsMs) : ("FAIL " + dnsWhy)) + "\n" +
+            "tcp: " + (tcpOk ? ("ok rtt=" + rtt + "ms") : ("FAIL " + tcpWhy)) + "\n" +
+            "tls: " + (tlsOk ? ("ok served=" + served + " " + tproto + " " + tcipher) : ("FAIL " + tfail + (served.Length > 0 ? (" served=" + served) : ""))) + "\n" +
+            "cred: TERMSRV/" + server + " " + (credExists ? ("present (" + credType + " user=" + credUser + ")") : "absent") + "\n\n" +
+            "death-point: " + death + "\n\n" +
+            "log: " + LogPath();
+        LogJson("diag", "diag", "done death=" + death);
+        ShowBox("ghrdp diag: " + death, summary);
+        return 0;
+    }
+
     private static int DoWork(string uri, string verb, string host, int port)
     {
         // [F19 §2] REFUSAL FIRST: no ghrdp:// URL may carry a credential. The
@@ -1232,15 +1547,20 @@ internal static class GhrdpRdpLauncher
 
         if (verb == "check") { return RunCheck(uri, host, port); }
 
+        // [F37] 'diag' (client telescope): staged beacons, no ticket, no
+        // mstsc, no credential write. Shares target validation below via
+        // RunDiag itself.
+        if (verb == "diag") { return RunDiag(uri, host, port); }
+
         // [F28 §2] 'recred' (one-click recovery) shares every target validation
         // below; only the redemption/fallback policy differs.
         if (verb != "rdp" && verb != "recred")
         {
-            LogJson("error", verb, "unknown verb '" + verb + "' - no rdp/recred/check work done");
+            LogJson("error", verb, "unknown verb '" + verb + "' - no rdp/recred/check/diag work done");
             ShowBox("ghrdp launcher: unknown verb",
-                "verb '" + (verb.Length == 0 ? "(none)" : verb) + "' is none of 'rdp', 'recred' or 'check'.\n\n" +
+                "verb '" + (verb.Length == 0 ? "(none)" : verb) + "' is none of 'rdp', 'recred', 'check' or 'diag'.\n\n" +
                 "Use:  ghrdp://rdp?server=<fqdn>&user=<user>\n   or  ghrdp://recred?server=<fqdn>&user=<user>&t=<ticket>\n" +
-                "   or  ghrdp://check\n   or  ghrdp://check?server=<fqdn>\n\n" +
+                "   or  ghrdp://check\n   or  ghrdp://check?server=<fqdn>\n   or  ghrdp://diag?server=<fqdn>\n\n" +
                 "log: " + LogPath());
             return 2;
         }
@@ -1411,7 +1731,9 @@ internal static class GhrdpRdpLauncher
         // primitive. Pure string check - no I/O - so the beacon still goes out
         // before any cmdkey/mstsc/file work.
         string beaconHost = FqdnRe.IsMatch(server) ? server : "";
-        LogJson("invoked", verb, "protocol invocation log=" + LogPath());
+        TraceId = TraceFromUri(uri);
+        TracePrefix = TraceId.Length > 0 ? ("trace=" + TraceId + " ") : "";
+        LogJson("invoked", verb, "protocol invocation log=" + LogPath() + (TraceId.Length > 0 ? (" trace=" + TraceId) : ""));
         HelloBounded(beaconHost, port, verb, true, "invoked");
 
         // [F15 §1.4] global catch: an escaping exception is reported through the

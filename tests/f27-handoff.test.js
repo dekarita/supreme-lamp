@@ -43,13 +43,16 @@ test('F27 gate: store target, options, buffer cleanup, no unsafe launch APIs or 
 test('F27 WINDOWS click gets bearer ticket before dispatch, never reads password state',async()=>{
  const source=block(ui,'if(waBtn) waBtn.onclick=async','// [F15 §3] [RUN CHECK]');
  const builder=block(ui,'function ghrdpRdpUrl','function syncWinAuto');
+ // [F37] the click mints a trace-id (shipped minter, executed here) and every
+ // beacon of the click carries it; the trace is identity, never a credential.
+ const minter=ui.slice(ui.indexOf('function mintTraceId'),ui.indexOf('function ghrdpRdpUrl'));
  const launch=[], requests=[];
  const els={rdpFqdn:{textContent:'fixture.tail.ts.net'},credUser:{textContent:'fixture'},winAutoNote:{},winAutoStale:{style:{}}};
- const ctx={waBtn:{disabled:false},$:id=>els[id],FQDN_RE:/\.ts\.net$/,getKey:()=> 'fixture-bearer',apiBase:()=>'',window:{addEventListener(){},removeEventListener(){}},document:{addEventListener(){},removeEventListener(){}},fetch:async(url,opt)=>{requests.push({url,opt});return {ok:true,json:async()=>({rid:'a'.repeat(32)})}},launchProto:u=>launch.push(u),setInterval(){},setTimeout(){},clearInterval(){},encodeURIComponent,Date};
- vm.createContext(ctx);vm.runInContext(builder+source,ctx);
+ const ctx={waBtn:{disabled:false},$:id=>els[id],FQDN_RE:/\.ts\.net$/,getKey:()=> 'fixture-bearer',apiBase:()=>'',window:{addEventListener(){},removeEventListener(){}},document:{addEventListener(){},removeEventListener(){}},fetch:async(url,opt)=>{requests.push({url,opt});return {ok:true,json:async()=>({rid:'a'.repeat(32)})}},launchProto:u=>launch.push(u),setInterval(){},setTimeout(){},clearInterval(){},encodeURIComponent,Date,Math};
+ vm.createContext(ctx);vm.runInContext(minter+builder+source,ctx);
  await ctx.waBtn.onclick();
  assert.equal(requests[0].url,'/api/rdp-token');assert.equal(requests[0].opt.headers.Authorization,'Bearer fixture-bearer');
- assert.equal(launch[0],'ghrdp://rdp?server=fixture.tail.ts.net&user=fixture&t='+'a'.repeat(32));
+ assert.match(launch[0],/^ghrdp:\/\/rdp\?server=fixture\.tail\.ts\.net&user=fixture&t=a{32}&trace=t-[0-9a-z]+-[0-9a-z]+$/);
  assert.doesNotMatch(source,/windowsPass|keySecrets|credWinPass|textContent[^;]*pass/i);
  ctx.fetch=async()=>({ok:false,status:401});await ctx.waBtn.onclick();assert.equal(launch.length,1);
  assert.match(els.winAutoNote.textContent,/ticket-issue failed/);

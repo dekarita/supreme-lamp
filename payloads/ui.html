@@ -473,10 +473,20 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
       <span class="k">Launcher beacon</span>
       <span class="v" id="winBeacon" style="font-family:ui-monospace,Consolas,monospace;font-size:12px">(none yet - click WINDOWS AUTO-LOGIN)</span>
       <button id="btnRunCheck" type="button" title="fires ghrdp://check - a MessageBox on this PC proves the launcher exe runs (no server needed)">RUN CHECK</button>
+      <button id="btnRunDiag" type="button" title="fires ghrdp://diag - staged client telescope (dns/tcp/tls/cred); each stage is beaconed with a trace-id and merged into the TRACE TIMELINE below">RUN DIAG</button>
       <span class="note">launcher log <code id="winBeaconLog">%LOCALAPPDATA%\ghrdp\ghrdp-launcher.log</code>
         <a href="javascript:void(0)" onclick="copyById('winBeaconLog',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
     </div>
     <div class="note" id="winBeaconStall" style="display:none;color:#f5b7b7"></div>
+    <!-- [F37] TRACE TIMELINE: ONE row merging the client diag beacons (verb
+         diag, this trace-id) + the runner telescope (rdpListener.telescope)
+         + authEvents for the CURRENT trace. The first red segment IS the death
+         point; RED text names the exact failing field. -->
+    <div class="row" id="traceTimelineRow" style="flex-direction:column;align-items:stretch;gap:4px">
+      <span class="k" style="font-weight:600">TRACE TIMELINE</span>
+      <span class="note" id="traceTimelineLine" style="margin:0;font-family:ui-monospace,Consolas,monospace;font-size:12px">no trace yet - click WINDOWS AUTO-LOGIN or RUN DIAG</span>
+      <span class="note" id="traceTimelineDeath" style="margin:0"></span>
+    </div>
     <!-- [F12-1 §1.4] Stale-registration notice: shown when the launcher's
          /api/handler-hello beacon does NOT arrive within 20s of the click. The
          pre-F2 registration ran the old script host, which is exactly the
@@ -552,6 +562,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <span class="note" id="srvConnLogState" style="margin:0">collector not reported yet (server 30s tick reads both RDP Operational logs)</span>
     <span class="note" id="srvConnLogLines" style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace"></span>
     <span class="note" id="srvConnLogTls" style="margin:0"></span>
+    <span class="note" id="srvConnLogTele" style="margin:0;font-family:ui-monospace,Consolas,monospace;font-size:12px"></span>
     <span class="note" style="margin:0">reason codes: tls-forcibly-closed | tls-handshake-failed | cert-rejected | connection-reset | auth-succeeded | auth-failed | listener-lifecycle | session-state. A "forcibly closed"/handshake/reset reason here IS the pre-logon TLS drop the Security log cannot show - run the purge + cipher copy-lines under CONNECTION DIAGNOSTICS.</span>
   </div>
   <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>
@@ -1278,6 +1289,8 @@ async function nativeStatus(){
   paintRdpListener(rl,s?s.rdpListenerAgeSec:null);
   // [F30 §3] SERVER CONN LOG row (RDP Operational logs; handshake drops live here).
   paintSrvConnLog(s);
+  // [F37] TRACE TIMELINE row (client diag beacons + runner telescope + authEvents).
+  paintTraceTimeline(s);
   // [F30 §2.2] the age-aware purge command is fetched once (dash-token) and
   // rendered copy-only - the page never runs it.
   try { var f30p=loadServerPurgeCmd(); if(f30p&&f30p.catch)f30p.catch(function(){}); } catch(_){ }
@@ -1831,6 +1844,126 @@ async function loadServerPurgeCmd(){
 // place a pre-LSA TLS drop appears). Newest 3 events + reason codes; the
 // collector's own liveness is rendered, so a dead collector can never read as a
 // clean log. Copy-only elsewhere: nothing on this page executes anything.
+// [F37 timeline-begin] telescopeTimeline: PURE merge of the client diag
+// beacons (this trace-id) + the runner telescope (rdpListener.telescope) +
+// authEvents into ONE row. Segments: dns|tcp|tls-cert|tls-chain|credssp|logon
+// |acl. The first red segment IS the death point. Unknown (no data yet) is
+// never red. Field names (servedThumb/chainStatus/failurePoint/rst-before-
+// cert/aclSids/deathPoint/traceId) are shared with rdp-telescope.ps1.
+function telescopeTimeline(chain,traceId,tele,authLast,authEvents,credsspLive,credsspLiveWhy){
+ chain=(chain&&chain.length)?chain:[];
+ tele=tele||null;
+ var diag={};
+ chain.forEach(function(e){
+  if(!e||!e.details)return;
+  if(traceId&&e.trace&&String(e.trace)!==String(traceId))return;
+  var d=String(e.details);
+  var m=/^diag-(dns|tcp|tls|cred):(.*)$/.exec(d);
+  if(m){diag[m[1]]={ok:(e.ok===true),text:m[2]};return;}
+  var m2=/^diag-done death=(\S+)$/.exec(d);
+  if(m2){diag.done={death:m2[1]};}
+ });
+ function seg(id,ok,text){return {id:id,ok:ok,text:text};}
+ var segs=[];
+ if(diag.dns){segs.push(seg('dns',diag.dns.ok,'client diag-dns:'+diag.dns.text));}
+ else if(tele&&tele.dns){segs.push(seg('dns',tele.dns.ok===true,('runner dns ip='+(tele.dns.ip||'?')+' ms='+(tele.dns.ms||'?')+(tele.dns.why?(' '+tele.dns.why):''))));}
+ else{segs.push(seg('dns',null,'no dns sample yet'));}
+ if(diag.tcp){segs.push(seg('tcp',diag.tcp.ok,'client diag-tcp:'+diag.tcp.text));}
+ else if(tele&&tele.tcp){segs.push(seg('tcp',tele.tcp.ok===true,('runner tcp rttMs='+(tele.tcp.rttMs||'?')+(tele.tcp.why?(' '+tele.tcp.why):''))));}
+ else{segs.push(seg('tcp',null,'no tcp sample yet'));}
+ (function(){
+  var cok=diag.tls?(diag.tls.ok):null;
+  var ctext=diag.tls?('client diag-tls:'+diag.tls.text):'';
+  var rok=null,rtext='';
+  if(tele&&tele.tls){
+   var fp=String(tele.tls.failurePoint||'?');
+   var served=String(tele.tls.servedThumb||'?');
+   var bound=(tele.listener&&tele.listener.boundThumb)?String(tele.listener.boundThumb):'?';
+   rtext='runner served='+served+' bound='+bound+' tls='+fp;
+   if(fp==='none'){rok=true;}
+   else if(fp.indexOf('chain=')===0){rok=null;}
+   else{rok=false;}
+  }
+  var ok=(cok===false||rok===false)?false:((cok===true||rok===true)?true:null);
+  var text=[ctext,rtext].filter(function(x){return !!x;}).join(' | ')||'no tls-cert sample yet';
+  segs.push(seg('tls-cert',ok,text));
+ })();
+ (function(){
+  var cok=diag.tls?(diag.tls.text.indexOf('chain=')===0?false:(diag.tls.ok?true:null)):null;
+  var rok=null,rtext='';
+  if(tele&&tele.tls){
+   var fp=String(tele.tls.failurePoint||'?');
+   var cs=((tele.tls.chainStatus||[]).join(',')||'');
+   if(fp.indexOf('chain=')===0){rok=false;rtext='runner chain='+cs;}
+   else if(fp==='none'){rok=true;rtext='runner chain clean';}
+  }
+  var ok=(cok===false||rok===false)?false:((cok===true||rok===true)?true:null);
+  var text=[diag.tls?('client diag-tls:'+diag.tls.text):'',rtext].filter(function(x){return !!x;}).join(' | ')||'no tls-chain sample yet';
+  segs.push(seg('tls-chain',ok,text));
+ })();
+ (function(){
+  var ok=null,text='';
+  if(diag.cred){ok=diag.cred.ok;text='client diag-cred:'+diag.cred.text;}
+  else if(credsspLive==='warn'){ok=false;text='runner credssp live WARN '+(credsspLiveWhy||'');}
+  else if(credsspLive==='ok'){ok=true;text='runner credssp live OK';}
+  else{text='no credssp sample yet';}
+  segs.push(seg('credssp',ok,text));
+ })();
+ (function(){
+  var ok=null,text='';
+  if(authLast&&authLast.result==='failed'){ok=false;text='logon failed sub='+(authLast.sub||'?')+((authLast.subMeaning)?(' ('+authLast.subMeaning+')'):'');}
+  else if(authLast&&authLast.result==='success'){ok=true;text='logon success at '+(authLast.eventTs||'?');}
+  else if(authEvents&&authEvents.verdict&&authEvents.verdict!=='none'){ok=false;text='authEvents verdict='+authEvents.verdict;}
+  else{text='no logon sample yet';}
+  segs.push(seg('logon',ok,text));
+ })();
+ (function(){
+  var ok=null,text='';
+  if(tele&&tele.listener){
+   var sids=(tele.listener.aclSids||[]).join(' ');
+   if(sids.indexOf('S-1-5-20')>=0){ok=true;text='NETWORK SERVICE ACE present';}
+   else{ok=false;text='NETWORK SERVICE ACE ABSENT acl=['+(((tele.listener.aclSids||[]).join(' | '))||'empty')+']';}
+  }
+  else{text='no acl sample yet';}
+  segs.push(seg('acl',ok,text));
+ })();
+ var death='none';
+ for(var i=0;i<segs.length;i++){if(segs[i].ok===false){death=segs[i].id;break;}}
+ var line=segs.map(function(g){return g.id+(g.ok===true?'\u2705':(g.ok===false?'\u274c':'\u2026')) ;}).join(' ');
+ return {segs:segs,death:death,line:line};
+}
+// [F37 timeline-end]
+function paintTraceTimeline(s){
+ var row=document.getElementById('traceTimelineRow');
+ if(!row)return;
+ var rl=(s&&s.rdpListener)||{};
+ var chain=(s&&s.handlerChain)||[];
+ var trace='';
+ try{trace=window.__lastTraceId||'';}catch(_){}
+ if(!trace){
+  for(var i=chain.length-1;i>=0;i--){if(chain[i]&&chain[i].trace){trace=String(chain[i].trace);break;}}
+ }
+ var t=telescopeTimeline(chain,trace||null,rl.telescope||null,rl.authLast||null,rl.authEvents||null,rl.credsspLive,rl.credsspLiveWhy);
+ var line=document.getElementById('traceTimelineLine');
+ var death=document.getElementById('traceTimelineDeath');
+ if(line){
+  line.textContent=(trace?('trace '+trace+': '):'')+t.line;
+  line.style.color=(t.death==='none')?'':'#f5b7b7';
+ }
+ if(death){
+  if(t.death==='none'){
+   var any=t.segs.some(function(g){return g.ok!==null;});
+   death.textContent=any?'death-point: none (every reported stage green)':'waiting for the first diag beacons + the runner telescope sample (keep-alive 60s tick)...';
+   death.style.color='';
+  }else{
+   var hit=null;
+   for(var j=0;j<t.segs.length;j++){if(t.segs[j].id===t.death){hit=t.segs[j];break;}}
+   death.textContent='death-point: '+t.death+' - '+(hit?hit.text:'')+' (first red segment)';
+   death.style.color='#f5b7b7';
+  }
+ }
+ try{window.__traceDeath=t.death;}catch(_){}
+}
 // [F30 §3 connlog-render-begin]
 function paintSrvConnLog(s){
  var row=document.getElementById('srvConnLogRow');
@@ -1842,6 +1975,22 @@ function paintSrvConnLog(s){
  var lines=document.getElementById('srvConnLogLines');
  var tls=document.getElementById('srvConnLogTls');
  row.style.display='';
+ // [F37] LIVE listener telescope: boundThumb vs servedThumb (drift visible
+ // instantly) + aclSids + schannel tail, from the keep-alive 60s tick.
+ var tele2=document.getElementById('srvConnLogTele');
+ if(tele2){
+  var t2=(rl&&rl.telescope)||null;
+  if(!t2){tele2.textContent='listener telescope: not reported yet (the keep-alive 60s tick stamps rdpListener.telescope)';tele2.style.color='#f5d9b7';}
+  else{
+   var served2=String((t2.tls&&t2.tls.servedThumb)||'');
+   var bound2=String((t2.listener&&t2.listener.boundThumb)||'');
+   var eq2=!!served2&&!!bound2&&(served2.toUpperCase()===bound2.toUpperCase());
+   var sch2=((t2.schannel&&t2.schannel.tail)||[]).map(function(e){return '#'+e.id;}).join(' ')||'no Schannel events';
+   tele2.textContent='listener telescope @'+(t2.ts||'?')+' bound='+bound2+' served='+served2+' '+(eq2?'MATCH':'DRIFT')+
+    ' tls='+((t2.tls&&t2.tls.failurePoint)||'?')+' acl=['+(((t2.listener&&t2.listener.aclSids)||[]).join(' | ')||'?')+'] schannel tail: '+sch2+' deathPoint='+(t2.deathPoint||'?');
+   tele2.style.color=eq2?'':'#f5b7b7';
+  }
+ }
  if(!cl){
   if(st){st.textContent='collector not reported yet - the server 30s tick reads Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational + Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational';st.style.color='#f5d9b7';}
   if(lines)lines.textContent='';
@@ -2143,6 +2292,15 @@ function paintRecovery(rl,s,nowMs){
 }
 // [F28 §2 recovery-card-end]
 // [F27 status-render-end]
+// [F37] one trace-id per click; the launcher prefixes every beacon of that
+// click with it, so the TRACE TIMELINE merges client+runner stages exactly.
+function mintTraceId(){return 't-'+Date.now().toString(36)+'-'+Math.floor(Math.random()*1296).toString(36);}
+function ghrdpDiagUrl(fqdn,user,trace){
+ var u='ghrdp://diag?server='+encodeURIComponent(fqdn);
+ if(user&&user!=='__USER__')u+='&user='+encodeURIComponent(user);
+ if(trace)u+='&trace='+encodeURIComponent(trace);
+ return u;
+}
 function ghrdpRdpUrl(fqdn,user,ip){
  var u='ghrdp://rdp?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user);
  if(ip&&/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(ip)){u+='&ip='+encodeURIComponent(ip);}
@@ -2197,7 +2355,9 @@ if(waBtn) waBtn.onclick=async function(ev){
   var failure=$('winAutoNote');if(failure)failure.textContent='ticket-issue failed - check dashboard authorization and direct tailnet access';
   return;
  }
- launchProto(ghrdpRdpUrl(fqdn,user,(typeof window.__runnerResolvedIP==='string'?window.__runnerResolvedIP:''))+'&t='+encodeURIComponent(ticket));
+ var traceId=mintTraceId();
+ try{window.__lastTraceId=traceId;}catch(_){}
+ launchProto(ghrdpRdpUrl(fqdn,user,(typeof window.__runnerResolvedIP==='string'?window.__runnerResolvedIP:''))+'&t='+encodeURIComponent(ticket)+'&trace='+encodeURIComponent(traceId));
  ticket='';
  var note=$('winAutoNote');
  if(note)note.textContent='protocol dispatched - mstsc should open fullscreen shortly';
@@ -2257,7 +2417,9 @@ if(frBtn) frBtn.onclick=async function(ev){
   return;
  }
  window.__recoveryDispatchedAt=Date.now();
- launchProto(ghrdpRecredUrl(fqdn,user)+'&t='+encodeURIComponent(ticket));
+ var traceId2=mintTraceId();
+ try{window.__lastTraceId=traceId2;}catch(_){}
+ launchProto(ghrdpRecredUrl(fqdn,user)+'&t='+encodeURIComponent(ticket)+'&trace='+encodeURIComponent(traceId2));
  ticket='';
  if(note)note.textContent='recovery dispatched - the launcher redeems the fresh ticket, overwrites the stored credential and reopens mstsc (watch the chain: recred-redeemed -> credwrite-ok -> mstsc-started)';
 };
@@ -2274,6 +2436,22 @@ if(rcBtn) rcBtn.onclick=function(ev){
  launchProto('ghrdp://check'+(FQDN_RE.test(fqdn)?('?server='+encodeURIComponent(fqdn)):''));
  var note=$('winAutoNote');
  if(note)note.textContent='ghrdp://check dispatched - a "ghrdp launcher check" MessageBox must appear on this PC (no MessageBox => read the launcher log: Defender or policy may have blocked the exe)';
+};
+// [F37] [RUN DIAG] - fires the client's staged telescope (ghrdp://diag): no
+// ticket, no mstsc, no credential write. Each stage is beaconed with the
+// minted trace-id and lands in the TRACE TIMELINE row below.
+var rdBtn=$('btnRunDiag');
+if(rdBtn) rdBtn.onclick=function(ev){
+ if(ev&&ev.preventDefault)ev.preventDefault();
+ var fqdn=($('rdpFqdn')||{}).textContent||'';
+ var user=($('credUser')||{}).textContent||'';
+ if(!FQDN_RE.test(fqdn))return;
+ var traceId=mintTraceId();
+ try{window.__lastTraceId=traceId;}catch(_){}
+ launchProto(ghrdpDiagUrl(fqdn,user,traceId));
+ try{nativeStatus();}catch(_){}
+ var note=$('winAutoNote');
+ if(note)note.textContent='ghrdp://diag dispatched (trace '+traceId+') - a "ghrdp diag" MessageBox must appear on this PC; its stages merge into the TRACE TIMELINE below';
 };
 var btn=$('autoLoginNative');
 if(btn) btn.onclick=function(ev){

@@ -7,6 +7,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: F31/F33 persisted-key ACL and served-certificate gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          acl=payloads/Grant-RdpKeyAccess.ps1
+          probe=payloads/Test-RdpListenerHandshake.ps1
+          for token in PersistKeySet MachineKeySet Exportable HasPrivateKey Grant-RdpKeyAccess.ps1 'Restart-Service TermService -Force -ErrorAction Stop'; do
+            grep -qF "$token" "$wf"
+          done
+          for token in 'GetRSAPrivateKey' 'GetECDsaPrivateKey' 'Crypto\Keys' 'RSA\MachineKeys' 'S-1-5-20' 'S-1-5-18' 'Set-Acl' 'GetAccessRules' 'Required ACE absent'; do
+            grep -qF "$token" "$acl"
+          done
+          for token in '0x03,0x00,0x00,0x13' '0x0e,0xe0' 'AuthenticateAsClientAsync' 'IsAuthenticated' 'SslPolicyErrors' '36870' 'key ACL:'; do
+            grep -qF "$token" "$probe"
+          done
+          # the probe is permissive by design: self-signed lab certs ALWAYS
+          # carry chain errors, so gating on Policy==None fails a healthy bind.
+          if grep -qF 'Policy -ne' "$probe"; then echo 'F31: the listener probe must not gate on TLS policy errors' >&2; exit 1; fi
+          grep -qF 'listenerHandshakeOk = $listenerHandshakeOk' "$wf"
+          grep -qF 'listenerHandshakeOk=false' "$wf"
+          grep -qF 'listener-handshake-ok' "$wf"
+          grep -qF 'F33 ACL-DENIED PASS' .github/workflows/autologin-lab.yml
+          grep -qF 'Id = @(36870, 36871, 36888)' payloads/ghrdp-server.ps1
+          grep -qF 'key-open-failed:' payloads/ghrdp-server.ps1
+          grep -qF 'tls-alert-sent:' payloads/ghrdp-server.ps1
+          if grep -E 'UserAuthentication -Value 0|SecurityLayer -Value 0|IgnoreCertificateErrors' "$wf" "$acl" "$probe"; then exit 1; fi
+
       - name: D/E launch gates
         shell: bash
         run: |
@@ -1802,6 +1830,89 @@ jobs:
           test -f tests/f34-up-diagnosis.test.js || { echo 'F34: the node matrix is missing' >&2; exit 1; }
           node --test tests/f34-up-diagnosis.test.js
           echo 'F34 gates PASS'
+      - name: F37 RDP telescope self-explaining observability gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          lab=.github/workflows/autologin-lab.yml
+          tele=payloads/rdp-telescope.ps1
+          srv=payloads/ghrdp-server.ps1
+          ui=payloads/ui.html
+          cs=payloads/ghrdp-rdp-launcher.cs
+          blk() { awk -v b="$2" -v e="$3" 'index($0,b){f=1} f{print} f&&index($0,e){exit}' "$1"; }
+          test -f "$tele" || { echo 'F37: the single-source telescope module is missing' >&2; exit 1; }
+          # (1) single source: lab + live + server + launcher + dashboard share ONE format.
+          for tok in servedThumb chainStatus failurePoint rst-before-cert aclSids deathPoint traceId; do
+            grep -qF "$tok" "$tele" || { echo "F37: telescope module lost token: $tok" >&2; exit 1; }
+          done
+          grep -qF 'rdp-telescope.ps1' "$lab" || { echo 'F37: lab does not source the telescope module' >&2; exit 1; }
+          grep -qF 'rdp-telescope.ps1' "$wf" || { echo 'F37: main.yml does not stage/run the telescope module' >&2; exit 1; }
+          for tok in servedThumb failurePoint deathPoint diag-dns diag-tcp diag-tls diag-cred diag-done; do
+            grep -qF "$tok" "$cs" || { echo "F37: launcher lost shared token: $tok" >&2; exit 1; }
+          done
+          for tok in servedThumb failurePoint deathPoint traceTimeline diag-done; do
+            grep -qF "$tok" "$ui" || { echo "F37: dashboard lost shared token: $tok" >&2; exit 1; }
+          done
+          for tok in 'trace=' 'hh.trace' 'diag-dns:' 'diag-tls:' 'diag-done death='; do
+            grep -qF "$tok" "$srv" || { echo "F37: server beacon channel lost token: $tok" >&2; exit 1; }
+          done
+          # (2) lab self-explanation: ServerAuth EKU + SAN, telescope pre/post printed, served==bound gate.
+          grep -qF '2.5.29.37={text}1.3.6.1.5.5.7.3.1' "$lab" || { echo 'F37: lab cert lacks ServerAuth EKU' >&2; exit 1; }
+          grep -qF "'localhost', \$env:COMPUTERNAME" "$lab" || { echo 'F37: lab cert lacks SAN localhost+machinename' >&2; exit 1; }
+          grep -qF "Write-Telescope 'pre-bind'" "$lab" || { echo 'F37: lab never runs the pre-bind telescope' >&2; exit 1; }
+          grep -qF "Write-Telescope 'post-bind'" "$lab" || { echo 'F37: lab never runs the post-bind telescope' >&2; exit 1; }
+          grep -qF '### TELESCOPE ' "$lab" || { echo 'F37: lab never prints telescope fields to the summary' >&2; exit 1; }
+          grep -qF 'telescope servedThumb != boundThumb' "$lab" || { echo 'F37: lab lost the served==bound gate' >&2; exit 1; }
+          grep -qF 'telescope handshake not ok' "$lab" || { echo 'F37: lab lost the handshake-ok gate' >&2; exit 1; }
+          grep -qF -- '- payloads/rdp-telescope.ps1' "$lab" || { echo 'F37: lab trigger paths omit the telescope module' >&2; exit 1; }
+          # dot-source clobber guard: the module's top-level param() resets any
+          # same-named caller variable, so cell R must use a collision-free name.
+          rblk=$(blk "$lab" 'name: "R:' 'name: "S:')
+          grep -qF '$labFqdn' <<< "$rblk" || { echo 'F37: cell R lost its collision-free fqdn variable' >&2; exit 1; }
+          if grep -q -e '\$fqdn' -e '\$Fqdn' <<< "$rblk"; then echo 'F37: cell R uses a variable the telescope param() block clobbers' >&2; exit 1; fi
+          # no cert cell may exit red without telescope fields: every
+          # bind-effectiveness failure must carry the telescope diagnosis.
+          if grep -F "R-Fail 'bind-effectiveness'" "$lab" | grep -vF 'telescope'; then
+            echo 'F37: a bind-effectiveness failure carries no telescope diagnosis' >&2; exit 1
+          fi
+          # (3) live runner: the 60s tick stamps rdpListener.telescope + prints bound vs served.
+          grep -qF '[F37 telescope-begin]' "$wf" || { echo 'F37: keep-alive telescope block markers missing' >&2; exit 1; }
+          grep -qF 'Update-RdpTelescopeTick' "$wf" || { echo 'F37: keep-alive never runs the telescope tick' >&2; exit 1; }
+          grep -qF 'Add-Member -NotePropertyName telescope' "$wf" || { echo 'F37: telescope never lands in rdpListener' >&2; exit 1; }
+          grep -qF '[F37] TELESCOPE bound=' "$wf" || { echo 'F37: keep-alive never prints bound vs served' >&2; exit 1; }
+          # (4) client: diag verb + per-click trace + RUN DIAG + ONE timeline row.
+          grep -qF 'ghrdp://diag' "$cs" || { echo 'F37: launcher has no diag verb' >&2; exit 1; }
+          grep -qF 'RunDiag' "$cs" || { echo 'F37: launcher RunDiag is missing' >&2; exit 1; }
+          grep -qF 'mintTraceId' "$ui" || { echo 'F37: dashboard never mints a trace-id' >&2; exit 1; }
+          grep -qF 'btnRunDiag' "$ui" || { echo 'F37: dashboard has no RUN DIAG button' >&2; exit 1; }
+          grep -qF 'telescopeTimeline' "$ui" || { echo 'F37: dashboard timeline merger is missing' >&2; exit 1; }
+          grep -qF 'death-point' "$ui" || { echo 'F37: dashboard never names the death point' >&2; exit 1; }
+          grep -qF 'srvConnLogTele' "$ui" || { echo 'F37: SERVER CONN LOG lost the live bound/served line' >&2; exit 1; }
+          grep -qF '&trace=' "$ui" || { echo 'F37: clicks never carry the trace-id' >&2; exit 1; }
+          # the diag verb must never launch mstsc, write a credential, or automate cred UI.
+          diagblk=$(blk "$cs" '[F37] ghrdp://diag' 'private static int DoWork')
+          test -n "$diagblk" || { echo 'F37: launcher diag block is missing' >&2; exit 1; }
+          if grep -nE 'MstscStep|CredWrite\(|cmdkey /delete|/pass:' <<< "$diagblk"; then
+            echo 'F37: the diag block launches/writes/deletes (diagnosis only)' >&2; exit 1
+          fi
+          # (5) refusals: telescope NEVER reads password bytes; no weakening; no trust installs.
+          # the two sub-status MEANING labels are the repo's existing classifier
+          # vocabulary (same strings as the F24 collector), not secret reads.
+          telecode=$(grep -vE '^\s*#' "$tele" | grep -v "subMeaning = 'wrong-password'" | grep -v "subMeaning = 'bad-user-or-password'")
+          if grep -niE 'password|passwd|securestring|credentialblob|get-credential|read-host|convertto-securestring|networkcredential' <<< "$telecode"; then
+            echo 'F37: secret-shaped token in the telescope module (handshake metadata only)' >&2; exit 1
+          fi
+          if grep -nE 'UserAuthentication -Value 0|SecurityLayer -Value 0|fPromptForPassword|AuthLvlOverride|authentication level' "$tele"; then
+            echo 'F37: an NLA weakening appeared in the telescope module' >&2; exit 1
+          fi
+          if grep -nE 'Add\(.*Root|certutil.*-addstore.*root' "$tele"; then
+            echo 'F37: the telescope module installs trust (forbidden)' >&2; exit 1
+          fi
+          # (6) the timeline merger + the shared format are executed, not merely grepped.
+          test -f tests/f37-telescope.test.js || { echo 'F37: the node matrix is missing' >&2; exit 1; }
+          node --test tests/f37-telescope.test.js
+          echo 'F37 gates PASS'
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:

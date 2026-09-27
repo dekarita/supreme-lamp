@@ -487,6 +487,14 @@ function Get-RdpConnLogReason {
     $t = ([string]$Text).ToLowerInvariant()
     $p = ([string]$Provider).ToLowerInvariant()
     $evt = ([string]$Id).Trim()
+    if ($p -match 'schannel' -and $evt -eq '36870') {
+        if ($t -match '0x[0-9a-f]{8}') { return ('key-open-failed:' + $Matches[0]) }
+        return 'key-open-failed:unknown'
+    }
+    if ($p -match 'schannel' -and $evt -eq '36888') {
+        if ($t -match 'error state (?:is )?(\d+)') { return ('tls-alert-sent:' + $Matches[1]) }
+        return 'tls-alert-sent:unknown'
+    }
     if ($t -match 'forcibly closed') { return 'tls-forcibly-closed' }
     # certificate FIRST: a cert failure message also says "TLS ... failed", and
     # 'cert-rejected' is the actionable reason code for it.
@@ -642,7 +650,7 @@ function Get-F31cSchannelWindow {
         $since = $now.ToLocalTime().AddMinutes(-5)
         $raw = @()
         try {
-            $raw = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = @(36870, 36871); StartTime = $since } -MaxEvents 10 -ErrorAction Stop)
+            $raw = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = @(36870, 36871, 36888); StartTime = $since } -MaxEvents 10 -ErrorAction Stop)
         } catch {
             $em = [string]$_.Exception.Message
             if ($em -notmatch 'No events were found|No events found') { $probeError = 'schannel-log-unreadable' }
@@ -659,7 +667,7 @@ function Get-F31cSchannelWindow {
                 provider = 'Schannel'
                 timeUtc  = $e.TimeCreated.ToUniversalTime().ToString('o')
                 level    = [string]$e.Level
-                reason   = ('schannel-' + $id)
+                reason   = (Get-RdpConnLogReason -Provider 'Schannel' -Id $id -Level ([string]$e.Level) -Text $desc)
                 desc     = $desc
             }
         }
@@ -1352,6 +1360,7 @@ function Invoke-ClientRequest {
                     verb = [string]$hb.verb
                     details = [string]$hb.details
                     ok = $(if ($null -ne $hb.ok) { [bool]$hb.ok } else { $false })
+                    trace = $(if ($hb.PSObject.Properties['trace']) { [string]$hb.trace } else { '' })
                 }
             }
             $ns.launcher = [ordered]@{ beacons = @($f31cBeacons) }
@@ -1418,17 +1427,32 @@ function Invoke-ClientRequest {
                     $bTxt = [System.Text.Encoding]::UTF8.GetString([byte[]]$bodyRaw)
                     $bj = $bTxt | ConvertFrom-Json -ErrorAction SilentlyContinue
                     if ($bj) {
-                        if ([string]$bj.verb -in @('rdp','check','setup','install','connect')) { $hh.verb = [string]$bj.verb } else { $hh.verb = 'other' }
+                        if ([string]$bj.verb -in @('rdp','recred','diag','check','setup','install','connect')) { $hh.verb = [string]$bj.verb } else { $hh.verb = 'other' }
                         if ($null -ne $bj.ok) { $hh.ok = [bool]$bj.ok }
                         # F27: reject arbitrary telemetry strings rather than redact guesses.
                         $detail = [string]$bj.details
+                        # [F37] trace-id: the dashboard mints one trace per click
+                        # and the launcher prefixes every beacon of that click
+                        # with 'trace=<id> '. The prefix is parsed into its own
+                        # field so the timeline can merge client+runner stages;
+                        # the remainder still faces the strict allowlist below.
+                        $hh.trace = ''
+                        $mTrace = [regex]::Match($detail, '^trace=([A-Za-z0-9\-]{1,40}) (.*)$')
+                        if ($mTrace.Success) { $hh.trace = $mTrace.Groups[1].Value; $detail = $mTrace.Groups[2].Value }
+                        if ([string]$bj.trace -match '^[A-Za-z0-9\-]{1,40}$' -and -not $hh.trace) { $hh.trace = [string]$bj.trace }
                         # [F28 §2/§3] recred-redeemed = the recovery redemption;
                         # fallback-mstsc-native-prompt = the closed fallback gap
                         # (the beacon immediately preceding a /prompt launch).
                         # [F30 §2.1/§2.3] purged <n> stale entries, wrote new as
                         # Domain = the purge-before-write proof; rdp-truncated =
                         # the .rdp byte-floor failure (never a silent launch).
-                        if ($detail -match '^(invoked|ticket-redeemed|recred-redeemed|credwrite-ok|credwrite-failed|rdp-written|rdp-truncated|purged [0-9]+ stale entries, wrote new as Domain|mstsc-started( pid=[0-9]+)?|mstsc-exited=-?[0-9]+|check-shown|cmdkey-shown|cmdkey-timeout|cmdkey-stored=(true|false)|client-dns-off|cred-param-rejected|invalid-target|fallback-mstsc-native-prompt|fallback-cmdkey reason=(ticket-missing|unreachable|ticket-invalid-or-expired))$') { $hh.details = $detail }
+                        # [F37] diag-dns/diag-tcp/diag-tls/diag-cred/diag-done =
+                        # the client telescope stages (verb diag): handshake
+                        # metadata only (servedThumb/protocol/cipher/failurePoint
+                        # share the single-source format with rdp-telescope.ps1),
+                        # never a secret. Charset-capped; anything else is still
+                        # 'launcher-error'.
+                        if ($detail -match '^(invoked|ticket-redeemed|recred-redeemed|credwrite-ok|credwrite-failed|rdp-written|rdp-truncated|purged [0-9]+ stale entries, wrote new as Domain|mstsc-started( pid=[0-9]+)?|mstsc-exited=-?[0-9]+|check-shown|cmdkey-shown|cmdkey-timeout|cmdkey-stored=(true|false)|client-dns-off|cred-param-rejected|invalid-target|fallback-mstsc-native-prompt|fallback-cmdkey reason=(ticket-missing|unreachable|ticket-invalid-or-expired)|diag-dns:(ok ip=[0-9.]{7,15} ms=[0-9]{1,6}|fail [A-Za-z0-9_.:+=, -]{1,60})|diag-tcp:(ok rtt=[0-9]{1,6}|fail [A-Za-z0-9_.:+=, -]{1,60})|diag-tls:(ok served=[A-Fa-f0-9]{40} proto=[A-Za-z0-9.]{1,16} cipher=[A-Za-z0-9/.]{1,32}|fail [A-Za-z0-9_=,.-]{1,60})|diag-cred:exists=(true|false)( type=[A-Za-z0-9_ ]{1,24})?( user=[A-Za-z0-9_.\\\\-]{1,64})?|diag-done death=(none|dns|tcp|tls-cert|tls-chain|credssp|logon|acl))$') { $hh.details = $detail }
                         elseif ($detail -like 'dns-guard:*') { $hh.details = 'dns-guard-failed' }
                         else { $hh.details = 'launcher-error' }
                         # [F19 §2] exe: the launcher's version stamp, used by the

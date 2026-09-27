@@ -56,14 +56,17 @@ stand up, no client-side trust manipulation.
   `tailscale status --json`, re-asserts `UserAuthentication = 1`,
   runs `tailscale cert --cert-file --key-file <fqdn>`, imports the
   resulting PEM as a PFX into `LocalMachine\My` with
-  `PersistKeySet|MachineKeySet`, grants `NETWORK SERVICE` read on the
-  private key, and binds the thumbprint on `RDP-Tcp` via WMI
+  `PersistKeySet|MachineKeySet|Exportable`, asserts `HasPrivateKey`, resolves
+  the actual CNG `Crypto\Keys` or CSP `RSA\MachineKeys` file, grants and
+  reads back `NETWORK SERVICE` Read and SYSTEM FullControl (failure is fatal),
+  and binds the thumbprint on `RDP-Tcp` via WMI
   `Win32_TSGeneralSetting.SetSSLCertificateSHA1Hash` (with a registry
   fallback to `HKLM:\...\RDP-Tcp\SSLCertificateSHA1Hash`). The step
   logs the thumbprint only — never the private key, never any password,
   never anything that could be replayed. `TermService` is restarted so
-  the new cert takes effect. Idempotent: safe to re-run every workflow
-  invocation, and idempotent on LE renewal.
+  the new cert takes effect. The F17 gate then requires X.224+TLS completion
+  with served thumbprint equal to bound thumbprint before advertisement.
+  Idempotent on LE renewal.
 - On a persistent VPS (see §1.7), run once (elevated, PowerShell 7+):
   `payloads\Enable-RdpTlsCertificate.ps1` — same logic as the workflow
   step, wrapped as a standalone script. Re-run when the LE cert renews
@@ -72,10 +75,28 @@ stand up, no client-side trust manipulation.
   with zero warnings. No client-side `Trusted Root` import, no self-signed
   cert, no `AuthenticationLevelOverride`, no `authentication level:i:*`
   suppression, no MOTW / SmartScreen bypass.
-- FALLBACK (only if `tailscale cert` is unavailable on the host): generate
-  a self-signed cert with a long expiry, export the public part, and
-  import once into each client's `Cert:\CurrentUser\Root`. Same
-  zero-warning outcome, one manual step per client. Use only as a bridge.
+- Live key diagnostics (terminal-safe, on the runner):
+  `certutil -store My <bound-thumbprint> | findstr /i "Key Container Provider"`;
+  then `icacls "C:\ProgramData\Microsoft\Crypto\Keys\<container>"`
+  (or `C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys\<container>`
+  for a CSP provider). A missing `NETWORK SERVICE` ACE predicts 36870/RST.
+  The constrained terminal account cannot use PowerShell certificate extension
+  methods; these are used only by the full-pwsh provisioning step.
+- RDP TELESCOPE (F37, self-explaining observability, single source
+  `payloads/rdp-telescope.ps1`, secret-free): on the runner,
+  `powershell -File payloads/rdp-telescope.ps1 -Fqdn <fqdn> -Target 127.0.0.1 -Summary`
+  prints dns -> tcp+rtt -> X.224+TLS (servedThumb, chainStatus, protocol,
+  cipher or rst-before-cert / chain=<status> / name-mismatch) -> cred target
+  exists+type+user -> last 4624/4625+sub -> Schannel tail -> listener
+  boundThumb/inStore/hasKey/container/aclSids, plus the first-red death point
+  (dns|tcp|tls-cert|tls-chain|credssp|logon|acl). The keep-alive 60s tick
+  stamps the same object into `rdpListener.telescope` (dashboard SERVER CONN
+  LOG shows bound vs served live); each AUTO-LOGIN/RECONNECT click mints a
+  trace-id, the launcher `ghrdp://diag` verb (dashboard RUN DIAG) beacons every
+  client stage with it, and the TRACE TIMELINE row merges client+runner stages
+  so the first red segment names the failure. Lab cert cells print the full
+  telescope to the step summary before+after bind and pass only on
+  servedThumb==boundThumb with a clean handshake.
 
 ### 1.4 User-run-once cmdkey (typed password, benign UX)
 

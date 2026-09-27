@@ -215,7 +215,7 @@ test('F28-2 recovery correlator: only host-refused 0xC000006A within 120s of the
   assert.equal(view.node('recoveryRow').style.display, 'flex', 'a 119s-old beacon with a fresh failure is in-window');
 });
 
-test('F28-2 FIX & RECONNECT mints a ticket then fires ghrdp://recred with ONLY t', async () => {
+test('F28-2 FIX & RECONNECT mints a ticket then fires ghrdp://recred with t + trace (identity only)', async () => {
   const launch = [];
   const requests = [];
   const els = {
@@ -224,21 +224,23 @@ test('F28-2 FIX & RECONNECT mints a ticket then fires ghrdp://recred with ONLY t
   };
   const ctx = {
     $: id => els[id], FQDN_RE: /\.ts\.net$/, getKey: () => 'fixture-bearer', apiBase: () => '',
-    window: {}, encodeURIComponent, Date,
+    window: {}, encodeURIComponent, Date, Math,
     fetch: async (url, opt) => { requests.push({ url, opt }); return { ok: true, status: 200, json: async () => ({ rid: 'b'.repeat(32), ttl: 60 }) }; },
     launchProto: u => launch.push(u)
   };
   vm.createContext(ctx);
   const src = a => html.slice(html.indexOf(a), html.indexOf(a.replace('begin', 'end')));
-  vm.runInContext(src('// [F28 §2 recovery-url-begin]') + '\n' + src('// [F28 §2 recovery-click-begin]'), ctx);
+  // [F37] the click mints a trace-id (shipped minter, executed here).
+  const minter = html.slice(html.indexOf('function mintTraceId'), html.indexOf('function ghrdpRdpUrl'));
+  vm.runInContext(minter + '\n' + src('// [F28 §2 recovery-url-begin]') + '\n' + src('// [F28 §2 recovery-click-begin]'), ctx);
   await ctx.frBtn.onclick();
   assert.equal(requests[0].url, '/api/rdp-token');
   assert.equal(requests[0].opt.method, 'POST');
   assert.equal(requests[0].opt.headers.Authorization, 'Bearer fixture-bearer');
-  assert.equal(launch[0], 'ghrdp://recred?server=' + fqdn + '&user=rdpuser&t=' + 'b'.repeat(32));
+  assert.match(launch[0], new RegExp('^ghrdp://recred\\?server=' + fqdn.replace(/\./g, '\\.') + '&user=rdpuser&t=b{32}&trace=t-[0-9a-z]+-[0-9a-z]+$'));
   // the recovery URL may carry the ticket and identity ONLY - never a credential.
   const q = new URL(launch[0].replace('ghrdp://recred', 'https://x/y'));
-  assert.deepEqual([...q.searchParams.keys()].sort(), ['server', 't', 'user']);
+  assert.deepEqual([...q.searchParams.keys()].sort(), ['server', 't', 'trace', 'user']);
   assert.doesNotMatch(launch[0], /pass|password|pwd|secret|apikey/i);
   assert.match(els.recoveryNote.textContent, /recred-redeemed -> credwrite-ok -> mstsc-started/);
   // a ticket-issue failure launches nothing
