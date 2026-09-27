@@ -6,8 +6,14 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 
-const ui = fs.readFileSync('payloads/ui.html', 'utf8');
-const mainYml = fs.readFileSync('.github/workflows/main.yml', 'utf8');
+// [F38] Windows runners check out with core.autocrlf=true (both the lab and
+// main.yml run on Windows), so compare LOGICAL content: normalise CRLF once
+// here instead of anchoring any assert to a raw '\n'. The font/base64 asserts
+// below still compare the exact staged bytes - normalising line endings never
+// touches the embedded base64 or the sha256 comparison.
+const lf = s => s.replace(/\r\n/g, '\n');
+const ui = lf(fs.readFileSync('payloads/ui.html', 'utf8'));
+const mainYml = lf(fs.readFileSync('.github/workflows/main.yml', 'utf8'));
 
 const BASELINE_IDS=[
   'activeBar', 'activeBytes', 'activeName', 'activePct', 'activePhase', 'aggBar',
@@ -110,7 +116,7 @@ test('F38-3 Noto Sans Sinhala staged + embedded + unicode-range gated', () => {
   // main.yml stages the font files alongside ui.html
   assert.ok(mainYml.includes('payloads/fonts/') && mainYml.includes('ghrdp-stage/fonts/'),
     'main.yml does not stage payloads/fonts');
-  const srv = fs.readFileSync('payloads/ghrdp-server.ps1', 'utf8');
+  const srv = lf(fs.readFileSync('payloads/ghrdp-server.ps1', 'utf8'));
   assert.ok(srv.includes('/fonts/noto-sans-sinhala-400-latin-free.woff2'), 'static font route missing');
   assert.ok(srv.includes("CType 'font/woff2'"), 'font route does not serve font/woff2');
 });
