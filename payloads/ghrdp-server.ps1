@@ -487,6 +487,14 @@ function Get-RdpConnLogReason {
     $t = ([string]$Text).ToLowerInvariant()
     $p = ([string]$Provider).ToLowerInvariant()
     $evt = ([string]$Id).Trim()
+    if ($p -match 'schannel' -and $evt -eq '36870') {
+        if ($t -match '0x[0-9a-f]{8}') { return ('key-open-failed:' + $Matches[0]) }
+        return 'key-open-failed:unknown'
+    }
+    if ($p -match 'schannel' -and $evt -eq '36888') {
+        if ($t -match 'error state (?:is )?(\d+)') { return ('tls-alert-sent:' + $Matches[1]) }
+        return 'tls-alert-sent:unknown'
+    }
     if ($t -match 'forcibly closed') { return 'tls-forcibly-closed' }
     # certificate FIRST: a cert failure message also says "TLS ... failed", and
     # 'cert-rejected' is the actionable reason code for it.
@@ -642,7 +650,7 @@ function Get-F31cSchannelWindow {
         $since = $now.ToLocalTime().AddMinutes(-5)
         $raw = @()
         try {
-            $raw = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = @(36870, 36871); StartTime = $since } -MaxEvents 10 -ErrorAction Stop)
+            $raw = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = @(36870, 36871, 36888); StartTime = $since } -MaxEvents 10 -ErrorAction Stop)
         } catch {
             $em = [string]$_.Exception.Message
             if ($em -notmatch 'No events were found|No events found') { $probeError = 'schannel-log-unreadable' }
@@ -659,7 +667,7 @@ function Get-F31cSchannelWindow {
                 provider = 'Schannel'
                 timeUtc  = $e.TimeCreated.ToUniversalTime().ToString('o')
                 level    = [string]$e.Level
-                reason   = ('schannel-' + $id)
+                reason   = (Get-RdpConnLogReason -Provider 'Schannel' -Id $id -Level ([string]$e.Level) -Text $desc)
                 desc     = $desc
             }
         }

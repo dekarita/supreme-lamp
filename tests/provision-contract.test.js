@@ -25,8 +25,8 @@ test('NLA/CredSSP, LE cert and tailnet-only firewall precede opening RDP', () =>
   assert.match(cert, /GetNameInfo\(/);
   assert.match(cert, /\$chain\.Build\(\$loaded\)/);
   assert.match(cert, /SetSSLCertificateSHA1Hash/);
-  assert.match(cert, /Persisted machine key not found/);
-  assert.match(cert, /S-1-5-20/);
+  assert.match(cert, /Grant-RdpKeyAccess\.ps1/);
+  assert.match(fs.readFileSync('payloads/Grant-RdpKeyAccess.ps1', 'utf8'), /S-1-5-20/);
   assert.match(provision, /-RemoteAddress '100\.64\.0\.0\/10' -InterfaceAlias \$tsAlias/);
   assert.match(provision, /-LocalAddress \$tsIp/);
   assert.ok(provision.indexOf('New-NetFirewallRule -Name') < provision.indexOf('fDenyTSConnections -Value 0'));
