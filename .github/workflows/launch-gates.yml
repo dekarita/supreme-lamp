@@ -613,7 +613,11 @@ jobs:
       - name: F19 client-DNS probe + launcher version guard + no-credential-automation gates
         shell: bash
         run: |
-          set -euo pipefail
+          set -euxo pipefail
+          echo "=== F19 DEBUG START ==="
+          echo "ui=$(wc -c < payloads/ui.html)"
+          ls -lh payloads/ui.html
+          echo "=== checking SendKeys etc ==="
           ui=payloads/ui.html
           cs=payloads/ghrdp-rdp-launcher.cs
           srv=payloads/ghrdp-server.ps1
