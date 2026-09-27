@@ -525,7 +525,11 @@ jobs:
           # [F37] Lab certs MUST carry ServerAuth EKU + SAN localhost+machinename:
           # Schannel RSTs server certs without ServerAuth EKU (rst-before-cert),
           # which was the red-without-why bind-effectiveness class.
-          $lc = New-SelfSignedCertificate -DnsName $fqdn, 'localhost', $env:COMPUTERNAME -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(2) -KeySpec KeyExchange -KeyLength 2048 -KeyExportPolicy Exportable -KeyUsage DigitalSignature, KeyEncipherment -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.1')
+          try {
+              $lc = New-SelfSignedCertificate -DnsName $fqdn, 'localhost', $env:COMPUTERNAME -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(2) -KeySpec KeyExchange -KeyLength 2048 -KeyExportPolicy Exportable -KeyUsage DigitalSignature, KeyEncipherment -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.1')
+          } catch { R-Fail 'cert-create' ('lab EKU/SAN cert creation threw: ' + $_.Exception.Message) }
+          if (-not $lc -or -not $lc.Thumbprint) { R-Fail 'cert-create' 'lab cert object empty after New-SelfSignedCertificate' }
+          Write-Host '::notice::[R] ckpt cert-ok'
           # Trust only this ephemeral lab cert so the production probe's full
           # X509Chain.Build check is exercised without relaxing production.
           $labRoot = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine')
@@ -533,7 +537,9 @@ jobs:
           # [F37] TELESCOPE: runs before+after bind+restart and PRINTS every
           # field to the step summary. On any fail the printed telescope IS the
           # diagnosis. This cell passes only if servedThumb==boundThumb.
-          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/rdp-telescope.ps1')
+          try { . (Join-Path $env:GITHUB_WORKSPACE 'payloads/rdp-telescope.ps1') }
+          catch { R-Fail 'telescope-import' ('dot-sourcing rdp-telescope.ps1 threw: ' + $_.Exception.Message) }
+          Write-Host '::notice::[R] ckpt tele-import-ok'
           function Write-Telescope([string]$Label) {
               try {
                   $t = Invoke-RdpTelescope -Name $fqdn -TargetHost '127.0.0.1' -Trace ('lab-R-' + $Label) -ScopeName 'server'
@@ -545,13 +551,17 @@ jobs:
               return $t
           }
           $telePre = Write-Telescope 'pre-bind'
+          Write-Host '::notice::[R] ckpt telepre-ok'
           $hash = -split ($lc.Thumbprint -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
           New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hash -Force | Out-Null
-          & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Grant-RdpKeyAccess.ps1') -Certificate $lc | Out-Null
+          try { & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Grant-RdpKeyAccess.ps1') -Certificate $lc | Out-Null }
+          catch { R-Fail 'key-acl' ('Grant-RdpKeyAccess threw: ' + $_.Exception.Message) }
+          Write-Host '::notice::[R] ckpt bind-ok'
           try { Restart-Service TermService -Force -ErrorAction SilentlyContinue } catch { }
           $up = $false
           for ($i = 0; $i -lt 30 -and -not $up; $i++) { try { $up = [bool](Test-NetConnection 127.0.0.1 -Port 3389 -WarningAction SilentlyContinue).TcpTestSucceeded } catch { }; if (-not $up) { Start-Sleep -Seconds 2 } }
           if (-not $up) { $null = Write-Telescope 'tcp-down'; R-Fail 'baseline' 'TermService never accepted TCP 127.0.0.1:3389 on the lab runner' }
+          Write-Host '::notice::[R] ckpt tcp-ok'
           # F31 bind-effectiveness pre-check gates this cert cell (<=30s, no TCP-only false pass).
           $effective = $false
           for ($i = 0; $i -lt 3 -and -not $effective; $i++) {
@@ -564,6 +574,7 @@ jobs:
           if (-not $effective) { R-Fail 'bind-effectiveness' ('BOUND != SERVED or TLS handshake failed after <=30s; telescope deathPoint=' + $telePost.deathPoint + ' served=' + $telePost.tls.servedThumb + ' bound=' + $telePost.listener.boundThumb + ' tls=' + $telePost.tls.failurePoint) }
           if ($telePost.tls.servedThumb -ine $lc.Thumbprint) { R-Fail 'bind-effectiveness' ('telescope servedThumb != boundThumb: served=' + $telePost.tls.servedThumb + ' bound=' + $lc.Thumbprint + ' deathPoint=' + $telePost.deathPoint) }
           if (-not $telePost.tls.ok) { R-Fail 'bind-effectiveness' ('telescope handshake not ok: failurePoint=' + $telePost.tls.failurePoint + ' why=' + $telePost.tls.why + ' deathPoint=' + $telePost.deathPoint) }
+          Write-Host '::notice::[R] ckpt beff-ok'
           Write-Host '[R] baseline OK: BOUND==SERVED==IN-STORE, X.224+TLS, NLA=1, fw scoped'
           # --- extract the §1 probe VERBATIM from main.yml (byte-faithful to the
           # step production runs; the launch-gates F17 block pins the markers).
@@ -740,7 +751,8 @@ jobs:
           Write-Host '[R] (9) PASS: loopback alias + GHRDP_LAB_DNS_ALLOW_LOOPBACK=1 => dns-guard ok + mstsc-started (lab-only path)'
           Write-Host '[R] PASS: F17 listener probe break/fix + native-status render + beacon age + dns-guard'
           # [F33] Real ACL-DENIED persisted-key negative: NOT a TCP-only probe.
-          $keyPathR = & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Grant-RdpKeyAccess.ps1') -Certificate $lc -VerifyOnly
+          try { $keyPathR = & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Grant-RdpKeyAccess.ps1') -Certificate $lc -VerifyOnly }
+          catch { R-Fail 'acl-verify' ('Grant-RdpKeyAccess -VerifyOnly threw: ' + $_.Exception.Message) }
           $originalAclR = Get-Acl -LiteralPath $keyPathR -ErrorAction Stop
           $nsSidR = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-20')
           $schKeyR = 'HKLM:\SYSTEM\CurrentControlSet\Control\SecurityProviders\SCHANNEL'
@@ -761,13 +773,15 @@ jobs:
               $schR = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = 36870; StartTime = $negStartR } -ErrorAction SilentlyContinue)
               if ($schR.Count -lt 1) { R-Fail 'acl-negative' 'handshake failed but no 36870 event: cannot attribute failure to key ACL' }
               Write-Host ('[R] F33 ACL-DENIED PASS: handshake-failed + Schannel 36870=' + $schR.Count)
+          } catch { R-Fail 'acl-negative-error' ('ACL-negative block threw: ' + $_.Exception.Message)
           } finally {
               Set-Acl -LiteralPath $keyPathR -AclObject $originalAclR -ErrorAction Stop
               if ($null -ne $oldLoggingR) { Set-ItemProperty -Path $schKeyR -Name EventLogging -Value $oldLoggingR -Type DWord }
               else { Remove-ItemProperty -Path $schKeyR -Name EventLogging -ErrorAction SilentlyContinue }
               Restart-Service TermService -Force -ErrorAction Stop
           }
-          & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Test-RdpListenerHandshake.ps1') -Fqdn $fqdn -ExpectedThumb $lc.Thumbprint -KeyFile $keyPathR | Out-Null
+          try { & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Test-RdpListenerHandshake.ps1') -Fqdn $fqdn -ExpectedThumb $lc.Thumbprint -KeyFile $keyPathR | Out-Null }
+          catch { R-Fail 'acl-restore' ('served!=bound after ACL restoration: ' + $_.Exception.Message) }
           Write-Host '[R] F33 restore PASS: served==bound after ACL restoration'
           # Cert-only negative: wrong expected thumb on a still-readable key must fail.
           # This is a cert mapping negative, not a false claim of server-side 36870.
