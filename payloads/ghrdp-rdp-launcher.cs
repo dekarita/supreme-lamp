@@ -1527,7 +1527,7 @@ internal static class GhrdpRdpLauncher
             tcp.EndConnect(ar);
             tcp.ReceiveTimeout = 7000;
             tcp.SendTimeout = 7000;
-            NetworkStream ns = tcp.GetStream();
+            System.Net.Sockets.NetworkStream ns = tcp.GetStream();
             byte[] req = new byte[] { 0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00,
                                       0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00 };
             ns.Write(req, 0, req.Length);
