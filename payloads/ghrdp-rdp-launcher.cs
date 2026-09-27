@@ -256,8 +256,18 @@ internal static class GhrdpRdpLauncher
     // [F37 §3] the same bounded POST, carrying the click's trace id.
     private static void HelloBounded(string host, int port, string verb, bool ok, string details, string trace)
     {
+        HelloBounded(host, port, verb, ok, details, "", trace);
+    }
+
+    // [F37 §3] the telescope beacon: trace id AND stage (dns|tcp|tls|cred).
+    // Without the stage the server's allowlist stored every client beacon as
+    // stage='other', so the dashboard timeline and the lab could never tell
+    // which segment of the path the beacon was talking about - the client face
+    // was emitting verdicts that no surface could render.
+    private static void HelloBounded(string host, int port, string verb, bool ok, string details, string stage, string trace)
+    {
         if (string.IsNullOrEmpty(host)) { return; }   // §1.5: POST only with a server arg
-        Thread t = new Thread(delegate() { Hello(host, port, verb, ok, details, trace); });
+        Thread t = new Thread(delegate() { Hello(host, port, verb, ok, details, stage, trace); });
         t.IsBackground = true;
         t.Start();
         t.Join(5000);
@@ -270,6 +280,11 @@ internal static class GhrdpRdpLauncher
 
     private static void Hello(string host, int port, string verb, bool ok, string details, string trace)
     {
+        Hello(host, port, verb, ok, details, "", trace);
+    }
+
+    private static void Hello(string host, int port, string verb, bool ok, string details, string stage, string trace)
+    {
         try
         {
             // [F19 §2] the beacon carries the exe version stamp: the server
@@ -279,8 +294,12 @@ internal static class GhrdpRdpLauncher
             // [F37 §3] trace is an opaque per-click id (never a credential) so
             // the dashboard can merge this client beacon with the runner-side
             // telescope into ONE timeline.
+            // [F37 §3] stage rides along ONLY for a telescope beacon: every
+            // other beacon (the handler-hello chain the fail-visible lab pins
+            // positionally) stays byte-identical to the pre-F37 body.
             string body = "{\"verb\":\"" + J(verb) + "\",\"ok\":" + (ok ? "true" : "false") +
                 ",\"details\":\"" + J(Redact(details)) + "\",\"exe\":\"" + J(Stamp) + "\"" +
+                (stage.Length > 0 ? (",\"stage\":\"" + J(stage) + "\"") : "") +
                 (trace.Length > 0 ? (",\"trace\":\"" + J(trace) + "\"") : "") + "}";
             string endpoint = (verb == "diag") ? "/api/rdp-telescope" : "/api/handler-hello";
             HttpWebRequest req = (HttpWebRequest)WebRequest.Create(
@@ -1493,7 +1512,7 @@ internal static class GhrdpRdpLauncher
         string slug = TelSlug(stage, ok, failureAt);
         LogJson(ok ? "info" : "error", "diag", "trace=" + trace + " stage=" + stage + " verdict=" + slug +
             (string.IsNullOrEmpty(why) ? "" : (" why=" + Redact(why))));
-        HelloBounded(host, port, "diag", ok, slug, trace);
+        HelloBounded(host, port, "diag", ok, slug, stage, trace);
     }
 
     private static byte[] TelReadExact(Stream s, int n)

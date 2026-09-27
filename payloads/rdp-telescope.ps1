@@ -564,9 +564,13 @@ function Initialize-RdpTelescopeModulePath {
     if ($script:F37TelModulePathRepair) { return $script:F37TelModulePathRepair }
     $repair = @()
     try {
-        $psHome = [string]$PSHOME
+        # NEVER name a local $psHome: PowerShell variables are case-insensitive,
+        # so that assignment hits the read-only automatic $PSHOME and throws
+        # ("Cannot overwrite variable PSHOME") - which is how the FIRST run of
+        # this repair silently did nothing while the ladder still saved the day.
+        $f37PsHome = [string](Get-Variable -Name 'PSHOME' -ValueOnly -ErrorAction SilentlyContinue)
         $current = @([string]$env:PSModulePath -split ';' | Where-Object { $_ })
-        $modDir = $(if ($psHome) { (Join-Path $psHome 'Modules') } else { '' })
+        $modDir = $(if ($f37PsHome) { (Join-Path $f37PsHome 'Modules') } else { '' })
         if ($modDir -and (Test-Path -LiteralPath $modDir -PathType Container)) {
             $present = @($current | Where-Object { $_.TrimEnd('\') -ieq $modDir.TrimEnd('\') }).Count -gt 0
             if ($present) { $repair += 'pshome-present' }

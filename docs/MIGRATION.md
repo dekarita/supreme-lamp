@@ -958,6 +958,17 @@ Failures are typed, never silent: `deriveError`, `listener.why`,
 `listener.keyTypedError` and `tls.why` name the exact reason, and the lab prints
 the decisive fields first (`[Z] …`) because GitHub caps error annotations.
 
+### The client beacon carries its stage
+
+`diag` beacons are POSTed to `/api/rdp-telescope` with `{verb, ok, details, exe,
+stage, trace}`. The stage (`dns|tcp|tls|cred`) travels on the wire — the server
+allowlists it and stores it verbatim, so the dashboard timeline and the lab can
+attribute every client verdict to one segment. An earlier build sent only the
+slug: the slugs were right (`telescope-dns-ok`) but every beacon arrived as
+`stage='other'`, which is why the lab failed with *“no client beacon for stage
+dns”* while the evidence sat one field away. Non-diag beacons (the
+handler-hello chain the fail-visible lab pins positionally) are unchanged.
+
 ### Lab contract
 
 Cell Z passes only when the printed telescope shows `servedThumb == boundThumb`,

@@ -1886,6 +1886,16 @@ jobs:
           grep -qF 'if (TraceParam(uri).Length > 0) { TelPreflight(uri, server, host, port); }' "$cs" || { echo 'F37: the preflight is not gated on the click trace' >&2; exit 1; }
           grep -qF 'endpoint = (verb == "diag") ? "/api/rdp-telescope" : "/api/handler-hello"' "$cs" || { echo 'F37: diag beacons must not enter the handler-hello chain' >&2; exit 1; }
           grep -qF "if (\$path -eq '/api/rdp-telescope' -and \$parts.method -eq 'POST')" "$srv" || { echo 'F37: the client beacon endpoint is missing' >&2; exit 1; }
+          # [F37 §3] a client beacon must carry its STAGE on the wire: the body
+          # once held verb/ok/details/exe/trace only, so the server stored every
+          # diag beacon as stage='other' and neither the dashboard timeline nor
+          # the lab could attribute a client verdict to a segment of the path
+          # (lab 36309913953: 'no client beacon for stage dns' with the slugs
+          # telescope-dns-ok sitting right there in the ring).
+          grep -qF 'HelloBounded(host, port, "diag", ok, slug, stage, trace)' "$cs" || { echo 'F37: the client beacon does not carry its stage' >&2; exit 1; }
+          grep -qF 'Hello(host, port, verb, ok, details, stage, trace)' "$cs" || { echo 'F37: the stage is dropped between HelloBounded and Hello' >&2; exit 1; }
+          grep -qF "if (\$stT -in @('dns', 'tcp', 'tls', 'cred')) { \$cb.stage = \$stT }" "$srv" || { echo 'F37: the beacon endpoint does not accept the module stage vocabulary' >&2; exit 1; }
+          grep -qF "\$_.stage -eq \$need" "$lab" || { echo 'F37: the lab does not check the beacon STAGE (only its presence)' >&2; exit 1; }
           grep -qF 'telescope-unparsed' "$srv" || { echo 'F37: an unknown beacon slug must be neutralized' >&2; exit 1; }
           grep -qF 'function telescopeTimeline(s, nowMs)' "$ui" || { echo 'F37: the ONE timeline function is missing' >&2; exit 1; }
           grep -qF 'id="btnRunDiag"' "$ui" || { echo 'F37: [RUN DIAG] is missing' >&2; exit 1; }

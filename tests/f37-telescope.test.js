@@ -763,7 +763,12 @@ test('F37-35 the key ACL is read by a LADDER, never by one cmdlet (the runner lo
   assert.ok(reader.indexOf("'dotnet-fileinfo'") < reader.indexOf("'icacls'"), 'the last-resort reader is not last');
   // the module path itself is repaired (every other on-demand module on that host)
   const repair = mod.slice(mod.indexOf('function Initialize-RdpTelescopeModulePath'), mod.indexOf('function Get-RdpTelescopeKeyAcl'));
-  assert.ok(repair.includes('Join-Path $psHome'), 'the repair does not restore the host module directory');
+  assert.ok(repair.includes('Join-Path $f37PsHome'), 'the repair does not restore the host module directory');
+  assert.ok(repair.includes("Get-Variable -Name 'PSHOME' -ValueOnly"), 'the repair reads $PSHOME through Get-Variable');
+  // a local named $psHome IS $PSHOME (variables are case-insensitive) and the
+  // assignment throws "cannot overwrite ... read-only" - which is exactly how
+  // the first version of this repair silently did nothing.
+  assert.ok(!/\$psHome\s*=/.test(repair), 'a local collides with the read-only automatic $PSHOME');
   assert.ok(repair.includes('Import-Module Microsoft.PowerShell.Security'), 'the repair never loads the module it exists for');
   assert.ok(reader.includes('Initialize-RdpTelescopeModulePath'), 'the reader never repairs the module path');
   // the listener stage goes THROUGH the ladder - never a bare Get-Acl again
@@ -804,6 +809,35 @@ test('F37-36 an unreadable ACL is a NAMED fault on every surface (module -> runn
   assert.ok(ui.includes("'UNREADABLE(no-reader)'"), 'the row cannot say the ACL was unreadable');
   assert.ok(ui.includes("('NO('+aclMethod+')')"), 'the row does not say which reader produced the NO');
   assert.ok(ui.includes('aclBlind'), 'a blind ACL verdict is not painted red');
+});
+
+test('F37-37 the CLIENT beacon carries its STAGE on the wire (server stored stage=other)', () => {
+  // Lab 36309913953, cell Z: 'no client beacon for stage dns' - the slugs were
+  // correct (telescope-dns-ok) but every beacon arrived with stage='other',
+  // because Hello() built the body from verb/ok/details/exe/trace only. The
+  // server defaulted the stage, so the timeline and the lab could not tell
+  // which segment of the path a client verdict belonged to.
+  assert.ok(cs.includes('stage.Length > 0 ? ('), 'the stage is not added conditionally');
+  // the emitted JSON field must be named exactly 'stage' (the server reads $bjT.stage)
+  assert.ok(cs.includes('stage\\":\\"" + J(stage) + "\\""'),
+    'the beacon body does not emit a "stage" field (the server defaults it to "other")');
+  assert.ok(cs.includes('HelloBounded(host, port, "diag", ok, slug, stage, trace)'),
+    'TelStage does not pass its stage to the beacon');
+  assert.ok(cs.includes('Hello(host, port, verb, ok, details, stage, trace)'),
+    'the stage is dropped between HelloBounded and Hello');
+  // the non-diag chain must stay byte-identical (the fail-visible lab pins it
+  // positionally), so the stage is only added when it is actually set
+  assert.ok(cs.includes('HelloBounded(host, port, verb, ok, details, "", trace)'),
+    'a non-telescope beacon must not grow a stage field');
+  // the server reads it through the SAME allowlist the module owns
+  assert.ok(srv.includes("if ($stT -in @('dns', 'tcp', 'tls', 'cred')) { $cb.stage = $stT }"),
+    'the beacon endpoint does not accept the module stage vocabulary');
+  assert.ok(srv.includes("$cb = [ordered]@{ ts = [datetime]::UtcNow.ToString('o'); trace = ''; stage = 'other'"),
+    'an unattributed beacon must still be stored as "other", never dropped silently');
+  // and the lab catches it: one beacon per stage under the click's trace
+  const z = lab.slice(lab.indexOf('Z: F37 telescope - module fields'), lab.indexOf('# [F19 §5] LAB PROOF'));
+  assert.ok(z.includes("'beacon-stage'"), 'the lab does not require a beacon per stage');
+  assert.ok(z.includes("$_.stage -eq $need"), 'the lab does not check the beacon STAGE (only its presence)');
 });
 
 test('F37-17 (lab fixture) the REAL native-status sample renders green through the shipped renderer', () => {
