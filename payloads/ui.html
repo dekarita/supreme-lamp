@@ -4,12 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark light">
-<!-- [F38 §1] self-hosted fonts only: Noto Sans Sinhala (latin-free subset,
-     payloads/fonts/*.woff2) is embedded below as a data URI and gated by
-     unicode-range U+0D80-0DFF. No external font/icon CDN anywhere - the
-     dashboard must render on a tailnet-only, offline-capable runner. -->
+<meta id="ghrdpBuild" name="ghrdp-build" content="__BUILD_SHA__">
 <title>RDP Mission Control</title>
 <style>
+
 /* [F38 §1/§2] Mission Control liquid-glass + typography overhaul.
    Root scale: html font-size drives every component via rem.
    Comfort = 18px (default), Large = 21px via html[data-text="large"];
@@ -396,13 +394,42 @@ pre.box::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:
 }
 .log-title{display:inline-flex;align-items:center;gap:.444rem;color:var(--acc1);text-transform:uppercase;letter-spacing:.06em;font-weight:600;font-size:1.333rem;font-family:var(--font-display);letter-spacing:-0.01em}
 
+
+
+/* F40 overrides: compact type 15/17, headers 20/18, tech 14-15 mono, row 32, padding 16-20, grid 1280 gap12 */
+html{font-size:15px !important}
+html[data-text="large"]{font-size:17px !important}
+.topbar h1{font-size:20px !important}
+section.glass h2{font-size:18px !important}
+#credIp,#credUser,#mstscVal,#credWinPass,#credVncPass,#legacyKey,#mirrorKey,code{font-size:.933rem !important}
+section.glass{padding:1.067rem 1.111rem !important}
+.row{min-height:2.133rem !important}
+main{max-width:1280px !important}
+.card-grid{display:grid;grid-template-columns:repeat(12,1fr);gap:12px;max-width:1280px;margin:0 auto;padding:12px 16px 24px}
+.card-grid > .glass{grid-column:span 6}
+@media(max-width:980px){.card-grid > .glass{grid-column:span 12}}
+.bottom-bar{position:sticky;bottom:0;z-index:45;display:flex;gap:12px;flex-wrap:wrap;align-items:center;padding:8px 16px;background:var(--tier-bar-bg, var(--glass-bg));backdrop-filter:var(--glass-blur);-webkit-backdrop-filter:var(--glass-blur);border-top:var(--glass-edge);font-family:ui-monospace,"SF Mono","Cascadia Mono","JetBrains Mono",Consolas,monospace;font-size:12px;line-height:1.5;box-shadow:0 -4px 24px rgba(0,0,0,.12)}
+.bottom-bar .bb-item{display:inline-flex;gap:6px;align-items:center;white-space:nowrap}
+.bottom-bar .bb-val{font-weight:600;font-variant-numeric:tabular-nums}
+.drawers{max-width:1280px;margin:0 auto;padding:0 16px 24px;display:flex;flex-direction:column;gap:12px}
+.drawers details.glass{padding:1rem 1.111rem}
+.drawers details.glass summary{font-weight:600;cursor:pointer;list-style:none}
+.drawers details.glass summary::-webkit-details-marker{display:none}
+#credUser{font-family:ui-monospace,"SF Mono","Cascadia Mono","JetBrains Mono",Consolas,monospace !important;font-weight:600 !important}
+.mono-chip{font-family:ui-monospace,"SF Mono","Cascadia Mono","JetBrains Mono",Consolas,monospace;font-weight:600}
+.mini-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px}
+@media(max-width:640px){.mini-grid{grid-template-columns:repeat(2,1fr)}}
+.mini-grid .tile{padding:.6rem .7rem}
+.mirror-ring{display:flex;gap:12px;align-items:center}
+.mirror-ring .ring{width:5rem;height:5rem}
+.topbar{flex-direction:column;align-items:stretch}
+.topbar .topbar-main{display:flex;align-items:center;gap:12px;flex-wrap:wrap;width:100%}
+.topbar .hero-row{display:flex;gap:8px;flex-wrap:wrap;width:100%;margin-top:8px}
+.topbar .vital-row{display:flex;gap:8px;flex-wrap:wrap;width:100%;margin-top:8px}
+
 </style>
 </head>
 <body>
-<!-- [F38 §2] ONE inline icon sprite (Lucide, ISC - https://lucide.dev).
-     24px grid, 1.5px round-cap/round-join strokes, stroke=currentColor.
-     Every <use> instance is aria-hidden; the adjacent text label or the
-     pill/button text carries the accessible name. -->
 <svg xmlns="http://www.w3.org/2000/svg" style="display:none" aria-hidden="true"><defs>
 <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></symbol>
 <symbol id="i-alert-triangle" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
@@ -438,427 +465,422 @@ pre.box::-webkit-scrollbar-thumb{background:rgba(255,255,255,.14);border-radius:
 <symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/></symbol>
 <symbol id="i-moon" viewBox="0 0 24 24"><path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/></symbol>
 </defs></svg>
-
 <div class="aurora" aria-hidden="true"><i class="a1"></i><i class="a2"></i><i class="a3"></i></div>
 <div class="noise" aria-hidden="true"></div>
-<header class="topbar">
-  <div class="brand"><span class="brand-dot" aria-hidden="true"></span><svg class="ic brand-ic" aria-hidden="true"><use href="#i-activity"/></svg><h1>RDP Mission Control</h1></div>
-  <div class="chip-row" role="status" aria-live="polite">
-    <span class="chip" id="pillConn" data-ic="activity" title="Actual result of the last data fetch"><svg class="ic" aria-hidden="true"><use href="#i-activity"/></svg><i class="dot"></i><span>connection: <span class="skel" style="width:60px"></span></span></span>
-    <span class="chip" id="pillMirror" data-ic="database" title="Mirror ON only when mirroring was enabled AND the watcher heartbeat is under 15s old"><svg class="ic" aria-hidden="true"><use href="#i-database"/></svg><i class="dot"></i><span>mirror: <span class="skel" style="width:40px"></span></span></span>
-    <span class="chip" id="pillWatcher" data-ic="eye" title="Watcher heartbeats every 5s. ACTIVE = heartbeat younger than 15s"><svg class="ic" aria-hidden="true"><use href="#i-eye"/></svg><i class="dot"></i><span>watcher: <span class="skel" style="width:50px"></span></span></span>
-    <span class="chip" id="pillRust" data-ic="zap" title="Rust WebSocket bridge (port 7332). LIVE = /ws connected"><svg class="ic" aria-hidden="true"><use href="#i-zap"/></svg><i class="dot"></i><span>ws: idle</span></span>
-    <span class="chip" id="pillClock" data-ic="clock" title="Server-side timestamp of the data below"><svg class="ic" aria-hidden="true"><use href="#i-clock"/></svg><i class="dot"></i><span>clock: <span class="skel" style="width:80px"></span></span></span>
-  </div>
-  <nav class="nav" aria-label="sections">
-    <a href="#sec-conn">connection</a>
-    <a href="#sec-native-rdp">rdp</a>
-    <a href="#sec-keys">keys</a>
-    <a href="#sec-mirror">mirror</a>
-    <a href="#sec-log">log</a>
-    <a href="#" onclick="openDrawer();return false">diag</a>
-    <button id="themeToggle" class="theme-toggle" type="button" aria-pressed="false" aria-label="Toggle light/dark theme" title="Theme: dark or light"><svg class="ic" aria-hidden="true"><use href="#i-sun"/></svg><span id="themeLabel">dark</span></button>
-    <button id="textScaleToggle" class="txt-toggle" type="button" aria-pressed="false" aria-label="Toggle large text" title="Text size: comfortable (18px) or large (21px)"><svg class="ic" aria-hidden="true"><use href="#i-type"/></svg><span id="textScaleLabel">Aa</span></button>
-  </nav>
-</header>
-<main>
-<p class="note" style="margin:0 0 -4px">
-primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP__:7332/</a> (Rust, realtime WS)
-&nbsp;|&nbsp; fallback: <a id="fallbackLink" href="http://__IP__:7331/">http://__IP__:7331/</a> (HTTP polling)
-</p>
-<div id="connBanner" class="banner">connection lost - cannot reach the dashboard server. Values below are the LAST KNOWN data and may be stale. Retrying...</div>
-<div class="banner egress" id="egressLine">Uploads execute ON THE RUNNER (egress IP ...) - your PC's connection is never used for uploads.</div>
-<section class="glass kpi" aria-label="key metrics">
-  <div class="ring" title="honest overall percent (capped at 99.9 until done==total)">
-    <svg viewBox="0 0 64 64" aria-hidden="true">
-      <defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
-        <stop offset="0%" stop-color="#22d3ee"/><stop offset="55%" stop-color="#34d399"/><stop offset="100%" stop-color="#a78bfa"/>
-      </linearGradient></defs>
-      <circle class="track" cx="32" cy="32" r="28"/>
-      <circle class="fill" id="ringFill" cx="32" cy="32" r="28" stroke-dasharray="175.93" stroke-dashoffset="175.93"/>
-    </svg>
-    <div class="label"><b id="stOverall">0%</b><span>overall</span></div>
-    <b id="aggBar" style="position:absolute;left:-9999px;top:-9999px" aria-hidden="true">0%</b>
-  </div>
-  <div class="tile"><span class="lab">files</span><span class="val" id="stDone">0/0</span><span class="sub">done / total</span></div>
-  <div class="tile" id="tileFailed"><span class="lab">failed</span><span class="val" id="stFailed">0</span><span class="sub">after 5 tries</span></div>
-  <div class="tile"><span class="lab">bytes</span><span class="val" id="stBytes">0 B</span><span class="sub" id="stBytesSub">of 0 B</span></div>
-  <div class="tile"><span class="lab">speed</span><span class="val" id="stSpeed">0 B/s</span><span class="sub">moving avg</span></div>
-  <div class="tile"><span class="lab">scans</span><span class="val" id="stScans">0</span><span class="sub" id="stScansSub">last: -</span></div>
-  <div class="tile"><span class="lab">eta</span><span class="val" id="stEta">-</span><span class="sub">time remaining</span></div>
-</section>
-<section class="glass" id="sec-conn">
-  <div class="sec-head"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-globe"/></svg><h2>Connection</h2></div>
-  <div class="row"><span class="k">Tailscale IP</span><span class="v" id="credIp">__IP__</span><button onclick="copyById('credIp',this)">copy</button></div>
-  <div class="row"><span class="k">RDP username</span><span class="v" id="credUser">__USER__</span><button onclick="copyById('credUser',this)">copy</button></div>
-  <div class="row"><span class="k">mstsc command</span><span class="v" id="mstscVal">mstsc /v:__IP__</span><button onclick="copyById('mstscVal',this)">copy</button></div>
-  <!-- [F10-3 §3] token-gated host creds: values arrive only via the
-       dash-token/tailnet-authenticated /api/config creds block; the screen
-       shows last-4 masks, the copy button copies the real value. They are
-       never placed in URLs, logs, summaries, or artifacts. -->
-  <div class="row"><span class="k">Windows password</span><span class="v" id="credWinPass">(host-only)</span><button onclick="copyById('credWinPass',this)">copy</button><span class="note">masked (last 4); served only to your token-authenticated dashboard</span></div>
-  <div class="row"><span class="k">VNC password</span><span class="v" id="credVncPass">(host-only)</span><button onclick="copyById('credVncPass',this)">copy</button><a href="javascript:void(0)" onclick="rememberVncFromKeys(this)" style="font-size:11px;opacity:.6;text-decoration:underline">remember for WEB DESKTOP</a><span class="note">the VNC_PASS secret set at dispatch; masked (last 4), token-gated. "remember" stores it in THIS browser only (never in a URL)</span></div>
-  <div class="row"><span class="k">Connectivity</span><span class="timer" id="connRtt" style="font-size:18px">-- ms</span><span class="badge" id="connBadge">path: --</span><span class="badge" id="connFps">-- fps</span><span class="badge" id="connJit">jit -- ms</span><canvas id="connSpark" width="220" height="34" style="width:220px;height:34px"></canvas></div>
-  <!-- [F17 §2] COPY-ONLY diagnostics for the mstsc 0x904/0x7 class: when the
-       FQDN will not resolve on YOUR PC, these two lines pinpoint it (DNS dead
-       vs listener dead). No buttons, no scripts - you run them yourself. -->
-  <div class="row" id="connDiagRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
-    <span class="k" style="font-weight:600">CONNECTION DIAGNOSTICS - run on YOUR PC (copy only; nothing here executes)</span>
-    <span class="note" style="margin:0">Runner FQDN: <code id="connDiagFqdn">-</code> &nbsp; runnerResolvedIP: <code id="connDiagResolved">-</code></span>
-    <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagPing" style="font-size:12px">ping &lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('connDiagPing',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
-    <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagTnc" style="font-size:12px">Test-NetConnection &lt;fqdn&gt; -Port 3389</code><a href="javascript:void(0)" onclick="copyById('connDiagTnc',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
-    <!-- [F20 §1] Resolve-DnsName goes through the Windows DNS client service,
-         so Tailscale's NRPT split-DNS applies. nslookup BYPASSES that service
-         (queries the router directly) and its timeout here is a false alarm -
-         it is no longer offered as a diagnostic anywhere on this page. -->
-    <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagRd" style="font-size:12px">Resolve-DnsName &lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('connDiagRd',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
-    <span class="note" style="margin:0">nslookup bypasses Tailscale split-DNS and queries your router directly; a nslookup timeout while ping works is EXPECTED and not a fault.</span>
-    <span class="note" style="margin:0">If ping fails: run ipconfig /flushdns, confirm Tailscale connected, retry. If still failing: Tailscale admin -&gt; DNS -&gt; enable MagicDNS + HTTPS Certificates, re-dispatch.</span>
-    <!-- [F20 §2] EVIDENCE-BASED 0x904/0x7 FALLBACK - only for the case where
-         every probe above is green and mstsc still fails. Collapsed by default
-         (it is never the first thing to try), copy-only like the rest of the
-         row: export the logs, paste them into the session, and map the error
-         from the logs - never guess. Nothing here executes. -->
-    <details id="connDiagFailBox" style="margin:0">
-      <summary style="cursor:pointer;font-size:11px;opacity:.75">if mstsc still fails (0x904/0x7) - export the logs</summary>
-      <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px">
-        <span class="note" style="margin:0;font-weight:600">On YOUR PC (client events):</span>
-        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagEvtClient" style="font-size:12px">wevtutil epl Microsoft-Windows-TerminalServices-ClientActiveXCore/Operational %TEMP%\rdp-client.evtx</code><a href="javascript:void(0)" onclick="copyById('connDiagEvtClient',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
-        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagEvtList" style="font-size:12px">wevtutil el | findstr /i "terminal credssp schannel"</code><a href="javascript:void(0)" onclick="copyById('connDiagEvtList',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
-        <span class="note" style="margin:0;font-weight:600">On the RUNNER (ask this session to collect these - you cannot RDP in yet):</span>
-        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagEvtSec" style="font-size:12px">wevtutil epl Security %TEMP%\rdp-security.evtx /q:"*[System[(EventID=4624 or EventID=4625)]]"</code><a href="javascript:void(0)" onclick="copyById('connDiagEvtSec',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
-        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagEvtSch" style="font-size:12px">wevtutil epl System %TEMP%\rdp-system.evtx /q:"*[System[Provider[@Name='Schannel']]]"</code><a href="javascript:void(0)" onclick="copyById('connDiagEvtSch',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
-        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagEvtTerm" style="font-size:12px">wevtutil epl Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational %TEMP%\rdp-termgr.evtx</code><a href="javascript:void(0)" onclick="copyById('connDiagEvtTerm',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
-        <span class="note" style="margin:0">Paste the exports into this session. The failure is then mapped from the logged event (cert chain / CredSSP / NLA / transport) - never guessed, and nothing here weakens NLA, CredSSP or certificate validation.</span>
-      </div>
-    </details>
-    <!-- [F21 §2] CredSSP/NLA HANDSHAKE DIAGNOSTICS (copy-only; nothing here executes) -->
-    <details id="connCredsspBox" style="margin:0">
-      <summary style="cursor:pointer;font-size:11px;opacity:.75">If TcpStateFrontAuth / NLA handshake failures persist - CredSSP/cert/encryption checks</summary>
-      <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px">
-        <span class="note" style="margin:0;font-weight:600">On YOUR PC (client-side CredSSP policy + encryption level):</span>
-        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagCredsspPol" style="font-size:12px">Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters' -EA SilentlyContinue</code><a href="javascript:void(0)" onclick="copyById('connDiagCredsspPol',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- check AllowEncryptionOracle (0=strict; 1/2=vulnerable, blocks NLA)</span></span>
-        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagLmCompat" style="font-size:12px">Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name 'LmCompatibilityLevel' -EA SilentlyContinue</code><a href="javascript:void(0)" onclick="copyById('connDiagLmCompat',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- check LmCompatibilityLevel (3=NTLMv2 only, recommended)</span></span>
-        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagMstscVerbose" style="font-size:12px">mstsc /v:&lt;fqdn&gt; /admin /prompt</code><a href="javascript:void(0)" onclick="copyById('connDiagMstscVerbose',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- connects with verbose prompt; observe exact error</span></span>
-        <span class="note" style="margin:0;font-weight:600">Advisory:</span>
-        <span class="note" style="margin:0">If TcpStateFrontAuth failures persist: (1) client+server CredSSP policies must match (AllowEncryptionOracle=0 strict on both sides); (2) server cert must be trusted (Let's Encrypt, not self-signed); (3) minimum encryption levels must align (LmCompatibilityLevel=3 recommended). Paste client .evtx exports + runner credsspStatus field into this session for log-mapped diagnosis.</span>
-        <span class="note" style="margin:0;color:#f87171">NEVER weaken NLA/CredSSP (auth-level overrides, credssp-support-off .rdp flags) or bypass cert validation as a workaround - those are the failure class, not the fix.</span>
-      </div>
-    </details>
-    <!-- [F30 §2.2/§4] TLS/CIPHER HANDSHAKE DROP KIT. Ground truth 2026-09-26:
-         "connection forcibly closed by remote host" DURING the TLS handshake,
-         before any credential is sent, with TCP/DNS/firewall all green. These are
-         COPY-ONLY lines - this page never runs, types or automates anything, and
-         nothing here weakens NLA/CredSSP/cert validation. -->
-    <details id="connDiagTlsBox" style="margin:0">
-      <summary style="cursor:pointer;font-size:11px;opacity:.75">TLS/cipher handshake drop ("forcibly closed by remote host") - purge + cipher checks</summary>
-      <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px">
-        <span class="note" style="margin:0;font-weight:600">1. Purge ALL stale TERMSRV credentials on YOUR PC (nuclear option)</span>
-        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagPurgeAll" style="font-size:12px">cmdkey /list | Select-String TERMSRV | ForEach-Object { $t=($_ -split 'target=')[1]; if ($t) { cmdkey "/delete:$t" } }</code><a href="javascript:void(0)" onclick="copyById('connDiagPurgeAll',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- deletes EVERY TERMSRV entry (both the <b>Domain:</b> and <b>LegacyGeneric:</b> shapes); mstsc then stores the current one on its next launch. cmdkey labels the target as <code>Target: LegacyGeneric:target=TERMSRV/&lt;fqdn&gt;</code>, which is why this splits on <code>target=</code> - a split on ':' would delete nothing useful.</span></span>
-        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagServerPurge" style="font-size:12px">(age-aware purge: loading the server-generated 7-day command...)</code><a href="javascript:void(0)" onclick="copyById('connDiagServerPurge',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- the same purge AGED: only entries whose LastWritten is older than 7 days, using the credential-store API. Requires the dashboard secret (this page fetches it for you; the server never runs it - YOU run it on YOUR PC).</span></span>
-        <span class="note" style="margin:0;font-weight:600">2. Check the cipher suites this PC can offer</span>
-        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagCiphers" style="font-size:12px">Get-TlsCipherSuite | Select-Object Name, CipherLength | Format-Table</code><a href="javascript:void(0)" onclick="copyById('connDiagCiphers',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- compare with the SERVER CONN LOG row's <code>server TLS:</code> line; the runner offers TLS_AES_256_GCM_SHA384 / TLS_CHACHA20_POLY1305_SHA256 / TLS_AES_128_GCM_SHA256 first.</span></span>
-        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagTls13" style="font-size:12px">mstsc /v:&lt;fqdn&gt; /admin /tls13</code><a href="javascript:void(0)" onclick="copyById('connDiagTls13',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- some mstsc builds reject <code>/tls13</code> ("parameter is incorrect"); if yours does, run <code>mstsc /v:&lt;fqdn&gt;</code> instead - TLS 1.3 is still attempted first, and TLS 1.2 stays enabled on the runner for clients that default to it.</span></span>
-        <span class="note" style="margin:0;font-weight:600">3. Capture the handshake (only if Wireshark/tshark is installed)</span>
-        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagTshark" style="font-size:12px">tshark -i "Tailscale" -f "tcp port 3389" -w %TEMP%\rdp-tls.pcap -a duration:30</code><a href="javascript:void(0)" onclick="copyById('connDiagTshark',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- start it, then launch mstsc; a ClientHello with no ServerHello (or an immediate RST right after it) is the server-side drop, not a credential problem.</span></span>
-        <span class="note" style="margin:0">If the SERVER CONN LOG shows <code>tls-forcibly-closed</code> / <code>tls-handshake-failed</code> / <code>cert-rejected</code>, paste that line plus the cipher table into this session: ONE targeted fix (cipher order | TLS version | cert trust) - never an NLA/CredSSP weakening.</span>
-      </div>
-    </details>
-  </div>
-  <!-- [F24 §3] AUTH-REJECT DISCRIMINATOR (F24): ONE decision row built from
-       rdpListener {credValid, authEvents, credsspStatus}. It replaces the
-       ambiguous "FAIL: pending" CredSSP semantics with the three branches that
-       actually distinguish a 0x904/0x7 TcpStateFrontAuth reject:
-         credValid=false              => SERVER credential bug - re-dispatch (red)
-         credValid=true + 4625 6A/6D  => YOUR stored password is stale (yellow)
-         credValid=true + no 4625     => TLS-layer suspect (yellow)
-       Every command below is a COPY-LINE the user runs themselves. Nothing on
-       this page executes anything, nothing here auto-types a password, and
-       nothing here weakens NLA/CredSSP/cert validation. -->
-  <div class="row" id="rdpAuthRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
-    <span class="k" style="font-weight:600">AUTH REJECT DISCRIMINATOR (F24 - why mstsc is rejected)</span>
-    <span class="note" id="rdpAuthVerdict" style="margin:0">waiting for the first /api/native-status sample...</span>
-    <span class="note" id="rdpAuthDetail" style="margin:0"></span>
-    <span class="note" id="rdpAuthCmds" style="display:none;flex-direction:column;gap:4px;margin:0">
-      <span id="rdpAuthCmdKeyDelWrap" style="display:none;gap:8px;align-items:center;flex-wrap:wrap"><code id="rdpAuthCmdKeyDel" style="font-size:12px">cmdkey /delete:TERMSRV/&lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('rdpAuthCmdKeyDel',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- run once on YOUR PC: removes the STALE stored credential for this target (no tooling deletes credentials for you)</span></span>
-      <span id="rdpAuthPassWrap" style="display:none;gap:8px;align-items:center;flex-wrap:wrap"><a href="javascript:void(0)" id="rdpAuthPassCopy" onclick="copyById('credWinPass',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy CURRENT password from KEYS</a><span style="font-size:11px">- fallback only: paste at the Windows prompt if the launcher reports failed ticket redemption (this page never types it)</span></span>
-      <span id="rdpAuthCmdCapi2Wrap" style="display:none;gap:8px;align-items:center;flex-wrap:wrap"><code id="rdpAuthCmdCapi2" style="font-size:12px">wevtutil epl Microsoft-Windows-CAPI2/Operational %TEMP%\capi2.evtx</code><a href="javascript:void(0)" onclick="copyById('rdpAuthCmdCapi2',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
-      <span id="rdpAuthCmdSystemWrap" style="display:none;gap:8px;align-items:center;flex-wrap:wrap"><code id="rdpAuthCmdSystem" style="font-size:12px">wevtutil epl System %TEMP%\system.evtx</code><a href="javascript:void(0)" onclick="copyById('rdpAuthCmdSystem',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- CAPI2 + Schannel providers; paste both exports into this session</span></span>
-    </span>
-  </div>
-  <div class="row"><span class="k">Runner elapsed</span><span class="timer" id="timerElapsed">--:--:--</span></div>
-  <!-- [F11-3 §3] RDP USAGE replaces logon age as the headline timer: seconds
-       accumulated ONLY while an RDP session is connected OR a webdesk client is
-       attached; it freezes within one server tick (<=20s) after both drop and
-       resumes on reconnect. Falls back to the logon age until the first sample. -->
-  <div class="row"><span class="k">RDP USAGE</span><span class="timer" id="timerRdpUsage">--:--:--</span><span class="badge" id="usageState">--</span><span class="badge" id="c2Srv">srv --</span></div>
-  <div class="row" id="connUdpAdv" style="display:none"><span class="k">Latency</span><span class="v" id="connUdpAdvText" style="color:#f5d9b7">direct WireGuard not established - check client firewall UDP 41641</span></div>
-  <div class="row"><span class="k">Remaining (5h30 session)</span><span class="timer" id="timerRemaining">--:--:--</span></div>
-  <div class="banner ended" id="endedBanner" style="display:none;">SESSION EXPIRED - GitHub hard cap reached. Runner termination imminent.</div>
-</section>
-<!-- Native VPS access: a dashboard-authorized, single-use rid launches the
-     locally installed executable. It POST-redeems for the pinned MagicDNS
-     FQDN and opens mstsc; Windows supplies the credential stored by the user.
-     Web desktop is the primary option, including on ephemeral hosts. -->
-<meta id="ghrdpBuild" name="ghrdp-build" content="__BUILD_SHA__">
-<section class="glass" id="sec-native-rdp">
-  <div class="row" id="nrBuildWarn" style="display:none"><span class="k">Deploy</span><span class="v" id="nrBuildWarnText" style="color:#f5d9b7"></span></div>
-  <div class="sec-head"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-monitor"/></svg><h2>Native mstsc auto-login</h2></div>
-  <!-- [F31c §2 live-dispatch-card-begin] LIVE DISPATCH STATUS. Polls
-       /api/native-status every 10s. Each failing check renders the exact
-       condition and the single fix. Nothing here executes, types, or weakens
-       NLA/CredSSP/cert validation. -->
-  <div class="row" id="liveDispatchRow" style="display:flex;flex-direction:column;align-items:stretch;gap:4px">
-    <span class="k" style="font-weight:600">LIVE DISPATCH STATUS</span>
-    <span class="note" id="liveDispatchSummary" style="margin:0">waiting for the first /api/native-status sample...</span>
-    <span class="note" id="liveDispatchChecks" style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace"></span>
-    <span class="note" id="liveDispatchFix" style="margin:0"></span>
-    <span class="note" id="liveDispatchAcl" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="liveDispatchAclCmd" style="font-size:12px">wevtutil qe System /q:"*[System[Provider[@Name='Schannel']]]" /c:10 /f:text | findstr "36870 36871"</code><a href="javascript:void(0)" onclick="copyById('liveDispatchAclCmd',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">key ACL dump needed - copy this line and paste it to the session (nothing here executes)</span></span>
-  </div>
-  <!-- [F31c §2 live-dispatch-card-end] -->
-  <!-- [F37 §3 timeline-begin] ONE TIMELINE per click: the client beacon stages
-       (dns/tcp/tls/cred, one trace id) merged with the runner telescope
-       (payloads/rdp-telescope.ps1, 60s tick) and the logon evidence. The FIRST
-       red segment IS the death point; [RUN DIAG] re-runs the read-only diag
-       verb. Nothing here stores or types a credential. -->
-  <div class="row" id="telescopeRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
-    <span class="k" style="font-weight:600">RDP TELESCOPE TIMELINE</span>
-    <span class="note" id="telescopeSummary" style="margin:0">waiting for the first /api/native-status sample...</span>
-    <span class="note" id="telescopeSegments" style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace"></span>
-    <span class="note" id="telescopeDeath" style="margin:0"></span>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button id="btnRunDiag" type="button" title="fires ghrdp://diag - read-only client telescope: dns/tcp/tls/cred stages, no store, no mstsc, no credential prompt"><svg class="ic" aria-hidden="true"><use href="#i-activity"/></svg>[RUN DIAG]</button>
-      <span class="note" id="telescopeTrace" style="margin:0;font-size:11px"></span>
+
+<header class="topbar glass tier-bar" id="topbar">
+  <div class="topbar-main">
+    <div class="brand"><span class="brand-dot" aria-hidden="true"></span><svg class="ic brand-ic" aria-hidden="true"><use href="#i-activity"/></svg><h1>RDP Mission Control</h1></div>
+    <div class="chip-row" role="status" aria-live="polite" id="topbarChips">
+      <span class="chip" id="pillConn" data-ic="activity" title="Actual result of the last data fetch"><svg class="ic" aria-hidden="true"><use href="#i-activity"/></svg><i class="dot"></i><span>connection: live</span></span>
+      <span class="chip" id="pillMirror" data-ic="database" title="Mirror ON only when mirroring was enabled AND the watcher heartbeat is under 15s old"><svg class="ic" aria-hidden="true"><use href="#i-database"/></svg><i class="dot"></i><span>mirror: ON</span></span>
+      <span class="chip" id="pillWatcher" data-ic="eye" title="Watcher heartbeats every 5s. ACTIVE = heartbeat younger than 15s"><svg class="ic" aria-hidden="true"><use href="#i-eye"/></svg><i class="dot"></i><span>watcher: ACTIVE</span></span>
+      <span class="chip" id="pillRust" data-ic="zap" title="Rust WebSocket bridge (port 7332). LIVE = /ws connected"><svg class="ic" aria-hidden="true"><use href="#i-zap"/></svg><i class="dot"></i><span>ws: idle</span></span>
+      <span class="chip" id="pillClock" data-ic="clock" title="Server-side timestamp of the data below"><svg class="ic" aria-hidden="true"><use href="#i-clock"/></svg><i class="dot"></i><span>clock: --</span></span>
+    </div>
+    <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
+      <button id="themeToggle" class="theme-toggle" type="button" aria-pressed="false" aria-label="Toggle light/dark theme" title="Theme: dark or light"><svg class="ic" aria-hidden="true"><use href="#i-sun"/></svg><span id="themeLabel">dark</span></button>
+      <button id="textScaleToggle" class="txt-toggle" type="button" aria-pressed="false" aria-label="Accessibility size" title="Accessibility size: Comfort (15px) / Large (17px)"><svg class="ic" aria-hidden="true"><use href="#i-type"/></svg><span id="textScaleLabel">Aa</span></button>
     </div>
   </div>
-  <!-- [F37 §3 timeline-end] -->
-  <!-- [F31c §3 manual-verify-begin] Collapsed. Copy-only. The user runs these. -->
-  <details id="manualVerifySteps">
-    <summary style="cursor:pointer;font-size:12px;font-weight:600">MANUAL VERIFY STEPS</summary>
-    <ol id="manualVerifyList" style="margin:6px 0 0;padding-left:18px;font-size:12px;line-height:1.55">
-      <li id="manualVerifyBrowser">If WINDOWS AUTO-LOGIN opens a browser prompt, click OPEN and tick always-allow</li>
-      <li id="manualVerifyRdp">If RDP window appears but shows 0x904/0x7, run this in PowerShell on your PC: <code id="manualVerifyCmdkey" style="font-size:12px">cmdkey /delete:TERMSRV/&lt;current-fqdn&gt;</code> <a href="javascript:void(0)" onclick="copyById('manualVerifyCmdkey',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a> Then click WINDOWS AUTO-LOGIN again</li>
-      <li id="manualVerifyStill">If still failing, copy this and paste to the session: <code id="manualVerifySchannel" style="font-size:12px">wevtutil qe System /q:"*[System[Provider[@Name='Schannel']]]" /c:10 /f:text | findstr "36870 36871"</code> <a href="javascript:void(0)" onclick="copyById('manualVerifySchannel',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></li>
-    </ol>
-  </details>
-  <!-- [F31c §3 manual-verify-end] -->
-  <div class="row"><span class="k">LAST RDP LOGON</span><span class="v" id="lastRdpLogon">not reported yet</span></div>
-  <div class="row"><span class="k">Ticket audit</span><span class="v" id="ticketAudit">not reported yet</span></div>
-  <div class="row"><span class="k">Launcher chain</span><span class="v" id="handoffChain">not reported yet</span></div>
-  <!-- [F28 §2] ONE-CLICK RECOVERY. Rendered only when the correlator proves the
-       host REFUSED the password (authLast.result=failed with sub=0xC000006A,
-       inside 120s of the last mstsc-started beacon): the launch reached the
-       host, the host rejected the credential, so the stored TERMSRV entry is
-       stale. [FIX & RECONNECT] mints a FRESH single-use ticket (POST
-       /api/rdp-token), then fires ghrdp://recred -> launcher redeems ->
-       CredWrite OVERWRITE -> rdp-written -> mstsc-started (beacons
-       recred-redeemed -> credwrite-ok -> mstsc-started). No password, no
-       clipboard, no typing. The cmdkey line below is a COPY-ONLY manual escape
-       hatch for the user to run themselves - this page never types it. -->
   <div class="row" id="recoveryRow" style="display:none;flex-direction:column;align-items:stretch;gap:6px">
     <span class="k" style="font-weight:600;color:#f5b7b7">RECOVERY - password rejected by the host</span>
     <span class="note" id="recoveryText" style="margin:0"></span>
     <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button class="primary" id="btnFixReconnect" type="button"><svg class="ic" aria-hidden="true"><use href="#i-refresh-cw"/></svg>FIX &amp; RECONNECT</button>
       <span class="note" id="recoveryNote" style="margin:0">fresh ticket -&gt; stored credential overwritten -&gt; mstsc reopens; no typing, no clipboard</span>
     </div>
     <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0">
       <code id="recoveryCmdkey" style="font-size:12px">cmdkey /generic:TERMSRV/&lt;fqdn&gt; /user:&lt;user&gt; /pass</code>
       <a href="javascript:void(0)" onclick="copyById('recoveryCmdkey',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
-      <span style="font-size:11px">manual escape hatch only (visible Windows prompt, valueless /pass) - you run it once on YOUR PC; nothing here types it</span>
     </span>
   </div>
-  <!-- [F10-3 §1.3] PS-FREE primary path: ghrdp://rdp?server=<fqdn>&user=<u>
-       handled by the install.cmd-registered launcher (in-box csc compile,
-       HKCU registration; no script host, no admin). If no handler answers,
-       the copy-once install hint + WEB DESKTOP zero-install path are shown. -->
-  <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button class="primary" id="btnWinAuto" type="button" disabled><svg class="ic" aria-hidden="true"><use href="#i-monitor"/></svg>WINDOWS AUTO-LOGIN</button>
-      <span class="note" id="winAutoNote">fullscreen native mstsc via one-time ticket; Windows prompts for your password (cmdkey) only if redemption fails</span>
-    </div>
-    <!-- [F15 §3] FAIL-VISIBLE launcher diagnostics. The launcher beacons BEFORE
-         any work (details='invoked'), then cmdkey-shown / cmdkey-stored=... /
-         mstsc-started pid=N / mstsc-exited=... . The row below renders the last
-         beacon {verb, details, ok, ageSec}; if the last beacon is still
-         'invoked' 45s later, no surface will ever appear -> red stall row
-         naming the exact stall point and the local launcher log. [RUN CHECK]
-         fires ghrdp://check (the same self test install.cmd runs): it needs no
-         server and always ends in a MessageBox on the PC. -->
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <span class="k">Launcher beacon</span>
-      <span class="v" id="winBeacon" style="font-family:ui-monospace,Consolas,monospace;font-size:12px">(none yet - click WINDOWS AUTO-LOGIN)</span>
-      <button id="btnRunCheck" type="button" title="fires ghrdp://check - a MessageBox on this PC proves the launcher exe runs (no server needed)"><svg class="ic" aria-hidden="true"><use href="#i-shield-check"/></svg>RUN CHECK</button>
-      <span class="note">launcher log <code id="winBeaconLog">%LOCALAPPDATA%\ghrdp\ghrdp-launcher.log</code>
-        <a href="javascript:void(0)" onclick="copyById('winBeaconLog',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
-    </div>
-    <div class="note" id="winBeaconStall" style="display:none;color:#f5b7b7"></div>
-    <!-- [F12-1 §1.4] Stale-registration notice: shown when the launcher's
-         /api/handler-hello beacon does NOT arrive within 20s of the click. The
-         pre-F2 registration ran the old script host, which is exactly the
-         "Open ... PowerShell?" prompt; one install.cmd run overwrites it. -->
-    <div class="note" id="winAutoStale" style="display:none;color:#f5d9b7">
-      If Windows offered to open <b>PowerShell</b>, your PC has a stale ghrdp registration - run
-      <b>install.cmd</b> once (text below).
-    </div>
-    <div class="note" id="winAutoInstall" style="display:none;color:#f5d9b7">
-      One-time handler setup (no script host, no admin, no download of binaries): copy
-      <code id="winAutoFiles">payloads\install.cmd + payloads\ghrdp-rdp-launcher.cs</code>
-      <a href="javascript:void(0)" onclick="copyById('winAutoFiles',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
-      from the repo into one folder on your PC and double-click <b>install.cmd</b> - or use WEB DESKTOP below (zero install).
-      install.cmd prints the handler value BEFORE and AFTER and verifies it points at the compiled exe.
-    </div>
-    <!-- [F14 §3] ONE-CLICK kit download + the step-by-step guide, rendered on
-         the page (no beacon wait - the download needs no dashboard state). The
-         kit = install.cmd + ghrdp-rdp-launcher.cs ONLY, served by GET /dl
-         (tailnet-only, no secrets inside, no dash token required). -->
-    <div class="note" id="winKitRow" style="display:flex;flex-direction:column;align-items:stretch;gap:8px;color:var(--mut)">
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <a class="btn primary" id="btnKitDl" href="/dl/ghrdp-handler-kit.zip"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>DOWNLOAD INSTALL KIT</a>
-        <span class="note" style="margin-top:0">ghrdp-handler-kit.zip = install.cmd + ghrdp-rdp-launcher.cs (nothing else; no secrets)</span>
-      </div>
-      <span class="k" style="font-weight:600">Install guide - Path A (downloaded kit)</span>
-      <ol id="kitGuideA" style="margin:0;padding-left:18px;font-size:11.5px;line-height:1.6">
-        <li>Click <b>DOWNLOAD INSTALL KIT</b> and save <code>ghrdp-handler-kit.zip</code>.</li>
-        <li>Extract the zip to any folder (right-click the zip - Extract All).</li>
-        <li>Double-click <b>install.cmd</b> in the extracted folder.</li>
-        <li>At the ONE-TIME <b>Security Warning</b> ("Windows protected your PC") click <b>Run</b> - downloaded files carry Mark-of-the-Web, so Windows asks once; Path B below never does.</li>
-        <li>Read the <b>BEFORE</b> and <b>AFTER</b> lines it prints - AFTER must show <code>ghrdp-rdp-launcher.exe</code>, NOT powershell.</li>
-        <li>Click <b>WINDOWS AUTO-LOGIN</b>: Windows asks for your password the FIRST time only (cmdkey); every later click is silent fullscreen.</li>
-      </ol>
-      <span class="note" id="kitPathB"><b>Path B (repo clone)</b>: <code>git pull</code> then double-click <code>payloads\install.cmd</code> - zero warnings, because clone files carry no Mark-of-the-Web. WEB DESKTOP below stays the zero-install primary.</span>
-    </div>
+  <div class="hero-row">
+    <button class="primary" id="btnWinAuto" type="button" disabled><svg class="ic" aria-hidden="true"><use href="#i-monitor"/></svg>WINDOWS AUTO-LOGIN</button>
+    <button class="primary" id="btnWebDesk" type="button" disabled><svg class="ic" aria-hidden="true"><use href="#i-globe"/></svg>WEB DESKTOP (primary)</button>
+    <button class="primary" id="btnFixReconnect" type="button" style="display:none"><svg class="ic" aria-hidden="true"><use href="#i-refresh-cw"/></svg>FIX &amp; RECONNECT</button>
+    <span class="note" id="winAutoNote">fullscreen native mstsc via one-time ticket; Windows prompts for your password (cmdkey) only if redemption fails</span>
+    <span class="note" id="autoLoginStatus"></span>
   </div>
-  <!-- [F17 §2] RDP LISTENER row: the runner-side self-probe (main.yml step
-       'RDP listener self-probe (F17)') writes config.json -> rdpListener and
-       /api/native-status serves it. Each field renders check/x marks with the exact
-       fix text; WINDOWS AUTO-LOGIN stays disabled until listening + fw + cert
-       + nla are ALL green (a dead listener is never advertised). -->
-  <!-- [F19 §2] LAUNCHER VERSION GUARD row (yellow, never blocks): the beacon
-       carries the client exe version stamp; /api/native-status compares it with
-       config.launcherVersion (the repo constant from ghrdp-rdp-launcher.cs) and
-       sets launcherOutdated=true when the installed client exe is older. -->
-  <div class="row" id="nrLauncherOutdatedRow" style="display:none"><span class="k">Launcher</span><span class="v" id="nrLauncherOutdated" style="color:#f5d9b7">launcher outdated - re-run install.cmd once (<a href="/dl/ghrdp-handler-kit.zip" style="color:#8fd3ff">DOWNLOAD INSTALL KIT</a>)</span><span class="note" id="nrLauncherVersions">installed: - / current: -</span></div>
-  <!-- [F19 §1] CLIENT-DNS PROBE (in-page, zero native code): two no-cors fetches
-       with a 3s abort - A = the runner tailnet IP, B = the MagicDNS FQDN. If A
-       answers and B does not, the failure is on THIS PC's resolver, and the card
-       says so with the one-line fix. Copy-only lines; nothing here executes. -->
-  <div class="row" id="clientDnsRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
-    <span class="k" style="font-weight:600">YOUR PC - CLIENT DNS PROBE</span>
-    <span class="note" id="clientDnsText" style="margin:0"></span>
-    <span class="note" id="clientDnsCmds" style="display:none;flex-direction:column;gap:4px;margin:0">
-      <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><code id="clientDnsFix1" style="font-size:12px">tailscale set --accept-dns=true</code><a href="javascript:void(0)" onclick="copyById('clientDnsFix1',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- or Tailscale tray menu -&gt; Use Tailscale DNS</span></span>
-      <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><code id="clientDnsFix2" style="font-size:12px">ipconfig /flushdns</code><a href="javascript:void(0)" onclick="copyById('clientDnsFix2',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
-      <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><code id="clientDnsFix3" style="font-size:12px">ping &lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('clientDnsFix3',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- must answer 100.x.y.z; if it does not, run the two lines above and reload</span></span>
-    </span>
+  <div class="vital-row">
+    <span class="chip" id="rdpFqdn" title="Target FQDN">__IP__</span>
+    <span class="chip" id="nrCert">cert: ...</span>
+    <span class="chip" id="nrNla">nla: ...</span>
+    <span class="chip" id="nrCredssp">credssp: ...</span>
+    <span class="note" id="nrCertReason" style="display:none">RDP-Tcp SSLCertificateSHA1Hash present (from /api/native-status).</span>
+    <span class="note" id="nrNlaReason" style="display:none">UserAuthentication == 1 on the RDP-Tcp listener.</span>
+    <span class="note" id="nrCredsspReason" style="display:none">F21 verification: NLA=1, cert trusted, policy strict, strong cipher.</span>
   </div>
-  <div class="row" id="rdpListenerRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
-    <span class="k" style="font-weight:600">RDP LISTENER</span>
-    <span class="note" id="rdpListenerLine" style="margin:0">probe not reported yet</span>
-    <span class="note" id="rdpListenerAge" style="margin:0"></span>
-  </div>
-  <!-- [F30 §3] SERVER CONN LOG: the runner's own 30s read of BOTH RDP
-       Operational logs (RdpCoreTS + TerminalServices-RemoteConnectionManager).
-       This is the ONLY surface that can see a TLS/CertSSP-layer drop: a
-       connection killed during the handshake never reaches LSA and therefore
-       never writes 4624/4625. Newest 3 with reason codes; a stale collector is
-       rendered as such, never as a clean log. -->
-  <div class="row" id="srvConnLogRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
-    <span class="k" style="font-weight:600">SERVER CONN LOG</span>
-    <span class="note" id="srvConnLogState" style="margin:0">collector not reported yet (server 30s tick reads both RDP Operational logs)</span>
-    <span class="note" id="srvConnLogLines" style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace"></span>
-    <span class="note" id="srvConnLogTls" style="margin:0"></span>
-    <span class="note" id="srvConnLogBind" style="margin:0;font-family:ui-monospace,Consolas,monospace"></span>
-    <span class="note" style="margin:0">reason codes: tls-forcibly-closed | tls-handshake-failed | cert-rejected | connection-reset | auth-succeeded | auth-failed | listener-lifecycle | session-state. A "forcibly closed"/handshake/reset reason here IS the pre-logon TLS drop the Security log cannot show - run the purge + cipher copy-lines under CONNECTION DIAGNOSTICS.</span>
-  </div>
-  <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>
-  <div class="row"><span class="k">Cert bound</span><span class="v" id="nrCert">...</span><span class="note" id="nrCertReason">RDP-Tcp SSLCertificateSHA1Hash present (from /api/native-status).</span></div>
-  <div class="row"><span class="k">NLA</span><span class="v" id="nrNla">...</span><span class="note" id="nrNlaReason">UserAuthentication == 1 on the RDP-Tcp listener.</span></div>
-  <div class="row"><span class="k">CredSSP</span><span class="v" id="nrCredssp">...</span><span class="note" id="nrCredsspReason">F21 verification: NLA=1, cert trusted, policy strict, strong cipher (see CONNECTION DIAGNOSTICS for client-side checks).</span></div>
-  <div class="row"><span class="k">Host</span><span class="v" id="nrHostKind">...</span><span class="note" id="nrHostKindNote">ephemeral runners change name every run. A one-time TERMSRV entry is VPS-only.</span></div>
-  <div class="row" id="nrEphemeralRow" style="display:none;flex-direction:column;align-items:stretch;gap:6px">
-    <span class="k" style="font-weight:600">WEB DESKTOP (primary) + shortcut instructions</span>
-    <span class="note">This host is ephemeral. Click WEB DESKTOP. Do not expect a stored TERMSRV entry to survive the next run. One-time cmdkey is VPS-only.</span>
-  </div>
-  <div class="row" id="nrVpsShortcutRow" style="display:none;flex-direction:column;align-items:stretch;gap:6px">
-    <span class="k" style="font-weight:600">Native auto-login (VPS only)</span>
-    <span class="note">One time on your PC: install the compiled protocol handler (see docs/AUTOLOGIN.md), run the cmdkey line below, and type the password at the Windows prompt. Neither the page nor the handler reads that password.</span>
-    <label class="note"><input type="checkbox" id="nrCmdkeyConfirmed"> I ran cmdkey for this FQDN on this PC (copying the line does not count).</label>
-    <button id="autoLoginNative" type="button" disabled><svg class="ic" aria-hidden="true"><use href="#i-power"/></svg>AUTO-LOGIN (VPS only)</button>
-  </div>
-  <div class="row" id="nrReadyRow" style="display:none"><span class="k">Status</span><span class="v" id="nrReady" style="color:#7dffc9"></span></div>
-  <div class="row" id="nrAdvisoryRow" style="display:none"><span class="k">Advisory</span><span class="v" id="nrAdvisory" style="color:#f5d9b7"></span></div>
-  <div class="row" id="nrMagicDnsRow" style="display:none"><span class="k">MagicDNS</span><span class="v" id="nrMagicDns" style="color:#f5d9b7"></span></div>
-  <div class="row" id="nrReasonsRow" style="display:none"><span class="k">Blocked by</span><span class="v" id="nrReasons" style="color:#f5b7b7"></span></div>
-  <div class="row" id="nrVpsPendingRow" style="display:none"><span class="k">VPS status</span><span class="v" id="nrVpsPending" style="color:#f5d9b7">provisioning pending (advisory)</span></div>
-  <div class="row" style="flex-direction:column;align-items:stretch;gap:8px">
-    <span class="k" style="font-weight:600">WEB DESKTOP (primary)</span>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <button class="primary" id="btnWebDesk" type="button" disabled><svg class="ic" aria-hidden="true"><use href="#i-globe"/></svg>WEB DESKTOP (primary)</button>
-      <span class="note" id="autoLoginStatus"></span>
+  <div id="connBanner" class="banner" style="margin-top:8px">connection lost - cannot reach the dashboard server. Values below are the LAST KNOWN data and may be stale. Retrying...</div>
+  <div class="banner egress" id="egressLine" style="margin-top:8px">Uploads execute ON THE RUNNER (egress IP ...) - your PC's connection is never used for uploads.</div>
+  <div class="banner ended" id="endedBanner" style="display:none;margin-top:8px">SESSION EXPIRED - GitHub hard cap reached. Runner termination imminent.</div>
+</header>
+
+<main class="card-grid">
+  <section class="glass tier-card" id="sec-conn">
+    <div class="sec-head"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-globe"/></svg><h2>Connection</h2></div>
+    <div class="row"><span class="k">Tailscale IP</span><span class="v" id="credIp" style="font-family:ui-monospace,Consolas,monospace">__IP__</span><button onclick="copyById('credIp',this)">copy</button></div>
+    <div class="row"><span class="k">RDP username</span><span class="chip mono-chip" id="credUser" style="font-family:ui-monospace,'SF Mono','Cascadia Mono','JetBrains Mono',Consolas,monospace;font-weight:600">__USER__</span><button onclick="copyById('credUser',this)">copy</button></div>
+    <div class="row"><span class="k">mstsc command</span><span class="v" id="mstscVal" style="font-family:ui-monospace,Consolas,monospace">mstsc /v:__IP__</span><button onclick="copyById('mstscVal',this)">copy</button></div>
+    <div class="row"><span class="k">Connectivity</span><span class="timer" id="connRtt" style="font-size:14px">-- ms</span><span class="badge" id="connBadge">path: --</span><span class="badge" id="connFps">-- fps</span><span class="badge" id="connJit">jit -- ms</span><canvas id="connSpark" width="220" height="34" style="width:220px;height:34px"></canvas></div>
+    <div class="row" id="connUdpAdv" style="display:none"><span class="k">Latency</span><span class="v" id="connUdpAdvText" style="color:#f5d9b7">direct WireGuard not established - check client firewall UDP 41641</span></div>
+    <div class="row"><span class="k">Rust</span><span class="badge" id="c2Srv">srv --</span><span class="badge" id="c2Via">via --</span><span class="badge" id="c2Fps">fps --</span><span class="badge" id="c2Jit">jit --</span><span class="badge" id="c2Rtt">rtt --</span><canvas id="c2Spark" width="120" height="24" style="width:120px;height:24px"></canvas></div>
+    <p class="note" style="margin:0">primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP__:7332/</a> | fallback: <a id="fallbackLink" href="http://__IP__:7331/">http://__IP__:7331/</a></p>
+  </section>
+
+  <section class="glass tier-card" id="sec-keys">
+    <div class="sec-head"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-key"/></svg><h2>Indexes &amp; keys</h2></div>
+    <div class="row"><span class="k">Mirror (github.io)</span><a id="pagesLink" href="javascript:void(0)">(pages base)</a><button onclick="copyText(document.getElementById('pagesLink').textContent,this)">copy</button></div>
+    <div class="row"><span class="k">Legacy Rentry (frozen)</span><a id="legacyLink" href="https://rentry.co/myurl0">https://rentry.co/myurl0</a><button onclick="copyText(document.getElementById('legacyLink').textContent,this)">copy</button></div>
+    <div class="row"><span class="k">LEGACY key</span><span class="v" id="legacyKey">...</span><button onclick="copyById('legacyKey',this)">copy</button><span class="note">decrypt key for files uploaded before this run</span></div>
+    <div class="row"><span class="k">Current key</span><span class="v" id="mirrorKey">__MIRRORKEY__</span><button onclick="copyById('mirrorKey',this)">copy</button><span class="note">decrypt key for THIS run's uploads</span></div>
+    <div class="row"><span class="k">Windows password</span><span class="v" id="credWinPass">(host-only)</span><button onclick="copyById('credWinPass',this)">copy</button><span class="note">masked (last 4); served only to your token-authenticated dashboard</span></div>
+    <div class="row"><span class="k">VNC password</span><span class="v" id="credVncPass">(host-only)</span><button onclick="copyById('credVncPass',this)">copy</button><a href="javascript:void(0)" onclick="rememberVncFromKeys(this)" style="font-size:11px;opacity:.6;text-decoration:underline">remember for WEB DESKTOP</a><span class="note">the VNC_PASS secret set at dispatch; masked (last 4), token-gated.</span></div>
+    <div class="row"><span class="k">Telegraph</span><a id="telegraphLink" href="javascript:void(0)">__TELEGRAPH__</a><button onclick="copyText(document.getElementById('telegraphLink').textContent,this)">copy</button></div>
+    <div class="row" id="decryptRow" style="display:none"><span class="k">Decryptor</span><a id="decryptLink" href="javascript:void(0)" target="_blank">-</a><button onclick="copyText(document.getElementById('decryptLink').href,this)">copy</button></div>
+    <div class="row" id="archiveRow" style="display:none"><span class="k">Archive</span><a id="archiveLink" href="javascript:void(0)" target="_blank">-</a><button onclick="copyText(document.getElementById('archiveLink').href,this)">copy</button></div>
+    <div class="row" id="searchRow" style="display:none"><span class="k">File Search</span><a id="searchLink" href="javascript:void(0)" target="_blank">-</a><button onclick="copyText(document.getElementById('searchLink').href,this)">copy</button></div>
+    <div class="row" id="explorerRow" style="display:none"><span class="k">Explorer (Win11)</span><a id="explorerLink" href="javascript:void(0)" target="_blank">-</a><button onclick="copyText(document.getElementById('explorerLink').href,this)">copy</button></div>
+    <div id="termRow" style="display:flex;gap:10px;align-items:center;padding:10px 14px;border:1px solid rgba(255,255,255,.14);border-radius:16px;background:rgba(255,255,255,.07);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);box-shadow:0 6px 24px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.1);margin-top:8px">
+      <span style="font-weight:600">Terminal</span>
+      <span style="opacity:.6;font-size:12px">runner · audit-logged · SYSTEM / INTERACTIVE</span>
+      <button id="btnTermOpen" style="margin-left:auto;background:linear-gradient(180deg,#4f8cff,#2f6bff);color:#fff;border:1px solid rgba(255,255,255,.3);border-radius:10px;padding:6px 14px;cursor:pointer"><svg class="ic" aria-hidden="true"><use href="#i-terminal"/></svg>Open Terminal</button>
+      <code id="termUrl" style="opacity:.75;font-size:11px;max-width:44%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></code>
+      <button id="btnTermCopy" style="background:rgba(255,255,255,.12);color:inherit;border:1px solid rgba(255,255,255,.16);border-radius:10px;padding:6px 10px;cursor:pointer">copy</button>
     </div>
+  </section>
+
+  <section class="glass tier-card" id="sec-native-rdp">
+    <div class="sec-head"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-monitor"/></svg><h2>WEB DESKTOP</h2></div>
+    <div class="row" id="nrBuildWarn" style="display:none"><span class="k">Deploy</span><span class="v" id="nrBuildWarnText" style="color:#f5d9b7"></span></div>
+    <div class="row"><span class="k">Status</span><span class="v" id="nrReady" style="color:#7dffc9"></span></div>
+    <div class="row" id="nrReadyRow" style="display:none"><span class="k">Ready</span><span class="v" id="nrReadyDup">--</span></div>
+    <div class="row" id="nrAdvisoryRow" style="display:none"><span class="k">Advisory</span><span class="v" id="nrAdvisory" style="color:#f5d9b7"></span></div>
+    <div class="row" id="nrMagicDnsRow" style="display:none"><span class="k">MagicDNS</span><span class="v" id="nrMagicDns" style="color:#f5d9b7"></span></div>
+    <div class="row" id="nrReasonsRow" style="display:none"><span class="k">Blocked by</span><span class="v" id="nrReasons" style="color:#f5b7b7"></span></div>
+    <div class="row" id="nrVpsPendingRow" style="display:none"><span class="k">VPS status</span><span class="v" id="nrVpsPending" style="color:#f5d9b7">provisioning pending (advisory)</span></div>
+    <div class="row"><span class="k">Host</span><span class="v" id="nrHostKind">...</span><span class="note" id="nrHostKindNote">ephemeral runners change name every run. A one-time TERMSRV entry is VPS-only.</span></div>
+    <div class="row" id="nrEphemeralRow" style="display:none;flex-direction:column;align-items:stretch;gap:6px">
+      <span class="k" style="font-weight:600">WEB DESKTOP (primary) + shortcut instructions</span>
+      <span class="note">This host is ephemeral. Click WEB DESKTOP. Do not expect a stored TERMSRV entry to survive the next run. One-time cmdkey is VPS-only.</span>
+    </div>
+    <div class="row" id="nrVpsShortcutRow" style="display:none;flex-direction:column;align-items:stretch;gap:6px">
+      <span class="k" style="font-weight:600">Native auto-login (VPS only)</span>
+      <span class="note">One time on your PC: install the compiled protocol handler (see docs/AUTOLOGIN.md), run the cmdkey line below, and type the password at the Windows prompt. Neither the page nor the handler reads that password.</span>
+      <label class="note"><input type="checkbox" id="nrCmdkeyConfirmed"> I ran cmdkey for this FQDN on this PC (copying the line does not count).</label>
+      <button id="autoLoginNative" type="button" disabled><svg class="ic" aria-hidden="true"><use href="#i-power"/></svg>AUTO-LOGIN (VPS only)</button>
+    </div>
+    <div class="row"><span class="k">Web desktop URL</span><span class="v" id="webdeskUrlVal">(not set)</span><a href="javascript:void(0)" onclick="copyById('webdeskUrlVal',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">VNC password = the VNC_PASS secret set at dispatch; this page never stores or shows it.</span></div>
+    <div class="row"><span class="k">VNC auth mode</span><span class="v" id="webdeskAuthVal">(unknown)</span></div>
     <span class="note">tailnet-only HTTP over WireGuard + VNC password; nothing installed on client. NLA on the Windows listener stays on.</span>
-  </div>
-  <!-- [F11-2 §2.2] VNC password memory: typed ONCE (or pulled from the gated
-       KEYS row), kept in this browser's localStorage, and handed to the noVNC
-       tab over postMessage (exact targetOrigin) - never inside the launch URL,
-       never in a query string, never in a log. -->
-  <div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
-    <span class="k" style="font-weight:600">VNC password memory (this device)</span>
-    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-      <input id="vncPassInput" type="password" autocomplete="off" spellcheck="false" placeholder="type the VNC_PASS once" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.18);color:inherit;border-radius:8px;padding:6px 10px;min-width:220px">
-      <label class="note"><input type="checkbox" id="vncPassRemember"> remember on this device (localStorage)</label>
-      <button type="button" id="vncPassForget">forget</button>
-      <span class="note" id="vncPassState">not stored</span>
+    <div class="row" id="webdeskAuthAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" id="webdeskAuthAdvisoryText" style="color:#f5d9b7"></span></div>
+    <div class="note" id="webdeskVncGuidance" style="display:none;color:#f5d9b7;margin:4px 0 10px 130px">
+      VNC_PASS secret is missing. To enable web desktop:
+      <ol style="margin:6px 0 0 20px">
+        <li>Open <a href="https://github.com/dekarita/supreme-lamp/settings/secrets/actions" target="_blank" rel="noopener">GitHub Secrets Settings</a></li>
+        <li>Click “New repository secret”</li>
+        <li>Name: <code>VNC_PASS</code></li>
+        <li>Value: any strong password (min 8 chars, e.g. MySecureVNC2026!)</li>
+        <li>Click “Add secret”</li>
+        <li>Re-dispatch the workflow (Actions &rarr; Windows RDP &rarr; Run workflow &rarr; main &rarr; Run)</li>
+      </ol>
+      After re-dispatch, this button will enable automatically.
     </div>
-    <span class="note">After the first entry, WEB DESKTOP auto-fills the noVNC Credentials dialog via postMessage from this page's origin only. The value never appears in a URL, query string, artifact, or log.</span>
-  </div>
-  <div class="row"><span class="k">Web desktop URL</span><span class="v" id="webdeskUrlVal">(not set)</span><a href="javascript:void(0)" onclick="copyById('webdeskUrlVal',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">VNC password = the VNC_PASS secret set at dispatch; this page never stores or shows it.</span></div>
-  <div class="row"><span class="k">VNC auth mode</span><span class="v" id="webdeskAuthVal">(unknown)</span></div>
-  <div class="row" id="webdeskAuthAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" id="webdeskAuthAdvisoryText" style="color:#f5d9b7"></span></div>
-  <div class="note" id="webdeskVncGuidance" style="display:none;color:#f5d9b7;margin:4px 0 10px 130px">
-    VNC_PASS secret is missing. To enable web desktop:
-    <ol style="margin:6px 0 0 20px">
-      <li>Open <a href="https://github.com/dekarita/supreme-lamp/settings/secrets/actions" target="_blank" rel="noopener">GitHub Secrets Settings</a></li>
-      <li>Click “New repository secret”</li>
-      <li>Name: <code>VNC_PASS</code></li>
-      <li>Value: any strong password (min 8 chars, e.g. MySecureVNC2026!)</li>
-      <li>Click “Add secret”</li>
-      <li>Re-dispatch the workflow (Actions &rarr; Windows RDP &rarr; Run workflow &rarr; main &rarr; Run)</li>
-    </ol>
-    After re-dispatch, this button will enable automatically.
-  </div>
-  <div class="row" id="webdeskVncAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" id="webdeskVncAdvisoryText" style="color:#f5d9b7">Web desktop unavailable: set <code>VNC_PASS</code> in <a href="https://github.com/dekarita/supreme-lamp/settings/secrets/actions" target="_blank" rel="noopener">GitHub Actions secrets</a>, then re-run.</span></div>
-  <div class="note" id="tsAuthGuidance" style="display:none;color:#f5d9b7;margin:4px 0 10px 130px"></div>
-  <div class="row" id="tsAuthAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" id="tsAuthAdvisoryText" style="color:#f5d9b7"></span></div>
-  <div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
-    <span class="k" style="font-weight:600">Shortcut text (copy only; VPS one-time cmdkey)</span>
-    <div style="display:flex;gap:8px;align-items:center">
-      <span class="note" style="opacity:.7">cmdkey line:</span>
-      <code id="cmdkeyLine" style="flex:1;padding:6px 8px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:11px ui-monospace,Consolas,monospace;overflow-x:auto">(populating...)</code>
-      <a href="javascript:void(0)" onclick="copyById('cmdkeyLine',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
+    <div class="row" id="webdeskVncAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" id="webdeskVncAdvisoryText" style="color:#f5d9b7">Web desktop unavailable: set <code>VNC_PASS</code> in <a href="https://github.com/dekarita/supreme-lamp/settings/secrets/actions" target="_blank" rel="noopener">GitHub Actions secrets</a>, then re-run.</span></div>
+    <div class="note" id="tsAuthGuidance" style="display:none;color:#f5d9b7;margin:4px 0 10px 130px"></div>
+    <div class="row" id="tsAuthAdvisory" style="display:none"><span class="k">Advisory</span><span class="v" id="tsAuthAdvisoryText" style="color:#f5d9b7"></span></div>
+    <div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
+      <span class="k" style="font-weight:600">VNC password memory (this device)</span>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="vncPassInput" type="password" autocomplete="off" spellcheck="false" placeholder="type the VNC_PASS once" style="background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.18);color:inherit;border-radius:8px;padding:6px 10px;min-width:220px">
+        <label class="note"><input type="checkbox" id="vncPassRemember"> remember on this device (localStorage)</label>
+        <button type="button" id="vncPassForget">forget</button>
+        <span class="note" id="vncPassState">not stored</span>
+      </div>
+      <span class="note">After the first entry, WEB DESKTOP auto-fills the noVNC Credentials dialog via postMessage from this page's origin only. The value never appears in a URL, query string, artifact, or log.</span>
     </div>
-    <div style="display:flex;gap:8px;align-items:center">
-      <span class="note" style="opacity:.7">mstsc line:</span>
-      <code id="mstscFallback" style="flex:1;padding:6px 8px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:11px ui-monospace,Consolas,monospace">mstsc /v:__IP__</code>
-      <a href="javascript:void(0)" onclick="copyById('mstscFallback',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
+    <div class="row" style="flex-direction:column;align-items:stretch;gap:6px">
+      <span class="k" style="font-weight:600">Shortcut text (copy only; VPS one-time cmdkey)</span>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="note" style="opacity:.7">cmdkey line:</span>
+        <code id="cmdkeyLine" style="flex:1;padding:6px 8px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:11px ui-monospace,Consolas,monospace;overflow-x:auto">(populating...)</code>
+        <a href="javascript:void(0)" onclick="copyById('cmdkeyLine',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="note" style="opacity:.7">mstsc line:</span>
+        <code id="mstscFallback" style="flex:1;padding:6px 8px;background:#0a1512;border:1px solid #1e3a2f;border-radius:6px;color:#7dffc9;font:11px ui-monospace,Consolas,monospace">mstsc /v:__IP__</code>
+        <a href="javascript:void(0)" onclick="copyById('mstscFallback',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a>
+      </div>
+      <span class="note">Password is typed at the prompt, never placed on the command line. Ephemeral hosts: ignore this pair and use WEB DESKTOP.</span>
     </div>
-    <span class="note">Password is typed at the prompt, never placed on the command line. Ephemeral hosts: ignore this pair and use WEB DESKTOP.</span>
+    <div class="row"><span class="k">Ticket audit</span><span class="v" id="ticketAudit">not reported yet</span></div>
+  </section>
+
+  <section class="glass tier-card" id="sec-mirror">
+    <div class="sec-head"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-database"/></svg><h2>Mirror - AES-256 encrypted upload</h2></div>
+    <div class="mirror-ring">
+      <div class="ring" title="honest overall percent (capped at 99.9 until done==total)">
+        <svg viewBox="0 0 64 64" aria-hidden="true">
+          <defs><linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#22d3ee"/><stop offset="55%" stop-color="#34d399"/><stop offset="100%" stop-color="#a78bfa"/>
+          </linearGradient></defs>
+          <circle class="track" cx="32" cy="32" r="28"/>
+          <circle class="fill" id="ringFill" cx="32" cy="32" r="28" stroke-dasharray="175.93" stroke-dashoffset="175.93"/>
+        </svg>
+        <div class="label"><b id="stOverall">0%</b><span>overall</span></div>
+        <b id="aggBar" style="position:absolute;left:-9999px;top:-9999px" aria-hidden="true">0%</b>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div class="pub"><span class="pdot" id="pubDot"></span><span class="txt" id="pubTxt">Publish status: unknown</span></div>
+        <div class="note" style="font-variant-numeric:tabular-nums;display:flex;gap:8px;flex-wrap:wrap">
+          <span>files <b id="stDone">0/0</b></span>
+          <span>failed <b id="stFailed">0</b></span>
+          <span>bytes <b id="stBytes">0 B</b> <span id="stBytesSub">of 0 B</span></span>
+          <span>speed <b id="stSpeed">0 B/s</b></span>
+          <span>scans <b id="stScans">0</b> <span id="stScansSub">last: -</span></span>
+          <span>eta <b id="stEta">-</b></span>
+        </div>
+      </div>
+    </div>
+    <div class="mini-grid" style="font-variant-numeric:tabular-nums">
+      <div class="tile"><span class="lab">files</span><span class="val" id="stDoneTile">0/0</span><span class="sub">done / total</span></div>
+      <div class="tile" id="tileFailed"><span class="lab">failed</span><span class="val" id="stFailedTile">0</span><span class="sub">after 5 tries</span></div>
+      <div class="tile"><span class="lab">bytes</span><span class="val" id="stBytesTile">0 B</span><span class="sub" id="stBytesSubTile">of 0 B</span></div>
+      <div class="tile"><span class="lab">speed</span><span class="val" id="stSpeedTile">0 B/s</span><span class="sub">moving avg</span></div>
+      <div class="tile"><span class="lab">scans</span><span class="val" id="stScansTile">0</span><span class="sub" id="stScansSubTile">last: -</span></div>
+      <div class="tile"><span class="lab">eta</span><span class="val" id="stEtaTile">-</span><span class="sub">time remaining</span></div>
+    </div>
+    <div class="active" aria-label="active file">
+      <div class="head"><span class="name" id="activeName">idle - no active file</span><span class="phase" id="activePhase">-</span></div>
+      <div class="bar" title="active file progress"><i id="activeBar" style="width:0%"></i></div>
+      <div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--mut);margin-top:6px;font-variant-numeric:tabular-nums">
+        <span id="activeBytes">0 B / 0 B</span><span id="activePct">0%</span>
+      </div>
+    </div>
+    <div class="spark-wrap">
+      <div class="head"><span class="lab">Speed history - last 90 samples (7.5 min @ 5s)</span><span class="val" id="sparkNow">0 B/s</span></div>
+      <canvas class="spark" id="sparkline" width="800" height="112"></canvas>
+    </div>
+    <div class="roots" id="rootsWrap" aria-label="per-root telemetry"></div>
+    <div class="act">
+      <button class="primary" onclick="doFlush(this)"><svg class="ic" aria-hidden="true"><use href="#i-upload"/></svg>Upload everything now</button>
+      <button onclick="doLaunch(this)"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg>Start watcher</button>
+      <button onclick="doDiag()"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>Diagnose</button>
+      <button onclick="copyAllLinks(this)"><svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg>Copy all links</button>
+    </div>
+    <div class="tbl-wrap"><div class="tbl-scroll">
+      <table>
+        <thead><tr><th>file</th><th>phase</th><th style="min-width:120px">progress</th><th>size</th><th>status</th><th>error</th><th>link</th></tr></thead>
+        <tbody id="fileRows"><tr><td colspan="7" style="color:var(--mut);text-align:center;padding:18px">waiting for watcher...</td></tr></tbody>
+      </table>
+    </div></div>
+  </section>
+
+  <section class="glass tier-card" id="sec-log" style="grid-column:span 12">
+    <div class="logwrap">
+      <div class="head"><span class="log-title"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-file-text"/></svg>Live log - last 200 lines</span>
+        <div style="display:flex;gap:6px">
+          <button onclick="copyLog(this)" title="copy log">copy</button>
+          <button onclick="toggleLogPause(this)" id="logPauseBtn" title="pause auto-scroll">pause</button>
+        </div>
+      </div>
+      <pre class="box" id="logBox" tabindex="0"></pre>
+    </div>
+  </section>
+</main>
+
+<section class="drawers">
+  <details class="glass" id="drawerConnDiag">
+    <summary><svg class="ic" aria-hidden="true"><use href="#i-info"/></svg> CONNECTION DIAGNOSTICS - copy-lines</summary>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+      <div class="row" id="connDiagRow" style="display:flex;flex-direction:column;align-items:stretch;gap:4px">
+        <span class="k" style="font-weight:600">CONNECTION DIAGNOSTICS - run on YOUR PC (copy only; nothing here executes)</span>
+        <span class="note" style="margin:0">Runner FQDN: <code id="connDiagFqdn">-</code> &nbsp; runnerResolvedIP: <code id="connDiagResolved">-</code></span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagPing" style="font-size:12px">ping &lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('connDiagPing',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagTnc" style="font-size:12px">Test-NetConnection &lt;fqdn&gt; -Port 3389</code><a href="javascript:void(0)" onclick="copyById('connDiagTnc',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+        <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagRd" style="font-size:12px">Resolve-DnsName &lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('connDiagRd',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+        <span class="note" style="margin:0">nslookup bypasses Tailscale split-DNS and queries your router directly; a nslookup timeout while ping works is EXPECTED and not a fault.</span>
+        <span class="note" style="margin:0">If ping fails: run ipconfig /flushdns, confirm Tailscale connected, retry. If still failing: Tailscale admin -&gt; DNS -&gt; enable MagicDNS + HTTPS Certificates, re-dispatch.</span>
+      </div>
+      <div class="row" id="clientDnsRow" style="display:flex;flex-direction:column;align-items:stretch;gap:4px">
+        <span class="k" style="font-weight:600">YOUR PC - CLIENT DNS PROBE</span>
+        <span class="note" id="clientDnsText" style="margin:0"></span>
+        <span class="note" id="clientDnsCmds" style="display:flex;flex-direction:column;gap:4px;margin:0">
+          <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><code id="clientDnsFix1" style="font-size:12px">tailscale set --accept-dns=true</code><a href="javascript:void(0)" onclick="copyById('clientDnsFix1',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">- or Tailscale tray menu -&gt; Use Tailscale DNS</span></span>
+          <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><code id="clientDnsFix2" style="font-size:12px">ipconfig /flushdns</code><a href="javascript:void(0)" onclick="copyById('clientDnsFix2',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+          <span style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><code id="clientDnsFix3" style="font-size:12px">ping &lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('clientDnsFix3',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+        </span>
+      </div>
+      <details id="connDiagFailBox" style="margin:0">
+        <summary style="cursor:pointer;font-size:11px;opacity:.75">if mstsc still fails (0x904/0x7) - export the logs</summary>
+        <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px">
+          <span class="note" style="margin:0;font-weight:600">On YOUR PC (client events):</span>
+          <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagEvtClient" style="font-size:12px">wevtutil epl Microsoft-Windows-TerminalServices-ClientActiveXCore/Operational %TEMP%\rdp-client.evtx</code><a href="javascript:void(0)" onclick="copyById('connDiagEvtClient',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+          <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagEvtList" style="font-size:12px">wevtutil el | findstr /i "terminal credssp schannel"</code><a href="javascript:void(0)" onclick="copyById('connDiagEvtList',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+          <span class="note" style="margin:0;font-weight:600">On the RUNNER (ask this session to collect these - you cannot RDP in yet):</span>
+          <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagEvtSec" style="font-size:12px">wevtutil epl Security %TEMP%\rdp-security.evtx /q:"*[System[(EventID=4624 or EventID=4625)]]"</code><a href="javascript:void(0)" onclick="copyById('connDiagEvtSec',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+          <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagEvtSch" style="font-size:12px">wevtutil epl System %TEMP%\rdp-system.evtx /q:"*[System[Provider[@Name='Schannel']]]"</code><a href="javascript:void(0)" onclick="copyById('connDiagEvtSch',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+          <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagEvtTerm" style="font-size:12px">wevtutil epl Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational %TEMP%\rdp-termgr.evtx</code><a href="javascript:void(0)" onclick="copyById('connDiagEvtTerm',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+          <span class="note" style="margin:0">Paste the exports into this session. The failure is then mapped from the logged event (cert chain / CredSSP / NLA / transport) - never guessed, and nothing here weakens NLA, CredSSP or certificate validation.</span>
+        </div>
+      </details>
+      <details id="connCredsspBox" style="margin:0">
+        <summary style="cursor:pointer;font-size:11px;opacity:.75">If TcpStateFrontAuth / NLA handshake failures persist - CredSSP/cert/encryption checks</summary>
+        <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px">
+          <span class="note" style="margin:0;font-weight:600">On YOUR PC (client-side CredSSP policy + encryption level):</span>
+          <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagCredsspPol" style="font-size:12px">Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System\CredSSP\Parameters' -EA SilentlyContinue</code><a href="javascript:void(0)" onclick="copyById('connDiagCredsspPol',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+          <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagLmCompat" style="font-size:12px">Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Lsa' -Name 'LmCompatibilityLevel' -EA SilentlyContinue</code><a href="javascript:void(0)" onclick="copyById('connDiagLmCompat',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+          <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagMstscVerbose" style="font-size:12px">mstsc /v:&lt;fqdn&gt; /admin /prompt</code><a href="javascript:void(0)" onclick="copyById('connDiagMstscVerbose',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+          <span class="note" style="margin:0;font-weight:600">Advisory:</span>
+          <span class="note" style="margin:0">If TcpStateFrontAuth failures persist: (1) client+server CredSSP policies must match (AllowEncryptionOracle=0 strict on both sides); (2) server cert must be trusted (Let's Encrypt, not self-signed); (3) minimum encryption levels must align (LmCompatibilityLevel=3 recommended). Paste client .evtx exports + runner credsspStatus field into this session for log-mapped diagnosis.</span>
+          <span class="note" style="margin:0;color:#f87171">NEVER weaken NLA/CredSSP (auth-level overrides, credssp-support-off .rdp flags) or bypass cert validation as a workaround - those are the failure class, not the fix.</span>
+        </div>
+      </details>
+      <details id="connDiagTlsBox" style="margin:0">
+        <summary style="cursor:pointer;font-size:11px;opacity:.75">TLS/cipher handshake drop ("forcibly closed by remote host") - purge + cipher checks</summary>
+        <div style="display:flex;flex-direction:column;gap:4px;margin-top:4px">
+          <span class="note" style="margin:0;font-weight:600">1. Purge ALL stale TERMSRV credentials on YOUR PC (nuclear option)</span>
+          <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagPurgeAll" style="font-size:12px">cmdkey /list | Select-String TERMSRV | ForEach-Object { $t=($_ -split 'target=')[1]; if ($t) { cmdkey "/delete:$t" } }</code><a href="javascript:void(0)" onclick="copyById('connDiagPurgeAll',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+          <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagServerPurge" style="font-size:12px">(age-aware purge: loading the server-generated 7-day command...)</code><a href="javascript:void(0)" onclick="copyById('connDiagServerPurge',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+          <span class="note" style="margin:0;font-weight:600">2. Check the cipher suites this PC can offer</span>
+          <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagCiphers" style="font-size:12px">Get-TlsCipherSuite | Select-Object Name, CipherLength | Format-Table</code><a href="javascript:void(0)" onclick="copyById('connDiagCiphers',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+          <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagTls13" style="font-size:12px">mstsc /v:&lt;fqdn&gt; /admin /tls13</code><a href="javascript:void(0)" onclick="copyById('connDiagTls13',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+          <span class="note" style="margin:0;font-weight:600">3. Capture the handshake (only if Wireshark/tshark is installed)</span>
+          <span class="note" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="connDiagTshark" style="font-size:12px">tshark -i "Tailscale" -f "tcp port 3389" -w %TEMP%\rdp-tls.pcap -a duration:30</code><a href="javascript:void(0)" onclick="copyById('connDiagTshark',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+        </div>
+      </details>
+  <div class="row" id="rdpAuthRow" style="display:flex;flex-direction:column;align-items:stretch;gap:4px">
+    <span class="k" style="font-weight:600">AUTH REJECT DISCRIMINATOR (F24 - why mstsc is rejected)</span>
+    <span class="note" id="rdpAuthVerdict" style="margin:0">waiting for the first /api/native-status sample...</span>
+    <span class="note" id="rdpAuthDetail" style="margin:0"></span>
+    <span class="note" id="rdpAuthCmds" style="display:flex;flex-direction:column;gap:4px;margin:0">
+      <span id="rdpAuthCmdKeyDelWrap" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><code id="rdpAuthCmdKeyDel" style="font-size:12px">cmdkey /delete:TERMSRV/&lt;fqdn&gt;</code><a href="javascript:void(0)" onclick="copyById('rdpAuthCmdKeyDel',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+      <span id="rdpAuthPassWrap" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><a href="javascript:void(0)" id="rdpAuthPassCopy" onclick="copyById('credWinPass',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy CURRENT password from KEYS</a></span>
+      <span id="rdpAuthCmdCapi2Wrap" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><code id="rdpAuthCmdCapi2" style="font-size:12px">wevtutil epl Microsoft-Windows-CAPI2/Operational %TEMP%\capi2.evtx</code><a href="javascript:void(0)" onclick="copyById('rdpAuthCmdCapi2',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+      <span id="rdpAuthCmdSystemWrap" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><code id="rdpAuthCmdSystem" style="font-size:12px">wevtutil epl System %TEMP%\system.evtx</code><a href="javascript:void(0)" onclick="copyById('rdpAuthCmdSystem',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+    </span>
   </div>
+    </div>
+  </details>
+
+  <!-- [F37 §3 timeline-begin] ONE TIMELINE per click: the client beacon stages + runner telescope + logon. -->
+  <details class="glass" id="drawerTelescope">
+    <summary><svg class="ic" aria-hidden="true"><use href="#i-activity"/></svg> RDP TELESCOPE TIMELINE</summary>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+      <div class="row" id="telescopeRow" style="display:flex;flex-direction:column;align-items:stretch;gap:4px">
+        <span class="k" style="font-weight:600">RDP TELESCOPE TIMELINE</span>
+        <span class="note" id="telescopeSummary" style="margin:0">waiting for the first /api/native-status sample...</span>
+        <span class="note" id="telescopeSegments" style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace"></span>
+        <span class="note" id="telescopeDeath" style="margin:0"></span>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <button id="btnRunDiag" type="button" title="fires ghrdp://diag - read-only client telescope: dns/tcp/tls/cred stages, no store, no mstsc, no credential prompt"><svg class="ic" aria-hidden="true"><use href="#i-activity"/></svg>[RUN DIAG]</button>
+          <span class="note" id="telescopeTrace" style="margin:0;font-size:11px"></span>
+        </div>
+      </div>
+    </div>
+  </details>
+  <!-- [F37 §3 timeline-end] -->
+
+  <!-- [F31c §2 live-dispatch-card-begin] LIVE DISPATCH STATUS. Polls /api/native-status every 10s, 5 checks. -->
+  <details class="glass" id="drawerLauncher">
+    <summary><svg class="ic" aria-hidden="true"><use href="#i-server"/></svg> LAUNCHER - chain / beacon / checks</summary>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+      <div class="row" id="liveDispatchRow" style="display:flex;flex-direction:column;align-items:stretch;gap:4px">
+        <span class="k" style="font-weight:600">LIVE DISPATCH STATUS</span>
+        <span class="note" id="liveDispatchSummary" style="margin:0">waiting for the first /api/native-status sample...</span>
+        <span class="note" id="liveDispatchChecks" style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace"></span>
+        <span class="note" id="liveDispatchFix" style="margin:0"></span>
+        <span class="note" id="liveDispatchAcl" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="liveDispatchAclCmd" style="font-size:12px">wevtutil qe System /q:"*[System[Provider[@Name='Schannel']]]" /c:10 /f:text | findstr "36870 36871"</code><a href="javascript:void(0)" onclick="copyById('liveDispatchAclCmd',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+      </div>
+      <!-- [F31c §2 live-dispatch-card-end] -->
+      <div class="row"><span class="k">Launcher chain</span><span class="v" id="handoffChain">not reported yet</span></div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span class="k">Launcher beacon</span>
+        <span class="v" id="winBeacon" style="font-family:ui-monospace,Consolas,monospace;font-size:12px">(none yet - click WINDOWS AUTO-LOGIN)</span>
+        <button id="btnRunCheck" type="button" title="fires ghrdp://check - a MessageBox on this PC proves the launcher exe runs (no server needed)"><svg class="ic" aria-hidden="true"><use href="#i-shield-check"/></svg>RUN CHECK</button>
+        <span class="note">launcher log <code id="winBeaconLog">%LOCALAPPDATA%\ghrdp\ghrdp-launcher.log</code> <a href="javascript:void(0)" onclick="copyById('winBeaconLog',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></span>
+      </div>
+      <div class="note" id="winBeaconStall" style="display:none;color:#f5b7b7"></div>
+      <div class="row" id="rdpListenerRow" style="display:flex;flex-direction:column;align-items:stretch;gap:4px">
+        <span class="k" style="font-weight:600">RDP LISTENER</span>
+        <span class="note" id="rdpListenerLine" style="margin:0">probe not reported yet</span>
+        <span class="note" id="rdpListenerAge" style="margin:0"></span>
+      </div>
+      <div class="row" id="srvConnLogRow" style="display:flex;flex-direction:column;align-items:stretch;gap:4px">
+        <span class="k" style="font-weight:600">SERVER CONN LOG</span>
+        <span class="note" id="srvConnLogState" style="margin:0">collector not reported yet (server 30s tick reads both RDP Operational logs)</span>
+        <span class="note" id="srvConnLogLines" style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace"></span>
+        <span class="note" id="srvConnLogTls" style="margin:0"></span>
+        <span class="note" id="srvConnLogBind" style="margin:0;font-family:ui-monospace,Consolas,monospace"></span>
+      </div>
+      <div class="row" id="nrLauncherOutdatedRow" style="display:none"><span class="k">Launcher</span><span class="v" id="nrLauncherOutdated" style="color:#f5d9b7">launcher outdated - re-run install.cmd once (<a href="/dl/ghrdp-handler-kit.zip" style="color:#8fd3ff">DOWNLOAD INSTALL KIT</a>)</span><span class="note" id="nrLauncherVersions">installed: - / current: -</span></div>
+    </div>
+  </details>
+
+  <details class="glass" id="drawerInstall">
+    <summary><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg> INSTALL GUIDE - kit + paths</summary>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+      <div class="note" id="winKitRow" style="display:flex;flex-direction:column;align-items:stretch;gap:8px;color:var(--mut)">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <a class="btn primary" id="btnKitDl" href="/dl/ghrdp-handler-kit.zip"><svg class="ic" aria-hidden="true"><use href="#i-download"/></svg>DOWNLOAD INSTALL KIT</a>
+          <span class="note" style="margin-top:0">ghrdp-handler-kit.zip = install.cmd + ghrdp-rdp-launcher.cs (nothing else; no secrets)</span>
+        </div>
+        <span class="k" style="font-weight:600">Install guide - Path A (downloaded kit)</span>
+        <ol id="kitGuideA" style="margin:0;padding-left:18px;font-size:11.5px;line-height:1.6">
+          <li>Click <b>DOWNLOAD INSTALL KIT</b> and save <code>ghrdp-handler-kit.zip</code>.</li>
+          <li>Extract the zip to any folder (right-click the zip - Extract All).</li>
+          <li>Double-click <b>install.cmd</b> in the extracted folder.</li>
+          <li>At the ONE-TIME <b>Security Warning</b> ("Windows protected your PC") click <b>Run</b> - downloaded files carry Mark-of-the-Web, so Windows asks once; Path B below never does.</li>
+          <li>Read the <b>BEFORE</b> and <b>AFTER</b> lines it prints - AFTER must show <code>ghrdp-rdp-launcher.exe</code>, NOT powershell.</li>
+          <li>Click <b>WINDOWS AUTO-LOGIN</b>: Windows asks for your password the FIRST time only (cmdkey); every later click is silent fullscreen.</li>
+        </ol>
+        <span class="note" id="kitPathB"><b>Path B (repo clone)</b>: <code>git pull</code> then double-click <code>payloads\install.cmd</code> - zero warnings, because clone files carry no Mark-of-the-Web. WEB DESKTOP below stays the zero-install primary.</span>
+      </div>
+      <div class="note" id="winAutoStale" style="display:none;color:#f5d9b7">If Windows offered to open <b>PowerShell</b>, your PC has a stale ghrdp registration - run <b>install.cmd</b> once (text below).</div>
+      <div class="note" id="winAutoInstall" style="display:none;color:#f5d9b7">One-time handler setup (no script host, no admin, no download of binaries): copy <code id="winAutoFiles">payloads\install.cmd + payloads\ghrdp-rdp-launcher.cs</code> <a href="javascript:void(0)" onclick="copyById('winAutoFiles',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a> from the repo into one folder on your PC and double-click <b>install.cmd</b> - or use WEB DESKTOP below (zero install).</div>
+    </div>
+  </details>
+
+  <!-- [F31c §3 manual-verify-begin] Collapsed. Copy-only. The user runs these. -->
+  <details class="glass" id="drawerManual">
+    <summary><svg class="ic" aria-hidden="true"><use href="#i-file-text"/></svg> MANUAL VERIFY STEPS</summary>
+    <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px">
+      <details id="manualVerifySteps">
+        <summary style="cursor:pointer;font-size:12px;font-weight:600">MANUAL VERIFY STEPS</summary>
+        <ol id="manualVerifyList" style="margin:6px 0 0;padding-left:18px;font-size:12px;line-height:1.55">
+          <li id="manualVerifyBrowser">If WINDOWS AUTO-LOGIN opens a browser prompt, click OPEN and tick always-allow</li>
+          <li id="manualVerifyRdp">If RDP window appears but shows 0x904/0x7, run this in PowerShell on your PC: <code id="manualVerifyCmdkey" style="font-size:12px">cmdkey /delete:TERMSRV/&lt;current-fqdn&gt;</code> <a href="javascript:void(0)" onclick="copyById('manualVerifyCmdkey',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a> Then click WINDOWS AUTO-LOGIN again</li>
+          <li id="manualVerifyStill">If still failing, copy this and paste to the session: <code id="manualVerifySchannel" style="font-size:12px">wevtutil qe System /q:"*[System[Provider[@Name='Schannel']]]" /c:10 /f:text | findstr "36870 36871"</code> <a href="javascript:void(0)" onclick="copyById('manualVerifySchannel',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a></li>
+        </ol>
+      </details>
+      <!-- [F31c §3 manual-verify-end] -->
+    </div>
+  </details>
 </section>
-<section class="glass" id="sec-keys">
-  <div class="sec-head"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-key"/></svg><h2>Indexes &amp; keys</h2></div>
-  <div class="row"><span class="k">Mirror (github.io)</span><a id="pagesLink" href="javascript:void(0)">(pages base)</a><button onclick="copyText(document.getElementById('pagesLink').textContent,this)">copy</button></div>
-  <div class="row"><span class="k">Legacy Rentry (frozen)</span><a id="legacyLink" href="https://rentry.co/myurl0">https://rentry.co/myurl0</a><button onclick="copyText(document.getElementById('legacyLink').textContent,this)">copy</button></div>
-  <div class="row"><span class="k">LEGACY key</span><span class="v" id="legacyKey">...</span><button onclick="copyById('legacyKey',this)">copy</button><span class="note">decrypt key for files uploaded before this run</span></div>
-<div id="termRow" style="display:flex;gap:10px;align-items:center;padding:10px 14px;border:1px solid rgba(255,255,255,.14);border-radius:16px;background:rgba(255,255,255,.07);backdrop-filter:saturate(180%) blur(20px);-webkit-backdrop-filter:saturate(180%) blur(20px);box-shadow:0 6px 24px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.1)">
-  <span style="font-weight:600">Terminal</span>
-  <span style="opacity:.6;font-size:12px">runner · audit-logged · SYSTEM / INTERACTIVE</span>
-  <button id="btnTermOpen" style="margin-left:auto;background:linear-gradient(180deg,#4f8cff,#2f6bff);color:#fff;border:1px solid rgba(255,255,255,.3);border-radius:10px;padding:6px 14px;cursor:pointer"><svg class="ic" aria-hidden="true"><use href="#i-terminal"/></svg>Open Terminal</button>
-  <code id="termUrl" style="opacity:.75;font-size:11px;max-width:44%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></code>
-  <button id="btnTermCopy" style="background:rgba(255,255,255,.12);color:inherit;border:1px solid rgba(255,255,255,.16);border-radius:10px;padding:6px 10px;cursor:pointer">copy</button>
-</div>
+
+<p class="sin-sample" lang="si" id="sinhalaSample" style="max-width:1280px;margin:0 auto;padding:0 16px 24px">සිංහල සහය: මෙම පාලක පුවරුව සිංහල අකුරු නිවැරදිව පෙන්වයි (Noto Sans Sinhala අකුරු සමඟ).</p>
+
+<footer class="bottom-bar glass tier-bar" id="bottomBar">
+  <span class="bb-item">RUNNER ELAPSED <span class="bb-val" id="timerElapsed">--:--:--</span></span>
+  <span class="bb-item">REMAINING <span class="bb-val" id="timerRemaining">--:--:--</span></span>
+  <span class="bb-item">RDP USAGE <span class="bb-val" id="timerRdpUsage">--:--:--</span><span class="badge" id="usageState">--</span><span class="badge" id="c2SrvBottom">srv --</span></span>
+  <span class="bb-item">LAST LOGON <span class="bb-val" id="lastRdpLogon">not reported yet</span></span>
+  <span class="bb-item">CLOCK <span class="bb-val" id="bottomClock">--:--:--</span></span>
+</footer>
+
+<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+<div class="drawer-scrim" id="drawerScrim" onclick="closeDrawer()"></div>
+<aside class="drawer" id="drawer" aria-hidden="true">
+  <header>
+    <h3>Diagnostics</h3>
+    <button onclick="doDiag()" title="refresh">refresh</button>
+    <button onclick="copyText((document.getElementById('diagBox')||{}).textContent||'',this)">copy</button>
+    <button onclick="closeDrawer()">close</button>
+  </header>
+  <div class="body"><pre id="diagBox">click Refresh to run /diag on the server.</pre></div>
+</aside>
+
 <script>
+
 (function(){
   function setup(){
     fetch('/api/config',{cache:'no-store'}).then(function(r){return r.json();}).then(function(cf){
@@ -871,69 +893,10 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   }
   setup(); setInterval(setup,5000);
 })();
+
 </script>
-  <div class="row"><span class="k">Telegraph</span><a id="telegraphLink" href="javascript:void(0)">__TELEGRAPH__</a><button onclick="copyText(document.getElementById('telegraphLink').textContent,this)">copy</button></div>
-  <div class="row"><span class="k">Current key</span><span class="v" id="mirrorKey">__MIRRORKEY__</span><button onclick="copyById('mirrorKey',this)">copy</button><span class="note">decrypt key for THIS run's uploads</span></div>
-  <div class="row" id="decryptRow" style="display:none"><span class="k">Decryptor</span><a id="decryptLink" href="javascript:void(0)" target="_blank">-</a><button onclick="copyText(document.getElementById('decryptLink').href,this)">copy</button></div>
-  <div class="row" id="archiveRow" style="display:none"><span class="k">Archive</span><a id="archiveLink" href="javascript:void(0)" target="_blank">-</a><button onclick="copyText(document.getElementById('archiveLink').href,this)">copy</button></div>
-  <div class="row" id="searchRow" style="display:none"><span class="k">File Search</span><a id="searchLink" href="javascript:void(0)" target="_blank">-</a><button onclick="copyText(document.getElementById('searchLink').href,this)">copy</button></div>
-  <div class="row" id="explorerRow" style="display:none"><span class="k">Explorer (Win11)</span><a id="explorerLink" href="javascript:void(0)" target="_blank">-</a><button onclick="copyText(document.getElementById('explorerLink').href,this)">copy</button></div>
-</section>
-<div class="grid">
-<section class="glass" id="sec-mirror">
-  <div class="sec-head"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-database"/></svg><h2>Mirror - AES-256 encrypted upload</h2></div>
-  <div class="active" aria-label="active file">
-    <div class="head"><span class="name" id="activeName">idle - no active file</span><span class="phase" id="activePhase">-</span></div>
-    <div class="bar" title="active file progress"><i id="activeBar" style="width:0%"></i></div>
-    <div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--mut);margin-top:6px;font-variant-numeric:tabular-nums">
-      <span id="activeBytes">0 B / 0 B</span><span id="activePct">0%</span>
-    </div>
-  </div>
-  <div class="spark-wrap">
-    <div class="head"><span class="lab">Speed history - last 90 samples (7.5 min @ 5s)</span><span class="val" id="sparkNow">0 B/s</span></div>
-    <canvas class="spark" id="sparkline" width="800" height="112"></canvas>
-  </div>
-  <div class="pub"><span class="pdot" id="pubDot"></span><span class="txt" id="pubTxt">Publish status: unknown</span></div>
-  <div class="roots" id="rootsWrap" aria-label="per-root telemetry"></div>
-  <div class="act">
-    <button class="primary" onclick="doFlush(this)"><svg class="ic" aria-hidden="true"><use href="#i-upload"/></svg>Upload everything now</button>
-    <button onclick="doLaunch(this)"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg>Start watcher</button>
-    <button onclick="doDiag()"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>Diagnose</button>
-    <button onclick="copyAllLinks(this)"><svg class="ic" aria-hidden="true"><use href="#i-copy"/></svg>Copy all links</button>
-  </div>
-  <div class="tbl-wrap"><div class="tbl-scroll">
-    <table>
-      <thead><tr><th>file</th><th>phase</th><th style="min-width:120px">progress</th><th>size</th><th>status</th><th>error</th><th>link</th></tr></thead>
-      <tbody id="fileRows"><tr><td colspan="7" style="color:var(--mut);text-align:center;padding:18px">waiting for watcher...</td></tr></tbody>
-    </table>
-  </div></div>
-</section>
-<section class="glass" id="sec-log">
-  <div class="logwrap">
-    <div class="head"><span class="log-title"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-file-text"/></svg>Live log - last 200 lines</span>
-      <div style="display:flex;gap:6px">
-        <button onclick="copyLog(this)" title="copy log">copy</button>
-        <button onclick="toggleLogPause(this)" id="logPauseBtn" title="pause auto-scroll">pause</button>
-      </div>
-    </div>
-    <pre class="box" id="logBox" tabindex="0"></pre>
-  </div>
-</section>
-</div>
-<p class="sin-sample" lang="si" id="sinhalaSample">සිංහල සහය: මෙම පාලක පුවරුව සිංහල අකුරු නිවැරදිව පෙන්වයි (Noto Sans Sinhala අකුරු සමඟ).</p>
-</main>
-<div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
-<div class="drawer-scrim" id="drawerScrim" onclick="closeDrawer()"></div>
-<aside class="drawer" id="drawer" aria-hidden="true">
-  <header>
-    <h3>Diagnostics</h3>
-    <button onclick="doDiag()" title="refresh">refresh</button>
-    <button onclick="copyText((document.getElementById('diagBox')||{}).textContent||'',this)">copy</button>
-    <button onclick="closeDrawer()">close</button>
-  </header>
-  <div class="body"><pre id="diagBox">click Refresh to run /diag on the server.</pre></div>
-</aside>
 <script>
+
 var lastData=null,lostCount=0,ws=null,wsTimer=null,wsAlive=false,pollTimer=null,wsLive=false;
 var clockOffsetMs=0,runStartedAtMs=null,sessionStartedAtMs=null;
 var speedHist=[],logPaused=false,firstRenderDone=false,ghrdpUrl='';
@@ -1250,12 +1213,14 @@ setInterval(function(){
   }).catch(function(){ samples.push(null); if(samples.length>60)samples.shift(); paint(null); });
 },2000);
 })();
+
 </script>
 <script>
+
 (function(){
 function cr(id){return document.getElementById(id)}
 ['connRtt','connVia','connBadge','connFps','connJit','connSpark'].forEach(function(id){var e=cr(id);if(e){var r=e.closest('.row');if(r)r.style.display='none';}});
-var mstsc=cr('mstscVal');if(mstsc){var row=mstsc.closest('.row');if(row){var nr=document.createElement('div');nr.className='row';nr.innerHTML='<span class="k">Connectivity</span><span class="timer" id="c2Rtt" style="font-size:20px">-- ms</span><span class="badge" id="c2Via">path: --</span><span class="badge" id="c2Fps">-- fps</span><span class="badge" id="c2Jit">jit -- ms</span><canvas id="c2Spark" width="220" height="34" style="width:220px;height:34px"></canvas>';row.insertAdjacentElement('afterend',nr);}}
+var mstsc=cr('mstscVal');if(mstsc&&!cr('c2Rtt')){var row=mstsc.closest('.row');if(row){var nr=document.createElement('div');nr.className='row';nr.innerHTML='<span class=\"k\">Connectivity</span><span class=\"timer\" id=\'c2Rtt\' style=\"font-size:20px\">-- ms</span><span class=\"badge\" id=\'c2Via\'>path: --</span><span class=\"badge\" id=\'c2Fps\'>-- fps</span><span class=\"badge\" id=\'c2Jit\'>jit -- ms</span><canvas id=\'c2Spark\' width=\"220\" height=\"34\" style=\"width:220px;height:34px\"></canvas>';row.insertAdjacentElement('afterend',nr);}}
 var frames=0,fps=0,lastT=performance.now();
 function raf(t){frames++;if(t-lastT>=1000){fps=Math.round(frames*1000/(t-lastT));frames=0;lastT=t;}requestAnimationFrame(raf);}
 requestAnimationFrame(raf);
@@ -1275,8 +1240,10 @@ setInterval(function(){
 },1000);
 paint();
 })();
+
 </script>
 <script>
+
 (function(){
 // VPS-only native flow: dashboard bearer header -> short-lived rid ->
 // ghrdp:connect?rid=<rid> -> locally pinned executable -> POST redemption ->
@@ -2786,8 +2753,10 @@ if(btn) btn.onclick=function(ev){
  })();
 };
 })();
+
 </script>
 <script>
+
 (function(){
 // [F11-3 §3] RDP USAGE ticker (replaces the logon-age headline): ticks only
 // while the server reports an ACTIVE usage window (RDP session connected or a
@@ -2804,9 +2773,10 @@ setInterval(function(){
  if(b){el.textContent=fmt(b.sec+(Date.now()-b.at)/1000);el.style.color='';}
 },1000);
 })();
-</script>
+
 </script>
 <script>
+
 (function(){
 // [F39 §1] theme system: <html data-theme=dark|light>, persisted localStorage['ghrdp:theme'], default dark
 // aurora background variant per theme; ALL colors as custom properties so gates can compute AA per theme.
@@ -2866,6 +2836,31 @@ try{
   }
 }catch(e){}
 })();
+
 </script>
+
+
+<script>
+// F40 bottom clock mirror + tile sync
+(function(){
+  function updBottom(){
+    var pc=document.getElementById('pillClock');
+    var bc=document.getElementById('bottomClock');
+    if(pc && bc){ bc.textContent=pc.textContent.replace('clock:','').trim(); }
+  }
+  setInterval(updBottom,1000);
+  function syncMirrorDup(){
+    var pairs=[['stDone','stDoneTile'],['stFailed','stFailedTile'],['stBytes','stBytesTile'],['stSpeed','stSpeedTile'],['stScans','stScansTile'],['stEta','stEtaTile'],['stBytesSub','stBytesSubTile'],['stScansSub','stScansSubTile']];
+    for(var i=0;i<pairs.length;i++){
+      var a=document.getElementById(pairs[i][0]), b=document.getElementById(pairs[i][1]);
+      if(a && b && a.textContent!==b.textContent){ b.textContent=a.textContent; }
+    }
+    var c2=document.getElementById('c2Srv'), c2b=document.getElementById('c2SrvBottom');
+    if(c2 && c2b) c2b.textContent=c2.textContent;
+  }
+  setInterval(syncMirrorDup,1000);
+})();
+</script>
+
 </body>
 </html>
