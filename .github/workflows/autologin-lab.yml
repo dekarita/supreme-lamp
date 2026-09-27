@@ -535,10 +535,12 @@ jobs:
           # diagnosis. This cell passes only if servedThumb==boundThumb.
           . (Join-Path $env:GITHUB_WORKSPACE 'payloads/rdp-telescope.ps1')
           function Write-Telescope([string]$Label) {
-              $t = Invoke-RdpTelescope -Name $fqdn -TargetHost '127.0.0.1' -Trace ('lab-R-' + $Label) -ScopeName 'server'
+              try {
+                  $t = Invoke-RdpTelescope -Name $fqdn -TargetHost '127.0.0.1' -Trace ('lab-R-' + $Label) -ScopeName 'server'
+              } catch { R-Fail 'telescope-error' ('the telescope itself threw (no diagnosis possible): ' + $_.Exception.Message) }
               $txt = Format-RdpTelescopeSummary -T $t
               Write-Host ('[R] TELESCOPE ' + $Label + ":`n" + $txt)
-              try { ('### TELESCOPE ' + $Label + "`n```n" + $txt + "`n```") | Add-Content -Path $env:GITHUB_STEP_SUMMARY } catch { }
+              try { (('### TELESCOPE ' + $Label) + "`n" + '```' + "`n" + $txt + "`n" + '```') | Add-Content -Path $env:GITHUB_STEP_SUMMARY } catch { }
               try { ($t | ConvertTo-Json -Depth 8 -Compress) | Out-File (Join-Path $diag ('telescope-' + $Label + '.json')) -Encoding utf8 } catch { }
               return $t
           }

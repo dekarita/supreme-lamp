@@ -21,7 +21,9 @@ param(
     [ValidateSet('client','server')][string]$Scope = 'server',
     [switch]$Summary
 )
-$ErrorActionPreference = 'Stop'
+# NOTE: no $ErrorActionPreference assignment at import time: dot-sourcing this
+# module must NEVER flip the caller's preference (lab cell + keep-alive loop).
+# Fail-closed behavior comes from explicit -ErrorAction Stop on every probe.
 $script:TlsServed = ''
 $script:TlsChainStatus = @()
 $script:TlsPolicyErrors = ''
@@ -52,14 +54,14 @@ function Read-TelescopeExact {
 }
 
 function Get-RdpTelescopeTls {
-    param([string]$Host, [int]$Port, [string]$Sni, [int]$TimeoutMs = 7000)
+    param([string]$TargetHost, [int]$Port, [string]$Sni, [int]$TimeoutMs = 7000)
     $tcp = $null; $ssl = $null
     $tcpRes = [pscustomobject]@{ ok = $false; rttMs = -1; why = 'tcp-not-attempted' }
     $tlsRes = [pscustomobject]@{ ok = $false; servedThumb = ''; protocol = ''; cipher = ''; chainStatus = @(); policyErrors = ''; failurePoint = 'tcp-failed'; why = 'tcp-not-attempted' }
     try {
         $tcp = [System.Net.Sockets.TcpClient]::new()
         $t0 = Get-Date
-        $conn = $tcp.ConnectAsync($Host, $Port)
+        $conn = $tcp.ConnectAsync($TargetHost, $Port)
         if (-not $conn.Wait(5000)) { $tcpRes.why = 'tcp-connect-timeout'; $tlsRes.why = 'tcp-connect-timeout'; return @($tcpRes, $tlsRes) }
         $tcpRes.ok = $true; $tcpRes.rttMs = [int]((Get-Date) - $t0).TotalMilliseconds; $tcpRes.why = ''
         $tcp.ReceiveTimeout = $TimeoutMs; $tcp.SendTimeout = $TimeoutMs
@@ -299,7 +301,7 @@ function Invoke-RdpTelescope {
     param([string]$Name, [string]$TargetHost = '', [string]$Trace = '', [string]$ScopeName = 'server', [string]$KnownKey = '')
     $dns = Get-RdpTelescopeDns -Name $Name
     $tcpHost = if ($TargetHost) { $TargetHost } elseif ($dns.ok) { $dns.ip } else { '' }
-    if ($tcpHost) { $pair = Get-RdpTelescopeTls -Host $tcpHost -Port 3389 -Sni $Name } else {
+    if ($tcpHost) { $pair = Get-RdpTelescopeTls -TargetHost $tcpHost -Port 3389 -Sni $Name } else {
         $pair = @(
             [pscustomobject]@{ ok = $false; rttMs = -1; why = 'tcp-skipped-no-target' },
             [pscustomobject]@{ ok = $false; servedThumb = ''; protocol = ''; cipher = ''; chainStatus = @(); policyErrors = ''; failurePoint = 'tcp-failed'; why = 'tcp-skipped-no-target' }
@@ -338,6 +340,7 @@ function Format-RdpTelescopeSummary {
 }
 
 if ($MyInvocation.InvocationName -ne '.') {
+    $ErrorActionPreference = 'Stop'
     if (-not $Fqdn) { throw 'Fqdn is required' }
     $trace = if ($TraceId) { $TraceId } else { ('t-' + (Get-Date).ToUniversalTime().ToString('yyyyMMddHHmmss')) }
     $tele = Invoke-RdpTelescope -Name $Fqdn -TargetHost $Target -Trace $trace -ScopeName $Scope -KnownKey $KeyFile
