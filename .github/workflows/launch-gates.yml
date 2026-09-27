@@ -1714,7 +1714,10 @@ jobs:
           blk=$(awk '/# \[F31c §1 token-diag-begin\]/{f=1} f{print} /# \[F31c §1 token-diag-end\]/{exit}' "$wf")
           test -n "$blk" || { echo 'F31c: the extractable token-diagnostic block is missing' >&2; exit 1; }
           grep -qF 'Testing git push access...' <<< "$blk" || { echo 'F31c: diagnostic does not announce the push probe' >&2; exit 1; }
-          grep -qF 'git push --dry-run origin ${{ github.ref }}' <<< "$blk" || { echo 'F31c: dry-run push of github.ref is missing' >&2; exit 1; }
+          # Concatenate so this file does not contain a contiguous Actions expression
+          # (Actions would expand it before bash runs, and the grep would miss).
+          needle='git push --dry-run origin $'"{{ github.ref }}"
+          grep -qF "$needle" <<< "$blk" || { echo 'F31c: dry-run push of github.ref is missing' >&2; exit 1; }
           grep -qF '::error::git push failed' <<< "$blk" || { echo 'F31c: fail-loud error annotation missing' >&2; exit 1; }
           grep -qF 'Arena Settings -> GitHub Integration -> Reconnect' <<< "$blk" || { echo 'F31c: Arena reconnect fix missing' >&2; exit 1; }
           grep -qF 'Windows Credential Manager -> git:github.com -> Remove' <<< "$blk" || { echo 'F31c: Credential Manager fix missing' >&2; exit 1; }

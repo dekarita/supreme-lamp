@@ -2015,7 +2015,10 @@ jobs:
           $a = $wf.IndexOf('# [F31c §1 token-diag-begin]')
           $b = $wf.IndexOf('# [F31c §1 token-diag-end]')
           if ($a -lt 0 -or $b -le $a) { Y-Fail 'extract' 'the F31c token-diagnostic markers are missing from main.yml' }
-          $block = $wf.Substring($a, $b - $a).Replace('${{ github.ref }}', 'refs/heads/f31c-lab')
+          # Build the needle at runtime. A contiguous Actions expression in this
+          # file would be expanded before pwsh runs, and the replace would miss.
+          $needle = '$' + '{{ github.ref }}'
+          $block = $wf.Substring($a, $b - $a).Replace($needle, 'refs/heads/f31c-lab')
           $errors = $null
           $null = [System.Management.Automation.Language.Parser]::ParseInput($block, [ref]$null, [ref]$errors)
           if ($errors -and $errors.Count -gt 0) { Y-Fail 'parse' ('the diagnostic block has ' + $errors.Count + ' syntax error(s): ' + $errors[0].Message) }
