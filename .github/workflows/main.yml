@@ -707,28 +707,23 @@ jobs:
           $thumb = ''
           try {
               $loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile($crtPath, $keyPath)
+              if (-not $loaded.HasPrivateKey) { throw 'PEM has no private key' }
               $pfxBytes = $loaded.Export('Pfx', [string]::Empty)
-              $flags = 'PersistKeySet,MachineKeySet,Exportable'
+              $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet -bor
+                       [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor
+                       [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
               $imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, [string]::Empty, $flags)
+              if (-not $imported.HasPrivateKey) { throw 're-imported certificate has no private key' }
               $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
-              $store.Open('ReadWrite')
-              foreach ($old in @($store.Certificates | Where-Object { $_.Subject -match [regex]::Escape($fqdn) })) { $store.Remove($old) }
-              $store.Add($imported)
-              $store.Close()
-              $thumb = $imported.Thumbprint
               try {
-                  $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported)
-                  if ($rsa -and $rsa.Key -and $rsa.Key.UniqueName) {
-                      $machineKeys = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
-                      $keyFile = Join-Path $machineKeys $rsa.Key.UniqueName
-                      if (Test-Path -LiteralPath $keyFile) {
-                          $acl = Get-Acl -Path $keyFile
-                          $rule = New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\NETWORK SERVICE', 'Read', 'Allow')
-                          $acl.AddAccessRule($rule)
-                          Set-Acl -Path $keyFile -AclObject $acl
-                      }
-                  }
-              } catch { Write-Host ('[cert] key ACL step skipped: ' + $_.Exception.Message) }
+                  $store.Open('ReadWrite')
+                  $store.Add($imported)
+              } finally { $store.Close() }
+              $thumb = $imported.Thumbprint
+              # [F31] Resolve the actual persisted container, not an assumed RSA\MachineKeys path.
+              # Throws on missing file, failed write or missing readback ACE; never bind a broken key.
+              $keyFile = & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Grant-RdpKeyAccess.ps1') -Certificate $imported
+              Write-Host ('[cert] NETWORK SERVICE Read + SYSTEM FullControl verified; container=' + $keyFile)
           } catch {
               # [F12-2] fail-closed: an import failure used to exit 0 and leave
               # certBound = NO on a green run.
@@ -758,9 +753,11 @@ jobs:
           $boundHex = ''
           try { $bound = (Get-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -ErrorAction Stop).SSLCertificateSHA1Hash; $boundHex = ($bound | ForEach-Object { $_.ToString('X2') }) -join '' } catch { }
           if ($boundHex -ieq $thumb) {
-              Write-Host ('[cert] OK: cert ' + $thumb + ' bound on RDP-Tcp; NLA=1')
-              try { Restart-Service TermService -Force -ErrorAction SilentlyContinue; Write-Host '[cert] TermService restarted' } catch { }
-              if ($S) { '### RDP cert bind OK' | Add-Content -Path $S; ('Thumbprint: `' + $thumb + '`') | Add-Content -Path $S }
+              if ((Get-ItemProperty -Path $rdpKey -Name 'UserAuthentication' -ErrorAction Stop).UserAuthentication -ne 1) { throw 'NLA changed after cert binding' }
+              Restart-Service TermService -Force -ErrorAction Stop
+              if ((Get-Service TermService -ErrorAction Stop).Status -ne 'Running') { throw 'TermService failed to restart' }
+              Write-Host ('[cert] OK: cert ' + $thumb + ' bound on RDP-Tcp; NLA=1; TermService restarted')
+              if ($S) { '### RDP cert bind OK (ACL verified; handshake pending F17)' | Add-Content -Path $S; ('Thumbprint: `' + $thumb + '`') | Add-Content -Path $S }
           } else {
               # [F12-2] A verification mismatch is a FAILED bind, not a notice:
               # the old branch wrote a summary line and exited 0, which is how a
@@ -2006,6 +2003,16 @@ jobs:
           # (5) nla: UserAuthentication == 1 on RDP-Tcp
           $nla = $false
           try { $nla = ((Get-ItemProperty -Path $rdpKeyF17 -Name 'UserAuthentication' -ErrorAction Stop).UserAuthentication -eq 1) } catch { $nla = $false }
+          # [F31] TCP-open is not enough: prove X.224 negotiation AND TLS serves the bound cert.
+          $listenerHandshakeOk = $false; $listenerHandshakeWhy = ''
+          if ($certThumb -and $certOk -and $listening) {
+              try {
+                  $keyF17 = & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Grant-RdpKeyAccess.ps1') -Certificate $boundF17 -VerifyOnly
+                  & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Test-RdpListenerHandshake.ps1') -Fqdn $dnsName -ExpectedThumb $certThumb -KeyFile $keyF17
+                  $listenerHandshakeOk = $true
+                  Write-Host '[F31] listener-handshake-ok: served==bound; X.224+TLS completed'
+              } catch { $listenerHandshakeWhy = $_.Exception.Message; Write-Host ('::error::[F31] listener handshake failed: ' + $listenerHandshakeWhy) }
+          } else { $listenerHandshakeWhy = 'no listening listener or valid bound certificate' }
           # Write rdpListener BEFORE any loud fail: the dashboard must see the
           # exact failing field even on a red run.
           $rdpListener = [ordered]@{
@@ -2023,8 +2030,10 @@ jobs:
               certChainStatus = $certChainStatus
               certOk = $certOk
               certWhy = $certWhy
+              listenerHandshakeOk = $listenerHandshakeOk
+              listenerHandshakeWhy = $listenerHandshakeWhy
               nla = $nla
-              ok = ($listening -and $fwRuleOk -and $certOk)
+              ok = ($listening -and $fwRuleOk -and $certOk -and $listenerHandshakeOk)
           }
           # [F24 §3b] PRESERVE the auth-verdict fields across this rebuild. The
           # F21 step runs EARLIER and stamps credsspStatus onto rdpListener, but
@@ -2058,6 +2067,7 @@ jobs:
           if (-not $listening) { $dead += 'listening=false (nothing accepted TCP 127.0.0.1:3389; TermService=' + $termStatus + ')' }
           if (-not $fwRuleOk) { $dead += 'fwRule=false (enabled/Any/100.64.0.0/10 not verified; scope=' + $fwScope + ' profile=' + $fwProfiles + '; ' + $fwWhy + ')' }
           if (-not $certOk) { $dead += 'certThumb invalid (' + $certWhy + ')' }
+          if (-not $listenerHandshakeOk) { $dead += 'listenerHandshakeOk=false (' + $listenerHandshakeWhy + ')' }
           if ($dead.Count -gt 0) {
               Write-Host ('::error::[F17] RDP listener probe FAILED: ' + ($dead -join ' | '))
               if ($S) {
