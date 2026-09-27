@@ -2081,6 +2081,8 @@ jobs:
           grep -qF '$script:UiV2Path' payloads/ghrdp-server.ps1
           grep -qF 'ui-v2.html' payloads/ghrdp-server.ps1
           grep -qF 'ui-v2.html' .github/workflows/main.yml
+          grep -qF 'ui-v2.html staging failed - build artifact missing' .github/workflows/main.yml
+          grep -qF "-replace '\\?', '&'" payloads/ghrdp-server.ps1
           pnpm exec vitest run
       - name: F41 v2 e2e (playwright, real bundle)
         run: |

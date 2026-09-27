@@ -171,7 +171,10 @@ function Get-RequestParts {
             $qAt = $target.IndexOf('?')
             if ($qAt -ge 0) {
                 $path = $target.Substring(0, $qAt)
-                foreach ($kv in ($target.Substring($qAt + 1) -split '&')) {
+                $rawQuery = $target.Substring($qAt + 1)
+                # [F42 §1] normalize second '?' (and any literal '?') to '&' before split
+                $rawQuery = $rawQuery -replace '\?', '&'
+                foreach ($kv in ($rawQuery -split '&')) {
                     $eq = $kv.IndexOf('=')
                     if ($eq -gt 0) {
                         $k = [uri]::UnescapeDataString($kv.Substring(0, $eq)).ToLower()
@@ -2358,8 +2361,19 @@ boot();
             $wantV2 = $script:UiV2Default -or ($uiSel -eq 'v2')
             if ($uiSel -eq 'v1') { $wantV2 = $false }
             $uiFile = $script:UiPath
-            if ($wantV2 -and (Test-Path -LiteralPath $script:UiV2Path)) { $uiFile = $script:UiV2Path }
+            $banner = ''
+            $missingV2 = $false
+            if ($wantV2) {
+                if (Test-Path -LiteralPath $script:UiV2Path) {
+                    $uiFile = $script:UiV2Path
+                } else {
+                    $missingV2 = $true
+                    $banner = '<div style="background:#b00;color:#fff;padding:12px;font-family:sans-serif;font-weight:bold;text-align:center;">ui-v2.html not staged in this run - main.yml stage step failed; re-dispatch or check CI</div>'
+                    Write-Host '[F42] ui-v2.html missing - banner injected; ui=v2 requested; main.yml stage step failed'
+                }
+            }
             try { $html = [System.IO.File]::ReadAllText($uiFile, [System.Text.Encoding]::UTF8) } catch { }
+            if ($missingV2 -and $html) { $html = $banner + $html }
             $ip = ''; $tg = ''
             if ($cfg) {
                 $ip = [string]$cfg.rdpIp
