@@ -11,13 +11,14 @@ jobs:
       - name: F19 gate with debug
         shell: bash
         run: |
-          set -euxo pipefail
+          set +e
           ui=payloads/ui.html
           cs=payloads/ghrdp-rdp-launcher.cs
           srv=payloads/ghrdp-server.ps1
           wf=.github/workflows/main.yml
           mig=docs/MIGRATION.md
           exec > /tmp/f19_full.log 2>&1
+          set -x
           echo "=== file sizes ==="
           wc -c payloads/ui.html
           echo "=== grep for clientDnsRow ==="
@@ -25,7 +26,6 @@ jobs:
           echo "=== grep for F19 markers ==="
           grep -n "F19 §1" payloads/ui.html || echo "not found"
           echo "=== running full F19 gate ==="
-          # copy-paste from launch-gates.yml F19
           if grep -rInE 'SendKeys|UIAutomation|AutomationElement|ValuePattern|keybd_event|mouse_event|SetCursorPos|AppActivate' payloads docs tests .github/workflows/main.yml .github/workflows/autologin-lab.yml .github/workflows/webdesk-lab.yml .github/workflows/apply-patch.yml; then
             echo 'F19: credential-UI automation token found' >&2
             exit 1
@@ -110,11 +110,26 @@ jobs:
           grep -qF -- "-ArgumentList '--dns-selftest'" .github/workflows/launch-gates.yml
           grep -qF -- '$p.WaitForExit()' .github/workflows/launch-gates.yml
           echo 'F19 gates PASS'
+          echo "EXIT_CODE=$?" > /tmp/exit_code.txt
+        continue-on-error: true
+      - name: Show log
+        if: always()
+        shell: bash
+        run: |
+          cat /tmp/f19_full.log || echo "no log"
+          echo "--- exit code file ---"
+          cat /tmp/exit_code.txt || echo "no exit code"
+          # also post to step summary
+          echo "## F19 Debug Log" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/f19_full.log >> $GITHUB_STEP_SUMMARY || echo "no log" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
       - name: Upload debug
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: f19-debug
           path: |
+            /tmp/f19_full.log
+            /tmp/exit_code.txt
             payloads/ui.html
-            /tmp/*.log
