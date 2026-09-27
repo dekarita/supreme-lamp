@@ -2076,12 +2076,18 @@ jobs:
           node scripts/check-regression-ids.mjs
           node scripts/check-no-neon-green.mjs ui/dist/index.html
           node scripts/check-bottom-bar-time.mjs
-          # F41 flag contract: default OFF, opt-in ?ui=v2, staged file ui-v2.html
-          grep -qF '$script:UiV2Default = $false' payloads/ghrdp-server.ps1
+          # [F43] flag contract: DEFAULT ON (v2), ?ui=v1 escape, staged ui-v2.html
+          grep -qF '$script:UiV2Default = $true' payloads/ghrdp-server.ps1
           grep -qF '$script:UiV2Path' payloads/ghrdp-server.ps1
           grep -qF 'ui-v2.html' payloads/ghrdp-server.ps1
           grep -qF 'ui-v2.html' .github/workflows/main.yml
           grep -qF 'ui-v2.html staging failed - build artifact missing' .github/workflows/main.yml
+          # [F43] build-ui job must exist in main.yml (root-cause fix)
+          grep -qE '^[[:space:]]+build-ui:' .github/workflows/main.yml
+          grep -qF 'needs: [build-ui]' .github/workflows/main.yml
+          grep -qF 'actions/download-artifact' .github/workflows/main.yml
+          grep -qF 'name: dist-ui' .github/workflows/main.yml
+          grep -qF 'if ($v2len -le 51200) { throw' .github/workflows/main.yml
           pnpm exec vitest run
       - name: F41 v2 e2e (playwright, real bundle)
         run: |
@@ -2136,6 +2142,48 @@ jobs:
           node scripts/check-regression-ids.mjs
           test "$(grep -c 'const BASELINE_IDS' tests/f38-ui-glass.test.js)" -eq 1
           echo 'F42 gates PASS: query=normalized, staging=fail-visible, links=correct'
+      # [F43] build-ui in main.yml + DEFAULT-v2 cutover + Classic UI escape.
+      - name: F43 build-ui wiring + default-v2 cutover gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          srv=payloads/ghrdp-server.ps1
+          # §1.4 gate greps: build-ui job + needs + download-artifact + size assert
+          grep -qE '^[[:space:]]+build-ui:' "$wf"
+          grep -qF 'needs: [build-ui]' "$wf"
+          grep -qF 'actions/download-artifact' "$wf"
+          grep -qF 'name: dist-ui' "$wf"
+          grep -qF 'actions: write' "$wf"
+          grep -qF 'if ($v2len -le 51200) { throw' "$wf"
+          grep -qF "throw 'ui-v2.html staging failed - build artifact missing'" "$wf"
+          # download-artifact must appear BEFORE the Stage files step
+          dl=$(grep -nF 'actions/download-artifact' "$wf" | head -1 | cut -d: -f1)
+          st=$(grep -nF 'Stage files + write config.json' "$wf" | head -1 | cut -d: -f1)
+          test -n "$dl" && test -n "$st" && test "$dl" -lt "$st" || { echo 'F43: download-artifact must precede Stage files' >&2; exit 1; }
+          # no in-rdp pnpm build of the v2 bundle (moved to build-ui)
+          if awk '/name: Write deploy payloads/,/name: Build ghrdp-handler-kit/' "$wf" | grep -E 'pnpm (run )?build|pnpm install'; then
+            echo 'F43: rdp Write-deploy still builds ui in-job (must use dist-ui artifact)' >&2
+            exit 1
+          fi
+          # §2 default-v2 cutover
+          grep -qF '$script:UiV2Default = $true' "$srv"
+          if grep -qF '$script:UiV2Default = $false' "$srv"; then
+            echo 'F43: UiV2Default still false' >&2; exit 1
+          fi
+          # Classic UI escape in v2 TopBar (en+si i18n)
+          grep -qF 'classicUiLink' src/components/layout/AppShell.tsx
+          grep -qF 'classic-ui-link' src/components/layout/AppShell.tsx
+          grep -qF 'classicUi' src/i18n/en.json
+          grep -qF 'classicUi' src/i18n/si.json
+          # v1 still has Preview-v2
+          grep -qF 'id="v2PreviewLink"' payloads/ui.html
+          # node unit matrix for default-flag resolution
+          test -f tests/f43-default-v2.test.js
+          node --test tests/f43-default-v2.test.js
+          # 219-id lock still green under default-flag config (post-build above)
+          node scripts/check-regression-ids.mjs
+          echo 'F43 gates PASS: build-ui=in-main.yml, default=v2, escape=v1, banner=fail-visible, ids=locked'
   windows-native:
     runs-on: windows-latest
     steps:

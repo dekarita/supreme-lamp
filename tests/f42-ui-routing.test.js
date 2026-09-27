@@ -97,9 +97,17 @@ test('F42-4 main.yml stage step halts loudly when ui-v2.html is missing/truncate
   assert.ok(wf.includes("if (-not (Test-Path -LiteralPath $v2p)) { throw 'ui-v2.html staging failed - build artifact missing' }"),
     'existence assert (Test-Path + throw) missing');
   assert.ok(wf.includes('if ($v2len -le 51200) { throw'), 'a size assert (> 50KB) is missing');
-  // the assert must sit AFTER the copy of ui/dist/index.html -> ui-v2.html
-  assert.ok(wf.indexOf('cp ui/dist/index.html "$RUNNER_TEMP/ghrdp-stage/ui-v2.html"') < wf.indexOf('$v2len = (Get-Item -LiteralPath $v2p).Length'),
-    'the assert must run after the artifact is staged');
+  // [F43] the assert must sit AFTER the dist-ui download/copy lands ui-v2.html
+  const assertAt = wf.indexOf('$v2len = (Get-Item -LiteralPath $v2p).Length');
+  const dlAt = wf.indexOf('actions/download-artifact');
+  const copyAt = Math.max(
+    wf.indexOf("Copy-Item -LiteralPath $src -Destination $v2p"),
+    wf.indexOf('cp ui/dist/index.html'),
+  );
+  assert.ok(assertAt > 0, 'size assert site missing');
+  assert.ok(dlAt > 0 || copyAt > 0, 'no staging source (download-artifact or cp) found');
+  if (dlAt > 0) assert.ok(dlAt < assertAt, 'download-artifact must run before the size assert');
+  if (copyAt > 0) assert.ok(copyAt < assertAt, 'the copy onto ui-v2.html must run before the size assert');
 });
 
 // --- §3 v1 link builder ------------------------------------------------------

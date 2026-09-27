@@ -8,14 +8,13 @@ $ErrorActionPreference = 'Continue'
 $script:CfgPath = Join-Path $Root 'config.json'
 $script:ProgPath = Join-Path $Root 'progress.json'
 $script:UiPath = Join-Path $Root 'ui.html'
-# [F41 P1] v2 dashboard bundle, OPT-IN only. Default stays v1 until the operator
-# flips $script:UiV2Default (P4 cutover). Routing contract:
+# [F43] v2 dashboard is the DEFAULT UI. Routing contract (fail-visible):
+#   /?ui=v1  -> always serve v1 ui.html (one-release Classic UI escape)
 #   /?ui=v2  -> serve ui-v2.html when staged; when NOT staged serve v1 PLUS the
 #               red uiV2MissingBanner (F42 §2: silent v1 fallback is forbidden)
-#   /?ui=v1  -> always serve v1 ui.html (one-release fallback after cutover)
-#   default  -> v1 while $script:UiV2Default is $false
+#   no param -> v2 (UiV2Default=$true); requested v2 but file missing -> v1 + banner
 $script:UiV2Path = Join-Path $Root 'ui-v2.html'
-$script:UiV2Default = $false
+$script:UiV2Default = $true
 $script:InstPath = Join-Path $Root 'ghrdp-install.ps1'
 # [F14 §2] the ONLY files GET /dl/<name> may serve. Exactly these three, never
 # more: they carry no secrets, so no dash token is required for them. Anything
@@ -2357,10 +2356,10 @@ boot();
             return
         }
         if (($path -eq '/') -or ($path -eq '/index.html')) {
-            # [F41 P1 / F42 §2] ui selection: default v1; ?ui=v2 opts into the
-            # v2 bundle (staged as ui-v2.html); ?ui=v1 pins v1. A missing v2
-            # file is fail-VISIBLE: v1 + the red uiV2MissingBanner, never a
-            # silent v1. No other query value changes the default.
+            # [F43 / F42 §2] ui selection: DEFAULT v2; ?ui=v1 pins classic v1;
+            # ?ui=v2 forces v2. A missing v2 file is fail-VISIBLE: v1 + the red
+            # uiV2MissingBanner, never a silent v1. No other query value changes
+            # the default.
             $html = '<h1>Mission Control UI file missing</h1>'
             $uiSel = ''
             try { if ($parts.query -and $parts.query.ContainsKey('ui')) { $uiSel = [string]$parts.query['ui'] } } catch { }
