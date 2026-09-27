@@ -122,9 +122,9 @@ jobs:
                   try { $tail = ((Get-Content $errLog -Tail 8 -ErrorAction SilentlyContinue) -join ' | ') } catch { }
                   F43-Fail 'listen' ('server never listened on 7395; stderr=[' + $tail + ']')
               }
-              $home = Get-F43Page '/'
-              if ($home -notmatch 'uiV2MissingBanner') { F43-Fail 'banner-default' 'default / did not inject the missing-v2 banner' }
-              if (-not $home.Contains($script:F43Banner)) { F43-Fail 'banner-text' 'banner text missing on default /' }
+              $rootPage = Get-F43Page '/'
+              if ($rootPage -notmatch 'uiV2MissingBanner') { F43-Fail 'banner-default' 'default / did not inject the missing-v2 banner' }
+              if (-not $rootPage.Contains($script:F43Banner)) { F43-Fail 'banner-text' 'banner text missing on default /' }
               $asked = Get-F43Page '/?ui=v2'
               if ($asked -notmatch 'uiV2MissingBanner' -or -not $asked.Contains($script:F43Banner)) { F43-Fail 'banner-v2' 'explicit ui=v2 missing-file did not banner' }
               $classic = Get-F43Page '/?ui=v1'
