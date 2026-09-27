@@ -2078,8 +2078,9 @@ jobs:
           node scripts/check-bottom-bar-time.mjs
           # F41 flag contract: default OFF, opt-in ?ui=v2, staged file ui-v2.html
           grep -qF '$script:UiV2Default = $false' payloads/ghrdp-server.ps1
-          grep -qF "Join-Path $Root 'ui-v2.html'" payloads/ghrdp-server.ps1
-          grep -qF "ui-v2.html" .github/workflows/main.yml
+          grep -qF '$script:UiV2Path' payloads/ghrdp-server.ps1
+          grep -qF 'ui-v2.html' payloads/ghrdp-server.ps1
+          grep -qF 'ui-v2.html' .github/workflows/main.yml
           pnpm exec vitest run
       - name: F41 v2 e2e (playwright, real bundle)
         run: |
