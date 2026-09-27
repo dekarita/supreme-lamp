@@ -203,6 +203,11 @@
       "si": "Sinhala",
       "shortSi": "සිං",
       "shortEn": "EN"
+    },
+    "classicUi": {
+      "label": "Classic UI",
+      "short": "Classic UI",
+      "title": "Open the classic v1 dashboard (one-release escape; v2 is the default)"
     }
   },
   "activity": {

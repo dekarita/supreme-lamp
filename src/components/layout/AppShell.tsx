@@ -20,6 +20,28 @@ function clockText(ms: number): string {
   return pad2(d.getHours()) + ":" + pad2(d.getMinutes()) + ":" + pad2(d.getSeconds());
 }
 
+// [F43] one-release escape to classic v1. Prefer a relative '?ui=v1' so the
+// ticket key is not required in the href; when the current URL already carries
+// a query, rebuild via URLSearchParams (never a second literal '?').
+function classicUiHref(base?: string): string {
+  try {
+    if (base == null && typeof location !== "undefined") {
+      const sp = new URLSearchParams(location.search || "");
+      sp.set("ui", "v1");
+      const q = sp.toString();
+      return q ? `?${q}` : "?ui=v1";
+    }
+    const raw = String(base || "?");
+    const qAt = raw.indexOf("?");
+    const norm = qAt >= 0 ? raw.slice(0, qAt + 1) + raw.slice(qAt + 1).replace(/\?/g, "&") : raw + "?";
+    const u = new URL(norm, "http://local.invalid");
+    u.searchParams.set("ui", "v1");
+    return "?" + u.searchParams.toString();
+  } catch {
+    return "?ui=v1";
+  }
+}
+
 function TopBar() {
   const { t } = useTranslation();
   const theme = useThemeStore((s) => s.theme);
@@ -73,6 +95,17 @@ function TopBar() {
         </Chip>
       </div>
       <div className="ml-auto flex items-center gap-1 shrink-0">
+        <a
+          id="classicUiLink"
+          data-testid="classic-ui-link"
+          href={classicUiHref()}
+          rel="noopener"
+          title={t("toggle.classicUi.title")}
+          aria-label={t("toggle.classicUi.label")}
+          className="px-2 py-1 text-xs font-medium rounded-md border border-default text-secondary hover:bg-raised hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent whitespace-nowrap"
+        >
+          {t("toggle.classicUi.short")}
+        </a>
         <button
           id="langToggle"
           type="button"

@@ -19,12 +19,46 @@ on:
         default: none
 
 permissions:
-  contents: write   # push docs/search.html from the watcher
+  contents: write   # push docs/search.html from the watcher (superset of read)
+  actions: write    # [F43] artifact upload/download for dist-ui (build-ui -> rdp)
   pages: write      # enable/configure GitHub Pages via API
   id-token: write   # optional, harmless; needed only if you later use OIDC
 
 jobs:
+  # [F43] Build the v2 dashboard on ubuntu IN PARALLEL with nothing else on the
+  # critical path except rdp's needs. Root cause of the F42 operator banner:
+  # vite build lived only in launch-gates; the production rdp job had no
+  # dist-ui artifact to stage, so ui-v2.html was absent on every dispatch.
+  build-ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build v2 single-file bundle
+        run: |
+          set -euo pipefail
+          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+          export VITE_BUILD_SHA="${GITHUB_SHA}"
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm run build
+          test -f ui/dist/index.html
+          node scripts/check-regression-ids.mjs
+          node scripts/check-no-neon-green.mjs ui/dist/index.html
+          node scripts/check-bottom-bar-time.mjs
+          LEN=$(wc -c < ui/dist/index.html)
+          echo "[F43] build-ui artifact bytes=$LEN"
+          if [ "$LEN" -le 51200 ]; then echo "ui-v2.html staging failed - build artifact missing"; exit 1; fi
+      - name: Upload dist-ui
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-ui
+          path: ui/dist/index.html
+          retention-days: 1
+          if-no-files-found: error
+
   rdp:
+    needs: [build-ui]
     runs-on: ${{ github.event.inputs.runner_target || 'windows-latest' }}
     timeout-minutes: 357
     env:
@@ -1604,26 +1638,10 @@ jobs:
           # [remediation] agent + enroll + accept payload staging removed (C2 client + acceptance-of-agent gone)
           # [remediation] acceptance + diag staging removed (agent-dependent probes deleted)
           ls -la "$RUNNER_TEMP/ghrdp-stage"
-          # [F41 P1] build the v2 dashboard single-file bundle and stage it as
-          # ui-v2.html NEXT TO ui.html (same tailnet-only surface, same config
-          # replacement - harmless, the v2 bundle reads /api/config instead).
-          # OPT-IN: GET /?ui=v2 serves it; the default stays v1 until the P4
-          # cutover flips $script:UiV2Default in ghrdp-server.ps1.
-          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-          export VITE_BUILD_SHA="${GITHUB_SHA}"
-          corepack enable
-          pnpm install --frozen-lockfile
-          pnpm run build
-          node scripts/check-regression-ids.mjs
-          node scripts/check-no-neon-green.mjs ui/dist/index.html
-          node scripts/check-bottom-bar-time.mjs
-          grep -qF '$script:UiV2Default = $false' payloads/ghrdp-server.ps1
-          cp ui/dist/index.html "$RUNNER_TEMP/ghrdp-stage/ui-v2.html"
-          echo "[f41] ui-v2.html staged ($(wc -c < "$RUNNER_TEMP/ghrdp-stage/ui-v2.html") bytes)"
-          if [ ! -f "$RUNNER_TEMP/ghrdp-stage/ui-v2.html" ]; then echo "ui-v2.html staging failed - build artifact missing"; exit 1; fi
-          LEN=$(stat -c %s "$RUNNER_TEMP/ghrdp-stage/ui-v2.html" 2>/dev/null || stat -f %z "$RUNNER_TEMP/ghrdp-stage/ui-v2.html" 2>/dev/null)
-          if [ "$LEN" -lt 51200 ]; then echo "ui-v2.html staging failed - build artifact missing"; exit 1; fi
-          # F42 stage assert: Test-Path AND length > 50KB else throw
+          # [F43] ui-v2.html is NO LONGER built here. The parallel build-ui job
+          # (ubuntu-latest) uploads dist-ui; the Stage files step downloads it
+          # and copies to C:\ghrdp\ui-v2.html with the F42 size assert. Building
+          # only in launch-gates left production runs without the artifact.
           mkdir -p "$RUNNER_TEMP/ghrdp-rust/src"
           cp "$GITHUB_WORKSPACE/payloads/Cargo.toml" "$RUNNER_TEMP/ghrdp-rust/Cargo.toml"
           cp "$GITHUB_WORKSPACE/payloads/main.rs" "$RUNNER_TEMP/ghrdp-rust/src/main.rs"
@@ -1656,6 +1674,14 @@ jobs:
               }
           } finally { $zipView.Dispose() }
           Write-Host '[kit] ghrdp-handler-kit.zip built: install.cmd + ghrdp-rdp-launcher.cs ONLY'
+      # [F43] Download the ubuntu build-ui artifact BEFORE staging so the
+      # Windows rdp job never depends on an in-job vite build (which was the
+      # F42 root cause: no dist-ui on production runs => missing ui-v2.html).
+      - name: Download dist-ui artifact (F43)
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-ui
+          path: ${{ runner.temp }}/dist-ui
       - name: Stage files + write config.json (UTF8 no BOM, Rentry secrets + provided edit code, token, ACLs)
         env:
           RENTRY_EDIT_PASSWORD: ${{ secrets.RENTRY_EDIT_PASSWORD }}
@@ -1678,15 +1704,27 @@ jobs:
               exit 1
           }
           . (Join-Path $root 'ghrdp-lib.ps1')
-          # [F42 §4] STAGING ASSERT: ui/dist/index.html must have landed as
-          # C:\ghrdp\ui-v2.html. A missing / truncated v2 artifact used to be a
-          # SILENT v1-forever (/?ui=v2 rendered v1 with no signal). Loud halt
-          # beats silent v1 forever - fail THIS dispatch instead of guessing.
+          # [F43] Place the downloaded dist-ui build at C:\ghrdp\ui-v2.html
+          # BEFORE the F42 assert. download-artifact lands index.html under
+          # RUNNER_TEMP\dist-ui (flat or nested - accept either).
+          $dl = Join-Path $env:RUNNER_TEMP 'dist-ui'
+          $src = Join-Path $dl 'index.html'
+          if (-not (Test-Path -LiteralPath $src)) {
+              $hit = Get-ChildItem -LiteralPath $dl -Filter 'index.html' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($hit) { $src = $hit.FullName }
+          }
+          if (-not (Test-Path -LiteralPath $src)) { throw 'ui-v2.html staging failed - build artifact missing' }
           $v2p = Join-Path $root 'ui-v2.html'
+          Copy-Item -LiteralPath $src -Destination $v2p -Force
+          # also keep a copy in the stage dir for any later re-copy paths
+          Copy-Item -LiteralPath $src -Destination (Join-Path $stage 'ui-v2.html') -Force -ErrorAction SilentlyContinue
+          # [F42 §4] STAGING ASSERT (kept): missing / truncated v2 artifact is a
+          # LOUD halt - never silent v1-forever. Fail THIS dispatch instead of guessing.
           if (-not (Test-Path -LiteralPath $v2p)) { throw 'ui-v2.html staging failed - build artifact missing' }
           $v2len = (Get-Item -LiteralPath $v2p).Length
           if ($v2len -le 51200) { throw ('ui-v2.html staging failed - build artifact missing (only ' + $v2len + ' bytes, need > 50KB)') }
           Write-Host ('[f42] ui-v2.html staged OK: ' + $v2len + ' bytes')
+          Write-Host ('[f43] dist-ui downloaded + copied to C:\ghrdp\ui-v2.html (' + $v2len + ' bytes)')
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $ip = ''
           $dns = ''

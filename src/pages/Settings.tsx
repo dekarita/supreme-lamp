@@ -84,7 +84,7 @@ export default function Settings() {
               </tr>
               <tr className="border-b border-default">
                 <td className="px-3 py-2 font-mono">flag</td>
-                <td className="px-3 py-2">?ui=v2 on / serves this app; default flip is one boolean ($script:UiV2Default) after operator verification</td>
+                <td className="px-3 py-2">{"v2 is the DEFAULT ($script:UiV2Default=$true); ?ui=v1 opens Classic UI for one release; missing ui-v2.html -> v1 + red banner"}</td>
               </tr>
             </tbody>
           </table>

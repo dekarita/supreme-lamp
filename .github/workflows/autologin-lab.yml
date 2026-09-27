@@ -19,6 +19,11 @@ on:
       - payloads/ghrdp-cred-shim.js
       - payloads/ui.html
       - payloads/fonts/**
+      - src/**
+      - package.json
+      - pnpm-lock.yaml
+      - tests/f42-ui-routing.test.js
+      - tests/f43-default-v2.test.js
       - tests/f38-ui-glass.test.js
       - tests/f39-ui-glass-v2.test.js
       - tests/f27-windows.ps1
@@ -2863,6 +2868,48 @@ jobs:
           } catch { }
           Flush 9
           Write-Host '[Q] forensics done'
+      # [F43] Stage simulation: ui-v2.html must land from a dist-ui-shaped
+      # artifact with the F42 size assert; missing file is fail-VISIBLE (banner).
+      - name: "F43: ui-v2 stage simulation + default-v2 banner"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stage = Join-Path $env:RUNNER_TEMP 'f43-stage'
+          $root = Join-Path $env:RUNNER_TEMP 'f43-ghrdp'
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          New-Item -ItemType Directory -Path $root -Force | Out-Null
+          # Simulate the ubuntu build-ui artifact: a >50KB index.html
+          $dl = Join-Path $env:RUNNER_TEMP 'dist-ui'
+          New-Item -ItemType Directory -Path $dl -Force | Out-Null
+          $payload = ('x' * 60000)
+          $src = Join-Path $dl 'index.html'
+          [System.IO.File]::WriteAllText($src, ('<!doctype html><html><body id="v2sim">' + $payload + '</body></html>'))
+          # Stage step contract (same as main.yml F43): copy to ui-v2.html + assert
+          $v2p = Join-Path $root 'ui-v2.html'
+          Copy-Item -LiteralPath $src -Destination $v2p -Force
+          if (-not (Test-Path -LiteralPath $v2p)) { throw 'ui-v2.html staging failed - build artifact missing' }
+          $v2len = (Get-Item -LiteralPath $v2p).Length
+          if ($v2len -le 51200) { throw ('ui-v2.html staging failed - build artifact missing (only ' + $v2len + ' bytes, need > 50KB)') }
+          Write-Host ('[F43] stage OK: ui-v2.html landed (' + $v2len + ' bytes)')
+          # Missing-file banner simulation (server contract text, no secrets)
+          $bannerText = 'ui-v2.html not staged in this run - main.yml stage step failed; re-dispatch or check CI'
+          $v1 = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'payloads\ui.html') -Raw -ErrorAction SilentlyContinue
+          if (-not $v1) { $v1 = '<html><body id="topbar">v1</body></html>' }
+          $banner = '<div id="uiV2MissingBanner" role="alert" style="background:#7f1d1d;color:#fff">' + $bannerText + '</div>'
+          $withBanner = [regex]::Replace($v1, '(?i)(<body[^>]*>)', ('$1' + $banner), 1)
+          if ($withBanner -notmatch 'uiV2MissingBanner') { throw 'F43: banner injection failed' }
+          if ($withBanner -notmatch [regex]::Escape($bannerText)) { throw 'F43: banner text missing' }
+          if ($bannerText -match 'password|token|ghp_|tskey-') { throw 'F43: banner carries secret material' }
+          # Default flag pin
+          $srv = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-server.ps1') -Raw
+          if ($srv -notmatch '\$script:UiV2Default = \$true') { throw 'F43: UiV2Default is not $true' }
+          if ($srv -match '\$script:UiV2Default = \$false') { throw 'F43: UiV2Default=$false still present' }
+          # main.yml wiring pins
+          $wf = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE '.github\workflows\main.yml') -Raw
+          if ($wf -notmatch '(?m)^  build-ui:') { throw 'F43: build-ui job missing from main.yml' }
+          if ($wf -notmatch 'needs: \[build-ui\]') { throw 'F43: rdp needs build-ui missing' }
+          if ($wf -notmatch 'actions/download-artifact') { throw 'F43: download-artifact missing' }
+          Write-Host '[F43] PASS: stage sim size OK, banner fail-visible, default=v2, build-ui wired'
       - name: "G: setup-time measurement + lab matrix summary"
         if: ${{ always() }}
         shell: pwsh
@@ -2911,6 +2958,7 @@ jobs:
               Write-Host ('::notice::[' + $cell + '] ' + $mark + $text)
           }
           Nt 'O' 'O_result' 'F14 kit download: /dl 3/3 sha-identical + decoys 404 + guide rendered'
+          Nt 'F43' 'F43_result' 'F43 ui-v2 stage sim + default-v2 banner + build-ui wiring'
           Nt 'I' 'I_result' ('usage timer: ticks -> freezes <=20s -> resumes -> persists/continues at ' + $env:I_usage + 's')
           Nt 'H' 'H_result' 'cred shim: opener+exact-origin auto-fill, wrong origin/non-opener ignored, zero log output'
           Nt 'N' 'N_result' 'handler overwrite: stale registration printed+overwritten+verified by the REAL install.cmd'

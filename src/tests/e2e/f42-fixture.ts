@@ -1,9 +1,10 @@
-// [F42 §5] Routing fixture for the playwright cases. It mirrors the SHIPPED
-// server contract one-for-one (payloads/ghrdp-server.ps1):
+// [F42 §5 / F43] Routing fixture for the playwright cases. It mirrors the
+// SHIPPED server contract one-for-one (payloads/ghrdp-server.ps1):
 //   §1  every literal '?' after the FIRST one is normalised to '&' BEFORE the
 //       split on '&' (then each pair is url-decoded)
-//   §2  ui=v2 with ui-v2.html absent => v1 PLUS the red uiV2MissingBanner
+//   §2  wantV2 with ui-v2.html absent => v1 PLUS the red uiV2MissingBanner
 //       (HTTP 200), never a silent v1
+//   §3  [F43] DEFAULT is v2 (UiV2Default=true); ?ui=v1 pins classic
 // Kept as a helper (not *.spec.ts) so playwright does not collect it as a test.
 import { createServer as createHttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -28,9 +29,15 @@ export function parseQuery(target: string): Record<string, string> {
   return out;
 }
 
-export function selectUi(dir: string, query: Record<string, string>) {
+// [F43] DEFAULT is v2. Mirrors ghrdp-server.ps1:
+//   wantV2 = UiV2Default -or (uiSel -eq 'v2'); if uiSel -eq 'v1' { wantV2 = false }
+export const UiV2Default = true;
+
+export function selectUi(dir: string, query: Record<string, string>, defaultV2: boolean = UiV2Default) {
   const v2 = join(dir, "ui-v2.html");
-  const wantV2 = query.ui === "v2";
+  const uiSel = query.ui || "";
+  let wantV2 = defaultV2 || uiSel === "v2";
+  if (uiSel === "v1") wantV2 = false;
   if (wantV2 && existsSync(v2)) return { file: v2, missingV2: false };
   return { file: join(dir, "ui.html"), missingV2: wantV2 };
 }
