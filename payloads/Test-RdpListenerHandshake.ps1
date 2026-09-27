@@ -40,16 +40,33 @@ for ($attempt = 1; $attempt -le 3; $attempt++) {
         if ($response[7] -ne 2 -or $response[9] -ne 8 -or $response[10] -ne 0) { throw 'RDP negotiation did not select TLS' }
         $protocol = [BitConverter]::ToUInt32($response, 11)
         if ($protocol -ne 1 -and $protocol -ne 2 -and $protocol -ne 8) { throw ('RDP selected non-TLS protocol ' + $protocol) }
-        $callback = [System.Net.Security.RemoteCertificateValidationCallback]{
-            param($sender, $cert, $chain, $errors)
-            if (-not $cert) { return $false }
-            $script:served = $cert.GetCertHashString().ToUpperInvariant()
-            return ($script:served -eq $ExpectedThumb.ToUpperInvariant() -and $errors -eq [System.Net.Security.SslPolicyErrors]::None)
+        # Static .NET capture: the TLS callback runs on a handshake thread with
+        # NO PowerShell runspace, so a scriptblock callback dies with 'There is
+        # no Runspace available'. Capture in a static field, verify after Wait.
+        if (-not ([System.Management.Automation.PSTypeName]'RdpTlsCapture').Type) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public static class RdpTlsCapture {
+    public static string Served = "";
+    public static string Policy = "";
+    public static bool Callback(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errors) {
+        try { Policy = errors.ToString(); } catch { }
+        try { if (cert != null) Served = cert.GetCertHashString().ToUpperInvariant(); } catch { }
+        return true;
+    }
+}
+'@
         }
+        [RdpTlsCapture]::Served = ''; [RdpTlsCapture]::Policy = ''
+        $script:served = ''
+        $callback = [System.Delegate]::CreateDelegate([System.Net.Security.RemoteCertificateValidationCallback], [RdpTlsCapture], 'Callback')
         $ssl = [System.Net.Security.SslStream]::new($stream, $false, $callback)
         $task = $ssl.AuthenticateAsClientAsync($Fqdn)
         if (-not $task.Wait(7000)) { throw 'TLS handshake timeout' }
-        if (-not $ssl.IsAuthenticated -or $script:served -ne $ExpectedThumb.ToUpperInvariant()) {
+        $script:served = [RdpTlsCapture]::Served
+        if (-not $ssl.IsAuthenticated -or $script:served -ne $ExpectedThumb.ToUpperInvariant() -or [RdpTlsCapture]::Policy -ne [System.Net.Security.SslPolicyErrors]::None.ToString()) {
             throw ('served certificate mismatch: served=' + $script:served + ' bound=' + $ExpectedThumb)
         }
         Write-Host ('[F31] X.224 + TLS handshake OK, served==bound=' + $script:served)

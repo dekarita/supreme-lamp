@@ -33,8 +33,12 @@ test('F37-1 the telescope module carries every stage + the death classifier', ()
     assert.ok(tele.includes(tok), 'telescope module lost: ' + tok);
   }
   // the TLS probe is permissive (reads RemoteCertificate even on chain
-  // failure) so rst-before-cert and chain rejects are distinguishable.
-  assert.ok(tele.includes('return $true'), 'the TLS callback is not permissive');
+  // failure) so rst-before-cert and chain rejects are distinguishable - via a
+  // STATIC .NET callback: handshake threads have no PowerShell runspace, so a
+  // scriptblock callback dies with 'There is no Runspace available'.
+  assert.ok(tele.includes('return true;'), 'the TLS callback is not permissive');
+  assert.ok(tele.includes('CreateDelegate'), 'the callback is not a static delegate');
+  assert.ok(!tele.includes('RemoteCertificateValidationCallback]{'), 'a scriptblock callback cannot run on handshake threads');
   assert.ok(tele.includes("'rst-before-cert'") && tele.includes("'chain='"),
     'the module cannot distinguish rst-before-cert from chain rejects');
 });

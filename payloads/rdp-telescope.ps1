@@ -24,9 +24,8 @@ param(
 # NOTE: no $ErrorActionPreference assignment at import time: dot-sourcing this
 # module must NEVER flip the caller's preference (lab cell + keep-alive loop).
 # Fail-closed behavior comes from explicit -ErrorAction Stop on every probe.
-$script:TlsServed = ''
-$script:TlsChainStatus = @()
-$script:TlsPolicyErrors = ''
+# (TLS capture lives in the static RdpTelescopeTlsCapture class below: the TLS
+# callback runs on a handshake thread with NO PowerShell runspace.)
 
 function Get-RdpTelescopeDns {
     param([string]$Name)
@@ -88,42 +87,59 @@ function Get-RdpTelescopeTls {
             $tlsRes.why = $msg
             return @($tcpRes, $tlsRes)
         }
-        # Permissive callback: ALWAYS read RemoteCertificate (even on chain
+        # Permissive capture: ALWAYS read RemoteCertificate (even on chain
         # failure) so rst-before-cert and chain rejects are distinguishable.
-        $script:TlsServed = ''; $script:TlsChainStatus = @(); $script:TlsPolicyErrors = ''
-        $callback = [System.Net.Security.RemoteCertificateValidationCallback]{
-            param($sender, $cert, $chain, $errors)
-            try { $script:TlsPolicyErrors = [string]$errors } catch { }
-            try {
-                if ($chain -and $chain.ChainStatus) {
-                    $script:TlsChainStatus = @($chain.ChainStatus | ForEach-Object { [string]$_.Status })
-                }
-            } catch { }
-            try { if ($cert) { $script:TlsServed = $cert.GetCertHashString().ToUpperInvariant() } } catch { }
-            return $true
+        # Static .NET fields: the TLS callback runs on a handshake thread with
+        # NO PowerShell runspace, so a scriptblock callback dies with 'There is
+        # no Runspace available'. A static method needs no runspace at all.
+        if (-not ([System.Management.Automation.PSTypeName]'RdpTelescopeTlsCapture').Type) {
+            Add-Type -TypeDefinition @'
+using System;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public static class RdpTelescopeTlsCapture {
+    public static string Served = "";
+    public static string Chain = "";
+    public static string Policy = "";
+    public static bool Callback(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errors) {
+        try { Policy = errors.ToString(); } catch { }
+        try {
+            if (chain != null && chain.ChainStatus != null) {
+                string s = "";
+                foreach (X509ChainStatus st in chain.ChainStatus) { if (s.Length > 0) s += ","; s += st.Status.ToString(); }
+                Chain = s;
+            }
+        } catch { }
+        try { if (cert != null) Served = cert.GetCertHashString().ToUpperInvariant(); } catch { }
+        return true;
+    }
+}
+'@
         }
+        [RdpTelescopeTlsCapture]::Served = ''; [RdpTelescopeTlsCapture]::Chain = ''; [RdpTelescopeTlsCapture]::Policy = ''
+        $callback = [System.Delegate]::CreateDelegate([System.Net.Security.RemoteCertificateValidationCallback], [RdpTelescopeTlsCapture], 'Callback')
         $ssl = [System.Net.Security.SslStream]::new($stream, $false, $callback)
         try {
             $task = $ssl.AuthenticateAsClientAsync($Sni)
             if (-not $task.Wait($TimeoutMs)) { throw 'TLS handshake timeout' }
             $task.GetAwaiter().GetResult() | Out-Null
         } catch {
-            if (-not $script:TlsServed) {
+            if (-not [RdpTelescopeTlsCapture]::Served) {
                 # The server RST the connection before serving any certificate
                 # (the Schannel-without-ServerAuth-EKU class): no cert to compare.
                 $tlsRes.failurePoint = 'rst-before-cert'
             } else {
                 $tlsRes.failurePoint = 'tls-alert'
             }
-            $tlsRes.servedThumb = $script:TlsServed
-            $tlsRes.chainStatus = @($script:TlsChainStatus)
-            $tlsRes.policyErrors = $script:TlsPolicyErrors
+            $tlsRes.servedThumb = [RdpTelescopeTlsCapture]::Served
+            $tlsRes.chainStatus = @(([RdpTelescopeTlsCapture]::Chain -split ',') | Where-Object { $_ })
+            $tlsRes.policyErrors = [RdpTelescopeTlsCapture]::Policy
             $tlsRes.why = $_.Exception.Message
             return @($tcpRes, $tlsRes)
         }
-        $tlsRes.servedThumb = $script:TlsServed
-        $tlsRes.chainStatus = @($script:TlsChainStatus)
-        $tlsRes.policyErrors = $script:TlsPolicyErrors
+        $tlsRes.servedThumb = [RdpTelescopeTlsCapture]::Served
+        $tlsRes.chainStatus = @(([RdpTelescopeTlsCapture]::Chain -split ',') | Where-Object { $_ })
+        $tlsRes.policyErrors = [RdpTelescopeTlsCapture]::Policy
         try { $tlsRes.protocol = [string]$ssl.SslProtocol } catch { }
         try { $tlsRes.cipher = ([string]$ssl.CipherAlgorithm + '/' + [string]$ssl.CipherStrength) } catch { }
         if (-not $tlsRes.servedThumb) {
