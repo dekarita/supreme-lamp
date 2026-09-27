@@ -102,12 +102,12 @@ test('F38-3 Noto Sans Sinhala staged + embedded + unicode-range gated', () => {
     assert.ok(b.length > 10000, 'font too small: ' + f);
     assert.equal(b.subarray(0, 4).toString('ascii'), 'wOF2', 'not a woff2: ' + f);
   }
-  assert.ok(/@font-face\{font-family:'Noto Sans Sinhala'[^}]*unicode-range:U\+0D80-0DFF\}/.test(ui.replace(/\n/g, '')),
+  assert.ok(/@font-face\{font-family:'Noto Sans Sinhala'[^}]*unicode-range:U\+0D80-0DFF\}/.test(ui.replace(/\r?\n/g, '')),
     'the @font-face lacks the U+0D80-0DFF unicode-range');
   // the embedded base64 must be EXACTLY the staged files (same bytes)
   for (const [f, weight] of [['400', 400], ['600', 600]]) {
     const file = fs.readFileSync(`payloads/fonts/noto-sans-sinhala-${weight}-latin-free.woff2`);
-    const m = ui.match(new RegExp(`font-weight:${weight};font-display:swap;\\n  src:url\\(data:font/woff2;base64,([A-Za-z0-9+/=]+)\\) format\\('woff2'\\)`));
+    const m = ui.match(new RegExp(`font-weight:${weight};font-display:swap;\\r?\\n  src:url\\(data:font/woff2;base64,([A-Za-z0-9+/=]+)\\) format\\('woff2'\\)`));
     assert.ok(m, `no embedded base64 for weight ${weight}`);
     const embedded = Buffer.from(m[1], 'base64');
     assert.equal(crypto.createHash('sha256').update(embedded).digest('hex'),
