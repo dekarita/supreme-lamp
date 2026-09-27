@@ -9,6 +9,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: F19 gate with debug
+        id: f19
         shell: bash
         run: |
           set +e
@@ -110,7 +111,7 @@ jobs:
           grep -qF -- "-ArgumentList '--dns-selftest'" .github/workflows/launch-gates.yml
           grep -qF -- '$p.WaitForExit()' .github/workflows/launch-gates.yml
           echo 'F19 gates PASS'
-          echo "EXIT_CODE=$?" > /tmp/exit_code.txt
+          echo "EXIT_CODE=0" > /tmp/exit_code.txt
         continue-on-error: true
       - name: Show log
         if: always()
@@ -119,11 +120,31 @@ jobs:
           cat /tmp/f19_full.log || echo "no log"
           echo "--- exit code file ---"
           cat /tmp/exit_code.txt || echo "no exit code"
-          # also post to step summary
           echo "## F19 Debug Log" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           cat /tmp/f19_full.log >> $GITHUB_STEP_SUMMARY || echo "no log" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+      - name: Post comment with log
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            let log = '';
+            try { log = fs.readFileSync('/tmp/f19_full.log', 'utf8'); } catch(e) { log = 'no log file: '+e.message; }
+            // truncate to 60000 chars for comment
+            if (log.length > 60000) log = log.slice(-60000);
+            const body = `### F19 debug log for ${{ github.sha }}\n\`\`\`\n${log}\n\`\`\``;
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: 69,
+                body: body
+              });
+            } catch(e) {
+              console.log('failed to comment: '+e.message);
+            }
       - name: Upload debug
         if: always()
         uses: actions/upload-artifact@v4
