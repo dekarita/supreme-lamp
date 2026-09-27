@@ -6,6 +6,10 @@ on:
 jobs:
   debug:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - name: F19 gate
@@ -103,18 +107,21 @@ jobs:
           grep -qF -- "-ArgumentList '--dns-selftest'" .github/workflows/launch-gates.yml
           grep -qF -- '$p.WaitForExit()' .github/workflows/launch-gates.yml
           echo 'F19 gates PASS'
-      - name: Show log on failure
+      - name: Show log and comment
         if: failure()
         shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo "=== LOG ==="
           cat /tmp/f19_full.log || echo "no log"
           echo "=== END ==="
-          # write to summary
-          echo "## F19 log" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat /tmp/f19_full.log >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          # post comment to PR 69
+          LOG=$(tail -n 100 /tmp/f19_full.log | head -c 60000)
+          gh pr comment 69 --body "F19 failed log for ${{ github.sha }}:
+          \`\`\`
+          $LOG
+          \`\`\`" || echo "comment failed"
       - name: Upload log
         if: always()
         uses: actions/upload-artifact@v4
