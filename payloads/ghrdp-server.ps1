@@ -2307,9 +2307,9 @@ $lastLogonScan = Get-Date
 # scanTs are stamped by the function instead of throwing).
 try { Update-RdpConnLog -StatePath $script:ConnLogStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
 $lastConnLogScan = Get-Date
-# [F37] establish initial baseline before the dashboard starts serving requests.
-try { Update-RdpTelescope } catch { }
-$lastTelescopeScan = Get-Date
+# [F37] begin the first 60s telescope tick only after the dashboard listener is up;
+# the diagnosis must never delay the early-live dashboard bind/health check.
+$lastTelescopeScan = (Get-Date).AddSeconds(-1 * $script:TelescopeIntervalSec)
 $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse($Bind), $Port)
 try { $listener.Start() } catch {
     try { [System.IO.File]::WriteAllText($script:OkFile, 'LISTEN_FAIL: ' + $_.Exception.Message, $script:NoBom) } catch { }
