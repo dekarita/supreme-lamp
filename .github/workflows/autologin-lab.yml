@@ -2410,8 +2410,24 @@ jobs:
           # --- (4) jsdom-style smoke: the existing beacon/ticket DOM flows ---------
           Push-Location $env:GITHUB_WORKSPACE
           try {
-            node --test tests/f27-handoff.test.js tests/f28-logon-recovery.test.js tests/f31c-live-dispatch.test.js tests/ui-native.test.js tests/f37-telescope.test.js tests/f38-ui-glass.test.js 2>&1 | Select-Object -Last 6 | ForEach-Object { Write-Host "[W] node: $_" }
-            if ($LASTEXITCODE -ne 0) { W-Fail 'dom-smoke' 'existing beacon/ticket flows regressed (node --test failed)' }
+            $nodeLog = Join-Path $ws 'f38-lab-nodetest.txt'
+            node --test tests/f27-handoff.test.js tests/f28-logon-recovery.test.js tests/f31c-live-dispatch.test.js tests/ui-native.test.js tests/f37-telescope.test.js tests/f38-ui-glass.test.js 2>&1 | Tee-Object -FilePath $nodeLog | Select-Object -Last 6 | ForEach-Object { Write-Host "[W] node: $_" }
+            $nodeRc = $LASTEXITCODE
+            if ($nodeRc -ne 0) {
+              # The runner log is fetched from blob storage; surface the failing test
+              # NAMES + first errors as an annotation so a red dom-smoke is
+              # diagnosable from the API alone (the full TAP lives in
+              # f38-lab-nodetest.txt inside the f38-ui-screenshots artifact).
+              $names = @(); $detail = @()
+              if (Test-Path -LiteralPath $nodeLog) {
+                $names = @(Select-String -Path $nodeLog -Pattern '^not ok \d+ - (.+)$' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -First 5)
+                $detail = @(Select-String -Path $nodeLog -Pattern "^  error: '(.+)'" | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -First 3)
+              }
+              $uiRaw = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ui.html'))
+              $crlf = ([regex]::Matches($uiRaw, "`r`n")).Count
+              Write-Host ('::error::[W] node-fail rc=' + $nodeRc + ' ui.html-crlf=' + $crlf + ' :: ' + (($names + $detail) -join ' | '))
+              W-Fail 'dom-smoke' ('existing beacon/ticket flows regressed (node --test failed): ' + ($names -join ', '))
+            }
           } finally { Pop-Location }
           Write-Host '[W] PASS: shipped ui.html proves glass typography + icons + Sinhala + persisted Large toggle on a real browser'
           'W_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
@@ -2425,6 +2441,7 @@ jobs:
             ${{ runner.temp }}/f38-ui-lab/f38-lab-error.txt
             ${{ runner.temp }}/f38-ui-lab/f38-lab-out.txt
             ${{ runner.temp }}/f38-ui-lab/f38-lab-err.txt
+            ${{ runner.temp }}/f38-ui-lab/f38-lab-nodetest.txt
           if-no-files-found: warn
       # [F30] TLS/CIPHER HANDSHAKE FIX + CREDENTIAL TYPE NORMALIZATION + STALE
       # ENTRY PURGE - the five lab cells the F30 spec names, proven on a real
