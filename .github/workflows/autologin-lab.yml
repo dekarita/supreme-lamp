@@ -31,6 +31,7 @@ on:
       - payloads/Test-RdpListenerHandshake.ps1
       - payloads/rdp-telescope.ps1
       - tests/f37-telescope.test.js
+      - tests/f43-default-v2.test.js
 jobs:
   proof:
     runs-on: windows-latest
@@ -54,6 +55,99 @@ jobs:
       GHRDP_LAB_TEL_INTERVAL_SEC: '10'
     steps:
       - uses: actions/checkout@v4
+
+      - name: "F43: stage simulation (ui-v2.html lands + size) and missing-file banner"
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script:F43Failed = $false
+          $script:F43Banner = 'ui-v2.html not staged in this run - main.yml stage step failed; re-dispatch or check CI'
+          $script:F43Port = 7395
+          $srvProc = $null
+          $srvRoot = $null
+          function F43-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[F43] stage=' + $Stage + ' :: ' + $Detail)
+              $script:F43Failed = $true
+              throw $Detail
+          }
+          function Get-F43Page([string]$UrlPath) {
+              $req = [System.Net.HttpWebRequest]::Create(('http://127.0.0.1:' + $script:F43Port + $UrlPath))
+              $req.Method = 'GET'
+              $req.Proxy = $null
+              $req.Timeout = 20000
+              $req.ReadWriteTimeout = 20000
+              $resp = $req.GetResponse()
+              $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
+              $t = $sr.ReadToEnd()
+              $sr.Close()
+              $resp.Close()
+              return $t
+          }
+          try {
+              $src = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-server.ps1'))
+              if (-not $src.Contains('$script:UiV2Default = $true')) { F43-Fail 'flag' 'UiV2Default is not true' }
+              $root = Join-Path $env:RUNNER_TEMP 'f43-stage'
+              New-Item -ItemType Directory -Path $root -Force | Out-Null
+              $artifactDir = Join-Path $env:RUNNER_TEMP 'f43-dist-ui'
+              New-Item -ItemType Directory -Path $artifactDir -Force | Out-Null
+              $artifact = Join-Path $artifactDir 'index.html'
+              $marker = 'F43-V2-STAGED'
+              $body = '<!doctype html><html><head><title>v2</title></head><body>' + $marker + '</body></html>'
+              if ($body.Length -lt 53000) { $body = $body + ('x' * (53000 - $body.Length)) }
+              $utf8 = New-Object System.Text.UTF8Encoding $false
+              [System.IO.File]::WriteAllText($artifact, $body, $utf8)
+              $f43src = $artifact
+              if (-not (Test-Path -LiteralPath $f43src)) { throw 'ui-v2.html staging failed - build artifact missing' }
+              Copy-Item -LiteralPath $f43src -Destination (Join-Path $root 'ui-v2.html') -Force
+              $v2p = Join-Path $root 'ui-v2.html'
+              if (-not (Test-Path -LiteralPath $v2p)) { throw 'ui-v2.html staging failed - build artifact missing' }
+              $v2len = (Get-Item -LiteralPath $v2p).Length
+              if ($v2len -le 51200) { throw ('ui-v2.html staging failed - build artifact missing (only ' + $v2len + ' bytes, need > 50KB)') }
+              Write-Host ('[F43] stage simulation PASS: ui-v2.html ' + $v2len + ' bytes')
+              $srvRoot = Join-Path $env:RUNNER_TEMP 'f43-srv'
+              New-Item -ItemType Directory -Path $srvRoot -Force | Out-Null
+              Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'payloads\ui.html') (Join-Path $srvRoot 'ui.html') -Force
+              [System.IO.File]::WriteAllText((Join-Path $srvRoot 'config.json'), '{"dnsName":"lab-host.dekarita.tailnet-lab.ts.net","rdpUser":"labuser","rdpIp":"100.118.42.7"}', $utf8)
+              [System.IO.File]::WriteAllText((Join-Path $srvRoot 'dash-token.txt'), 'lab-dash-token-f43', $utf8)
+              $outLog = Join-Path $env:RUNNER_TEMP 'f43-server-out.log'
+              $errLog = Join-Path $env:RUNNER_TEMP 'f43-server-err.log'
+              $srvProc = Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File',(Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-server.ps1'),'-Port','7395','-Root',$srvRoot
+              $up = $false
+              for ($i = 0; $i -lt 80 -and -not $up; $i++) {
+                  try { $up = [bool](Get-NetTCPConnection -LocalPort $script:F43Port -State Listen -ErrorAction Stop) } catch { }
+                  if (-not $up) { Start-Sleep -Milliseconds 500 }
+              }
+              if (-not $up) {
+                  $tail = ''
+                  try { $tail = ((Get-Content $errLog -Tail 8 -ErrorAction SilentlyContinue) -join ' | ') } catch { }
+                  F43-Fail 'listen' ('server never listened on 7395; stderr=[' + $tail + ']')
+              }
+              $home = Get-F43Page '/'
+              if ($home -notmatch 'uiV2MissingBanner') { F43-Fail 'banner-default' 'default / did not inject the missing-v2 banner' }
+              if (-not $home.Contains($script:F43Banner)) { F43-Fail 'banner-text' 'banner text missing on default /' }
+              $asked = Get-F43Page '/?ui=v2'
+              if ($asked -notmatch 'uiV2MissingBanner' -or -not $asked.Contains($script:F43Banner)) { F43-Fail 'banner-v2' 'explicit ui=v2 missing-file did not banner' }
+              $classic = Get-F43Page '/?ui=v1'
+              if ($classic -match 'uiV2MissingBanner') { F43-Fail 'escape' 'ui=v1 must not show the missing-v2 banner' }
+              if ($classic -notmatch 'id="topbar"') { F43-Fail 'escape-v1' 'ui=v1 did not serve the classic page' }
+              Copy-Item -LiteralPath $artifact -Destination (Join-Path $srvRoot 'ui-v2.html') -Force
+              $live = Get-F43Page '/'
+              if ($live -match 'uiV2MissingBanner') { F43-Fail 'served' 'a staged ui-v2.html still showed the banner' }
+              if (-not $live.Contains($marker)) { F43-Fail 'served' 'default / did not serve the staged v2 file' }
+              if ($live.Length -le 51200) { F43-Fail 'served-size' ('served body only ' + $live.Length + ' bytes') }
+              Write-Host '[F43] banner simulation PASS: default and ui=v2 fail-visible; ui=v1 escape clean; staged file served'
+          } catch {
+              if (-not $script:F43Failed) { F43-Fail 'unhandled' $_.Exception.Message }
+          } finally {
+              if ($srvProc -and -not $srvProc.HasExited) { try { Stop-Process -Id $srvProc.Id -Force -ErrorAction SilentlyContinue } catch { } }
+              if ($srvRoot) {
+                  try {
+                      Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -and $_.CommandLine.IndexOf($srvRoot, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 } | ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch { } }
+                  } catch { }
+              }
+          }
+          if ($script:F43Failed) { exit 1 }
+          'F43_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
 
       - name: "F27: ticket + CredWrite + collector mechanics (not live NLA)"
         shell: powershell
@@ -2895,10 +2989,11 @@ jobs:
           ('| (y) token diagnostic + live dispatch matrix (F31c) | ' + $(if ($env:Y_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml token-diagnostic block: simulated git push --dry-run failure exits 1 with the Arena reconnect + Windows Credential Manager message (no token printed); success dry-run confirms push access; SHIPPED card renders "36870 present" + key ACL dump hint for a connLog fixture and ALL GREEN when the 5 checks pass. Fullscreen stays PENDING-USER |') | Add-Content -Path $S
           ('| (w) liquid-glass UI + Sinhala + persisted Large toggle (F38) | ' + $(if ($env:W_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | shipped ui.html on installed Edge: screenshots 1280/1600/1920, no horizontal overflow, computed stack includes Noto Sans Sinhala, Sinhala sample width > 0, Comfort/Large persisted, WCAG AA palette, Lucide sprite, beacon/ticket DOM smoke. UI reaches live runners only on the next main.yml dispatch. |') | Add-Content -Path $S
           ('| (k) no console window in the interactive session | **contract PASS** | every host-helper launch is -WindowStyle Hidden (or NoNewWindow for the user-driven terminal exec) and the long-lived services are SYSTEM scheduled tasks; launch-gates F11-5.3 enforces it. Visual confirmation on the first physical RDP session = PENDING-USER |') | Add-Content -Path $S
+          ('| (f43) default v2 + dist-ui stage | ' + $(if ($env:F43_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | stage copy lands ui-v2.html > 50KB; REAL server: default / and ?ui=v2 banner when the file is missing, ?ui=v1 is classic with no banner, staged file is served on / |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
           # retrievable), so the PR/verify evidence does not depend on the log UI.
-          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'}) + ' t=' + $(if ($env:T_result -eq 'pass') {'pass'} else {'fail'}) + ' u=' + $(if ($env:U_result -eq 'pass') {'pass'} else {'fail'}) + ' v=' + $(if ($env:V_result -eq 'pass') {'pass'} else {'fail'}) + ' x=' + $(if ($env:X_result -eq 'pass') {'pass'} else {'fail'}) + ' y=' + $(if ($env:Y_result -eq 'pass') {'pass'} else {'fail'}) + ' z=' + $(if ($env:Z_result -eq 'pass') {'pass'} else {'fail'}) + ' w=' + $(if ($env:W_result -eq 'pass') {'pass'} else {'fail'})
+          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'}) + ' t=' + $(if ($env:T_result -eq 'pass') {'pass'} else {'fail'}) + ' u=' + $(if ($env:U_result -eq 'pass') {'pass'} else {'fail'}) + ' v=' + $(if ($env:V_result -eq 'pass') {'pass'} else {'fail'}) + ' x=' + $(if ($env:X_result -eq 'pass') {'pass'} else {'fail'}) + ' y=' + $(if ($env:Y_result -eq 'pass') {'pass'} else {'fail'}) + ' z=' + $(if ($env:Z_result -eq 'pass') {'pass'} else {'fail'}) + ' w=' + $(if ($env:W_result -eq 'pass') {'pass'} else {'fail'}) + ' f43=' + $(if ($env:F43_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
           # [F19] Evidence notices must carry the CELL RESULT they belong to:
           # before this, every notice claimed its achievement even when the cell

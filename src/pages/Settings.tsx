@@ -84,7 +84,7 @@ export default function Settings() {
               </tr>
               <tr className="border-b border-default">
                 <td className="px-3 py-2 font-mono">flag</td>
-                <td className="px-3 py-2">?ui=v2 on / serves this app; default flip is one boolean ($script:UiV2Default) after operator verification</td>
+                <td className="px-3 py-2">v2 is the default. ?ui=v1 is the one-release classic escape. Flag removal stays one release after the operator confirms the default.</td>
               </tr>
             </tbody>
           </table>

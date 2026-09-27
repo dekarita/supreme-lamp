@@ -41,7 +41,7 @@ function TopBar() {
   const mirrorOn = !!(mirror && (mirror.files.length > 0 || mirror.pubDot !== ""));
 
   return (
-    <header role="banner" className="sticky top-0 z-40 h-12 bg-surface border-b border-default flex items-center px-4 gap-3">
+    <header role="banner" data-testid="topbar" className="sticky top-0 z-40 h-12 bg-surface border-b border-default flex items-center px-4 gap-3">
       <button
         type="button"
         className="lg:hidden text-secondary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
@@ -73,6 +73,13 @@ function TopBar() {
         </Chip>
       </div>
       <div className="ml-auto flex items-center gap-1 shrink-0">
+        <a
+          id="classicUiLink"
+          href="?ui=v1"
+          className="px-2 py-1 text-xs font-medium rounded-md border border-default text-secondary hover:bg-raised hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          {t("nav.classicUi")}
+        </a>
         <button
           id="langToggle"
           type="button"
@@ -207,7 +214,7 @@ function BottomBar() {
   const row = logonRowText((rl && rl.authLast) || null, (rl && rl.logonCollector) || (native && native.logonCollector) || null, now);
 
   return (
-    <footer role="contentinfo" className="sticky bottom-0 z-40 h-8 bg-surface border-t border-default flex items-center px-4 gap-6 overflow-x-auto">
+    <footer role="contentinfo" data-testid="bottombar" className="sticky bottom-0 z-40 h-8 bg-surface border-t border-default flex items-center px-4 gap-6 overflow-x-auto">
       <span id="status-runner-elapsed" className="bb-item font-mono text-xs text-tertiary whitespace-nowrap">
         {t("status.runnerElapsed")}{" "}
         <span id="timerElapsed" className="text-secondary" data-testid="bb-elapsed">

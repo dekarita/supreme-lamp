@@ -2,8 +2,9 @@
 // server contract one-for-one (payloads/ghrdp-server.ps1):
 //   §1  every literal '?' after the FIRST one is normalised to '&' BEFORE the
 //       split on '&' (then each pair is url-decoded)
-//   §2  ui=v2 with ui-v2.html absent => v1 PLUS the red uiV2MissingBanner
-//       (HTTP 200), never a silent v1
+//   §2  ui=v2 (or the F43 v2 default) with ui-v2.html absent => v1 PLUS the
+//       red uiV2MissingBanner (HTTP 200), never a silent v1
+//   §3  [F43] no ui param => v2; ui=v1 => v1
 // Kept as a helper (not *.spec.ts) so playwright does not collect it as a test.
 import { createServer as createHttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -30,7 +31,11 @@ export function parseQuery(target: string): Record<string, string> {
 
 export function selectUi(dir: string, query: Record<string, string>) {
   const v2 = join(dir, "ui-v2.html");
-  const wantV2 = query.ui === "v2";
+  // [F43] same order as payloads/ghrdp-server.ps1 ($script:UiV2Default = $true):
+  // ui=v1 -> v1; ui=v2 -> v2; no param -> v2; wanted v2 but file missing -> banner.
+  const uiV2Default = true;
+  let wantV2 = uiV2Default || query.ui === "v2";
+  if (query.ui === "v1") wantV2 = false;
   if (wantV2 && existsSync(v2)) return { file: v2, missingV2: false };
   return { file: join(dir, "ui.html"), missingV2: wantV2 };
 }

@@ -2076,8 +2076,8 @@ jobs:
           node scripts/check-regression-ids.mjs
           node scripts/check-no-neon-green.mjs ui/dist/index.html
           node scripts/check-bottom-bar-time.mjs
-          # F41 flag contract: default OFF, opt-in ?ui=v2, staged file ui-v2.html
-          grep -qF '$script:UiV2Default = $false' payloads/ghrdp-server.ps1
+          # F43 flag contract: v2 is the default; ?ui=v1 is the one-release escape
+          grep -qF '$script:UiV2Default = $true' payloads/ghrdp-server.ps1
           grep -qF '$script:UiV2Path' payloads/ghrdp-server.ps1
           grep -qF 'ui-v2.html' payloads/ghrdp-server.ps1
           grep -qF 'ui-v2.html' .github/workflows/main.yml
@@ -2136,6 +2136,50 @@ jobs:
           node scripts/check-regression-ids.mjs
           test "$(grep -c 'const BASELINE_IDS' tests/f38-ui-glass.test.js)" -eq 1
           echo 'F42 gates PASS: query=normalized, staging=fail-visible, links=correct'
+      - name: F43 build-ui in main.yml + default-v2 cutover gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          srv=payloads/ghrdp-server.ps1
+          # §1.4 build-ui job, needs, download-artifact, size assert
+          grep -qE '^  build-ui:' "$wf"
+          grep -qF 'needs: [build-ui]' "$wf"
+          grep -qF 'actions/upload-artifact@v4' "$wf"
+          grep -qF 'actions/download-artifact@v4' "$wf"
+          grep -qF 'name: dist-ui' "$wf"
+          grep -qF 'path: ui/dist/index.html' "$wf"
+          grep -qF 'retention-days: 1' "$wf"
+          grep -qF 'actions: write' "$wf"
+          grep -qF 'contents: read' "$wf"
+          grep -qF 'pnpm build' "$wf"
+          grep -qF 'Copy-Item -LiteralPath $f43src -Destination (Join-Path $root '"'"'ui-v2.html'"'"') -Force' "$wf"
+          grep -qF 'if ($v2len -le 51200) { throw' "$wf"
+          grep -qF 'Test-Path -LiteralPath $v2p' "$wf"
+          dl=$(grep -nF 'actions/download-artifact@v4' "$wf" | head -1 | cut -d: -f1)
+          st=$(grep -nF 'name: Stage files + write config.json' "$wf" | head -1 | cut -d: -f1)
+          test -n "$dl" && test -n "$st" && test "$dl" -lt "$st"
+          copy_ln=$(grep -nF 'Copy-Item -LiteralPath $f43src' "$wf" | head -1 | cut -d: -f1)
+          assert_ln=$(grep -nF 'if ($v2len -le 51200) { throw' "$wf" | head -1 | cut -d: -f1)
+          test "$copy_ln" -lt "$assert_ln"
+          # default-v2 flag + fail-visible banner stay mandatory
+          grep -qF '$script:UiV2Default = $true' "$srv"
+          grep -qF "if (\$uiSel -eq 'v1') { \$wantV2 = \$false }" "$srv"
+          grep -qF 'uiV2MissingBanner' "$srv"
+          grep -qF '[F42] V2-MISSING: ' "$srv"
+          # Classic UI escape is i18n-keyed and does not carry a credential
+          grep -qF 'id="classicUiLink"' src/components/layout/AppShell.tsx
+          grep -qF 'href="?ui=v1"' src/components/layout/AppShell.tsx
+          grep -qF '"classicUi"' src/i18n/en.json
+          grep -qF '"classicUi"' src/i18n/si.json
+          if grep -nE 'classicUiLink[\s\S]{0,180}(key|token|password|passwd)=' src/components/layout/AppShell.tsx; then
+            echo 'F43: Classic UI link carries credential text' >&2; exit 1
+          fi
+          test -f tests/f43-default-v2.test.js
+          test -f src/tests/e2e/f43-default-v2.spec.ts
+          node --test tests/f43-default-v2.test.js
+          node scripts/check-regression-ids.mjs
+          echo 'F43 gates PASS: build=in-main.yml, default=v2, escape=v1, banner=fail-visible-only'
   windows-native:
     runs-on: windows-latest
     steps:

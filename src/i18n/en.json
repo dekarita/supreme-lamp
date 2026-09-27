@@ -11,7 +11,8 @@
     "keys": "Keys & Secrets",
     "mirror": "Mirror",
     "telemetry": "Telemetry",
-    "settings": "Settings"
+    "settings": "Settings",
+    "classicUi": "Classic UI"
   },
   "sidebar": {
     "nav": "Primary navigation",
