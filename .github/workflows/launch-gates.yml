@@ -1908,6 +1908,21 @@ jobs:
             grep -qF '$dump' <<< "$body" || { echo "F37: line $line can exit red without the telescope fields" >&2; exit 1; }
           done
           grep -qF 'if ($servedR -ne $boundR)' "$lab" || { echo 'F37: the lab does not gate servedThumb == boundThumb' >&2; exit 1; }
+          # [F37] the CERTIFICATE's own acceptance is named, not inferred: the
+          # module reads the ServerAuth EKU + SAN off the bound cert, the death
+          # point prefers tls-eku over the RST symptom, and the live row says it.
+          grep -qF 'hasServerAuth' "$mod" && grep -qF 'hasServerAuth' "$ui" || { echo 'F37: the ServerAuth EKU is not classified on the runner + row' >&2; exit 1; }
+          grep -qF "return 'tls-eku'" "$mod" || { echo 'F37: a missing EKU cannot name the tls-eku death point' >&2; exit 1; }
+          grep -qF '$fields.hasServerAuth' "$mod" || { echo 'F37: the listener verdict ignores the cert EKU' >&2; exit 1; }
+          # [F37] a red cell must never be red-without-a-readable-annotation:
+          # both F37 cells trap unhandled exceptions, the fail helpers collapse
+          # their detail onto one line, and a forensics step re-emits the
+          # telescope + the classification files whenever a cell failed.
+          test "$(grep -c 'stage=unhandled' "$lab")" -ge 2 || { echo 'F37: the F37 lab cells do not trap unhandled errors' >&2; exit 1; }
+          grep -qF '$f37one = ($Detail -replace' "$lab" || { echo 'F37: a lab fail helper can still emit a multi-line (dropped) annotation' >&2; exit 1; }
+          grep -qF 'Q: failure forensics' "$lab" || { echo 'F37: the failure-forensics step is missing' >&2; exit 1; }
+          grep -qF '::error::[forensics]' "$lab" || { echo 'F37: the forensics step emits no annotation' >&2; exit 1; }
+          grep -qF 'Format-RdpTelescopeDump' "$lab" || { echo 'F37: the forensics step does not re-print the telescope' >&2; exit 1; }
           grep -qF 'Test-RdpListenerHandshake.ps1' "$lab" || { echo 'F37: the lab lost the strict F31 handshake gate' >&2; exit 1; }
           grep -qF 'node --test tests/f37-telescope.test.js' "$lab" || { echo 'F37: the lab does not run the F37 matrix over its own sample' >&2; exit 1; }
           # (7) SECRET-FREE / NO WEAKENING on every F37 surface

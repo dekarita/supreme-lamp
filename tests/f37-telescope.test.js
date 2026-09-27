@@ -409,6 +409,50 @@ test('F37-16 a missing client telescope is NOT a red path, and a missing runner 
   assert.strictEqual(sampled.deathPoint, 'none');
 });
 
+test('F37-18 the listener stage names the CERTIFICATE itself (ServerAuth EKU + SAN), and a missing EKU is a death point', () => {
+  const mod = fs.readFileSync('payloads/rdp-telescope.ps1', 'utf8');
+  const allow = /listener = @\(([^)]*)\)/.exec(mod);
+  assert.ok(allow, 'the listener allowlist is missing');
+  for (const f of ['hasServerAuth', 'eku', 'san']) {
+    assert.ok(allow[1].includes("'" + f + "'"), 'the listener allowlist drops ' + f + ' (the cause would be invisible)');
+  }
+  // the EKU/SAN are read from the SHIPPED functions, and the verdict requires them
+  assert.ok(mod.includes("$_.Oid.Value -eq '2.5.29.37'"), 'the ServerAuth EKU is not read from the bound certificate');
+  assert.ok(mod.includes("$_.Oid.Value -eq '2.5.29.17'"), 'the SAN is not read from the bound certificate');
+  assert.ok(mod.includes('bound cert has NO ServerAuth EKU'), 'a missing ServerAuth EKU is not named');
+  assert.match(mod, /\$ok = \(\$fields\.inStore -and \$fields\.hasKey -and \$fields\.hasServerAuth -and \$fields\.aclOk -and \$fields\.serving\)/,
+    'a cert without ServerAuth must not be able to pass the listener verdict');
+  // the death point prefers the CAUSE over the symptom of an RST
+  assert.match(mod, /hasServerAuth'\] -and -not \[bool\]\$listenerObj\.hasServerAuth\) \{ return 'tls-eku' \}/,
+    'a missing ServerAuth EKU does not name the tls-eku death point');
+  // and the derived fields travel to the config stamp / conn log row
+  for (const f of ['hasServerAuth', 'eku', 'san']) {
+    assert.ok(new RegExp('\\$out\\.' + f + ' =').test(mod), 'Get-RdpTelescopeFields does not derive ' + f);
+  }
+  assert.ok(fs.readFileSync('payloads/ui.html', 'utf8').includes('NO-ServerAuth'),
+    'the SERVER CONN LOG row cannot render a missing ServerAuth EKU');
+});
+
+test('F37-19 the lab cannot go red without a readable annotation (trap + collapsed ::error:: + forensics step)', () => {
+  const lab = fs.readFileSync('.github/workflows/autologin-lab.yml', 'utf8');
+  // the two F37 cells catch unhandled exceptions and say so on ONE line
+  assert.ok((lab.match(/stage=unhandled/g) || []).length >= 2, 'the F37 cells have no unhandled-error trap');
+  assert.ok((lab.match(/\$f37one = \(\$Detail -replace/g) || []).length >= 2,
+    'the fail helpers do not collapse their detail (a multi-line workflow command is dropped by GitHub)');
+  // the lab cert carries BOTH extensions, with the documented fallback
+  assert.ok(lab.includes("$labEku = '2.5.29.37={text}1.3.6.1.5.5.7.3.1'"), 'the lab cert lost the ServerAuth EKU');
+  assert.ok(lab.includes("$labSan = '2.5.29.17={text}DNS='"), 'the lab cert lost the SAN');
+  assert.ok(lab.includes('New-SelfSignedCertificate -Subject'), 'the lab cert is not built from an explicit subject');
+  assert.ok(lab.includes('$labCertForm'), 'the lab does not report which cert form it used');
+  // the forensics step re-emits evidence whenever a cell failed
+  const q = lab.slice(lab.indexOf('Q: failure forensics'), lab.indexOf('G: setup-time'));
+  assert.ok(q.length > 100, 'the failure-forensics step is missing');
+  assert.ok(q.includes('if: ${{ failure() }}'), 'the forensics step does not run on failure');
+  assert.ok(q.includes('::error::[forensics]'), 'the forensics step emits no annotation');
+  assert.ok(q.includes('Format-RdpTelescopeDump'), 'the forensics step does not re-print the telescope');
+  assert.ok(q.includes('de-diag'), 'the forensics step does not re-emit the cell classification files');
+});
+
 test('F37-17 (lab fixture) the REAL native-status sample renders green through the shipped renderer', () => {
   const fx = process.env.F37_TEL_FIXTURE;
   if (!fx) { console.log('[F37] no F37_TEL_FIXTURE set - the lab-only live-sample cell is skipped'); return; }

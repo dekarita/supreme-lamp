@@ -506,10 +506,18 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          trap {
+              $f37m = ($_.Exception.Message -replace "`r?`n", ' / ')
+              if ($f37m.Length -gt 700) { $f37m = $f37m.Substring(0, 700) + ' ...' }
+              Write-Host ('::error::[R] stage=unhandled :: ' + $_.Exception.GetType().Name + ' :: ' + $f37m + ' @ ' + (($_.InvocationInfo.PositionMessage) -replace "`r?`n", ' | '))
+              exit 1
+          }
           $diag = Join-Path $env:GITHUB_WORKSPACE 'de-diag'
           New-Item -ItemType Directory -Path $diag -Force | Out-Null
           function R-Fail([string]$Stage, [string]$Detail) {
-              Write-Host ('::error::[R] stage=' + $Stage + ' :: ' + $Detail)
+              $f37one = ($Detail -replace "`r?`n", ' / ')
+              if ($f37one.Length -gt 900) { $f37one = $f37one.Substring(0, 900) + ' ...' }
+              Write-Host ('::error::[R] stage=' + $Stage + ' :: ' + $f37one)
               try { ('stage=' + $Stage + "`n" + 'detail=' + $Detail) | Out-File (Join-Path $diag 'f17-classification.txt') -Encoding utf8 } catch { }
               exit 1
           }
@@ -538,7 +546,21 @@ jobs:
           # former red-cell-with-no-explanation class.
           $labSan = '2.5.29.17={text}DNS=' + $fqdn + '&DNS=localhost&DNS=' + $env:COMPUTERNAME
           $labEku = '2.5.29.37={text}1.3.6.1.5.5.7.3.1'
-          $lc = New-SelfSignedCertificate -DnsName $fqdn, 'localhost', $env:COMPUTERNAME -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(2) -Type Custom -KeySpec KeyExchange -KeyUsage DigitalSignature, KeyEncipherment -TextExtension @($labSan, $labEku)
+          # The SAN is written EXPLICITLY (the -DnsName form + a SAN
+          # TextExtension conflict on some builds) and the EKU is ServerAuth: a
+          # cert without it makes Schannel reset the connection BEFORE it is
+          # presented - the rst-before-cert class this cell could not explain.
+          $lc = $null
+          $labCertForm = 'subject+san+eku'
+          try {
+              $lc = New-SelfSignedCertificate -Subject ('CN=' + $fqdn) -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(2) -Type Custom -KeySpec KeyExchange -KeyUsage DigitalSignature, KeyEncipherment -TextExtension @($labSan, $labEku)
+          } catch {
+              Write-Host ('[R] SAN TextExtension form rejected (' + $_.Exception.Message + '); using -DnsName (same SAN) + ServerAuth EKU')
+              $labCertForm = 'dnsname+eku'
+              $lc = New-SelfSignedCertificate -DnsName $fqdn, 'localhost', $env:COMPUTERNAME -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(2) -Type Custom -KeySpec KeyExchange -KeyUsage DigitalSignature, KeyEncipherment -TextExtension @($labEku)
+          }
+          if (-not $lc) { R-Fail 'cert' 'New-SelfSignedCertificate produced nothing (both forms rejected)' }
+          Write-Host ('[R] lab cert form=' + $labCertForm + ' thumb=' + $lc.Thumbprint + ' notAfter=' + $lc.NotAfter.ToUniversalTime().ToString('o'))
           # [F37 §2] TELESCOPE BEFORE BIND: the listener has no certificate yet,
           # so the telescope must SAY SO instead of the cell going red silently.
           $telModR = Join-Path $env:GITHUB_WORKSPACE 'payloads/rdp-telescope.ps1'
@@ -805,10 +827,18 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          trap {
+              $f37m = ($_.Exception.Message -replace "`r?`n", ' / ')
+              if ($f37m.Length -gt 700) { $f37m = $f37m.Substring(0, 700) + ' ...' }
+              Write-Host ('::error::[Z] stage=unhandled :: ' + $_.Exception.GetType().Name + ' :: ' + $f37m + ' @ ' + (($_.InvocationInfo.PositionMessage) -replace "`r?`n", ' | '))
+              exit 1
+          }
           $diag = Join-Path $env:GITHUB_WORKSPACE 'de-diag'
           New-Item -ItemType Directory -Path $diag -Force | Out-Null
           function Z-Fail([string]$Stage, [string]$Detail) {
-              Write-Host ('::error::[Z] stage=' + $Stage + ' :: ' + $Detail)
+              $f37one = ($Detail -replace "`r?`n", ' / ')
+              if ($f37one.Length -gt 900) { $f37one = $f37one.Substring(0, 900) + ' ...' }
+              Write-Host ('::error::[Z] stage=' + $Stage + ' :: ' + $f37one)
               try { ('stage=' + $Stage + "`n" + 'detail=' + $Detail) | Out-File (Join-Path $diag 'f37-classification.txt') -Encoding utf8 } catch { }
               exit 1
           }
@@ -2272,6 +2302,50 @@ jobs:
           Write-Host '[Y] (b) PASS: 36870 in connLog renders "36870 present" + key ACL dump needed => copy-line to session'
           Write-Host '[Y] (c) PASS: all 5 checks green'
           'Y_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+      # [F37 §2] FAILURE FORENSICS: a red cell used to reach the session as
+      # "exit code 1" and nothing else (the log blob is unreachable). Every
+      # de-diag classification file, every telescope JSONL and the listener face
+      # as it stands NOW are re-emitted as single-line annotations, so the next
+      # red run names its own death point.
+      - name: "Q: failure forensics (single-line annotations + telescope)"
+        if: ${{ failure() }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          function Emit([string]$Tag, [string]$Text) {
+              if (-not $Text) { return }
+              $one = ($Text -replace "`r?`n", ' / ')
+              if ($one.Length -gt 900) { $one = $one.Substring(0, 900) + ' ...' }
+              Write-Host ('::error::[forensics] ' + $Tag + ' :: ' + $one)
+          }
+          $diag = Join-Path $env:GITHUB_WORKSPACE 'de-diag'
+          if (Test-Path -LiteralPath $diag) {
+              foreach ($f in @(Get-ChildItem -LiteralPath $diag -File -ErrorAction SilentlyContinue | Select-Object -First 12)) {
+                  Emit $f.Name ([System.IO.File]::ReadAllText($f.FullName))
+              }
+          }
+          foreach ($t in @(Get-ChildItem -Path $env:GITHUB_WORKSPACE -Recurse -File -Filter '*.jsonl' -ErrorAction SilentlyContinue | Select-Object -First 6)) {
+              Emit $t.Name ([System.IO.File]::ReadAllText($t.FullName))
+          }
+          try {
+              $mod = Join-Path $env:GITHUB_WORKSPACE 'payloads/rdp-telescope.ps1'
+              if (Test-Path -LiteralPath $mod) {
+                  . $mod
+                  $fq = 'lab-host.dekarita.tailnet-lab.ts.net'
+                  try { $cfg = (Get-Content -Raw -LiteralPath (Join-Path 'C:\ghrdp' 'config.json')) | ConvertFrom-Json; if ($cfg.dnsName) { $fq = [string]$cfg.dnsName } } catch { }
+                  $tel = Invoke-RdpTelescope -Fqdn $fq -Src 'forensics' -Local -Ip '127.0.0.1' -SkipLogon -SkipCred
+                  Emit 'telescope-now' (Format-RdpTelescopeDump -Telescope $tel)
+              }
+          } catch { Emit 'telescope-now-error' ([string]$_.Exception.Message) }
+          try {
+              $ev = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Schannel'; StartTime = (Get-Date).AddMinutes(-30) } -MaxEvents 12 -ErrorAction SilentlyContinue | ForEach-Object { $_.TimeCreated.ToString('o') + ' id=' + $_.Id + ' ' + (($_.Message -split "`r?`n")[0]) })
+              if ($ev.Count -gt 0) { Emit 'schannel-tail' ($ev -join ' // ') }
+          } catch { }
+          try {
+              $raw = Get-Content -Raw -LiteralPath (Join-Path 'C:\ghrdp' 'config.json') -ErrorAction SilentlyContinue
+              if ($raw) { Emit 'lab-config' ([string]$raw) }
+          } catch { }
+          Write-Host '[Q] forensics done'
       - name: "G: setup-time measurement + lab matrix summary"
         if: ${{ always() }}
         shell: pwsh

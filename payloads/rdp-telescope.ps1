@@ -71,7 +71,7 @@ $script:F37TelFields = @{
     cred     = @('credTarget', 'credExists', 'credType', 'credUser')
     logon    = @('eventId', 'logonType', 'sub', 'eventTs', 'count4624', 'count4625')
     schannel = @('schannelIds', 'lastSchannelId', 'lastSchannelTs', 'schannelWhy', 'sinceSec')
-    listener = @('boundThumb', 'servedThumb', 'inStore', 'hasKey', 'container', 'containerPath', 'certutilContainer', 'aclSids', 'aclRead', 'aclOk', 'serving')
+    listener = @('boundThumb', 'servedThumb', 'inStore', 'hasKey', 'container', 'containerPath', 'certutilContainer', 'aclSids', 'aclRead', 'aclOk', 'serving', 'hasServerAuth', 'eku', 'san')
     beacon   = @('beacon')
 }
 function Get-RdpTelescopeFormatTokens {
@@ -425,7 +425,7 @@ function Get-RdpTelescopeListener {
         [string]$Trace = '',
         [string]$Src = ''
     )
-    $fields = @{ boundThumb = ''; servedThumb = $ServedThumb; inStore = $false; hasKey = $false; container = ''; containerPath = ''; certutilContainer = ''; aclSids = @(); aclRead = $false; aclOk = $false; serving = $false }
+    $fields = @{ boundThumb = ''; servedThumb = $ServedThumb; inStore = $false; hasKey = $false; container = ''; containerPath = ''; certutilContainer = ''; aclSids = @(); aclRead = $false; aclOk = $false; serving = $false; hasServerAuth = $false; eku = @(); san = @() }
     $why = @()
     try {
         $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
@@ -470,6 +470,23 @@ function Get-RdpTelescopeListener {
                 }
             } catch { $why += ('key container resolution failed: ' + $_.Exception.Message) }
             if (-not $fields.container) { $why += 'no persisted key container name' }
+            # The certificate's own acceptance: without the ServerAuth EKU
+            # Schannel resets the connection BEFORE presenting it, and without a
+            # SAN naming the FQDN the client fails the name check. Both are
+            # named here, because the handshake cannot say either one.
+            try {
+                $ekuExt = @($cert.Extensions | Where-Object { $_.Oid -and $_.Oid.Value -eq '2.5.29.37' } | Select-Object -First 1)
+                if ($ekuExt.Count -gt 0) {
+                    $ekuObj = New-Object System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension($ekuExt[0], $false)
+                    $fields.eku = @($ekuObj.EnhancedKeyUsages | ForEach-Object { [string]$_.Value })
+                    $fields.hasServerAuth = [bool](@($fields.eku | Where-Object { $_ -eq '1.3.6.1.5.5.7.3.1' }).Count -gt 0)
+                }
+                if (-not $fields.hasServerAuth) { $why += 'bound cert has NO ServerAuth EKU (Schannel resets before presenting it: rst-before-cert)' }
+                $sanExt = @($cert.Extensions | Where-Object { $_.Oid -and $_.Oid.Value -eq '2.5.29.17' } | Select-Object -First 1)
+                if ($sanExt.Count -gt 0) {
+                    $fields.san = @(($sanExt[0].Format($false) -split ',\s*') | ForEach-Object { ([string]$_ -replace '^DNS Name=', '') })
+                } else { $why += 'bound cert has NO subject alternative name (name-mismatch on every client)' }
+            } catch { $why += ('EKU/SAN read failed: ' + $_.Exception.Message) }
             try {
                 $cu = @(certutil.exe -store -v My $boundHex 2>&1 | ForEach-Object { [string]$_ })
                 foreach ($l in $cu) { if ($l -match '(?i)container') { $fields.certutilContainer = $l.Trim(); break } }
@@ -490,7 +507,7 @@ function Get-RdpTelescopeListener {
         }
         if (-not $fields.aclOk) { $why += 'NETWORK SERVICE (S-1-5-20) Read ACE absent or unverified' }
         if (-not $fields.serving) { $why += ('served ' + $fields.servedThumb + ' != bound ' + $fields.boundThumb) }
-        $ok = ($fields.inStore -and $fields.hasKey -and $fields.aclOk -and $fields.serving)
+        $ok = ($fields.inStore -and $fields.hasKey -and $fields.hasServerAuth -and $fields.aclOk -and $fields.serving)
         return New-RdpTelescopeLine -Stage 'listener' -Ok $ok -Why ($why -join '; ') -Fields $fields -Trace $Trace -Src $Src
     } catch {
         return New-RdpTelescopeLine -Stage 'listener' -Ok $false -Why ('listener probe failed: ' + $_.Exception.Message) -Fields $fields -Trace $Trace -Src $Src
@@ -506,6 +523,7 @@ function Get-RdpTelescopeFields {
     $out = [ordered]@{
         boundThumb = ''; servedThumb = ''; serving = $false; bindDrift = $false
         inStore = $false; hasKey = $false; container = ''; aclRead = $false
+        hasServerAuth = $false; eku = @(); san = @()
         aclSids = @(); schannelTail = @(); schannelWhy = ''
         protocol = ''; cipher = ''; failureAt = ''
         logonEventId = ''; logonSub = ''; count4624 = 0; count4625 = 0
@@ -531,6 +549,9 @@ function Get-RdpTelescopeFields {
                 if ($o.PSObject.Properties['hasKey']) { $out.hasKey = [bool]$o.hasKey }
                 if ($o.PSObject.Properties['container']) { $out.container = [string]$o.container }
                 if ($o.PSObject.Properties['aclRead']) { $out.aclRead = [bool]$o.aclRead }
+                if ($o.PSObject.Properties['hasServerAuth']) { $out.hasServerAuth = [bool]$o.hasServerAuth }
+                if ($o.PSObject.Properties['eku']) { $out.eku = @($o.eku) }
+                if ($o.PSObject.Properties['san']) { $out.san = @($o.san) }
                 if ($o.PSObject.Properties['aclSids']) { $out.aclSids = @($o.aclSids) }
             }
             'schannel' {
@@ -564,6 +585,9 @@ function Get-RdpTelescopeDeathPoint {
     }
     if ($byStage.ContainsKey('dns') -and -not $byStage['dns'].ok) { return 'dns' }
     if ($byStage.ContainsKey('tcp') -and -not $byStage['tcp'].ok) { return 'tcp' }
+    $listenerObj = 0
+    if ($byStage.ContainsKey('listener')) { $listenerObj = $byStage['listener'] }
+    if ($listenerObj -and $listenerObj.PSObject.Properties['hasServerAuth'] -and -not [bool]$listenerObj.hasServerAuth) { return 'tls-eku' }
     if ($tlsFailure) {
         if ($tlsFailure -eq 'rst-before-cert') { return 'tls-cert' }
         if ($tlsFailure -eq 'name-mismatch') { return 'name-mismatch' }

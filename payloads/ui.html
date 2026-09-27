@@ -2092,11 +2092,16 @@ function paintSrvConnLog(s){
    var drift=!!tel.bindDrift||(bt&&st2&&bt!==st2);
    var sids=(tel.aclSids&&tel.aclSids.length)?tel.aclSids.join(' '):'not read';
    var sch=(tel.schannelTail&&tel.schannelTail.length)?tel.schannelTail.join(','):'none';
+   // [F37 §4] the certificate's OWN acceptance: a bound cert without the
+   // ServerAuth EKU is reset by Schannel before it is ever presented, which no
+   // client-side handshake can say - the row says it here.
+   var ekuBad=(tel.hasServerAuth===false);
+   var ekuTxt=ekuBad?(' EKU=NO-ServerAuth eku='+((tel.eku&&tel.eku.length)?tel.eku.join(','):'none')+' san='+((tel.san&&tel.san.length)?tel.san.join(','):'none')):'';
    tb.textContent='telescope['+String(tel.src||'live')+'] bound='+(bt||'(none)')+' served='+(st2||'(none)')+
     ' '+(drift?'DRIFT':'match')+' aclRead='+(tel.aclRead===true?'yes':'NO')+' aclSids='+sids+
-    ' schannel=['+sch+']'+(tel.schannelWhy?(' '+tel.schannelWhy):'')+
+    ' schannel=['+sch+']'+(tel.schannelWhy?(' '+tel.schannelWhy):'')+ekuTxt+
     ' deathPoint='+String(tel.deathPoint||'none')+(tc?(' (tick '+(tc.alive===true?'alive':'STALE')+')'):'');
-   tb.style.color=drift?'#f5b7b7':((tel.deathPoint&&tel.deathPoint!=='none')?'#f5d9b7':'');
+   tb.style.color=(drift||ekuBad)?'#f5b7b7':((tel.deathPoint&&tel.deathPoint!=='none')?'#f5d9b7':'');
   }
  }
  if(tls){
