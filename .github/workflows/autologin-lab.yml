@@ -15,6 +15,7 @@ on:
       - payloads/ghrdp-rdp-launcher.cs
       - payloads/install.cmd
       - payloads/ghrdp-server.ps1
+      - payloads/rdp-telescope.ps1
       - payloads/edge-ext-resolve.ps1
       - payloads/ghrdp-cred-shim.js
       - payloads/ui.html
@@ -519,11 +520,32 @@ jobs:
           try { Start-Service TermService -ErrorAction SilentlyContinue } catch { }
           Get-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
           New-NetFirewallRule -DisplayName 'ghrdp-rdp-3389' -Direction Inbound -LocalPort 3389 -Protocol TCP -Action Allow -RemoteAddress '100.64.0.0/10' -Profile Any -Enabled True | Out-Null
-          $lc = New-SelfSignedCertificate -DnsName $fqdn -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(2)
+          # [F37] Shared module emits JSONL per stage; before-bind output survives any later failure.
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads\rdp-telescope.ps1')
+          function Write-F37Dump([string]$Label, [string]$Path) {
+              Write-Host ('[F37] ' + $Label + ' telescope dump:')
+              $lines = @(Get-Content -LiteralPath $Path)
+              foreach ($line in $lines) { Write-Host ('[F37] ' + $line) }
+              if ($env:GITHUB_STEP_SUMMARY) { ('### F37 telescope ' + $Label + "`n```jsonl`n" + ($lines -join "`n") + "`n```" ) | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY }
+          }
+          $beforePath = Join-Path $env:RUNNER_TEMP 'f37-before.jsonl'
+          Remove-Item $beforePath -Force -ErrorAction SilentlyContinue
+          Get-RdpTelescope -Target 'localhost' -TraceId ([guid]::NewGuid().ToString('N')) -OutputPath $beforePath | Out-Null
+          Write-F37Dump 'before-bind' $beforePath
+          # RDP Schannel and the exact TLS probe name in SAN;
+          # the fake tailnet FQDN is also present for end-to-end lab parity.
+          $lc = New-SelfSignedCertificate -DnsName @('localhost', $env:COMPUTERNAME, $fqdn) -Type SSLServerAuthentication -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(2)
           # Trust only this ephemeral lab cert so the production probe's full
           # X509Chain.Build check is exercised without relaxing production.
           $labRoot = New-Object System.Security.Cryptography.X509Certificates.X509Store('Root', 'LocalMachine')
           try { $labRoot.Open('ReadWrite'); $labRoot.Add($lc) } finally { $labRoot.Close() }
+          # RDP's service identity must be able to read the actual machine key.
+          $labPriv = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($lc)
+          $labKeyFile = if ($labPriv -is [System.Security.Cryptography.RSACng]) { Join-Path $env:ProgramData ('Microsoft\Crypto\Keys\' + $labPriv.Key.UniqueName) } else { Join-Path $env:ProgramData ('Microsoft\Crypto\RSA\MachineKeys\' + $labPriv.CspKeyContainerInfo.UniqueKeyContainerName) }
+          if (-not (Test-Path -LiteralPath $labKeyFile)) { R-Fail 'cert-key' 'the lab certificate private-key container is absent' }
+          $labAcl = Get-Acl -LiteralPath $labKeyFile
+          $labAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new('S-1-5-20'), [System.Security.AccessControl.FileSystemRights]::Read, [System.Security.AccessControl.AccessControlType]::Allow))
+          Set-Acl -LiteralPath $labKeyFile -AclObject $labAcl
           $hash = -split ($lc.Thumbprint -replace '(..)', '$1 ') | ForEach-Object { [byte]("0x$_") }
           New-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name 'SSLCertificateSHA1Hash' -PropertyType Binary -Value $hash -Force | Out-Null
           try { Restart-Service TermService -Force -ErrorAction SilentlyContinue } catch { }
@@ -531,6 +553,18 @@ jobs:
           for ($i = 0; $i -lt 30 -and -not $up; $i++) { try { $up = [bool](Test-NetConnection 127.0.0.1 -Port 3389 -WarningAction SilentlyContinue).TcpTestSucceeded } catch { }; if (-not $up) { Start-Sleep -Seconds 2 } }
           if (-not $up) { R-Fail 'baseline' 'TermService never accepted TCP 127.0.0.1:3389 on the lab runner' }
           Write-Host '[R] baseline OK: 3389 listening, NLA=1, rule ghrdp-rdp-3389 scoped, cert bound'
+          $afterPath = Join-Path $env:RUNNER_TEMP 'f37-after.jsonl'
+          Remove-Item $afterPath -Force -ErrorAction SilentlyContinue
+          Get-RdpTelescope -Target 'localhost' -TraceId ([guid]::NewGuid().ToString('N')) -OutputPath $afterPath | Out-Null
+          Write-F37Dump 'after-bind-restart' $afterPath
+          $after = @(Get-Content -LiteralPath $afterPath | ForEach-Object { $_ | ConvertFrom-Json })
+          $tls = @($after | Where-Object stage -eq 'tls' | Select-Object -Last 1)[0]
+          $listener = @($after | Where-Object stage -eq 'listener' | Select-Object -Last 1)[0]
+          if (-not $tls -or -not $listener -or $tls.status -ne 'ok' -or -not $tls.servedThumb -or $tls.servedThumb -ne $listener.boundThumb) {
+              R-Fail 'f37-bind-effectiveness' ('telescope gate failed: tls=' + ($tls | ConvertTo-Json -Compress) + ' listener=' + ($listener | ConvertTo-Json -Compress))
+          }
+          Write-Host ('[F37] PASS listener-handshake-ok servedThumb=' + $tls.servedThumb + ' boundThumb=' + $listener.boundThumb)
+          if ($env:GITHUB_STEP_SUMMARY) { ('**listener-handshake-ok** servedThumb=`' + $tls.servedThumb + '` boundThumb=`' + $listener.boundThumb + '`') | Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY }
           # --- extract the §1 probe VERBATIM from main.yml (byte-faithful to the
           # step production runs; the launch-gates F17 block pins the markers).
           $wfPath = Join-Path $env:GITHUB_WORKSPACE '.github\workflows\main.yml'

@@ -230,15 +230,16 @@ test('F28-2 FIX & RECONNECT mints a ticket then fires ghrdp://recred with ONLY t
   };
   vm.createContext(ctx);
   const src = a => html.slice(html.indexOf(a), html.indexOf(a.replace('begin', 'end')));
-  vm.runInContext(src('// [F28 §2 recovery-url-begin]') + '\n' + src('// [F28 §2 recovery-click-begin]'), ctx);
+  const trace = html.slice(html.indexOf('function ghrdpTraceId'), html.indexOf('function ghrdpRdpUrl'));
+  vm.runInContext(trace + '\n' + src('// [F28 §2 recovery-url-begin]') + '\n' + src('// [F28 §2 recovery-click-begin]'), ctx);
   await ctx.frBtn.onclick();
   assert.equal(requests[0].url, '/api/rdp-token');
   assert.equal(requests[0].opt.method, 'POST');
   assert.equal(requests[0].opt.headers.Authorization, 'Bearer fixture-bearer');
-  assert.equal(launch[0], 'ghrdp://recred?server=' + fqdn + '&user=rdpuser&t=' + 'b'.repeat(32));
-  // the recovery URL may carry the ticket and identity ONLY - never a credential.
+  assert.match(launch[0], /^ghrdp:\/\/recred\?server=.*&user=rdpuser&trace=[0-9a-f]{32}&t=b{32}$/);
+  // the recovery URL may carry the ticket, trace ID, and identity ONLY - never a credential.
   const q = new URL(launch[0].replace('ghrdp://recred', 'https://x/y'));
-  assert.deepEqual([...q.searchParams.keys()].sort(), ['server', 't', 'user']);
+  assert.deepEqual([...q.searchParams.keys()].sort(), ['server', 't', 'trace', 'user']);
   assert.doesNotMatch(launch[0], /pass|password|pwd|secret|apikey/i);
   assert.match(els.recoveryNote.textContent, /recred-redeemed -> credwrite-ok -> mstsc-started/);
   // a ticket-issue failure launches nothing

@@ -7,6 +7,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: F37 telescope shared-contract gates
+        shell: bash
+        run: node --test tests/f37-telescope.test.js
       - name: D/E launch gates
         shell: bash
         run: |

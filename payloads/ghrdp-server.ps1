@@ -23,6 +23,11 @@ $script:LogonStatePath = Join-Path $Root 'rdp-logon.json'
 # [F30 §3] server connection-log state (own file: same no-writer-race rule as
 # the F28 logon state - main.yml only MIRRORS it into config.json).
 $script:ConnLogStatePath = Join-Path $Root 'rdp-connlog.json'
+# [F37] telescope has its own state file; its source module is deployed beside this server.
+$script:TelescopeStatePath = Join-Path $Root 'rdp-telescope.json'
+$script:TelescopeModulePath = Join-Path $Root 'rdp-telescope.ps1'
+$script:TelescopeIntervalSec = 60
+$script:TelescopeScans = 0
 $script:NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:WebDeskHtml = ''
 $script:Token = ''
@@ -181,6 +186,29 @@ function Get-RequestParts {
     $method = 'GET'
     if ($lines.Count -gt 0 -and $lines[0]) { $tok0 = ($lines[0].Trim() -split ' ')[0]; if ($tok0) { $method = $tok0.ToUpper() } }
     return @{ path = $path; headers = $headers; query = $query; method = $method }
+}
+# [F37] Same JSONL parser/payload as the lab and production runner. This independent
+# 60s server tick measures a real RDP X.224/TLS handshake; no credential bytes read.
+function Update-RdpTelescope {
+    try {
+        if (-not (Test-Path -LiteralPath $script:TelescopeModulePath)) { throw 'telescope-module-missing' }
+        $cfg = Read-JsonFile -Path $script:CfgPath
+        $target = if ($cfg -and $cfg.dnsName) { [string]$cfg.dnsName } else { [System.Net.Dns]::GetHostName() }
+        . $script:TelescopeModulePath
+        $trace = [guid]::NewGuid().ToString('N')
+        # Correlate the runner's nearest live probe to the latest client click.
+        try { $lastBeacon = Read-JsonFile -Path (Join-Path $Root 'handler-hello-last.json'); if ([string]$lastBeacon.traceId -match '^[0-9a-f]{32}$') { $trace = [string]$lastBeacon.traceId } } catch { }
+        $tmp = $script:TelescopeStatePath + '.jsonl'
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        Get-RdpTelescope -Target $target -TraceId $trace -OutputPath $tmp | Out-Null
+        $items = @(); if (Test-Path -LiteralPath $tmp) { $items = @(Get-Content -LiteralPath $tmp | ForEach-Object { $_ | ConvertFrom-Json }) }
+        $tls = @($items | Where-Object stage -eq 'tls' | Select-Object -Last 1)[0]
+        $listener = @($items | Where-Object stage -eq 'listener' | Select-Object -Last 1)[0]
+        $state = [ordered]@{ ts=[datetime]::UtcNow.ToString('o'); target=$target; traceId=$trace; items=$items; servedThumb=[string]$tls.servedThumb; boundThumb=[string]$listener.boundThumb; handshakeOk=([string]$tls.status -eq 'ok' -and [string]$tls.servedThumb -ne '') }
+        [System.IO.File]::WriteAllText($script:TelescopeStatePath, ($state | ConvertTo-Json -Depth 8 -Compress), $script:NoBom)
+        $script:TelescopeScans++
+        Write-Host ('[F37] telescope trace=' + $trace + ' target=' + $target + ' handshake=' + $state.handshakeOk + ' served=' + $state.servedThumb + ' bound=' + $state.boundThumb)
+    } catch { Write-Host ('[F37] telescope unavailable: ' + $_.Exception.GetType().Name) }
 }
 function Test-IsLoopbackAddr {
     # [F10-15] `$ip.IsLoopback` resolved to $false for a genuine 127.0.0.1
@@ -1263,6 +1291,9 @@ function Invoke-ClientRequest {
             try { $connState.connLog = Merge-F31cConnLog -ConnLog $connState.connLog -Sch (Get-F31cSchannelWindow) } catch { }
             $tlsNormState = $null
             try { $tlsNormState = Get-F30TlsNormState -StatePath (Join-Path $Root 'tls-norm.json') } catch { }
+            # [F37] live, independently collected X.224/TLS + listener comparison.
+            $telescopeState = $null; $telescopeAgeSec = $null
+            try { $telescopeState = Read-JsonFile -Path $script:TelescopeStatePath; if ($telescopeState) { $telescopeAgeSec = Get-UtcAgeSeconds $telescopeState.ts } } catch { }
             $rlOut = $null
             if ($cfgN -and $cfgN.PSObject.Properties['rdpListener'] -and $cfgN.rdpListener) { $rlOut = $cfgN.rdpListener }
             if ($null -eq $rlOut) { $rlOut = New-Object psobject }
@@ -1282,6 +1313,8 @@ function Invoke-ClientRequest {
                 # the F30 normalization step) - the row shows it next to the
                 # client-side cipher list.
                 $rlOut | Add-Member -NotePropertyName tlsNorm -NotePropertyValue $tlsNormState -Force
+                $rlOut | Add-Member -NotePropertyName telescope -NotePropertyValue $telescopeState -Force
+                $rlOut | Add-Member -NotePropertyName telescopeAgeSec -NotePropertyValue $telescopeAgeSec -Force
             } catch { }
             $ns = [ordered]@{
                 fqdn = $fqdnN
@@ -1351,6 +1384,7 @@ function Invoke-ClientRequest {
                     ts = [string]$hb.ts
                     verb = [string]$hb.verb
                     details = [string]$hb.details
+                    traceId = $(if ([string]$hb.traceId -match '^[0-9a-f]{32}$') { [string]$hb.traceId } else { '' })
                     ok = $(if ($null -ne $hb.ok) { [bool]$hb.ok } else { $false })
                 }
             }
@@ -1369,7 +1403,7 @@ function Invoke-ClientRequest {
                         # parsed as local (+05:30 => beacon age +19800s).
                         # [F19 §2] exe: the client's launcher version stamp from
                         # the beacon (string only, never a path/credential).
-                        $ns.lastHandlerVerb = @{ verb = [string]$lv.verb; ok = [bool]$lv.ok; details = [string]$lv.details; exe = $(if ($lv.PSObject.Properties['exe']) { ([string]$lv.exe).Substring(0, [Math]::Min(120, ([string]$lv.exe).Length)) } else { '' }); ts = (ConvertTo-UtcIso (Get-RawJsonTs $lvFile)) }
+                        $ns.lastHandlerVerb = @{ verb = [string]$lv.verb; ok = [bool]$lv.ok; details = [string]$lv.details; traceId = $(if ([string]$lv.traceId -match '^[0-9a-f]{32}$') { [string]$lv.traceId } else { '' }); exe = $(if ($lv.PSObject.Properties['exe']) { ([string]$lv.exe).Substring(0, [Math]::Min(120, ([string]$lv.exe).Length)) } else { '' }); ts = (ConvertTo-UtcIso (Get-RawJsonTs $lvFile)) }
                     }
                 }
             } catch { }
@@ -1418,8 +1452,9 @@ function Invoke-ClientRequest {
                     $bTxt = [System.Text.Encoding]::UTF8.GetString([byte[]]$bodyRaw)
                     $bj = $bTxt | ConvertFrom-Json -ErrorAction SilentlyContinue
                     if ($bj) {
-                        if ([string]$bj.verb -in @('rdp','check','setup','install','connect')) { $hh.verb = [string]$bj.verb } else { $hh.verb = 'other' }
+                        if ([string]$bj.verb -in @('rdp','diag','check','setup','install','connect')) { $hh.verb = [string]$bj.verb } else { $hh.verb = 'other' }
                         if ($null -ne $bj.ok) { $hh.ok = [bool]$bj.ok }
+                        if ([string]$bj.traceId -match '^[0-9a-f]{32}$') { $hh.traceId = [string]$bj.traceId }
                         # F27: reject arbitrary telemetry strings rather than redact guesses.
                         $detail = [string]$bj.details
                         # [F28 §2/§3] recred-redeemed = the recovery redemption;
@@ -1428,7 +1463,7 @@ function Invoke-ClientRequest {
                         # [F30 §2.1/§2.3] purged <n> stale entries, wrote new as
                         # Domain = the purge-before-write proof; rdp-truncated =
                         # the .rdp byte-floor failure (never a silent launch).
-                        if ($detail -match '^(invoked|ticket-redeemed|recred-redeemed|credwrite-ok|credwrite-failed|rdp-written|rdp-truncated|purged [0-9]+ stale entries, wrote new as Domain|mstsc-started( pid=[0-9]+)?|mstsc-exited=-?[0-9]+|check-shown|cmdkey-shown|cmdkey-timeout|cmdkey-stored=(true|false)|client-dns-off|cred-param-rejected|invalid-target|fallback-mstsc-native-prompt|fallback-cmdkey reason=(ticket-missing|unreachable|ticket-invalid-or-expired))$') { $hh.details = $detail }
+                        if ($detail -match '^(invoked|ticket-redeemed|recred-redeemed|credwrite-ok|credwrite-failed|rdp-written|rdp-truncated|purged [0-9]+ stale entries, wrote new as Domain|mstsc-started( pid=[0-9]+)?|mstsc-exited=-?[0-9]+|check-shown|cmdkey-shown|cmdkey-timeout|cmdkey-stored=(true|false)|client-dns-off|cred-param-rejected|invalid-target|fallback-mstsc-native-prompt|fallback-cmdkey reason=(ticket-missing|unreachable|ticket-invalid-or-expired)|telescope-(dns|tcp|tls|cred)-(ok|fail))$') { $hh.details = $detail }
                         elseif ($detail -like 'dns-guard:*') { $hh.details = 'dns-guard-failed' }
                         else { $hh.details = 'launcher-error' }
                         # [F19 §2] exe: the launcher's version stamp, used by the
@@ -2272,6 +2307,9 @@ $lastLogonScan = Get-Date
 # scanTs are stamped by the function instead of throwing).
 try { Update-RdpConnLog -StatePath $script:ConnLogStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
 $lastConnLogScan = Get-Date
+# [F37] establish initial baseline before the dashboard starts serving requests.
+try { Update-RdpTelescope } catch { }
+$lastTelescopeScan = Get-Date
 $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse($Bind), $Port)
 try { $listener.Start() } catch {
     try { [System.IO.File]::WriteAllText($script:OkFile, 'LISTEN_FAIL: ' + $_.Exception.Message, $script:NoBom) } catch { }
@@ -2330,6 +2368,11 @@ while (((Get-Date) - $start) -lt $limit) {
     if (((Get-Date) - $lastConnLogScan).TotalSeconds -ge $script:F30ConnLogIntervalSec) {
         $lastConnLogScan = Get-Date
         try { Update-RdpConnLog -StatePath $script:ConnLogStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
+    }
+    # [F37] 60s live server-side telescope; bind drift is visible without a workflow tick.
+    if (((Get-Date) - $lastTelescopeScan).TotalSeconds -ge $script:TelescopeIntervalSec) {
+        $lastTelescopeScan = Get-Date
+        try { Update-RdpTelescope } catch { }
     }
     if (((Get-Date) - $lastHeal).TotalSeconds -ge 60) {
         $lastHeal = Get-Date

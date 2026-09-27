@@ -554,6 +554,12 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <span class="note" id="srvConnLogTls" style="margin:0"></span>
     <span class="note" style="margin:0">reason codes: tls-forcibly-closed | tls-handshake-failed | cert-rejected | connection-reset | auth-succeeded | auth-failed | listener-lifecycle | session-state. A "forcibly closed"/handshake/reset reason here IS the pre-logon TLS drop the Security log cannot show - run the purge + cipher copy-lines under CONNECTION DIAGNOSTICS.</span>
   </div>
+  <div class="row" id="rdpTelescopeRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
+    <span class="k" style="font-weight:600">RDP TELESCOPE TRACE</span>
+    <span class="note" id="rdpTelescopeState" style="margin:0">waiting for runner/client trace</span>
+    <button id="rdpTelescopeRunDiag" type="button" style="align-self:flex-start">RUN DIAG</button>
+    <span class="note" id="rdpTelescopeLines" style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace"></span>
+  </div>
   <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>
   <div class="row"><span class="k">Cert bound</span><span class="v" id="nrCert">...</span><span class="note" id="nrCertReason">RDP-Tcp SSLCertificateSHA1Hash present (from /api/native-status).</span></div>
   <div class="row"><span class="k">NLA</span><span class="v" id="nrNla">...</span><span class="note" id="nrNlaReason">UserAuthentication == 1 on the RDP-Tcp listener.</span></div>
@@ -1278,6 +1284,7 @@ async function nativeStatus(){
   paintRdpListener(rl,s?s.rdpListenerAgeSec:null);
   // [F30 §3] SERVER CONN LOG row (RDP Operational logs; handshake drops live here).
   paintSrvConnLog(s);
+  paintRdpTelescope(s);
   // [F30 §2.2] the age-aware purge command is fetched once (dash-token) and
   // rendered copy-only - the page never runs it.
   try { var f30p=loadServerPurgeCmd(); if(f30p&&f30p.catch)f30p.catch(function(){}); } catch(_){ }
@@ -1882,6 +1889,26 @@ function paintSrvConnLog(s){
  }
 }
 // [F30 §3 connlog-render-end]
+// [F37] One trace view joins client beacons, the live runner X.224/TLS probe,
+// listener bind/ACL/Schannel fields, and the latest auth snapshot. First red is
+// the death point; rendering is textContent-only and never exposes secrets.
+function paintRdpTelescope(s){
+ var row=document.getElementById('rdpTelescopeRow');if(!row)return;row.style.display='';
+ var rl=(s&&s.rdpListener)||{}, t=rl.telescope||null, beacons=(s&&s.launcher&&s.launcher.beacons)||[];
+ var trace='';for(var i=beacons.length-1;i>=0;i--){if(/^[0-9a-f]{32}$/.test(String(beacons[i].traceId||''))){trace=String(beacons[i].traceId);break;}}
+ if(!trace&&t)trace=String(t.traceId||'');
+ var events=[];
+ beacons.forEach(function(b){if(trace&&b.traceId!==trace)return;var label='client '+String(b.details||b.verb||'beacon');events.push({ts:String(b.ts||''),red:b.ok===false,label:label,line:(b.ts||'')+' '+(b.ok===false?'FAIL ':'OK ')+label+' trace='+String(b.traceId||'')});});
+ var stages=(t&&t.items)||[];stages.forEach(function(x){var label='runner '+x.stage+' '+x.status+(x.failurePoint?(' '+x.failurePoint):'');events.push({ts:String(x.ts||''),red:x.status==='fail',label:String(x.stage||'runner'),line:(x.ts||'')+' '+label+' trace='+String(x.traceId||'')});if(x.stage==='listener')events.push({ts:String(x.ts||''),red:false,label:'listener metadata',line:'  boundThumb='+String(x.boundThumb||'')+' inStore='+String(x.inStore)+' hasKey='+String(x.hasKey)+' aclSids='+((x.aclSids||[]).join(','))+' certutil='+String(x.certutil||'')});});
+ var ae=rl.authEvents||null;if(ae){var authTs=String(ae.last4625At||ae.last4624At||'');events.push({ts:authTs,red:Number(ae.count4625||0)>0&&Number(ae.count4624||0)===0,label:'auth',line:(authTs||'')+' auth snapshot 4624='+String(ae.count4624||0)+' 4625='+String(ae.count4625||0)+' verdict='+String(ae.verdict||'unknown')+' last4625='+String(ae.last4625At||'')});}
+ events.sort(function(a,b){var aa=Date.parse(a.ts),bb=Date.parse(b.ts);return (isFinite(aa)?aa:0)-(isFinite(bb)?bb:0);});
+ var death='none';for(var j=0;j<events.length;j++){if(events[j].red){death=events[j].label;break;}}
+ var out=events.map(function(e){return e.line;});
+ var served=t&&t.servedThumb||'',bound=t&&t.boundThumb||'';out.push('live bind compare: servedThumb='+served+' boundThumb='+bound+' handshakeOk='+String(!!(t&&t.handshakeOk))+' ageSec='+String(rl.telescopeAgeSec));
+ var age=Number(rl.telescopeAgeSec);if(death==='none'&&(!t||rl.telescopeAgeSec==null||!isFinite(age)||age>120))death='runner-telescope-stale';
+ var st=document.getElementById('rdpTelescopeState');if(st)st.textContent=(trace?'trace='+trace:'trace not reported')+' first red death-point='+death;
+ var el=document.getElementById('rdpTelescopeLines');if(el)el.textContent=out.length?out.join('\n'):'waiting for a client beacon or runner telescope tick';
+}
 // [F24 §3] AUTH-REJECT DISCRIMINATOR: ONE decision row rendered from
 // rdpListener {credValid, authEvents, credsspStatus} - the three branches that
 // separate a 0x904/0x7 TcpStateFrontAuth reject into an actionable cause:
@@ -2143,8 +2170,12 @@ function paintRecovery(rl,s,nowMs){
 }
 // [F28 §2 recovery-card-end]
 // [F27 status-render-end]
+function ghrdpTraceId(){
+ var b=new Uint8Array(16);if(window.crypto&&window.crypto.getRandomValues)window.crypto.getRandomValues(b);else for(var i=0;i<16;i++)b[i]=Math.floor(Math.random()*256);
+ return Array.prototype.map.call(b,function(x){return ('0'+x.toString(16)).slice(-2);}).join('');
+}
 function ghrdpRdpUrl(fqdn,user,ip){
- var u='ghrdp://rdp?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user);
+ var u='ghrdp://rdp?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user)+'&trace='+ghrdpTraceId();
  if(ip&&/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(ip)){u+='&ip='+encodeURIComponent(ip);}
  return u;
 }
@@ -2154,7 +2185,7 @@ function ghrdpRdpUrl(fqdn,user,ip){
 // diagnosis parameter - recovery deliberately does not need it (the launcher's
 // DNS guard still runs and reports 'dns-guard failed' on its own).
 function ghrdpRecredUrl(fqdn,user){
- return 'ghrdp://recred?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user);
+ return 'ghrdp://recred?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user)+'&trace='+ghrdpTraceId();
 }
 // [F28 §2 recovery-url-end]
 function syncWinAuto(){
@@ -2262,6 +2293,14 @@ if(frBtn) frBtn.onclick=async function(ev){
  if(note)note.textContent='recovery dispatched - the launcher redeems the fresh ticket, overwrites the stored credential and reopens mstsc (watch the chain: recred-redeemed -> credwrite-ok -> mstsc-started)';
 };
 // [F28 §2 recovery-click-end]
+// [F37] Re-run the client-side DNS/TCP/X.224/TLS/credential-metadata probe without launching mstsc.
+var diagBtn=$('rdpTelescopeRunDiag');
+if(diagBtn)diagBtn.onclick=function(){
+ var fqdn=($('rdpFqdn')||{}).textContent||'',user=($('credUser')||{}).textContent||'';
+ if(!FQDN_RE.test(fqdn)||!user)return;
+ var trace=ghrdpTraceId();launchProto('ghrdp://diag?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user)+'&trace='+trace);
+ var st=$('rdpTelescopeState');if(st)st.textContent='client diagnostic dispatched trace='+trace+' - no mstsc launch';
+};
 // [F15 §3] [RUN CHECK] - fires the launcher's own self test (ghrdp://check): it
 // needs no server and ends in a MessageBox on the PC showing the registered reg
 // command, the TERMSRV credential state, the log path and the exe stamp. With a

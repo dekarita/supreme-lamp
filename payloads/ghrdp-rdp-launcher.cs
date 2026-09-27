@@ -93,8 +93,12 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Net;
+using System.Net.Security;
+using System.Net.Sockets;
 using System.Reflection;
+using System.Security.Authentication;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -107,14 +111,17 @@ using System.Threading;
 // that stored nothing can no longer reach a silent mstsc - the ticket is
 // retried once and the launch then carries the native credential prompt with
 // the 'fallback-mstsc-native-prompt' beacon.
-[assembly: AssemblyVersion("2.6.0.0")]
-[assembly: AssemblyFileVersion("2.6.0.0")]
+// F37 trace propagation changes client telemetry; keep the repository version monotonic.
+[assembly: AssemblyVersion("2.7.0.0")]
+[assembly: AssemblyFileVersion("2.7.0.0")]
 [assembly: AssemblyTitle("ghrdp-rdp-launcher")]
 
 internal static class GhrdpRdpLauncher
 {
-    private const string Ver = "2.6.0.0";
-    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F28 recred+fallback-gap; F30 purge+rdp-assert)";
+    private const string Ver = "2.7.0.0";
+    private const string Stamp = "ghrdp-rdp-launcher " + Ver + " (F37 trace; F28 recred+fallback-gap; F30 purge+rdp-assert)";
+    private static string TraceId = "";
+    private static string TraceVerb = "rdp";
     private const int DefaultPort = 7331;
     // [F19 §2] the RDP TCP port used ONLY for the client-DNS diagnosis probe
     // (the mstsc target itself always stays the MagicDNS FQDN).
@@ -247,7 +254,7 @@ internal static class GhrdpRdpLauncher
             // and flags an outdated client launcher. Version string only -
             // never a credential, path or user.
             string body = "{\"verb\":\"" + J(verb) + "\",\"ok\":" + (ok ? "true" : "false") +
-                ",\"details\":\"" + J(Redact(details)) + "\",\"exe\":\"" + J(Stamp) + "\"}";
+                ",\"details\":\"" + J(Redact(details)) + "\",\"exe\":\"" + J(Stamp) + "\",\"traceId\":\"" + J(TraceId) + "\"}";
             HttpWebRequest req = (HttpWebRequest)WebRequest.Create(
                 "http://" + host + ":" + port + "/api/handler-hello");
             req.Method = "POST";
@@ -442,6 +449,13 @@ internal static class GhrdpRdpLauncher
             if (CredParamRe.IsMatch("?" + k + "=")) { return k.ToLowerInvariant(); }
         }
         return "";
+    }
+
+    private static string TraceFromUri(string uri)
+    {
+        if (string.IsNullOrEmpty(uri)) { return ""; }
+        Match m = Regex.Match(uri, @"(?:[?&])trace=([0-9a-f]{32})(?:&|$)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return m.Success ? m.Groups[1].Value.ToLowerInvariant() : "";
     }
 
     // Is the tailnet address reachable on the RDP port? DIAGNOSIS ONLY - a
@@ -1203,6 +1217,71 @@ internal static class GhrdpRdpLauncher
         return 0;
     }
 
+    // [F37] Client-side, metadata-only RDP telescope. The JSONL schema matches
+    // payloads/rdp-telescope.ps1; this is diagnostic-only and never blocks launch.
+    private static void TelescopeStage(string host, int port, string stage, bool ok, string fields)
+    {
+        string status = ok ? "ok" : "fail";
+        Dictionary<string, object> row = new Dictionary<string, object>();
+        row["schema"]="rdp-telescope.v1"; row["ts"]=DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture);
+        row["traceId"]=TraceId; row["stage"]=stage; row["status"]=status;
+        foreach(string item in (fields??"").Split(new char[]{' '},StringSplitOptions.RemoveEmptyEntries)) {
+            int eq=item.IndexOf('='); if(eq<1)continue; string key=item.Substring(0,eq), value=Redact(item.Substring(eq+1));
+            if(key=="targetExists") row[key]=String.Equals(value,"true",StringComparison.OrdinalIgnoreCase);
+            else if(key=="ips"||key=="chainStatus") row[key]=value.Length==0?new string[0]:value.Split(',');
+            else if(key=="port"||key=="rttMs") { int n; row[key]=Int32.TryParse(value,out n)?(object)n:value; }
+            else row[key]=value;
+        }
+        string line = new JavaScriptSerializer().Serialize(row);
+        try { File.AppendAllText(LogPath(), line + Environment.NewLine, new UTF8Encoding(false)); } catch { }
+        Thread post = new Thread(delegate() { HelloBounded(host, port, TraceVerb, ok, "telescope-" + stage + "-" + status); });
+        post.IsBackground = true; post.Start();
+    }
+    private static void RunClientTelescope(string server, string host, int beaconPort)
+    {
+        IPAddress[] ips = new IPAddress[0];
+        try { ips = Dns.GetHostAddresses(server); } catch { }
+        TelescopeStage(host, beaconPort, "dns", ips.Length > 0, "fqdn=" + server + " ips=" + String.Join(",", Array.ConvertAll(ips, a => a.ToString())));
+        string ip = ips.Length > 0 ? ips[0].ToString() : "";
+        if (ip.Length == 0) { TelescopeStage(host, beaconPort, "tcp", false, "failurePoint=dns-failed"); TelescopeStage(host, beaconPort, "tls", false, "failurePoint=dns-failed"); }
+        else
+        {
+            TcpClient tcp = null; NetworkStream net = null; SslStream ssl = null;
+            string servedThumb="", chainStatus=""; SslPolicyErrors policy=SslPolicyErrors.None; bool tcpReported=false;
+            try
+            {
+                Stopwatch tcpClock=Stopwatch.StartNew(); tcp = new TcpClient(); IAsyncResult ar = tcp.BeginConnect(ip, RdpPort, null, null);
+                if (!ar.AsyncWaitHandle.WaitOne(2500)) { throw new TimeoutException(); }
+                tcp.EndConnect(ar); tcpClock.Stop(); net = tcp.GetStream(); net.ReadTimeout = 3000; net.WriteTimeout = 3000;
+                TelescopeStage(host, beaconPort, "tcp", true, "ip=" + ip + " port=3389 rttMs=" + tcpClock.ElapsedMilliseconds); tcpReported=true;
+                byte[] req = new byte[] {3,0,0,19,14,224,0,0,0,0,0,1,0,8,0,1,0,0,0}; net.Write(req,0,req.Length);
+                byte[] hdr=new byte[4]; int got=0; while(got<4){int r=net.Read(hdr,got,4-got);if(r<=0)throw new IOException("x224-short-header");got+=r;}
+                int length=hdr[2]*256+hdr[3]; if(length<11||length>8192)throw new IOException("x224-invalid-length");
+                byte[] resp=new byte[length]; Buffer.BlockCopy(hdr,0,resp,0,4); got=4; while(got<length){int r=net.Read(resp,got,length-got);if(r<=0)throw new IOException("x224-short-response");got+=r;} int n=length, pos=-1;
+                for(int i=11;i<=n-8;i++){if(resp[i]==2&&resp[i+1]==0&&resp[i+2]==8&&resp[i+3]==0){pos=i;break;}}
+                if(n<11||resp[5]!=208||pos<0||BitConverter.ToUInt32(resp,pos+4)!=1) throw new IOException("x224-tls-not-selected");
+                RemoteCertificateValidationCallback callback = delegate(object sender, X509Certificate certificate, X509Chain chain, SslPolicyErrors errors) {
+                    policy=errors; if(certificate!=null)servedThumb=new X509Certificate2(certificate).Thumbprint;
+                    if(chain!=null)chainStatus=String.Join(",",Array.ConvertAll(chain.ChainStatus,x=>x.Status.ToString())); return true;
+                };
+                ssl = new SslStream(net,false,callback); ssl.AuthenticateAsClient(server,null,SslProtocols.Tls12,false);
+                bool tlsOk=servedThumb.Length>0&&policy==SslPolicyErrors.None;
+                string failurePoint=policy.ToString().Contains("RemoteCertificateNameMismatch")?"name-mismatch":(policy!=SslPolicyErrors.None?"chain="+chainStatus:"");
+                TelescopeStage(host,beaconPort,"tls",tlsOk,"servedThumb="+servedThumb+" chainStatus="+chainStatus+" failurePoint="+failurePoint+" protocol="+ssl.SslProtocol+" cipher="+ssl.CipherAlgorithm);
+            }
+            catch(Exception ex) {
+                if(!tcpReported) TelescopeStage(host,beaconPort,"tcp",false,"ip="+ip+" port=3389 failurePoint=tcp-connect-failed");
+                string point=servedThumb.Length>0?(policy.ToString().Contains("RemoteCertificateNameMismatch")?"name-mismatch":"chain="+chainStatus):"rst-before-cert";
+                TelescopeStage(host,beaconPort,"tls",false,"servedThumb="+servedThumb+" chainStatus="+chainStatus+" failurePoint="+point+" error="+ex.GetType().Name);
+            }
+            finally { if(ssl!=null)ssl.Dispose(); if(net!=null)net.Dispose(); if(tcp!=null)tcp.Close(); }
+        }
+        string target="TERMSRV/"+server; int domainCount=CountTermsvrEntries(target,2), genericCount=CountTermsvrEntries(target,1);
+        bool exists=domainCount+genericCount>0; string type=domainCount>0?"DomainPassword":(genericCount>0?"LegacyGeneric":"none");
+        string user=domainCount>0?ReadCredUserName(target,2):(genericCount>0?ReadCredUserName(target,1):"");
+        TelescopeStage(host,beaconPort,"cred",true,"targetExists="+exists+" type="+type+" user="+user);
+    }
+
     // ------------------------------------------------------------------
     // Work: everything that touches cmdkey/mstsc/disk lives here, strictly
     // AFTER Main's first instruction (the 'invoked' log + beacon).
@@ -1234,7 +1313,7 @@ internal static class GhrdpRdpLauncher
 
         // [F28 §2] 'recred' (one-click recovery) shares every target validation
         // below; only the redemption/fallback policy differs.
-        if (verb != "rdp" && verb != "recred")
+        if (verb != "rdp" && verb != "recred" && verb != "diag")
         {
             LogJson("error", verb, "unknown verb '" + verb + "' - no rdp/recred/check work done");
             ShowBox("ghrdp launcher: unknown verb",
@@ -1256,6 +1335,9 @@ internal static class GhrdpRdpLauncher
                 "log: " + LogPath());
             return 3;
         }
+        if (verb == "diag") { RunClientTelescope(server, host, port); return 0; }
+        // [F37] each AUTO-LOGIN/RECONNECT click measures the actual client-to-runner RDP TLS path.
+        RunClientTelescope(server, host, port);
 
         // [F17 §3] DNS guard BEFORE any credential or mstsc work: the exact
         // failure behind mstsc Error 0x904 / extended 0x7 was a target name
@@ -1401,7 +1483,9 @@ internal static class GhrdpRdpLauncher
         // log line + POST /api/handler-hello {verb, ok:true, details:'invoked'} -
         // BEFORE any cmdkey/mstsc/file work, and with every POST failure caught.
         string uri = JoinArgs(args);
+        TraceId = TraceFromUri(uri);
         string verb = PickVerb(uri);
+        TraceVerb = verb;
         string server; string user; string portRaw;
         ParseQuery(uri, out server, out user, out portRaw);
         int port = PickPort(portRaw);
