@@ -198,6 +198,78 @@ function Get-RdpTelescopeX224Request {
     return ,([byte[]](0x03, 0x00, 0x00, 0x13, 0x0e, 0xe0, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x01, 0x00, 0x08, 0x00, 0x03, 0x00, 0x00, 0x00))
 }
+function Add-RdpTelescopeTlsShim {
+    # [F37 §1] A PowerShell SCRIPTBLOCK cannot be the certificate callback: the
+    # handshake completes on a threadpool thread that has no runspace
+    # ("There is no Runspace available to run scripts in this thread"), the task
+    # faults and the probe reports a FALSE rst-before-cert - exactly what the lab
+    # showed while the listener itself was healthy. ONE compiled delegate (C# 5,
+    # in-box compiler) records the served certificate and the validation errors
+    # for the caller and ALWAYS accepts: read-only, never trusted or installed.
+    if ('GhrdpTelTls' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Net.Security;
+using System.Security.Cryptography.X509Certificates;
+public static class GhrdpTelTls {
+    public static byte[] ServedRaw;
+    public static string ServedThumb = "";
+    public static string ChainStatus = "";
+    public static bool ChainOk;
+    public static int Errors;
+    public static void Reset() { ServedRaw = null; ServedThumb = ""; ChainStatus = ""; ChainOk = false; Errors = 0; }
+    public static bool Accept(object sender, X509Certificate cert, X509Chain chain, SslPolicyErrors errors) {
+        try {
+            if (cert != null) {
+                ServedRaw = cert.GetRawCertData();
+                string t = cert.GetCertHashString();
+                ServedThumb = (t == null) ? "" : t.ToUpperInvariant();
+            }
+        } catch { }
+        try {
+            if (chain != null) {
+                System.Text.StringBuilder sb = new System.Text.StringBuilder();
+                foreach (X509ChainStatus s in chain.ChainStatus) {
+                    if (sb.Length > 0) { sb.Append('|'); }
+                    sb.Append(s.Status.ToString());
+                }
+                ChainStatus = sb.ToString();
+            }
+        } catch { }
+        Errors = (int)errors;
+        ChainOk = (errors == SslPolicyErrors.None);
+        return true;
+    }
+    public static RemoteCertificateValidationCallback Callback() { return new RemoteCertificateValidationCallback(Accept); }
+}
+'@
+}
+function Test-RdpTelescopeCertServerAuth {
+    # ServerAuth EKU check, shared by the client probe (tls stage) and the runner
+    # probe (listener stage). Absent EKU means "any usage" (RFC 5280) - that is
+    # not a failure on its own; a PRESENT EKU without serverAuth is.
+    param([Parameter(Mandatory)]$Certificate)
+    $oids = @()
+    try {
+        foreach ($ext in @($Certificate.Extensions)) {
+            if ($ext.Oid -and $ext.Oid.Value -eq '2.5.29.37') {
+                foreach ($line in @(([string]$ext.Format($false)) -split "[`r`n,]+")) {
+                    $t = $line.Trim()
+                    if ($t -match '^\d+(\.\d+)+$') { $oids += $t }
+                }
+            }
+        }
+        if ($oids.Count -eq 0) {
+            $ekuExt = @($Certificate.Extensions | Where-Object { $_.Oid -and $_.Oid.Value -eq '2.5.29.37' } | Select-Object -First 1)
+            if ($ekuExt.Count -gt 0) {
+                $ekuObj = New-Object System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension($ekuExt[0], $false)
+                $oids = @($ekuObj.EnhancedKeyUsages | ForEach-Object { [string]$_.Value })
+            }
+        }
+    } catch { }
+    $has = [bool](@($oids | Where-Object { $_ -eq '1.3.6.1.5.5.7.3.1' }).Count -gt 0)
+    return [pscustomobject]@{ eku = $oids; ekuText = ($oids -join '|'); hasServerAuth = $has; ekuAbsent = [bool]($oids.Count -eq 0) }
+}
 function Get-RdpTelescopeTls {
     # stage x224+tls: negotiate X.224, then read what the listener SERVES.
     # The validation callback is PERMISSIVE (returns true) so the certificate is
@@ -246,13 +318,12 @@ function Get-RdpTelescopeTls {
         if ($response[7] -ne 2 -or $response[9] -ne 8 -or $response[10] -ne 0) { throw 'RDP negotiation did not select TLS' }
         $protocol = [BitConverter]::ToUInt32($response, 11)
         if ($protocol -ne 1 -and $protocol -ne 2 -and $protocol -ne 8) { throw ('RDP selected non-TLS protocol ' + $protocol) }
-        $callback = [System.Net.Security.RemoteCertificateValidationCallback]{
-            param($sender, $cert, $chain, $errors)
-            # PERMISSIVE on purpose: read, never trust (no install, no override).
-            if ($cert) { $script:F37TelCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($cert) }
-            $script:F37TelErrors = $errors
-            return $true
-        }
+        # PERMISSIVE on purpose: read, never trust (no install, no override) -
+        # through the COMPILED delegate, because a scriptblock cannot run on the
+        # threadpool thread that completes the handshake.
+        Add-RdpTelescopeTlsShim
+        [GhrdpTelTls]::Reset()
+        $callback = [GhrdpTelTls]::Callback()
         $ssl = [System.Net.Security.SslStream]::new($stream, $false, $callback)
         $task = $ssl.AuthenticateAsClientAsync($Fqdn)
         if (-not $task.Wait($TimeoutMs)) { throw 'TLS handshake timeout' }
@@ -261,6 +332,9 @@ function Get-RdpTelescopeTls {
         try { $fields.cipher = [string]$ssl.NegotiatedCipherSuite } catch { }
         if (-not $fields.cipher) { $fields.cipher = [string]$ssl.CipherAlgorithm }
         try { $fields.cipherStrength = [int]$ssl.CipherStrength } catch { }
+        if ([GhrdpTelTls]::ServedRaw) {
+            try { $script:F37TelCert = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new([byte[]][GhrdpTelTls]::ServedRaw) } catch { }
+        }
         $cert = $script:F37TelCert
         if (-not $cert) {
             $fields.failureAt = 'rst-before-cert'
@@ -274,6 +348,7 @@ function Get-RdpTelescopeTls {
             $statuses = @($chain2.ChainStatus | ForEach-Object { [string]$_.Status })
             $chain2.Dispose()
             $fields.chainOk = [bool]$built
+            if ($statuses.Count -eq 0 -and [string][GhrdpTelTls]::ChainStatus) { $statuses = @(([string][GhrdpTelTls]::ChainStatus) -split '\|') }
             $fields.chainStatus = $(if ($statuses.Count) { $statuses } else { @('(no status)') })
         } catch {
             $fields.chainOk = $false
@@ -287,19 +362,9 @@ function Get-RdpTelescopeTls {
         $fields.nameServed = ($names | Where-Object { $_ } | Select-Object -First 1)
         $fields.nameMatch = $false
         foreach ($n in @($names)) { if ($n -and $n -match [regex]::Escape($Fqdn)) { $fields.nameMatch = $true } }
-        $ekuOids = @()
-        foreach ($ext in @($cert.Extensions)) {
-            if ($ext.Oid -and $ext.Oid.Value -eq '2.5.29.37') {
-                foreach ($line in @(([string]$ext.Format($false)) -split "[`r`n,]+")) {
-                    $t = $line.Trim()
-                    if ($t -match '^\d+(\.\d+)+$') { $ekuOids += $t }
-                }
-            }
-        }
-        $fields.eku = ($ekuOids -join '|')
-        # Absent EKU => any usage (RFC 5280 4.2.1.12) => not a failure on its own.
-        $fields.serverAuth = $true
-        if ($ekuOids.Count -gt 0 -and -not ($ekuOids -contains '1.3.6.1.5.5.7.3.1')) { $fields.serverAuth = $false }
+        $ekuInfo = Test-RdpTelescopeCertServerAuth -Certificate $cert
+        $fields.eku = [string]$ekuInfo.ekuText
+        $fields.serverAuth = [bool]$ekuInfo.hasServerAuth
         if ($ExpectedThumb -and $fields.servedThumb -ne $ExpectedThumb.ToUpperInvariant()) {
             $fields.failureAt = 'served!=bound'
             return New-RdpTelescopeLine -Stage 'tls' -Ok $false -Why ('served certificate ' + $fields.servedThumb + ' != bound ' + $ExpectedThumb.ToUpperInvariant()) -Fields $fields -Trace $Trace -Src $Src
@@ -532,12 +597,9 @@ function Get-RdpTelescopeListener {
             # SAN naming the FQDN the client fails the name check. Both are
             # named here, because the handshake cannot say either one.
             try {
-                $ekuExt = @($cert.Extensions | Where-Object { $_.Oid -and $_.Oid.Value -eq '2.5.29.37' } | Select-Object -First 1)
-                if ($ekuExt.Count -gt 0) {
-                    $ekuObj = New-Object System.Security.Cryptography.X509Certificates.X509EnhancedKeyUsageExtension($ekuExt[0], $false)
-                    $fields.eku = @($ekuObj.EnhancedKeyUsages | ForEach-Object { [string]$_.Value })
-                    $fields.hasServerAuth = [bool](@($fields.eku | Where-Object { $_ -eq '1.3.6.1.5.5.7.3.1' }).Count -gt 0)
-                }
+                $ekuInfoL = Test-RdpTelescopeCertServerAuth -Certificate $cert
+                $fields.eku = @($ekuInfoL.eku)
+                $fields.hasServerAuth = [bool]$ekuInfoL.hasServerAuth
                 if (-not $fields.hasServerAuth) { $why += 'bound cert has NO ServerAuth EKU (Schannel resets before presenting it: rst-before-cert)' }
                 $sanExt = @($cert.Extensions | Where-Object { $_.Oid -and $_.Oid.Value -eq '2.5.29.17' } | Select-Object -First 1)
                 if ($sanExt.Count -gt 0) {

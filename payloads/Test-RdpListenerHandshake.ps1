@@ -8,6 +8,17 @@ $ErrorActionPreference = 'Stop'
 $started = Get-Date
 $lastError = 'no probe attempted'
 $script:served = ''
+# [F37 §1] the SAME compiled callback shim the telescope uses: a PowerShell
+# scriptblock cannot run on the threadpool thread that completes the handshake
+# ("no Runspace available to run scripts in this thread"), which made this probe
+# report served=<empty> while the listener was healthy. One implementation, one
+# behaviour, no second parser.
+$tlsMod = Join-Path $PSScriptRoot 'rdp-telescope.ps1'
+if ((Test-Path -LiteralPath $tlsMod -PathType Leaf) -and -not (Get-Command 'Add-RdpTelescopeTlsShim' -ErrorAction SilentlyContinue)) {
+    try { . $tlsMod } catch { }
+}
+if (Get-Command 'Add-RdpTelescopeTlsShim' -ErrorAction SilentlyContinue) { Add-RdpTelescopeTlsShim }
+else { throw 'the compiled TLS callback shim is unavailable (payloads/rdp-telescope.ps1 must sit next to this probe)' }
 for ($attempt = 1; $attempt -le 3; $attempt++) {
     $tcp = $null; $ssl = $null; $script:served = ''
     try {
@@ -38,17 +49,19 @@ for ($attempt = 1; $attempt -le 3; $attempt++) {
         if ($response[6] -ne 2 -or $response[8] -ne 8 -or $response[9] -ne 0) { throw 'RDP negotiation did not select TLS' }
         $protocol = [BitConverter]::ToUInt32($response, 10)
         if ($protocol -ne 1 -and $protocol -ne 2 -and $protocol -ne 8) { throw ('RDP selected non-TLS protocol ' + $protocol) }
-        $callback = [System.Net.Security.RemoteCertificateValidationCallback]{
-            param($sender, $cert, $chain, $errors)
-            if (-not $cert) { return $false }
-            $script:served = $cert.GetCertHashString().ToUpperInvariant()
-            return ($script:served -eq $ExpectedThumb.ToUpperInvariant() -and $errors -eq [System.Net.Security.SslPolicyErrors]::None)
-        }
+        [GhrdpTelTls]::Reset()
+        $callback = [GhrdpTelTls]::Callback()
         $ssl = [System.Net.Security.SslStream]::new($stream, $false, $callback)
         $task = $ssl.AuthenticateAsClientAsync($Fqdn)
         if (-not $task.Wait(7000)) { throw 'TLS handshake timeout' }
-        if (-not $ssl.IsAuthenticated -or $script:served -ne $ExpectedThumb.ToUpperInvariant()) {
+        $script:served = [string][GhrdpTelTls]::ServedThumb
+        if (-not $ssl.IsAuthenticated) { throw 'TLS stream did not authenticate' }
+        if ($script:served -ne $ExpectedThumb.ToUpperInvariant()) {
             throw ('served certificate mismatch: served=' + $script:served + ' bound=' + $ExpectedThumb)
+        }
+        $errs = [System.Net.Security.SslPolicyErrors]([int][GhrdpTelTls]::Errors)
+        if ($errs -ne [System.Net.Security.SslPolicyErrors]::None) {
+            throw ('served certificate did not validate: ' + $errs + ' [' + [string][GhrdpTelTls]::ChainStatus + ']')
         }
         Write-Host ('[F31] X.224 + TLS handshake OK, served==bound=' + $script:served)
         return

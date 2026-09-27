@@ -65,16 +65,21 @@ test('F37-1 the telescope module declares the stage/failure/slug vocabulary', ()
 test('F37-2 the TLS probe reads the certificate even when the chain fails, and names the failure point', () => {
   const tls = mod.slice(mod.indexOf('function Get-RdpTelescopeTls'), mod.indexOf('function Get-RdpTelescopeCredReadback'));
   assert.ok(tls.length > 400, 'the TLS stage was not found');
-  // permissive callback: READ, never trust, never install.
-  assert.match(tls, /RemoteCertificateValidationCallback/, 'no validation callback');
-  assert.match(tls, /return \$true/, 'the callback must be permissive so the certificate is READ');
-  assert.match(tls, /GetCertHashString\(\)/, 'the served thumbprint is never read');
+  // permissive callback: READ, never trust, never install - and COMPILED,
+  // because a scriptblock cannot run on the threadpool thread that completes
+  // the handshake (that is what produced the false rst-before-cert).
+  assert.match(tls, /\[GhrdpTelTls\]::Callback\(\)/, 'the TLS stage does not use the compiled callback');
+  assert.match(mod, /return true;\s*\n\s*\}/, 'the compiled callback must be permissive so the certificate is READ');
+  assert.match(mod, /public static byte\[\] ServedRaw/, 'the compiled callback does not capture the served certificate');
+  assert.match(tls, /GetCertHashString\(\)|ServedThumb/, 'the served thumbprint is never read');
   assert.match(tls, /X509Chain/, 'the chain status is never evaluated locally');
   // the four named failure points, each reachable
   for (const f of ["'rst-before-cert'", "'name-mismatch'", "'eku'", "'chain='"]) {
     assert.ok(tls.includes(f), 'the TLS stage cannot name ' + f);
   }
-  assert.ok(tls.includes('2.5.29.37') && tls.includes('1.3.6.1.5.5.7.3.1'), 'the EKU check is missing');
+  // the EKU check is shared with the runner probe (one implementation)
+  assert.ok(mod.includes('function Test-RdpTelescopeCertServerAuth'), 'the shared EKU check is missing');
+  assert.ok(mod.includes('2.5.29.37') && mod.includes('1.3.6.1.5.5.7.3.1'), 'the EKU check is missing');
   assert.ok(tls.includes('2.5.29.17'), 'the SAN check is missing');
   // no trust is ever installed by the telescope
   assert.ok(!/X509Store\('Root'/.test(mod), 'the telescope must never touch the Root store');
@@ -494,6 +499,26 @@ test('F37-21 the lab forces key persistence and names the ACL stage (no red with
   const q = lab.slice(lab.indexOf('Q: failure forensics'), lab.indexOf('G: setup-time'));
   assert.ok(q.includes('telescope-now'), 'forensics no longer re-prints the telescope');
   assert.ok(q.includes("'*.jsonl'"), 'forensics no longer re-emits the telescope artifacts');
+});
+
+test('F37-22 the certificate callback is COMPILED (a scriptblock callback cannot run on the handshake thread)', () => {
+  const mod = fs.readFileSync('payloads/rdp-telescope.ps1', 'utf8');
+  const probe = fs.readFileSync('payloads/Test-RdpListenerHandshake.ps1', 'utf8');
+  // one compiled delegate, installed once, shared with the F31 probe
+  assert.ok(mod.includes('function Add-RdpTelescopeTlsShim'), 'the module does not install the compiled callback shim');
+  assert.ok(mod.includes('public static class GhrdpTelTls'), 'the compiled callback class is missing');
+  assert.ok(mod.includes('public static RemoteCertificateValidationCallback Callback()'), 'the shim exposes no delegate factory');
+  assert.ok(mod.includes('Add-RdpTelescopeTlsShim'), 'the TLS stage never installs the shim');
+  assert.ok(probe.includes("Add-RdpTelescopeTlsShim"), 'the F31 probe does not use the shared shim');
+  assert.ok(probe.includes("Join-Path $PSScriptRoot 'rdp-telescope.ps1'"), 'the F31 probe does not load the module next to it');
+  // and NO surface may hand a PowerShell scriptblock to the TLS stack
+  for (const [name, text] of [['module', mod], ['probe', probe]]) {
+    assert.ok(!/RemoteCertificateValidationCallback\]\s*\{/.test(text),
+      name + ' still passes a scriptblock to RemoteCertificateValidationCallback (threadpool => no runspace => false rst-before-cert)');
+  }
+  // the permissive/read-only rule survives in both places
+  assert.ok(mod.includes('never trust'), 'the read-only promise is gone from the module');
+  assert.ok(probe.includes('GhrdpTelTls'), 'the probe does not read the shim result');
 });
 
 test('F37-17 (lab fixture) the REAL native-status sample renders green through the shipped renderer', () => {
