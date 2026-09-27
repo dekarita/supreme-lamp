@@ -821,7 +821,12 @@ test('F37-35 the key ACL is read by a LADDER, never by one cmdlet (the runner lo
   assert.ok(reader.indexOf("'dotnet-fileinfo'") < reader.indexOf("'icacls'"), 'the last-resort reader is not last');
   // the module path itself is repaired (every other on-demand module on that host)
   const repair = mod.slice(mod.indexOf('function Initialize-RdpTelescopeModulePath'), mod.indexOf('function Get-RdpTelescopeKeyAcl'));
-  assert.ok(repair.includes('Join-Path $psHome'), 'the repair does not restore the host module directory');
+  assert.ok(repair.includes('Join-Path $f37PsHome'), 'the repair does not restore the host module directory');
+  assert.ok(repair.includes("Get-Variable -Name 'PSHOME' -ValueOnly"), 'the repair reads $PSHOME through Get-Variable');
+  // a local named $psHome IS $PSHOME (variables are case-insensitive), so the
+  // assignment throws 'cannot overwrite ... read-only' and the repair silently
+  // does nothing - every live sample then reported aclModule=repair-threw.
+  assert.ok(!/\$psHome\s*=/.test(repair), 'a local collides with the read-only automatic $PSHOME');
   assert.ok(repair.includes('Import-Module Microsoft.PowerShell.Security'), 'the repair never loads the module it exists for');
   assert.ok(reader.includes('Initialize-RdpTelescopeModulePath'), 'the reader never repairs the module path');
   // the listener stage goes THROUGH the ladder - never a bare Get-Acl again

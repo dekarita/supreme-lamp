@@ -2010,6 +2010,14 @@ jobs:
           # present. No host may lose that evidence to a module-load fault again.
           grep -qF 'function Get-RdpTelescopeKeyAcl' "$mod" || { echo 'F37: the module has no independent key-ACL reader' >&2; exit 1; }
           grep -qF 'function Initialize-RdpTelescopeModulePath' "$mod" || { echo 'F37: nothing repairs a host that cannot load its own modules' >&2; exit 1; }
+          # $PSHOME is a read-only automatic variable and PowerShell variable
+          # names are case-insensitive, so a local named $psHome assigns straight
+          # into it and throws - the repair then reports 'repair-threw' on every
+          # live sample and the module path is never restored.
+          if grep -nE '^[[:space:]]*\$psHome[[:space:]]*=' "$mod"; then
+            echo 'F37: a local named $psHome collides with the read-only automatic $PSHOME (read it with Get-Variable)' >&2; exit 1
+          fi
+          grep -qF "Get-Variable -Name 'PSHOME' -ValueOnly" "$mod" || { echo 'F37: the module path repair does not read $PSHOME safely' >&2; exit 1; }
           for m in "'get-acl'" "'dotnet-fileinfo'" "'acl-extensions'" "'icacls'"; do
             grep -qF "$m" "$mod" || { echo "F37: the ACL ladder lost the reader $m" >&2; exit 1; }
           done

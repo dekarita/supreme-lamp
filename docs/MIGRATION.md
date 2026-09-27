@@ -953,7 +953,7 @@ impossible on both sides, and the lab fails closed on any unmapped row
 ### Windows PowerShell 5.1 hardening (runner reality)
 
 The runner server is started with `powershell.exe` (5.1), while the lab and the
-provisioning paths run pwsh 7. Three 5.1-only gaps were closed in the module:
+provisioning paths run pwsh 7. Four 5.1-only gaps were closed in the module:
 
 1. `System.Security.Cryptography.X509Certificates` / `.Cng` are not
    type-loaded in 5.1, so `Initialize-RdpTelescopeKeyTypes` warms them with a
@@ -978,6 +978,18 @@ provisioning paths run pwsh 7. Three 5.1-only gaps were closed in the module:
    repair), travels to the config stamp, the SERVER CONN LOG row and the lab
    annotation, and the lab fails closed when the method is `none`: a blind "no
    ACE" verdict and a genuinely missing ACE are two different fixes.
+
+4. **Even the repair can be silently dead — so it is pinned.** `$PSHOME` is a
+   read-only automatic variable and PowerShell variable names are
+   case-insensitive, so a local written as `$psHome = [string]$PSHOME` assigns
+   straight into it and throws *“Cannot overwrite variable PSHOME”*. The repair
+   then did nothing on every live sample while reporting `aclModule=repair-threw:
+   Cannot overwrite variable PSHOME` — a repair that names its own failure is
+   still a repair that never ran. It now reads the path through
+   `Get-Variable -Name 'PSHOME' -ValueOnly` into `$f37PsHome`, and both the F37
+   gate step and `tests/f37-telescope.test.js` fail the build if a local named
+   `$psHome` comes back (the shipped ACL ladder kept the evidence even while the
+   repair was dead, which is the whole point of the ladder).
 
 Failures are typed, never silent: `deriveError`, `listener.why`,
 `listener.keyTypedError` and `tls.why` name the exact reason, and the lab prints
