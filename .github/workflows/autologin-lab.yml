@@ -2410,8 +2410,12 @@ jobs:
           # --- (4) jsdom-style smoke: the existing beacon/ticket DOM flows ---------
           Push-Location $env:GITHUB_WORKSPACE
           try {
-            node --test tests/f27-handoff.test.js tests/f28-logon-recovery.test.js tests/f31c-live-dispatch.test.js tests/ui-native.test.js tests/f37-telescope.test.js tests/f38-ui-glass.test.js 2>&1 | Select-Object -Last 6 | ForEach-Object { Write-Host "[W] node: $_" }
-            if ($LASTEXITCODE -ne 0) { W-Fail 'dom-smoke' 'existing beacon/ticket flows regressed (node --test failed)' }
+            $nodeOut = @(node --test tests/f27-handoff.test.js tests/f28-logon-recovery.test.js tests/f31c-live-dispatch.test.js tests/ui-native.test.js tests/f37-telescope.test.js tests/f38-ui-glass.test.js 2>&1)
+            $nodeOut | Select-Object -Last 6 | ForEach-Object { Write-Host "[W] node: $_" }
+            if ($LASTEXITCODE -ne 0) {
+              $nodeOut | ForEach-Object { Write-Host "[W] detail: $_" }
+              W-Fail 'dom-smoke' 'existing beacon/ticket flows regressed (node --test failed)'
+            }
           } finally { Pop-Location }
           Write-Host '[W] PASS: shipped ui.html proves glass typography + icons + Sinhala + persisted Large toggle on a real browser'
           'W_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
