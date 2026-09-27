@@ -161,7 +161,7 @@ internal static class GhrdpRdpLauncher
             if (eq < 1) { continue; }
             if (pair.Substring(0, eq).Trim().ToLowerInvariant() != "trace") { continue; }
             string v = Decode(pair.Substring(eq + 1).Trim());
-            if (v.Length >= 1 && v.Length <= 40 && Regex.IsMatch(v, "^[A-Za-z0-9\-]+$")) { return v; }
+            if (v.Length >= 1 && v.Length <= 40 && Regex.IsMatch(v, @"^[A-Za-z0-9\-]+$")) { return v; }
             return "";
         }
         return "";
