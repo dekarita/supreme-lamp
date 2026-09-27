@@ -907,6 +907,31 @@ permissive-callback warning) travel as `probeWarn` and can never manufacture a
 death point. Nothing outside the module re-implements the mapping; the workflow
 only copies `$f37TelFields.deathPoint`.
 
+### Beacon stage: declared by the client, derived by the server
+
+A client beacon is one line of the timeline (`dns|tcp|tls|cred`), so the stage
+cannot be whatever the poster says it is. The module owns ONE table
+(`$slugStage` in `Get-RdpTelescopeFormatTokens`, read back through
+`Get-RdpTelescopeBeaconStage`) mapping every beacon slug to its stage:
+
+* the launcher DECLARES the stage on each `diag` beacon (gated by its own
+  client-stage allowlist, so it can never speak a runner-only stage),
+* `POST /api/rdp-telescope` DERIVES the stage from the slug through that same
+  table — never from the body's `stage` — and stores
+  `stage=other` + `details=telescope-unparsed` when the slug is unknown or the
+  declaration disagrees with the slug,
+* the server keeps no second mapping: with the module deployed it asks the
+  module, and the structural fallback (used only when the module is absent, the
+  same condition that makes the telescope emit its self-explaining fallback
+  line) reads the slug's SHAPE rather than a list.
+
+Why it exists: the first live lab run showed four healthy client beacons stored
+as `stage:"other"` with the slug in `details` — the timeline lost its client
+stage because the launcher declared no stage and the server trusted a field
+nobody sent. Deriving the stage from the shared slug makes a mislabeled beacon
+impossible on both sides, and the lab fails closed on any unmapped row
+(`Z: beacon-stage-derivation`).
+
 ### Scope decision: what the telescope may NOT do
 
 * **Credentials are the client's property.** The server/runner face runs the
@@ -928,7 +953,7 @@ only copies `$f37TelFields.deathPoint`.
 ### Windows PowerShell 5.1 hardening (runner reality)
 
 The runner server is started with `powershell.exe` (5.1), while the lab and the
-provisioning paths run pwsh 7. Three 5.1-only gaps were closed in the module:
+provisioning paths run pwsh 7. Four 5.1-only gaps were closed in the module:
 
 1. `System.Security.Cryptography.X509Certificates` / `.Cng` are not
    type-loaded in 5.1, so `Initialize-RdpTelescopeKeyTypes` warms them with a
@@ -954,20 +979,21 @@ provisioning paths run pwsh 7. Three 5.1-only gaps were closed in the module:
    annotation, and the lab fails closed when the method is `none`: a blind "no
    ACE" verdict and a genuinely missing ACE are two different fixes.
 
+4. **Even the repair can be silently dead — so it is pinned.** `$PSHOME` is a
+   read-only automatic variable and PowerShell variable names are
+   case-insensitive, so a local written as `$psHome = [string]$PSHOME` assigns
+   straight into it and throws *“Cannot overwrite variable PSHOME”*. The repair
+   then did nothing on every live sample while reporting `aclModule=repair-threw:
+   Cannot overwrite variable PSHOME` — a repair that names its own failure is
+   still a repair that never ran. It now reads the path through
+   `Get-Variable -Name 'PSHOME' -ValueOnly` into `$f37PsHome`, and both the F37
+   gate step and `tests/f37-telescope.test.js` fail the build if a local named
+   `$psHome` comes back (the shipped ACL ladder kept the evidence even while the
+   repair was dead, which is the whole point of the ladder).
+
 Failures are typed, never silent: `deriveError`, `listener.why`,
 `listener.keyTypedError` and `tls.why` name the exact reason, and the lab prints
 the decisive fields first (`[Z] …`) because GitHub caps error annotations.
-
-### The client beacon carries its stage
-
-`diag` beacons are POSTed to `/api/rdp-telescope` with `{verb, ok, details, exe,
-stage, trace}`. The stage (`dns|tcp|tls|cred`) travels on the wire — the server
-allowlists it and stores it verbatim, so the dashboard timeline and the lab can
-attribute every client verdict to one segment. An earlier build sent only the
-slug: the slugs were right (`telescope-dns-ok`) but every beacon arrived as
-`stage='other'`, which is why the lab failed with *“no client beacon for stage
-dns”* while the evidence sat one field away. Non-diag beacons (the
-handler-hello chain the fail-visible lab pins positionally) are unchanged.
 
 ### Lab contract
 

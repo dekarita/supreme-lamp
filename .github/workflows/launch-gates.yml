@@ -1868,6 +1868,17 @@ jobs:
           for slug in telescope-dns-ok telescope-tcp-ok telescope-tls-ok telescope-cred-missing; do
             grep -qE "telescope-(dns|tcp|tls|cred)|\\(rst-before-cert" <<< "$(grep -F 'F37TelSlugRe' "$srv")" || { echo 'F37: the server slug allowlist drifted' >&2; exit 1; }
           done
+          # [F37] the beacon STAGE is DERIVED from the shared slug: ONE table in
+          # the module, the client only DECLARES it, and the server neutralizes any
+          # disagreement - a mislabeled beacon can never become a timeline verdict
+          # (the class that made a live diag beacon render as stage 'other').
+          grep -qF '$slugStage = [ordered]@{' "$mod" || { echo 'F37: the module does not declare the slug -> stage table' >&2; exit 1; }
+          grep -qF 'function Get-RdpTelescopeBeaconStage' "$mod" || { echo 'F37: the module owns no slug -> stage accessor' >&2; exit 1; }
+          grep -qF 'Get-F37BeaconStageForSlug' "$srv" || { echo 'F37: the server does not derive the beacon stage' >&2; exit 1; }
+          grep -qF 'Get-RdpTelescopeBeaconStage -Slug $Slug' "$srv" || { echo 'F37: the server keeps a second slug -> stage mapping' >&2; exit 1; }
+          grep -qF 'if (-not $derivedT -or ($stT -and $stT -ne $derivedT))' "$srv" || { echo 'F37: a declared/derived stage mismatch is not neutralized' >&2; exit 1; }
+          grep -qF 'HelloBounded(host, port, "diag", ok, slug, trace, stage)' "$cs" || { echo 'F37: the diag beacon does not declare its stage' >&2; exit 1; }
+          grep -qF 'IsTelClientStage(stage)' "$cs" || { echo 'F37: the declared stage is not gated on the client token set' >&2; exit 1; }
           # (3) the failure point is NAMED on every surface
           for f in rst-before-cert name-mismatch eku; do
             grep -qF "$f" "$cs" || { echo "F37: the launcher cannot name the failure point $f" >&2; exit 1; }
@@ -1886,16 +1897,6 @@ jobs:
           grep -qF 'if (TraceParam(uri).Length > 0) { TelPreflight(uri, server, host, port); }' "$cs" || { echo 'F37: the preflight is not gated on the click trace' >&2; exit 1; }
           grep -qF 'endpoint = (verb == "diag") ? "/api/rdp-telescope" : "/api/handler-hello"' "$cs" || { echo 'F37: diag beacons must not enter the handler-hello chain' >&2; exit 1; }
           grep -qF "if (\$path -eq '/api/rdp-telescope' -and \$parts.method -eq 'POST')" "$srv" || { echo 'F37: the client beacon endpoint is missing' >&2; exit 1; }
-          # [F37 §3] a client beacon must carry its STAGE on the wire: the body
-          # once held verb/ok/details/exe/trace only, so the server stored every
-          # diag beacon as stage='other' and neither the dashboard timeline nor
-          # the lab could attribute a client verdict to a segment of the path
-          # (lab 36309913953: 'no client beacon for stage dns' with the slugs
-          # telescope-dns-ok sitting right there in the ring).
-          grep -qF 'HelloBounded(host, port, "diag", ok, slug, stage, trace)' "$cs" || { echo 'F37: the client beacon does not carry its stage' >&2; exit 1; }
-          grep -qF 'Hello(host, port, verb, ok, details, stage, trace)' "$cs" || { echo 'F37: the stage is dropped between HelloBounded and Hello' >&2; exit 1; }
-          grep -qF "if (\$stT -in @('dns', 'tcp', 'tls', 'cred')) { \$cb.stage = \$stT }" "$srv" || { echo 'F37: the beacon endpoint does not accept the module stage vocabulary' >&2; exit 1; }
-          grep -qF "\$_.stage -eq \$need" "$lab" || { echo 'F37: the lab does not check the beacon STAGE (only its presence)' >&2; exit 1; }
           grep -qF 'telescope-unparsed' "$srv" || { echo 'F37: an unknown beacon slug must be neutralized' >&2; exit 1; }
           grep -qF 'function telescopeTimeline(s, nowMs)' "$ui" || { echo 'F37: the ONE timeline function is missing' >&2; exit 1; }
           grep -qF 'id="btnRunDiag"' "$ui" || { echo 'F37: [RUN DIAG] is missing' >&2; exit 1; }
@@ -2009,6 +2010,14 @@ jobs:
           # present. No host may lose that evidence to a module-load fault again.
           grep -qF 'function Get-RdpTelescopeKeyAcl' "$mod" || { echo 'F37: the module has no independent key-ACL reader' >&2; exit 1; }
           grep -qF 'function Initialize-RdpTelescopeModulePath' "$mod" || { echo 'F37: nothing repairs a host that cannot load its own modules' >&2; exit 1; }
+          # $PSHOME is a read-only automatic variable and PowerShell variable
+          # names are case-insensitive, so a local named $psHome assigns straight
+          # into it and throws - the repair then reports 'repair-threw' on every
+          # live sample and the module path is never restored.
+          if grep -nE '^[[:space:]]*\$psHome[[:space:]]*=' "$mod"; then
+            echo 'F37: a local named $psHome collides with the read-only automatic $PSHOME (read it with Get-Variable)' >&2; exit 1
+          fi
+          grep -qF "Get-Variable -Name 'PSHOME' -ValueOnly" "$mod" || { echo 'F37: the module path repair does not read $PSHOME safely' >&2; exit 1; }
           for m in "'get-acl'" "'dotnet-fileinfo'" "'acl-extensions'" "'icacls'"; do
             grep -qF "$m" "$mod" || { echo "F37: the ACL ladder lost the reader $m" >&2; exit 1; }
           done

@@ -89,13 +89,36 @@ function Get-RdpTelescopeFormatTokens {
         'telescope-name-mismatch', 'telescope-eku', 'telescope-cred-ok',
         'telescope-cred-missing'
     )
+    # [F37 §1 telescope-format beacon-stage] slug -> stage: the ONE table that
+    # says which stage a beacon slug belongs to. The CLIENT declares it, but the
+    # SERVER derives it from HERE instead of trusting the declaration - a beacon
+    # whose declared stage disagrees with its slug is neutralized, never stored.
+    $slugStage = [ordered]@{
+        'telescope-dns-ok' = 'dns'; 'telescope-dns-fail' = 'dns'
+        'telescope-tcp-ok' = 'tcp'; 'telescope-tcp-fail' = 'tcp'
+        'telescope-tls-ok' = 'tls'; 'telescope-rst-before-cert' = 'tls'
+        'telescope-chain' = 'tls'; 'telescope-name-mismatch' = 'tls'
+        'telescope-eku' = 'tls'
+        'telescope-cred-ok' = 'cred'; 'telescope-cred-missing' = 'cred'
+    }
     switch ($Kind) {
         'stages' { return $stages }
         'failureAt' { return $failureAt }
         'deathPoints' { return $deathPoints }
         'slugs' { return $slugs }
-        default { return @{ stages = $stages; failureAt = $failureAt; deathPoints = $deathPoints; slugs = $slugs } }
+        'slugStage' { return $slugStage }
+        default { return @{ stages = $stages; failureAt = $failureAt; deathPoints = $deathPoints; slugs = $slugs; slugStage = $slugStage } }
     }
+}
+function Get-RdpTelescopeBeaconStage {
+    # [F37 §1 telescope-format beacon-stage] the stage a shared beacon slug
+    # BELONGS to, read from the one token table (never a second mapping). '' means
+    # the slug is not part of the format, so the caller must not store a stage.
+    param([string]$Slug)
+    if (-not $Slug) { return '' }
+    $map = Get-RdpTelescopeFormatTokens -Kind 'slugStage'
+    if ($map.Contains($Slug)) { return [string]$map[$Slug] }
+    return ''
 }
 function New-RdpTelescopeTraceId {
     # minted per click (dashboard/launcher) so every line of one attempt shares
@@ -565,9 +588,11 @@ function Initialize-RdpTelescopeModulePath {
     $repair = @()
     try {
         # NEVER name a local $psHome: PowerShell variables are case-insensitive,
-        # so that assignment hits the read-only automatic $PSHOME and throws
-        # ("Cannot overwrite variable PSHOME") - which is how the FIRST run of
-        # this repair silently did nothing while the ladder still saved the day.
+        # so that assignment targets the read-only automatic $PSHOME and throws
+        # ("Cannot overwrite variable PSHOME ...") - which is how this repair
+        # silently did nothing on the live runner (aclModule reported
+        # 'repair-threw: Cannot overwrite variable PSHOME' on every sample) while
+        # the ladder below still produced the evidence.
         $f37PsHome = [string](Get-Variable -Name 'PSHOME' -ValueOnly -ErrorAction SilentlyContinue)
         $current = @([string]$env:PSModulePath -split ';' | Where-Object { $_ })
         $modDir = $(if ($f37PsHome) { (Join-Path $f37PsHome 'Modules') } else { '' })
