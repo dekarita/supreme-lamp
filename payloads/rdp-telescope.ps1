@@ -77,8 +77,10 @@ function Get-RdpTelescopeTls {
             if ($length -lt 19 -or $length -gt 1024) { throw ('invalid X.224 length ' + $length) }
             [byte[]]$response = Read-TelescopeExact $stream ($length - 4)
             if ($response[1] -ne 0xd0) { throw 'X.224 is not a connection confirm' }
-            if ($response[6] -ne 2 -or $response[8] -ne 8 -or $response[9] -ne 0) { throw 'RDP negotiation did not select TLS' }
-            $protocol = [BitConverter]::ToUInt32($response, 10)
+            # X.224 confirm fixed part is 7 bytes (after TPKT); the RDP
+            # negotiation response starts at index 7.
+            if ($response[7] -ne 2 -or $response[9] -ne 8 -or $response[10] -ne 0) { throw 'RDP negotiation did not select TLS' }
+            $protocol = [BitConverter]::ToUInt32($response, 11)
             if ($protocol -ne 1 -and $protocol -ne 2 -and $protocol -ne 8) { throw ('RDP selected non-TLS protocol ' + $protocol) }
         } catch {
             $msg = $_.Exception.Message

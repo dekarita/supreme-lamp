@@ -1359,8 +1359,10 @@ internal static class GhrdpRdpLauncher
                 if (length < 19 || length > 1024) { throw new System.IO.IOException("invalid X.224 length " + length); }
                 byte[] response = DiagReadExact(stream, length - 4);
                 if (response[1] != 0xd0) { throw new System.IO.IOException("X.224 is not a connection confirm"); }
-                if (response[6] != 2 || response[8] != 8 || response[9] != 0) { throw new System.IO.IOException("RDP negotiation did not select TLS"); }
-                uint selected = BitConverter.ToUInt32(response, 10);
+                // X.224 confirm fixed part is 7 bytes (after TPKT); the RDP
+                // negotiation response starts at index 7.
+                if (response[7] != 2 || response[9] != 8 || response[10] != 0) { throw new System.IO.IOException("RDP negotiation did not select TLS"); }
+                uint selected = BitConverter.ToUInt32(response, 11);
                 if (selected != 1 && selected != 2 && selected != 8) { throw new System.IO.IOException("RDP selected non-TLS protocol " + selected); }
             }
             catch (Exception ex)

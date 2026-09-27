@@ -571,7 +571,7 @@ jobs:
               } catch { if ($i -lt 2) { Start-Sleep -Seconds 3 } }
           }
           $telePost = Write-Telescope 'post-bind'
-          if (-not $effective) { R-Fail 'bind-effectiveness' ('BOUND != SERVED or TLS handshake failed after <=30s; telescope deathPoint=' + $telePost.deathPoint + ' served=' + $telePost.tls.servedThumb + ' bound=' + $telePost.listener.boundThumb + ' tls=' + $telePost.tls.failurePoint) }
+          if (-not $effective) { R-Fail 'bind-effectiveness' ('BOUND != SERVED or TLS handshake failed after <=30s; telescope deathPoint=' + $telePost.deathPoint + ' served=' + $telePost.tls.servedThumb + ' bound=' + $telePost.listener.boundThumb + ' tls=' + $telePost.tls.failurePoint + ' why=' + $telePost.tls.why) }
           if ($telePost.tls.servedThumb -ine $lc.Thumbprint) { R-Fail 'bind-effectiveness' ('telescope servedThumb != boundThumb: served=' + $telePost.tls.servedThumb + ' bound=' + $lc.Thumbprint + ' deathPoint=' + $telePost.deathPoint) }
           if (-not $telePost.tls.ok) { R-Fail 'bind-effectiveness' ('telescope handshake not ok: failurePoint=' + $telePost.tls.failurePoint + ' why=' + $telePost.tls.why + ' deathPoint=' + $telePost.deathPoint) }
           Write-Host '::notice::[R] ckpt beff-ok'

@@ -34,9 +34,11 @@ for ($attempt = 1; $attempt -le 3; $attempt++) {
         if ($length -lt 19 -or $length -gt 1024) { throw ('invalid X.224 length ' + $length) }
         [byte[]]$response = Read-Exact $stream ($length - 4)
         if ($response[1] -ne 0xd0) { throw 'X.224 is not a connection confirm' }
-        # X.224 confirm is 7 bytes (including TPKT); negotiation response at offset 7.
-        if ($response[6] -ne 2 -or $response[8] -ne 8 -or $response[9] -ne 0) { throw 'RDP negotiation did not select TLS' }
-        $protocol = [BitConverter]::ToUInt32($response, 10)
+        # X.224 confirm fixed part is 7 bytes (after TPKT: LI, code, dstref, srcref,
+        # class); the RDP negotiation response starts at index 7 (type, flags,
+        # length-lo, length-hi, selected-protocol<u32>).
+        if ($response[7] -ne 2 -or $response[9] -ne 8 -or $response[10] -ne 0) { throw 'RDP negotiation did not select TLS' }
+        $protocol = [BitConverter]::ToUInt32($response, 11)
         if ($protocol -ne 1 -and $protocol -ne 2 -and $protocol -ne 8) { throw ('RDP selected non-TLS protocol ' + $protocol) }
         $callback = [System.Net.Security.RemoteCertificateValidationCallback]{
             param($sender, $cert, $chain, $errors)
