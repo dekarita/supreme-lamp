@@ -1693,6 +1693,72 @@ jobs:
           test -f tests/f30-tls-cipher.test.js || { echo 'F30: the node matrix is missing' >&2; exit 1; }
           node --test tests/f30-tls-cipher.test.js
           echo 'F30 gates PASS'
+      # [F31c] TOKEN-AWARE PUSH + SELF-REPORTING DIAGNOSTIC MATRIX. The static
+      # half pins the fail-loud step, the 5 card checks and the copy-only
+      # checklist; tests/f31c-live-dispatch.test.js EXECUTES the shipped card.
+      # Prior F27/F28/F30/F31 locks are untouched (no cred-UI automation, no
+      # creds in URLs/logs, no NLA weakening, no token bypass).
+      - name: F31c token diagnostic + live dispatch gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          ui=payloads/ui.html
+          srv=payloads/ghrdp-server.ps1
+          diag_line=$(grep -n 'name: GitHub Token Diagnostic' "$wf" | head -1 | cut -d: -f1)
+          checkout_line=$(grep -n 'name: Checkout repo (payloads)' "$wf" | head -1 | cut -d: -f1)
+          ts_line=$(grep -n 'name: Download Tailscale installer' "$wf" | head -1 | cut -d: -f1)
+          test -n "$diag_line" && test -n "$checkout_line" && test -n "$ts_line" || { echo 'F31c: token diagnostic step missing' >&2; exit 1; }
+          test "$diag_line" -lt "$checkout_line" || { echo 'F31c: token diagnostic must be the first step, before checkout' >&2; exit 1; }
+          test "$checkout_line" -lt "$ts_line" || { echo 'F31c: token diagnostic drifted below Tailscale setup' >&2; exit 1; }
+          blk=$(awk '/# \[F31c §1 token-diag-begin\]/{f=1} f{print} /# \[F31c §1 token-diag-end\]/{exit}' "$wf")
+          test -n "$blk" || { echo 'F31c: the extractable token-diagnostic block is missing' >&2; exit 1; }
+          grep -qF 'Testing git push access...' <<< "$blk" || { echo 'F31c: diagnostic does not announce the push probe' >&2; exit 1; }
+          grep -qF 'git push --dry-run origin ${{ github.ref }}' <<< "$blk" || { echo 'F31c: dry-run push of github.ref is missing' >&2; exit 1; }
+          grep -qF '::error::git push failed' <<< "$blk" || { echo 'F31c: fail-loud error annotation missing' >&2; exit 1; }
+          grep -qF 'Arena Settings -> GitHub Integration -> Reconnect' <<< "$blk" || { echo 'F31c: Arena reconnect fix missing' >&2; exit 1; }
+          grep -qF 'Windows Credential Manager -> git:github.com -> Remove' <<< "$blk" || { echo 'F31c: Credential Manager fix missing' >&2; exit 1; }
+          grep -qF 'exit 1' <<< "$blk" || { echo 'F31c: token diagnostic does not exit 1 (token bypass)' >&2; exit 1; }
+          grep -qF 'git push access confirmed' <<< "$blk" || { echo 'F31c: success confirmation missing' >&2; exit 1; }
+          if grep -nE 'Write-Host[^$]*\$env:GITHUB_TOKEN|echo \$env:GITHUB_TOKEN' "$wf"; then
+            echo 'F31c: the workflow prints GITHUB_TOKEN' >&2; exit 1
+          fi
+          # --- LIVE DISPATCH STATUS: all 5 checks, exact fixes -----------------
+          grep -qF 'id="liveDispatchRow"' "$ui" || { echo 'F31c: LIVE DISPATCH STATUS card missing' >&2; exit 1; }
+          grep -qF 'LIVE DISPATCH STATUS' "$ui" || { echo 'F31c: card title missing' >&2; exit 1; }
+          grep -qF 'function liveDispatchStatus(s, nowMs)' "$ui" || { echo 'F31c: the decision function is missing' >&2; exit 1; }
+          for name in 'Runner reachable' 'F31 bound' '36870 absent' 'Credential stored' 'Logon success'; do
+            grep -qF "$name" "$ui" || { echo "F31c: card check missing: $name" >&2; exit 1; }
+          done
+          grep -qF 'F31 not bound => re-dispatch main.yml' "$ui" || { echo 'F31c: F31 fix hint missing' >&2; exit 1; }
+          grep -qF '36870 present => key ACL dump needed => copy-line to session' "$ui" || { echo 'F31c: 36870 fix hint missing' >&2; exit 1; }
+          grep -qF 'listenerHandshakeOk' "$ui" || { echo 'F31c: card does not read listenerHandshakeOk' >&2; exit 1; }
+          grep -qF 'launcher.beacons' "$srv" || { echo 'F31c: server does not serve launcher.beacons' >&2; exit 1; }
+          grep -qF 'setInterval(function(){ try{ nativeStatus(); }catch(_){} }, 10000);' "$ui" || { echo 'F31c: card does not poll /api/native-status every 10s' >&2; exit 1; }
+          # --- MANUAL VERIFY STEPS ---------------------------------------------
+          grep -qF 'id="manualVerifySteps"' "$ui" || { echo 'F31c: MANUAL VERIFY STEPS missing' >&2; exit 1; }
+          grep -qF 'MANUAL VERIFY STEPS' "$ui" || { echo 'F31c: verify checklist title missing' >&2; exit 1; }
+          grep -qF 'If WINDOWS AUTO-LOGIN opens a browser prompt, click OPEN and tick always-allow' "$ui" || { echo 'F31c: browser-prompt verify line missing' >&2; exit 1; }
+          grep -qF 'If RDP window appears but shows 0x904/0x7, run this in PowerShell on your PC:' "$ui" || { echo 'F31c: 0x904 verify line missing' >&2; exit 1; }
+          grep -qF 'cmdkey /delete:TERMSRV/' "$ui" || { echo 'F31c: cmdkey verify copy-line missing' >&2; exit 1; }
+          grep -qF 'Then click WINDOWS AUTO-LOGIN again' "$ui" || { echo 'F31c: retry instruction missing' >&2; exit 1; }
+          grep -qF 'If still failing, copy this and paste to the session:' "$ui" || { echo 'F31c: schannel paste instruction missing' >&2; exit 1; }
+          grep -qF 'wevtutil qe System /q:"*[System[Provider[@Name='"'"'Schannel'"'"']]]" /c:10 /f:text | findstr "36870 36871"' "$ui" || { echo 'F31c: schannel copy-line missing' >&2; exit 1; }
+          vblock=$(awk '/<!-- \[F31c §3 manual-verify-begin\]/{f=1} f{print} /<!-- \[F31c §3 manual-verify-end\]/{exit}' "$ui")
+          test -n "$vblock" || { echo 'F31c: verify checklist markers missing' >&2; exit 1; }
+          if grep -nE 'powershell\.exe|-ExecutionPolicy|Invoke-Expression|-EncodedCommand|mshta|wscript|cscript' <<< "$vblock"; then
+            echo 'F31c: verify checklist executes a script host' >&2; exit 1
+          fi
+          if grep -oE 'onclick="[^"]*"' <<< "$vblock" | grep -v 'onclick="copyById'; then
+            echo 'F31c: verify checklist has a non-copy control' >&2; exit 1
+          fi
+          # server merge so a live 36870 cannot hide outside connLog
+          grep -qF 'Get-F31cSchannelWindow' "$srv" || { echo 'F31c: Schannel 36870 window is not read' >&2; exit 1; }
+          grep -qF 'Merge-F31cConnLog' "$srv" || { echo 'F31c: 36870 events are not merged into connLog' >&2; exit 1; }
+          # the matrix is executed, not merely grepped
+          test -f tests/f31c-live-dispatch.test.js || { echo 'F31c: the node matrix is missing' >&2; exit 1; }
+          node --test tests/f31c-live-dispatch.test.js
+          echo 'F31c gates PASS'
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:

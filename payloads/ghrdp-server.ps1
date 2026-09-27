@@ -624,6 +624,82 @@ function Get-F30TlsNormState {
     return $st
 }
 # [F30 §3 connlog-end]
+# [F31c §2 schannel-begin] System Schannel 36870/36871 are NOT in the RDP
+# Operational logs the F30 collector reads. Merge the last 5 minutes into the
+# served connLog so the LIVE DISPATCH STATUS card can prove absence instead of
+# assuming it. Ids + clipped descriptions only - never a key, a password, or a
+# thumbprint. A dead System log is a named probe error (not a clean absence).
+$script:F31cSchannelAt = [datetime]::MinValue
+$script:F31cSchannelMemo = $null
+function Get-F31cSchannelWindow {
+    $now = Get-Date
+    if ($script:F31cSchannelMemo -and (($now - $script:F31cSchannelAt).TotalSeconds -lt 30)) {
+        return $script:F31cSchannelMemo
+    }
+    $items = @()
+    $probeError = ''
+    try {
+        $since = $now.ToLocalTime().AddMinutes(-5)
+        $raw = @()
+        try {
+            $raw = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; Id = @(36870, 36871); StartTime = $since } -MaxEvents 10 -ErrorAction Stop)
+        } catch {
+            $em = [string]$_.Exception.Message
+            if ($em -notmatch 'No events were found|No events found') { $probeError = 'schannel-log-unreadable' }
+        }
+        foreach ($e in @($raw)) {
+            if (-not $e) { continue }
+            $desc = ''
+            try { $desc = [string]$e.Message } catch { $desc = '' }
+            if ($desc.Length -gt 200) { $desc = $desc.Substring(0, 200) }
+            $desc = [regex]::Replace($desc, '(?i)(password|passwd|pwd|subjectusername|targetusername|subjectdomainname)(\s*[=:]\s*)\S+', '$1$2[redacted]')
+            $id = [string]$e.Id
+            $items += [pscustomobject]@{
+                id       = $id
+                provider = 'Schannel'
+                timeUtc  = $e.TimeCreated.ToUniversalTime().ToString('o')
+                level    = [string]$e.Level
+                reason   = ('schannel-' + $id)
+                desc     = $desc
+            }
+        }
+    } catch { $probeError = 'schannel-log-unreadable' }
+    $memo = [pscustomobject]@{ items = @($items | Where-Object { $_ }); probeError = $probeError; windowSec = 300 }
+    $script:F31cSchannelAt = $now
+    $script:F31cSchannelMemo = $memo
+    return $memo
+}
+function Merge-F31cConnLog {
+    param($ConnLog, $Sch)
+    if (-not $Sch) { return $ConnLog }
+    $extra = @($Sch.items | Where-Object { $_ })
+    if (-not $ConnLog) {
+        if ($extra.Count -eq 0) { return $null }
+        return [pscustomobject]@{
+            ts = (Get-Date).ToUniversalTime().ToString('o')
+            items = $extra
+            newest = @($extra | Select-Object -First 3)
+            count = $extra.Count
+            probeError = ''
+            schannelProbeError = [string]$Sch.probeError
+        }
+    }
+    $have = @{}
+    $merged = @()
+    foreach ($it in @($ConnLog.items)) {
+        if (-not $it) { continue }
+        $k = ([string]$it.id) + '|' + ([string]$it.timeUtc)
+        if (-not $have.ContainsKey($k)) { $have[$k] = $true; $merged += $it }
+    }
+    foreach ($it in $extra) {
+        $k = ([string]$it.id) + '|' + ([string]$it.timeUtc)
+        if (-not $have.ContainsKey($k)) { $have[$k] = $true; $merged += $it }
+    }
+    try { $ConnLog | Add-Member -NotePropertyName items -NotePropertyValue $merged -Force } catch { }
+    try { $ConnLog | Add-Member -NotePropertyName schannelProbeError -NotePropertyValue ([string]$Sch.probeError) -Force } catch { }
+    return $ConnLog
+}
+# [F31c §2 schannel-end]
 function Read-ClientRequest {
 param($Stream)
 $acc = New-Object System.Text.StringBuilder
@@ -1181,6 +1257,10 @@ function Invoke-ClientRequest {
             # reaches LSA and therefore never writes 4624/4625.
             $connState = [pscustomobject]@{ connLog = $null; connLogCollector = $null }
             try { $connState = Get-RdpConnLogState -StatePath $script:ConnLogStatePath -ServerStartedUtc $script:ServerStartedUtc } catch { }
+            # [F31c §2] fold last-5-minute Schannel 36870/36871 into the served
+            # connLog. listenerHandshakeOk stays a pass-through of the F31
+            # self-probe stamp (absent => the card says F31 not bound).
+            try { $connState.connLog = Merge-F31cConnLog -ConnLog $connState.connLog -Sch (Get-F31cSchannelWindow) } catch { }
             $tlsNormState = $null
             try { $tlsNormState = Get-F30TlsNormState -StatePath (Join-Path $Root 'tls-norm.json') } catch { }
             $rlOut = $null
@@ -1260,6 +1340,21 @@ function Invoke-ClientRequest {
             }
             $ns.ticketAudit = $script:TicketAudit
             $ns.handlerChain = @($script:HandlerChain)
+            # [F31c §2] launcher.beacons: allowlisted handler-chain slugs only
+            # (credwrite-ok, mstsc-started, ...) so the LIVE DISPATCH STATUS card
+            # can see whether the last attempt stored a credential. Never a
+            # password, a ticket, or a URL.
+            $f31cBeacons = @()
+            foreach ($hb in @($script:HandlerChain)) {
+                if (-not $hb) { continue }
+                $f31cBeacons += [ordered]@{
+                    ts = [string]$hb.ts
+                    verb = [string]$hb.verb
+                    details = [string]$hb.details
+                    ok = $(if ($null -ne $hb.ok) { [bool]$hb.ok } else { $false })
+                }
+            }
+            $ns.launcher = [ordered]@{ beacons = @($f31cBeacons) }
             # [U4] lastHandlerVerb: verb + result of the most recent /api/handler-hello,
             # so the dashboard can show "last: install ok" / "last: setup skipped" without
             # keeping any per-client state on the server. Optional (may be null).
