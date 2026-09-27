@@ -61,6 +61,7 @@
 $script:F37TelSrc = 'live'
 $script:F37TelTrace = ''
 $script:F37TelPortDefault = 3389
+$script:F37TelModulePathRepair = ''
 
 # [F37 §1 telescope-format] the allowlist IS the wire format.
 $script:F37TelFields = @{
@@ -71,7 +72,7 @@ $script:F37TelFields = @{
     cred     = @('credTarget', 'credExists', 'credType', 'credUser')
     logon    = @('eventId', 'logonType', 'sub', 'eventTs', 'count4624', 'count4625')
     schannel = @('schannelIds', 'lastSchannelId', 'lastSchannelTs', 'schannelWhy', 'sinceSec')
-    listener = @('boundThumb', 'servedThumb', 'inStore', 'hasKey', 'container', 'containerKind', 'containerPath', 'keyFilePathSource', 'keyFileFound', 'keyFileCandidates', 'keyDirHits', 'keyDirSample', 'keyTypedError', 'typesLoader', 'certutilContainer', 'aclSids', 'aclRead', 'aclOk', 'serving', 'hasServerAuth', 'eku', 'san')
+    listener = @('boundThumb', 'servedThumb', 'inStore', 'hasKey', 'container', 'containerKind', 'containerPath', 'keyFilePathSource', 'keyFileFound', 'keyFileCandidates', 'keyDirHits', 'keyDirSample', 'keyTypedError', 'typesLoader', 'certutilContainer', 'aclSids', 'aclRead', 'aclOk', 'aclReadMethod', 'aclModule', 'serving', 'hasServerAuth', 'eku', 'san')
     beacon   = @('beacon')
 }
 function Get-RdpTelescopeFormatTokens {
@@ -548,6 +549,122 @@ function Initialize-RdpTelescopeCryptoTypes {
     }
     return $script:F37TelTypesReady
 }
+function Initialize-RdpTelescopeModulePath {
+    # [F37 §4] A HOST THAT CANNOT LOAD A MODULE MUST NOT LOSE THE EVIDENCE.
+    # Windows PowerShell 5.1 inherits PSModulePath from its PARENT process, and
+    # the live runner is started by a pwsh (Core) step - so 5.1 receives the
+    # Core module directories and NOT its own $PSHOME\Modules. Every module that
+    # is not preloaded in the 5.1 initial session state then fails to load ON
+    # DEMAND, which is exactly how the runner telescope lost Get-Acl
+    # ("the module 'Microsoft.PowerShell.Security' could not be loaded") while
+    # Management/Utility kept working and the listener stage went red with
+    # deathPoint=acl on a key whose NETWORK SERVICE ACE was present. Repair the
+    # path once and REPORT what happened: a silent repair is how this class
+    # comes back.
+    if ($script:F37TelModulePathRepair) { return $script:F37TelModulePathRepair }
+    $repair = @()
+    try {
+        $psHome = [string]$PSHOME
+        $current = @([string]$env:PSModulePath -split ';' | Where-Object { $_ })
+        $modDir = $(if ($psHome) { (Join-Path $psHome 'Modules') } else { '' })
+        if ($modDir -and (Test-Path -LiteralPath $modDir -PathType Container)) {
+            $present = @($current | Where-Object { $_.TrimEnd('\') -ieq $modDir.TrimEnd('\') }).Count -gt 0
+            if ($present) { $repair += 'pshome-present' }
+            else {
+                $env:PSModulePath = ((@($current) + @($modDir)) -join ';')
+                $repair += ('appended ' + $modDir)
+            }
+        } else { $repair += ('pshome-modules-missing: ' + $modDir) }
+    } catch { $repair += ('repair-threw: ' + $_.Exception.Message) }
+    try {
+        Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
+        $repair += 'security-imported'
+    } catch { $repair += ('security-unavailable: ' + ($_.Exception.Message -split "[\r\n]+")[0]) }
+    $script:F37TelModulePathRepair = ($repair -join ',')
+    return $script:F37TelModulePathRepair
+}
+function Get-RdpTelescopeKeyAcl {
+    # [F37 §1] THE ACL IS F31's GROUND TRUTH (NETWORK SERVICE absent =>
+    # Schannel 36870 / 0x8009030D), so this read must never depend on one
+    # cmdlet that some host may be unable to load. Ladder, most capable first,
+    # and the method that answered is REPORTED (aclReadMethod): an unreadable
+    # ACL that says nothing is the red-without-why class this module exists to
+    # kill. Secret-free by construction - SIDs and rights only, never a blob.
+    param([Parameter(Mandatory)][string]$Path)
+    $out = [ordered]@{ sids = @(); read = $false; ok = $false; method = 'none'; error = ''; module = '' }
+    try { $out.module = [string](Initialize-RdpTelescopeModulePath) } catch { $out.module = ('repair-threw: ' + $_.Exception.Message) }
+    $errs = @()
+    $rules = $null
+    # (1) the canonical cmdlet - available wherever its module loads.
+    try {
+        $acl1 = Get-Acl -LiteralPath $Path -ErrorAction Stop
+        $rules = @($acl1.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+        if (@($rules).Count -gt 0) { $out.method = 'get-acl' } else { $rules = $null; $errs += 'get-acl: no access rules returned' }
+    } catch { $errs += ('get-acl: ' + $_.Exception.Message) }
+    # (2) .NET DIRECT - no cmdlet, no module. FileInfo.GetAccessControl is an
+    #     instance method on .NET Framework (the 5.1 runner) and a PowerShell
+    #     type extension on Core, so this is the path a host that cannot load
+    #     Microsoft.PowerShell.Security can always take.
+    if (-not $rules) {
+        try {
+            $fi2 = [System.IO.FileInfo]::new($Path)
+            $acl2 = $fi2.GetAccessControl()
+            $rules = @($acl2.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+            if (@($rules).Count -gt 0) { $out.method = 'dotnet-fileinfo' } else { $rules = $null; $errs += 'dotnet-fileinfo: no access rules returned' }
+        } catch { $errs += ('dotnet-fileinfo: ' + $_.Exception.Message) }
+    }
+    # (3) Core-only FileSystemAclExtensions (PowerShell 7 / .NET 5+).
+    if (-not $rules) {
+        try {
+            $fi3 = [System.IO.FileInfo]::new($Path)
+            $acl3 = [System.Security.AccessControl.FileSystemAclExtensions]::GetAccessControl($fi3)
+            $rules = @($acl3.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
+            if (@($rules).Count -gt 0) { $out.method = 'acl-extensions' } else { $rules = $null; $errs += 'acl-extensions: no access rules returned' }
+        } catch { $errs += ('acl-extensions: ' + $_.Exception.Message) }
+    }
+    if ($rules) {
+        $out.sids = @($rules | ForEach-Object { ([string]$_.IdentityReference.Value) + ':' + ([string]$_.FileSystemRights) + ':' + ([string]$_.AccessControlType) })
+        $out.read = @($rules | Where-Object {
+                $_.IdentityReference.Value -eq 'S-1-5-20' -and $_.AccessControlType -eq 'Allow' -and
+                (($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Read) -eq [System.Security.AccessControl.FileSystemRights]::Read)
+            }).Count -gt 0
+        $out.ok = $out.read
+        return [pscustomobject]$out
+    }
+    # (4) icacls.exe: the ACL is a FACT on the box even when no managed API can
+    #     read it (locked-down host, exotic provider). Names are translated to
+    #     SIDs so the format never carries a second vocabulary.
+    try {
+        $icLines = @(& icacls.exe $Path 2>&1 | ForEach-Object { [string]$_ })
+        $icSids = @()
+        foreach ($l in $icLines) {
+            # -match (never -notmatch): only -match populates $Matches, and a
+            # silently stale $Matches would mint an ACE out of the previous line.
+            # The id group is lazy so the PATH icacls prints on the first line
+            # (C:\...\keyfile  NT AUTHORITY\SYSTEM:(F)) is not captured as part
+            # of the identity; a run of 2+ spaces separates the two.
+            if ($l -notmatch '\(') { continue }
+            if (-not ($l -match '^(?<id>.+?):\s*(?<deny>\(DENY\)\s*)?\((?<perm>[^)]*)\)\s*$')) { continue }
+            $idTxt = ((@([string]$Matches['id'] -split '\s{2,}') | Select-Object -Last 1)).Trim()
+            $permTxt = [string]$Matches['perm']
+            $denyTxt = [bool]($Matches['deny'])
+            if (-not $idTxt -or -not $permTxt) { continue }
+            $sidTxt = ''
+            try { $sidTxt = ([System.Security.Principal.NTAccount]::new($idTxt)).Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { $sidTxt = $idTxt }
+            $icSids += ($sidTxt + ':' + $permTxt + ':' + $(if ($denyTxt) { 'Deny' } else { 'Allow' }))
+        }
+        if (@($icSids).Count -gt 0) {
+            $out.sids = @($icSids)
+            $out.method = 'icacls'
+            $out.read = @($icSids | Where-Object { $_ -like 'S-1-5-20:*' -and $_ -notlike '*:Deny' -and $_ -match ':(R|RX|RW|M|F)(:|$)' }).Count -gt 0
+            $out.ok = $out.read
+            return [pscustomobject]$out
+        }
+        $errs += ('icacls: no ACE parsed from ' + @($icLines).Count + ' lines')
+    } catch { $errs += ('icacls: ' + $_.Exception.Message) }
+    $out.error = (($errs | ForEach-Object { ([string]$_ -split "[\r\n]+")[0] }) -join ' | ')
+    return [pscustomobject]$out
+}
 function Resolve-RdpTelescopeKeyFile {
     # WHERE is the persisted private-key file? A provider-reported container name
     # is NOT proof that a file exists in the first directory you try: Windows has
@@ -638,7 +755,7 @@ function Get-RdpTelescopeListener {
         [string]$Trace = '',
         [string]$Src = ''
     )
-    $fields = @{ boundThumb = ''; servedThumb = $ServedThumb; inStore = $false; hasKey = $false; container = ''; containerKind = ''; containerPath = ''; keyFilePathSource = ''; keyFileFound = $false; keyFileCandidates = @(); keyDirHits = @(); keyDirSample = @(); keyTypedError = ''; typesLoader = ''; certutilContainer = ''; aclSids = @(); aclRead = $false; aclOk = $false; serving = $false; hasServerAuth = $false; eku = @(); san = @() }
+    $fields = @{ boundThumb = ''; servedThumb = $ServedThumb; inStore = $false; hasKey = $false; container = ''; containerKind = ''; containerPath = ''; keyFilePathSource = ''; keyFileFound = $false; keyFileCandidates = @(); keyDirHits = @(); keyDirSample = @(); keyTypedError = ''; typesLoader = ''; certutilContainer = ''; aclSids = @(); aclRead = $false; aclOk = $false; aclReadMethod = ''; aclModule = ''; serving = $false; hasServerAuth = $false; eku = @(); san = @() }
     $why = @()
     try {
         $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
@@ -712,12 +829,22 @@ function Get-RdpTelescopeListener {
         $kf = $KeyFile
         if (-not $kf -and $fields.containerPath) { $kf = $fields.containerPath }
         if ($kf -and (Test-Path -LiteralPath $kf -PathType Leaf)) {
+            # [F37 §1] the ACL read is a LADDER, not a cmdlet call: the live
+            # runner (Windows PowerShell 5.1 under a pwsh parent) could not load
+            # Microsoft.PowerShell.Security, so Get-Acl failed there and the
+            # stage went red with deathPoint=acl while the ACE was present.
             try {
-                $acl = Get-Acl -LiteralPath $kf -ErrorAction Stop
-                $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
-                $fields.aclSids = @($rules | ForEach-Object { ([string]$_.IdentityReference.Value) + ':' + ([string]$_.FileSystemRights) + ':' + ([string]$_.AccessControlType) })
-                $fields.aclRead = @($rules | Where-Object { $_.IdentityReference.Value -eq 'S-1-5-20' -and $_.AccessControlType -eq 'Allow' -and (($_.FileSystemRights -band [System.Security.AccessControl.FileSystemRights]::Read) -eq [System.Security.AccessControl.FileSystemRights]::Read) }).Count -gt 0
-                $fields.aclOk = $fields.aclRead
+                $aclInfo = Get-RdpTelescopeKeyAcl -Path $kf
+                $fields.aclSids = @($aclInfo.sids)
+                $fields.aclRead = [bool]$aclInfo.read
+                $fields.aclOk = [bool]$aclInfo.ok
+                $fields.aclReadMethod = [string]$aclInfo.method
+                $fields.aclModule = [string]$aclInfo.module
+                if ($fields.aclReadMethod -eq 'none') {
+                    $why += ('key ACL unreadable by every method (module=' + $fields.aclModule + '): ' + [string]$aclInfo.error)
+                } elseif (-not $fields.aclOk) {
+                    $why += ('key ACL read via ' + $fields.aclReadMethod + ': NETWORK SERVICE (S-1-5-20) Read ACE absent')
+                }
             } catch { $why += ('key ACL unreadable: ' + $_.Exception.Message) }
         } elseif ($kf) {
             $why += ('persisted key file missing: ' + $kf)
@@ -743,7 +870,7 @@ function Get-RdpTelescopeFields {
         hasServerAuth = $false; eku = @(); san = @()
         keyFileFound = $false; containerKind = ''; keyDirHits = @(); keyDirSample = @(); keyFilePathSource = ''
         containerPath = ''; keyTypedError = ''; typesLoader = ''
-        aclSids = @(); schannelTail = @(); schannelWhy = ''
+        aclSids = @(); aclReadMethod = ''; aclModule = ''; schannelTail = @(); schannelWhy = ''
         protocol = ''; cipher = ''; failureAt = ''; tlsWhy = ''; listenerWhy = ''
         logonEventId = ''; logonSub = ''; count4624 = 0; count4625 = 0; logonWhy = ''
         # [F37 §4] redStages/fatalStages: WHICH stage is red, in the module's own
@@ -791,6 +918,8 @@ function Get-RdpTelescopeFields {
                 if ($o.PSObject.Properties['containerPath']) { $out.containerPath = [string]$o.containerPath }
                 if ($o.PSObject.Properties['keyTypedError']) { $out.keyTypedError = [string]$o.keyTypedError }
                 if ($o.PSObject.Properties['typesLoader']) { $out.typesLoader = [string]$o.typesLoader }
+                if ($o.PSObject.Properties['aclReadMethod']) { $out.aclReadMethod = [string]$o.aclReadMethod }
+                if ($o.PSObject.Properties['aclModule']) { $out.aclModule = [string]$o.aclModule }
                 if ($o.PSObject.Properties['why']) { $out.listenerWhy = [string]$o.why }
             }
             'schannel' {

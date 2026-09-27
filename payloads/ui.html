@@ -2095,6 +2095,14 @@ function paintSrvConnLog(s){
    var bt=String(tel.boundThumb||''),st2=String(tel.servedThumb||'');
    var drift=!!tel.bindDrift||(bt&&st2&&bt!==st2);
    var sids=(tel.aclSids&&tel.aclSids.length)?tel.aclSids.join(' '):'not read';
+   // [F37 §4] WHICH reader answered (get-acl|dotnet-fileinfo|acl-extensions|
+   // icacls|none): 'aclRead=NO' alone is ambiguous - the ACE may be missing, or
+   // the host may have failed to read it (the runner lost Get-Acl to an
+   // unloadable module and rendered deathPoint=acl on a healthy key). The row
+   // says which, so no one has to guess between a real fault and a blind one.
+   var aclMethod=String(tel.aclReadMethod||'none');
+   var aclTxt=(tel.aclRead===true?('yes('+aclMethod+')'):(aclMethod==='none'?'UNREADABLE(no-reader)':('NO('+aclMethod+')')));
+   var aclMod=(aclMethod==='none'&&tel.aclModule)?(' aclModule='+String(tel.aclModule).slice(0,90)):'';
    var sch=(tel.schannelTail&&tel.schannelTail.length)?tel.schannelTail.join(','):'none';
    // [F37 §4] the certificate's OWN acceptance: a bound cert without the
    // ServerAuth EKU is reset by Schannel before it is ever presented, which no
@@ -2121,10 +2129,13 @@ function paintSrvConnLog(s){
    var lWhy=(tel.listenerWhy&&!tel.aclOk)?(' listenerWhy='+String(tel.listenerWhy).slice(0,160)):'';
    var warn=(tc&&tc.probeWarn)?(' | evidence: '+String(tc.probeWarn).slice(0,160)):'';
    tb.textContent='telescope['+String(tel.src||'live')+'] bound='+(bt||'(none)')+' served='+(st2||'(none)')+
-    ' '+(drift?'DRIFT':'match')+' aclRead='+(tel.aclRead===true?'yes':'NO')+' aclSids='+sids+
+    ' '+(drift?'DRIFT':'match')+' aclRead='+aclTxt+' aclSids='+sids+aclMod+
     ' schannel=['+sch+']'+(tel.schannelWhy?(' '+tel.schannelWhy):'')+ekuTxt+keyTxt+fatal+reds+dErr+kErr+ldr+lWhy+
     ' deathPoint='+String(tel.deathPoint||'none')+(tc?(' (tick '+(tc.alive===true?'alive':'STALE')+')'):'')+warn;
-   tb.style.color=(drift||ekuBad||keyBad||(tel.fatalStages&&tel.fatalStages.length)||tel.deriveError)?'#f5b7b7':((tel.deathPoint&&tel.deathPoint!=='none')?'#f5d9b7':'');
+   // an ACL no reader could read is a RED row (a blind verdict is a fault),
+   // never an amber 'unknown' that reads like a transient sample gap.
+   var aclBlind=(aclMethod==='none'&&tel.aclRead!==true&&tel.deathPoint&&tel.deathPoint!=='none');
+   tb.style.color=(drift||ekuBad||keyBad||aclBlind||(tel.fatalStages&&tel.fatalStages.length)||tel.deriveError)?'#f5b7b7':((tel.deathPoint&&tel.deathPoint!=='none')?'#f5d9b7':'');
   }
  }
  if(tls){

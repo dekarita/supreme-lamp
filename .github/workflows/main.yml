@@ -2039,7 +2039,7 @@ jobs:
               $f37ArtDir = $root
               if ($env:GITHUB_WORKSPACE) { $f37ArtDir = Join-Path $env:GITHUB_WORKSPACE 'rdp-diag' }
               Write-RdpTelescopeLines -Telescope $f37Tel -Path (Join-Path $f37ArtDir 'rdp-telescope.jsonl')
-              Write-Host ('[F37] telescope: deathPoint=' + $f37Tel.deathPoint + ' bound=' + $f37TelFields.boundThumb + ' served=' + $f37TelFields.servedThumb + ' aclRead=' + $f37TelFields.aclRead + ' schannel=[' + ($f37TelFields.schannelTail -join ',') + ']')
+              Write-Host ('[F37] telescope: deathPoint=' + $f37Tel.deathPoint + ' bound=' + $f37TelFields.boundThumb + ' served=' + $f37TelFields.servedThumb + ' aclRead=' + $f37TelFields.aclRead + ' aclReadMethod=' + [string]$f37TelFields.aclReadMethod + ' aclModule=' + [string]$f37TelFields.aclModule + ' schannel=[' + ($f37TelFields.schannelTail -join ',') + ']')
           } catch {
               $f37TelLines = @(([ordered]@{ ts = (Get-Date).ToUniversalTime().ToString('o'); trace = ''; src = 'live'; stage = 'telescope'; ok = $false; why = ('telescope failed: ' + $_.Exception.Message) } | ConvertTo-Json -Compress))
               if ($S) { ('- ❌ F37 telescope failed: ' + $_.Exception.Message) | Add-Content -Path $S }
@@ -2079,6 +2079,12 @@ jobs:
                   bindDrift = $(if ($f37TelFields) { [bool]$f37TelFields.bindDrift } else { $false })
                   aclRead = $(if ($f37TelFields) { [bool]$f37TelFields.aclRead } else { $false })
                   aclSids = $(if ($f37TelFields) { @($f37TelFields.aclSids) } else { @() })
+                  # [F37 §4] WHICH reader answered (get-acl|dotnet-fileinfo|
+                  # acl-extensions|icacls|none): 'aclRead=False' is ambiguous -
+                  # a missing NETWORK SERVICE ACE and a host that could not read
+                  # the ACL at all are two different fixes.
+                  aclReadMethod = $(if ($f37TelFields) { [string]$f37TelFields.aclReadMethod } else { 'none' })
+                  aclModule = $(if ($f37TelFields) { [string]$f37TelFields.aclModule } else { '' })
                   container = $(if ($f37TelFields) { [string]$f37TelFields.container } else { '' })
                   schannelTail = $(if ($f37TelFields) { @($f37TelFields.schannelTail) } else { @() })
                   schannelWhy = $(if ($f37TelFields) { [string]$f37TelFields.schannelWhy } else { '' })
@@ -4677,6 +4683,8 @@ jobs:
                           bindDrift = [bool]$f37F.bindDrift
                           aclRead = [bool]$f37F.aclRead
                           aclSids = @($f37F.aclSids)
+                          aclReadMethod = [string]$f37F.aclReadMethod
+                          aclModule = [string]$f37F.aclModule
                           container = [string]$f37F.container
                           schannelTail = @($f37F.schannelTail)
                           schannelWhy = [string]$f37F.schannelWhy
@@ -4711,7 +4719,7 @@ jobs:
                       $cfgT | Add-Member -NotePropertyName rdpListener -NotePropertyValue $rlT -Force
                       [System.IO.File]::WriteAllText($CfgPath, ($cfgT | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
                       $f37S = $env:GITHUB_STEP_SUMMARY
-                      Write-Host ('[F37] keep-alive telescope: deathPoint=' + $f37F.deathPoint + ' bound=' + $f37F.boundThumb + ' served=' + $f37F.servedThumb + ' aclRead=' + $f37F.aclRead + ' drift=' + $f37F.bindDrift + ' fatal=[' + (@($f37F.fatalStages) -join ',') + '] red=[' + (@($f37F.redStages) -join ',') + ']' + $(if ([string]$f37F.deriveError) { ' deriveError=' + [string]$f37F.deriveError } else { '' }))
+                      Write-Host ('[F37] keep-alive telescope: deathPoint=' + $f37F.deathPoint + ' bound=' + $f37F.boundThumb + ' served=' + $f37F.servedThumb + ' aclRead=' + $f37F.aclRead + ' aclReadMethod=' + [string]$f37F.aclReadMethod + ' aclModule=' + [string]$f37F.aclModule + ' drift=' + $f37F.bindDrift + ' fatal=[' + (@($f37F.fatalStages) -join ',') + '] red=[' + (@($f37F.redStages) -join ',') + ']' + $(if ([string]$f37F.deriveError) { ' deriveError=' + [string]$f37F.deriveError } else { '' }))
                       if ($f37S -and ($f37F.bindDrift -or $f37F.deathPoint -ne 'none')) {
                           # A red telescope prints ITSELF into the summary, first
                           # occurrence only (the tick runs every 60s).

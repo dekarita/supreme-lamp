@@ -746,6 +746,66 @@ test('F37-34 every PowerShell surface the runner loads is PARSED in CI and audit
   }
 });
 
+test('F37-35 the key ACL is read by a LADDER, never by one cmdlet (the runner lost Get-Acl)', () => {
+  // GROUND TRUTH (run 36307844517, cell Z): the live runner is powershell.exe
+  // 5.1 started by a pwsh step, so it inherits the CORE PSModulePath and cannot
+  // load Microsoft.PowerShell.Security on demand -> Get-Acl failed inside the
+  // server while the very same ACE read green in the pwsh step, and the row
+  // reported deathPoint=acl on a healthy key. A single-method read is that bug.
+  const reader = mod.slice(mod.indexOf('function Get-RdpTelescopeKeyAcl'), mod.indexOf('function Resolve-RdpTelescopeKeyFile'));
+  assert.ok(reader.length > 1500, 'the independent ACL reader is missing from the module');
+  for (const m of ["'get-acl'", "'dotnet-fileinfo'", "'acl-extensions'", "'icacls'"]) {
+    assert.ok(reader.includes(m), 'the ACL ladder lost the reader ' + m);
+  }
+  assert.ok(reader.includes('.GetAccessControl()'), 'no managed ACL API is reachable without a cmdlet');
+  // the ladder must be ORDERED: the cmdlet first, the module-free .NET path next
+  assert.ok(reader.indexOf("'get-acl'") < reader.indexOf("'dotnet-fileinfo'"), 'the ladder is not ordered cmdlet -> .NET -> Core -> icacls');
+  assert.ok(reader.indexOf("'dotnet-fileinfo'") < reader.indexOf("'icacls'"), 'the last-resort reader is not last');
+  // the module path itself is repaired (every other on-demand module on that host)
+  const repair = mod.slice(mod.indexOf('function Initialize-RdpTelescopeModulePath'), mod.indexOf('function Get-RdpTelescopeKeyAcl'));
+  assert.ok(repair.includes('Join-Path $psHome'), 'the repair does not restore the host module directory');
+  assert.ok(repair.includes('Import-Module Microsoft.PowerShell.Security'), 'the repair never loads the module it exists for');
+  assert.ok(reader.includes('Initialize-RdpTelescopeModulePath'), 'the reader never repairs the module path');
+  // the listener stage goes THROUGH the ladder - never a bare Get-Acl again
+  const listener = mod.slice(mod.indexOf('function Get-RdpTelescopeListener'), mod.indexOf('function Get-RdpTelescopeFields'));
+  assert.ok(listener.includes('Get-RdpTelescopeKeyAcl -Path $kf'), 'the listener stage does not use the ladder');
+  assert.ok(!/^\s*\$acl = Get-Acl -LiteralPath/m.test(listener), 'the listener stage calls Get-Acl directly again (one method, no ladder)');
+  // the method is PART OF THE FORMAT (allowlist) and of the verdict
+  assert.ok(mod.includes("'aclReadMethod'") && mod.includes("'aclModule'"), 'the listener allowlist drops the reader evidence');
+  assert.ok(listener.includes("$fields.aclReadMethod = [string]$aclInfo.method"), 'the method that answered is not stamped');
+  assert.ok(listener.includes("key ACL unreadable by every method"), 'a total reader failure is not named');
+  // and the derived picture carries it, so every consumer can see it
+  const deriv = mod.slice(mod.indexOf('function Get-RdpTelescopeFields'), mod.indexOf('function Get-RdpTelescopeStageLine'));
+  assert.ok(deriv.includes("if ($o.PSObject.Properties['aclReadMethod']) { $out.aclReadMethod = [string]$o.aclReadMethod }"),
+    'the shared derivation drops aclReadMethod');
+  assert.ok(deriv.includes("if ($o.PSObject.Properties['aclModule']) { $out.aclModule = [string]$o.aclModule }"),
+    'the shared derivation drops aclModule');
+});
+
+test('F37-36 an unreadable ACL is a NAMED fault on every surface (module -> runner -> row -> lab)', () => {
+  // a host that could not READ the ACL must never render the same as a host whose
+  // NETWORK SERVICE ACE is genuinely missing: those are two different fixes.
+  for (const f of ['aclReadMethod', 'aclModule']) {
+    assert.ok(mod.includes(f), 'the module lost ' + f);
+    assert.ok(srv.includes(f), 'the runner state does not carry ' + f);
+    assert.ok(lab.includes(f), 'the lab never asserts ' + f);
+    assert.ok(ui.includes(f), 'the dashboard row never renders ' + f);
+  }
+  // the runner persists it (read-back), and a derivation fault keeps every key
+  assert.ok(srv.includes('aclReadMethod = [string]$derived.aclReadMethod'), 'the runner does not stamp the method');
+  assert.ok(srv.includes("aclSids = @(); aclReadMethod = ''; aclModule = ''"),
+    'the fallback state object is missing the new keys (a consumer could read a fault as absence)');
+  // the lab fails CLOSED on 'none' for BOTH faces (module self-run + live runner)
+  const z = lab.slice(lab.indexOf('Z: F37 telescope - module fields'), lab.indexOf('# [F19 §5] LAB PROOF'));
+  assert.ok(z.includes("'module-acl-method'"), 'the module self-run can pass with no ACL reader');
+  assert.ok(z.includes("'runner-acl-method'"), 'a runner whose ACL reader failed can still pass the cell');
+  assert.ok(z.includes("aclReadMethod=' + [string]$ns.telescope.aclReadMethod"), 'the decisive annotation omits the method');
+  // the row distinguishes UNREADABLE (blind) from NO (ACE missing)
+  assert.ok(ui.includes("'UNREADABLE(no-reader)'"), 'the row cannot say the ACL was unreadable');
+  assert.ok(ui.includes("('NO('+aclMethod+')')"), 'the row does not say which reader produced the NO');
+  assert.ok(ui.includes('aclBlind'), 'a blind ACL verdict is not painted red');
+});
+
 test('F37-17 (lab fixture) the REAL native-status sample renders green through the shipped renderer', () => {
   const fx = process.env.F37_TEL_FIXTURE;
   if (!fx) { console.log('[F37] no F37_TEL_FIXTURE set - the lab-only live-sample cell is skipped'); return; }

@@ -1992,6 +1992,22 @@ jobs:
           for f in deriveError redStages fatalStages keyTypedError typesLoader; do
             grep -qF "$f" "$mod" && grep -qF "$f" "$srv" && grep -qF "$f" "$wf" && grep -qF "$f" "$ui" || { echo "F37: $f does not travel module -> runner -> stamp -> row" >&2; exit 1; }
           done
+          # [F37 §1] the key ACL is read by a LADDER, never by one cmdlet: the
+          # live runner (Windows PowerShell 5.1 started by a pwsh step) could not
+          # load Microsoft.PowerShell.Security, Get-Acl failed there, and the row
+          # reported deathPoint=acl on a key whose NETWORK SERVICE ACE was
+          # present. No host may lose that evidence to a module-load fault again.
+          grep -qF 'function Get-RdpTelescopeKeyAcl' "$mod" || { echo 'F37: the module has no independent key-ACL reader' >&2; exit 1; }
+          grep -qF 'function Initialize-RdpTelescopeModulePath' "$mod" || { echo 'F37: nothing repairs a host that cannot load its own modules' >&2; exit 1; }
+          for m in "'get-acl'" "'dotnet-fileinfo'" "'acl-extensions'" "'icacls'"; do
+            grep -qF "$m" "$mod" || { echo "F37: the ACL ladder lost the reader $m" >&2; exit 1; }
+          done
+          grep -qF '.GetAccessControl()' "$mod" || { echo 'F37: no managed ACL API is reachable without a cmdlet' >&2; exit 1; }
+          if grep -nE '^[[:space:]]*\$acl = Get-Acl -LiteralPath' "$mod"; then echo 'F37: the listener stage calls Get-Acl directly again (one method, no ladder)' >&2; exit 1; fi
+          for f in aclReadMethod aclModule; do
+            grep -qF "$f" "$mod" && grep -qF "$f" "$srv" && grep -qF "$f" "$lab" || { echo "F37: $f does not travel module -> runner -> lab verdict" >&2; exit 1; }
+          done
+          grep -qF "'runner-acl-method'" "$lab" || { echo 'F37: a runner whose ACL reader failed can still pass the cell' >&2; exit 1; }
           # the resolver must work on the runtime the SERVER actually uses (5.1)
           grep -qF 'function Initialize-RdpTelescopeCryptoTypes' "$mod" || { echo 'F37: the 5.1 crypto-type loader is missing (the runner telescope degrades silently)' >&2; exit 1; }
           grep -qF 'certutil.exe -store -v My $Certificate.Thumbprint' "$mod" || { echo 'F37: the key resolver has no provider-independent fallback' >&2; exit 1; }

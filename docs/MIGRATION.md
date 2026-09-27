@@ -928,7 +928,7 @@ only copies `$f37TelFields.deathPoint`.
 ### Windows PowerShell 5.1 hardening (runner reality)
 
 The runner server is started with `powershell.exe` (5.1), while the lab and the
-provisioning paths run pwsh 7. Two 5.1-only gaps were closed in the module:
+provisioning paths run pwsh 7. Three 5.1-only gaps were closed in the module:
 
 1. `System.Security.Cryptography.X509Certificates` / `.Cng` are not
    type-loaded in 5.1, so `Initialize-RdpTelescopeKeyTypes` warms them with a
@@ -938,6 +938,21 @@ provisioning paths run pwsh 7. Two 5.1-only gaps were closed in the module:
    container name) when the typed path yields nothing, so
    `Resolve-RdpTelescopeKeyFile` still finds the file and `aclSids` still lists
    the ACEs — including the NETWORK SERVICE grant the live host was missing.
+3. **A host can lose a module and keep running.** 5.1 inherits `PSModulePath`
+   from its parent, so a `powershell.exe` server started by a pwsh step receives
+   the Core module directories and not its own `$PSHOME\Modules`; every module
+   that is not preloaded in the initial session state then fails to load on
+   demand. That is exactly how `Get-Acl` died inside the runner
+   (`Microsoft.PowerShell.Security` could not be loaded) while the very same ACE
+   read green in the pwsh step — the row reported `deathPoint=acl` on a healthy
+   key. `Initialize-RdpTelescopeModulePath` repairs the module path, and
+   `Get-RdpTelescopeKeyAcl` reads the ACL through a ladder instead of one
+   cmdlet: `get-acl` → `dotnet-fileinfo` (`FileInfo.GetAccessControl`, no cmdlet
+   at all) → `acl-extensions` (Core) → `icacls.exe`. The method that answered is
+   carried as `listener.aclReadMethod` (with `aclModule` naming the module-path
+   repair), travels to the config stamp, the SERVER CONN LOG row and the lab
+   annotation, and the lab fails closed when the method is `none`: a blind "no
+   ACE" verdict and a genuinely missing ACE are two different fixes.
 
 Failures are typed, never silent: `deriveError`, `listener.why`,
 `listener.keyTypedError` and `tls.why` name the exact reason, and the lab prints

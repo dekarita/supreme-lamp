@@ -772,7 +772,7 @@ function Update-RdpListenerTelescope {
             hasServerAuth = $false; eku = @(); san = @()
             keyFileFound = $false; containerKind = ''; keyDirHits = @(); keyDirSample = @(); keyFilePathSource = ''
             containerPath = ''; keyTypedError = ''; typesLoader = ''
-            aclSids = @(); schannelTail = @(); schannelWhy = ''
+            aclSids = @(); aclReadMethod = ''; aclModule = ''; schannelTail = @(); schannelWhy = ''
             tlsWhy = ''; listenerWhy = ''
             logonEventId = ''; logonSub = ''; count4624 = 0; count4625 = 0; logonWhy = ''
             redStages = @(); fatalStages = @(); deriveError = $deriveThrown
@@ -793,6 +793,14 @@ function Update-RdpListenerTelescope {
         bindDrift   = [bool]$derived.bindDrift
         aclSids     = @($derived.aclSids)
         aclRead     = [bool]$derived.aclRead
+        # [F37 §4] WHICH reader produced the ACL verdict (get-acl |
+        # dotnet-fileinfo | acl-extensions | icacls | none) + what the module
+        # path repair had to do: the runner lost Get-Acl to an unloadable
+        # Microsoft.PowerShell.Security module under a pwsh parent, and the row
+        # rendered deathPoint=acl on a healthy key. The method makes that
+        # difference visible instead of debatable.
+        aclReadMethod = [string]$derived.aclReadMethod
+        aclModule   = [string]$derived.aclModule
         container   = [string]$derived.container
         schannelTail = @($derived.schannelTail)
         schannelWhy = [string]$derived.schannelWhy
