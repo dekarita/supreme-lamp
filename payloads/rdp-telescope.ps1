@@ -13,7 +13,7 @@
 # +dashboard to prove ONE format): traceId servedThumb chainStatus
 # failurePoint rst-before-cert aclSids deathPoint boundThumb.
 param(
-    [Parameter(Mandatory)][string]$Fqdn,
+    [string]$Fqdn = '',
     [string]$ExpectedThumb = '',
     [string]$KeyFile = '',
     [string]$Target = '',
