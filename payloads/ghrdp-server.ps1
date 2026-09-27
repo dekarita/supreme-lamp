@@ -23,6 +23,10 @@ $script:LogonStatePath = Join-Path $Root 'rdp-logon.json'
 # [F30 §3] server connection-log state (own file: same no-writer-race rule as
 # the F28 logon state - main.yml only MIRRORS it into config.json).
 $script:ConnLogStatePath = Join-Path $Root 'rdp-connlog.json'
+# [F37 §4] live runner telescope (own 60s tick, own state file - never a writer
+# race with the workflow) + the client beacon ring the launcher posts to.
+$script:F37TelStatePath = Join-Path $Root 'rdp-listener-telescope.json'
+$script:F37TelClientPath = Join-Path $Root 'rdp-telescope-client.jsonl'
 $script:NoBom = New-Object System.Text.UTF8Encoding($false)
 $script:WebDeskHtml = ''
 $script:Token = ''
@@ -632,6 +636,202 @@ function Get-F30TlsNormState {
     return $st
 }
 # [F30 §3 connlog-end]
+# [F37 §4 telescope-begin] LIVE RUNNER TELESCOPE (secret-free).
+# The runner keeps its OWN observability: a 60s tick runs the SINGLE telescope
+# implementation (payloads/rdp-telescope.ps1 - dot-sourced here, never a copy)
+# against the listener this host serves and stamps the result so
+# /api/native-status can show boundThumb vs servedThumb LIVE (bind drift is
+# visible instantly), the key container + its ACL SIDs, and the Schannel tail.
+# If the module is not deployed the row still explains itself (ok=false,
+# why='module missing') - a silent absence would be a red-without-why again.
+$script:F37TelIntervalSec = 60
+# LAB-ONLY shortening (GHRDP_LAB_TEL_INTERVAL_SEC): lets the Windows lab
+# observe a FRESH sample without waiting a full production minute. Accepted only
+# as a plain number in [5,600]; production main.yml carries no GHRDP_LAB_
+# switch at all (launch-gates F17 proves it), so production is always 60.
+try {
+    $f37LabInt = [string]$env:GHRDP_LAB_TEL_INTERVAL_SEC
+    if ($f37LabInt -match '^\d{1,3}$') {
+        $f37LabVal = [int]$f37LabInt
+        if ($f37LabVal -ge 5 -and $f37LabVal -le 600) { $script:F37TelIntervalSec = $f37LabVal }
+    }
+} catch { }
+$script:F37TelStaleSec = 180
+$script:F37TelMaxClient = 60
+$script:F37TelSlugRe = '^telescope-(dns|tcp)-(ok|fail)$|^telescope-tls-(ok|fail)$|^telescope-cred-(ok|missing)$|^telescope-(rst-before-cert|chain|name-mismatch|eku)$'
+$script:F37TelModule = ''
+$script:F37TelScans = 0
+$script:F37TelLastError = ''
+$script:F37ClientBeacons = @()
+foreach ($f37cand in @((Join-Path $Root 'rdp-telescope.ps1'), (Join-Path $PSScriptRoot 'rdp-telescope.ps1'))) {
+    try {
+        if ($script:F37TelModule) { break }
+        if ($f37cand -and (Test-Path -LiteralPath $f37cand -PathType Leaf)) {
+            . $f37cand
+            $script:F37TelModule = $f37cand
+        }
+    } catch { $script:F37TelLastError = ('module load failed: ' + $_.Exception.Message) }
+}
+function New-F37TelescopeFallback {
+    # The telescope explains its own absence: same line shape, same keys.
+    param([string]$Why, [string]$Src = 'live', [string]$Trace = '')
+    $line = [ordered]@{
+        ts = (Get-Date).ToUniversalTime().ToString('o')
+        trace = $Trace
+        src = $Src
+        stage = 'telescope'
+        ok = $false
+        why = $Why
+    }
+    return [pscustomobject]@{ trace = $Trace; src = $Src; deathPoint = 'none'; lines = @(($line | ConvertTo-Json -Compress)) }
+}
+function Invoke-F37Telescope {
+    # One call, one implementation: the module's Invoke-RdpTelescope. Never
+    # throws - a missing module or a probe error is itself a telescope line.
+    param([string]$Fqdn, [string]$Src = 'live', [string]$ExpectedThumb = '')
+    if (-not $script:F37TelModule) {
+        return (New-F37TelescopeFallback -Why ('rdp-telescope.ps1 not deployed at ' + $Root) -Src $Src)
+    }
+    try {
+        if (-not $Fqdn) { $Fqdn = 'localhost' }
+        return (Invoke-RdpTelescope -Fqdn $Fqdn -ExpectedThumb $ExpectedThumb -Src $Src -Local -Ip '127.0.0.1')
+    } catch {
+        return (New-F37TelescopeFallback -Why ('telescope failed: ' + $_.Exception.Message) -Src $Src)
+    }
+}
+function Get-F37LineField {
+    # Read ONE field out of a telescope line (JSON string) - tolerates a missing
+    # or unparsable line instead of killing the tick.
+    param([string]$Line, [string]$Field)
+    try {
+        if (-not $Line) { return $null }
+        $o = $Line | ConvertFrom-Json
+        if ($o -and $o.PSObject.Properties[$Field]) { return $o.$Field }
+    } catch { }
+    return $null
+}
+function Update-RdpListenerTelescope {
+    # The 60s tick body: run the telescope, stamp the derived bind-drift fields
+    # (boundThumb/servedThumb/serving/aclSids/schannel tail) and persist.
+    param([string]$StatePath, [datetime]$ScanStartedUtc)
+    $scanTs = (Get-Date).ToUniversalTime().ToString('o')
+    $cfgT = $null
+    try { $cfgT = Read-JsonFile -Path $script:CfgPath } catch { }
+    $fqdn = ''
+    try { if ($cfgT -and $cfgT.PSObject.Properties['dnsName']) { $fqdn = [string]$cfgT.dnsName } } catch { }
+    $expected = ''
+    try {
+        $rdpK = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
+        $b = (Get-ItemProperty -Path $rdpK -Name 'SSLCertificateSHA1Hash' -ErrorAction Stop).SSLCertificateSHA1Hash
+        $expected = (($b | ForEach-Object { $_.ToString('X2') }) -join '')
+    } catch { }
+    $tel = Invoke-F37Telescope -Fqdn $fqdn -Src 'live' -ExpectedThumb $expected
+    $script:F37TelScans = [int]$script:F37TelScans + 1
+    # ONE derivation, shared with the workflow stamp (module, not a copy).
+    $derived = $null
+    if ($script:F37TelModule) {
+        try { $derived = Get-RdpTelescopeFields -Telescope $tel } catch { $derived = $null }
+    }
+    if (-not $derived) {
+        $derived = [pscustomobject]@{ boundThumb = ''; servedThumb = ''; serving = $false; bindDrift = $false; aclRead = $false; aclSids = @(); container = ''; schannelTail = @(); schannelWhy = '' }
+    }
+    $state = [ordered]@{
+        ts          = $scanTs
+        scanTs      = $scanTs
+        trace       = [string]$tel.trace
+        src         = [string]$tel.src
+        deathPoint  = [string]$tel.deathPoint
+        fqdn        = $fqdn
+        module      = $script:F37TelModule
+        boundThumb  = [string]$derived.boundThumb
+        servedThumb = [string]$derived.servedThumb
+        serving     = [bool]$derived.serving
+        bindDrift   = [bool]$derived.bindDrift
+        aclSids     = @($derived.aclSids)
+        aclRead     = [bool]$derived.aclRead
+        container   = [string]$derived.container
+        schannelTail = @($derived.schannelTail)
+        schannelWhy = [string]$derived.schannelWhy
+        lines       = @($tel.lines)
+        intervalSec = $script:F37TelIntervalSec
+        scans       = [int]$script:F37TelScans
+        probeError  = [string]$script:F37TelLastError
+    }
+    try { [System.IO.File]::WriteAllText($StatePath, ($state | ConvertTo-Json -Compress -Depth 6), $script:NoBom) } catch { }
+    return $state
+}
+function Get-RdpListenerTelescopeState {
+    # Read-back for /api/native-status: the state + the tick's own liveness
+    # (a missing or >180s stale sample is NOT a green telescope).
+    param([string]$StatePath, [datetime]$ServerStartedUtc)
+    $state = $null
+    $ageSec = $null
+    if ($StatePath -and (Test-Path -LiteralPath $StatePath)) {
+        $state = Read-JsonFile -Path $StatePath
+        try { $ageSec = [int]((Get-Date) - (Get-Item -LiteralPath $StatePath).LastWriteTime).TotalSeconds } catch { $ageSec = $null }
+    }
+    $uptime = [int]((Get-Date).ToUniversalTime() - $ServerStartedUtc).TotalSeconds
+    $alive = $false
+    if ($null -ne $ageSec) { $alive = ($ageSec -le $script:F37TelStaleSec) } else { $alive = ($uptime -le $script:F37TelStaleSec) }
+    $collector = [ordered]@{
+        intervalSec = $script:F37TelIntervalSec
+        staleSec    = $script:F37TelStaleSec
+        scans       = [int]$script:F37TelScans
+        alive       = $alive
+        uptimeSec   = $uptime
+        lastScanAgeSec = $ageSec
+        module      = $script:F37TelModule
+        probeError  = [string]$script:F37TelLastError
+    }
+    return [pscustomobject]@{ telescope = $state; telescopeCollector = $collector }
+}
+function Add-F37ClientBeacon {
+    # Ring buffer (last N) + JSONL append for the launcher's stage beacons.
+    # Only ts/trace/stage/ok/details are accepted: the endpoint allowlists them
+    # before this is called, so a beacon can never carry a secret.
+    param([string]$Path, [System.Collections.IDictionary]$Beacon)
+    $obj = [ordered]@{
+        ts      = [string]$Beacon['ts']
+        trace   = [string]$Beacon['trace']
+        stage   = [string]$Beacon['stage']
+        ok      = [bool]$Beacon['ok']
+        details = [string]$Beacon['details']
+    }
+    $script:F37ClientBeacons = @(@($obj) + @($script:F37ClientBeacons) | Select-Object -First $script:F37TelMaxClient)
+    try { [System.IO.File]::AppendAllText($Path, (($obj | ConvertTo-Json -Compress) + "`n"), $script:NoBom) } catch { }
+    return $obj
+}
+function Get-F37ClientTelescope {
+    # Newest-first beacons + the trace the timeline should focus on. Re-seeds
+    # from the JSONL file after a server restart so a restart never blanks the
+    # timeline (the last 60 lines are enough for one attempt).
+    param([string]$Path)
+    if (@($script:F37ClientBeacons).Count -eq 0 -and $Path -and (Test-Path -LiteralPath $Path)) {
+        try {
+            $all = @([System.IO.File]::ReadAllLines($Path) | Where-Object { $_ } | Select-Object -Last $script:F37TelMaxClient)
+            $items = @()
+            foreach ($l in $all) {
+                try {
+                    $o = $l | ConvertFrom-Json
+                    $items += [ordered]@{ ts = [string]$o.ts; trace = [string]$o.trace; stage = [string]$o.stage; ok = [bool]$o.ok; details = [string]$o.details }
+                } catch { }
+            }
+            $script:F37ClientBeacons = @(@($items) | Sort-Object -Property ts -Descending | Select-Object -First $script:F37TelMaxClient)
+        } catch { }
+    }
+    $items = @($script:F37ClientBeacons)
+    $newestTrace = ''
+    foreach ($it in $items) { if ($it['trace']) { $newestTrace = [string]$it['trace']; break } }
+    return [pscustomobject]@{
+        items       = $items
+        count       = $items.Count
+        newestTrace = $newestTrace
+        intervalSec = $script:F37TelIntervalSec
+        ageSec      = $(if ($items.Count -gt 0) { try { [int]((Get-Date).ToUniversalTime() - ([datetime]$items[0]['ts']).ToUniversalTime()).TotalSeconds } catch { $null } } else { $null })
+    }
+}
+# [F37 §4 telescope-end]
+
 # [F31c §2 schannel-begin] System Schannel 36870/36871 are NOT in the RDP
 # Operational logs the F30 collector reads. Merge the last 5 minutes into the
 # served connLog so the LIVE DISPATCH STATUS card can prove absence instead of
@@ -1269,6 +1469,14 @@ function Invoke-ClientRequest {
             # connLog. listenerHandshakeOk stays a pass-through of the F31
             # self-probe stamp (absent => the card says F31 not bound).
             try { $connState.connLog = Merge-F31cConnLog -ConnLog $connState.connLog -Sch (Get-F31cSchannelWindow) } catch { }
+            # [F37 §4] telescope: the runner's own 60s observation of the
+            # listener it serves + the client beacons the launcher posted. The
+            # SERVER CONN LOG row reads boundThumb/servedThumb/aclSids/schannel
+            # from here, so bind drift can never hide behind a cached stamp.
+            $f37State = [pscustomobject]@{ telescope = $null; telescopeCollector = $null }
+            try { $f37State = Get-RdpListenerTelescopeState -StatePath $script:F37TelStatePath -ServerStartedUtc $script:ServerStartedUtc } catch { }
+            $f37Client = $null
+            try { $f37Client = Get-F37ClientTelescope -Path $script:F37TelClientPath } catch { }
             $tlsNormState = $null
             try { $tlsNormState = Get-F30TlsNormState -StatePath (Join-Path $Root 'tls-norm.json') } catch { }
             $rlOut = $null
@@ -1290,6 +1498,14 @@ function Invoke-ClientRequest {
                 # the F30 normalization step) - the row shows it next to the
                 # client-side cipher list.
                 $rlOut | Add-Member -NotePropertyName tlsNorm -NotePropertyValue $tlsNormState -Force
+                # [F37 §4] rdpListener.telescopeLive: the RUNNER's own 60s
+                # observation, always served next to the config stamp
+                # (rdpListener.telescope, written by the workflow's F17 probe /
+                # keep-alive tick). The row prefers LIVE: a bind drift that
+                # happened after the last dispatch must be visible NOW.
+                if ($f37State.telescope) {
+                    $rlOut | Add-Member -NotePropertyName telescopeLive -NotePropertyValue $f37State.telescope -Force
+                }
             } catch { }
             $ns = [ordered]@{
                 fqdn = $fqdnN
@@ -1312,6 +1528,14 @@ function Invoke-ClientRequest {
                 # when the config stamp is absent).
                 connLog = $connState.connLog
                 connLogCollector = $connState.connLogCollector
+                # [F37 §4] telescope (runner 60s observation of the listener it
+                # serves: boundThumb vs servedThumb, serving, aclSids, schannel
+                # tail) + telescopeClient (the launcher's per-stage beacons,
+                # newest first). Top-level so the timeline renders even when the
+                # config stamp is absent. Never a credential.
+                telescope = $f37State.telescope
+                telescopeCollector = $f37State.telescopeCollector
+                telescopeClient = $f37Client
                 # [F18 §4] runnerResolvedIP: the F18 runner FQDN self-test result
                 # (100.64.0.0/10 only). Empty/invalid => AUTO-LOGIN stays disabled.
                 runnerResolvedIP = $(if ($cfgN -and $cfgN.PSObject.Properties['runnerResolvedIP'] -and ([string]$cfgN.runnerResolvedIP -match '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.')) { [string]$cfgN.runnerResolvedIP } else { '' })
@@ -1450,6 +1674,34 @@ function Invoke-ClientRequest {
             $script:HandlerChain = @(@($script:HandlerChain) + @($hh) | Select-Object -Last 40)
             try { [System.IO.File]::AppendAllText((Join-Path $Root 'handler-hello-chain.jsonl'), (($hh | ConvertTo-Json -Compress) + "`n"), $script:NoBom) } catch { }
             try { [System.IO.File]::WriteAllText((Join-Path $Root 'handler-hello-last.json'), ($hh | ConvertTo-Json -Compress), $script:NoBom) } catch { }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":true}'))
+            return
+        }
+        # [F37 §3] POST /api/rdp-telescope - the CLIENT telescope beacon (the
+        # launcher's dns/tcp/tls/cred stages, one trace id per click). Strict
+        # allowlist: stage in dns|tcp|tls|cred, details matching the SHARED slug
+        # set of payloads/rdp-telescope.ps1, trace an opaque id. A beacon cannot
+        # smuggle a secret: an unknown slug becomes 'telescope-unparsed' and only
+        # these five fields are ever stored.
+        if ($path -eq '/api/rdp-telescope' -and $parts.method -eq 'POST') {
+            $cb = [ordered]@{ ts = [datetime]::UtcNow.ToString('o'); trace = ''; stage = 'other'; ok = $false; details = 'telescope-unparsed' }
+            try {
+                $bodyRawT = $parts.body
+                if ($bodyRawT -and $bodyRawT.Length -gt 0) {
+                    $bTxtT = [System.Text.Encoding]::UTF8.GetString([byte[]]$bodyRawT)
+                    $bjT = $bTxtT | ConvertFrom-Json -ErrorAction SilentlyContinue
+                    if ($bjT) {
+                        $trT = [string]$bjT.trace
+                        if ($trT -match '^[A-Za-z0-9\-]{4,64}$') { $cb.trace = $trT }
+                        $stT = [string]$bjT.stage
+                        if ($stT -in @('dns', 'tcp', 'tls', 'cred')) { $cb.stage = $stT }
+                        if ($null -ne $bjT.ok) { $cb.ok = [bool]$bjT.ok }
+                        $detT = [string]$bjT.details
+                        if ($detT -match $script:F37TelSlugRe) { $cb.details = $detT }
+                    }
+                }
+            } catch { }
+            Add-F37ClientBeacon -Path $script:F37TelClientPath -Beacon $cb | Out-Null
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"ok":true}'))
             return
         }
@@ -2280,6 +2532,11 @@ $lastLogonScan = Get-Date
 # scanTs are stamped by the function instead of throwing).
 try { Update-RdpConnLog -StatePath $script:ConnLogStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
 $lastConnLogScan = Get-Date
+# [F37 §4] STARTUP SCAN: the telescope stamps BEFORE the first client can poll
+# (same shape as the F28/F30 startup scans), so "not reported yet" can only mean
+# a genuinely absent sample - and the 60s tick below keeps it live.
+try { Update-RdpListenerTelescope -StatePath $script:F37TelStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
+$lastTelScan = Get-Date
 $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse($Bind), $Port)
 try { $listener.Start() } catch {
     try { [System.IO.File]::WriteAllText($script:OkFile, 'LISTEN_FAIL: ' + $_.Exception.Message, $script:NoBom) } catch { }
@@ -2338,6 +2595,14 @@ while (((Get-Date) - $start) -lt $limit) {
     if (((Get-Date) - $lastConnLogScan).TotalSeconds -ge $script:F30ConnLogIntervalSec) {
         $lastConnLogScan = Get-Date
         try { Update-RdpConnLog -StatePath $script:ConnLogStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
+    }
+    # [F37 §4] INDEPENDENT 60s telescope tick: binds the OBSERVED listener
+    # (boundThumb vs servedThumb, serving, key container + ACL SIDs, Schannel
+    # tail) to the row, so a bind drift or a refused handshake is visible the
+    # moment it happens instead of at the next workflow dispatch.
+    if (((Get-Date) - $lastTelScan).TotalSeconds -ge $script:F37TelIntervalSec) {
+        $lastTelScan = Get-Date
+        try { Update-RdpListenerTelescope -StatePath $script:F37TelStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
     }
     if (((Get-Date) - $lastHeal).TotalSeconds -ge 60) {
         $lastHeal = Get-Date

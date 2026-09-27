@@ -45,7 +45,9 @@ test('F27 WINDOWS click gets bearer ticket before dispatch, never reads password
  const builder=block(ui,'function ghrdpRdpUrl','function syncWinAuto');
  const launch=[], requests=[];
  const els={rdpFqdn:{textContent:'fixture.tail.ts.net'},credUser:{textContent:'fixture'},winAutoNote:{},winAutoStale:{style:{}}};
- const ctx={waBtn:{disabled:false},$:id=>els[id],FQDN_RE:/\.ts\.net$/,getKey:()=> 'fixture-bearer',apiBase:()=>'',window:{addEventListener(){},removeEventListener(){}},document:{addEventListener(){},removeEventListener(){}},fetch:async(url,opt)=>{requests.push({url,opt});return {ok:true,json:async()=>({rid:'a'.repeat(32)})}},launchProto:u=>launch.push(u),setInterval(){},setTimeout(){},clearInterval(){},encodeURIComponent,Date};
+ // [F37 §3] the click now mints a trace id via traceParam(); an empty trace keeps
+// the pinned URL byte-identical, so this F27 contract is unchanged by F37.
+const ctx={waBtn:{disabled:false},$:id=>els[id],FQDN_RE:/\.ts\.net$/,getKey:()=> 'fixture-bearer',apiBase:()=>'',window:{addEventListener(){},removeEventListener(){}},document:{addEventListener(){},removeEventListener(){}},fetch:async(url,opt)=>{requests.push({url,opt});return {ok:true,json:async()=>({rid:'a'.repeat(32)})}},launchProto:u=>launch.push(u),setInterval(){},setTimeout(){},clearInterval(){},traceParam:()=>'',encodeURIComponent,Date};
  vm.createContext(ctx);vm.runInContext(builder+source,ctx);
  await ctx.waBtn.onclick();
  assert.equal(requests[0].url,'/api/rdp-token');assert.equal(requests[0].opt.headers.Authorization,'Bearer fixture-bearer');
