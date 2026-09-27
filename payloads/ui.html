@@ -1508,12 +1508,27 @@ async function nativeStatus(){
       '</ol>'+
       'There is no interactive sign-in fallback; the key value is never shown in logs, links or this page.';
   }
+  // [F34-2] The two classes the F34 classifier can emit that are NOT a bad key.
+  // Without these branches the box simply stays hidden (no false advice), but the run
+  // halts either way, so the page names the real fix and the real link instead of
+  // making the user open the Actions log to learn that the key was never the problem.
+  var TS_STATUS_URL='https://status.tailscale.com';
+  var tsAdviceLine='';
+  if(tsReason==='ts-authkey-missing'){
+    tsAdviceLine='Workflow halted: <code>TS_AUTHKEY</code> secret missing - <a href="'+TS_KEYS_URL+'" target="_blank" rel="noopener">generate a reusable key</a>, then update the repo secret and re-run.';
+  } else if(tsReason==='ts-authkey-invalid'){
+    tsAdviceLine='Workflow halted: <code>TS_AUTHKEY</code> rejected (invalid/expired/revoked) - <a href="'+TS_KEYS_URL+'" target="_blank" rel="noopener">regenerate a reusable key</a>, then update the repo secret and re-run.';
+  } else if(tsReason==='ts-control-plane'){
+    tsHtml='The workflow halted on a <strong>Tailscale control-plane error</strong> (timeouts / 5xx contacting the coordination server). This is <em>not</em> an auth-key problem: check <a href="'+TS_STATUS_URL+'" target="_blank" rel="noopener">Tailscale service status</a>, then re-dispatch.';
+    tsAdviceLine='Workflow halted: Tailscale control-plane error (not the auth key) - <a href="'+TS_STATUS_URL+'" target="_blank" rel="noopener">check service status</a>, then re-run.';
+  } else if(tsReason==='ts-tailnet-ip-unavailable'){
+    tsHtml='The node signed in (<code>BackendState=Running</code>) but was never assigned a tailnet address, so the run halted <em>before</em> the MagicDNS gate. Check the auth key capabilities and the tailnet ACLs on <a href="'+TS_KEYS_URL+'" target="_blank" rel="noopener">Tailscale Admin &rarr; Settings &rarr; Keys</a>, then re-dispatch.';
+    tsAdviceLine='Workflow halted: no tailnet address issued (not a MagicDNS problem) - <a href="'+TS_KEYS_URL+'" target="_blank" rel="noopener">check key capabilities and ACLs</a>, then re-run.';
+  }
   if(tsGuide){ tsGuide.innerHTML=tsHtml; tsGuide.style.display=tsHtml?'block':'none'; }
   if(tsAdvice){
     tsAdvice.style.display=tsHtml?'':'none';
-    if(tsAdviceTxt)tsAdviceTxt.innerHTML=tsHtml?(tsReason==='ts-authkey-missing'
-      ?'Workflow halted: <code>TS_AUTHKEY</code> secret missing - <a href="'+TS_KEYS_URL+'" target="_blank" rel="noopener">generate a reusable key</a>, then update the repo secret and re-run.'
-      :'Workflow halted: <code>TS_AUTHKEY</code> rejected (invalid/expired/revoked) - <a href="'+TS_KEYS_URL+'" target="_blank" rel="noopener">regenerate a reusable key</a>, then update the repo secret and re-run.'):'';
+    if(tsAdviceTxt)tsAdviceTxt.innerHTML=tsHtml?tsAdviceLine:'';
   }
   // [F9o] VNC auth mode row + degraded-mode advisory. webdeskAuth comes from
   // config.json via native-status ('vnc' = password gate verified by the

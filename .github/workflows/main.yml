@@ -334,6 +334,9 @@ jobs:
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $S = $env:GITHUB_STEP_SUMMARY
           $keysUrl = 'https://login.tailscale.com/admin/settings/keys'
+          # [F34-2] A control-plane fault is not a bad key, so it must not be sent to
+          # the keys page: every class carries its OWN remediation link.
+          $statusUrl = 'https://status.tailscale.com'
           # [F9k] Redactor: strips the injected secret VALUE(s) plus any
           # tskey-*/ghp_*/github_pat_* token shape from every printed line.
           function ConvertTo-Redacted([string]$Text) {
@@ -407,16 +410,31 @@ jobs:
           $upLog = Join-Path $env:RUNNER_TEMP 'ts-up.log'
           $upErr = Join-Path $env:RUNNER_TEMP 'ts-up.err'
           $ok = $false
+          $tsIp = ''
+          $stateRunning = $false
+          # [F25] anchored CGNAT validator, same pattern as the webdesk ladder.
+          $cgnat = '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.(\d{1,3})\.(\d{1,3})$'
           for ($attempt = 1; $attempt -le 2 -and -not $ok; $attempt++) {
               Remove-Item $upLog, $upErr -Force -ErrorAction SilentlyContinue
               Start-Process -FilePath $ts -ArgumentList @('up', ('--authkey=' + $env:TS_AUTHKEY), '--accept-dns=true', ('--hostname=' + $hostname)) -RedirectStandardOutput $upLog -RedirectStandardError $upErr -WindowStyle Hidden | Out-Null
               $fatalHit = $false
-              # Poll status --json <= 90 s for Running; break EARLY on a fatal
-              # authkey rejection (no need to burn the full window).
+              # [F34-1] Poll status --json for <= 90 s until BackendState is Running AND a
+              # CGNAT tailnet IP is assigned. Every downstream consumer (stage config
+              # writer, cert bind, webdesk) needs the address, so 'Running but address-less'
+              # keeps polling instead of exiting green and failing two steps later. The
+              # address is read from Self.TailscaleIPs in the SAME status JSON - this step
+              # never calls `tailscale ip -4` (F9n/F25 proved that LocalAPI call 401s when
+              # the node is SYSTEM-owned). Break EARLY on a fatal authkey rejection.
               for ($i = 0; $i -lt 45; $i++) {
                   try {
                       $j = (& $ts status --json 2>$null) | ConvertFrom-Json -ErrorAction Stop
-                      if ($j -and ($j.BackendState -eq 'Running')) { $ok = $true; break }
+                      if ($j -and ($j.BackendState -eq 'Running')) {
+                          $stateRunning = $true
+                          foreach ($a in @($j.Self.TailscaleIPs)) {
+                              if (([string]$a).Trim() -match $cgnat) { $tsIp = ([string]$a).Trim(); break }
+                          }
+                          if ($tsIp) { $ok = $true; break }
+                      }
                   } catch { }
                   $allNow = ''
                   try { if (Test-Path -LiteralPath $upErr) { $allNow += [System.IO.File]::ReadAllText($upErr) } } catch { }
@@ -434,8 +452,11 @@ jobs:
               } else { break }
           }
           if ($ok) {
-              Write-Host '[ts] auto-login OK via TS_AUTHKEY'
-              if ($S) { '### Tailscale: auto-logged-in via TS_AUTHKEY' | Add-Content -Path $S }
+              Write-Host ('[ts] auto-login OK via TS_AUTHKEY (tailnet IP ' + $tsIp + ')')
+              # [F34-1] hand the PROVEN address to the stage step, which halts on an
+              # empty IP before the MagicDNS branch can misdiagnose it.
+              if ($env:GITHUB_ENV) { Add-Content -Path $env:GITHUB_ENV -Value ('TS_TAILNET_IP=' + $tsIp) }
+              if ($S) { '### Tailscale: auto-logged-in via TS_AUTHKEY (tailnet IP `' + $tsIp + '`)' | Add-Content -Path $S }
               exit 0
           }
 
@@ -449,11 +470,27 @@ jobs:
           $tailText = ($tail -join "`n")
           Write-Host '[ts] tailscale up failed - last 25 log lines (redacted):'
           foreach ($l in $tail) { Write-Host ('[ts]   ' + $l) }
+          # [F34-2] CLASSIFIER: reason + the link that actually fixes it. Ordered, first
+          # match wins; the authkey classes are tested BEFORE control-plane because a
+          # rejected key also prints dial/EOF noise and the generic pattern would swallow
+          # it. Previously every class pointed at the keys page, so a Tailscale-side
+          # outage read as 'your auth key is wrong'.
+          $f34Classes = @(
+              [pscustomobject]@{ Reason = 'ts-authkey-invalid'; Url = $keysUrl; Pattern = 'invalid|expired|revoked|not a valid|already been used|consumed' }
+              [pscustomobject]@{ Reason = 'ts-authkey-ratelimited'; Url = $keysUrl; Pattern = 'rate.?limit|too many requests|\b429\b|limiter' }
+              [pscustomobject]@{ Reason = 'ts-control-plane'; Url = $statusUrl; Pattern = 'timeout|timed out|temporar|unavailable|no such host|dial tcp|connection (refused|reset)|EOF|50[0-9]|try again' }
+          )
           $reason = 'ts-authkey-unknown'
-          if ($tailText -match 'invalid|expired|revoked|not a valid') { $reason = 'ts-authkey-invalid' }
-          elseif ($tailText -match 'rate|limit') { $reason = 'ts-authkey-ratelimited' }
+          $haltUrl = $keysUrl
+          foreach ($cl in $f34Classes) {
+              if ($tailText -match $cl.Pattern) { $reason = $cl.Reason; $haltUrl = $cl.Url; break }
+          }
+          # Running for the whole window with no address assigned is an ACL/capability
+          # fault, not an unparseable key - say so instead of 'unknown'.
+          if ($reason -eq 'ts-authkey-unknown' -and $stateRunning -and -not $tsIp) { $reason = 'ts-tailnet-ip-unavailable' }
           if ($reason -eq 'ts-authkey-unknown' -and -not $tailText) { Write-Host '[ts] note: tailscale up produced no log output; treating as unclassified failure.' }
-          Emit-SecretHalt 'TS_AUTHKEY login failed' $keysUrl $reason $authSteps $tailText
+          Write-Host ('[ts] classified as ' + $reason + ' (remediation: ' + $haltUrl + ')')
+          Emit-SecretHalt 'TS_AUTHKEY login failed' $haltUrl $reason $authSteps $tailText
 
       - name: Wait for Tailscale connected
         shell: pwsh
@@ -469,9 +506,40 @@ jobs:
               Start-Sleep -Seconds 5
           }
           if (-not $authed) { throw 'Tailscale sign-in timeout (15 min).' }
-          $ip = ([string](& $ts ip -4 2>$null | Select-Object -First 1)).Trim()
-          $LASTEXITCODE = 0
-          Write-Host ('[ts] connected. Tailscale IP = ' + $ip)
+          # [F34-3] IP-FIRST BRANCHING. Ladder: the address the up-step PROVED
+          # (TS_TAILNET_IP) | Self.TailscaleIPs of the status JSON already in hand |
+          # `tailscale ip -4` as a last resort (kept: it works on a user-owned node).
+          # An empty IP HALTS HERE, BEFORE the MagicDNS branch below, because 'MagicDNS
+          # is OFF' is the wrong diagnosis when it is the tailnet address that is
+          # missing - it sent users to toggle DNS for an auth-key/ACL fault while the
+          # real cause stayed unreported.
+          $cgnat = '^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.(\d{1,3})\.(\d{1,3})$'
+          $ip = ''
+          $ipSource = 'none'
+          if (([string]$env:TS_TAILNET_IP).Trim() -match $cgnat) { $ip = ([string]$env:TS_TAILNET_IP).Trim(); $ipSource = 'up-step' }
+          if (-not $ip) {
+              foreach ($a in @($j.Self.TailscaleIPs)) {
+                  if (([string]$a).Trim() -match $cgnat) { $ip = ([string]$a).Trim(); $ipSource = 'status-json'; break }
+              }
+          }
+          if (-not $ip) {
+              $ipRaw = ([string](& $ts ip -4 2>$null | Select-Object -First 1)).Trim()
+              $LASTEXITCODE = 0
+              if ($ipRaw -match $cgnat) { $ip = $ipRaw; $ipSource = 'tailscale-ip' }
+          }
+          Write-Host ('[ts] connected. Tailscale IP = ' + $ip + ' (source: ' + $ipSource + ')')
+          if (-not $ip) {
+              $f34h = @(
+                  '### Tailnet IP missing - workflow halted by design (this is NOT a MagicDNS problem)'
+                  '[Tailscale admin keys + ACLs](https://login.tailscale.com/admin/settings/keys)'
+                  '[Tailscale service status](https://status.tailscale.com)'
+                  'BackendState reached Running but no 100.64.0.0/10 address was assigned. Check the auth key capabilities / tailnet ACLs, then re-dispatch. The MagicDNS gate is deliberately NOT reported: it was never evaluated.'
+              )
+              Write-Host '::error::[F34] tailnet IP empty after sign-in - halting BEFORE the MagicDNS branch (a DNS diagnosis here would be wrong)'
+              foreach ($l in $f34h) { Write-Host ('[f34] ' + $l) }
+              if ($env:GITHUB_STEP_SUMMARY) { $f34h | Add-Content -Path $env:GITHUB_STEP_SUMMARY }
+              throw 'tailnet IP unavailable after sign-in (no CGNAT address) - halting before MagicDNS diagnostics'
+          }
           $dnsName = ''
           try { $dnsName = ([string]$j.Self.DNSName).TrimEnd('.') } catch { }
           # [F9b] opt-in auto-enable: only when BOTH TS_API_TOKEN and
@@ -4580,7 +4648,17 @@ jobs:
                   }
               }
               $psOk = Test-DashHttp
-              if (-not $psOk) {
+              # [F34-4] Quiet skip when the payload is not on disk: until 'Write deploy
+              # payloads' lands C:\ghrdp\ghrdp-server.ps1 (and on any run where it was
+              # removed) the restart was doomed - Start-ScheduledTask threw and the tick
+              # printed a wrench line every 2 minutes that read like a fresh incident.
+              # No file = nothing to heal, so say that once and do not attempt it.
+              $psSkipped = $false
+              if (-not $psOk -and -not (Test-Path -LiteralPath 'C:\ghrdp\ghrdp-server.ps1')) {
+                  $psSkipped = $true
+                  Write-Host ($icons.hourglass + ' ' + $stamp + ' ghrdp-server.ps1 not on disk - dashboard restart skipped (nothing to heal yet)')
+              }
+              if (-not $psOk -and -not $psSkipped) {
                   if (((Get-Date) - $lastPsFix).TotalMinutes -ge 2) {
                       $lastPsFix = Get-Date
                       Write-Host ($icons.wrench + ' ' + $stamp + ' PowerShell dashboard not responding on 7331 - restarting GhrdpServer')

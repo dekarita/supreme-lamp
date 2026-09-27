@@ -1762,6 +1762,46 @@ jobs:
           test -f tests/f31c-live-dispatch.test.js || { echo 'F31c: the node matrix is missing' >&2; exit 1; }
           node --test tests/f31c-live-dispatch.test.js
           echo 'F31c gates PASS'
+      - name: F34 up-step IP poll + class links + IP-first stage + keep-alive skip gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          up=$(awk '/^      - name: Tailscale up \(TS_AUTHKEY fail-closed/{f=1;next} /^      - name: Wait for Tailscale connected/{f=0} f' "$wf")
+          stage=$(awk '/^      - name: Wait for Tailscale connected/{f=1;next} /^      - name: Runner FQDN self-test/{f=0} f' "$wf")
+          ka=$(awk '/^      - name: Keep-alive 5h30/{f=1} /^      - name: Cleanup /{f=0} f' "$wf")
+          test -n "$up" && test -n "$stage" && test -n "$ka" || { echo 'F34: a step region is missing (gate would be vacuous)' >&2; exit 1; }
+          # (1) up-step: the 90s window must gate on BackendState AND a CGNAT address.
+          grep -qF "\$i -lt 45" <<< "$up" || { echo 'F34: up-step no longer polls 45 x 2s (90s)' >&2; exit 1; }
+          grep -qF "\$j.BackendState -eq 'Running'" <<< "$up" || { echo 'F34: up-step does not read BackendState' >&2; exit 1; }
+          grep -qF 'Self.TailscaleIPs' <<< "$up" || { echo 'F34: up-step does not require a tailnet IP' >&2; exit 1; }
+          grep -qF 'TS_TAILNET_IP=' <<< "$up" || { echo 'F34: up-step does not publish the proven IP' >&2; exit 1; }
+          # Only a CALL counts: the F34 comment explains why the CLI is avoided.
+          if grep -qE '& \$ts ip -4' <<< "$up"; then echo 'F34: up-step calls `tailscale ip -4` (proved 401-prone)' >&2; exit 1; fi
+          # (2) class links: table with the three classes + the two distinct links.
+          for r in ts-authkey-invalid ts-authkey-ratelimited ts-control-plane; do
+            grep -qF "$r" <<< "$up" || { echo "F34: classifier class missing: $r" >&2; exit 1; }
+          done
+          grep -qF "https://status.tailscale.com" <<< "$up" || { echo 'F34: control-plane class has no status link' >&2; exit 1; }
+          grep -qF 'Emit-SecretHalt' <<< "$up" && grep -qE "Emit-SecretHalt .*\\\$haltUrl" <<< "$up" || { echo 'F34: halt does not carry the class-specific link' >&2; exit 1; }
+          # (3) stage: empty IP must halt BEFORE any MagicDNS branch (line ordering).
+          ipLine=$(grep -nF 'tailnet IP unavailable after sign-in' <<< "$stage" | head -1 | cut -d: -f1 || true)
+          dnsLine=$(grep -nF 'enable MagicDNS in tailnet DNS settings' <<< "$stage" | head -1 | cut -d: -f1 || true)
+          test -n "$ipLine" || { echo 'F34: stage step has no empty-IP halt' >&2; exit 1; }
+          test -n "$dnsLine" || { echo 'F34: stage step lost its MagicDNS halt' >&2; exit 1; }
+          test "$ipLine" -lt "$dnsLine" || { echo 'F34: the empty-IP halt sits AFTER the MagicDNS branch' >&2; exit 1; }
+          haltBlk=$(awk -v s="$ipLine" 'NR>=s-20 && NR<=s' <<< "$stage")
+          if grep -qF 'MagicDNS is OFF' <<< "$haltBlk"; then echo 'F34: the empty-IP halt emits the MagicDNS sentence' >&2; exit 1; fi
+          grep -qF 'login.tailscale.com/admin/settings/keys' <<< "$haltBlk" || { echo 'F34: empty-IP halt lacks a clickable link' >&2; exit 1; }
+          # (4) keep-alive: absent ghrdp-server.ps1 => quiet skip, no restart attempt.
+          grep -qF "Test-Path -LiteralPath 'C:" <<< "$ka" || { echo 'F34: keep-alive does not probe for ghrdp-server.ps1' >&2; exit 1; }
+          grep -qF "ghrdp-server.ps1'" <<< "$ka" || { echo 'F34: the keep-alive probe is not for ghrdp-server.ps1' >&2; exit 1; }
+          grep -qF 'dashboard restart skipped (nothing to heal yet)' <<< "$ka" || { echo 'F34: keep-alive quiet-skip line missing' >&2; exit 1; }
+          grep -qF 'if (-not $psOk -and -not $psSkipped) {' <<< "$ka" || { echo 'F34: the restart block is not gated on $psSkipped' >&2; exit 1; }
+          # (5) the classifier/branching matrices are executed, not merely grepped.
+          test -f tests/f34-up-diagnosis.test.js || { echo 'F34: the node matrix is missing' >&2; exit 1; }
+          node --test tests/f34-up-diagnosis.test.js
+          echo 'F34 gates PASS'
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:
