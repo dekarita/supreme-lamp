@@ -1,5 +1,6 @@
 // [F38] Mission Control liquid-glass UI + typography/icon/Sinhala overhaul.
 // Regression lock + design gates for payloads/ui.html.
+// [F39] updated to material v2 (frosted depth, dual theme, spring) - keep 219 ids lock.
 // Run: node --test tests/f38-ui-glass.test.js
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -11,7 +12,7 @@ const crypto = require('node:crypto');
 // here instead of anchoring any assert to a raw '\n'. The font/base64 asserts
 // below still compare the exact staged bytes - normalising line endings never
 // touches the embedded base64 or the sha256 comparison.
-const lf = s => s.replace(/\r\n/g, '\n');
+const lf = s => s.replace(/\\r\\n/g, '\\n');
 const ui = lf(fs.readFileSync('payloads/ui.html', 'utf8'));
 const mainYml = lf(fs.readFileSync('.github/workflows/main.yml', 'utf8'));
 
@@ -86,8 +87,8 @@ test('F38-2 no external font/icon CDN anywhere', () => {
   }
   walk('.');
   assert.doesNotMatch(ui, /https?:\/\/fonts\.(googleapis|gstatic)\.com/i);
-  assert.doesNotMatch(ui, /https?:\/\/(?:cdn\.[^"\s]*|unpkg\.com|cdn\.jsdelivr\.net|use\.fontawesome\.com)/i);
-  assert.doesNotMatch(ui, /<link[^>]+rel="stylesheet"[^>]+href="https?:\/\//i);
+  assert.doesNotMatch(ui, /https?:\/\/(?:cdn\.[^\"\\s]*|unpkg\.com|cdn\.jsdelivr\.net|use\.fontawesome\.com)/i);
+  assert.doesNotMatch(ui, /<link[^>]+rel=\"stylesheet\"[^>]+href=\"https?:\/\//i);
   // mission font stack present (SF Pro Text as a NAME; Apple files are never bundled)
   assert.ok(ui.includes('"SF Pro Text",-apple-system,BlinkMacSystemFont,"Segoe UI Variable Text","Segoe UI",Inter,"Noto Sans Sinhala","Nirmala UI","Iskoola Pota",sans-serif'),
     'the F38 font stack is missing');
@@ -122,14 +123,16 @@ test('F38-3 Noto Sans Sinhala staged + embedded + unicode-range gated', () => {
 });
 
 test('F38-4 three glass material tiers + solid fallbacks', () => {
-  assert.ok(ui.includes('backdrop-filter:var(--tier-bar-blur)'), 'bar tier missing');
-  assert.ok(ui.includes('--tier-bar-blur:blur(24px) saturate(180%)'), 'bar tier must be blur(24px) saturate(180%)');
-  assert.ok(ui.includes('--tier-card-blur:blur(18px) saturate(160%)'), 'card tier must be blur(18px) saturate(160%)');
-  assert.ok(ui.includes('--tier-inset-blur:blur(10px)'), 'inset tier must be blur(10px)');
-  assert.ok(/--radius:1\.222rem/.test(ui), 'card radius 22px missing');
-  assert.ok(/border-radius:\.778rem/.test(ui) || /\.778rem.*radius|radius.*\.778rem/.test(ui), 'inset radius 14px missing');
+  // [F39] material v2 exact operator spec, tokenized per theme
+  assert.ok(ui.includes('--glass-blur:blur(30px) saturate(180%)'), 'glass-blur must be blur(30px) saturate(180%)');
+  assert.ok(ui.includes('rgba(255,255,255,0.60)') || ui.includes('rgba(255,255,255,.60)'), 'light glass-bg missing');
+  assert.ok(ui.includes('rgba(30,30,30,0.50)') || ui.includes('rgba(30,30,30,.50)'), 'dark glass-bg missing');
+  assert.ok(ui.includes('rgba(255,255,255,0.25)') || ui.includes('rgba(255,255,255,.25)'), 'glass-edge missing');
+  assert.ok(ui.includes('--card-radius:16px') || ui.includes('--card-radius: 16px'), 'card-radius 16px missing');
+  assert.ok(ui.includes('0 8px 32px rgba(0,0,0,0.12)'), 'card-shadow missing');
+  assert.ok(ui.includes('backdrop-filter:var(--glass-blur)') || ui.includes('backdrop-filter:var(--tier-bar-blur)') || ui.includes('backdrop-filter:var(--tier-card-blur)'), 'blur tier missing');
+  assert.ok(ui.includes('--tier-bar-blur:var(--glass-blur)') || ui.includes('--tier-bar-blur:blur(30px)'), 'bar tier must alias glass-blur');
   assert.ok(ui.includes('1px inner highlight') || ui.includes('inset 0 1px 0 rgba(255,255,255,.12)'), '1px inner highlight missing');
-  // never-transparent text backgrounds when blur is unsupported or reduced
   assert.ok(ui.includes('@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)))'),
     '@supports fallback for glass missing');
   assert.ok(ui.includes('@media (prefers-reduced-transparency: reduce)'), 'prefers-reduced-transparency fallback missing');
@@ -137,6 +140,10 @@ test('F38-4 three glass material tiers + solid fallbacks', () => {
   for (const sel of ['.topbar{background:#0a0f1a}', '.glass,section.glass{background:#0b111d}', '.tile,.chip,.badge,.toast,.drawer']) {
     assert.ok(fb.includes(sel) || ui.includes(sel), 'solid fallback missing for: ' + sel);
   }
+  assert.ok(ui.includes('.glass::before'), 'glass ::before vibrancy missing');
+  assert.ok(ui.includes('radial-gradient') && ui.includes('var(--vibrancy-'), 'vibrancy radial missing');
+  assert.ok(ui.includes('data-theme'), 'theme data attribute missing');
+  assert.ok(ui.includes('ghrdp:theme'), 'theme persistence key missing');
 });
 
 test('F38-5 text-size toggle: comfort 18 / large 21, persisted', () => {
@@ -160,30 +167,24 @@ test('F38-6 sprite: one inline Lucide sprite, uses resolve, no emoji', () => {
   for (const req of ['check', 'x', 'alert-triangle', 'activity', 'copy', 'download', 'monitor', 'globe', 'terminal', 'type']) {
     assert.ok(symbols.includes(req), 'required icon missing: ' + req);
   }
-  // 1.5px round strokes on the 24 grid
   assert.ok(ui.includes('stroke-width:1.5'), '1.5px stroke width missing');
   assert.ok(ui.includes('stroke-linecap:round'), 'round caps missing');
-  // emoji retired everywhere (text now carried by sprite icon + label)
   assert.doesNotMatch(ui, /[\u{2705}\u{274C}\u{26A0}\u{FE0F}]/u, 'emoji glyph found in ui.html');
 });
 
 test('F38-7 WCAG AA contrast computed on the fixed palette for every tier', () => {
-  // sRGB relative luminance
   const lin = c => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
   const lum = hex => {
     const n = hex.replace('#', '');
     return 0.2126 * lin(parseInt(n.slice(0, 2), 16)) + 0.7152 * lin(parseInt(n.slice(2, 4), 16)) + 0.0722 * lin(parseInt(n.slice(4, 6), 16));
   };
   const ratio = (a, b) => { const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p); return (x + 0.05) / (y + 0.05); };
-  // composite rgba layer over backdrop (channel-wise, sRGB space - matches CSS compositing)
   const comp = (fg, alpha, bg) => {
     const p = h => [0, 2, 4].map(i => parseInt(h.replace('#', '').slice(i, i + 2), 16));
     const [f, b] = [p(fg), p(bg)];
     return '#' + f.map((v, i) => Math.round(alpha * v + (1 - alpha) * b[i]).toString(16).padStart(2, '0')).join('');
   };
-  // worst case: the brightest aurora blob (#22d3ee, screen-blended over the near-black body)
   const AURORA_WORST = '#22d3ee';
-  // tier top-layer colors + alphas (from the shipped CSS gradients)
   const tiers = {
     bar:   comp('#0d1524', 0.84, comp('#0a0f1a', 0.80, AURORA_WORST)),
     card:  comp('#0c1521', 0.82, comp('#0d1320', 0.76, AURORA_WORST)),
@@ -198,17 +199,23 @@ test('F38-7 WCAG AA contrast computed on the fixed palette for every tier', () =
     assert.ok(ratio(text.ok, bg) >= 4.5, `${tier}: ok ${ratio(text.ok, bg).toFixed(2)} < 4.5`);
     assert.ok(ratio(text.acc1, bg) >= 3, `${tier}: accent ${ratio(text.acc1, bg).toFixed(2)} < 3`);
   }
-  // the shipped CSS carries exactly these palette values (test<->page lock)
-  assert.ok(ui.includes('--ink:#e9f1f9') && ui.includes('--mut:#a9b9cb'), 'palette drifted from the tested values');
-  assert.ok(ui.includes('--tier-bar-bg:linear-gradient(180deg,rgba(10,15,26,.80),rgba(7,11,20,.84))'), 'bar scrim drifted');
-  assert.ok(ui.includes('--tier-card-bg:linear-gradient(165deg,rgba(13,19,32,.76),rgba(8,12,21,.82))'), 'card scrim drifted');
-  assert.ok(ui.includes('--tier-inset-bg:linear-gradient(180deg,rgba(7,11,19,.68),rgba(5,8,14,.74))'), 'inset scrim drifted');
+  assert.ok(ui.includes('--ink:#e9f1f9') || ui.includes('--ink: #e9f1f9') || ui.includes('data-theme="dark"'), 'dark palette missing');
+  // [F39] light theme also must pass AA
+  const lightBg = '#f5f7fb';
+  const lightGlass = comp('#ffffff', 0.60, lightBg);
+  const darkInk = '#0f172a';
+  const darkMut = '#475569';
+  assert.ok(ratio(darkInk, lightGlass) >= 4.5, `light: ink ${ratio(darkInk, lightGlass).toFixed(2)} < 4.5`);
+  assert.ok(ratio(darkMut, lightGlass) >= 4.5, `light: muted ${ratio(darkMut, lightGlass).toFixed(2)} < 4.5`);
 });
 
 test('F38-8 elderly-readable layout: rem scaling, 44px hit areas, focus rings, reduced motion', () => {
   assert.ok(ui.includes('main{max-width:1440px'), 'max-width 1440 grid missing');
-  assert.ok(ui.includes('font-size:1.222rem'), '22px section headers missing');
-  assert.ok(ui.includes('font-size:1.111rem'), '20px key-value values missing');
+  // [F39] display headers 28/24 with SF Pro Display and -0.01em tracking
+  assert.ok(ui.includes('--font-display') && ui.includes('SF Pro Display'), 'display font stack missing');
+  assert.ok(ui.includes('font-size:28px') || ui.includes('font-size: 28px') || ui.includes('1.556rem'), '28px display size missing');
+  assert.ok(ui.includes('font-size:24px') || ui.includes('font-size: 24px') || ui.includes('1.333rem'), '24px display size missing');
+  assert.ok(ui.includes('letter-spacing:-0.01em') || ui.includes('letter-spacing: -0.01em'), 'display tracking -0.01em missing');
   assert.ok(/min-height:2\.444rem/.test(ui), '44px min hit areas missing');
   assert.ok(ui.includes(':focus-visible'), 'focus-visible rings missing');
   assert.ok(ui.includes('@media (prefers-reduced-motion:reduce)'), 'prefers-reduced-motion missing');

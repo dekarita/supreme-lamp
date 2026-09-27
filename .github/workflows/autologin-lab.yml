@@ -20,6 +20,7 @@ on:
       - payloads/ui.html
       - payloads/fonts/**
       - tests/f38-ui-glass.test.js
+      - tests/f39-ui-glass-v2.test.js
       - tests/f27-windows.ps1
       - tests/f27-handoff.test.js
       - tests/f27-copy.test.js
@@ -2173,7 +2174,7 @@ jobs:
       # targets resolve, and the existing beacon/ticket/timeline DOM flows
       # still update (node --test jsdom-style smoke over the shipped sources).
       # Full-page screenshots at all three widths upload as an artifact.
-      - name: "W: F38 UI glass lab (typography + icons + Sinhala + persisted toggle)"
+      - name: "W: F39 UI glass v2 lab (frosted depth + dual theme + spring + Sinhala)"
         if: always()
         shell: pwsh
         run: |
@@ -2205,8 +2206,6 @@ jobs:
             process.exit(1);
           }
           async function fontStatus(page) {
-            // Never return document.fonts / FontFaceSet — Playwright cannot clone it
-            // (run 36314836406 / 36315501075 died here before any screenshot).
             return await page.evaluate(async () => {
               try {
                 const ready = document.fonts && document.fonts.ready;
@@ -2231,7 +2230,6 @@ jobs:
             if (!exe) fail('edge-launch', 'no msedge channel or exe: ' + e.message);
             browser = await chromium.launch({ executablePath: exe, headless: true, timeout: 60000 });
           }
-          // same palette math as tests/f38-ui-glass.test.js (test<->lab lock)
           const lin = c => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
           const lum = hex => { const n = hex.replace('#',''); return 0.2126*lin(parseInt(n.slice(0,2),16)) + 0.7152*lin(parseInt(n.slice(2,4),16)) + 0.0722*lin(parseInt(n.slice(4,6),16)); };
           const ratio = (a,b) => { const [x,y]=[lum(a),lum(b)].sort((p,q)=>q-p); return (x+0.05)/(y+0.05); };
@@ -2247,9 +2245,6 @@ jobs:
           const SIN = 'සිංහල සහය: මෙම පාලක පුවරුව සිංහල අකුරු නිවැරදිව පෙන්වයි';
           process.on('unhandledRejection', e => { fs.writeFileSync('f38-lab-error.txt', 'unhandledRejection: ' + (e && e.stack || e)); process.exit(1); });
           process.on('uncaughtException', e => { try { fs.writeFileSync('f38-lab-error.txt', 'uncaughtException: ' + (e && e.stack || e)); } catch (_) {} process.exit(1); });
-          // In-process server on an ephemeral port. Cell P owns 7391 and a
-          // separate Start-Process can exit before listen (run 36316833646:
-          // ERR_CONNECTION_REFUSED, zero screenshots).
           const http = await import('node:http');
           const uiFile = 'ui-live.html';
           if (!fs.existsSync(uiFile)) fail('serve', 'ui-live.html missing in ' + process.cwd());
@@ -2289,11 +2284,14 @@ jobs:
             if (lastGoto) fail('goto', origin + ' :: ' + (lastGoto && lastGoto.message || lastGoto));
             const hasToggle = await page.locator('#textScaleToggle').count();
             if (!hasToggle) fail('page', 'served document is not ui.html (missing #textScaleToggle) url=' + page.url());
+            const hasTheme = await page.locator('#themeToggle').count();
+            if (!hasTheme) fail('page', 'served document missing #themeToggle url=' + page.url());
             const fss = await fontStatus(page);
             console.log('[W] fonts.status@' + width + '=' + fss);
             await page.waitForTimeout(400);
-            await page.screenshot({ path: 'ui-' + width + '.png', fullPage: false, animations: 'disabled' });
-            const overflowInfo = await page.evaluate(() => {
+            // dark (default)
+            await page.screenshot({ path: 'ui-' + width + '-dark.png', fullPage: false, animations: 'disabled' });
+            const overflowDark = await page.evaluate(() => {
               const delta = document.documentElement.scrollWidth - window.innerWidth;
               let worst = '';
               if (delta > 1) {
@@ -2311,14 +2309,10 @@ jobs:
               }
               return String(delta) + (worst ? (' worst=' + worst) : '');
             });
-            const overflow = parseFloat(overflowInfo);
-            if (overflow > 1) fail('overflow', width + 'px viewport: horizontal overflow ' + overflowInfo);
-            const ff = await page.evaluate(() => getComputedStyle(document.body).fontFamily);
-            if (!ff.includes('Noto Sans Sinhala')) fail('font-stack', width + 'px: computed font-family lacks Noto Sans Sinhala: ' + ff);
+            if (parseFloat(overflowDark) > 1) fail('overflow-dark', width + 'px dark: horizontal overflow ' + overflowDark);
+            const ffDark = await page.evaluate(() => getComputedStyle(document.body).fontFamily);
+            if (!ffDark.includes('Noto Sans Sinhala')) fail('font-stack-dark', width + 'px dark: computed font-family lacks Noto Sans Sinhala: ' + ffDark);
             if (width === 1280) {
-              // fonts.check must be given the Sinhala sample: the face is
-              // unicode-range gated (U+0D80-0DFF), so an empty default text
-              // would report false even when the face is loaded and working.
               const loaded = await page.evaluate(async (t) => {
                 try {
                   const ready = document.fonts && document.fonts.ready;
@@ -2342,7 +2336,6 @@ jobs:
               if (Math.abs(widths.noto - widths.mono) < 0.5 || Math.abs(widths.noto - widths.plain) < 0.01)
                 fail('sinhala-render', 'sample does not measure like the Sinhala face (noto=' + widths.noto + ' mono=' + widths.mono + ' plain=' + widths.plain + ')');
               console.log('[W] (c) PASS: Sinhala sample renders with the embedded Noto Sans Sinhala face (width ' + widths.noto.toFixed(1) + 'px, differs from fallbacks)');
-              // toggle: comfort -> large, persisted across reload
               const before = await page.evaluate(() => document.documentElement.getAttribute('data-text'));
               if (before !== 'comfort') fail('toggle-init', 'initial data-text=' + before);
               await page.click('#textScaleToggle');
@@ -2353,10 +2346,24 @@ jobs:
               const persisted = await page.evaluate(() => ({ t: document.documentElement.getAttribute('data-text'), fs: getComputedStyle(document.documentElement).fontSize }));
               if (persisted.t !== 'large' || persisted.fs !== '21px') fail('toggle-persist', JSON.stringify(persisted));
               console.log('[W] (d) PASS: Large text toggle persists across reload (html font-size 21px)');
-              await page.click('#textScaleToggle'); // back to comfort for the screenshots
+              await page.click('#textScaleToggle');
               const back = await page.evaluate(() => getComputedStyle(document.documentElement).fontSize);
               if (back !== '18px') fail('toggle-back', 'comfort font-size=' + back);
-              // sprite: present, referenced, no emoji in rendered text
+              // theme toggle persistence
+              const themeBefore = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
+              if (themeBefore !== 'dark') fail('theme-init', 'initial data-theme=' + themeBefore);
+              await page.click('#themeToggle');
+              const themeAfter = await page.evaluate(() => ({ t: document.documentElement.getAttribute('data-theme'), ls: localStorage.getItem('ghrdp:theme') }));
+              if (themeAfter.t !== 'light' || themeAfter.ls !== 'light') fail('theme-click', JSON.stringify(themeAfter));
+              await page.reload({ waitUntil: 'domcontentloaded' });
+              await fontStatus(page);
+              const themePersisted = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
+              if (themePersisted !== 'light') fail('theme-persist', 'persisted theme=' + themePersisted);
+              console.log('[W] (d2) PASS: theme toggle persists across reload (light)');
+              await page.click('#themeToggle'); // back to dark for dark screenshot already done? we are now light, need to go back to dark then re-toggle for light screenshot below
+              await page.waitForTimeout(200);
+              const backDark = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
+              if (backDark !== 'dark') fail('theme-back', 'back to dark=' + backDark);
               const sprite = await page.evaluate(() => ({
                 symbols: document.querySelectorAll('symbol[id^="i-"]').length,
                 uses: document.querySelectorAll('svg.ic use').length,
@@ -2366,15 +2373,42 @@ jobs:
               if (sprite.emoji) fail('sprite-emoji', 'rendered text still contains emoji glyphs');
               console.log('[W] (e) PASS: sprite present (' + sprite.symbols + ' symbols, ' + sprite.uses + ' uses) and no emoji in rendered text');
             }
+            // now toggle to light and capture light screenshot
+            await page.click('#themeToggle');
+            await page.waitForTimeout(300);
+            const themeLight = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
+            if (themeLight !== 'light') fail('theme-light', 'expected light after toggle, got ' + themeLight);
+            await page.screenshot({ path: 'ui-' + width + '-light.png', fullPage: false, animations: 'disabled' });
+            const overflowLight = await page.evaluate(() => {
+              const delta = document.documentElement.scrollWidth - window.innerWidth;
+              let worst = '';
+              if (delta > 1) {
+                let max = 0;
+                const nodes = document.body.querySelectorAll('*');
+                for (let i = 0; i < nodes.length; i++) {
+                  const r = nodes[i].getBoundingClientRect();
+                  if (r.width > 0 && r.right > window.innerWidth + 1 && r.right > max) {
+                    max = r.right;
+                    const id = nodes[i].id ? ('#' + nodes[i].id) : '';
+                    const cls = String(nodes[i].className || '').slice(0, 40);
+                    worst = nodes[i].tagName + id + '.' + cls + ' right=' + Math.round(r.right);
+                  }
+                }
+              }
+              return String(delta) + (worst ? (' worst=' + worst) : '');
+            });
+            if (parseFloat(overflowLight) > 1) fail('overflow-light', width + 'px light: horizontal overflow ' + overflowLight);
+            const ffLight = await page.evaluate(() => getComputedStyle(document.body).fontFamily);
+            if (!ffLight.includes('Noto Sans Sinhala')) fail('font-stack-light', width + 'px light: computed font-family lacks Noto Sans Sinhala: ' + ffLight);
             results[width] = true;
             await ctx.close();
-            console.log('[W] screenshot ui-' + width + '.png captured (no horizontal overflow, stack ok)');
+            console.log('[W] screenshots ui-' + width + '-dark.png + ui-' + width + '-light.png captured (no horizontal overflow, stack ok)');
           }
           if (Object.keys(results).length !== 3) fail('screenshots', 'expected 3 widths, got ' + Object.keys(results).length);
           await browser.close();
           server.close();
-          console.log('[W] (b) PASS: 1280/1600/1920 - no horizontal overflow, computed stack includes Noto Sans Sinhala');
-          console.log('::notice::[W] phase=f38-ui ok screenshots=3 toggle=persisted sinhala=rendered contrast=aa sprite=present');
+          console.log('[W] (b) PASS: 1280/1600/1920 x dark/light - no horizontal overflow, computed stack includes Noto Sans Sinhala');
+          console.log('::notice::[W] phase=f39-ui ok screenshots=6 toggle=persisted theme=persisted sinhala=rendered contrast=aa sprite=present');
           process.exit(0);
           '@
           $labPath = Join-Path $ws 'f38-lab.mjs'
@@ -2411,7 +2445,7 @@ jobs:
           Push-Location $env:GITHUB_WORKSPACE
           try {
             $nodeLog = Join-Path $ws 'f38-lab-nodetest.txt'
-            node --test tests/f27-handoff.test.js tests/f28-logon-recovery.test.js tests/f31c-live-dispatch.test.js tests/ui-native.test.js tests/f37-telescope.test.js tests/f38-ui-glass.test.js 2>&1 | Tee-Object -FilePath $nodeLog | Select-Object -Last 6 | ForEach-Object { Write-Host "[W] node: $_" }
+            node --test tests/f27-handoff.test.js tests/f28-logon-recovery.test.js tests/f31c-live-dispatch.test.js tests/ui-native.test.js tests/f37-telescope.test.js tests/f38-ui-glass.test.js tests/f39-ui-glass-v2.test.js 2>&1 | Tee-Object -FilePath $nodeLog | Select-Object -Last 6 | ForEach-Object { Write-Host "[W] node: $_" }
             $nodeRc = $LASTEXITCODE
             if ($nodeRc -ne 0) {
               # The runner log is fetched from blob storage; surface the failing test
@@ -2429,7 +2463,7 @@ jobs:
               W-Fail 'dom-smoke' ('existing beacon/ticket flows regressed (node --test failed): ' + ($names -join ', '))
             }
           } finally { Pop-Location }
-          Write-Host '[W] PASS: shipped ui.html proves glass typography + icons + Sinhala + persisted Large toggle on a real browser'
+          Write-Host '[W] PASS: shipped ui.html proves F39 glass v2 frosted depth + dual theme + spring + Sinhala + persisted toggles on a real browser'
           'W_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
       - name: "W diagnostics artifact (survives halts)"
         if: always()
