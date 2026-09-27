@@ -2193,21 +2193,6 @@ jobs:
           $ui = $ui.Replace('__BUILD_SHA__', 'lab-sha-f38').Replace('__IP__', '100.64.0.1').Replace('__USER__', 'labuser').Replace('__TELEGRAPH__', 'https://telegraph.example/lab').Replace('__MIRRORKEY__', 'lab-mirror-key')
           $uiPath = Join-Path $ws 'ui-live.html'
           [System.IO.File]::WriteAllText($uiPath, $ui, (New-Object System.Text.UTF8Encoding($false)))
-          $srvJs = @'
-          const http=require('http'),fs=require('fs'),path=require('path');
-          const file=path.join(__dirname,'ui-live.html');
-          http.createServer((req,res)=>{
-            if(req.url==='/'||req.url.startsWith('/?')){
-              const b=fs.readFileSync(file);
-              res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Content-Length':b.length});
-              res.end(b);return;
-            }
-            res.writeHead(404,{'Content-Type':'application/json'});
-            res.end(JSON.stringify({ok:false,path:req.url}));
-          }).listen(7391,'127.0.0.1',()=>console.log('[W] ui served on 127.0.0.1:7391'));
-          '@
-          $srvPath = Join-Path $ws 'serve-ui.js'
-          [System.IO.File]::WriteAllText($srvPath, $srvJs, (New-Object System.Text.UTF8Encoding($false)))
           # --- (2) the assertion script (playwright-core + installed Edge) ------
           $lab = @'
           import { chromium } from 'playwright-core';
@@ -2225,7 +2210,9 @@ jobs:
             return await page.evaluate(async () => {
               try {
                 const ready = document.fonts && document.fonts.ready;
-                if (ready && typeof ready.then === 'function') await ready;
+                if (ready && typeof ready.then === 'function') {
+                  await Promise.race([ready, new Promise(r => setTimeout(r, 2000))]);
+                }
               } catch (e) {
                 return 'ready-threw:' + String(e && e.message || e);
               }
@@ -2238,11 +2225,11 @@ jobs:
             'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
           ];
           let browser = null;
-          try { browser = await chromium.launch({ channel: 'msedge', headless: true }); }
+          try { browser = await chromium.launch({ channel: 'msedge', headless: true, timeout: 60000 }); }
           catch (e) {
             const exe = EDGE_CANDIDATES.find(p => fs.existsSync(p));
             if (!exe) fail('edge-launch', 'no msedge channel or exe: ' + e.message);
-            browser = await chromium.launch({ executablePath: exe, headless: true });
+            browser = await chromium.launch({ executablePath: exe, headless: true, timeout: 60000 });
           }
           // same palette math as tests/f38-ui-glass.test.js (test<->lab lock)
           const lin = c => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
@@ -2277,8 +2264,9 @@ jobs:
             res.end(JSON.stringify({ ok: false, path: req.url }));
           });
           await new Promise((resolve, reject) => {
-            server.once('error', reject);
-            server.listen(0, '127.0.0.1', resolve);
+            const tm = setTimeout(() => reject(new Error('server listen timeout after 5s')), 5000);
+            server.once('error', err => { clearTimeout(tm); reject(err); });
+            server.listen(0, '127.0.0.1', () => { clearTimeout(tm); resolve(); });
           });
           const origin = 'http://127.0.0.1:' + server.address().port + '/';
           console.log('[W] ui served on ' + origin);
@@ -2304,7 +2292,7 @@ jobs:
             const fss = await fontStatus(page);
             console.log('[W] fonts.status@' + width + '=' + fss);
             await page.waitForTimeout(400);
-            await page.screenshot({ path: 'ui-' + width + '.png', fullPage: true, animations: 'disabled' });
+            await page.screenshot({ path: 'ui-' + width + '.png', fullPage: false, animations: 'disabled' });
             const overflowInfo = await page.evaluate(() => {
               const delta = document.documentElement.scrollWidth - window.innerWidth;
               let worst = '';
@@ -2334,7 +2322,9 @@ jobs:
               const loaded = await page.evaluate(async (t) => {
                 try {
                   const ready = document.fonts && document.fonts.ready;
-                  if (ready && typeof ready.then === 'function') await ready;
+                  if (ready && typeof ready.then === 'function') {
+                    await Promise.race([ready, new Promise(r => setTimeout(r, 2000))]);
+                  }
                 } catch (_) {}
                 const faces = [];
                 if (document.fonts && document.fonts.forEach) {
@@ -2396,12 +2386,23 @@ jobs:
             if ($LASTEXITCODE -ne 0) { W-Fail 'npm' 'playwright-core install failed' }
             # The lab script binds its own ephemeral port and serves ui-live.html.
             # Do not reuse 7391: cell P's hello-listener owns that port.
-            node $labPath
-            if ($LASTEXITCODE -ne 0) {
-              $errFile = Join-Path $ws 'f38-lab-error.txt'
+            $outFile = Join-Path $ws 'f38-lab-out.txt'
+            $errFile = Join-Path $ws 'f38-lab-err.txt'
+            $p = Start-Process -FilePath 'node' -ArgumentList $labPath -WorkingDirectory $ws -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru -NoNewWindow
+            if (-not $p.WaitForExit(240000)) {
+              try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }
+              [System.IO.File]::WriteAllText((Join-Path $ws 'f38-lab-error.txt'), '[W] stage=timeout :: node f38-lab.mjs exceeded 240s')
+              if (Test-Path -LiteralPath $outFile) { Get-Content $outFile | ForEach-Object { Write-Host $_ } }
+              if (Test-Path -LiteralPath $errFile) { Get-Content $errFile | ForEach-Object { Write-Host $_ } }
+              W-Fail 'timeout' 'node f38-lab.mjs exceeded 240s'
+            }
+            if (Test-Path -LiteralPath $outFile) { Get-Content $outFile | ForEach-Object { Write-Host $_ } }
+            if (Test-Path -LiteralPath $errFile) { Get-Content $errFile | ForEach-Object { Write-Host $_ } }
+            if ($p.ExitCode -ne 0) {
+              $errFileTxt = Join-Path $ws 'f38-lab-error.txt'
               $extra = ''
-              if (Test-Path -LiteralPath $errFile) { $extra = ' :: ' + (([System.IO.File]::ReadAllText($errFile)) -replace "`r?`n", ' / ') }
-              W-Fail 'lab-script' ("node f38-lab.mjs exited $LASTEXITCODE" + $extra)
+              if (Test-Path -LiteralPath $errFileTxt) { $extra = ' :: ' + (([System.IO.File]::ReadAllText($errFileTxt)) -replace "`r?`n", ' / ') }
+              W-Fail 'lab-script' ("node f38-lab.mjs exited " + $p.ExitCode + $extra)
             }
           } finally { Pop-Location }
           # --- (4) jsdom-style smoke: the existing beacon/ticket DOM flows ---------
@@ -2420,6 +2421,8 @@ jobs:
           path: |
             ${{ runner.temp }}/f38-ui-lab/*.png
             ${{ runner.temp }}/f38-ui-lab/f38-lab-error.txt
+            ${{ runner.temp }}/f38-ui-lab/f38-lab-out.txt
+            ${{ runner.temp }}/f38-ui-lab/f38-lab-err.txt
           if-no-files-found: warn
       # [F30] TLS/CIPHER HANDSHAKE FIX + CREDENTIAL TYPE NORMALIZATION + STALE
       # ENTRY PURGE - the five lab cells the F30 spec names, proven on a real
