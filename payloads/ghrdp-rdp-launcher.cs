@@ -158,6 +158,11 @@ internal static class GhrdpRdpLauncher
         return logPathCache;
     }
 
+    private static string TelescopeLogPath()
+    {
+        return Path.Combine(Path.GetDirectoryName(LogPath()), "ghrdp-telescope.jsonl");
+    }
+
     private static string Redact(string s)
     {
         if (s == null) { return ""; }
@@ -1234,7 +1239,7 @@ internal static class GhrdpRdpLauncher
             else row[key]=value;
         }
         string line = new JavaScriptSerializer().Serialize(row);
-        try { File.AppendAllText(LogPath(), line + Environment.NewLine, new UTF8Encoding(false)); } catch { }
+        try { File.AppendAllText(TelescopeLogPath(), line + Environment.NewLine, new UTF8Encoding(false)); } catch { }
         Interlocked.Increment(ref TelescopePending);
         Thread post = new Thread(delegate() { try { HelloBounded(host, port, TraceVerb, ok, "telescope-" + stage + "-" + status); } finally { Interlocked.Decrement(ref TelescopePending); } });
         post.IsBackground = true; post.Start();

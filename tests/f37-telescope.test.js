@@ -47,6 +47,7 @@ test('F37 click trace propagates from dashboard URL through launcher to merged l
   assert.ok(launcher.includes('TraceFromUri(uri)'));
   assert.ok(launcher.includes('RunClientTelescope(server, host, port)'));
   assert.ok(launcher.includes('RemoteCertificateValidationCallback'));
+  assert.ok(launcher.includes('ghrdp-telescope.jsonl'));
   assert.ok(launcher.includes('"diag"'));
   assert.ok(ui.includes("ghrdp://diag?server="));
   assert.ok(launcher.includes('row["traceId"]'));
