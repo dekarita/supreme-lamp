@@ -2053,6 +2053,11 @@ jobs:
           test -f tests/ps-balance-audit.py || { echo 'F37: the PowerShell structural audit is missing' >&2; exit 1; }
           python3 tests/ps-balance-audit.py
           echo 'F37 gates PASS'
+      - name: F40 information-architecture regression lock
+        shell: bash
+        run: |
+          test -f tests/f40-ia-gate.sh || { echo 'F40: the IA regression lock is missing' >&2; exit 1; }
+          bash tests/f40-ia-gate.sh
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:

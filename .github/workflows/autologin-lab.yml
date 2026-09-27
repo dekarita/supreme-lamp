@@ -2344,11 +2344,11 @@ jobs:
               await page.reload({ waitUntil: 'domcontentloaded' });
               await fontStatus(page);
               const persisted = await page.evaluate(() => ({ t: document.documentElement.getAttribute('data-text'), fs: getComputedStyle(document.documentElement).fontSize }));
-              if (persisted.t !== 'large' || persisted.fs !== '21px') fail('toggle-persist', JSON.stringify(persisted));
-              console.log('[W] (d) PASS: Large text toggle persists across reload (html font-size 21px)');
+              if (persisted.t !== 'large' || persisted.fs !== '17px') fail('toggle-persist', JSON.stringify(persisted));
+              console.log('[W] (d) PASS: Large text toggle persists across reload (html font-size 17px)');
               await page.click('#textScaleToggle');
               const back = await page.evaluate(() => getComputedStyle(document.documentElement).fontSize);
-              if (back !== '18px') fail('toggle-back', 'comfort font-size=' + back);
+              if (back !== '15px') fail('toggle-back', 'comfort font-size=' + back);
               // theme toggle persistence
               const themeBefore = await page.evaluate(() => document.documentElement.getAttribute('data-theme'));
               if (themeBefore !== 'dark') fail('theme-init', 'initial data-theme=' + themeBefore);
@@ -2372,6 +2372,56 @@ jobs:
               if (sprite.symbols < 20 || sprite.uses < 10) fail('sprite', JSON.stringify(sprite));
               if (sprite.emoji) fail('sprite-emoji', 'rendered text still contains emoji glyphs');
               console.log('[W] (e) PASS: sprite present (' + sprite.symbols + ' symbols, ' + sprite.uses + ' uses) and no emoji in rendered text');
+
+              // --- [F40] INFORMATION-ARCHITECTURE assertions -------------------
+              // The rebuild moved content between tiers; these pin the shape in a
+              // REAL browser (computed style, not markup): three tiers, compact
+              // type, every time field in the sticky bottom bar, diagnostics
+              // hidden until opened, the username as a mono semibold chip, the
+              // mirror ring + 6-stat grid in T2, the activity pills on top, and
+              // the F39 spring still wired.
+              const ia = await page.evaluate(() => {
+                const cs = el => (el ? getComputedStyle(el) : null);
+                const inEl = (id, host) => { const e = document.getElementById(id); return !!e && !!host && host.contains(e); };
+                const drawers = [...document.querySelectorAll('details[id^="drawer"]')];
+                const bb = document.getElementById('bottomBar');
+                const grid = document.querySelector('main');
+                const topbar = document.getElementById('topbar');
+                const mir = document.getElementById('sec-mirror');
+                const ring = document.getElementById('ringFill');
+                const user = cs(document.getElementById('credUser'));
+                const TIME = ['timerElapsed', 'timerRemaining', 'timerRdpUsage', 'lastRdpLogon'];
+                return {
+                  drawers: drawers.length,
+                  openDrawers: drawers.filter(d => d.open).length,
+                  htmlFs: cs(document.documentElement).fontSize,
+                  bodyFs: cs(document.body).fontSize,
+                  bbItems: bb ? bb.querySelectorAll('.bb-item').length : 0,
+                  timesInBar: TIME.filter(id => inEl(id, bb)).length,
+                  timesInGrid: TIME.filter(id => inEl(id, grid)).length,
+                  userFF: user ? user.fontFamily : '',
+                  userWeight: user ? user.fontWeight : '',
+                  tiles: mir ? mir.querySelectorAll('.mini-grid .tile').length : 0,
+                  hasRing: !!ring,
+                  ringDash: ring ? cs(ring).strokeDasharray : '',
+                  pills: ['pillConn', 'pillWatcher', 'pillRust', 'pillClock'].filter(id => inEl(id, topbar)).length,
+                  spring: cs(document.documentElement).getPropertyValue('--spring').trim()
+                };
+              });
+              if (ia.drawers < 5) fail('ia-drawers', 'expected 5 T3 drawers, found ' + ia.drawers);
+              if (ia.openDrawers !== 0) fail('ia-drawers-open', ia.openDrawers + ' T3 drawers are open by default - diagnostics must stay hidden until opened');
+              if (ia.htmlFs !== '15px') fail('ia-base-type', 'Comfort base computes to ' + ia.htmlFs + ' (expected 15px)');
+              if (ia.bodyFs !== '15px') fail('ia-base-type', 'body computes to ' + ia.bodyFs + ' (expected 15px)');
+              if (ia.bbItems < 4) fail('ia-bottom-bar', 'the sticky bottom status bar holds ' + ia.bbItems + ' time fields (needs 4+)');
+              if (ia.timesInBar !== 4) fail('ia-bottom-bar', 'only ' + ia.timesInBar + '/4 time fields live inside #bottomBar');
+              if (ia.timesInGrid !== 0) fail('ia-times-in-grid', ia.timesInGrid + ' time fields are still inside the card grid');
+              if (!/ui-monospace/.test(ia.userFF)) fail('ia-username-chip', 'the RDP username is not mono: ' + ia.userFF);
+              if (ia.userWeight !== '600') fail('ia-username-chip', 'the RDP username chip weighs ' + ia.userWeight + ' (expected 600)');
+              if (ia.tiles !== 6) fail('ia-mirror', 'the mirror mini-grid holds ' + ia.tiles + ' tiles (expected 6)');
+              if (!ia.hasRing) fail('ia-mirror', 'the mirror SVG progress ring is missing');
+              if (ia.pills !== 4) fail('ia-top-pills', 'the top bar holds ' + ia.pills + '/4 activity pills');
+              if (!/cubic-bezier/.test(ia.spring)) fail('ia-spring', 'the F39 spring easing is gone: --spring=' + ia.spring);
+              console.log('[W] (f) PASS: F40 IA - ' + ia.drawers + ' drawers all closed, base ' + ia.htmlFs + ' / body ' + ia.bodyFs + ', ' + ia.bbItems + ' time fields in the bottom bar, 0 times in the card grid, username mono w' + ia.userWeight + ', mirror ring + ' + ia.tiles + ' tiles, ' + ia.pills + '/4 top pills, spring=' + ia.spring);
             }
             // now toggle to light and capture light screenshot
             await page.click('#themeToggle');
