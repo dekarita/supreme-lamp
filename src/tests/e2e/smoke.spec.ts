@@ -21,7 +21,7 @@ test("bundle renders with zero JS errors and all regression ids", async ({ page 
   });
   page.on("pageerror", (err) => errors.push(String(err)));
   await page.goto("/");
-  await page.waitForSelector("#root > *", { timeout: 30000 });
+  await page.waitForSelector("#root > *", { state: "attached", timeout: 30000 });
   const missing: string[] = [];
   for (const id of IDS) {
     if (!(await page.locator("#" + id).count())) missing.push(id);
