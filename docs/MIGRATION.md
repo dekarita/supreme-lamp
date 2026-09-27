@@ -56,14 +56,17 @@ stand up, no client-side trust manipulation.
   `tailscale status --json`, re-asserts `UserAuthentication = 1`,
   runs `tailscale cert --cert-file --key-file <fqdn>`, imports the
   resulting PEM as a PFX into `LocalMachine\My` with
-  `PersistKeySet|MachineKeySet`, grants `NETWORK SERVICE` read on the
-  private key, and binds the thumbprint on `RDP-Tcp` via WMI
+  `PersistKeySet|MachineKeySet|Exportable`, asserts `HasPrivateKey`, resolves
+  the actual CNG `Crypto\Keys` or CSP `RSA\MachineKeys` file, grants and
+  reads back `NETWORK SERVICE` Read and SYSTEM FullControl (failure is fatal),
+  and binds the thumbprint on `RDP-Tcp` via WMI
   `Win32_TSGeneralSetting.SetSSLCertificateSHA1Hash` (with a registry
   fallback to `HKLM:\...\RDP-Tcp\SSLCertificateSHA1Hash`). The step
   logs the thumbprint only — never the private key, never any password,
   never anything that could be replayed. `TermService` is restarted so
-  the new cert takes effect. Idempotent: safe to re-run every workflow
-  invocation, and idempotent on LE renewal.
+  the new cert takes effect. The F17 gate then requires X.224+TLS completion
+  with served thumbprint equal to bound thumbprint before advertisement.
+  Idempotent on LE renewal.
 - On a persistent VPS (see §1.7), run once (elevated, PowerShell 7+):
   `payloads\Enable-RdpTlsCertificate.ps1` — same logic as the workflow
   step, wrapped as a standalone script. Re-run when the LE cert renews
@@ -72,10 +75,13 @@ stand up, no client-side trust manipulation.
   with zero warnings. No client-side `Trusted Root` import, no self-signed
   cert, no `AuthenticationLevelOverride`, no `authentication level:i:*`
   suppression, no MOTW / SmartScreen bypass.
-- FALLBACK (only if `tailscale cert` is unavailable on the host): generate
-  a self-signed cert with a long expiry, export the public part, and
-  import once into each client's `Cert:\CurrentUser\Root`. Same
-  zero-warning outcome, one manual step per client. Use only as a bridge.
+- Live key diagnostics (terminal-safe, on the runner):
+  `certutil -store My <bound-thumbprint> | findstr /i "Key Container Provider"`;
+  then `icacls "C:\ProgramData\Microsoft\Crypto\Keys\<container>"`
+  (or `C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys\<container>`
+  for a CSP provider). A missing `NETWORK SERVICE` ACE predicts 36870/RST.
+  The constrained terminal account cannot use PowerShell certificate extension
+  methods; these are used only by the full-pwsh provisioning step.
 
 ### 1.4 User-run-once cmdkey (typed password, benign UX)
 
@@ -868,3 +874,94 @@ through to a silent `mstsc`.
 artifact, `t=`-only ticket links, NLA/CredSSP/cert validation untouched,
 no credential deletion by tooling, no public exposure. The physical
 click-through (fullscreen + usage ticking) stays user-verified.
+
+## F37: RDP telescope — self-explaining observability (2026-09-27)
+
+One module, `payloads/rdp-telescope.ps1`, answers "why is RDP not up?" with
+evidence instead of interpretation. Every consumer (lab, server, launcher)
+renders the SAME fields, so a verdict cannot drift from the data that produced
+it.
+
+### Stages and what each one proves
+
+| stage | evidence | proves |
+| --- | --- | --- |
+| `dns` | ip, dnsSource | the tailnet name resolves to a routable address |
+| `tcp` | connected, rttMs | the RDP port is open at the network layer |
+| `x224`/`tls` | protocol, cipher, servedThumb, chainStatus | TLS actually negotiated and **which** cert answered |
+| `cred` | scope, targetFound, userName | the stored TERMSRV entry the handshake will use |
+| `logon` | authStatus, logonType, logonId | 4624/4625 says whether the session got in |
+| `schannel` | 36870/36871/36888/12018 with source/line | the OS's own TLS story for this handshake |
+| `listener` | boundThumb, inStore, hasKey, container, aclSids | the server side is capable of serving the pinned cert |
+
+The TLS probe uses a permissive validation callback that RECORDS the remote
+certificate — a chain failure is data, not a reason to see nothing — and never
+relaxes anything a real client enforces.
+
+### Death-point rule
+
+`failureAt` is derived once, in the module, from `fatalStages` (dns → tcp → tls →
+x224/tls-cert/tls-eku → cred → logon → listener): the first fatal stage is the
+one actionable fix the UI states. Observational reds (`schannel` events, a
+permissive-callback warning) travel as `probeWarn` and can never manufacture a
+death point. Nothing outside the module re-implements the mapping; the workflow
+only copies `$f37TelFields.deathPoint`.
+
+### Scope decision: what the telescope may NOT do
+
+* **Credentials are the client's property.** The server/runner face runs the
+  telescope with `-SkipCred`, the module stamps the skipped stage
+  `scope='client-only'`, and the launcher's `diag` verb reports the client-side
+  cred stage. The runner therefore never has a reason to read another user's
+  credential store, and the `cred` stage can never go red on the runner for a
+  reason the runner cannot fix. The telescope itself never touches password
+  bytes: read-back is metadata only (`credEnumerate` names, `cmdkey /list`
+  output), and a read-back failure on the runner face is reported
+  informationally rather than as a fatal stage.
+* **No credential-UI automation** (no typing, no clicking, no dialog driving) —
+  the telescope only observes what the OS already recorded.
+* **No NLA weakening, no client trust installs, no credentials in URLs/logs.**
+  `servedThumb`/`boundThumb` are hashes; nothing secret is ever emitted.
+* A logon window with **no** 4624/4625 at all is informational (audit policy may
+  not logon-log this session); a 4625 in the window stays fatal.
+
+### Windows PowerShell 5.1 hardening (runner reality)
+
+The runner server is started with `powershell.exe` (5.1), while the lab and the
+provisioning paths run pwsh 7. Three 5.1-only gaps were closed in the module:
+
+1. `System.Security.Cryptography.X509Certificates` / `.Cng` are not
+   type-loaded in 5.1, so `Initialize-RdpTelescopeKeyTypes` warms them with a
+   guarded `LoadWithPartialName` and records the loader outcome in
+   `listener.typesLoader`.
+2. Key resolution falls back to `certutil -store` (which prints the CNG/CAPICOM
+   container name) when the typed path yields nothing, so
+   `Resolve-RdpTelescopeKeyFile` still finds the file and `aclSids` still lists
+   the ACEs — including the NETWORK SERVICE grant the live host was missing.
+3. **A host can lose a module and keep running.** 5.1 inherits `PSModulePath`
+   from its parent, so a `powershell.exe` server started by a pwsh step receives
+   the Core module directories and not its own `$PSHOME\Modules`; every module
+   that is not preloaded in the initial session state then fails to load on
+   demand. That is exactly how `Get-Acl` died inside the runner
+   (`Microsoft.PowerShell.Security` could not be loaded) while the very same ACE
+   read green in the pwsh step — the row reported `deathPoint=acl` on a healthy
+   key. `Initialize-RdpTelescopeModulePath` repairs the module path, and
+   `Get-RdpTelescopeKeyAcl` reads the ACL through a ladder instead of one
+   cmdlet: `get-acl` → `dotnet-fileinfo` (`FileInfo.GetAccessControl`, no cmdlet
+   at all) → `acl-extensions` (Core) → `icacls.exe`. The method that answered is
+   carried as `listener.aclReadMethod` (with `aclModule` naming the module-path
+   repair), travels to the config stamp, the SERVER CONN LOG row and the lab
+   annotation, and the lab fails closed when the method is `none`: a blind "no
+   ACE" verdict and a genuinely missing ACE are two different fixes.
+
+Failures are typed, never silent: `deriveError`, `listener.why`,
+`listener.keyTypedError` and `tls.why` name the exact reason, and the lab prints
+the decisive fields first (`[Z] …`) because GitHub caps error annotations.
+
+### Lab contract
+
+Cell Z passes only when the printed telescope shows `servedThumb == boundThumb`,
+an OK handshake, no fatal stage, and an ACL that includes the service account;
+the lab certificate must carry the ServerAuth EKU and SANs for `localhost` and
+the machine name. A red lab blocks the merge — the telescope's job is to say
+which single stage to fix.

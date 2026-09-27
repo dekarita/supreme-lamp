@@ -206,7 +206,7 @@ test('F31c-6 server serves launcher.beacons and merges Schannel 36870 into connL
   const blk = between(srv, '# [F31c §2 schannel-begin]', '# [F31c §2 schannel-end]');
   assert.match(blk, /Get-F31cSchannelWindow/);
   assert.match(blk, /Merge-F31cConnLog/);
-  assert.match(blk, /Id = @\(36870, 36871\)/);
+  assert.match(blk, /Id = @\(36870, 36871, 36888\)/);
   assert.match(blk, /schannel-log-unreadable/);
   assert.match(blk, /\[redacted\]/);
   assert.match(srv, /\$ns\.launcher = \[ordered\]@\{ beacons = @\(\$f31cBeacons\) \}/);
