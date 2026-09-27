@@ -2103,7 +2103,8 @@ function paintSrvConnLog(s){
    var keyHits=(tel.keyDirHits&&tel.keyDirHits.length)?('; hits='+tel.keyDirHits.slice(0,3).join(',')):'';
    var keyKind=tel.containerKind?(' kind='+tel.containerKind):'';
    var keyDir=(tel.keyDirSample&&tel.keyDirSample.length)?(' dir='+String(tel.keyDirSample[0]).slice(0,80)):'';
-   var keyTxt=keyBad?(' keyFile=NOT-FOUND'+keyKind+'('+String(tel.containerPath||tel.container||'?')+keyHits+keyDir+')'):'';
+   var keySrc=tel.keyFilePathSource?(' src='+String(tel.keyFilePathSource)):'';
+   var keyTxt=(keyBad||keySrc)?((keyBad?' keyFile=NOT-FOUND':' keyFile=ok')+keyKind+keySrc+(keyBad?('('+String(tel.containerPath||tel.container||'?')+keyHits+keyDir+')'):'')):'';
    tb.textContent='telescope['+String(tel.src||'live')+'] bound='+(bt||'(none)')+' served='+(st2||'(none)')+
     ' '+(drift?'DRIFT':'match')+' aclRead='+(tel.aclRead===true?'yes':'NO')+' aclSids='+sids+
     ' schannel=['+sch+']'+(tel.schannelWhy?(' '+tel.schannelWhy):'')+ekuTxt+keyTxt+

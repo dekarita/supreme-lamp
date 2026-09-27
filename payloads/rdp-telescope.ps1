@@ -71,7 +71,7 @@ $script:F37TelFields = @{
     cred     = @('credTarget', 'credExists', 'credType', 'credUser')
     logon    = @('eventId', 'logonType', 'sub', 'eventTs', 'count4624', 'count4625')
     schannel = @('schannelIds', 'lastSchannelId', 'lastSchannelTs', 'schannelWhy', 'sinceSec')
-    listener = @('boundThumb', 'servedThumb', 'inStore', 'hasKey', 'container', 'containerKind', 'containerPath', 'keyFileFound', 'keyFileCandidates', 'keyDirHits', 'keyDirSample', 'certutilContainer', 'aclSids', 'aclRead', 'aclOk', 'serving', 'hasServerAuth', 'eku', 'san')
+    listener = @('boundThumb', 'servedThumb', 'inStore', 'hasKey', 'container', 'containerKind', 'containerPath', 'keyFilePathSource', 'keyFileFound', 'keyFileCandidates', 'keyDirHits', 'keyDirSample', 'certutilContainer', 'aclSids', 'aclRead', 'aclOk', 'serving', 'hasServerAuth', 'eku', 'san')
     beacon   = @('beacon')
 }
 function Get-RdpTelescopeFormatTokens {
@@ -505,7 +505,7 @@ function Resolve-RdpTelescopeKeyFile {
     # reports every candidate, which ones exist, any near-miss hit, and a bounded
     # listing of each store - so the environment explains itself next time.
     param([Parameter(Mandatory)]$Certificate)
-    $out = [ordered]@{ name = ''; kind = ''; provider = ''; candidates = @(); found = ''; hits = @(); dirSample = @(); roots = @() }
+    $out = [ordered]@{ name = ''; kind = ''; provider = ''; candidates = @(); found = ''; hits = @(); dirSample = @(); roots = @(); pathSource = '' }
     $key = $null
     try {
         $key = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($Certificate)
@@ -531,16 +531,24 @@ function Resolve-RdpTelescopeKeyFile {
     $out.roots = @($roots)
     foreach ($r in @($roots)) { $out.candidates += (Join-Path $r $out.name) }
     foreach ($c in @($out.candidates)) { if ((-not $out.found) -and (Test-Path -LiteralPath $c -PathType Leaf)) { $out.found = $c } }
+    # A provider name is a CLAIM; the file is the fact. Some runtimes report the
+    # container with a trailing _GUID while the store holds the bare 32-hex stem
+    # (and vice versa) - so when no exact candidate exists, accept a UNIQUE
+    # stem match and say so, instead of reporting "not found" while Schannel
+    # fails with 0x8009030D on the very same key.
+    $stem = [string]($out.name -split '_')[0]
     if (-not $out.found) {
-        $stem = [string]($out.name -split '_')[0]
         foreach ($r in @($roots)) {
             try {
-                foreach ($f in @(Get-ChildItem -LiteralPath $r -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $out.name -or ($stem.Length -ge 8 -and $_.Name -like ($stem + '*')) } | Select-Object -First 3)) {
+                foreach ($f in @(Get-ChildItem -LiteralPath $r -File -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq $out.name -or ($stem.Length -ge 8 -and $_.Name -like ($stem + '*')) } | Select-Object -First 4)) {
                     $out.hits += $f.FullName
                 }
             } catch { }
         }
-    }
+        if (@($out.hits).Count -eq 1) { $out.found = [string](@($out.hits)[0]); $out.pathSource = 'stem-hit' }
+        elseif (@($out.hits).Count -gt 1) { $out.pathSource = 'ambiguous-stem-hit' }
+        else { $out.pathSource = 'none' }
+    } else { $out.pathSource = 'candidate' }
     foreach ($r in @($roots)) {
         try {
             $names = @(Get-ChildItem -LiteralPath $r -File -ErrorAction SilentlyContinue | Select-Object -First 6 | ForEach-Object { $_.Name })
@@ -561,7 +569,7 @@ function Get-RdpTelescopeListener {
         [string]$Trace = '',
         [string]$Src = ''
     )
-    $fields = @{ boundThumb = ''; servedThumb = $ServedThumb; inStore = $false; hasKey = $false; container = ''; containerKind = ''; containerPath = ''; keyFileFound = $false; keyFileCandidates = @(); keyDirHits = @(); keyDirSample = @(); certutilContainer = ''; aclSids = @(); aclRead = $false; aclOk = $false; serving = $false; hasServerAuth = $false; eku = @(); san = @() }
+    $fields = @{ boundThumb = ''; servedThumb = $ServedThumb; inStore = $false; hasKey = $false; container = ''; containerKind = ''; containerPath = ''; keyFilePathSource = ''; keyFileFound = $false; keyFileCandidates = @(); keyDirHits = @(); keyDirSample = @(); certutilContainer = ''; aclSids = @(); aclRead = $false; aclOk = $false; serving = $false; hasServerAuth = $false; eku = @(); san = @() }
     $why = @()
     try {
         $rdpKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp'
@@ -602,11 +610,12 @@ function Get-RdpTelescopeListener {
                 $fields.keyFileCandidates = @($kr.candidates)
                 $fields.keyDirHits = @($kr.hits)
                 $fields.keyDirSample = @($kr.dirSample)
+                $fields.keyFilePathSource = [string]$kr.pathSource
                 if ($kr.found) { $fields.containerPath = [string]$kr.found; $fields.keyFileFound = $true }
                 elseif (@($fields.keyFileCandidates).Count -gt 0) { $fields.containerPath = [string](@($fields.keyFileCandidates)[0]) }
                 if ($fields.keyFileFound) { }
                 elseif ($fields.containerPath) {
-                    $why += ('persisted key file NOT FOUND at ' + $fields.containerPath + '; hits=[' + (@($fields.keyDirHits) -join ',') + '] stores=[' + (@($fields.keyDirSample) -join ' | ') + ']')
+                    $why += ('persisted key file NOT FOUND (name=' + $fields.container + ' tried=[' + (@($fields.keyFileCandidates) -join ',') + '] hits=[' + (@($fields.keyDirHits) -join ',') + '] source=' + $fields.keyFilePathSource + ' stores=[' + (@($fields.keyDirSample) -join ' | ') + ']')
                 }
             } catch { $why += ('key container resolution failed: ' + $_.Exception.Message) }
             if (-not $fields.container) { $why += 'no persisted key container name' }
@@ -661,7 +670,7 @@ function Get-RdpTelescopeFields {
         boundThumb = ''; servedThumb = ''; serving = $false; bindDrift = $false
         inStore = $false; hasKey = $false; container = ''; aclRead = $false
         hasServerAuth = $false; eku = @(); san = @()
-        keyFileFound = $false; containerKind = ''; keyDirHits = @(); keyDirSample = @()
+        keyFileFound = $false; containerKind = ''; keyDirHits = @(); keyDirSample = @(); keyFilePathSource = ''
         aclSids = @(); schannelTail = @(); schannelWhy = ''
         protocol = ''; cipher = ''; failureAt = ''
         logonEventId = ''; logonSub = ''; count4624 = 0; count4625 = 0
@@ -690,6 +699,7 @@ function Get-RdpTelescopeFields {
                 if ($o.PSObject.Properties['hasServerAuth']) { $out.hasServerAuth = [bool]$o.hasServerAuth }
                 if ($o.PSObject.Properties['keyFileFound']) { $out.keyFileFound = [bool]$o.keyFileFound }
                 if ($o.PSObject.Properties['containerKind']) { $out.containerKind = [string]$o.containerKind }
+                if ($o.PSObject.Properties['keyFilePathSource']) { $out.keyFilePathSource = [string]$o.keyFilePathSource }
                 if ($o.PSObject.Properties['keyDirHits']) { $out.keyDirHits = @($o.keyDirHits) }
                 if ($o.PSObject.Properties['keyDirSample']) { $out.keyDirSample = @($o.keyDirSample) }
                 if ($o.PSObject.Properties['eku']) { $out.eku = @($o.eku) }

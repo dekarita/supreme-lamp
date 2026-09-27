@@ -1927,8 +1927,11 @@ jobs:
           acl=payloads/Grant-RdpKeyAccess.ps1
           grep -qF 'function Resolve-RdpTelescopeKeyFile' "$mod" || { echo 'F37: the module does not own the key-file resolver' >&2; exit 1; }
           grep -qF 'Resolve-RdpTelescopeKeyFile' "$acl" || { echo 'F37: the ACL helper assumes a key path instead of resolving it' >&2; exit 1; }
-          grep -qF 'persisted key file NOT FOUND at' "$mod" || { echo 'F37: a missing key file is not named with its evidence' >&2; exit 1; }
-          for f in keyFileFound keyDirHits keyDirSample containerKind; do
+          grep -qF 'persisted key file NOT FOUND' "$mod" || { echo 'F37: a missing key file is not named with its evidence' >&2; exit 1; }
+          grep -qF "\$out.pathSource = 'stem-hit'" "$mod" || { echo 'F37: a unique provider naming variant is not accepted' >&2; exit 1; }
+          grep -qF "ambiguous-stem-hit" "$mod" || { echo 'F37: an ambiguous key-file match is not flagged' >&2; exit 1; }
+          grep -qF "'keyFilePathSource'" "$mod" || { echo 'F37: the chosen key-file path source is not part of the format' >&2; exit 1; }
+          for f in keyFileFound keyDirHits keyDirSample containerKind keyFilePathSource; do
             grep -qF "$f" "$mod" && grep -qF "$f" "$ui" || { echo "F37: $f never reaches the row" >&2; exit 1; }
           done
           # [F37] the certificate callback must be COMPILED: a PowerShell

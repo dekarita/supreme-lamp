@@ -472,7 +472,11 @@ test('F37-20 the persisted key file is RESOLVED, not assumed (single source, wit
   for (const f of ['keyFileFound', 'keyFileCandidates', 'keyDirHits', 'keyDirSample', 'containerKind']) {
     assert.ok(new RegExp("'" + f + "'").test(mod), 'the listener allowlist drops ' + f);
   }
-  assert.ok(mod.includes("persisted key file NOT FOUND at"), 'a missing key file is not named with its search evidence');
+  assert.ok(mod.includes('persisted key file NOT FOUND'), 'a missing key file is not named with its search evidence');
+  // a provider name is a claim; a UNIQUE stem match is accepted and reported
+  assert.ok(mod.includes("$out.pathSource = 'stem-hit'"), 'a unique naming-variant match is not accepted');
+  assert.ok(mod.includes("$out.pathSource = 'ambiguous-stem-hit'"), 'an ambiguous match must not be accepted silently');
+  assert.ok(mod.includes("'keyFilePathSource'"), 'the chosen path source does not travel to the row');
   // the BEFORE-bind telescope resolves the EXPECTED certificate (nothing is bound yet)
   assert.ok(mod.includes('$lookupThumb = $(if ($want) { $want } else { $boundHex })'),
     'the listener only looks at the BOUND thumb, so the before-bind evidence is empty');
