@@ -100,7 +100,13 @@ function New-RdpTelescopeTraceId {
     # minted per click (dashboard/launcher) so every line of one attempt shares
     # one id. Random + timestamp only, never derived from a credential.
     param([string]$Src = 'live')
-    $r = [System.Security.Cryptography.RandomNumberGenerator]::GetBytes(4)
+    # The SERVER runs Windows PowerShell 5.1 (.NET Framework 4.8): the static
+    # RandomNumberGenerator::GetBytes(int) is .NET Core 3.0+ only and made the
+    # whole runner telescope degrade - so mint with the instance API that exists
+    # on every supported runtime.
+    $r = [byte[]]::new(4)
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($r) } finally { if ($rng) { $rng.Dispose() } }
     return ('t' + (Get-Date).ToUniversalTime().ToString('yyMMddHHmmss') + '-' + $Src + '-' + (($r | ForEach-Object { $_.ToString('x2') }) -join ''))
 }
 function Select-RdpTelescopeLine {

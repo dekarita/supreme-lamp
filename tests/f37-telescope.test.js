@@ -552,6 +552,33 @@ test('F37-23 the X.224 confirm / RDP_NEG_RSP layout is EXECUTED and single-sourc
     'the F31 probe does not use the shared X.224 validator');
 });
 
+test('F37-24 every runtime the SERVER loads stays Windows PowerShell 5.1 safe', () => {
+  // The live server is started with powershell.exe (in-box 5.1 / .NET Framework),
+  // and a .NET Core-only API silently degraded the whole runner telescope into a
+  // fallback line. Only APIs that exist on BOTH runtimes may be used.
+  const surfaces = ['payloads/rdp-telescope.ps1', 'payloads/ghrdp-server.ps1', 'payloads/ghrdp-lib.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1'];
+  const coreOnly = [
+    /RandomNumberGenerator\]::(GetBytes|Fill)\(/,
+    /\[Convert\]::ToHexString\(/,
+    /SHA(256|384|512)\]::HashData\(/,
+    /Encoding\]::Latin1/,
+    /\[System\.IO\.Path\]::Join\(/,
+  ];
+  for (const f of surfaces) {
+    const text = fs.readFileSync(f, 'utf8');
+    for (const re of coreOnly) {
+      assert.ok(!re.test(text), f + ' uses a .NET Core-only API (' + re + ') that does not exist on Windows PowerShell 5.1');
+    }
+  }
+  // the trace id is minted with the instance API (both runtimes) and is
+  // random + timestamp only - never derived from a credential
+  const mod = fs.readFileSync('payloads/rdp-telescope.ps1', 'utf8');
+  const fn = mod.slice(mod.indexOf('function New-RdpTelescopeTraceId'), mod.indexOf('function Select-RdpTelescopeLine'));
+  assert.ok(fn.includes('RandomNumberGenerator]::Create()'), 'the trace id does not use the instance RNG');
+  assert.ok(fn.includes('.GetBytes($r)'), 'the trace id does not fill the buffer with the instance RNG');
+  assert.ok(!/(pass|pwd|secret|ticket|token)/i.test(fn), 'the trace id must never be derived from a credential');
+});
+
 test('F37-17 (lab fixture) the REAL native-status sample renders green through the shipped renderer', () => {
   const fx = process.env.F37_TEL_FIXTURE;
   if (!fx) { console.log('[F37] no F37_TEL_FIXTURE set - the lab-only live-sample cell is skipped'); return; }

@@ -1946,6 +1946,15 @@ jobs:
           if grep -nE '\[6\] -ne 2|\[8\] -ne 8|\[9\] -ne 0|ToUInt32\(\$(response|Response), 10\)' "$mod" "$probe"; then
             echo 'F37: an off-by-one X.224 byte offset is back' >&2; exit 1
           fi
+          # [F37] the live runner is WINDOWS POWERSHELL 5.1 (.NET Framework): a
+          # .NET Core-only API degraded the whole runner telescope on the first
+          # live run. No surface the server loads may use one.
+          for f in "$mod" "$srv" payloads/ghrdp-lib.ps1 payloads/Grant-RdpKeyAccess.ps1 "$probe"; do
+            if grep -nE 'RandomNumberGenerator\]::(GetBytes|Fill)\(|\[Convert\]::ToHexString\(|SHA(256|384|512)\]::HashData\(|\[System\.IO\.Path\]::Join\(' "$f"; then
+              echo "F37: $f uses a .NET Core-only API that Windows PowerShell 5.1 does not have" >&2; exit 1
+            fi
+          done
+          grep -qF 'RandomNumberGenerator]::Create()' "$mod" || { echo 'F37: the trace id does not use the 5.1-safe instance RNG' >&2; exit 1; }
           grep -qF 'certutil.exe -repairstore My' "$lab" || { echo 'F37: the lab never forces key persistence' >&2; exit 1; }
           grep -qF "R-Fail 'key-acl-grant'" "$lab" || { echo 'F37: the ACL grant can still die as an unhandled exit' >&2; exit 1; }
           grep -qF '::error::[forensics]' "$lab" || { echo 'F37: the forensics step emits no annotation' >&2; exit 1; }
