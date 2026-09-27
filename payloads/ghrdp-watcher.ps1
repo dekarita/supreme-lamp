@@ -6,6 +6,10 @@ $ErrorActionPreference = 'Continue'
 $libPath = Join-Path $Root 'ghrdp-lib.ps1'
 if (-not (Test-Path -LiteralPath $libPath)) { exit 1 }
 . $libPath
+# [F44] diagnostics module holds preflight/classifier/retry-policy/records.
+$diagPath = Join-Path $Root 'ghrdp-mirror-diag.ps1'
+if (-not (Test-Path -LiteralPath $diagPath)) { Write-Host '[F44] FATAL: ghrdp-mirror-diag.ps1 missing next to the watcher - staging is broken (fail-visible)'; exit 1 }
+. $diagPath
 $global:GhrdpCfgPath = Join-Path $Root 'config.json'
 function Resolve-RealProfile {
     param([string]$User)
@@ -272,6 +276,9 @@ try {
     $maxTries = 5
     $tries = @{}
     $enqueued = @{}
+    # [F44] per-file FULL attempt ledger across scans (capped at 40 records),
+    # carried into progress.json files[].attempts for the UI matrix.
+    $attemptHist = @{}
     $incompleteExt = @('.!qb', '.!ut', '.aria2', '.wkdownload', '.part0', '.part1', '.part2', '.part3', '.part4', '.part5', '.part6', '.part7', '.part8', '.part9')
     $idx = Get-MirrorIndexList -IdxFile $idxFile
     if ($null -eq $idx) { $idx = New-Object System.Collections.ArrayList }
@@ -414,9 +421,12 @@ try {
               Set-ActiveFile -Name $f.Name -Phase 'encrypt' -Total ([long]$f.Length)
               $encErr = $null
               try {
-                  $encErr = 'mirror path disabled per remediation'
+                  # [F44 §1.4] real encrypt, then VERIFY ciphertext exists and
+                  # is >0 bytes before any upload (phase=encrypt when dark).
+                  Invoke-AesEncryptFile -InPath ([string]$f.FullName) -OutPath $encPath -Password ([string]$cfg.mirrorKey)
+                  Test-MirrorEncryptOutput -Path $encPath | Out-Null
               } catch {
-                  $encErr = $_.Exception.Message
+                  $encErr = Protect-MirrorText -Text ($_.Exception.Message + ' | ' + $_.ScriptStackTrace) -ExtraSecrets @([string]$cfg.mirrorKey)
               }
               if ($encErr -and $encErr -match 'Could not find') {
                   Add-MirrorLog ('[mirror] VANISHED {0} (file disappeared before encrypt)' -f $f.Name)
@@ -431,9 +441,9 @@ try {
               }
               if ($encErr -or (-not (Test-Path -LiteralPath $encPath))) {
                   Add-MirrorLog ('[mirror] encrypt failed for {0}: {1}' -f $f.Name, $encErr)
-                  $entry['phase'] = 'queued'
+                  $entry['phase'] = 'encrypt'
                   $entry['status'] = 'pending'
-                  $entry['error'] = ('encrypt: ' + $encErr)
+                  $entry['error'] = ('phase=encrypt | ' + $encErr)
                   Remove-Item -LiteralPath $encPath -Force -ErrorAction SilentlyContinue
                   Flush-MirrorProgress -Force
                   continue
@@ -454,8 +464,21 @@ try {
           }
           Set-ActiveFile -Name $f.Name -Phase 'upload' -Total $uploadLen
           Add-MirrorLog ('[mirror] uploading {0} ({1} bytes, display={2}, encrypted={3})' -f $f.Name, $uploadLen, $dispName, $shouldEncrypt)
-          $link = $null
-          # [remediation] mirror upload removed (lib fn neutered); $link stays null
+          # [F44 §1] diagnostics-first upload: per-host preflight (0 network on
+          # size/type), classified attempts, retry policy (fail-fast on
+          # 401/403/413/451/content-policy; retry ONLY tcp/tls/429/5xx), FULL
+          # error text + per-attempt ledger on the progress row.
+          $up = Invoke-MirrorUpload -Path ([string]$uploadPath) -DispName $dispName -ExtraSecrets @([string]$cfg.mirrorKey)
+          $link = [string]$up.link
+          foreach ($a in @($up.attempts)) {
+              if (-not $attemptHist.ContainsKey($key)) { $attemptHist[$key] = New-Object System.Collections.ArrayList }
+              [void]$attemptHist[$key].Add($a)
+          }
+          $hist = @()
+          if ($attemptHist.ContainsKey($key)) { $hist = @($attemptHist[$key]) }
+          if ($hist.Count -gt 40) { $hist = $hist[($hist.Count - 40)..($hist.Count - 1)] }
+          $entry['attempts'] = $hist
+          foreach ($a in @($up.attempts)) { Add-MirrorLog ('[mirror-attempt] {0} | {1} | phase={2} http={3} bytes={4} {5}ms | {6}' -f $f.Name, $a.host, $a.phase, $a.httpStatus, $a.bytesSent, $a.durationMs, $a.hostMessage) }
           if ($encPath) { Remove-Item -LiteralPath $encPath -Force -ErrorAction SilentlyContinue }
           if ($link) {
               $previewLink = ''
@@ -490,18 +513,29 @@ try {
               } catch { Add-MirrorLog ('[mirror] guarded step entry-update failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               Add-MirrorLog ('[mirror] OK {0} -> {1} via runner egress {2}' -f $f.Name, $link, $(if ($egress) { $egress } else { 'unknown' }))
           } else {
+              # [F44 §1.3] fail-fast classes (size/type/auth/encrypt/policy)
+              # are NEVER retried; only transient classes re-queue (visibly).
+              if (-not [bool]$up.retryable) {
+                  $tries[$key] = $maxTries
+                  $entry['phase'] = [string]$up.phase
+                  $entry['status'] = 'failed'
+                  $entry['error'] = [string]$up.errorText
+                  $prog.agg.failed = [int]$prog.agg.failed + 1
+                  Add-MirrorLog ('[mirror] FAIL-FAST {0}: {1}' -f $f.Name, $up.errorText)
+              } else {
               if ($tries.ContainsKey($key)) { $tries[$key] = [int]$tries[$key] + 1 } else { $tries[$key] = 1 }
               if ([int]$tries[$key] -ge $maxTries) {
-                  $entry['phase'] = 'failed'
+                  $entry['phase'] = [string]$up.phase
                   $entry['status'] = 'failed'
-                  $entry['error'] = 'upload failed after 5 tries (all hosts; see log)'
+                  $entry['error'] = ('upload failed after 5 tries: ' + [string]$up.errorText)
                   $prog.agg.failed = [int]$prog.agg.failed + 1
-                  Add-MirrorLog ('[mirror] FAILED after {0} tries: {1}' -f $tries[$key], $f.Name)
+                  Add-MirrorLog ('[mirror] FAILED after {0} tries: {1} :: {2}' -f $tries[$key], $f.Name, $up.errorText)
               } else {
-                  $entry['phase'] = 'queued'
+                  $entry['phase'] = [string]$up.phase
                   $entry['status'] = 'pending'
-                  $entry['error'] = ('upload retry ' + $tries[$key] + '/' + $maxTries)
-                  Add-MirrorLog ('[mirror] upload failed for {0}; will retry (try {1}/{2})' -f $f.Name, $tries[$key], $maxTries)
+                  $entry['error'] = ('upload retry ' + $tries[$key] + '/' + $maxTries + ': ' + [string]$up.errorText)
+                  Add-MirrorLog ('[mirror] upload failed for {0}; will retry (try {1}/{2}): {3}' -f $f.Name, $tries[$key], $maxTries, $up.errorText)
+              }
               }
           }
           Flush-MirrorProgress -Force

@@ -308,6 +308,10 @@ tr.expired-row{opacity:.45}tr.expired-row td.link a{text-decoration:line-through
 .banner.ended.show{display:block!important}
 body.expired .timer{color:var(--bad)}
 .errmsg{color:var(--bad);font-size:.778rem}
+.errmsg-full{white-space:pre-wrap;word-break:break-word}
+.errdetail{margin-top:2px;font-size:.722rem;color:var(--bad)}
+.errdetail summary{cursor:pointer;opacity:.8}
+.errdetail .errline{white-space:pre-wrap;word-break:break-word;opacity:.95;padding:1px 0}
 .logwrap{display:flex;flex-direction:column;gap:.444rem}
 .logwrap .head{display:flex;justify-content:space-between;align-items:center;font-size:.722rem;
   text-transform:uppercase;letter-spacing:.10em;color:var(--mut)}
@@ -1062,7 +1066,8 @@ function render(d){
       if(f.status==='active'&&act.name&&act.name===f.name)pf=Number(act.pct)||pf;
       var isExpired=f.status==='expired';
       var linkCell=isExpired?('<span class="stag expired">expired</span>'):f.link?('<a href="'+esc(f.link)+'" target="_blank">open</a>'):'-';
-      var errCell=f.error?('<span class="errmsg" title="'+esc(f.error)+'">'+esc(f.error).substring(0,40)+'</span>'):'-';
+      // [F44 §1.2] error text is NEVER truncated: full text + tooltip + expandable ledger.
+      var errCell=f.error?('<span class="errmsg errmsg-full" title="'+esc(f.error)+'">'+esc(f.error)+'</span>'+(f.attempts&&f.attempts.length?'<details class="errdetail"><summary>attempts ('+f.attempts.length+')</summary>'+f.attempts.map(function(a){return '<div class="errline">'+esc(String(a.host))+' | '+esc(String(a.phase))+' | http '+esc(String(a.httpStatus))+' | '+esc(String(a.bytesSent))+'B '+esc(String(a.durationMs))+'ms | '+esc(String(a.hostMessage))+'</div>';}).join('')+'</details>':'')):'-';
       var statusClass = f.status || 'pending';
       html+='<tr'+(isExpired?' class="expired-row"':'')+'><td>'+esc(f.name)+'</td><td>'+esc(f.phase)+'</td><td><span class="mini-bar"><i style="width:'+pf+'%"></i></span><span class="pctnum">'+pf.toFixed(0)+'%</span></td><td>'+fmtBytes(f.size)+'</td><td><span class="stag '+esc(statusClass)+'">'+esc(statusClass)+'</span></td><td>'+errCell+'</td><td class="link">'+linkCell+'</td></tr>';
     }

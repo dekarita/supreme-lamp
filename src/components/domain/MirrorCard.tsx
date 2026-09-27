@@ -2,6 +2,7 @@
 // (capped 99.9 until done==total), 6-stat grid (v1 mini-grid ids kept),
 // active-file bar, speed sparkline, per-root chips, publish status, file
 // table, and the four mirror actions (flush/launch/diag/copy-links).
+import { useState } from "react";
 import { Copy, Play, Search, Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, EmptyState, ProgressRing } from "@/components/primitives/Data";
@@ -23,6 +24,9 @@ export function MirrorCard() {
   const runDiag = useSessionStore((s) => s.runDiag);
   const native = useSessionStore((s) => s.native);
   const m = mirror;
+  // [F44 §1.2] expandable error/attempt rows - error text is NEVER truncated.
+  const [openRows, setOpenRows] = useState<Record<number, boolean>>({});
+  const toggleRow = (i: number) => setOpenRows((p) => ({ ...p, [i]: !p[i] }));
 
   async function doFlush() {
     await getJson("/launch");
@@ -201,7 +205,7 @@ export function MirrorCard() {
                   </td>
                 </tr>
               ) : (
-                m.files.map((f, i) => (
+                m.files.map((f, i) => [
                   <tr key={i} className={cn("border-b border-default last:border-0", f.expired && "opacity-60")}>
                     <td className="px-3 py-1.5 break-all">{f.name}</td>
                     <td className="px-3 py-1.5 text-tertiary">{f.phase}</td>
@@ -220,8 +224,25 @@ export function MirrorCard() {
                       />{" "}
                       <span className="text-xs">{f.status}</span>
                     </td>
-                    <td className="px-3 py-1.5 text-xs text-danger max-w-[160px] truncate" title={f.error}>
-                      {f.error ? f.error.slice(0, 40) : "-"}
+                    <td className="px-3 py-1.5 text-xs text-danger" data-testid="mirror-error-cell">
+                      {f.error ? (
+                        <div className="flex items-start gap-1">
+                          <button
+                            type="button"
+                            data-testid="mirror-error-expand"
+                            className="mt-0.5 shrink-0 text-tertiary hover:text-secondary"
+                            title={openRows[i] ? "hide attempt ledger" : "show attempt ledger"}
+                            onClick={() => toggleRow(i)}
+                          >
+                            {openRows[i] ? "\u25BE" : "\u25B8"}
+                          </button>
+                          <span data-testid="mirror-error-full" className="whitespace-pre-wrap break-words" title={f.error}>
+                            {f.error}
+                          </span>
+                        </div>
+                      ) : (
+                        "-"
+                      )}
                     </td>
                     <td className="px-3 py-1.5">
                       {f.expired ? (
@@ -234,12 +255,77 @@ export function MirrorCard() {
                         "-"
                       )}
                     </td>
-                  </tr>
-                ))
+                  </tr>,
+                  openRows[i] && (
+                    <tr key={i + "-attempts"} className="bg-raised/30" data-testid="mirror-attempts-row">
+                      <td colSpan={7} className="px-3 py-2">
+                        {f.attempts.length === 0 ? (
+                          <span className="text-xs text-tertiary">no per-attempt records on this row</span>
+                        ) : (
+                          <table className="w-full text-xs font-mono">
+                            <thead>
+                              <tr className="text-left text-tertiary border-b border-default">
+                                <th className="py-1 pr-2 font-medium">host</th>
+                                <th className="py-1 pr-2 font-medium">ts</th>
+                                <th className="py-1 pr-2 font-medium">phase</th>
+                                <th className="py-1 pr-2 font-medium">http</th>
+                                <th className="py-1 pr-2 font-medium">bytes</th>
+                                <th className="py-1 pr-2 font-medium">ms</th>
+                                <th className="py-1 font-medium">host message (full, redacted)</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {f.attempts.map((a, j) => (
+                                <tr key={j} data-testid="mirror-attempt-row" className="border-b border-default last:border-0">
+                                  <td className="py-1 pr-2">{a.host}</td>
+                                  <td className="py-1 pr-2 text-tertiary">{a.ts ? a.ts.substring(11, 19) : "-"}</td>
+                                  <td className="py-1 pr-2">{a.phase}</td>
+                                  <td className="py-1 pr-2">{a.httpStatus || "-"}</td>
+                                  <td className="py-1 pr-2">{a.bytesSent}</td>
+                                  <td className="py-1 pr-2">{a.durationMs}</td>
+                                  <td className="py-1 whitespace-pre-wrap break-words" title={a.hostMessage}>
+                                    {a.hostMessage}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        )}
+                      </td>
+                    </tr>
+                  ),
+                ])
               )}
             </tbody>
           </table>
         </div>
+      </div>
+
+      {/* [F44 §1.2] per-host failure matrix: one cell per host across the run */}
+      <div className="mt-3" data-testid="mirror-host-matrix" aria-label="per-host failure matrix">
+        <div className="text-xs text-tertiary mb-1">per-host attempt matrix</div>
+        {!m || m.hostMatrix.length === 0 ? (
+          <div className="text-xs text-tertiary">no attempts recorded yet</div>
+        ) : (
+          <div className="flex flex-wrap gap-2">
+            {m.hostMatrix.map((c) => (
+              <span
+                key={c.host}
+                data-testid="mirror-host-cell"
+                className="inline-flex items-center gap-1 rounded bg-raised border border-default px-2 py-0.5 text-xs text-secondary"
+                title={c.host + ": " + c.total + " attempt(s), " + c.ok + " ok"}
+              >
+                <b className="text-primary">{c.host}</b>
+                <span className="text-tertiary">{c.ok}/{c.total} ok</span>
+                {Object.keys(c.byPhase).map((p) => (
+                  <span key={p} className="text-danger">
+                    {p}:{c.byPhase[p]}
+                  </span>
+                ))}
+              </span>
+            ))}
+          </div>
+        )}
       </div>
       <div className="text-xs text-tertiary mt-2">{t("mirror.runnerEgress")}: {(native && native.runnerEgressIp) || "..."}</div>
     </Card>

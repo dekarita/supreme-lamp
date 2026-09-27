@@ -7,6 +7,27 @@ import { asList } from "./telescope";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
 
+// [F44 §1.1] per-attempt upload record shipped by the runner diagnostics
+// module (phase vocabulary: dns|tcp|tls|encrypt|size|type|auth|http|parse).
+export interface MirrorAttempt {
+  host: string;
+  ts: string;
+  phase: string;
+  httpStatus: number;
+  hostMessage: string;
+  bytesSent: number;
+  durationMs: number;
+}
+
+// [F44 §1.2] per-host failure matrix row: aggregate of the attempt ledger.
+export interface MirrorHostCell {
+  host: string;
+  total: number;
+  ok: number;
+  byPhase: Record<string, number>;
+  lastPhase: string;
+}
+
 export interface MirrorModel {
   pct: number;
   pctText: string;
@@ -25,8 +46,29 @@ export interface MirrorModel {
   roots: string[];
   pubDot: "" | "ok" | "warn";
   pubTxt: string;
-  files: { name: string; phase: string; pct: number; size: string; status: string; error: string; link: string; expired: boolean }[];
+  files: { name: string; phase: string; pct: number; size: string; status: string; error: string; link: string; expired: boolean; attempts: MirrorAttempt[] }[];
+  hostMatrix: MirrorHostCell[];
   speedHistory: number[];
+}
+
+// [F44] aggregate the attempt ledger of every file row into a per-host
+// matrix (ok = http/2xx recorded with a link by the runner module).
+export function mirrorHostMatrix(files: { attempts: MirrorAttempt[] }[]): MirrorHostCell[] {
+  const by = new Map<string, MirrorHostCell>();
+  for (const f of files) {
+    for (const a of f.attempts || []) {
+      let c = by.get(a.host);
+      if (!c) {
+        c = { host: a.host, total: 0, ok: 0, byPhase: {}, lastPhase: "" };
+        by.set(a.host, c);
+      }
+      c.total += 1;
+      c.lastPhase = a.phase;
+      if (a.phase === "http" && a.httpStatus >= 200 && a.httpStatus < 300) c.ok += 1;
+      else c.byPhase[a.phase] = (c.byPhase[a.phase] || 0) + 1;
+    }
+  }
+  return Array.from(by.values());
 }
 
 export function mirrorModel(d: Any, prevHistory: number[]): MirrorModel {
@@ -66,6 +108,15 @@ export function mirrorModel(d: Any, prevHistory: number[]): MirrorModel {
       error: f.error ? String(f.error) : "",
       link: isExpired ? "" : f.link ? String(f.link) : "",
       expired: isExpired,
+      attempts: asList(f.attempts).map((a: Any) => ({
+        host: String(a.host ?? ""),
+        ts: String(a.ts ?? ""),
+        phase: String(a.phase ?? ""),
+        httpStatus: Number(a.httpStatus) || 0,
+        hostMessage: String(a.hostMessage ?? ""),
+        bytesSent: Number(a.bytesSent) || 0,
+        durationMs: Number(a.durationMs) || 0,
+      })),
     };
   });
   let pubDot: "" | "ok" | "warn" = "";
@@ -96,6 +147,7 @@ export function mirrorModel(d: Any, prevHistory: number[]): MirrorModel {
     pubDot,
     pubTxt,
     files,
+    hostMatrix: mirrorHostMatrix(files),
     speedHistory,
   };
 }

@@ -154,7 +154,9 @@ function Flush-MirrorProgress {
 }
 function Invoke-AesEncryptFile {
     param([string]$InPath, [string]$OutPath, [string]$Password)
-    throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'
+    # [F44 §1.4] encrypt step re-enabled for the DIAGNOSTIC path only; the
+    # caller (watcher) MUST verify output via Test-MirrorEncryptOutput before
+    # any upload. All publish/index fns stay neutered (locked decision).
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     $salt = New-Object byte[] 16
     $iv = New-Object byte[] 16

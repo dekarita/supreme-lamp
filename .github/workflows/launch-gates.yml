@@ -2184,6 +2184,48 @@ jobs:
           # 219-id lock still green under default-flag config (post-build above)
           node scripts/check-regression-ids.mjs
           echo 'F43 gates PASS: build-ui=in-main.yml, default=v2, escape=v1, banner=fail-visible, ids=locked'
+      # [F44] mirror diagnostics gates: classification layer, retry policy,
+      # zero truncation, zero evasion patterns, lab wiring. Mirror stays
+      # default-OFF (F11 gate above is untouched); diagnostics only.
+      - name: F44 mirror diagnostics gates (phases, retry policy, no truncation, no evasion)
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          mod=payloads/ghrdp-mirror-diag.ps1
+          lab=.github/workflows/autologin-lab.yml
+          watch=payloads/ghrdp-watcher.ps1
+          test -f "$mod"
+          # honest UA everywhere in new surfaces; NO host-policy evasion patterns
+          grep -qF "ghrdp-mirror-diag/1.0" "$mod"
+          if grep -nEi -- "-A 'Mozilla|Referer:|Origin: https|X-Forwarded-For|--proxy|proxychains|socks4|socks5" "$mod" tests/f44-mirror-lab-driver.ps1 tests/f44-host-probe.ps1 tests/mirror-mock-server.js; then
+            echo 'F44: host-policy evasion pattern present in F44 surfaces' >&2; exit 1
+          fi
+          # §1.1 record shape + §1.3 policy + fail-fast codes pinned via unit test
+          node --test tests/f44-mirror-diag.test.js
+          # watcher: preflight/encrypt verify BEFORE the upload call
+          grep -qF 'Invoke-MirrorUpload -Path ([string]$uploadPath)' "$watch"
+          grep -qF 'Test-MirrorEncryptOutput -Path $encPath' "$watch"
+          grep -qF "\$entry['attempts']" "$watch"
+          grep -qF '. $diagPath' "$watch"
+          if grep -qF 'upload failed after 5 tries (all hosts; see log)' "$watch"; then
+            echo 'F44: bare all-hosts-failed text must be gone from the watcher' >&2; exit 1
+          fi
+          # §1.2 error text never truncated in EITHER UI
+          grep -qF 'data-testid="mirror-error-full"' src/components/domain/MirrorCard.tsx
+          grep -qF 'data-testid="mirror-host-matrix"' src/components/domain/MirrorCard.tsx
+          if grep -qF '.slice(0, 40' src/components/domain/MirrorCard.tsx; then echo 'F44: v2 error slicing is back' >&2; exit 1; fi
+          if grep -qF 'esc(f.error).substring(0,40)' payloads/ui.html; then echo 'F44: v1 error slicing is back' >&2; exit 1; fi
+          # main.yml: module staged + mirror-diag artifact each run
+          grep -qF 'ghrdp-mirror-diag.ps1' "$wf"
+          grep -qF 'name: mirror-diag' "$wf"
+          grep -qF 'Stage mirror-diag artifact (F44)' "$wf"
+          # lab: mirror-cell job + driver + probe + mock
+          grep -qE '^  mirror-cell:' "$lab"
+          grep -qF 'tests/f44-mirror-lab-driver.ps1' "$lab"
+          grep -qF 'tests/f44-host-probe.ps1' "$lab"
+          grep -qF 'tests/mirror-mock-server.js' "$lab"
+          echo 'F44 gates PASS: phases=labeled, retry=policy-only-transient, truncation=none, evasion=none, artifact=every-run'
   windows-native:
     runs-on: windows-latest
     steps:
@@ -2246,7 +2288,8 @@ jobs:
           # [F37] the telescope module + the F31 helpers are parsed here too: a
           # syntax error in them used to surface only as a red Windows lab cell
           # (an expensive loop), and the server DOT-SOURCES the module at start.
-          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1')) {
+          # [F44] the mirror diagnostics module + watcher + lab driver/probe are parsed too.
+          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1', 'payloads/ghrdp-mirror-diag.ps1', 'payloads/ghrdp-watcher.ps1', 'tests/f44-mirror-lab-driver.ps1', 'tests/f44-host-probe.ps1')) {
               $errors = $null
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
               if ($errors) { throw "$file has $($errors.Count) PowerShell syntax error(s): $($errors[0].Message)" }
