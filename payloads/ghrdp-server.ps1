@@ -440,7 +440,8 @@ $script:F30ConnLogPerLog = 10
 $script:F30ConnLogMaxItems = 12
 $script:F30ConnLogSources = @(
     'Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational',
-    'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational'
+    'Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational',
+    'System'
 )
 $script:F30ConnLogScans = 0
 $script:F30ConnLogLastProbeError = ''
@@ -469,6 +470,7 @@ function Get-RdpConnLogEventFields {
         $desc = $desc -replace '(?i)(password|passwd|pwd|subjectusername|targetusername|subjectdomainname)(\s*[=:]\s*)\S+', '$1$2[redacted]'
         if ($desc.Length -gt 200) { $desc = $desc.Substring(0, 200) }
     }
+    if ($Provider -eq 'Schannel') { $desc = Get-RdpConnLogReason -Provider $Provider -Id $id -Level $lvl -Text '' }
     return [pscustomobject]@{
         id       = $id.Trim()
         provider = $Provider
@@ -487,6 +489,14 @@ function Get-RdpConnLogReason {
     $t = ([string]$Text).ToLowerInvariant()
     $p = ([string]$Provider).ToLowerInvariant()
     $evt = ([string]$Id).Trim()
+    if ($p -eq 'schannel') {
+        switch ($evt) {
+            '36870' { return 'private-key/ACL' }
+            '36871' { return 'cipher' }
+            '12017' { return 'credential-event' }
+            '12018' { return 'no-cred' }
+        }
+    }
     if ($t -match 'forcibly closed') { return 'tls-forcibly-closed' }
     # certificate FIRST: a cert failure message also says "TLS ... failed", and
     # 'cert-rejected' is the actionable reason code for it.
@@ -527,6 +537,7 @@ function Get-RdpConnLog {
     return [pscustomobject]@{
         ts          = $scanTs
         scanTs      = $scanTs
+        schannel    = @($sorted | Where-Object { $_.provider -eq 'Schannel' } | Select-Object -First 5)
         windowStart = (Get-RdpConnLogWindowStart -ScanStartedUtc $ScanStartedUtc)
         items       = $items
         newest      = @($items | Select-Object -First 3)
@@ -552,12 +563,17 @@ function Update-RdpConnLog {
     foreach ($logName in $script:F30ConnLogSources) {
         try {
             $since = (Get-Date).ToLocalTime().AddSeconds(-300)
-            $raw = @(Get-WinEvent -FilterHashtable @{ LogName = $logName; StartTime = $since } -MaxEvents $script:F30ConnLogPerLog -ErrorAction Stop)
+            if ($logName -eq 'System') {
+                $raw = @(Get-WinEvent -FilterHashtable @{ LogName = 'System'; ProviderName = 'Schannel'; Id = 36870,36871,12017,12018; StartTime = $since } -MaxEvents 5 -ErrorAction Stop)
+            } else {
+                $raw = @(Get-WinEvent -FilterHashtable @{ LogName = $logName; StartTime = $since } -MaxEvents $script:F30ConnLogPerLog -ErrorAction Stop)
+            }
             foreach ($e in $raw) {
                 $prov = $logName.Split('/')[0] -replace '^Microsoft-Windows-', ''
+                if ($logName -eq 'System') { $prov = 'Schannel' }
                 $items += (Get-RdpConnLogEventFields -Xml ([xml]$e.ToXml()) -Provider $prov)
             }
-        } catch { $failed += $logName }
+        } catch { if ($_.FullyQualifiedErrorId -notlike 'NoMatchingEventsFound*') { $failed += $logName } }
     }
     $probeErr = ''
     if ($failed.Count -eq $script:F30ConnLogSources.Count) { $probeErr = 'conn-logs-unreadable' }

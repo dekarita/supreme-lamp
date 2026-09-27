@@ -226,3 +226,14 @@ test('F31c-7 gate + lab cell are pinned; new blocks do not weaken NLA', () => {
   assert.ok(!/UserAuthentication.{0,12}0|AllowEncryptionOracle.{0,12}[12]|authentication level:i:0/.test(diag),
     'the token diagnostic must not weaken NLA');
 });
+
+test('F32 absent/nonboolean listenerHandshakeOk cannot render ALL GREEN', () => {
+  for (const value of [undefined, null, false, 'true', 1]) {
+    const ctx = loadDispatch(); const s = greenStatus();
+    if (value === undefined) delete s.rdpListener.listenerHandshakeOk;
+    else s.rdpListener.listenerHandshakeOk = value;
+    assert.equal(ctx.liveDispatchStatus(s, NOW).ok, false);
+    ctx.paintLiveDispatch(s, NOW);
+    assert.doesNotMatch(ctx.els.liveDispatchSummary.textContent, /ALL GREEN/);
+  }
+});
