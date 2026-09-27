@@ -2372,8 +2372,10 @@ jobs:
           }
           if (Object.keys(results).length !== 3) fail('screenshots', 'expected 3 widths, got ' + Object.keys(results).length);
           await browser.close();
+          server.close();
           console.log('[W] (b) PASS: 1280/1600/1920 - no horizontal overflow, computed stack includes Noto Sans Sinhala');
           console.log('::notice::[W] phase=f38-ui ok screenshots=3 toggle=persisted sinhala=rendered contrast=aa sprite=present');
+          process.exit(0);
           '@
           $labPath = Join-Path $ws 'f38-lab.mjs'
           [System.IO.File]::WriteAllText($labPath, $lab, (New-Object System.Text.UTF8Encoding($false)))
