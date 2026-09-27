@@ -7,6 +7,31 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: F31/F33 persisted-key ACL and served-certificate gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          acl=payloads/Grant-RdpKeyAccess.ps1
+          probe=payloads/Test-RdpListenerHandshake.ps1
+          for token in PersistKeySet MachineKeySet Exportable HasPrivateKey Grant-RdpKeyAccess.ps1 'Restart-Service TermService -Force -ErrorAction Stop'; do
+            grep -qF "$token" "$wf"
+          done
+          for token in 'GetRSAPrivateKey' 'GetECDsaPrivateKey' 'Crypto\Keys' 'RSA\MachineKeys' 'S-1-5-20' 'S-1-5-18' 'Set-Acl' 'GetAccessRules' 'Required ACE absent'; do
+            grep -qF "$token" "$acl"
+          done
+          for token in '0x03,0x00,0x00,0x13' '0x0e,0xe0' 'AuthenticateAsClientAsync' 'IsAuthenticated' 'SslPolicyErrors' '36870' 'key ACL:'; do
+            grep -qF "$token" "$probe"
+          done
+          grep -qF 'listenerHandshakeOk = $listenerHandshakeOk' "$wf"
+          grep -qF 'listenerHandshakeOk=false' "$wf"
+          grep -qF 'listener-handshake-ok' "$wf"
+          grep -qF 'F33 ACL-DENIED PASS' .github/workflows/autologin-lab.yml
+          grep -qF 'Id = @(36870, 36871, 36888)' payloads/ghrdp-server.ps1
+          grep -qF 'key-open-failed:' payloads/ghrdp-server.ps1
+          grep -qF 'tls-alert-sent:' payloads/ghrdp-server.ps1
+          if grep -E 'UserAuthentication -Value 0|SecurityLayer -Value 0|IgnoreCertificateErrors' "$wf" "$acl" "$probe"; then exit 1; fi
+
       - name: D/E launch gates
         shell: bash
         run: |
@@ -964,7 +989,9 @@ jobs:
           grep -qF 'Update-RdpAuthEvents -CfgPath $cfgPath' "$wf" || { echo 'F24: the collector never ticks in the keep-alive loop' >&2; exit 1; }
           # --- §3b the F17 rebuild carries the verdict fields forward -----------
           grep -qF '[F24 §3b]' "$wf" || { echo 'F24: the F17 probe does not carry the F21 verdict fields forward' >&2; exit 1; }
-          grep -qF "foreach (\$k in @('credsspStatus', 'credsspWhy', 'credValid', 'credValidAt', 'credValidWhy', 'credValidProbeError', 'authEvents'))" "$wf" || { echo 'F24: the carry-forward field list is wrong' >&2; exit 1; }
+          # [F37] the list legitimately gained 'telescope' (the live telescope must
+          # survive the F17 rebuild, exactly like the F21 verdict fields do).
+          grep -qF "foreach (\$k in @('credsspStatus', 'credsspWhy', 'credValid', 'credValidAt', 'credValidWhy', 'credValidProbeError', 'authEvents', 'telescope'))" "$wf" || { echo 'F24: the carry-forward field list is wrong (all F21 verdict fields + the F37 telescope)' >&2; exit 1; }
           # --- §3 ONE decision row with the three branches -----------------------
           grep -qF 'id="rdpAuthRow"' "$ui" || { echo 'F24: ui.html lacks the auth-reject discriminator row' >&2; exit 1; }
           for tok in 'SERVER credential bug - re-dispatch' 'YOUR stored password is stale' 'copy CURRENT password from KEYS' 'TLS-layer suspect' 'cmdkey /delete:TERMSRV/' 'capi2.evtx' 'system.evtx' 'authEvents' 'credValid' 'credValidProbeError' 'PROBE FAILED' 'paste the copied password EXACTLY' 'no tooling deletes credentials'; do
@@ -1527,7 +1554,9 @@ jobs:
           if grep -Eq "pass=|password=|pwd=|passwd=|key=|token=|secret=|apikey=" <<< "$ru"; then
             echo 'F28: the recovery URL can carry a password (tickets only)' >&2; exit 1
           fi
-          grep -qF "ghrdpRecredUrl(fqdn,user)+'&t='" "$ui" || { echo 'F28: the recovery click does not append the ticket' >&2; exit 1; }
+          # [F37 §3] the trace is minted first; the bearer ticket stays LAST and
+          # stays the only credential-shaped parameter.
+          grep -qE "ghrdpRecredUrl\(fqdn,user\)\+traceParam\(\)\+'&t='" "$ui" || { echo 'F28: the recovery click does not append the ticket (after the F37 trace)' >&2; exit 1; }
           # the card is copy-only apart from the single button (handler attached in JS)
           card=$(awk '/id="recoveryRow"/{f=1} f{print} f&&/id="btnFixReconnect"/{exit}' "$ui")
           handlers=$(grep -o 'onclick="[^"]*"' <<< "$card" || true)
@@ -1802,6 +1831,220 @@ jobs:
           test -f tests/f34-up-diagnosis.test.js || { echo 'F34: the node matrix is missing' >&2; exit 1; }
           node --test tests/f34-up-diagnosis.test.js
           echo 'F34 gates PASS'
+      # [F37] TELESCOPE GATES. The format has ONE implementation
+      # (payloads/rdp-telescope.ps1); the client (launcher .cs), the runner
+      # (ghrdp-server.ps1) and the lab (autologin-lab.yml) must all speak ITS
+      # vocabulary, the lab must PRINT the telescope on every cert cell, and the
+      # whole surface must stay secret-free (no password bytes, no cred UI, no
+      # trust installs, no NLA weakening). tests/f37-telescope.test.js EXECUTES
+      # the shipped timeline renderer and cross-checks the tokens.
+      - name: F37 telescope single-source + self-explaining lab gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mod=payloads/rdp-telescope.ps1
+          srv=payloads/ghrdp-server.ps1
+          ui=payloads/ui.html
+          cs=payloads/ghrdp-rdp-launcher.cs
+          lab=.github/workflows/autologin-lab.yml
+          wf=.github/workflows/main.yml
+          # (1) the module exists and declares its format + vocabulary
+          test -f "$mod" || { echo 'F37: the telescope module (single source of truth) is missing' >&2; exit 1; }
+          grep -qF '# [F37 §1 telescope-format]' "$mod" || { echo 'F37: the format header marker is missing' >&2; exit 1; }
+          for t in dns tcp tls cred logon schannel listener rst-before-cert name-mismatch eku; do
+            grep -qF "'$t'" "$mod" || { echo "F37: the module does not declare the token $t" >&2; exit 1; }
+          done
+          grep -qF 'function Select-RdpTelescopeLine' "$mod" || { echo 'F37: the field allowlist filter is missing' >&2; exit 1; }
+          # (2) ALL FOUR SURFACES share the ONE parser/format
+          grep -qF 'payloads/rdp-telescope.ps1' "$lab" || { echo 'F37: the lab does not load the single-source module' >&2; exit 1; }
+          grep -qF 'rdp-telescope.ps1' "$srv" || { echo 'F37: the server does not load the single-source module' >&2; exit 1; }
+          grep -qF '. $f37cand' "$srv" || { echo 'F37: the server must DOT-SOURCE the module, never re-implement the format' >&2; exit 1; }
+          grep -qF 'payloads/rdp-telescope.ps1' "$wf" || { echo 'F37: the live probe does not load the module' >&2; exit 1; }
+          grep -qF '[F37 §1 telescope-format: shared with payloads/rdp-telescope.ps1]' "$cs" || { echo 'F37: the launcher does not point at the single source of truth' >&2; exit 1; }
+          for slug in telescope-dns-ok telescope-tcp-fail telescope-tls-ok telescope-rst-before-cert telescope-chain telescope-name-mismatch telescope-eku telescope-cred-missing; do
+            grep -qF "\"$slug\"" "$cs" || { echo "F37: the launcher cannot emit the shared slug $slug" >&2; exit 1; }
+          done
+          # the runner-side slug allowlist must accept exactly those slugs
+          for slug in telescope-dns-ok telescope-tcp-ok telescope-tls-ok telescope-cred-missing; do
+            grep -qE "telescope-(dns|tcp|tls|cred)|\\(rst-before-cert" <<< "$(grep -F 'F37TelSlugRe' "$srv")" || { echo 'F37: the server slug allowlist drifted' >&2; exit 1; }
+          done
+          # [F37] the beacon STAGE is DERIVED from the shared slug: ONE table in
+          # the module, the client only DECLARES it, and the server neutralizes any
+          # disagreement - a mislabeled beacon can never become a timeline verdict
+          # (the class that made a live diag beacon render as stage 'other').
+          grep -qF '$slugStage = [ordered]@{' "$mod" || { echo 'F37: the module does not declare the slug -> stage table' >&2; exit 1; }
+          grep -qF 'function Get-RdpTelescopeBeaconStage' "$mod" || { echo 'F37: the module owns no slug -> stage accessor' >&2; exit 1; }
+          grep -qF 'Get-F37BeaconStageForSlug' "$srv" || { echo 'F37: the server does not derive the beacon stage' >&2; exit 1; }
+          grep -qF 'Get-RdpTelescopeBeaconStage -Slug $Slug' "$srv" || { echo 'F37: the server keeps a second slug -> stage mapping' >&2; exit 1; }
+          grep -qF 'if (-not $derivedT -or ($stT -and $stT -ne $derivedT))' "$srv" || { echo 'F37: a declared/derived stage mismatch is not neutralized' >&2; exit 1; }
+          grep -qF 'HelloBounded(host, port, "diag", ok, slug, trace, stage)' "$cs" || { echo 'F37: the diag beacon does not declare its stage' >&2; exit 1; }
+          grep -qF 'IsTelClientStage(stage)' "$cs" || { echo 'F37: the declared stage is not gated on the client token set' >&2; exit 1; }
+          # (3) the failure point is NAMED on every surface
+          for f in rst-before-cert name-mismatch eku; do
+            grep -qF "$f" "$cs" || { echo "F37: the launcher cannot name the failure point $f" >&2; exit 1; }
+          done
+          grep -qF 'permissive' "$mod" || { echo 'F37: the TLS probe no longer documents its read-only permissive callback' >&2; exit 1; }
+          # (4) RUNNER: 60s tick, startup scan, row fields, live preference
+          grep -qF '$script:F37TelIntervalSec = 60' "$srv" || { echo 'F37: the runner telescope tick is not 60s' >&2; exit 1; }
+          grep -qF 'STARTUP SCAN: the telescope stamps BEFORE the first client can poll' "$srv" || { echo 'F37: the telescope startup scan is missing' >&2; exit 1; }
+          grep -qF 'telescope = $f37State.telescope' "$srv" || { echo 'F37: native-status does not serve the runner telescope' >&2; exit 1; }
+          grep -qF 'telescopeClient = $f37Client' "$srv" || { echo 'F37: native-status does not serve the client beacons' >&2; exit 1; }
+          grep -qF 'telescopeLive' "$srv" || { echo 'F37: bind drift cannot be rendered live' >&2; exit 1; }
+          grep -qF 'boundThumb' "$ui" && grep -qF 'servedThumb' "$ui" && grep -qF 'aclSids' "$ui" && grep -qF 'schannelTail' "$ui" || { echo 'F37: the SERVER CONN LOG row lacks the bind-drift fields' >&2; exit 1; }
+          # (5) CLIENT: diag verb + trace id + preflight that never breaks the
+          # pinned fail-visible beacon chain
+          grep -qF 'if (verb == "diag") { return DiagStep(uri, host, port); }' "$cs" || { echo 'F37: the diag verb is missing' >&2; exit 1; }
+          grep -qF 'if (TraceParam(uri).Length > 0) { TelPreflight(uri, server, host, port); }' "$cs" || { echo 'F37: the preflight is not gated on the click trace' >&2; exit 1; }
+          grep -qF 'endpoint = (verb == "diag") ? "/api/rdp-telescope" : "/api/handler-hello"' "$cs" || { echo 'F37: diag beacons must not enter the handler-hello chain' >&2; exit 1; }
+          grep -qF "if (\$path -eq '/api/rdp-telescope' -and \$parts.method -eq 'POST')" "$srv" || { echo 'F37: the client beacon endpoint is missing' >&2; exit 1; }
+          grep -qF 'telescope-unparsed' "$srv" || { echo 'F37: an unknown beacon slug must be neutralized' >&2; exit 1; }
+          grep -qF 'function telescopeTimeline(s, nowMs)' "$ui" || { echo 'F37: the ONE timeline function is missing' >&2; exit 1; }
+          grep -qF 'id="btnRunDiag"' "$ui" || { echo 'F37: [RUN DIAG] is missing' >&2; exit 1; }
+          grep -qF 'function mintTraceId(src)' "$ui" || { echo 'F37: the client trace minter is missing' >&2; exit 1; }
+          # (6) LAB: the cert is Schannel-acceptable and every cert cell PRINTS
+          # the telescope - a red cert cell must never be red-without-why.
+          grep -qF '2.5.29.37={text}1.3.6.1.5.5.7.3.1' "$lab" || { echo 'F37: the lab cert carries no ServerAuth EKU (the rst-before-cert class)' >&2; exit 1; }
+          grep -qF '2.5.29.17={text}DNS=' "$lab" || { echo 'F37: the lab cert carries no SAN' >&2; exit 1; }
+          grep -qF 'F37 lab telescope BEFORE bind' "$lab" || { echo 'F37: the lab does not telescope BEFORE the bind' >&2; exit 1; }
+          grep -qF 'F37 lab telescope AFTER bind+restart' "$lab" || { echo 'F37: the lab does not telescope AFTER the bind' >&2; exit 1; }
+          bindLine=$(grep -nF "New-ItemProperty -Path 'HKLM:\\System\\CurrentControlSet\\Control\\Terminal Server\\WinStations\\RDP-Tcp' -Name 'SSLCertificateSHA1Hash'" "$lab" | head -1 | cut -d: -f1)
+          beforeLine=$(grep -nF 'F37 lab telescope BEFORE bind' "$lab" | head -1 | cut -d: -f1)
+          afterLine=$(grep -nF 'F37 lab telescope AFTER bind+restart' "$lab" | head -1 | cut -d: -f1)
+          test -n "$bindLine" && test -n "$beforeLine" && test -n "$afterLine" || { echo 'F37: a lab anchor is missing (vacuous gate)' >&2; exit 1; }
+          test "$beforeLine" -lt "$bindLine" || { echo 'F37: the BEFORE telescope runs after the bind' >&2; exit 1; }
+          test "$bindLine" -lt "$afterLine" || { echo 'F37: the AFTER telescope runs before the bind' >&2; exit 1; }
+          cell=$(awk -v s="$bindLine" -v e="$afterLine" 'NR>s && NR<e+60' "$lab")
+          for line in $(grep -nF "R-Fail 'bind-effectiveness'" "$lab" | cut -d: -f1); do
+            body=$(sed -n "${line}p" "$lab")
+            grep -qF '$dump' <<< "$body" || { echo "F37: line $line can exit red without the telescope fields" >&2; exit 1; }
+          done
+          grep -qF 'if ($servedR -ne $boundR)' "$lab" || { echo 'F37: the lab does not gate servedThumb == boundThumb' >&2; exit 1; }
+          # [F37] the CERTIFICATE's own acceptance is named, not inferred: the
+          # module reads the ServerAuth EKU + SAN off the bound cert, the death
+          # point prefers tls-eku over the RST symptom, and the live row says it.
+          grep -qF 'hasServerAuth' "$mod" && grep -qF 'hasServerAuth' "$ui" || { echo 'F37: the ServerAuth EKU is not classified on the runner + row' >&2; exit 1; }
+          grep -qF "return 'tls-eku'" "$mod" || { echo 'F37: a missing EKU cannot name the tls-eku death point' >&2; exit 1; }
+          grep -qF '$fields.hasServerAuth' "$mod" || { echo 'F37: the listener verdict ignores the cert EKU' >&2; exit 1; }
+          # [F37] a red cell must never be red-without-a-readable-annotation:
+          # both F37 cells trap unhandled exceptions, the fail helpers collapse
+          # their detail onto one line, and a forensics step re-emits the
+          # telescope + the classification files whenever a cell failed.
+          test "$(grep -c 'stage=unhandled' "$lab")" -ge 2 || { echo 'F37: the F37 lab cells do not trap unhandled errors' >&2; exit 1; }
+          grep -qF '$f37one = ($Detail -replace' "$lab" || { echo 'F37: a lab fail helper can still emit a multi-line (dropped) annotation' >&2; exit 1; }
+          grep -qF 'Q: failure forensics' "$lab" || { echo 'F37: the failure-forensics step is missing' >&2; exit 1; }
+          # [F37] the persisted KEY FILE is resolved, never assumed: one resolver
+          # in the module, shared by the listener and the F31 ACL helper, with
+          # store candidates + hits in every failure message.
+          acl=payloads/Grant-RdpKeyAccess.ps1
+          grep -qF 'function Resolve-RdpTelescopeKeyFile' "$mod" || { echo 'F37: the module does not own the key-file resolver' >&2; exit 1; }
+          grep -qF 'Resolve-RdpTelescopeKeyFile' "$acl" || { echo 'F37: the ACL helper assumes a key path instead of resolving it' >&2; exit 1; }
+          grep -qF 'persisted key file NOT FOUND' "$mod" || { echo 'F37: a missing key file is not named with its evidence' >&2; exit 1; }
+          grep -qF "\$out.pathSource = 'stem-hit'" "$mod" || { echo 'F37: a unique provider naming variant is not accepted' >&2; exit 1; }
+          grep -qF "ambiguous-stem-hit" "$mod" || { echo 'F37: an ambiguous key-file match is not flagged' >&2; exit 1; }
+          grep -qF "'keyFilePathSource'" "$mod" || { echo 'F37: the chosen key-file path source is not part of the format' >&2; exit 1; }
+          for f in keyFileFound keyDirHits keyDirSample containerKind keyFilePathSource; do
+            grep -qF "$f" "$mod" && grep -qF "$f" "$ui" || { echo "F37: $f never reaches the row" >&2; exit 1; }
+          done
+          # [F37] the certificate callback must be COMPILED: a PowerShell
+          # scriptblock cannot run on the threadpool thread that completes the
+          # handshake, and both probes then reported a false rst-before-cert.
+          probe=payloads/Test-RdpListenerHandshake.ps1
+          grep -qF 'public static class GhrdpTelTls' "$mod" || { echo 'F37: the compiled TLS callback shim is missing' >&2; exit 1; }
+          grep -qF 'Add-RdpTelescopeTlsShim' "$probe" || { echo 'F37: the F31 probe does not share the compiled callback' >&2; exit 1; }
+          if grep -nE 'RemoteCertificateValidationCallback\]\s*\{' "$mod" "$probe"; then echo 'F37: a scriptblock is still used as the TLS callback' >&2; exit 1; fi
+          # [F37] the X.224 confirm / RDP_NEG_RSP layout is single-sourced and
+          # the off-by-one that made a HEALTHY listener read as "did not select
+          # TLS" may not come back on any surface.
+          grep -qF 'function Test-RdpTelescopeX224Confirm' "$mod" || { echo 'F37: the shared X.224 validator is missing' >&2; exit 1; }
+          grep -qF 'Test-RdpTelescopeX224Confirm -Response $response' "$probe" || { echo 'F37: the F31 probe hand-rolls the X.224 offsets' >&2; exit 1; }
+          if grep -nE '\[6\] -ne 2|\[8\] -ne 8|\[9\] -ne 0|ToUInt32\(\$(response|Response), 10\)' "$mod" "$probe"; then
+            echo 'F37: an off-by-one X.224 byte offset is back' >&2; exit 1
+          fi
+          # [F37] the live runner is WINDOWS POWERSHELL 5.1 (.NET Framework): a
+          # .NET Core-only API degraded the whole runner telescope on the first
+          # live run. No surface the server loads may use one.
+          for f in "$mod" "$srv" payloads/ghrdp-lib.ps1 payloads/Grant-RdpKeyAccess.ps1 "$probe"; do
+            if grep -nE 'RandomNumberGenerator\]::(GetBytes|Fill)\(|\[Convert\]::ToHexString\(|SHA(256|384|512)\]::HashData\(|\[System\.IO\.Path\]::Join\(' "$f"; then
+              echo "F37: $f uses a .NET Core-only API that Windows PowerShell 5.1 does not have" >&2; exit 1
+            fi
+          done
+          grep -qF 'RandomNumberGenerator]::Create()' "$mod" || { echo 'F37: the trace id does not use the 5.1-safe instance RNG' >&2; exit 1; }
+          grep -qF 'certutil.exe -repairstore My' "$lab" || { echo 'F37: the lab never forces key persistence' >&2; exit 1; }
+          grep -qF "R-Fail 'key-acl-grant'" "$lab" || { echo 'F37: the ACL grant can still die as an unhandled exit' >&2; exit 1; }
+          grep -qF '::error::[forensics]' "$lab" || { echo 'F37: the forensics step emits no annotation' >&2; exit 1; }
+          grep -qF 'Format-RdpTelescopeDump' "$lab" || { echo 'F37: the forensics step does not re-print the telescope' >&2; exit 1; }
+          grep -qF 'Test-RdpListenerHandshake.ps1' "$lab" || { echo 'F37: the lab lost the strict F31 handshake gate' >&2; exit 1; }
+          grep -qF 'node --test tests/f37-telescope.test.js' "$lab" || { echo 'F37: the lab does not run the F37 matrix over its own sample' >&2; exit 1; }
+          # (7) SECRET-FREE / NO WEAKENING on every F37 surface
+          if grep -nE 'Read-Host|AsPlainText|ConvertTo-SecureString|/pass:|Invoke-Expression' "$mod" "$cs"; then
+            echo 'F37: a telescope surface handles a credential blob' >&2; exit 1
+          fi
+          if grep -nF "X509Store('Root'" "$mod" "$cs"; then echo 'F37: the telescope installs trust' >&2; exit 1; fi
+          if grep -nE 'UserAuthentication.*(Set-ItemProperty|= 0)' "$mod" "$cs"; then echo 'F37: the telescope touches NLA' >&2; exit 1; fi
+          if grep -nE 'password=|passwd=|pwd=' "$ui" "$cs"; then echo 'F37: a password-shaped parameter exists in a launch URL' >&2; exit 1; fi
+          if grep -nF 'GHRDP_LAB_TEL_INTERVAL_SEC' "$wf"; then echo 'F37: a lab-only switch reached production main.yml' >&2; exit 1; fi
+          # [F37 §4] SCOPE: the runner face (server tick + live probe) never
+          # evaluates the CLIENT-owned cred stage, and says why it carries none.
+          # A healthy host that reads as deathPoint=credssp is a false verdict.
+          grep -qF -e "-Ip '127.0.0.1' -SkipCred" "$srv" || { echo 'F37: the live runner evaluates the client-owned cred stage' >&2; exit 1; }
+          grep -qF "credScope   = 'client-only'" "$srv" || { echo 'F37: the runner sample does not name its own scope' >&2; exit 1; }
+          grep -qF -e '-ExpectedThumb $certThumb -SkipLogon -SkipCred' "$wf" || { echo 'F37: the live F17 probe is not runner-scoped' >&2; exit 1; }
+          grep -qF 'runner face: no stored TERMSRV target' "$mod" || { echo 'F37: an absent client credential on the runner is not a named scope fact' >&2; exit 1; }
+          grep -qF -e '-Informational:$Local' "$mod" || { echo 'F37: the runner face is not informational for client-owned stages' >&2; exit 1; }
+          # an absent logon window is INFORMATIONAL; only a rejection is a fault
+          grep -qF 'informational: nobody has logged on yet' "$mod" || { echo 'F37: an empty logon window still reads as a red path' >&2; exit 1; }
+          grep -qF 'RDP logon rejected: newest event is a 4625' "$mod" || { echo 'F37: a logon rejection is not named' >&2; exit 1; }
+          if grep -qF -e "-Ok ([bool](\$id -eq '4624'))" "$mod"; then echo 'F37: the logon stage paints an empty window red again' >&2; exit 1; fi
+          # probeError is the LISTENER FACE; evidence (schannel/logon) is probeWarn
+          grep -qF "'telescope evidence: '" "$srv" || { echo 'F37: the runner cannot separate a fatal stage from evidence' >&2; exit 1; }
+          grep -qF 'probeWarn' "$srv" && grep -qF 'probeWarn' "$ui" || { echo 'F37: the runner evidence line never reaches the row' >&2; exit 1; }
+          if grep -qF '"ok":false' "$srv"; then echo 'F37: the server hand-matches the wire format instead of reading it' >&2; exit 1; fi
+          # a derivation fault and the key-resolver cause are NAMED, end to end
+          for f in deriveError redStages fatalStages keyTypedError typesLoader; do
+            grep -qF "$f" "$mod" && grep -qF "$f" "$srv" && grep -qF "$f" "$wf" && grep -qF "$f" "$ui" || { echo "F37: $f does not travel module -> runner -> stamp -> row" >&2; exit 1; }
+          done
+          # [F37 §1] the key ACL is read by a LADDER, never by one cmdlet: the
+          # live runner (Windows PowerShell 5.1 started by a pwsh step) could not
+          # load Microsoft.PowerShell.Security, Get-Acl failed there, and the row
+          # reported deathPoint=acl on a key whose NETWORK SERVICE ACE was
+          # present. No host may lose that evidence to a module-load fault again.
+          grep -qF 'function Get-RdpTelescopeKeyAcl' "$mod" || { echo 'F37: the module has no independent key-ACL reader' >&2; exit 1; }
+          grep -qF 'function Initialize-RdpTelescopeModulePath' "$mod" || { echo 'F37: nothing repairs a host that cannot load its own modules' >&2; exit 1; }
+          for m in "'get-acl'" "'dotnet-fileinfo'" "'acl-extensions'" "'icacls'"; do
+            grep -qF "$m" "$mod" || { echo "F37: the ACL ladder lost the reader $m" >&2; exit 1; }
+          done
+          grep -qF '.GetAccessControl()' "$mod" || { echo 'F37: no managed ACL API is reachable without a cmdlet' >&2; exit 1; }
+          if grep -nE '^[[:space:]]*\$acl = Get-Acl -LiteralPath' "$mod"; then echo 'F37: the listener stage calls Get-Acl directly again (one method, no ladder)' >&2; exit 1; fi
+          for f in aclReadMethod aclModule; do
+            grep -qF "$f" "$mod" && grep -qF "$f" "$srv" && grep -qF "$f" "$lab" || { echo "F37: $f does not travel module -> runner -> lab verdict" >&2; exit 1; }
+          done
+          grep -qF "'runner-acl-method'" "$lab" || { echo 'F37: a runner whose ACL reader failed can still pass the cell' >&2; exit 1; }
+          # the resolver must work on the runtime the SERVER actually uses (5.1)
+          grep -qF 'function Initialize-RdpTelescopeCryptoTypes' "$mod" || { echo 'F37: the 5.1 crypto-type loader is missing (the runner telescope degrades silently)' >&2; exit 1; }
+          grep -qF 'certutil.exe -store -v My $Certificate.Thumbprint' "$mod" || { echo 'F37: the key resolver has no provider-independent fallback' >&2; exit 1; }
+          grep -qF "'certutil-candidate'" "$mod" || { echo 'F37: a certutil-resolved key path is not reported as such' >&2; exit 1; }
+          # the death point cannot blame the EKU when NOTHING is bound
+          grep -qF "[bool]\$listenerObj.inStore -and \$listenerObj.PSObject.Properties['hasServerAuth']" "$mod" || { echo 'F37: an unbound listener still resolves tls-eku' >&2; exit 1; }
+          grep -qF "return 'tls-cert' }" "$mod" || { echo 'F37: an unbound listener has no death point' >&2; exit 1; }
+          # a beacon the allowlist neutralized is NOT a stage verdict
+          grep -qF 'telescope-unparsed' "$ui" || { echo 'F37: the timeline treats a neutralized beacon as a verdict' >&2; exit 1; }
+          # the lab proves the scope split, feeds the client diag, and spends its
+          # 10-annotation forensics budget on the decisive evidence first
+          grep -qF "'module-scope'" "$lab" || { echo 'F37: the lab never proves the runner/client cred scope split' >&2; exit 1; }
+          grep -qF 'cmdkey.exe /generic:TERMSRV/$fqdn /user:labuser /pass:LABDUMMY-win-9876' "$lab" || { echo 'F37: the client diag has no stored target (a healthy path would read credssp)' >&2; exit 1; }
+          grep -qF 'telescope-cred-ok' "$lab" || { echo 'F37: the lab does not require the client cred stage to be green' >&2; exit 1; }
+          grep -qF 'Flush 9' "$lab" || { echo 'F37: the forensics step can lose its decisive annotation to the cap' >&2; exit 1; }
+          grep -qF 'CLASSIFICATION:' "$lab" && grep -qF 'RUNNER-SUMMARY:' "$lab" || { echo 'F37: the forensics step does not lead with the cell verdict + runner state' >&2; exit 1; }
+          # (8) the matrix is EXECUTED (the timeline runs the shipped renderer)
+          test -f tests/f37-telescope.test.js || { echo 'F37: the node matrix is missing' >&2; exit 1; }
+          node --test tests/f37-telescope.test.js
+          # (9) STRUCTURAL AUDIT: this lane has no PowerShell interpreter, so the
+          # edited .ps1 surfaces and every workflow PowerShell block are
+          # tokenized and checked for brace/here-string balance and a dangling
+          # catch - the failure class that otherwise costs a whole lab run.
+          test -f tests/ps-balance-audit.py || { echo 'F37: the PowerShell structural audit is missing' >&2; exit 1; }
+          python3 tests/ps-balance-audit.py
+          echo 'F37 gates PASS'
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
   windows-native:
@@ -1863,7 +2106,10 @@ jobs:
       - name: Parse native PowerShell scripts
         shell: pwsh
         run: |
-          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1')) {
+          # [F37] the telescope module + the F31 helpers are parsed here too: a
+          # syntax error in them used to surface only as a red Windows lab cell
+          # (an expensive loop), and the server DOT-SOURCES the module at start.
+          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1')) {
               $errors = $null
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
               if ($errors) { throw "$file has $($errors.Count) PowerShell syntax error(s): $($errors[0].Message)" }
