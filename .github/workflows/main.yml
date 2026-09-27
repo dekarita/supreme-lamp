@@ -1566,6 +1566,12 @@ jobs:
           cp "$GITHUB_WORKSPACE/payloads/ui.html" "$RUNNER_TEMP/ghrdp-stage/ui.html"
           sed -i "s/__BUILD_SHA__/${GITHUB_SHA}/g" "$RUNNER_TEMP/ghrdp-stage/ui.html"
           echo "[ui] ui.html written sha=${GITHUB_SHA}"
+          # [F38 §1] the Sinhala woff2 faces are EMBEDDED in ui.html (data URI, no
+          # CDN, tailnet-offline) AND staged here so GET /fonts/<name>.woff2 on
+          # the existing dashboard server can serve the same bytes.
+          mkdir -p "$RUNNER_TEMP/ghrdp-stage/fonts"
+          cp "$GITHUB_WORKSPACE/payloads/fonts/"*.woff2 "$RUNNER_TEMP/ghrdp-stage/fonts/"
+          echo "[ui] Noto Sans Sinhala woff2 staged ($(ls "$GITHUB_WORKSPACE/payloads/fonts/" | wc -l) files)"
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/explorer.html" "$RUNNER_TEMP/ghrdp-stage/explorer.html"
           echo '[explorer] unified fluent explorer written'

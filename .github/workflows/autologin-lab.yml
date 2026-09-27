@@ -18,6 +18,8 @@ on:
       - payloads/edge-ext-resolve.ps1
       - payloads/ghrdp-cred-shim.js
       - payloads/ui.html
+      - payloads/fonts/**
+      - tests/f38-ui-glass.test.js
       - tests/f27-windows.ps1
       - tests/f27-handoff.test.js
       - tests/f27-copy.test.js
@@ -1883,10 +1885,30 @@ jobs:
           # unpacked into the profile (the extensions-page equivalent for CI).
           . (Join-Path $env:GITHUB_WORKSPACE 'payloads\edge-ext-resolve.ps1')
           . (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-provision-apps.ps1')
-          $ubo = Resolve-StoreExtId -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('gorhill', 'uBlock Origin') -VendorPages @('https://raw.githubusercontent.com/gorhill/uBlock/master/README.md')
-          $dr  = Resolve-StoreExtId -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('darkreader.org', 'Dark Reader') -VendorPages @('https://raw.githubusercontent.com/darkreader/darkreader/main/README.md')
-          $cubo = Resolve-StoreExtId -Store 'cws' -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('uBlock Origin', 'gorhill')
-          $cdr  = Resolve-StoreExtId -Store 'cws' -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('Dark Reader', 'darkreader.org')
+          # [F38] CWS search HTML is often a shell with no detail links (lab
+          # 36316421533: cws uBlock Origin unresolved while Edge resolved). The
+          # vendor README is a live page that carries the store detail URL; retry
+          # once because the store fetch is flaky. IDs stay discovered, never hardcoded.
+          function Resolve-KExt([string]$Store, [string]$Query, [string]$Slug, [string[]]$Markers, [string[]]$VendorPages) {
+              $resolved = $null
+              for ($try = 1; $try -le 2; $try++) {
+                  if ($Store -eq 'cws') {
+                      $resolved = Resolve-StoreExtId -Store 'cws' -Query $Query -Slug $Slug -Markers $Markers -VendorPages $VendorPages
+                  } else {
+                      $resolved = Resolve-StoreExtId -Query $Query -Slug $Slug -Markers $Markers -VendorPages $VendorPages
+                  }
+                  if ($resolved) { break }
+                  Write-Host ('[K] resolve empty ' + $Store + ' ' + $Query + ' try ' + $try + ' - retrying')
+                  Start-Sleep -Seconds 4
+              }
+              return $resolved
+          }
+          $uboPages = @('https://raw.githubusercontent.com/gorhill/uBlock/master/README.md')
+          $drPages = @('https://raw.githubusercontent.com/darkreader/darkreader/main/README.md')
+          $ubo = Resolve-KExt -Store 'edge' -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('gorhill', 'uBlock Origin') -VendorPages $uboPages
+          $dr  = Resolve-KExt -Store 'edge' -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('darkreader.org', 'Dark Reader') -VendorPages $drPages
+          $cubo = Resolve-KExt -Store 'cws' -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('uBlock Origin', 'gorhill') -VendorPages $uboPages
+          $cdr  = Resolve-KExt -Store 'cws' -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('Dark Reader', 'darkreader.org') -VendorPages $drPages
           foreach ($pair in @(@('edge', $ubo, 'uBlock Origin'), @('edge', $dr, 'Dark Reader'), @('cws', $cubo, 'uBlock Origin'), @('cws', $cdr, 'Dark Reader'))) {
               if (-not $pair[1]) { Write-Host ('::error::[K] stage=resolve :: ' + $pair[0] + ' ' + $pair[2] + ' could not be resolved from a live store page'); exit 1 }
           }
@@ -2139,6 +2161,288 @@ jobs:
           Write-Host '[V] (d) PASS: the 30s scan runs in the server process from start (main.yml never mentions it); the page renders the row, the recovery card and the live CREDSSP probe'
           Write-Host '[V] PASS: F28 closed logon-result loop + one-click recovery + closed fallback gap'
           'V_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+      # [F38 §4] UI GLASS LAB PROOF on a real Windows browser cell. Serves the
+      # SHIPPED ui.html (placeholders substituted exactly like main.yml does),
+      # drives the installed Edge headless via playwright-core (no browser
+      # download), and asserts: no horizontal overflow at 1280/1600/1920, the
+      # computed font stack includes Noto Sans Sinhala, a Sinhala sample string
+      # actually RENDERS with the embedded face (document.fonts.check + a
+      # measured width that differs from the fallback), the Comfort/Large text
+      # toggle persists across a reload, the fixed palette passes WCAG AA
+      # contrast on every glass tier, the sprite is present and its <use>
+      # targets resolve, and the existing beacon/ticket/timeline DOM flows
+      # still update (node --test jsdom-style smoke over the shipped sources).
+      # Full-page screenshots at all three widths upload as an artifact.
+      - name: "W: F38 UI glass lab (typography + icons + Sinhala + persisted toggle)"
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          trap {
+              Write-Host ('::error::[W] stage=unhandled :: ' + $_.Exception.GetType().FullName + ' :: ' + $_.Exception.Message)
+              exit 1
+          }
+          function W-Fail([string]$Stage, [string]$Detail) {
+              Write-Host ('::error::[W] stage=' + $Stage + ' :: ' + $Detail)
+              exit 1
+          }
+          $ws = Join-Path $env:RUNNER_TEMP 'f38-ui-lab'
+          New-Item -ItemType Directory -Force -Path $ws | Out-Null
+          # --- (1) serve the SHIPPED page with production-style substitution ----
+          $ui = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ui.html'))
+          $ui = $ui.Replace('__BUILD_SHA__', 'lab-sha-f38').Replace('__IP__', '100.64.0.1').Replace('__USER__', 'labuser').Replace('__TELEGRAPH__', 'https://telegraph.example/lab').Replace('__MIRRORKEY__', 'lab-mirror-key')
+          $uiPath = Join-Path $ws 'ui-live.html'
+          [System.IO.File]::WriteAllText($uiPath, $ui, (New-Object System.Text.UTF8Encoding($false)))
+          # --- (2) the assertion script (playwright-core + installed Edge) ------
+          $lab = @'
+          import { chromium } from 'playwright-core';
+          import fs from 'node:fs';
+          import { execSync } from 'node:child_process';
+          function fail(stage, detail){
+            const msg = '[W] stage=' + stage + ' :: ' + detail;
+            try { fs.writeFileSync('f38-lab-error.txt', msg); } catch (_) {}
+            console.error('::error::' + msg);
+            process.exit(1);
+          }
+          async function fontStatus(page) {
+            // Never return document.fonts / FontFaceSet — Playwright cannot clone it
+            // (run 36314836406 / 36315501075 died here before any screenshot).
+            return await page.evaluate(async () => {
+              try {
+                const ready = document.fonts && document.fonts.ready;
+                if (ready && typeof ready.then === 'function') {
+                  await Promise.race([ready, new Promise(r => setTimeout(r, 2000))]);
+                }
+              } catch (e) {
+                return 'ready-threw:' + String(e && e.message || e);
+              }
+              const status = document.fonts && document.fonts.status;
+              return typeof status === 'string' ? status : 'none';
+            });
+          }
+          const EDGE_CANDIDATES = [
+            'C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe',
+            'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
+          ];
+          let browser = null;
+          try { browser = await chromium.launch({ channel: 'msedge', headless: true, timeout: 60000 }); }
+          catch (e) {
+            const exe = EDGE_CANDIDATES.find(p => fs.existsSync(p));
+            if (!exe) fail('edge-launch', 'no msedge channel or exe: ' + e.message);
+            browser = await chromium.launch({ executablePath: exe, headless: true, timeout: 60000 });
+          }
+          // same palette math as tests/f38-ui-glass.test.js (test<->lab lock)
+          const lin = c => { c /= 255; return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4); };
+          const lum = hex => { const n = hex.replace('#',''); return 0.2126*lin(parseInt(n.slice(0,2),16)) + 0.7152*lin(parseInt(n.slice(2,4),16)) + 0.0722*lin(parseInt(n.slice(4,6),16)); };
+          const ratio = (a,b) => { const [x,y]=[lum(a),lum(b)].sort((p,q)=>q-p); return (x+0.05)/(y+0.05); };
+          const comp = (fg, alpha, bg) => { const p=h=>[0,2,4].map(i=>parseInt(h.replace('#','').slice(i,i+2),16)); const [f,b]=[p(fg),p(bg)]; return '#'+f.map((v,i)=>Math.round(alpha*v+(1-alpha)*b[i]).toString(16).padStart(2,'0')).join(''); };
+          const AURORA = '#22d3ee';
+          const tiers = { bar: comp('#0d1524',0.84,comp('#0a0f1a',0.80,AURORA)), card: comp('#0c1521',0.82,comp('#0d1320',0.76,AURORA)), inset: comp('#05080e',0.74,comp('#070b13',0.68,AURORA)) };
+          const text = { ink:'#e9f1f9', mut:'#a9b9cb', warn:'#fbbf24', bad:'#f87171', ok:'#34d399', acc1:'#22d3ee' };
+          for (const [tier,bg] of Object.entries(tiers)) for (const [k,v] of Object.entries(text)) {
+            const need = k==='acc1' ? 3 : 4.5;
+            if (ratio(v,bg) < need) fail('contrast', tier + '/' + k + ' = ' + ratio(v,bg).toFixed(2) + ' < ' + need);
+          }
+          console.log('[W] (a) PASS: fixed palette passes WCAG AA on bar/card/inset (worst-case aurora composite)');
+          const SIN = 'සිංහල සහය: මෙම පාලක පුවරුව සිංහල අකුරු නිවැරදිව පෙන්වයි';
+          process.on('unhandledRejection', e => { fs.writeFileSync('f38-lab-error.txt', 'unhandledRejection: ' + (e && e.stack || e)); process.exit(1); });
+          process.on('uncaughtException', e => { try { fs.writeFileSync('f38-lab-error.txt', 'uncaughtException: ' + (e && e.stack || e)); } catch (_) {} process.exit(1); });
+          // In-process server on an ephemeral port. Cell P owns 7391 and a
+          // separate Start-Process can exit before listen (run 36316833646:
+          // ERR_CONNECTION_REFUSED, zero screenshots).
+          const http = await import('node:http');
+          const uiFile = 'ui-live.html';
+          if (!fs.existsSync(uiFile)) fail('serve', 'ui-live.html missing in ' + process.cwd());
+          const server = http.createServer((req, res) => {
+            if (req.url === '/' || (req.url && req.url.startsWith('/?'))) {
+              const b = fs.readFileSync(uiFile);
+              res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Content-Length': b.length });
+              res.end(b);
+              return;
+            }
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: false, path: req.url }));
+          });
+          await new Promise((resolve, reject) => {
+            const tm = setTimeout(() => reject(new Error('server listen timeout after 5s')), 5000);
+            server.once('error', err => { clearTimeout(tm); reject(err); });
+            server.listen(0, '127.0.0.1', () => { clearTimeout(tm); resolve(); });
+          });
+          const origin = 'http://127.0.0.1:' + server.address().port + '/';
+          console.log('[W] ui served on ' + origin);
+          const results = {};
+          for (const width of [1280, 1600, 1920]) {
+            const ctx = await browser.newContext({ viewport: { width, height: 900 } });
+            const page = await ctx.newPage();
+            let lastGoto = null;
+            for (let attempt = 1; attempt <= 3; attempt++) {
+              try {
+                await page.goto(origin, { waitUntil: 'domcontentloaded', timeout: 20000 });
+                lastGoto = null;
+                break;
+              } catch (e) {
+                lastGoto = e;
+                console.log('[W] goto attempt ' + attempt + ' failed: ' + (e && e.message || e));
+                await page.waitForTimeout(500);
+              }
+            }
+            if (lastGoto) fail('goto', origin + ' :: ' + (lastGoto && lastGoto.message || lastGoto));
+            const hasToggle = await page.locator('#textScaleToggle').count();
+            if (!hasToggle) fail('page', 'served document is not ui.html (missing #textScaleToggle) url=' + page.url());
+            const fss = await fontStatus(page);
+            console.log('[W] fonts.status@' + width + '=' + fss);
+            await page.waitForTimeout(400);
+            await page.screenshot({ path: 'ui-' + width + '.png', fullPage: false, animations: 'disabled' });
+            const overflowInfo = await page.evaluate(() => {
+              const delta = document.documentElement.scrollWidth - window.innerWidth;
+              let worst = '';
+              if (delta > 1) {
+                let max = 0;
+                const nodes = document.body.querySelectorAll('*');
+                for (let i = 0; i < nodes.length; i++) {
+                  const r = nodes[i].getBoundingClientRect();
+                  if (r.width > 0 && r.right > window.innerWidth + 1 && r.right > max) {
+                    max = r.right;
+                    const id = nodes[i].id ? ('#' + nodes[i].id) : '';
+                    const cls = String(nodes[i].className || '').slice(0, 40);
+                    worst = nodes[i].tagName + id + '.' + cls + ' right=' + Math.round(r.right);
+                  }
+                }
+              }
+              return String(delta) + (worst ? (' worst=' + worst) : '');
+            });
+            const overflow = parseFloat(overflowInfo);
+            if (overflow > 1) fail('overflow', width + 'px viewport: horizontal overflow ' + overflowInfo);
+            const ff = await page.evaluate(() => getComputedStyle(document.body).fontFamily);
+            if (!ff.includes('Noto Sans Sinhala')) fail('font-stack', width + 'px: computed font-family lacks Noto Sans Sinhala: ' + ff);
+            if (width === 1280) {
+              // fonts.check must be given the Sinhala sample: the face is
+              // unicode-range gated (U+0D80-0DFF), so an empty default text
+              // would report false even when the face is loaded and working.
+              const loaded = await page.evaluate(async (t) => {
+                try {
+                  const ready = document.fonts && document.fonts.ready;
+                  if (ready && typeof ready.then === 'function') {
+                    await Promise.race([ready, new Promise(r => setTimeout(r, 2000))]);
+                  }
+                } catch (_) {}
+                const faces = [];
+                if (document.fonts && document.fonts.forEach) {
+                  document.fonts.forEach(f => faces.push(String(f.family) + '=' + String(f.status)));
+                }
+                const check = !!(document.fonts && document.fonts.check("18px 'Noto Sans Sinhala'", t));
+                return { check, faces: faces.join('|') };
+              }, SIN);
+              if (!loaded.check) fail('sinhala-font', "document.fonts.check('Noto Sans Sinhala', sample) is false; faces=" + loaded.faces);
+              const widths = await page.evaluate((t) => {
+                const mk = f => { const s=document.createElement('span'); s.textContent=t; s.style.cssText='position:absolute;visibility:hidden;font-size:18px;font-family:'+f; document.body.appendChild(s); const w=s.getBoundingClientRect().width; s.remove(); return w; };
+                return { noto: mk("'Noto Sans Sinhala'"), mono: mk('monospace'), plain: mk('sans-serif') };
+              }, SIN);
+              if (!(widths.noto > 0)) fail('sinhala-render', 'sample measures width 0');
+              if (Math.abs(widths.noto - widths.mono) < 0.5 || Math.abs(widths.noto - widths.plain) < 0.01)
+                fail('sinhala-render', 'sample does not measure like the Sinhala face (noto=' + widths.noto + ' mono=' + widths.mono + ' plain=' + widths.plain + ')');
+              console.log('[W] (c) PASS: Sinhala sample renders with the embedded Noto Sans Sinhala face (width ' + widths.noto.toFixed(1) + 'px, differs from fallbacks)');
+              // toggle: comfort -> large, persisted across reload
+              const before = await page.evaluate(() => document.documentElement.getAttribute('data-text'));
+              if (before !== 'comfort') fail('toggle-init', 'initial data-text=' + before);
+              await page.click('#textScaleToggle');
+              const after = await page.evaluate(() => ({ t: document.documentElement.getAttribute('data-text'), ls: localStorage.getItem('ghrdp:textScale') }));
+              if (after.t !== 'large' || after.ls !== 'large') fail('toggle-click', JSON.stringify(after));
+              await page.reload({ waitUntil: 'domcontentloaded' });
+              await fontStatus(page);
+              const persisted = await page.evaluate(() => ({ t: document.documentElement.getAttribute('data-text'), fs: getComputedStyle(document.documentElement).fontSize }));
+              if (persisted.t !== 'large' || persisted.fs !== '21px') fail('toggle-persist', JSON.stringify(persisted));
+              console.log('[W] (d) PASS: Large text toggle persists across reload (html font-size 21px)');
+              await page.click('#textScaleToggle'); // back to comfort for the screenshots
+              const back = await page.evaluate(() => getComputedStyle(document.documentElement).fontSize);
+              if (back !== '18px') fail('toggle-back', 'comfort font-size=' + back);
+              // sprite: present, referenced, no emoji in rendered text
+              const sprite = await page.evaluate(() => ({
+                symbols: document.querySelectorAll('symbol[id^="i-"]').length,
+                uses: document.querySelectorAll('svg.ic use').length,
+                emoji: /[\u{2705}\u{274C}\u{26A0}]/u.test(document.body.innerText),
+              }));
+              if (sprite.symbols < 20 || sprite.uses < 10) fail('sprite', JSON.stringify(sprite));
+              if (sprite.emoji) fail('sprite-emoji', 'rendered text still contains emoji glyphs');
+              console.log('[W] (e) PASS: sprite present (' + sprite.symbols + ' symbols, ' + sprite.uses + ' uses) and no emoji in rendered text');
+            }
+            results[width] = true;
+            await ctx.close();
+            console.log('[W] screenshot ui-' + width + '.png captured (no horizontal overflow, stack ok)');
+          }
+          if (Object.keys(results).length !== 3) fail('screenshots', 'expected 3 widths, got ' + Object.keys(results).length);
+          await browser.close();
+          server.close();
+          console.log('[W] (b) PASS: 1280/1600/1920 - no horizontal overflow, computed stack includes Noto Sans Sinhala');
+          console.log('::notice::[W] phase=f38-ui ok screenshots=3 toggle=persisted sinhala=rendered contrast=aa sprite=present');
+          process.exit(0);
+          '@
+          $labPath = Join-Path $ws 'f38-lab.mjs'
+          [System.IO.File]::WriteAllText($labPath, $lab, (New-Object System.Text.UTF8Encoding($false)))
+          # --- (3) deps, server, run ------------------------------------------------
+          Push-Location $ws
+          try {
+            $pkg = '{"name":"f38-ui-lab","private":true,"type":"module"}'
+            [System.IO.File]::WriteAllText((Join-Path $ws 'package.json'), $pkg, (New-Object System.Text.UTF8Encoding($false)))
+            npm install playwright-core --no-audit --no-fund --loglevel=error 2>&1 | ForEach-Object { Write-Host "[W] npm: $_" }
+            if ($LASTEXITCODE -ne 0) { W-Fail 'npm' 'playwright-core install failed' }
+            # The lab script binds its own ephemeral port and serves ui-live.html.
+            # Do not reuse 7391: cell P's hello-listener owns that port.
+            $outFile = Join-Path $ws 'f38-lab-out.txt'
+            $errFile = Join-Path $ws 'f38-lab-err.txt'
+            $p = Start-Process -FilePath 'node' -ArgumentList $labPath -WorkingDirectory $ws -RedirectStandardOutput $outFile -RedirectStandardError $errFile -PassThru -NoNewWindow
+            if (-not $p.WaitForExit(240000)) {
+              try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch { }
+              [System.IO.File]::WriteAllText((Join-Path $ws 'f38-lab-error.txt'), '[W] stage=timeout :: node f38-lab.mjs exceeded 240s')
+              if (Test-Path -LiteralPath $outFile) { Get-Content $outFile | ForEach-Object { Write-Host $_ } }
+              if (Test-Path -LiteralPath $errFile) { Get-Content $errFile | ForEach-Object { Write-Host $_ } }
+              W-Fail 'timeout' 'node f38-lab.mjs exceeded 240s'
+            }
+            if (Test-Path -LiteralPath $outFile) { Get-Content $outFile | ForEach-Object { Write-Host $_ } }
+            if (Test-Path -LiteralPath $errFile) { Get-Content $errFile | ForEach-Object { Write-Host $_ } }
+            if ($p.ExitCode -ne 0) {
+              $errFileTxt = Join-Path $ws 'f38-lab-error.txt'
+              $extra = ''
+              if (Test-Path -LiteralPath $errFileTxt) { $extra = ' :: ' + (([System.IO.File]::ReadAllText($errFileTxt)) -replace "`r?`n", ' / ') }
+              W-Fail 'lab-script' ("node f38-lab.mjs exited " + $p.ExitCode + $extra)
+            }
+          } finally { Pop-Location }
+          # --- (4) jsdom-style smoke: the existing beacon/ticket DOM flows ---------
+          Push-Location $env:GITHUB_WORKSPACE
+          try {
+            $nodeLog = Join-Path $ws 'f38-lab-nodetest.txt'
+            node --test tests/f27-handoff.test.js tests/f28-logon-recovery.test.js tests/f31c-live-dispatch.test.js tests/ui-native.test.js tests/f37-telescope.test.js tests/f38-ui-glass.test.js 2>&1 | Tee-Object -FilePath $nodeLog | Select-Object -Last 6 | ForEach-Object { Write-Host "[W] node: $_" }
+            $nodeRc = $LASTEXITCODE
+            if ($nodeRc -ne 0) {
+              # The runner log is fetched from blob storage; surface the failing test
+              # NAMES + first errors as an annotation so a red dom-smoke is
+              # diagnosable from the API alone (the full TAP lives in
+              # f38-lab-nodetest.txt inside the f38-ui-screenshots artifact).
+              $names = @(); $detail = @()
+              if (Test-Path -LiteralPath $nodeLog) {
+                $names = @(Select-String -Path $nodeLog -Pattern '^not ok \d+ - (.+)$' | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -First 5)
+                $detail = @(Select-String -Path $nodeLog -Pattern "^  error: '(.+)'" | ForEach-Object { $_.Matches[0].Groups[1].Value } | Select-Object -First 3)
+              }
+              $uiRaw = [System.IO.File]::ReadAllText((Join-Path $env:GITHUB_WORKSPACE 'payloads\ui.html'))
+              $crlf = ([regex]::Matches($uiRaw, "`r`n")).Count
+              Write-Host ('::error::[W] node-fail rc=' + $nodeRc + ' ui.html-crlf=' + $crlf + ' :: ' + (($names + $detail) -join ' | '))
+              W-Fail 'dom-smoke' ('existing beacon/ticket flows regressed (node --test failed): ' + ($names -join ', '))
+            }
+          } finally { Pop-Location }
+          Write-Host '[W] PASS: shipped ui.html proves glass typography + icons + Sinhala + persisted Large toggle on a real browser'
+          'W_result=pass' | Out-File $env:GITHUB_ENV -Append -Encoding ascii
+      - name: "W diagnostics artifact (survives halts)"
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: f38-ui-screenshots
+          path: |
+            ${{ runner.temp }}/f38-ui-lab/*.png
+            ${{ runner.temp }}/f38-ui-lab/f38-lab-error.txt
+            ${{ runner.temp }}/f38-ui-lab/f38-lab-out.txt
+            ${{ runner.temp }}/f38-ui-lab/f38-lab-err.txt
+            ${{ runner.temp }}/f38-ui-lab/f38-lab-nodetest.txt
+          if-no-files-found: warn
       # [F30] TLS/CIPHER HANDSHAKE FIX + CREDENTIAL TYPE NORMALIZATION + STALE
       # ENTRY PURGE - the five lab cells the F30 spec names, proven on a real
       # Windows host: (a) cipher-suite ORDER verified, (b) TLS 1.2/1.3 registry
@@ -2505,11 +2809,12 @@ jobs:
           ('| (v) logon-result loop + one-click recovery + fallback gap (F28) | ' + $(if ($env:V_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED ghrdp-server.ps1 scanner driven with synthetic events (4625 0xC000006A => failed+sub+eventTs, newer type-10 4624 => success, empty window => none, probe error => named, console/type-3 + pre-window ignored, scanTs stamped on EVERY path, verdict carries no identity field); SHIPPED launcher compiled by the in-box csc runs --fallback-selftest 4/4 (stored=false + failed retry => native-prompt + fallback-mstsc-native-prompt beacon, zero mstsc/cmdkey calls); shipped page renderer executed through the node matrix (LAST RDP LOGON result+sub+eventTs+scanTs verbatim, RED collector-dead, recovery card ONLY for 0xC000006A inside 120s of mstsc-started, FIX & RECONNECT mints a ticket then fires ghrdp://recred with t only, CREDSSP live probe + stamp); the 30s scan tick lives in the server process from start and main.yml never mentions it. The physical click-through stays PENDING-USER |') | Add-Content -Path $S
           ('| (x) TLS/cipher handshake fix + purge + conn log (F30) | ' + $(if ($env:X_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml normalization block: fixture-driven order verdict (CBC/3DES-first rejected, GCM/ChaCha20 moved to the front in the declared order) + REAL run on the runner (Schannel Functions list rewritten and re-read, TLS 1.2 AND 1.3 Enabled=1/DisabledByDefault=0 on Client+Server, RDP-Tcp SecurityLayer=2/MinEncryptionLevel=3); SHIPPED launcher compiled by the in-box csc runs --purge-selftest against the REAL credential store (planted LegacyGeneric type-1 + Domain type-2 pair both PURGED, fresh entry written as DomainPassword, zero mstsc/cmdkey); .rdp written from the shipped 19-directive template is > 400 bytes with the read-back assert before the launch; EXTRACTED conn-log collector driven with synthetic events (tls-forcibly-closed / auth-succeeded / cert-rejected / connection-reset, credential-shaped text redacted) and the resulting sample rendered into the SERVER CONN LOG row by the shipped page. What stays PENDING-USER is only the physical click-through (fullscreen session) |') | Add-Content -Path $S
           ('| (y) token diagnostic + live dispatch matrix (F31c) | ' + $(if ($env:Y_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | EXTRACTED main.yml token-diagnostic block: simulated git push --dry-run failure exits 1 with the Arena reconnect + Windows Credential Manager message (no token printed); success dry-run confirms push access; SHIPPED card renders "36870 present" + key ACL dump hint for a connLog fixture and ALL GREEN when the 5 checks pass. Fullscreen stays PENDING-USER |') | Add-Content -Path $S
+          ('| (w) liquid-glass UI + Sinhala + persisted Large toggle (F38) | ' + $(if ($env:W_result -eq 'pass') {'**PASS (lab)**'} else {'FAIL'}) + ' | shipped ui.html on installed Edge: screenshots 1280/1600/1920, no horizontal overflow, computed stack includes Noto Sans Sinhala, Sinhala sample width > 0, Comfort/Large persisted, WCAG AA palette, Lucide sprite, beacon/ticket DOM smoke. UI reaches live runners only on the next main.yml dispatch. |') | Add-Content -Path $S
           ('| (k) no console window in the interactive session | **contract PASS** | every host-helper launch is -WindowStyle Hidden (or NoNewWindow for the user-driven terminal exec) and the long-lived services are SYSTEM scheduled tasks; launch-gates F11-5.3 enforces it. Visual confirmation on the first physical RDP session = PENDING-USER |') | Add-Content -Path $S
           # [F10-19] ::notice:: lines make the whole matrix + the live-resolved
           # ids readable from the Checks API (runner logs are not always
           # retrievable), so the PR/verify evidence does not depend on the log UI.
-          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'}) + ' t=' + $(if ($env:T_result -eq 'pass') {'pass'} else {'fail'}) + ' u=' + $(if ($env:U_result -eq 'pass') {'pass'} else {'fail'}) + ' v=' + $(if ($env:V_result -eq 'pass') {'pass'} else {'fail'}) + ' x=' + $(if ($env:X_result -eq 'pass') {'pass'} else {'fail'}) + ' y=' + $(if ($env:Y_result -eq 'pass') {'pass'} else {'fail'}) + ' z=' + $(if ($env:Z_result -eq 'pass') {'pass'} else {'fail'})
+          $cells = 'k2=' + $(if ($env:K_result -eq 'pass') {'pass'} else {'fail'}) + ' l=' + $(if ($env:L_result -eq 'pass') {'pass'} else {'fail'}) + ' m=' + $(if ($env:M_result -eq 'pass') {'pass'} else {'fail'}) + ' n=' + $(if ($env:N_result -eq 'pass') {'pass'} else {'fail'}) + ' o=' + $(if ($env:O_result -eq 'pass') {'pass'} else {'fail'}) + ' ' + 'a=' + $(if ($env:A_result -eq 'pass') {'pass'} else {'fail'}) + ' b_c=' + $(if ($env:BC_result -eq 'pass') {'pass'} else {'fail'}) + ' d_e=' + $(if ($env:DE_result -eq 'pass') {'pass'} else {'fail'}) + ' f=' + $(if ($env:F_result -eq 'pass') {'pass'} else {'fail'}) + ' h=' + $(if ($env:H_result -eq 'pass') {'pass'} else {'fail'}) + ' i=' + $(if ($env:I_result -eq 'pass') {'pass'} else {'fail'}) + ' j=' + $(if ($env:J_result -eq 'pass') {'pass'} else {'fail'}) + ' p=' + $(if ($env:P_result -eq 'pass') {'pass'} else {'fail'}) + ' r=' + $(if ($env:R_result -eq 'pass') {'pass'} else {'fail'}) + ' s=' + $(if ($env:S_result -eq 'pass') {'pass'} else {'fail'}) + ' t=' + $(if ($env:T_result -eq 'pass') {'pass'} else {'fail'}) + ' u=' + $(if ($env:U_result -eq 'pass') {'pass'} else {'fail'}) + ' v=' + $(if ($env:V_result -eq 'pass') {'pass'} else {'fail'}) + ' x=' + $(if ($env:X_result -eq 'pass') {'pass'} else {'fail'}) + ' y=' + $(if ($env:Y_result -eq 'pass') {'pass'} else {'fail'}) + ' z=' + $(if ($env:Z_result -eq 'pass') {'pass'} else {'fail'}) + ' w=' + $(if ($env:W_result -eq 'pass') {'pass'} else {'fail'})
           Write-Host ('::notice::[G] lab matrix (autologin-lab fallback) ' + $cells)
           # [F19] Evidence notices must carry the CELL RESULT they belong to:
           # before this, every notice claimed its achievement even when the cell
@@ -2531,6 +2836,7 @@ jobs:
           Nt 'U' 'U_result' 'F24: SAM credential fixture (valid => true, stale => false), 4625 collector parse (6A/6D => credential-mismatch, 15B => logon-type-denied, 4624-only => none, F27 target account only), three-branch renderer matrix + CAPI2/System copy-lines'
           Nt 'V' 'V_result' 'F28: server-side 30s logon scan (failed/sub/eventTs/scanTs from synthetic events, always stamped), closed fallback gap (stored=false => retry once => native prompt + beacon, nothing launched), one-click recovery (ticket -> ghrdp://recred -> CredWrite overwrite) and the CREDSSP live-probe row'
           Nt 'Y' 'Y_result' 'F31c: token diagnostic dry-run failure exits 1 with the reconnect message; 36870 fixture renders present + key ACL dump hint; all-pass fixture renders all green'
+          Nt 'W' 'W_result' 'F38: glass UI screenshots 1280/1600/1920, Noto Sans Sinhala rendered, Large toggle persisted, no overflow, sprite present'
           Nt 'K' 'K_result' 'browser policies: live-resolved ids -> forcelist readback -> Edge unpacked the forced extensions'
           Nt 'L' 'L_result' 'qBittorrent default handler: .torrent + magnet wired to the plain app, readback ok'
           Nt 'G' 'F_result' ('uBlock Origin=' + $env:F_ubo)
