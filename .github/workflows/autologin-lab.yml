@@ -526,7 +526,7 @@ jobs:
           # Schannel RSTs server certs without ServerAuth EKU (rst-before-cert),
           # which was the red-without-why bind-effectiveness class.
           try {
-              $lc = New-SelfSignedCertificate -DnsName $fqdn, 'localhost', $env:COMPUTERNAME -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(2) -KeySpec KeyExchange -KeyLength 2048 -KeyExportPolicy Exportable -KeyUsage DigitalSignature, KeyEncipherment -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.1')
+              $lc = New-SelfSignedCertificate -DnsName $fqdn, 'localhost', $env:COMPUTERNAME -CertStoreLocation 'Cert:\LocalMachine\My' -NotAfter (Get-Date).AddDays(2) -KeyLength 2048 -KeyExportPolicy Exportable -KeyUsage DigitalSignature, KeyEncipherment -TextExtension @('2.5.29.37={text}1.3.6.1.5.5.7.3.1')
           } catch { R-Fail 'cert-create' ('lab EKU/SAN cert creation threw: ' + $_.Exception.Message) }
           if (-not $lc -or -not $lc.Thumbprint) { R-Fail 'cert-create' 'lab cert object empty after New-SelfSignedCertificate' }
           Write-Host '::notice::[R] ckpt cert-ok'
