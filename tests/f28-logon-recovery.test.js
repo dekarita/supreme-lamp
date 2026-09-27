@@ -226,7 +226,10 @@ test('F28-2 FIX & RECONNECT mints a ticket then fires ghrdp://recred with ONLY t
     $: id => els[id], FQDN_RE: /\.ts\.net$/, getKey: () => 'fixture-bearer', apiBase: () => '',
     window: {}, encodeURIComponent, Date,
     fetch: async (url, opt) => { requests.push({ url, opt }); return { ok: true, status: 200, json: async () => ({ rid: 'b'.repeat(32), ttl: 60 }) }; },
-    launchProto: u => launch.push(u)
+    launchProto: u => launch.push(u),
+    // [F37 §3] the click mints a trace id via traceParam(); an empty trace keeps
+    // the pinned recred URL byte-identical, so the F28 contract is unchanged.
+    traceParam: () => ''
   };
   vm.createContext(ctx);
   const src = a => html.slice(html.indexOf(a), html.indexOf(a.replace('begin', 'end')));

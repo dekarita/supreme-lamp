@@ -66,34 +66,20 @@ try { if (-not $chain.Build($loaded)) { throw 'Tailscale LE certificate chain is
 finally { $chain.Dispose() }
 # Re-export/import to persist the key with MachineKeySet + PersistKeySet.
 $pfxBytes = $loaded.Export('Pfx', [string]::Empty)
-$flags = 'PersistKeySet,MachineKeySet'
+$flags = 'PersistKeySet,MachineKeySet,Exportable'
+# The in-memory PEM key must survive the PFX round-trip into the machine store.
 $imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, [string]::Empty, $flags)
 
 $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
 try { $store.Open('ReadWrite'); $store.Add($imported) }
 finally { $store.Close() }
+if (-not $imported.HasPrivateKey) { throw 'Re-imported certificate lacks a private key' }
 $thumb = $imported.Thumbprint
 Write-Host "Imported thumbprint: $thumb"
 
-# --- 5. Grant NETWORK SERVICE read on the actual persisted key container -----
-$privateKey = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported)
-if (-not $privateKey) {
-    $privateKey = [System.Security.Cryptography.X509Certificates.ECDsaCertificateExtensions]::GetECDsaPrivateKey($imported)
-}
-if ($privateKey -is [System.Security.Cryptography.RSACng] -or
-    $privateKey -is [System.Security.Cryptography.ECDsaCng]) {
-    $keyFile = Join-Path (Join-Path $env:ProgramData 'Microsoft\Crypto\Keys') $privateKey.Key.UniqueName
-} elseif ($privateKey -is [System.Security.Cryptography.RSACryptoServiceProvider]) {
-    $keyFile = Join-Path (Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys') $privateKey.CspKeyContainerInfo.UniqueKeyContainerName
-} else { throw 'Imported certificate private key has no supported machine key container.' }
-if (-not (Test-Path -LiteralPath $keyFile)) { throw 'Persisted machine key not found; refusing to bind an unreadable RDP certificate.' }
-$keyAcl = Get-Acl -LiteralPath $keyFile -ErrorAction Stop
-$keyAcl.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new(
-    [System.Security.Principal.SecurityIdentifier]::new('S-1-5-20'),
-    [System.Security.AccessControl.FileSystemRights]::Read,
-    [System.Security.AccessControl.AccessControlType]::Allow))
-Set-Acl -LiteralPath $keyFile -AclObject $keyAcl -ErrorAction Stop
-Write-Host 'NETWORK SERVICE can read the listener private key'
+# --- 5. Grant and verify the ACL on the actual persisted key container ------
+$keyFile = & (Join-Path $PSScriptRoot 'Grant-RdpKeyAccess.ps1') -Certificate $imported
+Write-Host "NETWORK SERVICE Read + SYSTEM FullControl verified: $keyFile"
 
 # --- 6. Bind on RDP-Tcp listener ------------------------------------------------
 $tsSetting = Get-CimInstance -Namespace 'root/cimv2/TerminalServices' `
@@ -114,7 +100,7 @@ if ($boundHex -ne $thumb) { throw "bind verification failed: registry=$boundHex,
 $nlaAfter = (Get-ItemProperty -Path $rdpKey -Name 'UserAuthentication').UserAuthentication
 if ($nlaAfter -ne 1) { throw "NLA flipped to $nlaAfter during operation; aborting." }
 
-Write-Host "OK: NLA=1, cert $thumb bound on RDP-Tcp for $Fqdn."
-Write-Host "Restart TermService for the new cert to take effect:"
-Write-Host "  Restart-Service TermService -Force"
-Write-Host "(Kicks any active session; schedule during a maintenance window.)"
+Restart-Service TermService -Force -ErrorAction Stop
+if ((Get-Service TermService -ErrorAction Stop).Status -ne 'Running') { throw 'TermService restart failed' }
+& (Join-Path $PSScriptRoot 'Test-RdpListenerHandshake.ps1') -Fqdn $Fqdn -ExpectedThumb $thumb -KeyFile $keyFile
+Write-Host "OK: NLA=1, NETWORK SERVICE ACL verified, listener-handshake-ok, served==bound=$thumb."

@@ -707,28 +707,23 @@ jobs:
           $thumb = ''
           try {
               $loaded = [System.Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile($crtPath, $keyPath)
+              if (-not $loaded.HasPrivateKey) { throw 'PEM has no private key' }
               $pfxBytes = $loaded.Export('Pfx', [string]::Empty)
-              $flags = 'PersistKeySet,MachineKeySet,Exportable'
+              $flags = [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::MachineKeySet -bor
+                       [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::PersistKeySet -bor
+                       [System.Security.Cryptography.X509Certificates.X509KeyStorageFlags]::Exportable
               $imported = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($pfxBytes, [string]::Empty, $flags)
+              if (-not $imported.HasPrivateKey) { throw 're-imported certificate has no private key' }
               $store = New-Object System.Security.Cryptography.X509Certificates.X509Store('My', 'LocalMachine')
-              $store.Open('ReadWrite')
-              foreach ($old in @($store.Certificates | Where-Object { $_.Subject -match [regex]::Escape($fqdn) })) { $store.Remove($old) }
-              $store.Add($imported)
-              $store.Close()
-              $thumb = $imported.Thumbprint
               try {
-                  $rsa = [System.Security.Cryptography.X509Certificates.RSACertificateExtensions]::GetRSAPrivateKey($imported)
-                  if ($rsa -and $rsa.Key -and $rsa.Key.UniqueName) {
-                      $machineKeys = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
-                      $keyFile = Join-Path $machineKeys $rsa.Key.UniqueName
-                      if (Test-Path -LiteralPath $keyFile) {
-                          $acl = Get-Acl -Path $keyFile
-                          $rule = New-Object System.Security.AccessControl.FileSystemAccessRule('NT AUTHORITY\NETWORK SERVICE', 'Read', 'Allow')
-                          $acl.AddAccessRule($rule)
-                          Set-Acl -Path $keyFile -AclObject $acl
-                      }
-                  }
-              } catch { Write-Host ('[cert] key ACL step skipped: ' + $_.Exception.Message) }
+                  $store.Open('ReadWrite')
+                  $store.Add($imported)
+              } finally { $store.Close() }
+              $thumb = $imported.Thumbprint
+              # [F31] Resolve the actual persisted container, not an assumed RSA\MachineKeys path.
+              # Throws on missing file, failed write or missing readback ACE; never bind a broken key.
+              $keyFile = & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Grant-RdpKeyAccess.ps1') -Certificate $imported
+              Write-Host ('[cert] NETWORK SERVICE Read + SYSTEM FullControl verified; container=' + $keyFile)
           } catch {
               # [F12-2] fail-closed: an import failure used to exit 0 and leave
               # certBound = NO on a green run.
@@ -758,9 +753,11 @@ jobs:
           $boundHex = ''
           try { $bound = (Get-ItemProperty -Path $rdpKey -Name 'SSLCertificateSHA1Hash' -ErrorAction Stop).SSLCertificateSHA1Hash; $boundHex = ($bound | ForEach-Object { $_.ToString('X2') }) -join '' } catch { }
           if ($boundHex -ieq $thumb) {
-              Write-Host ('[cert] OK: cert ' + $thumb + ' bound on RDP-Tcp; NLA=1')
-              try { Restart-Service TermService -Force -ErrorAction SilentlyContinue; Write-Host '[cert] TermService restarted' } catch { }
-              if ($S) { '### RDP cert bind OK' | Add-Content -Path $S; ('Thumbprint: `' + $thumb + '`') | Add-Content -Path $S }
+              if ((Get-ItemProperty -Path $rdpKey -Name 'UserAuthentication' -ErrorAction Stop).UserAuthentication -ne 1) { throw 'NLA changed after cert binding' }
+              Restart-Service TermService -Force -ErrorAction Stop
+              if ((Get-Service TermService -ErrorAction Stop).Status -ne 'Running') { throw 'TermService failed to restart' }
+              Write-Host ('[cert] OK: cert ' + $thumb + ' bound on RDP-Tcp; NLA=1; TermService restarted')
+              if ($S) { '### RDP cert bind OK (ACL verified; handshake pending F17)' | Add-Content -Path $S; ('Thumbprint: `' + $thumb + '`') | Add-Content -Path $S }
           } else {
               # [F12-2] A verification mismatch is a FAILED bind, not a notice:
               # the old branch wrote a summary line and exited 0, which is how a
@@ -1561,6 +1558,10 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-server.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-server.ps1"
           echo '[ps-server] ghrdp-server.ps1 written'
+          # [F37 §4] the telescope module must be deployed NEXT TO the server:
+          # the 60s tick dot-sources it (single source of truth for the format).
+          cp "$GITHUB_WORKSPACE/payloads/rdp-telescope.ps1" "$RUNNER_TEMP/ghrdp-stage/rdp-telescope.ps1"
+          echo '[telescope] rdp-telescope.ps1 written'
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ui.html" "$RUNNER_TEMP/ghrdp-stage/ui.html"
           sed -i "s/__BUILD_SHA__/${GITHUB_SHA}/g" "$RUNNER_TEMP/ghrdp-stage/ui.html"
@@ -2006,6 +2007,41 @@ jobs:
           # (5) nla: UserAuthentication == 1 on RDP-Tcp
           $nla = $false
           try { $nla = ((Get-ItemProperty -Path $rdpKeyF17 -Name 'UserAuthentication' -ErrorAction Stop).UserAuthentication -eq 1) } catch { $nla = $false }
+          # [F31] TCP-open is not enough: prove X.224 negotiation AND TLS serves the bound cert.
+          $listenerHandshakeOk = $false; $listenerHandshakeWhy = ''
+          if ($certThumb -and $certOk -and $listening) {
+              try {
+                  $keyF17 = & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Grant-RdpKeyAccess.ps1') -Certificate $boundF17 -VerifyOnly
+                  & (Join-Path $env:GITHUB_WORKSPACE 'payloads/Test-RdpListenerHandshake.ps1') -Fqdn $dnsName -ExpectedThumb $certThumb -KeyFile $keyF17
+                  $listenerHandshakeOk = $true
+                  Write-Host '[F31] listener-handshake-ok: served==bound; X.224+TLS completed'
+              } catch { $listenerHandshakeWhy = $_.Exception.Message; Write-Host ('::error::[F31] listener handshake failed: ' + $listenerHandshakeWhy) }
+          } else { $listenerHandshakeWhy = 'no listening listener or valid bound certificate' }
+          # [F37 §1] TELESCOPE: the SAME stages the client and the live runner
+          # observe, emitted as one JSON line per stage (dns/tcp/tls/cred/
+          # listener/schannel/logon). It runs INSIDE this probe, so the lab cell
+          # (which extracts this block VERBATIM) exercises the production path,
+          # and a red probe always ships its own explanation: step summary +
+          # config rdpListener.telescope + artifact. Never a password: the module
+          # reads handshake metadata only (thumbprints, chain status, ACL SIDs,
+          # event ids).
+          $f37TelLines = @()
+          $f37TelFields = $null
+          try {
+              . (Join-Path $env:GITHUB_WORKSPACE 'payloads/rdp-telescope.ps1')
+              $f37Tel = Invoke-RdpTelescope -Fqdn $dnsName -Src 'live' -Local -Ip '127.0.0.1' -ExpectedThumb $certThumb -SkipLogon
+              $f37TelLines = @($f37Tel.lines)
+              $f37TelFields = Get-RdpTelescopeFields -Telescope $f37Tel
+              Write-RdpTelescopeSummary -Telescope $f37Tel -Title 'F37 telescope (live runner, listener face)' -SummaryPath $S | Out-Null
+              $f37ArtDir = $root
+              if ($env:GITHUB_WORKSPACE) { $f37ArtDir = Join-Path $env:GITHUB_WORKSPACE 'rdp-diag' }
+              Write-RdpTelescopeLines -Telescope $f37Tel -Path (Join-Path $f37ArtDir 'rdp-telescope.jsonl')
+              Write-Host ('[F37] telescope: deathPoint=' + $f37Tel.deathPoint + ' bound=' + $f37TelFields.boundThumb + ' served=' + $f37TelFields.servedThumb + ' aclRead=' + $f37TelFields.aclRead + ' schannel=[' + ($f37TelFields.schannelTail -join ',') + ']')
+          } catch {
+              $f37TelLines = @(([ordered]@{ ts = (Get-Date).ToUniversalTime().ToString('o'); trace = ''; src = 'live'; stage = 'telescope'; ok = $false; why = ('telescope failed: ' + $_.Exception.Message) } | ConvertTo-Json -Compress))
+              if ($S) { ('- ❌ F37 telescope failed: ' + $_.Exception.Message) | Add-Content -Path $S }
+              Write-Host ('::warning::[F37] telescope failed: ' + $_.Exception.Message)
+          }
           # Write rdpListener BEFORE any loud fail: the dashboard must see the
           # exact failing field even on a red run.
           $rdpListener = [ordered]@{
@@ -2023,8 +2059,30 @@ jobs:
               certChainStatus = $certChainStatus
               certOk = $certOk
               certWhy = $certWhy
+              listenerHandshakeOk = $listenerHandshakeOk
+              listenerHandshakeWhy = $listenerHandshakeWhy
+              # [F37 §1/§4] the telescope stamp: every stage as one JSONL line +
+              # the derived bind facts the dashboard timeline and the SERVER CONN
+              # LOG row render (boundThumb vs servedThumb, aclSids, schannel
+              # tail, deathPoint). Derived by the MODULE, never here.
+              telescope = [ordered]@{
+                  ts = (Get-Date).ToUniversalTime().ToString('o')
+                  src = 'live'
+                  trace = $(if ($f37TelFields) { [string]$f37TelFields.trace } else { '' })
+                  deathPoint = $(if ($f37TelFields) { [string]$f37TelFields.deathPoint } else { 'none' })
+                  boundThumb = $(if ($f37TelFields) { [string]$f37TelFields.boundThumb } else { '' })
+                  servedThumb = $(if ($f37TelFields) { [string]$f37TelFields.servedThumb } else { '' })
+                  serving = $(if ($f37TelFields) { [bool]$f37TelFields.serving } else { $false })
+                  bindDrift = $(if ($f37TelFields) { [bool]$f37TelFields.bindDrift } else { $false })
+                  aclRead = $(if ($f37TelFields) { [bool]$f37TelFields.aclRead } else { $false })
+                  aclSids = $(if ($f37TelFields) { @($f37TelFields.aclSids) } else { @() })
+                  container = $(if ($f37TelFields) { [string]$f37TelFields.container } else { '' })
+                  schannelTail = $(if ($f37TelFields) { @($f37TelFields.schannelTail) } else { @() })
+                  schannelWhy = $(if ($f37TelFields) { [string]$f37TelFields.schannelWhy } else { '' })
+                  lines = @($f37TelLines)
+              }
               nla = $nla
-              ok = ($listening -and $fwRuleOk -and $certOk)
+              ok = ($listening -and $fwRuleOk -and $certOk -and $listenerHandshakeOk)
           }
           # [F24 §3b] PRESERVE the auth-verdict fields across this rebuild. The
           # F21 step runs EARLIER and stamps credsspStatus onto rdpListener, but
@@ -2038,7 +2096,7 @@ jobs:
                   $cfgPrevF24 = [System.IO.File]::ReadAllText($cfgPathF17) | ConvertFrom-Json
                   if ($cfgPrevF24 -and $cfgPrevF24.PSObject.Properties['rdpListener'] -and $cfgPrevF24.rdpListener) {
                       $prevL = $cfgPrevF24.rdpListener
-                      foreach ($k in @('credsspStatus', 'credsspWhy', 'credValid', 'credValidAt', 'credValidWhy', 'credValidProbeError', 'authEvents')) {
+                      foreach ($k in @('credsspStatus', 'credsspWhy', 'credValid', 'credValidAt', 'credValidWhy', 'credValidProbeError', 'authEvents', 'telescope')) {
                           if ($prevL.PSObject.Properties[$k]) { $rdpListener[$k] = $prevL.$k }
                       }
                   }
@@ -2058,6 +2116,7 @@ jobs:
           if (-not $listening) { $dead += 'listening=false (nothing accepted TCP 127.0.0.1:3389; TermService=' + $termStatus + ')' }
           if (-not $fwRuleOk) { $dead += 'fwRule=false (enabled/Any/100.64.0.0/10 not verified; scope=' + $fwScope + ' profile=' + $fwProfiles + '; ' + $fwWhy + ')' }
           if (-not $certOk) { $dead += 'certThumb invalid (' + $certWhy + ')' }
+          if (-not $listenerHandshakeOk) { $dead += 'listenerHandshakeOk=false (' + $listenerHandshakeWhy + ')' }
           if ($dead.Count -gt 0) {
               Write-Host ('::error::[F17] RDP listener probe FAILED: ' + ($dead -join ' | '))
               if ($S) {
@@ -2071,6 +2130,15 @@ jobs:
           exit 0
           # [F17 §1 probe-end] (marker last: the lab cell extracts the COMPLETE
           # step body verbatim)
+
+      - name: F37 telescope artifact (survives halts)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rdp-telescope
+          if-no-files-found: warn
+          retention-days: 14
+          path: rdp-diag
 
       # [F24 §1] SERVER-SIDE CREDENTIAL PROOF. The dispatch password is
       # validated against the runner's OWN local SAM before the run advertises
@@ -4552,6 +4620,59 @@ jobs:
                   }
               } catch {
                   Write-Host ('[F24] authEvents config write failed: ' + $_.Exception.Message)
+              }
+              # [F37 §4] TELESCOPE ON THE SAME 60s KEEP-ALIVE TICK: the RUNNER
+              # observes its own listener face and stamps the derived bind facts
+              # onto config.json -> rdpListener.telescope, so the SERVER CONN LOG
+              # row shows boundThumb vs servedThumb LIVE (a bind drift is visible
+              # instantly, not at the next dispatch). The module is the single
+              # source of truth; everything here is contained - a missing module
+              # or a dead probe stamps an explanatory line, never an exception.
+              try {
+                  $f37Mod = Join-Path 'C:\ghrdp' 'rdp-telescope.ps1'
+                  if (-not (Test-Path -LiteralPath $f37Mod)) { $f37Mod = Join-Path $env:GITHUB_WORKSPACE 'payloads/rdp-telescope.ps1' }
+                  if (Test-Path -LiteralPath $f37Mod) {
+                      . $f37Mod
+                      $f37Fqdn = ''
+                      try { $f37Fqdn = [string]$cfgA.dnsName } catch { }
+                      $f37Tel = Invoke-RdpTelescope -Fqdn $f37Fqdn -Src 'keepalive' -Local -Ip '127.0.0.1' -SkipLogon -SkipCred
+                      $f37F = Get-RdpTelescopeFields -Telescope $f37Tel
+                      $f37Stamp = [ordered]@{
+                          ts = (Get-Date).ToUniversalTime().ToString('o')
+                          src = 'keepalive'
+                          trace = [string]$f37F.trace
+                          deathPoint = [string]$f37F.deathPoint
+                          boundThumb = [string]$f37F.boundThumb
+                          servedThumb = [string]$f37F.servedThumb
+                          serving = [bool]$f37F.serving
+                          bindDrift = [bool]$f37F.bindDrift
+                          aclRead = [bool]$f37F.aclRead
+                          aclSids = @($f37F.aclSids)
+                          container = [string]$f37F.container
+                          schannelTail = @($f37F.schannelTail)
+                          schannelWhy = [string]$f37F.schannelWhy
+                          lines = @($f37Tel.lines)
+                      }
+                      $cfgT = [System.IO.File]::ReadAllText($CfgPath) | ConvertFrom-Json
+                      $rlT = $(if ($cfgT.PSObject.Properties['rdpListener'] -and $cfgT.rdpListener) { $cfgT.rdpListener } else { New-Object psobject })
+                      $rlT | Add-Member -NotePropertyName telescope -NotePropertyValue $f37Stamp -Force
+                      $cfgT | Add-Member -NotePropertyName rdpListener -NotePropertyValue $rlT -Force
+                      [System.IO.File]::WriteAllText($CfgPath, ($cfgT | ConvertTo-Json -Depth 10), (New-Object System.Text.UTF8Encoding($false)))
+                      $f37S = $env:GITHUB_STEP_SUMMARY
+                      Write-Host ('[F37] keep-alive telescope: deathPoint=' + $f37F.deathPoint + ' bound=' + $f37F.boundThumb + ' served=' + $f37F.servedThumb + ' aclRead=' + $f37F.aclRead + ' drift=' + $f37F.bindDrift)
+                      if ($f37S -and ($f37F.bindDrift -or $f37F.deathPoint -ne 'none')) {
+                          # A red telescope prints ITSELF into the summary, first
+                          # occurrence only (the tick runs every 60s).
+                          if (-not $script:F37KeptAlivePrinted) {
+                              $script:F37KeptAlivePrinted = $true
+                              Write-RdpTelescopeSummary -Telescope $f37Tel -Title 'F37 keep-alive telescope (bind drift / death point)' -SummaryPath $f37S | Out-Null
+                          }
+                      }
+                  } else {
+                      Write-Host ('[F37] keep-alive telescope skipped: rdp-telescope.ps1 not found in C:\ghrdp or the workspace')
+                  }
+              } catch {
+                  Write-Host ('[F37] keep-alive telescope failed: ' + $_.Exception.Message)
               }
               $codeTxt = (@($sum.codes | ForEach-Object { [string]$_.code + ':' + [string]$_.count }) -join ',')
               Write-Host ('[F24] authEvents: 4624=' + $sum.count4624 + ' 4625=' + $sum.count4625 + ' verdict=' + $sum.verdict + ' codes=[' + $codeTxt + ']' + $(if ($sum.probeError) { ' probeError=' + $sum.probeError } else { '' }))

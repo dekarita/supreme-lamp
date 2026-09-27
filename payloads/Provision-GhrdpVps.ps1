@@ -184,7 +184,12 @@ if (Test-Path -LiteralPath $tokenPath) {
     $dashToken = [System.IO.File]::ReadAllText($tokenPath).Trim()
     if ($dashToken -notmatch '^[a-zA-Z0-9_-]{32,128}$') { throw 'Existing dash-token.txt is missing/weak; rotate it locally before proceeding.' }
 } else {
-    $dashToken = [Convert]::ToHexString([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32)).ToLowerInvariant()
+    # .NET-Framework-safe random: the static RandomNumberGenerator::GetBytes(int)
+    # and [Convert]::ToHexString are .NET Core 3.0+ only.
+    $dashBytes = [byte[]]::new(32)
+    $dashRng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $dashRng.GetBytes($dashBytes) } finally { if ($dashRng) { $dashRng.Dispose() } }
+    $dashToken = (($dashBytes | ForEach-Object { $_.ToString('x2') }) -join '')
     [System.IO.File]::WriteAllText($tokenPath, $dashToken, $enc)
     Protect-Path -Path $tokenPath
 }

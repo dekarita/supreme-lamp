@@ -56,14 +56,17 @@ stand up, no client-side trust manipulation.
   `tailscale status --json`, re-asserts `UserAuthentication = 1`,
   runs `tailscale cert --cert-file --key-file <fqdn>`, imports the
   resulting PEM as a PFX into `LocalMachine\My` with
-  `PersistKeySet|MachineKeySet`, grants `NETWORK SERVICE` read on the
-  private key, and binds the thumbprint on `RDP-Tcp` via WMI
+  `PersistKeySet|MachineKeySet|Exportable`, asserts `HasPrivateKey`, resolves
+  the actual CNG `Crypto\Keys` or CSP `RSA\MachineKeys` file, grants and
+  reads back `NETWORK SERVICE` Read and SYSTEM FullControl (failure is fatal),
+  and binds the thumbprint on `RDP-Tcp` via WMI
   `Win32_TSGeneralSetting.SetSSLCertificateSHA1Hash` (with a registry
   fallback to `HKLM:\...\RDP-Tcp\SSLCertificateSHA1Hash`). The step
   logs the thumbprint only — never the private key, never any password,
   never anything that could be replayed. `TermService` is restarted so
-  the new cert takes effect. Idempotent: safe to re-run every workflow
-  invocation, and idempotent on LE renewal.
+  the new cert takes effect. The F17 gate then requires X.224+TLS completion
+  with served thumbprint equal to bound thumbprint before advertisement.
+  Idempotent on LE renewal.
 - On a persistent VPS (see §1.7), run once (elevated, PowerShell 7+):
   `payloads\Enable-RdpTlsCertificate.ps1` — same logic as the workflow
   step, wrapped as a standalone script. Re-run when the LE cert renews
@@ -72,10 +75,13 @@ stand up, no client-side trust manipulation.
   with zero warnings. No client-side `Trusted Root` import, no self-signed
   cert, no `AuthenticationLevelOverride`, no `authentication level:i:*`
   suppression, no MOTW / SmartScreen bypass.
-- FALLBACK (only if `tailscale cert` is unavailable on the host): generate
-  a self-signed cert with a long expiry, export the public part, and
-  import once into each client's `Cert:\CurrentUser\Root`. Same
-  zero-warning outcome, one manual step per client. Use only as a bridge.
+- Live key diagnostics (terminal-safe, on the runner):
+  `certutil -store My <bound-thumbprint> | findstr /i "Key Container Provider"`;
+  then `icacls "C:\ProgramData\Microsoft\Crypto\Keys\<container>"`
+  (or `C:\ProgramData\Microsoft\Crypto\RSA\MachineKeys\<container>`
+  for a CSP provider). A missing `NETWORK SERVICE` ACE predicts 36870/RST.
+  The constrained terminal account cannot use PowerShell certificate extension
+  methods; these are used only by the full-pwsh provisioning step.
 
 ### 1.4 User-run-once cmdkey (typed password, benign UX)
 

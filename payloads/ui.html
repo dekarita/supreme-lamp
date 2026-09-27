@@ -416,6 +416,22 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <span class="note" id="liveDispatchAcl" style="display:none;gap:8px;align-items:center;flex-wrap:wrap;margin:0"><code id="liveDispatchAclCmd" style="font-size:12px">wevtutil qe System /q:"*[System[Provider[@Name='Schannel']]]" /c:10 /f:text | findstr "36870 36871"</code><a href="javascript:void(0)" onclick="copyById('liveDispatchAclCmd',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span style="font-size:11px">key ACL dump needed - copy this line and paste it to the session (nothing here executes)</span></span>
   </div>
   <!-- [F31c §2 live-dispatch-card-end] -->
+  <!-- [F37 §3 timeline-begin] ONE TIMELINE per click: the client beacon stages
+       (dns/tcp/tls/cred, one trace id) merged with the runner telescope
+       (payloads/rdp-telescope.ps1, 60s tick) and the logon evidence. The FIRST
+       red segment IS the death point; [RUN DIAG] re-runs the read-only diag
+       verb. Nothing here stores or types a credential. -->
+  <div class="row" id="telescopeRow" style="display:none;flex-direction:column;align-items:stretch;gap:4px">
+    <span class="k" style="font-weight:600">RDP TELESCOPE TIMELINE</span>
+    <span class="note" id="telescopeSummary" style="margin:0">waiting for the first /api/native-status sample...</span>
+    <span class="note" id="telescopeSegments" style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace"></span>
+    <span class="note" id="telescopeDeath" style="margin:0"></span>
+    <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <button id="btnRunDiag" type="button" title="fires ghrdp://diag - read-only client telescope: dns/tcp/tls/cred stages, no store, no mstsc, no credential prompt">[RUN DIAG]</button>
+      <span class="note" id="telescopeTrace" style="margin:0;font-size:11px"></span>
+    </div>
+  </div>
+  <!-- [F37 §3 timeline-end] -->
   <!-- [F31c §3 manual-verify-begin] Collapsed. Copy-only. The user runs these. -->
   <details id="manualVerifySteps">
     <summary style="cursor:pointer;font-size:12px;font-weight:600">MANUAL VERIFY STEPS</summary>
@@ -552,6 +568,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
     <span class="note" id="srvConnLogState" style="margin:0">collector not reported yet (server 30s tick reads both RDP Operational logs)</span>
     <span class="note" id="srvConnLogLines" style="margin:0;white-space:pre-wrap;font-family:ui-monospace,Consolas,monospace"></span>
     <span class="note" id="srvConnLogTls" style="margin:0"></span>
+    <span class="note" id="srvConnLogBind" style="margin:0;font-family:ui-monospace,Consolas,monospace"></span>
     <span class="note" style="margin:0">reason codes: tls-forcibly-closed | tls-handshake-failed | cert-rejected | connection-reset | auth-succeeded | auth-failed | listener-lifecycle | session-state. A "forcibly closed"/handshake/reset reason here IS the pre-logon TLS drop the Security log cannot show - run the purge + cipher copy-lines under CONNECTION DIAGNOSTICS.</span>
   </div>
   <div class="row"><span class="k">Target FQDN</span><span class="v" id="rdpFqdn">__IP__</span><a href="javascript:void(0)" onclick="copyById('rdpFqdn',this)" style="font-size:11px;opacity:.6;text-decoration:underline">copy</a><span class="note">Tailscale MagicDNS (*.ts.net). LE cert bound automatically on RDP-Tcp (workflow U5b + docs/MIGRATION.md sec 1.3).</span></div>
@@ -1286,6 +1303,8 @@ async function nativeStatus(){
   paintHandoffStatus(rl,s);
   // [F31c §2] LIVE DISPATCH STATUS (5 checks; exact failing condition + one fix).
   paintLiveDispatch(s);
+  // [F37 §3] ONE TIMELINE: client beacon stages + runner telescope + logon.
+  paintTelescopeTimeline(s);
   // [F17 §2] CONNECTION diagnostics lines (copy-only) follow the live FQDN.
   var diagF=(s&&s.fqdn)||'';
   var diagIP=(s&&s.runnerResolvedIP)||'';
@@ -1755,6 +1774,195 @@ function paintLiveDispatch(s, nowMs){
  if(mv) mv.textContent='cmdkey /delete:TERMSRV/'+(fqdn||'<current-fqdn>');
 }
 // [F31c §2 live-dispatch-end]
+// [F37 §3 timeline-begin] ONE TIMELINE (client beacon + runner telescope +
+// logon). The vocabulary is payloads/rdp-telescope.ps1's (the single source of
+// truth): stages dns|tcp|tls|cred|logon|schannel|listener, failure points
+// rst-before-cert|chain|name-mismatch|eku, death points
+// dns|tcp|tls-cert|tls-chain|tls-eku|name-mismatch|credssp|logon|acl|none.
+// telescopeTimeline is PURE (no DOM, no fetch) so the Node/lab matrices can
+// execute it against synthetic native-status samples.
+var TEL_STAGE_ORDER=['dns','tcp','tls','cred','listener','schannel','logon'];
+var TEL_CLIENT_DETAIL={
+ 'telescope-dns-ok':'name resolved',
+ 'telescope-dns-fail':'name did not resolve (Tailscale DNS off / stale resolver cache)',
+ 'telescope-tcp-ok':'3389 reachable',
+ 'telescope-tcp-fail':'3389 refused/filtered',
+ 'telescope-tls-ok':'X.224+TLS ok, served==bound',
+ 'telescope-rst-before-cert':'reset before a certificate was presented (Schannel refused the listener key/cert)',
+ 'telescope-chain':'certificate served, chain rejected',
+ 'telescope-name-mismatch':'certificate does not cover the FQDN',
+ 'telescope-eku':'served certificate lacks the Server Authentication EKU',
+ 'telescope-cred-ok':'stored TERMSRV target present (metadata only)',
+ 'telescope-cred-missing':'no stored TERMSRV target on this PC'
+};
+var TEL_DEATH_FIX={
+ 'dns':'client DNS: tailscale set --accept-dns=true, ipconfig /flushdns, then click WINDOWS AUTO-LOGIN again',
+ 'tcp':'nothing accepted TCP 3389: the runner listener/firewall is down - read the RDP LISTENER row and re-dispatch main.yml',
+ 'tls-cert':'the listener reset BEFORE presenting a certificate: Schannel refused the key/cert (persisted-key ACL, missing ServerAuth EKU, or no bind) - see SERVER CONN LOG (36870) and the ACL line above',
+ 'tls-chain':'a certificate WAS served and the chain did not validate: check the bound cert/issuer on the host',
+ 'tls-eku':'the served certificate has no Server Authentication EKU: rebind a ServerAuth certificate (this is the lab red class)',
+ 'name-mismatch':'the served certificate does not cover this FQDN: rebind the cert for the exact MagicDNS name',
+ 'credssp':'no stored TERMSRV target on this PC: click WINDOWS AUTO-LOGIN (ticket -> CredWrite) or FIX & RECONNECT',
+ 'acl':'the persisted private-key ACL does not grant NETWORK SERVICE read (36870 class): re-dispatch main.yml (F31 ACL gate)',
+ 'logon':'the handshake completed but no 4624 type-10 arrived: the host refused the logon (read the 4625 SubStatus above)',
+ 'none':''
+};
+function telescopeDeathFix(dp){ return TEL_DEATH_FIX[String(dp||'none')]||''; }
+function mintTraceId(src){
+ var r='';
+ try{ var b=new Uint8Array(4); (window.crypto&&window.crypto.getRandomValues)?window.crypto.getRandomValues(b):b.set([1,2,3,4]);
+  for(var i=0;i<b.length;i++){ r+=('0'+b[i].toString(16)).slice(-2); } }catch(_){ r='00000000'; }
+ var t=new Date().toISOString().replace(/[-:TZ.]/g,'').slice(2,14);
+ return 't'+t+'-'+String(src||'client')+'-'+r;
+}
+function traceParam(){
+ var id=mintTraceId('client');
+ window.__lastTrace=id;
+ return '&trace='+encodeURIComponent(id);
+}
+function telescopeParseLine(l){
+ if(l&&typeof l==='object') return l;
+ try{ return JSON.parse(String(l)); }catch(_){ return null; }
+}
+function telescopeClientSegments(s){
+ var tc=(s&&s.telescopeClient)||null;
+ var items=(tc&&tc.items&&tc.items.length)?tc.items:[];
+ if(!items.length&&s&&s.launcher&&s.launcher.telescope) items=liveDispatchAsList(s.launcher.telescope);
+ var trace=String((tc&&tc.newestTrace)||'');
+ var segs=[],seen={};
+ for(var i=0;i<items.length;i++){
+  var it=items[i]||{};
+  var t=String(it.trace||'');
+  if(trace&&t&&t!==trace) continue;
+  var stage=String(it.stage||'');
+  if(!stage||seen['c:'+stage]) continue;
+  seen['c:'+stage]=true;
+  var det=String(it.details||'');
+  // the slug carries the failure CLASS (rst-before-cert|chain|name-mismatch|
+  // eku) - never guess the class from the human sentence.
+  var cls='';
+  if(det==='telescope-rst-before-cert') cls='rst-before-cert';
+  else if(det==='telescope-chain') cls='chain';
+  else if(det==='telescope-name-mismatch') cls='name-mismatch';
+  else if(det==='telescope-eku') cls='eku';
+  segs.push({src:'client', stage:stage, label:String(stage), ok:(it.ok===true?true:(it.ok===false?false:null)),
+   detail:(TEL_CLIENT_DETAIL[det]||det||'(no detail)'), slug:det, failureAt:cls, ts:String(it.ts||''), trace:(t||trace)});
+ }
+ if(!segs.length) segs.push({src:'client', stage:'diag', label:'diag', ok:null, detail:'no client beacons yet - click [RUN DIAG] (read-only: dns/tcp/tls/cred)', ts:'', trace:trace});
+ return {segments:segs, trace:trace};
+}
+function telescopeRunnerSegments(s){
+ var rl=(s&&s.rdpListener)||{};
+ var tel=(rl&&rl.telescopeLive)?rl.telescopeLive:((rl&&rl.telescope)?rl.telescope:((s&&s.telescope)?s.telescope:null));
+ var segs=[];
+ if(!tel) return {segments:segs, telescope:null};
+ var lines=liveDispatchAsList(tel.lines);
+ for(var i=0;i<lines.length;i++){
+  var o=telescopeParseLine(lines[i]);
+  if(!o||!o.stage) continue;
+  var det='';
+  if(o.stage==='dns') det='ip='+String(o.ip||'(none)');
+  if(o.stage==='tcp') det='ip='+String(o.ip||'')+' port='+String(o.port==null?'':o.port)+' rttMs='+String(o.rttMs==null?'':o.rttMs);
+  if(o.stage==='tls') det='servedThumb='+String(o.servedThumb||'(none, no certificate presented)')+' chainOk='+String(o.chainOk===true)+' nameMatch='+String(o.nameMatch===true)+' serverAuth='+String(o.serverAuth===true);
+  if(o.stage==='listener') det='bound='+String(o.boundThumb||'(none)')+' served='+String(o.servedThumb||'(none)')+' aclRead='+String(o.aclRead===true)+' container='+String(o.container||'(none)');
+  if(o.stage==='schannel') det='events=['+liveDispatchAsList(o.schannelIds).join(',')+']';
+  if(o.stage==='logon') det='last='+String(o.eventId||'(none)')+' sub='+String(o.sub||'')+' 4624='+String(o.count4624==null?'':o.count4624)+' 4625='+String(o.count4625==null?'':o.count4625);
+  if(o.ok!==true&&o.failureAt) det='failureAt='+String(o.failureAt)+' '+det;
+  if(o.ok!==true&&o.why) det=det+' why='+String(o.why);
+  segs.push({src:'runner', stage:String(o.stage), label:String(o.stage), ok:(o.ok===true), detail:det, ts:String(o.ts||''), trace:String(o.trace||''), failureAt:String(o.failureAt||'')});
+ }
+ return {segments:segs, telescope:tel};
+}
+function telescopeLogonSegments(s, runnerHasLogon){
+ if(runnerHasLogon) return [];
+ var rl=(s&&s.rdpListener)||{};
+ var ae=rl.authEvents||null;
+ if(!ae) return [];
+ var c24=Number(ae.count4624||0), c25=Number(ae.count4625||0);
+ var sub=String(ae.sub||(ae.lastSubStatus||''));
+ return [{src:'logon', stage:'logon', label:'logon', ok:(c24>0), detail:'4624='+c24+' 4625='+c25+(sub?(' sub='+sub):''), ts:String(ae.last4624At||''), trace:''}];
+}
+function telescopeDeathFromSegment(seg){
+ if(!seg||seg.ok!==false) return 'none';
+ var st=String(seg.stage||'');
+ if(st==='dns') return 'dns';
+ if(st==='tcp') return 'tcp';
+ if(st==='tls'){
+  var f=String(seg.failureAt||'')+' '+String(seg.detail||'');
+  if(/rst-before-cert|served!=bound|handshake-aborted|skipped/.test(f)) return 'tls-cert';
+  if(/name-mismatch/.test(f)) return 'name-mismatch';
+  if(/eku/.test(f)) return 'tls-eku';
+  return 'tls-chain';
+ }
+ if(st==='cred') return 'credssp';
+ if(st==='listener') return 'acl';
+ if(st==='logon') return 'logon';
+ return 'none';
+}
+function telescopeTimeline(s, nowMs){
+ var cli=telescopeClientSegments(s);
+ var run=telescopeRunnerSegments(s);
+ var hasLogon=false;
+ for(var i=0;i<run.segments.length;i++){ if(run.segments[i].stage==='logon') hasLogon=true; }
+ var segs=cli.segments.concat(run.segments).concat(telescopeLogonSegments(s,hasLogon));
+ segs.sort(function(a,b){
+  var ia=TEL_STAGE_ORDER.indexOf(a.stage), ib=TEL_STAGE_ORDER.indexOf(b.stage);
+  if(ia<0) ia=TEL_STAGE_ORDER.length+1;
+  if(ib<0) ib=TEL_STAGE_ORDER.length+1;
+  if(ia!==ib) return ia-ib;
+  var ra=(a.src==='client')?0:1, rb=(b.src==='client')?0:1;
+  return ra-rb;
+ });
+ var death='none';
+ for(var j=0;j<segs.length;j++){
+  if(segs[j].stage==='schannel') continue;   // evidence, never a segment verdict
+  var d=telescopeDeathFromSegment(segs[j]);
+  if(d!=='none'){ death=d; break; }
+ }
+ if(death==='none'&&run.telescope&&run.telescope.deathPoint&&run.telescope.deathPoint!=='none') death=String(run.telescope.deathPoint);
+ return {trace:cli.trace, segments:segs, deathPoint:death, ok:(death==='none'), fix:telescopeDeathFix(death)};
+}
+function telescopeSegmentText(seg){
+ var mark=(seg.ok===true)?'ok':(seg.ok===false?'FAIL':'--');
+ return '['+seg.src+'] '+seg.stage+' '+mark+' '+seg.detail;
+}
+function paintTelescopeTimeline(s){
+ var row=document.getElementById('telescopeRow');
+ if(!row) return;
+ var tl=telescopeTimeline(s, Date.now());
+ row.style.display='';
+ var sum=document.getElementById('telescopeSummary');
+ var body=document.getElementById('telescopeSegments');
+ var deathEl=document.getElementById('telescopeDeath');
+ var tr=document.getElementById('telescopeTrace');
+ if(sum){
+  sum.textContent=tl.ok?('ALL GREEN - every observed segment on the path is ok (trace '+(tl.trace||'runner')+')')
+   :('DEATH POINT: '+tl.deathPoint+' - '+tl.fix);
+  sum.style.color=tl.ok?'#7dffc9':'#f5b7b7';
+ }
+ if(body) body.textContent=tl.segments.map(telescopeSegmentText).join('\n');
+ if(deathEl){
+  deathEl.textContent=tl.ok?('first red segment: none - client stages (dns/tcp/tls/cred) and runner stages (listener/schannel/logon) all ok')
+   :('first red segment: '+tl.deathPoint+' | one targeted fix: '+tl.fix);
+  deathEl.style.color=tl.ok?'':'#f5d9b7';
+ }
+ if(tr) tr.textContent=window.__lastTrace?('last click trace: '+window.__lastTrace+' (client beacons carry it)'):'no click trace yet';
+}
+var btnDiag=document.getElementById('btnRunDiag');
+if(btnDiag) btnDiag.onclick=function(ev){
+ if(ev&&ev.preventDefault)ev.preventDefault();
+ var fqdn=($('rdpFqdn')||{}).textContent||'';
+ var user=($('credUser')||{}).textContent||'rdpuser';
+ var note=$('winAutoNote');
+ if(!FQDN_RE.test(fqdn)){ if(note)note.textContent='RUN DIAG needs a valid *.ts.net FQDN (see Target FQDN)'; return; }
+ var url='ghrdp://diag?server='+encodeURIComponent(fqdn)+'&user='+encodeURIComponent(user);
+ var ip=(typeof window.__runnerResolvedIP==='string'?window.__runnerResolvedIP:'');
+ if(/^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}$/.test(ip)) url+='&ip='+encodeURIComponent(ip);
+ launchProto(url+traceParam());
+ var tr=document.getElementById('telescopeTrace');
+ if(tr) tr.textContent='diag dispatched with trace '+(window.__lastTrace||'')+' - each stage beacons into the timeline above';
+};
+// [F37 §3 timeline-end]
 // [F15 §3] Launcher beacon row + stall verdict. The launcher's beacon sequence
 // is invoked -> cmdkey-shown|cmdkey-stored=... -> mstsc-started pid=N (or a
 // mstsc-exited=/<ExceptionType> failure, which is red on its own). If the LAST
@@ -1865,6 +2073,43 @@ function paintSrvConnLog(s){
     var ts=String(e.timeUtc||'').replace('T',' ').replace(/\..*/,'');
     return ts+' #'+e.id+' '+e.provider+' reason='+e.reason+((e.level)?(' level='+e.level):'')+((e.desc)?(' - '+e.desc):'');
    }).join('\n');
+  }
+ }
+ // [F37 §4] bind drift, live: boundThumb vs servedThumb + key ACL SIDs +
+ // Schannel tail, from the runner's own 60s telescope tick (rdpListener.telescope
+ // or the top-level telescope sample). A drift means the listener is serving a
+ // DIFFERENT certificate than the one bound on RDP-Tcp.
+ var tb=document.getElementById('srvConnLogBind');
+ if(tb){
+  // [F37 §4] prefer the RUNNER's live 60s sample (telescopeLive) over the
+  // workflow stamp (telescope), then the top-level sample: bind drift is a
+  // NOW fact, never a dispatch-time snapshot.
+  var tel=(rl&&rl.telescopeLive)?rl.telescopeLive:((rl&&rl.telescope)?rl.telescope:((s&&s.telescope)?s.telescope:null));
+  var tc=(s&&s.telescopeCollector)?s.telescopeCollector:null;
+  if(!tel){tb.textContent='telescope: not reported yet (runner 60s tick) - bind drift not proven';tb.style.color='#f5d9b7';}
+  else{
+   var bt=String(tel.boundThumb||''),st2=String(tel.servedThumb||'');
+   var drift=!!tel.bindDrift||(bt&&st2&&bt!==st2);
+   var sids=(tel.aclSids&&tel.aclSids.length)?tel.aclSids.join(' '):'not read';
+   var sch=(tel.schannelTail&&tel.schannelTail.length)?tel.schannelTail.join(','):'none';
+   // [F37 §4] the certificate's OWN acceptance: a bound cert without the
+   // ServerAuth EKU is reset by Schannel before it is ever presented, which no
+   // client-side handshake can say - the row says it here.
+   // [F37 §4] a key file the providers cannot point at is the same death class
+   // the lab hit (Schannel 36870 / 0x8009030D): say it, do not infer it.
+   var keyBad=(tel.keyFileFound===false);
+   var ekuBad=(tel.hasServerAuth===false);
+   var ekuTxt=ekuBad?(' EKU=NO-ServerAuth eku='+((tel.eku&&tel.eku.length)?tel.eku.join(','):'none')+' san='+((tel.san&&tel.san.length)?tel.san.join(','):'none')):'';
+   var keyHits=(tel.keyDirHits&&tel.keyDirHits.length)?('; hits='+tel.keyDirHits.slice(0,3).join(',')):'';
+   var keyKind=tel.containerKind?(' kind='+tel.containerKind):'';
+   var keyDir=(tel.keyDirSample&&tel.keyDirSample.length)?(' dir='+String(tel.keyDirSample[0]).slice(0,80)):'';
+   var keySrc=tel.keyFilePathSource?(' src='+String(tel.keyFilePathSource)):'';
+   var keyTxt=(keyBad||keySrc)?((keyBad?' keyFile=NOT-FOUND':' keyFile=ok')+keyKind+keySrc+(keyBad?('('+String(tel.containerPath||tel.container||'?')+keyHits+keyDir+')'):'')):'';
+   tb.textContent='telescope['+String(tel.src||'live')+'] bound='+(bt||'(none)')+' served='+(st2||'(none)')+
+    ' '+(drift?'DRIFT':'match')+' aclRead='+(tel.aclRead===true?'yes':'NO')+' aclSids='+sids+
+    ' schannel=['+sch+']'+(tel.schannelWhy?(' '+tel.schannelWhy):'')+ekuTxt+keyTxt+
+    ' deathPoint='+String(tel.deathPoint||'none')+(tc?(' (tick '+(tc.alive===true?'alive':'STALE')+')'):'');
+   tb.style.color=(drift||ekuBad||keyBad)?'#f5b7b7':((tel.deathPoint&&tel.deathPoint!=='none')?'#f5d9b7':'');
   }
  }
  if(tls){
@@ -2197,7 +2442,7 @@ if(waBtn) waBtn.onclick=async function(ev){
   var failure=$('winAutoNote');if(failure)failure.textContent='ticket-issue failed - check dashboard authorization and direct tailnet access';
   return;
  }
- launchProto(ghrdpRdpUrl(fqdn,user,(typeof window.__runnerResolvedIP==='string'?window.__runnerResolvedIP:''))+'&t='+encodeURIComponent(ticket));
+ launchProto(ghrdpRdpUrl(fqdn,user,(typeof window.__runnerResolvedIP==='string'?window.__runnerResolvedIP:''))+traceParam()+'&t='+encodeURIComponent(ticket));
  ticket='';
  var note=$('winAutoNote');
  if(note)note.textContent='protocol dispatched - mstsc should open fullscreen shortly';
@@ -2257,7 +2502,7 @@ if(frBtn) frBtn.onclick=async function(ev){
   return;
  }
  window.__recoveryDispatchedAt=Date.now();
- launchProto(ghrdpRecredUrl(fqdn,user)+'&t='+encodeURIComponent(ticket));
+ launchProto(ghrdpRecredUrl(fqdn,user)+traceParam()+'&t='+encodeURIComponent(ticket));
  ticket='';
  if(note)note.textContent='recovery dispatched - the launcher redeems the fresh ticket, overwrites the stored credential and reopens mstsc (watch the chain: recred-redeemed -> credwrite-ok -> mstsc-started)';
 };
