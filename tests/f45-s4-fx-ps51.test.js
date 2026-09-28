@@ -241,6 +241,22 @@ test('F45-S4-PS1-11 an array element that uses + is parenthesized', () => {
   assert.deepEqual(offenders, [], 'an unparenthesized + element swallows the rest of the array');
 });
 
+test('F45-S4-PS1-12 a cast to an array type is never applied to a member access', () => {
+  // `[byte[]]$body.Length` casts the LENGTH (an int), not the array: it either
+  // throws ("2096" is not a byte) or silently truncates the body to one byte. It
+  // did so AFTER Send-FxResponse had already written the head with its real
+  // Content-Length, and the legacy top-level catch then answered the same
+  // request with its own 500 - two responses, and the real fault invisible.
+  // `([byte[]]$body).Length` is the only correct form.
+  const offenders = [];
+  for (const [label, s] of [['region', regionScan], ['glue', glueScan]]) {
+    for (const m of s.code.matchAll(/\[[A-Za-z][\w.]*\[\]\]\s*\$[\w:]+\.(Length|Count|LongLength)\b/g)) {
+      offenders.push(`${label} line ${lineOf(s.code, m.index)}: ${m[0]}`);
+    }
+  }
+  assert.deepEqual(offenders, [], 'a cast to an array type was applied to a member access');
+});
+
 test('F45-S4-PS1-9 a stored timestamp is validated, never re-formatted', () => {
   // Re-formatting a stored ISO string (e.g. to 7 fractional digits) makes a
   // re-normalized document differ from its own input: the epoch fallback is

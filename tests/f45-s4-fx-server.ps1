@@ -618,10 +618,10 @@ try {
     Assert-Fx ($list.Code -eq 200) 'list returns 200 with a header dash token from a public source'
     $listJson = ConvertFrom-FxBody $list ($stage + ' list JSON')
     Assert-Fx ($listJson.schemaVersion -eq 2) 'list emits schemaVersion 2 even when the file on disk was v1'
-    Assert-Fx (@($listJson.gofileHosts).Count -eq 1 -and $listJson.gofileHosts[0].id -eq 'gofile') 'list emits the gofileHosts array'
+    Assert-Fx (@($listJson.gofileHosts).Count -eq 1 -and @($listJson.gofileHosts)[0].id -eq 'gofile') 'list emits the gofileHosts array'
     Assert-Fx (@($listJson.files).Count -eq 4) 'list carries every file entry'
-    Assert-Fx ($listJson.files[2].path -eq '/../escaped.txt') 'list carries paths verbatim (no silent rewrite)'
-    Assert-Fx ($listJson.files[3].gofile.directUrl -eq 'https://store1.gofile.io/download/FILE9') 'a stored credential-free link is preserved'
+    Assert-Fx (@($listJson.files)[2].path -eq '/../escaped.txt') 'list carries paths verbatim (no silent rewrite)'
+    Assert-Fx (@($listJson.files)[3].gofile.directUrl -eq 'https://store1.gofile.io/download/FILE9') 'a stored credential-free link is preserved'
     Assert-Fx (-not $list.Head.Contains('Access-Control-Allow-Origin')) 'Explorer responses are never CORS-wildcarded'
     Assert-Fx ($list.Headers['content-type'] -eq 'application/json; charset=utf-8') 'list is JSON'
     Assert-Fx ($list.Headers['cache-control'] -eq 'no-store') 'list is never cached'
@@ -645,7 +645,9 @@ try {
     Assert-Fx ((Request-Fx -Path '/api/fx/meta' -Headers @{ 'X-Dash-Token' = $script:FxToken }).Code -eq 404) 'meta without an id is a 404 (not a wildcard)'
 
     $stage = 'I5 Range request (206)'
-    $helloId = $listJson.files[0].id
+    # @(...) first: indexing a $null member throws "Cannot index into a null
+    # array" and would abort the run instead of reporting the failed assertion.
+    $helloId = @($listJson.files)[0].id
     $full = Request-Fx -Path ('/api/fx/preview?id=' + $helloId) -Headers @{ 'X-Dash-Token' = $script:FxToken }
     Assert-Fx ($full.Code -eq 200) 'a full preview returns 200'
     Assert-Fx ($full.Bytes.Count -eq $helloBytes.Length) 'the full body has the file length'

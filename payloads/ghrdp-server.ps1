@@ -2461,7 +2461,15 @@ function Get-FxGofileStatusResponse {
         if ($null -eq $data) { $data = $parsed }
         $fresh = Get-FxMember $data 'status'
         if ($fresh -is [string]) {
-            $mapped = Get-FxEnumMember ([string]$fresh).ToLower() @('uploaded', 'processing', 'expired', 'failed', 'none') 'processing'
+            # gofile answers in ITS vocabulary ("ok", "error", "deleted", ...),
+            # so map the host words explicitly and only then fall back to our own
+            # status names. Without this, a perfectly healthy "ok" was classified
+            # as 'processing' and the UI would never see the file as uploaded.
+            $freshText = ([string]$fresh).ToLower()
+            $hostMap = @{ ok = 'uploaded'; uploaded = 'uploaded'; processing = 'processing'; expired = 'expired'; deleted = 'expired'; notfound = 'expired'; error = 'failed'; failed = 'failed'; down = 'failed' }
+            $mapped = 'processing'
+            if ($hostMap.ContainsKey($freshText)) { $mapped = [string]$hostMap[$freshText] }
+            else { $mapped = Get-FxEnumMember $freshText @('uploaded', 'processing', 'expired', 'failed', 'none') 'processing' }
             $null = Set-FxMember -Object $state -Name 'status' -Value $mapped
             $downloads = Get-FxNumberOrNull (Get-FxMember $data 'downloadCount')
             if ($null -ne $downloads) { $null = Set-FxMember -Object $state -Name 'downloads' -Value ([int]$downloads) }
@@ -2768,7 +2776,15 @@ function Send-FxResponse {
             }
         } finally { if ($fs) { $fs.Dispose() } }
     } elseif ($bodyLen -gt 0) {
-        $Stream.Write([byte[]]$body, 0, [byte[]]$body.Length)
+        # ([byte[]]$body).Length, NOT [byte[]]$body.Length. The second form casts
+        # the LENGTH (an int) to byte[], which either throws ("2096" is not a
+        # byte) or truncates the body to one byte - and it does so AFTER the head
+        # with its real Content-Length is already on the wire. The legacy
+        # top-level catch then answered the SAME request with its own 500, so the
+        # client saw a head-only 200 followed by a legacy 500 and the real fault
+        # was invisible.
+        $bytes = [byte[]]$body
+        $Stream.Write($bytes, 0, $bytes.Length)
     }
     $Stream.Flush()
 }
@@ -3084,7 +3100,15 @@ function Invoke-ClientRequest {
                 $fxResp = New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('explorer handler failed: ' + $fxErr)
             }
             if ($fxResp) {
-                Send-FxResponse -Stream $stream -Response $fxResp
+                # Log the REAL cause before the legacy top-level catch below turns
+                # any write failure into a generic 500 on the same socket (that
+                # masking is exactly what hid the head-only-response bug), then
+                # let the exception go so the existing error path still answers.
+                try { Send-FxResponse -Stream $stream -Response $fxResp }
+                catch {
+                    $null = Write-FxLog ('fx response write failed: ' + (Protect-FxText ([string]$_.Exception.Message)))
+                    throw
+                }
                 return
             }
         }
