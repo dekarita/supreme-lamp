@@ -1,0 +1,166 @@
+[
+  {
+    "mime": "image/png",
+    "renderer": "image"
+  },
+  {
+    "mime": "image/jpeg",
+    "renderer": "image"
+  },
+  {
+    "mime": "image/gif",
+    "renderer": "image"
+  },
+  {
+    "mime": "image/webp",
+    "renderer": "image"
+  },
+  {
+    "mime": "image/avif",
+    "renderer": "image"
+  },
+  {
+    "mime": "image/svg+xml",
+    "renderer": "image"
+  },
+  {
+    "mime": "image/bmp",
+    "renderer": "image"
+  },
+  {
+    "mime": "image/tiff",
+    "renderer": "image"
+  },
+  {
+    "mime": "video/mp4",
+    "renderer": "video"
+  },
+  {
+    "mime": "video/webm",
+    "renderer": "video"
+  },
+  {
+    "mime": "video/quicktime",
+    "renderer": "video"
+  },
+  {
+    "mime": "audio/mpeg",
+    "renderer": "audio"
+  },
+  {
+    "mime": "audio/wav",
+    "renderer": "audio"
+  },
+  {
+    "mime": "audio/ogg",
+    "renderer": "audio"
+  },
+  {
+    "mime": "audio/flac",
+    "renderer": "audio"
+  },
+  {
+    "mime": "application/pdf",
+    "renderer": "pdf"
+  },
+  {
+    "mime": "text/markdown",
+    "renderer": "md"
+  },
+  {
+    "mime": "text/x-markdown",
+    "renderer": "md"
+  },
+  {
+    "mime": "text/x-python",
+    "renderer": "code"
+  },
+  {
+    "mime": "text/x-c",
+    "renderer": "code"
+  },
+  {
+    "mime": "text/x-c++src",
+    "renderer": "code"
+  },
+  {
+    "mime": "text/x-java-source",
+    "renderer": "code"
+  },
+  {
+    "mime": "text/x-shellscript",
+    "renderer": "code"
+  },
+  {
+    "mime": "text/x-rust",
+    "renderer": "code"
+  },
+  {
+    "mime": "text/x-go",
+    "renderer": "code"
+  },
+  {
+    "mime": "text/x-typescript",
+    "renderer": "code"
+  },
+  {
+    "mime": "application/json",
+    "renderer": "code"
+  },
+  {
+    "mime": "application/javascript",
+    "renderer": "code"
+  },
+  {
+    "mime": "application/typescript",
+    "renderer": "code"
+  },
+  {
+    "mime": "application/x-shellscript",
+    "renderer": "code"
+  },
+  {
+    "mime": "application/x-python-code",
+    "renderer": "code"
+  },
+  {
+    "mime": "text/plain",
+    "renderer": "text"
+  },
+  {
+    "mime": "text/csv",
+    "renderer": "text"
+  },
+  {
+    "mime": "text/tab-separated-values",
+    "renderer": "text"
+  },
+  {
+    "mime": "text/html",
+    "renderer": "text"
+  },
+  {
+    "mime": "text/css",
+    "renderer": "text"
+  },
+  {
+    "mime": "application/octet-stream",
+    "renderer": "hex"
+  },
+  {
+    "mime": "application/zip",
+    "renderer": "hex"
+  },
+  {
+    "mime": "application/x-7z-compressed",
+    "renderer": "hex"
+  },
+  {
+    "mime": "application/x-unknown",
+    "renderer": "hex"
+  },
+  {
+    "mime": "application/x-ghrdp-mirror",
+    "renderer": "crypto"
+  }
+]
