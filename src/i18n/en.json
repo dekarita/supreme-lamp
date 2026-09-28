@@ -69,7 +69,8 @@
     "explorer": "Explorer (Win11)",
     "terminal": "Terminal",
     "hostOnly": "(host-only)",
-    "rememberVnc": "remember for WEB DESKTOP"
+    "rememberVnc": "remember for WEB DESKTOP",
+    "currentKeyMask": "mirror key (this run)"
   },
   "webDesktop": {
     "title": "WEB DESKTOP",
@@ -94,7 +95,7 @@
   },
   "mirror": {
     "title": "Mirror",
-    "titleLong": "Mirror - AES-256 encrypted upload",
+    "titleLong": "Mirror - AES-256 encrypted runner upload",
     "titlePlain": "Mirror - plaintext runner upload (no AES-256)",
     "titleEncryptLocked": "Mirror - AES-256 requested but unavailable in this build (plaintext refused)",
     "progress": "Upload progress",
@@ -117,7 +118,8 @@
     "publishStatus": "Publish status",
     "showReason": "show full reason",
     "encryptMode": "encryptMode",
-    "encryptedRows": "encrypted uploads"
+    "encryptedRows": "encrypted uploads",
+    "encryptAlg": "algorithm"
   },
   "logs": {
     "title": "Logs",
@@ -271,5 +273,18 @@
     "ended": "SESSION EXPIRED - GitHub hard cap reached. Runner termination imminent.",
     "recoveryTitle": "RECOVERY - password rejected by the host",
     "recoveryNote": "fresh ticket -> stored credential overwritten -> mstsc reopens; no typing, no clipboard"
+  },
+  "mirrorHostMatrix": {
+    "title": "Mirror host matrix (read-only probe)",
+    "subtitle": "Live from /diag mirrorHosts - the same {host,status,note} rows the CI step summary prints. Read-only GET of each host API root: no upload, no credential, no evasion.",
+    "loading": "probing hosts...",
+    "refreshing": "probing...",
+    "rows": "host(s)",
+    "empty": "no host rows from /diag (server unreachable or ghrdp-mirror.ps1 not staged)",
+    "unreachable": "/diag unreachable - the runner dashboard is not answering",
+    "optionsTitle": "Operator options (docs/MIRROR-HOSTS.md §5)",
+    "optionVps": "Run the mirror upload from an operator-owned VPS egress that you configure yourself (payloads/Provision-GhrdpVps.ps1).",
+    "optionAccept": "Accept that the mirror is unavailable from ephemeral runners and leave it off (mirror_enable=false).",
+    "optionsFooter": "A 403 from the runner egress is a policy dead-end, not a puzzle: host-policy workarounds are refused by design and blocked by a CI gate. Re-dispatch with mirror_enable=false, or move the upload to your own egress."
   }
 }

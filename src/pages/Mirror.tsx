@@ -4,6 +4,7 @@ import { Database } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, DataTable, type Column } from "@/components/primitives/Data";
 import { MirrorCard } from "@/components/domain/MirrorCard";
+import { MirrorHostMatrix } from "@/components/domain/MirrorHostMatrix";
 import { useTelemetryStore } from "@/stores/telemetryStore";
 import { useSessionStore } from "@/stores/sessionStore";
 
@@ -51,6 +52,8 @@ export default function Mirror() {
         <h2 className="text-xl font-semibold">{t("pages.mirrorPage.title")}</h2>
       </div>
       <MirrorCard />
+      {/* [F47 §2] the F46 read-only probe matrix, live on the Mirror page. */}
+      <MirrorHostMatrix />
       <Card title={t("pages.mirrorPage.history")} className="mb-4">
         <DataTable columns={columns} rows={rows} maxHeight="max-h-[420px]" />
       </Card>

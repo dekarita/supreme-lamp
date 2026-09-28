@@ -30,6 +30,9 @@ export interface MirrorModel {
   encryptMode: string;
   encryptRequested: boolean;
   encryptedAny: boolean;
+  // [F47 §3] the algorithm the worker actually used for the encrypted rows
+  // (AES-256-GCM | AES-256-CBC-PBKDF2 | '' when nothing was encrypted).
+  encAlg: string;
   // [F46 §1] the complete, untruncated failure reason per file plus the raw
   // attempt records behind it (the same table the mirror-diag artifact carries).
   files: {
@@ -77,6 +80,7 @@ export function mirrorModel(d: Any, prevHistory: number[]): MirrorModel {
   if (!encryptMode) encryptMode = "none";
   const encryptRequested = encryptMode === "all" || encryptMode === "media-plain";
   let encryptedAny = false;
+  const encAlg = String(diag.encAlg || "");
   const files = asList(pData.files).slice(0, 50).map((f: Any) => {
     let pf = Number(f.pct) || 0;
     if (f.status === "active" && act.name && act.name === f.name) pf = Number(act.pct) || pf;
@@ -141,6 +145,7 @@ export function mirrorModel(d: Any, prevHistory: number[]): MirrorModel {
     encryptMode,
     encryptRequested,
     encryptedAny,
+    encAlg,
     files,
     speedHistory,
   };

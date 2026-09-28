@@ -2165,6 +2165,71 @@ jobs:
           grep -qF 'and the encrypt' docs/MIRROR-HOSTS.md || true
           echo 'F46 gates PASS'
 
+      # [F47] Mirror per-run opt-in + token plumbing + AES-256 honesty gates.
+      # The shipped default stays OFF, the gofile token travels as process env
+      # ONLY (never config.json, a token file, a URL, a log or an artifact),
+      # mirror_enable without the secret is a loud fail-closed stage halt, the
+      # AES-256 mode is a real encryptor with a per-run 32-byte key, and the
+      # probe matrix is visible on the Mirror page. No host-policy evasion.
+      - name: F47 mirror opt-in + token plumbing + AES-256 gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          inblock() { awk '/^on:/{f=1} /^permissions:/{f=0} f' "$wf"; }
+          # §1 the opt-in is a first-class dispatch input, default false
+          inblock | grep -qE '^[[:space:]]+mirror_enable:'
+          inblock | grep -qE '^[[:space:]]+mirror_encrypt:'
+          awk '/mirror_enable:/{f=1} f&&/default:/{print;exit}' "$wf" | grep -qF 'default: false'
+          awk '/mirror_encrypt:/{f=1} f&&/default:/{print;exit}' "$wf" | grep -qF 'default: false'
+          grep -qE 'MIRROR_INPUT: \$\{\{ github\.event\.inputs\.mirror_enable == true' "$wf"
+          grep -qE 'MIRROR_ENCRYPT_INPUT: \$\{\{ github\.event\.inputs\.mirror_encrypt == true' "$wf"
+          # §1.1 token via process env ONLY
+          grep -qE 'GOFILE_TOKEN: \$\{\{ secrets\.GOFILE_TOKEN \}\}' "$wf"
+          grep -qF "[Environment]::SetEnvironmentVariable('GHRDP_GOFILE_TOKEN', " "$wf"
+          grep -qF "SetEnvironmentVariable('GHRDP_GOFILE_TOKEN', \$null, 'User')" "$wf"
+          # a config.json property write is an indented bare key; the PowerShell
+          # local ($gofileToken) is not a config write.
+          if grep -nE '^[[:space:]]+gofileToken[[:space:]]*=|gofile-token\.txt' "$wf"; then
+            echo 'F47: the gofile token may never be written to config.json or a token file' >&2
+            exit 1
+          fi
+          if grep -nE '[?&]token=' "$wf" payloads/ghrdp-mirror.ps1 payloads/ghrdp-watcher.ps1; then
+            echo 'F47: a credential may not appear in a URL' >&2
+            exit 1
+          fi
+          # §1.3 fail-closed stage halt with the Secrets link
+          grep -qF 'MISSING REQUIRED SECRET: GOFILE_TOKEN' "$wf"
+          grep -qF 'settings/secrets/actions' "$wf"
+          grep -qF "throw 'F47: mirror_enable=true requires the repo secret GOFILE_TOKEN" "$wf"
+          # §3 real AES-256 + honest title + masked key
+          grep -qF 'keyBytes = 32' payloads/ghrdp-mirror.ps1
+          grep -qF "encryptedMime = 'application/x-ghrdp-mirror'" payloads/ghrdp-mirror.ps1
+          grep -qF 'function Invoke-F46EncryptFile' payloads/ghrdp-mirror.ps1
+          grep -qF 'function Invoke-F46DecryptFile' payloads/ghrdp-mirror.ps1
+          grep -qF 'function Test-F46AesGcmUsable' payloads/ghrdp-mirror.ps1
+          grep -qF 'Invoke-F46EncryptFile' payloads/ghrdp-watcher.ps1
+          grep -qF 'refusing to upload plaintext' payloads/ghrdp-watcher.ps1
+          grep -qF '@($token, $mirrorKeyText)' payloads/ghrdp-watcher.ps1
+          grep -qF 'Mirror - AES-256 encrypted runner upload' src/i18n/en.json
+          grep -qF 'MaskedField id="mirrorKey"' src/components/domain/KeysCard.tsx
+          # §2 probe matrix visible on the Mirror page + in the step summary
+          grep -qF '<MirrorHostMatrix />' src/pages/Mirror.tsx
+          grep -qF 'mirrorHosts' src/components/domain/MirrorHostMatrix.tsx
+          grep -qF 'mirror-host-operator-options' src/components/domain/MirrorHostMatrix.tsx
+          grep -qF '[F47] mirror opt-in for THIS run' "$wf"
+          # no evasion in any mirror surface (the new page component included)
+          if grep -nE 'Mozilla/[0-9]|X-Forwarded-For|[Ww]ebProxy|proxy[[:space:]]*=|rotat' payloads/ghrdp-mirror.ps1 payloads/ghrdp-watcher.ps1 payloads/ghrdp-fx.ps1 src/components/domain/MirrorHostMatrix.tsx; then
+            echo 'F47: an evasion pattern (UA spoofing / proxy / IP rotation / header spoofing) appeared' >&2
+            exit 1
+          fi
+          # §4 the lab + suites exist and run
+          test -f tests/f47-mirror-optin.test.js
+          test -f src/tests/smoke/f47-mirror-optin.test.tsx
+          grep -qF '[F47' tests/f46-mirror-policy.ps1
+          node --test tests/f47-mirror-optin.test.js
+          echo 'F47 gates PASS'
+
       - name: F40 information-architecture regression lock
         shell: bash
         run: |

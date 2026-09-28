@@ -82,11 +82,10 @@ export function KeysCard() {
         <span className="text-xs text-tertiary">decrypt key for files uploaded before this run</span>
       </Row>
       <Row k={t("keys.currentKey")}>
-        <span id="mirrorKey" className="font-mono text-sm text-text-mono break-all">
-          {mirrorKey}
-        </span>
-        <CopyButton value={mirrorKey} />
-        <span className="text-xs text-tertiary">decrypt key for THIS run&apos;s uploads</span>
+        {/* [F47 §3] the per-run AES-256 key: masked in the DOM, full value only
+            behind the reveal toggle and the copy button (MaskedField). */}
+        <MaskedField id="mirrorKey" value={mirrorKey} labelKey="keys.currentKeyMask" placeholder="__MIRRORKEY__" />
+        <span className="text-xs text-tertiary">per-run AES-256 key for THIS run&apos;s uploads (32 B, config mirrorKey; never logged)</span>
       </Row>
       <Row k={t("keys.windowsPassword")}>
         <MaskedField id="credWinPass" value={secrets.credWinPass} mask={secrets.windowsPassMask} labelKey="keys.windowsPassword" />
