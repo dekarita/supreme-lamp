@@ -137,8 +137,15 @@ enable destructive operations on archived data.
 
 Local proof: 35 new data/mock assertions pass, including partial JSON,
 idempotency, non-mutation, UTF-8 identity, exact full host errors and no network
-fallback. Stage-specific annotations wired. Hosted proof/landing pending.
-Operator checkpoints remain pending as above; S3 has not started.
+fallback. Stage-specific annotations wired. Landed via PR
+[#78](https://github.com/dekarita/supreme-lamp/pull/78), head
+`5bc34120fccd8f3e683cc53c9f7a1951922388cd`, merge commit
+`826096763437a4bd56f0900e45af247e7b63eb21`: PR launch-gates 36377980668 PASS
+and push autologin-lab 36377955523 PASS. The push launch-gates run 36377955417
+on the same sha was red ONLY on the F42 e2e flake that the ride-along below
+root-caused and fixed in S3 - the merge was made on the green PR lane and the
+flake is recorded rather than hidden. Operator checkpoints remain unchanged and
+pending; S3 began only after this merge.
 
 ## S3 — endpoint clients only
 
@@ -233,8 +240,18 @@ gofile call and no real runner call was made.
 
 ### Hosted proof and landing
 
-Pending: this stage has not been pushed at the time of writing. Operator
-checkpoints above remain unchanged and pending; S4 has not started.
+Landed via PR [#79](https://github.com/dekarita/supreme-lamp/pull/79), head
+`23369d60e56cb46fcd853f4ec6b8f5c31f2825cb`, merge commit
+`efba6794fc8ca06c20cdeefd0b49a993172f54fe` after all checks passed:
+
+| Run | Lane | Result |
+|---|---|---|
+| 36380574320 | push launch-gates (gates + windows-native + hosted e2e) | PASS |
+| 36380596878 | PR launch-gates (gates + windows-native + hosted e2e) | PASS |
+| 36380574357 | push autologin-lab proof | PASS |
+
+No dispatch. Operator checkpoints above remain unchanged and pending; S4 began
+only after this merge.
 
 
 ## S4 — server-side Explorer routes (fx)

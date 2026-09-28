@@ -23,10 +23,22 @@ $script:Fail = 0
 $script:Failures = @()
 $script:Diag = 'not reached'
 $script:Keep = [bool]$KeepArtifacts
+# unit vs integration split (the stage report quotes both counts; the CI lane
+# only ever showed the combined number before this).
+$script:Section = 'unit'
+$script:UnitPass = 0
+$script:UnitFail = 0
+$script:IntegPass = 0
+$script:IntegFail = 0
 
-function Ok([string]$Name) { $script:Pass++; Write-Host ('  ok   ' + $Name) }
+function Ok([string]$Name) {
+    $script:Pass++
+    if ($script:Section -eq 'integration') { $script:IntegPass++ } else { $script:UnitPass++ }
+    Write-Host ('  ok   ' + $Name)
+}
 function Fail([string]$Name, [string]$Detail) {
     $script:Fail++
+    if ($script:Section -eq 'integration') { $script:IntegFail++ } else { $script:UnitFail++ }
     $flat = ([string]$Detail).Replace("`r", ' ').Replace("`n", ' | ')
     $script:Failures += ($Name + ' :: ' + $flat)
     # GitHub keeps only the first 10 annotations per step, so every failure is
@@ -212,6 +224,7 @@ try {
 $script:Diag = $script:Diag + $probe
 Write-Host ('[F45] diagnostics: ' + $script:Diag)
 
+$script:Section = 'unit'
 try {
 Write-Host '[F45] unit: GET /api/fx/list'
 $r = Invoke-FxRoute -Ctx (New-FxCtx -Path '/api/fx/list' -Headers @{ 'x-dash-token' = $Token } -DashToken $Token)
@@ -493,6 +506,7 @@ CheckEqual 'migration never mutates the input' 1 $v1Doc.schemaVersion
 # =============================================================================
 # INTEGRATION - the REAL server over HTTP
 # =============================================================================
+$script:Section = 'integration'
 Write-Host '[F45] integration: real ghrdp-server.ps1 over loopback HTTP'
 function Get-FreePort {
     $l = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse('127.0.0.1'), 0)
@@ -689,7 +703,10 @@ CheckContains 'the fx audit trail exists' $auditText2 'fx op='
 if ($script:Keep) { Write-Host ('[F45] artifacts kept at ' + $root) } else { try { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue } catch { } }
 
 $total = $script:Pass + $script:Fail
-Write-Host ('[F45] unit+integration: ' + $script:Pass + '/' + $total + ' passed')
+$unitTotal = $script:UnitPass + $script:UnitFail
+$integTotal = $script:IntegPass + $script:IntegFail
+$split = '[F45] unit ' + [string]$script:UnitPass + '/' + [string]$unitTotal + ' | integration ' + [string]$script:IntegPass + '/' + [string]$integTotal + ' | total ' + [string]$script:Pass + '/' + [string]$total + ' passed'
+Write-Host $split
 if ($script:Fail -gt 0) {
     # ONE annotation: %0A is a newline in a workflow command, so the operator
     # sees EVERY failed check (the 10-annotation cap cannot hide any of them).
@@ -707,4 +724,7 @@ if ($script:Fail -gt 0) {
     exit 1
 }
 Write-Host '[F45] PASS - server routes: contract, CSRF, Range, error paths, redaction'
+# a notice annotation carries the split out of the hosted run (logs are not
+# downloadable from this environment, annotations are).
+Write-Host ('::notice::' + $split)
 exit 0
