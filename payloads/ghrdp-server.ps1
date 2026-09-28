@@ -650,6 +650,40 @@ function Get-F30TlsNormState {
     return $st
 }
 # [F30 §3 connlog-end]
+# [F45 S4 fx-module-begin] EXPLORER FILE-API ROUTES. The route implementation
+# lives in payloads/ghrdp-fx.ps1 (deployed next to this script) and is
+# dot-sourced here, never copied: the server and tests/f45-fx-server.ps1 execute
+# the SAME functions. $script:FxReady is the fail-visible flag the dispatch
+# below honours - a missing module answers 503 on every /api/fx/* route instead
+# of pretending the API exists.
+$script:FxModule = ''
+$script:FxReady = $false
+$script:FxLoadError = ''
+$script:FxCsrf = ''
+foreach ($fxCand in @((Join-Path $Root 'ghrdp-fx.ps1'), (Join-Path $PSScriptRoot 'ghrdp-fx.ps1'))) {
+    try {
+        if ($script:FxReady) { break }
+        if ($fxCand -and (Test-Path -LiteralPath $fxCand -PathType Leaf)) {
+            . $fxCand
+            $script:FxModule = $fxCand
+            $script:FxReady = $true
+        }
+    } catch {
+        $script:FxLoadError = ('module load failed: ' + $_.Exception.Message)
+    }
+}
+if (-not $script:FxReady) { $script:FxLoadError = ('ghrdp-fx.ps1 not found next to the server at ' + $Root) }
+# §1.5/§1.6 CSRF token: one per server process, 24 random bytes, never logged.
+# It reaches the dashboard as the JS-readable SameSite=Strict cookie
+# ghrdp_fx_csrf (and the X-CSRF-Token response header on /api/fx/list); a POST
+# without it is refused with 403.
+try {
+    $fxCsrfBytes = New-Object byte[] 24
+    $fxCsrfRng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $fxCsrfRng.GetBytes($fxCsrfBytes) } finally { $fxCsrfRng.Dispose() }
+    $script:FxCsrf = ([BitConverter]::ToString($fxCsrfBytes)).Replace('-', '').ToLowerInvariant()
+} catch { $script:FxCsrf = '' }
+# [F45 S4 fx-module-end]
 # [F37 §4 telescope-begin] LIVE RUNNER TELESCOPE (secret-free).
 # The runner keeps its OWN observability: a 60s tick runs the SINGLE telescope
 # implementation (payloads/rdp-telescope.ps1 - dot-sourced here, never a copy)
@@ -1076,12 +1110,23 @@ function Send-ClientResponse {
     # emits byte-identical headers. Cache-Control: no-store is always set.
     param($Stream, [int]$Code, [string]$CType, [byte[]]$Body, [string]$ExtraHeaders = '')
     $status = 'OK'
-    if ($Code -eq 401) { $status = 'Unauthorized' }
+    if ($Code -eq 202) { $status = 'Accepted' }
     if ($Code -eq 204) { $status = 'No Content' }
+    if ($Code -eq 206) { $status = 'Partial Content' }
+    if ($Code -eq 400) { $status = 'Bad Request' }
+    if ($Code -eq 401) { $status = 'Unauthorized' }
     if ($Code -eq 403) { $status = 'Forbidden' }
     if ($Code -eq 404) { $status = 'Not Found' }
+    if ($Code -eq 405) { $status = 'Method Not Allowed' }
     if ($Code -eq 409) { $status = 'Conflict' }
+    if ($Code -eq 413) { $status = 'Payload Too Large' }
+    if ($Code -eq 415) { $status = 'Unsupported Media Type' }
+    if ($Code -eq 416) { $status = 'Range Not Satisfiable' }
+    if ($Code -eq 429) { $status = 'Too Many Requests' }
     if ($Code -eq 500) { $status = 'Server Error' }
+    if ($Code -eq 502) { $status = 'Bad Gateway' }
+    if ($Code -eq 503) { $status = 'Service Unavailable' }
+    if ($Code -eq 504) { $status = 'Gateway Timeout' }
     $hdr = "HTTP/1.1 $Code $status`r`nContent-Type: $CType`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`nCache-Control: no-store`r`nAccess-Control-Allow-Origin: *`r`nAccess-Control-Allow-Headers: Content-Type, Authorization`r`nAccess-Control-Allow-Methods: GET,POST,OPTIONS`r`n$ExtraHeaders`r`n"
     $hb = [System.Text.Encoding]::ASCII.GetBytes($hdr)
     $Stream.Write($hb, 0, $hb.Length)
@@ -1171,6 +1216,56 @@ function Invoke-ClientRequest {
         # [F10-2 §3] per-request creds authorization (strict subset of access).
         $credsAllowed = Test-CredsAllowed -Client $Client -Query $parts.query -Token $Token
         $cfg = Read-JsonFile -Path $script:CfgPath
+        # [F45 S4 fx-dispatch-begin] Explorer file-API + preview-sandbox routes.
+        # Everything security-relevant is decided INSIDE the module (dash-token
+        # presentation, query-credential refusal, CSRF, path containment); this
+        # block only translates the parsed request into the module's context and
+        # writes the response back through the one response writer. The audit
+        # line carries method+path+status only - never a query string, never a
+        # header, never a token.
+        if ($path -eq '/api/fx' -or $path.StartsWith('/api/fx/') -or $path -eq '/preview-sandbox' -or $path.StartsWith('/preview-sandbox/')) {
+            if (-not $script:FxReady) {
+                Send-ClientResponse -Stream $stream -Code 503 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ phase = 'parse'; error = ('Explorer API unavailable: ' + [string]$script:FxLoadError) })
+                Write-ClientAudit ('fx ' + [string]$parts.method + ' ' + $path + ' -> 503 (module missing)')
+                return
+            }
+            $fxClass = 'other'
+            try {
+                $fxIp = $Client.Client.RemoteEndPoint.Address
+                if (Test-IsLoopbackAddr $fxIp) { $fxClass = 'loopback' }
+                else {
+                    $fxOct = $fxIp.GetAddressBytes()
+                    if ($fxOct.Length -eq 4 -and $fxOct[0] -eq 100 -and $fxOct[1] -ge 64 -and $fxOct[1] -le 127) { $fxClass = 'tailnet' }
+                }
+            } catch { }
+            $fxCtx = @{
+                root = $Root
+                path = $path
+                method = [string]$parts.method
+                query = $parts.query
+                headers = $parts.headers
+                body = [byte[]]$parts.body
+                clientClass = $fxClass
+                dashToken = [string]$Token
+                csrfToken = [string]$script:FxCsrf
+                options = @{ Config = $cfg }
+            }
+            $fxResp = $null
+            $fxErr = ''
+            try { $fxResp = Invoke-FxRoute -Ctx $fxCtx } catch { $fxErr = $_.Exception.Message }
+            if (-not $fxResp) {
+                $fxMsg = 'fx route failed'
+                if ($fxErr) { $fxMsg = $fxMsg + ': ' + (Protect-FxText -Text $fxErr -Secrets @([string]$Token)) }
+                $fxResp = @{ Code = 500; CType = 'application/json; charset=utf-8'; Body = (ConvertTo-JsonBytes @{ phase = 'parse'; error = $fxMsg }); Headers = @() }
+            }
+            $fxExtra = ''
+            $fxHdrList = @($fxResp.Headers)
+            if ($fxHdrList.Count -gt 0) { $fxExtra = ($fxHdrList -join "`r`n") }
+            Send-ClientResponse -Stream $stream -Code ([int]$fxResp.Code) -CType ([string]$fxResp.CType) -Body ([byte[]]$fxResp.Body) -ExtraHeaders $fxExtra
+            Write-ClientAudit ('fx ' + [string]$parts.method + ' ' + $path + ' -> ' + [string]$fxResp.Code)
+            return
+        }
+        # [F45 S4 fx-dispatch-end]
         # [remediation 8A] /rentrydiag removed: no public-mirror editing
         if ($path -eq '/rentrydiag') {
             Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('endpoint removed per remediation'))
@@ -2722,6 +2817,19 @@ try { $listener.Start() } catch {
     exit 1
 }
 [System.IO.File]::WriteAllText($script:OkFile, ('LISTENING pid={0} bind={1} port={2} at={3}' -f $PID, $Bind, $Port, (Get-Date -Format o)), $script:NoBom)
+# [F45 S4 fx-worker-begin] Queue worker: one process per Root owns
+# %TEMP%\ghrdp\fx-upload-queue.json (same singleton discipline as the wire-probe
+# / rdp-ping / rdp-usage loops). It is a no-op off Windows and it never runs
+# when the module failed to load, so a lab harness stays deterministic.
+try {
+    if ($script:FxReady) {
+        $fxWorker = Start-FxUploadWorker -Root $Root -QueuePath (Get-FxQueuePath -Root $Root -Options @{}) -ModulePath $script:FxModule
+        Write-Host ('[F45] fx upload worker: started=' + [string]$fxWorker.started + ' reason=' + [string]$fxWorker.reason)
+    } else {
+        Write-Host ('[F45] fx upload worker not started: ' + [string]$script:FxLoadError)
+    }
+} catch { Write-Host ('[F45] fx upload worker start failed: ' + $_.Exception.Message) }
+# [F45 S4 fx-worker-end]
 $probeScript = @'
 $ErrorActionPreference='Continue'
 $ts='C:\Program Files\Tailscale\tailscale.exe'

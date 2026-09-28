@@ -7,7 +7,8 @@ Read the user-supplied `rdp-dashboard-plan.md` first, then the binding
 This ledger does not replace either plan or claim operator acceptance.
 
 Session branches: S1/S2 landed from `arena/01a0e638-supreme-lamp`; S3 is
-authored on `arena/01a0e650-supreme-lamp`. No workflow dispatches by the agent.
+authored on `arena/01a0e650-supreme-lamp`; S4 is authored on
+`arena/01a0e6c3-supreme-lamp`. No workflow dispatches by the agent.
 Landing: session push → PR → all CI green → merge commit, never squash/rebase,
 force-push, amend pushed history, or push main. Subsequent stages wait for the
 previous stage's green lab/landing. Production dispatch is operator-only.
@@ -234,3 +235,86 @@ gofile call and no real runner call was made.
 
 Pending: this stage has not been pushed at the time of writing. Operator
 checkpoints above remain unchanged and pending; S4 has not started.
+
+
+## S4 — server-side Explorer routes (fx)
+
+Plan references: Explorer §1.1–1.9, §3, §5 endpoint contract, §7 sandbox
+isolation, §8 upload state machine; parent §§2, 8.2–8.3, 9.1. No UI (S5+), no
+Mirror state change, no live gofile call, no live runner call. The
+user-supplied `rdp-file-explorer-plan.md` is NOT in this checkout; the binding
+contract used here is the S3 client (`src/components/explorer/api/endpoints.ts`
+validators) plus the S2 data layer (`schema.ts`, `migrations/`), which the S3
+ledger already records as the de-facto contract.
+
+### What landed
+
+- `payloads/ghrdp-fx.ps1` (NEW): the route implementation, deployed next to the
+  server and DOT-SOURCED by `payloads/ghrdp-server.ps1` (never copied), so the
+  server, the S4 test and any later stage execute ONE implementation. Routes:
+  `/api/fx/list` (schemaVersion-2 emission + v1 migration), `/api/fx/meta`,
+  `/api/fx/gofile/status` (cached; live poll only when a host token is
+  configured), `/api/fx/preview` (Range/206, 416, 413 cap, 415 allowlist,
+  credential-free direct links only), `/api/fx/op` (CSRF; atomic index write),
+  `/api/fx/upload` (CSRF; durable queue at `%TEMP%\ghrdp\fx-upload-queue.json`;
+  background worker per §8), `/preview-sandbox/<id>` (MIME-explicit shell; CSP,
+  `Origin-Agent-Cluster: ?1`, `Cross-Origin-Resource-Policy: same-site`,
+  SameSite=Strict CSRF cookie). One redaction funnel (`Protect-FxText` →
+  `***REDACTED***`) guards every log line and every error body.
+- `payloads/ghrdp-server.ps1`: module load with a fail-visible 503 when the
+  module is missing, request-context translation, response passthrough through
+  the single `Send-ClientResponse` writer (status text for 202/206/400/401/403/
+  404/405/409/413/415/416/429/500/502/503/504), redacted 500 on a thrown route,
+  per-process CSRF token, worker start after LISTENING.
+- `.github/workflows/main.yml`: stages the module next to the server.
+- `.github/workflows/launch-gates.yml`: parses the module + the new test in the
+  windows-native language-parser step; runs `tests/f45-fx-server.ps1`; runs
+  `scripts/ps-balance-audit.mjs` plus source-level F45 assertions in the gates job.
+- `scripts/ps-balance-audit.mjs` (NEW): the node twin of the Python structural
+  audit (same tokenizer) with the F45 contract checks; `tests/f45-fx-server.test.js`
+  imports its `audit()` and proves the audit is not vacuous.
+- `tests/f45-fx-server.ps1` (NEW): unit matrix (mock index + mock host through
+  the injectable Fetch/Uploader seam) and the REAL server over loopback HTTP
+  (dash-token 401, 200/206/416/413/415/404, CSRF 403/200, upload 202, sandbox
+  headers, credential-redaction sweep over every log the run produced).
+- `tests/f45-fx-server.test.js` (NEW): pins the route table, the 41-value MIME
+  allowlist against `preview-mime-map.json`, the redaction funnel, atomic
+  schemaVersion-2 emission with `gofileHosts`, the deployment staging and both
+  lanes' wiring.
+- `tests/ps-balance-audit.py`: audits the module and the new test too.
+
+### Decisions and deltas (explicit, not silent)
+
+| # | Decision | Why |
+|---|---|---|
+| 1 | Index path `%Root%\fx-index.json` (env `GHRDP_FX_INDEX_PATH` override) | F44's mirror index is not a proven dependency (PR #76 open and red); the route reads the runner-owned index next to the server. |
+| 2 | Auth = `X-Dash-Token` (or `Authorization: Bearer`); a credential in the QUERY STRING is refused with 401 | S3 client sends the header only; `?key=` must never authorise an Explorer call. |
+| 3 | POST requires `X-CSRF-Token` equal to the per-process token, delivered as the `ghrdp_fx_csrf` SameSite=Strict cookie | CSRF is not inferable from the dash token; the cookie is readable by the dashboard only. |
+| 4 | 504 for a host timeout, 502 otherwise, both with `Retry-After` | Matches S3 `errors.ts` (retryable transients) and §5.2's phase split (504 → `tcp`). |
+| 5 | `move` rewrites the stable id (SHA-1(root+path)); the response reports the REQUIRED id | Identity is content-addressed, so a moved file is a new id; the client must be able to correlate. |
+| 6 | `hard=true` and unknown ops are refused 400 | §5.1(3): no hard delete anywhere, and an untyped op must not be a no-op. |
+| 7 | No host token → the upload job is HELD (`queued`) with `phase=auth` recorded, never sent anonymously and never dropped | A silent drop is exactly the red-without-why failure mode this project keeps paying for. |
+| 8 | Preview cap 64 MiB default (`fxPreviewMaxBytes` / `Options.PreviewMaxBytes`) | Fail-closed before reading a multi-GB file into memory; the lab lowers it to prove 413. |
+| 9 | The sandbox shell is MIME-explicit, `script-src 'none'`, GET-only | §7: the renderer is chosen server-side; no script execution in the isolated surface. |
+
+### Local evidence (S4)
+
+| Gate | Result |
+|---|---|
+| Frozen pnpm install | PASS; lockfile unchanged |
+| tsc + `vite build` | PASS (`ui/dist/index.html`, 557 kB) |
+| Vitest | 498/498 PASS (15 files; unchanged by S4) |
+| Node regression suites | 293/293 PASS (279 + 14 new S4 assertions) |
+| PowerShell structural audits (py + mjs) | PASS, 0 surfaces failed |
+| F45 S4 mjs contract surface | PASS (routes, statuses, CSRF, atomic write, MIME fixture, redaction, staging, lanes) |
+| 219-ID lock / fx-* namespace | 219/219 PASS; 10 IDs + 1 class, collision-free |
+| No-neon-green / bottom-bar-time | PASS / PASS |
+| Browser e2e (10 specs) | NOT RUN locally: `cdn.playwright.dev` is unreachable from this sandbox; hosted lane required |
+| PowerShell execution | NOT RUN locally: no `pwsh` in the sandbox and the download hosts are blocked; the real parse/execution proof is the hosted windows-native lane (`Parse native PowerShell scripts` + the F45 step) |
+
+No operator confirmation and no live-functionality claim is made here. No real
+gofile call, no real runner call, no workflow dispatch.
+
+### Hosted proof and landing
+
+Pending until the push/PR runs finish; see the stage report.
