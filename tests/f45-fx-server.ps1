@@ -580,6 +580,12 @@ try {
         CheckEqual 'I 401 on a wrong dash token' 401 $r.Code
         $r = Send-FxRaw -Port $port -Method 'GET' -Target '/api/fx/list'
         CheckEqual 'I list 200 from loopback' 200 $r.Code
+        # raw-transmission probe: a status/header can be right while the body is
+        # lost in the socket path, and the CI log is the only place that shows it
+        $rawList = Send-FxRaw -Port $port -Method 'GET' -Target '/api/fx/list'
+        $rawHead = [string]$rawList.Head
+        $rawHead = $rawHead.Replace("`r", ' ').Replace("`n", ' | ')
+        Write-Host ('[F45] http probe: code=' + [string]$rawList.Code + ' bytes=' + [string]$rawList.Body.Length + ' cl=[' + [string]$rawList.Headers['content-length'] + '] ctype=[' + [string]$rawList.Headers['content-type'] + '] head=[' + $rawHead + ']')
         CheckContains 'I list is schemaVersion 2' $r.Text '"schemaVersion":2'
         CheckContains 'I list carries gofileHosts' $r.Text 'gofileHosts'
         CheckContains 'I CSRF cookie is delivered' ([string]$r.Headers['set-cookie']) 'ghrdp_fx_csrf='
