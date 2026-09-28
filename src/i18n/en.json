@@ -276,7 +276,7 @@
   },
   "mirrorHostMatrix": {
     "title": "Mirror host matrix (read-only probe)",
-    "subtitle": "Live from /diag mirrorHosts - the same {host,status,note} rows the CI step summary prints. Read-only GET of each host API root: no upload, no credential, no evasion.",
+    "subtitle": "Live from /diag mirrorHosts - the same {host,status,note} rows the CI step summary prints. Read-only GET of each host API root: token-less guest mode - no upload, no credential, no evasion.",
     "loading": "probing hosts...",
     "refreshing": "probing...",
     "rows": "host(s)",
@@ -285,6 +285,9 @@
     "optionsTitle": "Operator options (docs/MIRROR-HOSTS.md §5)",
     "optionVps": "Run the mirror upload from an operator-owned VPS egress that you configure yourself (payloads/Provision-GhrdpVps.ps1).",
     "optionAccept": "Accept that the mirror is unavailable from ephemeral runners and leave it off (mirror_enable=false).",
-    "optionsFooter": "A 403 from the runner egress is a policy dead-end, not a puzzle: host-policy workarounds are refused by design and blocked by a CI gate. Re-dispatch with mirror_enable=false, or move the upload to your own egress."
+    "optionDisable": "Disable the mirror (mirror_enable=false) - no upload is attempted.",
+    "optionSelfHosted": "Point the mirror at a self-hosted operator target you control.",
+    "optionTokenFuture": "Token mode is a separate future decision, out of scope here (this build never accepts or stores a host token).",
+    "optionsFooter": "A 403 from the runner egress or a 'host requires account token; token-less mode unsupported' reason is a policy dead-end, not a puzzle: host-policy workarounds are refused by design and blocked by a CI gate. Re-dispatch with mirror_enable=false, or move the upload to your own egress."
   }
 }

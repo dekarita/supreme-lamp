@@ -15,8 +15,12 @@
 #
 # Legitimate documented usage only (docs/MIRROR-HOSTS.md pins the contract
 # fetched from https://gofile.io/api): no user-agent spoofing, no IP/proxy
-# switching, no block evasion, no credential in a URL. The token travels in
-# the `Authorization: Bearer <token>` header only - never a query-string token, never a URL.
+# switching, no block evasion, no credential anywhere. [F48 §0] TOKEN-LESS
+# MIRROR MODE: uploads are a guest multipart POST (field `file`) to the pinned
+# anonymous endpoint with NO Authorization, NO X-Gofile-Token, NO Cookie header
+# toward the host, ever. A host that answers 401/403 gets ONE labeled terminal
+# reason (host requires account token; token-less mode unsupported) plus the
+# operator options - never a retry loop and never a credential workaround.
 
 # --- [F46 §2 policy-begin] -------------------------------------------------
 # Mirrors src/components/explorer/api/retryPolicy.ts + errors.ts exactly.
@@ -35,9 +39,9 @@ $script:F46AttemptMsgChars = 200
 # docs/MIRROR-HOSTS.md for the verbatim excerpts and the deltas.
 $script:F46GofileContract = [ordered]@{
     apiRoot = 'https://api.gofile.io'
-    # POST /accounts with body {} -> data.token (guest account). No token needed.
-    accountsPath = '/accounts'
-    # GET /servers -> data.servers[].name (documented two-step upload flow).
+    # [F48 §0] GET /servers -> data.servers[].name (read-only probe + the
+    # documented two-step upload flow). The account-minting POST /accounts rung
+    # was removed with all token plumbing: the guest contract needs no account.
     serversPath = '/servers'
     # Current reference: POST https://upload.gofile.io/uploadfile
     uploadHostAuto = 'upload.gofile.io'
@@ -45,8 +49,9 @@ $script:F46GofileContract = [ordered]@{
     # Legacy/documented fleet form: POST https://<server>.gofile.io/contents/uploadfile
     uploadPathFleet = '/contents/uploadfile'
     multipartField = 'file'
-    authScheme = 'Bearer'
-    # [F47 §1] the scheme is a CONTRACT constant, never a per-attempt choice:
+    # [F48 §0] guest contract: NO Authorization / X-Gofile-Token / Cookie header
+    # is ever attached to a host request. The scheme is a CONTRACT constant,
+    # never a per-attempt choice:
     # production uploads are https. The lab points one host at a local listener
     # over http to prove the wire contract; no other value is honoured anywhere.
     uploadScheme = 'https'
@@ -87,10 +92,12 @@ function Get-F46DefaultHost {
         uploadPath = '/uploadfile'
         uploadScheme = 'https'
         enabled = $false
-        autoAccount = $false
         maxFileBytes = 0
         blockedExtensions = @()
-        tokenConfigKey = 'gofileToken'
+        # [F48 §1.3] 'guest' is the token-less contract this module always
+        # attempts; it flips to 'requires-account' only from a probe or first
+        # attempt result (401/403), never from the presence of any secret.
+        authMode = 'guest'
         timeoutSec = 120
     }
 }
@@ -104,7 +111,7 @@ function Get-F46Hosts {
     try { if ($Cfg -and $Cfg.PSObject.Properties['mirrorHosts']) { $configured = @($Cfg.mirrorHosts) } } catch { $configured = @() }
     foreach ($c in @($configured)) {
         $h = Get-F46DefaultHost
-        foreach ($k in @('id', 'displayName', 'apiRoot', 'uploadHostMode', 'uploadHost', 'uploadPath', 'uploadScheme', 'enabled', 'autoAccount', 'maxFileBytes', 'tokenConfigKey', 'timeoutSec')) {
+        foreach ($k in @('id', 'displayName', 'apiRoot', 'uploadHostMode', 'uploadHost', 'uploadPath', 'uploadScheme', 'enabled', 'maxFileBytes', 'authMode', 'timeoutSec')) {
             try {
                 if ($c -and $c.PSObject.Properties[$k] -and $null -ne $c.$k) { $h[$k] = $c.$k }
             } catch { }
@@ -130,33 +137,10 @@ function Select-F46UploadHost {
     return $null
 }
 
-function Get-F46HostToken {
-    # [F47 §1] TOKEN SOURCE LADDER - the dispatch secret arrives as PROCESS ENV
-    # (GHRDP_GOFILE_TOKEN) and nowhere else: never config.json, never a file the
-    # stage step writes, never a URL, log, artifact or UI field. The config key
-    # and gofile-token.txt rungs stay for a manual/lab runner only; the stage
-    # step writes neither.
-    param($Cfg, [string]$Root, $HostCfg)
-    $envTok = ''
-    try { $envTok = ([string]$env:GHRDP_GOFILE_TOKEN).Trim() } catch { $envTok = '' }
-    if ($envTok) { return $envTok }
-    $key = 'gofileToken'
-    try { if ($HostCfg -and $HostCfg.tokenConfigKey) { $key = [string]$HostCfg.tokenConfigKey } } catch { }
-    $t = ''
-    try { if ($Cfg -and $Cfg.PSObject.Properties[$key]) { $t = [string]$Cfg.$key } } catch { $t = '' }
-    if (-not $t -and $Root) {
-        try {
-            $p = Join-Path $Root 'gofile-token.txt'
-            if (Test-Path -LiteralPath $p) { $t = ([System.IO.File]::ReadAllText($p)).Trim() }
-        } catch { }
-    }
-    if ($t) { $t = $t.Trim() }
-    return $t
-}
-
 function Protect-F46SecretText {
     # Every log/artifact surface goes through here: configured secrets first,
-    # then bearer/token-shaped text (covers a guestToken echoed by the host).
+    # then any stray token-shaped text - including bare `token=` strings a host
+    # or a stale fixture may echo ([F48 §1.2] the redaction set greps them).
     param([string]$Text, $Secrets)
     if ($null -eq $Text) { return '' }
     $out = [string]$Text
@@ -566,36 +550,15 @@ function Get-F46GofileErrorClass {
     }
 }
 
-function New-F46GofileAccount {
-    # DOCUMENTED step 1 (POST https://api.gofile.io/accounts with {} -> a guest
-    # account token). Never silent: only reached when the host config sets
-    # autoAccount=true (see docs/MIRROR-HOSTS.md). The token is returned to the
-    # caller and never logged.
-    param([string]$ApiRoot = 'https://api.gofile.io', [int]$TimeoutSec = 30)
-    $uri = $ApiRoot.TrimEnd('/') + [string]$script:F46GofileContract.accountsPath
-    $body = '{}'
-    $r = [System.Net.WebRequest]::Create($uri)
-    $r.Method = 'POST'
-    $r.ContentType = 'application/json'
-    $r.Timeout = $TimeoutSec * 1000
-    $r.ReadWriteTimeout = $TimeoutSec * 1000
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($body)
-    $r.ContentLength = $bytes.Length
-    $rs = $r.GetRequestStream()
-    $rs.Write($bytes, 0, $bytes.Length)
-    $rs.Close()
-    $resp = $r.GetResponse()
-    $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
-    $text = $sr.ReadToEnd()
-    $sr.Close()
-    $resp.Close()
-    $json = ConvertFrom-F46Json -Text $text
-    $status = Get-F46String $json 'status'
-    $token = Get-F46FirstString (Get-F46Prop $json 'data') @('token')
-    if ($status -ne [string]$script:F46GofileContract.okStatus -or -not $token) {
-        return @{ ok = $false; token = ''; message = ('account creation failed: status=' + $status) }
-    }
-    return @{ ok = $true; token = $token; message = 'guest account created (documented POST /accounts)' }
+function Format-F48AuthReason {
+    # [F48 §2] The ONE labeled terminal reason for a 401/403 (or auth-class
+    # envelope) answer to an unauthenticated guest attempt: fail-fast (no
+    # retry loop) + the rendered operator options. The original host message
+    # is appended, never truncated (F44).
+    param([string]$Message)
+    $reason = 'host requires account token; token-less mode unsupported (authMode=requires-account). Operator options: (1) disable mirror (mirror_enable=false); (2) self-hosted operator target; (3) token mode - a separate future decision, out of scope here.'
+    if ($Message) { return ($reason + ' | ' + $Message) }
+    return $reason
 }
 
 function Get-F46UploadTarget {
@@ -657,19 +620,19 @@ function Get-F46UploadTarget {
 }
 
 function New-F46UploadRequestSpec {
-    # [F47 §4] The ONE place the multipart contract is assembled: field name
-    # `file`, the `Authorization: Bearer <token>` header (never a query-string
-    # token) and the part Content-Type - application/octet-stream for a
+    # [F48 §0] The ONE place the multipart contract is assembled: field name
+    # `file` and the part Content-Type - application/octet-stream for a
     # plaintext upload, application/x-ghrdp-mirror for an encrypted one. The
-    # lab asserts this spec AND the bytes a local listener receives, so the
-    # contract cannot drift between the two proof lanes.
-    param($HostCfg, [string]$Name, [string]$Token, [string]$Boundary, [string]$ContentType = '')
+    # request carries ONLY Accept; no Authorization, no X-Gofile-Token, no
+    # Cookie header toward the host ever exists. The lab asserts this spec AND
+    # the bytes a local listener receives, so the contract cannot drift
+    # between the two proof lanes.
+    param($HostCfg, [string]$Name, [string]$Boundary, [string]$ContentType = '')
     $fieldName = [string]$script:F46GofileContract.multipartField
     $ct = [string]$ContentType
     if (-not $ct) { $ct = [string]$script:F46GofileContract.plainMime }
     $safeName = ([string]$Name) -replace '[\r\n"]', '_'
     $headers = [ordered]@{ 'Accept' = 'application/json' }
-    if ($Token) { $headers['Authorization'] = ([string]$script:F46GofileContract.authScheme + ' ' + $Token) }
     $partHeader = ('--' + $Boundary + "`r`n" + 'Content-Disposition: form-data; name="' + $fieldName + '"; filename="' + $safeName + '"' + "`r`n" + 'Content-Type: ' + $ct + "`r`n`r`n")
     return [ordered]@{
         fieldName = $fieldName
@@ -684,19 +647,20 @@ function New-F46UploadRequestSpec {
 }
 
 function Send-F46GofileUpload {
-    # The upload itself: multipart/form-data, field name `file`, token in the
-    # Authorization header (never in the URL). Streamed - a multi-GB file is
-    # never buffered in memory. Returns ok/phase/httpStatus/hostMessage plus the
-    # documented response fields (code, file id, downloadPage).
+    # [F48 §0] The upload itself: guest multipart/form-data, field name `file`,
+    # NO auth header of any kind (never a credential in the URL either).
+    # Streamed - a multi-GB file is never buffered in memory. Returns
+    # ok/phase/httpStatus/hostMessage plus the documented response fields
+    # (code, file id, downloadPage).
     # [F47 §3] $ContentType stamps the part: the encrypted path passes
     # application/x-ghrdp-mirror, the plaintext path stays octet-stream.
-    param($HostCfg, [string]$Path, [string]$Name, [string]$Token, [int]$TimeoutSec = 120, $Target = $null, [string]$ContentType = '')
+    param($HostCfg, [string]$Path, [string]$Name, [int]$TimeoutSec = 120, $Target = $null, [string]$ContentType = '')
     if (-not $Target) { $Target = Get-F46UploadTarget -HostCfg $HostCfg -TimeoutSec ([Math]::Min($TimeoutSec, 30)) }
     if (-not $Target.ok) { return @{ ok = $false; phase = $Target.phase; httpStatus = $null; hostMessage = $Target.message; retryAfterMs = $null } }
     $fileLen = 0
     try { $fileLen = (Get-Item -LiteralPath $Path).Length } catch { return @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('upload source unreadable: ' + $_.Exception.Message); retryAfterMs = $null } }
     $boundary = '----ghrdpF46' + [guid]::NewGuid().ToString('N')
-    $spec = New-F46UploadRequestSpec -HostCfg $HostCfg -Name $Name -Token $Token -Boundary $boundary -ContentType $ContentType
+    $spec = New-F46UploadRequestSpec -HostCfg $HostCfg -Name $Name -Boundary $boundary -ContentType $ContentType
     $enc = [System.Text.Encoding]::UTF8
     $prefixBytes = $enc.GetBytes([string]$spec.partHeader)
     $suffixBytes = $enc.GetBytes([string]$spec.partTrailer)
@@ -710,7 +674,8 @@ function Send-F46GofileUpload {
         $req.ReadWriteTimeout = $TimeoutSec * 1000
         foreach ($hk in @($spec.headers.Keys)) {
             # Accept is a restricted header on HttpWebRequest - it has its own
-            # property; Authorization (and anything else) goes through Headers.
+            # property; any other allowed header goes through Headers. [F48]
+            # the spec only ever carries Accept: no auth header exists to set.
             if (([string]$hk) -eq 'Accept') { $req.Accept = [string]$spec.headers[$hk] } else { $req.Headers[[string]$hk] = [string]$spec.headers[$hk] }
         }
         $req.ContentLength = $prefixBytes.Length + [long]$fileLen + $suffixBytes.Length
@@ -809,9 +774,12 @@ function ConvertFrom-F46UploadResponse {
 
 function Invoke-F46MirrorAttempt {
     # ONE attempt, fully classified. Preflight (size/type), policy (host not
-    # enabled), credential hold and the encrypt lock all produce a labeled
-    # terminal reason with ZERO network tries.
-    param($HostCfg, [string]$Path, [string]$Name, [long]$Size, [string]$Token, [int]$AttemptNo = 1, $Transport = $null, [bool]$EncryptRequested = $false, [bool]$Encrypted = $false, [int]$TimeoutSec = 0, [string]$ContentType = '')
+    # enabled) and the encrypt lock produce a labeled terminal reason with
+    # ZERO network tries. [F48 §2] the attempt itself is ALWAYS the unauthenticated
+    # guest multipart POST: a 401/403 answer is ONE fail-fast attempt labeled
+    # 'host requires account token; token-less mode unsupported' (+ operator
+    # options), never a retry loop and never a credential.
+    param($HostCfg, [string]$Path, [string]$Name, [long]$Size, [int]$AttemptNo = 1, $Transport = $null, [bool]$EncryptRequested = $false, [bool]$Encrypted = $false, [int]$TimeoutSec = 0, [string]$ContentType = '')
     $hostId = 'none'
     if ($HostCfg) { $hostId = [string]$HostCfg.id }
     $started = Get-Date
@@ -831,24 +799,9 @@ function Invoke-F46MirrorAttempt {
     }
     $pre = Test-F46UploadPreflight -Size $Size -Name $Name -Host $HostCfg
     if (-not $pre.ok) { return (& $emit $pre.phase $null $pre.hostMessage $false $null) }
-    if (-not $Token) {
-        $auto = $false
-        try { $auto = [bool]$HostCfg.autoAccount } catch { $auto = $false }
-        if (-not $auto) {
-            return (& $emit 'auth' $null 'no host credential configured (config gofileToken / gofile-token.txt) and autoAccount=false - upload not attempted' $false $null)
-        }
-        $tries = 0
-        $acct = $null
-        while ($tries -lt 2 -and (-not $acct -or -not $acct.ok)) {
-            $tries = $tries + 1
-            try { $acct = New-F46GofileAccount -ApiRoot ([string]$HostCfg.apiRoot) -TimeoutSec 30 } catch { $acct = @{ ok = $false; token = ''; message = ('account creation failed: ' + $_.Exception.Message) } }
-        }
-        if (-not $acct.ok) { return (& $emit 'auth' $null ([string]$acct.message) $false $null) }
-        $Token = [string]$acct.token
-    }
     if ($Transport) {
         $raw = $null
-        try { $raw = (& $Transport $HostCfg $Path $Name $Size $Token) } catch { $raw = @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('mock transport threw: ' + $_.Exception.Message); retryAfterMs = $null } }
+        try { $raw = (& $Transport $HostCfg $Path $Name $Size) } catch { $raw = @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('mock transport threw: ' + $_.Exception.Message); retryAfterMs = $null } }
         if ($null -eq $raw) { $raw = @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = 'mock transport returned no result'; retryAfterMs = $null } }
         $ms = [int]((Get-Date) - $started).TotalMilliseconds
         $phase = 'http'
@@ -857,10 +810,14 @@ function Invoke-F46MirrorAttempt {
         try { if ($null -ne $raw.httpStatus) { $st = $raw.httpStatus } } catch { $st = $null }
         $msg = ''
         try { $msg = [string]$raw.hostMessage } catch { $msg = '' }
+        # [F48 §2] auth refusal => labeled reason + requires-account, ONE attempt.
+        $authMode = 'guest'
+        if ($phase -eq 'auth') { $msg = (Format-F48AuthReason -Message $msg); $authMode = 'requires-account' }
         $retry = $false
         try { if ($null -ne $raw.retryable) { $retry = [bool]$raw.retryable } else { $retry = (Test-F46TransientPhase -Phase $phase -Status $st) } } catch { $retry = (Test-F46TransientPhase -Phase $phase -Status $st) }
+        if ($phase -eq 'auth') { $retry = $false }
         $rec = New-F46AttemptRecord -N $AttemptNo -HostId $hostId -Phase $phase -Status $st -Message $msg -Ms $ms -Retryable $retry
-        $out = @{ ok = [bool]$raw.ok; phase = $phase; httpStatus = $st; hostMessage = $msg; retryAfterMs = $null; attemptNo = $AttemptNo; record = $rec; fileId = ''; code = ''; downloadPage = ''; directUrl = ''; durationMs = $ms }
+        $out = @{ ok = [bool]$raw.ok; phase = $phase; httpStatus = $st; hostMessage = $msg; retryAfterMs = $null; attemptNo = $AttemptNo; record = $rec; fileId = ''; code = ''; downloadPage = ''; directUrl = ''; durationMs = $ms; authMode = $authMode }
         try { if ($raw.retryAfterMs) { $out['retryAfterMs'] = $raw.retryAfterMs } } catch { }
         try { $out['fileId'] = [string]$raw.fileId } catch { }
         try { $out['code'] = [string]$raw.code } catch { }
@@ -874,7 +831,7 @@ function Invoke-F46MirrorAttempt {
     }
     $to = 120
     if ($TimeoutSec -gt 0) { $to = $TimeoutSec } elseif ($HostCfg -and $HostCfg.timeoutSec) { try { $to = [int]$HostCfg.timeoutSec } catch { $to = 120 } }
-    $res = Send-F46GofileUpload -HostCfg $HostCfg -Path $Path -Name $Name -Token $Token -TimeoutSec $to -ContentType $ContentType
+    $res = Send-F46GofileUpload -HostCfg $HostCfg -Path $Path -Name $Name -TimeoutSec $to -ContentType $ContentType
     $ms2 = [int]((Get-Date) - $started).TotalMilliseconds
     $phase2 = 'http'
     try { if ($res.phase) { $phase2 = [string]$res.phase } } catch { $phase2 = 'http' }
@@ -884,10 +841,14 @@ function Invoke-F46MirrorAttempt {
     try { $msg2 = [string]$res.hostMessage } catch { $msg2 = '' }
     $ok2 = $false
     try { $ok2 = [bool]$res.ok } catch { $ok2 = $false }
+    # [F48 §2] auth refusal => labeled reason + requires-account, ONE attempt.
+    $authMode2 = 'guest'
+    if ($phase2 -eq 'auth') { $msg2 = (Format-F48AuthReason -Message $msg2); $authMode2 = 'requires-account' }
     $retry2 = $false
     if (-not $ok2) { $retry2 = (Test-F46TransientPhase -Phase $phase2 -Status $st2) }
+    if ($phase2 -eq 'auth') { $retry2 = $false }
     $rec2 = New-F46AttemptRecord -N $AttemptNo -HostId $hostId -Phase $phase2 -Status $st2 -Message $msg2 -Ms $ms2 -Retryable $retry2
-    $out2 = @{ ok = $ok2; phase = $phase2; httpStatus = $st2; hostMessage = $msg2; retryAfterMs = $null; attemptNo = $AttemptNo; record = $rec2; fileId = ''; code = ''; downloadPage = ''; directUrl = ''; durationMs = $ms2 }
+    $out2 = @{ ok = $ok2; phase = $phase2; httpStatus = $st2; hostMessage = $msg2; retryAfterMs = $null; attemptNo = $AttemptNo; record = $rec2; fileId = ''; code = ''; downloadPage = ''; directUrl = ''; durationMs = $ms2; authMode = $authMode2 }
     try { if ($res.retryAfterMs) { $out2['retryAfterMs'] = $res.retryAfterMs } } catch { }
     try { $out2['fileId'] = [string]$res.fileId } catch { }
     try { $out2['code'] = [string]$res.code } catch { }
@@ -901,14 +862,14 @@ function Invoke-F46MirrorUploadWithPolicy {
     # scan and schedules the next with Get-F46BackoffMs; this loop exists so the
     # lab can prove the attempt counts per status without a live host and without
     # waiting for wall-clock backoff ($Sleeper is injectable).
-    param($HostCfg, [string]$Path, [string]$Name, [long]$Size, [string]$Token, $Transport = $null, [bool]$EncryptRequested = $false, [bool]$Encrypted = $false, [scriptblock]$Sleeper = $null, $Rand01 = $null, [string]$ContentType = '')
+    param($HostCfg, [string]$Path, [string]$Name, [long]$Size, $Transport = $null, [bool]$EncryptRequested = $false, [bool]$Encrypted = $false, [scriptblock]$Sleeper = $null, $Rand01 = $null, [string]$ContentType = '')
     $attempts = New-Object System.Collections.ArrayList
     $n = 0
     $ok = $false
     $last = $null
     while (-not $ok) {
         $n = $n + 1
-        $last = Invoke-F46MirrorAttempt -HostCfg $HostCfg -Path $Path -Name $Name -Size $Size -Token $Token -AttemptNo $n -Transport $Transport -EncryptRequested $EncryptRequested -Encrypted $Encrypted -ContentType $ContentType
+        $last = Invoke-F46MirrorAttempt -HostCfg $HostCfg -Path $Path -Name $Name -Size $Size -AttemptNo $n -Transport $Transport -EncryptRequested $EncryptRequested -Encrypted $Encrypted -ContentType $ContentType
         [void]$attempts.Add($last.record)
         if ($last.ok) { $ok = $true; break }
         $max = Get-F46MaxAttempts -Phase $last.phase -Status $last.httpStatus
@@ -927,6 +888,7 @@ function Invoke-F46MirrorUploadWithPolicy {
         code = $(if ($last) { $last.code } else { '' })
         downloadPage = $(if ($last) { $last.downloadPage } else { '' })
         link = $(if ($last) { $last.directUrl } else { '' })
+        authMode = $(if ($last -and $last.authMode) { $last.authMode } else { '' })
     }
 }
 
@@ -980,7 +942,7 @@ function Invoke-F46HostProbe {
             if ($we.Response) {
                 try { $status = [string]([int]$we.Response.StatusCode) } catch { $status = '-' }
                 if ($status -eq '403' -or $status -eq '401') {
-                    $note = 'runner egress rejected (' + $status + ') - policy/endpoint level rejection; operator option: operator-owned VPS egress (no evasion)'
+                    $note = 'runner egress rejected (' + $status + ') - token-less guest probe refused (authMode=requires-account); policy/endpoint level rejection; operator option: operator-owned VPS egress (no evasion)'
                 } elseif ($status -eq '429') {
                     $note = 'rate limited (429) at the API root - back off; the probe never changes identity'
                 } else {

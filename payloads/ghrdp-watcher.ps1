@@ -426,6 +426,9 @@ try {
       $mirrorKeyText = ''
       try { $mirrorKeyText = ([string]$cfg.mirrorKey).Trim() } catch { $mirrorKeyText = '' }
       $mirrorEncAlg = ''
+      # [F48 §1.3] authMode is set by the attempt/probe RESULT only:
+      # 'guest' until the host answers 401/403 ('requires-account').
+      $mirrorAuthMode = 'guest'
       foreach ($f in @($queue)) {
           $key = ([string]$f.FullName).ToLower()
           if ($mirrorTerminal.ContainsKey($key)) { continue }
@@ -570,16 +573,17 @@ try {
               Flush-MirrorProgress -Force
               continue
           }
-          $token = ''
-          try { $token = Get-F46HostToken -Cfg $cfg -Root $Root -HostCfg $mirrorHost } catch { $token = '' }
+          # [F48 §0] token-less guest mode: no credential is read anywhere -
+          # the attempt below is always the unauthenticated guest multipart.
           $res = $null
           try {
-              $res = Invoke-F46MirrorAttempt -HostCfg $mirrorHost -Path $uploadPath -Name $dispName -Size $uploadLen -Token $token -AttemptNo $attemptNo -EncryptRequested $shouldEncrypt -Encrypted $encApplied -ContentType $uploadMime
+              $res = Invoke-F46MirrorAttempt -HostCfg $mirrorHost -Path $uploadPath -Name $dispName -Size $uploadLen -AttemptNo $attemptNo -EncryptRequested $shouldEncrypt -Encrypted $encApplied -ContentType $uploadMime
           } catch {
               $res = @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('mirror attempt threw: ' + $_.Exception.Message); retryAfterMs = $null; record = $null; fileId = ''; code = ''; downloadPage = ''; directUrl = '' }
           }
           if ($null -eq $res) { $res = @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = 'mirror attempt returned nothing'; retryAfterMs = $null; record = $null; fileId = ''; code = ''; downloadPage = ''; directUrl = '' } }
-          $fullMsg = Protect-F46SecretText -Text ([string]$res.hostMessage) -Secrets @($token, $mirrorKeyText)
+          try { if ($res.authMode) { $mirrorAuthMode = [string]$res.authMode } } catch { }
+          $fullMsg = Protect-F46SecretText -Text ([string]$res.hostMessage) -Secrets @($mirrorKeyText)
           $phaseNow = [string]$res.phase
           $statusNow = '-'
           if ($null -ne $res.httpStatus) { if ([string]$res.httpStatus) { $statusNow = [string]$res.httpStatus } }
@@ -661,7 +665,7 @@ try {
       try {
           $diagAttempts = @($mirrorAttemptLog)
           if ($diagAttempts.Count -gt $mirrorDiagLimit) { $diagAttempts = $diagAttempts[($diagAttempts.Count - $mirrorDiagLimit)..($diagAttempts.Count - 1)] }
-          $prog.mirrorDiag = [ordered]@{ attempts = @($diagAttempts); terminalFiles = @($mirrorTerminal.Keys); hosts = @($prog.mirrorHosts); encryptMode = $encryptMode; encAlg = $mirrorEncAlg; keyBytes = $(if ($mirrorKeyText) { 32 } else { 0 }) }
+          $prog.mirrorDiag = [ordered]@{ attempts = @($diagAttempts); terminalFiles = @($mirrorTerminal.Keys); hosts = @($prog.mirrorHosts); encryptMode = $encryptMode; encAlg = $mirrorEncAlg; authMode = $mirrorAuthMode; keyBytes = $(if ($mirrorKeyText) { 32 } else { 0 }) }
       } catch { }
   } else {
       if (-not [bool]$cfg.mirror) {

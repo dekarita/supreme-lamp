@@ -2123,12 +2123,15 @@ jobs:
           grep -qF '$script:F46MaxAttempts = 5' payloads/ghrdp-mirror.ps1
           grep -qF '$script:F46RetryAfterCapMs = 120000' payloads/ghrdp-mirror.ps1
           # the documented gofile contract (current reference + fleet form)
-          grep -qF "accountsPath = '/accounts'" payloads/ghrdp-mirror.ps1
+          grep -qF 'guest contract needs no account' payloads/ghrdp-mirror.ps1
           grep -qF "serversPath = '/servers'" payloads/ghrdp-mirror.ps1
           grep -qF "uploadPathAuto = '/uploadfile'" payloads/ghrdp-mirror.ps1
           grep -qF "uploadPathFleet = '/contents/uploadfile'" payloads/ghrdp-mirror.ps1
           grep -qF "multipartField = 'file'" payloads/ghrdp-mirror.ps1
-          grep -qF "authScheme = 'Bearer'" payloads/ghrdp-mirror.ps1
+          if grep -nF "authScheme = 'Bearer'" payloads/ghrdp-mirror.ps1; then
+            echo 'F46: the account Bearer scheme returned to the host contract (F48 token-less)' >&2
+            exit 1
+          fi
           grep -qF "idFields = @('fileId', 'id')" payloads/ghrdp-mirror.ps1
           grep -qF "pageFields = @('downloadPage', 'directLink')" payloads/ghrdp-mirror.ps1
           # mirror stays default-OFF; the probe is read-only; no credential in a URL
@@ -2165,13 +2168,13 @@ jobs:
           grep -qF 'and the encrypt' docs/MIRROR-HOSTS.md || true
           echo 'F46 gates PASS'
 
-      # [F47] Mirror per-run opt-in + token plumbing + AES-256 honesty gates.
-      # The shipped default stays OFF, the gofile token travels as process env
-      # ONLY (never config.json, a token file, a URL, a log or an artifact),
-      # mirror_enable without the secret is a loud fail-closed stage halt, the
-      # AES-256 mode is a real encryptor with a per-run 32-byte key, and the
-      # probe matrix is visible on the Mirror page. No host-policy evasion.
-      - name: F47 mirror opt-in + token plumbing + AES-256 gates
+      # [F48] TOKEN-LESS MIRROR gates (operator directive §0/§1.6): no gofile
+      # API token exists anywhere in this system - no secret read, no env
+      # plumbing, no missing-token stage halt (absence is NORMAL), no auth
+      # header toward the host in payloads/ or src/, guest contract + probe +
+      # authMode in the schema/docs/UI. The AES-256 + probe-matrix greps from
+      # F47 §3/§2 stay enforced here. No host-policy evasion.
+      - name: F48 token-less mirror gates (guest contract + no-token greps)
         shell: bash
         run: |
           set -euo pipefail
@@ -2184,25 +2187,81 @@ jobs:
           awk '/mirror_encrypt:/{f=1} f&&/default:/{print;exit}' "$wf" | grep -qF 'default: false'
           grep -qE 'MIRROR_INPUT: \$\{\{ github\.event\.inputs\.mirror_enable == true' "$wf"
           grep -qE 'MIRROR_ENCRYPT_INPUT: \$\{\{ github\.event\.inputs\.mirror_encrypt == true' "$wf"
-          # §1.1 token via process env ONLY
-          grep -qE 'GOFILE_TOKEN: \$\{\{ secrets\.GOFILE_TOKEN \}\}' "$wf"
-          grep -qF "[Environment]::SetEnvironmentVariable('GHRDP_GOFILE_TOKEN', " "$wf"
-          grep -qF "SetEnvironmentVariable('GHRDP_GOFILE_TOKEN', \$null, 'User')" "$wf"
-          # a config.json property write is an indented bare key; the PowerShell
-          # local ($gofileToken) is not a config write.
-          if grep -nE '^[[:space:]]+gofileToken[[:space:]]*=|gofile-token\.txt' "$wf"; then
-            echo 'F47: the gofile token may never be written to config.json or a token file' >&2
+          # §1.6 GATE 1: the banished mirror secret name may not exist ANYWHERE
+          # in the tree (the pattern uses [_] so this workflow file - which
+          # spells the pattern out - never matches itself).
+          hits=$(grep -RIl --exclude-dir=.git --exclude-dir=node_modules --exclude-dir=dist --exclude-dir=ui --exclude-dir=coverage --exclude-dir=.vite 'GOFILE[_]TOKEN' . || true)
+          if [ -n "$hits" ]; then
+            echo 'F48: the banished mirror secret name appeared in:' >&2
+            echo "$hits" >&2
             exit 1
           fi
+          # §1.6 GATE 2: no Authorization / X-Gofile-Token / Cookie header may
+          # target the host in payloads/ or src/. Comment lines may NAME the
+          # banned headers while documenting their absence - only non-comment
+          # lines count. The mirror module + watcher are 100% host-facing, so
+          # ANY non-comment auth header there fails; elsewhere a hit needs a
+          # gofile/accountToken target on the same line (local dash/terminal/
+          # GitHub API auth is out of scope and stays).
+          strip_comments() { grep -vE '^[[:space:]]*(#|//|\*|/\*)' "$1" || true; }
+          for f in payloads/ghrdp-mirror.ps1 payloads/ghrdp-watcher.ps1; do
+            if strip_comments "$f" | grep -nE 'Authorization|X-Gofile-Token|Cookie'; then
+              echo "F48: an auth header toward the host appeared in $f" >&2
+              exit 1
+            fi
+          done
+          auth_hits=''
+          while IFS= read -r -d '' f; do
+            h=$(grep -nE 'Authorization|X-Gofile-Token|[Cc]ookie' "$f" 2>/dev/null \
+              | grep -vE '^[0-9]+:[[:space:]]*(#|//|\*|/\*)' \
+              | grep -iE 'gofile|accountToken' || true)
+            if [ -n "$h" ]; then auth_hits="$auth_hits$h\n($f)\n"; fi
+          done < <(find payloads src -type f \( -name '*.ps1' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.html' \) -print0 2>/dev/null)
+          if [ -n "$auth_hits" ]; then
+            printf '%b' "$auth_hits"
+            echo 'F48: an auth header targeting the mirror host appeared in payloads/ or src/' >&2
+            exit 1
+          fi
+          url_hits=''
+          while IFS= read -r -d '' f; do
+            case "$f" in src/tests/*) continue ;; esac
+            h=$(grep -nE '[?&]token=|accountToken=' "$f" 2>/dev/null \
+              | grep -vE '^[0-9]+:[[:space:]]*(#|//|\*|/\*)' \
+              | grep -v '\*\*\*REDACTED\*\*\*' \
+              | grep -iE 'gofile|accountToken' || true)
+            if [ -n "$h" ]; then url_hits="$url_hits$h\n($f)\n"; fi
+          done < <(find payloads src -type f \( -name '*.ps1' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.html' \) -print0 2>/dev/null)
+          if [ -n "$url_hits" ]; then
+            printf '%b' "$url_hits"
+            echo 'F48: a credential parameter targeting the host appeared in a URL/header in payloads/ or src/' >&2
+            exit 1
+          fi
+          # §1.6 GATE 3: a missing mirror secret may never halt staging again -
+          # the F47 fail-closed halt constructs must be gone, and the validate
+          # step must report token-less guest mode as the NORMAL state.
+          if grep -nE "MISSING REQUIRED SECRET: GOFILE|requires the repo secret|F47 halt|repo secret GOFILE" "$wf"; then
+            echo 'F48: a missing-token staging halt reappeared in main.yml' >&2
+            exit 1
+          fi
+          grep -qF 'F48 mirror opt-in ON for this run: token-less guest mode' "$wf"
+          grep -qF '[F48] mirror opt-in for THIS run' "$wf"
+          # guest contract pins: no token ladder, no auth scheme, authMode field
+          if grep -nE 'Get-F46HostToken|authScheme|autoAccount|tokenConfigKey|gofile-token\.txt' payloads/ghrdp-mirror.ps1 payloads/ghrdp-watcher.ps1 payloads/ghrdp-fx.ps1; then
+            echo 'F48: token plumbing reappeared in a payload' >&2
+            exit 1
+          fi
+          grep -qF "authMode = 'guest'" payloads/ghrdp-mirror.ps1
+          grep -qF 'host requires account token; token-less mode unsupported' payloads/ghrdp-mirror.ps1
+          grep -qF 'Format-F48AuthReason' payloads/ghrdp-mirror.ps1
+          grep -qF "authMode?: 'guest' | 'requires-account'" src/components/explorer/data/schema.ts
+          grep -qF 'token-less guest mode' src/i18n/en.json
           if grep -nE '[?&]token=' "$wf" payloads/ghrdp-mirror.ps1 payloads/ghrdp-watcher.ps1; then
-            echo 'F47: a credential may not appear in a URL' >&2
+            echo 'F48: a credential may not appear in a URL' >&2
             exit 1
           fi
-          # §1.3 fail-closed stage halt with the Secrets link
-          grep -qF 'MISSING REQUIRED SECRET: GOFILE_TOKEN' "$wf"
-          grep -qF 'settings/secrets/actions' "$wf"
-          grep -qF "throw 'F47: mirror_enable=true requires the repo secret GOFILE_TOKEN" "$wf"
-          # §3 real AES-256 + honest title + masked key
+          # §1.5 the secret-hygiene note is documented on the Settings page
+          grep -qF 'Secret hygiene' src/pages/Settings.tsx
+          # §3 real AES-256 + honest title + masked key (F47 §3, unchanged)
           grep -qF 'keyBytes = 32' payloads/ghrdp-mirror.ps1
           grep -qF "encryptedMime = 'application/x-ghrdp-mirror'" payloads/ghrdp-mirror.ps1
           grep -qF 'function Invoke-F46EncryptFile' payloads/ghrdp-mirror.ps1
@@ -2210,31 +2269,30 @@ jobs:
           grep -qF 'function Test-F46AesGcmUsable' payloads/ghrdp-mirror.ps1
           grep -qF 'Invoke-F46EncryptFile' payloads/ghrdp-watcher.ps1
           grep -qF 'refusing to upload plaintext' payloads/ghrdp-watcher.ps1
-          grep -qF '@($token, $mirrorKeyText)' payloads/ghrdp-watcher.ps1
+          grep -qF '@($mirrorKeyText)' payloads/ghrdp-watcher.ps1
           grep -qF 'Mirror - AES-256 encrypted runner upload' src/i18n/en.json
           grep -qF 'MaskedField id="mirrorKey"' src/components/domain/KeysCard.tsx
           # §2 probe matrix visible on the Mirror page + in the step summary
           grep -qF '<MirrorHostMatrix />' src/pages/Mirror.tsx
           grep -qF 'mirrorHosts' src/components/domain/MirrorHostMatrix.tsx
           grep -qF 'mirror-host-operator-options' src/components/domain/MirrorHostMatrix.tsx
-          grep -qF '[F47] mirror opt-in for THIS run' "$wf"
-          # no evasion in any mirror surface (the new page component included)
+          # no evasion in any mirror surface (the page component included)
           if grep -nE 'Mozilla/[0-9]|X-Forwarded-For|[Ww]ebProxy|proxy[[:space:]]*=|rotat' payloads/ghrdp-mirror.ps1 payloads/ghrdp-watcher.ps1 payloads/ghrdp-fx.ps1 src/components/domain/MirrorHostMatrix.tsx; then
-            echo 'F47: an evasion pattern (UA spoofing / proxy / IP rotation / header spoofing) appeared' >&2
+            echo 'F48: an evasion pattern (UA spoofing / proxy / IP rotation / header spoofing) appeared' >&2
             exit 1
           fi
-          # §4 the lab + suites exist and run
-          test -f tests/f47-mirror-optin.test.js
-          test -f src/tests/smoke/f47-mirror-optin.test.tsx
-          grep -qF '[F47' tests/f46-mirror-policy.ps1
+          # §3 the lab + suites exist and run
+          test -f tests/f48-tokenless-mirror.test.js
+          test -f src/tests/smoke/f48-tokenless-mirror.test.tsx
+          grep -qF '[F48' tests/f46-mirror-policy.ps1
           # a nested try inside a finally must carry its own catch INSIDE the
           # finally - `finally { try { X } } catch { }` is a parse error.
           if grep -nE 'finally \{ try \{[^{}]*\} \} catch \{ \}' payloads/ghrdp-mirror.ps1 payloads/ghrdp-watcher.ps1 tests/f46-mirror-policy.ps1 "$wf"; then
-            echo 'F47: malformed try/finally (the catch must sit inside the finally block)' >&2
+            echo 'F48: malformed try/finally (the catch must sit inside the finally block)' >&2
             exit 1
           fi
-          node --test tests/f47-mirror-optin.test.js
-          echo 'F47 gates PASS'
+          node --test tests/f48-tokenless-mirror.test.js
+          echo 'F48 gates PASS'
 
       - name: F40 information-architecture regression lock
         shell: bash
@@ -2290,7 +2348,7 @@ jobs:
       - name: F45 S2 schema and mock-host gates (offline only)
         run: |
           set -euo pipefail
-          if ! out=$(pnpm exec vitest run src/tests/smoke/fx-schema-migration.test.ts src/tests/smoke/fx-gofile-mock.test.ts 2>&1); then
+          if ! out=$(pnpm exec vitest run src/tests/smoke/fx-schema-migration.test.ts src/tests/smoke/fx-gofile-mock.test.tsx 2>&1); then
             echo "$out"
             detail=$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g')
             echo "::error title=F45 S2 data::${detail}"

@@ -4,5 +4,6 @@
   "maxFileBytes": null,
   "allowedMimePrefixes": null,
   "ttlSeconds": null,
-  "notes": ""
+  "notes": "",
+  "authMode": "guest"
 }

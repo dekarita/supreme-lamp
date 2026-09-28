@@ -55,25 +55,27 @@ none - the reason is reported immediately |
 - **Attempt 0 (preflight, zero network tries)**: `mirrorHosts[].maxFileBytes` and
   `mirrorHosts[].blockedExtensions` are evaluated from config before any request;
   a violation is reported as `phase=size` / `phase=type` with `0` network tries.
-- Encryption requested but unavailable, no host credential and "no enabled host"
-  are all terminal, single-attempt, labeled reasons - failures are never silent
-  and never blind-retried.
+- Encryption requested but unavailable, a `phase=auth` refusal (F48: the host
+  requires an account token and token-less mode is unsupported) and "no enabled
+  host" are all terminal, single-attempt, labeled reasons - failures are never
+  silent and never blind-retried.
 
-## 3. Documented gofile API contract (F46 §3)
+## 3. Documented gofile API contract (F46 §3, token-less per F48 §0)
 
 Fetched from <https://gofile.io/api> on 2026-09-28 and pinned in
-`payloads/ghrdp-mirror.ps1` (`$script:F46GofileContract`):
+`payloads/ghrdp-mirror.ps1` (`$script:F46GofileContract`). **[F48] TOKEN-LESS
+GUEST MODE: the upload contract has no credential of any kind.** No
+`Authorization`, no `X-Gofile-Token`, no `Cookie` header is ever attached to a
+host request, nothing token-shaped travels in a URL, and no account token is
+read, minted, stored or rendered anywhere in this system. The previous
+account-minting rung (`POST /accounts` -> token) and every token config/file/env
+rung were deleted; a CI gate fails the build if any of them reappears.
 
-- **`POST https://api.gofile.io/accounts`**, JSON body `{}` -> a guest account
-  whose token is `data.token` (`{status:"ok",data:{id, rootFolder, tier:"guest",
-  token}}`). The token is the only way back into a guest account - store it, never
-  log it. Off by default (`mirrorHosts[].autoAccount=false`): the worker does not
-  mint accounts silently, it holds the job with `phase=auth`.
-- **`GET https://api.gofile.io/servers`** -> `data.servers[].name`, the documented
-  two-step upload flow (host config `uploadHostMode='fleet'`).
-- **Upload** - multipart/form-data, field name **`file`**, optional `folderId`,
-  token in the `Authorization: Bearer <token>` header (the docs' query-string
-  token form is GET-only; this worker never puts a credential in a URL):
+- **`GET https://api.gofile.io/servers`** -> `data.servers[].name`: the
+  read-only probe endpoint (unauthenticated) and the documented two-step upload
+  flow (host config `uploadHostMode='fleet'`).
+- **Upload (guest contract)** - multipart/form-data, field name **`file`**,
+  optional `folderId`, **no request header beyond `Accept`**:
   - current reference (default, `uploadHostMode='auto'`):
     `POST https://upload.gofile.io/uploadfile`. Uploads do not go to
     `api.gofile.io`; the fleet routes the file to the closest store. The
@@ -83,11 +85,16 @@ Fetched from <https://gofile.io/api> on 2026-09-28 and pinned in
     never something the worker switches between;
   - fleet form (`uploadHostMode='fleet'`):
     `POST https://<server>.gofile.io/contents/uploadfile`.
-- Uploading **without** a token makes gofile create a guest account on the fly
-  and the response carries `guestToken` + `parentFolder`. This worker never
-  relies on that implicit path: no credential means the job is held with
-  `phase=auth` unless the operator set `autoAccount=true` (docs: "Create **one**
-  account and reuse its token - do not mint an account per upload").
+- **Probe procedure (F48 §2)**: a read-only, unauthenticated
+  `GET <apiRoot>/servers` per configured host records `{host, status, note}`
+  (never a body parse, never an upload). The FIRST real upload attempt is also
+  unauthenticated: `status=ok` -> a guest success row with the `downloadPage`
+  link and `authMode=guest`; `401/403` -> **exactly ONE attempt** with
+  `phase=auth` and the labeled reason
+  `host requires account token; token-less mode unsupported` plus the operator
+  options below - **no retry loop on auth, ever**. The result is what sets
+  `authMode='guest' | 'requires-account'`; it is never derived from any secret
+  (none exists).
 - **Response data** (current reference): `id`, `type`, `name`, `parentFolder`,
   `parentFolderCode`, **`downloadPage`**, `code`, `size`, `md5`, `mimetype`,
   `createTime`, `modTime`, `servers[]`. The legacy form returned `fileId` and
@@ -136,8 +143,8 @@ credential in a log or artifact. A gate fails the build on those patterns.
   algorithm; a DOM test pins title/worker parity, so the UI cannot overclaim.
 - The key lives in config `mirrorKey` (masked + copy in the Keys card) and is in
   the log-redaction set: it never appears in a log line, attempt record,
-  artifact or URL. The gofile **token** is a different secret and never touches
-  config.json at all - see §9.
+  artifact or URL. [F48] There is **no gofile token at all** in this system -
+  the mirror is token-less guest mode end to end (§9).
 
 ## 5. Read-only host probe (F46 §5)
 
@@ -148,7 +155,7 @@ and yields a `{host, status, note}` matrix rendered by `Format-F46ProbeTable`:
 | host | status | note |
 | --- | --- | --- |
 | `gofile` | `200` | read-only GET /servers reachable; upload flow is documented + enabled=False |
-| `gofile` | `403` | runner egress rejected (403) - policy/endpoint level rejection; operator option: operator-owned VPS egress (no evasion) |
+| `gofile` | `403` | runner egress rejected (403) - token-less guest probe refused (authMode=requires-account); policy/endpoint level rejection; operator option: operator-owned VPS egress (no evasion) |
 | `gofile` | `-` | transport failure: NameResolutionFailure - … |
 
 Where it appears: the CI step summary + `mirror-diag` artifact (every dispatch,
@@ -173,18 +180,19 @@ unavailable from ephemeral runners and leave it off. No evasion is permitted.
       "uploadHost": "upload.gofile.io",
       "uploadPath": "/uploadfile",
       "enabled": false,
-      "autoAccount": false,
       "maxFileBytes": 0,
       "blockedExtensions": [],
-      "tokenConfigKey": "gofileToken",
+      "authMode": "guest",
       "timeoutSec": 120
     }
   ]
 }
 ```
 
-`enabled=false` is the shipped default (mirror OFF, unchanged CI gate); the token
-comes from `gofileToken` or `gofile-token.txt` in the runner root. `maxFileBytes`
+`enabled=false` is the shipped default (mirror OFF, unchanged CI gate).
+`authMode` is `'guest' | 'requires-account'` and is set **only** by a probe or
+first-attempt result (401/403 flips it), never by the presence of any secret -
+no token field exists in this schema. `maxFileBytes`
 0 means "no cap", `blockedExtensions` empty means "no blocked types" - both are
 operator policy knobs, not invented defaults.
 
@@ -200,31 +208,37 @@ operator policy knobs, not invented defaults.
   `retryPolicy.ts`, the contract fields, the watcher's structured lines, the
   default-OFF rule, the staging/lane wiring and the evasion bans.
 - `src/components/explorer/data/fixtures/gofile-mock-server/handlers.ts`
-  (MSW) models the same documented flow for the client lane:
-  `POST /accounts` -> `data.token`, `GET /servers` -> `data.servers[].name`,
-  the documented upload paths (`upload.gofile.io/uploadfile` and
-  `<server>/contents/uploadfile`) with `id` + `downloadPage`, the legacy
-  `fileId`/`directLink` alias, and the policy matrix
-  (403/413/415/429/500/502 plus `tls-reset` as a transport rejection).
-  `src/tests/smoke/fx-gofile-mock.test.ts` exercises all of it; no real call.
+  (MSW) models the same token-less flow for the client lane:
+  `GET /servers` -> `data.servers[].name`, the guest upload paths
+  (`upload.gofile.io/uploadfile` and `<server>/contents/uploadfile`) with
+  **no auth header on the request** (request inspection), `id` +
+  `downloadPage`, the legacy `fileId`/`directLink` alias, and the policy matrix
+  (401/403 fail-fast, 413/415, 429/500/502 retries plus `tls-reset` as a
+  transport rejection).
+  `src/tests/smoke/fx-gofile-mock.test.tsx` exercises all of it; no real call.
 - `src/tests/smoke/f46-mirror-truth.test.tsx` renders the shipped Mirror card
   against worker payloads and asserts the untruncated reason column and the
   title/`encrypted` parity.
 
-## 8. Operator verification
+## 8. Operator verification (token-less)
 
-1. Set the repository secret `GOFILE_TOKEN` once (Settings > Secrets and
-   variables > Actions) - see §9.
+1. Secret hygiene first (F48 §4): delete the former mirror-host account-token
+   secret from repo `Settings > Secrets and variables > Actions` **and**
+   invalidate that token on the host account page (treated as compromised).
+   Confirm both before dispatching. The workflow reads NO mirror secret.
 2. Dispatch `main.yml` with `mirror_enable=true` (+ `mirror_encrypt=true` if you
    want AES-256); read the `F46 mirror host probe` matrix in the step summary.
 3. Open the Mirror page: the **Mirror host matrix** card renders the same
-   `{host,status,note}` rows live from `/diag` (`mirrorHosts`), and the Diagnose
-   drawer carries them plus the worker's attempt table (`mirrorAttempts`).
+   `{host,status,note}` rows live from `/diag` (`mirrorHosts`, token-less guest
+   mode), and the Diagnose drawer carries them plus the worker's attempt table
+   (`mirrorAttempts`).
 4. Click **Upload everything now** once and upload ONE small benign `.txt`.
-5. Expect either a success row with a `downloadPage` link, or ONE labeled reason
-   (`phase=… status=… msg=…`) - never "failed after 5 tries" without a cause.
+5. Expect either a guest success row with a `downloadPage` link, or ONE labeled
+   reason (`phase=… status=… msg=…`) - e.g.
+   `host requires account token; token-less mode unsupported` with the operator
+   options rendered - never "failed after 5 tries" without a cause.
 
-## 9. F47 per-run opt-in and token plumbing
+## 9. F48 token-less guest mode (per-run opt-in stays, tokens are gone)
 
 Mirror default-OFF is a locked gate: the shipped `Get-F46DefaultHost` keeps
 `enabled=false` and the CI gate that forbids a default-ON mirror is unchanged.
@@ -235,29 +249,36 @@ Enabling the mirror is **operator intent expressed per dispatch**:
 | `mirror_enable` | `false` | `true` writes `mirrorHosts[0].enabled=true` into `config.json` **for this run only** (enabled flag + host id, nothing else). |
 | `mirror_encrypt` | `false` | `true` sets `encryptMode=all` and generates the per-run 32-byte `mirrorKey` (§4). |
 
-**Token plumbing (process env only).** `main.yml` reads the optional repository
-secret `GOFILE_TOKEN` into step env and publishes it as `GHRDP_GOFILE_TOKEN` in
-the RDP user's process environment (user scope, so the `ONLOGON` watcher process
-inherits it as its own process env). `Get-F46HostToken` reads that env var
-FIRST; the `gofileToken` config key and `gofile-token.txt` rungs remain for a
-manual/lab runner only and the stage step writes neither. The token is therefore
-never in `config.json`, never in a file the workflow writes, never in a URL, log
-line, artifact or UI field, and the cleanup step clears the env var on the way
-out.
+**No token anywhere (operator directive, binding).** Every gofile API token
+plumbing path was deleted: no repository secret read, no step or process
+environment variable, no config key, no token file, no auth header, no UI field.
+A **missing credential is the NORMAL state** - the stage step never halts on it
+(the F47 fail-closed halt is removed) and uploads use only the anonymous guest
+contract. CI gates fail the build if the banished secret name, an
+`Authorization` / `X-Gofile-Token` / `Cookie` header targeting the host, or a
+missing-token staging halt ever reappears.
 
-**Fail-closed.** `mirror_enable=true` with no `GOFILE_TOKEN` halts the stage
-step loudly (`::error::` + a step-summary card + `throw`) with a direct link to
-the repository Secrets settings. There is no workaround, no plaintext fallback
-and no silent guest-account fallback (`autoAccount` stays `false`), so the run
-can never degrade into an unexplained `phase=policy` row.
+**Probe-first, fail-fast (§2).** The probe is an unauthenticated read-only
+`GET /servers`; the first real upload is unauthenticated. `status=ok` records a
+guest row with the link (`authMode=guest`); `401/403` records exactly ONE
+attempt with `phase=auth`, the reason `host requires account token;
+token-less mode unsupported` and the operator options. There is no retry loop
+on auth.
+
+**Operator options when the host refuses token-less uploads:**
+1. **Disable the mirror** (`mirror_enable=false`) - nothing is attempted.
+2. **Self-hosted operator target** - point `mirrorHosts[0]` at an upload
+   endpoint you own and control (e.g. an operator-owned VPS).
+3. **Token mode** - a **separate future decision, explicitly out of scope
+   here**; this build never accepts, prints or stores a host token.
 
 **Where the truth is rendered.** The dispatch step summary prints the probe
-matrix plus `mirror opt-in for THIS run: enabled=… encryptMode=…`; the Mirror
+matrix plus `mirror opt-in for THIS run: token-less guest mode …`; the Mirror
 page renders the same rows from `/diag`; the `mirror-diag` artifact keeps both
-tables after a halt.
+tables.
 
 **If every probe row is blocked from the runner egress (403)**, that is a policy
-dead-end with exactly two honest options - run the upload from an operator-owned
-VPS egress you configure yourself, or accept the mirror as unavailable from
-ephemeral runners and leave `mirror_enable=false`. Nothing in this repository
+dead-end with honest options - run the upload from an operator-owned VPS egress
+you configure yourself, or accept the mirror as unavailable from ephemeral
+runners and leave `mirror_enable=false`. Nothing in this repository
 attempts to work around a host policy.

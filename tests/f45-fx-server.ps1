@@ -269,21 +269,24 @@ CheckEqual 'meta unknown id 404' 404 $r.Code
 $r = Invoke-FxRoute -Ctx (New-FxCtx -Path '/api/fx/meta')
 CheckEqual 'meta missing id 400' 400 $r.Code
 
-Write-Host '[F45] unit: GET /api/fx/gofile/status'
-$r = Invoke-FxRoute -Ctx (New-FxCtx -Path '/api/fx/gofile/status' -Query @{ id = $remoteId })
-CheckEqual 'gofile/status cached 200' 200 $r.Code
-CheckEqual 'gofile/status cached value' 'uploaded' (Get-FxJson $r).status
+Write-Host '[F45] unit: GET /api/fx/gofile/status  [F48 token-less guest poll]'
+$script:lastPollHdrs = $null
+$guestPoll = New-FxCtx -Path '/api/fx/gofile/status' -Query @{ id = $remoteId } -Options @{ IndexPath = $indexPath; QueuePath = $queuePath; AuditPath = $auditPath; Fetch = { param($Uri, $Hdrs, $Range) $script:lastPollHdrs = $Hdrs; @{ ok = $true; status = 200; contentType = 'application/json'; bytes = [System.Text.Encoding]::UTF8.GetBytes('{"status":"ok","data":{"status":"uploaded","downloads":0,"size":12}}'); error = ''; kind = 'ok' } } }
+$r = Invoke-FxRoute -Ctx $guestPoll
+CheckEqual 'gofile/status guest poll 200 (no credential needed)' 200 $r.Code
+CheckEqual 'gofile/status guest poll value' 'uploaded' (Get-FxJson $r).status
+CheckEqual 'gofile/status guest poll sends NO Authorization header' $false ([bool]($script:lastPollHdrs -and $script:lastPollHdrs.ContainsKey('Authorization')))
 $r = Invoke-FxRoute -Ctx (New-FxCtx -Path '/api/fx/gofile/status' -Query @{ id = 'nope' })
 CheckEqual 'gofile/status unknown id 404' 404 $r.Code
-$pollCtx = New-FxCtx -Path '/api/fx/gofile/status' -Query @{ id = $remoteId } -Options @{ IndexPath = $indexPath; QueuePath = $queuePath; AuditPath = $auditPath; GofileToken = 'lab-gofile-token-1234567890'; Fetch = { param($Uri, $Hdrs, $Range) @{ ok = $true; status = 200; contentType = 'application/json'; bytes = [System.Text.Encoding]::UTF8.GetBytes('{"status":"ok","data":{"status":"processing","downloads":7,"size":12}}'); error = ''; kind = 'ok' } } }
+$pollCtx = New-FxCtx -Path '/api/fx/gofile/status' -Query @{ id = $remoteId } -Options @{ IndexPath = $indexPath; QueuePath = $queuePath; AuditPath = $auditPath; Fetch = { param($Uri, $Hdrs, $Range) @{ ok = $true; status = 200; contentType = 'application/json'; bytes = [System.Text.Encoding]::UTF8.GetBytes('{"status":"ok","data":{"status":"processing","downloads":7,"size":12}}'); error = ''; kind = 'ok' } } }
 $r = Invoke-FxRoute -Ctx $pollCtx
 CheckEqual 'gofile/status poll 200' 200 $r.Code
 CheckEqual 'gofile/status poll downloads' 7 (Get-FxJson $r).downloads
 CheckEqual 'gofile/status poll status' 'processing' (Get-FxJson $r).status
-$failCtx = New-FxCtx -Path '/api/fx/gofile/status' -Query @{ id = $remoteId } -Options @{ IndexPath = $indexPath; QueuePath = $queuePath; AuditPath = $auditPath; GofileToken = 'lab-gofile-token-1234567890'; Fetch = { param($Uri, $Hdrs, $Range) @{ ok = $false; status = 0; contentType = ''; bytes = [byte[]]@(); error = 'host transport error: connection refused'; kind = 'transport' } } }
+$failCtx = New-FxCtx -Path '/api/fx/gofile/status' -Query @{ id = $remoteId } -Options @{ IndexPath = $indexPath; QueuePath = $queuePath; AuditPath = $auditPath; Fetch = { param($Uri, $Hdrs, $Range) @{ ok = $false; status = 0; contentType = ''; bytes = [byte[]]@(); error = 'host transport error: connection refused'; kind = 'transport' } } }
 $r = Invoke-FxRoute -Ctx $failCtx
 CheckEqual 'gofile/status unreachable 502' 502 $r.Code
-$r = Invoke-FxRoute -Ctx (New-FxCtx -Path '/api/fx/gofile/status' -Query @{ id = $remoteId } -Options @{ IndexPath = $indexPath; QueuePath = $queuePath; AuditPath = $auditPath; GofileToken = 'lab-gofile-token-1234567890'; Fetch = { param($Uri, $Hdrs, $Range) @{ ok = $false; status = 0; contentType = ''; bytes = [byte[]]@(); error = 'host transport error: timed out'; kind = 'timeout' } } })
+$r = Invoke-FxRoute -Ctx (New-FxCtx -Path '/api/fx/gofile/status' -Query @{ id = $remoteId } -Options @{ IndexPath = $indexPath; QueuePath = $queuePath; AuditPath = $auditPath; Fetch = { param($Uri, $Hdrs, $Range) @{ ok = $false; status = 0; contentType = ''; bytes = [byte[]]@(); error = 'host transport error: timed out'; kind = 'timeout' } } })
 CheckEqual 'gofile/status timeout 504' 504 $r.Code
 
 Write-Host '[F45] unit: GET /api/fx/preview'
@@ -455,8 +458,9 @@ CheckEqual 'successful upload stamps schemaVersion 2' 2 $afterIndex.schemaVersio
 $ctx = New-FxUploadCtx @{}
 [void](Invoke-FxUploadStep -Ctx $ctx -Options @{})
 $queue = (Read-FxJsonFile -Path $queuePath).value
-CheckEqual 'no host token holds the job (never a silent drop)' 'queued' $queue.jobs[0].status
-CheckEqual 'no host token stamps the auth phase' 'auth' $queue.jobs[0].lastError.phase
+CheckEqual 'F48 token-less guest attempt runs without a credential (never held)' 'failed' $queue.jobs[0].status
+CheckEqual 'missing shared module is a labeled parse reason (not an auth hold)' 'parse' $queue.jobs[0].lastError.phase
+CheckContains 'the staging reason names the shared contract module' ([string]$queue.jobs[0].lastError.hostMessage) 'ghrdp-mirror.ps1'
 $r = Invoke-FxRoute -Ctx (New-FxCtx -Path '/api/fx/upload/events')
 CheckEqual 'upload/events is not an S4 route' 404 $r.Code
 

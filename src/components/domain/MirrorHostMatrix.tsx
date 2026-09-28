@@ -130,6 +130,10 @@ export function MirrorHostMatrix() {
           <ul className="mt-1 list-disc pl-4 flex flex-col gap-1">
             <li>{t("mirrorHostMatrix.optionVps")}</li>
             <li>{t("mirrorHostMatrix.optionAccept")}</li>
+            {/* [F48 §2] options for a "host requires account token" refusal. */}
+            <li>{t("mirrorHostMatrix.optionDisable")}</li>
+            <li>{t("mirrorHostMatrix.optionSelfHosted")}</li>
+            <li>{t("mirrorHostMatrix.optionTokenFuture")}</li>
           </ul>
           <p className="mt-1 text-tertiary">{t("mirrorHostMatrix.optionsFooter")}</p>
         </div>
