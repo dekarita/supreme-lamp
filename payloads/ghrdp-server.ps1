@@ -1255,7 +1255,13 @@ function ConvertTo-FxIso {
     $dt = [datetime]::MinValue
     $parsed = [datetime]::TryParse($s, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$dt)
     if (-not $parsed) { return $null }
-    return $dt.ToUniversalTime().ToString('o')
+    # The stored STRING is returned verbatim once it is a valid timestamp. It
+    # used to be re-formatted to 7 fractional digits, which meant a document
+    # re-read and re-normalized differed from its own input (the epoch fallback
+    # is millisecond-precision) - i.e. migration was not idempotent, and every
+    # read of an untouched file rewrote its mtime. Only a real [datetime] is
+    # formatted; the client parses either form.
+    return $s.Trim()
 }
 
 function Protect-FxText {
@@ -1272,7 +1278,16 @@ function Protect-FxText {
     foreach ($s in @($all | Select-Object -Unique)) {
         if ($s) { $out = $out.Replace([string]$s, $script:FxRedacted) }
     }
-    $out = [regex]::Replace($out, '(?i)((?:dash[-_]?token|csrf[-_]?token|token|key|authorization|go_[A-Za-z0-9]{6,})\s*[:=]\s*)[^&\s"'']+', ('$1' + $script:FxRedacted))
+    # Shape rule FIRST, independent of any name=value context: a host that echoes
+    # its own credential inside an error page, a URL path or a bare token field
+    # must not be able to smuggle `go_...` into a log line, a body or a detail
+    # string (F44 + S1.8). This is what the unknown-token case relies on, because
+    # $script:FxGofileToken is only set on a host that is configured.
+    $out = [regex]::Replace($out, '(?i)\bgo_[A-Za-z0-9_-]{8,}', $script:FxRedacted)
+    # Then the credential-shaped name=value pairs. The value may carry an
+    # authentication scheme (`Authorization: Bearer <token>`), so the scheme word
+    # is part of what gets replaced - otherwise the secret itself survives.
+    $out = [regex]::Replace($out, '(?i)((?:dash[-_]?token|csrf[-_]?token|token|key|authorization|go_[A-Za-z0-9]{6,})\s*[:=]\s*)(?:(?:bearer|basic|digest)\s+)?[^&\s"'']+', ('$1' + $script:FxRedacted))
     return $out
 }
 
@@ -1392,6 +1407,19 @@ function Get-FxMember {
         if ($p) { return $p.Value }
     } catch { }
     return $null
+}
+
+function Get-FxRows {
+    # Array-valued read for iteration and counting. PowerShell DROPS an empty
+    # array on return, so `@(Get-FxRows $o 'roots')` cannot tell "no rows" from
+    # "one null row": on 5.1 and 7 alike it iterates ONCE with $null and a
+    # normalizer would fabricate a row (a phantom Temp root, a bogus queue job).
+    # Callers therefore always write `@(Get-FxRows $o 'roots')`, which is 0 rows
+    # when the member is missing, null or empty.
+    param($Object, [string]$Name)
+    $raw = Get-FxMember $Object $Name
+    if ($null -eq $raw) { return }
+    return @($raw)
 }
 
 function Test-FxMember {
@@ -1636,14 +1664,14 @@ function Invoke-FxMigrateIndex {
     $configured = $null
     # NOT $host: that name is a read-only automatic variable and 5.1 throws
     # "Cannot overwrite variable Host" the moment it is bound.
-    foreach ($hostEntry in @(Get-FxMember $src 'gofileHosts')) {
+    foreach ($hostEntry in @(Get-FxRows $src 'gofileHosts')) {
         if ((Get-FxEnumMember (Get-FxMember $hostEntry 'id') @('gofile') '') -eq 'gofile') { $configured = $hostEntry; break }
     }
     if ($null -eq $configured) { $configured = $script:FxDefaultGofileHost }
     $roots = @()
-    foreach ($r in @(Get-FxMember $src 'roots')) { $roots += (ConvertTo-FxRootSnapshot -Value $r) }
+    foreach ($r in @(Get-FxRows $src 'roots')) { $roots += (ConvertTo-FxRootSnapshot -Value $r) }
     $files = @()
-    foreach ($f in @(Get-FxMember $src 'files')) { $files += (ConvertTo-FxFileEntry -Value $f) }
+    foreach ($f in @(Get-FxRows $src 'files')) { $files += (ConvertTo-FxFileEntry -Value $f) }
     return [ordered]@{
         schemaVersion = $script:FxSchemaVersion
         generatedAt = (Get-FxIsoOrFallbackValue -Value (Get-FxMember $src 'generatedAt') -Fallback $script:FxEpoch)
@@ -1719,11 +1747,11 @@ function Set-FxIndexDoc {
     try {
         $null = Set-FxMember -Object $doc -Name 'schemaVersion' -Value $script:FxSchemaVersion
         $null = Set-FxMember -Object $doc -Name 'generatedAt' -Value (Get-FxNowIso)
-        if (-not (Test-FxMember $doc 'gofileHosts') -or @(Get-FxMember $doc 'gofileHosts').Count -eq 0) {
+        if (-not (Test-FxMember $doc 'gofileHosts') -or @(Get-FxRows $doc 'gofileHosts').Count -eq 0) {
             $null = Set-FxMember -Object $doc -Name 'gofileHosts' -Value @((ConvertTo-FxGofileHost -Value $script:FxDefaultGofileHost))
         }
         $counts = @{}
-        foreach ($entry in @(Get-FxMember $doc 'files')) {
+        foreach ($entry in @(Get-FxRows $doc 'files')) {
             $r = Get-FxTextOr (Get-FxMember $entry 'root') 'Temp'
             if (-not $counts.ContainsKey($r)) { $counts[$r] = [ordered]@{ count = 0; bytes = [double]0 } }
             $counts[$r].count = [int]$counts[$r].count + 1
@@ -1732,7 +1760,7 @@ function Set-FxIndexDoc {
         $roots = @()
         foreach ($r in $script:FxRoots) {
             $existing = $null
-            foreach ($snap in @(Get-FxMember $doc 'roots')) { if ((Get-FxTextOr (Get-FxMember $snap 'root') '') -eq $r) { $existing = $snap; break } }
+            foreach ($snap in @(Get-FxRows $doc 'roots')) { if ((Get-FxTextOr (Get-FxMember $snap 'root') '') -eq $r) { $existing = $snap; break } }
             $count = 0; $bytes = [double]0
             if ($counts.ContainsKey($r)) { $count = [int]$counts[$r].count; $bytes = [double]$counts[$r].bytes }
             $roots += [ordered]@{
@@ -1754,7 +1782,7 @@ function Set-FxIndexDoc {
 function Select-FxFileEntry {
     param($Index, [string]$Id)
     if ($null -eq $Index -or -not $Id) { return $null }
-    foreach ($entry in @(Get-FxMember $Index 'files')) {
+    foreach ($entry in @(Get-FxRows $Index 'files')) {
         if ((Get-FxTextOr (Get-FxMember $entry 'id') '') -ceq $Id) { return $entry }
     }
     return $null
@@ -1870,7 +1898,7 @@ function Get-FxIdempotentHit {
     if (-not $Key) { return $out }
     $doc = Read-FxJson -Path $Path
     if (-not $doc.ok -or $null -eq $doc.value) { return $out }
-    foreach ($entry in @(Get-FxMember $doc.value 'entries')) {
+    foreach ($entry in @(Get-FxRows $doc.value 'entries')) {
         if ((Get-FxTextOr (Get-FxMember $entry 'key') '') -ceq $Key) {
             $stored = Get-FxTextOr (Get-FxMember $entry 'requestHash') ''
             if ($stored -ceq $RequestHash) {
@@ -1898,7 +1926,7 @@ function Save-FxIdempotentResult {
     $entries = @()
     $seq = 0
     if ($doc.ok -and $null -ne $doc.value) {
-        foreach ($entry in @(Get-FxMember $doc.value 'entries')) {
+        foreach ($entry in @(Get-FxRows $doc.value 'entries')) {
             $seq = [int](Get-FxNumberOrZero (Get-FxMember $entry 'seq'))
             $entries += [ordered]@{
                 seq = $seq
@@ -2053,7 +2081,7 @@ function Get-FxUploadQueue {
     $seq = 0
     $updatedAt = ''
     if ($doc.ok -and $null -ne $doc.value) {
-        foreach ($j in @(Get-FxMember $doc.value 'jobs')) { $jobs += (ConvertTo-FxUploadJob -Value $j) }
+        foreach ($j in @(Get-FxRows $doc.value 'jobs')) { $jobs += (ConvertTo-FxUploadJob -Value $j) }
         $seq = [int](Get-FxNumberOrZero (Get-FxMember $doc.value 'seq'))
         $t = Get-FxStringOrNull (Get-FxMember $doc.value 'updatedAt')
         if ($t) { $updatedAt = $t }
@@ -2138,7 +2166,7 @@ function Set-FxUploadQueue {
         schemaVersion = $script:FxQueueSchemaVersion
         updatedAt = (Get-FxNowIso)
         seq = [int](Get-FxNumberOrZero (Get-FxMember $Queue 'seq'))
-        jobs = @(Get-FxMember $Queue 'jobs')
+        jobs = @(Get-FxRows $Queue 'jobs')
     }
     return (Save-FxJsonAtomic -Path $Path -Object $doc)
 }
@@ -2913,9 +2941,9 @@ function Invoke-FxRoute {
                 schemaVersion = $script:FxSchemaVersion
                 generatedAt = (Get-FxTextOr (Get-FxMember $doc.index 'generatedAt') $script:FxEpoch)
                 runnerId = (Get-FxTextOr (Get-FxMember $doc.index 'runnerId') 'unknown')
-                roots = @(Get-FxMember $doc.index 'roots')
-                files = @(Get-FxMember $doc.index 'files')
-                gofileHosts = @(Get-FxMember $doc.index 'gofileHosts')
+                roots = @(Get-FxRows $doc.index 'roots')
+                files = @(Get-FxRows $doc.index 'files')
+                gofileHosts = @(Get-FxRows $doc.index 'gofileHosts')
                 source = [string]$doc.source
             }
             return [ordered]@{ code = 200; ctype = 'application/json; charset=utf-8'; headers = @('Vary: X-Dash-Token'); body = (ConvertTo-FxJsonBytes $payload); file = $null; phase = $null; message = '' }
@@ -3013,7 +3041,7 @@ function Initialize-FxServer {
     if ($env:GHRDP_GOFILE_TOKEN -and -not $script:FxGofileToken) { $script:FxGofileToken = [string]$env:GHRDP_GOFILE_TOKEN }
     $doc = Initialize-FxIndex
     if ($doc.ok) {
-        $fileCount = [int]@(Get-FxMember $doc.index 'files').Count
+        $fileCount = [int]@(Get-FxRows $doc.index 'files').Count
         $null = Write-FxLog ('index ready: source=' + [string]$doc.source + ' schemaVersion=' + [string]$script:FxSchemaVersion + ' files=' + [string]$fileCount + ' migrated=' + [string]$doc.migrated + ' gofileToken=' + $(if ($script:FxGofileToken) { 'configured' } else { 'absent' }))
     } else {
         $null = Write-FxLog ('index NOT ready: reason=' + [string]$doc.reason + ' detail=' + [string]$doc.detail)

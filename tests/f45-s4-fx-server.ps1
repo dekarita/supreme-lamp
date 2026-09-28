@@ -57,6 +57,21 @@ function Import-Functions([string]$Text, [string[]]$Names) {
     }
 }
 
+# Comma splitter that ignores commas inside JSON strings, so a diagnostic can
+# name the field that differs between two documents.
+function Split-FxTopLevelJson([string]$Json) {
+    $out = @()
+    $cur = ''
+    $inStr = $false
+    for ($i = 0; $i -lt $Json.Length; $i++) {
+        $ch = $Json[$i]
+        if ($ch -eq '"') { $inStr = -not $inStr }
+        if ($ch -eq ',' -and -not $inStr) { $out += $cur; $cur = '' } else { $cur = $cur + $ch }
+    }
+    $out += $cur
+    return ,$out
+}
+
 # --- the shipped request cycle, over in-memory streams ----------------------
 function Request-Fx {
     param([string]$Path, [string]$Method = 'GET', [string]$Source = '203.0.113.9', [string]$Body = '', [hashtable]$Headers = @())
@@ -200,13 +215,33 @@ try {
     Assert-Fx ($migrated.files[0].path -eq '/reports/q1.txt') 'windows separators normalize to POSIX'
     Assert-Fx ($migrated.files[0].id -eq (ConvertTo-FxStableId -RootName 'Documents' -Path '/reports/q1.txt')) 'a missing id is computed from root + path'
     Assert-Fx ($migrated.files[0].mtime -eq '1970-01-01T00:00:00.000Z') 'a missing mtime falls back to the epoch, never the current clock'
+    Assert-Fx ($migrated.generatedAt -eq '2026-01-01T00:00:00.000Z') 'a stored timestamp is preserved verbatim, never re-formatted'
+    Assert-Fx ($migrated.files[1].mtime -eq '2026-01-01T00:00:00.000Z') 'a per-file stored timestamp is preserved verbatim too'
+    Assert-Fx (@($migrated.roots).Count -eq 0) 'a document with no roots does not gain a fabricated one'
     Assert-Fx ($migrated.files[1].id -eq 'legacy-1') 'an existing id is preserved'
     Assert-Fx ($null -eq $migrated.files[2].gofile.directUrl) 'a directUrl on a non-uploaded file is dropped'
     Assert-Fx ($migrated.files[3].root -eq 'Temp') 'an unknown root falls back to Temp'
     Assert-Fx ($migrated.files[3].upload.lastError.hostMessage -eq 'HOST_MESSAGE_MARKER') 'the F44 host message survives migration intact'
     Assert-Fx ($migrated.files[3].upload.lastError.phase -eq 'http' -and $migrated.files[3].upload.lastError.httpStatus -eq 502) 'the phase + status survive migration'
     $again = Invoke-FxMigrateIndex -Value $migrated
-    Assert-Fx ((($again | ConvertTo-Json -Depth 10 -Compress)) -eq (($migrated | ConvertTo-Json -Depth 10 -Compress))) 'migration is idempotent'
+    $jsonAgain = [string]($again | ConvertTo-Json -Depth 10 -Compress)
+    $jsonFirst = [string]($migrated | ConvertTo-Json -Depth 10 -Compress)
+    if ($jsonAgain -ne $jsonFirst) {
+        # self-diagnosing: the two documents differ somewhere, so report the
+        # field-level difference instead of only "false"
+        $pa = @(Split-FxTopLevelJson $jsonAgain)
+        $pb = @(Split-FxTopLevelJson $jsonFirst)
+        $diff = @()
+        for ($i = 0; $i -lt [Math]::Max($pa.Count, $pb.Count) -and $diff.Count -lt 8; $i++) {
+            $xa = '<absent>'; if ($i -lt $pa.Count) { $xa = $pa[$i] }
+            $xb = '<absent>'; if ($i -lt $pb.Count) { $xb = $pb[$i] }
+            if ($xa -ne $xb) { $diff += ('@' + $i + ' again=' + $xa + ' <> first=' + $xb) }
+        }
+        Write-Host ('::warning::[F45 S4] idempotency diff: ' + ($diff -join ' ;; '))
+        Write-Host ('::warning::[F45 S4] again head: ' + $jsonAgain.Substring(0, [Math]::Min(500, $jsonAgain.Length)))
+        Write-Host ('::warning::[F45 S4] first head: ' + $jsonFirst.Substring(0, [Math]::Min(500, $jsonFirst.Length)))
+    }
+    Assert-Fx ($jsonAgain -eq $jsonFirst) 'migration is idempotent'
     $long = 'Untruncated host error. ' * 500
     $longEntry = (ConvertTo-FxFileEntry -Value ([pscustomobject]@{ root = 'Temp'; path = '/x'; upload = [pscustomobject]@{ status = 'failed'; lastError = [pscustomobject]@{ phase = 'http'; hostMessage = $long } } }))
     Assert-Fx ($longEntry.upload.lastError.hostMessage.Length -eq $long.Length) 'a 12k host message is preserved with no cap'
@@ -331,7 +366,7 @@ try {
 '@
     $qOk = Invoke-FxMigrateIndex -Value ($qOkJson | ConvertFrom-Json)
     $null = Add-FxUploadJobs -Index $qOk -Ids @('aaa') -HostId 'gofile' -Path $script:FxQueuePath
-    $summary = Step-FxUploadQueue -Path $script:FxQueuePath -IndexPath $script:FxIndexPath -Uploader $okUploader -Index $qIdx
+    $summary = Step-FxUploadQueue -Path $script:FxQueuePath -IndexPath $script:FxIndexPath -Uploader $okUploader -Index $qOk
     Assert-Fx ($summary.succeeded -eq 1 -and $summary.failed -eq 0) 'a successful upload is reported once'
     Assert-Fx ($qOk.files[0].gofile.status -eq 'uploaded' -and $qOk.files[0].gofile.fileId -eq 'fx-file-1') 'the index records the hosted state'
     Assert-Fx ($qOk.files[0].gofile.directUrl -eq 'https://store1.gofile.io/download/fx-file-1') 'a credential-free direct link is stored'
@@ -358,7 +393,9 @@ try {
     # the retry must wait its own backoff: the very next tick may not re-attempt
     $gate = Step-FxUploadQueue -Path $script:FxQueuePath -IndexPath $script:FxIndexPath -Uploader $failUploader -Index $qIdx2
     Assert-Fx ($gate.processed -eq 0 -and $gate.skipped -eq 1) 'a retry is not attempted before its backoff deadline'
-    Assert-Fx (([string](Get-FxUploadQueue -Path $script:FxQueuePath).jobs[0].retryAt)) 'the queue carries the retry deadline'
+    # BOOLEAN condition: a bare string cannot bind to [bool]$Condition, and the
+    # terminating error it raises would hide every later stage.
+    Assert-Fx (-not [string]::IsNullOrEmpty([string](Get-FxUploadQueue -Path $script:FxQueuePath).jobs[0].retryAt)) 'the queue carries the retry deadline'
     for ($i = 2; $i -le 4; $i++) {
         $script:FxClock = (Get-Date).ToUniversalTime().AddSeconds(60)
         $s = Step-FxUploadQueue -Path $script:FxQueuePath -IndexPath $script:FxIndexPath -Uploader $failUploader -Index $qIdx2

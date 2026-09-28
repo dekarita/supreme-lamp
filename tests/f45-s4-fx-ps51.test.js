@@ -226,6 +226,37 @@ test('F45-S4-PS1-5 the proof script is pure ASCII and so are the region literals
   assert.notEqual(Buffer.from(serverSrc, 'utf8')[0], 0xef, 'the server file must not grow a BOM');
 });
 
+test('F45-S4-PS1-9 a stored timestamp is validated, never re-formatted', () => {
+  // Re-formatting a stored ISO string (e.g. to 7 fractional digits) makes a
+  // re-normalized document differ from its own input: the epoch fallback is
+  // millisecond-precision, so migration stopped being idempotent and every read
+  // of an untouched file rewrote its mtime. Only a real [datetime] is formatted.
+  const m = region.match(/function ConvertTo-FxIso \{\n([\s\S]*?)\n\}/);
+  assert.ok(m, 'ConvertTo-FxIso is defined in the region');
+  const body = m[1];
+  const from = body.indexOf('$s = [string]$Value');
+  const to = body.indexOf('return $s');
+  assert.ok(from > 0 && to > from, 'the string branch returns the stored text verbatim');
+  assert.equal(/\.ToString\(/.test(body.slice(from, to)), false, 'a stored ISO string must not be re-formatted');
+  assert.ok(/ToString\('o'\)/.test(body), 'a [datetime] value is still formatted');
+});
+
+test('F45-S4-PS1-8 array members are read through Get-FxRows, never through @(Get-FxMember ...)', () => {
+  // PowerShell drops an EMPTY array on return, so `@(Get-FxMember $o 'roots')`
+  // is a one-element array containing $null - a normalizer then fabricates a row
+  // (this is what produced a phantom Temp root and broke migration idempotency).
+  // Get-FxRows turns "missing or empty" into zero rows, and every call site must
+  // keep the @() wrapper because a bare call would unroll a single row into a
+  // scalar: that is why the wrapper is asserted here, not just the call.
+  const code = regionScan.code + glueScan.code;
+  const bareMember = [...code.matchAll(/(^|[^@])\(\s*Get-FxMember\s+[^\n]*'(?:files|roots|jobs|gofileHosts|entries)'/g)];
+  assert.deepEqual(bareMember.map((m) => `@(Get-FxMember ...) at line ${lineOf(code, m.index)}`), [], 'array members must be read through Get-FxRows');
+  const bareRows = [...code.matchAll(/(^|[^@])\(\s*Get-FxRows\b/g)];
+  assert.deepEqual(bareRows.map((m) => `bare Get-FxRows at line ${lineOf(code, m.index)}`), [], 'every Get-FxRows call must be wrapped in @( )');
+  assert.ok(code.includes('@(Get-FxRows '), 'the region still iterates its arrays');
+  assert.match(region, /function Get-FxRows \{/, 'the helper exists in the region');
+});
+
 test('F45-S4-PS1-7 no property-syntax write adds a key to an ordered document', () => {
   // On 5.1, `$ordered.NewKey = 1` throws "The property cannot be found on this
   // object" while the indexer form adds it (PowerShell 7 allows both). Every
