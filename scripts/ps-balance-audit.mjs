@@ -237,6 +237,17 @@ function fxContractProblems() {
 
   // 2.4 redaction: ONE funnel, ***REDACTED***, no token in any log call
   if (!fx.includes("$script:FxRedacted = '***REDACTED***'")) problems.push(`${fxPath}: the redaction marker is not ***REDACTED***`);
+  // typed-parameter defaults: [hashtable] $x = @() (and [string[]] $x = @{})
+  // throw ParameterBindingArgumentTransformationException on every call that
+  // omits the argument, so an error route silently becomes a 500. Found by CI.
+  for (const [i, line] of fx.split('\n').entries()) {
+    if (/\[hashtable\]\s*\$\w+\s*=\s*@\(\)/.test(line)) problems.push(`${fxPath}:${i + 1}: a [hashtable] parameter defaults to @() (binding throw on every call)`);
+    if (/\[string\[\]\]\s*\$\w+\s*=\s*@\{\}/.test(line)) problems.push(`${fxPath}:${i + 1}: a [string[]] parameter defaults to @{} (binding throw on every call)`);
+  }
+  const srvText = read('payloads/ghrdp-server.ps1');
+  for (const [i, line] of srvText.split('\n').entries()) {
+    if (/\[hashtable\]\s*\$\w+\s*=\s*@\(\)/.test(line)) problems.push(`payloads/ghrdp-server.ps1:${i + 1}: a [hashtable] parameter defaults to @() (binding throw on every call)`);
+  }
   if (!/Protect-FxText -Text \$Message -Secrets \$secrets/.test(fx)) problems.push(`${fxPath}: Write-FxAudit does not redact before writing`);
   if (!/function Protect-FxText/.test(fx)) problems.push(`${fxPath}: Protect-FxText is missing`);
   const auditCalls = fx.split('\n').filter((l) => /Write-FxAudit/.test(l) && !/^function /.test(l.trim()));

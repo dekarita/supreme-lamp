@@ -27,7 +27,16 @@ function Ok([string]$Name) { $script:Pass++; Write-Host ('  ok   ' + $Name) }
 function Fail([string]$Name, [string]$Detail) {
     $script:Fail++
     $script:Failures += ($Name + ' :: ' + $Detail)
-    Write-Host ('::error::[F45] ' + $Name + ' :: ' + $Detail)
+    # annotations are single-line and the first 10 are the ones the operator
+    # sees; keep the message complete but flat.
+    $flat = ($Detail -replace '\r?\n', ' | ')
+    Write-Host ('::error::[F45] ' + $Name + ' :: ' + $flat)
+}
+function Get-FxFailDetail($Err) {
+    if (-not $Err) { return 'unknown error' }
+    $pos = ''
+    try { $pos = ' | at ' + ([string]$Err.InvocationInfo.PositionMessage -replace '\r?\n', ' ') } catch { }
+    return ($Err.Exception.GetType().Name + ': ' + $Err.Exception.Message + $pos)
 }
 function Check([string]$Name, $Cond, [string]$Detail = '') {
     if ($Cond) { Ok $Name } else { Fail $Name ($Detail + ' (condition false)') }
@@ -445,7 +454,7 @@ CheckEqual 'migration keeps a clean sentinel root' 'Temp' $normalized.files[2].r
 CheckEqual 'migration never mutates the input' 1 $v1Doc.schemaVersion
 
 } catch {
-    Fail 'unit section aborted' ($_.Exception.GetType().Name + ': ' + $_.Exception.Message + ' @ line ' + [string]$_.InvocationInfo.ScriptLineNumber)
+    Fail 'unit section aborted' (Get-FxFailDetail $_)
 }
 
 # =============================================================================
@@ -597,7 +606,7 @@ try {
         CheckEqual 'I the legacy routes still answer 200' 200 $r.Code
     }
 } catch {
-    Fail 'integration section aborted' ($_.Exception.GetType().Name + ': ' + $_.Exception.Message + ' @ line ' + [string]$_.InvocationInfo.ScriptLineNumber)
+    Fail 'integration section aborted' (Get-FxFailDetail $_)
 } finally {
     if ($proc) { try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { } }
     foreach ($pf in @('fx-upload-worker.pid')) {

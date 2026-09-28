@@ -482,7 +482,11 @@ function New-FxResponse {
 }
 function New-FxErrorResponse {
     # F44: the body carries the phase AND the complete host message.
-    param([int]$Code, [string]$Phase, [string]$Message, [hashtable]$Extra = @(), [string[]]$Headers = @())
+    # [F45 S4 CI fix] the default MUST be @{}: a [hashtable] parameter whose
+    # default is @() throws ParameterBindingArgumentTransformationException on
+    # every call that omits -Extra ("Cannot convert System.Object[] to
+    # Hashtable"), which turned every error route into a 500.
+    param([int]$Code, [string]$Phase, [string]$Message, [hashtable]$Extra = @{}, [string[]]$Headers = @())
     $body = [ordered]@{ phase = $Phase; error = $Message; at = (Get-Date).ToUniversalTime().ToString('o') }
     foreach ($k in @($Extra.Keys)) { $body[$k] = $Extra[$k] }
     return (New-FxResponse -Code $Code -CType 'application/json; charset=utf-8' -Body (ConvertTo-FxJsonBytes $body) -Headers $Headers)

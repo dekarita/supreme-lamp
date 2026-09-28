@@ -209,7 +209,27 @@ test('F45-S4-13 the mjs auditor catches the failure classes it claims', async ()
   assert.ok(audit('probe', '$x = "a`nb"').length === 0, 'a backtick escape must not unbalance anything');
 });
 
-test('F45-S4-14 the auditor audits the new surfaces and pins the contract', () => {
+test('F45-S4-14 no typed parameter defaults to an incompatible literal', () => {
+  // A [hashtable] parameter whose default is @() throws
+  // ParameterBindingArgumentTransformationException on every call that omits
+  // the argument, turning error routes into 500s (found by CI, fixed once).
+  const psFiles = ['payloads/ghrdp-fx.ps1', 'tests/f45-fx-server.ps1', 'payloads/ghrdp-server.ps1'];
+  for (const f of psFiles) {
+    const text = read(f);
+    for (const line of text.split('\n')) {
+      assert.ok(
+        !/\[hashtable\]\s*\$\w+\s*=\s*@\(\)/.test(line),
+        `${f}: a [hashtable] parameter defaults to @() -> ${line.trim()}`
+      );
+      assert.ok(
+        !/\[string\[\]\]\s*\$\w+\s*=\s*@\{\}/.test(line),
+        `${f}: a [string[]] parameter defaults to @{} -> ${line.trim()}`
+      );
+    }
+  }
+});
+
+test('F45-S4-15 the auditor audits the new surfaces and pins the contract', () => {
   assert.match(audit, /'payloads\/ghrdp-fx\.ps1'/, 'the module is not in the audit target list');
   assert.match(audit, /'tests\/f45-fx-server\.ps1'/, 'the dynamic test is not structurally audited');
   for (const needle of [
