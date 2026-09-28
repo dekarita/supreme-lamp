@@ -144,8 +144,13 @@ try {
     # vector is meant to catch.
     $vectorPath = Join-Path $repo 'src/components/explorer/data/fixtures/stable-id-vectors.json'
     Assert-Fx (Test-Path -LiteralPath $vectorPath) 'the shared stable-id vector fixture exists'
-    $vectors = @(([IO.File]::ReadAllText($vectorPath)) | ConvertFrom-Json)
-    Assert-Fx ($vectors.Count -ge 5) 'the fixture carries at least five identity vectors'
+    # NOTE for 5.1: `$json | ConvertFrom-Json` sends a TOP-LEVEL array as ONE
+    # object through the pipeline, so the fixture is an object and its array is
+    # enumerated explicitly with @($doc.vectors). Never count the pipeline form.
+    $vectorDoc = ConvertFrom-Json ([IO.File]::ReadAllText($vectorPath))
+    $vectors = @($vectorDoc.vectors)
+    Assert-Fx ($vectors.Count -ge 5) ('the fixture carries at least five identity vectors (got ' + [string]@($vectors).Count + ')')
+    Assert-Fx ([int]$vectorDoc.schemaVersion -eq 1) 'the fixture declares its own schema version'
     $nonAsciiVectors = 0
     $seenIds = @()
     foreach ($v in $vectors) {

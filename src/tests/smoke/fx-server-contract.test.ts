@@ -16,7 +16,7 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import stableIdVectors from '@/components/explorer/data/fixtures/stable-id-vectors.json';
+import stableIdVectorDoc from '@/components/explorer/data/fixtures/stable-id-vectors.json';
 import mimeMap from '@/components/explorer/data/fixtures/preview-mime-map.json';
 import { INDEX_SCHEMA_VERSION } from '@/components/explorer/data/schema';
 import { FAIL_FAST_HTTP } from '@/components/explorer/api/errors';
@@ -109,6 +109,8 @@ describe('F45 S4 server ↔ client contract', () => {
     // The fixture is the ONE source both runtimes read: node:crypto here, the
     // shipped PowerShell in tests/f45-s4-fx-server.ps1 (which reads the same
     // UTF-8 file, so neither runtime can drift on a non-ASCII path).
+    const stableIdVectors = stableIdVectorDoc.vectors;
+    expect(stableIdVectorDoc.schemaVersion).toBe(1);
     expect(stableIdVectors.length).toBeGreaterThanOrEqual(5);
     expect(new Set(stableIdVectors.map((v) => v.id)).size).toBe(stableIdVectors.length);
     for (const vector of stableIdVectors) {
