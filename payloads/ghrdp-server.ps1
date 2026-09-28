@@ -1315,6 +1315,193 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes @{ ok = $true; message = $note })
             return
         }
+        # [F49 runtime-opt-in-begin] One-click THIS-RUN opt-in for the token-less
+        # mirror (the Mirror page ConfirmModal). GET /api/mirror/status is the
+        # read; POST /api/mirror/enable|/disable converge the run. The dispatch
+        # mirror_enable path is untouched and the shipped default stays
+        # disabled (F11-5.2). Auth: the dash token in X-Dash-Token or
+        # Authorization: Bearer, never in the query string (fx rule); POSTs
+        # additionally require X-CSRF-Token (the per-process token, delivered
+        # by the status response header + cookie). The enable POST also queues
+        # the flush, so [Enable & Upload] is one action.
+        if ($path -eq '/api/mirror/status' -or $path -eq '/api/mirror/enable' -or $path -eq '/api/mirror/disable') {
+            if ($parts.method -eq 'OPTIONS') {
+                Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@()) -ExtraHeaders "Access-Control-Allow-Headers: Content-Type, Authorization, X-Dash-Token, X-CSRF-Token`r`nAccess-Control-Max-Age: 600"
+                Write-ClientAudit ('mirror ' + [string]$parts.method + ' ' + $path + ' -> 204 (preflight)')
+                return
+            }
+            $mIsPost = ($path -eq '/api/mirror/enable' -or $path -eq '/api/mirror/disable')
+            if ($mIsPost -and ($parts.method -ne 'POST')) {
+                Send-ClientResponse -Stream $stream -Code 405 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = 'method not allowed (POST required)' })
+                Write-ClientAudit ('mirror ' + [string]$parts.method + ' ' + $path + ' -> 405')
+                return
+            }
+            if ((-not $mIsPost) -and ($parts.method -ne 'GET')) {
+                Send-ClientResponse -Stream $stream -Code 405 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = 'method not allowed (GET required)' })
+                Write-ClientAudit ('mirror ' + [string]$parts.method + ' ' + $path + ' -> 405')
+                return
+            }
+            $mQueryCred = $false
+            try {
+                foreach ($qk in @('key', 'token', 'dash-token', 'dash_token', 'dashtoken', 'access-token', 'access_token', 'password')) {
+                    if ($parts.query.ContainsKey($qk)) { $mQueryCred = $true; break }
+                }
+            } catch { }
+            if ($mQueryCred) {
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = 'credentials are not accepted in the query string; send X-Dash-Token' })
+                Write-ClientAudit ('mirror ' + [string]$parts.method + ' ' + $path + ' -> 401 (query credential refused)')
+                return
+            }
+            $mPresented = ''
+            try { $mPresented = [string]$parts.headers['x-dash-token'] } catch { }
+            if (-not $mPresented) {
+                $mAuth = ''
+                try { $mAuth = [string]$parts.headers['authorization'] } catch { }
+                if ($mAuth -match '^(?i)Bearer\s+(.+)$') { $mPresented = $Matches[1].Trim() }
+            }
+            $mTokenOk = $false
+            if ($mPresented -and $Token) {
+                $mRecv = [System.Text.Encoding]::UTF8.GetBytes($mPresented)
+                $mExp = [System.Text.Encoding]::UTF8.GetBytes([string]$Token)
+                if (($mRecv.Length -eq $mExp.Length) -and (Test-TicketBearer $mRecv $mExp)) { $mTokenOk = $true }
+            }
+            $mClass = 'other'
+            try {
+                $mIp = $Client.Client.RemoteEndPoint.Address
+                if (Test-IsLoopbackAddr $mIp) { $mClass = 'loopback' }
+                else {
+                    $mOct = $mIp.GetAddressBytes()
+                    if ($mOct.Length -eq 4 -and $mOct[0] -eq 100 -and $mOct[1] -ge 64 -and $mOct[1] -le 127) { $mClass = 'tailnet' }
+                }
+            } catch { }
+            if ($mIsPost) {
+                if (-not $mTokenOk) {
+                    Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = 'dashboard authorization required (X-Dash-Token or Bearer)' })
+                    Write-ClientAudit ('mirror ' + [string]$parts.method + ' ' + $path + ' -> 401 (dash token required)')
+                    return
+                }
+                $mCsrf = ''
+                try { $mCsrf = [string]$parts.headers['x-csrf-token'] } catch { }
+                $mCsrfOk = $false
+                if ($mCsrf -and [string]$script:FxCsrf) {
+                    $mCsrfRecv = [System.Text.Encoding]::UTF8.GetBytes($mCsrf)
+                    $mCsrfExp = [System.Text.Encoding]::UTF8.GetBytes([string]$script:FxCsrf)
+                    if (($mCsrfRecv.Length -eq $mCsrfExp.Length) -and (Test-TicketBearer $mCsrfRecv $mCsrfExp)) { $mCsrfOk = $true }
+                }
+                if (-not $mCsrfOk) {
+                    Send-ClientResponse -Stream $stream -Code 403 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = 'CSRF token missing or invalid' })
+                    Write-ClientAudit ('mirror ' + [string]$parts.method + ' ' + $path + ' -> 403 (CSRF)')
+                    return
+                }
+            } else {
+                if ($mPresented -and (-not $mTokenOk)) {
+                    Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = 'dashboard authorization required (X-Dash-Token or Bearer)' })
+                    Write-ClientAudit ('mirror ' + [string]$parts.method + ' ' + $path + ' -> 401 (dash token invalid)')
+                    return
+                }
+                if (-not ($mTokenOk -or ($mClass -eq 'loopback') -or ($mClass -eq 'tailnet'))) {
+                    Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = 'dashboard authorization required (X-Dash-Token or Bearer)' })
+                    Write-ClientAudit ('mirror ' + [string]$parts.method + ' ' + $path + ' -> 401 (dash token required)')
+                    return
+                }
+            }
+            if (-not $script:F46MirrorReady) {
+                Send-ClientResponse -Stream $stream -Code 503 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = ('mirror module unavailable: ' + [string]$script:F46MirrorLoadError) })
+                Write-ClientAudit ('mirror ' + [string]$parts.method + ' ' + $path + ' -> 503 (module missing)')
+                return
+            }
+            $mCfg = Read-JsonFile -Path $script:CfgPath
+            if (-not $mCfg) {
+                Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = 'config.json is missing or unreadable' })
+                Write-ClientAudit ('mirror ' + [string]$parts.method + ' ' + $path + ' -> 500 (config unreadable)')
+                return
+            }
+            if ($path -eq '/api/mirror/status') {
+                $mSt = $null
+                try { $mSt = Get-F49OptInStatus -Cfg $mCfg } catch { $mSt = $null }
+                if (-not $mSt) {
+                    Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = 'mirror status unavailable' })
+                    Write-ClientAudit ('mirror GET /api/mirror/status -> 500')
+                    return
+                }
+                $mPending = $false
+                try { $mPending = (Test-Path -LiteralPath (Join-Path $Root ([string]$script:F49OptInEnableFlag))) -or (Test-Path -LiteralPath (Join-Path $Root ([string]$script:F49OptInDisableFlag))) } catch { }
+                $mBody = [ordered]@{ ok = $true; enabled = [bool]$mSt.enabled; mirror = [bool]$mSt.mirror; hosts = @($mSt.hosts); host = [string]$mSt.host; scope = [string]$mSt.scope; source = [string]$mSt.source; at = [string]$mSt.at; pending = [bool]$mPending }
+                $mExtra = ('X-CSRF-Token: ' + [string]$script:FxCsrf + "`r`n" + 'Access-Control-Expose-Headers: X-CSRF-Token' + "`r`n" + 'Set-Cookie: ghrdp_mirror_csrf=' + [string]$script:FxCsrf + '; Path=/; SameSite=Strict')
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $mBody) -ExtraHeaders $mExtra
+                Write-ClientAudit ('mirror GET /api/mirror/status -> 200')
+                return
+            }
+            if ($path -eq '/api/mirror/enable') {
+                $mRes = $null
+                try { $mRes = Set-F49RuntimeOptIn -Cfg $mCfg } catch { $mRes = $null }
+                if (-not $mRes) {
+                    Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = 'runtime opt-in failed' })
+                    Write-ClientAudit ('mirror POST /api/mirror/enable -> 500 (converge failed)')
+                    return
+                }
+                try {
+                    [System.IO.File]::WriteAllText($script:CfgPath, ($mCfg | ConvertTo-Json -Depth 10), $script:NoBom)
+                } catch {
+                    Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = ('config write failed: ' + $_.Exception.Message) })
+                    Write-ClientAudit ('mirror POST /api/mirror/enable -> 500 (config write failed)')
+                    return
+                }
+                try { Write-F49OptInBeacon -Root $Root -Marker (Get-F49RuntimeOptIn -Cfg $mCfg) -HostId ([string]$mRes.host) } catch { }
+                if ([bool]$mRes.changed) {
+                    try {
+                        [System.IO.File]::WriteAllText((Join-Path $Root ([string]$script:F49OptInEnableFlag)), (Get-Date -Format o), $script:NoBom)
+                    } catch {
+                        Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = ('opt-in flag write failed: ' + $_.Exception.Message) })
+                        Write-ClientAudit ('mirror POST /api/mirror/enable -> 500 (flag write failed)')
+                        return
+                    }
+                }
+                try {
+                    [System.IO.File]::WriteAllText($script:FlushFlag, (Get-Date -Format o), $script:NoBom)
+                } catch {
+                    Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = ('flush flag write failed: ' + $_.Exception.Message) })
+                    Write-ClientAudit ('mirror POST /api/mirror/enable -> 500 (flush write failed)')
+                    return
+                }
+                $mSt2 = $null
+                try { $mSt2 = Get-F49OptInStatus -Cfg $mCfg } catch { $mSt2 = $null }
+                $mPend2 = $false
+                try { $mPend2 = (Test-Path -LiteralPath (Join-Path $Root ([string]$script:F49OptInEnableFlag))) } catch { }
+                $mBody2 = [ordered]@{ ok = $true; enabled = $true; host = [string]$mRes.host; scope = [string]$script:F49OptInScope; source = [string]$script:F49OptInSource; at = $(if ($mSt2) { [string]$mSt2.at } else { '' }); alreadyEnabled = (-not [bool]$mRes.changed); pending = [bool]$mPend2 }
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $mBody2)
+                Write-ClientAudit ('mirror POST /api/mirror/enable -> 200')
+                return
+            }
+            $mResOff = $null
+            try { $mResOff = Clear-F49RuntimeOptIn -Cfg $mCfg } catch { $mResOff = $null }
+            if (-not $mResOff) {
+                Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = 'runtime opt-out failed' })
+                Write-ClientAudit ('mirror POST /api/mirror/disable -> 500 (converge failed)')
+                return
+            }
+            try {
+                [System.IO.File]::WriteAllText($script:CfgPath, ($mCfg | ConvertTo-Json -Depth 10), $script:NoBom)
+            } catch {
+                Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = ('config write failed: ' + $_.Exception.Message) })
+                Write-ClientAudit ('mirror POST /api/mirror/disable -> 500 (config write failed)')
+                return
+            }
+            try { Remove-F49OptInBeacon -Root $Root } catch { }
+            if ([bool]$mResOff.changed) {
+                try {
+                    [System.IO.File]::WriteAllText((Join-Path $Root ([string]$script:F49OptInDisableFlag)), (Get-Date -Format o), $script:NoBom)
+                } catch {
+                    Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = ('opt-out flag write failed: ' + $_.Exception.Message) })
+                    Write-ClientAudit ('mirror POST /api/mirror/disable -> 500 (flag write failed)')
+                    return
+                }
+            }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; enabled = $false; scope = [string]$script:F49OptInScope; source = 'off'; alreadyDisabled = (-not [bool]$mResOff.changed) }))
+            Write-ClientAudit ('mirror POST /api/mirror/disable -> 200')
+            return
+        }
+        # [F49 runtime-opt-in-end]
         if ($path -eq '/launch') {
             $msg = 'watcher task start requested'
             try { Start-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction Stop } catch { $msg = 'could not start watcher task (log in via RDP first): ' + $_.Exception.Message }

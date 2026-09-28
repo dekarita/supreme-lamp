@@ -968,3 +968,195 @@ function Format-F46ProbeTable {
     foreach ($r in @($Rows)) { $lines += ('{0} {1} {2}' -f [string]$r.host, [string]$r.status, [string]$r.note) }
     return ($lines -join "`n")
 }
+
+# --- [F49 runtime-opt-in-begin] --------------------------------------------
+# ONE-click runtime opt-in for the token-less mirror (the dashboard
+# ConfirmModal -> POST /api/mirror/enable). The dispatch mirror_enable path
+# (F47/F48) is UNCHANGED; this is the second, operator-clicked path with the
+# same THIS-RUN scope: the runner is ephemeral, so a config.json write can
+# never outlive the run, and the shipped code default stays enabled=false
+# (F11-5.2). The guest contract is unchanged: no Authorization, no
+# X-Gofile-Token, no Cookie toward the host, ever.
+$script:F49OptInScope = 'this-run'
+$script:F49OptInSource = 'runtime'
+$script:F49OptInBeaconName = 'mirror-optin-beacon.json'
+$script:F49OptInEnableFlag = 'mirror-enable.flag'
+$script:F49OptInDisableFlag = 'mirror-disable.flag'
+
+function Set-F49CfgProp {
+    # Config objects arrive as PSCustomObject (ConvertFrom-Json) in production
+    # and as hashtables in some lab fixtures: write through either shape.
+    param($Cfg, [string]$Name, $Value)
+    if (-not $Cfg) { return }
+    if ($Cfg -is [System.Collections.IDictionary]) { try { $Cfg[$Name] = $Value } catch { } return }
+    $has = $false
+    try { $has = ($null -ne $Cfg.PSObject.Properties[$Name]) } catch { $has = $false }
+    if ($has) { try { $Cfg.$Name = $Value } catch { } }
+    else { try { $Cfg | Add-Member -MemberType NoteProperty -Name $Name -Value $Value -Force } catch { } }
+}
+
+function ConvertTo-F49UtcIso {
+    # [F17 S2] the SAME coercion the beacon-age bug taught: ConvertFrom-Json in
+    # Windows PowerShell 5.1 turns an ISO "...Z" stamp into a [datetime], and a
+    # bare [string] of it renders locale-without-Z. The opt-in marker rides
+    # config.json, so every read-back MUST normalize: strings parse with
+    # RoundtripKind (an explicit offset is honored, a bare stamp is UTC),
+    # datetimes convert to UTC. Returns '' when there is no stamp.
+    param($Ts)
+    try {
+        if ($null -eq $Ts) { return '' }
+        $dt = $null
+        if ($Ts -is [datetime]) { $dt = $Ts }
+        else {
+            $s = [string]$Ts
+            if (-not $s) { return '' }
+            $dt = [datetime]::Parse($s, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+        }
+        if ($dt.Kind -eq [System.DateTimeKind]::Unspecified) { $dt = New-Object System.DateTime($dt.Ticks, [System.DateTimeKind]::Utc) }
+        return $dt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    } catch { return '' }
+}
+
+function Get-F49RuntimeOptIn {
+    param($Cfg)
+    try {
+        if ($Cfg -and $Cfg.PSObject.Properties['mirrorRuntimeOptIn'] -and $Cfg.mirrorRuntimeOptIn) { return $Cfg.mirrorRuntimeOptIn }
+    } catch { }
+    return $null
+}
+
+function Test-F49MirrorEnabled {
+    # The worker's actual gate, in one place: the master switch AND an enabled
+    # host. Either one off means no upload is attempted.
+    param($Cfg)
+    $on = $false
+    try { $on = [bool]$Cfg.mirror } catch { $on = $false }
+    if (-not $on) { return $false }
+    $hosts = @()
+    try { $hosts = @(Get-F46Hosts -Cfg $Cfg) } catch { $hosts = @() }
+    $sel = $null
+    try { $sel = Select-F46UploadHost -Hosts $hosts } catch { $sel = $null }
+    return ($null -ne $sel)
+}
+
+function Get-F49OptInStatus {
+    # source=runtime only when the marker exists; a dispatch-enabled config
+    # (mirror=true, no marker) reports dispatch; anything else is off. Scope is
+    # always this-run: both paths die with the ephemeral runner.
+    param($Cfg)
+    $enabled = $false
+    try { $enabled = (Test-F49MirrorEnabled -Cfg $Cfg) } catch { $enabled = $false }
+    $marker = $null
+    try { $marker = (Get-F49RuntimeOptIn -Cfg $Cfg) } catch { $marker = $null }
+    $source = 'off'
+    if ($marker) { $source = [string]$script:F49OptInSource }
+    elseif ($enabled) { $source = 'dispatch' }
+    $at = ''
+    try { if ($marker -and $marker.PSObject.Properties['at']) { $at = ConvertTo-F49UtcIso $marker.at } } catch { }
+    $hosts = @()
+    try { $hosts = @(Get-F46Hosts -Cfg $Cfg) } catch { $hosts = @() }
+    $rows = @()
+    foreach ($h in @($hosts)) {
+        $id = 'gofile'
+        $en = $false
+        try { if ($h.id) { $id = [string]$h.id } } catch { }
+        try { $en = [bool]$h.enabled } catch { }
+        $rows += ([ordered]@{ id = $id; enabled = $en })
+    }
+    $selHost = ''
+    try { $sel = Select-F46UploadHost -Hosts $hosts; if ($sel) { $selHost = [string]$sel.id } } catch { }
+    $mirror = $false
+    try { $mirror = [bool]$Cfg.mirror } catch { }
+    return [ordered]@{ enabled = [bool]$enabled; mirror = [bool]$mirror; hosts = @($rows); host = $selHost; scope = [string]$script:F49OptInScope; source = $source; at = $at }
+}
+
+function Set-F49RuntimeOptIn {
+    # Converge a config OBJECT to runtime-enabled: master switch on, first host
+    # enabled (the default gofile entry is created when mirrorHosts is
+    # missing/empty), the runtime marker stamped. No other key is touched.
+    # Returns @{ changed; host } - changed=false means the config was already
+    # fully runtime-enabled (an idempotent re-POST keeps the original marker).
+    param($Cfg, [string]$At = '')
+    $stamp = $At
+    if (-not $stamp) { $stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+    $beforeEnabled = $false
+    $beforeSource = 'off'
+    try { $b = Get-F49OptInStatus -Cfg $Cfg; $beforeEnabled = [bool]$b.enabled; $beforeSource = [string]$b.source } catch { }
+    $already = ([bool]$beforeEnabled -and ($beforeSource -eq [string]$script:F49OptInSource))
+    $list = @()
+    try { if ($Cfg -and $Cfg.PSObject.Properties['mirrorHosts'] -and $Cfg.mirrorHosts) { $list = @($Cfg.mirrorHosts) } } catch { $list = @() }
+    if (@($list).Count -eq 0) {
+        $d = Get-F46DefaultHost
+        $d.enabled = $true
+        $list = @([pscustomobject]$d)
+    } else {
+        $first = $list[0]
+        if ($first -is [System.Collections.IDictionary]) { try { $first['enabled'] = $true } catch { } }
+        else { try { $first.enabled = $true } catch { } }
+    }
+    Set-F49CfgProp -Cfg $Cfg -Name 'mirrorHosts' -Value @($list)
+    Set-F49CfgProp -Cfg $Cfg -Name 'mirror' -Value $true
+    if (-not $already) {
+        $marker = [pscustomobject][ordered]@{ at = $stamp; source = [string]$script:F49OptInSource; scope = [string]$script:F49OptInScope; by = 'dashboard' }
+        Set-F49CfgProp -Cfg $Cfg -Name 'mirrorRuntimeOptIn' -Value $marker
+    }
+    $selHost = ''
+    try { $a = Get-F49OptInStatus -Cfg $Cfg; $selHost = [string]$a.host } catch { }
+    return @{ changed = (-not $already); host = $selHost }
+}
+
+function Clear-F49RuntimeOptIn {
+    # Converge a config OBJECT to default-off: master switch false, EVERY host
+    # disabled, the runtime marker removed. Returns @{ changed }.
+    param($Cfg)
+    $beforeEnabled = $false
+    try { $b = Get-F49OptInStatus -Cfg $Cfg; $beforeEnabled = [bool]$b.enabled } catch { }
+    Set-F49CfgProp -Cfg $Cfg -Name 'mirror' -Value $false
+    $list = @()
+    try { if ($Cfg -and $Cfg.PSObject.Properties['mirrorHosts'] -and $Cfg.mirrorHosts) { $list = @($Cfg.mirrorHosts) } } catch { $list = @() }
+    foreach ($h in @($list)) {
+        if ($h -is [System.Collections.IDictionary]) { try { $h['enabled'] = $false } catch { } }
+        else { try { $h.enabled = $false } catch { } }
+    }
+    $hadMarker = $false
+    try { $hadMarker = ($null -ne $Cfg.PSObject.Properties['mirrorRuntimeOptIn']) } catch { $hadMarker = $false }
+    if ($hadMarker) {
+        if ($Cfg -is [System.Collections.IDictionary]) { try { $Cfg.Remove('mirrorRuntimeOptIn') } catch { } }
+        else { try { $Cfg.PSObject.Properties.Remove('mirrorRuntimeOptIn') } catch { } }
+    }
+    return @{ changed = [bool]$beforeEnabled }
+}
+
+function Format-F49OptInLedger {
+    # THE §3 ledger line. One format function, used by the watcher and pinned
+    # by the lab: the operator pastes this line as the opt-in proof.
+    param($Marker, [string]$HostId = 'gofile')
+    $at = ''
+    try { if ($Marker -and $Marker.PSObject.Properties['at']) { $at = ConvertTo-F49UtcIso $Marker.at } } catch { }
+    if (-not $at) { $at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+    return ('[mirror] RUNTIME OPT-IN: enabled=true scope=this-run source=runtime host=' + $HostId + ' at=' + $at + ' (dashboard one-click; token-less guest, no credential)')
+}
+
+function Format-F49OptOutLedger {
+    return '[mirror] RUNTIME OPT-IN: cleared by dashboard (mirror=false, hosts disabled)'
+}
+
+function Write-F49OptInBeacon {
+    # The per-run opt-in beacon (own file: the same no-writer-race rule as the
+    # F28/F30 state files). Written by enable, deleted by disable; it carries
+    # no secret and dies with the ephemeral runner.
+    param([string]$Root, $Marker, [string]$HostId = 'gofile')
+    $at = ''
+    try { if ($Marker -and $Marker.PSObject.Properties['at']) { $at = ConvertTo-F49UtcIso $Marker.at } } catch { }
+    $beacon = [ordered]@{ event = 'mirror-runtime-opt-in'; enabled = $true; scope = [string]$script:F49OptInScope; source = [string]$script:F49OptInSource; host = $HostId; at = $at }
+    $p = Join-Path $Root ([string]$script:F49OptInBeaconName)
+    [System.IO.File]::WriteAllText($p, ($beacon | ConvertTo-Json -Compress -Depth 5), (New-Object System.Text.UTF8Encoding($false)))
+    return $p
+}
+
+function Remove-F49OptInBeacon {
+    param([string]$Root)
+    $p = Join-Path $Root ([string]$script:F49OptInBeaconName)
+    try { if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction Stop } } catch { }
+}
+# --- [F49 runtime-opt-in-end] ----------------------------------------------

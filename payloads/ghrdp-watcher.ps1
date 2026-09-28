@@ -294,6 +294,8 @@ try {
     $mirrorTerminal = @{}
     $mirrorNextAt = @{}
     $mirrorDiagLimit = 200
+    # [F49] the last runtime opt-in marker already ledgered (marker `at` stamp).
+    $script:F49LastOptInAt = ''
     $mirrorPolicyMax = 5
     if ($mirrorModuleOk) {
         try { $mirrorPolicyMax = [int]$script:F46MaxAttempts } catch { $mirrorPolicyMax = 5 }
@@ -308,6 +310,54 @@ try {
     while ((Get-Date) -lt $deadline) {
         try {
   $fullPass = $false
+  # [F49] runtime opt-in flags (dashboard ConfirmModal -> POST /api/mirror/
+  # enable|disable). The server already wrote config.json + the beacon; these
+  # flags apply the SAME change to the watcher's in-memory config (config.json
+  # is loaded once at start) and ledger it. Flag files are the channel, so no
+  # read-modify-write race with the watcher's own config saves is possible.
+  $f49EnFlag = Join-Path $Root 'mirror-enable.flag'
+  if (Test-Path -LiteralPath $f49EnFlag) {
+      Remove-Item -LiteralPath $f49EnFlag -Force -ErrorAction SilentlyContinue
+      $f49Disk = $null
+      try { $f49Disk = Read-MirrorCfg -Path (Join-Path $Root 'config.json') } catch { $f49Disk = $null }
+      if ($f49Disk) {
+          try { $cfg.mirror = [bool]$f49Disk.mirror } catch { try { $cfg.mirror = $true } catch { } }
+          try { $cfg.mirrorHosts = @($f49Disk.mirrorHosts) } catch { }
+          try {
+              if ($cfg.PSObject.Properties['mirrorRuntimeOptIn']) { $cfg.mirrorRuntimeOptIn = $f49Disk.mirrorRuntimeOptIn }
+              else { $cfg | Add-Member -MemberType NoteProperty -Name 'mirrorRuntimeOptIn' -Value $f49Disk.mirrorRuntimeOptIn -Force }
+          } catch { }
+      } else {
+          try { $cfg.mirror = $true } catch { }
+      }
+      Save-MirrorCfg -Cfg $cfg -Path (Join-Path $Root 'config.json')
+  }
+  $f49DisFlag = Join-Path $Root 'mirror-disable.flag'
+  if (Test-Path -LiteralPath $f49DisFlag) {
+      Remove-Item -LiteralPath $f49DisFlag -Force -ErrorAction SilentlyContinue
+      try { $cfg.mirror = $false } catch { }
+      try { foreach ($f49h in @($cfg.mirrorHosts)) { $f49h.enabled = $false } } catch { }
+      try { if ($cfg.PSObject.Properties['mirrorRuntimeOptIn']) { $cfg.PSObject.Properties.Remove('mirrorRuntimeOptIn') } } catch { }
+      Save-MirrorCfg -Cfg $cfg -Path (Join-Path $Root 'config.json')
+      $f49Off = ''
+      try { $f49Off = Format-F49OptOutLedger } catch { $f49Off = '' }
+      if (-not $f49Off) { $f49Off = '[mirror] RUNTIME OPT-IN: cleared by dashboard (mirror=false, hosts disabled)' }
+      Add-MirrorLog $f49Off
+  }
+  # [F49] the §3 ledger line: one line per runtime opt-in marker, emitted when
+  # the worker applies it (first pass after the click, or first pass after a
+  # watcher start when the operator enabled before the watcher ran).
+  $f49Marker = $null
+  try { if ($cfg.PSObject.Properties['mirrorRuntimeOptIn']) { $f49Marker = $cfg.mirrorRuntimeOptIn } } catch { }
+  $f49At = ''
+  try { if ($f49Marker -and $f49Marker.PSObject.Properties['at']) { $f49At = [string]$f49Marker.at } } catch { }
+  if ($f49Marker -and $f49At -and ($f49At -ne [string]$script:F49LastOptInAt)) {
+      $script:F49LastOptInAt = $f49At
+      $f49Line = ''
+      try { $f49Line = Format-F49OptInLedger -Marker $f49Marker -HostId 'gofile' } catch { $f49Line = '' }
+      if (-not $f49Line) { $f49Line = ('[mirror] RUNTIME OPT-IN: enabled=true scope=this-run source=runtime host=gofile at=' + $f49At) }
+      Add-MirrorLog $f49Line
+  }
   $flushFlag = Join-Path $Root 'flush.flag'
   if (Test-Path -LiteralPath $flushFlag) {
       Remove-Item -LiteralPath $flushFlag -Force -ErrorAction SilentlyContinue
@@ -665,7 +715,11 @@ try {
       try {
           $diagAttempts = @($mirrorAttemptLog)
           if ($diagAttempts.Count -gt $mirrorDiagLimit) { $diagAttempts = $diagAttempts[($diagAttempts.Count - $mirrorDiagLimit)..($diagAttempts.Count - 1)] }
-          $prog.mirrorDiag = [ordered]@{ attempts = @($diagAttempts); terminalFiles = @($mirrorTerminal.Keys); hosts = @($prog.mirrorHosts); encryptMode = $encryptMode; encAlg = $mirrorEncAlg; authMode = $mirrorAuthMode; keyBytes = $(if ($mirrorKeyText) { 32 } else { 0 }) }
+          # [F49] the runtime opt-in marker rides mirrorDiag so /diag carries
+          # the same opt-in record the ledger line was stamped from.
+          $f49OptInDiag = $null
+          try { if ($cfg.PSObject.Properties['mirrorRuntimeOptIn'] -and $cfg.mirrorRuntimeOptIn) { $f49OptInDiag = $cfg.mirrorRuntimeOptIn } } catch { }
+          $prog.mirrorDiag = [ordered]@{ attempts = @($diagAttempts); terminalFiles = @($mirrorTerminal.Keys); hosts = @($prog.mirrorHosts); encryptMode = $encryptMode; encAlg = $mirrorEncAlg; authMode = $mirrorAuthMode; keyBytes = $(if ($mirrorKeyText) { 32 } else { 0 }); optIn = $f49OptInDiag }
       } catch { }
   } else {
       if (-not [bool]$cfg.mirror) {

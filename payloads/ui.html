@@ -190,6 +190,19 @@ main{max-width:1440px;margin:0 auto;padding:1.222rem 1.222rem 4.444rem;display:f
   border:1px solid rgba(248,113,113,.32);background:rgba(248,113,113,.10);color:#fecaca;font-size:.833rem;
   backdrop-filter:var(--tier-inset-blur);-webkit-backdrop-filter:var(--tier-inset-blur)}
 .banner.egress{display:block;color:#fde68a;border-color:rgba(251,191,36,.28);background:rgba(251,191,36,.09)}
+/* [F49] runtime opt-in: the disabled banner + the confirm modal (plain classes,
+   no framework). The banner is amber like the egress banner; the modal is a
+   centered dialog over a scrim, Escape-dismissible, focus to the primary. */
+.mOptBanner{display:block;color:#fde68a;border:1px solid rgba(251,191,36,.28);background:rgba(251,191,36,.09);padding:.667rem 1rem;border-radius:.778rem;font-size:.833rem;margin-bottom:.778rem}
+.mOptBanner[hidden]{display:none}
+.mOptScrim{position:fixed;inset:0;background:rgba(2,4,10,.55);z-index:200}
+.mOptScrim[hidden]{display:none}
+.mOptModal{position:fixed;z-index:201;left:50%;top:50%;transform:translate(-50%,-50%);width:min(480px,92vw);background:var(--glass,rgba(13,20,28,.96));border:1px solid rgba(251,191,36,.32);border-radius:.778rem;padding:1.111rem 1.222rem;box-shadow:0 1.111rem 2.778rem rgba(0,0,0,.5)}
+.mOptModal[hidden]{display:none}
+.mOptModal h2{font-size:1rem;margin:0 0 .444rem}
+.mOptModal p{font-size:.833rem;color:var(--mut,#9fb3c8);margin:0 0 .889rem;line-height:1.5}
+.mOptModal p code{font-family:var(--font-mono,ui-monospace,Consolas,monospace);font-size:.778rem}
+.mOptBtns{display:flex;justify-content:flex-end;gap:.556rem}
 .kpi{display:grid;grid-template-columns:auto repeat(6,1fr);gap:.778rem;padding:1rem 1.111rem}
 .ring{width:5rem;height:5rem;position:relative;flex:0 0 auto}
 .ring svg{width:100%;height:100%;transform:rotate(-90deg)}
@@ -621,6 +634,9 @@ main{max-width:1280px !important}
 
   <section class="glass tier-card" id="sec-mirror">
     <div class="sec-head"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-database"/></svg><h2>Mirror - AES-256 encrypted upload</h2></div>
+    <!-- [F49] the disabled banner: mirror default-off is the shipped state, so
+         the page says so and points at the one-click opt-in (not a silent no-op). -->
+    <div id="mirrorOptInBanner" class="mOptBanner" role="status" hidden>Mirror is OFF for this run (default). Queued files are tracked but NOT uploaded. Choose &ldquo;Upload everything now&rdquo; to review and enable a one-click token-less upload for this run only.</div>
     <div class="mirror-ring">
       <div class="ring" title="honest overall percent (capped at 99.9 until done==total)">
         <svg viewBox="0 0 64 64" aria-hidden="true">
@@ -872,6 +888,17 @@ main{max-width:1280px !important}
 </footer>
 
 <div class="toasts" id="toasts" aria-live="polite" aria-atomic="false"></div>
+<!-- [F49] runtime opt-in confirm modal: opens BEFORE the flush when the mirror
+     is disabled; [Enable & Upload] is enable+flush in one action. -->
+<div class="mOptScrim" id="mirrorOptInScrim" onclick="closeMirrorOptIn()" hidden></div>
+<div class="mOptModal" id="mirrorOptInModal" role="dialog" aria-modal="true" aria-labelledby="mirrorOptInTitle" aria-describedby="mirrorOptInDesc" hidden>
+  <h2 id="mirrorOptInTitle">Enable mirror for this run?</h2>
+  <p id="mirrorOptInDesc">This enables the token-less guest upload (no account, no credential) for THIS RUN ONLY and uploads everything now. The opt-in is recorded in the mirror ledger (<code>[mirror] RUNTIME OPT-IN</code>). The dispatch default stays off.</p>
+  <div class="mOptBtns">
+    <button type="button" id="mirrorOptInCancel" onclick="closeMirrorOptIn()">Cancel</button>
+    <button type="button" id="mirrorOptInConfirm" class="primary" onclick="confirmMirrorOptIn()">Enable &amp; Upload</button>
+  </div>
+</div>
 <div class="drawer-scrim" id="drawerScrim" onclick="closeDrawer()"></div>
 <aside class="drawer" id="drawer" aria-hidden="true">
   <header>
@@ -934,12 +961,24 @@ function copyById(id,btn){
 function copyLog(btn){copyText($('logBox').textContent,btn)}
 function copyAllLinks(btn){var out=[];if(lastData){if(lastData.legacyIndexUrl)out.push('LEGACY RENTRY: '+lastData.legacyIndexUrl);if(lastData.rentryNewUrl)out.push('NEW RENTRY: '+lastData.rentryNewUrl);if(lastData.mirrorIndexUrl)out.push('TELEGRAPH: '+lastData.mirrorIndexUrl);var fl=lastData.files||[];for(var i=0;i<fl.length;i++){if(fl[i].link)out.push(fl[i].name+': '+fl[i].link)}}if(out.length===0){flashBtn(btn,'no links yet');toast('No links yet','warn');return}copyText(out.join('\n'),btn)}
 async function getJson(url){try{var r=await fetch(url,{cache:'no-store'});if(!r.ok)return null;return await r.json()}catch(e){return null}}
-async function doFlush(btn){flashBtn(btn,'...');await getJson('/launch');var d=await getJson('/flush');if(d&&d.ok){toast('Flush requested - watcher will upload everything','ok')}else{toast('Flush failed - server not reachable','bad')}}
+async function legacyFlush(btn){flashBtn(btn,'...');await getJson('/launch');var d=await getJson('/flush');if(d&&d.ok){toast('Flush requested - watcher will upload everything','ok')}else{toast('Flush failed - server not reachable','bad')}}
+/* [F49] runtime opt-in client. Status unknown (pre-F49 server: the endpoint
+   404s) falls back to the legacy flush, so old servers keep working; status
+   disabled opens the ConfirmModal FIRST instead of flushing. */
+var mirrorOptState=null,mirrorOptBtn=null;
+function mirrorUrls(p){var u=[p];try{if(location.hostname&&location.port!=='7331')u.push(location.protocol+'//'+location.hostname+':7331'+p)}catch(_){}return u}
+async function getMirrorStatus(){var key='';try{key=getKey()}catch(_){key=''}var hd={};if(key)hd['X-Dash-Token']=key;var urls=mirrorUrls('/api/mirror/status');for(var i=0;i<urls.length;i++){var r=null;try{r=await fetch(urls[i],{headers:hd,cache:'no-store'})}catch(e){continue}if(!r||r.status===404)continue;if(!r.ok)return null;var j=null;try{j=await r.json()}catch(e){return null}if(!j||typeof j!=='object')return null;var csrf='';try{csrf=r.headers.get('X-CSRF-Token')||''}catch(e){csrf=''}if(!csrf){try{var m=document.cookie.match(/(?:^|;\s*)ghrdp_mirror_csrf=([0-9a-f]+)/);if(m)csrf=m[1]}catch(e){}}return{enabled:!!j.enabled,csrf:csrf,source:String((j&&j.source)||'')}}return null}
+async function refreshMirrorBanner(){var s=null;try{s=await getMirrorStatus()}catch(e){s=null}mirrorOptState=s;var b=null;try{b=$('mirrorOptInBanner')}catch(e){b=null}if(b)b.hidden=!(s&&!s.enabled)}
+async function doFlush(btn){if(!mirrorOptState){try{mirrorOptState=await getMirrorStatus()}catch(e){mirrorOptState=null}}if(mirrorOptState&&!mirrorOptState.enabled){openMirrorOptIn(btn);return}await legacyFlush(btn)}
+function openMirrorOptIn(btn){mirrorOptBtn=btn||null;try{$('mirrorOptInScrim').hidden=false;var m=$('mirrorOptInModal');m.hidden=false;var c=$('mirrorOptInConfirm');if(c)c.focus()}catch(e){}}
+function closeMirrorOptIn(){try{$('mirrorOptInScrim').hidden=true;$('mirrorOptInModal').hidden=true}catch(e){}if(mirrorOptBtn&&mirrorOptBtn.focus){try{mirrorOptBtn.focus()}catch(e){}}mirrorOptBtn=null}
+async function confirmMirrorOptIn(){var s=mirrorOptState;if(!s||!s.csrf){toast('Mirror status unavailable - server not reachable','bad');return}var key='';try{key=getKey()}catch(_){}if(!key){toast('Dashboard authorization missing (?key=)','bad');return}var hd={'X-Dash-Token':key,'X-CSRF-Token':s.csrf};var urls=mirrorUrls('/api/mirror/enable');var ok=false,err='';for(var i=0;i<urls.length;i++){var r=null;try{r=await fetch(urls[i],{method:'POST',headers:hd,cache:'no-store'})}catch(e){continue}if(!r||r.status===404)continue;if(!r.ok){try{var j=await r.json();if(j&&j.error)err=String(j.error)}catch(e){}if(!err)err='HTTP '+r.status;break}ok=true;break}if(ok){closeMirrorOptIn();toast('Mirror enabled for this run - uploading everything','ok');mirrorOptState=null;refreshMirrorBanner()}else{toast('Enable failed: '+(err||'server not reachable'),'bad')}}
+try{var _mOptBoot=refreshMirrorBanner();if(_mOptBoot&&_mOptBoot.catch)_mOptBoot.catch(function(){})}catch(_){}
 async function doLaunch(btn){flashBtn(btn,'...');var d=await getJson('/launch');if(d&&d.ok){toast('Watcher start requested','ok')}else{toast('Launch failed - server not reachable','bad')}}
 async function doDiag(){openDrawer();var db=$('diagBox');db.textContent='running /diag...';var d=await getJson('/diag');db.textContent=d?JSON.stringify(d,null,2):'Diagnostics failed - server not reachable.'}
 function openDrawer(){$('drawer').classList.add('open');$('drawer').setAttribute('aria-hidden','false');$('drawerScrim').classList.add('open')}
 function closeDrawer(){$('drawer').classList.remove('open');$('drawer').setAttribute('aria-hidden','true');$('drawerScrim').classList.remove('open')}
-document.addEventListener('keydown',function(e){if(e.key==='Escape')closeDrawer()});
+document.addEventListener('keydown',function(e){if(e.key==='Escape'){closeDrawer();closeMirrorOptIn()}});
 /* Native access is handled exclusively by the dedicated VPS section below. */
 function chip(id,text,cls){var p=$(id);if(!p)return;p.className='chip '+(cls||'');p.innerHTML=markSvg(p.getAttribute('data-ic')||CHIP_ICON[id]||'info')+'<i class="dot"></i><span>'+esc(text)+'</span>'}
 (function(){var box=$('logBox');if(!box)return;box.addEventListener('mouseenter',function(){logPaused=true});box.addEventListener('mouseleave',function(){logPaused=false})})();

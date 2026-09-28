@@ -191,6 +191,7 @@ def main():
         'payloads/ghrdp-mirror.ps1',
         'payloads/ghrdp-watcher.ps1',
         'tests/f46-mirror-policy.ps1',
+        'tests/f49-mirror-runtime.ps1',
     ]
     failed = 0
     for t in targets:
