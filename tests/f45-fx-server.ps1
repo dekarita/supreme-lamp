@@ -27,7 +27,7 @@ $script:Keep = [bool]$KeepArtifacts
 function Ok([string]$Name) { $script:Pass++; Write-Host ('  ok   ' + $Name) }
 function Fail([string]$Name, [string]$Detail) {
     $script:Fail++
-    $flat = ($Detail -replace '\r?\n', ' | ')
+    $flat = ([string]$Detail).Replace("`r", ' ').Replace("`n", ' | ')
     $script:Failures += ($Name + ' :: ' + $flat)
     # GitHub keeps only the first 10 annotations per step, so every failure is
     # printed to the log AND (at the end) all of them are emitted as ONE
@@ -38,7 +38,7 @@ function Fail([string]$Name, [string]$Detail) {
 function Get-FxFailDetail($Err) {
     if (-not $Err) { return 'unknown error' }
     $pos = ''
-    try { $pos = ' | at ' + ([string]$Err.InvocationInfo.PositionMessage -replace '\r?\n', ' ') } catch { }
+    try { $pos = ' | at ' + ([string]$Err.InvocationInfo.PositionMessage).Replace("`r", ' ').Replace("`n", ' ') } catch { }
     return ($Err.Exception.GetType().Name + ': ' + $Err.Exception.Message + $pos)
 }
 function Check([string]$Name, $Cond, [string]$Detail = '') {
@@ -188,17 +188,15 @@ Write-Host ('[F45] unit+integration root=' + $root)
 # always here (wrong path, unreadable fixture, id formula drift), and CI shows
 # it next to the failures instead of requiring a second round trip.
 $dbgIndex = Read-FxJsonFile -Path $indexPath
-$script:Diag = ('root=' + $root
-    + ' | indexPath=' + $indexPath
-    + ' | indexExists=' + [string](Test-Path -LiteralPath $indexPath)
-    + ' | routeIndexPath=' + (Get-FxIndexPath -Root $root -Options @{ IndexPath = $indexPath })
-    + ' | readOk=' + [string]$dbgIndex.ok
-    + ' | readError=' + [string]$dbgIndex.error
-    + ' | fileCount=' + [string]@($dbgIndex.value.files).Count
-    + ' | firstId=' + [string]$dbgIndex.value.files[0].id
-    + ' | firstRoot=' + [string]$dbgIndex.value.files[0].root
-    + ' | expectedId=' + $notesId
-    + ' | stableId=' + (Get-FxStableId 'RDP-Storage' '/notes.txt'))
+$dbgCount = 0
+$dbgFirstId = ''
+$dbgFirstRoot = ''
+try {
+    $dbgFiles = @($dbgIndex.value.files)
+    $dbgCount = $dbgFiles.Count
+    if ($dbgCount -gt 0) { $dbgFirstId = [string]$dbgFiles[0].id; $dbgFirstRoot = [string]$dbgFiles[0].root }
+} catch { }
+$script:Diag = 'root=' + $root + ' | indexPath=' + $indexPath + ' | indexExists=' + [string](Test-Path -LiteralPath $indexPath) + ' | readOk=' + [string]$dbgIndex.ok + ' | readError=' + [string]$dbgIndex.error + ' | fileCount=' + [string]$dbgCount + ' | firstId=' + $dbgFirstId + ' | firstRoot=' + $dbgFirstRoot + ' | expectedId=' + $notesId + ' | stableId=' + (Get-FxStableId 'RDP-Storage' '/notes.txt')
 Write-Host ('[F45] diagnostics: ' + $script:Diag)
 
 try {
@@ -670,10 +668,16 @@ Write-Host ('[F45] unit+integration: ' + $script:Pass + '/' + $total + ' passed'
 if ($script:Fail -gt 0) {
     # ONE annotation: %0A is a newline in a workflow command, so the operator
     # sees EVERY failed check (the 10-annotation cap cannot hide any of them).
-    $report = @('[F45] ' + [string]$script:Fail + '/' + [string]$total + ' checks failed', ('diag: ' + [string]$script:Diag))
-    $report += $script:Failures
-    $flat = [string]::Join('%0A', @($report | ForEach-Object { [string]$_ -replace '\r?\n', ' | ' -replace '%', '%25' }))
-    if ($flat.Length -gt 60000) { $flat = $flat.Substring(0, 60000) + '%0A(truncated)' }
+    $lines = @()
+    $lines += ('[F45] ' + [string]$script:Fail + '/' + [string]$total + ' checks failed')
+    $lines += ('diag: ' + [string]$script:Diag)
+    foreach ($f in @($script:Failures)) { $lines += [string]$f }
+    $flat = ''
+    foreach ($l in $lines) {
+        $clean = ([string]$l).Replace('%', '%25').Replace("`r", ' ').Replace("`n", ' | ')
+        if ($flat) { $flat = $flat + '%0A' + $clean } else { $flat = $clean }
+    }
+    if ($flat.Length -gt 20000) { $flat = $flat.Substring(0, 20000) + '%0A(truncated)' }
     Write-Host ('::error::' + $flat)
     exit 1
 }

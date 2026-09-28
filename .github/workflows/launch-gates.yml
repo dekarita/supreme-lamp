@@ -2342,11 +2342,24 @@ jobs:
           # [F37] the telescope module + the F31 helpers are parsed here too: a
           # syntax error in them used to surface only as a red Windows lab cell
           # (an expensive loop), and the server DOT-SOURCES the module at start.
+          $bad = @()
           foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/ghrdp-fx.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1', 'tests/f45-fx-server.ps1')) {
               $errors = $null
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
-              if ($errors) { throw "$file has $($errors.Count) PowerShell syntax error(s): $($errors[0].Message)" }
+              if ($errors) {
+                  foreach ($e in @($errors)) { $bad += ($file + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
+              }
           }
+          if ($bad.Count -gt 0) {
+              # ONE annotation carrying EVERY syntax error (the message cap used to
+              # hide all but the generic exit code, costing a full CI round trip).
+              $flat = ''
+              foreach ($b in $bad) { if ($flat) { $flat = $flat + '%0A' + $b } else { $flat = $b } }
+              Write-Host ('::error::PowerShell syntax errors:%0A' + $flat)
+              Write-Host ('[F37] parse failed: ' + [string]$bad.Count + ' error(s)')
+              exit 1
+          }
+          Write-Host '[F37] native PowerShell scripts parse clean'
       # [F45 S4 §2.1] Server-side tests for the Explorer file-API routes. The
       # module is dot-sourced for the unit matrix (mock index, mock host through
       # the injectable Fetch/Uploader seam) and the REAL payloads/ghrdp-server.ps1
