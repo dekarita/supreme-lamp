@@ -585,7 +585,10 @@ try {
         $rawList = Send-FxRaw -Port $port -Method 'GET' -Target '/api/fx/list'
         $rawHead = [string]$rawList.Head
         $rawHead = $rawHead.Replace("`r", ' ').Replace("`n", ' | ')
-        Write-Host ('[F45] http probe: code=' + [string]$rawList.Code + ' bytes=' + [string]$rawList.Body.Length + ' cl=[' + [string]$rawList.Headers['content-length'] + '] ctype=[' + [string]$rawList.Headers['content-type'] + '] head=[' + $rawHead + ']')
+        $rawMeta = Send-FxRaw -Port $port -Method 'GET' -Target '/api/fx/meta?id=nope'
+        $script:Diag = $script:Diag + ' || http list: code=' + [string]$rawList.Code + ' bytes=' + [string]$rawList.Body.Length + ' cl=[' + [string]$rawList.Headers['content-length'] + '] ctype=[' + [string]$rawList.Headers['content-type'] + '] head=[' + $rawHead + ']'
+        $script:Diag = $script:Diag + ' || http meta404: code=' + [string]$rawMeta.Code + ' bytes=' + [string]$rawMeta.Body.Length + ' cl=[' + [string]$rawMeta.Headers['content-length'] + '] text=[' + [string]$rawMeta.Text + ']'
+        Write-Host ('[F45] http probe: ' + [string]$rawList.Body.Length + ' bytes, cl=' + [string]$rawList.Headers['content-length'])
         CheckContains 'I list is schemaVersion 2' $r.Text '"schemaVersion":2'
         CheckContains 'I list carries gofileHosts' $r.Text 'gofileHosts'
         CheckContains 'I CSRF cookie is delivered' ([string]$r.Headers['set-cookie']) 'ghrdp_fx_csrf='

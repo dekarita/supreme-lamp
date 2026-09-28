@@ -1261,8 +1261,21 @@ function Invoke-ClientRequest {
             $fxExtra = ''
             $fxHdrList = @($fxResp.Headers)
             if ($fxHdrList.Count -gt 0) { $fxExtra = ($fxHdrList -join "`r`n") }
-            Send-ClientResponse -Stream $stream -Code ([int]$fxResp.Code) -CType ([string]$fxResp.CType) -Body ([byte[]]$fxResp.Body) -ExtraHeaders $fxExtra
-            Write-ClientAudit ('fx ' + [string]$parts.method + ' ' + $path + ' -> ' + [string]$fxResp.Code)
+            # Copy the body byte by byte instead of casting: a response object that
+            # is a hashtable must never be able to lose its body to a cast, and the
+            # count is audited so a body that never reaches the socket is visible.
+            $fxBodyBytes = [byte[]]@()
+            try {
+                if ($null -ne $fxResp.Body) {
+                    $fxArr = @($fxResp.Body)
+                    if ($fxArr.Count -gt 0) {
+                        $fxBodyBytes = New-Object byte[] $fxArr.Count
+                        for ($fxBi = 0; $fxBi -lt $fxArr.Count; $fxBi++) { $fxBodyBytes[$fxBi] = [byte]$fxArr[$fxBi] }
+                    }
+                }
+            } catch { $fxBodyBytes = [byte[]]@() }
+            Send-ClientResponse -Stream $stream -Code ([int]$fxResp.Code) -CType ([string]$fxResp.CType) -Body $fxBodyBytes -ExtraHeaders $fxExtra
+            Write-ClientAudit ('fx ' + [string]$parts.method + ' ' + $path + ' -> ' + [string]$fxResp.Code + ' body=' + [string]$fxBodyBytes.Length)
             return
         }
         # [F45 S4 fx-dispatch-end]
