@@ -2151,6 +2151,8 @@ jobs:
         run: |
           test -f tests/f45-s4-fx-routes.test.js || { echo 'F45 S4: the source contract audit is missing' >&2; exit 1; }
           node --test tests/f45-s4-fx-routes.test.js
+          test -f tests/f45-s4-fx-ps51.test.js || { echo 'F45 S4: the 5.1 compatibility gate is missing' >&2; exit 1; }
+          node --test tests/f45-s4-fx-ps51.test.js
           test -f src/tests/smoke/fx-server-contract.test.ts || { echo 'F45 S4: the client/server contract suite is missing' >&2; exit 1; }
           if ! out=$(pnpm exec vitest run src/tests/smoke/fx-server-contract.test.ts 2>&1); then
             echo "$out"

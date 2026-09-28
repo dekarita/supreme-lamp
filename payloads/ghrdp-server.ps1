@@ -1222,6 +1222,15 @@ $script:FxRouteTable = @(
 )
 $script:FxFetcher = $null
 $script:FxUploader = $null
+# System.Net.Http is NOT loaded by Windows PowerShell 5.1 by default, so the
+# default transport (a test-injectable fetcher is the other path) resolves it
+# ONCE here. If it cannot be resolved the transport reports the ordinary
+# 502/504 phases instead of surfacing a type-load error to the operator.
+$script:FxHttpClientReady = $false
+try {
+    if ($null -eq ('System.Net.Http.HttpClient' -as [type])) { Add-Type -AssemblyName System.Net.Http -ErrorAction Stop }
+    $script:FxHttpClientReady = ($null -ne ('System.Net.Http.HttpClient' -as [type]))
+} catch { $script:FxHttpClientReady = $false }
 $script:FxLastWriteError = ''
 $script:FxStartedAt = $null
 $script:FxQueueTicks = 0
@@ -1625,8 +1634,10 @@ function Invoke-FxMigrateIndex {
     $src = $Value
     if ($null -eq $src) { $src = [ordered]@{} }
     $configured = $null
-    foreach ($host in @(Get-FxMember $src 'gofileHosts')) {
-        if ((Get-FxEnumMember (Get-FxMember $host 'id') @('gofile') '') -eq 'gofile') { $configured = $host; break }
+    # NOT $host: that name is a read-only automatic variable and 5.1 throws
+    # "Cannot overwrite variable Host" the moment it is bound.
+    foreach ($hostEntry in @(Get-FxMember $src 'gofileHosts')) {
+        if ((Get-FxEnumMember (Get-FxMember $hostEntry 'id') @('gofile') '') -eq 'gofile') { $configured = $hostEntry; break }
     }
     if ($null -eq $configured) { $configured = $script:FxDefaultGofileHost }
     $roots = @()
@@ -2053,11 +2064,13 @@ function Get-FxUploadQueue {
 function Add-FxUploadJobs {
     # POST /api/fx/upload -> 202 { jobs: [{ id, uploadJobId }] }. The queue is
     # persisted to %TEMP%\ghrdp\fx-upload-queue.json with a temp file + rename.
-    param($Index, [string[]]$Ids, [string]$Host = 'gofile', [string]$Path = '', [string]$Now = '')
+    # The host parameter is NOT named $Host: that is a read-only automatic
+    # variable, and binding it throws on Windows PowerShell 5.1.
+    param($Index, [string[]]$Ids, [string]$HostId = 'gofile', [string]$Path = '', [string]$Now = '')
     if (-not $Path) { $Path = $script:FxQueuePath }
     if (-not $Now) { $Now = (Get-FxNowIso) }
     $out = [ordered]@{ code = 400; jobs = @(); skipped = @(); message = ''; queuePath = $Path }
-    if ($Host -ne 'gofile') { $out.message = ('unknown upload host: ' + [string]$Host); return $out }
+    if ($HostId -ne 'gofile') { $out.message = ('unknown upload host: ' + [string]$HostId); return $out }
     $ids = @(Get-FxUniqueStrings $Ids)
     if ($ids.Count -eq 0) { $out.message = 'upload requires at least one id'; return $out }
     if ($null -eq $Index) { $out.message = 'index unavailable'; return $out }
@@ -2270,7 +2283,11 @@ function Step-FxUploadQueue {
             if ($null -ne $status) { $lastError['httpStatus'] = [int]$status }
             $lastError['at'] = (Get-FxNowIso)
             $null = Set-FxMember -Object $job -Name 'phase' -Value $phase
-            $null = Set-FxMember -Object $job -Name 'lastError' -Value $safeMessage
+            # The queue row and the index entry carry the SAME structured
+            # lastError (phase + optional httpStatus + the complete, already
+            # redacted host message + the attempt stamp), so the F44 shape the
+            # client reads is a property of the state, not of where it landed.
+            $null = Set-FxMember -Object $job -Name 'lastError' -Value $lastError
             $null = Set-FxMember -Object $job -Name 'updatedAt' -Value (Get-FxNowIso)
             $nextState = 'failed'
             if ($retryable -and $attempt -lt $max) {
@@ -2333,6 +2350,11 @@ function Invoke-FxHttpRequest {
             $result.message = Protect-FxText ([string]$_.Exception.Message)
             return $result
         }
+    }
+    if (-not $script:FxHttpClientReady) {
+        $result.phase = 'dns'
+        $result.message = 'the HTTP client type is unavailable on this host'
+        return $result
     }
     try {
         $handler = New-Object System.Net.Http.HttpClientHandler
@@ -2795,15 +2817,19 @@ function Get-FxSandboxResponse {
 # --- router ----------------------------------------------------------------
 
 function New-FxErrorResponse {
-    param([int]$Code, [string]$Phase, [string]$Error, [string[]]$Headers = @())
+    # The parameter is deliberately NOT named $Error: that is a read-only
+    # automatic variable on Windows PowerShell 5.1, and binding it throws
+    # "Cannot overwrite variable Error" before the function body ever runs. The
+    # JSON FIELD is still `error` - that is the F44 envelope the client reads.
+    param([int]$Code, [string]$Phase, [string]$Message, [string[]]$Headers = @())
     return [ordered]@{
         code = $Code
         ctype = 'application/json; charset=utf-8'
         headers = @($Headers)
-        body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $false; phase = $Phase; error = $Error }))
+        body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $false; phase = $Phase; error = $Message }))
         file = $null
         phase = $Phase
-        message = $Error
+        message = $Message
     }
 }
 
@@ -2827,23 +2853,23 @@ function Invoke-FxRoute {
         $gateS = Test-FxDashToken -Headers $Headers -Query $Query -Token $Token -SourceIp $SourceIp
         if (-not $gateS.ok) {
             $null = Write-FxLog ('sandbox denied (' + [string]$gateS.reason + ')')
-            return (New-FxErrorResponse -Code 401 -Phase 'auth' -Error 'dashboard authorization required')
+            return (New-FxErrorResponse -Code 401 -Phase 'auth' -Message 'dashboard authorization required')
         }
         return (Get-FxSandboxResponse -Path $Path)
     }
     if (-not ($Path -in @('/api/fx/list', '/api/fx/meta', '/api/fx/gofile/status', '/api/fx/preview', '/api/fx/op', '/api/fx/upload'))) {
-        return (New-FxErrorResponse -Code 404 -Phase 'parse' -Error ('no such Explorer endpoint: ' + $Path))
+        return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message ('no such Explorer endpoint: ' + $Path))
     }
     $gate = Test-FxDashToken -Headers $Headers -Query $Query -Token $Token -SourceIp $SourceIp
     if (-not $gate.ok) {
         # The reason is a sentence, never the presented value.
         $null = Write-FxLog ('fx request denied (' + [string]$gate.reason + ') for ' + $Path)
-        return (New-FxErrorResponse -Code 401 -Phase 'auth' -Error 'dashboard authorization required')
+        return (New-FxErrorResponse -Code 401 -Phase 'auth' -Message 'dashboard authorization required')
     }
     if ($method -eq 'POST') {
         if (-not (Test-FxCsrf -Headers $Headers -Method $method -Token $Token)) {
             $null = Write-FxLog ('fx POST refused: CSRF token missing or wrong for ' + $Path)
-            return (New-FxErrorResponse -Code 403 -Phase 'auth' -Error 'CSRF token missing or invalid')
+            return (New-FxErrorResponse -Code 403 -Phase 'auth' -Message 'CSRF token missing or invalid')
         }
     }
     # §5.1 rule 6: a POST carrying X-Idempotency-Key is replayed, not re-run.
@@ -2857,7 +2883,7 @@ function Invoke-FxRoute {
         $idem = Get-FxIdempotentHit -Key $idemKey -RequestHash $idemHash
         if ($idem.conflict) {
             $null = Write-FxLog ('idempotency key reused with a different body for ' + $Path)
-            return (New-FxErrorResponse -Code 409 -Phase 'parse' -Error 'idempotency key reused with a different request')
+            return (New-FxErrorResponse -Code 409 -Phase 'parse' -Message 'idempotency key reused with a different request')
         }
         if ($idem.hit) {
             $null = Write-FxLog ('replaying the recorded result for ' + $Path)
@@ -2876,11 +2902,11 @@ function Invoke-FxRoute {
     if ($Query -and $Query.ContainsKey('id')) { $id = [string]$Query['id'] }
     switch ($Path) {
         '/api/fx/list' {
-            if ($method -ne 'GET') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Error 'list is GET only') }
+            if ($method -ne 'GET') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Message 'list is GET only') }
             $doc = Get-FxIndexDoc
             if (-not $doc.ok) {
                 $null = Write-FxLog ('index unreadable: ' + [string]$doc.detail)
-                return (New-FxErrorResponse -Code 500 -Phase 'parse' -Error ('index JSON could not be parsed: ' + [string]$doc.detail))
+                return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('index JSON could not be parsed: ' + [string]$doc.detail))
             }
             if ($doc.migrated) { $null = Write-FxLog ('index migrated from schemaVersion ' + [string]$doc.schemaVersion + ' to ' + [string]$script:FxSchemaVersion) }
             $payload = [ordered]@{
@@ -2895,47 +2921,47 @@ function Invoke-FxRoute {
             return [ordered]@{ code = 200; ctype = 'application/json; charset=utf-8'; headers = @('Vary: X-Dash-Token'); body = (ConvertTo-FxJsonBytes $payload); file = $null; phase = $null; message = '' }
         }
         '/api/fx/meta' {
-            if ($method -ne 'GET') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Error 'meta is GET only') }
-            if (-not $id) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Error 'meta requires an id') }
+            if ($method -ne 'GET') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Message 'meta is GET only') }
+            if (-not $id) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message 'meta requires an id') }
             $doc = Get-FxIndexDoc
-            if (-not $doc.ok) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Error ('index JSON could not be parsed: ' + [string]$doc.detail)) }
+            if (-not $doc.ok) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('index JSON could not be parsed: ' + [string]$doc.detail)) }
             $entry = Select-FxFileEntry -Index $doc.index -Id $id
-            if ($null -eq $entry) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Error 'unknown id') }
+            if ($null -eq $entry) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message 'unknown id') }
             return [ordered]@{ code = 200; ctype = 'application/json; charset=utf-8'; headers = @(); body = (ConvertTo-FxJsonBytes $entry); file = $null; phase = $null; message = '' }
         }
         '/api/fx/gofile/status' {
-            if ($method -ne 'GET') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Error 'gofile/status is GET only') }
-            if (-not $id) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Error 'gofile/status requires an id') }
+            if ($method -ne 'GET') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Message 'gofile/status is GET only') }
+            if (-not $id) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message 'gofile/status requires an id') }
             $doc = Get-FxIndexDoc
-            if (-not $doc.ok) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Error ('index JSON could not be parsed: ' + [string]$doc.detail)) }
+            if (-not $doc.ok) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('index JSON could not be parsed: ' + [string]$doc.detail)) }
             $st = Get-FxGofileStatusResponse -Index $doc.index -Id $id -Token $script:FxGofileToken
             if ($st.code -ne 200) {
-                if ($st.code -eq 404) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Error 'unknown id') }
-                return (New-FxErrorResponse -Code $st.code -Phase ([string]$st.phase) -Error (Protect-FxText ([string]$st.message)))
+                if ($st.code -eq 404) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message 'unknown id') }
+                return (New-FxErrorResponse -Code $st.code -Phase ([string]$st.phase) -Message (Protect-FxText ([string]$st.message)))
             }
             return [ordered]@{ code = 200; ctype = 'application/json; charset=utf-8'; headers = @(); body = (ConvertTo-FxJsonBytes $st.json); file = $null; phase = $null; message = '' }
         }
         '/api/fx/preview' {
-            if ($method -ne 'GET') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Error 'preview is GET only') }
-            if (-not $id) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Error 'preview requires an id') }
+            if ($method -ne 'GET') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Message 'preview is GET only') }
+            if (-not $id) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message 'preview requires an id') }
             $rangeHeader = ''
             if ($Headers -and $Headers.ContainsKey('range')) { $rangeHeader = [string]$Headers['range'] }
             $doc = Get-FxIndexDoc
-            if (-not $doc.ok) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Error ('index JSON could not be parsed: ' + [string]$doc.detail)) }
+            if (-not $doc.ok) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('index JSON could not be parsed: ' + [string]$doc.detail)) }
             return (Get-FxPreviewResponse -Index $doc.index -Id $id -RangeHeader $rangeHeader -Token $Token)
         }
         '/api/fx/op' {
-            if ($method -ne 'POST') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Error 'op is POST only') }
+            if ($method -ne 'POST') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Message 'op is POST only') }
             $bodyObj = Get-FxBodyObject -Body $Body
             $doc = Get-FxIndexDoc
-            if (-not $doc.ok) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Error ('index JSON could not be parsed: ' + [string]$doc.detail)) }
+            if (-not $doc.ok) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('index JSON could not be parsed: ' + [string]$doc.detail)) }
             $opResult = Invoke-FxOpOnIndex -Index $doc.index -Body $bodyObj -Now ($(if ($Now) { [string]$Now } else { Get-FxNowIso }))
             if ($opResult.code -ne 200) {
                 $null = Write-FxLog ('op refused: ' + [string]$opResult.message)
-                return (New-FxErrorResponse -Code 400 -Phase 'parse' -Error ([string]$opResult.message))
+                return (New-FxErrorResponse -Code 400 -Phase 'parse' -Message ([string]$opResult.message))
             }
             if (-not (Set-FxIndexDoc -Index $doc.index)) {
-                return (New-FxErrorResponse -Code 500 -Phase 'parse' -Error ('index write failed: ' + [string]$script:FxLastWriteError))
+                return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('index write failed: ' + [string]$script:FxLastWriteError))
             }
             $payload = [ordered]@{ applied = @($opResult.applied); skipped = @($opResult.skipped) }
             $opBytes = ConvertTo-FxJsonBytes $payload
@@ -2945,17 +2971,17 @@ function Invoke-FxRoute {
             return [ordered]@{ code = 200; ctype = 'application/json; charset=utf-8'; headers = @(); body = $opBytes; file = $null; phase = $null; message = '' }
         }
         '/api/fx/upload' {
-            if ($method -ne 'POST') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Error 'upload is POST only') }
+            if ($method -ne 'POST') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Message 'upload is POST only') }
             $bodyObj = Get-FxBodyObject -Body $Body
-            if ($null -eq $bodyObj) { return (New-FxErrorResponse -Code 400 -Phase 'parse' -Error 'upload requires a JSON body') }
-            if (Test-FxBodyHasHardFlag -Body $bodyObj) { return (New-FxErrorResponse -Code 400 -Phase 'parse' -Error 'hard delete is not an Explorer operation') }
+            if ($null -eq $bodyObj) { return (New-FxErrorResponse -Code 400 -Phase 'parse' -Message 'upload requires a JSON body') }
+            if (Test-FxBodyHasHardFlag -Body $bodyObj) { return (New-FxErrorResponse -Code 400 -Phase 'parse' -Message 'hard delete is not an Explorer operation') }
             $doc = Get-FxIndexDoc
-            if (-not $doc.ok) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Error ('index JSON could not be parsed: ' + [string]$doc.detail)) }
+            if (-not $doc.ok) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('index JSON could not be parsed: ' + [string]$doc.detail)) }
             $hostName = Get-FxTextOr (Get-FxMember $bodyObj 'host') ''
             $idsParam = @(Get-FxUniqueStrings (Get-FxMember $bodyObj 'ids'))
-            $queued = Add-FxUploadJobs -Index $doc.index -Ids $idsParam -Host $hostName -Now ($(if ($Now) { [string]$Now } else { Get-FxNowIso }))
-            if ($queued.code -eq 500) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Error (Protect-FxText ([string]$queued.message))) }
-            if ($queued.code -ne 202) { return (New-FxErrorResponse -Code 400 -Phase 'parse' -Error ([string]$queued.message)) }
+            $queued = Add-FxUploadJobs -Index $doc.index -Ids $idsParam -HostId $hostName -Now ($(if ($Now) { [string]$Now } else { Get-FxNowIso }))
+            if ($queued.code -eq 500) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message (Protect-FxText ([string]$queued.message))) }
+            if ($queued.code -ne 202) { return (New-FxErrorResponse -Code 400 -Phase 'parse' -Message ([string]$queued.message)) }
             $payload = [ordered]@{ jobs = @($queued.jobs); skipped = @($queued.skipped) }
             $jobBytes = ConvertTo-FxJsonBytes $payload
             if ($idemKey) {
@@ -2964,7 +2990,7 @@ function Invoke-FxRoute {
             return [ordered]@{ code = 202; ctype = 'application/json; charset=utf-8'; headers = @(); body = $jobBytes; file = $null; phase = $null; message = 'queued' }
         }
     }
-    return (New-FxErrorResponse -Code 404 -Phase 'parse' -Error 'no such Explorer endpoint')
+    return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message 'no such Explorer endpoint')
 }
 
 function Initialize-FxServer {
@@ -3023,7 +3049,7 @@ function Invoke-ClientRequest {
             } catch {
                 $fxErr = Protect-FxText ([string]$_.Exception.Message)
                 $null = Write-FxLog ('fx route failed: ' + $fxErr)
-                $fxResp = New-FxErrorResponse -Code 500 -Phase 'parse' -Error ('explorer handler failed: ' + $fxErr)
+                $fxResp = New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('explorer handler failed: ' + $fxErr)
             }
             if ($fxResp) {
                 Send-FxResponse -Stream $stream -Response $fxResp

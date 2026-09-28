@@ -243,6 +243,22 @@ path falls straight through to the parent routes, unchanged.
 | 9 | `op` mutates the INDEX only — no filesystem move/delete happens on the runner from a browser request | §1.5 scopes the endpoint to CSRF + an atomic index write + the no-hard-delete rule. The runner-side action stays with the watcher/mirror lane, which already owns every disk mutation. |
 | 10 | The log is append-only and the idempotency ring keeps the last 50 keys | The plan defines no retention for either; both are bounded by construction per request (the ring) or per line (the log), and S6/S7 own cleanup. |
 
+### Windows PowerShell 5.1 compatibility (learned from the lane, pinned by a gate)
+
+`payloads/ghrdp-server.ps1` is executed by `powershell.exe` 5.1 on the operator
+host, and every row below cost a Windows-lane run before it was pinned:
+
+| Rule | Why 5.1 needs it | Where it is enforced |
+|---|---|---|
+| The region and its proof stay ASCII; JSON fixtures are read as UTF-8 text | a BOM-less `.ps1` is decoded as ANSI, so a non-ASCII literal is mojibake before the script runs (the Sinhala stable-id vector hashed to the wrong digest) | `tests/f45-s4-fx-ps51.test.js` (ASCII rule) + the proof reads the fixture with `[IO.File]::ReadAllText` |
+| Never pipe a document whose root is an ARRAY into `ConvertFrom-Json` | 5.1 sends a top-level JSON array through the pipeline as ONE object, so `.Count` reads 1 for a 6-vector fixture (PowerShell#3424; only 7.x enumerates). The fixture is an object (schemaVersion + vectors) and the array member is enumerated with `@($doc.vectors)` | the fixture shape and the proof reads, pinned by the gate |
+| Never bind a read-only automatic variable | `param($Host ...)`, `param($Error ...)` and `foreach ($host in ...)` all throw "Cannot overwrite variable ..." BEFORE the body runs. The error envelope parameter is `-Message` (the JSON field is still `error`) and the upload host parameter is `-HostId` | the gate checks declarations, loop variables and assignments against the read-only list, in both call directions |
+| Write into an ordered document with `Set-FxMember` or the indexer, never property syntax | 5.1 refuses `$ordered.NewKey = 1` ("the property cannot be found"); `$ordered['NewKey'] = 1` adds it | `Set-FxMember` is the only writer the region uses; the gate verifies every dot-write names a key its `[ordered]` literal already declares |
+
+`Add-Type -AssemblyName System.Net.Http` runs once behind a capability flag: 5.1
+does not preload `System.Net.Http`, and when the assembly cannot be resolved the
+transport reports the ordinary 502/504 phases instead of a type-load error.
+
 ### Local evidence (S4)
 
 | Gate | Result |
@@ -250,13 +266,14 @@ path falls straight through to the parent routes, unchanged.
 | Frozen pnpm install | PASS; lockfile unchanged |
 | tsc (build config + full project incl. `src/tests`) | PASS, 0 errors |
 | Vitest (`pnpm test:smoke`) | 508/508 PASS, 16 files (S4 adds `fx-server-contract.test.ts`) |
-| Node suites (`node --test tests/*.test.js`) | 289/289 PASS, incl. the new `tests/f45-s4-fx-routes.test.js` (10 S4 checks) |
-| Every ubuntu bash gate, run verbatim (`tests/run-launch-gates.py`) | PASS 34/34, incl. the new `F45 S4 Explorer server contract + redaction gates` step |
+| Node suites (`node --test tests/*.test.js`) | 296/296 PASS, incl. the new `tests/f45-s4-fx-routes.test.js` (10 S4 checks) and `tests/f45-s4-fx-ps51.test.js` (7 checks) |
+| Every ubuntu bash gate, run verbatim (`tests/run-launch-gates.py`) | PASS 34/34, incl. the new `F45 S4 Explorer server contract + redaction gates` step (which also runs the 5.1 gate) |
 | PowerShell structural + Explorer redaction audit (`tests/ps-balance-audit.py`) | PASS, 0 failed (6 shipped surfaces + the Explorer region + a shipped-surface token-literal scan) |
 | Parent regression lock / fx namespace | 219/219 PASS; 10 IDs + 1 class, collision-free |
 | No-neon-green / bottom-bar-time on the built bundle | PASS (557,308 bytes scanned) |
-| Offline PowerShell parse of the edited surfaces (`tests/f45-s4-fx-server.ps1`, `ghrdp-server.ps1`) | 1 known-benign tree-sitter MISSING node in the test harness, byte-identical to `tests/f27-windows.ps1`'s; the server file is clean |
-| Executed server proof (`tests/f45-s4-fx-server.ps1`) | NOT RUN LOCALLY: this sandbox has no PowerShell interpreter. It runs as the LAST step of the windows-native job (halt-on-error), driving the shipped handler over in-memory sockets: 221 assertion sites (U1–U12 unit, I1–I13 integration, some executed per case) |
+| Offline PowerShell parse of the edited surfaces (`tests/f45-s4-fx-server.ps1`, `ghrdp-server.ps1`) | both clean: 0 problem nodes each (the harness empty `Close` scriptblock, which tree-sitter reads as a MISSING node exactly like `tests/f27-windows.ps1`, is now `{ return }`) |
+| Windows PowerShell 5.1 compatibility gate (`tests/f45-s4-fx-ps51.test.js`) | 7/7 PASS: read-only automatic variables, the `-Message`/`-HostId` names in both directions, PS7-only syntax, the top-level-array JSON trap, ASCII-only literals, property-vs-indexer writes on ordered documents, and the shared vector fixture |
+| Executed server proof (`tests/f45-s4-fx-server.ps1`) | NOT RUN LOCALLY: this sandbox has no PowerShell interpreter (no pwsh, and neither apt nor the GitHub release host is reachable). It runs as the LAST step of the windows-native job (halt-on-error), driving the shipped handler over in-memory sockets: 223 `Assert-Fx` call sites (U1-U12 unit, I1-I13 integration, some executed per case). A failed assertion is RECORDED and the run continues (capped at 25), so one lane run reports every failed site with its stage instead of only the first |
 | Local browser e2e | NOT RUN: `cdn.playwright.dev` is unreachable from this sandbox (`ECONNRESET`); hosted lab required |
 
 Negative tests (the gate must be able to fail): injecting a `Write-Host` inside

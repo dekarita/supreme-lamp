@@ -179,7 +179,11 @@ test('F45-S4-5 logs are redacted and no credential can be echoed', () => {
   // redacts the message again before it becomes a response body
   const poller = psFunction('Get-FxGofileStatusResponse');
   assert.ok(poller.includes('Protect-FxText'), 'the host poller redacts host text with the request token');
-  assert.ok(region.includes('-Error (Protect-FxText ([string]$st.message))'), 'the status route redacts the host message');
+  // NOTE: the parameter is -Message, not -Error: $Error is a read-only
+  // automatic variable on Windows PowerShell 5.1, so a parameter with that name
+  // cannot be bound at all (tests/f45-s4-fx-ps51.test.js pins the whole rule).
+  assert.ok(region.includes('-Message (Protect-FxText ([string]$st.message))'), 'the status route redacts the host message');
+  assert.equal(/\B-Error\b(?!Action|Variable|Record)/.test(region), false, 'no call site may pass -Error to the 5.1-safe envelope');
   assert.ok(poller.includes("never log the request URL"), 'the tokenised URL is deliberately not logged');
   // the preview log line must never carry the request URL of a tokenised call
   assert.ok(!/Write-FxLog[^\n]*\$url/i.test(region), 'a tokenised request URL must never be logged');
@@ -267,6 +271,7 @@ test('F45-S4-9 the windows lane and the ubuntu gates actually run these tests', 
   const linesAfterFx = windowsJob.slice(fxStep).split('\n').slice(1);
   assert.ok(!linesAfterFx.some((line) => /^\s*- name:/.test(line)), 'the Explorer lane is the LAST step of the windows job');
   assert.ok(/node --test tests\/f45-s4-fx-routes\.test\.js/.test(gates), 'launch-gates runs the source contract audit');
+  assert.ok(/node --test tests\/f45-s4-fx-ps51\.test\.js/.test(gates), 'launch-gates runs the 5.1 compatibility gate');
   assert.ok(/python3 tests\/ps-balance-audit\.py/.test(gates), 'launch-gates runs the redaction audit');
   assert.ok(fs.existsSync('tests/ps-balance-audit.py'), 'the redaction audit exists');
   assert.ok(fs.readFileSync('tests/ps-balance-audit.py', 'utf8').includes('Explorer server region'), 'the audit covers the Explorer region');

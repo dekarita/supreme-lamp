@@ -17,6 +17,7 @@ $repo = Split-Path $PSScriptRoot -Parent
 $script:FxToken = 'dash-token-' + [guid]::NewGuid().ToString('N')
 $script:FxPass = 0
 $script:FxFail = 0
+$script:FxFailures = @()
 $stage = 'initialization'
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('f45s4-' + [guid]::NewGuid().ToString('N'))
 $queueDir = Join-Path $tempRoot 'queue'
@@ -24,8 +25,24 @@ $null = New-Item -ItemType Directory -Path $tempRoot -Force
 $null = New-Item -ItemType Directory -Path $queueDir -Force
 
 function Assert-Fx([bool]$Condition, [string]$Label) {
-    if (-not $Condition) { $script:FxFail++; throw ('F45-S4 assertion FAILED: ' + $Label) }
+    # An assertion failure is RECORDED and the run continues, so one Windows
+    # lane run reports every failed assertion site instead of only the first
+    # (a terminating error - a real crash - still aborts through the outer
+    # catch below and is reported with its stage). The cap keeps a cascade from
+    # turning into a wall of output; the first entry is always the root cause.
+    if (-not $Condition) {
+        $script:FxFail++
+        $script:FxFailures += ($stage + ' :: ' + $Label)
+        Write-Host ('::warning::[F45 S4] assertion FAILED at stage "' + $stage + '": ' + $Label)
+        if ($script:FxFail -ge 25) { throw ('F45-S4 assertion FAILED: ' + $Label) }
+        return
+    }
     $script:FxPass++
+}
+
+function Write-FxFailures {
+    $script:FxFailures | Select-Object -First 20 | ForEach-Object { Write-Host ('::error::[F45 S4] ' + $_) }
+    if ($script:FxFailures.Count -gt 20) { Write-Host ('::error::[F45 S4] ... and ' + ($script:FxFailures.Count - 20) + ' more assertion site(s)') }
 }
 
 function Import-Functions([string]$Text, [string[]]$Names) {
@@ -52,7 +69,7 @@ function Request-Fx {
     $mem.Position = 0
     $client = [pscustomobject]@{ Stream = $mem; Client = [pscustomobject]@{ RemoteEndPoint = [pscustomobject]@{ Address = [Net.IPAddress]::Parse($Source) } } }
     $client | Add-Member ScriptMethod GetStream { return $this.Stream }
-    $client | Add-Member ScriptMethod Close { }
+    $client | Add-Member ScriptMethod Close { return }
     Invoke-ClientRequest -Client $client -Token $script:FxToken
     $all = $mem.ToArray()
     $text = [Text.Encoding]::UTF8.GetString($all, $inputBytes.Length, $all.Length - $inputBytes.Length)
@@ -286,21 +303,21 @@ try {
     $qIdx = Invoke-FxMigrateIndex -Value (@'
 {"files":[{"id":"aaa","root":"Downloads","path":"/hello.txt","size":20,"mime":"text/plain"},{"id":"bbb","root":"Downloads","path":"/b.txt"},{"id":"ccc","root":"Downloads","path":"/c.txt","trashed":true}]}
 '@ | ConvertFrom-Json)
-    $first = Add-FxUploadJobs -Index $qIdx -Ids @('aaa') -Host 'gofile' -Path $script:FxQueuePath -Now '2026-02-01T00:00:00.000Z'
+    $first = Add-FxUploadJobs -Index $qIdx -Ids @('aaa') -HostId 'gofile' -Path $script:FxQueuePath -Now '2026-02-01T00:00:00.000Z'
     Assert-Fx ($first.code -eq 202) 'a valid upload request is accepted with 202'
     Assert-Fx (@($first.jobs).Count -eq 1 -and $first.jobs[0].id -eq 'aaa' -and $first.jobs[0].uploadJobId) 'the accepted job carries id + uploadJobId'
     Assert-Fx (Test-Path -LiteralPath $script:FxQueuePath) 'the queue is persisted'
     Assert-Fx (@(Get-ChildItem -LiteralPath $queueDir -Filter '*.tmp' -ErrorAction SilentlyContinue).Count -eq 0) 'no temp file is left behind by the atomic write'
     $queueOnDisk = [IO.File]::ReadAllText($script:FxQueuePath) | ConvertFrom-Json
     Assert-Fx ($queueOnDisk.schemaVersion -eq 1 -and @($queueOnDisk.jobs).Count -eq 1) 'the queue file has one job and a schema version'
-    $second = Add-FxUploadJobs -Index $qIdx -Ids @('aaa') -Host 'gofile' -Path $script:FxQueuePath -Now '2026-02-01T00:05:00.000Z'
+    $second = Add-FxUploadJobs -Index $qIdx -Ids @('aaa') -HostId 'gofile' -Path $script:FxQueuePath -Now '2026-02-01T00:05:00.000Z'
     Assert-Fx ($second.jobs[0].uploadJobId -eq $first.jobs[0].uploadJobId) 'a repeated request reuses the live job (idempotent)'
     $queueOnDisk = [IO.File]::ReadAllText($script:FxQueuePath) | ConvertFrom-Json
     Assert-Fx (@($queueOnDisk.jobs).Count -eq 1) 'the queue did not grow'
-    $mixed = Add-FxUploadJobs -Index $qIdx -Ids @('bbb', 'ccc', 'nope') -Host 'gofile' -Path $script:FxQueuePath
+    $mixed = Add-FxUploadJobs -Index $qIdx -Ids @('bbb', 'ccc', 'nope') -HostId 'gofile' -Path $script:FxQueuePath
     Assert-Fx (@($mixed.jobs).Count -eq 1 -and $mixed.jobs[0].id -eq 'bbb') 'only the eligible id is queued'
     Assert-Fx ((@($mixed.skipped | ForEach-Object { $_.reason }) -join ',') -eq 'trashed,unknown-id') 'trashed + unknown ids are reported as skipped'
-    $badHost = Add-FxUploadJobs -Index $qIdx -Ids @('bbb') -Host 'mega' -Path $script:FxQueuePath
+    $badHost = Add-FxUploadJobs -Index $qIdx -Ids @('bbb') -HostId 'mega' -Path $script:FxQueuePath
     Assert-Fx ($badHost.code -eq 400 -and $badHost.message -match 'unknown upload host') 'an unknown host is refused'
 
     # --- U9 worker state machine -------------------------------------------
@@ -313,7 +330,7 @@ try {
 {"files":[{"id":"aaa","root":"Downloads","path":"/hello.txt","size":20,"mime":"text/plain"}]}
 '@
     $qOk = Invoke-FxMigrateIndex -Value ($qOkJson | ConvertFrom-Json)
-    $null = Add-FxUploadJobs -Index $qOk -Ids @('aaa') -Host 'gofile' -Path $script:FxQueuePath
+    $null = Add-FxUploadJobs -Index $qOk -Ids @('aaa') -HostId 'gofile' -Path $script:FxQueuePath
     $summary = Step-FxUploadQueue -Path $script:FxQueuePath -IndexPath $script:FxIndexPath -Uploader $okUploader -Index $qIdx
     Assert-Fx ($summary.succeeded -eq 1 -and $summary.failed -eq 0) 'a successful upload is reported once'
     Assert-Fx ($qOk.files[0].gofile.status -eq 'uploaded' -and $qOk.files[0].gofile.fileId -eq 'fx-file-1') 'the index records the hosted state'
@@ -335,7 +352,7 @@ try {
 {"files":[{"id":"ddd","root":"Downloads","path":"/hello.txt","size":20,"mime":"text/plain"}]}
 '@
     $qIdx2 = Invoke-FxMigrateIndex -Value ($qIdx2Json | ConvertFrom-Json)
-    $null = Add-FxUploadJobs -Index $qIdx2 -Ids @('ddd') -Host 'gofile' -Path $script:FxQueuePath
+    $null = Add-FxUploadJobs -Index $qIdx2 -Ids @('ddd') -HostId 'gofile' -Path $script:FxQueuePath
     $s = Step-FxUploadQueue -Path $script:FxQueuePath -IndexPath $script:FxIndexPath -Uploader $failUploader -Index $qIdx2
     Assert-Fx ($s.queued -eq 1 -and $s.failed -eq 0) 'a transient 502 is retried (pass 1)'
     # the retry must wait its own backoff: the very next tick may not re-attempt
@@ -366,7 +383,7 @@ try {
 {"files":[{"id":"eee","root":"Downloads","path":"/hello.txt","size":20,"mime":"text/plain"}]}
 '@
     $qIdx3 = Invoke-FxMigrateIndex -Value ($qIdx3Json | ConvertFrom-Json)
-    $null = Add-FxUploadJobs -Index $qIdx3 -Ids @('eee') -Host 'gofile' -Path $script:FxQueuePath
+    $null = Add-FxUploadJobs -Index $qIdx3 -Ids @('eee') -HostId 'gofile' -Path $script:FxQueuePath
     $s = Step-FxUploadQueue -Path $script:FxQueuePath -IndexPath $script:FxIndexPath -Uploader $authUploader -Index $qIdx3
     Assert-Fx ($s.failed -eq 1 -and $s.queued -eq 0) 'a 401 is terminal at the first attempt'
     $defaultUploader = Invoke-FxGofileUpload -Job $null -FullPath (Join-Path $rootsDir 'Downloads\hello.txt') -Token ''
@@ -377,7 +394,7 @@ try {
     # message is still carried COMPLETE (F44)
     Remove-Item -LiteralPath $script:FxQueuePath -Force -ErrorAction SilentlyContinue
     $echoIdx = Invoke-FxMigrateIndex -Value ((@{ files = @(@{ id = 'fff'; root = 'Downloads'; path = '/hello.txt'; size = 20; mime = 'text/plain' }) } | ConvertTo-Json -Depth 6 -Compress) | ConvertFrom-Json)
-    $null = Add-FxUploadJobs -Index $echoIdx -Ids @('fff') -Host 'gofile' -Path $script:FxQueuePath
+    $null = Add-FxUploadJobs -Index $echoIdx -Ids @('fff') -HostId 'gofile' -Path $script:FxQueuePath
     $script:FxGofileToken = 'go_echo_token_0123456789abcdef'
     $echoUploader = { param($job, $fullPath) [ordered]@{ ok = $false; phase = 'http'; status = 403; message = ('denied for token=' + $script:FxGofileToken + ' at file stage') } }
     $s = Step-FxUploadQueue -Path $script:FxQueuePath -IndexPath $script:FxIndexPath -Uploader $echoUploader -Index $echoIdx
@@ -640,11 +657,17 @@ try {
     Assert-Fx (-not ([IO.File]::ReadAllText($script:FxQueuePath)).Contains($script:FxToken)) 'the queue never contains the dash token'
     Assert-Fx ($script:FxLogRedactionHits -ge 1) 'the redaction counter recorded at least one hit'
 
+    if ($script:FxFail -gt 0) {
+        Write-Host ('::error::[F45 S4] fx server routes FAILED: ' + $script:FxFail + ' assertion site(s), ' + $script:FxPass + ' passed')
+        Write-FxFailures
+        exit 1
+    }
     Write-Host ('[F45 S4] fx server routes PASS: ' + $script:FxPass + ' assertions (unit + integration, no live host call)')
     exit 0
 } catch {
     Write-Host ('::error::[F45 S4] fx server routes FAILED at stage "' + $stage + '" :: ' + $_.Exception.Message)
-    Write-Host ('::error::[F45 S4] passed ' + $script:FxPass + ' assertions before the failure')
+    Write-Host ('::error::[F45 S4] passed ' + $script:FxPass + ' assertions, ' + $script:FxFail + ' failed, before the failure')
+    Write-FxFailures
     exit 1
 } finally {
     if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue }
