@@ -23,6 +23,11 @@ function Check([string]$Name, [bool]$Cond, [string]$Detail) {
     } else {
         $script:failures = $script:failures + 1
         Write-Host ('  [FAIL] ' + $Name + ' :: ' + $Detail)
+        # Surface EVERY failure as a step annotation: the run-log blob host is
+        # not reachable from the dev sandbox, and an annotation is how the
+        # failing check name+detail survives without log access (F37 pattern).
+        $ann = (('::error title=F46 check::' + $Name + ' :: ' + $Detail) -replace '[\r\n]+', ' ')
+        Write-Host $ann
     }
 }
 
