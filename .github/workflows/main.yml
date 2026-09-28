@@ -2350,12 +2350,16 @@ jobs:
               $optInTxt = ('mirror opt-in this run: enabled=' + $f47On + ' (dispatch mirror_enable; default false) | encryptMode=' + $(if ($cfg -and $cfg.encryptMode) { [string]$cfg.encryptMode } else { 'none' }))
               Write-Host ('[F46] read-only host probe (no upload):' + "`n" + $matrixTxt)
               Write-Host ('[F47] ' + $optInTxt)
+              # [F49] the one-click runtime path (the dispatch mirror_enable path
+              # above is unchanged): the endpoint + the banner the operator sees.
+              Write-Host '[F49] runtime opt-in ready: POST /api/mirror/enable|/disable + GET /api/mirror/status (dash-token + CSRF, this-run scope) - the Mirror page shows the disabled banner + confirm modal'
               if ($S) {
                   '### F46 mirror host probe (read-only, runner egress)' | Add-Content -Path $S
                   '```' | Add-Content -Path $S
                   $matrixTxt | Add-Content -Path $S
                   '```' | Add-Content -Path $S
                   ('- ' + $optInTxt) | Add-Content -Path $S
+                  '- [F49] runtime opt-in: POST /api/mirror/enable (dash-token + CSRF, this-run scope); the Mirror page shows the disabled banner + confirm modal; dispatch mirror_enable path unchanged' | Add-Content -Path $S
               }
           } catch {
               $matrixTxt = ('probe failed: ' + $_.Exception.Message)

@@ -2,15 +2,17 @@
 // (capped 99.9 until done==total), 6-stat grid (v1 mini-grid ids kept),
 // active-file bar, speed sparkline, per-root chips, publish status, file
 // table, and the four mirror actions (flush/launch/diag/copy-links).
+import { useEffect, useState } from "react";
 import { Copy, Play, Search, Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Card, EmptyState, ProgressRing } from "@/components/primitives/Data";
 import { Button } from "@/components/primitives/Button";
 import { StatusDot } from "@/components/primitives/Chip";
-import { useToast } from "@/components/primitives/Feedback";
+import { Modal, useToast } from "@/components/primitives/Feedback";
 import { useTelemetryStore } from "@/stores/telemetryStore";
 import { useSessionStore } from "@/stores/sessionStore";
 import { getJson } from "@/lib/api";
+import { getMirrorStatus, setMirrorEnabled, type MirrorOptState } from "@/lib/mirror";
 import { copyText } from "@/lib/clipboard";
 import { Sparkline } from "./ConnectionCard";
 import { cn } from "@/lib/cn";
@@ -35,11 +37,68 @@ export function MirrorCard() {
         ? t("mirror.titleEncryptLocked")
         : t("mirror.titlePlain");
 
+  // [F49] runtime opt-in state: undefined = still loading, null = pre-F49
+  // server or unreachable (the legacy flush path below covers both).
+  const [optIn, setOptIn] = useState<MirrorOptState | null | undefined>(undefined);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [optBusy, setOptBusy] = useState(false);
+  useEffect(() => {
+    let live = true;
+    void getMirrorStatus().then((s) => {
+      if (live) setOptIn(s ?? null);
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+  async function refreshOptIn() {
+    const s = await getMirrorStatus();
+    setOptIn(s ?? null);
+  }
   async function doFlush() {
     await getJson("/launch");
     const d = await getJson("/flush");
     if (d && (d as { ok?: boolean }).ok) toast.ok("Flush requested - watcher will upload everything");
     else toast.bad("Flush failed - server not reachable");
+  }
+  // [F49] disabled => the ConfirmModal opens FIRST; enabled (or a status we
+  // could not read) => the legacy flush, unchanged.
+  async function onUploadNow() {
+    if (optIn && !optIn.status.enabled) {
+      setModalOpen(true);
+      return;
+    }
+    await doFlush();
+  }
+  async function confirmEnableUpload() {
+    if (!optIn || optBusy) return;
+    setOptBusy(true);
+    try {
+      const r = await setMirrorEnabled(true, optIn.csrf);
+      if (r.ok) {
+        toast.ok("Mirror enabled for this run - uploading everything");
+        setModalOpen(false);
+        await refreshOptIn();
+      } else {
+        toast.bad("Enable failed: " + r.error);
+      }
+    } finally {
+      setOptBusy(false);
+    }
+  }
+  async function doDisableMirror() {
+    const cur = await getMirrorStatus();
+    if (!cur) {
+      toast.bad("Mirror status unavailable - server not reachable");
+      return;
+    }
+    const r = await setMirrorEnabled(false, cur.csrf);
+    if (r.ok) {
+      toast.ok("Mirror disabled for this run");
+      await refreshOptIn();
+    } else {
+      toast.bad("Disable failed: " + r.error);
+    }
   }
   async function doLaunch() {
     const d = await getJson("/launch");
@@ -67,6 +126,13 @@ export function MirrorCard() {
 
   return (
     <Card id="sec-mirror" title={claimTitle} icon={<Upload className="size-4 text-tertiary" aria-hidden />} className="mb-4">
+      {/* [F49] the disabled banner: default-off is the shipped state, so the
+          page says so and points at the one-click opt-in (not a silent no-op). */}
+      {optIn && !optIn.status.enabled && (
+        <div role="status" data-testid="mirror-disabled-banner" className="mb-4 rounded-md border border-default bg-raised/60 px-3 py-2 text-sm text-primary">
+          {t("mirror.optInBanner")}
+        </div>
+      )}
       <div className="flex flex-wrap items-center gap-6">
         <div className="flex items-center gap-4">
           <ProgressRing fillId="ringFill" gradId="ringGrad" pct={m ? Number(m.pctText.replace("%", "")) : 0} label={t("mirror.progress")} size={80} />
@@ -176,9 +242,14 @@ export function MirrorCard() {
       </div>
 
       <div className="flex flex-wrap gap-2 mt-4">
-        <Button variant="primary" size="sm" icon={<Upload className="size-3.5" aria-hidden />} onClick={() => void doFlush()}>
+        <Button variant="primary" size="sm" icon={<Upload className="size-3.5" aria-hidden />} onClick={() => void onUploadNow()}>
           {t("actions.uploadNow")}
         </Button>
+        {optIn && optIn.status.enabled && (
+          <Button variant="ghost" size="sm" data-testid="mirror-disable" onClick={() => void doDisableMirror()}>
+            {t("mirror.optOut")}
+          </Button>
+        )}
         <Button variant="secondary" size="sm" icon={<Play className="size-3.5" aria-hidden />} onClick={() => void doLaunch()}>
           {t("actions.startWatcher")}
         </Button>
@@ -289,6 +360,18 @@ export function MirrorCard() {
           {m && m.encryptedAny ? " · " + t("mirror.encryptAlg") + "=" + (m.encAlg || "AES-256") : ""}
         </span>
       </div>
+      {/* [F49] the runtime opt-in ConfirmModal: [Enable & Upload] is
+          enable+flush in one action (the server queues the flush too). */}
+      <Modal
+        open={modalOpen}
+        title={t("mirror.optInTitle")}
+        description={t("mirror.optInBody")}
+        onClose={() => {
+          if (!optBusy) setModalOpen(false);
+        }}
+        secondary={{ label: t("mirror.optInCancel"), onClick: () => setModalOpen(false) }}
+        primary={{ label: t("mirror.enableUpload"), onClick: () => void confirmEnableUpload() }}
+      />
     </Card>
   );
 }

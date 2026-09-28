@@ -146,6 +146,21 @@ Check 'encrypt requested but unavailable => phase=encrypt, refused (never claims
 $resPolicy = Invoke-F46MirrorAttempt -HostCfg $null -Path $filePath -Name 'f46-mock-payload.bin' -Size ([long]2048) -AttemptNo 1 -Transport $transport
 Check 'no enabled host => phase=policy, 1 labeled attempt' ($resPolicy.phase -eq 'policy') ('phase=' + $resPolicy.phase)
 
+Write-Host '[F49] runtime opt-in converge + gate (mock transport)'
+$f49CfgA = '{"mirror":false}' | ConvertFrom-Json
+Check '[F49] default config selects no host (policy gate holds)' ((Select-F46UploadHost -Hosts @(Get-F46Hosts -Cfg $f49CfgA)) -eq $null) 'a host was selected while disabled'
+$f49CfgB = '{"mirror":false}' | ConvertFrom-Json
+$f49Set = Set-F49RuntimeOptIn -Cfg $f49CfgB -At '2026-09-28T18:00:00Z'
+$f49Sel = Select-F46UploadHost -Hosts @(Get-F46Hosts -Cfg $f49CfgB)
+Check '[F49] opt-in flips mirror+host+marker and selects gofile' (([bool]$f49Set.changed) -and [bool]$f49CfgB.mirror -and [bool]$f49Sel -and ($f49Sel.id -eq 'gofile') -and ((Get-F49OptInStatus -Cfg $f49CfgB).source -eq 'runtime')) ('changed=' + $f49Set.changed)
+Reset-Case @('success') | Out-Null
+$f49Go = Invoke-F46MirrorAttempt -HostCfg $f49Sel -Path $filePath -Name 'f46-mock-payload.bin' -Size ([long]2048) -AttemptNo 1 -Transport $transport
+Check '[F49] upload-after-enable reaches the (mock) transport as guest' (($f49Go.ok) -and ($script:networkCalls -eq 1) -and ([string]$f49Go.authMode -eq 'guest')) ('ok=' + $f49Go.ok + ' network=' + $script:networkCalls + ' authMode=' + $f49Go.authMode)
+$f49Line = Format-F49OptInLedger -Marker (Get-F49RuntimeOptIn -Cfg $f49CfgB) -HostId 'gofile'
+Check '[F49] ledger line carries the §3 needle + marker stamp' (($f49Line -match '^\[mirror\] RUNTIME OPT-IN: enabled=true scope=this-run source=runtime host=gofile at=2026-09-28T18:00:00Z') -and ($f49Line -match 'token-less guest')) ($f49Line)
+$f49Clr = Clear-F49RuntimeOptIn -Cfg $f49CfgB
+Check '[F49] disable reverts to default-off (no marker, no host)' (([bool]$f49Clr.changed) -and (-not [bool]$f49CfgB.mirror) -and ((Get-F49RuntimeOptIn -Cfg $f49CfgB) -eq $null) -and ((Select-F46UploadHost -Hosts @(Get-F46Hosts -Cfg $f49CfgB)) -eq $null)) 'revert incomplete'
+
 Write-Host '[F46] documented gofile contract (pinned from https://gofile.io/api)'
 $c = $script:F46GofileContract
 Check 'contract: GET /servers -> probe + upload server' ($c.serversPath -eq '/servers') ('serversPath=' + $c.serversPath)

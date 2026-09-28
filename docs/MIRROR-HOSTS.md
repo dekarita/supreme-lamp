@@ -233,10 +233,14 @@ operator policy knobs, not invented defaults.
    mode), and the Diagnose drawer carries them plus the worker's attempt table
    (`mirrorAttempts`).
 4. Click **Upload everything now** once and upload ONE small benign `.txt`.
+   With the mirror disabled the ConfirmModal opens FIRST (§10); choose
+   **[Enable & Upload]** (enable+flush in one action for this run only).
 5. Expect either a guest success row with a `downloadPage` link, or ONE labeled
    reason (`phase=… status=… msg=…`) - e.g.
    `host requires account token; token-less mode unsupported` with the operator
    options rendered - never "failed after 5 tries" without a cause.
+6. Paste the `[mirror]` attempt lines including the
+   `[mirror] RUNTIME OPT-IN:` ledger line (live log / `/api/progress` log).
 
 ## 9. F48 token-less guest mode (per-run opt-in stays, tokens are gone)
 
@@ -282,3 +286,31 @@ dead-end with honest options - run the upload from an operator-owned VPS egress
 you configure yourself, or accept the mirror as unavailable from ephemeral
 runners and leave `mirror_enable=false`. Nothing in this repository
 attempts to work around a host policy.
+
+## 10. F49 one-click runtime opt-in (this-run scope, token-less)
+
+The dispatch `mirror_enable` path (§9) is unchanged; F49 adds the second,
+operator-clicked path for a run that dispatched with the mirror OFF:
+
+1. The Mirror page shows the **disabled banner** while the mirror is off
+   (`GET /api/mirror/status` says `enabled=false`).
+2. Clicking **Upload everything now** while disabled opens the **ConfirmModal
+   FIRST** (focus-trapped, Escape-dismissible, `role=dialog`).
+3. **[Enable & Upload]** POSTs `/api/mirror/enable` (dash token in
+   `X-Dash-Token` + per-process `X-CSRF-Token`) and is enable+flush in ONE
+   action: the server converges `config.json` (`mirror=true`,
+   `mirrorHosts[0].enabled=true`, the `mirrorRuntimeOptIn` marker), writes the
+   `mirror-optin-beacon.json` beacon, and queues both the opt-in flag and the
+   flush flag. The watcher applies the flags on its next pass and stamps the
+   `[mirror] RUNTIME OPT-IN: …` ledger line.
+4. The attempt rows then show `host=gofile` with phase progress, ending in
+   either a success row with a link or exactly one labeled reason (§8 step 5).
+5. `POST /api/mirror/disable` reverts to default-off (mirror=false, every host
+   disabled, marker + beacon removed); the watcher ledgers the clear.
+
+Scope is **this run only** on both paths: the runner is ephemeral, so a
+`config.json` write can never outlive the run; the shipped code default stays
+`enabled=false`. The API lives on the always-on PowerShell dashboard (7331);
+a page served from the real-time Rust dashboard (7332) reaches across
+explicitly. The guest contract is unchanged: no `Authorization`, no
+`X-Gofile-Token`, no `Cookie` toward the host, ever.
