@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "vectors": [
+    {
+      "root": "Downloads",
+      "path": "/hello.txt",
+      "id": "b82ffa738c3da94d5d67f90f3f9a51f966a2c181"
+    },
+    {
+      "root": "Documents",
+      "path": "/සිංහල.txt",
+      "id": "5aabe6793aa9c98f59d1fb98a387319b8c5ac972"
+    },
+    {
+      "root": "Downloads",
+      "path": "/notes.txt",
+      "id": "8476704194b57691c1c68d7891655553c29fae8d"
+    },
+    {
+      "root": "Documents",
+      "path": "/reports/q1.txt",
+      "id": "448d613743a5e86b355d3118e2d7cbfebcd30fa6"
+    },
+    {
+      "root": "Downloads",
+      "path": "/emoji-🗂️.txt",
+      "id": "f1375aeaca122a0b70992184cd3379b0adcecf9f"
+    },
+    {
+      "root": "Temp",
+      "path": "/éàü.txt",
+      "id": "b229ad5f6243df9f19d84ee92b213bc0a2c385b6"
+    }
+  ]
+}

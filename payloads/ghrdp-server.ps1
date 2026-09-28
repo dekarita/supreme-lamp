@@ -1128,6 +1128,1948 @@ function Remove-CredKeys {
     } catch { }
     return $Obj
 }
+# ---------------------------------------------------------------------------
+# [F45 S4 fx-core-begin] EXPLORER SERVER CORE (F45-S4, Explorer §5 endpoints).
+#
+# The whole Explorer server surface lives in this ONE extracted, self-contained
+# region so the Windows lane can dot-source it and drive REAL request cycles
+# (tests/f45-s4-fx-server.ps1) instead of grepping it. Contract sources:
+#   * src/components/explorer/api/endpoints.ts  -> paths, op vocabulary, shapes
+#   * src/components/explorer/api/errors.ts     -> HTTP -> F44 phase mapping
+#   * src/components/explorer/api/fxClient.ts   -> X-Dash-Token / X-CSRF-Token
+#   * src/components/explorer/data/migrations/v1_to_v2.ts + stableId.ts
+#
+# Rules this region MUST keep:
+#   1. /api/fx/* answers are never CORS-wildcarded (Explorer §5.1 rule 8, D4).
+#   2. No gofile token, dash token or CSRF token is ever logged, echoed in a
+#      body, or embedded in a URL that this server logs (F44 + §1.8). Every
+#      log line goes through Write-FxLog -> Protect-FxText.
+#   3. Every index write emits schemaVersion 2 + the gofileHosts array
+#      (§1.9), atomically (temp file in the same directory + rename).
+#   4. The F44 mirror index (mirror-index.json, written by the workflow) is
+#      READ-only here. Explorer state lives in fx-index.json.
+# ---------------------------------------------------------------------------
+$script:FxSchemaVersion = 2
+$script:FxQueueSchemaVersion = 1
+$script:FxRedacted = '***REDACTED***'
+$script:FxEpoch = '1970-01-01T00:00:00.000Z'
+$script:FxMaxAttempts = 5
+$script:FxBackoffBaseMs = 500
+$script:FxBackoffCapMs = 8000
+$script:FxIntervalSec = 15
+$script:FxPreviewMaxBytes = 262144000
+$script:FxFxRootsName = 'fx-roots'
+$script:FxTransientPhases = @('dns', 'tcp', 'tls', 'http')
+$script:FxFailFastStatus = @(401, 403, 413, 415)
+$script:FxOps = @('trash', 'restore', 'move', 'tag', 'pin')
+$script:FxRoots = @('Downloads', 'Desktop', 'Documents', 'Temp', 'RDP-Storage')
+$script:FxUploadPhases = @('dns', 'tcp', 'tls', 'encrypt', 'size', 'type', 'auth', 'http', 'parse')
+$script:FxUploadStatuses = @('idle', 'queued', 'uploading', 'success', 'failed', 'canceled')
+$script:FxGofileStatuses = @('none', 'uploaded', 'processing', 'expired', 'failed')
+# Exactly the 41 types of the S2 MIME map (preview-mime-map.json); the S4 gate
+# asserts the two lists are identical, so a type can never be renderable in the
+# client and 415-refused here (or the other way round).
+$script:FxPreviewMimeAllow = @(
+    'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'image/avif', 'image/svg+xml', 'image/bmp', 'image/tiff',
+    'video/mp4', 'video/webm', 'video/quicktime',
+    'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/flac',
+    'application/pdf',
+    'text/markdown', 'text/x-markdown', 'text/x-python', 'text/x-c', 'text/x-c++src', 'text/x-java-source',
+    'text/x-shellscript', 'text/x-rust', 'text/x-go', 'text/x-typescript',
+    'application/json', 'application/javascript', 'application/typescript', 'application/x-shellscript',
+    'application/x-python-code',
+    'text/plain', 'text/csv', 'text/tab-separated-values', 'text/html', 'text/css',
+    'application/octet-stream', 'application/zip', 'application/x-7z-compressed', 'application/x-unknown',
+    'application/x-ghrdp-mirror'
+)
+$script:FxDefaultGofileHost = [ordered]@{
+    id = 'gofile'
+    displayName = 'gofile.io'
+    maxFileBytes = $null
+    allowedMimePrefixes = $null
+    ttlSeconds = $null
+    notes = ''
+}
+$script:FxRoot = ''
+try { if ($Root) { $script:FxRoot = [string]$Root } } catch { }
+if (-not $script:FxRoot) { $script:FxRoot = [System.IO.Path]::GetTempPath() }
+$script:FxRootsMap = [ordered]@{
+    Downloads = (Join-Path $script:FxRoot 'fx-roots\Downloads')
+    Desktop = (Join-Path $script:FxRoot 'fx-roots\Desktop')
+    Documents = (Join-Path $script:FxRoot 'fx-roots\Documents')
+    Temp = (Join-Path $script:FxRoot 'fx-roots\Temp')
+    'RDP-Storage' = (Join-Path $script:FxRoot 'fx-roots\RDP-Storage')
+}
+$script:FxIndexReadPath = Join-Path $script:FxRoot 'mirror-index.json'
+$script:FxIndexPath = Join-Path $script:FxRoot 'fx-index.json'
+$script:FxLogPath = Join-Path $script:FxRoot 'fx-server.log'
+$script:FxQueueDir = Join-Path ([System.IO.Path]::GetTempPath()) 'ghrdp'
+$script:FxQueuePath = Join-Path $script:FxQueueDir 'fx-upload-queue.json'
+$script:FxIdempotencyPath = Join-Path $script:FxRoot 'fx-idempotency.json'
+$script:FxIdempotencyMax = 50
+$script:FxGofileBase = 'https://api.gofile.io'
+$script:FxGofileToken = ''
+$script:FxGofileHostAllow = @('gofile.io', 'www.gofile.io', 'api.gofile.io', 'store1.gofile.io', 'store2.gofile.io')
+$script:FxClock = $null
+$script:FxCsrfOverride = ''
+$script:FxRouteTable = @(
+    [ordered]@{ method = 'GET'; path = '/api/fx/list'; auth = 'dash'; csrf = $false }
+    [ordered]@{ method = 'GET'; path = '/api/fx/meta'; auth = 'dash'; csrf = $false }
+    [ordered]@{ method = 'GET'; path = '/api/fx/gofile/status'; auth = 'dash'; csrf = $false }
+    [ordered]@{ method = 'GET'; path = '/api/fx/preview'; auth = 'dash'; csrf = $false }
+    [ordered]@{ method = 'POST'; path = '/api/fx/op'; auth = 'dash'; csrf = $true }
+    [ordered]@{ method = 'POST'; path = '/api/fx/upload'; auth = 'dash'; csrf = $true }
+)
+$script:FxFetcher = $null
+$script:FxUploader = $null
+# System.Net.Http is NOT loaded by Windows PowerShell 5.1 by default, so the
+# default transport (a test-injectable fetcher is the other path) resolves it
+# ONCE here. If it cannot be resolved the transport reports the ordinary
+# 502/504 phases instead of surfacing a type-load error to the operator.
+$script:FxHttpClientReady = $false
+try {
+    if ($null -eq ('System.Net.Http.HttpClient' -as [type])) { Add-Type -AssemblyName System.Net.Http -ErrorAction Stop }
+    $script:FxHttpClientReady = ($null -ne ('System.Net.Http.HttpClient' -as [type]))
+} catch { $script:FxHttpClientReady = $false }
+$script:FxLastWriteError = ''
+$script:FxStartedAt = $null
+$script:FxQueueTicks = 0
+$script:FxLogRedactionHits = 0
+
+function Get-FxClock {
+    if ($script:FxClock) { return [datetime]$script:FxClock }
+    return (Get-Date).ToUniversalTime()
+}
+
+function Get-FxNowIso {
+    return (Get-FxClock).ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+}
+
+function ConvertTo-FxIso {
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [datetime]) { return ([datetime]$Value).ToUniversalTime().ToString('o') }
+    if (-not ($Value -is [string])) { return $null }
+    $s = [string]$Value
+    if (-not $s) { return $null }
+    $dt = [datetime]::MinValue
+    $parsed = [datetime]::TryParse($s, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$dt)
+    if (-not $parsed) { return $null }
+    # The stored STRING is returned verbatim once it is a valid timestamp. It
+    # used to be re-formatted to 7 fractional digits, which meant a document
+    # re-read and re-normalized differed from its own input (the epoch fallback
+    # is millisecond-precision) - i.e. migration was not idempotent, and every
+    # read of an untouched file rewrote its mtime. Only a real [datetime] is
+    # formatted; the client parses either form.
+    return $s.Trim()
+}
+
+function Protect-FxText {
+    # [F45 §1.8] Credential redaction for EVERY log line, error body and detail
+    # string this region produces. Known secret values are replaced first, then
+    # credential-shaped name=value pairs, so an unknown token shape still cannot
+    # reach a log.
+    param([string]$Text, [string[]]$Secrets = @())
+    if (-not $Text) { return '' }
+    $out = [string]$Text
+    $all = @()
+    if ($script:FxGofileToken) { $all += [string]$script:FxGofileToken }
+    foreach ($s in @($Secrets)) { if ($s -and ([string]$s).Length -ge 8) { $all += [string]$s } }
+    foreach ($s in @($all | Select-Object -Unique)) {
+        if ($s) { $out = $out.Replace([string]$s, $script:FxRedacted) }
+    }
+    # Shape rule FIRST, independent of any name=value context: a host that echoes
+    # its own credential inside an error page, a URL path or a bare token field
+    # must not be able to smuggle `go_...` into a log line, a body or a detail
+    # string (F44 + S1.8). This is what the unknown-token case relies on, because
+    # $script:FxGofileToken is only set on a host that is configured.
+    $out = [regex]::Replace($out, '(?i)\bgo_[A-Za-z0-9_-]{8,}', $script:FxRedacted)
+    # Then the credential-shaped name=value pairs. The value may carry an
+    # authentication scheme (`Authorization: Bearer <token>`), so the scheme word
+    # is part of what gets replaced - otherwise the secret itself survives.
+    $out = [regex]::Replace($out, '(?i)((?:dash[-_]?token|csrf[-_]?token|token|key|authorization|go_[A-Za-z0-9]{6,})\s*[:=]\s*)(?:(?:bearer|basic|digest)\s+)?[^&\s"'']+', ('$1' + $script:FxRedacted))
+    return $out
+}
+
+function Write-FxLog {
+    # The ONLY fx log writer: every line passes through Protect-FxText first.
+    # Returns the redacted line so a test can assert a token never appears.
+    param([string]$Message, [string[]]$Secrets = @())
+    $raw = [string]$Message
+    if ($script:FxGofileToken) { $Secrets = @($Secrets) + @([string]$script:FxGofileToken) }
+    $red = Protect-FxText -Text $raw -Secrets $Secrets
+    $line = ((Get-FxClock).ToString('o') + ' [fx] ' + $red)
+    if ($raw -ne $red) { $script:FxLogRedactionHits = [int]$script:FxLogRedactionHits + 1 }
+    if ($script:FxLogPath) {
+        try {
+            $dir = Split-Path -Parent $script:FxLogPath
+            if ($dir -and -not (Test-Path -LiteralPath $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force }
+            [System.IO.File]::AppendAllText($script:FxLogPath, ($line + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        } catch { }
+    }
+    return $line
+}
+
+function Test-FxConstantEquals {
+    # Same shape as Test-TicketBearer: length check + XOR accumulate, no early
+    # exit, so a token compare cannot be timed character by character.
+    param([string]$A, [string]$B)
+    if ($null -eq $A -or $null -eq $B) { return $false }
+    if ($A.Length -ne $B.Length -or $A.Length -eq 0) { return $false }
+    $diff = 0
+    for ($i = 0; $i -lt $A.Length; $i++) { $diff = $diff -bor ([int][char]$A[$i] -bxor [int][char]$B[$i]) }
+    return ($diff -eq 0)
+}
+
+function Get-FxSha256Hex {
+    param([string]$Text)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes([string]$Text))
+        $sb = New-Object System.Text.StringBuilder
+        foreach ($b in $hash) { $null = $sb.Append($b.ToString('x2')) }
+        return $sb.ToString()
+    } finally { $sha.Dispose() }
+}
+
+function ConvertTo-FxStableId {
+    # [F45 S2 stableId.ts] identity, not authentication: UTF-8 SHA1(root + path),
+    # lowercase hex. The server must agree with the client byte for byte.
+    param([string]$RootName, [string]$Path)
+    $sha = [System.Security.Cryptography.SHA1]::Create()
+    try {
+        $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes(([string]$RootName + [string]$Path)))
+        $sb = New-Object System.Text.StringBuilder
+        foreach ($b in $hash) { $null = $sb.Append($b.ToString('x2')) }
+        return $sb.ToString()
+    } finally { $sha.Dispose() }
+}
+
+function ConvertTo-FxJsonBytes {
+    param($Object)
+    return [System.Text.Encoding]::UTF8.GetBytes(($Object | ConvertTo-Json -Depth 12 -Compress))
+}
+
+function Save-FxJsonAtomic {
+    # temp file in the SAME directory, then rename: a reader can never observe a
+    # half-written index or queue (Explorer §5.1 rule 5).
+    param([string]$Path, $Object)
+    $script:FxLastWriteError = ''
+    try {
+        $dir = Split-Path -Parent $Path
+        if ($dir -and -not (Test-Path -LiteralPath $dir)) { $null = New-Item -ItemType Directory -Path $dir -Force }
+        $json = ($Object | ConvertTo-Json -Depth 12 -Compress)
+        $tmp = $Path + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+        [System.IO.File]::WriteAllText($tmp, $json, (New-Object System.Text.UTF8Encoding($false)))
+        if (Test-Path -LiteralPath $Path) {
+            try { [System.IO.File]::Replace($tmp, $Path, $null) }
+            catch { [System.IO.File]::Delete($Path); [System.IO.File]::Move($tmp, $Path) }
+        } else {
+            [System.IO.File]::Move($tmp, $Path)
+        }
+        return $true
+    } catch {
+        $script:FxLastWriteError = Protect-FxText ([string]$_.Exception.Message)
+        return $false
+    }
+}
+
+function Read-FxJson {
+    param([string]$Path)
+    $result = [ordered]@{ ok = $false; value = $null; reason = 'missing'; detail = '' }
+    if (-not $Path) { return $result }
+    if (-not (Test-Path -LiteralPath $Path)) { return $result }
+    try {
+        $raw = [System.IO.File]::ReadAllText($Path)
+        if (-not $raw -or -not $raw.Trim()) { $result.reason = 'empty'; return $result }
+        $result.value = ($raw | ConvertFrom-Json)
+        $result.ok = $true
+        $result.reason = 'ok'
+    } catch {
+        $result.reason = 'parse'
+        $result.detail = Protect-FxText ([string]$_.Exception.Message)
+    }
+    return $result
+}
+
+function Get-FxMember {
+    # Dictionary-aware (the index/queue are [ordered] documents) and
+    # PSObject-aware (a ConvertFrom-Json value), so a caller never has to know
+    # which shape it holds.
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
+    if ($Object -is [System.Collections.IDictionary]) {
+        if ($Object.Contains($Name)) { return $Object[$Name] }
+        return $null
+    }
+    try {
+        $p = $Object.PSObject.Properties[$Name]
+        if ($p) { return $p.Value }
+    } catch { }
+    return $null
+}
+
+function Get-FxRows {
+    # Array-valued read for iteration and counting. PowerShell DROPS an empty
+    # array on return, so `@(Get-FxRows $o 'roots')` cannot tell "no rows" from
+    # "one null row": on 5.1 and 7 alike it iterates ONCE with $null and a
+    # normalizer would fabricate a row (a phantom Temp root, a bogus queue job).
+    # Callers therefore always write `@(Get-FxRows $o 'roots')`, which is 0 rows
+    # when the member is missing, null or empty.
+    param($Object, [string]$Name)
+    $raw = Get-FxMember $Object $Name
+    if ($null -eq $raw) { return }
+    return @($raw)
+}
+
+function Test-FxMember {
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return $false }
+    if ($Object -is [System.Collections.IDictionary]) { return [bool]$Object.Contains($Name) }
+    try { return ($null -ne $Object.PSObject.Properties[$Name]) } catch { return $false }
+}
+
+function Set-FxMember {
+    # Set (or add) one member on either document shape. Returns $false instead
+    # of throwing, so a malformed entry can never take the whole route down.
+    param($Object, [string]$Name, $Value)
+    if ($null -eq $Object) { return $false }
+    if ($Object -is [System.Collections.IDictionary]) {
+        if ($Object.Contains($Name)) { $Object[$Name] = $Value } else { $Object.Add($Name, $Value) }
+        return $true
+    }
+    try { $null = $Object | Add-Member -MemberType NoteProperty -Name $Name -Value $Value -Force; return $true } catch { return $false }
+}
+
+function Get-FxTextOr {
+    param($Value, [string]$Fallback = '')
+    if ($Value -is [string]) { return [string]$Value }
+    return $Fallback
+}
+
+function Get-FxStringOrNull {
+    param($Value)
+    if ($Value -is [string] -and $Value.Length -gt 0) { return [string]$Value }
+    return $null
+}
+
+function Get-FxBool {
+    param($Value)
+    if ($Value -is [bool]) { return [bool]$Value }
+    return $false
+}
+
+function Get-FxNumberOrZero {
+    param($Value)
+    if ($Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal] -or $Value -is [int16] -or $Value -is [single]) {
+        $d = [double]$Value
+        if (-not [double]::IsNaN($d) -and -not [double]::IsInfinity($d) -and $d -ge 0) { return $d }
+    }
+    return [double]0
+}
+
+function Get-FxNumberOrNull {
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal] -or $Value -is [int16] -or $Value -is [single]) {
+        $d = [double]$Value
+        if (-not [double]::IsNaN($d) -and -not [double]::IsInfinity($d) -and $d -ge 0) { return $d }
+    }
+    return $null
+}
+
+function Get-FxStringArray {
+    param($Value)
+    $out = @()
+    foreach ($item in @($Value)) {
+        if ($item -is [string]) { $out += [string]$item }
+    }
+    return $out
+}
+
+function Get-FxUniqueStrings {
+    param($Value)
+    $out = @()
+    foreach ($item in @(Get-FxStringArray $Value)) {
+        if ($out -notcontains $item) { $out += $item }
+    }
+    return $out
+}
+
+function Test-FxStringArrayEqual {
+    param($A, $B)
+    $x = @(Get-FxStringArray $A)
+    $y = @(Get-FxStringArray $B)
+    if ($x.Count -ne $y.Count) { return $false }
+    for ($i = 0; $i -lt $x.Count; $i++) { if ($x[$i] -cne $y[$i]) { return $false } }
+    return $true
+}
+
+function Get-FxEnumMember {
+    param($Value, [string[]]$Allowed, [string]$Fallback)
+    if ($Value -is [string] -and ($Allowed -contains [string]$Value)) { return [string]$Value }
+    return $Fallback
+}
+
+function Get-FxSafeDirectUrl {
+    # Explorer §4 invariant, byte-identical to S2's safeDirectUrl: https only,
+    # no userinfo, no query, no fragment. A credential-bearing link can never be
+    # stored, logged or rendered.
+    param($Value)
+    if (-not ($Value -is [string])) { return $null }
+    $s = [string]$Value
+    if (-not $s) { return $null }
+    try { $uri = [uri]$s } catch { return $null }
+    if ($uri.Scheme -ne 'https') { return $null }
+    if ($uri.UserInfo) { return $null }
+    if ($uri.Query) { return $null }
+    if ($uri.Fragment) { return $null }
+    return $s
+}
+
+function Test-FxProxyAllowedUrl {
+    # Only the configured gofile host may be proxied. This is the allowlist that
+    # matters: it gates the OUTBOUND fetch, not the stored value, so S2's
+    # "keep any credential-free https link" rule stays true.
+    param([string]$Url)
+    if (-not $Url) { return $false }
+    try { $uri = [uri]$Url } catch { return $false }
+    if ($uri.Scheme -ne 'https') { return $false }
+    if ($uri.UserInfo -or $uri.Query -or $uri.Fragment) { return $false }
+    return ($script:FxGofileHostAllow -contains $uri.Host.ToLower())
+}
+
+# --- index model (port of data/migrations/v1_to_v2.ts) ---------------------
+
+function Get-FxIdForEntry {
+    param($Value, [string]$RootName, [string]$Path)
+    $existing = Get-FxStringOrNull (Get-FxMember $Value 'id')
+    if ($existing) { return $existing }
+    return (ConvertTo-FxStableId -RootName $RootName -Path $Path)
+}
+
+function ConvertTo-FxUploadState {
+    param($Value)
+    $phase = $null
+    if (Test-FxMember $Value 'phase') {
+        $rawPhase = Get-FxMember $Value 'phase'
+        if ($null -ne $rawPhase) { $phase = Get-FxEnumMember $rawPhase $script:FxUploadPhases 'parse' }
+    }
+    $lastError = $null
+    if ((Test-FxMember $Value 'lastError') -and $null -ne (Get-FxMember $Value 'lastError')) {
+        $src = Get-FxMember $Value 'lastError'
+        $lastError = [ordered]@{ phase = (Get-FxEnumMember (Get-FxMember $src 'phase') $script:FxUploadPhases 'parse') }
+        $hs = Get-FxMember $src 'httpStatus'
+        if ($hs -is [int] -or $hs -is [long] -or $hs -is [double] -or $hs -is [decimal]) { $lastError['httpStatus'] = [int]$hs }
+        # F44: the host message is carried COMPLETE. No substring, no cap.
+        $hm = Get-FxMember $src 'hostMessage'
+        if ($hm -is [string]) { $lastError['hostMessage'] = [string]$hm }
+        $at = Get-FxStringOrNull (Get-FxMember $src 'at')
+        if ($at) { $lastError['at'] = $at }
+    }
+    return [ordered]@{
+        phase = $phase
+        status = (Get-FxEnumMember (Get-FxMember $Value 'status') $script:FxUploadStatuses 'idle')
+        retries = (Get-FxNumberOrZero (Get-FxMember $Value 'retries'))
+        lastError = $lastError
+        bytesSent = (Get-FxNumberOrZero (Get-FxMember $Value 'bytesSent'))
+    }
+}
+
+function ConvertTo-FxGofileState {
+    param($Value)
+    $status = Get-FxEnumMember (Get-FxMember $Value 'status') $script:FxGofileStatuses 'none'
+    $directUrl = $null
+    # §4 invariant: a direct link exists ONLY for an uploaded file.
+    if ($status -eq 'uploaded') { $directUrl = Get-FxSafeDirectUrl (Get-FxMember $Value 'directUrl') }
+    return [ordered]@{
+        code = (Get-FxStringOrNull (Get-FxMember $Value 'code'))
+        fileId = (Get-FxStringOrNull (Get-FxMember $Value 'fileId'))
+        directUrl = $directUrl
+        status = $status
+        uploadedAt = (Get-FxStringOrNull (Get-FxMember $Value 'uploadedAt'))
+        expiryTs = (Get-FxStringOrNull (Get-FxMember $Value 'expiryTs'))
+        downloads = (Get-FxNumberOrZero (Get-FxMember $Value 'downloads'))
+        remoteSize = (Get-FxNumberOrNull (Get-FxMember $Value 'remoteSize'))
+    }
+}
+
+function ConvertTo-FxFileEntry {
+    param($Value)
+    $rootName = Get-FxEnumMember (Get-FxMember $Value 'root') $script:FxRoots 'Temp'
+    $rawPath = (Get-FxTextOr (Get-FxMember $Value 'path') '')
+    $path = '/' + ($rawPath.Replace('\', '/').TrimStart('/'))
+    return [ordered]@{
+        id = (Get-FxIdForEntry -Value $Value -RootName $rootName -Path $path)
+        root = $rootName
+        path = $path
+        size = (Get-FxNumberOrZero (Get-FxMember $Value 'size'))
+        mtime = (Get-FxIsoOrFallbackValue -Value (Get-FxMember $Value 'mtime') -Fallback $script:FxEpoch)
+        mime = (Get-FxTextOr (Get-FxMember $Value 'mime') 'application/octet-stream')
+        checksum = (Get-FxStringOrNull (Get-FxMember $Value 'checksum'))
+        tags = @(Get-FxUniqueStrings (Get-FxMember $Value 'tags'))
+        pinned = (Get-FxBool (Get-FxMember $Value 'pinned'))
+        trashed = (Get-FxBool (Get-FxMember $Value 'trashed'))
+        trashedAt = (Get-FxStringOrNull (Get-FxMember $Value 'trashedAt'))
+        recentsTs = (Get-FxStringOrNull (Get-FxMember $Value 'recentsTs'))
+        upload = (ConvertTo-FxUploadState -Value (Get-FxMember $Value 'upload'))
+        gofile = (ConvertTo-FxGofileState -Value (Get-FxMember $Value 'gofile'))
+    }
+}
+
+function Get-FxIsoOrFallbackValue {
+    param($Value, [string]$Fallback)
+    $iso = ConvertTo-FxIso $Value
+    if ($iso) { return $iso }
+    return $Fallback
+}
+
+function ConvertTo-FxRootSnapshot {
+    param($Value)
+    return [ordered]@{
+        root = (Get-FxEnumMember (Get-FxMember $Value 'root') $script:FxRoots 'Temp')
+        scannedAt = (Get-FxIsoOrFallbackValue -Value (Get-FxMember $Value 'scannedAt') -Fallback $script:FxEpoch)
+        totalBytes = (Get-FxNumberOrZero (Get-FxMember $Value 'totalBytes'))
+        fileCount = (Get-FxNumberOrZero (Get-FxMember $Value 'fileCount'))
+        quotaBytes = (Get-FxNumberOrNull (Get-FxMember $Value 'quotaBytes'))
+    }
+}
+
+function ConvertTo-FxGofileHost {
+    param($Value)
+    $maxBytes = Get-FxNumberOrNull (Get-FxMember $Value 'maxFileBytes')
+    $ttl = Get-FxNumberOrNull (Get-FxMember $Value 'ttlSeconds')
+    $prefixes = $null
+    if ((Test-FxMember $Value 'allowedMimePrefixes') -and $null -ne (Get-FxMember $Value 'allowedMimePrefixes')) {
+        $prefixes = @(Get-FxStringArray (Get-FxMember $Value 'allowedMimePrefixes'))
+    }
+    return [ordered]@{
+        id = 'gofile'
+        displayName = (Get-FxTextOr (Get-FxMember $Value 'displayName') $script:FxDefaultGofileHost.displayName)
+        maxFileBytes = $maxBytes
+        allowedMimePrefixes = $prefixes
+        ttlSeconds = $ttl
+        notes = (Get-FxTextOr (Get-FxMember $Value 'notes') '')
+    }
+}
+
+function Invoke-FxMigrateIndex {
+    # Additive v1 -> v2 (also the normalizer for an already-v2 document, so every
+    # read hands the operations layer a complete, mutable, allowlisted shape).
+    # Unknown properties are not copied; missing timestamps get the epoch, never
+    # a fabricated current clock; exactly one configured host.
+    param($Value)
+    $src = $Value
+    if ($null -eq $src) { $src = [ordered]@{} }
+    $configured = $null
+    # NOT $host: that name is a read-only automatic variable and 5.1 throws
+    # "Cannot overwrite variable Host" the moment it is bound.
+    foreach ($hostEntry in @(Get-FxRows $src 'gofileHosts')) {
+        if ((Get-FxEnumMember (Get-FxMember $hostEntry 'id') @('gofile') '') -eq 'gofile') { $configured = $hostEntry; break }
+    }
+    if ($null -eq $configured) { $configured = $script:FxDefaultGofileHost }
+    $roots = @()
+    foreach ($r in @(Get-FxRows $src 'roots')) { $roots += (ConvertTo-FxRootSnapshot -Value $r) }
+    $files = @()
+    foreach ($f in @(Get-FxRows $src 'files')) { $files += (ConvertTo-FxFileEntry -Value $f) }
+    return [ordered]@{
+        schemaVersion = $script:FxSchemaVersion
+        generatedAt = (Get-FxIsoOrFallbackValue -Value (Get-FxMember $src 'generatedAt') -Fallback $script:FxEpoch)
+        runnerId = (Get-FxTextOr (Get-FxMember $src 'runnerId') 'unknown')
+        roots = $roots
+        files = $files
+        gofileHosts = @((ConvertTo-FxGofileHost -Value $configured))
+    }
+}
+
+function New-FxEmptyIndex {
+    $roots = @()
+    foreach ($r in $script:FxRoots) {
+        $roots += [ordered]@{ root = $r; scannedAt = $script:FxEpoch; totalBytes = 0; fileCount = 0; quotaBytes = $null }
+    }
+    $seed = (Get-FxSha256Hex ([string]$env:COMPUTERNAME + '|' + [string]$script:FxRoot)).Substring(0, 12)
+    return [ordered]@{
+        schemaVersion = $script:FxSchemaVersion
+        generatedAt = (Get-FxNowIso)
+        runnerId = ('runner-' + $seed)
+        roots = $roots
+        files = @()
+        gofileHosts = @((ConvertTo-FxGofileHost -Value $script:FxDefaultGofileHost))
+    }
+}
+
+function Get-FxIndexDoc {
+    # ok=$false + reason='parse' carries the F44 phase the caller must report
+    # (500 + phase=parse). reason='missing' means "not scanned yet", NOT an
+    # empty index: the endpoint still answers 200 with an empty v2 document and
+    # an explicit 'unscanned' source so the UI cannot mistake it for real data.
+    param([string]$ReadPath = '', [string]$MirrorPath = '')
+    if (-not $ReadPath) { $ReadPath = $script:FxIndexPath }
+    if (-not $MirrorPath) { $MirrorPath = $script:FxIndexReadPath }
+    $result = [ordered]@{ ok = $false; index = $null; source = 'missing'; reason = 'missing'; detail = ''; schemaVersion = 0; migrated = $false }
+    $doc = $null
+    $source = 'unscanned'
+    $read = Read-FxJson -Path $ReadPath
+    if ($read.ok) { $doc = $read.value; $source = 'fx-index' }
+    elseif ($read.reason -eq 'parse') { $result.reason = 'parse'; $result.detail = $read.detail; return $result }
+    if ($null -eq $doc -and $MirrorPath -and $MirrorPath -ne $ReadPath) {
+        $mirror = Read-FxJson -Path $MirrorPath
+        if ($mirror.ok) { $doc = $mirror.value; $source = 'mirror-index' }
+        elseif ($mirror.reason -eq 'parse') { $result.reason = 'parse'; $result.detail = $mirror.detail; return $result }
+    }
+    $version = 0
+    if ($null -ne $doc) {
+        $rawVersion = Get-FxMember $doc 'schemaVersion'
+        if ($rawVersion -is [int] -or $rawVersion -is [long] -or $rawVersion -is [double] -or $rawVersion -is [decimal]) { $version = [int]$rawVersion }
+    }
+    $result.schemaVersion = $version
+    if ($null -eq $doc) {
+        $doc = New-FxEmptyIndex
+    } else {
+        if ($version -ne $script:FxSchemaVersion) { $result.migrated = $true }
+        $doc = Invoke-FxMigrateIndex -Value $doc
+    }
+    $result.ok = $true
+    $result.reason = 'ok'
+    $result.index = $doc
+    $result.source = $source
+    return $result
+}
+
+function Set-FxIndexDoc {
+    # [F45 §1.9] every index write emits schemaVersion 2 + gofileHosts, from a
+    # temp file in the same directory. Never writes the F44 mirror index.
+    param($Index, [string]$Path = '')
+    if (-not $Path) { $Path = $script:FxIndexPath }
+    if ($null -eq $Index) { return $false }
+    $doc = $Index
+    if (-not ($doc -is [System.Collections.IDictionary])) { $doc = Invoke-FxMigrateIndex -Value $doc }
+    try {
+        $null = Set-FxMember -Object $doc -Name 'schemaVersion' -Value $script:FxSchemaVersion
+        $null = Set-FxMember -Object $doc -Name 'generatedAt' -Value (Get-FxNowIso)
+        if (-not (Test-FxMember $doc 'gofileHosts') -or @(Get-FxRows $doc 'gofileHosts').Count -eq 0) {
+            $null = Set-FxMember -Object $doc -Name 'gofileHosts' -Value @((ConvertTo-FxGofileHost -Value $script:FxDefaultGofileHost))
+        }
+        $counts = @{}
+        foreach ($entry in @(Get-FxRows $doc 'files')) {
+            $r = Get-FxTextOr (Get-FxMember $entry 'root') 'Temp'
+            if (-not $counts.ContainsKey($r)) { $counts[$r] = [ordered]@{ count = 0; bytes = [double]0 } }
+            $counts[$r].count = [int]$counts[$r].count + 1
+            $counts[$r].bytes = [double]$counts[$r].bytes + [double](Get-FxNumberOrZero (Get-FxMember $entry 'size'))
+        }
+        $roots = @()
+        foreach ($r in $script:FxRoots) {
+            $existing = $null
+            foreach ($snap in @(Get-FxRows $doc 'roots')) { if ((Get-FxTextOr (Get-FxMember $snap 'root') '') -eq $r) { $existing = $snap; break } }
+            $count = 0; $bytes = [double]0
+            if ($counts.ContainsKey($r)) { $count = [int]$counts[$r].count; $bytes = [double]$counts[$r].bytes }
+            $roots += [ordered]@{
+                root = $r
+                scannedAt = (Get-FxTextOr (Get-FxMember $existing 'scannedAt') $script:FxEpoch)
+                totalBytes = $bytes
+                fileCount = $count
+                quotaBytes = (Get-FxNumberOrNull (Get-FxMember $existing 'quotaBytes'))
+            }
+        }
+        $null = Set-FxMember -Object $doc -Name 'roots' -Value $roots
+    } catch {
+        $script:FxLastWriteError = Protect-FxText ([string]$_.Exception.Message)
+        return $false
+    }
+    return (Save-FxJsonAtomic -Path $Path -Object $doc)
+}
+
+function Select-FxFileEntry {
+    param($Index, [string]$Id)
+    if ($null -eq $Index -or -not $Id) { return $null }
+    foreach ($entry in @(Get-FxRows $Index 'files')) {
+        if ((Get-FxTextOr (Get-FxMember $entry 'id') '') -ceq $Id) { return $entry }
+    }
+    return $null
+}
+
+function Initialize-FxIndex {
+    # Startup: create fx-index.json (schemaVersion 2 + gofileHosts) from the F44
+    # mirror index when one exists, else as an explicitly unscanned empty index.
+    param([string]$ReadPath = '', [string]$MirrorPath = '', [string]$WritePath = '')
+    if (-not $ReadPath) { $ReadPath = $script:FxIndexPath }
+    if (-not $WritePath) { $WritePath = $script:FxIndexPath }
+    if (-not $MirrorPath) { $MirrorPath = $script:FxIndexReadPath }
+    if (Test-Path -LiteralPath $ReadPath) {
+        $doc = Get-FxIndexDoc -ReadPath $ReadPath -MirrorPath ''
+        if (-not $doc.ok) { return $doc }
+        # Re-emit so an existing v1/partial file is upgraded in place (§1.9).
+        $null = Set-FxIndexDoc -Index $doc.index -Path $WritePath
+        return $doc
+    }
+    $fresh = Get-FxIndexDoc -ReadPath $ReadPath -MirrorPath $MirrorPath
+    if (-not $fresh.ok) { return $fresh }
+    $null = Set-FxIndexDoc -Index $fresh.index -Path $WritePath
+    return $fresh
+}
+
+# --- gates -----------------------------------------------------------------
+
+function Test-FxSourceAllowed {
+    param([string]$SourceIp)
+    if (-not $SourceIp) { return $false }
+    $ip = $null
+    try { $ip = [System.Net.IPAddress]::Parse($SourceIp) } catch { return $false }
+    if (-not $ip) { return $false }
+    if ($ip.IsIPv4MappedToIPv6) { $ip = $ip.MapToIPv4() }
+    if ([System.Net.IPAddress]::IsLoopback($ip)) { return $true }
+    $b = $ip.GetAddressBytes()
+    return (($b.Length -eq 4 -and $b[0] -eq 100 -and $b[1] -ge 64 -and $b[1] -le 127) -or
+        ($b.Length -eq 16 -and $b[0] -eq 0xfd -and $b[1] -eq 0x7a))
+}
+
+function Get-FxCsrfToken {
+    # §5.1 rule 4 needs a CSRF token that a cross-site attacker can never read:
+    # it is derived from the dash token, lives only in a header (never a cookie,
+    # never a URL) and is compared in constant time. Documented delta: the plan
+    # requires CSRF but does not define its derivation.
+    param([string]$Token)
+    if (-not $Token) { return '' }
+    return (Get-FxSha256Hex ([string]$Token + '|fx-csrf-v1')).Substring(0, 32)
+}
+
+function Test-FxDashToken {
+    # The dash token arrives in X-Dash-Token only (Explorer §5.1 rule 1). The
+    # parent ?key= form is accepted as documented compatibility for the existing
+    # dashboard flows, and a tailnet/loopback source is the same trust path the
+    # parent gate already grants. A token is REQUIRED here even when none is
+    # configured: /api/fx fails closed.
+    param($Headers, $Query, [string]$Token, [string]$SourceIp)
+    $out = [ordered]@{ ok = $false; reason = 'missing'; via = 'none'; present = $false }
+    if (Test-FxSourceAllowed -SourceIp $SourceIp) { $out.ok = $true; $out.reason = 'source'; $out.via = 'source'; return $out }
+    $sent = ''
+    if ($Headers -and $Headers.ContainsKey('x-dash-token')) { $sent = [string]$Headers['x-dash-token'] }
+    if (-not $sent -and $Query -and $Query.ContainsKey('key')) { $sent = [string]$Query['key'] }
+    if (-not $sent) { return $out }
+    $out.present = $true
+    $out.via = 'header'
+    if ($Query -and -not ($Headers -and $Headers.ContainsKey('x-dash-token')) -and $Query.ContainsKey('key')) { $out.via = 'query' }
+    if (-not $Token) { $out.reason = 'unconfigured'; return $out }
+    if (Test-FxConstantEquals -A $sent -B $Token) { $out.ok = $true; $out.reason = 'token'; return $out }
+    $out.reason = 'mismatch'
+    return $out
+}
+
+function Test-FxCsrf {
+    param($Headers, [string]$Method, [string]$Token)
+    if ([string]$Method -ne 'POST') { return $true }
+    $sent = ''
+    if ($Headers -and $Headers.ContainsKey('x-csrf-token')) { $sent = [string]$Headers['x-csrf-token'] }
+    if (-not $sent) { return $false }
+    $expected = Get-FxCsrfToken -Token $Token
+    if (-not $expected) {
+        if ($script:FxCsrfOverride) { return (Test-FxConstantEquals -A $sent -B ([string]$script:FxCsrfOverride)) }
+        return $false
+    }
+    return (Test-FxConstantEquals -A $sent -B $expected)
+}
+
+# --- idempotency (§5.1 rule 6) ---------------------------------------------
+
+function Get-FxRequestHash {
+    # SHA-256 over method + path + the raw body bytes: a replayed key is only
+    # honoured for the IDENTICAL request, and a reuse with a different body is a
+    # client error rather than a second side effect.
+    param([string]$Method, [string]$Path, $Body)
+    $prefix = [System.Text.Encoding]::UTF8.GetBytes(([string]$Method + ' ' + [string]$Path + '|'))
+    $bodyBytes = @()
+    if ($null -ne $Body) { $bodyBytes = [byte[]]$Body }
+    $all = [byte[]]::new($prefix.Length + $bodyBytes.Length)
+    [System.Array]::Copy($prefix, 0, $all, 0, $prefix.Length)
+    if ($bodyBytes.Length -gt 0) { [System.Array]::Copy($bodyBytes, 0, $all, $prefix.Length, $bodyBytes.Length) }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $sha.ComputeHash($all)
+        $sb = New-Object System.Text.StringBuilder
+        foreach ($b in $hash) { $null = $sb.Append($b.ToString('x2')) }
+        return $sb.ToString()
+    } finally { $sha.Dispose() }
+}
+
+function Get-FxIdempotentHit {
+    param([string]$Key, [string]$RequestHash, [string]$Path = '')
+    if (-not $Path) { $Path = $script:FxIdempotencyPath }
+    $out = [ordered]@{ hit = $false; conflict = $false; code = 0; body = ''; at = '' }
+    if (-not $Key) { return $out }
+    $doc = Read-FxJson -Path $Path
+    if (-not $doc.ok -or $null -eq $doc.value) { return $out }
+    foreach ($entry in @(Get-FxRows $doc.value 'entries')) {
+        if ((Get-FxTextOr (Get-FxMember $entry 'key') '') -ceq $Key) {
+            $stored = Get-FxTextOr (Get-FxMember $entry 'requestHash') ''
+            if ($stored -ceq $RequestHash) {
+                $out.hit = $true
+                $out.code = [int](Get-FxNumberOrZero (Get-FxMember $entry 'code'))
+                $out.body = Get-FxTextOr (Get-FxMember $entry 'body') ''
+                $out.at = Get-FxTextOr (Get-FxMember $entry 'at') ''
+            } else {
+                $out.conflict = $true
+            }
+            return $out
+        }
+    }
+    return $out
+}
+
+function Save-FxIdempotentResult {
+    # Bounded ring (the last $script:FxIdempotencyMax keys), atomic write. The
+    # stored body is the response the replay must reproduce, so the key must
+    # never be used for two different requests.
+    param([string]$Key, [string]$Method, [string]$Path, [string]$RequestHash, [int]$Code, [string]$Body, [string]$StorePath = '')
+    if (-not $Key) { return $false }
+    if (-not $StorePath) { $StorePath = $script:FxIdempotencyPath }
+    $doc = Read-FxJson -Path $StorePath
+    $entries = @()
+    $seq = 0
+    if ($doc.ok -and $null -ne $doc.value) {
+        foreach ($entry in @(Get-FxRows $doc.value 'entries')) {
+            $seq = [int](Get-FxNumberOrZero (Get-FxMember $entry 'seq'))
+            $entries += [ordered]@{
+                seq = $seq
+                key = (Get-FxTextOr (Get-FxMember $entry 'key') '')
+                method = (Get-FxTextOr (Get-FxMember $entry 'method') '')
+                path = (Get-FxTextOr (Get-FxMember $entry 'path') '')
+                requestHash = (Get-FxTextOr (Get-FxMember $entry 'requestHash') '')
+                code = [int](Get-FxNumberOrZero (Get-FxMember $entry 'code'))
+                body = (Get-FxTextOr (Get-FxMember $entry 'body') '')
+                at = (Get-FxTextOr (Get-FxMember $entry 'at') '')
+            }
+        }
+    }
+    $seq = $seq + 1
+    $entries += [ordered]@{ seq = $seq; key = $Key; method = [string]$Method; path = [string]$Path; requestHash = [string]$RequestHash; code = [int]$Code; body = [string]$Body; at = (Get-FxNowIso) }
+    while ($entries.Count -gt $script:FxIdempotencyMax) { $entries = @($entries | Select-Object -Skip 1) }
+    $store = [ordered]@{ schemaVersion = 1; updatedAt = (Get-FxNowIso); entries = $entries }
+    return (Save-FxJsonAtomic -Path $StorePath -Object $store)
+}
+
+# --- operations (POST /api/fx/op) ------------------------------------------
+
+function Get-FxBodyObject {
+    param([byte[]]$Body)
+    if (-not $Body -or $Body.Length -eq 0) { return $null }
+    try { return ([System.Text.Encoding]::UTF8.GetString($Body) | ConvertFrom-Json) } catch { return $null }
+}
+
+function Test-FxBodyHasHardFlag {
+    # §5.1 rule 3: no hard delete ANYWHERE. A smuggled hard flag is a 400, not a
+    # silently ignored field.
+    param($Body)
+    if ($null -eq $Body) { return $false }
+    try {
+        foreach ($p in @($Body.PSObject.Properties)) { if ([string]$p.Name -ieq 'hard') { return $true } }
+    } catch { return $false }
+    return $false
+}
+
+function New-FxSkips {
+    param([string]$Id, [string]$Reason)
+    return [ordered]@{ id = $Id; reason = $Reason }
+}
+
+function Invoke-FxOpOnIndex {
+    # Pure in-memory application of one operation to a normalized index. The
+    # caller persists the result atomically; a 400 here means the REQUEST is
+    # malformed, an entry-level refusal is a `skipped` row (§5.1 rule 5).
+    param($Index, $Body, [string]$Now = '')
+    if (-not $Now) { $Now = (Get-FxNowIso) }
+    $result = [ordered]@{ code = 400; applied = @(); skipped = @(); reason = 'bad-op'; message = '' }
+    if ($null -eq $Body) { $result.message = 'op requires a JSON body'; return $result }
+    if ($null -eq $Index) { $result.message = 'index unavailable'; return $result }
+    if (Test-FxBodyHasHardFlag -Body $Body) { $result.message = 'hard delete is not an Explorer operation'; return $result }
+    $op = Get-FxStringOrNull (Get-FxMember $Body 'op')
+    if (-not $op -or ($script:FxOps -notcontains $op)) { $result.message = ('unknown op: ' + [string]$op); return $result }
+    $ids = @(Get-FxUniqueStrings (Get-FxMember $Body 'ids'))
+    if ($ids.Count -eq 0) { $result.message = 'op requires at least one id'; return $result }
+    $target = Get-FxStringOrNull (Get-FxMember $Body 'target')
+    if ($op -eq 'move') {
+        # `target` is a DESTINATION DIRECTORY (Explorer: "destination for move,
+        # relative to a root"). The file keeps its own name, which is what makes
+        # one request able to move several files, and what keeps a move from
+        # collapsing two entries onto a single path.
+        if (-not $target -or -not $target.StartsWith('/')) { $result.message = 'move requires a POSIX target directory'; return $result }
+        foreach ($seg in $target.Split('/')) {
+            if ($seg -eq '..' -or $seg -eq '.') { $result.message = 'target must not contain . or ..'; return $result }
+            if ($seg.IndexOfAny([char[]]@(':', '*', '?', '"', '<', '>', '|')) -ge 0) { $result.message = 'target contains an unsafe character'; return $result }
+        }
+        while ($target.Length -gt 1 -and $target.EndsWith('/')) { $target = $target.Substring(0, $target.Length - 1) }
+    }
+    if ($op -eq 'pin' -and -not ((Get-FxMember $Body 'pin') -is [bool])) { $result.message = 'pin requires a boolean pin field'; return $result }
+    if ($op -eq 'tag' -and -not (Test-FxMember $Body 'tags')) { $result.message = 'tag requires a tags array'; return $result }
+    $tags = @(Get-FxUniqueStrings (Get-FxMember $Body 'tags'))
+    $pin = Get-FxBool (Get-FxMember $Body 'pin')
+    $applied = @()
+    $skipped = @()
+    foreach ($id in $ids) {
+        $entry = Select-FxFileEntry -Index $Index -Id $id
+        if ($null -eq $entry) { $skipped += (New-FxSkips -Id $id -Reason 'unknown-id'); continue }
+        $changed = $false
+        if ($op -eq 'trash') {
+            if ([bool](Get-FxBool (Get-FxMember $entry 'trashed'))) { $skipped += (New-FxSkips -Id $id -Reason 'no-change') }
+            else { $null = Set-FxMember -Object $entry -Name 'trashed' -Value $true; $null = Set-FxMember -Object $entry -Name 'trashedAt' -Value $Now; $changed = $true }
+        } elseif ($op -eq 'restore') {
+            if (-not [bool](Get-FxBool (Get-FxMember $entry 'trashed'))) { $skipped += (New-FxSkips -Id $id -Reason 'no-change') }
+            else { $null = Set-FxMember -Object $entry -Name 'trashed' -Value $false; $null = Set-FxMember -Object $entry -Name 'trashedAt' -Value $null; $changed = $true }
+        } elseif ($op -eq 'move') {
+            $base = Get-FxTextOr (Get-FxMember $entry 'path') ''
+            if ([bool](Get-FxBool (Get-FxMember $entry 'trashed'))) { $skipped += (New-FxSkips -Id $id -Reason 'trashed') }
+            else {
+                $leaf = $base
+                $slash = $base.LastIndexOf('/')
+                if ($slash -ge 0) { $leaf = $base.Substring($slash + 1) }
+                if (-not $leaf) { $skipped += (New-FxSkips -Id $id -Reason 'no-change') }
+                else {
+                    $dest = $target + '/' + $leaf
+                    if ($dest -eq $base) { $skipped += (New-FxSkips -Id $id -Reason 'no-change') }
+                    else { $null = Set-FxMember -Object $entry -Name 'path' -Value $dest; $changed = $true }
+                }
+            }
+        } elseif ($op -eq 'tag') {
+            if ([bool](Get-FxBool (Get-FxMember $entry 'trashed'))) { $skipped += (New-FxSkips -Id $id -Reason 'trashed') }
+            elseif (Test-FxStringArrayEqual (Get-FxMember $entry 'tags') $tags) { $skipped += (New-FxSkips -Id $id -Reason 'no-change') }
+            else { $null = Set-FxMember -Object $entry -Name 'tags' -Value $tags; $changed = $true }
+        } elseif ($op -eq 'pin') {
+            if ([bool](Get-FxBool (Get-FxMember $entry 'trashed'))) { $skipped += (New-FxSkips -Id $id -Reason 'trashed') }
+            elseif ([bool](Get-FxBool (Get-FxMember $entry 'pinned')) -eq $pin) { $skipped += (New-FxSkips -Id $id -Reason 'no-change') }
+            else { $null = Set-FxMember -Object $entry -Name 'pinned' -Value $pin; $changed = $true }
+        }
+        if ($changed) { $applied += $id }
+    }
+    $result.code = 200
+    $result.applied = $applied
+    $result.skipped = $skipped
+    $result.reason = 'ok'
+    return $result
+}
+
+# --- upload queue (§1.6) ---------------------------------------------------
+
+function ConvertTo-FxUploadJob {
+    # One shape for a queue row, whatever the JSON on disk looked like, so the
+    # worker can transition state without depending on PSCustomObject semantics.
+    param($Value)
+    $phase = $null
+    if ($null -ne (Get-FxMember $Value 'phase')) { $phase = Get-FxEnumMember (Get-FxMember $Value 'phase') $script:FxUploadPhases 'parse' }
+    return [ordered]@{
+        uploadJobId = (Get-FxTextOr (Get-FxMember $Value 'uploadJobId') '')
+        id = (Get-FxTextOr (Get-FxMember $Value 'id') '')
+        host = (Get-FxEnumMember (Get-FxMember $Value 'host') @('gofile') 'gofile')
+        state = (Get-FxEnumMember (Get-FxMember $Value 'state') @('queued', 'uploading', 'success', 'failed', 'canceled') 'queued')
+        phase = $phase
+        attempts = [int](Get-FxNumberOrZero (Get-FxMember $Value 'attempts'))
+        bytesSent = (Get-FxNumberOrZero (Get-FxMember $Value 'bytesSent'))
+        size = (Get-FxNumberOrZero (Get-FxMember $Value 'size'))
+        path = (Get-FxTextOr (Get-FxMember $Value 'path') '')
+        root = (Get-FxTextOr (Get-FxMember $Value 'root') 'Temp')
+        createdAt = (Get-FxTextOr (Get-FxMember $Value 'createdAt') '')
+        updatedAt = (Get-FxTextOr (Get-FxMember $Value 'updatedAt') '')
+        lastError = (Get-FxMember $Value 'lastError')
+        nextAttemptMs = (Get-FxNumberOrNull (Get-FxMember $Value 'nextAttemptMs'))
+        retryAt = (Get-FxStringOrNull (Get-FxMember $Value 'retryAt'))
+    }
+}
+
+function Get-FxUploadQueue {
+    param([string]$Path = '')
+    if (-not $Path) { $Path = $script:FxQueuePath }
+    $doc = Read-FxJson -Path $Path
+    $jobs = @()
+    $seq = 0
+    $updatedAt = ''
+    if ($doc.ok -and $null -ne $doc.value) {
+        foreach ($j in @(Get-FxRows $doc.value 'jobs')) { $jobs += (ConvertTo-FxUploadJob -Value $j) }
+        $seq = [int](Get-FxNumberOrZero (Get-FxMember $doc.value 'seq'))
+        $t = Get-FxStringOrNull (Get-FxMember $doc.value 'updatedAt')
+        if ($t) { $updatedAt = $t }
+    }
+    return [ordered]@{ schemaVersion = $script:FxQueueSchemaVersion; updatedAt = $updatedAt; seq = $seq; jobs = $jobs; path = $Path; parseError = $(if ($doc.reason -eq 'parse') { $doc.detail } else { '' }) }
+}
+
+function Add-FxUploadJobs {
+    # POST /api/fx/upload -> 202 { jobs: [{ id, uploadJobId }] }. The queue is
+    # persisted to %TEMP%\ghrdp\fx-upload-queue.json with a temp file + rename.
+    # The host parameter is NOT named $Host: that is a read-only automatic
+    # variable, and binding it throws on Windows PowerShell 5.1.
+    param($Index, [string[]]$Ids, [string]$HostId = 'gofile', [string]$Path = '', [string]$Now = '')
+    if (-not $Path) { $Path = $script:FxQueuePath }
+    if (-not $Now) { $Now = (Get-FxNowIso) }
+    $out = [ordered]@{ code = 400; jobs = @(); skipped = @(); message = ''; queuePath = $Path }
+    if ($HostId -ne 'gofile') { $out.message = ('unknown upload host: ' + [string]$HostId); return $out }
+    $ids = @(Get-FxUniqueStrings $Ids)
+    if ($ids.Count -eq 0) { $out.message = 'upload requires at least one id'; return $out }
+    if ($null -eq $Index) { $out.message = 'index unavailable'; return $out }
+    $queue = Get-FxUploadQueue -Path $Path
+    if ($queue.parseError) { $out.code = 500; $out.message = ('queue unreadable: ' + [string]$queue.parseError); return $out }
+    $jobs = @($queue.jobs)
+    $seq = [int]$queue.seq
+    $accepted = @()
+    $skipped = @()
+    foreach ($id in $ids) {
+        $entry = Select-FxFileEntry -Index $Index -Id $id
+        if ($null -eq $entry) { $skipped += (New-FxSkips -Id $id -Reason 'unknown-id'); continue }
+        if ([bool](Get-FxBool (Get-FxMember $entry 'trashed'))) { $skipped += (New-FxSkips -Id $id -Reason 'trashed'); continue }
+        $gofile = Get-FxMember $entry 'gofile'
+        if ((Get-FxEnumMember (Get-FxMember $gofile 'status') $script:FxGofileStatuses 'none') -eq 'uploaded') { $skipped += (New-FxSkips -Id $id -Reason 'already-uploaded'); continue }
+        $existing = $null
+        foreach ($j in $jobs) {
+            if ((Get-FxTextOr (Get-FxMember $j 'id') '') -ceq $id -and (@('queued', 'uploading') -contains (Get-FxEnumMember (Get-FxMember $j 'state') @('queued', 'uploading') ''))) { $existing = $j; break }
+        }
+        if ($null -ne $existing) {
+            # Idempotent: the same id never gets two live jobs (§5.1 rule 6).
+            $accepted += [ordered]@{ id = $id; uploadJobId = (Get-FxTextOr (Get-FxMember $existing 'uploadJobId') '') }
+            continue
+        }
+        $seq = $seq + 1
+        $jobId = 'fxj-' + $seq.ToString('000000') + '-' + (Get-FxSha256Hex ($id + '|' + $Now)).Substring(0, 8)
+        $jobs += [ordered]@{
+            uploadJobId = $jobId
+            id = $id
+            host = 'gofile'
+            state = 'queued'
+            phase = $null
+            attempts = 0
+            bytesSent = 0
+            size = (Get-FxNumberOrZero (Get-FxMember $entry 'size'))
+            path = (Get-FxTextOr (Get-FxMember $entry 'path') '')
+            root = (Get-FxTextOr (Get-FxMember $entry 'root') 'Temp')
+            createdAt = $Now
+            updatedAt = $Now
+            lastError = $null
+        }
+        $accepted += [ordered]@{ id = $id; uploadJobId = $jobId }
+    }
+    $null = Set-FxMember -Object $queue -Name 'jobs' -Value $jobs
+    $null = Set-FxMember -Object $queue -Name 'seq' -Value $seq
+    $null = Set-FxMember -Object $queue -Name 'updatedAt' -Value $Now
+    if ($accepted.Count -gt 0) {
+        if (-not (Save-FxJsonAtomic -Path $Path -Object $queue)) {
+            $out.code = 500
+            $out.message = 'queue write failed'
+            return $out
+        }
+    }
+    $out.code = 202
+    $out.jobs = $accepted
+    $out.skipped = $skipped
+    $out.message = 'queued'
+    return $out
+}
+
+function Set-FxUploadQueue {
+    param($Queue, [string]$Path = '')
+    if (-not $Path) { $Path = $script:FxQueuePath }
+    $doc = [ordered]@{
+        schemaVersion = $script:FxQueueSchemaVersion
+        updatedAt = (Get-FxNowIso)
+        seq = [int](Get-FxNumberOrZero (Get-FxMember $Queue 'seq'))
+        jobs = @(Get-FxRows $Queue 'jobs')
+    }
+    return (Save-FxJsonAtomic -Path $Path -Object $doc)
+}
+
+function Test-FxPhaseRetryable {
+    # §8.2/§5.2: 401/403/413/415 fail fast; a transient phase retries.
+    param([string]$Phase, $HttpStatus)
+    if ($null -ne $HttpStatus) {
+        foreach ($code in $script:FxFailFastStatus) { if ([int]$HttpStatus -eq [int]$code) { return $false } }
+    }
+    return ($script:FxTransientPhases -contains [string]$Phase)
+}
+
+function Get-FxJobMaxAttempts {
+    param([string]$Phase, $HttpStatus)
+    if (Test-FxPhaseRetryable -Phase $Phase -HttpStatus $HttpStatus) { return $script:FxMaxAttempts }
+    return 1
+}
+
+function Get-FxBackoffMs {
+    param([int]$Attempt = 1, $RetryAfterMs = $null)
+    if ($null -ne $RetryAfterMs -and [double]$RetryAfterMs -gt 0) {
+        $clamped = [double]$RetryAfterMs
+        if ($clamped -gt 120000) { $clamped = 120000 }
+        return [int]$clamped
+    }
+    $d = [double]$script:FxBackoffBaseMs * [math]::Pow(2, [math]::Max(0, $Attempt - 1))
+    if ($d -gt $script:FxBackoffCapMs) { $d = $script:FxBackoffCapMs }
+    if ($d -lt 100) { $d = 100 }
+    return [int]$d
+}
+
+function Step-FxUploadQueue {
+    # ONE bounded worker pass over the queue. The state machine is §8: a job is
+    # queued -> uploading -> success, or -> failed with the F44 phase plus the
+    # COMPLETE host message. Transient phases retry (bounded attempts); a
+    # fail-fast status is terminal at the first attempt. Every transition is
+    # persisted before the next HTTP call, so a crash can never lose the state.
+    param([string]$Path = '', [string]$IndexPath = '', [scriptblock]$Uploader = $null, $Index = $null)
+    if (-not $Path) { $Path = $script:FxQueuePath }
+    if (-not $IndexPath) { $IndexPath = $script:FxIndexPath }
+    $summary = [ordered]@{ processed = 0; succeeded = 0; failed = 0; queued = 0; skipped = 0; ticks = 0 }
+    $queue = Get-FxUploadQueue -Path $Path
+    if ($queue.parseError) {
+        $null = Write-FxLog ('upload queue unreadable, refusing to process: ' + [string]$queue.parseError)
+        return $summary
+    }
+    $jobs = @($queue.jobs)
+    if ($jobs.Count -eq 0) { return $summary }
+    $ownIndex = $false
+    if ($null -eq $Index) {
+        $doc = Get-FxIndexDoc -ReadPath $IndexPath -MirrorPath ''
+        if (-not $doc.ok) {
+            $null = Write-FxLog ('index unreadable, upload pass aborted: ' + [string]$doc.reason)
+            return $summary
+        }
+        $Index = $doc.index
+        $ownIndex = $true
+    }
+    $doUpload = $Uploader
+    if (-not $doUpload) { $doUpload = $script:FxUploader }
+    $touched = $false
+    $changedIndex = $false
+    foreach ($job in $jobs) {
+        $state = Get-FxEnumMember (Get-FxMember $job 'state') @('queued', 'uploading', 'success', 'failed', 'canceled') 'queued'
+        if ($state -ne 'queued' -and $state -ne 'uploading') { continue }
+        # A retry is not attempted before the backoff it was given: the tick is
+        # 15s and the cap is 8s, but a job that failed a moment ago still waits
+        # its own delay instead of riding the next tick.
+        if ($state -eq 'queued') {
+            $retryAt = Get-FxStringOrNull (Get-FxMember $job 'retryAt')
+            if ($retryAt) {
+                $when = [datetime]::MinValue
+                $okParse = [datetime]::TryParse($retryAt, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$when)
+                if ($okParse -and (Get-FxClock) -lt $when.ToUniversalTime()) { $summary.skipped = [int]$summary.skipped + 1; continue }
+            }
+        }
+        $summary.processed = [int]$summary.processed + 1
+        $id = Get-FxTextOr (Get-FxMember $job 'id') ''
+        $entry = Select-FxFileEntry -Index $Index -Id $id
+        if ($null -eq $entry) {
+            $null = Set-FxMember -Object $job -Name 'state' -Value 'failed'
+            $null = Set-FxMember -Object $job -Name 'phase' -Value 'parse'
+            $null = Set-FxMember -Object $job -Name 'lastError' -Value 'unknown-id'
+            $null = Set-FxMember -Object $job -Name 'updatedAt' -Value (Get-FxNowIso)
+            $touched = $true
+            $summary.failed = [int]$summary.failed + 1
+            continue
+        }
+        $resolved = Resolve-FxLocalPath -RootName (Get-FxTextOr (Get-FxMember $entry 'root') 'Temp') -Path (Get-FxTextOr (Get-FxMember $entry 'path') '')
+        if (-not $resolved.ok -or -not (Test-Path -LiteralPath $resolved.fullPath -PathType Leaf)) {
+            $null = Set-FxMember -Object $job -Name 'state' -Value 'failed'
+            $null = Set-FxMember -Object $job -Name 'phase' -Value 'type'
+            $null = Set-FxMember -Object $job -Name 'lastError' -Value ('source file unavailable (' + [string]$resolved.reason + ')')
+            $null = Set-FxMember -Object $job -Name 'updatedAt' -Value (Get-FxNowIso)
+            $touched = $true
+            $summary.failed = [int]$summary.failed + 1
+            continue
+        }
+        $null = Set-FxMember -Object $job -Name 'state' -Value 'uploading'
+        $null = Set-FxMember -Object $job -Name 'updatedAt' -Value (Get-FxNowIso)
+        $attempt = [int](Get-FxNumberOrZero (Get-FxMember $job 'attempts')) + 1
+        $null = Set-FxMember -Object $job -Name 'attempts' -Value $attempt
+        $touched = $true
+        $attemptResult = $null
+        try {
+            $attemptResult = & $doUpload $job $resolved.fullPath
+        } catch {
+            $attemptResult = [ordered]@{ ok = $false; phase = 'parse'; status = $null; message = (Protect-FxText ([string]$_.Exception.Message)) }
+        }
+        if ($null -eq $attemptResult) { $attemptResult = [ordered]@{ ok = $false; phase = 'parse'; status = $null; message = 'uploader returned no result' } }
+        $ok = [bool](Get-FxMember $attemptResult 'ok')
+        $phase = Get-FxEnumMember (Get-FxMember $attemptResult 'phase') $script:FxUploadPhases 'parse'
+        $status = Get-FxNumberOrNull (Get-FxMember $attemptResult 'status')
+        $message = Get-FxTextOr (Get-FxMember $attemptResult 'message') ''
+        if ($ok) {
+            $null = Set-FxMember -Object $job -Name 'state' -Value 'success'
+            $null = Set-FxMember -Object $job -Name 'phase' -Value $null
+            $null = Set-FxMember -Object $job -Name 'lastError' -Value $null
+            $null = Set-FxMember -Object $job -Name 'bytesSent' -Value (Get-FxNumberOrZero (Get-FxMember $job 'size'))
+            $null = Set-FxMember -Object $job -Name 'retryAt' -Value $null
+            $null = Set-FxMember -Object $job -Name 'updatedAt' -Value (Get-FxNowIso)
+            $fileId = Get-FxStringOrNull (Get-FxMember $attemptResult 'fileId')
+            $code = Get-FxStringOrNull (Get-FxMember $attemptResult 'code')
+            $direct = Get-FxStringOrNull (Get-FxMember $attemptResult 'directUrl')
+            try {
+                $null = Set-FxMember -Object $entry -Name 'upload' -Value (ConvertTo-FxUploadState -Value @{ phase = $null; status = 'success'; retries = ($attempt - 1); lastError = $null; bytesSent = (Get-FxMember $job 'bytesSent') })
+                $null = Set-FxMember -Object $entry -Name 'gofile' -Value (ConvertTo-FxGofileState -Value @{ code = $code; fileId = $fileId; directUrl = (Get-FxSafeDirectUrl $direct); status = 'uploaded'; uploadedAt = (Get-FxNowIso); expiryTs = $null; downloads = 0; remoteSize = (Get-FxMember $job 'size') })
+                $changedIndex = $true
+            } catch { }
+            $summary.succeeded = [int]$summary.succeeded + 1
+            $null = Write-FxLog ('upload job ' + $id + ' succeeded via ' + [string]$phase)
+        } else {
+            $retryable = Test-FxPhaseRetryable -Phase $phase -HttpStatus $status
+            $max = Get-FxJobMaxAttempts -Phase $phase -HttpStatus $status
+            # F44: the host message is stored COMPLETE (no truncation, no
+            # substring) but never raw - a host that echoes the credential in an
+            # error page must not have it written into the queue, the index or a
+            # log line. This is the only transformation applied to it.
+            $safeMessage = Protect-FxText -Text $message -Secrets @([string]$script:FxGofileToken)
+            $lastError = [ordered]@{ phase = $phase; hostMessage = $safeMessage }
+            if ($null -ne $status) { $lastError['httpStatus'] = [int]$status }
+            $lastError['at'] = (Get-FxNowIso)
+            $null = Set-FxMember -Object $job -Name 'phase' -Value $phase
+            # The queue row and the index entry carry the SAME structured
+            # lastError (phase + optional httpStatus + the complete, already
+            # redacted host message + the attempt stamp), so the F44 shape the
+            # client reads is a property of the state, not of where it landed.
+            $null = Set-FxMember -Object $job -Name 'lastError' -Value $lastError
+            $null = Set-FxMember -Object $job -Name 'updatedAt' -Value (Get-FxNowIso)
+            $nextState = 'failed'
+            if ($retryable -and $attempt -lt $max) {
+                $nextState = 'queued'
+                $delayMs = Get-FxBackoffMs -Attempt $attempt
+                $null = Set-FxMember -Object $job -Name 'nextAttemptMs' -Value $delayMs
+                $null = Set-FxMember -Object $job -Name 'retryAt' -Value ((Get-FxClock).AddMilliseconds([double]$delayMs).ToString('o'))
+                $summary.queued = [int]$summary.queued + 1
+            } else {
+                $null = Set-FxMember -Object $job -Name 'retryAt' -Value $null
+                $summary.failed = [int]$summary.failed + 1
+            }
+            $null = Set-FxMember -Object $job -Name 'state' -Value $nextState
+            try {
+                $null = Set-FxMember -Object $entry -Name 'upload' -Value (ConvertTo-FxUploadState -Value @{ phase = $phase; status = $nextState; retries = ($attempt - 1); lastError = $lastError; bytesSent = 0 })
+                $changedIndex = $true
+            } catch { }
+            # F44: the COMPLETE host message reaches the UI; the log copy is the
+            # same text with credentials redacted by Write-FxLog, never cut.
+            $null = Write-FxLog ('upload job ' + $id + ' ' + $nextState + ' phase=' + $phase + ' status=' + [string]$status + ' message=' + $safeMessage)
+        }
+    }
+    if ($touched) {
+        $null = Set-FxUploadQueue -Queue $queue -Path $Path
+    }
+    if ($ownIndex -and $changedIndex) {
+        $null = Set-FxIndexDoc -Index $Index -Path $IndexPath
+    }
+    $summary.ticks = 1
+    $script:FxQueueTicks = [int]$script:FxQueueTicks + 1
+    return $summary
+}
+
+# --- gofile transport (§1.3 / §1.4 proxy) ---------------------------------
+
+function Invoke-FxHttpRequest {
+    # One seam for every outbound call: a scriptblock fetcher is injected by the
+    # tests (no live host), and the default uses HttpClient. Result phases are
+    # §5.2 shapes: 502 = a status line arrived (http), 504 = no response in time
+    # (tcp), dns = the connection never established.
+    param([string]$Url, [string]$Method = 'GET', $Headers = $null, [byte[]]$Body = $null, [string]$ContentType = '', [int]$TimeoutSec = 30, [scriptblock]$Fetcher = $null)
+    $request = [ordered]@{ url = $Url; method = $Method; headers = $(if ($Headers) { $Headers } else { @{} }); body = $Body; contentType = $ContentType; timeoutSec = $TimeoutSec }
+    $use = $Fetcher
+    if (-not $use) { $use = $script:FxFetcher }
+    $result = [ordered]@{ ok = $false; status = 0; text = ''; phase = 'dns'; message = ''; bytes = $null; contentRange = '' }
+    if ($use) {
+        try {
+            $r = & $use $request
+            if ($null -eq $r) { $result.message = 'fetcher returned nothing'; return $result }
+            $result.ok = [bool](Get-FxMember $r 'ok')
+            $result.status = [int](Get-FxNumberOrZero (Get-FxMember $r 'status'))
+            $result.text = (Get-FxTextOr (Get-FxMember $r 'text') '')
+            $result.phase = Get-FxEnumMember (Get-FxMember $r 'phase') $script:FxUploadPhases 'http'
+            $result.message = Protect-FxText (Get-FxTextOr (Get-FxMember $r 'message') '')
+            $result.bytes = Get-FxMember $r 'bytes'
+            $result.contentRange = Get-FxTextOr (Get-FxMember $r 'contentRange') ''
+            return $result
+        } catch {
+            $result.phase = 'dns'
+            $result.message = Protect-FxText ([string]$_.Exception.Message)
+            return $result
+        }
+    }
+    if (-not $script:FxHttpClientReady) {
+        $result.phase = 'dns'
+        $result.message = 'the HTTP client type is unavailable on this host'
+        return $result
+    }
+    try {
+        $handler = New-Object System.Net.Http.HttpClientHandler
+        $client = New-Object System.Net.Http.HttpClient($handler)
+        try {
+            $client.Timeout = [System.TimeSpan]::FromSeconds($TimeoutSec)
+            $methodObj = New-Object System.Net.Http.HttpMethod($Method)
+            $msg = New-Object System.Net.Http.HttpRequestMessage($methodObj, $Url)
+            if ($Headers) {
+                foreach ($k in @($Headers.Keys)) { $null = $msg.Headers.TryAddWithoutValidation([string]$k, [string]$Headers[$k]) }
+            }
+            if ($null -ne $Body) {
+                $content = New-Object System.Net.Http.ByteArrayContent($Body)
+                if ($ContentType) { $content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse($ContentType) }
+                $msg.Content = $content
+            }
+            $resp = $client.SendAsync($msg).GetAwaiter().GetResult()
+            $result.status = [int]$resp.StatusCode
+            $result.bytes = $resp.Content.ReadAsByteArrayAsync().GetAwaiter().GetResult()
+            if ($result.bytes -and $result.bytes.Length -le 1048576) { $result.text = [System.Text.Encoding]::UTF8.GetString($result.bytes) }
+            $cr = $resp.Content.Headers.ContentRange
+            if ($cr -and $cr.ToString()) { $result.contentRange = [string]$cr.ToString() }
+            $result.ok = ($result.status -ge 200 -and $result.status -lt 300)
+            $result.phase = 'http'
+            return $result
+        } finally { $client.Dispose() }
+    } catch [System.Threading.Tasks.TaskCanceledException] {
+        $result.phase = 'tcp'
+        $result.message = 'host transport timed out'
+        return $result
+    } catch [System.OperationCanceledException] {
+        $result.phase = 'tcp'
+        $result.message = 'host transport timed out'
+        return $result
+    } catch {
+        $result.phase = 'dns'
+        $result.message = Protect-FxText ([string]$_.Exception.Message)
+        return $result
+    }
+}
+
+function Get-FxGofileStatusResponse {
+    # GET /api/fx/gofile/status?id=... The stored state is the answer; when a
+    # token is configured the host is polled for a fresher one, and a host
+    # failure is reported as 502 (status line) / 504 (transport), never as a
+    # silently stale "success".
+    param($Index, [string]$Id, [string]$Token = '', [string]$Base = '', [scriptblock]$Fetcher = $null)
+    $out = [ordered]@{ code = 404; json = $null; phase = $null; message = '' }
+    $entry = Select-FxFileEntry -Index $Index -Id $Id
+    if ($null -eq $entry) { $out.message = 'unknown id'; return $out }
+    $state = Get-FxMember $entry 'gofile'
+    $out.code = 200
+    $out.json = $state
+    if (-not $Token) { return $out }
+    $code = Get-FxStringOrNull (Get-FxMember $state 'code')
+    if (-not $code) { return $out }
+    if (-not $Base) { $Base = $script:FxGofileBase }
+    $url = $Base + '/contents/' + [uri]::EscapeDataString($code) + '?token=' + [uri]::EscapeDataString($Token)
+    # never log the request URL: it carries the host token in the query.
+    $resp = Invoke-FxHttpRequest -Url $url -Method 'GET' -TimeoutSec 20 -Fetcher $Fetcher
+    if ($resp.phase -eq 'tcp') { $out.code = 504; $out.json = $state; $out.phase = 'tcp'; $out.message = Protect-FxText -Text 'host transport timed out' -Secrets @($Token); return $out }
+    if ($resp.phase -eq 'dns') { $out.code = 502; $out.json = $state; $out.phase = 'dns'; $out.message = Protect-FxText -Text 'host unreachable' -Secrets @($Token); return $out }
+    if (-not $resp.ok) {
+        $out.code = 502
+        $out.json = $state
+        $out.phase = 'http'
+        # The host text is redacted with THIS request's token before it can
+        # become a body or a log line: a host that echoes the credential in an
+        # error page must not be able to publish it back to the operator.
+        $out.message = Protect-FxText -Text ('host returned ' + [string]$resp.status) -Secrets @($Token)
+        return $out
+    }
+    try {
+        $parsed = ($resp.text | ConvertFrom-Json)
+        $data = Get-FxMember $parsed 'data'
+        if ($null -eq $data) { $data = $parsed }
+        $fresh = Get-FxMember $data 'status'
+        if ($fresh -is [string]) {
+            # gofile answers in ITS vocabulary ("ok", "error", "deleted", ...),
+            # so map the host words explicitly and only then fall back to our own
+            # status names. Without this, a perfectly healthy "ok" was classified
+            # as 'processing' and the UI would never see the file as uploaded.
+            $freshText = ([string]$fresh).ToLower()
+            $hostMap = @{ ok = 'uploaded'; uploaded = 'uploaded'; processing = 'processing'; expired = 'expired'; deleted = 'expired'; notfound = 'expired'; error = 'failed'; failed = 'failed'; down = 'failed' }
+            $mapped = 'processing'
+            if ($hostMap.ContainsKey($freshText)) { $mapped = [string]$hostMap[$freshText] }
+            else { $mapped = Get-FxEnumMember $freshText @('uploaded', 'processing', 'expired', 'failed', 'none') 'processing' }
+            $null = Set-FxMember -Object $state -Name 'status' -Value $mapped
+            $downloads = Get-FxNumberOrNull (Get-FxMember $data 'downloadCount')
+            if ($null -ne $downloads) { $null = Set-FxMember -Object $state -Name 'downloads' -Value ([int]$downloads) }
+            $size = Get-FxNumberOrNull (Get-FxMember $data 'size')
+            if ($null -ne $size) { $null = Set-FxMember -Object $state -Name 'remoteSize' -Value $size }
+        }
+    } catch {
+        $out.code = 502
+        $out.json = $state
+        $out.phase = 'parse'
+        $out.message = 'host reply was not JSON'
+        return $out
+    }
+    $out.json = $state
+    return $out
+}
+
+function New-FxMultipartBody {
+    # Multipart/form-data encoder for the gofile upload endpoint. Pure bytes in,
+    # bytes out: the state machine can be driven in CI with no host access.
+    param([string]$Boundary, [string]$FieldName, [string]$FileName, [byte[]]$FileBytes, [string]$MimeType = 'application/octet-stream')
+    if (-not $Boundary) { $Boundary = '----fx' + [guid]::NewGuid().ToString('N') }
+    $prefix = "--$Boundary`r`nContent-Disposition: form-data; name=`"$FieldName`"; filename=`"$FileName`"`r`nContent-Type: $MimeType`r`n`r`n"
+    $suffix = "`r`n--$Boundary--`r`n"
+    $prefixBytes = [System.Text.Encoding]::UTF8.GetBytes($prefix)
+    $suffixBytes = [System.Text.Encoding]::UTF8.GetBytes($suffix)
+    $fileLen = 0
+    if ($null -ne $FileBytes) { $fileLen = [int]$FileBytes.Length }
+    $out = [byte[]]::new($prefixBytes.Length + $fileLen + $suffixBytes.Length)
+    [System.Array]::Copy($prefixBytes, 0, $out, 0, $prefixBytes.Length)
+    if ($fileLen -gt 0) { [System.Array]::Copy($FileBytes, 0, $out, $prefixBytes.Length, $fileLen) }
+    [System.Array]::Copy($suffixBytes, 0, $out, $prefixBytes.Length + $fileLen, $suffixBytes.Length)
+    return [ordered]@{ boundary = $Boundary; contentType = ('multipart/form-data; boundary=' + $Boundary); bytes = $out }
+}
+
+function Invoke-FxGofileUpload {
+    # Default uploader for the queue worker. Fail closed: with no token
+    # configured the job fails in the `auth` phase rather than pretending to
+    # upload. The complete host message is preserved (F44).
+    param($Job, [string]$FullPath, [string]$Token = '', [string]$Base = '', [scriptblock]$Fetcher = $null)
+    if (-not $Token) { $Token = [string]$script:FxGofileToken }
+    if (-not $Token) { return [ordered]@{ ok = $false; phase = 'auth'; status = $null; message = 'gofile token is not configured on the runner' } }
+    if (-not $Base) { $Base = $script:FxGofileBase }
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($FullPath)
+    } catch {
+        return [ordered]@{ ok = $false; phase = 'type'; status = $null; message = ('source unreadable: ' + (Protect-FxText ([string]$_.Exception.Message))) }
+    }
+    $fileName = [System.IO.Path]::GetFileName($FullPath)
+    $form = New-FxMultipartBody -Boundary '' -FieldName 'file' -FileName $fileName -FileBytes $bytes
+    $headers = @{ Authorization = 'Bearer ' + $Token }
+    $url = $Base + '/uploadFile'
+    $resp = Invoke-FxHttpRequest -Url $url -Method 'POST' -Headers $headers -Body $form.bytes -ContentType $form.contentType -TimeoutSec 300 -Fetcher $Fetcher
+    if (-not $resp.ok) {
+        $phase = $resp.phase
+        if ($phase -eq 'http' -and $resp.status -eq 0) { $phase = 'dns' }
+        return [ordered]@{ ok = $false; phase = $phase; status = $(if ($resp.status -gt 0) { $resp.status } else { $null }); message = $(if ($resp.message) { $resp.message } else { Protect-FxText $resp.text }) }
+    }
+    try {
+        $parsed = ($resp.text | ConvertFrom-Json)
+        $data = Get-FxMember $parsed 'data'
+        if ($null -eq $data) { $data = $parsed }
+        $fileId = Get-FxStringOrNull (Get-FxMember $data 'id')
+        $parent = Get-FxMember $data 'parentFolder'
+        $code = $null
+        if ($parent -is [string]) { $code = [string]$parent }
+        $download = Get-FxStringOrNull (Get-FxMember $data 'downloadPage')
+        if (-not $download) { $download = Get-FxStringOrNull (Get-FxMember $data 'directLink') }
+        return [ordered]@{ ok = $true; phase = 'http'; status = $resp.status; fileId = $fileId; code = $code; directUrl = (Get-FxSafeDirectUrl $download); message = '' }
+    } catch {
+        return [ordered]@{ ok = $false; phase = 'parse'; status = $resp.status; message = 'host reply was not JSON' }
+    }
+}
+
+# --- path resolution + preview (§1.4) -------------------------------------
+
+function Resolve-FxLocalPath {
+    # Every Explorer path is a POSIX path under a known root. Resolution refuses
+    # traversal outright and then re-checks the realpath prefix, so a symlink or
+    # an encoded separator cannot walk out of the root tree.
+    param([string]$RootName, [string]$Path, $RootMap = $null)
+    $out = [ordered]@{ ok = $false; fullPath = ''; reason = 'unknown-root'; basePath = '' }
+    if (-not $RootMap) { $RootMap = $script:FxRootsMap }
+    if ($script:FxRoots -notcontains $RootName) { return $out }
+    $rel = [string]$Path
+    if (-not $rel -or -not $rel.StartsWith('/')) { $out.reason = 'not-absolute'; return $out }
+    $rel = $rel.Substring(1).Replace('/', '\')
+    if (-not $rel) { $out.reason = 'empty-path'; return $out }
+    foreach ($seg in $rel.Split('\')) {
+        if ($seg -eq '..' -or $seg -eq '.') { $out.reason = 'unsafe-segment'; return $out }
+        if ($seg.IndexOfAny([char[]]@(':', '*', '?', '"', '<', '>', '|')) -ge 0) { $out.reason = 'unsafe-segment'; return $out }
+    }
+    $base = [string](Get-FxMember $RootMap $RootName)
+    if (-not $base) { $out.reason = 'no-root-map'; return $out }
+    $out.basePath = $base
+    try {
+        $baseFull = [System.IO.Path]::GetFullPath($base)
+        if (-not $baseFull.EndsWith([string][System.IO.Path]::DirectorySeparatorChar)) { $baseFull = $baseFull + [System.IO.Path]::DirectorySeparatorChar }
+        $full = [System.IO.Path]::GetFullPath((Join-Path $base $rel))
+    } catch {
+        $out.reason = 'bad-path'
+        return $out
+    }
+    if (-not $full.StartsWith($baseFull, [System.StringComparison]::OrdinalIgnoreCase)) { $out.reason = 'escape'; return $out }
+    $out.fullPath = $full
+    $out.ok = $true
+    $out.reason = 'ok'
+    return $out
+}
+
+function Get-FxContentRange {
+    # One range, one answer: `bytes=a-b`, `bytes=a-`, `bytes=-n`. Anything else
+    # (multi-range, malformed, start beyond EOF) is unsatisfiable -> 416 with
+    # `Content-Range: bytes */total`.
+    param([string]$RangeHeader, [int64]$TotalLength)
+    $out = [ordered]@{ ok = $false; unsatisfiable = $false; start = [int64]0; end = [int64]0; length = [int64]0; header = '' }
+    if ($TotalLength -lt 0) { $TotalLength = 0 }
+    if (-not $RangeHeader -or -not $RangeHeader.Trim()) {
+        $out.ok = $true
+        $out.start = 0
+        $out.end = $TotalLength - 1
+        $out.length = $TotalLength
+        return $out
+    }
+    $raw = $RangeHeader.Trim()
+    $m = [regex]::Match($raw, '^bytes=(\d*)-(\d*)$', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+    if (-not $m.Success) { $out.unsatisfiable = $true; $out.header = 'bytes */' + $TotalLength; return $out }
+    $startText = $m.Groups[1].Value
+    $endText = $m.Groups[2].Value
+    $start = [int64]0
+    $end = [int64]0
+    if (-not $startText -and -not $endText) { $out.unsatisfiable = $true; $out.header = 'bytes */' + $TotalLength; return $out }
+    if (-not $startText) {
+        $suffix = [int64]$endText
+        if ($suffix -le 0) { $out.unsatisfiable = $true; $out.header = 'bytes */' + $TotalLength; return $out }
+        if ($suffix -gt $TotalLength) { $suffix = $TotalLength }
+        $start = $TotalLength - $suffix
+        $end = $TotalLength - 1
+    } else {
+        $start = [int64]$startText
+        if (-not $endText) { $end = $TotalLength - 1 } else { $end = [int64]$endText }
+    }
+    if ($TotalLength -le 0 -or $start -ge $TotalLength -or $start -gt $end) { $out.unsatisfiable = $true; $out.header = 'bytes */' + $TotalLength; return $out }
+    if ($end -gt $TotalLength - 1) { $end = $TotalLength - 1 }
+    $out.ok = $true
+    $out.start = $start
+    $out.end = $end
+    $out.length = ($end - $start) + 1
+    $out.header = 'bytes ' + $start + '-' + $end + '/' + $TotalLength
+    return $out
+}
+
+function Get-FxMimeVerdict {
+    # 415 for a type the Explorer cannot render inline (and for a missing one:
+    # application/octet-stream IS in the map, so a missing mime is a refusal).
+    param($Entry)
+    $mime = (Get-FxTextOr (Get-FxMember $Entry 'mime') '').ToLower()
+    if (-not $mime) { return $false }
+    return ($script:FxPreviewMimeAllow -contains $mime)
+}
+
+function Get-FxPreviewResponse {
+    # GET /api/fx/preview?id=&Range:
+    #   200/206 local file stream, 404 unknown id, 413 too large, 415 wrong
+    #   type, 416 unsatisfiable range, 502/504 when the hosted copy must be
+    #   proxied and the host refuses or times out.
+    param($Index, [string]$Id, [string]$RangeHeader = '', [int64]$MaxBytes = 0, [scriptblock]$Fetcher = $null, [string]$Token = '')
+    $out = [ordered]@{ code = 404; ctype = 'application/json; charset=utf-8'; headers = @(); body = $null; file = $null; phase = $null; message = '' }
+    if (-not $MaxBytes) { $MaxBytes = $script:FxPreviewMaxBytes }
+    $entry = Select-FxFileEntry -Index $Index -Id $Id
+    if ($null -eq $entry) { $out.body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $false; phase = 'parse'; error = 'unknown id' })); $out.message = 'unknown id'; return $out }
+    $size = [int64](Get-FxNumberOrZero (Get-FxMember $entry 'size'))
+    if ($MaxBytes -gt 0 -and $size -gt $MaxBytes) {
+        $out.code = 413
+        $out.phase = 'size'
+        $out.body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $false; phase = 'size'; error = ('file exceeds the ' + $MaxBytes + ' byte preview ceiling'); size = $size }))
+        return $out
+    }
+    if (-not (Get-FxMimeVerdict -Entry $entry)) {
+        $out.code = 415
+        $out.phase = 'type'
+        $out.body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $false; phase = 'type'; error = ('preview refuses ' + (Get-FxTextOr (Get-FxMember $entry 'mime') 'unknown') + ' inline') }))
+        return $out
+    }
+    $resolved = Resolve-FxLocalPath -RootName (Get-FxTextOr (Get-FxMember $entry 'root') 'Temp') -Path (Get-FxTextOr (Get-FxMember $entry 'path') '')
+    if ($resolved.ok -and (Test-Path -LiteralPath $resolved.fullPath -PathType Leaf)) {
+        $total = [int64](New-Object -TypeName System.IO.FileInfo -ArgumentList $resolved.fullPath).Length
+        $range = Get-FxContentRange -RangeHeader $RangeHeader -TotalLength $total
+        $mime = (Get-FxTextOr (Get-FxMember $entry 'mime') 'application/octet-stream')
+        $out.headers = @('Accept-Ranges: bytes', 'X-Content-Type-Options: nosniff', 'Content-Security-Policy: sandbox; default-src ''none''', 'Cross-Origin-Resource-Policy: same-site')
+        $out.ctype = $mime
+        if (-not $range.ok) {
+            $out.code = 416
+            $out.phase = 'parse'
+            $out.headers = @('Accept-Ranges: bytes', 'Content-Range: ' + $range.header)
+            $out.body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $false; phase = 'parse'; error = 'range not satisfiable' }))
+            return $out
+        }
+        if ($RangeHeader -and $RangeHeader.Trim()) {
+            # A satisfied Range request is answered 206 even when it happens to
+            # cover the whole file: media elements use `bytes=0-` to probe for
+            # seek support, and a 200 there reads as "not seekable".
+            $out.code = 206
+            $out.headers = @('Accept-Ranges: bytes', 'Content-Range: ' + $range.header, 'X-Content-Type-Options: nosniff', 'Content-Security-Policy: sandbox; default-src ''none''', 'Cross-Origin-Resource-Policy: same-site')
+        } else {
+            $out.code = 200
+        }
+        $out.file = [ordered]@{ path = $resolved.fullPath; offset = $range.start; length = $range.length; total = $total }
+        return $out
+    }
+    # Not on this host: proxy the hosted copy, but ONLY to the configured host.
+    $gofile = Get-FxMember $entry 'gofile'
+    $direct = Get-FxStringOrNull (Get-FxMember $gofile 'directUrl')
+    if (-not (Test-FxProxyAllowedUrl -Url $direct)) {
+        $out.body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $false; phase = 'parse'; error = 'not available locally and no proxyable hosted copy' }))
+        $out.message = 'no proxyable copy'
+        return $out
+    }
+    $headersToHost = @{}
+    if ($RangeHeader -and $RangeHeader.Trim()) { $headersToHost['Range'] = $RangeHeader.Trim() }
+    $resp = Invoke-FxHttpRequest -Url $direct -Method 'GET' -Headers $headersToHost -TimeoutSec 60 -Fetcher $Fetcher
+    if ($resp.phase -eq 'tcp') { $out.code = 504; $out.phase = 'tcp'; $out.body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $false; phase = 'tcp'; error = 'host transport timed out' })); return $out }
+    if ($resp.phase -eq 'dns') { $out.code = 502; $out.phase = 'dns'; $out.body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $false; phase = 'dns'; error = 'host unreachable' })); return $out }
+    if (-not $resp.ok -and $resp.status -ne 206) {
+        $out.code = 502
+        $out.phase = 'http'
+        $out.body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $false; phase = 'http'; error = ('host returned ' + [string]$resp.status) }))
+        return $out
+    }
+    if ($null -eq $resp.bytes) {
+        $out.code = 502
+        $out.phase = 'parse'
+        $out.body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $false; phase = 'parse'; error = 'host reply carried no body' }))
+        return $out
+    }
+    $out.code = $(if ($resp.status -eq 206) { 206 } else { 200 })
+    $out.ctype = (Get-FxTextOr (Get-FxMember $entry 'mime') 'application/octet-stream')
+    $out.headers = @('Accept-Ranges: bytes', 'X-Content-Type-Options: nosniff', 'Content-Security-Policy: sandbox; default-src ''none''', 'Cross-Origin-Resource-Policy: same-site')
+    if ($resp.status -eq 206 -and $resp.contentRange) { $out.headers = @($out.headers) + @('Content-Range: ' + [string]$resp.contentRange) }
+    $out.body = [byte[]]$resp.bytes
+    return $out
+}
+
+# --- response writer -------------------------------------------------------
+
+function Get-FxStatusText {
+    param([int]$Code)
+    if ($Code -eq 200) { return 'OK' }
+    if ($Code -eq 202) { return 'Accepted' }
+    if ($Code -eq 204) { return 'No Content' }
+    if ($Code -eq 206) { return 'Partial Content' }
+    if ($Code -eq 400) { return 'Bad Request' }
+    if ($Code -eq 401) { return 'Unauthorized' }
+    if ($Code -eq 403) { return 'Forbidden' }
+    if ($Code -eq 404) { return 'Not Found' }
+    if ($Code -eq 405) { return 'Method Not Allowed' }
+    if ($Code -eq 409) { return 'Conflict' }
+    if ($Code -eq 413) { return 'Payload Too Large' }
+    if ($Code -eq 415) { return 'Unsupported Media Type' }
+    if ($Code -eq 416) { return 'Range Not Satisfiable' }
+    if ($Code -eq 429) { return 'Too Many Requests' }
+    if ($Code -eq 500) { return 'Server Error' }
+    if ($Code -eq 502) { return 'Bad Gateway' }
+    if ($Code -eq 504) { return 'Gateway Timeout' }
+    return 'OK'
+}
+
+function Send-FxResponse {
+    # Explorer responses carry NO wildcard CORS (unlike Send-ClientResponse) and
+    # stream file bodies in 64 KiB chunks instead of buffering them.
+    param($Stream, $Response)
+    if (-not $Response -or -not $Stream) { return }
+    $code = [int]$Response.code
+    $body = $Response.body
+    $bodyLen = [int64]0
+    if ($null -ne $body) { $bodyLen = [int64]([byte[]]$body).LongLength }
+    $fileLen = [int64]0
+    if ($Response.file) { $fileLen = [int64](Get-FxNumberOrZero (Get-FxMember $Response.file 'length')) }
+    $contentLength = $(if ($Response.file) { $fileLen } else { $bodyLen })
+    $headerLines = New-Object System.Collections.Generic.List[string]
+    $headerLines.Add('Content-Type: ' + [string]$Response.ctype)
+    $headerLines.Add('Content-Length: ' + $contentLength)
+    $headerLines.Add('Connection: close')
+    $headerLines.Add('Cache-Control: no-store')
+    $headerLines.Add('X-Content-Type-Options: nosniff')
+    foreach ($h in @($Response.headers)) { if ($h) { $headerLines.Add([string]$h) } }
+    $head = 'HTTP/1.1 ' + $code + ' ' + (Get-FxStatusText -Code $code) + "`r`n" + ($headerLines -join "`r`n") + "`r`n`r`n"
+    $hb = [System.Text.Encoding]::ASCII.GetBytes($head)
+    $Stream.Write($hb, 0, $hb.Length)
+    if ($Response.file) {
+        $fs = $null
+        try {
+            $fs = [System.IO.File]::Open((Get-FxTextOr (Get-FxMember $Response.file 'path') ''), [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)
+            $fs.Position = [int64](Get-FxNumberOrZero (Get-FxMember $Response.file 'offset'))
+            $remaining = [int64](Get-FxNumberOrZero (Get-FxMember $Response.file 'length'))
+            $buffer = New-Object byte[] 65536
+            while ($remaining -gt 0) {
+                $want = $buffer.Length
+                if ($remaining -lt $want) { $want = [int]$remaining }
+                $read = $fs.Read($buffer, 0, $want)
+                if ($read -le 0) { break }
+                $Stream.Write($buffer, 0, $read)
+                $remaining = $remaining - $read
+            }
+        } finally { if ($fs) { $fs.Dispose() } }
+    } elseif ($bodyLen -gt 0) {
+        # ([byte[]]$body).Length, NOT [byte[]]$body.Length. The second form casts
+        # the LENGTH (an int) to byte[], which either throws ("2096" is not a
+        # byte) or truncates the body to one byte - and it does so AFTER the head
+        # with its real Content-Length is already on the wire. The legacy
+        # top-level catch then answered the SAME request with its own 500, so the
+        # client saw a head-only 200 followed by a legacy 500 and the real fault
+        # was invisible.
+        $bytes = [byte[]]$body
+        $Stream.Write($bytes, 0, $bytes.Length)
+    }
+    $Stream.Flush()
+}
+
+# --- sandbox shell (§1.7) --------------------------------------------------
+
+function Get-FxSandboxShell {
+    # MIME-explicit HTML shell: explicit doctype + meta charset, NO inline script
+    # without the nonce, and a CSP that cannot be loosened by the payload. Data
+    # arrives later (S8) only through the parent's postMessage bridge.
+    param([string]$Nonce)
+    $sb = New-Object System.Text.StringBuilder
+    $null = $sb.AppendLine('<!DOCTYPE html>')
+    $null = $sb.AppendLine('<html lang="en">')
+    $null = $sb.AppendLine('<head>')
+    $null = $sb.AppendLine('<meta charset="utf-8">')
+    $null = $sb.AppendLine('<meta name="viewport" content="width=device-width, initial-scale=1">')
+    $null = $sb.AppendLine('<meta name="referrer" content="no-referrer">')
+    $null = $sb.AppendLine('<title>ghrdp preview sandbox</title>')
+    $null = $sb.AppendLine('<link rel="stylesheet" href="data:text/css,:root{color-scheme:light dark}">')
+    $null = $sb.AppendLine('<script nonce="' + $Nonce + '">"use strict";window.__fxSandbox=function(){return{ready:true,mime:"",bytes:0};};</script>')
+    $null = $sb.AppendLine('</head>')
+    $null = $sb.AppendLine('<body>')
+    $null = $sb.AppendLine('<output id="fx-sandbox-body" data-renderer="none">preview sandbox ready</output>')
+    $null = $sb.AppendLine('</body>')
+    $null = $sb.AppendLine('</html>')
+    return $sb.ToString()
+}
+
+function Get-FxSandboxResponse {
+    # /preview-sandbox/<nonce>/* : CSP + Origin-Agent-Cluster + CORP and a
+    # SameSite=Strict cookie scoped to /preview-sandbox. The cookie is NOT
+    # Secure: the dashboard is also served over plain tailnet HTTP, and a Secure
+    # cookie would simply vanish there (fail open in the operator's browser).
+    param([string]$Path)
+    $out = [ordered]@{ code = 404; ctype = 'application/json; charset=utf-8'; headers = @(); body = $null; file = $null; phase = 'parse' }
+    $rel = [string]$Path
+    if (-not $rel.StartsWith('/preview-sandbox')) {
+        $out.body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $false; error = 'not a sandbox path' }))
+        return $out
+    }
+    $parts = @($rel.Split('/') | Where-Object { $_ -ne '' })
+    if ($parts.Count -lt 2 -or $parts.Count -gt 3) {
+        $out.headers = @('Cross-Origin-Resource-Policy: same-site', 'Origin-Agent-Cluster: ?1')
+        $out.body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $false; error = 'sandbox path must be /preview-sandbox/<nonce> or /preview-sandbox/<nonce>/body' }))
+        return $out
+    }
+    $nonce = [string]$parts[1]
+    if ($nonce -notmatch '^[a-f0-9]{16,64}$') {
+        $out.body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $false; error = 'sandbox nonce must be lowercase hex' }))
+        return $out
+    }
+    $doc = ($parts.Count -eq 3 -and $parts[2] -eq 'body')
+    $out.code = 200
+    $csp = "default-src 'none'; script-src 'nonce-$nonce'; style-src 'nonce-$nonce' data:; img-src data: blob:; media-src blob:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'self'; sandbox allow-scripts"
+    # The two expression elements are PARENTHESIZED on purpose: the comma
+    # operator binds tighter than +, so an unparenthesized
+    # `'Content-Security-Policy: ' + $csp,` swallows the whole rest of the list
+    # into one space-joined string (one malformed header instead of six).
+    $out.headers = @(
+        ('Content-Security-Policy: ' + $csp),
+        'Origin-Agent-Cluster: ?1',
+        'Cross-Origin-Resource-Policy: same-site',
+        'Referrer-Policy: no-referrer',
+        'X-Content-Type-Options: nosniff',
+        ('Set-Cookie: fx_sandbox=' + $nonce + '; Path=/preview-sandbox; SameSite=Strict; HttpOnly; Max-Age=900')
+    )
+    if ($doc) {
+        $out.ctype = 'text/html; charset=utf-8'
+        $out.body = [System.Text.Encoding]::UTF8.GetBytes((Get-FxSandboxShell -Nonce $nonce))
+    } else {
+        $out.ctype = 'application/json; charset=utf-8'
+        $out.body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $true; nonce = $nonce; shell = ('/preview-sandbox/' + $nonce + '/body') }))
+    }
+    return $out
+}
+
+# --- router ----------------------------------------------------------------
+
+function New-FxErrorResponse {
+    # The parameter is deliberately NOT named $Error: that is a read-only
+    # automatic variable on Windows PowerShell 5.1, and binding it throws
+    # "Cannot overwrite variable Error" before the function body ever runs. The
+    # JSON FIELD is still `error` - that is the F44 envelope the client reads.
+    param([int]$Code, [string]$Phase, [string]$Message, [string[]]$Headers = @())
+    return [ordered]@{
+        code = $Code
+        ctype = 'application/json; charset=utf-8'
+        headers = @($Headers)
+        body = (ConvertTo-FxJsonBytes ([ordered]@{ ok = $false; phase = $Phase; error = $Message }))
+        file = $null
+        phase = $Phase
+        message = $Message
+    }
+}
+
+function Invoke-FxRoute {
+    # The single Explorer entry point. Returns a response descriptor, or $null
+    # when the path is not an Explorer route (the caller then continues with the
+    # parent routes). Nothing here touches the F44 mirror index.
+    param([string]$Method, [string]$Path, $Query, $Headers, [byte[]]$Body = $null, [string]$SourceIp = '', [string]$Token = '', $Now = $null)
+    if (-not $Path) { return $null }
+    $isApi = $Path.StartsWith('/api/fx/')
+    $isSandbox = $Path.StartsWith('/preview-sandbox')
+    if (-not $isApi -and -not $isSandbox) { return $null }
+    $method = [string]$Method
+    if (-not $method) { $method = 'GET' }
+    if ($method -eq 'OPTIONS') {
+        return [ordered]@{ code = 204; ctype = 'text/plain'; headers = @('Allow: GET, POST, OPTIONS'); body = $null; file = $null; phase = $null; message = '' }
+    }
+    if ($isSandbox) {
+        # The shell is static and secret-free, but it is still only served to the
+        # dashboard's own trust path.
+        $gateS = Test-FxDashToken -Headers $Headers -Query $Query -Token $Token -SourceIp $SourceIp
+        if (-not $gateS.ok) {
+            $null = Write-FxLog ('sandbox denied (' + [string]$gateS.reason + ')')
+            return (New-FxErrorResponse -Code 401 -Phase 'auth' -Message 'dashboard authorization required')
+        }
+        return (Get-FxSandboxResponse -Path $Path)
+    }
+    if (-not ($Path -in @('/api/fx/list', '/api/fx/meta', '/api/fx/gofile/status', '/api/fx/preview', '/api/fx/op', '/api/fx/upload'))) {
+        return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message ('no such Explorer endpoint: ' + $Path))
+    }
+    $gate = Test-FxDashToken -Headers $Headers -Query $Query -Token $Token -SourceIp $SourceIp
+    if (-not $gate.ok) {
+        # The reason is a sentence, never the presented value.
+        $null = Write-FxLog ('fx request denied (' + [string]$gate.reason + ') for ' + $Path)
+        return (New-FxErrorResponse -Code 401 -Phase 'auth' -Message 'dashboard authorization required')
+    }
+    if ($method -eq 'POST') {
+        if (-not (Test-FxCsrf -Headers $Headers -Method $method -Token $Token)) {
+            $null = Write-FxLog ('fx POST refused: CSRF token missing or wrong for ' + $Path)
+            return (New-FxErrorResponse -Code 403 -Phase 'auth' -Message 'CSRF token missing or invalid')
+        }
+    }
+    # §5.1 rule 6: a POST carrying X-Idempotency-Key is replayed, not re-run.
+    $idemKey = ''
+    $idemHash = ''
+    if ($method -eq 'POST' -and $Headers -and $Headers.ContainsKey('x-idempotency-key')) {
+        $idemKey = [string]$Headers['x-idempotency-key']
+    }
+    if ($idemKey) {
+        $idemHash = Get-FxRequestHash -Method $method -Path $Path -Body $Body
+        $idem = Get-FxIdempotentHit -Key $idemKey -RequestHash $idemHash
+        if ($idem.conflict) {
+            $null = Write-FxLog ('idempotency key reused with a different body for ' + $Path)
+            return (New-FxErrorResponse -Code 409 -Phase 'parse' -Message 'idempotency key reused with a different request')
+        }
+        if ($idem.hit) {
+            $null = Write-FxLog ('replaying the recorded result for ' + $Path)
+            return [ordered]@{
+                code = [int]$idem.code
+                ctype = 'application/json; charset=utf-8'
+                headers = @('X-Idempotent-Replay: 1')
+                body = [System.Text.Encoding]::UTF8.GetBytes([string]$idem.body)
+                file = $null
+                phase = $null
+                message = 'replay'
+            }
+        }
+    }
+    $id = ''
+    if ($Query -and $Query.ContainsKey('id')) { $id = [string]$Query['id'] }
+    switch ($Path) {
+        '/api/fx/list' {
+            if ($method -ne 'GET') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Message 'list is GET only') }
+            $doc = Get-FxIndexDoc
+            if (-not $doc.ok) {
+                $null = Write-FxLog ('index unreadable: ' + [string]$doc.detail)
+                return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('index JSON could not be parsed: ' + [string]$doc.detail))
+            }
+            if ($doc.migrated) { $null = Write-FxLog ('index migrated from schemaVersion ' + [string]$doc.schemaVersion + ' to ' + [string]$script:FxSchemaVersion) }
+            $payload = [ordered]@{
+                schemaVersion = $script:FxSchemaVersion
+                generatedAt = (Get-FxTextOr (Get-FxMember $doc.index 'generatedAt') $script:FxEpoch)
+                runnerId = (Get-FxTextOr (Get-FxMember $doc.index 'runnerId') 'unknown')
+                roots = @(Get-FxRows $doc.index 'roots')
+                files = @(Get-FxRows $doc.index 'files')
+                gofileHosts = @(Get-FxRows $doc.index 'gofileHosts')
+                source = [string]$doc.source
+            }
+            return [ordered]@{ code = 200; ctype = 'application/json; charset=utf-8'; headers = @('Vary: X-Dash-Token'); body = (ConvertTo-FxJsonBytes $payload); file = $null; phase = $null; message = '' }
+        }
+        '/api/fx/meta' {
+            if ($method -ne 'GET') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Message 'meta is GET only') }
+            if (-not $id) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message 'meta requires an id') }
+            $doc = Get-FxIndexDoc
+            if (-not $doc.ok) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('index JSON could not be parsed: ' + [string]$doc.detail)) }
+            $entry = Select-FxFileEntry -Index $doc.index -Id $id
+            if ($null -eq $entry) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message 'unknown id') }
+            return [ordered]@{ code = 200; ctype = 'application/json; charset=utf-8'; headers = @(); body = (ConvertTo-FxJsonBytes $entry); file = $null; phase = $null; message = '' }
+        }
+        '/api/fx/gofile/status' {
+            if ($method -ne 'GET') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Message 'gofile/status is GET only') }
+            if (-not $id) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message 'gofile/status requires an id') }
+            $doc = Get-FxIndexDoc
+            if (-not $doc.ok) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('index JSON could not be parsed: ' + [string]$doc.detail)) }
+            $st = Get-FxGofileStatusResponse -Index $doc.index -Id $id -Token $script:FxGofileToken
+            if ($st.code -ne 200) {
+                if ($st.code -eq 404) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message 'unknown id') }
+                return (New-FxErrorResponse -Code $st.code -Phase ([string]$st.phase) -Message (Protect-FxText ([string]$st.message)))
+            }
+            return [ordered]@{ code = 200; ctype = 'application/json; charset=utf-8'; headers = @(); body = (ConvertTo-FxJsonBytes $st.json); file = $null; phase = $null; message = '' }
+        }
+        '/api/fx/preview' {
+            if ($method -ne 'GET') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Message 'preview is GET only') }
+            if (-not $id) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message 'preview requires an id') }
+            $rangeHeader = ''
+            if ($Headers -and $Headers.ContainsKey('range')) { $rangeHeader = [string]$Headers['range'] }
+            $doc = Get-FxIndexDoc
+            if (-not $doc.ok) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('index JSON could not be parsed: ' + [string]$doc.detail)) }
+            return (Get-FxPreviewResponse -Index $doc.index -Id $id -RangeHeader $rangeHeader -Token $Token)
+        }
+        '/api/fx/op' {
+            if ($method -ne 'POST') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Message 'op is POST only') }
+            $bodyObj = Get-FxBodyObject -Body $Body
+            $doc = Get-FxIndexDoc
+            if (-not $doc.ok) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('index JSON could not be parsed: ' + [string]$doc.detail)) }
+            $opResult = Invoke-FxOpOnIndex -Index $doc.index -Body $bodyObj -Now ($(if ($Now) { [string]$Now } else { Get-FxNowIso }))
+            if ($opResult.code -ne 200) {
+                $null = Write-FxLog ('op refused: ' + [string]$opResult.message)
+                return (New-FxErrorResponse -Code 400 -Phase 'parse' -Message ([string]$opResult.message))
+            }
+            if (-not (Set-FxIndexDoc -Index $doc.index)) {
+                return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('index write failed: ' + [string]$script:FxLastWriteError))
+            }
+            $payload = [ordered]@{ applied = @($opResult.applied); skipped = @($opResult.skipped) }
+            $opBytes = ConvertTo-FxJsonBytes $payload
+            if ($idemKey) {
+                $null = Save-FxIdempotentResult -Key $idemKey -Method $method -Path $Path -RequestHash $idemHash -Code 200 -Body ([System.Text.Encoding]::UTF8.GetString($opBytes))
+            }
+            return [ordered]@{ code = 200; ctype = 'application/json; charset=utf-8'; headers = @(); body = $opBytes; file = $null; phase = $null; message = '' }
+        }
+        '/api/fx/upload' {
+            if ($method -ne 'POST') { return (New-FxErrorResponse -Code 405 -Phase 'parse' -Message 'upload is POST only') }
+            $bodyObj = Get-FxBodyObject -Body $Body
+            if ($null -eq $bodyObj) { return (New-FxErrorResponse -Code 400 -Phase 'parse' -Message 'upload requires a JSON body') }
+            if (Test-FxBodyHasHardFlag -Body $bodyObj) { return (New-FxErrorResponse -Code 400 -Phase 'parse' -Message 'hard delete is not an Explorer operation') }
+            $doc = Get-FxIndexDoc
+            if (-not $doc.ok) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('index JSON could not be parsed: ' + [string]$doc.detail)) }
+            $hostName = Get-FxTextOr (Get-FxMember $bodyObj 'host') ''
+            $idsParam = @(Get-FxUniqueStrings (Get-FxMember $bodyObj 'ids'))
+            $queued = Add-FxUploadJobs -Index $doc.index -Ids $idsParam -HostId $hostName -Now ($(if ($Now) { [string]$Now } else { Get-FxNowIso }))
+            if ($queued.code -eq 500) { return (New-FxErrorResponse -Code 500 -Phase 'parse' -Message (Protect-FxText ([string]$queued.message))) }
+            if ($queued.code -ne 202) { return (New-FxErrorResponse -Code 400 -Phase 'parse' -Message ([string]$queued.message)) }
+            $payload = [ordered]@{ jobs = @($queued.jobs); skipped = @($queued.skipped) }
+            $jobBytes = ConvertTo-FxJsonBytes $payload
+            if ($idemKey) {
+                $null = Save-FxIdempotentResult -Key $idemKey -Method $method -Path $Path -RequestHash $idemHash -Code 202 -Body ([System.Text.Encoding]::UTF8.GetString($jobBytes))
+            }
+            return [ordered]@{ code = 202; ctype = 'application/json; charset=utf-8'; headers = @(); body = $jobBytes; file = $null; phase = $null; message = 'queued' }
+        }
+    }
+    return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message 'no such Explorer endpoint')
+}
+
+function Initialize-FxServer {
+    # Startup wiring: index readiness, gofile token from config (never logged),
+    # and the first queue pass timestamp.
+    param([string]$ConfigPath = '')
+    if (-not $ConfigPath) { $ConfigPath = $script:CfgPath }
+    $script:FxStartedAt = Get-FxNowIso
+    if ($ConfigPath -and -not $script:FxGofileToken) {
+        $cfg = Read-FxJson -Path $ConfigPath
+        if ($cfg.ok -and $null -ne $cfg.value) {
+            $tok = Get-FxStringOrNull (Get-FxMember $cfg.value 'gofileToken')
+            if ($tok) { $script:FxGofileToken = $tok }
+            $base = Get-FxStringOrNull (Get-FxMember $cfg.value 'gofileBase')
+            if ($base) { $script:FxGofileBase = $base }
+            $maxPreview = Get-FxNumberOrNull (Get-FxMember $cfg.value 'fxPreviewMaxBytes')
+            if ($null -ne $maxPreview -and $maxPreview -gt 0) { $script:FxPreviewMaxBytes = [int64]$maxPreview }
+        }
+    }
+    if ($env:GHRDP_GOFILE_TOKEN -and -not $script:FxGofileToken) { $script:FxGofileToken = [string]$env:GHRDP_GOFILE_TOKEN }
+    $doc = Initialize-FxIndex
+    if ($doc.ok) {
+        $fileCount = [int]@(Get-FxRows $doc.index 'files').Count
+        $null = Write-FxLog ('index ready: source=' + [string]$doc.source + ' schemaVersion=' + [string]$script:FxSchemaVersion + ' files=' + [string]$fileCount + ' migrated=' + [string]$doc.migrated + ' gofileToken=' + $(if ($script:FxGofileToken) { 'configured' } else { 'absent' }))
+    } else {
+        $null = Write-FxLog ('index NOT ready: reason=' + [string]$doc.reason + ' detail=' + [string]$doc.detail)
+    }
+    return $doc
+}
+# [F45 S4 fx-core-end]
+
 function Invoke-ClientRequest {
     param($Client, $Token)
     $stream = $null
@@ -1139,6 +3081,38 @@ function Invoke-ClientRequest {
         $parts['body'] = [byte[]]$rr.body
         $path = [string]$parts.path
         if (-not $path) { $path = '/' }
+        # [F45 S4 fx-route-begin] Explorer routes are dispatched BEFORE the
+        # parent gate because they authenticate the same dashboard out of the
+        # X-Dash-Token header (the S3 client never puts a token in a URL), and
+        # because their error contract is 401/403/404/413/415/500/502/504 with
+        # an F44 phase, not the parent's plain-text 401. Nothing else is
+        # affected: a non-Explorer path falls straight through to the parent
+        # routes below, and the Explorer gate fails closed on its own.
+        if ($path.StartsWith('/api/fx/') -or $path.StartsWith('/preview-sandbox')) {
+            $fxSrc = ''
+            try { $fxSrc = $Client.Client.RemoteEndPoint.Address.ToString() } catch { }
+            $fxResp = $null
+            try {
+                $fxResp = Invoke-FxRoute -Method $parts.method -Path $path -Query $parts.query -Headers $parts.headers -Body ([byte[]]$parts.body) -SourceIp $fxSrc -Token $Token
+            } catch {
+                $fxErr = Protect-FxText ([string]$_.Exception.Message)
+                $null = Write-FxLog ('fx route failed: ' + $fxErr)
+                $fxResp = New-FxErrorResponse -Code 500 -Phase 'parse' -Message ('explorer handler failed: ' + $fxErr)
+            }
+            if ($fxResp) {
+                # Log the REAL cause before the legacy top-level catch below turns
+                # any write failure into a generic 500 on the same socket (that
+                # masking is exactly what hid the head-only-response bug), then
+                # let the exception go so the existing error path still answers.
+                try { Send-FxResponse -Stream $stream -Response $fxResp }
+                catch {
+                    $null = Write-FxLog ('fx response write failed: ' + (Protect-FxText ([string]$_.Exception.Message)))
+                    throw
+                }
+                return
+            }
+        }
+        # [F45 S4 fx-route-end]
         # Browser cross-origin preflight carries no bearer; disclose nothing.
         if ($path -eq '/api/rdp-token' -and $parts.method -eq 'OPTIONS') {
             Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@())
@@ -2716,6 +4690,11 @@ $lastConnLogScan = Get-Date
 # a genuinely absent sample - and the 60s tick below keeps it live.
 try { Update-RdpListenerTelescope -StatePath $script:F37TelStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
 $lastTelScan = Get-Date
+# [F45 S4] Explorer index readiness: fx-index.json is created/migrated to
+# schemaVersion 2 (with the gofileHosts array) BEFORE the first client can ask
+# for it, so /api/fx/list never races the first write.
+try { $null = Initialize-FxServer -ConfigPath $script:CfgPath } catch { try { $null = Write-FxLog ('fx init failed: ' + [string]$_.Exception.Message) } catch { } }
+$lastFxTick = Get-Date
 $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse($Bind), $Port)
 try { $listener.Start() } catch {
     try { [System.IO.File]::WriteAllText($script:OkFile, 'LISTEN_FAIL: ' + $_.Exception.Message, $script:NoBom) } catch { }
@@ -2786,6 +4765,14 @@ while (((Get-Date) - $start) -lt $limit) {
     if (((Get-Date) - $lastHeal).TotalSeconds -ge 60) {
         $lastHeal = Get-Date
         try { Start-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction SilentlyContinue } catch { }
+    }
+    # [F45 S4] Explorer upload-queue worker: ONE bounded pass every
+    # $script:FxIntervalSec inside this loop. Deliberately in-process: the queue
+    # file and fx-index.json then have exactly one writer, so no child process
+    # can interleave a partial upload state into the index.
+    if (((Get-Date) - $lastFxTick).TotalSeconds -ge $script:FxIntervalSec) {
+        $lastFxTick = Get-Date
+        try { $null = Step-FxUploadQueue } catch { }
     }
     Start-Sleep -Milliseconds 50
 }
