@@ -2053,6 +2053,45 @@ jobs:
           test -f tests/ps-balance-audit.py || { echo 'F37: the PowerShell structural audit is missing' >&2; exit 1; }
           python3 tests/ps-balance-audit.py
           echo 'F37 gates PASS'
+      # [F45 S4] Explorer file-API server routes. The mjs auditor tokenizes the
+      # new module (and the server that dot-sources it) exactly like the py
+      # audit, then asserts the F45 contract: every documented route dispatched
+      # once, the 400/401/403/404/405/413/415/416/500/502/504 status set, CSRF
+      # on both POSTs, the hard-op refusal, atomic schemaVersion-2 index writes
+      # with gofileHosts, the 41-value preview allowlist (compared value for
+      # value against the S2 fixture), the SameSite=Strict CSRF cookie, the
+      # sandbox CSP/isolation headers, and ONE redaction funnel whose marker is
+      # ***REDACTED***. It also pins the deployment (main.yml stages the module
+      # next to the server) and this lane's own wiring.
+      - name: F45 S4 Explorer file-API route contract (structure + redaction)
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f payloads/ghrdp-fx.ps1 || { echo 'F45: the fx module is missing' >&2; exit 1; }
+          test -f tests/f45-fx-server.ps1 || { echo 'F45: the fx server test is missing' >&2; exit 1; }
+          test -f scripts/ps-balance-audit.mjs || { echo 'F45: the node ps auditor is missing' >&2; exit 1; }
+          node scripts/ps-balance-audit.mjs
+          # every route of the contract is answered by the module
+          for route in '/api/fx/list' '/api/fx/meta' '/api/fx/gofile/status' '/api/fx/preview' '/api/fx/op' '/api/fx/upload' '/preview-sandbox'; do
+            grep -qF "'$route'" payloads/ghrdp-fx.ps1 || { echo "F45: the module does not dispatch $route" >&2; exit 1; }
+          done
+          # the module logs ONLY through the redaction funnel
+          grep -qF '***REDACTED***' payloads/ghrdp-fx.ps1 || { echo 'F45: no redaction marker' >&2; exit 1; }
+          grep -qF 'Protect-FxText -Text $Message -Secrets $secrets' payloads/ghrdp-fx.ps1 || { echo 'F45: the audit funnel does not redact' >&2; exit 1; }
+          if grep -nF 'Write-Host' payloads/ghrdp-fx.ps1; then
+            echo 'F45: the module writes to the console outside the redaction funnel' >&2; exit 1
+          fi
+          if grep -nF 'Invoke-WebRequest' payloads/ghrdp-fx.ps1; then
+            echo 'F45: the module must use its injectable HTTP seam' >&2; exit 1
+          fi
+          # the server cannot silently pretend the API exists
+          grep -qF '[F45 S4 fx-dispatch-begin]' payloads/ghrdp-server.ps1 || { echo 'F45: the server dispatch block is missing' >&2; exit 1; }
+          grep -qF 'Explorer API unavailable' payloads/ghrdp-server.ps1 || { echo 'F45: a missing module is not fail-visible' >&2; exit 1; }
+          # deployment + lane wiring
+          grep -qF 'payloads/ghrdp-fx.ps1' .github/workflows/main.yml || { echo 'F45: main.yml does not stage the module' >&2; exit 1; }
+          grep -qF "'payloads/ghrdp-fx.ps1'" .github/workflows/launch-gates.yml || { echo 'F45: windows-native does not parse the module' >&2; exit 1; }
+          grep -qF 'tests/f45-fx-server.ps1' .github/workflows/launch-gates.yml || { echo 'F45: the server test is not executed by any lane' >&2; exit 1; }
+          echo 'F45 gates PASS'
       - name: F40 information-architecture regression lock
         shell: bash
         run: |
@@ -2303,11 +2342,37 @@ jobs:
           # [F37] the telescope module + the F31 helpers are parsed here too: a
           # syntax error in them used to surface only as a red Windows lab cell
           # (an expensive loop), and the server DOT-SOURCES the module at start.
-          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1')) {
+          $bad = @()
+          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/ghrdp-fx.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1', 'tests/f45-fx-server.ps1')) {
               $errors = $null
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
-              if ($errors) { throw "$file has $($errors.Count) PowerShell syntax error(s): $($errors[0].Message)" }
+              if ($errors) {
+                  foreach ($e in @($errors)) { $bad += ($file + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
+              }
           }
+          if ($bad.Count -gt 0) {
+              # ONE annotation carrying EVERY syntax error (the message cap used to
+              # hide all but the generic exit code, costing a full CI round trip).
+              $flat = ''
+              foreach ($b in $bad) { if ($flat) { $flat = $flat + '%0A' + $b } else { $flat = $b } }
+              Write-Host ('::error::PowerShell syntax errors:%0A' + $flat)
+              Write-Host ('[F37] parse failed: ' + [string]$bad.Count + ' error(s)')
+              exit 1
+          }
+          Write-Host '[F37] native PowerShell scripts parse clean'
+      # [F45 S4 §2.1] Server-side tests for the Explorer file-API routes. The
+      # module is dot-sourced for the unit matrix (mock index, mock host through
+      # the injectable Fetch/Uploader seam) and the REAL payloads/ghrdp-server.ps1
+      # is started on a loopback port with a temp Root for the integration matrix
+      # (dash-token 401, schemaVersion-2 list, Range 206, 413/415/404, CSRF
+      # 403/200, upload 202, sandbox CSP/OAC/CORP/Set-Cookie) plus a redaction
+      # sweep over every log the run produced. No live gofile call is made.
+      - name: F45 S4 Explorer file-API routes (unit + integration + redaction)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f45-fx-server.ps1')
+          if ($LASTEXITCODE -ne 0) { throw ('F45: the fx server test failed with exit ' + $LASTEXITCODE) }
       # [F24] The F24 blocks live INSIDE main.yml (inline pwsh) and are extracted
       # verbatim by the lab cell U + the F24 gate. Parse them here with the
       # PowerShell language parser so a syntax error is caught in ~1 min instead

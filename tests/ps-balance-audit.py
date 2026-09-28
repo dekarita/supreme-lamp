@@ -180,6 +180,8 @@ def workflow_blocks(path, shells=('pwsh', 'powershell')):
 def main():
     repo = Path(__file__).resolve().parent.parent
     targets = [
+        'payloads/ghrdp-fx.ps1',
+        'tests/f45-fx-server.ps1',
         'payloads/rdp-telescope.ps1',
         'payloads/ghrdp-server.ps1',
         'payloads/Grant-RdpKeyAccess.ps1',

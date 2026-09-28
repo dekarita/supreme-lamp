@@ -1593,6 +1593,12 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-server.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-server.ps1"
           echo '[ps-server] ghrdp-server.ps1 written'
+          # [F45 S4] the Explorer file-API routes are a SEPARATE module the
+          # server dot-sources at start (one implementation shared with the
+          # tests). Missing module => every /api/fx/* route answers 503, so it
+          # MUST be staged next to the server.
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-fx.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-fx.ps1"
+          echo '[fx] ghrdp-fx.ps1 written'
           # [F37 §4] the telescope module must be deployed NEXT TO the server:
           # the 60s tick dot-sources it (single source of truth for the format).
           cp "$GITHUB_WORKSPACE/payloads/rdp-telescope.ps1" "$RUNNER_TEMP/ghrdp-stage/rdp-telescope.ps1"
