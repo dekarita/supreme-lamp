@@ -21,16 +21,19 @@ $ErrorActionPreference = 'Continue'
 $script:Pass = 0
 $script:Fail = 0
 $script:Failures = @()
+$script:Diag = 'not reached'
 $script:Keep = [bool]$KeepArtifacts
 
 function Ok([string]$Name) { $script:Pass++; Write-Host ('  ok   ' + $Name) }
 function Fail([string]$Name, [string]$Detail) {
     $script:Fail++
-    $script:Failures += ($Name + ' :: ' + $Detail)
-    # annotations are single-line and the first 10 are the ones the operator
-    # sees; keep the message complete but flat.
     $flat = ($Detail -replace '\r?\n', ' | ')
-    Write-Host ('::error::[F45] ' + $Name + ' :: ' + $flat)
+    $script:Failures += ($Name + ' :: ' + $flat)
+    # GitHub keeps only the first 10 annotations per step, so every failure is
+    # printed to the log AND (at the end) all of them are emitted as ONE
+    # annotation whose message uses %0A for newlines - nothing is hidden by the
+    # cap. See the summary block at the end of this file.
+    Write-Host ('FAIL ' + $Name + ' :: ' + $flat)
 }
 function Get-FxFailDetail($Err) {
     if (-not $Err) { return 'unknown error' }
@@ -181,6 +184,23 @@ Write-Host ('[F45] unit+integration root=' + $root)
 # =============================================================================
 # UNIT - routes
 # =============================================================================
+# One-line environment probe: if a route answers 404/500 the reason is almost
+# always here (wrong path, unreadable fixture, id formula drift), and CI shows
+# it next to the failures instead of requiring a second round trip.
+$dbgIndex = Read-FxJsonFile -Path $indexPath
+$script:Diag = ('root=' + $root
+    + ' | indexPath=' + $indexPath
+    + ' | indexExists=' + [string](Test-Path -LiteralPath $indexPath)
+    + ' | routeIndexPath=' + (Get-FxIndexPath -Root $root -Options @{ IndexPath = $indexPath })
+    + ' | readOk=' + [string]$dbgIndex.ok
+    + ' | readError=' + [string]$dbgIndex.error
+    + ' | fileCount=' + [string]@($dbgIndex.value.files).Count
+    + ' | firstId=' + [string]$dbgIndex.value.files[0].id
+    + ' | firstRoot=' + [string]$dbgIndex.value.files[0].root
+    + ' | expectedId=' + $notesId
+    + ' | stableId=' + (Get-FxStableId 'RDP-Storage' '/notes.txt'))
+Write-Host ('[F45] diagnostics: ' + $script:Diag)
+
 try {
 Write-Host '[F45] unit: GET /api/fx/list'
 $r = Invoke-FxRoute -Ctx (New-FxCtx -Path '/api/fx/list' -Headers @{ 'x-dash-token' = $Token } -DashToken $Token)
@@ -648,7 +668,13 @@ if ($script:Keep) { Write-Host ('[F45] artifacts kept at ' + $root) } else { try
 $total = $script:Pass + $script:Fail
 Write-Host ('[F45] unit+integration: ' + $script:Pass + '/' + $total + ' passed')
 if ($script:Fail -gt 0) {
-    foreach ($f in $script:Failures) { Write-Host ('::error::[F45] FAILED ' + $f) }
+    # ONE annotation: %0A is a newline in a workflow command, so the operator
+    # sees EVERY failed check (the 10-annotation cap cannot hide any of them).
+    $report = @('[F45] ' + [string]$script:Fail + '/' + [string]$total + ' checks failed', ('diag: ' + [string]$script:Diag))
+    $report += $script:Failures
+    $flat = [string]::Join('%0A', @($report | ForEach-Object { [string]$_ -replace '\r?\n', ' | ' -replace '%', '%25' }))
+    if ($flat.Length -gt 60000) { $flat = $flat.Substring(0, 60000) + '%0A(truncated)' }
+    Write-Host ('::error::' + $flat)
     exit 1
 }
 Write-Host '[F45] PASS - server routes: contract, CSRF, Range, error paths, redaction'
