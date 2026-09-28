@@ -209,7 +209,22 @@ test('F45-S4-13 the mjs auditor catches the failure classes it claims', async ()
   assert.ok(audit('probe', '$x = "a`nb"').length === 0, 'a backtick escape must not unbalance anything');
 });
 
-test('F45-S4-14 no typed parameter defaults to an incompatible literal', () => {
+test('F45-S4-14 property access understands both object shapes', () => {
+  // PowerShell's PSObject member view does not expose a Hashtable /
+  // OrderedDictionary's keys, and this module BUILDS those (migrated index
+  // entries, queue jobs). Without an IDictionary branch, every migrated entry
+  // lost its id/root/mime and every lookup answered 404 - proven by CI.
+  const prop = fx.slice(fx.indexOf('function Get-FxProp {'), fx.indexOf('function Get-FxString {'));
+  assert.match(prop, /\[System\.Collections\.IDictionary\]/, 'Get-FxProp must handle IDictionary objects');
+  assert.match(prop, /\.Contains\(\$Name\)/, 'Get-FxProp must use the dictionary Contains check');
+  const has = fx.slice(fx.indexOf('function Test-FxHasProp {'), fx.indexOf('function Get-FxMember {'));
+  assert.match(has, /\[System\.Collections\.IDictionary\]/, 'Test-FxHasProp must handle IDictionary objects');
+  assert.ok(/function Read-FxUploadQueue/.test(fx), 'the queue reader is missing');
+  const reader = fx.slice(fx.indexOf('function Read-FxUploadQueue {'), fx.indexOf('function Save-FxUploadQueue {'));
+  assert.match(reader, /uploadJobId = \(Get-FxString/, 'queue jobs must be normalised into hashtables before the state machine mutates them');
+});
+
+test('F45-S4-15 no typed parameter defaults to an incompatible literal', () => {
   // A [hashtable] parameter whose default is @() throws
   // ParameterBindingArgumentTransformationException on every call that omits
   // the argument, turning error routes into 500s (found by CI, fixed once).
@@ -229,7 +244,7 @@ test('F45-S4-14 no typed parameter defaults to an incompatible literal', () => {
   }
 });
 
-test('F45-S4-15 the auditor audits the new surfaces and pins the contract', () => {
+test('F45-S4-16 the auditor audits the new surfaces and pins the contract', () => {
   assert.match(audit, /'payloads\/ghrdp-fx\.ps1'/, 'the module is not in the audit target list');
   assert.match(audit, /'tests\/f45-fx-server\.ps1'/, 'the dynamic test is not structurally audited');
   for (const needle of [

@@ -237,6 +237,10 @@ function fxContractProblems() {
 
   // 2.4 redaction: ONE funnel, ***REDACTED***, no token in any log call
   if (!fx.includes("$script:FxRedacted = '***REDACTED***'")) problems.push(`${fxPath}: the redaction marker is not ***REDACTED***`);
+  // property access must understand BOTH shapes (PSCustomObject from JSON and
+  // the hashtables this module builds): a dictionary's keys are invisible to
+  // PSObject.Properties, which silently emptied every migrated index entry.
+  if (!/System\.Collections\.IDictionary/.test(fx)) problems.push(`${fxPath}: Get-FxProp/Test-FxHasProp do not handle IDictionary objects`);
   // typed-parameter defaults: [hashtable] $x = @() (and [string[]] $x = @{})
   // throw ParameterBindingArgumentTransformationException on every call that
   // omits the argument, so an error route silently becomes a 500. Found by CI.

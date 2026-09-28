@@ -197,6 +197,19 @@ try {
     if ($dbgCount -gt 0) { $dbgFirstId = [string]$dbgFiles[0].id; $dbgFirstRoot = [string]$dbgFiles[0].root }
 } catch { }
 $script:Diag = 'root=' + $root + ' | indexPath=' + $indexPath + ' | indexExists=' + [string](Test-Path -LiteralPath $indexPath) + ' | readOk=' + [string]$dbgIndex.ok + ' | readError=' + [string]$dbgIndex.error + ' | fileCount=' + [string]$dbgCount + ' | firstId=' + $dbgFirstId + ' | firstRoot=' + $dbgFirstRoot + ' | expectedId=' + $notesId + ' | stableId=' + (Get-FxStableId 'RDP-Storage' '/notes.txt')
+$probe = ''
+try { $conv = ConvertTo-FxIndexV2 $dbgIndex.value } catch { $conv = $null }
+try {
+    $probe = $probe + ' A=' + [string](Get-FxProp $dbgFiles[0] 'id')
+    $probe = $probe + ' B=' + [string](Get-FxMember (Get-FxProp $dbgFiles[0] 'root') $script:FxRoots 'Temp')
+    $probe = $probe + ' C=' + [string]$script:FxRoots.Count
+    $probe = $probe + ' D=' + [string]@($conv.files).Count
+    $probe = $probe + ' E=' + [string]$conv.files[0].id
+    $probe = $probe + ' F=' + [string]$conv.files[0].root
+    $probe = $probe + ' G=' + [string](Get-FxString $conv.files[0] 'id')
+    $probe = $probe + ' H=' + [string]$conv.files[0].GetType().Name
+} catch { $probe = $probe + ' PROBE-ERR=' + $_.Exception.Message }
+$script:Diag = $script:Diag + $probe
 Write-Host ('[F45] diagnostics: ' + $script:Diag)
 
 try {

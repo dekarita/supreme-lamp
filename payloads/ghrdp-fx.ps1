@@ -259,9 +259,20 @@ function Get-FxStableId {
     return $sb.ToString()
 }
 function Get-FxProp {
+    # [F45 S4 CI fix] TWO object shapes reach this helper: PSCustomObjects (every
+    # index/body/token JSON read from disk) and the Hashtable/OrderedDictionary
+    # values this module BUILDS itself (the migrated index entries, queue jobs).
+    # PowerShell's PSObject member view does not expose a dictionary's keys, so
+    # a dictionary must be checked with Contains() FIRST - otherwise every
+    # migrated entry lost its id/root/mime and every lookup answered 404.
     param($Obj, [string]$Name)
     if ($null -eq $Obj) { return $null }
     try {
+        if ($Obj -is [System.Collections.IDictionary]) {
+            $d = [System.Collections.IDictionary]$Obj
+            if ($d.Contains($Name)) { return $d[$Name] }
+            return $null
+        }
         $p = $Obj.PSObject.Properties[$Name]
         if ($p) { return $p.Value }
     } catch { }
@@ -270,7 +281,10 @@ function Get-FxProp {
 function Test-FxHasProp {
     param($Obj, [string]$Name)
     if ($null -eq $Obj) { return $false }
-    try { return [bool]($Obj.PSObject.Properties[$Name]) } catch { return $false }
+    try {
+        if ($Obj -is [System.Collections.IDictionary]) { return ([System.Collections.IDictionary]$Obj).Contains($Name) }
+        return [bool]($Obj.PSObject.Properties[$Name])
+    } catch { return $false }
 }
 function Get-FxString {
     param($Obj, [string]$Name, [string]$Default = '')
@@ -1121,7 +1135,25 @@ function Read-FxUploadQueue {
     $read = Read-FxJsonFile -Path $Path
     if (-not $read.ok) { return @{ jobs = @(); path = $Path; loaded = $false; error = [string]$read.error } }
     $jobs = @()
-    foreach ($j in @(Get-FxProp $read.value 'jobs')) { $jobs += $j }
+    foreach ($j in @(Get-FxProp $read.value 'jobs')) {
+        # Normalise every job into an ordered hashtable: the state machine
+        # mutates jobs by key, and a PSCustomObject read from JSON refuses a key
+        # that is not already in the file.
+        $jobs += [ordered]@{
+            uploadJobId = (Get-FxString $j 'uploadJobId')
+            id = (Get-FxString $j 'id')
+            host = (Get-FxString $j 'host' 'gofile')
+            root = (Get-FxString $j 'root')
+            path = (Get-FxString $j 'path')
+            size = (Get-FxNumber $j 'size' 0)
+            status = (Get-FxMember (Get-FxString $j 'status') $script:FxUploadStatuses 'queued')
+            phase = (Get-FxNullableString $j 'phase')
+            retries = (Get-FxNumber $j 'retries' 0)
+            bytesSent = (Get-FxNumber $j 'bytesSent' 0)
+            lastError = (Get-FxProp $j 'lastError')
+            nextAttemptTs = (Get-FxString $j 'nextAttemptTs')
+        }
+    }
     return @{ jobs = $jobs; path = $Path; loaded = $true; error = '' }
 }
 function Save-FxUploadQueue {
