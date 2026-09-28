@@ -60,6 +60,12 @@ export interface GofileHostConfig {
   allowedMimePrefixes: string[] | null;
   ttlSeconds: number | null;
   notes: string;
+  /**
+   * [F48 §1.3] Token-less mirror mode: 'guest' is the anonymous contract this
+   * system always attempts; 'requires-account' is recorded only from a probe
+   * or first-attempt result (401/403), never from the presence of a secret.
+   */
+  authMode?: 'guest' | 'requires-account';
 }
 export interface IndexJson {
   schemaVersion: 2;

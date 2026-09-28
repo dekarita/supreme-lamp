@@ -48,19 +48,24 @@ test("F46-1 the policy constants match the F44/S3 TypeScript contract", () => {
   assert.match(module, /function Format-F46AttemptTableText/, "the attempt table formatter must exist under its documented name");
 });
 
-test("F46-2 the documented gofile contract is pinned and dual-field", () => {
-  assert.match(module, /accountsPath = '\/accounts'/, "POST /accounts must be pinned");
-  assert.match(module, /serversPath = '\/servers'/, "GET /servers must be pinned");
+test("F46-2 the documented gofile contract is pinned and token-less (F48 guest mode)", () => {
+  assert.match(module, /serversPath = '\/servers'/, "GET /servers must be pinned (probe + two-step flow)");
   assert.match(module, /uploadPathAuto = '\/uploadfile'/, "the current reference upload path must be pinned");
   assert.match(module, /uploadPathFleet = '\/contents\/uploadfile'/, "the fleet upload path must be pinned");
   assert.match(module, /multipartField = 'file'/, "the multipart field name must be `file`");
-  assert.match(module, /authScheme = 'Bearer'/, "the Authorization header must be Bearer");
   assert.match(module, /idFields = @\('fileId', 'id'\)/, "the response id field must accept the current `id` and the legacy `fileId`");
   assert.match(module, /pageFields = @\('downloadPage', 'directLink'\)/, "the page field must accept `downloadPage` and legacy `directLink`");
   assert.match(module, /envelopeField = 'status'/, "the status envelope must be branched on");
-  assert.match(module, /New-F46GofileAccount/, "POST /accounts must be implemented (opt-in host config)");
   assert.match(module, /function Send-F46GofileUpload/, "the uploader must exist");
-  assert.match(module, /Authorization: Bearer/, "the header form must be documented in the module");
+  // [F48 §0] token-less guest contract: no auth scheme, no account mint, no
+  // auth header, no token rung anywhere in the module (comments included).
+  assert.ok(!code(module).includes("authScheme"), "the Bearer auth scheme must be gone (code lines)");
+  assert.ok(!code(module).includes("Authorization"), "no auth header may exist toward the host (code lines)");
+  assert.ok(!module.includes("New-F46GofileAccount"), "the account-minting rung must be gone");
+  assert.ok(!module.includes("Get-F46HostToken"), "the token ladder must be gone");
+  assert.match(module, /Format-F48AuthReason/, "the labeled auth refusal reason must exist");
+  assert.match(module, /host requires account token; token-less mode unsupported/, "the exact F48 auth reason must be pinned");
+  assert.match(module, /authMode = 'guest'/, "the default authMode must be guest");
   assert.ok(!/token=\$Token|token=' \+ \$Token|\?token=/.test(code(module)), "a token must never be put in a URL");
 });
 
@@ -108,7 +113,10 @@ test("F46-5 the server Diagnose output carries the read-only matrix + attempt ta
 
 test("F46-6 the fx uploader delegates to the one shared contract", () => {
   assert.match(fx, /function Send-FxGofileUpload/, "the uploader wrapper must stay");
-  assert.match(fx, /Send-F46GofileUpload -HostCfg \$hostCfg -Path \$Path -Name \$name -Token \$Token/, "the wrapper must delegate to the shared contract");
+  assert.match(fx, /Send-F46GofileUpload -HostCfg \$hostCfg -Path \$Path -Name \$name -TimeoutSec 120/, "the wrapper must delegate to the shared contract (guest, no credential)");
+  assert.ok(!fx.includes("Get-FxGofileToken"), "the fx host-token ladder must be gone");
+  assert.ok(!fx.includes("GHRDP_FX_GOFILE" + "_TOKEN"), "the fx token env var must be gone");
+  assert.ok(!fx.includes("gofile-token.txt"), "the fx token file rung must be gone");
   assert.match(fx, /Get-F46MaxAttempts/, "the fx retry budget must come from the shared policy");
   assert.match(fx, /Get-F46BackoffMs/, "the fx retry delay must come from the shared policy");
   assert.ok(!fx.includes("https://<store>.gofile.io/contents/uploadfile"), "the stale inline endpoint comment/flow must be gone");
@@ -159,8 +167,7 @@ test("F46-10 the mock host declares the whole policy matrix", () => {
   }
   assert.match(handlers, /HttpResponse\.error\(\)/, "tls-reset must be a transport failure, not an HTTP code");
   const mockPaths = {
-    "/accounts": "the accounts mint path",
-    "/servers": "the server-list path",
+    "/servers": "the server-list (probe) path",
     "/uploadfile": "the documented reference upload path",
     "/contents/uploadfile": "the documented fleet upload path",
     "downloadPage: MOCK_GOFILE_DOWNLOAD_PAGE": "the documented downloadPage field (fileId/directLink stay as the legacy alias)",
@@ -168,8 +175,9 @@ test("F46-10 the mock host declares the whole policy matrix", () => {
   for (const [token, why] of Object.entries(mockPaths)) {
     assert.ok(handlers.includes(token), `the MSW mock host must pin ${why} (${token})`);
   }
-  const smoke = read("src/tests/smoke/fx-gofile-mock.test.ts");
-  assert.match(smoke, /Authorization: `Bearer \$\{MOCK_GOFILE_TOKEN\}`/, "the mock upload must carry the Bearer header");
+  const smoke = read("src/tests/smoke/fx-gofile-mock.test.tsx");
+  assert.match(smoke, /expectNoAuthHeaders/, "the mock upload request must be inspected for auth headers (none allowed)");
+  assert.ok(!smoke.includes("MOCK_GOFILE" + "_TOKEN"), "no token fixture may remain in the mock lane");
   assert.match(smoke, /MOCK_GOFILE_UPLOAD_ORIGIN/, "the documented upload origin must be exercised");
   assert.match(smoke, /tls-reset is a transport rejection/, "the transport failure must be asserted as a rejection");
   const lab = read("tests/f46-mirror-policy.ps1");
@@ -183,7 +191,7 @@ test("F46-10 the mock host declares the whole policy matrix", () => {
 test("F46-8 docs pin the contract, the policy and the operator options", () => {
   assert.ok(existsSync("docs/MIRROR-HOSTS.md"), "docs/MIRROR-HOSTS.md must exist");
   const doc = read("docs/MIRROR-HOSTS.md");
-  for (const needle of ["POST https://api.gofile.io/accounts", "GET https://api.gofile.io/servers", "upload.gofile.io/uploadfile", "contents/uploadfile", "downloadPage", "401 / 403 / 413 / 415", "Retry-After", "read-only", "VPS egress"]) {
+  for (const needle of ["GET https://api.gofile.io/servers", "upload.gofile.io/uploadfile", "contents/uploadfile", "downloadPage", "401 / 403 / 413 / 415", "Retry-After", "read-only", "VPS egress", "token-less guest mode", "host requires account token; token-less mode unsupported", "Probe procedure", "X-Gofile-Token"]) {
     assert.ok(doc.includes(needle), `docs/MIRROR-HOSTS.md must document ${needle}`);
   }
   assert.ok(!/Mozilla|proxy rotat|evade|bypass/i.test(doc), "the doc must not describe evasion");

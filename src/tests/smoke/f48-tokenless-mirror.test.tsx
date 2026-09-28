@@ -1,11 +1,15 @@
-// [F47 §2/§3] Mirror page truth gates (offline DOM).
+// [F47 §2/§3 -> F48 §1.5/§3] Mirror page truth gates (offline DOM).
 //
 // §0 ground truth this file answers: the F46 probe matrix existed only in the
 // CI artifact and the raw Diagnose drawer, so the operator could not see gofile
 // reachability from the runner egress on the Mirror page; and the card claimed
-// "AES-256 encrypted upload" while the worker uploaded plaintext. These tests
-// pin (a) the probe rows rendering live from /diag with the operator options on
-// a 403 egress, and (b) the card title equalling the worker's reported mode.
+// "AES-256 encrypted upload" while the worker uploaded plaintext. [F48] on top
+// of that, the matrix subtitle must read "token-less guest mode" and the
+// rendered operator options must carry the F48 set (disable mirror,
+// self-hosted target, token mode as a separate future decision).
+// These tests pin (a) the probe rows rendering live from /diag with the
+// operator options on a 401/403 egress, and (b) the card title equalling the
+// worker's reported mode.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import "@/i18n";
@@ -99,6 +103,28 @@ describe("F47 mirror host matrix (probe visibility)", () => {
     expect(options.textContent).toContain("VPS");
     expect(options.textContent).toContain("docs/MIRROR-HOSTS.md");
     // no evasion is offered: the note names the two honest options only
+    expect(options.textContent).not.toMatch(/Mozilla|proxy|rotat|spoof/i);
+  });
+
+  it("[F48] the card note reads token-less guest mode and a 401 auth refusal renders the F48 options", async () => {
+    stubDiag({
+      mirrorHosts: [
+        {
+          host: "gofile",
+          status: "401",
+          note: "runner egress rejected (401) - token-less guest probe refused (authMode=requires-account); policy/endpoint level rejection; operator option: operator-owned VPS egress (no evasion)",
+        },
+      ],
+      mirrorAttempts: [],
+    });
+    const { container } = render(<MirrorHostMatrix />);
+    expect(container.textContent).toContain("token-less guest mode");
+    await waitFor(() => expect(screen.getByTestId("mirror-host-operator-options")).toBeTruthy());
+    expect(screen.getByTestId("mirror-host-status").textContent).toBe("401");
+    const options = screen.getByTestId("mirror-host-operator-options");
+    expect(options.textContent).toContain("Disable the mirror");
+    expect(options.textContent).toContain("self-hosted operator target");
+    expect(options.textContent).toContain("separate future decision");
     expect(options.textContent).not.toMatch(/Mozilla|proxy|rotat|spoof/i);
   });
 });

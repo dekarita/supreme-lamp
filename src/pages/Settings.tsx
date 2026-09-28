@@ -90,6 +90,30 @@ export default function Settings() {
           </table>
         </div>
       </Card>
+
+      {/* [F48 §4] OPERATOR SECRET HYGIENE - documented here AND in the PR body.
+          The literal secret name may not exist anywhere in this repository (a
+          CI gate enforces it), so the card describes the action instead. */}
+      <Card title="Secret hygiene (mirror token-less mode)" className="mb-4">
+        <div className="flex flex-col gap-2 text-sm text-secondary" data-testid="secret-hygiene">
+          <p>
+            <b className="text-primary">Secret hygiene (F48):</b> the mirror now uploads in token-less guest
+            mode - no repository secret is read by any workflow, and no auth header is ever sent to the
+            mirror host.
+          </p>
+          <ol className="list-decimal pl-5 flex flex-col gap-1">
+            <li>
+              Delete the former mirror-host account-token secret from repo{" "}
+              <span className="font-mono text-xs">Settings &gt; Secrets and variables &gt; Actions</span> (the
+              F47-era secret; its name no longer exists anywhere in this repository).
+            </li>
+            <li>
+              Invalidate that token on the mirror host&apos;s account page - it is treated as compromised
+              (it traversed sessions). Confirm both are done before the next dispatch.
+            </li>
+          </ol>
+        </div>
+      </Card>
     </div>
   );
 }

@@ -2,16 +2,17 @@
  * S7 will compose these with the mock Explorer upload worker, not bypass the
  * real retry policy with canned UI rows.
  *
- * [F46 §3] the handlers pin the DOCUMENTED gofile flow (docs/MIRROR-HOSTS.md
- * §3, fetched 2026-09-28): POST /accounts -> data.token; GET /servers ->
- * data.servers[].name; upload is multipart with the token in the
- * `Authorization: Bearer` header and the current response carrying
- * `id` + `downloadPage` (`fileId` + `directLink` remain as the legacy alias the
- * parser must still accept). Every response keeps the `status` envelope.
+ * [F46 §3 + F48 §0] the handlers pin the DOCUMENTED token-less guest flow
+ * (docs/MIRROR-HOSTS.md §3): GET /servers -> data.servers[].name; upload is an
+ * anonymous multipart POST with NO auth header (no Authorization, no
+ * X-Gofile-Token, no Cookie - request inspection in the smoke test enforces
+ * it) and the current response carrying `id` + `downloadPage` (`fileId` +
+ * `directLink` remain as the legacy alias the parser must still accept). Every
+ * response keeps the `status` envelope. There is no account-mint fixture: the
+ * token-less contract needs no account.
  */
 import { http, HttpResponse } from 'msw';
 export const MOCK_GOFILE_ORIGIN = 'https://gofile.test';
-export const MOCK_GOFILE_TOKEN = 'mock-guest-token';
 export const MOCK_GOFILE_SERVER = 'store-mock';
 export const MOCK_GOFILE_UPLOAD_ORIGIN = 'https://upload.gofile.test';
 export const MOCK_GOFILE_UPLOAD_PATH = '/uploadfile';
@@ -28,6 +29,7 @@ export type MockGofileScenario =
   | 'success'
   | 'processing'
   | 'expired'
+  | '401'
   | '403'
   | '413'
   | '415'
@@ -57,9 +59,6 @@ export function gofileHandlers(scenarios: MockGofileScenario[] = ['success']) {
       { status: Number(scenario), headers: scenario === '429' || scenario === '502' ? { 'Retry-After': '1' } : {} },
     );
   return [
-    http.post(`${MOCK_GOFILE_ORIGIN}/accounts`, () =>
-      HttpResponse.json({ status: 'ok', data: { id: 'mock-account', rootFolder: 'mock-root', tier: 'guest', token: MOCK_GOFILE_TOKEN } }),
-    ),
     http.get(`${MOCK_GOFILE_ORIGIN}/servers`, () =>
       HttpResponse.json({ status: 'ok', data: { servers: [{ name: MOCK_GOFILE_SERVER }] } }),
     ),

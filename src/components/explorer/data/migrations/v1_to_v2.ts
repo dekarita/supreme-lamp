@@ -78,6 +78,9 @@ export function migrateV1toV2(value: unknown): IndexJson {
     id: 'gofile', displayName: text(h.displayName, defaultHost.displayName),
     maxFileBytes: nullableNumber(h.maxFileBytes), allowedMimePrefixes: h.allowedMimePrefixes == null ? null : strings(h.allowedMimePrefixes),
     ttlSeconds: nullableNumber(h.ttlSeconds), notes: text(h.notes, ''),
+    // [F48 §1.3] token-less guest mode: keep a recorded probe/attempt result,
+    // otherwise the guest contract is the default - never secret-derived.
+    authMode: (h as { authMode?: string }).authMode === 'requires-account' ? 'requires-account' : 'guest',
   };
   return {
     schemaVersion: 2, generatedAt: iso(src.generatedAt), runnerId: text(src.runnerId, 'unknown'),

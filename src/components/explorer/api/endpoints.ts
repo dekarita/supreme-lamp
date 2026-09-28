@@ -227,6 +227,13 @@ export function assertIndexJson(value: unknown, fail: (detail: string) => FxErro
               })(),
       ttlSeconds: entry.ttlSeconds === null ? null : num(entry.ttlSeconds, 'ttlSeconds', where, fail),
       notes: str(entry.notes, 'notes', where, fail),
+      // [F48 §1.3] token-less guest mode; a recorded 401/403 probe/attempt
+      // result round-trips, anything else defaults to the guest contract.
+      ...(entry.authMode === 'requires-account'
+        ? { authMode: 'requires-account' as const }
+        : entry.authMode === 'guest'
+          ? { authMode: 'guest' as const }
+          : {}),
     };
   });
 

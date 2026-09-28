@@ -35,9 +35,10 @@
 # Error bodies are JSON with the F44 phase vocabulary, and the host message is
 # COMPLETE (never truncated) - the S3 client surfaces it verbatim.
 #
-# Nothing here calls a live host by itself: the gofile token is read only when
-# configured, and every network call goes through an injectable scriptblock
-# (Invoke-FxHttpBytes / Invoke-FxHttpJson) so tests never leave the machine.
+# Nothing here calls a live host by itself: [F48 §0] no host token exists in
+# this system (token-less guest mode), and every network call goes through an
+# injectable scriptblock (Invoke-FxHttpBytes / Invoke-FxHttpJson) so tests
+# never leave the machine.
 
 $script:FxSchemaVersion = 2
 $script:FxRedacted = '***REDACTED***'
@@ -138,9 +139,8 @@ function Get-FxSecretList {
     $list = @()
     try { if ($Ctx -and $Ctx.dashToken) { $list += [string]$Ctx.dashToken } } catch { }
     try { if ($Ctx -and $Ctx.csrfToken) { $list += [string]$Ctx.csrfToken } } catch { }
-    try {
-        if ($Ctx -and $Ctx.options -and $Ctx.options.ContainsKey('GofileToken') -and $Ctx.options['GofileToken']) { $list += [string]$Ctx.options['GofileToken'] }
-    } catch { }
+    # [F48 §0] no host credential exists in this process - the token-less
+    # guest contract holds, so no host-token rung is carried here.
     return $list
 }
 function Write-FxAudit {
@@ -403,6 +403,9 @@ function New-FxGofileHosts {
             allowedMimePrefixes = $prefixes
             ttlSeconds = (Get-FxNullableNumber $configured 'ttlSeconds')
             notes = (Get-FxString $configured 'notes' '')
+            # [F48 §1.3] token-less guest mode: carry a recorded probe/attempt
+            # result; otherwise the guest contract default. Never secret-derived.
+            authMode = $(if ((Get-FxString $configured 'authMode') -eq 'requires-account') { 'requires-account' } else { 'guest' })
         }
     )
 }
@@ -677,28 +680,6 @@ function Invoke-FxMetaRoute {
 # ---------------------------------------------------------------------------
 # §1.3 GET /api/fx/gofile/status?id=
 # ---------------------------------------------------------------------------
-function Get-FxGofileToken {
-    # Operator-configured host credential. Read from config.json (gofileToken)
-    # or gofile-token.txt in Root; the lab env var is the test seam. Absent means
-    # "do not poll" - never "poll anonymously".
-    param($Ctx)
-    try {
-        if ($Ctx.options -and $Ctx.options.ContainsKey('GofileToken') -and $Ctx.options['GofileToken']) { return [string]$Ctx.options['GofileToken'] }
-    } catch { }
-    if ($env:GHRDP_FX_GOFILE_TOKEN) { return [string]$env:GHRDP_FX_GOFILE_TOKEN }
-    try {
-        $cfg = $Ctx.options['Config']
-        if ($cfg) {
-            $t = Get-FxNullableString $cfg 'gofileToken'
-            if ($t) { return $t }
-        }
-    } catch { }
-    try {
-        $p = Join-Path ([string]$Ctx.root) 'gofile-token.txt'
-        if (Test-Path -LiteralPath $p) { return ([System.IO.File]::ReadAllText($p)).Trim() }
-    } catch { }
-    return ''
-}
 function Invoke-FxHttpBytes {
     # The ONE network seam. $Ctx.options.Fetch (a scriptblock) replaces it in
     # tests: param($Uri, $Headers) -> @{ ok; status; contentType; bytes; error;
@@ -759,20 +740,16 @@ function Invoke-FxGofileStatusRoute {
     $entry = Get-FxFileEntry $read.index $id
     if (-not $entry) { return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message ('unknown id: ' + $id)) }
     $state = $entry.gofile
-    $token = Get-FxGofileToken $Ctx
-    if (-not $token) {
-        [void](Write-FxAudit $Ctx ('fx gofile status cached id=' + $id + ' (no host token configured: no poll)'))
-        return (New-FxResponse -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-FxJsonBytes $state) -Headers (Get-FxCsrfCookieLine $Ctx))
-    }
     $fileId = Get-FxString $state 'fileId'
     if (-not $fileId) {
         [void](Write-FxAudit $Ctx ('fx gofile status cached id=' + $id + ' (no fileId recorded: no poll)'))
         return (New-FxResponse -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-FxJsonBytes $state) -Headers (Get-FxCsrfCookieLine $Ctx))
     }
-    # §1.3 optional live poll. The token travels in the Authorization header
-    # only; it is never part of the URL, never echoed and never logged.
+    # §1.3 optional live poll. [F48 §0] TOKEN-LESS: the guest poll is a plain
+    # unauthenticated GET (no Authorization / X-Gofile-Token / Cookie header
+    # toward the host, nothing in the URL, nothing echoed, nothing logged).
     $uri = $script:FxGofileApiBase + '/contents/' + [uri]::EscapeDataString($fileId)
-    $hdrs = @{ 'Authorization' = 'Bearer ' + $token; 'Accept' = 'application/json' }
+    $hdrs = @{ 'Accept' = 'application/json' }
     $result = Invoke-FxHttpJson -Ctx $Ctx -Uri $uri -Headers $hdrs
     if (-not $result.ok) {
         $secrets = Get-FxSecretList $Ctx
@@ -956,9 +933,9 @@ function Invoke-FxPreviewRoute {
             return (New-FxErrorResponse -Code 404 -Phase 'parse' -Message ('no local file and no host copy for id ' + $id) -Extra @{ id = $id })
         }
         if ($fullTotal -gt $cap) { return (New-FxErrorResponse -Code 413 -Phase 'size' -Message ('file is ' + $fullTotal + ' bytes; the preview cap is ' + $cap) -Extra @{ id = $id; size = $fullTotal; cap = $cap }) }
-        $token = Get-FxGofileToken $Ctx
+        # [F48 §0] token-less guest fetch: no credential header of any kind
+        # toward the host - a refusal surfaces as a labeled phase/status row.
         $hdrs = @{ 'Accept' = '*/*' }
-        if ($token) { $hdrs['Authorization'] = 'Bearer ' + $token }
         $raw = Invoke-FxHttpBytes -Ctx $Ctx -Uri $direct -Headers $hdrs
         if (-not $raw.ok) {
             $secrets = Get-FxSecretList $Ctx
@@ -1313,24 +1290,14 @@ function Invoke-FxUploadStep {
         [void](Save-FxUploadQueue -Path $queuePath -Jobs $jobs)
         return @{ processed = $true; reason = 'source missing'; jobId = $id }
     }
-    $token = Get-FxGofileToken $Ctx
-    if (-not $uploader -and -not $token) {
-        # No host credential: the job is NOT silently dropped and is NOT sent
-        # anonymously - it stays queued with the reason recorded.
-        $job['status'] = 'queued'
-        $job['phase'] = 'auth'
-        $job['lastError'] = [ordered]@{ phase = 'auth'; httpStatus = $null; hostMessage = 'no gofile token configured on this runner; upload not attempted'; at = $now.ToString('o') }
-        $job['nextAttemptTs'] = $now.AddSeconds(60).ToString('o')
-        $jobs[$target] = $job
-        [void](Save-FxUploadQueue -Path $queuePath -Jobs $jobs)
-        [void](Write-FxAudit $Ctx ('fx upload job=' + [string]$job.uploadJobId + ' held: no host token configured'))
-        return @{ processed = $true; reason = 'no host token'; jobId = $id }
-    }
+    # [F48 §0] token-less guest mode: no credential exists, so the job is
+    # never held for one - the attempt below always runs (the injected lab
+    # uploader, or the shared guest multipart contract).
     $result = $null
     if ($uploader) {
         try { $result = (& $uploader $job $localPath) } catch { $result = @{ ok = $false; phase = 'transport'; httpStatus = $null; hostMessage = ('uploader threw: ' + $_.Exception.Message) } }
     } else {
-        $result = (Send-FxGofileUpload -Ctx $Ctx -Job $job -Path $localPath -Token $token)
+        $result = (Send-FxGofileUpload -Ctx $Ctx -Job $job -Path $localPath)
     }
     if ($null -eq $result) { $result = @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = 'uploader returned no result' } }
     $phase = (Get-FxMember (Get-PropOrNull $result 'phase') $script:FxUploadPhases 'http')
@@ -1396,14 +1363,14 @@ function Invoke-FxUploadStep {
 }
 function Send-FxGofileUpload {
     # Production uploader. The DOCUMENTED gofile contract lives in
-    # payloads/ghrdp-mirror.ps1 (F46 §3) and is shared with the mirror worker:
-    # POST /accounts -> token when the host config allows it, GET /servers ->
-    # upload server, then a STREAMED multipart POST with the token in the
-    # Authorization header ONLY and the documented response fields
-    # (code, fileId|id, downloadPage|directLink). This wrapper only maps the
-    # result into the upload state machine; it never logs the token and never
-    # falls back to an anonymous upload when the module is missing.
-    param($Ctx, $Job, [string]$Path, [string]$Token)
+    # payloads/ghrdp-mirror.ps1 (F46 §3 + F48 §0) and is shared with the
+    # mirror worker: GET /servers -> upload server, then a STREAMED guest
+    # multipart POST (field `file`, NO Authorization / X-Gofile-Token / Cookie
+    # header toward the host, nothing in the URL) with the documented response
+    # fields (code, fileId|id, downloadPage|directLink). This wrapper only
+    # maps the result into the upload state machine; it never invents a
+    # credential and never falls back to one when the module is missing.
+    param($Ctx, $Job, [string]$Path)
     if (-not (Get-Command Send-F46GofileUpload -ErrorAction SilentlyContinue)) {
         return @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = 'ghrdp-mirror.ps1 (F46 host contract) is not staged next to the server - upload not attempted'; retryable = $false; retryAfterMs = $null }
     }
@@ -1422,7 +1389,7 @@ function Send-FxGofileUpload {
     try { $name = [System.IO.Path]::GetFileName($Path) } catch { $name = [string]$Path }
     $r = $null
     try {
-        $r = Send-F46GofileUpload -HostCfg $hostCfg -Path $Path -Name $name -Token $Token -TimeoutSec 120
+        $r = Send-F46GofileUpload -HostCfg $hostCfg -Path $Path -Name $name -TimeoutSec 120
     } catch {
         $r = @{ ok = $false; phase = 'http'; httpStatus = $null; hostMessage = ('upload failed: ' + $_.Exception.Message); retryAfterMs = $null; fileId = ''; code = ''; downloadPage = '' }
     }

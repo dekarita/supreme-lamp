@@ -23,6 +23,11 @@ function Check([string]$Name, [bool]$Cond, [string]$Detail) {
     } else {
         $script:failures = $script:failures + 1
         Write-Host ('  [FAIL] ' + $Name + ' :: ' + $Detail)
+        # Surface EVERY failure as a step annotation: the run-log blob host is
+        # not reachable from the dev sandbox, and an annotation is how the
+        # failing check name+detail survives without log access (F37 pattern).
+        $ann = (('::error title=F46 check::' + $Name + ' :: ' + $Detail) -replace '[\r\n]+', ' ')
+        Write-Host $ann
     }
 }
 
@@ -40,7 +45,7 @@ $filePath = Join-Path $tmp 'f46-mock-payload.bin'
 [System.IO.File]::WriteAllBytes($filePath, (New-Object byte[] 2048))
 
 $transport = {
-    param($HostCfg, $Path, $Name, $Size, $Token)
+    param($HostCfg, $Path, $Name, $Size)
     $script:networkCalls = $script:networkCalls + 1
     $sc = 'success'
     if ($script:scenarioIdx -lt @($script:scenarios).Count) { $sc = [string]$script:scenarios[$script:scenarioIdx] }
@@ -70,7 +75,7 @@ function Run-Case {
     param($Scenarios, $HostCfg, [bool]$EncryptRequested = $false, [bool]$Encrypted = $false, $Rand01 = 0)
     Reset-Case $Scenarios
     $h = $HostCfg
-    return (Invoke-F46MirrorUploadWithPolicy -HostCfg $h -Path $filePath -Name 'f46-mock-payload.bin' -Size ([long]2048) -Token 'mock-token' -Transport $transport -EncryptRequested $EncryptRequested -Encrypted $Encrypted -Rand01 $Rand01 -Sleeper { param($ms) $script:sleptMs += @([int]$ms) })
+    return (Invoke-F46MirrorUploadWithPolicy -HostCfg $h -Path $filePath -Name 'f46-mock-payload.bin' -Size ([long]2048) -Transport $transport -EncryptRequested $EncryptRequested -Encrypted $Encrypted -Rand01 $Rand01 -Sleeper { param($ms) $script:sleptMs += @([int]$ms) })
 }
 
 $hostOn = Get-F46DefaultHost
@@ -128,22 +133,24 @@ Check 'no bare "upload failed" string is produced' (-not ((Format-F46FailureSumm
 $reasonText = Format-F46Reason -Phase 'auth' -Status 403 -Message $reason
 Check 'UI reason string starts with phase/status and keeps the full msg' ($reasonText.StartsWith('phase=auth status=403 msg=') -and $reasonText.EndsWith('END-OF-UNTRUNCATED-MESSAGE')) ('len=' + $reasonText.Length)
 
-$noToken = Reset-Case @('success')
-$resNoTok = Invoke-F46MirrorAttempt -HostCfg $hostOn -Path $filePath -Name 'f46-mock-payload.bin' -Size ([long]2048) -Token '' -AttemptNo 1 -Transport $transport
-Check 'no token + autoAccount=false => phase=auth, 0 network, 1 attempt' (($resNoTok.phase -eq 'auth') -and ($script:networkCalls -eq 0)) ('phase=' + $resNoTok.phase + ' network=' + $script:networkCalls)
+$guestCase = Reset-Case @('success')
+$resGuest = Invoke-F46MirrorAttempt -HostCfg $hostOn -Path $filePath -Name 'f46-mock-payload.bin' -Size ([long]2048) -AttemptNo 1 -Transport $transport
+Check 'token-less guest attempt runs (no credential needed): ok=1 network=1 authMode=guest' (($resGuest.ok) -and ($script:networkCalls -eq 1) -and ([string]$resGuest.authMode -eq 'guest')) ('ok=' + $resGuest.ok + ' network=' + $script:networkCalls + ' authMode=' + $resGuest.authMode)
 
-$resEnc = Invoke-F46MirrorAttempt -HostCfg $hostOn -Path $filePath -Name 'f46-mock-payload.bin' -Size ([long]2048) -Token 'mock-token' -AttemptNo 1 -Transport $transport -EncryptRequested $true -Encrypted $false
+# reset the network counter so this cell asserts ITS OWN zero-try guarantee
+# (the guest cell above legitimately consumed one mock call).
+Reset-Case @('success') | Out-Null
+$resEnc = Invoke-F46MirrorAttempt -HostCfg $hostOn -Path $filePath -Name 'f46-mock-payload.bin' -Size ([long]2048) -AttemptNo 1 -Transport $transport -EncryptRequested $true -Encrypted $false
 Check 'encrypt requested but unavailable => phase=encrypt, refused (never claims encrypted)' (($resEnc.phase -eq 'encrypt') -and ($script:networkCalls -eq 0)) ('phase=' + $resEnc.phase)
 
-$resPolicy = Invoke-F46MirrorAttempt -HostCfg $null -Path $filePath -Name 'f46-mock-payload.bin' -Size ([long]2048) -Token 'mock-token' -AttemptNo 1 -Transport $transport
+$resPolicy = Invoke-F46MirrorAttempt -HostCfg $null -Path $filePath -Name 'f46-mock-payload.bin' -Size ([long]2048) -AttemptNo 1 -Transport $transport
 Check 'no enabled host => phase=policy, 1 labeled attempt' ($resPolicy.phase -eq 'policy') ('phase=' + $resPolicy.phase)
 
 Write-Host '[F46] documented gofile contract (pinned from https://gofile.io/api)'
 $c = $script:F46GofileContract
-Check 'contract: POST /accounts -> token' ($c.accountsPath -eq '/accounts') ('accountsPath=' + $c.accountsPath)
-Check 'contract: GET /servers -> upload server' ($c.serversPath -eq '/servers') ('serversPath=' + $c.serversPath)
+Check 'contract: GET /servers -> probe + upload server' ($c.serversPath -eq '/servers') ('serversPath=' + $c.serversPath)
 Check 'contract: multipart field name is file' ($c.multipartField -eq 'file') ('field=' + $c.multipartField)
-Check 'contract: Bearer authorization header' ($c.authScheme -eq 'Bearer') ('auth=' + $c.authScheme)
+Check 'contract [F48]: no auth scheme, no accounts rung (guest contract)' ((-not $c.Contains('authScheme')) -and (-not $c.Contains('accountsPath'))) ('keys=' + (@($c.Keys) -join ','))
 Check 'contract: current response id field accepted' (@($c.idFields) -contains 'id') ('idFields=' + (@($c.idFields) -join ','))
 Check 'contract: current downloadPage field accepted' (@($c.pageFields) -contains 'downloadPage') ('pageFields=' + (@($c.pageFields) -join ','))
 
@@ -161,9 +168,12 @@ Check 'status=ok with no id/code/downloadPage => parse failure (never a silent s
 $rej = ConvertFrom-F46UploadResponse -Text '{"status":"ok","data":{}}' -HttpStatus 403 -RetryAfterMs $null -TransportMessage ''
 Check '403 body => phase=auth, status kept' ((-not $rej.ok) -and $rej.phase -eq 'auth' -and [int]$rej.httpStatus -eq 403) ('phase=' + $rej.phase)
 
-$tok = $null
-try { $tok = New-F46GofileAccount -ApiRoot 'https://127.0.0.1:9' -TimeoutSec 1 } catch { $tok = @{ ok = $false; token = ''; message = ('transport failure surfaced: ' + $_.Exception.Message) } }
-Check 'account creation fails closed with a reason (no token invented)' ((-not $tok.ok) -and ($tok.token -eq '')) ('ok=' + $tok.ok)
+# [F48 §2] the labeled auth reason: exact wording + operator options, appended
+# to (never replacing) the host's own message.
+$labeled = Format-F48AuthReason -Message 'HTTP 401: host said what it said END-OF-UNTRUNCATED-MESSAGE'
+Check 'F48: auth reason is the exact labeled wording' ($labeled.StartsWith('host requires account token; token-less mode unsupported')) ($labeled.Substring(0, [Math]::Min(100, $labeled.Length)))
+Check 'F48: auth reason renders the operator options' ($labeled.Contains('Operator options: (1) disable mirror (mirror_enable=false); (2) self-hosted operator target; (3) token mode - a separate future decision, out of scope here.')) ($labeled)
+Check 'F48: auth reason keeps the host message untruncated after the label' ($labeled.EndsWith('END-OF-UNTRUNCATED-MESSAGE')) ('len=' + $labeled.Length)
 
 Write-Host '[F46] probe matrix (read-only)'
 $probeRows = @(Invoke-F46HostProbe -Hosts @($hostOn) -Transport { param($h, $root) @{ status = 403; note = 'runner egress rejected (403) - policy/endpoint level rejection; operator option: operator-owned VPS egress (no evasion)' } })
@@ -174,34 +184,35 @@ $realProbe = @(Invoke-F46HostProbe -Hosts @((Get-F46DefaultHost)) -TimeoutSec 8)
 Check 'real read-only probe returns a shaped row (no content upload)' (@($realProbe).Count -ge 1 -and $realProbe[0].host -eq 'gofile' -and $null -ne $realProbe[0].status) ('rows=' + @($realProbe).Count)
 Write-Host ('  [INFO] real read-only probe: ' + (Format-F46ProbeTable -Rows $realProbe))
 
-Write-Host '[F47 §1/§3/§4] per-run opt-in, real multipart contract, AES-256 honesty'
-# --- token plumbing: process env is the ONLY source the dispatch secret uses --
-$env:GHRDP_GOFILE_TOKEN = 'f47-env-token-value'
-$cfgF47 = [pscustomobject]@{ gofileToken = 'cfg-should-not-win'; mirrorHosts = @([pscustomobject]@{ id = 'gofile'; enabled = $true }) }
-$tokF47 = Get-F46HostToken -Cfg $cfgF47 -Root $null -HostCfg (Get-F46DefaultHost)
-Check 'token ladder: GHRDP_GOFILE_TOKEN process env wins over config' ($tokF47 -eq 'f47-env-token-value') ('token=' + $tokF47)
-Remove-Item Env:\GHRDP_GOFILE_TOKEN -ErrorAction SilentlyContinue
-$tokCfg = Get-F46HostToken -Cfg $cfgF47 -Root $null -HostCfg (Get-F46DefaultHost)
-Check 'token ladder: config rung still works when no env token is present' ($tokCfg -eq 'cfg-should-not-win') ('token=' + $tokCfg)
-$hostsF47 = @(Get-F46Hosts -Cfg $cfgF47)
-Check 'config mirrorHosts[].enabled=true is honoured by the selector' ((Select-F46UploadHost -Hosts $hostsF47) -ne $null) 'no host selected'
+Write-Host '[F48 §0/§2] token-less guest mode: config, labeled auth refusal, guest spec'
+$cfgF48 = [pscustomobject]@{ mirrorHosts = @([pscustomobject]@{ id = 'gofile'; enabled = $true }) }
+$hostsF48 = @(Get-F46Hosts -Cfg $cfgF48)
+Check 'config mirrorHosts[].enabled=true is honoured by the selector' ((Select-F46UploadHost -Hosts $hostsF48) -ne $null) 'no host selected'
 $hostsOff = @(Get-F46Hosts -Cfg ([pscustomobject]@{ mirrorHosts = @() }))
 Check 'no mirrorHosts entry => shipped default stays enabled=false' ((Select-F46UploadHost -Hosts $hostsOff) -eq $null) 'a host was selected from an empty config'
+$defHost48 = Get-F46DefaultHost
+Check 'default host ships authMode=guest and no credential field' (($defHost48.authMode -eq 'guest') -and (-not $defHost48.Contains('tokenConfigKey'))) ('authMode=' + $defHost48.authMode)
 
-# --- token missing => ONE labeled fail-fast reason, ZERO network tries -------
-Reset-Case @('success') | Out-Null
-$noTokF47 = Invoke-F46MirrorAttempt -HostCfg $hostOn -Path $filePath -Name 'f47-happy.txt' -Size ([long]2048) -Token '' -AttemptNo 1 -Transport $transport
-Check 'F47 token-missing => phase=auth, 0 network tries, 1 labeled attempt' (($noTokF47.phase -eq 'auth') -and ($script:networkCalls -eq 0) -and ([string]$noTokF47.hostMessage).Contains('autoAccount=false')) ('phase=' + $noTokF47.phase + ' network=' + $script:networkCalls)
+# --- 401/403 => EXACTLY ONE attempt, labeled reason, authMode flip ----------
+Reset-Case @('403', 'success') | Out-Null
+$rAuth = Invoke-F46MirrorUploadWithPolicy -HostCfg $hostOn -Path $filePath -Name 'f48-auth.txt' -Size ([long]2048) -Transport $transport -Sleeper { param($ms) $script:sleptMs += @([int]$ms) }
+Check 'F48 401/403 => exactly 1 attempt (no retry loop on auth)' ((@($rAuth.attempts).Count -eq 1) -and ($script:networkCalls -eq 1) -and ((@($script:sleptMs).Count) -eq 0)) ('attempts=' + @($rAuth.attempts).Count + ' network=' + $script:networkCalls + ' sleeps=' + (@($script:sleptMs).Count))
+Check 'F48 401/403 => phase=auth + labeled reason + options' (($rAuth.phase -eq 'auth') -and ([string]$rAuth.hostMessage).StartsWith('host requires account token; token-less mode unsupported') -and ([string]$rAuth.hostMessage).Contains('Operator options:')) ('phase=' + $rAuth.phase + ' msg=' + ([string]$rAuth.hostMessage).Substring(0, [Math]::Min(90, ([string]$rAuth.hostMessage).Length)))
+Check 'F48 401/403 => authMode flips to requires-account' ([string]$rAuth.authMode -eq 'requires-account') ('authMode=' + [string]$rAuth.authMode)
 
-# --- request spec: the multipart contract, asserted without a network -------
-$specPlain = New-F46UploadRequestSpec -HostCfg $hostOn -Name 'f47-happy.txt' -Token 'f47-mock-token' -Boundary '----ghrdpF47spec'
+# --- request spec: the GUEST multipart contract, asserted without a network --
+$specPlain = New-F46UploadRequestSpec -HostCfg $hostOn -Name 'f48-happy.txt' -Boundary '----ghrdpF48spec'
 Check 'spec: multipart field name is file' ($specPlain.fieldName -eq 'file') ('field=' + $specPlain.fieldName)
-Check 'spec: Authorization is Bearer <token> (never a URL)' (([string]$specPlain.headers['Authorization']) -eq 'Bearer f47-mock-token') ('auth=' + $specPlain.headers['Authorization'])
-Check 'spec: request Content-Type is multipart/form-data with the boundary' (([string]$specPlain.requestContentType) -eq 'multipart/form-data; boundary=----ghrdpF47spec') ('ctype=' + $specPlain.requestContentType)
+Check 'spec [F48]: NO auth header keys at all (guest contract)' ((@($specPlain.headers.Keys) -notcontains 'Authorization') -and (@($specPlain.headers.Keys) -notcontains 'Cookie') -and (@($specPlain.headers.Keys) -notcontains 'X-Gofile-Token')) ('keys=' + (@($specPlain.headers.Keys) -join ','))
+Check 'spec: request Content-Type is multipart/form-data with the boundary' (([string]$specPlain.requestContentType) -eq 'multipart/form-data; boundary=----ghrdpF48spec') ('ctype=' + $specPlain.requestContentType)
 Check 'spec: plaintext part is application/octet-stream' ($specPlain.partContentType -eq 'application/octet-stream') ('part=' + $specPlain.partContentType)
-Check 'spec: part header carries name="file" + filename' ((([string]$specPlain.partHeader) -match 'name="file"') -and (([string]$specPlain.partHeader) -match 'filename="f47-happy.txt"')) ('hdr=' + ([string]$specPlain.partHeader -replace "`r`n", ' | '))
-$specEnc = New-F46UploadRequestSpec -HostCfg $hostOn -Name 'f47.txt.ghenc' -Token 'f47-mock-token' -Boundary '----ghrdpF47spec' -ContentType ([string]$script:F46GofileContract.encryptedMime)
+Check 'spec: part header carries name="file" + filename' ((([string]$specPlain.partHeader) -match 'name="file"') -and (([string]$specPlain.partHeader) -match 'filename="f48-happy.txt"')) ('hdr=' + ([string]$specPlain.partHeader -replace "`r`n", ' | '))
+$specEnc = New-F46UploadRequestSpec -HostCfg $hostOn -Name 'f48.txt.ghenc' -Boundary '----ghrdpF48spec' -ContentType ([string]$script:F46GofileContract.encryptedMime)
 Check 'spec: encrypted part is application/x-ghrdp-mirror' ($specEnc.partContentType -eq 'application/x-ghrdp-mirror') ('part=' + $specEnc.partContentType)
+
+# --- redaction: stray token= strings are grepped too ------------------------
+$stray = Protect-F46SecretText -Text 'mirror debug: url token=abc123def456 and apikey=zzzz9999 end' -Secrets @()
+Check 'redaction greps stray token= strings' ((-not $stray.Contains('abc123def456')) -and ($stray.Contains('***REDACTED***'))) ('out=' + $stray)
 
 # --- AES-256: real ciphertext, 32-byte key, round trip, mime stamp ----------
 $keyF47 = New-F46MirrorKey
@@ -260,7 +271,7 @@ if (-not $listener) {
     $hostLive.uploadHost = ('127.0.0.1:' + $portF47)
     $hostLive.uploadScheme = 'http'
     $clientJob = Start-Job -ScriptBlock {
-        param($Mod, $Path, $Name, $Size, $Token, $Enc, $Key, $HostId, $Port, $Scheme)
+        param($Mod, $Path, $Name, $Size, $Enc, $Key, $HostId, $Port, $Scheme)
         $ErrorActionPreference = 'Stop'
         . $Mod
         $h = Get-F46DefaultHost
@@ -278,17 +289,17 @@ if (-not $listener) {
             $nm = $Name + '.ghenc'
             $ct = 'application/x-ghrdp-mirror'
         }
-        $r = Invoke-F46MirrorAttempt -HostCfg $h -Path $up -Name $nm -Size $Size -Token $Token -AttemptNo 1 -ContentType $ct
+        $r = Invoke-F46MirrorAttempt -HostCfg $h -Path $up -Name $nm -Size $Size -AttemptNo 1 -ContentType $ct
         try { if ($Enc -and (Test-Path -LiteralPath ($Path + '.ghenc'))) { Remove-Item -LiteralPath ($Path + '.ghenc') -Force } } catch { }
         return @{ ok = [bool]$r.ok; phase = [string]$r.phase; fileId = [string]$r.fileId; downloadPage = [string]$r.downloadPage; link = [string]$r.directUrl; msg = [string]$r.hostMessage }
-    } -ArgumentList $modPath, $plainF47, 'f47-happy.txt', ([long](Get-Item -LiteralPath $plainF47).Length), 'f47-wire-token', $false, '', 'gofile', $portF47, 'http'
+    } -ArgumentList $modPath, $plainF47, 'f47-happy.txt', ([long](Get-Item -LiteralPath $plainF47).Length), $false, '', 'gofile', $portF47, 'http'
     $wire = $null
     try {
         $ctx = $listener.GetContext()
         $sr = New-Object System.IO.StreamReader($ctx.Request.InputStream)
         $bodyTxt = $sr.ReadToEnd()
         $sr.Close()
-        $wire = [ordered]@{ method = $ctx.Request.HttpMethod; path = $ctx.Request.Url.AbsolutePath; auth = [string]$ctx.Request.Headers['Authorization']; ctype = [string]$ctx.Request.ContentType; body = $bodyTxt }
+        $wire = [ordered]@{ method = $ctx.Request.HttpMethod; path = $ctx.Request.Url.AbsolutePath; auth = [string]$ctx.Request.Headers['Authorization']; cookie = [string]$ctx.Request.Headers['Cookie']; hostTokHdr = [string]$ctx.Request.Headers['X-Gofile-Token']; ctype = [string]$ctx.Request.ContentType; body = $bodyTxt }
         $respTxt = '{"status":"ok","data":{"id":"f47-wire-id","downloadPage":"https://gofile.test/d/f47wire","code":"f47wirecode"}}'
         $rb = [System.Text.Encoding]::UTF8.GetBytes($respTxt)
         $ctx.Response.StatusCode = 200
@@ -301,14 +312,15 @@ if (-not $listener) {
     try { if (Wait-Job -Job $clientJob -Timeout 60) { $client = Receive-Job -Job $clientJob } } catch { $client = $null }
     try { Remove-Job -Job $clientJob -Force -ErrorAction SilentlyContinue } catch { }
     Check 'happy path: the request is a POST to /uploadfile' ($wire -and $wire.method -eq 'POST' -and $wire.path -eq '/uploadfile') ('req=' + $(if ($wire) { $wire.method + ' ' + $wire.path } else { 'none' }))
-    Check 'happy path: Authorization carries Bearer <token>' ($wire -and $wire.auth -eq 'Bearer f47-wire-token') ('auth=' + $(if ($wire) { $wire.auth } else { 'none' }))
-    Check 'happy path: no token in the URL' ($wire -and (-not ($wire.path -match 'token='))) ('path=' + $(if ($wire) { $wire.path } else { 'none' }))
+    Check 'happy path [F48]: NO Authorization header on the wire (token-less guest)' ($wire -and ([string]$wire.auth -eq '')) ('auth=' + $(if ($wire) { '[' + $wire.auth + ']' } else { 'none' }))
+    Check 'happy path [F48]: NO Cookie and NO X-Gofile-Token header on the wire' ($wire -and ([string]$wire.cookie -eq '') -and ([string]$wire.hostTokHdr -eq '')) ('cookie=[' + $(if ($wire) { $wire.cookie } else { '' }) + '] hostTok=[' + $(if ($wire) { $wire.hostTokHdr } else { '' }) + ']')
+    Check 'happy path: no credential parameter in the URL' ($wire -and (-not ($wire.path -match 'token='))) ('path=' + $(if ($wire) { $wire.path } else { 'none' }))
     Check 'happy path: multipart body declares the field name file' ($wire -and ($wire.body -match 'name="file"')) 'field name missing'
     Check 'happy path: plaintext part is application/octet-stream' ($wire -and ($wire.body -match 'Content-Type: application/octet-stream')) 'part mime missing'
     Check 'happy path: id + downloadPage parse into a success row with a link' ($client -and [bool]$client.ok -and $client.fileId -eq 'f47-wire-id' -and $client.link -eq 'https://gofile.test/d/f47wire') ('client=' + ($client | ConvertTo-Json -Compress -Depth 3))
     # encrypted pass over the same socket
     $clientJob2 = Start-Job -ScriptBlock {
-        param($Mod, $Path, $Name, $Size, $Token, $Key, $Port)
+        param($Mod, $Path, $Name, $Size, $Key, $Port)
         $ErrorActionPreference = 'Stop'
         . $Mod
         $h = Get-F46DefaultHost
@@ -318,10 +330,10 @@ if (-not $listener) {
         $h.uploadScheme = 'http'
         $enc = Invoke-F46EncryptFile -Path $Path -OutPath ($Path + '.ghenc') -KeyBase64 $Key
         if (-not $enc.ok) { return @{ ok = $false; phase = 'encrypt'; alg = ''; msg = $enc.message } }
-        $r = Invoke-F46MirrorAttempt -HostCfg $h -Path ($Path + '.ghenc') -Name ($Name + '.ghenc') -Size ([long]$enc.bytes) -Token $Token -AttemptNo 1 -ContentType 'application/x-ghrdp-mirror'
+        $r = Invoke-F46MirrorAttempt -HostCfg $h -Path ($Path + '.ghenc') -Name ($Name + '.ghenc') -Size ([long]$enc.bytes) -AttemptNo 1 -ContentType 'application/x-ghrdp-mirror'
         try { Remove-Item -LiteralPath ($Path + '.ghenc') -Force -ErrorAction SilentlyContinue } catch { }
         return @{ ok = [bool]$r.ok; alg = [string]$enc.alg; link = [string]$r.directUrl }
-    } -ArgumentList $modPath, $plainF47, 'f47-happy.txt', ([long](Get-Item -LiteralPath $plainF47).Length), 'f47-wire-token', $keyF47, $portF47
+    } -ArgumentList $modPath, $plainF47, 'f47-happy.txt', ([long](Get-Item -LiteralPath $plainF47).Length), $keyF47, $portF47
     $wire2 = $null
     try {
         $ctx2 = $listener.GetContext()
