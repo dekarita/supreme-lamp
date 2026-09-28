@@ -13,8 +13,10 @@
  * check the pairing the other two cannot: a client constant that the server
  * does not honour would leave the Explorer with an endpoint nobody answers.
  */
+import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
+import stableIdVectors from '@/components/explorer/data/fixtures/stable-id-vectors.json';
 import mimeMap from '@/components/explorer/data/fixtures/preview-mime-map.json';
 import { INDEX_SCHEMA_VERSION } from '@/components/explorer/data/schema';
 import { FAIL_FAST_HTTP } from '@/components/explorer/api/errors';
@@ -101,6 +103,24 @@ describe('F45 S4 server ↔ client contract', () => {
     expect(core).toContain('X-Idempotent-Replay: 1');
     // the dash token is read from the header, never required in a URL
     expect(core).toContain("$Headers['x-dash-token']");
+  });
+
+  it('pins the stable-id vectors the server must reproduce byte for byte', () => {
+    // The fixture is the ONE source both runtimes read: node:crypto here, the
+    // shipped PowerShell in tests/f45-s4-fx-server.ps1 (which reads the same
+    // UTF-8 file, so neither runtime can drift on a non-ASCII path).
+    expect(stableIdVectors.length).toBeGreaterThanOrEqual(5);
+    expect(new Set(stableIdVectors.map((v) => v.id)).size).toBe(stableIdVectors.length);
+    for (const vector of stableIdVectors) {
+      const id = createHash('sha1').update(Buffer.from(vector.root + vector.path, 'utf8')).digest('hex');
+      expect(id, `${vector.root}${vector.path}`).toBe(vector.id);
+      expect(id).toMatch(/^[0-9a-f]{40}$/);
+    }
+    // at least two vectors must be non-ASCII, or the byte-wise check is vacuous
+    expect(stableIdVectors.filter((v) => /[^\x00-\x7f]/.test(v.path)).length).toBeGreaterThanOrEqual(2);
+    // the server must compute them with the same algorithm (UTF-8 SHA-1)
+    expect(core).toContain('System.Security.Cryptography.SHA1');
+    expect(core).toContain('UTF8.GetBytes');
   });
 
   it('shares the renderable MIME vocabulary with the S2 map', () => {

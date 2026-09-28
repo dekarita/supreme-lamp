@@ -1,10 +1,10 @@
-# [F45 S4] Explorer server routes — REAL unit + integration proof.
+# [F45 S4] Explorer server routes - REAL unit + integration proof.
 #
 # The Explorer core lives inside payloads/ghrdp-server.ps1 between the
 # '# [F45 S4 fx-core-begin]' / '# [F45 S4 fx-core-end]' markers. This script
 # extracts that region VERBATIM, parses it with the PowerShell language parser,
 # dot-sources it, and then drives the SHIPPED handler (Invoke-ClientRequest)
-# through complete HTTP request cycles over in-memory client streams — the same
+# through complete HTTP request cycles over in-memory client streams - the same
 # harness shape tests/f27-windows.ps1 uses.
 #
 # Nothing here contacts gofile: the transport seam is a scriptblock fetcher, so
@@ -136,16 +136,31 @@ try {
 
     # --- U2 identity parity with S2 stableId.ts -----------------------------
     $stage = 'U2 stable id parity'
-    # Independent expectations: sha1(root + path) hex computed by Node (crypto),
-    # i.e. by the S2 client's language, not by this implementation.
+    # The expectations are the shared S2/S4 fixture (UTF-8, read as UTF-8 by
+    # BOTH runtimes), whose ids src/tests/smoke/fx-server-contract.test.ts
+    # recomputes with node:crypto. This script therefore stays pure ASCII: a
+    # non-ASCII literal here would be decoded as ANSI by powershell.exe 5.1
+    # (the repo ships every .ps1 without a BOM), which is exactly the drift the
+    # vector is meant to catch.
+    $vectorPath = Join-Path $repo 'src/components/explorer/data/fixtures/stable-id-vectors.json'
+    Assert-Fx (Test-Path -LiteralPath $vectorPath) 'the shared stable-id vector fixture exists'
+    $vectors = @(([IO.File]::ReadAllText($vectorPath)) | ConvertFrom-Json)
+    Assert-Fx ($vectors.Count -ge 5) 'the fixture carries at least five identity vectors'
+    $nonAsciiVectors = 0
+    $seenIds = @()
+    foreach ($v in $vectors) {
+        $want = [string]$v.id
+        $got = ConvertTo-FxStableId -RootName ([string]$v.root) -Path ([string]$v.path)
+        Assert-Fx ($got -ceq $want) ('the server id matches the shared vector for ' + [string]$v.root + [string]$v.path)
+        if ([string]$v.path -match '[^\x00-\x7F]') { $nonAsciiVectors++ }
+        $seenIds += $got
+    }
+    Assert-Fx ($nonAsciiVectors -ge 2) 'the fixture includes non-ASCII vectors (a real UTF-8 check)'
+    Assert-Fx (@($seenIds | Select-Object -Unique).Count -eq $vectors.Count) 'no two vectors collide'
     $idA = ConvertTo-FxStableId -RootName 'Downloads' -Path '/notes.txt'
-    $idB = ConvertTo-FxStableId -RootName 'Documents' -Path '/සිංහල.txt'
-    Assert-Fx ($idA -eq '8476704194b57691c1c68d7891655553c29fae8d') 'the server id equals Node sha1("Downloads/notes.txt")'
-    Assert-Fx ($idB -eq '5aabe6793aa9c98f59d1fb98a387319b8c5ac972') 'the server id is UTF-8 correct for a Sinhala path'
     Assert-Fx ($idA -match '^[0-9a-f]{40}$') 'stable id is lowercase hex'
-    Assert-Fx ($idA -ne $idB) 'root contributes to the identity'
-    Assert-Fx ((ConvertTo-FxStableId -RootName 'Downloads' -Path '/hello.txt') -eq 'b82ffa738c3da94d5d67f90f3f9a51f966a2c181') 'the /hello.txt fixture id matches Node'
-    Assert-Fx ((ConvertTo-FxStableId -RootName 'Documents' -Path '/reports/q1.txt') -eq '448d613743a5e86b355d3118e2d7cbfebcd30fa6') 'a nested path hashes without a separator'
+    Assert-Fx ($idA -eq '8476704194b57691c1c68d7891655553c29fae8d') 'the server id equals the recorded Node sha1("Downloads/notes.txt")'
+    Assert-Fx ($idA -ne (ConvertTo-FxStableId -RootName 'Documents' -Path '/notes.txt')) 'root contributes to the identity'
 
     # --- U3 migration -------------------------------------------------------
     $stage = 'U3 v1 -> v2 migration'
@@ -329,7 +344,7 @@ try {
     }
     $script:FxClock = (Get-Date).ToUniversalTime().AddSeconds(120)
     $s = Step-FxUploadQueue -Path $script:FxQueuePath -IndexPath $script:FxIndexPath -Uploader $failUploader -Index $qIdx2
-    Assert-Fx ($s.failed -eq 1 -and $s.queued -eq 0) 'the fifth transient failure is terminal (§8.2 attempt budget)'
+    Assert-Fx ($s.failed -eq 1 -and $s.queued -eq 0) 'the fifth transient failure is terminal (S8.2 attempt budget)'
     $script:FxClock = $null
     Assert-Fx ($qIdx2.files[0].upload.lastError.hostMessage -eq 'HOST_FAILURE_MESSAGE') 'the complete host message is stored on the entry'
     Assert-Fx ($qIdx2.files[0].upload.lastError.phase -eq 'http') 'the F44 phase is stored'
@@ -532,7 +547,7 @@ try {
     $onDisk = ([IO.File]::ReadAllText($script:FxIndexPath) | ConvertFrom-Json)
     Assert-Fx ($onDisk.schemaVersion -eq 2) 'the write re-emitted schemaVersion 2'
     Assert-Fx (@($onDisk.gofileHosts).Count -eq 1) 'the write kept the gofileHosts array'
-    # §5.1 rule 6: the same key + the same body replays the recorded answer
+    # S5.1 rule 6: the same key + the same body replays the recorded answer
     $replay = Request-Fx -Path '/api/fx/op' -Method 'POST' -Body $opBody -Headers @{ 'X-Dash-Token' = $script:FxToken; 'X-CSRF-Token' = $csrfToken; 'X-Idempotency-Key' = 'k1' }
     Assert-Fx ($replay.Code -eq 200 -and $replay.Headers['x-idempotent-replay'] -eq '1') 'a replayed idempotency key is answered from the record'
     Assert-Fx (((($replay.Body | ConvertFrom-Json)).applied) -join ',' -eq 'fx-refused') 'the replay returns the ORIGINAL applied list'

@@ -194,7 +194,8 @@ path falls straight through to the parent routes, unchanged.
 - `[1.1]` `GET /api/fx/list` — reads the F44 mirror index (`mirror-index.json`)
   when no Explorer index exists yet, migrates v1→v2 server-side (the port of
   `data/migrations/v1_to_v2.ts`, asserted byte-for-byte on the SHA-1 identity
-  vectors), answers `schemaVersion: 2` + `gofileHosts`, 200 with an explicit
+  vectors in `data/fixtures/stable-id-vectors.json`, the fixture node:crypto and
+  the shipped PowerShell both read as UTF-8), answers `schemaVersion: 2` + `gofileHosts`, 200 with an explicit
   `source: 'unscanned'` when nothing has been scanned, 401 `phase=auth` for a
   refused credential and 500 `phase=parse` for an unparsable index.
 - `[1.2]` `GET /api/fx/meta?id=` — 200 FileEntry, 404 unknown/absent id.
@@ -248,7 +249,7 @@ path falls straight through to the parent routes, unchanged.
 |---|---|
 | Frozen pnpm install | PASS; lockfile unchanged |
 | tsc (build config + full project incl. `src/tests`) | PASS, 0 errors |
-| Vitest (`pnpm test:smoke`) | 507/507 PASS, 16 files (S4 adds `fx-server-contract.test.ts`) |
+| Vitest (`pnpm test:smoke`) | 508/508 PASS, 16 files (S4 adds `fx-server-contract.test.ts`) |
 | Node suites (`node --test tests/*.test.js`) | 289/289 PASS, incl. the new `tests/f45-s4-fx-routes.test.js` (10 S4 checks) |
 | Every ubuntu bash gate, run verbatim (`tests/run-launch-gates.py`) | PASS 34/34, incl. the new `F45 S4 Explorer server contract + redaction gates` step |
 | PowerShell structural + Explorer redaction audit (`tests/ps-balance-audit.py`) | PASS, 0 failed (6 shipped surfaces + the Explorer region + a shipped-surface token-literal scan) |
