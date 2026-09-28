@@ -2091,7 +2091,7 @@ jobs:
           if ! out=$(pnpm exec vitest run 2>&1); then
             echo "$out"
             detail=$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g')
-            echo "::error title=F45 S1 smoke::${detail}"
+            echo "::error title=F45 S2 smoke::${detail}"
             exit 1
           fi
       - name: F45 S1 Explorer namespace and token gates
@@ -2102,6 +2102,15 @@ jobs:
             echo "$out"
             detail=$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g')
             echo "::error title=F45 S1 fx-foundation::${detail}"
+            exit 1
+          fi
+      - name: F45 S2 schema and mock-host gates (offline only)
+        run: |
+          set -euo pipefail
+          if ! out=$(pnpm exec vitest run src/tests/smoke/fx-schema-migration.test.ts src/tests/smoke/fx-gofile-mock.test.ts 2>&1); then
+            echo "$out"
+            detail=$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g')
+            echo "::error title=F45 S2 data::${detail}"
             exit 1
           fi
       - name: F41 v2 e2e (playwright, real bundle)

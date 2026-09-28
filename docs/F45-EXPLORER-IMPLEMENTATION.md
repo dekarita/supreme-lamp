@@ -91,8 +91,17 @@ No real gofile calls made.
 
 ### Hosted proof and landing
 
-Populate PR SHA, run IDs, conclusions and merge result from GitHub evidence.
-Until then: **S1 lab/landing pending; S2 not started**.
+S1 PR [#77](https://github.com/dekarita/supreme-lamp/pull/77), head
+`2516f583558d2707ca2d93c44f953e9690d4d2b1`, merged via merge commit
+`a82ca95abbd6714a9b8ed2cba405397ce447551a` after all checks passed:
+
+| Run | Lane | Result |
+|---|---|---|
+| 36377176728 | push launch-gates (gates + windows-native + hosted e2e) | PASS |
+| 36377206695 | PR launch-gates (gates + windows-native + hosted e2e) | PASS |
+| 36377176756 | push autologin-lab proof | PASS |
+
+No dispatch. No operator quote required for S1. S2 began only after this merge.
 
 ### Operator checkpoints
 
@@ -105,3 +114,26 @@ Until then: **S1 lab/landing pending; S2 not started**.
 
 Do not emit the final EXPLORER LIVE declaration before the required written
 operator confirmation. This S1 change does not make Explorer live.
+
+
+## S2 — data only
+
+Plan references: Explorer §§4, 4.2, 11.1, 12.1(3). No UI, API clients or server
+routes exposed. No live gofile calls. Schema v2 models all specified fields;
+migration handles missing/partial nested data without mutation and preserves
+complete host errors. 5000-file JSON plus a deterministic regeneration script,
+41-case MIME map, archived v1 fixture, and MSW reserved-host handlers cover
+success/processing/expired/403/413/415/502 (including recovery sequence).
+MSW is dev-only and unhandled requests fail closed.
+
+Migration safety notes are in `data/migrations/MIGRATIONS.md`: epoch fallback
+rather than a fabricated current timestamp; unknown fields not copied (as in
+plan sketch); credential-bearing direct URLs discarded; one configured host.
+SHA-1 here is stable identity only, independently checked against Node crypto.
+Fixtures/migration are not permission or filesystem-path validators, and cannot
+enable destructive operations on archived data.
+
+Local proof: 35 new data/mock assertions pass, including partial JSON,
+idempotency, non-mutation, UTF-8 identity, exact full host errors and no network
+fallback. Stage-specific annotations wired. Hosted proof/landing pending.
+Operator checkpoints remain pending as above; S3 has not started.

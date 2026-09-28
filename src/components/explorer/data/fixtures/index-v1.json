@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-01-01T00:00:00.000Z",
+  "runnerId": "fx-lab-v1",
+  "files": [
+    {
+      "id": "legacy-1",
+      "root": "Downloads",
+      "path": "/notes.txt",
+      "size": 24,
+      "mtime": "2026-01-01T00:00:00.000Z"
+    },
+    {
+      "root": "Documents",
+      "path": "/සිංහල.txt"
+    }
+  ]
+}
