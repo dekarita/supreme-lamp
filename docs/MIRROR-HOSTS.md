@@ -107,17 +107,37 @@ Legitimate documented usage only: no User-Agent spoofing, no proxy or IP
 switching, no header spoofing, no block-evasion tricks, no token in a URL, no
 credential in a log or artifact. A gate fails the build on those patterns.
 
-## 4. Encryption honesty (F46 §4)
+## 4. Encryption honesty (F46 §4, made real by F47 §3)
 
 - The worker reports the encryption that ACTUALLY happened (`encrypted=false`
   for a plaintext upload; the flag is never inferred from `encryptMode`).
-- If `encryptMode` asks for AES-256 while no encryptor is available on the runner
-  (the current remediation lock), the attempt is refused with
-  `phase=encrypt status=- msg=… refusing to upload plaintext` - it never uploads
-  plaintext behind an "AES-256 encrypted upload" card.
-- The Mirror card derives its title from the reported mode: "runner upload
-  (plain)" unless the worker reports encrypted uploads; a DOM test pins parity,
-  so the UI cannot overclaim.
+- **F47: the documented AES-256 mode now exists.** `mirror_encrypt=true` at
+  dispatch (or `encryptMode=all|media-plain` in config) makes the worker encrypt
+  each file with a per-run 32-byte key before upload:
+  - `AES-256-GCM` - preferred. Container: `GHRDPMIR` + ver + alg + nonce(12) +
+    tag(16) + ciphertext. Availability is PROVEN per runner by a real
+    encrypt/decrypt self-test (`Test-F46AesGcmUsable`), never assumed.
+  - `AES-256-CBC-PBKDF2` - fallback when the runner's .NET cannot bind
+    `AesGcm`. Container: salt(16) + iv(16) + AES-256-CBC over
+    PBKDF2-SHA256(key, salt, 100000) - byte-identical to the legacy `.ghenc`
+    form, so `docs/decrypt.html` and the web index decrypt it in the browser.
+  - Which algorithm ran is recorded per file (`encAlg`) and printed in the
+    attempt table; a 32-byte key length is asserted, a shorter key is refused.
+- Encrypted parts are uploaded with the part mime
+  **`application/x-ghrdp-mirror`** (already in the Explorer preview allowlist),
+  and the display name gains the `.ghenc` suffix (the legacy Explorer decrypt
+  path). Plaintext uploads keep `application/octet-stream`.
+- If the key is missing or no AES-256 encryptor can be constructed, the attempt
+  is refused with `phase=encrypt status=- msg=… refusing to upload plaintext` -
+  it never uploads plaintext behind an "AES-256" card.
+- The Mirror card derives its title from the reported mode: "Mirror - plaintext
+  runner upload (no AES-256)" unless the worker reports encrypted rows, in which
+  case it reads "Mirror - AES-256 encrypted runner upload" and names the
+  algorithm; a DOM test pins title/worker parity, so the UI cannot overclaim.
+- The key lives in config `mirrorKey` (masked + copy in the Keys card) and is in
+  the log-redaction set: it never appears in a log line, attempt record,
+  artifact or URL. The gofile **token** is a different secret and never touches
+  config.json at all - see §9.
 
 ## 5. Read-only host probe (F46 §5)
 
@@ -193,10 +213,51 @@ operator policy knobs, not invented defaults.
 
 ## 8. Operator verification
 
-1. Dispatch `main.yml`; read the `F46 mirror host probe` matrix in the summary.
-2. Open Diagnose in the dashboard: the same matrix plus the worker's attempt
-   table (`mirrorAttempts`).
-3. Enable the mirror only if desired (`mirrorHosts[0].enabled=true` + a token),
-   flush once, and upload ONE small benign `.txt`.
-4. Expect either a success row with a direct link, or ONE labeled reason
+1. Set the repository secret `GOFILE_TOKEN` once (Settings > Secrets and
+   variables > Actions) - see §9.
+2. Dispatch `main.yml` with `mirror_enable=true` (+ `mirror_encrypt=true` if you
+   want AES-256); read the `F46 mirror host probe` matrix in the step summary.
+3. Open the Mirror page: the **Mirror host matrix** card renders the same
+   `{host,status,note}` rows live from `/diag` (`mirrorHosts`), and the Diagnose
+   drawer carries them plus the worker's attempt table (`mirrorAttempts`).
+4. Click **Upload everything now** once and upload ONE small benign `.txt`.
+5. Expect either a success row with a `downloadPage` link, or ONE labeled reason
    (`phase=… status=… msg=…`) - never "failed after 5 tries" without a cause.
+
+## 9. F47 per-run opt-in and token plumbing
+
+Mirror default-OFF is a locked gate: the shipped `Get-F46DefaultHost` keeps
+`enabled=false` and the CI gate that forbids a default-ON mirror is unchanged.
+Enabling the mirror is **operator intent expressed per dispatch**:
+
+| Input | Default | Effect |
+| --- | --- | --- |
+| `mirror_enable` | `false` | `true` writes `mirrorHosts[0].enabled=true` into `config.json` **for this run only** (enabled flag + host id, nothing else). |
+| `mirror_encrypt` | `false` | `true` sets `encryptMode=all` and generates the per-run 32-byte `mirrorKey` (§4). |
+
+**Token plumbing (process env only).** `main.yml` reads the optional repository
+secret `GOFILE_TOKEN` into step env and publishes it as `GHRDP_GOFILE_TOKEN` in
+the RDP user's process environment (user scope, so the `ONLOGON` watcher process
+inherits it as its own process env). `Get-F46HostToken` reads that env var
+FIRST; the `gofileToken` config key and `gofile-token.txt` rungs remain for a
+manual/lab runner only and the stage step writes neither. The token is therefore
+never in `config.json`, never in a file the workflow writes, never in a URL, log
+line, artifact or UI field, and the cleanup step clears the env var on the way
+out.
+
+**Fail-closed.** `mirror_enable=true` with no `GOFILE_TOKEN` halts the stage
+step loudly (`::error::` + a step-summary card + `throw`) with a direct link to
+the repository Secrets settings. There is no workaround, no plaintext fallback
+and no silent guest-account fallback (`autoAccount` stays `false`), so the run
+can never degrade into an unexplained `phase=policy` row.
+
+**Where the truth is rendered.** The dispatch step summary prints the probe
+matrix plus `mirror opt-in for THIS run: enabled=… encryptMode=…`; the Mirror
+page renders the same rows from `/diag`; the `mirror-diag` artifact keeps both
+tables after a halt.
+
+**If every probe row is blocked from the runner egress (403)**, that is a policy
+dead-end with exactly two honest options - run the upload from an operator-owned
+VPS egress you configure yourself, or accept the mirror as unavailable from
+ephemeral runners and leave `mirror_enable=false`. Nothing in this repository
+attempts to work around a host policy.

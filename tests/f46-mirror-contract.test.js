@@ -117,7 +117,13 @@ test("F46-6 the fx uploader delegates to the one shared contract", () => {
 test("F46-7 mirror stays default-OFF and the probe never uploads in CI", () => {
   assert.match(module, /enabled = \$false/, "a host must default to disabled");
   assert.match(main, /MIRROR_INPUT -eq 'true'/, "the unchanged mirror gate must stay");
-  assert.equal(/^\s+mirror:/m.test(main.split("on:")[1].split("permissions:")[0] || ""), false, "no mirror dispatch input may reappear");
+  // [F47] the old split("on:") slice ended at the first `description:` (which
+  // also ends in "on:"), so this check was vacuous. Slice the real block.
+  const dispatchBlock = main.slice(main.indexOf("workflow_dispatch:"), main.indexOf("\npermissions:"));
+  assert.ok(dispatchBlock.includes("runner_target"), "the dispatch block must be the real inputs block");
+  assert.equal(/^\s+mirror:/m.test(dispatchBlock), false, "no bare `mirror:` dispatch input may reappear (mirror_enable/mirror_encrypt are the F47 opt-in inputs)");
+  const defFalse = dispatchBlock.match(/mirror_enable:[\s\S]*?default: (true|false)/);
+  assert.ok(defFalse && defFalse[1] === "false", "mirror_enable must default to false");
   assert.match(main, /F46 mirror host read-only probe/, "main.yml must run the read-only probe");
   assert.match(main, /no content upload/i, "the probe step must state that it uploads nothing");
   assert.match(main, /rdp-diag\/mirror-\*/, "the mirror-diag artifact must carry probe + attempt table");
@@ -138,7 +144,7 @@ test("F46-9 the UI renders the full reason and claims encryption honestly", () =
   assert.match(card, /claimTitle/, "the card title must be derived from the reported encryption");
   assert.match(card, /mirror\.titlePlain/, "the plaintext claim must exist");
   assert.match(card, /mirror\.titleEncryptLocked/, "the encrypt-locked claim must exist");
-  assert.equal(t.titleLong, "Mirror - AES-256 encrypted upload", "the encrypted claim stays for encrypted rows");
+  assert.equal(t.titleLong, "Mirror - AES-256 encrypted runner upload", "the encrypted claim stays for encrypted rows (F47 wording)");
   assert.match(t.titlePlain, /plaintext/i, "the default title must say plaintext");
   assert.match(progress, /encryptMode/, "the UI model must carry the reported encryptMode");
   assert.match(progress, /encryptedAny/, "the UI model must derive encryptedAny from the worker rows");

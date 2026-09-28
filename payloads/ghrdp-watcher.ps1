@@ -420,6 +420,12 @@ try {
           } catch { }
       }
       $prog.encryptMode = $encryptMode
+      # [F47 §3] the per-run AES-256 key is read ONCE per scan and is only ever
+      # used as key material: it goes into the redaction set for every log line
+      # and attempt record, and never into a URL, artifact or progress field.
+      $mirrorKeyText = ''
+      try { $mirrorKeyText = ([string]$cfg.mirrorKey).Trim() } catch { $mirrorKeyText = '' }
+      $mirrorEncAlg = ''
       foreach ($f in @($queue)) {
           $key = ([string]$f.FullName).ToLower()
           if ($mirrorTerminal.ContainsKey($key)) { continue }
@@ -488,21 +494,56 @@ try {
           $dispName = [string]$f.Name
           $encPath = $null
           $encApplied = $false
+          $uploadMime = ''
           if ($shouldEncrypt) {
-              # [F46 §4] ENCRYPTION HONESTY: this build has no AES-256 encryptor
-              # (remediation lock), so a config that asks for encryption gets ONE
-              # labeled fail-fast reason - never a plaintext upload, never an
-              # "encrypted" flag the worker cannot back with a real ciphertext.
-              $encErr = 'AES-256 encryptor unavailable in this build (remediation lock): refusing to upload plaintext'
-              Add-MirrorLog ('[mirror] attempt {0} host={1} phase=encrypt status=- msg={2} ms=0' -f $attemptNo, [string]$entry['host'], $encErr)
-              $entry['phase'] = 'encrypt'
-              $entry['status'] = 'failed'
-              $entry['error'] = ('phase=encrypt status=- msg=' + $encErr)
-              $entry['encrypted'] = 'False'
-              $mirrorTerminal[$key] = $true
-              $prog.agg.failed = [int]$prog.agg.failed + 1
-              Flush-MirrorProgress -Force
-              continue
+              # [F47 §3] AES-256 HONEST MODE: the documented encryption is now
+              # REAL. The per-run 32-byte key comes from config mirrorKey (the
+              # one place it lives; never logged, never in a URL or artifact).
+              # The ciphertext is stamped application/x-ghrdp-mirror so the
+              # legacy Explorer/decrypt path recognises it. If the key is
+              # missing or no AES-256 encryptor can be constructed, the attempt
+              # is ONE labeled fail-fast reason - never a plaintext upload
+              # behind an "encrypted" claim.
+              $encErr = ''
+              $encRes = $null
+              if (-not (Test-Path -LiteralPath $f.FullName)) {
+                  $encErr = 'source vanished before encryption'
+              } elseif (-not $mirrorModuleOk) {
+                  $encErr = 'ghrdp-mirror.ps1 is missing on this runner - the AES-256 encryptor is unavailable (staging bug); refusing to upload plaintext'
+              } elseif (-not $mirrorKeyText) {
+                  $encErr = 'mirror_encrypt was requested but config mirrorKey holds no per-run 32-byte key (dispatch main.yml with mirror_enable=true + mirror_encrypt=true); refusing to upload plaintext'
+              } else {
+                  $encDir = Join-Path $Root 'enc'
+                  try { New-Item -ItemType Directory -Path $encDir -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
+                  $encPath = Join-Path $encDir (([string]$f.Name) + [string]$script:F46GofileContract.encryptedSuffix)
+                  try {
+                      $encRes = Invoke-F46EncryptFile -Path ([string]$f.FullName) -OutPath $encPath -KeyBase64 $mirrorKeyText
+                  } catch {
+                      $encRes = @{ ok = $false; alg = ''; bytes = 0; message = ('encryptor threw: ' + $_.Exception.Message) }
+                  }
+                  if (-not $encRes -or -not [bool]$encRes.ok) {
+                      $encErr = $(if ($encRes -and $encRes.message) { [string]$encRes.message } else { 'AES-256 encryptor unavailable on this runner; refusing to upload plaintext' })
+                  }
+              }
+              if ($encErr) {
+                  Add-MirrorLog ('[mirror] attempt {0} host={1} phase=encrypt status=- msg={2} ms=0' -f $attemptNo, [string]$entry['host'], $encErr)
+                  $entry['phase'] = 'encrypt'
+                  $entry['status'] = 'failed'
+                  $entry['error'] = ('phase=encrypt status=- msg=' + $encErr)
+                  $entry['encrypted'] = 'False'
+                  $mirrorTerminal[$key] = $true
+                  $prog.agg.failed = [int]$prog.agg.failed + 1
+                  try { if ($encPath -and (Test-Path -LiteralPath $encPath)) { Remove-Item -LiteralPath $encPath -Force -ErrorAction SilentlyContinue } } catch { }
+                  Flush-MirrorProgress -Force
+                  continue
+              }
+              $encApplied = $true
+              $uploadPath = $encPath
+              $uploadLen = [long]$encRes.bytes
+              $dispName = (([string]$f.Name) + [string]$script:F46GofileContract.encryptedSuffix)
+              $uploadMime = [string]$script:F46GofileContract.encryptedMime
+              # The key is named, never printed: only algorithm + sizes are logged.
+              Add-MirrorLog ('[mirror] encrypted {0} -> {1} bytes alg={2} mime={3} key=redacted(32B, config mirrorKey)' -f $f.Name, $uploadLen, [string]$encRes.alg, $uploadMime)
           } else {
               if (-not (Test-Path -LiteralPath $f.FullName)) {
                   Add-MirrorLog ('[mirror] VANISHED {0} (file disappeared before upload)' -f $f.Name)
@@ -533,12 +574,12 @@ try {
           try { $token = Get-F46HostToken -Cfg $cfg -Root $Root -HostCfg $mirrorHost } catch { $token = '' }
           $res = $null
           try {
-              $res = Invoke-F46MirrorAttempt -HostCfg $mirrorHost -Path $uploadPath -Name $dispName -Size $uploadLen -Token $token -AttemptNo $attemptNo -EncryptRequested $false -Encrypted $false
+              $res = Invoke-F46MirrorAttempt -HostCfg $mirrorHost -Path $uploadPath -Name $dispName -Size $uploadLen -Token $token -AttemptNo $attemptNo -EncryptRequested $shouldEncrypt -Encrypted $encApplied -ContentType $uploadMime
           } catch {
               $res = @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('mirror attempt threw: ' + $_.Exception.Message); retryAfterMs = $null; record = $null; fileId = ''; code = ''; downloadPage = ''; directUrl = '' }
           }
           if ($null -eq $res) { $res = @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = 'mirror attempt returned nothing'; retryAfterMs = $null; record = $null; fileId = ''; code = ''; downloadPage = ''; directUrl = '' } }
-          $fullMsg = Protect-F46SecretText -Text ([string]$res.hostMessage) -Secrets @($token)
+          $fullMsg = Protect-F46SecretText -Text ([string]$res.hostMessage) -Secrets @($token, $mirrorKeyText)
           $phaseNow = [string]$res.phase
           $statusNow = '-'
           if ($null -ne $res.httpStatus) { if ([string]$res.httpStatus) { $statusNow = [string]$res.httpStatus } }
@@ -551,6 +592,10 @@ try {
               $entry['attempts'] = @($mirrorAttempts[$key])
               Add-MirrorLog (Format-F46AttemptLine -Attempt $attemptRec)
           }
+          if ($encApplied) { try { $mirrorEncAlg = [string]$encRes.alg } catch { $mirrorEncAlg = 'AES-256' } }
+          # [F47 §3] the local ciphertext is a transport artifact only: it is
+          # deleted as soon as the attempt is classified, success or failure.
+          try { if ($encPath -and (Test-Path -LiteralPath $encPath)) { Remove-Item -LiteralPath $encPath -Force -ErrorAction SilentlyContinue } } catch { }
           $link = $null
           if ([bool]$res.ok) {
               $link = [string]$res.directUrl
@@ -616,7 +661,7 @@ try {
       try {
           $diagAttempts = @($mirrorAttemptLog)
           if ($diagAttempts.Count -gt $mirrorDiagLimit) { $diagAttempts = $diagAttempts[($diagAttempts.Count - $mirrorDiagLimit)..($diagAttempts.Count - 1)] }
-          $prog.mirrorDiag = [ordered]@{ attempts = @($diagAttempts); terminalFiles = @($mirrorTerminal.Keys); hosts = @($prog.mirrorHosts); encryptMode = $encryptMode }
+          $prog.mirrorDiag = [ordered]@{ attempts = @($diagAttempts); terminalFiles = @($mirrorTerminal.Keys); hosts = @($prog.mirrorHosts); encryptMode = $encryptMode; encAlg = $mirrorEncAlg; keyBytes = $(if ($mirrorKeyText) { 32 } else { 0 }) }
       } catch { }
   } else {
       if (-not [bool]$cfg.mirror) {

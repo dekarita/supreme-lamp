@@ -285,6 +285,8 @@ export function MirrorCard() {
         <span className="font-mono" data-testid="mirror-encrypt-honesty">
           {t("mirror.encryptMode")}={m ? m.encryptMode : "none"} · {t("mirror.encryptedRows")}=
           {m && m.encryptedAny ? "yes" : "no"}
+          {/* [F47 §3] the algorithm the WORKER reported, never an assumption. */}
+          {m && m.encryptedAny ? " · " + t("mirror.encryptAlg") + "=" + (m.encAlg || "AES-256") : ""}
         </span>
       </div>
     </Card>

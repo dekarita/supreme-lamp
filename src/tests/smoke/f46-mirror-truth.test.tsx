@@ -84,7 +84,7 @@ describe("F46 mirror reason visibility", () => {
     const { container } = render(<MirrorCard />);
     const title = container.querySelector("#sec-mirror h2, #sec-mirror [data-card-title]") || screen.getByText(/Mirror - /);
     expect(title.textContent).toContain("plaintext");
-    expect(title.textContent).not.toContain("AES-256 encrypted upload");
+    expect(title.textContent).not.toContain("AES-256 encrypted runner upload");
     expect(screen.getByTestId("mirror-encrypt-honesty").textContent).toContain("encryptMode=none");
     expect(screen.getByTestId("mirror-encrypt-honesty").textContent).toContain("encrypted uploads=no");
   });
@@ -93,7 +93,7 @@ describe("F46 mirror reason visibility", () => {
     useTelemetryStore.getState().setProgress(progressPayload("True") as Any);
     const { container } = render(<MirrorCard />);
     const title = container.querySelector("#sec-mirror h2, #sec-mirror [data-card-title]") || screen.getByText(/Mirror - /);
-    expect(title.textContent).toContain("AES-256 encrypted upload");
+    expect(title.textContent).toContain("AES-256 encrypted runner upload");
     expect(screen.getByTestId("mirror-encrypt-honesty").textContent).toContain("encrypted uploads=yes");
   });
 });

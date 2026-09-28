@@ -17,6 +17,19 @@ on:
           - media-plain
           - all
         default: none
+      # [F47 §1] PER-RUN MIRROR OPT-IN. The shipped default stays OFF (the
+      # "mirror default must stay OFF" gate is unchanged): enabling the mirror
+      # is operator intent expressed per dispatch, and it requires the repo
+      # secret GOFILE_TOKEN. Absent token + mirror_enable=true = a loud
+      # fail-closed stage halt with the Secrets link, never a silent policy row.
+      mirror_enable:
+        description: 'F47 per-run mirror opt-in: enable mirrorHosts[0] for THIS run only (needs repo secret GOFILE_TOKEN). false = mirror stays OFF (default).'
+        type: boolean
+        default: false
+      mirror_encrypt:
+        description: 'F47 AES-256 honest mode: encrypt every upload with a per-run 32-byte key (config mirrorKey, masked in the Keys card) and stamp it application/x-ghrdp-mirror. Needs mirror_enable=true.'
+        type: boolean
+        default: false
 
 permissions:
   contents: write   # push docs/search.html from the watcher (superset of read)
@@ -65,6 +78,10 @@ jobs:
     env:
       GHRDP_EPHEMERAL: 'true'
       ENCRYPT_MODE: ${{ github.event.inputs.encrypt_mode || 'none' }}
+      # [F47 §1] the per-run opt-in as a string; the stage step is the only
+      # consumer and it still only ever compares MIRROR_INPUT to 'true'.
+      MIRROR_INPUT: ${{ github.event.inputs.mirror_enable == true && 'true' || 'false' }}
+      MIRROR_ENCRYPT_INPUT: ${{ github.event.inputs.mirror_encrypt == true && 'true' || 'false' }}
       RENTRY_MAIN_URL: 'https://rentry.co/myurl0'
       RENTRY_MAIN_EDIT: ''
       RUN_STARTED_AT: ${{ github.run_started_at || '' }}
@@ -277,6 +294,9 @@ jobs:
       - name: Validate required secret (RENTRY_EDIT_PASSWORD) - fail fast, NO bypass
         env:
           RENTRY_EDIT_PASSWORD: ${{ secrets.RENTRY_EDIT_PASSWORD }}
+          # [F47 §1] presence check only - the VALUE never leaves this step and
+          # the fail-closed halt lives in the stage step (one place, no drift).
+          GOFILE_TOKEN: ${{ secrets.GOFILE_TOKEN }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -293,6 +313,17 @@ jobs:
               Write-Host '  NO BYPASS: refusing to publish Rentry anonymously. Failing now.'
               Write-Host '============================================================'
               Write-Host '[validate] RENTRY_EDIT_PASSWORD not set - OK (myurl0 is frozen; github.io is the primary index).'
+          }
+          # [F47 §1] per-run mirror opt-in presence (the halt is the stage step's).
+          if ($env:MIRROR_INPUT -eq 'true') {
+              if ([string]$env:GOFILE_TOKEN) {
+                  Write-Host '[validate] F47 mirror opt-in ON for this run: GOFILE_TOKEN present (value never printed).'
+              } else {
+                  Write-Host '::warning::[F47] mirror_enable=true but GOFILE_TOKEN is NOT set - the stage step will halt fail-closed.'
+                  Write-Host ('[validate] set it here: ' + $link + ' (Name: GOFILE_TOKEN)')
+              }
+          } else {
+              Write-Host '[validate] F47 mirror opt-in OFF for this run (mirror_enable=false) - GOFILE_TOKEN not required.'
           }
           if (-not $mirrorOn) {
               Write-Host '[validate] mirror is OFF this run - RENTRY_EDIT_PASSWORD not required.'
@@ -1699,6 +1730,10 @@ jobs:
           RENTRY_EDIT_PASSWORD: ${{ secrets.RENTRY_EDIT_PASSWORD }}
           RENTRY_EDIT_COOKIE: ${{ secrets.RENTRY_EDIT_COOKIE }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # [F47 §1] the optional mirror credential. Step-scoped on purpose: it
+          # reaches the worker as process env only and is never written to
+          # config.json, a log line, an artifact or a URL.
+          GOFILE_TOKEN: ${{ secrets.GOFILE_TOKEN }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -1812,6 +1847,66 @@ jobs:
           }
           Write-Host ('[stage] rdpIp source = ' + $ipSrcStage + '; value = [' + $ip + ']')
           $mirrorOn = ($env:MIRROR_INPUT -eq 'true')
+          # --- [F47 §1 per-run-mirror-opt-in-begin] ---------------------------
+          # mirror_enable=true is OPERATOR INTENT FOR THIS RUN ONLY: this step
+          # writes mirrorHosts[0].enabled=true into config.json (enabled flag +
+          # host id, nothing else), the shipped default stays disabled, and the
+          # gofile token travels as PROCESS ENV (GHRDP_GOFILE_TOKEN, user scope
+          # for the RDP user's session so the ONLOGON watcher inherits it) -
+          # never config.json, never a file this step writes, never a URL, log
+          # line, artifact or UI field. No token => loud fail-closed halt.
+          $mirrorEncryptOn = ($env:MIRROR_ENCRYPT_INPUT -eq 'true')
+          $gofileToken = ([string]$env:GOFILE_TOKEN).Trim()
+          $mirrorHostsCfg = @()
+          $mirrorKeyF47 = ''
+          $encModeF47 = [string]$env:ENCRYPT_MODE
+          $f47SecretsLink = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/settings/secrets/actions')
+          if ($mirrorOn -and -not $gofileToken) {
+              Write-Host '::error::[F47] mirror_enable=true but the repo secret GOFILE_TOKEN is not set - the mirror upload cannot authenticate. Fail-closed: no bypass, no guest-account fallback, no silent policy row.'
+              Write-Host '============================================================'
+              Write-Host '  MISSING REQUIRED SECRET: GOFILE_TOKEN'
+              Write-Host ('  Add it here: ' + $f47SecretsLink + '/new')
+              Write-Host '    Name  : GOFILE_TOKEN'
+              Write-Host '    Value : your gofile.io account token (gofile.io -> My Profile)'
+              Write-Host '  The token reaches the worker as process env ONLY - it is never'
+              Write-Host '  written to config.json, a log, an artifact or a URL.'
+              Write-Host '  NO BYPASS: refusing to enable a mirror host that cannot'
+              Write-Host '  authenticate. Nothing was uploaded. Failing now.'
+              Write-Host '============================================================'
+              if ($env:GITHUB_STEP_SUMMARY) {
+                  '### F47 halt: `mirror_enable=true` but the `GOFILE_TOKEN` secret is missing' | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+                  ('Set the repository secret **GOFILE_TOKEN** in [Settings > Secrets and variables > Actions](' + $f47SecretsLink + '), then dispatch again with `mirror_enable=true`. No host was enabled and nothing was uploaded.') | Add-Content -Path $env:GITHUB_STEP_SUMMARY
+              }
+              throw 'F47: mirror_enable=true requires the repo secret GOFILE_TOKEN (fail-closed; the Secrets link is in the step log)'
+          }
+          if ($mirrorOn) {
+              $f47Mod = Join-Path $root 'ghrdp-mirror.ps1'
+              if (-not (Test-Path -LiteralPath $f47Mod)) {
+                  Write-Host '::error::[F47] ghrdp-mirror.ps1 was not staged - an EARLIER step halted this run; refusing to enable a mirror host without its contract module.'
+                  throw 'F47: ghrdp-mirror.ps1 missing from C:\ghrdp (staging failure)'
+              }
+              . $f47Mod
+              # config stores the enabled flag + host id ONLY.
+              $mirrorHostsCfg = @([ordered]@{ id = 'gofile'; displayName = 'gofile.io'; apiRoot = 'https://api.gofile.io'; uploadHostMode = 'auto'; uploadHost = 'upload.gofile.io'; uploadPath = '/uploadfile'; enabled = $true; autoAccount = $false })
+              if ($mirrorEncryptOn) {
+                  $encModeF47 = 'all'
+                  $mirrorKeyF47 = (New-F46MirrorKey)
+                  if (@([Convert]::FromBase64String($mirrorKeyF47)).Length -ne 32) { throw 'F47: the per-run mirror key is not 32 bytes' }
+              }
+              # Process env ONLY: user scope so the ONLOGON watcher process in
+              # the RDP user's session inherits it as its own process env.
+              try {
+                  [Environment]::SetEnvironmentVariable('GHRDP_GOFILE_TOKEN', $gofileToken, 'User')
+                  Write-Host '[F47] GOFILE_TOKEN published to the RDP user process environment (name only; the value is never printed)'
+              } catch {
+                  Write-Host ('::error::[F47] GHRDP_GOFILE_TOKEN could not be published to the process environment: ' + $_.Exception.Message)
+                  throw 'F47: the gofile token cannot reach the worker as process env - refusing to enable a host that cannot authenticate'
+              }
+              Write-Host ('[F47] mirror opt-in for THIS run: host=gofile enabled=true encrypt=' + $mirrorEncryptOn + ' keyBytes=' + $(if ($mirrorKeyF47) { 32 } else { 0 }) + ' (shipped default stays enabled=false)')
+          } else {
+              Write-Host '[F47] mirror_enable=false - mirrorHosts keeps the shipped default (enabled=false); no token read, no host enabled, no key generated.'
+          }
+          # --- [F47 §1 per-run-mirror-opt-in-end] -----------------------------
           $tokSet = 'abcdefghijklmnopqrstuvwxyz0123456789'
           $tok = ''
           for ($i = 0; $i -lt 32; $i++) { $tok = $tok + (Pick-Char -Set $tokSet) }
@@ -1873,8 +1968,10 @@ jobs:
               repo = [string]$env:GITHUB_REPOSITORY
               dashToken = $tok
               mirror = $mirrorOn
-              encryptMode = [string]$env:ENCRYPT_MODE
-              mirrorKey = ''
+              # [F47 §1] per-run opt-in: enabled flag + host id only, never a token.
+              mirrorHosts = @($mirrorHostsCfg)
+              encryptMode = $encModeF47
+              mirrorKey = $mirrorKeyF47
               telegraphToken = ''
               telegraphPath = ''
               mirrorIndexUrl = ''
@@ -2285,12 +2382,20 @@ jobs:
               $hosts = @(Get-F46Hosts -Cfg $cfg)
               $rows = @(Invoke-F46HostProbe -Hosts $hosts -TimeoutSec 8)
               $matrixTxt = Format-F46ProbeTable -Rows $rows
+              # [F47 §2] the same table the Mirror page renders from /diag, plus
+              # the per-run opt-in state, so the operator never has to open an
+              # artifact to see whether gofile is reachable from this egress.
+              $f47On = 'false'
+              try { if ($cfg) { $f47On = [string](@(Get-F46Hosts -Cfg $cfg)[0].enabled) } } catch { }
+              $optInTxt = ('mirror opt-in this run: enabled=' + $f47On + ' (dispatch mirror_enable; default false) | encryptMode=' + $(if ($cfg -and $cfg.encryptMode) { [string]$cfg.encryptMode } else { 'none' }))
               Write-Host ('[F46] read-only host probe (no upload):' + "`n" + $matrixTxt)
+              Write-Host ('[F47] ' + $optInTxt)
               if ($S) {
                   '### F46 mirror host probe (read-only, runner egress)' | Add-Content -Path $S
                   '```' | Add-Content -Path $S
                   $matrixTxt | Add-Content -Path $S
                   '```' | Add-Content -Path $S
+                  ('- ' + $optInTxt) | Add-Content -Path $S
               }
           } catch {
               $matrixTxt = ('probe failed: ' + $_.Exception.Message)
@@ -5304,6 +5409,9 @@ jobs:
           $ErrorActionPreference = 'Continue'
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           Write-Host '[cleanup] secure cleanup starting'
+          # [F47 §1] the mirror token lived in the process environment only -
+          # remove it on the way out (name only is ever printed).
+          try { [Environment]::SetEnvironmentVariable('GHRDP_GOFILE_TOKEN', $null, 'User'); Write-Host '[cleanup] GHRDP_GOFILE_TOKEN cleared from the user environment' } catch { }
           if (Test-Path -LiteralPath $ts) {
               foreach ($cmdArgs in @(@('serve', '--reset'), @('funnel', '--reset'), @('serve', 'off'), @('funnel', 'off'))) {
                   try { & $ts @cmdArgs 2>$null | Out-Null } catch { }
