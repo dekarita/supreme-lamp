@@ -53,6 +53,8 @@
   },
   "mirror": {
     "title": "දර්පණය",
+    "titlePlain": "Mirror - plaintext runner upload (no AES-256)",
+    "titleEncryptLocked": "Mirror - AES-256 requested but unavailable in this build (plaintext refused)",
     "progress": "උඩුගත කිරීමේ ප්‍රගතිය",
     "runnerEgress": "රනර් නික්මීම",
     "overall": "සමස්ත",
@@ -61,7 +63,10 @@
     "bytes": "බයිට",
     "speed": "වේගය",
     "scans": "ස්කෑන්",
-    "eta": "ETA"
+    "eta": "ETA",
+    "showReason": "show full reason",
+    "encryptMode": "encryptMode",
+    "encryptedRows": "encrypted uploads"
   },
   "logs": {
     "title": "සටහන්",

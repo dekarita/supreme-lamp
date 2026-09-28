@@ -25,7 +25,26 @@ export interface MirrorModel {
   roots: string[];
   pubDot: "" | "ok" | "warn";
   pubTxt: string;
-  files: { name: string; phase: string; pct: number; size: string; status: string; error: string; link: string; expired: boolean }[];
+  // [F46 §4] encryption honesty: what the WORKER reported, never what the card
+  // wishes. `encryptedAny` is true only when a file row carries encrypted=True.
+  encryptMode: string;
+  encryptRequested: boolean;
+  encryptedAny: boolean;
+  // [F46 §1] the complete, untruncated failure reason per file plus the raw
+  // attempt records behind it (the same table the mirror-diag artifact carries).
+  files: {
+    name: string;
+    phase: string;
+    pct: number;
+    size: string;
+    status: string;
+    error: string;
+    link: string;
+    expired: boolean;
+    host: string;
+    encrypted: string;
+    attempts: { n: number; line: string }[];
+  }[];
   speedHistory: number[];
 }
 
@@ -53,6 +72,11 @@ export function mirrorModel(d: Any, prevHistory: number[]): MirrorModel {
     eta = dn === tot && tot > 0 ? "done" : "-";
   }
   const act = pData.active || {};
+  const diag = pData.mirrorDiag || {};
+  let encryptMode = String(pData.encryptMode || diag.encryptMode || "none");
+  if (!encryptMode) encryptMode = "none";
+  const encryptRequested = encryptMode === "all" || encryptMode === "media-plain";
+  let encryptedAny = false;
   const files = asList(pData.files).slice(0, 50).map((f: Any) => {
     let pf = Number(f.pct) || 0;
     if (f.status === "active" && act.name && act.name === f.name) pf = Number(act.pct) || pf;
@@ -66,8 +90,27 @@ export function mirrorModel(d: Any, prevHistory: number[]): MirrorModel {
       error: f.error ? String(f.error) : "",
       link: isExpired ? "" : f.link ? String(f.link) : "",
       expired: isExpired,
+      host: f.host ? String(f.host) : "",
+      encrypted: f.encrypted ? String(f.encrypted) : "False",
+      attempts: asList(f.attempts).map((a: Any) => ({
+        n: Number(a && a.n) || 0,
+        line:
+          "attempt " +
+          String((a && a.n) ?? "?") +
+          " host=" +
+          String((a && a.host) ?? "-") +
+          " phase=" +
+          String((a && a.phase) ?? "-") +
+          " status=" +
+          String(a && a.status !== null && a.status !== undefined && a.status !== "" ? a.status : "-") +
+          " msg=" +
+          String((a && a.msg) ?? "") +
+          " ms=" +
+          String((a && a.ms) ?? 0),
+      })),
     };
   });
+  for (const row of files) if (row.encrypted === "True") encryptedAny = true;
   let pubDot: "" | "ok" | "warn" = "";
   let pubTxt = "Mirror disabled";
   if (d.mirrorIndexUrl || d.rentryNewUrl) {
@@ -95,6 +138,9 @@ export function mirrorModel(d: Any, prevHistory: number[]): MirrorModel {
     roots: asList(telemetry.roots).map((r: Any) => String(r)),
     pubDot,
     pubTxt,
+    encryptMode,
+    encryptRequested,
+    encryptedAny,
     files,
     speedHistory,
   };

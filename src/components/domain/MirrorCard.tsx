@@ -23,6 +23,17 @@ export function MirrorCard() {
   const runDiag = useSessionStore((s) => s.runDiag);
   const native = useSessionStore((s) => s.native);
   const m = mirror;
+  // [F46 §4] ENCRYPTION HONESTY: the card claims exactly what the worker
+  // reported. "AES-256 encrypted upload" only when a file row carries
+  // encrypted=True; a config that asks for AES-256 while this build cannot
+  // encrypt says so; the shipped default (encryptMode=none) says plaintext.
+  const claimTitle = !m
+    ? t("mirror.titleLong")
+    : m.encryptedAny
+      ? t("mirror.titleLong")
+      : m.encryptRequested
+        ? t("mirror.titleEncryptLocked")
+        : t("mirror.titlePlain");
 
   async function doFlush() {
     await getJson("/launch");
@@ -55,7 +66,7 @@ export function MirrorCard() {
   const tile = "flex flex-col gap-0.5 rounded-md border border-default bg-raised/40 px-3 py-2";
 
   return (
-    <Card id="sec-mirror" title={t("mirror.titleLong")} icon={<Upload className="size-4 text-tertiary" aria-hidden />} className="mb-4">
+    <Card id="sec-mirror" title={claimTitle} icon={<Upload className="size-4 text-tertiary" aria-hidden />} className="mb-4">
       <div className="flex flex-wrap items-center gap-6">
         <div className="flex items-center gap-4">
           <ProgressRing fillId="ringFill" gradId="ringGrad" pct={m ? Number(m.pctText.replace("%", "")) : 0} label={t("mirror.progress")} size={80} />
@@ -220,8 +231,34 @@ export function MirrorCard() {
                       />{" "}
                       <span className="text-xs">{f.status}</span>
                     </td>
-                    <td className="px-3 py-1.5 text-xs text-danger max-w-[160px] truncate" title={f.error}>
-                      {f.error ? f.error.slice(0, 40) : "-"}
+                    {/* [F46 §1] NEVER truncated: the complete phase/status/message
+                        (and every attempt line behind it) is in the DOM. The
+                        summary only collapses it; no slice, no CSS truncation. */}
+                    <td className="px-3 py-1.5 text-xs text-danger align-top max-w-[380px]" data-testid="mirror-error-cell">
+                      {f.error ? (
+                        <details data-testid="mirror-reason">
+                          <summary className="cursor-pointer break-words whitespace-normal" data-testid="mirror-reason-summary">
+                            {t("mirror.showReason")}
+                          </summary>
+                          <div
+                            className="mt-1 max-w-[380px] whitespace-pre-wrap break-all font-mono text-[11px] text-danger"
+                            data-testid="mirror-reason-full"
+                          >
+                            {f.error}
+                          </div>
+                          {f.attempts.length > 0 && (
+                            <ul className="mt-1 flex flex-col gap-0.5 text-[11px] text-secondary" data-testid="mirror-attempts">
+                              {f.attempts.map((a) => (
+                                <li key={a.n} className="font-mono whitespace-pre-wrap break-all">
+                                  {a.line}
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </details>
+                      ) : (
+                        "-"
+                      )}
                     </td>
                     <td className="px-3 py-1.5">
                       {f.expired ? (
@@ -241,7 +278,15 @@ export function MirrorCard() {
           </table>
         </div>
       </div>
-      <div className="text-xs text-tertiary mt-2">{t("mirror.runnerEgress")}: {(native && native.runnerEgressIp) || "..."}</div>
+      <div className="text-xs text-tertiary mt-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span>
+          {t("mirror.runnerEgress")}: {(native && native.runnerEgressIp) || "..."}
+        </span>
+        <span className="font-mono" data-testid="mirror-encrypt-honesty">
+          {t("mirror.encryptMode")}={m ? m.encryptMode : "none"} · {t("mirror.encryptedRows")}=
+          {m && m.encryptedAny ? "yes" : "no"}
+        </span>
+      </div>
     </Card>
   );
 }

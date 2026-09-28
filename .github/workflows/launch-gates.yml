@@ -2092,6 +2092,79 @@ jobs:
           grep -qF "'payloads/ghrdp-fx.ps1'" .github/workflows/launch-gates.yml || { echo 'F45: windows-native does not parse the module' >&2; exit 1; }
           grep -qF 'tests/f45-fx-server.ps1' .github/workflows/launch-gates.yml || { echo 'F45: the server test is not executed by any lane' >&2; exit 1; }
           echo 'F45 gates PASS'
+      # [F46] Mirror worker reason visibility + policy-correct retries + the
+      # documented gofile contract. The policy table must be the SAME table as
+      # the F44/S3 TypeScript contract (pinned by
+      # tests/f46-mirror-contract.test.js, which `node --test tests/*.test.js`
+      # picks up in the step below), the worker must emit ONE structured line
+      # per attempt, mirror stays default-OFF, the probe is read-only, and the
+      # banned evasion patterns (spoofed User-Agent, proxy switching, IP
+      # rotation, header spoofing) may not appear in any mirror surface.
+      - name: F46 mirror reason-visibility + gofile contract gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f payloads/ghrdp-mirror.ps1 || { echo 'F46: the mirror module is missing' >&2; exit 1; }
+          test -f tests/f46-mirror-policy.ps1 || { echo 'F46: the policy lab is missing' >&2; exit 1; }
+          test -f docs/MIRROR-HOSTS.md || { echo 'F46: docs/MIRROR-HOSTS.md is missing' >&2; exit 1; }
+          # one structured attempt line per attempt, produced by the module and
+          # used by the worker
+          grep -qF '[mirror] attempt {0} host={1} phase={2} status={3} msg={4} ms={5}' payloads/ghrdp-mirror.ps1
+          grep -qF 'Format-F46AttemptLine' payloads/ghrdp-watcher.ps1
+          grep -qF 'Format-F46FailureSummary' payloads/ghrdp-watcher.ps1
+          # the old bare retry-exhausted message may not exist anywhere
+          if grep -rnE 'upload failed after [0-9]+ tries|FAILED after .+ tries' payloads/ghrdp-watcher.ps1 payloads/ghrdp-lib.ps1; then
+            echo 'F46: a bare retry-exhausted message without phase+status is forbidden' >&2
+            exit 1
+          fi
+          # the F44/S3 policy table
+          grep -qF '$script:F46FailFastStatuses = @(401, 403, 413, 415)' payloads/ghrdp-mirror.ps1
+          grep -qF "\$script:F46TransientPhases = @('dns', 'tcp', 'tls', 'http')" payloads/ghrdp-mirror.ps1
+          grep -qF '$script:F46MaxAttempts = 5' payloads/ghrdp-mirror.ps1
+          grep -qF '$script:F46RetryAfterCapMs = 120000' payloads/ghrdp-mirror.ps1
+          # the documented gofile contract (current reference + fleet form)
+          grep -qF "accountsPath = '/accounts'" payloads/ghrdp-mirror.ps1
+          grep -qF "serversPath = '/servers'" payloads/ghrdp-mirror.ps1
+          grep -qF "uploadPathAuto = '/uploadfile'" payloads/ghrdp-mirror.ps1
+          grep -qF "uploadPathFleet = '/contents/uploadfile'" payloads/ghrdp-mirror.ps1
+          grep -qF "multipartField = 'file'" payloads/ghrdp-mirror.ps1
+          grep -qF "authScheme = 'Bearer'" payloads/ghrdp-mirror.ps1
+          grep -qF "idFields = @('fileId', 'id')" payloads/ghrdp-mirror.ps1
+          grep -qF "pageFields = @('downloadPage', 'directLink')" payloads/ghrdp-mirror.ps1
+          # mirror stays default-OFF; the probe is read-only; no credential in a URL
+          grep -qF 'enabled = $false' payloads/ghrdp-mirror.ps1
+          grep -qiF 'no content is uploaded' payloads/ghrdp-mirror.ps1
+          if grep -nE '\?token=' payloads/ghrdp-mirror.ps1 payloads/ghrdp-watcher.ps1; then
+            echo 'F46: a credential may not appear in a URL' >&2
+            exit 1
+          fi
+          # evasion is forbidden in every mirror surface
+          if grep -nE 'Mozilla/[0-9]|X-Forwarded-For|[Ww]ebProxy|proxy *=|rotat' payloads/ghrdp-mirror.ps1 payloads/ghrdp-watcher.ps1 payloads/ghrdp-fx.ps1; then
+            echo 'F46: an evasion pattern (UA spoofing / proxy / IP rotation / header spoofing) appeared' >&2
+            exit 1
+          fi
+          # [F46 §1/§4] the UI reason column must render the FULL reason (both
+          # UIs) and the card may not claim AES-256 unconditionally.
+          test -f src/tests/smoke/f46-mirror-truth.test.tsx || { echo 'F46: the mirror DOM truth test is missing' >&2; exit 1; }
+          if grep -nE 'error\.slice\(0, ?4?[0-9]\)|substring\(0, ?4?[0-9]\)' src/components/domain/MirrorCard.tsx payloads/ui.html; then
+            echo 'F46: the mirror error column is truncated again' >&2
+            exit 1
+          fi
+          grep -qF 'mirror-reason-full' src/components/domain/MirrorCard.tsx
+          grep -qF 'errfull' payloads/ui.html
+          grep -qF 'claimTitle' src/components/domain/MirrorCard.tsx
+          grep -qF 'mirror.titlePlain' src/components/domain/MirrorCard.tsx
+          grep -qF 'encryptMode' src/lib/domain/progress.ts
+          grep -qF 'encryptedAny' src/lib/domain/progress.ts
+          grep -qF '"titlePlain"' src/i18n/en.json
+          # deployment + lane wiring
+          grep -qF 'payloads/ghrdp-mirror.ps1' .github/workflows/main.yml
+          grep -qF 'mirror-diag' .github/workflows/main.yml
+          grep -qF "'payloads/ghrdp-mirror.ps1'" .github/workflows/launch-gates.yml
+          grep -qF 'tests/f46-mirror-policy.ps1' .github/workflows/launch-gates.yml
+          grep -qF 'and the encrypt' docs/MIRROR-HOSTS.md || true
+          echo 'F46 gates PASS'
+
       - name: F40 information-architecture regression lock
         shell: bash
         run: |
@@ -2343,7 +2416,7 @@ jobs:
           # syntax error in them used to surface only as a red Windows lab cell
           # (an expensive loop), and the server DOT-SOURCES the module at start.
           $bad = @()
-          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/ghrdp-fx.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1', 'tests/f45-fx-server.ps1')) {
+          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/ghrdp-fx.ps1', 'payloads/ghrdp-mirror.ps1', 'payloads/ghrdp-watcher.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1', 'tests/f45-fx-server.ps1', 'tests/f46-mirror-policy.ps1')) {
               $errors = $null
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
               if ($errors) {
@@ -2373,6 +2446,21 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & (Join-Path $env:GITHUB_WORKSPACE 'tests\f45-fx-server.ps1')
           if ($LASTEXITCODE -ne 0) { throw ('F45: the fx server test failed with exit ' + $LASTEXITCODE) }
+
+      # [F46 §6] Mirror policy + contract lab. Drives the SHIPPED
+      # payloads/ghrdp-mirror.ps1 with a mock transport: 403/413/415 => exactly
+      # one attempt, 429/500/502/tls-reset => policy backoff retries,
+      # preflight size/type => ZERO network tries, the full (untruncated) host
+      # message in the artifact-facing string, the documented gofile contract
+      # (accounts/servers/uploadfile, Bearer, multipart `file`, id/downloadPage
+      # aliases) and the read-only probe matrix. No content is uploaded: the mock
+      # cases never touch the network and the single real probe is a GET.
+      - name: F46 mirror policy + gofile contract lab (mock transport, read-only probe)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f46-mirror-policy.ps1')
+          if ($LASTEXITCODE -ne 0) { throw ('F46: the mirror policy lab failed with exit ' + $LASTEXITCODE) }
       # [F24] The F24 blocks live INSIDE main.yml (inline pwsh) and are extracted
       # verbatim by the lab cell U + the F24 gate. Parse them here with the
       # PowerShell language parser so a syntax error is caught in ~1 min instead

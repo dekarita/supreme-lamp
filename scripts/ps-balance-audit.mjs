@@ -298,6 +298,18 @@ function fxContractProblems() {
   if (!gates.includes("'payloads/ghrdp-fx.ps1'")) problems.push('launch-gates.yml: the fx module is not parsed in windows-native');
   if (!gates.includes('tests/f45-fx-server.ps1')) problems.push('launch-gates.yml: the fx server test is not executed');
   if (!gates.includes('node scripts/ps-balance-audit.mjs')) problems.push('launch-gates.yml: this audit is not executed');
+
+  // 2.9 [F46] one shared mirror contract: staged, parsed, lab-run, and used by
+  // both the watcher (worker) and the server (Diagnose probe).
+  const mirror = read('payloads/ghrdp-mirror.ps1');
+  const watcher = read('payloads/ghrdp-watcher.ps1');
+  if (!/payloads\/ghrdp-mirror\.ps1" "\$RUNNER_TEMP\/ghrdp-stage\/ghrdp-mirror\.ps1"/.test(main)) problems.push('main.yml: ghrdp-mirror.ps1 is not staged next to the server + watcher');
+  if (!gates.includes("'payloads/ghrdp-mirror.ps1'")) problems.push('launch-gates.yml: the mirror module is not parsed in windows-native');
+  if (!gates.includes('tests/f46-mirror-policy.ps1')) problems.push('launch-gates.yml: the F46 policy lab is not executed');
+  if (!mirror.includes("$script:F46GofileContract")) problems.push('ghrdp-mirror.ps1: the gofile contract table is missing');
+  if (!/\. \$global:GhrdpMirrorModulePath/.test(watcher)) problems.push('ghrdp-watcher.ps1: the mirror module is not dot-sourced');
+  if (!watcher.includes('Invoke-F46MirrorAttempt')) problems.push('ghrdp-watcher.ps1: the shared attempt engine is not used');
+  if (!srv.includes('Invoke-F46HostProbe')) problems.push(`${srvPath}: /diag does not run the read-only host probe`);
   return problems;
 }
 
@@ -314,6 +326,9 @@ const targets = [
   'payloads/Test-RdpListenerHandshake.ps1',
   'payloads/Enable-RdpTlsCertificate.ps1',
   'payloads/ghrdp-lib.ps1',
+  'payloads/ghrdp-mirror.ps1',
+  'payloads/ghrdp-watcher.ps1',
+  'tests/f46-mirror-policy.ps1',
 ];
 
 let failed = 0;

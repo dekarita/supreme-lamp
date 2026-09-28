@@ -673,6 +673,23 @@ foreach ($fxCand in @((Join-Path $Root 'ghrdp-fx.ps1'), (Join-Path $PSScriptRoot
     }
 }
 if (-not $script:FxReady) { $script:FxLoadError = ('ghrdp-fx.ps1 not found next to the server at ' + $Root) }
+# [F46 §3/§5] mirror host module (documented gofile contract + attempt policy +
+# READ-ONLY probe). Dot-sourced for the Diagnose surface; the watcher's mirror
+# worker and the Explorer uploader execute the SAME functions. A missing module
+# is fail-visible in /diag and in every upload reason - never silent.
+$script:F46MirrorReady = $false
+foreach ($f46cand in @((Join-Path $Root 'ghrdp-mirror.ps1'), (Join-Path $PSScriptRoot 'ghrdp-mirror.ps1'))) {
+    if ($script:F46MirrorReady) { break }
+    if ($f46cand -and (Test-Path -LiteralPath $f46cand -PathType Leaf)) {
+        try {
+            . $f46cand
+            $script:F46MirrorReady = $true
+        } catch {
+            $script:F46MirrorReady = $false
+        }
+    }
+}
+if (-not $script:F46MirrorReady) { $script:F46MirrorLoadError = ('ghrdp-mirror.ps1 not found next to the server at ' + $Root) }
 # §1.5/§1.6 CSRF token: one per server process, 24 random bytes, never logged.
 # It reaches the dashboard as the JS-readable SameSite=Strict cookie
 # ghrdp_fx_csrf (and the X-CSRF-Token response header on /api/fx/list); a POST
@@ -1312,6 +1329,28 @@ function Invoke-ClientRequest {
             try { $wt = Get-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction SilentlyContinue; if ($wt) { $watcherState = [string]$wt.State } } catch { }
             $progAge = $null
             try { if ($prog -and $prog.ts) { $progAge = [int]((Get-Date) - [datetime]$prog.ts).TotalSeconds } } catch { }
+            # [F46 §5] READ-ONLY mirror host probe + the worker's attempt table.
+            # HEAD/GET of each configured host API root: no credential, no body
+            # upload, no evasion. The matrix is the Diagnose output the operator
+            # reads; all-403 from a runner egress is a documented policy
+            # dead-end (operator options in docs/MIRROR-HOSTS.md).
+            $mirrorRows = @()
+            if ($script:F46MirrorReady) {
+                try {
+                    $mCfg = Read-JsonFile -Path $script:CfgPath
+                    $mirrorRows = @(Invoke-F46HostProbe -Hosts (@(Get-F46Hosts -Cfg $mCfg)) -TimeoutSec 8)
+                } catch {
+                    $mirrorRows = @(@{ host = 'probe'; status = '-'; note = ('probe failed: ' + $_.Exception.Message) })
+                }
+            } else {
+                $mirrorRows = @(@{ host = 'none'; status = '-'; note = 'ghrdp-mirror.ps1 not staged next to the server - read-only probe unavailable (F46 §5)' })
+            }
+            $mirrorAttempts = @()
+            try { if ($prog -and $prog.mirrorDiag) { $mirrorAttempts = @($prog.mirrorDiag.attempts) } } catch { $mirrorAttempts = @() }
+            $mirrorPolicy = $null
+            if ($script:F46MirrorReady) {
+                try { $mirrorPolicy = [ordered]@{ failFast = @($script:F46FailFastStatuses); transient = @($script:F46TransientPhases); maxAttempts = [int]$script:F46MaxAttempts } } catch { $mirrorPolicy = $null }
+            }
             $d = [ordered]@{
                 serverTs = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
                 port = $Port
@@ -1320,6 +1359,9 @@ function Invoke-ClientRequest {
                 watcherTask = $watcherState
                 progressAgeSeconds = $progAge
                 watcherAlive = [bool]$prog.alive
+                mirrorHosts = @($mirrorRows)
+                mirrorAttempts = @($mirrorAttempts)
+                mirrorPolicy = $mirrorPolicy
                 note = 'ps server 7331 (fallback); rust realtime dashboard 7332 when available'
             }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes $d)

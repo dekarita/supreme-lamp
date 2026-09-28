@@ -378,7 +378,7 @@ function Get-FxSafeDirectUrl {
 }
 function New-FxGofileHosts {
     # §1.9 every index write carries the gofileHosts config array. One host, the
-    # configured one: no fallback/rotation channel is invented here.
+    # configured one: no fallback or identity-switching channel is invented here.
     param($Raw)
     $configured = $null
     try {
@@ -1362,11 +1362,21 @@ function Invoke-FxUploadStep {
         $job['retries'] = $retries
         $job['phase'] = $phase
         $job['lastError'] = [ordered]@{ phase = $phase; httpStatus = (Get-FxNullableNumber $result 'httpStatus'); hostMessage = $hostMessage; at = $now.ToString('o') }
-        $transient = ($script:FxTransientPhases -contains $phase)
-        if ($transient -and $retries -lt $script:FxUploadMaxRetries) {
+        # [F46 §2] policy-correct retries: fail-fast statuses (401/403/413/415)
+        # are terminal, only dns/tcp/tls/http retry, the delay is the shared
+        # jittered backoff and a Retry-After hint is a floor (never a ceiling).
+        $retryAfterMs = $null
+        try { if ($null -ne (Get-PropOrNull $result 'retryAfterMs')) { $retryAfterMs = [int](Get-PropOrNull $result 'retryAfterMs') } } catch { $retryAfterMs = $null }
+        $maxFor = $script:FxUploadMaxRetries
+        try { if (Get-Command Get-F46MaxAttempts -ErrorAction SilentlyContinue) { $maxFor = [int](Get-F46MaxAttempts -Phase $phase -Status (Get-FxNullableNumber $result 'httpStatus')) } } catch { $maxFor = $script:FxUploadMaxRetries }
+        $transient = ($script:FxTransientPhases -contains $phase) -and ($retries -lt $maxFor)
+        if ($transient) {
             $job['status'] = 'queued'
-            $delay = [math]::Min(60, [math]::Pow(2, $retries) * 1)
-            $job['nextAttemptTs'] = $now.AddSeconds($delay).ToString('o')
+            $delayMs = [int]([math]::Pow(2, $retries) * 1000)
+            try { if (Get-Command Get-F46BackoffMs -ErrorAction SilentlyContinue) { $delayMs = [int](Get-F46BackoffMs -Attempt ($retries - 1) -RetryAfterMs $retryAfterMs) } } catch { }
+            if ($delayMs -lt 1) { $delayMs = 1 }
+            if ($delayMs -gt 60000) { $delayMs = 60000 }
+            $job['nextAttemptTs'] = $now.AddMilliseconds($delayMs).ToString('o')
         } else {
             $job['status'] = 'failed'
             $job['nextAttemptTs'] = ''
@@ -1385,70 +1395,55 @@ function Invoke-FxUploadStep {
     return @{ processed = $true; reason = [string]$job['status']; jobId = $id }
 }
 function Send-FxGofileUpload {
-    # Production uploader: multipart POST to https://<store>.gofile.io/contents/uploadfile
-    # with the account token in the Authorization header ONLY. Never called in
-    # tests (the injectable Uploader is used) and never called when no token is
-    # configured (Invoke-FxUploadStep holds the job instead).
+    # Production uploader. The DOCUMENTED gofile contract lives in
+    # payloads/ghrdp-mirror.ps1 (F46 §3) and is shared with the mirror worker:
+    # POST /accounts -> token when the host config allows it, GET /servers ->
+    # upload server, then a STREAMED multipart POST with the token in the
+    # Authorization header ONLY and the documented response fields
+    # (code, fileId|id, downloadPage|directLink). This wrapper only maps the
+    # result into the upload state machine; it never logs the token and never
+    # falls back to an anonymous upload when the module is missing.
     param($Ctx, $Job, [string]$Path, [string]$Token)
-    $server = ''
-    try {
-        $servers = Invoke-FxHttpJson -Ctx $Ctx -Uri ($script:FxGofileApiBase + '/servers') -Headers @{ 'Accept' = 'application/json' }
-        if ($servers.ok) {
-            $list = Get-FxProp $servers.json 'data'
-            try { if ($list.PSObject.Properties['servers']) { $list = $list.servers } } catch { }
-            foreach ($s in @($list)) {
-                $nm = Get-FxString $s 'name'
-                if ($nm) { $server = $nm; break }
-            }
-        }
-    } catch { $server = '' }
-    if (-not $server) { return @{ ok = $false; phase = 'dns'; httpStatus = $null; hostMessage = 'gofile servers endpoint returned no usable store host' } }
-    $uri = 'https://' + $server + '.gofile.io/contents/uploadfile'
-    try {
-        Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
-    } catch {
-        return @{ ok = $false; phase = 'http'; httpStatus = $null; hostMessage = ('System.Net.Http unavailable: ' + $_.Exception.Message) }
+    if (-not (Get-Command Send-F46GofileUpload -ErrorAction SilentlyContinue)) {
+        return @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = 'ghrdp-mirror.ps1 (F46 host contract) is not staged next to the server - upload not attempted'; retryable = $false; retryAfterMs = $null }
     }
-    $client = $null
-    $fs = $null
+    $hostCfg = $null
     try {
-        $client = New-Object System.Net.Http.HttpClient
-        $client.Timeout = [timespan]::FromSeconds(120)
-        $client.DefaultRequestHeaders.Add('Authorization', 'Bearer ' + $Token)
-        $content = New-Object System.Net.Http.MultipartFormDataContent
-        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-        $streamContent = New-Object System.Net.Http.StreamContent($fs)
-        $content.Add($streamContent, 'file', [System.IO.Path]::GetFileName($Path))
-        $resp = $client.PostAsync($uri, $content).Result
-        $text = $resp.Content.ReadAsStringAsync().Result
-        $json = $null
-        try { $json = ($text | ConvertFrom-Json) } catch { $json = $null }
-        if (-not $resp.IsSuccessStatusCode) {
-            $msg = 'gofile upload rejected with HTTP ' + [int]$resp.StatusCode + ': ' + $text
-            $phase = 'http'
-            if ([int]$resp.StatusCode -eq 401 -or [int]$resp.StatusCode -eq 403) { $phase = 'auth' }
-            return @{ ok = $false; phase = $phase; httpStatus = [int]$resp.StatusCode; hostMessage = $msg }
-        }
-        $data = Get-FxProp $json 'data'
-        $fileId = Get-FxNullableString $data 'fileId'
-        $code = Get-FxNullableString $data 'code'
-        $direct = ''
-        $dl = Get-FxProp $data 'directLink'
-        if ($dl) { $direct = [string]$dl }
-        $size = 0
-        try { $size = (Get-Item -LiteralPath $Path).Length } catch { $size = 0 }
-        return @{ ok = $true; phase = $null; httpStatus = [int]$resp.StatusCode; hostMessage = ''; fileId = $fileId; code = $code; directUrl = $direct; bytesSent = $size }
-    } catch [System.AggregateException] {
-        $inner = $_.Exception
-        try { if ($inner.InnerException) { $inner = $inner.InnerException } } catch { }
-        $phase = 'transport'
-        if ($inner -is [System.Threading.Tasks.TaskCanceledException]) { $phase = 'timeout' }
-        return @{ ok = $false; phase = $phase; httpStatus = $null; hostMessage = ('gofile upload transport failed: ' + $inner.Message) }
+        $cfg = $Ctx.options['Config']
+        $hostCfg = @(Get-F46Hosts -Cfg $cfg)[0]
+    } catch { $hostCfg = $null }
+    if (-not $hostCfg) {
+        try { $hostCfg = Get-F46DefaultHost } catch { $hostCfg = $null }
+    }
+    if (-not $hostCfg) {
+        return @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = 'no mirror host configuration is available on this runner'; retryable = $false; retryAfterMs = $null }
+    }
+    $name = ''
+    try { $name = [System.IO.Path]::GetFileName($Path) } catch { $name = [string]$Path }
+    $r = $null
+    try {
+        $r = Send-F46GofileUpload -HostCfg $hostCfg -Path $Path -Name $name -Token $Token -TimeoutSec 120
     } catch {
-        return @{ ok = $false; phase = 'transport'; httpStatus = $null; hostMessage = ('gofile upload failed: ' + $_.Exception.Message) }
-    } finally {
-        try { if ($fs) { $fs.Dispose() } } catch { }
-        try { if ($client) { $client.Dispose() } } catch { }
+        $r = @{ ok = $false; phase = 'http'; httpStatus = $null; hostMessage = ('upload failed: ' + $_.Exception.Message); retryAfterMs = $null; fileId = ''; code = ''; downloadPage = '' }
+    }
+    if ($null -eq $r) { $r = @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = 'uploader returned no result'; retryAfterMs = $null; fileId = ''; code = ''; downloadPage = '' } }
+    $phase = 'http'
+    try { if ($r.phase) { $phase = [string]$r.phase } } catch { $phase = 'http' }
+    $retryable = $false
+    try { $retryable = [bool](Test-F46TransientPhase -Phase $phase -Status $r.httpStatus) } catch { $retryable = $false }
+    $size = 0
+    try { $size = (Get-Item -LiteralPath $Path).Length } catch { $size = 0 }
+    return @{
+        ok = [bool]$r.ok
+        phase = $(if ([bool]$r.ok) { $null } else { $phase })
+        httpStatus = $(if ($null -ne $r.httpStatus) { [int]$r.httpStatus } else { $null })
+        hostMessage = [string]$r.hostMessage
+        retryable = $retryable
+        retryAfterMs = $(if ($null -ne $r.retryAfterMs) { [int]$r.retryAfterMs } else { $null })
+        fileId = [string]$r.fileId
+        code = [string]$r.code
+        directUrl = [string]$r.downloadPage
+        bytesSent = [long]$size
     }
 }
 function Get-FxUploadWorkerScript {
