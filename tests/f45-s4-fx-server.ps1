@@ -28,21 +28,70 @@ function Assert-Fx([bool]$Condition, [string]$Label) {
     # An assertion failure is RECORDED and the run continues, so one Windows
     # lane run reports every failed assertion site instead of only the first
     # (a terminating error - a real crash - still aborts through the outer
-    # catch below and is reported with its stage). The cap keeps a cascade from
-    # turning into a wall of output; the first entry is always the root cause.
+    # catch below and is reported with its stage). The cap only exists to keep a
+    # runaway cascade bounded: it is high because the compact summary at the end
+    # is one annotation, so a single run can enumerate every failed site.
     if (-not $Condition) {
         $script:FxFail++
         $script:FxFailures += ($stage + ' :: ' + $Label)
-        Write-Host ('::warning::[F45 S4] assertion FAILED at stage "' + $stage + '": ' + $Label)
-        if ($script:FxFail -ge 25) { throw ('F45-S4 assertion FAILED: ' + $Label) }
+        # deliberately NOT an ::error::/::warning:: annotation: GitHub keeps only
+        # the first few annotations per step and they were eating each other, so
+        # the log line stays plain and ONE compact summary is emitted at the end.
+        Write-Host ('[F45 S4] FAIL ' + $stage + ' :: ' + $Label)
+        if ($script:FxFail -ge 60) { throw ('F45-S4 assertion FAILED: ' + $Label) }
         return
     }
     $script:FxPass++
 }
 
 function Write-FxFailures {
-    $script:FxFailures | Select-Object -First 20 | ForEach-Object { Write-Host ('::error::[F45 S4] ' + $_) }
-    if ($script:FxFailures.Count -gt 20) { Write-Host ('::error::[F45 S4] ... and ' + ($script:FxFailures.Count - 20) + ' more assertion site(s)') }
+    # ONE annotation carrying every failed site: the per-site annotations were
+    # capped by GitHub and silently dropped part of the list.
+    $all = @($script:FxFailures)
+    if ($all.Count -eq 0) { return }
+    Write-Host ('::error::[F45 S4] failed site(s) [' + $all.Count + ']: ' + ($all -join ' | '))
+}
+
+function Get-FxBytePreview([byte[]]$Bytes, [int]$Max = 220) {
+    # ASCII-safe preview of raw bytes. Control bytes are escaped because a raw
+    # CR/LF inside an annotation is mangled or invisible, and the whole point of
+    # this helper is that a failure annotation carries the ACTUAL bytes.
+    if ($null -eq $Bytes -or $Bytes.Length -eq 0) { return '(no bytes)' }
+    $take = $Max
+    if ($Bytes.Length -lt $take) { $take = $Bytes.Length }
+    $sb = New-Object System.Text.StringBuilder
+    for ($i = 0; $i -lt $take; $i++) {
+        $b = [int]$Bytes[$i]
+        if ($b -eq 13) { $null = $sb.Append('\r') }
+        elseif ($b -eq 10) { $null = $sb.Append('\n') }
+        elseif ($b -ge 32 -and $b -lt 127) { $null = $sb.Append([char]$b) }
+        else { $null = $sb.Append('\x' + $b.ToString('x2')) }
+    }
+    if ($Bytes.Length -gt $take) { $null = $sb.Append('...(+' + ($Bytes.Length - $take) + 'B)') }
+    return $sb.ToString()
+}
+
+function ConvertFrom-FxJsonText([string]$Text, [string]$Label, [byte[]]$Bytes) {
+    # A body that does not parse is an ASSERTION, never a terminating error:
+    # with $ErrorActionPreference='Stop' a bare body-piped JSON read
+    # aborts the whole lane and hides every later stage (that is exactly how
+    # "Invalid JSON primitive: HTTP." stopped I2..I13 from ever running).
+    $trimmed = ''
+    if ($Text) { $trimmed = $Text.TrimStart() }
+    if (-not ($trimmed.StartsWith('{') -or $trimmed.StartsWith('['))) {
+        Assert-Fx $false ($Label + ': the response body is not JSON: ' + (Get-FxBytePreview $Bytes))
+        return $null
+    }
+    try { return (ConvertFrom-Json -InputObject $Text) }
+    catch {
+        Assert-Fx $false ($Label + ': the JSON body does not parse [' + (Protect-FxText ([string]$_.Exception.Message)) + ']: ' + (Get-FxBytePreview $Bytes))
+        return $null
+    }
+}
+
+function ConvertFrom-FxBody($Response, [string]$Label) {
+    if ($null -eq $Response) { Assert-Fx $false ($Label + ': no response object'); return $null }
+    return (ConvertFrom-FxJsonText ([string]$Response.Body) $Label ([byte[]]$Response.Bytes))
 }
 
 function Import-Functions([string]$Text, [string[]]$Names) {
@@ -78,35 +127,79 @@ function Request-Fx {
     $extra = ''
     foreach ($k in $Headers.Keys) { $extra = $extra + $k + ': ' + [string]$Headers[$k] + "`r`n" }
     $raw = "$Method $Path HTTP/1.1`r`nHost: fixture.ts.net`r`n" + $extra + "Content-Length: " + [Text.Encoding]::UTF8.GetByteCount($Body) + "`r`n`r`n" + $Body
-    $inputBytes = [Text.Encoding]::UTF8.GetBytes($raw)
+    $reqBytes = [Text.Encoding]::UTF8.GetBytes($raw)
+    $reqLen = $reqBytes.Length
     $mem = New-Object IO.MemoryStream
-    $mem.Write($inputBytes, 0, $inputBytes.Length)
+    $mem.Write($reqBytes, 0, $reqLen)
     $mem.Position = 0
     $client = [pscustomobject]@{ Stream = $mem; Client = [pscustomobject]@{ RemoteEndPoint = [pscustomobject]@{ Address = [Net.IPAddress]::Parse($Source) } } }
     $client | Add-Member ScriptMethod GetStream { return $this.Stream }
     $client | Add-Member ScriptMethod Close { return }
-    Invoke-ClientRequest -Client $client -Token $script:FxToken
+    $null = Invoke-ClientRequest -Client $client -Token $script:FxToken
     $all = $mem.ToArray()
-    $text = [Text.Encoding]::UTF8.GetString($all, $inputBytes.Length, $all.Length - $inputBytes.Length)
-    $split = $text.IndexOf("`r`n`r`n")
-    Assert-Fx ($split -gt 0) ('route produced an HTTP response for ' + $Method + ' ' + $Path)
-    $head = $text.Substring(0, $split)
-    $bodyStart = $inputBytes.Length + [Text.Encoding]::UTF8.GetByteCount($text.Substring(0, $split + 4))
-    $bodyBytes = @()
-    if ($all.Length -gt $bodyStart) { $bodyBytes = @($all[$bodyStart..($all.Length - 1)]) }
-    $match = [regex]::Match($head, '^HTTP/1\.1 (\d+)')
-    Assert-Fx $match.Success 'the response starts with a status line'
+    $empty = [pscustomobject]@{ Code = 0; Head = ''; Headers = @{}; Bytes = @(); Body = '' }
+    if ($all.Length -le $reqLen) {
+        Assert-Fx $false ('no response bytes for ' + $Method + ' ' + $Path + ' (stream ' + $all.Length + 'B, request ' + $reqLen + 'B)')
+        return $empty
+    }
+    # 28591 (ISO-8859-1) maps ONE byte to exactly ONE char, so a string offset
+    # IS a byte offset even when the body is binary. A UTF-8 decode (the old
+    # code) desynchronizes the two, and GetByteCount math on the head is off by
+    # one for every non-ASCII byte, which slides the body slice into the head.
+    # Offsets are found on the latin1 view; the strings handed out are decoded
+    # from the exact byte range as UTF-8.
+    $latin1 = [Text.Encoding]::GetEncoding(28591)
+    $wide = $latin1.GetString($all, $reqLen, $all.Length - $reqLen)
+    $respStart = $reqLen
+    $at = $wide.IndexOf('HTTP/1.1 ')
+    if ($at -lt 0) {
+        Assert-Fx $false ('the response carries no status line for ' + $Method + ' ' + $Path + ': ' + (Get-FxBytePreview ([byte[]]($all[$reqLen..($all.Length - 1)]))))
+        return $empty
+    }
+    if ($at -ne 0) {
+        # the request echo is still in the buffer: start at OUR status line
+        $respStart = $reqLen + $at
+        $wide = $wide.Substring($at)
+        Assert-Fx $false ('the response does not start at a status line (offset ' + $at + 'B) for ' + $Method + ' ' + $Path + ': ' + (Get-FxBytePreview ([byte[]]($all[$reqLen..($all.Length - 1)]))))
+    }
+    $split = $wide.IndexOf("`r`n`r`n")
+    if ($split -lt 0) {
+        Assert-Fx $false ('the response head is not CRLF-terminated for ' + $Method + ' ' + $Path + ': ' + (Get-FxBytePreview ([byte[]]($all[$respStart..($all.Length - 1)]))))
+        return $empty
+    }
+    $head = [Text.Encoding]::UTF8.GetString($all, $respStart, $split)
     $headerMap = @{}
     foreach ($line in ($head -split "`r`n")) {
         $ix = $line.IndexOf(':')
         if ($ix -gt 0) { $headerMap[$line.Substring(0, $ix).Trim().ToLower()] = $line.Substring($ix + 1).Trim() }
     }
+    $bodyStart = $respStart + $split + 4
+    $bodyBytes = @()
+    if ($all.Length -gt $bodyStart) { $bodyBytes = @($all[$bodyStart..($all.Length - 1)]) }
+    $bodyText = ''
+    if ($bodyBytes.Count -gt 0) { $bodyText = [Text.Encoding]::UTF8.GetString([byte[]]$bodyBytes) }
+    # Layout faults are REPORTED (with the escaped bytes) and the response is
+    # still sliced normally, so the run continues instead of aborting.
+    if (-not $head.StartsWith('HTTP/1.1 ')) {
+        Assert-Fx $false ('the response head does not start with a status line for ' + $Method + ' ' + $Path + ': ' + (Get-FxBytePreview ([byte[]]($all[$respStart..($all.Length - 1)]))))
+    }
+    if ($head -match "(?m)^\s*$") {
+        # an empty line INSIDE the head ends the header block early: everything
+        # after it (including the rest of the headers) becomes the "body", which
+        # is how a JSON parse ends up being fed a status line
+        Assert-Fx $false ('the response head carries a blank line before the terminator for ' + $Method + ' ' + $Path + ': ' + (Get-FxBytePreview ([byte[]]($all[$respStart..($all.Length - 1)]))))
+    }
+    if ($bodyText -match '(?m)^HTTP/1\.1 \d{3} ') {
+        Assert-Fx $false ('the route wrote a second response for ' + $Method + ' ' + $Path + ': ' + (Get-FxBytePreview ([byte[]]($all[$respStart..($all.Length - 1)]))))
+    }
+    $match = [regex]::Match($head, '^HTTP/1\.1 (\d+)')
+    Assert-Fx $match.Success ('the response starts with a status line for ' + $Method + ' ' + $Path)
     return [pscustomobject]@{
         Code = [int]$match.Groups[1].Value
         Head = $head
         Headers = $headerMap
         Bytes = $bodyBytes
-        Body = [Text.Encoding]::UTF8.GetString($bodyBytes)
+        Body = $bodyText
     }
 }
 
@@ -397,11 +490,14 @@ try {
     # terminating error it raises would hide every later stage.
     Assert-Fx (-not [string]::IsNullOrEmpty([string](Get-FxUploadQueue -Path $script:FxQueuePath).jobs[0].retryAt)) 'the queue carries the retry deadline'
     for ($i = 2; $i -le 4; $i++) {
-        $script:FxClock = (Get-Date).ToUniversalTime().AddSeconds(60)
+        # the clock must move PAST the deadline the previous attempt recorded
+        # (retryAt = clock + backoff), so each retry pass advances it by minutes
+        # instead of re-pinning it to "now + 60s"
+        $script:FxClock = (Get-FxClock).AddMinutes(5)
         $s = Step-FxUploadQueue -Path $script:FxQueuePath -IndexPath $script:FxIndexPath -Uploader $failUploader -Index $qIdx2
         Assert-Fx ($s.queued -eq 1 -and $s.failed -eq 0) ('a transient 502 is retried (pass ' + $i + ')')
     }
-    $script:FxClock = (Get-Date).ToUniversalTime().AddSeconds(120)
+    $script:FxClock = (Get-FxClock).AddMinutes(5)
     $s = Step-FxUploadQueue -Path $script:FxQueuePath -IndexPath $script:FxIndexPath -Uploader $failUploader -Index $qIdx2
     Assert-Fx ($s.failed -eq 1 -and $s.queued -eq 0) 'the fifth transient failure is terminal (S8.2 attempt budget)'
     $script:FxClock = $null
@@ -520,7 +616,7 @@ try {
     $stage = 'I1 GET /api/fx/list'
     $list = Request-Fx -Path '/api/fx/list' -Headers @{ 'X-Dash-Token' = $script:FxToken }
     Assert-Fx ($list.Code -eq 200) 'list returns 200 with a header dash token from a public source'
-    $listJson = $list.Body | ConvertFrom-Json
+    $listJson = ConvertFrom-FxBody $list ($stage + ' list JSON')
     Assert-Fx ($listJson.schemaVersion -eq 2) 'list emits schemaVersion 2 even when the file on disk was v1'
     Assert-Fx (@($listJson.gofileHosts).Count -eq 1 -and $listJson.gofileHosts[0].id -eq 'gofile') 'list emits the gofileHosts array'
     Assert-Fx (@($listJson.files).Count -eq 4) 'list carries every file entry'
@@ -533,7 +629,7 @@ try {
     $stage = 'I2/I3 authorization'
     $noToken = Request-Fx -Path '/api/fx/list'
     Assert-Fx ($noToken.Code -eq 401) 'a public source with no token is 401'
-    $noTokenJson = $noToken.Body | ConvertFrom-Json
+    $noTokenJson = ConvertFrom-FxBody $noToken ($stage + ' 401 body')
     Assert-Fx ($noTokenJson.phase -eq 'auth') 'the 401 body carries the F44 phase'
     $wrongToken = Request-Fx -Path '/api/fx/list' -Headers @{ 'X-Dash-Token' = 'wrong-token-0123456789' }
     Assert-Fx ($wrongToken.Code -eq 401) 'a wrong token is 401'
@@ -544,7 +640,7 @@ try {
 
     $stage = 'I4 GET /api/fx/meta'
     $meta = Request-Fx -Path '/api/fx/meta?id=fx-refused' -Headers @{ 'X-Dash-Token' = $script:FxToken }
-    Assert-Fx ($meta.Code -eq 200 -and (($meta.Body | ConvertFrom-Json)).id -eq 'fx-refused') 'meta returns the entry'
+    Assert-Fx ($meta.Code -eq 200 -and (ConvertFrom-FxBody $meta $stage).id -eq 'fx-refused') 'meta returns the entry'
     Assert-Fx ((Request-Fx -Path '/api/fx/meta?id=nope' -Headers @{ 'X-Dash-Token' = $script:FxToken }).Code -eq 404) 'meta returns 404 for an unknown id'
     Assert-Fx ((Request-Fx -Path '/api/fx/meta' -Headers @{ 'X-Dash-Token' = $script:FxToken }).Code -eq 404) 'meta without an id is a 404 (not a wildcard)'
 
@@ -572,11 +668,11 @@ try {
     $stage = 'I6 preview refusals'
     Assert-Fx ((Request-Fx -Path '/api/fx/preview?id=nope' -Headers @{ 'X-Dash-Token' = $script:FxToken }).Code -eq 404) 'an unknown preview id is 404'
     $refusedMime = Request-Fx -Path '/api/fx/preview?id=fx-refused' -Headers @{ 'X-Dash-Token' = $script:FxToken }
-    Assert-Fx ($refusedMime.Code -eq 415 -and (($refusedMime.Body | ConvertFrom-Json)).phase -eq 'type') 'a refused type is 415 with phase=type'
+    Assert-Fx ($refusedMime.Code -eq 415 -and (ConvertFrom-FxBody $refusedMime $stage).phase -eq 'type') 'a refused type is 415 with phase=type'
     $savedMax = $script:FxPreviewMaxBytes
     $script:FxPreviewMaxBytes = 4
     $tooBig = Request-Fx -Path ('/api/fx/preview?id=' + $helloId) -Headers @{ 'X-Dash-Token' = $script:FxToken }
-    Assert-Fx ($tooBig.Code -eq 413 -and (($tooBig.Body | ConvertFrom-Json)).phase -eq 'size') 'a file over the ceiling is 413 with phase=size'
+    Assert-Fx ($tooBig.Code -eq 413 -and (ConvertFrom-FxBody $tooBig $stage).phase -eq 'size') 'a file over the ceiling is 413 with phase=size'
     $script:FxPreviewMaxBytes = $savedMax
     $escaping = Request-Fx -Path '/api/fx/preview?id=fx-escaped' -Headers @{ 'X-Dash-Token' = $script:FxToken }
     Assert-Fx ($escaping.Code -eq 404) 'a traversal path has no local file and no proxyable copy'
@@ -596,20 +692,20 @@ try {
     $opBody = New-FxJson @{ op = 'trash'; ids = @('fx-refused') }
     $noCsrf = Request-Fx -Path '/api/fx/op' -Method 'POST' -Body $opBody -Headers @{ 'X-Dash-Token' = $script:FxToken }
     Assert-Fx ($noCsrf.Code -eq 403) 'a POST without CSRF is 403'
-    Assert-Fx ((($noCsrf.Body | ConvertFrom-Json)).phase -eq 'auth') 'the CSRF refusal carries phase=auth'
+    Assert-Fx ((ConvertFrom-FxBody $noCsrf $stage).phase -eq 'auth') 'the CSRF refusal carries phase=auth'
     $opOk = Request-Fx -Path '/api/fx/op' -Method 'POST' -Body $opBody -Headers @{ 'X-Dash-Token' = $script:FxToken; 'X-CSRF-Token' = $csrfToken; 'X-Idempotency-Key' = 'k1' }
     Assert-Fx ($opOk.Code -eq 200) 'a CSRF-authorised op applies'
-    $opJson = $opOk.Body | ConvertFrom-Json
+    $opJson = ConvertFrom-FxBody $opOk ($stage + ' op JSON')
     Assert-Fx ((@($opJson.applied) -join ',') -eq 'fx-refused' -and @($opJson.skipped).Count -eq 0) 'the response is { applied, skipped }'
     $afterOp = Request-Fx -Path '/api/fx/meta?id=fx-refused' -Headers @{ 'X-Dash-Token' = $script:FxToken }
-    Assert-Fx ((($afterOp.Body | ConvertFrom-Json)).trashed) 'the op was persisted to the index'
+    Assert-Fx ((ConvertFrom-FxBody $afterOp $stage).trashed) 'the op was persisted to the index'
     $onDisk = ([IO.File]::ReadAllText($script:FxIndexPath) | ConvertFrom-Json)
     Assert-Fx ($onDisk.schemaVersion -eq 2) 'the write re-emitted schemaVersion 2'
     Assert-Fx (@($onDisk.gofileHosts).Count -eq 1) 'the write kept the gofileHosts array'
     # S5.1 rule 6: the same key + the same body replays the recorded answer
     $replay = Request-Fx -Path '/api/fx/op' -Method 'POST' -Body $opBody -Headers @{ 'X-Dash-Token' = $script:FxToken; 'X-CSRF-Token' = $csrfToken; 'X-Idempotency-Key' = 'k1' }
     Assert-Fx ($replay.Code -eq 200 -and $replay.Headers['x-idempotent-replay'] -eq '1') 'a replayed idempotency key is answered from the record'
-    Assert-Fx (((($replay.Body | ConvertFrom-Json)).applied) -join ',' -eq 'fx-refused') 'the replay returns the ORIGINAL applied list'
+    Assert-Fx (((ConvertFrom-FxBody $replay $stage).applied) -join ',' -eq 'fx-refused') 'the replay returns the ORIGINAL applied list'
     $keyReuse = Request-Fx -Path '/api/fx/op' -Method 'POST' -Body (New-FxJson @{ op = 'restore'; ids = @('fx-refused') }) -Headers @{ 'X-Dash-Token' = $script:FxToken; 'X-CSRF-Token' = $csrfToken; 'X-Idempotency-Key' = 'k1' }
     Assert-Fx ($keyReuse.Code -eq 409) 'reusing a key with a different body is 409'
     Assert-Fx (Test-Path -LiteralPath $script:FxIdempotencyPath) 'the idempotency record is persisted'
@@ -624,7 +720,7 @@ try {
     Assert-Fx ($getOp.Code -eq 405) 'op is POST only (405 for GET)'
     $restore = Request-Fx -Path '/api/fx/op' -Method 'POST' -Body (New-FxJson @{ op = 'restore'; ids = @('fx-refused') }) -Headers @{ 'X-Dash-Token' = $script:FxToken; 'X-CSRF-Token' = $csrfToken }
     Assert-Fx ($restore.Code -eq 200) 'restore is accepted'
-    Assert-Fx (-not ((Request-Fx -Path '/api/fx/meta?id=fx-refused' -Headers @{ 'X-Dash-Token' = $script:FxToken }).Body | ConvertFrom-Json).trashed) 'restore persisted'
+    Assert-Fx (-not (ConvertFrom-FxBody (Request-Fx -Path '/api/fx/meta?id=fx-refused' -Headers @{ 'X-Dash-Token' = $script:FxToken }) $stage).trashed) 'restore persisted'
 
     $stage = 'I8 POST /api/fx/upload'
     Remove-Item -LiteralPath $script:FxQueuePath -Force -ErrorAction SilentlyContinue
@@ -633,7 +729,7 @@ try {
     Assert-Fx ($noCsrfUpload.Code -eq 403) 'upload without CSRF is 403'
     $upload = Request-Fx -Path '/api/fx/upload' -Method 'POST' -Body $uploadBody -Headers @{ 'X-Dash-Token' = $script:FxToken; 'X-CSRF-Token' = $csrfToken }
     Assert-Fx ($upload.Code -eq 202) 'a valid upload request is 202'
-    $uploadJson = $upload.Body | ConvertFrom-Json
+    $uploadJson = ConvertFrom-FxBody $upload ($stage + ' upload JSON')
     Assert-Fx (@($uploadJson.jobs).Count -eq 2) 'both ids are queued'
     foreach ($j in @($uploadJson.jobs)) {
         Assert-Fx ($j.id -and $j.uploadJobId) 'each job carries id + uploadJobId'
@@ -665,7 +761,7 @@ try {
     [IO.File]::WriteAllText($script:FxIndexPath, '{ this is not json')
     $broken = Request-Fx -Path '/api/fx/list' -Headers @{ 'X-Dash-Token' = $script:FxToken }
     Assert-Fx ($broken.Code -eq 500) 'an unparsable index is 500'
-    $brokenJson = $broken.Body | ConvertFrom-Json
+    $brokenJson = ConvertFrom-FxBody $broken ($stage + ' broken JSON')
     Assert-Fx ($brokenJson.phase -eq 'parse') 'the 500 body carries the F44 parse phase'
     Assert-Fx (-not [string]::IsNullOrEmpty([string]$brokenJson.error)) 'the 500 body carries a message'
     [IO.File]::WriteAllText($script:FxIndexPath, $goodIndex)
@@ -673,7 +769,7 @@ try {
 
     $stage = 'I12 gofile status route'
     $status200 = Request-Fx -Path '/api/fx/gofile/status?id=fx-hosted' -Headers @{ 'X-Dash-Token' = $script:FxToken }
-    Assert-Fx ($status200.Code -eq 200 -and (($status200.Body | ConvertFrom-Json)).status -eq 'uploaded') 'status serves the stored state'
+    Assert-Fx ($status200.Code -eq 200 -and (ConvertFrom-FxBody $status200 $stage).status -eq 'uploaded') 'status serves the stored state'
     Assert-Fx ((Request-Fx -Path '/api/fx/gofile/status?id=nope' -Headers @{ 'X-Dash-Token' = $script:FxToken }).Code -eq 404) 'status 404s an unknown id'
     $script:FxGofileToken = 'go_live_token_0123456789abcdef'
     $script:FxFetcher = { param($req) [ordered]@{ ok = $false; phase = 'tcp'; status = 0; message = 'timeout' } }
@@ -688,7 +784,7 @@ try {
     Assert-Fx (-not $logNow.Contains($script:FxToken)) 'the dash token never reaches the fx log'
     Assert-Fx (-not $logNow.Contains('go_live_token_0123456789abcdef')) 'the gofile token never reaches the fx log'
     foreach ($resp in @($list, $meta, $status200, $opOk, $upload)) {
-        Assert-Fx (-not $resp.Body.Contains($script:FxToken)) 'no response body echoes the dash token'
+        Assert-Fx (-not ([string]$resp.Body).Contains($script:FxToken)) 'no response body echoes the dash token'
     }
     Assert-Fx (-not ([IO.File]::ReadAllText($script:FxIndexPath)).Contains($script:FxToken)) 'the index never contains the dash token'
     Assert-Fx (-not ([IO.File]::ReadAllText($script:FxQueuePath)).Contains($script:FxToken)) 'the queue never contains the dash token'

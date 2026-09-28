@@ -226,6 +226,21 @@ test('F45-S4-PS1-5 the proof script is pure ASCII and so are the region literals
   assert.notEqual(Buffer.from(serverSrc, 'utf8')[0], 0xef, 'the server file must not grow a BOM');
 });
 
+test('F45-S4-PS1-11 an array element that uses + is parenthesized', () => {
+  // `,` binds tighter than `+`, so `@('prefix: ' + $v, 'other')` is ONE
+  // space-joined string: the sandbox sent one malformed header instead of six.
+  // Every element line that starts with a quoted string and uses + must be
+  // wrapped in parentheses.
+  const offenders = [];
+  for (const [label, s] of [['region', regionScan], ['glue', glueScan]]) {
+    s.code.split('\n').forEach((line, i) => {
+      const trimmed = line.trim();
+      if (/^['"]/.test(trimmed) && / \+ /.test(trimmed)) offenders.push(`${label} line ${i + 1}: ${trimmed.slice(0, 80)}`);
+    });
+  }
+  assert.deepEqual(offenders, [], 'an unparenthesized + element swallows the rest of the array');
+});
+
 test('F45-S4-PS1-9 a stored timestamp is validated, never re-formatted', () => {
   // Re-formatting a stored ISO string (e.g. to 7 fractional digits) makes a
   // re-normalized document differ from its own input: the epoch fallback is
@@ -239,6 +254,91 @@ test('F45-S4-PS1-9 a stored timestamp is validated, never re-formatted', () => {
   assert.ok(from > 0 && to > from, 'the string branch returns the stored text verbatim');
   assert.equal(/\.ToString\(/.test(body.slice(from, to)), false, 'a stored ISO string must not be re-formatted');
   assert.ok(/ToString\('o'\)/.test(body), 'a [datetime] value is still formatted');
+});
+
+// ---- PS1-10 / PS1-11 helpers -----------------------------------------------
+// PowerShell's comma operator binds TIGHTER than +, so `@('a' + $b, 'c')` is a
+// ONE-element array holding the space-joined string "a b c". The sandbox shell
+// declared six headers that way and sent a single malformed header, which the
+// Windows lane reported as four separate missing-header failures before the
+// cause was visible. Both rules below were validated against the pre-fix source.
+
+const FX_OPERATORS = new Set([
+  'and', 'or', 'eq', 'ne', 'lt', 'gt', 'le', 'ge', 'not', 'ceq', 'cne',
+  'like', 'notlike', 'match', 'notmatch', 'contains', 'notcontains', 'in',
+  'notin', 'is', 'isnot', 'band', 'bor', 'bxor', 'bnot', 'shl', 'shr',
+]);
+
+// The declared parameters (and switches) of every function in the region, so a
+// legitimate named argument such as -Path or -Message is never mistaken for an
+// operator. `null` means "no param block", i.e. arity is unknown: skip it.
+function fxParamSets(code) {
+  const map = new Map();
+  for (const m of code.matchAll(/function\s+([A-Za-z][\w-]*)\s*\{/g)) {
+    const body = code.slice(m.index, Math.min(code.length, m.index + 4000));
+    const at = body.indexOf('param(');
+    if (at < 0) { map.set(m[1].toLowerCase(), null); continue; }
+    let depth = 0, end = -1;
+    for (let k = at + 6; k < body.length; k++) {
+      if (body[k] === '(') depth++;
+      else if (body[k] === ')' && --depth === 0) { end = k; break; }
+    }
+    const decl = end < 0 ? body.slice(at) : body.slice(at, end + 1);
+    const params = new Set();
+    for (const q of decl.matchAll(/\$([A-Za-z_]\w*)/g)) params.add(q[1].toLowerCase());
+    map.set(m[1].toLowerCase(), params);
+  }
+  return map;
+}
+
+// The text of one command invocation: from just after the command name up to the
+// parenthesis that closes its enclosing group, or the end of the statement.
+function fxCallText(code, from) {
+  let depth = 0;
+  for (let i = from; i < code.length; i++) {
+    const c = code[i];
+    if (c === '(') depth++;
+    else if (c === ')') { if (depth === 0) return code.slice(from, i); depth--; }
+    else if (depth === 0 && (c === '\n' || c === ';' || c === '|' || c === '{' || c === '}')) return code.slice(from, i);
+  }
+  return code.slice(from);
+}
+
+test('F45-S4-PS1-10 a bare command call is never the left side of -and / -or', () => {
+  // `Test-FxMember $Value 'lastError' -and $null -ne (Get-FxMember ...)` is ONE
+  // command: -and, $null, -ne and the inner call become ARGUMENTS to
+  // Test-FxMember and the second half of the condition is silently dropped. That
+  // is how the v2 migration gate stopped guarding `lastError` and the migration
+  // stopped being idempotent. Parenthesizing the call is the fix.
+  const offenders = [];
+  for (const [label, s] of [['region', regionScan], ['glue', glueScan]]) {
+    const paramSets = fxParamSets(s.code);
+    for (const m of s.code.matchAll(/(^|[^\w$.'"-])([A-Z][A-Za-z]*-[A-Za-z][\w-]*)(?=[\s(])/gm)) {
+      const name = m[2].toLowerCase();
+      const params = paramSets.get(name);
+      if (!params) continue; // not one of our helpers: arity unknown, skip
+      const at = m.index + m[1].length;
+      const words = fxCallText(s.code, at + m[2].length).split(/\s+/).filter(Boolean);
+      const bad = [...new Set(words
+        .filter((w) => w[0] === '-' && !params.has(w.slice(1).toLowerCase()) && FX_OPERATORS.has(w.slice(1).toLowerCase())))];
+      if (bad.length) offenders.push(`${label} line ${lineOf(s.code, at)}: ${m[2]} took ${bad.join(' ')} as an argument`);
+    }
+  }
+  assert.deepEqual(offenders, [], 'a command call swallowed a comparison operator as an argument');
+});
+
+test('F45-S4-PS1-11 an array element that uses + is parenthesized', () => {
+  // `@('a' + $b, 'c')` is one element, not two: the comma binds tighter than +.
+  // Every element line that begins with a quoted string and concatenates must be
+  // wrapped in parentheses.
+  const offenders = [];
+  for (const [label, s] of [['region', regionScan], ['glue', glueScan]]) {
+    s.code.split('\n').forEach((line, i) => {
+      const trimmed = line.trim();
+      if (/^['"]/.test(trimmed) && / \+ /.test(trimmed)) offenders.push(`${label} line ${i + 1}: ${trimmed.slice(0, 80)}`);
+    });
+  }
+  assert.deepEqual(offenders, [], 'an unparenthesized + element swallows the rest of the array');
 });
 
 test('F45-S4-PS1-8 array members are read through Get-FxRows, never through @(Get-FxMember ...)', () => {

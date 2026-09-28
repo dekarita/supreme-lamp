@@ -1556,7 +1556,7 @@ function ConvertTo-FxUploadState {
         if ($null -ne $rawPhase) { $phase = Get-FxEnumMember $rawPhase $script:FxUploadPhases 'parse' }
     }
     $lastError = $null
-    if (Test-FxMember $Value 'lastError' -and $null -ne (Get-FxMember $Value 'lastError')) {
+    if ((Test-FxMember $Value 'lastError') -and $null -ne (Get-FxMember $Value 'lastError')) {
         $src = Get-FxMember $Value 'lastError'
         $lastError = [ordered]@{ phase = (Get-FxEnumMember (Get-FxMember $src 'phase') $script:FxUploadPhases 'parse') }
         $hs = Get-FxMember $src 'httpStatus'
@@ -1640,7 +1640,7 @@ function ConvertTo-FxGofileHost {
     $maxBytes = Get-FxNumberOrNull (Get-FxMember $Value 'maxFileBytes')
     $ttl = Get-FxNumberOrNull (Get-FxMember $Value 'ttlSeconds')
     $prefixes = $null
-    if (Test-FxMember $Value 'allowedMimePrefixes' -and $null -ne (Get-FxMember $Value 'allowedMimePrefixes')) {
+    if ((Test-FxMember $Value 'allowedMimePrefixes') -and $null -ne (Get-FxMember $Value 'allowedMimePrefixes')) {
         $prefixes = @(Get-FxStringArray (Get-FxMember $Value 'allowedMimePrefixes'))
     }
     return [ordered]@{
@@ -2824,13 +2824,17 @@ function Get-FxSandboxResponse {
     $doc = ($parts.Count -eq 3 -and $parts[2] -eq 'body')
     $out.code = 200
     $csp = "default-src 'none'; script-src 'nonce-$nonce'; style-src 'nonce-$nonce' data:; img-src data: blob:; media-src blob:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'; frame-ancestors 'self'; sandbox allow-scripts"
+    # The two expression elements are PARENTHESIZED on purpose: the comma
+    # operator binds tighter than +, so an unparenthesized
+    # `'Content-Security-Policy: ' + $csp,` swallows the whole rest of the list
+    # into one space-joined string (one malformed header instead of six).
     $out.headers = @(
-        'Content-Security-Policy: ' + $csp,
+        ('Content-Security-Policy: ' + $csp),
         'Origin-Agent-Cluster: ?1',
         'Cross-Origin-Resource-Policy: same-site',
         'Referrer-Policy: no-referrer',
         'X-Content-Type-Options: nosniff',
-        'Set-Cookie: fx_sandbox=' + $nonce + '; Path=/preview-sandbox; SameSite=Strict; HttpOnly; Max-Age=900'
+        ('Set-Cookie: fx_sandbox=' + $nonce + '; Path=/preview-sandbox; SameSite=Strict; HttpOnly; Max-Age=900')
     )
     if ($doc) {
         $out.ctype = 'text/html; charset=utf-8'
