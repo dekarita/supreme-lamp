@@ -2113,6 +2113,32 @@ jobs:
             echo "::error title=F45 S2 data::${detail}"
             exit 1
           fi
+      # [F45 S3] endpoint clients only: dash-token header transport, CSRF on
+      # POST, typed §5 clients and the §5.2/§8.2 retry policy. Offline MSW; no
+      # server routes (S4) and no UI (S5+) are wired yet, so the shipped bundle
+      # must not gain any /api/fx code - that is asserted here too.
+      - name: F45 S3 endpoint client and retry policy gates (offline only)
+        run: |
+          set -euo pipefail
+          if ! out=$(pnpm exec vitest run src/tests/smoke/fx-retry-policy.test.ts src/tests/smoke/fx-endpoint-client.test.ts 2>&1); then
+            echo "$out"
+            detail=$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g')
+            echo "::error title=F45 S3 endpoints::${detail}"
+            exit 1
+          fi
+          # No credential may reach a URL in the Explorer client sources, and the
+          # S3 layer must stay out of the production single-file bundle.
+          if grep -RnE '\$\{[^}]*[Tt]oken[^}]*\}|\?key=' src/components/explorer/api/ ; then
+            echo "::error title=F45 S3 endpoints::credential appears in an Explorer URL expression"
+            exit 1
+          fi
+          for needle in 'X-Dash-Token' 'api/fx/list' 'fx.err.hostBadGateway'; do
+            if grep -qF "$needle" ui/dist/index.html; then
+              echo "::error title=F45 S3 endpoints::S3 client code leaked into the shipped bundle ($needle)"
+              exit 1
+            fi
+          done
+          echo 'F45 S3 endpoint gates PASS'
       - name: F41 v2 e2e (playwright, real bundle)
         run: |
           set -euo pipefail
