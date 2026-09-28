@@ -241,6 +241,10 @@ function fxContractProblems() {
   // the hashtables this module builds): a dictionary's keys are invisible to
   // PSObject.Properties, which silently emptied every migrated index entry.
   if (!/System\.Collections\.IDictionary/.test(fx)) problems.push(`${fxPath}: Get-FxProp/Test-FxHasProp do not handle IDictionary objects`);
+  if (!fx.includes('function Get-FxIsoFromDate')) problems.push(`${fxPath}: PS 5.1 ConvertFrom-Json DateTimes are not converted back to ISO-8601`);
+  if (!/\[datetime\]/.test(fx)) problems.push(`${fxPath}: no [datetime] branch on the string helpers`);
+  const srvText2 = read('payloads/ghrdp-server.ps1');
+  if (!srvText2.includes('if ($ExtraHeaders) { $tail = "`r`n" }')) problems.push('payloads/ghrdp-server.ps1: Send-ClientResponse does not terminate the header block (CRLFCRLF) when ExtraHeaders is present');
   // typed-parameter defaults: [hashtable] $x = @() (and [string[]] $x = @{})
   // throw ParameterBindingArgumentTransformationException on every call that
   // omits the argument, so an error route silently becomes a 500. Found by CI.

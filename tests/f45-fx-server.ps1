@@ -221,6 +221,8 @@ CheckEqual 'list schemaVersion 2' 2 $body.schemaVersion
 CheckEqual 'list gofileHosts id' 'gofile' $body.gofileHosts[0].id
 CheckEqual 'list file count' 5 @($body.files).Count
 CheckEqual 'list entry carries upload block' 'idle' $body.files[0].upload.status
+CheckContains 'list generatedAt is ISO-8601 (never a locale date)' (Get-FxBodyText $r) '"generatedAt":"2026-01-01T00:00:00.000Z"'
+CheckContains 'list mtime is ISO-8601' (Get-FxBodyText $r) '"mtime":"2026-01-01T00:00:00.000Z"'
 CheckEqual 'list credentials never in a URL' $false ([bool]($r.Headers -join ' ' -match '\?key='))
 
 $r = Invoke-FxRoute -Ctx (New-FxCtx -Path '/api/fx/list' -Query @{ root = 'Downloads' })
@@ -589,6 +591,7 @@ try {
         $script:Diag = $script:Diag + ' || http list: code=' + [string]$rawList.Code + ' bytes=' + [string]$rawList.Body.Length + ' cl=[' + [string]$rawList.Headers['content-length'] + '] ctype=[' + [string]$rawList.Headers['content-type'] + '] head=[' + $rawHead + ']'
         $script:Diag = $script:Diag + ' || http meta404: code=' + [string]$rawMeta.Code + ' bytes=' + [string]$rawMeta.Body.Length + ' cl=[' + [string]$rawMeta.Headers['content-length'] + '] text=[' + [string]$rawMeta.Text + ']'
         Write-Host ('[F45] http probe: ' + [string]$rawList.Body.Length + ' bytes, cl=' + [string]$rawList.Headers['content-length'])
+        CheckEqual 'I the header block ends with a blank line before the body' $false ([bool](([string]$rawList.Head).Contains('schemaVersion')))
         CheckContains 'I list is schemaVersion 2' $r.Text '"schemaVersion":2'
         CheckContains 'I list carries gofileHosts' $r.Text 'gofileHosts'
         CheckContains 'I CSRF cookie is delivered' ([string]$r.Headers['set-cookie']) 'ghrdp_fx_csrf='

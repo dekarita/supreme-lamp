@@ -1127,7 +1127,15 @@ function Send-ClientResponse {
     if ($Code -eq 502) { $status = 'Bad Gateway' }
     if ($Code -eq 503) { $status = 'Service Unavailable' }
     if ($Code -eq 504) { $status = 'Gateway Timeout' }
-    $hdr = "HTTP/1.1 $Code $status`r`nContent-Type: $CType`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`nCache-Control: no-store`r`nAccess-Control-Allow-Origin: *`r`nAccess-Control-Allow-Headers: Content-Type, Authorization`r`nAccess-Control-Allow-Methods: GET,POST,OPTIONS`r`n$ExtraHeaders`r`n"
+    # [F45 S4 fix] the blank line that terminates the header block: with no extra
+    # headers the template already ends in CRLFCRLF (byte-identical to every
+    # existing response). With extra headers the last ONE of them used to sit
+    # directly against the body - no separator at all - so an HTTP client (and
+    # the F45 harness) saw the body as a bogus header line and every successful
+    # fx response arrived with an empty body.
+    $tail = ''
+    if ($ExtraHeaders) { $tail = "`r`n" }
+    $hdr = "HTTP/1.1 $Code $status`r`nContent-Type: $CType`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`nCache-Control: no-store`r`nAccess-Control-Allow-Origin: *`r`nAccess-Control-Allow-Headers: Content-Type, Authorization`r`nAccess-Control-Allow-Methods: GET,POST,OPTIONS`r`n$ExtraHeaders$tail`r`n"
     $hb = [System.Text.Encoding]::ASCII.GetBytes($hdr)
     $Stream.Write($hb, 0, $hb.Length)
     if ($Body.Length -gt 0) { $Stream.Write($Body, 0, $Body.Length) }

@@ -286,10 +286,20 @@ function Test-FxHasProp {
         return [bool]($Obj.PSObject.Properties[$Name])
     } catch { return $false }
 }
+function Get-FxIsoFromDate {
+    # Windows PowerShell's ConvertFrom-Json has no -DateKind and turns every ISO
+    # string into a [datetime]; hand it back as ISO-8601 UTC. Serialising the
+    # DateTime itself produced the host's locale format ("01/01/2026 00:00:00"),
+    # which the S3 client's validators reject.
+    param($Value)
+    if ($Value.Kind -eq [System.DateTimeKind]::Utc) { return $Value.ToString('yyyy-MM-ddTHH:mm:ss.fffZ') }
+    return $Value.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+}
 function Get-FxString {
     param($Obj, [string]$Name, [string]$Default = '')
     $v = Get-FxProp $Obj $Name
     if ($null -eq $v) { return $Default }
+    if ($v -is [datetime]) { return (Get-FxIsoFromDate $v) }
     if ($v -is [string]) { if ($v) { return $v } else { return $Default } }
     return [string]$v
 }
@@ -297,6 +307,7 @@ function Get-FxNullableString {
     param($Obj, [string]$Name)
     $v = Get-FxProp $Obj $Name
     if ($null -eq $v) { return $null }
+    if ($v -is [datetime]) { return (Get-FxIsoFromDate $v) }
     if ($v -is [string]) { return $v }
     return [string]$v
 }
@@ -340,8 +351,11 @@ function Test-FxIsoString {
 }
 function Get-FxIsoString {
     # Mirrors v1_to_v2.ts iso(): the value is kept when it parses, else EPOCH.
+    # A [datetime] (PS 5.1 ConvertFrom-Json) is NOT a string: it is handed back
+    # as ISO-8601 UTC instead of collapsing to the epoch.
     param($Obj, [string]$Name, [string]$Default = '1970-01-01T00:00:00.000Z')
     $v = Get-FxProp $Obj $Name
+    if ($v -is [datetime]) { return (Get-FxIsoFromDate $v) }
     if ($v -is [string] -and $v -and (Test-FxIsoString $v)) { return $v }
     return $Default
 }

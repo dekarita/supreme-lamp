@@ -219,6 +219,12 @@ test('F45-S4-14 property access understands both object shapes', () => {
   assert.match(prop, /\.Contains\(\$Name\)/, 'Get-FxProp must use the dictionary Contains check');
   const has = fx.slice(fx.indexOf('function Test-FxHasProp {'), fx.indexOf('function Get-FxMember {'));
   assert.match(has, /\[System\.Collections\.IDictionary\]/, 'Test-FxHasProp must handle IDictionary objects');
+  // PS 5.1's ConvertFrom-Json has no -DateKind: every ISO string comes back as
+  // a [datetime], and serialising that gave the host locale format.
+  assert.match(fx, /function Get-FxIsoFromDate/, 'a [datetime] -> ISO-8601 helper is missing');
+  assert.match(fx, /-is \[datetime\]/, 'the string helpers must handle a [datetime] value');
+  const srvSend = srv.slice(srv.indexOf('function Send-ClientResponse {'));
+  assert.ok(srvSend.includes('if ($ExtraHeaders) { $tail = "`r`n" }'), 'Send-ClientResponse must end the header block with CRLFCRLF even with extra headers');
   assert.ok(/function Read-FxUploadQueue/.test(fx), 'the queue reader is missing');
   const reader = fx.slice(fx.indexOf('function Read-FxUploadQueue {'), fx.indexOf('function Save-FxUploadQueue {'));
   assert.match(reader, /uploadJobId = \(Get-FxString/, 'queue jobs must be normalised into hashtables before the state machine mutates them');
