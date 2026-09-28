@@ -1,0 +1,8 @@
+{
+  "id": "gofile",
+  "displayName": "gofile.io",
+  "maxFileBytes": null,
+  "allowedMimePrefixes": null,
+  "ttlSeconds": null,
+  "notes": ""
+}
