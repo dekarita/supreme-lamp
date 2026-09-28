@@ -137,6 +137,9 @@ $guestCase = Reset-Case @('success')
 $resGuest = Invoke-F46MirrorAttempt -HostCfg $hostOn -Path $filePath -Name 'f46-mock-payload.bin' -Size ([long]2048) -AttemptNo 1 -Transport $transport
 Check 'token-less guest attempt runs (no credential needed): ok=1 network=1 authMode=guest' (($resGuest.ok) -and ($script:networkCalls -eq 1) -and ([string]$resGuest.authMode -eq 'guest')) ('ok=' + $resGuest.ok + ' network=' + $script:networkCalls + ' authMode=' + $resGuest.authMode)
 
+# reset the network counter so this cell asserts ITS OWN zero-try guarantee
+# (the guest cell above legitimately consumed one mock call).
+Reset-Case @('success') | Out-Null
 $resEnc = Invoke-F46MirrorAttempt -HostCfg $hostOn -Path $filePath -Name 'f46-mock-payload.bin' -Size ([long]2048) -AttemptNo 1 -Transport $transport -EncryptRequested $true -Encrypted $false
 Check 'encrypt requested but unavailable => phase=encrypt, refused (never claims encrypted)' (($resEnc.phase -eq 'encrypt') -and ($script:networkCalls -eq 0)) ('phase=' + $resEnc.phase)
 
