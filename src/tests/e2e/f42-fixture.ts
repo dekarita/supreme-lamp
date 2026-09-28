@@ -6,7 +6,7 @@
 //       (HTTP 200), never a silent v1
 //   §3  [F43] DEFAULT is v2 (UiV2Default=true); ?ui=v1 pins classic
 // Kept as a helper (not *.spec.ts) so playwright does not collect it as a test.
-import { createServer as createHttpServer } from "node:http";
+import { createServer as createHttpServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -42,6 +42,42 @@ export function selectUi(dir: string, query: Record<string, string>, defaultV2: 
   return { file: join(dir, "ui.html"), missingV2: wantV2 };
 }
 
+// [F45-S2-RESUME §1.1] DETERMINISTIC TEARDOWN.
+//
+// Root cause of the CI flake (launch-gates 36377955417 step "F41 v2 e2e",
+// f42-ui-routing.spec.ts:53 "(c)" -> "Test timeout of 60000ms exceeded", and
+// the identical shape earlier in 36347561362 at f43-default-v2.spec.ts:61 "(d)"):
+//
+//   Both tests start a v1-only fixture INSIDE the test body and await
+//   `closeV1()` in a `finally` while their own page is still alive. The v1
+//   payload polls `/api/progress` every 3000ms (payloads/ui.html:1114), so at
+//   the instant `close()` runs the browser's keep-alive connection is often
+//   still carrying a request. `server.close()` only reaps sockets that are
+//   IDLE at that moment (node >= 19 behaviour); every other socket has to be
+//   hung up by the browser first. The promise therefore never settles and the
+//   test burns its whole 60s budget inside `finally` - reported as a test
+//   timeout with no failing assertion. Whether it reproduces depends purely on
+//   where the 3s poll happens to land, which is why the SAME commit passed the
+//   pull_request run (36377980668) and failed the push run.
+//
+//   Measured against this file (node 22.22.3): all-idle -> close() settles in
+//   1ms; one in-flight request -> close() never settles (8s watchdog).
+//
+// `closeIdleConnections()` / `closeAllConnections()` (node >= 18.2) settle it
+// unconditionally; the watchdog keeps a future socket race from ever eating the
+// test budget again. No assertion, selector or served byte is changed.
+async function closeFixture(server: Server): Promise<void> {
+  const closed = new Promise<void>((resolve) => server.once("close", () => resolve()));
+  server.close(); // stop accepting new connections
+  server.closeIdleConnections?.(); // reap idle keep-alive sockets
+  server.closeAllConnections?.(); // destroy any socket still mid-request
+  const watchdog = new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, 5000) as unknown as { unref?: () => void };
+    timer.unref?.(); // a settled close must not hold the playwright worker open
+  });
+  await Promise.race([closed, watchdog]);
+}
+
 export async function startFixture(dir: string): Promise<{ url: string; close: () => Promise<void> }> {
   const server = createHttpServer((req, res) => {
     const target = req.url || "/";
@@ -64,6 +100,6 @@ export async function startFixture(dir: string): Promise<{ url: string; close: (
   const { port } = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}`,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    close: () => closeFixture(server),
   };
 }

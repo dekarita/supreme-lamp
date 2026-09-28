@@ -9,6 +9,12 @@ export default defineConfig({
   retries: 0,
   use: {
     baseURL: process.env.F41_BASE_URL || "http://127.0.0.1:4173",
+    // [F45-S2-RESUME §1.1] Bound navigation explicitly. Without it a stuck
+    // page.goto inherits the whole 60s test timeout and the failure reads as an
+    // opaque "Test timeout of 60000ms exceeded" with no pending-call detail.
+    // 30s is far beyond a local fixture serving the 557 kB single-file bundle,
+    // and it leaves the rest of the budget for the assertions.
+    navigationTimeout: 30000,
     trace: "retain-on-failure",
   },
   webServer: process.env.F41_BASE_URL

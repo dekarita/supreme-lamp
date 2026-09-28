@@ -2114,8 +2114,15 @@ jobs:
           # (blob storage blocked), so surface the report tail as ONE readable
           # ::error:: annotation on the check run.
           if ! out=$(pnpm exec playwright test 2>&1); then
-            echo "$out" | tail -40
-            echo "::error::E2E-FAIL::$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r')"
+            echo "$out" | tail -60
+            # [F45-S2-RESUME §1.1] `tail -c 2200` kept the run SUMMARY and cut the
+            # per-test detail block, which is exactly where playwright prints the
+            # pending "Call log" (i.e. which await was still running when the test
+            # timed out). That is why the f42 "(c)" timeout was un-diagnosable from
+            # the annotation. Emit the failure block (head) PLUS the summary (tail).
+            detail=$(printf '%s' "$out" | awk '/^  [0-9]+\) /{f=1} f{print}' | head -c 1700)
+            summary=$(printf '%s' "$out" | tail -c 400)
+            echo "::error::E2E-FAIL::$(printf '%s' "${detail}${summary}" | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g' | iconv -f UTF-8 -t UTF-8 -c)"
             exit 1
           fi
       # [F42] ?ui=v2 must ACTUALLY reach v2: normalised query, fail-visible
