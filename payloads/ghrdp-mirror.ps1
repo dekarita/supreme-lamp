@@ -211,13 +211,13 @@ function Test-F46AesGcmUsable {
         if (-not $t) { return $false }
         $key = New-Object byte[] 32
         $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-        try { $rng.GetBytes($key) } finally { try { $rng.Dispose() } } catch { }
+        try { $rng.GetBytes($key) } finally { try { $rng.Dispose() } catch { } }
         $aes = New-F46AesGcm -Key $key
         if (-not $aes) { return $false }
         try {
             $nonce = New-Object byte[] ([int]$script:F46GofileContract.gcmNonceBytes)
             $rng2 = [System.Security.Cryptography.RandomNumberGenerator]::Create()
-            try { $rng2.GetBytes($nonce) } finally { try { $rng2.Dispose() } } catch { }
+            try { $rng2.GetBytes($nonce) } finally { try { $rng2.Dispose() } catch { } }
             $pt = [System.Text.Encoding]::UTF8.GetBytes('ghrdp-f47-selftest')
             $ct = New-Object byte[] $pt.Length
             $tag = New-Object byte[] ([int]$script:F46GofileContract.gcmTagBytes)
@@ -225,7 +225,7 @@ function Test-F46AesGcmUsable {
             $back = New-Object byte[] $pt.Length
             $aes.Decrypt($nonce, $ct, $tag, $back)
             return ([System.Text.Encoding]::UTF8.GetString($back) -eq 'ghrdp-f47-selftest')
-        } finally { try { $aes.Dispose() } } catch { }
+        } finally { try { $aes.Dispose() } catch { } }
     } catch { return $false }
 }
 
@@ -280,7 +280,7 @@ function Invoke-F46EncryptFile {
                     $out.AddRange([byte[]]$ct)
                     [System.IO.File]::WriteAllBytes($OutPath, $out.ToArray())
                     return @{ ok = $true; alg = 'AES-256-GCM'; bytes = [long]$out.Count; message = '' }
-                } finally { try { $aes.Dispose() } } catch { }
+                } finally { try { $aes.Dispose() } catch { } }
             }
         }
         # Legacy AES-256-CBC + PBKDF2 container (browser-decryptable).
@@ -307,9 +307,9 @@ function Invoke-F46EncryptFile {
                     $out2.AddRange([byte[]]$ct2)
                     [System.IO.File]::WriteAllBytes($OutPath, $out2.ToArray())
                     return @{ ok = $true; alg = 'AES-256-CBC-PBKDF2'; bytes = [long]$out2.Count; message = '' }
-                } finally { try { $enc.Dispose() } } catch { }
-            } finally { try { $a.Dispose() } } catch { }
-        } finally { try { $kdf.Dispose() } } catch { }
+                } finally { try { $enc.Dispose() } catch { } }
+            } finally { try { $a.Dispose() } catch { } }
+        } finally { try { $kdf.Dispose() } catch { } }
     } catch {
         return @{ ok = $false; alg = ''; bytes = 0; message = ('encryption failed: ' + $_.Exception.Message) }
     } finally {
@@ -352,7 +352,7 @@ function Invoke-F46DecryptFile {
                 $aes.Decrypt($nonce, $ct, $tag, $pt)
                 [System.IO.File]::WriteAllBytes($OutPath, $pt)
                 return @{ ok = $true; alg = 'AES-256-GCM'; message = '' }
-            } finally { try { $aes.Dispose() } } catch { }
+            } finally { try { $aes.Dispose() } catch { } }
         }
         $salt = New-Object byte[] 16
         $iv = New-Object byte[] 16
@@ -372,9 +372,9 @@ function Invoke-F46DecryptFile {
                     $pt2 = $dec.TransformFinalBlock($blob, 32, $blob.Length - 32)
                     [System.IO.File]::WriteAllBytes($OutPath, $pt2)
                     return @{ ok = $true; alg = 'AES-256-CBC-PBKDF2'; message = '' }
-                } finally { try { $dec.Dispose() } } catch { }
-            } finally { try { $a.Dispose() } } catch { }
-        } finally { try { $kdf.Dispose() } } catch { }
+                } finally { try { $dec.Dispose() } catch { } }
+            } finally { try { $a.Dispose() } catch { } }
+        } finally { try { $kdf.Dispose() } catch { } }
     } catch { return @{ ok = $false; alg = ''; message = ('decryption failed: ' + $_.Exception.Message) } }
     return @{ ok = $false; alg = ''; message = 'decryption produced no output' }
 }

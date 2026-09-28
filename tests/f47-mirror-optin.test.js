@@ -187,3 +187,26 @@ test("F47-9 docs describe the opt-in, the token path and the AES-256 mode", () =
   }
   assert.ok(!/Mozilla|proxy rotat|evade the|bypass the block/i.test(doc), "the doc must not describe evasion");
 });
+
+test("F47-10 no malformed try/finally (the parse failure this lane caught)", () => {
+  // windows-native reported "The Try statement is missing its Catch or Finally
+  // block" 11 times in ghrdp-mirror.ps1: `finally { try { X } } catch { }`
+  // closes the finally BEFORE the catch. Pin the shape so it cannot return -
+  // a nested try inside a finally must carry its own catch INSIDE the finally.
+  const bad = /finally \{ try \{[^{}]*\} \} catch \{ \}/;
+  for (const [name, text] of [
+    ["ghrdp-mirror.ps1", module],
+    ["ghrdp-watcher.ps1", watcher],
+    ["f46-mirror-policy.ps1", lab],
+    ["main.yml", main],
+  ]) {
+    assert.ok(!bad.test(text), `${name}: malformed 'finally { try { X } } catch { }' (the catch must sit inside the finally)`);
+  }
+  // every SINGLE-LINE try in the crypto path must carry its catch/finally on
+  // the same line (a multi-line try opens its block on the next lines).
+  for (const line of module.split("\n")) {
+    if (/\btry \{.*\}/.test(line) && !/\b(catch|finally)\b/.test(line)) {
+      assert.fail("a single-line try without catch/finally appeared: " + line.trim());
+    }
+  }
+});

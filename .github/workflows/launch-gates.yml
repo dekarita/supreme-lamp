@@ -2227,6 +2227,12 @@ jobs:
           test -f tests/f47-mirror-optin.test.js
           test -f src/tests/smoke/f47-mirror-optin.test.tsx
           grep -qF '[F47' tests/f46-mirror-policy.ps1
+          # a nested try inside a finally must carry its own catch INSIDE the
+          # finally - `finally { try { X } } catch { }` is a parse error.
+          if grep -nE 'finally \{ try \{[^{}]*\} \} catch \{ \}' payloads/ghrdp-mirror.ps1 payloads/ghrdp-watcher.ps1 tests/f46-mirror-policy.ps1 "$wf"; then
+            echo 'F47: malformed try/finally (the catch must sit inside the finally block)' >&2
+            exit 1
+          fi
           node --test tests/f47-mirror-optin.test.js
           echo 'F47 gates PASS'
 
