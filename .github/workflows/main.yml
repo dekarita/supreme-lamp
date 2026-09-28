@@ -44,6 +44,7 @@ jobs:
           pnpm run build
           test -f ui/dist/index.html
           node scripts/check-regression-ids.mjs
+          node scripts/check-fx-ids.mjs
           node scripts/check-no-neon-green.mjs ui/dist/index.html
           node scripts/check-bottom-bar-time.mjs
           LEN=$(wc -c < ui/dist/index.html)

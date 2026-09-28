@@ -9,6 +9,12 @@ export default {
   theme: {
     extend: {
       colors: {
+        "fx-selection": "var(--color-fx-selection)",
+        "fx-selection-border": "var(--color-fx-selection-border)",
+        "fx-drop-target": "var(--color-fx-drop-target)",
+        "fx-thumb-bg": "var(--color-fx-thumb-bg)",
+        "fx-preview-scrim": "var(--color-fx-preview-scrim)",
+        "fx-mask": "var(--color-fx-mask)",
         base: "var(--color-bg-base)",
         surface: "var(--color-bg-surface)",
         raised: "var(--color-bg-surface-raised)",
@@ -27,6 +33,18 @@ export default {
         danger: "var(--color-danger)",
         "danger-hover": "var(--color-danger-hover)",
         "focus-ring": "var(--color-focus-ring)",
+      },
+      spacing: {
+        "fx-row": "var(--space-fx-row)",
+        "fx-row-compact": "var(--space-fx-row-compact)",
+        "fx-tile": "var(--space-fx-tile)",
+        "fx-column": "var(--space-fx-column)",
+        "fx-drawer": "var(--space-fx-drawer)",
+      },
+      zIndex: {
+        "fx-context": "var(--z-fx-context)",
+        "fx-drawer": "var(--z-fx-drawer)",
+        "fx-palette": "var(--z-fx-palette)",
       },
       borderColor: {
         default: "var(--color-border-default)",

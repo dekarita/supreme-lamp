@@ -2088,7 +2088,22 @@ jobs:
           grep -qF 'actions/download-artifact' .github/workflows/main.yml
           grep -qF 'name: dist-ui' .github/workflows/main.yml
           grep -qF 'if ($v2len -le 51200) { throw' .github/workflows/main.yml
-          pnpm exec vitest run
+          if ! out=$(pnpm exec vitest run 2>&1); then
+            echo "$out"
+            detail=$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g')
+            echo "::error title=F45 S1 smoke::${detail}"
+            exit 1
+          fi
+      - name: F45 S1 Explorer namespace and token gates
+        run: |
+          set -euo pipefail
+          node scripts/check-fx-ids.mjs
+          if ! out=$(pnpm exec vitest run src/tests/smoke/fx-ids-regression.test.ts src/tests/smoke/fx-tokens.test.ts 2>&1); then
+            echo "$out"
+            detail=$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g')
+            echo "::error title=F45 S1 fx-foundation::${detail}"
+            exit 1
+          fi
       - name: F41 v2 e2e (playwright, real bundle)
         run: |
           set -euo pipefail
