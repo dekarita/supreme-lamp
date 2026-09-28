@@ -2430,7 +2430,11 @@ jobs:
             echo "::error title=F45 S3 endpoints::credential appears in an Explorer URL expression"
             exit 1
           fi
-          for needle in 'X-Dash-Token' 'api/fx/list' 'fx.err.hostBadGateway'; do
+          # [F49] X-Dash-Token is a legitimate PRODUCTION header now (the Mirror
+          # page sends the dash token by header); it no longer proves the S3
+          # layer leaked. X-Idempotency-Key is S3-client-only, so the bundle
+          # stays clean of S3 exactly as before.
+          for needle in 'X-Idempotency-Key' 'api/fx/list' 'fx.err.hostBadGateway'; do
             if grep -qF "$needle" ui/dist/index.html; then
               echo "::error title=F45 S3 endpoints::S3 client code leaked into the shipped bundle ($needle)"
               exit 1

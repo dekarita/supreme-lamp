@@ -995,6 +995,28 @@ function Set-F49CfgProp {
     else { try { $Cfg | Add-Member -MemberType NoteProperty -Name $Name -Value $Value -Force } catch { } }
 }
 
+function ConvertTo-F49UtcIso {
+    # [F17 S2] the SAME coercion the beacon-age bug taught: ConvertFrom-Json in
+    # Windows PowerShell 5.1 turns an ISO "...Z" stamp into a [datetime], and a
+    # bare [string] of it renders locale-without-Z. The opt-in marker rides
+    # config.json, so every read-back MUST normalize: strings parse with
+    # RoundtripKind (an explicit offset is honored, a bare stamp is UTC),
+    # datetimes convert to UTC. Returns '' when there is no stamp.
+    param($Ts)
+    try {
+        if ($null -eq $Ts) { return '' }
+        $dt = $null
+        if ($Ts -is [datetime]) { $dt = $Ts }
+        else {
+            $s = [string]$Ts
+            if (-not $s) { return '' }
+            $dt = [datetime]::Parse($s, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+        }
+        if ($dt.Kind -eq [System.DateTimeKind]::Unspecified) { $dt = New-Object System.DateTime($dt.Ticks, [System.DateTimeKind]::Utc) }
+        return $dt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+    } catch { return '' }
+}
+
 function Get-F49RuntimeOptIn {
     param($Cfg)
     try {
@@ -1030,7 +1052,7 @@ function Get-F49OptInStatus {
     if ($marker) { $source = [string]$script:F49OptInSource }
     elseif ($enabled) { $source = 'dispatch' }
     $at = ''
-    try { if ($marker -and $marker.PSObject.Properties['at']) { $at = [string]$marker.at } } catch { }
+    try { if ($marker -and $marker.PSObject.Properties['at']) { $at = ConvertTo-F49UtcIso $marker.at } } catch { }
     $hosts = @()
     try { $hosts = @(Get-F46Hosts -Cfg $Cfg) } catch { $hosts = @() }
     $rows = @()
@@ -1110,7 +1132,7 @@ function Format-F49OptInLedger {
     # by the lab: the operator pastes this line as the opt-in proof.
     param($Marker, [string]$HostId = 'gofile')
     $at = ''
-    try { if ($Marker -and $Marker.PSObject.Properties['at']) { $at = [string]$Marker.at } } catch { }
+    try { if ($Marker -and $Marker.PSObject.Properties['at']) { $at = ConvertTo-F49UtcIso $Marker.at } } catch { }
     if (-not $at) { $at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
     return ('[mirror] RUNTIME OPT-IN: enabled=true scope=this-run source=runtime host=' + $HostId + ' at=' + $at + ' (dashboard one-click; token-less guest, no credential)')
 }
@@ -1125,7 +1147,7 @@ function Write-F49OptInBeacon {
     # no secret and dies with the ephemeral runner.
     param([string]$Root, $Marker, [string]$HostId = 'gofile')
     $at = ''
-    try { if ($Marker -and $Marker.PSObject.Properties['at']) { $at = [string]$Marker.at } } catch { }
+    try { if ($Marker -and $Marker.PSObject.Properties['at']) { $at = ConvertTo-F49UtcIso $Marker.at } } catch { }
     $beacon = [ordered]@{ event = 'mirror-runtime-opt-in'; enabled = $true; scope = [string]$script:F49OptInScope; source = [string]$script:F49OptInSource; host = $HostId; at = $at }
     $p = Join-Path $Root ([string]$script:F49OptInBeaconName)
     [System.IO.File]::WriteAllText($p, ($beacon | ConvertTo-Json -Compress -Depth 5), (New-Object System.Text.UTF8Encoding($false)))

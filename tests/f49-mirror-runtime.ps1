@@ -135,7 +135,7 @@ try {
     $beaconOk = (Test-Path -LiteralPath $beaconPath) -and ($beaconPath -like '*mirror-optin-beacon.json')
     $beacon = $null
     try { $beacon = ([System.IO.File]::ReadAllText($beaconPath) | ConvertFrom-Json) } catch { $beacon = $null }
-    Check 'U beacon file is written with the opt-in record' ($beaconOk -and ($beacon -ne $null) -and ([string]$beacon.event -eq 'mirror-runtime-opt-in') -and [bool]$beacon.enabled -and ([string]$beacon.scope -eq 'this-run') -and ([string]$beacon.source -eq 'runtime') -and ([string]$beacon.host -eq 'gofile') -and ([string]$beacon.at -eq '2026-09-28T18:00:00Z')) ('path=' + $beaconPath)
+    Check 'U beacon file is written with the opt-in record' ($beaconOk -and ($beacon -ne $null) -and ([string]$beacon.event -eq 'mirror-runtime-opt-in') -and [bool]$beacon.enabled -and ([string]$beacon.scope -eq 'this-run') -and ([string]$beacon.source -eq 'runtime') -and ([string]$beacon.host -eq 'gofile') -and ([string](ConvertTo-F49UtcIso $beacon.at) -eq '2026-09-28T18:00:00Z')) ('path=' + $beaconPath)
     Remove-F49OptInBeacon -Root $labRoot
     Check 'U beacon file is removed by disable' (-not (Test-Path -LiteralPath (Join-Path $labRoot 'mirror-optin-beacon.json'))) 'beacon still present'
     $removeThrew = $false
