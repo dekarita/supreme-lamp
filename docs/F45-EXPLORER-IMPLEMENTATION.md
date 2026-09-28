@@ -6,7 +6,8 @@ Read the user-supplied `rdp-dashboard-plan.md` first, then the binding
 `rdp-file-explorer-plan.md`. Explorer wins conflicts; D1–D7 are pre-approved.
 This ledger does not replace either plan or claim operator acceptance.
 
-Session branch: `arena/01a0e638-supreme-lamp`. No workflow dispatches by the agent.
+Session branches: S1/S2 landed from `arena/01a0e638-supreme-lamp`; S3 is
+authored on `arena/01a0e650-supreme-lamp`. No workflow dispatches by the agent.
 Landing: session push → PR → all CI green → merge commit, never squash/rebase,
 force-push, amend pushed history, or push main. Subsequent stages wait for the
 previous stage's green lab/landing. Production dispatch is operator-only.
@@ -137,3 +138,99 @@ Local proof: 35 new data/mock assertions pass, including partial JSON,
 idempotency, non-mutation, UTF-8 identity, exact full host errors and no network
 fallback. Stage-specific annotations wired. Hosted proof/landing pending.
 Operator checkpoints remain pending as above; S3 has not started.
+
+## S3 — endpoint clients only
+
+Plan references: Explorer §§5, 5.1, 5.2, 8.2, 11.1, 12.1(4). No server routes
+(S4), no UI (S5+), no Mirror state change, no live gofile call, no live runner
+call. Nothing in the production bundle imports this layer yet — asserted by a
+new gate, not by inspection.
+
+- `api/errors.ts` — §5.2 HTTP → F44 phase mapping, `FxError` carrying the
+  COMPLETE host message, `Retry-After` parsing, and credential redaction.
+- `api/retryPolicy.ts` — §8.2 transient-only gating: `dns|tcp|tls|http` retry,
+  everything else is terminal; five attempts for a transient failure, one for
+  anything else; jittered exponential backoff (500ms base, 8s cap, 100ms floor).
+- `api/fxClient.ts` — dash-token transport. Token travels in `X-Dash-Token`
+  only; a URL containing the token or a `key=`/`token=` parameter is refused
+  before sending. POST requires `X-CSRF-Token` (§5.1/4) and fails closed
+  without one. Cross-origin base refused (§5.1/8, D4). `cache: no-store`.
+- `api/endpoints.ts` — typed clients for `/api/fx/list`, `/meta`,
+  `/gofile/status`, `/op`, `/upload`, plus same-origin URL builders for
+  `/preview` and `/upload/events` (their clients land with S4/S8). Every
+  response is validated; anything unexpected is a `parse` FxError, so a v1 index
+  is rejected (§12.5) rather than half-rendered.
+- Smoke: `fx-retry-policy.test.ts` (table-driven over all 9 phases × 14
+  statuses = 126 combinations, asserted three ways, with expectations
+  transcribed from the plan text rather than from the implementation) and
+  `fx-endpoint-client.test.ts` (offline MSW: header/CSRF/idempotency transport,
+  fail-fast attempt counts, transient recovery, budget exhaustion, Retry-After
+  floor, transport failure, v1 rejection, redaction, fail-closed on an
+  unconfigured URL).
+
+### Documented deltas (gaps in the plan text, not relaxations)
+
+| # | Delta | Reason |
+|---|---|---|
+| 1 | Fail-fast set is 401/403/413/415, and `maxAttempts` agrees with `canRetry` for all four | §8.2's sketch listed `{403,413,415}` and only special-cased 403/413 in `maxAttempts`; §5.2 marks 401 non-retryable and the ledger requires fail-fast. |
+| 2 | 400 (bad op) and 409 (concurrent scan) map to the non-retryable `parse` phase and `fx.err.parse` | §5.2 has no row for either. Reuses an existing key instead of inventing i18n before S10. |
+| 3 | HTTP 504 → phase `tcp`; a request with NO HTTP response → phase `dns` | §5.2 writes 504's phase as "tcp/tls/dns", which is not a single `UploadPhase`. Both are transient, so retry behaviour is identical; the split is presentational. |
+| 4 | `directUrl` must be null unless `gofile.status === 'uploaded'` | §4 invariant, enforced client-side so a fabricated or credential-bearing link can never be rendered or copied. |
+| 5 | `/op` refuses a `hard` flag client-side | §5.1(3): no hard delete anywhere. The type cannot express it, and untyped JSON carrying one is rejected before the request is built. |
+| 6 | `Retry-After` is a floor, clamped to 120s | The server hint must win when longer than the jittered delay, but a hostile or buggy header must not park the queue. |
+| 7 | `canRetry(state)` kept faithful to the §8.2 sketch (classification only); `shouldRetryNow(state)` adds the attempt budget | Avoids silently redefining the sketch while giving S7 the correct call to make. |
+
+## Ride-along: F42/F43 e2e timeout root cause (not an S2/S3 code defect)
+
+Launch-gates 36377955417 (push, sha `5bc3412`) failed at
+`f42-ui-routing.spec.ts:53` with "Test timeout of 60000ms exceeded" while the
+pull_request run 36377980668 on the SAME sha passed. Run 36347561362 failed the
+same way at `f43-default-v2.spec.ts:61` — the identical shape in the other spec,
+on a branch that predates S2. Neither file is touched by S2 or S3.
+
+Cause: both tests start a v1-only fixture inside the test body and await
+`closeV1()` in a `finally` while their own page is still alive. The v1 payload
+polls `/api/progress` every 3000ms (`payloads/ui.html:1114`), so at the instant
+`server.close()` runs the browser keep-alive socket is often still carrying a
+request. `server.close()` only reaps sockets idle at that moment (node ≥ 19);
+the rest must be hung up by the browser first, so the promise never settles and
+the test spends its whole 60s budget in `finally`. Measured against the real
+`startFixture` on node 22.22.3: all sockets idle → `close()` settles in 1ms; one
+in-flight request → `close()` never settles (8s watchdog). After the fix the
+in-flight case settles in 0ms.
+
+Fix (timing only — no assertion, selector or served byte changed):
+`closeIdleConnections()` + `closeAllConnections()` (node ≥ 18.2, optional-called
+for older runtimes) plus a 5s unref'd watchdog. Also `navigationTimeout: 30000`
+so a stuck `page.goto` reports a named navigation timeout with its call log
+instead of an opaque test timeout, and the `E2E-FAIL` annotation bridge now
+emits the per-test block (where playwright prints the pending "Call log") rather
+than `tail -c 2200` of the run summary, which is why this was un-diagnosable
+from the annotation alone.
+
+### Local evidence (S3 + ride-along)
+
+| Gate | Result |
+|---|---|
+| Frozen pnpm install | PASS; lockfile unchanged |
+| tsc, full project including `src/tests` | PASS, 0 errors |
+| Vitest | 498/498 PASS (15 files; 430 new S3 assertions) |
+| S2 data/mock subset | 35/35 PASS |
+| Parent regression lock | 219/219 PASS |
+| fx namespace gate | 10 IDs + 1 class; collision-free PASS (no `.tsx` added) |
+| No-neon-green / bottom-bar-time scripts | PASS |
+| F40 IA gate / Node regression suites | PASS / 279/279 PASS |
+| PowerShell structural audit | PASS, 0 failed; no `.ps1` touched |
+| S3 credential-in-URL guard | CLEAN over `src/components/explorer/api/` |
+| S3 absent from shipped bundle | PASS: 0 hits for `X-Dash-Token`, `api/fx/list`, `fx.err.hostBadGateway` in `ui/dist/index.html` |
+| Shell gzip (inlined font data excluded) | 127873 bytes, below the 180 KB budget; unchanged by S3 |
+| Fixture teardown probe (node, real `startFixture`) | idle 1ms → 0ms; in-flight HANG → 0ms |
+| Local browser e2e | NOT RUN: `cdn.playwright.dev` is unreachable from this sandbox (`ECONNRESET`); hosted lab required |
+
+Unit green is not a live-functionality claim and not an a11y claim. No real
+gofile call and no real runner call was made.
+
+### Hosted proof and landing
+
+Pending: this stage has not been pushed at the time of writing. Operator
+checkpoints above remain unchanged and pending; S4 has not started.
