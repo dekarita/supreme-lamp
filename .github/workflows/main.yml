@@ -1599,6 +1599,11 @@ jobs:
           # MUST be staged next to the server.
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-fx.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-fx.ps1"
           echo '[fx] ghrdp-fx.ps1 written'
+          # [F46 §3] the mirror host contract + attempt policy module is
+          # dot-sourced by the watcher AND by the server (read-only Diagnose
+          # probe). Missing module => labeled reasons, never a silent loop.
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-mirror.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-mirror.ps1"
+          echo '[mirror] ghrdp-mirror.ps1 written'
           # [F37 §4] the telescope module must be deployed NEXT TO the server:
           # the 60s tick dot-sources it (single source of truth for the format).
           cp "$GITHUB_WORKSPACE/payloads/rdp-telescope.ps1" "$RUNNER_TEMP/ghrdp-stage/rdp-telescope.ps1"
@@ -2254,6 +2259,47 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
           path: rdp-diag
+
+      # [F46 §5] READ-ONLY mirror host probe - no content upload, ever. The
+      # runner's own egress is what is under test: HEAD/GET the API root of each
+      # configured host and record {host,status,note}. The matrix lands in the
+      # step summary, in rdp-diag/mirror-probe.txt and in the mirror-diag
+      # artifact. An all-403 result is a documented policy dead-end (operator
+      # options: operator-owned VPS egress or accept mirror unavailable from
+      # ephemeral runners) - evasion is forbidden and would be caught by the
+      # F46 gate.
+      - name: F46 mirror host read-only probe (no upload; matrix in summary)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $S = $env:GITHUB_STEP_SUMMARY
+          $art = Join-Path $env:GITHUB_WORKSPACE 'rdp-diag'
+          New-Item -ItemType Directory -Path $art -Force -ErrorAction SilentlyContinue | Out-Null
+          $mod = 'C:\ghrdp\ghrdp-mirror.ps1'
+          if (-not (Test-Path -LiteralPath $mod)) { $mod = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-mirror.ps1' }
+          $matrixTxt = ''
+          try {
+              . $mod
+              $cfg = $null
+              try { $cfg = [System.IO.File]::ReadAllText('C:\ghrdp\config.json') | ConvertFrom-Json } catch { $cfg = $null }
+              $hosts = @(Get-F46Hosts -Cfg $cfg)
+              $rows = @(Invoke-F46HostProbe -Hosts $hosts -TimeoutSec 8)
+              $matrixTxt = Format-F46ProbeTable -Rows $rows
+              Write-Host ('[F46] read-only host probe (no upload):' + "`n" + $matrixTxt)
+              if ($S) {
+                  '### F46 mirror host probe (read-only, runner egress)' | Add-Content -Path $S
+                  '```' | Add-Content -Path $S
+                  $matrixTxt | Add-Content -Path $S
+                  '```' | Add-Content -Path $S
+              }
+          } catch {
+              $matrixTxt = ('probe failed: ' + $_.Exception.Message)
+              Write-Host ('::warning::[F46] read-only host probe failed: ' + $_.Exception.Message)
+              if ($S) { ('- F46 probe failed: ' + $_.Exception.Message) | Add-Content -Path $S }
+          }
+          try { [System.IO.File]::WriteAllText((Join-Path $art 'mirror-probe.txt'), ($matrixTxt + "`n"), (New-Object System.Text.UTF8Encoding($false))) } catch { }
+          Write-Host '[F46] probe is diagnostic only - it never halts the run and never uploads content'
+          exit 0
 
       # [F24 §1] SERVER-SIDE CREDENTIAL PROOF. The dispatch password is
       # validated against the runner's OWN local SAM before the run advertises
@@ -5201,6 +5247,55 @@ jobs:
           Show-Banner -Reason 'keep-alive window finished - cleanup follows'
           Write-Host '[keepalive] keep-alive window complete; the cleanup steps will run now'
           exit 0
+
+      # [F46 §1] the worker's attempt table, whatever the run's outcome: one row
+      # per attempt with host/phase/status/ms and the COMPLETE host message. This
+      # is what replaces "FAILED after 5 tries (all hosts; see log)" - a red run
+      # now ships its own reason in the summary and the artifact.
+      - name: F46 mirror attempt table + probe matrix (survives halts)
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $S = $env:GITHUB_STEP_SUMMARY
+          $art = Join-Path $env:GITHUB_WORKSPACE 'rdp-diag'
+          New-Item -ItemType Directory -Path $art -Force -ErrorAction SilentlyContinue | Out-Null
+          $mod = 'C:\ghrdp\ghrdp-mirror.ps1'
+          if (-not (Test-Path -LiteralPath $mod)) { $mod = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-mirror.ps1' }
+          $tableTxt = 'attempt table unavailable: progress.json not readable'
+          try {
+              . $mod
+              $prog = $null
+              try { $prog = [System.IO.File]::ReadAllText('C:\ghrdp\progress.json') | ConvertFrom-Json } catch { $prog = $null }
+              $attempts = @()
+              $mode = 'unknown'
+              $mirrorOn = 'unknown'
+              try { if ($prog) { $mirrorOn = [string]$prog.mirror } } catch { }
+              try { if ($prog.mirrorDiag) { $attempts = @($prog.mirrorDiag.attempts); $mode = [string]$prog.mirrorDiag.encryptMode } } catch { }
+              if (@($attempts).Count -eq 0) {
+                  $tableTxt = ('no mirror upload attempts this run (mirror=' + $mirrorOn + ' encryptMode=' + $mode + ') - zero attempts is itself a reported state, never an unexplained failure')
+              } else {
+                  $tableTxt = (Format-F46AttemptTableText -Attempts $attempts) + "`n" + ('encryptMode=' + $mode + ' (encrypted=false means the worker uploaded PLAINTEXT; the card must say so)')
+              }
+          } catch { $tableTxt = ('attempt table failed: ' + $_.Exception.Message) }
+          Write-Host ('[F46] ' + $tableTxt)
+          if ($S) {
+              '### F46 mirror attempt table' | Add-Content -Path $S
+              '```' | Add-Content -Path $S
+              $tableTxt | Add-Content -Path $S
+              '```' | Add-Content -Path $S
+          }
+          try { [System.IO.File]::WriteAllText((Join-Path $art 'mirror-attempts.txt'), ($tableTxt + "`n"), (New-Object System.Text.UTF8Encoding($false))) } catch { }
+          exit 0
+
+      - name: F46 mirror diagnostics artifact (probe + attempt table)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mirror-diag
+          if-no-files-found: warn
+          retention-days: 14
+          path: rdp-diag/mirror-*
 
       - name: Cleanup (wipe profiles/storage, reset funnel/serve) - no log-clear per remediation 8E
         if: ${{ always() && env.GHRDP_EPHEMERAL == 'true' }}

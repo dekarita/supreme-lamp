@@ -95,6 +95,8 @@
   "mirror": {
     "title": "Mirror",
     "titleLong": "Mirror - AES-256 encrypted upload",
+    "titlePlain": "Mirror - plaintext runner upload (no AES-256)",
+    "titleEncryptLocked": "Mirror - AES-256 requested but unavailable in this build (plaintext refused)",
     "progress": "Upload progress",
     "runnerEgress": "Runner egress",
     "overall": "overall",
@@ -105,14 +107,17 @@
     "scans": "scans",
     "eta": "eta",
     "doneTotal": "done / total",
-    "afterTries": "after 5 tries",
+    "afterTries": "after policy retries (max 5)",
     "movingAvg": "moving avg",
     "timeRemaining": "time remaining",
     "speedHistory": "Speed history - last 90 samples (7.5 min @ 5s)",
     "activeFile": "active file",
     "perRoot": "per-root telemetry",
     "root": "root:",
-    "publishStatus": "Publish status"
+    "publishStatus": "Publish status",
+    "showReason": "show full reason",
+    "encryptMode": "encryptMode",
+    "encryptedRows": "encrypted uploads"
   },
   "logs": {
     "title": "Logs",

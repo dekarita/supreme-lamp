@@ -188,6 +188,9 @@ def main():
         'payloads/Test-RdpListenerHandshake.ps1',
         'payloads/Enable-RdpTlsCertificate.ps1',
         'payloads/ghrdp-lib.ps1',
+        'payloads/ghrdp-mirror.ps1',
+        'payloads/ghrdp-watcher.ps1',
+        'tests/f46-mirror-policy.ps1',
     ]
     failed = 0
     for t in targets:

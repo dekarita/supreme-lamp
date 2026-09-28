@@ -308,6 +308,9 @@ tr.expired-row{opacity:.45}tr.expired-row td.link a{text-decoration:line-through
 .banner.ended.show{display:block!important}
 body.expired .timer{color:var(--bad)}
 .errmsg{color:var(--bad);font-size:.778rem}
+.errbox{max-width:380px}
+.errbox>summary{color:var(--bad);font-size:.778rem;cursor:pointer}
+.errfull{color:var(--bad);font-size:.722rem;font-family:var(--mono);white-space:pre-wrap;word-break:break-word;margin-top:.222rem}
 .logwrap{display:flex;flex-direction:column;gap:.444rem}
 .logwrap .head{display:flex;justify-content:space-between;align-items:center;font-size:.722rem;
   text-transform:uppercase;letter-spacing:.10em;color:var(--mut)}
@@ -644,7 +647,7 @@ main{max-width:1280px !important}
     </div>
     <div class="mini-grid" style="font-variant-numeric:tabular-nums">
       <div class="tile"><span class="lab">files</span><span class="val" id="stDoneTile">0/0</span><span class="sub">done / total</span></div>
-      <div class="tile" id="tileFailed"><span class="lab">failed</span><span class="val" id="stFailedTile">0</span><span class="sub">after 5 tries</span></div>
+      <div class="tile" id="tileFailed"><span class="lab">failed</span><span class="val" id="stFailedTile">0</span><span class="sub">after policy retries (max 5)</span></div>
       <div class="tile"><span class="lab">bytes</span><span class="val" id="stBytesTile">0 B</span><span class="sub" id="stBytesSubTile">of 0 B</span></div>
       <div class="tile"><span class="lab">speed</span><span class="val" id="stSpeedTile">0 B/s</span><span class="sub">moving avg</span></div>
       <div class="tile"><span class="lab">scans</span><span class="val" id="stScansTile">0</span><span class="sub" id="stScansSubTile">last: -</span></div>
@@ -1062,7 +1065,21 @@ function render(d){
       if(f.status==='active'&&act.name&&act.name===f.name)pf=Number(act.pct)||pf;
       var isExpired=f.status==='expired';
       var linkCell=isExpired?('<span class="stag expired">expired</span>'):f.link?('<a href="'+esc(f.link)+'" target="_blank">open</a>'):'-';
-      var errCell=f.error?('<span class="errmsg" title="'+esc(f.error)+'">'+esc(f.error).substring(0,40)+'</span>'):'-';
+      // [F46 §1] NEVER truncated: the full phase/status/message is always in
+      // the DOM (the summary only collapses it); per-attempt lines follow.
+      var errCell='-';
+      if(f.error){
+        var errFull=String(f.error);
+        var atts=f.attempts||[];
+        if(atts.length){
+          errFull+='\n';
+          for(var ai=0;ai<atts.length;ai++){
+            var a=atts[ai]||{};
+            errFull+='attempt '+String(a.n!=null?a.n:'?')+' host='+String(a.host!=null?a.host:'-')+' phase='+String(a.phase!=null?a.phase:'-')+' status='+String(a.status!=null&&a.status!==''?a.status:'-')+' msg='+String(a.msg!=null?a.msg:'')+' ms='+String(a.ms!=null?a.ms:0)+'\n';
+          }
+        }
+        errCell='<details class="errbox"><summary title="'+esc(errFull)+'">show full reason</summary><div class="errfull">'+esc(errFull)+'</div></details>';
+      }
       var statusClass = f.status || 'pending';
       html+='<tr'+(isExpired?' class="expired-row"':'')+'><td>'+esc(f.name)+'</td><td>'+esc(f.phase)+'</td><td><span class="mini-bar"><i style="width:'+pf+'%"></i></span><span class="pctnum">'+pf.toFixed(0)+'%</span></td><td>'+fmtBytes(f.size)+'</td><td><span class="stag '+esc(statusClass)+'">'+esc(statusClass)+'</span></td><td>'+errCell+'</td><td class="link">'+linkCell+'</td></tr>';
     }

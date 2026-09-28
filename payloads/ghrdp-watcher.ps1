@@ -6,6 +6,20 @@ $ErrorActionPreference = 'Continue'
 $libPath = Join-Path $Root 'ghrdp-lib.ps1'
 if (-not (Test-Path -LiteralPath $libPath)) { exit 1 }
 . $libPath
+# [F46] mirror host contract + attempt policy. Dot-sourced, never copied, so the
+# watcher, the server (Diagnose probe) and the Explorer uploader share ONE
+# implementation. A missing module is reported as a labeled reason per file -
+# it can never fall back to the old bare five-try loop.
+$global:GhrdpMirrorModulePath = Join-Path $Root 'ghrdp-mirror.ps1'
+$mirrorModuleOk = $false
+if (Test-Path -LiteralPath $global:GhrdpMirrorModulePath) {
+    try {
+        . $global:GhrdpMirrorModulePath
+        $mirrorModuleOk = [bool](Get-Command Invoke-F46MirrorAttempt -ErrorAction SilentlyContinue)
+    } catch {
+        $mirrorModuleOk = $false
+    }
+}
 $global:GhrdpCfgPath = Join-Path $Root 'config.json'
 function Resolve-RealProfile {
     param([string]$User)
@@ -251,6 +265,11 @@ try {
         Add-MirrorLog ('[watcher] RDP logon confirmed via quser - sessionStartedAt stamped at ' + $cfg.sessionStartedAt)
     }
     Add-MirrorLog '[watcher] watcher started (single instance; heartbeat every 5s)'
+    if ($mirrorModuleOk) {
+        Add-MirrorLog ('[mirror] policy loaded: fail-fast=' + (@($script:F46FailFastStatuses) -join ',') + ' transient=' + (@($script:F46TransientPhases) -join ',') + ' maxAttempts=' + [int]$script:F46MaxAttempts)
+    } else {
+        Add-MirrorLog '[mirror] ghrdp-mirror.ps1 NOT loaded - every upload attempt will be reported as phase=parse (staging bug)'
+    }
     if (-not [string]$cfg.runnerEgressIp) {
         $eg = Get-RunnerEgressIp
         if ($eg) {
@@ -269,8 +288,17 @@ try {
     # [remediation] initial mirror index publish + mirror bookmark update removed (mirror path disabled)
     $minBytes = 512
     $scanSeconds = 10
-    $maxTries = 5
-    $tries = @{}
+    # [F46 §2] the fixed-tries counter is replaced by the policy ledger:
+    # per-file attempt records, a terminal set and a per-file due time.
+    $mirrorAttempts = @{}
+    $mirrorTerminal = @{}
+    $mirrorNextAt = @{}
+    $mirrorDiagLimit = 200
+    $mirrorPolicyMax = 5
+    if ($mirrorModuleOk) {
+        try { $mirrorPolicyMax = [int]$script:F46MaxAttempts } catch { $mirrorPolicyMax = 5 }
+    }
+    $mirrorAttemptLog = New-Object System.Collections.ArrayList
     $enqueued = @{}
     $incompleteExt = @('.!qb', '.!ut', '.aria2', '.wkdownload', '.part0', '.part1', '.part2', '.part3', '.part4', '.part5', '.part6', '.part7', '.part8', '.part9')
     $idx = Get-MirrorIndexList -IdxFile $idxFile
@@ -286,6 +314,10 @@ try {
       $fullPass = $true
       $script:GhrdpStable = @{}
       $enqueued = @{}
+      $mirrorTerminal = @{}
+      $mirrorNextAt = @{}
+      $mirrorAttempts = @{}
+      Add-MirrorLog '[mirror] flush requested: attempt ledger reset (fresh attempt 1 per file, policy reapplied)'
       if (-not [bool]$cfg.mirror) {
           $cfg.mirror = $true
           Save-MirrorCfg -Cfg $cfg -Path (Join-Path $Root 'config.json')
@@ -333,7 +365,7 @@ try {
           $key = ([string]$f.FullName).ToLower()
           if ($key.StartsWith($Root.ToLower())) { continue }
           if ($doneMap.ContainsKey($key)) { continue }
-          if ($tries.ContainsKey($key) -and ([int]$tries[$key] -ge $maxTries)) { continue }
+          if ($mirrorTerminal.ContainsKey($key)) { continue }
           $telemetry.seen = [int]$telemetry.seen + 1
           if (Test-MirrorJunk -File $f) { $telemetry.skippedJunk = [int]$telemetry.skippedJunk + 1; continue }
           if ([long]$f.Length -lt $minBytes) { $telemetry.skippedSmall = [int]$telemetry.skippedSmall + 1; continue }
@@ -375,8 +407,51 @@ try {
       $encryptMode = [string]$cfg.encryptMode
       if (-not $encryptMode) { $encryptMode = 'none' }
       $mediaExt = @('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mp3', '.flac', '.wav', '.aac', '.ogg', '.wma', '.m4a', '.opus')
+      # [F46 §1/§2] ONE host decision per scan + the attempt ledger. An attempt
+      # only happens when its own policy backoff is due: the fixed ~10s cadence
+      # that produced five instant failures in the same second is gone.
+      $mirrorHosts = @()
+      $mirrorHost = $null
+      if ($mirrorModuleOk) {
+          try { $mirrorHosts = @(Get-F46Hosts -Cfg $cfg) } catch { $mirrorHosts = @() }
+          try { $mirrorHost = Select-F46UploadHost -Hosts $mirrorHosts } catch { $mirrorHost = $null }
+          try {
+              $prog.mirrorHosts = @($mirrorHosts | ForEach-Object { [ordered]@{ id = [string]$_.id; enabled = [bool]$_.enabled; apiRoot = [string]$_.apiRoot; maxFileBytes = [long]$_.maxFileBytes; blockedExtensions = @($_.blockedExtensions) } })
+          } catch { }
+      }
+      $prog.encryptMode = $encryptMode
       foreach ($f in @($queue)) {
           $key = ([string]$f.FullName).ToLower()
+          if ($mirrorTerminal.ContainsKey($key)) { continue }
+          # [F46 §2] backoff gate: no network attempt before the policy due time.
+          if ($mirrorNextAt.ContainsKey($key)) {
+              $dueAt = [datetime]$mirrorNextAt[$key]
+              if ((Get-Date) -lt $dueAt) {
+                  $waitSec = [int][math]::Max(0, ($dueAt - (Get-Date)).TotalSeconds)
+                  $prev = @($mirrorAttempts[$key])
+                  $lastRec = $null
+                  if (@($prev).Count -gt 0) { $lastRec = $prev[@($prev).Count - 1] }
+                  $waitMsg = ('backoff window open (' + $waitSec + 's until attempt ' + (1 + @($prev).Count) + ' of ' + [int]$mirrorPolicyMax + ')')
+                  $entryW = [ordered]@{
+                      name = [string]$f.Name
+                      folder = '.'
+                      size = [long]$f.Length
+                      phase = 'queued'
+                      pct = 0
+                      status = 'pending'
+                      link = ''
+                      encrypted = 'False'
+                      host = $(if ($mirrorHost) { [string]$mirrorHost.id } else { '-' })
+                      error = $(if ($lastRec) { ((Format-F46Reason -Phase ([string]$lastRec.phase) -Status ([string]$lastRec.status) -Message ([string]$lastRec.msg)) + ' | ' + $waitMsg) } else { $waitMsg })
+                      attempts = @($prev)
+                  }
+                  $newFilesW = @($entryW) + @($prog.files)
+                  if ($newFilesW.Count -gt 60) { $newFilesW = $newFilesW[0..59] }
+                  $prog.files = $newFilesW
+                  Flush-MirrorProgress -Force
+                  continue
+              }
+          }
           $fExt = [System.IO.Path]::GetExtension(([string]$f.Name).ToLower())
           $shouldEncrypt = $false
           if ($encryptMode -eq 'all') { $shouldEncrypt = $true }
@@ -391,15 +466,19 @@ try {
                   break
               }
           }
+          $prevAttempts = @($mirrorAttempts[$key])
+          $attemptNo = @($prevAttempts).Count + 1
           $entry = [ordered]@{
               name = [string]$f.Name
               folder = $relFolder
               size = [long]$f.Length
-              phase = if ($shouldEncrypt) { 'encrypt' } else { 'upload' }
+              phase = $(if ($shouldEncrypt) { 'encrypt' } else { 'upload' })
               pct = 0
               status = 'active'
               link = ''
-              encrypted = [string]$shouldEncrypt
+              encrypted = 'False'
+              host = $(if ($mirrorHost) { [string]$mirrorHost.id } else { '-' })
+              attempts = @($prevAttempts)
           }
           $newFiles = @($entry) + @($prog.files)
           if ($newFiles.Count -gt 60) { $newFiles = $newFiles[0..59] }
@@ -408,38 +487,22 @@ try {
           $uploadLen = [long]$f.Length
           $dispName = [string]$f.Name
           $encPath = $null
+          $encApplied = $false
           if ($shouldEncrypt) {
-              $encPath = Join-Path $encDir ([guid]::NewGuid().ToString('N') + '.ghenc')
-              Add-MirrorLog ('[mirror] encrypting {0} ({1} bytes)' -f $f.Name, $f.Length)
-              Set-ActiveFile -Name $f.Name -Phase 'encrypt' -Total ([long]$f.Length)
-              $encErr = $null
-              try {
-                  $encErr = 'mirror path disabled per remediation'
-              } catch {
-                  $encErr = $_.Exception.Message
-              }
-              if ($encErr -and $encErr -match 'Could not find') {
-                  Add-MirrorLog ('[mirror] VANISHED {0} (file disappeared before encrypt)' -f $f.Name)
-                  $entry['phase'] = 'skipped'
-                  $entry['status'] = 'vanished'
-                  $entry['error'] = 'file vanished before processing'
-                  $prog.agg.total = [math]::Max(0, [int]$prog.agg.total - 1)
-                  $prog.agg.bytesTotal = [math]::Max(0, [long]$prog.agg.bytesTotal - [long]$f.Length)
-                  Remove-Item -LiteralPath $encPath -Force -ErrorAction SilentlyContinue
-                  Flush-MirrorProgress -Force
-                  continue
-              }
-              if ($encErr -or (-not (Test-Path -LiteralPath $encPath))) {
-                  Add-MirrorLog ('[mirror] encrypt failed for {0}: {1}' -f $f.Name, $encErr)
-                  $entry['phase'] = 'queued'
-                  $entry['status'] = 'pending'
-                  $entry['error'] = ('encrypt: ' + $encErr)
-                  Remove-Item -LiteralPath $encPath -Force -ErrorAction SilentlyContinue
-                  Flush-MirrorProgress -Force
-                  continue
-              }
-              $uploadPath = $encPath
-              $uploadLen = [long](Get-Item -LiteralPath $encPath).Length
+              # [F46 §4] ENCRYPTION HONESTY: this build has no AES-256 encryptor
+              # (remediation lock), so a config that asks for encryption gets ONE
+              # labeled fail-fast reason - never a plaintext upload, never an
+              # "encrypted" flag the worker cannot back with a real ciphertext.
+              $encErr = 'AES-256 encryptor unavailable in this build (remediation lock): refusing to upload plaintext'
+              Add-MirrorLog ('[mirror] attempt {0} host={1} phase=encrypt status=- msg={2} ms=0' -f $attemptNo, [string]$entry['host'], $encErr)
+              $entry['phase'] = 'encrypt'
+              $entry['status'] = 'failed'
+              $entry['error'] = ('phase=encrypt status=- msg=' + $encErr)
+              $entry['encrypted'] = 'False'
+              $mirrorTerminal[$key] = $true
+              $prog.agg.failed = [int]$prog.agg.failed + 1
+              Flush-MirrorProgress -Force
+              continue
           } else {
               if (-not (Test-Path -LiteralPath $f.FullName)) {
                   Add-MirrorLog ('[mirror] VANISHED {0} (file disappeared before upload)' -f $f.Name)
@@ -453,21 +516,56 @@ try {
               }
           }
           Set-ActiveFile -Name $f.Name -Phase 'upload' -Total $uploadLen
-          Add-MirrorLog ('[mirror] uploading {0} ({1} bytes, display={2}, encrypted={3})' -f $f.Name, $uploadLen, $dispName, $shouldEncrypt)
+          Add-MirrorLog ('[mirror] uploading {0} ({1} bytes, display={2}, encrypted={3}, host={4}, attempt={5}/{6})' -f $f.Name, $uploadLen, $dispName, $encApplied, [string]$entry['host'], $attemptNo, [int]$mirrorPolicyMax)
+          if (-not $mirrorModuleOk) {
+              # A staging bug is a labeled reason, never five blind retries.
+              $modMsg = 'ghrdp-mirror.ps1 is missing on this runner - the attempt cannot be classified (staging bug; no retry loop started)'
+              Add-MirrorLog ('[mirror] attempt {0} host={1} phase=parse status=- msg={2} ms=0' -f $attemptNo, '-', $modMsg)
+              $entry['phase'] = 'parse'
+              $entry['status'] = 'failed'
+              $entry['error'] = ('phase=parse status=- msg=' + $modMsg)
+              $mirrorTerminal[$key] = $true
+              $prog.agg.failed = [int]$prog.agg.failed + 1
+              Flush-MirrorProgress -Force
+              continue
+          }
+          $token = ''
+          try { $token = Get-F46HostToken -Cfg $cfg -Root $Root -HostCfg $mirrorHost } catch { $token = '' }
+          $res = $null
+          try {
+              $res = Invoke-F46MirrorAttempt -HostCfg $mirrorHost -Path $uploadPath -Name $dispName -Size $uploadLen -Token $token -AttemptNo $attemptNo -EncryptRequested $false -Encrypted $false
+          } catch {
+              $res = @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('mirror attempt threw: ' + $_.Exception.Message); retryAfterMs = $null; record = $null; fileId = ''; code = ''; downloadPage = ''; directUrl = '' }
+          }
+          if ($null -eq $res) { $res = @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = 'mirror attempt returned nothing'; retryAfterMs = $null; record = $null; fileId = ''; code = ''; downloadPage = ''; directUrl = '' } }
+          $fullMsg = Protect-F46SecretText -Text ([string]$res.hostMessage) -Secrets @($token)
+          $phaseNow = [string]$res.phase
+          $statusNow = '-'
+          if ($null -ne $res.httpStatus) { if ([string]$res.httpStatus) { $statusNow = [string]$res.httpStatus } }
+          $attemptRec = $res.record
+          if ($attemptRec) {
+              $attemptRec['msg'] = $fullMsg
+              [void]$mirrorAttemptLog.Add($attemptRec)
+              if (-not $mirrorAttempts.ContainsKey($key)) { $mirrorAttempts[$key] = New-Object System.Collections.ArrayList }
+              [void]$mirrorAttempts[$key].Add($attemptRec)
+              $entry['attempts'] = @($mirrorAttempts[$key])
+              Add-MirrorLog (Format-F46AttemptLine -Attempt $attemptRec)
+          }
           $link = $null
-          # [remediation] mirror upload removed (lib fn neutered); $link stays null
-          if ($encPath) { Remove-Item -LiteralPath $encPath -Force -ErrorAction SilentlyContinue }
+          if ([bool]$res.ok) {
+              $link = [string]$res.directUrl
+              if (-not $link) { $link = [string]$res.downloadPage }
+          }
           if ($link) {
               $previewLink = ''
               $prevExt = [System.IO.Path]::GetExtension(([string]$f.Name).ToLower())
               $previewable = @('.png','.jpg','.jpeg','.gif','.webp','.bmp','.mp3','.flac','.wav','.aac','.ogg','.m4a','.mp4','.mkv','.webm','.mov','.avi') -contains $prevExt
-              # [remediation] mirror preview-copy removed (lib fn neutered)
               try { Add-MirrorDone -DoneFile $doneFile -Path $key -Size ([long]$f.Length) } catch { Add-MirrorLog ('[mirror] guarded step done-map failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               try { $doneMap[$key] = [long]$f.Length } catch { Add-MirrorLog ('[mirror] guarded step done-cache failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               try { $global:GhrdpDoneBytes = [long]$global:GhrdpDoneBytes + [long]$f.Length } catch { Add-MirrorLog ('[mirror] guarded step bytes failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               try {
                   $tsl = (Get-Date).AddHours(5).AddMinutes(30).ToString('yyyy-MM-dd HH:mm:ss')
-                  if ($null -ne $link) { [void]$idx.Add(@{ name = [string]$f.Name; folder = $relFolder; size = [long]$f.Length; time = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); timeSL = $tsl; link = [string]$link; preview = [string]$previewLink; encrypted = [string]$shouldEncrypt; decrypt = (([string]$cfg.pagesBase) + '/decrypt.html#key=' + [string]$cfg.mirrorKey) }) }
+                  if ($null -ne $link) { [void]$idx.Add(@{ name = [string]$f.Name; folder = $relFolder; size = [long]$f.Length; time = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); timeSL = $tsl; link = [string]$link; fileId = [string]$res.fileId; code = [string]$res.code; preview = [string]$previewLink; encrypted = [string]$encApplied; decrypt = (([string]$cfg.pagesBase) + '/decrypt.html#key=' + [string]$cfg.mirrorKey) }) }
               } catch { Add-MirrorLog ('[mirror] guarded step index-append failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               try { Save-MirrorIndexList -IdxFile $idxFile -List $idx } catch { Add-MirrorLog ('[mirror] guarded step save-index failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               # [remediation] mirror index publish removed (lib fn neutered)
@@ -479,6 +577,7 @@ try {
                   $entry['status'] = 'done'
                   $entry['pct'] = 100
                   $entry['link'] = [string]$link
+                  $entry['encrypted'] = [string]$encApplied
                   if ($entry.Contains('error')) { $entry.Remove('error') }
                   $prog.agg.done = [int]$prog.agg.done + 1
                   $prog.active.name = ''
@@ -488,24 +587,37 @@ try {
                   $prog.active.bytesTotal = [long]0
                   $prog.active.speedBps = [long]0
               } catch { Add-MirrorLog ('[mirror] guarded step entry-update failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
-              Add-MirrorLog ('[mirror] OK {0} -> {1} via runner egress {2}' -f $f.Name, $link, $(if ($egress) { $egress } else { 'unknown' }))
+              Add-MirrorLog ('[mirror] OK {0} -> {1} via runner egress {2} (host={3}, encrypted={4})' -f $f.Name, $link, $(if ($egress) { $egress } else { 'unknown' }), [string]$entry['host'], $encApplied)
           } else {
-              if ($tries.ContainsKey($key)) { $tries[$key] = [int]$tries[$key] + 1 } else { $tries[$key] = 1 }
-              if ([int]$tries[$key] -ge $maxTries) {
-                  $entry['phase'] = 'failed'
-                  $entry['status'] = 'failed'
-                  $entry['error'] = 'upload failed after 5 tries (all hosts; see log)'
-                  $prog.agg.failed = [int]$prog.agg.failed + 1
-                  Add-MirrorLog ('[mirror] FAILED after {0} tries: {1}' -f $tries[$key], $f.Name)
-              } else {
+              # [F46 §1/§2] the reason IS the product: host + phase + status +
+              # the complete host message, persisted for the UI and the artifact.
+              $entry['error'] = (Format-F46Reason -Phase $phaseNow -Status $res.httpStatus -Message $fullMsg)
+              $maxFor = [int](Get-F46MaxAttempts -Phase $phaseNow -Status $res.httpStatus)
+              $retryable = (Test-F46TransientPhase -Phase $phaseNow -Status $res.httpStatus) -and ($attemptNo -lt $maxFor)
+              if ($retryable) {
+                  $delay = [int](Get-F46BackoffMs -Attempt ($attemptNo - 1) -RetryAfterMs $res.retryAfterMs)
+                  if ($delay -lt 1) { $delay = 1 }
+                  $mirrorNextAt[$key] = (Get-Date).AddMilliseconds($delay)
                   $entry['phase'] = 'queued'
                   $entry['status'] = 'pending'
-                  $entry['error'] = ('upload retry ' + $tries[$key] + '/' + $maxTries)
-                  Add-MirrorLog ('[mirror] upload failed for {0}; will retry (try {1}/{2})' -f $f.Name, $tries[$key], $maxTries)
+                  $entry['retryInMs'] = $delay
+                  Add-MirrorLog ('[mirror] attempt {0} retryable host={1} phase={2} status={3} next-in-ms={4} (policy: {5} of {6} allowed)' -f $attemptNo, [string]$entry['host'], $phaseNow, $statusNow, $delay, $attemptNo, $maxFor)
+              } else {
+                  $entry['phase'] = 'failed'
+                  $entry['status'] = 'failed'
+                  $mirrorTerminal[$key] = $true
+                  $prog.agg.failed = [int]$prog.agg.failed + 1
+                  Add-MirrorLog (Format-F46FailureSummary -HostId ([string]$entry['host']) -Phase $phaseNow -Status $statusNow -Attempts $attemptNo -Message $fullMsg)
               }
           }
           Flush-MirrorProgress -Force
       }
+      # Attempt table for the mirror-diag artifact + the Diagnose output.
+      try {
+          $diagAttempts = @($mirrorAttemptLog)
+          if ($diagAttempts.Count -gt $mirrorDiagLimit) { $diagAttempts = $diagAttempts[($diagAttempts.Count - $mirrorDiagLimit)..($diagAttempts.Count - 1)] }
+          $prog.mirrorDiag = [ordered]@{ attempts = @($diagAttempts); terminalFiles = @($mirrorTerminal.Keys); hosts = @($prog.mirrorHosts); encryptMode = $encryptMode }
+      } catch { }
   } else {
       if (-not [bool]$cfg.mirror) {
           if (@($queue).Count -gt 0) {
@@ -528,7 +640,8 @@ try {
       foreach ($it in @($idx)) {
           if ([string]$it.status -eq 'done' -and [string]$it.link -match 'gofile\.io') {
               $code = 0
-              try { $code = [int](& curl.exe -o NUL -s -w '%{http_code}' --max-time 10 -A 'Mozilla/5.0' ([string]$it.link) 2>$null); $LASTEXITCODE = 0 } catch { }
+              # [F46] no spoofed User-Agent: a plain HEAD-style GET with curl defaults.
+try { $code = [int](& curl.exe -o NUL -s -w '%{http_code}' --max-time 10 ([string]$it.link) 2>$null); $LASTEXITCODE = 0 } catch { }
               if ($code -eq 404 -or $code -eq 410) { $it.status = 'expired'; Add-MirrorLog ('[link] EXPIRED on host: ' + [string]$it.name) }
           }
       }
