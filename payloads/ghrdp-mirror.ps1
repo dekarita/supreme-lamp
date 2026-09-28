@@ -1041,11 +1041,11 @@ function Get-F49OptInStatus {
         try { $en = [bool]$h.enabled } catch { }
         $rows += ([ordered]@{ id = $id; enabled = $en })
     }
-    $host = ''
-    try { $sel = Select-F46UploadHost -Hosts $hosts; if ($sel) { $host = [string]$sel.id } } catch { }
+    $selHost = ''
+    try { $sel = Select-F46UploadHost -Hosts $hosts; if ($sel) { $selHost = [string]$sel.id } } catch { }
     $mirror = $false
     try { $mirror = [bool]$Cfg.mirror } catch { }
-    return [ordered]@{ enabled = [bool]$enabled; mirror = [bool]$mirror; hosts = @($rows); host = $host; scope = [string]$script:F49OptInScope; source = $source; at = $at }
+    return [ordered]@{ enabled = [bool]$enabled; mirror = [bool]$mirror; hosts = @($rows); host = $selHost; scope = [string]$script:F49OptInScope; source = $source; at = $at }
 }
 
 function Set-F49RuntimeOptIn {
@@ -1078,9 +1078,9 @@ function Set-F49RuntimeOptIn {
         $marker = [pscustomobject][ordered]@{ at = $stamp; source = [string]$script:F49OptInSource; scope = [string]$script:F49OptInScope; by = 'dashboard' }
         Set-F49CfgProp -Cfg $Cfg -Name 'mirrorRuntimeOptIn' -Value $marker
     }
-    $host = ''
-    try { $a = Get-F49OptInStatus -Cfg $Cfg; $host = [string]$a.host } catch { }
-    return @{ changed = (-not $already); host = $host }
+    $selHost = ''
+    try { $a = Get-F49OptInStatus -Cfg $Cfg; $selHost = [string]$a.host } catch { }
+    return @{ changed = (-not $already); host = $selHost }
 }
 
 function Clear-F49RuntimeOptIn {
