@@ -180,6 +180,99 @@ new gate, not by inspection.
 | 6 | `Retry-After` is a floor, clamped to 120s | The server hint must win when longer than the jittered delay, but a hostile or buggy header must not park the queue. |
 | 7 | `canRetry(state)` kept faithful to the §8.2 sketch (classification only); `shouldRetryNow(state)` adds the attempt budget | Avoids silently redefining the sketch while giving S7 the correct call to make. |
 
+## S4 — server routes only
+
+Plan references: Explorer §§1.1–1.9, 5, 5.1, 5.2, 8.2, 11.1, 12.1(5). No UI
+(S5+), no `/api/fx/upload/events` (S8), no Mirror write, no live gofile call, no
+live runner call, no workflow dispatch. The whole Explorer server surface is ONE
+delimited region inside `payloads/ghrdp-server.ps1`
+(`# [F45 S4 fx-core-begin]` … `# [F45 S4 fx-core-end]`), reached from
+`Invoke-ClientRequest` through a second marked block
+(`# [F45 S4 fx-route-begin]`/`-end`) that runs BEFORE the parent gate; any other
+path falls straight through to the parent routes, unchanged.
+
+- `[1.1]` `GET /api/fx/list` — reads the F44 mirror index (`mirror-index.json`)
+  when no Explorer index exists yet, migrates v1→v2 server-side (the port of
+  `data/migrations/v1_to_v2.ts`, asserted byte-for-byte on the SHA-1 identity
+  vectors), answers `schemaVersion: 2` + `gofileHosts`, 200 with an explicit
+  `source: 'unscanned'` when nothing has been scanned, 401 `phase=auth` for a
+  refused credential and 500 `phase=parse` for an unparsable index.
+- `[1.2]` `GET /api/fx/meta?id=` — 200 FileEntry, 404 unknown/absent id.
+- `[1.3]` `GET /api/fx/gofile/status?id=` — stored state, plus a fresh poll when
+  a host token is configured; 404 unknown id, 502 (host status / unreachable),
+  504 (transport) and 502 `phase=parse` for a non-JSON host reply.
+- `[1.4]` `GET /api/fx/preview?id=` — local stream or an allowlisted gofile
+  proxy; `Accept-Ranges: bytes`, exact `Content-Range`, 206 for a satisfied
+  range, 416 + `bytes */total` when unsatisfiable, 413 `phase=size`,
+  415 `phase=type`, 404 unknown, 401 unauthenticated, 502/504 for the proxy.
+- `[1.5]` `POST /api/fx/op` — CSRF, in-memory application, atomic index write,
+  `{applied, skipped}`; per-entry refusals are `skipped` rows
+  (`unknown-id`/`no-change`/`trashed`), the REQUEST is what 400s. `hard` is a
+  400 wherever it appears.
+- `[1.6]` `POST /api/fx/upload` — CSRF, `%TEMP%\ghrdp\fx-upload-queue.json`
+  (temp + rename), 202 `{jobs:[{id,uploadJobId}], skipped}`; the §8 worker runs
+  as ONE bounded pass per 15s tick inside the server loop (single writer for
+  both the queue and `fx-index.json`), with the attempt budget, the fail-fast
+  set, the backoff deadline and the complete-but-redacted host message.
+- `[1.7]` `/preview-sandbox/<nonce>[ /body]` — MIME-explicit HTML shell, nonce
+  CSP (`default-src 'none'`, `sandbox allow-scripts`, `frame-ancestors 'self'`),
+  `Origin-Agent-Cluster: ?1`, `Cross-Origin-Resource-Policy: same-site`, and a
+  `SameSite=Strict` + `HttpOnly` cookie scoped to `/preview-sandbox`.
+- `[1.8]` Credential redaction: `Write-FxLog` is the only log writer and every
+  line passes `Protect-FxText` (known secret values first, then
+  `token=…`/`Authorization: …`/`go_…` shapes). No response body interpolates a
+  credential, no tokenised URL is logged, and the token can never reach the log,
+  the index, the queue or a body — asserted over the wire, on disk and in the
+  audit.
+- `[1.9]` Every index write re-emits `schemaVersion: 2` + `gofileHosts` + the
+  per-root counters, through a temp file in the same directory and a rename.
+
+### Documented deltas (gaps in the plan text, not relaxations)
+
+| # | Delta | Reason |
+|---|---|---|
+| 1 | `op: move` carries a destination DIRECTORY and keeps the file name | The plan says only "destination (relative to a root)". A full-path target would collapse every id in a multi-id request onto one path; a directory target is the only reading that can move several files. Empty/…-segments and `:|*?"<>` are refused with 400. |
+| 2 | The CSRF token is derived, not stored: `sha256(dashToken + '|fx-csrf-v1')[:32]` | §5.1(4) requires CSRF but defines no derivation. The value never leaves a header, is compared in constant time, and is unavailable to a cross-site attacker. |
+| 3 | `X-Idempotency-Key` is honoured server-side: identical replay returns the RECORDED response (`X-Idempotent-Replay: 1`), a key reused with a different body is 409 | §5.1(6) requires idempotency; without a recorded result a retried `op` would apply nothing and answer `applied: []`, which reads like a lost operation. Bounded ring of 50 keys, atomic write. |
+| 4 | A satisfied `Range` is always 206 (even when it spans the whole file) | Media elements probe seek support with `bytes=0-`; a 200 there reads as "not seekable". |
+| 5 | The sandbox cookie is NOT `Secure` | The dashboard is also served over plain tailnet HTTP; a `Secure` cookie would silently not be set there. `SameSite=Strict` + `HttpOnly` + path scope are the isolation that matters here. |
+| 6 | 401 is answered for a MISSING token as well as a wrong one (the region fails closed even with no dash token configured) | The Explorer gate must not become the one surface that opens when configuration is absent. |
+| 7 | A retry waits its own backoff deadline (`retryAt` on the queue row) instead of riding the 15s tick | §8.2's backoff is part of the state machine; the first retry must not be immediate just because the tick happens to fire. |
+| 8 | `Send-FxResponse` is separate from `Send-ClientResponse` and DOES send reason phrases | The parent writer omits them for 206/413/415/416/502/504 (an old lab-contract choice); the Explorer response is its own contract, and the parent function is never edited. |
+| 9 | `op` mutates the INDEX only — no filesystem move/delete happens on the runner from a browser request | §1.5 scopes the endpoint to CSRF + an atomic index write + the no-hard-delete rule. The runner-side action stays with the watcher/mirror lane, which already owns every disk mutation. |
+| 10 | The log is append-only and the idempotency ring keeps the last 50 keys | The plan defines no retention for either; both are bounded by construction per request (the ring) or per line (the log), and S6/S7 own cleanup. |
+
+### Local evidence (S4)
+
+| Gate | Result |
+|---|---|
+| Frozen pnpm install | PASS; lockfile unchanged |
+| tsc (build config + full project incl. `src/tests`) | PASS, 0 errors |
+| Vitest (`pnpm test:smoke`) | 507/507 PASS, 16 files (S4 adds `fx-server-contract.test.ts`) |
+| Node suites (`node --test tests/*.test.js`) | 289/289 PASS, incl. the new `tests/f45-s4-fx-routes.test.js` (10 S4 checks) |
+| Every ubuntu bash gate, run verbatim (`tests/run-launch-gates.py`) | PASS 34/34, incl. the new `F45 S4 Explorer server contract + redaction gates` step |
+| PowerShell structural + Explorer redaction audit (`tests/ps-balance-audit.py`) | PASS, 0 failed (6 shipped surfaces + the Explorer region + a shipped-surface token-literal scan) |
+| Parent regression lock / fx namespace | 219/219 PASS; 10 IDs + 1 class, collision-free |
+| No-neon-green / bottom-bar-time on the built bundle | PASS (557,308 bytes scanned) |
+| Offline PowerShell parse of the edited surfaces (`tests/f45-s4-fx-server.ps1`, `ghrdp-server.ps1`) | 1 known-benign tree-sitter MISSING node in the test harness, byte-identical to `tests/f27-windows.ps1`'s; the server file is clean |
+| Executed server proof (`tests/f45-s4-fx-server.ps1`) | NOT RUN LOCALLY: this sandbox has no PowerShell interpreter. It runs as the LAST step of the windows-native job (halt-on-error), driving the shipped handler over in-memory sockets: 221 assertion sites (U1–U12 unit, I1–I13 integration, some executed per case) |
+| Local browser e2e | NOT RUN: `cdn.playwright.dev` is unreachable from this sandbox (`ECONNRESET`); hosted lab required |
+
+Negative tests (the gate must be able to fail): injecting a `Write-Host` inside
+the region, removing `Protect-FxText` from `Write-FxLog`, interpolating a token
+into a response body, adding a wildcard CORS header, and dropping the forced
+`gofileHosts`/`schemaVersion` write each make `tests/ps-balance-audit.py` (or
+`tests/f45-s4-fx-routes.test.js`) fail, while each mutation was reverted.
+
+Unit green is not a live-functionality claim. No real gofile call and no real
+runner call was made; the Windows lane and the hosted lab remain the only
+executed proofs for the server route cycles.
+
+### Hosted proof and landing
+
+Pending: this stage has not been pushed at the time of writing. Operator
+checkpoints remain unchanged and pending; S5 has not started.
+
 ## Ride-along: F42/F43 e2e timeout root cause (not an S2/S3 code defect)
 
 Launch-gates 36377955417 (push, sha `5bc3412`) failed at

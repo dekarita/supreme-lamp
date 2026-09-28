@@ -2058,6 +2058,31 @@ jobs:
         run: |
           test -f tests/f40-ia-gate.sh || { echo 'F40: the IA regression lock is missing' >&2; exit 1; }
           bash tests/f40-ia-gate.sh
+      # [F45 S4] Explorer server contract gates. The six /api/fx routes, the F44
+      # phase vocabulary, atomic schema-v2 index writes, the sandbox isolation
+      # headers and the credential-redaction discipline are pinned on EVERY push
+      # from the source; the EXECUTED proof (real request cycles through the
+      # shipped handler) runs in the windows-native job, where a PowerShell
+      # interpreter exists. tests/ps-balance-audit.py (F37 step above) carries
+      # the region's redaction + route discipline audit.
+      - name: F45 S4 Explorer server contract + redaction gates
+        shell: bash
+        run: |
+          test -f tests/f45-s4-fx-routes.test.js || { echo 'F45 S4: the source contract audit is missing' >&2; exit 1; }
+          node --test tests/f45-s4-fx-routes.test.js
+          test -f src/tests/smoke/fx-server-contract.test.ts || { echo 'F45 S4: the client/server contract suite is missing' >&2; exit 1; }
+          if ! out=$(pnpm exec vitest run src/tests/smoke/fx-server-contract.test.ts 2>&1); then
+            echo "$out"
+            detail=$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g')
+            echo "::error title=F45 S4 server contract::${detail}"
+            exit 1
+          fi
+          test -f tests/f45-s4-fx-server.ps1 || { echo 'F45 S4: the executed server proof is missing' >&2; exit 1; }
+          grep -qF 'run: ./tests/f45-s4-fx-server.ps1' .github/workflows/launch-gates.yml || { echo 'F45 S4: the windows lane does not run the server proof' >&2; exit 1; }
+          grep -qF 'Write-FxLog -> Protect-FxText' payloads/ghrdp-server.ps1 || { echo 'F45 S4: the region does not document its log path' >&2; exit 1; }
+          grep -qF '***REDACTED***' payloads/ghrdp-server.ps1 || { echo 'F45 S4: the redaction marker is missing' >&2; exit 1; }
+          grep -qF "Set-Cookie: fx_sandbox=" payloads/ghrdp-server.ps1 || { echo 'F45 S4: the sandbox cookie is missing' >&2; exit 1; }
+          echo 'F45 S4 gates PASS'
       - name: Native UI and VPS contracts (Node)
         run: node --test tests/*.test.js
       # [F41 P1] v2 dashboard gates: the built bundle must render all 219
@@ -2450,3 +2475,15 @@ jobs:
       - name: F27 Windows credential handoff mechanics (not live NLA)
         shell: powershell
         run: ./tests/f27-windows.ps1
+
+      # [F45 S4] Explorer server routes - the EXECUTED proof. The shipped core is
+      # extracted between the fx-core markers, parsed, dot-sourced, and driven
+      # through real HTTP request cycles over in-memory client sockets: route
+      # matrix, CSRF, Range 200/206/416, 401/404/413/415/500/502/504, the upload
+      # queue + worker state machine, the sandbox header set, and the credential
+      # redaction assertions (no token in a log, a body, the index or the queue).
+      # LAST on purpose: this job is halt-on-error, so an Explorer regression can
+      # never hide a failure in a lane that runs before it.
+      - name: F45 S4 Explorer server routes (unit + integration)
+        shell: powershell
+        run: ./tests/f45-s4-fx-server.ps1
