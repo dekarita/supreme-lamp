@@ -117,7 +117,10 @@ test("F48-4 the module is the guest contract: no auth header, labeled auth reaso
 test("F48-5 the watcher never reads a credential and records the authMode result", () => {
   assert.ok(!watcher.includes("Get-F46HostToken"), "the worker must not use the token ladder");
   assert.ok(!watcher.includes("GHRDP_GOFILE"), "the worker must not read a token env var");
-  assert.match(watcher, /Invoke-F46MirrorAttempt -HostCfg \$mirrorHost -Path \$uploadPath -Name \$dispName -Size \$uploadLen -AttemptNo \$attemptNo/, "the attempt call must carry no -Token");
+  // [F51] the attempt call takes the PER-FILE host ($fileHost): the enabled
+  // host while the mirror is on, or the Downloads always-on host copy while
+  // it is off. Still no -Token argument of any kind.
+  assert.match(watcher, /Invoke-F46MirrorAttempt -HostCfg \$fileHost -Path \$uploadPath -Name \$dispName -Size \$uploadLen -AttemptNo \$attemptNo/, "the attempt call must carry no -Token");
   assert.ok(!/-Token \$token/.test(watcher), "no -Token argument may remain");
   assert.match(watcher, /Protect-F46SecretText -Text \(\[string\]\$res\.hostMessage\) -Secrets @\(\$mirrorKeyText\)/, "the redaction set is the mirror key only");
   assert.match(watcher, /\$mirrorAuthMode = 'guest'/, "authMode must default to guest in the progress diag");

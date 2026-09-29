@@ -245,8 +245,9 @@ operator policy knobs, not invented defaults.
 ## 9. F48 token-less guest mode (per-run opt-in stays, tokens are gone)
 
 Mirror default-OFF is a locked gate: the shipped `Get-F46DefaultHost` keeps
-`enabled=false` and the CI gate that forbids a default-ON mirror is unchanged.
-Enabling the mirror is **operator intent expressed per dispatch**:
+`enabled=false` and the CI gate that forbids a default-ON mirror is unchanged
+— **with exactly one exception (F51, §11): a watched `Downloads` root is
+Always-ON.** Enabling the mirror is **operator intent expressed per dispatch**:
 
 | Input | Default | Effect |
 | --- | --- | --- |
@@ -314,3 +315,68 @@ Scope is **this run only** on both paths: the runner is ephemeral, so a
 a page served from the real-time Rust dashboard (7332) reaches across
 explicitly. The guest contract is unchanged: no `Authorization`, no
 `X-Gofile-Token`, no `Cookie` toward the host, ever.
+
+## 11. F51 Downloads-root auto-upload (always-on)
+
+**[F51 §0 operator override, 2026-09-29]** Locked Rule 5 ("mirror is
+default-OFF") is overridden for the `Downloads` root ONLY: a file that lands
+anywhere under a **watched root whose leaf name is `Downloads`** is queued for
+mirror upload **automatically** — no `mirror_enable` dispatch input and no F49
+ConfirmModal. Files downloaded into the Downloads root therefore reach the
+mirror host without any operator action.
+
+- **How it classifies**: `Test-F51AutoUploadPath` (in
+  `payloads/ghrdp-mirror.ps1`, driven by `payloads/ghrdp-watcher.ps1`) returns
+  true only when the file path sits under a watched root that IS the Downloads
+  root (case-insensitive leaf match). Sub-folders of Downloads count
+  (`Downloads\qBittorrent\...`). A folder merely named `Downloads` under some
+  other root (e.g. `Desktop\Downloads\`) does **not** count, and neither do
+  `Desktop`, `Documents`, `Temp`, `RDP-Storage` or torrent save paths
+  (`D:\Torrents`, `C:\Torrents`) — those keep the full default-OFF + opt-in
+  contract of §9/§10 (the ConfirmModal is still required for them).
+- **The config truth is never touched**: the auto path selects
+  `Select-F51AutoUploadHost` — a **copy** of the first configured host (or the
+  shipped default gofile entry) with `enabled=true` for the attempt only.
+  `config.json` on disk, the watcher's config object and the
+  `/api/mirror/status` truth keep reporting `mirror=false`, hosts disabled.
+- **The ledger proof**: one line per watcher run, emitted with the first
+  Downloads attempt:
+  `[mirror] AUTO-UPLOAD: root=Downloads scope=this-run source=auto host=gofile at=<UTC> (Downloads always-on per F51; token-less guest, no credential, no opt-in)`.
+  `progress.json` → `mirrorDiag.autoUpload` reports `downloads` while the
+  always-on path is active for this run.
+- **Everything else is unchanged**: junk/stability/min-size gates apply to
+  auto files exactly as to opt-in files (a partial `.crdownload`/`.part` is
+  skipped until complete and quiet); the F44/F46 attempt policy, the F48
+  token-less guest contract (no auth header, ever) and the F49 runtime opt-in
+  paths are byte-for-byte the same; the F49 ConfirmModal and disabled banner
+  stay for every non-Downloads root.
+- **Scope is this run only**: the runner is ephemeral, so the always-on
+  behavior dies with it, exactly like the §9/§10 opt-ins. The shipped code
+  default stays `enabled=false` (the F11-5.2 CI gate is untouched).
+
+## 12. F50 streaming transport (large-file fix)
+
+The upload itself (`Send-F46GofileUpload`) is **streamed, never buffered**:
+`HttpClient` + `MultipartFormDataContent` + `StreamContent(FileStream)`,
+copying the file to the wire in 64 KB chunks straight from a read-only
+`FileStream`. There is **no whole-file byte array and no MemoryStream in the
+upload path**, so the .NET 2 GB single-buffer ceiling that aborted large
+uploads with `Stream was too long` cannot be reached. The exact request length
+is computed by the framework from the seekable stream (boundary + part headers
++ file bytes + closing boundary), so the host still receives ONE
+length-delimited multipart body — never a chunked stream it might refuse.
+The F44/F46 policy is unchanged: fail-fast 401/403/413/415 (exactly one
+attempt), jittered backoff for dns/tcp/tls/http transients, `Retry-After`
+honored as a floor clamped to 120 s; a transport failure is classified by
+walking the exception chain (`Get-F46TransportPhase`), never guessed.
+`PROJECT-CONTEXT-v2-CANONICAL.md` Section 6 pins the same rule at the
+architecture level.
+
+**Lab proof** (`tests/f50-mirror-streaming.ps1`, Windows lane): 100 MB, 1 GB,
+3 GB and 6 GB `fsutil`-created sparse files streamed to a discarding loopback
+listener (byte-exact length, no auth headers, sub-2 GB memory profile); the
+retry matrix (429 / 500 / 502 / connection reset) and the zero-network
+preflight refusals (size/type) driven over the REAL streaming transport; and a
+real watcher run that watches a file land in `Downloads` and uploads it
+automatically with `mirror=false` — plus the same file landing on `Desktop`
+staying tracked-not-uploaded.

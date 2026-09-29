@@ -330,6 +330,7 @@ const targets = [
   'payloads/ghrdp-watcher.ps1',
   'tests/f46-mirror-policy.ps1',
   'tests/f49-mirror-runtime.ps1',
+  'tests/f50-mirror-streaming.ps1',
 ];
 
 let failed = 0;
