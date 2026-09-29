@@ -125,11 +125,22 @@ credential in a log or artifact. A gate fails the build on those patterns.
     tag(16) + ciphertext. Availability is PROVEN per runner by a real
     encrypt/decrypt self-test (`Test-F46AesGcmUsable`), never assumed.
   - `AES-256-CBC-PBKDF2` - fallback when the runner's .NET cannot bind
-    `AesGcm`. Container: salt(16) + iv(16) + AES-256-CBC over
+    `AesGcm`, **and the only mode above the F50 one-shot cap (§11.4)**.
+    Container: salt(16) + iv(16) + AES-256-CBC over
     PBKDF2-SHA256(key, salt, 100000) - byte-identical to the legacy `.ghenc`
     form, so `docs/decrypt.html` and the web index decrypt it in the browser.
+    [F50] written by a chunked `FileStream -> CryptoStream -> FileStream` loop
+    (64 KiB), so the working set is constant at any file size.
   - Which algorithm ran is recorded per file (`encAlg`) and printed in the
     attempt table; a 32-byte key length is asserted, a shorter key is refused.
+  - [F50] `Invoke-F46EncryptFile` / `Invoke-F46DecryptFile` also return
+    `mode` = `one-shot` (GCM, whole file in arrays, only up to the 1 GiB cap),
+    `streamed` (CBC, chunked, any size) or `refused-too-large` (a GCM container
+    above the decrypt cap); the F50 lab pins all three. What the worker surfaces
+    is still `alg`, and it is the truth: `[mirror] encrypted <name> -> <bytes>
+    bytes alg=<the algorithm that ran> ...`, `progress.json`
+    `mirrorDiag.encAlg`, and the card's `encryptAlg` all read that value - a
+    large file is never labeled GCM because GCM was requested.
 - Encrypted parts are uploaded with the part mime
   **`application/x-ghrdp-mirror`** (already in the Explorer preview allowlist),
   and the display name gains the `.ghenc` suffix (the legacy Explorer decrypt
@@ -156,7 +167,12 @@ and yields a `{host, status, note}` matrix rendered by `Format-F46ProbeTable`:
 | --- | --- | --- |
 | `gofile` | `200` | read-only GET /servers reachable; upload flow is documented + enabled=False |
 | `gofile` | `403` | runner egress rejected (403) - token-less guest probe refused (authMode=requires-account); policy/endpoint level rejection; operator option: operator-owned VPS egress (no evasion) |
-| `gofile` | `-` | transport failure: NameResolutionFailure - … |
+| `gofile` | `-` | transport failure: dns - dns resolution failed (HostNotFound): … |
+
+[F50] the probe rides the same streaming `HttpClient` as the uploader, so a
+transport failure now reports the F44 **phase** (`dns` / `tcp` / `tls` / `http`)
+plus the inner reason instead of a `WebExceptionStatus` name. Every other note
+above is verbatim unchanged.
 
 Where it appears: the CI step summary + `mirror-diag` artifact (every dispatch,
 `main.yml`), and the Diagnose drawer (`/diag` -> `mirrorHosts`,
@@ -204,6 +220,23 @@ operator policy knobs, not invented defaults.
   the full-length host message is preserved while the log line keeps its 200-char
   copy; the current + legacy response bodies parse; the envelope wins over HTTP
   200; the probe matrix renders. The one real probe is a read-only GET.
+- [F50] `tests/f50-mirror-largefile.ps1` (Windows lane) drives the shipped
+  module over loopback with **real multi-GB payloads**: the reported
+  `Stream was too long.` symptom is reproduced from first principles, then
+  100 MB / 1 GB / 3 GB / 6 GB sparse files are streamed through a discarding
+  listener with the uploader's peak working set bounded far below the file size,
+  the streamed CBC container round-trips above the GCM cap (SHA-256 equal), the
+  over-cap GCM container is refused honestly, 429/500/502 retry with the exact
+  deterministic jitter sequence and a `Retry-After` floor, a TLS-handshake reset
+  and a TCP refusal are classified as transients, 403/413/415 fail fast in ONE
+  attempt with the complete host message, and preflight size/type refusals prove
+  ZERO network tries. Every cell prints `CELL=/EXPECT=/OBSERVED=/RESULT=`.
+- [F50] `tests/f50-mirror-largefile.test.js` (Node) pins the same contract
+  offline: the buffering transport is retired from code lines, the streaming
+  transport + pinned part headers are present, the timeout-floor arithmetic is
+  recomputed from the constants in the module, the streamed crypto paths carry
+  no whole-file array, the F44 constants are byte-for-byte unchanged, both lanes
+  and both structural audits are wired, and the guest/default-OFF locks hold.
 - `tests/f46-mirror-contract.test.js` (Node) pins the policy parity with
   `retryPolicy.ts`, the contract fields, the watcher's structured lines, the
   default-OFF rule, the staging/lane wiring and the evasion bans.
@@ -314,3 +347,146 @@ Scope is **this run only** on both paths: the runner is ephemeral, so a
 a page served from the real-time Rust dashboard (7332) reaches across
 explicitly. The guest contract is unchanged: no `Authorization`, no
 `X-Gofile-Token`, no `Cookie` toward the host, ever.
+
+## 11. F50 large-file streaming (the `Stream was too long.` fix)
+
+### 11.1 Symptom and root cause (two 2 GiB walls, not one)
+
+The watcher ledger line was:
+
+```
+phase=http status=- msg=upload failed: Exception calling "Write" with "3" argument(s): "Stream was too long."
+```
+
+- **Wall 1 - the upload.** `Send-F46GofileUpload` already copied the file
+  through a 64 KiB `FileStream` loop, but into
+  `HttpWebRequest.GetRequestStream()` with the .NET default
+  `AllowWriteStreamBuffering = true`. That default assembles the **entire
+  multipart body in a `MemoryStream`** before the first byte reaches the socket,
+  and a `MemoryStream` cannot grow past `Int32.MaxValue` (2 GiB) - which is
+  exactly where `Write(byte[], int, int)` throws `Stream was too long.`. The
+  phase was reported as `http` with `status=-` because the throw happened inside
+  the generic catch, after zero bytes had been sent: a 6 GiB file never even
+  started uploading.
+- **Wall 2 - the encryptor.** `Invoke-F46EncryptFile` did
+  `[IO.File]::ReadAllBytes($Path)` + `New-Object byte[] $plain.Length` for the
+  ciphertext + a `List[byte]` container + `ToArray()`: four whole-file
+  allocations (~4x the file size), so a multi-GB file died at `phase=encrypt`
+  before it ever reached wall 1.
+
+### 11.2 The transport now (F50 §1)
+
+`HttpClient` + `MultipartFormDataContent` + `StreamContent(FileStream)`,
+constructed by `New-F50HttpClient` / used by `Send-F46GofileUpload`:
+
+- The file is opened `[IO.File]::Open(Read, FileShare::ReadWrite)` and handed to
+  `StreamContent` with a 64 KiB buffer (`$script:F50StreamBufferBytes`). Nothing
+  is ever buffered in one blob; `HttpWebRequest` is retired module-wide (the
+  fleet `/servers` lookup and the read-only probe now ride the same client).
+- **The part headers are pinned, not left to the runtime.** .NET Framework
+  (Windows PowerShell 5.1 - the production runner) quotes `name="file"`, .NET 8
+  (pwsh - the hosted lab lane) does not, so `New-F46UploadRequestSpec` exposes
+  the exact `partDisposition` / `partContentType` strings and the uploader writes
+  them with `TryAddWithoutValidation`. The lab asserts the wire bytes equal the
+  spec at every size, so the contract cannot drift between lanes.
+- Requests stay **length-based** (`Content-Length` from the exact `FileStream`
+  length), which is what the pinned guest endpoint expects. Chunked transfer
+  encoding is used only when no length can be determined at all, and only if
+  `$script:F50AllowChunkedTransfer` is true (it is false for the pinned host).
+- `Expect: 100-continue` is requested, so a host that will refuse (413/415/403)
+  can say so **before** a multi-GB body is pushed at it.
+- [F48/F49] The client carries `Accept` only. There is no credential plumbing to
+  remove: no auth header, no host-token header, no session state toward the host,
+  nothing in a URL, no proxy/user-agent/rotation manipulation. The handler is
+  created per attempt and disposed with it, so no host-supplied session state can
+  ride into the next attempt.
+- A runner that cannot bind `System.Net.Http` gets a labeled terminal
+  `phase=parse` reason - never a silent downgrade to a buffering transport.
+
+### 11.3 Size-aware timeout floor (F50 §1)
+
+`HttpClient.Timeout` covers the **whole** request, body included - unlike the
+retired `HttpWebRequest.ReadWriteTimeout`, which was per-write. Keeping the old
+120 s setting would have made every multi-GB upload fail with a timeout, so the
+configured per-host `timeoutSec` is now a **floor**, not a cap
+(`Get-F50UploadTimeoutSec`): `max(configured, ceil(size / 2 MiB per second))`,
+capped at 6 h.
+
+| File size | `timeoutSec` in config | Timeout actually used |
+| --- | --- | --- |
+| 100 MiB | 120 | 120 s (floor 50 s loses) |
+| 1 GiB | 120 | 512 s |
+| 3 GiB | 120 | 1536 s |
+| 6 GiB | 120 | **3072 s** |
+| 1 TiB | 120 | 21600 s (capped) |
+
+### 11.4 AES-256 containers by size (F50 §2)
+
+| File size | Container | `alg` | `mode` | Working set |
+| --- | --- | --- | --- | --- |
+| <= 1 GiB and `AesGcm` usable | `GHRDPMIR` + ver + alg + nonce(12) + tag(16) + ct | `AES-256-GCM` | `one-shot` | ~4x file (bounded by the cap) |
+| > 1 GiB (`$script:F50GcmOneShotMaxBytes`), or no `AesGcm` | salt(16) + iv(16) + AES-256-CBC(PBKDF2-SHA256) | `AES-256-CBC-PBKDF2` | `streamed` | O(64 KiB) |
+
+- The streamed container is **byte-identical to the legacy `.ghenc` form**, so
+  `docs/decrypt.html` and `payloads/web-index-template.html` still open it in the
+  browser. That is why the size crossover uses CBC rather than a new chunked-GCM
+  container: a new format would not be browser-decryptable.
+- Decryption is streamed for the CBC container at any size. A GCM container is
+  still one-shot (.NET's `AesGcm` API has no streaming form), so it is bounded by
+  `$script:F50GcmDecryptMaxBytes` (2 GiB - 2) and **refuses honestly** above it
+  (`mode=refused-too-large`, naming the cap) instead of dying with
+  `Stream was too long.`. Only a pre-F50 build could have produced such a
+  container.
+- A wrong key never leaves a half-decrypted file behind: the partial output is
+  removed when the padding/auth check fails.
+- Plaintext is still never uploaded: a missing key or unavailable encryptor is
+  the same terminal `phase=encrypt` refusal as before.
+
+### 11.5 What did NOT change
+
+The F44 attempt policy is byte-for-byte identical on the new transport:
+fail-fast `401/403/413/415` = exactly ONE attempt; only `dns/tcp/tls/http` are
+retried (5 total); jittered exponential backoff `min(8000, 500 * 2^n)` with a
+100 ms floor; `Retry-After` honoured as a **floor** clamped to 120 s; preflight
+`phase=size|type` refusals with **zero** network tries; complete, untruncated
+host messages; mirror **default-OFF**; token-less guest ladder only. Transport
+exceptions are mapped to the same phase vocabulary by `Get-F50TransportPhase`
+(walking the inner chain, because `HttpClient` wraps socket/TLS causes).
+
+### 11.6 How the lab proves multi-GB sizes on a hosted runner
+
+`tests/f50-mirror-largefile.ps1` never contacts a real host and never allocates
+a multi-GB array:
+
+- **Sparse sources.** `fsutil sparse setflag` + `FileStream.SetLength` give a
+  file whose logical length is the real 100 MB / 1 GB / 3 GB / 6 GB value while
+  the allocation stays near zero (cell `C1` proves the mechanism, and reports the
+  measured allocation delta, before any cell depends on it).
+- **Discarding listener.** A loopback `HttpListener` counts every byte and keeps
+  only the first 8 KiB (for the part-header contract), so a 6 GiB upload costs no
+  disk. The encrypted round-trip cell is the only one that writes real bytes
+  (~1 GiB ciphertext + ~1 GiB plaintext) and it checks free space first.
+- **Memory ceiling, measured not guessed.** Cell `C2` records the peak working
+  set of a process that only dot-sources the module; every size cell then
+  requires the uploader's `PeakWorkingSet64` to stay under
+  `baseline + max(128 MiB, size/8)`. A whole-file blob would exceed that at
+  1 GiB and would throw at 6 GiB, so the assertion discriminates at every scale.
+- **Deterministic retries.** The `Sleeper` is injected and the jitter is fixed
+  (`-Rand01 0.5`), so the backoff sequence is asserted exactly:
+  `300,550,1050,2050` ms, and `1000,1000,1050,2050` ms when the host sends
+  `Retry-After: 1` (the floor wins over the jitter).
+
+### 11.7 Operator verification (F50)
+
+1. Mirror stays **default-OFF**; enable it per run (dispatch `mirror_enable=true`,
+   or the one-click runtime opt-in in §10). Add `mirror_encrypt=true` to exercise
+   the streamed container.
+2. Queue ONE benign large file (the size class you actually mirror) and click
+   **Upload everything now**.
+3. Expect a `[mirror] encrypted <name> -> <bytes> bytes alg=AES-256-CBC-PBKDF2
+   mime=application/x-ghrdp-mirror key=redacted(32B, config mirrorKey)` line for
+   a file above the 1 GiB cap (or `alg=AES-256-GCM` below it), then attempt rows
+   ending in a success row with a link - or exactly one labeled reason.
+4. `Stream was too long.` may never appear again. If an upload still fails, paste
+   the `[mirror] attempt …` lines: they now carry the phase, the status and the
+   complete host message, including the size-aware timeout that was applied.
