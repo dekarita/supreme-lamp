@@ -120,7 +120,7 @@ test('F51-3 the scan loop consumes the partition: Downloads auto-queues without 
   assert.match(watcher, /foreach \(\$f in @\(\$uploadQueue\)\)/, 'the worker loop must iterate the partitioned queue');
   assert.match(watcher, /if \(\$f51AutoMode -and \(-not \$mirrorHost\)\)/, 'the auto path must fall back to the in-memory override host');
   assert.match(watcher, /Invoke-F46MirrorAttempt -HostCfg \$mirrorHost -Path \$uploadPath -Name \$dispName -Size \$uploadLen -AttemptNo \$attemptNo/, 'the shared attempt engine call is unchanged');
-  assert.match(watcher, /autoUpload = \$\(if \(\$f51AutoMode\)/, 'mirrorDiag must carry the auto-upload state');
+  assert.match(watcher, /autoUpload = 'downloads-always-on'/, 'Downloads stays auto even when other roots are opted in (F52)');
   assert.match(watcher, /autoRoots = @\(\$f51AutoRoots\)/, 'mirrorDiag must carry the auto roots');
   assert.match(watcher, /autoQueued = @\(\$f51AutoFiles\.Keys\)\.Count/, 'mirrorDiag must carry the auto-queued count');
 });

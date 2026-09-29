@@ -144,6 +144,39 @@ function Split-F51AutoQueue {
     }
     return @{ auto = @($auto); gated = @($gated) }
 }
+# [F52] Called by the shipped uploader on the PowerShell runspace, never
+# from an async socket thread. Progress is cumulative PAYLOAD bytes flushed.
+function Update-F52MirrorProgress {
+    param($Progress, $Entry, [bool]$Encrypted = $false)
+    $p = $global:GhrdpProg
+    if (-not $p) { return }
+    foreach ($k in @('bytesSent', 'windowBytes', 'windowSeconds', 'speedBps', 'etaSeconds', 'noBytesSeconds', 'stalled', 'stallLabel')) { $p.active[$k] = $Progress[$k] }
+    $p.active.phase = 'http'
+    $p.active.bytesDone = [long]$Progress.bytesSent
+    $p.agg.active = 1
+    $Entry['phase'] = 'http'
+    $Entry['status'] = [string]$Progress.status
+    $Entry['bytesSent'] = [long]$Progress.bytesSent
+    $Entry['size'] = [long]$Progress.size
+    $Entry['progress'] = $Progress
+    $Entry['encryptMode'] = [string]$Progress.encryptMode
+    $Entry['encrypted'] = $(if ($Encrypted -and [long]$Progress.bytesSent -gt 0) { 'True' } else { 'False' })
+    if ([long]$Progress.size -gt 0) { $Entry['pct'] = [math]::Round([decimal]100 * [decimal]$Progress.bytesSent / [decimal]$Progress.size, 1) }
+    if (-not $p.mirrorDiag) { $p.mirrorDiag = [ordered]@{ attempts = @(); stallRecords = @() } }
+    $p.mirrorDiag['progress'] = $Progress
+    $p.mirrorDiag['encryptMode'] = [string]$Progress.encryptMode
+    $p.encryptMode = [string]$Progress.encryptMode
+    # One structured phase=http stall event per no-byte window, not per poll.
+    if ([int]$Progress.stallWindows -gt 0 -and [int]$Progress.stallWindows -gt [int]$Entry['stallWindows']) {
+        $Entry['stallWindows'] = [int]$Progress.stallWindows
+        $rec = [ordered]@{ n = [int]$Progress.n; host = [string]$Progress.host; phase = 'http'; status = [string]$Progress.status; ms = [long]$Progress.ms; msg = ([string]$Progress.stallLabel + ' | last socket/host text: ' + [string]$Progress.lastSocketText); at = [string]$Progress.at; bytesSent = [long]$Progress.bytesSent; encryptMode = [string]$Progress.encryptMode }
+        $p.mirrorDiag.stallRecords = @($p.mirrorDiag.stallRecords) + @($rec)
+        if ($p.mirrorDiag.stallRecords.Count -gt 200) { $p.mirrorDiag.stallRecords = @($p.mirrorDiag.stallRecords | Select-Object -Last 200) }
+        Add-MirrorLog ('[mirror] stall host={0} phase=http status={1} ms={2} msg={3}' -f $rec.host, $rec.status, $rec.ms, $rec.msg)
+    }
+    Flush-MirrorProgress
+}
+
 function New-F51AutoHost {
     # [F51 §1] The ALWAYS-ON host for the Downloads override: the documented
     # gofile guest contract with enabled=true, computed IN MEMORY for THIS RUN
@@ -162,7 +195,7 @@ function New-F51AutoHost {
             uploadPath = '/uploadfile'
             uploadScheme = 'https'
             enabled = $false
-            maxFileBytes = 0
+            maxFileBytes = $null
             blockedExtensions = @()
             authMode = 'guest'
             timeoutSec = 120
@@ -377,6 +410,15 @@ try {
     $script:F49LastOptInAt = ''
     # [F51] the Downloads always-on override is ledgered ONCE per watcher run.
     $script:F51AutoHostLedgered = $false
+    $f52ProbeRows = $null
+    $f52WireSizes = @{}
+    # Legacy runners without the F52 stage also get a this-run key. Persisted
+    # only in the sanctioned local config so runtime opt-in shares that key.
+    if ($mirrorModuleOk -and -not (Get-F46MirrorKeyBytes -KeyBase64 ([string]$cfg.mirrorKey))) {
+        Set-F49CfgProp -Cfg $cfg -Name 'mirrorKey' -Value (New-F46MirrorKey)
+        Save-MirrorCfg -Cfg $cfg -Path (Join-Path $Root 'config.json')
+    }
+    $global:GhrdpF52MirrorKey = [string]$cfg.mirrorKey
     $mirrorPolicyMax = 5
     if ($mirrorModuleOk) {
         try { $mirrorPolicyMax = [int]$script:F46MaxAttempts } catch { $mirrorPolicyMax = 5 }
@@ -503,7 +545,7 @@ try {
           if ($mirrorTerminal.ContainsKey($key)) { continue }
           $telemetry.seen = [int]$telemetry.seen + 1
           if (Test-MirrorJunk -File $f) { $telemetry.skippedJunk = [int]$telemetry.skippedJunk + 1; continue }
-          if ([long]$f.Length -lt $minBytes) { $telemetry.skippedSmall = [int]$telemetry.skippedSmall + 1; continue }
+          if ([long]$f.Length -lt $minBytes -and -not (Test-F51DownloadsRoot -RootPath ([string]$r))) { $telemetry.skippedSmall = [int]$telemetry.skippedSmall + 1; continue }
           $hn = [string]$f.Name
           $ishidden = $false
           foreach ($hp in @($cfg.hiddenFiles)) { if ($hn -like $hp) { $ishidden = $true; break } }
@@ -549,9 +591,7 @@ try {
   }
   Flush-MirrorProgress -Force
   if (@($uploadQueue).Count -gt 0) {
-      $encryptMode = [string]$cfg.encryptMode
-      if (-not $encryptMode) { $encryptMode = 'none' }
-      $mediaExt = @('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mp3', '.flac', '.wav', '.aac', '.ogg', '.wma', '.m4a', '.opus')
+      $encryptMode = Get-F52WorkerMode -Cfg $cfg -Auto $f51AutoMode
       # [F46 §1/§2] ONE host decision per scan + the attempt ledger. An attempt
       # only happens when its own policy backoff is due: the fixed ~10s cadence
       # that produced five instant failures in the same second is gone.
@@ -560,6 +600,7 @@ try {
       if ($mirrorModuleOk) {
           try { $mirrorHosts = @(Get-F46Hosts -Cfg $cfg) } catch { $mirrorHosts = @() }
           try { $mirrorHost = Select-F46UploadHost -Hosts $mirrorHosts } catch { $mirrorHost = $null }
+          $manualHost52 = $mirrorHost
           # [F51 §1] Downloads always-on: when the mirror was never opted in
           # (every host still disabled), the auto path attempts with the
           # in-memory guest host for THIS RUN ONLY - config.json keeps
@@ -571,11 +612,15 @@ try {
                   Add-MirrorLog '[mirror] F51 AUTO: Downloads root always-on override applied (host=gofile, guest, this run only; config.json mirror stays false)'
               }
           }
+          if ($null -eq $f52ProbeRows) { $f52ProbeRows = @(Get-F52HostMatrix -Root $Root -Hosts @(Get-F46Hosts -Cfg $cfg)) }
+          $mirrorHost = Set-F52HostCap -HostCfg $mirrorHost -Rows $f52ProbeRows
+          $prog.mirrorProbe = @($f52ProbeRows)
           try {
-              $prog.mirrorHosts = @($mirrorHosts | ForEach-Object { [ordered]@{ id = [string]$_.id; enabled = [bool]$_.enabled; apiRoot = [string]$_.apiRoot; maxFileBytes = [long]$_.maxFileBytes; blockedExtensions = @($_.blockedExtensions) } })
+              $prog.mirrorHosts = @($mirrorHosts | ForEach-Object { [ordered]@{ id = [string]$_.id; enabled = [bool]$_.enabled; apiRoot = [string]$_.apiRoot; maxFileBytes = $_.maxFileBytes; blockedExtensions = @($_.blockedExtensions) } })
           } catch { }
       }
       $prog.encryptMode = $encryptMode
+      $prog.mirrorPlaintextElection = ([bool]$cfg.mirrorPlaintextElection -and -not (Get-F49RuntimeOptIn -Cfg $cfg))
       # [F47 §3] the per-run AES-256 key is read ONCE per scan and is only ever
       # used as key material: it goes into the redaction set for every log line
       # and attempt record, and never into a URL, artifact or progress field.
@@ -591,7 +636,17 @@ try {
           # [F51 §2] one ledger line per auto-queued Downloads file (F49-style
           # ledger logging; emitted when the file first reaches the worker).
           $f51AutoFile = $false
-          try { if ($f51AutoMode) { $f51AutoFile = (Test-F51AutoUploadPath -Path ([string]$f.FullName) -AutoRoots $f51AutoRoots) } } catch { $f51AutoFile = $false }
+          try { $f51AutoFile = (Test-F51AutoUploadPath -Path ([string]$f.FullName) -AutoRoots $f51AutoRoots) } catch { $f51AutoFile = $false }
+          # Per-file host gate: a partially enabled manual config must neither
+          # disable Downloads nor enable other roots through its auto host.
+          if ($f51AutoFile) {
+              $mirrorHost = $manualHost52
+              if (-not $mirrorHost) { $mirrorHost = New-F51AutoHost }
+              $mirrorHost = Set-F52HostCap -HostCfg $mirrorHost -Rows $f52ProbeRows
+          } else { $mirrorHost = $manualHost52 }
+          $encryptMode = Get-F52WorkerMode -Cfg $cfg -Auto $f51AutoFile
+          $workerLane52 = $(if ($f51AutoFile) { 'auto' } elseif (Get-F49RuntimeOptIn -Cfg $cfg) { 'runtime' } else { 'manual' })
+          $prog.encryptMode = $encryptMode
           if ($f51AutoFile -and (-not $f51AutoFiles.ContainsKey($key))) {
               $f51AutoFiles[$key] = $true
               Add-MirrorLog ('[mirror] AUTO-UPLOAD: {0} (Downloads root; F51 always-on, opt-in not required)' -f $f.Name)
@@ -614,22 +669,22 @@ try {
                       status = 'pending'
                       link = ''
                       encrypted = 'False'
+                      encryptMode = $encryptMode
+                      bytesSent = [long]0
                       auto = $(if ($f51AutoFile) { 'True' } else { 'False' })
                       host = $(if ($mirrorHost) { [string]$mirrorHost.id } else { '-' })
                       error = $(if ($lastRec) { ((Format-F46Reason -Phase ([string]$lastRec.phase) -Status ([string]$lastRec.status) -Message ([string]$lastRec.msg)) + ' | ' + $waitMsg) } else { $waitMsg })
                       attempts = @($prev)
                   }
-                  $newFilesW = @($entryW) + @($prog.files)
+                  $entryW['pathKey'] = $key
+                  $newFilesW = @($entryW) + @($prog.files | Where-Object { $_.pathKey -ne $key })
                   if ($newFilesW.Count -gt 60) { $newFilesW = $newFilesW[0..59] }
                   $prog.files = $newFilesW
                   Flush-MirrorProgress -Force
                   continue
               }
           }
-          $fExt = [System.IO.Path]::GetExtension(([string]$f.Name).ToLower())
-          $shouldEncrypt = $false
-          if ($encryptMode -eq 'all') { $shouldEncrypt = $true }
-          elseif ($encryptMode -eq 'media-plain') { $shouldEncrypt = -not ($mediaExt -contains $fExt) }
+          $shouldEncrypt = ($encryptMode -eq 'all')
           $relFolder = '.'
           foreach ($rr in $roots) {
               $fs = [string]$f.FullName
@@ -651,17 +706,20 @@ try {
               status = 'active'
               link = ''
               encrypted = 'False'
+              encryptMode = $encryptMode
+              bytesSent = [long]0
               auto = $(if ($f51AutoFile) { 'True' } else { 'False' })
               host = $(if ($mirrorHost) { [string]$mirrorHost.id } else { '-' })
               attempts = @($prevAttempts)
           }
-          $newFiles = @($entry) + @($prog.files)
+          $entry['pathKey'] = $key
+          $newFiles = @($entry) + @($prog.files | Where-Object { $_.pathKey -ne $key })
           if ($newFiles.Count -gt 60) { $newFiles = $newFiles[0..59] }
           $prog.files = $newFiles
           $uploadPath = $f.FullName
           $uploadLen = [long]$f.Length
           $dispName = [string]$f.Name
-          $encPath = $null
+          $uploadSource = $null
           $encApplied = $false
           $uploadMime = ''
           if ($shouldEncrypt) {
@@ -680,13 +738,10 @@ try {
               } elseif (-not $mirrorModuleOk) {
                   $encErr = 'ghrdp-mirror.ps1 is missing on this runner - the AES-256 encryptor is unavailable (staging bug); refusing to upload plaintext'
               } elseif (-not $mirrorKeyText) {
-                  $encErr = 'mirror_encrypt was requested but config mirrorKey holds no per-run 32-byte key (dispatch main.yml with mirror_enable=true + mirror_encrypt=true); refusing to upload plaintext'
+                  $encErr = 'encrypted auto/runtime lane has no per-run 32-byte key; refusing to upload plaintext'
               } else {
-                  $encDir = Join-Path $Root 'enc'
-                  try { New-Item -ItemType Directory -Path $encDir -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
-                  $encPath = Join-Path $encDir (([string]$f.Name) + [string]$script:F46GofileContract.encryptedSuffix)
                   try {
-                      $encRes = Invoke-F46EncryptFile -Path ([string]$f.FullName) -OutPath $encPath -KeyBase64 $mirrorKeyText
+                      $encRes = Invoke-F46EncryptFile -Path ([string]$f.FullName) -KeyBase64 $mirrorKeyText -StreamOnly
                   } catch {
                       $encRes = @{ ok = $false; alg = ''; bytes = 0; message = ('encryptor threw: ' + $_.Exception.Message) }
                   }
@@ -702,17 +757,20 @@ try {
                   $entry['encrypted'] = 'False'
                   $mirrorTerminal[$key] = $true
                   $prog.agg.failed = [int]$prog.agg.failed + 1
-                  try { if ($encPath -and (Test-Path -LiteralPath $encPath)) { Remove-Item -LiteralPath $encPath -Force -ErrorAction SilentlyContinue } } catch { }
+                  $encRec = New-F46AttemptRecord -N $attemptNo -HostId ([string]$entry.host) -Phase 'encrypt' -Status $null -Message $encErr -Ms 0 -Retryable $false
+                  $encRec['encryptMode'] = $encryptMode
+                  [void]$mirrorAttemptLog.Add($encRec)
+                  $entry['attempts'] = @($prevAttempts) + @($encRec)
                   Flush-MirrorProgress -Force
                   continue
               }
               $encApplied = $true
-              $uploadPath = $encPath
+              $uploadSource = $encRes.stream
               $uploadLen = [long]$encRes.bytes
               $dispName = (([string]$f.Name) + [string]$script:F46GofileContract.encryptedSuffix)
               $uploadMime = [string]$script:F46GofileContract.encryptedMime
               # The key is named, never printed: only algorithm + sizes are logged.
-              Add-MirrorLog ('[mirror] encrypted {0} -> {1} bytes alg={2} mime={3} key=redacted(32B, config mirrorKey)' -f $f.Name, $uploadLen, [string]$encRes.alg, $uploadMime)
+              Add-MirrorLog ('[mirror] encrypt-stream {0} -> planned {1} bytes alg={2} mime={3} key=redacted(32B, config mirrorKey)' -f $f.Name, $uploadLen, [string]$encRes.alg, $uploadMime)
           } else {
               if (-not (Test-Path -LiteralPath $f.FullName)) {
                   Add-MirrorLog ('[mirror] VANISHED {0} (file disappeared before upload)' -f $f.Name)
@@ -725,7 +783,20 @@ try {
                   continue
               }
           }
-          Set-ActiveFile -Name $f.Name -Phase 'upload' -Total $uploadLen
+          $entry['size'] = $uploadLen
+          $entry['sourceSize'] = [long]$f.Length
+          if (-not $f52WireSizes.ContainsKey($key)) {
+              $prog.agg.bytesTotal = [long]$prog.agg.bytesTotal + ($uploadLen - [long]$f.Length)
+              $f52WireSizes[$key] = $uploadLen
+          }
+          Set-ActiveFile -Name $f.Name -Phase 'http' -Total $uploadLen
+          $prog.agg.active = 1
+          if (-not $prog.mirrorDiag) { $prog.mirrorDiag = [ordered]@{ attempts = @(); stallRecords = @() } }
+          if ($encApplied) { $prog.mirrorDiag['encAlg'] = [string]$encRes.alg }
+          $progressAction52 = { param($snapshot52)
+              $snapshot52['lastSocketText'] = Protect-F46SecretText -Text ([string]$snapshot52.lastSocketText) -Secrets @($mirrorKeyText)
+              Update-F52MirrorProgress -Progress $snapshot52 -Entry $entry -Encrypted $encApplied
+          }
           Add-MirrorLog ('[mirror] uploading {0} ({1} bytes, display={2}, encrypted={3}, host={4}, attempt={5}/{6})' -f $f.Name, $uploadLen, $dispName, $encApplied, [string]$entry['host'], $attemptNo, [int]$mirrorPolicyMax)
           if (-not $mirrorModuleOk) {
               # A staging bug is a labeled reason, never five blind retries.
@@ -743,7 +814,7 @@ try {
           # the attempt below is always the unauthenticated guest multipart.
           $res = $null
           try {
-              $res = Invoke-F46MirrorAttempt -HostCfg $mirrorHost -Path $uploadPath -Name $dispName -Size $uploadLen -AttemptNo $attemptNo -EncryptRequested $shouldEncrypt -Encrypted $encApplied -ContentType $uploadMime
+              $res = Invoke-F46MirrorAttempt -HostCfg $mirrorHost -Path $uploadPath -Name $dispName -Size $uploadLen -AttemptNo $attemptNo -EncryptRequested $shouldEncrypt -Encrypted $encApplied -ContentType $uploadMime -UploadSource $uploadSource -ProgressAction $progressAction52 -WorkerMode $encryptMode -WorkerLane $workerLane52
           } catch {
               $res = @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('mirror attempt threw: ' + $_.Exception.Message); retryAfterMs = $null; record = $null; fileId = ''; code = ''; downloadPage = ''; directUrl = '' }
           }
@@ -763,9 +834,9 @@ try {
               Add-MirrorLog (Format-F46AttemptLine -Attempt $attemptRec)
           }
           if ($encApplied) { try { $mirrorEncAlg = [string]$encRes.alg } catch { $mirrorEncAlg = 'AES-256' } }
-          # [F47 §3] the local ciphertext is a transport artifact only: it is
-          # deleted as soon as the attempt is classified, success or failure.
-          try { if ($encPath -and (Test-Path -LiteralPath $encPath)) { Remove-Item -LiteralPath $encPath -Force -ErrorAction SilentlyContinue } } catch { }
+          # F52: dispose the on-the-fly ciphertext source after each attempt.
+          try { if ($uploadSource) { $uploadSource.Dispose() } } catch { }
+          $entry['bytesSent'] = [long]$res.bytesSent
           $link = $null
           if ([bool]$res.ok) {
               $link = [string]$res.directUrl
@@ -777,10 +848,10 @@ try {
               $previewable = @('.png','.jpg','.jpeg','.gif','.webp','.bmp','.mp3','.flac','.wav','.aac','.ogg','.m4a','.mp4','.mkv','.webm','.mov','.avi') -contains $prevExt
               try { Add-MirrorDone -DoneFile $doneFile -Path $key -Size ([long]$f.Length) } catch { Add-MirrorLog ('[mirror] guarded step done-map failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               try { $doneMap[$key] = [long]$f.Length } catch { Add-MirrorLog ('[mirror] guarded step done-cache failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
-              try { $global:GhrdpDoneBytes = [long]$global:GhrdpDoneBytes + [long]$f.Length } catch { Add-MirrorLog ('[mirror] guarded step bytes failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
+              try { $global:GhrdpDoneBytes = [long]$global:GhrdpDoneBytes + [long]$uploadLen } catch { Add-MirrorLog ('[mirror] guarded step bytes failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               try {
                   $tsl = (Get-Date).AddHours(5).AddMinutes(30).ToString('yyyy-MM-dd HH:mm:ss')
-                  if ($null -ne $link) { [void]$idx.Add(@{ name = [string]$f.Name; folder = $relFolder; size = [long]$f.Length; time = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); timeSL = $tsl; link = [string]$link; fileId = [string]$res.fileId; code = [string]$res.code; preview = [string]$previewLink; encrypted = [string]$encApplied; decrypt = (([string]$cfg.pagesBase) + '/decrypt.html#key=' + [string]$cfg.mirrorKey) }) }
+                  if ($null -ne $link) { [void]$idx.Add(@{ name = [string]$f.Name; folder = $relFolder; size = [long]$f.Length; time = (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'); timeSL = $tsl; link = [string]$link; fileId = [string]$res.fileId; code = [string]$res.code; preview = [string]$previewLink; encrypted = [string]$encApplied }) }
               } catch { Add-MirrorLog ('[mirror] guarded step index-append failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               try { Save-MirrorIndexList -IdxFile $idxFile -List $idx } catch { Add-MirrorLog ('[mirror] guarded step save-index failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               # [remediation] mirror index publish removed (lib fn neutered)
@@ -800,7 +871,13 @@ try {
                   $prog.active.pct = 0
                   $prog.active.bytesDone = [long]0
                   $prog.active.bytesTotal = [long]0
-                  $prog.active.speedBps = [long]0
+                  $prog.active.speedBps = [double]0
+                  $prog.active.bytesSent = [long]0
+                  $prog.active.windowBytes = [long]0
+                  $prog.active.windowSeconds = [double]0
+                  $prog.active.etaSeconds = $null
+                  $prog.active.stalled = $false
+                  $prog.active.stallLabel = ''
               } catch { Add-MirrorLog ('[mirror] guarded step entry-update failed: ' + $_.Exception.Message + ' | ' + $_.ScriptStackTrace) }
               Add-MirrorLog ('[mirror] OK {0} -> {1} via runner egress {2} (host={3}, encrypted={4})' -f $f.Name, $link, $(if ($egress) { $egress } else { 'unknown' }), [string]$entry['host'], $encApplied)
           } else {
@@ -825,6 +902,9 @@ try {
                   Add-MirrorLog (Format-F46FailureSummary -HostId ([string]$entry['host']) -Phase $phaseNow -Status $statusNow -Attempts $attemptNo -Message $fullMsg)
               }
           }
+          $prog.agg.active = 0
+          $prog.active.name = ''
+          $prog.active.phase = 'idle'
           Flush-MirrorProgress -Force
       }
       # Attempt table for the mirror-diag artifact + the Diagnose output.
@@ -835,7 +915,9 @@ try {
           # the same opt-in record the ledger line was stamped from.
           $f49OptInDiag = $null
           try { if ($cfg.PSObject.Properties['mirrorRuntimeOptIn'] -and $cfg.mirrorRuntimeOptIn) { $f49OptInDiag = $cfg.mirrorRuntimeOptIn } } catch { }
-          $prog.mirrorDiag = [ordered]@{ attempts = @($diagAttempts); terminalFiles = @($mirrorTerminal.Keys); hosts = @($prog.mirrorHosts); encryptMode = $encryptMode; encAlg = $mirrorEncAlg; authMode = $mirrorAuthMode; keyBytes = $(if ($mirrorKeyText) { 32 } else { 0 }); optIn = $f49OptInDiag; autoUpload = $(if ($f51AutoMode) { 'downloads-always-on' } else { 'opt-in' }); autoRoots = @($f51AutoRoots); autoQueued = @($f51AutoFiles.Keys).Count }
+          $lastProgress52 = $prog.mirrorDiag.progress
+          $stallRecords52 = @($prog.mirrorDiag.stallRecords)
+          $prog.mirrorDiag = [ordered]@{ progress = $lastProgress52; stallRecords = $stallRecords52; probe = @($f52ProbeRows); attempts = @($diagAttempts); terminalFiles = @($mirrorTerminal.Keys); hosts = @($prog.mirrorHosts); encryptMode = $encryptMode; encAlg = $mirrorEncAlg; authMode = $mirrorAuthMode; keyBytes = $(if ($mirrorKeyText) { 32 } else { 0 }); optIn = $f49OptInDiag; autoUpload = 'downloads-always-on'; autoRoots = @($f51AutoRoots); autoQueued = @($f51AutoFiles.Keys).Count }
       } catch { }
   } else {
       if (-not [bool]$cfg.mirror) {

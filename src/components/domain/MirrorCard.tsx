@@ -31,7 +31,11 @@ export function MirrorCard() {
   // encrypt says so; the shipped default (encryptMode=none) says plaintext.
   const claimTitle = !m
     ? t("mirror.titleLong")
-    : m.encryptedAny
+    : m.encryptionDefect
+      ? t("mirror.titleEncryptLocked")
+      : m.plaintextElected && m.encryptMode === "none"
+      ? t("mirror.titlePlain")
+      : m.encryptedAny
       ? t("mirror.titleLong")
       : m.encryptRequested
         ? t("mirror.titleEncryptLocked")
@@ -131,6 +135,17 @@ export function MirrorCard() {
       {optIn && !optIn.status.enabled && (
         <div role="status" data-testid="mirror-disabled-banner" className="mb-4 rounded-md border border-default bg-raised/60 px-3 py-2 text-sm text-primary">
           {t("mirror.optInBanner")}
+          <p className="mt-1">Downloads auto-upload is always ON and encrypted; OFF applies to manual roots only.</p>
+        </div>
+      )}
+      {m?.plaintextElected && (
+        <div role="alert" data-testid="mirror-plaintext-banner" className="mb-4 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-primary">
+          PLAINTEXT ELECTED: mirror_encrypt=false dispatch — manual lane only. Downloads auto-upload and runtime opt-in always encrypt.
+        </div>
+      )}
+      {m?.encryptionDefect && (
+        <div role="alert" data-testid="mirror-encryption-defect" className="mb-4 rounded-md border border-danger p-3 text-sm text-danger">
+          Encryption defect: auto/runtime lane is not encryptMode=all. STOP; no plaintext fallback is permitted.
         </div>
       )}
       <div className="flex flex-wrap items-center gap-6">
@@ -286,8 +301,8 @@ export function MirrorCard() {
                 m.files.map((f, i) => (
                   <tr key={i} className={cn("border-b border-default last:border-0", f.expired && "opacity-60")}>
                     <td className="px-3 py-1.5 break-all">{f.name}</td>
-                    <td className="px-3 py-1.5 text-tertiary">{f.phase}</td>
-                    <td className="px-3 py-1.5">
+                    <td className="px-3 py-1.5 text-tertiary">{f.phase}<div className="font-mono text-xs">encryptMode={f.encryptMode}</div></td>
+                    <td className="px-3 py-1.5" title={f.byteCounts}>
                       <span className="inline-flex items-center gap-2">
                         <span className="inline-block w-24 h-1 rounded bg-sunken overflow-hidden align-middle">
                           <i className="block h-full bg-accent" style={{ width: f.pct + "%" }} />
@@ -298,9 +313,9 @@ export function MirrorCard() {
                     <td className="px-3 py-1.5 font-mono text-xs">{f.size}</td>
                     <td className="px-3 py-1.5">
                       <StatusDot
-                        tone={f.status === "done" || f.status === "active" ? "success" : f.status === "failed" || f.status === "expired" ? "danger" : "neutral"}
+                        tone={f.status === "stalled" ? "warning" : f.status === "done" || f.status === "active" || f.status === "uploading" ? "success" : f.status === "failed" || f.status === "expired" ? "danger" : "neutral"}
                       />{" "}
-                      <span className="text-xs">{f.status}</span>
+                      <span className="text-xs">{f.statusLabel}</span>
                     </td>
                     {/* [F46 §1] NEVER truncated: the complete phase/status/message
                         (and every attempt line behind it) is in the DOM. The

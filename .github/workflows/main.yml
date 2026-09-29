@@ -27,9 +27,9 @@ on:
         type: boolean
         default: false
       mirror_encrypt:
-        description: 'F47 AES-256 honest mode: encrypt every upload with a per-run 32-byte key (config mirrorKey, masked in the Keys card) and stamp it application/x-ghrdp-mirror. Needs mirror_enable=true.'
+        description: 'F52 encrypted by default. Explicit false elects PLAINTEXT for the manual dispatch lane ONLY (banner required); Downloads auto-upload and runtime opt-in always encrypt. The per-run key stays runner-local.'
         type: boolean
-        default: false
+        default: true
 
 permissions:
   contents: write   # push docs/search.html from the watcher (superset of read)
@@ -82,6 +82,8 @@ jobs:
       # consumer and it still only ever compares MIRROR_INPUT to 'true'.
       MIRROR_INPUT: ${{ github.event.inputs.mirror_enable == true && 'true' || 'false' }}
       MIRROR_ENCRYPT_INPUT: ${{ github.event.inputs.mirror_encrypt == true && 'true' || 'false' }}
+      # An omitted input is not a plaintext election (default is now true).
+      MIRROR_PLAINTEXT_ELECTED: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mirror_encrypt == 'false' && 'true' || 'false' }}
       RENTRY_MAIN_URL: 'https://rentry.co/myurl0'
       RENTRY_MAIN_EDIT: ''
       RUN_STARTED_AT: ${{ github.run_started_at || '' }}
@@ -1627,6 +1629,7 @@ jobs:
           # dot-sourced by the watcher AND by the server (read-only Diagnose
           # probe). Missing module => labeled reasons, never a silent loop.
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-mirror.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-mirror.ps1"
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-mirror-progress.cs" "$RUNNER_TEMP/ghrdp-stage/ghrdp-mirror-progress.cs"
           echo '[mirror] ghrdp-mirror.ps1 written'
           # [F37 §4] the telescope module must be deployed NEXT TO the server:
           # the 60s tick dot-sources it (single source of truth for the format).
@@ -1844,10 +1847,17 @@ jobs:
           # credential is written to config.json, a file, an environment, a URL,
           # a log line, an artifact or the UI - the worker uploads with the
           # anonymous guest multipart contract only. Missing secret = NORMAL.
-          $mirrorEncryptOn = ($env:MIRROR_ENCRYPT_INPUT -eq 'true')
+          $mirrorPlaintextElection = ($env:MIRROR_PLAINTEXT_ELECTED -eq 'true')
+          $mirrorEncryptOn = (-not $mirrorPlaintextElection)
           $mirrorHostsCfg = @()
-          $mirrorKeyF47 = ''
-          $encModeF47 = [string]$env:ENCRYPT_MODE
+          # F52: one key for EVERY run, even with the manual mirror disabled.
+          # Downloads and later runtime opt-in must not silently become plain.
+          $f52Mod = Join-Path $root 'ghrdp-mirror.ps1'
+          if (-not (Test-Path -LiteralPath $f52Mod)) { throw 'F52: mirror contract was not staged; refusing an unclassified auto lane' }
+          . $f52Mod
+          $mirrorKeyF47 = (New-F46MirrorKey)
+          if (@([Convert]::FromBase64String($mirrorKeyF47)).Length -ne 32) { throw 'F52: per-run mirror key must be 32 bytes' }
+          $encModeF47 = $(if ($mirrorPlaintextElection) { 'none' } else { 'all' })
           if ($mirrorOn) {
               $f47Mod = Join-Path $root 'ghrdp-mirror.ps1'
               if (-not (Test-Path -LiteralPath $f47Mod)) {
@@ -1857,15 +1867,11 @@ jobs:
               . $f47Mod
               # config stores the enabled flag + host id ONLY.
               $mirrorHostsCfg = @([ordered]@{ id = 'gofile'; displayName = 'gofile.io'; apiRoot = 'https://api.gofile.io'; uploadHostMode = 'auto'; uploadHost = 'upload.gofile.io'; uploadPath = '/uploadfile'; enabled = $true })
-              if ($mirrorEncryptOn) {
-                  $encModeF47 = 'all'
-                  $mirrorKeyF47 = (New-F46MirrorKey)
-                  if (@([Convert]::FromBase64String($mirrorKeyF47)).Length -ne 32) { throw 'F47: the per-run mirror key is not 32 bytes' }
-              }
               Write-Host ('[F48] mirror opt-in for THIS run: host=gofile enabled=true token-less guest mode (no secret read, no auth header) encrypt=' + $mirrorEncryptOn + ' keyBytes=' + $(if ($mirrorKeyF47) { 32 } else { 0 }) + ' (shipped default stays enabled=false)')
           } else {
-              Write-Host '[F48] mirror_enable=false - mirrorHosts keeps the shipped default (enabled=false); no host enabled, no key generated.'
+              Write-Host '[F48] mirror_enable=false - manual hosts stay disabled; Downloads auto lane encrypts with the runner-local per-run key.'
           }
+          if ($mirrorPlaintextElection) { Write-Host '[F52] PLAINTEXT ELECTED: mirror_encrypt=false dispatch; manual lane ONLY. Downloads auto-upload and runtime opt-in always encrypt. Key stays runner-local.' }
           # --- [F48 §0 token-less-mirror-opt-in-end] ---------------------------
           $tokSet = 'abcdefghijklmnopqrstuvwxyz0123456789'
           $tok = ''
@@ -1931,6 +1937,7 @@ jobs:
               # [F47 §1] per-run opt-in: enabled flag + host id only, never a token.
               mirrorHosts = @($mirrorHostsCfg)
               encryptMode = $encModeF47
+              mirrorPlaintextElection = $mirrorPlaintextElection
               mirrorKey = $mirrorKeyF47
               telegraphToken = ''
               telegraphPath = ''
@@ -2341,6 +2348,7 @@ jobs:
               try { $cfg = [System.IO.File]::ReadAllText('C:\ghrdp\config.json') | ConvertFrom-Json } catch { $cfg = $null }
               $hosts = @(Get-F46Hosts -Cfg $cfg)
               $rows = @(Invoke-F46HostProbe -Hosts $hosts -TimeoutSec 8)
+              [System.IO.File]::WriteAllText('C:\ghrdp\mirror-probe.json', ((ConvertTo-F52JsonSafe $rows) | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
               $matrixTxt = Format-F46ProbeTable -Rows $rows
               # [F47 §2] the same table the Mirror page renders from /diag, plus
               # the per-run opt-in state, so the operator never has to open an
@@ -4630,7 +4638,6 @@ jobs:
                   $legacyUrl = [string]$cfg.legacyIndexUrl
                   $rentryNew = [string]$cfg.rentryNewUrl
                   $egress = [string]$cfg.runnerEgressIp
-                  $mirrorKey = [string]$cfg.mirrorKey
                   $mirrorOn = [bool]$cfg.mirror
               }
               if (-not $legacyUrl) { $legacyUrl = 'https://rentry.co/myurl0' }
@@ -4682,7 +4689,7 @@ jobs:
               Write-Host ('     web : open ' + $runUrl + '  and press "Cancel workflow"')
               Write-Host ('     cli : ' + $cancelCli + '   (copy: triple-click + Ctrl+C)')
               Write-Host '     On cancel: the emergency mirror pass uploads remaining files,'
-              Write-Host '     republishes BOTH keys + ALL links, then wipes the runner; the'
+              Write-Host '     retains no public mirror key, then shuts down the runner; the'
               Write-Host '     free-space overwrite step is skipped when cancelled.'
               Write-Host ''
               Write-Host ('  ' + $icons.hourglass + ' time remaining: ' + (Get-Remaining))
@@ -4708,7 +4715,6 @@ jobs:
                   $legacyUrlS = [string]$cfgS.legacyIndexUrl
                   $rentryS = [string]$cfgS.rentryNewUrl
                   $egressS = [string]$cfgS.runnerEgressIp
-                  $mirKeyS = [string]$cfgS.mirrorKey
                   $userS = [string]$cfgS.rdpUser
               }
               if (-not $legacyUrlS) { $legacyUrlS = 'https://rentry.co/myurl0' }
@@ -4723,7 +4729,7 @@ jobs:
               if ($legacyKeyS) { ('- **LEGACY decrypt key**: `' + $legacyKeyS + '`') | Add-Content -Path $summary }
               if ($rentryS) { ('- **New Rentry**: ' + $rentryS) | Add-Content -Path $summary }
               if ($teleS) { ('- **Telegraph**: ' + $teleS) | Add-Content -Path $summary }
-              if ($mirKeyS) { ('- **Current decrypt key**: `' + $mirKeyS + '`') | Add-Content -Path $summary }
+              '- Mirror key: runner-local (32 B); never in URLs/logs/UI/artifacts.' | Add-Content -Path $summary
               if ($egressS) { ('- Uploads execute ON THE RUNNER (egress IP ' + $egressS + ')') | Add-Content -Path $summary }
               if ($ipS) { ('- RDP: `mstsc /v:' + $ipS + '` as `' + $userS + '` (credentials are in the dashboard)') | Add-Content -Path $summary }
               $last5S = Get-Last5Links
@@ -5292,7 +5298,7 @@ jobs:
                       tailnetUrl = $(if ($cfg2 -and $cfg2.rdpIp) { 'http://' + $cfg2.rdpIp + ':7331/' } else { '' })
                       rustUrl = $(if ($cfg2) { [string]$cfg2.rustUrl } else { '' })
                       funnelUrl = $(if ($cfg2) { [string]$cfg2.funnelUrl } else { '' })
-                      mirrorKey = $(if ($cfg2 -and [bool]$cfg2.mirror) { [string]$cfg2.mirrorKey } else { '' })
+                      mirrorKey = '' # F52: no mirror key in the public snapshot
                       legacyKey = $(if ($cfg2) { [string]$cfg2.legacyDecryptKey } else { '' })
                       telegraphUrl = $(if ($cfg2) { [string]$cfg2.mirrorIndexUrl } else { '' })
                       rentryNewUrl = $(if ($cfg2) { [string]$cfg2.rentryNewUrl } else { '' })

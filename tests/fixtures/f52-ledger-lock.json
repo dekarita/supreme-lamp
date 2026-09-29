@@ -1,0 +1,114 @@
+[
+  {
+    "phase": "F50",
+    "sha256": "70af74b4254cf220a5bf2040c901873fc6fab18d6381f43d01b930222e432f9a"
+  },
+  {
+    "phase": "F49",
+    "sha256": "12db08088e36e87387971dda9b85a424842d034005fc67a1f8398ee78726aa0a"
+  },
+  {
+    "phase": "F48",
+    "sha256": "4a65822748213e96bef6d4bc7d4b0be551606398e00a25c49af9ddfa7eaf8e25"
+  },
+  {
+    "phase": "F47",
+    "sha256": "dd9a4be589ef431e50606a05a43e18c8c7dd32703d9414c2193d80926be3cae2"
+  },
+  {
+    "phase": "F43",
+    "sha256": "f025190f1873611ec42c33bcedad8defba92e15141dd1a99f927401114e7473b"
+  },
+  {
+    "phase": "F41",
+    "sha256": "305e4896a08f1d0b35e1e5a77641f355a601d8b466aee915d40d9a44dee23db9"
+  },
+  {
+    "phase": "F38",
+    "sha256": "ab68b79e692fa9a869902256c389132b4587d9175f8966de961f789229b201d6"
+  },
+  {
+    "phase": "F37",
+    "sha256": "833f815c68d82d29b37d7586e29b52b74706f2840035b005fa744c32d85c5cb5"
+  },
+  {
+    "phase": "F37",
+    "sha256": "97e99f486550bb0db202b1b72f7ff7dd5a564007ca6e492c138d5deb21db14be"
+  },
+  {
+    "phase": "F37",
+    "sha256": "6dd00a709c205090ee1cb920ba12b0288af9d84f9d839bd1434d008d10250977"
+  },
+  {
+    "phase": "F34",
+    "sha256": "fc34f886967dc9be84b388beba4950a57589493ea9301104913028e6ac2b5e8d"
+  },
+  {
+    "phase": "F31c",
+    "sha256": "06209cd50e43b52a378abf35c277cc53c1708a4b6a4a6564d7d7497cf0e9e137"
+  },
+  {
+    "phase": "F28",
+    "sha256": "104ca7ddbb0cf6c1f55d8ad9650e0920fa24e73fe3c50a39e4c0ba4b69cefdb8"
+  },
+  {
+    "phase": "F24",
+    "sha256": "8f6532968d9268bb011e094418a296a3e07ad1eaebef4a5580a9fce0015104a5"
+  },
+  {
+    "phase": "F22",
+    "sha256": "45b0d6ea215ccf25d2d87ac2c366d55bdd22214a4bd807367fc83f5afaf77ee5"
+  },
+  {
+    "phase": "F20",
+    "sha256": "a08bdc09b3171c05f4bd10afb8c568afaa05814001f57a20992dad46dcbd608b"
+  },
+  {
+    "phase": "F19",
+    "sha256": "86a2a34a4b7ce5409f4944acd01c90004077077bdc47f00c777056a53ea293f6"
+  },
+  {
+    "phase": "F17",
+    "sha256": "955b4b47078742eb177a265bd60896476436eaa5d4fd74dc914e95e0c30ccae7"
+  },
+  {
+    "phase": "F15",
+    "sha256": "37263aed0c40e67be48e438661be95fffc928e68564ffbb520134b47fa333559"
+  },
+  {
+    "phase": "F14",
+    "sha256": "26ff65559da2e80a7afb80e1052da51bd4502b2c8d4e9b52c1fc27d4653e7600"
+  },
+  {
+    "phase": "U1",
+    "sha256": "adc30602dfd32c9b237aea72f55218ce95c59892a48fc2ec782207868904ca09"
+  },
+  {
+    "phase": "G3",
+    "sha256": "657f62f873d479ae4b8b8f1f89d0d1ab9720b4fcb5aaac66d91558019713e69f"
+  },
+  {
+    "phase": "Lab",
+    "sha256": "117d99b244f4d16d514cdbec426bfcf7023104ce0b70f420e99e2f3084f4beac"
+  },
+  {
+    "phase": "F9k-secrets",
+    "sha256": "e936114a624ee1e8880e7eb94d47da80f2272e1120d629c25135c0d4e27cae5a"
+  },
+  {
+    "phase": "Prior:",
+    "sha256": "f212b906c3d3626d9bac32700fbc8507ef7e46a152a560043539ef0d0798254c"
+  },
+  {
+    "phase": "Prior:",
+    "sha256": "26b6e8f518de80e81932cea4d0e940756cb8538c621328e6b81155e8b65343f2"
+  },
+  {
+    "phase": "F11",
+    "sha256": "0c0e42822c13fd14f796d31fc52730c9edad3cda4bdb4f313a094b8304daa090"
+  },
+  {
+    "phase": "F30",
+    "sha256": "d4b3f9719e69aecd22318981a29be18b8faf83b0600d4d6690f12e191ca1c405"
+  }
+]

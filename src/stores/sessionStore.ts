@@ -94,6 +94,9 @@ export const useSessionStore = create<SessionState>((set, get) => ({
 
   setConfig: (cf) => {
     if (!cf) return;
+    // F52: discard even a legacy server's mirror key before UI state storage.
+    cf = { ...cf };
+    delete cf.mirrorKey;
     const cr = cf.creds || {};
     const fqdn = cr.fqdn || "";
     const user = cr.user || "";

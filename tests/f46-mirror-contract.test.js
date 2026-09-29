@@ -102,7 +102,7 @@ test("F46-4 the worker never uses evasion patterns", () => {
 
 test("F46-5 the server Diagnose output carries the read-only matrix + attempt table", () => {
   assert.match(server, /ghrdp-mirror\.ps1/, "the server must load the mirror module");
-  assert.match(server, /Invoke-F46HostProbe/, "the Diagnose probe must run the read-only host probe");
+  assert.match(server, /Get-F52HostMatrix/, "the Diagnose probe reads the same cached read-only host matrix (F52)");
   assert.match(server, /mirrorHosts = @\(\$mirrorRows\)/, "the probe matrix must be in /diag");
   assert.match(server, /mirrorAttempts = @\(\$mirrorAttempts\)/, "the attempt table must be in /diag");
   assert.match(server, /mirrorPolicy = \$mirrorPolicy/, "the policy must be reported verbatim");

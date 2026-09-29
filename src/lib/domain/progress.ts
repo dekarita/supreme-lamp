@@ -3,6 +3,7 @@
 // grid, active file, speed history, roots, publish status, file rows).
 import { fmtBytes, fmtDurShort } from "../format";
 import { asList } from "./telescope";
+import { mirrorBytes, mirrorPercent, mirrorTransfer } from "./mirrorBytes";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -33,6 +34,8 @@ export interface MirrorModel {
   // [F47 §3] the algorithm the worker actually used for the encrypted rows
   // (AES-256-GCM | AES-256-CBC-PBKDF2 | '' when nothing was encrypted).
   encAlg: string;
+  plaintextElected: boolean;
+  encryptionDefect: boolean;
   // [F46 §1] the complete, untruncated failure reason per file plus the raw
   // attempt records behind it (the same table the mirror-diag artifact carries).
   files: {
@@ -46,51 +49,62 @@ export interface MirrorModel {
     expired: boolean;
     host: string;
     encrypted: string;
+    encryptMode: string;
+    statusLabel: string;
+    byteCounts: string;
     attempts: { n: number; line: string }[];
   }[];
   speedHistory: number[];
 }
 
 export function mirrorModel(d: Any, prevHistory: number[]): MirrorModel {
-  const pData = d || {};
+  const pData = (d && d.progress) || d || {};
   const agg = pData.agg || {};
   const telemetry = pData.telemetry || {};
   const tot = Number(agg.total) || 0;
   const dn = Number(agg.done) || 0;
-  const pct = tot > 0 ? Math.min((dn / tot) * 100, dn === tot ? 100 : 99.9) : 0;
-  const spd = Number(agg.speedBps) || 0;
+  const act = pData.active || {};
+  const diag = pData.mirrorDiag || {};
+  const live = !!act.name && (act.phase === "http" || act.phase === "upload");
+  const transfer = mirrorTransfer(act, live);
+  const liveBytes = agg.bytesSent ?? agg.bytesDone;
+  const pct = mirrorPercent(liveBytes, agg.bytesTotal);
+  const spd = transfer.speed;
   let speedHistory: number[];
-  const hs = d.speedHistory && d.speedHistory.length ? d.speedHistory.slice(-90) : null;
+  const hs = pData.speedHistory && pData.speedHistory.length ? pData.speedHistory.slice(-90) : null;
   if (hs) speedHistory = hs;
   else {
     speedHistory = prevHistory.slice();
     speedHistory.push(spd);
     if (speedHistory.length > 90) speedHistory.shift();
   }
-  let eta: string;
-  if (spd > 0 && tot > dn) {
-    const remBytes = (Number(agg.bytesTotal) || 0) - (Number(agg.bytesDone) || 0);
-    eta = fmtDurShort(remBytes / spd);
-  } else {
-    eta = dn === tot && tot > 0 ? "done" : "-";
+  let eta = dn === tot && tot > 0 ? "done" : "-";
+  if (spd > 0 && transfer.window > 0n && !transfer.stalled) {
+    const totalBytes = mirrorBytes(agg.bytesTotal);
+    const sentBytes = mirrorBytes(liveBytes);
+    eta = fmtDurShort(Number(totalBytes > sentBytes ? totalBytes - sentBytes : 0n) / spd);
   }
-  const act = pData.active || {};
-  const diag = pData.mirrorDiag || {};
-  let encryptMode = String(pData.encryptMode || diag.encryptMode || "none");
+  let encryptMode = String((live && act.encryptMode) || pData.encryptMode || diag.encryptMode || d.encryptMode || "none");
   if (!encryptMode) encryptMode = "none";
   const encryptRequested = encryptMode === "all" || encryptMode === "media-plain";
   let encryptedAny = false;
   const encAlg = String(diag.encAlg || "");
   const files = asList(pData.files).slice(0, 50).map((f: Any) => {
-    let pf = Number(f.pct) || 0;
-    if (f.status === "active" && act.name && act.name === f.name) pf = Number(act.pct) || pf;
+    const rowLive = ["active", "uploading", "stalled"].includes(f.status) && ["http", "upload"].includes(f.phase);
+    const rowTransfer = mirrorTransfer(rowLive && act.name === f.name ? act : f.progress || f, rowLive);
+    let pf = f.bytesSent !== undefined ? mirrorPercent(f.bytesSent, f.size) : Number(f.pct) || 0;
+    if (rowLive && act.name === f.name) pf = mirrorPercent(transfer.sent, transfer.size);
+    const mode = String(f.encryptMode || encryptMode);
     const isExpired = f.status === "expired";
     return {
       name: String(f.name ?? ""),
       phase: String(f.phase ?? ""),
       pct: pf,
       size: fmtBytes(f.size),
-      status: String(f.status || "pending"),
+      status: rowTransfer.stalled ? "stalled" : String(f.status || "pending"),
+      statusLabel: rowTransfer.label || String(f.status || "pending"),
+      encryptMode: mode,
+      byteCounts: mirrorBytes(f.bytesSent).toString() + " / " + mirrorBytes(f.size).toString() + " bytes",
       error: f.error ? String(f.error) : "",
       link: isExpired ? "" : f.link ? String(f.link) : "",
       expired: isExpired,
@@ -110,35 +124,55 @@ export function mirrorModel(d: Any, prevHistory: number[]): MirrorModel {
           " msg=" +
           String((a && a.msg) ?? "") +
           " ms=" +
-          String((a && a.ms) ?? 0),
+          String((a && a.ms) ?? 0) +
+          " encryptMode=" + String((a && a.encryptMode) || mode),
       })),
     };
   });
   for (const row of files) if (row.encrypted === "True") encryptedAny = true;
+  const plaintextElected = pData.mirrorPlaintextElection === true || d.mirrorPlaintextElection === true;
+  const encryptionDefect = asList(pData.files).some((f: Any) =>
+    (f.auto === "True" || f.auto === true || diag.optIn) && String(f.encryptMode || encryptMode) !== "all"
+  );
   let pubDot: "" | "ok" | "warn" = "";
   let pubTxt = "Mirror disabled";
-  if (d.mirrorIndexUrl || d.rentryNewUrl) {
+  if (live) {
+    pubDot = "warn";
+    pubTxt = transfer.label || "Uploading " + String(act.name);
+  } else if (dn > 0 || files.some((f) => f.status === "done")) {
+    pubDot = "ok";
+    pubTxt = Math.max(dn, files.filter((f) => f.status === "done").length) + " uploaded";
+  } else if (files.some((f) => f.status === "active")) {
+    pubDot = "warn";
+    pubTxt = "Preparing encrypted upload";
+  } else if (files.some((f) => f.status === "failed") || Number(agg.failed) > 0) {
+    pubDot = "warn";
+    pubTxt = "Upload failed - see labeled reason";
+  } else if (tot > 0 || files.length > 0) {
+    pubDot = "warn";
+    pubTxt = "Queued: " + Math.max(tot - dn, files.length) + " files";
+  } else if (d.mirrorIndexUrl || d.rentryNewUrl) {
     pubDot = "ok";
     pubTxt = "Indexes published";
-  } else if (d.mirror) {
+  } else if (d.mirror || diag.autoUpload === "downloads-always-on") {
     pubDot = "warn";
-    pubTxt = "Waiting for first upload...";
+    pubTxt = diag.autoUpload === "downloads-always-on" ? "Downloads auto-upload ready" : "Waiting for first upload...";
   }
   return {
     pct,
     pctText: pct.toFixed(1) + "%",
     done: dn + "/" + tot,
     failed: String(Number(agg.failed) || 0),
-    bytes: fmtBytes(agg.bytesDone),
+    bytes: fmtBytes(liveBytes),
     bytesSub: "of " + fmtBytes(agg.bytesTotal),
-    speed: fmtBytes(spd) + "/s",
+    speed: transfer.stalled ? transfer.label : fmtBytes(spd) + "/s",
     scans: String(Number(telemetry.scans) || 0),
     scansSub: "last: " + (telemetry.lastScan ? String(telemetry.lastScan).substring(11, 19) : "-"),
     eta,
     activeName: act && act.name ? String(act.name) : "idle - no active file",
-    activePhase: act && act.name ? String(act.phase || "-") : "-",
-    activePct: act && act.name ? Number(act.pct) || 0 : 0,
-    activeBytes: act && act.name ? fmtBytes(act.bytesDone) + " / " + fmtBytes(act.bytesTotal) : "0 B / 0 B",
+    activePhase: act && act.name ? String(act.phase || "-") + (transfer.label ? " · " + transfer.label : "") : "-",
+    activePct: act && act.name ? mirrorPercent(transfer.sent, transfer.size) : 0,
+    activeBytes: act && act.name ? fmtBytes(transfer.sent) + " / " + fmtBytes(transfer.size) : "0 B / 0 B",
     roots: asList(telemetry.roots).map((r: Any) => String(r)),
     pubDot,
     pubTxt,
@@ -146,6 +180,8 @@ export function mirrorModel(d: Any, prevHistory: number[]): MirrorModel {
     encryptRequested,
     encryptedAny,
     encAlg,
+    plaintextElected,
+    encryptionDefect,
     files,
     speedHistory,
   };

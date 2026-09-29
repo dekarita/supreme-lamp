@@ -79,6 +79,80 @@ $script:F46GofileContract = [ordered]@{
 }
 # --- [F46 §3 contract-end] --------------------------------------------------
 
+# --- [F52 telemetry + lane truth] -----------------------------------------
+function Add-F52ProgressTypes {
+    if ('Ghrdp.Mirror.ProgressContent' -as [type]) { return }
+    if (-not ('System.Net.Http.HttpClient' -as [type])) { Add-Type -AssemblyName System.Net.Http }
+    $cs = Join-Path $PSScriptRoot 'ghrdp-mirror-progress.cs'
+    if ($PSVersionTable.PSVersion.Major -lt 6) {
+        Add-Type -Path $cs -ReferencedAssemblies @('System.dll', 'System.Core.dll', 'System.Net.Http.dll') -ErrorAction Stop
+    } else { Add-Type -Path $cs -ErrorAction Stop }
+}
+
+function ConvertTo-F52JsonSafe {
+    # Keep Int64 IN MEMORY; JSON numbers above JavaScript's exact range become
+    # decimal strings. Recurse without mutating the worker's live objects.
+    param($Value)
+    if ($null -eq $Value) { return $null }
+    if (($Value -is [long]) -or ($Value -is [uint64])) {
+        if ([decimal]$Value -gt 9007199254740991 -or [decimal]$Value -lt -9007199254740991) {
+            return $Value.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+        }
+        return $Value
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $obj = [ordered]@{}
+        foreach ($k in @($Value.Keys)) { $obj[$k] = ConvertTo-F52JsonSafe $Value[$k] }
+        return $obj
+    }
+    if ($Value -is [array] -or $Value -is [System.Collections.IList]) {
+        $list = @()
+        foreach ($v in $Value) { $list += ,(ConvertTo-F52JsonSafe $v) }
+        return ,$list
+    }
+    if ($Value -is [pscustomobject]) {
+        $obj = [ordered]@{}
+        foreach ($prop in $Value.PSObject.Properties) { $obj[$prop.Name] = ConvertTo-F52JsonSafe $prop.Value }
+        return $obj
+    }
+    return $Value
+}
+
+function Get-F52WorkerMode {
+    param($Cfg, [bool]$Auto = $false)
+    # Downloads ALWAYS encrypt, including a plaintext-elected dispatch. A
+    # dashboard runtime opt-in also overrides the manual dispatch election.
+    if ($Auto) { return 'all' }
+    if (Get-F49RuntimeOptIn -Cfg $Cfg) { return 'all' }
+    $elected = $false
+    try { $elected = ($Cfg.mirrorPlaintextElection -eq $true) } catch { }
+    if ($elected) { return 'none' }
+    return 'all'
+}
+
+function ConvertTo-F52Progress {
+    param($Snapshot, [long]$Size, [string]$HostId, [string]$WorkerMode, [int]$AttemptNo = 1)
+    $sent = [long]$Snapshot.BytesSent
+    $window = [long]$Snapshot.WindowBytes
+    $speed = [double]$Snapshot.SpeedBps
+    $eta = $null
+    if ($window -gt 0 -and $speed -gt 0 -and -not $Snapshot.Stalled) {
+        $eta = [double]([decimal][Math]::Max([long]0, ($Size - $sent)) / [decimal]$speed)
+    }
+    $label = ''
+    if ($window -eq 0 -or $Snapshot.Stalled) { $label = ('stalled (no bytes in ' + [int]$Snapshot.NoBytesSeconds + 's)') }
+    return [ordered]@{
+        host = $HostId; phase = 'http'; status = $(if ($Snapshot.Failed) { 'failed' } elseif ($label) { 'stalled' } else { 'uploading' })
+        n = $AttemptNo; ms = [long]($Snapshot.ElapsedSeconds * 1000); msg = $label
+        encryptMode = $WorkerMode; bytesSent = $sent; size = [long]$Size
+        windowBytes = $window; windowSeconds = [double]$Snapshot.WindowSeconds
+        speedBps = $(if ($label) { [double]0 } else { $speed }); etaSeconds = $eta
+        noBytesSeconds = [int]$Snapshot.NoBytesSeconds; stallWindows = [int]$Snapshot.StallWindows
+        stalled = [bool]($label); stallLabel = $label; lastSocketText = [string]$Snapshot.LastMessage
+        at = (Get-Date).ToUniversalTime().ToString('o')
+    }
+}
+
 function Get-F46DefaultHost {
     # mirrorHosts entry defaults. enabled=false keeps the remediation lock (no
     # mirror upload) until an operator opts in; the attempt is then reported as
@@ -92,7 +166,7 @@ function Get-F46DefaultHost {
         uploadPath = '/uploadfile'
         uploadScheme = 'https'
         enabled = $false
-        maxFileBytes = 0
+        maxFileBytes = $null # null = unknown; NOT a proven unlimited host
         blockedExtensions = @()
         # [F48 §1.3] 'guest' is the token-less contract this module always
         # attempts; it flips to 'requires-account' only from a probe or first
@@ -156,7 +230,7 @@ function Protect-F46SecretText {
 function New-F46MirrorKey {
     # [F47 §3] PER-RUN AES-256 KEY: 32 cryptographically random bytes, returned
     # base64. The stage step stores it in config `mirrorKey` (the ONE place it
-    # lives) and the Keys card shows it masked with a copy button. It is
+    # lives). F52 keeps it runner-local: no key or fragment in the UI. It is
     # redacted from every log line, attempt record, artifact and URL.
     param([int]$Bytes = 32)
     $n = $Bytes
@@ -222,84 +296,32 @@ function New-F46AesGcm {
 }
 
 function Invoke-F46EncryptFile {
-    # [F47 §3] AES-256 encryption of ONE file before upload.
-    #   GCM container : 'GHRDPMIR' ver=1 alg=1 | nonceLen | nonce | tagLen | tag | ciphertext
-    #   CBC container : salt(16) | iv(16) | AES-256-CBC(PBKDF2-SHA256(key,salt,100000))
-    #                   - byte-identical to the legacy .ghenc form that
-    #                   docs/decrypt.html + payloads/web-index-template.html
-    #                   already decrypt in the browser.
-    # Returns @{ ok; alg; bytes; message }. The key never leaves this function
-    # except as ciphertext; nothing is written to a log here.
-    param([string]$Path, [string]$OutPath, [string]$KeyBase64)
+    # [F52] Bounded AES-256-CBC/PBKDF2-SHA256 in the existing .ghenc form.
+    # StreamOnly is the worker path: encryption follows the socket's pull,
+    # never allocates/stages a whole ciphertext, and has no client-side cap.
+    # The file-output path remains for the F47 round-trip lab and local tools.
+    param([string]$Path, [string]$OutPath = '', [string]$KeyBase64, [switch]$StreamOnly)
     $key = Get-F46MirrorKeyBytes -KeyBase64 $KeyBase64
-    if ($null -eq $key) {
-        return @{ ok = $false; alg = ''; bytes = 0; message = ('mirrorKey is not 32 base64-decoded bytes (got ' + ([string]$KeyBase64).Length + ' chars) - refusing to encrypt with a weak key') }
-    }
-    $plain = $null
-    try { $plain = [System.IO.File]::ReadAllBytes($Path) } catch { return @{ ok = $false; alg = ''; bytes = 0; message = ('source unreadable: ' + $_.Exception.Message) } }
-    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    if ($null -eq $key) { return @{ ok = $false; alg = ''; bytes = [long]0; message = 'mirrorKey is not 32 base64-decoded bytes - refusing to upload plaintext' } }
+    $source = $null
+    $output = $null
     try {
-        if (Test-F46AesGcmUsable) {
-            $aes = New-F46AesGcm -Key $key
-            if ($aes) {
-                try {
-                    $nLen = [int]$script:F46GofileContract.gcmNonceBytes
-                    $tLen = [int]$script:F46GofileContract.gcmTagBytes
-                    $nonce = New-Object byte[] $nLen
-                    $rng.GetBytes($nonce)
-                    $ct = New-Object byte[] $plain.Length
-                    $tag = New-Object byte[] $tLen
-                    $aes.Encrypt($nonce, $plain, $ct, $tag)
-                    $magic = [System.Text.Encoding]::ASCII.GetBytes([string]$script:F46GofileContract.containerMagic)
-                    $hdr = New-Object System.Collections.Generic.List[byte]
-                    $hdr.AddRange([byte[]]$magic)
-                    $hdr.Add([byte]1)
-                    $hdr.Add([byte]1)
-                    $hdr.Add([byte]$nLen)
-                    $hdr.AddRange([byte[]]$nonce)
-                    $hdr.Add([byte]$tLen)
-                    $hdr.AddRange([byte[]]$tag)
-                    $out = New-Object System.Collections.Generic.List[byte]
-                    $out.AddRange([byte[]]$hdr.ToArray())
-                    $out.AddRange([byte[]]$ct)
-                    [System.IO.File]::WriteAllBytes($OutPath, $out.ToArray())
-                    return @{ ok = $true; alg = 'AES-256-GCM'; bytes = [long]$out.Count; message = '' }
-                } finally { try { $aes.Dispose() } catch { } }
-            }
-        }
-        # Legacy AES-256-CBC + PBKDF2 container (browser-decryptable).
-        $salt = New-Object byte[] 16
-        $iv = New-Object byte[] 16
-        $rng.GetBytes($salt)
-        $rng.GetBytes($iv)
-        $kdf = New-Object System.Security.Cryptography.Rfc2898DeriveBytes(([System.Text.Encoding]::UTF8.GetString($key)), $salt, 100000, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
-        try {
-            $aesKey = $kdf.GetBytes(32)
-            $a = [System.Security.Cryptography.Aes]::Create()
-            try {
-                $a.KeySize = 256
-                $a.Key = $aesKey
-                $a.IV = $iv
-                $a.Mode = [System.Security.Cryptography.CipherMode]::CBC
-                $a.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
-                $enc = $a.CreateEncryptor()
-                try {
-                    $ct2 = $enc.TransformFinalBlock($plain, 0, $plain.Length)
-                    $out2 = New-Object System.Collections.Generic.List[byte]
-                    $out2.AddRange([byte[]]$salt)
-                    $out2.AddRange([byte[]]$iv)
-                    $out2.AddRange([byte[]]$ct2)
-                    [System.IO.File]::WriteAllBytes($OutPath, $out2.ToArray())
-                    return @{ ok = $true; alg = 'AES-256-CBC-PBKDF2'; bytes = [long]$out2.Count; message = '' }
-                } finally { try { $enc.Dispose() } catch { } }
-            } finally { try { $a.Dispose() } catch { } }
-        } finally { try { $kdf.Dispose() } catch { } }
+        Add-F52ProgressTypes
+        $source = New-Object Ghrdp.Mirror.EncryptedSource($Path, ([byte[]]$key))
+        $len = [long]$source.WireLength
+        if ($StreamOnly) { return @{ ok = $true; alg = 'AES-256-CBC-PBKDF2'; bytes = $len; stream = $source; message = '' } }
+        $output = [System.IO.File]::Open($OutPath, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write)
+        $source.CopyTo($output, 1048576)
+        $output.Flush()
+        return @{ ok = $true; alg = 'AES-256-CBC-PBKDF2'; bytes = $len; message = '' }
     } catch {
-        return @{ ok = $false; alg = ''; bytes = 0; message = ('encryption failed: ' + $_.Exception.Message) }
+        try { if ($source) { $source.Dispose() } } catch { }
+        return @{ ok = $false; alg = ''; bytes = [long]0; message = ('encryption failed: ' + $_.Exception.GetBaseException().Message + '; refusing to upload plaintext') }
     } finally {
-        try { $rng.Dispose() } catch { }
+        try { if ($output) { $output.Dispose() } } catch { }
+        try { if ($source -and -not $StreamOnly) { $source.Dispose() } } catch { }
+        try { [Array]::Clear($key, 0, $key.Length) } catch { }
     }
-    return @{ ok = $false; alg = ''; bytes = 0; message = 'no AES-256 encryptor could be constructed on this runner' }
 }
 
 function Invoke-F46DecryptFile {
@@ -458,13 +480,83 @@ function Format-F46AttemptTableText {
     return ($lines -join "`n")
 }
 
+# [F52] A missing cap is UNKNOWN, not unlimited. Only an explicit byte-valued
+# maxFileBytes in a successful GET /servers envelope is host-cap evidence.
+function ConvertTo-F52CapBytes {
+    param($Value)
+    try {
+        if ($null -eq $Value -or [string]$Value -eq '') { return $null }
+        $n = [long]::Parse([string]$Value, [System.Globalization.CultureInfo]::InvariantCulture)
+        if ($n -gt 0) { return $n }
+    } catch { }
+    return $null
+}
+
+function Get-F52ServersCap {
+    param($Json, $HostCfg)
+    if ((Get-F46String $Json 'status') -ne 'ok') { return $null }
+    $data = Get-F46Prop $Json 'data'
+    $globalCap = ConvertTo-F52CapBytes (Get-F46Prop $data 'maxFileBytes')
+    if ($null -ne $globalCap) { return $globalCap }
+    $servers = @(Get-F46Prop $data 'servers')
+    if ([string]$HostCfg.uploadHostMode -eq 'fleet') {
+        # Same fixed first usable server as Get-F46UploadTarget.
+        foreach ($srv in $servers) {
+            if (Get-F46String $srv 'name') { return (ConvertTo-F52CapBytes (Get-F46Prop $srv 'maxFileBytes')) }
+        }
+        return $null
+    }
+    # The automatic endpoint may select any listed server. A per-server limit
+    # applies to that endpoint only when ALL usable servers advertise it and
+    # agree. Missing/mixed caps cannot honestly become an automatic-host cap.
+    $caps = @()
+    foreach ($srv in $servers) {
+        if (-not (Get-F46String $srv 'name')) { continue }
+        $n = ConvertTo-F52CapBytes (Get-F46Prop $srv 'maxFileBytes')
+        if ($null -eq $n) { return $null }
+        $caps += $n
+    }
+    if ($caps.Count -gt 0 -and @($caps | Select-Object -Unique).Count -eq 1) { return [long]$caps[0] }
+    return $null
+}
+
+function Set-F52HostCap {
+    param($HostCfg, $Rows)
+    if (-not $HostCfg) { return $null }
+    foreach ($row in @($Rows)) {
+        if ([string]$row.host -ne [string]$HostCfg.id) { continue }
+        $cap = ConvertTo-F52CapBytes $row.maxFileBytes
+        if ($null -ne $cap) {
+            $configured = ConvertTo-F52CapBytes $HostCfg.maxFileBytes
+            if ($null -eq $configured -or $cap -le $configured) {
+                $HostCfg['maxFileBytes'] = [long]$cap
+                $HostCfg['capSource'] = 'GET /servers maxFileBytes (advertised, not upload-proven)'
+            }
+        }
+    }
+    return $HostCfg
+}
+
+function Get-F52HostMatrix {
+    param([string]$Root, $Hosts)
+    $path = Join-Path $Root 'mirror-probe.json'
+    try {
+        if (Test-Path -LiteralPath $path) { return @([System.IO.File]::ReadAllText($path) | ConvertFrom-Json) }
+    } catch { }
+    $rows = @(Invoke-F46HostProbe -Hosts $Hosts -TimeoutSec 8)
+    try { [System.IO.File]::WriteAllText($path, ((ConvertTo-F52JsonSafe $rows) | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false))) } catch { }
+    return @($rows)
+}
+
 function Test-F46UploadPreflight {
     # Attempt 0: per-host limits are decided from config with ZERO network tries.
     param([long]$Size, [string]$Name, $HostCfg)
     $maxBytes = 0
     try { if ($HostCfg -and $HostCfg.maxFileBytes) { $maxBytes = [long]$HostCfg.maxFileBytes } } catch { $maxBytes = 0 }
     if ($maxBytes -gt 0 -and [long]$Size -gt $maxBytes) {
-        return @{ ok = $false; phase = 'size'; hostMessage = ('preflight (0 network tries): file is ' + [long]$Size + ' bytes and host ' + [string]$HostCfg.id + ' allows at most ' + $maxBytes + ' (config mirrorHosts[].maxFileBytes)') }
+        $source = 'config mirrorHosts[].maxFileBytes'
+        try { if ($HostCfg.capSource) { $source = [string]$HostCfg.capSource } } catch { }
+        return @{ ok = $false; phase = 'size'; hostMessage = ('preflight (0 network tries; network=0): file is ' + [long]$Size + ' bytes and host ' + [string]$HostCfg.id + ' allows at most ' + $maxBytes + ' bytes (' + $source + ')') }
     }
     $ext = ''
     try { $ext = [System.IO.Path]::GetExtension([string]$Name).ToLower() } catch { $ext = '' }
@@ -660,11 +752,11 @@ function Send-F46GofileUpload {
     # application/x-ghrdp-mirror, the plaintext path stays octet-stream.
     # Returns ok/phase/httpStatus/hostMessage plus the documented response
     # fields (code, file id, downloadPage).
-    param($HostCfg, [string]$Path, [string]$Name, [int]$TimeoutSec = 120, $Target = $null, [string]$ContentType = '')
+    param($HostCfg, [string]$Path, [string]$Name, [int]$TimeoutSec = 120, $Target = $null, [string]$ContentType = '', $ProgressAction = $null, $UploadSource = $null, [int]$StallWindowSec = 60, [string]$WorkerMode = '', [int]$AttemptNo = 1)
     if (-not $Target) { $Target = Get-F46UploadTarget -HostCfg $HostCfg -TimeoutSec ([Math]::Min($TimeoutSec, 30)) }
     if (-not $Target.ok) { return @{ ok = $false; phase = $Target.phase; httpStatus = $null; hostMessage = $Target.message; retryAfterMs = $null } }
-    $fileLen = 0
-    try { $fileLen = (Get-Item -LiteralPath $Path).Length } catch { return @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('upload source unreadable: ' + $_.Exception.Message); retryAfterMs = $null } }
+    $fileLen = [long]0
+    try { if ($UploadSource) { $fileLen = [long]$UploadSource.Length } else { $fileLen = [long](Get-Item -LiteralPath $Path).Length } } catch { return @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('upload source unreadable: ' + $_.Exception.Message); retryAfterMs = $null } }
     if (-not ('System.Net.Http.HttpClient' -as [type])) { try { Add-Type -AssemblyName System.Net.Http } catch { } }
     $boundary = '----ghrdpF46' + [guid]::NewGuid().ToString('N')
     $spec = New-F46UploadRequestSpec -HostCfg $HostCfg -Name $Name -Boundary $boundary -ContentType $ContentType
@@ -672,11 +764,19 @@ function Send-F46GofileUpload {
     $req = $null
     $mp = $null
     $fs = $null
+    $cancel = $null
+    $state52 = $null
     try {
-        $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        Add-F52ProgressTypes
+        # Shortened stall clocks are a loopback LAB seam only.
+        if ($StallWindowSec -ne 60 -and -not ([uri]$Target.uri).IsLoopback) { throw 'F52: shortened stall windows are loopback-lab only' }
+        $state52 = New-Object Ghrdp.Mirror.ProgressState($StallWindowSec)
+        $cancel = New-Object System.Threading.CancellationTokenSource
+        if ($UploadSource) { $fs = $UploadSource } else { $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite) }
         # [F50] StreamContent over the FileStream: bounded-chunk wire I/O, no
         # whole-file byte array anywhere in this path.
-        $fileContent = New-Object System.Net.Http.StreamContent($fs)
+        $innerContent = New-Object System.Net.Http.StreamContent($fs, 1048576)
+        $fileContent = New-Object Ghrdp.Mirror.ProgressContent($innerContent, $fileLen, $state52)
         $disp = New-Object System.Net.Http.Headers.ContentDispositionHeaderValue('form-data')
         $disp.Name = '"' + [string]$spec.fieldName + '"'
         $disp.FileName = '"' + [string]$spec.fileName + '"'
@@ -691,9 +791,25 @@ function Send-F46GofileUpload {
             if (([string]$hk) -eq 'Accept') { $req.Headers.Accept.ParseAdd([string]$spec.headers[$hk]) } else { $req.Headers.TryAddWithoutValidation([string]$hk, [string]$spec.headers[$hk]) | Out-Null }
         }
         $req.Content = $mp
-        $client = New-Object System.Net.Http.HttpClient
-        $client.Timeout = [TimeSpan]::FromSeconds([Math]::Max(1, $TimeoutSec))
-        $resp = $client.SendAsync($req).GetAwaiter().GetResult()
+        $client = [Ghrdp.Mirror.GuestClient]::Create()
+        # A whole-request timeout is a hidden large-file cap. Only the three
+        # no-byte windows cancel a transfer; progress keeps any size alive.
+        $client.Timeout = [System.Threading.Timeout]::InfiniteTimeSpan
+        $task52 = $client.SendAsync($req, [System.Net.Http.HttpCompletionOption]::ResponseContentRead, $cancel.Token)
+        while (-not $task52.IsCompleted) {
+            $snap52 = $state52.Snapshot()
+            $progress52 = ConvertTo-F52Progress -Snapshot $snap52 -Size $fileLen -HostId ([string]$HostCfg.id) -WorkerMode $WorkerMode -AttemptNo $AttemptNo
+            if ($ProgressAction) { & $ProgressAction $progress52 | Out-Null }
+            if ($snap52.Failed) {
+                $state52.CancelForStall()
+                $cancel.Cancel()
+                return @{ ok = $false; phase = 'http'; httpStatus = $null; hostMessage = ($progress52.stallLabel + ' | last socket/host text: ' + $snap52.LastMessage); retryAfterMs = $null; bytesSent = [long]$snap52.BytesSent; progress = $progress52 }
+            }
+            try { [void]$task52.Wait(250) } catch { break }
+        }
+        $resp = $task52.GetAwaiter().GetResult()
+        $progress52 = ConvertTo-F52Progress -Snapshot ($state52.Snapshot()) -Size $fileLen -HostId ([string]$HostCfg.id) -WorkerMode $WorkerMode -AttemptNo $AttemptNo
+        if ($ProgressAction) { & $ProgressAction $progress52 | Out-Null }
         $code = [int]$resp.StatusCode
         $retryAfter = $null
         $ra = $null
@@ -715,7 +831,10 @@ function Send-F46GofileUpload {
         }
         $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
         $resp.Dispose()
-        return (ConvertFrom-F46UploadResponse -Text $text -HttpStatus $code -RetryAfterMs $retryAfter)
+        $result52 = ConvertFrom-F46UploadResponse -Text $text -HttpStatus $code -RetryAfterMs $retryAfter
+        $result52['bytesSent'] = [long]$progress52.bytesSent
+        $result52['progress'] = $progress52
+        return $result52
     } catch {
         # [F50] transport failures: phase comes from the inner socket/host
         # exception, keeping the F44 dns/tcp/tls ladder honest on BOTH runtimes
@@ -745,12 +864,21 @@ function Send-F46GofileUpload {
                 $inner = $inner.InnerException
             }
         } catch { }
-        return @{ ok = $false; phase = $phase; httpStatus = $null; hostMessage = ('transport failed (' + $phase + '): ' + $msg); retryAfterMs = $null }
+        $sent52 = [long]0
+        $progress52 = $null
+        if ($state52) {
+            $state52.SocketMessage($msg)
+            $progress52 = ConvertTo-F52Progress -Snapshot ($state52.Snapshot()) -Size $fileLen -HostId ([string]$HostCfg.id) -WorkerMode $WorkerMode -AttemptNo $AttemptNo
+            $sent52 = [long]$progress52.bytesSent
+            if ($ProgressAction) { & $ProgressAction $progress52 | Out-Null }
+        }
+        return @{ ok = $false; phase = $phase; httpStatus = $null; hostMessage = ('transport failed (' + $phase + '): ' + $msg); retryAfterMs = $null; bytesSent = $sent52; progress = $progress52 }
     } finally {
         try { if ($req) { $req.Dispose() } } catch { }
         try { if ($mp) { $mp.Dispose() } } catch { }
         try { if ($fs) { $fs.Dispose() } } catch { }
         try { if ($client) { $client.Dispose() } } catch { }
+        try { if ($cancel) { $cancel.Dispose() } } catch { }
     }
 }
 
@@ -803,14 +931,16 @@ function Invoke-F46MirrorAttempt {
     # guest multipart POST: a 401/403 answer is ONE fail-fast attempt labeled
     # 'host requires account token; token-less mode unsupported' (+ operator
     # options), never a retry loop and never a credential.
-    param($HostCfg, [string]$Path, [string]$Name, [long]$Size, [int]$AttemptNo = 1, $Transport = $null, [bool]$EncryptRequested = $false, [bool]$Encrypted = $false, [int]$TimeoutSec = 0, [string]$ContentType = '')
+    param($HostCfg, [string]$Path, [string]$Name, [long]$Size, [int]$AttemptNo = 1, $Transport = $null, [bool]$EncryptRequested = $false, [bool]$Encrypted = $false, [int]$TimeoutSec = 0, [string]$ContentType = '', $ProgressAction = $null, $UploadSource = $null, [string]$WorkerMode = '', [int]$StallWindowSec = 60, [string]$WorkerLane = 'manual')
     $hostId = 'none'
     if ($HostCfg) { $hostId = [string]$HostCfg.id }
     $started = Get-Date
+    if (-not $WorkerMode) { $WorkerMode = $(if ($EncryptRequested) { 'all' } else { 'none' }) }
     $emit = {
         param($Phase, $Status, $Message, $Retryable, $Extra)
         $ms = [int]((Get-Date) - $started).TotalMilliseconds
         $rec = New-F46AttemptRecord -N $AttemptNo -HostId $hostId -Phase $Phase -Status $Status -Message $Message -Ms $ms -Retryable $Retryable
+        $rec['encryptMode'] = $WorkerMode; $rec['encrypted'] = [bool]$Encrypted
         $out = @{ ok = $false; phase = $Phase; httpStatus = $Status; hostMessage = $Message; retryAfterMs = $null; attemptNo = $AttemptNo; record = $rec; fileId = ''; code = ''; downloadPage = ''; directUrl = ''; durationMs = $ms }
         if ($Extra) { foreach ($k in @($Extra.Keys)) { $out[$k] = $Extra[$k] } }
         return $out
@@ -818,10 +948,13 @@ function Invoke-F46MirrorAttempt {
     if (-not $HostCfg) {
         return (& $emit 'policy' $null 'no mirror host is enabled (config mirrorHosts[].enabled=false). The mirror worker does not attempt an upload and does not retry - see docs/MIRROR-HOSTS.md for the operator options.' $false $null)
     }
+    if ($WorkerLane -ne 'manual' -and ($WorkerMode -ne 'all' -or -not $EncryptRequested -or -not $Encrypted)) {
+        return (& $emit 'encrypt' $null 'F52 STOP: auto/runtime encryption defect; refusing to upload plaintext (one fix loop required)' $false $null)
+    }
     if ($EncryptRequested -and -not $Encrypted) {
         return (& $emit 'encrypt' $null 'encryptMode requests AES-256 but the encryptor is unavailable on this runner (remediation lock) - refusing to upload plaintext' $false $null)
     }
-    $pre = Test-F46UploadPreflight -Size $Size -Name $Name -Host $HostCfg
+    $pre = Test-F46UploadPreflight -Size $Size -Name $Name -HostCfg $HostCfg
     if (-not $pre.ok) { return (& $emit $pre.phase $null $pre.hostMessage $false $null) }
     if ($Transport) {
         $raw = $null
@@ -841,6 +974,7 @@ function Invoke-F46MirrorAttempt {
         try { if ($null -ne $raw.retryable) { $retry = [bool]$raw.retryable } else { $retry = (Test-F46TransientPhase -Phase $phase -Status $st) } } catch { $retry = (Test-F46TransientPhase -Phase $phase -Status $st) }
         if ($phase -eq 'auth') { $retry = $false }
         $rec = New-F46AttemptRecord -N $AttemptNo -HostId $hostId -Phase $phase -Status $st -Message $msg -Ms $ms -Retryable $retry
+        $rec['encryptMode'] = $WorkerMode; $rec['encrypted'] = [bool]$Encrypted
         $out = @{ ok = [bool]$raw.ok; phase = $phase; httpStatus = $st; hostMessage = $msg; retryAfterMs = $null; attemptNo = $AttemptNo; record = $rec; fileId = ''; code = ''; downloadPage = ''; directUrl = ''; durationMs = $ms; authMode = $authMode }
         try { if ($raw.retryAfterMs) { $out['retryAfterMs'] = $raw.retryAfterMs } } catch { }
         try { $out['fileId'] = [string]$raw.fileId } catch { }
@@ -855,7 +989,7 @@ function Invoke-F46MirrorAttempt {
     }
     $to = 120
     if ($TimeoutSec -gt 0) { $to = $TimeoutSec } elseif ($HostCfg -and $HostCfg.timeoutSec) { try { $to = [int]$HostCfg.timeoutSec } catch { $to = 120 } }
-    $res = Send-F46GofileUpload -HostCfg $HostCfg -Path $Path -Name $Name -TimeoutSec $to -ContentType $ContentType
+    $res = Send-F46GofileUpload -HostCfg $HostCfg -Path $Path -Name $Name -TimeoutSec $to -ContentType $ContentType -ProgressAction $ProgressAction -UploadSource $UploadSource -WorkerMode $WorkerMode -AttemptNo $AttemptNo -StallWindowSec $StallWindowSec
     $ms2 = [int]((Get-Date) - $started).TotalMilliseconds
     $phase2 = 'http'
     try { if ($res.phase) { $phase2 = [string]$res.phase } } catch { $phase2 = 'http' }
@@ -872,12 +1006,16 @@ function Invoke-F46MirrorAttempt {
     if (-not $ok2) { $retry2 = (Test-F46TransientPhase -Phase $phase2 -Status $st2) }
     if ($phase2 -eq 'auth') { $retry2 = $false }
     $rec2 = New-F46AttemptRecord -N $AttemptNo -HostId $hostId -Phase $phase2 -Status $st2 -Message $msg2 -Ms $ms2 -Retryable $retry2
+    $rec2['encryptMode'] = $WorkerMode; $rec2['encrypted'] = [bool]$Encrypted
     $out2 = @{ ok = $ok2; phase = $phase2; httpStatus = $st2; hostMessage = $msg2; retryAfterMs = $null; attemptNo = $AttemptNo; record = $rec2; fileId = ''; code = ''; downloadPage = ''; directUrl = ''; durationMs = $ms2; authMode = $authMode2 }
     try { if ($res.retryAfterMs) { $out2['retryAfterMs'] = $res.retryAfterMs } } catch { }
     try { $out2['fileId'] = [string]$res.fileId } catch { }
     try { $out2['code'] = [string]$res.code } catch { }
     try { $out2['downloadPage'] = [string]$res.downloadPage } catch { }
     try { $out2['directUrl'] = [string]$res.directUrl } catch { }
+    $out2['bytesSent'] = [long]$res.bytesSent
+    $out2['progress'] = $res.progress
+    $rec2['bytesSent'] = [long]$res.bytesSent
     return $out2
 }
 
@@ -934,13 +1072,16 @@ function Invoke-F46HostProbe {
             $raw = $null
             try { $raw = (& $Transport $h $apiRoot) } catch { $raw = $null }
             if ($null -eq $raw) { $rows += @{ host = $id; status = '-'; note = 'probe transport returned nothing' }; continue }
-            $rows += @{ host = $id; status = $(if ($null -ne $raw.status) { [string]$raw.status } else { '-' }); note = [string]$raw.note }
+            $rows += @{ host = $id; status = $(if ($null -ne $raw.status) { [string]$raw.status } else { '-' }); note = [string]$raw.note; maxFileBytes = (ConvertTo-F52CapBytes $raw.maxFileBytes); maxProvenBytes = $null; capEvidence = 'advertised-only' }
             continue
         }
         $serversUri = $apiRoot + [string]$script:F46GofileContract.serversPath
         $status = '-'
         $note = ''
         $done = $false
+        $maxFileBytes = $null
+        $servers52 = @()
+        $probeWatch = [System.Diagnostics.Stopwatch]::StartNew()
         try {
             $req = [System.Net.WebRequest]::Create($serversUri)
             $req.Method = 'GET'
@@ -955,6 +1096,10 @@ function Invoke-F46HostProbe {
             $resp.Close()
             $json = ConvertFrom-F46Json -Text $text
             $envStatus = Get-F46String $json 'status'
+            $maxFileBytes = Get-F52ServersCap -Json $json -HostCfg $h
+            foreach ($srv52 in @(Get-F46Prop (Get-F46Prop $json 'data') 'servers')) {
+                $servers52 += [ordered]@{ name = (Get-F46String $srv52 'name'); maxFileBytes = (ConvertTo-F52CapBytes (Get-F46Prop $srv52 'maxFileBytes')) }
+            }
             if ($envStatus -and $envStatus -ne [string]$script:F46GofileContract.okStatus) {
                 $note = ('read-only GET ' + [string]$script:F46GofileContract.serversPath + ' answered envelope status=' + $envStatus + ' (no upload attempted)')
             } else {
@@ -981,7 +1126,8 @@ function Invoke-F46HostProbe {
             $done = $true
         }
         if (-not $done) { $note = 'probe did not complete' }
-        $rows += @{ host = $id; status = $status; note = $note }
+        $note += (' | maxFileBytes=' + $(if ($null -ne $maxFileBytes) { [string]$maxFileBytes } else { 'unknown' }) + '; max-proven=unknown (read-only, no upload acceptance proven)')
+        $rows += @{ host = $id; phase = 'size'; status = $status; ms = [long]$probeWatch.ElapsedMilliseconds; msg = $note; note = $note; maxFileBytes = $maxFileBytes; maxProvenBytes = $null; capEvidence = 'advertised-only'; servers = @($servers52) }
     }
     return @($rows)
 }
@@ -1097,7 +1243,7 @@ function Get-F49OptInStatus {
 function Set-F49RuntimeOptIn {
     # Converge a config OBJECT to runtime-enabled: master switch on, first host
     # enabled (the default gofile entry is created when mirrorHosts is
-    # missing/empty), the runtime marker stamped. No other key is touched.
+    # missing/empty), the runtime marker stamped. F52 also converges encryption.
     # Returns @{ changed; host } - changed=false means the config was already
     # fully runtime-enabled (an idempotent re-POST keeps the original marker).
     param($Cfg, [string]$At = '')
@@ -1120,6 +1266,11 @@ function Set-F49RuntimeOptIn {
     }
     Set-F49CfgProp -Cfg $Cfg -Name 'mirrorHosts' -Value @($list)
     Set-F49CfgProp -Cfg $Cfg -Name 'mirror' -Value $true
+    Set-F49CfgProp -Cfg $Cfg -Name 'encryptMode' -Value 'all'
+    Set-F49CfgProp -Cfg $Cfg -Name 'mirrorPlaintextElection' -Value $false
+    if (-not (Get-F46MirrorKeyBytes -KeyBase64 ([string]$Cfg.mirrorKey))) {
+        Set-F49CfgProp -Cfg $Cfg -Name 'mirrorKey' -Value (New-F46MirrorKey)
+    }
     if (-not $already) {
         $marker = [pscustomobject][ordered]@{ at = $stamp; source = [string]$script:F49OptInSource; scope = [string]$script:F49OptInScope; by = 'dashboard' }
         Set-F49CfgProp -Cfg $Cfg -Name 'mirrorRuntimeOptIn' -Value $marker

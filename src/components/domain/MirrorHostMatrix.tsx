@@ -14,12 +14,15 @@ import { useTranslation } from "react-i18next";
 import { Radar, RefreshCw } from "lucide-react";
 import { Card, EmptyState } from "@/components/primitives/Data";
 import { Button } from "@/components/primitives/Button";
+import { mirrorBytes } from "@/lib/domain/mirrorBytes";
 import { StatusDot } from "@/components/primitives/Chip";
 
 export interface ProbeRow {
   host: string;
   status: string;
   note: string;
+  maxFileBytes?: string | null;
+  maxProvenBytes?: string | null;
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -29,6 +32,8 @@ function asRows(v: any): ProbeRow[] {
     host: String((r && r.host) ?? "-"),
     status: String((r && r.status !== null && r.status !== undefined && r.status !== "" ? r.status : "-")),
     note: String((r && r.note) ?? ""),
+    maxFileBytes: r?.maxFileBytes == null ? null : String(r.maxFileBytes),
+    maxProvenBytes: r?.maxProvenBytes == null ? null : String(r.maxProvenBytes),
   }));
 }
 
@@ -74,6 +79,7 @@ export function MirrorHostMatrix() {
 
   const list = rows || [];
   const blocked = list.filter(isBlockedRow);
+  const smallCaps = list.filter((r) => mirrorBytes(r.maxFileBytes) > 0n && mirrorBytes(r.maxFileBytes) < 100000000000n);
   const allBlocked = list.length > 0 && blocked.length === list.length;
 
   return (
@@ -114,11 +120,18 @@ export function MirrorHostMatrix() {
                     <StatusDot tone={r.status === "200" ? "success" : isBlockedRow(r) ? "danger" : "neutral"} />{" "}
                     <span className="font-mono text-xs" data-testid="mirror-host-status">{r.status}</span>
                   </td>
-                  <td className="px-3 py-1.5 text-xs text-secondary break-words" data-testid="mirror-host-note">{r.note}</td>
+                  <td className="px-3 py-1.5 text-xs text-secondary break-words" data-testid="mirror-host-note">{r.note}
+                    <div className="font-mono mt-1" data-testid="mirror-cap-reality">advertised cap bytes={r.maxFileBytes ?? "unknown"} · upload-proven bytes={r.maxProvenBytes ?? "unknown"}</div>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+      {smallCaps.length > 0 && (
+        <div role="alert" data-testid="mirror-cap-stop" className="mt-3 rounded-md border border-warning/40 p-3 text-xs text-secondary">
+          STOP: guest cap is below 100 GB ({smallCaps.map((r) => r.maxFileBytes).join(", ")} bytes). Operator options: self-hosted target for this size class | accept the cap. No identity changes or account credentials.
         </div>
       )}
       {allBlocked && (

@@ -549,7 +549,7 @@ main{max-width:1280px !important}
     <div class="row"><span class="k">Mirror (github.io)</span><a id="pagesLink" href="javascript:void(0)">(pages base)</a><button onclick="copyText(document.getElementById('pagesLink').textContent,this)">copy</button></div>
     <div class="row"><span class="k">Legacy Rentry (frozen)</span><a id="legacyLink" href="https://rentry.co/myurl0">https://rentry.co/myurl0</a><button onclick="copyText(document.getElementById('legacyLink').textContent,this)">copy</button></div>
     <div class="row"><span class="k">LEGACY key</span><span class="v" id="legacyKey">...</span><button onclick="copyById('legacyKey',this)">copy</button><span class="note">decrypt key for files uploaded before this run</span></div>
-    <div class="row"><span class="k">Current key</span><span class="v" id="mirrorKey">__MIRRORKEY__</span><button onclick="copyById('mirrorKey',this)">copy</button><span class="note">decrypt key for THIS run's uploads</span></div>
+    <div class="row"><span class="k">Current key</span><span class="v" id="mirrorKey">runner-local; not exposed</span><span class="note">per-run AES-256 key never leaves the runner</span></div>
     <div class="row"><span class="k">Windows password</span><span class="v" id="credWinPass">(host-only)</span><button onclick="copyById('credWinPass',this)">copy</button><span class="note">masked (last 4); served only to your token-authenticated dashboard</span></div>
     <div class="row"><span class="k">VNC password</span><span class="v" id="credVncPass">(host-only)</span><button onclick="copyById('credVncPass',this)">copy</button><a href="javascript:void(0)" onclick="rememberVncFromKeys(this)" style="font-size:11px;opacity:.6;text-decoration:underline">remember for WEB DESKTOP</a><span class="note">the VNC_PASS secret set at dispatch; masked (last 4), token-gated.</span></div>
     <div class="row"><span class="k">Telegraph</span><a id="telegraphLink" href="javascript:void(0)">__TELEGRAPH__</a><button onclick="copyText(document.getElementById('telegraphLink').textContent,this)">copy</button></div>
@@ -633,10 +633,13 @@ main{max-width:1280px !important}
   </section>
 
   <section class="glass tier-card" id="sec-mirror">
-    <div class="sec-head"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-database"/></svg><h2>Mirror - AES-256 encrypted upload</h2></div>
+    <div class="sec-head"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-database"/></svg><h2 id="mirrorClaimTitle">Mirror - encryption awaiting worker report</h2></div>
     <!-- [F49] the disabled banner: mirror default-off is the shipped state, so
          the page says so and points at the one-click opt-in (not a silent no-op). -->
     <div id="mirrorOptInBanner" class="mOptBanner" role="status" hidden>Mirror is OFF for this run (default). Queued files are tracked but NOT uploaded. Choose &ldquo;Upload everything now&rdquo; to review and enable a one-click token-less upload for this run only.</div>
+    <div id="mirrorPlaintextBanner" class="mOptBanner" role="alert" hidden>PLAINTEXT ELECTED: mirror_encrypt=false dispatch — manual lane only. Downloads auto-upload and runtime opt-in always encrypt.</div>
+    <div class="note">Downloads auto-upload is always ON and encrypted; OFF applies to manual roots only.</div>
+    <div id="mirrorEncryptionHonesty" class="note">encryptMode=unknown · encrypted uploads=no</div>
     <div class="mirror-ring">
       <div class="ring" title="honest overall percent (capped at 99.9 until done==total)">
         <svg viewBox="0 0 64 64" aria-hidden="true">
@@ -984,6 +987,11 @@ function chip(id,text,cls){var p=$(id);if(!p)return;p.className='chip '+(cls||''
 (function(){var box=$('logBox');if(!box)return;box.addEventListener('mouseenter',function(){logPaused=true});box.addEventListener('mouseleave',function(){logPaused=false})})();
 function toggleLogPause(btn){logPaused=!logPaused;btn.textContent=logPaused?'resume':'pause';btn.classList.toggle('copied',logPaused)}
 function drawSpark(samples){var cv=$('sparkline');if(!cv)return;var dpr=window.devicePixelRatio||1;var cssW=cv.clientWidth||800,cssH=cv.clientHeight||56;if(cv.width!==Math.floor(cssW*dpr)||cv.height!==Math.floor(cssH*dpr)){cv.width=Math.floor(cssW*dpr);cv.height=Math.floor(cssH*dpr)}var ctx=cv.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,cssW,cssH);if(!samples||samples.length===0){ctx.fillStyle='rgba(148,163,184,.55)';ctx.font='11px system-ui,sans-serif';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('no samples yet',cssW/2,cssH/2);return}var maxV=1;for(var i=0;i<samples.length;i++){if(samples[i]>maxV)maxV=samples[i]}var padL=4,padR=4,padT=4,padB=6;var w=cssW-padL-padR,h=cssH-padT-padB;var n=samples.length;var pts=[];for(var j=0;j<n;j++){var x=padL+(n===1?w/2:(j*w/(n-1)));var y=padT+h-(samples[j]/maxV)*h;pts.push([x,y])}var g=ctx.createLinearGradient(0,padT,0,padT+h);g.addColorStop(0,'rgba(34,211,238,.32)');g.addColorStop(1,'rgba(34,211,238,0)');ctx.fillStyle=g;ctx.beginPath();ctx.moveTo(pts[0][0],padT+h);for(var k=0;k<pts.length;k++)ctx.lineTo(pts[k][0],pts[k][1]);ctx.lineTo(pts[pts.length-1][0],padT+h);ctx.closePath();ctx.fill();var sg=ctx.createLinearGradient(0,0,cssW,0);sg.addColorStop(0,'#22d3ee');sg.addColorStop(.55,'#34d399');sg.addColorStop(1,'#a78bfa');ctx.strokeStyle=sg;ctx.lineWidth=1.8;ctx.lineJoin='round';ctx.lineCap='round';ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);for(var m=1;m<pts.length;m++)ctx.lineTo(pts[m][0],pts[m][1]);ctx.stroke();var last=pts[pts.length-1];ctx.fillStyle='#a78bfa';ctx.beginPath();ctx.arc(last[0],last[1],2.4,0,Math.PI*2);ctx.fill()}
+// [F52 byte-window-begin] Same Int64 semantics as src/lib/domain/mirrorBytes.ts.
+function f52Bytes(value){try{if(typeof value==='number'&&!Number.isSafeInteger(value))return BigInt(0);var s=String(value==null?'0':value);if(!/^\d+$/.test(s))return BigInt(0);var n=BigInt(s);return n<=BigInt('9223372036854775807')?n:BigInt(0)}catch(_){return BigInt(0)}}
+function f52Percent(sent,size){var n=f52Bytes(sent),total=f52Bytes(size);return total>BigInt(0)?Math.min(100,Number(n*BigInt(1000)/total)/10):0}
+function f52Transfer(progress,live){var sent=f52Bytes(progress.bytesSent==null?progress.bytesDone:progress.bytesSent),size=f52Bytes(progress.size==null?progress.bytesTotal:progress.size),window=f52Bytes(progress.windowBytes),seconds=Math.max(0,Number(progress.windowSeconds)||0),gap=Math.max(0,Math.floor(Number(progress.noBytesSeconds)||0));var stalled=live&&(window===BigInt(0)||seconds<=0||gap>=60||progress.stalled===true);var label=stalled?'stalled (no bytes in '+gap+'s)':'';var speed=live&&!stalled&&seconds>0?Number(window)/seconds:0;var remaining=size>sent?size-sent:BigInt(0);var eta=speed>0&&window>BigInt(0)&&!stalled?Number(remaining)/speed:null;return{sent:sent,size:size,window:window,seconds:seconds,gap:gap,stalled:stalled,label:label,speed:speed,eta:eta}}
+// [F52 byte-window-end]
 var RING_C=2*Math.PI*28;
 function setRing(pct){var fill=$('ringFill');if(!fill)return;var p=Math.max(0,Math.min(100,Number(pct)||0));fill.setAttribute('stroke-dashoffset',(RING_C*(1-p/100)).toFixed(2))}
 function render(d){
@@ -1006,7 +1014,6 @@ function render(d){
   if(d.legacyDecryptKey){$('legacyKey').textContent=d.legacyDecryptKey;}
   var tl=$('telegraphLink');
   if(d.mirrorIndexUrl){tl.textContent=d.mirrorIndexUrl;tl.href=d.mirrorIndexUrl;}else{tl.textContent='(not created yet)';tl.href='javascript:void(0)';}
-  if(d.mirrorKey){$('mirrorKey').textContent=d.mirrorKey;}
   if(d.pagesBase){var pb=d.pagesBase;var pl2=$('pagesLink');if(pl2){pl2.textContent=pb;pl2.href=pb;}var dr=$('decryptRow');if(dr){dr.style.display='';var dl=$('decryptLink');dl.href=pb+'/decrypt.html';dl.textContent='Web Decryptor';}var ar=$('archiveRow');if(ar){ar.style.display='';var al=$('archiveLink');al.href=pb+'/archive.html';al.textContent='Session Archive';}var sr=$('searchRow');if(sr){sr.style.display='';var sl=$('searchLink');sl.href=pb+'/search.html';sl.textContent='File Search';}var xr=$('explorerRow');if(xr){xr.style.display='';var xl=$('explorerLink');xl.href=pb+'/explorer.html';xl.textContent='GHRDP Explorer (Win11)';}}
   if(!runStartedAtMs&&d.runStartedAt){var rs=parseTs(d.runStartedAt);if(!isNaN(rs))runStartedAtMs=rs;}
   else if(!runStartedAtMs&&d.startedAt){var rs2=parseTs(d.startedAt);if(!isNaN(rs2))runStartedAtMs=rs2;}
@@ -1037,15 +1044,18 @@ function render(d){
   chip('pillClock','clock: '+String(pData.ts||'never').replace('T',' ').substring(0,19),'');
   var agg=pData.agg||{};
   var tot=Number(agg.total)||0,dn=Number(agg.done)||0;
-  var pct=tot>0?Math.min(dn/tot*100,dn===tot?100:99.9):0;
+  var act=pData.active||{};
+  var transfer52=f52Transfer(act,!!act.name&&(act.phase==='http'||act.phase==='upload'));
+  var bytesLive52=agg.bytesSent==null?agg.bytesDone:agg.bytesSent;
+  var pct=f52Percent(bytesLive52,agg.bytesTotal);
   $('stOverall').textContent=pct.toFixed(1)+'%';
   setRing(pct);
   $('stDone').textContent=dn+'/'+tot;
   $('stFailed').textContent=String(Number(agg.failed)||0);
-  $('stBytes').textContent=fmtBytes(agg.bytesDone);
+  $('stBytes').textContent=fmtBytes(bytesLive52);
   $('stBytesSub').textContent='of '+fmtBytes(agg.bytesTotal);
-  var spd = Number(agg.speedBps)||0;
-  $('stSpeed').textContent=fmtSpeed(spd);
+  var spd = transfer52.speed;
+  $('stSpeed').textContent=transfer52.label||fmtSpeed(spd);
   var hs=(d.speedHistory&&d.speedHistory.length)?d.speedHistory.slice(-90):null;
   if(hs){speedHist=hs;}else{speedHist.push(spd);if(speedHist.length>90)speedHist.shift();}
   drawSpark(speedHist);
@@ -1053,20 +1063,16 @@ function render(d){
   var t=pData.telemetry||{};
   $('stScans').textContent=String(Number(t.scans)||0);
   $('stScansSub').textContent='last: '+(t.lastScan?String(t.lastScan).substring(11,19):'-');
-  if(spd > 0 && tot > dn){
-    var remBytes = (Number(agg.bytesTotal)||0) - (Number(agg.bytesDone)||0);
-    var etaSec = remBytes / spd;
-    $('stEta').textContent=fmtDurShort(etaSec);
-  } else {
-    $('stEta').textContent = dn===tot && tot>0 ? 'done' : '-';
-  }
-  var act=pData.active||{};
+  if(spd > 0 && transfer52.window>BigInt(0) && !transfer52.stalled){
+    var remBytes=f52Bytes(agg.bytesTotal)-f52Bytes(bytesLive52);
+    $('stEta').textContent=fmtDurShort(Number(remBytes>BigInt(0)?remBytes:BigInt(0))/spd);
+  } else { $('stEta').textContent=dn===tot&&tot>0?'done':'-'; }
   if(act && act.name){
     $('activeName').textContent=act.name;
-    $('activePhase').textContent=act.phase||'-';
-    var apct = Number(act.pct)||0;
+    $('activePhase').textContent=(act.phase||'-')+(transfer52.label?' · '+transfer52.label:'');
+    var apct=f52Percent(transfer52.sent,transfer52.size);
     $('activeBar').style.width=apct+'%';
-    $('activeBytes').textContent=fmtBytes(act.bytesDone)+' / '+fmtBytes(act.bytesTotal);
+    $('activeBytes').textContent=fmtBytes(transfer52.sent)+' / '+fmtBytes(transfer52.size);
     $('activePct').textContent=apct.toFixed(0)+'%';
   } else {
     $('activeName').textContent='idle - no active file';
@@ -1084,15 +1090,22 @@ function render(d){
     }
     rw.innerHTML=rhtml;
   } else { rw.innerHTML=''; }
-  var pubDot=$('pubDot'), pubTxt=$('pubTxt');
-  if(d.mirrorIndexUrl || d.rentryNewUrl){
-    pubDot.className='pdot ok'; pubTxt.textContent='Indexes published';
-  } else if(d.mirror) {
-    pubDot.className='pdot warn'; pubTxt.textContent='Waiting for first upload...';
-  } else {
-    pubDot.className='pdot'; pubTxt.textContent='Mirror disabled';
-  }
+  var pubDot=$('pubDot'),pubTxt=$('pubTxt');
   var files=pData.files||[];
+  var hasDone52=dn>0||files.some(function(f){return f.status==='done'});
+  if(act.name&&(act.phase==='http'||act.phase==='upload')){pubDot.className='pdot warn';pubTxt.textContent=transfer52.label||('Uploading '+act.name);}
+  else if(hasDone52){pubDot.className='pdot ok';pubTxt.textContent=Math.max(dn,files.filter(function(f){return f.status==='done'}).length)+' uploaded';}
+  else if(files.some(function(f){return f.status==='active'})){pubDot.className='pdot warn';pubTxt.textContent='Preparing encrypted upload';}
+  else if((Number(agg.failed)||0)>0||files.some(function(f){return f.status==='failed'})){pubDot.className='pdot warn';pubTxt.textContent='Upload failed - see labeled reason';}
+  else if(tot>0||files.length){pubDot.className='pdot warn';pubTxt.textContent='Queued: '+Math.max(tot-dn,files.length)+' files';}
+  else if(d.mirrorIndexUrl||d.rentryNewUrl){pubDot.className='pdot ok';pubTxt.textContent='Indexes published';}
+  else if(d.mirror){pubDot.className='pdot warn';pubTxt.textContent='Waiting for first upload...';}
+  else{pubDot.className='pdot';pubTxt.textContent='Downloads auto-upload ready';}
+  var mode52=String(pData.encryptMode||(pData.mirrorDiag||{}).encryptMode||d.encryptMode||'none');
+  var enc52=files.some(function(f){return f.encrypted==='True'||f.encrypted===true});
+  var title52=$('mirrorClaimTitle');if(title52)title52.textContent=mode52==='none'&&(pData.mirrorPlaintextElection===true||d.mirrorPlaintextElection===true)?'Mirror - plaintext runner upload (no AES-256)':enc52?'Mirror - AES-256 encrypted runner upload':mode52==='all'?'Mirror - encryption awaiting ciphertext bytes':'Mirror - plaintext runner upload (no AES-256)';
+  var honesty52=$('mirrorEncryptionHonesty');if(honesty52)honesty52.textContent='encryptMode='+mode52+' · encrypted uploads='+(enc52?'yes':'no');
+  var plain52=$('mirrorPlaintextBanner');if(plain52)plain52.hidden=!(pData.mirrorPlaintextElection===true||d.mirrorPlaintextElection===true);
   var rows=$('fileRows');
   if(files.length===0){
     rows.innerHTML='<tr><td colspan="7" style="color:var(--mut);text-align:center;padding:18px">no files processed yet</td></tr>';
@@ -1100,8 +1113,10 @@ function render(d){
     var html='';
     for(var i=0;i<Math.min(files.length,50);i++){
       var f=files[i];
-      var pf=Number(f.pct)||0;
-      if(f.status==='active'&&act.name&&act.name===f.name)pf=Number(act.pct)||pf;
+      var rowLive52=['active','uploading','stalled'].indexOf(f.status)>=0&&['http','upload'].indexOf(f.phase)>=0;
+      var row52=f52Transfer(rowLive52&&act.name===f.name?act:(f.progress||f),rowLive52);
+      var pf=f.bytesSent!=null?f52Percent(f.bytesSent,f.size):Number(f.pct)||0;
+      if(rowLive52&&act.name===f.name)pf=f52Percent(transfer52.sent,transfer52.size);
       var isExpired=f.status==='expired';
       var linkCell=isExpired?('<span class="stag expired">expired</span>'):f.link?('<a href="'+esc(f.link)+'" target="_blank">open</a>'):'-';
       // [F46 §1] NEVER truncated: the full phase/status/message is always in
@@ -1119,8 +1134,9 @@ function render(d){
         }
         errCell='<details class="errbox"><summary title="'+esc(errFull)+'">show full reason</summary><div class="errfull">'+esc(errFull)+'</div></details>';
       }
-      var statusClass = f.status || 'pending';
-      html+='<tr'+(isExpired?' class="expired-row"':'')+'><td>'+esc(f.name)+'</td><td>'+esc(f.phase)+'</td><td><span class="mini-bar"><i style="width:'+pf+'%"></i></span><span class="pctnum">'+pf.toFixed(0)+'%</span></td><td>'+fmtBytes(f.size)+'</td><td><span class="stag '+esc(statusClass)+'">'+esc(statusClass)+'</span></td><td>'+errCell+'</td><td class="link">'+linkCell+'</td></tr>';
+      var statusClass=row52.stalled?'stalled':(f.status||'pending');
+      var statusLabel=row52.label||statusClass;
+      html+='<tr'+(isExpired?' class="expired-row"':'')+'><td>'+esc(f.name)+'</td><td>'+esc(f.phase)+'<div class="note">encryptMode='+esc(f.encryptMode||mode52)+'</div></td><td><span class="mini-bar"><i style="width:'+pf+'%"></i></span><span class="pctnum">'+pf.toFixed(0)+'%</span></td><td>'+fmtBytes(f.size)+'</td><td><span class="stag '+esc(statusClass)+'">'+esc(statusLabel)+'</span></td><td>'+errCell+'</td><td class="link">'+linkCell+'</td></tr>';
     }
     rows.innerHTML=html;
   }
