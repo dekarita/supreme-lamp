@@ -31,6 +31,13 @@ function Check([string]$Name, [bool]$Cond, [string]$Detail) {
     }
 }
 
+trap {
+    $ann = ('::error title=F46 lab fault::line ' + $_.InvocationInfo.ScriptLineNumber + ': ' + $_.Exception.GetType().Name + ': ' + $_.Exception.Message) -replace '[\r\n]+', ' '
+    Write-Host $ann
+    Write-Host ('::error::[F46] lab terminated by an unhandled fault (see the F46 lab fault annotation)')
+    exit 1
+}
+
 $root = $env:GITHUB_WORKSPACE
 if (-not $root) { $root = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path }
 $modPath = Join-Path $root 'payloads\ghrdp-mirror.ps1'
@@ -384,6 +391,7 @@ Write-Host ('[F46] policy: ' + $policyTxt)
 # array and no buffering request stream exist in it (the .NET 2GB in-box
 # request buffer was the "Stream was too long" failure).
 # ---------------------------------------------------------------------------
+Write-Host '::notice::[F46 lab] enter F50 §1 (transport source checks)'
 Write-Host '[F50 §1] transport rewrite: streamed upload path (no whole-file buffering)'
 $moduleText = Get-Content -LiteralPath $modPath -Raw
 $fnStart = $moduleText.IndexOf('function Send-F46GofileUpload')
@@ -407,6 +415,7 @@ Check 'F50: F44 attempt budget stays 5' ([int]$script:F46MaxAttempts -eq 5) ('ma
 # bytes; a pass proves the request completed above the old 2GB ceiling with
 # bounded memory on the client side (StreamContent streams the FileStream).
 # ---------------------------------------------------------------------------
+Write-Host '::notice::[F46 lab] enter F50 §2 (sparse streaming matrix)'
 Write-Host '[F50 §2] sparse-file streaming matrix: 100MB / 1GB / 3GB / 6GB -> discarding loopback listener'
 $f50Listener = $null
 $f50Port = 0
@@ -490,6 +499,7 @@ if (-not $f50Listener) {
 # cost ZERO network tries. TLS reset stays covered by the mock scenario above
 # (a loopback runner cannot fabricate a live TLS reset).
 # ---------------------------------------------------------------------------
+Write-Host '::notice::[F46 lab] enter F50 §3 (real-transport retry paths)'
 Write-Host '[F50 §3] real-transport retry paths: 429 (Retry-After), 500, 502, refused-tcp, preflight network=0'
 # [F50 §3] each scenario gets its OWN listener + port so a timed-out job from a
 # previous scenario cannot desync the scripted responses; the 200 step answers
@@ -562,7 +572,7 @@ foreach ($rcase in @(
     $served = 0
     $raSeen = ''
     foreach ($step53 in $script50) {
-        $srv = Serve-Scripted -Listener $pair53.listener -Step $step53
+        try { $srv = Serve-Scripted -Listener $pair53.listener -Step $step53 } catch { $srv = ('THROW:' + $_.Exception.Message); Write-Host ('::error title=F46 serve fault::' + $rname + ': ' + $_.Exception.Message); break }
         if ($srv -is [string]) { $raSeen = [string]$srv } else { $raSeen = '' }
         $served = $served + 1
     }
@@ -608,6 +618,7 @@ if ($refusedPort -le 0) {
 }
 # preflight refusals keep ZERO network tries even on the real transport: the
 # spy transport would fail the cell the moment a single byte left the machine.
+Write-Host '::notice::[F46 lab] enter F50 §4 (preflight network=0)'
 Write-Host '[F50 §4] preflight refusal cells (size/type) with network=0'
 $script:spyCalls = 0
 $spy = { param($HostCfg, $Path, $Name, $Size) $script:spyCalls = $script:spyCalls + 1; return @{ ok = $false; phase = 'http'; httpStatus = 599; hostMessage = 'SPY MUST NEVER RUN FOR A PREFLIGHT REFUSAL' } }
@@ -629,6 +640,7 @@ Check 'F50 preflight type refusal: phase=type with ZERO network tries' (($preTyp
 # Temp / RDP-Storage stay gated; the in-memory host override never touches
 # config.json and the F49 modal contract for other roots is untouched.
 # ---------------------------------------------------------------------------
+Write-Host '::notice::[F46 lab] enter F51 §1 (Downloads classification)'
 Write-Host '[F51 §1] real watcher helpers: Downloads auto-classification (extracted, then executed)'
 $watcherPath = Join-Path $root 'payloads\ghrdp-watcher.ps1'
 if (-not (Test-Path -LiteralPath $watcherPath)) { $watcherPath = Join-Path $root 'payloads/ghrdp-watcher.ps1' }
@@ -667,6 +679,7 @@ Check 'F51: the override host is in-memory only (no flag file, no config write i
 $autoHost51 = New-F51AutoHost
 Check 'F51: the override host is the gofile GUEST contract, enabled for this run' (($autoHost51.id -eq 'gofile') -and ([bool]$autoHost51.enabled) -and ([string]$autoHost51.authMode -eq 'guest')) ('id=' + $autoHost51.id + ' enabled=' + $autoHost51.enabled + ' authMode=' + $autoHost51.authMode)
 Check 'F51: the override host carries no credential field (F48)' (-not ($autoHost51.Contains('tokenConfigKey')) -and -not ($autoHost51.Contains('gofileToken'))) 'a credential field appeared'
+Write-Host '::notice::[F46 lab] enter F51 §2 (auto-upload trigger)'
 Write-Host '[F51 §2] trigger simulation: a new download into Downloads auto-queues (mirror stays false, no opt-in state)'
 $cfgF51 = '{"mirror":false}' | ConvertFrom-Json
 Check 'F51: precondition - NO opt-in exists (mirror=false, no host enabled)' ((Select-F46UploadHost -Hosts @(Get-F46Hosts -Cfg $cfgF51)) -eq $null) 'a host was enabled without opt-in'
@@ -686,6 +699,7 @@ $gated51 = Get-Item -LiteralPath (Join-Path $f51tmp 'profile\Desktop\note.txt')
 $sim52 = Split-F51AutoQueue -Queue (New-Object System.Collections.ArrayList @(, $gated51)) -AutoRoots $f51autos
 Check 'F51: a Desktop file does NOT auto-queue (F49 opt-in modal still governs it)' ((@($sim52.auto).Count -eq 0) -and (@($sim52.gated).Count -eq 1)) ('auto=' + @($sim52.auto).Count + ' gated=' + @($sim52.gated).Count)
 try { Remove-Item -LiteralPath $f51tmp -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+Write-Host '::notice::[F46 lab] enter F51 §3 (wiring needles)'
 Write-Host '[F51 §3] watcher wiring: the scan loop consumes the split, the override and the ledger lines'
 $watcherText = Get-Content -LiteralPath $watcherPath -Raw
 Check 'F51: the upload loop gates on the partitioned upload queue' ($watcherText -match '\$uploadQueue = @\(\$queue\)') 'no $uploadQueue wiring'
