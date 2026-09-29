@@ -120,7 +120,7 @@
     "encryptMode": "encryptMode",
     "encryptedRows": "encrypted uploads",
     "encryptAlg": "algorithm",
-    "optInBanner": "Mirror is OFF for this run (default). Queued files are tracked but NOT uploaded. Choose 'Upload everything now' to review and enable a one-click token-less upload for this run only.",
+    "optInBanner": "Mirror is OFF for this run (default). Queued files are tracked but NOT uploaded. Choose 'Upload everything now' to review and enable a one-click token-less upload for this run only. Exception (F51): files in the Downloads root auto-upload always-on - no opt-in needed there; other roots keep the opt-in.",
     "optInTitle": "Enable mirror for this run?",
     "optInBody": "This enables the token-less guest upload (no account, no credential) for THIS RUN ONLY and uploads everything now. The opt-in is recorded in the mirror ledger ([mirror] RUNTIME OPT-IN). The dispatch default stays off.",
     "enableUpload": "Enable & Upload",

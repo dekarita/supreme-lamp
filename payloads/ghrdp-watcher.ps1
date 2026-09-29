@@ -296,6 +296,8 @@ try {
     $mirrorDiagLimit = 200
     # [F49] the last runtime opt-in marker already ledgered (marker `at` stamp).
     $script:F49LastOptInAt = ''
+    # [F51] one AUTO-UPLOAD ledger line per watcher run (first Downloads attempt).
+    $script:F51AutoLedgered = $false
     $mirrorPolicyMax = 5
     if ($mirrorModuleOk) {
         try { $mirrorPolicyMax = [int]$script:F46MaxAttempts } catch { $mirrorPolicyMax = 5 }
@@ -443,17 +445,34 @@ try {
       }
   }
   $queue = [System.Collections.ArrayList]@($queue | Sort-Object LastWriteTime)
+  # [F51] Downloads-root auto-upload classification: files under a WATCHED
+  # root whose leaf is 'downloads' upload with NO opt-in (operator override
+  # of the default-OFF rule, Downloads root ONLY). Desktop, Documents, Temp,
+  # RDP-Storage and torrent save paths keep the full opt-in contract.
+  $autoFiles = @{}
+  if ($mirrorModuleOk) {
+      foreach ($fAuto in @($queue)) {
+          $isAuto = $false
+          try { $isAuto = (Test-F51AutoUploadPath -Path ([string]$fAuto.FullName) -Roots $roots) } catch { $isAuto = $false }
+          if ($isAuto) { $autoFiles[(([string]$fAuto.FullName)).ToLower()] = $true }
+      }
+  }
+  $autoCount = @($autoFiles.Keys).Count
+  $uploadQueue = $queue
+  if (-not [bool]$cfg.mirror) {
+      $uploadQueue = [System.Collections.ArrayList]@(@($queue) | Where-Object { $autoFiles.ContainsKey((([string]$_.FullName)).ToLower()) })
+  }
   $telemetry.queued = [int]$queue.Count
-  if (@($queue).Count -gt 0) { Add-MirrorLog ('[watcher] queue={0} mirror={1} (click "Upload everything now" to bypass stability gate)' -f @($queue).Count, [bool]$cfg.mirror) }
+  if (@($queue).Count -gt 0) { Add-MirrorLog ('[watcher] queue={0} mirror={1} auto-downloads={2} (click "Upload everything now" to bypass stability gate)' -f @($queue).Count, [bool]$cfg.mirror, $autoCount) }
   $prog.agg.active = [int]$queue.Count
   if ((@($queue).Count -gt 0) -or ($telemetry.seen -gt 0) -or (($beat2 = ($telemetry.scans % 6)) -eq 0)) {
-  Add-MirrorLog ('[watcher] scan #{0}: seen={1} queued={2} mirror={3} roots={4}' -f $telemetry.scans, $telemetry.seen, @($queue).Count, [bool]$cfg.mirror, @($roots).Count)
+  Add-MirrorLog ('[watcher] scan #{0}: seen={1} queued={2} mirror={3} roots={4} auto={5}' -f $telemetry.scans, $telemetry.seen, @($queue).Count, [bool]$cfg.mirror, @($roots).Count, $autoCount)
   }
   if ((-not [bool]$cfg.mirror) -and (@($queue).Count -gt 0)) {
-  Add-MirrorLog ('[watcher] MIRROR IS OFF - {0} file(s) tracked but NOT uploaded. Click "Upload everything now" or re-run with mirror=true.' -f @($queue).Count)
+  Add-MirrorLog ('[watcher] MIRROR IS OFF - {0} file(s) tracked but NOT uploaded; {1} Downloads file(s) auto-upload per F51 (Downloads root only). Click "Upload everything now" or re-run with mirror=true for the other roots.' -f ((@($queue).Count) - $autoCount), $autoCount)
   }
   Flush-MirrorProgress -Force
-  if ([bool]$cfg.mirror -and (@($queue).Count -gt 0)) {
+  if ((([bool]$cfg.mirror) -or (@($uploadQueue).Count -gt 0)) -and (@($queue).Count -gt 0)) {
       $encryptMode = [string]$cfg.encryptMode
       if (-not $encryptMode) { $encryptMode = 'none' }
       $mediaExt = @('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mp3', '.flac', '.wav', '.aac', '.ogg', '.wma', '.m4a', '.opus')
@@ -462,9 +481,13 @@ try {
       # that produced five instant failures in the same second is gone.
       $mirrorHosts = @()
       $mirrorHost = $null
+      $autoHost = $null
       if ($mirrorModuleOk) {
           try { $mirrorHosts = @(Get-F46Hosts -Cfg $cfg) } catch { $mirrorHosts = @() }
           try { $mirrorHost = Select-F46UploadHost -Hosts $mirrorHosts } catch { $mirrorHost = $null }
+          # [F51] the always-on host copy for Downloads-root attempts (config
+          # and the F49 status truth are never touched).
+          try { $autoHost = Select-F51AutoUploadHost -Hosts $mirrorHosts } catch { $autoHost = $null }
           try {
               $prog.mirrorHosts = @($mirrorHosts | ForEach-Object { [ordered]@{ id = [string]$_.id; enabled = [bool]$_.enabled; apiRoot = [string]$_.apiRoot; maxFileBytes = [long]$_.maxFileBytes; blockedExtensions = @($_.blockedExtensions) } })
           } catch { }
@@ -479,9 +502,21 @@ try {
       # [F48 §1.3] authMode is set by the attempt/probe RESULT only:
       # 'guest' until the host answers 401/403 ('requires-account').
       $mirrorAuthMode = 'guest'
-      foreach ($f in @($queue)) {
+      # [F51] $uploadQueue: every queued file when the mirror master switch is
+      # ON, or ONLY the Downloads-root auto files when it is OFF - the other
+      # roots stay tracked-not-uploaded until the operator opts in.
+      foreach ($f in @($uploadQueue)) {
           $key = ([string]$f.FullName).ToLower()
           if ($mirrorTerminal.ContainsKey($key)) { continue }
+          $fAuto = $autoFiles.ContainsKey($key)
+          $fileHost = $mirrorHost
+          if ((-not $fileHost) -and $fAuto -and $autoHost) { $fileHost = $autoHost }
+          if ($fAuto -and $fileHost -and (-not $script:F51AutoLedgered)) {
+              $script:F51AutoLedgered = $true
+              $f51Line = ''
+              try { $f51Line = Format-F51AutoLedger -HostId ([string]$fileHost.id) } catch { $f51Line = '' }
+              if ($f51Line) { Add-MirrorLog $f51Line }
+          }
           # [F46 §2] backoff gate: no network attempt before the policy due time.
           if ($mirrorNextAt.ContainsKey($key)) {
               $dueAt = [datetime]$mirrorNextAt[$key]
@@ -500,7 +535,7 @@ try {
                       status = 'pending'
                       link = ''
                       encrypted = 'False'
-                      host = $(if ($mirrorHost) { [string]$mirrorHost.id } else { '-' })
+                      host = $(if ($fileHost) { [string]$fileHost.id } else { '-' })
                       error = $(if ($lastRec) { ((Format-F46Reason -Phase ([string]$lastRec.phase) -Status ([string]$lastRec.status) -Message ([string]$lastRec.msg)) + ' | ' + $waitMsg) } else { $waitMsg })
                       attempts = @($prev)
                   }
@@ -536,7 +571,7 @@ try {
               status = 'active'
               link = ''
               encrypted = 'False'
-              host = $(if ($mirrorHost) { [string]$mirrorHost.id } else { '-' })
+              host = $(if ($fileHost) { [string]$fileHost.id } else { '-' })
               attempts = @($prevAttempts)
           }
           $newFiles = @($entry) + @($prog.files)
@@ -627,7 +662,7 @@ try {
           # the attempt below is always the unauthenticated guest multipart.
           $res = $null
           try {
-              $res = Invoke-F46MirrorAttempt -HostCfg $mirrorHost -Path $uploadPath -Name $dispName -Size $uploadLen -AttemptNo $attemptNo -EncryptRequested $shouldEncrypt -Encrypted $encApplied -ContentType $uploadMime
+              $res = Invoke-F46MirrorAttempt -HostCfg $fileHost -Path $uploadPath -Name $dispName -Size $uploadLen -AttemptNo $attemptNo -EncryptRequested $shouldEncrypt -Encrypted $encApplied -ContentType $uploadMime
           } catch {
               $res = @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('mirror attempt threw: ' + $_.Exception.Message); retryAfterMs = $null; record = $null; fileId = ''; code = ''; downloadPage = ''; directUrl = '' }
           }
@@ -719,7 +754,7 @@ try {
           # the same opt-in record the ledger line was stamped from.
           $f49OptInDiag = $null
           try { if ($cfg.PSObject.Properties['mirrorRuntimeOptIn'] -and $cfg.mirrorRuntimeOptIn) { $f49OptInDiag = $cfg.mirrorRuntimeOptIn } } catch { }
-          $prog.mirrorDiag = [ordered]@{ attempts = @($diagAttempts); terminalFiles = @($mirrorTerminal.Keys); hosts = @($prog.mirrorHosts); encryptMode = $encryptMode; encAlg = $mirrorEncAlg; authMode = $mirrorAuthMode; keyBytes = $(if ($mirrorKeyText) { 32 } else { 0 }); optIn = $f49OptInDiag }
+          $prog.mirrorDiag = [ordered]@{ attempts = @($diagAttempts); terminalFiles = @($mirrorTerminal.Keys); hosts = @($prog.mirrorHosts); encryptMode = $encryptMode; encAlg = $mirrorEncAlg; authMode = $mirrorAuthMode; keyBytes = $(if ($mirrorKeyText) { 32 } else { 0 }); optIn = $f49OptInDiag; autoUpload = $(if (@($autoFiles.Keys).Count -gt 0) { 'downloads' } else { 'off' }) }
       } catch { }
   } else {
       if (-not [bool]$cfg.mirror) {

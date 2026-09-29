@@ -2351,6 +2351,69 @@ jobs:
           node --test tests/f49-mirror-runtime.test.js
           echo 'F49 gates PASS'
 
+      # [F50] STREAMING TRANSPORT: the upload path is HttpClient +
+      # MultipartFormDataContent + StreamContent(FileStream) - no whole-file
+      # byte array, no MemoryStream, so the .NET 2 GB "Stream was too long"
+      # ceiling is unreachable; the policy/reason/token-less contracts are
+      # unchanged. [F51] DOWNLOADS AUTO-UPLOAD: locked Rule 5 is overridden
+      # for the Downloads root ONLY (operator directive 2026-09-29); every
+      # other root keeps the default-OFF + F49 opt-in gate, and the on-disk
+      # config / F49 status truth is never mutated by the auto path.
+      - name: F50+F51 streaming transport + Downloads auto-upload gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f tests/f50-mirror-streaming.ps1 || { echo 'F50: the streaming lab is missing' >&2; exit 1; }
+          test -f tests/f50-f51-mirror-stream.test.js || { echo 'F50: the node suite is missing' >&2; exit 1; }
+          # the streaming rewrite: the exact stack, and nothing that buffers
+          grep -qF 'System.Net.Http.HttpClient' payloads/ghrdp-mirror.ps1
+          grep -qF 'System.Net.Http.MultipartFormDataContent' payloads/ghrdp-mirror.ps1
+          grep -qF 'System.Net.Http.StreamContent' payloads/ghrdp-mirror.ps1
+          grep -qF '[System.IO.File]::Open($Path, [System.IO.FileMode]::Open' payloads/ghrdp-mirror.ps1
+          if awk '/^function Send-F46GofileUpload \/{f=1} f && /^\}/{print; exit} f && !/^\s*#/{print}' payloads/ghrdp-mirror.ps1 | grep -nE 'ReadAllBytes|MemoryStream|GetRequestStream'; then
+            echo 'F50: the upload path buffers whole files again (ReadAllBytes / MemoryStream / legacy request stream)' >&2
+            exit 1
+          fi
+          # F50 cells: the four sizes, the memory bound, the retry + preflight
+          # cells over the REAL transport, and the lab executes in the lane
+          for n in 104857600 1073741824 3221225472 6442450944; do
+            grep -qF "$n" tests/f50-mirror-streaming.ps1 || { echo "F50: the $n-byte cell is missing" >&2; exit 1; }
+          done
+          grep -qF 'PeakWorkingSet64' tests/f50-mirror-streaming.ps1
+          grep -qF 'fsutil.exe sparse setflag' tests/f50-mirror-streaming.ps1
+          grep -qF 'transportCalls -eq 0' tests/f50-mirror-streaming.ps1
+          grep -qF "'abort', 'ok'" tests/f50-mirror-streaming.ps1
+          grep -qF 'F50/F51 mirror streaming + Downloads auto-upload lab' .github/workflows/launch-gates.yml
+          grep -qF "'tests/f50-mirror-streaming.ps1'" .github/workflows/launch-gates.yml
+          # F51 helpers + ledger + watcher wiring + the non-Downloads gate
+          grep -qF 'function Test-F51AutoUploadPath' payloads/ghrdp-mirror.ps1
+          grep -qF 'function Select-F51AutoUploadHost' payloads/ghrdp-mirror.ps1
+          grep -qF 'function Format-F51AutoLedger' payloads/ghrdp-mirror.ps1
+          grep -qF '[mirror] AUTO-UPLOAD: root=Downloads scope=this-run source=auto host=' payloads/ghrdp-mirror.ps1
+          grep -qF 'Test-F51AutoUploadPath' payloads/ghrdp-watcher.ps1
+          grep -qF 'Select-F51AutoUploadHost' payloads/ghrdp-watcher.ps1
+          grep -qF 'Format-F51AutoLedger' payloads/ghrdp-watcher.ps1
+          grep -qF 'autoUpload = $(if (@($autoFiles.Keys).Count -gt 0)' payloads/ghrdp-watcher.ps1
+          # the default-off + opt-in contract stays intact for every other root
+          grep -qF 'enabled = $false' payloads/ghrdp-mirror.ps1
+          awk '/mirror_enable:/{f=1} f&&/default:/{print;exit}' .github/workflows/main.yml | grep -qF 'default: false'
+          if grep -nE 'auto_?upload:|downloads_enable:' .github/workflows/main.yml; then
+            echo 'F51: auto-upload must not need a dispatch input' >&2
+            exit 1
+          fi
+          # docs: the canonical rule + the contract section
+          test -f PROJECT-CONTEXT-v2-CANONICAL.md || { echo 'F51: PROJECT-CONTEXT-v2-CANONICAL.md is missing' >&2; exit 1; }
+          grep -qF 'Always-ON (Auto-upload)' PROJECT-CONTEXT-v2-CANONICAL.md
+          grep -qF '## 11. F51 Downloads-root auto-upload' docs/MIRROR-HOSTS.md
+          grep -qF '## 12. F50 streaming transport' docs/MIRROR-HOSTS.md
+          # no token / auth-header drift (F48 holds over the new code)
+          if grep -vE '^\s*#' payloads/ghrdp-mirror.ps1 | grep -nE 'Authorization|X-Gofile-Token|Cookie'; then
+            echo 'F48: an auth header appeared in the mirror module' >&2
+            exit 1
+          fi
+          node --test tests/f50-f51-mirror-stream.test.js
+          echo 'F50+F51 gates PASS'
+
       - name: F40 information-architecture regression lock
         shell: bash
         run: |
@@ -2606,7 +2669,7 @@ jobs:
           # syntax error in them used to surface only as a red Windows lab cell
           # (an expensive loop), and the server DOT-SOURCES the module at start.
           $bad = @()
-          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/ghrdp-fx.ps1', 'payloads/ghrdp-mirror.ps1', 'payloads/ghrdp-watcher.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1', 'tests/f45-fx-server.ps1', 'tests/f46-mirror-policy.ps1', 'tests/f49-mirror-runtime.ps1')) {
+          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/ghrdp-fx.ps1', 'payloads/ghrdp-mirror.ps1', 'payloads/ghrdp-watcher.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1', 'tests/f45-fx-server.ps1', 'tests/f46-mirror-policy.ps1', 'tests/f49-mirror-runtime.ps1', 'tests/f50-mirror-streaming.ps1')) {
               $errors = $null
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
               if ($errors) {
@@ -2667,6 +2730,22 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & (Join-Path $env:GITHUB_WORKSPACE 'tests\f49-mirror-runtime.ps1')
           if ($LASTEXITCODE -ne 0) { throw ('F49: the runtime opt-in lab failed with exit ' + $LASTEXITCODE) }
+      # [F50/F51] Streaming upload + Downloads auto-upload lab. F50: 100 MB /
+      # 1 GB / 3 GB / 6 GB fsutil sparse files streamed through the SHIPPED
+      # HttpClient+MultipartFormDataContent+StreamContent uploader to a
+      # discarding loopback listener (byte-exact length, no auth headers,
+      # sub-2 GiB client memory), the retry matrix (429/500/502/connection
+      # reset/403/413) and the zero-network preflight refusals over the REAL
+      # transport. F51: the classifier truth table + a REAL watcher run with
+      # mirror=false - a file landing in Downloads uploads automatically
+      # while the same marker on Desktop stays tracked-not-uploaded.
+      # Loopback only; no live host; no content leaves the runner.
+      - name: F50/F51 mirror streaming + Downloads auto-upload lab
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f50-mirror-streaming.ps1')
+          if ($LASTEXITCODE -ne 0) { throw ('F50/F51: the streaming + auto-upload lab failed with exit ' + $LASTEXITCODE) }
       # [F24] The F24 blocks live INSIDE main.yml (inline pwsh) and are extracted
       # verbatim by the lab cell U + the F24 gate. Parse them here with the
       # PowerShell language parser so a syntax error is caught in ~1 min instead

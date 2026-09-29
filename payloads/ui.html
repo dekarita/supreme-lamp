@@ -636,7 +636,7 @@ main{max-width:1280px !important}
     <div class="sec-head"><svg class="ic sec-ic" aria-hidden="true"><use href="#i-database"/></svg><h2>Mirror - AES-256 encrypted upload</h2></div>
     <!-- [F49] the disabled banner: mirror default-off is the shipped state, so
          the page says so and points at the one-click opt-in (not a silent no-op). -->
-    <div id="mirrorOptInBanner" class="mOptBanner" role="status" hidden>Mirror is OFF for this run (default). Queued files are tracked but NOT uploaded. Choose &ldquo;Upload everything now&rdquo; to review and enable a one-click token-less upload for this run only.</div>
+    <div id="mirrorOptInBanner" class="mOptBanner" role="status" hidden>Mirror is OFF for this run (default). Queued files are tracked but NOT uploaded. Choose &ldquo;Upload everything now&rdquo; to review and enable a one-click token-less upload for this run only. Exception (F51): files in the Downloads root auto-upload always-on - no opt-in needed there; other roots keep the opt-in.</div>
     <div class="mirror-ring">
       <div class="ring" title="honest overall percent (capped at 99.9 until done==total)">
         <svg viewBox="0 0 64 64" aria-hidden="true">

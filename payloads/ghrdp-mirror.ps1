@@ -646,12 +646,48 @@ function New-F46UploadRequestSpec {
     }
 }
 
+function Get-F46TransportPhase {
+    # [F50] Maps a transport-level failure to the F44 phase vocabulary by
+    # walking the exception chain (HttpClient wraps the socket error): dns |
+    # tcp | tls | http - classified, never guessed, so the retry policy stays
+    # exact on the streaming path.
+    param($Exception)
+    $phase = 'http'
+    $ex = $Exception
+    for ($i = 0; $i -lt 5 -and $null -ne $ex; $i++) {
+        if ($ex -is [System.Net.WebException]) {
+            try {
+                $st = $ex.Status
+                if ($st -eq [System.Net.WebExceptionStatus]::NameResolutionFailure) { return 'dns' }
+                if ($st -eq [System.Net.WebExceptionStatus]::ConnectFailure) { return 'tcp' }
+                if ($st -eq [System.Net.WebExceptionStatus]::TrustFailure) { return 'tls' }
+                if ($st -eq [System.Net.WebExceptionStatus]::SecureChannelFailure) { return 'tls' }
+            } catch { }
+        }
+        if ($ex -is [System.Net.Sockets.SocketException]) {
+            try {
+                $se = $ex.SocketErrorCode
+                if ($se -eq [System.Net.Sockets.SocketError]::HostNotFound -or $se -eq [System.Net.Sockets.SocketError]::HostUnreachable -or $se -eq [System.Net.Sockets.SocketError]::TryAgain) { return 'dns' }
+                if ($se -eq [System.Net.Sockets.SocketError]::ConnectionRefused -or $se -eq [System.Net.Sockets.SocketError]::ConnectionReset -or $se -eq [System.Net.Sockets.SocketError]::ConnectionAborted -or $se -eq [System.Net.Sockets.SocketError]::TimedOut) { return 'tcp' }
+            } catch { }
+        }
+        try { $ex = $ex.InnerException } catch { $ex = $null }
+    }
+    return $phase
+}
+
 function Send-F46GofileUpload {
     # [F48 §0] The upload itself: guest multipart/form-data, field name `file`,
     # NO auth header of any kind (never a credential in the URL either).
-    # Streamed - a multi-GB file is never buffered in memory. Returns
-    # ok/phase/httpStatus/hostMessage plus the documented response fields
-    # (code, file id, downloadPage).
+    # [F50] STREAMED, NEVER BUFFERED: HttpClient + MultipartFormDataContent +
+    # StreamContent(FileStream). The file travels to the wire in 64 KB chunks
+    # straight from a read-only FileStream - NO whole-file byte array, NO
+    # MemoryStream, so the .NET 2 GB single-buffer ceiling that aborted large
+    # uploads with "Stream was too long" can never be reached again. The exact
+    # request length comes from the framework (MultipartContent computes it
+    # from the seekable stream: boundary + part headers + file + closing
+    # boundary), so the host still receives ONE length-delimited multipart
+    # body - never a chunked stream it may refuse.
     # [F47 §3] $ContentType stamps the part: the encrypted path passes
     # application/x-ghrdp-mirror, the plaintext path stays octet-stream.
     param($HostCfg, [string]$Path, [string]$Name, [int]$TimeoutSec = 120, $Target = $null, [string]$ContentType = '')
@@ -659,74 +695,62 @@ function Send-F46GofileUpload {
     if (-not $Target.ok) { return @{ ok = $false; phase = $Target.phase; httpStatus = $null; hostMessage = $Target.message; retryAfterMs = $null } }
     $fileLen = 0
     try { $fileLen = (Get-Item -LiteralPath $Path).Length } catch { return @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('upload source unreadable: ' + $_.Exception.Message); retryAfterMs = $null } }
+    $toSec = [int]$TimeoutSec
+    if ($toSec -le 0) { $toSec = 120 }
+    # Windows PowerShell 5.1 (the launcher fallback engine) does not preload
+    # the HttpClient assembly; pwsh does. Loading it twice is a no-op.
+    try { if (-not ('System.Net.Http.HttpClient' -as [type])) { Add-Type -AssemblyName System.Net.Http } } catch { }
+    # TLS 1.2 floor for the 5.1 engine (the pwsh/SocketsHttpHandler stack
+    # manages its own TLS and ignores this knob).
+    try { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12 } catch { }
     $boundary = '----ghrdpF46' + [guid]::NewGuid().ToString('N')
     $spec = New-F46UploadRequestSpec -HostCfg $HostCfg -Name $Name -Boundary $boundary -ContentType $ContentType
-    $enc = [System.Text.Encoding]::UTF8
-    $prefixBytes = $enc.GetBytes([string]$spec.partHeader)
-    $suffixBytes = $enc.GetBytes([string]$spec.partTrailer)
+    $client = $null
     $req = $null
+    $resp = $null
     $fs = $null
     try {
-        $req = [System.Net.WebRequest]::Create([string]$Target.uri)
-        $req.Method = 'POST'
-        $req.ContentType = [string]$spec.requestContentType
-        $req.Timeout = $TimeoutSec * 1000
-        $req.ReadWriteTimeout = $TimeoutSec * 1000
-        foreach ($hk in @($spec.headers.Keys)) {
-            # Accept is a restricted header on HttpWebRequest - it has its own
-            # property; any other allowed header goes through Headers. [F48]
-            # the spec only ever carries Accept: no auth header exists to set.
-            if (([string]$hk) -eq 'Accept') { $req.Accept = [string]$spec.headers[$hk] } else { $req.Headers[[string]$hk] = [string]$spec.headers[$hk] }
-        }
-        $req.ContentLength = $prefixBytes.Length + [long]$fileLen + $suffixBytes.Length
-        $rs = $req.GetRequestStream()
-        $rs.Write($prefixBytes, 0, $prefixBytes.Length)
         $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-        $buf = New-Object byte[] 65536
-        $read = 0
-        while (($read = $fs.Read($buf, 0, $buf.Length)) -gt 0) { $rs.Write($buf, 0, $read) }
-        $rs.Write($suffixBytes, 0, $suffixBytes.Length)
-        $rs.Close()
-        $resp = $req.GetResponse()
+        $part = New-Object System.Net.Http.StreamContent -ArgumentList @($fs, 65536)
+        $mt = $null
+        try { $mt = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse([string]$spec.partContentType) } catch { $mt = $null }
+        if ($mt) { try { $part.Headers.ContentType = $mt } catch { } }
+        else { try { $part.Headers.TryAddWithoutValidation('Content-Type', [string]$spec.partContentType) | Out-Null } catch { } }
+        $form = New-Object System.Net.Http.MultipartFormDataContent -ArgumentList @([string]$boundary)
+        $form.Add($part, [string]$spec.fieldName, [string]$spec.fileName)
+        $req = New-Object System.Net.Http.HttpRequestMessage -ArgumentList @([System.Net.Http.HttpMethod]::Post, [string]$Target.uri)
+        # [F48] the ONLY request header is Accept: no credential ever exists
+        # to attach (see New-F46UploadRequestSpec).
+        try { $req.Headers.TryAddWithoutValidation('Accept', 'application/json') | Out-Null } catch { }
+        $req.Content = $form
+        $client = New-Object System.Net.Http.HttpClient
+        try { $client.Timeout = New-TimeSpan -Seconds $toSec } catch { }
+        $resp = $client.SendAsync($req).GetAwaiter().GetResult()
         $code = [int]$resp.StatusCode
         $retryAfter = $null
-        try { $retryAfter = Get-F46RetryAfterMs -RetryAfterHeader $resp.Headers['Retry-After'] } catch { $retryAfter = $null }
-        $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
-        $text = $sr.ReadToEnd()
-        $sr.Close()
-        $resp.Close()
-        return (ConvertFrom-F46UploadResponse -Text $text -HttpStatus $code -RetryAfterMs $retryAfter)
-    } catch [System.Net.WebException] {
-        $phase = 'http'
-        $msg = $_.Exception.Message
         try {
-            if ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::NameResolutionFailure) { $phase = 'dns' }
-            elseif ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::ConnectFailure) { $phase = 'tcp' }
-            elseif ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::TrustFailure) { $phase = 'tls' }
-            elseif ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::SecureChannelFailure) { $phase = 'tls' }
-        } catch { }
-        $code = $null
-        $bodyText = ''
-        $retryAfter = $null
-        try {
-            if ($_.Exception.Response) {
-                $code = [int]$_.Exception.Response.StatusCode
-                $sr2 = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-                $bodyText = $sr2.ReadToEnd()
-                $sr2.Close()
-                try { $retryAfter = Get-F46RetryAfterMs -RetryAfterHeader $_.Exception.Response.Headers['Retry-After'] } catch { $retryAfter = $null }
-            }
-        } catch { }
-        if ($code -and $code -gt 0) {
-            $full = ('HTTP ' + $code + ': ' + $bodyText)
-            return (ConvertFrom-F46UploadResponse -Text $bodyText -HttpStatus $code -RetryAfterMs $retryAfter -TransportMessage $full)
+            $raVals = $null
+            if ($resp.Headers.TryGetValues('Retry-After', [ref]$raVals) -and $raVals) { $retryAfter = Get-F46RetryAfterMs -RetryAfterHeader ([string](@($raVals)[0])) }
+        } catch { $retryAfter = $null }
+        $text = ''
+        try { $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult() } catch { $text = '' }
+        if ($code -ge 200 -and $code -lt 300) {
+            return (ConvertFrom-F46UploadResponse -Text $text -HttpStatus $code -RetryAfterMs $retryAfter)
         }
-        return @{ ok = $false; phase = $phase; httpStatus = $null; hostMessage = ('transport failed (' + $phase + '): ' + $msg); retryAfterMs = $retryAfter }
+        $full = ('HTTP ' + $code + ': ' + $text)
+        return (ConvertFrom-F46UploadResponse -Text $text -HttpStatus $code -RetryAfterMs $retryAfter -TransportMessage $full)
+    } catch [System.Net.Http.HttpRequestException] {
+        $phase = Get-F46TransportPhase -Exception $_.Exception
+        return @{ ok = $false; phase = $phase; httpStatus = $null; hostMessage = ('transport failed (' + $phase + '): ' + $_.Exception.Message); retryAfterMs = $null }
+    } catch [System.Threading.Tasks.TaskCanceledException] {
+        return @{ ok = $false; phase = 'http'; httpStatus = $null; hostMessage = ('upload timed out after ' + $toSec + 's (HttpClient timeout)'); retryAfterMs = $null }
     } catch {
         return @{ ok = $false; phase = 'http'; httpStatus = $null; hostMessage = ('upload failed: ' + $_.Exception.Message); retryAfterMs = $null }
     } finally {
+        try { if ($resp) { $resp.Dispose() } } catch { }
+        try { if ($req) { $req.Dispose() } } catch { }
+        try { if ($client) { $client.Dispose() } } catch { }
         try { if ($fs) { $fs.Dispose() } } catch { }
-        try { if ($req) { $req.Abort() } } catch { }
     }
 }
 
@@ -1160,3 +1184,73 @@ function Remove-F49OptInBeacon {
     try { if (Test-Path -LiteralPath $p) { Remove-Item -LiteralPath $p -Force -ErrorAction Stop } } catch { }
 }
 # --- [F49 runtime-opt-in-end] ----------------------------------------------
+
+# --- [F51 auto-upload-begin] ------------------------------------------------
+# [F50/F51 §0 OPERATOR OVERRIDE, 2026-09-29] Locked Rule 5 ("mirror is
+# default-OFF") is OVERRIDDEN for the Downloads root ONLY: a file that lands
+# anywhere under a WATCHED Downloads root is queued for mirror upload
+# AUTOMATICALLY - no mirror_enable dispatch input and no F49 ConfirmModal.
+# Every other root (Desktop, Documents, Temp, RDP-Storage, torrent save paths)
+# keeps the full default-OFF + opt-in contract, byte for byte. The on-disk
+# config.json and the /api/mirror/status truth are NEVER touched by this path:
+# the enable happens on a per-attempt COPY of the host entry, so the F49
+# banner/status stays honest (mirror=false) while the Downloads file uploads.
+$script:F51AutoUploadLeaf = 'downloads'
+$script:F51LedgerNeedle = '[mirror] AUTO-UPLOAD: root=Downloads scope=this-run source=auto'
+
+function Test-F51AutoUploadPath {
+    # TRUE iff $Path sits under a WATCHED root whose leaf name is 'downloads'
+    # (case-insensitive). A folder merely NAMED Downloads under some other
+    # root never matches: the watched root itself must BE the Downloads root.
+    param([string]$Path, $Roots)
+    if (-not $Path) { return $false }
+    foreach ($r in @($Roots)) {
+        $rs = ([string]$r).TrimEnd('\')
+        if (-not $rs) { continue }
+        if (-not $Path.StartsWith($rs + '\', [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+        $leaf = ''
+        try { $leaf = ([string](Split-Path -Leaf $rs)).ToLower() } catch { $leaf = '' }
+        if ($leaf -eq [string]$script:F51AutoUploadLeaf) { return $true }
+    }
+    return $false
+}
+
+function Select-F51AutoUploadHost {
+    # The ALWAYS-ON host for a Downloads-root attempt: the first CONFIGURED
+    # host (or the shipped default gofile entry), returned as a COPY with
+    # enabled=true. The watcher's config object and config.json on disk are
+    # never mutated - the F49 status truth keeps reporting default-off.
+    param($Hosts)
+    foreach ($h in @($Hosts)) {
+        if ($null -eq $h) { continue }
+        $c = [ordered]@{}
+        foreach ($k in @('id', 'displayName', 'apiRoot', 'uploadHostMode', 'uploadHost', 'uploadPath', 'uploadScheme', 'maxFileBytes', 'authMode', 'timeoutSec')) {
+            $v = $null
+            try {
+                if ($h -is [System.Collections.IDictionary]) { if ($h.Contains($k)) { $v = $h[$k] } }
+                elseif ($h.PSObject.Properties[$k]) { $v = $h.$k }
+            } catch { $v = $null }
+            if ($null -ne $v) { $c[$k] = $v }
+        }
+        $bl = @()
+        try {
+            if ($h -is [System.Collections.IDictionary]) { $bl = @($h['blockedExtensions']) }
+            elseif ($h.PSObject.Properties['blockedExtensions']) { $bl = @($h.blockedExtensions) }
+        } catch { $bl = @() }
+        $c['blockedExtensions'] = @($bl)
+        $c['enabled'] = $true
+        return $c
+    }
+    return $null
+}
+
+function Format-F51AutoLedger {
+    # THE F51 ledger line - the operator pastes this as the auto-upload proof
+    # (one line per watcher run, emitted with the first Downloads attempt).
+    param([string]$HostId = 'gofile', [string]$At = '')
+    $stamp = $At
+    if (-not $stamp) { $stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') }
+    return ('[mirror] AUTO-UPLOAD: root=Downloads scope=this-run source=auto host=' + $HostId + ' at=' + $stamp + ' (Downloads always-on per F51; token-less guest, no credential, no opt-in)')
+}
+# --- [F51 auto-upload-end] --------------------------------------------------
+

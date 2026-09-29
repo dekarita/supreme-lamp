@@ -192,6 +192,7 @@ def main():
         'payloads/ghrdp-watcher.ps1',
         'tests/f46-mirror-policy.ps1',
         'tests/f49-mirror-runtime.ps1',
+        'tests/f50-mirror-streaming.ps1',
     ]
     failed = 0
     for t in targets:
