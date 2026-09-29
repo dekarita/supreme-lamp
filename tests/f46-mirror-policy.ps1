@@ -708,7 +708,7 @@ Check 'F51: the worker loop iterates the partitioned queue' ($watcherText -match
 Check 'F51: the override host is wired for the auto path' ($watcherText -match 'New-F51AutoHost') 'no New-F51AutoHost wiring'
 Check 'F51: the per-file AUTO-UPLOAD ledger line exists (F49-style logging)' ($watcherText -match '\[mirror\] AUTO-UPLOAD: \{0\} \(Downloads root; F51 always-on, opt-in not required\)') 'no AUTO-UPLOAD ledger line'
 Check 'F51: the override ledger line is emitted once per run' ($watcherText -match 'F51AutoHostLedgered') 'no once-per-run override ledger guard'
-Check 'F51: mirrorDiag carries the auto-upload state' ($watcherText -match 'autoUpload = \$\(if \(\$f51AutoMode\)') 'mirrorDiag has no autoUpload field'
+Check 'F51: mirrorDiag carries the auto-upload state' (($watcherText -match "autoUpload = 'downloads-always-on'") -and ($watcherText -match 'autoRoots = @\(\$f51AutoRoots\)') -and ($watcherText -match 'autoQueued = @\(\$f51AutoFiles\.Keys\)\.Count')) 'mirrorDiag must carry always-on Downloads mode, roots and queued count (F52)'
 Check 'F51: the F49 opt-in flags still govern (modal contract intact for other roots)' (($watcherText -match 'mirror-enable\.flag') -and ($watcherText -match 'mirror-disable\.flag')) 'the F49 flag consumption was disturbed'
 $ui49 = Get-Content -LiteralPath (Join-Path $root 'payloads\ui.html') -Raw
 Check 'F51: the F49 ConfirmModal stays in the v1 UI (untouched by F51)' (($ui49 -match 'id="mirrorOptInModal"') -and ($ui49 -match 'openMirrorOptIn\(btn\)')) 'the F49 modal needles vanished'
