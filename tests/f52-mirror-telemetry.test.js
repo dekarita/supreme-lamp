@@ -114,6 +114,7 @@ test('F52-LANES-SOURCE RESULT: explicit manual plaintext only; auto/runtime encr
   assert.match(mod, /if \(Get-F49RuntimeOptIn -Cfg \$Cfg\) \{ return 'all' \}/);
   assert.match(mod, /Name 'encryptMode' -Value 'all'/);
   assert.match(watcher, /Get-F52WorkerMode -Cfg \$cfg -Auto \$f51AutoFile/);
+  assert.match(read('tests/f46-mirror-policy.ps1'), /autoUpload = 'downloads-always-on'/, 'native policy pin follows always-on Downloads semantics');
   assert.match(watcher, /Invoke-F46EncryptFile .* -StreamOnly/);
   const enc = between(mod, 'function Invoke-F46EncryptFile', 'function Invoke-F46DecryptFile');
   assert.doesNotMatch(enc, /ReadAllBytes|TransformFinalBlock|MemoryStream/);
