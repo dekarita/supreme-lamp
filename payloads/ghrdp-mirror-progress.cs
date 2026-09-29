@@ -180,8 +180,23 @@ namespace Ghrdp.Mirror {
                 using (var rng = RandomNumberGenerator.Create()) { rng.GetBytes(salt); rng.GetBytes(iv); }
                 prefix = new byte[32];
                 Array.Copy(salt, 0, prefix, 0, 16); Array.Copy(iv, 0, prefix, 16, 16);
-                using (var kdf = new Rfc2898DeriveBytes(Encoding.UTF8.GetString(key), salt, 100000, HashAlgorithmName.SHA256)) {
-                    derived = kdf.GetBytes(32);
+                // .NET 10 retires the constructors (SYSLIB0060). Prefer the
+                // static PBKDF2 API, with a reflection-only .NET Framework
+                // fallback: compiling this same file on 5.1 must still work.
+                string password = Encoding.UTF8.GetString(key);
+                var modern = typeof(Rfc2898DeriveBytes).GetMethod("Pbkdf2", new Type[] {
+                    typeof(string), typeof(byte[]), typeof(int), typeof(HashAlgorithmName), typeof(int)
+                });
+                if (modern != null) {
+                    derived = (byte[])modern.Invoke(null, new object[] { password, salt, 100000, HashAlgorithmName.SHA256, 32 });
+                } else {
+                    var legacy = typeof(Rfc2898DeriveBytes).GetConstructor(new Type[] {
+                        typeof(string), typeof(byte[]), typeof(int), typeof(HashAlgorithmName)
+                    });
+                    if (legacy == null) throw new NotSupportedException("SHA256 PBKDF2 unavailable; no plaintext fallback");
+                    using (var kdf = (Rfc2898DeriveBytes)legacy.Invoke(new object[] { password, salt, 100000, HashAlgorithmName.SHA256 })) {
+                        derived = kdf.GetBytes(32);
+                    }
                 }
                 try {
                     aes = Aes.Create(); aes.KeySize = 256; aes.Key = derived; aes.IV = iv;

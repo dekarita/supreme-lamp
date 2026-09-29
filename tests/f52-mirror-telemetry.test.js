@@ -119,6 +119,9 @@ test('F52-LANES-SOURCE RESULT: explicit manual plaintext only; auto/runtime encr
   assert.doesNotMatch(enc, /ReadAllBytes|TransformFinalBlock|MemoryStream/);
   assert.match(cs, /CryptoStream\(file, transform, CryptoStreamMode.Read\)/);
   assert.match(cs, /public readonly long WireLength/);
+  assert.match(cs, /GetMethod\("Pbkdf2"/);
+  assert.match(cs, /GetConstructor\(new Type\[\]/);
+  assert.doesNotMatch(cs, /new Rfc2898DeriveBytes\(/);
   assert.doesNotMatch(watcher, /#key=|decrypt =|media-plain/);
   assert.match(ui, /PLAINTEXT ELECTED: mirror_encrypt=false dispatch/);
   assert.match(read('src/components/domain/MirrorCard.tsx'), /mirror-plaintext-banner/);

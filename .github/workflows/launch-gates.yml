@@ -2675,6 +2675,15 @@ jobs:
               exit 1
           }
           Write-Host '[F37] native PowerShell scripts parse clean'
+          # F52: compile before any listener awaits a client (fail-visible).
+          try {
+              . (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-mirror.ps1')
+              Add-F52ProgressTypes
+              Write-Host '::notice title=F52 cell::F52-COMPILE RESULT=PASS; native progress/encryption types loaded'
+          } catch {
+              Write-Host ('::error title=F52 compiler::F52-COMPILE RESULT=FAIL ' + $_.Exception.GetBaseException().Message)
+              exit 1
+          }
       # [F45 S4 §2.1] Server-side tests for the Explorer file-API routes. The
       # module is dot-sourced for the unit matrix (mock index, mock host through
       # the injectable Fetch/Uploader seam) and the REAL payloads/ghrdp-server.ps1
