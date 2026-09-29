@@ -92,6 +92,85 @@ foreach ($cand in @(
 }
 return @($out | Select-Object -Unique)
 }
+# [F51 §0] ALWAYS-ON DOWNLOADS (operator-authorized brief override of Locked
+# Rule 5, for the Downloads root ONLY): any file that lands in the Downloads
+# root is queued for mirror upload automatically - no mirror_enable dispatch
+# input and no F49 runtime opt-in is consulted for it. Desktop, Documents,
+# Temp and RDP-Storage keep the full opt-in gate (mirror_enable / F49 modal).
+# The override is IN-MEMORY ONLY: config.json keeps mirror=false and the F49
+# enable/disable flags keep governing every non-Downloads root. No credential
+# is involved anywhere (F48 guest contract holds).
+function Test-F51DownloadsRoot {
+    param([string]$RootPath)
+    $n = ''
+    try { $n = ([string]$RootPath).Trim() } catch { $n = '' }
+    if (-not $n) { return $false }
+    $n = $n.TrimEnd('\').ToLower()
+    if (-not $n) { return $false }
+    # Downloads, shell-known Downloads, and anything nested inside a Downloads
+    # family folder (e.g. Downloads\qBittorrent or a qBittorrent SavePath
+    # under it). Desktop/Documents/Temp/RDP-Storage never match.
+    return (($n -match '(^|\\)downloads$') -or ($n.Contains('\downloads\')))
+}
+function Get-F51AutoUploadRoots {
+    # The Downloads-family roots among $Roots.
+    param([string[]]$Roots)
+    $out = New-Object System.Collections.ArrayList
+    foreach ($r in @($Roots)) {
+        if (Test-F51DownloadsRoot -RootPath ([string]$r)) { [void]$out.Add((([string]$r).TrimEnd('\'))) }
+    }
+    return @($out | Select-Object -Unique)
+}
+function Test-F51AutoUploadPath {
+    param([string]$Path, [string[]]$AutoRoots)
+    $p = ''
+    try { $p = ([string]$Path).TrimEnd('\').ToLower() } catch { $p = '' }
+    if (-not $p) { return $false }
+    foreach ($r in @($AutoRoots)) {
+        $rr = ([string]$r).TrimEnd('\').ToLower()
+        if ($rr -and $p.StartsWith($rr + '\')) { return $true }
+    }
+    return $false
+}
+function Split-F51AutoQueue {
+    # [F51 §1] Partitions the scan queue: auto = Downloads files (always-on),
+    # gated = everything else (opt-in still required).
+    param($Queue, [string[]]$AutoRoots)
+    $auto = New-Object System.Collections.ArrayList
+    $gated = New-Object System.Collections.ArrayList
+    foreach ($f in @($Queue)) {
+        if ($null -eq $f) { continue }
+        if (Test-F51AutoUploadPath -Path ([string]$f.FullName) -AutoRoots $AutoRoots) { [void]$auto.Add($f) } else { [void]$gated.Add($f) }
+    }
+    return @{ auto = @($auto); gated = @($gated) }
+}
+function New-F51AutoHost {
+    # [F51 §1] The ALWAYS-ON host for the Downloads override: the documented
+    # gofile guest contract with enabled=true, computed IN MEMORY for THIS RUN
+    # ONLY. Nothing here reads a flag file, writes config.json, or creates a
+    # credential (F48). Without the mirror module the caller keeps the labeled
+    # policy refusal, exactly as before.
+    $h = $null
+    try { $h = Get-F46DefaultHost } catch { $h = $null }
+    if (-not $h) {
+        $h = [ordered]@{
+            id = 'gofile'
+            displayName = 'gofile.io'
+            apiRoot = 'https://api.gofile.io'
+            uploadHostMode = 'auto'
+            uploadHost = 'upload.gofile.io'
+            uploadPath = '/uploadfile'
+            uploadScheme = 'https'
+            enabled = $false
+            maxFileBytes = 0
+            blockedExtensions = @()
+            authMode = 'guest'
+            timeoutSec = 120
+        }
+    }
+    $h['enabled'] = $true
+    return $h
+}
 function Get-WatcherRoots {
     param([string]$UserName)
     $list = New-Object System.Collections.ArrayList
@@ -296,12 +375,17 @@ try {
     $mirrorDiagLimit = 200
     # [F49] the last runtime opt-in marker already ledgered (marker `at` stamp).
     $script:F49LastOptInAt = ''
+    # [F51] the Downloads always-on override is ledgered ONCE per watcher run.
+    $script:F51AutoHostLedgered = $false
     $mirrorPolicyMax = 5
     if ($mirrorModuleOk) {
         try { $mirrorPolicyMax = [int]$script:F46MaxAttempts } catch { $mirrorPolicyMax = 5 }
     }
     $mirrorAttemptLog = New-Object System.Collections.ArrayList
     $enqueued = @{}
+    # [F51] per-file auto-upload ledger lines: one per Downloads file, not one
+    # per scan.
+    $f51AutoFiles = @{}
     $incompleteExt = @('.!qb', '.!ut', '.aria2', '.wkdownload', '.part0', '.part1', '.part2', '.part3', '.part4', '.part5', '.part6', '.part7', '.part8', '.part9')
     $idx = Get-MirrorIndexList -IdxFile $idxFile
     if ($null -eq $idx) { $idx = New-Object System.Collections.ArrayList }
@@ -367,6 +451,7 @@ try {
       $mirrorTerminal = @{}
       $mirrorNextAt = @{}
       $mirrorAttempts = @{}
+      $f51AutoFiles = @{}
       Add-MirrorLog '[mirror] flush requested: attempt ledger reset (fresh attempt 1 per file, policy reapplied)'
       if (-not [bool]$cfg.mirror) {
           $cfg.mirror = $true
@@ -444,16 +529,26 @@ try {
   }
   $queue = [System.Collections.ArrayList]@($queue | Sort-Object LastWriteTime)
   $telemetry.queued = [int]$queue.Count
-  if (@($queue).Count -gt 0) { Add-MirrorLog ('[watcher] queue={0} mirror={1} (click "Upload everything now" to bypass stability gate)' -f @($queue).Count, [bool]$cfg.mirror) }
-  $prog.agg.active = [int]$queue.Count
+  # [F51 §1] partition the queue BEFORE the mirror gate: Downloads files are
+  # always-on (no opt-in), every other root keeps the full opt-in gate.
+  $f51AutoRoots = @()
+  if ($mirrorModuleOk) { try { $f51AutoRoots = @(Get-F51AutoUploadRoots -Roots ([string[]]@($roots))) } catch { $f51AutoRoots = @() } }
+  $f51Split = Split-F51AutoQueue -Queue $queue -AutoRoots $f51AutoRoots
+  $f51AutoMode = (-not [bool]$cfg.mirror)
+  $uploadQueue = @($queue)
+  if ($f51AutoMode) { $uploadQueue = @($f51Split.auto) }
   if ((@($queue).Count -gt 0) -or ($telemetry.seen -gt 0) -or (($beat2 = ($telemetry.scans % 6)) -eq 0)) {
   Add-MirrorLog ('[watcher] scan #{0}: seen={1} queued={2} mirror={3} roots={4}' -f $telemetry.scans, $telemetry.seen, @($queue).Count, [bool]$cfg.mirror, @($roots).Count)
   }
-  if ((-not [bool]$cfg.mirror) -and (@($queue).Count -gt 0)) {
-  Add-MirrorLog ('[watcher] MIRROR IS OFF - {0} file(s) tracked but NOT uploaded. Click "Upload everything now" or re-run with mirror=true.' -f @($queue).Count)
+  if ((@($queue).Count -gt 0)) { Add-MirrorLog ('[watcher] queue={0} mirror={1} (click "Upload everything now" to bypass stability gate)' -f @($queue).Count, [bool]$cfg.mirror) }
+  if ((-not [bool]$cfg.mirror) -and (@($f51Split.gated).Count -gt 0)) {
+  Add-MirrorLog ('[watcher] MIRROR IS OFF - {0} file(s) outside Downloads tracked but NOT uploaded (Downloads root is F51 always-on). Click "Upload everything now" or re-run with mirror=true.' -f @($f51Split.gated).Count)
+  }
+  if ($f51AutoMode -and (@($f51Split.auto).Count -gt 0)) {
+  Add-MirrorLog ('[mirror] F51 AUTO-UPLOAD: {0} file(s) in the Downloads root queued automatically (always-on; opt-in not required)' -f @($f51Split.auto).Count)
   }
   Flush-MirrorProgress -Force
-  if ([bool]$cfg.mirror -and (@($queue).Count -gt 0)) {
+  if (@($uploadQueue).Count -gt 0) {
       $encryptMode = [string]$cfg.encryptMode
       if (-not $encryptMode) { $encryptMode = 'none' }
       $mediaExt = @('.mp4', '.mkv', '.avi', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mp3', '.flac', '.wav', '.aac', '.ogg', '.wma', '.m4a', '.opus')
@@ -465,6 +560,17 @@ try {
       if ($mirrorModuleOk) {
           try { $mirrorHosts = @(Get-F46Hosts -Cfg $cfg) } catch { $mirrorHosts = @() }
           try { $mirrorHost = Select-F46UploadHost -Hosts $mirrorHosts } catch { $mirrorHost = $null }
+          # [F51 §1] Downloads always-on: when the mirror was never opted in
+          # (every host still disabled), the auto path attempts with the
+          # in-memory guest host for THIS RUN ONLY - config.json keeps
+          # mirror=false on disk and the F49 opt-in state is untouched.
+          if ($f51AutoMode -and (-not $mirrorHost)) {
+              try { $mirrorHost = New-F51AutoHost } catch { $mirrorHost = $null }
+              if ($mirrorHost -and (-not $script:F51AutoHostLedgered)) {
+                  $script:F51AutoHostLedgered = $true
+                  Add-MirrorLog '[mirror] F51 AUTO: Downloads root always-on override applied (host=gofile, guest, this run only; config.json mirror stays false)'
+              }
+          }
           try {
               $prog.mirrorHosts = @($mirrorHosts | ForEach-Object { [ordered]@{ id = [string]$_.id; enabled = [bool]$_.enabled; apiRoot = [string]$_.apiRoot; maxFileBytes = [long]$_.maxFileBytes; blockedExtensions = @($_.blockedExtensions) } })
           } catch { }
@@ -479,9 +585,17 @@ try {
       # [F48 §1.3] authMode is set by the attempt/probe RESULT only:
       # 'guest' until the host answers 401/403 ('requires-account').
       $mirrorAuthMode = 'guest'
-      foreach ($f in @($queue)) {
+      foreach ($f in @($uploadQueue)) {
           $key = ([string]$f.FullName).ToLower()
           if ($mirrorTerminal.ContainsKey($key)) { continue }
+          # [F51 §2] one ledger line per auto-queued Downloads file (F49-style
+          # ledger logging; emitted when the file first reaches the worker).
+          $f51AutoFile = $false
+          try { if ($f51AutoMode) { $f51AutoFile = (Test-F51AutoUploadPath -Path ([string]$f.FullName) -AutoRoots $f51AutoRoots) } } catch { $f51AutoFile = $false }
+          if ($f51AutoFile -and (-not $f51AutoFiles.ContainsKey($key))) {
+              $f51AutoFiles[$key] = $true
+              Add-MirrorLog ('[mirror] AUTO-UPLOAD: {0} (Downloads root; F51 always-on, opt-in not required)' -f $f.Name)
+          }
           # [F46 §2] backoff gate: no network attempt before the policy due time.
           if ($mirrorNextAt.ContainsKey($key)) {
               $dueAt = [datetime]$mirrorNextAt[$key]
@@ -500,6 +614,7 @@ try {
                       status = 'pending'
                       link = ''
                       encrypted = 'False'
+                      auto = $(if ($f51AutoFile) { 'True' } else { 'False' })
                       host = $(if ($mirrorHost) { [string]$mirrorHost.id } else { '-' })
                       error = $(if ($lastRec) { ((Format-F46Reason -Phase ([string]$lastRec.phase) -Status ([string]$lastRec.status) -Message ([string]$lastRec.msg)) + ' | ' + $waitMsg) } else { $waitMsg })
                       attempts = @($prev)
@@ -536,6 +651,7 @@ try {
               status = 'active'
               link = ''
               encrypted = 'False'
+              auto = $(if ($f51AutoFile) { 'True' } else { 'False' })
               host = $(if ($mirrorHost) { [string]$mirrorHost.id } else { '-' })
               attempts = @($prevAttempts)
           }
@@ -719,12 +835,12 @@ try {
           # the same opt-in record the ledger line was stamped from.
           $f49OptInDiag = $null
           try { if ($cfg.PSObject.Properties['mirrorRuntimeOptIn'] -and $cfg.mirrorRuntimeOptIn) { $f49OptInDiag = $cfg.mirrorRuntimeOptIn } } catch { }
-          $prog.mirrorDiag = [ordered]@{ attempts = @($diagAttempts); terminalFiles = @($mirrorTerminal.Keys); hosts = @($prog.mirrorHosts); encryptMode = $encryptMode; encAlg = $mirrorEncAlg; authMode = $mirrorAuthMode; keyBytes = $(if ($mirrorKeyText) { 32 } else { 0 }); optIn = $f49OptInDiag }
+          $prog.mirrorDiag = [ordered]@{ attempts = @($diagAttempts); terminalFiles = @($mirrorTerminal.Keys); hosts = @($prog.mirrorHosts); encryptMode = $encryptMode; encAlg = $mirrorEncAlg; authMode = $mirrorAuthMode; keyBytes = $(if ($mirrorKeyText) { 32 } else { 0 }); optIn = $f49OptInDiag; autoUpload = $(if ($f51AutoMode) { 'downloads-always-on' } else { 'opt-in' }); autoRoots = @($f51AutoRoots); autoQueued = @($f51AutoFiles.Keys).Count }
       } catch { }
   } else {
       if (-not [bool]$cfg.mirror) {
-          if (@($queue).Count -gt 0) {
-              Add-MirrorLog ('[watcher] mirror disabled; {0} file(s) tracked but NOT uploaded' -f @($queue).Count)
+          if (@($f51Split.gated).Count -gt 0) {
+              Add-MirrorLog ('[watcher] mirror disabled; {0} file(s) outside Downloads tracked but NOT uploaded (Downloads root is F51 always-on)' -f @($f51Split.gated).Count)
           }
       }
   }

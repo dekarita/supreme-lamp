@@ -2166,6 +2166,43 @@ jobs:
           grep -qF "'payloads/ghrdp-mirror.ps1'" .github/workflows/launch-gates.yml
           grep -qF 'tests/f46-mirror-policy.ps1' .github/workflows/launch-gates.yml
           grep -qF 'and the encrypt' docs/MIRROR-HOSTS.md || true
+          # [F50] streaming transport gates: the upload path must stay streamed
+          # (HttpClient + MultipartFormDataContent + StreamContent(FileStream)),
+          # with no whole-file buffering of any kind, and the windows lab must
+          # keep the sparse-file streaming matrix + real retry paths.
+          echo '[F50] streaming transport gates'
+          grep -qF 'System.Net.Http.StreamContent' payloads/ghrdp-mirror.ps1
+          grep -qF 'MultipartFormDataContent' payloads/ghrdp-mirror.ps1
+          grep -qF 'System.Net.Http.HttpClient' payloads/ghrdp-mirror.ps1
+          grep -qF '[System.IO.File]::Open($Path' payloads/ghrdp-mirror.ps1
+          if awk '/^function Send-F46GofileUpload/,/^function ConvertFrom-F46UploadResponse/' payloads/ghrdp-mirror.ps1 | grep -nE 'ReadAllBytes|MemoryStream|AllowWriteStreamBuffering'; then
+            echo 'F50: a whole-file buffering pattern returned to the upload path (the 2GB "Stream was too long" class)' >&2
+            exit 1
+          fi
+          grep -qF 'fsutil file createnew' tests/f46-mirror-policy.ps1
+          for f50size in 100MB 1GB 3GB 6GB; do
+            grep -qF "'$f50size'" tests/f46-mirror-policy.ps1 || { echo "F50: the lab is missing the $f50size sparse-streaming cell" >&2; exit 1; }
+          done
+          grep -qF '429-then-success' tests/f46-mirror-policy.ps1
+          grep -qF '502-budget' tests/f46-mirror-policy.ps1
+          grep -qF 'ZERO network tries' tests/f46-mirror-policy.ps1
+          grep -qF '$script:F46RetryAfterCapMs = 120000' payloads/ghrdp-mirror.ps1
+          grep -qF '$script:F46MaxAttempts = 5' payloads/ghrdp-mirror.ps1
+          # [F51] always-on Downloads gates: the override exists, is wired into
+          # the scan loop, stays in-memory only, and keeps the F49 opt-in gate
+          # (flags + modal) fully intact for Desktop/Documents/Temp/RDP-Storage.
+          echo '[F51] always-on Downloads gates'
+          grep -qF 'function Split-F51AutoQueue' payloads/ghrdp-watcher.ps1
+          grep -qF 'function New-F51AutoHost' payloads/ghrdp-watcher.ps1
+          grep -qF '$uploadQueue = @($f51Split.auto)' payloads/ghrdp-watcher.ps1
+          grep -qF 'foreach ($f in @($uploadQueue))' payloads/ghrdp-watcher.ps1
+          grep -qF '[mirror] AUTO-UPLOAD: {0} (Downloads root; F51 always-on, opt-in not required)' payloads/ghrdp-watcher.ps1
+          grep -qF 'F51AutoHostLedgered' payloads/ghrdp-watcher.ps1
+          grep -qF 'the new download lands in the AUTO queue by itself' tests/f46-mirror-policy.ps1
+          grep -qF 'a Desktop file does NOT auto-queue' tests/f46-mirror-policy.ps1
+          grep -qF 'id="mirrorOptInModal"' payloads/ui.html
+          grep -qF 'F51' docs/MIRROR-HOSTS.md
+          node --test tests/f50-f51-stream-auto.test.js
           echo 'F46 gates PASS'
 
       # [F48] TOKEN-LESS MIRROR gates (operator directive §0/§1.6): no gofile

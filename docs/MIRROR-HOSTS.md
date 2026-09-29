@@ -9,8 +9,10 @@ same policy the Explorer clients use (F44/S3).
 Ground truth (watcher log 2026-09-28 12:15-12:19Z): `NeatDM_setup.exe` (917340
 bytes) got 5 attempts ~10 s apart, each failing inside the second it started,
 and the UI error column was truncated with no host/phase/status anywhere. Mirror
-uploads stay **default OFF**; the mirror path is remediation-locked, so an
-attempt with no enabled host is reported as ONE labeled fail-fast reason.
+uploads stay **default OFF** — with the single operator-authorized exception of
+the `Downloads` root, which is **always-on** (F51 auto-upload, §11) — and the
+mirror path is remediation-locked, so an attempt with no enabled host is
+reported as ONE labeled fail-fast reason.
 
 ## 1. Reason visibility (F46 §1)
 
@@ -314,3 +316,76 @@ Scope is **this run only** on both paths: the runner is ephemeral, so a
 a page served from the real-time Rust dashboard (7332) reaches across
 explicitly. The guest contract is unchanged: no `Authorization`, no
 `X-Gofile-Token`, no `Cookie` toward the host, ever.
+
+## 11. F51 ALWAYS-ON DOWNLOADS AUTO-UPLOAD + F50 STREAMING TRANSPORT
+
+**The rule (canonical).** `PROJECT-CONTEXT-v2-CANONICAL.md` Section 6, Rule 5
+now reads: "Mirror is default-OFF, EXCEPT for the `Downloads` root which is
+Always-ON (Auto-upload)." This is an operator-authorized override of the
+formerly blanket default-OFF lock, for the `Downloads` root only.
+
+### 11.1 What auto-uploads (F51)
+
+- Any file that lands in the **Downloads root** — the profile `Downloads`
+  folder, the shell-known Downloads library, and anything nested inside a
+  Downloads family folder such as `Downloads\qBittorrent` or a qBittorrent
+  `SavePath` under it — is queued for mirror upload **automatically**, without
+  `mirror_enable=true` in `main.yml` and without the F49 runtime opt-in
+  (the ConfirmModal is not required for these files).
+- **Still fully opt-in** (dispatch input or the F49 one-click modal):
+  `Desktop`, `Documents`, `Temp`, `RDP-Storage`, and every other root.
+- The override is **in-memory, this run only**: `config.json` keeps
+  `mirror=false` on disk, the `mirror-optin-beacon.json` and the
+  `mirror-enable.flag` / `mirror-disable.flag` channels are untouched, and
+  disabling via the F49 modal still governs every non-Downloads root. When the
+  mirror was never opted in, the auto path attempts with the documented gofile
+  **guest** host enabled in memory (`New-F51AutoHost`) — no credential exists
+  anywhere (F48).
+- Per-host policy still applies to auto files: preflight size/type refusals
+  (`mirrorHosts[].maxFileBytes` / `blockedExtensions`) cost **zero network
+  tries**, and every attempt is classified + retried under the F44 policy
+  exactly like an opted-in file.
+
+**Ledger lines** (the watcher log, also in `mirrorDiag`):
+
+```
+[mirror] F51 AUTO-UPLOAD: 2 file(s) in the Downloads root queued automatically (always-on; opt-in not required)
+[mirror] AUTO-UPLOAD: invoice.pdf (Downloads root; F51 always-on, opt-in not required)
+[mirror] F51 AUTO: Downloads root always-on override applied (host=gofile, guest, this run only; config.json mirror stays false)
+```
+
+`mirrorDiag.autoUpload` is `downloads-always-on` while the override drives the
+worker and `opt-in` under a full opt-in; `autoRoots` + `autoQueued` carry the
+classified roots and the per-file count.
+
+### 11.2 How large files travel (F50)
+
+The upload path is **streamed**: `Send-F46GofileUpload` posts with
+`HttpClient` + `MultipartFormDataContent` + `StreamContent(FileStream)`. The
+file is never materialised in memory — no whole-file byte array, no buffering
+request stream. (The previous `HttpWebRequest` path relied on the in-box
+request buffering, whose 2GB ceiling surfaced on the runner as the error
+`Stream was too long`; multi-GB uploads now move in bounded chunks straight
+from the `FileStream`.) The wire contract is byte-identical: multipart field
+`file`, part Content-Type `application/octet-stream` (or
+`application/x-ghrdp-mirror` when encrypted), no auth header of any kind.
+
+**F44 policy is preserved verbatim**: fail-fast `401/403/413/415` get exactly
+one attempt, only `dns | tcp | tls | http` are retried, backoff is jittered
+with a `Retry-After` hint as a FLOOR capped at 120s, and the F48/F49 contracts
+are untouched.
+
+### 11.3 Lab proof (windows-native lane, `tests/f46-mirror-policy.ps1`)
+
+- Sparse files created with `fsutil file createnew` at **100 MB / 1 GB / 3 GB /
+  6 GB** are streamed by the shipped uploader into a **discarding loopback
+  listener** that counts (never stores) the body bytes; 6 GB lands above the
+  old 2GB ceiling with the full byte count accounted for.
+- Real-transport retry cells: `429` (with a `Retry-After` floor), `500`, `502`
+  and a refused connection are classified and retried to the policy budget;
+  `tls-reset` stays covered by the mock scenario matrix.
+- Preflight refusals (size / type) are proven with **zero network tries**.
+- F51 cells execute the REAL watcher helpers (extracted, never copied): a
+  simulated download into `Downloads` auto-queues and attempts without any
+  opt-in state, while Desktop/Documents/Temp/RDP-Storage files stay gated, and
+  the F49 modal contract is asserted untouched.
