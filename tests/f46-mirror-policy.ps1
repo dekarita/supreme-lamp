@@ -684,7 +684,7 @@ Write-Host '[F51 §2] trigger simulation: a new download into Downloads auto-que
 $cfgF51 = '{"mirror":false}' | ConvertFrom-Json
 Check 'F51: precondition - NO opt-in exists (mirror=false, no host enabled)' ((Select-F46UploadHost -Hosts @(Get-F46Hosts -Cfg $cfgF51)) -eq $null) 'a host was enabled without opt-in'
 $dlFile51 = Get-Item -LiteralPath (Join-Path $f51tmp 'profile\Downloads\invoice.pdf')
-$sim51 = Split-F51AutoQueue -Queue (New-Object System.Collections.ArrayList @(, $dlFile51)) -AutoRoots $f51autos
+$sim51 = Split-F51AutoQueue -Queue @($dlFile51) -AutoRoots $f51autos
 Check 'F51: the new download lands in the AUTO queue by itself' ((@($sim51.auto).Count -eq 1) -and (@($sim51.gated).Count -eq 0)) ('auto=' + @($sim51.auto).Count + ' gated=' + @($sim51.gated).Count)
 Reset-Case @('success') | Out-Null
 $go51 = Invoke-F46MirrorAttempt -HostCfg (New-F51AutoHost) -Path $dlFile51.FullName -Name $dlFile51.Name -Size ([long]$dlFile51.Length) -AttemptNo 1 -Transport $transport
@@ -696,7 +696,7 @@ $autoCap51.maxFileBytes = 1024
 $autoPre51 = Invoke-F46MirrorAttempt -HostCfg $autoCap51 -Path $filePath -Name 'f50-preflight.bin' -Size ([long]2048) -AttemptNo 1 -Transport $spy
 Check 'F51: the override does NOT bypass per-host preflight (size cap => phase=size, network=0)' (($autoPre51.phase -eq 'size') -and ($script:spyCalls -eq 0)) ('phase=' + $autoPre51.phase + ' spyCalls=' + $script:spyCalls)
 $gated51 = Get-Item -LiteralPath (Join-Path $f51tmp 'profile\Desktop\note.txt')
-$sim52 = Split-F51AutoQueue -Queue (New-Object System.Collections.ArrayList @(, $gated51)) -AutoRoots $f51autos
+$sim52 = Split-F51AutoQueue -Queue @($gated51) -AutoRoots $f51autos
 Check 'F51: a Desktop file does NOT auto-queue (F49 opt-in modal still governs it)' ((@($sim52.auto).Count -eq 0) -and (@($sim52.gated).Count -eq 1)) ('auto=' + @($sim52.auto).Count + ' gated=' + @($sim52.gated).Count)
 try { Remove-Item -LiteralPath $f51tmp -Recurse -Force -ErrorAction SilentlyContinue } catch { }
 Write-Host '::notice::[F46 lab] enter F51 §3 (wiring needles)'
