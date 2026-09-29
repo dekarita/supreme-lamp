@@ -698,8 +698,15 @@ function Send-F46GofileUpload {
         $retryAfter = $null
         $ra = $null
         try { $ra = $resp.Headers.RetryAfter } catch { $ra = $null }
-        if ($ra -and $ra.DeltaSeconds) { $retryAfter = [int]$ra.DeltaSeconds.Value.TotalMilliseconds }
-        elseif ($ra -and $ra.Date) { $retryAfter = Get-F46RetryAfterMs -RetryAfterHeader ($ra.Date.Value.ToString('R')) }
+        # [F50] DeltaSeconds is a Nullable<TimeSpan>: pwsh unwraps it to a bare
+        # TimeSpan, so the parse must not lean on .Value.
+        if ($ra -and ($null -ne $ra.DeltaSeconds)) {
+            $ds50 = $ra.DeltaSeconds
+            if ($ds50 -is [TimeSpan]) { $retryAfter = [int]$ds50.TotalMilliseconds }
+            else { $retryAfter = Get-F46RetryAfterMs -RetryAfterHeader ([string]$ds50) }
+        } elseif ($ra -and $ra.Date) {
+            $retryAfter = Get-F46RetryAfterMs -RetryAfterHeader ($ra.Date.Value.ToString('R'))
+        }
         $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
         $resp.Dispose()
         return (ConvertFrom-F46UploadResponse -Text $text -HttpStatus $code -RetryAfterMs $retryAfter)

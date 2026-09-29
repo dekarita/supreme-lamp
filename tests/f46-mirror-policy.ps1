@@ -396,7 +396,7 @@ Check 'F50: body is a MultipartFormDataContent' ($fnBody -match 'MultipartFormDa
 Check 'F50: the file part is StreamContent over a FileStream' (($fnBody -match 'System\.Net\.Http\.StreamContent') -and ($fnBody -match 'System\.IO\.File\]::Open\(')) 'no StreamContent(FileStream) in the upload path'
 Check 'F50: NO whole-file byte array (no ReadAllBytes in the upload path)' ($fnBody -notmatch 'ReadAllBytes') 'ReadAllBytes appeared in the upload path'
 Check 'F50: NO MemoryStream in the upload path' ($fnBody -notmatch 'MemoryStream') 'MemoryStream appeared in the upload path'
-Check 'F50: F44 fail-fast statuses untouched' ((@($script:F46FailFastStatuses) -join ',') -eq '401, 403, 413, 415') ('failFast=' + (@($script:F46FailFastStatuses) -join ','))
+Check 'F50: F44 fail-fast statuses untouched' ((@($script:F46FailFastStatuses) -join ',') -eq '401,403,413,415') ('failFast=' + (@($script:F46FailFastStatuses) -join ','))
 Check 'F50: F44 Retry-After cap stays 120s' ([int]$script:F46RetryAfterCapMs -eq 120000) ('cap=' + [int]$script:F46RetryAfterCapMs)
 Check 'F50: F44 attempt budget stays 5' ([int]$script:F46MaxAttempts -eq 5) ('max=' + [int]$script:F46MaxAttempts)
 
@@ -491,107 +491,116 @@ if (-not $f50Listener) {
 # (a loopback runner cannot fabricate a live TLS reset).
 # ---------------------------------------------------------------------------
 Write-Host '[F50 §3] real-transport retry paths: 429 (Retry-After), 500, 502, refused-tcp, preflight network=0'
-$f50Listener2 = $null
-$f50Port2 = 0
-for ($p52 = 47310; $p52 -le 47390; $p52++) {
-    try {
-        $l52 = New-Object System.Net.HttpListener
-        $l52.Prefixes.Add('http://127.0.0.1:' + $p52 + '/uploadfile/')
-        $l52.Start()
-        $f50Listener2 = $l52
-        $f50Port2 = $p52
-        break
-    } catch { try { if ($l52) { $l52.Close() } } catch { } }
+# [F50 §3] each scenario gets its OWN listener + port so a timed-out job from a
+# previous scenario cannot desync the scripted responses; the 200 step answers
+# with a real status=ok envelope so the policy loop terminates exactly at the
+# scripted attempt count.
+function New-ScriptedListener {
+    for ($p53 = 47310; $p53 -le 47390; $p53++) {
+        try {
+            $l53 = New-Object System.Net.HttpListener
+            $l53.Prefixes.Add('http://127.0.0.1:' + $p53 + '/uploadfile/')
+            $l53.Start()
+            return @{ listener = $l53; port = $p53 }
+        } catch { try { if ($l53) { $l53.Close() } } catch { } }
+    }
+    return $null
 }
-if (-not $f50Listener2) {
-    Check 'F50: a scripted-response loopback listener could be started' $false 'no free port / listener refused'
+function Serve-Scripted {
+    # Serves ONE scripted response: @('<httpCode>', '<retryAfterSeconds>').
+    param($Listener, $Step)
+    $ctx53 = $Listener.GetContext()
+    try {
+        $in53 = $ctx53.Request.InputStream
+        $buf53 = New-Object byte[] 65536
+        while (($in53.Read($buf53, 0, $buf53.Length)) -gt 0) { }
+        $in53.Close()
+        $code53 = [int]$Step[0]
+        if ($code53 -eq 200) { $body53 = '{"status":"ok","data":{"id":"f50-scripted-id","downloadPage":"https://gofile.test/d/f50scripted","code":"f50scripted"}}' }
+        else { $body53 = '{"status":"error-cannot-store-' + $code53 + '"}' }
+        $rb53 = [System.Text.Encoding]::UTF8.GetBytes($body53)
+        $r53 = $ctx53.Response
+        $r53.StatusCode = $code53
+        $r53.ContentType = 'application/json'
+        $r53.ContentLength64 = $rb53.Length
+        if ([string]$Step[1]) { try { $r53.AddHeader('Retry-After', [string]$Step[1]) } catch { } }
+        $r53.OutputStream.Write($rb53, 0, $rb53.Length)
+        $r53.Close()
+        return $true
+    } catch { return $false }
+}
+foreach ($rcase in @(
+    @('429-then-success', @(@('429', '1'), @('200', '')), 2, $true, 1000),
+    @('500-500-then-success', @(@('500', ''), @('500', ''), @('200', '')), 3, $true, 0),
+    @('502-budget', @(@('502', ''), @('502', ''), @('502', ''), @('502', ''), @('502', '')), 5, $false, 0)
+)) {
+    $rname = [string]$rcase[0]
+    $script50 = @($rcase[1])
+    $wantTries = [int]$rcase[2]
+    $wantOk = [bool]$rcase[3]
+    $minFirstSleep = [int]$rcase[4]
+    $pair53 = New-ScriptedListener
+    if (-not $pair53) {
+        Check ('F50 ' + $rname + ': a scripted listener could be started') $false 'no free port / listener refused'
+        continue
+    }
+    $job54 = Start-Job -ScriptBlock {
+        param($Mod, $Payload, $Port, $Name)
+        $ErrorActionPreference = 'Stop'
+        . $Mod
+        $h = Get-F46DefaultHost
+        $h.enabled = $true
+        $h.uploadHostMode = 'auto'
+        $h.uploadHost = ('127.0.0.1:' + $Port)
+        $h.uploadScheme = 'http'
+        $h.timeoutSec = 15
+        $slept = New-Object System.Collections.ArrayList
+        $r = Invoke-F46MirrorUploadWithPolicy -HostCfg $h -Path $Payload -Name $Name -Size ([long](Get-Item -LiteralPath $Payload).Length) -Sleeper { param($ms) [void]$slept.Add([int]$ms); Start-Sleep -Milliseconds ([Math]::Min([int]$ms, 1200)) } -Rand01 0
+        return @{ ok = [bool]$r.ok; phase = [string]$r.phase; tries = @($r.attempts).Count; httpStatuses = @(@($r.attempts) | ForEach-Object { [string]$_.status }); slept = @($slept) }
+    } -ArgumentList $modPath, $filePath, $pair53.port, ('f50-' + $rname + '.bin')
+    $served = 0
+    foreach ($step53 in $script50) {
+        if (Serve-Scripted -Listener $pair53.listener -Step $step53) { $served = $served + 1 } else { break }
+    }
+    $client54 = $null
+    try { if (Wait-Job -Job $job54 -Timeout 120) { $client54 = Receive-Job -Job $job54 } } catch { $client54 = $null }
+    try { Remove-Job -Job $job54 -Force -ErrorAction SilentlyContinue } catch { }
+    try { $pair53.listener.Stop(); $pair53.listener.Close() } catch { }
+    Check ('F50 ' + $rname + ': ' + $wantTries + ' attempt(s) under the policy, ok=' + $wantOk) ($client54 -and ([int]$client54.tries -eq $wantTries) -and ([bool]$client54.ok -eq $wantOk)) ('r=' + $(if ($client54) { ($client54 | ConvertTo-Json -Compress -Depth 3) } else { 'no result' }))
+    if ($minFirstSleep -gt 0 -and $client54) {
+        $firstSleep = 0
+        if (@($client54.slept).Count -gt 0) { $firstSleep = [int]@($client54.slept)[0] }
+        Check ('F50 ' + $rname + ': the Retry-After hint stayed a FLOOR for the first backoff') ($firstSleep -ge $minFirstSleep) ('firstSleepMs=' + $firstSleep)
+    }
+}
+# refused connection: a REAL transport failure classified by the new
+# HttpClient catch ladder (tcp) and retried to the transient budget.
+$refusedPort = 0
+for ($rp = 47410; $rp -le 47490; $rp++) {
+    $inUse = $false
+    try { $t = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $rp); $t.Start(); $t.Stop() } catch { $inUse = $true }
+    if (-not $inUse) { $refusedPort = $rp; break }
+}
+if ($refusedPort -le 0) {
+    Check 'F50 refused-tcp: a free port could be found' $false 'no free port'
 } else {
-    Write-Host ('[F50] scripted listener on http://127.0.0.1:' + $f50Port2 + '/uploadfile/')
-    foreach ($rcase in @(
-        @('429-then-success', @(@('429', '1'), @('200', '')), 2, $true, 1000),
-        @('500-500-then-success', @(@('500', ''), @('500', ''), @('200', '')), 3, $true, 0),
-        @('502-budget', @(@('502', ''), @('502', ''), @('502', ''), @('502', ''), @('502', '')), 5, $false, 0)
-    )) {
-        $rname = [string]$rcase[0]
-        $script50 = @($rcase[1])
-        $wantTries = [int]$rcase[2]
-        $wantOk = [bool]$rcase[3]
-        $minFirstSleep = [int]$rcase[4]
-        $job52 = Start-Job -ScriptBlock {
-            param($Mod, $Payload, $Port, $Script, $Name)
-            $ErrorActionPreference = 'Stop'
-            . $Mod
-            $h = Get-F46DefaultHost
-            $h.enabled = $true
-            $h.uploadHostMode = 'auto'
-            $h.uploadHost = ('127.0.0.1:' + $Port)
-            $h.uploadScheme = 'http'
-            $h.timeoutSec = 30
-            $slept = New-Object System.Collections.ArrayList
-            $r = Invoke-F46MirrorUploadWithPolicy -HostCfg $h -Path $Payload -Name $Name -Size ([long](Get-Item -LiteralPath $Payload).Length) -Sleeper { param($ms) [void]$slept.Add([int]$ms); Start-Sleep -Milliseconds ([Math]::Min([int]$ms, 1200)) } -Rand01 0
-            return @{ ok = [bool]$r.ok; phase = [string]$r.phase; tries = @($r.attempts).Count; httpStatuses = @(@($r.attempts) | ForEach-Object { [string]$_.status }); slept = @($slept) }
-        } -ArgumentList $modPath, $filePath, $f50Port2, $script50, ('f50-' + $rname + '.bin')
-        $served = 0
-        foreach ($step50 in $script50) {
-            $ctx52 = $null
-            try { $ctx52 = $f50Listener2.GetContext() } catch { break }
-            try {
-                $in52 = $ctx52.Request.InputStream
-                $buf52 = New-Object byte[] 65536
-                while (($in52.Read($buf52, 0, $buf52.Length)) -gt 0) { }
-                $in52.Close()
-                $code52 = [int]$step50[0]
-                $rb52 = [System.Text.Encoding]::UTF8.GetBytes('{"status":"error-cannot-store-' + $code52 + '"}')
-                $r52 = $ctx52.Response
-                $r52.StatusCode = $code52
-                $r52.ContentType = 'application/json'
-                $r52.ContentLength64 = $rb52.Length
-                if ($step50[1]) { $r52.Headers['Retry-After'] = [string]$step50[1] }
-                $r52.OutputStream.Write($rb52, 0, $rb52.Length)
-                $r52.Close()
-                $served = $served + 1
-            } catch { Write-Host ('[F50] scripted response failed (' + $rname + '): ' + $_.Exception.Message); break }
-        }
-        $client52 = $null
-        try { if (Wait-Job -Job $job52 -Timeout 120) { $client52 = Receive-Job -Job $job52 } } catch { $client52 = $null }
-        try { Remove-Job -Job $job52 -Force -ErrorAction SilentlyContinue } catch { }
-        Check ('F50 ' + $rname + ': ' + $wantTries + ' attempt(s) under the policy, ok=' + $wantOk) ($client52 -and ([int]$client52.tries -eq $wantTries) -and ([bool]$client52.ok -eq $wantOk)) ('r=' + $(if ($client52) { ($client52 | ConvertTo-Json -Compress -Depth 3) } else { 'no result' }))
-        if ($minFirstSleep -gt 0 -and $client52) {
-            $firstSleep = 0
-            if (@($client52.slept).Count -gt 0) { $firstSleep = [int]@($client52.slept)[0] }
-            Check ('F50 ' + $rname + ': the Retry-After hint stayed a FLOOR for the first backoff') ($firstSleep -ge $minFirstSleep) ('firstSleepMs=' + $firstSleep)
-        }
-    }
-    # refused connection: a REAL transport failure classified by the new
-    # HttpClient catch ladder (tcp) and retried to the transient budget.
-    $refusedPort = 0
-    for ($rp = 47410; $rp -le 47490; $rp++) {
-        $inUse = $false
-        try { $t = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $rp); $t.Start(); $t.Stop() } catch { $inUse = $true }
-        if (-not $inUse) { $refusedPort = $rp; break }
-    }
-    if ($refusedPort -le 0) {
-        Check 'F50 refused-tcp: a free port could be found' $false 'no free port'
-    } else {
-        $job53 = Start-Job -ScriptBlock {
-            param($Mod, $Payload, $Port)
-            $ErrorActionPreference = 'Stop'
-            . $Mod
-            $h = Get-F46DefaultHost
-            $h.enabled = $true
-            $h.uploadHostMode = 'auto'
-            $h.uploadHost = ('127.0.0.1:' + $Port)
-            $h.uploadScheme = 'http'
-            $h.timeoutSec = 10
-            $r = Invoke-F46MirrorUploadWithPolicy -HostCfg $h -Path $Payload -Name 'f50-refused.bin' -Size ([long](Get-Item -LiteralPath $Payload).Length) -Sleeper { param($ms) } -Rand01 0
-            return @{ ok = [bool]$r.ok; phase = [string]$r.phase; tries = @($r.attempts).Count; firstPhase = [string](@($r.attempts)[0].phase) }
-        } -ArgumentList $modPath, $filePath, $refusedPort
-        $client53 = $null
-        try { if (Wait-Job -Job $job53 -Timeout 120) { $client53 = Receive-Job -Job $job53 } } catch { $client53 = $null }
-        try { Remove-Job -Job $job53 -Force -ErrorAction SilentlyContinue } catch { }
-        Check 'F50 refused-tcp: labeled transient phase (tcp|http) retried to the 5-attempt budget' ($client53 -and (-not [bool]$client53.ok) -and ([int]$client53.tries -eq 5) -and (@('tcp', 'http') -contains [string]$client53.firstPhase)) ('r=' + $(if ($client53) { ($client53 | ConvertTo-Json -Compress -Depth 3) } else { 'no result' }))
-    }
-    try { $f50Listener2.Stop(); $f50Listener2.Close() } catch { }
+    $job55 = Start-Job -ScriptBlock {
+        param($Mod, $Payload, $Port)
+        $ErrorActionPreference = 'Stop'
+        . $Mod
+        $h = Get-F46DefaultHost
+        $h.enabled = $true
+        $h.uploadHostMode = 'auto'
+        $h.uploadHost = ('127.0.0.1:' + $Port)
+        $h.uploadScheme = 'http'
+        $h.timeoutSec = 10
+        $r = Invoke-F46MirrorUploadWithPolicy -HostCfg $h -Path $Payload -Name 'f50-refused.bin' -Size ([long](Get-Item -LiteralPath $Payload).Length) -Sleeper { param($ms) } -Rand01 0
+        return @{ ok = [bool]$r.ok; phase = [string]$r.phase; tries = @($r.attempts).Count; firstPhase = [string](@($r.attempts)[0].phase) }
+    } -ArgumentList $modPath, $filePath, $refusedPort
+    $client55 = $null
+    try { if (Wait-Job -Job $job55 -Timeout 120) { $client55 = Receive-Job -Job $job55 } } catch { $client55 = $null }
+    try { Remove-Job -Job $job55 -Force -ErrorAction SilentlyContinue } catch { }
+    Check 'F50 refused-tcp: labeled transient phase (tcp|http) retried to the 5-attempt budget' ($client55 -and (-not [bool]$client55.ok) -and ([int]$client55.tries -eq 5) -and (@('tcp', 'http') -contains [string]$client55.firstPhase)) ('r=' + $(if ($client55) { ($client55 | ConvertTo-Json -Compress -Depth 3) } else { 'no result' }))
 }
 # preflight refusals keep ZERO network tries even on the real transport: the
 # spy transport would fail the cell the moment a single byte left the machine.
