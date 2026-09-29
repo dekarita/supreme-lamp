@@ -2205,6 +2205,21 @@ jobs:
           node --test tests/f50-f51-stream-auto.test.js
           echo 'F46 gates PASS'
 
+      # [F52] socket truth, Int64, strict lanes and honest guest-cap evidence.
+      - name: F52 honest mirror telemetry + Int64 + cap-proof gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/f52-mirror-telemetry.test.js
+          test -f src/tests/smoke/f52-mirror-telemetry.test.tsx
+          test -f payloads/ghrdp-mirror-progress.cs
+          grep -qF 'ghrdp-mirror-progress.cs' .github/workflows/main.yml
+          grep -qF 'F52' docs/MIRROR-HOSTS.md
+          test "$(wc -l < STATE.md)" -le 60
+          python3 tests/ps-balance-audit.py
+          node scripts/ps-balance-audit.mjs
+          echo 'F52 RESULT=PASS source/DOM/window/cap contracts; native cells remain mandatory'
+
       # [F48] TOKEN-LESS MIRROR gates (operator directive §0/§1.6): no gofile
       # API token exists anywhere in this system - no secret read, no env
       # plumbing, no missing-token stage halt (absence is NORMAL), no auth
@@ -2221,7 +2236,7 @@ jobs:
           inblock | grep -qE '^[[:space:]]+mirror_enable:'
           inblock | grep -qE '^[[:space:]]+mirror_encrypt:'
           awk '/mirror_enable:/{f=1} f&&/default:/{print;exit}' "$wf" | grep -qF 'default: false'
-          awk '/mirror_encrypt:/{f=1} f&&/default:/{print;exit}' "$wf" | grep -qF 'default: false'
+          awk '/mirror_encrypt:/{f=1} f&&/default:/{print;exit}' "$wf" | grep -qF 'default: true' # F52: encrypted unless explicit false
           grep -qE 'MIRROR_INPUT: \$\{\{ github\.event\.inputs\.mirror_enable == true' "$wf"
           grep -qE 'MIRROR_ENCRYPT_INPUT: \$\{\{ github\.event\.inputs\.mirror_encrypt == true' "$wf"
           # §1.6 GATE 1: the banished mirror secret name may not exist ANYWHERE
@@ -2643,7 +2658,7 @@ jobs:
           # syntax error in them used to surface only as a red Windows lab cell
           # (an expensive loop), and the server DOT-SOURCES the module at start.
           $bad = @()
-          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/ghrdp-fx.ps1', 'payloads/ghrdp-mirror.ps1', 'payloads/ghrdp-watcher.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1', 'tests/f45-fx-server.ps1', 'tests/f46-mirror-policy.ps1', 'tests/f49-mirror-runtime.ps1')) {
+          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/ghrdp-fx.ps1', 'payloads/ghrdp-mirror.ps1', 'payloads/ghrdp-watcher.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1', 'tests/f45-fx-server.ps1', 'tests/f46-mirror-policy.ps1', 'tests/f49-mirror-runtime.ps1', 'tests/f52-mirror-telemetry.ps1')) {
               $errors = $null
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
               if ($errors) {
@@ -2660,6 +2675,15 @@ jobs:
               exit 1
           }
           Write-Host '[F37] native PowerShell scripts parse clean'
+          # F52: compile before any listener awaits a client (fail-visible).
+          try {
+              . (Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-mirror.ps1')
+              Add-F52ProgressTypes
+              Write-Host '::notice title=F52 cell::F52-COMPILE RESULT=PASS; native progress/encryption types loaded'
+          } catch {
+              Write-Host ('::error title=F52 compiler::F52-COMPILE RESULT=FAIL ' + $_.Exception.GetBaseException().Message)
+              exit 1
+          }
       # [F45 S4 §2.1] Server-side tests for the Explorer file-API routes. The
       # module is dot-sourced for the unit matrix (mock index, mock host through
       # the injectable Fetch/Uploader seam) and the REAL payloads/ghrdp-server.ps1
@@ -2846,3 +2870,18 @@ jobs:
       - name: F27 Windows credential handoff mechanics (not live NLA)
         shell: powershell
         run: ./tests/f27-windows.ps1
+
+      - name: F52 socket telemetry + 8/64/128 GiB sparse-stream lab
+        timeout-minutes: 35
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f52-mirror-telemetry.ps1')
+          if ($LASTEXITCODE -ne 0) { throw ('F52: native mirror cells failed with exit ' + $LASTEXITCODE) }
+      - name: F52 Windows PowerShell 5.1 transport compatibility (small wire cell)
+        timeout-minutes: 5
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f52-mirror-telemetry.ps1') -SkipLargeCells
+          if ($LASTEXITCODE -ne 0) { throw ('F52: 5.1 compatibility cells failed with exit ' + $LASTEXITCODE) }

@@ -1169,7 +1169,8 @@ function To-IsoUtc {
 }
 function ConvertTo-JsonBytes {
     param($Obj)
-    return [System.Text.Encoding]::UTF8.GetBytes(($Obj | ConvertTo-Json -Depth 10 -Compress))
+    if (Get-Command ConvertTo-F52JsonSafe -ErrorAction SilentlyContinue) { $Obj = ConvertTo-F52JsonSafe $Obj }
+    return [System.Text.Encoding]::UTF8.GetBytes(($Obj | ConvertTo-Json -Depth 12 -Compress))
 }
 function Remove-CredKeys {
     # [remediation #7A / U1] Strip secrets from a config object before it leaves
@@ -1525,7 +1526,7 @@ function Invoke-ClientRequest {
             if ($script:F46MirrorReady) {
                 try {
                     $mCfg = Read-JsonFile -Path $script:CfgPath
-                    $mirrorRows = @(Invoke-F46HostProbe -Hosts (@(Get-F46Hosts -Cfg $mCfg)) -TimeoutSec 8)
+                    $mirrorRows = @(Get-F52HostMatrix -Root $Root -Hosts (@(Get-F46Hosts -Cfg $mCfg)))
                 } catch {
                     $mirrorRows = @(@{ host = 'probe'; status = '-'; note = ('probe failed: ' + $_.Exception.Message) })
                 }
@@ -1548,6 +1549,7 @@ function Invoke-ClientRequest {
                 watcherAlive = [bool]$prog.alive
                 mirrorHosts = @($mirrorRows)
                 mirrorAttempts = @($mirrorAttempts)
+                mirrorDiag = $prog.mirrorDiag
                 mirrorPolicy = $mirrorPolicy
                 note = 'ps server 7331 (fallback); rust realtime dashboard 7332 when available'
             }
@@ -2636,7 +2638,7 @@ boot();
             }
             return
         }
-        if ($path -eq '/progress' -or $path -eq '/api/progress') {
+        if ($path -eq '/progress' -or $path -eq '/api/progress' -or $path -eq '/mirror') {
             $prog = Read-JsonFile -Path $script:ProgPath
             $wireNow = Read-JsonFile -Path (Join-Path $script:Root 'wire-probe.json')
             if (-not $prog) {
@@ -2668,7 +2670,10 @@ boot();
             $obj = [ordered]@{
                 serverTs = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
                 mirror = $mirrorFlag
-                encryptMode = $em
+                encryptMode = $(if ($prog.encryptMode) { [string]$prog.encryptMode } else { $em })
+                mirrorPlaintextElection = ([bool]$cfg.mirrorPlaintextElection -and -not (Get-F49RuntimeOptIn -Cfg $cfg))
+                mirrorDiag = $prog.mirrorDiag
+                mirrorProbe = $prog.mirrorProbe
                 ghrdp = [string]$cfg.ghrdp
                 mirrorIndexUrl = $tg
                 serveUrl = $sv

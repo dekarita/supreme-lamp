@@ -309,7 +309,7 @@ function fxContractProblems() {
   if (!mirror.includes("$script:F46GofileContract")) problems.push('ghrdp-mirror.ps1: the gofile contract table is missing');
   if (!/\. \$global:GhrdpMirrorModulePath/.test(watcher)) problems.push('ghrdp-watcher.ps1: the mirror module is not dot-sourced');
   if (!watcher.includes('Invoke-F46MirrorAttempt')) problems.push('ghrdp-watcher.ps1: the shared attempt engine is not used');
-  if (!srv.includes('Invoke-F46HostProbe')) problems.push(`${srvPath}: /diag does not run the read-only host probe`);
+  if (!srv.includes('Get-F52HostMatrix')) problems.push(`${srvPath}: /diag does not read the cached read-only host matrix`);
   return problems;
 }
 
@@ -330,6 +330,7 @@ const targets = [
   'payloads/ghrdp-watcher.ps1',
   'tests/f46-mirror-policy.ps1',
   'tests/f49-mirror-runtime.ps1',
+        'tests/f52-mirror-telemetry.ps1',
 ];
 
 let failed = 0;

@@ -206,7 +206,7 @@ try {
         Check 'I enable 200 with dash token + CSRF' ([int]$r.Code -eq 200) ('code=' + $r.Code + ' text=' + $r.Text)
         $cfgAfter = $null
         try { $cfgAfter = ([System.IO.File]::ReadAllText((Join-Path $srvRoot 'config.json')) | ConvertFrom-Json) } catch { $cfgAfter = $null }
-        Check 'I enable wrote config.json (mirror + host + marker)' (($cfgAfter -ne $null) -and [bool]$cfgAfter.mirror -and [bool](@($cfgAfter.mirrorHosts)[0].enabled) -and ([string]$cfgAfter.mirrorRuntimeOptIn.source -eq 'runtime')) ('cfg=' + ([System.IO.File]::ReadAllText((Join-Path $srvRoot 'config.json'))))
+        Check 'I enable wrote config.json (mirror + host + marker)' (($cfgAfter -ne $null) -and [bool]$cfgAfter.mirror -and [bool](@($cfgAfter.mirrorHosts)[0].enabled) -and ([string]$cfgAfter.mirrorRuntimeOptIn.source -eq 'runtime')) ('mirror=' + [bool]$cfgAfter.mirror + ' encryptMode=' + [string]$cfgAfter.encryptMode + ' markerSource=' + [string]$cfgAfter.mirrorRuntimeOptIn.source)
         Check 'I enable wrote the beacon file' (Test-Path -LiteralPath (Join-Path $srvRoot 'mirror-optin-beacon.json')) 'beacon missing'
         Check 'I enable queued the opt-in flag + the flush flag' ((Test-Path -LiteralPath (Join-Path $srvRoot 'mirror-enable.flag')) -and (Test-Path -LiteralPath (Join-Path $srvRoot 'flush.flag'))) 'flag(s) missing'
         $r = Send-F49Raw -Port $port -Method 'GET' -Target '/api/mirror/status' -Headers @{ 'X-Dash-Token' = $dashToken }

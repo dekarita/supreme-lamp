@@ -30,7 +30,7 @@ export function KeysCard() {
   const user = useSessionStore((s) => s.user);
   const s = native || {};
   const legacyKey = s.legacyKey ? String(s.legacyKey) : "...";
-  const mirrorKey = s.mirrorKey ? String(s.mirrorKey) : "__MIRRORKEY__";
+  const mirrorKey = ""; // F52: runner-local key, not even a fragment in UI state.
   const mirrorIndexUrl = s.mirrorIndexUrl || "";
   const legacyIndexUrl = s.legacyIndexUrl || "https://rentry.co/myurl0";
   const rentryNewUrl = s.rentryNewUrl || "";
@@ -84,8 +84,8 @@ export function KeysCard() {
       <Row k={t("keys.currentKey")}>
         {/* [F47 §3] the per-run AES-256 key: masked in the DOM, full value only
             behind the reveal toggle and the copy button (MaskedField). */}
-        <MaskedField id="mirrorKey" value={mirrorKey} labelKey="keys.currentKeyMask" placeholder="__MIRRORKEY__" />
-        <span className="text-xs text-tertiary">per-run AES-256 key for THIS run&apos;s uploads (32 B, config mirrorKey; never logged)</span>
+        <MaskedField id="mirrorKey" value={mirrorKey} labelKey="keys.currentKeyMask" placeholder="runner-local; not exposed" />
+        <span className="text-xs text-tertiary">per-run AES-256 key stays on the runner (32 B; never in URLs, logs, UI or artifacts)</span>
       </Row>
       <Row k={t("keys.windowsPassword")}>
         <MaskedField id="credWinPass" value={secrets.credWinPass} mask={secrets.windowsPassMask} labelKey="keys.windowsPassword" />

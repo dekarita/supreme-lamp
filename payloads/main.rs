@@ -115,11 +115,6 @@ fn build_snapshot(root: &Path, wire_opt: Option<Value>) -> Value {
         })
     });
     let mirror = cfg.get("mirror").and_then(Value::as_bool).unwrap_or(false);
-    let mirror_key = if mirror {
-        cfg_str(&cfg, "mirrorKey")
-    } else {
-        String::new()
-    };
     let legacy_links: Vec<String> = cfg
         .get("legacyLinks")
         .and_then(Value::as_array)
@@ -140,8 +135,8 @@ fn build_snapshot(root: &Path, wire_opt: Option<Value>) -> Value {
         },
         "ghrdp": cfg_str(&cfg, "ghrdp"),
         "mirror": mirror,
-        "encryptMode": cfg_str(&cfg, "encryptMode"),
-        "mirrorKey": mirror_key,
+        "encryptMode": prog.get("encryptMode").cloned().unwrap_or_else(|| json!(cfg_str(&cfg, "encryptMode"))),
+        "mirrorPlaintextElection": cfg.get("mirrorPlaintextElection").and_then(Value::as_bool).unwrap_or(false),
         "mirrorIndexUrl": cfg_str(&cfg, "mirrorIndexUrl"),
         "serveUrl": cfg_str(&cfg, "serveUrl"),
         "funnelUrl": cfg_str(&cfg, "funnelUrl"),
@@ -720,6 +715,7 @@ async fn main() {
         .route("/health", get(health_handler))
         .route("/ping", get(ping_handler))
         .route("/api/progress", get(api_progress))
+        .route("/mirror", get(api_progress))
         .route("/api/config", get(api_config))
         .route("/api/uploads", get(api_uploads))
         .route("/api/stats", get(api_stats))
@@ -1079,7 +1075,7 @@ primary: <a id="primaryLink" class="grad" href="http://__IP__:7332/">http://__IP
   <div class="row"><span class="k">LEGACY key</span><span class="v" id="legacyKey">...</span><button onclick="copyById('legacyKey',this)">copy</button><span class="note">decrypt key for files uploaded before this run</span></div>
   <div class="row"><span class="k">New Rentry</span><a id="rentryNew" href="javascript:void(0)">(not created yet)</a><button onclick="copyText(document.getElementById('rentryNew').textContent,this)">copy</button></div>
   <div class="row"><span class="k">Telegraph</span><a id="telegraphLink" href="javascript:void(0)">__TELEGRAPH__</a><button onclick="copyText(document.getElementById('telegraphLink').textContent,this)">copy</button></div>
-  <div class="row"><span class="k">Current key</span><span class="v" id="mirrorKey">__MIRRORKEY__</span><button onclick="copyById('mirrorKey',this)">copy</button><span class="note">decrypt key for THIS run's uploads</span></div>
+  <div class="row"><span class="k">Current key</span><span class="v" id="mirrorKey">runner-local; not exposed</span><span class="note">per-run key never leaves the runner</span></div>
   <div class="row" id="decryptRow" style="display:none"><span class="k">Decryptor</span><a id="decryptLink" href="javascript:void(0)" target="_blank">-</a><button onclick="copyText(document.getElementById('decryptLink').href,this)">copy</button></div>
   <div class="row" id="archiveRow" style="display:none"><span class="k">Archive</span><a id="archiveLink" href="javascript:void(0)" target="_blank">-</a><button onclick="copyText(document.getElementById('archiveLink').href,this)">copy</button></div>
   <div class="row" id="searchRow" style="display:none"><span class="k">File Search</span><a id="searchLink" href="javascript:void(0)" target="_blank">-</a><button onclick="copyText(document.getElementById('searchLink').href,this)">copy</button></div>
@@ -1198,7 +1194,6 @@ function render(d){
   if(d.rentryNewUrl){rn.textContent=d.rentryNewUrl;rn.href=d.rentryNewUrl;}else{rn.textContent='(not created yet)';rn.href='javascript:void(0)';}
   var tl=$('telegraphLink');
   if(d.mirrorIndexUrl){tl.textContent=d.mirrorIndexUrl;tl.href=d.mirrorIndexUrl;}else{tl.textContent='(not created yet)';tl.href='javascript:void(0)';}
-  if(d.mirrorKey){$('mirrorKey').textContent=d.mirrorKey;}
   if(d.pagesBase){var pb=d.pagesBase;var pl2=$('pagesLink');if(pl2){pl2.textContent=pb;pl2.href=pb;}var dr=$('decryptRow');if(dr){dr.style.display='';var dl=$('decryptLink');dl.href=pb+'/decrypt.html';dl.textContent='Web Decryptor';}var ar=$('archiveRow');if(ar){ar.style.display='';var al=$('archiveLink');al.href=pb+'/archive.html';al.textContent='Session Archive';}var sr=$('searchRow');if(sr){sr.style.display='';var sl=$('searchLink');sl.href=pb+'/search.html';sl.textContent='File Search';}var xr=$('explorerRow');if(xr){xr.style.display='';var xl=$('explorerLink');xl.href=pb+'/explorer.html';xl.textContent='GHRDP Explorer (Win11)';}}
   if(!runStartedAtMs&&d.runStartedAt){var rs=parseTs(d.runStartedAt);if(!isNaN(rs))runStartedAtMs=rs;}
   else if(!runStartedAtMs&&d.startedAt){var rs2=parseTs(d.startedAt);if(!isNaN(rs2))runStartedAtMs=rs2;}

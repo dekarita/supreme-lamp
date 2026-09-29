@@ -55,7 +55,8 @@ none - the reason is reported immediately |
   `Get-F46BackoffMs`; the fixed ~10 s cadence is gone (a file inside its backoff
   window is reported as `queued` with the reason, and no network call is made).
 - **Attempt 0 (preflight, zero network tries)**: `mirrorHosts[].maxFileBytes` and
-  `mirrorHosts[].blockedExtensions` are evaluated from config before any request;
+  `mirrorHosts[].blockedExtensions` are evaluated before any upload request. F52
+  fills the cap from the cached read-only `GET /servers` matrix;
   a violation is reported as `phase=size` / `phase=type` with `0` network tries.
 - Encryption requested but unavailable, a `phase=auth` refusal (F48: the host
   requires an account token and token-less mode is unsupported) and "no enabled
@@ -120,18 +121,19 @@ credential in a log or artifact. A gate fails the build on those patterns.
 
 - The worker reports the encryption that ACTUALLY happened (`encrypted=false`
   for a plaintext upload; the flag is never inferred from `encryptMode`).
-- **F47: the documented AES-256 mode now exists.** `mirror_encrypt=true` at
-  dispatch (or `encryptMode=all|media-plain` in config) makes the worker encrypt
-  each file with a per-run 32-byte key before upload:
-  - `AES-256-GCM` - preferred. Container: `GHRDPMIR` + ver + alg + nonce(12) +
-    tag(16) + ciphertext. Availability is PROVEN per runner by a real
-    encrypt/decrypt self-test (`Test-F46AesGcmUsable`), never assumed.
-  - `AES-256-CBC-PBKDF2` - fallback when the runner's .NET cannot bind
-    `AesGcm`. Container: salt(16) + iv(16) + AES-256-CBC over
-    PBKDF2-SHA256(key, salt, 100000) - byte-identical to the legacy `.ghenc`
-    form, so `docs/decrypt.html` and the web index decrypt it in the browser.
-  - Which algorithm ran is recorded per file (`encAlg`) and printed in the
-    attempt table; a 32-byte key length is asserted, a shorter key is refused.
+- **F52: encryption is the default, and streams with the socket.** Auto-upload
+  and runtime opt-in ALWAYS use the per-run 32-byte key with
+  `AES-256-CBC-PBKDF2` (salt(16) + iv(16) + AES-256-CBC over
+  PBKDF2-SHA256(key, salt, 100000), the existing `.ghenc` form). The source is a
+  bounded pull stream: no full-file byte array and no ciphertext staging file.
+  Its length is `32 + 16 * (floor(plainBytes / 16) + 1)`, computed in Int64.
+  CBC is not authenticated GCM, and is labeled CBC, never GCM. The existing
+  GCM container remains readable by the legacy decrypt helper; the runner's
+  `Test-F46AesGcmUsable` self-test remains available for legacy compatibility.
+- Only an explicit `mirror_encrypt=false` dispatch elects manual plaintext;
+  `media-plain` and missing/old `encryptMode=none` are NOT plaintext elections.
+- Algorithm and actual mode are recorded per file and attempt. A malformed or
+  missing key/encryptor yields a single `phase=encrypt` refusal, never fallback.
 - Encrypted parts are uploaded with the part mime
   **`application/x-ghrdp-mirror`** (already in the Explorer preview allowlist),
   and the display name gains the `.ghenc` suffix (the legacy Explorer decrypt
@@ -143,9 +145,9 @@ credential in a log or artifact. A gate fails the build on those patterns.
   runner upload (no AES-256)" unless the worker reports encrypted rows, in which
   case it reads "Mirror - AES-256 encrypted runner upload" and names the
   algorithm; a DOM test pins title/worker parity, so the UI cannot overclaim.
-- The key lives in config `mirrorKey` (masked + copy in the Keys card) and is in
+- The key lives ONLY in runner-local config `mirrorKey` (no UI reveal/copy) and is in
   the log-redaction set: it never appears in a log line, attempt record,
-  artifact or URL. [F48] There is **no gofile token at all** in this system -
+  artifact, UI or URL. [F48] There is **no gofile token at all** in this system -
   the mirror is token-less guest mode end to end (§9).
 
 ## 5. Read-only host probe (F46 §5)
@@ -182,7 +184,7 @@ unavailable from ephemeral runners and leave it off. No evasion is permitted.
       "uploadHost": "upload.gofile.io",
       "uploadPath": "/uploadfile",
       "enabled": false,
-      "maxFileBytes": 0,
+      "maxFileBytes": null,
       "blockedExtensions": [],
       "authMode": "guest",
       "timeoutSec": 120
@@ -195,8 +197,10 @@ unavailable from ephemeral runners and leave it off. No evasion is permitted.
 `authMode` is `'guest' | 'requires-account'` and is set **only** by a probe or
 first-attempt result (401/403 flips it), never by the presence of any secret -
 no token field exists in this schema. `maxFileBytes`
-0 means "no cap", `blockedExtensions` empty means "no blocked types" - both are
-operator policy knobs, not invented defaults.
+null (and legacy 0) means **unknown cap**, never a proven unlimited host.
+`blockedExtensions` empty means "no blocked types". The cached host matrix
+provides any explicitly advertised cap; a smaller manual config limit is still
+honored. No client-side size cap is added to the Downloads auto lane.
 
 ## 7. Proof (F46 §6)
 
@@ -228,8 +232,8 @@ operator policy knobs, not invented defaults.
    secret from repo `Settings > Secrets and variables > Actions` **and**
    invalidate that token on the host account page (treated as compromised).
    Confirm both before dispatching. The workflow reads NO mirror secret.
-2. Dispatch `main.yml` with `mirror_enable=true` (+ `mirror_encrypt=true` if you
-   want AES-256); read the `F46 mirror host probe` matrix in the step summary.
+2. Dispatch `main.yml` with `mirror_enable=true` (encryption defaults on; only explicit
+   `mirror_encrypt=false` elects manual plaintext); read the `F46 mirror host probe` matrix in the step summary.
 3. Open the Mirror page: the **Mirror host matrix** card renders the same
    `{host,status,note}` rows live from `/diag` (`mirrorHosts`, token-less guest
    mode), and the Diagnose drawer carries them plus the worker's attempt table
@@ -253,7 +257,7 @@ Enabling the mirror is **operator intent expressed per dispatch**:
 | Input | Default | Effect |
 | --- | --- | --- |
 | `mirror_enable` | `false` | `true` writes `mirrorHosts[0].enabled=true` into `config.json` **for this run only** (enabled flag + host id, nothing else). |
-| `mirror_encrypt` | `false` | `true` sets `encryptMode=all` and generates the per-run 32-byte `mirrorKey` (§4). |
+| `mirror_encrypt` | `true` (F52) | Explicit `false` elects manual plaintext + banner. Every run gets a runner-local 32-byte key; auto/runtime always encrypt (§4). |
 
 **No token anywhere (operator directive, binding).** Every gofile API token
 plumbing path was deleted: no repository secret read, no step or process
@@ -389,3 +393,68 @@ are untouched.
   simulated download into `Downloads` auto-queues and attempts without any
   opt-in state, while Desktop/Documents/Temp/RDP-Storage files stay gated, and
   the F49 modal contract is asserted untouched.
+
+
+## 12. F52 HONEST TELEMETRY, Int64 streams and guest-cap reality
+
+**Socket truth.** `StreamContent` is wrapped at its outgoing destination. Only
+successful payload `Write` + `Flush` completions increment `bytesSent` (Int64);
+file reads, encryption, scans, multipart framing and attempted/failed flushes
+never do. This measures bytes handed to the socket, NOT host acceptance. Live
+samples are published while `SendAsync` is pending, to `mirrorDiag.progress`,
+`/mirror` and `/api/progress`; classic and v2 cards poll every 3s (plus existing
+WebSocket push). Counts above 9,007,199,254,740,991 are decimal JSON strings;
+BigInt subtraction/ratios keep the cards exact before human-unit formatting.
+
+**Stall semantics.** Speed is the payload-byte delta over a bounded 60s rolling
+window (one-second samples), not smoothed scan/completion jumps. ETA exists ONLY
+with a positive window delta; otherwise both row and header show
+`stalled (no bytes in <N>s)` and ETA is hidden. The window clock is monotonic.
+At each 60s no-byte window a structured `host/phase=http/status/ms/msg` stall
+record is emitted. Three such windows cancel/classify that attempt as failed
+`phase=http`, retaining the last socket/host text. The F44 transient-only
+five-attempt budget, jitter and Retry-After floor/cap are byte-for-byte unchanged.
+A whole-request 120s timeout is not used as a hidden large-file cap. Active and
+done rows override “Waiting for first upload”; retry rows are upserted rather
+than accumulating stale active copies. Bytes/size drive progress percentages.
+
+**Guest cap is evidence, not a promise.** An explicit byte-valued
+`maxFileBytes` in a successful, unauthenticated `GET /servers` envelope is an
+ADVERTISED cap. Fleet mode uses the first usable server (no rotation); the
+automatic endpoint uses a global cap or unanimous explicit per-server caps.
+Absent/mixed caps stay null (unknown), so the stream may be attempted. Before
+upload, a known cap below the exact wire length produces `phase=size`,
+`network=0` and that exact cap in `hostMessage`. The read-only matrix always
+keeps `maxProvenBytes=null`: a GET cannot prove upload acceptance. Likewise,
+128 GiB loopback success does NOT prove a 128 GiB guest-host cap. If host-cap
+proof is below the 100 GB target (100,000,000,000 bytes), STOP; operator options
+are **self-hosted target for that size class | accept the cap**. No identity
+spoofing, proxy, rotation, account auth or tokens. F48 GATE1–3 remain zero-hit.
+Sandbox probe on 2026-09-29: TLS EOF before HTTP; advertised cap and upload-proven
+cap both unknown. The Windows lab records a separate read-only runner verdict.
+
+**Auto-upload rule and plaintext election.** Any completed/stable RDP download
+into the Downloads root (including Downloads subfolders and sub-512-byte files)
+auto-queues without opt-in, even when the other roots are disabled. No client
+size cap; encryption is an on-demand bounded stream, including 100 GB+ lengths.
+Desktop/Documents/Temp/RDP-Storage retain the full opt-in gate. Every Downloads
+attempt encrypts with the per-run key and reports worker `encryptMode=all` in
+its row and structured attempt. Runtime opt-in converges to `all` as well.
+Explicit `mirror_encrypt=false` dispatch is manual-lane-only and renders:
+`PLAINTEXT ELECTED: mirror_encrypt=false dispatch — manual lane only. Downloads auto-upload and runtime opt-in always encrypt.`
+No runtime or automatic plaintext fallback is allowed. The key never enters
+URLs, logs, UI, public snapshots, indexes or artifacts; only runner-local config
+and cryptographic memory hold it.
+
+**Lab cells.** `tests/f52-mirror-telemetry.ps1` streams fsutil-marked sparse
+8/64/128 GiB files (8,589,934,592 / 68,719,476,736 / 137,438,953,472 bytes) into a
+discarding loopback receiver. It checks counter/drain parity, monotonic samples,
+bounded socket lead, failed-flush=0, 60s window/180s classification, a genuinely
+frozen socket (loopback-only shortened clock), cap refusal with network=0,
+streamed encrypted Downloads trigger, mode labels and secret-free records.
+Windows PowerShell 5.1 runs the small compatibility cell separately; CI never
+skips the full pwsh sparse matrix. Node classic-DOM and Vitest v2-DOM frozen-byte
+cells require a stall label, hidden ETA and truthful headers. Host acceptance
+and the >4 GB live Downloads/operator verification remain PENDING-USER. The
+session never dispatches `main.yml` or claims the final LIVE line before those
+operator confirmations.

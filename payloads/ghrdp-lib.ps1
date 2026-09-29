@@ -68,7 +68,7 @@ function Initialize-MirrorProgress {
         ts = (Get-Date).ToString('o')
         alive = $false
         mirror = $false
-        active = [ordered]@{ name = ''; phase = 'idle'; bytesDone = [long]0; bytesTotal = [long]0; pct = 0; speedBps = [long]0 }
+        active = [ordered]@{ name = ''; phase = 'idle'; bytesSent = [long]0; bytesDone = [long]0; bytesTotal = [long]0; pct = 0; speedBps = [double]0; windowBytes = [long]0; windowSeconds = [double]0; etaSeconds = $null; stalled = $false; noBytesSeconds = 0; stallLabel = '' }
         agg = [ordered]@{ total = 0; done = 0; active = 0; failed = 0; bytesDone = [long]0; bytesTotal = [long]0; overallPct = 0; speedBps = [long]0 }
         telemetry = [ordered]@{ scans = 0; lastScan = ''; roots = @(); seen = 0; skippedJunk = 0; skippedSmall = 0; locked = 0; queued = 0 }
         archives = @()
@@ -85,6 +85,13 @@ function Set-ActiveFile {
     $a.name = $Name
     $a.phase = $Phase
     $a.bytesDone = [long]0
+    $a.bytesSent = [long]0
+    $a.windowBytes = [long]0
+    $a.windowSeconds = [double]0
+    $a.etaSeconds = $null
+    $a.stalled = $false
+    $a.noBytesSeconds = 0
+    $a.stallLabel = ''
     $a.bytesTotal = [long]$Total
     $a.pct = 0
     $a.speedBps = [long]0
@@ -102,6 +109,9 @@ function Tick-MirrorBytes {
 function Add-MirrorLog {
     param([string]$Message)
     if (-not $global:GhrdpProg) { return }
+    if ($global:GhrdpF52MirrorKey -and (Get-Command Protect-F46SecretText -ErrorAction SilentlyContinue)) {
+        $Message = Protect-F46SecretText -Text $Message -Secrets @($global:GhrdpF52MirrorKey)
+    }
     $line = (Get-Date -Format 'HH:mm:ss') + ' ' + $Message
     $p = $global:GhrdpProg
     $newLog = @($line) + @($p.log)
@@ -117,37 +127,45 @@ function Flush-MirrorProgress {
     if (-not $global:GhrdpProgPath -or -not $global:GhrdpProg) { return }
     $p = $global:GhrdpProg
     $p.ts = (Get-Date).ToString('o')
-    $dt = ($now - $global:GhrdpSpdAll.t) / 10000000.0
-    $liveNow = [long]$global:GhrdpDoneBytes
-    if ($p.active) { $liveNow = [long]$global:GhrdpDoneBytes + [long]$p.active.bytesDone }
+    # [F52] NEVER infer upload speed from scans, encryption reads, completion
+    # jumps or an exponential moving average. Only the socket adapter's 60s
+    # window is authoritative. A frozen counter becomes zero, not ~1 B/s.
+    $activeSent = [long]0
+    $activeWindow = [long]0
+    $speed = [double]0
+    if ($p.active -and $p.active.name -and $p.active.phase -eq 'http') {
+        $activeSent = [long]$p.active.bytesSent
+        $activeWindow = [long]$p.active.windowBytes
+        if ($activeWindow -gt 0 -and -not $p.active.stalled) { $speed = [double]$p.active.speedBps }
+    }
+    $p.active.bytesDone = $activeSent
+    $liveNow = [long]$global:GhrdpDoneBytes + $activeSent
     $global:GhrdpLiveBytes = $liveNow
-    if ($dt -gt 0.5) {
-        $inst = [math]::Max(0, [math]::Round(($liveNow - [long]$global:GhrdpSpdAll.b) / $dt))
-        $old = [long]$p.agg.speedBps
-        $p.agg.speedBps = [long]([math]::Round((0.4 * $inst) + (0.6 * $old)))
-        $global:GhrdpSpdAll = @{ t = $now; b = $liveNow }
-        $hist = @($p.speedHistory) + @($p.agg.speedBps)
+    $p.agg.speedBps = $speed
+    $p.agg.windowBytes = $activeWindow
+    $p.agg.windowSeconds = [double]$p.active.windowSeconds
+    $p.agg.bytesSent = $liveNow
+    $p.agg.bytesDone = $liveNow
+    $p.agg.etaSeconds = $null
+    if ($speed -gt 0 -and $activeWindow -gt 0) {
+        $p.agg.etaSeconds = [double]([decimal][Math]::Max([long]0, ([long]$p.agg.bytesTotal - $liveNow)) / [decimal]$speed)
+    }
+    if ($p.active.name -and [long]$p.active.bytesTotal -gt 0) {
+        $p.active.pct = [math]::Min(100, [math]::Round([decimal]100 * [decimal]$activeSent / [decimal]$p.active.bytesTotal, 1))
+    } else { $p.active.pct = 0 }
+    $p.agg.overallPct = 0
+    if ([long]$p.agg.bytesTotal -gt 0) {
+        $p.agg.overallPct = [math]::Min(100, [math]::Round([decimal]100 * [decimal]$liveNow / [decimal]$p.agg.bytesTotal, 1))
+    }
+    if (($now - $global:GhrdpSpdAll.t) -ge 10000000) {
+        $hist = @($p.speedHistory) + @($speed)
         if ($hist.Count -gt 90) { $hist = $hist[($hist.Count - 90)..($hist.Count - 1)] }
         $p.speedHistory = $hist
-    }
-    $dta = ($now - $global:GhrdpSpdFile.t) / 10000000.0
-    if ($dta -gt 0.5) {
-        $p.active.speedBps = [long][math]::Max(0, [math]::Round(([long]$p.active.bytesDone - [long]$global:GhrdpSpdFile.b) / $dta))
-        $global:GhrdpSpdFile = @{ t = $now; b = [long]$p.active.bytesDone }
-    }
-    if ([long]$p.active.bytesTotal -gt 0) {
-        $p.active.pct = [math]::Min(100, [math]::Round(100.0 * [long]$p.active.bytesDone / [long]$p.active.bytesTotal, 1))
-    } else {
-        $p.active.pct = 0
-    }
-    $p.agg.bytesDone = [long]$global:GhrdpDoneBytes
-    $p.agg.overallPct = 0
-    if ([int]$p.agg.total -gt 0) {
-        $p.agg.overallPct = [math]::Min(100, [math]::Round(100.0 * [int]$p.agg.done / [int]$p.agg.total, 1))
+        $global:GhrdpSpdAll.t = $now
     }
     try {
         $tmp = $global:GhrdpProgPath + '.tmp'
-        [System.IO.File]::WriteAllText($tmp, ($p | ConvertTo-Json -Depth 8), $global:GhrdpEncNoBom)
+        [System.IO.File]::WriteAllText($tmp, ((ConvertTo-F52JsonSafe $p) | ConvertTo-Json -Depth 10), $global:GhrdpEncNoBom)
         [System.IO.File]::Copy($tmp, $global:GhrdpProgPath, $true)
         Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
     } catch { }
@@ -409,7 +427,7 @@ function Build-IndexBodyText {
         [void]$sb.AppendLine(('LEGACY decrypt key (files uploaded before this run): ' + [string]$Cfg.legacyDecryptKey))
     }
     if ($encMode -ne 'none') {
-        [void]$sb.AppendLine(('Current decrypt key (this run): ' + [string]$Cfg.mirrorKey))
+        [void]$sb.AppendLine('Current mirror key: runner-local; not exposed')
     }
     [void]$sb.AppendLine('')
     [void]$sb.AppendLine('## FOLDERS - quick overview (no scrolling needed)')
@@ -491,7 +509,7 @@ function Publish-TelegraphIndex {
         [void]$nodes.Add(@{ tag = 'p'; children = @(('LEGACY decrypt key (older runs): ' + [string]$Cfg.legacyDecryptKey)) })
     }
     if ($encMode -ne 'none') {
-        [void]$nodes.Add(@{ tag = 'p'; children = @(('Current decrypt key (this run): ' + [string]$Cfg.mirrorKey)) })
+        [void]$nodes.Add(@{ tag = 'p'; children = @('Current mirror key: runner-local; not exposed') })
     }
     [void]$nodes.Add(@{ tag = 'h4'; children = @('FOLDERS - quick overview (no scrolling needed)') })
     foreach ($g in $groups.Keys) {
@@ -671,7 +689,7 @@ function Publish-SearchPage {
         runUrl = ('https://github.com/' + $repo + '/actions/runs/' + [string]$env:GITHUB_RUN_ID)
         mirror = [bool]$Cfg.mirror
         encryptMode = [string]$Cfg.encryptMode
-        mirrorKey = [string]$Cfg.mirrorKey
+        mirrorKey = ''
         legacyDecryptKey = [string]$Cfg.legacyDecryptKey
         mirrorIndexUrl = [string]$Cfg.mirrorIndexUrl
         pagesBase = [string]$Cfg.searchUrl
@@ -690,7 +708,7 @@ function Publish-SearchPage {
     $sessions = @()
     try { if (Test-Path -LiteralPath $arcPath) { $aj = Get-Content -LiteralPath $arcPath -Raw | ConvertFrom-Json; $sessions = @($aj.sessions) } } catch { }
     $sessions = @($sessions | Where-Object { [string]$_.runId -ne [string]$env:GITHUB_RUN_ID })
-    $sessions += [ordered]@{ runId = [string]$env:GITHUB_RUN_ID; startedAt = [string]$Cfg.sessionStartedAt; filesCount = @($data).Count; key = [string]$Cfg.mirrorKey; telegraphUrl = [string]$Cfg.mirrorIndexUrl; files = $data }
+    $sessions += [ordered]@{ runId = [string]$env:GITHUB_RUN_ID; startedAt = [string]$Cfg.sessionStartedAt; filesCount = @($data).Count; key = ''; telegraphUrl = [string]$Cfg.mirrorIndexUrl; files = $data }
     [System.IO.File]::WriteAllText($arcPath, (ConvertTo-Json -InputObject @{ sessions = $sessions; updated = (Get-Date -Format o) } -Depth 6 -Compress), $global:GhrdpEncNoBom)
     & git.exe -C $tmp add docs/search.html docs/index.html docs/archive.json 2>$null | Out-Null
     & git.exe -C $tmp -c user.email=ghrdp@local -c user.name=ghrdp-bot commit -m "update mirror web pages" 2>$null | Out-Null
@@ -756,7 +774,7 @@ function Publish-GithubPagesData {
         sessionId = [string]$Cfg.sessionId
         mirror = [bool]$Cfg.mirror
         encryptMode = [string]$Cfg.encryptMode
-        mirrorKey = [string]$Cfg.mirrorKey
+        mirrorKey = ''
         legacyKey = [string]$Cfg.legacyDecryptKey
         legacyLinks = @($Cfg.legacyLinks)
         telegraph = [string]$Cfg.mirrorIndexUrl
@@ -773,7 +791,7 @@ function Publish-GithubPagesData {
     foreach ($it in @($IndexList)) { $liveFiles += [ordered]@{ n = [string]$it.name; s = [long]$it.size; l = [string]$it.link; p = [string]$it.preview; e = [string]$it.encrypted; f = ([string]$it.folder) } }
     $liveBytes = [long]0
     foreach ($it in @($IndexList)) { $liveBytes += [long]$it.size }
-    $live = [ordered]@{ id = ([string]$Cfg.sessionId); date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'); live = $true; filesCount = @($IndexList).Count; bytes = $liveBytes; key = [string]$Cfg.mirrorKey; telegraph = [string]$Cfg.mirrorIndexUrl; rentry = ''; files = $liveFiles }
+    $live = [ordered]@{ id = ([string]$Cfg.sessionId); date = (Get-Date).ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss'); live = $true; filesCount = @($IndexList).Count; bytes = $liveBytes; key = ''; telegraph = [string]$Cfg.mirrorIndexUrl; rentry = ''; files = $liveFiles }
     try { Put-GhFile -Repo ([string]$Cfg.repo) -Path 'live.json' -Text ($live | ConvertTo-Json -Depth 6 -Compress) -Token $token; Add-MirrorLog '[pages] live.json pushed (search page shows live session)' } catch { Add-MirrorLog ('[pages] live.json push failed: ' + $_.Exception.Message) }
     return $true
 }
