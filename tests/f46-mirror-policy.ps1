@@ -523,11 +523,12 @@ function Serve-Scripted {
         $r53.StatusCode = $code53
         $r53.ContentType = 'application/json'
         $r53.ContentLength64 = $rb53.Length
-        if ([string]$Step[1]) { try { $r53.AddHeader('Retry-After', [string]$Step[1]) } catch { } }
+        $raSet = ''
+        if ([string]$Step[1]) { try { $r53.AddHeader('Retry-After', [string]$Step[1]) } catch { }; $raSet = [string]$r53.Headers['Retry-After'] }
         $r53.OutputStream.Write($rb53, 0, $rb53.Length)
         $r53.Close()
-        return $true
-    } catch { return $false }
+        return $raSet
+    } catch { return ('ERR:' + $_.Exception.Message) }
 }
 foreach ($rcase in @(
     @('429-then-success', @(@('429', '1'), @('200', '')), 2, $true, 1000),
@@ -559,8 +560,11 @@ foreach ($rcase in @(
         return @{ ok = [bool]$r.ok; phase = [string]$r.phase; tries = @($r.attempts).Count; httpStatuses = @(@($r.attempts) | ForEach-Object { [string]$_.status }); slept = @($slept) }
     } -ArgumentList $modPath, $filePath, $pair53.port, ('f50-' + $rname + '.bin')
     $served = 0
+    $raSeen = ''
     foreach ($step53 in $script50) {
-        if (Serve-Scripted -Listener $pair53.listener -Step $step53) { $served = $served + 1 } else { break }
+        $srv = Serve-Scripted -Listener $pair53.listener -Step $step53
+        if ($srv -is [string]) { $raSeen = [string]$srv } else { $raSeen = '' }
+        $served = $served + 1
     }
     $client54 = $null
     try { if (Wait-Job -Job $job54 -Timeout 120) { $client54 = Receive-Job -Job $job54 } } catch { $client54 = $null }
@@ -570,7 +574,7 @@ foreach ($rcase in @(
     if ($minFirstSleep -gt 0 -and $client54) {
         $firstSleep = 0
         if (@($client54.slept).Count -gt 0) { $firstSleep = [int]@($client54.slept)[0] }
-        Check ('F50 ' + $rname + ': the Retry-After hint stayed a FLOOR for the first backoff') ($firstSleep -ge $minFirstSleep) ('firstSleepMs=' + $firstSleep)
+        Check ('F50 ' + $rname + ': the Retry-After hint stayed a FLOOR for the first backoff') ($firstSleep -ge $minFirstSleep) ('firstSleepMs=' + $firstSleep + ' listenerHeader=[' + $raSeen + ']')
     }
 }
 # refused connection: a REAL transport failure classified by the new
