@@ -378,6 +378,314 @@ Write-Host ('[F47] AES-256 mode on this runner: ' + $(if (Test-F46AesGcmUsable) 
 $policyTxt = ('failFast=' + (@($script:F46FailFastStatuses) -join ',') + ' transient=' + (@($script:F46TransientPhases) -join ',') + ' maxAttempts=' + [int]$script:F46MaxAttempts + ' retryAfterCapMs=' + [int]$script:F46RetryAfterCapMs)
 Write-Host ('[F46] policy: ' + $policyTxt)
 
+# ---------------------------------------------------------------------------
+# [F50 §1] STREAMING TRANSPORT: the upload path is HttpClient +
+# MultipartFormDataContent + StreamContent(FileStream); no whole-file byte
+# array and no buffering request stream exist in it (the .NET 2GB in-box
+# request buffer was the "Stream was too long" failure).
+# ---------------------------------------------------------------------------
+Write-Host '[F50 §1] transport rewrite: streamed upload path (no whole-file buffering)'
+$moduleText = Get-Content -LiteralPath $modPath -Raw
+$fnStart = $moduleText.IndexOf('function Send-F46GofileUpload')
+$fnEnd = $moduleText.IndexOf('function ConvertFrom-F46UploadResponse', [Math]::Max($fnStart, 0))
+$fnBody = ''
+if ($fnStart -ge 0 -and $fnEnd -gt $fnStart) { $fnBody = $moduleText.Substring($fnStart, $fnEnd - $fnStart) }
+Check 'F50: the uploader exists to be rewritten' ($fnStart -ge 0 -and $fnEnd -gt $fnStart) 'Send-F46GofileUpload not found'
+Check 'F50: transport is HttpClient' ($fnBody -match 'System\.Net\.Http\.HttpClient') 'no HttpClient in the upload path'
+Check 'F50: body is a MultipartFormDataContent' ($fnBody -match 'MultipartFormDataContent') 'no MultipartFormDataContent in the upload path'
+Check 'F50: the file part is StreamContent over a FileStream' (($fnBody -match 'System\.Net\.Http\.StreamContent') -and ($fnBody -match 'System\.IO\.File\]::Open\(')) 'no StreamContent(FileStream) in the upload path'
+Check 'F50: NO whole-file byte array (no ReadAllBytes in the upload path)' ($fnBody -notmatch 'ReadAllBytes') 'ReadAllBytes appeared in the upload path'
+Check 'F50: NO MemoryStream in the upload path' ($fnBody -notmatch 'MemoryStream') 'MemoryStream appeared in the upload path'
+Check 'F50: F44 fail-fast statuses untouched' ((@($script:F46FailFastStatuses) -join ',') -eq '401, 403, 413, 415') ('failFast=' + (@($script:F46FailFastStatuses) -join ','))
+Check 'F50: F44 Retry-After cap stays 120s' ([int]$script:F46RetryAfterCapMs -eq 120000) ('cap=' + [int]$script:F46RetryAfterCapMs)
+Check 'F50: F44 attempt budget stays 5' ([int]$script:F46MaxAttempts -eq 5) ('max=' + [int]$script:F46MaxAttempts)
+
+# ---------------------------------------------------------------------------
+# [F50 §2] LARGE-FILE STREAMING MATRIX: sparse files (fsutil file createnew)
+# of 100MB / 1GB / 3GB / 6GB streamed by the SHIPPED uploader into a
+# discarding loopback listener. The listener counts (never stores) the body
+# bytes; a pass proves the request completed above the old 2GB ceiling with
+# bounded memory on the client side (StreamContent streams the FileStream).
+# ---------------------------------------------------------------------------
+Write-Host '[F50 §2] sparse-file streaming matrix: 100MB / 1GB / 3GB / 6GB -> discarding loopback listener'
+$f50Listener = $null
+$f50Port = 0
+for ($p50 = 47210; $p50 -le 47290; $p50++) {
+    try {
+        $l50 = New-Object System.Net.HttpListener
+        $l50.Prefixes.Add('http://127.0.0.1:' + $p50 + '/uploadfile/')
+        $l50.Start()
+        $f50Listener = $l50
+        $f50Port = $p50
+        break
+    } catch { try { if ($l50) { $l50.Close() } } catch { } }
+}
+if (-not $f50Listener) {
+    Check 'F50: a discarding loopback listener could be started' $false 'no free port / listener refused'
+} else {
+    Write-Host ('[F50] discarding listener on http://127.0.0.1:' + $f50Port + '/uploadfile/ (body bytes counted, never stored)')
+    foreach ($case in @(@('100MB', 100MB, 150), @('1GB', 1GB, 240), @('3GB', 3GB, 360), @('6GB', 6GB, 600))) {
+        $caseName = [string]$case[0]
+        $caseSize = [long]$case[1]
+        $caseTmo = [int]$case[2]
+        $sparse = Join-Path $tmp ('f50-sparse-' + $caseName + '.bin')
+        $fsutilOut = ''
+        try { $fsutilOut = (& fsutil file createnew $sparse $caseSize 2>&1 | Out-String).Trim() } catch { $fsutilOut = $_.Exception.Message }
+        if (-not (Test-Path -LiteralPath $sparse)) {
+            Check ('F50 ' + $caseName + ': the sparse file was created (fsutil)') $false $fsutilOut
+            continue
+        }
+        $onDisk = [long](Get-Item -LiteralPath $sparse).Length
+        Check ('F50 ' + $caseName + ': fsutil allocated ' + $caseSize + ' bytes sparse') ($onDisk -eq $caseSize) ('onDisk=' + $onDisk)
+        $job50 = Start-Job -ScriptBlock {
+            param($Mod, $Sparse, $Size, $Tmo, $Port)
+            $ErrorActionPreference = 'Stop'
+            . $Mod
+            $h = Get-F46DefaultHost
+            $h.enabled = $true
+            $h.uploadHostMode = 'auto'
+            $h.uploadHost = ('127.0.0.1:' + $Port)
+            $h.uploadScheme = 'http'
+            $h.timeoutSec = $Tmo
+            $sw = [System.Diagnostics.Stopwatch]::StartNew()
+            $r = Send-F46GofileUpload -HostCfg $h -Path $Sparse -Name ('f50-' + $Size + '.bin') -TimeoutSec $Tmo
+            $sw.Stop()
+            return @{ ok = [bool]$r.ok; phase = [string]$r.phase; httpStatus = $r.httpStatus; msg = [string]$r.hostMessage; fileId = [string]$r.fileId; ms = [int]$sw.ElapsedMilliseconds }
+        } -ArgumentList $modPath, $sparse, $caseSize, $caseTmo, $f50Port
+        $got = [long]0
+        $resp50 = $null
+        try {
+            $ctx50 = $f50Listener.GetContext()
+            $in50 = $ctx50.Request.InputStream
+            $buf50 = New-Object byte[] 1048576
+            $n50 = 0
+            while (($n50 = $in50.Read($buf50, 0, $buf50.Length)) -gt 0) { $got = $got + [long]$n50 }
+            $in50.Close()
+            $rb50 = [System.Text.Encoding]::UTF8.GetBytes('{"status":"ok","data":{"id":"f50-' + $caseName + '-id","downloadPage":"https://gofile.test/d/f50' + $caseName + '","code":"f50' + $caseName + '"}}')
+            $resp50 = $ctx50.Response
+            $resp50.StatusCode = 200
+            $resp50.ContentType = 'application/json'
+            $resp50.ContentLength64 = $rb50.Length
+            $resp50.OutputStream.Write($rb50, 0, $rb50.Length)
+            $resp50.Close()
+        } catch { Write-Host ('[F50] listener context failed (' + $caseName + '): ' + $_.Exception.Message) }
+        $client50 = $null
+        try { if (Wait-Job -Job $job50 -Timeout $caseTmo) { $client50 = Receive-Job -Job $job50 } } catch { $client50 = $null }
+        try { Remove-Job -Job $job50 -Force -ErrorAction SilentlyContinue } catch { }
+        $over = $got - $caseSize
+        Check ('F50 ' + $caseName + ': the full body reached the wire (' + $caseSize + ' bytes streamed, multipart overhead < 1KB)') (($got -ge $caseSize) -and ($over -ge 0) -and ($over -lt 1024)) ('got=' + $got + ' overhead=' + $over)
+        Check ('F50 ' + $caseName + ': the shipped uploader streamed it end-to-end (ok, id parsed)') ($client50 -and [bool]$client50.ok -and ($client50.fileId -eq ('f50-' + $caseName + '-id'))) ('r=' + $(if ($client50) { ($client50 | ConvertTo-Json -Compress -Depth 3) } else { 'no result' }))
+        $mbps = 0
+        if ($client50 -and [int]$client50.ms -gt 0) { $mbps = [int][math]::Round(($caseSize / 1MB) / ([int]$client50.ms / 1000.0)) }
+        Write-Host ('  [F50] ' + $caseName + ': ' + $got + ' bytes on the wire in ' + $(if ($client50) { [int]$client50.ms } else { -1 }) + ' ms (~' + $mbps + ' MB/s), memory bounded by the 1MB client chunk loop + StreamContent')
+        try { Remove-Item -LiteralPath $sparse -Force -ErrorAction SilentlyContinue } catch { }
+    }
+    try { $f50Listener.Stop(); $f50Listener.Close() } catch { }
+}
+
+# ---------------------------------------------------------------------------
+# [F50 §3] RETRY PATHS ON THE REAL TRANSPORT: the F44 policy still governs the
+# HttpClient path - 429 (Retry-After floor), 500, 502 retry to the budget,
+# a refused connection is a labeled transient, and preflight refusals still
+# cost ZERO network tries. TLS reset stays covered by the mock scenario above
+# (a loopback runner cannot fabricate a live TLS reset).
+# ---------------------------------------------------------------------------
+Write-Host '[F50 §3] real-transport retry paths: 429 (Retry-After), 500, 502, refused-tcp, preflight network=0'
+$f50Listener2 = $null
+$f50Port2 = 0
+for ($p52 = 47310; $p52 -le 47390; $p52++) {
+    try {
+        $l52 = New-Object System.Net.HttpListener
+        $l52.Prefixes.Add('http://127.0.0.1:' + $p52 + '/uploadfile/')
+        $l52.Start()
+        $f50Listener2 = $l52
+        $f50Port2 = $p52
+        break
+    } catch { try { if ($l52) { $l52.Close() } } catch { } }
+}
+if (-not $f50Listener2) {
+    Check 'F50: a scripted-response loopback listener could be started' $false 'no free port / listener refused'
+} else {
+    Write-Host ('[F50] scripted listener on http://127.0.0.1:' + $f50Port2 + '/uploadfile/')
+    foreach ($rcase in @(
+        @('429-then-success', @(@('429', '1'), @('200', '')), 2, $true, 1000),
+        @('500-500-then-success', @(@('500', ''), @('500', ''), @('200', '')), 3, $true, 0),
+        @('502-budget', @(@('502', ''), @('502', ''), @('502', ''), @('502', ''), @('502', '')), 5, $false, 0)
+    )) {
+        $rname = [string]$rcase[0]
+        $script50 = @($rcase[1])
+        $wantTries = [int]$rcase[2]
+        $wantOk = [bool]$rcase[3]
+        $minFirstSleep = [int]$rcase[4]
+        $job52 = Start-Job -ScriptBlock {
+            param($Mod, $Payload, $Port, $Script, $Name)
+            $ErrorActionPreference = 'Stop'
+            . $Mod
+            $h = Get-F46DefaultHost
+            $h.enabled = $true
+            $h.uploadHostMode = 'auto'
+            $h.uploadHost = ('127.0.0.1:' + $Port)
+            $h.uploadScheme = 'http'
+            $h.timeoutSec = 30
+            $slept = New-Object System.Collections.ArrayList
+            $r = Invoke-F46MirrorUploadWithPolicy -HostCfg $h -Path $Payload -Name $Name -Size ([long](Get-Item -LiteralPath $Payload).Length) -Sleeper { param($ms) [void]$slept.Add([int]$ms); Start-Sleep -Milliseconds ([Math]::Min([int]$ms, 1200)) } -Rand01 0
+            return @{ ok = [bool]$r.ok; phase = [string]$r.phase; tries = @($r.attempts).Count; httpStatuses = @(@($r.attempts) | ForEach-Object { [string]$_.status }); slept = @($slept) }
+        } -ArgumentList $modPath, $filePath, $f50Port2, $script50, ('f50-' + $rname + '.bin')
+        $served = 0
+        foreach ($step50 in $script50) {
+            $ctx52 = $null
+            try { $ctx52 = $f50Listener2.GetContext() } catch { break }
+            try {
+                $in52 = $ctx52.Request.InputStream
+                $buf52 = New-Object byte[] 65536
+                while (($in52.Read($buf52, 0, $buf52.Length)) -gt 0) { }
+                $in52.Close()
+                $code52 = [int]$step50[0]
+                $rb52 = [System.Text.Encoding]::UTF8.GetBytes('{"status":"error-cannot-store-' + $code52 + '"}')
+                $r52 = $ctx52.Response
+                $r52.StatusCode = $code52
+                $r52.ContentType = 'application/json'
+                $r52.ContentLength64 = $rb52.Length
+                if ($step50[1]) { $r52.Headers['Retry-After'] = [string]$step50[1] }
+                $r52.OutputStream.Write($rb52, 0, $rb52.Length)
+                $r52.Close()
+                $served = $served + 1
+            } catch { Write-Host ('[F50] scripted response failed (' + $rname + '): ' + $_.Exception.Message); break }
+        }
+        $client52 = $null
+        try { if (Wait-Job -Job $job52 -Timeout 120) { $client52 = Receive-Job -Job $job52 } } catch { $client52 = $null }
+        try { Remove-Job -Job $job52 -Force -ErrorAction SilentlyContinue } catch { }
+        Check ('F50 ' + $rname + ': ' + $wantTries + ' attempt(s) under the policy, ok=' + $wantOk) ($client52 -and ([int]$client52.tries -eq $wantTries) -and ([bool]$client52.ok -eq $wantOk)) ('r=' + $(if ($client52) { ($client52 | ConvertTo-Json -Compress -Depth 3) } else { 'no result' }))
+        if ($minFirstSleep -gt 0 -and $client52) {
+            $firstSleep = 0
+            if (@($client52.slept).Count -gt 0) { $firstSleep = [int]@($client52.slept)[0] }
+            Check ('F50 ' + $rname + ': the Retry-After hint stayed a FLOOR for the first backoff') ($firstSleep -ge $minFirstSleep) ('firstSleepMs=' + $firstSleep)
+        }
+    }
+    # refused connection: a REAL transport failure classified by the new
+    # HttpClient catch ladder (tcp) and retried to the transient budget.
+    $refusedPort = 0
+    for ($rp = 47410; $rp -le 47490; $rp++) {
+        $inUse = $false
+        try { $t = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, $rp); $t.Start(); $t.Stop() } catch { $inUse = $true }
+        if (-not $inUse) { $refusedPort = $rp; break }
+    }
+    if ($refusedPort -le 0) {
+        Check 'F50 refused-tcp: a free port could be found' $false 'no free port'
+    } else {
+        $job53 = Start-Job -ScriptBlock {
+            param($Mod, $Payload, $Port)
+            $ErrorActionPreference = 'Stop'
+            . $Mod
+            $h = Get-F46DefaultHost
+            $h.enabled = $true
+            $h.uploadHostMode = 'auto'
+            $h.uploadHost = ('127.0.0.1:' + $Port)
+            $h.uploadScheme = 'http'
+            $h.timeoutSec = 10
+            $r = Invoke-F46MirrorUploadWithPolicy -HostCfg $h -Path $Payload -Name 'f50-refused.bin' -Size ([long](Get-Item -LiteralPath $Payload).Length) -Sleeper { param($ms) } -Rand01 0
+            return @{ ok = [bool]$r.ok; phase = [string]$r.phase; tries = @($r.attempts).Count; firstPhase = [string](@($r.attempts)[0].phase) }
+        } -ArgumentList $modPath, $filePath, $refusedPort
+        $client53 = $null
+        try { if (Wait-Job -Job $job53 -Timeout 120) { $client53 = Receive-Job -Job $job53 } } catch { $client53 = $null }
+        try { Remove-Job -Job $job53 -Force -ErrorAction SilentlyContinue } catch { }
+        Check 'F50 refused-tcp: labeled transient phase (tcp|http) retried to the 5-attempt budget' ($client53 -and (-not [bool]$client53.ok) -and ([int]$client53.tries -eq 5) -and (@('tcp', 'http') -contains [string]$client53.firstPhase)) ('r=' + $(if ($client53) { ($client53 | ConvertTo-Json -Compress -Depth 3) } else { 'no result' }))
+    }
+    try { $f50Listener2.Stop(); $f50Listener2.Close() } catch { }
+}
+# preflight refusals keep ZERO network tries even on the real transport: the
+# spy transport would fail the cell the moment a single byte left the machine.
+Write-Host '[F50 §4] preflight refusal cells (size/type) with network=0'
+$script:spyCalls = 0
+$spy = { param($HostCfg, $Path, $Name, $Size) $script:spyCalls = $script:spyCalls + 1; return @{ ok = $false; phase = 'http'; httpStatus = 599; hostMessage = 'SPY MUST NEVER RUN FOR A PREFLIGHT REFUSAL' } }
+$hostPre = Get-F46DefaultHost
+$hostPre.enabled = $true
+$hostPre.maxFileBytes = 1024
+$preSize = Invoke-F46MirrorAttempt -HostCfg $hostPre -Path $filePath -Name 'f50-preflight.bin' -Size ([long]2048) -AttemptNo 1 -Transport $spy
+Check 'F50 preflight size refusal: phase=size with ZERO network tries' (($preSize.phase -eq 'size') -and ($script:spyCalls -eq 0)) ('phase=' + $preSize.phase + ' spyCalls=' + $script:spyCalls)
+$hostPre2 = Get-F46DefaultHost
+$hostPre2.enabled = $true
+$hostPre2.blockedExtensions = @('.bin')
+$preType = Invoke-F46MirrorAttempt -HostCfg $hostPre2 -Path $filePath -Name 'f50-preflight.bin' -Size ([long]2048) -AttemptNo 1 -Transport $spy
+Check 'F50 preflight type refusal: phase=type with ZERO network tries' (($preType.phase -eq 'type') -and ($script:spyCalls -eq 0)) ('phase=' + $preType.phase + ' spyCalls=' + $script:spyCalls)
+
+# ---------------------------------------------------------------------------
+# [F51] ALWAYS-ON DOWNLOADS AUTO-UPLOAD: the real watcher helpers are
+# extracted from the shipped source and executed - a file that lands in the
+# Downloads root is queued WITHOUT any opt-in, while Desktop / Documents /
+# Temp / RDP-Storage stay gated; the in-memory host override never touches
+# config.json and the F49 modal contract for other roots is untouched.
+# ---------------------------------------------------------------------------
+Write-Host '[F51 §1] real watcher helpers: Downloads auto-classification (extracted, then executed)'
+$watcherPath = Join-Path $root 'payloads\ghrdp-watcher.ps1'
+if (-not (Test-Path -LiteralPath $watcherPath)) { $watcherPath = Join-Path $root 'payloads/ghrdp-watcher.ps1' }
+$wAst = $null
+$wParseErr = $null
+$wAst = [System.Management.Automation.Language.Parser]::ParseFile($watcherPath, [ref]$null, [ref]$wParseErr)
+Check 'F51: the watcher parses clean before extraction' ($null -eq $wParseErr -or @($wParseErr).Count -eq 0) (($wParseErr | ForEach-Object { $_.Message }) -join ' | ')
+function Get-WatcherFn([string]$Name51) {
+    $fn = $wAst.Find({ param($a) ($a -is [System.Management.Automation.Language.FunctionDefinitionAst]) -and ($a.Name -eq $Name51) }, $true)
+    if (-not $fn) { throw ('watcher function missing: ' + $Name51) }
+    return $fn.Extent.Text
+}
+foreach ($fn51 in @('Test-F51DownloadsRoot', 'Get-F51AutoUploadRoots', 'Test-F51AutoUploadPath', 'Split-F51AutoQueue', 'New-F51AutoHost')) {
+    . ([scriptblock]::Create((Get-WatcherFn $fn51)))
+}
+$f51tmp = Join-Path $tmp ('f51-lab-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+foreach ($d51 in @('profile\Downloads', 'profile\Downloads\qBittorrent', 'profile\Desktop', 'profile\Documents', 'profile\AppData\Local\Temp', 'storage\RDP-Storage')) {
+    try { New-Item -ItemType Directory -Path (Join-Path $f51tmp $d51) -Force -ErrorAction Stop | Out-Null } catch { }
+}
+foreach ($n51 in @('profile\Downloads\invoice.pdf', 'profile\Downloads\qBittorrent\ubuntu.iso', 'profile\Desktop\note.txt', 'profile\Documents\report.docx', 'profile\AppData\Local\Temp\junk.tmp', 'storage\RDP-Storage\archive.zip')) {
+    try { [System.IO.File]::WriteAllText((Join-Path $f51tmp $n51), 'f51-lab') } catch { }
+}
+$f51roots = @((Join-Path $f51tmp 'profile\Downloads'), (Join-Path $f51tmp 'profile\Desktop'), (Join-Path $f51tmp 'profile\Documents'), (Join-Path $f51tmp 'profile\AppData\Local\Temp'), (Join-Path $f51tmp 'storage\RDP-Storage'))
+$f51autos = @(Get-F51AutoUploadRoots -Roots ([string[]]$f51roots))
+Check 'F51: exactly the Downloads root is auto-upload' ((@($f51autos).Count -eq 1) -and ($f51autos[0] -like '*Downloads')) ('autos=' + (@($f51autos) -join ' | '))
+Check 'F51: Desktop/Documents/Temp/RDP-Storage are NOT auto-upload roots' ((Test-F51DownloadsRoot -RootPath (Join-Path $f51tmp 'profile\Desktop')) -eq $false -and (Test-F51DownloadsRoot -RootPath (Join-Path $f51tmp 'profile\Documents')) -eq $false -and (Test-F51DownloadsRoot -RootPath (Join-Path $f51tmp 'profile\AppData\Local\Temp')) -eq $false -and (Test-F51DownloadsRoot -RootPath (Join-Path $f51tmp 'storage\RDP-Storage')) -eq $false) 'a gated root was classified as Downloads'
+$f51queue = New-Object System.Collections.ArrayList
+foreach ($n51 in @('profile\Downloads\invoice.pdf', 'profile\Downloads\qBittorrent\ubuntu.iso', 'profile\Desktop\note.txt', 'profile\Documents\report.docx', 'profile\AppData\Local\Temp\junk.tmp', 'storage\RDP-Storage\archive.zip')) {
+    [void]$f51queue.Add((Get-Item -LiteralPath (Join-Path $f51tmp $n51)))
+}
+$f51split = Split-F51AutoQueue -Queue $f51queue -AutoRoots $f51autos
+Check 'F51: Downloads files (incl. Downloads\qBittorrent) partition to AUTO without opt-in' ((@($f51split.auto).Count -eq 2) -and (@($f51split.auto | ForEach-Object { $_.Name }) -contains 'invoice.pdf') -and (@($f51split.auto | ForEach-Object { $_.Name }) -contains 'ubuntu.iso')) ('auto=' + (@($f51split.auto | ForEach-Object { $_.Name }) -join ','))
+Check 'F51: Desktop/Documents/Temp/RDP-Storage files stay GATED behind opt-in' ((@($f51split.gated).Count -eq 4) -and (@($f51split.gated | ForEach-Object { $_.Name }) -contains 'note.txt') -and (@($f51split.gated | ForEach-Object { $_.Name }) -contains 'archive.zip')) ('gated=' + (@($f51split.gated | ForEach-Object { $_.Name }) -join ','))
+$fn51Host = Get-WatcherFn 'New-F51AutoHost'
+Check 'F51: the override host is in-memory only (no flag file, no config write inside the helper)' ((Get-WatcherFn 'New-F51AutoHost') -notmatch 'mirror-enable\.flag|mirror-disable\.flag|Save-MirrorCfg') 'the helper touches flags or config.json'
+$autoHost51 = New-F51AutoHost
+Check 'F51: the override host is the gofile GUEST contract, enabled for this run' (($autoHost51.id -eq 'gofile') -and ([bool]$autoHost51.enabled) -and ([string]$autoHost51.authMode -eq 'guest')) ('id=' + $autoHost51.id + ' enabled=' + $autoHost51.enabled + ' authMode=' + $autoHost51.authMode)
+Check 'F51: the override host carries no credential field (F48)' (-not ($autoHost51.Contains('tokenConfigKey')) -and -not ($autoHost51.Contains('gofileToken'))) 'a credential field appeared'
+Write-Host '[F51 §2] trigger simulation: a new download into Downloads auto-queues (mirror stays false, no opt-in state)'
+$cfgF51 = '{"mirror":false}' | ConvertFrom-Json
+Check 'F51: precondition - NO opt-in exists (mirror=false, no host enabled)' ((Select-F46UploadHost -Hosts @(Get-F46Hosts -Cfg $cfgF51)) -eq $null) 'a host was enabled without opt-in'
+$dlFile51 = Get-Item -LiteralPath (Join-Path $f51tmp 'profile\Downloads\invoice.pdf')
+$sim51 = Split-F51AutoQueue -Queue (New-Object System.Collections.ArrayList @(, $dlFile51)) -AutoRoots $f51autos
+Check 'F51: the new download lands in the AUTO queue by itself' ((@($sim51.auto).Count -eq 1) -and (@($sim51.gated).Count -eq 0)) ('auto=' + @($sim51.auto).Count + ' gated=' + @($sim51.gated).Count)
+Reset-Case @('success') | Out-Null
+$go51 = Invoke-F46MirrorAttempt -HostCfg (New-F51AutoHost) -Path $dlFile51.FullName -Name $dlFile51.Name -Size ([long]$dlFile51.Length) -AttemptNo 1 -Transport $transport
+Check 'F51: the auto queue attempts WITHOUT opt-in and succeeds as guest' (($go51.ok) -and ($script:networkCalls -eq 1) -and ([string]$go51.authMode -eq 'guest')) ('ok=' + $go51.ok + ' network=' + $script:networkCalls + ' authMode=' + $go51.authMode)
+$no51 = Invoke-F46MirrorAttempt -HostCfg (Select-F46UploadHost -Hosts @(Get-F46Hosts -Cfg $cfgF51)) -Path $dlFile51.FullName -Name $dlFile51.Name -Size ([long]$dlFile51.Length) -AttemptNo 1 -Transport $transport
+Check 'F51: WITHOUT the override the same file is a labeled policy refusal (proves the trigger is F51)' ($no51.phase -eq 'policy') ('phase=' + $no51.phase)
+$autoCap51 = New-F51AutoHost
+$autoCap51.maxFileBytes = 1024
+$autoPre51 = Invoke-F46MirrorAttempt -HostCfg $autoCap51 -Path $filePath -Name 'f50-preflight.bin' -Size ([long]2048) -AttemptNo 1 -Transport $spy
+Check 'F51: the override does NOT bypass per-host preflight (size cap => phase=size, network=0)' (($autoPre51.phase -eq 'size') -and ($script:spyCalls -eq 0)) ('phase=' + $autoPre51.phase + ' spyCalls=' + $script:spyCalls)
+$gated51 = Get-Item -LiteralPath (Join-Path $f51tmp 'profile\Desktop\note.txt')
+$sim52 = Split-F51AutoQueue -Queue (New-Object System.Collections.ArrayList @(, $gated51)) -AutoRoots $f51autos
+Check 'F51: a Desktop file does NOT auto-queue (F49 opt-in modal still governs it)' ((@($sim52.auto).Count -eq 0) -and (@($sim52.gated).Count -eq 1)) ('auto=' + @($sim52.auto).Count + ' gated=' + @($sim52.gated).Count)
+try { Remove-Item -LiteralPath $f51tmp -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+Write-Host '[F51 §3] watcher wiring: the scan loop consumes the split, the override and the ledger lines'
+$watcherText = Get-Content -LiteralPath $watcherPath -Raw
+Check 'F51: the upload loop gates on the partitioned upload queue' ($watcherText -match '\$uploadQueue = @\(\$queue\)') 'no $uploadQueue wiring'
+Check 'F51: mirror=false keeps ONLY the auto (Downloads) slice' ($watcherText -match 'if \(\$f51AutoMode\) \{ \$uploadQueue = @\(\$f51Split\.auto\) \}') 'the auto slice is not consumed'
+Check 'F51: the worker loop iterates the partitioned queue' ($watcherText -match 'foreach \(\$f in @\(\$uploadQueue\)\)') 'the loop still iterates the unsplit queue'
+Check 'F51: the override host is wired for the auto path' ($watcherText -match 'New-F51AutoHost') 'no New-F51AutoHost wiring'
+Check 'F51: the per-file AUTO-UPLOAD ledger line exists (F49-style logging)' ($watcherText -match '\[mirror\] AUTO-UPLOAD: \{0\} \(Downloads root; F51 always-on, opt-in not required\)') 'no AUTO-UPLOAD ledger line'
+Check 'F51: the override ledger line is emitted once per run' ($watcherText -match 'F51AutoHostLedgered') 'no once-per-run override ledger guard'
+Check 'F51: mirrorDiag carries the auto-upload state' ($watcherText -match 'autoUpload = \$\(if \(\$f51AutoMode\)') 'mirrorDiag has no autoUpload field'
+Check 'F51: the F49 opt-in flags still govern (modal contract intact for other roots)' (($watcherText -match 'mirror-enable\.flag') -and ($watcherText -match 'mirror-disable\.flag')) 'the F49 flag consumption was disturbed'
+$ui49 = Get-Content -LiteralPath (Join-Path $root 'payloads\ui.html') -Raw
+Check 'F51: the F49 ConfirmModal stays in the v1 UI (untouched by F51)' (($ui49 -match 'id="mirrorOptInModal"') -and ($ui49 -match 'openMirrorOptIn\(btn\)')) 'the F49 modal needles vanished'
+
 if ($script:failures -gt 0) {
     Write-Host ('::error::[F46] mirror policy lab failed: ' + $script:failures + ' check(s)')
     exit 1

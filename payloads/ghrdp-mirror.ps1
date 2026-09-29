@@ -649,84 +649,95 @@ function New-F46UploadRequestSpec {
 function Send-F46GofileUpload {
     # [F48 §0] The upload itself: guest multipart/form-data, field name `file`,
     # NO auth header of any kind (never a credential in the URL either).
-    # Streamed - a multi-GB file is never buffered in memory. Returns
-    # ok/phase/httpStatus/hostMessage plus the documented response fields
-    # (code, file id, downloadPage).
+    # [F50 §2] TRANSPORT REWRITE (Thread B): the body is streamed with
+    # HttpClient + MultipartFormDataContent + StreamContent(FileStream). The
+    # file is never materialised in memory - no whole-file byte array, no
+    # buffering request stream. (The previous HttpWebRequest path relied on the
+    # in-box request buffering, whose 2GB ceiling surfaced as the runner
+    # failure "Stream was too long" on large uploads.) Multi-GB files now go
+    # to the wire in bounded chunks straight from the FileStream.
     # [F47 §3] $ContentType stamps the part: the encrypted path passes
     # application/x-ghrdp-mirror, the plaintext path stays octet-stream.
+    # Returns ok/phase/httpStatus/hostMessage plus the documented response
+    # fields (code, file id, downloadPage).
     param($HostCfg, [string]$Path, [string]$Name, [int]$TimeoutSec = 120, $Target = $null, [string]$ContentType = '')
     if (-not $Target) { $Target = Get-F46UploadTarget -HostCfg $HostCfg -TimeoutSec ([Math]::Min($TimeoutSec, 30)) }
     if (-not $Target.ok) { return @{ ok = $false; phase = $Target.phase; httpStatus = $null; hostMessage = $Target.message; retryAfterMs = $null } }
     $fileLen = 0
     try { $fileLen = (Get-Item -LiteralPath $Path).Length } catch { return @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('upload source unreadable: ' + $_.Exception.Message); retryAfterMs = $null } }
+    if (-not ('System.Net.Http.HttpClient' -as [type])) { try { Add-Type -AssemblyName System.Net.Http } catch { } }
     $boundary = '----ghrdpF46' + [guid]::NewGuid().ToString('N')
     $spec = New-F46UploadRequestSpec -HostCfg $HostCfg -Name $Name -Boundary $boundary -ContentType $ContentType
-    $enc = [System.Text.Encoding]::UTF8
-    $prefixBytes = $enc.GetBytes([string]$spec.partHeader)
-    $suffixBytes = $enc.GetBytes([string]$spec.partTrailer)
+    $client = $null
     $req = $null
+    $mp = $null
     $fs = $null
     try {
-        $req = [System.Net.WebRequest]::Create([string]$Target.uri)
-        $req.Method = 'POST'
-        $req.ContentType = [string]$spec.requestContentType
-        $req.Timeout = $TimeoutSec * 1000
-        $req.ReadWriteTimeout = $TimeoutSec * 1000
-        foreach ($hk in @($spec.headers.Keys)) {
-            # Accept is a restricted header on HttpWebRequest - it has its own
-            # property; any other allowed header goes through Headers. [F48]
-            # the spec only ever carries Accept: no auth header exists to set.
-            if (([string]$hk) -eq 'Accept') { $req.Accept = [string]$spec.headers[$hk] } else { $req.Headers[[string]$hk] = [string]$spec.headers[$hk] }
-        }
-        $req.ContentLength = $prefixBytes.Length + [long]$fileLen + $suffixBytes.Length
-        $rs = $req.GetRequestStream()
-        $rs.Write($prefixBytes, 0, $prefixBytes.Length)
         $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-        $buf = New-Object byte[] 65536
-        $read = 0
-        while (($read = $fs.Read($buf, 0, $buf.Length)) -gt 0) { $rs.Write($buf, 0, $read) }
-        $rs.Write($suffixBytes, 0, $suffixBytes.Length)
-        $rs.Close()
-        $resp = $req.GetResponse()
+        # [F50] StreamContent over the FileStream: bounded-chunk wire I/O, no
+        # whole-file byte array anywhere in this path.
+        $fileContent = New-Object System.Net.Http.StreamContent($fs)
+        $disp = New-Object System.Net.Http.Headers.ContentDispositionHeaderValue('form-data')
+        $disp.Name = '"' + [string]$spec.fieldName + '"'
+        $disp.FileName = '"' + [string]$spec.fileName + '"'
+        $fileContent.Headers.ContentDisposition = $disp
+        $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse([string]$spec.partContentType)
+        $mp = New-Object System.Net.Http.MultipartFormDataContent($boundary)
+        $mp.Add($fileContent)
+        $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Post, [string]$Target.uri)
+        foreach ($hk in @($spec.headers.Keys)) {
+            # [F48] the spec only ever carries Accept: no auth header exists to
+            # set, and no other header is ever added toward the host.
+            if (([string]$hk) -eq 'Accept') { $req.Headers.Accept.ParseAdd([string]$spec.headers[$hk]) } else { $req.Headers.TryAddWithoutValidation([string]$hk, [string]$spec.headers[$hk]) | Out-Null }
+        }
+        $req.Content = $mp
+        $client = New-Object System.Net.Http.HttpClient
+        $client.Timeout = [TimeSpan]::FromSeconds([Math]::Max(1, $TimeoutSec))
+        $resp = $client.SendAsync($req).GetAwaiter().GetResult()
         $code = [int]$resp.StatusCode
         $retryAfter = $null
-        try { $retryAfter = Get-F46RetryAfterMs -RetryAfterHeader $resp.Headers['Retry-After'] } catch { $retryAfter = $null }
-        $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
-        $text = $sr.ReadToEnd()
-        $sr.Close()
-        $resp.Close()
+        $ra = $null
+        try { $ra = $resp.Headers.RetryAfter } catch { $ra = $null }
+        if ($ra -and $ra.DeltaSeconds) { $retryAfter = [int]$ra.DeltaSeconds.Value.TotalMilliseconds }
+        elseif ($ra -and $ra.Date) { $retryAfter = Get-F46RetryAfterMs -RetryAfterHeader ($ra.Date.Value.ToString('R')) }
+        $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        $resp.Dispose()
         return (ConvertFrom-F46UploadResponse -Text $text -HttpStatus $code -RetryAfterMs $retryAfter)
-    } catch [System.Net.WebException] {
+    } catch {
+        # [F50] transport failures: phase comes from the inner socket/host
+        # exception, keeping the F44 dns/tcp/tls ladder honest on BOTH runtimes
+        # (Windows PowerShell 5.1 wraps a WebException; pwsh/.NET surfaces a
+        # SocketException or an AuthenticationException directly).
         $phase = 'http'
         $msg = $_.Exception.Message
         try {
-            if ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::NameResolutionFailure) { $phase = 'dns' }
-            elseif ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::ConnectFailure) { $phase = 'tcp' }
-            elseif ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::TrustFailure) { $phase = 'tls' }
-            elseif ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::SecureChannelFailure) { $phase = 'tls' }
-        } catch { }
-        $code = $null
-        $bodyText = ''
-        $retryAfter = $null
-        try {
-            if ($_.Exception.Response) {
-                $code = [int]$_.Exception.Response.StatusCode
-                $sr2 = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-                $bodyText = $sr2.ReadToEnd()
-                $sr2.Close()
-                try { $retryAfter = Get-F46RetryAfterMs -RetryAfterHeader $_.Exception.Response.Headers['Retry-After'] } catch { $retryAfter = $null }
+            $inner = $_.Exception.InnerException
+            while ($inner) {
+                if ($inner -is [System.Net.WebException]) {
+                    $msg = $inner.Message
+                    if ($inner.Status -eq [System.Net.WebExceptionStatus]::NameResolutionFailure) { $phase = 'dns' }
+                    elseif ($inner.Status -eq [System.Net.WebExceptionStatus]::ConnectFailure) { $phase = 'tcp' }
+                    elseif ($inner.Status -eq [System.Net.WebExceptionStatus]::TrustFailure) { $phase = 'tls' }
+                    elseif ($inner.Status -eq [System.Net.WebExceptionStatus]::SecureChannelFailure) { $phase = 'tls' }
+                    break
+                }
+                if ($inner -is [System.Net.Sockets.SocketException]) {
+                    $msg = $inner.Message
+                    $sec = $inner.SocketErrorCode
+                    if ($sec -eq [System.Net.Sockets.SocketError]::HostNotFound -or $sec -eq [System.Net.Sockets.SocketError]::NoData -or $sec -eq [System.Net.Sockets.SocketError]::TryAgain) { $phase = 'dns' }
+                    elseif ($sec -eq [System.Net.Sockets.SocketError]::ConnectionRefused -or $sec -eq [System.Net.Sockets.SocketError]::TimedOut -or $sec -eq [System.Net.Sockets.SocketError]::NetworkUnreachable -or $sec -eq [System.Net.Sockets.SocketError]::HostUnreachable) { $phase = 'tcp' }
+                    break
+                }
+                if ($inner -is [System.Security.Authentication.AuthenticationException]) { $msg = $inner.Message; $phase = 'tls'; break }
+                $inner = $inner.InnerException
             }
         } catch { }
-        if ($code -and $code -gt 0) {
-            $full = ('HTTP ' + $code + ': ' + $bodyText)
-            return (ConvertFrom-F46UploadResponse -Text $bodyText -HttpStatus $code -RetryAfterMs $retryAfter -TransportMessage $full)
-        }
-        return @{ ok = $false; phase = $phase; httpStatus = $null; hostMessage = ('transport failed (' + $phase + '): ' + $msg); retryAfterMs = $retryAfter }
-    } catch {
-        return @{ ok = $false; phase = 'http'; httpStatus = $null; hostMessage = ('upload failed: ' + $_.Exception.Message); retryAfterMs = $null }
+        return @{ ok = $false; phase = $phase; httpStatus = $null; hostMessage = ('transport failed (' + $phase + '): ' + $msg); retryAfterMs = $null }
     } finally {
+        try { if ($req) { $req.Dispose() } } catch { }
+        try { if ($mp) { $mp.Dispose() } } catch { }
         try { if ($fs) { $fs.Dispose() } } catch { }
-        try { if ($req) { $req.Abort() } } catch { }
+        try { if ($client) { $client.Dispose() } } catch { }
     }
 }
 
