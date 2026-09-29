@@ -21,6 +21,28 @@
 # toward the host, ever. A host that answers 401/403 gets ONE labeled terminal
 # reason (host requires account token; token-less mode unsupported) plus the
 # operator options - never a retry loop and never a credential workaround.
+#
+# [F50 §0] LARGE-FILE ROOT CAUSE (watcher log: `phase=http status=-
+# msg=upload failed: Exception calling "Write" with "3" argument(s): "Stream
+# was too long."`): the uploader already copied the file through a 64 KiB
+# FileStream loop, but it did so into `HttpWebRequest.GetRequestStream()` with
+# the .NET default `AllowWriteStreamBuffering = true`, so the ENTIRE multipart
+# body was assembled in a `MemoryStream` before the first byte hit the socket -
+# and a `MemoryStream` cannot grow past `Int32.MaxValue` (2 GiB), which is
+# exactly where `Write(byte[], int, int)` throws "Stream was too long.". The
+# second 2 GiB wall was the AES-256 encryptor: `ReadAllBytes` + a `byte[]`
+# ciphertext + a `List[byte]` container build one whole-file array each (a
+# ~4x working set), so a multi-GB file died at `phase=encrypt` before it ever
+# reached the socket. [F50 §1] the upload is now `HttpClient` +
+# `MultipartFormDataContent` + `StreamContent(FileStream)`: the file is never
+# buffered in one blob, `HttpWebRequest` is retired from this module, and the
+# F44 attempt policy below is byte-for-byte unchanged. [F50 §2] the encryptor
+# and decryptor are chunked `FileStream -> CryptoStream -> FileStream` with an
+# O(64 KiB) working set at any size; the AES-256-GCM one-shot API (which needs
+# the whole plaintext in one array) is used only up to the documented cap, and
+# above it the streamed CBC-PBKDF2 container is used because that is the
+# container docs/decrypt.html + payloads/web-index-template.html already open
+# in the browser. Both containers and the cap live in docs/MIRROR-HOSTS.md.
 
 # --- [F46 §2 policy-begin] -------------------------------------------------
 # Mirrors src/components/explorer/api/retryPolicy.ts + errors.ts exactly.
@@ -33,6 +55,35 @@ $script:F46BackoffFloorMs = 100
 $script:F46RetryAfterCapMs = 120000
 $script:F46AttemptMsgChars = 200
 # --- [F46 §2 policy-end] ---------------------------------------------------
+
+# --- [F50 §1 streaming-begin] ---------------------------------------------
+# Streaming transport + size-aware timeouts. NONE of this changes the F44
+# attempt policy above: fail-fast statuses still get exactly ONE attempt, only
+# dns/tcp/tls/http are retried, backoff is still jittered and a Retry-After
+# hint is still a FLOOR capped at 120s. What changes is that the body is never
+# assembled in memory, and that a multi-GB upload is not killed by a 120s
+# whole-request timeout that only ever fitted a small file.
+$script:F50StreamBufferBytes = 65536
+# .NET's AES-GCM is a one-shot API: it needs the whole plaintext, the whole
+# ciphertext and the container in arrays at once (~4x the file size), so it is
+# used only up to 1 GiB (a ~4 GiB peak, safe on a 16 GB runner). Above that the
+# streamed CBC-PBKDF2 container is used - the legacy browser-decryptable form.
+$script:F50GcmOneShotMaxBytes = 1073741824
+# Decrypt allocates ciphertext + plaintext (~2x), so its cap is the array limit
+# itself; a pre-F50 GCM container above it gets an honest labeled refusal.
+$script:F50GcmDecryptMaxBytes = 2147483646
+# Upload timeout floor: assume at least this many bytes/second sustained and
+# never time a big file out below it (HttpClient.Timeout covers the WHOLE
+# request, body included - unlike the retired HttpWebRequest.ReadWriteTimeout,
+# which was per-write). Capped so a stalled socket still dies eventually.
+$script:F50UploadBytesPerSecFloor = 2097152
+$script:F50UploadTimeoutCapSec = 21600
+$script:F50Transport = 'httpclient-multipart-streamcontent-filestream'
+# The pinned guest contract answers a length-based upload, so Content-Length is
+# always sent (StreamContent reports the exact FileStream length). Chunked
+# transfer encoding is used ONLY when a length cannot be determined at all.
+$script:F50AllowChunkedTransfer = $false
+# --- [F50 §1 streaming-end] -----------------------------------------------
 
 # --- [F46 §3 contract-begin] ----------------------------------------------
 # Pinned from https://gofile.io/api (fetched 2026-09-28) - see
@@ -226,20 +277,33 @@ function Invoke-F46EncryptFile {
     #   GCM container : 'GHRDPMIR' ver=1 alg=1 | nonceLen | nonce | tagLen | tag | ciphertext
     #   CBC container : salt(16) | iv(16) | AES-256-CBC(PBKDF2-SHA256(key,salt,100000))
     #                   - byte-identical to the legacy .ghenc form that
-    #                   docs/decrypt.html + payloads/web-index-template.html
-    #                   already decrypt in the browser.
-    # Returns @{ ok; alg; bytes; message }. The key never leaves this function
-    # except as ciphertext; nothing is written to a log here.
+    #                     docs/decrypt.html + payloads/web-index-template.html
+    #                     already decrypt in the browser.
+    # [F50 §2] MODE SELECTION BY SIZE. .NET's AES-GCM is a one-shot API: it
+    # needs the whole plaintext, the whole ciphertext and the container in
+    # arrays at the same time (~4x the file size), which is the second 2 GiB
+    # wall behind `Stream was too long.` / OutOfMemory on multi-GB mirrors. So
+    # GCM is used only up to F50GcmOneShotMaxBytes (1 GiB); above it the CBC
+    # container is written by a chunked FileStream -> CryptoStream -> FileStream
+    # loop with an O(64 KiB) working set at ANY size - the same
+    # browser-decryptable bytes as before. `mode` reports which path ran
+    # (one-shot | streamed) and `alg` stays the truth the Mirror card renders
+    # as encAlg. Plaintext is still never uploaded: a failure here is terminal
+    # at phase=encrypt in the caller.
+    # Returns @{ ok; alg; bytes; message; mode }. The key never leaves this
+    # function except as ciphertext; nothing is written to a log here.
     param([string]$Path, [string]$OutPath, [string]$KeyBase64)
     $key = Get-F46MirrorKeyBytes -KeyBase64 $KeyBase64
     if ($null -eq $key) {
-        return @{ ok = $false; alg = ''; bytes = 0; message = ('mirrorKey is not 32 base64-decoded bytes (got ' + ([string]$KeyBase64).Length + ' chars) - refusing to encrypt with a weak key') }
+        return @{ ok = $false; alg = ''; bytes = 0; message = ('mirrorKey is not 32 base64-decoded bytes (got ' + ([string]$KeyBase64).Length + ' chars) - refusing to encrypt with a weak key'); mode = '' }
     }
-    $plain = $null
-    try { $plain = [System.IO.File]::ReadAllBytes($Path) } catch { return @{ ok = $false; alg = ''; bytes = 0; message = ('source unreadable: ' + $_.Exception.Message) } }
+    $fileLen = -1
+    try { $fileLen = (Get-Item -LiteralPath $Path).Length } catch { return @{ ok = $false; alg = ''; bytes = 0; message = ('source unreadable: ' + $_.Exception.Message); mode = '' } }
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     try {
-        if (Test-F46AesGcmUsable) {
+        $useGcm = $false
+        try { $useGcm = (Test-F46AesGcmUsable) } catch { $useGcm = $false }
+        if ($useGcm -and $fileLen -le [long]$script:F50GcmOneShotMaxBytes) {
             $aes = New-F46AesGcm -Key $key
             if ($aes) {
                 try {
@@ -247,6 +311,9 @@ function Invoke-F46EncryptFile {
                     $tLen = [int]$script:F46GofileContract.gcmTagBytes
                     $nonce = New-Object byte[] $nLen
                     $rng.GetBytes($nonce)
+                    # [F50 §2] bounded by the cap above: this array is the whole
+                    # plaintext, and it is the ONLY whole-file array left.
+                    $plain = [System.IO.File]::ReadAllBytes($Path)
                     $ct = New-Object byte[] $plain.Length
                     $tag = New-Object byte[] $tLen
                     $aes.Encrypt($nonce, $plain, $ct, $tag)
@@ -259,15 +326,23 @@ function Invoke-F46EncryptFile {
                     $hdr.AddRange([byte[]]$nonce)
                     $hdr.Add([byte]$tLen)
                     $hdr.AddRange([byte[]]$tag)
-                    $out = New-Object System.Collections.Generic.List[byte]
-                    $out.AddRange([byte[]]$hdr.ToArray())
-                    $out.AddRange([byte[]]$ct)
-                    [System.IO.File]::WriteAllBytes($OutPath, $out.ToArray())
-                    return @{ ok = $true; alg = 'AES-256-GCM'; bytes = [long]$out.Count; message = '' }
+                    $outFs = [System.IO.File]::Create($OutPath)
+                    try {
+                        $hb = $hdr.ToArray()
+                        $outFs.Write($hb, 0, $hb.Length)
+                        $outFs.Write($ct, 0, $ct.Length)
+                    } finally { try { $outFs.Dispose() } catch { } }
+                    $written = 0
+                    try { $written = (Get-Item -LiteralPath $OutPath).Length } catch { $written = [long]($hdr.Count + $ct.Length) }
+                    return @{ ok = $true; alg = 'AES-256-GCM'; bytes = [long]$written; message = ''; mode = 'one-shot' }
                 } finally { try { $aes.Dispose() } catch { } }
             }
         }
-        # Legacy AES-256-CBC + PBKDF2 container (browser-decryptable).
+        # [F50 §2] Streamed legacy AES-256-CBC + PBKDF2 container
+        # (browser-decryptable). Also the fallback when GCM cannot be
+        # constructed, and the ONLY path above the one-shot cap. No whole-file
+        # array is built: plaintext is read, encrypted and written in
+        # F50StreamBufferBytes chunks.
         $salt = New-Object byte[] 16
         $iv = New-Object byte[] 16
         $rng.GetBytes($salt)
@@ -284,43 +359,86 @@ function Invoke-F46EncryptFile {
                 $a.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
                 $enc = $a.CreateEncryptor()
                 try {
-                    $ct2 = $enc.TransformFinalBlock($plain, 0, $plain.Length)
-                    $out2 = New-Object System.Collections.Generic.List[byte]
-                    $out2.AddRange([byte[]]$salt)
-                    $out2.AddRange([byte[]]$iv)
-                    $out2.AddRange([byte[]]$ct2)
-                    [System.IO.File]::WriteAllBytes($OutPath, $out2.ToArray())
-                    return @{ ok = $true; alg = 'AES-256-CBC-PBKDF2'; bytes = [long]$out2.Count; message = '' }
+                    $inFs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                    try {
+                        $outFs2 = [System.IO.File]::Create($OutPath)
+                        try {
+                            $outFs2.Write($salt, 0, $salt.Length)
+                            $outFs2.Write($iv, 0, $iv.Length)
+                            $cs = New-Object System.Security.Cryptography.CryptoStream($outFs2, $enc, [System.Security.Cryptography.CryptoStreamMode]::Write)
+                            try {
+                                $buf = New-Object byte[] ([int]$script:F50StreamBufferBytes)
+                                $read = 0
+                                while (($read = $inFs.Read($buf, 0, $buf.Length)) -gt 0) { $cs.Write($buf, 0, $read) }
+                                $cs.FlushFinalBlock()
+                            } finally { try { $cs.Dispose() } catch { } }
+                        } finally { try { $outFs2.Dispose() } catch { } }
+                    } finally { try { $inFs.Dispose() } catch { } }
+                    $written2 = 0
+                    try { $written2 = (Get-Item -LiteralPath $OutPath).Length } catch { $written2 = 0 }
+                    return @{ ok = $true; alg = 'AES-256-CBC-PBKDF2'; bytes = [long]$written2; message = ''; mode = 'streamed' }
                 } finally { try { $enc.Dispose() } catch { } }
             } finally { try { $a.Dispose() } catch { } }
         } finally { try { $kdf.Dispose() } catch { } }
     } catch {
-        return @{ ok = $false; alg = ''; bytes = 0; message = ('encryption failed: ' + $_.Exception.Message) }
+        try { if (Test-Path -LiteralPath $OutPath) { Remove-Item -LiteralPath $OutPath -Force -ErrorAction SilentlyContinue } } catch { }
+        return @{ ok = $false; alg = ''; bytes = 0; message = ('encryption failed: ' + $_.Exception.Message); mode = '' }
     } finally {
         try { $rng.Dispose() } catch { }
     }
-    return @{ ok = $false; alg = ''; bytes = 0; message = 'no AES-256 encryptor could be constructed on this runner' }
+    return @{ ok = $false; alg = ''; bytes = 0; message = 'no AES-256 encryptor could be constructed on this runner'; mode = '' }
 }
 
 function Invoke-F46DecryptFile {
     # [F47 §3] The inverse, so the operator (and the lab's round-trip proof)
     # can open what the worker uploaded. Header-driven: GHRDPMIR => GCM,
     # otherwise the legacy salt|iv|CBC container.
+    # [F50 §2] The CBC container is decrypted by a chunked
+    # FileStream -> CryptoStream -> FileStream loop (O(64 KiB) at any size).
+    # The GCM container still needs the whole blob in arrays because the .NET
+    # AES-GCM API is one-shot, so it is bounded by F50GcmDecryptMaxBytes and
+    # refuses HONESTLY above it (only a pre-F50 build could have produced such a
+    # container) instead of dying with `Stream was too long.`.
+    # Returns @{ ok; alg; message; mode; bytes }.
     param([string]$Path, [string]$OutPath, [string]$KeyBase64)
     $key = Get-F46MirrorKeyBytes -KeyBase64 $KeyBase64
-    if ($null -eq $key) { return @{ ok = $false; alg = ''; message = 'mirrorKey is not 32 bytes' } }
-    $blob = $null
-    try { $blob = [System.IO.File]::ReadAllBytes($Path) } catch { return @{ ok = $false; alg = ''; message = ('ciphertext unreadable: ' + $_.Exception.Message) } }
+    if ($null -eq $key) { return @{ ok = $false; alg = ''; message = 'mirrorKey is not 32 bytes'; mode = ''; bytes = 0 } }
+    $fileLen = -1
+    try { $fileLen = (Get-Item -LiteralPath $Path).Length } catch { return @{ ok = $false; alg = ''; message = ('ciphertext unreadable: ' + $_.Exception.Message); mode = ''; bytes = 0 } }
     $magic = [System.Text.Encoding]::ASCII.GetBytes([string]$script:F46GofileContract.containerMagic)
-    $isGcm = $true
-    if ($blob.Length -lt ($magic.Length + 3)) { $isGcm = $false }
-    else { for ($i = 0; $i -lt $magic.Length; $i++) { if ($blob[$i] -ne $magic[$i]) { $isGcm = $false } } }
+    $isGcm = $false
+    try {
+        $sniff = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            if ($fileLen -ge ($magic.Length + 3)) {
+                $head = New-Object byte[] $magic.Length
+                $got = $sniff.Read($head, 0, $head.Length)
+                if ($got -eq $head.Length) {
+                    $isGcm = $true
+                    for ($i = 0; $i -lt $magic.Length; $i++) { if ($head[$i] -ne $magic[$i]) { $isGcm = $false } }
+                }
+            }
+        } finally { try { $sniff.Dispose() } catch { } }
+    } catch { return @{ ok = $false; alg = ''; message = ('ciphertext unreadable: ' + $_.Exception.Message); mode = ''; bytes = 0 } }
     try {
         if ($isGcm) {
+            if ($fileLen -gt [long]$script:F50GcmDecryptMaxBytes) {
+                return @{ ok = $false; alg = 'AES-256-GCM'; message = ('the GCM container is ' + [long]$fileLen + ' bytes, above the F50 one-shot decrypt cap of ' + [long]$script:F50GcmDecryptMaxBytes + ' bytes (.NET AES-GCM is a one-shot API; a container that large can only come from a pre-F50 build) - re-encrypt it with the streamed CBC container'); mode = 'refused-too-large'; bytes = 0 }
+            }
+            $blob = New-Object byte[] ([int]$fileLen)
+            $bfs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            try {
+                $off = 0
+                while ($off -lt $blob.Length) {
+                    $r = $bfs.Read($blob, $off, ($blob.Length - $off))
+                    if ($r -le 0) { break }
+                    $off = $off + $r
+                }
+            } finally { try { $bfs.Dispose() } catch { } }
             $p = $magic.Length
             $ver = [int]$blob[$p]; $p = $p + 1
             $algId = [int]$blob[$p]; $p = $p + 1
-            if ($ver -ne 1 -or $algId -ne 1) { return @{ ok = $false; alg = ''; message = ('unknown container ver=' + $ver + ' alg=' + $algId) } }
+            if ($ver -ne 1 -or $algId -ne 1) { return @{ ok = $false; alg = ''; message = ('unknown container ver=' + $ver + ' alg=' + $algId); mode = ''; bytes = 0 } }
             $nLen = [int]$blob[$p]; $p = $p + 1
             $nonce = New-Object byte[] $nLen
             [Array]::Copy($blob, $p, $nonce, 0, $nLen); $p = $p + $nLen
@@ -330,37 +448,53 @@ function Invoke-F46DecryptFile {
             $ct = New-Object byte[] ($blob.Length - $p)
             [Array]::Copy($blob, $p, $ct, 0, $ct.Length)
             $aes = New-F46AesGcm -Key $key
-            if (-not $aes) { return @{ ok = $false; alg = 'AES-256-GCM'; message = 'this runner cannot construct AesGcm to decrypt' } }
+            if (-not $aes) { return @{ ok = $false; alg = 'AES-256-GCM'; message = 'this runner cannot construct AesGcm to decrypt'; mode = ''; bytes = 0 } }
             try {
                 $pt = New-Object byte[] $ct.Length
                 $aes.Decrypt($nonce, $ct, $tag, $pt)
-                [System.IO.File]::WriteAllBytes($OutPath, $pt)
-                return @{ ok = $true; alg = 'AES-256-GCM'; message = '' }
+                $pfs = [System.IO.File]::Create($OutPath)
+                try { $pfs.Write($pt, 0, $pt.Length) } finally { try { $pfs.Dispose() } catch { } }
+                return @{ ok = $true; alg = 'AES-256-GCM'; message = ''; mode = 'one-shot'; bytes = [long]$pt.Length }
             } finally { try { $aes.Dispose() } catch { } }
         }
-        $salt = New-Object byte[] 16
-        $iv = New-Object byte[] 16
-        [Array]::Copy($blob, 0, $salt, 0, 16)
-        [Array]::Copy($blob, 16, $iv, 0, 16)
-        $kdf = New-Object System.Security.Cryptography.Rfc2898DeriveBytes(([System.Text.Encoding]::UTF8.GetString($key)), $salt, 100000, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
+        # [F50 §2] streamed legacy container: salt(16) | iv(16) | CBC ciphertext
+        $inFs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
         try {
-            $a = [System.Security.Cryptography.Aes]::Create()
+            $salt = New-Object byte[] 16
+            $iv = New-Object byte[] 16
+            $rs = $inFs.Read($salt, 0, 16)
+            $rv = $inFs.Read($iv, 0, 16)
+            if ($rs -ne 16 -or $rv -ne 16) { return @{ ok = $false; alg = ''; message = 'the CBC container is shorter than its 32-byte salt|iv header'; mode = ''; bytes = 0 } }
+            $kdf = New-Object System.Security.Cryptography.Rfc2898DeriveBytes(([System.Text.Encoding]::UTF8.GetString($key)), $salt, 100000, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
             try {
-                $a.KeySize = 256
-                $a.Key = $kdf.GetBytes(32)
-                $a.IV = $iv
-                $a.Mode = [System.Security.Cryptography.CipherMode]::CBC
-                $a.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
-                $dec = $a.CreateDecryptor()
+                $a = [System.Security.Cryptography.Aes]::Create()
                 try {
-                    $pt2 = $dec.TransformFinalBlock($blob, 32, $blob.Length - 32)
-                    [System.IO.File]::WriteAllBytes($OutPath, $pt2)
-                    return @{ ok = $true; alg = 'AES-256-CBC-PBKDF2'; message = '' }
-                } finally { try { $dec.Dispose() } catch { } }
-            } finally { try { $a.Dispose() } catch { } }
-        } finally { try { $kdf.Dispose() } catch { } }
-    } catch { return @{ ok = $false; alg = ''; message = ('decryption failed: ' + $_.Exception.Message) } }
-    return @{ ok = $false; alg = ''; message = 'decryption produced no output' }
+                    $a.KeySize = 256
+                    $a.Key = $kdf.GetBytes(32)
+                    $a.IV = $iv
+                    $a.Mode = [System.Security.Cryptography.CipherMode]::CBC
+                    $a.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
+                    $dec = $a.CreateDecryptor()
+                    try {
+                        $outFs = [System.IO.File]::Create($OutPath)
+                        try {
+                            $cs = New-Object System.Security.Cryptography.CryptoStream($inFs, $dec, [System.Security.Cryptography.CryptoStreamMode]::Read)
+                            try { $cs.CopyTo($outFs, [int]$script:F50StreamBufferBytes) } finally { try { $cs.Dispose() } catch { } }
+                        } finally { try { $outFs.Dispose() } catch { } }
+                    } finally { try { $dec.Dispose() } catch { } }
+                } finally { try { $a.Dispose() } catch { } }
+            } finally { try { $kdf.Dispose() } catch { } }
+        } finally { try { $inFs.Dispose() } catch { } }
+        $written = 0
+        try { $written = (Get-Item -LiteralPath $OutPath).Length } catch { $written = 0 }
+        return @{ ok = $true; alg = 'AES-256-CBC-PBKDF2'; message = ''; mode = 'streamed'; bytes = [long]$written }
+    } catch {
+        # A wrong key throws at the padding check AFTER part of the plaintext was
+        # streamed out: never leave a half-decrypted file behind.
+        try { if (Test-Path -LiteralPath $OutPath) { Remove-Item -LiteralPath $OutPath -Force -ErrorAction SilentlyContinue } } catch { }
+        return @{ ok = $false; alg = ''; message = ('decryption failed: ' + $_.Exception.Message); mode = ''; bytes = 0 }
+    }
+    return @{ ok = $false; alg = ''; message = 'decryption produced no output'; mode = ''; bytes = 0 }
 }
 
 function Test-F46FailFastStatus {
@@ -581,17 +715,20 @@ function Get-F46UploadTarget {
         return @{ ok = $true; uri = ($sch + '://' + $uh + $up); phase = $null; message = ''; server = $uh; mode = 'auto' }
     }
     $uri = $apiRoot.TrimEnd('/') + [string]$script:F46GofileContract.serversPath
+    # [F50 §1] the small JSON GET rides the same streaming client as the upload
+    # (Accept only, no credential, no evasion); HttpWebRequest is retired
+    # module-wide, so this branch keeps its documented phase vocabulary.
     try {
-        $req = [System.Net.WebRequest]::Create($uri)
-        $req.Method = 'GET'
-        $req.Timeout = $TimeoutSec * 1000
-        $req.ReadWriteTimeout = $TimeoutSec * 1000
-        $req.Accept = 'application/json'
-        $resp = $req.GetResponse()
-        $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
-        $text = $sr.ReadToEnd()
-        $sr.Close()
-        $resp.Close()
+        $got = Invoke-F50HttpGetString -Uri $uri -TimeoutSec $TimeoutSec
+        if ($null -eq $got.status) {
+            return @{ ok = $false; uri = ''; phase = $got.phase; message = ('servers endpoint transport failed: ' + $got.message); server = ''; mode = 'fleet' }
+        }
+        $text = [string]$got.text
+        if (-not $got.ok) {
+            $head = $text
+            if ($head.Length -gt 400) { $head = $head.Substring(0, 400) }
+            return @{ ok = $false; uri = ''; phase = 'http'; message = ('servers endpoint transport failed: HTTP ' + [string]$got.status + ': ' + $head); server = ''; mode = 'fleet' }
+        }
         $json = ConvertFrom-F46Json -Text $text
         $status = Get-F46String $json 'status'
         if ($status -and $status -ne [string]$script:F46GofileContract.okStatus) {
@@ -602,22 +739,161 @@ function Get-F46UploadTarget {
         $list = Get-F46Prop $data 'servers'
         if ($null -eq $list) { $list = $data }
         $name = ''
-        foreach ($s in @($list)) {
-            $name = Get-F46String $s 'name'
+        foreach ($srvRow in @($list)) {
+            $name = Get-F46String $srvRow 'name'
             if ($name) { break }
         }
         if (-not $name) {
             return @{ ok = $false; uri = ''; phase = 'parse'; message = 'servers endpoint returned no usable store host'; server = ''; mode = 'fleet' }
         }
         return @{ ok = $true; uri = ('https://' + $name + [string]$script:F46GofileContract.uploadPathFleet); phase = $null; message = ''; server = $name; mode = 'fleet' }
-    } catch [System.Net.WebException] {
-        $phase = 'http'
-        try { if ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::NameResolutionFailure) { $phase = 'dns' } } catch { }
-        return @{ ok = $false; uri = ''; phase = $phase; message = ('servers endpoint transport failed: ' + $_.Exception.Message); server = ''; mode = 'fleet' }
     } catch {
         return @{ ok = $false; uri = ''; phase = 'http'; message = ('servers endpoint failed: ' + $_.Exception.Message); server = ''; mode = 'fleet' }
     }
 }
+
+# --- [F50 §1 transport helpers] --------------------------------------------
+function Add-F50HttpAssembly {
+    # System.Net.Http ships with .NET 4.5+ (the floor for Windows PowerShell
+    # 5.1) and is already loaded on PowerShell 7. A runner that cannot bind it
+    # gets a labeled terminal reason from the caller - never a silent downgrade
+    # to a buffering transport and never a plaintext fallback.
+    if ($script:F50HttpAssemblyLoaded) { return $true }
+    try {
+        Add-Type -AssemblyName System.Net.Http -ErrorAction Stop
+        $script:F50HttpAssemblyLoaded = $true
+        return $true
+    } catch {
+        $script:F50HttpAssemblyError = [string]$_.Exception.Message
+        return $false
+    }
+}
+$script:F50HttpAssemblyLoaded = $false
+$script:F50HttpAssemblyError = ''
+
+function New-F50HttpClient {
+    # [F48 §0] The client carries ONLY Accept. There is no credential plumbing
+    # here to remove: the guest contract has no auth header, no host-token
+    # header and no session state toward the host. The handler is created per
+    # attempt and disposed with it, so no host-supplied session state can ride
+    # into the next attempt, and Expect: 100-continue is requested so a host
+    # that is going to refuse (413/415/403) can say so BEFORE a multi-GB body
+    # is pushed at it. No proxy, redirect or user-agent manipulation exists
+    # anywhere in this module (F48: no evasion).
+    param([int]$TimeoutSec = 120)
+    $handler = New-Object System.Net.Http.HttpClientHandler
+    $handler.AllowAutoRedirect = $true
+    $client = New-Object System.Net.Http.HttpClient($handler)
+    $sec = [int]$TimeoutSec
+    if ($sec -le 0) { $sec = 120 }
+    $client.Timeout = [System.TimeSpan]::FromSeconds($sec)
+    try { $client.DefaultRequestHeaders.ExpectContinue = $true } catch { }
+    try { [void]$client.DefaultRequestHeaders.Accept.Add((New-Object System.Net.Http.Headers.MediaTypeWithQualityHeaderValue('application/json'))) } catch { }
+    return $client
+}
+
+function Get-F50UploadTimeoutSec {
+    # Size-aware floor. A 6 GiB upload over a 120s whole-request timeout can
+    # never succeed, so the configured per-host timeout is a FLOOR, not a cap:
+    # the request is allowed at least (size / 2 MiB per second), never more
+    # than the 6h cap. Returns @{ sec; configured; floor; capped }.
+    param([long]$Size, [int]$ConfiguredSec = 120)
+    $cfg = [int]$ConfiguredSec
+    if ($cfg -le 0) { $cfg = 120 }
+    $bytes = [long]$Size
+    if ($bytes -lt 0) { $bytes = 0 }
+    $rate = [long]$script:F50UploadBytesPerSecFloor
+    if ($rate -le 0) { $rate = 2097152 }
+    $floor = [int][Math]::Ceiling([double]$bytes / [double]$rate)
+    $capped = $false
+    if ($floor -gt [int]$script:F50UploadTimeoutCapSec) { $floor = [int]$script:F50UploadTimeoutCapSec; $capped = $true }
+    $sec = [Math]::Max($cfg, $floor)
+    return @{ sec = [int]$sec; configured = $cfg; floor = [int]$floor; capped = [bool]$capped }
+}
+
+function Get-F50TransportPhase {
+    # Maps a transport exception onto the SAME F44 phases the retired
+    # WebException mapping produced (dns / tcp / tls / http). Walks the inner
+    # chain because HttpClient wraps socket + TLS failures in
+    # HttpRequestException / IOException, and a timeout surfaces as a canceled
+    # task. Returns @{ phase; message }.
+    param($Err)
+    $msg = ''
+    try { $msg = [string]$Err.Message } catch { $msg = '' }
+    $ex = $Err
+    $depth = 0
+    while ($ex -and $depth -lt 8) {
+        $tn = $ex.GetType().FullName
+        if ($tn -eq 'System.Threading.Tasks.TaskCanceledException' -or $tn -eq 'System.TimeoutException') {
+            return @{ phase = 'tcp'; message = ('upload timed out (F50 size-aware timeout floor applied): ' + $msg) }
+        }
+        if ($tn -eq 'System.Security.Authentication.AuthenticationException') {
+            return @{ phase = 'tls'; message = ('tls handshake failed: ' + $msg) }
+        }
+        if ($tn -eq 'System.IO.IOException') {
+            # A server that answers a TLS ClientHello with plain HTTP bytes is
+            # reported by some runtimes as an IOException ("The handshake failed
+            # due to an unexpected packet format." / "A call to SSPI failed")
+            # rather than an AuthenticationException. That is still phase=tls:
+            # a transport-level transient, retried under the F44 policy.
+            $im = ''
+            try { $im = [string]$ex.Message } catch { $im = '' }
+            if ($im -match 'handshake|sspi|ssl|tls') {
+                return @{ phase = 'tls'; message = ('tls handshake failed: ' + $im) }
+            }
+        }
+        if ($tn -eq 'System.Net.Sockets.SocketException') {
+            $sec = ''
+            try { $sec = [string]$ex.SocketErrorCode } catch { $sec = '' }
+            switch -Regex ($sec.ToLower()) {
+                '^hostnotfound$|^tryagain$|^nodata$|^norecovery$' { return @{ phase = 'dns'; message = ('dns resolution failed (' + $sec + '): ' + $msg) } }
+                default { return @{ phase = 'tcp'; message = ('tcp connect failed (' + $(if ($sec) { $sec } else { 'socket' }) + '): ' + $msg) } }
+            }
+        }
+        if ($tn -eq 'System.Net.WebException') {
+            $st = ''
+            try { $st = [string]$ex.Status } catch { $st = '' }
+            switch -Regex ($st) {
+                'NameResolutionFailure' { return @{ phase = 'dns'; message = ('dns resolution failed: ' + $msg) } }
+                'ConnectFailure' { return @{ phase = 'tcp'; message = ('tcp connect failed: ' + $msg) } }
+                'TrustFailure|SecureChannelFailure' { return @{ phase = 'tls'; message = ('tls handshake failed: ' + $msg) } }
+                'Timeout' { return @{ phase = 'tcp'; message = ('upload timed out: ' + $msg) } }
+                default { return @{ phase = 'http'; message = ('transport failed (' + $(if ($st) { $st } else { 'http' }) + '): ' + $msg) } }
+            }
+        }
+        $next = $null
+        try { $next = $ex.InnerException } catch { $next = $null }
+        $ex = $next
+        $depth = $depth + 1
+    }
+    return @{ phase = 'http'; message = ('upload failed: ' + $msg) }
+}
+
+function Invoke-F50HttpGetString {
+    # The ONE read path for the small JSON GETs this module makes (the fleet
+    # /servers lookup and the read-only probe). Same client construction as the
+    # uploader: Accept only, no credential, no evasion. Returns
+    # @{ ok; status; text; phase; message } and NEVER throws.
+    param([string]$Uri, [int]$TimeoutSec = 30)
+    if (-not (Add-F50HttpAssembly)) {
+        return @{ ok = $false; status = $null; text = ''; phase = 'parse'; message = ('System.Net.Http could not be loaded on this runner: ' + $script:F50HttpAssemblyError) }
+    }
+    $client = $null
+    try {
+        $client = New-F50HttpClient -TimeoutSec $TimeoutSec
+        $resp = $client.GetAsync([string]$Uri).GetAwaiter().GetResult()
+        $code = [int]$resp.StatusCode
+        $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        $resp.Dispose()
+        return @{ ok = ($code -ge 200 -and $code -lt 300); status = $code; text = [string]$text; phase = $(if ($code -ge 200 -and $code -lt 300) { $null } else { 'http' }); message = '' }
+    } catch {
+        $cls = Get-F50TransportPhase -Err $_.Exception
+        return @{ ok = $false; status = $null; text = ''; phase = $cls.phase; message = $cls.message }
+    } finally {
+        try { if ($client) { $client.Dispose() } } catch { }
+    }
+}
+# --- [F50 §1 transport helpers end] ---------------------------------------
 
 function New-F46UploadRequestSpec {
     # [F48 §0] The ONE place the multipart contract is assembled: field name
@@ -634,10 +910,17 @@ function New-F46UploadRequestSpec {
     $safeName = ([string]$Name) -replace '[\r\n"]', '_'
     $headers = [ordered]@{ 'Accept' = 'application/json' }
     $partHeader = ('--' + $Boundary + "`r`n" + 'Content-Disposition: form-data; name="' + $fieldName + '"; filename="' + $safeName + '"' + "`r`n" + 'Content-Type: ' + $ct + "`r`n`r`n")
+    # [F50 §1] The part headers as EXACT strings. The HttpClient path sets them
+    # with TryAddWithoutValidation so the wire bytes are identical on .NET
+    # Framework (Windows PowerShell 5.1, the production runner) and .NET 8
+    # (pwsh, the hosted lab lane) - the two runtimes quote `name=` differently
+    # when they build the disposition themselves, and the contract is pinned.
+    $partDisposition = ('form-data; name="' + $fieldName + '"; filename="' + $safeName + '"')
     return [ordered]@{
         fieldName = $fieldName
         fileName = $safeName
         partContentType = $ct
+        partDisposition = $partDisposition
         boundary = $Boundary
         requestContentType = ('multipart/form-data; boundary=' + $Boundary)
         headers = $headers
@@ -649,84 +932,84 @@ function New-F46UploadRequestSpec {
 function Send-F46GofileUpload {
     # [F48 §0] The upload itself: guest multipart/form-data, field name `file`,
     # NO auth header of any kind (never a credential in the URL either).
-    # Streamed - a multi-GB file is never buffered in memory. Returns
-    # ok/phase/httpStatus/hostMessage plus the documented response fields
-    # (code, file id, downloadPage).
+    # [F50 §1] Streamed end to end: HttpClient + MultipartFormDataContent +
+    # StreamContent(FileStream). The body is NEVER assembled in one blob, so a
+    # 3 GiB or 6 GiB file no longer dies at the 2 GiB MemoryStream/array limit
+    # with `Exception calling "Write" with "3" argument(s): "Stream was too
+    # long."` - the failure this rewrite exists for. HttpWebRequest, whose
+    # default AllowWriteStreamBuffering buffered the whole body in a
+    # MemoryStream, is retired from this module.
+    # Returns ok/phase/httpStatus/hostMessage plus the documented response
+    # fields (code, file id, downloadPage).
     # [F47 §3] $ContentType stamps the part: the encrypted path passes
     # application/x-ghrdp-mirror, the plaintext path stays octet-stream.
     param($HostCfg, [string]$Path, [string]$Name, [int]$TimeoutSec = 120, $Target = $null, [string]$ContentType = '')
+    if (-not (Add-F50HttpAssembly)) {
+        # Fail visible and terminal: never a silent downgrade to a buffering
+        # transport and never a plaintext fallback (F44 phase=parse).
+        return @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('System.Net.Http could not be loaded on this runner, so the F50 streaming uploader cannot run: ' + $script:F50HttpAssemblyError); retryAfterMs = $null }
+    }
     if (-not $Target) { $Target = Get-F46UploadTarget -HostCfg $HostCfg -TimeoutSec ([Math]::Min($TimeoutSec, 30)) }
     if (-not $Target.ok) { return @{ ok = $false; phase = $Target.phase; httpStatus = $null; hostMessage = $Target.message; retryAfterMs = $null } }
-    $fileLen = 0
+    $fileLen = -1
     try { $fileLen = (Get-Item -LiteralPath $Path).Length } catch { return @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('upload source unreadable: ' + $_.Exception.Message); retryAfterMs = $null } }
+    # [F50 §1] HttpClient.Timeout covers the WHOLE request (body included), so
+    # the configured per-host timeout is a floor, not a cap: a 6 GiB upload gets
+    # at least size/2MiBps seconds. The retired HttpWebRequest.ReadWriteTimeout
+    # was per-write, which is why a 120s setting used to survive big files.
+    $to = Get-F50UploadTimeoutSec -Size $fileLen -ConfiguredSec $TimeoutSec
     $boundary = '----ghrdpF46' + [guid]::NewGuid().ToString('N')
     $spec = New-F46UploadRequestSpec -HostCfg $HostCfg -Name $Name -Boundary $boundary -ContentType $ContentType
-    $enc = [System.Text.Encoding]::UTF8
-    $prefixBytes = $enc.GetBytes([string]$spec.partHeader)
-    $suffixBytes = $enc.GetBytes([string]$spec.partTrailer)
-    $req = $null
+    $client = $null
     $fs = $null
+    $part = $null
+    $form = $null
+    $reqMsg = $null
     try {
-        $req = [System.Net.WebRequest]::Create([string]$Target.uri)
-        $req.Method = 'POST'
-        $req.ContentType = [string]$spec.requestContentType
-        $req.Timeout = $TimeoutSec * 1000
-        $req.ReadWriteTimeout = $TimeoutSec * 1000
-        foreach ($hk in @($spec.headers.Keys)) {
-            # Accept is a restricted header on HttpWebRequest - it has its own
-            # property; any other allowed header goes through Headers. [F48]
-            # the spec only ever carries Accept: no auth header exists to set.
-            if (([string]$hk) -eq 'Accept') { $req.Accept = [string]$spec.headers[$hk] } else { $req.Headers[[string]$hk] = [string]$spec.headers[$hk] }
-        }
-        $req.ContentLength = $prefixBytes.Length + [long]$fileLen + $suffixBytes.Length
-        $rs = $req.GetRequestStream()
-        $rs.Write($prefixBytes, 0, $prefixBytes.Length)
+        $client = New-F50HttpClient -TimeoutSec ([int]$to.sec)
         $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-        $buf = New-Object byte[] 65536
-        $read = 0
-        while (($read = $fs.Read($buf, 0, $buf.Length)) -gt 0) { $rs.Write($buf, 0, $read) }
-        $rs.Write($suffixBytes, 0, $suffixBytes.Length)
-        $rs.Close()
-        $resp = $req.GetResponse()
+        # StreamContent copies the FileStream in F50StreamBufferBytes chunks and
+        # reports its exact length, so the request goes out length-based like
+        # the pinned guest contract expects. Chunked transfer encoding is used
+        # only when no length can be determined at all AND the contract allows
+        # it (F50AllowChunkedTransfer is false for the pinned endpoint).
+        $part = New-Object System.Net.Http.StreamContent($fs, [int]$script:F50StreamBufferBytes)
+        [void]$part.Headers.TryAddWithoutValidation('Content-Disposition', [string]$spec.partDisposition)
+        [void]$part.Headers.TryAddWithoutValidation('Content-Type', [string]$spec.partContentType)
+        $form = New-Object System.Net.Http.MultipartFormDataContent([string]$spec.boundary)
+        $form.Add($part)
+        if ($fileLen -lt 0 -and [bool]$script:F50AllowChunkedTransfer) {
+            try { $form.Headers.TransferEncodingChunked = $true } catch { }
+        }
+        $reqMsg = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Post, [string]$Target.uri)
+        $reqMsg.Content = $form
+        $resp = $client.SendAsync($reqMsg).GetAwaiter().GetResult()
         $code = [int]$resp.StatusCode
         $retryAfter = $null
-        try { $retryAfter = Get-F46RetryAfterMs -RetryAfterHeader $resp.Headers['Retry-After'] } catch { $retryAfter = $null }
-        $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
-        $text = $sr.ReadToEnd()
-        $sr.Close()
-        $resp.Close()
-        return (ConvertFrom-F46UploadResponse -Text $text -HttpStatus $code -RetryAfterMs $retryAfter)
-    } catch [System.Net.WebException] {
-        $phase = 'http'
-        $msg = $_.Exception.Message
         try {
-            if ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::NameResolutionFailure) { $phase = 'dns' }
-            elseif ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::ConnectFailure) { $phase = 'tcp' }
-            elseif ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::TrustFailure) { $phase = 'tls' }
-            elseif ($_.Exception.Status -eq [System.Net.WebExceptionStatus]::SecureChannelFailure) { $phase = 'tls' }
-        } catch { }
-        $code = $null
-        $bodyText = ''
-        $retryAfter = $null
-        try {
-            if ($_.Exception.Response) {
-                $code = [int]$_.Exception.Response.StatusCode
-                $sr2 = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-                $bodyText = $sr2.ReadToEnd()
-                $sr2.Close()
-                try { $retryAfter = Get-F46RetryAfterMs -RetryAfterHeader $_.Exception.Response.Headers['Retry-After'] } catch { $retryAfter = $null }
-            }
-        } catch { }
-        if ($code -and $code -gt 0) {
-            $full = ('HTTP ' + $code + ': ' + $bodyText)
-            return (ConvertFrom-F46UploadResponse -Text $bodyText -HttpStatus $code -RetryAfterMs $retryAfter -TransportMessage $full)
+            $raVals = $null
+            if ($resp.Headers.TryGetValues('Retry-After', [ref]$raVals)) { $retryAfter = Get-F46RetryAfterMs -RetryAfterHeader (@($raVals)[0]) }
+        } catch { $retryAfter = $null }
+        # Only the host's small JSON envelope is read into a string; the file
+        # itself never was.
+        $text = $resp.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+        try { $resp.Dispose() } catch { }
+        if ($code -lt 200 -or $code -ge 300) {
+            $full = ('HTTP ' + $code + ': ' + [string]$text)
+            return (ConvertFrom-F46UploadResponse -Text $text -HttpStatus $code -RetryAfterMs $retryAfter -TransportMessage $full)
         }
-        return @{ ok = $false; phase = $phase; httpStatus = $null; hostMessage = ('transport failed (' + $phase + '): ' + $msg); retryAfterMs = $retryAfter }
+        return (ConvertFrom-F46UploadResponse -Text $text -HttpStatus $code -RetryAfterMs $retryAfter)
     } catch {
-        return @{ ok = $false; phase = 'http'; httpStatus = $null; hostMessage = ('upload failed: ' + $_.Exception.Message); retryAfterMs = $null }
+        # [F50 §1] the SAME phase vocabulary the retired WebException mapping
+        # produced (dns / tcp / tls / http), derived from the inner chain.
+        $cls = Get-F50TransportPhase -Err $_.Exception
+        return @{ ok = $false; phase = $cls.phase; httpStatus = $null; hostMessage = $cls.message; retryAfterMs = $null }
     } finally {
+        try { if ($reqMsg) { $reqMsg.Dispose() } } catch { }
+        try { if ($form) { $form.Dispose() } } catch { }
+        try { if ($part) { $part.Dispose() } } catch { }
         try { if ($fs) { $fs.Dispose() } } catch { }
-        try { if ($req) { $req.Abort() } } catch { }
+        try { if ($client) { $client.Dispose() } } catch { }
     }
 }
 
@@ -918,29 +1201,22 @@ function Invoke-F46HostProbe {
         $note = ''
         $done = $false
         try {
-            $req = [System.Net.WebRequest]::Create($serversUri)
-            $req.Method = 'GET'
-            $req.Timeout = $TimeoutSec * 1000
-            $req.ReadWriteTimeout = $TimeoutSec * 1000
-            $req.Accept = 'application/json'
-            $resp = $req.GetResponse()
-            $status = [string]([int]$resp.StatusCode)
-            $sr = New-Object System.IO.StreamReader($resp.GetResponseStream())
-            $text = $sr.ReadToEnd()
-            $sr.Close()
-            $resp.Close()
-            $json = ConvertFrom-F46Json -Text $text
-            $envStatus = Get-F46String $json 'status'
-            if ($envStatus -and $envStatus -ne [string]$script:F46GofileContract.okStatus) {
-                $note = ('read-only GET ' + [string]$script:F46GofileContract.serversPath + ' answered envelope status=' + $envStatus + ' (no upload attempted)')
-            } else {
-                $note = ('read-only GET ' + [string]$script:F46GofileContract.serversPath + ' reachable; upload flow is documented + enabled=' + [string]$h.enabled)
-            }
-            $done = $true
-        } catch [System.Net.WebException] {
-            $we = $_.Exception
-            if ($we.Response) {
-                try { $status = [string]([int]$we.Response.StatusCode) } catch { $status = '-' }
+            # [F50 §1] the read-only probe rides the same streaming client as the
+            # uploader: Accept only, no credential, no identity change, no
+            # evasion. Status/note shapes are unchanged; a transport failure now
+            # reports the F44 phase (dns/tcp/tls/http) plus the inner reason
+            # instead of a WebExceptionStatus name.
+            $got = Invoke-F50HttpGetString -Uri $serversUri -TimeoutSec $TimeoutSec
+            if ($null -ne $got.status) { $status = [string]$got.status }
+            if ($got.ok) {
+                $json = ConvertFrom-F46Json -Text ([string]$got.text)
+                $envStatus = Get-F46String $json 'status'
+                if ($envStatus -and $envStatus -ne [string]$script:F46GofileContract.okStatus) {
+                    $note = ('read-only GET ' + [string]$script:F46GofileContract.serversPath + ' answered envelope status=' + $envStatus + ' (no upload attempted)')
+                } else {
+                    $note = ('read-only GET ' + [string]$script:F46GofileContract.serversPath + ' reachable; upload flow is documented + enabled=' + [string]$h.enabled)
+                }
+            } elseif ($null -ne $got.status) {
                 if ($status -eq '403' -or $status -eq '401') {
                     $note = 'runner egress rejected (' + $status + ') - token-less guest probe refused (authMode=requires-account); policy/endpoint level rejection; operator option: operator-owned VPS egress (no evasion)'
                 } elseif ($status -eq '429') {
@@ -949,7 +1225,7 @@ function Invoke-F46HostProbe {
                     $note = 'HTTP ' + $status + ' from the API root (read-only probe)'
                 }
             } else {
-                $note = 'transport failure: ' + $we.Status + ' - ' + $we.Message
+                $note = ('transport failure: ' + [string]$got.phase + ' - ' + [string]$got.message)
             }
             $done = $true
         } catch {

@@ -2351,6 +2351,100 @@ jobs:
           node --test tests/f49-mirror-runtime.test.js
           echo 'F49 gates PASS'
 
+      # [F50] Mirror LARGE-FILE streaming contract. The reported failure was
+      #   phase=http status=- msg=upload failed: Exception calling "Write" with
+      #   "3" argument(s): "Stream was too long."
+      # Root cause: HttpWebRequest's default AllowWriteStreamBuffering assembled
+      # the WHOLE multipart body in a MemoryStream (2 GiB / Int32.MaxValue cap),
+      # and the AES-256 encryptor built whole-file arrays. This step pins the
+      # streaming transport, the size-aware timeout floor, the streamed crypto
+      # containers and the UNCHANGED F44 policy. The executable multi-GB proof
+      # (100 MB / 1 GB / 3 GB / 6 GB sparse files over a discarding loopback
+      # listener, 429/500/502/TLS-reset/TCP-refused retries, preflight refusals
+      # with network=0) is tests/f50-mirror-largefile.ps1 in the windows-native
+      # lane. No live host call and no credential anywhere (F48/F49).
+      - name: F50 mirror large-file streaming contract (transport + policy + lab pins)
+        shell: bash
+        run: |
+          set -euo pipefail
+          mirror=payloads/ghrdp-mirror.ps1
+          lab=tests/f50-mirror-largefile.ps1
+          suite=tests/f50-mirror-largefile.test.js
+          test -f "$mirror" || { echo 'F50: the mirror module is missing' >&2; exit 1; }
+          test -f "$lab" || { echo 'F50: the large-file lab is missing' >&2; exit 1; }
+          test -f "$suite" || { echo 'F50: the large-file suite is missing' >&2; exit 1; }
+          test -f docs/MIRROR-HOSTS.md || { echo 'F50: docs/MIRROR-HOSTS.md is missing' >&2; exit 1; }
+          # 1. the buffering transport is retired from CODE lines (the module
+          #    header documents the retired shape on purpose, so comments are
+          #    stripped before this grep)
+          if grep -vE '^[[:space:]]*#' "$mirror" | grep -nE '\[System\.Net\.WebRequest\]::Create|AllowWriteStreamBuffering|GetRequestStream'; then
+            echo '::error title=F50 streaming::the buffering transport reappeared in payloads/ghrdp-mirror.ps1 (the 2 GiB "Stream was too long." root cause)'
+            exit 1
+          fi
+          # 2. the streaming transport is present and used by the uploader
+          for tok in 'System.Net.Http.HttpClient' 'System.Net.Http.MultipartFormDataContent' 'System.Net.Http.StreamContent' 'System.Net.Http.HttpRequestMessage' 'New-F50HttpClient' 'Add-F50HttpAssembly'; do
+            grep -qF "$tok" "$mirror" || { echo "F50: a streaming transport token is missing: $tok" >&2; exit 1; }
+          done
+          grep -qE 'New-Object System\.Net\.Http\.StreamContent\(\$fs, \[int\]\$script:F50StreamBufferBytes\)' "$mirror" || { echo 'F50: the file part is not a StreamContent over the FileStream' >&2; exit 1; }
+          grep -qE 'TryAddWithoutValidation\(.Content-Disposition., \[string\]\$spec\.partDisposition\)' "$mirror" || { echo 'F50: the part headers must come from the pinned spec verbatim' >&2; exit 1; }
+          grep -qF '$script:F50StreamBufferBytes = 65536' "$mirror" || { echo 'F50: the stream buffer constant is missing' >&2; exit 1; }
+          # 3. the size-aware timeout floor (HttpClient.Timeout covers the body)
+          grep -qF '$script:F50UploadBytesPerSecFloor = 2097152' "$mirror" || { echo 'F50: the sustained-rate floor constant is missing' >&2; exit 1; }
+          grep -qF '$script:F50UploadTimeoutCapSec = 21600' "$mirror" || { echo 'F50: the timeout ceiling constant is missing' >&2; exit 1; }
+          grep -qF '[Math]::Max($cfg, $floor)' "$mirror" || { echo 'F50: the configured timeout must be a floor, never a cap' >&2; exit 1; }
+          grep -qF 'Get-F50UploadTimeoutSec -Size $fileLen -ConfiguredSec $TimeoutSec' "$mirror" || { echo 'F50: the uploader does not apply the timeout floor' >&2; exit 1; }
+          # 4. streamed AES-256 + honest caps
+          grep -qF '$script:F50GcmOneShotMaxBytes = 1073741824' "$mirror" || { echo 'F50: the GCM one-shot cap is missing' >&2; exit 1; }
+          grep -qF '$script:F50GcmDecryptMaxBytes = 2147483646' "$mirror" || { echo 'F50: the GCM decrypt cap is missing' >&2; exit 1; }
+          grep -qE "mode = 'streamed'" "$mirror" || { echo 'F50: the streamed crypto mode must be reported' >&2; exit 1; }
+          grep -qE "mode = 'refused-too-large'" "$mirror" || { echo 'F50: an over-cap GCM container must be refused with a labeled mode' >&2; exit 1; }
+          grep -qF 'CryptoStreamMode]::Write' "$mirror" || { echo 'F50: the encryptor must stream through a CryptoStream' >&2; exit 1; }
+          grep -qF 'CryptoStreamMode]::Read' "$mirror" || { echo 'F50: the decryptor must stream through a CryptoStream' >&2; exit 1; }
+          # 5. the F44 policy is byte-for-byte unchanged on the new transport
+          grep -qF '$script:F46FailFastStatuses = @(401, 403, 413, 415)' "$mirror"
+          grep -qF "\$script:F46TransientPhases = @('dns', 'tcp', 'tls', 'http')" "$mirror"
+          grep -qF '$script:F46MaxAttempts = 5' "$mirror"
+          grep -qF '$script:F46RetryAfterCapMs = 120000' "$mirror"
+          grep -qF '[Math]::Max($jittered, $floor)' "$mirror" || { echo 'F50: Retry-After must stay a floor over the jittered backoff' >&2; exit 1; }
+          grep -qF 'preflight (0 network tries)' "$mirror" || { echo 'F50: preflight must still refuse with zero network tries' >&2; exit 1; }
+          # 6. [F48/F49] the new surface stays token-less guest + loopback-only
+          if grep -nE 'GOFILE[_]TOKEN|[?&]token=' "$lab"; then
+            echo 'F50: a credential appeared in the large-file lab' >&2
+            exit 1
+          fi
+          if grep -nE 'api\.gofile\.io|upload\.gofile\.io|store\.gofile\.io' "$lab"; then
+            echo 'F50: the lab must never contact a real host (loopback only)' >&2
+            exit 1
+          fi
+          # 7. the lab covers every size, retry path and refusal the brief names
+          for cell in A1-repro-stream-too-long C1-sparse-mechanism C2-baseline-peak-measured D1-upload-100mb D2-upload-1gb D3-upload-3gb D4-upload-6gb D5-host-413-real-socket D6-retry-429-real-socket D7-retry-500-real-socket D8-retry-502-then-success D9-auth-403-real-socket D10-host-415-real-socket E1-tls-reset E2-tcp-refused B1-preflight-size-6gib-network0 B2-preflight-type-3gib-network0 B3-no-hidden-2gib-cap F1-encrypt-below-cap F2-streamed-encrypt-above-cap F4-streamed-roundtrip-above-cap F7-gcm-cap-honest-refusal; do
+            grep -qF "$cell" "$lab" || { echo "F50: the lab is missing cell $cell" >&2; exit 1; }
+          done
+          for sz in 104857600 1073741824 3221225472 6442450944; do
+            grep -qF "$sz" "$lab" || { echo "F50: the lab is missing the exact size $sz" >&2; exit 1; }
+          done
+          grep -qF 'fsutil' "$lab" || { echo 'F50: the lab must build its multi-GB sources as sparse files' >&2; exit 1; }
+          grep -qF 'PeakWorkingSet64' "$lab" || { echo 'F50: the lab must bound the uploader peak working set' >&2; exit 1; }
+          grep -qF 'CELL=' "$lab" && grep -qF 'EXPECT=' "$lab" && grep -qF 'OBSERVED=' "$lab" && grep -qF 'RESULT=' "$lab" || { echo 'F50: every cell must print CELL=/EXPECT=/OBSERVED=/RESULT=' >&2; exit 1; }
+          grep -qF '::error title=F50 cell' "$lab" || { echo 'F50: a failed cell must emit a named annotation' >&2; exit 1; }
+          grep -qF 'networkCalls -eq 0' "$lab" || { echo 'F50: preflight cells must prove zero network tries' >&2; exit 1; }
+          # the malformed try/finally ban covers the new lab too
+          if grep -nE 'finally \\{ try \\{[^{}]*\\} \\} catch \\{ \\}' "$lab"; then
+            echo 'F50: malformed try/finally (the catch must sit inside the finally block)' >&2
+            exit 1
+          fi
+          # 8. both lanes + both structural audits are wired
+          grep -qF 'tests/f50-mirror-largefile.ps1' .github/workflows/launch-gates.yml || { echo 'F50: the lab is not referenced by any lane' >&2; exit 1; }
+          grep -qF "tests\\f50-mirror-largefile.ps1" .github/workflows/launch-gates.yml || { echo 'F50: the lab is not executed by the windows-native lane' >&2; exit 1; }
+          grep -qF 'tests/f50-mirror-largefile.ps1' scripts/ps-balance-audit.mjs || { echo 'F50: the node structural audit does not tokenize the lab' >&2; exit 1; }
+          grep -qF 'tests/f50-mirror-largefile.ps1' tests/ps-balance-audit.py || { echo 'F50: the python structural audit does not tokenize the lab' >&2; exit 1; }
+          # 9. the operator-facing doc carries the new contract
+          for tok in 'F50' 'Stream was too long' 'AllowWriteStreamBuffering' 'StreamContent' 'MultipartFormDataContent' 'AES-256-CBC-PBKDF2' 'sparse'; do
+            grep -qF "$tok" docs/MIRROR-HOSTS.md || { echo "F50: docs/MIRROR-HOSTS.md is missing: $tok" >&2; exit 1; }
+          done
+          node --test "$suite"
+          echo 'F50 gates PASS'
+
       - name: F40 information-architecture regression lock
         shell: bash
         run: |
@@ -2606,7 +2700,7 @@ jobs:
           # syntax error in them used to surface only as a red Windows lab cell
           # (an expensive loop), and the server DOT-SOURCES the module at start.
           $bad = @()
-          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/ghrdp-fx.ps1', 'payloads/ghrdp-mirror.ps1', 'payloads/ghrdp-watcher.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1', 'tests/f45-fx-server.ps1', 'tests/f46-mirror-policy.ps1', 'tests/f49-mirror-runtime.ps1')) {
+          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/ghrdp-fx.ps1', 'payloads/ghrdp-mirror.ps1', 'payloads/ghrdp-watcher.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1', 'tests/f45-fx-server.ps1', 'tests/f46-mirror-policy.ps1', 'tests/f49-mirror-runtime.ps1', 'tests/f50-mirror-largefile.ps1')) {
               $errors = $null
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
               if ($errors) {
@@ -2667,6 +2761,24 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & (Join-Path $env:GITHUB_WORKSPACE 'tests\f49-mirror-runtime.ps1')
           if ($LASTEXITCODE -ne 0) { throw ('F49: the runtime opt-in lab failed with exit ' + $LASTEXITCODE) }
+      # [F50 §3] Mirror LARGE-FILE streaming lab. Drives the SHIPPED
+      # payloads/ghrdp-mirror.ps1 over loopback: the reported "Stream was too
+      # long." symptom is reproduced from first principles, then real 100 MB /
+      # 1 GB / 3 GB / 6 GB sparse payloads are streamed through a DISCARDING
+      # listener with the uploader's peak working set bounded far below the file
+      # size, the streamed AES-256-CBC-PBKDF2 container round-trips above the GCM
+      # one-shot cap (SHA-256 equal), 429/500/502 retry with the deterministic
+      # jittered backoff and a Retry-After floor, a TLS-handshake reset and a TCP
+      # refusal are classified as transients, 403/413/415 fail fast in ONE
+      # attempt with the complete host message, and preflight size/type refusals
+      # prove ZERO network tries. Every cell prints CELL=/EXPECT=/OBSERVED=/
+      # RESULT=. No live host is contacted and no credential exists (F48/F49).
+      - name: F50 mirror large-file streaming lab (100 MB / 1 GB / 3 GB / 6 GB sparse, loopback only)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f50-mirror-largefile.ps1')
+          if ($LASTEXITCODE -ne 0) { throw ('F50: the large-file streaming lab failed with exit ' + $LASTEXITCODE) }
       # [F24] The F24 blocks live INSIDE main.yml (inline pwsh) and are extracted
       # verbatim by the lab cell U + the F24 gate. Parse them here with the
       # PowerShell language parser so a syntax error is caught in ~1 min instead
