@@ -114,6 +114,10 @@ export interface SearchState {
   /** [F56-c v2] Fetch stub bookkeeping: records a pending fetch row for the
    *  rail without starting any transfer (F56-d replaces the body). */
   stubFetch: (resultId: string) => void;
+  /** [F56-c v3] Merge rows into the normalized result maps (deduped by
+   *  resultId). Used by the DEV fixture stream; F56-d's live partials take
+   *  the same path through pollOnce, which always wins (see Search.tsx). */
+  ingestResults: (rows: SearchResult[]) => void;
 }
 
 export const useSearchStore = create<SearchState>((set, get) => ({
@@ -292,6 +296,17 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     // no URL request, no mirror opt-in (mirror stays default-OFF).
     if (get().fetches[resultId]) return;
     set({ fetches: { ...get().fetches, [resultId]: { fetchId: resultId } } });
+  },
+
+  ingestResults: (rows) => {
+    if (!rows.length) return;
+    const results = { ...get().results };
+    const resultOrder = [...get().resultOrder];
+    for (const r of rows) {
+      if (!results[r.resultId]) resultOrder.push(r.resultId);
+      results[r.resultId] = r;
+    }
+    set({ results, resultOrder });
   },
 }));
 

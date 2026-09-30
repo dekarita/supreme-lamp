@@ -1,5 +1,7 @@
-// [F56-c v2] Search page - Google-style landing -> animated to the top ->
-// progressive 5-minute lab -> result cards. The page owns composition only:
+// [F56-c v3] Search page - all-in-one bar landing (zero visible chips) ->
+// animated to the top -> VISIBLE 5-minute lab -> result cards, with a
+// DEV-only fixture fallback so the lab and grid progress without F56-d.
+// The page owns composition only:
 // query state lives in searchStore, view/animation/advanced/import/credential
 // state in searchUiStore, the 5-minute state machine in
 // src/lib/search/progressiveLab.ts, and the fetch action in the src/api/fetch
@@ -17,6 +19,7 @@ import { AdapterStatusList } from "./search/AdapterStatusList";
 import { ResultsGrid } from "./search/ResultsGrid";
 import { PreviewDialog } from "./search/PreviewDialog";
 import { BottomProgressRail } from "./search/BottomProgressRail";
+import { DEV_FIXTURE_ROWS, DEV_FIXTURE_TICK_MS, isDevMode, shouldStreamDevFixture } from "./search/devFixture";
 
 const POLL_MS = 2000;
 
@@ -37,7 +40,45 @@ export default function Search() {
   const view = useSearchUiStore((s) => s.view);
   const endAnimation = useSearchUiStore((s) => s.endAnimation);
   const backToLanding = useSearchUiStore((s) => s.backToLanding);
+  const devFixtureGen = useSearchUiStore((s) => s.devFixtureGen);
   const queryRef = useRef<string | null>(null);
+
+  // [F56-c v3] §3 DEV fixture fallback: when a settled search produced zero
+  // live results, stream fixture rows into the SAME normalized ingest path so
+  // progressive states are visible before F56-d's transport exists. Live
+  // partials always win: if anything else appends rows, the stream stops.
+  useEffect(() => {
+    const st = useSearchStore.getState();
+    const ui = useSearchUiStore.getState();
+    if (
+      !shouldStreamDevFixture({
+        phase,
+        totalResults: st.resultOrder.length,
+        queryGeneration: st.queryGeneration,
+        devFixtureGen: ui.devFixtureGen,
+      })
+    )
+      return;
+    // Latch first (outside the deps) so the interval survives the re-render.
+    ui.setDevFixtureGen(st.queryGeneration);
+    let i = 0;
+    const id = window.setInterval(() => {
+      const cur = useSearchStore.getState();
+      if (cur.resultOrder.length !== i) {
+        window.clearInterval(id); // live results (or a new search) arrived
+        return;
+      }
+      const row = DEV_FIXTURE_ROWS[i];
+      if (!row) {
+        window.clearInterval(id);
+        return;
+      }
+      i += 1;
+      cur.ingestResults([row]);
+    }, DEV_FIXTURE_TICK_MS);
+    return () => window.clearInterval(id);
+    // devFixtureGen is deliberately NOT a dep: the latch must never kill the stream.
+  }, [phase, queryGeneration]);
 
   // Palette prefill (?q=...): apply once per value, never auto-submit (Plan §D).
   const q = params.get("q");
@@ -64,9 +105,10 @@ export default function Search() {
 
   return (
     <div id="f56.search.view" data-testid="search-page" data-view={view} className="flex flex-col gap-4">
+      {/* §2: landing surface = title, the all-in-one bar, one sub-line and
+          three quiet chips. NOTHING else (no chips, no sliders, no caps). */}
       <div id="f56.search.v2.landing" hidden={!landing} className="flex flex-col items-center">
         <h1 className="text-2xl font-semibold text-primary">{t("search.page.title")}</h1>
-        <p className="text-sm text-secondary text-center max-w-2xl">{t("search.page.description")}</p>
       </div>
 
       <CommandBar onAnimationEnd={endAnimation} />
@@ -116,9 +158,16 @@ export default function Search() {
           <AdapterStatusList />
 
           <section className="flex flex-col gap-2">
-            <h2 id="f56.search.resultsHeader" className="text-sm font-semibold text-primary">
-              {t("search.results.label")}
-            </h2>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 id="f56.search.resultsHeader" className="text-sm font-semibold text-primary">
+                {t("search.results.label")}
+              </h2>
+              {isDevMode() && totalResults > 0 && devFixtureGen > 0 && devFixtureGen === queryGeneration ? (
+                <span id="f56.search.devFixtureNote" data-testid="dev-fixture-note" className="text-xs text-tertiary">
+                  {t("search.v3.devFixture.note")}
+                </span>
+              ) : null}
+            </div>
             {phase === "failed" ? (
               <div id="f56.search.resultsError" role="alert" data-testid="results-error" className="text-sm text-danger bg-danger/10 rounded p-3 flex items-center gap-3">
                 <span>

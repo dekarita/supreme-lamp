@@ -73,3 +73,19 @@ export const F57_EXPLORER_V2_IDS = [
 export const F57_EXPLORER_V2_TEMPLATES = [] as const;
 
 export const F56C_V2_ALL_IDS = [...F56C_V2_SEARCH_IDS, ...F57_EXPLORER_V2_IDS];
+
+// [F56-c v3] Additive v3 ids: the all-in-one bar's inline icons, the visible
+// lab's classifier stream + consolidation notes, and the DEV fixture note.
+// Appended only - the frozen 219 and the v2 lock above stay untouched
+// (one-directional id rule).
+export const F56C_V3_SEARCH_IDS = [
+  "f56.search.v2.urlImportIndicator",
+  "f56.search.v2.micStub",
+  "f56.search.v2.labClassifierStream",
+  "f56.search.v2.labClassifierMsg",
+  "f56.search.v2.labConsolidated",
+  "f56.search.v2.labTimedOut",
+  "f56.search.devFixtureNote",
+] as const;
+
+export const F56C_V3_SEARCH_TEMPLATES = ["f56.search.v2.labClassifierMsg"] as const;

@@ -23,6 +23,8 @@ export interface SearchUiState {
   recentQueries: string[];
   /** Epoch ms of the submit that started the 5-minute lab; 0 = not started. */
   labStartedAt: number;
+  /** [F56-c v3] queryGeneration the DEV fixture stream already served (0 = none). */
+  devFixtureGen: number;
   credModalOpen: boolean;
   cred: CredDraft;
   credError: string;
@@ -35,6 +37,8 @@ export interface SearchUiState {
   rememberQuery: (query: string) => void;
   startLab: (at?: number) => void;
   resetLab: () => void;
+  /** [F56-c v3] Latch the DEV fixture stream to a query generation. */
+  setDevFixtureGen: (gen: number) => void;
   openCredModal: (host: string) => void;
   closeCredModal: () => void;
   setCredUser: (v: string) => void;
@@ -62,6 +66,7 @@ export const useSearchUiStore = create<SearchUiState>((set, get) => ({
   importMode: false,
   recentQueries: [],
   labStartedAt: 0,
+  devFixtureGen: 0,
   credModalOpen: false,
   cred: EMPTY_CRED,
   credError: "",
@@ -82,6 +87,7 @@ export const useSearchUiStore = create<SearchUiState>((set, get) => ({
   },
   startLab: (at) => set({ labStartedAt: at ?? Date.now() }),
   resetLab: () => set({ labStartedAt: 0 }),
+  setDevFixtureGen: (gen) => set({ devFixtureGen: gen }),
   openCredModal: (host) => set({ credModalOpen: true, credError: "", cred: { host, user: "", password: "" } }),
   // Session-end wipe: closing the modal clears user AND password. There is no
   // persistence layer for either field anywhere in this store.

@@ -153,6 +153,10 @@ describe("Search page (F56-c)", () => {
     useSearchUiStore.setState({ view: "results" });
     renderSearch();
     expect(screen.getAllByTestId("result-row").length).toBe(2);
+    // [F56-c v3] filter chips live only inside the ⋯ inline drawer
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("bar-icon-drawer"));
+    });
     await act(async () => {
       fireEvent.click(document.getElementById("f56.search.licenceChip.public-domain") as HTMLElement);
     });
