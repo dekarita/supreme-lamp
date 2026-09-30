@@ -2220,6 +2220,24 @@ jobs:
           node scripts/ps-balance-audit.mjs
           echo 'F52 RESULT=PASS source/DOM/window/cap contracts; native cells remain mandatory'
 
+      # [F53] declared multipart length is the container formula; retries show 0%.
+      - name: F53 content-length truth + retry honesty gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/f53-content-length.test.js
+          test -f src/tests/smoke/f53-queue-progress.test.tsx
+          test -f tests/f53-content-length.ps1
+          test -f tests/f53-content-length.cs
+          grep -qF 'class ContainerLength' payloads/ghrdp-mirror-progress.cs
+          grep -qF 'new SnapshotReadStream' payloads/ghrdp-mirror-progress.cs
+          grep -qF 'Get-F53DeclaredPartLength' payloads/ghrdp-mirror.ps1
+          grep -qF 'Set-F53PendingRetry' payloads/ghrdp-watcher.ps1
+          grep -qF 'framingMode = '"'"'content-length'"'"'' payloads/ghrdp-mirror.ps1
+          grep -qF 'F53' docs/MIRROR-HOSTS.md
+          test "$(wc -l < STATE.md)" -le 60
+          echo 'F53 RESULT=PASS source/DOM contracts; native wire cells remain mandatory'
+
       # [F48] TOKEN-LESS MIRROR gates (operator directive §0/§1.6): no gofile
       # API token exists anywhere in this system - no secret read, no env
       # plumbing, no missing-token stage halt (absence is NORMAL), no auth
@@ -2658,7 +2676,7 @@ jobs:
           # syntax error in them used to surface only as a red Windows lab cell
           # (an expensive loop), and the server DOT-SOURCES the module at start.
           $bad = @()
-          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/ghrdp-fx.ps1', 'payloads/ghrdp-mirror.ps1', 'payloads/ghrdp-watcher.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1', 'tests/f45-fx-server.ps1', 'tests/f46-mirror-policy.ps1', 'tests/f49-mirror-runtime.ps1', 'tests/f52-mirror-telemetry.ps1')) {
+          foreach ($file in @('payloads/ghrdp-server.ps1', 'payloads/ghrdp-fx.ps1', 'payloads/ghrdp-mirror.ps1', 'payloads/ghrdp-watcher.ps1', 'payloads/Provision-GhrdpVps.ps1', 'payloads/Enable-RdpTlsCertificate.ps1', 'payloads/helper-ghrdp-connect.ps1', 'payloads/rdp-telescope.ps1', 'payloads/Grant-RdpKeyAccess.ps1', 'payloads/Test-RdpListenerHandshake.ps1', 'tests/f45-fx-server.ps1', 'tests/f46-mirror-policy.ps1', 'tests/f49-mirror-runtime.ps1', 'tests/f52-mirror-telemetry.ps1', 'tests/f53-content-length.ps1')) {
               $errors = $null
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $file), [ref]$null, [ref]$errors)
               if ($errors) {
@@ -2885,3 +2903,17 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & (Join-Path $env:GITHUB_WORKSPACE 'tests\f52-mirror-telemetry.ps1') -SkipLargeCells
           if ($LASTEXITCODE -ne 0) { throw ('F52: 5.1 compatibility cells failed with exit ' + $LASTEXITCODE) }
+      - name: F53 content-length truth + retry honesty
+        timeout-minutes: 25
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f53-content-length.ps1')
+          if ($LASTEXITCODE -ne 0) { throw ('F53: content-length cells failed with exit ' + $LASTEXITCODE) }
+      - name: F53 Windows PowerShell 5.1 content-length (small cells)
+        timeout-minutes: 8
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f53-content-length.ps1') -SkipLargeCells
+          if ($LASTEXITCODE -ne 0) { throw ('F53: 5.1 content-length cells failed with exit ' + $LASTEXITCODE) }

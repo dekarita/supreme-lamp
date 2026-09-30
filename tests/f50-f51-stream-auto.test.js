@@ -34,11 +34,15 @@ const fnSlice = (text, startMarker, endMarker) => {
   return text.slice(a, b);
 };
 const send = fnSlice(mod, 'function Send-F46GofileUpload', 'function ConvertFrom-F46UploadResponse');
+const framed = fnSlice(mod, 'function New-F46UploadContent', 'function Measure-F53Upload');
+const upload = send + '\n' + framed;
 
 test('F50-1 the upload transport is streamed: HttpClient + MultipartFormDataContent + StreamContent(FileStream)', () => {
   assert.match(send, /System\.Net\.Http\.HttpClient/, 'the transport must be HttpClient');
-  assert.match(send, /MultipartFormDataContent/, 'the body must be a MultipartFormDataContent');
-  assert.match(send, /System\.Net\.Http\.StreamContent/, 'the file part must be a StreamContent');
+  assert.match(send, /New-F46UploadContent/, 'Send must use the single framing owner');
+  assert.equal(mod.split('New-Object System.Net.Http.MultipartFormDataContent').length - 1, 1, 'exactly one multipart framing owner');
+  assert.match(framed, /MultipartFormDataContent/, 'the body must be a MultipartFormDataContent');
+  assert.match(framed, /System\.Net\.Http\.StreamContent/, 'the file part must be a StreamContent');
   assert.match(send, /System\.IO\.File\]::Open\(/, 'the stream must come from a FileStream (File::Open)');
   assert.match(send, /FileShare\]::ReadWrite/, 'the source must stay share-readable while it grows');
 });
@@ -61,11 +65,11 @@ test('F50-3 the F44 policy is preserved verbatim (fail-fast, budget, Retry-After
 });
 
 test('F50-4 the F48 guest contract rides the new transport (field file, part mime, zero auth surface)', () => {
-  assert.match(send, /\$spec\.fieldName/, 'the pinned field name must feed the disposition');
-  assert.match(send, /\$spec\.partContentType/, 'the pinned part mime must feed the part header');
-  assert.ok(!code(send).includes('Authorization'), 'no auth header may appear in the streamed transport');
-  assert.ok(!code(send).includes('Cookie'), 'no cookie may appear in the streamed transport');
-  assert.ok(!code(send).includes('X-Gofile-Token'), 'no host token may appear in the streamed transport');
+  assert.match(framed, /\$Spec\.fieldName/, 'the pinned field name must feed the disposition');
+  assert.match(framed, /\$Spec\.partContentType/, 'the pinned part mime must feed the part header');
+  assert.ok(!code(upload).includes('Authorization'), 'no auth header may appear in the streamed transport');
+  assert.ok(!code(upload).includes('Cookie'), 'no cookie may appear in the streamed transport');
+  assert.ok(!code(upload).includes('X-Gofile-Token'), 'no host token may appear in the streamed transport');
   assert.match(send, /TryAddWithoutValidation|Accept/, 'request headers still come from the pinned spec only');
 });
 
