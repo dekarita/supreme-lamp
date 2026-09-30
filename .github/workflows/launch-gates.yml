@@ -2613,6 +2613,111 @@ jobs:
           # 219-id lock still green under default-flag config (post-build above)
           node scripts/check-regression-ids.mjs
           echo 'F43 gates PASS: build-ui=in-main.yml, default=v2, escape=v1, banner=fail-visible, ids=locked'
+
+      - name: F56-c sidebar + search + file-explorer shell gates
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          sh=src/components/layout/AppShell.tsx
+          app=src/App.tsx
+          # §1 sidebar: exactly 9 entries in locked order; the original 7 stay
+          # untouched; File Explorer above Mirror (Alt+E) and Search above
+          # Telemetry (Alt+F) carry their additive f57/f56 nav ids.
+          python3 -c '
+          import re
+          src = open("src/components/layout/AppShell.tsx", encoding="utf-8").read()
+          nav = src.split("const NAV: NavItem[]")[1].split("];")[0]
+          tos = re.findall(r"to: \"([^\"]+)\"", nav)
+          expect = ["/", "/sessions", "/connections", "/keys", "/files", "/mirror", "/search", "/telemetry", "/settings"]
+          assert tos == expect, ("sidebar order drifted", tos)
+          assert "id: \"f57.explorer.nav\"" in nav and "hint: \"Alt+E\"" in nav, "files entry"
+          assert "id: \"f56.search.nav\"" in nav and "hint: \"Alt+F\"" in nav, "search entry"
+          assert "icon: Folder" in nav and "icon: Search" in nav, "icons"
+          print("F56-c sidebar: 9 entries, order locked")
+          '
+          # §1 routes + hotkeys + palette prefill
+          grep -qF 'path="/files" element={<FileExplorer />' "$app"
+          grep -qF 'path="/search" element={<Search />' "$app"
+          grep -qF 'navigate("/files")' "$sh"
+          grep -qF 'navigate("/search")' "$sh"
+          test -f src/components/layout/CommandPalette.tsx
+          grep -qF '"?q="' src/components/layout/CommandPalette.tsx
+          # §2 search state + frozen /api/search{,/status,/cancel} client wiring
+          test -f src/stores/searchStore.ts
+          test -f src/api/search/index.ts
+          grep -qF '"/api/search"' src/api/search/index.ts
+          grep -qF '"/api/search/status' src/api/search/index.ts
+          grep -qF '"/api/search/cancel"' src/api/search/index.ts
+          grep -qF '"react-window"' package.json
+          test -f src/pages/Search.tsx
+          test -f src/pages/FileExplorer.tsx
+          test -f src/pages/file-explorer/fixture.json
+          # §5 refusals: no /api/fetch CALL from the UI (F56-d). Comments and
+          # tests may name the endpoint to prove its absence; real src/ code
+          # outside comments may not carry it, and no fetch() may be built
+          # against it.
+          if grep -Rn '/api/fetch' src/ \
+            | grep -vE '\.(test|spec)\.tsx?:[0-9]+:' \
+            | grep -vE ':[0-9]+:\s*(//|\*|/\*)'; then
+            echo 'F56-c: /api/fetch literal outside comments - refuse' >&2
+            exit 1
+          fi
+          if grep -RnE 'fetch\(.{0,48}/api/fetch' src/; then
+            echo 'F56-c: /api/fetch call constructed in src/ - refuse' >&2
+            exit 1
+          fi
+          awk '/mirror_enable:/{f=1} f&&/default:/{print;exit}' .github/workflows/main.yml | grep -qF 'default: false'
+          # §4 i18n: byte-verified en/si parity over search.* + files.* + new nav keys
+          python3 -c '
+          import json
+          def flat(d, p=""):
+              out = {}
+              for k, v in d.items():
+                  if isinstance(v, dict): out.update(flat(v, p + k + "."))
+                  else: out[p + k] = str(v)
+              return out
+          fe = flat(json.load(open("src/i18n/en.json", encoding="utf-8")))
+          fs = flat(json.load(open("src/i18n/si.json", encoding="utf-8")))
+          new = lambda k: k.startswith(("search.", "files.")) or k in ("nav.files", "nav.search")
+          en_new = sorted(k for k in fe if new(k))
+          si_new = sorted(k for k in fs if new(k))
+          assert en_new == si_new, ("en/si key sets drifted", len(en_new), len(si_new))
+          for k in si_new:
+              v = fs[k]
+              assert v.strip(), ("empty si value", k)
+              assert v.encode("utf-8").decode("utf-8") == v, ("si byte round-trip", k)
+          print("F56-c i18n:", len(en_new), "keys x 2 catalogs, parity OK")
+          '
+          # §5 219-id one-directional: frozen lock untouched, f56/f57 additive + collision-free
+          node scripts/check-regression-ids.mjs
+          python3 -c '
+          import re
+          parent = set(re.findall(r"\x27([^\x27]+)\x27", open("src/lib/regression-ids.ts", encoding="utf-8").read()))
+          s56 = open("src/pages/search/ids.ts", encoding="utf-8").read()
+          s57 = open("src/pages/file-explorer/ids.ts", encoding="utf-8").read()
+          def arr(text, name):
+              return re.findall(r"\"(f5[67]\.[A-Za-z0-9.]+)\"", re.search(name + r" = \[(.*?)\] as const;", text, re.S).group(1))
+          inv = arr(s56, "F56_SEARCH_IDS") + arr(s57, "F57_EXPLORER_IDS")
+          tmpls = set(arr(s56, "F56_SEARCH_TEMPLATES") + arr(s57, "F57_EXPLORER_TEMPLATES"))
+          assert len(inv) == 71 + 21, ("id lock size", len(inv))
+          assert len(set(inv)) == len(inv), "duplicate f56/f57 id"
+          assert tmpls <= set(inv), "template missing from inventory"
+          dashed = set(x.replace(".", "-") for x in inv)
+          for p in parent:
+              assert p not in inv, ("collision", p)
+              assert p not in dashed, ("dashed collision", p)
+          print("F56-c ids:", len(inv), "additive f56/f57 entries, collision-free")
+          '
+          # §4 F56-c Vitest cells (sidebar / search / file explorer / locks / parity)
+          corepack enable >/dev/null 2>&1 || true
+          if ! out=$(pnpm exec vitest run src/tests/smoke/sidebar-nav.test.tsx src/tests/smoke/search-page.test.tsx src/tests/smoke/file-explorer-shell.test.tsx src/tests/smoke/f56-f57-ids.test.ts src/tests/smoke/i18n-f56-parity.test.ts 2>&1); then
+            echo "$out"
+            detail=$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g')
+            echo "::error title=F56-c UI shell::${detail}"
+            exit 1
+          fi
+          echo 'F56-c gates PASS: sidebar=9, search-page=live, file-explorer-page=live, ids=additive, i18n=parity'
   windows-native:
     runs-on: windows-latest
     steps:

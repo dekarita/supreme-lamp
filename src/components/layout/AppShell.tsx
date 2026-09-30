@@ -2,9 +2,11 @@
 // (240px/64px, sticky, <1024 overlay) + Main (max-w-1600) + BottomBar (32px,
 // sticky, the ONLY surface allowed to render the four time fields + clock -
 // enforced by tests/smoke/bottom-bar-time.test.ts + scripts/check-bottom-bar-time.mjs).
-import { NavLink, Outlet } from "react-router-dom";
-import { Activity, ChevronsLeft, Clock, Database, Globe, KeyRound, Menu, Moon, Settings, Sun, Type, Zap } from "lucide-react";
+import { NavLink, Outlet, useNavigate } from "react-router-dom";
+import { Activity, ChevronsLeft, Clock, Database, Folder, Globe, KeyRound, Menu, Moon, Search, Settings, Sun, Type, Zap } from "lucide-react";
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
+import { CommandPalette } from "@/components/layout/CommandPalette";
 import { useThemeStore, useScaleStore, useLangStore, useSidebarStore } from "@/stores/prefsStore";
 import { useTelemetryStore } from "@/stores/telemetryStore";
 import { useSessionStore } from "@/stores/sessionStore";
@@ -144,12 +146,25 @@ function TopBar() {
   );
 }
 
-const NAV = [
+// [F56-c] 9 entries: the original 7 stay byte-identical and in their original
+// order. File Explorer inserts above Mirror (Alt+E); Search inserts above
+// Telemetry (Alt+F). ids are additive f57.explorer.nav / f56.search.nav.
+interface NavItem {
+  to: string;
+  key: string;
+  icon: typeof Activity;
+  id?: string;
+  hint?: string;
+}
+
+const NAV: NavItem[] = [
   { to: "/", key: "nav.overview", icon: Activity },
   { to: "/sessions", key: "nav.sessions", icon: Clock },
   { to: "/connections", key: "nav.connections", icon: Globe },
   { to: "/keys", key: "nav.keys", icon: KeyRound },
+  { to: "/files", key: "nav.files", icon: Folder, id: "f57.explorer.nav", hint: "Alt+E" },
   { to: "/mirror", key: "nav.mirror", icon: Database },
+  { to: "/search", key: "nav.search", icon: Search, id: "f56.search.nav", hint: "Alt+F" },
   { to: "/telemetry", key: "nav.telemetry", icon: Zap },
   { to: "/settings", key: "nav.settings", icon: Settings },
 ];
@@ -183,6 +198,8 @@ function Sidebar() {
                 key={item.to}
                 to={item.to}
                 end={item.to === "/"}
+                id={item.id}
+                title={item.hint ? t(item.key) + " (" + item.hint + ")" : undefined}
                 onClick={() => setMobileOpen(false)}
                 className={({ isActive }) =>
                   cn(
@@ -292,6 +309,27 @@ function useSessionNative() {
 
 export function AppShell() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
+
+  // [F56-c] File Explorer = Alt+E, Search = Alt+F (session §1). Ctrl+K is
+  // handled by CommandPalette (Plan §D: opens the palette; Search command
+  // prefills /search without submitting).
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if (e.defaultPrevented || e.ctrlKey || e.metaKey) return;
+      const k = (e.key || "").toLowerCase();
+      if (e.altKey && k === "e") {
+        e.preventDefault();
+        navigate("/files");
+      } else if (e.altKey && k === "f") {
+        e.preventDefault();
+        navigate("/search");
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [navigate]);
+
   return (
     <div className="min-h-screen bg-base text-primary flex flex-col">
       <a href="#main" className="skip-link">
@@ -303,6 +341,7 @@ export function AppShell() {
         <Main />
       </div>
       <BottomBar />
+      <CommandPalette />
     </div>
   );
 }

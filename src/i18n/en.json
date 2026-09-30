@@ -11,7 +11,9 @@
     "keys": "Keys & Secrets",
     "mirror": "Mirror",
     "telemetry": "Telemetry",
-    "settings": "Settings"
+    "settings": "Settings",
+    "files": "File Explorer",
+    "search": "Search"
   },
   "sidebar": {
     "nav": "Primary navigation",
@@ -295,5 +297,291 @@
     "optionSelfHosted": "Point the mirror at a self-hosted operator target you control.",
     "optionTokenFuture": "Token mode is a separate future decision, out of scope here (this build never accepts or stores a host token).",
     "optionsFooter": "A 403 from the runner egress or a 'host requires account token; token-less mode unsupported' reason is a policy dead-end, not a puzzle: host-policy workarounds are refused by design and blocked by a CI gate. Re-dispatch with mirror_enable=false, or move the upload to your own egress."
+  },
+  "search": {
+    "nav": {
+      "label": "Search"
+    },
+    "page": {
+      "title": "Search",
+      "description": "Federated search across the compiled source roster and your own storage."
+    },
+    "palette": {
+      "command": "Open Search",
+      "description": "Prefills the Search query; it is not submitted until you press Enter.",
+      "queryPrefilled": "Query prefilled in Search"
+    },
+    "keyboard": {
+      "help": "Alt+F opens Search. Enter submits. Arrow keys move between rows and cells."
+    },
+    "query": {
+      "label": "Search query",
+      "placeholder": "Search titles, creators, or paste an https:// URL",
+      "submit": "Search",
+      "clear": "Clear",
+      "searching": "Searching",
+      "empty": "Enter a query to search.",
+      "invalid": "This query cannot be submitted.",
+      "urlDetected": "HTTPS URL detected",
+      "urlImport": "URL import"
+    },
+    "urlImport": {
+      "label": "URL import",
+      "validating": "Validating URL",
+      "valid": "Valid HTTPS URL; it will resolve against the compiled adapters.",
+      "invalidScheme": "Only https:// URLs can be imported.",
+      "unknownDomain": "This domain is not on the compiled allowlist.",
+      "redirectRejected": "The redirect left the adapter allowlist and was rejected.",
+      "robotsBlocked": "The source robots policy blocks this request."
+    },
+    "scope": {
+      "label": "Scope",
+      "federated": "Federated",
+      "ownStorage": "Own storage"
+    },
+    "filters": {
+      "label": "Filters",
+      "reset": "Reset filters",
+      "category": {
+        "label": "Category",
+        "all": "All",
+        "books": "Books",
+        "audio": "Audio",
+        "scholarly": "Scholarly",
+        "education": "Education",
+        "media": "Media",
+        "software": "Software",
+        "music": "Music",
+        "video": "Video",
+        "ownStorage": "Own storage",
+        "purchase": "Purchase"
+      },
+      "licence": {
+        "label": "Licence",
+        "publicDomain": "Public domain",
+        "openAccess": "Open access",
+        "creativeCommons": "Creative Commons",
+        "purchase": "Purchase",
+        "ownStorage": "Own storage"
+      },
+      "size": {
+        "label": "Maximum size",
+        "minimum": "0 GB (no cap)",
+        "maximum": "100 GB",
+        "any": "Any size",
+        "zero": "No maximum",
+        "valueGb": "{{value}} GB"
+      },
+      "sort": {
+        "label": "Sort",
+        "relevance": "Relevance",
+        "size": "Size",
+        "date": "Date"
+      }
+    },
+    "results": {
+      "label": "Results",
+      "loading": "Loading results",
+      "count": "{{count}} results",
+      "noQuery": "No search yet; enter a query above.",
+      "empty": "No results for this query.",
+      "noFilterMatch": "Filters removed all current results.",
+      "partial": "Partial results; some adapters are still running.",
+      "allAdaptersFailed": "All adapters failed.",
+      "source": "Source",
+      "title": "Title",
+      "creator": "Creator / publisher",
+      "size": "Size",
+      "updated": "Updated",
+      "licence": "Licence",
+      "actions": "Actions",
+      "selected": "Selected",
+      "unknownSize": "Size unknown",
+      "unknownDate": "Date unknown",
+      "previewUnavailable": "Preview unavailable",
+      "contentType": "Content type"
+    },
+    "actions": {
+      "fetch": "Fetch",
+      "preview": "Preview",
+      "openPurchase": "Open purchase",
+      "retry": "Retry",
+      "cancel": "Cancel",
+      "cancelSearch": "Cancel search",
+      "clearSelection": "Clear selection",
+      "externalPurchase": "Opens the provider in a new tab",
+      "fetchUnavailable": "Fetch unavailable for this result",
+      "previewUnavailableReason": "No preview artifact is available for this result.",
+      "purchaseUnavailableReason": "No validated purchase URL is available for this result.",
+      "comingSoon": "coming in F56-d"
+    },
+    "adapter": {
+      "status": {
+        "idle": "Idle",
+        "queued": "Queued",
+        "running": "Running",
+        "complete": "Complete",
+        "empty": "Empty",
+        "rateLimited": "Rate limited",
+        "blockedRobots": "Blocked by robots",
+        "timedOut": "Timed out",
+        "failed": "Failed",
+        "cancelled": "Cancelled"
+      },
+      "retryAfter": "Retry after {{time}}",
+      "resultCount": "{{count}} results"
+    },
+    "progress": {
+      "title": "Fetch progress",
+      "empty": "No active fetches. Fetch lands in F56-d.",
+      "transportAria2": "aria2c",
+      "transportTorrent": "qBittorrent",
+      "gid": "GID {{gid}}",
+      "qbittorrentHandle": "Handle {{handle}}",
+      "queued": "Queued",
+      "downloading": "Downloading",
+      "verifying": "Verifying",
+      "encrypting": "Encrypting",
+      "postFetch": "Post-fetch",
+      "completed": "Completed",
+      "retrying": "Retrying",
+      "failed": "Failed",
+      "cancelRequested": "Cancelling",
+      "cancelled": "Cancelled",
+      "speed": "Speed {{speed}}",
+      "eta": "ETA {{eta}}",
+      "bytes": "{{done}} / {{total}}",
+      "retry": "Retry",
+      "cancel": "Cancel",
+      "mirrorOff": "Mirror OFF",
+      "pipelineComplete": "Pipeline complete"
+    },
+    "errors": {
+      "validation": "The request was rejected by validation.",
+      "httpsOnly": "HTTPS is required.",
+      "unknownSource": "Unknown source.",
+      "domainNotAllowlisted": "Domain is not allowlisted.",
+      "robotsBlocked": "Blocked by the source robots policy.",
+      "rateLimited": "Rate limited by the source.",
+      "timeout": "The source timed out.",
+      "parseFailed": "The source response could not be parsed.",
+      "noLicenceEvidence": "Licence evidence is missing; the result was omitted.",
+      "snapshotMismatch": "Source snapshot mismatch; fetch refused.",
+      "contentLengthRequired": "Content length is required.",
+      "wireLengthMismatch": "Wire length mismatch.",
+      "transportUnavailable": "Transport unavailable.",
+      "searchCancelled": "Search cancelled.",
+      "fetchCancelled": "Fetch cancelled.",
+      "classifierBlocked": "Blocked after intent confirmation.",
+      "generic": "Something went wrong."
+    },
+    "a11y": {
+      "commandBar": "Search command bar",
+      "queryInput": "Search query input",
+      "queryDescription": "Type a query and press Enter to search. HTTPS URLs enter URL import.",
+      "categoryGroup": "Category filters",
+      "licenceGroup": "Licence filters",
+      "sizeSlider": "Maximum size slider",
+      "sortSelector": "Sort order",
+      "adapterStatusList": "Adapter status list",
+      "resultsGrid": "Search results grid",
+      "resultRow": "Search result row",
+      "sourceBadge": "Source badge",
+      "categoryGlyph": "Category",
+      "resultActions": "Result actions",
+      "progressRail": "Fetch progress rail",
+      "progressRow": "Fetch progress row",
+      "speedSparkline": "Recent speed history",
+      "liveStatus": "Search status updates",
+      "selected": "selected",
+      "notSelected": "not selected",
+      "externalLink": "opens in a new tab"
+    },
+    "sources": {
+      "projectGutenberg": "Project Gutenberg",
+      "standardEbooks": "Standard Ebooks",
+      "librivox": "LibriVox",
+      "iaOpenLibrary": "IA Open Library",
+      "hathitrust": "HathiTrust",
+      "wikisource": "Wikisource",
+      "doab": "DOAB",
+      "arxiv": "arXiv",
+      "biorxiv": "bioRxiv",
+      "pubmedCentral": "PubMed Central",
+      "doaj": "DOAJ",
+      "oerCommons": "OER Commons",
+      "ssrn": "SSRN",
+      "internetArchive": "Internet Archive",
+      "blenderStudio": "Blender Studio",
+      "wikimediaCommons": "Wikimedia Commons",
+      "sourceforge": "SourceForge",
+      "githubReleases": "GitHub Releases",
+      "bandcamp": "Bandcamp",
+      "ccMarkedYoutube": "CC-marked YouTube",
+      "kindleAudible": "Kindle/Audible",
+      "kobo": "Kobo",
+      "googleBooks": "Google Books",
+      "sarasavi": "Sarasavi",
+      "vijithaYapa": "Vijitha Yapa",
+      "godage": "Godage",
+      "overdriveLibby": "OverDrive/Libby",
+      "ownStorage": "Own storage"
+    }
+  },
+  "files": {
+    "page": {
+      "title": "File Explorer",
+      "description": "Shell preview; real file operations arrive in F57."
+    },
+    "tree": {
+      "label": "Explorer tree"
+    },
+    "quickAccess": {
+      "label": "Quick Access",
+      "desktop": "Desktop",
+      "downloads": "Downloads",
+      "documents": "Documents"
+    },
+    "thisPc": {
+      "label": "This PC",
+      "windows": "Windows (C:)",
+      "rdpStorage": "RDP-Storage (D:)"
+    },
+    "folder": {
+      "fetched": "Fetched"
+    },
+    "breadcrumb": {
+      "label": "Breadcrumb"
+    },
+    "commandBar": {
+      "label": "Command bar"
+    },
+    "command": {
+      "newFolder": "New folder",
+      "upload": "Upload",
+      "rename": "Rename",
+      "copy": "Copy",
+      "delete": "Delete",
+      "refresh": "Refresh"
+    },
+    "tooltip": {
+      "comingSoon": "coming in F57"
+    },
+    "results": {
+      "label": "Files",
+      "kind": {
+        "folder": "Folder",
+        "file": "File"
+      }
+    },
+    "view": {
+      "list": "List view",
+      "grid": "Grid view"
+    },
+    "preview": {
+      "label": "Preview",
+      "empty": "Select a file to preview.",
+      "comingSoon": "Preview content coming in F57."
+    }
   }
 }

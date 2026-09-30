@@ -13,7 +13,9 @@ import Overview from "@/pages/Overview";
 import Sessions from "@/pages/Sessions";
 import Connections from "@/pages/Connections";
 import Keys from "@/pages/Keys";
+import FileExplorer from "@/pages/FileExplorer";
 import Mirror from "@/pages/Mirror";
+import Search from "@/pages/Search";
 import Telemetry from "@/pages/Telemetry";
 import Settings from "@/pages/Settings";
 
@@ -35,7 +37,9 @@ export default function App() {
           <Route path="/sessions" element={<Sessions />} />
           <Route path="/connections" element={<Connections />} />
           <Route path="/keys" element={<Keys />} />
+          <Route path="/files" element={<FileExplorer />} />
           <Route path="/mirror" element={<Mirror />} />
+          <Route path="/search" element={<Search />} />
           <Route path="/telemetry" element={<Telemetry />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Overview />} />
