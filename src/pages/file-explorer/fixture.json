@@ -1,0 +1,25 @@
+{
+  "note": "[F56-c] F57 shell fixture rows only - no real file operations until F57. IDs stay under f57.explorer.*.",
+  "quickAccess": [
+    { "id": "qa-desktop", "labelKey": "files.quickAccess.desktop", "path": "C:\\Users\\RDP\\Desktop" },
+    { "id": "qa-downloads", "labelKey": "files.quickAccess.downloads", "path": "C:\\Users\\RDP\\Downloads" },
+    { "id": "qa-documents", "labelKey": "files.quickAccess.documents", "path": "C:\\Users\\RDP\\Documents" }
+  ],
+  "thisPc": [
+    { "id": "pc-windows", "labelKey": "files.thisPc.windows", "path": "C:\\" },
+    { "id": "pc-rdp-storage", "labelKey": "files.thisPc.rdpStorage", "path": "D:\\RDP-Storage" }
+  ],
+  "breadcrumb": [
+    { "id": "bc-this-pc", "labelKey": "files.thisPc.label", "path": "This PC" },
+    { "id": "bc-rdp-storage", "labelKey": "files.thisPc.rdpStorage", "path": "D:\\RDP-Storage" },
+    { "id": "bc-fetched", "labelKey": "files.folder.fetched", "path": "D:\\RDP-Storage\\Fetched" }
+  ],
+  "rows": [
+    { "id": "row-archives", "name": "Archives", "kind": "folder", "sizeBytes": null, "modified": "2026-09-26T10:14:00Z" },
+    { "id": "row-handoffs", "name": "Handoffs", "kind": "folder", "sizeBytes": null, "modified": "2026-09-28T06:40:12Z" },
+    { "id": "row-neatdm", "name": "NeatDM_setup.exe", "kind": "file", "sizeBytes": 917340, "modified": "2026-09-28T05:02:11Z" },
+    { "id": "row-kit", "name": "ghrdp-handler-kit.zip", "kind": "file", "sizeBytes": 324115, "modified": "2026-09-27T18:22:45Z" },
+    { "id": "row-report", "name": "session-report.md", "kind": "file", "sizeBytes": 14822, "modified": "2026-09-29T20:11:02Z" },
+    { "id": "row-video", "name": "logon-recovery.mp4", "kind": "file", "sizeBytes": 52428800, "modified": "2026-09-25T09:03:33Z" }
+  ]
+}

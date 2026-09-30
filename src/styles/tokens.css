@@ -34,6 +34,19 @@
   --color-fx-preview-scrim: rgba(15,23,42,0.60);
   --color-fx-mask: #334155;
 
+  /* F56 Search licence palette (Plan §C) - muted, AA on both themes, never
+     neon green; the only green family is the sanctioned emerald (mint). */
+  --search-licence-public-fg: #047857;
+  --search-licence-public-bg: rgba(5, 150, 105, 0.10);
+  --search-licence-open-fg: #0369a1;
+  --search-licence-open-bg: rgba(14, 165, 233, 0.10);
+  --search-licence-cc-fg: #6d28d9;
+  --search-licence-cc-bg: rgba(139, 92, 246, 0.12);
+  --search-licence-purchase-fg: #b45309;
+  --search-licence-purchase-bg: rgba(217, 119, 6, 0.12);
+  --search-licence-own-fg: #475569;
+  --search-licence-own-bg: rgba(100, 116, 139, 0.12);
+
   /* 1.4 Shadow */
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.10), 0 1px 3px rgba(0, 0, 0, 0.08);
@@ -66,6 +79,17 @@ html[data-theme="dark"] {
   --color-fx-thumb-bg: #0b1220;
   --color-fx-preview-scrim: rgba(15,23,42,0.72);
   --color-fx-mask: #94a3b8;
+
+  --search-licence-public-fg: #34d399;
+  --search-licence-public-bg: rgba(16, 185, 129, 0.14);
+  --search-licence-open-fg: #38bdf8;
+  --search-licence-open-bg: rgba(14, 165, 233, 0.14);
+  --search-licence-cc-fg: #a78bfa;
+  --search-licence-cc-bg: rgba(139, 92, 246, 0.16);
+  --search-licence-purchase-fg: #fbbf24;
+  --search-licence-purchase-bg: rgba(245, 158, 11, 0.14);
+  --search-licence-own-fg: #cbd5e1;
+  --search-licence-own-bg: rgba(148, 163, 184, 0.14);
 }
 
 :root {

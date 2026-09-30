@@ -11,7 +11,9 @@
     "keys": "යතුරු සහ රහස්",
     "mirror": "දර්පණය",
     "telemetry": "දුරමිතික",
-    "settings": "සැකසුම්"
+    "settings": "සැකසුම්",
+    "files": "ගොනු ගවේෂකය",
+    "search": "සොයන්න"
   },
   "sidebar": {
     "nav": "ප්‍රාථමික සංචලනය",
@@ -200,6 +202,292 @@
       "language": "භාෂාව",
       "textScale": "පෙළ ප්‍රමාණය",
       "theme": "තේමාව"
+    }
+  },
+  "search": {
+    "nav": {
+      "label": "සොයන්න"
+    },
+    "page": {
+      "title": "සොයන්න",
+      "description": "සම්පාදිත මූලාශ්‍ර ලැයිස්තුව හරහා සහ ඔබේ ගබඩාව තුළ ඒකාබද්ධ සෙවුමක්."
+    },
+    "palette": {
+      "command": "සෙවුම විවෘත කරන්න",
+      "description": "සෙවුම් විමසුම කලින් පුරවයි; Enter එබෙන තුරු ඉදිරිපත් නොවේ.",
+      "queryPrefilled": "විමසුම සෙවුමේ පුරවන ලදී"
+    },
+    "keyboard": {
+      "help": "Alt+F සෙවුම විවෘත කරයි. Enter ඉදිරිපත් කරයි. ඊතල යතුරු පේළි සහ කොටු අතර ගමන් කරයි."
+    },
+    "query": {
+      "label": "සෙවුම් විමසුම",
+      "placeholder": "මාතෘකා, නිර්මාතෘ සොයන්න, හෝ https:// URL එකක් අලවන්න",
+      "submit": "සොයන්න",
+      "clear": "හිස් කරන්න",
+      "searching": "සොයමින්",
+      "empty": "සෙවීමට විමසුමක් ඇතුළත් කරන්න.",
+      "invalid": "මෙම විමසුම ඉදිරිපත් කළ නොහැක.",
+      "urlDetected": "HTTPS URL හඳුනාගන්නා ලදී",
+      "urlImport": "URL ආයාතය"
+    },
+    "urlImport": {
+      "label": "URL ආයාතය",
+      "validating": "URL සත්‍යාපනය කරමින්",
+      "valid": "වලංගු HTTPS URL එකක්; සම්පාදිත අනුවර්තක හරහා විසඳේ.",
+      "invalidScheme": "https:// URL පමණක් ආයාත කළ හැක.",
+      "unknownDomain": "මෙම වසම සම්පාදිත අනුමත ලැයිස්තුවේ නැත.",
+      "redirectRejected": "යොමුව අනුවර්තක අනුමත ලැයිස්තුවෙන් පිටතට ගිය නිසා ප්‍රතික්ෂේප විය.",
+      "robotsBlocked": "මූලාශ්‍රයේ රොබෝට් ප්‍රතිපත්තිය මෙම ඉල්ලීම අවහිර කරයි."
+    },
+    "scope": {
+      "label": "පරාසය",
+      "federated": "ඒකාබද්ධ",
+      "ownStorage": "ස්වකීය ගබඩාව"
+    },
+    "filters": {
+      "label": "පෙරහන්",
+      "reset": "පෙරහන් යළි පිහිටුවන්න",
+      "category": {
+        "label": "ප්‍රවර්ගය",
+        "all": "සියල්ල",
+        "books": "පොත්",
+        "audio": "ශ්‍රාව්‍ය",
+        "scholarly": "ශාස්ත්‍රීය",
+        "education": "අධ්‍යාපන",
+        "media": "මාධ්‍ය",
+        "software": "මෘදුකාංග",
+        "music": "සංගීත",
+        "video": "වීඩියෝ",
+        "ownStorage": "ස්වකීය ගබඩාව",
+        "purchase": "මිලදීගැනීම"
+      },
+      "licence": {
+        "label": "බලපත්‍රය",
+        "publicDomain": "පොදු දේපළ",
+        "openAccess": "විවෘත ප්‍රවේශය",
+        "creativeCommons": "ක්‍රියේටිව් කොමන්ස්",
+        "purchase": "මිලදීගැනීම",
+        "ownStorage": "ස්වකීය ගබඩාව"
+      },
+      "size": {
+        "label": "උපරිම ප්‍රමාණය",
+        "minimum": "0 GB (සීමාවක් නැත)",
+        "maximum": "100 GB",
+        "any": "ඕනෑම ප්‍රමාණයක්",
+        "zero": "උපරිමයක් නැත",
+        "valueGb": "{{value}} GB"
+      },
+      "sort": {
+        "label": "පෙළගැස්ම",
+        "relevance": "අදාළත්වය",
+        "size": "ප්‍රමාණය",
+        "date": "දිනය"
+      }
+    },
+    "results": {
+      "label": "ප්‍රතිඵල",
+      "loading": "ප්‍රතිඵල පූරණය වෙමින්",
+      "count": "ප්‍රතිඵල {{count}}",
+      "noQuery": "තවම සෙවුමක් නැත; ඉහළින් විමසුමක් ඇතුළත් කරන්න.",
+      "empty": "මෙම විමසුමට ප්‍රතිඵල නැත.",
+      "noFilterMatch": "පෙරහන් නිසා සියලු ප්‍රතිඵල ඉවත් විය.",
+      "partial": "අර්ධ ප්‍රතිඵල; සමහර අනුවර්තක තවම ක්‍රියාත්මකයි.",
+      "allAdaptersFailed": "සියලු අනුවර්තක අසාර්ථකයි.",
+      "source": "මූලාශ්‍රය",
+      "title": "මාතෘකාව",
+      "creator": "නිර්මාතෘ / ප්‍රකාශක",
+      "size": "ප්‍රමාණය",
+      "updated": "යාවත්කාලීන",
+      "licence": "බලපත්‍රය",
+      "actions": "ක්‍රියා",
+      "selected": "තෝරාගෙන ඇත",
+      "unknownSize": "ප්‍රමාණය නොදනී",
+      "unknownDate": "දිනය නොදනී",
+      "previewUnavailable": "පෙරදසුන නොමැත",
+      "contentType": "අන්තර්ගත වර්ගය"
+    },
+    "actions": {
+      "fetch": "ලබාගන්න",
+      "preview": "පෙරදසුන",
+      "openPurchase": "මිලදීගැනීම විවෘත කරන්න",
+      "retry": "නැවත උත්සාහ කරන්න",
+      "cancel": "අවලංගු කරන්න",
+      "cancelSearch": "සෙවුම අවලංගු කරන්න",
+      "clearSelection": "තේරීම හිස් කරන්න",
+      "externalPurchase": "සැපයුම්කරු නව ටැබයක විවෘත වේ",
+      "fetchUnavailable": "මෙම ප්‍රතිඵලය සඳහා ලබාගැනීම නොමැත",
+      "previewUnavailableReason": "මෙම ප්‍රතිඵලයට පෙරදසුන් ද්‍රව්‍යයක් නොමැත.",
+      "purchaseUnavailableReason": "මෙම ප්‍රතිඵලයට සත්‍යාපිත මිලදීගැනුම් URL එකක් නොමැත.",
+      "comingSoon": "F56-d දී පැමිණේ"
+    },
+    "adapter": {
+      "status": {
+        "idle": "නිෂ්ක්‍රිය",
+        "queued": "පෝලිමේ",
+        "running": "ක්‍රියාත්මකයි",
+        "complete": "සම්පූර්ණයි",
+        "empty": "හිස්",
+        "rateLimited": "අනුපාත සීමාව",
+        "blockedRobots": "රොබෝට් විසින් අවහිරයි",
+        "timedOut": "කාලය ඉකුත්යි",
+        "failed": "අසාර්ථකයි",
+        "cancelled": "අවලංගුයි"
+      },
+      "retryAfter": "{{time}} නැවත උත්සාහ කරන්න",
+      "resultCount": "ප්‍රතිඵල {{count}}"
+    },
+    "progress": {
+      "title": "ලබාගැනීම් ප්‍රගතිය",
+      "empty": "ක්‍රියාත්මක ලබාගැනීම් නැත. ලබාගැනීම F56-d දී පැමිණේ.",
+      "transportAria2": "aria2c",
+      "transportTorrent": "qBittorrent",
+      "gid": "GID {{gid}}",
+      "qbittorrentHandle": "හැඳුනුම {{handle}}",
+      "queued": "පෝලිමේ",
+      "downloading": "බාගනිමින්",
+      "verifying": "සත්‍යාපනය කරමින්",
+      "encrypting": "සංකේතනය කරමින්",
+      "postFetch": "පසු-ලබාගැනීම",
+      "completed": "සම්පූර්ණයි",
+      "retrying": "නැවත උත්සාහ කරමින්",
+      "failed": "අසාර්ථකයි",
+      "cancelRequested": "අවලංගු කරමින්",
+      "cancelled": "අවලංගුයි",
+      "speed": "වේගය {{speed}}",
+      "eta": "ETA {{eta}}",
+      "bytes": "{{done}} / {{total}}",
+      "retry": "නැවත උත්සාහ",
+      "cancel": "අවලංගු",
+      "mirrorOff": "දර්පණය OFF",
+      "pipelineComplete": "පයිප්ලයින් සම්පූර්ණයි"
+    },
+    "errors": {
+      "validation": "ඉල්ලීම සත්‍යාපනයෙන් ප්‍රතික්ෂේප විය.",
+      "httpsOnly": "HTTPS අවශ්‍යයි.",
+      "unknownSource": "නොදන්නා මූලාශ්‍රයක්.",
+      "domainNotAllowlisted": "වසම අනුමත ලැයිස්තුවේ නැත.",
+      "robotsBlocked": "මූලාශ්‍ර රොබෝට් ප්‍රතිපත්තියෙන් අවහිරයි.",
+      "rateLimited": "මූලාශ්‍රය අනුපාත සීමා කර ඇත.",
+      "timeout": "මූලාශ්‍රය කාලය ඉකුත් විය.",
+      "parseFailed": "මූලාශ්‍ර ප්‍රතිචාරය විග්‍රහ කළ නොහැක.",
+      "noLicenceEvidence": "බලපත්‍ර සාක්ෂි නොමැත; ප්‍රතිඵලය ඉවත් කරන ලදී.",
+      "snapshotMismatch": "මූලාශ්‍ර ස්නැප්ෂොට් නොගැලපේ; ලබාගැනීම ප්‍රතික්ෂේපයි.",
+      "contentLengthRequired": "අන්තර්ගත දිග අවශ්‍යයි.",
+      "wireLengthMismatch": "වයර් දිග නොගැලපේ.",
+      "transportUnavailable": "ප්‍රවාහනය නොමැත.",
+      "searchCancelled": "සෙවුම අවලංගුයි.",
+      "fetchCancelled": "ලබාගැනීම අවලංගුයි.",
+      "classifierBlocked": "අභිප්‍රාය තහවුරු කිරීමෙන් පසු අවහිරයි.",
+      "generic": "යම් දෝෂයක් සිදු විය."
+    },
+    "a11y": {
+      "commandBar": "සෙවුම් විධාන තීරුව",
+      "queryInput": "සෙවුම් විමසුම් ක්ෂේත්‍රය",
+      "queryDescription": "විමසුමක් ටයිප් කර Enter එබී සොයන්න. HTTPS URL ආයාත මාදිලියට යයි.",
+      "categoryGroup": "ප්‍රවර්ග පෙරහන්",
+      "licenceGroup": "බලපත්‍ර පෙරහන්",
+      "sizeSlider": "උපරිම ප්‍රමාණ ස්ලයිඩරය",
+      "sortSelector": "පෙළගැස්ම් අනුපිළිවෙල",
+      "adapterStatusList": "අනුවර්තක තත්ත්ව ලැයිස්තුව",
+      "resultsGrid": "සෙවුම් ප්‍රතිඵල ජාලකය",
+      "resultRow": "සෙවුම් ප්‍රතිඵල පේළිය",
+      "sourceBadge": "මූලාශ්‍ර පොල්ල",
+      "categoryGlyph": "ප්‍රවර්ගය",
+      "resultActions": "ප්‍රතිඵල ක්‍රියා",
+      "progressRail": "ලබාගැනීම් ප්‍රගති තීරුව",
+      "progressRow": "ලබාගැනීම් ප්‍රගති පේළිය",
+      "speedSparkline": "මෑත වේග ඉතිහාසය",
+      "liveStatus": "සෙවුම් තත්ත්ව යාවත්කාලීන",
+      "selected": "තෝරාගෙන ඇත",
+      "notSelected": "තෝරාගෙන නැත",
+      "externalLink": "නව ටැබයක විවෘත වේ"
+    },
+    "sources": {
+      "projectGutenberg": "Project Gutenberg",
+      "standardEbooks": "Standard Ebooks",
+      "librivox": "LibriVox",
+      "iaOpenLibrary": "IA Open Library",
+      "hathitrust": "HathiTrust",
+      "wikisource": "Wikisource",
+      "doab": "DOAB",
+      "arxiv": "arXiv",
+      "biorxiv": "bioRxiv",
+      "pubmedCentral": "PubMed Central",
+      "doaj": "DOAJ",
+      "oerCommons": "OER Commons",
+      "ssrn": "SSRN",
+      "internetArchive": "Internet Archive",
+      "blenderStudio": "Blender Studio",
+      "wikimediaCommons": "Wikimedia Commons",
+      "sourceforge": "SourceForge",
+      "githubReleases": "GitHub Releases",
+      "bandcamp": "Bandcamp",
+      "ccMarkedYoutube": "CC-marked YouTube",
+      "kindleAudible": "Kindle/Audible",
+      "kobo": "Kobo",
+      "googleBooks": "Google Books",
+      "sarasavi": "Sarasavi",
+      "vijithaYapa": "Vijitha Yapa",
+      "godage": "Godage",
+      "overdriveLibby": "OverDrive/Libby",
+      "ownStorage": "ස්වකීය ගබඩාව"
+    }
+  },
+  "files": {
+    "page": {
+      "title": "ගොනු ගවේෂකය",
+      "description": "ශෙල් පෙරදසුන; සැබෑ ගොනු ක්‍රියා F57 දී පැමිණේ."
+    },
+    "tree": {
+      "label": "ගවේෂක ගස"
+    },
+    "quickAccess": {
+      "label": "ඉක්මන් ප්‍රවේශය",
+      "desktop": "Desktop",
+      "downloads": "Downloads",
+      "documents": "Documents"
+    },
+    "thisPc": {
+      "label": "මෙම පරිගණකය",
+      "windows": "Windows (C:)",
+      "rdpStorage": "RDP-Storage (D:)"
+    },
+    "folder": {
+      "fetched": "Fetched"
+    },
+    "breadcrumb": {
+      "label": "මඟ සලකුණු"
+    },
+    "commandBar": {
+      "label": "විධාන තීරුව"
+    },
+    "command": {
+      "newFolder": "නව ෆෝල්ඩරයක්",
+      "upload": "උඩුගත කරන්න",
+      "rename": "නැවත නම් කරන්න",
+      "copy": "පිටපත් කරන්න",
+      "delete": "මකන්න",
+      "refresh": "නැවුම් කරන්න"
+    },
+    "tooltip": {
+      "comingSoon": "F57 දී පැමිණේ"
+    },
+    "results": {
+      "label": "ගොනු",
+      "kind": {
+        "folder": "ෆෝල්ඩරය",
+        "file": "ගොනුව"
+      }
+    },
+    "view": {
+      "list": "ලැයිස්තු දැක්ම",
+      "grid": "ජාලක දැක්ම"
+    },
+    "preview": {
+      "label": "පෙරදසුන",
+      "empty": "පෙරදසුනට ගොනුවක් තෝරන්න.",
+      "comingSoon": "පෙරදසුන් අන්තර්ගතය F57 දී පැමිණේ."
     }
   }
 }
