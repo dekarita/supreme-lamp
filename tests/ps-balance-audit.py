@@ -198,6 +198,12 @@ def main():
         # sandbox has no PowerShell interpreter, so structure is audited here.
         'payloads/ghrdp-sources.ps1',
         'tests/f58-source-store.ps1',
+        # [F56-d §1/§4] the aria2c JSON-RPC helper + its four labs are new surfaces.
+        'payloads/ghrdp-aria2.ps1',
+        'tests/f56d-aria2-jsonrpc.ps1',
+        'tests/f56d-post-fetch-e2e.ps1',
+        'tests/f56d-creds-memory.ps1',
+        'tests/f56d-search-input.ps1',
     ]
     failed = 0
     for t in targets:

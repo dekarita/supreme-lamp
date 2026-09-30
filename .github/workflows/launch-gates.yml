@@ -3129,6 +3129,26 @@ jobs:
           if grep -qF '0.0.0.0:6800' payloads/ghrdp-aria2.ps1; then echo 'F56-d: public interface' >&2; exit 1; fi
           grep -qF 'exe' "$srv"
           if grep -nE 'Set-Content.*cred|WriteAllText.*cred' "$srv"; then echo 'F56-d: creds persisted' >&2; exit 1; fi
+          # [F56-d loop 2] The F41 step is the only `pnpm run build` in this job and it
+          # carries no `shell:` key, so tests/run-launch-gates.py (the sandbox-visible
+          # runner) never ran it - a red tsc reached main through that hole (PR #102 and
+          # #103 merged with the `gates` check FAILURE). Re-prove the typecheck here on
+          # the bash-counted lane and pin the four shapes that red build named.
+          if [ ! -d node_modules/typescript ]; then
+            echo 'F56-d: node_modules missing - run `pnpm install --frozen-lockfile` first' >&2; exit 1
+          fi
+          pnpm exec tsc -p tsconfig.build.json --noEmit
+          grep -qF 'sizeBytes: Number.isFinite' src/pages/FileExplorer.tsx
+          grep -qF 'getJson<{ searchEnabled?' src/hooks/useDashboardPolling.ts
+          grep -qF 'keyMaterial' src/lib/f46.ts
+          grep -qF '"bad"' src/pages/search/v2/OwnCredentialModal.tsx
+          if grep -qF 'cred.url' src/pages/search/v2/OwnCredentialModal.tsx; then echo 'F56-d: modal holds a full URL (host-only store)' >&2; exit 1; fi
+          # The Fetched root is fed by the arrival event only: the F45 S3 file-API client
+          # must stay out of the shipped UI (real Explorer file ops are F57). Source-level
+          # so it fails before the bundle is ever built; the S3 gate re-proves the bundle.
+          if grep -RnF 'api/fx/list' src/ --exclude-dir=explorer --exclude-dir=tests; then
+            echo 'F56-d: S3 file-API client leaked into the shipped UI (F57 owns real file ops)' >&2; exit 1
+          fi
           echo 'F56-d gates PASS'
 
 

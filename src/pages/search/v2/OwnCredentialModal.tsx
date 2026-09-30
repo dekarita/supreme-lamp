@@ -50,7 +50,10 @@ export function OwnCredentialModal() {
         operation: 'start',
         requestId: Math.random().toString(36).slice(2, 12),
         idempotencyKey: Math.random().toString(36).slice(2, 12),
-        urlImport: { url: cred.url || 'https://' + (cred.host || 'example.com') + '/protected' },
+        // The store deliberately keeps ONLY the host (a path or query string could
+        // carry a token - see searchUiStore.hostOf). Send an https-only host URL; the
+        // server re-resolves the allowlisted adapter + snapshot for it.
+        urlImport: { url: "https://" + (cred.host || "example.com") + "/" },
         adapterId: 'custom',
         sourceSnapshotId: 'snap-' + Date.now(),
         intent: 'download',
@@ -73,13 +76,13 @@ export function OwnCredentialModal() {
         closeCredModal();
       } else {
         const msgKey = result.error?.messageKey || "search.errors.generic";
-        push(t(msgKey), "error");
+        push(t(msgKey), "bad");
         setCredError(t(msgKey));
         // Wipe even on error
         try { (enc as any).userEnc = ''; (enc as any).passEnc = ''; (enc as any).keyB64 = ''; } catch {}
       }
     } catch (e: any) {
-      push(t("search.errors.generic"), "error");
+      push(t("search.errors.generic"), "bad");
       setCredError(t("search.errors.generic"));
     } finally {
       setSubmitting(false);

@@ -24,9 +24,15 @@ function bytesFromB64(b64: string): Uint8Array {
 
 async function aesGcmEncrypt(plain: string, keyBytes: Uint8Array): Promise<string> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'AES-GCM' }, false, ['encrypt']);
+  // WebCrypto wants an ArrayBuffer-backed view (TS lib types a bare Uint8Array as
+  // Uint8Array<ArrayBufferLike>). Copy the key bytes into a fresh ArrayBuffer for the
+  // import only - process memory, wiped right after, never written to disk.
+  const keyMaterial = new ArrayBuffer(keyBytes.byteLength);
+  new Uint8Array(keyMaterial).set(keyBytes);
+  const key = await crypto.subtle.importKey('raw', keyMaterial, { name: 'AES-GCM' }, false, ['encrypt']);
   const pt = new TextEncoder().encode(plain);
   const ctBuf = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, tagLength: 128 }, key, pt);
+  try { new Uint8Array(keyMaterial).fill(0); } catch {}
   const ctBytes = new Uint8Array(ctBuf);
   // ctBuf contains ct + tag (16 bytes at end) in WebCrypto; we split tag for PowerShell format: nonce(12)+tag(16)+ct
   const tag = ctBytes.slice(ctBytes.length - 16);

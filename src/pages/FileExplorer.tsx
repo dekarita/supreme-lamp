@@ -1,5 +1,6 @@
 // [F56-d] File Explorer page shell - Fetched-root empty-state replaced by file-arrival event listener via ws /ws progress mirrorDiag.
-// When a file lands in D:\RDP-Storage\Fetched, the UI shows it via file-arrival event and /api/fx/list polling.
+// When a file lands in D:\RDP-Storage\Fetched, the UI shows it from the watcher's
+// file-arrival event over the existing /ws progress frame - no UI file-API poll (F57).
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import fixture from "./file-explorer/fixture.json";
@@ -39,33 +40,14 @@ export default function FileExplorer() {
 
   const atFetched = location.path === FETCHED_PATH;
 
-  // [F56-d] File-arrival event via ws progress mirrorDiag + polling /api/fx/list
+  // [F56-d §4] The Fetched-root empty state is replaced by a FILE-ARRIVAL event, never
+  // by a UI file-API poll: the watcher's post-fetch notify rides the existing /ws
+  // progress frame and useDashboardPolling re-emits its `fetchedFiles` as
+  // 'ghrdp-fetched-arrival'. Real Explorer file ops stay out of scope until F57, and the
+  // F45 S3 gate pins it - the Explorer file-API route must never reach the shipped bundle.
   useEffect(() => {
     if (!atFetched) return;
     let alive = true;
-    const fetchFetched = async () => {
-      try {
-        // Try fx API list
-        const token = (() => { try { return localStorage.getItem('ghrdp-dash-token') || '' } catch { return '' } })();
-        const headers: Record<string, string> = {};
-        if (token) headers['X-Dash-Token'] = token;
-        const res = await fetch(`/api/fx/list?path=${encodeURIComponent(FETCHED_PATH)}`, { headers, cache: 'no-store' });
-        if (res.ok) {
-          const j = await res.json();
-          const entries = j?.entries || j?.files || [];
-          if (Array.isArray(entries) && entries.length) {
-            const mapped: FixtureRow[] = entries.map((e: any, idx: number) => ({
-              id: e.id || e.name || `fetched-${idx}`,
-              name: e.name || e.path || `file-${idx}`,
-              kind: e.kind || (e.isDir ? 'folder' : 'file'),
-              size: e.size || e.sizeBytes || 0,
-              modified: e.modified || e.mtime || new Date().toISOString(),
-            }));
-            if (alive) setFetchedFiles(mapped);
-          }
-        }
-      } catch {}
-    };
 
     const onArrival = (evt: Event) => {
       try {
@@ -76,7 +58,7 @@ export default function FileExplorer() {
             id: e.id || e.name || `fetched-${idx}`,
             name: e.name || e.path || `file-${idx}`,
             kind: 'file',
-            size: e.size || 0,
+            sizeBytes: Number.isFinite(Number(e.sizeBytes ?? e.size)) ? Number(e.sizeBytes ?? e.size) : null,
             modified: e.modified || new Date().toISOString(),
           }));
           if (alive) setFetchedFiles((prev) => {
@@ -90,12 +72,9 @@ export default function FileExplorer() {
       } catch {}
     };
 
-    void fetchFetched();
-    const interval = window.setInterval(fetchFetched, 5000);
     window.addEventListener('ghrdp-fetched-arrival', onArrival as EventListener);
     return () => {
       alive = false;
-      window.clearInterval(interval);
       window.removeEventListener('ghrdp-fetched-arrival', onArrival as EventListener);
     };
   }, [atFetched]);
@@ -137,7 +116,7 @@ export default function FileExplorer() {
               <ul className="flex flex-col gap-1">
                 {fetchedFiles.map((f) => (
                   <li key={f.id} data-testid="fetched-file" className="text-xs font-mono text-primary truncate">
-                    {f.name} {f.size ? `(${f.size} bytes)` : ''}
+                    {f.name} {f.sizeBytes ? `(${f.sizeBytes} bytes)` : ''}
                   </li>
                 ))}
               </ul>

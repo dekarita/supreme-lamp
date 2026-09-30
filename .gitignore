@@ -11,3 +11,6 @@ ui/dist/
 node_modules/
 playwright-report/
 test-results/
+
+# local gate-runner venv (PyYAML for tests/run-launch-gates.py)
+.venv/
