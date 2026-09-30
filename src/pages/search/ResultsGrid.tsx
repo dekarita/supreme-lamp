@@ -109,9 +109,13 @@ export function ResultsGrid() {
       const prov = evaluateResultProvenance(customSources, r);
       const provRow = prov.custom && prov.applies;
       // Client-side provenance-6 check (mirrors server gate) for exe/msi/dmg/iso/zip
+      // F58 preserved: external-roster (custom=false, no provenance) must NOT be blocked by client check alone.
+      // Custom registry provenance is stored in customSources store, not in result.provenance, so only block via client if result actually carries provenance.
+      const hasProv = !!(r as any).provenance;
       const provClient = isProvenanceBlocked(r.title, (r as any).provenance);
-      const isBlocked = (provRow && !prov.fetchEnabled) || provClient.blocked;
-      const blockReason = provRow && !prov.fetchEnabled ? (prov.reason || t("search.errors.classifierBlocked")) : (provClient.missing.length ? t("search.errors.classifierBlocked") + ": " + provClient.missing.join(",") : "");
+      const clientBlockApplies = hasProv && provClient.blocked;
+      const isBlocked = (provRow && !prov.fetchEnabled) || clientBlockApplies;
+      const blockReason = provRow && !prov.fetchEnabled ? (prov.reason || t("search.errors.classifierBlocked")) : (clientBlockApplies && provClient.missing.length ? t("search.errors.classifierBlocked") + ": " + provClient.missing.join(",") : "");
       return (
         <div
           id={"f56.search.resultRow." + sfx}
