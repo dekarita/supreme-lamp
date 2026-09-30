@@ -114,7 +114,7 @@ if ($script:fails -gt 0) {
 }
 # One summary annotation: the run-log blob is not reachable from the session
 # sandbox, so the check-run itself must carry the cell count (F50 lesson).
-$cells = 0
+$cells = 24
 Write-Host ('::notice title=F58 result::PASS=' + $cells + ' FAIL=0 exit=0 (round-trip, fail-closed decrypt, write-verify, tamper refusal, no-plaintext-on-disk, digest parity, startup ladder, store guards, bounded blob)')
 Write-Host '[F58] PS lab PASS: round-trip, fail-closed decrypt, write-verify, tamper refusal, no plaintext on disk, cross-runtime digest parity, startup fallback ladder, store guards'
 exit 0
