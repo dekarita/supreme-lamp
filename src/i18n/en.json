@@ -526,6 +526,85 @@
       "godage": "Godage",
       "overdriveLibby": "OverDrive/Libby",
       "ownStorage": "Own storage"
+    },
+    "v2": {
+      "hero": {
+        "subline": "One bar, every compiled source. Your query leaves this host only when you submit.",
+        "quietChips": "Quick actions",
+        "chip": {
+          "recent": "Recent",
+          "ownStorage": "Own Storage",
+          "ownStorageOn": "Own Storage only",
+          "pasteUrl": "Paste URL"
+        },
+        "recent": {
+          "label": "Recent searches (this session only)",
+          "empty": "No searches yet this session."
+        }
+      },
+      "backToLanding": "New search",
+      "advanced": {
+        "toggle": "Advanced",
+        "panel": "Advanced filters",
+        "adapters": {
+          "label": "Sources",
+          "count": "{{count}} selected",
+          "hint": "None selected probes every compiled source."
+        }
+      },
+      "import": {
+        "banner": "URL import mode",
+        "body": "The HTTPS URL is validated against the compiled registry before any request is sent.",
+        "ownCredential": "Source requires login",
+        "ownCredentialHint": "Own credentials stay in this session only."
+      },
+      "cred": {
+        "title": "Own credentials",
+        "host": "Source host: {{host}}",
+        "user": "Username",
+        "password": "Password",
+        "notice": "F46 per-run key, never persisted, session-end wipe.",
+        "error": {
+          "user": "Enter a username.",
+          "password": "Enter a password."
+        }
+      },
+      "credStub": "Credential submit is a stub in F56-c - coming in F56-d.",
+      "lab": {
+        "title": "Progressive discovery",
+        "windows": "0-30s classifier · 30s-4min federated probes · 4-5min consolidation",
+        "percent": "{{percent}}% of the 5-minute window",
+        "links": "Direct HTTPS links extracted: {{count}}",
+        "rail": {
+          "label": "Per-adapter probe rail",
+          "queued": "queued",
+          "probing": "probing",
+          "streaming": "streaming",
+          "settled": "settled"
+        },
+        "stage": {
+          "classifier": "Classifier",
+          "probes": "Federated probes",
+          "consolidation": "Consolidation",
+          "complete": "Settled"
+        },
+        "hint": {
+          "classifier": "Reading the query; nothing has left this host yet.",
+          "probes": "Adapters stream partial results as they answer.",
+          "consolidation": "Merging partials and extracting direct HTTPS links.",
+          "complete": "Every adapter has reported."
+        }
+      },
+      "card": {
+        "label": "Result card",
+        "bytes": "Actual bytes",
+        "directUrl": "Direct HTTPS URL",
+        "urlWithheld": "URL withheld - not a validated HTTPS origin.",
+        "fetchStub": "Fetch is stubbed in F56-c; F56-d starts the real transfer."
+      },
+      "toast": {
+        "fetchStub": "Fetch: coming in F56-d"
+      }
     }
   },
   "files": {
@@ -582,6 +661,20 @@
       "label": "Preview",
       "empty": "Select a file to preview.",
       "comingSoon": "Preview content coming in F57."
+    },
+    "v2": {
+      "fetched": {
+        "group": "Fetched (reserved)",
+        "node": "Fetched",
+        "badge": "reserved for F56-d",
+        "empty": {
+          "title": "Fetched is reserved",
+          "body": "D:\\RDP-Storage\\Fetched opens when the F56-d fetch plane lands. It stays behind mirror opt-in."
+        }
+      },
+      "thisPc": {
+        "stub": "Stub - real listing arrives in F57."
+      }
     }
   }
 }

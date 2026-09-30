@@ -8,6 +8,8 @@ import { MemoryRouter } from "react-router-dom";
 import "@/i18n";
 import Search from "@/pages/Search";
 import { useSearchStore, DEFAULT_MAX_SIZE_BYTES } from "@/stores/searchStore";
+import { useSearchUiStore } from "@/stores/searchUiStore";
+import { useToastStore } from "@/stores/toastStore";
 
 type Any = any;
 
@@ -93,6 +95,21 @@ function resetStore() {
     sort: "relevance",
     lastErrorCode: "",
   });
+  // [F56-c v2] The page now opens on the Google-style landing surface; every
+  // cell below states explicitly which view it wants, and the UI store is reset
+  // so a previous cell's submit cannot leak the results view into the next one.
+  useSearchUiStore.setState({
+    view: "landing",
+    animating: false,
+    advancedOpen: false,
+    importMode: false,
+    recentQueries: [],
+    labStartedAt: 0,
+    credModalOpen: false,
+    cred: { host: "", user: "", password: "" },
+    credError: "",
+  });
+  useToastStore.setState({ toasts: [] });
 }
 
 function renderSearch() {
@@ -133,6 +150,7 @@ describe("Search page (F56-c)", () => {
       results: { g1: RESULTS[0], s1: RESULTS[1] },
       resultOrder: ["g1", "s1"],
     });
+    useSearchUiStore.setState({ view: "results" });
     renderSearch();
     expect(screen.getAllByTestId("result-row").length).toBe(2);
     await act(async () => {
@@ -148,6 +166,7 @@ describe("Search page (F56-c)", () => {
 
   it("shows the empty state when a completed search has no results", () => {
     useSearchStore.setState({ phase: "empty", lastSubmittedQuery: "nothing", normalizedQuery: "nothing" });
+    useSearchUiStore.setState({ view: "results" });
     renderSearch();
     expect(screen.getByTestId("results-empty")).toBeInTheDocument();
   });
@@ -156,6 +175,7 @@ describe("Search page (F56-c)", () => {
     mockFetch(() =>
       jsonResponse({ requestId: "req-1", traceId: "", code: "INTERNAL_ERROR", messageKey: "search.errors.generic", retryable: true }, false, 500)
     );
+    useSearchUiStore.setState({ view: "results" });
     renderSearch();
     fireEvent.change(screen.getByTestId("search-query"), { target: { value: "boom" } });
     await act(async () => {
@@ -172,6 +192,7 @@ describe("Search page (F56-c)", () => {
       results: { g1: RESULTS[0], s1: RESULTS[1] },
       resultOrder: ["g1", "s1"],
     });
+    useSearchUiStore.setState({ view: "results" });
     renderSearch();
     const grid = screen.getByTestId("results-grid");
     expect(grid.getAttribute("role")).toBe("grid");
@@ -190,7 +211,7 @@ describe("Search page (F56-c)", () => {
     expect(useSearchStore.getState().activeRowIndex).toBe(0);
   });
 
-  it("keeps fetch on the F56-d stub and never calls /api/fetch", async () => {
+  it("racks the F56-c v2 fetch stub: enabled card button, toast, ZERO network", async () => {
     const calls: string[] = [];
     mockFetch((url) => {
       calls.push(url);
@@ -201,11 +222,18 @@ describe("Search page (F56-c)", () => {
       results: { g1: RESULTS[0] },
       resultOrder: ["g1"],
     });
+    useSearchUiStore.setState({ view: "results" });
     renderSearch();
     const fetchBtn = document.getElementById("f56.search.resultFetch.project-gutenberg.g1") as HTMLButtonElement | null;
     expect(fetchBtn).not.toBeNull();
-    expect(fetchBtn?.disabled).toBe(true);
+    // The v2 stub is a real, clickable affordance (F56-c v1 shipped it disabled).
+    expect(fetchBtn?.disabled).toBe(false);
     expect(fetchBtn?.title).toBe("coming in F56-d");
-    expect(calls.every((u) => !u.includes("/api/fetch"))).toBe(true);
+    await act(async () => {
+      fireEvent.click(fetchBtn as HTMLElement);
+    });
+    expect(useToastStore.getState().toasts.map((t) => t.msg)).toContain("coming in F56-d");
+    expect(Object.keys(useSearchStore.getState().fetches)).toEqual(["g1"]);
+    expect(calls).toEqual([]); // the stub never touches the network
   });
 });

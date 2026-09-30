@@ -22,7 +22,14 @@ import {
 export type InputKind = "text" | "https-url" | "unsupported-url" | "empty";
 
 const GB = 1024 * 1024 * 1024;
-export const DEFAULT_MAX_SIZE_BYTES = 10 * GB; // decisions.md A1
+// [F56-c v2] decisions.md A1 in-place overwrite (operator brief §2): the size
+// slider's initial position is 0 = "no maximum-size cap" (Google-style landing
+// shows no cap at all), while positive slider values stay inclusive maximum
+// sizes and 0 keeps its frozen A1 "no cap" meaning for the wire contract. The
+// planned 10 GB default is retained only as a named constant for the history
+// note; nothing reads it as a default any more.
+export const DEFAULT_MAX_SIZE_BYTES = 0;
+export const A1_PLANNED_DEFAULT_MAX_SIZE_BYTES = 10 * GB;
 export const MAX_SIZE_BYTES = 100 * GB;
 
 export function classifyQuery(raw: string): InputKind {
@@ -61,6 +68,10 @@ export interface SearchState {
   maxSizeBytes: number;
   sort: SortKey;
   scope: Scope;
+  // [F56-c v2] Advanced "adapter selection": empty = probe every compiled
+  // source (the frozen contract's optional adapterIds). F56-b compiles the
+  // registry; the ids come from the derived roster (search/v2/adapters.ts).
+  adapterIds: string[];
   // Per-adapter state (compiled adapters arrive with the accepted list)
   adapters: Record<string, AdapterState>;
   // Search request state
@@ -88,6 +99,7 @@ export interface SearchState {
   clearQuery: () => void;
   toggleCategory: (c: Category | "all") => void;
   toggleLicence: (l: LicenceTag) => void;
+  toggleAdapter: (adapterId: string) => void;
   resetFilters: () => void;
   setMaxSizeBytes: (n: number) => void;
   setSort: (s: SortKey) => void;
@@ -99,6 +111,9 @@ export interface SearchState {
   setActiveRow: (index: number) => void;
   openPreview: (resultId: string) => void;
   closePreview: () => void;
+  /** [F56-c v2] Fetch stub bookkeeping: records a pending fetch row for the
+   *  rail without starting any transfer (F56-d replaces the body). */
+  stubFetch: (resultId: string) => void;
 }
 
 export const useSearchStore = create<SearchState>((set, get) => ({
@@ -113,6 +128,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   maxSizeBytes: DEFAULT_MAX_SIZE_BYTES,
   sort: "relevance",
   scope: "federated",
+  adapterIds: [],
   adapters: {},
   searchId: "",
   requestId: "",
@@ -146,7 +162,12 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     const cur = get().licenceTags;
     set({ licenceTags: cur.includes(l) ? cur.filter((x) => x !== l) : [...cur, l] });
   },
-  resetFilters: () => set({ categories: [], licenceTags: [], maxSizeBytes: DEFAULT_MAX_SIZE_BYTES, sort: "relevance" }),
+  toggleAdapter: (adapterId) => {
+    const cur = get().adapterIds;
+    set({ adapterIds: cur.includes(adapterId) ? cur.filter((x) => x !== adapterId) : [...cur, adapterId] });
+  },
+  resetFilters: () =>
+    set({ categories: [], licenceTags: [], maxSizeBytes: DEFAULT_MAX_SIZE_BYTES, sort: "relevance", adapterIds: [] }),
   setMaxSizeBytes: (n) => set({ maxSizeBytes: Math.max(0, Math.min(n, MAX_SIZE_BYTES)) }),
   setSort: (s) => set({ sort: s }),
   setScope: (s) => set({ scope: s }),
@@ -186,6 +207,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
       scope: st.scope,
       categories: st.categories.length ? st.categories : undefined,
       licenceTags: st.licenceTags.length ? st.licenceTags : undefined,
+      adapterIds: st.adapterIds.length ? st.adapterIds : undefined,
       maxSizeBytes: st.maxSizeBytes,
       sort: st.sort,
       limit: 50,
@@ -265,6 +287,12 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   },
   openPreview: (resultId) => set({ previewResultId: resultId }),
   closePreview: () => set({ previewResultId: "" }),
+  stubFetch: (resultId) => {
+    // F56-d fills FetchRecord; F56-c records the pending row only. No bytes,
+    // no URL request, no mirror opt-in (mirror stays default-OFF).
+    if (get().fetches[resultId]) return;
+    set({ fetches: { ...get().fetches, [resultId]: { fetchId: resultId } } });
+  },
 }));
 
 export type ResultFilters = Pick<SearchState, "results" | "resultOrder" | "categories" | "licenceTags" | "maxSizeBytes" | "sort">;
@@ -291,7 +319,9 @@ export function selectVisibleResults(s: ResultFilters): SearchResult[] {
 }
 
 export function selectFilterSelectionCount(s: SearchState): number {
-  return s.categories.length + s.licenceTags.length + (s.maxSizeBytes < MAX_SIZE_BYTES ? 1 : 0);
+  // [F56-c v2] 0 = no cap = NOT a filter, so the untouched default counts 0.
+  const sizeFiltered = s.maxSizeBytes > 0 && s.maxSizeBytes < MAX_SIZE_BYTES ? 1 : 0;
+  return s.categories.length + s.licenceTags.length + s.adapterIds.length + sizeFiltered;
 }
 
 export function logToSizeBytes(position: number): number {
