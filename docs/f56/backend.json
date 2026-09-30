@@ -1,0 +1,1096 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "F56 Search & Fetch Explorer backend contract (frozen stub by F56-a)",
+    "version": "f56-a-freeze",
+    "summary": "Verbatim freeze of payloads/docs/f56-search-explorer-plan.md §F 'Backend contract' as OpenAPI 3.1 stubs.",
+    "description": "§F opening rule, verbatim: 'The F56 API should use a common request ID and error envelope. Search metadata requests may use adapter transport directly, but actual content and preview bytes must use the existing encrypted fetch tail.' These are STUBS: request/response shapes carry exactly the fields §F enumerates - no more. §F names some fields with backticked identifiers and others with prose descriptions; where §F gives prose only, the property name is the camelCase of the plan's own wording, is marked x-f56-name-derived:true, and is listed as a blocker row in docs/f56/decisions.md instead of being silently invented. HTTP statuses are pinned only where §F pins them (202 for POST /api/search and for the fetch start response); every other status is a documented gap. The error-envelope code enum is exactly the 17 §F codes.",
+    "x-f56-locked-rules": [
+      "HTTPS only; no proxy, no UA spoofing, no IP rotation",
+      "robots.txt honored; a robots block is non-retryable",
+      "content-length framing; wire length == EncryptedSource.WireLength",
+      "ciphertext remains bound to the source snapshot",
+      "mirror default remains OFF",
+      "the request must not contain an arbitrary source URL or domain",
+      "the response must never return an unvalidated download or purchase URL",
+      "raw provider HTML, credentials, proxy details, and internal transport secrets must not reach the client"
+    ],
+    "x-f56-fetch-invariants": [
+      "1. Source URL is HTTPS and allowlisted.",
+      "2. Robots policy permits the request.",
+      "3. Source snapshot matches the result snapshot.",
+      "4. Content length is available and validated.",
+      "5. Encrypted output is framed with Content-Length.",
+      "6. wire length == EncryptedSource.WireLength.",
+      "7. Ciphertext remains bound to the source snapshot.",
+      "8. Mirror default remains OFF."
+    ],
+    "x-f56-endpoint-count": 4
+  },
+  "paths": {
+    "/api/search": {
+      "post": {
+        "operationId": "createSearch",
+        "summary": "Creates an asynchronous federated or own-storage search.",
+        "description": "§F: 'The request must not contain an arbitrary source URL or domain. URL import is validated separately and then resolved against the compiled registry.' Optional compiled adapter IDs are rejected when unknown.",
+        "x-f56-plan-section": "F / POST /api/search",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchCreateRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "§F 'Successful response: HTTP 202'.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchCreateAccepted"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Common error envelope (§F). Per-code HTTP statuses are not enumerated in the plan - decisions.md blocker B8.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/search/status": {
+      "get": {
+        "operationId": "getSearchStatus",
+        "summary": "Returns incremental search state.",
+        "description": "§F: 'The response must never return an unvalidated download or purchase URL.'",
+        "x-f56-plan-section": "F / GET /api/search/status",
+        "parameters": [
+          {
+            "name": "searchId",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "§F query field 'searchId'."
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            },
+            "description": "§F 'optional result cursor'. Opaque continuation cursor; parameter name derived (x-f56-name-derived) - decisions.md blocker B3.",
+            "x-f56-name-derived": true
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "§F 'optional result limit'. Parameter name derived (x-f56-name-derived) - decisions.md blocker B3.",
+            "x-f56-name-derived": true
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Incremental search state. Status code not pinned by §F - decisions.md blocker B8.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchStatus"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Common error envelope (§F).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/search/cancel": {
+      "post": {
+        "operationId": "cancelSearch",
+        "summary": "Cancels a search.",
+        "description": "§F: 'Cancellation must stop new adapter work and prevent late result publication.' Plan §B cancellation model: search cancellation is per searchId, is idempotent, frontend abort signals are advisory and backend cancellation is authoritative, and a cancelled search cannot append results after cancellation.",
+        "x-f56-plan-section": "F / POST /api/search/cancel",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SearchCancelRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Final or transitional cancellation state. Status code not pinned by §F - decisions.md blocker B8.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SearchCancelResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Common error envelope (§F).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/fetch": {
+      "post": {
+        "operationId": "fetchCommand",
+        "summary": "This command starts, cancels, or explicitly retries a fetch.",
+        "description": "§F: 'The server must clamp the pipeline to encryption enabled. Mirror remains false unless an existing, explicit F49 opt-in is present.' 'For URL import, the server must resolve the submitted HTTPS URL to a compiled adapter and re-run robots, allowlist, and content-length checks.' 'The command is delegated to the existing fetch/transport cancellation path. F56 does not modify mirror-side implementation.' 'Retry is rejected for non-retryable policy failures.' NOTE (docs/f56/audit.md §C.4): no existing per-fetch cancellation path exists in the repository today, so the cancel branch has nothing to delegate to yet - decisions.md blocker B2.",
+        "x-f56-plan-section": "F / POST /api/fetch",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FetchCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "§F 'Start response: HTTP 202'. Applies to the start operation only; cancel/retry response statuses and shapes are not specified by §F - decisions.md blocker B5.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FetchStartAccepted"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Common error envelope (§F).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "Category": {
+        "type": "string",
+        "enum": [
+          "books",
+          "audio",
+          "scholarly",
+          "education",
+          "media",
+          "software",
+          "music",
+          "video",
+          "own-storage",
+          "purchase"
+        ],
+        "description": "Plan §E category enum (the only category set in the plan)."
+      },
+      "LicenceTag": {
+        "type": "string",
+        "enum": [
+          "public-domain",
+          "open-access",
+          "creative-commons",
+          "purchase",
+          "own-storage"
+        ],
+        "description": "Plan §B/§E: the five approved licence tags."
+      },
+      "Scope": {
+        "type": "string",
+        "enum": [
+          "federated",
+          "own-storage"
+        ],
+        "description": "Plan §B filter state 'scope': federated or own-storage; own-storage also participates as the built-in adapter in federated mode."
+      },
+      "Sort": {
+        "type": "string",
+        "enum": [
+          "relevance",
+          "size",
+          "date"
+        ],
+        "description": "Plan §B/§D sort selector. Sorting must be stable: equal values retain adapter order and result identity order."
+      },
+      "SearchPhase": {
+        "type": "string",
+        "enum": [
+          "idle",
+          "queued",
+          "running",
+          "partial",
+          "complete",
+          "empty",
+          "failed",
+          "cancelled"
+        ],
+        "description": "Plan §B 'Search request state' phase enum, verbatim."
+      },
+      "AdapterStatus": {
+        "type": "string",
+        "enum": [
+          "idle",
+          "queued",
+          "running",
+          "complete",
+          "empty",
+          "rate-limited",
+          "blocked-robots",
+          "timed-out",
+          "failed",
+          "cancelled"
+        ],
+        "description": "Plan §B 'Per-adapter state' status enum, verbatim. A rate-limited adapter must not prevent successful results from other adapters."
+      },
+      "AdapterState": {
+        "type": "object",
+        "description": "Plan §B per-adapter record. §F names only 'adapter status map' / 'initial adapter statuses' / 'per-adapter cancellation states', so the map value shape is the §B record; sub-field JSON names for cursor/retryAfter/lastErrorCode/partial are derived - decisions.md blocker B1.",
+        "x-f56-name-derived": true,
+        "properties": {
+          "adapterId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nameKey": {
+            "type": "string",
+            "description": "§B 'display-name key'."
+          },
+          "status": {
+            "$ref": "#/components/schemas/AdapterStatus"
+          },
+          "resultCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "§B 'cursor'; opaque."
+          },
+          "retryAfter": {
+            "type": [
+              "string",
+              "integer",
+              "null"
+            ],
+            "description": "§B 'retry-after timestamp'; unit/format not specified by the plan - blocker B1."
+          },
+          "lastErrorCode": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ErrorCode"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "§B 'last error code'."
+          },
+          "requestGeneration": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "contributingPartialResults": {
+            "type": "boolean",
+            "description": "§B 'whether the adapter is still contributing partial results'."
+          },
+          "cancellationState": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "§F cancel response 'per-adapter cancellation states'; shape not specified - blocker B1."
+          }
+        },
+        "required": [
+          "adapterId",
+          "status"
+        ]
+      },
+      "SearchResult": {
+        "type": "object",
+        "description": "Plan §F 'Each result contains'. The source snapshot ID is immutable for the lifetime of the result; fetching a result with a different snapshot must fail closed (§B).",
+        "properties": {
+          "resultId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "adapterId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "nameKey": {
+            "type": "string",
+            "description": "§F 'source display-name key'.",
+            "x-f56-name-derived": true
+          },
+          "category": {
+            "$ref": "#/components/schemas/Category"
+          },
+          "title": {
+            "type": "string"
+          },
+          "creator": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "§F 'creator/publisher'.",
+            "x-f56-name-derived": true
+          },
+          "sizeBytes": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "§F 'size ... when known'.",
+            "x-f56-name-derived": true
+          },
+          "contentLength": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "§F '... and content length when known'.",
+            "x-f56-name-derived": true
+          },
+          "licenceTag": {
+            "$ref": "#/components/schemas/LicenceTag"
+          },
+          "licenceEvidence": {
+            "type": [
+              "string",
+              "boolean",
+              "null"
+            ],
+            "description": "§F 'licence evidence marker'; marker shape not specified - blocker B1.",
+            "x-f56-name-derived": true
+          },
+          "sourceSnapshotId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "§F 'source snapshot ID'. Immutable for the lifetime of the result."
+          },
+          "sourceUrl": {
+            "type": "string",
+            "pattern": "^https://",
+            "description": "§F 'source URL'; must be validated and allowlisted before it is returned."
+          },
+          "previewUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^https://",
+            "description": "§F 'preview URL, if permitted'."
+          },
+          "purchaseUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^https://",
+            "description": "§F 'purchase URL, if permitted'. Purchase is navigation-only and never starts a fetch (§D)."
+          },
+          "transportHint": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "§F 'transport hint'; value set not specified - blocker B1.",
+            "x-f56-name-derived": true
+          },
+          "mimeType": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "§F 'MIME type'."
+          },
+          "date": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "§F 'date' (publication/update date, §B); format not specified - blocker B1."
+          },
+          "availability": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "§F 'availability'; value set not specified - blocker B1.",
+            "x-f56-name-derived": true
+          }
+        },
+        "required": [
+          "resultId",
+          "adapterId",
+          "category",
+          "title",
+          "licenceTag",
+          "sourceSnapshotId",
+          "sourceUrl"
+        ]
+      },
+      "SearchCreateRequest": {
+        "type": "object",
+        "description": "§F POST /api/search request fields.",
+        "additionalProperties": false,
+        "required": [
+          "requestId",
+          "query",
+          "scope",
+          "sort",
+          "limit"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "§F common request ID."
+          },
+          "query": {
+            "type": "string",
+            "description": "Normalized query. Must NOT contain an arbitrary source URL or domain."
+          },
+          "scope": {
+            "$ref": "#/components/schemas/Scope"
+          },
+          "categories": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/Category"
+            },
+            "description": "§F 'categories' (selected category set, §B). Optional per §F (only the cursor and adapter-IDs bullets are marked optional, so requiredness of the remaining fields is a plan gap - blocker B9)."
+          },
+          "licenceTags": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/components/schemas/LicenceTag"
+            }
+          },
+          "maxSizeBytes": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Logarithmic size-filter value converted to bytes before reaching the backend (§D). Plan Assumption 1: 0 means 'no maximum-size cap'; positive values are inclusive maximum sizes; initial default 10 GB."
+          },
+          "sort": {
+            "$ref": "#/components/schemas/Sort"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "cursor": {
+            "type": "string",
+            "description": "§F 'optional opaque continuation cursor'.",
+            "x-f56-name-derived": true
+          },
+          "adapterIds": {
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "description": "§F 'optional compiled adapter IDs; the server rejects unknown IDs'. Unknown ID => UNKNOWN_SOURCE.",
+            "x-f56-name-derived": true
+          }
+        }
+      },
+      "SearchCreateAccepted": {
+        "type": "object",
+        "description": "§F POST /api/search successful response (HTTP 202).",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "searchId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "phase": {
+            "$ref": "#/components/schemas/SearchPhase",
+            "description": "§F 'initial phase'."
+          },
+          "acceptedAdapterIds": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "§F 'accepted adapter IDs'.",
+            "x-f56-name-derived": true
+          },
+          "statusRef": {
+            "type": "string",
+            "description": "§F 'status reference' (the GET /api/search/status reference).",
+            "x-f56-name-derived": true
+          },
+          "queryGeneration": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "§F 'query generation'; monotonic, used for stale-response rejection (§B)."
+          },
+          "adapterStatuses": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AdapterState"
+            },
+            "description": "§F 'initial adapter statuses'."
+          }
+        },
+        "required": [
+          "requestId",
+          "searchId",
+          "phase",
+          "acceptedAdapterIds",
+          "statusRef",
+          "queryGeneration",
+          "adapterStatuses"
+        ]
+      },
+      "SearchStatus": {
+        "type": "object",
+        "description": "§F GET /api/search/status response fields.",
+        "properties": {
+          "searchId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "phase": {
+            "$ref": "#/components/schemas/SearchPhase"
+          },
+          "queryGeneration": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "adapterStatuses": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/AdapterState"
+            },
+            "description": "§F 'adapter status map'."
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SearchResult"
+            },
+            "description": "§F 'partial result list'. Never contains an unvalidated download or purchase URL."
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "§F 'result cursor'.",
+            "x-f56-name-derived": true
+          },
+          "hasMore": {
+            "type": "boolean"
+          },
+          "serverTs": {
+            "type": "string",
+            "description": "§F 'server timestamp'. Name follows the existing repository convention (GET /api/progress returns serverTs) - blocker B1.",
+            "x-f56-name-derived": true
+          },
+          "cancellationState": {
+            "type": [
+              "string",
+              "object",
+              "null"
+            ],
+            "description": "§F 'cancellation state'; shape not specified - blocker B1.",
+            "x-f56-name-derived": true
+          }
+        },
+        "required": [
+          "searchId",
+          "phase",
+          "queryGeneration",
+          "adapterStatuses",
+          "results",
+          "hasMore",
+          "serverTs"
+        ]
+      },
+      "SearchCancelRequest": {
+        "type": "object",
+        "description": "§F POST /api/search/cancel request.",
+        "additionalProperties": false,
+        "required": [
+          "requestId",
+          "searchId",
+          "reason"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "searchId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "reason": {
+            "type": "string",
+            "description": "§F 'cancellation reason'."
+          }
+        }
+      },
+      "SearchCancelResult": {
+        "type": "object",
+        "description": "§F POST /api/search/cancel response.",
+        "properties": {
+          "searchId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cancellationState": {
+            "type": "string",
+            "description": "§F 'final or transitional cancellation state'.",
+            "x-f56-name-derived": true
+          },
+          "adapterCancellations": {
+            "type": "object",
+            "additionalProperties": {
+              "type": [
+                "string",
+                "object"
+              ]
+            },
+            "description": "§F 'per-adapter cancellation states'.",
+            "x-f56-name-derived": true
+          },
+          "idempotency": {
+            "type": [
+              "string",
+              "object",
+              "boolean"
+            ],
+            "description": "§F 'idempotency result'; cancellation is idempotent (§B). Shape not specified - blocker B1.",
+            "x-f56-name-derived": true
+          }
+        },
+        "required": [
+          "searchId",
+          "cancellationState",
+          "adapterCancellations",
+          "idempotency"
+        ]
+      },
+      "FetchCommand": {
+        "description": "§F POST /api/fetch: 'This command starts, cancels, or explicitly retries a fetch.' Discriminated on 'operation'.",
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/FetchStartRequest"
+          },
+          {
+            "$ref": "#/components/schemas/FetchCancelRequest"
+          },
+          {
+            "$ref": "#/components/schemas/FetchRetryRequest"
+          }
+        ],
+        "discriminator": {
+          "propertyName": "operation",
+          "mapping": {
+            "start": "#/components/schemas/FetchStartRequest",
+            "cancel": "#/components/schemas/FetchCancelRequest",
+            "retry": "#/components/schemas/FetchRetryRequest"
+          }
+        }
+      },
+      "FetchStartRequest": {
+        "type": "object",
+        "description": "§F 'Start request'.",
+        "additionalProperties": false,
+        "required": [
+          "operation",
+          "requestId",
+          "idempotencyKey",
+          "adapterId",
+          "sourceSnapshotId",
+          "intent",
+          "transport",
+          "mirrorOptIn"
+        ],
+        "properties": {
+          "operation": {
+            "const": "start"
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1
+          },
+          "resultId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "§F 'resultId or validated URL-import descriptor' - exactly one of resultId / urlImport must be present."
+          },
+          "urlImport": {
+            "type": "object",
+            "description": "§F 'validated URL-import descriptor'. §F: 'For URL import, the server must resolve the submitted HTTPS URL to a compiled adapter and re-run robots, allowlist, and content-length checks.' Sub-fields are NOT specified by the plan - blocker B6.",
+            "x-f56-name-derived": true,
+            "properties": {
+              "url": {
+                "type": "string",
+                "pattern": "^https://",
+                "description": "HTTPS only; http://, non-HTTPS schemes, IP-literal URLs, unknown domains and redirects outside the compiled allowlist are rejected (§D)."
+              }
+            },
+            "required": [
+              "url"
+            ]
+          },
+          "adapterId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sourceSnapshotId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Must match the result snapshot or the fetch fails closed (SNAPSHOT_MISMATCH)."
+          },
+          "intent": {
+            "type": "string",
+            "enum": [
+              "download",
+              "preview"
+            ],
+            "description": "§F 'intent: download or preview'. Preview uses the same fetch pipeline so it cannot bypass encryption, content-length framing, or snapshot binding (§D)."
+          },
+          "transport": {
+            "type": "string",
+            "enum": [
+              "auto",
+              "aria2c",
+              "torrent"
+            ],
+            "description": "§F 'transport: auto, aria2c, or torrent'. NOTE: §B fetch state names the second transport 'qBittorrent' while §F names it 'torrent' - the §F request enum is frozen as written and the discrepancy is blocker B7."
+          },
+          "pipelineIntent": {
+            "type": [
+              "string",
+              "object"
+            ],
+            "description": "§F 'pipeline intent'. Not further specified; the server must clamp the pipeline to encryption enabled regardless of what is submitted.",
+            "x-f56-name-derived": true
+          },
+          "mirrorOptIn": {
+            "type": "boolean",
+            "description": "§F 'mirror opt-in state'. Mirror remains false unless an existing, explicit F49 opt-in is present; the shipped default is OFF."
+          }
+        },
+        "x-f56-one-of-rule": "resultId XOR urlImport (§F 'resultId or validated URL-import descriptor')."
+      },
+      "FetchCancelRequest": {
+        "type": "object",
+        "description": "§F 'Cancel request'. 'The command is delegated to the existing fetch/transport cancellation path. F56 does not modify mirror-side implementation.'",
+        "additionalProperties": false,
+        "required": [
+          "operation",
+          "fetchId",
+          "requestId",
+          "idempotencyKey"
+        ],
+        "properties": {
+          "operation": {
+            "const": "cancel"
+          },
+          "fetchId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "idempotencyKey": {
+            "type": "string",
+            "minLength": 1,
+            "description": "§F writes 'idempotency key' in prose for this branch; mapped to the same identifier the start branch uses - blocker B5."
+          }
+        }
+      },
+      "FetchRetryRequest": {
+        "type": "object",
+        "description": "§F 'Retry request'. 'Retry is rejected for non-retryable policy failures.' §D: retry uses the same source snapshot unless the backend explicitly supplies a new valid snapshot, and never bypasses a robots block, HTTPS requirement, content-length failure, or source allowlist rule.",
+        "additionalProperties": false,
+        "required": [
+          "operation",
+          "fetchId",
+          "sourceSnapshotId",
+          "reason"
+        ],
+        "properties": {
+          "operation": {
+            "const": "retry"
+          },
+          "fetchId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sourceSnapshotId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "§F 'original source snapshot ID'."
+          },
+          "reason": {
+            "type": "string",
+            "description": "§F 'explicit retry reason'."
+          }
+        }
+      },
+      "FetchStartAccepted": {
+        "type": "object",
+        "description": "§F 'Start response' (HTTP 202).",
+        "properties": {
+          "fetchId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "transport": {
+            "type": "string",
+            "description": "§F 'selected transport'. §B fetch state enumerates the transports as 'aria2c' or 'qBittorrent'; §F does not repeat the value set here - blocker B7.",
+            "x-f56-name-derived": true
+          },
+          "gid": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "§F 'aria2c gid, or qBittorrent handle'."
+          },
+          "qbittorrentHandle": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "§F 'aria2c gid, or qBittorrent handle'.",
+            "x-f56-name-derived": true
+          },
+          "progressRef": {
+            "type": "string",
+            "description": "§F 'progress reference supplied by the existing F46 transport status surface'. Per docs/f56/audit.md §C.1-C.2 that surface is GET /api/progress -> mirrorModel()/mirrorTransfer() (3 s poll; ws=false on the PowerShell dashboard).",
+            "x-f56-name-derived": true
+          },
+          "sourceSnapshotId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "cipherSnapshotId": {
+            "type": "string",
+            "minLength": 1,
+            "description": "§B fetch state 'cipherSnapshotId'; ciphertext remains bound to the source snapshot."
+          },
+          "expectedContentLength": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "§F 'expected content length'.",
+            "x-f56-name-derived": true
+          },
+          "wireLength": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "§F 'computed wire length'. Invariant: wire length == EncryptedSource.WireLength (payloads/ghrdp-mirror-progress.cs GetWireLength / ContainerLength.Cbc = 32 + (n/16+1)*16)."
+          },
+          "pipelineStages": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "§F 'pipeline stages'. Stage value set is not specified by the plan; the repository's frozen F46 phase ladder is dns/tcp/tls/encrypt/size/type/auth/http/parse (audit §C.3) - blocker B4.",
+            "x-f56-name-derived": true
+          },
+          "mirrorOptIn": {
+            "type": "boolean",
+            "description": "§F 'mirror opt-in state'; default false."
+          },
+          "status": {
+            "type": [
+              "string",
+              "object"
+            ],
+            "description": "§F 'initial status'. Value set not specified; §B fetch state says 'current status' - blocker B4.",
+            "x-f56-name-derived": true
+          }
+        },
+        "required": [
+          "fetchId",
+          "transport",
+          "progressRef",
+          "sourceSnapshotId",
+          "cipherSnapshotId",
+          "expectedContentLength",
+          "wireLength",
+          "pipelineStages",
+          "mirrorOptIn",
+          "status"
+        ]
+      },
+      "ErrorCode": {
+        "type": "string",
+        "description": "§F 'Planned error codes include' - the 17 codes, frozen verbatim. Each maps to the §H search.errors.* localization key of the same name.",
+        "enum": [
+          "VALIDATION_ERROR",
+          "HTTPS_REQUIRED",
+          "UNKNOWN_SOURCE",
+          "DOMAIN_NOT_ALLOWLISTED",
+          "ROBOTS_BLOCKED",
+          "RATE_LIMITED",
+          "TIMEOUT",
+          "PARSE_FAILED",
+          "NO_LICENCE_EVIDENCE",
+          "SNAPSHOT_MISMATCH",
+          "CONTENT_LENGTH_REQUIRED",
+          "WIRE_LENGTH_MISMATCH",
+          "TRANSPORT_UNAVAILABLE",
+          "SEARCH_CANCELLED",
+          "FETCH_CANCELLED",
+          "CLASSIFIER_BLOCKED",
+          "INTERNAL_ERROR"
+        ],
+        "x-f56-localization-keys": {
+          "VALIDATION_ERROR": "search.errors.validation",
+          "HTTPS_REQUIRED": "search.errors.httpsOnly",
+          "UNKNOWN_SOURCE": "search.errors.unknownSource",
+          "DOMAIN_NOT_ALLOWLISTED": "search.errors.domainNotAllowlisted",
+          "ROBOTS_BLOCKED": "search.errors.robotsBlocked",
+          "RATE_LIMITED": "search.errors.rateLimited",
+          "TIMEOUT": "search.errors.timeout",
+          "PARSE_FAILED": "search.errors.parseFailed",
+          "NO_LICENCE_EVIDENCE": "search.errors.noLicenceEvidence",
+          "SNAPSHOT_MISMATCH": "search.errors.snapshotMismatch",
+          "CONTENT_LENGTH_REQUIRED": "search.errors.contentLengthRequired",
+          "WIRE_LENGTH_MISMATCH": "search.errors.wireLengthMismatch",
+          "TRANSPORT_UNAVAILABLE": "search.errors.transportUnavailable",
+          "SEARCH_CANCELLED": "search.errors.searchCancelled",
+          "FETCH_CANCELLED": "search.errors.fetchCancelled",
+          "CLASSIFIER_BLOCKED": "search.errors.classifierBlocked",
+          "INTERNAL_ERROR": "search.errors.generic"
+        },
+        "x-f56-code-count": 17
+      },
+      "ErrorEnvelope": {
+        "type": "object",
+        "description": "§F 'Error envelope' - 'All four endpoints use: HTTP status, requestId, traceId, stable machine-readable error code, localization key, retryable, optional retryAfterSeconds, safe structured details.' 'Raw provider HTML, credentials, proxy details, and internal transport secrets must not reach the client.' The HTTP status travels in the response line, not the body.",
+        "additionalProperties": false,
+        "required": [
+          "requestId",
+          "traceId",
+          "code",
+          "messageKey",
+          "retryable"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "traceId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode",
+            "description": "§F 'stable machine-readable error code'."
+          },
+          "messageKey": {
+            "type": "string",
+            "pattern": "^search\\.errors\\.",
+            "description": "§F 'localization key'; Plan §H search.errors.* catalogue. Name follows the existing repository convention (FxError.messageKey / fx.err.*) - blocker B1.",
+            "x-f56-name-derived": true
+          },
+          "retryable": {
+            "type": "boolean"
+          },
+          "retryAfterSeconds": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "exclusiveMinimum": 0,
+            "description": "§F 'optional retryAfterSeconds'. Repository policy (F44): Retry-After is a FLOOR capped at 120 s (RETRY_AFTER_CAP_MS = 120000)."
+          },
+          "details": {
+            "type": "object",
+            "description": "§F 'safe structured details'. Must never carry raw provider HTML, credentials, proxy details, or internal transport secrets.",
+            "x-f56-name-derived": true
+          }
+        },
+        "x-f56-status-code-mapping": "§F pins no HTTP status per error code (only 'HTTP status' as an envelope element and 202 for the two accepted responses). The status/code mapping is blocker B8 and must be supplied by the operator before F56-b implements it."
+      }
+    }
+  },
+  "x-f56-plan-gaps": [
+    "B1 - §F prose-only field names frozen as camelCase of the plan wording and marked x-f56-name-derived (acceptedAdapterIds, statusRef, serverTs, progressRef, expectedContentLength, creator, sizeBytes, contentLength, nameKey, mimeType, availability, transportHint, licenceEvidence marker, cancellationState, idempotency, adapterCancellations, transport, pipelineStages, status).",
+    "B2 - §F POST /api/fetch operation:cancel says it is delegated to the existing fetch/transport cancellation path, but no per-fetch/per-job cancellation surface exists in the repository (docs/f56/audit.md §C.4). Plan Assumption 3 is therefore only half satisfied.",
+    "B3 - GET /api/search/status query-parameter names for the §F bullets optional result cursor and optional result limit.",
+    "B4 - the value sets for pipeline stages and initial status in the fetch start response.",
+    "B5 - POST /api/fetch cancel/retry response shapes and status codes; the identifier name for the cancel branch idempotency key.",
+    "B6 - the sub-fields of the validated URL-import descriptor.",
+    "B7 - transport value-set conflict: §F request enum says torrent while §B fetch state says aria2c or qBittorrent.",
+    "B8 - HTTP status per error code (§F pins only 202 for the two accepted responses and lists HTTP status as an envelope element).",
+    "B9 - which POST /api/search request fields are mandatory (§F marks only the cursor and adapter-IDs bullets as optional).",
+    "B17 - the locked literal value of schemaVersion and the key pattern for nameKey (docs/f56/schema.json)."
+  ]
+}
