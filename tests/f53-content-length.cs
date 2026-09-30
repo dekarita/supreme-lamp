@@ -38,7 +38,7 @@ namespace Ghrdp.MirrorLab {
     public sealed class StrictReceiver : IDisposable {
         private readonly TcpListener listener;
         private readonly Task serving;
-        private readonly ManualResetEventSlim done = new ManualResetEventSlim(false);
+        private readonly ManualResetEvent done = new ManualResetEvent(false);
         private readonly X509Certificate2 cert;
         public readonly int Port;
         public long Declared;
@@ -57,7 +57,7 @@ namespace Ghrdp.MirrorLab {
             Port = ((IPEndPoint)listener.LocalEndpoint).Port;
             serving = Task.Run((Action)Serve);
         }
-        public void Wait(int ms) { done.Wait(ms); }
+        public void Wait(int ms) { done.WaitOne(ms); }
         public void Dispose() {
             try { listener.Stop(); } catch { }
             done.Set();

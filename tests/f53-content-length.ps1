@@ -23,12 +23,26 @@ $labCs = Join-Path $PSScriptRoot 'f53-content-length.cs'
 if ($PSVersionTable.PSVersion.Major -lt 6) {
     Add-Type -Path $labCs -ReferencedAssemblies @('System.dll', 'System.Core.dll')
 } else {
-    $refs = New-Object System.Collections.Generic.List[string]
-    foreach ($n in @('System.Net.Security', 'System.Net.Sockets', 'System.Security.Cryptography.X509Certificates', 'System.Runtime', 'System.Net.Primitives', 'netstandard')) {
-        try { $a = [System.Reflection.Assembly]::Load($n); if ($a.Location) { [void]$refs.Add($a.Location) } } catch { }
+    # [F53] A PARTIAL -ReferencedAssemblies list REPLACES the default assembly
+    # set instead of adding to it, so omitting System.Threading left every type in
+    # it unresolvable: "CS1069: the type name 'ManualResetEventSlim' in
+    # 'System.Threading' is forwarded to assembly 'System.Threading, Version=
+    # 10.0.0.0', which is not in the current list of referenced assemblies".
+    # Compile on the default set first - the same shape
+    # tests/f52-mirror-telemetry.ps1 already compiles green on this runner for
+    # a lab that also uses ManualResetEventSlim/TcpListener/Task.Run. Only if
+    # that is ever not enough fall back to an explicit list, and that list now
+    # carries the threading assemblies the default set was hiding.
+    try {
+        Add-Type -Path $labCs
+    } catch {
+        $refs = New-Object System.Collections.Generic.List[string]
+        foreach ($n in @('System.Net.Security', 'System.Net.Sockets', 'System.Security.Cryptography.X509Certificates', 'System.Threading', 'System.Threading.Tasks', 'System.Runtime', 'System.Net.Primitives', 'netstandard')) {
+            try { $a = [System.Reflection.Assembly]::Load($n); if ($a.Location) { [void]$refs.Add($a.Location) } } catch { }
+        }
+        if ($refs.Count -eq 0) { throw }
+        Add-Type -Path $labCs -ReferencedAssemblies $refs.ToArray()
     }
-    if ($refs.Count -gt 0) { Add-Type -Path $labCs -ReferencedAssemblies $refs.ToArray() }
-    else { Add-Type -Path $labCs }
 }
 $tmp = $env:RUNNER_TEMP
 if (-not $tmp) { $tmp = [System.IO.Path]::GetTempPath() }
