@@ -9,6 +9,7 @@ using System.Security.Authentication;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Ghrdp.MirrorLab {
     public sealed class ContentLengthGate : Stream {
@@ -36,8 +37,8 @@ namespace Ghrdp.MirrorLab {
 
     public sealed class StrictReceiver : IDisposable {
         private readonly TcpListener listener;
-        private readonly Thread thread;
-        private readonly ManualResetEvent done = new ManualResetEvent(false);
+        private readonly Task serving;
+        private readonly ManualResetEventSlim done = new ManualResetEventSlim(false);
         private readonly X509Certificate2 cert;
         public readonly int Port;
         public long Declared;
@@ -54,11 +55,9 @@ namespace Ghrdp.MirrorLab {
             listener = new TcpListener(IPAddress.Loopback, 0);
             listener.Start();
             Port = ((IPEndPoint)listener.LocalEndpoint).Port;
-            thread = new Thread(Serve);
-            thread.IsBackground = true;
-            thread.Start();
+            serving = Task.Run((Action)Serve);
         }
-        public void Wait(int ms) { done.WaitOne(ms); }
+        public void Wait(int ms) { done.Wait(ms); }
         public void Dispose() {
             try { listener.Stop(); } catch { }
             done.Set();
