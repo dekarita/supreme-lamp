@@ -37,7 +37,9 @@ export function useDashboardPolling(): void {
     };
     const pollDiagForSearch = async () => {
       try {
-        const diag = await getJson("/diag");
+        // [F56-d §3] /diag echoes the dispatch lane: searchEnabled (boolean) + searchInput
+        // (raw SEARCH_INPUT string). Typed here so the boot read stays compile-checked.
+        const diag = await getJson<{ searchEnabled?: boolean | string | number; searchInput?: string }>("/diag");
         if (alive && diag) {
           const enabled = !!(diag.searchEnabled === true || diag.searchEnabled === 'true' || diag.searchEnabled === 1);
           // @ts-ignore
