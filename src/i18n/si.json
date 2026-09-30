@@ -557,7 +557,10 @@
         "error": {
           "user": "පරිශීලක නාමයක් ඇතුළත් කරන්න.",
           "password": "මුරපදයක් ඇතුළත් කරන්න."
-        }
+        },
+        "submit": "Submit",
+        "submitting": "Encrypting...",
+        "encrypted": "Encrypted with F46 per-run key, memory-only, no disk persist."
       },
       "credStub": "අක්තපත්‍ර යැවීම F56-c හි ස්ථාවරයක් - F56-d දී පැමිණේ.",
       "lab": {
@@ -617,6 +620,18 @@
       "toast": {
         "micStub": "හඬ ආදානය තවම ස්ටබ් එකකි - ඉදිරි අදියරකින් ලැබේ."
       }
+    },
+    "fetch": {
+      "started": "Fetch started: {{fetchId}}",
+      "cancelled": "Fetch cancelled",
+      "retry": "Retrying fetch",
+      "failed": "Fetch failed",
+      "queued": "Fetch queued",
+      "downloading": "Downloading via aria2c",
+      "verifying": "Verifying checksum",
+      "encrypting": "Encrypting with F46",
+      "postFetch": "Post-fetch mirror check",
+      "completed": "Fetch completed"
     }
   },
   "files": {
@@ -682,7 +697,12 @@
         "empty": {
           "title": "Fetched වෙන් කර ඇත",
           "body": "F56-d ලබාගැනීම් තලය පැමිණි විට D:\\RDP-Storage\\Fetched විවෘත වේ. එය මිරර් තේරීමට යටතේ පවතී."
-        }
+        },
+        "list": {
+          "title": "Fetched files",
+          "body": "{{count}} file(s) in Fetched"
+        },
+        "listening": "Listening for file-arrival events via /ws"
       },
       "thisPc": {
         "stub": "ස්ථාවරය - සැබෑ ලැයිස්තුව F57 දී පැමිණේ."

@@ -156,6 +156,15 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const r = await fetch("/diag", { cache: "no-store" });
       const d = r.ok ? await r.json() : null;
       set({ diagText: d ? JSON.stringify(d, null, 2) : "Diagnostics failed - server not reachable." });
+      try {
+        // [F56-d §3] Search surface reads window.__GHRDP_SEARCH_ENABLED from /diag
+        const enabled = !!(d && (d.searchEnabled === true || d.searchEnabled === 'true'));
+        // @ts-ignore
+        if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_ENABLED = enabled;
+        // Also set searchInput echo for SEARCH_INPUT propagation lab
+        // @ts-ignore
+        if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_INPUT = d?.searchInput || '';
+      } catch {}
     } catch {
       set({ diagText: "Diagnostics failed - server not reachable." });
     }

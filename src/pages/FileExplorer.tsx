@@ -1,15 +1,6 @@
-// [F56-c] File Explorer page shell (session §3 + payloads/docs/
-// rdp-file-explorer-plan.md): left tree (Quick Access + reserved "Fetched" +
-// This PC stubs), breadcrumb, results grid (list + grid toggle), preview panel
-// stub, and a disabled command bar with "coming in F57" tooltips. Rows come
-// from src/pages/file-explorer/fixture.json; F57 ids are reserved under
-// f57.explorer.* (additive, collision-free against the frozen 219).
-//
-// [F56-c v2] The breadcrumb is now derived from the selected location instead
-// of being a static fixture list, and selecting the reserved Fetched root
-// renders its own empty state ("coming in F56-d") - no rows are invented for a
-// root that the F56-d fetch plane owns.
-import { useState } from "react";
+// [F56-d] File Explorer page shell - Fetched-root empty-state replaced by file-arrival event listener via ws /ws progress mirrorDiag.
+// When a file lands in D:\RDP-Storage\Fetched, the UI shows it via file-arrival event and /api/fx/list polling.
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import fixture from "./file-explorer/fixture.json";
 import { ExplorerTree, type TreeNode } from "./file-explorer/ExplorerTree";
@@ -25,9 +16,6 @@ interface Crumb {
 
 export const FETCHED_PATH = "D:\\RDP-Storage\\Fetched";
 
-/** Known path segments, longest-first, so a location maps to deterministic
- *  crumb ids (`f57.explorer.breadcrumbItem.<segment id>`) - never to a slice
- *  of an unsanitized path. */
 const SEGMENTS: Crumb[] = [
   { id: "bc-fetched", labelKey: "files.v2.fetched.node", path: FETCHED_PATH },
   { id: "bc-rdp-storage", labelKey: "files.thisPc.rdpStorage", path: "D:\\RDP-Storage" },
@@ -47,8 +35,70 @@ export default function FileExplorer() {
   const [view, setView] = useState<ViewMode>("list");
   const [location, setLocation] = useState<TreeNode>(() => (fixture.thisPc as TreeNode[])[1]);
   const [selected, setSelected] = useState<FixtureRow | null>(null);
+  const [fetchedFiles, setFetchedFiles] = useState<FixtureRow[]>([]);
 
   const atFetched = location.path === FETCHED_PATH;
+
+  // [F56-d] File-arrival event via ws progress mirrorDiag + polling /api/fx/list
+  useEffect(() => {
+    if (!atFetched) return;
+    let alive = true;
+    const fetchFetched = async () => {
+      try {
+        // Try fx API list
+        const token = (() => { try { return localStorage.getItem('ghrdp-dash-token') || '' } catch { return '' } })();
+        const headers: Record<string, string> = {};
+        if (token) headers['X-Dash-Token'] = token;
+        const res = await fetch(`/api/fx/list?path=${encodeURIComponent(FETCHED_PATH)}`, { headers, cache: 'no-store' });
+        if (res.ok) {
+          const j = await res.json();
+          const entries = j?.entries || j?.files || [];
+          if (Array.isArray(entries) && entries.length) {
+            const mapped: FixtureRow[] = entries.map((e: any, idx: number) => ({
+              id: e.id || e.name || `fetched-${idx}`,
+              name: e.name || e.path || `file-${idx}`,
+              kind: e.kind || (e.isDir ? 'folder' : 'file'),
+              size: e.size || e.sizeBytes || 0,
+              modified: e.modified || e.mtime || new Date().toISOString(),
+            }));
+            if (alive) setFetchedFiles(mapped);
+          }
+        }
+      } catch {}
+    };
+
+    const onArrival = (evt: Event) => {
+      try {
+        const custom = evt as CustomEvent;
+        const detail = custom.detail;
+        if (Array.isArray(detail)) {
+          const mapped: FixtureRow[] = detail.map((e: any, idx: number) => ({
+            id: e.id || e.name || `fetched-${idx}`,
+            name: e.name || e.path || `file-${idx}`,
+            kind: 'file',
+            size: e.size || 0,
+            modified: e.modified || new Date().toISOString(),
+          }));
+          if (alive) setFetchedFiles((prev) => {
+            const merged = [...prev];
+            for (const m of mapped) {
+              if (!merged.find(p => p.name === m.name)) merged.push(m);
+            }
+            return merged;
+          });
+        }
+      } catch {}
+    };
+
+    void fetchFetched();
+    const interval = window.setInterval(fetchFetched, 5000);
+    window.addEventListener('ghrdp-fetched-arrival', onArrival as EventListener);
+    return () => {
+      alive = false;
+      window.clearInterval(interval);
+      window.removeEventListener('ghrdp-fetched-arrival', onArrival as EventListener);
+    };
+  }, [atFetched]);
 
   return (
     <div id="f57.explorer.view" data-testid="file-explorer-page" className="flex flex-col gap-4">
@@ -75,18 +125,40 @@ export default function FileExplorer() {
       <div className="flex flex-wrap items-start gap-3">
         <ExplorerTree activePath={location.path} onSelect={setLocation} />
         {atFetched ? (
-          <section
-            id="f57.explorer.v2.fetchedEmpty"
-            data-testid="fetched-empty"
-            aria-label={t("files.v2.fetched.empty.title")}
-            className="flex-1 min-w-0 bg-surface border border-default rounded-md p-4 flex flex-col gap-2"
-          >
-            <h2 className="text-sm font-semibold text-primary">{t("files.v2.fetched.empty.title")}</h2>
-            <p className="text-sm text-secondary">{t("files.v2.fetched.empty.body")}</p>
-            <p id="f57.explorer.v2.reservedBadge.empty" data-testid="fetched-reserved-badge" className="text-xs text-tertiary">
-              {t("files.v2.fetched.badge")}
-            </p>
-          </section>
+          fetchedFiles.length > 0 ? (
+            <section
+              id="f57.explorer.v2.fetchedList"
+              data-testid="fetched-list"
+              aria-label={t("files.v2.fetched.list.title")}
+              className="flex-1 min-w-0 bg-surface border border-default rounded-md p-4 flex flex-col gap-2"
+            >
+              <h2 className="text-sm font-semibold text-primary">{t("files.v2.fetched.list.title")}</h2>
+              <p className="text-xs text-secondary">{t("files.v2.fetched.list.body", { count: fetchedFiles.length })}</p>
+              <ul className="flex flex-col gap-1">
+                {fetchedFiles.map((f) => (
+                  <li key={f.id} data-testid="fetched-file" className="text-xs font-mono text-primary truncate">
+                    {f.name} {f.size ? `(${f.size} bytes)` : ''}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : (
+            <section
+              id="f57.explorer.v2.fetchedEmpty"
+              data-testid="fetched-empty"
+              aria-label={t("files.v2.fetched.empty.title")}
+              className="flex-1 min-w-0 bg-surface border border-default rounded-md p-4 flex flex-col gap-2"
+            >
+              <h2 className="text-sm font-semibold text-primary">{t("files.v2.fetched.empty.title")}</h2>
+              <p className="text-sm text-secondary">{t("files.v2.fetched.empty.body")}</p>
+              <p id="f57.explorer.v2.reservedBadge.empty" data-testid="fetched-reserved-badge" className="text-xs text-tertiary">
+                {t("files.v2.fetched.badge")}
+              </p>
+              <p data-testid="fetched-file-arrival-listener" className="text-xs text-tertiary">
+                {t("files.v2.fetched.listening")}
+              </p>
+            </section>
+          )
         ) : (
           <ExplorerResults view={view} onView={setView} selectedId={selected ? selected.id : ""} onSelect={setSelected} />
         )}

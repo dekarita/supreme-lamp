@@ -2,6 +2,7 @@
 // native-status 15s + 10s (F31c live dispatch), progress 3s + ws push,
 // /ping 2s, /health 30s. All failures soft (stores keep last known data and
 // the conn banner reflects loss).
+// [F56-d §3] Search surface reads window.__GHRDP_SEARCH_ENABLED from /diag at boot + polling.
 import { useEffect } from "react";
 import { configUrl, getJson, nativeStatusUrl } from "@/lib/api";
 import { useSessionStore } from "@/stores/sessionStore";
@@ -34,6 +35,18 @@ export function useDashboardPolling(): void {
       const d = await getJson("/api/progress");
       if (alive) setProgress(d);
     };
+    const pollDiagForSearch = async () => {
+      try {
+        const diag = await getJson("/diag");
+        if (alive && diag) {
+          const enabled = !!(diag.searchEnabled === true || diag.searchEnabled === 'true' || diag.searchEnabled === 1);
+          // @ts-ignore
+          if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_ENABLED = enabled;
+          // @ts-ignore
+          if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_INPUT = diag.searchInput || '';
+        }
+      } catch {}
+    };
     const pollPing = async () => {
       const t0 = performance.now();
       try {
@@ -61,15 +74,16 @@ export function useDashboardPolling(): void {
     void pollConfig();
     void pollNative();
     void pollProgress();
+    void pollDiagForSearch();
     void probeHealth();
     timers.push(window.setInterval(pollConfig, 15000));
     timers.push(window.setInterval(pollNative, 15000));
-    timers.push(window.setInterval(pollNative, 10000)); // F31c live dispatch cadence
+    timers.push(window.setInterval(pollNative, 10000));
     timers.push(window.setInterval(pollProgress, 3000));
     timers.push(window.setInterval(pollPing, 2000));
     timers.push(window.setInterval(probeHealth, 30000));
+    timers.push(window.setInterval(pollDiagForSearch, 15000));
 
-    // Rust ws bridge push (first progress render connects, v1 contract).
     let ws: WebSocket | null = null;
     let wsRetry = 0;
     const connectWs = () => {
@@ -79,19 +93,25 @@ export function useDashboardPolling(): void {
         ws.onopen = () => useTelemetryStore.getState().setWsLive(true);
         ws.onmessage = (evt) => {
           try {
-            setProgress(JSON.parse(evt.data as string));
-          } catch {
-            /* ignore */
-          }
+            const data = JSON.parse(evt.data as string);
+            setProgress(data);
+            // [F56-d] File-arrival event via ws progress mirrorDiag for Fetched-root
+            try {
+              // If progress contains fetchedFiles or files in Fetched, propagate to FileExplorer
+              // @ts-ignore
+              if (data && data.fetchedFiles) {
+                // @ts-ignore
+                if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('ghrdp-fetched-arrival', { detail: data.fetchedFiles }));
+              }
+            } catch {}
+          } catch {}
         };
         ws.onclose = () => {
           void probeHealth();
           wsRetry = window.setTimeout(connectWs, 2000) as unknown as number;
         };
         ws.onerror = () => {};
-      } catch {
-        /* ignore */
-      }
+      } catch {}
     };
     const wsStarter = window.setInterval(() => {
       if (useTelemetryStore.getState().wsLive && !ws) connectWs();

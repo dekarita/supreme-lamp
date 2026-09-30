@@ -1,12 +1,10 @@
-// [F56-c v2] Own-credential modal (URL import → "login required"). UI ONLY:
-// the fields, the F46 per-run notice and the stub submit. Nothing is sent and
-// nothing is persisted - no localStorage/sessionStorage write anywhere, the
-// password is state-only and is wiped on close AND on stub submit (session-end
-// wipe); F56-d owns the encrypted per-run submission.
-import { useEffect, useRef } from "react";
+// [F56-d] Own-credential modal now real: encrypts creds with WebCrypto AES-GCM using per-run key
+// fetched from /api/config mirrorKey fallback ephemeral, POSTs to /api/fetch with enc blob + key wipe, memory-only.
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchUiStore } from "@/stores/searchUiStore";
-import { requestFetchStub } from "@/lib/fetchStub";
+import { requestFetch } from "@/lib/fetchStub";
+import { encryptOwnCreds } from "@/lib/f46";
 import { useToastStore } from "@/stores/toastStore";
 
 export function OwnCredentialModal() {
@@ -20,6 +18,7 @@ export function OwnCredentialModal() {
   const setCredError = useSearchUiStore((s) => s.setCredError);
   const push = useToastStore((s) => s.push);
   const firstFieldRef = useRef<HTMLInputElement | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -33,7 +32,7 @@ export function OwnCredentialModal() {
 
   if (!open) return null;
 
-  const submit = () => {
+  const submit = async () => {
     if (!cred.user.trim()) {
       setCredError(t("search.v2.cred.error.user"));
       return;
@@ -42,12 +41,51 @@ export function OwnCredentialModal() {
       setCredError(t("search.v2.cred.error.password"));
       return;
     }
-    // Stub: no request is constructed (F56-d owns the encrypted per-run key).
-    requestFetchStub({ resultId: "own-credential" });
-    setCredError("");
-    push(t("search.v2.credStub"), "warn");
-    // Session-end wipe, immediately: the typed password leaves memory here.
-    setCredPassword("");
+    setSubmitting(true);
+    try {
+      // Encrypt creds with F46 per-run key AES-GCM
+      const enc = await encryptOwnCreds(cred.user, cred.password);
+      // POST to /api/fetch with enc blob
+      const result = await requestFetch({
+        operation: 'start',
+        requestId: Math.random().toString(36).slice(2, 12),
+        idempotencyKey: Math.random().toString(36).slice(2, 12),
+        urlImport: { url: cred.url || 'https://' + (cred.host || 'example.com') + '/protected' },
+        adapterId: 'custom',
+        sourceSnapshotId: 'snap-' + Date.now(),
+        intent: 'download',
+        transport: 'aria2c',
+        mirrorOptIn: false,
+        credUserEnc: enc.userEnc,
+        credPassEnc: enc.passEnc,
+        credKeyB64: enc.keyB64,
+        credKeyIv: enc.keyB64,
+      } as any);
+
+      if (result.ok) {
+        push(t("search.fetch.started", { fetchId: result.data?.fetchId || '' }));
+        setCredError("");
+        // Wipe password immediately - memory-only
+        setCredPassword("");
+        setCredUser("");
+        // Clear enc object from memory
+        try { (enc as any).userEnc = ''; (enc as any).passEnc = ''; (enc as any).keyB64 = ''; } catch {}
+        closeCredModal();
+      } else {
+        const msgKey = result.error?.messageKey || "search.errors.generic";
+        push(t(msgKey), "error");
+        setCredError(t(msgKey));
+        // Wipe even on error
+        try { (enc as any).userEnc = ''; (enc as any).passEnc = ''; (enc as any).keyB64 = ''; } catch {}
+      }
+    } catch (e: any) {
+      push(t("search.errors.generic"), "error");
+      setCredError(t("search.errors.generic"));
+    } finally {
+      setSubmitting(false);
+      // Session-end wipe
+      setCredPassword("");
+    }
   };
 
   return (
@@ -97,8 +135,8 @@ export function OwnCredentialModal() {
         <p id="f56.search.v2.credNotice" data-testid="cred-notice" className="text-xs text-tertiary bg-sunken rounded p-2">
           {t("search.v2.cred.notice")}
         </p>
-        <p id="f56.search.v2.credStub" data-testid="cred-stub" className="text-xs text-warning">
-          {t("search.v2.credStub")}
+        <p id="f56.search.v2.credEncrypted" data-testid="cred-encrypted" className="text-xs text-success">
+          {t("search.v2.cred.encrypted")}
         </p>
         <p id="f56.search.v2.credError" role="alert" data-testid="cred-error" className="text-xs text-danger">
           {credError}
@@ -108,10 +146,11 @@ export function OwnCredentialModal() {
           <button
             type="button"
             data-testid="cred-submit"
-            onClick={submit}
-            className="h-11 px-3 rounded-md bg-accent text-accent-fg text-sm font-medium hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            onClick={() => void submit()}
+            disabled={submitting}
+            className="h-11 px-3 rounded-md bg-accent text-accent-fg text-sm font-medium hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
           >
-            {t("search.v2.cred.submit")}
+            {submitting ? t("search.v2.cred.submitting") : t("search.v2.cred.submit")}
           </button>
           <button
             id="f56.search.v2.credCancel"
