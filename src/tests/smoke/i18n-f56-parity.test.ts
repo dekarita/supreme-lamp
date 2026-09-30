@@ -29,7 +29,7 @@ const siNew = Object.keys(fs).filter(isNew).sort();
 describe("i18n F56 parity (byte-verified)", () => {
   it("en/si new-namespace key sets are identical", () => {
     expect(siNew).toEqual(enNew);
-    expect(enNew.length).toBe(273); // [F56-c v2] 218 + 55 additive en/si keys
+    expect(enNew.length).toBe(283); // [F56-c v3] 273 + 10 additive en/si keys
   });
 
   it("every si value is non-empty, byte-stable Sinhala or a technical token", () => {

@@ -1,8 +1,10 @@
-// [F56-c v2] Google-style landing (§2): centered ~60%-wide, ~64px-tall bar with
-// autofocus, a sub-line, exactly three QUIET chips (Recent | Own Storage |
-// Paste URL), NO visible filter chips and NO visible size cap, and the
-// "Advanced ⋯" disclosure holding the frozen F56-c filter ids. Submitting
-// animates the same bar center -> top before results render.
+// [F56-c v3] All-in-one landing (§1/§2): the landing surface renders ZERO
+// chips - every F56-c filter control (Category, Licence, Maximum-size, Sort,
+// Sources, Scope + the "None selected" note) is ABSENT until the ⋯ inline
+// drawer opens inside the bar. One centered ~60%-wide, ~72px-tall autofocused
+// bar with the magnifier submit on the left and [clip][⋯][mic][clear] inline
+// on the right; under it, one sub-line + three quiet chips, and the keyboard
+// hint is exactly "Alt+F opens Search. Enter submits.".
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -13,19 +15,20 @@ import { useSearchUiStore } from "@/stores/searchUiStore";
 
 type Any = any;
 
-const RESULTS: Any[] = [
-  {
-    resultId: "g1",
-    adapterId: "project-gutenberg",
-    nameKey: "search.sources.projectGutenberg",
-    category: "books",
-    title: "Pride and Prejudice",
-    creator: "Jane Austen",
-    sizeBytes: 412000,
-    licenceTag: "public-domain",
-    sourceSnapshotId: "snap-1",
-    sourceUrl: "https://www.gutenberg.org/ebooks/1342",
-  },
+const REMOVED_IDS = [
+  "f56.search.categoryGroup",
+  "f56.search.categoryChip.all",
+  "f56.search.categoryChip.books",
+  "f56.search.licenceGroup",
+  "f56.search.licenceChip.public-domain",
+  "f56.search.sizeSlider",
+  "f56.search.sizeValue",
+  "f56.search.sortSelector",
+  "f56.search.scope",
+  "f56.search.v2.adapterGroup",
+  "f56.search.v2.adapterChip.project-gutenberg",
+  "f56.search.filtersReset",
+  "f56.search.filterSelectionCount",
 ];
 
 function mockFetch(impl: (url: string, init?: Any) => Any) {
@@ -63,6 +66,7 @@ function reset() {
     importMode: false,
     recentQueries: [],
     labStartedAt: 0,
+    devFixtureGen: 0,
     credModalOpen: false,
     cred: { host: "", user: "", password: "" },
     credError: "",
@@ -80,46 +84,87 @@ function renderSearch() {
 beforeEach(() => reset());
 afterEach(() => vi.unstubAllGlobals());
 
-describe("F56-c v2 Google-style landing", () => {
-  it("centers a large autofocused bar with a sub-line and exactly three quiet chips", () => {
+describe("F56-c v3 all-in-one landing", () => {
+  it("renders ZERO chips: every removed F56-c control is absent from the landing", () => {
     renderSearch();
-    const bar = screen.getByTestId("hero-bar");
-    expect(bar.getAttribute("data-mode")).toBe("landing");
-    // ~60% viewport width + ~64px height + the center->top transition exist on
-    // the bar (the exact px live in the class list; the animation latch is the
-    // data-anim attribute).
-    expect(document.getElementById("f56.search.commandBar")?.className).toContain("w-[60%]");
-    expect(document.getElementById("f56.search.query")?.className).toContain("h-16");
-    // autofocus is real focus (React applies autoFocus imperatively, not as an attribute)
-    expect(document.activeElement).toBe(document.getElementById("f56.search.query"));
-    expect(screen.getByTestId("hero-subline")).toBeInTheDocument();
-    expect(screen.getByTestId("quiet-chip-recent")).toBeInTheDocument();
-    expect(screen.getByTestId("quiet-chip-own-storage")).toBeInTheDocument();
-    expect(screen.getByTestId("quiet-chip-paste-url")).toBeInTheDocument();
+    for (const id of REMOVED_IDS) {
+      expect(document.getElementById(id), id + " must not exist on the landing").toBeNull();
+    }
+    expect(screen.queryByText(/None selected probes every compiled source/i)).toBeNull();
+    // only the quiet chips exist (3), never filter chips
     expect(document.querySelectorAll('[data-testid^="quiet-chip-"]').length).toBe(3);
+    expect(screen.getByTestId("keyboard-help").textContent).toBe("Alt+F opens Search. Enter submits.");
   });
 
-  it("shows NO visible filter chips and NO visible size cap until Advanced opens", async () => {
+  it("centers one ~60%-wide, ~72px-tall autofocused bar with the 3 inline icons", () => {
     renderSearch();
-    const panel = screen.getByTestId("advanced-panel");
-    expect(panel.hasAttribute("hidden")).toBe(true);
-    expect(screen.getByTestId("advanced-toggle").getAttribute("aria-expanded")).toBe("false");
-    // the frozen F56-c filter ids remain in the DOM exactly once (id lock), just
-    // inside the collapsed disclosure
-    expect(document.getElementById("f56.search.sizeSlider")).not.toBeNull();
-    expect(document.getElementById("f56.search.licenceChip.public-domain")).not.toBeNull();
-    expect(document.getElementById("f56.search.categoryChip.books")).not.toBeNull();
-    await act(async () => {
-      fireEvent.click(screen.getByTestId("advanced-toggle"));
-    });
-    expect(panel.hasAttribute("hidden")).toBe(false);
-    expect(screen.getByTestId("advanced-toggle").getAttribute("aria-expanded")).toBe("true");
-    // the size slider's untouched default is 0 = unlimited (v2 A1 overwrite)
-    expect(screen.getByTestId("size-value").textContent).toBe("No maximum");
-    expect(document.getElementById("f56.search.v2.adapterChip.project-gutenberg")).not.toBeNull();
+    expect(screen.getByTestId("hero-bar").getAttribute("data-mode")).toBe("landing");
+    expect(document.getElementById("f56.search.commandBar")?.className).toContain("w-[60%]");
+    const bar = document.getElementById("f56.search.query")?.closest("form");
+    expect(bar?.className).toContain("h-[72px]");
+    expect(document.activeElement).toBe(document.getElementById("f56.search.query"));
+    const clip = screen.getByTestId("bar-icon-clip");
+    const drawer = screen.getByTestId("bar-icon-drawer");
+    const mic = screen.getByTestId("bar-icon-mic");
+    // §2 order: [clip][⋯][mic]
+    expect(clip.compareDocumentPosition(drawer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(drawer.compareDocumentPosition(mic) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId("hero-subline")).toBeInTheDocument();
   });
 
-  it("quiet chips act: Own Storage toggles scope, Paste URL enters import mode", async () => {
+  it("⋯ opens the inline filter drawer; Esc collapses it again", async () => {
+    renderSearch();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("bar-icon-drawer"));
+    });
+    const panel = screen.getByTestId("advanced-panel");
+    expect(panel.hasAttribute("hidden")).toBe(false);
+    // every §1 control now lives ONLY inside the open drawer
+    expect(document.getElementById("f56.search.sizeSlider")).not.toBeNull();
+    expect(document.getElementById("f56.search.categoryChip.books")).not.toBeNull();
+    expect(document.getElementById("f56.search.licenceChip.public-domain")).not.toBeNull();
+    expect(document.getElementById("f56.search.sortSelector")).not.toBeNull();
+    expect(document.getElementById("f56.search.scope")).not.toBeNull();
+    expect(document.getElementById("f56.search.v2.adapterChip.project-gutenberg")).not.toBeNull();
+    await act(async () => {
+      fireEvent.keyDown(document.getElementById("f56.search.commandBar") as HTMLElement, { key: "Escape" });
+    });
+    expect(screen.queryByTestId("advanced-panel")).toBeNull();
+  });
+
+  it("Enter collapses the drawer and submits (bar animates center -> top)", async () => {
+    mockFetch((url) =>
+      url.includes("/api/search/status")
+        ? jsonResponse({ searchId: "s1", phase: "complete", queryGeneration: 1, adapterStatuses: [], results: [], hasMore: false, serverTs: "2026-09-30T10:00:00Z" })
+        : jsonResponse({ requestId: "r", searchId: "s1", phase: "running", acceptedAdapterIds: ["project-gutenberg"], statusRef: "/api/search/status", queryGeneration: 1, adapterStatuses: [] }, true, 202)
+    );
+    renderSearch();
+    fireEvent.change(screen.getByTestId("search-query"), { target: { value: "gutenberg" } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("bar-icon-drawer"));
+    });
+    expect(screen.getByTestId("advanced-panel")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("search-submit"));
+    });
+    await waitFor(() => expect(screen.getByTestId("hero-bar").getAttribute("data-mode")).toBe("results"));
+    expect(screen.queryByTestId("advanced-panel")).toBeNull();
+    expect(useSearchUiStore.getState().recentQueries).toEqual(["gutenberg"]);
+    expect(useSearchUiStore.getState().labStartedAt).toBeGreaterThan(0);
+  });
+
+  it("URL-import mode auto-lights the clip icon on an HTTPS paste", () => {
+    renderSearch();
+    const clip = screen.getByTestId("bar-icon-clip");
+    expect(clip.getAttribute("data-active")).toBe("false");
+    fireEvent.change(screen.getByTestId("search-query"), { target: { value: "https://example.org/dataset.zip" } });
+    expect(clip.getAttribute("data-active")).toBe("true");
+    expect(clip.getAttribute("aria-pressed")).toBe("true");
+    expect(useSearchStore.getState().inputKind).toBe("https-url");
+    expect(document.getElementById("f56.search.urlImport")?.textContent).toContain("HTTPS URL detected");
+  });
+
+  it("quiet chips still act: Own Storage toggles scope, Paste URL enters import mode", async () => {
     renderSearch();
     await act(async () => {
       fireEvent.click(screen.getByTestId("quiet-chip-own-storage"));
@@ -129,22 +174,5 @@ describe("F56-c v2 Google-style landing", () => {
       fireEvent.click(screen.getByTestId("quiet-chip-paste-url"));
     });
     expect(useSearchUiStore.getState().importMode).toBe(true);
-    expect(useSearchUiStore.getState().view).toBe("results");
-  });
-
-  it("animates the bar center -> top on submit and records the query as recent", async () => {
-    mockFetch((url) => (url.includes("/api/search/status") ? jsonResponse({ searchId: "s1", phase: "complete", queryGeneration: 1, adapterStatuses: [], results: RESULTS, hasMore: false, serverTs: "2026-09-30T10:00:00Z" }) : jsonResponse({ requestId: "r", searchId: "s1", phase: "running", acceptedAdapterIds: ["project-gutenberg"], statusRef: "/api/search/status", queryGeneration: 1, adapterStatuses: [] }, true, 202)));
-    renderSearch();
-    fireEvent.change(screen.getByTestId("search-query"), { target: { value: "gutenberg" } });
-    await act(async () => {
-      fireEvent.click(screen.getByTestId("search-submit"));
-    });
-    await waitFor(() => expect(screen.getByTestId("hero-bar").getAttribute("data-mode")).toBe("results"));
-    expect(screen.getByTestId("hero-bar").getAttribute("data-anim")).toBe("to-top");
-    expect(screen.getByTestId("hero-bar").className).toContain("transition-all");
-    expect(useSearchUiStore.getState().recentQueries).toEqual(["gutenberg"]);
-    expect(useSearchUiStore.getState().labStartedAt).toBeGreaterThan(0);
-    // the landing elements are gone once the bar is at the top
-    expect(screen.queryByTestId("hero-subline")).toBeNull();
   });
 });

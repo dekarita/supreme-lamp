@@ -1,19 +1,17 @@
-// [F56-c v2] Google-style command bar. ONE input element serves both modes:
-// the landing bar is centered, ~60% of the viewport wide and 64px tall with
-// autofocus; on submit the same element animates center -> top (a transition
-// on the hero container, latched by searchUiStore.animating) and the results
-// view renders beneath it. Typing still updates local state only (decisions.md
-// A2) - fan-out happens on Enter / explicit Search only.
-//
-// The visible surface is deliberately bare (brief §2): no filter chips and no
-// size cap. The "Advanced ⋯" toggle discloses the frozen F56-c filter id set
-// (category/licence chips, size slider, sort, scope, reset) plus the v2
-// adapter selection; collapsed means the panel is `hidden`, so the ids stay in
-// the DOM exactly once while nothing is visible.
+// [F56-c v3] All-in-one search bar (§1/§2): ONE control, centered, ~60% of the
+// viewport wide and ~72px tall, autofocus. Inline left icon = magnifier (the
+// submit control); inline right icons in order: [clip] URL-import indicator
+// (auto-lights on an HTTPS paste), [⋯] the inline filter drawer (every §1
+// filter lives there; it collapses on Enter or Esc), [mic] stub, then clear.
+// The landing surface itself shows ZERO chips: the drawer content is rendered
+// only while open, so no Category/Licence/Size/Sort/Sources/Scope control is
+// ever present on the landing surface. Keyboard hint = "Alt+F opens Search.
+// Enter submits." and nothing else.
 import { useTranslation } from "react-i18next";
-import { MoreHorizontal, Search as SearchIcon, X } from "lucide-react";
+import { Mic, MoreHorizontal, Paperclip, Search as SearchIcon, X } from "lucide-react";
 import { useSearchStore } from "@/stores/searchStore";
 import { hostOf, useSearchUiStore } from "@/stores/searchUiStore";
+import { useToastStore } from "@/stores/toastStore";
 import { AdvancedPanel } from "./v2/AdvancedPanel";
 
 export { camel, licenceStyle } from "@/pages/search/tokens";
@@ -29,15 +27,19 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
   const view = useSearchUiStore((s) => s.view);
   const animating = useSearchUiStore((s) => s.animating);
   const advancedOpen = useSearchUiStore((s) => s.advancedOpen);
+  const setAdvanced = useSearchUiStore((s) => s.setAdvanced);
   const toggleAdvanced = useSearchUiStore((s) => s.toggleAdvanced);
   const importMode = useSearchUiStore((s) => s.importMode);
   const setImportMode = useSearchUiStore((s) => s.setImportMode);
   const openCredModal = useSearchUiStore((s) => s.openCredModal);
   const enterResults = useSearchUiStore((s) => s.enterResults);
+  const pushToast = useToastStore((s) => s.push);
 
   const busy = phase === "queued" || phase === "running" || phase === "partial";
   const landing = view === "landing";
   const urlHost = hostOf(rawQuery);
+  // §2: the clip auto-lights the moment the bar holds an HTTPS URL.
+  const urlLit = inputKind === "https-url";
 
   const validationKey: string =
     inputKind === "https-url"
@@ -50,10 +52,14 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
 
   const doSubmit = () => {
     if (inputKind !== "text" && inputKind !== "https-url") return;
+    setAdvanced(false); // §2: the drawer collapses on Enter
     enterResults(rawQuery.trim());
     if (inputKind === "https-url") setImportMode(true);
     void submit();
   };
+
+  const iconBtn =
+    "h-11 w-11 shrink-0 rounded-full border text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent ";
 
   return (
     <div
@@ -70,17 +76,24 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
       <section
         id="f56.search.commandBar"
         aria-label={t("search.a11y.commandBar")}
-        className={
-          "flex flex-col gap-2 " +
-          (landing ? "w-[60%] max-w-3xl" : "w-full")
-        }
+        onKeyDown={(e) => {
+          // §2: the drawer also collapses on Esc (never swallows a closed drawer).
+          if (e.key === "Escape" && advancedOpen) {
+            e.preventDefault();
+            setAdvanced(false);
+          }
+        }}
+        className={"flex flex-col gap-2 " + (landing ? "w-[60%] max-w-3xl" : "w-full")}
       >
         <form
-          className={"flex items-center gap-2 " + (landing ? "" : "")}
           onSubmit={(e) => {
             e.preventDefault();
             doSubmit();
           }}
+          className={
+            "flex items-center gap-1 rounded-full border border-default bg-surface shadow-md px-2 focus-within:ring-2 focus-within:ring-accent " +
+            (landing ? "h-[72px]" : "h-16")
+          }
         >
           <label htmlFor="f56.search.query" className="sr-only">
             {t("search.query.label")}
@@ -88,6 +101,17 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
           <span id="f56.search.queryDescription" className="sr-only">
             {t("search.a11y.queryDescription")}
           </span>
+          <button
+            id="f56.search.querySubmit"
+            data-testid="search-submit"
+            type="submit"
+            disabled={inputKind === "empty" || inputKind === "unsupported-url" || busy}
+            aria-label={busy ? t("search.query.searching") : t("search.query.submit")}
+            title={busy ? t("search.query.searching") : t("search.query.submit")}
+            className="h-11 w-11 shrink-0 rounded-full text-secondary hover:bg-raised disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            <SearchIcon className="size-5 mx-auto" aria-hidden />
+          </button>
           <input
             id="f56.search.query"
             data-testid="search-query"
@@ -99,42 +123,62 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
             placeholder={t("search.query.placeholder")}
             onChange={(e) => setQuery(e.target.value)}
             className={
-              "flex-1 px-3 rounded-full border border-default bg-surface text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " +
-              (landing ? "h-16 text-base shadow-md" : "h-11 text-sm")
+              "min-w-0 flex-1 bg-transparent text-primary placeholder:text-tertiary focus-visible:outline-none " +
+              (landing ? "text-base" : "text-sm")
             }
           />
+          <button
+            id="f56.search.v2.urlImportIndicator"
+            data-testid="bar-icon-clip"
+            type="button"
+            data-active={urlLit ? "true" : "false"}
+            aria-pressed={urlLit}
+            aria-label={t("search.v3.bar.clip")}
+            title={t("search.v3.bar.clip")}
+            onClick={() => {
+              setImportMode(true);
+              document.getElementById("f56.search.query")?.focus();
+            }}
+            className={
+              iconBtn +
+              (urlLit || importMode ? "border-accent text-accent bg-accent/10" : "border-transparent")
+            }
+          >
+            <Paperclip className="size-4 mx-auto" aria-hidden />
+          </button>
+          <button
+            id="f56.search.v2.advancedToggle"
+            data-testid="bar-icon-drawer"
+            type="button"
+            aria-expanded={advancedOpen}
+            aria-controls="f56.search.v2.advancedPanel"
+            title={t("search.v2.advanced.toggle")}
+            aria-label={t("search.v2.advanced.toggle")}
+            onClick={() => toggleAdvanced()}
+            className={iconBtn + (advancedOpen ? "border-accent" : "border-transparent")}
+          >
+            <MoreHorizontal className="size-4 mx-auto" aria-hidden />
+          </button>
+          <button
+            id="f56.search.v2.micStub"
+            data-testid="bar-icon-mic"
+            type="button"
+            aria-label={t("search.v3.bar.mic")}
+            title={t("search.v3.bar.mic")}
+            onClick={() => pushToast(t("search.v3.toast.micStub"))}
+            className={iconBtn + "border-transparent"}
+          >
+            <Mic className="size-4 mx-auto" aria-hidden />
+          </button>
           <button
             id="f56.search.queryClear"
             type="button"
             aria-label={t("search.query.clear")}
             title={t("search.query.clear")}
             onClick={() => clearQuery()}
-            className="h-11 w-11 rounded-full border border-default text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            className={iconBtn + "border-transparent"}
           >
             <X className="size-4 mx-auto" aria-hidden />
-          </button>
-          <button
-            id="f56.search.querySubmit"
-            data-testid="search-submit"
-            type="submit"
-            disabled={inputKind === "empty" || inputKind === "unsupported-url" || busy}
-            className="h-11 px-4 rounded-full bg-accent text-accent-fg text-sm font-medium hover:bg-accent-hover disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent inline-flex items-center gap-2"
-          >
-            <SearchIcon className="size-4" aria-hidden />
-            {busy ? t("search.query.searching") : t("search.query.submit")}
-          </button>
-          <button
-            id="f56.search.v2.advancedToggle"
-            data-testid="advanced-toggle"
-            type="button"
-            aria-expanded={advancedOpen}
-            aria-controls="f56.search.v2.advancedPanel"
-            title={t("search.v2.advanced.toggle")}
-            aria-label={t("search.v2.advanced.toggle")}
-            onClick={toggleAdvanced}
-            className="h-11 w-11 rounded-full border border-default text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-          >
-            <MoreHorizontal className="size-4 mx-auto" aria-hidden />
           </button>
         </form>
 
@@ -164,9 +208,12 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
           </div>
         ) : null}
 
-        <AdvancedPanel open={advancedOpen} />
+        {/* §1: the single inline drawer. Rendered ONLY while open, so the
+            landing surface exposes zero chips; every F56-c filter id lives
+            here exactly once (AdvancedPanel keeps the frozen id inventory). */}
+        {advancedOpen ? <AdvancedPanel open={advancedOpen} /> : null}
 
-        <p id="f56.search.keyboardHelp" className="text-xs text-tertiary">
+        <p id="f56.search.keyboardHelp" data-testid="keyboard-help" className="text-xs text-tertiary">
           {t("search.keyboard.help")}
         </p>
       </section>

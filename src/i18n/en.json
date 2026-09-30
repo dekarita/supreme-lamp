@@ -312,7 +312,7 @@
       "queryPrefilled": "Query prefilled in Search"
     },
     "keyboard": {
-      "help": "Alt+F opens Search. Enter submits. Arrow keys move between rows and cells."
+      "help": "Alt+F opens Search. Enter submits."
     },
     "query": {
       "label": "Search query",
@@ -604,6 +604,28 @@
       },
       "toast": {
         "fetchStub": "Fetch: coming in F56-d"
+      }
+    },
+    "v3": {
+      "bar": {
+        "clip": "URL import mode",
+        "mic": "Voice search (stub)"
+      },
+      "lab": {
+        "classify": {
+          "tokens": "Tokenizing the query",
+          "language": "Detecting query language",
+          "category": "Scoring category candidates",
+          "licence": "Checking licence signals"
+        },
+        "consolidated": "Consolidated {{count}} results",
+        "timedOut": "{{count}} adapters timed out; open Advanced to retry"
+      },
+      "devFixture": {
+        "note": "DEV fixture stream - the live transport lands in F56-d."
+      },
+      "toast": {
+        "micStub": "Voice input is a stub - it lands in a later flight."
       }
     }
   },

@@ -2849,6 +2849,105 @@ jobs:
             exit 1
           fi
           echo 'F56-c v2 gates PASS: google-style=live, lab=live, advanced=live, url-import=live, own-cred-modal=stub, fx-shell=live, fetched=reserved'
+      - name: F56-c v3 all-in-one bar + visible lab + DEV fixture gates
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          v2=src/pages/search/v2
+          # §2 all-in-one bar: ONE centered ~60%-wide, ~72px-tall autofocused
+          # control with the magnifier submit on the left and the three inline
+          # icons [clip][drawer][mic] on the right.
+          grep -qF 'w-[60%]' src/pages/search/CommandBar.tsx
+          grep -qF 'h-[72px]' src/pages/search/CommandBar.tsx
+          grep -qF 'f56.search.v2.urlImportIndicator' src/pages/search/CommandBar.tsx
+          grep -qF 'f56.search.v2.micStub' src/pages/search/CommandBar.tsx
+          grep -qF 'bar-icon-clip' src/pages/search/CommandBar.tsx
+          grep -qF 'bar-icon-drawer' src/pages/search/CommandBar.tsx
+          grep -qF 'bar-icon-mic' src/pages/search/CommandBar.tsx
+          # §1 zero visible chips: every §1 control lives ONLY inside the ⋯
+          # inline drawer, which renders only while open.
+          grep -qF 'advancedOpen ? <AdvancedPanel open={advancedOpen} /> : null' src/pages/search/CommandBar.tsx
+          if grep -nE 'categoryChip|licenceChip|sizeSlider|sortSelector|f56.search.scope|adapterChip' "$v2/SearchHero.tsx"; then
+            echo 'F56-c v3: filter controls leaked back onto the landing surface' >&2
+            exit 1
+          fi
+          grep -qF '"help": "Alt+F opens Search. Enter submits."' src/i18n/en.json
+          # §3 visible lab: classifier stream, rail timestamps, consolidation
+          # summary + informational timed-out note (muted, never a red banner).
+          grep -qF 'labClassifierStream' src/lib/search/progressiveLab.ts
+          grep -qF 'labTimedOut' src/lib/search/progressiveLab.ts
+          grep -qF 'labStamp' src/lib/search/progressiveLab.ts
+          grep -qF 'f56.search.v2.labClassifierStream' "$v2/ProgressiveLab.tsx"
+          grep -qF 'f56.search.v2.labTimedOut' "$v2/ProgressiveLab.tsx"
+          grep -qF 'f56.search.v2.labConsolidated' "$v2/ProgressiveLab.tsx"
+          if grep -n 'labTimedOut' "$v2/ProgressiveLab.tsx" | grep -q 'danger'; then
+            echo 'F56-c v3: the timed-out note must stay informational' >&2
+            exit 1
+          fi
+          # §3 DEV fixture fallback: 10-20 mock rows, DEV-flagged, prod-safe.
+          test -f src/pages/search/fixture.json
+          rows=$(grep -c '"resultId"' src/pages/search/fixture.json)
+          test "$rows" -ge 10 -a "$rows" -le 20
+          grep -qF 'import.meta.env.DEV' src/pages/search/devFixture.ts
+          grep -qF 'shouldStreamDevFixture' src/pages/Search.tsx
+          grep -qF 'f56.search.devFixtureNote' src/pages/Search.tsx
+          # §4 id rule: v3 ids additive, namespaced, collision-free against the
+          # frozen 219; the 219 lock itself stays untouched and asserted.
+          python3 - <<'PY'
+          import re
+          parent = set(re.findall(r"'([^']+)'", open("src/lib/regression-ids.ts", encoding="utf-8").read()))
+          txt = open("src/pages/search/v2/ids.ts", encoding="utf-8").read()
+          m = re.search(r"F56C_V3_SEARCH_IDS = \[(.*?)\] as const;", txt, re.S)
+          v3 = re.findall(r'"(f5[67]\.[A-Za-z0-9.]+)"', m.group(1))
+          assert 5 <= len(v3) <= 40, ("v3 id lock size", len(v3))
+          assert len(set(v3)) == len(v3), "duplicate v3 id"
+          t = re.search(r"F56C_V3_SEARCH_TEMPLATES = \[(.*?)\] as const;", txt, re.S)
+          tmpl = set(re.findall(r'"(f5[67]\.[A-Za-z0-9.]+)"', t.group(1)))
+          assert tmpl <= set(v3), "v3 template missing from inventory"
+          for i in v3:
+              assert re.match(r"^f5[67]\.(search|explorer)\.[A-Za-z0-9]+(\.[A-Za-z0-9]+)*$", i), ("v3 id shape", i)
+              assert i not in parent and i.replace(".", "-") not in parent, ("219 collision", i)
+          assert len(parent) == 219, "frozen 219 changed"
+          print("F56-c v3 ids:", len(v3), "additive entries, 219 untouched")
+          PY
+          # §4 i18n: v3 en/si parity, byte-verified Sinhala, placeholder match.
+          python3 - <<'PY'
+          import json, re
+          def flat(d, p=""):
+              out = {}
+              for k, v in d.items():
+                  if isinstance(v, dict): out.update(flat(v, p + k + "."))
+                  else: out[p + k] = str(v)
+              return out
+          fe = flat(json.load(open("src/i18n/en.json", encoding="utf-8")))
+          fs = flat(json.load(open("src/i18n/si.json", encoding="utf-8")))
+          en3 = sorted(k for k in fe if k.startswith("search.v3."))
+          si3 = sorted(k for k in fs if k.startswith("search.v3."))
+          assert en3 == si3, ("v3 en/si key sets drifted", len(en3), len(si3))
+          assert len(en3) == 10, ("v3 key count", len(en3))
+          for k in si3:
+              v = fs[k]
+              assert v.strip(), ("empty si v3 value", k)
+              assert v.encode("utf-8").decode("utf-8") == v, ("si byte round-trip", k)
+              stripped = re.sub(r"\{\{\s*\w+\s*\}\}", "", v)
+              assert re.search("[\u0D80-\u0DFF]", v) or re.fullmatch(r"[A-Za-z0-9 ._:/\-+()%&,']+", stripped), ("si Sinhala-or-technical", k)
+              assert sorted(re.findall(r"\{\{\s*\w+\s*\}\}", v)) == sorted(re.findall(r"\{\{\s*\w+\s*\}\}", fe[k])), ("placeholder drift", k)
+          print("F56-c v3 i18n:", len(en3), "keys x 2 catalogs, parity OK")
+          PY
+          # mirror default-OFF preserved; 219 lock still asserted in the suite.
+          grep -qF 'mirror stays default-OFF' src/stores/searchStore.ts
+          grep -qF 'expect(REGRESSION_IDS.length).toBe(219)' src/tests/smoke/ids-regression.test.tsx
+          # §4 v3 Vitest cells (all-in-one landing + visible lab + DEV fixture)
+          corepack enable >/dev/null 2>&1 || true
+          if ! out=$(pnpm exec vitest run src/tests/smoke/f56c-v2-landing.test.tsx src/tests/smoke/f56c-v3-lab.test.tsx src/tests/smoke/search-page.test.tsx src/tests/smoke/i18n-f56-parity.test.ts src/tests/smoke/f56-f57-ids.test.ts 2>&1); then
+            echo "$out"
+            detail=$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g')
+            echo "::error title=F56-c v3 UI::${detail}"
+            exit 1
+          fi
+          echo 'F56-c v3 gates PASS: chips-visible=0, size-cap-display=none, all-in-one-bar=live, deep-lab=visible, dev-fixture=wired'
+
   windows-native:
     runs-on: windows-latest
     steps:
