@@ -98,7 +98,12 @@ try {
     $throwMsg = ''
     try { $enc16.CopyTo($gate, 4096) } catch { $threw = $true; $throwMsg = $_.Exception.GetBaseException().Message }
     $enc16.Dispose()
-    Result-F53 'F53-CLASSIFY-BD' ($threw -and $throwMsg -eq 'Unable to write content to request stream; content would exceed Content-Length.' -and $gate.Written -eq 16) ('hypothesis=b/d plaintext-pin evidence-bytes=' + ([Ghrdp.Mirror.ContainerLength]::Cbc(16) - 16) + ' message=' + $throwMsg)
+    # A length pinned to plaintext is refused on the FIRST write, so the guest
+    # takes 0 of the wire's bytes and the overshoot can never be absorbed.
+    # ContentLengthGate rejects any write that would cross the limit and only
+    # then counts it, so Written is 0 once it throws - it cannot be 16.
+    $wire16 = [long][Ghrdp.Mirror.ContainerLength]::Cbc(16)
+    Result-F53 'F53-CLASSIFY-BD' ($threw -and $throwMsg -eq 'Unable to write content to request stream; content would exceed Content-Length.' -and $gate.Written -eq 0 -and $wire16 -gt 16) ('hypothesis=b/d declared=16 wire=' + $wire16 + ' overshoot=' + ($wire16 - 16) + ' accepted-bytes=' + $gate.Written + ' message=' + $throwMsg)
 
     $snapMs = New-Object System.IO.MemoryStream(,[byte[]](1, 2, 3, 4, 5))
     $snap = New-Object Ghrdp.Mirror.SnapshotReadStream($snapMs, ([long]3))
