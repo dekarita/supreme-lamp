@@ -12,6 +12,18 @@ export function mirrorBytes(value: unknown): bigint {
   }
 }
 
+export function mirrorQueueProgress(file: Record<string, unknown>) {
+  const status = String(file.status ?? "");
+  const phase = String(file.phase ?? "");
+  const pending = status === "pending" || status === "queued" || status === "retrying" || phase === "queued" || phase === "retrying";
+  const attempts = Array.isArray(file.attempts) ? file.attempts.length : 0;
+  const raw = file.attempt;
+  const next = raw != null && raw !== "" ? Number(raw) : attempts + 1;
+  const attempt = !next || next < 1 ? 1 : next;
+  if (pending) return { pending: true, pct: 0, text: "0% · attempt " + attempt, attempt };
+  return { pending: false, pct: null as number | null, text: "", attempt };
+}
+
 export function mirrorPercent(sent: unknown, size: unknown): number {
   const n = mirrorBytes(sent);
   const total = mirrorBytes(size);

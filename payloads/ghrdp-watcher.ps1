@@ -708,6 +708,7 @@ try {
               encrypted = 'False'
               encryptMode = $encryptMode
               bytesSent = [long]0
+              attempt = $attemptNo
               auto = $(if ($f51AutoFile) { 'True' } else { 'False' })
               host = $(if ($mirrorHost) { [string]$mirrorHost.id } else { '-' })
               attempts = @($prevAttempts)
@@ -890,9 +891,7 @@ try {
                   $delay = [int](Get-F46BackoffMs -Attempt ($attemptNo - 1) -RetryAfterMs $res.retryAfterMs)
                   if ($delay -lt 1) { $delay = 1 }
                   $mirrorNextAt[$key] = (Get-Date).AddMilliseconds($delay)
-                  $entry['phase'] = 'queued'
-                  $entry['status'] = 'pending'
-                  $entry['retryInMs'] = $delay
+                  Set-F53PendingRetry -Entry $entry -AttemptNo $attemptNo -DelayMs $delay | Out-Null
                   Add-MirrorLog ('[mirror] attempt {0} retryable host={1} phase={2} status={3} next-in-ms={4} (policy: {5} of {6} allowed)' -f $attemptNo, [string]$entry['host'], $phaseNow, $statusNow, $delay, $attemptNo, $maxFor)
               } else {
                   $entry['phase'] = 'failed'

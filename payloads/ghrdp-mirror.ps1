@@ -738,6 +738,64 @@ function New-F46UploadRequestSpec {
     }
 }
 
+function Get-F53DeclaredPartLength {
+    # [F53] Content-Length is the container formula when the source publishes
+    # WireLength. Never a plaintext Length, never an index FileEntry.size.
+    param($UploadSource, [string]$Path)
+    if ($UploadSource) {
+        $wire = $null
+        try { $wire = $UploadSource.PSObject.Properties['WireLength'] } catch { $wire = $null }
+        if ($wire -and $null -ne $wire.Value) { return [long]$wire.Value }
+        return [long]$UploadSource.Length
+    }
+    return [long](Get-Item -LiteralPath $Path).Length
+}
+
+function New-F46UploadContent {
+    # [F53] The only multipart-framing owner. Send and the dry-run measure
+    # both call this; a second framing writer would double the boundary bytes.
+    param($Stream, [long]$Length, $State, $Spec, [string]$Boundary)
+    $innerContent = New-Object System.Net.Http.StreamContent($Stream, 1048576)
+    $fileContent = New-Object Ghrdp.Mirror.ProgressContent($innerContent, $Length, $State)
+    $disp = New-Object System.Net.Http.Headers.ContentDispositionHeaderValue('form-data')
+    $disp.Name = '"' + [string]$Spec.fieldName + '"'
+    $disp.FileName = '"' + [string]$Spec.fileName + '"'
+    $fileContent.Headers.ContentDisposition = $disp
+    $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse([string]$Spec.partContentType)
+    # Part length is materialized before the multipart length is read.
+    $null = $fileContent.Headers.ContentLength
+    $mp = New-Object System.Net.Http.MultipartFormDataContent($Boundary)
+    $mp.Add($fileContent)
+    return $mp
+}
+
+function Measure-F53Upload {
+    # Dry-run serialized length. CountingStream, no socket.
+    param($Stream, [long]$Length, $Spec, [string]$Boundary, $State)
+    if (-not $State) { $State = New-Object Ghrdp.Mirror.ProgressState(60) }
+    $mp = New-F46UploadContent -Stream $Stream -Length $Length -State $State -Spec $Spec -Boundary $Boundary
+    $declared = $mp.Headers.ContentLength
+    if ($null -eq $declared) { throw 'multipart Content-Length is null; framing=chunked is not the guest path' }
+    $count = New-Object Ghrdp.Mirror.CountingStream
+    $mp.CopyToAsync($count).GetAwaiter().GetResult()
+    $dry = [long]$count.Count
+    $mp.Dispose()
+    return @{ declared = [long]$declared; partSum = [long]$Length; dryRun = $dry; framing = ($dry - [long]$Length); framingMode = 'content-length' }
+}
+
+function Set-F53PendingRetry {
+    # A pending/retrying row is not a finished upload. Zero the failed
+    # attempt's socket count so the row cannot render 100%.
+    param($Entry, [int]$AttemptNo, [int]$DelayMs)
+    $Entry['bytesSent'] = [long]0
+    $Entry['pct'] = 0
+    $Entry['phase'] = 'queued'
+    $Entry['status'] = 'pending'
+    $Entry['attempt'] = ([int]$AttemptNo + 1)
+    $Entry['retryInMs'] = [int]$DelayMs
+    return $Entry
+}
+
 function Send-F46GofileUpload {
     # [F48 §0] The upload itself: guest multipart/form-data, field name `file`,
     # NO auth header of any kind (never a credential in the URL either).
@@ -756,7 +814,7 @@ function Send-F46GofileUpload {
     if (-not $Target) { $Target = Get-F46UploadTarget -HostCfg $HostCfg -TimeoutSec ([Math]::Min($TimeoutSec, 30)) }
     if (-not $Target.ok) { return @{ ok = $false; phase = $Target.phase; httpStatus = $null; hostMessage = $Target.message; retryAfterMs = $null } }
     $fileLen = [long]0
-    try { if ($UploadSource) { $fileLen = [long]$UploadSource.Length } else { $fileLen = [long](Get-Item -LiteralPath $Path).Length } } catch { return @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('upload source unreadable: ' + $_.Exception.Message); retryAfterMs = $null } }
+    try { $fileLen = [long](Get-F53DeclaredPartLength -UploadSource $UploadSource -Path $Path) } catch { return @{ ok = $false; phase = 'parse'; httpStatus = $null; hostMessage = ('upload source unreadable: ' + $_.Exception.Message); retryAfterMs = $null } }
     if (-not ('System.Net.Http.HttpClient' -as [type])) { try { Add-Type -AssemblyName System.Net.Http } catch { } }
     $boundary = '----ghrdpF46' + [guid]::NewGuid().ToString('N')
     $spec = New-F46UploadRequestSpec -HostCfg $HostCfg -Name $Name -Boundary $boundary -ContentType $ContentType
@@ -771,19 +829,12 @@ function Send-F46GofileUpload {
         # Shortened stall clocks are a loopback LAB seam only.
         if ($StallWindowSec -ne 60 -and -not ([uri]$Target.uri).IsLoopback) { throw 'F52: shortened stall windows are loopback-lab only' }
         $state52 = New-Object Ghrdp.Mirror.ProgressState($StallWindowSec)
+        $state52.Reset()
         $cancel = New-Object System.Threading.CancellationTokenSource
         if ($UploadSource) { $fs = $UploadSource } else { $fs = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite) }
         # [F50] StreamContent over the FileStream: bounded-chunk wire I/O, no
-        # whole-file byte array anywhere in this path.
-        $innerContent = New-Object System.Net.Http.StreamContent($fs, 1048576)
-        $fileContent = New-Object Ghrdp.Mirror.ProgressContent($innerContent, $fileLen, $state52)
-        $disp = New-Object System.Net.Http.Headers.ContentDispositionHeaderValue('form-data')
-        $disp.Name = '"' + [string]$spec.fieldName + '"'
-        $disp.FileName = '"' + [string]$spec.fileName + '"'
-        $fileContent.Headers.ContentDisposition = $disp
-        $fileContent.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse([string]$spec.partContentType)
-        $mp = New-Object System.Net.Http.MultipartFormDataContent($boundary)
-        $mp.Add($fileContent)
+        # whole-file byte array anywhere in this path. [F53] one framing owner.
+        $mp = New-F46UploadContent -Stream $fs -Length $fileLen -State $state52 -Spec $spec -Boundary $boundary
         $req = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Post, [string]$Target.uri)
         foreach ($hk in @($spec.headers.Keys)) {
             # [F48] the spec only ever carries Accept: no auth header exists to

@@ -193,6 +193,7 @@ def main():
         'tests/f46-mirror-policy.ps1',
         'tests/f49-mirror-runtime.ps1',
         'tests/f52-mirror-telemetry.ps1',
+        'tests/f53-content-length.ps1',
     ]
     failed = 0
     for t in targets:

@@ -85,7 +85,8 @@ test('F52-SOCKET-SOURCE RESULT: counter updates AFTER outgoing WriteAsync and Fl
   assert.match(cs, /now - 60/);
   assert.match(cs, /Failed = windows >= 3/);
   const send = between(mod, 'function Send-F46GofileUpload', 'function ConvertFrom-F46UploadResponse');
-  assert.match(send, /Ghrdp\.Mirror\.ProgressContent/);
+  assert.match(send, /New-F46UploadContent/);
+  assert.match(between(mod, 'function New-F46UploadContent', 'function Measure-F53Upload'), /Ghrdp\.Mirror\.ProgressContent/);
   assert.match(send, /while \(-not \$task52\.IsCompleted\)/);
   assert.match(send, /InfiniteTimeSpan/);
   assert.match(send, /StallWindowSec -ne 60.*IsLoopback/);
@@ -118,7 +119,8 @@ test('F52-LANES-SOURCE RESULT: explicit manual plaintext only; auto/runtime encr
   assert.match(watcher, /Invoke-F46EncryptFile .* -StreamOnly/);
   const enc = between(mod, 'function Invoke-F46EncryptFile', 'function Invoke-F46DecryptFile');
   assert.doesNotMatch(enc, /ReadAllBytes|TransformFinalBlock|MemoryStream/);
-  assert.match(cs, /CryptoStream\(file, transform, CryptoStreamMode.Read\)/);
+  assert.match(cs, /new SnapshotReadStream\(file, PlainLength\)/);
+  assert.match(cs, /CryptoStream\(bounded, transform, CryptoStreamMode.Read\)/);
   assert.match(cs, /public readonly long WireLength/);
   assert.match(cs, /GetMethod\("Pbkdf2"/);
   assert.match(cs, /GetConstructor\(new Type\[\]/);
