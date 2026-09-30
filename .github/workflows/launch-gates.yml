@@ -2718,6 +2718,137 @@ jobs:
             exit 1
           fi
           echo 'F56-c gates PASS: sidebar=9, search-page=live, file-explorer-page=live, ids=additive, i18n=parity'
+      - name: F56-c v2 Google-style landing + progressive lab + URL import gates
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          set -euo pipefail
+          v2=src/pages/search/v2
+          # §2 Google-style landing: ONE centered bar (~60% wide, ~64px tall,
+          # autofocused) with a sub-line and exactly three QUIET chips; the
+          # frozen F56-c filter ids move INSIDE the collapsed Advanced disclosure
+          # so the landing surface shows no chips and no size cap.
+          test -f "$v2/SearchHero.tsx"
+          test -f "$v2/AdvancedPanel.tsx"
+          grep -qF 'w-[60%]' src/pages/search/CommandBar.tsx
+          grep -qF 'h-16' src/pages/search/CommandBar.tsx
+          grep -qF 'min-h-[45vh]' src/pages/search/CommandBar.tsx
+          grep -qF 'transition-all duration-500' src/pages/search/CommandBar.tsx
+          grep -qF 'data-anim' src/pages/search/CommandBar.tsx
+          grep -qF 'hidden={!open}' "$v2/AdvancedPanel.tsx"
+          grep -qF 'f56.search.sizeSlider' "$v2/AdvancedPanel.tsx"
+          grep -qF 'f56.search.licenceChip.' "$v2/AdvancedPanel.tsx"
+          grep -qF 'f56.search.categoryChip.' "$v2/AdvancedPanel.tsx"
+          grep -qF 'f56.search.v2.adapterChip.' "$v2/AdvancedPanel.tsx"
+          for chip in quietChipRecent quietChipOwnStorage quietChipPasteUrl; do
+            grep -qF "f56.search.v2.$chip" "$v2/SearchHero.tsx"
+          done
+          # A1 in-place overwrite: the untouched slider default is 0 = unlimited.
+          grep -qF 'export const DEFAULT_MAX_SIZE_BYTES = 0;' src/stores/searchStore.ts
+          grep -qF 'A1_PLANNED_DEFAULT_MAX_SIZE_BYTES = 10 * GB;' src/stores/searchStore.ts
+          grep -qF 'sizeFiltered' src/stores/searchStore.ts
+          # §2 progressive lab: pure 5-minute machine + per-adapter rail
+          test -f src/lib/search/progressiveLab.ts
+          grep -qF 'LAB_CLASSIFIER_END_MS = 30_000' src/lib/search/progressiveLab.ts
+          grep -qF 'LAB_PROBES_END_MS = 240_000' src/lib/search/progressiveLab.ts
+          grep -qF 'LAB_CONSOLIDATION_END_MS = 300_000' src/lib/search/progressiveLab.ts
+          grep -qF 'f56.search.v2.labAdapterRail' "$v2/ProgressiveLab.tsx"
+          grep -qF 'f56.search.v2.labStageRow.' "$v2/ProgressiveLab.tsx"
+          grep -qF 'f56.search.v2.labLinks' "$v2/ProgressiveLab.tsx"
+          # §2 result cards: badge + title + creator + ACTUAL bytes + direct URL
+          grep -qF 'f56.search.v2.card.' src/pages/search/ResultsGrid.tsx
+          grep -qF 'f56.search.v2.cardDirectUrl.' src/pages/search/ResultsGrid.tsx
+          grep -qF 'f56.search.v2.cardUrlWithheld.' src/pages/search/ResultsGrid.tsx
+          grep -qF 'formatActualBytes' src/pages/search/ResultsGrid.tsx
+          grep -qF 'f56.search.resultFetch.' src/pages/search/ResultsGrid.tsx
+          grep -qF 'validatedHttpsUrl' src/pages/search/tokens.ts
+          # §2 Fetch stub: real affordance, ZERO network, endpoint only in comments
+          test -f src/lib/fetchStub.ts
+          grep -qF 'FETCH_STUB_CODE = "F56D_NOT_IMPLEMENTED"' src/lib/fetchStub.ts
+          if grep -nE '\bfetch\(' src/lib/fetchStub.ts; then
+            echo 'F56-c v2: the fetch stub must not call fetch()' >&2
+            exit 1
+          fi
+          if grep -Rn '/api/fetch' src/ \
+            | grep -vE '\.(test|spec)\.tsx?:[0-9]+:' \
+            | grep -vE ':[0-9]+:\s*(//|\*|/\*)'; then
+            echo 'F56-c v2: /api/fetch literal outside comments - the frozen refusal stays' >&2
+            exit 1
+          fi
+          # §2 URL import + own-credential modal: UI only, never persisted
+          grep -qF 'f56.search.v2.importBanner' src/pages/search/CommandBar.tsx
+          grep -qF 'f56.search.v2.credModal' "$v2/OwnCredentialModal.tsx"
+          grep -qF 'f56.search.v2.credNotice' "$v2/OwnCredentialModal.tsx"
+          grep -qF 'f56.search.v2.credPassword' "$v2/OwnCredentialModal.tsx"
+          grep -qF 'autoComplete="new-password"' "$v2/OwnCredentialModal.tsx"
+          if grep -RnE 'localStorage|sessionStorage' "$v2" src/stores/searchUiStore.ts src/lib/fetchStub.ts \
+            | grep -vE ':[0-9]+:\s*(//|\*|/\*)'; then
+            echo 'F56-c v2: the own-credential surface must never persist' >&2
+            exit 1
+          fi
+          # §3 File Explorer: reserved Fetched root + its F56-d empty state
+          grep -qF 'f57.explorer.v2.fetchedGroup' src/pages/file-explorer/ExplorerTree.tsx
+          grep -qF 'f57.explorer.v2.fetchedNode' src/pages/file-explorer/ExplorerTree.tsx
+          grep -qF 'f57.explorer.v2.fetchedEmpty' src/pages/FileExplorer.tsx
+          grep -qF 'FETCHED_PATH' src/pages/FileExplorer.tsx
+          grep -qF 'D:\\RDP-Storage\\Fetched' src/pages/file-explorer/fixture.json
+          # §4 v2 id lock: additive, namespaced, collision-free against the frozen
+          # 92 f56/f57 ids and the frozen 219 (raw AND dashed forms).
+          python3 -c '
+          import re
+          parent = set(re.findall(r"\x27([^\x27]+)\x27", open("src/lib/regression-ids.ts", encoding="utf-8").read()))
+          def arr(text, name):
+              return re.findall(r"\"(f5[67]\.[A-Za-z0-9.]+)\"", re.search(name + r" = \[(.*?)\] as const;", text, re.S).group(1))
+          v2 = open("src/pages/search/v2/ids.ts", encoding="utf-8").read()
+          f56 = open("src/pages/search/ids.ts", encoding="utf-8").read()
+          f57 = open("src/pages/file-explorer/ids.ts", encoding="utf-8").read()
+          inv = arr(v2, "F56C_V2_SEARCH_IDS") + arr(v2, "F57_EXPLORER_V2_IDS")
+          frozen = arr(f56, "F56_SEARCH_IDS") + arr(f57, "F57_EXPLORER_IDS")
+          tmpl = set(arr(v2, "F56C_V2_SEARCH_TEMPLATES") + arr(v2, "F57_EXPLORER_V2_TEMPLATES"))
+          assert len(frozen) == 71 + 21, ("frozen id lock changed", len(frozen))
+          assert len(inv) >= 45, ("v2 id lock too small", len(inv))
+          assert len(set(inv)) == len(inv), "duplicate v2 id"
+          assert not set(inv) & set(frozen), "v2 id collides with a frozen f56/f57 id"
+          for i in inv:
+              assert re.match(r"^f5[67]\.(search|explorer)\.[A-Za-z0-9]+(\.[A-Za-z0-9]+)*$", i), ("v2 id shape", i)
+          dashed = set(x.replace(".", "-") for x in inv)
+          for p in parent:
+              assert p not in inv, ("collision", p)
+              assert p not in dashed, ("dashed collision", p)
+          assert tmpl <= set(inv), "v2 template missing from inventory"
+          print("F56-c v2 ids:", len(inv), "additive entries, collision-free")
+          '
+          # §4 i18n: the v2 catalogs stay byte-verified en/si parity
+          python3 -c '
+          import json
+          def flat(d, p=""):
+              out = {}
+              for k, v in d.items():
+                  if isinstance(v, dict): out.update(flat(v, p + k + "."))
+                  else: out[p + k] = str(v)
+              return out
+          fe = flat(json.load(open("src/i18n/en.json", encoding="utf-8")))
+          fs = flat(json.load(open("src/i18n/si.json", encoding="utf-8")))
+          en_v2 = sorted(k for k in fe if k.startswith(("search.v2.", "files.v2.")))
+          si_v2 = sorted(k for k in fs if k.startswith(("search.v2.", "files.v2.")))
+          assert en_v2 == si_v2, ("v2 en/si key sets drifted", len(en_v2), len(si_v2))
+          assert len(en_v2) == 55, ("v2 key count", len(en_v2))
+          for k in si_v2:
+              v = fs[k]
+              assert v.strip(), ("empty si v2 value", k)
+              assert v.encode("utf-8").decode("utf-8") == v, ("si byte round-trip", k)
+          print("F56-c v2 i18n:", len(en_v2), "keys x 2 catalogs, parity OK")
+          '
+          # §4 v2 Vitest cells (landing / lab / cards / import / explorer + the
+          # three F56-c cells whose surfaces the redesign touched)
+          corepack enable >/dev/null 2>&1 || true
+          if ! out=$(pnpm exec vitest run src/tests/smoke/f56c-v2-landing.test.tsx src/tests/smoke/f56c-v2-lab.test.tsx src/tests/smoke/f56c-v2-cards.test.tsx src/tests/smoke/f56c-v2-import.test.tsx src/tests/smoke/f56c-v2-explorer.test.tsx src/tests/smoke/search-page.test.tsx src/tests/smoke/file-explorer-shell.test.tsx src/tests/smoke/i18n-f56-parity.test.ts src/tests/smoke/f56-f57-ids.test.ts 2>&1); then
+            echo "$out"
+            detail=$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g')
+            echo "::error title=F56-c v2 UI::${detail}"
+            exit 1
+          fi
+          echo 'F56-c v2 gates PASS: google-style=live, lab=live, advanced=live, url-import=live, own-cred-modal=stub, fx-shell=live, fetched=reserved'
   windows-native:
     runs-on: windows-latest
     steps:

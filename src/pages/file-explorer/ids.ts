@@ -2,6 +2,12 @@
 // reserves the f57.explorer.* namespace only (additive, collision-free against
 // the frozen 219 and the f56.search.* lock). Template ids render as
 // deterministic runtime children (`<template>.<stable suffix>`).
+//
+// [F56-c v2] The frozen 21-entry inventory above stays byte-identical (the
+// frozen gate asserts len(inv) == 71 + 21). The v2 "Fetched is reserved" ids
+// are appended in a SEPARATE array - src/pages/search/v2/ids.ts exports
+// F57_EXPLORER_V2_IDS - so the frozen size assertion and the 219-id lock are
+// untouched.
 
 export const F57_EXPLORER_IDS = [
   "f57.explorer.nav",

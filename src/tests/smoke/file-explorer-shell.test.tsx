@@ -18,15 +18,19 @@ describe("File Explorer shell (F56-c)", () => {
     expect(screen.getAllByTestId("explorer-row").length).toBe((fixture.rows as unknown[]).length);
   });
 
-  it("renders the breadcrumb from the fixture", () => {
+  it("renders the breadcrumb for the active location (v2: derived, not static)", () => {
     render(<FileExplorer />);
     const bc = screen.getByTestId("explorer-breadcrumbs");
     expect(bc).toBeInTheDocument();
     const text = bc.textContent || "";
+    // Default location is D:\RDP-Storage, so the crumb trail is This PC /
+    // RDP-Storage (D:). Selecting the reserved Fetched root appends the third
+    // crumb - covered by f56c-v2-explorer.test.tsx.
     expect(text).toContain("This PC");
     expect(text).toContain("RDP-Storage (D:)");
-    expect(text).toContain("Fetched");
+    expect(bc.getAttribute("data-location")).toBe("D:\\RDP-Storage");
     expect(document.getElementById("f57.explorer.breadcrumbItem.bc-rdp-storage")).not.toBeNull();
+    expect(document.getElementById("f57.explorer.breadcrumbItem.bc-fetched")).toBeNull();
   });
 
   it("toggles list/grid view", () => {
