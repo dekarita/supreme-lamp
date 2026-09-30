@@ -1,0 +1,97 @@
+{
+  "descriptor": {
+    "allowedDomains": [
+      "gitlab.com",
+      "packages.gitlab.com",
+      "cdn.gitlab.com"
+    ],
+    "baseUrl": "https://gitlab.com",
+    "category": "software",
+    "downloadContract": {
+      "artifactFields": [
+        "browser_download_url",
+        "url"
+      ],
+      "contentLengthRequired": true,
+      "previewFields": [
+        "preview_url"
+      ],
+      "purchaseFields": [
+        "purchase_url"
+      ]
+    },
+    "id": "code-hosting-gitlab",
+    "licenceEvidence": {
+      "required": true
+    },
+    "licenceTag": {
+      "allowedTags": [
+        "open-access",
+        "creative-commons",
+        "purchase"
+      ],
+      "perResult": true
+    },
+    "nameKey": "search.registry.preset.gitlab",
+    "parseContract": {
+      "fieldMappings": {
+        "date": "updated_at",
+        "sourceUrl": "html_url",
+        "title": "name"
+      },
+      "format": "json",
+      "pagination": "cursor:query.page",
+      "resultSelector": "$.items[*]"
+    },
+    "queryTemplate": {
+      "method": "GET",
+      "path": "/api/v4/projects",
+      "placeholders": {
+        "cursor": "page",
+        "encodedQuery": "search",
+        "limit": "per_page"
+      },
+      "query": {
+        "page": "{cursor}",
+        "per_page": "{limit}",
+        "search": "{encodedQuery}"
+      }
+    },
+    "rateLimit": {
+      "backoff": "jittered-exponential",
+      "burst": 1,
+      "concurrency": 1,
+      "requestsPerMinute": 60,
+      "retryAfter": "respect-floor-120s"
+    },
+    "redirectPolicy": {
+      "requireAllowlisted": true,
+      "requireHttps": true
+    },
+    "robotsCheck": {
+      "onDisallow": "deny",
+      "policy": "https://gitlab.com/robots.txt"
+    },
+    "schemaVersion": "f56.1",
+    "timeout": {
+      "connect": 10,
+      "request": 30
+    },
+    "transportModes": [
+      "https"
+    ]
+  },
+  "f58": {
+    "addedAt": "2026-09-30T00:00:00Z",
+    "enableState": "permanent",
+    "source": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "f58Seed": true,
+  "pinnedAllowlist": [
+    "gitlab.com",
+    "packages.gitlab.com",
+    "cdn.gitlab.com"
+  ],
+  "scope": "project search + releases page + release-asset URLs",
+  "store": "ghrdp-custom-sources"
+}

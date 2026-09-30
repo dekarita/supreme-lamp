@@ -5,8 +5,13 @@
 // so the id lock and the local-filter behaviour are unchanged.
 //
 // Size default is 0 = unlimited (v2 brief; overrides the A1 10 GB default in
-// place - docs/f56/decisions.md A1 carries the overwrite).
+// place - docs/f56/decisions.md A1 carries the overwrite.
+//
+// [F58 §2] One additive block at the tail: the "Add source" inline card, which
+// mounts the SHARED SourceForm (src/components/search/SourceForm.tsx) so the
+// Advanced surface and Settings are the same component writing the same store.
 import { useTranslation } from "react-i18next";
+import { SourceForm } from "@/components/search/SourceForm";
 import {
   logToSizeBytes,
   sizeBytesToLog,
@@ -179,6 +184,21 @@ export function AdvancedPanel({ open }: { open: boolean }) {
           ))}
           <span className="text-xs text-tertiary">{t("search.v2.advanced.adapters.hint")}</span>
         </div>
+      </div>
+
+      {/* [F58 §2] Secondary mount point of the SHARED form: the same SourceForm
+          component the canonical Settings surface renders, writing the same store
+          instance. Additive block only - the frozen F56-c filter ids above stay in
+          the DOM exactly once and unchanged. */}
+      <div
+        id="f56.search.v2.sourcesCard"
+        data-testid="source-add-card"
+        role="group"
+        aria-label={t("search.registry.card.label")}
+        className="w-full rounded-md border border-default bg-base p-2 flex flex-col gap-2"
+      >
+        <span className="text-xs font-medium text-primary">{t("search.registry.add")}</span>
+        <SourceForm surface="advanced" />
       </div>
     </div>
   );

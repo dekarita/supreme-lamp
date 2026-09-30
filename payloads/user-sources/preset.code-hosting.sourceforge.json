@@ -1,0 +1,102 @@
+{
+  "descriptor": {
+    "allowedDomains": [
+      "sourceforge.net",
+      "a.fsdn.com",
+      "downloads.sourceforge.net",
+      "prdownloads.sourceforge.net",
+      "master.dl.sourceforge.net"
+    ],
+    "baseUrl": "https://sourceforge.net",
+    "category": "software",
+    "downloadContract": {
+      "artifactFields": [
+        "browser_download_url",
+        "url"
+      ],
+      "contentLengthRequired": true,
+      "previewFields": [
+        "preview_url"
+      ],
+      "purchaseFields": [
+        "purchase_url"
+      ]
+    },
+    "id": "code-hosting-sourceforge",
+    "licenceEvidence": {
+      "required": true
+    },
+    "licenceTag": {
+      "allowedTags": [
+        "open-access",
+        "creative-commons",
+        "purchase"
+      ],
+      "perResult": true
+    },
+    "nameKey": "search.registry.preset.sourceforge",
+    "parseContract": {
+      "fieldMappings": {
+        "date": "updated_at",
+        "sourceUrl": "html_url",
+        "title": "name"
+      },
+      "format": "json",
+      "pagination": "cursor:query.page",
+      "resultSelector": "$.items[*]"
+    },
+    "queryTemplate": {
+      "method": "GET",
+      "path": "/directory/",
+      "placeholders": {
+        "cursor": "page",
+        "encodedQuery": "q",
+        "limit": "limit"
+      },
+      "query": {
+        "limit": "{limit}",
+        "page": "{cursor}",
+        "q": "{encodedQuery}",
+        "type": "files"
+      }
+    },
+    "rateLimit": {
+      "backoff": "jittered-exponential",
+      "burst": 1,
+      "concurrency": 1,
+      "requestsPerMinute": 60,
+      "retryAfter": "respect-floor-120s"
+    },
+    "redirectPolicy": {
+      "requireAllowlisted": true,
+      "requireHttps": true
+    },
+    "robotsCheck": {
+      "onDisallow": "deny",
+      "policy": "https://sourceforge.net/robots.txt"
+    },
+    "schemaVersion": "f56.1",
+    "timeout": {
+      "connect": 10,
+      "request": 30
+    },
+    "transportModes": [
+      "https"
+    ]
+  },
+  "f58": {
+    "addedAt": "2026-09-30T00:00:00Z",
+    "enableState": "permanent",
+    "source": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "f58Seed": true,
+  "pinnedAllowlist": [
+    "sourceforge.net",
+    "a.fsdn.com",
+    "downloads.sourceforge.net",
+    "prdownloads.sourceforge.net",
+    "master.dl.sourceforge.net"
+  ],
+  "scope": "file-listing search + per-release mirror hosts",
+  "store": "ghrdp-custom-sources"
+}

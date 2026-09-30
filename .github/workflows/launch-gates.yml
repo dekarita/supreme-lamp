@@ -2948,6 +2948,120 @@ jobs:
           fi
           echo 'F56-c v3 gates PASS: chips-visible=0, size-cap-display=none, all-in-one-bar=live, deep-lab=visible, dev-fixture=wired'
 
+      # [F58] ADDITIVE ONLY: this is the one new gate step F58 lands. No existing
+      # step was edited, and this workflow never dispatches main.yml.
+      - name: F58 custom source registry gates (store + shared form + presets + provenance-6)
+        shell: bash
+        run: |
+          set -euo pipefail
+          core=src/search/custom-source-core.js
+          store=src/search/custom-source-store.ts
+          presets=src/search/source-presets.ts
+          form=src/components/search/SourceForm.tsx
+          list=src/components/search/SourceRegistryList.tsx
+          mod=payloads/ghrdp-sources.ps1
+          lab=tests/f58-source-store.ps1
+          for f in "$core" "$store" "$presets" "$form" "$list" "$mod" "$lab" tests/f58-descriptor-loader.test.js; do
+            test -f "$f" || { echo "F58: missing $f" >&2; exit 1; }
+          done
+          # §0 greenfield: the runtime/user payload dir is F58's, the compiled
+          # payloads/search-sources roster stays F56-b's and must not appear here.
+          test -d payloads/user-sources
+          test "$(ls payloads/user-sources/preset.code-hosting.*.json | wc -l)" -eq 4
+          if [ -d payloads/search-sources ]; then echo 'F58: payloads/search-sources is F56-b territory' >&2; exit 1; fi
+          # §2 ONE reusable form, mounted at exactly TWO surfaces, writing ONE store.
+          test "$(grep -c '<SourceForm' src/pages/Settings.tsx)" -eq 1
+          test "$(grep -c '<SourceForm' src/pages/search/v2/AdvancedPanel.tsx)" -eq 1
+          grep -qF 'export const customSources = createCustomSourceStore()' "$store"
+          grep -qF 'store = customSources' "$form"
+          if grep -nE 'surface === "(settings|advanced)"' "$form"; then
+            echo 'F58: the shared form must not branch on its mount point' >&2; exit 1
+          fi
+          # §1 store contract literals: runner path, operator-store env seam, the
+          # fail-closed startup ladder and the single-write confirmations.
+          for tok in '~/.ghrdp/sources' 'TS_SOURCES_URL' 'concurrency: 1' 'requestsPerMinute: 60' 'requestTimeoutSec: 30' 'FAN_OUT_CAP' 'overridable: false' 'decrypt-failed' 'cache-read-only' 'store-read-only' 'runtime-discovery-refused' 'remove-confirmation-mismatch' 'persist-verify'; do
+            grep -qF "$tok" "$store" "$core" || { echo "F58: missing literal: $tok" >&2; exit 1; }
+          done
+          grep -qF 'provenance-incomplete: ' "$core"
+          grep -qF 'signature-unverifiable: ' "$core"
+          grep -qF 'redirect-off-allowlist' "$core"
+          # §1 encrypted at rest, no plaintext fallthrough, no cache retry in the clear.
+          for fn in Protect-F58Blob Unprotect-F58Blob Write-F58StoreFile Read-F58StoreFile Get-F58OperatorBlob Invoke-F58Startup New-F58PerRunKey; do
+            grep -qF "function $fn" "$mod" || { echo "F58: $mod lost $fn" >&2; exit 1; }
+          done
+          grep -qF 'no plaintext fallthrough' "$mod"
+          grep -qF "sources-url-not-https" "$mod"
+          grep -qF 'sources-url-ip-literal' "$mod"
+          if grep -nE 'ConvertFrom-SecureString|ClipBoard|ExportClixml|ConvertTo-SecureString' "$mod"; then
+            echo 'F58: the store must not use an exportable/clipboard credential path' >&2; exit 1
+          fi
+          if grep -nE 'powershell\.exe|-ExecutionPolicy|Invoke-Expression|-EncodedCommand|mshta|wscript|cscript' "$mod" "$lab"; then
+            echo 'F58: script-host execution token in the new surfaces' >&2; exit 1
+          fi
+          # §3 presets: pinned per-host allowlists, wildcard-free, redirect fence.
+          test "$(grep -c 'presetId: "code-hosting/' "$core")" -eq 4
+          if grep -nE 'allowedDomains: \[[^]]*\*' "$core"; then
+            echo 'F58: wildcard domain in a preset (the frozen schema rejects it)' >&2; exit 1
+          fi
+          grep -qF 'requireAllowlisted: true' "$core"
+          # §3 hard rate limits are applied, not advertised: the clamp is reported.
+          grep -qF 'clamped to ' "$core"
+          # §2 the form is UI-only: no storage, no credential, no endpoint literal.
+          if grep -nE 'localStorage|sessionStorage|indexedDB|Authorization|password' "$store" "$core" "$presets" "$form" "$list"; then
+            echo 'F58: the registry must persist nothing in the browser and hold no credential' >&2; exit 1
+          fi
+          if grep -rn '/api/fetch' src/search src/components/search; then
+            echo 'F58: the fetch backend literal leaked into the F58 surface (F56-d owns it)' >&2; exit 1
+          fi
+          # mirror stays out of scope: default-OFF preserved, no new wiring.
+          grep -qF 'enabled = $false' payloads/ghrdp-mirror.ps1
+          if grep -nE 'mirror_enable|Get-F46DefaultHost|Set-F46|ghrdp-mirror' "$store" "$core" "$presets" "$form" "$list" "$mod"; then
+            echo 'F58: touched the mirror surface' >&2; exit 1
+          fi
+          # no piracy index, no crawler, no scraper anywhere in the F58 surfaces
+          if grep -rniE '1337x|thepiratebay|pirate ?bay|rarbg|kickass|torrentz|crawler|scrape|Spider\.'               src/search src/components/search payloads/user-sources "$mod" "$lab"; then
+            echo 'F58: a banned surface appeared' >&2; exit 1
+          fi
+          # §4 i18n: 56 registry keys, byte-identical key sets, both languages.
+          python3 - <<'PY'
+          import json, hashlib
+          def flat(d, p=''):
+              out = {}
+              for k, v in d.items():
+                  if isinstance(v, dict): out.update(flat(v, p + k + '.'))
+                  else: out[p + k] = v
+              return out
+          en = json.load(open('src/i18n/en.json', encoding='utf-8'))
+          si = json.load(open('src/i18n/si.json', encoding='utf-8'))
+          re_, rs = flat(en['search']['registry']), flat(si['search']['registry'])
+          assert sorted(re_) == sorted(rs), 'registry key sets differ'
+          assert len(re_) == 56, ('registry key count', len(re_))
+          assert all(v.strip() for v in rs.values()), 'empty si value'
+          assert any(chr(0x0d80) <= c <= chr(0x0dff) for v in rs.values() for c in v), 'si registry must carry Sinhala'
+          raw = open('docs/f56/schema.json', 'rb').read()
+          assert hashlib.sha256(raw).hexdigest() == 'c33601d94e55bab77cf940918c2949430ba5db19faf3314049f6dedb882336c8', 'frozen schema moved'
+          sch = json.loads(raw)
+          assert len(sch['required']) == 16 and sch['additionalProperties'] is False
+          for f in ('addedAt', 'source', 'enableState'):
+              assert f not in sch['properties'], 'F58 must not widen the frozen schema'
+          # the 219 id lock stays one-directional; F58 ids live in the additive file
+          parent = set(__import__('re').findall(r"'([^']+)'", open('src/lib/regression-ids.ts', encoding='utf-8').read()))
+          assert len(parent) == 219, 'frozen 219 changed'
+          ids = __import__('re').findall(r'"(f56\.search\.v2\.[A-Za-z0-9.]+)"', open('src/pages/search/v2/ids.ts', encoding='utf-8').read())
+          import re as _re
+          txt = open('src/pages/search/v2/ids.ts', encoding='utf-8').read()
+          m = _re.search(r'F58_SEARCH_IDS = \[(.*?)\] as const;', txt, _re.S)
+          f58 = _re.findall(r'"(f5[67]\.[A-Za-z0-9.]+)"', m.group(1))
+          assert 5 <= len(f58) <= 40, ('f58 id lock size', len(f58))
+          assert len(set(f58)) == len(f58), 'duplicate f58 id'
+          for i in f58:
+              assert i not in parent and i.replace('.', '-') not in parent, ('219 collision', i)
+          print('F58 registry i18n + schema + id locks OK (%d keys, %d ids)' % (len(re_), len(f58)))
+          PY
+          # the node lab is the loader-vs-freeze proof (also run by the Node step)
+          node --test tests/f58-descriptor-loader.test.js
+          echo 'F58 gates PASS'
+
   windows-native:
     runs-on: windows-latest
     steps:
@@ -3252,3 +3366,21 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & (Join-Path $env:GITHUB_WORKSPACE 'tests\f53-content-length.ps1') -SkipLargeCells
           if ($LASTEXITCODE -ne 0) { throw ('F53: 5.1 content-length cells failed with exit ' + $LASTEXITCODE) }
+      # [F58] ADDITIVE ONLY: the store crypto lab over the SHIPPED module. The two
+      # new PowerShell surfaces are parsed here as well (this step is the only
+      # place they are named; no existing step was edited).
+      - name: F58 custom source store crypto lab (round-trip + write-verify)
+        timeout-minutes: 12
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($f in @('payloads\ghrdp-sources.ps1', 'tests\f58-source-store.ps1')) {
+              $errs = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
+              if ($errs) {
+                  foreach ($e in @($errs)) { Write-Host ('::error title=F58 parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
+                  throw ('F58: PowerShell syntax error in ' + $f)
+              }
+          }
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f58-source-store.ps1')
+          if ($LASTEXITCODE -ne 0) { throw ('F58: store crypto lab failed with exit ' + $LASTEXITCODE) }
