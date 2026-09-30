@@ -78,6 +78,15 @@ namespace Ghrdp.Mirror {
             lock (gate) { if (!cancelling && !String.IsNullOrEmpty(text)) lastMessage = text; }
         }
         public void CancelForStall() { lock (gate) { cancelling = true; } }
+        // [F53] A retry must not inherit the previous attempt's socket count.
+        public void Reset() {
+            lock (gate) {
+                sent = 0;
+                lastByteAt = 0;
+                points.Clear();
+                points.Add(new Point(0, 0));
+            }
+        }
         public ProgressSnapshot Snapshot() { return SnapshotAt(clock.Elapsed.TotalSeconds); }
         // Explicit clock seam for deterministic window cells; production uses Snapshot().
         public ProgressSnapshot SnapshotAt(double seconds) {
@@ -153,6 +162,77 @@ namespace Ghrdp.Mirror {
         }
     }
 
+    // [F53] One formula for the container. CBC is salt(16)|iv(16)|PKCS7.
+    // GCM is the existing decrypt layout: GHRDPMIR(8)+ver+alg+nLen+nonce(12)
+    // +tLen+tag(16) = 40, then ciphertext of exactly plainLength (no pad).
+    public static class ContainerLength {
+        public const int CbcHeader = 32;
+        public const int GcmHeader = 40;
+        public static long Cbc(long plainLength) {
+            if (plainLength < 0) throw new ArgumentOutOfRangeException("plainLength");
+            return checked(32L + checked((plainLength / 16L + 1L) * 16L));
+        }
+        public static long Gcm(long plainLength) {
+            if (plainLength < 0) throw new ArgumentOutOfRangeException("plainLength");
+            return checked(40L + plainLength);
+        }
+    }
+
+    // Stops the encryptor at the opening snapshot so a file that grows under
+    // FileShare.ReadWrite cannot make ciphertext longer than ContainerLength.
+    public sealed class SnapshotReadStream : Stream {
+        private readonly Stream inner;
+        private long remaining;
+        public SnapshotReadStream(Stream inner, long maxBytes) {
+            if (inner == null) throw new ArgumentNullException("inner");
+            if (maxBytes < 0) throw new ArgumentOutOfRangeException("maxBytes");
+            this.inner = inner;
+            remaining = maxBytes;
+        }
+        public override int Read(byte[] buffer, int offset, int count) {
+            if (count <= 0 || remaining <= 0) return 0;
+            if ((long)count > remaining) count = (int)remaining;
+            int n = inner.Read(buffer, offset, count);
+            if (n > 0) remaining -= n;
+            return n;
+        }
+        public override bool CanRead { get { return true; } }
+        public override bool CanSeek { get { return false; } }
+        public override bool CanWrite { get { return false; } }
+        public override long Length { get { throw new NotSupportedException(); } }
+        public override long Position { get { throw new NotSupportedException(); } set { throw new NotSupportedException(); } }
+        public override void Flush() { }
+        public override void Write(byte[] b, int o, int c) { throw new NotSupportedException(); }
+        public override long Seek(long o, SeekOrigin s) { throw new NotSupportedException(); }
+        public override void SetLength(long n) { throw new NotSupportedException(); }
+        protected override void Dispose(bool disposing) {
+            if (disposing) inner.Dispose();
+            base.Dispose(disposing);
+        }
+    }
+
+    // Dry-run serialized length. No socket. Counts every byte CopyTo writes.
+    public sealed class CountingStream : Stream {
+        public long Count;
+        public override void Write(byte[] buffer, int offset, int count) {
+            if (count > 0) Count += count;
+        }
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken token) {
+            Write(buffer, offset, count);
+            return Task.FromResult(0);
+        }
+        public override void Flush() { }
+        public override Task FlushAsync(CancellationToken token) { return Task.FromResult(0); }
+        public override bool CanRead { get { return false; } }
+        public override bool CanSeek { get { return false; } }
+        public override bool CanWrite { get { return true; } }
+        public override long Length { get { return Count; } }
+        public override long Position { get { return Count; } set { throw new NotSupportedException(); } }
+        public override int Read(byte[] b, int o, int c) { throw new NotSupportedException(); }
+        public override long Seek(long o, SeekOrigin s) { throw new NotSupportedException(); }
+        public override void SetLength(long n) { throw new NotSupportedException(); }
+    }
+
     // The EXISTING salt(16)|iv(16)|AES-256-CBC/PBKDF2-SHA256 .ghenc wire form.
     // Encrypt as the socket consumes it: no whole-file array, no ciphertext
     // staging file, no 2GB array limit and no disk-size client cap. GCM legacy
@@ -167,15 +247,17 @@ namespace Ghrdp.Mirror {
         private int prefixAt;
         private long position;
         public readonly long WireLength;
+        public readonly long PlainLength;
         public static long GetWireLength(long plainLength) {
-            if (plainLength < 0) throw new ArgumentOutOfRangeException("plainLength");
-            return checked(32L + checked((plainLength / 16L + 1L) * 16L));
+            return ContainerLength.Cbc(plainLength);
         }
         public EncryptedSource(string path, byte[] key) {
             if (key == null || key.Length != 32) throw new ArgumentException("mirror key must be 32 bytes");
             try {
                 file = File.Open(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                WireLength = GetWireLength(file.Length);
+                PlainLength = file.Length;
+                WireLength = GetWireLength(PlainLength);
+                SnapshotReadStream bounded = new SnapshotReadStream(file, PlainLength);
                 byte[] salt = new byte[16], iv = new byte[16], derived = null;
                 using (var rng = RandomNumberGenerator.Create()) { rng.GetBytes(salt); rng.GetBytes(iv); }
                 prefix = new byte[32];
@@ -202,12 +284,16 @@ namespace Ghrdp.Mirror {
                     aes = Aes.Create(); aes.KeySize = 256; aes.Key = derived; aes.IV = iv;
                     aes.Mode = CipherMode.CBC; aes.Padding = PaddingMode.PKCS7;
                     transform = aes.CreateEncryptor();
-                    crypto = new CryptoStream(file, transform, CryptoStreamMode.Read);
+                    // bounded owns file. CryptoStream owns bounded. Growth past
+                    // the snapshot cannot extend the ciphertext.
+                    crypto = new CryptoStream(bounded, transform, CryptoStreamMode.Read);
                 } finally { if (derived != null) Array.Clear(derived, 0, derived.Length); }
             } catch { Dispose(); throw; }
         }
         public override int Read(byte[] buffer, int offset, int count) {
-            if (count == 0) return 0;
+            if (count == 0 || position >= WireLength) return 0;
+            long left = WireLength - position;
+            if ((long)count > left) count = (int)left;
             if (prefixAt < prefix.Length) {
                 int n = Math.Min(count, prefix.Length - prefixAt);
                 Array.Copy(prefix, prefixAt, buffer, offset, n);

@@ -3,7 +3,7 @@
 // grid, active file, speed history, roots, publish status, file rows).
 import { fmtBytes, fmtDurShort } from "../format";
 import { asList } from "./telescope";
-import { mirrorBytes, mirrorPercent, mirrorTransfer } from "./mirrorBytes";
+import { mirrorBytes, mirrorPercent, mirrorQueueProgress, mirrorTransfer } from "./mirrorBytes";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Any = any;
@@ -42,6 +42,7 @@ export interface MirrorModel {
     name: string;
     phase: string;
     pct: number;
+    pctText: string;
     size: string;
     status: string;
     error: string;
@@ -92,14 +93,17 @@ export function mirrorModel(d: Any, prevHistory: number[]): MirrorModel {
   const files = asList(pData.files).slice(0, 50).map((f: Any) => {
     const rowLive = ["active", "uploading", "stalled"].includes(f.status) && ["http", "upload"].includes(f.phase);
     const rowTransfer = mirrorTransfer(rowLive && act.name === f.name ? act : f.progress || f, rowLive);
+    const queue = mirrorQueueProgress(f);
     let pf = f.bytesSent !== undefined ? mirrorPercent(f.bytesSent, f.size) : Number(f.pct) || 0;
     if (rowLive && act.name === f.name) pf = mirrorPercent(transfer.sent, transfer.size);
+    if (queue.pending) pf = 0;
     const mode = String(f.encryptMode || encryptMode);
     const isExpired = f.status === "expired";
     return {
       name: String(f.name ?? ""),
       phase: String(f.phase ?? ""),
       pct: pf,
+      pctText: queue.pending ? queue.text : pf.toFixed(0) + "%",
       size: fmtBytes(f.size),
       status: rowTransfer.stalled ? "stalled" : String(f.status || "pending"),
       statusLabel: rowTransfer.label || String(f.status || "pending"),

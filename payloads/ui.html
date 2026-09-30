@@ -990,6 +990,9 @@ function drawSpark(samples){var cv=$('sparkline');if(!cv)return;var dpr=window.d
 // [F52 byte-window-begin] Same Int64 semantics as src/lib/domain/mirrorBytes.ts.
 function f52Bytes(value){try{if(typeof value==='number'&&!Number.isSafeInteger(value))return BigInt(0);var s=String(value==null?'0':value);if(!/^\d+$/.test(s))return BigInt(0);var n=BigInt(s);return n<=BigInt('9223372036854775807')?n:BigInt(0)}catch(_){return BigInt(0)}}
 function f52Percent(sent,size){var n=f52Bytes(sent),total=f52Bytes(size);return total>BigInt(0)?Math.min(100,Number(n*BigInt(1000)/total)/10):0}
+// [F53 queue-progress-begin] A pending/retrying row is not a finished upload.
+function f53QueueProgress(f){var st=String(f&&f.status||''),phase=String(f&&f.phase||'');var pending=st==='pending'||st==='queued'||st==='retrying'||phase==='queued'||phase==='retrying';var n=(f&&f.attempts&&f.attempts.length)?f.attempts.length:0;var next=(f&&f.attempt!=null&&f.attempt!=='')?Number(f.attempt):(n+1);if(!next||next<1)next=1;if(pending)return{pending:true,pct:0,label:'0%',attempt:next,text:'0% · attempt '+next};return{pending:false,pct:null,label:'',attempt:next,text:''}}
+// [F53 queue-progress-end]
 function f52Transfer(progress,live){var sent=f52Bytes(progress.bytesSent==null?progress.bytesDone:progress.bytesSent),size=f52Bytes(progress.size==null?progress.bytesTotal:progress.size),window=f52Bytes(progress.windowBytes),seconds=Math.max(0,Number(progress.windowSeconds)||0),gap=Math.max(0,Math.floor(Number(progress.noBytesSeconds)||0));var stalled=live&&(window===BigInt(0)||seconds<=0||gap>=60||progress.stalled===true);var label=stalled?'stalled (no bytes in '+gap+'s)':'';var speed=live&&!stalled&&seconds>0?Number(window)/seconds:0;var remaining=size>sent?size-sent:BigInt(0);var eta=speed>0&&window>BigInt(0)&&!stalled?Number(remaining)/speed:null;return{sent:sent,size:size,window:window,seconds:seconds,gap:gap,stalled:stalled,label:label,speed:speed,eta:eta}}
 // [F52 byte-window-end]
 var RING_C=2*Math.PI*28;
@@ -1115,8 +1118,10 @@ function render(d){
       var f=files[i];
       var rowLive52=['active','uploading','stalled'].indexOf(f.status)>=0&&['http','upload'].indexOf(f.phase)>=0;
       var row52=f52Transfer(rowLive52&&act.name===f.name?act:(f.progress||f),rowLive52);
-      var pf=f.bytesSent!=null?f52Percent(f.bytesSent,f.size):Number(f.pct)||0;
-      if(rowLive52&&act.name===f.name)pf=f52Percent(transfer52.sent,transfer52.size);
+      var q53=f53QueueProgress(f);
+      var pf=q53.pending?0:(f.bytesSent!=null?f52Percent(f.bytesSent,f.size):Number(f.pct)||0);
+      if(!q53.pending&&rowLive52&&act.name===f.name)pf=f52Percent(transfer52.sent,transfer52.size);
+      var pctText53=q53.pending?q53.text:(pf.toFixed(0)+'%');
       var isExpired=f.status==='expired';
       var linkCell=isExpired?('<span class="stag expired">expired</span>'):f.link?('<a href="'+esc(f.link)+'" target="_blank">open</a>'):'-';
       // [F46 §1] NEVER truncated: the full phase/status/message is always in
@@ -1136,7 +1141,7 @@ function render(d){
       }
       var statusClass=row52.stalled?'stalled':(f.status||'pending');
       var statusLabel=row52.label||statusClass;
-      html+='<tr'+(isExpired?' class="expired-row"':'')+'><td>'+esc(f.name)+'</td><td>'+esc(f.phase)+'<div class="note">encryptMode='+esc(f.encryptMode||mode52)+'</div></td><td><span class="mini-bar"><i style="width:'+pf+'%"></i></span><span class="pctnum">'+pf.toFixed(0)+'%</span></td><td>'+fmtBytes(f.size)+'</td><td><span class="stag '+esc(statusClass)+'">'+esc(statusLabel)+'</span></td><td>'+errCell+'</td><td class="link">'+linkCell+'</td></tr>';
+      html+='<tr'+(isExpired?' class="expired-row"':'')+'><td>'+esc(f.name)+'</td><td>'+esc(f.phase)+'<div class="note">encryptMode='+esc(f.encryptMode||mode52)+'</div></td><td><span class="mini-bar"><i style="width:'+pf+'%"></i></span><span class="pctnum">'+pctText53+'</span></td><td>'+fmtBytes(f.size)+'</td><td><span class="stag '+esc(statusClass)+'">'+esc(statusLabel)+'</span></td><td>'+errCell+'</td><td class="link">'+linkCell+'</td></tr>';
     }
     rows.innerHTML=html;
   }

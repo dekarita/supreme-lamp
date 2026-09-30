@@ -458,3 +458,21 @@ cells require a stall label, hidden ETA and truthful headers. Host acceptance
 and the >4 GB live Downloads/operator verification remain PENDING-USER. The
 session never dispatches `main.yml` or claims the final LIVE line before those
 operator confirmations.
+
+## 13. Content-Length truth (F53)
+
+The encrypted part length is `ContainerLength`: CBC is 32 + PKCS7 pad-to-16;
+GCM is the 40-byte header plus plaintext (no pad). `EncryptedSource` snapshots
+the file length at open and stops the read there, so a file that grows under
+`FileShare.ReadWrite` cannot outrun the declared length. `MultipartFormDataContent`
+is the only framing owner. Content-Length is that formula, never index
+`FileEntry.size` and never the plaintext `Length`. Guest uploads stay
+`framing=content-length` unless a read-only probe proves the host accepts
+chunked; chunked would be labeled `framing=chunked` and is not selected.
+
+A retryable failure calls `Set-F53PendingRetry`: `bytesSent` and `pct` return
+to 0 and the row shows `0% · attempt N`, never 100%. `tests/f53-content-length.ps1`
+logs declared length, part sum, and CountingStream dry-run against a strict
+rejector for CBC and GCM. Guest cap stays UNPROVEN until a read-only probe
+returns a number. If that number is below 100000000000, stop: self-hosted
+target for that size class, or accept the cap. No evasion.

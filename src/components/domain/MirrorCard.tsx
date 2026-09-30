@@ -307,7 +307,7 @@ export function MirrorCard() {
                         <span className="inline-block w-24 h-1 rounded bg-sunken overflow-hidden align-middle">
                           <i className="block h-full bg-accent" style={{ width: f.pct + "%" }} />
                         </span>
-                        <span className="text-xs text-tertiary font-mono">{f.pct.toFixed(0)}%</span>
+                        <span className="text-xs text-tertiary font-mono">{f.pctText}</span>
                       </span>
                     </td>
                     <td className="px-3 py-1.5 font-mono text-xs">{f.size}</td>
