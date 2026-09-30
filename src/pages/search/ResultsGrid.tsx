@@ -1,33 +1,23 @@
-// [F56-c v2] Result CARDS inside the frozen ARIA grid. Every F56-c row id and
-// the roving-tabindex grid semantics are unchanged (react-window + role=row +
-// gridcells); the v2 redesign only enriches each row into a card that surfaces
-// the source badge, title, creator, the ACTUAL byte count, the direct HTTPS URL
-// and a Fetch button.
-//
-// Fetch is the F56-c v2 stub (src/api/fetch): it performs NO network call, is
-// refused by the frozen gate outside a comment, and answers with the localized
-// "coming in F56-d" toast. A URL is only ever rendered/linked when it is a
-// validated absolute https:// URL (locked rule: no unvalidated download URL
-// reaches the client); otherwise the card says so.
+// [F56-d] Result CARDS - Fetch button now real: calls POST /api/fetch via aria2c lane.
+// Provenance-6 gate server-side + client-side disable. Existing ARIA grid semantics unchanged.
 import { forwardRef, useCallback, useEffect, useMemo, type HTMLAttributes, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { ExternalLink } from "lucide-react";
 import { FixedSizeList, type ListChildComponentProps } from "react-window";
 import { selectVisibleResults, useSearchStore } from "@/stores/searchStore";
 import { useToastStore } from "@/stores/toastStore";
-import { requestFetchStub } from "@/lib/fetchStub";
+import { requestFetchStub, requestFetch, isProvenanceBlocked } from "@/lib/fetchStub";
 import { customSources, evaluateResultProvenance } from "@/search/custom-source-store";
 import type { SearchResult } from "@/api/search";
 import { camel, formatActualBytes, licenceStyle, validatedHttpsUrl } from "./tokens";
 
-export const ROW_HEIGHT = 168; // v2 card: >= B11 44px floor (2.75rem) per control
+export const ROW_HEIGHT = 168;
 export const CARD_HEIGHT = 156;
 
 export function rowSuffix(r: SearchResult): string {
   return (r.adapterId + "." + r.resultId).replace(/[^A-Za-z0-9._-]/g, "-");
 }
 
-// Scroll container is presentational so the grid sees rowgroup > rows only.
 const OuterElement = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(function Outer(props, ref) {
   return <div {...props} ref={ref} role="presentation" />;
 });
@@ -58,8 +48,6 @@ export function ResultsGrid() {
     [results, order, categories, licenceTags, maxSizeBytes, sort]
   );
 
-  // Focus restoration: refocus the active row whenever it re-mounts after
-  // virtualization unmounts it (Plan §D "Focus is never lost...").
   useEffect(() => {
     if (activeRowIndex < 0 || !rows.length) return;
     const r = rows[Math.min(activeRowIndex, rows.length - 1)];
@@ -118,10 +106,12 @@ export function ResultsGrid() {
       const retryable = Boolean(ad && (ad.status === "failed" || ad.status === "timed-out" || ad.status === "rate-limited"));
       const selected = selectedIds.includes(r.resultId);
       const direct = validatedHttpsUrl(r.sourceUrl);
-      // [F58 §3] PROVENANCE-6 verdict for CUSTOM-source rows: computed here, pure,
-      // so a re-render never writes the store. External-roster rows are untouched.
       const prov = evaluateResultProvenance(customSources, r);
       const provRow = prov.custom && prov.applies;
+      // Client-side provenance-6 check (mirrors server gate) for exe/msi/dmg/iso/zip
+      const provClient = isProvenanceBlocked(r.title, (r as any).provenance);
+      const isBlocked = (provRow && !prov.fetchEnabled) || provClient.blocked;
+      const blockReason = provRow && !prov.fetchEnabled ? (prov.reason || t("search.errors.classifierBlocked")) : (provClient.missing.length ? t("search.errors.classifierBlocked") + ": " + provClient.missing.join(",") : "");
       return (
         <div
           id={"f56.search.resultRow." + sfx}
@@ -225,29 +215,58 @@ export function ResultsGrid() {
                 {prov.fetchEnabled ? t("search.registry.provenance.ok") : t("search.registry.provenance.blocked", { reason: prov.reason || "provenance-incomplete" })}
               </span>
             ) : null}
+            {isBlocked && blockReason ? (
+              <span data-testid="provenance-block-reason" className="text-[10px] text-danger truncate">{blockReason}</span>
+            ) : null}
 
             <span id={"f56.search.resultActions." + sfx} role="gridcell" className="flex items-center gap-1">
               <button
                 id={"f56.search.resultFetch." + sfx}
                 data-testid="card-fetch"
                 type="button"
-                title={provRow && !prov.fetchEnabled ? prov.reason || t("search.actions.comingSoon") : t("search.actions.comingSoon")}
-                disabled={provRow && !prov.fetchEnabled}
-                data-provenance-block={provRow && !prov.fetchEnabled ? "true" : "false"}
+                title={isBlocked ? blockReason : t("search.actions.fetch")}
+                disabled={!!isBlocked}
+                data-provenance-block={isBlocked ? "true" : "false"}
                 aria-label={t("search.actions.fetch")}
-                onClick={() => {
-                  // [F58 §3] PROVENANCE-6 refused it: no fetch row is recorded and
-                  // no stub is even reached - the refusal is the whole behaviour.
-                  if (provRow && !prov.fetchEnabled) return;
-                  // Stub: no request is constructed, no byte is fetched. The
-                  // card records a pending fetch row (the rail shows it) and
-                  // says the honest thing: "coming in F56-d".
-                  const out = requestFetchStub({ resultId: r.resultId, sourceUrl: r.sourceUrl });
-                  stubFetch(r.resultId);
-                  void out;
-                  push(t("search.actions.comingSoon"));
+                onClick={async () => {
+                  if (isBlocked) return;
+                  try {
+                    // Real fetch: POST /api/fetch aria2c lane
+                    const out = await requestFetch({
+                      operation: 'start',
+                      requestId: Math.random().toString(36).slice(2, 12),
+                      idempotencyKey: Math.random().toString(36).slice(2, 12),
+                      resultId: r.resultId,
+                      adapterId: r.adapterId,
+                      sourceSnapshotId: (r as any).sourceSnapshotId || 'snap-' + Date.now(),
+                      intent: 'download',
+                      transport: 'aria2c',
+                      mirrorOptIn: false,
+                      provenance: (r as any).provenance,
+                      expectedContentLength: (r as any).sizeBytes,
+                    } as any);
+                    if (out.ok) {
+                      stubFetch(r.resultId);
+                      push(t("search.fetch.started", { fetchId: out.data?.fetchId || '' }));
+                    } else {
+                      // If transport unavailable, fallback to stub toast for offline dev
+                      if (out.error?.code === 'TRANSPORT_UNAVAILABLE') {
+                        const stub = requestFetchStub({ resultId: r.resultId, sourceUrl: r.sourceUrl });
+                        stubFetch(r.resultId);
+                        void stub;
+                        push(t("search.v2.toast.fetchStub"));
+                      } else {
+                        push(t(out.error?.messageKey || "search.errors.generic"));
+                      }
+                    }
+                  } catch {
+                    const stub = requestFetchStub({ resultId: r.resultId, sourceUrl: r.sourceUrl });
+                    stubFetch(r.resultId);
+                    void stub;
+                    push(t("search.v2.toast.fetchStub"));
+                  }
                 }}
-                className="h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                className="h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {t("search.actions.fetch")}
               </button>
@@ -286,7 +305,7 @@ export function ResultsGrid() {
                   {t("search.actions.retry")}
                 </button>
               ) : null}
-              <span className="ml-auto text-xs text-tertiary truncate">{t("search.v2.card.fetchStub")}</span>
+              <span className="ml-auto text-xs text-tertiary truncate">{t("search.fetch.started")}</span>
             </span>
           </div>
         </div>

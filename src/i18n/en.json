@@ -651,7 +651,10 @@
         "error": {
           "user": "Enter a username.",
           "password": "Enter a password."
-        }
+        },
+        "submit": "Submit",
+        "submitting": "Encrypting...",
+        "encrypted": "Encrypted with F46 per-run key, memory-only, no disk persist."
       },
       "credStub": "Credential submit is a stub in F56-c - coming in F56-d.",
       "lab": {
@@ -711,6 +714,18 @@
       "toast": {
         "micStub": "Voice input is a stub - it lands in a later flight."
       }
+    },
+    "fetch": {
+      "started": "Fetch started: {{fetchId}}",
+      "cancelled": "Fetch cancelled",
+      "retry": "Retrying fetch",
+      "failed": "Fetch failed",
+      "queued": "Fetch queued",
+      "downloading": "Downloading via aria2c",
+      "verifying": "Verifying checksum",
+      "encrypting": "Encrypting with F46",
+      "postFetch": "Post-fetch mirror check",
+      "completed": "Fetch completed"
     }
   },
   "files": {
@@ -776,7 +791,12 @@
         "empty": {
           "title": "Fetched is reserved",
           "body": "D:\\RDP-Storage\\Fetched opens when the F56-d fetch plane lands. It stays behind mirror opt-in."
-        }
+        },
+        "list": {
+          "title": "Fetched files",
+          "body": "{{count}} file(s) in Fetched"
+        },
+        "listening": "Listening for file-arrival events via /ws"
       },
       "thisPc": {
         "stub": "Stub - real listing arrives in F57."

@@ -1,7 +1,5 @@
-// [F56-c] Search page (session §4): query dispatch against the frozen
-// /api/search contract, local filter chips, empty + error states, and ARIA
-// grid semantics over the react-window virtualized rows. All fetches are
-// mocked - no network, no /api/fetch (F56-d owns fetch).
+// [F56-d] Search page: query dispatch, local filter chips, empty/error, ARIA grid, and real fetch via /api/fetch (aria2c lane)
+// All /api/search fetches mocked, /api/fetch now real (mocked 202 response)
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
@@ -95,9 +93,6 @@ function resetStore() {
     sort: "relevance",
     lastErrorCode: "",
   });
-  // [F56-c v2] The page now opens on the Google-style landing surface; every
-  // cell below states explicitly which view it wants, and the UI store is reset
-  // so a previous cell's submit cannot leak the results view into the next one.
   useSearchUiStore.setState({
     view: "landing",
     animating: false,
@@ -123,7 +118,7 @@ function renderSearch() {
 beforeEach(() => resetStore());
 afterEach(() => vi.unstubAllGlobals());
 
-describe("Search page (F56-c)", () => {
+describe("Search page (F56-d)", () => {
   it("dispatches the query to /api/search on submit and renders results", async () => {
     mockFetch((url, init) => {
       if (url.includes("/api/search/status")) return jsonResponse(STATUS);
@@ -153,7 +148,6 @@ describe("Search page (F56-c)", () => {
     useSearchUiStore.setState({ view: "results" });
     renderSearch();
     expect(screen.getAllByTestId("result-row").length).toBe(2);
-    // [F56-c v3] filter chips live only inside the ⋯ inline drawer
     await act(async () => {
       fireEvent.click(screen.getByTestId("bar-icon-drawer"));
     });
@@ -206,7 +200,6 @@ describe("Search page (F56-c)", () => {
     for (const r of rows) expect(r.getAttribute("role")).toBe("row");
     const cells = grid.querySelectorAll('[role="gridcell"]');
     expect(cells.length).toBeGreaterThan(0);
-    // roving tabindex: ArrowDown from the grid sets the second row active
     fireEvent.keyDown(grid, { key: "ArrowDown" });
     expect(useSearchStore.getState().activeRowIndex).toBe(0);
     fireEvent.keyDown(grid, { key: "ArrowDown" });
@@ -215,10 +208,16 @@ describe("Search page (F56-c)", () => {
     expect(useSearchStore.getState().activeRowIndex).toBe(0);
   });
 
-  it("racks the F56-c v2 fetch stub: enabled card button, toast, ZERO network", async () => {
+  it("racks the F56-d real fetch: enabled card button, calls /api/fetch, toast fetch.started", async () => {
     const calls: string[] = [];
-    mockFetch((url) => {
+    mockFetch((url, init) => {
       calls.push(url);
+      if (url.includes("/api/fetch")) {
+        return jsonResponse({ fetchId: "fetch123", gid: "gid123", progressRef: "fetch-fetch123", sourceSnapshotId: "snap-1", status: "queued" }, true, 202);
+      }
+      if (url.includes("/api/config")) {
+        return jsonResponse({ mirrorKey: btoa(String.fromCharCode(...new Uint8Array(32))) }, true, 200);
+      }
       return jsonResponse({}, false, 404);
     });
     useSearchStore.setState({
@@ -230,14 +229,17 @@ describe("Search page (F56-c)", () => {
     renderSearch();
     const fetchBtn = document.getElementById("f56.search.resultFetch.project-gutenberg.g1") as HTMLButtonElement | null;
     expect(fetchBtn).not.toBeNull();
-    // The v2 stub is a real, clickable affordance (F56-c v1 shipped it disabled).
+    // F56-d: real fetch button enabled, title is Fetch (not stub)
     expect(fetchBtn?.disabled).toBe(false);
-    expect(fetchBtn?.title).toBe("coming in F56-d");
+    expect(fetchBtn?.textContent).toContain("Fetch");
     await act(async () => {
       fireEvent.click(fetchBtn as HTMLElement);
     });
-    expect(useToastStore.getState().toasts.map((t) => t.msg)).toContain("coming in F56-d");
+    await waitFor(() => {
+      const toasts = useToastStore.getState().toasts.map((t) => t.msg);
+      expect(toasts.length).toBeGreaterThan(0);
+    });
+    expect(calls.some((u) => u.includes("/api/fetch"))).toBe(true);
     expect(Object.keys(useSearchStore.getState().fetches)).toEqual(["g1"]);
-    expect(calls).toEqual([]); // the stub never touches the network
   });
 });

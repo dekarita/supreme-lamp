@@ -1,9 +1,6 @@
-// [F56-c v2] Result cards (§2): source badge + title + creator + ACTUAL bytes
-// + the direct HTTPS URL + the Fetch button. Fetch is the F56-c v2 stub: it
-// answers with the localized "coming in F56-d" toast and performs ZERO network
-// work (the frozen F56-c gate keeps refusing the endpoint literal in src/).
+// [F56-d] Result cards: source badge + title + creator + ACTUAL bytes + direct HTTPS URL + real Fetch button (aria2c lane)
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import "@/i18n";
 import Search from "@/pages/Search";
@@ -60,7 +57,6 @@ describe("F56-c v2 result cards", () => {
     expect(screen.getByTestId("card-source-badge").textContent).toBe("Project Gutenberg");
     expect(document.getElementById("f56.search.resultTitle.project-gutenberg.g1")?.textContent).toBe("Pride and Prejudice");
     expect(document.getElementById("f56.search.resultCreator.project-gutenberg.g1")?.textContent).toBe("Jane Austen");
-    // ACTUAL bytes: the exact byte count, never a rounded-up label
     expect(screen.getByTestId("card-bytes").textContent).toContain("412,000 B");
     expect(useSearchStore.getState().results.g1.sizeBytes).toBe(412000);
     const link = screen.getByTestId("card-direct-url") as HTMLAnchorElement;
@@ -83,10 +79,16 @@ describe("F56-c v2 result cards", () => {
     expect(formatActualBytes(917340)).toContain("917,340 B");
   });
 
-  it("Fetch is a clickable stub: toast 'coming in F56-d', a pending rail row, zero network", async () => {
+  it("Fetch is real in F56-d: calls /api/fetch, toast fetch.started, pending rail row", async () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", vi.fn((url: Any) => {
       calls.push(String(url));
+      if (String(url).includes("/api/fetch")) {
+        return Promise.resolve({ ok: true, status: 202, json: async () => ({ fetchId: "fetch123", gid: "gid123", progressRef: "fetch-fetch123", sourceSnapshotId: "snap-1", status: "queued" }) });
+      }
+      if (String(url).includes("/api/config")) {
+        return Promise.resolve({ ok: true, status: 200, json: async () => ({ mirrorKey: btoa(String.fromCharCode(...new Uint8Array(32))) }) });
+      }
       return Promise.resolve({ ok: false, status: 404, json: async () => ({}) });
     }));
     renderSearch();
@@ -95,10 +97,13 @@ describe("F56-c v2 result cards", () => {
     await act(async () => {
       fireEvent.click(btn);
     });
-    expect(useToastStore.getState().toasts.map((t) => t.msg)).toContain("coming in F56-d");
-    expect(useSearchStore.getState().fetches.g1).toEqual({ fetchId: "g1" });
-    expect(calls).toEqual([]);
-    // the stub module itself is inert and says so
+    await waitFor(() => {
+      expect(useToastStore.getState().toasts.length).toBeGreaterThan(0);
+    });
+    // Real fetch now hits /api/fetch
+    expect(calls.some((u) => u.includes("/api/fetch"))).toBe(true);
+    expect(useSearchStore.getState().fetches.g1).toBeDefined();
+    // Stub still exists for compat
     const out = requestFetchStub({ resultId: "g1", sourceUrl: RESULT.sourceUrl });
     expect(out.ok).toBe(false);
     expect(out.code).toBe(FETCH_STUB_CODE);

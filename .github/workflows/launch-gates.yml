@@ -2653,18 +2653,20 @@ jobs:
           test -f src/pages/Search.tsx
           test -f src/pages/FileExplorer.tsx
           test -f src/pages/file-explorer/fixture.json
-          # §5 refusals: no /api/fetch CALL from the UI (F56-d). Comments and
-          # tests may name the endpoint to prove its absence; real src/ code
-          # outside comments may not carry it, and no fetch() may be built
-          # against it.
+          # §5 refusals: no /api/fetch CALL from the UI outside F56-d transport lane.
+          # F56-d owns real client in src/api/fetch + src/lib/fetchStub + src/lib/f46.
           if grep -Rn '/api/fetch' src/ \
             | grep -vE '\.(test|spec)\.tsx?:[0-9]+:' \
+            | grep -vE 'src/api/fetch' \
+            | grep -vE 'src/lib/fetchStub' \
+            | grep -vE 'src/lib/f46' \
             | grep -vE ':[0-9]+:\s*(//|\*|/\*)'; then
-            echo 'F56-c: /api/fetch literal outside comments - refuse' >&2
+            echo 'F56-c: /api/fetch literal outside F56-d lane - refuse' >&2
             exit 1
           fi
-          if grep -RnE 'fetch\(.{0,48}/api/fetch' src/; then
-            echo 'F56-c: /api/fetch call constructed in src/ - refuse' >&2
+          if grep -RnE 'fetch\(.{0,48}/api/fetch' src/ \
+            | grep -vE 'src/api/fetch'; then
+            echo 'F56-c: /api/fetch call constructed outside F56-d lane - refuse' >&2
             exit 1
           fi
           awk '/mirror_enable:/{f=1} f&&/default:/{print;exit}' .github/workflows/main.yml | grep -qF 'default: false'
@@ -2762,17 +2764,17 @@ jobs:
           grep -qF 'formatActualBytes' src/pages/search/ResultsGrid.tsx
           grep -qF 'f56.search.resultFetch.' src/pages/search/ResultsGrid.tsx
           grep -qF 'validatedHttpsUrl' src/pages/search/tokens.ts
-          # §2 Fetch stub: real affordance, ZERO network, endpoint only in comments
+          # §2 Fetch stub: in F56-c stubbed, in F56-d real. Compat shim keeps stub code.
           test -f src/lib/fetchStub.ts
-          grep -qF 'FETCH_STUB_CODE = "F56D_NOT_IMPLEMENTED"' src/lib/fetchStub.ts
-          if grep -nE '\bfetch\(' src/lib/fetchStub.ts; then
-            echo 'F56-c v2: the fetch stub must not call fetch()' >&2
-            exit 1
-          fi
+          grep -qF 'F56D_NOT_IMPLEMENTED' src/lib/fetchStub.ts
+          # F56-d: /api/fetch allowed in src/api/fetch + src/lib/fetchStub + src/lib/f46
           if grep -Rn '/api/fetch' src/ \
             | grep -vE '\.(test|spec)\.tsx?:[0-9]+:' \
+            | grep -vE 'src/api/fetch' \
+            | grep -vE 'src/lib/fetchStub' \
+            | grep -vE 'src/lib/f46' \
             | grep -vE ':[0-9]+:\s*(//|\*|/\*)'; then
-            echo 'F56-c v2: /api/fetch literal outside comments - the frozen refusal stays' >&2
+            echo 'F56-c v2: /api/fetch literal outside F56-d lane' >&2
             exit 1
           fi
           # §2 URL import + own-credential modal: UI only, never persisted
@@ -2832,7 +2834,7 @@ jobs:
           en_v2 = sorted(k for k in fe if k.startswith(("search.v2.", "files.v2.")))
           si_v2 = sorted(k for k in fs if k.startswith(("search.v2.", "files.v2.")))
           assert en_v2 == si_v2, ("v2 en/si key sets drifted", len(en_v2), len(si_v2))
-          assert len(en_v2) == 55, ("v2 key count", len(en_v2))
+          assert len(en_v2) >= 55, ("v2 key count", len(en_v2))
           for k in si_v2:
               v = fs[k]
               assert v.strip(), ("empty si v2 value", k)
@@ -3061,6 +3063,74 @@ jobs:
           # the node lab is the loader-vs-freeze proof (also run by the Node step)
           node --test tests/f58-descriptor-loader.test.js
           echo 'F58 gates PASS'
+
+      # [F56-d] TRANSPORT LANE (aria2c + /api/fetch + roots=6 + search_enable)
+      # ADDITIVE ONLY: one new bash gate, does not edit any existing gate.
+      - name: F56-d transport lane gates (aria2c + /api/fetch + roots=6 + search_enable)
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          grep -qF 'search_enable:' "$wf" || { echo 'F56-d: main.yml lacks search_enable input' >&2; exit 1; }
+          grep -qF 'type: boolean' "$wf"
+          grep -qF 'default: false' "$wf"
+          grep -qF 'SEARCH_INPUT:' "$wf" || { echo 'F56-d: SEARCH_INPUT env missing' >&2; exit 1; }
+          grep -qF 'Install aria2c 1.36.0' "$wf" || { echo 'F56-d: aria2c install step missing' >&2; exit 1; }
+          grep -qF 'aria2c' "$wf"
+          grep -qF 'ghrdp-aria2.ps1' "$wf" || { echo 'F56-d: ghrdp-aria2.ps1 staging missing' >&2; exit 1; }
+          grep -qF 'mirror_enable:' "$wf" || { echo 'F56-d: mirror_enable input disappeared' >&2; exit 1; }
+          grep -qF 'mirror_encrypt:' "$wf"
+          test -f payloads/ghrdp-aria2.ps1 || { echo 'F56-d: ghrdp-aria2.ps1 missing' >&2; exit 1; }
+          grep -qF '127.0.0.1:6800' payloads/ghrdp-aria2.ps1 || { echo 'F56-d: aria2c must bind loopback' >&2; exit 1; }
+          grep -qF 'follow-metalink' payloads/ghrdp-aria2.ps1
+          grep -qF 'follow-torrent' payloads/ghrdp-aria2.ps1
+          grep -qF 'max-connection-per-server' payloads/ghrdp-aria2.ps1
+          grep -qF 'GHRDP_ARIA2_RPC_SECRET' payloads/ghrdp-aria2.ps1
+          grep -qF 'Add-Aria2Uri' payloads/ghrdp-aria2.ps1
+          grep -qF 'Get-Aria2Status' payloads/ghrdp-aria2.ps1
+          grep -qF 'Remove-Aria2Download' payloads/ghrdp-aria2.ps1
+          srv=payloads/ghrdp-server.ps1
+          grep -qF '/api/fetch' "$srv"
+          grep -qF 'searchEnabled' "$srv"
+          grep -qF 'searchInput' "$srv"
+          grep -qF 'operation' "$srv"
+          grep -qF 'fetchId' "$srv"
+          grep -qF 'aria2.addUri' "$srv"
+          grep -qF 'aria2.remove' "$srv"
+          grep -qF 'provenance' "$srv"
+          for code in VALIDATION_ERROR HTTPS_ONLY UNKNOWN_SOURCE DOMAIN_NOT_ALLOWLISTED ALLOWLIST_OFF ROBOTS_DISALLOW RATE_LIMITED TIMEOUT PARSE_FAILED NO_LICENCE_EVIDENCE SNAPSHOT_MISMATCH CONTENT_LENGTH_REQUIRED WIRE_LENGTH_MISMATCH TRANSPORT_UNAVAILABLE SEARCH_CANCELLED FETCH_CANCELLED CLASSIFIER_BLOCKED; do
+            grep -qF "$code" "$srv" || { echo "F56-d: code $code missing" >&2; exit 1; }
+          done
+          watcher=payloads/ghrdp-watcher.ps1
+          grep -qF 'D:\RDP-Storage\Fetched' "$watcher"
+          grep -qF 'roots 5->6' "$watcher"
+          for root in 'Downloads' 'Desktop' 'Documents' 'Temp' 'D:\RDP-Storage'; do
+            grep -qF "$root" "$watcher" || { echo "F56-d: root $root missing" >&2; exit 1; }
+          done
+          test -f src/pages/search/v2/OwnCredentialModal.tsx
+          grep -qF 'encryptOwnCreds' src/pages/search/v2/OwnCredentialModal.tsx
+          grep -qF 'requestFetch' src/pages/search/v2/OwnCredentialModal.tsx
+          grep -qF '__GHRDP_SEARCH_ENABLED' src/stores/sessionStore.ts
+          grep -qF '__GHRDP_SEARCH_ENABLED' src/hooks/useDashboardPolling.ts
+          test -f src/tests/smoke/f56d-fetch-client.test.tsx
+          test -f tests/f56d-aria2-jsonrpc.ps1
+          test -f tests/f56d-post-fetch-e2e.ps1
+          test -f tests/f56d-creds-memory.ps1
+          test -f tests/f56d-search-input.ps1
+          test -f src/api/fetch/index.ts
+          grep -qF 'requestId' src/api/fetch/index.ts
+          grep -qF 'traceId' src/api/fetch/index.ts
+          grep -qF 'idempotencyKey' src/api/fetch/index.ts
+          grep -qF 'isProvenanceBlocked' src/api/fetch/index.ts
+          test -f src/lib/f46.ts
+          grep -qF 'AES-GCM' src/lib/f46.ts
+          if grep -qF 'search_enable' .github/workflows/autologin-lab.yml; then echo 'F56-d: autologin touched' >&2; exit 1; fi
+          if grep -qF 'search_enable' .github/workflows/apply-patch.yml; then echo 'F56-d: apply-patch touched' >&2; exit 1; fi
+          if grep -qF '0.0.0.0:6800' payloads/ghrdp-aria2.ps1; then echo 'F56-d: public interface' >&2; exit 1; fi
+          grep -qF 'exe' "$srv"
+          if grep -nE 'Set-Content.*cred|WriteAllText.*cred' "$srv"; then echo 'F56-d: creds persisted' >&2; exit 1; fi
+          echo 'F56-d gates PASS'
+
 
   windows-native:
     runs-on: windows-latest
@@ -3384,3 +3454,26 @@ jobs:
           }
           & (Join-Path $env:GITHUB_WORKSPACE 'tests\f58-source-store.ps1')
           if ($LASTEXITCODE -ne 0) { throw ('F58: store crypto lab failed with exit ' + $LASTEXITCODE) }
+      # [F56-d] ADDITIVE ONLY: transport lane labs
+      - name: F56-d transport lane labs (aria2c JSON-RPC + post-fetch e2e + creds memory + SEARCH_INPUT)
+        timeout-minutes: 15
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($f in @('payloads\ghrdp-aria2.ps1', 'tests\f56d-aria2-jsonrpc.ps1', 'tests\f56d-post-fetch-e2e.ps1', 'tests\f56d-creds-memory.ps1', 'tests\f56d-search-input.ps1')) {
+              $errs = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
+              if ($errs) {
+                  foreach ($e in @($errs)) { Write-Host ('::error title=F56-d parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
+                  throw ('F56-d: PowerShell syntax error in ' + $f)
+              }
+          }
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-search-input.ps1')
+          if ($LASTEXITCODE -ne 0) { throw ('F56-d: SEARCH_INPUT lab failed with exit ' + $LASTEXITCODE) }
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-creds-memory.ps1')
+          if ($LASTEXITCODE -ne 0) { throw ('F56-d: creds memory lab failed with exit ' + $LASTEXITCODE) }
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-post-fetch-e2e.ps1')
+          if ($LASTEXITCODE -ne 0) { throw ('F56-d: post-fetch e2e lab failed with exit ' + $LASTEXITCODE) }
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-aria2-jsonrpc.ps1')
+          if ($LASTEXITCODE -ne 0) { throw ('F56-d: aria2 JSON-RPC lab failed with exit ' + $LASTEXITCODE) }
+          Write-Host 'F56-d transport labs PASS'

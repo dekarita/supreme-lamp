@@ -87,6 +87,7 @@ foreach ($cand in @(
 (Join-Path $prof 'Downloads\qBittorrent'),
 (Join-Path $prof 'Torrents'),
 'D:\RDP-Storage',
+'D:\RDP-Storage\Fetched',
 'C:\Torrents'
 )) { if (Test-Path -LiteralPath $cand) { [void]$out.Add($cand) } }
 }
@@ -227,6 +228,8 @@ function Get-WatcherRoots {
     if (-not $tmp) { $tmp = Join-Path $prof 'AppData\Local\Temp' }
     if ($tmp -and (Test-Path -LiteralPath $tmp)) { [void]$list.Add($tmp) }
     if (Test-Path -LiteralPath 'D:\RDP-Storage') { [void]$list.Add('D:\RDP-Storage') }
+    # [F56-d §3] roots 5->6 add D:\RDP-Storage\Fetched existing 5 untouched
+    if (Test-Path -LiteralPath 'D:\RDP-Storage\Fetched') { [void]$list.Add('D:\RDP-Storage\Fetched') }
     $seen = @{}
     $out = New-Object System.Collections.ArrayList
     foreach ($r in $list) {
