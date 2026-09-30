@@ -766,7 +766,9 @@ function New-F46UploadContent {
     $null = $fileContent.Headers.ContentLength
     $mp = New-Object System.Net.Http.MultipartFormDataContent($Boundary)
     $mp.Add($fileContent)
-    return $mp
+    # MultipartContent is IEnumerable. A bare return would unwrap it to the
+    # file part and drop the framing (name="file" / part Content-Type).
+    return ,$mp
 }
 
 function Measure-F53Upload {

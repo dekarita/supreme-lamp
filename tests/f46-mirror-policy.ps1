@@ -394,11 +394,11 @@ Write-Host ('[F46] policy: ' + $policyTxt)
 Write-Host '::notice::[F46 lab] enter F50 §1 (transport source checks)'
 Write-Host '[F50 §1] transport rewrite: streamed upload path (no whole-file buffering)'
 $moduleText = Get-Content -LiteralPath $modPath -Raw
-$fnStart = $moduleText.IndexOf('function Send-F46GofileUpload')
+$fnStart = $moduleText.IndexOf('function New-F46UploadContent')
 $fnEnd = $moduleText.IndexOf('function ConvertFrom-F46UploadResponse', [Math]::Max($fnStart, 0))
 $fnBody = ''
 if ($fnStart -ge 0 -and $fnEnd -gt $fnStart) { $fnBody = $moduleText.Substring($fnStart, $fnEnd - $fnStart) }
-Check 'F50: the uploader exists to be rewritten' ($fnStart -ge 0 -and $fnEnd -gt $fnStart) 'Send-F46GofileUpload not found'
+Check 'F50: the uploader exists to be rewritten' ($fnStart -ge 0 -and $fnEnd -gt $fnStart -and $fnBody.Contains('function Send-F46GofileUpload') -and $fnBody.Contains('New-F46UploadContent')) 'Send-F46GofileUpload not found'
 Check 'F50: transport is HttpClient' ($fnBody -match 'System\.Net\.Http\.HttpClient') 'no HttpClient in the upload path'
 Check 'F50: body is a MultipartFormDataContent' ($fnBody -match 'MultipartFormDataContent') 'no MultipartFormDataContent in the upload path'
 Check 'F50: the file part is StreamContent over a FileStream' (($fnBody -match 'System\.Net\.Http\.StreamContent') -and ($fnBody -match 'System\.IO\.File\]::Open\(')) 'no StreamContent(FileStream) in the upload path'
