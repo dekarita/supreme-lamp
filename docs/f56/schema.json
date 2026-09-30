@@ -1,0 +1,408 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/dekarita/supreme-lamp/blob/main/docs/f56/schema.json",
+  "title": "F56 source-adapter descriptor (frozen by F56-a)",
+  "description": "Verbatim freeze of payloads/docs/f56-search-explorer-plan.md §E 'Source-adapter schema'. All files live under payloads/search-sources/*.json. The registry is compiled and reviewed; it is NOT a runtime-configurable source list. Every one of the 16 §E 'Required descriptor fields' is required here; every §E enum is reproduced exactly; every §E 'Loader constraints' rejection is carried in x-f56-loader-constraints (a loader behaviour cannot be expressed as an instance property, so it is frozen as normative extension data rather than as an invented field). No field outside §E is authored: where §E states a constraint without naming a JSON shape, the property is left open-typed and the gap is recorded in docs/f56/decisions.md (blocker rows B5-B8) instead of being invented.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "nameKey",
+    "category",
+    "baseUrl",
+    "allowedDomains",
+    "queryTemplate",
+    "licenceTag",
+    "licenceEvidence",
+    "robotsCheck",
+    "rateLimit",
+    "timeout",
+    "parseContract",
+    "downloadContract",
+    "transportModes",
+    "redirectPolicy"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "description": "§E: 'Locked F56 schema version'. The plan fixes the ROLE but not the literal value, so no enum is invented; the loader must reject any value that is not the single locked F56 version (decisions.md blocker B17).",
+      "type": ["string", "integer"],
+      "x-f56-plan-verbatim": "Locked F56 schema version"
+    },
+    "id": {
+      "description": "§E: 'Stable lowercase adapter ID'. Loader rejects unknown source IDs and duplicate adapter IDs (§E loader constraints + §G item 12).",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "x-f56-plan-verbatim": "Stable lowercase adapter ID"
+    },
+    "nameKey": {
+      "description": "§E: 'Sinhala/localization key for the display name'. The plan states the contract but does not pin a key pattern (Plan §H lists 28 search.sources.* keys; that list is not declared normative for this field), so no pattern is invented (decisions.md blocker B17).",
+      "type": "string",
+      "minLength": 1,
+      "x-f56-plan-verbatim": "Sinhala/localization key for the display name"
+    },
+    "category": {
+      "description": "§E: 'One of books, audio, scholarly, education, media, software, music, video, own-storage, purchase'.",
+      "type": "string",
+      "enum": [
+        "books",
+        "audio",
+        "scholarly",
+        "education",
+        "media",
+        "software",
+        "music",
+        "video",
+        "own-storage",
+        "purchase"
+      ],
+      "x-f56-plan-verbatim": "One of `books`, `audio`, `scholarly`, `education`, `media`, `software`, `music`, `video`, `own-storage`, `purchase`"
+    },
+    "baseUrl": {
+      "description": "§E: 'Pinned HTTPS origin; never supplied by the user'. Loader rejects HTTP base URLs and IP-literal source URLs, so the pattern admits https:// + a DNS hostname only (no userinfo, no IP literal, no query, no fragment).",
+      "type": "string",
+      "pattern": "^https://[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:[0-9]{1,5})?(/[a-zA-Z0-9._~%!$&'()*+,;=:@/-]*)?$",
+      "x-f56-plan-verbatim": "Pinned HTTPS origin; never supplied by the user",
+      "x-f56-rejects": ["http:// base URLs", "IP-literal source URLs"]
+    },
+    "allowedDomains": {
+      "description": "§E: 'Exact domains or explicitly approved controlled subdomains'. Loader rejects unknown domains. Regional or redirected domains must be explicitly listed here; they may not be discovered dynamically (§E closing paragraph + Plan Assumption 4).",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$",
+        "x-f56-note": "lowercase DNS hostname; no scheme, no wildcard, no IP literal"
+      },
+      "x-f56-plan-verbatim": "Exact domains or explicitly approved controlled subdomains"
+    },
+    "queryTemplate": {
+      "description": "§E: 'Declarative method/path/query template with encoded query, cursor, and limit placeholders'. Declarative only: the loader rejects executable parser code and arbitrary request headers, so no headers property exists and no property may carry code.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "path", "placeholders"],
+      "properties": {
+        "method": {
+          "description": "Declarative HTTP method. §E names no method enum (decisions.md blocker B1 records that GET/POST is the frozen default, not a plan quote).",
+          "type": "string",
+          "enum": ["GET", "POST"]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^/",
+          "description": "Request path only. The origin always comes from baseUrl; a path may not carry a scheme, host or credential."
+        },
+        "query": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Declarative query parameters; values may reference the placeholders declared below."
+        },
+        "placeholders": {
+          "description": "§E requires 'encoded query, cursor, and limit placeholders'. Names are not given in the plan, so all three slots are required by role and left string-typed (decisions.md blocker B1).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["encodedQuery", "cursor", "limit"],
+          "properties": {
+            "encodedQuery": { "type": "string", "minLength": 1 },
+            "cursor": { "type": "string", "minLength": 1 },
+            "limit": { "type": "string", "minLength": 1 }
+          }
+        }
+      },
+      "x-f56-plan-verbatim": "Declarative method/path/query template with encoded query, cursor, and limit placeholders",
+      "x-f56-rejects": ["arbitrary request headers", "user-agent spoofing", "executable parser code"]
+    },
+    "licenceTag": {
+      "description": "§E: 'Fixed tag or per-result policy using only the five approved licence tags'. Modelled as a union: either a fixed tag string, or a per-result policy object. The five approved tags are the Plan §B filter-state values and are the only permitted labels.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "public-domain",
+            "open-access",
+            "creative-commons",
+            "purchase",
+            "own-storage"
+          ],
+          "description": "Fixed tag: every result from this adapter carries this licence tag."
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["perResult"],
+          "properties": {
+            "perResult": { "const": true },
+            "allowedTags": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "enum": [
+                  "public-domain",
+                  "open-access",
+                  "creative-commons",
+                  "purchase",
+                  "own-storage"
+                ]
+              }
+            }
+          },
+          "description": "Per-result policy: the tag is derived per result and must stay inside the five approved tags; derivation requires licenceEvidence."
+        }
+      ],
+      "x-f56-plan-verbatim": "Fixed tag or per-result policy using only the five approved licence tags"
+    },
+    "licenceEvidence": {
+      "description": "§E: 'Required field/path or explicit evidence rule for per-result labels'. §E closing rule: 'Per-result licences require evidence. A source with mixed legal availability must omit a result when the required licence evidence is absent rather than guessing.' The plan does not name the sub-fields, so the object is left open with only 'required' pinned (decisions.md blocker B1).",
+      "type": "object",
+      "required": ["required"],
+      "properties": {
+        "required": {
+          "const": true,
+          "description": "Evidence is mandatory for this adapter; absent evidence omits the result."
+        }
+      },
+      "x-f56-plan-verbatim": "Required field/path or explicit evidence rule for per-result labels",
+      "x-f56-omit-rule": "A result whose required licence evidence is absent is OMITTED, never guessed."
+    },
+    "robotsCheck": {
+      "description": "§E: 'Mandatory robots policy and deny-on-disallow behavior'. Loader rejects missing robots checks. §D/§F: a robots block is non-retryable (ROBOTS_BLOCKED) and retry never bypasses it.",
+      "type": "object",
+      "required": ["policy", "onDisallow"],
+      "properties": {
+        "policy": {
+          "description": "Mandatory: the adapter must declare a robots policy. §E names no policy enum (decisions.md blocker B1).",
+          "type": "string",
+          "minLength": 1
+        },
+        "onDisallow": {
+          "const": "deny",
+          "description": "§E 'deny-on-disallow behavior' - the only permitted value."
+        }
+      },
+      "x-f56-plan-verbatim": "Mandatory robots policy and deny-on-disallow behavior"
+    },
+    "rateLimit": {
+      "description": "§E: 'Requests per minute, burst, concurrency, retry-after handling, and backoff'. Loader rejects missing rate-limit configuration. §E conservative defaults when a source's documented rate limit is not explicit: ONE concurrent request, bounded request rate, bounded timeout.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requestsPerMinute",
+        "burst",
+        "concurrency",
+        "retryAfter",
+        "backoff"
+      ],
+      "properties": {
+        "requestsPerMinute": { "type": "integer", "minimum": 1 },
+        "burst": { "type": "integer", "minimum": 1 },
+        "concurrency": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Conservative default is 1 (§E loader constraints)."
+        },
+        "retryAfter": {
+          "description": "Retry-After handling. The repository-wide F44 policy treats Retry-After as a FLOOR capped at 120s (RETRY_AFTER_CAP_MS = 120000 in src/components/explorer/api/retryPolicy.ts); §E names no enum for this field (decisions.md blocker B1).",
+          "type": ["string", "object"]
+        },
+        "backoff": {
+          "description": "Backoff policy. §E names no shape (decisions.md blocker B1).",
+          "type": ["string", "object"]
+        }
+      },
+      "x-f56-plan-verbatim": "Requests per minute, burst, concurrency, retry-after handling, and backoff",
+      "x-f56-conservative-defaults": {
+        "concurrency": 1,
+        "requestRate": "bounded",
+        "timeout": "bounded"
+      }
+    },
+    "timeout": {
+      "description": "§E: 'Connect and request timeout with a bounded maximum'. Loader rejects unbounded timeouts. §E names no unit and no numeric ceiling, so both stay open and are recorded as blocker B1 rather than invented.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["connect", "request"],
+      "properties": {
+        "connect": { "type": "integer", "minimum": 1 },
+        "request": { "type": "integer", "minimum": 1 }
+      },
+      "x-f56-plan-verbatim": "Connect and request timeout with a bounded maximum",
+      "x-f56-rejects": ["unbounded timeouts"]
+    },
+    "parseContract": {
+      "description": "§E: 'Declarative response format, result selector, field mappings, pagination, and normalizers'. Loader rejects executable parser code, so every property here is data (strings/arrays/objects of strings), never code.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format", "resultSelector", "fieldMappings", "pagination"],
+      "properties": {
+        "format": {
+          "description": "Declarative response format. §E names no format enum (decisions.md blocker B1).",
+          "type": "string",
+          "minLength": 1
+        },
+        "resultSelector": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Declarative selector locating the result set inside the response."
+        },
+        "fieldMappings": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "string" },
+          "description": "Normalized-field -> source-field/path map. The normalized result fields are those of Plan §F 'Each result contains'."
+        },
+        "pagination": {
+          "description": "Declarative pagination. §E names no shape (decisions.md blocker B1).",
+          "type": ["string", "object"]
+        },
+        "normalizers": {
+          "description": "Declarative normalizers. §E names no shape and 'executable parser code' is rejected, so these must be named/declarative rules only (decisions.md blocker B1).",
+          "type": ["string", "array", "object"]
+        }
+      },
+      "x-f56-plan-verbatim": "Declarative response format, result selector, field mappings, pagination, and normalizers",
+      "x-f56-rejects": ["executable parser code"]
+    },
+    "downloadContract": {
+      "description": "§E: 'Allowed HTTPS artifact fields, preview fields, purchase fields, and content-length requirement'. Loader rejects 'missing content-length behavior for downloadable artifacts' and HTTP artifact URLs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactFields", "contentLengthRequired"],
+      "properties": {
+        "artifactFields": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Response fields that may carry a downloadable HTTPS artifact."
+        },
+        "previewFields": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Response fields that may carry a preview artifact (Plan §D Preview)."
+        },
+        "purchaseFields": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 },
+          "description": "Response fields that may carry a purchase URL (Plan §D Open Purchase; navigation-only, never starts a fetch)."
+        },
+        "contentLengthRequired": {
+          "const": true,
+          "description": "Content length is required and validated before bytes are accepted (Plan §F Fetch invariants 4-6)."
+        }
+      },
+      "x-f56-plan-verbatim": "Allowed HTTPS artifact fields, preview fields, purchase fields, and content-length requirement",
+      "x-f56-rejects": [
+        "HTTP base URLs or artifact URLs",
+        "missing content-length behavior for downloadable artifacts"
+      ]
+    },
+    "transportModes": {
+      "description": "§E: 'https, https-torrent, purchase-link, or internal'.",
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "enum": ["https", "https-torrent", "purchase-link", "internal"]
+      },
+      "x-f56-plan-verbatim": "`https`, `https-torrent`, `purchase-link`, or `internal`"
+    },
+    "redirectPolicy": {
+      "description": "§E: 'Redirects must remain HTTPS and within the adapter allowlist'. Loader rejects 'redirects outside the adapter allowlist'; §D rejects 'redirects outside the compiled allowlist'. The two invariants are therefore const-true, not configurable.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requireHttps", "requireAllowlisted"],
+      "properties": {
+        "requireHttps": { "const": true },
+        "requireAllowlisted": { "const": true }
+      },
+      "x-f56-plan-verbatim": "Redirects must remain HTTPS and within the adapter allowlist",
+      "x-f56-rejects": ["redirects outside the adapter allowlist"]
+    }
+  },
+  "x-f56-loader-constraints": {
+    "note": "Plan §E 'Loader constraints', frozen verbatim. These are Node adapter-loader behaviours, not descriptor properties; they are carried here as normative extension data so the freeze is complete without inventing descriptor fields.",
+    "theLoaderMustReject": [
+      "unknown source IDs",
+      "names not in the §0 roster",
+      "unknown domains",
+      "HTTP base URLs or artifact URLs",
+      "IP-literal source URLs",
+      "arbitrary request headers",
+      "user-agent spoofing",
+      "proxy configuration",
+      "IP rotation",
+      "executable parser code",
+      "unbounded timeouts",
+      "redirects outside the adapter allowlist",
+      "missing robots checks",
+      "missing rate-limit configuration",
+      "missing content-length behavior for downloadable artifacts"
+    ],
+    "conservativeDefaults": "The loader must use conservative defaults when a source's documented rate limit is not explicit: one concurrent request, bounded request rate, and bounded timeout.",
+    "licenceEvidenceRule": "Per-result licences require evidence. A source with mixed legal availability must omit a result when the required licence evidence is absent rather than guessing.",
+    "registryRule": "The registry is compiled and reviewed. It is not a runtime-configurable source list. No source outside the planned inventory may be added.",
+    "ciRule": "CI must assert that the final registry contains no source outside the §0 roster (Plan §G)."
+  },
+  "x-f56-source-location": "payloads/search-sources/*.json",
+  "x-f56-planned-inventory": {
+    "note": "Plan §E 'Planned adapter inventory' - 'These are the only external adapter files permitted by this plan'. Frozen as the closed set of permitted file names; the loader rejects anything else.",
+    "externalAdapterCount": 27,
+    "externalAdapters": [
+      { "file": "project-gutenberg.json", "rosterSource": "Project Gutenberg", "category": "books", "licencePolicy": "public-domain" },
+      { "file": "standard-ebooks.json", "rosterSource": "Standard Ebooks", "category": "books", "licencePolicy": "public-domain" },
+      { "file": "librivox.json", "rosterSource": "LibriVox", "category": "audio", "licencePolicy": "evidence-checked public-domain" },
+      { "file": "ia-open-library.json", "rosterSource": "IA Open Library", "category": "books", "licencePolicy": "per-result evidence" },
+      { "file": "hathitrust.json", "rosterSource": "HathiTrust", "category": "books", "licencePolicy": "per-result evidence" },
+      { "file": "wikisource.json", "rosterSource": "Wikisource", "category": "books", "licencePolicy": "per-result evidence" },
+      { "file": "doab.json", "rosterSource": "DOAB", "category": "scholarly", "licencePolicy": "open-access" },
+      { "file": "arxiv.json", "rosterSource": "arXiv", "category": "scholarly", "licencePolicy": "open-access/evidence policy" },
+      { "file": "biorxiv.json", "rosterSource": "bioRxiv", "category": "scholarly", "licencePolicy": "open-access" },
+      { "file": "pubmed-central.json", "rosterSource": "PubMed Central", "category": "scholarly", "licencePolicy": "open-access subset only" },
+      { "file": "doaj.json", "rosterSource": "DOAJ", "category": "scholarly", "licencePolicy": "open-access" },
+      { "file": "oer-commons.json", "rosterSource": "OER Commons", "category": "education", "licencePolicy": "per-result open-access/CC evidence" },
+      { "file": "ssrn.json", "rosterSource": "SSRN", "category": "scholarly", "licencePolicy": "per-result evidence" },
+      { "file": "internet-archive.json", "rosterSource": "Internet Archive", "category": "media", "licencePolicy": "per-result evidence" },
+      { "file": "blender-studio.json", "rosterSource": "Blender Studio", "category": "media", "licencePolicy": "per-result CC/evidence policy" },
+      { "file": "wikimedia-commons.json", "rosterSource": "Wikimedia Commons", "category": "media", "licencePolicy": "per-result CC/public-domain evidence" },
+      { "file": "sourceforge.json", "rosterSource": "SourceForge", "category": "software", "licencePolicy": "per-result licence evidence" },
+      { "file": "github-releases.json", "rosterSource": "GitHub Releases", "category": "software", "licencePolicy": "public-release and licence evidence" },
+      { "file": "bandcamp.json", "rosterSource": "Bandcamp", "category": "music", "licencePolicy": "purchase unless explicit CC/free evidence" },
+      { "file": "cc-marked-youtube.json", "rosterSource": "CC-marked YouTube", "category": "video", "licencePolicy": "CC metadata is mandatory" },
+      { "file": "kindle-audible.json", "rosterSource": "Kindle/Audible", "category": "purchase", "licencePolicy": "purchase" },
+      { "file": "kobo.json", "rosterSource": "Kobo", "category": "purchase", "licencePolicy": "purchase" },
+      { "file": "google-books.json", "rosterSource": "Google Books", "category": "purchase", "licencePolicy": "purchase" },
+      { "file": "sarasavi.json", "rosterSource": "Sarasavi", "category": "purchase", "licencePolicy": "purchase" },
+      { "file": "vijitha-yapa.json", "rosterSource": "Vijitha Yapa", "category": "purchase", "licencePolicy": "purchase" },
+      { "file": "godage.json", "rosterSource": "Godage", "category": "purchase", "licencePolicy": "purchase" },
+      { "file": "overdrive-libby.json", "rosterSource": "OverDrive/Libby", "category": "purchase", "licencePolicy": "purchase" }
+    ],
+    "internalAdapter": {
+      "file": "own-storage.json",
+      "rosterSource": "own-storage (internal)",
+      "category": "own-storage",
+      "licencePolicy": "own-storage",
+      "rule": "A separate own-storage.json descriptor may be used for the internal adapter. It uses a reserved internal origin and is not an external source.",
+      "openItem": "The 'reserved internal origin' is not named in the plan; the baseUrl pattern above admits DNS hostnames only, so the internal origin's literal value must be supplied by the operator (decisions.md blocker B9)."
+    },
+    "totalDescriptorCount": 28
+  },
+  "x-f56-per-adapter-obligation": "For each adapter, the implementation PR must pin the official HTTPS origin and documented query endpoint. Regional or redirected domains must be explicitly listed in that adapter's allowedDomains; they may not be discovered dynamically.",
+  "x-f56-locked-rules-carried": [
+    "HTTPS only; no proxy, no UA spoofing, no IP rotation (PROJECT-CONTEXT-v2-CANONICAL.md §6 Rule 3)",
+    "robots.txt honored; deny-on-disallow",
+    "content-length framing; wire length == EncryptedSource.WireLength",
+    "ciphertext snapshot-bound",
+    "mirror default-OFF (Downloads-root Always-ON override of 2026-09-29 unchanged)",
+    "no source outside the §0 roster; no piracy-aggregator integration",
+    "no neon green in any success/progress/error/retry state"
+  ]
+}
