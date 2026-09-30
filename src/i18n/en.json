@@ -527,6 +527,90 @@
       "overdriveLibby": "OverDrive/Libby",
       "ownStorage": "Own storage"
     },
+    "registry": {
+      "title": "Search sources",
+      "subtitle": "Operator-added custom sources. One shared form writes one encrypted registry.",
+      "add": "Add source",
+      "edit": "Edit source",
+      "pause": "Pause",
+      "resume": "Resume",
+      "saved": "Source saved: {{id}}",
+      "storeTarget": "registry · {{count}} source(s)",
+      "readonly": "read-only until the operator store reconnects",
+      "presets": "Preset templates",
+      "removed": "{{id}} removed from the registry",
+      "removeRefused": "Remove refused: {{reason}}",
+      "card": {
+        "label": "Add a custom search source"
+      },
+      "preset": {
+        "custom": "Custom",
+        "pinned": "pinned allowlist"
+      },
+      "field": {
+        "name": "Name",
+        "category": "Category",
+        "baseUrl": "Base URL (HTTPS only)",
+        "allowedDomains": "Allowed domains (one per line)",
+        "queryMethod": "Method",
+        "queryPath": "Path",
+        "parseContract": "Parse contract (pinned at add-time)",
+        "parseFormat": "Response format",
+        "resultSelector": "Result selector",
+        "fieldMappings": "Field mappings (field=source/path)"
+      },
+      "category": {
+        "codeHosting": "Code hosting",
+        "vendorDownload": "Vendor download",
+        "publicArchive": "Public archive",
+        "ownStorageNas": "Own storage (NAS)"
+      },
+      "contract": {
+        "pinned": "contract pinned",
+        "unpinned": "contract not confirmed"
+      },
+      "state": {
+        "permanent": "permanent",
+        "paused": "paused"
+      },
+      "status": {
+        "reachable": "reachable",
+        "robotsOk": "robots-ok",
+        "rateLimit": "rate-limit hits",
+        "lastError": "last error",
+        "none": "none",
+        "lastActive": "last active",
+        "never": "never",
+        "fetchDisabled": "Fetch disabled: {{reason}}"
+      },
+      "list": {
+        "empty": "No custom sources yet. Presets are pinned; a custom source needs a confirmed parse contract."
+      },
+      "probe": {
+        "run": "Probe source",
+        "idle": "not probed",
+        "ok": "reachable",
+        "unreachable": "unreachable",
+        "robotsOk": "robots allowed",
+        "robotsUnknown": "robots unknown",
+        "confirm": "Operator confirms this parse contract",
+        "confirmRequired": "Confirm the auto-suggested parse contract before saving (no runtime discovery after the pin)."
+      },
+      "ratelimit": {
+        "note": "Hard defaults, not overridable: {{conc}} concurrent / {{rpm}} rpm / {{timeout}}s timeout; per-search fan-out cap 8."
+      },
+      "remove": {
+        "label": "Remove",
+        "confirm": {
+          "title": "Remove this source?",
+          "body": "Removing {{name}} (last active {{lastActiveAt}}) drops it from the registry on the next persist."
+        }
+      },
+      "provenance": {
+        "ok": "provenance complete",
+        "blocked": "Fetch disabled: {{reason}}"
+      }
+    },
     "v2": {
       "hero": {
         "subline": "One bar, every compiled source. Your query leaves this host only when you submit.",

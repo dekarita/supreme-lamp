@@ -1,8 +1,16 @@
 // [F41 plan §5.7] Settings page: install kit (InstallGuide), appearance
 // (theme/scale/language mirroring the TopBar toggles), migration notes table
 // (F38 -> v2 id policy).
+// [F58 §2] Canonical CUSTOM SOURCE REGISTRY surface: the "Search sources" card
+// holds the operator source list (list + add + edit + pause + remove, with the
+// per-source reachable/robots/rate-limit/last-error status row) and mounts the
+// SAME shared SourceForm the search AdvancedPanel mounts - one component, one
+// store (src/search/custom-source-store.ts), two mount points.
+import { useState } from "react";
 import { Settings as SettingsIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { SourceForm } from "@/components/search/SourceForm";
+import { SourceRegistryList } from "@/components/search/SourceRegistryList";
 import { Card } from "@/components/primitives/Data";
 import { Button } from "@/components/primitives/Button";
 import { Toggle, Chip } from "@/components/primitives/Chip";
@@ -19,6 +27,8 @@ export default function Settings() {
   const setScale = useScaleStore((s) => s.setScale);
   const lang = useLangStore((s) => s.lang);
   const setLang = useLangStore((s) => s.setLang);
+  // [F58 §2] editId drives the shared form into edit mode on the canonical surface.
+  const [editId, setEditId] = useState<string | null>(null);
 
   return (
     <div>
@@ -54,6 +64,18 @@ export default function Settings() {
             <Toggle checked={lang === "si"} onChange={(v) => setLang(v ? "si" : "en")} label={t("toggle.language.label")} />
             <span className="text-sm text-secondary">{lang === "si" ? "සිංහල" : "English"}</span>
             <Chip tone="warning">Sinhala strings marked for operator native review</Chip>
+          </div>
+        </div>
+      </Card>
+
+      {/* [F58 §2] CUSTOM SOURCE REGISTRY (canonical surface). Additive: nothing on
+          this page changes the mirror opt-in model - the mirror stays default-OFF
+          with the F51 Downloads-root override and no workflow dispatch lives here. */}
+      <Card title={t("search.registry.title")} className="mb-4">
+        <div className="flex flex-col gap-3">
+          <SourceRegistryList onEdit={(id) => setEditId(id)} />
+          <div id="f56.search.v2.sourcesFormMount.settings" data-testid="source-form-mount" className="rounded border border-default bg-base p-2">
+            <SourceForm surface="settings" editId={editId} onDone={() => setEditId(null)} />
           </div>
         </div>
       </Card>

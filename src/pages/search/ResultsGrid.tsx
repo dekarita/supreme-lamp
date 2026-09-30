@@ -16,6 +16,7 @@ import { FixedSizeList, type ListChildComponentProps } from "react-window";
 import { selectVisibleResults, useSearchStore } from "@/stores/searchStore";
 import { useToastStore } from "@/stores/toastStore";
 import { requestFetchStub } from "@/lib/fetchStub";
+import { customSources, evaluateResultProvenance } from "@/search/custom-source-store";
 import type { SearchResult } from "@/api/search";
 import { camel, formatActualBytes, licenceStyle, validatedHttpsUrl } from "./tokens";
 
@@ -117,6 +118,10 @@ export function ResultsGrid() {
       const retryable = Boolean(ad && (ad.status === "failed" || ad.status === "timed-out" || ad.status === "rate-limited"));
       const selected = selectedIds.includes(r.resultId);
       const direct = validatedHttpsUrl(r.sourceUrl);
+      // [F58 §3] PROVENANCE-6 verdict for CUSTOM-source rows: computed here, pure,
+      // so a re-render never writes the store. External-roster rows are untouched.
+      const prov = evaluateResultProvenance(customSources, r);
+      const provRow = prov.custom && prov.applies;
       return (
         <div
           id={"f56.search.resultRow." + sfx}
@@ -208,14 +213,32 @@ export function ResultsGrid() {
               )}
             </div>
 
+            {provRow ? (
+              <span
+                id={"f56.search.v2.cardProvenance." + sfx}
+                role="gridcell"
+                data-testid="card-provenance"
+                data-fetch-enabled={prov.fetchEnabled ? "true" : "false"}
+                title={prov.reason || t("search.registry.provenance.ok")}
+                className={"block truncate text-[10px] leading-none " + (prov.fetchEnabled ? "text-tertiary" : "text-danger")}
+              >
+                {prov.fetchEnabled ? t("search.registry.provenance.ok") : t("search.registry.provenance.blocked", { reason: prov.reason || "provenance-incomplete" })}
+              </span>
+            ) : null}
+
             <span id={"f56.search.resultActions." + sfx} role="gridcell" className="flex items-center gap-1">
               <button
                 id={"f56.search.resultFetch." + sfx}
                 data-testid="card-fetch"
                 type="button"
-                title={t("search.actions.comingSoon")}
+                title={provRow && !prov.fetchEnabled ? prov.reason || t("search.actions.comingSoon") : t("search.actions.comingSoon")}
+                disabled={provRow && !prov.fetchEnabled}
+                data-provenance-block={provRow && !prov.fetchEnabled ? "true" : "false"}
                 aria-label={t("search.actions.fetch")}
                 onClick={() => {
+                  // [F58 §3] PROVENANCE-6 refused it: no fetch row is recorded and
+                  // no stub is even reached - the refusal is the whole behaviour.
+                  if (provRow && !prov.fetchEnabled) return;
                   // Stub: no request is constructed, no byte is fetched. The
                   // card records a pending fetch row (the rail shows it) and
                   // says the honest thing: "coming in F56-d".

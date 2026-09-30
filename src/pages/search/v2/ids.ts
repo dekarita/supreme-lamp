@@ -89,3 +89,35 @@ export const F56C_V3_SEARCH_IDS = [
 ] as const;
 
 export const F56C_V3_SEARCH_TEMPLATES = ["f56.search.v2.labClassifierMsg"] as const;
+
+// [F58] Additive F58 ids for the CUSTOM SOURCE REGISTRY surfaces: the shared
+// SourceForm (mounted at Settings AND the AdvancedPanel - one component, two
+// mount points), the canonical registry list, and the per-result provenance row.
+// Appended only: the frozen 219, the v2 lock and the v3 lock stay untouched
+// (one-directional id rule), and every id is a static template root whose
+// instances are `<template>.<stable suffix>` - never a title or a URL.
+export const F58_SEARCH_IDS = [
+  "f56.search.v2.sourcesCard",
+  "f56.search.v2.sourcesForm",
+  "f56.search.v2.sourcesFormMount",
+  "f56.search.v2.sourcesFormName",
+  "f56.search.v2.sourcesFormCategory",
+  "f56.search.v2.sourcesFormBaseUrl",
+  "f56.search.v2.sourcesFormDomains",
+  "f56.search.v2.sourcesFormMethod",
+  "f56.search.v2.sourcesFormPath",
+  "f56.search.v2.cardProvenance",
+] as const;
+
+export const F58_SEARCH_TEMPLATES = [
+  "f56.search.v2.sourcesFormMount",
+  "f56.search.v2.sourcesFormName",
+  "f56.search.v2.sourcesFormCategory",
+  "f56.search.v2.sourcesFormBaseUrl",
+  "f56.search.v2.sourcesFormDomains",
+  "f56.search.v2.sourcesFormMethod",
+  "f56.search.v2.sourcesFormPath",
+  "f56.search.v2.cardProvenance",
+] as const;
+
+export const F58_ALL_IDS = [...F58_SEARCH_IDS];

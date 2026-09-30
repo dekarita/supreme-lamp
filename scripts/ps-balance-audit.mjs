@@ -332,6 +332,9 @@ const targets = [
   'tests/f49-mirror-runtime.ps1',
         'tests/f52-mirror-telemetry.ps1',
         'tests/f53-content-length.ps1',
+  // [F58 §1] custom-source store module + its lab (new surfaces, same audit).
+  'payloads/ghrdp-sources.ps1',
+  'tests/f58-source-store.ps1',
 ];
 
 let failed = 0;

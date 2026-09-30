@@ -194,6 +194,10 @@ def main():
         'tests/f49-mirror-runtime.ps1',
         'tests/f52-mirror-telemetry.ps1',
         'tests/f53-content-length.ps1',
+        # [F58 §1] the custom-source store module + its lab are new surfaces: the
+        # sandbox has no PowerShell interpreter, so structure is audited here.
+        'payloads/ghrdp-sources.ps1',
+        'tests/f58-source-store.ps1',
     ]
     failed = 0
     for t in targets:
