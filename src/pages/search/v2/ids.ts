@@ -121,3 +121,22 @@ export const F58_SEARCH_TEMPLATES = [
 ] as const;
 
 export const F58_ALL_IDS = [...F58_SEARCH_IDS];
+
+// [F56-d] TRANSPORT LANE additive ids: Fetched-root file-arrival list, own-cred encrypted notice, etc.
+// Appended only - frozen 219, v2, v3, F58 locks untouched.
+export const F56D_SEARCH_IDS = [
+  "f56.search.v2.credEncrypted",
+  "f56.search.v2.credSubmitting",
+  "f56.search.v2.fetchStarted",
+  "f56.search.v2.fetchCancelled",
+  "f57.explorer.v2.fetchedList",
+  "f57.explorer.v2.fetchedFile",
+  "f57.explorer.v2.reservedBadge.empty",
+] as const;
+
+export const F56D_SEARCH_TEMPLATES = [
+  "f57.explorer.v2.fetchedFile",
+  "f57.explorer.v2.reservedBadge.empty",
+] as const;
+
+export const F56D_ALL_IDS = [...F56D_SEARCH_IDS];
