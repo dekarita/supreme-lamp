@@ -3212,6 +3212,14 @@ jobs:
           grep -qF 'IsNullOrWhiteSpace($secret)' /tmp/f56d-fixture.txt
           grep -qF "rpcArgs = '--enable-rpc --rpc-listen-all=false" /tmp/f56d-fixture.txt
           if grep -qF '$rpcArgs = @(' /tmp/f56d-fixture.txt; then echo 'F56-d: fixture builds its option vector as an array literal again' >&2; exit 1; fi
+          # [F56-d loop 4 survivor] The fixture must start the daemon the way main.yml
+          # does - a SYSTEM scheduled task - because the Windows runner kills a step's
+          # process tree when the step ends; a step-local daemon answers RPC inside the
+          # fixture step and actively refuses the labs step (observed in run 36842954708).
+          grep -qF 'task-system' /tmp/f56d-fixture.txt
+          grep -qF 'GhrdpAria2Lab' /tmp/f56d-fixture.txt
+          grep -qF 'survivor' /tmp/f56d-fixture.txt
+          if grep -qF 'Start-Process -FilePath $exe -ArgumentList $rpcArgs -PassThru -WindowStyle Hidden' /tmp/f56d-fixture.txt; then echo 'F56-d: fixture still relies on a step-local daemon' >&2; exit 1; fi
           # The lab must fail closed on a public bind and read the RUNNING daemon's
           # own options - the helper's hardcoded pin table alone was self-fulfilling.
           lab=tests/f56d-aria2-jsonrpc.ps1
@@ -3222,6 +3230,7 @@ jobs:
           grep -qF 'loopback only is mandatory' "$lab"
           grep -qF 'GHRDP_F56D_ARIA2_REQUIRED' "$lab"
           grep -qF 'Pause-Aria2All' "$lab"
+          grep -qF 'Get-F56dRpcReason' "$lab"
           # The creds lab used to warn "should wipe" because `Array\.Clear` never
           # matches the real token `[Array]::Clear`; it now asserts the wipe and
           # EXECUTES the shipped decrypt/wipe functions.
@@ -3344,11 +3353,14 @@ jobs:
           $dir = 'D:\RDP-Storage\Fetched'
           try { New-Item -ItemType Directory -Path $dir -Force | Out-Null } catch { $dir = Join-Path $env:RUNNER_TEMP 'f56d-fetched'; New-Item -ItemType Directory -Path $dir -Force | Out-Null }
           Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_F56D_ARIA2_DIR=' + $dir)
-          $log = Join-Path $env:RUNNER_TEMP 'f56d-aria2.log'
-          $outLog = Join-Path $env:RUNNER_TEMP 'f56d-aria2-out.log'
-          $errLog = Join-Path $env:RUNNER_TEMP 'f56d-aria2-err.log'
-          $probeOut = Join-Path $env:RUNNER_TEMP 'f56d-aria2-probe-out.log'
-          $probeErr = Join-Path $env:RUNNER_TEMP 'f56d-aria2-probe-err.log'
+          # C:\Users\Public is writable by the runner admin AND by the SYSTEM account
+          # the daemon has to run under (see the task-system launch mode below).
+          $logDir = 'C:\Users\Public'
+          $log = Join-Path $logDir 'f56d-aria2.log'
+          $outLog = Join-Path $logDir 'f56d-aria2-out.log'
+          $errLog = Join-Path $logDir 'f56d-aria2-err.log'
+          $probeOut = Join-Path $logDir 'f56d-aria2-probe-out.log'
+          $probeErr = Join-Path $logDir 'f56d-aria2-probe-err.log'
           Remove-Item -LiteralPath $log, $outLog, $errLog, $probeOut, $probeErr -Force -ErrorAction SilentlyContinue
           # ONE concatenated argument string, exactly like main.yml's GhrdpAria2 task.
           $rpcArgs = '--enable-rpc --rpc-listen-all=false --rpc-listen-port=6800 --rpc-secret=' + $secret + ' --dir=' + $dir + ' --max-connection-per-server=8 --split=8 --min-split-size=1M --follow-metalink=false --follow-torrent=false --check-integrity=true --auto-file-renaming=false --allow-overwrite=true --file-allocation=none --no-conf --log=' + $log + ' --log-level=notice'
@@ -3381,23 +3393,46 @@ jobs:
           $ver = ''
           $modeResults = @()
           $usedMode = ''
-          foreach ($mode in @('real-hidden','real-visible','shim-visible')) {
+          $survivor = $false
+          foreach ($mode in @('task-system','real-hidden','real-visible','shim-visible')) {
               if ($proc -and -not $proc.HasExited) { try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { } }
               $target = $exe
               if ($mode -eq 'shim-visible' -and (Test-Path -LiteralPath 'C:\ProgramData\chocolatey\bin\aria2c.exe')) { $target = 'C:\ProgramData\chocolatey\bin\aria2c.exe' }
               $pid0 = ''
               $exited = ''
               $rc0 = ''
+              $waits = 20
               try {
-                  if ($mode -eq 'real-hidden') { $proc = Start-Process -FilePath $target -ArgumentList $rpcArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog -ErrorAction Stop }
+                  if ($mode -eq 'task-system') {
+                      # [F56-d loop 4] main.yml's GhrdpAria2 pattern. The Windows runner
+                      # puts every step in a job object and kills the step's whole
+                      # process tree when the step ends, so a Start-Process daemon
+                      # answers RPC inside this step and actively refuses the
+                      # connection in the labs step - which is exactly what the
+                      # previous run showed. A SYSTEM scheduled task is not a child of
+                      # this step, so it survives and serves the lab, and the daemon
+                      # is started the same way production starts it.
+                      try { Unregister-ScheduledTask -TaskName 'GhrdpAria2Lab' -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+                      $action = New-ScheduledTaskAction -Execute $target -Argument $rpcArgs
+                      $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(3)
+                      $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+                      $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+                      Register-ScheduledTask -TaskName 'GhrdpAria2Lab' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+                      Start-ScheduledTask -TaskName 'GhrdpAria2Lab' -ErrorAction Stop
+                      $waits = 30
+                      $pid0 = 'task'
+                      Write-Host ('[F56-d fixture] launch task-system (GhrdpAria2Lab, SYSTEM) exe=' + $target + ' - survives the step boundary')
+                  } elseif ($mode -eq 'real-hidden') { $proc = Start-Process -FilePath $target -ArgumentList $rpcArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog -ErrorAction Stop }
                   else { $proc = Start-Process -FilePath $target -ArgumentList $rpcArgs -PassThru -RedirectStandardOutput $outLog -RedirectStandardError $errLog -ErrorAction Stop }
-                  $pid0 = [string]$proc.Id
-                  Write-Host ('[F56-d fixture] launch ' + $mode + ' pid=' + $pid0 + ' exe=' + $target)
+                  if ($mode -ne 'task-system') {
+                      $pid0 = [string]$proc.Id
+                      Write-Host ('[F56-d fixture] launch ' + $mode + ' pid=' + $pid0 + ' exe=' + $target + ' (step-local: dies with this step)')
+                  }
               } catch {
                   Write-Host ('[F56-d fixture] launch ' + $mode + ' failed: ' + $_.Exception.Message)
                   $proc = $null
               }
-              for ($i = 0; $i -lt 20; $i++) {
+              for ($i = 0; $i -lt $waits; $i++) {
                   Start-Sleep -Seconds 1
                   $ver = Test-F56dRpc
                   if ($ver) { break }
@@ -3405,7 +3440,7 @@ jobs:
               }
               if ($proc) { $exited = [string]$proc.HasExited; try { if ($proc.HasExited) { $rc0 = [string]$proc.ExitCode } } catch { } }
               $modeResults += ('mode=' + $mode + ' pid=' + $pid0 + ' exited=' + $exited + ' rc=' + $rc0)
-              if ($ver) { $usedMode = $mode; break }
+              if ($ver) { $usedMode = $mode; $survivor = ($mode -eq 'task-system'); break }
           }
           $logLines = @(Read-F56dTail $log 12)
           $outLines = @(Read-F56dTail $outLog 6)
@@ -3423,6 +3458,13 @@ jobs:
               Publish-F56dDiag ('stderr tail :: ' + (@($errLines) -join ' | '))
               Publish-F56dDiag ('netstat 6800 :: ' + (@($listen) -join ' | '))
               throw ('F56-d: aria2c 1.36.0 daemon is not answering JSON-RPC on 127.0.0.1:6800 - probes and tails are in the ::warning:: annotations above (exe=' + $exe + ')')
+          }
+          if (-not $survivor) {
+              # Answering RPC here is not enough: the lab runs in the NEXT step, and a
+              # step-local daemon is killed when this step ends. Refuse loudly instead
+              # of handing the lab a transport that will be gone.
+              Publish-F56dDiag ('step-local daemon only :: mode=' + $usedMode + ' answered RPC but the Windows runner kills the step process tree at step end, so the labs step would find nothing; only the task-system mode can serve the lab')
+              throw 'F56-d: aria2c answered RPC only from a step-local process - it cannot serve the labs step (the runner kills the step process tree at step end)'
           }
           $loopbackOnly = $true
           foreach ($row in @($listen)) {
@@ -3453,7 +3495,7 @@ jobs:
               Write-Host ('[F56-d fixture] loopback only: no JSON-RPC answer on ' + $pub + ':6800')
           } else { Write-Host '[F56-d fixture] no non-loopback IPv4 address to probe - behavioural loopback cell advisory' }
           Add-Content -Path $env:GITHUB_ENV -Value 'GHRDP_F56D_ARIA2_REQUIRED=1'
-          Publish-F56dEvidence ('ready :: aria2c ' + $ver + ' on 127.0.0.1:6800 via ' + $usedMode + ', option-parse rc=' + $helpRc + ', secretLen=' + $secret.Length + ', REQUIRED=1 for the lab')
+          Publish-F56dEvidence ('ready :: aria2c ' + $ver + ' on 127.0.0.1:6800 via ' + $usedMode + ' (survives the step boundary), option-parse rc=' + $helpRc + ', secretLen=' + $secret.Length + ', REQUIRED=1 for the lab')
           if ($env:GITHUB_STEP_SUMMARY) {
               Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## F56-d aria2c fixture'
               Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('- exe=' + $exe + ' sha256=' + $sha + ' version=' + $ver + ' dir=' + $dir + ' mode=' + $usedMode + ' option-parse-rc=' + $helpRc)

@@ -38,10 +38,23 @@ if (-not (Test-Path -LiteralPath $mod)) {
 . $mod
 
 # --- version + transport reachability -------------------------------------
+# A bare "not reachable" cost a whole CI round in loop 4 (the daemon had been
+# killed at the end of the fixture step). Always name the transport-level reason.
+function Get-F56dRpcReason {
+    $why = ''
+    try {
+        $diag = Invoke-Aria2Rpc -Method 'aria2.getVersion' -Params @() -Secret $sec
+        if (-not $diag.ok -and $diag.error) { $why = [string]$diag.error.message }
+    } catch { $why = $_.Exception.Message }
+    if (-not $why) { $why = 'unknown (no response body and no exception text)' }
+    return $why
+}
 $verRes = Get-Aria2Version -Secret $sec
 Write-Host ('[F56-d] aria2 version: ' + $verRes.version + ' ok=' + $verRes.ok)
 if (-not $verRes.ok) {
-    if ($required) { Fail-Lab 'aria2 RPC not reachable on 127.0.0.1:6800 while REQUIRED=1' }
+    $why = Get-F56dRpcReason
+    Write-Host ('::warning title=F56-d aria2 lab::RPC unreachable detail: ' + $why)
+    if ($required) { Fail-Lab ('aria2 RPC not reachable on 127.0.0.1:6800 while REQUIRED=1 :: ' + $why) }
     Write-Host '[F56-d] aria2 RPC not reachable - SKIP (advisory; transport unavailable)'
     exit 0
 }
