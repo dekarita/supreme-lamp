@@ -11,8 +11,10 @@ $cells = @()
 # Safety net: an UNEXPECTED terminating error must still name itself (and its
 # position) instead of dying silently behind an unreachable job log.
 trap {
+    # Both the message and the POSITION travel as workflow commands: the raw job log
+    # is unreachable from every environment, so anything printed plainly is lost.
     Write-Host ('::error title=F56-d qbt lab::' + $_.Exception.Message)
-    Write-Host ('[F56-d] at: ' + (([string]$_.InvocationInfo.PositionMessage) -replace "`r?`n", ' '))
+    Write-Host ('::error title=F56-d qbt at::' + (([string]$_.InvocationInfo.PositionMessage) -replace "`r?`n", ' | '))
     Write-Host ('::notice::F56-d qbt lane cells: ' + (@($script:cells) -join ' | '))
     exit 1
 }
@@ -121,10 +123,10 @@ Pass-Lab 'secret-hygiene (no log path, env-sourced, memory wiped)'
 
 # F: reachability failures are LABELED, never a silent pass and never an
 # unauthenticated fallback. 127.0.0.1:1 has nothing listening.
-$dead = Connect-GhrdpQbt -Address '127.0.0.1' -Port 1
+try { $dead = Connect-GhrdpQbt -Address '127.0.0.1' -Port 1 } catch { Fail-Lab 'fail-closed-connect' $_.Exception.Message }
 if ($dead.ok) { Fail-Lab 'fail-closed' 'a dead WebUI reported a successful session' }
 if (-not $dead.reason) { Fail-Lab 'fail-closed' 'the failure carried no labeled reason' }
-$ready = Get-GhrdpQbtTransportReady -Address '127.0.0.1' -Port 1
+try { $ready = Get-GhrdpQbtTransportReady -Address '127.0.0.1' -Port 1 } catch { Fail-Lab 'fail-closed-ready' $_.Exception.Message }
 if ($ready.ready) { Fail-Lab 'fail-closed' 'a dead WebUI reported transport ready' }
 Pass-Lab ('fail-closed (labeled reason: ' + $dead.reason + ')')
 

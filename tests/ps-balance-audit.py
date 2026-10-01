@@ -131,6 +131,14 @@ def audit(name, text):
         if kind.startswith('open') or kind.startswith('close'):
             continue
         problems.append('%s @ line %d' % (kind, line))
+    # [F56-d loop 5] typed-parameter collision guard. PowerShell variable names are
+    # case-INSENSITIVE, so assigning a scalar to a `[hashtable]$X` parameter variable
+    # (e.g. `$body = ''` against `[hashtable]$Body`) throws at RUN time - and this
+    # sandbox has no interpreter, so the structure has to catch it here.
+    for m in re.finditer(r'\[hashtable\]\$(\w+)', text):
+        name = m.group(1)
+        if re.search(r'(?im)^\s*\$' + re.escape(name) + r'''\s*=\s*[\'"][^\'"]*[\'"]\s*(?:#.*)?$''', text):
+            problems.append('assigns a string to the [hashtable] parameter $%s (case-insensitive collision)' % name)
     return problems
 
 

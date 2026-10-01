@@ -331,11 +331,14 @@ function Invoke-GhrdpQbtApi {
         $r = Invoke-WebRequest @req
         return @{ ok = $true; status = [int]$r.StatusCode; body = [string]$r.Content; session = $WebSession; error = $null }
     } catch {
+        # PowerShell variable names are case-INSENSITIVE: a local `$body` here would
+        # be the same variable as the `[hashtable]$Body` parameter and assigning ''
+        # to it throws (found by the windows-native lab). Keep the text separate.
         $code = -1
-        $body = ''
+        $bodyText = ''
         try { $code = [int]$_.Exception.Response.StatusCode } catch { }
-        try { $body = [string]$_.ErrorDetails.Message } catch { }
-        return @{ ok = $false; status = $code; body = $body; session = $WebSession; error = $_.Exception.Message }
+        try { $bodyText = [string]$_.ErrorDetails.Message } catch { }
+        return @{ ok = $false; status = $code; body = $bodyText; session = $WebSession; error = $_.Exception.Message }
     }
 }
 

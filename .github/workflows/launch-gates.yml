@@ -2,6 +2,9 @@ name: launch-gates
 on:
   pull_request:
   push:
+permissions:
+  contents: read
+  statuses: write
 jobs:
   gates:
     runs-on: ubuntu-latest
@@ -3217,6 +3220,12 @@ jobs:
           grep -qF 'Get-F56dQbtSession' "$srv"
           grep -qF 'Remove-GhrdpQbtTorrent' "$srv" || { echo 'F56-d: torrent cancel is not routed to the lane' >&2; exit 1; }
           grep -qF "details = @{ transport = 'torrent'; reason" "$srv" || { echo 'F56-d: torrent unavailability is not labeled' >&2; exit 1; }
+          # §4 own-cred torrent artifact: Basic auth stays in memory, the artifact
+          # lands in a %TEMP% .torrent file, and the finally block always deletes it.
+          grep -qF 'QbtTorrentMaxBytes' "$srv" || { echo 'F56-d: no torrent artifact size cap' >&2; exit 1; }
+          grep -qF "Join-Path \$env:TEMP ('ghrdp-'" "$srv" || { echo 'F56-d: torrent artifact is not staged under %TEMP%' >&2; exit 1; }
+          grep -qF 'Remove-Item -LiteralPath $torrentTmp' "$srv" || { echo 'F56-d: torrent artifact temp file is not deleted' >&2; exit 1; }
+          grep -qF "'Basic ' + \$basic" "$srv" || { echo 'F56-d: own-cred torrent fetch does not use in-memory Basic auth' >&2; exit 1; }
           # §1 loop 5: the pinned aria2c CLI + a REAL RPC readiness probe in main.yml.
           grep -qF -- '--max-connection-per-server=16 --split=16 --min-split-size=20M --continue=true' "$wf" || { echo 'F56-d: aria2c CLI pins drifted' >&2; exit 1; }
           grep -qF 'session.gz' "$wf" || { echo 'F56-d: aria2c session path drifted' >&2; exit 1; }
@@ -3286,7 +3295,11 @@ jobs:
                       target_url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID)
                   } | ConvertTo-Json -Compress
                   Invoke-RestMethod -Uri ('https://api.github.com/repos/' + $env:GITHUB_REPOSITORY + '/statuses/' + $env:GITHUB_SHA) -Method Post -Headers @{ Authorization = ('Bearer ' + $env:GH_TOKEN); Accept = 'application/vnd.github+json'; 'User-Agent' = 'ghrdp-f56d' } -Body $st -ContentType 'application/json' -TimeoutSec 30 | Out-Null
-              } catch { Write-Host ('[F56-d] status publish failed: ' + $_.Exception.Message) }
+              } catch {
+                  $detail = ''
+                  try { $detail = [string]$_.ErrorDetails.Message } catch { }
+                  Write-Host ('::warning title=F56-d qbt status::publish failed: ' + $_.Exception.Message + ' ' + $detail)
+              }
           }
           if ($env:GITHUB_STEP_SUMMARY) {
               Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## F56-d qbt torrent lane lab'
