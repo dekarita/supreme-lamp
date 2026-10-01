@@ -3167,6 +3167,12 @@ jobs:
           grep -qF 'Pause-Aria2All' tests/f56d-aria2-jsonrpc.ps1
           if grep -qF 'encrypt failed (advisory)' tests/f56d-post-fetch-e2e.ps1; then echo 'F56-d: post-fetch encrypt leg is advisory again' >&2; exit 1; fi
           grep -qF 'ghrdp-fetched-arrival' tests/f56d-post-fetch-e2e.ps1
+          # The arrival event needs a real producer: watcher -> progress.json ->
+          # /ws `.progress` -> shared reader -> UI event.
+          grep -qF 'Get-F56dFetchedArrivals' payloads/ghrdp-watcher.ps1
+          grep -qF '$prog.fetchedFiles = @(Get-F56dFetchedArrivals)' payloads/ghrdp-watcher.ps1
+          test -f src/lib/fetchedArrivals.ts
+          grep -qF 'extractFetchedArrivals' src/hooks/useDashboardPolling.ts
           echo 'F56-d gates PASS'
 
 
@@ -3560,6 +3566,34 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $script:F56dSummary = @()
+          # [F56-d loop 3] Run each lab through one runner that captures its output,
+          # puts the tail in the job summary and fails the step with the tail in the
+          # message. Before this, a lab that threw printed into a log the sandbox
+          # cannot read (the check-run annotation cap drops late annotations).
+          function Invoke-F56dLab([string]$Rel) {
+              $p = Join-Path $env:GITHUB_WORKSPACE $Rel
+              Write-Host ('=== ' + $Rel + ' ===')
+              $out = ''
+              $rc = 1
+              try {
+                  $out = (& $p *>&1 | Out-String)
+                  $rc = $LASTEXITCODE
+              } catch {
+                  $rc = 1
+                  $out = ($out + "`n" + ($_ | Out-String))
+              }
+              Write-Host $out
+              $lines = @(($out -split "`r?`n") | Where-Object { $_.Trim() -ne '' })
+              $tail = @($lines | Select-Object -Last 8)
+              if ($rc -ne 0) {
+                  $script:F56dSummary += ('- FAIL ' + $Rel + ' exit=' + $rc + ' :: ' + ($tail -join ' | '))
+                  Write-Host ('::error title=F56-d lab ' + $Rel + '::exit=' + $rc + ' ' + ($tail -join ' | '))
+                  throw ('F56-d: lab ' + $Rel + ' failed with exit ' + $rc + ' :: ' + ($tail -join ' | '))
+              }
+              $script:F56dSummary += ('- PASS ' + $Rel + ' :: ' + ($tail -join ' | '))
+              Write-Host ('::notice title=F56-d lab ' + $Rel + '::' + ($tail -join ' | '))
+          }
           foreach ($f in @('payloads\ghrdp-aria2.ps1', 'tests\f56d-aria2-jsonrpc.ps1', 'tests\f56d-post-fetch-e2e.ps1', 'tests\f56d-creds-memory.ps1', 'tests\f56d-search-input.ps1')) {
               $errs = $null
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
@@ -3568,12 +3602,17 @@ jobs:
                   throw ('F56-d: PowerShell syntax error in ' + $f)
               }
           }
-          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-search-input.ps1')
-          if ($LASTEXITCODE -ne 0) { throw ('F56-d: SEARCH_INPUT lab failed with exit ' + $LASTEXITCODE) }
-          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-creds-memory.ps1')
-          if ($LASTEXITCODE -ne 0) { throw ('F56-d: creds memory lab failed with exit ' + $LASTEXITCODE) }
-          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-post-fetch-e2e.ps1')
-          if ($LASTEXITCODE -ne 0) { throw ('F56-d: post-fetch e2e lab failed with exit ' + $LASTEXITCODE) }
-          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-aria2-jsonrpc.ps1')
-          if ($LASTEXITCODE -ne 0) { throw ('F56-d: aria2 JSON-RPC lab failed with exit ' + $LASTEXITCODE) }
+          Push-Location $env:GITHUB_WORKSPACE
+          try {
+              Invoke-F56dLab 'tests\f56d-search-input.ps1'
+              Invoke-F56dLab 'tests\f56d-creds-memory.ps1'
+              Invoke-F56dLab 'tests\f56d-post-fetch-e2e.ps1'
+              Invoke-F56dLab 'tests\f56d-aria2-jsonrpc.ps1'
+          } finally {
+              Pop-Location
+              if ($env:GITHUB_STEP_SUMMARY -and @($script:F56dSummary).Count -gt 0) {
+                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## F56-d transport lane labs'
+                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value (@($script:F56dSummary) -join "`n")
+              }
+          }
           Write-Host 'F56-d transport labs PASS'

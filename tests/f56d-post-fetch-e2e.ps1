@@ -55,23 +55,31 @@ if (Test-Path -LiteralPath $cfgPath) {
     Write-Host '[F56-d] config.json not found - mirror default OFF preserved (no file)'
 }
 
-# [F56-d loop 3] Notify contract: the FileExplorer empty state is replaced ONLY
-# by the real file-arrival event, so assert both ends of that wiring by token
-# (server emits fetchedFiles on the /ws progress frame; the UI hook re-dispatches
-# ghrdp-fetched-arrival). No file-API call is involved (F57 owns real file ops).
-$srvPath = Join-Path $PSScriptRoot '..' 'payloads' 'ghrdp-server.ps1'
+# [F56-d loop 3] Notify contract, asserted end to end by token: the WATCHER
+# publishes `fetchedFiles` (bounded arrivals in the Fetched root) into
+# progress.json, the Rust /ws bridge forwards it verbatim under `.progress`, and
+# the UI hook re-dispatches 'ghrdp-fetched-arrival' through the shared reader
+# src/lib/fetchedArrivals.ts. No file-API call is involved (F57 owns real file
+# ops). Before loop 3 nothing produced the field, so the event never fired.
+$watcherPath = Join-Path $PSScriptRoot '..' 'payloads' 'ghrdp-watcher.ps1'
 $hookPath = Join-Path $PSScriptRoot '..' 'src' 'hooks' 'useDashboardPolling.ts'
-if (Test-Path -LiteralPath $srvPath) {
-    if ((Get-Content -LiteralPath $srvPath -Raw) -notmatch 'fetchedFiles') { throw 'F56-d: server does not emit fetchedFiles in the progress frame' }
-    Write-Host '[F56-d] notify contract: server emits fetchedFiles'
+$readerPath = Join-Path $PSScriptRoot '..' 'src' 'lib' 'fetchedArrivals.ts'
+if (Test-Path -LiteralPath $watcherPath) {
+    $w = Get-Content -LiteralPath $watcherPath -Raw
+    if ($w -notmatch 'fetchedFiles') { throw 'F56-d: watcher never publishes fetchedFiles (the arrival event would be inert)' }
+    if ($w -notmatch 'Get-F56dFetchedArrivals') { throw 'F56-d: watcher arrival helper missing' }
+    if ($w -notmatch 'D:\\RDP-Storage\\Fetched') { throw 'F56-d: arrival helper does not read the Fetched root' }
+    Write-Host '[F56-d] notify contract: watcher publishes fetchedFiles from the Fetched root'
 }
 if (Test-Path -LiteralPath $hookPath) {
     $hook = Get-Content -LiteralPath $hookPath -Raw
     if ($hook -notmatch 'ghrdp-fetched-arrival') { throw 'F56-d: UI hook does not dispatch ghrdp-fetched-arrival' }
+    if ($hook -notmatch 'extractFetchedArrivals') { throw 'F56-d: UI hook does not read the shared arrival reader' }
     if ($hook -match 'api/fx/list') { throw 'F56-d: Fetched-root poll calls the F45 file API (S3 leak)' }
     Write-Host '[F56-d] notify contract: UI dispatches ghrdp-fetched-arrival, no file-API call'
 }
-Write-Host '[F56-d] file-arrival notify contract asserted (event path, not a simulation)'
+if (-not (Test-Path -LiteralPath $readerPath)) { throw 'F56-d: src/lib/fetchedArrivals.ts missing' }
+Write-Host '[F56-d] file-arrival notify contract asserted (watcher -> /ws -> UI event)'
 # Cleanup
 Remove-Item -LiteralPath $testFile -Force -ErrorAction SilentlyContinue
 Write-Host '[F56-d] post-fetch e2e lab PASS'
