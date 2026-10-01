@@ -341,6 +341,9 @@ const targets = [
   'tests/f56d-post-fetch-e2e.ps1',
   'tests/f56d-creds-memory.ps1',
   'tests/f56d-search-input.ps1',
+  // [F56-d §2] the qBittorrent-nox Tailnet-only torrent lane + its lab.
+  'payloads/ghrdp-qbt.ps1',
+  'tests/f56d-qbt-tailnet.ps1',
 ];
 
 let failed = 0;

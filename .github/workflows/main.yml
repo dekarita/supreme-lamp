@@ -1634,10 +1634,17 @@ jobs:
               }
           }
           if (-not $ok) { Write-Host '::warning::[aria2c] choco install failed - transport will be unavailable (advisory)'; exit 0 }
+          # [F56-d loop 5] Prefer the REAL tool exe over the chocolatey SHIM
+          # (bin\aria2c.exe launches the real tool as a child that owns the port;
+          # probing the shim's path made a dead daemon and a blind probe
+          # indistinguishable - the loop-4 windows-native red).
           $exe = ''
-          foreach ($p in @('C:\ProgramData\chocolatey\bin\aria2c.exe','C:\ProgramData\chocolatey\lib\aria2\tools\aria2c.exe','C:\tools\aria2\aria2c.exe')) {
+          $exeShim = ''
+          foreach ($p in @('C:\ProgramData\chocolatey\lib\aria2\tools\aria2c.exe','C:\tools\aria2\aria2c.exe')) {
               if (Test-Path -LiteralPath $p) { $exe = $p; break }
           }
+          if (Test-Path -LiteralPath 'C:\ProgramData\chocolatey\bin\aria2c.exe') { $exeShim = 'C:\ProgramData\chocolatey\bin\aria2c.exe' }
+          if (-not $exe) { $exe = $exeShim }
           if (-not $exe) { $hit = Get-Command aria2c.exe -ErrorAction SilentlyContinue; if ($hit) { $exe = $hit.Source } }
           if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { Write-Host '::warning::[aria2c] aria2c.exe not found after choco'; exit 0 }
           $hash = ''
@@ -1659,12 +1666,17 @@ jobs:
           $secFile = Join-Path $secDir 'aria2-secret.txt'
           try { [System.IO.File]::WriteAllText($secFile, $secret, (New-Object System.Text.UTF8Encoding($false))); Write-Host '[aria2c] secret persisted to C:\ghrdp\aria2-secret.txt (SYSTEM-only ACL)' } catch { Write-Host ('[aria2c] secret file write failed: ' + $_.Exception.Message) }
           try { icacls.exe $secFile /inheritance:r 2>&1 | Out-Null; icacls.exe $secFile /grant:r 'SYSTEM:(F)' 'Administrators:(F)' 2>&1 | Out-Null; $LASTEXITCODE=0 } catch { }
-          $sessionFile = Join-Path $ariaDir 'aria2.session'
+          # [F56-d §1] session path is the pinned C:\ghrdp\aria2\session.gz
+          # (gzip-compressed session: aria2 reads and writes .gz transparently).
+          $sessionFile = Join-Path $ariaDir 'session.gz'
+          $ariaLog = Join-Path $ariaDir 'aria2.log'
           if (-not (Test-Path -LiteralPath $sessionFile)) { try { New-Item -ItemType File -Path $sessionFile -Force | Out-Null } catch { } }
           $fetchedDir = 'D:\RDP-Storage\Fetched'
           New-Item -ItemType Directory -Path $fetchedDir -Force | Out-Null
           # SYSTEM scheduled task GhrdpAria2 loopback 127.0.0.1:6800
-          $rpcArgs = '--enable-rpc --rpc-listen-all=false --rpc-listen-port=6800 --rpc-secret=' + $secret + ' --dir=' + $fetchedDir + ' --max-connection-per-server=8 --split=8 --min-split-size=1M --follow-metalink=false --follow-torrent=false --check-integrity=true --save-session=' + $sessionFile + ' --input-file=' + $sessionFile + ' --save-session-interval=60'
+          # [F56-d §1] CLI pins: max-conn-per-server=16, split=16, min-split-size=20M,
+          # continue=true (large-artifact transport lane).
+          $rpcArgs = '--enable-rpc --rpc-listen-all=false --rpc-listen-port=6800 --rpc-secret=' + $secret + ' --dir=' + $fetchedDir + ' --max-connection-per-server=16 --split=16 --min-split-size=20M --continue=true --follow-metalink=false --follow-torrent=false --check-integrity=true --save-session=' + $sessionFile + ' --input-file=' + $sessionFile + ' --save-session-interval=60 --log=' + $ariaLog + ' --log-level=notice'
           try { Unregister-ScheduledTask -TaskName 'GhrdpAria2' -Confirm:$false -ErrorAction SilentlyContinue } catch { }
           try {
               $action = New-ScheduledTaskAction -Execute $exe -Argument $rpcArgs
@@ -1675,14 +1687,132 @@ jobs:
               Start-ScheduledTask -TaskName 'GhrdpAria2' -ErrorAction Stop
               Write-Host '[aria2c] GhrdpAria2 SYSTEM task registered + started (127.0.0.1:6800 loopback only)'
           } catch { Write-Host ('[aria2c] task registration failed: ' + $_.Exception.Message + ' - fallback background') }
+          # [F56-d loop 5] Readiness is a real aria2.getVersion JSON-RPC round-trip
+          # (the surface /api/fetch uses) - not just "is something bound to 6800".
           Start-Sleep -Seconds 3
           $listening = $false
-          for ($i=0; $i -lt 15; $i++) {
-              try { $c = Get-NetTCPConnection -LocalPort 6800 -State Listen -ErrorAction SilentlyContinue; if ($c) { $listening = $true; break } } catch { }
+          $rpcOk = $false
+          $rpcVersion = ''
+          $rpcReason = 'no-listener'
+          for ($i=0; $i -lt 20; $i++) {
+              try {
+                  $c = Get-NetTCPConnection -LocalPort 6800 -State Listen -ErrorAction SilentlyContinue
+                  if ($c) { $listening = $true }
+              } catch { }
+              $body = '{"jsonrpc":"2.0","id":"ghrdp","method":"aria2.getVersion","params":["token:' + $secret + '"]}'
+              try {
+                  $r = Invoke-RestMethod -Uri 'http://127.0.0.1:6800/jsonrpc' -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 5 -ErrorAction Stop
+                  if ($r -and $r.result -and $r.result.version) { $rpcOk = $true; $rpcVersion = [string]$r.result.version; break }
+                  $rpcReason = 'rpc-error-envelope'
+              } catch { $rpcReason = $_.Exception.Message }
               Start-Sleep -Seconds 1
           }
-          Write-Host ('[aria2c] listening on 127.0.0.1:6800 = ' + $listening + ' (loopback only, follow-metalink=false, follow-torrent=false, max-conn=8 split=8)')
-          if (-not $listening) { Write-Host '::warning::[aria2c] RPC not listening yet - /api/fetch will report TRANSPORT_UNAVAILABLE until ready' }
+          $listeners = @()
+          try { $listeners = @((Get-NetTCPConnection -LocalPort 6800 -State Listen -ErrorAction SilentlyContinue) | ForEach-Object { [string]$_.LocalAddress }) } catch { }
+          $nonLoop = @($listeners | Where-Object { $_ -ne '127.0.0.1' -and $_ -ne '::1' })
+          Write-Host ('[aria2c] RPC getVersion ok=' + $rpcOk + ' version=' + $rpcVersion + ' listeners=[' + ($listeners -join ',') + '] (loopback only, follow-metalink=false, follow-torrent=false, max-conn=16 split=16 min-split=20M continue=true)')
+          if ($nonLoop.Count -gt 0) {
+              # A non-loopback listener is a hard stop: the RPC secret is the only
+              # gate and the plan pins loopback.
+              Write-Host ('::error::[aria2c] RPC bound to a non-loopback address: ' + ($nonLoop -join ','))
+              try { Stop-ScheduledTask -TaskName 'GhrdpAria2' -ErrorAction SilentlyContinue } catch { }
+              exit 1
+          }
+          if (-not $rpcOk) {
+              Write-Host ('::warning::[aria2c] RPC getVersion failed (' + $rpcReason + ') - /api/fetch reports TRANSPORT_UNAVAILABLE until ready')
+              if (Test-Path -LiteralPath $ariaLog) { Write-Host ('[aria2c] daemon log tail:'); try { Get-Content -LiteralPath $ariaLog -Tail 20 | ForEach-Object { Write-Host ('  ' + $_) } } catch { } }
+          }
+          exit 0
+
+      - name: Install qBittorrent-nox 4.6.x + Tailnet-only WebUI (F56-d transport lane)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # [F56-d §2] qBittorrent-nox 4.6.x (Chocolatey, checksum-enforced) with the
+          # WebUI bound to the TAILNET INTERFACE ONLY (never 0.0.0.0 / '*'), port 8080,
+          # operator auth via GHRDP_QBT_PASSWORD, category ghrdp-fetched, save path
+          # D:\RDP-Storage\Fetched\. Legal-torrent presets + own URLs live in
+          # payloads/ghrdp-qbt.ps1 (single source - the preset host lists and the bind ladder live there).
+          $ok = $false
+          try {
+              $before = (& choco list --local-only qbittorrent-nox 2>$null | Out-String)
+              if ($before -match '4\.6\.') { $ok = $true; Write-Host '[qbt] qbittorrent-nox 4.6.x already installed' }
+          } catch { }
+          if (-not $ok) {
+              for ($a=1; $a -le 2; $a++) {
+                  try {
+                      # --require-checksums makes chocolatey verify the package's own
+                      # SHA-256 for every download; a package without checksums FAILS
+                      # here instead of installing unverified bytes.
+                      & choco install qbittorrent-nox --version 4.6 -y --no-progress --force --require-checksums 2>&1 | ForEach-Object { Write-Host $_ }
+                      if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+                  } catch { Write-Host ('[qbt] choco qbittorrent-nox attempt ' + $a + ' failed: ' + $_.Exception.Message) }
+                  Start-Sleep -Seconds 5
+              }
+          }
+          if (-not $ok) {
+              # No -nox package: install the plain package ONLY so the image is not
+              # left inconsistent, and say plainly that the torrent lane has no
+              # headless binary - /api/fetch then reports TRANSPORT_UNAVAILABLE.
+              try { & choco install qbittorrent --version 4.6 -y --no-progress --force --require-checksums 2>&1 | ForEach-Object { Write-Host $_ } } catch { }
+              Write-Host '::warning::[qbt] qbittorrent-nox 4.6.x not delivered by chocolatey - torrent lane unavailable (labeled TRANSPORT_UNAVAILABLE)'
+          }
+          # Operator secret 32B alphanumeric -> GHRDP_QBT_PASSWORD env, SYSTEM-only file.
+          $chars = @(); $chars += (48..57); $chars += (65..90); $chars += (97..122)
+          $qbtSecret = -join ((0..31) | ForEach-Object { [char]($chars | Get-Random) })
+          $env:GHRDP_QBT_PASSWORD = $qbtSecret
+          if ($env:GITHUB_ENV) { Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_QBT_PASSWORD=' + $qbtSecret) }
+          New-Item -ItemType Directory -Path 'C:\ghrdp' -Force | Out-Null
+          $qbtSecFile = 'C:\ghrdp\qbt-secret.txt'
+          try { [System.IO.File]::WriteAllText($qbtSecFile, $qbtSecret, (New-Object System.Text.UTF8Encoding($false))) } catch { }
+          try { icacls.exe $qbtSecFile /inheritance:r 2>&1 | Out-Null; icacls.exe $qbtSecFile /grant:r 'SYSTEM:(F)' 'Administrators:(F)' 2>&1 | Out-Null; $LASTEXITCODE=0 } catch { }
+          New-Item -ItemType Directory -Path 'C:\ghrdp\qbt' -Force | Out-Null
+          New-Item -ItemType Directory -Path 'D:\RDP-Storage\Fetched' -Force | Out-Null
+          $qbtMod = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-qbt.ps1'
+          if (-not (Test-Path -LiteralPath $qbtMod)) { Write-Host '::warning::[qbt] payloads/ghrdp-qbt.ps1 missing - skip'; exit 0 }
+          . $qbtMod
+          $qbtConf = 'C:\ghrdp\qbt\qBittorrent.conf'
+          $init = Initialize-GhrdpQbt -ConfigPath 'C:\ghrdp\config.json' -ConfPath $qbtConf
+          if (-not $init.ok) {
+              Write-Host ('::warning::[qbt] init refused with labeled reason ' + $init.reason + ' - /api/fetch reports TRANSPORT_UNAVAILABLE for the torrent lane')
+              exit 0
+          }
+          Write-Host ('[qbt] exe=' + $init.exe + ' nox=' + $init.nox + ' sha256=' + $init.sha256 + ' shaMode=' + $init.shaMode)
+          Write-Host ('[qbt] WebUI bind=' + $init.address + ' (' + $init.bindSource + ') port=' + $init.port + ' category=' + $init.category + ' savePath=' + $init.savePath + ' conf=' + $init.conf)
+          # SYSTEM scheduled task GhrdpQbt - same shape as GhrdpAria2 (the daemon must
+          # survive the step; --profile pins the config the writer just produced).
+          $qbtArgs = @('--webui-port=8080','--no-splash','--profile=C:\ghrdp\qbt') -join ' '
+          try { Unregister-ScheduledTask -TaskName 'GhrdpQbt' -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+          try {
+              $action = New-ScheduledTaskAction -Execute $init.exe -Argument $qbtArgs -WorkingDirectory 'C:\ghrdp\qbt'
+              $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(2)
+              $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+              $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 6)
+              Register-ScheduledTask -TaskName 'GhrdpQbt' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+              Start-ScheduledTask -TaskName 'GhrdpQbt' -ErrorAction Stop
+              Write-Host '[qbt] GhrdpQbt SYSTEM task registered + started'
+          } catch { Write-Host ('[qbt] task registration failed: ' + $_.Exception.Message) }
+          Start-Sleep -Seconds 5
+          # Readiness is a real WebUI API round-trip, and the tailnet-only claim is
+          # proven behaviourally (a non-tailnet local address must refuse).
+          $sess = $null
+          $ver = $null
+          for ($i=0; $i -lt 10; $i++) {
+              $conn = Connect-GhrdpQbt -Address $init.address -Port $init.port -LogPath 'C:\ghrdp\qbt\data\logs\qbittorrent.log'
+              if ($conn.ok) { $sess = $conn.session; $ver = Get-GhrdpQbtVersion -Address $init.address -Port $init.port -Session $sess; if ($ver.ok) { break } }
+              Start-Sleep -Seconds 2
+          }
+          if ($ver -and $ver.ok) {
+              Write-Host ('[qbt] WebUI API version=' + $ver.version + ' authMode=' + $conn.mode)
+              $cat = Set-GhrdpQbtCategory -Address $init.address -Port $init.port -Session $sess
+              Write-Host ('[qbt] category ' + $init.category + ' ensure ok=' + $cat.ok)
+          } else {
+              Write-Host ('::warning::[qbt] WebUI API not answering (' + $init.address + ':8080) - torrent lane unavailable until ready')
+          }
+          $refuse = Test-GhrdpQbtPublicRefusal -Address $init.address -Port $init.port
+          if ($refuse.refused -eq $false) { Write-Host ('::error::[qbt] WebUI answered on a non-tailnet address ' + $refuse.candidate + ' - refusing to continue'); exit 1 }
+          if ($refuse.refused -eq $null) { Write-Host ('[qbt] public-refusal probe not applicable (' + $refuse.reason + ')') }
+          else { Write-Host ('[qbt] public interface ' + $refuse.candidate + ':8080 refused = true') }
           exit 0
 
       # [F10-4c §5] ten adjacent bash stage/write steps merged into ONE
@@ -1710,6 +1840,11 @@ jobs:
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-mirror.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-mirror.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-mirror-progress.cs" "$RUNNER_TEMP/ghrdp-stage/ghrdp-mirror-progress.cs"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-aria2.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-aria2.ps1"
+          # [F56-d §2] the torrent-lane helper must be staged NEXT TO the server
+          # (it dot-sources ghrdp-qbt.ps1 per /api/fetch request).
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-qbt.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-qbt.ps1"
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-qbt-policy.json" "$RUNNER_TEMP/ghrdp-stage/ghrdp-qbt-policy.json"
+          echo '[F56-d] ghrdp-qbt.ps1 + ghrdp-qbt-policy.json written'
           echo '[mirror] ghrdp-mirror.ps1 written'
           echo '[F56-d] ghrdp-aria2.ps1 written'
           # [F37 §4] the telescope module must be deployed NEXT TO the server:
