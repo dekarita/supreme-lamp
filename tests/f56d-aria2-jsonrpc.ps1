@@ -17,6 +17,13 @@
 # must NOT answer on a non-loopback local address) - and it asserts the EFFECTIVE
 # options of the RUNNING daemon (aria2.getGlobalOption) instead of only the
 # helper's own hardcoded option table, which was a self-fulfilling check.
+#
+# [F56-d loop 4g] The remove leg asserted that tellStatus must FAIL after
+# aria2.remove. That is not aria2's contract: a removed GID stays queryable from
+# the download-result list with status=removed (retained per --max-download-result,
+# default 1000), which is what the runner reported. The leg now proves the effect
+# on both live queues (tellActive/tellWaiting) plus a deterministic, egress-free
+# pause=true queued GID, and publishes the whole transition as an annotation.
 
 $ErrorActionPreference = 'Stop'
 $required = ($env:GHRDP_F56D_ARIA2_REQUIRED -eq '1')
@@ -261,18 +268,91 @@ $pause = Pause-Aria2All -Secret $sec
 Write-Host ('[F56-d] pauseAll ok=' + $pause.ok)
 if (-not $pause.ok) { Fail-Lab 'aria2.pauseAll failed' }
 
-# --- remove is effective (gid2 is throttled to 1B/s so it cannot finish) ---
+# --- remove is effective ----------------------------------------------------
+# [F56-d loop 4g] The previous form of this check asserted that tellStatus must
+# FAIL after aria2.remove and the runner proved that wrong: aria2 moves a removed
+# download to its result list, where tellStatus still resolves it with
+# status=removed while the result is retained (--max-download-result, default
+# 1000; src/RpcMethodImpl.cc TellStatusRpcMethod -> findDownloadResult ->
+# gatherStoppedDownload). The effect is now proven properly, on two legs, with
+# the whole transition published as an annotation:
+#   gid2 - the production path: a throttled (1 B/s) real download, so it is LIVE
+#          when remove lands. remove must take it out of BOTH live queues
+#          (tellActive = requestGroups, tellWaiting = reservedGroups) and it must
+#          never resolve as active/waiting/paused again.
+#   gid3 - deterministic and egress-free: added with the per-download pause=true
+#          option (aria2 src: PREF_PAUSE is TAG_RPC + initial, and
+#          download_helper.cc sets pauseRequested when --enable-rpc is on), so the
+#          GID sits in the queue without ever touching the network. remove must
+#          drop it for good, which also proves the verb when a runner has no
+#          egress (then gid2 was already stopped and only warns below).
+function Get-F56dQueueGids([string]$Method, [string]$Secret) {
+    # tellWaiting REQUIRES offset+num (AbstractPaginationRpcMethod reads params
+    # 0/1 as required Integers); tellActive only takes an optional keys list.
+    $params = @()
+    if ($Method -eq 'aria2.tellWaiting') { $params = @(0, 100) }
+    $r = Invoke-Aria2Rpc -Method $Method -Params $params -Secret $Secret
+    $gids = @()
+    if ($r.ok -and $r.result) { foreach ($e in @($r.result)) { if ($e.gid) { $gids += [string]$e.gid } } }
+    return ,@($gids)
+}
+function Test-F56dGidQueued([string]$Gid, [string]$Secret) {
+    $q = @()
+    $q += (Get-F56dQueueGids 'aria2.tellActive' $Secret)
+    $q += (Get-F56dQueueGids 'aria2.tellWaiting' $Secret)
+    return ($q -contains $Gid)
+}
+function Format-F56dQueues([string]$Secret) {
+    return ('active=[' + ((Get-F56dQueueGids 'aria2.tellActive' $Secret) -join ',') + '] waiting=[' + ((Get-F56dQueueGids 'aria2.tellWaiting' $Secret) -join ',') + ']')
+}
 $add2 = Add-Aria2Uri -Uri $testUrl -Options @{ dir = $downloadDir; 'max-download-limit' = '1'; 'allow-overwrite' = 'true'; 'auto-file-renaming' = 'false'; 'file-allocation' = 'none' } -Secret $sec
 if (-not $add2.ok -or -not $add2.gid) { Fail-Lab ('second aria2.addUri failed: ' + (Format-F56dError $add2.error)) }
 $live = Get-Aria2Status -Gid $add2.gid -Secret $sec
-Write-Host ('[F56-d] gid2 tellStatus ok=' + $live.ok)
 if (-not $live.ok) { Fail-Lab 'tellStatus failed for the throttled gid before remove' }
+$liveState = [string]$live.status.status
 $rem = Remove-Aria2Download -Gid $add2.gid -Secret $sec
-Write-Host ('[F56-d] remove ok=' + $rem.ok + ' gid=' + $add2.gid)
-$gone = Get-Aria2Status -Gid $add2.gid -Secret $sec
-Write-Host ('[F56-d] tellStatus after remove ok=' + $gone.ok + ' (false expected: gid is gone)')
-if ($gone.ok) { Fail-Lab 'tellStatus still resolves a removed gid - remove was not effective' }
-if (-not $rem.ok) { Write-Host ('::warning::[F56-d] aria2.remove refused (' + (Format-F56dError $rem.error) + ') but the gid is gone - effect proven') }
+$inQueue = $true
+$afterState = '<unresolved>'
+for ($i = 0; $i -lt 20; $i++) {
+    Start-Sleep -Milliseconds 500
+    $inQueue = Test-F56dGidQueued $add2.gid $sec
+    $gone = Get-Aria2Status -Gid $add2.gid -Secret $sec
+    if ($gone.ok) { $afterState = [string]$gone.status.status } else { $afterState = '<unresolved>' }
+    if (-not $inQueue -and ($afterState -eq '<unresolved>' -or $afterState -in @('removed', 'error', 'complete'))) { break }
+}
+Write-Host ('::notice::[F56-d] remove(live) gid=' + $add2.gid + ' removeOk=' + $rem.ok + ' liveState=' + $liveState + ' inQueueAfter=' + $inQueue + ' afterState=' + $afterState)
+if ($afterState -in @('active', 'waiting', 'paused')) { Fail-Lab ('tellStatus still reports the removed gid as ' + $afterState) }
+if ($inQueue) { Fail-Lab ('gid still in ' + (Format-F56dQueues $sec) + ' after remove (liveState=' + $liveState + ' afterState=' + $afterState + ')') }
+if ($liveState -in @('active', 'waiting', 'paused')) {
+    if (-not $rem.ok) { Fail-Lab ('aria2.remove refused a live download: ' + (Format-F56dError $rem.error)) }
+} else {
+    Write-Host ('::warning::[F56-d] the throttled gid was already ' + $liveState + ' before remove (' + (Format-F56dError $rem.error) + ') - the queued-gid leg below still proves the verb')
+}
+
+# deterministic queued-gid leg (no egress at all; see the block comment above)
+$add3 = Add-Aria2Uri -Uri $testUrl -Options @{ dir = $downloadDir; pause = 'true'; 'allow-overwrite' = 'true'; 'auto-file-renaming' = 'false'; 'file-allocation' = 'none' } -Secret $sec
+if (-not $add3.ok -or -not $add3.gid) { Fail-Lab ('paused aria2.addUri failed: ' + (Format-F56dError $add3.error)) }
+$queued = $false
+$queueState = '<unresolved>'
+for ($i = 0; $i -lt 10; $i++) {
+    Start-Sleep -Milliseconds 500
+    $queued = Test-F56dGidQueued $add3.gid $sec
+    $s3 = Get-Aria2Status -Gid $add3.gid -Secret $sec
+    if ($s3.ok) { $queueState = [string]$s3.status.status }
+    if ($queued) { break }
+}
+if (-not $queued) { Fail-Lab ('pause=true addUri is not in any live queue (status=' + $queueState + ' ' + (Format-F56dQueues $sec) + ')') }
+$rem3 = Remove-Aria2Download -Gid $add3.gid -Secret $sec
+$after3 = '<unresolved>'
+for ($i = 0; $i -lt 20; $i++) {
+    $g3 = Get-Aria2Status -Gid $add3.gid -Secret $sec
+    if ($g3.ok) { $after3 = [string]$g3.status.status } else { $after3 = '<unresolved>' }
+    if ($after3 -eq '<unresolved>' -or $after3 -eq 'removed') { break }
+    Start-Sleep -Milliseconds 500
+}
+Write-Host ('::notice::[F56-d] remove(queued) gid=' + $add3.gid + ' queueState=' + $queueState + ' removeOk=' + $rem3.ok + ' afterState=' + $after3)
+if ($after3 -in @('active', 'waiting', 'paused')) { Fail-Lab ('removed queued gid still resolves as ' + $after3) }
+if (-not $rem3.ok) { Fail-Lab ('aria2.remove refused a queued download: ' + (Format-F56dError $rem3.error)) }
 
 Write-Host '[F56-d] aria2c JSON-RPC lab PASS (addUri/tellStatus/pauseAll/remove + loopback + secret + effective pins)'
 exit 0

@@ -3171,6 +3171,15 @@ jobs:
           grep -qF 'GHRDP_F56D_ARIA2_REQUIRED' tests/f56d-aria2-jsonrpc.ps1
           grep -qF 'aria2.pauseAll' payloads/ghrdp-aria2.ps1
           grep -qF 'Pause-Aria2All' tests/f56d-aria2-jsonrpc.ps1
+          # [F56-d loop 4g] "remove was effective" must be proven against real
+          # aria2 semantics: a removed GID stays queryable as status=removed
+          # (result list), so the check is "left tellActive AND tellWaiting, never
+          # live again" - plus the egress-free pause=true leg. Pin both, and
+          # forbid the old assertion shape (tellStatus must FAIL) from coming back.
+          grep -qF 'aria2.tellWaiting' tests/f56d-aria2-jsonrpc.ps1
+          grep -qF "pause = 'true'" tests/f56d-aria2-jsonrpc.ps1
+          grep -qF 'inQueueAfter=' tests/f56d-aria2-jsonrpc.ps1
+          if grep -qF 'tellStatus still resolves a removed gid' tests/f56d-aria2-jsonrpc.ps1; then echo 'F56-d: the remove leg regressed to the wrong (tellStatus-must-fail) assertion' >&2; exit 1; fi
           if grep -qF 'encrypt failed (advisory)' tests/f56d-post-fetch-e2e.ps1; then echo 'F56-d: post-fetch encrypt leg is advisory again' >&2; exit 1; fi
           grep -qF 'ghrdp-fetched-arrival' tests/f56d-post-fetch-e2e.ps1
           # The arrival event needs a real producer: watcher -> progress.json ->
