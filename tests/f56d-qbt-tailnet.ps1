@@ -159,11 +159,14 @@ $mainPath = Join-Path $PSScriptRoot '..' '.github' 'workflows' 'main.yml'
 $gatesTxt = Get-Content -LiteralPath $gatesPath -Raw
 $mainTxt = Get-Content -LiteralPath $mainPath -Raw
 if ($gatesTxt -notmatch 'tests\\f56d-qbt-tailnet\.ps1') { Fail-Lab 'wiring' 'this lab is not executed in CI' }
-if ($mainTxt -notmatch 'Install qBittorrent-nox 4\.6\.x') { Fail-Lab 'wiring' 'the qBittorrent-nox install step is missing' }
-if ($mainTxt -notmatch '--require-checksums') { Fail-Lab 'wiring' 'the chocolatey install is not checksum-enforced' }
+# [F59 §2] the lane installs the SHA-256-pinned PREBUILT release asset now
+# (Chocolatey removed); checksum enforcement is the pin + the release checksums.txt.
+if ($mainTxt -notmatch 'Install qBittorrent 4\.6\.5 \(F59 prebuilt, SHA-256 verified\)') { Fail-Lab 'wiring' 'the qBittorrent prebuilt install step is missing' }
+if ($mainTxt -notmatch 'Test-F59AssetSha256') { Fail-Lab 'wiring' 'the prebuilt asset is not SHA-256 verified' }
+if ($mainTxt -notmatch 'prebuilt-binaries') { Fail-Lab 'wiring' 'the prebuilt release asset is not sourced from the pinned release' }
 if ($mainTxt -match '0\.0\.0\.0:8080') { Fail-Lab 'wiring' 'a public WebUI literal is deployed' }
 if ($mainTxt -notmatch "GhrdpQbt") { Fail-Lab 'wiring' 'the daemon SYSTEM task is missing' }
-Pass-Lab 'wiring (install step + checksum enforcement + this lab in CI)'
+Pass-Lab 'wiring (prebuilt install step + SHA-256 pin enforcement + this lab in CI)'
 
 Write-Host ('::notice::F56-d qbt lane cells: ' + ($cells -join ' | '))
 Write-Host '[F56-d] qBittorrent-nox torrent lane lab PASS'
