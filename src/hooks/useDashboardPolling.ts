@@ -8,6 +8,7 @@ import { configUrl, getJson, nativeStatusUrl } from "@/lib/api";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useTelemetryStore } from "@/stores/telemetryStore";
 import type { WireState } from "@/lib/domain/connProbe";
+import { extractFetchedArrivals } from "@/lib/fetchedArrivals";
 
 export function useDashboardPolling(): void {
   const setConfig = useSessionStore((s) => s.setConfig);
@@ -97,13 +98,12 @@ export function useDashboardPolling(): void {
           try {
             const data = JSON.parse(evt.data as string);
             setProgress(data);
-            // [F56-d] File-arrival event via ws progress mirrorDiag for Fetched-root
+            // [F56-d] File-arrival event: the watcher publishes `fetchedFiles` in
+            // progress.json and the /ws snapshot carries it under `.progress`.
             try {
-              // If progress contains fetchedFiles or files in Fetched, propagate to FileExplorer
-              // @ts-ignore
-              if (data && data.fetchedFiles) {
-                // @ts-ignore
-                if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('ghrdp-fetched-arrival', { detail: data.fetchedFiles }));
+              const arrivals = extractFetchedArrivals(data);
+              if (arrivals && typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('ghrdp-fetched-arrival', { detail: arrivals }));
               }
             } catch {}
           } catch {}

@@ -101,6 +101,33 @@ return @($out | Select-Object -Unique)
 # The override is IN-MEMORY ONLY: config.json keeps mirror=false and the F49
 # enable/disable flags keep governing every non-Downloads root. No credential
 # is involved anywhere (F48 guest contract holds).
+# [F56-d §3 notify leg] Bounded list of files that landed in the Fetched root.
+# The watcher owns progress.json, the Rust /ws bridge forwards it verbatim
+# (payloads/main.rs build_snapshot) and useDashboardPolling re-emits
+# `progress.fetchedFiles` as 'ghrdp-fetched-arrival' - the ONLY thing that
+# replaces the FileExplorer Fetched-root empty state (real Explorer file ops
+# stay F57; the shipped UI never calls the F45 file API).
+function Get-F56dFetchedArrivals {
+    param([int]$Max = 50)
+    $dir = 'D:\RDP-Storage\Fetched'
+    $out = New-Object System.Collections.ArrayList
+    if (-not (Test-Path -LiteralPath $dir)) { return @() }
+    try {
+        $files = @(Get-ChildItem -LiteralPath $dir -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -notmatch '\.aria2$' -and $_.Name -notmatch '\.ghenc$' -and $_.Name -notmatch '\.part$' } |
+            Sort-Object LastWriteTime -Descending | Select-Object -First $Max)
+    } catch { return @() }
+    foreach ($f in @($files)) {
+        [void]$out.Add([ordered]@{
+            id = [string]$f.Name
+            name = [string]$f.Name
+            sizeBytes = [long]$f.Length
+            modified = $f.LastWriteTimeUtc.ToString('o')
+        })
+    }
+    return @($out)
+}
+
 function Test-F51DownloadsRoot {
     param([string]$RootPath)
     $n = ''
@@ -510,6 +537,9 @@ try {
   if (@(Get-ChildItem -Path (Join-Path $Root 'enc') -File -ErrorAction SilentlyContinue).Count -gt 0) { Add-MirrorLog '[watcher] stale .ghenc leftovers found in enc dir - cleaning' ; Remove-Item -LiteralPath (Join-Path $Root 'enc\*') -Force -ErrorAction SilentlyContinue }
   if (Test-Path -LiteralPath (Join-Path $Root 'emergency.flag')) { $fullPass = $true }
   $prog.alive = $true
+  # [F56-d §3] notify leg: arrivals in the Fetched root ride this frame. Kept on
+  # every scan so the UI's arrival event and the /ws snapshot agree.
+  $prog.fetchedFiles = @(Get-F56dFetchedArrivals)
   $telemetry.scans = [int]$telemetry.scans + 1
   $telemetry.lastScan = (Get-Date -Format o)
   $roots = @((Get-WatcherRoots -UserName $userName) + (Get-ExtraRoots -UserName $userName) | Select-Object -Unique)
