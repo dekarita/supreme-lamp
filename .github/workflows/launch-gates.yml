@@ -3236,6 +3236,67 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      # [F56-d §2] ADDITIVE ONLY: the torrent lane lab. The qBittorrent cells that
+      # need a live tailnet daemon report a labeled SKIP (a CI runner is not on the
+      # operator's tailnet); everything policy-shaped is proven for real.
+      - name: F56-d torrent lane lab (qBittorrent-nox Tailnet-only)
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The check-run annotation budget is spent by the earlier mirror labs and a
+          # raw log download is not reachable from every environment (the loop-3/4
+          # lesson), so the decisive line is published as ONE commit status
+          # (context 'f56d-qbt-lab') on success AND failure.
+          $script:QbtFailure = ''
+          $outText = ''
+          Push-Location $env:GITHUB_WORKSPACE
+          try {
+              foreach ($f in @('payloads\ghrdp-qbt.ps1', 'tests\f56d-qbt-tailnet.ps1')) {
+                  $errs = $null
+                  $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
+                  if ($errs) {
+                      foreach ($e in @($errs)) { Write-Host ('::error title=F56-d qbt parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
+                      throw ('PowerShell syntax error in ' + $f)
+                  }
+              }
+              $outText = (& (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-qbt-tailnet.ps1') *>&1 | Out-String)
+              $rc = $LASTEXITCODE
+              if ($rc -ne 0) { throw ('the lab exited ' + $rc) }
+          } catch {
+              $script:QbtFailure = $_.Exception.Message
+              $outText = ($outText + "`n" + ($_ | Out-String))
+          } finally {
+              Pop-Location
+          }
+          Write-Host $outText
+          $lines = @(($outText -split "`r?`n") | Where-Object { $_.Trim() -ne '' })
+          $decisive = @($lines | Where-Object { $_ -match '::error|FAIL|SKIP ' } | Select-Object -Last 1)
+          if (@($decisive).Count -eq 0) { $decisive = @($lines | Select-Object -Last 1) }
+          $desc = (([string](@($decisive) -join ' | ')) -replace '::error[^:]*::', '').Trim()
+          if ($desc.Length -gt 130) { $desc = $desc.Substring(0, 130) }
+          if ($env:GH_TOKEN) {
+              try {
+                  $st = @{
+                      state = $(if ($script:QbtFailure) { 'failure' } else { 'success' })
+                      context = 'f56d-qbt-lab'
+                      description = $desc
+                      target_url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID)
+                  } | ConvertTo-Json -Compress
+                  Invoke-RestMethod -Uri ('https://api.github.com/repos/' + $env:GITHUB_REPOSITORY + '/statuses/' + $env:GITHUB_SHA) -Method Post -Headers @{ Authorization = ('Bearer ' + $env:GH_TOKEN); Accept = 'application/vnd.github+json'; 'User-Agent' = 'ghrdp-f56d' } -Body $st -ContentType 'application/json' -TimeoutSec 30 | Out-Null
+              } catch { Write-Host ('[F56-d] status publish failed: ' + $_.Exception.Message) }
+          }
+          if ($env:GITHUB_STEP_SUMMARY) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## F56-d qbt torrent lane lab'
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('```' + "`n" + (@($lines | Select-Object -Last 40) -join "`n") + "`n" + '```')
+          }
+          if ($script:QbtFailure) {
+              Write-Host ('::error title=F56-d qbt lab::' + $script:QbtFailure)
+              throw ('F56-d: qBittorrent tailnet lab FAILED - ' + $script:QbtFailure)
+          }
+          Write-Host 'F56-d qbt torrent lane lab PASS'
       # [F19 §5] REAL unit test of the shipped launcher's DNS-guard decision:
       # compile payloads/ghrdp-rdp-launcher.cs with the same in-box csc that
       # install.cmd uses, run --dns-selftest (injected resolver/TCP results) and
@@ -3577,64 +3638,3 @@ jobs:
           & (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-aria2-jsonrpc.ps1')
           if ($LASTEXITCODE -ne 0) { throw ('F56-d: aria2 JSON-RPC lab failed with exit ' + $LASTEXITCODE) }
           Write-Host 'F56-d transport labs PASS'
-      # [F56-d §2] ADDITIVE ONLY: the torrent lane lab. The qBittorrent cells that
-      # need a live tailnet daemon report a labeled SKIP (a CI runner is not on the
-      # operator's tailnet); everything policy-shaped is proven for real.
-      - name: F56-d torrent lane lab (qBittorrent-nox Tailnet-only)
-        timeout-minutes: 10
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          # The check-run annotation budget is spent by the earlier mirror labs and a
-          # raw log download is not reachable from every environment (the loop-3/4
-          # lesson), so the decisive line is published as ONE commit status
-          # (context 'f56d-qbt-lab') on success AND failure.
-          $script:QbtFailure = ''
-          $outText = ''
-          Push-Location $env:GITHUB_WORKSPACE
-          try {
-              foreach ($f in @('payloads\ghrdp-qbt.ps1', 'tests\f56d-qbt-tailnet.ps1')) {
-                  $errs = $null
-                  $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
-                  if ($errs) {
-                      foreach ($e in @($errs)) { Write-Host ('::error title=F56-d qbt parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
-                      throw ('PowerShell syntax error in ' + $f)
-                  }
-              }
-              $outText = (& (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-qbt-tailnet.ps1') *>&1 | Out-String)
-              $rc = $LASTEXITCODE
-              if ($rc -ne 0) { throw ('the lab exited ' + $rc) }
-          } catch {
-              $script:QbtFailure = $_.Exception.Message
-              $outText = ($outText + "`n" + ($_ | Out-String))
-          } finally {
-              Pop-Location
-          }
-          Write-Host $outText
-          $lines = @(($outText -split "`r?`n") | Where-Object { $_.Trim() -ne '' })
-          $decisive = @($lines | Where-Object { $_ -match '::error|FAIL|SKIP ' } | Select-Object -Last 1)
-          if (@($decisive).Count -eq 0) { $decisive = @($lines | Select-Object -Last 1) }
-          $desc = (([string](@($decisive) -join ' | ')) -replace '::error[^:]*::', '').Trim()
-          if ($desc.Length -gt 130) { $desc = $desc.Substring(0, 130) }
-          if ($env:GH_TOKEN) {
-              try {
-                  $st = @{
-                      state = $(if ($script:QbtFailure) { 'failure' } else { 'success' })
-                      context = 'f56d-qbt-lab'
-                      description = $desc
-                      target_url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID)
-                  } | ConvertTo-Json -Compress
-                  Invoke-RestMethod -Uri ('https://api.github.com/repos/' + $env:GITHUB_REPOSITORY + '/statuses/' + $env:GITHUB_SHA) -Method Post -Headers @{ Authorization = ('Bearer ' + $env:GH_TOKEN); Accept = 'application/vnd.github+json'; 'User-Agent' = 'ghrdp-f56d' } -Body $st -ContentType 'application/json' -TimeoutSec 30 | Out-Null
-              } catch { Write-Host ('[F56-d] status publish failed: ' + $_.Exception.Message) }
-          }
-          if ($env:GITHUB_STEP_SUMMARY) {
-              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## F56-d qbt torrent lane lab'
-              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('```' + "`n" + (@($lines | Select-Object -Last 40) -join "`n") + "`n" + '```')
-          }
-          if ($script:QbtFailure) {
-              Write-Host ('::error title=F56-d qbt lab::' + $script:QbtFailure)
-              throw ('F56-d: qBittorrent tailnet lab FAILED - ' + $script:QbtFailure)
-          }
-          Write-Host 'F56-d qbt torrent lane lab PASS'
