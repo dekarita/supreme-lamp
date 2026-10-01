@@ -8,6 +8,14 @@
 $ErrorActionPreference = 'Stop'
 Write-Host '[F56-d] qBittorrent-nox Tailnet-only torrent lane lab'
 $cells = @()
+# Safety net: an UNEXPECTED terminating error must still name itself (and its
+# position) instead of dying silently behind an unreachable job log.
+trap {
+    Write-Host ('::error title=F56-d qbt lab::' + $_.Exception.Message)
+    Write-Host ('[F56-d] at: ' + (([string]$_.InvocationInfo.PositionMessage) -replace "`r?`n", ' '))
+    Write-Host ('::notice::F56-d qbt lane cells: ' + (@($script:cells) -join ' | '))
+    exit 1
+}
 function Pass-Lab([string]$name) { $script:cells += ('PASS ' + $name); Write-Host ('[F56-d] PASS ' + $name) }
 function Skip-Lab([string]$name, [string]$why) { $script:cells += ('SKIP ' + $name + ' (' + $why + ')'); Write-Host ('[F56-d] SKIP ' + $name + ' - ' + $why) }
 function Fail-Lab([string]$name, [string]$why) { Write-Host ('::error title=F56-d qbt::' + $name + ' :: ' + $why); throw ('F56-d qbt lab: ' + $name + ' - ' + $why) }

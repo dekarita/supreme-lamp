@@ -155,13 +155,12 @@ function Resolve-GhrdpQbtExe {
     # The -nox binary is the lane; a GUI binary is only reported (never silently
     # promoted into a headless lane: the lane needs --webui-port without a session).
     $names = @('qbittorrent-nox.exe', 'qbittorrent-nox', 'qbittorrent.exe')
-    $roots = @(
-        (Join-Path $env:ProgramFiles 'qBittorrent'),
-        (Join-Path ${env:ProgramFiles(x86)} 'qBittorrent'),
-        'C:\ProgramData\chocolatey\lib',
-        'C:\ProgramData\chocolatey\bin',
-        (Join-Path $env:LOCALAPPDATA 'Programs\qBittorrent')
-    )
+    $roots = @()
+    foreach ($base in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
+        if ($base) { $roots += (Join-Path $base 'qBittorrent') }
+    }
+    $roots += 'C:\ProgramData\chocolatey\lib'
+    $roots += 'C:\ProgramData\chocolatey\bin'
     foreach ($n in $names) {
         foreach ($r in $roots) {
             try {
@@ -247,7 +246,11 @@ function Set-GhrdpQbtWebUiConfig {
     }
     $dir = Split-Path -Parent $ConfPath
     if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    if (-not (Test-Path -LiteralPath $script:QbtSavePath)) { New-Item -ItemType Directory -Path $script:QbtSavePath -Force | Out-Null }
+    try {
+        if ($script:QbtSavePath -and -not (Test-Path -LiteralPath $script:QbtSavePath)) {
+            $null = New-Item -ItemType Directory -Path $script:QbtSavePath -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
     $keys = [ordered]@{
         'WebUI\Address'                = $Address
         'WebUI\Port'                   = [string]$Port
