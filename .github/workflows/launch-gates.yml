@@ -3180,6 +3180,142 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      # [F56-d loop 3] REAL aria2c 1.36.0 loopback daemon so the F56-d JSON-RPC
+      # round-trip lab is not vacuous: before this step the lab self-SKIPped on a
+      # runner that has no aria2c, i.e. it PASSed without exercising anything.
+      # Advisory exit 0 ONLY when chocolatey itself cannot deliver (the lane keeps
+      # its existing advisory posture); once the daemon is up it exports
+      # GHRDP_F56D_ARIA2_REQUIRED=1 and the lab must not skip.
+      - name: F56-d aria2c 1.36.0 loopback daemon (real JSON-RPC lab fixture)
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $ok = $false
+          try {
+              $before = (& choco list --local-only aria2 2>$null | Out-String)
+              if ($before -match '1\.36\.0') { $ok = $true; Write-Host '[F56-d fixture] aria2 1.36.0 already present' }
+          } catch { }
+          if (-not $ok) {
+              for ($a = 1; $a -le 2; $a++) {
+                  try {
+                      & choco install aria2 --version 1.36.0 -y --no-progress --force 2>&1 | ForEach-Object { Write-Host $_ }
+                      if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+                  } catch { Write-Host ('[F56-d fixture] choco attempt ' + $a + ' failed: ' + $_.Exception.Message) }
+                  Start-Sleep -Seconds 5
+              }
+          }
+          if (-not $ok) { Write-Host '::warning::[F56-d fixture] aria2c unavailable via chocolatey - JSON-RPC lab stays advisory (self-skip)'; exit 0 }
+          $exe = ''
+          foreach ($p in @('C:\ProgramData\chocolatey\bin\aria2c.exe','C:\ProgramData\chocolatey\lib\aria2\tools\aria2c.exe','C:\tools\aria2\aria2c.exe')) {
+              if (Test-Path -LiteralPath $p) { $exe = $p; break }
+          }
+          if (-not $exe) { $hit = Get-Command aria2c.exe -ErrorAction SilentlyContinue; if ($hit) { $exe = $hit.Source } }
+          if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { Write-Host '::warning::[F56-d fixture] aria2c.exe not found after choco - lab stays advisory'; exit 0 }
+          $verOut = ''
+          try { $verOut = (& $exe --version 2>$null | Select-Object -First 1 | Out-String).Trim() } catch { }
+          $sha = ''
+          try { $sha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash } catch { }
+          Write-Host ('[F56-d fixture] exe=' + $exe + ' sha256=' + $sha + ' ' + $verOut)
+          if ($verOut -notmatch '1\.36\.0') { Write-Host ('::warning::[F56-d fixture] expected 1.36.0 got ' + $verOut + ' - JSON-RPC lab stays advisory'); exit 0 }
+          $chars = @(); $chars += (48..57); $chars += (65..90); $chars += (97..122)
+          $secret = -join ((0..31) | ForEach-Object { [char]($chars | Get-Random) })
+          Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_ARIA2_RPC_SECRET=' + $secret)
+          Add-Content -Path $env:GITHUB_ENV -Value 'GHRDP_F56D_ARIA2_REQUIRED=1'
+          $dir = 'D:\RDP-Storage\Fetched'
+          try { New-Item -ItemType Directory -Path $dir -Force | Out-Null } catch { $dir = Join-Path $env:RUNNER_TEMP 'f56d-fetched'; New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+          Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_F56D_ARIA2_DIR=' + $dir)
+          # loopback only + the same CLI pins as main.yml's GhrdpAria2 task
+          $rpcArgs = @('--enable-rpc','--rpc-listen-all=false','--rpc-listen-port=6800','--rpc-secret=' + $secret,'--dir=' + $dir,'--max-connection-per-server=8','--split=8','--min-split-size=1M','--follow-metalink=false','--follow-torrent=false','--check-integrity=true','--auto-file-renaming=false','--allow-overwrite=true','--file-allocation=none','--no-conf')
+          $proc = Start-Process -FilePath $exe -ArgumentList $rpcArgs -PassThru -WindowStyle Hidden
+          $listen = $null
+          for ($i = 0; $i -lt 30; $i++) {
+              Start-Sleep -Seconds 1
+              try { $listen = @(Get-NetTCPConnection -LocalPort 6800 -State Listen -ErrorAction SilentlyContinue) } catch { $listen = $null }
+              if ($listen -and @($listen).Count -gt 0) { break }
+          }
+          if (-not $listen -or @($listen).Count -eq 0) { Write-Host ('::warning::[F56-d fixture] daemon pid=' + $proc.Id + ' not listening on 6800 - lab stays advisory'); exit 0 }
+          foreach ($l in @($listen)) {
+              Write-Host ('[F56-d fixture] listening ' + $l.LocalAddress + ':' + $l.LocalPort)
+              if ([string]$l.LocalAddress -ne '127.0.0.1' -and [string]$l.LocalAddress -ne '::1') { throw ('F56-d: aria2c bound ' + $l.LocalAddress + ' - loopback only is mandatory') }
+          }
+          Write-Host ('[F56-d fixture] aria2c 1.36.0 pid=' + $proc.Id + ' on 127.0.0.1:6800, REQUIRED=1 for the JSON-RPC lab')
+          exit 0
+
+      # [F56-d] ADDITIVE ONLY: transport lane labs
+      - name: F56-d transport lane labs (aria2c JSON-RPC + post-fetch e2e + creds memory + SEARCH_INPUT)
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script:F56dSummary = @()
+          # [F56-d loop 3] Run each lab through one runner that captures its output,
+          # puts the tail in the job summary and fails the step with the tail in the
+          # message. Before this, a lab that threw printed into a log the sandbox
+          # cannot read (the check-run annotation cap drops late annotations).
+          function Invoke-F56dLab([string]$Rel) {
+              $p = Join-Path $env:GITHUB_WORKSPACE $Rel
+              Write-Host ('=== ' + $Rel + ' ===')
+              $out = ''
+              $rc = 1
+              try {
+                  $out = (& $p *>&1 | Out-String)
+                  $rc = $LASTEXITCODE
+              } catch {
+                  $rc = 1
+                  $out = ($out + "`n" + ($_ | Out-String))
+              }
+              Write-Host $out
+              $lines = @(($out -split "`r?`n") | Where-Object { $_.Trim() -ne '' })
+              $tail = @($lines | Select-Object -Last 8)
+              # Publish the tail as a commit status: the check-run annotation budget
+              # is spent by the earlier mirror labs and raw log downloads are not
+              # reachable from every environment, so this is the one channel that
+              # always names the failing leg + its last line.
+              if ($env:GH_TOKEN) {
+                  try {
+                      $st = @{
+                          state = $(if ($rc -eq 0) { 'success' } else { 'failure' })
+                          context = ('F56-d ' + ($Rel -replace '[\\/]', ' '))
+                          description = ($tail -join ' | ')
+                          target_url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID)
+                      } | ConvertTo-Json -Compress
+                      Invoke-RestMethod -Uri ('https://api.github.com/repos/' + $env:GITHUB_REPOSITORY + '/statuses/' + $env:GITHUB_SHA) -Method Post -Headers @{ Authorization = ('Bearer ' + $env:GH_TOKEN); Accept = 'application/vnd.github+json'; 'User-Agent' = 'ghrdp-f56d' } -Body $st -ContentType 'application/json' -TimeoutSec 30 | Out-Null
+                  } catch { Write-Host ('[F56-d] status publish failed: ' + $_.Exception.Message) }
+              }
+              if ($rc -ne 0) {
+                  $script:F56dSummary += ('- FAIL ' + $Rel + ' exit=' + $rc + ' :: ' + ($tail -join ' | '))
+                  Write-Host ('::error title=F56-d lab ' + $Rel + '::exit=' + $rc + ' ' + ($tail -join ' | '))
+                  throw ('F56-d: lab ' + $Rel + ' failed with exit ' + $rc + ' :: ' + ($tail -join ' | '))
+              }
+              $script:F56dSummary += ('- PASS ' + $Rel + ' :: ' + ($tail -join ' | '))
+              Write-Host ('::notice title=F56-d lab ' + $Rel + '::' + ($tail -join ' | '))
+          }
+          foreach ($f in @('payloads\ghrdp-aria2.ps1', 'tests\f56d-aria2-jsonrpc.ps1', 'tests\f56d-post-fetch-e2e.ps1', 'tests\f56d-creds-memory.ps1', 'tests\f56d-search-input.ps1')) {
+              $errs = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
+              if ($errs) {
+                  foreach ($e in @($errs)) { Write-Host ('::error title=F56-d parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
+                  throw ('F56-d: PowerShell syntax error in ' + $f)
+              }
+          }
+          Push-Location $env:GITHUB_WORKSPACE
+          try {
+              Invoke-F56dLab 'tests\f56d-search-input.ps1'
+              Invoke-F56dLab 'tests\f56d-creds-memory.ps1'
+              Invoke-F56dLab 'tests\f56d-post-fetch-e2e.ps1'
+              Invoke-F56dLab 'tests\f56d-aria2-jsonrpc.ps1'
+          } finally {
+              Pop-Location
+              if ($env:GITHUB_STEP_SUMMARY -and @($script:F56dSummary).Count -gt 0) {
+                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## F56-d transport lane labs'
+                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value (@($script:F56dSummary) -join "`n")
+              }
+          }
+          Write-Host 'F56-d transport labs PASS'
       # [F19 §5] REAL unit test of the shipped launcher's DNS-guard decision:
       # compile payloads/ghrdp-rdp-launcher.cs with the same in-box csc that
       # install.cmd uses, run --dns-selftest (injected resolver/TCP results) and
@@ -3498,138 +3634,3 @@ jobs:
           }
           & (Join-Path $env:GITHUB_WORKSPACE 'tests\f58-source-store.ps1')
           if ($LASTEXITCODE -ne 0) { throw ('F58: store crypto lab failed with exit ' + $LASTEXITCODE) }
-      # [F56-d loop 3] REAL aria2c 1.36.0 loopback daemon so the F56-d JSON-RPC
-      # round-trip lab is not vacuous: before this step the lab self-SKIPped on a
-      # runner that has no aria2c, i.e. it PASSed without exercising anything.
-      # Advisory exit 0 ONLY when chocolatey itself cannot deliver (the lane keeps
-      # its existing advisory posture); once the daemon is up it exports
-      # GHRDP_F56D_ARIA2_REQUIRED=1 and the lab must not skip.
-      - name: F56-d aria2c 1.36.0 loopback daemon (real JSON-RPC lab fixture)
-        timeout-minutes: 10
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $ok = $false
-          try {
-              $before = (& choco list --local-only aria2 2>$null | Out-String)
-              if ($before -match '1\.36\.0') { $ok = $true; Write-Host '[F56-d fixture] aria2 1.36.0 already present' }
-          } catch { }
-          if (-not $ok) {
-              for ($a = 1; $a -le 2; $a++) {
-                  try {
-                      & choco install aria2 --version 1.36.0 -y --no-progress --force 2>&1 | ForEach-Object { Write-Host $_ }
-                      if ($LASTEXITCODE -eq 0) { $ok = $true; break }
-                  } catch { Write-Host ('[F56-d fixture] choco attempt ' + $a + ' failed: ' + $_.Exception.Message) }
-                  Start-Sleep -Seconds 5
-              }
-          }
-          if (-not $ok) { Write-Host '::warning::[F56-d fixture] aria2c unavailable via chocolatey - JSON-RPC lab stays advisory (self-skip)'; exit 0 }
-          $exe = ''
-          foreach ($p in @('C:\ProgramData\chocolatey\bin\aria2c.exe','C:\ProgramData\chocolatey\lib\aria2\tools\aria2c.exe','C:\tools\aria2\aria2c.exe')) {
-              if (Test-Path -LiteralPath $p) { $exe = $p; break }
-          }
-          if (-not $exe) { $hit = Get-Command aria2c.exe -ErrorAction SilentlyContinue; if ($hit) { $exe = $hit.Source } }
-          if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { Write-Host '::warning::[F56-d fixture] aria2c.exe not found after choco - lab stays advisory'; exit 0 }
-          $verOut = ''
-          try { $verOut = (& $exe --version 2>$null | Select-Object -First 1 | Out-String).Trim() } catch { }
-          $sha = ''
-          try { $sha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash } catch { }
-          Write-Host ('[F56-d fixture] exe=' + $exe + ' sha256=' + $sha + ' ' + $verOut)
-          if ($verOut -notmatch '1\.36\.0') { Write-Host ('::warning::[F56-d fixture] expected 1.36.0 got ' + $verOut + ' - JSON-RPC lab stays advisory'); exit 0 }
-          $chars = @(); $chars += (48..57); $chars += (65..90); $chars += (97..122)
-          $secret = -join ((0..31) | ForEach-Object { [char]($chars | Get-Random) })
-          Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_ARIA2_RPC_SECRET=' + $secret)
-          Add-Content -Path $env:GITHUB_ENV -Value 'GHRDP_F56D_ARIA2_REQUIRED=1'
-          $dir = 'D:\RDP-Storage\Fetched'
-          try { New-Item -ItemType Directory -Path $dir -Force | Out-Null } catch { $dir = Join-Path $env:RUNNER_TEMP 'f56d-fetched'; New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-          Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_F56D_ARIA2_DIR=' + $dir)
-          # loopback only + the same CLI pins as main.yml's GhrdpAria2 task
-          $rpcArgs = @('--enable-rpc','--rpc-listen-all=false','--rpc-listen-port=6800','--rpc-secret=' + $secret,'--dir=' + $dir,'--max-connection-per-server=8','--split=8','--min-split-size=1M','--follow-metalink=false','--follow-torrent=false','--check-integrity=true','--auto-file-renaming=false','--allow-overwrite=true','--file-allocation=none','--no-conf')
-          $proc = Start-Process -FilePath $exe -ArgumentList $rpcArgs -PassThru -WindowStyle Hidden
-          $listen = $null
-          for ($i = 0; $i -lt 30; $i++) {
-              Start-Sleep -Seconds 1
-              try { $listen = @(Get-NetTCPConnection -LocalPort 6800 -State Listen -ErrorAction SilentlyContinue) } catch { $listen = $null }
-              if ($listen -and @($listen).Count -gt 0) { break }
-          }
-          if (-not $listen -or @($listen).Count -eq 0) { Write-Host ('::warning::[F56-d fixture] daemon pid=' + $proc.Id + ' not listening on 6800 - lab stays advisory'); exit 0 }
-          foreach ($l in @($listen)) {
-              Write-Host ('[F56-d fixture] listening ' + $l.LocalAddress + ':' + $l.LocalPort)
-              if ([string]$l.LocalAddress -ne '127.0.0.1' -and [string]$l.LocalAddress -ne '::1') { throw ('F56-d: aria2c bound ' + $l.LocalAddress + ' - loopback only is mandatory') }
-          }
-          Write-Host ('[F56-d fixture] aria2c 1.36.0 pid=' + $proc.Id + ' on 127.0.0.1:6800, REQUIRED=1 for the JSON-RPC lab')
-          exit 0
-
-      # [F56-d] ADDITIVE ONLY: transport lane labs
-      - name: F56-d transport lane labs (aria2c JSON-RPC + post-fetch e2e + creds memory + SEARCH_INPUT)
-        timeout-minutes: 15
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $script:F56dSummary = @()
-          # [F56-d loop 3] Run each lab through one runner that captures its output,
-          # puts the tail in the job summary and fails the step with the tail in the
-          # message. Before this, a lab that threw printed into a log the sandbox
-          # cannot read (the check-run annotation cap drops late annotations).
-          function Invoke-F56dLab([string]$Rel) {
-              $p = Join-Path $env:GITHUB_WORKSPACE $Rel
-              Write-Host ('=== ' + $Rel + ' ===')
-              $out = ''
-              $rc = 1
-              try {
-                  $out = (& $p *>&1 | Out-String)
-                  $rc = $LASTEXITCODE
-              } catch {
-                  $rc = 1
-                  $out = ($out + "`n" + ($_ | Out-String))
-              }
-              Write-Host $out
-              $lines = @(($out -split "`r?`n") | Where-Object { $_.Trim() -ne '' })
-              $tail = @($lines | Select-Object -Last 8)
-              # Publish the tail as a commit status: the check-run annotation budget
-              # is spent by the earlier mirror labs and raw log downloads are not
-              # reachable from every environment, so this is the one channel that
-              # always names the failing leg + its last line.
-              if ($env:GH_TOKEN) {
-                  try {
-                      $st = @{
-                          state = $(if ($rc -eq 0) { 'success' } else { 'failure' })
-                          context = ('F56-d ' + ($Rel -replace '[\\/]', ' '))
-                          description = ($tail -join ' | ')
-                          target_url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID)
-                      } | ConvertTo-Json -Compress
-                      Invoke-RestMethod -Uri ('https://api.github.com/repos/' + $env:GITHUB_REPOSITORY + '/statuses/' + $env:GITHUB_SHA) -Method Post -Headers @{ Authorization = ('Bearer ' + $env:GH_TOKEN); Accept = 'application/vnd.github+json'; 'User-Agent' = 'ghrdp-f56d' } -Body $st -ContentType 'application/json' -TimeoutSec 30 | Out-Null
-                  } catch { Write-Host ('[F56-d] status publish failed: ' + $_.Exception.Message) }
-              }
-              if ($rc -ne 0) {
-                  $script:F56dSummary += ('- FAIL ' + $Rel + ' exit=' + $rc + ' :: ' + ($tail -join ' | '))
-                  Write-Host ('::error title=F56-d lab ' + $Rel + '::exit=' + $rc + ' ' + ($tail -join ' | '))
-                  throw ('F56-d: lab ' + $Rel + ' failed with exit ' + $rc + ' :: ' + ($tail -join ' | '))
-              }
-              $script:F56dSummary += ('- PASS ' + $Rel + ' :: ' + ($tail -join ' | '))
-              Write-Host ('::notice title=F56-d lab ' + $Rel + '::' + ($tail -join ' | '))
-          }
-          foreach ($f in @('payloads\ghrdp-aria2.ps1', 'tests\f56d-aria2-jsonrpc.ps1', 'tests\f56d-post-fetch-e2e.ps1', 'tests\f56d-creds-memory.ps1', 'tests\f56d-search-input.ps1')) {
-              $errs = $null
-              $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
-              if ($errs) {
-                  foreach ($e in @($errs)) { Write-Host ('::error title=F56-d parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
-                  throw ('F56-d: PowerShell syntax error in ' + $f)
-              }
-          }
-          Push-Location $env:GITHUB_WORKSPACE
-          try {
-              Invoke-F56dLab 'tests\f56d-search-input.ps1'
-              Invoke-F56dLab 'tests\f56d-creds-memory.ps1'
-              Invoke-F56dLab 'tests\f56d-post-fetch-e2e.ps1'
-              Invoke-F56dLab 'tests\f56d-aria2-jsonrpc.ps1'
-          } finally {
-              Pop-Location
-              if ($env:GITHUB_STEP_SUMMARY -and @($script:F56dSummary).Count -gt 0) {
-                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## F56-d transport lane labs'
-                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value (@($script:F56dSummary) -join "`n")
-              }
-          }
-          Write-Host 'F56-d transport labs PASS'
