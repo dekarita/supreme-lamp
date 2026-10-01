@@ -2,6 +2,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { requestFetch, startFetch, cancelFetch, retryFetch, isProvenanceBlocked } from '@/api/fetch/index.ts';
 import { encryptOwnCreds, encryptOwnCredsPlainFallback } from '@/lib/f46';
+import { extractFetchedArrivals } from '@/lib/fetchedArrivals';
 
 describe('F56-d fetch client', () => {
   beforeEach(() => {
@@ -120,6 +121,25 @@ describe('F56-d fetch client', () => {
     expect(events.length).toBe(1);
     expect(events[0][0].name).toBe('test.txt');
     window.removeEventListener('ghrdp-fetched-arrival', handler as EventListener);
+  });
+
+  // [F56-d loop 3] The producer side the UI event depends on: the /ws snapshot
+  // nests progress.json under `.progress`, the watcher writes `fetchedFiles`
+  // there. Before loop 3 nothing published the field, so the event was inert.
+  it('extractFetchedArrivals reads the nested /ws progress frame', async () => {
+    const frame = { kind: 'snapshot', progress: { fetchedFiles: [{ name: 'a.txt', sizeBytes: 5, modified: '2026-10-01T00:00:00.0000000Z' }] } };
+    const out = extractFetchedArrivals(frame);
+    expect(out).not.toBeNull();
+    expect(out?.[0].name).toBe('a.txt');
+    expect(out?.[0].sizeBytes).toBe(5);
+  });
+
+  it('extractFetchedArrivals accepts a flattened frame and refuses empty/absent data', async () => {
+    expect(extractFetchedArrivals({ fetchedFiles: [{ name: 'b.txt' }] })?.[0].name).toBe('b.txt');
+    expect(extractFetchedArrivals({ progress: { files: [] } })).toBeNull();
+    expect(extractFetchedArrivals({ progress: { fetchedFiles: [] } })).toBeNull();
+    expect(extractFetchedArrivals(null)).toBeNull();
+    expect(extractFetchedArrivals('nope')).toBeNull();
   });
 
   it('SEARCH_INPUT propagation from /diag to window flag', async () => {

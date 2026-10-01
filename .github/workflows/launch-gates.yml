@@ -3087,6 +3087,12 @@ jobs:
           grep -qF 'max-connection-per-server' payloads/ghrdp-aria2.ps1
           grep -qF 'GHRDP_ARIA2_RPC_SECRET' payloads/ghrdp-aria2.ps1
           grep -qF 'Add-Aria2Uri' payloads/ghrdp-aria2.ps1
+          # [F56-d loop 4] The RPC helper used to FLATTEN array-valued params
+          # (`$fullParams += $p` concatenates arrays), so aria2.addUri saw the URIs
+          # list as a bare string and rejected every call - the lab caught it, and
+          # /api/fetch start rides the same helper. Pin the fix and forbid the shape.
+          grep -qF 'System.Collections.ArrayList' payloads/ghrdp-aria2.ps1
+          if grep -qF '$fullParams += $p' payloads/ghrdp-aria2.ps1; then echo 'F56-d: helper flattens array-valued RPC params again' >&2; exit 1; fi
           grep -qF 'Get-Aria2Status' payloads/ghrdp-aria2.ps1
           grep -qF 'Remove-Aria2Download' payloads/ghrdp-aria2.ps1
           srv=payloads/ghrdp-server.ps1
@@ -3149,6 +3155,107 @@ jobs:
           if grep -RnF 'api/fx/list' src/ --exclude-dir=explorer --exclude-dir=tests; then
             echo 'F56-d: S3 file-API client leaked into the shipped UI (F57 owns real file ops)' >&2; exit 1
           fi
+          # [F56-d loop 3] The JSON-RPC lab used to self-SKIP on a runner without
+          # aria2c, i.e. it passed without exercising the transport. Pin the fixture
+          # daemon step (real 1.36.0, loopback only, secret, REQUIRED flag) and the
+          # two vacuity fixes in the labs so neither can silently regress to advisory.
+          grep -qF 'F56-d aria2c 1.36.0 loopback daemon (real JSON-RPC lab fixture)' .github/workflows/launch-gates.yml
+          # Extract the fixture step alone: a bare `grep -F '--rpc-listen-all=true'`
+          # over the whole file matches its OWN source line (that self-match made the
+          # first cut of this gate fail). The range is anchored to the `- name:` line
+          # so this gate's own source can never land in the extracted block.
+          sed -n '/^      - name: F56-d aria2c 1.36.0 loopback daemon (real JSON-RPC lab fixture)/,/^      - name: F56-d transport lane labs (/p' .github/workflows/launch-gates.yml > /tmp/f56d-fixture.txt
+          grep -qF -- '--rpc-listen-all=false' /tmp/f56d-fixture.txt || { echo 'F56-d: fixture does not pin --rpc-listen-all=false' >&2; exit 1; }
+          if grep -qF -- '--rpc-listen-all=true' /tmp/f56d-fixture.txt; then echo 'F56-d: fixture would bind the RPC publicly' >&2; exit 1; fi
+          grep -qF 'GHRDP_F56D_ARIA2_REQUIRED' .github/workflows/launch-gates.yml
+          grep -qF 'GHRDP_F56D_ARIA2_REQUIRED' tests/f56d-aria2-jsonrpc.ps1
+          grep -qF 'aria2.pauseAll' payloads/ghrdp-aria2.ps1
+          grep -qF 'Pause-Aria2All' tests/f56d-aria2-jsonrpc.ps1
+          # [F56-d loop 4g] "remove was effective" must be proven against real
+          # aria2 semantics: a removed GID stays queryable as status=removed
+          # (result list), so the check is "left tellActive AND tellWaiting, never
+          # live again" - plus the egress-free pause=true leg. Pin both, and
+          # forbid the old assertion shape (tellStatus must FAIL) from coming back.
+          grep -qF 'aria2.tellWaiting' tests/f56d-aria2-jsonrpc.ps1
+          grep -qF "pause = 'true'" tests/f56d-aria2-jsonrpc.ps1
+          grep -qF 'inQueueAfter=' tests/f56d-aria2-jsonrpc.ps1
+          if grep -qF 'tellStatus still resolves a removed gid' tests/f56d-aria2-jsonrpc.ps1; then echo 'F56-d: the remove leg regressed to the wrong (tellStatus-must-fail) assertion' >&2; exit 1; fi
+          if grep -qF 'encrypt failed (advisory)' tests/f56d-post-fetch-e2e.ps1; then echo 'F56-d: post-fetch encrypt leg is advisory again' >&2; exit 1; fi
+          grep -qF 'ghrdp-fetched-arrival' tests/f56d-post-fetch-e2e.ps1
+          # The arrival event needs a real producer: watcher -> progress.json ->
+          # /ws `.progress` -> shared reader -> UI event.
+          grep -qF 'Get-F56dFetchedArrivals' payloads/ghrdp-watcher.ps1
+          grep -qF '$prog.fetchedFiles = @(Get-F56dFetchedArrivals)' payloads/ghrdp-watcher.ps1
+          test -f src/lib/fetchedArrivals.ts
+          grep -qF 'extractFetchedArrivals' src/hooks/useDashboardPolling.ts
+          # [F56-d loop 4] Loop 3's fixture could only ever report "daemon pid=N not
+          # listening on 6800": it launched the chocolatey SHIM, captured no daemon
+          # log, and probed with Get-NetTCPConnection alone - so an aria2c that died
+          # at startup (--enable-rpc + a failing bind makes 1.36.0 throw DL_ABORT_EX
+          # "Failed to setup RPC server.", DownloadEngineFactory.cc) and a blind probe
+          # were indistinguishable. Pin what makes the fixture evidence-bearing: the
+          # real tool exe preferred over the shim, a captured daemon log, an RPC
+          # readiness probe, a netstat cross-check, the launch ladder, and a HARD FAIL
+          # (never an advisory) when the daemon does not come up. Every fixture token
+          # is read out of the block extracted above, so this gate's own source text
+          # cannot satisfy it.
+          grep -qF 'chocolatey\lib\aria2*\tools\aria2c.exe' /tmp/f56d-fixture.txt
+          grep -qF -- '--log=' /tmp/f56d-fixture.txt
+          grep -qF 'aria2.getVersion' /tmp/f56d-fixture.txt
+          grep -qF 'Invoke-RestMethod' /tmp/f56d-fixture.txt
+          grep -qF 'netstat' /tmp/f56d-fixture.txt
+          grep -qF 'GHRDP_F56D_ARIA2_REQUIRED' /tmp/f56d-fixture.txt
+          grep -qF 'real-hidden' /tmp/f56d-fixture.txt
+          grep -qF 'shim-visible' /tmp/f56d-fixture.txt
+          grep -qF 'never answered JSON-RPC' /tmp/f56d-fixture.txt
+          # A failing fixture must PUBLISH its evidence: the option-parse probe
+          # (aria2 parses options before printing usage, so a rejected pin exits
+          # non-zero and names itself), per-attempt exit codes, and the redirected
+          # stdout/stderr + daemon log tails as check-run annotations. The raw job
+          # log is not reachable from every environment.
+          grep -qF 'option-parse probe' /tmp/f56d-fixture.txt
+          grep -qF 'Publish-F56dDiag' /tmp/f56d-fixture.txt
+          grep -qF 'Publish-F56dEvidence' /tmp/f56d-fixture.txt
+          grep -qF 'RedirectStandardError' /tmp/f56d-fixture.txt
+          grep -qF 'launch attempts :: ' /tmp/f56d-fixture.txt
+          grep -qF 'secretLen=' /tmp/f56d-fixture.txt
+          # [F56-d loop 4 ROOT CAUSE] The daemon was dying with aria2's own
+          # "errorCode=28 ... '--rpc-secret' -> Empty string is not allowed" because
+          # the option vector was an array literal with inline concatenation. Pin
+          # the main.yml-style single argument string AND the refusal to start on a
+          # secret that is not exactly 32 chars, and forbid the broken shape.
+          grep -qF 'IsNullOrWhiteSpace($secret)' /tmp/f56d-fixture.txt
+          grep -qF "rpcArgs = '--enable-rpc --rpc-listen-all=false" /tmp/f56d-fixture.txt
+          if grep -qF '$rpcArgs = @(' /tmp/f56d-fixture.txt; then echo 'F56-d: fixture builds its option vector as an array literal again' >&2; exit 1; fi
+          # [F56-d loop 4 survivor] The fixture must start the daemon the way main.yml
+          # does - a SYSTEM scheduled task - because the Windows runner kills a step's
+          # process tree when the step ends; a step-local daemon answers RPC inside the
+          # fixture step and actively refuses the labs step (observed in run 36842954708).
+          grep -qF 'task-system' /tmp/f56d-fixture.txt
+          grep -qF 'GhrdpAria2Lab' /tmp/f56d-fixture.txt
+          grep -qF 'survivor' /tmp/f56d-fixture.txt
+          if grep -qF 'Start-Process -FilePath $exe -ArgumentList $rpcArgs -PassThru -WindowStyle Hidden' /tmp/f56d-fixture.txt; then echo 'F56-d: fixture still relies on a step-local daemon' >&2; exit 1; fi
+          # The lab must fail closed on a public bind and read the RUNNING daemon's
+          # own options - the helper's hardcoded pin table alone was self-fulfilling.
+          lab=tests/f56d-aria2-jsonrpc.ps1
+          grep -qF 'Get-F56dAria2Listener' "$lab"
+          grep -qF 'netstat' "$lab"
+          grep -qF 'aria2.getGlobalOption' "$lab"
+          grep -qF 'RPC answered on the non-loopback address' "$lab"
+          grep -qF 'loopback only is mandatory' "$lab"
+          grep -qF 'GHRDP_F56D_ARIA2_REQUIRED' "$lab"
+          grep -qF 'Pause-Aria2All' "$lab"
+          grep -qF 'Get-F56dRpcReason' "$lab"
+          grep -qF 'ConvertTo-F56dBytes' "$lab"
+          # The creds lab used to warn "should wipe" because `Array\.Clear` never
+          # matches the real token `[Array]::Clear`; it now asserts the wipe and
+          # EXECUTES the shipped decrypt/wipe functions.
+          creds=tests/f56d-creds-memory.ps1
+          grep -qF 'Array]::Clear' "$creds"
+          grep -qF 'Unprotect-F56dOwnCred' "$creds"
+          grep -qF 'Clear-F56dCredMemory' "$creds"
+          grep -qF 'fails closed on a non-32-byte key' "$creds"
+          if grep -qF 'should wipe' "$creds"; then echo 'F56-d: creds lab is warning-only about the memory wipe' >&2; exit 1; fi
           echo 'F56-d gates PASS'
 
 
@@ -3156,6 +3263,333 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+
+      # [F56-d loop 3] REAL aria2c 1.36.0 loopback daemon so the F56-d JSON-RPC
+      # round-trip lab is not vacuous: before this step the lab self-SKIPped on a
+      # runner that has no aria2c, i.e. it PASSed without exercising anything.
+      # Advisory exit 0 ONLY when chocolatey itself cannot deliver (the lane keeps
+      # its existing advisory posture); once the daemon is up it exports
+      # GHRDP_F56D_ARIA2_REQUIRED=1 and the lab must not skip.
+      #
+      # [F56-d loop 4 ROOT CAUSE - named by aria2 itself] The first cut of this
+      # step reported only "daemon pid=N not listening on 6800", so loop 3's lab
+      # died on "RPC not reachable ... while REQUIRED=1". The daemon was in fact
+      # dying in under a second, with aria2 saying exactly why:
+      #   errorCode=28 We encountered a problem while processing the option
+      #   '--rpc-secret' -> [OptionHandlerImpl.cc:296] errorCode=1
+      #   Empty string is not allowed
+      # The step's option vector was an ARRAY LITERAL with inline concatenation
+      # (@('--rpc-secret=' + $secret, '--dir=' + $dir, ...)); that shape does not
+      # group the way it reads, so the daemon received an EMPTY --rpc-secret=
+      # value and refused to start (exit 28) in every launch mode - and no listener
+      # table can show a process that never ran. The step now:
+      #   * builds ONE concatenated argument string, exactly like main.yml's
+      #     GhrdpAria2 task does (no array literal, no inline '+' inside it);
+      #   * generates the secret from RandomNumberGenerator bytes over an explicit
+      #     alphabet and REFUSES to start (self-naming failure) if the result is
+      #     not 32 chars - an empty --rpc-secret= can never recur silently;
+      #   * publishes the secret LENGTH (never the secret) and the masked argument
+      #     string, so a green run carries the proof that the pin arrived intact;
+      #   * prefers the REAL tool exe over the chocolatey shim (the shim hides the
+      #     daemon's startup output);
+      #   * captures the daemon's own log (--log=) plus redirected stdout/stderr;
+      #   * proves readiness with a real JSON-RPC aria2.getVersion round-trip, and
+      #     validates the whole pinned option set synchronously first (aria2 parses
+      #     options BEFORE printing usage, so a rejected pin exits non-zero and
+      #     names itself);
+      #   * cross-checks the listener table with netstat, asserts loopback-only in
+      #     the table AND behaviourally (no answer on the public address);
+      #   * HARD-FAILS with every diagnostic published as a ::warning:: annotation
+      #     when the daemon will not come up (the raw job log is not reachable from
+      #     every environment - the sandbox gets EOF from the results blob host).
+      - name: F56-d aria2c 1.36.0 loopback daemon (real JSON-RPC lab fixture)
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          function Publish-F56dDiag([string]$Text) {
+              Write-Host ('[F56-d fixture] ' + $Text)
+              $clean = ($Text -replace '[\r\n]+', ' ' -replace '%', 'pct' -replace '::', ':')
+              if ($clean.Length -gt 900) { $clean = $clean.Substring(0, 900) }
+              Write-Host ('::warning title=F56-d fixture::' + $clean)
+          }
+          function Publish-F56dEvidence([string]$Text) {
+              Write-Host ('[F56-d fixture] ' + $Text)
+              $clean = ($Text -replace '[\r\n]+', ' ' -replace '%', 'pct' -replace '::', ':')
+              if ($clean.Length -gt 900) { $clean = $clean.Substring(0, 900) }
+              Write-Host ('::notice title=F56-d fixture::' + $clean)
+          }
+          function Read-F56dTail([string]$Path, [int]$Count) {
+              try { if (Test-Path -LiteralPath $Path) { return @(Get-Content -LiteralPath $Path -Tail $Count -ErrorAction SilentlyContinue) } } catch { }
+              return @()
+          }
+          $ok = $false
+          try {
+              $before = (& choco list --local-only aria2 2>$null | Out-String)
+              if ($before -match '1\.36\.0') { $ok = $true; Write-Host '[F56-d fixture] aria2 1.36.0 already present' }
+          } catch { }
+          if (-not $ok) {
+              for ($a = 1; $a -le 2; $a++) {
+                  try {
+                      & choco install aria2 --version 1.36.0 -y --no-progress --force 2>&1 | ForEach-Object { Write-Host $_ }
+                      if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+                  } catch { Write-Host ('[F56-d fixture] choco attempt ' + $a + ' failed: ' + $_.Exception.Message) }
+                  Start-Sleep -Seconds 5
+              }
+          }
+          if (-not $ok) { Write-Host '::warning::[F56-d fixture] aria2c unavailable via chocolatey - JSON-RPC lab stays advisory (self-skip)'; exit 0 }
+          $cand = @()
+          foreach ($g in @('C:\ProgramData\chocolatey\lib\aria2*\tools\aria2c.exe')) {
+              $cand += @(Get-ChildItem -Path $g -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+          }
+          $cand += @('C:\tools\aria2\aria2c.exe', 'C:\ProgramData\chocolatey\bin\aria2c.exe')
+          $exe = ''
+          foreach ($p in @($cand)) { if ($p -and (Test-Path -LiteralPath $p)) { $exe = $p; break } }
+          if (-not $exe) { $hit = Get-Command aria2c.exe -ErrorAction SilentlyContinue; if ($hit) { $exe = $hit.Source } }
+          if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { Write-Host '::warning::[F56-d fixture] aria2c.exe not found after choco - lab stays advisory'; exit 0 }
+          $verOut = ''
+          try { $verOut = (& $exe --version 2>$null | Select-Object -First 1 | Out-String).Trim() } catch { }
+          $sha = ''
+          try { $sha = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash } catch { }
+          Write-Host ('[F56-d fixture] exe=' + $exe + ' sha256=' + $sha + ' ' + $verOut)
+          if ($verOut -notmatch '1\.36\.0') { Write-Host ('::warning::[F56-d fixture] expected 1.36.0 got ' + $verOut + ' - JSON-RPC lab stays advisory'); exit 0 }
+          # [F56-d loop 4] Secret from 32 RNG bytes over an explicit alphabet - no
+          # pipeline/cast idiom, and the length is REQUIRED to be exactly 32.
+          $alphabet = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+          $rngBytes = New-Object byte[] 32
+          $rngOk = $false
+          try { [System.Security.Cryptography.RandomNumberGenerator]::Fill($rngBytes); $rngOk = $true } catch { $rngOk = $false }
+          if (-not $rngOk) { for ($i = 0; $i -lt 32; $i++) { $rngBytes[$i] = [byte](Get-Random -Minimum 0 -Maximum 256) } }
+          $secret = -join @(for ($i = 0; $i -lt 32; $i++) { $alphabet[$rngBytes[$i] % 62] })
+          if ([string]::IsNullOrWhiteSpace($secret) -or $secret.Length -ne 32) {
+              Publish-F56dDiag ('secret probe :: len=' + $secret.Length + ' rngOk=' + $rngOk + ' - refusing to start the daemon with an empty --rpc-secret= (aria2 errorCode=28)')
+              throw 'F56-d: generated RPC secret is not 32 characters - refusing to start aria2c (an empty --rpc-secret= makes aria2 exit 28)'
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_ARIA2_RPC_SECRET=' + $secret)
+          $dir = 'D:\RDP-Storage\Fetched'
+          try { New-Item -ItemType Directory -Path $dir -Force | Out-Null } catch { $dir = Join-Path $env:RUNNER_TEMP 'f56d-fetched'; New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+          Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_F56D_ARIA2_DIR=' + $dir)
+          # C:\Users\Public is writable by the runner admin AND by the SYSTEM account
+          # the daemon has to run under (see the task-system launch mode below).
+          $logDir = 'C:\Users\Public'
+          $log = Join-Path $logDir 'f56d-aria2.log'
+          $outLog = Join-Path $logDir 'f56d-aria2-out.log'
+          $errLog = Join-Path $logDir 'f56d-aria2-err.log'
+          $probeOut = Join-Path $logDir 'f56d-aria2-probe-out.log'
+          $probeErr = Join-Path $logDir 'f56d-aria2-probe-err.log'
+          Remove-Item -LiteralPath $log, $outLog, $errLog, $probeOut, $probeErr -Force -ErrorAction SilentlyContinue
+          # ONE concatenated argument string, exactly like main.yml's GhrdpAria2 task.
+          $rpcArgs = '--enable-rpc --rpc-listen-all=false --rpc-listen-port=6800 --rpc-secret=' + $secret + ' --dir=' + $dir + ' --max-connection-per-server=8 --split=8 --min-split-size=1M --follow-metalink=false --follow-torrent=false --check-integrity=true --auto-file-renaming=false --allow-overwrite=true --file-allocation=none --no-conf --log=' + $log + ' --log-level=notice'
+          $masked = $rpcArgs
+          if ($secret) { $masked = $masked.Replace($secret, '<secret>') }
+          Publish-F56dEvidence ('pins :: secretLen=' + $secret.Length + ' args[' + $rpcArgs.Length + ']=' + $masked)
+          # Synchronous option-parse probe: aria2 parses the whole option set BEFORE
+          # it prints usage, so a pin this build rejects exits non-zero here and the
+          # message names the offending option. rc=0 proves the pinned set parses.
+          $helpRc = -1
+          $helpMsg = ''
+          try {
+              $hp = Start-Process -FilePath $exe -ArgumentList ($rpcArgs + ' --help') -PassThru -Wait -RedirectStandardOutput $probeOut -RedirectStandardError $probeErr -ErrorAction Stop
+              $helpRc = [int]$hp.ExitCode
+              $helpMsg = (@(@(Read-F56dTail $probeErr 3) + @(Read-F56dTail $probeOut 2)) -join ' | ')
+          } catch { $helpMsg = $_.Exception.Message }
+          Write-Host ('[F56-d fixture] option-parse probe (aria2c <pins> --help) rc=' + $helpRc + ' ' + $helpMsg)
+          $rpcBody = @{ jsonrpc = '2.0'; id = 'f56d-fixture'; method = 'aria2.getVersion'; params = @('token:' + $secret) } | ConvertTo-Json -Compress
+          $script:f56dProbeError = ''
+          function Test-F56dRpc {
+              try {
+                  $r = Invoke-RestMethod -Uri 'http://127.0.0.1:6800/jsonrpc' -Method Post -Body $rpcBody -ContentType 'application/json' -TimeoutSec 5 -ErrorAction Stop
+                  if ($r -and $r.result -and $r.result.version) { return [string]$r.result.version }
+                  if ($r -and $r.error) { $script:f56dProbeError = ('aria2 error envelope: ' + ([string]$r.error.message)) }
+                  return ''
+              } catch { $script:f56dProbeError = $_.Exception.Message }
+              return ''
+          }
+          $proc = $null
+          $ver = ''
+          $modeResults = @()
+          $usedMode = ''
+          $survivor = $false
+          foreach ($mode in @('task-system','real-hidden','real-visible','shim-visible')) {
+              if ($proc -and -not $proc.HasExited) { try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { } }
+              $target = $exe
+              if ($mode -eq 'shim-visible' -and (Test-Path -LiteralPath 'C:\ProgramData\chocolatey\bin\aria2c.exe')) { $target = 'C:\ProgramData\chocolatey\bin\aria2c.exe' }
+              $pid0 = ''
+              $exited = ''
+              $rc0 = ''
+              $waits = 20
+              try {
+                  if ($mode -eq 'task-system') {
+                      # [F56-d loop 4] main.yml's GhrdpAria2 pattern. The Windows runner
+                      # puts every step in a job object and kills the step's whole
+                      # process tree when the step ends, so a Start-Process daemon
+                      # answers RPC inside this step and actively refuses the
+                      # connection in the labs step - which is exactly what the
+                      # previous run showed. A SYSTEM scheduled task is not a child of
+                      # this step, so it survives and serves the lab, and the daemon
+                      # is started the same way production starts it.
+                      try { Unregister-ScheduledTask -TaskName 'GhrdpAria2Lab' -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+                      $action = New-ScheduledTaskAction -Execute $target -Argument $rpcArgs
+                      $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(3)
+                      $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+                      $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 1)
+                      Register-ScheduledTask -TaskName 'GhrdpAria2Lab' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+                      Start-ScheduledTask -TaskName 'GhrdpAria2Lab' -ErrorAction Stop
+                      $waits = 30
+                      $pid0 = 'task'
+                      Write-Host ('[F56-d fixture] launch task-system (GhrdpAria2Lab, SYSTEM) exe=' + $target + ' - survives the step boundary')
+                  } elseif ($mode -eq 'real-hidden') { $proc = Start-Process -FilePath $target -ArgumentList $rpcArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog -ErrorAction Stop }
+                  else { $proc = Start-Process -FilePath $target -ArgumentList $rpcArgs -PassThru -RedirectStandardOutput $outLog -RedirectStandardError $errLog -ErrorAction Stop }
+                  if ($mode -ne 'task-system') {
+                      $pid0 = [string]$proc.Id
+                      Write-Host ('[F56-d fixture] launch ' + $mode + ' pid=' + $pid0 + ' exe=' + $target + ' (step-local: dies with this step)')
+                  }
+              } catch {
+                  Write-Host ('[F56-d fixture] launch ' + $mode + ' failed: ' + $_.Exception.Message)
+                  $proc = $null
+              }
+              for ($i = 0; $i -lt $waits; $i++) {
+                  Start-Sleep -Seconds 1
+                  $ver = Test-F56dRpc
+                  if ($ver) { break }
+                  if ($proc -and $proc.HasExited) { break }
+              }
+              if ($proc) { $exited = [string]$proc.HasExited; try { if ($proc.HasExited) { $rc0 = [string]$proc.ExitCode } } catch { } }
+              $modeResults += ('mode=' + $mode + ' pid=' + $pid0 + ' exited=' + $exited + ' rc=' + $rc0)
+              if ($ver) { $usedMode = $mode; $survivor = ($mode -eq 'task-system'); break }
+          }
+          $logLines = @(Read-F56dTail $log 12)
+          $outLines = @(Read-F56dTail $outLog 6)
+          $errLines = @(Read-F56dTail $errLog 6)
+          $listen = @()
+          try { $listen = @(netstat -ano -p tcp | Select-String ':6800' | ForEach-Object { ([string]$_).Trim() }) } catch { }
+          if (-not $ver) {
+              Write-Host '::error title=F56-d fixture::aria2c 1.36.0 never answered JSON-RPC on 127.0.0.1:6800 (launch ladder exhausted)'
+              Publish-F56dDiag ('pins :: secretLen=' + $secret.Length + ' args[' + $rpcArgs.Length + ']=' + $masked)
+              Publish-F56dDiag ('option-parse probe rc=' + $helpRc + ' :: ' + $helpMsg)
+              Publish-F56dDiag ('launch attempts :: ' + (@($modeResults) -join ' ; '))
+              Publish-F56dDiag ('last RPC probe error :: ' + [string]$script:f56dProbeError)
+              Publish-F56dDiag ('aria2 log tail (' + $log + ') :: ' + (@($logLines) -join ' | '))
+              Publish-F56dDiag ('stdout tail :: ' + (@($outLines) -join ' | '))
+              Publish-F56dDiag ('stderr tail :: ' + (@($errLines) -join ' | '))
+              Publish-F56dDiag ('netstat 6800 :: ' + (@($listen) -join ' | '))
+              throw ('F56-d: aria2c 1.36.0 daemon is not answering JSON-RPC on 127.0.0.1:6800 - probes and tails are in the ::warning:: annotations above (exe=' + $exe + ')')
+          }
+          if (-not $survivor) {
+              # Answering RPC here is not enough: the lab runs in the NEXT step, and a
+              # step-local daemon is killed when this step ends. Refuse loudly instead
+              # of handing the lab a transport that will be gone.
+              Publish-F56dDiag ('step-local daemon only :: mode=' + $usedMode + ' answered RPC but the Windows runner kills the step process tree at step end, so the labs step would find nothing; only the task-system mode can serve the lab')
+              throw 'F56-d: aria2c answered RPC only from a step-local process - it cannot serve the labs step (the runner kills the step process tree at step end)'
+          }
+          $loopbackOnly = $true
+          foreach ($row in @($listen)) {
+              $parts = @($row -split '\s+' | Where-Object { $_ -ne '' })
+              if ($parts.Count -lt 4) { continue }
+              if ($parts[3] -ne 'LISTENING') { continue }
+              $la = [string]$parts[1]
+              Write-Host ('[F56-d fixture] listening ' + $la)
+              $ah = $la
+              if ($la -match '^\[(.+)\]:\d+$') { $ah = [string]$Matches[1] } elseif ($la -match '^([^:]+):\d+$') { $ah = [string]$Matches[1] }
+              if ($ah -ne '127.0.0.1' -and $ah -ne '::1') { $loopbackOnly = $false }
+          }
+          if (@($listen).Count -eq 0) { Write-Host '::warning::[F56-d fixture] no netstat LISTENING row for 6800 - loopback proven behaviourally below' }
+          if (-not $loopbackOnly) { throw 'F56-d: aria2c bound a non-loopback address - loopback only is mandatory' }
+          $pub = ''
+          try {
+              foreach ($ip in @([System.Net.Dns]::GetHostAddresses([System.Net.Dns]::GetHostName()))) {
+                  if ($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork -and [string]$ip -ne '127.0.0.1') { $pub = [string]$ip; break }
+              }
+          } catch { }
+          if ($pub) {
+              $leak = ''
+              try {
+                  $r2 = Invoke-RestMethod -Uri ('http://' + $pub + ':6800/jsonrpc') -Method Post -Body $rpcBody -ContentType 'application/json' -TimeoutSec 5 -ErrorAction Stop
+                  if ($r2 -and $r2.result) { $leak = $pub }
+              } catch { }
+              if ($leak) { throw ('F56-d: aria2c answered JSON-RPC on ' + $leak + ' - loopback only is mandatory') }
+              Write-Host ('[F56-d fixture] loopback only: no JSON-RPC answer on ' + $pub + ':6800')
+          } else { Write-Host '[F56-d fixture] no non-loopback IPv4 address to probe - behavioural loopback cell advisory' }
+          Add-Content -Path $env:GITHUB_ENV -Value 'GHRDP_F56D_ARIA2_REQUIRED=1'
+          Publish-F56dEvidence ('ready :: aria2c ' + $ver + ' on 127.0.0.1:6800 via ' + $usedMode + ' (survives the step boundary), option-parse rc=' + $helpRc + ', secretLen=' + $secret.Length + ', REQUIRED=1 for the lab')
+          if ($env:GITHUB_STEP_SUMMARY) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## F56-d aria2c fixture'
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('- exe=' + $exe + ' sha256=' + $sha + ' version=' + $ver + ' dir=' + $dir + ' mode=' + $usedMode + ' option-parse-rc=' + $helpRc)
+          }
+          exit 0
+      # [F56-d] ADDITIVE ONLY: transport lane labs
+      - name: F56-d transport lane labs (aria2c JSON-RPC + post-fetch e2e + creds memory + SEARCH_INPUT)
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script:F56dSummary = @()
+          # [F56-d loop 3] Run each lab through one runner that captures its output,
+          # puts the tail in the job summary and fails the step with the tail in the
+          # message. Before this, a lab that threw printed into a log the sandbox
+          # cannot read (the check-run annotation cap drops late annotations).
+          function Invoke-F56dLab([string]$Rel) {
+              $p = Join-Path $env:GITHUB_WORKSPACE $Rel
+              Write-Host ('=== ' + $Rel + ' ===')
+              $out = ''
+              $rc = 1
+              try {
+                  $out = (& $p *>&1 | Out-String)
+                  $rc = $LASTEXITCODE
+              } catch {
+                  $rc = 1
+                  $out = ($out + "`n" + ($_ | Out-String))
+              }
+              Write-Host $out
+              $lines = @(($out -split "`r?`n") | Where-Object { $_.Trim() -ne '' })
+              $tail = @($lines | Select-Object -Last 8)
+              # Publish the tail as a commit status: the check-run annotation budget
+              # is spent by the earlier mirror labs and raw log downloads are not
+              # reachable from every environment, so this is the one channel that
+              # always names the failing leg + its last line.
+              if ($env:GH_TOKEN) {
+                  try {
+                      $st = @{
+                          state = $(if ($rc -eq 0) { 'success' } else { 'failure' })
+                          context = ('F56-d ' + ($Rel -replace '[\\/]', ' '))
+                          description = ($tail -join ' | ')
+                          target_url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID)
+                      } | ConvertTo-Json -Compress
+                      Invoke-RestMethod -Uri ('https://api.github.com/repos/' + $env:GITHUB_REPOSITORY + '/statuses/' + $env:GITHUB_SHA) -Method Post -Headers @{ Authorization = ('Bearer ' + $env:GH_TOKEN); Accept = 'application/vnd.github+json'; 'User-Agent' = 'ghrdp-f56d' } -Body $st -ContentType 'application/json' -TimeoutSec 30 | Out-Null
+                  } catch { Write-Host ('[F56-d] status publish failed: ' + $_.Exception.Message) }
+              }
+              if ($rc -ne 0) {
+                  $script:F56dSummary += ('- FAIL ' + $Rel + ' exit=' + $rc + ' :: ' + ($tail -join ' | '))
+                  Write-Host ('::error title=F56-d lab ' + $Rel + '::exit=' + $rc + ' ' + ($tail -join ' | '))
+                  throw ('F56-d: lab ' + $Rel + ' failed with exit ' + $rc + ' :: ' + ($tail -join ' | '))
+              }
+              $script:F56dSummary += ('- PASS ' + $Rel + ' :: ' + ($tail -join ' | '))
+              Write-Host ('::notice title=F56-d lab ' + $Rel + '::' + ($tail -join ' | '))
+          }
+          foreach ($f in @('payloads\ghrdp-aria2.ps1', 'tests\f56d-aria2-jsonrpc.ps1', 'tests\f56d-post-fetch-e2e.ps1', 'tests\f56d-creds-memory.ps1', 'tests\f56d-search-input.ps1')) {
+              $errs = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
+              if ($errs) {
+                  foreach ($e in @($errs)) { Write-Host ('::error title=F56-d parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
+                  throw ('F56-d: PowerShell syntax error in ' + $f)
+              }
+          }
+          Push-Location $env:GITHUB_WORKSPACE
+          try {
+              Invoke-F56dLab 'tests\f56d-search-input.ps1'
+              Invoke-F56dLab 'tests\f56d-creds-memory.ps1'
+              Invoke-F56dLab 'tests\f56d-post-fetch-e2e.ps1'
+              Invoke-F56dLab 'tests\f56d-aria2-jsonrpc.ps1'
+          } finally {
+              Pop-Location
+              if ($env:GITHUB_STEP_SUMMARY -and @($script:F56dSummary).Count -gt 0) {
+                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## F56-d transport lane labs'
+                  Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value (@($script:F56dSummary) -join "`n")
+              }
+          }
+          Write-Host 'F56-d transport labs PASS'
       # [F19 §5] REAL unit test of the shipped launcher's DNS-guard decision:
       # compile payloads/ghrdp-rdp-launcher.cs with the same in-box csc that
       # install.cmd uses, run --dns-selftest (injected resolver/TCP results) and
@@ -3474,26 +3908,3 @@ jobs:
           }
           & (Join-Path $env:GITHUB_WORKSPACE 'tests\f58-source-store.ps1')
           if ($LASTEXITCODE -ne 0) { throw ('F58: store crypto lab failed with exit ' + $LASTEXITCODE) }
-      # [F56-d] ADDITIVE ONLY: transport lane labs
-      - name: F56-d transport lane labs (aria2c JSON-RPC + post-fetch e2e + creds memory + SEARCH_INPUT)
-        timeout-minutes: 15
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          foreach ($f in @('payloads\ghrdp-aria2.ps1', 'tests\f56d-aria2-jsonrpc.ps1', 'tests\f56d-post-fetch-e2e.ps1', 'tests\f56d-creds-memory.ps1', 'tests\f56d-search-input.ps1')) {
-              $errs = $null
-              $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
-              if ($errs) {
-                  foreach ($e in @($errs)) { Write-Host ('::error title=F56-d parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
-                  throw ('F56-d: PowerShell syntax error in ' + $f)
-              }
-          }
-          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-search-input.ps1')
-          if ($LASTEXITCODE -ne 0) { throw ('F56-d: SEARCH_INPUT lab failed with exit ' + $LASTEXITCODE) }
-          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-creds-memory.ps1')
-          if ($LASTEXITCODE -ne 0) { throw ('F56-d: creds memory lab failed with exit ' + $LASTEXITCODE) }
-          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-post-fetch-e2e.ps1')
-          if ($LASTEXITCODE -ne 0) { throw ('F56-d: post-fetch e2e lab failed with exit ' + $LASTEXITCODE) }
-          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-aria2-jsonrpc.ps1')
-          if ($LASTEXITCODE -ne 0) { throw ('F56-d: aria2 JSON-RPC lab failed with exit ' + $LASTEXITCODE) }
-          Write-Host 'F56-d transport labs PASS'
