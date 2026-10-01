@@ -3193,6 +3193,15 @@ jobs:
           grep -qF 'real-hidden' /tmp/f56d-fixture.txt
           grep -qF 'shim-visible' /tmp/f56d-fixture.txt
           grep -qF 'never answered JSON-RPC' /tmp/f56d-fixture.txt
+          # A failing fixture must PUBLISH its evidence: the option-parse probe
+          # (aria2 parses options before printing usage, so a rejected pin exits
+          # non-zero and names itself), per-attempt exit codes, and the redirected
+          # stdout/stderr + daemon log tails as check-run annotations. The raw job
+          # log is not reachable from every environment.
+          grep -qF 'option-parse probe' /tmp/f56d-fixture.txt
+          grep -qF 'Publish-F56dDiag' /tmp/f56d-fixture.txt
+          grep -qF 'RedirectStandardError' /tmp/f56d-fixture.txt
+          grep -qF 'launch attempts :: ' /tmp/f56d-fixture.txt
           # The lab must fail closed on a public bind and read the RUNNING daemon's
           # own options - the helper's hardcoded pin table alone was self-fulfilling.
           lab=tests/f56d-aria2-jsonrpc.ps1
@@ -3235,19 +3244,29 @@ jobs:
       # DL_ABORT_EX("Failed to setup RPC server.") and exits - DownloadEngineFactory
       # .cc) and a probe blind spot were therefore indistinguishable, and the run
       # ended in an advisory warning + a vacuous lab. The fixture is now
-      # evidence-bearing: the REAL tool exe is preferred over the shim, the daemon
-      # writes its own log (--log=) which is printed on failure, readiness is a real
-      # JSON-RPC aria2.getVersion round-trip (the very surface the lab exercises),
-      # a launch ladder retries without the shim / without -WindowStyle, netstat is
-      # cross-checked against Get-NetTCPConnection, loopback-only is asserted BOTH
-      # in the listener table and behaviourally (no answer on the public address),
-      # and a daemon that will not come up FAILS this step with its log tail
-      # instead of degrading to a silent advisory.
+      # evidence-bearing AND self-diagnosing: the REAL tool exe is preferred over
+      # the shim, the daemon writes its own log (--log=) plus redirected stdout and
+      # stderr per launch attempt, readiness is a real JSON-RPC aria2.getVersion
+      # round-trip (the very surface the lab exercises), an aria2c --help probe
+      # validates the whole pinned option set synchronously (aria2 parses options
+      # BEFORE printing usage, so a rejected pin exits non-zero and names itself),
+      # a launch ladder retries without the shim / without -WindowStyle, a netstat
+      # cross-check backs the listener table, loopback-only is asserted BOTH in the
+      # listener table and behaviourally (no answer on the public address), and a
+      # daemon that will not come up FAILS this step - publishing every diagnostic
+      # as a ::warning:: annotation, because the raw job log is not reachable from
+      # every environment (the sandbox hits EOF on the results blob host).
       - name: F56-d aria2c 1.36.0 loopback daemon (real JSON-RPC lab fixture)
         timeout-minutes: 10
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          function Publish-F56dDiag([string]$Text) {
+              Write-Host ('[F56-d fixture] ' + $Text)
+              $clean = ($Text -replace '[\r\n]+', ' ' -replace '%', 'pct' -replace '::', ':')
+              if ($clean.Length -gt 900) { $clean = $clean.Substring(0, 900) }
+              Write-Host ('::warning title=F56-d fixture::' + $clean)
+          }
           $ok = $false
           try {
               $before = (& choco list --local-only aria2 2>$null | Out-String)
@@ -3287,9 +3306,19 @@ jobs:
           try { New-Item -ItemType Directory -Path $dir -Force | Out-Null } catch { $dir = Join-Path $env:RUNNER_TEMP 'f56d-fetched'; New-Item -ItemType Directory -Path $dir -Force | Out-Null }
           Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_F56D_ARIA2_DIR=' + $dir)
           $log = Join-Path $env:RUNNER_TEMP 'f56d-aria2.log'
-          Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+          $outLog = Join-Path $env:RUNNER_TEMP 'f56d-aria2-out.log'
+          $errLog = Join-Path $env:RUNNER_TEMP 'f56d-aria2-err.log'
+          Remove-Item -LiteralPath $log, $outLog, $errLog -Force -ErrorAction SilentlyContinue
           # loopback only + the same CLI pins as main.yml's GhrdpAria2 task
           $rpcArgs = @('--enable-rpc','--rpc-listen-all=false','--rpc-listen-port=6800','--rpc-secret=' + $secret,'--dir=' + $dir,'--max-connection-per-server=8','--split=8','--min-split-size=1M','--follow-metalink=false','--follow-torrent=false','--check-integrity=true','--auto-file-renaming=false','--allow-overwrite=true','--file-allocation=none','--no-conf','--log=' + $log,'--log-level=notice')
+          # Synchronous option-parse probe: aria2 parses the whole option set BEFORE
+          # it prints usage, so a pin this build rejects exits non-zero here and the
+          # message names the offending option. rc=0 proves the pinned set parses.
+          $helpRc = -1
+          $helpOut = ''
+          try { $helpOut = (& $exe @rpcArgs --help 2>&1 | Out-String); $helpRc = $LASTEXITCODE } catch { $helpOut = $_.Exception.Message }
+          $helpMsg = (@((($helpOut -split "`r?`n") | Where-Object { $_.Trim() -ne '' }) | Select-Object -First 2) -join ' / ')
+          Write-Host ('[F56-d fixture] option-parse probe (aria2c <pins> --help) rc=' + $helpRc + ' ' + $helpMsg)
           $rpcBody = @{ jsonrpc = '2.0'; id = 'f56d-fixture'; method = 'aria2.getVersion'; params = @('token:' + $secret) } | ConvertTo-Json -Compress
           $script:f56dProbeError = ''
           function Test-F56dRpc {
@@ -3303,14 +3332,20 @@ jobs:
           }
           $proc = $null
           $ver = ''
+          $modeResults = @()
+          $usedMode = ''
           foreach ($mode in @('real-hidden','real-visible','shim-visible')) {
               if ($proc -and -not $proc.HasExited) { try { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue } catch { } }
               $target = $exe
               if ($mode -eq 'shim-visible' -and (Test-Path -LiteralPath 'C:\ProgramData\chocolatey\bin\aria2c.exe')) { $target = 'C:\ProgramData\chocolatey\bin\aria2c.exe' }
+              $pid0 = ''
+              $exited = ''
+              $rc0 = ''
               try {
-                  if ($mode -eq 'real-hidden') { $proc = Start-Process -FilePath $target -ArgumentList $rpcArgs -PassThru -WindowStyle Hidden -ErrorAction Stop }
-                  else { $proc = Start-Process -FilePath $target -ArgumentList $rpcArgs -PassThru -ErrorAction Stop }
-                  Write-Host ('[F56-d fixture] launch ' + $mode + ' pid=' + $proc.Id + ' exe=' + $target)
+                  if ($mode -eq 'real-hidden') { $proc = Start-Process -FilePath $target -ArgumentList $rpcArgs -PassThru -WindowStyle Hidden -RedirectStandardOutput $outLog -RedirectStandardError $errLog -ErrorAction Stop }
+                  else { $proc = Start-Process -FilePath $target -ArgumentList $rpcArgs -PassThru -RedirectStandardOutput $outLog -RedirectStandardError $errLog -ErrorAction Stop }
+                  $pid0 = [string]$proc.Id
+                  Write-Host ('[F56-d fixture] launch ' + $mode + ' pid=' + $pid0 + ' exe=' + $target)
               } catch {
                   Write-Host ('[F56-d fixture] launch ' + $mode + ' failed: ' + $_.Exception.Message)
                   $proc = $null
@@ -3321,19 +3356,29 @@ jobs:
                   if ($ver) { break }
                   if ($proc -and $proc.HasExited) { break }
               }
-              if ($ver) { break }
-              if ($proc -and $proc.HasExited) { Write-Host ('[F56-d fixture] ' + $mode + ' exited rc=' + $proc.ExitCode) }
+              if ($proc) { $exited = [string]$proc.HasExited; try { if ($proc.HasExited) { $rc0 = [string]$proc.ExitCode } } catch { } }
+              $modeResults += ('mode=' + $mode + ' pid=' + $pid0 + ' exited=' + $exited + ' rc=' + $rc0)
+              if ($ver) { $usedMode = $mode; break }
           }
-          $logLines = @()
-          if (Test-Path -LiteralPath $log) { try { $logLines = @(Get-Content -LiteralPath $log -Tail 12 -ErrorAction SilentlyContinue) } catch { } }
+          function Read-F56dTail([string]$Path, [int]$Count) {
+              try { if (Test-Path -LiteralPath $Path) { return @(Get-Content -LiteralPath $Path -Tail $Count -ErrorAction SilentlyContinue) } } catch { }
+              return @()
+          }
+          $logLines = @(Read-F56dTail $log 12)
+          $outLines = @(Read-F56dTail $outLog 6)
+          $errLines = @(Read-F56dTail $errLog 6)
           $listen = @()
           try { $listen = @(netstat -ano -p tcp | Select-String ':6800' | ForEach-Object { ([string]$_).Trim() }) } catch { }
           if (-not $ver) {
               Write-Host '::error title=F56-d fixture::aria2c 1.36.0 never answered JSON-RPC on 127.0.0.1:6800 (launch ladder exhausted)'
-              Write-Host ('[F56-d fixture] last probe error: ' + [string]$script:f56dProbeError)
-              Write-Host ('[F56-d fixture] daemon log (' + $log + '): ' + (@($logLines) -join ' | '))
-              Write-Host ('[F56-d fixture] netstat 6800: ' + (@($listen) -join ' | '))
-              throw ('F56-d: aria2c 1.36.0 daemon is not answering JSON-RPC on 127.0.0.1:6800 - last probe error: ' + [string]$script:f56dProbeError + ' (see the log tail in the ::error:: annotation; exe=' + $exe + ')')
+              Publish-F56dDiag ('option-parse probe rc=' + $helpRc + ' :: ' + $helpMsg)
+              Publish-F56dDiag ('launch attempts :: ' + (@($modeResults) -join ' ; '))
+              Publish-F56dDiag ('last RPC probe error :: ' + [string]$script:f56dProbeError)
+              Publish-F56dDiag ('aria2 log tail (' + $log + ') :: ' + (@($logLines) -join ' | '))
+              Publish-F56dDiag ('stdout tail :: ' + (@($outLines) -join ' | '))
+              Publish-F56dDiag ('stderr tail :: ' + (@($errLines) -join ' | '))
+              Publish-F56dDiag ('netstat 6800 :: ' + (@($listen) -join ' | '))
+              throw ('F56-d: aria2c 1.36.0 daemon is not answering JSON-RPC on 127.0.0.1:6800 - probes and tails are in the ::warning:: annotations above (exe=' + $exe + ')')
           }
           $loopbackOnly = $true
           foreach ($row in @($listen)) {
@@ -3346,7 +3391,7 @@ jobs:
               if ($la -match '^\[(.+)\]:\d+$') { $ah = [string]$Matches[1] } elseif ($la -match '^([^:]+):\d+$') { $ah = [string]$Matches[1] }
               if ($ah -ne '127.0.0.1' -and $ah -ne '::1') { $loopbackOnly = $false }
           }
-          if ($listen.Count -eq 0) { Write-Host '::warning::[F56-d fixture] no netstat LISTENING row for 6800 - loopback proven behaviourally below' }
+          if (@($listen).Count -eq 0) { Write-Host '::warning::[F56-d fixture] no netstat LISTENING row for 6800 - loopback proven behaviourally below' }
           if (-not $loopbackOnly) { throw 'F56-d: aria2c bound a non-loopback address - loopback only is mandatory' }
           $pub = ''
           try {
@@ -3364,10 +3409,10 @@ jobs:
               Write-Host ('[F56-d fixture] loopback only: no JSON-RPC answer on ' + $pub + ':6800')
           } else { Write-Host '[F56-d fixture] no non-loopback IPv4 address to probe - behavioural loopback cell advisory' }
           Add-Content -Path $env:GITHUB_ENV -Value 'GHRDP_F56D_ARIA2_REQUIRED=1'
-          Write-Host ('[F56-d fixture] aria2c ' + $ver + ' answering JSON-RPC on 127.0.0.1:6800, REQUIRED=1 for the JSON-RPC lab')
+          Write-Host ('[F56-d fixture] aria2c ' + $ver + ' answering JSON-RPC on 127.0.0.1:6800 via ' + $usedMode + ', REQUIRED=1 for the JSON-RPC lab')
           if ($env:GITHUB_STEP_SUMMARY) {
               Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## F56-d aria2c fixture'
-              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('- exe=' + $exe + ' sha256=' + $sha + ' version=' + $ver + ' dir=' + $dir)
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('- exe=' + $exe + ' sha256=' + $sha + ' version=' + $ver + ' dir=' + $dir + ' mode=' + $usedMode + ' option-parse-rc=' + $helpRc)
           }
           exit 0
       # [F56-d] ADDITIVE ONLY: transport lane labs
