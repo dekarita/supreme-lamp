@@ -26,6 +26,20 @@ function Fail-Lab([string]$Msg) {
     Write-Host ('::error title=F56-d aria2 lab::' + $Msg)
     throw ('F56-d aria2 lab: ' + $Msg)
 }
+# The helper returns aria2's JSON error object; stringifying it yields
+# "System.Collections.Hashtable", which is useless in an annotation - name the
+# code and the message instead (that is how loop 4 found the empty --rpc-secret=).
+function Format-F56dError($Err) {
+    if (-not $Err) { return 'no error object' }
+    $code = ''
+    $msg = ''
+    try { $code = [string]$Err.code } catch { }
+    try { $msg = [string]$Err.message } catch { }
+    if (-not $msg) { try { $msg = [string]$Err.Message } catch { } }
+    if (-not $msg -and $Err -is [string]) { $msg = [string]$Err }
+    $out = ('code=' + $code + ' message=' + $msg).Trim()
+    return $out
+}
 Write-Host ('[F56-d] aria2c JSON-RPC round-trip lab (required=' + $required + ')')
 
 $mod = Join-Path $PSScriptRoot '..' 'payloads' 'ghrdp-aria2.ps1'
@@ -44,7 +58,7 @@ function Get-F56dRpcReason {
     $why = ''
     try {
         $diag = Invoke-Aria2Rpc -Method 'aria2.getVersion' -Params @() -Secret $sec
-        if (-not $diag.ok -and $diag.error) { $why = [string]$diag.error.message }
+        if (-not $diag.ok -and $diag.error) { $why = Format-F56dError $diag.error }
     } catch { $why = $_.Exception.Message }
     if (-not $why) { $why = 'unknown (no response body and no exception text)' }
     return $why
@@ -204,7 +218,7 @@ Write-Host ('[F56-d] effective download dir: ' + $downloadDir)
 $testUrl = 'https://example.com/'
 $add = Add-Aria2Uri -Uri $testUrl -Options @{ dir = $downloadDir; 'allow-overwrite' = 'true'; 'auto-file-renaming' = 'false'; 'file-allocation' = 'none' } -Secret $sec
 Write-Host ('[F56-d] addUri result ok=' + $add.ok + ' gid=' + $add.gid)
-if (-not $add.ok -or -not $add.gid) { Fail-Lab ('aria2.addUri failed: ' + ([string]$add.error)) }
+if (-not $add.ok -or -not $add.gid) { Fail-Lab ('aria2.addUri failed: ' + (Format-F56dError $add.error)) }
 
 # aria2 omits a key it does not know yet (totalLength can be missing for the first
 # moments of a fresh download), so the field contract is polled briefly instead of
@@ -249,7 +263,7 @@ if (-not $pause.ok) { Fail-Lab 'aria2.pauseAll failed' }
 
 # --- remove is effective (gid2 is throttled to 1B/s so it cannot finish) ---
 $add2 = Add-Aria2Uri -Uri $testUrl -Options @{ dir = $downloadDir; 'max-download-limit' = '1'; 'allow-overwrite' = 'true'; 'auto-file-renaming' = 'false'; 'file-allocation' = 'none' } -Secret $sec
-if (-not $add2.ok -or -not $add2.gid) { Fail-Lab ('second aria2.addUri failed: ' + ([string]$add2.error)) }
+if (-not $add2.ok -or -not $add2.gid) { Fail-Lab ('second aria2.addUri failed: ' + (Format-F56dError $add2.error)) }
 $live = Get-Aria2Status -Gid $add2.gid -Secret $sec
 Write-Host ('[F56-d] gid2 tellStatus ok=' + $live.ok)
 if (-not $live.ok) { Fail-Lab 'tellStatus failed for the throttled gid before remove' }
@@ -258,7 +272,7 @@ Write-Host ('[F56-d] remove ok=' + $rem.ok + ' gid=' + $add2.gid)
 $gone = Get-Aria2Status -Gid $add2.gid -Secret $sec
 Write-Host ('[F56-d] tellStatus after remove ok=' + $gone.ok + ' (false expected: gid is gone)')
 if ($gone.ok) { Fail-Lab 'tellStatus still resolves a removed gid - remove was not effective' }
-if (-not $rem.ok) { Write-Host ('::warning::[F56-d] aria2.remove refused (' + ([string]$rem.error) + ') but the gid is gone - effect proven') }
+if (-not $rem.ok) { Write-Host ('::warning::[F56-d] aria2.remove refused (' + (Format-F56dError $rem.error) + ') but the gid is gone - effect proven') }
 
 Write-Host '[F56-d] aria2c JSON-RPC lab PASS (addUri/tellStatus/pauseAll/remove + loopback + secret + effective pins)'
 exit 0

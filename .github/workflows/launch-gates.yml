@@ -3087,6 +3087,12 @@ jobs:
           grep -qF 'max-connection-per-server' payloads/ghrdp-aria2.ps1
           grep -qF 'GHRDP_ARIA2_RPC_SECRET' payloads/ghrdp-aria2.ps1
           grep -qF 'Add-Aria2Uri' payloads/ghrdp-aria2.ps1
+          # [F56-d loop 4] The RPC helper used to FLATTEN array-valued params
+          # (`$fullParams += $p` concatenates arrays), so aria2.addUri saw the URIs
+          # list as a bare string and rejected every call - the lab caught it, and
+          # /api/fetch start rides the same helper. Pin the fix and forbid the shape.
+          grep -qF 'System.Collections.ArrayList' payloads/ghrdp-aria2.ps1
+          if grep -qF '$fullParams += $p' payloads/ghrdp-aria2.ps1; then echo 'F56-d: helper flattens array-valued RPC params again' >&2; exit 1; fi
           grep -qF 'Get-Aria2Status' payloads/ghrdp-aria2.ps1
           grep -qF 'Remove-Aria2Download' payloads/ghrdp-aria2.ps1
           srv=payloads/ghrdp-server.ps1

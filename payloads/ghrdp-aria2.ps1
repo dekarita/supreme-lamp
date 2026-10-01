@@ -32,9 +32,16 @@ function Invoke-Aria2Rpc {
         [string]$RpcUrl = $script:Aria2RpcUrl
     )
     $tok = Get-Aria2SecretToken -Secret $Secret
-    $fullParams = @()
-    if ($tok) { $fullParams += $tok }
-    foreach ($p in @($Params)) { $fullParams += $p }
+    # [F56-d loop 4] Array-valued params must survive as ONE element. The old
+    # per-param accumulation into a plain array silently FLATTENED them (in
+    # PowerShell, accumulating an array onto an array concatenates instead of
+    # nesting), so aria2.addUri received the URIs list as a bare string instead of
+    # an array of strings and rejected the call - which would have broken
+    # /api/fetch start in production too. The ArrayList preserves each param
+    # object exactly as passed (one index per param, no flattening).
+    $fullParams = New-Object System.Collections.ArrayList
+    if ($tok) { [void]$fullParams.Add($tok) }
+    foreach ($p in @($Params)) { [void]$fullParams.Add($p) }
     $body = @{
         jsonrpc = '2.0'
         id = [guid]::NewGuid().ToString('N').Substring(0,8)
