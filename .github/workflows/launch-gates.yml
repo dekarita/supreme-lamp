@@ -3241,6 +3241,136 @@ jobs:
           echo 'F56-d torrent lane gates PASS'
 
 
+      # [F57] ADDITIVE ONLY: this is the one new bash gate F57 lands. No existing
+      # step is edited, the counted baseline moves 45 -> 46, and this workflow
+      # never dispatches main.yml. The Explorer's real ops (command bar, context
+      # menu, preview, drag-drop, trash, durable queue) are proven here; the live
+      # file-op cell runs on the windows-native lane.
+      - name: F57 Explorer real-ops gates (command bar + ctx menu + preview + dnd + trash + queue)
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in \
+            src/lib/explorer/ops.ts src/lib/explorer/selection.ts src/lib/explorer/roots.ts \
+            src/lib/explorer/trash.ts src/lib/explorer/trashStore.ts src/lib/explorer/preview.ts \
+            src/lib/explorer/queue.ts src/lib/explorer/queueStore.ts src/lib/explorer/transport.ts \
+            src/pages/file-explorer/keymap.ts src/pages/file-explorer/ids.ops.ts \
+            src/pages/file-explorer/ExplorerContextMenu.tsx src/pages/file-explorer/ExplorerProgressRail.tsx \
+            src/pages/file-explorer/ExplorerTrashView.tsx tests/f57-explorer-ops.ps1 \
+            tests/f57-explorer-ops.test.js; do
+            test -f "$f" || { echo "F57: missing $f" >&2; exit 1; }
+          done
+          # §4 invariants the operator brief pins: 20 undo slots, 30-day trash
+          # retention under D:\RDP-Storage\.trash, six watched roots, and a
+          # client that can only express trash/restore/move (no hard delete).
+          grep -qF 'export const UNDO_LIMIT = 20;' src/lib/explorer/ops.ts
+          grep -qF 'export const TRASH_RETENTION_DAYS = 30;' src/lib/explorer/trash.ts
+          grep -qF 'export const ROOT_COUNT = 6;' src/lib/explorer/roots.ts
+          grep -qF 'D:\\RDP-Storage\\.trash' src/lib/explorer/trash.ts
+          grep -qF 'SERVER_OPS: readonly ServerOpName[] = ["trash", "restore", "move"]' src/lib/explorer/transport.ts
+          grep -qF 'ghrdp_fx_csrf' src/lib/explorer/transport.ts
+          grep -qF 'X-CSRF-Token' src/lib/explorer/transport.ts
+          grep -qF '/api/fx/preview' src/lib/explorer/transport.ts
+          grep -qF 'X-Dash-Token' src/lib/explorer/transport.ts
+          # §2 keyboard table + real command wiring
+          grep -qF 'F2' src/pages/file-explorer/keymap.ts
+          grep -qF 'Shift+Delete' src/pages/file-explorer/keymap.ts
+          grep -qF 'mod+z' src/pages/file-explorer/keymap.ts
+          grep -qF 'tinykeys(document' src/pages/FileExplorer.tsx
+          grep -qF 'f57.explorer.ops.contextMenu' src/pages/file-explorer/ExplorerContextMenu.tsx
+          grep -qF 'resolveDropTarget' src/lib/explorer/roots.ts
+          grep -qF 'renderMarkdown' src/lib/explorer/preview.ts
+          grep -qF 'highlightCode' src/lib/explorer/preview.ts
+          # refusal greps: F45 S3 / F56-d invariants still hold on the new surface
+          if grep -RnF 'api/fx/list' src/ --exclude-dir=explorer --exclude-dir=tests; then
+            echo 'F57: the S3 file-API literal leaked outside the explorer lane' >&2; exit 1
+          fi
+          if grep -RnE 'X-Idempotency-Key' src/lib/explorer src/pages/file-explorer; then
+            echo 'F57: the F45 S3 bundle needle reappeared' >&2; exit 1
+          fi
+          if grep -RnE '\$\{[^}]*[Tt]oken[^}]*\}|\?key=' src/lib/explorer src/pages/file-explorer; then
+            echo 'F57: a credential appears in a URL expression' >&2; exit 1
+          fi
+          # §5 id lock: additive, namespaced, collision-free vs the frozen 219 and
+          # every earlier additive array (raw AND dashed forms).
+          python3 - <<'PY'
+          import re
+          def arr(path, name):
+              text = open(path, encoding='utf-8').read()
+              return re.findall(r'"(f5[0-9]\.[A-Za-z0-9.]+)"', re.search(name + r' = \[(.*?)\] as const;', text, re.S).group(1))
+          ops = arr('src/pages/file-explorer/ids.ops.ts', 'F57_OPS_IDS')
+          assert 30 <= len(ops) <= 80, ('F57 ops id lock size', len(ops))
+          assert len(set(ops)) == len(ops), 'duplicate F57 ops id'
+          earlier = []
+          for path, name in [
+              ('src/pages/search/ids.ts', 'F56_SEARCH_IDS'),
+              ('src/pages/file-explorer/ids.ts', 'F57_EXPLORER_IDS'),
+              ('src/pages/search/v2/ids.ts', 'F56C_V2_SEARCH_IDS'),
+              ('src/pages/search/v2/ids.ts', 'F57_EXPLORER_V2_IDS'),
+              ('src/pages/search/v2/ids.ts', 'F56C_V3_SEARCH_IDS'),
+              ('src/pages/search/v2/ids.ts', 'F58_SEARCH_IDS'),
+              ('src/pages/search/v2/ids.ts', 'F56D_SEARCH_IDS'),
+          ]:
+              earlier += arr(path, name)
+          parent = set(re.findall(r"'([^']+)'", open('src/lib/regression-ids.ts', encoding='utf-8').read()))
+          assert len(parent) == 219, ('frozen 219 changed', len(parent))
+          for i in ops:
+              assert re.match(r'^f57\.explorer\.ops\.[A-Za-z0-9]+(\.[A-Za-z0-9]+)*$', i), ('F57 id shape', i)
+              assert i not in earlier, ('collision with an earlier additive id', i)
+              assert i not in parent and i.replace('.', '-') not in parent, ('219 collision', i)
+          tmpl = arr('src/pages/file-explorer/ids.ops.ts', 'F57_OPS_TEMPLATES')
+          assert tmpl and set(tmpl) <= set(ops), 'F57 template missing from the ops inventory'
+          print('F57 ops ids:', len(ops), 'additive entries, collision-free')
+          PY
+          # §5 i18n: 78 new operations keys x 2 catalogs, byte-verified Sinhala.
+          python3 - <<'PY'
+          import json, re
+          def flat(d, p=''):
+              out = {}
+              for k, v in d.items():
+                  if isinstance(v, dict): out.update(flat(v, p + k + '.'))
+                  else: out[p + k] = str(v)
+              return out
+          fe = flat(json.load(open('src/i18n/en.json', encoding='utf-8')))
+          fs = flat(json.load(open('src/i18n/si.json', encoding='utf-8')))
+          en = sorted(k for k in fe if k.startswith('files.ops.'))
+          si = sorted(k for k in fs if k.startswith('files.ops.'))
+          assert en == si, ('files.ops en/si key sets drifted', len(en), len(si))
+          assert len(en) == 78, ('files.ops key count', len(en))
+          for k in si:
+              v = fs[k]
+              assert v.strip(), ('empty si value', k)
+              assert v.encode('utf-8').decode('utf-8') == v, ('si byte round-trip', k)
+              assert sorted(re.findall(r'\{\{\s*\w+\s*\}\}', v)) == sorted(re.findall(r'\{\{\s*\w+\s*\}\}', fe[k])), ('placeholder drift', k)
+          assert any(re.search(r'[\u0D80-\u0DFF]', fs[k]) for k in si), 'si ops keys must carry Sinhala'
+          print('F57 i18n:', len(en), 'ops keys x 2 catalogs, parity OK')
+          PY
+          # §5 node lab: id lock + i18n + op fence + gate wiring, against the
+          # shipped sources (this step's own text included).
+          node --test tests/f57-explorer-ops.test.js
+          # §5 Vitest cells: the seven new suites plus the three F56-c surfaces
+          # whose command-bar pin F57 deliberately supersedes.
+          corepack enable >/dev/null 2>&1 || true
+          if ! out=$(pnpm exec vitest run \
+              src/tests/smoke/f57-command-actions.test.tsx \
+              src/tests/smoke/f57-context-menu.test.tsx \
+              src/tests/smoke/f57-keyboard.test.tsx \
+              src/tests/smoke/f57-selection-undo.test.ts \
+              src/tests/smoke/f57-preview-wire.test.tsx \
+              src/tests/smoke/f57-dragdrop-trash.test.tsx \
+              src/tests/smoke/f57-op-queue.test.tsx \
+              src/tests/smoke/file-explorer-shell.test.tsx \
+              src/tests/smoke/f56c-v2-explorer.test.tsx \
+              src/tests/smoke/i18n-f56-parity.test.ts \
+              src/tests/smoke/f56-f57-ids.test.ts 2>&1); then
+            echo "$out"
+            detail=$(printf '%s' "$out" | tail -c 2200 | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g')
+            echo "::error title=F57 Explorer ops::${detail}"
+            exit 1
+          fi
+          echo 'F57 gates PASS: command-bar=live, ctx-menu=live, preview=full, drag-drop=live, trash=soft+30d, undo=20, queue=durable'
+
   windows-native:
     runs-on: windows-latest
     steps:
@@ -3651,3 +3781,24 @@ jobs:
           & (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-aria2-jsonrpc.ps1')
           if ($LASTEXITCODE -ne 0) { throw ('F56-d: aria2 JSON-RPC lab failed with exit ' + $LASTEXITCODE) }
           Write-Host 'F56-d transport labs PASS'
+
+      # [F57] ADDITIVE ONLY: the Explorer real-ops live file-op lab. Every root
+      # that exists on the runner gets a real new/rename/move/delete cycle and the
+      # walk the watcher scan uses has to see all four states; absent roots are
+      # labeled skips.
+      - name: F57 explorer real-ops lab (watcher roots=6 live file ops)
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($f in @('payloads\ghrdp-watcher.ps1', 'tests\f57-explorer-ops.ps1')) {
+              $errs = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
+              if ($errs) {
+                  foreach ($e in @($errs)) { Write-Host ('::error title=F57 parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
+                  throw ('F57: PowerShell syntax error in ' + $f)
+              }
+          }
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f57-explorer-ops.ps1')
+          if ($LASTEXITCODE -ne 0) { throw ('F57: explorer ops lab failed with exit ' + $LASTEXITCODE) }
+          Write-Host 'F57 explorer ops lab PASS'

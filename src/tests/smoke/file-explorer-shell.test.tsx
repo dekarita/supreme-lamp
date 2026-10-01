@@ -2,7 +2,7 @@
 // view toggle, and the disabled command bar with "coming in F57" tooltips.
 // Rows come from src/pages/file-explorer/fixture.json; no real file ops (F57).
 import { describe, expect, it } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import "@/i18n";
 import FileExplorer from "@/pages/FileExplorer";
 import fixture from "@/pages/file-explorer/fixture.json";
@@ -45,17 +45,43 @@ describe("File Explorer shell (F56-c)", () => {
     expect(results.getAttribute("data-view")).toBe("list");
   });
 
-  it("disables every command-bar action with the coming-in-F57 tooltip", () => {
+  // [F57 §2] SUPERSEDED PIN: the F56-c shell shipped this bar DISABLED with
+  // "coming in F57" tooltips. F57 makes it real, so the cell now asserts the
+  // frozen six ids are enabled actions and the additive F57 commands exist.
+  it("wires every command-bar action to a real command (F57)", () => {
     render(<FileExplorer />);
     const bar = screen.getByTestId("explorer-command-bar");
     expect(bar).toBeInTheDocument();
-    const buttons = Array.from(bar.querySelectorAll("button"));
-    expect(buttons.length).toBe(6);
-    for (const b of buttons) {
-      expect((b as HTMLButtonElement).disabled).toBe(true);
-      expect(b.getAttribute("title")).toBe("coming in F57");
+    const frozen = [
+      "f57.explorer.commandNewFolder",
+      "f57.explorer.commandUpload",
+      "f57.explorer.commandRename",
+      "f57.explorer.commandCopy",
+      "f57.explorer.commandDelete",
+      "f57.explorer.commandRefresh",
+    ];
+    for (const id of frozen) {
+      const el = document.getElementById(id) as HTMLButtonElement;
+      expect(el).not.toBeNull();
+      expect(el.getAttribute("title")).not.toBe("coming in F57");
+      expect(el.getAttribute("data-command")).toBeTruthy();
     }
-    expect(document.getElementById("f57.explorer.commandUpload")).not.toBeNull();
+    // selection-free commands are live straight away...
+    for (const id of ["f57.explorer.commandNewFolder", "f57.explorer.commandUpload", "f57.explorer.commandRefresh"]) {
+      expect((document.getElementById(id) as HTMLButtonElement).disabled).toBe(false);
+    }
+    // ...selection-scoped ones enable once a row is chosen (real ops, not stubs)
+    for (const id of ["f57.explorer.commandRename", "f57.explorer.commandCopy", "f57.explorer.commandDelete"]) {
+      expect((document.getElementById(id) as HTMLButtonElement).disabled).toBe(true);
+    }
+    const row = screen.getAllByTestId("explorer-row")[0];
+    fireEvent.click(within(row).getByTestId("explorer-row-button"));
+    for (const id of ["f57.explorer.commandRename", "f57.explorer.commandCopy", "f57.explorer.commandDelete"]) {
+      expect((document.getElementById(id) as HTMLButtonElement).disabled).toBe(false);
+    }
+    const buttons = Array.from(bar.querySelectorAll("button"));
+    expect(buttons.length).toBeGreaterThanOrEqual(11);
+    expect(document.getElementById("f57.explorer.ops.commandPaste")).not.toBeNull();
     expect(document.getElementById("f57.explorer.preview")).not.toBeNull();
   });
 });

@@ -801,6 +801,120 @@
       "thisPc": {
         "stub": "Stub - real listing arrives in F57."
       }
+    },
+    "ops": {
+      "command": {
+        "newFile": "New file",
+        "cut": "Cut",
+        "paste": "Paste",
+        "share": "Share (copy path)",
+        "undo": "Undo"
+      },
+      "ctx": {
+        "label": "File actions",
+        "open": "Open",
+        "newFolder": "New folder",
+        "newFile": "New text file",
+        "rename": "Rename",
+        "cut": "Cut",
+        "copy": "Copy",
+        "paste": "Paste",
+        "share": "Copy path",
+        "trash": "Move to trash",
+        "deletePermanent": "Delete permanently",
+        "undo": "Undo"
+      },
+      "preview": {
+        "loading": "Loading preview…",
+        "restricted": "Preview restricted by external host",
+        "error": "Preview unavailable (runner error)",
+        "unsupportedTitle": "No inline preview for this type",
+        "unsupportedNote": "Open the runner copy or download the file.",
+        "download": "Download"
+      },
+      "drop": {
+        "moveHere": "Drop to move here",
+        "moved": "Moved {{count}} item(s)",
+        "refusedOutsideRoots": "Drop refused: outside the watched roots",
+        "refusedSelf": "Drop refused: already in that folder",
+        "refusedDescendant": "Drop refused: cannot move a folder into itself",
+        "refusedNoTarget": "Drop refused: no valid destination"
+      },
+      "selection": {
+        "count": "{{count}} selected"
+      },
+      "create": {
+        "nameLabel": "New item name",
+        "folderDefault": "New folder",
+        "fileDefault": "New text file.txt",
+        "done": "Created {{name}}"
+      },
+      "rename": {
+        "label": "Rename item",
+        "done": "Renamed to {{name}}",
+        "needsOne": "Select exactly one item to rename"
+      },
+      "clipboard": {
+        "cut": "Cut {{count}} item(s)",
+        "copy": "Copied {{count}} item(s)"
+      },
+      "paste": {
+        "empty": "Clipboard is empty",
+        "done": "Pasted {{count}} item(s)"
+      },
+      "undo": {
+        "empty": "Nothing to undo",
+        "done": "Undone",
+        "movedToTrash": "Moved {{count}} item(s) to trash"
+      },
+      "deletePermanent": {
+        "title": "Delete permanently?",
+        "body": "{{count}} item(s) will be removed from the runner (not undoable).",
+        "accept": "Delete permanently",
+        "cancel": "Cancel",
+        "done": "Permanently deleted {{count}} item(s)"
+      },
+      "trash": {
+        "group": "Trash",
+        "node": "Trash",
+        "title": "Trash",
+        "empty": "Trash is empty.",
+        "retentionNote": "Soft delete keeps items under D:\\RDP-Storage\\.trash for {{days}} days.",
+        "daysLeft": "{{days}} day(s) left",
+        "restore": "Restore",
+        "restored": "Restored {{count}} item(s)",
+        "purge": "Delete permanently",
+        "purged": "Purged {{count}} item(s)",
+        "count": "{{count}} item(s) in trash",
+        "emptyTrash": "Empty trash",
+        "settingsTitle": "Trash"
+      },
+      "queue": {
+        "title": "Operation queue",
+        "empty": "No queued operations.",
+        "progressLabel": "Progress for {{label}}",
+        "retry": "Retry",
+        "cancel": "Cancel",
+        "status": {
+          "queued": "queued",
+          "running": "running",
+          "done": "done",
+          "failed": "failed",
+          "cancelled": "cancelled"
+        }
+      },
+      "upload": {
+        "queued": "Queued {{count}} upload(s)"
+      },
+      "refresh": {
+        "done": "Refreshed listing"
+      },
+      "error": {
+        "empty-selection": "Nothing selected",
+        "name-taken": "A file with that name already exists",
+        "invalid-name": "That name is not allowed",
+        "unsupported": "That operation is not supported"
+      }
     }
   }
 }

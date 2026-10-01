@@ -16,11 +16,17 @@ import { Button } from "@/components/primitives/Button";
 import { Toggle, Chip } from "@/components/primitives/Chip";
 import { InstallGuide } from "@/components/domain/InstallGuide";
 import { useThemeStore, useScaleStore, useLangStore, type TextScale } from "@/stores/prefsStore";
+import { useTrashStore } from "@/lib/explorer/trashStore";
+import { TRASH_RETENTION_DAYS } from "@/lib/explorer/trash";
 
 const SCALES: TextScale[] = ["comfort", "large", "a11y"];
 
 export default function Settings() {
   const { t } = useTranslation();
+  // [F57 §4] Empty-trash control: the ONLY place every soft-deleted entry is
+  // cleared in one go. Retention + count are shown before the click.
+  const trashEntries = useTrashStore((s) => s.entries);
+  const purgeTrash = useTrashStore((s) => s.purge);
   const theme = useThemeStore((s) => s.theme);
   const setTheme = useThemeStore((s) => s.setTheme);
   const scale = useScaleStore((s) => s.scale);
@@ -77,6 +83,30 @@ export default function Settings() {
           <div id="f56.search.v2.sourcesFormMount.settings" data-testid="source-form-mount" className="rounded border border-default bg-base p-2">
             <SourceForm surface="settings" editId={editId} onDone={() => setEditId(null)} />
           </div>
+        </div>
+      </Card>
+
+      {/* [F57 §4] TRASH: soft-delete only. The runner routes every delete into
+          D:\RDP-Storage\.trash\<original-path>\<ts>; this control empties it and
+          the 30-day sweep is automatic on the Explorer's refresh. */}
+      <Card title={t("files.ops.trash.settingsTitle")} className="mb-4">
+        <div id="f57.explorer.ops.settingsTrash" data-testid="settings-trash" className="flex flex-col gap-2">
+          <p id="f57.explorer.ops.settingsTrashNote" data-testid="settings-trash-note" className="text-sm text-secondary">
+            {t("files.ops.trash.retentionNote", { days: TRASH_RETENTION_DAYS })}
+          </p>
+          <p className="text-xs text-tertiary" data-testid="settings-trash-count">
+            {t("files.ops.trash.count", { count: trashEntries.length })}
+          </p>
+          <button
+            id="f57.explorer.ops.settingsTrashEmpty"
+            type="button"
+            data-testid="settings-trash-empty"
+            disabled={trashEntries.length === 0}
+            onClick={() => purgeTrash(trashEntries.map((e) => e.id))}
+            className="h-11 w-40 rounded-md border border-default text-xs text-secondary disabled:opacity-50 hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            {t("files.ops.trash.emptyTrash")}
+          </button>
         </div>
       </Card>
 
