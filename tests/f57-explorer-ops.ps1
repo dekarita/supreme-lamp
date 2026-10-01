@@ -71,12 +71,21 @@ try {
     $roots = @($candidates | Select-Object -Unique)
     Ok ($roots.Count -eq 6) 'ROOT-COUNT' ('six candidate roots resolved on this runner: ' + $roots.Count)
 
-    function Test-ScanSees([string]$root, [string]$fullPath) {
+    function Test-ScanSees([string]$root, [string]$leaf, [string]$inSubdir) {
+        # Identity is the unique GUID leaf name, not a path string: CI resolves
+        # %TEMP% as an 8.3 short path (C:\Users\RUNNER~1\...) while the walk
+        # returns canonical long FullNames, so a FullName comparison is a false red.
         $found = @()
         try { $found = @(Get-ChildItem -LiteralPath $root -File -Recurse -ErrorAction SilentlyContinue) } catch { $found = @() }
         foreach ($f in $found) {
             if ($null -eq $f) { continue }
-            if (([string]$f.FullName).ToLower() -eq $fullPath.ToLower()) { return $true }
+            if (-not ([string]$f.Name).Equals($leaf, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            if ($inSubdir) {
+                $parentLeaf = ''
+                try { $parentLeaf = Split-Path -Leaf ([string]$f.DirectoryName) } catch { $parentLeaf = '' }
+                if (-not $parentLeaf.Equals($inSubdir, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+            }
+            return $true
         }
         return $false
     }
@@ -101,22 +110,23 @@ try {
             try {
                 # NEW
                 'f57 lab benign content' | Set-Content -LiteralPath $file -Encoding utf8
-                Ok (Test-ScanSees $r $file) ('NEW:' + $r) 'a newly created file is visible to the watcher scan walk'
+                Ok (Test-ScanSees $r $name '') ('NEW:' + $r) 'a newly created file is visible to the watcher scan walk'
 
                 # RENAMED
                 $renamed = Join-Path $r ($name -replace '\.txt$', '-renamed.txt')
+                $leafRenamed = Split-Path -Leaf $renamed
                 Move-Item -LiteralPath $file -Destination $renamed -Force
-                Ok ((Test-ScanSees $r $renamed) -and (-not (Test-ScanSees $r $file))) ('RENAMED:' + $r) 'the renamed file is visible and the old name is gone'
+                Ok ((Test-ScanSees $r $leafRenamed '') -and (-not (Test-ScanSees $r $name ''))) ('RENAMED:' + $r) 'the renamed file is visible and the old name is gone'
 
                 # MOVED (into a subfolder of the same root)
                 $null = New-Item -ItemType Directory -Path $sub -Force
                 $moved = Join-Path $sub (Split-Path -Leaf $renamed)
                 Move-Item -LiteralPath $renamed -Destination $moved -Force
-                Ok ((Test-ScanSees $r $moved) -and (-not (Test-ScanSees $r $renamed))) ('MOVED:' + $r) 'the moved file is visible at the destination and gone from the source'
+                Ok (Test-ScanSees $r $leafRenamed 'f57-lab-sub') ('MOVED:' + $r) 'the moved file is visible inside the destination subfolder of this root'
 
                 # DELETED
                 Remove-Item -LiteralPath $moved -Force
-                Ok (-not (Test-ScanSees $r $moved)) ('DELETED:' + $r) 'the deleted file is gone from the scan walk'
+                Ok (-not (Test-ScanSees $r $leafRenamed '')) ('DELETED:' + $r) 'the deleted file is gone from the scan walk'
             } catch {
                 $msg = $_.Exception.Message
                 if ($msg -match 'denied|UnauthorizedAccess') {
@@ -160,7 +170,15 @@ try {
 }
 
 if ($script:fails -gt 0) {
-    $list = ($script:failed) -join ', '
+    # Compact, root-leaf-qualified list: the status channel truncates at 140 chars.
+    $list = (@($script:failed) | ForEach-Object {
+        $parts = $_ -split ':', 2
+        if ($parts.Count -gt 1) {
+            $leaf = ''
+            try { $leaf = Split-Path -Leaf $parts[1] } catch { $leaf = '' }
+            if ($leaf) { $parts[0] + ':' + $leaf } else { $parts[0] }
+        } else { $parts[0] }
+    }) -join ', '
     Write-Host ('[F57] watcher roots=6 live file ops lab FAILED (' + $script:fails + ' cell(s)): ' + $list)
     Write-Host ('::error title=F57 lab summary::' + $script:fails + ' cell(s) failed: ' + $list)
     exit 1
