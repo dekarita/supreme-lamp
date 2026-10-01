@@ -1,0 +1,35 @@
+{
+  "schema": "ghrdp-f56d-qbt-policy/1",
+  "note": "[F56-d §2] SINGLE SOURCE for the qBittorrent-nox torrent lane policy. The shipped PowerShell lane (payloads/ghrdp-qbt.ps1) loads this file at run time and the Node lab (tests/f56d-qbt-tailnet.test.js) asserts the lane consumes it, so the lane and its proof cannot drift. WebUI is Tailnet-only by construction: the bind address must satisfy tailnetRegex and is never '*' or 0.0.0.0.",
+  "webUiPort": 8080,
+  "category": "ghrdp-fetched",
+  "savePath": "D:\\RDP-Storage\\Fetched",
+  "userName": "ghrdp",
+  "secretFile": "C:\\ghrdp\\qbt-secret.txt",
+  "shaPinPath": "C:\\ghrdp\\qbt-sha256.pin",
+  "logPath": "C:\\ghrdp\\qbt\\qbittorrent.log",
+  "torrentMaxBytes": 5242880,
+  "tailnetOnly": true,
+  "tailnetRegex": "^100\\.(6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\.(\\d{1,3})\\.(\\d{1,3})$",
+  "refusedUrlSchemes": ["magnet"],
+  "ownUrlsEnv": "GHRDP_QBT_OWN_URLS",
+  "presets": {
+    "linux-distros": [
+      "ubuntu.com",
+      "releases.ubuntu.com",
+      "cdimage.ubuntu.com",
+      "debian.org",
+      "cdimage.debian.org",
+      "fedoraproject.org",
+      "linuxmint.com",
+      "archlinux.org",
+      "opensuse.org",
+      "manjaro.org",
+      "rockylinux.org",
+      "almalinux.org",
+      "kali.org"
+    ],
+    "blender-open-movie": ["blender.org", "download.blender.org"],
+    "ia-torrents": ["archive.org"]
+  }
+}

@@ -2,6 +2,9 @@ name: launch-gates
 on:
   pull_request:
   push:
+permissions:
+  contents: read
+  statuses: write
 jobs:
   gates:
     runs-on: ubuntu-latest
@@ -3151,11 +3154,162 @@ jobs:
           fi
           echo 'F56-d gates PASS'
 
+      # [F56-d §2 + §1 loop 5] TORRENT LANE - ADDITIVE ONLY: one new bash gate, no
+      # existing gate edited. Pins the qBittorrent-nox Tailnet-only torrent lane, the
+      # transport selection in /api/fetch, the §1 aria2c CLI pins and the two labs.
+      - name: F56-d torrent lane gates (qBittorrent-nox + Tailnet-only + dispatch)
+        shell: bash
+        run: |
+          set -euo pipefail
+          wf=.github/workflows/main.yml
+          qbt=payloads/ghrdp-qbt.ps1
+          srv=payloads/ghrdp-server.ps1
+          # §2 install step: chocolatey with checksum enforcement + the operator secret.
+          grep -qF 'Install qBittorrent-nox 4.6.x' "$wf" || { echo 'F56-d: qBittorrent-nox install step missing' >&2; exit 1; }
+          grep -qF 'choco install qbittorrent-nox' "$wf"
+          grep -qF -- '--require-checksums' "$wf" || { echo 'F56-d: qBittorrent download is not checksum-enforced' >&2; exit 1; }
+          grep -qF 'GHRDP_QBT_PASSWORD' "$wf"
+          grep -qF 'ghrdp-qbt.ps1' "$wf" || { echo 'F56-d: ghrdp-qbt.ps1 not staged/deployed' >&2; exit 1; }
+          # §2 lane module: the Tailnet-only rules and the WebUI API surface.
+          test -f "$qbt" || { echo 'F56-d: ghrdp-qbt.ps1 missing' >&2; exit 1; }
+          for fn in Assert-GhrdpQbtTailnetOnly Resolve-GhrdpQbtBindAddress Test-GhrdpQbtTailnetAddress Test-GhrdpQbtShaPin Connect-GhrdpQbt Get-GhrdpQbtVersion Set-GhrdpQbtCategory Add-GhrdpQbtTorrent Get-GhrdpQbtTorrent Remove-GhrdpQbtTorrent Test-GhrdpQbtTorrentAllowed Invoke-GhrdpQbtApiFile Test-GhrdpQbtPublicRefusal Initialize-GhrdpQbt; do
+            grep -qF "function $fn" "$qbt" || { echo "F56-d: $qbt lacks $fn" >&2; exit 1; }
+          done
+          # The lane policy is ONE machine-readable file the lane and its Node lab
+          # both read (no duplicated constants to drift).
+          pol=payloads/ghrdp-qbt-policy.json
+          test -f "$pol" || { echo 'F56-d: ghrdp-qbt-policy.json missing' >&2; exit 1; }
+          grep -qF 'Import-GhrdpQbtPolicy' "$qbt" || { echo 'F56-d: the lane does not consume the policy file' >&2; exit 1; }
+          grep -qF 'qbt-policy-missing' "$qbt"
+          grep -qF 'ghrdp-qbt-policy.json' "$wf" || { echo 'F56-d: the policy file is not deployed' >&2; exit 1; }
+          grep -qF '"webUiPort": 8080' "$pol"
+          grep -qF '"category": "ghrdp-fetched"' "$pol"
+          grep -qF 'D:\\RDP-Storage\\Fetched' "$pol"
+          grep -qF '"tailnetOnly": true' "$pol"
+          grep -qF '"tailnetRegex"' "$pol" || { echo 'F56-d: the policy has no tailnet predicate' >&2; exit 1; }
+          # Semantic, not textual: the SAME regex the lanes compile, exercised here.
+          python3 - <<'PYEOF'
+          import json, re
+          pol = json.load(open('payloads/ghrdp-qbt-policy.json'))
+          rx = re.compile(pol['tailnetRegex'])
+          def ok(ip):
+              return bool(rx.match(ip))
+          assert ok('100.64.0.1') and ok('100.100.100.100') and ok('100.127.255.254'), 'tailnet literals rejected'
+          for bad in ('100.63.255.255', '100.128.0.1', '10.0.0.1', '192.168.1.5', '8.8.8.8', '100.64.0.1evil', '::1', '*', '0.0.0.0'):
+              assert not ok(bad), bad
+          PYEOF
+          grep -qF 'tailnet-ip-unavailable' "$qbt" || { echo 'F56-d: the bind ladder must fail closed' >&2; exit 1; }
+          # Preset families + operator own URLs + the magnet refusal.
+          for preset in linux-distros blender-open-movie ia-torrents; do
+            grep -qF "\"$preset\"" "$pol" || { echo "F56-d: torrent preset $preset missing" >&2; exit 1; }
+          done
+          grep -qF 'operator-own-url' "$qbt" || { echo 'F56-d: operator own URLs are not a preset' >&2; exit 1; }
+          grep -qF 'magnet-refused' "$qbt" || { echo 'F56-d: magnet-only flows must be refused' >&2; exit 1; }
+          grep -qF 'torrent-not-allowlisted' "$qbt"
+          grep -qF 'GHRDP_QBT_OWN_URLS' "$qbt" || { echo 'F56-d: operator own URLs are not wired' >&2; exit 1; }
+          grep -qF 'GHRDP_QBT_OWN_URLS' "$pol" || { echo 'F56-d: own-URL env is not in the policy' >&2; exit 1; }
+          # The operator password never reaches a log line, and the WebUI can never be
+          # bound to '*' / 0.0.0.0 (only the refusal guard may name those literals).
+          if grep -nE '(Write-Host|Write-Output)[^#]*(QbtPassword|\$pw\b)' "$qbt"; then echo 'F56-d: the qbt password can reach a log line' >&2; exit 1; fi
+          if grep -nE "WebUI.(Address|Port)[^#]*(0\.0\.0\.0|'\*')" "$qbt"; then echo 'F56-d: WebUI bind weakened to a public address' >&2; exit 1; fi
+          if grep -qF '0.0.0.0:8080' "$qbt" "$wf"; then echo 'F56-d: public WebUI bind literal present' >&2; exit 1; fi
+          grep -qF 'qbt-tailnet-only' "$qbt" || { echo 'F56-d: the hard tailnet-only guard is missing' >&2; exit 1; }
+          # §4 dispatch: transport selection + the torrent handle in the §F response.
+          grep -qF '@('"'"'auto'"'"', '"'"'aria2c'"'"', '"'"'torrent'"'"')' "$srv" || { echo 'F56-d: transport enum not validated' >&2; exit 1; }
+          grep -qF 'qbittorrentHandle' "$srv" || { echo 'F56-d: the §F qbittorrentHandle field is not returned' >&2; exit 1; }
+          grep -qF 'Get-F56dQbtSession' "$srv"
+          grep -qF 'Remove-GhrdpQbtTorrent' "$srv" || { echo 'F56-d: torrent cancel is not routed to the lane' >&2; exit 1; }
+          grep -qF "details = @{ transport = 'torrent'; reason" "$srv" || { echo 'F56-d: torrent unavailability is not labeled' >&2; exit 1; }
+          # §4 own-cred torrent artifact: Basic auth stays in memory, the artifact
+          # lands in a %TEMP% .torrent file, and the finally block always deletes it.
+          grep -qF 'QbtTorrentMaxBytes' "$srv" || { echo 'F56-d: no torrent artifact size cap' >&2; exit 1; }
+          grep -qF "Join-Path \$env:TEMP ('ghrdp-'" "$srv" || { echo 'F56-d: torrent artifact is not staged under %TEMP%' >&2; exit 1; }
+          grep -qF 'Remove-Item -LiteralPath $torrentTmp' "$srv" || { echo 'F56-d: torrent artifact temp file is not deleted' >&2; exit 1; }
+          grep -qF "'Basic ' + \$basic" "$srv" || { echo 'F56-d: own-cred torrent fetch does not use in-memory Basic auth' >&2; exit 1; }
+          # §1 loop 5: the pinned aria2c CLI + a REAL RPC readiness probe in main.yml.
+          grep -qF -- '--max-connection-per-server=16 --split=16 --min-split-size=20M --continue=true' "$wf" || { echo 'F56-d: aria2c CLI pins drifted' >&2; exit 1; }
+          grep -qF 'session.gz' "$wf" || { echo 'F56-d: aria2c session path drifted' >&2; exit 1; }
+          grep -qF 'aria2.getVersion' "$wf" || { echo 'F56-d: main.yml has no real RPC readiness probe' >&2; exit 1; }
+          grep -qF "'max-connection-per-server' = '16'" payloads/ghrdp-aria2.ps1 || { echo 'F56-d: helper max-conn pin drifted' >&2; exit 1; }
+          grep -qF "'min-split-size' = '20M'" payloads/ghrdp-aria2.ps1
+          grep -qF "'continue' = 'true'" payloads/ghrdp-aria2.ps1
+          # §6 labs: the PS tour + the node policy lab, both wired into this workflow.
+          test -f tests/f56d-qbt-tailnet.ps1 || { echo 'F56-d: qBittorrent PS lab missing' >&2; exit 1; }
+          test -f tests/f56d-qbt-tailnet.test.js || { echo 'F56-d: qBittorrent node lab missing' >&2; exit 1; }
+          grep -qF 'tests\f56d-qbt-tailnet.ps1' .github/workflows/launch-gates.yml || { echo 'F56-d: the PS lab is not executed in CI' >&2; exit 1; }
+          node --test tests/f56d-qbt-tailnet.test.js
+          echo 'F56-d torrent lane gates PASS'
+
 
   windows-native:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      # [F56-d §2] ADDITIVE ONLY: the torrent lane lab. The qBittorrent cells that
+      # need a live tailnet daemon report a labeled SKIP (a CI runner is not on the
+      # operator's tailnet); everything policy-shaped is proven for real.
+      - name: F56-d torrent lane lab (qBittorrent-nox Tailnet-only)
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The check-run annotation budget is spent by the earlier mirror labs and a
+          # raw log download is not reachable from every environment (the loop-3/4
+          # lesson), so the decisive line is published as ONE commit status
+          # (context 'f56d-qbt-lab') on success AND failure.
+          $script:QbtFailure = ''
+          $outText = ''
+          Push-Location $env:GITHUB_WORKSPACE
+          try {
+              foreach ($f in @('payloads\ghrdp-qbt.ps1', 'tests\f56d-qbt-tailnet.ps1')) {
+                  $errs = $null
+                  $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
+                  if ($errs) {
+                      foreach ($e in @($errs)) { Write-Host ('::error title=F56-d qbt parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
+                      throw ('PowerShell syntax error in ' + $f)
+                  }
+              }
+              $outText = (& (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-qbt-tailnet.ps1') *>&1 | Out-String)
+              $rc = $LASTEXITCODE
+              if ($rc -ne 0) { throw ('the lab exited ' + $rc) }
+          } catch {
+              $script:QbtFailure = $_.Exception.Message
+              $outText = ($outText + "`n" + ($_ | Out-String))
+          } finally {
+              Pop-Location
+          }
+          Write-Host $outText
+          $lines = @(($outText -split "`r?`n") | Where-Object { $_.Trim() -ne '' })
+          $decisive = @($lines | Where-Object { $_ -match '::error|FAIL|SKIP ' } | Select-Object -Last 1)
+          if (@($decisive).Count -eq 0) { $decisive = @($lines | Select-Object -Last 1) }
+          $desc = (([string](@($decisive) -join ' | ')) -replace '::error[^:]*::', '').Trim()
+          if ($desc.Length -gt 130) { $desc = $desc.Substring(0, 130) }
+          if ($env:GH_TOKEN) {
+              try {
+                  $st = @{
+                      state = $(if ($script:QbtFailure) { 'failure' } else { 'success' })
+                      context = 'f56d-qbt-lab'
+                      description = $desc
+                      target_url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID)
+                  } | ConvertTo-Json -Compress
+                  Invoke-RestMethod -Uri ('https://api.github.com/repos/' + $env:GITHUB_REPOSITORY + '/statuses/' + $env:GITHUB_SHA) -Method Post -Headers @{ Authorization = ('Bearer ' + $env:GH_TOKEN); Accept = 'application/vnd.github+json'; 'User-Agent' = 'ghrdp-f56d' } -Body $st -ContentType 'application/json' -TimeoutSec 30 | Out-Null
+              } catch {
+                  $detail = ''
+                  try { $detail = [string]$_.ErrorDetails.Message } catch { }
+                  Write-Host ('::warning title=F56-d qbt status::publish failed: ' + $_.Exception.Message + ' ' + $detail)
+              }
+          }
+          if ($env:GITHUB_STEP_SUMMARY) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## F56-d qbt torrent lane lab'
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('```' + "`n" + (@($lines | Select-Object -Last 40) -join "`n") + "`n" + '```')
+          }
+          if ($script:QbtFailure) {
+              Write-Host ('::error title=F56-d qbt lab::' + $script:QbtFailure)
+              throw ('F56-d: qBittorrent tailnet lab FAILED - ' + $script:QbtFailure)
+          }
+          Write-Host 'F56-d qbt torrent lane lab PASS'
       # [F19 §5] REAL unit test of the shipped launcher's DNS-guard decision:
       # compile payloads/ghrdp-rdp-launcher.cs with the same in-box csc that
       # install.cmd uses, run --dns-selftest (injected resolver/TCP results) and

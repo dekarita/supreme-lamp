@@ -1645,6 +1645,23 @@ function Invoke-ClientRequest {
             if (Test-Path -LiteralPath $ariaMod) {
                 try { . $ariaMod; $ariaReady = $true } catch { $ariaReady = $false }
             }
+            # [F56-d §2] torrent lane helper (qBittorrent-nox, Tailnet-only WebUI).
+            $qbtReady = $false
+            $qbtMod = Join-Path $Root 'ghrdp-qbt.ps1'
+            if (-not (Test-Path -LiteralPath $qbtMod)) { $qbtMod = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-qbt.ps1' }
+            if (Test-Path -LiteralPath $qbtMod) {
+                try { . $qbtMod; $qbtReady = $true } catch { $qbtReady = $false }
+            }
+            # One qbt session per request: resolve the tailnet bind (fail closed,
+            # never 0.0.0.0) and log in with the operator secret (never logged).
+            function Get-F56dQbtSession {
+                if (-not $qbtReady) { return @{ ok = $false; address = ''; reason = 'qbt-helper-missing' } }
+                $bind = Resolve-GhrdpQbtBindAddress -ConfigPath $script:CfgPath
+                if (-not $bind.ok) { return @{ ok = $false; address = ''; reason = $bind.reason } }
+                $conn = Connect-GhrdpQbt -Address $bind.address -Port $script:QbtWebUiPort
+                if (-not $conn.ok) { return @{ ok = $false; address = $bind.address; reason = $conn.reason } }
+                return @{ ok = $true; address = $bind.address; reason = ''; session = $conn.session; mode = $conn.mode }
+            }
             # Allowlisted adapters from F56 inventory (subset of search sources)
             $allowedAdapters = @('projectGutenberg','standardEbooks','librivox','iaOpenLibrary','hathitrust','wikisource','doab','arxiv','biorxiv','pubmedCentral','doaj','oerCommons','ssrn','internetArchive','blenderStudio','wikimediaCommons','sourceforge','githubReleases','bandcamp','ccMarkedYoutube','kindleAudible','kobo','googleBooks','sarasavi','vijithaYapa','godage','overdriveLibby','ownStorage','custom')
             # [F56-d §2] provenance-6 gate server-side reject executable+missing field
@@ -1932,6 +1949,100 @@ function Invoke-ClientRequest {
                     # Decrypt failure should not persist creds, just log and continue without creds? For security, fail closed if creds were supplied but decrypt failed.
                     Write-Host ('[fetch] own-cred decrypt error: ' + $_.Exception.Message)
                 }
+                # [F56-d §4] Transport selection. `transport` honors the §F wire enum
+                # (auto|aria2c|torrent); `auto` picks the torrent lane only for an
+                # HTTPS .torrent artifact whose host is an approved legal-torrent
+                # family, otherwise aria2c. magnet: is refused before selection.
+                $transportReq = 'auto'
+                try { $transportReq = ([string]$bodyJson.transport).Trim().ToLowerInvariant() } catch { }
+                if (-not $transportReq) { $transportReq = 'auto' }
+                if (@('auto', 'aria2c', 'torrent') -notcontains $transportReq) {
+                    $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'transport must be auto|aria2c|torrent' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                $transport = 'aria2c'
+                $isTorrent = $false
+                if ($transportReq -eq 'torrent') {
+                    $isTorrent = $true
+                } elseif ($transportReq -eq 'auto') {
+                    # A `.torrent` path is the artifact shape auto-detection keys on;
+                    # the host allowlist is then re-proved by the lane itself.
+                    if ($targetUrl -match '(?i)\.torrent($|\?)') { $isTorrent = $true }
+                }
+                if ($isTorrent) { $transport = 'torrent' }
+                if ($isTorrent -and $targetUrl -match '^(?i)magnet:') {
+                    $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'HTTPS_ONLY'; messageKey = 'search.errors.httpsOnly'; retryable = $false; details = @{ reason = 'magnet-refused'; transport = 'torrent' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                $gid = ''
+                if ($isTorrent) {
+                    # ---- qBittorrent lane (Tailnet-only WebUI, category ghrdp-fetched) ----
+                    if (-not $qbtReady) {
+                        $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'TRANSPORT_UNAVAILABLE'; messageKey = 'search.errors.transportUnavailable'; retryable = $true; details = @{ transport = 'torrent'; reason = 'qbt-helper-missing' } }
+                        Send-ClientResponse -Stream $stream -Code 503 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                        try { if ($credUserPlain) { $credUserPlain = '' } } catch { }
+                        try { if ($credPassPlain) { $credPassPlain = '' } } catch { }
+                        try { if ($credKeyBytes) { [Array]::Clear($credKeyBytes, 0, $credKeyBytes.Length) } } catch { }
+                        return
+                    }
+                    $ownUrls = @(Get-GhrdpQbtOwnUrls)
+                    $allowed = Test-GhrdpQbtTorrentAllowed -Url $targetUrl -OwnUrls $ownUrls
+                    if (-not $allowed.ok) {
+                        $code = 'DOMAIN_NOT_ALLOWLISTED'
+                        $status = 403
+                        if ($allowed.reason -eq 'https-only') { $code = 'HTTPS_ONLY'; $status = 400 }
+                        $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = $code; messageKey = 'search.errors.domainNotAllowlisted'; retryable = $false; details = @{ transport = 'torrent'; reason = $allowed.reason; preset = $allowed.preset; host = $allowed.host } }
+                        Send-ClientResponse -Stream $stream -Code $status -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                        return
+                    }
+                    $qbtSess = Get-F56dQbtSession
+                    if (-not $qbtSess.ok) {
+                        $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'TRANSPORT_UNAVAILABLE'; messageKey = 'search.errors.transportUnavailable'; retryable = $true; details = @{ transport = 'torrent'; reason = $qbtSess.reason } }
+                        Send-ClientResponse -Stream $stream -Code 503 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                        try { if ($credUserPlain) { $credUserPlain = '' } } catch { }
+                        try { if ($credPassPlain) { $credPassPlain = '' } } catch { }
+                        try { if ($credKeyBytes) { [Array]::Clear($credKeyBytes, 0, $credKeyBytes.Length) } } catch { }
+                        return
+                    }
+                    # Own-cred + torrent: the artifact is fetched HERE with the
+                    # in-memory credentials (transport-only), handed to the daemon as
+                    # bytes, and the temp file is deleted; the daemon never sees a
+                    # credential and no credential is ever logged or persisted.
+                    $torrentTmp = ''
+                    $addRes = $null
+                    try {
+                        if ($credUserPlain -or $credPassPlain) {
+                            $torrentTmp = Join-Path $env:TEMP ('ghrdp-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.torrent')
+                            $basic = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(([string]$credUserPlain + ':' + [string]$credPassPlain)))
+                            $dl = Invoke-WebRequest -Uri $targetUrl -Headers @{ Authorization = ('Basic ' + $basic) } -TimeoutSec 30 -ErrorAction Stop
+                            $bytes = $null
+                            try { $bytes = $dl.Content } catch { $bytes = $null }
+                            if (-not $bytes) { throw 'torrent artifact download returned no content' }
+                            if (-not ($bytes -is [byte[]])) { $bytes = [System.Text.Encoding]::UTF8.GetBytes([string]$bytes) }
+                            if ($bytes.Length -gt $script:QbtTorrentMaxBytes) { throw ('torrent artifact exceeds ' + $script:QbtTorrentMaxBytes + ' bytes') }
+                            [System.IO.File]::WriteAllBytes($torrentTmp, $bytes)
+                            try { [Array]::Clear($bytes, 0, $bytes.Length) } catch { }
+                            $addRes = Add-GhrdpQbtTorrent -Url $targetUrl -OwnUrls $ownUrls -Address $qbtSess.address -Session $qbtSess.session -TorrentFilePath $torrentTmp
+                        } else {
+                            $addRes = Add-GhrdpQbtTorrent -Url $targetUrl -OwnUrls $ownUrls -Address $qbtSess.address -Session $qbtSess.session
+                        }
+                    } catch {
+                        $addRes = @{ ok = $false; handle = ''; reason = ('torrent-artifact-failed: ' + $_.Exception.Message) }
+                    } finally {
+                        try { if ($torrentTmp -and (Test-Path -LiteralPath $torrentTmp)) { Remove-Item -LiteralPath $torrentTmp -Force } } catch { }
+                    }
+                    if (-not $addRes.ok) {
+                        $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'TRANSPORT_UNAVAILABLE'; messageKey = 'search.errors.transportUnavailable'; retryable = $true; details = @{ transport = 'torrent'; reason = $addRes.reason } }
+                        Send-ClientResponse -Stream $stream -Code 502 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                        try { if ($credUserPlain) { $credUserPlain = '' } } catch { }
+                        try { if ($credPassPlain) { $credPassPlain = '' } } catch { }
+                        try { if ($credKeyBytes) { [Array]::Clear($credKeyBytes, 0, $credKeyBytes.Length) } } catch { }
+                        return
+                    }
+                    $gid = [string]$addRes.handle
+                } else {
                 # Check aria2 transport availability
                 if (-not $ariaReady) {
                     $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'TRANSPORT_UNAVAILABLE'; messageKey = 'search.errors.transportUnavailable'; retryable = $true; details = @{ transport = 'aria2c' } }
@@ -1947,7 +2058,6 @@ function Invoke-ClientRequest {
                 try { $expectedLen = $bodyJson.expectedContentLength } catch { }
                 if (-not $expectedLen) { try { $expectedLen = $bodyJson.provenance.byteSize } catch { } }
                 # Call aria2.addUri via helper
-                $gid = ''
                 try {
                     $addRes = Add-Aria2Uri -Uri $targetUrl -Options $ariaOpts -Secret '' -Sha256 ([string]$bodyJson.provenance.sha256)
                     if ($addRes.ok) { $gid = [string]$addRes.gid }
@@ -1967,6 +2077,7 @@ function Invoke-ClientRequest {
                     try { if ($credPassPlain) { $credPassPlain = '' } } catch { }
                     try { if ($credKeyBytes) { [Array]::Clear($credKeyBytes, 0, $credKeyBytes.Length) } } catch { }
                     return
+                }
                 }
                 # Memory wipe of creds - no disk persist
                 try { if ($credUserPlain) { $credUserPlain = '' } } catch { }
@@ -1992,10 +2103,16 @@ function Invoke-ClientRequest {
                     pipelineStages = @('queued','downloading','verifying','encrypting','postFetch')
                     mirrorOptIn = [bool]$bodyJson.mirrorOptIn
                     status = 'queued'
+                    # [F56-d §4] 'selected transport' + 'aria2c gid, or qBittorrent
+                    # handle' - both fields the frozen docs/f56/backend.json
+                    # FetchStartAccepted enumerates (the §B display label stays
+                    # qBittorrent in the UI; §F's wire enum travels here).
+                    transport = $transport
+                    qbittorrentHandle = $(if ($isTorrent -and $gid) { [string]$gid } else { $null })
                 }
-                $script:FetchMap[$fetchId] = @{ gid = $gid; url = $targetUrl; snapshot = $snapId; status = 'queued'; created = (Get-Date) }
+                $script:FetchMap[$fetchId] = @{ gid = $gid; transport = $transport; url = $targetUrl; snapshot = $snapId; status = 'queued'; created = (Get-Date) }
                 Send-ClientResponse -Stream $stream -Code 202 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $resp)
-                Write-ClientAudit ('fetch start ' + $reqId + ' -> 202 gid=' + $gid + ' fetchId=' + $fetchId)
+                Write-ClientAudit ('fetch start ' + $reqId + ' -> 202 transport=' + $transport + ' gid=' + $gid + ' fetchId=' + $fetchId)
                 return
             }
             elseif ($op -eq 'cancel') {
@@ -2008,8 +2125,29 @@ function Invoke-ClientRequest {
                     Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
                     return
                 }
-                if (-not $gid -and $fetchId -and $script:FetchMap.ContainsKey($fetchId)) {
-                    $gid = [string]$script:FetchMap[$fetchId].gid
+                $cancelTransport = 'aria2c'
+                if ($fetchId -and $script:FetchMap.ContainsKey($fetchId)) {
+                    if (-not $gid) { $gid = [string]$script:FetchMap[$fetchId].gid }
+                    try { if ($script:FetchMap[$fetchId].transport) { $cancelTransport = [string]$script:FetchMap[$fetchId].transport } } catch { }
+                }
+                try { if ($bodyJson.transport -and @('aria2c', 'torrent') -contains ([string]$bodyJson.transport)) { $cancelTransport = [string]$bodyJson.transport } } catch { }
+                if ($cancelTransport -eq 'torrent') {
+                    # [F56-d §2] the torrent lane cancels through the same Tailnet-only
+                    # WebUI session; the partial artifact is deleted so a cancelled
+                    # fetch can never reach the watcher.
+                    $qbtSess = Get-F56dQbtSession
+                    if (-not $qbtSess.ok) {
+                        $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'TRANSPORT_UNAVAILABLE'; messageKey = 'search.errors.transportUnavailable'; retryable = $true; details = @{ transport = 'torrent'; reason = $qbtSess.reason } }
+                        Send-ClientResponse -Stream $stream -Code 503 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                        return
+                    }
+                    $remQbt = $null
+                    try { $remQbt = Remove-GhrdpQbtTorrent -Handle $gid -Address $qbtSess.address -Session $qbtSess.session } catch { $remQbt = @{ ok = $false } }
+                    if ($fetchId -and $script:FetchMap.ContainsKey($fetchId)) { $script:FetchMap[$fetchId].status = 'cancelled' }
+                    $resp = [ordered]@{ requestId = $reqId; traceId = $traceId; fetchId = $fetchId; gid = $gid; transport = 'torrent'; qbittorrentHandle = $gid; status = 'cancelled'; code = 'FETCH_CANCELLED'; messageKey = 'search.errors.fetchCancelled' }
+                    Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $resp)
+                    Write-ClientAudit ('fetch cancel ' + $fetchId + ' transport=torrent handle=' + $gid + ' -> ' + $remQbt.ok)
+                    return
                 }
                 if (-not $ariaReady) {
                     $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'TRANSPORT_UNAVAILABLE'; messageKey = 'search.errors.transportUnavailable'; retryable = $true; details = @{ transport = 'aria2c' } }

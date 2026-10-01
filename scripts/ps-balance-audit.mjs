@@ -117,6 +117,15 @@ export function audit(name, text) {
     if (kind.startsWith('open') || kind.startsWith('close')) continue;
     problems.push(`${kind} @ line ${line}`);
   }
+  // [F56-d loop 5] typed-parameter collision guard (Node twin of the python rule):
+  // PowerShell variable names are case-INSENSITIVE, so assigning a scalar to a
+  // `[hashtable]$X` parameter variable (e.g. `$body = ''` against `[hashtable]$Body`)
+  // throws at RUN time - and no interpreter runs in this sandbox.
+  for (const m of text.matchAll(/\[hashtable\]\$(\w+)/g)) {
+    const name = m[1];
+    const rx = new RegExp('^[\\s{};]*\\$' + name + '\\s*=\\s*[\'"][^\'"]*[\'"]\\s*(?:#.*)?$', 'im');
+    if (rx.test(text)) problems.push('assigns a string to the [hashtable] parameter $' + name + ' (case-insensitive collision)');
+  }
   return problems;
 }
 
@@ -341,6 +350,9 @@ const targets = [
   'tests/f56d-post-fetch-e2e.ps1',
   'tests/f56d-creds-memory.ps1',
   'tests/f56d-search-input.ps1',
+  // [F56-d §2] the qBittorrent-nox Tailnet-only torrent lane + its lab.
+  'payloads/ghrdp-qbt.ps1',
+  'tests/f56d-qbt-tailnet.ps1',
 ];
 
 let failed = 0;

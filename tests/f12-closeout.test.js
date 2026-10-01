@@ -84,7 +84,13 @@ test('F12-3 qBittorrent: discovered ProgId wires .torrent + magnet, no Web UI', 
   assert.match(apps, /HKEY_CLASSES_ROOT\\\.torrent/);
   assert.match(apps, /qBittorrent\./i);
   assert.match(wf, /Set-QbittorrentDefaultHandler -ExePath \$qbExe/);
-  assert.ok(!/qbittorrent[^\n]*(--webui|webui|8080)/i.test(wf), 'no torrent Web UI wiring');
+  // [F56-d §2] SUPERSEDED PIN (narrowed, not deleted): the F12 app step installs
+  // qBittorrent as a PLAIN file/protocol handler and must not touch its WebUI. The
+  // F56-d transport lane added a SEPARATE headless qBittorrent-nox step, so the
+  // "no Web UI wiring" assertion now scopes to the F12 app step itself.
+  const qbAppStep = wf.split(/\n(?=      - name: )/).find((s) => s.startsWith('      - name: App - qBittorrent'));
+  assert.ok(qbAppStep, 'the F12 qBittorrent app step is missing');
+  assert.ok(!/qbittorrent[^\n]*(--webui|webui|8080)/i.test(qbAppStep), 'no torrent Web UI wiring in the F12 app step');
   assert.ok(!/MIRROR_INPUT'? *(-ne|==) *'?true/i.test(wf) || /MIRROR_INPUT -eq 'true'/.test(wf));
 });
 

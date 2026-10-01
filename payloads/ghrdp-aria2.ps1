@@ -1,8 +1,9 @@
 # [F56-d §1] aria2c JSON-RPC helper - loopback only (127.0.0.1:6800).
 # Provides addUri, tellStatus, remove, pauseAll. CLI pins per spec:
-# max-connection-per-server=8, split=8, min-split-size=1M, dir=Fetched-root,
+# max-connection-per-server=16, split=16, min-split-size=20M, continue=true,
+# dir=Fetched-root,
 # follow-metalink=false, follow-torrent=false, check-integrity=true when sha256 given.
-# Secret via GHRDP_ARIA2_RPC_SECRET env, session at D:\ghrdp\aria2\session.
+# Secret via GHRDP_ARIA2_RPC_SECRET env, session at C:\ghrdp\aria2\session.gz.
 # No disk persist of creds - own-cred decrypted in memory, wiped after.
 
 $script:Aria2RpcUrl = 'http://127.0.0.1:6800/jsonrpc'
@@ -63,9 +64,10 @@ function Add-Aria2Uri {
     if (-not $Uri -or $Uri -notmatch '^https://') { return @{ ok = $false; gid = ''; error = 'HTTPS_REQUIRED' } }
     $opts = @{
         dir = 'D:\RDP-Storage\Fetched'
-        'max-connection-per-server' = '8'
-        split = '8'
-        'min-split-size' = '1M'
+        'max-connection-per-server' = '16'
+        split = '16'
+        'min-split-size' = '20M'
+        'continue' = 'true'
         'follow-metalink' = 'false'
         'follow-torrent' = 'false'
     }
