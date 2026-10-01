@@ -147,6 +147,26 @@ $fieldCount = 0
 try { $fieldCount = @($eff.PSObject.Properties).Count } catch { $fieldCount = 0 }
 Write-Host ('[F56-d] running daemon reports ' + $fieldCount + ' effective option(s)')
 if ($fieldCount -lt 1) { Fail-Lab 'aria2.getGlobalOption returned no options' }
+# aria2 reports size options in BYTES through getGlobalOption (min-split-size
+# comes back as 1048576, not as the CLI notation 1M), so sizes are compared
+# numerically and everything else by string.
+function ConvertTo-F56dBytes([string]$Text) {
+    $t = ''
+    if ($Text) { $t = $Text.Trim() }
+    if ($t -match '^(\d+)\s*[Mm]$') { return [long]$Matches[1] * 1048576 }
+    if ($t -match '^(\d+)\s*[Kk]$') { return [long]$Matches[1] * 1024 }
+    if ($t -match '^(\d+)\s*[Gg]$') { return [long]$Matches[1] * 1048576 * 1024 }
+    $n = [long]0
+    if ([long]::TryParse($t, [ref]$n)) { return $n }
+    return [long]-1
+}
+function Test-F56dPinValue([string]$Actual, [string]$Expected) {
+    if ([string]$Actual -eq [string]$Expected) { return $true }
+    $a = ConvertTo-F56dBytes $Actual
+    $e = ConvertTo-F56dBytes $Expected
+    if ($a -ge 0 -and $e -ge 0) { return ($a -eq $e) }
+    return $false
+}
 $pins = [ordered]@{
     'max-connection-per-server' = '8'
     split = '8'
@@ -157,8 +177,8 @@ $pins = [ordered]@{
 foreach ($k in @($pins.Keys)) {
     $p = $eff.PSObject.Properties[$k]
     if (-not $p) { Write-Host ('::warning::[F56-d] running daemon did not report pin ' + $k + ' (RPC omits an untouched/defaulted key)'); continue }
-    if ([string]$p.Value -ne [string]$pins[$k]) { Fail-Lab ('running daemon pin ' + $k + '=' + [string]$p.Value + ' expected ' + [string]$pins[$k]) }
-    Write-Host ('[F56-d] daemon pin ' + $k + '=' + [string]$p.Value)
+    if (-not (Test-F56dPinValue ([string]$p.Value) ([string]$pins[$k]))) { Fail-Lab ('running daemon pin ' + $k + '=' + [string]$p.Value + ' expected ' + [string]$pins[$k]) }
+    Write-Host ('[F56-d] daemon pin ' + $k + '=' + [string]$p.Value + ' (=CLI ' + [string]$pins[$k] + ')')
 }
 $dirProp = $eff.PSObject.Properties['dir']
 if (-not $dirProp) { Fail-Lab 'running daemon did not report --dir (dir=Fetched-root is a mandatory pin)' }
@@ -186,12 +206,23 @@ $add = Add-Aria2Uri -Uri $testUrl -Options @{ dir = $downloadDir; 'allow-overwri
 Write-Host ('[F56-d] addUri result ok=' + $add.ok + ' gid=' + $add.gid)
 if (-not $add.ok -or -not $add.gid) { Fail-Lab ('aria2.addUri failed: ' + ([string]$add.error)) }
 
-$status = Get-Aria2Status -Gid $add.gid -Secret $sec
-Write-Host ('[F56-d] tellStatus ok=' + $status.ok)
-if (-not $status.ok) { Fail-Lab 'aria2.tellStatus failed for a live gid' }
-foreach ($field in @('gid', 'status', 'totalLength', 'dir')) {
-    if (-not $status.status.PSObject.Properties[$field]) { Fail-Lab ('tellStatus payload lacks ' + $field) }
+# aria2 omits a key it does not know yet (totalLength can be missing for the first
+# moments of a fresh download), so the field contract is polled briefly instead of
+# asserted on a single immediate read.
+$status = $null
+$missing = @()
+for ($i = 0; $i -lt 20; $i++) {
+    $status = Get-Aria2Status -Gid $add.gid -Secret $sec
+    if (-not $status.ok) { Fail-Lab 'aria2.tellStatus failed for a live gid' }
+    $missing = @()
+    foreach ($field in @('gid', 'status', 'totalLength', 'dir')) {
+        if (-not $status.status.PSObject.Properties[$field]) { $missing += $field }
+    }
+    if (@($missing).Count -eq 0) { break }
+    Start-Sleep -Seconds 1
 }
+Write-Host ('[F56-d] tellStatus ok=' + $status.ok)
+if (@($missing).Count -gt 0) { Fail-Lab ('tellStatus payload lacks ' + (@($missing) -join ',') + ' after 20s') }
 Write-Host ('[F56-d] tellStatus fields ok status=' + $status.status.status + ' totalLength=' + $status.status.totalLength + ' dir=' + $status.status.dir)
 
 # Real byte arrival (advisory: needs https egress from the runner; never red on its own).

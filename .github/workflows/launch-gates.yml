@@ -3231,6 +3231,7 @@ jobs:
           grep -qF 'GHRDP_F56D_ARIA2_REQUIRED' "$lab"
           grep -qF 'Pause-Aria2All' "$lab"
           grep -qF 'Get-F56dRpcReason' "$lab"
+          grep -qF 'ConvertTo-F56dBytes' "$lab"
           # The creds lab used to warn "should wipe" because `Array\.Clear` never
           # matches the real token `[Array]::Clear`; it now asserts the wipe and
           # EXECUTES the shipped decrypt/wipe functions.
