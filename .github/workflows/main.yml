@@ -17,23 +17,33 @@ on:
           - media-plain
           - all
         default: none
-      # [F47 §1 -> F48 §0] PER-RUN MIRROR OPT-IN. The shipped default stays OFF
-      # (the "mirror default must stay OFF" gate is unchanged): enabling the
-      # mirror is operator intent expressed per dispatch. [F48] uploads run in
-      # TOKEN-LESS guest mode - no repository secret exists or is read, and a
-      # missing credential is the NORMAL state (never a halt).
+      # [F47 §1 -> F48 §0 -> F59 §1] PER-RUN MIRROR OPT-IN, DEFAULT FLIPPED ON.
+      # [F48] uploads run in TOKEN-LESS guest mode - no repository secret exists
+      # or is read, and a missing credential is the NORMAL state (never a halt).
+      # [F59] the dispatch default is now TRUE: a stock dispatch mirrors with the
+      # one-click F49 runtime opt-in/disable path unchanged; false turns the
+      # manual lane OFF for this run. The shipped config host default (F11-5.2,
+      # Get-F46DefaultHost enabled=$false) is a different thing and is untouched.
       mirror_enable:
-        description: 'F47/F48 per-run mirror opt-in: enable mirrorHosts[0] for THIS run only (token-less guest mode; no secret needed). false = mirror stays OFF (default).'
-        type: boolean
-        default: false
-      mirror_encrypt:
-        description: 'F52 encrypted by default. Explicit false elects PLAINTEXT for the manual dispatch lane ONLY (banner required); Downloads auto-upload and runtime opt-in always encrypt. The per-run key stays runner-local.'
+        description: 'F47/F48 per-run mirror opt-in (F59 default ON): mirrorHosts[0] for THIS run only, token-less guest mode (no secret needed). false = mirror stays OFF for this run.'
         type: boolean
         default: true
-      search_enable:
-        description: 'F56-d transport lane: enable search + aria2c fetch (default OFF).'
+      # [F59 §1] PLAINTEXT IS THE DEFAULT for the manual dispatch lane and the
+      # visible PLAINTEXT MODE banner is mandatory. The SAFETY FLOOR is not
+      # electable: Downloads auto-upload and the runtime opt-in lane ALWAYS
+      # encrypt (AES-256-GCM / CBC-PBKDF2 fallback), and the per-run key stays
+      # runner-local. true = the F46 encrypted lane for the manual dispatch path.
+      mirror_encrypt:
+        description: 'F59 default FALSE = PLAINTEXT MODE for the manual dispatch lane (visible banner required). true = F46 AES-256-GCM (CBC-PBKDF2 fallback). Downloads auto-upload and runtime opt-in ALWAYS encrypt - the safety floor cannot be elected away.'
         type: boolean
         default: false
+      # [F59 §1] F56-d transport lane, DEFAULT FLIPPED ON: the Search tab and the
+      # aria2c fetch button are live out of the box (the binary is the F59
+      # prebuilt release asset). false hides the lane for this run.
+      search_enable:
+        description: 'F56-d transport lane (F59 default ON): Search tab + aria2c fetch live out of the box. false = lane hidden for this run.'
+        type: boolean
+        default: true
 
 permissions:
   contents: write   # push docs/search.html from the watcher (superset of read)
@@ -50,8 +60,60 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
+      # [F59 §2] PREBUILT UI (primary path): build-ui.yml publishes
+      # ui/dist/index.html as ui-dist-<commit-sha>.zip + .sha256 on every push to
+      # main. This job downloads that bundle instead of running pnpm+vite on the
+      # dispatch critical path. The download is SHA-256 verified and FAIL-CLOSED:
+      # a present asset with a bad/missing sidecar digest kills the job (no
+      # silent fallback to an unverified bundle). Only a MISSING asset for this
+      # sha (e.g. a dispatch racing the build-ui run) falls back to an on-runner
+      # build, labeled loudly.
       - uses: actions/checkout@v4
-      - name: Build v2 single-file bundle
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - uses: actions/cache@v4
+        name: F59 UI fallback cache (pnpm store + node_modules)
+        with:
+          path: |
+            ~/.local/share/pnpm/store
+            node_modules
+          key: f59-ui-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'package-lock.json') }}
+          restore-keys: |
+            f59-ui-${{ runner.os }}-
+      - name: Download prebuilt UI bundle (F59 release asset, SHA-256 verified)
+        id: ui-prebuilt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          asset="ui-dist-${GITHUB_SHA}.zip"
+          mkdir -p "$RUNNER_TEMP/ui-dl"
+          if ! gh release download ui-dist --pattern "$asset" --pattern "${asset}.sha256" --dir "$RUNNER_TEMP/ui-dl" --clobber 2>/dev/null; then
+            echo "::warning::[F59 ui-prebuilt] no release asset ${asset} (build-ui.yml publishes one per push to main) - falling back to an on-runner build"
+            echo 'hit=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          test -f "$RUNNER_TEMP/ui-dl/${asset}.sha256"
+          echo "hit=true" >> "$GITHUB_OUTPUT"
+          cd "$RUNNER_TEMP/ui-dl"
+          # fail-closed: mismatch exits 1 (see scripts/f59-verify-sha256.mjs)
+          node "$GITHUB_WORKSPACE/scripts/f59-verify-sha256.mjs" "$asset" "$(tr -d '[:space:]' < "${asset}.sha256")" --label "$asset"
+          unzip -o -q "$asset" -d out
+          test -f out/index.html
+          mkdir -p "$GITHUB_WORKSPACE/ui/dist"
+          cp out/index.html "$GITHUB_WORKSPACE/ui/dist/index.html"
+          LEN=$(wc -c < "$GITHUB_WORKSPACE/ui/dist/index.html")
+          if [ "$LEN" -le 51200 ]; then echo "ui-v2.html staging failed - prebuilt bundle too small ($LEN bytes)"; exit 1; fi
+          node scripts/check-regression-ids.mjs
+          node scripts/check-no-neon-green.mjs "$GITHUB_WORKSPACE/ui/dist/index.html"
+          node scripts/check-bottom-bar-time.mjs
+          echo "[F59 ui-prebuilt] hit sha256-verified ${asset} bytes=$LEN"
+      - name: Build v2 single-file bundle (F59 fallback - asset miss only)
+        if: steps.ui-prebuilt.outputs.hit != 'true'
         run: |
           set -euo pipefail
           export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
@@ -65,7 +127,7 @@ jobs:
           node scripts/check-no-neon-green.mjs ui/dist/index.html
           node scripts/check-bottom-bar-time.mjs
           LEN=$(wc -c < ui/dist/index.html)
-          echo "[F43] build-ui artifact bytes=$LEN"
+          echo "[F43] build-ui artifact bytes=$LEN (F59 fallback path)"
           if [ "$LEN" -le 51200 ]; then echo "ui-v2.html staging failed - build artifact missing"; exit 1; fi
       - name: Upload dist-ui
         uses: actions/upload-artifact@v4
@@ -83,11 +145,16 @@ jobs:
       GHRDP_EPHEMERAL: 'true'
       ENCRYPT_MODE: ${{ github.event.inputs.encrypt_mode || 'none' }}
       # [F47 §1] the per-run opt-in as a string; the stage step is the only
-      # consumer and it still only ever compares MIRROR_INPUT to 'true'.
+      # consumer and it still only ever compares MIRROR_INPUT to 'true'
+      # ([F59] the DISPATCH DEFAULT is now true; the comparison is unchanged).
       MIRROR_INPUT: ${{ github.event.inputs.mirror_enable == true && 'true' || 'false' }}
       MIRROR_ENCRYPT_INPUT: ${{ github.event.inputs.mirror_encrypt == true && 'true' || 'false' }}
-      # An omitted input is not a plaintext election (default is now true).
-      MIRROR_PLAINTEXT_ELECTED: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mirror_encrypt == 'false' && 'true' || 'false' }}
+      # [F59 §1] the plaintext election is the DEFAULT now: ONLY an explicit
+      # mirror_encrypt=true keeps the encrypted lane. false/omitted means
+      # PLAINTEXT MODE with the visible banner. The auto-path encryption floor
+      # (Downloads auto-upload + runtime opt-in) is enforced in the stage/watcher
+      # code and is NOT derived from this flag.
+      MIRROR_PLAINTEXT_ELECTED: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.mirror_encrypt != 'true' && 'true' || 'false' }}
       SEARCH_INPUT: ${{ github.event.inputs.search_enable == true && 'true' || 'false' }}
       RENTRY_MAIN_URL: 'https://rentry.co/myurl0'
       RENTRY_MAIN_EDIT: ''
@@ -180,6 +247,9 @@ jobs:
 
       - name: Checkout repo (payloads)
         uses: actions/checkout@v4
+        with:
+          # [F59 §2] shallow checkout: nothing on this path needs history.
+          fetch-depth: 1
 
       - name: Auto-deploy Web UI, Worker, and Status Logic (Zero-Touch)
         env:
@@ -286,6 +356,15 @@ jobs:
           key: f10-setup-${{ runner.os }}-${{ hashFiles('payloads/Cargo.toml') }}-v1
           restore-keys: |
             f10-setup-${{ runner.os }}-
+      # [F59 §2] PREBUILT BINARY CACHE (separate from the F10-4c setup cache):
+      # the aria2c/qBittorrent release assets are downloaded + SHA-256 verified on
+      # the first dispatch per pin revision and restored from here afterwards.
+      # The key includes the pin file hash, so any pin change busts the cache.
+      - uses: actions/cache@v4
+        name: F59 prebuilt binary cache (SHA-256 pinned assets)
+        with:
+          path: C:\ghrdp\prebuilt
+          key: f59-prebuilt-${{ runner.os }}-${{ hashFiles('payloads/f59-prebuilt-pins.json') }}
       - name: Record job start + pre-create cache directories (F10-4c/F11-6)
         shell: pwsh
         run: |
@@ -323,7 +402,7 @@ jobs:
           if ($env:MIRROR_INPUT -eq 'true') {
               Write-Host '[validate] F48 mirror opt-in ON for this run: token-less guest mode (no secret read, no auth header).'
           } else {
-              Write-Host '[validate] F48 mirror opt-in OFF for this run (mirror_enable=false).'
+              Write-Host '[validate] F48/F59 mirror opt-in OFF for this run (mirror_enable=false was dispatched; the F59 dispatch default is ON).'
           }
           if (-not $mirrorOn) {
               Write-Host '[validate] mirror is OFF this run - RENTRY_EDIT_PASSWORD not required.'
@@ -332,48 +411,185 @@ jobs:
           }
           exit 0
 
-      - name: Download Tailscale installer (curl retries, IWR fallback)
+      # [F59 §2] PARALLEL PRE-WARM. Three independent jobs run as background
+      # PowerShell jobs INSIDE this one step (cross-step Start-Job is impossible:
+      # every step is its own process) and the step Wait-Jobs before returning,
+      # so the dispatch pays the SLOWEST leg instead of the sum:
+      #   1. Tailscale MSI download (the same retry ladder as before),
+      #   2. the SHA-256-pinned PREBUILT BINARIES (aria2c + qBittorrent) from the
+      #      prebuilt-binaries release - F59 §2: no Chocolatey anywhere, and every
+      #      byte is verified against payloads/f59-prebuilt-pins.json AND the
+      #      release checksums.txt before it is staged or executed (FAIL-CLOSED),
+      #   3. the PowerShell server pre-parse warm (parser load, not execution).
+      # Timings -> C:\ghrdp\startup-timing.jsonl (F59 §3).
+      - name: F59 parallel pre-warm (Tailscale MSI + prebuilt binaries + PS parse)
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Continue'
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-          $url = 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi'
-          $out = 'tailscale-setup.msi'
-          $ok = $false
-          for ($a = 1; $a -le 4; $a++) {
-              Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
-              & curl.exe -fL --retry 3 --retry-delay 2 --retry-connrefused --connect-timeout 30 --max-time 300 -o $out $url 2>$null
-              $LASTEXITCODE = 0
-              if ((Test-Path $out) -and ((Get-Item $out).Length -gt 1000000)) {
-                  $ok = $true
-                  Write-Host ('[ts] downloaded via curl, attempt {0}, size={1}' -f $a, (Get-Item $out).Length)
-                  break
-              }
-              Write-Host ('[ts] curl attempt {0} failed; retrying' -f $a)
-              Start-Sleep -Seconds (3 * $a)
-          }
-          if (-not $ok) {
-              for ($a = 1; $a -le 3; $a++) {
-                  try {
-                      Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
-                      if ((Test-Path $out) -and ((Get-Item $out).Length -gt 1000000)) {
-                          $ok = $true
-                          Write-Host ('[ts] downloaded via Invoke-WebRequest, attempt {0}' -f $a)
-                          break
-                      }
-                  } catch {
-                      Write-Host ('[ts] Invoke-WebRequest attempt {0} failed: {1}' -f $a, $_.Exception.Message)
+          New-Item -ItemType Directory -Path 'C:\ghrdp' -Force | Out-Null
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
+          $swAll = Start-F59Step
+
+          $msiJob = Start-Job -ArgumentList $env:GITHUB_WORKSPACE -ScriptBlock {
+              Set-Location $args[0]
+              [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+              $url = 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi'
+              $out = 'tailscale-setup.msi'
+              $ok = $false
+              for ($a = 1; $a -le 4; $a++) {
+                  Remove-Item -LiteralPath $out -Force -ErrorAction SilentlyContinue
+                  & curl.exe -fL --retry 3 --retry-delay 2 --retry-connrefused --connect-timeout 30 --max-time 300 -o $out $url 2>$null
+                  $LASTEXITCODE = 0
+                  if ((Test-Path $out) -and ((Get-Item $out).Length -gt 1000000)) {
+                      $ok = $true
+                      Write-Host ('[ts] downloaded via curl, attempt {0}, size={1}' -f $a, (Get-Item $out).Length)
+                      break
                   }
+                  Write-Host ('[ts] curl attempt {0} failed; retrying' -f $a)
                   Start-Sleep -Seconds (3 * $a)
               }
+              if (-not $ok) {
+                  for ($a = 1; $a -le 3; $a++) {
+                      try {
+                          Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing -TimeoutSec 300 -ErrorAction Stop
+                          if ((Test-Path $out) -and ((Get-Item $out).Length -gt 1000000)) {
+                              $ok = $true
+                              Write-Host ('[ts] downloaded via Invoke-WebRequest, attempt {0}' -f $a)
+                              break
+                          }
+                      } catch {
+                          Write-Host ('[ts] Invoke-WebRequest attempt {0} failed: {1}' -f $a, $_.Exception.Message)
+                      }
+                      Start-Sleep -Seconds (3 * $a)
+                  }
+              }
+              if (-not $ok) { throw 'Could not download the Tailscale MSI after retries. Re-run the workflow.' }
+              return @{ sw = 'tailscale-msi-download'; bytes = (Get-Item -LiteralPath $out).Length }
           }
-          if (-not $ok) { throw 'Could not download the Tailscale MSI after retries. Re-run the workflow.' }
+
+          # [F59 §2] the verification functions live in the SHIPPED module
+          # payloads/f59-prebuilt-verify.ps1 (single source - dot-sourced here AND
+          # inside the background job, which is a separate process).
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-prebuilt-verify.ps1')
+
+          $binJob = Start-Job -ArgumentList $env:GITHUB_WORKSPACE -ScriptBlock {
+              $ws = $args[0]
+              $ErrorActionPreference = 'Stop'
+              . (Join-Path $ws 'payloads/f59-prebuilt-verify.ps1')
+              $pins = Get-Content -LiteralPath (Join-Path $ws 'payloads/f59-prebuilt-pins.json') -Raw | ConvertFrom-Json
+              $tag = [string]$pins.release_tag
+              $cacheDir = 'C:\ghrdp\prebuilt'
+              $binDir = 'C:\ghrdp\bin'
+              New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+              New-Item -ItemType Directory -Path $binDir -Force | Out-Null
+              $tmp = Join-Path $env:RUNNER_TEMP 'f59-prebuilt-dl'
+              if (Test-Path -LiteralPath $tmp) { Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue }
+              New-Item -ItemType Directory -Path $tmp -Force | Out-Null
+              $ck = Join-Path $tmp ([string]$pins.checksums_asset)
+              $need = @()
+              foreach ($p in @($pins.assets.PSObject.Properties)) {
+                  $name = [string]$p.Value.name
+                  if (-not (Test-Path -LiteralPath (Join-Path $cacheDir $name))) { $need += $name }
+              }
+              if ($need.Count -gt 0) {
+                  gh release download $tag --pattern ([string]$pins.checksums_asset) --dir $tmp --clobber 2>$null | Out-Null
+                  foreach ($n in $need) { gh release download $tag --pattern $n --dir $tmp --clobber 2>$null | Out-Null }
+                  if ($LASTEXITCODE -ne 0) { throw ('[F59 prebuilt] gh release download failed for ' + ($need -join ', ') + ' (release ' + $tag + ') - assets must be published by f59-prebuilt-binaries.yml') }
+                  if (-not (Test-Path -LiteralPath $ck)) { throw ('[F59 prebuilt] release ' + $tag + ' did not deliver ' + [string]$pins.checksums_asset) }
+                  foreach ($p in @($pins.assets.PSObject.Properties)) {
+                      $name = [string]$p.Value.name
+                      $src = Join-Path $tmp $name
+                      if (-not (Test-Path -LiteralPath $src)) { continue }
+                      $sha = Test-F59AssetSha256 -Path $src -Expected ([string]$p.Value.sha256) -Label $name
+                      $null = Test-F59ChecksumsLine -ChecksumsPath $ck -AssetName $name -Expected $sha
+                      Copy-Item -LiteralPath $src -Destination (Join-Path $cacheDir $name) -Force
+                  }
+              } else {
+                  Write-Host '[F59 prebuilt] all assets restored from the F59 prebuilt cache'
+              }
+              # Stage the verified bytes: aria2c.exe -> C:\ghrdp\bin, the
+              # qBittorrent zip -> C:\Program Files\qBittorrent (the resolver's root).
+              $aria = [string]$pins.assets.aria2c.name
+              Test-F59AssetSha256 -Path (Join-Path $cacheDir $aria) -Expected ([string]$pins.assets.aria2c.sha256) -Label $aria | Out-Null
+              Copy-Item -LiteralPath (Join-Path $cacheDir $aria) -Destination (Join-Path $binDir 'aria2c.exe') -Force
+              $qbt = [string]$pins.assets.qbittorrent.name
+              Test-F59AssetSha256 -Path (Join-Path $cacheDir $qbt) -Expected ([string]$pins.assets.qbittorrent.sha256) -Label $qbt | Out-Null
+              $qdir = Join-Path $env:ProgramFiles 'qBittorrent'
+              New-Item -ItemType Directory -Path $qdir -Force | Out-Null
+              Expand-Archive -LiteralPath (Join-Path $cacheDir $qbt) -DestinationPath $qdir -Force
+              $qexe = Get-ChildItem -LiteralPath $qdir -Recurse -Include 'qbittorrent-nox.exe', 'qbittorrent.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+              if (-not $qexe) { throw '[F59 prebuilt] qBittorrent binary missing after extracting the verified zip' }
+              Write-Host ('[F59 prebuilt] staged aria2c.exe + ' + $qexe.FullName + ' from verified release assets (cache ' + $cacheDir + ')')
+              return @{ sw = 'prebuilt-binaries'; staged = @('aria2c.exe', $qexe.Name); cacheHit = ($need.Count -eq 0) }
+          }
+
+          $psJob = Start-Job -ArgumentList $env:GITHUB_WORKSPACE -ScriptBlock {
+              $ws = $args[0]
+              $files = @('payloads/ghrdp-lib.ps1', 'payloads/ghrdp-server.ps1', 'payloads/ghrdp-watcher.ps1', 'payloads/ghrdp-mirror.ps1', 'payloads/ghrdp-qbt.ps1', 'payloads/ghrdp-aria2.ps1')
+              $errs = 0
+              foreach ($f in $files) {
+                  $p = Join-Path $ws $f
+                  if (-not (Test-Path -LiteralPath $p)) { continue }
+                  $tokens = $null
+                  $parseErrs = $null
+                  [System.Management.Automation.Language.Parser]::ParseFile($p, [ref]$tokens, [ref]$parseErrs) | Out-Null
+                  if ($parseErrs) { $errs += @($parseErrs).Count; Write-Host ('[F59 prewarm] parse errors in ' + $f + ': ' + @($parseErrs).Count) }
+              }
+              Write-Host ('[F59 prewarm] PowerShell pre-parse warm complete (files=' + $files.Count + ' errors=' + $errs + ')')
+              return @{ sw = 'ps-parse-prewarm'; parseErrors = $errs }
+          }
+
+          # Leg 4 [F59 §2]: RDP cert-bind pre-warm - the certificate workdir and
+          # its ACLs, the MachineKeys container directory, and the
+          # root/cimv2/TerminalServices CIM class are prepared concurrently with
+          # the downloads so the cert step only has to fetch and bind.
+          $certJob = Start-Job -ScriptBlock {
+              $workDir = 'C:\ghrdp\tls'
+              New-Item -ItemType Directory -Path $workDir -Force | Out-Null
+              & icacls.exe $workDir /inheritance:r 2>&1 | Out-Null
+              & icacls.exe $workDir /grant:r 'SYSTEM:(OI)(CI)F' 'Administrators:(OI)(CI)F' 'NETWORK SERVICE:(OI)(CI)R' 2>&1 | Out-Null
+              $keyDir = Join-Path $env:ProgramData 'Microsoft\Crypto\RSA\MachineKeys'
+              if (-not (Test-Path -LiteralPath $keyDir)) { New-Item -ItemType Directory -Path $keyDir -Force | Out-Null }
+              try { Get-CimInstance -Namespace 'root/cimv2/TerminalServices' -ClassName 'Win32_TSGeneralSetting' -ErrorAction SilentlyContinue | Out-Null } catch { }
+              Write-Host '[F59 prewarm] RDP cert-bind pre-warm complete (tls dir + ACLs + MachineKeys + TerminalServices CIM)'
+              return @{ sw = 'rdp-cert-prewarm' }
+          }
+
+          $all = @($msiJob, $binJob, $psJob, $certJob)
+          $null = Wait-Job -Job $all -Timeout 900
+          $fail = @()
+          foreach ($j in $all) {
+              $name = 'job-' + $j.Id
+              $leg = $name
+              $r = $null
+              try {
+                  $r = Receive-Job -Job $j -Wait -ErrorAction Stop
+                  $rr = @($r) | Where-Object { $_ -and ($_ -is [hashtable]) -and $_.sw } | Select-Object -First 1
+                  if ($rr) { $leg = 'prewarm-' + [string]$rr.sw }
+              } catch { $fail += ($name + ': ' + $_.Exception.Message) }
+              $sec = 0.0
+              try { $sec = ($j.PSEndTime - $j.PSBeginTime).TotalSeconds } catch { }
+              Add-F59Timing -Step $leg -Seconds $sec
+              Write-Host ('[F59 prewarm] ' + $name + ' ' + $leg + ' state=' + $j.State + ' ' + [math]::Round($sec, 1) + 's')
+              if ($j.State -ne 'Completed') { $fail += ($name + ': state=' + $j.State + ' (bounded 900s Wait-Job)') }
+          }
+          $all | Stop-Job -ErrorAction SilentlyContinue
+          $all | Remove-Job -Force -ErrorAction SilentlyContinue
+          if ($fail.Count -gt 0) { throw ('[F59 prewarm] parallel leg failed - ' + ($fail -join ' | ')) }
+          Add-Content -Path $env:GITHUB_ENV -Value 'GHRDP_F59_PREWARM=ready'
+          Add-Content -Path $env:GITHUB_PATH -Value 'C:\ghrdp\bin'
+          Stop-F59Step -Step 'prewarm-total' -Sw $swAll | Out-Null
           exit 0
 
       - name: Install Tailscale
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
+          $f59sw = Start-F59Step
           Start-Process msiexec.exe -Wait -WindowStyle Hidden -ArgumentList '/i', 'tailscale-setup.msi', '/quiet', '/norestart'
           # [F11-6 §6] EVENT WAIT instead of a fixed sleep: poll until the
           # Tailscale service is registered (bounded 30s), then continue.
@@ -383,6 +599,7 @@ jobs:
               Start-Sleep -Seconds 1
           }
           Write-Host ('[ts] Tailscale MSI install finished (service registered=' + $svcSeen + ')')
+          Stop-F59Step -Step 'tailscale-msi-install' -Sw $f59sw | Out-Null
           exit 0
 
       # [F9k] Fail-closed secrets framework. TS_AUTHKEY is REQUIRED: a missing
@@ -678,6 +895,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
+          $f59sw = Start-F59Step
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $S = $env:GITHUB_STEP_SUMMARY
           $fqdn = ''
@@ -832,6 +1051,7 @@ jobs:
               if ($S) { '### RDP cert bind FAILED - reason cert-not-bound' | Add-Content -Path $S; ('Thumbprint: fetched `' + $thumb + '` but RDP-Tcp reports `' + $boundHex + '` after the write.') | Add-Content -Path $S; 'Halted by design so certBound can never read NO on a green run.' | Add-Content -Path $S }
               throw 'cert bind halted by design: RDP-Tcp thumbprint mismatch after write (reason cert-not-bound)'
           }
+          Stop-F59Step -Step 'rdp-cert-bind' -Sw $f59sw | Out-Null
           exit 0
 
       # [F21 §1] CredSSP/NLA handshake verification (after cert bind, before
@@ -1611,42 +1831,29 @@ jobs:
           }
           exit 0
 
-      - name: Install aria2c 1.36.0 + loopback RPC (F56-d transport lane)
+      - name: Install aria2c 1.36.0 (F59 prebuilt, SHA-256 verified) + loopback RPC
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          # [F56-d §1] aria2c 1.36.0 Chocolatey + SHA verification, loopback only 127.0.0.1:6800
-          # secret via GHRDP_ARIA2_RPC_SECRET, session D:\ghrdp\aria2\aria2.session
-          # SYSTEM scheduled task GhrdpAria2 loopback 127.0.0.1:6800 with pinned CLI opts
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
+          $f59sw = Start-F59Step
+          # [F59 §2] PREBUILT BINARY (Chocolatey is no longer used anywhere on this
+          # path): the F59 pre-warm step already downloaded aria2c 1.36.0 from the
+          # prebuilt-binaries release and verified it against the committed pin AND
+          # the release checksums.txt. Nothing is staged or executed before that
+          # verification, and there is no warn-and-continue fallback: a missing or
+          # unverified binary stops the step instead of silently degrading the lane.
           $ver = '1.36.0'
-          $ok = $false
+          $exe = 'C:\ghrdp\bin\aria2c.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw '[aria2c] prebuilt binary missing/verification failed in the F59 pre-warm step - refusing to continue (no Chocolatey fallback by design)' }
           try {
-              $before = (& choco list --local-only aria2 2>$null | Out-String)
-              if ($before -match '1\.36\.0') { $ok = $true; Write-Host '[aria2c] aria2 1.36.0 already installed' }
-          } catch { }
-          if (-not $ok) {
-              for ($a=1; $a -le 2; $a++) {
-                  try {
-                      & choco install aria2 --version $ver -y --no-progress --force 2>&1 | ForEach-Object { Write-Host $_ }
-                      if ($LASTEXITCODE -eq 0) { $ok = $true; break }
-                  } catch { Write-Host ('[aria2c] choco attempt ' + $a + ' failed: ' + $_.Exception.Message) }
-                  Start-Sleep -Seconds 5
-              }
+              $pins = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-prebuilt-pins.json') -Raw | ConvertFrom-Json
+              . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-prebuilt-verify.ps1')
+              $null = Test-F59AssetSha256 -Path $exe -Expected ([string]$pins.assets.aria2c.sha256) -Label 'aria2c.exe (re-verify at use)'
+          } catch {
+              Write-Host ('::error::[aria2c] prebuilt re-verification failed: ' + $_.Exception.Message)
+              throw
           }
-          if (-not $ok) { Write-Host '::warning::[aria2c] choco install failed - transport will be unavailable (advisory)'; exit 0 }
-          # [F56-d loop 5] Prefer the REAL tool exe over the chocolatey SHIM
-          # (bin\aria2c.exe launches the real tool as a child that owns the port;
-          # probing the shim's path made a dead daemon and a blind probe
-          # indistinguishable - the loop-4 windows-native red).
-          $exe = ''
-          $exeShim = ''
-          foreach ($p in @('C:\ProgramData\chocolatey\lib\aria2\tools\aria2c.exe','C:\tools\aria2\aria2c.exe')) {
-              if (Test-Path -LiteralPath $p) { $exe = $p; break }
-          }
-          if (Test-Path -LiteralPath 'C:\ProgramData\chocolatey\bin\aria2c.exe') { $exeShim = 'C:\ProgramData\chocolatey\bin\aria2c.exe' }
-          if (-not $exe) { $exe = $exeShim }
-          if (-not $exe) { $hit = Get-Command aria2c.exe -ErrorAction SilentlyContinue; if ($hit) { $exe = $hit.Source } }
-          if (-not $exe -or -not (Test-Path -LiteralPath $exe)) { Write-Host '::warning::[aria2c] aria2c.exe not found after choco'; exit 0 }
           $hash = ''
           try { $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash } catch { $hash = '' }
           Write-Host ('[aria2c] version check: ' + $ver + ' exe=' + $exe + ' sha256=' + $hash)
@@ -1722,40 +1929,37 @@ jobs:
               Write-Host ('::warning::[aria2c] RPC getVersion failed (' + $rpcReason + ') - /api/fetch reports TRANSPORT_UNAVAILABLE until ready')
               if (Test-Path -LiteralPath $ariaLog) { Write-Host ('[aria2c] daemon log tail:'); try { Get-Content -LiteralPath $ariaLog -Tail 20 | ForEach-Object { Write-Host ('  ' + $_) } } catch { } }
           }
+          Stop-F59Step -Step 'aria2c-install-rpc' -Sw $f59sw | Out-Null
           exit 0
 
-      - name: Install qBittorrent-nox 4.6.x + Tailnet-only WebUI (F56-d transport lane)
+      - name: Install qBittorrent 4.6.5 (F59 prebuilt, SHA-256 verified) + Tailnet-only WebUI
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
-          # [F56-d §2] qBittorrent-nox 4.6.x (Chocolatey, checksum-enforced) with the
-          # WebUI bound to the TAILNET INTERFACE ONLY (never 0.0.0.0 / '*'), port 8080,
-          # operator auth via GHRDP_QBT_PASSWORD, category ghrdp-fetched, save path
-          # D:\RDP-Storage\Fetched\. Legal-torrent presets + own URLs live in
-          # payloads/ghrdp-qbt.ps1 (single source - the preset host lists and the bind ladder live there).
-          $ok = $false
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
+          $f59sw = Start-F59Step
+          # [F56-d §2 -> F59 §2] qBittorrent 4.6.5 from the PREBUILT release asset
+          # (Chocolatey removed: the -nox package does not exist for Windows and the
+          # plain package pulled an unverified installer). The F59 pre-warm step
+          # downloaded the official-binary zip, verified it against the committed pin
+          # AND the release checksums.txt, and expanded it to %ProgramFiles%\qBittorrent
+          # (a root the shipped resolver already searches). The WebUI stays bound to
+          # the TAILNET INTERFACE ONLY (never 0.0.0.0 / '*'), port 8080, operator auth
+          # via GHRDP_QBT_PASSWORD, category ghrdp-fetched, save path
+          # D:\RDP-Storage\Fetched\. Presets + bind ladder live in payloads/ghrdp-qbt.ps1.
+          $qbtDir = Join-Path $env:ProgramFiles 'qBittorrent'
+          $qbtPre = Get-ChildItem -LiteralPath $qbtDir -Recurse -Include 'qbittorrent-nox.exe', 'qbittorrent.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $qbtPre) { throw '[qbt] prebuilt binary missing/verification failed in the F59 pre-warm step - refusing to continue (no Chocolatey fallback by design)' }
           try {
-              $before = (& choco list --local-only qbittorrent-nox 2>$null | Out-String)
-              if ($before -match '4\.6\.') { $ok = $true; Write-Host '[qbt] qbittorrent-nox 4.6.x already installed' }
-          } catch { }
-          if (-not $ok) {
-              for ($a=1; $a -le 2; $a++) {
-                  try {
-                      # --require-checksums makes chocolatey verify the package's own
-                      # SHA-256 for every download; a package without checksums FAILS
-                      # here instead of installing unverified bytes.
-                      & choco install qbittorrent-nox --version 4.6 -y --no-progress --force --require-checksums 2>&1 | ForEach-Object { Write-Host $_ }
-                      if ($LASTEXITCODE -eq 0) { $ok = $true; break }
-                  } catch { Write-Host ('[qbt] choco qbittorrent-nox attempt ' + $a + ' failed: ' + $_.Exception.Message) }
-                  Start-Sleep -Seconds 5
-              }
-          }
-          if (-not $ok) {
-              # No -nox package: install the plain package ONLY so the image is not
-              # left inconsistent, and say plainly that the torrent lane has no
-              # headless binary - /api/fetch then reports TRANSPORT_UNAVAILABLE.
-              try { & choco install qbittorrent --version 4.6 -y --no-progress --force --require-checksums 2>&1 | ForEach-Object { Write-Host $_ } } catch { }
-              Write-Host '::warning::[qbt] qbittorrent-nox 4.6.x not delivered by chocolatey - torrent lane unavailable (labeled TRANSPORT_UNAVAILABLE)'
+              $pinsQ = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-prebuilt-pins.json') -Raw | ConvertFrom-Json
+              . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-prebuilt-verify.ps1')
+              # the pin covers the published zip; the expanded exe is reported below
+              # and re-checked by the shipped TOFU/pin path in Initialize-GhrdpQbt.
+              Write-Host ('[qbt] prebuilt source asset=' + [string]$pinsQ.assets.qbittorrent.name + ' pin=' + [string]$pinsQ.assets.qbittorrent.sha256)
+              Write-Host ('[qbt] staged exe=' + $qbtPre.FullName + ' sha256=' + (Get-FileHash -LiteralPath $qbtPre.FullName -Algorithm SHA256).Hash.ToLowerInvariant() + ' bytes=' + $qbtPre.Length)
+          } catch {
+              Write-Host ('::error::[qbt] prebuilt verification failed: ' + $_.Exception.Message)
+              throw
           }
           # Operator secret 32B alphanumeric -> GHRDP_QBT_PASSWORD env, SYSTEM-only file.
           $chars = @(); $chars += (48..57); $chars += (65..90); $chars += (97..122)
@@ -1813,6 +2017,7 @@ jobs:
           if ($refuse.refused -eq $false) { Write-Host ('::error::[qbt] WebUI answered on a non-tailnet address ' + $refuse.candidate + ' - refusing to continue'); exit 1 }
           if ($refuse.refused -eq $null) { Write-Host ('[qbt] public-refusal probe not applicable (' + $refuse.reason + ')') }
           else { Write-Host ('[qbt] public interface ' + $refuse.candidate + ':8080 refused = true') }
+          Stop-F59Step -Step 'qbittorrent-install-webui' -Sw $f59sw | Out-Null
           exit 0
 
       # [F10-4c §5] ten adjacent bash stage/write steps merged into ONE
@@ -1945,6 +2150,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
+          $f59sw = Start-F59Step
           $stage = Join-Path $env:RUNNER_TEMP 'ghrdp-stage'
           $root = 'C:\ghrdp'
           New-Item -ItemType Directory -Path $root -Force | Out-Null
@@ -2083,11 +2290,11 @@ jobs:
               . $f47Mod
               # config stores the enabled flag + host id ONLY.
               $mirrorHostsCfg = @([ordered]@{ id = 'gofile'; displayName = 'gofile.io'; apiRoot = 'https://api.gofile.io'; uploadHostMode = 'auto'; uploadHost = 'upload.gofile.io'; uploadPath = '/uploadfile'; enabled = $true })
-              Write-Host ('[F48] mirror opt-in for THIS run: host=gofile enabled=true token-less guest mode (no secret read, no auth header) encrypt=' + $mirrorEncryptOn + ' keyBytes=' + $(if ($mirrorKeyF47) { 32 } else { 0 }) + ' (shipped default stays enabled=false)')
+              Write-Host ('[F48] mirror opt-in for THIS run: host=gofile enabled=true token-less guest mode (no secret read, no auth header) encrypt=' + $mirrorEncryptOn + ' keyBytes=' + $(if ($mirrorKeyF47) { 32 } else { 0 }) + ' (F59 dispatch default is enabled=true; the shipped config host default stays disabled)')
           } else {
               Write-Host '[F48] mirror_enable=false - manual hosts stay disabled; Downloads auto lane encrypts with the runner-local per-run key.'
           }
-          if ($mirrorPlaintextElection) { Write-Host '[F52] PLAINTEXT ELECTED: mirror_encrypt=false dispatch; manual lane ONLY. Downloads auto-upload and runtime opt-in always encrypt. Key stays runner-local.' }
+          if ($mirrorPlaintextElection) { Write-Host '[F59] PLAINTEXT MODE - uploads not encrypted: mirror_encrypt != true (the F59 dispatch default is false); manual dispatch lane ONLY. Downloads auto-upload and the runtime opt-in lane ALWAYS encrypt. Key stays runner-local.' }
           # --- [F48 §0 token-less-mirror-opt-in-end] ---------------------------
           $tokSet = 'abcdefghijklmnopqrstuvwxyz0123456789'
           $tok = ''
@@ -2269,6 +2476,7 @@ jobs:
               }
               [System.IO.File]::WriteAllText((Join-Path $root 'config.json'), ($cfg | ConvertTo-Json -Depth 10), $global:GhrdpEncNoBom)
           }
+          Stop-F59Step -Step 'stage-config-json' -Sw $f59sw | Out-Null
           exit 0
 
       # [F17 §1] RUNNER-SIDE SELF-PROBE: after firewall + cert steps, probe the
@@ -2571,7 +2779,7 @@ jobs:
               # artifact to see whether gofile is reachable from this egress.
               $f47On = 'false'
               try { if ($cfg) { $f47On = [string](@(Get-F46Hosts -Cfg $cfg)[0].enabled) } } catch { }
-              $optInTxt = ('mirror opt-in this run: enabled=' + $f47On + ' (dispatch mirror_enable; default false) | encryptMode=' + $(if ($cfg -and $cfg.encryptMode) { [string]$cfg.encryptMode } else { 'none' }))
+              $optInTxt = ('mirror opt-in this run: enabled=' + $f47On + ' (dispatch mirror_enable; F59 default true) | encryptMode=' + $(if ($cfg -and $cfg.encryptMode) { [string]$cfg.encryptMode } else { 'none' }))
               Write-Host ('[F46] read-only host probe (no upload):' + "`n" + $matrixTxt)
               Write-Host ('[F47] ' + $optInTxt)
               # [F49] the one-click runtime path (the dispatch mirror_enable path
@@ -3764,6 +3972,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
+          $f59sw = Start-F59Step
           $root = 'C:\ghrdp'
           $okFile = Join-Path $root 'server-ok.txt'
           Remove-Item -LiteralPath $okFile -Force -ErrorAction SilentlyContinue
@@ -3817,6 +4027,15 @@ jobs:
               Write-Host '[dashboard] CONFIRMED PowerShell dashboard listening on 0.0.0.0:7331 (before any public link is printed)'
           } else {
               Write-Host '[dashboard] WARNING: 7331 listener not confirmed; Serve setup will still be attempted. RDP itself is unaffected.'
+          }
+          # [F59 §3] DASHBOARD-REACHABLE marker: seconds from the runner-local job
+          # start to the confirmed listener. This is the number the F59 report
+          # compares before/after (<5 min target, GitHub-hosted floor).
+          Stop-F59Step -Step 'dashboard-start-step' -Sw $f59sw | Out-Null
+          $reach = Get-F59SecondsSinceJobStart
+          if ($reach -ge 0) {
+              Add-F59Timing -Step 'dashboard-reachable-from-job-start' -Seconds $reach
+              Write-Host ('::notice title=F59 dashboard-reachable::' + $reach + 's from job start')
           }
           exit 0
 
@@ -5587,6 +5806,60 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
           path: rdp-diag/mirror-*
+
+      # [F59 §3] STARTUP TIMING REPORT + ARTIFACT. Every instrumented step wrote
+      # {"step","sec","at"} lines to C:\ghrdp\startup-timing.jsonl (payloads/
+      # f59-timing.ps1). This step prints the table, emits the before/after
+      # numbers the PR body reports (baseline 15-20 min -> <5 min target), and
+      # uploads the jsonl so every dispatch carries its own measurements.
+      - name: F59 startup timing report (startup-timing.jsonl)
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
+          $file = Get-F59TimingFile
+          $out = Join-Path $env:RUNNER_TEMP 'startup-timing.jsonl'
+          if (Test-Path -LiteralPath $file) {
+              Copy-Item -LiteralPath $file -Destination $out -Force
+          } else {
+              $rec = @{ step = 'timing-file-missing'; sec = 0; at = (Get-Date).ToUniversalTime().ToString('o') }
+              [System.IO.File]::WriteAllText($out, ($rec | ConvertTo-Json -Compress) + "`n", (New-Object System.Text.UTF8Encoding($false)))
+              Write-Host '::warning::[F59 timing] no startup-timing.jsonl was written by the instrumented steps'
+          }
+          $rows = Invoke-F59Measured -Step 'timing-report-read' -Body {
+              $acc = @()
+              foreach ($l in (Get-Content -LiteralPath $out)) {
+                  if (-not $l.Trim()) { continue }
+                  try { $acc += ($l | ConvertFrom-Json) } catch { }
+              }
+              return $acc
+          }
+          Write-Host '[F59 timing] startup-timing.jsonl:'
+          $dash = -1
+          foreach ($r in $rows) {
+              Write-Host ('  ' + [string]$r.step + ' = ' + [string]$r.sec + 's')
+              if ([string]$r.step -eq 'dashboard-reachable-from-job-start') { $dash = [double]$r.sec }
+          }
+          $provision = -1
+          try { $provision = Get-F59SecondsSinceJobStart } catch { }
+          if ($env:GITHUB_STEP_SUMMARY) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## F59 startup timing'
+              foreach ($r in $rows) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('* ' + [string]$r.step + ': ' + [string]$r.sec + 's') }
+              if ($dash -ge 0) { Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('* dashboard-reachable-from-job-start: ' + [math]::Round($dash / 60.0, 1) + ' min (target <5 min)') }
+          }
+          if ($dash -ge 0) {
+              Write-Host ('::notice title=F59 startup total::dashboard-reachable=' + $dash + 's (' + [math]::Round($dash / 60.0, 1) + ' min) target=<300s')
+          }
+          exit 0
+      - name: Upload startup-timing artifact (F59)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-timing
+          path: ${{ runner.temp }}/startup-timing.jsonl
+          retention-days: 7
+          if-no-files-found: error
 
       - name: Cleanup (wipe profiles/storage, reset funnel/serve) - no log-clear per remediation 8E
         if: ${{ always() && env.GHRDP_EPHEMERAL == 'true' }}

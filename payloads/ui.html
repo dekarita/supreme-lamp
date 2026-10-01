@@ -637,7 +637,7 @@ main{max-width:1280px !important}
     <!-- [F49] the disabled banner: mirror default-off is the shipped state, so
          the page says so and points at the one-click opt-in (not a silent no-op). -->
     <div id="mirrorOptInBanner" class="mOptBanner" role="status" hidden>Mirror is OFF for this run (default). Queued files are tracked but NOT uploaded. Choose &ldquo;Upload everything now&rdquo; to review and enable a one-click token-less upload for this run only.</div>
-    <div id="mirrorPlaintextBanner" class="mOptBanner" role="alert" hidden>PLAINTEXT ELECTED: mirror_encrypt=false dispatch — manual lane only. Downloads auto-upload and runtime opt-in always encrypt.</div>
+    <div id="mirrorPlaintextBanner" class="mOptBanner" role="alert" hidden>PLAINTEXT MODE — uploads not encrypted. mirror_encrypt=false is the F59 dispatch default (manual lane only). Downloads auto-upload and the runtime opt-in lane ALWAYS encrypt; the per-run key stays runner-local.</div>
     <div class="note">Downloads auto-upload is always ON and encrypted; OFF applies to manual roots only.</div>
     <div id="mirrorEncryptionHonesty" class="note">encryptMode=unknown · encrypted uploads=no</div>
     <div class="mirror-ring">

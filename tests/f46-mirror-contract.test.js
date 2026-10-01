@@ -131,7 +131,7 @@ test("F46-7 mirror stays default-OFF and the probe never uploads in CI", () => {
   assert.ok(dispatchBlock.includes("runner_target"), "the dispatch block must be the real inputs block");
   assert.equal(/^\s+mirror:/m.test(dispatchBlock), false, "no bare `mirror:` dispatch input may reappear (mirror_enable/mirror_encrypt are the F47 opt-in inputs)");
   const defFalse = dispatchBlock.match(/mirror_enable:[\s\S]*?default: (true|false)/);
-  assert.ok(defFalse && defFalse[1] === "false", "mirror_enable must default to false");
+  assert.ok(defFalse && defFalse[1] === "true", "F59: mirror_enable must default to true (dispatch); the shipped host default stays disabled");
   assert.match(main, /F46 mirror host read-only probe/, "main.yml must run the read-only probe");
   assert.match(main, /no content upload/i, "the probe step must state that it uploads nothing");
   assert.match(main, /rdp-diag\/mirror-\*/, "the mirror-diag artifact must carry probe + attempt table");

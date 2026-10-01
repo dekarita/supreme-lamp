@@ -1,0 +1,25 @@
+{
+  "_comment": "F59 §2 prebuilt binary pins. OFFICIAL PROJECT RELEASE URLs ONLY. The f59-prebuilt-binaries.yml workflow downloads each source URL, verifies it, extracts the shipped executable/zip, asserts the extracted artifact against the sha256 below (a non-empty pin is FAIL-CLOSED; an empty pin is the documented BOOTSTRAP state - the workflow records the observed digest in the run log and in the release checksums.txt, the pin is then committed here and every later run asserts it), and publishes the verified artifact to the `prebuilt-binaries` release. main.yml downloads from that release and re-verifies against these same pins before anything is staged or executed - Chocolatey is no longer involved. Source URLs + method: docs/F59-PREBUILT-BINARIES.md.",
+  "release_tag": "prebuilt-binaries",
+  "checksums_asset": "checksums.txt",
+  "assets": {
+    "aria2c": {
+      "name": "aria2c-1.36.0-win-x64.exe",
+      "version": "1.36.0",
+      "sha256": "",
+      "source": "https://github.com/aria2/aria2/releases/download/release-1.36.0/aria2-1.36.0-win-64bit-build1.zip",
+      "source_kind": "official GitHub release (aria2/aria2) - the win-64bit build zip; aria2c.exe is extracted from it",
+      "extract": "aria2c.exe"
+    },
+    "qbittorrent": {
+      "name": "qbittorrent-4.6.5-win-x64.zip",
+      "version": "4.6.5",
+      "sha256": "",
+      "source": "https://downloads.sourceforge.net/project/qbittorrent/qbittorrent-win32/qbittorrent-4.6.5/qbittorrent_4.6.5_x64_setup.exe",
+      "source_kind": "official qBittorrent Windows release (SourceForge project qbittorrent, linked from qbittorrent.org/download.php)",
+      "extract": "the extracted application folder (qbittorrent.exe + any runtime files the official build ships). NOTE: qbittorrent-nox is NOT published by the project for Windows; the official Windows binary is the same program with the GUI shell, and payloads/ghrdp-qbt.ps1 already resolves it (nox=false is REPORTED, never silently promoted).",
+      "upstream_sha256": "50DE6E913A6F0A2A5C8356E56E9CC23B1921F067B55E2A97C75BBFFE345682FD",
+      "upstream_sha256_note": "sha256 of the qbittorrent_4.6.5_x64_setup.exe installer, as published in the Chocolatey `qbittorrent` 4.6.5 package VERIFICATION.txt; the fetch workflow asserts it before extracting anything"
+    }
+  }
+}

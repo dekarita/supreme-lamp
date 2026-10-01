@@ -99,7 +99,10 @@ test('F56-d-QBT-SECRET: the operator password cannot reach a log line', () => {
   assert.deepEqual(logged, [], 'no log line may carry the password');
   assert.ok(LANE.includes('GHRDP_QBT_PASSWORD') || fs.readFileSync('payloads/ghrdp-qbt-policy.json', 'utf8').includes('secretFile'), 'the secret source must be explicit');
   assert.ok(MAIN.includes('GHRDP_QBT_PASSWORD'), 'main.yml must supply the operator secret');
-  assert.ok(MAIN.includes('--require-checksums'), 'the chocolatey download must be checksum-enforced');
+  // [F59 §2] the lane no longer uses Chocolatey: the binary is the SHA-256-pinned
+  // prebuilt release asset, verified fail-closed before it is staged.
+  assert.ok(MAIN.includes('f59-prebuilt-pins.json'), 'the qBittorrent asset must come from the pinned prebuilt release');
+  assert.ok(MAIN.includes('Test-F59AssetSha256'), 'the prebuilt asset must be SHA-256 verified fail-closed');
   assert.ok(/icacls/.test(MAIN), 'the secret file must be ACL-locked');
 });
 
@@ -115,7 +118,7 @@ test('F56-d-QBT-DISPATCH: /api/fetch selects the lane and returns the handle', (
 });
 
 test('F56-d-QBT-WIRING: the gate and the labs are wired, not orphaned', () => {
-  assert.ok(MAIN.includes('Install qBittorrent-nox 4.6.x'), 'the install step must exist');
+  assert.ok(MAIN.includes('Install qBittorrent 4.6.5 (F59 prebuilt, SHA-256 verified)'), 'the install step must exist');
   assert.ok(MAIN.includes("'GhrdpQbt'"), 'the daemon must run as a SYSTEM task');
   assert.ok(GATES.includes('tests\\f56d-qbt-tailnet.ps1'), 'the PS lab must run in CI');
   assert.ok(GATES.includes('node --test tests/f56d-qbt-tailnet.test.js'), 'this lab must run in CI');

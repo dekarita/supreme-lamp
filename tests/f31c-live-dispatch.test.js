@@ -67,7 +67,7 @@ function greenStatus() {
 test('F31c-1 token diagnostic is the first step and fails loud with the reconnect message', () => {
   const diag = main.indexOf('name: GitHub Token Diagnostic');
   const checkout = main.indexOf('name: Checkout repo (payloads)');
-  const tailscale = main.indexOf('name: Download Tailscale installer');
+  const tailscale = main.indexOf('name: F59 parallel pre-warm');
   assert.ok(diag > 0 && checkout > diag, 'GitHub Token Diagnostic must be the first step, before checkout');
   assert.ok(tailscale > checkout, 'Tailscale setup must stay after checkout');
   const block = between(main, '# [F31c §1 token-diag-begin]', '# [F31c §1 token-diag-end]');

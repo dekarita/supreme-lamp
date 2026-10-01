@@ -140,7 +140,7 @@ export function MirrorCard() {
       )}
       {m?.plaintextElected && (
         <div role="alert" data-testid="mirror-plaintext-banner" className="mb-4 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm text-primary">
-          PLAINTEXT ELECTED: mirror_encrypt=false dispatch — manual lane only. Downloads auto-upload and runtime opt-in always encrypt.
+          PLAINTEXT MODE — uploads not encrypted. mirror_encrypt=false is the F59 dispatch default (manual lane only). Downloads auto-upload and the runtime opt-in lane ALWAYS encrypt; the per-run key stays runner-local.
         </div>
       )}
       {m?.encryptionDefect && (
