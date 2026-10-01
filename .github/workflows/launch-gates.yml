@@ -3375,6 +3375,71 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      # [F57] ADDITIVE ONLY: the Explorer real-ops live file-op lab. Every root
+      # that exists on the runner gets a real new/rename/move/delete cycle and the
+      # walk the watcher scan uses has to see all four states; absent roots are
+      # labeled skips. The check-run annotation budget is spent by the earlier
+      # mirror labs and a raw log download is not reachable from every loop, so the
+      # decisive line is published as ONE commit status (context 'f57-explorer-lab')
+      # on success AND failure - the same lesson the F56-d qbt step documents.
+      - name: F57 explorer real-ops lab (watcher roots=6 live file ops)
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script:F57Failure = ''
+          $outText = ''
+          foreach ($f in @('payloads\ghrdp-watcher.ps1', 'tests\f57-explorer-ops.ps1')) {
+              $errs = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
+              if ($errs) {
+                  foreach ($e in @($errs)) { Write-Host ('::error title=F57 parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
+                  $script:F57Failure = ('syntax error in ' + $f)
+              }
+          }
+          if (-not $script:F57Failure) {
+              try {
+                  $outText = (& (Join-Path $env:GITHUB_WORKSPACE 'tests\f57-explorer-ops.ps1') *>&1 | Out-String)
+                  $rc = $LASTEXITCODE
+                  if ($rc -ne 0) { throw ('the lab exited ' + $rc) }
+              } catch {
+                  $script:F57Failure = $_.Exception.Message
+                  $outText = ($outText + "`n" + ($_ | Out-String))
+              }
+          }
+          Write-Host $outText
+          $lines = @(($outText -split "`r?`n") | Where-Object { $_.Trim() -ne '' })
+          $decisive = @($lines | Where-Object { $_ -match '::error|FAIL|ABORT' } | Select-Object -Last 1)
+          if (@($decisive).Count -eq 0) { $decisive = @($lines | Select-Object -Last 1) }
+          $desc = (([string](@($decisive) -join ' | ')) -replace '::error[^:]*::', '').Trim()
+          if (-not $script:F57Failure) { $desc = 'watcher roots=6 live file ops lab PASS' }
+          if ($desc.Length -gt 130) { $desc = $desc.Substring(0, 130) }
+          if ($env:GH_TOKEN) {
+              try {
+                  $st = @{
+                      context = 'f57-explorer-lab'
+                      state = $(if ($script:F57Failure) { 'failure' } else { 'success' })
+                      description = $desc
+                      target_url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID)
+                  } | ConvertTo-Json -Compress
+                  Invoke-RestMethod -Uri ('https://api.github.com/repos/' + $env:GITHUB_REPOSITORY + '/statuses/' + $env:GITHUB_SHA) -Method Post -Headers @{ Authorization = ('Bearer ' + $env:GH_TOKEN); Accept = 'application/vnd.github+json'; 'User-Agent' = 'ghrdp-f57' } -Body $st -ContentType 'application/json' -TimeoutSec 30 | Out-Null
+              } catch {
+                  $detail = ''
+                  try { $detail = [string]$_.ErrorDetails.Message } catch { }
+                  Write-Host ('::warning title=F57 status::publish failed: ' + $_.Exception.Message + ' ' + $detail)
+              }
+          }
+          if ($env:GITHUB_STEP_SUMMARY) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## F57 explorer real-ops lab'
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('```' + "`n" + (@($lines | Select-Object -Last 40) -join "`n") + "`n" + '```')
+          }
+          if ($script:F57Failure) {
+              Write-Host ('::error title=F57 lab::' + $script:F57Failure)
+              throw ('F57: explorer real-ops lab FAILED - ' + $script:F57Failure)
+          }
+          Write-Host 'F57 explorer ops lab PASS'
       # [F56-d §2] ADDITIVE ONLY: the torrent lane lab. The qBittorrent cells that
       # need a live tailnet daemon report a labeled SKIP (a CI runner is not on the
       # operator's tailnet); everything policy-shaped is proven for real.
@@ -3782,23 +3847,3 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw ('F56-d: aria2 JSON-RPC lab failed with exit ' + $LASTEXITCODE) }
           Write-Host 'F56-d transport labs PASS'
 
-      # [F57] ADDITIVE ONLY: the Explorer real-ops live file-op lab. Every root
-      # that exists on the runner gets a real new/rename/move/delete cycle and the
-      # walk the watcher scan uses has to see all four states; absent roots are
-      # labeled skips.
-      - name: F57 explorer real-ops lab (watcher roots=6 live file ops)
-        timeout-minutes: 10
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          foreach ($f in @('payloads\ghrdp-watcher.ps1', 'tests\f57-explorer-ops.ps1')) {
-              $errs = $null
-              $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
-              if ($errs) {
-                  foreach ($e in @($errs)) { Write-Host ('::error title=F57 parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
-                  throw ('F57: PowerShell syntax error in ' + $f)
-              }
-          }
-          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f57-explorer-ops.ps1')
-          if ($LASTEXITCODE -ne 0) { throw ('F57: explorer ops lab failed with exit ' + $LASTEXITCODE) }
-          Write-Host 'F57 explorer ops lab PASS'
