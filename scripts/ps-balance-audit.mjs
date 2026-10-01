@@ -353,6 +353,8 @@ const targets = [
   // [F56-d §2] the qBittorrent-nox Tailnet-only torrent lane + its lab.
   'payloads/ghrdp-qbt.ps1',
   'tests/f56d-qbt-tailnet.ps1',
+  // [F57 §5] the Explorer real-ops lab (new surface, same audit).
+  'tests/f57-explorer-ops.ps1',
 ];
 
 let failed = 0;

@@ -37,10 +37,10 @@ describe("File Explorer shell (F56-c v2)", () => {
     // default location (RDP-Storage) still lists the fixture rows and keeps the
     // frozen F57 shell (disabled commands + list/grid toggle) intact
     expect(screen.getAllByTestId("explorer-row").length).toBe((fixture.rows as unknown[]).length);
+    // [F57] SUPERSEDED PIN: the bar is a real command surface now (the F56-c
+    // disabled state is asserted in file-explorer-shell.test.tsx's F57 cell).
     const bar = screen.getByTestId("explorer-command-bar");
-    const buttons = Array.from(bar.querySelectorAll("button"));
-    expect(buttons.length).toBe(6);
-    for (const b of buttons) expect((b as HTMLButtonElement).disabled).toBe(true);
+    expect(bar.querySelectorAll("button").length).toBeGreaterThanOrEqual(6);
     fireEvent.click(screen.getByTestId("view-toggle-grid"));
     expect(screen.getByTestId("explorer-results").getAttribute("data-view")).toBe("grid");
     fireEvent.click(document.getElementById("f57.explorer.v2.fetchedNode.fetched-root") as HTMLElement);

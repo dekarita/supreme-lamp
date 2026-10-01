@@ -215,6 +215,8 @@ def main():
         # [F56-d §2] the qBittorrent-nox Tailnet-only torrent lane + its lab.
         'payloads/ghrdp-qbt.ps1',
         'tests/f56d-qbt-tailnet.ps1',
+        # [F57 §5] the Explorer real-ops lab (new surface: no PS interpreter here).
+        'tests/f57-explorer-ops.ps1',
     ]
     failed = 0
     for t in targets:
