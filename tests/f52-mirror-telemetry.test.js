@@ -109,8 +109,8 @@ test('F52-CAPS-SOURCE RESULT: matrix bytes, zero-upload preflight, null is not u
   assert.match(watcher, /Set-F52HostCap -HostCfg \$mirrorHost -Rows \$f52ProbeRows/);
 });
 test('F52-LANES-SOURCE RESULT: explicit manual plaintext only; auto/runtime encrypt as pull-streams', () => {
-  assert.match(wf, /mirror_encrypt:\n[^\n]*\n\s+type: boolean\n\s+default: true/);
-  assert.match(wf, /MIRROR_PLAINTEXT_ELECTED:.*workflow_dispatch.*mirror_encrypt == 'false'/);
+  assert.match(wf, /mirror_encrypt:\n[^\n]*\n\s+type: boolean\n\s+default: false/);
+  assert.match(wf, /MIRROR_PLAINTEXT_ELECTED:.*workflow_dispatch.*mirror_encrypt != 'true'/);
   assert.match(mod, /if \(\$Auto\) \{ return 'all' \}/);
   assert.match(mod, /if \(Get-F49RuntimeOptIn -Cfg \$Cfg\) \{ return 'all' \}/);
   assert.match(mod, /Name 'encryptMode' -Value 'all'/);
@@ -126,7 +126,7 @@ test('F52-LANES-SOURCE RESULT: explicit manual plaintext only; auto/runtime encr
   assert.match(cs, /GetConstructor\(new Type\[\]/);
   assert.doesNotMatch(cs, /new Rfc2898DeriveBytes\(/);
   assert.doesNotMatch(watcher, /#key=|decrypt =|media-plain/);
-  assert.match(ui, /PLAINTEXT ELECTED: mirror_encrypt=false dispatch/);
+  assert.match(ui, /PLAINTEXT MODE \u2014 uploads not encrypted/);
   assert.match(read('src/components/domain/MirrorCard.tsx'), /mirror-plaintext-banner/);
 });
 test('F52-F44-VERBATIM RESULT: policy constants and retry functions byte-for-byte', () => {

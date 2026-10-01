@@ -1,0 +1,88 @@
+name: F59 build-ui (prebuilt UI release asset)
+# [F59 §2] PREBUILT UI ARTIFACT. Building the single-file dashboard (pnpm install
+# + tsc + vite + the regression gates) used to sit on the dispatch critical path
+# inside main.yml's rdp job and cost 2-3 minutes of every dispatch. It now runs
+# ONCE per push, here, and main.yml downloads the finished bundle from the
+# `ui-dist` release with the asset name pinned to the commit sha it is running
+# (ui-dist-<sha>.zip + its .sha256 sidecar). A dispatch that races this workflow
+# (asset absent) falls back to an on-runner build in main.yml, labeled loudly.
+on:
+  push:
+    branches:
+      - main
+      - 'arena/**'
+    paths:
+      - 'src/**'
+      - 'index.html'
+      - 'package.json'
+      - 'pnpm-lock.yaml'
+      - 'vite.config.ts'
+      - 'tsconfig*.json'
+      - 'tailwind.config.ts'
+      - 'postcss.config.cjs'
+      - 'scripts/**'
+      - '.github/workflows/build-ui.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create/update the ui-dist release + upload the bundle
+
+jobs:
+  build-ui-prebuilt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      # [F59 §2] setup-node with the npm cache (spec) - the real speed-up for a
+      # pnpm repo is the pnpm store/node_modules cache below; both are keyed on
+      # the committed lockfiles so a lock change busts them.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+      - uses: actions/cache@v4
+        name: F59 pnpm store + node_modules cache
+        with:
+          path: |
+            ~/.local/share/pnpm/store
+            node_modules
+          key: f59-ui-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'package-lock.json') }}
+          restore-keys: |
+            f59-ui-${{ runner.os }}-
+      - name: Build single-file bundle + regression gates
+        run: |
+          set -euo pipefail
+          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+          export VITE_BUILD_SHA="${GITHUB_SHA}"
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm run build
+          test -f ui/dist/index.html
+          node scripts/check-regression-ids.mjs
+          node scripts/check-fx-ids.mjs
+          node scripts/check-no-neon-green.mjs ui/dist/index.html
+          node scripts/check-bottom-bar-time.mjs
+          LEN=$(wc -c < ui/dist/index.html)
+          echo "[F59 build-ui] bundle bytes=$LEN for ${GITHUB_SHA}"
+          if [ "$LEN" -le 51200 ]; then echo 'ui-v2.html staging failed - build artifact missing'; exit 1; fi
+      - name: Publish ui-dist-<sha>.zip + .sha256 to the ui-dist release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          sha="${GITHUB_SHA}"
+          asset="ui-dist-${sha}.zip"
+          zip -q -j "$asset" ui/dist/index.html
+          # [F59] the sidecar hash is what main.yml verifies fail-closed BEFORE
+          # the bundle is staged; the asset name is the commit-sha pin.
+          (sha256sum "$asset" | awk '{print $1}') > "${asset}.sha256"
+          cat "${asset}.sha256"
+          if ! gh release view ui-dist >/dev/null 2>&1; then
+            gh release create ui-dist \
+              --title "F59 prebuilt UI bundles (ui-dist-<commit-sha>.zip)" \
+              --notes "Prebuilt single-file dashboard bundles. Asset: ui-dist-<commit-sha>.zip + ui-dist-<commit-sha>.zip.sha256. Published by .github/workflows/build-ui.yml; downloaded and SHA-256 verified by main.yml (F59 §2)."
+          fi
+          gh release upload ui-dist "$asset" "${asset}.sha256" --clobber
+          echo "[F59 build-ui] published $asset ($(wc -c < "$asset") bytes) sha256=$(cat "${asset}.sha256")"

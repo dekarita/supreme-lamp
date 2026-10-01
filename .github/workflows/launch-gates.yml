@@ -1739,7 +1739,8 @@ jobs:
           srv=payloads/ghrdp-server.ps1
           diag_line=$(grep -n 'name: GitHub Token Diagnostic' "$wf" | head -1 | cut -d: -f1)
           checkout_line=$(grep -n 'name: Checkout repo (payloads)' "$wf" | head -1 | cut -d: -f1)
-          ts_line=$(grep -n 'name: Download Tailscale installer' "$wf" | head -1 | cut -d: -f1)
+          # [F59 §2] the Tailscale MSI download moved into the parallel pre-warm step
+          ts_line=$(grep -n 'name: F59 parallel pre-warm' "$wf" | head -1 | cut -d: -f1)
           test -n "$diag_line" && test -n "$checkout_line" && test -n "$ts_line" || { echo 'F31c: token diagnostic step missing' >&2; exit 1; }
           test "$diag_line" -lt "$checkout_line" || { echo 'F31c: token diagnostic must be the first step, before checkout' >&2; exit 1; }
           test "$checkout_line" -lt "$ts_line" || { echo 'F31c: token diagnostic drifted below Tailscale setup' >&2; exit 1; }
@@ -2256,8 +2257,11 @@ jobs:
           # §1 the opt-in is a first-class dispatch input, default false
           inblock | grep -qE '^[[:space:]]+mirror_enable:'
           inblock | grep -qE '^[[:space:]]+mirror_encrypt:'
-          awk '/mirror_enable:/{f=1} f&&/default:/{print;exit}' "$wf" | grep -qF 'default: false'
-          awk '/mirror_encrypt:/{f=1} f&&/default:/{print;exit}' "$wf" | grep -qF 'default: true' # F52: encrypted unless explicit false
+          # [F59 §1] dispatch defaults FLIPPED (in-place rewrite of the F48/F52
+          # assertion): mirror ON, plaintext manual lane, search ON. The shipped
+          # config host default and the mirror gate comparison are untouched.
+          awk '/mirror_enable:/{f=1} f&&/default:/{print;exit}' "$wf" | grep -qF 'default: true' # F59: mirror ON by default
+          awk '/mirror_encrypt:/{f=1} f&&/default:/{print;exit}' "$wf" | grep -qF 'default: false' # F59: plaintext default + mandatory banner
           grep -qE 'MIRROR_INPUT: \$\{\{ github\.event\.inputs\.mirror_enable == true' "$wf"
           grep -qE 'MIRROR_ENCRYPT_INPUT: \$\{\{ github\.event\.inputs\.mirror_encrypt == true' "$wf"
           # §1.6 GATE 1: the banished mirror secret name may not exist ANYWHERE
@@ -2672,7 +2676,7 @@ jobs:
             echo 'F56-c: /api/fetch call constructed outside F56-d lane - refuse' >&2
             exit 1
           fi
-          awk '/mirror_enable:/{f=1} f&&/default:/{print;exit}' .github/workflows/main.yml | grep -qF 'default: false'
+          awk '/mirror_enable:/{f=1} f&&/default:/{print;exit}' .github/workflows/main.yml | grep -qF 'default: true' # F59 flip
           # §4 i18n: byte-verified en/si parity over search.* + files.* + new nav keys
           python3 -c '
           import json
@@ -3076,7 +3080,7 @@ jobs:
           wf=.github/workflows/main.yml
           grep -qF 'search_enable:' "$wf" || { echo 'F56-d: main.yml lacks search_enable input' >&2; exit 1; }
           grep -qF 'type: boolean' "$wf"
-          grep -qF 'default: false' "$wf"
+          awk '/search_enable:/{f=1} f&&/default:/{print;exit}' "$wf" | grep -qF 'default: true' # F59: search lane ON by default
           grep -qF 'SEARCH_INPUT:' "$wf" || { echo 'F56-d: SEARCH_INPUT env missing' >&2; exit 1; }
           grep -qF 'Install aria2c 1.36.0' "$wf" || { echo 'F56-d: aria2c install step missing' >&2; exit 1; }
           grep -qF 'aria2c' "$wf"
@@ -3157,6 +3161,53 @@ jobs:
       # [F56-d §2 + §1 loop 5] TORRENT LANE - ADDITIVE ONLY: one new bash gate, no
       # existing gate edited. Pins the qBittorrent-nox Tailnet-only torrent lane, the
       # transport selection in /api/fetch, the §1 aria2c CLI pins and the two labs.
+      # [F59 §4] ADDITIVE: ONE new counted bash gate. It runs the F59 contract
+      # suites and asserts the flipped defaults, the prebuilt asset path, the
+      # startup-timing instrumentation and the preserved auto-path encryption
+      # floor against the SHIPPED files. The three values it pins are exactly the
+      # ones F59 flips, so the F48/F52/F56-d assertions for those same three
+      # values were rewritten in place (no gate deleted, no floor weakened).
+      - name: F59 default flips + prebuilt assets + startup timing gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/f59-defaults.test.js tests/f59-verify-failclosed.test.js
+          node --test tests/f48-tokenless-mirror.test.js tests/f46-mirror-contract.test.js tests/f52-mirror-telemetry.test.js
+          for f in payloads/f59-prebuilt-pins.json payloads/f59-prebuilt-verify.ps1 payloads/f59-timing.ps1 \
+                   scripts/f59-verify-sha256.mjs .github/workflows/build-ui.yml \
+                   .github/workflows/f59-prebuilt-binaries.yml docs/F59-PREBUILT-BINARIES.md; do
+            test -f "$f" || { echo "F59: missing $f" >&2; exit 1; }
+          done
+          wf=.github/workflows/main.yml
+          awk '/mirror_enable:/{f=1} f&&/default:/{print;exit}' "$wf" | grep -qF 'default: true'
+          awk '/mirror_encrypt:/{f=1} f&&/default:/{print;exit}' "$wf" | grep -qF 'default: false'
+          awk '/search_enable:/{f=1} f&&/default:/{print;exit}' "$wf" | grep -qF 'default: true'
+          grep -qF 'startup-timing.jsonl' "$wf" || { echo 'F59: startup-timing.jsonl instrumentation missing' >&2; exit 1; }
+          grep -qF 'name: startup-timing' "$wf" || { echo 'F59: startup-timing artifact missing' >&2; exit 1; }
+          grep -qF 'Wait-Job -Job $all' "$wf" || { echo 'F59: parallel Wait-Job missing' >&2; exit 1; }
+          if grep -nE 'choco install (aria2|qbittorrent)' "$wf"; then echo 'F59: Chocolatey must not be on the transport lane' >&2; exit 1; fi
+          if sed -n '/^  rdp:/,/^  [a-z][a-z-]*:/p' "$wf" | grep -qF 'self-hosted'; then echo 'F59: self-hosted runner scope creep (F60)' >&2; exit 1; fi
+          python3 - <<'PY'
+          import json, re, sys
+          pins = json.load(open('payloads/f59-prebuilt-pins.json', encoding='utf-8'))
+          errs = []
+          if pins.get('release_tag') != 'prebuilt-binaries': errs.append('release tag')
+          for k in ('aria2c', 'qbittorrent'):
+              a = pins['assets'][k]
+              if not a.get('name'): errs.append(k + ' name')
+              if not a.get('source', '').startswith('https://'): errs.append(k + ' source')
+              if not re.match(r'^[0-9a-f]{64}$', a.get('sha256') or ''): errs.append(k + ' pin not 64-hex (bootstrap incomplete)')
+          mod = open('payloads/ghrdp-mirror.ps1', encoding='utf-8').read()
+          if "if ($Auto) { return 'all' }" not in mod: errs.append('auto lane floor')
+          if "if (Get-F49RuntimeOptIn -Cfg $Cfg) { return 'all' }" not in mod: errs.append('runtime lane floor')
+          if 'PLAINTEXT MODE' not in open('payloads/ui.html', encoding='utf-8').read(): errs.append('v1 banner')
+          if 'PLAINTEXT MODE' not in open('src/components/domain/MirrorCard.tsx', encoding='utf-8').read(): errs.append('v2 banner')
+          if errs:
+              print('F59 pins/floor check failed: ' + ', '.join(errs), file=sys.stderr)
+              sys.exit(1)
+          print('F59 pins: aria2c=%s qbittorrent=%s (sha256 pinned, official sources)' % (pins['assets']['aria2c']['name'], pins['assets']['qbittorrent']['name']))
+          PY
+          echo 'F59 gates PASS: mirror_enable=true, mirror_encrypt=false+banner, search_enable=true, prebuilt=release-assets, startup-timing=jsonl, auto-path-floor=preserved'
       - name: F56-d torrent lane gates (qBittorrent-nox + Tailnet-only + dispatch)
         shell: bash
         run: |
@@ -3164,10 +3215,15 @@ jobs:
           wf=.github/workflows/main.yml
           qbt=payloads/ghrdp-qbt.ps1
           srv=payloads/ghrdp-server.ps1
-          # §2 install step: chocolatey with checksum enforcement + the operator secret.
-          grep -qF 'Install qBittorrent-nox 4.6.x' "$wf" || { echo 'F56-d: qBittorrent-nox install step missing' >&2; exit 1; }
-          grep -qF 'choco install qbittorrent-nox' "$wf"
-          grep -qF -- '--require-checksums' "$wf" || { echo 'F56-d: qBittorrent download is not checksum-enforced' >&2; exit 1; }
+          # §2 install step: [F59 §2] the PREBUILT release asset with a SHA-256 pin
+          # (Chocolatey removed - checksum enforcement is now the fail-closed pin in
+          # payloads/f59-prebuilt-pins.json, verified by payloads/f59-prebuilt-verify.ps1)
+          # + the operator secret.
+          grep -qF 'Install qBittorrent 4.6.5 (F59 prebuilt, SHA-256 verified)' "$wf" || { echo 'F56-d: qBittorrent install step missing' >&2; exit 1; }
+          grep -qF 'prebuilt-binaries' "$wf"
+          grep -qF 'f59-prebuilt-pins.json' "$wf" || { echo 'F56-d: the qBittorrent asset is not pin-driven' >&2; exit 1; }
+          grep -qF 'Test-F59AssetSha256' "$wf" || { echo 'F56-d: qBittorrent download is not checksum-enforced' >&2; exit 1; }
+          python3 -c "import json;b=json.load(open('payloads/f59-prebuilt-pins.json'))['assets']['qbittorrent'];assert b['source'].startswith('https://downloads.sourceforge.net/project/qbittorrent/'),'qbt source';assert b['upstream_sha256'],'upstream pin'" || { echo 'F56-d: qBittorrent source/pin contract broken' >&2; exit 1; }
           grep -qF 'GHRDP_QBT_PASSWORD' "$wf"
           grep -qF 'ghrdp-qbt.ps1' "$wf" || { echo 'F56-d: ghrdp-qbt.ps1 not staged/deployed' >&2; exit 1; }
           # §2 lane module: the Tailnet-only rules and the WebUI API surface.
@@ -3846,4 +3902,25 @@ jobs:
           & (Join-Path $env:GITHUB_WORKSPACE 'tests\f56d-aria2-jsonrpc.ps1')
           if ($LASTEXITCODE -ne 0) { throw ('F56-d: aria2 JSON-RPC lab failed with exit ' + $LASTEXITCODE) }
           Write-Host 'F56-d transport labs PASS'
+      # [F59 §4] ADDITIVE: the parallel pre-warm + fail-closed verify lab. It
+      # exercises the SHIPPED modules (payloads/f59-timing.ps1,
+      # payloads/f59-prebuilt-verify.ps1) on a real PowerShell host: concurrent
+      # Start-Job/Wait-Job readiness, the fail-closed SHA-256 cells, the
+      # startup-timing.jsonl lines and the main.yml structural contract.
+      - name: F59 parallel pre-warm + fail-closed asset verify lab
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($f in @('payloads\f59-timing.ps1', 'payloads\f59-prebuilt-verify.ps1', 'tests\f59-prewarm-parallel.ps1')) {
+              $errs = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
+              if ($errs) {
+                  foreach ($e in @($errs)) { Write-Host ('::error title=F59 parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
+                  throw ('F59: PowerShell syntax error in ' + $f)
+              }
+          }
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f59-prewarm-parallel.ps1')
+          if ($LASTEXITCODE -ne 0) { throw ('F59: prewarm/verify lab failed with exit ' + $LASTEXITCODE) }
+          Write-Host 'F59 prewarm + verify lab PASS'
 

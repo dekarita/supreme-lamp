@@ -1,0 +1,170 @@
+name: F59 prebuilt binaries (aria2c + qBittorrent release assets)
+# [F59 §2] PREBUILT BINARIES. main.yml used to install aria2c and qBittorrent with
+# Chocolatey on every dispatch (3-5 minutes, network- and repo-dependent, and the
+# -nox package does not exist for Windows). This workflow downloads the OFFICIAL
+# project release artifacts ONCE per pin revision, verifies them, extracts the
+# shipped binary/folder, and publishes the verified artifacts PLUS checksums.txt
+# and a provenance README to the `prebuilt-binaries` release. main.yml downloads
+# from that release and re-verifies every byte against payloads/f59-prebuilt-pins.json
+# before anything is staged or executed - Chocolatey is out of the path entirely.
+#
+# PINS (payloads/f59-prebuilt-pins.json):
+#   * non-empty sha256  -> FAIL-CLOSED assertion (a mismatch kills this workflow)
+#   * empty sha256      -> documented BOOTSTRAP: the observed digest is printed as
+#                          a ::notice:: line and written to checksums.txt, then
+#                          committed into the pin file; every later run asserts it.
+on:
+  push:
+    branches:
+      - main
+      - 'arena/**'
+    paths:
+      - 'payloads/f59-prebuilt-pins.json'
+      - '.github/workflows/f59-prebuilt-binaries.yml'
+      - 'docs/F59-PREBUILT-BINARIES.md'
+  workflow_dispatch:
+
+permissions:
+  contents: write   # create/update the prebuilt-binaries release + upload assets
+
+jobs:
+  publish:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: Download official sources, verify pins, extract, publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          $pins = Get-Content -LiteralPath 'payloads/f59-prebuilt-pins.json' -Raw | ConvertFrom-Json
+          $tag = [string]$pins.release_tag
+          $work = Join-Path $env:RUNNER_TEMP 'f59-assets'
+          if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+          New-Item -ItemType Directory -Path $work -Force | Out-Null
+          function Get-F59Sha256([string]$Path) { return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+          function Get-F59File([string]$Url, [string]$Out, [string]$Label) {
+              for ($a = 1; $a -le 3; $a++) {
+                  try {
+                      & curl.exe -fL --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 600 -o $Out $Url 2>$null
+                      if ((Test-Path -LiteralPath $Out) -and ((Get-Item -LiteralPath $Out).Length -gt 1000000)) {
+                          Write-Host ('[F59 fetch] ' + $Label + ' downloaded (' + (Get-Item -LiteralPath $Out).Length + ' bytes)')
+                          return
+                      }
+                  } catch { }
+                  try {
+                      Invoke-WebRequest -Uri $Url -OutFile $Out -UseBasicParsing -TimeoutSec 600 -ErrorAction Stop
+                      if ((Test-Path -LiteralPath $Out) -and ((Get-Item -LiteralPath $Out).Length -gt 1000000)) { return }
+                  } catch { Write-Host ('[F59 fetch] ' + $Label + ' attempt ' + $a + ' failed: ' + $_.Exception.Message) }
+                  Start-Sleep -Seconds (3 * $a)
+              }
+              throw ('[F59 fetch] could not download ' + $Label + ' from the official source: ' + $Url)
+          }
+          function Assert-F59Pin([string]$Sha, [string]$Expected, [string]$Label) {
+              if ([string]::IsNullOrWhiteSpace($Expected)) {
+                  Write-Host ('::notice title=F59 pin bootstrap::' + $Label + '=' + $Sha + ' (empty pin in payloads/f59-prebuilt-pins.json - commit this digest)')
+                  return
+              }
+              if ($Sha -ne $Expected.Trim().ToLowerInvariant()) {
+                  throw ('[F59 fetch] PIN MISMATCH for ' + $Label + ': expected ' + $Expected + ' got ' + $Sha + ' - refusing to publish')
+              }
+              Write-Host ('[F59 fetch] ' + $Label + ' sha256=' + $Sha + ' PIN OK')
+          }
+
+          # --- aria2c 1.36.0 (official GitHub release zip -> aria2c.exe) ---
+          $a = $pins.assets.aria2c
+          $zip = Join-Path $work 'aria2-src.zip'
+          Get-F59File -Url ([string]$a.source) -Out $zip -Label 'aria2 source zip'
+          Assert-F59Pin -Sha (Get-F59Sha256 $zip) -Expected ([string]$a.upstream_zip_sha256) -Label 'aria2 source zip'
+          $adir = Join-Path $work 'aria2'
+          Expand-Archive -LiteralPath $zip -DestinationPath $adir -Force
+          $ahit = Get-ChildItem -LiteralPath $adir -Recurse -Filter 'aria2c.exe' -File | Select-Object -First 1
+          if (-not $ahit) { throw '[F59 fetch] aria2c.exe not found inside the official aria2 zip' }
+          $aout = Join-Path $work ([string]$a.name)
+          Copy-Item -LiteralPath $ahit.FullName -Destination $aout -Force
+          $asha = Get-F59Sha256 $aout
+          Assert-F59Pin -Sha $asha -Expected ([string]$a.sha256) -Label ([string]$a.name)
+          Write-Host ('::notice title=F59 asset::' + $a.name + ' bytes=' + (Get-Item -LiteralPath $aout).Length + ' sha256=' + $asha)
+
+          # --- qBittorrent 4.6.5 (official SourceForge installer -> app folder zip) ---
+          $q = $pins.assets.qbittorrent
+          $setup = Join-Path $work 'qbt-setup.exe'
+          Get-F59File -Url ([string]$q.source) -Out $setup -Label 'qBittorrent official setup'
+          Assert-F59Pin -Sha (Get-F59Sha256 $setup) -Expected ([string]$q.upstream_sha256) -Label 'qBittorrent setup (upstream pin)'
+          $qdir = Join-Path $work 'qbt'
+          New-Item -ItemType Directory -Path $qdir -Force | Out-Null
+          $sevenZip = 'C:\Program Files\7-Zip\7z.exe'
+          if (Test-Path -LiteralPath $sevenZip) {
+              & $sevenZip x -y ('-o' + $qdir) $setup | Out-Null
+              Write-Host '[F59 fetch] qBittorrent installer extracted with 7-Zip (no install performed)'
+          } else {
+              # In-box fallback: NSIS silent install into the temp dir, then delete
+              # the uninstaller. No system-wide installation, no registry policy.
+              $p = Start-Process -FilePath $setup -ArgumentList @('/S', ('/D=' + $qdir)) -Wait -PassThru -WindowStyle Hidden
+              Write-Host ('[F59 fetch] qBittorrent silent extract-install exit=' + $p.ExitCode)
+          }
+          $qhit = Get-ChildItem -LiteralPath $qdir -Recurse -Include 'qbittorrent-nox.exe', 'qbittorrent.exe' -File -ErrorAction SilentlyContinue |
+                  Sort-Object -Property Length -Descending | Select-Object -First 1
+          if (-not $qhit) { throw '[F59 fetch] qbittorrent.exe not found after extracting the official installer' }
+          if ($qhit.Name -like 'qbittorrent.exe') {
+              Write-Host '[F59 fetch] NOTE: qbittorrent-nox.exe is not published for Windows; shipping the official qbittorrent.exe (GUI shell, same app - the lane reports nox=false)'
+          }
+          Get-ChildItem -LiteralPath $qdir -Recurse -Include 'Uninstall*.exe', 'unins*.exe' -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+          foreach ($junk in @('$PLUGINSDIR', '$TEMP')) {
+              $jp = Join-Path $qdir $junk
+              if (Test-Path -LiteralPath $jp) { Remove-Item -LiteralPath $jp -Recurse -Force -ErrorAction SilentlyContinue }
+          }
+          $qout = Join-Path $work ([string]$q.name)
+          Compress-Archive -Path (Join-Path $qdir '*') -DestinationPath $qout -Force
+          $qsha = Get-F59Sha256 $qout
+          Assert-F59Pin -Sha $qsha -Expected ([string]$q.sha256) -Label ([string]$q.name)
+          Write-Host ('::notice title=F59 asset::' + $q.name + ' bytes=' + (Get-Item -LiteralPath $qout).Length + ' sha256=' + $qsha + ' exe=' + $qhit.Name)
+
+          # --- checksums.txt + provenance README (required release companions) ---
+          $lines = @()
+          foreach ($f in @($aout, $qout)) {
+              $lines += ((Get-F59Sha256 $f) + '  ' + (Split-Path -Leaf $f))
+          }
+          $ckPath = Join-Path $work 'checksums.txt'
+          [System.IO.File]::WriteAllLines($ckPath, $lines, (New-Object System.Text.UTF8Encoding($false)))
+          $readme = @(
+              '# F59 prebuilt binaries (aria2c + qBittorrent)',
+              '',
+              'Published by .github/workflows/f59-prebuilt-binaries.yml from the commits below.',
+              'Every artifact is downloaded by main.yml (F59 §2 pre-warm step) and verified',
+              'fail-closed against payloads/f59-prebuilt-pins.json AND this checksums.txt',
+              'before it is staged or executed. Chocolatey is not used.',
+              '',
+              '## Sources (official project release URLs ONLY)',
+              ('* aria2c-1.36.0-win-x64.exe <- ' + [string]$a.source),
+              '  (aria2c.exe extracted from the official win-64bit build zip)',
+              ('* ' + [string]$q.name + ' <- ' + [string]$q.source),
+              ('  (official qBittorrent 4.6.5 Windows setup; upstream installer sha256 ' + [string]$q.upstream_sha256 + ')'),
+              '  qbittorrent-nox is NOT published by the project for Windows: the shipped',
+              '  Windows binary is qbittorrent.exe, the same application with the GUI shell.',
+              '',
+              '## Checksums',
+              ''
+          ) + $lines + @('', ('Published: ' + (Get-Date).ToUniversalTime().ToString('o')), ('Run: ' + $env:GITHUB_SERVER_URL + '/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID))
+          $rmPath = Join-Path $work 'README.md'
+          [System.IO.File]::WriteAllLines($rmPath, $readme, (New-Object System.Text.UTF8Encoding($false)))
+
+          # --- publish (idempotent) ---
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+              gh release create $tag --title 'F59 prebuilt binaries (aria2c + qBittorrent)' --notes 'SHA-256-pinned prebuilt binaries for the F59 startup-speed lane. See README.md / checksums.txt.'
+          }
+          gh release upload $tag $aout $qout $ckPath $rmPath --clobber
+          if ($LASTEXITCODE -ne 0) { throw '[F59 fetch] gh release upload failed' }
+          Write-Host '[F59 fetch] published release assets:'
+          Get-ChildItem -LiteralPath $work -File | ForEach-Object { Write-Host ('  ' + $_.Name + '  ' + $_.Length + ' bytes  ' + (Get-F59Sha256 $_.FullName)) }
+      - name: Summary
+        shell: pwsh
+        run: |
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '## F59 prebuilt binaries'
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value 'Verified artifacts published to the `prebuilt-binaries` release (checksums.txt + README.md included). Bootstrap pins, when printed as ::notice::F59 pin bootstrap, must be committed to payloads/f59-prebuilt-pins.json.'

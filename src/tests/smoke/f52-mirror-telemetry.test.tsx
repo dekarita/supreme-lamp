@@ -72,8 +72,10 @@ describe("F52 honest mirror telemetry", () => {
     const d = frozen(); d.mirrorPlaintextElection = true;
     useTelemetryStore.getState().setProgress(d);
     const { container } = render(<MirrorCard />);
+    expect(screen.getByTestId("mirror-plaintext-banner")).toHaveTextContent("PLAINTEXT MODE");
+    expect(screen.getByTestId("mirror-plaintext-banner")).toHaveTextContent("uploads not encrypted");
     expect(screen.getByTestId("mirror-plaintext-banner")).toHaveTextContent("manual lane only");
-    expect(screen.getByTestId("mirror-plaintext-banner")).toHaveTextContent("Downloads auto-upload and runtime opt-in always encrypt");
+    expect(screen.getByTestId("mirror-plaintext-banner")).toHaveTextContent("Downloads auto-upload and the runtime opt-in lane ALWAYS encrypt");
     expect(container.querySelector("#fileRows")?.textContent).toContain("encryptMode=all");
   });
 

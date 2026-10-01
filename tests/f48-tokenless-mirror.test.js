@@ -37,11 +37,11 @@ const inputsBlock = (() => {
   return main.slice(start, end);
 })();
 
-test("F48-1 the opt-in stays default false; encryption defaults true per F52", () => {
+test("F59-0 dispatch defaults are FLIPPED (mirror ON, plaintext default, search ON); the MIRROR_INPUT comparison is unchanged", () => {
   const enable = inputsBlock.match(/mirror_enable:\n(?:.*\n)*?\s+default: (true|false)/);
-  assert.ok(enable && enable[1] === "false", "mirror_enable must stay a boolean input defaulting to false");
+  assert.ok(enable && enable[1] === "true", "F59: mirror_enable must be a boolean input defaulting to TRUE");
   const enc = inputsBlock.match(/mirror_encrypt:\n(?:.*\n)*?\s+default: (true|false)/);
-  assert.ok(enc && enc[1] === "true", "F52: mirror_encrypt defaults true; only explicit false elects manual plaintext");
+  assert.ok(enc && enc[1] === "false", "F59: mirror_encrypt defaults FALSE (plaintext manual lane, banner required); explicit true keeps the F46 encrypted lane");
   assert.equal(/^\s+mirror:/m.test(inputsBlock), false, "a bare `mirror:` dispatch input may not reappear");
   assert.match(main, /MIRROR_INPUT -eq 'true'/, "the unchanged mirror gate must stay");
   const badCmp = main.split("\n").filter((l) => /MIRROR_INPUT'?\\s*(-ne|-eq)\\s*'?(true|false)'?/.test(l) && !/MIRROR_INPUT -eq 'true'/.test(l));

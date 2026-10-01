@@ -1,5 +1,5 @@
 # [F56-d PS lab] SEARCH_INPUT propagation from main.yml to /diag to window flag
-# Validates main.yml has search_enable input boolean default false, env SEARCH_INPUT, /diag returns searchEnabled + searchInput
+# Validates main.yml has search_enable input boolean default TRUE (F59 flip), env SEARCH_INPUT, /diag returns searchEnabled + searchInput
 
 $ErrorActionPreference = 'Stop'
 Write-Host '[F56-d] SEARCH_INPUT propagation lab'
@@ -9,11 +9,11 @@ if (-not (Test-Path -LiteralPath $mainYml)) { Write-Host '[F56-d] main.yml not f
 
 $yml = Get-Content -LiteralPath $mainYml -Raw
 
-# Check search_enable input exists boolean default false
+# Check search_enable input exists boolean default true (F59)
 if ($yml -notmatch 'search_enable:') { throw 'search_enable input missing in main.yml' }
-if ($yml -notmatch 'type:\s*boolean' -or $yml -notmatch 'default:\s*false') {
-    Write-Host '::warning::[F56-d] search_enable should be boolean default false'
-}
+if ($yml -notmatch 'search_enable:') { throw 'search_enable input missing in main.yml' }
+$searchBlock = ([regex]::Match($yml, 'search_enable:[\s\S]{0,400}?default:\s*(true|false)')).Groups[1].Value
+if ($searchBlock -ne 'true') { throw ('F59: search_enable must be a boolean input defaulting to TRUE, got ' + $searchBlock) }
 Write-Host '[F56-d] main.yml search_enable input present'
 
 # Check SEARCH_INPUT env
