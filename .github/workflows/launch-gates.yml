@@ -3564,6 +3564,8 @@ jobs:
       - name: F56-d transport lane labs (aria2c JSON-RPC + post-fetch e2e + creds memory + SEARCH_INPUT)
         timeout-minutes: 15
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
           $script:F56dSummary = @()
@@ -3586,6 +3588,21 @@ jobs:
               Write-Host $out
               $lines = @(($out -split "`r?`n") | Where-Object { $_.Trim() -ne '' })
               $tail = @($lines | Select-Object -Last 8)
+              # Publish the tail as a commit status: the check-run annotation budget
+              # is spent by the earlier mirror labs and raw log downloads are not
+              # reachable from every environment, so this is the one channel that
+              # always names the failing leg + its last line.
+              if ($env:GH_TOKEN) {
+                  try {
+                      $st = @{
+                          state = $(if ($rc -eq 0) { 'success' } else { 'failure' })
+                          context = ('F56-d ' + ($Rel -replace '[\\/]', ' '))
+                          description = ($tail -join ' | ')
+                          target_url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID)
+                      } | ConvertTo-Json -Compress
+                      Invoke-RestMethod -Uri ('https://api.github.com/repos/' + $env:GITHUB_REPOSITORY + '/statuses/' + $env:GITHUB_SHA) -Method Post -Headers @{ Authorization = ('Bearer ' + $env:GH_TOKEN); Accept = 'application/vnd.github+json'; 'User-Agent' = 'ghrdp-f56d' } -Body $st -ContentType 'application/json' -TimeoutSec 30 | Out-Null
+                  } catch { Write-Host ('[F56-d] status publish failed: ' + $_.Exception.Message) }
+              }
               if ($rc -ne 0) {
                   $script:F56dSummary += ('- FAIL ' + $Rel + ' exit=' + $rc + ' :: ' + ($tail -join ' | '))
                   Write-Host ('::error title=F56-d lab ' + $Rel + '::exit=' + $rc + ' ' + ($tail -join ' | '))
