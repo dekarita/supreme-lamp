@@ -226,8 +226,16 @@ def main():
         'scripts/f60-health.ps1',
         'scripts/f60-stage-and-start.ps1',
         'scripts/f60-scrub-runcommand.ps1',
-        'tests/f60-bootstrap-lab.ps1',
-        'tests/f60-bootstrap.Tests.ps1',
+        # [F65 §3/§4/§5] the pre-staged-bundle producer/consumer surfaces: the
+        # D:/C: scratch detector, the telemetry helper, the parallel-map + state
+        # helpers, the background prefetch and the windows lab. Same rule as every
+        # surface above - brace/paren/here-string balance is audited here and
+        # BEHAVIOUR is proved in the launch-gates windows-native lane.
+        'scripts/f65-detect-scratch.ps1',
+        'payloads/f65-telemetry.ps1',
+        'payloads/f65-stack.ps1',
+        'payloads/f65-prefetch.ps1',
+        'tests/f65-stack-lab.ps1',
     ]
     failed = 0
     for t in targets:

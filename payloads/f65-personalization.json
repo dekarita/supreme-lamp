@@ -1,0 +1,11 @@
+{
+  "_comment": "[F65 §1] Versioned personalization payload shipped INSIDE the pre-staged stack bundle. These are the values main.yml already writes in the 'Machine personalization + apps' step (dark mode + accent for new logons). The bundle stages a copy so a consumer can prove drift; the authoritative write stays in main.yml.",
+  "schema": "ghrdp-f65-personalization/1",
+  "version": 1,
+  "theme": {
+    "apps_use_light_theme": 0,
+    "system_uses_light_theme": 0,
+    "accent_color": "0xff4cc2ff",
+    "accent_color_inactive": "0xff2a6f8f"
+  }
+}

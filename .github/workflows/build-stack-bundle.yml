@@ -1,0 +1,70 @@
+name: F65 build-stack bundle (pre-staged release asset, off critical path)
+
+# [F65 §1] PRE-STAGING WORKFLOW. This never touches a dispatch's critical path:
+# it publishes ONE checksummed ZIP (ghrdp-stack-<commit>.zip + .sha256 + a
+# ghrdp-stack-latest.json pointer) to the `stack-bundle` release so main.yml can
+# download a single verified artifact instead of N vendor downloads.
+#
+# TRIGGER: push to the bundle inputs is the PRIMARY trigger (F65 §6 refuses
+# cron-only pre-staging). The weekly cron is a BACKUP refresh only.
+on:
+  push:
+    paths:
+      - 'payloads/f65-bundle-manifest.json'
+      - 'payloads/f65-personalization.json'
+      - 'payloads/f65-bookmarks.json'
+      - 'scripts/f65-bundle-builder.mjs'
+      - 'tests/f65-bundle-manifest.test.js'
+      - '.github/workflows/build-stack-bundle.yml'
+  schedule:
+    - cron: '0 2 * * 0'   # Sunday 02:00 UTC - backup only; push is required for changes
+  workflow_dispatch:
+
+permissions:
+  contents: write   # publish/update the stack-bundle release assets
+
+concurrency:
+  group: f65-stack-bundle
+  cancel-in-progress: false
+
+jobs:
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      # [F62] gate scripts run from the repo root with explicit paths - no cwd games.
+      - name: F65 builder lab (offline fixtures, fail-closed cells)
+        run: node --test tests/f65-bundle-manifest.test.js
+      - name: Build the bundle (every pin verified byte-for-byte, fail-closed)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          node scripts/f65-bundle-builder.mjs --out dist/bundle --commit "${GITHUB_SHA:0:12}"
+          ls -l dist/bundle
+          cat dist/bundle/ghrdp-stack-latest.json
+      - name: Publish stack-bundle release assets + prune old versions
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag=stack-bundle
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" --title "F65 pre-staged stack bundle (individual vendor binaries, sha256-pinned)" \
+              --notes "One checksummed ZIP with the pinned vendor binaries + versioned personalization payloads, built by .github/workflows/build-stack-bundle.yml. ghrdp-stack-latest.json points at the current asset; every consumer verifies sha256 before use and falls back to individual downloads on a miss."
+          fi
+          gh release upload "$tag" dist/bundle/*.zip dist/bundle/*.sha256 dist/bundle/ghrdp-stack-latest.json --clobber
+          # keep the 3 newest versioned bundles (the pointer always names the newest)
+          gh release view "$tag" --json assets --jq '.assets[].name' \
+            | grep -E '^ghrdp-stack-[0-9a-f]{7,40}\.zip$' | sort | head -n -3 | while read -r old; do
+                echo "pruning $old"
+                gh release delete-asset "$tag" "$old" --yes || true
+                gh release delete-asset "$tag" "$old.sha256" --yes || true
+              done
+          gh release view "$tag" --json assets --jq '.assets[] | .name + " " + (.size|tostring)'

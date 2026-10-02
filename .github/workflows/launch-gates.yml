@@ -3676,6 +3676,63 @@ jobs:
           node --test tests/f62-build-ui-script-path.test.js
           d=$(mktemp -d); (cd "$d" && node "$GITHUB_WORKSPACE/scripts/check-regression-ids.mjs" && node "$GITHUB_WORKSPACE/scripts/check-bottom-bar-time.mjs"); rm -rf "$d"
           echo 'F62 gate PASS'
+      # [F65 §5] ADDITIVE: ONE new counted bash gate. Pre-staged bundle pins +
+      # fail-closed builder + D:/C: scratch contract + telemetry anchors (>=15
+      # static emission sites; the live-dispatch >=15 check reads the
+      # `f65-telemetry` artifact on the post-merge dispatch, never a fixture).
+      - name: F65 pre-staged bundle + scratch + telemetry gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/f65-bundle-manifest.test.js tests/f65-telemetry-parse.test.js
+          for f in payloads/f65-bundle-manifest.json payloads/f65-personalization.json payloads/f65-bookmarks.json \
+                   scripts/f65-bundle-builder.mjs scripts/f65-detect-scratch.ps1 payloads/f65-telemetry.ps1 \
+                   payloads/f65-stack.ps1 payloads/f65-prefetch.ps1 tests/f65-stack-lab.ps1 \
+                   .github/workflows/build-stack-bundle.yml docs/F65-STACK-BUNDLE.md; do
+            test -f "$f" || { echo "F65: missing $f" >&2; exit 1; }
+          done
+          wf=.github/workflows/main.yml
+          bw=.github/workflows/build-stack-bundle.yml
+          # §6 refusals: push is the PRIMARY trigger (cron is a backup), and no
+          # parallel-workflow decomposition (matrix/workflow_run) sneaks back in.
+          grep -qF 'push:' "$bw" || { echo 'F65: bundle workflow must have a push trigger (cron-only pre-staging is refused)' >&2; exit 1; }
+          grep -qF "cron: '0 2 * * 0'" "$bw" || { echo 'F65: weekly backup cron missing' >&2; exit 1; }
+          if grep -nE 'workflow_run:|strategy:|matrix:' "$bw"; then echo 'F65: no parallel-workflow decomposition' >&2; exit 1; fi
+          if grep -nF 'self-hosted' "$bw"; then echo 'F65: the bundle builds on ubuntu-latest only' >&2; exit 1; fi
+          # the bundle is additive: detached producer, bounded consumer rendezvous,
+          # and the individual-download fallback stays in every consumer.
+          grep -qF 'Start-Process -FilePath $pwshPath -PassThru -WindowStyle Hidden' "$wf" || { echo 'F65: prefetch is not launched detached' >&2; exit 1; }
+          grep -qF 'Get-F65StackState -Scratch $env:GHRDP_F65_SCRATCH -Wait -TimeoutSec' "$wf" || { echo 'F65: consumer rendezvous missing' >&2; exit 1; }
+          grep -qF 'f65-prefetch-fallback' payloads/f65-prefetch.ps1 || { echo 'F65: fallback telemetry missing' >&2; exit 1; }
+          grep -qF 'name: f65-telemetry' "$wf" || { echo 'F65: f65-telemetry artifact missing' >&2; exit 1; }
+          grep -qF '[F65-TELEMETRY-COUNT] points=' "$wf" || { echo 'F65: machine-readable count line missing' >&2; exit 1; }
+          n=$(grep -oE "(Add|Stop)-F65Point -Name \(?'[^']+'" "$wf" payloads/f65-prefetch.ps1 payloads/f65-stack.ps1 2>/dev/null | wc -l)
+          if [ "$n" -lt 15 ]; then echo "F65: only $n static telemetry emission sites (<15)" >&2; exit 1; fi
+          python3 - <<'PY'
+          import json, re, sys
+          pins = json.load(open('payloads/f65-bundle-manifest.json', encoding='utf-8'))
+          errs = []
+          if pins.get('schema') != 'ghrdp-f65-bundle-manifest/1': errs.append('schema')
+          if pins.get('release_tag') != 'stack-bundle': errs.append('release tag')
+          if '<commit>' not in (pins.get('asset_pattern') or ''): errs.append('asset pattern')
+          comps = pins.get('components') or {}
+          for want in ('tailscale', 'ffmpeg', 'vbcable', 'idd_sample_driver', 'ublock_crx', 'ublock_xpi', 'webrtc'):
+              if want not in comps: errs.append('missing component ' + want)
+          for key, c in comps.items():
+              if not re.match(r'^[0-9a-f]{64}$', c.get('sha256') or ''): errs.append(key + ' sha256 not 64-hex')
+              if not (c.get('source_url') or '').startswith('https://'): errs.append(key + ' source not https')
+              if not c.get('vendor'): errs.append(key + ' vendor missing')
+              if not c.get('consumed_by'): errs.append(key + ' consumer missing')
+          if 'parsec' in comps: errs.append('parsec must not be bundled (main.yml does not install it)')
+          if 'qbittorrent' in comps: errs.append('qBittorrent stays on the F59 prebuilt lane')
+          fallback = (pins.get('fallback') or '').lower()
+          if 'individual' not in fallback or 'hard dependency' not in fallback: errs.append('fallback policy text')
+          if errs:
+              print('F65 pins/fallback check failed: ' + ', '.join(errs), file=sys.stderr)
+              sys.exit(1)
+          print('F65 bundle pins: ' + str(len(comps)) + ' official-vendor components, all sha256-pinned, fallback=individual-download')
+          PY
+          echo "F65 gates PASS: bundle=pre-staged+pointer+sidecar, fallback=individual-download, scratch=D-or-C, telemetry-sites=$n (>=15), no cron-only/no matrix/no self-hosted"
 
   windows-native:
     runs-on: windows-latest
@@ -4319,3 +4376,87 @@ jobs:
           Publish-F60Status -state $labState -description $labDesc
           if ($labState -ne 'success') { exit 1 }
           Write-Host ('F60 windows-native lab GREEN on ' + $PSVersionTable.PSVersion.ToString() + ' (context ' + $context + ')')
+
+      # [F65 §5] ADDITIVE windows-native lab: the shipped PS surfaces PARSE, the
+      # D:/C: scratch fallback is real, Invoke-F65ParallelMap is genuinely
+      # concurrent with per-leg error isolation, the rendezvous picks up a late
+      # state file, Test-F65BundleFiles refuses tampering, and the telemetry the
+      # lab writes through payloads/f65-telemetry.ps1 feeds the SAME node parser
+      # (tests/f65-telemetry-parse.test.js) that the operator's artifact will use.
+      - name: F65 stack lab (scratch fallback + parallel map + rendezvous + telemetry)
+        timeout-minutes: 12
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # The raw job log is not reachable from every loop (this repo has burned
+          # annotations on the earlier mirror labs), so the decisive line is
+          # published as ONE commit status - the same idiom as F56-d/F57/F60.
+          $context = 'f65-stack-lab'
+          function Publish-F65Status([string]$State, [string]$Description, [string]$Ctx = '') {
+              try {
+                  if (-not $Ctx) { $Ctx = $context }
+                  $sha = [string]$env:GITHUB_SHA
+                  $repo = [string]$env:GITHUB_REPOSITORY
+                  if (-not $sha -or -not $repo -or -not $env:GH_TOKEN) { return }
+                  $body = @{ state = $State; context = $Ctx; description = $Description } | ConvertTo-Json -Compress
+                  Invoke-RestMethod -Method Post -Uri ('https://api.github.com/repos/' + $repo + '/statuses/' + $sha) -Headers @{ Authorization = ('Bearer ' + $env:GH_TOKEN); Accept = 'application/vnd.github+json' } -Body $body -ContentType 'application/json' -ErrorAction Stop | Out-Null
+                  Write-Host ('[F65 lab] status published: ' + $Ctx + ' ' + $State + ' :: ' + $Description)
+              } catch { Write-Host ('::warning title=F65 lab status::' + $_.Exception.Message) }
+          }
+          $state = 'failure'
+          $desc = 'F65 lab did not run'
+          try {
+              foreach ($f in @('scripts\f65-detect-scratch.ps1', 'payloads\f65-telemetry.ps1', 'payloads\f65-stack.ps1', 'payloads\f65-prefetch.ps1', 'tests\f65-stack-lab.ps1')) {
+                  $errs = $null
+                  $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
+                  if ($errs) {
+                      foreach ($e in @($errs)) { Write-Host ('::error title=F65 parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
+                      throw ('PowerShell syntax error in ' + $f)
+                  }
+              }
+              $labOut = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:GITHUB_WORKSPACE 'tests\f65-stack-lab.ps1') 2>&1
+              $labCode = $LASTEXITCODE
+              $txt = @($labOut | ForEach-Object { ([string]$_ -replace "`e\[[0-9;]*m", '') })
+              $txt | ForEach-Object { Write-Host $_ }
+              $failCells = @($txt | Where-Object { $_.StartsWith('::error title=F65 lab::') } | ForEach-Object { $_.Substring('::error title=F65 lab::'.Length) })
+              if ($labCode -ne 0 -or $failCells.Count -gt 0) {
+                  # one commit status PER red cell: the raw log is not reachable from
+                  # every loop and the annotation quota is spent by the earlier labs.
+                  foreach ($cell in @($failCells | Select-Object -First 8)) {
+                      $slug = ($cell -replace '[^A-Za-z0-9]+', '-').Trim('-')
+                      if ($slug.Length -gt 70) { $slug = $slug.Substring(0, 70) }
+                      $cellDesc = $cell
+                      if ($cellDesc.Length -gt 140) { $cellDesc = $cellDesc.Substring(0, 137) + '...' }
+                      Publish-F65Status -State 'failure' -Description $cellDesc -Ctx ('f65-lab/' + $slug)
+                  }
+                  if ($failCells.Count -gt 0) {
+                      $desc = 'red cells: ' + ((($failCells | Select-Object -First 3) -join ' ; '))
+                  } else {
+                      $tail = @($txt | Where-Object { $_.Trim() } | Select-Object -Last 3) -join ' ~ '
+                      if (-not $tail) { $tail = 'child exited ' + $labCode + ' with no captured output' }
+                      $desc = 'red: ' + $tail
+                  }
+                  throw ('stack lab failed (exit ' + $labCode + ')')
+              }
+              # Real PS-written telemetry -> the SAME node parser the operator uses.
+              $labArtifact = Join-Path $env:RUNNER_TEMP 'f65-live-lab.jsonl'
+              $env:GHRDP_F65_TIMING = $labArtifact
+              . (Join-Path $env:GITHUB_WORKSPACE 'payloads\f65-telemetry.ps1')
+              $names = @('f65-scratch-detect', 'f65-prefetch-start', 'f65-pointer-fetch', 'f65-bundle-download', 'f65-bundle-sha256-verify', 'f65-bundle-extract', 'f65-manifest-verify', 'f65-parallel-legs', 'f65-stack-ready', 'f65-tailscale-join-start', 'f65-dashboard-ready', 'f65-rendezvous-stack', 'f65-probe-dashboard-health', 'f65-probe-magicdns-resolve', 'f65-probe-rdp-3389', 'f65-probe-webrtc-8443', 'f65-probe-rendezvous', 'f65-consumer-idd')
+              for ($i = 0; $i -lt $names.Count; $i++) { Add-F65Point -Name $names[$i] -Seconds (10 + $i) -Detail 'windows-native lab emission' }
+              $env:F65_TELEMETRY_ARTIFACT = $labArtifact
+              & node --test tests/f65-telemetry-parse.test.js
+              if ($LASTEXITCODE -ne 0) { throw 'telemetry parse over a real PowerShell-written artifact failed' }
+              $state = 'success'
+              $desc = ('green on ' + $PSVersionTable.PSVersion.ToString() + ': ' + $names.Count + ' telemetry points parsed over a real artifact')
+          } catch {
+              $msg = [string]$_.Exception.Message
+              if ($msg -and $msg.Length -gt 0) { $desc = ($desc + ' (' + $msg + ')') }
+              Write-Host ('::error title=F65 lab::' + $desc)
+          }
+          if ($desc.Length -gt 140) { $desc = $desc.Substring(0, 137) + '...' }
+          Publish-F65Status -State $state -Description $desc
+          if ($state -ne 'success') { exit 1 }
+          Write-Host ('F65 windows-native lab GREEN: ' + $desc)
