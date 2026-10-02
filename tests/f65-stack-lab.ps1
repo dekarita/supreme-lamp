@@ -30,6 +30,7 @@ function Check([string]$Name, [bool]$Ok, [string]$Detail) {
     Write-Host $line
 }
 $tmp = Join-Path $env:RUNNER_TEMP ('f65-lab-' + [guid]::NewGuid().ToString('N'))
+Write-Host ('[F65 lab] START ps=' + $PSVersionTable.PSVersion.ToString() + ' cwd=' + (Get-Location).Path)
 New-Item -ItemType Directory -Path $tmp -Force | Out-Null
 
 # ---- shipped modules under test ---------------------------------------------------
@@ -134,5 +135,6 @@ Check 'F4 the report step emits the machine-readable count' $f4
 Check 'F5 the parallel probe step ships' $f5
 
 Write-Host ('[F65 lab] ' + $passes + ' PASS / ' + $fails + ' FAIL')
+Write-Host '[F65 lab] DONE'
 if ($fails -gt 0) { exit 1 }
 exit 0
