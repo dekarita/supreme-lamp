@@ -128,8 +128,10 @@ export async function buildBundle(args, opts = {}) {
     components[key] = { name: def.name, member, sha256: got.sha256, size: got.bytes, vendor: def.vendor, source: got.source, version: def.version || '' };
     bundleMembers.push(member);
     if (def.sha256_sidecar && def.sha256_sidecar_name) {
+      // The published sidecar convention is exactly "<sha256>\n" (65 bytes) - the
+      // pinned sidecar digest is the sha256 OF THAT FILE, so reproduce it byte-for-byte.
       const sidecarMember = `${pins.stage_dir}/${def.sha256_sidecar_name}`;
-      const sidecarText = `${def.sha256}  ${def.name}\n`;
+      const sidecarText = `${def.sha256}\n`;
       await writeFile(path.join(stageDir, sidecarMember), sidecarText, 'utf8');
       const gotSidecar = sha256(await readFile(path.join(stageDir, sidecarMember)));
       if (gotSidecar !== def.sha256_sidecar) throw new Error(`[F65 bundle] ${key}: sidecar sha256 ${gotSidecar} != pin ${def.sha256_sidecar}`);
@@ -194,5 +196,11 @@ export async function buildBundle(args, opts = {}) {
 const invokedDirectly = process.argv[1] && path.resolve(process.argv[1]).endsWith('f65-bundle-builder.mjs');
 if (invokedDirectly) {
   const args = parseArgs(process.argv.slice(2));
-  buildBundle(args).catch((err) => { console.error(String(err && err.message ? err.message : err)); process.exit(1); });
+  buildBundle(args).catch((err) => {
+    const msg = String(err && err.message ? err.message : err).replace(/\r?\n/g, ' ').slice(0, 300);
+    // GitHub annotation so a CI failure is readable from the checks API, not only
+    // from the (restricted) raw log. Nothing is ever published after this.
+    console.error(`::error title=F65 bundle build (fail-closed)::${msg}`);
+    process.exit(1);
+  });
 }

@@ -113,6 +113,12 @@ test("F65 manifest: every pin is a real 64-hex sha256 + official vendor + docume
   );
   assert.equal(manifest.components.ffmpeg.size, 257736868);
   assert.equal(manifest.components.webrtc.size, 9009341);
+  // the webrtc sidecar pin must be the digest of the published 65-byte convention
+  // ("<sha256>\n") - this is what broke the first CI build and it must stay caught.
+  const w = manifest.components.webrtc;
+  const sidecarBytes = `${w.sha256}\n`;
+  assert.equal(require("node:crypto").createHash("sha256").update(sidecarBytes).digest("hex"), w.sha256_sidecar);
+  assert.equal(Buffer.byteLength(sidecarBytes), 65);
 });
 
 test("F65 builder: lab build produces zip + sidecar + pointer + manifest with every file hashed", () => {
@@ -145,6 +151,39 @@ test("F65 builder: lab build produces zip + sidecar + pointer + manifest with ev
   assert.ok(inner.files["personalization/f65-bookmarks.json"], "personalization payload staged");
   assert.equal(inner.components.alpha.size, 4);
   assert.equal(inner.total_bytes, Object.values(inner.files).reduce((a, f) => a + f.size, 0));
+});
+
+test("F65 builder: a pinned sha256 sidecar is reproduced byte-for-byte (65-byte convention)", () => {
+  const body = "WEBSRV";
+  const sum = require("node:crypto").createHash("sha256").update(body).digest("hex");
+  const sidecarDigest = require("node:crypto").createHash("sha256").update(`${sum}\n`).digest("hex");
+  const dir = fs.mkdtempSync(path.join(tmpRoot, "sidecar-"));
+  const fixtures = path.join(dir, "fixtures");
+  fs.mkdirSync(fixtures, { recursive: true });
+  fs.writeFileSync(path.join(fixtures, "websrv.zip"), body);
+  const labManifest = path.join(dir, "lab-manifest.json");
+  fs.writeFileSync(
+    labManifest,
+    JSON.stringify({
+      schema: "ghrdp-f65-bundle-manifest/1",
+      release_tag: "stack-bundle",
+      pointer_asset: "ghrdp-stack-latest.json",
+      stage_dir: "stack",
+      personalization_dir: "personalization",
+      components: {
+        webrtc: { name: "websrv.zip", version: "lab", sha256: sum, size: Buffer.byteLength(body), vendor: "lab", source_url: "", mirror_url: "", sha256_sidecar_name: "websrv.zip.sha256", sha256_sidecar: sidecarDigest },
+      },
+      personalization: { "payloads/f65-personalization.json": "lab" },
+    })
+  );
+  const out = path.join(dir, "out");
+  const res = runBuilder(["--out", out, "--manifest", labManifest, "--fixtures", fixtures, "--commit", "deadbeefcafe"]);
+  assert.equal(res.status, 0, res.stderr);
+  const unzipDir = path.join(dir, "unzip");
+  assert.equal(spawnSync("unzip", ["-qq", path.join(out, "ghrdp-stack-deadbeefcafe.zip"), "-d", unzipDir]).status, 0);
+  const sidecar = fs.readFileSync(path.join(unzipDir, "stack/websrv.zip.sha256"), "utf8");
+  assert.equal(sidecar, `${sum}\n`, "sidecar content must be the 65-byte convention");
+  assert.equal(require("node:crypto").createHash("sha256").update(sidecar).digest("hex"), sidecarDigest);
 });
 
 test("F65 builder: fail-closed - tampered fixture, empty pin and missing source all refuse", () => {
