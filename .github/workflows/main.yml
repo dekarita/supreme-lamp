@@ -2138,9 +2138,12 @@ jobs:
               Start-Sleep -Seconds 1
           }
           if (-not $ip) { Write-Host '[stage] WARNING: Tailscale IP still empty after 30 tries' }
-          # [F9g] transient-read retry: 50 attempts (~50s at 1s), logged, so a
+          # [F9g] transient-read retry: 10 attempts (~50s at 5s), logged, so a
           # one-call CLI blip cannot masquerade as MagicDNS-off here.
-          for ($dnsTry = 1; $dnsTry -le 50; $dnsTry++) {
+          # [F64-FIX] F64 retuned this to 50 x 1s; that broke the gate-protected
+          # F9g contract pinned by tests/provision-contract.test.js (-le 10).
+          # 10 x 5s keeps the SAME ~50s transient window and restores the gate.
+          for ($dnsTry = 1; $dnsTry -le 10; $dnsTry++) {
               try {
                   $j = (& $ts status --json 2>$null) | ConvertFrom-Json
                   if (-not $ghName -and $j -and $j.Self) { $ghName = [string]$j.Self.HostName }
@@ -2150,7 +2153,7 @@ jobs:
               if ($dns -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') { break }
               Write-Host ('[stage] dns read attempt ' + $dnsTry + ': Self.DNSName = [' + $dns + '] - retrying')
               if (($dnsTry % 10) -eq 1) { Write-F64Stamp ('stage-dns-try ' + $dnsTry) }
-              Start-Sleep -Seconds 1
+              Start-Sleep -Seconds 5
           }
           # Fallback: original single-read (only reached if all retries failed)
           if (-not $dns -or $dns -notmatch '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') {
@@ -3698,7 +3701,10 @@ jobs:
           if ($checkIp) { $listenNow = [bool](Get-NetTCPConnection -LocalAddress $checkIp -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1) }
           $pidsNow = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*websockify*7333*' } | Select-Object -ExpandProperty ProcessId)
           VLog ('[webdesk-test] pre-check: tailnet-listen-7333(' + $checkIp + ')=' + $listenNow + ' websockify-pids=' + ($pidsNow -join ','))
-          # A - advertised URL, 3 tries x 1s (green path already breaks on first 200+noVNC).
+          # A - advertised URL, 3 tries x 5s (green path already breaks on first 200+noVNC).
+          # [F64-FIX] F64 shortened this to 1s; the gate-protected F9n contract
+          # (tests/workflow-webdesk.test.js) requires a 5s wait between the
+          # advertised-URL tries, and 1s was too short for a cold websockify bind.
           $advertisedCode = ''
           $probeS = $null
           for ($i = 1; $i -le 3; $i++) {
@@ -3707,7 +3713,7 @@ jobs:
               VLog ('[webdesk-test] A advertised probe ' + $i + ' HTTP [' + $advertisedCode + '] curl-exit=' + $probeS.Rc + ' headers=' + $probeS.Head)
               VLog ('[webdesk-test] A advertised probe ' + $i + ' first200=' + $probeS.First)
               if ($advertisedCode -eq '200' -and $probeS.First -match 'noVNC') { break }
-              Start-Sleep -Seconds 1
+              Start-Sleep -Seconds 5
           }
           if ($advertisedCode -eq '200' -and $probeS.First -match 'noVNC') {
               # [F9o] HTTP marker OK - now require the mode-matching VNC probe
