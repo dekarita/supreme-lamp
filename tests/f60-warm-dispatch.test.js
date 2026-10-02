@@ -193,4 +193,37 @@ test("F60-W11 the release transport is loaded in the CALLER's scope, not inside 
   assert.ok(useAt > loadAt, "before the commit-matched bundle is staged");
   assert.match(invoke, /Get-F60ReleaseAssetInfo' -ErrorAction SilentlyContinue/, "a transport that loads but defines nothing is refused, not trusted");
   assert.match(invoke, /no scripts\\f60-bootstrap\.ps1 to load the release transport/, "the cold lane fails closed when there is no transport to load");
+
+  // A dot-source binds the LOADED script's param block in the caller's scope, so the
+  // bootstrap's -Root/-UiReleaseTag/-UiBundleSha defaults would overwrite this
+  // function's own parameters. An empty $UiBundleSha would silently downgrade
+  // "commit-matched bundle" to "newest ui-dist-*.zip" - a quiet correctness loss.
+  const paramNames = (text) => {
+    const i = text.indexOf("param(");
+    if (i < 0) return [];
+    let depth = 0;
+    let buf = "";
+    for (let k = i + 6; k < text.length; k++) {   // i + 6 = just past "param("
+      const c = text[k];
+      if (c === "(") depth++;
+      else if (c === ")") { if (depth === 0) break; depth--; }
+      buf += c;
+    }
+    return [...buf.matchAll(/\$([A-Za-z][A-Za-z0-9_]*)/g)].map((m) => m[1]);
+  };
+  const bootstrapParams = paramNames(bootstrap).map((n) => n.toLowerCase());
+  const stagerParams = paramNames(invoke);
+  const collisions = stagerParams.filter(
+    (n, i) => bootstrapParams.includes(n.toLowerCase()) &&
+      stagerParams.findIndex((m) => m.toLowerCase() === n.toLowerCase()) === i
+  );
+  assert.ok(collisions.some((n) => n.toLowerCase() === "root"), "sanity: -Root really is declared by both scripts (the collision this guard exists for)");
+  assert.match(invoke, /\$saKeep = @\{/, "the caller snapshots its parameters before dot-sourcing the transport");
+  const loadAt2 = invoke.indexOf(". $transport -DefineOnly");
+  for (const name of collisions) {
+    const cap = name.charAt(0).toUpperCase() + name.slice(1);
+    const restore = invoke.indexOf("$" + cap + " = $saKeep." + cap);
+    assert.ok(restore > loadAt2, "the colliding parameter $" + cap + " must be restored from $saKeep AFTER the dot-source");
+  }
+  assert.match(invoke, /\$UiBundleSha = \$saKeep\.UiBundleSha/, "the commit sha survives the transport load");
 });

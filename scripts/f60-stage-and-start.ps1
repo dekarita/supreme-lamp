@@ -381,10 +381,31 @@ function Invoke-F60StageAndStart {
     $env:GHRDP_F59_TIMING = $tf
     # Dot-sourced HERE, in this function's own scope: definitions made inside
     # Import-F60Transport would vanish when it returned (see that function's note).
+    #
+    # A dot-source also BINDS THE LOADED SCRIPT'S PARAM BLOCK IN THIS SCOPE, and
+    # scripts/f60-bootstrap.ps1 declares -Root (default C:\ghrdp), -UiReleaseTag
+    # (default ui-dist) and -UiBundleSha (default '') - three of this function's own
+    # parameters. Without the snapshot/restore below, the bootstrap's defaults would
+    # silently replace the values this lane was called with, and an empty
+    # $UiBundleSha would downgrade "the commit-matched bundle" to "the newest
+    # ui-dist-*.zip" - a quiet correctness loss, not a crash. Same collision class
+    # that made tests/f60-bootstrap-lab.ps1 lose its repo root on the runner.
+    $saKeep = @{
+        Mode = $Mode; Root = $Root; Workspace = $Workspace; TimingFile = $TimingFile
+        DashPort = $DashPort; UiPort = $UiPort; UiReleaseTag = $UiReleaseTag
+        UiBundleSha = $UiBundleSha; Repo = $Repo; Token = $Token; WaitSec = $WaitSec
+        Restart = $Restart
+    }
     $transport = Import-F60Transport -Workspace $Workspace -Root $Root
     if ($transport) {
         . $transport -DefineOnly
-        Write-Host ('[F60 transport] release transport loaded from ' + $transport)
+        $Mode = $saKeep.Mode; $Root = $saKeep.Root; $Workspace = $saKeep.Workspace
+        $TimingFile = $saKeep.TimingFile; $DashPort = $saKeep.DashPort; $UiPort = $saKeep.UiPort
+        $UiReleaseTag = $saKeep.UiReleaseTag; $UiBundleSha = $saKeep.UiBundleSha
+        $Repo = $saKeep.Repo; $Token = $saKeep.Token; $WaitSec = $saKeep.WaitSec
+        $Restart = $saKeep.Restart
+        $bundleNote = if ($UiBundleSha) { $UiBundleSha.Substring(0, [Math]::Min(12, $UiBundleSha.Length)) } else { 'newest' }
+        Write-Host ('[F60 transport] release transport loaded from ' + $transport + ' (root=' + $Root + ' uiReleaseTag=' + $UiReleaseTag + ' bundle=' + $bundleNote + ')')
         if (-not (Get-Command -Name 'Get-F60ReleaseAssetInfo' -ErrorAction SilentlyContinue)) {
             throw ('[F60 transport] ' + $transport + ' loaded but Get-F60ReleaseAssetInfo is not defined - refusing to stage an unverifiable bundle')
         }

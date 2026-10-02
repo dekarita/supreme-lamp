@@ -40,7 +40,18 @@
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-$root = Split-Path -Parent $PSScriptRoot
+# NOTE ON NAMES: every surface below is dot-sourced into THIS scope, and a
+# dot-sourced script binds its own param block here too. All three F60 surfaces
+# declare `-Root` (default C:\ghrdp), so a lab variable spelled R-O-O-T is
+# overwritten the moment the first surface loads - which is exactly what made the
+# first windows-native run of this lab die at its second dot-source, looking for
+# C:\ghrdp\scripts\f60-health.ps1 instead of <repo>\scripts\f60-health.ps1.
+# Hence `$labRepoRoot`, a name no F60 surface declares, plus the integrity guard
+# after the three dot-sources.
+$labRepoRoot = Split-Path -Parent $PSScriptRoot
+$labBootstrap = Join-Path $labRepoRoot 'scripts\f60-bootstrap.ps1'
+$labHealth = Join-Path $labRepoRoot 'scripts\f60-health.ps1'
+$labStager = Join-Path $labRepoRoot 'scripts\f60-stage-and-start.ps1'
 $failures = @()
 $checks = 0
 
@@ -79,9 +90,18 @@ Write-Host ('[F60 lab] PowerShell ' + $PSVersionTable.PSVersion.ToString() + ', 
 # lab did (40 of 44 checks failed, all of them "not recognized"). So the three surfaces
 # are dot-sourced here, at the lab's own scope, and the A checks only assert that the
 # documented functions are callable from it.
-. (Join-Path $root 'scripts\f60-bootstrap.ps1') -DefineOnly
-. (Join-Path $root 'scripts\f60-health.ps1') -DefineOnly
-. (Join-Path $root 'scripts\f60-stage-and-start.ps1') -DefineOnly
+. $labBootstrap -DefineOnly
+. $labHealth -DefineOnly
+. $labStager -DefineOnly
+# Integrity guard: if a future surface ever declares a parameter whose name
+# collides with a lab variable, fail HERE with the reason instead of letting 40
+# checks fail with "the term 'X' is not recognized".
+if (-not (Test-Path -LiteralPath (Join-Path $labRepoRoot 'payloads\f60-warm-pins.json'))) {
+    throw ('$labRepoRoot was clobbered by a dot-sourced surface (now ' + $labRepoRoot + ') - rename the lab variable, it must not collide with any F60 param')
+}
+foreach ($labSurface in @($labBootstrap, $labHealth, $labStager)) {
+    if (-not (Test-Path -LiteralPath $labSurface)) { throw ('a dot-sourced surface path was clobbered: ' + $labSurface) }
+}
 
 Assert-Lab 'A: scripts/f60-bootstrap.ps1 -DefineOnly exposes the whole bootstrap surface' {
     foreach ($fn in @('Test-F60PinShape', 'Test-F60AssetSha256', 'Get-F60File', 'Register-F60NssmService',
@@ -108,7 +128,7 @@ Assert-Lab 'A: scripts/f60-stage-and-start.ps1 -DefineOnly exposes the stager su
 }
 Assert-Lab 'A: scripts/f60-scrub-runcommand.ps1 parses cleanly' {
     $tokens = $null; $errors = $null
-    $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $root 'scripts\f60-scrub-runcommand.ps1'), [ref]$tokens, [ref]$errors)
+    $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $labRepoRoot 'scripts\f60-scrub-runcommand.ps1'), [ref]$tokens, [ref]$errors)
     if ($errors -and $errors.Count) { throw ($errors.Count.ToString() + ' parse error(s): ' + (($errors | ForEach-Object { $_.Message }) -join ' | ')) }
 }
 
@@ -396,13 +416,13 @@ Assert-Lab 'L: a timing file without the measured step fails closed' {
 Assert-Lab 'M: every staged payload and tool exists in the repository' {
     $missing = @()
     foreach ($rel in (@(Get-F60PayloadList) + @(Get-F60ToolList))) {
-        if (-not (Test-Path -LiteralPath (Join-Path $root ($rel -replace '/', '\')))) { $missing += $rel }
+        if (-not (Test-Path -LiteralPath (Join-Path $labRepoRoot ($rel -replace '/', '\')))) { $missing += $rel }
     }
     if (@($missing).Count) { throw ('staged files missing from the repo: ' + ($missing -join ', ')) }
     Write-Host ('[F60 lab]        ' + @(Get-F60PayloadList).Count + ' payloads + ' + @(Get-F60ToolList).Count + ' tools all present')
 }
 Assert-Lab 'M: Import-F60Transport RESOLVES the bootstrap and the caller dot-sources it' {
-    $p = Import-F60Transport -Workspace $root -Root $temp
+    $p = Import-F60Transport -Workspace $labRepoRoot -Root $temp
     if (-not $p) { throw 'Import-F60Transport returned no path' }
     if ((Split-Path -Leaf $p) -ne 'f60-bootstrap.ps1') { throw ('it resolved ' + $p) }
     if (-not (Test-Path -LiteralPath $p)) { throw ('the resolved path does not exist: ' + $p) }

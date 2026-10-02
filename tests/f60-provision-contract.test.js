@@ -540,10 +540,18 @@ test("F60-P19 the lab loads its surfaces at LAB scope, and a red lab names its f
   // assertion returns. The first windows-native run of this lab failed 40 of 44 checks,
   // every one "The term 'X' is not recognized as the name of a cmdlet" - the four A
   // checks passed because they asserted inside the same block that loaded the surface.
-  for (const f of ["scripts\\f60-bootstrap.ps1", "scripts\\f60-health.ps1", "scripts\\f60-stage-and-start.ps1"]) {
-    const line = ". (Join-Path $root '" + f + "') -DefineOnly";
-    assert.ok(labFile.includes("\n" + line + "\n"), f + " must be dot-sourced at column 0, i.e. in the lab file's own scope");
+  // A dot-sourced script binds its own param block in the caller's scope, and all
+  // three F60 surfaces declare -Root (default C:\ghrdp). The lab's repo-root variable
+  // must therefore not be spelled $root: on the runner that collision made the second
+  // dot-source look for C:\ghrdp\scripts\f60-health.ps1 and killed the lab before a
+  // single check was recorded ("exited 1 with 0 failing check(s)").
+  assert.match(labFile, /\$labRepoRoot = Split-Path -Parent \$PSScriptRoot/, "the lab's repo root uses a collision-proof name");
+  assert.ok(!/\$root\b/.test(labFile), "no bare $root may remain in the lab: -Root is a parameter of all three dot-sourced surfaces");
+  for (const v of ["$labBootstrap", "$labHealth", "$labStager"]) {
+    assert.ok(labFile.includes("\n. " + v + " -DefineOnly"), v + " must be dot-sourced at column 0, i.e. in the lab file's own scope");
+    assert.match(labFile, new RegExp("\\$" + v.slice(1) + " = Join-Path \\$labRepoRoot 'scripts"), v + " is built from the collision-proof repo root");
   }
+  assert.match(labFile, /was clobbered by a dot-sourced surface/, "the lab fails loudly if a future surface re-introduces the collision");
   const sectionA = labFile.slice(labFile.indexOf("# --- A."), labFile.indexOf("# --- B."));
   assert.ok(!/\n[ \t]+\. \(Join-Path/.test(sectionA), "section A must not dot-source a surface from inside an Assert-Lab block");
   assert.match(labFile, /Import-F60Transport RESOLVES the bootstrap and the caller dot-sources it/, "the transport contract is asserted, not assumed");
