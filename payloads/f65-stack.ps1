@@ -94,7 +94,10 @@ function Invoke-F65ParallelMap {
     # bounded Start-Job wave fallback on Windows PowerShell 5.1. $Body receives the
     # item as its FIRST positional parameter (param($item)).
     param(
-        [Parameter(Mandatory)] [object[]]$Items,
+        # AllowEmptyCollection: PowerShell refuses to bind an empty array to a
+        # Mandatory parameter otherwise, and "no items" is a legitimate input
+        # (the function returns @() immediately - the lab pins that behaviour).
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Items,
         [Parameter(Mandatory)] [scriptblock]$Body,
         [int]$ThrottleLimit = 4,
         [int]$TimeoutSec = 900,

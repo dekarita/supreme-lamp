@@ -4418,7 +4418,7 @@ jobs:
               }
               $labOut = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:GITHUB_WORKSPACE 'tests\f65-stack-lab.ps1') 2>&1
               $labCode = $LASTEXITCODE
-              $txt = @($labOut | ForEach-Object { [string]$_ })
+              $txt = @($labOut | ForEach-Object { ([string]$_ -replace "`e\[[0-9;]*m", '') })
               $txt | ForEach-Object { Write-Host $_ }
               $failCells = @($txt | Where-Object { $_.StartsWith('::error title=F65 lab::') } | ForEach-Object { $_.Substring('::error title=F65 lab::'.Length) })
               if ($labCode -ne 0 -or $failCells.Count -gt 0) {
