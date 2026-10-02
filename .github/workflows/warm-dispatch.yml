@@ -1,0 +1,331 @@
+name: F60 warm dispatch (sl-warm runner, <60s dashboard-reachable, windows-latest fallback)
+# [F60 §4] THE RUNTIME PATH once provision-warm-runner.yml has created the warm VM.
+#
+# What this workflow measures: the whole point of the warm runner is that the VM,
+# the tailnet join, the pinned binaries, the four NSSM services and the runner
+# listener are ALREADY up, so a dispatch pays only "checkout + stage the
+# commit-matched bundle + restart two services + first HTTP 200". That number is
+# `dispatch-to-dashboard`, written to C:\ghrdp\startup-timing-f60.jsonl by the
+# SHIPPED F59 timing helper (payloads/f59-timing.ps1, redirected through
+# $env:GHRDP_F59_TIMING so the warm lane never overwrites the GitHub-hosted lane's
+# startup-timing.jsonl) and gated at < 60000 ms.
+#
+# What this workflow does NOT do (locked, asserted by the F60 gates):
+#   * it never edits or dispatches main.yml - the F59 lane stays exactly as merged;
+#   * it never adds `self-hosted` to main.yml's rdp job (the F59 gate fails closed
+#     on that string);
+#   * it never relaxes a security floor: the qBittorrent WebUI stays Tailnet-only,
+#     RDP stays Tailscale-only (NSG deny), and no credential ever appears in a log.
+#
+# STOP conditions implemented here:
+#   * warm lane over budget -> this run fails and the fallback job runs;
+#   * three CONSECUTIVE over-budget warm runs (tracked on the VM in
+#     C:\ghrdp\state\f60-warm-strikes.json) -> the run prints the F60 STOP line and
+#     the answer is "stay on f59-windows-latest", not "try again";
+#   * a stale RUNNER_TRACKING_ID / _work tree on the self-hosted runner is reported
+#     loudly with its remediation before the measurement starts.
+on:
+  workflow_dispatch:
+    inputs:
+      force_fallback:
+        description: 'Skip the warm runner and prove the windows-latest fallback lane (this is how the fallback-tested run is produced)'
+        required: false
+        type: boolean
+        default: false
+      budget_ms:
+        description: 'dispatch-to-dashboard budget in milliseconds (the F60 gate is <60000)'
+        required: false
+        default: '60000'
+      restart_services:
+        description: 'Restart all four warm NSSM services before measuring (cold-service comparison; the UI-facing two always restart)'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read   # checkout + the ui-dist release asset download
+
+env:
+  RUNNER_LABEL: sl-warm
+  F60_TIMING_NAME: startup-timing-f60.jsonl
+
+jobs:
+  # --------------------------------------------------------------------- #
+  # WARM LANE - the sl-warm self-hosted runner on the Azure VM.           #
+  # --------------------------------------------------------------------- #
+  warm:
+    if: ${{ github.event.inputs.force_fallback != 'true' }}
+    runs-on: [self-hosted, windows, sl-warm]
+    timeout-minutes: 20
+    outputs:
+      ms: ${{ steps.measure.outputs.f60_ms }}
+      magicdns: ${{ steps.health.outputs.magicdns }}
+      lane: warm
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # [F60 STOP] RUNNER_TRACKING_ID: a self-hosted Windows runner that kept a
+      # stale _work tree from a previous job can fail its next job before a single
+      # step runs. This guard is advisory (never fails the job) but it names the
+      # exact remediation instead of letting the run die unexplained.
+      - name: Self-hosted runner hygiene guard (RUNNER_TRACKING_ID + stale _work)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $tid = [string]$env:RUNNER_TRACKING_ID
+          Write-Host ('[F60 guard] RUNNER_TRACKING_ID=' + $(if ($tid) { $tid } else { '(unset)' }))
+          if (-not $tid) {
+              Write-Host '::warning title=F60 runner hygiene::RUNNER_TRACKING_ID is unset on this self-hosted job - if the next step fails with a tracking-id or work-directory error, stop the actions.runner.* service, delete the stale _work\<n> tree under C:\actions-runner and start the service again'
+          }
+          $workRoot = 'C:\actions-runner\_work'
+          if (Test-Path -LiteralPath $workRoot) {
+              $stale = @(Get-ChildItem -LiteralPath $workRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTimeUtc -lt (Get-Date).ToUniversalTime().AddHours(-24) })
+              Write-Host ('[F60 guard] _work directories=' + @(Get-ChildItem -LiteralPath $workRoot -Directory -ErrorAction SilentlyContinue).Count + ' stale(>24h)=' + @($stale).Count)
+              if (@($stale).Count -gt 0) {
+                  Write-Host ('::warning title=F60 runner hygiene::' + @($stale).Count + ' stale _work tree(s) older than 24 h: ' + (($stale | ForEach-Object { $_.Name }) -join ', ') + ' - remove them over Tailscale if a job fails to initialise')
+              }
+          } else {
+              Write-Host '[F60 guard] no _work tree at C:\actions-runner\_work (first job on this runner)'
+          }
+          $diag = 'C:\actions-runner\_diag'
+          if (Test-Path -LiteralPath $diag) {
+              $n = @(Get-ChildItem -LiteralPath $diag -File -ErrorAction SilentlyContinue).Count
+              Write-Host ('[F60 guard] _diag files=' + $n)
+          }
+          exit 0
+
+      - name: F60 warm stage + start (commit-matched bundle, service refresh, first HTTP 200)
+        id: measure
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # $args is a PowerShell automatic variable - the splat array is named.
+          $saArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $env:GITHUB_WORKSPACE 'scripts\f60-stage-and-start.ps1'), '-Mode', 'warm', '-Root', 'C:\ghrdp', '-Workspace', $env:GITHUB_WORKSPACE, '-UiReleaseTag', 'ui-dist', '-UiBundleSha', $env:GITHUB_SHA, '-WaitSec', '120')
+          if ('${{ github.event.inputs.restart_services }}' -eq 'true') { $saArgs += '-RestartServices' }
+          & pwsh @saArgs
+          if ($LASTEXITCODE -ne 0) { throw ('[F60 warm] stage-and-start exited ' + $LASTEXITCODE) }
+          Write-Host '[F60 warm] stage-and-start completed'
+
+      - name: F60 warm health probe (scripts/f60-health.ps1)
+        id: health
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $out = (& pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:GITHUB_WORKSPACE 'scripts\f60-health.ps1') -Root 'C:\ghrdp' -TimeoutSec 90 *>&1 | Out-String)
+          Write-Host $out
+          $magic = ''
+          if (Test-Path -LiteralPath 'C:\ghrdp\f60-health.json') {
+              try { $magic = [string]((Get-Content -LiteralPath 'C:\ghrdp\f60-health.json' -Raw | ConvertFrom-Json).tailscale.magicDns) } catch { $magic = '' }
+          }
+          if ($magic) { Add-Content -Path $env:GITHUB_OUTPUT -Value ('magicdns=' + $magic) }
+          if ($out -match 'F60_HEALTH_FAILED') {
+              $reason = ''
+              if ($out -match 'F60_HEALTH_FAILED:\s*([^\r\n]+)') { $reason = $Matches[1] }
+              Write-Host ('::error title=F60 warm health::' + $reason)
+              exit 1
+          }
+          if ($out -notmatch 'F60_HEALTH_OK') {
+              Write-Host '::error title=F60 warm health::no F60_HEALTH_OK marker in the probe output'
+              exit 1
+          }
+          Write-Host '[F60 warm] health probe green'
+
+      - name: F60 budget gate (dispatch-to-dashboard < budget, 3-strike STOP)
+        shell: pwsh
+        env:
+          BUDGET_MS: ${{ github.event.inputs.budget_ms || '60000' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . (Join-Path $env:GITHUB_WORKSPACE 'scripts\f60-health.ps1') -DefineOnly
+          $tf = 'C:\ghrdp\startup-timing-f60.jsonl'
+          $v = Get-F60WarmBudgetVerdict -TimingFile $tf -BudgetMs ([int]$env:BUDGET_MS) -Step 'dispatch-to-dashboard' -StrikeFile 'C:\ghrdp\state\f60-warm-strikes.json' -MaxStrikes 3
+          Write-Host ('[F60 budget] dispatch-to-dashboard=' + $v.ms + 'ms budget=' + $v.budgetMs + 'ms strikes=' + $v.strikes + '/' + $v.maxStrikes)
+          if ($v.stop) {
+              Write-Host '::error title=F60 STOP::the warm lane exceeded the budget ' + $v.strikes + ' consecutive runs - stay on f59-windows-latest (main.yml) and report the warm runner as not delivering; do not keep re-dispatching'
+              exit 1
+          }
+          if (-not $v.ok) {
+              Write-Host ('::error title=F60 budget::warm dispatch-to-dashboard=' + $v.ms + 'ms exceeds the ' + $v.budgetMs + 'ms budget (detail: ' + $v.detail + ') - the fallback lane runs next')
+              exit 1
+          }
+          Write-Host ('[F60 budget] PASS ' + $v.ms + 'ms < ' + $v.budgetMs + 'ms')
+          if ($env:GITHUB_STEP_SUMMARY) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('### F60 warm lane' + "`n")
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('- dispatch-to-dashboard: **' + $v.ms + ' ms** (budget ' + $v.budgetMs + ' ms)' + "`n")
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('- consecutive over-budget strikes: ' + $v.strikes + '/' + $v.maxStrikes + "`n")
+          }
+
+      # House pattern (main.yml does the same for startup-timing.jsonl): copy the
+      # evidence out of C:\ghrdp into the runner temp dir first, then upload from
+      # there, so the artifact paths are workspace-relative and predictable.
+      - name: Collect the F60 warm evidence into the runner temp dir
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $dst = Join-Path $env:RUNNER_TEMP 'f60-evidence'
+          $null = New-Item -ItemType Directory -Path $dst -Force
+          foreach ($f in @('C:\ghrdp\startup-timing-f60.jsonl', 'C:\ghrdp\f60-health.json', 'C:\ghrdp\state\f60-bootstrap-result.json', 'C:\ghrdp\state\f60-warm-strikes.json', 'C:\ghrdp\state\f60-aria2c.pin', 'C:\ghrdp\state\f60-nssm.pin', 'C:\ghrdp\state\f60-node.pin')) {
+              if (Test-Path -LiteralPath $f) {
+                  Copy-Item -LiteralPath $f -Destination $dst -Force
+                  Write-Host ('[F60 evidence] ' + $f)
+              } else {
+                  Write-Host ('[F60 evidence] missing ' + $f)
+              }
+          }
+          Get-ChildItem -LiteralPath $dst -File | ForEach-Object { Write-Host ('[F60 evidence] collected ' + $_.Name + ' (' + $_.Length + ' bytes)') }
+
+      - name: Upload the F60 warm timing + health evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-timing-f60-warm
+          if-no-files-found: warn
+          retention-days: 30
+          path: ${{ runner.temp }}/f60-evidence
+
+  # --------------------------------------------------------------------- #
+  # FALLBACK LANE - windows-latest, labeled f59-windows-latest.           #
+  # Runs when the warm job failed, was unhealthy, missed the budget, or   #
+  # when force_fallback was requested (the fallback-tested run).          #
+  # --------------------------------------------------------------------- #
+  fallback:
+    needs: warm
+    if: ${{ always() && (needs.warm.result != 'success' || github.event.inputs.force_fallback == 'true') }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    outputs:
+      ms: ${{ steps.measure.outputs.f60_ms }}
+      lane: f59-windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Why the fallback lane is running
+        shell: bash
+        run: |
+          set -euo pipefail
+          warm_result="${{ needs.warm.result }}"
+          forced="${{ github.event.inputs.force_fallback }}"
+          if [ "$forced" = "true" ]; then
+            echo '[F60 fallback] force_fallback=true was dispatched: this run deliberately proves the windows-latest lane (warm result='"${warm_result}"')'
+          else
+            echo "[F60 fallback] the warm lane did not succeed (result=${warm_result}) - running the labeled f59-windows-latest fallback"
+          fi
+          {
+            echo '### F60 fallback lane (f59-windows-latest)'
+            echo
+            echo "- warm job result: \`${warm_result}\`"
+            echo "- force_fallback: \`${forced:-false}\`"
+            echo
+            echo 'This job proves the fallback reaches the dashboard with the SAME prebuilt'
+            echo 'ui-dist bundle and the SAME shipped server payloads. It is not a'
+            echo 'substitute for main.yml'"'"'s full F59 lane, and it never dispatches main.yml.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: F60 cold stage + start on windows-latest (labeled f59-windows-latest)
+        id: measure
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $saArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $env:GITHUB_WORKSPACE 'scripts\f60-stage-and-start.ps1'), '-Mode', 'cold', '-Root', 'C:\ghrdp', '-Workspace', $env:GITHUB_WORKSPACE, '-UiReleaseTag', 'ui-dist', '-UiBundleSha', $env:GITHUB_SHA, '-WaitSec', '240')
+          & pwsh @saArgs
+          if ($LASTEXITCODE -ne 0) { throw ('[F60 fallback] stage-and-start exited ' + $LASTEXITCODE) }
+          Write-Host '[F60 fallback] lane=f59-windows-latest dashboard reachable'
+
+      - name: F60 fallback budget report (advisory - the GitHub-hosted floor is F59's, not 60 s)
+        shell: pwsh
+        env:
+          BUDGET_MS: ${{ github.event.inputs.budget_ms || '60000' }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          . (Join-Path $env:GITHUB_WORKSPACE 'scripts\f60-health.ps1') -DefineOnly
+          $tf = 'C:\ghrdp\startup-timing-f60.jsonl'
+          $v = Get-F60WarmBudgetVerdict -TimingFile $tf -BudgetMs ([int]$env:BUDGET_MS) -Step 'dispatch-to-dashboard'
+          Write-Host ('[F60 fallback] dispatch-to-dashboard=' + $v.ms + 'ms on windows-latest (the F59 GitHub-hosted floor; the <60 s budget belongs to the warm lane)')
+          if ($v.ms -lt 0) {
+              Write-Host ('::error title=F60 fallback::no dispatch-to-dashboard line was written (' + $v.detail + ')')
+              exit 1
+          }
+          if ($env:GITHUB_STEP_SUMMARY) {
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('- fallback dispatch-to-dashboard: **' + $v.ms + ' ms** (advisory; the warm budget is ' + $v.budgetMs + ' ms)' + "`n")
+          }
+          exit 0
+
+      - name: Collect the F60 fallback timing evidence into the runner temp dir
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $dst = Join-Path $env:RUNNER_TEMP 'f60-evidence'
+          $null = New-Item -ItemType Directory -Path $dst -Force
+          $f = 'C:\ghrdp\startup-timing-f60.jsonl'
+          if (Test-Path -LiteralPath $f) {
+              Copy-Item -LiteralPath $f -Destination $dst -Force
+              Write-Host ('[F60 evidence] ' + $f)
+              Get-Content -LiteralPath $f | ForEach-Object { Write-Host ('[F60 timing] ' + $_) }
+          } else {
+              Write-Host ('::warning title=F60 fallback evidence::' + $f + ' was not written - the cold lane recorded no dispatch-to-dashboard line')
+          }
+
+      - name: Upload the F60 fallback timing evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-timing-f60-fallback
+          if-no-files-found: warn
+          retention-days: 30
+          path: ${{ runner.temp }}/f60-evidence
+
+  # --------------------------------------------------------------------- #
+  # REPORT - one honest summary of which lane ran and what it measured.   #
+  # --------------------------------------------------------------------- #
+  report:
+    needs: [warm, fallback]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: F60 lane report
+        env:
+          WARM: ${{ needs.warm.result }}
+          FALLBACK: ${{ needs.fallback.result }}
+          WARM_MS: ${{ needs.warm.outputs.ms }}
+          FALLBACK_MS: ${{ needs.fallback.outputs.ms }}
+          MAGICDNS: ${{ needs.warm.outputs.magicdns }}
+          BUDGET: ${{ github.event.inputs.budget_ms || '60000' }}
+        run: |
+          set -uo pipefail
+          lane='none'
+          if [ "$WARM" = "success" ]; then lane='warm (sl-warm)'; fi
+          if [ "$FALLBACK" = "success" ] && [ "$WARM" != "success" ]; then lane='f59-windows-latest (fallback)'; fi
+          if [ "$FALLBACK" = "success" ] && [ "$WARM" = "skipped" ]; then lane='f59-windows-latest (forced fallback proof)'; fi
+          {
+            echo '## F60 warm-dispatch report'
+            echo
+            echo "| lane | result | dispatch-to-dashboard |"
+            echo '| --- | --- | --- |'
+            echo "| warm (sl-warm) | \`${WARM}\` | \`${WARM_MS:-n/a}\` ms |"
+            echo "| f59-windows-latest | \`${FALLBACK}\` | \`${FALLBACK_MS:-n/a}\` ms |"
+            echo
+            echo "- decisive lane: **${lane}**"
+            echo "- MagicDNS hostname: \`${MAGICDNS:-unknown}\`"
+            echo "- budget: < ${BUDGET} ms (warm lane only)"
+            echo
+            if [ "$WARM" != "success" ] && [ "$FALLBACK" != "success" ]; then
+              echo '**BOTH LANES RED** - this is a STOP, not a retry: report the exact failing step'
+              echo 'and the `startup-timing-f60-*` artifacts. Do not re-dispatch blindly.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "[F60 report] warm=${WARM} fallback=${FALLBACK} decisive=${lane}"
+          if [ "$WARM" != "success" ] && [ "$FALLBACK" != "success" ] && [ "$FALLBACK" != "skipped" ]; then
+            exit 1
+          fi
+          exit 0

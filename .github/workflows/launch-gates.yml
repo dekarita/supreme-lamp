@@ -3427,6 +3427,245 @@ jobs:
           fi
           echo 'F57 gates PASS: command-bar=live, ctx-menu=live, preview=full, drag-drop=live, trash=soft+30d, undo=20, queue=durable'
 
+      # ---- F60 GATE 1 (counted): the warm-runner provisioning lane. The pin file ----
+      # ---- must be fail-closed shaped (https, explicit versions, no '-latest-', ----
+      # ---- empty pin = bootstrap state, never an invented digest), the provision ----
+      # ---- workflow must halt on a broad SP scope before touching Azure, mask every ----
+      # ---- secret, be fail-closed on BOOTSTRAP_OK/FAILED, poll 30x10s, deny 3389 and ----
+      # ---- all inbound Internet, and the bootstrap must be idempotent + pinned. ----
+      - name: F60 warm-runner provisioning + pinned bootstrap gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '===== F60 gate: provisioning workflow + pinned warm-VM bootstrap ====='
+          for f in .github/workflows/provision-warm-runner.yml .github/workflows/f60-warm-pins-bootstrap.yml scripts/f60-bootstrap.ps1 scripts/f60-scrub-runcommand.ps1 payloads/f60-warm-pins.json payloads/f59-prebuilt-pins.json docs/F60-OPERATOR-SETUP.md; do
+            test -f "$f" || { echo "F60: $f missing" >&2; exit 1; }
+          done
+          # YAML must actually parse (PyYAML is preinstalled on ubuntu-latest; if it is
+          # ever missing this gate installs it or FAILS CLOSED - it must not silently skip).
+          for yml in .github/workflows/provision-warm-runner.yml .github/workflows/f60-warm-pins-bootstrap.yml .github/workflows/warm-dispatch.yml; do
+            python3 -c "
+          import sys, yaml
+          try:
+              yaml.safe_load(open('$yml'))
+          except ModuleNotFoundError:
+              print('F60: PyYAML missing - installing for the parse gate')
+              import subprocess
+              subprocess.run([sys.executable, '-m', 'pip', 'install', '--quiet', '--user', 'pyyaml'], check=True)
+              yaml.safe_load(open('$yml'))
+          except Exception as e:
+              print('F60: $yml does not parse: ' + str(e), file=sys.stderr)
+              sys.exit(1)
+          print('F60 yaml parse ok: $yml')
+          "
+          done
+          wf=.github/workflows/provision-warm-runner.yml
+          for tok in "workflow_dispatch:" "action:" "create" "verify" "teardown" "region:" "southeastasia" "centralindia" "vm_size:" "Standard_B2s" "timeout-minutes: 45" "contents: read" "actions: write" "concurrency:" "runs-on: ubuntu-latest" "uses: actions/checkout@v4" "az login --service-principal" "az account set --subscription" "az logout" "NO THIRD-PARTY ACTIONS" "runner_token" "RUNNER_REGISTRATION_TOKEN" "secrets.AZURE_CREDENTIALS" "Preflight" "f59-prebuilt-pins.json" "f60-warm-pins.json" "SP scope too broad" "F60 HALT" "DenyRdpInternet" "DenyAllInternetInbound" "default-allow-rdp" "MicrosoftWindowsServer:WindowsServer:2022-datacenter" "--os-disk-size-gb 128" "--data-disk-sizes-gb 32" "--public-ip-sku Standard" "--no-wait" "az vm wait" "registration-token" "::add-mask::" "az vm run-command invoke" "RunPowerShellScript" "@scripts/f60-bootstrap.ps1" "BOOTSTRAP_OK" "BOOTSTRAP_FAILED" "f60-scrub-runcommand.ps1" "seq 1 30" "sleep 10" "F60 STOP" "MagicDNS hostname" "runner id" "temporary public IP" "az group delete" "NO ARC / NO Kubernetes / NO GitHub Larger Runners"; do
+            grep -qF -- "$tok" "$wf" || { echo "F60: provision-warm-runner.yml missing: $tok" >&2; exit 1; }
+          done
+          # F60 references NO third-party action. A mutable tag such as
+          # azure/login@v2 both (a) makes GitHub reject the whole file when the repo's
+          # Actions policy only allows GitHub-authored actions - the run then dies in
+          # 0 s as "workflow file issue" and the workflow cannot even be dispatched -
+          # and (b) contradicts F60's own pinning rule. `az` is preinstalled on
+          # ubuntu-latest, so the SP login is plain CLI.
+          third=$(grep -hE '^[[:space:]]*uses: ' .github/workflows/provision-warm-runner.yml .github/workflows/warm-dispatch.yml .github/workflows/f60-warm-pins-bootstrap.yml | grep -vE 'uses: actions/' || true)
+          test -z "$third" || { echo "F60: an F60 workflow references a non-actions/* action:" >&2; printf '%s\n' "$third" >&2; exit 1; }
+          echo 'F60 action-provenance gate PASS: every uses: in the three F60 workflows is actions/*'
+          # ... and every permissions key must be one GitHub actually accepts: an
+          # unknown key (e.g. `administration`) invalidates the entire workflow file.
+          python3 - <<'PYEOF'
+          import sys, yaml
+          ok = {'actions', 'attestations', 'checks', 'contents', 'deployments', 'discussions',
+                'id-token', 'issues', 'metadata', 'packages', 'pages', 'pull-requests',
+                'repository-projects', 'security-events', 'statuses'}
+          files = ['.github/workflows/provision-warm-runner.yml',
+                   '.github/workflows/warm-dispatch.yml',
+                   '.github/workflows/f60-warm-pins-bootstrap.yml']
+          for f in files:
+              d = yaml.safe_load(open(f))
+              def check(perms, where, f=f):
+                  for k in (perms or {}):
+                      if k not in ok:
+                          print('F60: ' + f + ' ' + where + ' declares an unknown permissions key: ' + str(k))
+                          sys.exit(1)
+              check(d.get('permissions'), 'at workflow level')
+              for jn, j in (d.get('jobs') or {}).items():
+                  check(j.get('permissions'), 'in job ' + str(jn))
+          print('F60 permissions-key gate PASS: only documented workflow permission keys are declared')
+          PYEOF
+          # the lockdown must exist before the VM does
+          nsg=$(grep -nF 'Create the resource group + the Tailscale-only NSG' "$wf" | head -1 | cut -d: -f1)
+          vm=$(grep -nF 'name: Create the warm VM' "$wf" | head -1 | cut -d: -f1)
+          test -n "$nsg" && test -n "$vm" && test "$nsg" -lt "$vm" || { echo "F60: the NSG lockdown must precede the VM create" >&2; exit 1; }
+          # masking must precede the command that CONSUMES each secret value
+          mask_use() {
+            secret="$1"; use="$2"
+            grep -qF "echo \"::add-mask::\${$secret}\"" "$wf" || { echo "F60: $secret is not add-masked" >&2; exit 1; }
+            m=$(grep -nF "::add-mask::\${$secret}" "$wf" | head -1 | cut -d: -f1)
+            u=$(grep -nF -- "$use" "$wf" | head -1 | cut -d: -f1)
+            test -n "$m" && test -n "$u" && test "$m" -lt "$u" || { echo "F60: $secret is consumed ($use) before it is masked" >&2; exit 1; }
+            echo "F60 masking OK: $secret masked at line $m, consumed at line $u ($use)"
+          }
+          mask_use VM_ADMIN_PASSWORD '--admin-password'
+          mask_use TAILSCALE_AUTHKEY 'TailscaleAuthKey='
+          mask_use GHRDP_RELEASE_READONLY_TOKEN 'RepoAccessToken='
+          tok=$(grep -nF '::add-mask::$tok' "$wf" | head -1 | cut -d: -f1)
+          env_line=$(grep -nF 'RUNNER_TOKEN<<F60EOF' "$wf" | head -1 | cut -d: -f1)
+          test -n "$tok" && test -n "$env_line" && test "$tok" -lt "$env_line" || { echo "F60: the registration token must be masked before it is persisted" >&2; exit 1; }
+          # the run-command parameters must include the spec'd set and fail closed on markers
+          rc=$(awk '/name: Run scripts\/f60-bootstrap.ps1/,/name: Scrub the Run Command parameter files/' "$wf")
+          for tok in "TailscaleAuthKey=" "RunnerToken=" "RepoUrl=https://github.com/" "UiReleaseTag=" "RepoRef=" "UiBundleSha=" "RepoAccessToken=" "grep -q 'BOOTSTRAP_FAILED'" "grep -q 'BOOTSTRAP_OK'"; do
+            printf '%s' "$rc" | grep -qF -- "$tok" || { echo "F60: run-command step missing: $tok" >&2; exit 1; }
+          done
+          bs=scripts/f60-bootstrap.ps1
+          for tok in "[string]\$TailscaleAuthKey" "[string]\$RunnerToken" "[string]\$RepoUrl" "[string]\$UiReleaseTag" "\$ErrorActionPreference = 'Stop'" "\$ProgressPreference = 'SilentlyContinue'" "BOOTSTRAP_OK" "BOOTSTRAP_FAILED: " "MAGICDNS=" "EMPTY sha256 pin" "SHA-256 MISMATCH for" "Test-F59AssetSha256" "--auth-key=file:" "--advertise-tags=" "tag:ghrdp-warm" "--hostname=" "--accept-routes=false" "aria2c-nssm" "qbittorrent-nssm" "ghrdp-ui-nssm" "ghrdp-server-nssm" "SERVICE_AUTO_START" "LocalSystem" "--runasservice" "--unattended" "self-hosted,windows,sl-warm" "idempotent" "Clear-F60RunCommandSecrets" "Initialize-GhrdpQbt" "Install-F60ActionsRunner" "config.cmd" "ui-dist-" "Get-F60ReleaseAsset"; do
+            grep -qF -- "$tok" "$bs" || { echo "F60: f60-bootstrap.ps1 missing: $tok" >&2; exit 1; }
+          done
+          # no Chocolatey / ARC / K8s anywhere in the provisioning lane
+          for f in "$wf" "$bs" .github/workflows/f60-warm-pins-bootstrap.yml; do
+            ! grep -qiE "choco install|chocolatey install|arc generate|az aks|helm install|actions-runner-controller|larger-runner" "$f" || { echo "F60: banned approach in $f (no Chocolatey / ARC / K8s / Larger Runners)" >&2; exit 1; }
+          done
+          # the bootstrap must never print a secret parameter
+          ! grep -nE "(Write-Host|Write-Output|Add-Content).*(\\\$TailscaleAuthKey|\\\$RunnerToken|\\\$RepoAccessToken)" "$bs" || { echo "F60: a secret parameter appears in an output statement" >&2; exit 1; }
+          # the pin file must be fail-closed shaped
+          python3 - <<'PYEOF'
+          import json, re, sys
+          pins = json.load(open('payloads/f60-warm-pins.json'))
+          if pins.get('schema') != 'ghrdp-f60-warm-pins/1':
+              print('F60: unexpected pins schema'); sys.exit(1)
+          for name in ['tailscale_msi', 'nssm', 'node_win_x64_zip', 'actions_runner_win_x64_zip']:
+              a = pins['assets'].get(name)
+              if not a:
+                  print('F60: pins.assets.' + name + ' missing'); sys.exit(1)
+              sha = a.get('sha256', '')
+              state = a.get('pin_state', '')
+              if state == 'bootstrap':
+                  if sha:
+                      print('F60: ' + name + ' is a bootstrap pin but carries a digest (either commit the real one or empty it)'); sys.exit(1)
+                  if 'bootstrap' not in (a.get('bootstrap_note') or ''):
+                      print('F60: ' + name + ' must document how its pin gets filled'); sys.exit(1)
+              elif not re.fullmatch(r'[0-9a-f]{64}', sha):
+                  print('F60: ' + name + ' has an invalid sha256 (' + repr(sha) + ')'); sys.exit(1)
+              url = a.get('url', '')
+              if url:
+                  if not url.startswith('https://'):
+                      print('F60: ' + name + ' URL is not https'); sys.exit(1)
+                  if '-latest-' in url or '/latest/' in url:
+                      print('F60: ' + name + ' uses a moving latest URL - pins need an explicit version'); sys.exit(1)
+          ar = pins['assets']['actions_runner_win_x64_zip']
+          if ar.get('pin_state') != 'pinned':
+              print('F60: the actions/runner digest is already public in the release notes - commit it'); sys.exit(1)
+          if 'actions-runner-win-x64-' + ar['version'] + '.zip' not in ar['url']:
+              print('F60: the runner URL does not match the pinned version'); sys.exit(1)
+          reused = pins['reused_f59_assets']
+          if reused.get('ui_release_tag') != 'ui-dist' or reused.get('pins_file') != 'payloads/f59-prebuilt-pins.json':
+              print('F60: the F59 reuse block must keep pointing at the committed pins + the ui-dist release'); sys.exit(1)
+          if reused.get('ui_verifier') != 'scripts/f59-verify-sha256.mjs':
+              print('F60: the UI bundle must be verified by the shipped F59 verifier'); sys.exit(1)
+          f59 = json.load(open('payloads/f59-prebuilt-pins.json'))
+          for k in ['aria2c', 'qbittorrent']:
+              if not re.fullmatch(r'[0-9a-f]{64}', f59['assets'][k]['sha256']):
+                  print('F60: the F59 ' + k + ' pin must stay committed'); sys.exit(1)
+          print('F60 pin-file gate PASS (4 F60 assets + 2 reused F59 assets, fail-closed shapes)')
+          PYEOF
+          # the one-time pin-recording workflow must cross-check two sources for Node
+          pb=.github/workflows/f60-warm-pins-bootstrap.yml
+          for tok in "SHASUMS256.txt" "Node digest CROSS-CHECK FAILED" "BEGIN SHA win-x64" "actions/runner pin MISMATCH" "f60-warm-pins.observed.json" "checksums.txt" "gh release upload warm-pins" "contents: write"; do
+            grep -qF -- "$tok" "$pb" || { echo "F60: f60-warm-pins-bootstrap.yml missing: $tok" >&2; exit 1; }
+          done
+          # the operator doc: the 10-minute path AND the preserved manual 7 steps
+          d=docs/F60-OPERATOR-SETUP.md
+          for tok in "10-minute path" "sl-warm-rg" "az ad sp create-for-rbac" "--scopes /subscriptions/<SUB_ID>/resourceGroups/sl-warm-rg" "tag:ghrdp-warm" "openssl rand -base64 32" "AZURE_CREDENTIALS" "TAILSCALE_AUTHKEY" "VM_ADMIN_PASSWORD" "GHRDP_RELEASE_READONLY_TOKEN" "runner_token" "RUNNER_REGISTRATION_TOKEN" "Standard_B2s" "20-30 min" "MagicDNS" "Appendix A - manual 7-step setup" "Appendix B" "Appendix C" "HALT and STOP conditions" "deallocate"; do
+            grep -qF -- "$tok" "$d" || { echo "F60: F60-OPERATOR-SETUP.md missing: $tok" >&2; exit 1; }
+          done
+          for n in 1 2 3 4 5 6 7; do
+            grep -qE "^${n}\. \*\*" "$d" || { echo "F60: the manual appendix lost step $n" >&2; exit 1; }
+          done
+          echo 'F60-P gate PASS: the provisioning lane is dispatch-only, SP-scope-guarded, fully masked, pin-fail-closed and documented'
+          node --test tests/f60-provision-contract.test.js
+      # ---- F60 GATE 2 (counted): the warm runtime lane. Budget <60000 ms measured ----
+      # ---- to a real HTTP 200, three-strike STOP on the VM, health probe fail-closed ----
+      # ---- and injectable, labeled windows-latest fallback, and F59 untouched. ----
+      - name: F60 warm-dispatch + health + fallback gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '===== F60 gate: warm dispatch lane (<60s budget, 3-strike STOP, labeled fallback) ====='
+          for f in .github/workflows/warm-dispatch.yml scripts/f60-health.ps1 scripts/f60-stage-and-start.ps1 payloads/f59-timing.ps1 scripts/f59-verify-sha256.mjs; do
+            test -f "$f" || { echo "F60: $f missing" >&2; exit 1; }
+          done
+          wf=.github/workflows/warm-dispatch.yml
+          for tok in "workflow_dispatch:" "force_fallback" "budget_ms" "restart_services" "default: '60000'" "contents: read" "runs-on: [self-hosted, windows, sl-warm]" "timeout-minutes: 20" "needs: warm" "runs-on: windows-latest" "f59-windows-latest" "'-Mode', 'warm'" "'-Mode', 'cold'" "startup-timing-f60.jsonl" "Get-F60WarmBudgetVerdict" "f60-warm-strikes.json" "-MaxStrikes 3" "F60 STOP" "stay on f59-windows-latest" "RUNNER_TRACKING_ID" "scripts/f60-health.ps1" "F60_HEALTH_FAILED" "F60_HEALTH_OK" "name: startup-timing-f60-warm" "name: startup-timing-f60-fallback" "BOTH LANES RED" "report:"; do
+            grep -qF -- "$tok" "$wf" || { echo "F60: warm-dispatch.yml missing: $tok" >&2; exit 1; }
+          done
+          # the warm lane must not read any provisioning secret and must not dispatch main.yml
+          for s in TAILSCALE_AUTHKEY VM_ADMIN_PASSWORD AZURE_CREDENTIALS GHRDP_RELEASE_READONLY_TOKEN; do
+            ! grep -qF "secrets.$s" "$wf" || { echo "F60: warm-dispatch.yml reads the provisioning secret $s" >&2; exit 1; }
+          done
+          ! grep -qE "gh workflow run|workflow: main.yml" "$wf" scripts/f60-stage-and-start.ps1 scripts/f60-health.ps1 scripts/f60-bootstrap.ps1 || { echo "F60: F60 must never dispatch another workflow" >&2; exit 1; }
+          # main.yml stays untouched by F60 (additive only)
+          ! grep -qF "sl-warm" .github/workflows/main.yml || { echo "F60: main.yml must not mention the warm runner" >&2; exit 1; }
+          ! grep -qF "warm-dispatch" .github/workflows/main.yml || { echo "F60: main.yml must not reference the F60 lane" >&2; exit 1; }
+          # the F59 rdp job must still default to windows-latest (rdp: is the last
+          # job in main.yml, so compare line numbers instead of an awk range)
+          rdp_line=$(grep -n '^  rdp:$' .github/workflows/main.yml | head -1 | cut -d: -f1)
+          runs_line=$(grep -nF "runner_target || 'windows-latest'" .github/workflows/main.yml | head -1 | cut -d: -f1)
+          test -n "$rdp_line" && test -n "$runs_line" && test "$runs_line" -gt "$rdp_line" || { echo "F60: the F59 rdp job lost its windows-latest default" >&2; exit 1; }
+          echo "F60 additive check OK: main.yml rdp job (line $rdp_line) still defaults to windows-latest (line $runs_line)"
+          # (main.yml legitimately names self-hosted in the dispatch CHOICE list at
+          # the top of the file; the ban is on the rdp JOB, exactly like the F59 gate)
+          if sed -n '/^  rdp:/,/^  [a-z][a-z-]*:/p' .github/workflows/main.yml | grep -qF 'self-hosted'; then echo 'F60: the rdp job gained a self-hosted runner' >&2; exit 1; fi
+          h=scripts/f60-health.ps1
+          for tok in "F60_HEALTH_OK" "F60_HEALTH_FAILED: " "f60-health.json" "[int]\$DashPort = 7331" "[int]\$UiPort = 4173" "[int]\$Aria2Port = 6800" "aria2.getVersion" "status --json" "Invoke-F60RedactText" "[scriptblock]\$ServiceProbe" "[scriptblock]\$HttpProbe" "[scriptblock]\$TailscaleProbe" "[scriptblock]\$Aria2Probe" "[switch]\$DefineOnly" "\$global:F60HealthExit" "function Get-F60WarmBudgetVerdict" "[int]\$MaxStrikes = 3" "maxStrikes = \$MaxStrikes" "stop       = (\$strikes -ge \$MaxStrikes)" "if (\$history.Count -gt 20)"; do
+            grep -qF -- "$tok" "$h" || { echo "F60: f60-health.ps1 missing: $tok" >&2; exit 1; }
+          done
+          # the F9n lesson: `tailscale ip` 401s post-connect, so it must never be called
+          # (the file's header comment names `tailscale ip` to explain why it is NOT
+          # called, so only executable lines are inspected)
+          if grep -vE '^[[:space:]]*#' "$h" | grep -nE "tailscale(\.exe)?[\"']? +ip\b"; then echo "F60: the health probe calls 'tailscale ip' (F9n: it 401s when the node is owned by another account)" >&2; exit 1; fi
+          grep -qF 'status --json' "$h" || { echo "F60: the tailscale probe must read 'status --json' (Online + DNSName + TailscaleIPs)" >&2; exit 1; }
+          s=scripts/f60-stage-and-start.ps1
+          for tok in "[ValidateSet('warm', 'cold')]" "f59-verify-sha256.mjs" "Initialize-GhrdpQbt" "Get-F60ReleaseAssetInfo" "Import-F60Transport" "startup-timing-f60.jsonl" "GHRDP_F59_TIMING" "Stop-F59Step -Step 'dispatch-to-dashboard'" "ui-v2.html" "server-ok.txt" "F60_STAGE_RESULT" "\$script:F60UiFacingServices" "Start-F60ColdProcesses" "function Get-F60PayloadList"; do
+            grep -qF -- "$tok" "$s" || { echo "F60: f60-stage-and-start.ps1 missing: $tok" >&2; exit 1; }
+          done
+          ! grep -qE "0\.0\.0\.0'\)|Address' = '0\.0\.0\.0" "$s" || { echo "F60: the stager must never bind the qBittorrent WebUI to a wildcard" >&2; exit 1; }
+          # the payload list must be ONE list across the bootstrap and the stager
+          python3 - <<'PYEOF'
+          import re, sys
+          def lst(text, marker):
+              i = text.index(marker)
+              j = re.search(r'\n\s*\)', text[i:])
+              seg = text[i:i + j.start()]
+              return re.findall(r"'([^']+)'", seg)
+          boot = open('scripts/f60-bootstrap.ps1', encoding='utf-8').read()
+          stage = open('scripts/f60-stage-and-start.ps1', encoding='utf-8').read()
+          bl = lst(boot, 'function Get-F60StageList')
+          bp = sorted(x for x in bl if x.startswith('payloads/'))
+          sp = sorted(lst(stage, '$script:F60PayloadList = @('))
+          st = lst(stage, '$script:F60ToolList = @(')
+          bs = [x for x in bl if x.startswith('scripts/')]
+          if bp != sp:
+              print('F60: payload-list drift between the bootstrap and the stager'); sys.exit(1)
+          missing = [x for x in st if x not in bs]
+          if missing:
+              print('F60: the stager needs on the VM: ' + ', '.join(missing)); sys.exit(1)
+          import os
+          for rel in bp + st:
+              if not os.path.exists(rel):
+                  print('F60: staged file does not exist: ' + rel); sys.exit(1)
+          main = open('.github/workflows/main.yml', encoding='utf-8').read()
+          staged = set(re.findall(r'cp (?:-f )?"?\$GITHUB_WORKSPACE/(payloads/[^"\s]+)"?', main))
+          staged |= set(re.findall(r"cp -f (payloads/[^'\"\s]+)", main))
+          staged |= set(re.findall(r"Copy-Item -Path '(payloads/[^']+)'", main))
+          excluded = {'payloads/Cargo.toml', 'payloads/main.rs'}
+          gap = sorted(x for x in staged if x not in set(sp) and x not in excluded and not x.endswith('/'))
+          if gap:
+              print('F60: main.yml stages payloads the F60 lane would not: ' + ', '.join(gap)); sys.exit(1)
+          print('F60 stage-list gate PASS (' + str(len(bp)) + ' payloads identical, ' + str(len(st)) + ' tools, Rust exclusions documented)')
+          PYEOF
+          echo 'F60-W gate PASS: warm budget <60000 ms to a real HTTP 200, 3-strike STOP, fail-closed health, labeled fallback, F59 untouched'
+          node --test tests/f60-warm-dispatch.test.js
   windows-native:
     runs-on: windows-latest
     steps:
@@ -3924,3 +4163,148 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw ('F59: prewarm/verify lab failed with exit ' + $LASTEXITCODE) }
           Write-Host 'F59 prewarm + verify lab PASS'
 
+      # ---- F60 LAB (windows-native, single commit status like F57/F56-d): the ----
+      # ---- warm-runner PowerShell lab. Proves the parts a text gate cannot: the ----
+      # ---- four F60 scripts PARSE, the pin shape is refused when EMPTY (fail-closed), ----
+      # ---- Test-F60AssetSha256 rejects a mismatched fixture, secrets are redacted out ----
+      # ---- of log text, the service registration takes the IDEMPOTENT branch for an ----
+      # ---- existing service, Mount-F60DataDisk takes the already-mounted branch, the ----
+      # ---- health probe returns F60_HEALTH_OK / F60_HEALTH_FAILED with injected probes, ----
+      # ---- and Get-F60WarmBudgetVerdict implements the three-strike STOP. ----
+      - name: F60 warm-runner PS lab (bootstrap pins, idempotence, health, budget strikes)
+        timeout-minutes: 15
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $repo = [string]$env:GITHUB_REPOSITORY
+          $sha = [string]$env:GITHUB_SHA
+          $runId = [string]$env:GITHUB_RUN_ID
+          $tok = [string]$env:GH_TOKEN
+          $context = 'f60-warm-lab'
+          $labState = 'success'
+          $labDesc = 'F60 warm-runner PS lab green (pins fail-closed, idempotent branches, health, budget strikes)'
+          # Single commit status, same pattern as the F57/F56-d labs: published on
+          # success AND failure so a red lab can never read as "no lab ran".
+          function Publish-F60Status([string]$state, [string]$description) {
+              if (-not $repo -or -not $sha) { Write-Host ('F60: repo/sha unknown (' + $repo + ' @ ' + $sha + ') - status not publishable'); return }
+              if (-not $tok) { Write-Host 'F60: GH_TOKEN is empty - the commit status cannot be published (the step result below still stands)'; return }
+              if ($description.Length -gt 140) { $description = $description.Substring(0, 137) + '...' }
+              $st = @{
+                  state       = $state
+                  description = $description
+                  context     = $context
+                  target_url  = ('https://github.com/' + $repo + '/actions/runs/' + $runId)
+              } | ConvertTo-Json -Compress
+              try {
+                  $r = Invoke-RestMethod -Uri ('https://api.github.com/repos/' + $repo + '/statuses/' + $sha) -Method Post -Headers @{ Authorization = ('Bearer ' + $tok); Accept = 'application/vnd.github+json'; 'User-Agent' = 'ghrdp-f60' } -Body $st -ContentType 'application/json' -TimeoutSec 30
+                  Write-Host ('F60: commit status "' + $context + '" = ' + $state + ' (id ' + $r.id + ')')
+              } catch {
+                  Write-Host ('F60: could not publish the "' + $context + '" commit status: ' + $_.Exception.Message)
+              }
+          }
+          try {
+              $parseTargets = @(
+                  'payloads\f59-prebuilt-verify.ps1', 'scripts\f60-bootstrap.ps1',
+                  'scripts\f60-health.ps1', 'scripts\f60-stage-and-start.ps1',
+                  'scripts\f60-scrub-runcommand.ps1', 'tests\f60-bootstrap-lab.ps1'
+              )
+              Write-Host ('F60: parsing ' + $parseTargets.Count + ' PowerShell surfaces for syntax errors')
+              foreach ($t in $parseTargets) {
+                  $tokens = $null; $errors = $null
+                  $null = [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $t), [ref]$tokens, [ref]$errors)
+                  if ($errors -and $errors.Count -gt 0) {
+                      throw ('F60: ' + $t + ' has ' + $errors.Count + ' parse error(s): ' + (($errors | ForEach-Object { ($_.Extent.StartLineNumber.ToString() + ':' + $_.Message) }) -join ' | '))
+                  }
+                  Write-Host ('F60: parse OK: ' + $t + ' (' + $tokens.Count + ' tokens)')
+              }
+              $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\f60-bootstrap-lab.ps1 2>&1
+              $code = $LASTEXITCODE
+              $out | ForEach-Object { Write-Host ('[F60 lab] ' + $_) }
+              if ($code -ne 0) {
+                  # Carry the REASON out of the runner: the log blob is not always
+                  # reachable, but an ::error:: annotation and the f60-warm-lab
+                  # commit-status description are both readable through the API, so a
+                  # red lab always names its first failing check.
+                  $failLines = @($out | Where-Object { ([string]$_).Contains('[F60 lab] FAIL ') } | ForEach-Object { ([string]$_).Trim() })
+                  $tail = @($out | Where-Object { ([string]$_).Contains('F60_LAB_FAILED') } | ForEach-Object { ([string]$_).Trim() })
+                  $first = if ($failLines.Count -gt 0) { $failLines[0] } elseif ($tail.Count -gt 0) { $tail[0] } else { ([string]($out | Select-Object -Last 1)).Trim() }
+                  foreach ($l in @($failLines | Select-Object -First 3)) {
+                      Write-Host ('::error title=F60 lab check::' + (($l -replace "`r", ' ') -replace "`n", ' '))
+                  }
+                  throw ('F60: tests\f60-bootstrap-lab.ps1 exited ' + $code + ' with ' + $failLines.Count + ' failing check(s); first: ' + $first)
+              }
+              $txt = ($out | Out-String)
+              if ($txt -notmatch 'F60_LAB_OK') { throw 'F60: the bootstrap lab did not report F60_LAB_OK' }
+              Write-Host ('F60: lab OK on ' + $PSVersionTable.PSVersion.ToString())
+              $pester = $null
+              try { $pester = Get-Module -ListAvailable -Name Pester | Where-Object { $_.Version -ge [Version]'5.0.0' } | Select-Object -First 1 } catch { $pester = $null }
+              if ($pester) {
+                  Write-Host ('F60: Pester ' + $pester.Version.ToString() + ' available - running tests\f60-bootstrap.Tests.ps1')
+                  Import-Module -Name $pester.Path -Force
+                  $cfg = New-PesterConfiguration
+                  $cfg.Run.Path = 'tests\f60-bootstrap.Tests.ps1'
+                  $cfg.Run.PassThru = $true
+                  $cfg.Output.Verbosity = 'Detailed'
+                  $res = Invoke-Pester -Configuration $cfg
+                  if ($res.FailedCount -gt 0) {
+                      $names = @($res.Failed | ForEach-Object { $_.Name }) -join '; '
+                      throw ('F60: Pester reported ' + $res.FailedCount + ' failure(s): ' + $names)
+                  }
+                  Write-Host ('F60: Pester OK (' + $res.PassedCount + ' passed)')
+              } else {
+                  Write-Host '::warning title=F60 Pester unavailable::Pester 5+ is not installed on this runner image, so tests\f60-bootstrap.Tests.ps1 did not run; the hand-rolled tests\f60-bootstrap-lab.ps1 covered the same four behaviours (param validation, fail-closed pins, idempotent branches, health + budget strikes)'
+              }
+              # [F60 §5] PSScriptAnalyzer over the four shipped F60 scripts.
+              # ERROR severity fails the lab (that is the "analyzer clean" contract).
+              # Warning/Information findings are REPORTED, not failed: the house style
+              # already ships Initialize-/Resolve-/Stage- verbs (payloads/ghrdp-qbt.ps1,
+              # payloads/ghrdp-server.ps1) and deliberate empty catch blocks, and
+              # renaming those would break the F59 dot-source contract for no safety
+              # gain - so PSUseApprovedVerbs is the one documented exclusion.
+              $analyzer = $null
+              try { $analyzer = Get-Module -ListAvailable -Name PSScriptAnalyzer | Select-Object -First 1 } catch { $analyzer = $null }
+              if (-not $analyzer) {
+                  try {
+                      Install-Module -Name PSScriptAnalyzer -Scope CurrentUser -Force -AllowClobber -SkipPublisherCheck -ErrorAction Stop
+                      $analyzer = Get-Module -ListAvailable -Name PSScriptAnalyzer | Select-Object -First 1
+                  } catch { $analyzer = $null }
+              }
+              if ($analyzer) {
+                  Import-Module -Name $analyzer.Path -Force
+                  Write-Host ('F60: PSScriptAnalyzer ' + $analyzer.Version.ToString() + ' over the four F60 scripts')
+                  $anTargets = @('scripts\f60-bootstrap.ps1', 'scripts\f60-health.ps1', 'scripts\f60-stage-and-start.ps1', 'scripts\f60-scrub-runcommand.ps1')
+                  $anSettings = @{ ExcludeRules = @('PSUseApprovedVerbs') }
+                  $anAll = @()
+                  foreach ($a in $anTargets) {
+                      $anAll += @(Invoke-ScriptAnalyzer -Path $a -Settings $anSettings)
+                  }
+                  $anErr = @($anAll | Where-Object { [string]$_.Severity -eq 'Error' })
+                  $anWarn = @($anAll | Where-Object { [string]$_.Severity -eq 'Warning' })
+                  $anInfo = @($anAll | Where-Object { [string]$_.Severity -eq 'Information' })
+                  Write-Host ('F60: analyzer findings error=' + $anErr.Count + ' warning=' + $anWarn.Count + ' information=' + $anInfo.Count)
+                  foreach ($f in @($anAll | Select-Object -First 40)) {
+                      Write-Host ('F60:   [' + $f.Severity + '] ' + $f.RuleName + ' @ ' + (Split-Path -Leaf $f.ScriptPath) + ':' + $f.Line + ' - ' + $f.Message)
+                  }
+                  if ($anErr.Count -gt 0) {
+                      $names = @($anErr | ForEach-Object { ($_.RuleName + '@' + (Split-Path -Leaf $_.ScriptPath) + ':' + $_.Line) }) -join '; '
+                      throw ('F60: PSScriptAnalyzer reported ' + $anErr.Count + ' Error-severity finding(s): ' + $names)
+                  }
+                  if ($env:GITHUB_STEP_SUMMARY) {
+                      Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('- F60 PSScriptAnalyzer: 0 errors, ' + $anWarn.Count + ' warnings, ' + $anInfo.Count + ' informational (PSUseApprovedVerbs excluded by design)' + "`n")
+                  }
+              } else {
+                  Write-Host '::warning title=F60 PSScriptAnalyzer unavailable::PSScriptAnalyzer could not be found or installed on this runner image, so the four F60 scripts were not analyzer-checked; the parse gate and the behavioural lab above still ran'
+              }
+          } catch {
+              $labState = 'failure'
+              $msg = [string]$_.Exception.Message
+              if ($msg.Length -gt 200) { $msg = $msg.Substring(0, 200) }
+              $labDesc = 'F60 warm-runner PS lab red: ' + $msg
+              Write-Host ('::error title=F60 lab::' + $msg)
+              Write-Host ('F60 LAB FAIL CONTEXT: ' + $_.ScriptStackTrace)
+          }
+          Publish-F60Status -state $labState -description $labDesc
+          if ($labState -ne 'success') { exit 1 }
+          Write-Host ('F60 windows-native lab GREEN on ' + $PSVersionTable.PSVersion.ToString() + ' (context ' + $context + ')')

@@ -1,0 +1,235 @@
+name: F60 warm pins bootstrap (official-source SHA-256 digests)
+# [F60 §3] ONE-CLICK DIGEST BOOTSTRAP for payloads/f60-warm-pins.json.
+#
+# Why this workflow exists: the F60 gate set says "unpinned binary download =
+# HALT", and scripts/f60-bootstrap.ps1 is fail-closed (it reuses the shipped F59
+# verifier, which THROWS on an empty pin). Three of the four warm-VM artifacts
+# come from hosts the agent sandbox cannot reach (pkgs.tailscale.com, nssm.cc,
+# nodejs.org), so their digests could not be computed honestly at authoring time.
+# Inventing a digest would be worse than leaving it empty: an empty pin is
+# REFUSED, a wrong pin silently bricks the provision run. So the digests are
+# recorded HERE, on a GitHub-hosted runner that can reach the official sources,
+# and then committed - exactly the F59 prebuilt-binaries bootstrap pattern.
+#
+# The fourth artifact (actions/runner) is ALREADY pinned from the official
+# release notes; this workflow re-asserts that pin against the release notes of
+# the pinned tag instead of downloading 190 MB to recompute it.
+#
+# Nothing here touches main.yml, and nothing here provisions Azure.
+on:
+  workflow_dispatch:
+    inputs:
+      node_major:
+        description: 'Node LTS major to pin for the warm VM (matches main.yml setup-node)'
+        required: false
+        default: '20'
+      mode:
+        description: 'record = fill empty pins and publish the observed file; assert = fail closed unless every committed pin matches the official source'
+        required: false
+        type: choice
+        options:
+          - record
+          - assert
+        default: record
+
+permissions:
+  contents: write   # publish the observed pins + checksums to the `warm-pins` release
+
+jobs:
+  pins:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Download official sources, cross-check digests, publish the observed pins file
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_MAJOR: ${{ github.event.inputs.node_major || '20' }}
+          MODE: ${{ github.event.inputs.mode || 'record' }}
+        run: |
+          set -euo pipefail
+          pins=payloads/f60-warm-pins.json
+          test -f "$pins" || { echo 'F60: payloads/f60-warm-pins.json missing' >&2; exit 1; }
+          work="$RUNNER_TEMP/f60-pins"
+          rm -rf "$work"; mkdir -p "$work"
+
+          fetch() { # fetch <url> <out> <label>
+            local url="$1" out="$2" label="$3" a
+            for a in 1 2 3; do
+              if curl -fL --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 900 -o "$out" "$url" 2>/dev/null; then
+                if [ -s "$out" ]; then
+                  echo "[F60 pins] $label downloaded ($(wc -c < "$out") bytes) from $url"
+                  return 0
+                fi
+              fi
+              echo "[F60 pins] $label attempt $a failed; retrying"
+              sleep $((3 * a))
+            done
+            echo "[F60 pins] could not download $label from the official source: $url" >&2
+            return 1
+          }
+
+          # ---- 1. Tailscale MSI (official pkgs.tailscale.com, EXPLICIT version) ----
+          ts_url=$(python3 -c "import json;print(json.load(open('$pins'))['assets']['tailscale_msi']['url'])")
+          ts_name=$(python3 -c "import json;print(json.load(open('$pins'))['assets']['tailscale_msi']['name'])")
+          fetch "$ts_url" "$work/$ts_name" 'Tailscale MSI'
+          ts_sha=$(sha256sum "$work/$ts_name" | awk '{print $1}')
+
+          # ---- 2. NSSM (official nssm.cc release zip) ----
+          ns_url=$(python3 -c "import json;print(json.load(open('$pins'))['assets']['nssm']['url'])")
+          ns_name=$(python3 -c "import json;print(json.load(open('$pins'))['assets']['nssm']['name'])")
+          fetch "$ns_url" "$work/$ns_name" 'NSSM'
+          ns_sha=$(sha256sum "$work/$ns_name" | awk '{print $1}')
+
+          # ---- 3. Node LTS win-x64 zip (official nodejs.org, digest CROSS-CHECKED
+          #         against the published SHASUMS256.txt - two independent sources
+          #         must agree before the digest is recorded) ----
+          node_ver=$(curl -fsSL --retry 3 --connect-timeout 30 --max-time 120 https://nodejs.org/dist/index.json \
+            | NODE_MAJOR="$NODE_MAJOR" python3 -c "
+          import json, os, sys
+          major = 'v' + os.environ['NODE_MAJOR'] + '.'
+          for e in json.load(sys.stdin):
+              if str(e.get('version','')).startswith(major) and e.get('lts'):
+                  print(e['version']); break
+          else:
+              sys.exit('F60: no LTS release found for major ' + os.environ['NODE_MAJOR'])
+          ")
+          node_name="node-${node_ver}-win-x64.zip"
+          node_url="https://nodejs.org/dist/${node_ver}/${node_name}"
+          fetch "https://nodejs.org/dist/${node_ver}/SHASUMS256.txt" "$work/SHASUMS256.txt" "Node ${node_ver} SHASUMS256.txt"
+          node_published=$(awk -v n="$node_name" '$2 == n {print $1}' "$work/SHASUMS256.txt")
+          test -n "$node_published" || { echo "F60: SHASUMS256.txt has no line for $node_name" >&2; exit 1; }
+          fetch "$node_url" "$work/$node_name" "Node ${node_ver} win-x64 zip"
+          node_sha=$(sha256sum "$work/$node_name" | awk '{print $1}')
+          if [ "$node_sha" != "$node_published" ]; then
+            echo "F60: Node digest CROSS-CHECK FAILED: computed=$node_sha published=$node_published" >&2
+            exit 1
+          fi
+          echo "[F60 pins] Node ${node_ver} computed digest matches the published SHASUMS256.txt line"
+
+          # ---- 4. actions/runner: re-assert the COMMITTED pin against the official
+          #         release notes of the pinned tag (no 190 MB download needed) ----
+          ar_ver=$(python3 -c "import json;print(json.load(open('$pins'))['assets']['actions_runner_win_x64_zip']['version'])")
+          ar_committed=$(python3 -c "import json;print(json.load(open('$pins'))['assets']['actions_runner_win_x64_zip']['sha256'])")
+          ar_name=$(python3 -c "import json;print(json.load(open('$pins'))['assets']['actions_runner_win_x64_zip']['name'])")
+          ar_notes=$(gh api "repos/actions/runner/releases/tags/v${ar_ver}" --jq '.body')
+          # The official notes embed each digest as a hidden marker
+          # (`NAME <!-- BEGIN SHA win-x64 -->HEX<!-- END SHA win-x64 -->`). Parse
+          # TOLERANTLY: take the asset's own line and the first 64-hex token on it,
+          # so a formatting change in the notes can never yield a silently wrong pin
+          # (a missing digest is a hard failure, a wrong one would brick provisioning).
+          ar_line=$(printf '%s' "$ar_notes" | grep -F "$ar_name" | head -1 || true)
+          test -n "$ar_line" || { echo "F60: the actions/runner v${ar_ver} release notes do not mention $ar_name" >&2; exit 1; }
+          ar_published=$(printf '%s' "$ar_line" | grep -oE '[0-9a-f]{64}' | head -1 || true)
+          test -n "$ar_published" || { echo "F60: no win-x64 SHA-256 on the release-notes line for $ar_name (expected the '<!-- BEGIN SHA win-x64 -->' marker or a 64-hex digest); line was: $ar_line" >&2; exit 1; }
+          if [ "$ar_published" != "$ar_committed" ]; then
+            echo "F60: actions/runner pin MISMATCH: committed=$ar_committed official-release-notes=$ar_published - refusing (update payloads/f60-warm-pins.json)" >&2
+            exit 1
+          fi
+          echo "[F60 pins] actions/runner ${ar_ver} sha256=${ar_published} matches the committed pin (official release notes)"
+          ar_sha="$ar_published"
+
+          # ---- mode=assert: every committed pin must already match ----
+          if [ "$MODE" = "assert" ]; then
+            python3 - "$pins" "$ts_sha" "$ns_sha" "$node_sha" "$node_ver" "$node_name" "$node_url" <<'PY'
+          import json, re, sys
+          pins_path, ts, ns, nd, ndv, ndn, ndu = sys.argv[1:8]
+          p = json.load(open(pins_path, encoding='utf-8'))
+          errs = []
+          def chk(key, want, extra=None):
+              a = p['assets'][key]
+              got = (a.get('sha256') or '').strip().lower()
+              if not re.match(r'^[0-9a-f]{64}$', got):
+                  errs.append(key + ': committed pin is empty/malformed (run mode=record and commit the observed file)')
+              elif got != want:
+                  errs.append(key + ': committed ' + got + ' != official ' + want)
+              if extra:
+                  for field, val in extra.items():
+                      if str(a.get(field) or '') != str(val):
+                          errs.append(key + '.' + field + ': committed ' + str(a.get(field)) + ' != observed ' + str(val))
+          chk('tailscale_msi', ts)
+          chk('nssm', ns)
+          chk('node_win_x64_zip', nd, {'version': ndv, 'name': ndn, 'url': ndu})
+          if errs:
+              print('F60 assert mode FAILED: ' + '; '.join(errs), file=sys.stderr)
+              sys.exit(1)
+          print('F60 assert mode PASS: every committed warm pin matches its official source')
+          PY
+          fi
+
+          # ---- observed pins file + checksums (ready to commit) ----
+          out="$work/f60-warm-pins.observed.json"
+          python3 - "$pins" "$out" "$ts_sha" "$ns_sha" "$ar_sha" "$node_ver" "$node_name" "$node_url" "$node_sha" <<'PY'
+          import json, sys
+          src, dst, ts, ns, ar, ndv, ndn, ndu, nd = sys.argv[1:10]
+          p = json.load(open(src, encoding='utf-8'))
+          a = p['assets']
+          a['tailscale_msi']['sha256'] = ts
+          a['tailscale_msi']['pin_state'] = 'pinned'
+          a['nssm']['sha256'] = ns
+          a['nssm']['pin_state'] = 'pinned'
+          a['actions_runner_win_x64_zip']['sha256'] = ar
+          a['actions_runner_win_x64_zip']['pin_state'] = 'pinned'
+          n = a['node_win_x64_zip']
+          n['version'] = ndv
+          n['name'] = ndn
+          n['url'] = ndu
+          n['sha256'] = nd
+          n['pin_state'] = 'pinned'
+          p['bootstrap_note'] = ('Digests recorded by .github/workflows/f60-warm-pins-bootstrap.yml run '
+                                 + __import__('os').environ.get('GITHUB_RUN_ID', '?') + ' from the official sources '
+                                 '(pkgs.tailscale.com, nssm.cc, nodejs.org + its published SHASUMS256.txt, and the '
+                                 'actions/runner release notes). Commit this file verbatim; from then on every run '
+                                 'ASSERTS these values fail-closed.')
+          json.dump(p, open(dst, 'w', encoding='utf-8'), indent=2)
+          open(dst, 'a', encoding='utf-8').write('\n')
+          print('F60 observed pins written to ' + dst)
+          PY
+          {
+            echo "$ts_sha  $ts_name"
+            echo "$ns_sha  $ns_name"
+            echo "$node_sha  $node_name"
+            echo "$ar_sha  $ar_name"
+          } > "$work/checksums.txt"
+          cat "$work/checksums.txt"
+
+          echo "::notice title=F60 pin bootstrap::commit $work/f60-warm-pins.observed.json over payloads/f60-warm-pins.json (tailscale=$ts_sha nssm=$ns_sha node-${node_ver}=$node_sha actions-runner=$ar_sha)"
+          if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+            {
+              echo '## F60 warm pin bootstrap'
+              echo
+              echo '| artifact | version | sha256 | official source |'
+              echo '| --- | --- | --- | --- |'
+              echo "| tailscale_msi | $(python3 -c "import json;print(json.load(open('$pins'))['assets']['tailscale_msi']['version'])") | \`$ts_sha\` | pkgs.tailscale.com/stable |"
+              echo "| nssm | $(python3 -c "import json;print(json.load(open('$pins'))['assets']['nssm']['version'])") | \`$ns_sha\` | nssm.cc/release |"
+              echo "| node_win_x64_zip | $node_ver | \`$node_sha\` | nodejs.org/dist (cross-checked vs SHASUMS256.txt) |"
+              echo "| actions_runner_win_x64_zip | $ar_ver | \`$ar_sha\` | actions/runner release notes (asserted, not re-downloaded) |"
+              echo
+              echo 'Ready to commit as `payloads/f60-warm-pins.json`:'
+              echo
+              echo '```json'
+              cat "$out"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+          if ! gh release view warm-pins >/dev/null 2>&1; then
+            gh release create warm-pins \
+              --title "F60 warm-runner pin bootstrap (observed official-source digests)" \
+              --notes "Observed digests for payloads/f60-warm-pins.json, recorded from the official sources by .github/workflows/f60-warm-pins-bootstrap.yml. Commit f60-warm-pins.observed.json over the pins file; scripts/f60-bootstrap.ps1 refuses any asset whose pin is empty or mismatched (F60 §3 fail-closed)."
+          fi
+          gh release upload warm-pins "$work/f60-warm-pins.observed.json" "$work/checksums.txt" --clobber
+
+      - name: Upload the ready-to-commit pins file
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: warm-pins-bootstrap
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            ${{ runner.temp }}/f60-pins/f60-warm-pins.observed.json
+            ${{ runner.temp }}/f60-pins/checksums.txt
