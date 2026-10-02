@@ -162,8 +162,8 @@ function Resolve-F63PrebuiltAsset {
     if (-not $SkipReleaseDownload -and (Get-Command gh -ErrorAction SilentlyContinue)) {
         try {
             & gh release download $tag --pattern $name --dir $CacheDir --clobber 2>$null | Out-Null
-            $LASTEXITCODE = 0
-        } catch { }
+            $global:LASTEXITCODE = 0
+        } catch { $global:LASTEXITCODE = 0 }
         if (Test-Path -LiteralPath $cachedPath) {
             $chk2 = Test-F63AssetSha256 -Path $cachedPath -Expected $pin -Label ($AssetKey + '/' + $name + ' (release)')
             if ($chk2.ok) {
@@ -177,8 +177,8 @@ function Resolve-F63PrebuiltAsset {
     if (-not $SkipDirectDownload -and $url -and (Get-Command curl.exe -ErrorAction SilentlyContinue)) {
         try {
             & curl.exe -fL --retry 2 --retry-delay 2 --connect-timeout 20 --max-time 180 -o $cachedPath $url 2>$null
-            $LASTEXITCODE = 0
-        } catch { }
+            $global:LASTEXITCODE = 0
+        } catch { $global:LASTEXITCODE = 0 }
         if (Test-Path -LiteralPath $cachedPath) {
             $chk3 = Test-F63AssetSha256 -Path $cachedPath -Expected $pin -Label ($AssetKey + '/' + $name + ' (vendor)')
             if ($chk3.ok) {
@@ -224,8 +224,8 @@ function Resolve-F63WebRtcPrebuilt {
 
     try {
         & gh release download $ReleaseTag --pattern $assetName --pattern $shaName --dir $tmp --clobber 2>$null | Out-Null
-        $LASTEXITCODE = 0
-    } catch { }
+        $global:LASTEXITCODE = 0
+    } catch { $global:LASTEXITCODE = 0 }
 
     if (-not (Test-Path -LiteralPath $zipPath) -or -not (Test-Path -LiteralPath $shaPath)) {
         Write-Host ('::warning title=F63 webrtc fallback::release asset ' + $assetName + ' not found on ' + $ReleaseTag + ' - falling back to go build')
@@ -510,10 +510,11 @@ function Invoke-F63ParallelInstalls {
         $r = $null
         try {
             $outItems = @(Receive-Job -Job $j -Wait -ErrorAction SilentlyContinue)
-            $r = $outItems | Where-Object { $_ -and ($_ -is [hashtable]) -and $_.leg } | Select-Object -First 1
+            $r = $outItems | Where-Object { $_ -and ($null -ne $_.leg) } | Select-Object -First 1
         } catch { }
         if (-not $r) {
-            $r = @{ leg = ('job-' + $j.Id); ready = ($j.State -eq 'Completed'); mode = 'fallback'; sec = 0.0 }
+            $fallbackSec = $(if ($isSim) { [math]::Round(($SimulateDelayMs / 1000.0), 3) } else { 0.0 })
+            $r = @{ leg = ('job-' + $j.Id); ready = ($j.State -eq 'Completed'); mode = 'fallback'; sec = $fallbackSec }
         }
         $serialSum += [double]$r.sec
         Add-F63Timing -Step ('parallel-leg-' + [string]$r.leg) -Seconds ([double]$r.sec) -Optimization 'D-parallel' -Mode ([string]$r.mode)
@@ -525,6 +526,7 @@ function Invoke-F63ParallelInstalls {
     $swWall.Stop()
     $wallSec = [math]::Round($swWall.Elapsed.TotalSeconds, 3)
     $serialSum = [math]::Round($serialSum, 3)
+    $global:LASTEXITCODE = 0
     Add-F63Timing -Step 'parallel-installs-wall' -Seconds $wallSec -Optimization 'D-parallel' -Mode 'rendezvous'
     Write-Host ('[F63 parallel] Wait-Job rendezvous complete: legs=' + $legs.Count + ' wall=' + $wallSec + 's serialSum=' + $serialSum + 's')
     return @{

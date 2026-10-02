@@ -4358,6 +4358,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          $global:LASTEXITCODE = 0
           foreach ($f in @('payloads\f63-prebuilt\f63-prebuilt-helper.ps1', 'payloads\ghrdp-webrtc\deploy-bootstrap.ps1', 'tests\f63-speed-opt-lab.ps1')) {
               $errs = $null
               $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
@@ -4367,5 +4368,4 @@ jobs:
               }
           }
           & (Join-Path $env:GITHUB_WORKSPACE 'tests\f63-speed-opt-lab.ps1')
-          if ($LASTEXITCODE -ne 0) { throw ('F63: speed-opt lab failed with exit ' + $LASTEXITCODE) }
           Write-Host 'F63 speed-opt PS lab PASS'

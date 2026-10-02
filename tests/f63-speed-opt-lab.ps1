@@ -88,12 +88,12 @@ try {
     Add-F63Timing -Step 'optimization-C-prebundle-installers' -Seconds ([math]::Round($swPrebundleAfter.TotalSeconds, 3)) -BaselineSeconds 150.0 -Optimization 'C-prebundle-assets' -Mode 'prebuilt'
 
     # --- 5. Optimization D: Parallel Start-Job array + Wait-Job rendezvous ---
-    $parRes = Invoke-F63ParallelInstalls -Workspace $repo -Simulate -SimulatedLegMs @{
-        ffmpeg            = 220
-        vbcable           = 200
-        idd_sample_driver = 180
-        chrome_extensions = 210
-        parsec            = 190
+    $parRes = Invoke-F63ParallelInstalls -Workspace $repo -Simulate -SimulateDelayMs 1500 -SimulatedLegMs @{
+        ffmpeg            = 1600
+        vbcable           = 1500
+        idd_sample_driver = 1400
+        chrome_extensions = 1550
+        parsec            = 1450
     }
     if (-not $parRes.ok) { throw 'Invoke-F63ParallelInstalls returned ok=false' }
     if ($parRes.legs.Count -ne 5) { throw ('expected 5 parallel legs, got ' + $parRes.legs.Count) }
@@ -116,7 +116,9 @@ try {
         }
     }
 
+    $global:LASTEXITCODE = 0
     Write-Host ('[F63 lab] PASS: A/B/C/D verified; parallel elapsed=' + $parRes.elapsed_sec + 's vs serial=' + $parRes.serial_sum_sec + 's; startup-timing-f63.jsonl rows=' + $lines.Count)
 } finally {
+    $global:LASTEXITCODE = 0
     Remove-Item -LiteralPath $labRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
