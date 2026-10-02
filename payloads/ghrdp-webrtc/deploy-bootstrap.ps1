@@ -167,48 +167,63 @@ function Stop-StaleServer {
 }
 Write-Log ("stale process sweep: killed {0}" -f (Stop-StaleServer))
 
-# ---- P1d: synchronous build to the discovered exe path ---------------------
-$goExe = Resolve-GoExe
-if (-not $goExe) {
-    Write-Log 'FATAL: Go toolchain not found on this runner'
-    exit 5
-}
-Write-Log ("go: {0}" -f (& $goExe version 2>&1 | Select-Object -First 1))
-
+# ---- P1d: use F63 prebuilt binary if verified, else fallback to synchronous go build
 New-Item -ItemType Directory -Path $DeployDir -Force -ErrorAction SilentlyContinue | Out-Null
-$buildOut = Join-Path $DeployDir ($exeName + '.new')
-Push-Location $srcDir
-try {
-    $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
-    $ldflags = ('-s -w -X main.gitCommit={0} -X main.buildTime={1}' -f $GitCommit, $BuildTime)
-    Write-Log ("go build -mod=readonly -ldflags `"{0}`"" -f $ldflags)
-    # -mod=readonly: go.mod/go.sum are committed, so the build must not silently
-    # rewrite them. A missing requirement is a build failure here, not a quiet
-    # `go mod tidy` that makes this runner's binary differ from the committed sha.
-    & $goExe build -mod=readonly -ldflags $ldflags -o $buildOut . 2>&1 | ForEach-Object { Write-Log ("  go: {0}" -f $_) }
-    if ($LASTEXITCODE -ne 0 -or -not (Test-Path $buildOut)) {
-        Write-Log ("FATAL: go build failed (exit {0})" -f $LASTEXITCODE)
-        Pop-Location
-        exit 6
-    }
-    # also build the probe next to the server, used by acceptance (P5)
-    $probeOut = Join-Path $DeployDir 'probe.exe'
-    & $goExe build -mod=readonly -ldflags '-s -w' -o $probeOut ./cmd/probe 2>&1 | ForEach-Object { Write-Log ("  probe: {0}" -f $_) }
-    if ($LASTEXITCODE -ne 0) { Write-Log 'WARN: probe build failed; acceptance will report FAIL' }
-} finally {
-    Pop-Location
+$probeOut = Join-Path $DeployDir 'probe.exe'
+$shaFile = Join-Path $DeployDir 'deploy-sha.txt'
+$prebuiltSha = ''
+if (Test-Path -LiteralPath $shaFile) {
+    try { $prebuiltSha = ([System.IO.File]::ReadAllText($shaFile)).Trim() } catch { }
 }
+$prebuiltOk = (
+    ($env:GHRDP_WEBRTC_PREBUILT_HIT -eq 'true' -or $prebuiltSha -eq $GitCommit) -and
+    (Test-Path -LiteralPath $exePath) -and ((Get-Item -LiteralPath $exePath).Length -gt 1MB) -and
+    (Test-Path -LiteralPath $probeOut) -and ((Get-Item -LiteralPath $probeOut).Length -gt 1MB)
+)
+if ($prebuiltOk) {
+    Write-Log ("F63 prebuilt binary hit for commit={0}: {1} ({2:F1} MB) + probe.exe ({3:F1} MB) - skipping go build" -f $GitCommit, $exePath, ((Get-Item $exePath).Length / 1MB), ((Get-Item $probeOut).Length / 1MB))
+} else {
+    Write-Log 'F63 prebuilt binary miss - falling back to on-runner go build'
+    $goExe = Resolve-GoExe
+    if (-not $goExe) {
+        Write-Log 'FATAL: Go toolchain not found on this runner'
+        exit 5
+    }
+    Write-Log ("go: {0}" -f (& $goExe version 2>&1 | Select-Object -First 1))
 
-# swap in the new binary only after a successful build
-Get-CimInstance Win32_Process -Filter ("Name='{0}'" -f $exeName) -ErrorAction SilentlyContinue |
-    ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch { } }
-Start-Sleep -Milliseconds 500
-try {
-    Move-Item -LiteralPath $buildOut -Destination $exePath -Force -ErrorAction Stop
-    Write-Log ("installed: {0} ({1:F1} MB)" -f $exePath, ((Get-Item $exePath).Length / 1MB))
-} catch {
-    Write-Log ("FATAL: could not install binary: {0}" -f $_.Exception.Message)
-    exit 7
+    $buildOut = Join-Path $DeployDir ($exeName + '.new')
+    Push-Location $srcDir
+    try {
+        $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+        $ldflags = ('-s -w -X main.gitCommit={0} -X main.buildTime={1}' -f $GitCommit, $BuildTime)
+        Write-Log ("go build -mod=readonly -ldflags `"{0}`"" -f $ldflags)
+        # -mod=readonly: go.mod/go.sum are committed, so the build must not silently
+        # rewrite them. A missing requirement is a build failure here, not a quiet
+        # `go mod tidy` that makes this runner's binary differ from the committed sha.
+        & $goExe build -mod=readonly -ldflags $ldflags -o $buildOut . 2>&1 | ForEach-Object { Write-Log ("  go: {0}" -f $_) }
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $buildOut)) {
+            Write-Log ("FATAL: go build failed (exit {0})" -f $LASTEXITCODE)
+            Pop-Location
+            exit 6
+        }
+        # also build the probe next to the server, used by acceptance (P5)
+        & $goExe build -mod=readonly -ldflags '-s -w' -o $probeOut ./cmd/probe 2>&1 | ForEach-Object { Write-Log ("  probe: {0}" -f $_) }
+        if ($LASTEXITCODE -ne 0) { Write-Log 'WARN: probe build failed; acceptance will report FAIL' }
+    } finally {
+        Pop-Location
+    }
+
+    # swap in the new binary only after a successful build
+    Get-CimInstance Win32_Process -Filter ("Name='{0}'" -f $exeName) -ErrorAction SilentlyContinue |
+        ForEach-Object { try { Stop-Process -Id $_.ProcessId -Force } catch { } }
+    Start-Sleep -Milliseconds 500
+    try {
+        Move-Item -LiteralPath $buildOut -Destination $exePath -Force -ErrorAction Stop
+        Write-Log ("installed: {0} ({1:F1} MB)" -f $exePath, ((Get-Item $exePath).Length / 1MB))
+    } catch {
+        Write-Log ("FATAL: could not install binary: {0}" -f $_.Exception.Message)
+        exit 7
+    }
 }
 
 # ---- static assets ---------------------------------------------------------

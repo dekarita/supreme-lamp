@@ -1,0 +1,188 @@
+name: F63 build-webrtc (prebuilt WebRTC + F63 release assets)
+# [F63 §1.A + §1.C] PREBUILD WEBRTC BINARY + PREBUNDLE HEAVY INSTALLERS.
+# Compiles ghrdp-webrtc (webrtc-server.exe stamped with gitCommit + buildTime)
+# and probe.exe once per push, packages them with static assets into
+# ghrdp-webrtc-<sha>.zip + ghrdp-webrtc-<sha>.zip.sha256, and publishes to the
+# `webrtc-dist` release. Also ensures the `f63-prebuilt` release carries the
+# SHA-256-verified heavy installers declared in payloads/f63-prebuilt-manifest.json.
+# main.yml downloads + SHA-256 verifies these assets and falls back cleanly on miss.
+on:
+  push:
+    branches:
+      - main
+      - 'arena/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-webrtc-prebuilt:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: actions/cache@v4
+        name: F63 Go modules + build cache
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~\AppData\Local\go-build
+          key: f63-go-${{ runner.os }}-${{ hashFiles('payloads/ghrdp-webrtc/go.sum') }}
+          restore-keys: |
+            f63-go-${{ runner.os }}-
+      - uses: actions/cache@v4
+        name: F63 Rust + prebuilt installer cache
+        with:
+          path: |
+            ${{ runner.temp }}\ghrdp-rust\target
+            C:\ghrdp\prebuilt\f63
+          key: f63-assets-${{ runner.os }}-${{ hashFiles('payloads/Cargo.toml', 'payloads/f63-prebuilt-manifest.json') }}
+          restore-keys: |
+            f63-assets-${{ runner.os }}-
+      - name: Test and compile ghrdp-webrtc + probe + package ghrdp-webrtc-<sha>.zip
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sha = [string]$env:GITHUB_SHA
+          $buildTime = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+          $srcDir = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-webrtc'
+          $stageDir = Join-Path $env:RUNNER_TEMP 'f63-webrtc-stage'
+          if (Test-Path -LiteralPath $stageDir) { Remove-Item -LiteralPath $stageDir -Recurse -Force }
+          New-Item -ItemType Directory -Path $stageDir -Force | Out-Null
+
+          Push-Location $srcDir
+          try {
+              $env:GOOS = 'windows'; $env:GOARCH = 'amd64'; $env:CGO_ENABLED = '0'
+              Write-Host ('[F63 build-webrtc] running go test in ' + $srcDir)
+              & go test -mod=readonly -count=1 ./...
+              if ($LASTEXITCODE -ne 0) { throw ('[F63 build-webrtc] go test failed exit=' + $LASTEXITCODE) }
+
+              $srvOut = Join-Path $stageDir 'webrtc-server.exe'
+              $ldflags = ('-s -w -X main.gitCommit={0} -X main.buildTime={1}' -f $sha, $buildTime)
+              Write-Host ('[F63 build-webrtc] compiling webrtc-server.exe ldflags=' + $ldflags)
+              & go build -mod=readonly -ldflags $ldflags -o $srvOut .
+              if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $srvOut)) {
+                  throw ('[F63 build-webrtc] webrtc-server.exe build failed exit=' + $LASTEXITCODE)
+              }
+
+              $probeOut = Join-Path $stageDir 'probe.exe'
+              Write-Host '[F63 build-webrtc] compiling probe.exe'
+              & go build -mod=readonly -ldflags '-s -w' -o $probeOut ./cmd/probe
+              if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $probeOut)) {
+                  throw ('[F63 build-webrtc] probe.exe build failed exit=' + $LASTEXITCODE)
+              }
+          } finally {
+              Pop-Location
+          }
+
+          # Stage static files + scripts + deploy-sha.txt into the zip bundle
+          $staticDst = Join-Path $stageDir 'static'
+          New-Item -ItemType Directory -Path $staticDst -Force | Out-Null
+          Copy-Item -Path (Join-Path $srcDir 'static\*') -Destination $staticDst -Recurse -Force
+          foreach ($s in @('deploy-bootstrap.ps1', 'accept-webrtc.ps1', 'setup.ps1', 'run-server.cmd')) {
+              $sp = Join-Path $srcDir $s
+              if (Test-Path -LiteralPath $sp) {
+                  Copy-Item -LiteralPath $sp -Destination (Join-Path $stageDir $s) -Force
+              }
+          }
+          [System.IO.File]::WriteAllText((Join-Path $stageDir 'deploy-sha.txt'), ($sha + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+
+          # Best-effort prebuild of ghrdp-dash.exe so main.yml skips the 2m44s cargo build too
+          try {
+              $rustSrc = Join-Path $env:RUNNER_TEMP 'ghrdp-rust'
+              New-Item -ItemType Directory -Path (Join-Path $rustSrc 'src') -Force | Out-Null
+              Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'payloads\Cargo.toml') -Destination (Join-Path $rustSrc 'Cargo.toml') -Force
+              Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'payloads\main.rs') -Destination (Join-Path $rustSrc 'src\main.rs') -Force
+              $rustExe = Join-Path $rustSrc 'target\release\ghrdp-dash.exe'
+              if (-not (Test-Path -LiteralPath $rustExe)) {
+                  Push-Location $rustSrc
+                  try { & cargo.exe build --release 2>&1 | Out-Null; $LASTEXITCODE = 0 } finally { Pop-Location }
+              }
+              if ((Test-Path -LiteralPath $rustExe) -and ((Get-Item -LiteralPath $rustExe).Length -gt 100KB)) {
+                  Copy-Item -LiteralPath $rustExe -Destination (Join-Path $stageDir 'ghrdp-dash.exe') -Force
+                  Write-Host ('[F63 build-webrtc] bundled ghrdp-dash.exe (' + (Get-Item -LiteralPath $rustExe).Length + ' bytes)')
+              }
+          } catch {
+              Write-Host ('[F63 build-webrtc] optional ghrdp-dash.exe prebuild skipped: ' + $_.Exception.Message)
+          }
+
+          $asset = ('ghrdp-webrtc-' + $sha + '.zip')
+          $zipPath = Join-Path $env:RUNNER_TEMP $asset
+          $shaPath = ($zipPath + '.sha256')
+          if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
+          Compress-Archive -Path (Join-Path $stageDir '*') -DestinationPath $zipPath -Force
+          $digest = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          [System.IO.File]::WriteAllText($shaPath, ($digest + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+          Write-Host ('[F63 build-webrtc] packaged ' + $asset + ' bytes=' + (Get-Item -LiteralPath $zipPath).Length + ' sha256=' + $digest)
+
+          $tag = 'webrtc-dist'
+          & gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+              & gh release create $tag --title 'F63 prebuilt WebRTC bundles (ghrdp-webrtc-<sha>.zip)' --notes 'Prebuilt ghrdp-webrtc + probe bundles with SHA-256 sidecars. Published by .github/workflows/build-webrtc.yml.'
+          }
+          & gh release upload $tag $zipPath $shaPath --clobber
+          if ($LASTEXITCODE -ne 0) { throw '[F63 build-webrtc] gh release upload to webrtc-dist failed' }
+          Write-Host ('::notice title=F63 build-webrtc::published ' + $asset + ' sha256=' + $digest)
+
+      - name: Stage and publish F63 prebundled heavy installers (f63-prebuilt release)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f63-prebuilt/f63-prebuilt-helper.ps1')
+          $manifest = Get-F63Manifest -Workspace $env:GITHUB_WORKSPACE
+          $tag = [string]$manifest.release_tag
+          $cacheDir = 'C:\ghrdp\prebuilt\f63'
+          New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
+
+          & gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+              & gh release create $tag --title 'F63 prebundled heavy installers (SHA-256 verified)' --notes 'SHA-256-verified vendor installers for F63 speed-opt lane (FFmpeg, VB-CABLE, IddSampleDriver, Chrome extensions CRX, Parsec, Tailscale MSI).'
+          }
+
+          $toUpload = @()
+          foreach ($prop in @($manifest.assets.PSObject.Properties)) {
+              $key = [string]$prop.Name
+              $a = $prop.Value
+              $name = [string]$a.name
+              $url = [string]$a.source_url
+              $pin = [string]$a.sha256
+              $dst = Join-Path $cacheDir $name
+              if (Test-Path -LiteralPath $dst) {
+                  $chk0 = Test-F63AssetSha256 -Path $dst -Expected $pin -Label $name
+                  if ($chk0.ok) { $toUpload += $dst; continue }
+                  Remove-Item -LiteralPath $dst -Force -ErrorAction SilentlyContinue
+              }
+              & gh release download $tag --pattern $name --dir $cacheDir --clobber 2>$null | Out-Null
+              $LASTEXITCODE = 0
+              if (Test-Path -LiteralPath $dst) {
+                  $chk1 = Test-F63AssetSha256 -Path $dst -Expected $pin -Label $name
+                  if ($chk1.ok) { $toUpload += $dst; continue }
+                  Remove-Item -LiteralPath $dst -Force -ErrorAction SilentlyContinue
+              }
+              Write-Host ('[F63 prebuilt] fetching ' + $name + ' from official vendor URL: ' + $url)
+              & curl.exe -fL --retry 3 --retry-delay 2 --connect-timeout 30 --max-time 300 -o $dst $url 2>$null
+              $LASTEXITCODE = 0
+              if (Test-Path -LiteralPath $dst) {
+                  $chk2 = Test-F63AssetSha256 -Path $dst -Expected $pin -Label $name
+                  if ($chk2.ok) {
+                      $toUpload += $dst
+                  } else {
+                      Remove-Item -LiteralPath $dst -Force -ErrorAction SilentlyContinue
+                  }
+              }
+          }
+          if ($toUpload.Count -gt 0) {
+              & gh release upload $tag @toUpload --clobber
+              $LASTEXITCODE = 0
+              Write-Host ('[F63 prebuilt] uploaded ' + $toUpload.Count + ' verified installer(s) to release ' + $tag)
+          }
+          exit 0

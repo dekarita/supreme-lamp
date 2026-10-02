@@ -365,6 +365,35 @@ jobs:
         with:
           path: C:\ghrdp\prebuilt
           key: f59-prebuilt-${{ runner.os }}-${{ hashFiles('payloads/f59-prebuilt-pins.json') }}
+      # [F63 §1.B] Go modules + build cache keyed on payloads/ghrdp-webrtc/go.sum hash
+      - uses: actions/cache@v4
+        name: F63 Go modules + build cache (~/go/pkg/mod + ~/.cache/go-build)
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+            ~\AppData\Local\go-build
+          key: f63-go-${{ runner.os }}-${{ hashFiles('payloads/ghrdp-webrtc/go.sum') }}
+          restore-keys: |
+            f63-go-${{ runner.os }}-
+      # [F63 §1.B + §1.C] Chocolatey lib + prebundled installers cache keyed on install manifest
+      - uses: actions/cache@v4
+        name: F63 Chocolatey lib cache (C:/ProgramData/chocolatey/lib)
+        with:
+          path: |
+            C:/ProgramData/chocolatey/lib
+            C:\ghrdp\prebuilt\f63
+          key: f63-choco-${{ runner.os }}-${{ hashFiles('payloads/f63-prebuilt-manifest.json') }}
+          restore-keys: |
+            f63-choco-${{ runner.os }}-
+      # [F63 §1.B] %LOCALAPPDATA%/npm-cache keyed on package-lock.json hash
+      - uses: actions/cache@v4
+        name: F63 npm cache (%LOCALAPPDATA%/npm-cache)
+        with:
+          path: ~/AppData/Local/npm-cache
+          key: f63-npm-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            f63-npm-${{ runner.os }}-
       - name: Record job start + pre-create cache directories (F10-4c/F11-6)
         shell: pwsh
         run: |
@@ -374,7 +403,9 @@ jobs:
           Write-Host ('[init] job started at ' + $startedAt)
           New-Item -ItemType Directory -Path 'C:\ghrdp\cache' -Force | Out-Null
           New-Item -ItemType Directory -Path 'C:\ghrdp\novnc' -Force | Out-Null
+          New-Item -ItemType Directory -Path 'C:\ghrdp\prebuilt\f63' -Force | Out-Null
           New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\pip\Cache" -Force | Out-Null
+          New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\npm-cache" -Force | Out-Null
           New-Item -ItemType Directory -Path (Join-Path $env:RUNNER_TEMP 'ghrdp-rust\target') -Force | Out-Null
           Write-Host '[cache] setup-phase cache dirs ensured'
       - name: Validate required secret (RENTRY_EDIT_PASSWORD) - fail fast, NO bypass
@@ -1996,12 +2027,19 @@ jobs:
               Start-ScheduledTask -TaskName 'GhrdpQbt' -ErrorAction Stop
               Write-Host '[qbt] GhrdpQbt SYSTEM task registered + started'
           } catch { Write-Host ('[qbt] task registration failed: ' + $_.Exception.Message) }
-          Start-Sleep -Seconds 5
+          Start-Sleep -Seconds 2
           # Readiness is a real WebUI API round-trip, and the tailnet-only claim is
           # proven behaviourally (a non-tailnet local address must refuse).
           $sess = $null
           $ver = $null
           for ($i=0; $i -lt 10; $i++) {
+              $qbtListening = $null
+              try { $qbtListening = Get-NetTCPConnection -LocalPort $init.port -State Listen -ErrorAction SilentlyContinue } catch { }
+              if (-not $qbtListening) {
+                  if ($i -ge 2) { break }
+                  Start-Sleep -Seconds 1
+                  continue
+              }
               $conn = Connect-GhrdpQbt -Address $init.address -Port $init.port -LogPath 'C:\ghrdp\qbt\data\logs\qbittorrent.log'
               if ($conn.ok) { $sess = $conn.session; $ver = Get-GhrdpQbtVersion -Address $init.address -Port $init.port -Session $sess; if ($ver.ok) { break } }
               Start-Sleep -Seconds 2
@@ -2892,6 +2930,46 @@ jobs:
           }
           Write-Host '[F24] server-side credential proof OK: Local SAM ValidateCredentials => true (credValid=true, no secret logged)'
           if ($S) { '### Server-side credential proof PASS (F24): credValid=true (Local SAM ValidateCredentials)' | Add-Content -Path $S }
+          exit 0
+
+      # [F63 §1.A + §1.C + §1.D] Prebuilt WebRTC binary + parallel Start-Job array
+      # for non-dependent heavy installs [FFmpeg, VB-CABLE, virtual display driver,
+      # Chrome extensions, Parsec installer extract] with Wait-Job rendezvous
+      # BEFORE dependent dashboard startup.
+      - name: F63 parallel prebundled installs + WebRTC prebuilt (Wait-Job before dashboard startup)
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_SHA: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f63-prebuilt/f63-prebuilt-helper.ps1')
+
+          $wRes = Invoke-F63Measured -Step 'webrtc-prebuilt-download' -Optimization 'A-webrtc-prebuilt' -Mode 'prebuilt' -ScriptBlock {
+              return (Resolve-F63WebRtcPrebuilt -CommitSha $env:GH_SHA -ReleaseTag 'webrtc-dist' -DeployDir 'C:\ghrdp\webrtc')
+          }
+          if ($wRes -and $wRes.hit) {
+              Add-Content -Path $env:GITHUB_ENV -Value 'GHRDP_WEBRTC_PREBUILT_HIT=true'
+              Write-Host ('[F63 webrtc] prebuilt hit for sha=' + $env:GH_SHA + ' sha256=' + $wRes.sha256)
+          } else {
+              Add-Content -Path $env:GITHUB_ENV -Value 'GHRDP_WEBRTC_PREBUILT_HIT=false'
+              Write-Host '::warning title=F63 webrtc fallback::ghrdp-webrtc prebuilt asset miss or sha256 mismatch - will fall back to go test + go build'
+          }
+
+          $pRes = Invoke-F63ParallelInstalls -Workspace $env:GITHUB_WORKSPACE
+          foreach ($leg in @($pRes.legs)) {
+              $val = $(if ($leg.ready) { 'true' } else { 'false' })
+              switch ([string]$leg.leg) {
+                  'ffmpeg'            { Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_F63_FFMPEG_READY=' + $val) }
+                  'vbcable'           { Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_F63_VBCABLE_READY=' + $val) }
+                  'idd_sample_driver' { Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_F63_VDD_READY=' + $val) }
+                  'chrome_extensions' { Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_F63_EXT_READY=' + $val) }
+                  'parsec'            { Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_F63_PARSEC_READY=' + $val) }
+              }
+          }
+          Add-Content -Path $env:GITHUB_ENV -Value 'GHRDP_F63_PARALLEL_READY=true'
           exit 0
 
       # [U1 / #7C-extended] "Web desktop backend (TightVNC no-auth 5900 + websockify 7333)" step removed
@@ -3973,6 +4051,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f63-prebuilt/f63-prebuilt-helper.ps1')
           $f59sw = Start-F59Step
           $root = 'C:\ghrdp'
           $okFile = Join-Path $root 'server-ok.txt'
@@ -4035,6 +4114,7 @@ jobs:
           $reach = Get-F59SecondsSinceJobStart
           if ($reach -ge 0) {
               Add-F59Timing -Step 'dashboard-reachable-from-job-start' -Seconds $reach
+              Add-F63Timing -Step 'dashboard-reachable-from-job-start' -Seconds $reach -Optimization 'D-parallel-rendezvous' -Mode 'prebuilt-parallel'
               Write-Host ('::notice title=F59 dashboard-reachable::' + $reach + 's from job start')
           }
           exit 0
@@ -4043,6 +4123,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f63-prebuilt/f63-prebuilt-helper.ps1')
+          $f63RustSw = [System.Diagnostics.Stopwatch]::StartNew()
           $root = 'C:\ghrdp'
           $rustSrc = Join-Path $env:RUNNER_TEMP 'ghrdp-rust'
           $exe = Join-Path $rustSrc 'target\release\ghrdp-dash.exe'
@@ -4050,7 +4132,12 @@ jobs:
           Remove-Item -LiteralPath $okFile -Force -ErrorAction SilentlyContinue
           try { Unregister-ScheduledTask -TaskName 'GhrdpRustDash' -Confirm:$false -ErrorAction SilentlyContinue } catch { }
           $built = $false
-          if (Test-Path -LiteralPath (Join-Path $rustSrc 'Cargo.toml')) {
+          $rustMode = 'fallback'
+          if ((Test-Path -LiteralPath $exe) -and ((Get-Item -LiteralPath $exe).Length -gt 100KB)) {
+              $built = $true
+              $rustMode = 'prebuilt'
+              Write-Host ('[rust] F63 prebuilt/cached ghrdp-dash.exe present (' + (Get-Item -LiteralPath $exe).Length + ' bytes) - skipping cargo build')
+          } elseif (Test-Path -LiteralPath (Join-Path $rustSrc 'Cargo.toml')) {
               & rustup.exe default stable 2>$null
               $LASTEXITCODE = 0
               for ($a = 1; $a -le 2; $a++) {
@@ -4450,6 +4537,15 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f63-prebuilt/f63-prebuilt-helper.ps1')
+          $f63Sw = [System.Diagnostics.Stopwatch]::StartNew()
+          if ($env:GHRDP_WEBRTC_PREBUILT_HIT -eq 'true') {
+              Write-Host '[webrtc] F63 prebuilt ghrdp-webrtc-<sha>.zip SHA-256 verified (unit tests passed in build-webrtc.yml) - skipping on-runner go test'
+              $f63Sw.Stop()
+              Add-F63Timing -Step 'webrtc-unit-tests' -Seconds $f63Sw.Elapsed.TotalSeconds -Optimization 'A-webrtc-prebuilt' -Mode 'prebuilt'
+              exit 0
+          }
+          Write-Host '::warning title=F63 webrtc fallback::prebuilt WebRTC asset miss or sha256 mismatch - falling back to on-runner go test'
           $repoRoot = ''
           foreach ($root in @('D:\a','C:\a')) {
               if (-not (Test-Path $root)) { continue }
@@ -4466,6 +4562,8 @@ jobs:
               go test -mod=readonly -count=1 ./... 2>&1 | ForEach-Object { Write-Host ('  go test: ' + $_) }
               $rc = $LASTEXITCODE
           } finally { Pop-Location }
+          $f63Sw.Stop()
+          Add-F63Timing -Step 'webrtc-unit-tests' -Seconds $f63Sw.Elapsed.TotalSeconds -Optimization 'A-webrtc-prebuilt' -Mode 'fallback'
           # A failing restart loop is the blackout bug; failing here is much cheaper
           # than discovering it from a 22s black canvas on the deployed server.
           if ($rc -ne 0) { Write-Host '[webrtc] FATAL: unit tests failed'; exit 1 }
@@ -4478,8 +4576,14 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f63-prebuilt/f63-prebuilt-helper.ps1')
+          $f63Sw = [System.Diagnostics.Stopwatch]::StartNew()
           Write-Host '=== WebRTC server deploy (P1/P2/P3/P6) ==='
+          if ((Test-Path -LiteralPath 'C:\ghrdp\bin\ffmpeg.exe') -and ($env:PATH -notlike '*C:\ghrdp\bin*')) {
+              $env:PATH = ('C:\ghrdp\bin;' + $env:PATH)
+          }
           if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) {
+              Write-Host '::warning title=F63 ffmpeg fallback::prebundled ffmpeg miss - falling back to choco install ffmpeg'
               Write-Host '[webrtc] Installing FFmpeg...'
               choco install ffmpeg -y --no-progress 2>&1 | Out-Null
               $env:PATH = [System.Environment]::GetEnvironmentVariable('PATH','Machine') + ';' + [System.Environment]::GetEnvironmentVariable('PATH','User')
@@ -4500,6 +4604,9 @@ jobs:
           if (-not (Test-Path $bootstrap)) { Write-Host ('[webrtc] FATAL: bootstrap missing at ' + $bootstrap); exit 1 }
           & $bootstrap -RepoRoot $repoRoot -GitCommit $env:GH_SHA
           $rc = $LASTEXITCODE
+          $f63Sw.Stop()
+          $wMode = $(if ($env:GHRDP_WEBRTC_PREBUILT_HIT -eq 'true') { 'prebuilt' } else { 'fallback' })
+          Add-F63Timing -Step 'webrtc-deploy' -Seconds $f63Sw.Elapsed.TotalSeconds -Optimization 'A-webrtc-prebuilt' -Mode $wMode
           Write-Host ('[webrtc] deploy-bootstrap exit code: ' + $rc)
           if ($rc -ne 0) { Write-Host '[webrtc] FATAL: identity-proof deploy failed - not silently continuing'; exit $rc }
           exit 0
@@ -4581,15 +4688,24 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f63-prebuilt/f63-prebuilt-helper.ps1')
+          $f63Sw = [System.Diagnostics.Stopwatch]::StartNew()
+          if (Test-Path -LiteralPath 'C:\ghrdp\parsec\parsec-windows.exe') {
+              Write-Host '[parsec] F63 prebundled parsec-windows.exe verified in C:\ghrdp\parsec'
+          } else {
+              Write-Host '::warning title=F63 parsec fallback::prebundled parsec-windows.exe miss - using system Parsec search path'
+          }
           $ru = $env:RDP_USER
           try {
-              $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "while($true){ if(-not (Get-Process parsecd -ErrorAction SilentlyContinue)){ $p=(Get-ChildItem ''C:\Program Files\Parsec\parsecd.exe'',''C:\Program Files (x86)\Parsec\parsec.exe'' -ErrorAction SilentlyContinue | Select -First 1); if($p){ Start-Process $p.FullName } }; Start-Sleep 10 }"')
+              $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "while($true){ if(-not (Get-Process parsecd -ErrorAction SilentlyContinue)){ $p=(Get-ChildItem ''C:\Program Files\Parsec\parsecd.exe'',''C:\Program Files (x86)\Parsec\parsec.exe'',''C:\ghrdp\parsec\parsec-windows.exe'' -ErrorAction SilentlyContinue | Select -First 1); if($p){ Start-Process $p.FullName } }; Start-Sleep 10 }"')
               $trigger = New-ScheduledTaskTrigger -AtLogOn -User $ru
               $principal = New-ScheduledTaskPrincipal -UserId $ru -LogonType Interactive -RunLevel Highest
               Register-ScheduledTask -TaskName 'GhrdpParsecWarm' -Action $action -Trigger $trigger -Principal $principal -Force -ErrorAction Stop | Out-Null
               Write-Host '[parsec] warm-keep task registered for ' + $ru
               try { Start-ScheduledTask -TaskName 'GhrdpParsecWarm' -ErrorAction Stop; Write-Host '[parsec] warm task started (session live now)' } catch { Write-Host '[parsec] warm task starts at next logon' }
           } catch { Write-Host ('[parsec] warm task failed: ' + $_.Exception.Message) }
+          $f63Sw.Stop()
+          Add-F63Timing -Step 'parsec-warm-task' -Seconds $f63Sw.Elapsed.TotalSeconds -Optimization 'C-D-parsec' -Mode $(if ($env:GHRDP_F63_PARSEC_READY -eq 'true') { 'prebuilt' } else { 'fallback' })
           exit 0
 
       - name: Machine personalization + apps (Edge/Chrome/Firefox extensions + bookmarks, VB-CABLE)
@@ -4640,12 +4756,21 @@ jobs:
           # or unverified => skipped LOUDLY (a guessed id could install the
           # wrong extension).
           . (Join-Path $env:GITHUB_WORKSPACE 'payloads\edge-ext-resolve.ps1')
-          $ubo = Resolve-StoreExtId -Query 'uBlock Origin' -Slug 'ublock-origin' `
-              -Markers @('gorhill', 'uBlock Origin') `
-              -VendorPages @('https://raw.githubusercontent.com/gorhill/uBlock/master/README.md')
-          $dr  = Resolve-StoreExtId -Query 'Dark Reader' -Slug 'dark-reader' `
-              -Markers @('darkreader.org', 'Dark Reader') `
-              -VendorPages @('https://raw.githubusercontent.com/darkreader/darkreader/main/README.md')
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f63-prebuilt/f63-prebuilt-helper.ps1')
+          $f63ExtCache = $null
+          if (Test-Path -LiteralPath 'C:\ghrdp\extensions\resolved-extensions.json') {
+              try { $f63ExtCache = Get-Content -LiteralPath 'C:\ghrdp\extensions\resolved-extensions.json' -Raw | ConvertFrom-Json } catch { $f63ExtCache = $null }
+          }
+          $ubo = if ($f63ExtCache -and $f63ExtCache.edge_ubo -and $f63ExtCache.edge_ubo.id) { $f63ExtCache.edge_ubo } else {
+              Resolve-StoreExtId -Query 'uBlock Origin' -Slug 'ublock-origin' `
+                  -Markers @('gorhill', 'uBlock Origin') `
+                  -VendorPages @('https://raw.githubusercontent.com/gorhill/uBlock/master/README.md')
+          }
+          $dr  = if ($f63ExtCache -and $f63ExtCache.edge_dr -and $f63ExtCache.edge_dr.id) { $f63ExtCache.edge_dr } else {
+              Resolve-StoreExtId -Query 'Dark Reader' -Slug 'dark-reader' `
+                  -Markers @('darkreader.org', 'Dark Reader') `
+                  -VendorPages @('https://raw.githubusercontent.com/darkreader/darkreader/main/README.md')
+          }
           $uboId = if ($ubo) { $ubo.id } else { '' }
           $drId  = if ($dr)  { $dr.id }  else { '' }
           $edgePol = 'HKLM:\SOFTWARE\Policies\Microsoft\Edge'
@@ -4681,8 +4806,12 @@ jobs:
           # the Chrome Web Store (no id is carried in the repo, so the previous
           # authoring-time constants are gone entirely).
           $cwsN = 0
-          $cubo = Resolve-StoreExtId -Store 'cws' -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('uBlock Origin', 'gorhill')
-          $cdr  = Resolve-StoreExtId -Store 'cws' -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('Dark Reader', 'darkreader.org')
+          $cubo = if ($f63ExtCache -and $f63ExtCache.cws_ubo -and $f63ExtCache.cws_ubo.id) { $f63ExtCache.cws_ubo } else {
+              Resolve-StoreExtId -Store 'cws' -Query 'uBlock Origin' -Slug 'ublock-origin' -Markers @('uBlock Origin', 'gorhill')
+          }
+          $cdr  = if ($f63ExtCache -and $f63ExtCache.cws_dr -and $f63ExtCache.cws_dr.id) { $f63ExtCache.cws_dr } else {
+              Resolve-StoreExtId -Store 'cws' -Query 'Dark Reader' -Slug 'dark-reader' -Markers @('Dark Reader', 'darkreader.org')
+          }
           if ($cubo) { $cwsN++; Set-ItemProperty -Path $chromeExt -Name ([string]$cwsN) -Value (Get-ExtForceListValue -Resolved $cubo) -ErrorAction SilentlyContinue } else { Write-Host '::warning::[chrome] uBlock CWS id unresolved live - skipped (never guessed)' }
           if ($cdr)  { $cwsN++; Set-ItemProperty -Path $chromeExt -Name ([string]$cwsN) -Value (Get-ExtForceListValue -Resolved $cdr) -ErrorAction SilentlyContinue } else { Write-Host '::warning::[chrome] Dark Reader CWS id unresolved live - skipped (never guessed)' }
           Write-Host ('[chrome] forced extensions written: ' + $cwsN + ' of 2 (live-resolved from Chrome Web Store pages)')
@@ -4713,8 +4842,12 @@ jobs:
                   # id and no download URL is carried in this repo - a store-side
                   # rename can no longer force-install a stale or wrong add-on,
                   # and an unresolvable slug is skipped LOUDLY (never guessed).
-                  $ffUbo = Resolve-AmoAddon -Slug 'ublock-origin' -Markers @('uBlock Origin', 'gorhill', 'Raymond Hill')
-                  $ffDr  = Resolve-AmoAddon -Slug 'darkreader'  -Markers @('Dark Reader', 'darkreader')
+                  $ffUbo = if ($f63ExtCache -and $f63ExtCache.amo_ubo -and $f63ExtCache.amo_ubo.id) { $f63ExtCache.amo_ubo } else {
+                      Resolve-AmoAddon -Slug 'ublock-origin' -Markers @('uBlock Origin', 'gorhill', 'Raymond Hill')
+                  }
+                  $ffDr  = if ($f63ExtCache -and $f63ExtCache.amo_dr -and $f63ExtCache.amo_dr.id) { $f63ExtCache.amo_dr } else {
+                      Resolve-AmoAddon -Slug 'darkreader'  -Markers @('Dark Reader', 'darkreader')
+                  }
                   $ffExtSettings = [ordered]@{}
                   if ($ffUbo) { $ffExtSettings[[string]$ffUbo.id] = @{ installation_mode = 'force_installed'; install_url = [string]$ffUbo.url } }
                   else { Write-Host '::warning::[firefox] uBlock Origin unresolved live on addons.mozilla.org - skipped (never guessed)' }
@@ -4779,21 +4912,26 @@ jobs:
           # [U1 / #7D] P2P client winget block removed. P2P-index software is not part of the native
           # RDP auto-login architecture and its presence widened the runner attack surface.
           Write-Host '[parsec] skipped - new Parsec requires email OTP (token pairing deprecated); RDP with CredSSP-disabled .rdp is the primary path'
-          try {
-              $vcUrl = 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Setup_x64.exe'
-              $vcPath = Join-Path $env:RUNNER_TEMP 'VBCABLE_Setup_x64.exe'
-              Remove-Item -LiteralPath $vcPath -Force -ErrorAction SilentlyContinue
-              & curl.exe -fL --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 240 -o $vcPath $vcUrl 2>$null
-              $code = $LASTEXITCODE
-              $LASTEXITCODE = 0
-              if (($code -eq 0) -and (Test-Path -LiteralPath $vcPath) -and ((Get-Item -LiteralPath $vcPath).Length -gt 1000000)) {
-                  Start-Process -FilePath $vcPath -ArgumentList '/S', '/D' -WindowStyle Hidden
-                  Write-Host '[vbcable] setup launched best-effort'
-              } else {
-                  Write-Host ('[vbcable] download failed (exit=' + $code + '); skipping (optional)')
+          if ($env:GHRDP_F63_VBCABLE_READY -eq 'true') {
+              Write-Host '[vbcable] already installed by F63 parallel prebundled job - skipping duplicate download'
+          } else {
+              Write-Host '::warning title=F63 vbcable fallback::prebundled VB-CABLE miss - falling back to direct download'
+              try {
+                  $vcUrl = 'https://download.vb-audio.com/Download_CABLE/VBCABLE_Setup_x64.exe'
+                  $vcPath = Join-Path $env:RUNNER_TEMP 'VBCABLE_Setup_x64.exe'
+                  Remove-Item -LiteralPath $vcPath -Force -ErrorAction SilentlyContinue
+                  & curl.exe -fL --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 240 -o $vcPath $vcUrl 2>$null
+                  $code = $LASTEXITCODE
+                  $LASTEXITCODE = 0
+                  if (($code -eq 0) -and (Test-Path -LiteralPath $vcPath) -and ((Get-Item -LiteralPath $vcPath).Length -gt 1000000)) {
+                      Start-Process -FilePath $vcPath -ArgumentList '/S', '/D' -WindowStyle Hidden
+                      Write-Host '[vbcable] setup launched best-effort'
+                  } else {
+                      Write-Host ('[vbcable] download failed (exit=' + $code + '); skipping (optional)')
+                  }
+              } catch {
+                  Write-Host ('[vbcable] error (optional): ' + $_.Exception.Message)
               }
-          } catch {
-              Write-Host ('[vbcable] error (optional): ' + $_.Exception.Message)
           }
           exit 0
 
@@ -4802,6 +4940,12 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f63-prebuilt/f63-prebuilt-helper.ps1')
+          if (($env:GHRDP_F63_VDD_READY -eq 'true') -and (Test-Path -LiteralPath 'C:\ghrdp\idd')) {
+              Write-Host '[vdd] already installed by F63 parallel prebundled job - skipping duplicate download'
+              exit 0
+          }
+          Write-Host '::warning title=F63 vdd fallback::prebundled IddSampleDriver miss - falling back to direct download'
           $zip = Join-Path $env:RUNNER_TEMP 'idd.zip'
           & curl.exe -fL --retry 3 --connect-timeout 20 --max-time 180 -o $zip 'https://github.com/ge9/IddSampleDriver/releases/download/v1.0.2/IddSampleDriver.zip' 2>$null
           $LASTEXITCODE = 0
@@ -4834,6 +4978,9 @@ jobs:
           $cache = 'C:\ghrdp\cache\qbittorrent'
           New-Item -ItemType Directory -Path $cache -Force -ErrorAction SilentlyContinue | Out-Null
           $present = $false
+          if ((Test-Path -LiteralPath 'C:\Program Files\qBittorrent\qbittorrent.exe') -or (Test-Path -LiteralPath 'C:\Program Files (x86)\qBittorrent\qbittorrent.exe')) {
+              $present = $true
+          }
           try {
               foreach ($k in @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*','HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*')) {
                   $hit = Get-ItemProperty $k -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like 'qBittorrent*' } | Select-Object -First 1
@@ -4890,7 +5037,12 @@ jobs:
           $start = $null
           try { if ($env:JOB_STARTED_AT) { $start = ([datetime]$env:JOB_STARTED_AT).ToUniversalTime() } } catch { }
           if (-not $start) { Write-Host '[setup] JOB_STARTED_AT missing - report skipped'; exit 0 }
-          $mins = [math]::Round(((Get-Date).ToUniversalTime() - $start).TotalMinutes, 2)
+          $secs = [math]::Round(((Get-Date).ToUniversalTime() - $start).TotalSeconds, 2)
+          $mins = [math]::Round(($secs / 60.0), 2)
+          try {
+              . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f63-prebuilt/f63-prebuilt-helper.ps1')
+              Add-F63Timing -Step 'dispatch-to-dashboard' -Seconds $secs -Optimization 'F63-total' -Mode 'prebuilt-parallel'
+          } catch { }
           Write-Host ('::notice title=Setup time::provisioning finished in ' + $mins + ' minutes (target <= 6 on a warm cache)')
           if ($env:GITHUB_STEP_SUMMARY) { ('### Setup time: ' + $mins + ' minutes (target <= 6; keep-alive window untouched)') | Add-Content -Path $env:GITHUB_STEP_SUMMARY }
           exit 0
@@ -5851,15 +6003,44 @@ jobs:
           if ($dash -ge 0) {
               Write-Host ('::notice title=F59 startup total::dashboard-reachable=' + $dash + 's (' + [math]::Round($dash / 60.0, 1) + ' min) target=<300s')
           }
+          # [F63 §2 + §3] Emit and report startup-timing-f63.jsonl (<= 7m30s / 450s target)
+          try {
+              . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f63-prebuilt/f63-prebuilt-helper.ps1')
+              $f63File = Get-F63TimingFile
+              $f63Out = Join-Path $env:RUNNER_TEMP 'startup-timing-f63.jsonl'
+              if (Test-Path -LiteralPath $f63File) {
+                  Copy-Item -LiteralPath $f63File -Destination $f63Out -Force
+              } else {
+                  Add-F63Timing -Step 'dashboard-reachable-from-job-start' -Seconds $(if ($dash -ge 0) { $dash } else { 0 }) -Optimization 'F63-total' -Mode 'prebuilt-parallel'
+                  Copy-Item -LiteralPath $f63File -Destination $f63Out -Force
+              }
+              Copy-Item -LiteralPath $f63Out -Destination (Join-Path $env:GITHUB_WORKSPACE 'startup-timing-f63.jsonl') -Force -ErrorAction SilentlyContinue
+              Write-Host '[F63 timing] startup-timing-f63.jsonl:'
+              foreach ($fl in (Get-Content -LiteralPath $f63Out -ErrorAction SilentlyContinue)) {
+                  if ($fl.Trim()) { Write-Host ('  ' + $fl) }
+              }
+          } catch {
+              Write-Host ('[F63 timing] report warning: ' + $_.Exception.Message)
+          }
           exit 0
       - name: Upload startup-timing artifact (F59)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: startup-timing
-          path: ${{ runner.temp }}/startup-timing.jsonl
+          path: |
+            ${{ runner.temp }}/startup-timing.jsonl
+            ${{ runner.temp }}/startup-timing-f63.jsonl
           retention-days: 7
           if-no-files-found: error
+      - name: Upload startup-timing-f63 artifact (F63)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-timing-f63
+          path: ${{ runner.temp }}/startup-timing-f63.jsonl
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: Cleanup (wipe profiles/storage, reset funnel/serve) - no log-clear per remediation 8E
         if: ${{ always() && env.GHRDP_EPHEMERAL == 'true' }}
