@@ -6,8 +6,11 @@
 // component that also consumes useNow or the telemetry store.
 // CRLF-safe: EOL-normalized reads only.
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-const norm = (p) => readFileSync(p, "utf8").replace(/\r\n?/g, "\n");
+// [F62] Repo-root relative, CWD-independent.
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
+const norm = (p) => readFileSync(ROOT + p, "utf8").replace(/\r\n?/g, "\n");
 
 const shell = norm("src/components/layout/AppShell.tsx");
 const requiredIds = ["timerElapsed", "timerRemaining", "timerRdpUsage", "lastRdpLogon", "bottomClock"];
