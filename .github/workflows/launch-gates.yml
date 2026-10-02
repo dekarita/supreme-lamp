@@ -4386,25 +4386,60 @@ jobs:
       - name: F65 stack lab (scratch fallback + parallel map + rendezvous + telemetry)
         timeout-minutes: 12
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          foreach ($f in @('scripts\f65-detect-scratch.ps1', 'payloads\f65-telemetry.ps1', 'payloads\f65-stack.ps1', 'payloads\f65-prefetch.ps1', 'tests\f65-stack-lab.ps1')) {
-              $errs = $null
-              $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
-              if ($errs) {
-                  foreach ($e in @($errs)) { Write-Host ('::error title=F65 parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
-                  throw ('F65: PowerShell syntax error in ' + $f)
-              }
+          # The raw job log is not reachable from every loop (this repo has burned
+          # annotations on the earlier mirror labs), so the decisive line is
+          # published as ONE commit status - the same idiom as F56-d/F57/F60.
+          $context = 'f65-stack-lab'
+          function Publish-F65Status([string]$State, [string]$Description) {
+              try {
+                  $sha = [string]$env:GITHUB_SHA
+                  $repo = [string]$env:GITHUB_REPOSITORY
+                  if (-not $sha -or -not $repo -or -not $env:GH_TOKEN) { return }
+                  $body = @{ state = $State; context = $context; description = $Description } | ConvertTo-Json -Compress
+                  Invoke-RestMethod -Method Post -Uri ('https://api.github.com/repos/' + $repo + '/statuses/' + $sha) -Headers @{ Authorization = ('Bearer ' + $env:GH_TOKEN); Accept = 'application/vnd.github+json' } -Body $body -ContentType 'application/json' -ErrorAction Stop | Out-Null
+                  Write-Host ('[F65 lab] status published: ' + $State + ' :: ' + $Description)
+              } catch { Write-Host ('::warning title=F65 lab status::' + $_.Exception.Message) }
           }
-          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f65-stack-lab.ps1')
-          if ($LASTEXITCODE -ne 0) { throw ('F65: stack lab failed with exit ' + $LASTEXITCODE) }
-          # Real PS-written telemetry -> the SAME node parser the operator uses.
-          $labArtifact = Join-Path $env:RUNNER_TEMP 'f65-live-lab.jsonl'
-          $env:GHRDP_F65_TIMING = $labArtifact
-          . (Join-Path $env:GITHUB_WORKSPACE 'payloads\f65-telemetry.ps1')
-          $names = @('f65-scratch-detect', 'f65-prefetch-start', 'f65-pointer-fetch', 'f65-bundle-download', 'f65-bundle-sha256-verify', 'f65-bundle-extract', 'f65-manifest-verify', 'f65-parallel-legs', 'f65-stack-ready', 'f65-tailscale-join-start', 'f65-dashboard-ready', 'f65-rendezvous-stack', 'f65-probe-dashboard-health', 'f65-probe-magicdns-resolve', 'f65-probe-rdp-3389', 'f65-probe-webrtc-8443', 'f65-probe-rendezvous', 'f65-consumer-idd')
-          for ($i = 0; $i -lt $names.Count; $i++) { Add-F65Point -Name $names[$i] -Seconds (10 + $i) -Detail 'windows-native lab emission' }
-          $env:F65_TELEMETRY_ARTIFACT = $labArtifact
-          & node --test tests/f65-telemetry-parse.test.js
-          if ($LASTEXITCODE -ne 0) { throw 'F65: telemetry parse over a real PowerShell-written artifact failed' }
-          Write-Host ('F65 windows-native lab GREEN on ' + $PSVersionTable.PSVersion.ToString() + ' (' + $names.Count + ' telemetry points parsed)')
+          $state = 'failure'
+          $desc = 'F65 lab did not run'
+          try {
+              foreach ($f in @('scripts\f65-detect-scratch.ps1', 'payloads\f65-telemetry.ps1', 'payloads\f65-stack.ps1', 'payloads\f65-prefetch.ps1', 'tests\f65-stack-lab.ps1')) {
+                  $errs = $null
+                  $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
+                  if ($errs) {
+                      foreach ($e in @($errs)) { Write-Host ('::error title=F65 parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
+                      throw ('PowerShell syntax error in ' + $f)
+                  }
+              }
+              $labOut = & pwsh -NoProfile -ExecutionPolicy Bypass -File (Join-Path $env:GITHUB_WORKSPACE 'tests\f65-stack-lab.ps1') 2>&1
+              $labCode = $LASTEXITCODE
+              $labOut | ForEach-Object { Write-Host ([string]$_) }
+              $failLine = @($labOut | Where-Object { ([string]$_).StartsWith('[F65 lab] FAIL ') } | Select-Object -First 1)
+              if ($labCode -ne 0 -or $failLine.Count -gt 0) {
+                  $desc = 'lab red: ' + (($failLine -join ' | ') -replace '^\[F65 lab\] FAIL ', '')
+                  throw ('stack lab failed (exit ' + $labCode + ')')
+              }
+              # Real PS-written telemetry -> the SAME node parser the operator uses.
+              $labArtifact = Join-Path $env:RUNNER_TEMP 'f65-live-lab.jsonl'
+              $env:GHRDP_F65_TIMING = $labArtifact
+              . (Join-Path $env:GITHUB_WORKSPACE 'payloads\f65-telemetry.ps1')
+              $names = @('f65-scratch-detect', 'f65-prefetch-start', 'f65-pointer-fetch', 'f65-bundle-download', 'f65-bundle-sha256-verify', 'f65-bundle-extract', 'f65-manifest-verify', 'f65-parallel-legs', 'f65-stack-ready', 'f65-tailscale-join-start', 'f65-dashboard-ready', 'f65-rendezvous-stack', 'f65-probe-dashboard-health', 'f65-probe-magicdns-resolve', 'f65-probe-rdp-3389', 'f65-probe-webrtc-8443', 'f65-probe-rendezvous', 'f65-consumer-idd')
+              for ($i = 0; $i -lt $names.Count; $i++) { Add-F65Point -Name $names[$i] -Seconds (10 + $i) -Detail 'windows-native lab emission' }
+              $env:F65_TELEMETRY_ARTIFACT = $labArtifact
+              & node --test tests/f65-telemetry-parse.test.js
+              if ($LASTEXITCODE -ne 0) { throw 'telemetry parse over a real PowerShell-written artifact failed' }
+              $state = 'success'
+              $desc = ('green on ' + $PSVersionTable.PSVersion.ToString() + ': ' + $names.Count + ' telemetry points parsed over a real artifact')
+          } catch {
+              $msg = [string]$_.Exception.Message
+              if ($msg -and $msg.Length -gt 0) { $desc = ($desc + ' (' + $msg + ')') }
+              Write-Host ('::error title=F65 lab::' + $desc)
+          }
+          if ($desc.Length -gt 140) { $desc = $desc.Substring(0, 137) + '...' }
+          Publish-F65Status -State $state -Description $desc
+          if ($state -ne 'success') { exit 1 }
+          Write-Host ('F65 windows-native lab GREEN: ' + $desc)

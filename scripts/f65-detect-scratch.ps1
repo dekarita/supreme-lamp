@@ -39,8 +39,9 @@ function Set-F65ScratchEnv {
     }
 }
 
-if ($MyInvocation.InvocationName -ne '.') {
-    $det = Get-F65ScratchRoot
-    Set-F65ScratchEnv -Root $det.root
-    exit 0
-}
+# Functions only: this file is DOT-SOURCED (the prefetch producer, the main.yml
+# launcher/report steps, the windows lab). A run-as-script branch would be a
+# footgun the other way round - `$MyInvocation.InvocationName` is not reliably
+# '.' when a caller dot-sources a parenthesized path, and an accidental `exit`
+# would silently skip the whole prefetch.
+# Standalone use: `. .\scripts\f65-detect-scratch.ps1; Get-F65ScratchRoot`
