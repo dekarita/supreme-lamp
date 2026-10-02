@@ -1,0 +1,86 @@
+{
+  "jobs": [
+    {
+      "id": 1,
+      "name": "build-ui",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-10-02T09:34:52Z",
+      "completed_at": "2026-10-02T09:35:10Z",
+      "labels": ["ubuntu-latest"],
+      "run_id": 36990591537,
+      "head_sha": "df297fa8089e2c500d4ad2c61352c3094c48d8ff",
+      "steps": [
+        {
+          "name": "Download prebuilt UI bundle (F59 release asset, SHA-256 verified)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 5,
+          "started_at": "2026-10-02T09:34:58Z",
+          "completed_at": "2026-10-02T09:34:59Z"
+        },
+        {
+          "name": "Build v2 single-file bundle (F59 fallback - asset miss only)",
+          "status": "completed",
+          "conclusion": "skipped",
+          "number": 6,
+          "started_at": "2026-10-02T09:34:59Z",
+          "completed_at": "2026-10-02T09:34:59Z"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "name": "rdp",
+      "status": "completed",
+      "conclusion": "cancelled",
+      "started_at": "2026-10-02T09:35:14Z",
+      "completed_at": "2026-10-02T11:11:32Z",
+      "labels": ["windows-latest"],
+      "run_id": 36990591537,
+      "head_sha": "df297fa8089e2c500d4ad2c61352c3094c48d8ff",
+      "steps": [
+        {
+          "name": "Set up job",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 1,
+          "started_at": "2026-10-02T09:35:15Z",
+          "completed_at": "2026-10-02T09:35:16Z"
+        },
+        {
+          "name": "Install qBittorrent 4.6.5 (F59 prebuilt, SHA-256 verified) + Tailnet-only WebUI",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 23,
+          "started_at": "2026-10-02T09:36:48Z",
+          "completed_at": "2026-10-02T09:38:02Z"
+        },
+        {
+          "name": "Start Mission Control dashboard EARLY (PS 7331, SYSTEM task, confirm LISTENING)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 36,
+          "started_at": "2026-10-02T09:40:42Z",
+          "completed_at": "2026-10-02T09:40:51Z"
+        },
+        {
+          "name": "Start Rust WebSocket dashboard (build, verify, GhrdpRustDash, acceptance, advertise)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 37,
+          "started_at": "2026-10-02T09:40:51Z",
+          "completed_at": "2026-10-02T09:43:35Z"
+        },
+        {
+          "name": "Post Checkout repo (payloads)",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 122,
+          "started_at": "2026-10-02T11:11:30Z",
+          "completed_at": "2026-10-02T11:11:32Z"
+        }
+      ]
+    }
+  ]
+}

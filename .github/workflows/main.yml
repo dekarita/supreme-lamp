@@ -94,11 +94,13 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ui-dl"
           if ! gh release download ui-dist --pattern "$asset" --pattern "${asset}.sha256" --dir "$RUNNER_TEMP/ui-dl" --clobber 2>/dev/null; then
             echo "::warning::[F59 ui-prebuilt] no release asset ${asset} (build-ui.yml publishes one per push to main) - falling back to an on-runner build"
+            echo '[F64] ui-prebuilt release-asset download=MISS hit=false'
             echo 'hit=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
           test -f "$RUNNER_TEMP/ui-dl/${asset}.sha256"
           echo "hit=true" >> "$GITHUB_OUTPUT"
+          echo '[F64] ui-prebuilt release-asset download=HIT hit=true'
           cd "$RUNNER_TEMP/ui-dl"
           # fail-closed: mismatch exits 1 (see scripts/f59-verify-sha256.mjs)
           node "$GITHUB_WORKSPACE/scripts/f59-verify-sha256.mjs" "$asset" "$(tr -d '[:space:]' < "${asset}.sha256")" --label "$asset"
@@ -372,6 +374,9 @@ jobs:
           $startedAt = (Get-Date).ToUniversalTime().ToString('o')
           Add-Content -Path $env:GITHUB_ENV -Value ("JOB_STARTED_AT=" + $startedAt)
           Write-Host ('[init] job started at ' + $startedAt)
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f64-instrument.ps1')
+          Write-F64Stamp 'job-start'
+          $null = Get-F64HostFacts
           New-Item -ItemType Directory -Path 'C:\ghrdp\cache' -Force | Out-Null
           New-Item -ItemType Directory -Path 'C:\ghrdp\novnc' -Force | Out-Null
           New-Item -ItemType Directory -Path "$env:LOCALAPPDATA\pip\Cache" -Force | Out-Null
@@ -428,12 +433,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f64-instrument.ps1')
+          Write-F64Stamp 'prewarm-begin'
           [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
           New-Item -ItemType Directory -Path 'C:\ghrdp' -Force | Out-Null
           . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
           $swAll = Start-F59Step
 
-          $msiJob = Start-Job -ArgumentList $env:GITHUB_WORKSPACE -ScriptBlock {
+          $msiJob = Start-F64BgJob -ArgumentList $env:GITHUB_WORKSPACE -ScriptBlock {
               Set-Location $args[0]
               [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
               $url = 'https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi'
@@ -475,7 +482,7 @@ jobs:
           # inside the background job, which is a separate process).
           . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-prebuilt-verify.ps1')
 
-          $binJob = Start-Job -ArgumentList $env:GITHUB_WORKSPACE -ScriptBlock {
+          $binJob = Start-F64BgJob -ArgumentList $env:GITHUB_WORKSPACE -ScriptBlock {
               $ws = $args[0]
               $ErrorActionPreference = 'Stop'
               . (Join-Path $ws 'payloads/f59-prebuilt-verify.ps1')
@@ -526,7 +533,7 @@ jobs:
               return @{ sw = 'prebuilt-binaries'; staged = @('aria2c.exe', $qexe.Name); cacheHit = ($need.Count -eq 0) }
           }
 
-          $psJob = Start-Job -ArgumentList $env:GITHUB_WORKSPACE -ScriptBlock {
+          $psJob = Start-F64BgJob -ArgumentList $env:GITHUB_WORKSPACE -ScriptBlock {
               $ws = $args[0]
               $files = @('payloads/ghrdp-lib.ps1', 'payloads/ghrdp-server.ps1', 'payloads/ghrdp-watcher.ps1', 'payloads/ghrdp-mirror.ps1', 'payloads/ghrdp-qbt.ps1', 'payloads/ghrdp-aria2.ps1')
               $errs = 0
@@ -546,7 +553,7 @@ jobs:
           # its ACLs, the MachineKeys container directory, and the
           # root/cimv2/TerminalServices CIM class are prepared concurrently with
           # the downloads so the cert step only has to fetch and bind.
-          $certJob = Start-Job -ScriptBlock {
+          $certJob = Start-F64BgJob -ScriptBlock {
               $workDir = 'C:\ghrdp\tls'
               New-Item -ItemType Directory -Path $workDir -Force | Out-Null
               & icacls.exe $workDir /inheritance:r 2>&1 | Out-Null
@@ -614,6 +621,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f64-instrument.ps1')
+          Write-F64Stamp 'ts-up-begin'
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $S = $env:GITHUB_STEP_SUMMARY
           $keysUrl = 'https://login.tailscale.com/admin/settings/keys'
@@ -663,13 +672,14 @@ jobs:
           }
 
           $daemonOk = $false
-          for ($i = 0; $i -lt 30; $i++) {
+          # [F64] 60 x 1s = same 60s window as 30 x 2s.
+          for ($i = 0; $i -lt 60; $i++) {
               try {
                   $j = (& $ts status --json 2>$null) | ConvertFrom-Json -ErrorAction Stop
                   if ($j -and $j.BackendState) { $daemonOk = $true; break }
               } catch { }
               if ($i -eq 3) { Start-Service Tailscale -ErrorAction SilentlyContinue }
-              Start-Sleep -Seconds 2
+              Start-Sleep -Seconds 1
           }
           if (-not $daemonOk) { throw 'tailscaled did not start; check the Tailscale install step.' }
           $hostname = 'ghrdp-' + ([guid]::NewGuid().ToString('N').Substring(0, 6))
@@ -708,7 +718,9 @@ jobs:
               # address is read from Self.TailscaleIPs in the SAME status JSON - this step
               # never calls `tailscale ip -4` (F9n/F25 proved that LocalAPI call 401s when
               # the node is SYSTEM-owned). Break EARLY on a fatal authkey rejection.
-              for ($i = 0; $i -lt 45; $i++) {
+              # [F64] 90 x 1s = same 90s window as F34 45 x 2s; green path already breaks at 3-4s.
+              for ($i = 0; $i -lt 90; $i++) {
+                  if ($i -eq 0 -or ($i % 15) -eq 0) { Write-F64Stamp ('ts-up-poll i=' + $i) }
                   try {
                       $j = (& $ts status --json 2>$null) | ConvertFrom-Json -ErrorAction Stop
                       if ($j -and ($j.BackendState -eq 'Running')) {
@@ -723,7 +735,7 @@ jobs:
                   try { if (Test-Path -LiteralPath $upErr) { $allNow += [System.IO.File]::ReadAllText($upErr) } } catch { }
                   try { if (Test-Path -LiteralPath $upLog) { $allNow += "`n" + [System.IO.File]::ReadAllText($upLog) } } catch { }
                   if ($allNow -match 'invalid|expired|revoked|not a valid|unauthorized|forbidden|already been used|consumed') { $fatalHit = $true; break }
-                  Start-Sleep -Seconds 2
+                  Start-Sleep -Seconds 1
               }
               if ($ok -or $fatalHit) { break }
               # ONE retry, after 10 s, for transient control-plane errors only.
@@ -779,14 +791,18 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f64-instrument.ps1')
+          Write-F64Stamp 'ts-wait-begin'
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $authed = $false
-          for ($i = 0; $i -lt 180; $i++) {
+          # [F64] 900 x 1s = same 15-min HOLD as 180 x 5s. Green path already exits in 0-1s.
+          for ($i = 0; $i -lt 900; $i++) {
+              if ($i -eq 0 -or ($i % 60) -eq 0) { Write-F64Stamp ('ts-wait-connected i=' + $i) }
               try {
                   $j = (& $ts status --json 2>$null) | ConvertFrom-Json -ErrorAction Stop
                   if ($j -and ($j.BackendState -eq 'Running')) { $authed = $true; break }
               } catch { }
-              Start-Sleep -Seconds 5
+              Start-Sleep -Seconds 1
           }
           if (-not $authed) { throw 'Tailscale sign-in timeout (15 min).' }
           # [F34-3] IP-FIRST BRANCHING. Ladder: the address the up-step PROVED
@@ -895,6 +911,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f64-instrument.ps1')
+          Write-F64Stamp 'cert-begin'
           . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
           $f59sw = Start-F59Step
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
@@ -927,7 +945,8 @@ jobs:
               $null = & curl.exe -sS --fail -X POST ('https://api.tailscale.com/api/v2/tailnet/' + $env:TS_TAILNET_NAME + '/dns/preferences') -H ('Authorization: Bearer ' + $env:TS_API_TOKEN) -H 'Content-Type: application/json' -d '{"magicDNSEnabled":true}' --max-time 30 2>$null
               if ($LASTEXITCODE -eq 0) { Write-Host '[cert] F9b: opt-in MagicDNS auto-enable POST accepted' } else { Write-Host ('[cert] F9b: MagicDNS auto-enable API call failed (curl exit ' + $LASTEXITCODE + ') - check TS_API_TOKEN scope; token never printed') }
               $LASTEXITCODE = 0
-              Start-Sleep -Seconds 5
+              Write-F64Stamp 'cert-magicdns-settle'
+              Start-Sleep -Seconds 1
               try { $j = (& $ts status --json 2>$null) | ConvertFrom-Json; $fqdn = ([string]$j.Self.DNSName).TrimEnd('.'); $LASTEXITCODE = 0 } catch { }
           }
           # [F9a] MagicDNS OFF = halt by design. Before throwing, the step
@@ -963,6 +982,7 @@ jobs:
           $certOk = $false
           $certErrText = ''
           for ($attempt = 1; $attempt -le 3; $attempt++) {
+              Write-F64Stamp ('cert-attempt ' + $attempt + '/3')
               Remove-Item -LiteralPath $crtPath -Force -ErrorAction SilentlyContinue
               Remove-Item -LiteralPath $keyPath -Force -ErrorAction SilentlyContinue
               $p = Start-Process -FilePath $ts -ArgumentList @('cert', '--cert-file', $crtPath, '--key-file', $keyPath, $fqdn) -RedirectStandardOutput $certLog -RedirectStandardError $certErr -WindowStyle Hidden -PassThru
@@ -1835,6 +1855,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f64-instrument.ps1')
+          Write-F64Stamp 'aria2c-begin'
           . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
           $f59sw = Start-F59Step
           # [F59 §2] PREBUILT BINARY (Chocolatey is no longer used anywhere on this
@@ -1896,7 +1918,7 @@ jobs:
           } catch { Write-Host ('[aria2c] task registration failed: ' + $_.Exception.Message + ' - fallback background') }
           # [F56-d loop 5] Readiness is a real aria2.getVersion JSON-RPC round-trip
           # (the surface /api/fetch uses) - not just "is something bound to 6800".
-          Start-Sleep -Seconds 3
+          Write-F64Stamp 'aria2c-rpc-poll-begin'
           $listening = $false
           $rpcOk = $false
           $rpcVersion = ''
@@ -1932,94 +1954,10 @@ jobs:
           Stop-F59Step -Step 'aria2c-install-rpc' -Sw $f59sw | Out-Null
           exit 0
 
-      - name: Install qBittorrent 4.6.5 (F59 prebuilt, SHA-256 verified) + Tailnet-only WebUI
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
-          $f59sw = Start-F59Step
-          # [F56-d §2 -> F59 §2] qBittorrent 4.6.5 from the PREBUILT release asset
-          # (Chocolatey removed: the -nox package does not exist for Windows and the
-          # plain package pulled an unverified installer). The F59 pre-warm step
-          # downloaded the official-binary zip, verified it against the committed pin
-          # AND the release checksums.txt, and expanded it to %ProgramFiles%\qBittorrent
-          # (a root the shipped resolver already searches). The WebUI stays bound to
-          # the TAILNET INTERFACE ONLY (never 0.0.0.0 / '*'), port 8080, operator auth
-          # via GHRDP_QBT_PASSWORD, category ghrdp-fetched, save path
-          # D:\RDP-Storage\Fetched\. Presets + bind ladder live in payloads/ghrdp-qbt.ps1.
-          $qbtDir = Join-Path $env:ProgramFiles 'qBittorrent'
-          $qbtPre = Get-ChildItem -LiteralPath $qbtDir -Recurse -Include 'qbittorrent-nox.exe', 'qbittorrent.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $qbtPre) { throw '[qbt] prebuilt binary missing/verification failed in the F59 pre-warm step - refusing to continue (no Chocolatey fallback by design)' }
-          try {
-              $pinsQ = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-prebuilt-pins.json') -Raw | ConvertFrom-Json
-              . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-prebuilt-verify.ps1')
-              # the pin covers the published zip; the expanded exe is reported below
-              # and re-checked by the shipped TOFU/pin path in Initialize-GhrdpQbt.
-              Write-Host ('[qbt] prebuilt source asset=' + [string]$pinsQ.assets.qbittorrent.name + ' pin=' + [string]$pinsQ.assets.qbittorrent.sha256)
-              Write-Host ('[qbt] staged exe=' + $qbtPre.FullName + ' sha256=' + (Get-FileHash -LiteralPath $qbtPre.FullName -Algorithm SHA256).Hash.ToLowerInvariant() + ' bytes=' + $qbtPre.Length)
-          } catch {
-              Write-Host ('::error::[qbt] prebuilt verification failed: ' + $_.Exception.Message)
-              throw
-          }
-          # Operator secret 32B alphanumeric -> GHRDP_QBT_PASSWORD env, SYSTEM-only file.
-          $chars = @(); $chars += (48..57); $chars += (65..90); $chars += (97..122)
-          $qbtSecret = -join ((0..31) | ForEach-Object { [char]($chars | Get-Random) })
-          $env:GHRDP_QBT_PASSWORD = $qbtSecret
-          if ($env:GITHUB_ENV) { Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_QBT_PASSWORD=' + $qbtSecret) }
-          New-Item -ItemType Directory -Path 'C:\ghrdp' -Force | Out-Null
-          $qbtSecFile = 'C:\ghrdp\qbt-secret.txt'
-          try { [System.IO.File]::WriteAllText($qbtSecFile, $qbtSecret, (New-Object System.Text.UTF8Encoding($false))) } catch { }
-          try { icacls.exe $qbtSecFile /inheritance:r 2>&1 | Out-Null; icacls.exe $qbtSecFile /grant:r 'SYSTEM:(F)' 'Administrators:(F)' 2>&1 | Out-Null; $LASTEXITCODE=0 } catch { }
-          New-Item -ItemType Directory -Path 'C:\ghrdp\qbt' -Force | Out-Null
-          New-Item -ItemType Directory -Path 'D:\RDP-Storage\Fetched' -Force | Out-Null
-          $qbtMod = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-qbt.ps1'
-          if (-not (Test-Path -LiteralPath $qbtMod)) { Write-Host '::warning::[qbt] payloads/ghrdp-qbt.ps1 missing - skip'; exit 0 }
-          . $qbtMod
-          $qbtConf = 'C:\ghrdp\qbt\qBittorrent.conf'
-          $init = Initialize-GhrdpQbt -ConfigPath 'C:\ghrdp\config.json' -ConfPath $qbtConf
-          if (-not $init.ok) {
-              Write-Host ('::warning::[qbt] init refused with labeled reason ' + $init.reason + ' - /api/fetch reports TRANSPORT_UNAVAILABLE for the torrent lane')
-              exit 0
-          }
-          Write-Host ('[qbt] exe=' + $init.exe + ' nox=' + $init.nox + ' sha256=' + $init.sha256 + ' shaMode=' + $init.shaMode)
-          Write-Host ('[qbt] WebUI bind=' + $init.address + ' (' + $init.bindSource + ') port=' + $init.port + ' category=' + $init.category + ' savePath=' + $init.savePath + ' conf=' + $init.conf)
-          # SYSTEM scheduled task GhrdpQbt - same shape as GhrdpAria2 (the daemon must
-          # survive the step; --profile pins the config the writer just produced).
-          $qbtArgs = @('--webui-port=8080','--no-splash','--profile=C:\ghrdp\qbt') -join ' '
-          try { Unregister-ScheduledTask -TaskName 'GhrdpQbt' -Confirm:$false -ErrorAction SilentlyContinue } catch { }
-          try {
-              $action = New-ScheduledTaskAction -Execute $init.exe -Argument $qbtArgs -WorkingDirectory 'C:\ghrdp\qbt'
-              $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(2)
-              $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-              $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 6)
-              Register-ScheduledTask -TaskName 'GhrdpQbt' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
-              Start-ScheduledTask -TaskName 'GhrdpQbt' -ErrorAction Stop
-              Write-Host '[qbt] GhrdpQbt SYSTEM task registered + started'
-          } catch { Write-Host ('[qbt] task registration failed: ' + $_.Exception.Message) }
-          Start-Sleep -Seconds 5
-          # Readiness is a real WebUI API round-trip, and the tailnet-only claim is
-          # proven behaviourally (a non-tailnet local address must refuse).
-          $sess = $null
-          $ver = $null
-          for ($i=0; $i -lt 10; $i++) {
-              $conn = Connect-GhrdpQbt -Address $init.address -Port $init.port -LogPath 'C:\ghrdp\qbt\data\logs\qbittorrent.log'
-              if ($conn.ok) { $sess = $conn.session; $ver = Get-GhrdpQbtVersion -Address $init.address -Port $init.port -Session $sess; if ($ver.ok) { break } }
-              Start-Sleep -Seconds 2
-          }
-          if ($ver -and $ver.ok) {
-              Write-Host ('[qbt] WebUI API version=' + $ver.version + ' authMode=' + $conn.mode)
-              $cat = Set-GhrdpQbtCategory -Address $init.address -Port $init.port -Session $sess
-              Write-Host ('[qbt] category ' + $init.category + ' ensure ok=' + $cat.ok)
-          } else {
-              Write-Host ('::warning::[qbt] WebUI API not answering (' + $init.address + ':8080) - torrent lane unavailable until ready')
-          }
-          $refuse = Test-GhrdpQbtPublicRefusal -Address $init.address -Port $init.port
-          if ($refuse.refused -eq $false) { Write-Host ('::error::[qbt] WebUI answered on a non-tailnet address ' + $refuse.candidate + ' - refusing to continue'); exit 1 }
-          if ($refuse.refused -eq $null) { Write-Host ('[qbt] public-refusal probe not applicable (' + $refuse.reason + ')') }
-          else { Write-Host ('[qbt] public interface ' + $refuse.candidate + ':8080 refused = true') }
-          Stop-F59Step -Step 'qbittorrent-install-webui' -Sw $f59sw | Out-Null
-          exit 0
-
+      # [F64] ON-PATH MOVE: Install qBittorrent 4.6.5 used to sit HERE (74-94s of
+      # dashboard-reachable). The step body now runs AFTER 'Start Mission Control
+      # dashboard EARLY'. Search reports TRANSPORT_UNAVAILABLE until it finishes.
+      # SHA-256 fail-closed, tailnet-only WebUI, and the step NAME are unchanged.
       # [F10-4c §5] ten adjacent bash stage/write steps merged into ONE
       # (saves ~10 shell startups on every dispatch; bodies unchanged, in
       # original order). Neither launch-gates nor tests pinned the old step
@@ -2150,6 +2088,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f64-instrument.ps1')
+          Write-F64Stamp 'stage-begin'
           . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
           $f59sw = Start-F59Step
           $stage = Join-Path $env:RUNNER_TEMP 'ghrdp-stage'
@@ -2191,14 +2131,18 @@ jobs:
           $ip = ''
           $dns = ''
           $ghName = ''
-          for ($ipTry = 1; $ipTry -le 10; $ipTry++) {
+          for ($ipTry = 1; $ipTry -le 30; $ipTry++) {
               try { $ip = ([string](& $ts ip -4 2>$null | Select-Object -First 1)).Trim(); $LASTEXITCODE = 0 } catch { $ip = '' }
               if ($ip) { break }
-              Start-Sleep -Seconds 3
+              if (($ipTry % 10) -eq 1) { Write-F64Stamp ('stage-ip-try ' + $ipTry) }
+              Start-Sleep -Seconds 1
           }
-          if (-not $ip) { Write-Host '[stage] WARNING: Tailscale IP still empty after 10 tries' }
-          # [F9g] transient-read retry: 10 attempts (~50s), logged, so a
+          if (-not $ip) { Write-Host '[stage] WARNING: Tailscale IP still empty after 30 tries' }
+          # [F9g] transient-read retry: 10 attempts (~50s at 5s), logged, so a
           # one-call CLI blip cannot masquerade as MagicDNS-off here.
+          # [F64-FIX] F64 retuned this to 50 x 1s; that broke the gate-protected
+          # F9g contract pinned by tests/provision-contract.test.js (-le 10).
+          # 10 x 5s keeps the SAME ~50s transient window and restores the gate.
           for ($dnsTry = 1; $dnsTry -le 10; $dnsTry++) {
               try {
                   $j = (& $ts status --json 2>$null) | ConvertFrom-Json
@@ -2208,6 +2152,7 @@ jobs:
               } catch { }
               if ($dns -match '^[a-z0-9][a-z0-9\-]*(\.[a-z0-9\-]+)+\.ts\.net$') { break }
               Write-Host ('[stage] dns read attempt ' + $dnsTry + ': Self.DNSName = [' + $dns + '] - retrying')
+              if (($dnsTry % 10) -eq 1) { Write-F64Stamp ('stage-dns-try ' + $dnsTry) }
               Start-Sleep -Seconds 5
           }
           # Fallback: original single-read (only reached if all retries failed)
@@ -2226,7 +2171,8 @@ jobs:
               $null = & curl.exe -sS --fail -X POST ('https://api.tailscale.com/api/v2/tailnet/' + $env:TS_TAILNET_NAME + '/dns/preferences') -H ('Authorization: Bearer ' + $env:TS_API_TOKEN) -H 'Content-Type: application/json' -d '{"magicDNSEnabled":true}' --max-time 30 2>$null
               if ($LASTEXITCODE -eq 0) { Write-Host '[stage] F9b: opt-in MagicDNS auto-enable POST accepted' } else { Write-Host ('[stage] F9b: MagicDNS auto-enable API call failed (curl exit ' + $LASTEXITCODE + ') - check TS_API_TOKEN scope; token never printed') }
               $LASTEXITCODE = 0
-              Start-Sleep -Seconds 5
+              Write-F64Stamp 'stage-magicdns-settle'
+              Start-Sleep -Seconds 1
               try { $j = (& $ts status --json 2>$null) | ConvertFrom-Json; $dns = ([string]$j.Self.DNSName).TrimEnd('.'); $LASTEXITCODE = 0 } catch { }
           }
           # [F9a] MagicDNS OFF = halt by design. Before throwing, the step
@@ -2489,6 +2435,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f64-instrument.ps1')
+          Write-F64Stamp 'f17-probe-begin'
           $S = $env:GITHUB_STEP_SUMMARY
           $root = 'C:\ghrdp'
           # [F17 §1 probe-begin] Extracted VERBATIM by autologin-lab cell R
@@ -2924,6 +2872,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f64-instrument.ps1')
+          Write-F64Stamp 'webdesk-begin'
           $S = $env:GITHUB_STEP_SUMMARY
           # [F9n] No tailscale CLI handle: this step reads the tailnet IP from
           # config.json (written pre-lock by the stage step) and never shells
@@ -3194,7 +3144,7 @@ jobs:
               $needMsi = $true
               try { if ((Test-Path -LiteralPath $msi) -and ((Get-Item -LiteralPath $msi).Length -gt 1MB)) { $needMsi = $false; Write-Host ('[webdesk] tightvnc msi cache hit (' + (Get-Item -LiteralPath $msi).Length + ' bytes)') } } catch { }
               if ($needMsi) {
-                  $msiJob = Start-Job -ScriptBlock { param($u,$o) Invoke-WebRequest -Uri $u -OutFile $o -UseBasicParsing -TimeoutSec 120 } -ArgumentList $msiUrl, $msi
+                  $msiJob = Start-F64BgJob -ScriptBlock { param($u,$o) Invoke-WebRequest -Uri $u -OutFile $o -UseBasicParsing -TimeoutSec 120 } -ArgumentList $msiUrl, $msi
               }
               & python -m pip install --disable-pip-version-check --quiet vncdotool 2>&1 | Select-Object -Last 3 | Out-Null
               if ($msiJob) {
@@ -3572,6 +3522,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f64-instrument.ps1')
+          Write-F64Stamp 'webdesk-selftest-begin'
           # [F9n] Classified advertised-URL -> backend-root self-test with self-heal (A/B/C/D above).
           # [F9o] Mode-matching VNC probe required on every HTTP-PASS path.
           $S = $env:GITHUB_STEP_SUMMARY
@@ -3749,7 +3701,10 @@ jobs:
           if ($checkIp) { $listenNow = [bool](Get-NetTCPConnection -LocalAddress $checkIp -LocalPort 7333 -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1) }
           $pidsNow = @(Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*websockify*7333*' } | Select-Object -ExpandProperty ProcessId)
           VLog ('[webdesk-test] pre-check: tailnet-listen-7333(' + $checkIp + ')=' + $listenNow + ' websockify-pids=' + ($pidsNow -join ','))
-          # A - advertised URL, 3 tries x 5s.
+          # A - advertised URL, 3 tries x 5s (green path already breaks on first 200+noVNC).
+          # [F64-FIX] F64 shortened this to 1s; the gate-protected F9n contract
+          # (tests/workflow-webdesk.test.js) requires a 5s wait between the
+          # advertised-URL tries, and 1s was too short for a cold websockify bind.
           $advertisedCode = ''
           $probeS = $null
           for ($i = 1; $i -le 3; $i++) {
@@ -3972,6 +3927,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f64-instrument.ps1')
+          Write-F64Stamp 'dashboard-begin'
           . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
           $f59sw = Start-F59Step
           $root = 'C:\ghrdp'
@@ -3992,7 +3949,7 @@ jobs:
               Write-Host ('[dashboard] task registration failed: ' + $_.Exception.Message + ' (falling back to background process)')
           }
           $listening = $false
-          for ($i = 0; $i -lt 30; $i++) {
+          for ($i = 0; $i -lt 60; $i++) {
               if (Test-Path -LiteralPath $okFile) {
                   $txt = ''
                   try { $txt = [System.IO.File]::ReadAllText($okFile) } catch { }
@@ -4002,7 +3959,8 @@ jobs:
               $tcp = $null
               try { $tcp = Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction SilentlyContinue } catch { }
               if ($tcp) { $listening = $true; break }
-              Start-Sleep -Seconds 2
+              if (($i % 10) -eq 0) { Write-F64Stamp ('dash-listen i=' + $i) }
+              Start-Sleep -Seconds 1
           }
           if (-not $listening) {
               try {
@@ -4011,7 +3969,7 @@ jobs:
               } catch {
                   Write-Host ('[dashboard] background fallback failed: ' + $_.Exception.Message)
               }
-              for ($i = 0; $i -lt 30; $i++) {
+              for ($i = 0; $i -lt 60; $i++) {
                   if (Test-Path -LiteralPath $okFile) {
                       $txt = ''
                       try { $txt = [System.IO.File]::ReadAllText($okFile) } catch { }
@@ -4020,7 +3978,8 @@ jobs:
                   $tcp = $null
                   try { $tcp = Get-NetTCPConnection -LocalPort 7331 -State Listen -ErrorAction SilentlyContinue } catch { }
                   if ($tcp) { $listening = $true; break }
-                  Start-Sleep -Seconds 2
+                  if (($i % 10) -eq 0) { Write-F64Stamp ('dash-listen i=' + $i) }
+                  Start-Sleep -Seconds 1
               }
           }
           if ($listening) {
@@ -4037,6 +3996,98 @@ jobs:
               Add-F59Timing -Step 'dashboard-reachable-from-job-start' -Seconds $reach
               Write-Host ('::notice title=F59 dashboard-reachable::' + $reach + 's from job start')
           }
+          exit 0
+
+      # [F64] measured 74-94s ON the READY path. Dashboard answers :7331 first;
+      # the torrent lane comes up next (labeled until then).
+      - name: Install qBittorrent 4.6.5 (F59 prebuilt, SHA-256 verified) + Tailnet-only WebUI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f64-instrument.ps1')
+          Write-F64Stamp 'qbt-begin'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-timing.ps1')
+          $f59sw = Start-F59Step
+          # [F56-d §2 -> F59 §2] qBittorrent 4.6.5 from the PREBUILT release asset
+          # (Chocolatey removed: the -nox package does not exist for Windows and the
+          # plain package pulled an unverified installer). The F59 pre-warm step
+          # downloaded the official-binary zip, verified it against the committed pin
+          # AND the release checksums.txt, and expanded it to %ProgramFiles%\qBittorrent
+          # (a root the shipped resolver already searches). The WebUI stays bound to
+          # the TAILNET INTERFACE ONLY (never 0.0.0.0 / '*'), port 8080, operator auth
+          # via GHRDP_QBT_PASSWORD, category ghrdp-fetched, save path
+          # D:\RDP-Storage\Fetched\. Presets + bind ladder live in payloads/ghrdp-qbt.ps1.
+          $qbtDir = Join-Path $env:ProgramFiles 'qBittorrent'
+          $qbtPre = Get-ChildItem -LiteralPath $qbtDir -Recurse -Include 'qbittorrent-nox.exe', 'qbittorrent.exe' -File -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $qbtPre) { throw '[qbt] prebuilt binary missing/verification failed in the F59 pre-warm step - refusing to continue (no Chocolatey fallback by design)' }
+          try {
+              $pinsQ = Get-Content -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-prebuilt-pins.json') -Raw | ConvertFrom-Json
+              . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f59-prebuilt-verify.ps1')
+              # the pin covers the published zip; the expanded exe is reported below
+              # and re-checked by the shipped TOFU/pin path in Initialize-GhrdpQbt.
+              Write-Host ('[qbt] prebuilt source asset=' + [string]$pinsQ.assets.qbittorrent.name + ' pin=' + [string]$pinsQ.assets.qbittorrent.sha256)
+              Write-Host ('[qbt] staged exe=' + $qbtPre.FullName + ' sha256=' + (Get-FileHash -LiteralPath $qbtPre.FullName -Algorithm SHA256).Hash.ToLowerInvariant() + ' bytes=' + $qbtPre.Length)
+          } catch {
+              Write-Host ('::error::[qbt] prebuilt verification failed: ' + $_.Exception.Message)
+              throw
+          }
+          # Operator secret 32B alphanumeric -> GHRDP_QBT_PASSWORD env, SYSTEM-only file.
+          $chars = @(); $chars += (48..57); $chars += (65..90); $chars += (97..122)
+          $qbtSecret = -join ((0..31) | ForEach-Object { [char]($chars | Get-Random) })
+          $env:GHRDP_QBT_PASSWORD = $qbtSecret
+          if ($env:GITHUB_ENV) { Add-Content -Path $env:GITHUB_ENV -Value ('GHRDP_QBT_PASSWORD=' + $qbtSecret) }
+          New-Item -ItemType Directory -Path 'C:\ghrdp' -Force | Out-Null
+          $qbtSecFile = 'C:\ghrdp\qbt-secret.txt'
+          try { [System.IO.File]::WriteAllText($qbtSecFile, $qbtSecret, (New-Object System.Text.UTF8Encoding($false))) } catch { }
+          try { icacls.exe $qbtSecFile /inheritance:r 2>&1 | Out-Null; icacls.exe $qbtSecFile /grant:r 'SYSTEM:(F)' 'Administrators:(F)' 2>&1 | Out-Null; $LASTEXITCODE=0 } catch { }
+          New-Item -ItemType Directory -Path 'C:\ghrdp\qbt' -Force | Out-Null
+          New-Item -ItemType Directory -Path 'D:\RDP-Storage\Fetched' -Force | Out-Null
+          $qbtMod = Join-Path $env:GITHUB_WORKSPACE 'payloads\ghrdp-qbt.ps1'
+          if (-not (Test-Path -LiteralPath $qbtMod)) { Write-Host '::warning::[qbt] payloads/ghrdp-qbt.ps1 missing - skip'; exit 0 }
+          . $qbtMod
+          $qbtConf = 'C:\ghrdp\qbt\qBittorrent.conf'
+          $init = Initialize-GhrdpQbt -ConfigPath 'C:\ghrdp\config.json' -ConfPath $qbtConf
+          if (-not $init.ok) {
+              Write-Host ('::warning::[qbt] init refused with labeled reason ' + $init.reason + ' - /api/fetch reports TRANSPORT_UNAVAILABLE for the torrent lane')
+              exit 0
+          }
+          Write-Host ('[qbt] exe=' + $init.exe + ' nox=' + $init.nox + ' sha256=' + $init.sha256 + ' shaMode=' + $init.shaMode)
+          Write-Host ('[qbt] WebUI bind=' + $init.address + ' (' + $init.bindSource + ') port=' + $init.port + ' category=' + $init.category + ' savePath=' + $init.savePath + ' conf=' + $init.conf)
+          # SYSTEM scheduled task GhrdpQbt - same shape as GhrdpAria2 (the daemon must
+          # survive the step; --profile pins the config the writer just produced).
+          $qbtArgs = @('--webui-port=8080','--no-splash','--profile=C:\ghrdp\qbt') -join ' '
+          try { Unregister-ScheduledTask -TaskName 'GhrdpQbt' -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+          try {
+              $action = New-ScheduledTaskAction -Execute $init.exe -Argument $qbtArgs -WorkingDirectory 'C:\ghrdp\qbt'
+              $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(2)
+              $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+              $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 6)
+              Register-ScheduledTask -TaskName 'GhrdpQbt' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+              Start-ScheduledTask -TaskName 'GhrdpQbt' -ErrorAction Stop
+              Write-Host '[qbt] GhrdpQbt SYSTEM task registered + started'
+          } catch { Write-Host ('[qbt] task registration failed: ' + $_.Exception.Message) }
+          Write-F64Stamp 'qbt-webui-poll-begin'
+          # Readiness is a real WebUI API round-trip, and the tailnet-only claim is
+          # proven behaviourally (a non-tailnet local address must refuse).
+          $sess = $null
+          $ver = $null
+          for ($i=0; $i -lt 20; $i++) {
+              $conn = Connect-GhrdpQbt -Address $init.address -Port $init.port -LogPath 'C:\ghrdp\qbt\data\logs\qbittorrent.log'
+              if ($conn.ok) { $sess = $conn.session; $ver = Get-GhrdpQbtVersion -Address $init.address -Port $init.port -Session $sess; if ($ver.ok) { break } }
+              Start-Sleep -Seconds 1
+          }
+          if ($ver -and $ver.ok) {
+              Write-Host ('[qbt] WebUI API version=' + $ver.version + ' authMode=' + $conn.mode)
+              $cat = Set-GhrdpQbtCategory -Address $init.address -Port $init.port -Session $sess
+              Write-Host ('[qbt] category ' + $init.category + ' ensure ok=' + $cat.ok)
+          } else {
+              Write-Host ('::warning::[qbt] WebUI API not answering (' + $init.address + ':8080) - torrent lane unavailable until ready')
+          }
+          $refuse = Test-GhrdpQbtPublicRefusal -Address $init.address -Port $init.port
+          if ($refuse.refused -eq $false) { Write-Host ('::error::[qbt] WebUI answered on a non-tailnet address ' + $refuse.candidate + ' - refusing to continue'); exit 1 }
+          if ($refuse.refused -eq $null) { Write-Host ('[qbt] public-refusal probe not applicable (' + $refuse.reason + ')') }
+          else { Write-Host ('[qbt] public interface ' + $refuse.candidate + ':8080 refused = true') }
+          Stop-F59Step -Step 'qbittorrent-install-webui' -Sw $f59sw | Out-Null
           exit 0
 
       - name: Start Rust WebSocket dashboard (build, verify, GhrdpRustDash, acceptance, advertise)
@@ -4581,6 +4632,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f64-instrument.ps1')
+          Write-F64Stamp 'parsec-begin'
           $ru = $env:RDP_USER
           try {
               $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command "while($true){ if(-not (Get-Process parsecd -ErrorAction SilentlyContinue)){ $p=(Get-ChildItem ''C:\Program Files\Parsec\parsecd.exe'',''C:\Program Files (x86)\Parsec\parsec.exe'' -ErrorAction SilentlyContinue | Select -First 1); if($p){ Start-Process $p.FullName } }; Start-Sleep 10 }"')
@@ -4597,6 +4650,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f64-instrument.ps1')
+          Write-F64Stamp 'personalization-begin'
           $ts = 'C:\Program Files\Tailscale\tailscale.exe'
           $ip = ''
           try { $ip = ([string](& $ts ip -4 2>$null | Select-Object -First 1)).Trim(); $LASTEXITCODE = 0 } catch { }
@@ -4802,6 +4857,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
+          . (Join-Path $env:GITHUB_WORKSPACE 'payloads/f64-instrument.ps1')
+          Write-F64Stamp 'vdd-begin'
           $zip = Join-Path $env:RUNNER_TEMP 'idd.zip'
           & curl.exe -fL --retry 3 --connect-timeout 20 --max-time 180 -o $zip 'https://github.com/ge9/IddSampleDriver/releases/download/v1.0.2/IddSampleDriver.zip' 2>$null
           $LASTEXITCODE = 0

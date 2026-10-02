@@ -116,8 +116,8 @@ test('F34-1 Running-without-an-address is its own class, not "unknown"', () => {
 });
 
 test('F34-1 up-step poll waits for BackendState AND a CGNAT IP, then publishes it', () => {
-  assert.match(up.text, /for \(\$i = 0; \$i -lt 45; \$i\+\+\)/, 'poll is no longer 45 x 2s = 90s');
-  assert.match(up.text, /Start-Sleep -Seconds 2/);
+  assert.match(up.text, /for \(\$i = 0; \$i -lt 90; \$i\+\+\)/, 'poll is no longer 90 x 1s = 90s (F64: same window as 45 x 2s)');
+  assert.match(up.text, /Start-Sleep -Seconds 1/);
   const running = up.at(/\$j\.BackendState -eq 'Running'/);
   const ips = up.at(/\$j\.Self\.TailscaleIPs/);
   const okAt = up.at(/if \(\$tsIp\) \{ \$ok = \$true; break \}/);

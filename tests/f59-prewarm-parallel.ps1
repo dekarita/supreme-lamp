@@ -106,7 +106,7 @@ Check 'D2 mirror_encrypt default false' ([regex]::Match($main, 'mirror_encrypt:[
 Check 'D3 search_enable default true' ([regex]::Match($main, 'search_enable:[\s\S]{0,600}?default:\s*true').Success)
 Check 'D4 no Chocolatey on the transport lane' (-not ($main -match 'choco install (aria2|qbittorrent)'))
 Check 'D5 prebuilt release + pins + fail-closed verify' (($main -match 'prebuilt-binaries') -and ($main -match 'Test-F59AssetSha256') -and ($main -match 'f59-prebuilt-pins\.json'))
-Check 'D6 four background legs + Wait-Job' ((([regex]::Matches($main, 'Start-Job')).Count -ge 4) -and ($main -match 'Wait-Job -Job \$all'))
+Check 'D6 four background legs + Wait-Job' ((([regex]::Matches($main, 'Start-F64BgJob')).Count -ge 4) -and ($main -match 'Wait-Job -Job \$all'))
 Check 'D7 startup-timing.jsonl + artifact' (($main -match 'startup-timing\.jsonl') -and ($main -match 'name: startup-timing'))
 Check 'D8 dashboard-reachable marker after the prewarm gate' ($main.IndexOf('GHRDP_F59_PREWARM=ready') -lt $main.IndexOf('dashboard-reachable-from-job-start'))
 Check 'D9 auto-path encryption floor untouched' (($main -match "if \(\`$Auto\) \{ return 'all' \}") -or ((Get-Content -LiteralPath (Join-Path $ws 'payloads/ghrdp-mirror.ps1') -Raw) -match "if \(\`$Auto\) \{ return 'all' \}"))
