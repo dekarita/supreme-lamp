@@ -208,6 +208,19 @@ test("F65 builder: fail-closed - tampered fixture, empty pin and missing source 
   assert.notEqual(res3.status, 0, "missing source with downloads disabled must be refused");
 });
 
+test("F65 builder: repo-owned assets fall back to the documented API download route", () => {
+  const { parseReleaseAssetUrl } = require(path.join(root, "scripts/f65-bundle-builder.mjs"));
+  const asset = manifest.components.webrtc.source_url;
+  const parsed = parseReleaseAssetUrl(asset);
+  assert.deepEqual(
+    { owner: parsed.owner, repo: parsed.repo, tag: parsed.tag, name: parsed.name },
+    { owner: "dekarita", repo: "supreme-lamp", tag: "webrtc-dist", name: manifest.components.webrtc.name }
+  );
+  assert.equal(parseReleaseAssetUrl("https://pkgs.tailscale.com/stable/tailscale-setup-1.102.4-amd64.msi"), null);
+  assert.match(builderSrc, /Accept: application\/octet-stream|accept: 'application\/octet-stream'/);
+  assert.match(builderSrc, /api fallback: asset/);
+});
+
 test("F65 builder: prefers the vendor source, falls back to the release mirror", () => {
   assert.match(builderSrc, /mirror-release-asset/);
   assert.match(builderSrc, /for \(const src of componentSources\(def, args\.prefer\)\)/);

@@ -52,13 +52,38 @@ async function sha256File(file) {
   return sha256(buf);
 }
 
+export function parseReleaseAssetUrl(url) {
+  const m = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/releases\/download\/([^/]+)\/(.+)$/.exec(url || '');
+  return m ? { owner: m[1], repo: m[2], tag: m[3], name: m[4] } : null;
+}
+
+async function streamToFile(res, dest) {
+  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+  await pipeline(Readable.fromWeb(res.body), createWriteStream(dest));
+  return (await stat(dest)).size;
+}
+
 async function download(url, dest, token) {
   const headers = { 'user-agent': 'ghrdp-f65-bundle-builder' };
   if (token && /github\.com/.test(url)) headers.authorization = `Bearer ${token}`;
-  const res = await fetch(url, { headers, redirect: 'follow' });
-  if (!res.ok || !res.body) throw new Error(`HTTP ${res.status} for ${url}`);
-  await pipeline(Readable.fromWeb(res.body), createWriteStream(dest));
-  return (await stat(dest)).size;
+  try {
+    return await streamToFile(await fetch(url, { headers, redirect: 'follow' }), dest);
+  } catch (err) {
+    // [F65 §1] GitHub release-asset downloads through github.com can be refused
+    // (404) for a token-carrying request; the documented API route with
+    // Accept: application/octet-stream is the fallback for repo-owned assets.
+    const a = parseReleaseAssetUrl(url);
+    if (!a || !token) throw err;
+    const api = 'https://api.github.com';
+    const gh = { authorization: `token ${token}`, 'user-agent': 'ghrdp-f65-bundle-builder', accept: 'application/vnd.github+json' };
+    const rel = await fetch(`${api}/repos/${a.owner}/${a.repo}/releases/tags/${a.tag}`, { headers: gh });
+    if (!rel.ok) throw new Error(`${err.message}; api fallback: release lookup HTTP ${rel.status}`);
+    const meta = await rel.json();
+    const asset = (meta.assets || []).find((x) => x.name === a.name);
+    if (!asset) throw new Error(`${err.message}; api fallback: asset ${a.name} not in ${a.tag}`);
+    const res = await fetch(asset.url, { headers: { ...gh, accept: 'application/octet-stream' }, redirect: 'follow' });
+    return await streamToFile(res, dest);
+  }
 }
 
 function componentSources(def, prefer) {
