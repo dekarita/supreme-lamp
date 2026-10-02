@@ -355,6 +355,14 @@ const targets = [
   'tests/f56d-qbt-tailnet.ps1',
   // [F57 §5] the Explorer real-ops lab (new surface, same audit).
   'tests/f57-explorer-ops.ps1',
+  // [F60 §3/§4/§5] the warm-runner surfaces: VM bootstrap, health probe, warm/cold
+  // stager, post-run secret scrubber, and the two Windows labs.
+  'scripts/f60-bootstrap.ps1',
+  'scripts/f60-health.ps1',
+  'scripts/f60-stage-and-start.ps1',
+  'scripts/f60-scrub-runcommand.ps1',
+  'tests/f60-bootstrap-lab.ps1',
+  'tests/f60-bootstrap.Tests.ps1',
 ];
 
 let failed = 0;
@@ -364,7 +372,10 @@ for (const t of targets) {
   console.log((problems.length ? 'FAIL ' : 'PASS ') + t + (problems.length ? ' :: ' + problems.slice(0, 6).join('; ') : ''));
   failed += problems.length ? 1 : 0;
 }
-for (const wf of ['.github/workflows/autologin-lab.yml', '.github/workflows/main.yml', '.github/workflows/launch-gates.yml']) {
+for (const wf of ['.github/workflows/autologin-lab.yml', '.github/workflows/main.yml', '.github/workflows/launch-gates.yml',
+                  // [F60] the warm-runner workflows embed PowerShell too.
+                  '.github/workflows/provision-warm-runner.yml', '.github/workflows/warm-dispatch.yml',
+                  '.github/workflows/f60-warm-pins-bootstrap.yml']) {
   if (!existsSync(`${repo}/${wf}`)) continue;
   for (const [label, body] of workflowBlocks(wf)) {
     const problems = audit(label, body);

@@ -1,0 +1,515 @@
+name: F60 provision warm runner (Azure VM + Tailscale + self-hosted runner)
+# [F60 §2] WARM-RUNNER PROVISIONING. Replaces the manual 7-step operator setup
+# (kept as the troubleshooting appendix in docs/F60-OPERATOR-SETUP.md).
+#
+# ONE operator click -> an Azure B2s Windows Server 2022 VM in a dedicated
+# resource group, joined to the tailnet with tag:ghrdp-warm, RDP-locked to
+# Tailscale only, pre-warmed with the F59-pinned binaries + the prebuilt UI bundle
+# + the four NSSM services, and registered as the `sl-warm` self-hosted runner.
+#
+# HARD RULES (asserted by tests/f60-provision-contract.test.js + the F60 launch
+# gates, and enforced at runtime below):
+#   * ADDITIVE: main.yml is never touched. No self-hosted runner is added to any
+#     existing workflow; the warm lane lives in warm-dispatch.yml.
+#   * NO ARC / NO Kubernetes / NO GitHub Larger Runners - a plain VM + the stock
+#     actions/runner package only.
+#   * SERVICE-PRINCIPAL SCOPE: an AZURE_CREDENTIALS whose role assignment is
+#     broader than the sl-warm-rg resource group HALTS this workflow before any
+#     Azure resource is created.
+#   * SECRETS: the VM admin password, the Tailscale auth key, the runner
+#     registration token and the repo read-only token are masked here, are never
+#     echoed, and are scrubbed off the VM's Run Command settings files afterwards
+#     (scripts/f60-scrub-runcommand.ps1).
+#   * PINS: nothing is installed on the VM unless its SHA-256 pin is committed and
+#     non-empty (payloads/f60-warm-pins.json + payloads/f59-prebuilt-pins.json).
+#     An incomplete pin file HALTS at preflight, before `azure/login`.
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'create = provision the warm VM | verify = re-run the idempotent bootstrap + health probe | teardown = delete the resource group'
+        required: true
+        type: choice
+        options:
+          - create
+          - verify
+          - teardown
+        default: create
+      region:
+        description: 'Azure region for sl-warm-rg (southeastasia = Singapore, centralindia = Pune)'
+        required: true
+        type: choice
+        options:
+          - southeastasia
+          - centralindia
+        default: southeastasia
+      vm_size:
+        description: 'VM size (Standard_B2s = 2 vCPU/4 GiB burstable, the ~$46/mo target)'
+        required: true
+        type: choice
+        options:
+          - Standard_B2s
+          - Standard_B2s_v2
+        default: Standard_B2s
+
+# One provision at a time: two concurrent `create` runs would fight over the same
+# resource group, NSG and runner name.
+concurrency:
+  group: f60-provision-warm-runner
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: write          # §2: read the runner list / registration state
+  administration: write   # §1 step 4: mint the runner registration token itself
+
+env:
+  RG: sl-warm-rg
+  VM: sl-warm
+  NSG: sl-warm-nsg
+  RUNNER_LABEL: sl-warm
+  RUNNER_NAME: sl-warm
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      magicdns: ${{ steps.bootstrap.outputs.magicdns }}
+      runner_id: ${{ steps.poll.outputs.runner_id }}
+      public_ip: ${{ steps.summary.outputs.public_ip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ------------------------------------------------------------------ #
+      # 1. PREFLIGHT - fail closed BEFORE any Azure call.                  #
+      # ------------------------------------------------------------------ #
+      - name: Preflight (secrets present, F59 + F60 pins complete, script size bound)
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          VM_ADMIN_PASSWORD: ${{ secrets.VM_ADMIN_PASSWORD }}
+          GHRDP_RELEASE_READONLY_TOKEN: ${{ secrets.GHRDP_RELEASE_READONLY_TOKEN }}
+          ACTION: ${{ github.event.inputs.action }}
+        run: |
+          set -euo pipefail
+          # Mask every secret this step maps BEFORE anything else can print it.
+          # The step only ever tests these values for emptiness (names, not
+          # values, appear in the failure message), but masking here means a later
+          # edit cannot accidentally echo a credential into the log.
+          echo "::add-mask::${TAILSCALE_AUTHKEY}"
+          echo "::add-mask::${VM_ADMIN_PASSWORD}"
+          echo "::add-mask::${GHRDP_RELEASE_READONLY_TOKEN}"
+          sp_secret_pf=$(printf '%s' "$AZURE_CREDENTIALS" | jq -r '.clientSecret // empty' 2>/dev/null || true)
+          if [ -n "${sp_secret_pf:-}" ]; then echo "::add-mask::${sp_secret_pf}"; fi
+          echo "[F60 preflight] action=${ACTION}"
+          for f in payloads/f59-prebuilt-pins.json payloads/f59-prebuilt-verify.ps1 \
+                   payloads/f60-warm-pins.json scripts/f60-bootstrap.ps1 \
+                   scripts/f60-scrub-runcommand.ps1 scripts/f60-health.ps1 \
+                   .github/workflows/warm-dispatch.yml docs/F60-OPERATOR-SETUP.md; do
+            test -f "$f" || { echo "F60: missing $f (fail-closed)" >&2; exit 1; }
+          done
+          # The F59 pins are the aria2c/qBittorrent contract the warm VM installs
+          # from; a missing or unpinned entry stops the provision here.
+          python3 - <<'PY'
+          import json, re, sys
+          errs = []
+          f59 = json.load(open('payloads/f59-prebuilt-pins.json', encoding='utf-8'))
+          for k in ('aria2c', 'qbittorrent'):
+              if not re.match(r'^[0-9a-f]{64}$', (f59['assets'][k].get('sha256') or '')):
+                  errs.append('f59 pin incomplete: ' + k)
+          f60 = json.load(open('payloads/f60-warm-pins.json', encoding='utf-8'))
+          for k in ('tailscale_msi', 'nssm', 'node_win_x64_zip', 'actions_runner_win_x64_zip'):
+              a = f60['assets'][k]
+              if not re.match(r'^[0-9a-f]{64}$', (a.get('sha256') or '')):
+                  errs.append('f60 pin incomplete: ' + k + ' (run f60-warm-pins-bootstrap.yml once, then commit its f60-warm-pins.observed.json over payloads/f60-warm-pins.json)')
+              if not str(a.get('url') or '').startswith('https://'):
+                  errs.append('f60 pin url not https: ' + k)
+              if not a.get('name'):
+                  errs.append('f60 pin name missing: ' + k)
+          if f60['reused_f59_assets']['ui_release_tag'] != 'ui-dist':
+              errs.append('ui_release_tag must stay ui-dist (the build-ui.yml release)')
+          if errs:
+              print('F60 preflight FAILED: ' + '; '.join(errs), file=sys.stderr)
+              sys.exit(1)
+          print('F60 preflight pins OK: 4 F60 artifacts + 2 F59 artifacts pinned, ui release=ui-dist')
+          PY
+          # Azure Run Command caps the script payload; a bootstrap that grows past
+          # the bound must be split, not silently truncated.
+          sz=$(wc -c < scripts/f60-bootstrap.ps1)
+          echo "[F60 preflight] f60-bootstrap.ps1 = ${sz} bytes (Run Command bound 200000)"
+          if [ "$sz" -gt 200000 ]; then
+            echo "F60: scripts/f60-bootstrap.ps1 exceeds the Run Command bound (${sz} bytes)" >&2
+            exit 1
+          fi
+          if [ "${ACTION}" = "teardown" ]; then
+            echo '[F60 preflight] teardown needs only AZURE_CREDENTIALS'
+            [ -n "${AZURE_CREDENTIALS}" ] || { echo 'F60: repo secret AZURE_CREDENTIALS is empty' >&2; exit 1; }
+            exit 0
+          fi
+          # create/verify: all four secrets are required. The repository is
+          # PRIVATE, so the VM cannot fetch repo files or release assets
+          # anonymously and has no GITHUB_TOKEN outside a job - see
+          # docs/F60-OPERATOR-SETUP.md step 1c for the least-privilege PAT.
+          miss=''
+          [ -n "${AZURE_CREDENTIALS}" ] || miss="$miss AZURE_CREDENTIALS"
+          [ -n "${TAILSCALE_AUTHKEY}" ] || miss="$miss TAILSCALE_AUTHKEY"
+          [ -n "${VM_ADMIN_PASSWORD}" ] || miss="$miss VM_ADMIN_PASSWORD"
+          [ -n "${GHRDP_RELEASE_READONLY_TOKEN}" ] || miss="$miss GHRDP_RELEASE_READONLY_TOKEN"
+          if [ -n "$miss" ]; then
+            echo "F60: missing repo secret(s):$miss - see docs/F60-OPERATOR-SETUP.md step 1" >&2
+            exit 1
+          fi
+          echo '[F60 preflight] all four secrets present (values never printed)'
+
+      # ------------------------------------------------------------------ #
+      # 2. AZURE LOGIN + SERVICE-PRINCIPAL SCOPE GUARD (HALT condition).   #
+      # ------------------------------------------------------------------ #
+      - name: Azure login (service principal from AZURE_CREDENTIALS)
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+          enable-AzPSSession: false
+
+      - name: HALT guard - service principal scope must not exceed the resource group
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+        run: |
+          set -euo pipefail
+          # Parse the SP JSON WITHOUT printing it. The client secret is masked
+          # first so no later command can echo it into the log.
+          sp_secret=$(printf '%s' "$AZURE_CREDENTIALS" | jq -r '.clientSecret // empty')
+          if [ -n "$sp_secret" ]; then echo "::add-mask::$sp_secret"; fi
+          app_id=$(printf '%s' "$AZURE_CREDENTIALS" | jq -r '.clientId // empty')
+          tenant=$(printf '%s' "$AZURE_CREDENTIALS" | jq -r '.tenantId // empty')
+          sub=$(printf '%s' "$AZURE_CREDENTIALS" | jq -r '.subscriptionId // empty')
+          for pair in "app_id:${app_id}" "tenant_id:${tenant}" "subscription:${sub}"; do
+            name=${pair%%:*}; val=${pair#*:}
+            [ -n "$val" ] || { echo "F60: AZURE_CREDENTIALS is not --sdk-auth JSON (missing ${name})" >&2; exit 1; }
+          done
+          echo "[F60 sp] clientId=${app_id} tenantId=${tenant} subscription=${sub}"
+          want="/subscriptions/${sub}/resourceGroups/${RG}"
+          # A subscription-wide read that SUCCEEDS lets us see every assignment; if
+          # it is DENIED, the SP cannot even read subscription-scope assignments,
+          # which is what a correctly scoped SP looks like - the RG-scoped query
+          # below is then the enforced check.
+          set +e
+          all_json=$(az role assignment list --assignee "$app_id" -o json 2>/tmp/f60-sp-err)
+          rc=$?
+          set -e
+          if [ "$rc" -eq 0 ]; then
+            echo "$all_json" | jq -r '.[] | .scope + " " + .roleDefinitionName' | sed 's/^/[F60 sp] assignment: /'
+            n_assign=$(printf '%s' "$all_json" | jq 'length' 2>/dev/null || echo 0)
+            if [ "$n_assign" = "0" ]; then
+              echo 'F60 HALT: the service principal has NO role assignment at all - it cannot create the resource group. Recreate it: az ad sp create-for-rbac --name sl-warm-sp --role Contributor --scopes /subscriptions/<SUB_ID>/resourceGroups/sl-warm-rg --sdk-auth' >&2
+              exit 1
+            fi
+            # Any assignment whose scope is NOT the sl-warm resource group (or below
+            # it) is broader than this workflow is allowed to use.
+            broad=$(printf '%s' "$all_json" | WANT="$want" jq -r 'map(select((.scope | startswith($WANT)) | not)) | map(.scope + "=" + .roleDefinitionName) | join(", ")')
+            if [ -n "$broad" ]; then
+              echo "F60 HALT: SP scope too broad - the service principal holds a role assignment broader than the sl-warm-rg resource group (${want}): ${broad}" >&2
+              echo 'Refusing to provision. Recreate the SP scoped to the group only: az ad sp create-for-rbac --name sl-warm-sp --role Contributor --scopes /subscriptions/<SUB_ID>/resourceGroups/sl-warm-rg --sdk-auth' >&2
+              exit 1
+            fi
+            echo "[F60 sp] subscription-wide read succeeded: all ${n_assign} assignment(s) are at or below ${want}"
+          else
+            if grep -qiE 'AuthorizationFailed|does not have authorization|Forbidden' /tmp/f60-sp-err; then
+              echo '[F60 sp] subscription-wide role-assignment read DENIED - consistent with a resource-group-scoped SP (a broad scope would have been readable and is not)'
+            else
+              echo 'F60: the role-assignment query failed for a non-authorization reason:' >&2
+              cat /tmp/f60-sp-err >&2
+              exit 1
+            fi
+          fi
+          rm -f /tmp/f60-sp-err
+          # Enforced positive check where it is readable: an assignment ON the
+          # resource group. On a first `create` the group does not exist yet, so a
+          # negative here is a warning, not a halt - the group create below is the
+          # first real exercise of the scope.
+          set +e
+          rg_json=$(az role assignment list --assignee "$app_id" --scope "$want" -o json 2>/dev/null)
+          rc2=$?
+          set -e
+          if [ "$rc2" -eq 0 ]; then
+            if printf '%s' "$rg_json" | WANT="$want" jq -e 'map(select(.scope == $WANT or (.scope | startswith($WANT + "/")))) | if length == 0 then error("none") else . end' >/dev/null; then
+              echo "[F60 sp] resource-group-scoped assignment present (${want})"
+            else
+              echo "::warning::[F60 sp] no assignment visible at ${want} yet - expected on a first create; the group create below exercises the scope"
+            fi
+          fi
+
+      # ------------------------------------------------------------------ #
+      # 3. TEARDOWN (action=teardown) - delete the runner, then the group. #
+      # ------------------------------------------------------------------ #
+      - name: Teardown - remove the sl-warm runner registration, then delete the resource group
+        if: github.event.inputs.action == 'teardown'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rid=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runners" --jq ".runners[]? | select(.labels[]?.name==\"${RUNNER_LABEL}\") | .id" 2>/dev/null | head -1 || true)
+          if [ -n "$rid" ]; then
+            echo "[F60 teardown] deleting runner id=${rid} (name=${RUNNER_NAME}) from GitHub"
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/actions/runners/${rid}" \
+              || echo '::warning::[F60 teardown] the runner delete call failed (it will show as offline)'
+          else
+            echo '[F60 teardown] no runner with the sl-warm label is registered'
+          fi
+          az group delete --name "$RG" --yes --no-wait
+          echo "[F60 teardown] resource group ${RG} delete accepted (--no-wait); it disappears within a few minutes"
+          {
+            echo '## F60 teardown'
+            echo
+            echo "- resource group \`${RG}\`: delete accepted (async)"
+            if [ -n "$rid" ]; then
+              echo "- runner \`${RUNNER_NAME}\`: deleted (id=${rid})"
+            else
+              echo "- runner \`${RUNNER_NAME}\`: was not registered"
+            fi
+            echo '- billing stops when the group is gone; confirm with `az group exists -n sl-warm-rg`'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------------ #
+      # 4. CREATE (action=create) - group, NSG lockdown, then the VM.      #
+      # ------------------------------------------------------------------ #
+      - name: Create the resource group + the Tailscale-only NSG (before the VM exists)
+        if: github.event.inputs.action == 'create'
+        env:
+          REGION: ${{ github.event.inputs.region }}
+        run: |
+          set -euo pipefail
+          az group create --name "$RG" --location "$REGION" --tags purpose=ghrdp-warm-runner phase=F60 -o table
+          # The NSG is created BEFORE the VM so the deny rules exist from the first
+          # second of the VM's life. `az vm create` adds its default allow-RDP rule
+          # only when IT creates the NSG; supplying our own keeps 3389 closed. The
+          # F60 brief ordered the lockdown after the bootstrap - doing it first
+          # shrinks the RDP exposure window from ~20 min to zero, so the order is
+          # deliberately changed (documented in docs/F60-OPERATOR-SETUP.md).
+          az network nsg create --name "$NSG" --resource-group "$RG" --location "$REGION" -o table
+          az network nsg rule create --nsg-name "$NSG" --resource-group "$RG" \
+            --name DenyRdpInternet --priority 4000 --direction Inbound --access Deny \
+            --protocol Tcp --destination-port-ranges 3389 \
+            --source-address-prefixes Internet --destination-address-prefixes '*' \
+            --description 'F60: RDP is Tailscale-only' -o table
+          az network nsg rule create --nsg-name "$NSG" --resource-group "$RG" \
+            --name DenyAllInternetInbound --priority 4090 --direction Inbound --access Deny \
+            --protocol '*' --destination-port-ranges '*' \
+            --source-address-prefixes Internet --destination-address-prefixes '*' \
+            --description 'F60: no inbound from the Internet at all; the runner and Tailscale are outbound-initiated' -o table
+          echo "[F60 nsg] ${NSG}: DenyRdpInternet(4000) + DenyAllInternetInbound(4090) created"
+
+      - name: Create the warm VM (Windows Server 2022 Datacenter, 128 GB StandardSSD, no-wait)
+        if: github.event.inputs.action == 'create'
+        env:
+          REGION: ${{ github.event.inputs.region }}
+          VM_SIZE: ${{ github.event.inputs.vm_size }}
+          VM_ADMIN_PASSWORD: ${{ secrets.VM_ADMIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # The admin password is masked, is never echoed, and is used exactly
+          # once: with the NSG denying 3389 from the Internet, password logon is
+          # unreachable from outside the tailnet.
+          echo "::add-mask::${VM_ADMIN_PASSWORD}"
+          if az vm show --resource-group "$RG" --name "$VM" >/dev/null 2>&1; then
+            echo "[F60 vm] ${VM} already exists in ${RG} - not re-created (idempotent re-run)"
+          else
+            az vm create \
+              --resource-group "$RG" \
+              --name "$VM" \
+              --location "$REGION" \
+              --image MicrosoftWindowsServer:WindowsServer:2022-datacenter:latest \
+              --size "$VM_SIZE" \
+              --admin-username ghrdpadmin \
+              --admin-password "$VM_ADMIN_PASSWORD" \
+              --storage-sku StandardSSD_LRS \
+              --os-disk-size-gb 128 \
+              --os-disk-name "${VM}-osdisk" \
+              --data-disk-sizes-gb 32 \
+              --public-ip-sku Standard \
+              --public-ip-address-name "${VM}-pip" \
+              --nsg "$NSG" \
+              --tags purpose=ghrdp-warm-runner phase=F60 \
+              --no-wait
+            echo '[F60 vm] create accepted (--no-wait); waiting for the created state'
+            az vm wait --resource-group "$RG" --name "$VM" --created --interval 15 --timeout 1500
+            echo "[F60 vm] ${VM} created (${VM_SIZE}, 128 GB StandardSSD OS + 32 GB data disk for D:\\RDP-Storage)"
+          fi
+          # Belt and braces: if the platform added an allow-RDP rule anyway, remove
+          # it, then prove both deny rules exist.
+          if az network nsg rule show --nsg-name "$NSG" --resource-group "$RG" --name default-allow-rdp >/dev/null 2>&1; then
+            az network nsg rule delete --nsg-name "$NSG" --resource-group "$RG" --name default-allow-rdp
+            echo '[F60 nsg] removed default-allow-rdp (RDP stays Tailscale-only)'
+          fi
+          for r in DenyRdpInternet DenyAllInternetInbound; do
+            az network nsg rule show --nsg-name "$NSG" --resource-group "$RG" --name "$r" \
+              --query '{name:name,access:access,priority:priority,direction:direction}' -o json \
+              || { echo "F60 HALT: the ${r} deny rule is missing after VM create - the Tailscale-only lockdown is not proven" >&2; exit 1; }
+          done
+          echo "[F60 nsg] both deny rules verified on ${NSG}"
+
+      # ------------------------------------------------------------------ #
+      # 5. RUNNER REGISTRATION TOKEN (create + verify), masked.            #
+      # ------------------------------------------------------------------ #
+      - name: Mint the self-hosted runner registration token (masked, 1 h validity)
+        if: github.event.inputs.action != 'teardown'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          resp=$(gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runners/registration-token")
+          tok=$(printf '%s' "$resp" | jq -r '.token // empty')
+          expires=$(printf '%s' "$resp" | jq -r '.expires_at // "unknown"')
+          test -n "$tok" || { echo 'F60: the registration-token call returned an empty token (does the workflow have administration:write?)' >&2; exit 1; }
+          # Masked BEFORE it is written anywhere; never echoed, never summarised.
+          echo "::add-mask::$tok"
+          printf 'RUNNER_TOKEN<<F60EOF\n%s\nF60EOF\n' "$tok" >> "$GITHUB_ENV"
+          echo "[F60 runner] registration token minted and masked; expires_at=${expires}"
+
+      # ------------------------------------------------------------------ #
+      # 6. BOOTSTRAP ON THE VM (create + verify) via Run Command.          #
+      # ------------------------------------------------------------------ #
+      - name: Run scripts/f60-bootstrap.ps1 on the VM (idempotent, fail-closed on BOOTSTRAP_FAILED)
+        id: bootstrap
+        if: github.event.inputs.action != 'teardown'
+        env:
+          TAILSCALE_AUTHKEY: ${{ secrets.TAILSCALE_AUTHKEY }}
+          GHRDP_RELEASE_READONLY_TOKEN: ${{ secrets.GHRDP_RELEASE_READONLY_TOKEN }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${TAILSCALE_AUTHKEY}"
+          echo "::add-mask::${GHRDP_RELEASE_READONLY_TOKEN}"
+          if ! az vm show --resource-group "$RG" --name "$VM" >/dev/null 2>&1; then
+            echo "F60: the VM ${RG}/${VM} does not exist. action=verify re-runs the idempotent bootstrap on an EXISTING warm VM - run action=create first (or action=teardown, then create, to start over)." >&2
+            exit 1
+          fi
+          ui_tag=$(python3 -c "import json;print(json.load(open('payloads/f60-warm-pins.json'))['reused_f59_assets']['ui_release_tag'])")
+          echo "[F60 bootstrap] ui release tag=${ui_tag} (read from payloads/f60-warm-pins.json - the brief's f59-ui-release-tag.txt does not exist in this repo)"
+          echo "[F60 bootstrap] repo ref=${GITHUB_SHA}; pins are staged from the repo onto the VM (single source of truth)"
+          set +e
+          raw=$(az vm run-command invoke \
+            --resource-group "$RG" --name "$VM" \
+            --command-id RunPowerShellScript \
+            --scripts "@scripts/f60-bootstrap.ps1" \
+            --parameters \
+              "TailscaleAuthKey=${TAILSCALE_AUTHKEY}" \
+              "RunnerToken=${RUNNER_TOKEN}" \
+              "RepoUrl=https://github.com/${GITHUB_REPOSITORY}" \
+              "RepoRef=${GITHUB_SHA}" \
+              "UiReleaseTag=${ui_tag}" \
+              "UiBundleSha=${GITHUB_SHA}" \
+              "RepoAccessToken=${GHRDP_RELEASE_READONLY_TOKEN}" \
+            -o json 2>&1)
+          set -e
+          msg=$(printf '%s' "$raw" | jq -r '.value[]?.message // empty' 2>/dev/null || true)
+          if [ -z "$msg" ]; then msg="$raw"; fi
+          echo '----- VM bootstrap output (secret values are masked by the runner) -----'
+          printf '%s\n' "$msg"
+          echo '----- end of VM bootstrap output -----'
+          if printf '%s' "$msg" | grep -q 'BOOTSTRAP_FAILED'; then
+            reason=$(printf '%s' "$msg" | grep 'BOOTSTRAP_FAILED' | head -1)
+            echo "F60 HALT: the VM bootstrap reported failure - ${reason}" >&2
+            echo 'The full VM-side log is C:\ghrdp\logs\f60-bootstrap-*.log on sl-warm; fix the cause and re-run with action=verify (the bootstrap is idempotent).' >&2
+            exit 1
+          fi
+          if ! printf '%s' "$msg" | grep -q 'BOOTSTRAP_OK'; then
+            echo 'F60 HALT: no BOOTSTRAP_OK marker in the Run Command output.' >&2
+            echo 'Azure returns only the tail of the script output; if it was truncated, re-run with action=verify (idempotent) and read C:\ghrdp\state\f60-bootstrap-result.json on the VM.' >&2
+            exit 1
+          fi
+          magic=$(printf '%s' "$msg" | sed -n 's/^MAGICDNS=//p' | head -1)
+          [ -n "$magic" ] || magic='unknown'
+          echo "magicdns=${magic}" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$msg" | grep -E '^(SERVICES=|RUNNER=|TAILNET_IP=|QBT=)' | sed 's/^/[F60 vm] /' || true
+          echo "[F60 bootstrap] BOOTSTRAP_OK magicdns=${magic}"
+
+      - name: Scrub the Run Command parameter files off the VM (secret hygiene)
+        if: always() && github.event.inputs.action != 'teardown'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          # The bootstrap invocation's settings file holds the auth key, the
+          # registration token and the repo token. This second, parameter-free Run
+          # Command removes it (keeping only its own secret-free settings file).
+          raw=$(az vm run-command invoke \
+            --resource-group "$RG" --name "$VM" \
+            --command-id RunPowerShellScript \
+            --scripts "@scripts/f60-scrub-runcommand.ps1" \
+            -o json 2>&1) || true
+          msg=$(printf '%s' "$raw" | jq -r '.value[]?.message // empty' 2>/dev/null || printf '%s' "$raw")
+          printf '%s\n' "$msg" | tail -5
+          if printf '%s' "$msg" | grep -q 'SCRUB_OK'; then
+            echo "[F60 scrub] $(printf '%s' "$msg" | grep 'SCRUB_OK' | head -1)"
+          else
+            echo '::warning::[F60 scrub] the post-run scrub did not report SCRUB_OK - re-run action=verify, then delete C:\Packages\Plugins\Microsoft.Compute.RunCommandExtension\*\RuntimeSettings\*.settings by hand over Tailscale'
+          fi
+
+      # ------------------------------------------------------------------ #
+      # 7. RUNNER ONLINE POLL (create + verify): 30 attempts x 10 s.       #
+      # ------------------------------------------------------------------ #
+      - name: Wait for the sl-warm runner to report online (30 x 10 s)
+        id: poll
+        if: github.event.inputs.action != 'teardown'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          rid=''
+          status=''
+          for i in $(seq 1 30); do
+            line=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runners" \
+              --jq ".runners[]? | select(.labels[]?.name==\"${RUNNER_LABEL}\") | \"\(.id) \(.status) \(.name)\"" 2>/dev/null | head -1 || true)
+            if [ -n "$line" ]; then
+              rid=$(printf '%s' "$line" | awk '{print $1}')
+              status=$(printf '%s' "$line" | awk '{print $2}')
+              echo "[F60 runner] attempt ${i}/30: id=${rid} status=${status}"
+              if [ "$status" = "online" ]; then break; fi
+            else
+              echo "[F60 runner] attempt ${i}/30: no runner with the ${RUNNER_LABEL} label yet"
+            fi
+            sleep 10
+          done
+          if [ "$status" != "online" ]; then
+            echo "F60 STOP: the ${RUNNER_LABEL} runner is not online after 30 polling attempts (last status='${status:-none}')." >&2
+            echo 'Diagnose over Tailscale: services.msc -> actions.runner.* ; C:\actions-runner\_diag ; then re-run with action=verify.' >&2
+            exit 1
+          fi
+          echo "runner_id=${rid}" >> "$GITHUB_OUTPUT"
+          echo "[F60 runner] ${RUNNER_NAME} is ONLINE (id=${rid})"
+
+      # ------------------------------------------------------------------ #
+      # 8. JOB SUMMARY (MagicDNS + runner id + temporary public IP).       #
+      # ------------------------------------------------------------------ #
+      - name: Job summary (MagicDNS hostname, runner id, temporary public IP)
+        id: summary
+        if: always()
+        run: |
+          set -uo pipefail
+          action="${{ github.event.inputs.action }}"
+          region="${{ github.event.inputs.region }}"
+          size="${{ github.event.inputs.vm_size }}"
+          pip=''
+          if [ "$action" != "teardown" ]; then
+            pip=$(az vm show -d --resource-group "$RG" --name "$VM" --query publicIps -o tsv 2>/dev/null || true)
+          fi
+          echo "public_ip=${pip}" >> "$GITHUB_OUTPUT"
+          {
+            echo "## F60 warm runner - \`${action}\` (${region}, ${size})"
+            echo
+            if [ "$action" = "teardown" ]; then
+              echo "Resource group \`${RG}\` delete accepted. Billing stops when the group is gone."
+            else
+              echo '| fact | value |'
+              echo '| --- | --- |'
+              echo "| MagicDNS hostname | \`${{ steps.bootstrap.outputs.magicdns || 'unknown' }}\` |"
+              echo "| runner id | \`${{ steps.poll.outputs.runner_id || 'not-online' }}\` |"
+              echo "| runner labels | \`self-hosted, windows, ${RUNNER_LABEL}\` |"
+              echo "| resource group / VM | \`${RG}\` / \`${VM}\` |"
+              echo "| temporary public IP | \`${pip:-none}\` (inbound denied by ${NSG}: 3389 + all-Internet) |"
+              echo "| NSG | \`${NSG}\` - DenyRdpInternet(4000), DenyAllInternetInbound(4090) |"
+              echo
+              echo 'Next: click **Run workflow** on `warm-dispatch.yml` and expect `dispatch-to-dashboard` < 60000 ms.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

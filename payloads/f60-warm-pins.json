@@ -1,0 +1,57 @@
+{
+  "_comment": "[F60 §3] WARM-RUNNER BINARY PINS. Every byte the F60 warm VM installs is pinned here BEFORE it is installed: scripts/f60-bootstrap.ps1 dot-sources the SHIPPED F59 verifier (payloads/f59-prebuilt-verify.ps1 -> Test-F59AssetSha256) and REFUSES an empty pin, a malformed pin or a digest mismatch. There is no warn-and-continue path and no 'download whatever is latest' URL anywhere in the F60 lane (main.yml's Tailscale step still fetches tailscale-setup-latest-amd64.msi - that file is NOT touched by F60; the warm VM pins an explicit version instead).",
+  "schema": "ghrdp-f60-warm-pins/1",
+  "release_tag": "warm-pins",
+  "checksums_asset": "checksums.txt",
+  "assets": {
+    "tailscale_msi": {
+      "name": "tailscale-setup-1.102.5-amd64.msi",
+      "version": "1.102.5",
+      "url": "https://pkgs.tailscale.com/stable/tailscale-setup-1.102.5-amd64.msi",
+      "sha256": "",
+      "pin_state": "bootstrap",
+      "source_kind": "official Tailscale package host (pkgs.tailscale.com/stable). The version is EXPLICIT - the '-latest-' URL main.yml uses is banned on the warm VM because a moving URL cannot be pinned.",
+      "bootstrap_note": "Digest is recorded by .github/workflows/f60-warm-pins-bootstrap.yml (one click, GitHub-hosted) and committed here. This sandbox could not reach pkgs.tailscale.com to compute it, and an invented digest would be worse than an empty one: an empty pin is REFUSED at install time."
+    },
+    "nssm": {
+      "name": "nssm-2.24.zip",
+      "version": "2.24",
+      "url": "https://nssm.cc/release/nssm-2.24.zip",
+      "sha256": "",
+      "pin_state": "bootstrap",
+      "source_kind": "official NSSM release zip (nssm.cc/release). win64/nssm.exe is extracted from it and staged to C:\\ghrdp\\tools\\nssm.exe.",
+      "bootstrap_note": "Same one-click digest bootstrap as tailscale_msi (nssm.cc is not reachable from the agent sandbox)."
+    },
+    "node_win_x64_zip": {
+      "name": "",
+      "version": "",
+      "version_major": 20,
+      "url": "",
+      "sha256": "",
+      "pin_state": "bootstrap",
+      "source_kind": "official Node.js distribution (nodejs.org/dist). The bootstrap workflow resolves the newest LTS release of the pinned major (20), downloads node-v<ver>-win-x64.zip, and CROSS-CHECKS the computed digest against the published SHASUMS256.txt line before recording it - two independent sources must agree.",
+      "bootstrap_note": "version/name/url/sha256 are all filled by the bootstrap run (nodejs.org is not reachable from the agent sandbox). Node is needed on the warm VM for scripts/serve-dist.mjs (the ghrdp-ui-nssm service) and for scripts/f59-verify-sha256.mjs (the fail-closed bundle verifier)."
+    },
+    "actions_runner_win_x64_zip": {
+      "name": "actions-runner-win-x64-2.337.0.zip",
+      "version": "2.337.0",
+      "url": "https://github.com/actions/runner/releases/download/v2.337.0/actions-runner-win-x64-2.337.0.zip",
+      "sha256": "1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc",
+      "pin_state": "pinned",
+      "source_kind": "official actions/runner GitHub release. The digest is the value published in the release notes' 'SHA-256 Checksums' section for win-x64 (read through the GitHub API on 2026-10-01); f60-warm-pins-bootstrap.yml RE-ASSERTS it against the release notes of the pinned tag before the warm VM ever downloads it.",
+      "extract_to": "C:\\actions-runner"
+    }
+  },
+  "reused_f59_assets": {
+    "_comment": "The transport binaries and the dashboard bundle are NOT re-pinned here: they come from the F59 releases with the F59 pins, so the warm VM and the GitHub-hosted lane can never drift apart.",
+    "pins_file": "payloads/f59-prebuilt-pins.json",
+    "binaries_release_tag": "prebuilt-binaries",
+    "aria2c": "assets.aria2c (aria2c-1.36.0-win-x64.exe -> C:\\ghrdp\\bin\\aria2c.exe)",
+    "qbittorrent": "assets.qbittorrent (qbittorrent-4.6.5-win-x64.zip -> C:\\Program Files\\qBittorrent)",
+    "ui_release_tag": "ui-dist",
+    "ui_asset_pattern": "ui-dist-<commit-sha>.zip (+ .sha256 sidecar)",
+    "ui_verifier": "scripts/f59-verify-sha256.mjs"
+  },
+  "repo_access_note": "dekarita/supreme-lamp is a PRIVATE repository, so the warm VM cannot fetch the repo's own release assets anonymously and it has no GITHUB_TOKEN outside a job. The bootstrap therefore takes an OPTIONAL RepoAccessToken parameter (repo secret GHRDP_RELEASE_READONLY_TOKEN: a fine-grained PAT, Contents read-only, this repository only, short expiry). It is used ONLY for release-asset downloads, is masked in the provisioning log, is never written to any VM log, and is deleted from the Run Command runtime-settings files when the bootstrap finishes. Without it the three release assets are skipped with a LOUD label (warm-stage=deferred-to-dispatch) and warm-dispatch.yml stages them per run with the job's own GITHUB_TOKEN.",
+  "fail_closed": "scripts/f60-bootstrap.ps1 refuses to install anything whose pin is empty or mismatched (it reuses Test-F59AssetSha256, which throws on both). .github/workflows/provision-warm-runner.yml additionally fails at preflight when the pins file is missing, when a pin is not 64-hex, or when payloads/f59-prebuilt-pins.json is absent - before it ever logs in to Azure."
+}

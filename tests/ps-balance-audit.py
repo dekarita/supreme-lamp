@@ -217,6 +217,17 @@ def main():
         'tests/f56d-qbt-tailnet.ps1',
         # [F57 §5] the Explorer real-ops lab (new surface: no PS interpreter here).
         'tests/f57-explorer-ops.ps1',
+        # [F60 §3/§4/§5] the warm-runner surfaces: the VM bootstrap, the health
+        # probe, the warm/cold stager, the post-run secret scrubber and the two
+        # Windows labs. Same rule as every surface above - the sandbox has no
+        # PowerShell interpreter, so brace/paren/here-string balance is audited
+        # here and BEHAVIOUR is proved in the windows-native lane.
+        'scripts/f60-bootstrap.ps1',
+        'scripts/f60-health.ps1',
+        'scripts/f60-stage-and-start.ps1',
+        'scripts/f60-scrub-runcommand.ps1',
+        'tests/f60-bootstrap-lab.ps1',
+        'tests/f60-bootstrap.Tests.ps1',
     ]
     failed = 0
     for t in targets:
@@ -227,7 +238,12 @@ def main():
         print(('FAIL ' if problems else 'PASS ') + t + ((' :: ' + '; '.join(problems[:6])) if problems else ''))
         failed += bool(problems)
     for wf in ['.github/workflows/autologin-lab.yml', '.github/workflows/main.yml',
-               '.github/workflows/launch-gates.yml']:
+               '.github/workflows/launch-gates.yml',
+               # [F60] the warm-runner workflows embed PowerShell blocks that run on
+               # the VM / on a self-hosted runner - audited like the others.
+               '.github/workflows/provision-warm-runner.yml',
+               '.github/workflows/warm-dispatch.yml',
+               '.github/workflows/f60-warm-pins-bootstrap.yml']:
         for label, body in workflow_blocks(repo / wf):
             problems = audit(label, body)
             if problems:
