@@ -100,16 +100,40 @@ bootstrap returns. Rotate it like any other secret (checklist: `docs/MIGRATION.m
 sec 1.8); when it expires, `action=verify` fails at preflight with the secret's
 name and nothing else breaks.
 
-## Step 2 (~1 min) - GitHub Actions runners
+## Step 2 (~1 min) - the runner registration token
 
-Nothing to register by hand: the provisioning workflow mints the runner
-registration token itself (`POST /repos/<repo>/actions/runners/registration-token`)
-and passes it to `config.cmd`. The workflow needs `administration: write`, which it
-declares in its own `permissions:` block.
+Nothing to register by hand **if the workflow token may mint one**. The provisioning
+workflow tries `POST /repos/<repo>/actions/runners/registration-token` with
+`GITHUB_TOKEN` and passes the result straight to `config.cmd`.
 
-Confirm only that **Settings -> Actions -> General -> Workflow permissions** allows
-the job to write (the declared permission block is what matters; no manual runner
-registration is required).
+That endpoint wants the **Administration** permission, and `administration` is *not*
+one of the keys a workflow `permissions:` block may declare - writing it makes GitHub
+reject the whole file (a 0-second "workflow file issue" run, and the workflow can
+never be dispatched). So the workflow declares only `contents: read` + `actions:
+write` and takes the token from the first of these that is non-empty:
+
+1. the optional **`runner_token`** input of the dispatch form (nothing to set up in
+   advance, valid for 1 hour);
+2. the optional **`RUNNER_REGISTRATION_TOKEN`** repository secret (hands-off, for
+   re-provisioning);
+3. the API call above.
+
+If none of the three yields a token the run **halts before touching Azure** and
+prints both fallbacks. The 60-second version:
+
+> Repo **Settings -> Actions -> Runners -> New self-hosted runner** -> copy the value
+> after `--token` from the printed `config.cmd` line -> re-run the workflow with that
+> value in `runner_token`.
+
+The permanent version: a fine-grained PAT for **this repository only** with
+"Administration: read and write", stored as `RUNNER_REGISTRATION_TOKEN`. It is
+optional - it is not one of the four required secrets - and it is masked before use.
+
+Also confirm **Settings -> Actions -> General -> Workflow permissions** lets the job
+write (the declared permission block is what matters), and that
+**Settings -> Actions -> General -> Actions permissions** allows the actions this
+workflow uses: F60 uses **`actions/*` only** (checkout, upload/download-artifact), so
+even the strictest "Allow actions created by GitHub" policy is satisfied.
 
 ## Step 3 (one click, ~20-30 min) - provision
 
@@ -121,13 +145,16 @@ runner)** -> *Run workflow*:
 | `action` | `create` | `verify` = re-run the idempotent bootstrap + health probe; `teardown` = delete the resource group (and the runner registration). |
 | `region` | `southeastasia` | or `centralindia`. |
 | `vm_size` | `Standard_B2s` | 2 vCPU / 4 GiB burstable. `Standard_B2s_v2` if the burst credits prove too small. |
+| `runner_token` | *(empty)* | Optional fallback only - see Step 2. Paste a registration token here if the workflow is not allowed to mint one. |
 
 The run does, in order:
 
 1. **Preflight** - all four secrets present (values never printed), the F59 + F60
    pin files complete (every digest 64-hex), `scripts/f60-bootstrap.ps1` under the
    Run Command size bound. Any miss = halt before Azure is touched.
-2. **`azure/login`** with the service principal.
+2. **`az login --service-principal`** with the `AZURE_CREDENTIALS` service principal
+   (the `az` CLI is preinstalled on `ubuntu-latest`, so F60 pulls in **no third-party
+   action**; `az logout` runs at the end of the job whatever happened).
 3. **SP scope guard (HALT)** - a subscription-wide role-assignment read that
    succeeds is inspected, and any assignment broader than
    `/subscriptions/<sub>/resourceGroups/sl-warm-rg` stops the run. A *denied*
@@ -145,8 +172,11 @@ The run does, in order:
    `D:\RDP-Storage\Fetched` and the aria2 session directory exist as the shipped
    modules expect them), `--public-ip-sku Standard`, `--no-wait`, then
    `az vm wait --created`.
-6. **Registration token** minted and masked (`::add-mask::` before it is written
-   anywhere).
+6. **Registration token** obtained from the `runner_token` input, the optional
+   `RUNNER_REGISTRATION_TOKEN` secret, or the API - in that order - and masked
+   (`::add-mask::` before it is written anywhere). If all three are empty the run
+   halts here with the Step 2 instructions and **no Azure resource has been created
+   by this step**.
 7. **`az vm run-command invoke`** with `scripts/f60-bootstrap.ps1` and the
    parameters `TailscaleAuthKey`, `RunnerToken`, `RepoUrl`, `RepoRef`,
    `UiReleaseTag`, `UiBundleSha`, `RepoAccessToken`. The workflow fails closed
@@ -346,6 +376,8 @@ path.
 | 128 GB OS disk only | + 32 GB data disk mounted as `D:` | the shipped modules pin `D:\RDP-Storage\Fetched` (policy `savePath`, aria2 `--dir`, the trash tree); inventing a `C:` variant would mean editing shipped payloads |
 | pins assumed present | one-time `f60-warm-pins-bootstrap.yml` run + commit | the sandbox cannot reach `pkgs.tailscale.com`, `nssm.cc` or `nodejs.org`, and an unpinned download is a HALT condition |
 | `az vm run-command --parameters` carries the secrets (unchanged) | unchanged, **plus** `scripts/f60-scrub-runcommand.ps1` after the run | Azure writes run-command parameters into on-disk settings files; they are single-use, so they are deleted |
+| `azure/login@v2` for the SP login | plain `az login --service-principal` (+ `az logout` at the end) | a mutable third-party tag is an unpinned dependency in a lane whose rule is "nothing unpinned runs", and a repo Actions policy of "Allow actions created by GitHub" makes GitHub reject the *whole file* (`Unable to resolve action`), which is exactly what the first push of this branch did |
+| workflow declares `administration: write` and mints the token itself | `contents: read` + `actions: write` only; the token comes from the `runner_token` input, the optional `RUNNER_REGISTRATION_TOKEN` secret, or the API - and a missing token halts with instructions | `administration` is not a declarable workflow permission key, so declaring it invalidates the file; `GITHUB_TOKEN` is not guaranteed to be able to mint a registration token, so the lane needs a documented fallback rather than an assumption |
 
 ## Appendix C - what F60 does NOT change
 

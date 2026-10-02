@@ -135,22 +135,66 @@ test("F60-P3 provision-warm-runner.yml: dispatch-only, the three spec'd inputs, 
     assert.match(block, /default: /, "input " + input + " must have a default");
   }
   assert.match(provision, /type: choice/);
-  assert.match(provision, /^permissions:\n  contents: read\n  actions: write/m, "contents:read + actions:write");
-  assert.match(provision, /administration: write/, "the workflow mints its own registration token -> administration:write");
+  assert.match(provision, /^permissions:/m, "the workflow declares its own permissions");
+  assert.match(provision, /^  contents: read$/m, "contents:read");
+  assert.match(provision, /^  actions: write/m, "actions:write");
+  // An UNKNOWN permissions key (e.g. `administration`, which is what the
+  // registration-token endpoint wants but which is not a documented workflow
+  // permissions key) makes GitHub reject the whole file: the push produces a
+  // 0-second "workflow file issue" run and the workflow can never be dispatched.
+  assert.ok(!/^\s*administration:/m.test(provision), "no undocumented `administration` permissions key - the token is minted or supplied, never assumed");
+  assert.match(provision, /runner_token/, "an optional pasted registration token is the documented fallback");
+  assert.match(provision, /secrets\.RUNNER_REGISTRATION_TOKEN/, "an optional secret is the hands-off fallback");
   assert.match(provision, /timeout-minutes: 45/);
   assert.match(provision, /concurrency:\n  group: f60-provision-warm-runner\n  cancel-in-progress: false/);
   assert.match(provision, /runs-on: ubuntu-latest/);
   assert.ok(!/runs-on:.*self-hosted/.test(provision), "the provisioning job itself stays GitHub-hosted");
-  assert.match(provision, /uses: azure\/login@v2/);
-  assert.match(provision, /creds: \$\{\{ secrets\.AZURE_CREDENTIALS \}\}/);
+  // No third-party action: `az` is preinstalled on ubuntu-latest, so the SP login
+  // is plain CLI. A mutable `azure/login@v2` tag is both an unpinned dependency
+  // (F60 pins everything else it downloads) and a hard failure on any repo whose
+  // Actions policy only allows GitHub-authored actions.
+  assert.match(provision, /az login --service-principal/);
+  assert.match(provision, /az account set --subscription/);
+  assert.match(provision, /az logout/, "the SP session is dropped at the end of the job");
+  assert.ok(!/uses:\s*azure\/login/.test(provision), "no azure/login action is used (the explanatory comment may still name it)");
+  assert.match(provision, /AZURE_CREDENTIALS: \$\{\{ secrets\.AZURE_CREDENTIALS \}\}/);
   assert.match(provision, /uses: actions\/checkout@v4/);
   assert.match(provision, /fetch-depth: 1/);
 });
 
+test("F60-P3b no F60 workflow depends on a non-actions/* action, and every permissions key is one GitHub accepts", () => {
+  const files = [
+    [".github/workflows/provision-warm-runner.yml", provision],
+    [".github/workflows/warm-dispatch.yml", read(".github/workflows/warm-dispatch.yml")],
+    [".github/workflows/f60-warm-pins-bootstrap.yml", pinsBootstrap],
+  ];
+  for (const [name, text] of files) {
+    for (const line of text.split("\n")) {
+      const m = line.match(/^\s*uses:\s*(\S+)/);
+      if (!m) continue;
+      assert.ok(m[1].startsWith("actions/"), name + " must only use actions/*, found " + m[1]);
+    }
+    const documented = new Set([
+      "actions", "attestations", "checks", "contents", "deployments", "discussions",
+      "id-token", "issues", "metadata", "packages", "pages", "pull-requests",
+      "repository-projects", "security-events", "statuses",
+    ]);
+    const permBlocks = text.match(/^permissions:\n(?:[ #][^\n]*\n|  [a-z-]+:[^\n]*\n)*/gm) || [];
+    assert.ok(permBlocks.length > 0, name + " declares a permissions block");
+    for (const block of permBlocks) {
+      for (const line of block.split("\n")) {
+        const m = line.match(/^  ([a-z-]+):\s*(read|write|none)/);
+        if (!m) continue;
+        assert.ok(documented.has(m[1]), name + " declares an unknown permissions key: " + m[1]);
+      }
+    }
+  }
+});
+
 test("F60-P4 preflight is fail-closed BEFORE Azure is touched (F59 pins + F60 pins + script bound)", () => {
   const pre = provision.indexOf("name: Preflight");
-  const login = provision.indexOf("uses: azure/login@v2");
-  assert.ok(pre > 0 && login > pre, "preflight must run before azure/login");
+  const login = provision.indexOf("az login --service-principal");
+  assert.ok(pre > 0 && login > pre, "preflight must run before the az login");
   const preflight = provision.slice(pre, login);
   assert.match(preflight, /payloads\/f59-prebuilt-pins\.json/, "the F59 pins file is part of the preflight (fail-closed if missing)");
   assert.match(preflight, /payloads\/f60-warm-pins\.json/);
@@ -423,7 +467,8 @@ test("F60-P16 the doc is the 10-minute path, with the manual 7 steps preserved a
   assert.match(doc, /TAILSCALE_AUTHKEY/);
   assert.match(doc, /VM_ADMIN_PASSWORD/);
   assert.match(doc, /GHRDP_RELEASE_READONLY_TOKEN/);
-  assert.match(doc, /administration: write/, "the doc says the workflow mints its own token (no manual runner registration)");
+  assert.match(doc, /runner_token/, "the doc gives the 60-second registration-token fallback (input)");
+  assert.match(doc, /RUNNER_REGISTRATION_TOKEN/, "the doc gives the hands-off registration-token fallback (optional secret)");
   assert.match(doc, /Run workflow/);
   assert.match(doc, /Standard_B2s/);
   assert.match(doc, /20-30 min/);

@@ -22,7 +22,11 @@ name: F60 provision warm runner (Azure VM + Tailscale + self-hosted runner)
 #     (scripts/f60-scrub-runcommand.ps1).
 #   * PINS: nothing is installed on the VM unless its SHA-256 pin is committed and
 #     non-empty (payloads/f60-warm-pins.json + payloads/f59-prebuilt-pins.json).
-#     An incomplete pin file HALTS at preflight, before `azure/login`.
+#     An incomplete pin file HALTS at preflight, before `az login`.
+#   * NO THIRD-PARTY ACTIONS: every `uses:` in the three F60 workflows is
+#     `actions/*`. Azure is driven with the `az` CLI that is preinstalled on
+#     ubuntu-latest, so the workflow neither depends on a mutable third-party
+#     tag nor on a repo Actions policy that only allows GitHub-authored actions.
 on:
   workflow_dispatch:
     inputs:
@@ -51,6 +55,11 @@ on:
           - Standard_B2s
           - Standard_B2s_v2
         default: Standard_B2s
+      runner_token:
+        description: 'OPTIONAL fallback only - a self-hosted runner registration token pasted from Settings > Actions > Runners > New self-hosted runner (the value after --token; valid 1 h). Leave empty to let the workflow mint one.'
+        required: false
+        type: string
+        default: ''
 
 # One provision at a time: two concurrent `create` runs would fight over the same
 # resource group, NSG and runner name.
@@ -59,9 +68,15 @@ concurrency:
   cancel-in-progress: false
 
 permissions:
+  # Only keys from GitHub's documented workflow-permission set are used here: an
+  # unknown key makes the whole file invalid ("Unable to resolve"/"Unexpected
+  # value") and the workflow cannot even be dispatched. `administration`, which
+  # is what POST /actions/runners/registration-token wants, is NOT guaranteed to
+  # be settable on GITHUB_TOKEN - so step 5 tries the API and falls back to the
+  # optional `runner_token` input / RUNNER_REGISTRATION_TOKEN secret instead of
+  # declaring a permission the file may not be allowed to ask for.
   contents: read
   actions: write          # §2: read the runner list / registration state
-  administration: write   # §1 step 4: mint the runner registration token itself
 
 env:
   RG: sl-warm-rg
@@ -167,11 +182,26 @@ jobs:
       # ------------------------------------------------------------------ #
       # 2. AZURE LOGIN + SERVICE-PRINCIPAL SCOPE GUARD (HALT condition).   #
       # ------------------------------------------------------------------ #
-      - name: Azure login (service principal from AZURE_CREDENTIALS)
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-          enable-AzPSSession: false
+      - name: Azure login (az CLI + the AZURE_CREDENTIALS service principal; no third-party action)
+        env:
+          AZURE_CREDENTIALS: ${{ secrets.AZURE_CREDENTIALS }}
+        run: |
+          set -euo pipefail
+          # `az` is preinstalled on ubuntu-latest, so F60 needs no azure/login tag.
+          # The client secret is masked before anything else can print it, and
+          # --output none keeps az from echoing the credential object.
+          client_id=$(printf '%s' "$AZURE_CREDENTIALS" | jq -r '.clientId // empty')
+          client_secret=$(printf '%s' "$AZURE_CREDENTIALS" | jq -r '.clientSecret // empty')
+          tenant_id=$(printf '%s' "$AZURE_CREDENTIALS" | jq -r '.tenantId // empty')
+          subscription_id=$(printf '%s' "$AZURE_CREDENTIALS" | jq -r '.subscriptionId // empty')
+          if [ -n "$client_secret" ]; then echo "::add-mask::$client_secret"; fi
+          for pair in "clientId:${client_id}" "clientSecret:${client_secret}" "tenantId:${tenant_id}" "subscriptionId:${subscription_id}"; do
+            name=${pair%%:*}; val=${pair#*:}
+            [ -n "$val" ] || { echo "F60: AZURE_CREDENTIALS is not the `az ad sp create-for-rbac --sdk-auth` JSON (missing ${name})" >&2; exit 1; }
+          done
+          az login --service-principal -u "$client_id" -p "$client_secret" --tenant "$tenant_id" --output none
+          az account set --subscription "$subscription_id"
+          echo "[F60 azure] logged in as service principal clientId=${client_id} on subscription ${subscription_id}"
 
       - name: HALT guard - service principal scope must not exceed the resource group
         env:
@@ -353,20 +383,52 @@ jobs:
       # ------------------------------------------------------------------ #
       # 5. RUNNER REGISTRATION TOKEN (create + verify), masked.            #
       # ------------------------------------------------------------------ #
-      - name: Mint the self-hosted runner registration token (masked, 1 h validity)
+      - name: Obtain the self-hosted runner registration token (input > secret > API, masked, 1 h validity)
         if: github.event.inputs.action != 'teardown'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUNNER_TOKEN_INPUT: ${{ github.event.inputs.runner_token }}
+          RUNNER_TOKEN_SECRET: ${{ secrets.RUNNER_REGISTRATION_TOKEN }}
         run: |
           set -euo pipefail
-          resp=$(gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runners/registration-token")
-          tok=$(printf '%s' "$resp" | jq -r '.token // empty')
-          expires=$(printf '%s' "$resp" | jq -r '.expires_at // "unknown"')
-          test -n "$tok" || { echo 'F60: the registration-token call returned an empty token (does the workflow have administration:write?)' >&2; exit 1; }
-          # Masked BEFORE it is written anywhere; never echoed, never summarised.
+          # Every candidate is masked BEFORE anything can echo it.
+          if [ -n "${RUNNER_TOKEN_INPUT}" ]; then echo "::add-mask::${RUNNER_TOKEN_INPUT}"; fi
+          if [ -n "${RUNNER_TOKEN_SECRET}" ]; then echo "::add-mask::${RUNNER_TOKEN_SECRET}"; fi
+          tok=''; src=''; expires='unknown'; errfile=/tmp/f60-mint.err; rm -f "$errfile"
+          if [ -n "${RUNNER_TOKEN_INPUT}" ]; then
+            tok=${RUNNER_TOKEN_INPUT}; src='the runner_token input'
+          elif [ -n "${RUNNER_TOKEN_SECRET}" ]; then
+            tok=${RUNNER_TOKEN_SECRET}; src='the RUNNER_REGISTRATION_TOKEN secret'
+          else
+            # POST /repos/{o}/{r}/actions/runners/registration-token wants the
+            # Administration permission. GITHUB_TOKEN is not guaranteed to be
+            # able to hold it (and `administration` is not a documented workflow
+            # permissions key, so this file does not ask for it). A 403/404 here
+            # is the documented fallback path below, not a defect - and nothing
+            # on Azure has been touched by this step.
+            if resp=$(gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runners/registration-token" 2>"$errfile"); then
+              tok=$(printf '%s' "$resp" | jq -r '.token // empty')
+              expires=$(printf '%s' "$resp" | jq -r '.expires_at // "unknown"')
+              src='minted by this workflow run'
+            fi
+          fi
+          if [ -z "$tok" ]; then
+            echo 'F60 HALT: no self-hosted runner registration token is available.' >&2
+            echo '--- what the API said ---' >&2
+            if [ -f "$errfile" ]; then sed 's/^/  /' "$errfile" >&2 || true; fi
+            echo '--- pick ONE 60-second fallback, then re-run this workflow ---' >&2
+            echo '  a) Repo Settings > Actions > Runners > New self-hosted runner > copy the' >&2
+            echo '     value after --token from the config.cmd line and paste it into the' >&2
+            echo "     runner_token input of this workflow (registration tokens live 1 h)." >&2
+            echo '  b) Create a fine-grained PAT for THIS repo with "Administration: read and' >&2
+            echo '     write", store it as the RUNNER_REGISTRATION_TOKEN repo secret, re-run.' >&2
+            echo '  docs/F60-OPERATOR-SETUP.md step 2 documents both.' >&2
+            exit 1
+          fi
+          # Masked again before it is written anywhere; never echoed, never summarised.
           echo "::add-mask::$tok"
           printf 'RUNNER_TOKEN<<F60EOF\n%s\nF60EOF\n' "$tok" >> "$GITHUB_ENV"
-          echo "[F60 runner] registration token minted and masked; expires_at=${expires}"
+          echo "[F60 runner] registration token obtained from ${src} and masked; expires_at=${expires}"
 
       # ------------------------------------------------------------------ #
       # 6. BOOTSTRAP ON THE VM (create + verify) via Run Command.          #
@@ -513,3 +575,13 @@ jobs:
               echo 'Next: click **Run workflow** on `warm-dispatch.yml` and expect `dispatch-to-dashboard` < 60000 ms.'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # ------------------------------------------------------------------ #
+      # 9. AZURE LOGOUT - no service-principal session left on the runner.  #
+      # ------------------------------------------------------------------ #
+      - name: Azure logout (drop the service-principal session; secrets were masked, never echoed)
+        if: always()
+        continue-on-error: true
+        run: |
+          az logout >/dev/null 2>&1 || true
+          echo '[F60 azure] logged out'

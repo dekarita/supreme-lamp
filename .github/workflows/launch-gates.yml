@@ -3460,9 +3460,40 @@ jobs:
           "
           done
           wf=.github/workflows/provision-warm-runner.yml
-          for tok in "workflow_dispatch:" "action:" "create" "verify" "teardown" "region:" "southeastasia" "centralindia" "vm_size:" "Standard_B2s" "timeout-minutes: 45" "contents: read" "actions: write" "administration: write" "concurrency:" "runs-on: ubuntu-latest" "uses: actions/checkout@v4" "uses: azure/login@v2" "secrets.AZURE_CREDENTIALS" "Preflight" "f59-prebuilt-pins.json" "f60-warm-pins.json" "SP scope too broad" "F60 HALT" "DenyRdpInternet" "DenyAllInternetInbound" "default-allow-rdp" "MicrosoftWindowsServer:WindowsServer:2022-datacenter" "--os-disk-size-gb 128" "--data-disk-sizes-gb 32" "--public-ip-sku Standard" "--no-wait" "az vm wait" "registration-token" "::add-mask::" "az vm run-command invoke" "RunPowerShellScript" "@scripts/f60-bootstrap.ps1" "BOOTSTRAP_OK" "BOOTSTRAP_FAILED" "f60-scrub-runcommand.ps1" "seq 1 30" "sleep 10" "F60 STOP" "MagicDNS hostname" "runner id" "temporary public IP" "az group delete" "NO ARC / NO Kubernetes / NO GitHub Larger Runners"; do
+          for tok in "workflow_dispatch:" "action:" "create" "verify" "teardown" "region:" "southeastasia" "centralindia" "vm_size:" "Standard_B2s" "timeout-minutes: 45" "contents: read" "actions: write" "concurrency:" "runs-on: ubuntu-latest" "uses: actions/checkout@v4" "az login --service-principal" "az account set --subscription" "az logout" "NO THIRD-PARTY ACTIONS" "runner_token" "RUNNER_REGISTRATION_TOKEN" "secrets.AZURE_CREDENTIALS" "Preflight" "f59-prebuilt-pins.json" "f60-warm-pins.json" "SP scope too broad" "F60 HALT" "DenyRdpInternet" "DenyAllInternetInbound" "default-allow-rdp" "MicrosoftWindowsServer:WindowsServer:2022-datacenter" "--os-disk-size-gb 128" "--data-disk-sizes-gb 32" "--public-ip-sku Standard" "--no-wait" "az vm wait" "registration-token" "::add-mask::" "az vm run-command invoke" "RunPowerShellScript" "@scripts/f60-bootstrap.ps1" "BOOTSTRAP_OK" "BOOTSTRAP_FAILED" "f60-scrub-runcommand.ps1" "seq 1 30" "sleep 10" "F60 STOP" "MagicDNS hostname" "runner id" "temporary public IP" "az group delete" "NO ARC / NO Kubernetes / NO GitHub Larger Runners"; do
             grep -qF -- "$tok" "$wf" || { echo "F60: provision-warm-runner.yml missing: $tok" >&2; exit 1; }
           done
+          # F60 references NO third-party action. A mutable tag such as
+          # azure/login@v2 both (a) makes GitHub reject the whole file when the repo's
+          # Actions policy only allows GitHub-authored actions - the run then dies in
+          # 0 s as "workflow file issue" and the workflow cannot even be dispatched -
+          # and (b) contradicts F60's own pinning rule. `az` is preinstalled on
+          # ubuntu-latest, so the SP login is plain CLI.
+          third=$(grep -hE '^[[:space:]]*uses: ' .github/workflows/provision-warm-runner.yml .github/workflows/warm-dispatch.yml .github/workflows/f60-warm-pins-bootstrap.yml | grep -vE 'uses: actions/' || true)
+          test -z "$third" || { echo "F60: an F60 workflow references a non-actions/* action:" >&2; printf '%s\n' "$third" >&2; exit 1; }
+          echo 'F60 action-provenance gate PASS: every uses: in the three F60 workflows is actions/*'
+          # ... and every permissions key must be one GitHub actually accepts: an
+          # unknown key (e.g. `administration`) invalidates the entire workflow file.
+          python3 - <<'PYEOF'
+          import sys, yaml
+          ok = {'actions', 'attestations', 'checks', 'contents', 'deployments', 'discussions',
+                'id-token', 'issues', 'metadata', 'packages', 'pages', 'pull-requests',
+                'repository-projects', 'security-events', 'statuses'}
+          files = ['.github/workflows/provision-warm-runner.yml',
+                   '.github/workflows/warm-dispatch.yml',
+                   '.github/workflows/f60-warm-pins-bootstrap.yml']
+          for f in files:
+              d = yaml.safe_load(open(f))
+              def check(perms, where, f=f):
+                  for k in (perms or {}):
+                      if k not in ok:
+                          print('F60: ' + f + ' ' + where + ' declares an unknown permissions key: ' + str(k))
+                          sys.exit(1)
+              check(d.get('permissions'), 'at workflow level')
+              for jn, j in (d.get('jobs') or {}).items():
+                  check(j.get('permissions'), 'in job ' + str(jn))
+          print('F60 permissions-key gate PASS: only documented workflow permission keys are declared')
+          PYEOF
           # the lockdown must exist before the VM does
           nsg=$(grep -nF 'Create the resource group + the Tailscale-only NSG' "$wf" | head -1 | cut -d: -f1)
           vm=$(grep -nF 'name: Create the warm VM' "$wf" | head -1 | cut -d: -f1)
@@ -3545,7 +3576,7 @@ jobs:
           done
           # the operator doc: the 10-minute path AND the preserved manual 7 steps
           d=docs/F60-OPERATOR-SETUP.md
-          for tok in "10-minute path" "sl-warm-rg" "az ad sp create-for-rbac" "--scopes /subscriptions/<SUB_ID>/resourceGroups/sl-warm-rg" "tag:ghrdp-warm" "openssl rand -base64 32" "AZURE_CREDENTIALS" "TAILSCALE_AUTHKEY" "VM_ADMIN_PASSWORD" "GHRDP_RELEASE_READONLY_TOKEN" "administration: write" "Standard_B2s" "20-30 min" "MagicDNS" "Appendix A - manual 7-step setup" "Appendix B" "Appendix C" "HALT and STOP conditions" "deallocate"; do
+          for tok in "10-minute path" "sl-warm-rg" "az ad sp create-for-rbac" "--scopes /subscriptions/<SUB_ID>/resourceGroups/sl-warm-rg" "tag:ghrdp-warm" "openssl rand -base64 32" "AZURE_CREDENTIALS" "TAILSCALE_AUTHKEY" "VM_ADMIN_PASSWORD" "GHRDP_RELEASE_READONLY_TOKEN" "runner_token" "RUNNER_REGISTRATION_TOKEN" "Standard_B2s" "20-30 min" "MagicDNS" "Appendix A - manual 7-step setup" "Appendix B" "Appendix C" "HALT and STOP conditions" "deallocate"; do
             grep -qF -- "$tok" "$d" || { echo "F60: F60-OPERATOR-SETUP.md missing: $tok" >&2; exit 1; }
           done
           for n in 1 2 3 4 5 6 7; do
