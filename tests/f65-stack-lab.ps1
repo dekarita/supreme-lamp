@@ -19,7 +19,12 @@ $fails = 0
 $passes = 0
 function Check([string]$Name, [bool]$Ok, [string]$Detail) {
     $verdict = 'FAIL'
-    if ($Ok) { $verdict = 'PASS'; $script:passes++ } else { $script:fails++ }
+    if ($Ok) { $verdict = 'PASS'; $script:passes++ } else {
+        $script:fails++
+        # a failing cell also becomes a check-run ANNOTATION: the raw job log is not
+        # reachable from every loop, the checks API is.
+        Write-Host ('::error title=F65 lab::' + $Name + ' :: ' + $Detail)
+    }
     $line = '[F65 lab] ' + $verdict + ' ' + $Name
     if ($Detail) { $line = $line + ' :: ' + $Detail }
     Write-Host $line
@@ -78,7 +83,7 @@ $c3 = Test-F65BundleFiles -ExtractDir $bd -ManifestPath $mp
 Check 'C3 a missing file is reported fail-closed' ((-not $c3.ok) -and ($c3.missing -contains 'stack/b.bin')) ('missing=' + ($c3.missing -join ','))
 
 # ---- D. rendezvous ----------------------------------------------------------------
-$statePath = Join-Path $tmp 'late-state.json'
+$statePath = Get-F65StateFile -Scratch $tmp   # <scratch>\stack-state.json - exactly what the producer writes
 $job = Start-Job -ArgumentList $statePath -ScriptBlock {
     Start-Sleep -Seconds 3
     $s = @{ schema = 'ghrdp-f65-stack-state/1'; status = 'ready'; reason = ''; components = @{ idd_sample_driver = @{ path = 'C:\nope\IddSampleDriver.zip'; sha256 = 'e93b88f31ce3201814cba1fb4e11eb43e6f991f4d2a5e33145728a8dbfdd4eb7'; ok = $true } } }
