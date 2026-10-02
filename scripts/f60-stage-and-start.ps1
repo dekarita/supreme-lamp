@@ -114,15 +114,23 @@ function New-F60Directory {
 }
 
 function Import-F60Transport {
-    # Dot-source scripts/f60-bootstrap.ps1 with -DefineOnly so the release download
-    # reuses ONE implementation (Get-F60ReleaseAssetInfo / Get-F60File). Returns the
-    # path that was loaded, or '' when it is unavailable.
+    # RESOLVE (never load) the bootstrap that carries the release-asset transport, so
+    # the download path stays ONE implementation (Get-F60ReleaseAssetInfo /
+    # Get-F60File). Returns the path, or '' when it is unavailable.
+    #
+    # WHY THE CALLER DOT-SOURCES: PowerShell scopes definitions to the scope that
+    # made them. A `. $cand -DefineOnly` inside THIS function would be discarded the
+    # moment the function returned, and Stage-F60UiBundle would then die with "the
+    # term 'Get-F60ReleaseAssetInfo' is not recognized" - the release bundle could
+    # never be staged in either lane. So this function only resolves the path and
+    # every caller dot-sources it in its OWN scope (Invoke-F60StageAndStart below,
+    # tests/f60-bootstrap-lab.ps1 check M).
     param([string]$Workspace, [string]$Root)
-    foreach ($cand in @((Join-Path $Workspace 'scripts\f60-bootstrap.ps1'), (Join-Path $Root 'tools\f60-bootstrap.ps1'))) {
-        if ($cand -and (Test-Path -LiteralPath $cand)) {
-            . $cand -DefineOnly
-            return $cand
-        }
+    $cands = @()
+    if ($Workspace) { $cands += (Join-Path $Workspace 'scripts\f60-bootstrap.ps1') }
+    if ($Root) { $cands += (Join-Path $Root 'tools\f60-bootstrap.ps1') }
+    foreach ($cand in $cands) {
+        if (Test-Path -LiteralPath $cand) { return $cand }
     }
     return ''
 }
@@ -371,7 +379,20 @@ function Invoke-F60StageAndStart {
     )
     $tf = Get-F60TimingFile -Root $Root -TimingFile $TimingFile
     $env:GHRDP_F59_TIMING = $tf
-    $null = Import-F60Transport -Workspace $Workspace -Root $Root
+    # Dot-sourced HERE, in this function's own scope: definitions made inside
+    # Import-F60Transport would vanish when it returned (see that function's note).
+    $transport = Import-F60Transport -Workspace $Workspace -Root $Root
+    if ($transport) {
+        . $transport -DefineOnly
+        Write-Host ('[F60 transport] release transport loaded from ' + $transport)
+        if (-not (Get-Command -Name 'Get-F60ReleaseAssetInfo' -ErrorAction SilentlyContinue)) {
+            throw ('[F60 transport] ' + $transport + ' loaded but Get-F60ReleaseAssetInfo is not defined - refusing to stage an unverifiable bundle')
+        }
+    } elseif ($Mode -eq 'cold') {
+        throw '[F60 cold] no scripts\f60-bootstrap.ps1 to load the release transport from - the checkout is incomplete'
+    } else {
+        Write-Host '[F60 transport] WARNING no bootstrap transport found; the provision-time bundle stays in place'
+    }
     $timingModule = Join-Path $Root 'f59-timing.ps1'
     if (-not (Test-Path -LiteralPath $timingModule) -and $Workspace) { $timingModule = Join-Path $Workspace 'payloads\f59-timing.ps1' }
     if (Test-Path -LiteralPath $timingModule) { . $timingModule }

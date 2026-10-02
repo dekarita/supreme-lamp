@@ -71,9 +71,19 @@ $temp = Join-Path ([System.IO.Path]::GetTempPath()) ('f60-lab-' + [Guid]::NewGui
 $null = New-Item -ItemType Directory -Path $temp -Force
 Write-Host ('[F60 lab] PowerShell ' + $PSVersionTable.PSVersion.ToString() + ', scratch ' + $temp)
 
-# --- A. dot-source every surface -------------------------------------------------
-Assert-Lab 'A: scripts/f60-bootstrap.ps1 dot-sources with -DefineOnly' {
-    . (Join-Path $root 'scripts\f60-bootstrap.ps1') -DefineOnly
+# --- A. load every surface IN THIS FILE'S SCOPE, then assert it --------------------
+# A `. file.ps1` executed inside a scriptblock that Assert-Lab invokes with `& $Block`
+# defines everything in Assert-Lab's FUNCTION scope, which is discarded the moment the
+# assertion returns - every later check then fails with "The term 'X' is not recognized
+# as the name of a cmdlet". That is exactly what the first windows-native run of this
+# lab did (40 of 44 checks failed, all of them "not recognized"). So the three surfaces
+# are dot-sourced here, at the lab's own scope, and the A checks only assert that the
+# documented functions are callable from it.
+. (Join-Path $root 'scripts\f60-bootstrap.ps1') -DefineOnly
+. (Join-Path $root 'scripts\f60-health.ps1') -DefineOnly
+. (Join-Path $root 'scripts\f60-stage-and-start.ps1') -DefineOnly
+
+Assert-Lab 'A: scripts/f60-bootstrap.ps1 -DefineOnly exposes the whole bootstrap surface' {
     foreach ($fn in @('Test-F60PinShape', 'Test-F60AssetSha256', 'Get-F60File', 'Register-F60NssmService',
                       'Invoke-F60Bootstrap', 'Mount-F60DataDisk', 'Clear-F60RunCommandSecrets',
                       'Get-F60RepoOwner', 'Get-F60StageList', 'Add-F60Secret', 'Invoke-F60Redact',
@@ -81,8 +91,7 @@ Assert-Lab 'A: scripts/f60-bootstrap.ps1 dot-sources with -DefineOnly' {
         if (-not (Get-Command -Name $fn -ErrorAction SilentlyContinue)) { throw ($fn + ' is not defined') }
     }
 }
-Assert-Lab 'A: scripts/f60-health.ps1 dot-sources with -DefineOnly' {
-    . (Join-Path $root 'scripts\f60-health.ps1') -DefineOnly
+Assert-Lab 'A: scripts/f60-health.ps1 -DefineOnly exposes the health surface + markers' {
     foreach ($fn in @('Invoke-F60Health', 'Get-F60WarmBudgetVerdict', 'Invoke-F60RedactText',
                       'Get-F60HttpVerdict', 'Get-F60ServiceVerdict', 'Get-F60TailscaleVerdict', 'Get-F60Aria2Verdict')) {
         if (-not (Get-Command -Name $fn -ErrorAction SilentlyContinue)) { throw ($fn + ' is not defined') }
@@ -90,8 +99,7 @@ Assert-Lab 'A: scripts/f60-health.ps1 dot-sources with -DefineOnly' {
     if ($script:F60OkMarker -ne 'F60_HEALTH_OK') { throw ('ok marker is ' + $script:F60OkMarker) }
     if ($script:F60FailMarker -ne 'F60_HEALTH_FAILED') { throw ('fail marker is ' + $script:F60FailMarker) }
 }
-Assert-Lab 'A: scripts/f60-stage-and-start.ps1 dot-sources with -DefineOnly' {
-    . (Join-Path $root 'scripts\f60-stage-and-start.ps1') -DefineOnly
+Assert-Lab 'A: scripts/f60-stage-and-start.ps1 -DefineOnly exposes the stager surface' {
     foreach ($fn in @('Invoke-F60StageAndStart', 'Stage-F60FromCheckout', 'Stage-F60UiBundle', 'Start-F60WarmServices',
                       'Start-F60ColdProcesses', 'Wait-F60DashboardHttp', 'Get-F60PayloadList', 'Get-F60ToolList',
                       'Get-F60WarmServiceNames', 'Get-F60TimingFile', 'Import-F60Transport')) {
@@ -393,12 +401,20 @@ Assert-Lab 'M: every staged payload and tool exists in the repository' {
     if (@($missing).Count) { throw ('staged files missing from the repo: ' + ($missing -join ', ')) }
     Write-Host ('[F60 lab]        ' + @(Get-F60PayloadList).Count + ' payloads + ' + @(Get-F60ToolList).Count + ' tools all present')
 }
-Assert-Lab 'M: Import-F60Transport finds the bootstrap and loads its transport functions' {
+Assert-Lab 'M: Import-F60Transport RESOLVES the bootstrap and the caller dot-sources it' {
     $p = Import-F60Transport -Workspace $root -Root $temp
     if (-not $p) { throw 'Import-F60Transport returned no path' }
+    if ((Split-Path -Leaf $p) -ne 'f60-bootstrap.ps1') { throw ('it resolved ' + $p) }
+    if (-not (Test-Path -LiteralPath $p)) { throw ('the resolved path does not exist: ' + $p) }
+    # The CALLER dot-sources: a dot-source inside Import-F60Transport would die with
+    # that function's scope and the bundle could never be staged.
+    . $p -DefineOnly
     if (-not (Get-Command -Name 'Get-F60ReleaseAssetInfo' -ErrorAction SilentlyContinue)) { throw 'the transport function was not loaded' }
     if (-not (Get-Command -Name 'Get-F60File' -ErrorAction SilentlyContinue)) { throw 'Get-F60File was not loaded' }
-    Write-Host ('[F60 lab]        transport loaded from ' + $p)
+    # An empty workspace must resolve to '' rather than throw on Join-Path.
+    $none = Import-F60Transport -Workspace '' -Root $temp
+    if ($none) { throw ('a bare temp root resolved a transport: ' + $none) }
+    Write-Host ('[F60 lab]        transport resolved at ' + $p)
 }
 Assert-Lab 'M: the default timing file is the F60 file, not F59''s' {
     $tf = Get-F60TimingFile -Root $temp -TimingFile ''

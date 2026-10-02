@@ -4222,7 +4222,19 @@ jobs:
               $out = & powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\f60-bootstrap-lab.ps1 2>&1
               $code = $LASTEXITCODE
               $out | ForEach-Object { Write-Host ('[F60 lab] ' + $_) }
-              if ($code -ne 0) { throw ('F60: tests\f60-bootstrap-lab.ps1 exited ' + $code) }
+              if ($code -ne 0) {
+                  # Carry the REASON out of the runner: the log blob is not always
+                  # reachable, but an ::error:: annotation and the f60-warm-lab
+                  # commit-status description are both readable through the API, so a
+                  # red lab always names its first failing check.
+                  $failLines = @($out | Where-Object { ([string]$_).Contains('[F60 lab] FAIL ') } | ForEach-Object { ([string]$_).Trim() })
+                  $tail = @($out | Where-Object { ([string]$_).Contains('F60_LAB_FAILED') } | ForEach-Object { ([string]$_).Trim() })
+                  $first = if ($failLines.Count -gt 0) { $failLines[0] } elseif ($tail.Count -gt 0) { $tail[0] } else { ([string]($out | Select-Object -Last 1)).Trim() }
+                  foreach ($l in @($failLines | Select-Object -First 3)) {
+                      Write-Host ('::error title=F60 lab check::' + (($l -replace "`r", ' ') -replace "`n", ' '))
+                  }
+                  throw ('F60: tests\f60-bootstrap-lab.ps1 exited ' + $code + ' with ' + $failLines.Count + ' failing check(s); first: ' + $first)
+              }
               $txt = ($out | Out-String)
               if ($txt -notmatch 'F60_LAB_OK') { throw 'F60: the bootstrap lab did not report F60_LAB_OK' }
               Write-Host ('F60: lab OK on ' + $PSVersionTable.PSVersion.ToString())

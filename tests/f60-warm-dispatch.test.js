@@ -171,3 +171,26 @@ test("F60-W10 the fallback lane is honest about what it proves", () => {
   assert.match(fb, /no dispatch-to-dashboard line was written/);
   assert.match(warm, /decisive lane/);
 });
+test("F60-W11 the release transport is loaded in the CALLER's scope, not inside the resolver", () => {
+  // PowerShell scopes definitions to the scope that made them. A `. $cand -DefineOnly`
+  // inside Import-F60Transport would vanish when that function returned, and
+  // Stage-F60UiBundle would then fail with "the term 'Get-F60ReleaseAssetInfo' is not
+  // recognized" - no commit-matched bundle in EITHER lane. Same bug class as the lab
+  // scoping failure (F60-P19), on the shipped side this time.
+  const start = stage.indexOf("function Import-F60Transport");
+  const end = stage.indexOf("function Stage-F60FromCheckout");
+  assert.ok(start > 0 && end > start, "Import-F60Transport must exist ahead of Stage-F60FromCheckout");
+  const resolver = stage.slice(start, end);
+  assert.ok(!/^\s*\.\s+\$cand/m.test(resolver), "Import-F60Transport must RESOLVE only - a dot-source in here dies with the function");
+  assert.match(resolver, /return \$cand/, "it hands the caller the resolved path");
+  assert.match(resolver, /if \(\$Workspace\)/, "an empty -Workspace must not reach Join-Path, which throws on an empty string");
+  const invoke = stage.slice(stage.indexOf("function Invoke-F60StageAndStart"));
+  const resolveAt = invoke.indexOf("$transport = Import-F60Transport");
+  const loadAt = invoke.indexOf(". $transport -DefineOnly");
+  const useAt = invoke.indexOf("Stage-F60UiBundle");
+  assert.ok(resolveAt > -1, "the caller resolves the transport");
+  assert.ok(loadAt > resolveAt, "and dot-sources it in its OWN scope, after resolving");
+  assert.ok(useAt > loadAt, "before the commit-matched bundle is staged");
+  assert.match(invoke, /Get-F60ReleaseAssetInfo' -ErrorAction SilentlyContinue/, "a transport that loads but defines nothing is refused, not trusted");
+  assert.match(invoke, /no scripts\\f60-bootstrap\.ps1 to load the release transport/, "the cold lane fails closed when there is no transport to load");
+});

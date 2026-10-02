@@ -532,3 +532,26 @@ test("F60-P18 the windows-native lab parses, runs the behavioural lab, then Pest
   assert.match(lab, /if \(\$labState -ne 'success'\) \{ exit 1 \}/);
   assert.match(lab, /::error title=F60 lab::/, "a red lab annotates the run");
 });
+
+test("F60-P19 the lab loads its surfaces at LAB scope, and a red lab names its first failing check", () => {
+  const labFile = read("tests/f60-bootstrap-lab.ps1");
+  // A `. file.ps1` executed inside a scriptblock that Assert-Lab invokes with `& $Block`
+  // defines everything in Assert-Lab's FUNCTION scope, which is discarded the moment the
+  // assertion returns. The first windows-native run of this lab failed 40 of 44 checks,
+  // every one "The term 'X' is not recognized as the name of a cmdlet" - the four A
+  // checks passed because they asserted inside the same block that loaded the surface.
+  for (const f of ["scripts\\f60-bootstrap.ps1", "scripts\\f60-health.ps1", "scripts\\f60-stage-and-start.ps1"]) {
+    const line = ". (Join-Path $root '" + f + "') -DefineOnly";
+    assert.ok(labFile.includes("\n" + line + "\n"), f + " must be dot-sourced at column 0, i.e. in the lab file's own scope");
+  }
+  const sectionA = labFile.slice(labFile.indexOf("# --- A."), labFile.indexOf("# --- B."));
+  assert.ok(!/\n[ \t]+\. \(Join-Path/.test(sectionA), "section A must not dot-source a surface from inside an Assert-Lab block");
+  assert.match(labFile, /Import-F60Transport RESOLVES the bootstrap and the caller dot-sources it/, "the transport contract is asserted, not assumed");
+  assert.match(labFile, /a bare temp root resolved a transport/, "an empty -Workspace resolves to '' instead of throwing in Join-Path");
+  // Diagnosability: the log blob is not always reachable, so a red lab must publish its
+  // reason through the channels the API does expose (annotations + commit status).
+  const step = gates.slice(gates.indexOf("name: F60 warm-runner PS lab"));
+  assert.match(step, /Contains\('\[F60 lab\] FAIL '\)/, "the failing checks are collected from the lab's own output");
+  assert.match(step, /::error title=F60 lab check::/, "each of the first failing checks becomes an annotation");
+  assert.match(step, /failing check\(s\); first: /, "the thrown reason names the first failing check, which is what the f60-warm-lab status description carries");
+});
