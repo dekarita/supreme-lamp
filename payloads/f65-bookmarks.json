@@ -1,0 +1,13 @@
+{
+  "_comment": "[F65 §1] Canonical bookmark payload shipped inside the pre-staged stack bundle. Exactly the three entries main.yml's personalization step already writes: Mission Control (session tailnet IP, filled at consume time), the in-repo auto-login guide and the Tailscale admin DNS page. No third-party index is ever added here (F10/F11 gates scan this file).",
+  "schema": "ghrdp-f65-bookmarks/1",
+  "version": 1,
+  "toplevel_name": "GHRDP",
+  "session_toplevel_name": "GHRDP Session",
+  "bookmarks": [
+    { "name": "Mission Control", "url_template": "http://{rdpIp}:{port}", "default_url": "http://127.0.0.1:7331", "session": true },
+    { "name": "Auto-login guide (docs/AUTOLOGIN.md)", "url": "https://github.com/dekarita/supreme-lamp/blob/main/docs/AUTOLOGIN.md" },
+    { "name": "Tailscale Admin - DNS", "url": "https://login.tailscale.com/admin/dns" }
+  ],
+  "port_fallback": "7332 when the Rust dashboard is the advertised one"
+}

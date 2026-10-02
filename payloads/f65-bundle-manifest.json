@@ -1,0 +1,116 @@
+{
+  "_comment": "[F65 §1] PRE-STAGED STACK BUNDLE pins. Every component comes from an OFFICIAL vendor source and carries a SHA-256 pin. The bundle builder (scripts/f65-bundle-builder.mjs) verifies the pin byte-for-byte at BUILD time and refuses (exit 1) on any miss or mismatch - main.yml additionally verifies the produced bundle zip (pointer + sidecar) AND every extracted file (manifest.json) before any consumer reads it, and falls back to the individual download path when the bundle misses.",
+  "schema": "ghrdp-f65-bundle-manifest/1",
+  "release_tag": "stack-bundle",
+  "asset_pattern": "ghrdp-stack-<commit>.zip",
+  "pointer_asset": "ghrdp-stack-latest.json",
+  "sidecar_suffix": ".sha256",
+  "stage_dir": "stack",
+  "personalization_dir": "personalization",
+  "fallback": "main.yml falls back to the individual download path (per consumer) when the bundle asset misses or a sha256 disagrees - the bundle is NEVER a hard dependency",
+  "excluded_on_purpose": {
+    "parsec": "main.yml deliberately does NOT install Parsec ('new Parsec requires email OTP; RDP with CredSSP-disabled .rdp is the primary path') - a pre-staged installer nobody consumes would be dead weight",
+    "qbittorrent_aria2c": "owned by the F59 prebuilt-binaries release lane (payloads/f59-prebuilt-pins.json, fail-closed verifier); the F65 bundle must not fork that single source of truth",
+    "tailscale_msi_url": "the F59 pre-warm already downloads the Tailscale MSI; the bundle copy is staged for the F65 rendezvous + fallback path, not to replace the F59 cache key"
+  },
+  "components": {
+    "tailscale": {
+      "kind": "zip-member-transfer",
+      "name": "tailscale-setup-1.102.4-amd64.msi",
+      "version": "1.102.4",
+      "size": 38390272,
+      "sha256": "80eb007e39dfebe17299fa1a09c79a8e1d934f76e0246c0817ebe3af675b7ef6",
+      "vendor": "pkgs.tailscale.com",
+      "release_page_url": "https://pkgs.tailscale.com/stable/",
+      "source_url": "https://pkgs.tailscale.com/stable/tailscale-setup-1.102.4-amd64.msi",
+      "mirror_url": "https://github.com/dekarita/supreme-lamp/releases/download/f63-prebuilt/tailscale-setup-1.102.4-amd64.msi",
+      "pins_verified_via": "mirror-release-asset-digest (vendor URL is versioned; the same bytes are asserted at bundle build time)",
+      "consumed_by": "payloads/f65-prefetch.ps1 rendezvous; F59 pre-warm remains the primary MSI source"
+    },
+    "ffmpeg": {
+      "kind": "zip-member-transfer",
+      "name": "ffmpeg-release-full.zip",
+      "version": "9.0.2",
+      "size": 257736868,
+      "sha256": "759d0a9831c436a0eb331ad36f236c06cb04aaa0005da46571f0e9d3d9206f6b",
+      "vendor": "ffmpeg.org (Gyan Doshi build)",
+      "release_page_url": "https://ffmpeg.org/download.html#build-windows",
+      "source_url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-full_build.zip",
+      "mirror_url": "https://github.com/dekarita/supreme-lamp/releases/download/f63-prebuilt/ffmpeg-release-full.zip",
+      "pins_verified_via": "vendor-release-asset-digest (GitHub API digest == pin == mirror digest)",
+      "consumed_by": "main.yml WebRTC step ffmpeg (bundle preferred, choco fallback)"
+    },
+    "vbcable": {
+      "kind": "zip-member-transfer",
+      "name": "VBCABLE_Driver_Pack43.zip",
+      "version": "43",
+      "size": 1139147,
+      "sha256": "66fd0a4d9f4896ff41632b7e3d53892c085c4561f53e8ae8d0f0bc10eedd1cdd",
+      "vendor": "vb-audio.com",
+      "release_page_url": "https://vb-audio.com/Cable/",
+      "source_url": "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip",
+      "mirror_url": "https://github.com/dekarita/supreme-lamp/releases/download/f63-prebuilt/VBCABLE_Driver_Pack43.zip",
+      "member": "VBCABLE_Setup_x64.exe",
+      "pins_verified_via": "mirror-release-asset-digest",
+      "consumed_by": "main.yml personalization step VB-CABLE (bundle preferred, direct curl fallback)"
+    },
+    "idd_sample_driver": {
+      "kind": "zip-member-transfer",
+      "name": "IddSampleDriver.zip",
+      "version": "0.0.1.4",
+      "size": 52582,
+      "sha256": "e93b88f31ce3201814cba1fb4e11eb43e6f991f4d2a5e33145728a8dbfdd4eb7",
+      "vendor": "github.com/ge9/IddSampleDriver",
+      "release_page_url": "https://github.com/ge9/IddSampleDriver/releases",
+      "source_url": "https://github.com/ge9/IddSampleDriver/releases/download/0.0.1.4/IddSampleDriver.zip",
+      "mirror_url": "https://github.com/dekarita/supreme-lamp/releases/download/f63-prebuilt/IddSampleDriver.zip",
+      "pins_verified_via": "mirror-release-asset-digest (the vendor asset predates GitHub's digest field; size 52582 matches)",
+      "consumed_by": "main.yml virtual-display-driver step (bundle preferred; NOTE the current individual URL v1.0.2 404s - see docs/F65-STACK-BUNDLE.md)"
+    },
+    "ublock_crx": {
+      "kind": "zip-member-transfer",
+      "name": "uBlock0_1.75.0.chromium.crx",
+      "version": "1.75.0",
+      "size": 4568084,
+      "sha256": "d688ed3f0262ec4f8bdcd4c8f65987c5444c560aeb387a9e02aca1facdfa7046",
+      "vendor": "github.com/gorhill/uBlock (Chrome Web Store build)",
+      "release_page_url": "https://github.com/gorhill/uBlock/releases/tag/1.75.0",
+      "source_url": "https://github.com/gorhill/uBlock/releases/download/1.75.0/uBlock0_1.75.0.chromium.crx",
+      "mirror_url": "https://github.com/dekarita/supreme-lamp/releases/download/f63-prebuilt/uBlock0_1.75.0.chromium.crx",
+      "pins_verified_via": "vendor-release-asset-digest",
+      "consumed_by": "staged for manual/offline install (C:\\ghrdp\\extensions); policies keep the live-resolved store ids"
+    },
+    "ublock_xpi": {
+      "kind": "zip-member-transfer",
+      "name": "uBlock0_1.75.0.firefox.signed.xpi",
+      "version": "1.75.0",
+      "size": 4650100,
+      "sha256": "5b74415860456370644bd80f16125e865b0e6c356bb5dfcfb84069967eaa5287",
+      "vendor": "github.com/gorhill/uBlock (AMO-signed Firefox build)",
+      "release_page_url": "https://github.com/gorhill/uBlock/releases/tag/1.75.0",
+      "source_url": "https://github.com/gorhill/uBlock/releases/download/1.75.0/uBlock0_1.75.0.firefox.signed.xpi",
+      "mirror_url": "",
+      "pins_verified_via": "vendor-release-asset-digest",
+      "consumed_by": "staged for manual/offline install (C:\\ghrdp\\extensions)"
+    },
+    "webrtc": {
+      "kind": "zip-member-transfer",
+      "name": "ghrdp-webrtc-f46727fe7f721a47fc7694d4f55333a2eab51059.zip",
+      "version": "f46727fe",
+      "size": 9009341,
+      "sha256": "0525eed634d439ae143cfe977d7a16818ab861ee97235c8d742e54f002b13eb8",
+      "sha256_sidecar_name": "ghrdp-webrtc-f46727fe7f721a47fc7694d4f55333a2eab51059.zip.sha256",
+      "sha256_sidecar": "2f8830cb860bbb936f32d8dab315b926221e2125bef8240bbd747612b6dc4531",
+      "vendor": "this repository (built from source by the F63 build-webrtc workflow)",
+      "release_page_url": "https://github.com/dekarita/supreme-lamp/releases/tag/webrtc-dist",
+      "source_url": "https://github.com/dekarita/supreme-lamp/releases/download/webrtc-dist/ghrdp-webrtc-f46727fe7f721a47fc7694d4f55333a2eab51059.zip",
+      "mirror_url": "",
+      "pins_verified_via": "vendor-release-asset-digest (published by .github/workflows/build-webrtc.yml)",
+      "consumed_by": "DEFERRED: main.yml still builds WebRTC in-runner; the pre-staged zip is staged + verified for the follow-up swap (docs/F65-STACK-BUNDLE.md)"
+    }
+  },
+  "personalization": {
+    "payloads/f65-personalization.json": "theme/personalization payload (versioned).",
+    "payloads/f65-bookmarks.json": "canonical bookmark set (the same three entries main.yml already writes)."
+  }
+}
