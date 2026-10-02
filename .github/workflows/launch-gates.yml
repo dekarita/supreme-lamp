@@ -1805,7 +1805,7 @@ jobs:
           ka=$(awk '/^      - name: Keep-alive 5h30/{f=1} /^      - name: Cleanup /{f=0} f' "$wf")
           test -n "$up" && test -n "$stage" && test -n "$ka" || { echo 'F34: a step region is missing (gate would be vacuous)' >&2; exit 1; }
           # (1) up-step: the 90s window must gate on BackendState AND a CGNAT address.
-          grep -qF "\$i -lt 45" <<< "$up" || { echo 'F34: up-step no longer polls 45 x 2s (90s)' >&2; exit 1; }
+          grep -qF "\$i -lt 90" <<< "$up" || { echo 'F34: up-step no longer polls 90 x 1s (90s; F64 same window as 45 x 2s)' >&2; exit 1; }
           grep -qF "\$j.BackendState -eq 'Running'" <<< "$up" || { echo 'F34: up-step does not read BackendState' >&2; exit 1; }
           grep -qF 'Self.TailscaleIPs' <<< "$up" || { echo 'F34: up-step does not require a tailnet IP' >&2; exit 1; }
           grep -qF 'TS_TAILNET_IP=' <<< "$up" || { echo 'F34: up-step does not publish the proven IP' >&2; exit 1; }
@@ -3677,6 +3677,58 @@ jobs:
           d=$(mktemp -d); (cd "$d" && node "$GITHUB_WORKSPACE/scripts/check-regression-ids.mjs" && node "$GITHUB_WORKSPACE/scripts/check-bottom-bar-time.mjs"); rm -rf "$d"
           echo 'F62 gate PASS'
 
+      # [F64] ADDITIVE: ONE new counted bash gate. Honest timing collector +
+      # baseline jsonl (last 3 main.yml runs), 1s-poll windows (same timeouts),
+      # qBittorrent AFTER dashboard-reachable, ThreadJob fallback, no ToS
+      # evasion, no guaranteed-6 claim, F60 stays PARKED.
+      - name: F64 honest timing + 1s-poll + post-dashboard qbt gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f f64-timing-baseline.jsonl || { echo 'F64: f64-timing-baseline.jsonl missing' >&2; exit 1; }
+          test -f docs/F64-TOS-NOTE.md || { echo 'F64: TOS note missing' >&2; exit 1; }
+          test -f docs/F64-BASELINE.md || { echo 'F64: baseline doc missing' >&2; exit 1; }
+          test -f payloads/f64-instrument.ps1 || { echo 'F64: instrument helper missing' >&2; exit 1; }
+          test -f scripts/f64-timing-collector.js || { echo 'F64: collector missing' >&2; exit 1; }
+          test -f tests/f64-timing-collector.test.js || { echo 'F64: collector test missing' >&2; exit 1; }
+          node --test tests/f64-timing-collector.test.js
+          wf=.github/workflows/main.yml
+          grep -qF 'payloads/f64-instrument.ps1' "$wf" || { echo 'F64: main.yml does not load f64-instrument.ps1' >&2; exit 1; }
+          grep -qF 'Write-F64Stamp' "$wf" || { echo 'F64: no intra-step Write-F64Stamp' >&2; exit 1; }
+          grep -qF 'Get-F64HostFacts' "$wf" || { echo 'F64: no host-facts log (D:/ImageOS/Defender)' >&2; exit 1; }
+          grep -qF 'Start-F64BgJob' "$wf" || { echo 'F64: Start-F64BgJob missing' >&2; exit 1; }
+          grep -qF "\$i -lt 90" "$wf" || { echo 'F64: Tailscale up is not 90 x 1s' >&2; exit 1; }
+          grep -qF "\$i -lt 900" "$wf" || { echo 'F64: MagicDNS wait is not 900 x 1s (15 min HOLD)' >&2; exit 1; }
+          grep -qF 'if ($attempt -lt 3) { Start-Sleep -Seconds 10 }' "$wf" || { echo 'F64: F12 cert 10s between attempts was removed' >&2; exit 1; }
+          python3 - <<'PY'
+          from pathlib import Path
+          main = Path('.github/workflows/main.yml').read_text()
+          dash = main.find('      - name: Start Mission Control dashboard EARLY')
+          qbt = main.find('      - name: Install qBittorrent 4.6.5 (F59 prebuilt, SHA-256 verified)')
+          web = main.find('      - name: Web desktop (noVNC + TightVNC')
+          if dash < 0 or qbt < 0:
+              raise SystemExit('F64: dashboard or qbt step missing')
+          if not (qbt > dash):
+              raise SystemExit('F64: qBittorrent transport install is still BEFORE dashboard-reachable')
+          if not (0 < web < dash):
+              raise SystemExit('F64: F8 pin broken - web desktop must stay BEFORE dashboard EARLY')
+          if main.count('Start-F64BgJob') < 4:
+              raise SystemExit('F64: expected >=4 Start-F64BgJob legs')
+          if "runner_target || 'windows-latest'" not in main:
+              raise SystemExit('F64: F60 PARKED pin missing (windows-latest default)')
+          print('F64 order+ThreadJob python pin OK')
+          PY
+          if grep -qE 'DisableRealtimeMonitoring|Set-MpPreference' payloads/f64-instrument.ps1 "$wf"; then
+            echo 'F64: Defender disable slipped in' >&2; exit 1
+          fi
+          if grep -qE 'guaranteed 6|lab-verified 6m22s' docs/F64-BASELINE.md docs/F64-TOS-NOTE.md payloads/f64-instrument.ps1; then
+            echo 'F64: guaranteed-6 / lab-as-prod claim' >&2; exit 1
+          fi
+          grep -qF '7-8' docs/F64-BASELINE.md || { echo 'F64: honest 7-8 min target missing' >&2; exit 1; }
+          grep -qF 'Terms of Service' docs/F64-TOS-NOTE.md || { echo 'F64: TOS note empty' >&2; exit 1; }
+          grep -qF 'Oracle' docs/F64-TOS-NOTE.md || { echo 'F64: Oracle Free Tier suggestion missing' >&2; exit 1; }
+          echo 'F64 gate PASS'
+
   windows-native:
     runs-on: windows-latest
     steps:
@@ -4173,6 +4225,27 @@ jobs:
           & (Join-Path $env:GITHUB_WORKSPACE 'tests\f59-prewarm-parallel.ps1')
           if ($LASTEXITCODE -ne 0) { throw ('F59: prewarm/verify lab failed with exit ' + $LASTEXITCODE) }
           Write-Host 'F59 prewarm + verify lab PASS'
+
+
+      # [F64] ADDITIVE windows-native lab: parse the instrument helper, prove
+      # Start-F64BgJob + Wait-Job, and pin qBittorrent AFTER dashboard-reachable.
+      # Behavioural ThreadJob wall-time is NOT claimed as production.
+      - name: F64 instrument + ThreadJob lab
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          foreach ($f in @('payloads\\f64-instrument.ps1', 'tests\\f64-instrument-lab.ps1')) {
+              $errs = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
+              if ($errs) {
+                  foreach ($e in @($errs)) { Write-Host ('::error title=F64 parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
+                  throw ('F64: PowerShell syntax error in ' + $f)
+              }
+          }
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\\f64-instrument-lab.ps1')
+          if ($LASTEXITCODE -ne 0) { throw ('F64: instrument lab failed with exit ' + $LASTEXITCODE) }
+          Write-Host 'F64 instrument + ThreadJob lab PASS'
 
       # ---- F60 LAB (windows-native, single commit status like F57/F56-d): the ----
       # ---- warm-runner PowerShell lab. Proves the parts a text gate cannot: the ----

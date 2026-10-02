@@ -131,7 +131,7 @@ test("F59-7 actions cache + shallow checkout + parallelism + startup timing", ()
   // parallel pre-warm: four concurrent legs started before the dashboard gate
   assert.match(main, /F59 parallel pre-warm \(Tailscale MSI \+ prebuilt binaries \+ PS parse\)/);
   const prewarm = main.slice(main.indexOf("F59 parallel pre-warm"), main.indexOf("name: Install Tailscale"));
-  assert.ok((prewarm.match(/Start-Job/g) || []).length >= 4, "four background legs (MSI, binaries, PS parse, cert pre-warm)");
+  assert.ok((prewarm.match(/Start-F64BgJob/g) || []).length >= 4, "four background legs via Start-F64BgJob (ThreadJob with Start-Job fallback; Wait-Job still joins)");
   assert.match(prewarm, /Wait-Job -Job \$all -Timeout 900/);
   assert.match(prewarm, /GHRDP_F59_PREWARM=ready/);
   // the gate: prewarm must complete before the dashboard-reachable step

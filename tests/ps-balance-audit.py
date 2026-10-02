@@ -228,6 +228,9 @@ def main():
         'scripts/f60-scrub-runcommand.ps1',
         'tests/f60-bootstrap-lab.ps1',
         'tests/f60-bootstrap.Tests.ps1',
+        # [F64] instrumentation helper + windows lab (no PS interpreter here).
+        'payloads/f64-instrument.ps1',
+        'tests/f64-instrument-lab.ps1',
     ]
     failed = 0
     for t in targets:
