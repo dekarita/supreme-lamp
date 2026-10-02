@@ -3666,6 +3666,17 @@ jobs:
           PYEOF
           echo 'F60-W gate PASS: warm budget <60000 ms to a real HTTP 200, 3-strike STOP, fail-closed health, labeled fallback, F59 untouched'
           node --test tests/f60-warm-dispatch.test.js
+      # [F62] ADDITIVE: ONE new counted bash gate. main.yml's ui-prebuilt step runs
+      # from $RUNNER_TEMP/ui-dl; its repo scripts must be invoked by absolute path
+      # and must resolve repo files from their own location, not CWD.
+      - name: F62 build-ui script path (cwd-independent gate scripts)
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/f62-build-ui-script-path.test.js
+          d=$(mktemp -d); (cd "$d" && node "$GITHUB_WORKSPACE/scripts/check-regression-ids.mjs" && node "$GITHUB_WORKSPACE/scripts/check-bottom-bar-time.mjs"); rm -rf "$d"
+          echo 'F62 gate PASS'
+
   windows-native:
     runs-on: windows-latest
     steps:

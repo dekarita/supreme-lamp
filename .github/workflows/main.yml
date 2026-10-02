@@ -108,9 +108,9 @@ jobs:
           cp out/index.html "$GITHUB_WORKSPACE/ui/dist/index.html"
           LEN=$(wc -c < "$GITHUB_WORKSPACE/ui/dist/index.html")
           if [ "$LEN" -le 51200 ]; then echo "ui-v2.html staging failed - prebuilt bundle too small ($LEN bytes)"; exit 1; fi
-          node scripts/check-regression-ids.mjs
-          node scripts/check-no-neon-green.mjs "$GITHUB_WORKSPACE/ui/dist/index.html"
-          node scripts/check-bottom-bar-time.mjs
+          node "$GITHUB_WORKSPACE/scripts/check-regression-ids.mjs"
+          node "$GITHUB_WORKSPACE/scripts/check-no-neon-green.mjs" "$GITHUB_WORKSPACE/ui/dist/index.html"
+          node "$GITHUB_WORKSPACE/scripts/check-bottom-bar-time.mjs"
           echo "[F59 ui-prebuilt] hit sha256-verified ${asset} bytes=$LEN"
       - name: Build v2 single-file bundle (F59 fallback - asset miss only)
         if: steps.ui-prebuilt.outputs.hit != 'true'

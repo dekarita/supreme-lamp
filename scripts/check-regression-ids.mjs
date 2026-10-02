@@ -4,18 +4,23 @@
 // between the v1 fixture and the v2 lock file fails CI.
 // CRLF-safe: both files are read with EOL normalization before regex work.
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
+// [F62] Resolve repo-relative paths from this script's location, not CWD
+// (main.yml runs it from $RUNNER_TEMP/ui-dl).
+const ROOT = fileURLToPath(new URL("..", import.meta.url));
 
 const norm = (s) => s.replace(/\r\n?/g, "\n");
 
 function extractBaseline() {
-  const src = norm(readFileSync("tests/f38-ui-glass.test.js", "utf8"));
+  const src = norm(readFileSync(ROOT + "tests/f38-ui-glass.test.js", "utf8"));
   const m = src.match(/const\s+BASELINE_IDS\s*=\s*\[([\s\S]*?)\]/);
   if (!m) throw new Error("BASELINE_IDS not found in tests/f38-ui-glass.test.js");
   return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
 }
 
 function extractLock() {
-  const src = norm(readFileSync("src/lib/regression-ids.ts", "utf8"));
+  const src = norm(readFileSync(ROOT + "src/lib/regression-ids.ts", "utf8"));
   const m = src.match(/export const REGRESSION_IDS: readonly string\[\] = \[([\s\S]*?)\]/);
   if (!m) throw new Error("REGRESSION_IDS not found in src/lib/regression-ids.ts");
   return [...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
