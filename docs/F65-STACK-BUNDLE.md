@@ -129,6 +129,36 @@ mandated anchors; with `F65_TELEMETRY_ARTIFACT` set it runs over a REAL artifact
   post-merge median/p90 for F65 can only be measured after the operator merges and
   dispatches 3+ times.
 
+## 5. Published bundle + CI evidence (this branch)
+
+Pushed from `e7e7863c`; the bundle workflow ran GREEN and published to the
+`stack-bundle` release (asset digests from the GitHub API):
+
+| asset | size | sha256 |
+|---|---|---|
+| `ghrdp-stack-e7e7863c521b.zip` | 307,469,116 B | `5e452eb0cb05622cf8b7c1bc4f93e219046dcfdc660ba672efcd3836c72d7d84` |
+| `ghrdp-stack-e7e7863c521b.zip.sha256` | 95 B | `693b64ad2d1c7ee1683601506dad83130e847fe4b635893fd24f1667bfbff581` |
+| `ghrdp-stack-latest.json` (pointer) | 347 B | `cbd04fbac1cd90272652a8cc1c9f8cfd96bb1f64b308f0d97891aeb2f695b2fe` |
+
+The sidecar digest was re-derived offline: `sha256("<bundle sha>  ghrdp-stack-e7e7863c521b.zip\n")`
+equals the published sidecar digest, so the fail-closed chain (pointer -> zip ->
+sidecar) is self-consistent.
+
+Merge-verification loop (lab-first, F62 discipline) found and fixed **two real
+bugs before landing**:
+1. the bundle builder synthesised the webrtc sidecar as `<sha>  <name>\n`; the
+   published convention is the 65-byte `<sha>\n` - the pinned sidecar digest now
+   round-trips (regression test added);
+2. `github.com/.../releases/download/...` can answer 404 for a token-carrying
+   request, so repo-owned assets now fall back to the documented API route
+   (`Accept: application/octet-stream`);
+3. `Invoke-F65ParallelMap` refused an empty `-Items` array at parameter binding
+   (`[AllowEmptyCollection]` now) - caught by the windows lab cell B5.
+
+CI on head `8277b289`: `gates` green (incl. the F65 bash gate), `windows-native`
+green (F65 stack lab + a real PowerShell-written telemetry file parsed by the node
+suite), `f65-stack-lab` commit status green.
+
 ## 5. Gates
 
 - `gates` (ubuntu): additive step *F65 pre-staged bundle + scratch + telemetry
