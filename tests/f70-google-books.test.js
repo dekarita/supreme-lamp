@@ -83,7 +83,8 @@ test('F70-P2-STATIC: endpoint, no API key, rate window, cap and pinned mapping',
   assert.ok(HELPER.includes("'TRANSPORT_UNAVAILABLE'") && HELPER.includes("'TIMEOUT'"), 'transport error codes');
   // wiring: the fan-out calls the helper and google-books-public is default
   assert.ok(SERVER.includes("Invoke-GhrdpGoogleBooksSearch -Query $f70Query -Limit $f70Limit -Cursor $f70Cursor"), 'the search fan-out invokes the helper');
-  assert.ok(SERVER.includes("$script:DefaultAdapterIds = @('google-books-public','internet-archive')"), 'default adapter fan-out');
+  // [F72 §1.3] Default fan-out expanded to 5-source TLS-Radar pack.
+  assert.ok(SERVER.includes("$script:DefaultAdapterIds = @('github-releases','internet-archive','arxiv','wikisource','google-books-public')"), 'default 5-source adapter fan-out');
 });
 
 // The twin: each rule below executes ONLY a literal pinned in the static test

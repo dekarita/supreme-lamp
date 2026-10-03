@@ -283,7 +283,25 @@
         "relevance": "අදාළත්වය",
         "size": "ප්‍රමාණය",
         "date": "දිනය"
-      }
+      },
+      "fileExt": {
+        "label": "ගොනු වර්ගය",
+        "pdf": ".pdf",
+        "epub": ".epub",
+        "mp3": ".mp3",
+        "mp4": ".mp4",
+        "zip": ".zip",
+        "tarGz": ".tar.gz",
+        "sourceCode": "source-code",
+        "exe": ".exe",
+        "deb": ".deb",
+        "rpm": ".rpm",
+        "dmg": ".dmg",
+        "msi": ".msi"
+      },
+      "yearFrom": "වර්ෂය සිට",
+      "yearTo": "වර්ෂය දක්වා",
+      "groupBySource": "මූලාශ්‍රය අනුව කණ්ඩ"
     },
     "results": {
       "label": "ප්‍රතිඵල",
@@ -387,6 +405,7 @@
       "queryDescription": "විමසුමක් ටයිප් කර Enter එබී සොයන්න. HTTPS URL ආයාත මාදිලියට යයි.",
       "categoryGroup": "ප්‍රවර්ග පෙරහන්",
       "licenceGroup": "බලපත්‍ර පෙරහන්",
+      "fileExtGroup": "ගොනු වර්ග පෙරහන්",
       "sizeSlider": "උපරිම ප්‍රමාණ ස්ලයිඩරය",
       "sortSelector": "පෙළගැස්ම් අනුපිළිවෙල",
       "adapterStatusList": "අනුවර්තක තත්ත්ව ලැයිස්තුව",
@@ -625,6 +644,24 @@
       "toast": {
         "micStub": "හඬ ආදානය තවම ස්ටබ් එකකි - ඉදිරි අදියරකින් ලැබේ."
       }
+    },
+    "lab": {
+      "openInLab": "Lab හි විවෘත කරන්න",
+      "backToResults": "ප්‍රතිඵල වෙත ආපසු",
+      "title": "Lab මාදිලිය - ගැඹුරු පරීක්ෂක",
+      "comingSoon": "සම්පූර්ණ පරීක්ෂකය F75 හි පැමිණේ. ප්‍රතිඵල පාර-අයිතිය පහත දැක්වේ.",
+      "metadata": "පාර-අයිතිය",
+      "sourceUrl": "මූලාශ්‍ර URL",
+      "adapter": "අනුවර්තකය",
+      "category": "ප්‍රවර්ගය",
+      "licence": "බලපත්‍රය",
+      "date": "දිනය",
+      "mimeType": "MIME වර්ගය",
+      "size": "ප්‍රමාණය"
+    },
+    "googleSearch": {
+      "openOnGoogle": "google.com හි විවෘත කරන්න",
+      "hint": "විමසුම Google හි නව ටැබයක විවෘත කරයි"
     },
     "fetch": {
       "started": "Fetch started: {{fetchId}}",

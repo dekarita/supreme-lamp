@@ -377,7 +377,25 @@
         "relevance": "Relevance",
         "size": "Size",
         "date": "Date"
-      }
+      },
+      "fileExt": {
+        "label": "File type",
+        "pdf": ".pdf",
+        "epub": ".epub",
+        "mp3": ".mp3",
+        "mp4": ".mp4",
+        "zip": ".zip",
+        "tarGz": ".tar.gz",
+        "sourceCode": "source-code",
+        "exe": ".exe",
+        "deb": ".deb",
+        "rpm": ".rpm",
+        "dmg": ".dmg",
+        "msi": ".msi"
+      },
+      "yearFrom": "Year from",
+      "yearTo": "Year to",
+      "groupBySource": "Group by source"
     },
     "results": {
       "label": "Results",
@@ -475,14 +493,15 @@
       "classifierBlocked": "Blocked after intent confirmation.",
       "generic": "Something went wrong."
     },
-    "a11y": {
-      "commandBar": "Search command bar",
-      "queryInput": "Search query input",
-      "queryDescription": "Type a query and press Enter to search. HTTPS URLs enter URL import.",
-      "categoryGroup": "Category filters",
-      "licenceGroup": "Licence filters",
-      "sizeSlider": "Maximum size slider",
-      "sortSelector": "Sort order",
+      "a11y": {
+        "commandBar": "Search command bar",
+        "queryInput": "Search query input",
+        "queryDescription": "Type a query and press Enter to search. HTTPS URLs enter URL import.",
+        "categoryGroup": "Category filters",
+        "licenceGroup": "Licence filters",
+        "fileExtGroup": "File type filters",
+        "sizeSlider": "Maximum size slider",
+        "sortSelector": "Sort order",
       "adapterStatusList": "Adapter status list",
       "resultsGrid": "Search results grid",
       "resultRow": "Search result row",
@@ -719,6 +738,24 @@
       "toast": {
         "micStub": "Voice input is a stub - it lands in a later flight."
       }
+    },
+    "lab": {
+      "openInLab": "Open in Lab",
+      "backToResults": "Back to results",
+      "title": "Lab Mode - Deep Inspector",
+      "comingSoon": "Full inspector coming in F75. Result metadata shown below.",
+      "metadata": "Metadata",
+      "sourceUrl": "Source URL",
+      "adapter": "Adapter",
+      "category": "Category",
+      "licence": "Licence",
+      "date": "Date",
+      "mimeType": "MIME type",
+      "size": "Size"
+    },
+    "googleSearch": {
+      "openOnGoogle": "Open on google.com",
+      "hint": "Opens the query in a new tab on Google"
     },
     "fetch": {
       "started": "Fetch started: {{fetchId}}",

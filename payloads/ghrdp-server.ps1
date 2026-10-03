@@ -1791,7 +1791,7 @@ function Invoke-ClientRequest {
                     # [F69 §1.2] placeholder/test hosts removed from the allowlist - they defeated the host gate.
                     # [F70 §2.1] www.googleapis.com added (Google Books Volumes API); books.google.com
                     # (previewLink/infoLink targets) was already allowlisted.
-                    $allowHosts = @('gutenberg.org','standardebooks.org','librivox.org','archive.org','openlibrary.org','hathitrust.org','wikisource.org','doabooks.org','arxiv.org','biorxiv.org','ncbi.nlm.nih.gov','doaj.org','oercommons.org','ssrn.com','blender.org','wikimedia.org','sourceforge.net','github.com','bandcamp.com','youtube.com','amazon.com','kobo.com','books.google.com','www.googleapis.com','sarasavi.lk','vijithayapa.com','godage.com','overdrive.com')
+                    $allowHosts = @('gutenberg.org','standardebooks.org','librivox.org','archive.org','openlibrary.org','hathitrust.org','wikisource.org','wikipedia.org','doabooks.org','arxiv.org','biorxiv.org','ncbi.nlm.nih.gov','doaj.org','oercommons.org','ssrn.com','blender.org','wikimedia.org','sourceforge.net','github.com','bandcamp.com','youtube.com','amazon.com','kobo.com','books.google.com','www.googleapis.com','sarasavi.lk','vijithayapa.com','godage.com','overdrive.com')
                     foreach ($ah in $allowHosts) { if ($hostName -eq $ah -or $hostName.EndsWith('.' + $ah)) { $domainOk = $true; break } }
                     if (-not $domainOk) {
                         # Check custom registry file if exists
@@ -2242,7 +2242,9 @@ function Invoke-ClientRequest {
             # two literals to the same core ids.
             $searchAllowedAdapters = @('project-gutenberg','standard-ebooks','librivox','ia-open-library','hathitrust','wikisource','doab','arxiv','biorxiv','pubmed-central','doaj','oer-commons','ssrn','internet-archive','blender-studio','wikimedia-commons','sourceforge','github-releases','bandcamp','cc-marked-youtube','kindle-audible','kobo','google-books','google-books-public','sarasavi','vijitha-yapa','godage','overdrive-libby','own-storage','custom')
             # [F70 §1.1] default fan-out when the request omits adapterIds.
-            $script:DefaultAdapterIds = @('google-books-public','internet-archive')
+            # [F72 §1.3] Expanded to the 5-source TLS-Radar default pack:
+            # GitHub repos, Internet Archive, arXiv, Wikipedia, Google Books.
+            $script:DefaultAdapterIds = @('github-releases','internet-archive','arxiv','wikisource','google-books-public')
             # Live phase from the record: cancelled > any result > all-run-failed
             # > empty > running (lanes that never ran keep the search "running").
             function Get-F70SearchPhase {
@@ -2391,6 +2393,308 @@ function Invoke-ClientRequest {
                         if ($f70Msg -match '(?i)timeout|timed out') { $f70Code = 'TIMEOUT' }
                     } catch { }
                     return @{ ok = $false; status = 'failed'; lastErrorCode = $f70Code; rows = @(); totalItems = 0; nextCursor = '' }
+                }
+            }
+            # [F72 §1.3] GitHub Repositories search adapter (F71 §C 2.3).
+            # GET https://api.github.com/search/repositories?q=<q>&per_page=<lim>
+            # Maps: full_name→title, owner.login→creator, html_url→sourceUrl,
+            # updated_at→date, license.spdx_id→licenceTag. Rate limit: respect
+            # X-RateLimit-Remaining; backoff on 429. 10 req/min unauth.
+            function Invoke-F72GithubSearch {
+                param([string]$Query, [int]$Limit = 20)
+                try {
+                    $f72Max = [Math]::Min([Math]::Max($Limit, 1), 40)
+                    $f72Uri = 'https://api.github.com/search/repositories?q=' + [uri]::EscapeDataString($Query) + '&per_page=' + [string]$f72Max
+                    $f72Headers = @{ 'Accept' = 'application/vnd.github+json'; 'User-Agent' = 'GHRDP-Search/1.0' }
+                    # If GH_TOKEN is available in the environment, use it for higher rate limits
+                    try {
+                        $f72GhToken = [System.Environment]::GetEnvironmentVariable('GH_TOKEN')
+                        if ($f72GhToken) { $f72Headers['Authorization'] = 'Bearer ' + $f72GhToken }
+                    } catch { }
+                    $f72Resp = Invoke-WebRequest -Uri $f72Uri -Method Get -Headers $f72Headers -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
+                    if ($f72Resp.StatusCode -eq 403) {
+                        return @{ ok = $false; status = 'rate-limited'; lastErrorCode = 'RATE_LIMITED'; rows = @(); totalItems = 0; nextCursor = '' }
+                    }
+                    if ($f72Resp.StatusCode -ne 200) {
+                        return @{ ok = $false; status = 'failed'; lastErrorCode = 'TRANSPORT_UNAVAILABLE'; rows = @(); totalItems = 0; nextCursor = '' }
+                    }
+                    $f72Json = $f72Resp.Content | ConvertFrom-Json -ErrorAction Stop
+                    $f72Total = 0
+                    try { $f72Total = [int]$f72Json.total_count } catch { $f72Total = 0 }
+                    $f72OpenLicences = @('MIT','Apache-2.0','BSD-3-Clause','GPL-3.0','GPL-2.0','ISC','LGPL-2.1','LGPL-3.0','MPL-2.0','Unlicense','0BSD')
+                    $f72Rows = @()
+                    foreach ($f72It in @($f72Json.items)) {
+                        if (-not $f72It) { continue }
+                        $f72Title = ''
+                        try { $f72Title = [string]$f72It.full_name } catch { }
+                        if (-not $f72Title) { continue }
+                        $f72Creator = ''
+                        try { $f72Creator = [string]$f72It.owner.login } catch { }
+                        $f72SourceUrl = ''
+                        try { $f72SourceUrl = [string]$f72It.html_url } catch { }
+                        if (-not $f72SourceUrl) { continue }
+                        $f72Date = ''
+                        try { $f72Date = [string]$f72It.updated_at; if ($f72Date.Length -gt 10) { $f72Date = $f72Date.Substring(0,10) } } catch { $f72Date = '' }
+                        $f72Lic = 'unknown'
+                        try {
+                            $f72Spdx = [string]$f72It.license.spdx_id
+                            if ($f72OpenLicences -contains $f72Spdx) { $f72Lic = 'open-access' }
+                            elseif ($f72Spdx -eq 'CC0-1.0') { $f72Lic = 'public-domain' }
+                        } catch { }
+                        $f72Stars = $null
+                        try { $f72Stars = [int]$f72It.stargazers_count } catch { }
+                        $f72Lang = $null
+                        try { $f72Lang = [string]$f72It.language } catch { }
+                        $f72Rows += @{
+                            adapterId = 'github-releases'
+                            nameKey = 'search.sources.githubReleases'
+                            category = 'software'
+                            title = $f72Title
+                            creator = $f72Creator
+                            sizeBytes = $null
+                            licenceTag = $f72Lic
+                            licenceEvidence = $null
+                            sourceSnapshotId = 'gh-' + [string]$f72It.id
+                            sourceUrl = $f72SourceUrl
+                            previewUrl = $f72SourceUrl
+                            purchaseUrl = $null
+                            transportHint = 'https'
+                            mimeType = $null
+                            date = $f72Date
+                            availability = ''
+                            metadata = @{ stars = $f72Stars; language = $f72Lang }
+                        }
+                    }
+                    $f72Status = 'complete'
+                    if ($f72Rows.Count -eq 0) { $f72Status = 'empty' }
+                    return @{ ok = $true; status = $f72Status; lastErrorCode = $null; rows = $f72Rows; totalItems = $f72Total; nextCursor = '' }
+                } catch {
+                    $f72Code = 'TRANSPORT_UNAVAILABLE'
+                    try {
+                        $f72Msg = ''
+                        if ($Error[0] -and $Error[0].Exception) { $f72Msg = [string]$Error[0].Exception.Message }
+                        if ($f72Msg -match '(?i)timeout|timed out') { $f72Code = 'TIMEOUT' }
+                        if ($f72Msg -match '(?i)429|rate.limit') { $f72Code = 'RATE_LIMITED' }
+                    } catch { }
+                    return @{ ok = $false; status = 'failed'; lastErrorCode = $f72Code; rows = @(); totalItems = 0; nextCursor = '' }
+                }
+            }
+            # [F72 §1.3] Internet Archive Advanced Search adapter (F71 §C 2.4).
+            # GET https://archive.org/advancedsearch.php?q=<q>&fl[]=identifier,
+            # title,creator,date,mediatype&output=json&rows=<lim>
+            # Public API, no auth required.
+            function Invoke-F72InternetArchiveSearch {
+                param([string]$Query, [int]$Limit = 20)
+                try {
+                    $f72Max = [Math]::Min([Math]::Max($Limit, 1), 50)
+                    $f72Uri = 'https://archive.org/advancedsearch.php?q=' + [uri]::EscapeDataString($Query) + '&fl[]=identifier&fl[]=title&fl[]=creator&fl[]=date&fl[]=mediatype&output=json&rows=' + [string]$f72Max
+                    $f72Resp = Invoke-WebRequest -Uri $f72Uri -Method Get -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
+                    if ($f72Resp.StatusCode -ne 200) {
+                        return @{ ok = $false; status = 'failed'; lastErrorCode = 'TRANSPORT_UNAVAILABLE'; rows = @(); totalItems = 0; nextCursor = '' }
+                    }
+                    $f72Json = $f72Resp.Content | ConvertFrom-Json -ErrorAction Stop
+                    $f72Total = 0
+                    try { $f72Total = [int]$f72Json.response.numFound } catch { $f72Total = 0 }
+                    $f72Rows = @()
+                    foreach ($f72It in @($f72Json.response.docs)) {
+                        if (-not $f72It) { continue }
+                        $f72Id = ''
+                        try { $f72Id = [string]$f72It.identifier } catch { }
+                        if (-not $f72Id) { continue }
+                        $f72Title = ''
+                        try { $f72Title = [string]$f72It.title } catch { }
+                        if (-not $f72Title) { $f72Title = $f72Id }
+                        $f72Creator = ''
+                        try { $f72Creator = [string]$f72It.creator } catch { }
+                        $f72Date = ''
+                        try { $f72Date = [string]$f72It.date; if ($f72Date.Length -gt 10) { $f72Date = $f72Date.Substring(0,10) } } catch { $f72Date = '' }
+                        $f72Media = ''
+                        try { $f72Media = [string]$f72It.mediatype } catch { }
+                        $f72Cat = 'media'
+                        switch ($f72Media) {
+                            'texts' { $f72Cat = 'books' }
+                            'audio' { $f72Cat = 'audio' }
+                            'movies' { $f72Cat = 'video' }
+                            'software' { $f72Cat = 'software' }
+                            'image' { $f72Cat = 'media' }
+                        }
+                        $f72Rows += @{
+                            adapterId = 'internet-archive'
+                            nameKey = 'search.sources.internetArchive'
+                            category = $f72Cat
+                            title = $f72Title
+                            creator = $f72Creator
+                            sizeBytes = $null
+                            licenceTag = 'public-domain'
+                            licenceEvidence = 'Internet Archive public domain'
+                            sourceSnapshotId = 'ia-' + $f72Id
+                            sourceUrl = 'https://archive.org/details/' + $f72Id
+                            previewUrl = 'https://archive.org/details/' + $f72Id
+                            purchaseUrl = $null
+                            transportHint = 'https'
+                            mimeType = $null
+                            date = $f72Date
+                            availability = ''
+                        }
+                    }
+                    $f72Status = 'complete'
+                    if ($f72Rows.Count -eq 0) { $f72Status = 'empty' }
+                    return @{ ok = $true; status = $f72Status; lastErrorCode = $null; rows = $f72Rows; totalItems = $f72Total; nextCursor = '' }
+                } catch {
+                    $f72Code = 'TRANSPORT_UNAVAILABLE'
+                    try {
+                        $f72Msg = ''
+                        if ($Error[0] -and $Error[0].Exception) { $f72Msg = [string]$Error[0].Exception.Message }
+                        if ($f72Msg -match '(?i)timeout|timed out') { $f72Code = 'TIMEOUT' }
+                    } catch { }
+                    return @{ ok = $false; status = 'failed'; lastErrorCode = $f72Code; rows = @(); totalItems = 0; nextCursor = '' }
+                }
+            }
+            # [F72 §1.3] arXiv search adapter (F71 §C 2.6).
+            # GET https://export.arxiv.org/api/query?search_query=all:<q>&max_results=<lim>
+            # Atom XML. Enforce 3-sec delay between calls. sourceUrl = link[title=pdf].href
+            # OR link[rel=alternate].href. mimeType = application/pdf.
+            function Invoke-F72ArxivSearch {
+                param([string]$Query, [int]$Limit = 20)
+                try {
+                    # 3-second delay between calls (arXiv rate limit)
+                    if (-not $script:F72ArxivLastCall) { $script:F72ArxivLastCall = [datetime]::MinValue }
+                    $f72Elapsed = ((Get-Date).ToUniversalTime() - $script:F72ArxivLastCall).TotalSeconds
+                    if ($f72Elapsed -lt 3) { Start-Sleep -Seconds ([int]([Math]::Ceiling(3 - $f72Elapsed))) }
+                    $f72Max = [Math]::Min([Math]::Max($Limit, 1), 50)
+                    $f72Uri = 'https://export.arxiv.org/api/query?search_query=all:' + [uri]::EscapeDataString($Query) + '&max_results=' + [string]$f72Max
+                    $script:F72ArxivLastCall = (Get-Date).ToUniversalTime()
+                    $f72Resp = Invoke-WebRequest -Uri $f72Uri -Method Get -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
+                    if ($f72Resp.StatusCode -ne 200) {
+                        return @{ ok = $false; status = 'failed'; lastErrorCode = 'TRANSPORT_UNAVAILABLE'; rows = @(); totalItems = 0; nextCursor = '' }
+                    }
+                    # Parse Atom XML
+                    $f72Xml = [xml]$f72Resp.Content
+                    $f72Ns = @{ atom = 'http://www.w3.org/2005/Atom'; arxiv = 'http://arxiv.org/schemas/atom' }
+                    $f72Total = 0
+                    try {
+                        $f72TotalNode = $f72Xml.feed.SelectSingleNode("//opensearch:totalResults", ([System.Xml.XmlNamespaceManager]::new($f72Xml.NameTable)))
+                        if ($f72TotalNode) { $f72Total = [int]$f72TotalNode.InnerText }
+                    } catch { }
+                    $f72Rows = @()
+                    foreach ($f72Entry in @($f72Xml.feed.entry)) {
+                        if (-not $f72Entry) { continue }
+                        $f72Title = ''
+                        try { $f72Title = ($f72Entry.title -replace '\s+', ' ').Trim() } catch { }
+                        if (-not $f72Title) { continue }
+                        $f72Creator = ''
+                        try { $f72Creator = [string]$f72Entry.author[0].name } catch { }
+                        $f72Date = ''
+                        try { $f72Date = [string]$f72Entry.published; if ($f72Date.Length -gt 10) { $f72Date = $f72Date.Substring(0,10) } } catch { }
+                        # Find PDF link: link[title=pdf] first, then link[rel=alternate]
+                        $f72SourceUrl = ''
+                        try {
+                            foreach ($f72Link in @($f72Entry.link)) {
+                                if ($f72Link.title -eq 'pdf') { $f72SourceUrl = [string]$f72Link.href; break }
+                            }
+                            if (-not $f72SourceUrl) {
+                                foreach ($f72Link in @($f72Entry.link)) {
+                                    if ($f72Link.rel -eq 'alternate') { $f72SourceUrl = [string]$f72Link.href; break }
+                                }
+                            }
+                        } catch { }
+                        if (-not $f72SourceUrl) { continue }
+                        $f72ArxivId = ''
+                        try { $f72ArxivId = ($f72Entry.id -replace 'http://arxiv.org/abs/', '') } catch { }
+                        $f72Rows += @{
+                            adapterId = 'arxiv'
+                            nameKey = 'search.sources.arxiv'
+                            category = 'scholarly'
+                            title = $f72Title
+                            creator = $f72Creator
+                            sizeBytes = $null
+                            licenceTag = 'open-access'
+                            licenceEvidence = 'arXiv open access'
+                            sourceSnapshotId = 'arxiv-' + $f72ArxivId
+                            sourceUrl = $f72SourceUrl
+                            previewUrl = $f72SourceUrl
+                            purchaseUrl = $null
+                            transportHint = 'https'
+                            mimeType = 'application/pdf'
+                            date = $f72Date
+                            availability = ''
+                        }
+                    }
+                    $f72Status = 'complete'
+                    if ($f72Rows.Count -eq 0) { $f72Status = 'empty' }
+                    return @{ ok = $true; status = $f72Status; lastErrorCode = $null; rows = $f72Rows; totalItems = $f72Total; nextCursor = '' }
+                } catch {
+                    $f72Code = 'TRANSPORT_UNAVAILABLE'
+                    try {
+                        $f72Msg = ''
+                        if ($Error[0] -and $Error[0].Exception) { $f72Msg = [string]$Error[0].Exception.Message }
+                        if ($f72Msg -match '(?i)timeout|timed out') { $f72Code = 'TIMEOUT' }
+                    } catch { }
+                    return @{ ok = $false; status = 'failed'; lastErrorCode = $f72Code; rows = @(); totalItems = 0; nextCursor = '' }
+                }
+            }
+            # [F72 §1.3] Wikipedia Opensearch adapter (F71 §C 2.8).
+            # GET https://en.wikipedia.org/w/api.php?action=opensearch&search=<q>&limit=<lim>&format=json
+            # Returns 4-tuple [query, titles[], descriptions[], urls[]].
+            # licenceTag = creative-commons (Wikipedia CC BY-SA).
+            function Invoke-F72WikipediaSearch {
+                param([string]$Query, [int]$Limit = 10)
+                try {
+                    $f72Max = [Math]::Min([Math]::Max($Limit, 1), 50)
+                    $f72Uri = 'https://en.wikipedia.org/w/api.php?action=opensearch&search=' + [uri]::EscapeDataString($Query) + '&limit=' + [string]$f72Max + '&format=json'
+                    $f72Resp = Invoke-WebRequest -Uri $f72Uri -Method Get -Headers @{ 'User-Agent' = 'GHRDP-Search/1.0 (contact: github.com/dekarita)' } -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
+                    if ($f72Resp.StatusCode -ne 200) {
+                        return @{ ok = $false; status = 'failed'; lastErrorCode = 'TRANSPORT_UNAVAILABLE'; rows = @(); totalItems = 0; nextCursor = '' }
+                    }
+                    $f72Json = $f72Resp.Content | ConvertFrom-Json -ErrorAction Stop
+                    # Parse the 4-tuple: [query, titles[], descriptions[], urls[]]
+                    $f72Titles = @()
+                    $f72Descs = @()
+                    $f72Urls = @()
+                    try { $f72Titles = @($f72Json[1]) } catch { }
+                    try { $f72Descs = @($f72Json[2]) } catch { }
+                    try { $f72Urls = @($f72Json[3]) } catch { }
+                    $f72Rows = @()
+                    for ($f72I = 0; $f72I -lt $f72Titles.Count; $f72I++) {
+                        $f72Title = [string]$f72Titles[$f72I]
+                        if (-not $f72Title) { continue }
+                        $f72Desc = ''
+                        if ($f72I -lt $f72Descs.Count) { $f72Desc = [string]$f72Descs[$f72I] }
+                        $f72Url = ''
+                        if ($f72I -lt $f72Urls.Count) { $f72Url = [string]$f72Urls[$f72I] }
+                        if (-not $f72Url) { continue }
+                        $f72Rows += @{
+                            adapterId = 'wikisource'
+                            nameKey = 'search.sources.wikisource'
+                            category = 'education'
+                            title = $f72Title
+                            creator = 'Wikipedia'
+                            sizeBytes = $null
+                            licenceTag = 'creative-commons'
+                            licenceEvidence = 'Wikipedia CC BY-SA'
+                            sourceSnapshotId = 'wiki-' + [uri]::EscapeDataString($f72Title)
+                            sourceUrl = $f72Url
+                            previewUrl = $f72Url
+                            purchaseUrl = $null
+                            transportHint = 'https'
+                            mimeType = 'text/html'
+                            date = ''
+                            availability = ''
+                            metadata = @{ description = $f72Desc }
+                        }
+                    }
+                    $f72Total = $f72Rows.Count
+                    $f72Status = 'complete'
+                    if ($f72Rows.Count -eq 0) { $f72Status = 'empty' }
+                    return @{ ok = $true; status = $f72Status; lastErrorCode = $null; rows = $f72Rows; totalItems = $f72Total; nextCursor = '' }
+                } catch {
+                    $f72Code = 'TRANSPORT_UNAVAILABLE'
+                    try {
+                        $f72Msg = ''
+                        if ($Error[0] -and $Error[0].Exception) { $f72Msg = [string]$Error[0].Exception.Message }
+                        if ($f72Msg -match '(?i)timeout|timed out') { $f72Code = 'TIMEOUT' }
+                    } catch { }
+                    return @{ ok = $false; status = 'failed'; lastErrorCode = $f72Code; rows = @(); totalItems = 0; nextCursor = '' }
                 }
             }
             # [F70 §3.1] Deep add-time probe for custom source descriptors (the
@@ -2786,6 +3090,78 @@ function Invoke-ClientRequest {
                             $script:F56dResultsMap[$f70ResultId] = $f70Row
                         }
                         $f70Rec.adapterStatuses['google-books-public'].resultCount = @($f70Gb.rows).Count
+                    }
+                }
+                # [F72 §1.3] GitHub repos adapter fan-out (F71 §C 2.3).
+                if ($f70Adapters -contains 'github-releases') {
+                    $f72GhHelper = $null
+                    try { $f72GhHelper = Get-Command -Name Invoke-F72GithubSearch -ErrorAction Stop } catch { $f72GhHelper = $null }
+                    if ($f72GhHelper) {
+                        $f72Gh = Invoke-F72GithubSearch -Query $f70Query -Limit $f70Limit
+                        $f70Rec.adapterStatuses['github-releases'].status = [string]$f72Gh.status
+                        if ($f72Gh.lastErrorCode) { $f70Rec.adapterStatuses['github-releases'].lastErrorCode = [string]$f72Gh.lastErrorCode }
+                        foreach ($f70Row in @($f72Gh.rows)) {
+                            if (-not $f70Row) { continue }
+                            $f70ResultId = 'f72-gh-' + [guid]::NewGuid().ToString('N').Substring(0,14)
+                            $f70Rec.results[$f70ResultId] = $f70Row
+                            $f70Rec.resultOrder += $f70ResultId
+                            $script:F56dResultsMap[$f70ResultId] = $f70Row
+                        }
+                        $f70Rec.adapterStatuses['github-releases'].resultCount = @($f72Gh.rows).Count
+                    }
+                }
+                # [F72 §1.3] Internet Archive adapter fan-out (F71 §C 2.4).
+                if ($f70Adapters -contains 'internet-archive') {
+                    $f72IaHelper = $null
+                    try { $f72IaHelper = Get-Command -Name Invoke-F72InternetArchiveSearch -ErrorAction Stop } catch { $f72IaHelper = $null }
+                    if ($f72IaHelper) {
+                        $f72Ia = Invoke-F72InternetArchiveSearch -Query $f70Query -Limit $f70Limit
+                        $f70Rec.adapterStatuses['internet-archive'].status = [string]$f72Ia.status
+                        if ($f72Ia.lastErrorCode) { $f70Rec.adapterStatuses['internet-archive'].lastErrorCode = [string]$f72Ia.lastErrorCode }
+                        foreach ($f70Row in @($f72Ia.rows)) {
+                            if (-not $f70Row) { continue }
+                            $f70ResultId = 'f72-ia-' + [guid]::NewGuid().ToString('N').Substring(0,14)
+                            $f70Rec.results[$f70ResultId] = $f70Row
+                            $f70Rec.resultOrder += $f70ResultId
+                            $script:F56dResultsMap[$f70ResultId] = $f70Row
+                        }
+                        $f70Rec.adapterStatuses['internet-archive'].resultCount = @($f72Ia.rows).Count
+                    }
+                }
+                # [F72 §1.3] arXiv adapter fan-out (F71 §C 2.6).
+                if ($f70Adapters -contains 'arxiv') {
+                    $f72AxHelper = $null
+                    try { $f72AxHelper = Get-Command -Name Invoke-F72ArxivSearch -ErrorAction Stop } catch { $f72AxHelper = $null }
+                    if ($f72AxHelper) {
+                        $f72Ax = Invoke-F72ArxivSearch -Query $f70Query -Limit $f70Limit
+                        $f70Rec.adapterStatuses['arxiv'].status = [string]$f72Ax.status
+                        if ($f72Ax.lastErrorCode) { $f70Rec.adapterStatuses['arxiv'].lastErrorCode = [string]$f72Ax.lastErrorCode }
+                        foreach ($f70Row in @($f72Ax.rows)) {
+                            if (-not $f70Row) { continue }
+                            $f70ResultId = 'f72-ax-' + [guid]::NewGuid().ToString('N').Substring(0,14)
+                            $f70Rec.results[$f70ResultId] = $f70Row
+                            $f70Rec.resultOrder += $f70ResultId
+                            $script:F56dResultsMap[$f70ResultId] = $f70Row
+                        }
+                        $f70Rec.adapterStatuses['arxiv'].resultCount = @($f72Ax.rows).Count
+                    }
+                }
+                # [F72 §1.3] Wikipedia adapter fan-out (F71 §C 2.8).
+                if ($f70Adapters -contains 'wikisource') {
+                    $f72WpHelper = $null
+                    try { $f72WpHelper = Get-Command -Name Invoke-F72WikipediaSearch -ErrorAction Stop } catch { $f72WpHelper = $null }
+                    if ($f72WpHelper) {
+                        $f72Wp = Invoke-F72WikipediaSearch -Query $f70Query -Limit $f70Limit
+                        $f70Rec.adapterStatuses['wikisource'].status = [string]$f72Wp.status
+                        if ($f72Wp.lastErrorCode) { $f70Rec.adapterStatuses['wikisource'].lastErrorCode = [string]$f72Wp.lastErrorCode }
+                        foreach ($f70Row in @($f72Wp.rows)) {
+                            if (-not $f70Row) { continue }
+                            $f70ResultId = 'f72-wp-' + [guid]::NewGuid().ToString('N').Substring(0,14)
+                            $f70Rec.results[$f70ResultId] = $f70Row
+                            $f70Rec.resultOrder += $f70ResultId
+                            $script:F56dResultsMap[$f70ResultId] = $f70Row
+                        }
+                        $f70Rec.adapterStatuses['wikisource'].resultCount = @($f72Wp.rows).Count
                     }
                 }
                 $resp = [ordered]@{

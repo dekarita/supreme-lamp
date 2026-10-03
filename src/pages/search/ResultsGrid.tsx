@@ -1,8 +1,9 @@
 // [F56-d] Result CARDS - Fetch button now real: calls POST /api/fetch via aria2c lane.
 // Provenance-6 gate server-side + client-side disable. Existing ARIA grid semantics unchanged.
 import { forwardRef, useCallback, useEffect, useMemo, type HTMLAttributes, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, FlaskConical } from "lucide-react";
 import { FixedSizeList, type ListChildComponentProps } from "react-window";
 import { selectVisibleResults, useSearchStore } from "@/stores/searchStore";
 import { useToastStore } from "@/stores/toastStore";
@@ -44,10 +45,16 @@ export function ResultsGrid() {
   const fetches = useSearchStore((s) => s.fetches);
   const submit = useSearchStore((s) => s.submit);
   const push = useToastStore((s) => s.push);
+  const navigate = useNavigate();
+
+  const fileExtensions = useSearchStore((s) => s.fileExtensions);
+  const yearFrom = useSearchStore((s) => s.yearFrom);
+  const yearTo = useSearchStore((s) => s.yearTo);
+  const lastSubmittedQuery = useSearchStore((s) => s.lastSubmittedQuery);
 
   const rows = useMemo(
-    () => selectVisibleResults({ results, resultOrder: order, categories, licenceTags, maxSizeBytes, sort }),
-    [results, order, categories, licenceTags, maxSizeBytes, sort]
+    () => selectVisibleResults({ results, resultOrder: order, categories, licenceTags, maxSizeBytes, sort, fileExtensions, yearFrom, yearTo, query: lastSubmittedQuery }),
+    [results, order, categories, licenceTags, maxSizeBytes, sort, fileExtensions, yearFrom, yearTo, lastSubmittedQuery]
   );
 
   useEffect(() => {
@@ -299,6 +306,19 @@ export function ResultsGrid() {
                 className="h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
                 {t("search.actions.preview")}
+              </button>
+              {/* [F72 §2.4] "⋯ Open in Lab" button (Q3: dedicated sub-route, Q4: explicit click only) */}
+              <button
+                id={"f56.search.resultLab." + sfx}
+                data-testid="card-open-lab"
+                type="button"
+                title={t("search.lab.openInLab")}
+                aria-label={t("search.lab.openInLab")}
+                onClick={() => navigate("/search/lab/" + encodeURIComponent(r.resultId))}
+                className="h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised inline-flex items-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                <FlaskConical className="size-3" aria-hidden />
+                {t("search.lab.openInLab")}
               </button>
               {r.purchaseUrl ? (
                 <button

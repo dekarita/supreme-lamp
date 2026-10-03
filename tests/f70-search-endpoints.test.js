@@ -49,7 +49,8 @@ test('F70-P1-ROUTES: the three search routes are wired next to /api/fetch with t
   assert.ok(FETCH_ALLOWED.includes('google-books-public'), 'google-books-public is fetchable (end-to-end)');
   const core = (a) => a.filter((x) => x !== 'google-books-public');
   assert.deepEqual(core(SEARCH_ALLOWED), core(FETCH_ALLOWED), 'the two allowlists must stay in sync');
-  assert.deepEqual(DEFAULT_ADAPTERS, ['google-books-public', 'internet-archive'], 'F70 §1.1 default fan-out');
+  // [F72 §1.3] Default fan-out expanded to 5-source TLS-Radar pack.
+  assert.deepEqual(DEFAULT_ADAPTERS, ['github-releases', 'internet-archive', 'arxiv', 'wikisource', 'google-books-public'], 'F72 §1.3 default 5-source fan-out');
 });
 
 test('F70-P1-GATES: method, query-credential, constant-time token and validation order', () => {
