@@ -3,7 +3,8 @@
 // live here so the v2 subtree (cards, advanced panel, preview) can share them
 // without importing a component. CommandBar re-exports both names, so existing
 // call sites keep working byte-for-byte.
-import type { LicenceTag } from "@/api/search";
+import type { LicenceTag, SearchResult } from "@/api/search";
+import { extensionOf } from "@/lib/explorer/preview";
 
 export function camel(v: string): string {
   return v.replace(/-([a-z])/g, (_m, c: string) => c.toUpperCase());
@@ -49,4 +50,58 @@ export function formatActualBytes(n: number): string {
   if (n < 1024 * 1024) return grouped + " B (" + Math.round((n / 1024) * 10) / 10 + " KiB)";
   if (n < 1024 * 1024 * 1024) return grouped + " B (" + Math.round((n / (1024 * 1024)) * 10) / 10 + " MiB)";
   return grouped + " B (" + Math.round((n / (1024 * 1024 * 1024)) * 10) / 10 + " GiB)";
+}
+
+/** [F69 §2.2] Common MIME -> display extension (F68 Extension Rank 2). Only the
+ *  families the search roster surfaces today; unknown MIMEs fall through to the
+ *  URL/title basename so nothing is invented. */
+const MIME_TO_EXT: Record<string, string> = {
+  "application/pdf": "pdf",
+  "application/epub+zip": "epub",
+  "application/zip": "zip",
+  "application/x-iso9660-image": "iso",
+  "application/x-bittorrent": "torrent",
+  "application/json": "json",
+  "application/xml": "xml",
+  "text/xml": "xml",
+  "text/plain": "txt",
+  "text/markdown": "md",
+  "text/html": "html",
+  "text/csv": "csv",
+  "audio/mpeg": "mp3",
+  "audio/mp4": "m4a",
+  "audio/ogg": "ogg",
+  "audio/flac": "flac",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "video/quicktime": "mov",
+  "video/x-matroska": "mkv",
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "image/svg+xml": "svg",
+};
+
+/** Lowercase file extension for a result card badge (without the dot), or
+ *  null when nothing honest can be derived. Order: declared mimeType, then the
+ *  https URL path basename, then the title. Landing-page URLs
+ *  (…/ebooks/1342, …/abs/2606.01342) yield null rather than a guess. */
+export function fileExtension(r: Pick<SearchResult, "mimeType" | "sourceUrl" | "title">): string | null {
+  const mime = String(r.mimeType || "").toLowerCase().split(";")[0].trim();
+  if (mime && MIME_TO_EXT[mime]) return MIME_TO_EXT[mime];
+  const url = validatedHttpsUrl(r.sourceUrl);
+  if (url) {
+    try {
+      const base = decodeURIComponent(new URL(url).pathname.split("/").pop() || "");
+      const ext = extensionOf(base);
+      if (ext && ext.length <= 8 && /[a-z]/.test(ext)) return ext;
+    } catch {
+      /* fall through to the title */
+    }
+  }
+  const ext = extensionOf(String(r.title || "").trim());
+  return ext && ext.length <= 8 && /[a-z]/.test(ext) ? ext : null;
 }
