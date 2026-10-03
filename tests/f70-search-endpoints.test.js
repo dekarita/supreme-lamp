@@ -43,7 +43,7 @@ test('F70-P1-ROUTES: the three search routes are wired next to /api/fetch with t
   for (const route of ['/api/search\'', '/api/search/status', '/api/search/cancel']) {
     assert.ok(SERVER.includes("'$path -eq '".replace("'$path", '$path').replace("'", '')) || true, 'noop');
   }
-  assert.ok(SERVER.includes("if ($path -eq '/api/search' -or $path -eq '/api/search/status' -or $path -eq '/api/search/cancel') {"), 'the combined route guard exists');
+  assert.ok(SERVER.includes("if ($path -eq '/api/search' -or $path -eq '/api/search/status' -or $path -eq '/api/search/cancel' -or $path -eq '/api/search/probe') {"), 'the combined route guard exists (F70 §3 adds the probe route)');
   // The search-lane allowlist is the F69 /api/fetch roster plus google-books-public.
   assert.ok(SEARCH_ALLOWED.includes('google-books-public'), 'google-books-public is searchable');
   assert.ok(FETCH_ALLOWED.includes('google-books-public'), 'google-books-public is fetchable (end-to-end)');

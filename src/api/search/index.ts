@@ -189,3 +189,26 @@ export function getSearchStatus(searchId: string, cursor?: string, limit?: numbe
 export function cancelSearch(req: SearchCancelRequest): Promise<ApiResult<SearchCancelResult>> {
   return callApi<SearchCancelResult>("/api/search/cancel", req.requestId, { method: "POST", body: JSON.stringify(req) });
 }
+
+// [F70 §3.1] Deep add-time probe outcome (POST /api/search/probe). The body is
+// the F58 SourceDescriptor; the server runs robots.txt + HEAD + a sample
+// query + the parse-contract schema match and recommends approve|warn.
+export interface ProbeOutcome {
+  reachable: boolean;
+  robotsOk: boolean;
+  schemaMatch: boolean;
+  recommendation: "approve" | "warn";
+  sampleResultCount?: number;
+  sampleItem?: unknown;
+  httpStatus?: number;
+  contentType?: string | null;
+  contentLength?: number | null;
+  reason?: string | null;
+  disallowRule?: string | null;
+  missingFields?: string[];
+  sampleResponse?: string | null;
+}
+
+export function probeSource(descriptor: unknown): Promise<ApiResult<ProbeOutcome>> {
+  return callApi<ProbeOutcome>("/api/search/probe", newRequestId(), { method: "POST", body: JSON.stringify(descriptor) });
+}

@@ -595,7 +595,11 @@
         "robotsOk": "robots allowed",
         "robotsUnknown": "robots unknown",
         "confirm": "Operator confirms this parse contract",
-        "confirmRequired": "Confirm the auto-suggested parse contract before saving (no runtime discovery after the pin)."
+        "confirmRequired": "Confirm the auto-suggested parse contract before saving (no runtime discovery after the pin).",
+        "approveRequired": "Probe approval required: run the probe or tick the override",
+        "override": "Save despite probe findings (I understand the parse contract may fail at query time)",
+        "approved": "probe: approve",
+        "warned": "probe: warn (override required to save)"
       },
       "ratelimit": {
         "note": "Hard defaults, not overridable: {{conc}} concurrent / {{rpm}} rpm / {{timeout}}s timeout; per-search fan-out cap 8."

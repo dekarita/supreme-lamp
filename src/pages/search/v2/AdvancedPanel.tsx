@@ -12,6 +12,7 @@
 // Advanced surface and Settings are the same component writing the same store.
 import { useTranslation } from "react-i18next";
 import { SourceForm } from "@/components/search/SourceForm";
+import { serverAddTimeProbe } from "@/search/probe-client";
 import {
   logToSizeBytes,
   sizeBytesToLog,
@@ -198,7 +199,7 @@ export function AdvancedPanel({ open }: { open: boolean }) {
         className="w-full rounded-md border border-default bg-base p-2 flex flex-col gap-2"
       >
         <span className="text-xs font-medium text-primary">{t("search.registry.add")}</span>
-        <SourceForm surface="advanced" />
+        <SourceForm surface="advanced" probe={serverAddTimeProbe} />
       </div>
     </div>
   );

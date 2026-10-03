@@ -40,6 +40,9 @@ async function completeAddFlow() {
     fireEvent.click(screen.getByTestId("source-form-probe-run"));
   });
   fireEvent.click(screen.getByTestId("source-form-confirm-contract"));
+  // [F70 §3.2] the unwired probe cannot return "approve", so the flow ticks
+  // the explicit operator override ("Save despite probe findings...") to save.
+  fireEvent.click(screen.getByTestId("source-form-override"));
   await act(async () => {
     fireEvent.click(screen.getByTestId("source-form-save"));
   });
@@ -99,6 +102,14 @@ describe("f58 shared SourceForm (two mount points, one store)", () => {
     expect(screen.getByTestId("source-form-errors").textContent).toContain("Confirm the auto-suggested parse contract");
     expect(customSources.entries().length).toBe(0);
     fireEvent.click(screen.getByTestId("source-form-confirm-contract"));
+    // [F70 §3.2] confirmation alone no longer saves: without an approved
+    // probe the deep-probe gate refuses first.
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("source-form-save"));
+    });
+    expect(customSources.entries().length).toBe(0);
+    expect(screen.getByTestId("source-form-errors").textContent).toContain("Probe approval required");
+    fireEvent.click(screen.getByTestId("source-form-override"));
     await act(async () => {
       fireEvent.click(screen.getByTestId("source-form-save"));
     });
@@ -128,6 +139,8 @@ describe("f58 shared SourceForm (two mount points, one store)", () => {
     const probe = vi.fn(async (_d: SourceDescriptor) => ({
       reachable: true,
       robotsOk: true,
+      // [F70 §3.2] a deep-probe outcome that does NOT approve
+      recommendation: "warn" as const,
       suggestedParseContract: { format: "json", resultSelector: "$.repos[*]", fieldMappings: { title: "full_name", sourceUrl: "html_url", date: "pushed_at" }, pagination: "cursor:query.page" },
     }));
     const store = customSources;
@@ -141,12 +154,19 @@ describe("f58 shared SourceForm (two mount points, one store)", () => {
     expect(screen.getByTestId("source-form-mappings")).toHaveProperty("value", "title=full_name\nsourceUrl=html_url\ndate=pushed_at");
     expect(screen.getByTestId("source-form-probe-status").textContent).toBe("reachable");
     expect(screen.getByTestId("source-form-probe-robots").textContent).toBe("robots allowed");
+    expect(screen.getByTestId("source-form-probe-recommendation").textContent).toContain("warn");
     // the suggestion arrives UNCONFIRMED: saving is still refused
     await act(async () => {
       fireEvent.click(screen.getByTestId("source-form-save"));
     });
     expect(store.entries().length).toBe(0);
     fireEvent.click(screen.getByTestId("source-form-confirm-contract"));
+    // [F70 §3.2] confirmed but not probe-approved: still refused
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("source-form-save"));
+    });
+    expect(store.entries().length).toBe(0);
+    fireEvent.click(screen.getByTestId("source-form-override"));
     await act(async () => {
       fireEvent.click(screen.getByTestId("source-form-save"));
     });

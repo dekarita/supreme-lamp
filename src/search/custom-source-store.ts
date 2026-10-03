@@ -433,6 +433,9 @@ export interface ProbeResult {
   robotsOk: boolean;
   suggestedParseContract: SourceDescriptor["parseContract"] | null;
   error: string | null;
+  /** [F70 §3.2] deep-probe verdict from POST /api/search/probe; "approve" is
+   *  required to save without the explicit operator override. */
+  recommendation?: "approve" | "warn" | null;
 }
 
 export async function runAddTimeProbe(
@@ -453,6 +456,7 @@ export async function runAddTimeProbe(
     robotsOk: partial.robotsOk === true,
     suggestedParseContract: suggested,
     error: partial.error || null,
+    recommendation: partial.recommendation === "approve" ? "approve" : partial.recommendation === "warn" ? "warn" : null,
   };
 }
 

@@ -2235,7 +2235,7 @@ function Invoke-ClientRequest {
         # resultId] (hashtable rows; the /api/fetch lookup unwraps .sourceUrl),
         # and answers 202 with the SearchCreateAccepted shape the typed client
         # (src/api/search/index.ts) already submits against.
-        if ($path -eq '/api/search' -or $path -eq '/api/search/status' -or $path -eq '/api/search/cancel') {
+        if ($path -eq '/api/search' -or $path -eq '/api/search/status' -or $path -eq '/api/search/cancel' -or $path -eq '/api/search/probe') {
             # [F70 §1.1] search-lane adapter allowlist: the F69 /api/fetch roster
             # plus google-books-public. Keep in sync with $allowedAdapters in the
             # /api/fetch block above - tests/f70-search-endpoints.test.js pins the
@@ -2393,6 +2393,206 @@ function Invoke-ClientRequest {
                     return @{ ok = $false; status = 'failed'; lastErrorCode = $f70Code; rows = @(); totalItems = 0; nextCursor = '' }
                 }
             }
+            # [F70 §3.1] Deep add-time probe for custom source descriptors (the
+            # same SourceDescriptor shape the F58 registry persists). Steps:
+            #   (a) robots.txt from the SAME host as baseUrl (User-agent: *),
+            #       10s timeout; a matching Disallow is non-retryable;
+            #   (b) HEAD the substituted query path (test query, limit 1) and
+            #       record status + content-type + content-length;
+            #   (c) full GET with the test query, parse per
+            #       parseContract.format (json|xml), apply resultSelector;
+            #   (d) validate the first item carries every fieldMappings source
+            #       field non-null;
+            #   (e) recommend approve|warn.
+            # Guards preserved: https-only baseUrl with no userinfo, GET/POST
+            # only, no custom headers in queryTemplate, selector-only parsing
+            # (no inline executable parser code), 30s request timeout.
+            function Invoke-GhrdpProbe {
+                param($Descriptor)
+                $f70Warn = {
+                    param([string]$Reason, [bool]$Reachable, [bool]$RobotsOk)
+                    return @{ reachable = $Reachable; robotsOk = $RobotsOk; schemaMatch = $false; recommendation = 'warn'; reason = $Reason }
+                }
+                $baseUrl = ''
+                try { $baseUrl = [string]$Descriptor.baseUrl } catch { $baseUrl = '' }
+                if (-not $baseUrl) { return (& $f70Warn 'baseUrl required' $false $false) }
+                $bUri = $null
+                try { $bUri = [System.Uri]$baseUrl } catch { $bUri = $null }
+                if (-not $bUri -or $bUri.Scheme -ne 'https' -or $bUri.UserInfo) {
+                    return (& $f70Warn 'baseUrl must be https and carry no credentials' $false $false)
+                }
+                $qt = $null
+                try { if ($Descriptor.queryTemplate) { $qt = $Descriptor.queryTemplate } } catch { $qt = $null }
+                if (-not $qt) { return (& $f70Warn 'queryTemplate required' $false $false) }
+                $qtMethod = 'GET'
+                try { $mRaw = [string]$qt.method; if ($mRaw) { $qtMethod = $mRaw.ToUpperInvariant() } } catch { }
+                if ($qtMethod -ne 'GET' -and $qtMethod -ne 'POST') { return (& $f70Warn 'queryTemplate.method must be GET or POST' $false $false) }
+                try { if ($qt.PSObject.Properties['headers'] -and $qt.headers) { return (& $f70Warn 'custom headers are not permitted in the query template' $false $false) } } catch { }
+                $qtPath = '/'
+                try { $qtPath = [string]$qt.path; if (-not $qtPath) { $qtPath = '/' } } catch { $qtPath = '/' }
+                if (-not $qtPath.StartsWith('/')) { $qtPath = '/' + $qtPath }
+                $pc = $null
+                try { if ($Descriptor.parseContract) { $pc = $Descriptor.parseContract } } catch { $pc = $null }
+                if (-not $pc) { return (& $f70Warn 'parseContract required' $false $false) }
+                $fmt = 'json'
+                try { $fRaw = [string]$pc.format; if ($fRaw) { $fmt = $fRaw.ToLowerInvariant() } } catch { }
+                if ($fmt -ne 'json' -and $fmt -ne 'xml') { return (& $f70Warn 'parseContract.format must be json or xml - no inline parser code' $false $false) }
+                $sel = ''
+                try { $sel = [string]$pc.resultSelector } catch { $sel = '' }
+                if (-not $sel) { return (& $f70Warn 'resultSelector required' $false $false) }
+                $maps = @{}
+                try { foreach ($mp in $pc.fieldMappings.PSObject.Properties) { $maps[[string]$mp.Name] = [string]$mp.Value } } catch { }
+                if ($maps.Count -eq 0) { return (& $f70Warn 'fieldMappings required' $false $false) }
+                $lenRequired = $false
+                try { if ($Descriptor.downloadContract -and $Descriptor.downloadContract.contentLengthRequired) { $lenRequired = $true } } catch { }
+
+                # (a) robots.txt - same host, User-agent: * group.
+                $robotsOk = $true
+                $disallowRule = ''
+                $hostReachable = $true
+                $robotsContent = ''
+                try {
+                    $robotsResp = Invoke-WebRequest -Uri ('https://' + $bUri.Host + '/robots.txt') -Method Get -TimeoutSec 10 -UseBasicParsing -ErrorAction Stop
+                    if ($robotsResp.StatusCode -eq 200) { $robotsContent = [string]$robotsResp.Content }
+                } catch {
+                    $rr = $null
+                    try { $rr = $_.Exception.Response } catch { $rr = $null }
+                    if (-not $rr) { $hostReachable = $false } else { $robotsContent = '' }
+                }
+                if ($robotsContent) {
+                    $inStar = $false
+                    foreach ($rl in @($robotsContent -split "`n")) {
+                        $rt = $rl.Trim()
+                        if ($rt -match '^(?i)User-agent:\s*(.+)$') { $inStar = (($Matches[1].Trim()) -eq '*'); continue }
+                        if ($inStar -and $rt -match '^(?i)Disallow:\s*(.*)$') {
+                            $dp = $Matches[1].Trim()
+                            if ($dp -and $qtPath.ToLowerInvariant().StartsWith($dp.ToLowerInvariant())) {
+                                $robotsOk = $false
+                                $disallowRule = $rt
+                                break
+                            }
+                        }
+                    }
+                }
+                if (-not $robotsOk) {
+                    return @{ reachable = $true; robotsOk = $false; schemaMatch = $false; recommendation = 'warn'; reason = 'robots.txt disallows the configured path'; disallowRule = $disallowRule }
+                }
+
+                # Build the substituted probe URL (test query, limit 1, cursor '').
+                $qPairs = @()
+                try {
+                    foreach ($qp in $qt.query.PSObject.Properties) {
+                        $qv = [string]$qp.Value
+                        $qv = $qv.Replace('{encodedQuery}', [uri]::EscapeDataString('test'))
+                        $qv = $qv.Replace('{limit}', '1')
+                        $qv = $qv.Replace('{cursor}', '')
+                        if ($qp.Name -and $null -ne $qp.Value) { $qPairs += ([string]$qp.Name) + '=' + $qv }
+                    }
+                } catch { }
+                $probeUrl = 'https://' + $bUri.Host + $qtPath
+                if ($qPairs.Count -gt 0) { $probeUrl = $probeUrl + '?' + ($qPairs -join '&') }
+
+                # (b) HEAD: status + content-type + content-length.
+                $httpStatus = 0
+                $contentType = ''
+                $contentLength = $null
+                try {
+                    $headResp = Invoke-WebRequest -Uri $probeUrl -Method Head -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
+                    $httpStatus = [int]$headResp.StatusCode
+                    try { $contentType = [string]$headResp.Headers['Content-Type'] } catch { $contentType = '' }
+                    try { $clRaw = [string]$headResp.Headers['Content-Length']; if ($clRaw) { $contentLength = [int]$clRaw } } catch { $contentLength = $null }
+                } catch {
+                    $hr = $null
+                    try { $hr = $_.Exception.Response } catch { $hr = $null }
+                    if (-not $hr) { return (& $f70Warn 'baseUrl unreachable' $hostReachable $robotsOk) }
+                    try { $httpStatus = [int]$hr.StatusCode } catch { $httpStatus = 0 }
+                }
+
+                # (c) full GET (or POST) with the test query.
+                $bodyText = ''
+                try {
+                    if ($qtMethod -eq 'POST') {
+                        $getResp = Invoke-WebRequest -Uri $probeUrl -Method Post -Body ($qPairs -join '&') -ContentType 'application/x-www-form-urlencoded' -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
+                    } else {
+                        $getResp = Invoke-WebRequest -Uri $probeUrl -Method Get -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
+                    }
+                    $httpStatus = [int]$getResp.StatusCode
+                    try { $contentType = [string]$getResp.Headers['Content-Type'] } catch { }
+                    try { $cl2 = [string]$getResp.Headers['Content-Length']; if ($cl2 -and $null -eq $contentLength) { $contentLength = [int]$cl2 } } catch { }
+                    $bodyText = [string]$getResp.Content
+                } catch {
+                    $gr = $null
+                    try { $gr = $_.Exception.Response } catch { $gr = $null }
+                    if (-not $gr) { return (& $f70Warn 'baseUrl unreachable' $hostReachable $robotsOk) }
+                    try { $httpStatus = [int]$gr.StatusCode } catch { }
+                }
+
+                # selector-only parsing: JSONPath subset for json, XPath for xml.
+                $items = @()
+                if ($fmt -eq 'json') {
+                    try {
+                        $parsed = $bodyText | ConvertFrom-Json -ErrorAction Stop
+                        $cur = @($parsed)
+                        $expr = $sel.Trim()
+                        if ($expr.StartsWith('$')) { $expr = $expr.Substring(1) }
+                        foreach ($segRaw in ($expr -split '\.')) {
+                            $seg = $segRaw.Trim()
+                            if (-not $seg) { continue }
+                            $takeAll = $false
+                            if ($seg -eq '*') { $takeAll = $true; $seg = '' }
+                            elseif ($seg.EndsWith('[*]')) { $takeAll = $true; $seg = $seg.Substring(0, $seg.Length - 3) }
+                            $next = @()
+                            foreach ($node in $cur) {
+                                if ($null -eq $node) { continue }
+                                $v = $node
+                                if ($seg) {
+                                    $v = $null
+                                    try { if ($node.PSObject.Properties[$seg]) { $v = $node.PSObject.Properties[$seg].Value } } catch { $v = $null }
+                                }
+                                if ($null -ne $v) {
+                                    if ($takeAll) { $next += @($v) } else { $next += $v }
+                                }
+                            }
+                            $cur = @($next)
+                        }
+                        $items = @($cur)
+                    } catch { $items = @() }
+                } else {
+                    try {
+                        $xdoc = New-Object System.Xml.XmlDocument
+                        $xdoc.LoadXml($bodyText)
+                        $items = @($xdoc.SelectNodes($sel))
+                    } catch { $items = @() }
+                }
+                if ($items.Count -eq 0 -or -not $items[0]) {
+                    $sampleResp = ''
+                    if ($bodyText.Length -gt 500) { $sampleResp = $bodyText.Substring(0, 500) } else { $sampleResp = $bodyText }
+                    return @{ reachable = $true; robotsOk = $true; schemaMatch = $false; recommendation = 'warn'; reason = 'resultSelector matched zero items'; sampleResponse = $sampleResp; httpStatus = $httpStatus; contentType = $contentType; contentLength = $contentLength }
+                }
+
+                # (d) every fieldMappings source field set and non-null on item 1.
+                $first = $items[0]
+                $missing = @()
+                foreach ($mk in @($maps.Keys)) {
+                    $srcField = $maps[$mk]
+                    $val = $null
+                    if ($first -is [System.Xml.XmlNode]) {
+                        try { $xn = $first.SelectSingleNode($srcField); if ($xn) { $val = $xn.InnerText } } catch { $val = $null }
+                    } else {
+                        try { if ($first.PSObject.Properties[$srcField]) { $val = $first.PSObject.Properties[$srcField].Value } } catch { $val = $null }
+                    }
+                    if ($null -eq $val -or ([string]$val -eq '')) { $missing += $mk }
+                }
+                if ($missing.Count -gt 0) {
+                    return @{ reachable = $true; robotsOk = $true; schemaMatch = $false; recommendation = 'warn'; missingFields = @($missing); sampleItem = $first; httpStatus = $httpStatus; contentType = $contentType; contentLength = $contentLength }
+                }
+
+                # (e) everything matched: approve unless a soft signal warns.
+                $rec = 'approve'
+                if ($httpStatus -ne 200) { $rec = 'warn' }
+                if ($lenRequired -and ($null -eq $contentLength -or $contentLength -le 0)) { $rec = 'warn' }
+                return @{ reachable = $true; robotsOk = $true; schemaMatch = $true; sampleResultCount = $items.Count; sampleItem = $first; httpStatus = $httpStatus; contentType = $contentType; contentLength = $contentLength; recommendation = $rec }
+            }
             if ($parts.method -eq 'OPTIONS') {
                 Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@()) -ExtraHeaders "Access-Control-Allow-Headers: Content-Type, Authorization, X-Dash-Token, X-CSRF-Token`r`nAccess-Control-Max-Age: 600"
                 return
@@ -2401,6 +2601,7 @@ function Invoke-ClientRequest {
             if ($path -eq '/api/search' -and $parts.method -eq 'POST') { $f70MethodOk = $true }
             if ($path -eq '/api/search/status' -and $parts.method -eq 'GET') { $f70MethodOk = $true }
             if ($path -eq '/api/search/cancel' -and $parts.method -eq 'POST') { $f70MethodOk = $true }
+            if ($path -eq '/api/search/probe' -and $parts.method -eq 'POST') { $f70MethodOk = $true }
             if (-not $f70MethodOk) {
                 $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'method not allowed for ' + $path } }
                 Send-ClientResponse -Stream $stream -Code 405 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
@@ -2713,6 +2914,28 @@ function Invoke-ClientRequest {
                 $resp = [ordered]@{ searchId = $f70SearchId; cancellationState = 'cancelled'; adapterCancellations = $f70Cancel; idempotency = $f70Idem }
                 Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $resp)
                 Write-ClientAudit ('search cancel ' + $f70SearchId + ' -> 200 ' + $f70Idem)
+                return
+            }
+            # [F70 §3.1] POST /api/search/probe: body = SourceDescriptor (the
+            # same shape the F58 registry persists). Runs the deep add-time
+            # probe (robots + HEAD + sample query + schema match) and returns
+            # the probe outcome; the SourceForm save gate requires
+            # recommendation "approve" or the explicit operator override.
+            if ($path -eq '/api/search/probe') {
+                $f70BodyText = ''
+                try { $f70BodyText = [System.Text.Encoding]::UTF8.GetString($parts.body) } catch { $f70BodyText = '' }
+                $f70Json = $null
+                try { $f70Json = $f70BodyText | ConvertFrom-Json -ErrorAction Stop } catch { $f70Json = $null }
+                if (-not $f70Json) {
+                    $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'invalid json' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                $f70Outcome = Invoke-GhrdpProbe -Descriptor $f70Json
+                $f70Code = 200
+                try { if ($f70Outcome.reachable -eq $false -and $f70Outcome.reason -eq 'baseUrl required') { $f70Code = 400 } } catch { }
+                Send-ClientResponse -Stream $stream -Code $f70Code -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $f70Outcome)
+                Write-ClientAudit ('search probe -> ' + $f70Code + ' rec=' + [string]$f70Outcome.recommendation)
                 return
             }
         }
