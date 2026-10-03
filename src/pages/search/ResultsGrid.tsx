@@ -40,6 +40,7 @@ export function ResultsGrid() {
   const select = useSearchStore((s) => s.select);
   const openPreview = useSearchStore((s) => s.openPreview);
   const stubFetch = useSearchStore((s) => s.stubFetch);
+  const fetches = useSearchStore((s) => s.fetches);
   const submit = useSearchStore((s) => s.submit);
   const push = useToastStore((s) => s.push);
 
@@ -106,6 +107,7 @@ export function ResultsGrid() {
       const retryable = Boolean(ad && (ad.status === "failed" || ad.status === "timed-out" || ad.status === "rate-limited"));
       const selected = selectedIds.includes(r.resultId);
       const direct = validatedHttpsUrl(r.sourceUrl);
+      const fetchRec = fetches[r.resultId];
       const prov = evaluateResultProvenance(customSources, r);
       const provRow = prov.custom && prov.applies;
       // Client-side provenance-6 check (mirrors server gate) for exe/msi/dmg/iso/zip
@@ -309,13 +311,18 @@ export function ResultsGrid() {
                   {t("search.actions.retry")}
                 </button>
               ) : null}
-              <span className="ml-auto text-xs text-tertiary truncate">{t("search.fetch.started")}</span>
+              {fetchRec ? (
+                // [F69 §1.5] only after a fetch was accepted for this card (F68 §H.6)
+                <span data-testid="card-fetch-started" className="ml-auto text-xs text-tertiary truncate">
+                  {t("search.fetch.started", { fetchId: fetchRec.fetchId })}
+                </span>
+              ) : null}
             </span>
           </div>
         </div>
       );
     },
-    [rows, adapters, activeRowIndex, selectedIds, setActiveRow, select, openPreview, stubFetch, submit, push, t]
+    [rows, adapters, activeRowIndex, selectedIds, fetches, setActiveRow, select, openPreview, stubFetch, submit, push, t]
   );
 
   return (

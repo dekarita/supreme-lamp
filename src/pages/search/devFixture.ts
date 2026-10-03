@@ -33,7 +33,9 @@ export function shouldStreamDevFixture(s: {
   devFixtureGen: number;
 }): boolean {
   if (!isDevMode()) return false;
-  if (s.phase !== "complete" && s.phase !== "empty") return false;
+  // [F69 §1.3] "failed" included: when POST /api/search is absent (404/network),
+  // searchStore.submit() settles on phase "failed" and the dev stream must still fire.
+  if (s.phase !== "complete" && s.phase !== "empty" && s.phase !== "failed") return false;
   if (s.totalResults > 0 || s.queryGeneration === 0) return false;
   return s.devFixtureGen !== s.queryGeneration;
 }

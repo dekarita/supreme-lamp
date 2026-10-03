@@ -4,6 +4,7 @@
 // the conn banner reflects loss).
 // [F56-d §3] Search surface reads window.__GHRDP_SEARCH_ENABLED from /diag at boot + polling.
 import { useEffect } from "react";
+import { announceSearchLane } from "@/lib/search/lane";
 import { configUrl, getJson, nativeStatusUrl } from "@/lib/api";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useTelemetryStore } from "@/stores/telemetryStore";
@@ -46,6 +47,7 @@ export function useDashboardPolling(): void {
           if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_ENABLED = enabled;
           // @ts-ignore
           if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_INPUT = diag.searchInput || '';
+          announceSearchLane(); // [F69 §1.4] let the sidebar/route re-read the flag
         }
       } catch {}
     };

@@ -12,6 +12,7 @@ import { useTelemetryStore } from "@/stores/telemetryStore";
 import { useSessionStore } from "@/stores/sessionStore";
 import { Chip } from "@/components/primitives/Chip";
 import { cn } from "@/lib/cn";
+import { useSearchLaneEnabled } from "@/lib/search/lane";
 import { fmtHMS, pad2 } from "@/lib/format";
 import { elapsedSeconds, remainingSeconds } from "@/stores/telemetryStore";
 import { logonRowText, rdpUsageSeconds } from "@/lib/domain/native";
@@ -175,6 +176,10 @@ function Sidebar() {
   const toggleCollapsed = useSidebarStore((s) => s.toggleCollapsed);
   const mobileOpen = useSidebarStore((s) => s.mobileOpen);
   const setMobileOpen = useSidebarStore((s) => s.setMobileOpen);
+  // [F69 §1.4] search_enable=false (/diag searchEnabled -> window.__GHRDP_SEARCH_ENABLED)
+  // hides the Search entry; the NAV constant itself stays the locked 9-entry list.
+  const searchLane = useSearchLaneEnabled();
+  const visibleNav = searchLane ? NAV : NAV.filter((item) => item.to !== "/search");
 
   return (
     <>
@@ -191,7 +196,7 @@ function Sidebar() {
         )}
       >
         <nav aria-label={t("sidebar.nav")} className="flex-1 overflow-y-auto py-3">
-          {NAV.map((item) => {
+          {visibleNav.map((item) => {
             const Icon = item.icon;
             return (
               <NavLink

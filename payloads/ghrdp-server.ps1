@@ -1663,7 +1663,12 @@ function Invoke-ClientRequest {
                 return @{ ok = $true; address = $bind.address; reason = ''; session = $conn.session; mode = $conn.mode }
             }
             # Allowlisted adapters from F56 inventory (subset of search sources)
-            $allowedAdapters = @('projectGutenberg','standardEbooks','librivox','iaOpenLibrary','hathitrust','wikisource','doab','arxiv','biorxiv','pubmedCentral','doaj','oerCommons','ssrn','internetArchive','blenderStudio','wikimediaCommons','sourceforge','githubReleases','bandcamp','ccMarkedYoutube','kindleAudible','kobo','googleBooks','sarasavi','vijithaYapa','godage','overdriveLibby','ownStorage','custom')
+            # [F69 §1.1] kebab-case to match the client roster (src/pages/search/v2/adapters.ts derives
+            # project-gutenberg from the i18n search.sources.* keys); camelCase here 400'd 15 adapters.
+            $allowedAdapters = @('project-gutenberg','standard-ebooks','librivox','ia-open-library','hathitrust','wikisource','doab','arxiv','biorxiv','pubmed-central','doaj','oer-commons','ssrn','internet-archive','blender-studio','wikimedia-commons','sourceforge','github-releases','bandcamp','cc-marked-youtube','kindle-audible','kobo','google-books','sarasavi','vijitha-yapa','godage','overdrive-libby','own-storage','custom')
+            # [F69 §1.2] resultId -> resolved https URL map. Populated by the search lane (F70 /api/search);
+            # until then the resultId path fails closed (400) instead of synthesizing a placeholder host.
+            if (-not $script:F56dResultsMap) { $script:F56dResultsMap = @{} }
             # [F56-d §2] provenance-6 gate server-side reject executable+missing field
             function Test-F56dProvenance {
                 param($Prov)
@@ -1741,13 +1746,21 @@ function Invoke-ClientRequest {
                 # urlImport https only + allowlist + robots stub + content-length truth
                 $targetUrl = ''
                 if ($hasResultId) {
-                    # For resultId path, we expect a pre-resolved URL from the search result store (stubbed as https://example.com/file)
-                    # In real impl, lookup resultId -> url. Here we require body to also contain urlImport for validation if present, else use placeholder.
-                    # For testability, if resultId present, we synthesize a valid https URL if not supplied via urlImport.
-                    $targetUrl = 'https://' + $adapterId + '.example.com/' + $resultId
-                    if ($hasUrlImport) { $targetUrl = $urlImportUrl }
-                    # If resultId is the URL itself (some adapters), allow https only
-                    if ($resultId -match '^https://') { $targetUrl = $resultId }
+                    # [F69 §1.2] resultId path: resolve through the server-side results map only.
+                    # No placeholder host synthesis - an unknown id fails closed with VALIDATION_ERROR
+                    # and the operator uses the explicit urlImport.url flow instead.
+                    $mapped = ''
+                    try { if ($script:F56dResultsMap.ContainsKey($resultId)) { $mapped = [string]$script:F56dResultsMap[$resultId] } } catch { $mapped = '' }
+                    if ($mapped) {
+                        $targetUrl = $mapped
+                    } elseif ($resultId -match '^https://') {
+                        # If resultId is the URL itself (some adapters), allow https only
+                        $targetUrl = $resultId
+                    } else {
+                        $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'resultId lookup unavailable; use urlImport.url'; resultId = $resultId } }
+                        Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                        return
+                    }
                 } else {
                     $targetUrl = $urlImportUrl
                 }
@@ -1762,7 +1775,8 @@ function Invoke-ClientRequest {
                     $uriObj = [System.Uri]$targetUrl
                     $hostName = $uriObj.Host.ToLowerInvariant()
                     # Allowlist: if host ends with known source domains or is in custom allowlist file
-                    $allowHosts = @('gutenberg.org','standardebooks.org','librivox.org','archive.org','openlibrary.org','hathitrust.org','wikisource.org','doabooks.org','arxiv.org','biorxiv.org','ncbi.nlm.nih.gov','doaj.org','oercommons.org','ssrn.com','blender.org','wikimedia.org','sourceforge.net','github.com','bandcamp.com','youtube.com','amazon.com','kobo.com','books.google.com','sarasavi.lk','vijithayapa.com','godage.com','overdrive.com','example.com','custom.example.com')
+                    # [F69 §1.2] placeholder/test hosts removed from the allowlist - they defeated the host gate.
+                    $allowHosts = @('gutenberg.org','standardebooks.org','librivox.org','archive.org','openlibrary.org','hathitrust.org','wikisource.org','doabooks.org','arxiv.org','biorxiv.org','ncbi.nlm.nih.gov','doaj.org','oercommons.org','ssrn.com','blender.org','wikimedia.org','sourceforge.net','github.com','bandcamp.com','youtube.com','amazon.com','kobo.com','books.google.com','sarasavi.lk','vijithayapa.com','godage.com','overdrive.com')
                     foreach ($ah in $allowHosts) { if ($hostName -eq $ah -or $hostName.EndsWith('.' + $ah)) { $domainOk = $true; break } }
                     if (-not $domainOk) {
                         # Check custom registry file if exists
