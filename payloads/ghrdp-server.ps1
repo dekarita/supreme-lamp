@@ -1665,9 +1665,12 @@ function Invoke-ClientRequest {
             # Allowlisted adapters from F56 inventory (subset of search sources)
             # [F69 §1.1] kebab-case to match the client roster (src/pages/search/v2/adapters.ts derives
             # project-gutenberg from the i18n search.sources.* keys); camelCase here 400'd 15 adapters.
-            $allowedAdapters = @('project-gutenberg','standard-ebooks','librivox','ia-open-library','hathitrust','wikisource','doab','arxiv','biorxiv','pubmed-central','doaj','oer-commons','ssrn','internet-archive','blender-studio','wikimedia-commons','sourceforge','github-releases','bandcamp','cc-marked-youtube','kindle-audible','kobo','google-books','sarasavi','vijitha-yapa','godage','overdrive-libby','own-storage','custom')
-            # [F69 §1.2] resultId -> resolved https URL map. Populated by the search lane (F70 /api/search);
-            # until then the resultId path fails closed (400) instead of synthesizing a placeholder host.
+            # [F70 §2.1] google-books-public added for the public Volumes API lane
+            # (www.googleapis.com; results link out to books.google.com).
+            $allowedAdapters = @('project-gutenberg','standard-ebooks','librivox','ia-open-library','hathitrust','wikisource','doab','arxiv','biorxiv','pubmed-central','doaj','oer-commons','ssrn','internet-archive','blender-studio','wikimedia-commons','sourceforge','github-releases','bandcamp','cc-marked-youtube','kindle-audible','kobo','google-books','google-books-public','sarasavi','vijitha-yapa','godage','overdrive-libby','own-storage','custom')
+            # [F69 §1.2] resultId -> resolved https URL map. [F70 §1.1] the search
+            # lane populates it with result rows (adapterId/sourceUrl/title/
+            # mimeType/sizeBytes/createdAt); /api/fetch unwraps row.sourceUrl.
             if (-not $script:F56dResultsMap) { $script:F56dResultsMap = @{} }
             # [F56-d §2] provenance-6 gate server-side reject executable+missing field
             function Test-F56dProvenance {
@@ -1749,8 +1752,18 @@ function Invoke-ClientRequest {
                     # [F69 §1.2] resultId path: resolve through the server-side results map only.
                     # No placeholder host synthesis - an unknown id fails closed with VALIDATION_ERROR
                     # and the operator uses the explicit urlImport.url flow instead.
+                    # [F70 §1.1] the search lane now populates this map with result
+                    # ROWS (hashtables carrying sourceUrl); unwrap the URL, and keep
+                    # plain-string values (the pre-F70 form) working unchanged.
                     $mapped = ''
-                    try { if ($script:F56dResultsMap.ContainsKey($resultId)) { $mapped = [string]$script:F56dResultsMap[$resultId] } } catch { $mapped = '' }
+                    try {
+                        if ($script:F56dResultsMap.ContainsKey($resultId)) {
+                            $mv = $script:F56dResultsMap[$resultId]
+                            if ($mv -is [hashtable]) { $mapped = [string]$mv['sourceUrl'] }
+                            elseif ($mv -and $mv.PSObject.Properties['sourceUrl']) { $mapped = [string]$mv.sourceUrl }
+                            else { $mapped = [string]$mv }
+                        }
+                    } catch { $mapped = '' }
                     if ($mapped) {
                         $targetUrl = $mapped
                     } elseif ($resultId -match '^https://') {
@@ -1776,7 +1789,9 @@ function Invoke-ClientRequest {
                     $hostName = $uriObj.Host.ToLowerInvariant()
                     # Allowlist: if host ends with known source domains or is in custom allowlist file
                     # [F69 §1.2] placeholder/test hosts removed from the allowlist - they defeated the host gate.
-                    $allowHosts = @('gutenberg.org','standardebooks.org','librivox.org','archive.org','openlibrary.org','hathitrust.org','wikisource.org','doabooks.org','arxiv.org','biorxiv.org','ncbi.nlm.nih.gov','doaj.org','oercommons.org','ssrn.com','blender.org','wikimedia.org','sourceforge.net','github.com','bandcamp.com','youtube.com','amazon.com','kobo.com','books.google.com','sarasavi.lk','vijithayapa.com','godage.com','overdrive.com')
+                    # [F70 §2.1] www.googleapis.com added (Google Books Volumes API); books.google.com
+                    # (previewLink/infoLink targets) was already allowlisted.
+                    $allowHosts = @('gutenberg.org','standardebooks.org','librivox.org','archive.org','openlibrary.org','hathitrust.org','wikisource.org','doabooks.org','arxiv.org','biorxiv.org','ncbi.nlm.nih.gov','doaj.org','oercommons.org','ssrn.com','blender.org','wikimedia.org','sourceforge.net','github.com','bandcamp.com','youtube.com','amazon.com','kobo.com','books.google.com','www.googleapis.com','sarasavi.lk','vijithayapa.com','godage.com','overdrive.com')
                     foreach ($ah in $allowHosts) { if ($hostName -eq $ah -or $hostName.EndsWith('.' + $ah)) { $domainOk = $true; break } }
                     if (-not $domainOk) {
                         # Check custom registry file if exists
@@ -2205,6 +2220,404 @@ function Invoke-ClientRequest {
             else {
                 $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'unknown operation ' + $op } }
                 Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                return
+            }
+        }
+        # [F70 §1] F56 search lane: POST /api/search, GET /api/search/status,
+        # POST /api/search/cancel per docs/f56/backend.json:31-208. F69 shipped
+        # the /api/fetch side and the resultId -> $script:F56dResultsMap lookup,
+        # but nothing ever populated that map (F68-SEARCH-AUDIT): this lane is
+        # the population path. POST /api/search validates the SearchCreateRequest,
+        # mints a searchId, fans out to the compiled adapters (google-books-public
+        # runs for real via Invoke-GhrdpGoogleBooksSearch [F70 §2]; every other
+        # adapter stays "queued" until F71), stores each result row in BOTH
+        # $script:F56dSearchMap[searchId].results and $script:F56dResultsMap[
+        # resultId] (hashtable rows; the /api/fetch lookup unwraps .sourceUrl),
+        # and answers 202 with the SearchCreateAccepted shape the typed client
+        # (src/api/search/index.ts) already submits against.
+        if ($path -eq '/api/search' -or $path -eq '/api/search/status' -or $path -eq '/api/search/cancel') {
+            # [F70 §1.1] search-lane adapter allowlist: the F69 /api/fetch roster
+            # plus google-books-public. Keep in sync with $allowedAdapters in the
+            # /api/fetch block above - tests/f70-search-endpoints.test.js pins the
+            # two literals to the same core ids.
+            $searchAllowedAdapters = @('project-gutenberg','standard-ebooks','librivox','ia-open-library','hathitrust','wikisource','doab','arxiv','biorxiv','pubmed-central','doaj','oer-commons','ssrn','internet-archive','blender-studio','wikimedia-commons','sourceforge','github-releases','bandcamp','cc-marked-youtube','kindle-audible','kobo','google-books','google-books-public','sarasavi','vijitha-yapa','godage','overdrive-libby','own-storage','custom')
+            # [F70 §1.1] default fan-out when the request omits adapterIds.
+            $script:DefaultAdapterIds = @('google-books-public','internet-archive')
+            # Live phase from the record: cancelled > any result > all-run-failed
+            # > empty > running (lanes that never ran keep the search "running").
+            function Get-F70SearchPhase {
+                param($Rec)
+                try {
+                    if ($Rec.cancelled) { return 'cancelled' }
+                    if (@($Rec.resultOrder).Count -gt 0) { return 'complete' }
+                    $ran = 0; $failed = 0
+                    foreach ($k in @($Rec.adapterStatuses.Keys)) {
+                        $s = [string]$Rec.adapterStatuses[$k].status
+                        if (@('complete','empty','failed','rate-limited','timed-out','blocked-robots','cancelled') -contains $s) {
+                            $ran++
+                            if (@('failed','rate-limited','timed-out') -contains $s) { $failed++ }
+                        }
+                    }
+                    if ($ran -eq 0) { return 'running' }
+                    if ($failed -gt 0 -and $failed -eq $ran) { return 'failed' }
+                    return 'empty'
+                } catch { return 'failed' }
+            }
+            # kebab adapterId -> the camelCase i18n label key the client roster
+            # derives (src/pages/search/v2/adapters.ts camelToKebab inverse).
+            function Get-F70AdapterNameKey {
+                param([string]$AdapterId)
+                if ($AdapterId -eq 'google-books-public') { return 'search.sources.googleBooksPublic' }
+                $segs = @($AdapterId -split '-')
+                $buf = @()
+                for ($pi = 0; $pi -lt $segs.Count; $pi++) {
+                    if ($pi -eq 0) { $buf += $segs[$pi] }
+                    elseif ($segs[$pi].Length -gt 0) { $buf += $segs[$pi].Substring(0,1).ToUpper() + $segs[$pi].Substring(1) }
+                }
+                return 'search.sources.' + ($buf -join '')
+            }
+            # AdapterState rows as an ARRAY (the typed client iterates
+            # res.data.adapterStatuses; the map form is decisions.md blocker B1).
+            function Get-F70AdapterRows {
+                param($Rec)
+                $rows = @()
+                foreach ($k in @($Rec.adapterIds)) {
+                    $st = $Rec.adapterStatuses[$k]
+                    $rows += [ordered]@{
+                        adapterId = $k
+                        nameKey = (Get-F70AdapterNameKey $k)
+                        status = [string]$st.status
+                        resultCount = [int]$st.resultCount
+                        cursor = $st.cursor
+                        retryAfter = $null
+                        lastErrorCode = $st.lastErrorCode
+                        requestGeneration = 1
+                        contributingPartialResults = $false
+                        cancellationState = [string]$Rec.cancellationState
+                    }
+                }
+                return $rows
+            }
+            if ($parts.method -eq 'OPTIONS') {
+                Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@()) -ExtraHeaders "Access-Control-Allow-Headers: Content-Type, Authorization, X-Dash-Token, X-CSRF-Token`r`nAccess-Control-Max-Age: 600"
+                return
+            }
+            $f70MethodOk = $false
+            if ($path -eq '/api/search' -and $parts.method -eq 'POST') { $f70MethodOk = $true }
+            if ($path -eq '/api/search/status' -and $parts.method -eq 'GET') { $f70MethodOk = $true }
+            if ($path -eq '/api/search/cancel' -and $parts.method -eq 'POST') { $f70MethodOk = $true }
+            if (-not $f70MethodOk) {
+                $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'method not allowed for ' + $path } }
+                Send-ClientResponse -Stream $stream -Code 405 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                return
+            }
+            # Zero query-string credentials (same refusal set as /api/fetch).
+            $f70QCred = $false
+            try {
+                foreach ($qk in @('key','token','dash-token','dash_token','dashtoken','access-token','access_token','password')) {
+                    if ($parts.query.ContainsKey($qk)) { $f70QCred = $true; break }
+                }
+            } catch { }
+            if ($f70QCred) {
+                $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'query credential refused' } }
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                return
+            }
+            # [F70 §1.1] constant-time X-Dash-Token verify (Test-TicketBearer over
+            # UTF8 bytes, identical to /api/fetch). Missing or invalid -> 403.
+            $f70Tok = ''
+            try { $f70Tok = [string]$parts.headers['x-dash-token'] } catch { }
+            if (-not $f70Tok) {
+                $f70AuthH = ''
+                try { $f70AuthH = [string]$parts.headers['authorization'] } catch { }
+                if ($f70AuthH -match '^(?i)Bearer\s+(.+)$') { $f70Tok = $Matches[1].Trim() }
+            }
+            $f70TokOk = $false
+            if ($f70Tok -and $Token) {
+                $f70Recv = [System.Text.Encoding]::UTF8.GetBytes($f70Tok)
+                $f70Exp = [System.Text.Encoding]::UTF8.GetBytes([string]$Token)
+                if (($f70Recv.Length -eq $f70Exp.Length) -and (Test-TicketBearer $f70Recv $f70Exp)) { $f70TokOk = $true }
+            }
+            if (-not $f70TokOk) {
+                $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'dash token required' } }
+                Send-ClientResponse -Stream $stream -Code 403 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                Write-ClientAudit ('search auth refused ' + $path + ' -> 403')
+                return
+            }
+            if (-not $script:F56dSearchMap) { $script:F56dSearchMap = @{} }
+            if (-not $script:F56dResultsMap) { $script:F56dResultsMap = @{} }
+            if ($path -eq '/api/search') {
+                $f70BodyText = ''
+                try { $f70BodyText = [System.Text.Encoding]::UTF8.GetString($parts.body) } catch { $f70BodyText = '' }
+                $f70Json = $null
+                try { $f70Json = $f70BodyText | ConvertFrom-Json -ErrorAction Stop } catch { $f70Json = $null }
+                if (-not $f70Json) {
+                    $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'invalid json' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                $f70ReqId = ''
+                try { $f70ReqId = [string]$f70Json.requestId } catch { }
+                if (-not $f70ReqId) { $f70ReqId = [guid]::NewGuid().ToString('N').Substring(0,12) }
+                $f70Trace = [guid]::NewGuid().ToString('N').Substring(0,12)
+                # query: required, non-empty, and never an embedded source URL or
+                # domain (locked rule: the request must not carry an arbitrary URL).
+                $f70Query = ''
+                try { $f70Query = [string]$f70Json.query } catch { }
+                $f70Query = $f70Query.Trim()
+                if (-not $f70Query) {
+                    $err = [ordered]@{ requestId = $f70ReqId; traceId = $f70Trace; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'query required' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                if ($f70Query -match '(?i)https?://') {
+                    $err = [ordered]@{ requestId = $f70ReqId; traceId = $f70Trace; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'query must not contain a source URL or domain' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                # adapterIds: optional; unknown id -> UNKNOWN_SOURCE 400.
+                $f70ReqAdapters = @()
+                try {
+                    foreach ($a in @($f70Json.adapterIds)) {
+                        $as = [string]$a
+                        if ($as) { $f70ReqAdapters += $as }
+                    }
+                } catch { }
+                foreach ($a in $f70ReqAdapters) {
+                    if ($searchAllowedAdapters -notcontains $a) {
+                        $err = [ordered]@{ requestId = $f70ReqId; traceId = $f70Trace; code = 'UNKNOWN_SOURCE'; messageKey = 'search.errors.unknownSource'; retryable = $false; details = @{ adapterId = $a } }
+                        Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                        return
+                    }
+                }
+                # scope / filters / sort / maxSizeBytes / limit / cursor.
+                $f70Scope = 'federated'
+                try { $f70ScopeRaw = [string]$f70Json.scope; if ($f70ScopeRaw) { $f70Scope = $f70ScopeRaw } } catch { }
+                if ($f70Scope -ne 'federated' -and $f70Scope -ne 'own-storage') {
+                    $err = [ordered]@{ requestId = $f70ReqId; traceId = $f70Trace; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'scope must be federated or own-storage' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                $f70Cats = @()
+                try { foreach ($c in @($f70Json.categories)) { $cs2 = [string]$c; if ($cs2) { $f70Cats += $cs2 } } } catch { }
+                foreach ($c in $f70Cats) {
+                    if (@('books','audio','scholarly','education','media','software','music','video','own-storage','purchase') -notcontains $c) {
+                        $err = [ordered]@{ requestId = $f70ReqId; traceId = $f70Trace; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'unknown category ' + $c } }
+                        Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                        return
+                    }
+                }
+                $f70Lics = @()
+                try { foreach ($l in @($f70Json.licenceTags)) { $ls2 = [string]$l; if ($ls2) { $f70Lics += $ls2 } } } catch { }
+                foreach ($l in $f70Lics) {
+                    if (@('public-domain','open-access','creative-commons','purchase','own-storage') -notcontains $l) {
+                        $err = [ordered]@{ requestId = $f70ReqId; traceId = $f70Trace; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'unknown licence tag ' + $l } }
+                        Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                        return
+                    }
+                }
+                $f70Sort = 'relevance'
+                try { $f70SortRaw = [string]$f70Json.sort; if ($f70SortRaw) { $f70Sort = $f70SortRaw } } catch { }
+                if (@('relevance','size','date') -notcontains $f70Sort) {
+                    $err = [ordered]@{ requestId = $f70ReqId; traceId = $f70Trace; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'sort must be relevance, size or date' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                $f70MaxSize = 0
+                try {
+                    if ($f70Json.PSObject.Properties['maxSizeBytes'] -and $null -ne $f70Json.maxSizeBytes) { $f70MaxSize = [int]$f70Json.maxSizeBytes }
+                } catch {
+                    $err = [ordered]@{ requestId = $f70ReqId; traceId = $f70Trace; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'maxSizeBytes must be an integer' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                if ($f70MaxSize -lt 0) {
+                    $err = [ordered]@{ requestId = $f70ReqId; traceId = $f70Trace; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'maxSizeBytes must be >= 0' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                $f70Limit = 50
+                try {
+                    if ($f70Json.PSObject.Properties['limit'] -and $null -ne $f70Json.limit) { $f70Limit = [int]$f70Json.limit }
+                } catch { $f70Limit = -1 }
+                if ($f70Limit -lt 1 -or $f70Limit -gt 50) {
+                    $err = [ordered]@{ requestId = $f70ReqId; traceId = $f70Trace; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'limit must be 1..50' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                $f70Cursor = ''
+                try { $f70Cursor = [string]$f70Json.cursor } catch { }
+                # searchId + record, then the fan-out.
+                $f70SearchId = [guid]::NewGuid().ToString('N')
+                $f70Adapters = @($f70ReqAdapters | Select-Object -Unique)
+                if ($f70Adapters.Count -eq 0) { $f70Adapters = @($script:DefaultAdapterIds) }
+                $f70Now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+                $f70Rec = @{
+                    query = $f70Query
+                    adapterIds = @($f70Adapters)
+                    scope = $f70Scope
+                    filters = @{ categories = @($f70Cats); licenceTags = @($f70Lics); sort = $f70Sort; maxSizeBytes = $f70MaxSize }
+                    createdAt = $f70Now
+                    cancelled = $false
+                    cancellationState = ''
+                    adapterStatuses = @{}
+                    results = @{}
+                    resultOrder = @()
+                }
+                foreach ($a in $f70Adapters) {
+                    $f70Rec.adapterStatuses[$a] = @{ status = 'queued'; resultCount = 0; lastErrorCode = $null; cursor = $null }
+                }
+                $script:F56dSearchMap[$f70SearchId] = $f70Rec
+                # [F70 §2.1] google-books-public is the one real lane in F70;
+                # the helper is defined in this block (F70 §2). If a build stages
+                # this server without it, the adapter stays "queued" - never a
+                # synthesized result.
+                if ($f70Adapters -contains 'google-books-public') {
+                    $f70GbHelper = $null
+                    try { $f70GbHelper = Get-Command -Name Invoke-GhrdpGoogleBooksSearch -ErrorAction Stop } catch { $f70GbHelper = $null }
+                    if ($f70GbHelper) {
+                        $f70Gb = Invoke-GhrdpGoogleBooksSearch -Query $f70Query -Limit $f70Limit -Cursor $f70Cursor
+                        $f70Rec.adapterStatuses['google-books-public'].status = [string]$f70Gb.status
+                        if ($f70Gb.lastErrorCode) { $f70Rec.adapterStatuses['google-books-public'].lastErrorCode = [string]$f70Gb.lastErrorCode }
+                        if ($f70Gb.nextCursor) { $f70Rec.adapterStatuses['google-books-public'].cursor = [string]$f70Gb.nextCursor }
+                        foreach ($f70Row in @($f70Gb.rows)) {
+                            if (-not $f70Row) { continue }
+                            $f70ResultId = 'f70-' + [guid]::NewGuid().ToString('N').Substring(0,16)
+                            $f70Rec.results[$f70ResultId] = $f70Row
+                            $f70Rec.resultOrder += $f70ResultId
+                            # [F70 §1.1] populate the F69 resultId map so the
+                            # /api/fetch resultId path resolves end-to-end.
+                            $script:F56dResultsMap[$f70ResultId] = $f70Row
+                        }
+                        $f70Rec.adapterStatuses['google-books-public'].resultCount = @($f70Gb.rows).Count
+                    }
+                }
+                $resp = [ordered]@{
+                    requestId = $f70ReqId
+                    searchId = $f70SearchId
+                    phase = (Get-F70SearchPhase -Rec $f70Rec)
+                    acceptedAdapterIds = @($f70Adapters)
+                    statusRef = '/api/search/status?searchId=' + $f70SearchId
+                    queryGeneration = 1
+                    adapterStatuses = (Get-F70AdapterRows -Rec $f70Rec)
+                }
+                Send-ClientResponse -Stream $stream -Code 202 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $resp)
+                Write-ClientAudit ('search create ' + $f70SearchId + ' adapters=' + ($f70Adapters -join ',') + ' -> 202')
+                return
+            }
+            if ($path -eq '/api/search/status') {
+                $f70SearchId = ''
+                try { $f70SearchId = [string]$parts.query['searchid'] } catch { }
+                if (-not $f70SearchId) {
+                    $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'searchId required' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                if (-not $script:F56dSearchMap.ContainsKey($f70SearchId)) {
+                    $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'UNKNOWN_SOURCE'; messageKey = 'search.errors.unknownSource'; retryable = $false; details = @{ searchId = $f70SearchId } }
+                    Send-ClientResponse -Stream $stream -Code 404 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                $f70Rec = $script:F56dSearchMap[$f70SearchId]
+                $f70Limit = 50
+                $f70LimitOk = $true
+                try { if ($parts.query.ContainsKey('limit') -and $parts.query['limit']) { $f70Limit = [int]$parts.query['limit'] } } catch { $f70LimitOk = $false }
+                if (-not $f70LimitOk -or $f70Limit -lt 1 -or $f70Limit -gt 50) {
+                    $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'limit must be 1..50' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                $f70Start = 0
+                $f70CursorOk = $true
+                try { if ($parts.query.ContainsKey('cursor') -and $parts.query['cursor']) { $f70Start = [int]$parts.query['cursor'] } } catch { $f70CursorOk = $false }
+                if (-not $f70CursorOk -or $f70Start -lt 0) {
+                    $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'invalid cursor' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                $f70Order = @($f70Rec.resultOrder)
+                $f70Page = @()
+                for ($fi = $f70Start; $fi -lt $f70Order.Count -and $f70Page.Count -lt $f70Limit; $fi++) { $f70Page += $f70Order[$fi] }
+                $f70Rows = @()
+                foreach ($rid in $f70Page) {
+                    $row = $f70Rec.results[$rid]
+                    if (-not $row) { continue }
+                    $f70Rows += [ordered]@{
+                        resultId = $rid
+                        adapterId = [string]$row.adapterId
+                        nameKey = [string]$row.nameKey
+                        category = [string]$row.category
+                        title = [string]$row.title
+                        creator = [string]$row.creator
+                        sizeBytes = $row.sizeBytes
+                        contentLength = $row.sizeBytes
+                        licenceTag = [string]$row.licenceTag
+                        licenceEvidence = $row.licenceEvidence
+                        sourceSnapshotId = [string]$row.sourceSnapshotId
+                        sourceUrl = [string]$row.sourceUrl
+                        previewUrl = $row.previewUrl
+                        purchaseUrl = $row.purchaseUrl
+                        transportHint = $row.transportHint
+                        mimeType = $row.mimeType
+                        date = [string]$row.date
+                        availability = $row.availability
+                    }
+                }
+                $f70HasMore = (($f70Start + $f70Page.Count) -lt $f70Order.Count)
+                $f70NextCursor = $null
+                if ($f70HasMore) { $f70NextCursor = [string]($f70Start + $f70Page.Count) }
+                $resp = [ordered]@{
+                    searchId = $f70SearchId
+                    phase = (Get-F70SearchPhase -Rec $f70Rec)
+                    queryGeneration = 1
+                    adapterStatuses = (Get-F70AdapterRows -Rec $f70Rec)
+                    results = $f70Rows
+                    resultOrder = $f70Order
+                    cursor = $f70NextCursor
+                    hasMore = $f70HasMore
+                    serverTs = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+                    cancellationState = [string]$f70Rec.cancellationState
+                }
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $resp)
+                return
+            }
+            # POST /api/search/cancel: searchId from the SearchCancelRequest body
+            # (client contract) or the query param (F70 §1.3). Idempotent; a
+            # cancelled search can never append results (the F70 fan-out is
+            # synchronous, and the cancelled flag guards any future async lane).
+            if ($path -eq '/api/search/cancel') {
+                $f70BodyText = ''
+                try { $f70BodyText = [System.Text.Encoding]::UTF8.GetString($parts.body) } catch { $f70BodyText = '' }
+                $f70Json = $null
+                if ($f70BodyText) { try { $f70Json = $f70BodyText | ConvertFrom-Json -ErrorAction Stop } catch { $f70Json = $null } }
+                $f70SearchId = ''
+                if ($f70Json) { try { $f70SearchId = [string]$f70Json.searchId } catch { } }
+                if (-not $f70SearchId) { try { $f70SearchId = [string]$parts.query['searchid'] } catch { } }
+                if (-not $f70SearchId) {
+                    $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'searchId required' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                if (-not $script:F56dSearchMap.ContainsKey($f70SearchId)) {
+                    $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'UNKNOWN_SOURCE'; messageKey = 'search.errors.unknownSource'; retryable = $false; details = @{ searchId = $f70SearchId } }
+                    Send-ClientResponse -Stream $stream -Code 404 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                $f70Rec = $script:F56dSearchMap[$f70SearchId]
+                $f70Already = [bool]$f70Rec.cancelled
+                $f70Rec.cancelled = $true
+                $f70Rec.cancellationState = 'cancelled'
+                $f70Cancel = @{}
+                foreach ($k in @($f70Rec.adapterStatuses.Keys)) {
+                    $f70St = [string]$f70Rec.adapterStatuses[$k].status
+                    if ($f70St -ne 'complete' -and $f70St -ne 'empty') { $f70Rec.adapterStatuses[$k].status = 'cancelled' }
+                    $f70Cancel[$k] = [string]$f70Rec.adapterStatuses[$k].status
+                }
+                $f70Idem = 'cancelled'
+                if ($f70Already) { $f70Idem = 'already-cancelled' }
+                $resp = [ordered]@{ searchId = $f70SearchId; cancellationState = 'cancelled'; adapterCancellations = $f70Cancel; idempotency = $f70Idem }
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $resp)
+                Write-ClientAudit ('search cancel ' + $f70SearchId + ' -> 200 ' + $f70Idem)
                 return
             }
         }
