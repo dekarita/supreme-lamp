@@ -32,11 +32,14 @@ export const DEFAULT_MAX_SIZE_BYTES = 0;
 export const A1_PLANNED_DEFAULT_MAX_SIZE_BYTES = 10 * GB;
 export const MAX_SIZE_BYTES = 100 * GB;
 
-// [F69 §2.1] Default adapter pre-selected when the user types a query and
-// submits without opening Advanced (F68 Extension Rank 1): internet-archive
-// gives broad coverage without purchase-only noise. The user can still toggle
-// adapter chips in AdvancedPanel; an empty selection fans out to every adapter.
-export const DEFAULT_ADAPTER_ID = "internet-archive";
+// [F70 §2.2] Default adapter pre-selected when the user types a query and
+// submits without opening Advanced (F68 Extension Rank 1; F69 shipped
+// internet-archive, F70 flips to the first REAL lane): google-books-public is
+// the public Volumes API lane the server actually fans out to (F70 §2.1),
+// so a raw query returns real results with .epub/.pdf file-ext badges instead
+// of a queued stub. The user can still toggle adapter chips in AdvancedPanel;
+// an empty selection fans out to every adapter.
+export const DEFAULT_ADAPTER_ID = "google-books-public";
 
 export function classifyQuery(raw: string): InputKind {
   const q = raw.trim();

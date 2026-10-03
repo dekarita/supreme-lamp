@@ -48,6 +48,8 @@ export function SourceForm({ surface, editId = null, store = customSources, prob
   const [mapping, setMapping] = useState(target ? Object.entries(target.descriptor.parseContract.fieldMappings).map(([k, v]) => k + "=" + v).join("\n") : "title=name\nsourceUrl=html_url\ndate=updated_at");
   const [probeResult, setProbeResult] = useState<ProbeResult | null>(null);
   const [confirmed, setConfirmed] = useState(Boolean(target && target.parseContractPinned));
+  // [F70 §3.2] explicit operator override for the deep-probe save gate.
+  const [override, setOverride] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
   const [saved, setSaved] = useState<string | null>(null);
   const pinned = isAllowlistPinned(presetId);
@@ -110,6 +112,14 @@ export function SourceForm({ surface, editId = null, store = customSources, prob
     const { descriptor, errors: buildErrors } = buildDraft();
     if (!descriptor) { setErrors(buildErrors); return; }
     if (!confirmed) { setErrors([t("search.registry.probe.confirmRequired")]); return; }
+    // [F70 §3.2] deep-probe save gate: saving requires an APPROVED probe
+    // (recommendation === "approve") OR this explicit operator override. The
+    // probe itself only ever fires from the "Probe source" button - never on
+    // mount, never on save.
+    if (!override && probeResult?.recommendation !== "approve") {
+      setErrors([t("search.registry.probe.approveRequired")]);
+      return;
+    }
     const extension = {
       addedAt: (target && target.f58.addedAt) || new Date().toISOString(),
       // §1 attribution: hash of the operator id, never the identity itself.
@@ -130,7 +140,7 @@ export function SourceForm({ surface, editId = null, store = customSources, prob
     setErrors(outcome.ok ? [] : outcome.errors);
     setSaved(outcome.ok ? String(descriptor.id) : null);
     if (outcome.ok && onDone) onDone(String(descriptor.id));
-  }, [buildDraft, confirmed, onDone, store, t, target]);
+  }, [buildDraft, confirmed, onDone, override, probeResult, store, t, target]);
 
   return (
     <div
@@ -280,6 +290,9 @@ export function SourceForm({ surface, editId = null, store = customSources, prob
         <span data-testid="source-form-probe-status" className="text-xs font-mono text-tertiary">
           {probeResult ? (probeResult.error || (probeResult.reachable ? t("search.registry.probe.ok") : t("search.registry.probe.unreachable"))) : t("search.registry.probe.idle")}
         </span>
+        <span data-testid="source-form-probe-recommendation" className="text-xs font-mono text-tertiary">
+          {probeResult ? (probeResult.recommendation === "approve" ? t("search.registry.probe.approved") : t("search.registry.probe.warned")) : ""}
+        </span>
         <span data-testid="source-form-probe-robots" className="text-xs text-tertiary">
           {probeResult && probeResult.robotsOk ? t("search.registry.probe.robotsOk") : t("search.registry.probe.robotsUnknown")}
         </span>
@@ -288,6 +301,11 @@ export function SourceForm({ surface, editId = null, store = customSources, prob
           {t("search.registry.probe.confirm")}
         </label>
       </div>
+
+      <label className="flex items-center gap-1 text-xs text-secondary" data-testid="source-form-override-row">
+        <input type="checkbox" data-testid="source-form-override" checked={override} onChange={(e) => setOverride(e.target.checked)} />
+        {t("search.registry.probe.override")}
+      </label>
 
       <p data-testid="source-form-ratelimit" className="text-xs text-tertiary">
         {t("search.registry.ratelimit.note", { conc: F58.HARD.concurrency, rpm: F58.HARD.requestsPerMinute, timeout: F58.HARD.requestTimeoutSec })}

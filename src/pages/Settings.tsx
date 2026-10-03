@@ -11,6 +11,7 @@ import { Settings as SettingsIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { SourceForm } from "@/components/search/SourceForm";
 import { SourceRegistryList } from "@/components/search/SourceRegistryList";
+import { serverAddTimeProbe } from "@/search/probe-client";
 import { Card } from "@/components/primitives/Data";
 import { Button } from "@/components/primitives/Button";
 import { Toggle, Chip } from "@/components/primitives/Chip";
@@ -81,7 +82,7 @@ export default function Settings() {
         <div className="flex flex-col gap-3">
           <SourceRegistryList onEdit={(id) => setEditId(id)} />
           <div id="f56.search.v2.sourcesFormMount.settings" data-testid="source-form-mount" className="rounded border border-default bg-base p-2">
-            <SourceForm surface="settings" editId={editId} onDone={() => setEditId(null)} />
+            <SourceForm surface="settings" editId={editId} onDone={() => setEditId(null)} probe={serverAddTimeProbe} />
           </div>
         </div>
       </Card>
