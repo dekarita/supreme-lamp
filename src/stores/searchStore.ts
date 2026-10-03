@@ -32,6 +32,12 @@ export const DEFAULT_MAX_SIZE_BYTES = 0;
 export const A1_PLANNED_DEFAULT_MAX_SIZE_BYTES = 10 * GB;
 export const MAX_SIZE_BYTES = 100 * GB;
 
+// [F69 §2.1] Default adapter pre-selected when the user types a query and
+// submits without opening Advanced (F68 Extension Rank 1): internet-archive
+// gives broad coverage without purchase-only noise. The user can still toggle
+// adapter chips in AdvancedPanel; an empty selection fans out to every adapter.
+export const DEFAULT_ADAPTER_ID = "internet-archive";
+
 export function classifyQuery(raw: string): InputKind {
   const q = raw.trim();
   if (!q) return "empty";
@@ -52,6 +58,14 @@ export function classifyQuery(raw: string): InputKind {
 export interface FetchRecord {
   // F56-d fills this contract (Plan §B fetch state); empty in F56-c.
   fetchId: string;
+  // [F69 §2.5] FetchAccepted projection (F68 Extension Rank 7). Optional so the
+  // F56-c compat rows (stubFetch: fetchId === resultId, no gid) keep rendering;
+  // the cancel action only appears once a real gid exists.
+  resultId?: string;
+  gid?: string;
+  transport?: "aria2c" | "torrent";
+  status?: string;
+  sourceSnapshotId?: string;
 }
 
 export interface SearchState {
@@ -114,6 +128,10 @@ export interface SearchState {
   /** [F56-c v2] Fetch stub bookkeeping: records a pending fetch row for the
    *  rail without starting any transfer (F56-d replaces the body). */
   stubFetch: (resultId: string) => void;
+  /** [F69 §2.5] Record an accepted F56-d fetch for a result (keyed by resultId). */
+  recordFetch: (resultId: string, rec: Omit<FetchRecord, "resultId">) => void;
+  /** [F69 §2.5] Update the status pill of a recorded fetch (cancel lifecycle). */
+  setFetchStatus: (resultId: string, status: string) => void;
   /** [F56-c v3] Merge rows into the normalized result maps (deduped by
    *  resultId). Used by the DEV fixture stream; F56-d's live partials take
    *  the same path through pollOnce, which always wins (see Search.tsx). */
@@ -132,7 +150,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   maxSizeBytes: DEFAULT_MAX_SIZE_BYTES,
   sort: "relevance",
   scope: "federated",
-  adapterIds: [],
+  adapterIds: [DEFAULT_ADAPTER_ID],
   adapters: {},
   searchId: "",
   requestId: "",
@@ -171,7 +189,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     set({ adapterIds: cur.includes(adapterId) ? cur.filter((x) => x !== adapterId) : [...cur, adapterId] });
   },
   resetFilters: () =>
-    set({ categories: [], licenceTags: [], maxSizeBytes: DEFAULT_MAX_SIZE_BYTES, sort: "relevance", adapterIds: [] }),
+    set({ categories: [], licenceTags: [], maxSizeBytes: DEFAULT_MAX_SIZE_BYTES, sort: "relevance", adapterIds: [DEFAULT_ADAPTER_ID] }),
   setMaxSizeBytes: (n) => set({ maxSizeBytes: Math.max(0, Math.min(n, MAX_SIZE_BYTES)) }),
   setSort: (s) => set({ sort: s }),
   setScope: (s) => set({ scope: s }),
@@ -296,6 +314,16 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     // no URL request, no mirror opt-in (mirror stays default-OFF).
     if (get().fetches[resultId]) return;
     set({ fetches: { ...get().fetches, [resultId]: { fetchId: resultId } } });
+  },
+
+  recordFetch: (resultId, rec) => {
+    set({ fetches: { ...get().fetches, [resultId]: { ...rec, resultId } } });
+  },
+
+  setFetchStatus: (resultId, status) => {
+    const cur = get().fetches[resultId];
+    if (!cur) return;
+    set({ fetches: { ...get().fetches, [resultId]: { ...cur, status } } });
   },
 
   ingestResults: (rows) => {

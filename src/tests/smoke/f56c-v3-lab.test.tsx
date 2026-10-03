@@ -10,7 +10,7 @@ import { MemoryRouter } from "react-router-dom";
 import "@/i18n";
 import Search from "@/pages/Search";
 import { ProgressiveLab } from "@/pages/search/v2/ProgressiveLab";
-import { DEV_FIXTURE_TICK_MS, isDevMode } from "@/pages/search/devFixture";
+import { DEV_FIXTURE_ROWS, DEV_FIXTURE_TICK_MS, isDevMode } from "@/pages/search/devFixture";
 import { useSearchStore, DEFAULT_MAX_SIZE_BYTES } from "@/stores/searchStore";
 import { useSearchUiStore } from "@/stores/searchUiStore";
 import {
@@ -168,12 +168,13 @@ describe("DEV fixture fallback + empty state", () => {
     });
     const partial = useSearchStore.getState().resultOrder.length;
     expect(partial).toBeGreaterThan(0);
-    expect(partial).toBeLessThan(12);
+    // [F69 §2.4] row count follows fixture.json (launch-gates allow 10-20 rows)
+    expect(partial).toBeLessThan(DEV_FIXTURE_ROWS.length);
     await act(async () => {
       vi.advanceTimersByTime(DEV_FIXTURE_TICK_MS * 20);
     });
     const order = useSearchStore.getState().resultOrder;
-    expect(order.length).toBe(12);
+    expect(order.length).toBe(DEV_FIXTURE_ROWS.length);
     expect(order[0]).toBe("fx-01");
     expect(screen.getByTestId("dev-fixture-note")).toBeInTheDocument();
     expect(screen.queryByTestId("results-empty")).toBeNull();

@@ -9,7 +9,7 @@ import { useToastStore } from "@/stores/toastStore";
 import { requestFetchStub, requestFetch, isProvenanceBlocked } from "@/lib/fetchStub";
 import { customSources, evaluateResultProvenance } from "@/search/custom-source-store";
 import type { SearchResult } from "@/api/search";
-import { camel, formatActualBytes, licenceStyle, validatedHttpsUrl } from "./tokens";
+import { camel, fileExtension, formatActualBytes, licenceStyle, validatedHttpsUrl } from "./tokens";
 
 export const ROW_HEIGHT = 168;
 export const CARD_HEIGHT = 156;
@@ -40,6 +40,8 @@ export function ResultsGrid() {
   const select = useSearchStore((s) => s.select);
   const openPreview = useSearchStore((s) => s.openPreview);
   const stubFetch = useSearchStore((s) => s.stubFetch);
+  const recordFetch = useSearchStore((s) => s.recordFetch);
+  const fetches = useSearchStore((s) => s.fetches);
   const submit = useSearchStore((s) => s.submit);
   const push = useToastStore((s) => s.push);
 
@@ -106,6 +108,8 @@ export function ResultsGrid() {
       const retryable = Boolean(ad && (ad.status === "failed" || ad.status === "timed-out" || ad.status === "rate-limited"));
       const selected = selectedIds.includes(r.resultId);
       const direct = validatedHttpsUrl(r.sourceUrl);
+      const fetchRec = fetches[r.resultId];
+      const ext = fileExtension(r); // [F69 §2.2]
       const prov = evaluateResultProvenance(customSources, r);
       const provRow = prov.custom && prov.applies;
       // Client-side provenance-6 check (mirrors server gate) for exe/msi/dmg/iso/zip
@@ -161,6 +165,11 @@ export function ResultsGrid() {
               >
                 {t("search.filters.category." + camel(r.category))}
               </span>
+              {ext ? (
+                <span data-testid="card-file-ext" title={r.mimeType || undefined} className="rounded bg-raised px-1.5 py-0.5 font-mono text-xs text-tertiary">
+                  .{ext}
+                </span>
+              ) : null}
               <span id={"f56.search.resultLicence." + sfx} role="gridcell" className={"rounded px-2 py-0.5 text-xs font-medium " + licenceStyle(r.licenceTag)}>
                 {t("search.filters.licence." + camel(r.licenceTag))}
               </span>
@@ -250,7 +259,14 @@ export function ResultsGrid() {
                       expectedContentLength: (r as any).sizeBytes,
                     } as any);
                     if (out.ok) {
-                      stubFetch(r.resultId);
+                      // [F69 §2.5] keep the accepted record (fetchId/gid/status) for the progress rail
+                      recordFetch(r.resultId, {
+                        fetchId: out.data?.fetchId || r.resultId,
+                        gid: out.data?.gid || undefined,
+                        transport: 'aria2c',
+                        status: out.data?.status || 'queued',
+                        sourceSnapshotId: out.data?.sourceSnapshotId || undefined,
+                      });
                       push(t("search.fetch.started", { fetchId: out.data?.fetchId || '' }));
                     } else {
                       // If transport unavailable, fallback to stub toast for offline dev
@@ -309,13 +325,18 @@ export function ResultsGrid() {
                   {t("search.actions.retry")}
                 </button>
               ) : null}
-              <span className="ml-auto text-xs text-tertiary truncate">{t("search.fetch.started")}</span>
+              {fetchRec ? (
+                // [F69 §1.5] only after a fetch was accepted for this card (F68 §H.6)
+                <span data-testid="card-fetch-started" className="ml-auto text-xs text-tertiary truncate">
+                  {t("search.fetch.started", { fetchId: fetchRec.fetchId })}
+                </span>
+              ) : null}
             </span>
           </div>
         </div>
       );
     },
-    [rows, adapters, activeRowIndex, selectedIds, setActiveRow, select, openPreview, stubFetch, submit, push, t]
+    [rows, adapters, activeRowIndex, selectedIds, fetches, setActiveRow, select, openPreview, stubFetch, recordFetch, submit, push, t]
   );
 
   return (

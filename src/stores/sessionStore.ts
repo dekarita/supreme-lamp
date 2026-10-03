@@ -4,6 +4,7 @@
 // state (the v1 closure equivalent) and are never rendered unmasked; the
 // masked field shows bullets and the copy action pulls from here.
 import { create } from "zustand";
+import { announceSearchLane } from "@/lib/search/lane";
 import { postRdpToken, launchProto, mintTraceId, fetchPurgeCommand } from "@/lib/api";
 import { FQDN_RE, CGNAT_RE, parseTsUtc } from "@/lib/format";
 import { ghrdpRdpUrl, ghrdpRecredUrl, beaconModel, authDiscriminator, type AuthDiscriminator } from "@/lib/domain/native";
@@ -164,6 +165,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         // Also set searchInput echo for SEARCH_INPUT propagation lab
         // @ts-ignore
         if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_INPUT = d?.searchInput || '';
+        announceSearchLane(); // [F69 §1.4] let the sidebar/route re-read the flag
       } catch {}
     } catch {
       set({ diagText: "Diagnostics failed - server not reachable." });
