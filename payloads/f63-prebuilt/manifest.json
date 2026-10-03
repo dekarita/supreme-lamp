@@ -1,0 +1,101 @@
+{
+  "_comment": "[F63] SPEED-OPT prebundled installer + prebuilt binary manifest. All binaries come from OFFICIAL vendor sources only (ffmpeg.org, pkgs.tailscale.com, parsec.app, community.chocolatey.org / github.com/ge9/IddSampleDriver, chromewebstore.google.com / github.com/gorhill/uBlock) with SHA-256 pin AND release-page URL recorded here. Every prebuilt asset has an explicit fallback path (asset miss or sha256 mismatch -> original install path with ::warning:: annotation).",
+  "schema": "ghrdp-f63-prebuilt-manifest/1",
+  "release_tag": "f63-prebuilt",
+  "webrtc_release_tag": "webrtc-dist",
+  "webrtc_asset_pattern": "ghrdp-webrtc-<sha>.zip",
+  "timing_artifact": "startup-timing-f63.jsonl",
+  "baseline_seconds": 660,
+  "target_range_seconds": [360, 420],
+  "target_max_seconds": 450,
+  "webrtc_prebuilt": {
+    "workflow": ".github/workflows/build-webrtc.yml",
+    "release_tag": "webrtc-dist",
+    "asset_pattern": "ghrdp-webrtc-<sha>.zip",
+    "sha256_pattern": "ghrdp-webrtc-<sha>.zip.sha256",
+    "fallback": "go test -mod=readonly -count=1 ./... && go build -mod=readonly -ldflags '-s -w' -o webrtc-server.exe . && go build -mod=readonly -ldflags '-s -w' -o probe.exe ./cmd/probe"
+  },
+  "parallel_install_group": [
+    "ffmpeg",
+    "vbcable",
+    "idd_sample_driver",
+    "chrome_extensions",
+    "parsec"
+  ],
+  "assets": {
+    "ffmpeg": {
+      "name": "ffmpeg-release-full.zip",
+      "version": "9.0.2",
+      "sha256": "759d0a9831c436a0eb331ad36f236c06cb04aaa0005da46571f0e9d3d9206f6b",
+      "vendor": "ffmpeg.org",
+      "release_page_url": "https://ffmpeg.org/download.html#build-windows",
+      "source_url": "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-full_build.zip",
+      "mirror_url": "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-full.zip",
+      "extract_to": "C:\\ghrdp\\bin",
+      "binary": "ffmpeg.exe",
+      "fallback": "choco install ffmpeg -y --no-progress",
+      "fallback_cmd": "choco install ffmpeg -y --no-progress"
+    },
+    "vbcable": {
+      "name": "VBCABLE_Driver_Pack43.zip",
+      "version": "43",
+      "sha256": "66fd0a4d9f4896ff41632b7e3d53892c085c4561f53e8ae8d0f0bc10eedd1cdd",
+      "vendor": "chocolatey.org",
+      "release_page_url": "https://community.chocolatey.org/packages/vb-cable",
+      "source_url": "https://download.vb-audio.com/Download_CABLE/VBCABLE_Driver_Pack43.zip",
+      "extract_to": "C:\\ghrdp\\vbcable",
+      "binary": "VBCABLE_Setup_x64.exe",
+      "fallback": "curl.exe -fL https://download.vb-audio.com/Download_CABLE/VBCABLE_Setup_x64.exe",
+      "fallback_cmd": "curl.exe -fL https://download.vb-audio.com/Download_CABLE/VBCABLE_Setup_x64.exe"
+    },
+    "idd_sample_driver": {
+      "name": "IddSampleDriver.zip",
+      "version": "0.0.1.4",
+      "sha256": "e93b88f31ce3201814cba1fb4e11eb43e6f991f4d2a5e33145728a8dbfdd4eb7",
+      "vendor": "chocolatey.org",
+      "release_page_url": "https://community.chocolatey.org/packages/iddsampledriver",
+      "source_url": "https://github.com/ge9/IddSampleDriver/releases/download/0.0.1.4/IddSampleDriver.zip",
+      "extract_to": "C:\\ghrdp\\idd",
+      "binary": "IddSampleDriver.inf",
+      "fallback": "curl.exe -fL https://github.com/ge9/IddSampleDriver/releases/download/0.0.1.4/IddSampleDriver.zip",
+      "fallback_cmd": "curl.exe -fL https://github.com/ge9/IddSampleDriver/releases/download/0.0.1.4/IddSampleDriver.zip"
+    },
+    "chrome_extensions": {
+      "name": "uBlock0_1.75.0.chromium.crx",
+      "bundle_alias": "chrome-extensions-bundle.crx",
+      "version": "1.75.0",
+      "sha256": "d688ed3f0262ec4f8bdcd4c8f65987c5444c560aeb387a9e02aca1facdfa7046",
+      "vendor": "chromewebstore.google.com",
+      "release_page_url": "https://chromewebstore.google.com/search/uBlock%20Origin",
+      "source_url": "https://github.com/gorhill/uBlock/releases/download/1.75.0/uBlock0_1.75.0.chromium.crx",
+      "extract_to": "C:\\ghrdp\\extensions",
+      "binary": "uBlock0_1.75.0.chromium.crx",
+      "fallback": "Resolve-StoreExtId + Resolve-AmoAddon live store resolution (payloads/edge-ext-resolve.ps1)",
+      "fallback_cmd": "Resolve-StoreExtId + Resolve-AmoAddon live store resolution (payloads/edge-ext-resolve.ps1)"
+    },
+    "parsec": {
+      "name": "parsec-windows.exe",
+      "version": "150.104.1.0",
+      "sha256": "b8a9cd519010666def0ef6e119eb42b33b5b811216f34e4f6c8e2e25ac290fbc",
+      "vendor": "parsec.app",
+      "release_page_url": "https://parsec.app/downloads",
+      "source_url": "https://builds.parsec.app/package/parsec-windows.exe",
+      "extract_to": "C:\\ghrdp\\parsec",
+      "binary": "parsec-windows.exe",
+      "fallback": "curl.exe -fL https://builds.parsec.app/package/parsec-windows.exe",
+      "fallback_cmd": "curl.exe -fL https://builds.parsec.app/package/parsec-windows.exe"
+    },
+    "tailscale": {
+      "name": "tailscale-setup-1.102.4-amd64.msi",
+      "version": "1.102.4",
+      "sha256": "80eb007e39dfebe17299fa1a09c79a8e1d934f76e0246c0817ebe3af675b7ef6",
+      "vendor": "pkgs.tailscale.com",
+      "release_page_url": "https://pkgs.tailscale.com/stable/",
+      "source_url": "https://pkgs.tailscale.com/stable/tailscale-setup-1.102.4-amd64.msi",
+      "extract_to": "C:\\ghrdp\\prebuilt",
+      "binary": "tailscale-setup-1.102.4-amd64.msi",
+      "fallback": "curl.exe -fL https://pkgs.tailscale.com/stable/tailscale-setup-1.102.4-amd64.msi",
+      "fallback_cmd": "curl.exe -fL https://pkgs.tailscale.com/stable/tailscale-setup-1.102.4-amd64.msi"
+    }
+  }
+}
