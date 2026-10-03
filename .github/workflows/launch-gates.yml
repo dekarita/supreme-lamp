@@ -3044,7 +3044,10 @@ jobs:
           si = json.load(open('src/i18n/si.json', encoding='utf-8'))
           re_, rs = flat(en['search']['registry']), flat(si['search']['registry'])
           assert sorted(re_) == sorted(rs), 'registry key sets differ'
-          assert len(re_) == 56, ('registry key count', len(re_))
+          # [F70 §3.2] 56 -> 60: the four intended deep-probe keys
+          # (probe.approveRequired/override/approved/warned, en+si parity
+          # asserted by i18n-f56-parity.test.ts).
+          assert len(re_) == 60, ('registry key count', len(re_))
           assert all(v.strip() for v in rs.values()), 'empty si value'
           assert any(chr(0x0d80) <= c <= chr(0x0dff) for v in rs.values() for c in v), 'si registry must carry Sinhala'
           raw = open('docs/f56/schema.json', 'rb').read()
