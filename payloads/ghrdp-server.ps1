@@ -2298,6 +2298,101 @@ function Invoke-ClientRequest {
                 }
                 return $rows
             }
+            # [F70 §2.1] Google Books Volumes public read lane. Public endpoint,
+            # NO API KEY (the free tier allows 1000 requests/day). Host is
+            # allowlisted (www.googleapis.com); results link out to
+            # books.google.com (also allowlisted). Rate budget = the F58.HARD
+            # defaults (1 concurrent, 60 rpm) enforced by a 60-second sliding
+            # window - over budget returns rate-limited, never an unbounded
+            # call. Field mapping is the pinned parse contract:
+            #   title=volumeInfo.title, creator=authors joined ', ',
+            #   sourceUrl=previewLink, purchaseUrl=infoLink,
+            #   mimeType=epub|pdf from accessInfo (else null), sizeBytes=null
+            #   (the API does not return it), licenceTag=public-domain |
+            #   open-access (viewability ALL_PAGES) | purchase,
+            #   date=publishedDate sliced to YYYY-MM-DD.
+            function Invoke-GhrdpGoogleBooksSearch {
+                param([string]$Query, [int]$Limit = 40, [string]$Cursor = '')
+                try {
+                    if (-not $script:F70GbWindow) { $script:F70GbWindow = @() }
+                    $f70Cut = (Get-Date).ToUniversalTime().AddSeconds(-60)
+                    $script:F70GbWindow = @($script:F70GbWindow | Where-Object { $_ -gt $f70Cut })
+                    if ($script:F70GbWindow.Count -ge 60) {
+                        return @{ ok = $false; status = 'rate-limited'; lastErrorCode = 'RATE_LIMITED'; rows = @(); totalItems = 0; nextCursor = '' }
+                    }
+                    $f70Start = 0
+                    if ($Cursor) { try { $f70Start = [int]$Cursor } catch { $f70Start = 0 } }
+                    if ($f70Start -lt 0) { $f70Start = 0 }
+                    $f70Max = $Limit
+                    if ($f70Max -lt 1) { $f70Max = 1 }
+                    if ($f70Max -gt 40) { $f70Max = 40 }
+                    $f70Uri = 'https://www.googleapis.com/books/v1/volumes?q=' + [uri]::EscapeDataString($Query) + '&maxResults=' + [string]$f70Max + '&startIndex=' + [string]$f70Start
+                    $script:F70GbWindow += (Get-Date).ToUniversalTime()
+                    $f70Resp = Invoke-WebRequest -Uri $f70Uri -Method Get -TimeoutSec 30 -UseBasicParsing -ErrorAction Stop
+                    if ($f70Resp.StatusCode -ne 200) {
+                        return @{ ok = $false; status = 'failed'; lastErrorCode = 'TRANSPORT_UNAVAILABLE'; rows = @(); totalItems = 0; nextCursor = '' }
+                    }
+                    $f70Json = $f70Resp.Content | ConvertFrom-Json -ErrorAction Stop
+                    $f70Total = 0
+                    try { $f70Total = [int]$f70Json.totalItems } catch { $f70Total = 0 }
+                    $f70Rows = @()
+                    foreach ($f70It in @($f70Json.items)) {
+                        if (-not $f70It -or -not $f70It.volumeInfo) { continue }
+                        $f70Vi = $f70It.volumeInfo
+                        $f70Title = ''
+                        try { $f70Title = [string]$f70Vi.title } catch { }
+                        if (-not $f70Title) { continue }
+                        $f70Creator = ''
+                        try { $f70Creator = (@($f70Vi.authors) -join ', ') } catch { }
+                        $f70SourceUrl = ''
+                        try { $f70SourceUrl = [string]$f70Vi.previewLink } catch { }
+                        if (-not $f70SourceUrl) { try { $f70SourceUrl = [string]$f70Vi.infoLink } catch { } }
+                        $f70PurchaseUrl = ''
+                        try { $f70PurchaseUrl = [string]$f70Vi.infoLink } catch { }
+                        $f70Mime = $null
+                        try { if ($f70It.accessInfo.epub.isAvailable) { $f70Mime = 'application/epub+zip' } } catch { }
+                        if (-not $f70Mime) { try { if ($f70It.accessInfo.pdf.isAvailable) { $f70Mime = 'application/pdf' } } catch { } }
+                        $f70Lic = 'purchase'
+                        try { if ($f70It.accessInfo.publicDomain) { $f70Lic = 'public-domain' } } catch { }
+                        if ($f70Lic -eq 'purchase') {
+                            try { if ([string]$f70It.accessInfo.viewability -eq 'ALL_PAGES') { $f70Lic = 'open-access' } } catch { }
+                        }
+                        $f70Date = ''
+                        try { $f70Date = [string]$f70Vi.publishedDate; if ($f70Date.Length -gt 10) { $f70Date = $f70Date.Substring(0,10) } } catch { $f70Date = '' }
+                        $f70Rows += @{
+                            adapterId = 'google-books-public'
+                            nameKey = 'search.sources.googleBooksPublic'
+                            category = 'books'
+                            title = $f70Title
+                            creator = $f70Creator
+                            sizeBytes = $null
+                            licenceTag = $f70Lic
+                            licenceEvidence = $null
+                            sourceSnapshotId = 'gb-' + [string]$f70It.id
+                            sourceUrl = $f70SourceUrl
+                            previewUrl = $f70SourceUrl
+                            purchaseUrl = $f70PurchaseUrl
+                            transportHint = 'https'
+                            mimeType = $f70Mime
+                            date = $f70Date
+                            availability = ''
+                        }
+                    }
+                    $f70Status = 'complete'
+                    if ($f70Rows.Count -eq 0) { $f70Status = 'empty' }
+                    $f70Next = ''
+                    if ($f70Rows.Count -gt 0 -and (($f70Start + $f70Rows.Count) -lt $f70Total)) { $f70Next = [string]($f70Start + $f70Rows.Count) }
+                    return @{ ok = $true; status = $f70Status; lastErrorCode = $null; rows = $f70Rows; totalItems = $f70Total; nextCursor = $f70Next }
+                } catch {
+                    $f70Code = 'TRANSPORT_UNAVAILABLE'
+                    try {
+                        $f70Msg = ''
+                        if ($Error[0] -and $Error[0].Exception) { $f70Msg = [string]$Error[0].Exception.Message }
+                        if ($f70Msg -match '(?i)timeout|timed out') { $f70Code = 'TIMEOUT' }
+                    } catch { }
+                    return @{ ok = $false; status = 'failed'; lastErrorCode = $f70Code; rows = @(); totalItems = 0; nextCursor = '' }
+                }
+            }
             if ($parts.method -eq 'OPTIONS') {
                 Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@()) -ExtraHeaders "Access-Control-Allow-Headers: Content-Type, Authorization, X-Dash-Token, X-CSRF-Token`r`nAccess-Control-Max-Age: 600"
                 return

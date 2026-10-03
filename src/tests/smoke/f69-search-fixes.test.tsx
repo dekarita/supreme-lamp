@@ -111,9 +111,11 @@ describe("F69 §1.4 search_enable lane flag", () => {
   });
 });
 
-describe("F69 §2.1 default adapter", () => {
-  it("pre-selects internet-archive and resetFilters restores it", () => {
-    expect(DEFAULT_ADAPTER_ID).toBe("internet-archive");
+describe("F69 §2.1 default adapter (F70 §2.2 flip)", () => {
+  it("pre-selects google-books-public and resetFilters restores it", () => {
+    // F70 §2.2: the default flipped from internet-archive (F69) to
+    // google-books-public - the first adapter with a real server lane.
+    expect(DEFAULT_ADAPTER_ID).toBe("google-books-public");
     useSearchStore.getState().toggleAdapter("arxiv");
     useSearchStore.getState().resetFilters();
     expect(useSearchStore.getState().adapterIds).toEqual([DEFAULT_ADAPTER_ID]);
