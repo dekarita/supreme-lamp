@@ -1,5 +1,15 @@
 # F60 operator setup - the 10-minute path (provisioning workflow)
 
+> ⚠️ PARKED - Azure warm-runner path is OPTIONAL and cancelled per operator
+> decision 2026-10-02. Project runs free on F59 windows-latest path. These docs
+> preserved for future use if budget allows. Do NOT dispatch
+> provision-warm-runner.yml.
+
+**PRODUCTION PATH (what to actually run):** F59 on `windows-latest` free tier -
+`.github/workflows/main.yml` dispatch, prebuilt binaries + prebuilt UI,
+`actions/cache`, parallel pre-warm; dispatch-to-dashboard ~7:30-8:00 min, $0/mo.
+Everything below this banner is the parked OPTIONAL Azure warm-runner lane.
+
 **Status:** this document is the operator-facing half of F60. The code half is
 `.github/workflows/provision-warm-runner.yml` (provisioning),
 `scripts/f60-bootstrap.ps1` (what runs on the VM),
