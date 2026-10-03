@@ -4,6 +4,7 @@ import { forwardRef, useCallback, useEffect, useMemo, type HTMLAttributes, type 
 import { useTranslation } from "react-i18next";
 import { ExternalLink } from "lucide-react";
 import { FixedSizeList, type ListChildComponentProps } from "react-window";
+import { useNavigate } from "react-router-dom";
 import { selectVisibleResults, useSearchStore } from "@/stores/searchStore";
 import { useToastStore } from "@/stores/toastStore";
 import { requestFetchStub, requestFetch, isProvenanceBlocked } from "@/lib/fetchStub";
@@ -27,14 +28,21 @@ const InnerElement = forwardRef<HTMLDivElement, HTMLAttributes<HTMLDivElement>>(
 
 export function ResultsGrid() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const results = useSearchStore((s) => s.results);
   const order = useSearchStore((s) => s.resultOrder);
   const categories = useSearchStore((s) => s.categories);
   const licenceTags = useSearchStore((s) => s.licenceTags);
   const maxSizeBytes = useSearchStore((s) => s.maxSizeBytes);
   const sort = useSearchStore((s) => s.sort);
+  const normalizedQuery = useSearchStore((s) => s.normalizedQuery);
+  const fileExtensions = useSearchStore((s) => s.fileExtensions);
+  const yearFrom = useSearchStore((s) => s.yearFrom);
+  const yearTo = useSearchStore((s) => s.yearTo);
+  const language = useSearchStore((s) => s.language);
+  const groupBySource = useSearchStore((s) => s.groupBySource);
   const adapters = useSearchStore((s) => s.adapters);
-  const activeRowIndex = useSearchStore((s) => s.activeRowIndex);
+  const activeResultId = useSearchStore((s) => s.activeResultId);
   const selectedIds = useSearchStore((s) => s.selectedIds);
   const setActiveRow = useSearchStore((s) => s.setActiveRow);
   const select = useSearchStore((s) => s.select);
@@ -46,63 +54,97 @@ export function ResultsGrid() {
   const push = useToastStore((s) => s.push);
 
   const rows = useMemo(
-    () => selectVisibleResults({ results, resultOrder: order, categories, licenceTags, maxSizeBytes, sort }),
-    [results, order, categories, licenceTags, maxSizeBytes, sort]
+    () => selectVisibleResults({ results, resultOrder: order, categories, licenceTags, maxSizeBytes, sort, normalizedQuery, fileExtensions, yearFrom, yearTo, language }),
+    [results, order, categories, licenceTags, maxSizeBytes, sort, normalizedQuery, fileExtensions, yearFrom, yearTo, language]
   );
+  const sourceGroups = useMemo(() => {
+    const groups = new Map<string, { adapterId: string; nameKey: string; rows: SearchResult[]; resultIndices: number[]; visualIndices: number[]; headerIndex: number }>();
+    for (const result of rows) {
+      let group = groups.get(result.adapterId);
+      if (!group) {
+        group = { adapterId: result.adapterId, nameKey: result.nameKey, rows: [], resultIndices: [], visualIndices: [], headerIndex: -1 };
+        groups.set(result.adapterId, group);
+      }
+      group.rows.push(result);
+      group.resultIndices.push(rows.findIndex((row) => row.resultId === result.resultId));
+    }
+    let visualIndex = 0;
+    for (const group of groups.values()) {
+      group.headerIndex = visualIndex++;
+      group.visualIndices = group.rows.map(() => visualIndex++);
+    }
+    return [...groups.values()];
+  }, [rows]);
+  const navigationRows = useMemo(() => groupBySource ? sourceGroups.flatMap((group) => group.rows) : rows, [groupBySource, sourceGroups, rows]);
+  const flatData = useMemo(() => ({
+    rows,
+    resultIndices: rows.map((_result, index) => index),
+    visualIndices: rows.map((_result, index) => index),
+  }), [rows]);
 
   useEffect(() => {
-    if (activeRowIndex < 0 || !rows.length) return;
-    const r = rows[Math.min(activeRowIndex, rows.length - 1)];
+    if (!activeResultId) return;
+    const r = rows.find((item) => item.resultId === activeResultId);
+    if (!r) return;
     const el = document.getElementById("f56.search.resultRow." + rowSuffix(r));
-    if (el && document.activeElement !== el && document.activeElement && document.activeElement.closest("#f56\\.search\\.results")) {
-      el.focus();
-    }
-  }, [activeRowIndex, rows]);
+    if (el && document.activeElement !== el && document.activeElement && document.activeElement.closest("#f56\\.search\\.results")) el.focus();
+  }, [activeResultId, rows]);
 
   const onKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>) => {
-      const last = rows.length - 1;
+      const last = navigationRows.length - 1;
       if (last < 0) return;
+      const current = navigationRows.findIndex((result) => result.resultId === activeResultId);
+      const next = current < 0 ? 0 : current;
+      const activate = (index: number) => {
+        const result = navigationRows[Math.max(0, Math.min(index, last))];
+        const resultIndex = result ? rows.findIndex((row) => row.resultId === result.resultId) : -1;
+        if (resultIndex >= 0) setActiveRow(resultIndex);
+        return result;
+      };
       switch (e.key) {
         case "ArrowDown":
           e.preventDefault();
-          setActiveRow(Math.min(activeRowIndex + 1, last));
+          activate(current < 0 ? 0 : Math.min(next + 1, last));
           break;
         case "ArrowUp":
           e.preventDefault();
-          setActiveRow(Math.max(activeRowIndex - 1, 0));
+          activate(current < 0 ? 0 : Math.max(next - 1, 0));
           break;
         case "Home":
           e.preventDefault();
-          setActiveRow(0);
+          activate(0);
           break;
         case "End":
           e.preventDefault();
-          setActiveRow(last);
+          activate(last);
           break;
         case "Enter": {
           e.preventDefault();
-          const r = rows[Math.max(0, activeRowIndex)];
-          if (r) openPreview(r.resultId);
+          const result = activate(current < 0 ? 0 : current);
+          if (result) openPreview(result.resultId);
           break;
         }
         case " ":
         case "Spacebar": {
           e.preventDefault();
-          const r = rows[Math.max(0, activeRowIndex)];
-          if (r) select(r.resultId, !selectedIds.includes(r.resultId));
+          const result = activate(current < 0 ? 0 : current);
+          if (result) select(result.resultId, !selectedIds.includes(result.resultId));
           break;
         }
         default:
           break;
       }
     },
-    [rows, activeRowIndex, setActiveRow, openPreview, select, selectedIds]
+    [navigationRows, rows, activeResultId, setActiveRow, openPreview, select, selectedIds]
   );
 
   const Row = useCallback(
-    ({ index, style }: ListChildComponentProps) => {
-      const r = rows[index] as SearchResult;
+    ({ index, style, data }: ListChildComponentProps<{ rows: SearchResult[]; resultIndices: number[]; visualIndices: number[] }>) => {
+      const rowData = data || flatData;
+      const r = rowData.rows[index] as SearchResult;
+      const resultIndex = rowData.resultIndices[index] ?? index;
+      const visualIndex = rowData.visualIndices[index] ?? index;
       const sfx = rowSuffix(r);
       const ad = adapters[r.adapterId];
       const retryable = Boolean(ad && (ad.status === "failed" || ad.status === "timed-out" || ad.status === "rate-limited"));
@@ -124,13 +166,13 @@ export function ResultsGrid() {
         <div
           id={"f56.search.resultRow." + sfx}
           role="row"
-          aria-rowindex={index + 1}
+          aria-rowindex={visualIndex + 1}
           aria-selected={selected}
-          tabIndex={activeRowIndex >= 0 && index === activeRowIndex ? 0 : -1}
+          tabIndex={activeResultId === r.resultId ? 0 : -1}
           data-testid="result-row"
           data-result-id={r.resultId}
           style={style}
-          onFocus={() => setActiveRow(index)}
+          onFocus={() => setActiveRow(resultIndex)}
           className="px-2 py-2"
         >
           <div
@@ -300,6 +342,19 @@ export function ResultsGrid() {
               >
                 {t("search.actions.preview")}
               </button>
+              <button
+                id={"f56.search.resultLab." + sfx}
+                data-testid="open-in-lab"
+                type="button"
+                aria-label={t("search.actions.openInLab")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  navigate("/search/lab/" + encodeURIComponent(r.resultId));
+                }}
+                className="h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                {t("search.actions.openInLab")}
+              </button>
               {r.purchaseUrl ? (
                 <button
                   id={"f56.search.resultPurchase." + sfx}
@@ -336,7 +391,7 @@ export function ResultsGrid() {
         </div>
       );
     },
-    [rows, adapters, activeRowIndex, selectedIds, fetches, setActiveRow, select, openPreview, stubFetch, recordFetch, submit, push, t]
+    [flatData, adapters, activeResultId, selectedIds, fetches, setActiveRow, select, openPreview, stubFetch, recordFetch, submit, push, navigate, t]
   );
 
   return (
@@ -344,22 +399,54 @@ export function ResultsGrid() {
       id="f56.search.results"
       role="grid"
       aria-label={t("search.a11y.resultsGrid")}
-      aria-rowcount={rows.length}
+      aria-rowcount={rows.length + (groupBySource ? sourceGroups.length : 0)}
       data-testid="results-grid"
       tabIndex={-1}
       onKeyDown={onKeyDown}
     >
-      <FixedSizeList
-        height={Math.max(ROW_HEIGHT, Math.min(rows.length, 8) * ROW_HEIGHT)}
-        width="100%"
-        itemCount={rows.length}
-        itemSize={ROW_HEIGHT}
-        overscanCount={4}
-        outerElementType={OuterElement}
-        innerElementType={InnerElement}
-      >
-        {Row}
-      </FixedSizeList>
+      {groupBySource ? (
+        <div className="flex flex-col gap-3" data-testid="grouped-results">
+          {sourceGroups.map((group) => {
+            const groupData = {
+              rows: group.rows,
+              resultIndices: group.resultIndices,
+              visualIndices: group.visualIndices,
+            };
+            return (
+              <section key={group.adapterId} role="rowgroup" data-testid="source-group" data-source={group.adapterId} className="flex flex-col gap-1">
+                <div id={"f56.search.sourceGroup." + group.adapterId.replace(/[^A-Za-z0-9._-]/g, "-")} role="row" aria-rowindex={group.headerIndex + 1} data-testid="source-group-header" className="px-3 text-xs font-semibold text-secondary">
+                  <span role="gridcell">{t(group.nameKey)}</span>
+                </div>
+                <FixedSizeList
+                  height={Math.max(ROW_HEIGHT, Math.min(group.rows.length, 8) * ROW_HEIGHT)}
+                  width="100%"
+                  itemCount={group.rows.length}
+                  itemSize={ROW_HEIGHT}
+                  itemData={groupData}
+                  overscanCount={4}
+                  outerElementType={OuterElement}
+                  innerElementType={InnerElement}
+                >
+                  {Row}
+                </FixedSizeList>
+              </section>
+            );
+          })}
+        </div>
+      ) : (
+        <FixedSizeList
+          height={Math.max(ROW_HEIGHT, Math.min(rows.length, 8) * ROW_HEIGHT)}
+          width="100%"
+          itemCount={rows.length}
+          itemSize={ROW_HEIGHT}
+          itemData={flatData}
+          overscanCount={4}
+          outerElementType={OuterElement}
+          innerElementType={InnerElement}
+        >
+          {Row}
+        </FixedSizeList>
+      )}
     </div>
   );
 }

@@ -354,8 +354,8 @@
   },
   "x-f56-source-location": "payloads/search-sources/*.json",
   "x-f56-planned-inventory": {
-    "note": "Plan §E 'Planned adapter inventory' - 'These are the only external adapter files permitted by this plan'. Frozen as the closed set of permitted file names; the loader rejects anything else.",
-    "externalAdapterCount": 27,
+    "note": "F56 base inventory widened by F72's three reviewed public API adapters. The runtime roster remains compiled and reviewed; no runtime-configurable source list is introduced.",
+    "externalAdapterCount": 30,
     "externalAdapters": [
       { "file": "project-gutenberg.json", "rosterSource": "Project Gutenberg", "category": "books", "licencePolicy": "public-domain" },
       { "file": "standard-ebooks.json", "rosterSource": "Standard Ebooks", "category": "books", "licencePolicy": "public-domain" },
@@ -363,8 +363,10 @@
       { "file": "ia-open-library.json", "rosterSource": "IA Open Library", "category": "books", "licencePolicy": "per-result evidence" },
       { "file": "hathitrust.json", "rosterSource": "HathiTrust", "category": "books", "licencePolicy": "per-result evidence" },
       { "file": "wikisource.json", "rosterSource": "Wikisource", "category": "books", "licencePolicy": "per-result evidence" },
+      { "file": "wikipedia-public.json", "rosterSource": "Wikipedia (public API)", "category": "education", "licencePolicy": "creative-commons; fixed HTTPS endpoint" },
       { "file": "doab.json", "rosterSource": "DOAB", "category": "scholarly", "licencePolicy": "open-access" },
       { "file": "arxiv.json", "rosterSource": "arXiv", "category": "scholarly", "licencePolicy": "open-access/evidence policy" },
+      { "file": "arxiv-public.json", "rosterSource": "arXiv (public API)", "category": "scholarly", "licencePolicy": "open-access; fixed HTTPS endpoint" },
       { "file": "biorxiv.json", "rosterSource": "bioRxiv", "category": "scholarly", "licencePolicy": "open-access" },
       { "file": "pubmed-central.json", "rosterSource": "PubMed Central", "category": "scholarly", "licencePolicy": "open-access subset only" },
       { "file": "doaj.json", "rosterSource": "DOAJ", "category": "scholarly", "licencePolicy": "open-access" },
@@ -380,6 +382,7 @@
       { "file": "kindle-audible.json", "rosterSource": "Kindle/Audible", "category": "purchase", "licencePolicy": "purchase" },
       { "file": "kobo.json", "rosterSource": "Kobo", "category": "purchase", "licencePolicy": "purchase" },
       { "file": "google-books.json", "rosterSource": "Google Books", "category": "purchase", "licencePolicy": "purchase" },
+      { "file": "google-books-public.json", "rosterSource": "Google Books (public API)", "category": "books", "licencePolicy": "per-volume accessInfo evidence; unknown is not fetch permission" },
       { "file": "sarasavi.json", "rosterSource": "Sarasavi", "category": "purchase", "licencePolicy": "purchase" },
       { "file": "vijitha-yapa.json", "rosterSource": "Vijitha Yapa", "category": "purchase", "licencePolicy": "purchase" },
       { "file": "godage.json", "rosterSource": "Godage", "category": "purchase", "licencePolicy": "purchase" },
@@ -393,7 +396,7 @@
       "rule": "A separate own-storage.json descriptor may be used for the internal adapter. It uses a reserved internal origin and is not an external source.",
       "openItem": "The 'reserved internal origin' is not named in the plan; the baseUrl pattern above admits DNS hostnames only, so the internal origin's literal value must be supplied by the operator (decisions.md blocker B9)."
     },
-    "totalDescriptorCount": 28
+    "totalDescriptorCount": 31
   },
   "x-f56-per-adapter-obligation": "For each adapter, the implementation PR must pin the official HTTPS origin and documented query endpoint. Regional or redirected domains must be explicitly listed in that adapter's allowedDomains; they may not be discovered dynamically.",
   "x-f56-locked-rules-carried": [

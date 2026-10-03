@@ -78,8 +78,13 @@ export const EXT_TO_RENDERER: Record<string, PreviewRenderer> = {
   cs: "code",
 };
 
+// [F71 §B#5 / F72.1] Preserve compound archive extensions before the generic
+// one-suffix fallback; callers use this for both preview dispatch and badges.
 export function extensionOf(name: string): string {
-  const m = /\.([A-Za-z0-9]+)$/.exec(String(name || ""));
+  const value = String(name || "");
+  const compound = /\.(tar\.(?:gz|xz|bz2))$/i.exec(value);
+  if (compound) return compound[1].toLowerCase();
+  const m = /\.([A-Za-z0-9]+)$/.exec(value);
   return m ? m[1].toLowerCase() : "";
 }
 

@@ -314,6 +314,16 @@
     "keyboard": {
       "help": "Alt+F opens Search. Enter submits."
     },
+    "google": {
+      "open": "Open on google.com"
+    },
+    "lab": {
+      "title": "Search Lab",
+      "placeholder": "Lab inspection is a placeholder. No inspection or provider request runs automatically.",
+      "target": "Explicitly selected result",
+      "notFound": "This result is no longer in the current search state.",
+      "back": "Back to search results"
+    },
     "query": {
       "label": "Search query",
       "placeholder": "Search titles, creators, or paste an https:// URL",
@@ -362,8 +372,18 @@
         "openAccess": "Open access",
         "creativeCommons": "Creative Commons",
         "purchase": "Purchase",
-        "ownStorage": "Own storage"
+        "ownStorage": "Own storage",
+        "unknown": "Unknown"
       },
+      "fileTypes": {
+        "label": "File type",
+        "sourceCode": "Source code"
+      },
+      "yearFrom": "Year from",
+      "yearTo": "Year to",
+      "language": "Language",
+      "anyLanguage": "Any language",
+      "groupBySource": "Group by source",
       "size": {
         "label": "Maximum size",
         "minimum": "0 GB (no cap)",
@@ -413,6 +433,7 @@
       "fetchUnavailable": "Fetch unavailable for this result",
       "previewUnavailableReason": "No preview artifact is available for this result.",
       "purchaseUnavailableReason": "No validated purchase URL is available for this result.",
+      "openInLab": "⋯ Open in Lab",
       "comingSoon": "coming in F56-d"
     },
     "adapter": {
@@ -506,6 +527,7 @@
       "wikisource": "Wikisource",
       "doab": "DOAB",
       "arxiv": "arXiv",
+      "arxivPublic": "arXiv (public API)",
       "biorxiv": "bioRxiv",
       "pubmedCentral": "PubMed Central",
       "doaj": "DOAJ",
@@ -521,11 +543,13 @@
       "kindleAudible": "Kindle/Audible",
       "kobo": "Kobo",
       "googleBooks": "Google Books",
+      "googleBooksPublic": "Google Books (public API)",
       "sarasavi": "Sarasavi",
       "vijithaYapa": "Vijitha Yapa",
       "godage": "Godage",
       "overdriveLibby": "OverDrive/Libby",
-      "ownStorage": "Own storage"
+      "ownStorage": "Own storage",
+      "wikipediaPublic": "Wikipedia (public API)"
     },
     "registry": {
       "title": "Search sources",

@@ -220,6 +220,16 @@
     "keyboard": {
       "help": "Alt+F සෙවුම විවෘත කරයි. Enter ඉදිරිපත් කරයි."
     },
+    "google": {
+      "open": "google.com හි විවෘත කරන්න"
+    },
+    "lab": {
+      "title": "සෙවුම් Lab",
+      "placeholder": "Lab පරීක්ෂාව සඳහා මෙය තාවකාලික පිටුවකි. පරීක්ෂාවක් හෝ සැපයුම්කරු ඉල්ලීමක් ස්වයංක්‍රීයව සිදු නොවේ.",
+      "target": "පැහැදිලිව තෝරාගත් ප්‍රතිඵලය",
+      "notFound": "මෙම ප්‍රතිඵලය වත්මන් සෙවුම් තත්ත්වයේ තවදුරටත් නොමැත.",
+      "back": "සෙවුම් ප්‍රතිඵල වෙත ආපසු"
+    },
     "query": {
       "label": "සෙවුම් විමසුම",
       "placeholder": "මාතෘකා, නිර්මාතෘ සොයන්න, හෝ https:// URL එකක් අලවන්න",
@@ -268,8 +278,18 @@
         "openAccess": "විවෘත ප්‍රවේශය",
         "creativeCommons": "ක්‍රියේටිව් කොමන්ස්",
         "purchase": "මිලදීගැනීම",
-        "ownStorage": "ස්වකීය ගබඩාව"
+        "ownStorage": "ස්වකීය ගබඩාව",
+        "unknown": "නොදන්නා"
       },
+      "fileTypes": {
+        "label": "ගොනු වර්ගය",
+        "sourceCode": "මූලාශ්‍ර කේතය"
+      },
+      "yearFrom": "වසර සිට",
+      "yearTo": "වසර දක්වා",
+      "language": "භාෂාව",
+      "anyLanguage": "ඕනෑම භාෂාවක්",
+      "groupBySource": "මූලාශ්‍රය අනුව කණ්ඩායම් කරන්න",
       "size": {
         "label": "උපරිම ප්‍රමාණය",
         "minimum": "0 GB (සීමාවක් නැත)",
@@ -319,6 +339,7 @@
       "fetchUnavailable": "මෙම ප්‍රතිඵලය සඳහා ලබාගැනීම නොමැත",
       "previewUnavailableReason": "මෙම ප්‍රතිඵලයට පෙරදසුන් ද්‍රව්‍යයක් නොමැත.",
       "purchaseUnavailableReason": "මෙම ප්‍රතිඵලයට සත්‍යාපිත මිලදීගැනුම් URL එකක් නොමැත.",
+      "openInLab": "⋯ Lab හි විවෘත කරන්න",
       "comingSoon": "F56-d දී පැමිණේ"
     },
     "adapter": {
@@ -412,6 +433,7 @@
       "wikisource": "Wikisource",
       "doab": "DOAB",
       "arxiv": "arXiv",
+      "arxivPublic": "arXiv (පොදු API)",
       "biorxiv": "bioRxiv",
       "pubmedCentral": "PubMed Central",
       "doaj": "DOAJ",
@@ -427,11 +449,13 @@
       "kindleAudible": "Kindle/Audible",
       "kobo": "Kobo",
       "googleBooks": "Google Books",
+      "googleBooksPublic": "Google Books (පොදු API)",
       "sarasavi": "Sarasavi",
       "vijithaYapa": "Vijitha Yapa",
       "godage": "Godage",
       "overdriveLibby": "OverDrive/Libby",
-      "ownStorage": "ස්වකීය ගබඩාව"
+      "ownStorage": "ස්වකීය ගබඩාව",
+      "wikipediaPublic": "Wikipedia (පොදු API)"
     },
     "registry": {
       "title": "සෙවුම් මූලාශ්‍ර",

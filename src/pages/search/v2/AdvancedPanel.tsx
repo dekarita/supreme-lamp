@@ -16,6 +16,7 @@ import {
   logToSizeBytes,
   sizeBytesToLog,
   useSearchStore,
+  selectFilterSelectionCount,
   type SearchState,
 } from "@/stores/searchStore";
 import { MAX_SIZE_BYTES } from "@/stores/searchStore";
@@ -24,7 +25,9 @@ import { camel, licenceStyle } from "@/pages/search/tokens";
 import { ADAPTER_ROSTER } from "./adapters";
 
 const CATEGORIES: Category[] = ["books", "audio", "scholarly", "education", "media", "software", "music", "video", "own-storage", "purchase"];
-const LICENCES: LicenceTag[] = ["public-domain", "open-access", "creative-commons", "purchase", "own-storage"];
+const LICENCES: LicenceTag[] = ["public-domain", "open-access", "creative-commons", "purchase", "own-storage", "unknown"];
+const FILE_TYPES = ["pdf", "epub", "mp3", "mp4", "zip", "tar.gz", "source-code", "exe", "deb", "rpm", "dmg", "msi"] as const;
+const LANGUAGES = ["JavaScript", "TypeScript", "Python", "Go", "Rust", "Java", "C", "C++"];
 const SORTS: SortKey[] = ["relevance", "size", "date"];
 
 function formatGb(bytes: number): string {
@@ -41,7 +44,16 @@ export function AdvancedPanel({ open }: { open: boolean }) {
   const sort = useSearchStore((s) => s.sort);
   const scope = useSearchStore((s) => s.scope);
   const adapterIds = useSearchStore((s) => s.adapterIds);
-  const filterCount = useSearchStore((s) => s.categories.length + s.licenceTags.length + s.adapterIds.length);
+  const fileExtensions = useSearchStore((s) => s.fileExtensions);
+  const yearFrom = useSearchStore((s) => s.yearFrom);
+  const yearTo = useSearchStore((s) => s.yearTo);
+  const language = useSearchStore((s) => s.language);
+  const groupBySource = useSearchStore((s) => s.groupBySource);
+  const filterCount = useSearchStore(selectFilterSelectionCount);
+  const toggleFileExtension = useSearchStore((s) => s.toggleFileExtension);
+  const setYearRange = useSearchStore((s) => s.setYearRange);
+  const setLanguage = useSearchStore((s) => s.setLanguage);
+  const toggleGroupBySource = useSearchStore((s) => s.toggleGroupBySource);
   const toggleCategory = useSearchStore((s) => s.toggleCategory);
   const toggleLicence = useSearchStore((s) => s.toggleLicence);
   const toggleAdapter = useSearchStore((s) => s.toggleAdapter);
@@ -124,6 +136,68 @@ export function AdvancedPanel({ open }: { open: boolean }) {
               {t("search.filters.licence." + camel(l))}
             </button>
           ))}
+        </div>
+
+        {/* [F71 §D#4 / F73.2] Local-only filters; no new network lane. */}
+        <div id="f56.search.v2.fileExtGroup" role="group" aria-label={t("search.filters.fileTypes.label")} className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-tertiary mr-1">{t("search.filters.fileTypes.label")}</span>
+          {FILE_TYPES.map((ext) => {
+            const idExt = ext === "tar.gz" ? "tar-gz" : ext;
+            return (
+              <button
+                key={ext}
+                id={"f56.search.v2.fileExtChip." + idExt}
+                type="button"
+                aria-pressed={fileExtensions.includes(ext)}
+                onClick={() => toggleFileExtension(ext)}
+                className={"h-11 px-3 rounded-full border text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " + (fileExtensions.includes(ext) ? "bg-accent/10 border-accent text-accent" : "border-default text-secondary hover:bg-raised")}
+              >
+                {ext === "source-code" ? t("search.filters.fileTypes.sourceCode") : "." + ext}
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <label htmlFor="f56.search.v2.yearFrom" className="text-xs text-tertiary">{t("search.filters.yearFrom")}</label>
+          <input
+            id="f56.search.v2.yearFrom"
+            type="number"
+            min={0}
+            max={9999}
+            value={yearFrom ?? ""}
+            onChange={(e) => setYearRange(e.currentTarget.value === "" ? null : Number(e.currentTarget.value), yearTo)}
+            className="h-11 w-24 px-2 rounded-md border border-default bg-base text-xs text-primary"
+          />
+          <label htmlFor="f56.search.v2.yearTo" className="text-xs text-tertiary">{t("search.filters.yearTo")}</label>
+          <input
+            id="f56.search.v2.yearTo"
+            type="number"
+            min={0}
+            max={9999}
+            value={yearTo ?? ""}
+            onChange={(e) => setYearRange(yearFrom, e.currentTarget.value === "" ? null : Number(e.currentTarget.value))}
+            className="h-11 w-24 px-2 rounded-md border border-default bg-base text-xs text-primary"
+          />
+          <label htmlFor="f56.search.v2.languageFilter" className="text-xs text-tertiary">{t("search.filters.language")}</label>
+          <select
+            id="f56.search.v2.languageFilter"
+            value={language}
+            onChange={(e) => setLanguage(e.currentTarget.value)}
+            className="h-11 px-2 rounded-md border border-default bg-base text-xs text-primary"
+          >
+            <option value="">{t("search.filters.anyLanguage")}</option>
+            {LANGUAGES.map((lang) => <option key={lang} value={lang}>{lang}</option>)}
+          </select>
+          <button
+            id="f56.search.v2.groupBySourceToggle"
+            type="button"
+            aria-pressed={groupBySource}
+            onClick={() => toggleGroupBySource()}
+            className={"h-11 px-3 rounded-md border text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " + (groupBySource ? "bg-accent/10 border-accent text-accent" : "border-default text-secondary hover:bg-raised")}
+          >
+            {t("search.filters.groupBySource")}
+          </button>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">

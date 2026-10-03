@@ -5,6 +5,10 @@
 // F56-d stub: nothing in F56-c starts a download or a preview byte fetch.
 // Stale responses are rejected with the monotonic queryGeneration.
 import { create } from "zustand";
+import { customSources } from "@/search/custom-source-store";
+import { fileExtension } from "@/pages/search/tokens";
+import { DEFAULT_FANOUT_ADAPTER_IDS, resolveFanOutAdapters } from "@/lib/search/fanOut";
+import { scoreResult } from "@/lib/search/relevance";
 import {
   cancelSearch as apiCancelSearch,
   createSearch,
@@ -32,10 +36,9 @@ export const DEFAULT_MAX_SIZE_BYTES = 0;
 export const A1_PLANNED_DEFAULT_MAX_SIZE_BYTES = 10 * GB;
 export const MAX_SIZE_BYTES = 100 * GB;
 
-// [F69 §2.1] Default adapter pre-selected when the user types a query and
-// submits without opening Advanced (F68 Extension Rank 1): internet-archive
-// gives broad coverage without purchase-only noise. The user can still toggle
-// adapter chips in AdvancedPanel; an empty selection fans out to every adapter.
+// [F71 §D#1 / F73.1] Keep the legacy single-source export for F69 callers, but
+// the live initial/reset selection is the reviewed five-source fan-out pack.
+export { DEFAULT_FANOUT_ADAPTER_IDS };
 export const DEFAULT_ADAPTER_ID = "internet-archive";
 
 export function classifyQuery(raw: string): InputKind {
@@ -82,6 +85,11 @@ export interface SearchState {
   maxSizeBytes: number;
   sort: SortKey;
   scope: Scope;
+  fileExtensions: string[];
+  yearFrom: number | null;
+  yearTo: number | null;
+  language: string;
+  groupBySource: boolean;
   // [F56-c v2] Advanced "adapter selection": empty = probe every compiled
   // source (the frozen contract's optional adapterIds). F56-b compiles the
   // registry; the ids come from the derived roster (search/v2/adapters.ts).
@@ -118,6 +126,10 @@ export interface SearchState {
   setMaxSizeBytes: (n: number) => void;
   setSort: (s: SortKey) => void;
   setScope: (s: Scope) => void;
+  toggleFileExtension: (ext: string) => void;
+  setYearRange: (from: number | null, to: number | null) => void;
+  setLanguage: (lang: string) => void;
+  toggleGroupBySource: () => void;
   submit: () => Promise<void>;
   pollOnce: () => Promise<void>;
   cancelSearch: () => Promise<void>;
@@ -150,7 +162,12 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   maxSizeBytes: DEFAULT_MAX_SIZE_BYTES,
   sort: "relevance",
   scope: "federated",
-  adapterIds: [DEFAULT_ADAPTER_ID],
+  fileExtensions: [],
+  yearFrom: null,
+  yearTo: null,
+  language: "",
+  groupBySource: false,
+  adapterIds: [...DEFAULT_FANOUT_ADAPTER_IDS],
   adapters: {},
   searchId: "",
   requestId: "",
@@ -189,10 +206,23 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     set({ adapterIds: cur.includes(adapterId) ? cur.filter((x) => x !== adapterId) : [...cur, adapterId] });
   },
   resetFilters: () =>
-    set({ categories: [], licenceTags: [], maxSizeBytes: DEFAULT_MAX_SIZE_BYTES, sort: "relevance", adapterIds: [DEFAULT_ADAPTER_ID] }),
+    set({ categories: [], licenceTags: [], maxSizeBytes: DEFAULT_MAX_SIZE_BYTES, sort: "relevance", fileExtensions: [], yearFrom: null, yearTo: null, language: "", groupBySource: false, adapterIds: [...DEFAULT_FANOUT_ADAPTER_IDS] }),
   setMaxSizeBytes: (n) => set({ maxSizeBytes: Math.max(0, Math.min(n, MAX_SIZE_BYTES)) }),
   setSort: (s) => set({ sort: s }),
   setScope: (s) => set({ scope: s }),
+  toggleFileExtension: (ext) => {
+    const current = get().fileExtensions;
+    set({ fileExtensions: current.includes(ext) ? current.filter((item) => item !== ext) : [...current, ext] });
+  },
+  setYearRange: (from, to) => {
+    const clean = (value: number | null) => value == null || !Number.isFinite(value) ? null : Math.max(0, Math.min(9999, Math.floor(value)));
+    let yearFrom = clean(from);
+    let yearTo = clean(to);
+    if (yearFrom != null && yearTo != null && yearFrom > yearTo) [yearFrom, yearTo] = [yearTo, yearFrom];
+    set({ yearFrom, yearTo });
+  },
+  setLanguage: (lang) => set({ language: String(lang || "").trim() }),
+  toggleGroupBySource: () => set({ groupBySource: !get().groupBySource }),
 
   submit: async () => {
     const st = get();
@@ -229,7 +259,7 @@ export const useSearchStore = create<SearchState>((set, get) => ({
       scope: st.scope,
       categories: st.categories.length ? st.categories : undefined,
       licenceTags: st.licenceTags.length ? st.licenceTags : undefined,
-      adapterIds: st.adapterIds.length ? st.adapterIds : undefined,
+      adapterIds: resolveFanOutAdapters(st.adapterIds, customSources),
       maxSizeBytes: st.maxSizeBytes,
       sort: st.sort,
       limit: 50,
@@ -303,9 +333,9 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     });
   },
   setActiveRow: (index) => {
-    const order = get().resultOrder;
-    const clamped = Math.max(-1, Math.min(index, order.length - 1));
-    set({ activeRowIndex: clamped, activeResultId: clamped >= 0 ? order[clamped] : "" });
+    const visibleRows = selectVisibleResults(get());
+    const clamped = Math.max(-1, Math.min(index, visibleRows.length - 1));
+    set({ activeRowIndex: clamped, activeResultId: clamped >= 0 ? visibleRows[clamped]?.resultId || "" : "" });
   },
   openPreview: (resultId) => set({ previewResultId: resultId }),
   closePreview: () => set({ previewResultId: "" }),
@@ -338,25 +368,49 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   },
 }));
 
-export type ResultFilters = Pick<SearchState, "results" | "resultOrder" | "categories" | "licenceTags" | "maxSizeBytes" | "sort">;
+export type ResultFilters = Pick<SearchState, "results" | "resultOrder" | "categories" | "licenceTags" | "maxSizeBytes" | "sort" | "normalizedQuery" | "fileExtensions" | "yearFrom" | "yearTo" | "language">;
 
-/** Local filters + stable sort (Plan §B/§D). Applied to received results first;
- *  equal values retain adapter order and result identity order. maxSizeBytes 0
- *  means no cap (decisions.md A1); unknown sizes are never filtered out. */
+const SOURCE_CODE_EXTENSIONS = new Set(["py", "js", "ts", "go", "rs", "java", "c", "cpp", "h", "wasm"]);
+const SOURCE_CODE_LANGUAGES = new Set(["javascript", "typescript", "python", "go", "rust", "java", "c", "c++"]);
+
+/** Local filters + deterministic relevance/date/size ordering over received results. */
 export function selectVisibleResults(s: ResultFilters): SearchResult[] {
   const out: SearchResult[] = [];
+  const fileExtensions = s.fileExtensions || [];
   for (const id of s.resultOrder) {
     const r = s.results[id];
     if (!r) continue;
     if (s.categories.length && !s.categories.includes(r.category)) continue;
     if (s.licenceTags.length && !s.licenceTags.includes(r.licenceTag)) continue;
     if (s.maxSizeBytes > 0 && r.sizeBytes != null && r.sizeBytes > s.maxSizeBytes) continue;
+    if (s.yearFrom != null || s.yearTo != null) {
+      const yearText = String(r.date || "").slice(0, 4);
+      const year = /^\d{4}$/.test(yearText) ? Number(yearText) : null;
+      if (year == null) continue;
+      if (s.yearFrom != null && year < s.yearFrom) continue;
+      if (s.yearTo != null && year > s.yearTo) continue;
+    }
+    if (s.language) {
+      const resultLanguage = String(r.metadata?.language || "").toLocaleLowerCase();
+      if (resultLanguage !== s.language.toLocaleLowerCase()) continue;
+    }
+    if (fileExtensions.length) {
+      const ext = fileExtension(r);
+      const codeLanguage = String(r.metadata?.language || "").trim().toLocaleLowerCase();
+      const sourceCode = SOURCE_CODE_EXTENSIONS.has(ext || "") || SOURCE_CODE_LANGUAGES.has(codeLanguage);
+      const matches = fileExtensions.some((filter) => filter === "source-code" ? sourceCode : ext === filter);
+      if (!matches) continue;
+    }
     out.push(r);
   }
+  const stableIndex = new Map(s.resultOrder.map((id, index) => [id, index]));
+  const tieBreak = (a: SearchResult, b: SearchResult) => (stableIndex.get(a.resultId) ?? 0) - (stableIndex.get(b.resultId) ?? 0);
   if (s.sort === "size") {
-    out.sort((a, b) => (b.sizeBytes ?? -1) - (a.sizeBytes ?? -1));
+    out.sort((a, b) => (b.sizeBytes ?? -1) - (a.sizeBytes ?? -1) || tieBreak(a, b));
   } else if (s.sort === "date") {
-    out.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+    out.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || tieBreak(a, b));
+  } else {
+    out.sort((a, b) => scoreResult(s.normalizedQuery, b) - scoreResult(s.normalizedQuery, a) || tieBreak(a, b));
   }
   return out;
 }
@@ -364,7 +418,9 @@ export function selectVisibleResults(s: ResultFilters): SearchResult[] {
 export function selectFilterSelectionCount(s: SearchState): number {
   // [F56-c v2] 0 = no cap = NOT a filter, so the untouched default counts 0.
   const sizeFiltered = s.maxSizeBytes > 0 && s.maxSizeBytes < MAX_SIZE_BYTES ? 1 : 0;
-  return s.categories.length + s.licenceTags.length + s.adapterIds.length + sizeFiltered;
+  const yearFiltered = s.yearFrom != null || s.yearTo != null ? 1 : 0;
+  const languageFiltered = s.language ? 1 : 0;
+  return s.categories.length + s.licenceTags.length + s.adapterIds.length + s.fileExtensions.length + yearFiltered + languageFiltered + sizeFiltered;
 }
 
 export function logToSizeBytes(position: number): number {

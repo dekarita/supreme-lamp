@@ -1199,6 +1199,278 @@ function Remove-CredKeys {
     } catch { }
     return $Obj
 }
+# [F71 §B#3/#4, §C#2.1/#2.3/#2.4/#2.6/#2.8 / F72.2-F72.4]
+# Fixed public API adapters. Only literal vendor hosts are queried; each result
+# URL is revalidated against an exact host roster before it can reach the client.
+$script:F72ApiHosts = @('api.github.com','archive.org','export.arxiv.org','en.wikipedia.org','www.googleapis.com')
+$script:F72ResultHosts = @('github.com','archive.org','arxiv.org','export.arxiv.org','en.wikipedia.org','books.google.com')
+$script:DefaultFanOutAdapterIds = @('github-releases','internet-archive','arxiv-public','wikipedia-public','google-books-public')
+$script:F72CoreAdapterIds = @('github-releases','internet-archive','arxiv-public','wikipedia-public','google-books-public')
+$script:F72AllowedAdapters = @('project-gutenberg','standard-ebooks','librivox','ia-open-library','hathitrust','wikisource','doab','arxiv','arxiv-public','biorxiv','pubmed-central','doaj','oer-commons','ssrn','internet-archive','blender-studio','wikimedia-commons','sourceforge','github-releases','bandcamp','cc-marked-youtube','kindle-audible','kobo','google-books','google-books-public','wikipedia-public','sarasavi','vijitha-yapa','godage','overdrive-libby','own-storage','custom')
+if (-not $script:F56dSearchMap) { $script:F56dSearchMap = @{} }
+if (-not $script:F56dResultsMap) { $script:F56dResultsMap = @{} }
+if (-not $script:F72LastAdapterCall) { $script:F72LastAdapterCall = @{} }
+if (-not $script:F72SearchGeneration) { $script:F72SearchGeneration = 0 }
+
+function Get-F72ExactHttpsUri {
+    param([string]$Value, [string[]]$AllowedHosts)
+    try {
+        $u = [uri]$Value
+        $hostName = $u.DnsSafeHost.ToLowerInvariant()
+        $hostOk = $false
+        foreach ($allowed in @($AllowedHosts)) { if ($hostName -ceq [string]$allowed) { $hostOk = $true; break } }
+        if ($u.Scheme -cne 'https' -or $u.Port -ne 443 -or $u.UserInfo -or -not $hostOk) { return $null }
+        # Provider links must not smuggle API credentials into client URLs.
+        foreach ($pair in ($u.Query.TrimStart('?') -split '&')) {
+            if (-not $pair) { continue }
+            $key = [uri]::UnescapeDataString((@($pair -split '=',2))[0]).ToLowerInvariant()
+            if ($key -in @('key','token','dash-token','dash_token','access-token','access_token','password','api_key','apikey')) { return $null }
+        }
+        return $u
+    } catch { return $null }
+}
+
+function Invoke-F72HttpGet {
+    param([string]$Url, [string]$ExpectedHost, [int]$TimeoutSec = 20)
+    $u = Get-F72ExactHttpsUri -Value $Url -AllowedHosts @($ExpectedHost)
+    if (-not $u) { return @{ ok = $false; statusCode = 0; content = ''; headers = $null; retryAfter = ''; errorCode = 'DOMAIN_NOT_ALLOWLISTED' } }
+    try {
+        # Redirects are disabled: a vendor response cannot pivot this request to another host.
+        $response = Invoke-WebRequest -Uri $u.AbsoluteUri -Method Get -TimeoutSec $TimeoutSec -MaximumRedirection 0 -UseBasicParsing -ErrorAction Stop
+        $statusCode = [int]$response.StatusCode
+        $content = [string]$response.Content
+        if ($content.Length -gt 2097152) { return @{ ok = $false; statusCode = 413; content = ''; headers = $response.Headers; retryAfter = ''; errorCode = 'PARSE_FAILED' } }
+        $retryAfter = ''
+        try { $retryAfter = [string]$response.Headers['Retry-After'] } catch { }
+        $remaining = ''
+        try { $remaining = [string]$response.Headers['X-RateLimit-Remaining'] } catch { }
+        $reset = ''
+        try { $reset = [string]$response.Headers['X-RateLimit-Reset'] } catch { }
+        return @{ ok = ($statusCode -ge 200 -and $statusCode -lt 300); statusCode = $statusCode; content = $content; headers = $response.Headers; retryAfter = $retryAfter; remaining = $remaining; reset = $reset; errorCode = '' }
+    } catch {
+        $statusCode = 0; $headers = $null; $retryAfter = ''; $remaining = ''; $reset = ''
+        try { $response = $_.Exception.Response; if ($response) { $statusCode = [int]$response.StatusCode; $headers = $response.Headers } } catch { }
+        try { $retryAfter = [string]$headers['Retry-After'] } catch { }
+        try { $remaining = [string]$headers['X-RateLimit-Remaining'] } catch { }
+        try { $reset = [string]$headers['X-RateLimit-Reset'] } catch { }
+        $errorCode = ''
+        if ($_.Exception -is [System.TimeoutException] -or $_.Exception.Message -match '(?i)timed out|timeout') { $errorCode = 'TIMEOUT' }
+        return @{ ok = $false; statusCode = $statusCode; content = ''; headers = $headers; retryAfter = $retryAfter; remaining = $remaining; reset = $reset; errorCode = $errorCode }
+    }
+}
+
+function Test-F72RateWindow {
+    param([string]$AdapterId, [int]$MinimumIntervalSeconds)
+    if (-not $script:F72LastAdapterCall) { $script:F72LastAdapterCall = @{} }
+    $now = [datetime]::UtcNow
+    if ($script:F72LastAdapterCall.ContainsKey($AdapterId)) {
+        $elapsed = ($now - [datetime]$script:F72LastAdapterCall[$AdapterId]).TotalSeconds
+        if ($elapsed -lt $MinimumIntervalSeconds) {
+            $retryAt = $now.AddSeconds([Math]::Ceiling($MinimumIntervalSeconds - $elapsed)).ToString('o')
+            return @{ allowed = $false; retryAfter = $retryAt }
+        }
+    }
+    $script:F72LastAdapterCall[$AdapterId] = $now
+    return @{ allowed = $true; retryAfter = '' }
+}
+
+function Wait-F72RateWindow {
+    param([string]$AdapterId, [int]$MinimumIntervalSeconds)
+    if (-not $script:F72LastAdapterCall) { $script:F72LastAdapterCall = @{} }
+    if ($script:F72LastAdapterCall.ContainsKey($AdapterId)) {
+        $elapsed = ([datetime]::UtcNow - [datetime]$script:F72LastAdapterCall[$AdapterId]).TotalSeconds
+        if ($elapsed -lt $MinimumIntervalSeconds) { Start-Sleep -Milliseconds ([int][Math]::Ceiling(($MinimumIntervalSeconds - $elapsed) * 1000)) }
+    }
+    $script:F72LastAdapterCall[$AdapterId] = [datetime]::UtcNow
+}
+
+function New-F72AdapterOutcome {
+    param([string]$Status, [object[]]$Rows = @(), [string]$RetryAfter = '', [string]$ErrorCode = '')
+    return @{ status = $Status; results = @($Rows); retryAfter = $RetryAfter; lastErrorCode = $ErrorCode }
+}
+
+function Get-F72SourceNameKey {
+    param([string]$AdapterId)
+    switch ($AdapterId) {
+        'github-releases' { return 'search.sources.githubReleases' }
+        'internet-archive' { return 'search.sources.internetArchive' }
+        'arxiv-public' { return 'search.sources.arxivPublic' }
+        'wikipedia-public' { return 'search.sources.wikipediaPublic' }
+        'google-books-public' { return 'search.sources.googleBooksPublic' }
+        default { return 'search.errors.unknownSource' }
+    }
+}
+
+function New-F72SearchResult {
+    param(
+        [string]$AdapterId, [string]$Category, [string]$Title, [string]$Creator,
+        [string]$SourceUrl, [string]$LicenceTag, [string]$LicenceEvidence = '',
+        [string]$MimeType = '', [string]$Date = '', [string]$Snippet = '',
+        [string]$PreviewUrl = '', [string]$PurchaseUrl = '', [string]$Availability = '',
+        [hashtable]$Metadata = @{}
+    )
+    $titleText = ([string]$Title -replace '\s+',' ').Trim()
+    if (-not $titleText) { return $null }
+    $source = Get-F72ExactHttpsUri -Value $SourceUrl -AllowedHosts $script:F72ResultHosts
+    if (-not $source) { return $null }
+    $preview = $null; $purchase = $null
+    if ($PreviewUrl) { $previewUri = Get-F72ExactHttpsUri -Value $PreviewUrl -AllowedHosts $script:F72ResultHosts; if ($previewUri) { $preview = $previewUri.AbsoluteUri } }
+    if ($PurchaseUrl) { $purchaseUri = Get-F72ExactHttpsUri -Value $PurchaseUrl -AllowedHosts $script:F72ResultHosts; if ($purchaseUri) { $purchase = $purchaseUri.AbsoluteUri } }
+    if ($LicenceTag -notin @('public-domain','open-access','creative-commons','purchase','own-storage','unknown')) { $LicenceTag = 'unknown' }
+    $resultId = 'f72-' + [guid]::NewGuid().ToString('N')
+    $snapshotId = 'f72-' + [guid]::NewGuid().ToString('N')
+    return [ordered]@{
+        resultId = $resultId; adapterId = $AdapterId; nameKey = (Get-F72SourceNameKey $AdapterId)
+        category = $Category; title = $titleText; creator = $(if ($Creator) { [string]$Creator } else { $null })
+        sizeBytes = $null; contentLength = $null; licenceTag = $LicenceTag
+        licenceEvidence = $(if ($LicenceEvidence) { [string]$LicenceEvidence } else { $null })
+        sourceSnapshotId = $snapshotId; sourceUrl = $source.AbsoluteUri; previewUrl = $preview
+        purchaseUrl = $purchase; transportHint = $null; mimeType = $(if ($MimeType) { $MimeType } else { $null })
+        date = $(if ($Date) { [string]$Date } else { $null }); availability = $(if ($Availability) { [string]$Availability } else { $null })
+        snippet = $(if ($Snippet) { ([string]$Snippet -replace '\s+',' ').Trim().Substring(0,[Math]::Min(1200,(([string]$Snippet -replace '\s+',' ').Trim()).Length)) } else { $null })
+        metadata = $Metadata
+    }
+}
+
+function Invoke-F72GithubReleases {
+    param([string]$Query, [int]$Limit)
+    $gate = Test-F72RateWindow -AdapterId 'github-releases' -MinimumIntervalSeconds 6
+    if (-not $gate.allowed) { return New-F72AdapterOutcome -Status 'rate-limited' -RetryAfter $gate.retryAfter -ErrorCode 'RATE_LIMITED' }
+    $uri = 'https://api.github.com/search/repositories?q=' + [uri]::EscapeDataString($Query) + '&per_page=' + [Math]::Min(50,[Math]::Max(1,$Limit))
+    $api = Invoke-F72HttpGet -Url $uri -ExpectedHost 'api.github.com'
+    $retry = [string]$api.retryAfter
+    if ($api.statusCode -eq 429 -or ($api.statusCode -eq 403 -and [string]$api.remaining -eq '0')) {
+        if (-not $retry -and [string]$api.reset -match '^\d+$') { try { $retry = [DateTimeOffset]::FromUnixTimeSeconds([long]$api.reset).UtcDateTime.ToString('o') } catch { } }
+        return New-F72AdapterOutcome -Status 'rate-limited' -RetryAfter $retry -ErrorCode 'RATE_LIMITED'
+    }
+    if (-not $api.ok) { return New-F72AdapterOutcome -Status $(if ($api.errorCode -eq 'TIMEOUT') { 'timed-out' } else { 'failed' }) -ErrorCode ([string]$api.errorCode) }
+    try { $payload = [string]$api.content | ConvertFrom-Json -ErrorAction Stop } catch { return New-F72AdapterOutcome -Status 'failed' -ErrorCode 'PARSE_FAILED' }
+    $rows = @()
+    foreach ($item in @($payload.items)) {
+        $spdx = ''; try { $spdx = [string]$item.license.spdx_id } catch { }
+        $tag = 'unknown'; if ($spdx -in @('MIT','Apache-2.0','BSD-3-Clause','GPL-3.0','GPL-3.0-only','BSD-2-Clause')) { $tag = 'open-access' }
+        $owner = ''; try { $owner = [string]$item.owner.login } catch { }
+        $metadata = @{ stars = [long]$item.stargazers_count; language = [string]$item.language; topics = @($item.topics); pushedAt = [string]$item.pushed_at }
+        $row = New-F72SearchResult -AdapterId 'github-releases' -Category 'software' -Title ([string]$item.full_name) -Creator $owner -SourceUrl ([string]$item.html_url) -LicenceTag $tag -LicenceEvidence $spdx -Date ([string]$item.updated_at) -Snippet ([string]$item.description) -Availability 'repository metadata' -Metadata $metadata
+        if ($row) { $rows += $row }
+    }
+    return New-F72AdapterOutcome -Status $(if ($rows.Count) { 'complete' } else { 'empty' }) -Rows $rows -RetryAfter $retry
+}
+
+function Invoke-F72InternetArchive {
+    param([string]$Query, [int]$Limit)
+    $gate = Test-F72RateWindow -AdapterId 'internet-archive' -MinimumIntervalSeconds 2
+    if (-not $gate.allowed) { return New-F72AdapterOutcome -Status 'rate-limited' -RetryAfter $gate.retryAfter -ErrorCode 'RATE_LIMITED' }
+    $q = [uri]::EscapeDataString($Query)
+    $uri = 'https://archive.org/advancedsearch.php?q=' + $q + '&fl%5B%5D=identifier,title,creator,date,mediatype&output=json&rows=' + [Math]::Min(50,[Math]::Max(1,$Limit))
+    $api = Invoke-F72HttpGet -Url $uri -ExpectedHost 'archive.org'
+    if ($api.statusCode -eq 429) { return New-F72AdapterOutcome -Status 'rate-limited' -RetryAfter ([string]$api.retryAfter) -ErrorCode 'RATE_LIMITED' }
+    if (-not $api.ok) { return New-F72AdapterOutcome -Status $(if ($api.errorCode -eq 'TIMEOUT') { 'timed-out' } else { 'failed' }) -ErrorCode ([string]$api.errorCode) }
+    try { $payload = [string]$api.content | ConvertFrom-Json -ErrorAction Stop } catch { return New-F72AdapterOutcome -Status 'failed' -ErrorCode 'PARSE_FAILED' }
+    $rows = @()
+    foreach ($doc in @($payload.response.docs)) {
+        $identifier = [string]$doc.identifier
+        if (-not $identifier -or $identifier -notmatch '^[A-Za-z0-9._-]{1,200}$') { continue }
+        $creator = ''; try { $creator = (@($doc.creator) -join '; ') } catch { }
+        $media = [string]$doc.mediatype
+        $category = 'media'
+        if ($media -in @('texts','web')) { $category = 'books' }
+        elseif ($media -eq 'audio') { $category = 'audio' }
+        elseif ($media -eq 'software') { $category = 'software' }
+        elseif ($media -in @('movies','video')) { $category = 'video' }
+        $source = 'https://archive.org/details/' + [uri]::EscapeDataString($identifier)
+        $row = New-F72SearchResult -AdapterId 'internet-archive' -Category $category -Title ([string]$doc.title) -Creator $creator -SourceUrl $source -LicenceTag 'unknown' -LicenceEvidence '' -Date ([string]$doc.date) -Availability $media -Metadata @{ identifier = $identifier; mediatype = $media }
+        if ($row) { $rows += $row }
+    }
+    return New-F72AdapterOutcome -Status $(if ($rows.Count) { 'complete' } else { 'empty' }) -Rows $rows
+}
+
+function Invoke-F72ArxivPublic {
+    param([string]$Query, [int]$Limit)
+    # arXiv's published policy is one request every three seconds; serialize with a real delay.
+    Wait-F72RateWindow -AdapterId 'arxiv-public' -MinimumIntervalSeconds 3
+    $uri = 'https://export.arxiv.org/api/query?search_query=all:' + [uri]::EscapeDataString($Query) + '&max_results=' + [Math]::Min(50,[Math]::Max(1,$Limit))
+    $api = Invoke-F72HttpGet -Url $uri -ExpectedHost 'export.arxiv.org'
+    if ($api.statusCode -eq 429) { return New-F72AdapterOutcome -Status 'rate-limited' -RetryAfter ([string]$api.retryAfter) -ErrorCode 'RATE_LIMITED' }
+    if (-not $api.ok) { return New-F72AdapterOutcome -Status $(if ($api.errorCode -eq 'TIMEOUT') { 'timed-out' } else { 'failed' }) -ErrorCode ([string]$api.errorCode) }
+    try { [xml]$feed = [string]$api.content } catch { return New-F72AdapterOutcome -Status 'failed' -ErrorCode 'PARSE_FAILED' }
+    $rows = @()
+    foreach ($entry in @($feed.SelectNodes("//*[local-name()='entry']"))) {
+        $titleNode = $entry.SelectSingleNode("./*[local-name()='title']")
+        $summaryNode = $entry.SelectSingleNode("./*[local-name()='summary']")
+        $publishedNode = $entry.SelectSingleNode("./*[local-name()='published']")
+        $authors = @(); foreach ($author in @($entry.SelectNodes("./*[local-name()='author']/*[local-name()='name']"))) { if ($author.InnerText) { $authors += [string]$author.InnerText } }
+        $pdf = ''; $alternate = ''
+        foreach ($link in @($entry.SelectNodes("./*[local-name()='link']"))) {
+            $rel = [string]$link.GetAttribute('rel'); $title = [string]$link.GetAttribute('title'); $href = [string]$link.GetAttribute('href')
+            if ($title -eq 'pdf') { $pdf = $href }
+            if ($rel -eq 'alternate') { $alternate = $href }
+        }
+        $source = $pdf; if (-not $source) { $source = $alternate }
+        $row = New-F72SearchResult -AdapterId 'arxiv-public' -Category 'scholarly' -Title ([string]$titleNode.InnerText) -Creator ($authors -join '; ') -SourceUrl $source -LicenceTag 'open-access' -LicenceEvidence 'arXiv Atom record' -MimeType 'application/pdf' -Date ([string]$publishedNode.InnerText) -Snippet ([string]$summaryNode.InnerText) -Availability 'open access PDF'
+        if ($row) { $rows += $row }
+    }
+    return New-F72AdapterOutcome -Status $(if ($rows.Count) { 'complete' } else { 'empty' }) -Rows $rows
+}
+
+function Invoke-F72WikipediaPublic {
+    param([string]$Query, [int]$Limit)
+    $gate = Test-F72RateWindow -AdapterId 'wikipedia-public' -MinimumIntervalSeconds 1
+    if (-not $gate.allowed) { return New-F72AdapterOutcome -Status 'rate-limited' -RetryAfter $gate.retryAfter -ErrorCode 'RATE_LIMITED' }
+    $uri = 'https://en.wikipedia.org/w/api.php?action=opensearch&search=' + [uri]::EscapeDataString($Query) + '&limit=' + [Math]::Min(50,[Math]::Max(1,$Limit)) + '&format=json'
+    $api = Invoke-F72HttpGet -Url $uri -ExpectedHost 'en.wikipedia.org'
+    if ($api.statusCode -eq 429) { return New-F72AdapterOutcome -Status 'rate-limited' -RetryAfter ([string]$api.retryAfter) -ErrorCode 'RATE_LIMITED' }
+    if (-not $api.ok) { return New-F72AdapterOutcome -Status $(if ($api.errorCode -eq 'TIMEOUT') { 'timed-out' } else { 'failed' }) -ErrorCode ([string]$api.errorCode) }
+    try { $payload = [string]$api.content | ConvertFrom-Json -ErrorAction Stop } catch { return New-F72AdapterOutcome -Status 'failed' -ErrorCode 'PARSE_FAILED' }
+    $titles = @($payload[1]); $descriptions = @($payload[2]); $urls = @($payload[3]); $rows = @()
+    for ($i = 0; $i -lt $titles.Count; $i++) {
+        $description = ''; if ($i -lt $descriptions.Count) { $description = [string]$descriptions[$i] }
+        $url = ''; if ($i -lt $urls.Count) { $url = [string]$urls[$i] }
+        $row = New-F72SearchResult -AdapterId 'wikipedia-public' -Category 'education' -Title ([string]$titles[$i]) -Creator 'Wikipedia' -SourceUrl $url -LicenceTag 'creative-commons' -LicenceEvidence 'Wikipedia CC BY-SA content notice' -Snippet $description -Availability 'encyclopedia article'
+        if ($row) { $rows += $row }
+    }
+    return New-F72AdapterOutcome -Status $(if ($rows.Count) { 'complete' } else { 'empty' }) -Rows $rows
+}
+
+function Invoke-F72GoogleBooksPublic {
+    param([string]$Query, [int]$Limit, [string]$Cursor = '')
+    $gate = Test-F72RateWindow -AdapterId 'google-books-public' -MinimumIntervalSeconds 1
+    if (-not $gate.allowed) { return New-F72AdapterOutcome -Status 'rate-limited' -RetryAfter $gate.retryAfter -ErrorCode 'RATE_LIMITED' }
+    $startIndex = 0; if ($Cursor -match '^\d{1,6}$') { $startIndex = [int]$Cursor }
+    $uri = 'https://www.googleapis.com/books/v1/volumes?q=' + [uri]::EscapeDataString($Query) + '&maxResults=' + [Math]::Min(40,[Math]::Max(1,$Limit)) + '&startIndex=' + $startIndex
+    $api = Invoke-F72HttpGet -Url $uri -ExpectedHost 'www.googleapis.com'
+    if ($api.statusCode -eq 429) { return New-F72AdapterOutcome -Status 'rate-limited' -RetryAfter ([string]$api.retryAfter) -ErrorCode 'RATE_LIMITED' }
+    if (-not $api.ok) { return New-F72AdapterOutcome -Status $(if ($api.errorCode -eq 'TIMEOUT') { 'timed-out' } else { 'failed' }) -ErrorCode ([string]$api.errorCode) }
+    try { $payload = [string]$api.content | ConvertFrom-Json -ErrorAction Stop } catch { return New-F72AdapterOutcome -Status 'failed' -ErrorCode 'PARSE_FAILED' }
+    $rows = @()
+    foreach ($item in @($payload.items)) {
+        $volume = $item.volumeInfo; $access = $item.accessInfo
+        $authors = @(); try { $authors = @($volume.authors) } catch { }
+        $tag = 'purchase'; $evidence = [string]$access.viewability
+        if ([bool]$access.publicDomain) { $tag = 'public-domain'; $evidence = 'Google Books accessInfo.publicDomain' }
+        elseif ([string]$access.viewability -eq 'ALL_PAGES') { $tag = 'open-access'; $evidence = 'Google Books accessInfo.viewability=ALL_PAGES' }
+        $mime = ''; if ([bool]$access.epub.isAvailable) { $mime = 'application/epub+zip' } elseif ([bool]$access.pdf.isAvailable) { $mime = 'application/pdf' }
+        $previewUrl = [string]$volume.previewLink; $infoUrl = [string]$volume.infoLink
+        $source = $previewUrl; if (-not $source) { $source = $infoUrl }
+        $metadata = @{ volumeId = [string]$item.id; pageCount = $volume.pageCount; categories = @($volume.categories); epubAvailable = [bool]$access.epub.isAvailable; pdfAvailable = [bool]$access.pdf.isAvailable }
+        $row = New-F72SearchResult -AdapterId 'google-books-public' -Category 'books' -Title ([string]$volume.title) -Creator ($authors -join '; ') -SourceUrl $source -LicenceTag $tag -LicenceEvidence $evidence -MimeType $mime -Date ([string]$volume.publishedDate) -Snippet ([string]$volume.description) -PreviewUrl $previewUrl -PurchaseUrl $infoUrl -Availability ([string]$access.viewability) -Metadata $metadata
+        if ($row) { $rows += $row }
+    }
+    return New-F72AdapterOutcome -Status $(if ($rows.Count) { 'complete' } else { 'empty' }) -Rows $rows
+}
+
+function Invoke-F72AdapterQuery {
+    param([string]$AdapterId, [string]$Query, [int]$Limit, [string]$Cursor = '')
+    switch -Exact ($AdapterId) {
+        'github-releases' { return (Invoke-F72GithubReleases -Query $Query -Limit $Limit) }
+        'internet-archive' { return (Invoke-F72InternetArchive -Query $Query -Limit $Limit) }
+        'arxiv-public' { return (Invoke-F72ArxivPublic -Query $Query -Limit $Limit) }
+        'wikipedia-public' { return (Invoke-F72WikipediaPublic -Query $Query -Limit $Limit) }
+        'google-books-public' { return (Invoke-F72GoogleBooksPublic -Query $Query -Limit $Limit -Cursor $Cursor) }
+        default { return (New-F72AdapterOutcome -Status 'failed' -ErrorCode 'UNKNOWN_SOURCE') }
+    }
+}
+
 function Invoke-ClientRequest {
     param($Client, $Token)
     $stream = $null
@@ -1665,7 +1937,7 @@ function Invoke-ClientRequest {
             # Allowlisted adapters from F56 inventory (subset of search sources)
             # [F69 §1.1] kebab-case to match the client roster (src/pages/search/v2/adapters.ts derives
             # project-gutenberg from the i18n search.sources.* keys); camelCase here 400'd 15 adapters.
-            $allowedAdapters = @('project-gutenberg','standard-ebooks','librivox','ia-open-library','hathitrust','wikisource','doab','arxiv','biorxiv','pubmed-central','doaj','oer-commons','ssrn','internet-archive','blender-studio','wikimedia-commons','sourceforge','github-releases','bandcamp','cc-marked-youtube','kindle-audible','kobo','google-books','sarasavi','vijitha-yapa','godage','overdrive-libby','own-storage','custom')
+            $allowedAdapters = @('project-gutenberg','standard-ebooks','librivox','ia-open-library','hathitrust','wikisource','doab','arxiv','arxiv-public','biorxiv','pubmed-central','doaj','oer-commons','ssrn','internet-archive','blender-studio','wikimedia-commons','sourceforge','github-releases','bandcamp','cc-marked-youtube','kindle-audible','kobo','google-books','google-books-public','wikipedia-public','sarasavi','vijitha-yapa','godage','overdrive-libby','own-storage','custom')
             # [F69 §1.2] resultId -> resolved https URL map. Populated by the search lane (F70 /api/search);
             # until then the resultId path fails closed (400) instead of synthesizing a placeholder host.
             if (-not $script:F56dResultsMap) { $script:F56dResultsMap = @{} }
@@ -1776,7 +2048,7 @@ function Invoke-ClientRequest {
                     $hostName = $uriObj.Host.ToLowerInvariant()
                     # Allowlist: if host ends with known source domains or is in custom allowlist file
                     # [F69 §1.2] placeholder/test hosts removed from the allowlist - they defeated the host gate.
-                    $allowHosts = @('gutenberg.org','standardebooks.org','librivox.org','archive.org','openlibrary.org','hathitrust.org','wikisource.org','doabooks.org','arxiv.org','biorxiv.org','ncbi.nlm.nih.gov','doaj.org','oercommons.org','ssrn.com','blender.org','wikimedia.org','sourceforge.net','github.com','bandcamp.com','youtube.com','amazon.com','kobo.com','books.google.com','sarasavi.lk','vijithayapa.com','godage.com','overdrive.com')
+                    $allowHosts = @('gutenberg.org','standardebooks.org','librivox.org','archive.org','openlibrary.org','hathitrust.org','wikisource.org','doabooks.org','arxiv.org','export.arxiv.org','biorxiv.org','ncbi.nlm.nih.gov','doaj.org','oercommons.org','ssrn.com','blender.org','wikimedia.org','sourceforge.net','github.com','api.github.com','bandcamp.com','youtube.com','amazon.com','kobo.com','books.google.com','www.googleapis.com','en.wikipedia.org','sarasavi.lk','vijithayapa.com','godage.com','overdrive.com')
                     foreach ($ah in $allowHosts) { if ($hostName -eq $ah -or $hostName.EndsWith('.' + $ah)) { $domainOk = $true; break } }
                     if (-not $domainOk) {
                         # Check custom registry file if exists
@@ -2207,6 +2479,195 @@ function Invoke-ClientRequest {
                 Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
                 return
             }
+        }
+        # [F71 §B#3/#4, §C#2.1/#2.3/#2.4/#2.6/#2.8 / F72.2-F72.3]
+        # Search metadata only. Fetch/preview bytes still use the existing /api/fetch path.
+        if ($path -in @('/api/search','/api/search/status','/api/search/cancel')) {
+            if ($parts.method -eq 'OPTIONS') {
+                Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@()) -ExtraHeaders "Access-Control-Allow-Headers: Content-Type, Authorization, X-Dash-Token, X-CSRF-Token`r`nAccess-Control-Max-Age: 600"
+                return
+            }
+            $isStatus = ($path -eq '/api/search/status')
+            $expectedMethod = 'POST'; if ($isStatus) { $expectedMethod = 'GET' }
+            if ($parts.method -ne $expectedMethod) {
+                $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = ($expectedMethod + ' required') } }
+                Send-ClientResponse -Stream $stream -Code 405 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                return
+            }
+            $queryCredential = $false
+            try { foreach ($qk in @('key','token','dash-token','dash_token','dashtoken','access-token','access_token','password','api_key','apikey')) { if ($parts.query.ContainsKey($qk)) { $queryCredential = $true; break } } } catch { }
+            if ($queryCredential) {
+                $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'credentials are not accepted in the query string' } }
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                return
+            }
+            $presented = ''; try { $presented = [string]$parts.headers['x-dash-token'] } catch { }
+            if (-not $presented) { $authH = ''; try { $authH = [string]$parts.headers['authorization'] } catch { }; if ($authH -match '^(?i)Bearer\s+(.+)$') { $presented = $Matches[1].Trim() } }
+            $tokenOk = $false
+            if ($presented -and $Token) {
+                $received = [System.Text.Encoding]::UTF8.GetBytes($presented); $expected = [System.Text.Encoding]::UTF8.GetBytes([string]$Token)
+                if (($received.Length -eq $expected.Length) -and (Test-TicketBearer $received $expected)) { $tokenOk = $true }
+            }
+            if (-not $tokenOk) {
+                $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'dash token required' } }
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                return
+            }
+            if ($parts.body.Length -gt 65536) {
+                $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'request body too large' } }
+                Send-ClientResponse -Stream $stream -Code 413 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                return
+            }
+            $requestId = ''; $bodyJson = $null
+            if (-not $isStatus) {
+                $bodyText = ''; try { $bodyText = [System.Text.Encoding]::UTF8.GetString($parts.body) } catch { }
+                try { $bodyJson = $bodyText | ConvertFrom-Json -ErrorAction Stop } catch { $bodyJson = $null }
+                if (-not $bodyJson) {
+                    $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'invalid json' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                try { $requestId = [string]$bodyJson.requestId } catch { }
+                if (-not $requestId -or $requestId.Length -gt 128) {
+                    $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'requestId required' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+            }
+            $traceId = [guid]::NewGuid().ToString('N').Substring(0,12)
+            if ($isStatus) {
+                if (-not $script:F56dSearchMap) { $script:F56dSearchMap = @{} }
+                $searchId = ''; try { $searchId = ([string]$parts.query['searchid']).Trim() } catch { }
+                if (-not $searchId -or $searchId.Length -gt 64 -or -not $script:F56dSearchMap.ContainsKey($searchId)) {
+                    $err = [ordered]@{ requestId = ''; traceId = $traceId; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'searchId not found' } }
+                    Send-ClientResponse -Stream $stream -Code 404 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                $state = $script:F56dSearchMap[$searchId]
+                $offset = 0; $requestedCursor = ''; try { $requestedCursor = [string]$parts.query['cursor'] } catch { }
+                if ($requestedCursor -and $requestedCursor -notmatch '^\d{1,6}$') {
+                    $err = [ordered]@{ requestId = ''; traceId = $traceId; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'invalid cursor' } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                if ($requestedCursor) { $offset = [int]$requestedCursor }
+                $pageLimit = 50; $rawStatusLimit = ''; try { $rawStatusLimit = [string]$parts.query['limit'] } catch { }
+                if ($rawStatusLimit -match '^\d{1,3}$') { $pageLimit = [Math]::Min(50,[Math]::Max(1,[int]$rawStatusLimit)) }
+                $order = @($state.resultOrder); $total = $order.Count
+                if ($offset -gt $total) { $offset = $total }
+                $end = [Math]::Min($total, $offset + $pageLimit); $page = @()
+                for ($i = $offset; $i -lt $end; $i++) { $rid = [string]$order[$i]; if ($state.results.ContainsKey($rid)) { $page += $state.results[$rid] } }
+                $hasMore = ($end -lt $total); $cursor = $null; $phase = [string]$state.phase
+                if ($hasMore) { $cursor = [string]$end; $phase = 'partial' }
+                $adapterStates = @(); foreach ($adapterId in @($state.adapterIds)) { if ($state.adapterStatuses.ContainsKey([string]$adapterId)) { $adapterStates += $state.adapterStatuses[[string]$adapterId] } }
+                $statusBody = [ordered]@{ searchId = $searchId; phase = $phase; queryGeneration = [int]$state.queryGeneration; adapterStatuses = $adapterStates; results = $page; resultOrder = $order; cursor = $cursor; hasMore = [bool]$hasMore; serverTs = [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ'); cancellationState = [string]$state.cancellationState }
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $statusBody)
+                return
+            }
+            if ($path -eq '/api/search/cancel') {
+                try { $searchId = [string]$bodyJson.searchId } catch { $searchId = '' }
+                if (-not $searchId -or -not $script:F56dSearchMap -or -not $script:F56dSearchMap.ContainsKey($searchId)) {
+                    $err = [ordered]@{ requestId = $requestId; traceId = $traceId; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'searchId not found' } }
+                    Send-ClientResponse -Stream $stream -Code 404 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                $state = $script:F56dSearchMap[$searchId]; $cancelStates = @{}
+                foreach ($adapterId in @($state.adapterIds)) {
+                    $adapterId = [string]$adapterId
+                    if ($state.adapterStatuses.ContainsKey($adapterId)) { $state.adapterStatuses[$adapterId].status = 'cancelled'; $state.adapterStatuses[$adapterId].cancellationState = 'cancelled' }
+                    $cancelStates[$adapterId] = 'cancelled'
+                }
+                $state.phase = 'cancelled'; $state.cancellationState = 'cancelled'
+                $cancelBody = [ordered]@{ searchId = $searchId; cancellationState = 'cancelled'; adapterCancellations = $cancelStates; idempotency = 'cancelled' }
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $cancelBody)
+                return
+            }
+            # POST /api/search: query text is data only; adapter URLs are built by fixed helpers.
+            $queryText = ''; try { $queryText = ([string]$bodyJson.query).Trim() } catch { }
+            if (-not $queryText -or $queryText.Length -gt 500) {
+                $err = [ordered]@{ requestId = $requestId; traceId = $traceId; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'query must contain 1-500 characters' } }
+                Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                return
+            }
+            $scope = [string]$bodyJson.scope
+            if ($scope -notin @('federated','own-storage')) {
+                $err = [ordered]@{ requestId = $requestId; traceId = $traceId; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'invalid scope' } }
+                Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                return
+            }
+            $sort = [string]$bodyJson.sort
+            if ($sort -notin @('relevance','size','date')) {
+                $err = [ordered]@{ requestId = $requestId; traceId = $traceId; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'invalid sort' } }
+                Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                return
+            }
+            $limit = 50
+            try { if ($null -ne $bodyJson.limit) { $limit = [int]$bodyJson.limit } } catch { $limit = 0 }
+            if ($limit -lt 1 -or $limit -gt 50) {
+                $err = [ordered]@{ requestId = $requestId; traceId = $traceId; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'limit must be between 1 and 50' } }
+                Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                return
+            }
+            $adapterIds = @(); try { $adapterIds = @($bodyJson.adapterIds) } catch { }
+            if ($adapterIds.Count -eq 0) { $adapterIds = @($script:DefaultFanOutAdapterIds) }
+            $seenAdapters = @{}; $validAdapters = @()
+            foreach ($adapterId in $adapterIds) {
+                $adapterId = ([string]$adapterId).Trim()
+                if (-not $adapterId -or -not ($script:F72AllowedAdapters -ccontains $adapterId)) {
+                    $err = [ordered]@{ requestId = $requestId; traceId = $traceId; code = 'UNKNOWN_SOURCE'; messageKey = 'search.errors.unknownSource'; retryable = $false; details = @{ adapterId = $adapterId } }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
+                }
+                if (-not $seenAdapters.ContainsKey($adapterId)) { $seenAdapters[$adapterId] = $true; $validAdapters += $adapterId }
+            }
+            if ($validAdapters.Count -gt 8) {
+                $err = [ordered]@{ requestId = $requestId; traceId = $traceId; code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'adapter fan-out limit is 8' } }
+                Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                return
+            }
+            $categories = @(); try { $categories = @($bodyJson.categories) } catch { }
+            $licenceTags = @(); try { $licenceTags = @($bodyJson.licenceTags) } catch { }
+            $maxSizeBytes = 0L; try { if ($null -ne $bodyJson.maxSizeBytes) { $maxSizeBytes = [long]$bodyJson.maxSizeBytes } } catch { }
+            if ($maxSizeBytes -lt 0) { $maxSizeBytes = 0 }
+            $script:F72SearchGeneration = [int]$script:F72SearchGeneration + 1
+            $generation = [int]$script:F72SearchGeneration
+            $searchId = [guid]::NewGuid().ToString('N')
+            $state = @{ requestId = $requestId; query = $queryText; adapterIds = @($validAdapters); createdAt = [datetime]::UtcNow.ToString('o'); adapterStatuses = @{}; results = @{}; resultOrder = @(); cursor = ''; phase = 'running'; queryGeneration = $generation; cancellationState = $null; sort = $sort }
+            foreach ($adapterId in $validAdapters) { $state.adapterStatuses[$adapterId] = [ordered]@{ adapterId = $adapterId; nameKey = (Get-F72SourceNameKey $adapterId); status = 'queued'; resultCount = 0; cursor = $null; retryAfter = $null; lastErrorCode = $null; requestGeneration = $generation; contributingPartialResults = $false; cancellationState = $null } }
+            $script:F56dSearchMap[$searchId] = $state
+            foreach ($adapterId in $validAdapters) {
+                if ($state.phase -eq 'cancelled') { break }
+                $state.adapterStatuses[$adapterId].status = 'running'
+                $outcome = Invoke-F72AdapterQuery -AdapterId $adapterId -Query $queryText -Limit $limit -Cursor ([string]$bodyJson.cursor)
+                $rows = @($outcome.results); $acceptedCount = 0
+                foreach ($row in $rows) {
+                    if (-not $row) { continue }
+                    if ($categories.Count -gt 0 -and $categories -cnotcontains [string]$row.category) { continue }
+                    if ($licenceTags.Count -gt 0 -and $licenceTags -cnotcontains [string]$row.licenceTag) { continue }
+                    if ($maxSizeBytes -gt 0 -and $null -ne $row.sizeBytes -and [long]$row.sizeBytes -gt $maxSizeBytes) { continue }
+                    $resultId = [string]$row.resultId
+                    if (-not $resultId -or $state.results.ContainsKey($resultId)) { continue }
+                    $sourceUri = Get-F72ExactHttpsUri -Value ([string]$row.sourceUrl) -AllowedHosts $script:F72ResultHosts
+                    if (-not $sourceUri) { continue }
+                    $state.results[$resultId] = $row
+                    $state.resultOrder = @($state.resultOrder) + $resultId
+                    $script:F56dResultsMap[$resultId] = $sourceUri.AbsoluteUri
+                    $acceptedCount++
+                }
+                $status = [string]$outcome.status
+                $state.adapterStatuses[$adapterId].status = $status
+                $state.adapterStatuses[$adapterId].resultCount = $acceptedCount
+                $state.adapterStatuses[$adapterId].retryAfter = $(if ($outcome.retryAfter) { [string]$outcome.retryAfter } else { $null })
+                $state.adapterStatuses[$adapterId].lastErrorCode = $(if ($outcome.lastErrorCode) { [string]$outcome.lastErrorCode } else { $null })
+            }
+            $successCount = @($state.adapterStatuses.Values | Where-Object { $_.status -in @('complete','empty') }).Count
+            if (@($state.resultOrder).Count -eq 0 -and $successCount -eq 0) { $state.phase = 'failed' }
+            elseif (@($state.resultOrder).Count -eq 0) { $state.phase = 'empty' }
+            else { $state.phase = 'complete' }
+            $accepted = [ordered]@{ requestId = $requestId; searchId = $searchId; phase = $state.phase; acceptedAdapterIds = @($validAdapters); statusRef = '/api/search/status?searchId=' + $searchId; queryGeneration = $generation; adapterStatuses = @($state.adapterStatuses.Values) }
+            Send-ClientResponse -Stream $stream -Code 202 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $accepted)
+            Write-ClientAudit ('search POST /api/search -> 202 adapters=' + $validAdapters.Count + ' results=' + @($state.resultOrder).Count)
+            return
         }
         # [remediation] C2 / agent-payload / .bat endpoints removed -> 404
         # (no enrollment, no command queue, no agent hello/status, no diag up/download, no served payloads/bat)

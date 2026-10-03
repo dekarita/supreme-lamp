@@ -14,7 +14,7 @@ import Search from "@/pages/Search";
 import { shouldStreamDevFixture } from "@/pages/search/devFixture";
 import { fileExtension } from "@/pages/search/tokens";
 import { announceSearchLane, isSearchLaneEnabled } from "@/lib/search/lane";
-import { DEFAULT_ADAPTER_ID, useSearchStore } from "@/stores/searchStore";
+import { DEFAULT_FANOUT_ADAPTER_IDS, useSearchStore } from "@/stores/searchStore";
 import { useSearchUiStore } from "@/stores/searchUiStore";
 
 type Any = any;
@@ -111,12 +111,13 @@ describe("F69 §1.4 search_enable lane flag", () => {
   });
 });
 
-describe("F69 §2.1 default adapter", () => {
-  it("pre-selects internet-archive and resetFilters restores it", () => {
-    expect(DEFAULT_ADAPTER_ID).toBe("internet-archive");
-    useSearchStore.getState().toggleAdapter("arxiv");
+describe("F72/F73 default adapter pack", () => {
+  it("pre-selects the five-source pack and resetFilters restores it", () => {
+    expect(DEFAULT_FANOUT_ADAPTER_IDS).toEqual(["github-releases", "internet-archive", "arxiv-public", "wikipedia-public", "google-books-public"]);
+    useSearchStore.setState({ adapterIds: [...DEFAULT_FANOUT_ADAPTER_IDS] });
+    useSearchStore.getState().toggleAdapter("arxiv-public");
     useSearchStore.getState().resetFilters();
-    expect(useSearchStore.getState().adapterIds).toEqual([DEFAULT_ADAPTER_ID]);
+    expect(useSearchStore.getState().adapterIds).toEqual([...DEFAULT_FANOUT_ADAPTER_IDS]);
   });
 });
 

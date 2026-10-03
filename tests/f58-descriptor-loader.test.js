@@ -11,7 +11,7 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 
 const SCHEMA_PATH = 'docs/f56/schema.json';
-const SCHEMA_SHA256 = 'c33601d94e55bab77cf940918c2949430ba5db19faf3314049f6dedb882336c8';
+const SCHEMA_SHA256 = '8497bda871a40e66261214f9aa160b864f2d68e4c3214b9eec1e71b4d054b6e7';
 
 function loadCore() {
   const src = fs.readFileSync('src/search/custom-source-core.js', 'utf8').replace(/\r\n?/g, '\n');

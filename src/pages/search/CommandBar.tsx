@@ -213,9 +213,26 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
             here exactly once (AdvancedPanel keeps the frozen id inventory). */}
         {advancedOpen ? <AdvancedPanel open={advancedOpen} /> : null}
 
-        <p id="f56.search.keyboardHelp" data-testid="keyboard-help" className="text-xs text-tertiary">
-          {t("search.keyboard.help")}
-        </p>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p id="f56.search.keyboardHelp" data-testid="keyboard-help" className="text-xs text-tertiary">
+            {t("search.keyboard.help")}
+          </p>
+          <button
+            id="f56.search.googleOpen"
+            data-testid="google-search-nav"
+            type="button"
+            disabled={!rawQuery.trim()}
+            aria-label={t("search.google.open")}
+            onClick={() => {
+              const query = rawQuery.trim();
+              if (!query) return;
+              window.open("https://www.google.com/search?q=" + encodeURIComponent(query), "_blank", "noopener,noreferrer");
+            }}
+            className="h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:opacity-50"
+          >
+            ⚡ {t("search.google.open")}
+          </button>
+        </div>
       </section>
     </div>
   );

@@ -19,7 +19,7 @@ export type Category =
   | "video"
   | "own-storage"
   | "purchase";
-export type LicenceTag = "public-domain" | "open-access" | "creative-commons" | "purchase" | "own-storage";
+export type LicenceTag = "public-domain" | "open-access" | "creative-commons" | "purchase" | "own-storage" | "unknown";
 export type SearchPhase = "idle" | "queued" | "running" | "partial" | "complete" | "empty" | "failed" | "cancelled";
 export type AdapterStatusValue =
   | "idle"
@@ -65,6 +65,9 @@ export interface SearchResult {
   mimeType?: string | null;
   date?: string | null;
   availability?: string | null;
+  /** [F71 §D#3 / F72.3] Adapter-owned evidence used only for display/ranking. */
+  snippet?: string | null;
+  metadata?: Record<string, unknown>;
 }
 
 export interface SearchCreateRequest {

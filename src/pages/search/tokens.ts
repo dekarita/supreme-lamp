@@ -21,6 +21,8 @@ export function licenceStyle(tag: LicenceTag): string {
       return "text-[color:var(--search-licence-cc-fg)] bg-[color:var(--search-licence-cc-bg)]";
     case "purchase":
       return "text-[color:var(--search-licence-purchase-fg)] bg-[color:var(--search-licence-purchase-bg)]";
+    case "unknown":
+      return "text-tertiary bg-raised";
     default:
       return "text-[color:var(--search-licence-own-fg)] bg-[color:var(--search-licence-own-bg)]";
   }
@@ -52,15 +54,31 @@ export function formatActualBytes(n: number): string {
   return grouped + " B (" + Math.round((n / (1024 * 1024 * 1024)) * 10) / 10 + " GiB)";
 }
 
-/** [F69 §2.2] Common MIME -> display extension (F68 Extension Rank 2). Only the
- *  families the search roster surfaces today; unknown MIMEs fall through to the
- *  URL/title basename so nothing is invented. */
+/** [F69 §2.2, F71 §B#5 / F72.1] Common MIME -> display extension. Unknown
+ *  MIMEs fall through to the URL/title basename so nothing is invented. */
 const MIME_TO_EXT: Record<string, string> = {
   "application/pdf": "pdf",
   "application/epub+zip": "epub",
   "application/zip": "zip",
   "application/x-iso9660-image": "iso",
   "application/x-bittorrent": "torrent",
+  "application/vnd.rar": "rar",
+  "application/x-rar-compressed": "rar",
+  "application/x-7z-compressed": "7z",
+  "application/vnd.debian.binary-package": "deb",
+  "application/x-rpm": "rpm",
+  "application/vnd.android.package-archive": "apk",
+  "application/x-apple-diskimage": "dmg",
+  "application/x-raw-disk-image": "img",
+  "application/x-subrip": "srt",
+  "text/x-ssa": "ass",
+  "application/x-ass": "ass",
+  "text/vtt": "vtt",
+  "application/wasm": "wasm",
+  "application/x-msdownload": "exe",
+  "application/x-msi": "msi",
+  "application/gzip": "tar.gz",
+  "application/x-gzip": "tar.gz",
   "application/json": "json",
   "application/xml": "xml",
   "text/xml": "xml",
@@ -68,6 +86,17 @@ const MIME_TO_EXT: Record<string, string> = {
   "text/markdown": "md",
   "text/html": "html",
   "text/csv": "csv",
+  "text/x-python": "py",
+  "application/javascript": "js",
+  "text/javascript": "js",
+  "application/typescript": "ts",
+  "text/typescript": "ts",
+  "text/x-go": "go",
+  "text/x-rust": "rs",
+  "text/x-java-source": "java",
+  "text/x-c": "c",
+  "text/x-c++src": "cpp",
+  "text/x-chdr": "h",
   "audio/mpeg": "mp3",
   "audio/mp4": "m4a",
   "audio/ogg": "ogg",

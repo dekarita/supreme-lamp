@@ -237,9 +237,10 @@
           "open-access",
           "creative-commons",
           "purchase",
-          "own-storage"
+          "own-storage",
+          "unknown"
         ],
-        "description": "Plan §B/§E: the five approved licence tags."
+        "description": "Plan §B/§E approved tags plus F72's explicit unknown-evidence tag; unknown is not treated as permission to fetch."
       },
       "Scope": {
         "type": "string",
@@ -377,6 +378,15 @@
           },
           "title": {
             "type": "string"
+          },
+          "snippet": {
+            "type": ["string", "null"],
+            "description": "F72 optional normalized description text; provider markup is never returned."
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "F72 allowlisted, provider-specific scalar metadata for local presentation/ranking only."
           },
           "creator": {
             "type": [
@@ -586,11 +596,11 @@
             "description": "§F 'query generation'; monotonic, used for stale-response rejection (§B)."
           },
           "adapterStatuses": {
-            "type": "object",
-            "additionalProperties": {
+            "type": "array",
+            "items": {
               "$ref": "#/components/schemas/AdapterState"
             },
-            "description": "§F 'initial adapter statuses'."
+            "description": "§F initial adapter statuses; emitted as an array to match the F56-c typed client."
           }
         },
         "required": [
@@ -619,18 +629,23 @@
             "minimum": 0
           },
           "adapterStatuses": {
-            "type": "object",
-            "additionalProperties": {
+            "type": "array",
+            "items": {
               "$ref": "#/components/schemas/AdapterState"
             },
-            "description": "§F 'adapter status map'."
+            "description": "§F adapter status map, projected as the F56-c typed client's array."
           },
           "results": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/SearchResult"
             },
-            "description": "§F 'partial result list'. Never contains an unvalidated download or purchase URL."
+            "description": "§F partial result list. Never contains an unvalidated download or purchase URL."
+          },
+          "resultOrder": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "F72 stable resultId order used by the normalized client store."
           },
           "cursor": {
             "type": [
@@ -664,6 +679,7 @@
           "queryGeneration",
           "adapterStatuses",
           "results",
+          "resultOrder",
           "hasMore",
           "serverTs"
         ]

@@ -32,7 +32,7 @@ export const HARD = F58.HARD;
 export const FAN_OUT_CAP = F58.FAN_OUT_CAP;
 export const PROVENANCE_FIELDS = F58.PROVENANCE_FIELDS;
 export const SOURCE_CATEGORIES = F58.SOURCE_CATEGORIES;
-export const SCHEMA_SHA256_PINNED = "c33601d94e55bab77cf940918c2949430ba5db19faf3314049f6dedb882336c8";
+export const SCHEMA_SHA256_PINNED = "8497bda871a40e66261214f9aa160b864f2d68e4c3214b9eec1e71b4d054b6e7";
 
 export interface SourceStatus {
   reachable: boolean | null;

@@ -50,6 +50,11 @@ export function ProgressiveLab({ nowMs }: { nowMs?: number } = {}) {
   const licenceTags = useSearchStore((s) => s.licenceTags);
   const maxSizeBytes = useSearchStore((s) => s.maxSizeBytes);
   const sort = useSearchStore((s) => s.sort);
+  const normalizedQuery = useSearchStore((s) => s.normalizedQuery);
+  const fileExtensions = useSearchStore((s) => s.fileExtensions);
+  const yearFrom = useSearchStore((s) => s.yearFrom);
+  const yearTo = useSearchStore((s) => s.yearTo);
+  const language = useSearchStore((s) => s.language);
   const elapsed = useLabNow(startedAt, nowMs);
 
   const p = labProgress(elapsed);
@@ -57,7 +62,7 @@ export function ProgressiveLab({ nowMs }: { nowMs?: number } = {}) {
     ? Object.values(adapters).map((a) => ({ adapterId: a.adapterId, status: a.status, resultCount: a.resultCount }))
     : ADAPTER_ROSTER.map((a) => ({ adapterId: a.adapterId, status: "idle", resultCount: 0 }));
   const rows = labRail(roster, elapsed);
-  const visible = selectVisibleResults({ results, resultOrder: order, categories, licenceTags, maxSizeBytes, sort });
+  const visible = selectVisibleResults({ results, resultOrder: order, categories, licenceTags, maxSizeBytes, sort, normalizedQuery, fileExtensions, yearFrom, yearTo, language });
   const links = visible.filter((r) => validatedHttpsUrl(r.sourceUrl) !== "").length;
   const percent = Math.round(p.totalFraction * 100);
 

@@ -3048,7 +3048,7 @@ jobs:
           assert all(v.strip() for v in rs.values()), 'empty si value'
           assert any(chr(0x0d80) <= c <= chr(0x0dff) for v in rs.values() for c in v), 'si registry must carry Sinhala'
           raw = open('docs/f56/schema.json', 'rb').read()
-          assert hashlib.sha256(raw).hexdigest() == 'c33601d94e55bab77cf940918c2949430ba5db19faf3314049f6dedb882336c8', 'frozen schema moved'
+          assert hashlib.sha256(raw).hexdigest() == '8497bda871a40e66261214f9aa160b864f2d68e4c3214b9eec1e71b4d054b6e7', 'frozen schema moved'
           sch = json.loads(raw)
           assert len(sch['required']) == 16 and sch['additionalProperties'] is False
           for f in ('addedAt', 'source', 'enableState'):
