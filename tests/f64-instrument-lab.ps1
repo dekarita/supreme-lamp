@@ -17,10 +17,10 @@ $errs = $null
 $null = [System.Management.Automation.Language.Parser]::ParseFile($mod, [ref]$null, [ref]$errs)
 Check 'parse payloads/f64-instrument.ps1' (-not $errs) ($(if ($errs) { $errs[0].Message } else { 'ok' }))
 . $mod
-Check 'Write-F64Stamp exists' [bool](Get-Command Write-F64Stamp -ErrorAction SilentlyContinue)
-Check 'Get-F64HostFacts exists' [bool](Get-Command Get-F64HostFacts -ErrorAction SilentlyContinue)
-Check 'Start-F64BgJob exists' [bool](Get-Command Start-F64BgJob -ErrorAction SilentlyContinue)
-Check 'Resolve-F64InstallRoot exists' [bool](Get-Command Resolve-F64InstallRoot -ErrorAction SilentlyContinue)
+Check 'Write-F64Stamp exists' ($null -ne (Get-Command Write-F64Stamp -ErrorAction SilentlyContinue))
+Check 'Get-F64HostFacts exists' ($null -ne (Get-Command Get-F64HostFacts -ErrorAction SilentlyContinue))
+Check 'Start-F64BgJob exists' ($null -ne (Get-Command Start-F64BgJob -ErrorAction SilentlyContinue))
+Check 'Resolve-F64InstallRoot exists' ($null -ne (Get-Command Resolve-F64InstallRoot -ErrorAction SilentlyContinue))
 
 $facts = Get-F64HostFacts
 Check 'host facts return a hashtable' ($facts -is [hashtable] -or $facts -is [System.Collections.Hashtable]) ('defender=' + [string]$facts.defender)
