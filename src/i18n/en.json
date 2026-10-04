@@ -19,7 +19,9 @@
     "nav": "Primary navigation",
     "expand": "Expand sidebar",
     "collapse": "Collapse sidebar",
-    "menu": "Open navigation"
+    "menu": "Open navigation",
+    "search": "Search",
+    "searchLab": "Lab"
   },
   "actions": {
     "autoLogin": "WINDOWS AUTO-LOGIN",

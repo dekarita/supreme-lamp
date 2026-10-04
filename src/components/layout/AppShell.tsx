@@ -147,25 +147,29 @@ function TopBar() {
   );
 }
 
-// [F56-c] 9 entries: the original 7 stay byte-identical and in their original
-// order. File Explorer inserts above Mirror (Alt+E); Search inserts above
-// Telemetry (Alt+F). ids are additive f57.explorer.nav / f56.search.nav.
+// [F76 §2.1] 9 entries. Search moves to slot 2 (directly under Overview) so the
+// high-frequency surface is visible without scrolling; the remaining entries keep
+// their F56-c relative order (File Explorer above Mirror, Alt+E; ids unchanged:
+// f57.explorer.nav / f56.search.nav). labelKey is additive: it lets the Search
+// item render the dedicated sidebar.search catalog entry while nav.search stays
+// the fallback (and the F56 i18n parity namespace keeps counting nav.search).
 interface NavItem {
   to: string;
   key: string;
   icon: typeof Activity;
   id?: string;
   hint?: string;
+  labelKey?: string;
 }
 
 const NAV: NavItem[] = [
   { to: "/", key: "nav.overview", icon: Activity },
+  { to: "/search", key: "nav.search", labelKey: "sidebar.search", icon: Search, id: "f56.search.nav", hint: "Alt+F" },
   { to: "/sessions", key: "nav.sessions", icon: Clock },
   { to: "/connections", key: "nav.connections", icon: Globe },
   { to: "/keys", key: "nav.keys", icon: KeyRound },
   { to: "/files", key: "nav.files", icon: Folder, id: "f57.explorer.nav", hint: "Alt+E" },
   { to: "/mirror", key: "nav.mirror", icon: Database },
-  { to: "/search", key: "nav.search", icon: Search, id: "f56.search.nav", hint: "Alt+F" },
   { to: "/telemetry", key: "nav.telemetry", icon: Zap },
   { to: "/settings", key: "nav.settings", icon: Settings },
 ];
@@ -198,6 +202,9 @@ function Sidebar() {
         <nav aria-label={t("sidebar.nav")} className="flex-1 overflow-y-auto py-3">
           {visibleNav.map((item) => {
             const Icon = item.icon;
+            // [F76 §2.1] sidebar.* label wins; nav.* stays the translated fallback
+            // when a catalog predates the F76 keys.
+            const label = item.labelKey ? t(item.labelKey, { defaultValue: t(item.key) }) : t(item.key);
             return (
               <NavLink
                 key={item.to}
@@ -215,7 +222,7 @@ function Sidebar() {
                 }
               >
                 <Icon className="size-5 shrink-0" aria-hidden />
-                <span className={cn("truncate", collapsed && "lg:hidden")}>{t(item.key)}</span>
+                <span className={cn("truncate", collapsed && "lg:hidden")}>{label}</span>
               </NavLink>
             );
           })}

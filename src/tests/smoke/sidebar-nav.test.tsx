@@ -1,5 +1,6 @@
 // [F56-c] Sidebar + routes + keyboard + palette prefill (session §4).
 // 9 entries in locked order; the original 7 keep their to=/key=/icon= exactly.
+// [F76 §2.1] Search moved to slot 2 (directly under Overview) - F76 order below.
 // Alt+E opens File Explorer, Alt+F opens Search; Ctrl+K palette prefills
 // /search WITHOUT submitting (Plan §D).
 import { describe, expect, it } from "vitest";
@@ -7,10 +8,11 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 import App from "@/App";
 import { useSearchStore } from "@/stores/searchStore";
 
-const ORDER = ["/", "/sessions", "/connections", "/keys", "/files", "/mirror", "/search", "/telemetry", "/settings"];
+// [F76 §3.E] Search is the high-frequency surface: slot 2, under Overview.
+const ORDER = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/settings"];
 
-describe("sidebar navigation (F56-c)", () => {
-  it("renders 9 entries in the locked order with the two new routes wired", () => {
+describe("sidebar navigation (F56-c / F76 order)", () => {
+  it("renders 9 entries in the F76 order with the two new routes wired", () => {
     const { container } = render(<App />);
     const nav = container.querySelector('[data-testid="sidebar"] nav');
     expect(nav).not.toBeNull();
@@ -24,10 +26,13 @@ describe("sidebar navigation (F56-c)", () => {
 
   it("routes /files and /search to their pages", async () => {
     const { container } = render(<App />);
-    const links = Array.from(container.querySelectorAll('[data-testid="sidebar"] nav a'));
-    fireEvent.click(links[4]);
+    const link = (to: string) =>
+      Array.from(container.querySelectorAll('[data-testid="sidebar"] nav a')).find(
+        (a) => (a.getAttribute("href") || "").replace(/^#/, "") === to
+      ) as HTMLElement;
+    fireEvent.click(link("/files"));
     expect(screen.getByTestId("file-explorer-page")).toBeInTheDocument();
-    fireEvent.click(links[6]);
+    fireEvent.click(link("/search"));
     expect(screen.getByTestId("search-page")).toBeInTheDocument();
   });
 
