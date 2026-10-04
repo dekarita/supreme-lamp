@@ -24,6 +24,12 @@ export interface CustomSourceRow {
   name: string;
   baseUrl: string;
   hostname: string;
+  /** [F85 §2] The host the save-time HTTPS probe ACTUALLY answered from (the
+   *  redirect target). Empty when it equals `hostname`. F84 stores it on the
+   *  server row and allowlists it; before F85 the client dropped it in asRow(),
+   *  so an operator whose site redirects to www.<host> had no way to SEE that
+   *  the tolerant fence was what kept the Lab working. */
+  canonicalHostname?: string;
   labMode: boolean;
   category: string;
   allowedDomains: string[];
@@ -99,12 +105,29 @@ function asRow(raw: unknown): CustomSourceRow | null {
     baseUrl,
     // Derived, never trusted from the payload: hostname always follows baseUrl.
     hostname: ext.hostname,
+    // [F85 §2] The probe-answered host (server row field, or the F58 extension
+    // envelope). canonicalOf() collapses the same-site case to undefined so the
+    // single-host card renders exactly as it did in F84.
+    canonicalHostname: canonicalOf(ext.hostname, r.canonicalHostname ?? (rawExt as Record<string, unknown>).canonicalHostname),
     labMode: ext.labMode !== false,
     category: String(descriptor.category ?? "software"),
     allowedDomains: Array.isArray(descriptor.allowedDomains) ? descriptor.allowedDomains.map(String) : ext.hostname ? [ext.hostname] : [],
     enableState: String(ext.enableState ?? "permanent"),
     addedAt: String(ext.addedAt ?? ""),
   };
+}
+
+/** [F85 §2] The canonical (probe-answered) host, lowercased and www-trimmed for
+ *  the compare. Returns undefined when the server did not report one or when it
+ *  is the same site as the typed hostname - the card then shows nothing extra,
+ *  so the normal single-host case stays visually identical to F84. */
+function canonicalOf(hostname: string, raw: unknown): string | undefined {
+  const c = String(raw ?? "").trim().toLowerCase();
+  if (!c) return undefined;
+  const h = String(hostname || "").trim().toLowerCase();
+  if (c === h) return undefined;
+  if (c.replace(/^www\./, "") === h.replace(/^www\./, "")) return undefined;
+  return c;
 }
 
 function offline<T>(code: string, messageKey: string): LabResult<T> {

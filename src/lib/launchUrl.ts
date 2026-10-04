@@ -46,6 +46,22 @@ function reasonForCode(code: string): string {
   return "search.launchUrl.failed";
 }
 
+// [F85 §3] Feature-DETECTION handle. The diagnostic banner must be able to
+// prove the no-fallback contract is in the RUNNING bundle (`typeof
+// window.launchUrl === "function"`) instead of believing a server flag: a
+// stale ui-dist zip would otherwise print a checkmark for code it does not
+// contain. This exports nothing new to the operator - it is the same function
+// the result cards call - and it is installed once from src/main.tsx.
+export function installLaunchUrlHandle(): void {
+  try {
+    if (typeof window === "undefined") return;
+    (window as unknown as { launchUrl?: typeof launchUrl }).launchUrl = launchUrl;
+  } catch {
+    // A locked-down window object is not a reason to break the app; the banner
+    // simply reports the check as missing.
+  }
+}
+
 export async function launchUrl(raw: string): Promise<LaunchOutcome> {
   const url = String(raw || "").trim();
   if (!isSafeLaunchUrl(url)) return { ok: false, reason: "search.launchUrl.failed", code: "VALIDATION_ERROR" };

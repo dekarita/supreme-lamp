@@ -4791,6 +4791,40 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body ([System.Text.Encoding]::UTF8.GetBytes('{"rdp_age_s":' + $rdpAgeSec + ',"logon_type":' + $logonType + '}'))
             return
         }
+        # [F85 §3] /api/version - the diagnostic-banner contract. The banner at
+        # /#/search?diag=1 prints one checkmark per F84 capability and NEVER a
+        # checkmark it cannot verify: each flag here is true only because the
+        # matching F84 code path exists in the shipped bytes of THIS file, and
+        # tests/f85-f84-symbols.test.js re-extracts all four symbols from those
+        # bytes (normalizeUrl auto-https, Test-F78SameHost www-tolerance, the
+        # aria2-less download branch, and the client's no-window.open contract)
+        # so the flag cannot outlive the code it advertises. `sha` is the commit
+        # the RUNNER was dispatched with (GITHUB_SHA); the UI compares it with
+        # the sha its bundle was BUILT from, so a stale bundle shows as a
+        # mismatch instead of a silent half-deploy.
+        if ($path -eq '/api/version') {
+            $f85Sha = ''
+            try { $f85Sha = [string]$env:GHRDP_BUILD_SHA } catch { $f85Sha = '' }
+            if (-not $f85Sha) { try { $f85Sha = [string]$env:GITHUB_SHA } catch { $f85Sha = '' } }
+            if (-not $f85Sha) { try { $cfgV = Read-JsonFile -Path $script:CfgPath; $f85Sha = [string]$cfgV.commit } catch { $f85Sha = '' } }
+            if (-not $f85Sha) { $f85Sha = 'dev' }
+            $f85Sha7 = $f85Sha
+            if ($f85Sha7.Length -gt 7) { $f85Sha7 = $f85Sha7.Substring(0, 7) }
+            $objV = [ordered]@{
+                ok = $true
+                server = 'ghrdp'
+                sha = $f85Sha
+                sha7 = $f85Sha7
+                features = [ordered]@{
+                    autoHttps = $true
+                    wwwTolerance = $true
+                    noFallback = $true
+                    downloadToRdp = $true
+                }
+            }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $objV)
+            return
+        }
         if ($path -eq '/api/ping') {
             $tIp = Get-TailnetIp
             $commit = ''

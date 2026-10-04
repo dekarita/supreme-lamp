@@ -44,7 +44,6 @@ export function ResultsGrid() {
   const openPreview = useSearchStore((s) => s.openPreview);
   const stubFetch = useSearchStore((s) => s.stubFetch);
   const recordFetch = useSearchStore((s) => s.recordFetch);
-  const fetches = useSearchStore((s) => s.fetches);
   const submit = useSearchStore((s) => s.submit);
   const push = useToastStore((s) => s.push);
   const navigate = useNavigate();
@@ -115,9 +114,20 @@ export function ResultsGrid() {
       const sfx = rowSuffix(r);
       const ad = adapters[r.adapterId];
       const retryable = Boolean(ad && (ad.status === "failed" || ad.status === "timed-out" || ad.status === "rate-limited"));
-      const selected = selectedIds.includes(r.resultId);
+      // [F85 §2] Row-local store subscriptions replace the activeRowIndex /
+      // selectedIds / fetches CLOSURES that used to sit in this component's
+      // dep array. Changing any of them handed react-window a NEW component
+      // TYPE for the same position, so React unmounted + remounted every row
+      // (fresh DOM nodes, same ids = the F85 e2e proved it with a MutationObserver:
+      // mousedown on "Download to RDP" -> focus -> setActiveRow -> remount ->
+      // the pressed node was gone before mouseup, so the browser fired NO click
+      // and the first click on any row button was silently swallowed).
+      // Subscribing here keeps the DOM node alive across those updates; the
+      // visual contract (roving tabindex, aria-selected, fetch chip) is unchanged.
+      const rowActive = useSearchStore((s) => s.activeRowIndex);
+      const selected = useSearchStore((s) => s.selectedIds.includes(r.resultId));
+      const fetchRec = useSearchStore((s) => s.fetches[r.resultId]);
       const direct = validatedHttpsUrl(r.sourceUrl);
-      const fetchRec = fetches[r.resultId];
       const ext = fileExtension(r); // [F69 §2.2]
       // [F84 §2.4] File-ish = a real asset URL (.mp4/.pdf/.zip/... from the
       // MIME_TO_EXT table), NOT a landing page (archive.org/details/...).
@@ -138,11 +148,18 @@ export function ResultsGrid() {
           role="row"
           aria-rowindex={index + 1}
           aria-selected={selected}
-          tabIndex={activeRowIndex >= 0 && index === activeRowIndex ? 0 : -1}
+          tabIndex={rowActive >= 0 && index === rowActive ? 0 : -1}
           data-testid="result-row"
           data-result-id={r.resultId}
           style={style}
-          onFocus={() => setActiveRow(index)}
+          // [F85 §2] Only the ROW itself may claim the active row. A button
+          // inside the row (Download to RDP / Open in RDP / Fetch) gets focus
+          // on mousedown, and treating that bubbled focus as "row activated"
+          // is what caused the remount above - guarding it keeps the operator's
+          // first click on those buttons.
+          onFocus={(e) => {
+            if (e.target === e.currentTarget) setActiveRow(index);
+          }}
           className="pb-6"
         >
           <div
@@ -421,7 +438,7 @@ export function ResultsGrid() {
         </div>
       );
     },
-    [rows, adapters, activeRowIndex, selectedIds, fetches, setActiveRow, select, openPreview, stubFetch, recordFetch, submit, push, t]
+    [rows, adapters, setActiveRow, select, openPreview, stubFetch, recordFetch, submit, push, t]
   );
 
   return (
