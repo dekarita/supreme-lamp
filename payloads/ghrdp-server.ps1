@@ -4056,7 +4056,7 @@ function Invoke-ClientRequest {
             # The ladder tries, in order, and reports which rung actually did the
             # work (the response now carries tier + tierDetail):
             #   TIER 1  direct process spawn as the ghrdp-server user itself
-            #           (Start-Process <browser> --new-window <url>, PID proof;
+            #           (a direct <browser> --new-window <url> spawn, PID proof;
             #           cmd.exe /c start msedge.exe is the second form).
             #   TIER 2  the F81 interactive scheduled task, now run INSIDE the
             #           ladder: schedsvc starts the task in the console user's
