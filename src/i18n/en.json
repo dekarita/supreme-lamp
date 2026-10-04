@@ -499,7 +499,41 @@
       "searchCancelled": "Search cancelled.",
       "fetchCancelled": "Fetch cancelled.",
       "classifierBlocked": "Blocked after intent confirmation.",
+      "queryTooShort": "Type at least 3 characters before searching.",
       "generic": "Something went wrong."
+    },
+    "deleteSite": {
+      "confirmTitle": "Delete {{hostname}}?",
+      "confirmBody": "Delete {{hostname}}? This cannot be undone.",
+      "confirmLabel": "Delete {{hostname}}",
+      "confirm": "Delete",
+      "cancel": "Cancel"
+    },
+    "intent": {
+      "code": "Code",
+      "paper": "Paper",
+      "video": "Video",
+      "book": "Book",
+      "repo": "Repo",
+      "general": "General"
+    },
+    "preview": {
+      "loading": "Loading preview…",
+      "openSource": "Open source",
+      "unavailable": "Preview unavailable"
+    },
+    "suggestions": {
+      "recentLabel": "Recent searches",
+      "fromSites": "From your sites"
+    },
+    "history": {
+      "title": "Search history",
+      "empty": "No searches yet this session."
+    },
+    "launchUrl": {
+      "launched": "Launched in this RDP session",
+      "failed": "Could not launch in this session",
+      "noSession": "No active console session is attached"
     },
       "a11y": {
         "commandBar": "Search command bar",
@@ -990,7 +1024,8 @@
     "sizeLimit": "The homepage is larger than the 2 MB Lab limit.",
     "hostnameMismatch": "The response came from a different hostname than the stored site.",
     "notFound": "No stored site matches this Lab address.",
-    "loading": "Fetching the stored homepage\u2026"
+    "loading": "Fetching the stored homepage\u2026",
+    "source": "Source: {{source}} ({{count}} URLs)"
   },
   "newSiteName": "Name",
   "newSiteUrl": "Base URL (https)",
@@ -1000,5 +1035,6 @@
   "newSiteHttpsRequired": "An https:// URL is required.",
   "newSiteNameRequired": "A name is required.",
   "newSiteNameTooLong": "The name must be 50 characters or fewer.",
-  "newSiteAuthNotAllowed": "Credentials in a URL are refused. Remove user:pass and use the https origin."
+  "newSiteAuthNotAllowed": "Credentials in a URL are refused. Remove user:pass and use the https origin.",
+  "newSiteMaxReached": "Maximum 50 custom sites reached. Delete one before adding another."
 }

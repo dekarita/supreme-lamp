@@ -39,6 +39,10 @@ export const DEFAULT_ADAPTER_ID = "google-books-public";
 // [F72 §2.1] Fan-out helper import
 import { resolveFanOutAdapters } from "@/lib/search/fanOut";
 import { scoreResult } from "@/lib/search/relevance";
+// [F81 §2.3/Q7=B] Intent-aware adapter ranking
+import { classifyIntent, rankAdaptersByIntent } from "@/lib/search/intent";
+// [F81 §5.0/Q14=C] Search history → localStorage cache
+import { useSearchHistoryStore } from "@/stores/searchHistoryStore";
 
 export function classifyQuery(raw: string): InputKind {
   const q = raw.trim();
@@ -224,9 +228,18 @@ export const useSearchStore = create<SearchState>((set, get) => ({
       set({ inputKind });
       return;
     }
+    // [F81 §2.2/Q6] Query-length minimum: reject <3 chars after trim. The
+    // operator sees an inline hint via the `lastErrorCode` / `phase: idle`
+    // pair; the search bar re-renders the existing validation text. Empty
+    // URL imports already short-circuit above via inputKind.
+    const trimmed = st.rawQuery.trim();
+    if (trimmed.length < 3) {
+      set({ phase: "idle", lastErrorCode: "search.errors.queryTooShort" });
+      return;
+    }
     const generation = st.queryGeneration + 1;
     const requestId = newRequestId();
-    const query = st.rawQuery.trim();
+    const query = trimmed;
     set({
       inputKind,
       normalizedQuery: query,
@@ -246,10 +259,22 @@ export const useSearchStore = create<SearchState>((set, get) => ({
       cancelling: false,
       lastErrorCode: "",
     });
+    // [F81 §5.0/Q14=C] Record this query for autocomplete + history.
+    try { useSearchHistoryStore.getState().add(query); } catch { }
     // [F79] The backend is the source of truth for the automatic five-source
     // pack. Send [] rather than silently selecting one or the whole registry.
     // Preserve F72 deduplication + eight-source cap for explicit selections.
-    const resolvedAdapters = st.adapterIds.length ? resolveFanOutAdapters(st.adapterIds) : [];
+    // [F81 §2.3/Q7=B] When the operator does NOT explicitly pick adapters,
+    // the intent classifier lifts the relevant sources to the top of the
+    // default fan-out. Empty selection still defaults to the backend's
+    // five-source pack; we only re-rank if the operator pre-selected.
+    let resolvedAdapters: string[];
+    if (st.adapterIds.length) {
+      const intent = classifyIntent(query);
+      resolvedAdapters = rankAdaptersByIntent(resolveFanOutAdapters(st.adapterIds), intent);
+    } else {
+      resolvedAdapters = [];
+    }
     const res = await createSearch({
       requestId,
       query,
@@ -416,11 +441,13 @@ export function selectVisibleResults(s: ResultFilters): SearchResult[] {
   } else if (s.sort === "date") {
     out.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
   } else if (s.sort === "relevance" && s.query) {
-    // [F72 §2.1] Deterministic relevance sort: score desc, then original order
+    // [F72 §2.1 + F81 §2.1/Q5=D] Deterministic relevance sort: score desc,
+    // then original order. The score function takes the full corpus so BM25
+    // IDF stays calibrated across this search's results.
     const orderMap = new Map(s.resultOrder.map((id, i) => [id, i]));
     out.sort((a, b) => {
-      const sa = scoreResult(s.query!, a);
-      const sb = scoreResult(s.query!, b);
+      const sa = scoreResult(s.query!, a, out);
+      const sb = scoreResult(s.query!, b, out);
       if (sb !== sa) return sb - sa;
       return (orderMap.get(a.resultId) ?? 0) - (orderMap.get(b.resultId) ?? 0);
     });

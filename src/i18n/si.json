@@ -405,7 +405,41 @@
       "searchCancelled": "සෙවුම අවලංගුයි.",
       "fetchCancelled": "ලබාගැනීම අවලංගුයි.",
       "classifierBlocked": "අභිප්‍රාය තහවුරු කිරීමෙන් පසු අවහිරයි.",
+      "queryTooShort": "සෙවීමට පෙර අවම වශයෙන් අක්ෂර 3ක් ටයිප් කරන්න.",
       "generic": "යම් දෝෂයක් සිදු විය."
+    },
+    "deleteSite": {
+      "confirmTitle": "{{hostname}} මකන්න?",
+      "confirmBody": "{{hostname}} මකන්න? මෙය ආපසු හැරවිය නොහැක.",
+      "confirmLabel": "{{hostname}} මකන්න",
+      "confirm": "මකන්න",
+      "cancel": "අවලංගු කරන්න"
+    },
+    "intent": {
+      "code": "කේතය",
+      "paper": "පත්‍රය",
+      "video": "වීඩියෝ",
+      "book": "පොත",
+      "repo": "රිපෝ",
+      "general": "සාමාන්‍ය"
+    },
+    "preview": {
+      "loading": "පෙරදසුන පූරණය වෙමින්…",
+      "openSource": "මූලාශ්‍රය විවෘත කරන්න",
+      "unavailable": "පෙරදසුන ලබා ගත නොහැක"
+    },
+    "suggestions": {
+      "recentLabel": "මෑත සෙවුම්",
+      "fromSites": "ඔබේ අඩවි වලින්"
+    },
+    "history": {
+      "title": "සෙවුම් ඉතිහාසය",
+      "empty": "මෙම සැසියේ තවම සෙවුම් නැත."
+    },
+    "launchUrl": {
+      "launched": "මෙම RDP සැසිය තුළ දියත් කරන ලදී",
+      "failed": "මෙම සැසිය තුළ දියත් කළ නොහැක",
+      "noSession": "සක්‍රිය කොන්සෝල් සැසියක් සම්බන්ධ නැත"
     },
     "a11y": {
       "commandBar": "සෙවුම් විධාන තීරුව",
@@ -896,7 +930,8 @@
     "sizeLimit": "මුල් පිටුව ලැබ් සීමාව වන 2 MB ට වැඩිය.",
     "hostnameMismatch": "ප්‍රතිචාරය ගබඩාගත් අඩවියට වෙනස් hostname එකකින් ලැබුණි.",
     "notFound": "මෙම ලැබ් ලිපිනයට ගබඩාගත් අඩවියක් නොමැත.",
-    "loading": "ගබඩාගත් මුල් පිටුව ලබාගනිමින්…"
+    "loading": "ගබඩාගත් මුල් පිටුව ලබාගනිමින්…",
+    "source": "මූලාශ්‍රය: {{source}} (URL {{count}})"
   },
   "newSiteName": "නාමය",
   "newSiteUrl": "මූල යුආර්එල් (https)",
@@ -906,5 +941,6 @@
   "newSiteHttpsRequired": "https:// යුආර්එල් එකක් අවශ්‍යයි.",
   "newSiteNameRequired": "නාමයක් අවශ්‍යයි.",
   "newSiteNameTooLong": "නාමය අක්ෂර 50කට නොවැඩි විය යුතුය.",
-  "newSiteAuthNotAllowed": "යුආර්එල් තුළ අධිසංවිධානය ප්‍රතික්ෂේප කරයි. user:pass ඉවත් කර https මූලය භාවිත කරන්න."
+  "newSiteAuthNotAllowed": "යුආර්එල් තුළ අධිසංවිධානය ප්‍රතික්ෂේප කරයි. user:pass ඉවත් කර https මූලය භාවිත කරන්න.",
+  "newSiteMaxReached": "අභිරුචි අඩවි 50ක සීමාව පිළිපදිනු ලැබ ඇත. තවත් එකක් එකතු කිරීමට පෙර එකක් මකන්න."
 }

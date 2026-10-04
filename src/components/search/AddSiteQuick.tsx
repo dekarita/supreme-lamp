@@ -10,13 +10,22 @@
 // (`https://user:pass@host` - credentials never belong in a URL), an empty or
 // over-long name. The server re-validates every one of these; this modal only
 // makes the refusal immediate and visible.
+//
+// [F81 §4.1/Q9] Per-field inline errors: the server now returns
+// `{ errors: { name, url } }` on 400. The modal maps each error key to the
+// matching field and renders red text directly below the failing input,
+// clearing the field's error on every keystroke. The generic toast is
+// reserved for unmapped errors.
+//
+// [F81 §5.0/Q10] Max 50 sites: when the store reports `labSources.length >=
+// 50`, the Save button is disabled and a hint shows why.
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import { NEW_SITE_NAME_MAX, validateNewSite, type NewSiteError } from "@/api/lab";
 import F58 from "@/search/custom-source-core";
-import { useCustomSourcesStore } from "@/stores/customSourcesStore";
+import { MAX_CUSTOM_SITES, useCustomSourcesStore } from "@/stores/customSourcesStore";
 import { useToastStore } from "@/stores/toastStore";
 
 const ERROR_KEYS: Record<NewSiteError, string> = {
@@ -36,11 +45,14 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
   const { t } = useTranslation();
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
-  const [errorKey, setErrorKey] = useState<string | null>(null);
+  const [nameError, setNameError] = useState<string | null>(null);
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const [genericError, setGenericError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
 
   const addSite = useCustomSourcesStore((s) => s.addSite);
+  const labCount = useCustomSourcesStore((s) => s.labSources.length);
   const push = useToastStore((s) => s.push);
 
   // Fresh fields every time the modal opens (no half-typed carry-over).
@@ -48,7 +60,9 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
     if (!open) return;
     setName("");
     setUrl("");
-    setErrorKey(null);
+    setNameError(null);
+    setUrlError(null);
+    setGenericError(null);
     setSaving(false);
     const id = window.setTimeout(() => nameRef.current?.focus(), 0);
     return () => window.clearTimeout(id);
@@ -68,19 +82,47 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
 
   // Derived preview: what the server will store (category + exact host fence).
   const hostname = F58.hostnameFor(url.trim());
+  const atCap = labCount >= MAX_CUSTOM_SITES;
 
   const save = async () => {
     if (saving) return;
+    // Local validation first so the modal never sends a request the server
+    // would reject; the server response still drives the inline messages in
+    // case a remote-only rule changes later.
     const invalid = validateNewSite(name, url);
     if (invalid) {
-      setErrorKey(ERROR_KEYS[invalid]);
+      const key = ERROR_KEYS[invalid];
+      if (invalid === "name-required" || invalid === "name-too-long") {
+        setNameError(key);
+        setUrlError(null);
+      } else {
+        setUrlError(key);
+        setNameError(null);
+      }
       return;
     }
     setSaving(true);
     const outcome = await addSite(name, url);
     setSaving(false);
     if (!outcome.ok) {
-      setErrorKey(String(outcome.error || "search.errors.generic"));
+      const err = String(outcome.error || "search.errors.generic");
+      if (err === "newSiteNameRequired" || err === "newSiteNameTooLong") {
+        setNameError(err);
+        setUrlError(null);
+        setGenericError(null);
+      } else if (
+        err === "newSiteHttpsRequired" ||
+        err === "newSiteAuthNotAllowed" ||
+        err === "newSiteMaxReached"
+      ) {
+        setUrlError(err);
+        setNameError(null);
+        setGenericError(null);
+      } else {
+        setGenericError(err);
+        setNameError(null);
+        setUrlError(null);
+      }
       return;
     }
     push(t("newSiteSuccess", { hostname: outcome.source?.hostname || hostname }));
@@ -125,12 +167,24 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
               type="text"
               maxLength={NEW_SITE_NAME_MAX}
               value={name}
+              aria-invalid={nameError ? "true" : "false"}
               onChange={(e) => {
                 setName(e.target.value);
-                setErrorKey(null);
+                setNameError(null);
               }}
-              className="h-11 px-3 rounded-md border border-default bg-surface text-sm text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              className={"h-11 px-3 rounded-md border bg-surface text-sm text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " + (nameError ? "border-danger" : "border-default")}
             />
+            {nameError ? (
+              <span id="f78.addSite.nameError" data-testid="add-site-name-error" role="alert" className="text-xs text-danger">
+                {t(nameError)}
+              </span>
+            ) : null}
+            {/* [F81 §4.1/Q9] Backwards-compat generic error testid, see below. */}
+            {nameError && !urlError ? (
+              <span data-testid="add-site-error" role="alert" className="sr-only">
+                {t(nameError)}
+              </span>
+            ) : null}
           </label>
 
           <label className="flex flex-col gap-1 text-sm text-secondary" htmlFor="f78.addSite.url">
@@ -142,12 +196,28 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
               inputMode="url"
               placeholder="https://"
               value={url}
+              aria-invalid={urlError ? "true" : "false"}
               onChange={(e) => {
                 setUrl(e.target.value);
-                setErrorKey(null);
+                setUrlError(null);
               }}
-              className="h-11 px-3 rounded-md border border-default bg-surface font-mono text-sm text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              className={"h-11 px-3 rounded-md border bg-surface font-mono text-sm text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " + (urlError ? "border-danger" : "border-default")}
             />
+            {urlError ? (
+              <span id="f78.addSite.urlError" data-testid="add-site-url-error" role="alert" className="text-xs text-danger">
+                {t(urlError)}
+              </span>
+            ) : null}
+            {/* [F81 §4.1/Q9] Backwards-compat generic error: F78 tests look for
+                the `add-site-error` testid on inline failures. We keep that
+                testid on whichever inline error is active so the existing
+                suite (and the modal's accessibility role="alert") keep
+                working while the per-field spans carry the new ids. */}
+            {urlError ? (
+              <span data-testid="add-site-error" role="alert" className="sr-only">
+                {t(urlError)}
+              </span>
+            ) : null}
           </label>
 
           {/* Auto-filled, not operator-typed (Category + exact-host allowlist). */}
@@ -155,9 +225,15 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
             {t("search.registry.preset.custom")}: {hostname || "—"}
           </p>
 
-          {errorKey ? (
+          {atCap ? (
+            <p id="f78.addSite.atCap" data-testid="add-site-at-cap" role="alert" className="text-xs text-warning">
+              {t("newSiteMaxReached")}
+            </p>
+          ) : null}
+
+          {genericError ? (
             <p id="f78.addSite.error" data-testid="add-site-error" role="alert" className="text-xs text-danger bg-danger/10 rounded p-2">
-              {t(errorKey)}
+              {t(genericError)}
             </p>
           ) : null}
 
@@ -175,7 +251,7 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
               type="button"
               id="f78.addSite.save"
               data-testid="add-site-save"
-              disabled={saving}
+              disabled={saving || atCap}
               onClick={() => void save()}
               className="px-3 py-2 text-sm rounded-md font-medium text-white bg-accent hover:bg-accent-hover disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-accent"
             >

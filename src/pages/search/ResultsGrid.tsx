@@ -11,6 +11,7 @@ import { requestFetchStub, requestFetch, isProvenanceBlocked } from "@/lib/fetch
 import { customSources, evaluateResultProvenance } from "@/search/custom-source-store";
 import type { SearchResult } from "@/api/search";
 import { camel, fileExtension, formatActualBytes, licenceStyle, validatedHttpsUrl } from "./tokens";
+import { launchUrl } from "@/lib/launchUrl";
 
 // [F79 D5/D7] 16px card padding + a 24px inter-result gutter.
 export const CARD_HEIGHT = 216;
@@ -213,6 +214,10 @@ export function ResultsGrid() {
                   href={direct}
                   rel="noopener noreferrer nofollow"
                   target="_blank"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void launchUrl(direct);
+                  }}
                   className="text-xs text-success truncate underline-offset-2 hover:underline"
                 >
                   {direct}

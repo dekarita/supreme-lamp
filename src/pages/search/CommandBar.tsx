@@ -14,6 +14,7 @@ import { useSearchStore } from "@/stores/searchStore";
 import { hostOf, useSearchUiStore } from "@/stores/searchUiStore";
 import { useToastStore } from "@/stores/toastStore";
 import { useCustomSourcesStore } from "@/stores/customSourcesStore";
+import { useSearchHistoryStore } from "@/stores/searchHistoryStore";
 import { AdvancedPanel } from "./v2/AdvancedPanel";
 
 export { camel, licenceStyle } from "@/pages/search/tokens";
@@ -61,6 +62,13 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
 
   const doSubmit = () => {
     if (inputKind !== "text" && inputKind !== "https-url") return;
+    // [F81 §2.2/Q6] Inline hint: when the operator tries to submit a query
+    // shorter than 3 chars, show the "too short" hint right below the bar
+    // instead of dispatching a request the backend would refuse.
+    if (inputKind === "text" && rawQuery.trim().length > 0 && rawQuery.trim().length < 3) {
+      pushToast(t("search.errors.queryTooShort"));
+      return;
+    }
     setAdvanced(false); // §2: the drawer collapses on Enter
     enterResults(rawQuery.trim());
     if (inputKind === "https-url") setImportMode(true);
@@ -191,6 +199,13 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
           </button>
         </form>
 
+        {/* [F81 §5.0/Q13=D] Autocomplete dropdown — recent queries
+            (session-only, localStorage) + active custom-site hostnames.
+            Hidden when the bar is empty or already an https:// URL import. */}
+        {inputKind === "text" && rawQuery.trim().length > 0 && rawQuery.trim().length < 8 && !advancedOpen ? (
+          <SuggestionList query={rawQuery} onPick={(v) => { setQuery(v); }} />
+        ) : null}
+
         {inputKind === "https-url" && (
           <p id="f56.search.urlImport" className="text-xs text-accent">
             {t("search.query.urlDetected")} — {t("search.query.urlImport")}
@@ -250,5 +265,62 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
         </div>
       </section>
     </div>
+  );
+}
+
+/** [F81 §5.0/Q13=D] Inline suggestion dropdown. Combines recent searches
+ *  (session-only) and the operator's "Your sites" hostnames. The query is
+ *  matched case-insensitively on either the history item or the hostname.
+ *  The dropdown stays under the bar, navigable with the keyboard (Enter
+ *  picks the first row), and hides itself on Esc or after a pick. */
+function SuggestionList({ query, onPick }: { query: string; onPick: (v: string) => void }) {
+  const { t } = useTranslation();
+  const history = useSearchHistoryStore((s) => s.items);
+  const sites = useCustomSourcesStore((s) => s.labSources);
+  const q = String(query || "").trim().toLowerCase();
+  const recent = q ? history.filter((h) => h.toLowerCase().includes(q)).slice(0, 5) : history.slice(0, 5);
+  const fromSites = q
+    ? sites.filter((s) => s.hostname.toLowerCase().includes(q)).slice(0, 5)
+    : sites.slice(0, 5);
+  if (!recent.length && !fromSites.length) return null;
+  return (
+    <ul
+      id="f56.search.suggestions"
+      data-testid="search-suggestions"
+      className="rounded-md border border-default bg-surface shadow-md max-w-[760px] w-full mx-auto text-xs"
+    >
+      {recent.length ? (
+        <li className="px-3 pt-2 pb-1 text-tertiary text-[10px] uppercase tracking-wide">{t("search.suggestions.recentLabel")}</li>
+      ) : null}
+      {recent.map((h, i) => (
+        <li key={"h" + i}>
+          <button
+            id={"f56.search.suggestion.recent." + i}
+            data-testid="suggestion-recent"
+            type="button"
+            onClick={() => onPick(h)}
+            className="w-full text-left px-3 py-1 hover:bg-raised text-primary"
+          >
+            {h}
+          </button>
+        </li>
+      ))}
+      {fromSites.length ? (
+        <li className="px-3 pt-2 pb-1 text-tertiary text-[10px] uppercase tracking-wide">{t("search.suggestions.fromSites")}</li>
+      ) : null}
+      {fromSites.map((s, i) => (
+        <li key={"s" + i}>
+          <button
+            id={"f56.search.suggestion.site." + i}
+            data-testid="suggestion-site"
+            type="button"
+            onClick={() => onPick(s.hostname)}
+            className="w-full text-left px-3 py-1 hover:bg-raised text-primary font-mono"
+          >
+            {s.hostname}
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
