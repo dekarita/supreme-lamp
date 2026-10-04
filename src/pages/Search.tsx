@@ -8,6 +8,7 @@
 // stub (F56-d replaces that one module).
 import { useEffect, useRef, useState } from "react";
 import { Plus } from "lucide-react";
+import { EmptyState, LoadingState } from "./search/SearchStates";
 import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useSearchStore, selectVisibleResults, selectFilterSelectionCount } from "@/stores/searchStore";
@@ -34,7 +35,11 @@ export default function Search() {
   const queryGeneration = useSearchStore((s) => s.queryGeneration);
   const hasQuery = useSearchStore((s) => s.normalizedQuery.length > 0 || s.lastSubmittedQuery.length > 0);
   const totalResults = useSearchStore((s) => s.resultOrder.length);
-  const visibleCount = useSearchStore(selectVisibleResults).length;
+  const visibleResults = useSearchStore(selectVisibleResults);
+  const visibleCount = visibleResults.length;
+  const categoryCount = new Set(visibleResults.map((r) => r.category)).size;
+  const showProgress = useSearchStore((s) => s.showProgress);
+  const fetchCount = useSearchStore((s) => Object.keys(s.fetches).length);
   const filterCount = useSearchStore(selectFilterSelectionCount);
   const adapters = useSearchStore((s) => s.adapters);
   const cancelling = useSearchStore((s) => s.cancelling);
@@ -57,6 +62,7 @@ export default function Search() {
     const st = useSearchStore.getState();
     const ui = useSearchUiStore.getState();
     if (
+      !st.showProgress ||
       !shouldStreamDevFixture({
         phase,
         totalResults: st.resultOrder.length,
@@ -84,7 +90,7 @@ export default function Search() {
     }, DEV_FIXTURE_TICK_MS);
     return () => window.clearInterval(id);
     // devFixtureGen is deliberately NOT a dep: the latch must never kill the stream.
-  }, [phase, queryGeneration]);
+  }, [phase, queryGeneration, showProgress]);
 
   // Palette prefill (?q=...): apply once per value, never auto-submit (Plan §D).
   const q = params.get("q");
@@ -110,10 +116,10 @@ export default function Search() {
   const landing = view === "landing";
 
   return (
-    <div id="f56.search.view" data-testid="search-page" data-view={view} className="flex flex-col gap-4">
+    <div id="f56.search.view" data-testid="search-page" data-view={view} className="mx-auto w-full max-w-[760px] flex flex-col gap-6">
       {/* §2: landing surface = title, the all-in-one bar, one sub-line and
           three quiet chips. NOTHING else (no chips, no sliders, no caps). */}
-      <div id="f56.search.v2.landing" hidden={!landing} className="flex flex-col items-center">
+      <div id="f56.search.v2.landing" hidden={!landing} className={landing ? "flex flex-col items-center" : "hidden"}>
         <h1 className="text-2xl font-semibold text-primary">{t("search.page.title")}</h1>
       </div>
 
@@ -139,48 +145,55 @@ export default function Search() {
       {landing ? (
         <SearchHero />
       ) : (
-        <section id="f56.search.v2.results" className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-sm font-semibold text-primary">{t("search.results.label")}</h2>
-            <span id="f56.search.ownStorageResults" data-testid="own-storage-results" className="text-xs text-tertiary">
-              {t("search.scope.ownStorage")}: {String(totalResults)}
-            </span>
-            <button
-              type="button"
-              data-testid="back-to-landing"
-              onClick={() => backToLanding()}
-              className="h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            >
-              {t("search.v2.backToLanding")}
-            </button>
-            <button
-              id="f56.search.cancelSearch"
-              type="button"
-              data-testid="cancel-search"
-              disabled={!busy || cancelling}
-              onClick={() => void cancelSearch()}
-              className="ml-auto h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-            >
-              {t("search.actions.cancelSearch")}
-            </button>
-          </div>
+        <section id="f56.search.v2.results" className="flex flex-col gap-6">
+          {/* [F79 D5] Stored sites remain first, even on a zero-result search. */}
+          <CustomSitesRow query={lastSubmittedQuery} />
+          {showProgress ? (
+            <>
+                <div className="flex flex-wrap items-center gap-2">
+                  <h2 className="text-sm font-semibold text-primary">{t("search.results.label")}</h2>
+                  <span id="f56.search.ownStorageResults" data-testid="own-storage-results" className="text-xs text-tertiary">
+                    {t("search.scope.ownStorage")}: {String(totalResults)}
+                  </span>
+                  <button
+                    type="button"
+                    data-testid="back-to-landing"
+                    onClick={() => backToLanding()}
+                    className="h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  >
+                    {t("search.v2.backToLanding")}
+                  </button>
+                  <button
+                    id="f56.search.cancelSearch"
+                    type="button"
+                    data-testid="cancel-search"
+                    disabled={!busy || cancelling}
+                    onClick={() => void cancelSearch()}
+                    className="ml-auto h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  >
+                    {t("search.actions.cancelSearch")}
+                  </button>
+                </div>
 
-          <div
-            id="f56.search.statusLive"
-            role="status"
-            aria-live="polite"
-            aria-label={t("search.a11y.liveStatus")}
-            data-testid="status-live"
-            className="text-xs font-mono text-secondary"
-          >
-            {t("search.filters.label")}: {String(filterCount)} — {phase} — gen {String(queryGeneration)}
-            {visibleCount !== totalResults ? " — " + t("search.results.noFilterMatch") : ""}
-          </div>
+                <div
+                  id="f56.search.statusLive"
+                  role="status"
+                  aria-live="polite"
+                  aria-label={t("search.a11y.liveStatus")}
+                  data-testid="status-live"
+                  className="text-xs font-mono text-secondary"
+                >
+                  {t("search.filters.label")}: {String(filterCount)} — {phase} — gen {String(queryGeneration)}
+                  {visibleCount !== totalResults ? " — " + t("search.results.noFilterMatch") : ""}
+                </div>
 
-          <ProgressiveLab />
-          <AdapterStatusList />
+                <ProgressiveLab />
+                <AdapterStatusList />
+            </>
+          ) : null}
 
-          <section className="flex flex-col gap-2">
+          <section className="flex flex-col gap-6">
+            {showProgress || categoryCount >= 2 ? (
             <div className="flex flex-wrap items-center gap-2">
               <h2 id="f56.search.resultsHeader" className="text-sm font-semibold text-primary">
                 {t("search.results.label")}
@@ -191,6 +204,7 @@ export default function Search() {
                 </span>
               ) : null}
             </div>
+            ) : null}
             {phase === "failed" ? (
               <div id="f56.search.resultsError" role="alert" data-testid="results-error" className="text-sm text-danger bg-danger/10 rounded p-3 flex items-center gap-3">
                 <span>
@@ -229,22 +243,16 @@ export default function Search() {
                 {t("search.errors.snapshotMismatch")}
               </p>
             ) : null}
-            {busy ? (
-              <p id="f56.search.resultsLoading" data-testid="results-loading" className="text-sm text-secondary">
-                {t("search.results.loading")}
-              </p>
-            ) : null}
+            {busy && totalResults === 0 ? <LoadingState /> : null}
             {(phase === "complete" || phase === "empty") && totalResults === 0 ? (
-              <p id="f56.search.resultsEmpty" data-testid="results-empty" className="text-sm text-secondary">
-                {t("search.results.empty")}
-              </p>
+              <EmptyState query={lastSubmittedQuery} onAddSite={() => setAddSiteOpen(true)} />
             ) : null}
             {!hasQuery && phase === "idle" ? (
               <p id="f56.search.resultsEmpty" data-testid="results-noquery" className="text-sm text-secondary">
                 {t("search.results.noQuery")}
               </p>
             ) : null}
-            {rateLimited ? (
+            {showProgress && rateLimited ? (
               <p id="f56.search.resultsRateLimited" data-testid="results-rate-limited" className="text-sm text-warning">
                 {t("search.errors.rateLimited")}
               </p>
@@ -254,14 +262,6 @@ export default function Search() {
                 {t("search.results.noFilterMatch")}
               </p>
             ) : null}
-            {/* [F78 §3.2] "Your sites" sits ABOVE the public adapter results.
-                It is mounted here rather than inside ResultsGrid because the
-                grid only renders when the FEDERATED lane returned rows: the
-                operator's own stored sites must stay reachable even when a
-                query produced zero public results. CustomSitesRow renders
-                nothing at all when no Lab Mode source is stored, so the public
-                lane is unaffected. */}
-            <CustomSitesRow query={lastSubmittedQuery} />
             {totalResults > 0 ? <ResultsGrid /> : null}
           </section>
         </section>
@@ -269,7 +269,7 @@ export default function Search() {
 
       {!landing ? (
         <>
-          <BottomProgressRail />
+          {showProgress || fetchCount > 0 ? <BottomProgressRail /> : null}
           <PreviewDialog />
         </>
       ) : null}

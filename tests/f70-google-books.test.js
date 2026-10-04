@@ -84,7 +84,7 @@ test('F70-P2-STATIC: endpoint, no API key, rate window, cap and pinned mapping',
   // wiring: the fan-out calls the helper and google-books-public is default
   assert.ok(SERVER.includes("Invoke-GhrdpGoogleBooksSearch -Query $f70Query -Limit $f70Limit -Cursor $f70Cursor"), 'the search fan-out invokes the helper');
   // [F72 §1.3] Default fan-out expanded to 5-source TLS-Radar pack.
-  assert.ok(SERVER.includes("$script:DefaultAdapterIds = @('github-releases','internet-archive','arxiv','wikisource','google-books-public')"), 'default 5-source adapter fan-out');
+  assert.ok(SERVER.includes("$script:DefaultFanOutAdapterIds = @('github-releases','internet-archive','arxiv-public','wikipedia-public','google-books-public')"), 'default 5-source adapter fan-out');
 });
 
 // The twin: each rule below executes ONLY a literal pinned in the static test
@@ -185,14 +185,14 @@ test('F70-P2-FETCH-MOCK: the lane calls googleapis.com with the escaped query', 
   }
 });
 
-test('F70-P2-ROSTER: googleBooksPublic is entry 29 of the derived roster (en + si)', () => {
+test('F70-P2-ROSTER: googleBooksPublic and the F79 canonical public ids remain on the derived roster (en + si)', () => {
   const en = JSON.parse(fs.readFileSync('src/i18n/en.json', 'utf8'));
   const si = JSON.parse(fs.readFileSync('src/i18n/si.json', 'utf8'));
   assert.equal(en.search.sources.googleBooksPublic, 'Google Books');
   assert.equal(si.search.sources.googleBooksPublic, 'Google Books');
   // adapters.ts derives kebab-case ids from the en keys, sorted -> 29 entries
   const ids = Object.keys(en.search.sources).sort().map((k) => k.replace(/[A-Z]/g, (m) => '-' + m.toLowerCase()));
-  assert.equal(ids.length, 29, 'the roster grew by exactly one entry');
+  assert.equal(ids.length, 31, 'F79 includes the two canonical public adapter labels');
   assert.ok(ids.includes('google-books-public'), 'camelToKebab maps googleBooksPublic -> google-books-public');
   assert.ok(ids.includes('google-books'), 'the F69 navigation-only google-books entry is untouched');
 });

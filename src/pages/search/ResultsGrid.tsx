@@ -12,8 +12,9 @@ import { customSources, evaluateResultProvenance } from "@/search/custom-source-
 import type { SearchResult } from "@/api/search";
 import { camel, fileExtension, formatActualBytes, licenceStyle, validatedHttpsUrl } from "./tokens";
 
-export const ROW_HEIGHT = 168;
-export const CARD_HEIGHT = 156;
+// [F79 D5/D7] 16px card padding + a 24px inter-result gutter.
+export const CARD_HEIGHT = 216;
+export const ROW_HEIGHT = CARD_HEIGHT + 24;
 
 export function rowSuffix(r: SearchResult): string {
   return (r.adapterId + "." + r.resultId).replace(/[^A-Za-z0-9._-]/g, "-");
@@ -138,13 +139,13 @@ export function ResultsGrid() {
           data-result-id={r.resultId}
           style={style}
           onFocus={() => setActiveRow(index)}
-          className="px-2 py-2"
+          className="pb-6"
         >
           <div
             id={"f56.search.v2.card." + sfx}
             data-testid="result-card"
             aria-label={t("search.v2.card.label")}
-            className="h-full rounded-md border border-default bg-surface px-3 py-2 flex flex-col gap-1"
+            className="h-full rounded-md border border-default bg-surface p-4 flex flex-col gap-2 hover:shadow-md transition-shadow motion-reduce:transition-none"
           >
             <div className="flex items-center gap-2 text-xs">
               <input
@@ -186,11 +187,8 @@ export function ResultsGrid() {
             </div>
 
             <div className="flex items-baseline gap-2 min-w-0">
-              <span id={"f56.search.resultTitle." + sfx} role="gridcell" className="text-sm font-semibold text-primary truncate">
+              <span id={"f56.search.resultTitle." + sfx} role="gridcell" className="text-lg font-semibold text-primary truncate">
                 {r.title}
-              </span>
-              <span id={"f56.search.resultCreator." + sfx} role="gridcell" className="text-xs text-secondary truncate">
-                {r.creator || "—"}
               </span>
               <span
                 id={"f56.search.resultSize." + sfx}
@@ -203,6 +201,9 @@ export function ResultsGrid() {
               </span>
             </div>
 
+            <p id={"f56.search.resultCreator." + sfx} role="gridcell" data-testid="card-snippet" className="text-sm text-secondary truncate">
+              {r.snippet || r.creator || "—"}
+            </p>
             <div className="flex items-center gap-2 min-w-0 text-xs">
               <span className="text-tertiary shrink-0">{t("search.v2.card.directUrl")}</span>
               {direct ? (
@@ -212,7 +213,7 @@ export function ResultsGrid() {
                   href={direct}
                   rel="noopener noreferrer nofollow"
                   target="_blank"
-                  className="font-mono text-accent truncate underline-offset-2 hover:underline"
+                  className="text-xs text-success truncate underline-offset-2 hover:underline"
                 >
                   {direct}
                 </a>

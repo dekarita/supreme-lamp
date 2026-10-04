@@ -2734,13 +2734,13 @@ jobs:
         run: |
           set -euo pipefail
           v2=src/pages/search/v2
-          # §2 Google-style landing: ONE centered bar (~60% wide, ~64px tall,
+          # §2/F79 Google-style landing: ONE centered bar (760px max, ~64px tall,
           # autofocused) with a sub-line and exactly three QUIET chips; the
           # frozen F56-c filter ids move INSIDE the collapsed Advanced disclosure
           # so the landing surface shows no chips and no size cap.
           test -f "$v2/SearchHero.tsx"
           test -f "$v2/AdvancedPanel.tsx"
-          grep -qF 'w-[60%]' src/pages/search/CommandBar.tsx
+          grep -qF 'max-w-[760px]' src/pages/search/CommandBar.tsx
           grep -qF 'h-16' src/pages/search/CommandBar.tsx
           grep -qF 'min-h-[45vh]' src/pages/search/CommandBar.tsx
           grep -qF 'transition-all duration-500' src/pages/search/CommandBar.tsx
@@ -2868,7 +2868,7 @@ jobs:
           # §2 all-in-one bar: ONE centered ~60%-wide, ~72px-tall autofocused
           # control with the magnifier submit on the left and the three inline
           # icons [clip][drawer][mic] on the right.
-          grep -qF 'w-[60%]' src/pages/search/CommandBar.tsx
+          grep -qF 'max-w-[760px]' src/pages/search/CommandBar.tsx
           grep -qF 'h-[72px]' src/pages/search/CommandBar.tsx
           grep -qF 'f56.search.v2.urlImportIndicator' src/pages/search/CommandBar.tsx
           grep -qF 'f56.search.v2.micStub' src/pages/search/CommandBar.tsx

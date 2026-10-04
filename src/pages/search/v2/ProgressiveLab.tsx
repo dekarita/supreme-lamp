@@ -9,7 +9,7 @@ import { useTranslation } from "react-i18next";
 import { selectVisibleResults, useSearchStore } from "@/stores/searchStore";
 import { useSearchUiStore } from "@/stores/searchUiStore";
 import { validatedHttpsUrl } from "@/pages/search/tokens";
-import { ADAPTER_ROSTER } from "./adapters";
+import { resolveFanOutAdapters } from "@/lib/search/fanOut";
 import {
   LAB_STAGES,
   labClassifierStream,
@@ -44,6 +44,7 @@ export function ProgressiveLab({ nowMs }: { nowMs?: number } = {}) {
   const { t } = useTranslation();
   const startedAt = useSearchUiStore((s) => s.labStartedAt);
   const adapters = useSearchStore((s) => s.adapters);
+  const adapterIds = useSearchStore((s) => s.adapterIds);
   const results = useSearchStore((s) => s.results);
   const order = useSearchStore((s) => s.resultOrder);
   const categories = useSearchStore((s) => s.categories);
@@ -55,7 +56,8 @@ export function ProgressiveLab({ nowMs }: { nowMs?: number } = {}) {
   const p = labProgress(elapsed);
   const roster = Object.keys(adapters).length
     ? Object.values(adapters).map((a) => ({ adapterId: a.adapterId, status: a.status, resultCount: a.resultCount }))
-    : ADAPTER_ROSTER.map((a) => ({ adapterId: a.adapterId, status: "idle", resultCount: 0 }));
+    // [F79] Never fabricate a 29-adapter probe from the Advanced registry.
+    : resolveFanOutAdapters(adapterIds).map((adapterId) => ({ adapterId, status: "idle", resultCount: 0 }));
   const rows = labRail(roster, elapsed);
   const visible = selectVisibleResults({ results, resultOrder: order, categories, licenceTags, maxSizeBytes, sort });
   const links = visible.filter((r) => validatedHttpsUrl(r.sourceUrl) !== "").length;

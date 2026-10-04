@@ -1,0 +1,32 @@
+{
+  "results": [
+    {
+      "resultId": "f79-paper-1",
+      "adapterId": "arxiv-public",
+      "nameKey": "search.sources.arxivPublic",
+      "category": "scholarly",
+      "title": "TLS: a practical guide to secure connections",
+      "creator": "Public research archive",
+      "snippet": "An open-access introduction to TLS, certificates and secure connections.",
+      "sizeBytes": 412000,
+      "licenceTag": "open-access",
+      "sourceSnapshotId": "f79-snapshot-1",
+      "sourceUrl": "https://arxiv.org/abs/2606.01342",
+      "date": "2026-06-02"
+    },
+    {
+      "resultId": "f79-paper-2",
+      "adapterId": "arxiv-public",
+      "nameKey": "search.sources.arxivPublic",
+      "category": "scholarly",
+      "title": "Understanding the TLS handshake",
+      "creator": "Public research archive",
+      "snippet": "A clear overview of the handshake and how transport security protects data.",
+      "sizeBytes": 698000,
+      "licenceTag": "open-access",
+      "sourceSnapshotId": "f79-snapshot-2",
+      "sourceUrl": "https://arxiv.org/abs/2606.01343",
+      "date": "2026-06-03"
+    }
+  ]
+}

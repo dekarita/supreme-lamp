@@ -207,6 +207,12 @@
     }
   },
   "search": {
+    "showProgress": "සෙවුම් ප්‍රගතිය පෙන්වන්න (දෝෂ නිරාකරණය)",
+    "noResults": "'{{query}}' සඳහා ප්‍රතිඵල නැත. වඩා පුළුල් පද උත්සාහ කරන්න හෝ",
+    "addCustomSite": "+ අභිරුචි අඩවියක් එක් කරන්න",
+    "loading": "සොයමින්...",
+    "openOnGoogle": "google.com හි විවෘත කරන්න",
+    "external": "බාහිර",
     "nav": {
       "label": "සොයන්න"
     },
@@ -425,6 +431,8 @@
       "externalLink": "නව ටැබයක විවෘත වේ"
     },
     "sources": {
+      "arxivPublic": "arXiv (පොදු)",
+      "wikipediaPublic": "විකිපීඩියා (පොදු)",
       "projectGutenberg": "Project Gutenberg",
       "standardEbooks": "Standard Ebooks",
       "librivox": "LibriVox",
@@ -565,7 +573,7 @@
         "adapters": {
           "label": "මූලාශ්‍ර",
           "count": "{{count}} තෝරා ඇත",
-          "hint": "කිසිවක් තෝරා නොගැනීමෙන් සියලු සම්පාදිත මූලාශ්‍ර පරීක්ෂා වේ."
+          "hint": "කිසිවක් තෝරා නොගත් විට පෙරනිමි පොදු මූලාශ්‍ර පහෙහි සොයයි."
         }
       },
       "import": {

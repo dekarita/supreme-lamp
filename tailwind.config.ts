@@ -6,6 +6,8 @@ import type { Config } from "tailwindcss";
 export default {
   darkMode: ["class", '[data-theme="dark"]'],
   content: ["./index.html", "./src/**/*.{ts,tsx}"],
+  // [F79] A timestamp regex in lib/api.ts is not an arbitrary CSS property.
+  blocklist: ["[-:TZ.]"],
   theme: {
     extend: {
       colors: {

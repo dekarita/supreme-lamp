@@ -32,10 +32,8 @@ export const DEFAULT_MAX_SIZE_BYTES = 0;
 export const A1_PLANNED_DEFAULT_MAX_SIZE_BYTES = 10 * GB;
 export const MAX_SIZE_BYTES = 100 * GB;
 
-// [F70 §2.2] Default adapter pre-selected when the user types a query and
-// submits without opening Advanced (F68 Extension Rank 1; F69 shipped
-// internet-archive, F70 flips to the first REAL lane). [F72 §2.1] Now points
-// to the first member of the 5-source TLS-Radar default fan-out pack.
+// [F70] Retained legacy single-source ID for explicit selections and callers.
+// [F79] It is NOT pre-selected: [] delegates the default pack to the backend.
 export const DEFAULT_ADAPTER_ID = "google-books-public";
 
 // [F72 §2.1] Fan-out helper import
@@ -86,10 +84,11 @@ export interface SearchState {
   maxSizeBytes: number;
   sort: SortKey;
   scope: Scope;
-  // [F56-c v2] Advanced "adapter selection": empty = probe every compiled
-  // source (the frozen contract's optional adapterIds). F56-b compiles the
-  // registry; the ids come from the derived roster (search/v2/adapters.ts).
+  // [F79] Empty selection delegates to the backend's locked five defaults.
+  // Explicit Advanced selections retain the F72 capped fan-out helper.
   adapterIds: string[];
+  // [F79] Session-only diagnostic disclosure; OFF until explicitly enabled.
+  showProgress: boolean;
   // Per-adapter state (compiled adapters arrive with the accepted list)
   adapters: Record<string, AdapterState>;
   // Search request state
@@ -124,6 +123,7 @@ export interface SearchState {
   toggleCategory: (c: Category | "all") => void;
   toggleLicence: (l: LicenceTag) => void;
   toggleAdapter: (adapterId: string) => void;
+  setShowProgress: (show: boolean) => void;
   resetFilters: () => void;
   setMaxSizeBytes: (n: number) => void;
   setSort: (s: SortKey) => void;
@@ -165,7 +165,8 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   maxSizeBytes: DEFAULT_MAX_SIZE_BYTES,
   sort: "relevance",
   scope: "federated",
-  adapterIds: [DEFAULT_ADAPTER_ID],
+  adapterIds: [],
+  showProgress: false,
   adapters: {},
   searchId: "",
   requestId: "",
@@ -209,8 +210,9 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     const cur = get().adapterIds;
     set({ adapterIds: cur.includes(adapterId) ? cur.filter((x) => x !== adapterId) : [...cur, adapterId] });
   },
+  setShowProgress: (showProgress) => set({ showProgress }),
   resetFilters: () =>
-    set({ categories: [], licenceTags: [], maxSizeBytes: DEFAULT_MAX_SIZE_BYTES, sort: "relevance", adapterIds: [DEFAULT_ADAPTER_ID] }),
+    set({ categories: [], licenceTags: [], maxSizeBytes: DEFAULT_MAX_SIZE_BYTES, sort: "relevance", adapterIds: [] }),
   setMaxSizeBytes: (n) => set({ maxSizeBytes: Math.max(0, Math.min(n, MAX_SIZE_BYTES)) }),
   setSort: (s) => set({ sort: s }),
   setScope: (s) => set({ scope: s }),
@@ -244,9 +246,10 @@ export const useSearchStore = create<SearchState>((set, get) => ({
       cancelling: false,
       lastErrorCode: "",
     });
-    // [F72 §2.1] Resolve adapter IDs through the fan-out helper: empty
-    // selection → default TLS-Radar 5-source pack; capped at FAN_OUT_CAP (8).
-    const resolvedAdapters = resolveFanOutAdapters(st.adapterIds);
+    // [F79] The backend is the source of truth for the automatic five-source
+    // pack. Send [] rather than silently selecting one or the whole registry.
+    // Preserve F72 deduplication + eight-source cap for explicit selections.
+    const resolvedAdapters = st.adapterIds.length ? resolveFanOutAdapters(st.adapterIds) : [];
     const res = await createSearch({
       requestId,
       query,

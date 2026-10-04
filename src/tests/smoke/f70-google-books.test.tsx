@@ -90,16 +90,16 @@ afterEach(() => {
 });
 
 describe("F70 §2.2 default adapter", () => {
-  it("is google-books-public, is on the derived roster as entry 29, and has both i18n labels", () => {
+  it("keeps the legacy single-source selection available on the canonical public roster", () => {
     expect(DEFAULT_ADAPTER_ID).toBe("google-books-public");
-    expect(ADAPTER_ROSTER_SIZE).toBe(29);
+    expect(ADAPTER_ROSTER_SIZE).toBe(31); // F79 adds the canonical public aliases.
     const hit = ADAPTER_ROSTER.find((a) => a.adapterId === "google-books-public");
     expect(hit?.nameKey).toBe("search.sources.googleBooksPublic");
     // the F69 navigation-only entry is untouched
     expect(ADAPTER_ROSTER.find((a) => a.adapterId === "google-books")?.nameKey).toBe("search.sources.googleBooks");
   });
 
-  it("a raw query with default state POSTs /api/search with adapterIds=[google-books-public]", async () => {
+  it("an explicit Google Books selection still POSTs adapterIds=[google-books-public]", async () => {
     const calls: Any[] = [];
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       calls.push({ url: String(url), init });

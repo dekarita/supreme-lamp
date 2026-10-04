@@ -33,7 +33,7 @@ function extractSingleQuotedArray(marker) {
 
 const SEARCH_ALLOWED = extractSingleQuotedArray('$searchAllowedAdapters = @(');
 const FETCH_ALLOWED = extractSingleQuotedArray('$allowedAdapters = @(');
-const DEFAULT_ADAPTERS = extractSingleQuotedArray('$script:DefaultAdapterIds = @(');
+const DEFAULT_ADAPTERS = extractSingleQuotedArray('$script:DefaultFanOutAdapterIds = @(');
 const LIMIT_CAP = 50;
 
 test('F70-P1-ROUTES: the three search routes are wired next to /api/fetch with the F69 roster', () => {
@@ -50,7 +50,7 @@ test('F70-P1-ROUTES: the three search routes are wired next to /api/fetch with t
   const core = (a) => a.filter((x) => x !== 'google-books-public');
   assert.deepEqual(core(SEARCH_ALLOWED), core(FETCH_ALLOWED), 'the two allowlists must stay in sync');
   // [F72 §1.3] Default fan-out expanded to 5-source TLS-Radar pack.
-  assert.deepEqual(DEFAULT_ADAPTERS, ['github-releases', 'internet-archive', 'arxiv', 'wikisource', 'google-books-public'], 'F72 §1.3 default 5-source fan-out');
+  assert.deepEqual(DEFAULT_ADAPTERS, ['github-releases', 'internet-archive', 'arxiv-public', 'wikipedia-public', 'google-books-public'], 'F72 §1.3 default 5-source fan-out');
 });
 
 test('F70-P1-GATES: method, query-credential, constant-time token and validation order', () => {

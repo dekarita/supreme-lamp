@@ -3,13 +3,13 @@
 // TLS-Radar 5-source pack fans out. F58.HARD caps at 8 adapters per search.
 const FAN_OUT_CAP = 8;
 
-/** [F72 §2.1] Default TLS-Radar fan-out set. Mirrors $script:DefaultAdapterIds
+/** [F72 §2.1] Default TLS-Radar fan-out set. Mirrors $script:DefaultFanOutAdapterIds
  *  in payloads/ghrdp-server.ps1 (F72 §1.3). */
 export const DEFAULT_FANOUT_ADAPTER_IDS: readonly string[] = [
   "github-releases",
   "internet-archive",
-  "arxiv",
-  "wikisource",
+  "arxiv-public",
+  "wikipedia-public",
   "google-books-public",
 ];
 

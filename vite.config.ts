@@ -37,6 +37,17 @@ export default defineConfig({
   resolve: {
     alias: { "@": resolve(__dirname, "src") },
   },
+  // [F79] Arena HTTPS previews use relative API URLs; proxy to the mock API
+  // on the server, never to localhost in the user's browser.
+  server: {
+    host: "0.0.0.0",
+    allowedHosts: [".e2b.app"],
+    proxy: {
+      "/api": "http://127.0.0.1:7331",
+      "/diag": "http://127.0.0.1:7331",
+    },
+  },
+  preview: { host: "0.0.0.0", allowedHosts: [".e2b.app"] },
   build: {
     outDir: "ui/dist",
     assetsInlineLimit: 100000000,
@@ -47,7 +58,7 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/tests/setup.ts"],
-    include: ["src/tests/smoke/**/*.test.ts", "src/tests/smoke/**/*.test.tsx"],
+    include: ["src/tests/smoke/**/*.test.ts", "src/tests/smoke/**/*.test.tsx", "tests/f79-*.test.ts", "tests/f79-*.test.tsx"],
     css: false,
   },
 });

@@ -11,6 +11,7 @@ import "@/i18n";
 import Search from "@/pages/Search";
 import { ProgressiveLab } from "@/pages/search/v2/ProgressiveLab";
 import { DEV_FIXTURE_ROWS, DEV_FIXTURE_TICK_MS, isDevMode } from "@/pages/search/devFixture";
+import type { AdapterState } from "@/api/search";
 import { useSearchStore, DEFAULT_MAX_SIZE_BYTES } from "@/stores/searchStore";
 import { useSearchUiStore } from "@/stores/searchUiStore";
 import {
@@ -24,10 +25,10 @@ import {
 
 type Any = any;
 
-const ROSTER = [
-  { adapterId: "project-gutenberg", status: "idle", resultCount: 0 },
-  { adapterId: "sourceforge", status: "idle", resultCount: 0 },
-  { adapterId: "wikisource", status: "idle", resultCount: 0 },
+const ROSTER: AdapterState[] = [
+  { adapterId: "project-gutenberg", nameKey: "search.sources.projectGutenberg", status: "idle", resultCount: 0 },
+  { adapterId: "sourceforge", nameKey: "search.sources.sourceforge", status: "idle", resultCount: 0 },
+  { adapterId: "wikisource", nameKey: "search.sources.wikisource", status: "idle", resultCount: 0 },
 ];
 
 function jsonResponse(data: unknown, ok = true, status = 200) {
@@ -49,6 +50,7 @@ function resetAll() {
     categories: [],
     licenceTags: [],
     adapterIds: [],
+    showProgress: false,
     maxSizeBytes: DEFAULT_MAX_SIZE_BYTES,
     sort: "relevance",
     scope: "federated",
@@ -79,7 +81,7 @@ describe("visible lab state machine on mock timers", () => {
   it("ticks classifier -> probes -> consolidation with a growing message stream", async () => {
     vi.useFakeTimers();
     useSearchUiStore.setState({ labStartedAt: Date.now(), view: "results" });
-    useSearchStore.setState({ adapters: ROSTER });
+    useSearchStore.setState({ adapters: Object.fromEntries(ROSTER.map((a) => [a.adapterId, a])) });
     render(<ProgressiveLab />);
     const lab = screen.getByTestId("progressive-lab");
     expect(lab.getAttribute("data-stage")).toBe("classifier");
@@ -126,7 +128,7 @@ describe("visible lab state machine on mock timers", () => {
   it("rail rows carry real dispatch/settle timestamps once probes run", () => {
     const t0 = Date.UTC(2026, 8, 30, 12, 0, 0);
     useSearchUiStore.setState({ labStartedAt: t0, view: "results" });
-    useSearchStore.setState({ adapters: ROSTER });
+    useSearchStore.setState({ adapters: Object.fromEntries(ROSTER.map((a) => [a.adapterId, a])) });
     render(<ProgressiveLab nowMs={LAB_CLASSIFIER_END_MS + 10_000} />);
     const stamps = screen.getAllByTestId("lab-adapter-stamp").map((n) => n.textContent || "");
     expect(stamps.some((s) => /^\d{2}:\d{2}:\d{2}$/.test(s))).toBe(true);
@@ -145,6 +147,7 @@ describe("DEV fixture fallback + empty state", () => {
   it("streams fixture.json rows into the Results grid when live adapters settle empty (DEV)", async () => {
     vi.useFakeTimers();
     expect(isDevMode()).toBe(true); // vitest runs in DEV mode
+    useSearchStore.setState({ showProgress: true }); // F79: fixtures are debug-only.
     vi.stubGlobal(
       "fetch",
       vi.fn((url: Any) =>
@@ -182,7 +185,7 @@ describe("DEV fixture fallback + empty state", () => {
 
   it("with DEV off, the empty-state message surfaces cleanly and no fixture streams", async () => {
     vi.useFakeTimers();
-    vi.stubEnv("DEV", "");
+    vi.stubEnv("DEV", false);
     expect(isDevMode()).toBe(false);
     useSearchStore.setState({
       phase: "empty",

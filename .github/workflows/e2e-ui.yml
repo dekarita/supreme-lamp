@@ -1,9 +1,6 @@
-# [F78 §E.4] E2E-UI gate: the stored-website Lab Mode lane (quick-add, Your sites,
-# Lab inspector) driven in a REAL chromium through the vite dev server and the
-# mock dashboard backend. This is a UI gate only - it never touches the runner,
-# the tailnet or main.yml. The F41 smoke lane keeps its own config and stays in
-# launch-gates.yml; this workflow uses playwright.e2e-ui.config.ts via
-# `pnpm run e2e`.
+# [F79 D8] Run the real built UI with cached, prebuilt Chromium. No Playwright
+# browser download: the Ubuntu runner's Chrome is Chromium-based and includes
+# its binary/libraries. executablePath (NOT PLAYWRIGHT_BROWSERS_PATH) selects it.
 name: e2e-ui
 on:
   pull_request:
@@ -26,12 +23,28 @@ jobs:
           export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
           corepack enable
           pnpm install --frozen-lockfile
-      - name: Install chromium (playwright)
+      - name: Cache prebuilt Chromium binary
+        id: chromium-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright/f79-chromium
+          key: playwright-chromium-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pnpm-lock.yaml') }}-v1
+      - name: Select cached Chromium (runner Chrome on a cache miss)
         run: |
           set -euo pipefail
-          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-          corepack enable
-          pnpm exec playwright install --with-deps chromium
+          browser_dir="$HOME/.cache/ms-playwright/f79-chromium"
+          if [[ ! -x "$browser_dir/chrome" ]]; then
+            # Chrome is prebuilt on ubuntu-latest. The APT fallback is also
+            # Chromium-based, not Ubuntu's chromium-browser snap wrapper.
+            if [[ ! -x /opt/google/chrome/chrome ]]; then
+              sudo apt-get update
+              sudo apt-get install -y google-chrome-stable
+            fi
+            mkdir -p "$browser_dir"
+            cp -R /opt/google/chrome/. "$browser_dir/"
+          fi
+          "$browser_dir/chrome" --version
+          echo "PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=$browser_dir/chrome" >> "$GITHUB_ENV"
       - name: Build the dashboard bundle (tsc + vite, single file)
         run: |
           set -euo pipefail
@@ -39,28 +52,34 @@ jobs:
           export VITE_BUILD_SHA="${GITHUB_SHA:-dev}"
           corepack enable
           pnpm run build
-      - name: Run the F78 E2E specs (vite dev + mock backend on :7331)
+      - name: Run F78 + F79 E2E specs (real bundle + mock backend)
         run: |
           set -euo pipefail
           export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
           corepack enable
           if ! out=$(pnpm run e2e 2>&1); then
             echo "$out" | tail -80
-            # The sandbox authoring this cannot read runner logs, so the failing
-            # test names ride out as ONE ::error:: annotation.
             detail=$(printf '%s' "$out" | awk '/^  [0-9]+\) /{f=1} f{print}' | head -c 1700)
             summary=$(printf '%s' "$out" | tail -c 400)
-            echo "::error::F78-E2E-FAIL::$(printf '%s' "${detail}${summary}" | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g' | iconv -f UTF-8 -t UTF-8 -c)"
+            echo "::error::F79-E2E-FAIL::$(printf '%s' "${detail}${summary}" | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g' | iconv -f UTF-8 -t UTF-8 -c)"
             exit 1
           fi
-      - name: Upload screenshots (one per assertion)
+          echo "$out" | tail -8
+      - name: Upload screenshots (mandatory visual review)
+        id: screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screenshots
+          name: screenshots-${{ github.sha }}
           path: screenshots/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 14
+      - name: Publish screenshot download link
+        if: always() && steps.screenshots.outputs.artifact-url != ''
+        env:
+          SCREENSHOTS_URL: ${{ steps.screenshots.outputs.artifact-url }}
+        run: |
+          echo "Review the empty, loading, results and Your-sites screenshots BEFORE merging: $SCREENSHOTS_URL" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the playwright report on failure
         if: failure()
         uses: actions/upload-artifact@v4

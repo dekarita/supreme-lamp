@@ -58,6 +58,8 @@ export function AdvancedPanel({ open }: { open: boolean }) {
   const sort = useSearchStore((s) => s.sort);
   const scope = useSearchStore((s) => s.scope);
   const adapterIds = useSearchStore((s) => s.adapterIds);
+  const showProgress = useSearchStore((s) => s.showProgress);
+  const setShowProgress = useSearchStore((s) => s.setShowProgress);
   const filterCount = useSearchStore((s) => s.categories.length + s.licenceTags.length + s.adapterIds.length + s.fileExtensions.length + (s.yearFrom != null || s.yearTo != null ? 1 : 0));
   const toggleCategory = useSearchStore((s) => s.toggleCategory);
   const toggleLicence = useSearchStore((s) => s.toggleLicence);
@@ -83,6 +85,17 @@ export function AdvancedPanel({ open }: { open: boolean }) {
       aria-label={t("search.v2.advanced.panel")}
       className="w-full bg-surface border border-default rounded-md p-3 flex flex-col gap-3 text-left"
     >
+      <label className="flex items-center gap-2 min-h-11 text-sm text-secondary">
+        <input
+          id="f79.search.showProgressToggle"
+          data-testid="show-progress-toggle"
+          type="checkbox"
+          checked={showProgress}
+          onChange={(e) => setShowProgress(e.target.checked)}
+          className="size-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        />
+        {t("search.showProgress")}
+      </label>
       <div className="flex flex-wrap items-center gap-2">
         <label htmlFor="f56.search.scope" className="text-xs text-tertiary">
           {t("search.scope.label")}

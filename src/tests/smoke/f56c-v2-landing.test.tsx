@@ -99,7 +99,7 @@ describe("F56-c v3 all-in-one landing", () => {
   it("centers one ~60%-wide, ~72px-tall autofocused bar with the 3 inline icons", () => {
     renderSearch();
     expect(screen.getByTestId("hero-bar").getAttribute("data-mode")).toBe("landing");
-    expect(document.getElementById("f56.search.commandBar")?.className).toContain("w-[60%]");
+    expect(document.getElementById("f56.search.commandBar")?.className).toContain("max-w-[760px]");
     const bar = document.getElementById("f56.search.query")?.closest("form");
     expect(bar?.className).toContain("h-[72px]");
     expect(document.activeElement).toBe(document.getElementById("f56.search.query"));
