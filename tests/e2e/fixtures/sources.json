@@ -12,6 +12,19 @@
       "addedAt": "2026-10-04T00:00:00Z"
     },
     {
+      "id": "demo",
+      "name": "Demo Site",
+      "baseUrl": "https://example.com",
+      "hostname": "example.com",
+      "labMode": true,
+      "allowedDomains": ["example.com"],
+      "category": "Custom",
+      "method": "GET",
+      "path": "/",
+      "enableState": "permanent",
+      "addedAt": "2026-10-04T00:00:00Z"
+    },
+    {
       "id": "si-wikipedia-org",
       "name": "Sinhala Wikipedia",
       "baseUrl": "https://si.wikipedia.org",

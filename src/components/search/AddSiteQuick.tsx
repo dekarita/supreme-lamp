@@ -83,6 +83,9 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
   // Derived preview: what the server will store (category + exact host fence).
   const hostname = F58.hostnameFor(url.trim());
   const atCap = labCount >= MAX_CUSTOM_SITES;
+  // [F82 §2.1] Whichever error is active (field first, then generic) is
+  // mirrored into the single visible aggregate element rendered in the footer.
+  const anyError = nameError ?? urlError ?? genericError;
 
   const save = async () => {
     if (saving) return;
@@ -179,12 +182,6 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
                 {t(nameError)}
               </span>
             ) : null}
-            {/* [F81 §4.1/Q9] Backwards-compat generic error testid, see below. */}
-            {nameError && !urlError ? (
-              <span data-testid="add-site-error" role="alert" className="sr-only">
-                {t(nameError)}
-              </span>
-            ) : null}
           </label>
 
           <label className="flex flex-col gap-1 text-sm text-secondary" htmlFor="f78.addSite.url">
@@ -208,16 +205,11 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
                 {t(urlError)}
               </span>
             ) : null}
-            {/* [F81 §4.1/Q9] Backwards-compat generic error: F78 tests look for
-                the `add-site-error` testid on inline failures. We keep that
-                testid on whichever inline error is active so the existing
-                suite (and the modal's accessibility role="alert") keep
-                working while the per-field spans carry the new ids. */}
-            {urlError ? (
-              <span data-testid="add-site-error" role="alert" className="sr-only">
-                {t(urlError)}
-              </span>
-            ) : null}
+            {/* [F82 §2.1] The F78 backwards-compat `add-site-error` testid now
+                lives on ONE visible aggregate element in the footer (below).
+                Rendering it here as well would make getByTestId throw on the
+                duplicate (vitest) and kept it sr-only (invisible to
+                Playwright). The per-field span above is the F81 UX. */}
           </label>
 
           {/* Auto-filled, not operator-typed (Category + exact-host allowlist). */}
@@ -231,9 +223,15 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
             </p>
           ) : null}
 
-          {genericError ? (
-            <p id="f78.addSite.error" data-testid="add-site-error" role="alert" className="text-xs text-danger bg-danger/10 rounded p-2">
-              {t(genericError)}
+          {/* [F82 §2.1] ONE visible aggregate error line: it carries the F78
+              contract verbatim (`id="f78.addSite.error"` +
+              `data-testid="add-site-error"`, singular) for ANY active error -
+              field or generic - so the F78 E2E http:// case and the vitest
+              getByTestId lookups resolve to a real, visible element. F81's
+              per-field red spans above are untouched. */}
+          {anyError ? (
+            <p id="f78.addSite.error" data-testid="add-site-error" role="alert" className="text-xs text-danger/80 bg-danger/10 rounded p-2">
+              {t(anyError)}
             </p>
           ) : null}
 
