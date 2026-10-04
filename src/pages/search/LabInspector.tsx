@@ -1,5 +1,10 @@
-// [F78 §4.2] The stored-website Lab inspector (replaces the F74 placeholder for
-// Lab Mode sources; the legacy result-id view in Lab.tsx is untouched).
+// [F78 §4.2/F86 §B.2] The deep Lab inspector. It serves TWO shapes with ONE
+// renderer, which is the whole point of F86 §B.2:
+//   * a stored Lab Mode source  -> inspectSource(source.id, query)
+//   * a RESULT (result-id route) -> inspectResultUrl(result.sourceUrl, query)
+// The F74/F75 placeholder ("Full inspector coming in F75") is gone: a result-id
+// navigation now runs the same deep-inspector pipeline over the result's own
+// sourceUrl and shows the same link list, header and refetch affordance.
 //
 // What it is allowed to do: ask the server to fetch the STORED homepage of ONE
 // operator-added site and show the links that came back. Default posture:
@@ -17,7 +22,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ExternalLink, FlaskConical, RefreshCw } from "lucide-react";
-import { inspectSource, type CustomSourceRow, type LabError, type LabInspectResult } from "@/api/lab";
+import { inspectResultUrl, inspectSource, type CustomSourceRow, type LabError, type LabInspectResult } from "@/api/lab";
 import { launchUrl } from "@/lib/launchUrl";
 import { useToastStore } from "@/stores/toastStore";
 
@@ -30,12 +35,23 @@ const ERROR_KEYS: Record<string, string> = {
   TRANSPORT_UNAVAILABLE: "lab.timeout",
 };
 
-export interface LabInspectorProps {
-  source: CustomSourceRow;
-  query: string;
+/** [F86 §B.2] What a result-id navigation hands the inspector: the title and
+ *  adapter of the result plus the URL to inspect. */
+export interface LabResultTarget {
+  title: string;
+  sourceUrl: string;
+  adapterKey: string;
 }
 
-export function LabInspector({ source, query }: LabInspectorProps) {
+/** Exactly one of `source` (stored site) or `result` (result-id route). */
+export type LabInspectorProps =
+  | { source: CustomSourceRow; result?: undefined; query: string }
+  | { result: LabResultTarget; source?: undefined; query: string };
+
+export function LabInspector(props: LabInspectorProps) {
+  const query = props.query;
+  const source = props.source;
+  const result = props.result;
   const { t } = useTranslation();
   const navigate = useNavigate();
   const push = useToastStore((s) => s.push);
@@ -52,7 +68,10 @@ export function LabInspector({ source, query }: LabInspectorProps) {
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
-    const res = await inspectSource(source.id, q);
+    // [F86 §B.2] result-id -> the result's sourceUrl IS the inspected target.
+    const res = source
+      ? await inspectSource(source.id, q)
+      : await inspectResultUrl(result ? result.sourceUrl : "", q);
     if (!alive.current) return;
     setLoading(false);
     if (res.ok) {
@@ -61,7 +80,7 @@ export function LabInspector({ source, query }: LabInspectorProps) {
     }
     setError(res.error);
     if (res.error.code === "RATE_LIMITED") setCooldown(Math.max(1, res.error.retryAfterSeconds ?? 60));
-  }, [source.id, q]);
+  }, [source ? source.id : "", result ? result.sourceUrl : "", q]);
 
   useEffect(() => {
     alive.current = true;
@@ -103,10 +122,10 @@ export function LabInspector({ source, query }: LabInspectorProps) {
       <header className="flex flex-wrap items-center gap-2">
         <FlaskConical className="size-4 text-secondary" aria-hidden />
         <h1 id="f78.lab.title" data-testid="lab-site-title" className="text-base font-semibold text-primary truncate">
-          {data?.title || source.name || source.hostname}
+          {data?.title || (source ? source.name || source.hostname : result ? result.title : "")}
         </h1>
         <span id="f78.lab.hostname" data-testid="lab-hostname" className="text-xs font-mono text-tertiary">
-          {data?.hostname || source.hostname}
+          {data?.hostname || (source ? source.hostname : "")}
         </span>
         <button
           id="f78.lab.refetch"
@@ -120,6 +139,12 @@ export function LabInspector({ source, query }: LabInspectorProps) {
           {t("lab.refetch")}
         </button>
       </header>
+
+      {result ? (
+        <p id="f86.lab.resultContext" data-testid="lab-result-context" className="text-xs text-secondary">
+          {t("lab.resultContext", { title: result.title, adapter: t(result.adapterKey) })}
+        </p>
+      ) : null}
 
       <p id="f78.lab.query" data-testid="lab-query-echo" className="text-xs text-secondary">
         {t("lab.query")}: <span className="font-mono text-primary">{q || "—"}</span>

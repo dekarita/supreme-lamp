@@ -16,6 +16,22 @@ const PORT = Number(process.env.F78_MOCK_PORT || 7331);
 
 const readJson = (name) => JSON.parse(readFileSync(join(HERE, name), "utf8"));
 
+/** [F86 §D] The per-site sitemap fixtures: 52 URLs each (pages + .mp3/.mp4/.pdf),
+ *  the exact corpus the ten-site deep spec asserts (>= 50 URLs per site). */
+function f86SitemapRows(site) {
+  let xml = "";
+  try {
+    xml = readFileSync(join(HERE, "f86-sitemaps", site + ".xml"), "utf8");
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const m of xml.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/g)) out.push(m[1]);
+  return out;
+}
+
+/** The launch-url calls the F86 spec inspects (tier proof). */
+const launchCalls = [];
 /** Added at runtime by POST /api/f58/sources so the "add then card appears"
  *  flow is observable without mutating the fixture file on disk. */
 const added = [];
@@ -205,6 +221,44 @@ const server = createServer(async (req, res) => {
 
   if (path === "/api/lab/inspect" && req.method === "POST") {
     const body = await readBody(req);
+    // [F86 §B.2/§D] RESULT-VIEW + DEEP lanes. A body.sourceUrl (the result id
+    // route) or a query that starts with "f86" selects the deep lane: the
+    // response is the site's OWN 52-URL fixture (pages + .mp3/.mp4/.pdf), which
+    // is what "Lab finds >= 50 URLs" means for the ten-site spec. Every other
+    // request keeps the F78/F85 shape byte-for-byte, so those suites cannot
+    // drift because of this branch.
+    const f86Query = String(body?.query || "");
+    const f86Deep = Boolean(body && body.sourceUrl) || /^f86/.test(f86Query.trim());
+    if (f86Deep) {
+      let host = "";
+      try {
+        host = body.sourceUrl ? new URL(String(body.sourceUrl)).hostname.replace(/^www\./, "") : "";
+      } catch {
+        host = "";
+      }
+      if (!host && body.sourceId) {
+        const row = sources().find((x) => x.id === body.sourceId);
+        host = row ? String(row.hostname).replace(/^www\./, "") : "";
+      }
+      if (!host) host = "archive.org";
+      const urls = f86SitemapRows(host);
+      const q = f86Query.replace(/^f86[^ ]*/, "").trim().toLowerCase();
+      const links = urls.map((href) => ({ href, text: href.split("/").pop() || href, matches: Boolean(q) && href.toLowerCase().includes(q) }));
+      if (links.length >= 50) {
+        send(res, 200, {
+          hostname: "www." + host,
+          title: host + " deep index",
+          links,
+          fetchedAt: new Date().toISOString(),
+          linkCount: links.length,
+          matchCount: links.filter((l) => l.matches).length,
+          source: "sitemap.xml",
+          sourceUrls: links.length,
+          adapterStatus: { phase: "sitemap-ok", sourceLabel: "sitemap.xml" },
+        });
+        return;
+      }
+    }
     if (!body || !body.sourceId) {
       send(res, 400, { code: "VALIDATION_ERROR", messageKey: "search.errors.validation", retryable: false });
       return;
@@ -268,7 +322,7 @@ const server = createServer(async (req, res) => {
     // the only way to reach the F84 "Download to RDP" button end to end (the F79
     // fixture rows are landing pages on purpose - they keep the single Open
     // action). Nothing else in the lane changes.
-    const f85Match = /^f85\s+(\S+)$/.exec(search.query.trim());
+    const f85Match = /^f8[56]\s+(\S+)$/.exec(search.query.trim());
     const f85Results = f85Match
       ? [{
           resultId: "f85-file-1",
@@ -316,6 +370,52 @@ const server = createServer(async (req, res) => {
       sha7: "f85mock",
       features: { autoHttps: true, wwwTolerance: true, noFallback: true, downloadToRdp: true },
     });
+    return;
+  }
+
+  // [F86 §A/§D] launch-url: the ten-site spec clicks a Lab row and asserts that
+  // the request really happened and that a TIER came back (the F86 contract:
+  // the response carries the rung that did the work). The mock answers tier 1
+  // and records every call so the spec can read them back.
+  if (path === "/api/launch-url" && req.method === "POST") {
+    const body = await readBody(req);
+    const target = String(body?.url || "");
+    if (!target.startsWith("https://")) {
+      send(res, 400, { code: "VALIDATION_ERROR", messageKey: "newSiteHttpsRequired", retryable: false });
+      return;
+    }
+    launchCalls.push({ url: target, at: new Date().toISOString() });
+    send(res, 200, { ok: true, launched: true, tier: 1, tierDetail: "direct-spawn", browser: "msedge", pid: 4242, user: "runner" });
+    return;
+  }
+
+  // [F86 §A.3] The diagnostic banner's launch probe.
+  if (path === "/api/launch-url/diag" && req.method === "GET") {
+    const last = launchCalls[launchCalls.length - 1] || null;
+    send(res, 200, {
+      ok: true,
+      activeTier: 1,
+      lastLaunchAt: last ? last.at : "",
+      lastResult: last ? "ok" : "",
+      lastTier: last ? 1 : 0,
+      lastDetail: last ? "direct-spawn" : "",
+      chromePath: "",
+      msedgePath: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+      firefoxPath: "",
+      interactiveSessionDetected: true,
+      sessionId: 1,
+      activeUser: "runner",
+      pipeReady: true,
+      pipeName: "ghrdp-browser-opener-f86",
+      logPath: "C:\\Users\\runner\\.ghrdp\\launch-url.log",
+      errorHistory: [],
+      history: [],
+    });
+    return;
+  }
+
+  if (path === "/__f86/launch-calls") {
+    send(res, 200, { calls: launchCalls });
     return;
   }
 
