@@ -14,3 +14,6 @@ test-results/
 
 # local gate-runner venv (PyYAML for tests/run-launch-gates.py)
 .venv/
+
+# [F78] playwright screenshot output (CI uploads it as the "screenshots" artifact)
+screenshots/

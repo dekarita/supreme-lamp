@@ -676,6 +676,13 @@
       "encrypting": "Encrypting with F46",
       "postFetch": "Post-fetch mirror check",
       "completed": "Fetch completed"
+    },
+    "addSite": "නව අඩවියක් එක්කරන්න",
+    "yourSites": "ඔබේ අඩවි",
+    "deepInspect": "{{hostname}} තුළ “{{query}}” ගේබීරව පරීක්ෂා කරන්න",
+    "openInLabSite": "{{hostname}} ලැබ් තුළ විවෘත කරන්න",
+    "labMode": {
+      "badge": "ලැබ්"
     }
   },
   "files": {
@@ -867,4 +874,29 @@
       }
     }
   }
+,
+  "lab": {
+    "title": "ලැබ් පරීක්ෂකය",
+    "query": "විමසීම",
+    "matchCount": "සබැඳුම් {{total}} අතරින් {{matches}} ක් “{{query}}” හා ගැලපෙයි",
+    "matchesFirst": "ගැලපෙන ඒවා මොටුවෙන්",
+    "allLinks": "සියලුම සබැඳුම් {{total}}",
+    "openInNewTab": "නව ටැබ් එකක විවෘත කරන්න",
+    "refetch": "නැවත ලබාගන්න",
+    "rateLimited": "අනුපාත සීමාවයි, තත්පර {{seconds}}ත් නැවත උත්සාහ කරන්න",
+    "timeout": "වෙබ් අඩවිය තත්පර 10ක් තුළ පිළිතුරක් නොදුන්නේය.",
+    "sizeLimit": "මුල් පිටුව ලැබ් සීමාව වන 2 MB ට වැඩිය.",
+    "hostnameMismatch": "ප්‍රතිචාරය ගබඩාගත් අඩවියට වෙනස් hostname එකකින් ලැබුණි.",
+    "notFound": "මෙම ලැබ් ලිපිනයට ගබඩාගත් අඩවියක් නොමැත.",
+    "loading": "ගබඩාගත් මුල් පිටුව ලබාගනිමින්…"
+  },
+  "newSiteName": "නාමය",
+  "newSiteUrl": "මූල යුආර්එල් (https)",
+  "newSiteSave": "සුරකින්න",
+  "newSiteCancel": "අවලංගු කරන්න",
+  "newSiteSuccess": "{{hostname}} “ඔබේ අඩවි” වෙත එක් කළා.",
+  "newSiteHttpsRequired": "https:// යුආර්එල් එකක් අවශ්‍යයි.",
+  "newSiteNameRequired": "නාමයක් අවශ්‍යයි.",
+  "newSiteNameTooLong": "නාමය අක්ෂර 50කට නොවැඩි විය යුතුය.",
+  "newSiteAuthNotAllowed": "යුආර්එල් තුළ අධිසංවිධානය ප්‍රතික්ෂේප කරයි. user:pass ඉවත් කර https මූලය භාවිත කරන්න."
 }

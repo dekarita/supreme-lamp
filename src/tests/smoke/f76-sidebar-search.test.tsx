@@ -90,7 +90,7 @@ describe("F76 §1.3 route registration (source-pinned + rendered)", () => {
     expect(app).toMatch(/<Route path="\/search\/lab\/:targetId" element=\{<SearchLab \/>\} \/>/);
   });
 
-  it("/search/lab/:targetId renders the Lab scaffold", () => {
+  it("/search/lab/:targetId renders the Lab scaffold", async () => {
     render(
       <MemoryRouter initialEntries={["/search/lab/g1"]}>
         <Routes>
@@ -99,7 +99,10 @@ describe("F76 §1.3 route registration (source-pinned + rendered)", () => {
         </Routes>
       </MemoryRouter>
     );
-    expect(screen.getByTestId("lab-back-button")).toBeInTheDocument();
+    // [F78 §4.2] The route now settles AFTER the F58 registry pull, so an id can
+    // be told apart from a stored-source id instead of flashing "unknown". The
+    // F76 assertion is unchanged once the lookup has settled.
+    await waitFor(() => expect(screen.getByTestId("lab-back-button")).toBeInTheDocument());
     expect(document.getElementById("f56.search.lab.title")).not.toBeNull();
   });
 });

@@ -1,0 +1,12 @@
+{
+  "hostname": "docs.python.org",
+  "title": "Python 3 documentation",
+  "links": [
+    { "text": "ssl - TLS/SSL support", "href": "https://docs.python.org/3/library/ssl.html" },
+    { "text": "asyncio - asynchronous I/O", "href": "https://docs.python.org/3/library/asyncio.html" },
+    { "text": "typing - type hints", "href": "https://docs.python.org/3/library/typing.html" },
+    { "text": "venv - virtual environments", "href": "https://docs.python.org/3/library/venv.html" },
+    { "text": "socket - low level networking", "href": "https://docs.python.org/3/library/socket.html" },
+    { "text": "What's new in 3.13", "href": "https://docs.python.org/3/whatsnew/3.13.html" }
+  ]
+}

@@ -200,6 +200,11 @@ var F58 = (function () {
     if (!str(x.addedAt) || !ISO_RE.test(String(x.addedAt))) e.push("addedAt must be an ISO-8601 Z timestamp");
     if (!str(x.source) || !/^[a-f0-9]{16,64}$/.test(String(x.source))) e.push("source must be the operator-id hash (hex digest, never the operator identity)");
     if (!inList(x.enableState, ENABLE_STATES)) e.push("enableState must be permanent or paused");
+    // [F78 §1.1] optional, typed when present (absent = labMode true / hostname
+    // derived at save time by withHostname()).
+    if ("labMode" in x && typeof x.labMode !== "boolean") e.push("labMode must be a boolean when present");
+    if ("hostname" in x && !str(x.hostname)) e.push("hostname must be a non-empty DNS hostname when present");
+    else if ("hostname" in x && !HOST_RE.test(String(x.hostname).toLowerCase())) e.push("hostname must be a DNS hostname");
     return e;
   }
 
@@ -207,6 +212,56 @@ var F58 = (function () {
     var core = validateCore(d);
     var ext = validateExtension(x);
     return { ok: core.length === 0 && ext.length === 0, coreErrors: core, extensionErrors: ext, errors: core.concat(ext) };
+  }
+
+  // [F78 §1.1] Lab Mode + hostname are EXTENSION-layer additions, never frozen
+  // schema edits: docs/f56/schema.json is byte-frozen (its sha256 is pinned by
+  // tests/f58-descriptor-loader.test.js) and carries additionalProperties:false,
+  // so `labMode`/`hostname` live beside addedAt/source/enableState and cannot
+  // widen the F56 core. Behaviour pinned here, once, for every surface:
+  //   * labMode DEFAULTS TO TRUE - an operator-added source is a Lab shortcut
+  //     (open its homepage in the inspector) and is not auto-queried by fan-out;
+  //   * hostname is DERIVED from baseUrl's host (new URL(baseUrl).hostname
+  //     semantics) so the stored host and the fetched host can never disagree.
+  function hostnameFor(baseUrl) {
+    var h = hostOf(baseUrl);
+    return h && HOST_RE.test(h) ? h : "";
+  }
+
+  function normalizeExtension(x) {
+    var out = clone(isObj(x) ? x : {});
+    out.labMode = typeof out.labMode === "boolean" ? out.labMode : true;
+    out.hostname = str(out.hostname) ? String(out.hostname).toLowerCase() : "";
+    return out;
+  }
+
+  // Save-time shape: a caller that knows only baseUrl still gets the hostname.
+  // baseUrl is the SOURCE OF TRUTH: a supplied hostname may never disagree with
+  // it (the extension value is only a fallback when baseUrl is unusable).
+  function withHostname(baseUrl, x) {
+    var out = normalizeExtension(x);
+    var derived = hostnameFor(baseUrl);
+    if (derived) out.hostname = derived;
+    return out;
+  }
+
+  // The Lab Mode shortcut subset of a registry list. Accepts the store envelope
+  // ({f58} extension) and the bare extension, so the same rule serves the UI
+  // store and the server payload.
+  function labSources(list) {
+    var out = [];
+    if (!Array.isArray(list)) return out;
+    for (var i = 0; i < list.length; i++) {
+      var it = list[i];
+      if (!it) continue;
+      var ext = null;
+      if (isObj(it.f58)) ext = it.f58;
+      else if (isObj(it.extension)) ext = it.extension;
+      else if (isObj(it.descriptor)) ext = it;
+      if (normalizeExtension(ext).labMode === false) continue;
+      out.push(it);
+    }
+    return out;
   }
 
   // §3 hard defaults, no override: values above the floor are clamped DOWN and the
@@ -355,6 +410,7 @@ var F58 = (function () {
     validateExtension: validateExtension, enforceRateLimit: enforceRateLimit, redirectAllowed: redirectAllowed,
     domainAllowed: domainAllowed, allowedHosts: allowedHosts, hostOf: hostOf, evaluateProvenance: evaluateProvenance,
     planFanOut: planFanOut, presetIds: presetIds, instantiate: instantiate,
+    hostnameFor: hostnameFor, normalizeExtension: normalizeExtension, withHostname: withHostname, labSources: labSources,
   };
 })();
 /* [F58-core-end] */
