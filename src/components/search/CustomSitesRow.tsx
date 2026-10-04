@@ -125,6 +125,23 @@ export function CustomSitesRow({ query, sources }: CustomSitesRowProps) {
                 </span>
               </div>
 
+              {/* [F85 §2] Visible canonical host. F84's save-time HTTPS probe
+                  records the host the server ACTUALLY answered from; when that
+                  differs from the typed hostname (e.g. openculture.com ->
+                  www.openculture.com) the operator must be able to see WHICH
+                  host is allowlisted, otherwise the tolerant fence is
+                  invisible and "it works" looks like luck. Absent for the
+                  single-host case, so that card is byte-identical to F84. */}
+              {s.canonicalHostname ? (
+                <span
+                  data-testid={"your-site-canonical-" + s.id}
+                  className="text-xs text-tertiary truncate"
+                  title={s.canonicalHostname}
+                >
+                  {t("search.canonicalHost", { hostname: s.canonicalHostname })}
+                </span>
+              ) : null}
+
               <button
                 id={"f78.search.siteDeepInspect." + s.id}
                 data-testid={"your-site-cta-" + s.id}

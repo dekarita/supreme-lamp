@@ -1,0 +1,160 @@
+{
+  "sites": [
+    "openculture.com",
+    "archive.org",
+    "openverse.org",
+    "awesome.re",
+    "gutenberg.org",
+    "standardebooks.org",
+    "librivox.org",
+    "openlibrary.org",
+    "tubitv.com",
+    "pluto.tv",
+    "freemusicarchive.org"
+  ],
+  "sources": [
+    {
+      "id": "openculture-com",
+      "name": "openculture.com",
+      "baseUrl": "https://openculture.com",
+      "hostname": "openculture.com",
+      "labMode": true,
+      "category": "software",
+      "allowedDomains": [
+        "openculture.com"
+      ],
+      "enableState": "permanent",
+      "addedAt": "2026-10-04T00:00:00Z"
+    },
+    {
+      "id": "archive-org",
+      "name": "archive.org",
+      "baseUrl": "https://archive.org",
+      "hostname": "archive.org",
+      "labMode": true,
+      "category": "software",
+      "allowedDomains": [
+        "archive.org"
+      ],
+      "enableState": "permanent",
+      "addedAt": "2026-10-04T00:00:00Z"
+    },
+    {
+      "id": "openverse-org",
+      "name": "openverse.org",
+      "baseUrl": "https://openverse.org",
+      "hostname": "openverse.org",
+      "labMode": true,
+      "category": "software",
+      "allowedDomains": [
+        "openverse.org"
+      ],
+      "enableState": "permanent",
+      "addedAt": "2026-10-04T00:00:00Z"
+    },
+    {
+      "id": "awesome-re",
+      "name": "awesome.re",
+      "baseUrl": "https://awesome.re",
+      "hostname": "awesome.re",
+      "labMode": true,
+      "category": "software",
+      "allowedDomains": [
+        "awesome.re"
+      ],
+      "enableState": "permanent",
+      "addedAt": "2026-10-04T00:00:00Z"
+    },
+    {
+      "id": "gutenberg-org",
+      "name": "gutenberg.org",
+      "baseUrl": "https://gutenberg.org",
+      "hostname": "gutenberg.org",
+      "labMode": true,
+      "category": "software",
+      "allowedDomains": [
+        "gutenberg.org"
+      ],
+      "enableState": "permanent",
+      "addedAt": "2026-10-04T00:00:00Z"
+    },
+    {
+      "id": "standardebooks-org",
+      "name": "standardebooks.org",
+      "baseUrl": "https://standardebooks.org",
+      "hostname": "standardebooks.org",
+      "labMode": true,
+      "category": "software",
+      "allowedDomains": [
+        "standardebooks.org"
+      ],
+      "enableState": "permanent",
+      "addedAt": "2026-10-04T00:00:00Z"
+    },
+    {
+      "id": "librivox-org",
+      "name": "librivox.org",
+      "baseUrl": "https://librivox.org",
+      "hostname": "librivox.org",
+      "labMode": true,
+      "category": "software",
+      "allowedDomains": [
+        "librivox.org"
+      ],
+      "enableState": "permanent",
+      "addedAt": "2026-10-04T00:00:00Z"
+    },
+    {
+      "id": "openlibrary-org",
+      "name": "openlibrary.org",
+      "baseUrl": "https://openlibrary.org",
+      "hostname": "openlibrary.org",
+      "labMode": true,
+      "category": "software",
+      "allowedDomains": [
+        "openlibrary.org"
+      ],
+      "enableState": "permanent",
+      "addedAt": "2026-10-04T00:00:00Z"
+    },
+    {
+      "id": "tubitv-com",
+      "name": "tubitv.com",
+      "baseUrl": "https://tubitv.com",
+      "hostname": "tubitv.com",
+      "labMode": true,
+      "category": "software",
+      "allowedDomains": [
+        "tubitv.com"
+      ],
+      "enableState": "permanent",
+      "addedAt": "2026-10-04T00:00:00Z"
+    },
+    {
+      "id": "pluto-tv",
+      "name": "pluto.tv",
+      "baseUrl": "https://pluto.tv",
+      "hostname": "pluto.tv",
+      "labMode": true,
+      "category": "software",
+      "allowedDomains": [
+        "pluto.tv"
+      ],
+      "enableState": "permanent",
+      "addedAt": "2026-10-04T00:00:00Z"
+    },
+    {
+      "id": "freemusicarchive-org",
+      "name": "freemusicarchive.org",
+      "baseUrl": "https://freemusicarchive.org",
+      "hostname": "freemusicarchive.org",
+      "labMode": true,
+      "category": "software",
+      "allowedDomains": [
+        "freemusicarchive.org"
+      ],
+      "enableState": "permanent",
+      "addedAt": "2026-10-04T00:00:00Z"
+    }
+  ]
+}
