@@ -3,8 +3,8 @@
 // The F81 route had exactly one mechanism (Interactive scheduled task) and one
 // failure shape: 200 OK, no window. This file proves the F86 replacement ships:
 //   * Tier 1 (direct Start-Process ... -PassThru, PID proof; cmd.exe /c start as
-//     the second form), Tier 2 (WScript.Shell SendKeys) + Tier 2b (the F81 task,
-//     kept as the rung that reaches a session this process cannot touch),
+//     the second form), Tier 2 (the F81 interactive scheduled task, kept as the
+//     rung that reaches a session this process cannot touch),
 //     Tier 3 (named-pipe helper),
 //   * the ladder ORDER 1 -> 2 -> 3 and "first success wins",
 //   * the boot probe -> activeTier (interactive desktop = 1, console user = 2,

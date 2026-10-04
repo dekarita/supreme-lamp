@@ -368,7 +368,7 @@ const server = createServer(async (req, res) => {
       server: "mock",
       sha: "f85mock0000000000000000000000000000000",
       sha7: "f85mock",
-      features: { autoHttps: true, wwwTolerance: true, noFallback: true, downloadToRdp: true },
+      features: { autoHttps: true, wwwTolerance: true, noFallback: true, downloadToRdp: true, launchTiers: true },
     });
     return;
   }

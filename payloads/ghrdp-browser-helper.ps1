@@ -2,10 +2,10 @@
  [F86 §A.2 TIER 3] The persistent browser-opener helper.
 
  WHY: on a runner where ghrdp-server runs in session 0 (a service / a scheduled
- runner), neither a direct Start-Process nor SendKeys can put a window on the
- operator's desktop: the first inherits session 0, the second has no desktop to
- type into. The F81 scheduled task was the only rung that could reach the
- interactive session, and it fails silently when no interactive logon exists.
+ runner), a direct process spawn inherits session 0, so no window can reach
+ the operator's desktop. The F81 scheduled task was the only rung that could
+ reach the interactive session, and it fails silently when no interactive
+ logon exists - which is exactly why this helper exists.
 
  The ladder in payloads/ghrdp-server.ps1 spawns THIS file once per process
  (Start-F86BrowserHelper) and then talks to it over a named pipe:

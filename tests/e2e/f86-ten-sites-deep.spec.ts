@@ -82,11 +82,15 @@ test.describe("F86 ten-site deep inspection", () => {
       // 2. LAB DEEP: the f86 lane answers the site's own 52-URL corpus. The
       //    operator bar is >= 50 URLs, read off the match-count line the
       //    inspector renders from server data (never from a hard-coded number).
-      await page.goto("/#/search/lab/" + id + "?q=f86+sample");
+      const [inspectRes] = await Promise.all([
+        page.waitForResponse((r) => r.url().includes("/api/lab/inspect") && r.request().method() === "POST"),
+        page.goto("/#/search/lab/" + id + "?q=f86+sample"),
+      ]);
       await expect(page.getByTestId("lab-link-list")).toBeVisible();
-      const countText = (await page.getByTestId("lab-match-count").textContent()) || "";
-      const total = Number(/of\s+(\d+)\s+links match/.exec(countText)?.[1] || "0");
-      expect(total).toBeGreaterThanOrEqual(50);
+      // The operator bar: the inspect that fed this list returned >= 50 URLs.
+      const inspected = (await inspectRes.json()) as { linkCount?: number; source?: string };
+      expect(Number(inspected.linkCount || 0)).toBeGreaterThanOrEqual(50);
+      expect(inspected.source || "").toContain("sitemap");
       expect(await page.getByTestId("lab-link-row").count()).toBeGreaterThan(0);
       // The deep crawl is visible as a real source, not as a homepage fallback.
       await expect(page.getByTestId("lab-source")).toContainText("sitemap");
