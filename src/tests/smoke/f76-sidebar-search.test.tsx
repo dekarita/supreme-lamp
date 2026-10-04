@@ -1,8 +1,7 @@
 // [F76] Regression cells for F76-UI-WIRING-FIX:
 //  §2.1 Search is a visible sidebar entry in slot 2 (Overview, Search, Sessions, ...)
 //  §2.2 sidebar.search / sidebar.searchLab exist in BOTH catalogs (en + si parity)
-//  §1.2 an explicit /diag answer moves the lane flag; a payload WITHOUT
-//       searchEnabled must NOT hide the entry (lane.ts:7-9 contract)
+//  §1.2 /diag.searchEnabled is informational only; every response keeps Search visible
 //  §1.3/S2.3 /search + /search/lab/:targetId stay registered (App.tsx)
 // NOTE: vitest `include` is src/tests/smoke/** (vite.config.ts:48), so this F76
 // suite lives here rather than at repo-root tests/ to actually run in CI.
@@ -86,8 +85,8 @@ describe("F76 §1.3 route registration (source-pinned + rendered)", () => {
   it("App.tsx registers /search and /search/lab/:targetId with the Lab import", () => {
     const app = fs.readFileSync(path.resolve(__dirname, "../../App.tsx"), "utf8");
     expect(app).toContain('import LabPage from "@/pages/search/Lab"');
-    expect(app).toMatch(/<Route path="\/search" element=\{<Search \/>\} \/>/);
-    expect(app).toMatch(/<Route path="\/search\/lab\/:targetId" element=\{<SearchLab \/>\} \/>/);
+    expect(app).toMatch(/<Route path="\/search" element=\{<SearchPage \/>\} \/>/);
+    expect(app).toMatch(/<Route path="\/search\/lab\/:targetId" element=\{<LabPage \/>\} \/>/);
   });
 
   it("/search/lab/:targetId renders the Lab scaffold", () => {
@@ -120,20 +119,21 @@ describe("F76 §2.2 i18n parity for the new sidebar keys", () => {
   });
 });
 
-describe("F76 §1.2 lane flag only follows an EXPLICIT /diag answer", () => {
-  it("/diag without searchEnabled leaves the lane untouched and Search visible", async () => {
-    stubDiag({ searchInput: "" }); // no searchEnabled field at all
+describe("F77 /diag.searchEnabled is informational only", () => {
+  it("a /diag payload without searchEnabled leaves Search visible", async () => {
+    stubDiag({ searchInput: "" });
     const { container } = render(<App />);
     await waitFor(() => expect((window as Any).__GHRDP_SEARCH_INPUT).toBe(""));
     expect((window as Any).__GHRDP_SEARCH_ENABLED).toBeUndefined();
     expect(sidebarHrefs(container)).toContain("/search");
   });
 
-  it("explicit searchEnabled=false still hides the entry (F69 §1.4 contract kept)", async () => {
+  it("an explicit searchEnabled=false still leaves Search visible", async () => {
     stubDiag({ searchEnabled: false, searchInput: "" });
     const { container } = render(<App />);
-    await waitFor(() => expect(sidebarHrefs(container)).not.toContain("/search"));
-    expect((window as Any).__GHRDP_SEARCH_ENABLED).toBe(false);
-    expect(document.getElementById("f56.search.nav")).toBeNull();
+    await waitFor(() => expect((window as Any).__GHRDP_SEARCH_INPUT).toBe(""));
+    expect((window as Any).__GHRDP_SEARCH_ENABLED).toBeUndefined();
+    expect(sidebarHrefs(container)).toContain("/search");
+    expect(document.getElementById("f56.search.nav")).not.toBeNull();
   });
 });

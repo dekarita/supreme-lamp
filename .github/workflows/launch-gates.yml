@@ -2644,9 +2644,10 @@ jobs:
           assert "icon: Folder" in nav and "icon: Search" in nav, "icons"
           print("F56-c sidebar: 9 entries, order locked")
           '
-          # §1 routes + hotkeys + palette prefill
+          # §1 routes + hotkeys + palette prefill (F77: direct Search route, never gated)
           grep -qF 'path="/files" element={<FileExplorer />' "$app"
-          grep -qF 'path="/search" element={<Search />' "$app"
+          grep -qF 'path="/search" element={<SearchPage />' "$app"
+          grep -qF '{NAV.map((item) => {' "$sh" # F77: Search is not lane-filtered
           grep -qF 'navigate("/files")' "$sh"
           grep -qF 'navigate("/search")' "$sh"
           test -f src/components/layout/CommandPalette.tsx
@@ -3121,8 +3122,15 @@ jobs:
           test -f src/pages/search/v2/OwnCredentialModal.tsx
           grep -qF 'encryptOwnCreds' src/pages/search/v2/OwnCredentialModal.tsx
           grep -qF 'requestFetch' src/pages/search/v2/OwnCredentialModal.tsx
-          grep -qF '__GHRDP_SEARCH_ENABLED' src/stores/sessionStore.ts
-          grep -qF '__GHRDP_SEARCH_ENABLED' src/hooks/useDashboardPolling.ts
+          if grep -qE '__GHRDP_SEARCH_ENABLED[[:space:]]*=' src/stores/sessionStore.ts src/hooks/useDashboardPolling.ts; then
+            echo 'F77: a diag poller still writes the Search visibility flag' >&2; exit 1
+          fi
+          grep -qF '__GHRDP_SEARCH_INPUT' src/stores/sessionStore.ts
+          grep -qF '__GHRDP_SEARCH_INPUT' src/hooks/useDashboardPolling.ts
+          grep -qF 'return true;' src/lib/search/lane.ts
+          if grep -qE 'localStorage|sessionStorage|__GHRDP_SEARCH_ENABLED' src/lib/search/lane.ts; then
+            echo 'F77: Search lane still reads browser state' >&2; exit 1
+          fi
           test -f src/tests/smoke/f56d-fetch-client.test.tsx
           test -f tests/f56d-aria2-jsonrpc.ps1
           test -f tests/f56d-post-fetch-e2e.ps1

@@ -51,23 +51,21 @@ permissions:
   pages: write      # enable/configure GitHub Pages via API
   id-token: write   # optional, harmless; needed only if you later use OIDC
 
+# Dispatch order: merge PR -> wait for build-ui.yml green -> dispatch main.yml.
+# See docs/f77-deploy-order.md; main.yml never substitutes a different UI SHA.
 jobs:
-  # [F43] Build the v2 dashboard on ubuntu IN PARALLEL with nothing else on the
-  # critical path except rdp's needs. Root cause of the F42 operator banner:
-  # vite build lived only in launch-gates; the production rdp job had no
-  # dist-ui artifact to stage, so ui-v2.html was absent on every dispatch.
+  # [F43] Stage the v2 dashboard on ubuntu in parallel with the runner setup.
+  # The exact ui-dist-${GITHUB_SHA}.zip must already be published by build-ui.yml;
+  # F77 waits up to 180s for that run, then fails closed instead of building or
+  # silently falling back to another commit's bundle.
   build-ui:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      # [F59 §2] PREBUILT UI (primary path): build-ui.yml publishes
-      # ui/dist/index.html as ui-dist-<commit-sha>.zip + .sha256 on every push to
-      # main. This job downloads that bundle instead of running pnpm+vite on the
-      # dispatch critical path. The download is SHA-256 verified and FAIL-CLOSED:
-      # a present asset with a bad/missing sidecar digest kills the job (no
-      # silent fallback to an unverified bundle). Only a MISSING asset for this
-      # sha (e.g. a dispatch racing the build-ui run) falls back to an on-runner
-      # build, labeled loudly.
+      # [F59/F77] build-ui.yml publishes ui-dist-<commit-sha>.zip + .sha256.
+      # This job waits for and consumes only the exact GITHUB_SHA asset. A missing
+      # asset after the bounded wait or a bad sidecar fails closed; no build or
+      # different-SHA fallback can stage a stale dashboard.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
@@ -75,33 +73,57 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-      - uses: actions/cache@v4
-        name: F59 UI fallback cache (pnpm store + node_modules)
-        with:
-          path: |
-            ~/.local/share/pnpm/store
-            node_modules
-          key: f59-ui-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml', 'package-lock.json') }}
-          restore-keys: |
-            f59-ui-${{ runner.os }}-
-      - name: Download prebuilt UI bundle (F59 release asset, SHA-256 verified)
+      - name: Download SHA-pinned UI bundle (F77 wait + fail-closed, SHA-256 verified)
         id: ui-prebuilt
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           asset="ui-dist-${GITHUB_SHA}.zip"
-          mkdir -p "$RUNNER_TEMP/ui-dl"
-          if ! gh release download ui-dist --pattern "$asset" --pattern "${asset}.sha256" --dir "$RUNNER_TEMP/ui-dl" --clobber 2>/dev/null; then
-            echo "::warning::[F59 ui-prebuilt] no release asset ${asset} (build-ui.yml publishes one per push to main) - falling back to an on-runner build"
-            echo 'hit=false' >> "$GITHUB_OUTPUT"
-            exit 0
+          sidecar="${asset}.sha256"
+          download_dir="$RUNNER_TEMP/ui-dl"
+          mkdir -p "$download_dir"
+          deadline=$((SECONDS + 180))
+          downloaded=false
+
+          try_download() {
+            rm -f "$download_dir/$asset" "$download_dir/$sidecar"
+            if gh release download ui-dist --pattern "$asset" --pattern "$sidecar" --dir "$download_dir" --clobber 2>/dev/null \
+              && test -s "$download_dir/$asset" \
+              && test -s "$download_dir/$sidecar"; then
+              return 0
+            fi
+            return 1
+          }
+
+          while true; do
+            if try_download; then
+              downloaded=true
+              break
+            fi
+            if (( SECONDS >= deadline )); then
+              break
+            fi
+            run_state="$(gh api "repos/${GITHUB_REPOSITORY}/actions/workflows/build-ui.yml/runs?head_sha=${GITHUB_SHA}&per_page=20" \
+              --jq '.workflow_runs | map({status, conclusion, html_url})' 2>/dev/null || echo '[]')"
+            echo "[F77] Waiting for build-ui.yml on ${GITHUB_SHA}; matching run(s): ${run_state}"
+            remaining=$((deadline - SECONDS))
+            if (( remaining <= 0 )); then break; fi
+            sleep "$(( remaining < 15 ? remaining : 15 ))"
+          done
+
+          # Final exact-SHA recheck closes the publish-vs-timeout edge.
+          if [[ "$downloaded" != true ]] && try_download; then
+            downloaded=true
           fi
-          test -f "$RUNNER_TEMP/ui-dl/${asset}.sha256"
-          echo "hit=true" >> "$GITHUB_OUTPUT"
-          cd "$RUNNER_TEMP/ui-dl"
-          # fail-closed: mismatch exits 1 (see scripts/f59-verify-sha256.mjs)
-          node "$GITHUB_WORKSPACE/scripts/f59-verify-sha256.mjs" "$asset" "$(tr -d '[:space:]' < "${asset}.sha256")" --label "$asset"
+          if [[ "$downloaded" != true ]]; then
+            echo "::error::ui-dist-${GITHUB_SHA}.zip not yet published; dispatch build-ui.yml manually and re-run main.yml."
+            exit 1
+          fi
+
+          cd "$download_dir"
+          # Fail closed on a missing/mismatched sidecar before staging the bundle.
+          node "$GITHUB_WORKSPACE/scripts/f59-verify-sha256.mjs" "$asset" "$(tr -d '[:space:]' < "$sidecar")" --label "$asset"
           unzip -o -q "$asset" -d out
           test -f out/index.html
           mkdir -p "$GITHUB_WORKSPACE/ui/dist"
@@ -111,24 +133,7 @@ jobs:
           node "$GITHUB_WORKSPACE/scripts/check-regression-ids.mjs"
           node "$GITHUB_WORKSPACE/scripts/check-no-neon-green.mjs" "$GITHUB_WORKSPACE/ui/dist/index.html"
           node "$GITHUB_WORKSPACE/scripts/check-bottom-bar-time.mjs"
-          echo "[F59 ui-prebuilt] hit sha256-verified ${asset} bytes=$LEN"
-      - name: Build v2 single-file bundle (F59 fallback - asset miss only)
-        if: steps.ui-prebuilt.outputs.hit != 'true'
-        run: |
-          set -euo pipefail
-          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-          export VITE_BUILD_SHA="${GITHUB_SHA}"
-          corepack enable
-          pnpm install --frozen-lockfile
-          pnpm run build
-          test -f ui/dist/index.html
-          node scripts/check-regression-ids.mjs
-          node scripts/check-fx-ids.mjs
-          node scripts/check-no-neon-green.mjs ui/dist/index.html
-          node scripts/check-bottom-bar-time.mjs
-          LEN=$(wc -c < ui/dist/index.html)
-          echo "[F43] build-ui artifact bytes=$LEN (F59 fallback path)"
-          if [ "$LEN" -le 51200 ]; then echo "ui-v2.html staging failed - build artifact missing"; exit 1; fi
+          echo "[F77 ui-prebuilt] hit exact-SHA, sha256-verified ${asset} bytes=$LEN"
       - name: Upload dist-ui
         uses: actions/upload-artifact@v4
         with:

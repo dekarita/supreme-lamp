@@ -1,6 +1,6 @@
 // [F69-FIX] Regression cells for the F68-SEARCH-AUDIT fixes:
 //  §1.3 DEV fixture stream also fires on phase "failed" (F68 §H.2)
-//  §1.4 search_enable flag hides the sidebar entry + redirects /search (F68 §H.5)
+//  §1.4 (F77) diagnostic search_enable flag cannot hide the sidebar entry or route
 //  §1.5 "Fetch started" text only after an accepted fetch (F68 §H.6)
 //  §2.1 default adapter pre-selected (F68 Extension Rank 1)
 //  §2.2 file-type badge derivation + rendering (F68 Extension Rank 2)
@@ -13,7 +13,7 @@ import App from "@/App";
 import Search from "@/pages/Search";
 import { shouldStreamDevFixture } from "@/pages/search/devFixture";
 import { fileExtension } from "@/pages/search/tokens";
-import { announceSearchLane, isSearchLaneEnabled } from "@/lib/search/lane";
+import { isSearchLaneEnabled } from "@/lib/search/lane";
 import { DEFAULT_ADAPTER_ID, useSearchStore } from "@/stores/searchStore";
 import { useSearchUiStore } from "@/stores/searchUiStore";
 
@@ -78,36 +78,25 @@ describe("F69 §1.3 dev fixture stream on failed dispatch", () => {
   });
 });
 
-describe("F69 §1.4 search_enable lane flag", () => {
-  it("undefined keeps the locked 9-entry sidebar; explicit false hides /search and redirects", async () => {
+describe("F77 unconditional Search lane", () => {
+  it("diagnostic false cannot hide the entry, Search route, or Alt+F surface", async () => {
+    window.location.hash = "#/";
     expect(isSearchLaneEnabled()).toBe(true);
     const { container } = render(<App />);
     const links = () => Array.from(container.querySelectorAll('[data-testid="sidebar"] nav a')).map((a) => (a.getAttribute("href") || "").replace(/^#/, ""));
     expect(links().length).toBe(9);
     expect(links()).toContain("/search");
 
-    // poller reports search_enable=false -> entry disappears without a remount
-    await act(async () => {
-      (window as Any).__GHRDP_SEARCH_ENABLED = false;
-      announceSearchLane();
-    });
-    expect(isSearchLaneEnabled()).toBe(false);
-    expect(links().length).toBe(8);
-    expect(links()).not.toContain("/search");
-    expect(document.getElementById("f56.search.nav")).toBeNull();
+    // A stale global flag cannot alter the lane or route.
+    (window as Any).__GHRDP_SEARCH_ENABLED = false;
+    expect(isSearchLaneEnabled()).toBe(true);
+    expect(links()).toContain("/search");
+    expect(document.getElementById("f56.search.nav")).not.toBeNull();
 
-    // Alt+F deep link degrades to the Overview redirect, never a search surface
     await act(async () => {
       fireEvent.keyDown(window, { key: "f", altKey: true });
     });
-    expect(screen.queryByTestId("search-page")).toBeNull();
-
-    // flag flips back -> entry returns
-    await act(async () => {
-      (window as Any).__GHRDP_SEARCH_ENABLED = true;
-      announceSearchLane();
-    });
-    expect(links().length).toBe(9);
+    expect(screen.getByTestId("search-page")).toBeInTheDocument();
   });
 });
 

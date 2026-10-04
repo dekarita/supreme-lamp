@@ -4,8 +4,8 @@ name: F59 build-ui (prebuilt UI release asset)
 # inside main.yml's rdp job and cost 2-3 minutes of every dispatch. It now runs
 # ONCE per push, here, and main.yml downloads the finished bundle from the
 # `ui-dist` release with the asset name pinned to the commit sha it is running
-# (ui-dist-<sha>.zip + its .sha256 sidecar). A dispatch that races this workflow
-# (asset absent) falls back to an on-runner build in main.yml, labeled loudly.
+# (ui-dist-<sha>.zip + its .sha256 sidecar). main.yml consumes only the asset for
+# its exact GITHUB_SHA, waits up to 180s for this workflow, then fails closed if absent.
 on:
   push:
     branches:

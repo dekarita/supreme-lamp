@@ -12,7 +12,6 @@ import { useTelemetryStore } from "@/stores/telemetryStore";
 import { useSessionStore } from "@/stores/sessionStore";
 import { Chip } from "@/components/primitives/Chip";
 import { cn } from "@/lib/cn";
-import { useSearchLaneEnabled } from "@/lib/search/lane";
 import { fmtHMS, pad2 } from "@/lib/format";
 import { elapsedSeconds, remainingSeconds } from "@/stores/telemetryStore";
 import { logonRowText, rdpUsageSeconds } from "@/lib/domain/native";
@@ -180,11 +179,6 @@ function Sidebar() {
   const toggleCollapsed = useSidebarStore((s) => s.toggleCollapsed);
   const mobileOpen = useSidebarStore((s) => s.mobileOpen);
   const setMobileOpen = useSidebarStore((s) => s.setMobileOpen);
-  // [F69 §1.4] search_enable=false (/diag searchEnabled -> window.__GHRDP_SEARCH_ENABLED)
-  // hides the Search entry; the NAV constant itself stays the locked 9-entry list.
-  const searchLane = useSearchLaneEnabled();
-  const visibleNav = searchLane ? NAV : NAV.filter((item) => item.to !== "/search");
-
   return (
     <>
       <div className={cn("fixed inset-0 z-40 bg-black/40 lg:hidden", mobileOpen ? "block" : "hidden")} onClick={() => setMobileOpen(false)} aria-hidden />
@@ -200,7 +194,7 @@ function Sidebar() {
         )}
       >
         <nav aria-label={t("sidebar.nav")} className="flex-1 overflow-y-auto py-3">
-          {visibleNav.map((item) => {
+          {NAV.map((item) => {
             const Icon = item.icon;
             // [F76 §2.1] sidebar.* label wins; nav.* stays the translated fallback
             // when a catalog predates the F76 keys.
@@ -265,6 +259,7 @@ function BottomBar() {
   const el = elapsedSeconds(runStartedAtMs, now);
   const rem = remainingSeconds(runStartedAtMs, now);
   const usageSec = rdpUsageSeconds(usage, logonFallback, now);
+  const uiBuildSha = import.meta.env.VITE_BUILD_SHA?.slice(0, 7) || "dev";
   const rl = (native && native.rdpListener) || null;
   const row = logonRowText((rl && rl.authLast) || null, (rl && rl.logonCollector) || (native && native.logonCollector) || null, now);
 
@@ -311,6 +306,14 @@ function BottomBar() {
       <span id="status-clock" className="ml-auto font-mono text-xs text-tertiary whitespace-nowrap">
         <span id="bottomClock">{clockText(now)}</span>
       </span>
+      <span
+        id="uiBuildSha"
+        data-testid="ui-build-sha"
+        className="font-mono text-[9px] text-tertiary whitespace-nowrap"
+        title={`Dashboard UI build ${uiBuildSha}`}
+      >
+        ui: {uiBuildSha}
+      </span>
     </footer>
   );
 }
@@ -322,6 +325,17 @@ function useSessionNative() {
 export function AppShell() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+
+  // [F77] Purge legacy Search gates once per mount; visibility is unconditional.
+  useEffect(() => {
+    try {
+      window.localStorage.removeItem("__GHRDP_SEARCH_ENABLED");
+      window.localStorage.removeItem("f56.search.enabled");
+      window.localStorage.removeItem("ghrdp.lane.search");
+    } catch {
+      // Storage may be unavailable in a restricted browser context.
+    }
+  }, []);
 
   // [F56-c] File Explorer = Alt+E, Search = Alt+F (session §1). Ctrl+K is
   // handled by CommandPalette (Plan §D: opens the palette; Search command

@@ -4,7 +4,6 @@
 // state (the v1 closure equivalent) and are never rendered unmasked; the
 // masked field shows bullets and the copy action pulls from here.
 import { create } from "zustand";
-import { announceSearchLane } from "@/lib/search/lane";
 import { postRdpToken, launchProto, mintTraceId, fetchPurgeCommand } from "@/lib/api";
 import { FQDN_RE, CGNAT_RE, parseTsUtc } from "@/lib/format";
 import { ghrdpRdpUrl, ghrdpRecredUrl, beaconModel, authDiscriminator, type AuthDiscriminator } from "@/lib/domain/native";
@@ -158,16 +157,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       const d = r.ok ? await r.json() : null;
       set({ diagText: d ? JSON.stringify(d, null, 2) : "Diagnostics failed - server not reachable." });
       try {
-        // [F56-d §3] Search surface reads window.__GHRDP_SEARCH_ENABLED from /diag.
-        // [F76 §1.2] Only an explicit answer moves the lane flag (lane.ts:7-9): a
-        // /diag payload without searchEnabled must not hide the Search entry.
-        if (d && d.searchEnabled !== undefined) {
-          const enabled = !!(d.searchEnabled === true || d.searchEnabled === 'true');
-          // @ts-ignore
-          if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_ENABLED = enabled;
-          announceSearchLane(); // [F69 §1.4] let the sidebar/route re-read the flag
-        }
-        // Also set searchInput echo for SEARCH_INPUT propagation lab
+        // /diag.searchEnabled stays visible in diagnostics but is ignored by the UI.
+        // Preserve only the searchInput echo used by the Search lab.
         // @ts-ignore
         if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_INPUT = d?.searchInput || '';
       } catch {}

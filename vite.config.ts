@@ -26,6 +26,9 @@ export default defineConfig({
   ],
   define: {
     __BUILD_SHA__: JSON.stringify(buildSha),
+    "import.meta.env.VITE_BUILD_SHA": JSON.stringify(
+      process.env.GITHUB_SHA?.slice(0, 7) || "dev"
+    ),
   },
   resolve: {
     alias: { "@": resolve(__dirname, "src") },

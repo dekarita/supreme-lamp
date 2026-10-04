@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const lf = (s) => s.replace(/\r\n?/g, '\n');
 const srv = lf(fs.readFileSync('payloads/ghrdp-server.ps1', 'utf8'));
 const wf = lf(fs.readFileSync('.github/workflows/main.yml', 'utf8'));
+const buildUi = lf(fs.readFileSync('.github/workflows/build-ui.yml', 'utf8'));
 const gates = lf(fs.readFileSync('.github/workflows/launch-gates.yml', 'utf8'));
 const shell = lf(fs.readFileSync('src/components/layout/AppShell.tsx', 'utf8'));
 const en = lf(fs.readFileSync('src/i18n/en.json', 'utf8'));
@@ -16,11 +17,14 @@ const si = lf(fs.readFileSync('src/i18n/si.json', 'utf8'));
 const ui = lf(fs.readFileSync('payloads/ui.html', 'utf8'));
 
 // --- §1 build-ui wiring in main.yml -----------------------------------------
-test('F43-1 main.yml has a parallel build-ui job that uploads dist-ui', () => {
+test('F43/F77-1 main.yml consumes the build-ui release and uploads dist-ui', () => {
   assert.match(wf, /^ {2}build-ui:/m, 'build-ui job missing');
   assert.ok(wf.includes('runs-on: ubuntu-latest'), 'build-ui must run on ubuntu-latest');
-  assert.ok(wf.includes('pnpm install --frozen-lockfile'), 'frozen lockfile install missing');
-  assert.ok(/pnpm run build|pnpm build/.test(wf), 'pnpm build missing');
+  assert.ok(buildUi.includes('pnpm install --frozen-lockfile'), 'build-ui must use the frozen lockfile');
+  assert.ok(/pnpm run build|pnpm build/.test(buildUi), 'build-ui pnpm build missing');
+  assert.ok(buildUi.includes('ui-dist-${sha}.zip'), 'build-ui release must pin the built commit SHA');
+  assert.ok(wf.includes('ui-dist-${GITHUB_SHA}.zip'), 'main.yml must request the exact dispatch SHA');
+  assert.ok(wf.includes('actions/workflows/build-ui.yml/runs?head_sha=${GITHUB_SHA}'), 'main.yml must wait on the matching build-ui run');
   assert.ok(wf.includes('actions/upload-artifact@v4'), 'upload-artifact missing');
   assert.ok(wf.includes('name: dist-ui'), 'artifact name dist-ui missing');
   assert.ok(wf.includes('path: ui/dist/index.html'), 'upload path must be ui/dist/index.html');

@@ -99,7 +99,7 @@ test("F59-5 prebuilt binaries: pins file, official sources, no Chocolatey, fail-
   assert.match(main, /no Chocolatey fallback by design/);
 });
 
-test("F59-6 prebuilt UI artifact: build-ui.yml publishes, main.yml downloads + verifies, fallback is explicit", () => {
+test("F77 prebuilt UI artifact: main.yml waits for the exact SHA and fails closed without fallback", () => {
   const bu = read(".github/workflows/build-ui.yml");
   assert.match(bu, /ui-dist-\$\{sha\}\.zip/);
   assert.match(bu, /sha256sum "\$asset"/);
@@ -110,12 +110,16 @@ test("F59-6 prebuilt UI artifact: build-ui.yml publishes, main.yml downloads + v
   assert.match(bu, /setup-node@v4/);
   assert.match(bu, /cache: 'npm'/);
   assert.match(bu, /actions\/cache@v4/);
-  // main.yml: download first, SHA-256 verified, fail-closed, fallback only on a miss
+  // main.yml: exact GITHUB_SHA only; wait for the matching build-ui run, verify,
+  // and fail with an operator instruction rather than using a stale bundle.
+  assert.match(main, /asset="ui-dist-\$\{GITHUB_SHA\}\.zip"/);
   assert.match(main, /gh release download ui-dist --pattern "\$asset"/);
+  assert.match(main, /actions\/workflows\/build-ui\.yml\/runs\?head_sha=\$\{GITHUB_SHA\}/);
+  assert.match(main, /deadline=\$\(\(SECONDS \+ 180\)\)/);
+  assert.match(main, /ui-dist-\$\{GITHUB_SHA\}\.zip not yet published; dispatch build-ui\.yml manually and re-run main\.yml\./);
   assert.match(main, /scripts\/f59-verify-sha256\.mjs/);
-  assert.match(main, /echo 'hit=false' >> "\$GITHUB_OUTPUT"/);
-  assert.match(main, /if: steps\.ui-prebuilt\.outputs\.hit != 'true'/);
-  assert.match(main, /F59 ui-prebuilt\] hit sha256-verified/);
+  assert.match(main, /F77 ui-prebuilt\] hit exact-SHA, sha256-verified/);
+  assert.doesNotMatch(main, /F59 fallback|steps\.ui-prebuilt\.outputs\.hit|falling back to an on-runner build/);
   const verify = read("scripts/f59-verify-sha256.mjs");
   assert.match(verify, /SHA-256 mismatch/);
   assert.match(verify, /process\.exit\(1\)/);

@@ -1541,7 +1541,7 @@ function Invoke-ClientRequest {
             }
             # [F56-d §3] SEARCH_INPUT propagation: main.yml adds search_enable boolean default false
             # SEARCH_INPUT env = inputs.search_enable. /diag returns searchEnabled boolean + searchInput echo.
-            # Search surface reads window.__GHRDP_SEARCH_ENABLED from /diag.
+            # F77: /diag.searchEnabled is diagnostic-only; the UI always renders Search.
             $searchInputStr = ''
             try { $searchInputStr = [string]$env:SEARCH_INPUT } catch { $searchInputStr = '' }
             $searchEnabledFlag = $false

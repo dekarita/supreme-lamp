@@ -2,9 +2,8 @@
 // native-status 15s + 10s (F31c live dispatch), progress 3s + ws push,
 // /ping 2s, /health 30s. All failures soft (stores keep last known data and
 // the conn banner reflects loss).
-// [F56-d §3] Search surface reads window.__GHRDP_SEARCH_ENABLED from /diag at boot + polling.
+// [F77] /diag.searchEnabled is informational only; Search is never gated by it.
 import { useEffect } from "react";
-import { announceSearchLane } from "@/lib/search/lane";
 import { configUrl, getJson, nativeStatusUrl } from "@/lib/api";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useTelemetryStore } from "@/stores/telemetryStore";
@@ -38,19 +37,9 @@ export function useDashboardPolling(): void {
     };
     const pollDiagForSearch = async () => {
       try {
-        // [F56-d §3] /diag echoes the dispatch lane: searchEnabled (boolean) + searchInput
-        // (raw SEARCH_INPUT string). Typed here so the boot read stays compile-checked.
-        const diag = await getJson<{ searchEnabled?: boolean | string | number; searchInput?: string }>("/diag");
+        // /diag.searchEnabled is deliberately ignored; searchInput still feeds the lab.
+        const diag = await getJson<{ searchInput?: string }>("/diag");
         if (alive && diag) {
-          // [F76 §1.2] Write the lane flag ONLY on an explicit /diag answer. A payload
-          // that omits searchEnabled must not be read as false - that hid the Search
-          // entry (lane.ts:7-9: "only an EXPLICIT false hides the lane").
-          if (diag.searchEnabled !== undefined) {
-            const enabled = !!(diag.searchEnabled === true || diag.searchEnabled === 'true' || diag.searchEnabled === 1);
-            // @ts-ignore
-            if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_ENABLED = enabled;
-            announceSearchLane(); // [F69 §1.4] let the sidebar/route re-read the flag
-          }
           // @ts-ignore
           if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_INPUT = diag.searchInput || '';
         }

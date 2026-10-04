@@ -1,5 +1,5 @@
-# [F56-d PS lab] SEARCH_INPUT propagation from main.yml to /diag to window flag
-# Validates main.yml has search_enable input boolean default TRUE (F59 flip), env SEARCH_INPUT, /diag returns searchEnabled + searchInput
+# [F56-d/F77 PS lab] SEARCH_INPUT propagation to /diag while visibility stays unconditional
+# Validates search_enable input, /diag diagnostics, searchInput echo, and absence of frontend flag writers
 
 $ErrorActionPreference = 'Stop'
 Write-Host '[F56-d] SEARCH_INPUT propagation lab'
@@ -36,20 +36,29 @@ if (Test-Path -LiteralPath $serverPath) {
     Write-Host '[F56-d] server file not found - advisory'
 }
 
-# Check sessionStore sets window.__GHRDP_SEARCH_ENABLED
+# F77: Search visibility is unconditional; only searchInput is propagated.
 $storePath = Join-Path $PSScriptRoot '..' 'src' 'stores' 'sessionStore.ts'
 if (Test-Path -LiteralPath $storePath) {
     $store = Get-Content -LiteralPath $storePath -Raw
-    if ($store -notmatch '__GHRDP_SEARCH_ENABLED') { throw 'window.__GHRDP_SEARCH_ENABLED not set in sessionStore' }
-    Write-Host '[F56-d] window.__GHRDP_SEARCH_ENABLED set in sessionStore'
+    if ($store -notmatch '__GHRDP_SEARCH_INPUT') { throw 'searchInput echo missing in sessionStore' }
+    if ($store -match '__GHRDP_SEARCH_ENABLED\s*=') { throw 'legacy Search visibility writer remains in sessionStore' }
+    Write-Host '[F77] sessionStore preserves searchInput and ignores searchEnabled for visibility'
 }
 
-# Check useDashboardPolling also sets at boot
 $pollPath = Join-Path $PSScriptRoot '..' 'src' 'hooks' 'useDashboardPolling.ts'
 if (Test-Path -LiteralPath $pollPath) {
     $poll = Get-Content -LiteralPath $pollPath -Raw
-    if ($poll -notmatch '__GHRDP_SEARCH_ENABLED') { throw '__GHRDP_SEARCH_ENABLED not set in useDashboardPolling' }
-    Write-Host '[F56-d] window.__GHRDP_SEARCH_ENABLED set in useDashboardPolling'
+    if ($poll -notmatch '__GHRDP_SEARCH_INPUT') { throw 'searchInput echo missing in useDashboardPolling' }
+    if ($poll -match '__GHRDP_SEARCH_ENABLED\s*=') { throw 'legacy Search visibility writer remains in polling hook' }
+    Write-Host '[F77] useDashboardPolling preserves searchInput and ignores searchEnabled for visibility'
+}
+
+$lanePath = Join-Path $PSScriptRoot '..' 'src' 'lib' 'search' 'lane.ts'
+if (Test-Path -LiteralPath $lanePath) {
+    $lane = Get-Content -LiteralPath $lanePath -Raw
+    if ($lane -notmatch 'function isSearchLaneEnabled\(\): boolean\s*\{\s*return true;') { throw 'Search lane is not hardcoded enabled' }
+    if ($lane -match 'localStorage|sessionStorage|__GHRDP_SEARCH_ENABLED') { throw 'Search lane still reads browser state' }
+    Write-Host '[F77] lane helper is hardcoded true with no storage/global read'
 }
 
 Write-Host '[F56-d] SEARCH_INPUT propagation lab PASS'

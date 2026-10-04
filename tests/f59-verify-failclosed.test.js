@@ -60,10 +60,16 @@ test("F59-13 the checksums-only mode still enforces the pin it finds", () => {
   assert.equal(run(["--checksums", goodPath, ck]).status, 1, "a stale checksums.txt line must exit 1");
 });
 
-test("F59-14 the UI-artifact lane uses the SAME fail-closed verifier (workflow pin)", () => {
+test("F77 UI-artifact lane waits for its exact SHA then uses the fail-closed verifier", () => {
   const main = fs.readFileSync(path.join(root, ".github/workflows/main.yml"), "utf8");
-  const step = main.slice(main.indexOf("Download prebuilt UI bundle"), main.indexOf("Fallback build v2 single-file bundle"));
+  const start = main.indexOf("Download SHA-pinned UI bundle");
+  const end = main.indexOf("- name: Upload dist-ui", start);
+  assert.ok(start >= 0 && end > start, "SHA-pinned download step should be present with no fallback step");
+  const step = main.slice(start, end);
   assert.match(step, /scripts\/f59-verify-sha256\.mjs/, "the UI download must verify through the shipped verifier");
+  assert.match(step, /actions\/workflows\/build-ui\.yml\/runs\?head_sha=\$\{GITHUB_SHA\}/, "the wait must query build-ui for the exact SHA");
+  assert.match(step, /ui-dist-\$\{GITHUB_SHA\}\.zip not yet published/, "an asset miss must fail with an operator message");
+  assert.doesNotMatch(step, /pnpm (install|run)|Fallback build/, "there is no on-runner or stale-SHA fallback");
   assert.ok(
     step.indexOf("f59-verify-sha256.mjs") < step.indexOf("ui/dist/index.html"),
     "verification must run BEFORE the bundle is staged"
