@@ -18,6 +18,7 @@ import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ExternalLink, FlaskConical, RefreshCw } from "lucide-react";
 import { inspectSource, type CustomSourceRow, type LabError, type LabInspectResult } from "@/api/lab";
+import { launchUrl } from "@/lib/launchUrl";
 
 const ERROR_KEYS: Record<string, string> = {
   RATE_LIMITED: "lab.rateLimited",
@@ -125,6 +126,11 @@ export function LabInspector({ source, query }: LabInspectorProps) {
             {t("lab.matchCount", { matches: data.matchCount, total: data.linkCount, query: q })}
           </span>
         ) : null}
+        {data && (data as any).source ? (
+          <span id="f78.lab.source" data-testid="lab-source" className="ml-2 text-tertiary">
+            {t("lab.source", { source: (data as any).source, count: (data as any).sourceUrls || data.linkCount })}
+          </span>
+        ) : null}
       </p>
 
       {cooldown > 0 ? (
@@ -177,6 +183,10 @@ export function LabInspector({ source, query }: LabInspectorProps) {
                   href={l.href}
                   target="_blank"
                   rel="noopener noreferrer"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void launchUrl(l.href);
+                  }}
                   aria-label={t("lab.openInNewTab") + ": " + (l.text || l.href)}
                   className="ml-auto shrink-0 text-xs text-secondary hover:text-primary inline-flex items-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded px-1"
                 >

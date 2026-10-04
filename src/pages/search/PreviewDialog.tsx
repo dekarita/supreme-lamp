@@ -1,12 +1,24 @@
-// [F56-c] PreviewDialog (Plan §A/§D): metadata + a safe unavailable state for
-// preview bytes ("coming in F56-d" - Preview cannot bypass the F46/F49 tail).
-// Source link opens only where permitted; the purchase notice is navigation
-// only and never starts a fetch. Escape closes; focus returns to the page.
-import { useEffect, useRef } from "react";
+// [F56-c] PreviewDialog (Plan §A/§D): metadata + a safe preview of the
+// first ~500 chars of text from the source URL.
+//
+// [F81 §3.2/Q8] When the dialog opens it POSTs to /api/preview with
+// {url, maxBytes: 2048} and shows the returned summary inside a fade-out
+// gradient box. The "Open source" button below opens the full URL in the
+// RDP session via the launch-url route (Q1=B). Escape closes; focus
+// returns to the page. The previous "coming in F56-d" placeholder is gone.
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ExternalLink } from "lucide-react";
 import { useSearchStore } from "@/stores/searchStore";
-import { camel, licenceStyle } from "./CommandBar";
+import { camel } from "./CommandBar";
+import { licenceStyle } from "@/pages/search/tokens";
+import { getKey } from "@/lib/api";
+
+interface PreviewState {
+  status: "idle" | "loading" | "ok" | "error";
+  summary: string;
+  reason?: string;
+}
 
 export function PreviewDialog() {
   const { t } = useTranslation();
@@ -14,6 +26,7 @@ export function PreviewDialog() {
   const result = useSearchStore((s) => (s.previewResultId ? s.results[s.previewResultId] : null));
   const closePreview = useSearchStore((s) => s.closePreview);
   const closeRef = useRef<HTMLButtonElement | null>(null);
+  const [state, setState] = useState<PreviewState>({ status: "idle", summary: "" });
 
   useEffect(() => {
     if (!previewResultId) return;
@@ -25,7 +38,64 @@ export function PreviewDialog() {
     return () => window.removeEventListener("keydown", onKey);
   }, [previewResultId, closePreview]);
 
+  useEffect(() => {
+    if (!previewResultId || !result) {
+      setState({ status: "idle", summary: "" });
+      return;
+    }
+    let cancelled = false;
+    setState({ status: "loading", summary: "" });
+    const url = result.sourceUrl;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const key = getKey();
+    if (key) headers["X-Dash-Token"] = key;
+    fetch("/api/preview", {
+      method: "POST",
+      cache: "no-store",
+      headers,
+      body: JSON.stringify({ url, maxBytes: 2048, adapterId: result.adapterId }),
+    })
+      .then(async (r) => {
+        const body = (await r.json().catch(() => null)) as { ok?: boolean; summary?: string; code?: string; messageKey?: string } | null;
+        if (cancelled) return;
+        if (body && body.ok && typeof body.summary === "string") {
+          setState({ status: "ok", summary: body.summary });
+        } else {
+          setState({ status: "error", summary: "", reason: (body && (body.code || body.messageKey)) || "preview-unavailable" });
+        }
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setState({ status: "error", summary: "", reason: "transport" });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [previewResultId, result]);
+
   if (!previewResultId || !result) return null;
+
+  const direct = result.sourceUrl;
+  const openRdp = async () => {
+    if (!direct) return;
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    const key = getKey();
+    if (key) headers["X-Dash-Token"] = key;
+    try {
+      const r = await fetch("/api/launch-url", {
+        method: "POST",
+        cache: "no-store",
+        headers,
+        body: JSON.stringify({ url: direct }),
+      });
+      if (!r.ok) {
+        // Fall back to opening in a new tab if the server route is missing.
+        try { window.open(direct, "_blank", "noopener,noreferrer"); } catch { }
+      }
+    } catch {
+      try { window.open(direct, "_blank", "noopener,noreferrer"); } catch { }
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={closePreview}>
@@ -53,20 +123,32 @@ export function PreviewDialog() {
           <dt>{t("search.results.size")}</dt>
           <dd className="font-mono">{result.sizeBytes != null ? String(result.sizeBytes) : t("search.results.unknownSize")}</dd>
         </dl>
-        <p className="text-xs text-tertiary bg-sunken rounded p-3" data-testid="preview-body">
-          {t("search.results.previewUnavailable")} — {t("search.actions.comingSoon")}
-        </p>
+        <div
+          id="f56.search.previewBody"
+          data-testid="preview-body"
+          className="relative text-xs text-secondary bg-sunken rounded p-3 min-h-[6em] max-h-40 overflow-auto"
+        >
+          {state.status === "loading" ? (
+            <span data-testid="preview-loading">{t("search.preview.loading")}</span>
+          ) : state.status === "ok" ? (
+            <span data-testid="preview-text">{state.summary}</span>
+          ) : state.status === "error" ? (
+            <span data-testid="preview-error" className="text-warning">{t("search.preview.unavailable")} — {state.reason || ""}</span>
+          ) : null}
+          <span aria-hidden className="pointer-events-none absolute inset-x-0 bottom-0 h-6 bg-gradient-to-t from-[var(--surface-sunken,theme(colors.sunken.500))] to-transparent" />
+        </div>
         <div className="flex items-center gap-2">
-          <a
-            href={result.sourceUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-accent inline-flex items-center gap-1"
+          <button
+            type="button"
+            id="f56.search.previewOpen"
+            data-testid="preview-open-source"
+            onClick={() => void openRdp()}
+            className="text-xs text-accent inline-flex items-center gap-1 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded px-1"
           >
-            {t("search.results.source")}
+            {t("search.preview.openSource")}
             <ExternalLink className="size-3" aria-hidden />
             <span className="sr-only">({t("search.a11y.externalLink")})</span>
-          </a>
+          </button>
           {result.purchaseUrl ? (
             <p id="f56.search.purchaseNotice" className="text-xs text-tertiary ml-auto">
               {t("search.actions.externalPurchase")}

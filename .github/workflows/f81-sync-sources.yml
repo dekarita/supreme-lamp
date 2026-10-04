@@ -1,0 +1,86 @@
+name: F81 sync custom Lab sources to repo branch
+# [F81 §1.1/A.1 Q2=A] Repo-branch commit is the cross-runner source of truth
+# for the operator-added Lab Mode sources. The workflow reads the
+# XOR-obfuscated store file from the runner's `~/.ghrdp/lab-sources.bin`
+# (written by /api/f58/sources POST on every save) and commits it to the
+# `custom-sources-store` branch under `data/sources.enc`. main.yml downloads
+# this branch's contents to `~/.ghrdp/lab-sources.bin` before launching
+# ghrdp-server.ps1 so a fresh dispatch starts with the previously-saved
+# sites already in `$script:F78Sources`.
+#
+# Manual only — there is no automatic commit per save. The intent is to
+# snapshot the registry at operator-chosen moments (after adding a batch,
+# before tearing down, etc.) rather than push dozens of commits per
+# session. Idempotent: a second run on an unchanged store writes nothing.
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: "Optional commit message suffix"
+        required: false
+        type: string
+
+permissions:
+  contents: write   # create the custom-sources-store branch and push data/
+
+jobs:
+  sync:
+    runs-on: self-hosted
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - name: Read local Lab store
+        id: read
+        shell: pwsh
+        run: |
+          $candidates = @()
+          if ($env:GHRDP_F81_STORE) { $candidates += $env:GHRDP_F81_STORE }
+          $candidates += (Join-Path $env:USERPROFILE '.ghrdp\lab-sources.bin')
+          $candidates += 'C:\ghrdp\lab-sources.bin'
+          $found = ''
+          foreach ($p in $candidates) { if ($p -and (Test-Path -LiteralPath $p)) { $found = $p; break } }
+          if (-not $found) {
+            Write-Host "::notice::No Lab store file found; nothing to commit."
+            Add-Content -Path $env:GITHUB_OUTPUT -Value "has_store=false`n"
+            exit 0
+          }
+          $bytes = [System.IO.File]::ReadAllBytes($found)
+          $sha = (Get-FileHash -Algorithm SHA256 -InputStream ([System.IO.MemoryStream]::new($bytes))).Hash.ToLowerInvariant()
+          $size = $bytes.Length
+          Add-Content -Path $env:GITHUB_OUTPUT -Value "has_store=true`n"
+          Add-Content -Path $env:GITHUB_OUTPUT -Value ("sha256=" + $sha + "`n")
+          Add-Content -Path $env:GITHUB_OUTPUT -Value ("size=" + $size + "`n")
+          Write-Host ("found=" + $found + " size=" + $size + " sha=" + $sha)
+      - name: Write file under data/
+        if: steps.read.outputs.has_store == 'true'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path data -Force | Out-Null
+          $found = ''
+          foreach ($p in @($env:GHRDP_F81_STORE, (Join-Path $env:USERPROFILE '.ghrdp\lab-sources.bin'), 'C:\ghrdp\lab-sources.bin')) {
+            if ($p -and (Test-Path -LiteralPath $p)) { $found = $p; break }
+          }
+          Copy-Item -LiteralPath $found -Destination data/sources.enc -Force
+      - name: Commit to custom-sources-store branch
+        if: steps.read.outputs.has_store == 'true'
+        shell: pwsh
+        run: |
+          $note = "${{ github.event.inputs.note }}"
+          if (-not $note) { $note = "snapshot" }
+          git config user.name "GHRDP Lab Sync"
+          git config user.email "lab-sync@local"
+          # Idempotent: if data/sources.enc is identical to what's already on
+          # the branch, do not commit. The branch is created from origin/main
+          # on first run.
+          git checkout -B custom-sources-store
+          git add data/sources.enc
+          if (git diff --cached --quiet) {
+            Write-Host "::notice::No changes; branch already up to date."
+            exit 0
+          }
+          git commit -m "f81: $note"
+          git push -u origin custom-sources-store --force-with-lease

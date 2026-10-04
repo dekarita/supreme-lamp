@@ -77,11 +77,22 @@ test('F78-P6-FENCE: only the save path writes the host fence, and inspect re-che
 });
 
 test('F78-P7-SAVE: name/URL validation is fail-closed and mirrors the client', () => {
-  assert.ok(BLOCK.includes('if (-not $f78Name -or $f78Name.Length -gt 50)'), 'the 50-char name cap is missing');
-  assert.ok(BLOCK.includes("if (-not $f78Base.StartsWith('https://'))"), 'the https-only save gate is missing');
-  assert.ok(BLOCK.includes('if ($f78Uri.UserInfo)'), 'the userinfo refusal on save is missing');
+  // [F81 §4.1/Q9 + §5.0/Q10] The 50-char cap + HTTPS-only + userinfo-refusal
+  // are now expressed as a per-field error envelope, but the original
+  // validation intent is preserved verbatim. The shape changed from
+  //   if (-not $f78Name -or $f78Name.Length -gt 50) { 400 + single key }
+  // to
+  //   $f78FieldErrors['name'] = 'newSiteNameRequired' | 'newSiteNameTooLong'
+  //   $f78FieldErrors['url']  = 'newSiteHttpsRequired' | 'newSiteAuthNotAllowed'
+  //   return 400 + errors envelope.
+  assert.ok(BLOCK.includes("$f78Name.Length -gt 50"), 'the 50-char name cap is missing');
+  assert.ok(BLOCK.includes("https://'"), 'the https-only save gate is missing');
+  assert.ok(BLOCK.includes('$f78Uri.UserInfo'), 'the userinfo refusal on save is missing');
   assert.ok(BLOCK.includes("'newSiteHttpsRequired'") && BLOCK.includes("'newSiteAuthNotAllowed'"), 'the save path must reuse the shared i18n keys');
+  assert.ok(BLOCK.includes("'newSiteNameRequired'") && BLOCK.includes("'newSiteNameTooLong'"), 'the per-field name keys must be present');
   assert.ok(BLOCK.includes('labMode = $true'), 'a quick-added source is always a Lab Mode source');
+  assert.ok(BLOCK.includes('$f78FieldErrors'), 'per-field error envelope is missing');
+  assert.ok(BLOCK.includes('$f78Cap = 50'), 'the Q10 50-site cap is missing');
 });
 
 test('F78-P8-LINKS: hrefs stay inside the added host, text/href matching is case-insensitive', () => {

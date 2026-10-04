@@ -43,7 +43,12 @@ test('F79 frontend debug mirror matches the backend source of truth', () => {
   assert.ok(literal);
   assert.deepEqual([...literal[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]), strings(defaults[1]));
   const store = readFileSync('src/stores/searchStore.ts', 'utf8');
-  assert.ok(store.includes('st.adapterIds.length ? resolveFanOutAdapters(st.adapterIds) : []'));
+  // [F81 §2.3/Q7=B] The empty-selection default still delegates to the
+  // backend (sends []). When the operator pre-selects, intent-aware
+  // ranking may reorder the adapters; that is an ADDITIVE feature on
+  // top of the F79 contract.
+  assert.ok(store.includes('resolveFanOutAdapters(st.adapterIds)'), 'explicit resolveFanOutAdapters call missing');
+  assert.ok(store.includes('resolvedAdapters = [];'), 'empty-selection default fan-out is missing');
 });
 test('F79 CI caches Chromium and launches an executable, never a fake browser directory', () => {
   const workflow = readFileSync('.github/workflows/e2e-ui.yml', 'utf8');

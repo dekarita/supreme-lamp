@@ -53,18 +53,27 @@ jobs:
           corepack enable
           pnpm run build
       - name: Run F78 + F79 E2E specs (real bundle + mock backend)
+        # [F82 §2.3] Explicit bash + no `-u`; the SIGPIPE fix is below.
+        shell: bash
         run: |
-          set -euo pipefail
+          # [F82 §2.3] SIGPIPE (exit 141) fix: the old `awk ... | head -c 1700`
+          # fed a live pipe to a consumer that exits after 1700 bytes, so awk
+          # took SIGPIPE and `set -o pipefail` propagated 141 - aborting the
+          # step BEFORE the ::error:: annotation printed. The full Playwright
+          # log now goes to a file and is post-processed by readers only
+          # (awk, tr, iconv and tail all consume EOF; none exit early),
+          # so no truncated pipeline can ever kill the step again.
+          set -eo pipefail
           export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
           corepack enable
-          if ! out=$(pnpm run e2e 2>&1); then
-            echo "$out" | tail -80
-            detail=$(printf '%s' "$out" | awk '/^  [0-9]+\) /{f=1} f{print}' | head -c 1700)
-            summary=$(printf '%s' "$out" | tail -c 400)
+          if ! pnpm run e2e > e2e-run.log 2>&1; then
+            tail -80 e2e-run.log
+            detail=$(awk '/^  [0-9]+\) /{f=1} f{if (n < 1700) { print; n += length($0) + 1 }}' e2e-run.log)
+            summary=$(tail -c 400 e2e-run.log)
             echo "::error::F79-E2E-FAIL::$(printf '%s' "${detail}${summary}" | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g' | iconv -f UTF-8 -t UTF-8 -c)"
             exit 1
           fi
-          echo "$out" | tail -8
+          tail -8 e2e-run.log
       - name: Upload screenshots (mandatory visual review)
         id: screenshots
         if: always()

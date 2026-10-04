@@ -44,6 +44,11 @@ export interface LabInspectResult {
   fetchedAt: string;
   linkCount: number;
   matchCount: number;
+  /** [F81 §3.1/Q4] Which path served the data: "sitemap.xml" or "homepage". */
+  source?: string;
+  sourceUrls?: number;
+  /** [F81 §3.1/Q4] Adapter-status style phase tag for UI display. */
+  adapterStatus?: { phase: string; sourceLabel: string };
 }
 
 export interface LabError {
@@ -144,6 +149,31 @@ export async function createCustomSource(name: string, baseUrl: string): Promise
   }
 }
 
+// [F81 §1.2/Q3] DELETE /api/f58/sources/<id> — one-shot removal of a stored
+// Lab Mode source. Validates the id is non-empty (no traversal); mirrors the
+// server's per-row checks (404 on unknown id, 401 on missing token). The
+// call site in the UI optimistically removes the row first; a failure
+// restores the prior list. No URL credential is ever read or sent here.
+export async function deleteCustomSource(sourceId: string): Promise<LabResult<{ deletedId: string }>> {
+  const id = String(sourceId || "").trim();
+  if (!id || id.includes("/") || id.includes("..")) return offline("VALIDATION_ERROR", "search.errors.validation");
+  try {
+    const r = await fetch(apiBase() + SOURCES_PATH + "/" + encodeURIComponent(id), {
+      method: "DELETE",
+      cache: "no-store",
+      headers: dashHeaders(),
+    });
+    const body = (await r.json().catch(() => null)) as unknown;
+    if (!r.ok) {
+      const env = (body || {}) as { code?: string; messageKey?: string };
+      return offline(String(env.code || "TRANSPORT_UNAVAILABLE"), String(env.messageKey || "search.errors.generic"));
+    }
+    return { ok: true, data: { deletedId: id } };
+  } catch {
+    return offline("TRANSPORT_UNAVAILABLE", "search.errors.generic");
+  }
+}
+
 export async function inspectSource(sourceId: string, query: string): Promise<LabResult<LabInspectResult>> {
   try {
     const r = await fetch(apiBase() + LAB_INSPECT_PATH, {
@@ -175,6 +205,9 @@ export async function inspectSource(sourceId: string, query: string): Promise<La
         fetchedAt: String(d.fetchedAt ?? ""),
         linkCount: typeof d.linkCount === "number" ? d.linkCount : links.length,
         matchCount: typeof d.matchCount === "number" ? d.matchCount : links.filter((l) => l.matches).length,
+        source: typeof d.source === "string" ? d.source : undefined,
+        sourceUrls: typeof d.sourceUrls === "number" ? d.sourceUrls : undefined,
+        adapterStatus: d.adapterStatus && typeof d.adapterStatus === "object" ? (d.adapterStatus as { phase: string; sourceLabel: string }) : undefined,
       },
     };
   } catch {

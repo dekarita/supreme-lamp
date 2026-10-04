@@ -33,7 +33,7 @@ describe("i18n F56 parity (byte-verified)", () => {
     // search.openInLabSite + search.labMode.badge = 474 (the lab.*/newSite*
     // keys live OUTSIDE this namespace and are asserted by
     // src/tests/smoke/f78-*.test.tsx).
-    expect(enNew.length).toBe(482); // F79: 474 + six UI keys + two canonical sources.
+    expect(enNew.length).toBe(504); // F81: 482 (F79) + 22 keys (deleteSite, intent, preview, suggestions, history, launchUrl, queryTooShort, newSiteMaxReached, lab.source).
   });
 
   it("every si value is non-empty, byte-stable Sinhala or a technical token", () => {

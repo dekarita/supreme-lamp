@@ -16,6 +16,7 @@ import { useSearchStore } from "@/stores/searchStore";
 import { useCustomSourcesStore } from "@/stores/customSourcesStore";
 import { LabInspector } from "./LabInspector";
 import { validatedHttpsUrl, fileExtension, formatActualBytes, licenceStyle, camel } from "@/pages/search/tokens";
+import { launchUrl } from "@/lib/launchUrl";
 
 export default function Lab() {
   const { targetId } = useParams<{ targetId: string }>();
@@ -127,7 +128,16 @@ export default function Lab() {
             <dt className="text-tertiary">{t("search.lab.sourceUrl")}</dt>
             <dd className="text-primary font-mono truncate">
               {directUrl ? (
-                <a href={directUrl} target="_blank" rel="noopener noreferrer nofollow" className="text-accent underline-offset-2 hover:underline">
+                <a
+                  href={directUrl}
+                  target="_blank"
+                  rel="noopener noreferrer nofollow"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    void launchUrl(directUrl);
+                  }}
+                  className="text-accent underline-offset-2 hover:underline"
+                >
                   {directUrl}
                 </a>
               ) : (

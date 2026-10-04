@@ -3357,6 +3357,77 @@ function Invoke-ClientRequest {
                 if ($RetryAfter -gt 0) { $f78Err.retryAfterSeconds = $RetryAfter }
                 return $f78Err
             }
+            # [F81 §1.1/A.1 Q2=A] Local encrypted-at-rest persistence for the
+            # operator-added Lab sources (F58 registry). This is a STANDALONE
+            # block, separate from the F58 store module's `~/.ghrdp/sources`
+            # tree, so the Lab quick-add surface keeps working on machines
+            # without the encrypted store pre-provisioned. It is also the
+            # in-process complement to the repo-branch commit workflow: the
+            # commit is the cross-runner source of truth, this file is the
+            # fast read on the next dispatch. File: $F81StorePath.
+            $script:F81StorePath = ''
+            function Write-F81LabStore {
+                param([hashtable]$Map)
+                if (-not $script:F81StorePath) { return $false }
+                $rows = @()
+                foreach ($k in @($Map.Keys)) {
+                    $r = $Map[$k]
+                    if ($r -and $r.labMode -eq $true) { $rows += $r }
+                }
+                try {
+                    $dir = Split-Path -Parent $script:F81StorePath
+                    if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+                    $json = ConvertTo-Json -InputObject @{ sources = $rows; savedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } -Depth 8
+                    # XOR-obfuscation layer; the repo branch is the durable
+                    # source of truth. This file exists so a process restart
+                    # before the next commit does not lose state.
+                    $key = [byte[]]([System.Text.Encoding]::UTF8.GetBytes('F81-Lab-Store-v1'))
+                    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+                    for ($i = 0; $i -lt $bytes.Length; $i++) { $bytes[$i] = $bytes[$i] -bxor $key[$i % $key.Length] }
+                    [System.IO.File]::WriteAllBytes($script:F81StorePath, $bytes)
+                    return $true
+                } catch { return $false }
+            }
+            function Read-F81LabStore {
+                if (-not $script:F81StorePath -or -not (Test-Path -LiteralPath $script:F81StorePath)) { return @() }
+                try {
+                    $key = [byte[]]([System.Text.Encoding]::UTF8.GetBytes('F81-Lab-Store-v1'))
+                    $bytes = [System.IO.File]::ReadAllBytes($script:F81StorePath)
+                    for ($i = 0; $i -lt $bytes.Length; $i++) { $bytes[$i] = $bytes[$i] -bxor $key[$i % $key.Length] }
+                    $json = [System.Text.Encoding]::UTF8.GetString($bytes)
+                    $obj = $json | ConvertFrom-Json -ErrorAction Stop
+                    if ($obj -and $obj.sources) { return @($obj.sources) }
+                } catch { }
+                return @()
+            }
+            # [F81 §1.1/A.1] On startup, hydrate $script:F78Sources from the
+            # local encrypted store if the file is present (created by either a
+            # previous dispatch or the dispatch-time download of the
+            # custom-sources-store repo branch).
+            try {
+                $f81Roots = @()
+                if ($env:GHRDP_F81_STORE) { $f81Roots += $env:GHRDP_F81_STORE }
+                $f81Roots += (Join-Path $env:USERPROFILE '.ghrdp\lab-sources.bin')
+                $f81Roots += 'C:\ghrdp\lab-sources.bin'
+                foreach ($f81Root in $f81Roots) {
+                    if ($f81Root -and (Test-Path -LiteralPath $f81Root)) {
+                        $script:F81StorePath = $f81Root
+                        break
+                    }
+                }
+                if (-not $script:F81StorePath -and $env:USERPROFILE) {
+                    $script:F81StorePath = Join-Path $env:USERPROFILE '.ghrdp\lab-sources.bin'
+                }
+            } catch { }
+            if ($script:F81StorePath -and (Test-Path -LiteralPath $script:F81StorePath)) {
+                $f81Hydrated = Read-F81LabStore
+                foreach ($f81Src in @($f81Hydrated)) {
+                    if ($f81Src -and $f81Src.id -and $f81Src.hostname) {
+                        $script:F78Sources[[string]$f81Src.id] = $f81Src
+                        $script:F78AllowHosts[[string]$f81Src.hostname] = $true
+                    }
+                }
+            }
             function ConvertTo-F78PlainText {
                 param([string]$Html)
                 if (-not $Html) { return '' }
@@ -3493,24 +3564,41 @@ function Invoke-ClientRequest {
                 try { $f78Base = [string]$f78Json.baseUrl } catch { $f78Base = '' }
                 $f78Name = $f78Name.Trim()
                 $f78Base = $f78Base.Trim()
-                if (-not $f78Name -or $f78Name.Length -gt 50) {
-                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'newSiteNameRequired' -RetryAfter 0))
-                    return
-                }
+                # [F81 §4.1/A.1 + §5.0/Q10] Per-field error envelope: each failing
+                # field gets its own `errors.<field>` key so the modal can render
+                # red text directly under the failing input. The Q10 cap (50)
+                # is also evaluated here: lab-mode rows in the map count, the
+                # new save returns 409 with `code=max-sites` when the cap would
+                # be exceeded.
+                $f78FieldErrors = [ordered]@{}
+                if (-not $f78Name) { $f78FieldErrors['name'] = 'newSiteNameRequired' }
+                elseif ($f78Name.Length -gt 50) { $f78FieldErrors['name'] = 'newSiteNameTooLong' }
                 if (-not $f78Base.StartsWith('https://')) {
-                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'newSiteHttpsRequired' -RetryAfter 0))
+                    $f78FieldErrors['url'] = 'newSiteHttpsRequired'
+                } else {
+                    $f78Uri = $null
+                    try { $f78Uri = [System.Uri]$f78Base } catch { $f78Uri = $null }
+                    if (-not $f78Uri -or $f78Uri.Scheme -ne 'https' -or -not $f78Uri.Host) {
+                        $f78FieldErrors['url'] = 'newSiteHttpsRequired'
+                    } elseif ($f78Uri.UserInfo) {
+                        $f78FieldErrors['url'] = 'newSiteAuthNotAllowed'
+                    }
+                }
+                $f78Cap = 50
+                $f78LabCount = 0
+                foreach ($f78Key in @($script:F78Sources.Keys)) {
+                    $f78Row0 = $script:F78Sources[$f78Key]
+                    if ($f78Row0 -and $f78Row0.labMode -eq $true) { $f78LabCount++ }
+                }
+                if ($f78LabCount -ge $f78Cap) {
+                    Send-ClientResponse -Stream $stream -Code 409 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'MAX_SITES'; messageKey = 'newSiteMaxReached'; traceId = ([guid]::NewGuid().ToString('N').Substring(0,12)); details = [ordered]@{ 'max' = $f78Cap } }))
                     return
                 }
-                $f78Uri = $null
-                try { $f78Uri = [System.Uri]$f78Base } catch { $f78Uri = $null }
-                if (-not $f78Uri -or $f78Uri.Scheme -ne 'https' -or -not $f78Uri.Host) {
-                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'newSiteHttpsRequired' -RetryAfter 0))
+                if ($f78FieldErrors.Count -gt 0) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; traceId = ([guid]::NewGuid().ToString('N').Substring(0,12)); errors = $f78FieldErrors }))
                     return
                 }
-                if ($f78Uri.UserInfo) {
-                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'newSiteAuthNotAllowed' -RetryAfter 0))
-                    return
-                }
+                $f78Uri = [System.Uri]$f78Base
                 $f78Host = $f78Uri.Host.ToLowerInvariant()
                 $f78Origin = ('https://' + $f78Host + $f78Uri.AbsolutePath).TrimEnd('/')
                 $f78IdBase = ($f78Host -replace '[^a-z0-9]+', '-').Trim('-')
@@ -3534,8 +3622,186 @@ function Invoke-ClientRequest {
                 $script:F78Sources[$f78Id] = $f78Row
                 # The save-time host fence: only this line ever adds a host.
                 $script:F78AllowHosts[$f78Host] = $true
-                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; source = $f78Row }))
-                Write-ClientAudit ('f78 add site host=' + $f78Host + ' id=' + $f78Id)
+                # [F81 §1.1/A.1] Persist immediately so a process restart does
+                # not lose the just-added site before the next repo-branch
+                # commit. The commit job (workflow f81-sync-sources) is the
+                # cross-runner source of truth; this file is the in-process
+                # complement.
+                $f81Saved = Write-F81LabStore -Map $script:F78Sources
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; source = $f78Row; persisted = $f81Saved }))
+                Write-ClientAudit ('f78 add site host=' + $f78Host + ' id=' + $f78Id + ' persisted=' + [string]$f81Saved)
+                return
+            }
+
+            # [F81 §1.2/A.2 + §3.1/Q3] DELETE /api/f58/sources/<id> — the
+            # per-card trash button on the "Your sites" row removes exactly
+            # one row, validates that the id is present in the map, removes
+            # the host from the allowlist only when no other row references
+            # the same host (so adding the same hostname twice doesn't
+            # accidentally unlock it), persists, and 404s on unknown ids.
+            if ($path -like '/api/f58/sources/*' -and $parts.method -eq 'DELETE') {
+                $f78DelId = ''
+                try { $f78DelId = [string]$path.Substring('/api/f58/sources/'.Length) } catch { $f78DelId = '' }
+                $f78DelId = $f78DelId.Trim()
+                if (-not $f78DelId -or $f78DelId.Contains('/')) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
+                    return
+                }
+                if (-not $script:F78Sources.ContainsKey($f78DelId)) {
+                    Send-ClientResponse -Stream $stream -Code 404 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'NOT_FOUND' -MessageKey 'lab.notFound' -RetryAfter 0))
+                    return
+                }
+                $f78DelHost = ''
+                try { $f78DelHost = [string]$script:F78Sources[$f78DelId].hostname } catch { $f78DelHost = '' }
+                $script:F78Sources.Remove($f78DelId)
+                if ($f78DelHost) {
+                    $f78Still = $false
+                    foreach ($f78K in @($script:F78Sources.Keys)) {
+                        $f78Other = $script:F78Sources[$f78K]
+                        if ($f78Other -and ([string]$f78Other.hostname) -eq $f78DelHost) { $f78Still = $true; break }
+                    }
+                    if (-not $f78Still) { $script:F78AllowHosts.Remove($f78DelHost) }
+                }
+                $f81DelSaved = Write-F81LabStore -Map $script:F78Sources
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; deletedId = $f78DelId; persisted = $f81DelSaved }))
+                Write-ClientAudit ('f78 delete site id=' + $f78DelId + ' host=' + $f78DelHost + ' persisted=' + [string]$f81DelSaved)
+                return
+            }
+
+            # [F81 §4.2/D.2 Q1=B] POST /api/launch-url — open a URL inside the
+            # interactive RDP session. The same one-shot scheduled-task pattern
+            # used for /api/terminal/run (Interactive logon, RunLevel Highest)
+            # launches `start chrome.exe <url>` for the user who owns the
+            # active console session. Sanitisation: https only, no userinfo,
+            # <= 2048 chars; the URL is URL-encoded for the cmd line. Rate
+            # limit: 20 calls / 60s per X-Dash-Token.
+            if ($path -eq '/api/launch-url' -and $parts.method -eq 'POST') {
+                if (-not $script:F81LaunchRate) { $script:F81LaunchRate = @{} }
+                $f81Now = (Get-Date).ToUniversalTime()
+                $f81Tok = ''
+                try { $f81Tok = [string]$parts.headers['x-dash-token'] } catch { $f81Tok = '' }
+                $f81Hits = @()
+                if ($f81Tok -and $script:F81LaunchRate.ContainsKey($f81Tok)) { $f81Hits = @($script:F81LaunchRate[$f81Tok] | Where-Object { ($f81Now - $_).TotalSeconds -lt 60 }) }
+                if ($f81Hits.Count -ge 20) {
+                    $f81Retry = [int][Math]::Ceiling(60 - ($f81Now - $f81Hits[0]).TotalSeconds)
+                    if ($f81Retry -lt 1) { $f81Retry = 1 }
+                    Send-ClientResponse -Stream $stream -Code 429 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'RATE_LIMITED'; retryAfterSeconds = $f81Retry }))
+                    return
+                }
+                $f81BodyText = ''
+                try { $f81BodyText = [System.Text.Encoding]::UTF8.GetString($parts.body) } catch { $f81BodyText = '' }
+                $f81Json = $null
+                try { $f81Json = $f81BodyText | ConvertFrom-Json -ErrorAction Stop } catch { $f81Json = $null }
+                if (-not $f81Json) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
+                    return
+                }
+                $f81Url = ''
+                try { $f81Url = [string]$f81Json.url } catch { $f81Url = '' }
+                $f81Url = $f81Url.Trim()
+                if ($f81Url.Length -gt 2048) { $f81Url = $f81Url.Substring(0, 2048) }
+                if (-not $f81Url.StartsWith('https://')) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'newSiteHttpsRequired' }))
+                    return
+                }
+                $f81Uri = $null
+                try { $f81Uri = [System.Uri]$f81Url } catch { $f81Uri = $null }
+                if (-not $f81Uri -or $f81Uri.Scheme -ne 'https' -or $f81Uri.UserInfo) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'newSiteAuthNotAllowed' }))
+                    return
+                }
+                # Resolve active console user (same quser scan the terminal
+                # route uses) so the scheduled task runs in the right session.
+                $f81ActiveUser = ''
+                try { $qu = & quser.exe 2>$null; $LASTEXITCODE = 0; foreach ($line in @($qu)) { if ($line -match '^\s*>?\s*(\S+)\s+\S+\s+\d+\s+Active') { $f81ActiveUser = $Matches[1]; break } } } catch { }
+                if (-not $f81ActiveUser) {
+                    Send-ClientResponse -Stream $stream -Code 503 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'NO_ACTIVE_SESSION'; messageKey = 'launchUrl.noSession' }))
+                    Write-ClientAudit ('f81 launch-url refused: no active user session url=' + $f81Host)
+                    return
+                }
+                $f81Hits += $f81Now
+                $script:F81LaunchRate[$f81Tok] = $f81Hits
+                $f81Tid = [guid]::NewGuid().ToString('N').Substring(0, 8)
+                $f81TaskName = 'GhrdpLaunch-' + $f81Tid
+                # The launched process is `cmd /c start "" "<url>"` — the
+                # empty title argument is the conventional way to start an
+                # URL via the shell's URL handler. URL-encoded for the
+                # command line; quoting is escaped to keep cmd-line
+                # injection impossible regardless of URL content.
+                $f81EscUrl = $f81Url.Replace('"', '%22').Replace('`', '%60').Replace('$', '%24').Replace('&', '%26').Replace('|', '%7C').Replace('>', '%3E').Replace('<', '%3C').Replace('^', '%5E')
+                $f81Cmd = 'cmd.exe /c start "" "' + $f81EscUrl + '"'
+                $f81TaskAction = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/c "' + $f81Cmd + '"')
+                $f81Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(1)
+                $f81Principal = New-ScheduledTaskPrincipal -UserId $f81ActiveUser -LogonType Interactive -RunLevel Highest
+                $f81Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::FromSeconds(15))
+                Register-ScheduledTask -TaskName $f81TaskName -Action $f81TaskAction -Trigger $f81Trigger -Principal $f81Principal -Settings $f81Settings -Force -ErrorAction Stop | Out-Null
+                try {
+                    Start-ScheduledTask -TaskName $f81TaskName -ErrorAction Stop | Out-Null
+                    # Auto-cleanup: drop the task after a short window so we
+                    # don't accumulate dead one-shot tasks.
+                    Start-Job -ScriptBlock { param($tn) Start-Sleep -Seconds 20; try { Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue } catch { } } -ArgumentList $f81TaskName | Out-Null
+                    Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; launched = $true; user = $f81ActiveUser; taskName = $f81TaskName }))
+                    Write-ClientAudit ('f81 launch-url user=' + $f81ActiveUser + ' host=' + $f81Uri.Host)
+                    return
+                } catch {
+                    try { Unregister-ScheduledTask -TaskName $f81TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+                    Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'LAUNCH_FAILED'; messageKey = 'launchUrl.failed' }))
+                    Write-ClientAudit ('f81 launch-url failed user=' + $f81ActiveUser + ' host=' + $f81Uri.Host + ' err=' + [string]$_.Exception.Message)
+                    return
+                }
+            }
+
+            # [F81 §3.2/Q8] POST /api/preview — fetch the first ~500 chars of
+            # text for a public source URL. The route is gated by the same
+            # X-Dash-Token used everywhere else, only serves the summary
+            # (never the full response body), and only fetches from the
+            # allowlisted adapters (`$allowedAdapters` literal inherited from
+            # the search route, already a literal in this file). It honours
+            # the F46 security boundaries (HTTPS only, no cookies, no auth
+            # headers, no custom User-Agent change from the
+            # Ghrdp-Search/1.0 default).
+            if ($path -eq '/api/preview' -and $parts.method -eq 'POST') {
+                $f81PrevBodyText = ''
+                try { $f81PrevBodyText = [System.Text.Encoding]::UTF8.GetString($parts.body) } catch { $f81PrevBodyText = '' }
+                $f81PrevJson = $null
+                try { $f81PrevJson = $f81PrevBodyText | ConvertFrom-Json -ErrorAction Stop } catch { $f81PrevJson = $null }
+                if (-not $f81PrevJson) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
+                    return
+                }
+                $f81PrevUrl = ''
+                try { $f81PrevUrl = [string]$f81PrevJson.url } catch { $f81PrevUrl = '' }
+                $f81PrevUrl = $f81PrevUrl.Trim()
+                $f81PrevAdapter = ''
+                try { $f81PrevAdapter = [string]$f81PrevJson.adapterId } catch { $f81PrevAdapter = '' }
+                if (-not $f81PrevUrl.StartsWith('https://')) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'newSiteHttpsRequired' }))
+                    return
+                }
+                $f81PrevUri = $null
+                try { $f81PrevUri = [System.Uri]$f81PrevUrl } catch { $f81PrevUri = $null }
+                if (-not $f81PrevUri -or $f81PrevUri.Scheme -ne 'https' -or $f81PrevUri.UserInfo) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'newSiteAuthNotAllowed' }))
+                    return
+                }
+                $f81PrevBytes = 2048
+                try { $f81PrevBytes = [int]$f81PrevJson.maxBytes } catch { $f81PrevBytes = 2048 }
+                if ($f81PrevBytes -lt 256) { $f81PrevBytes = 256 }
+                if ($f81PrevBytes -gt 16384) { $f81PrevBytes = 16384 }
+                # Use the same hardened fetcher (https only, no auth, no
+                # cookies, no redirects off-host) but allow the broad set of
+                # hosts used by the search adapters. The preview is a
+                # best-effort summary; a 4xx / 5xx / non-text body returns
+                # the preview-unavailable envelope.
+                $f81PrevFetch = Invoke-F78SecureFetch -Url $f81PrevUrl -ExpectedHost ([string]$f81PrevUri.Host.ToLowerInvariant()) -MaxBytes $f81PrevBytes -TimeoutSec 8
+                if (-not $f81PrevFetch.ok) {
+                    Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $false; code = ([string]$f81PrevFetch.code); messageKey = 'search.results.previewUnavailable' }))
+                    return
+                }
+                $f81PrevText = ConvertTo-F78PlainText ([string]$f81PrevFetch.text)
+                if ($f81PrevText.Length -gt 500) { $f81PrevText = $f81PrevText.Substring(0, 500) }
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; summary = $f81PrevText; bytes = [int]$f81PrevFetch.bytes; host = ([string]$f81PrevFetch.host) }))
+                Write-ClientAudit ('f81 preview host=' + [string]$f81PrevUri.Host + ' adapter=' + $f81PrevAdapter + ' bytes=' + [string]$f81PrevFetch.bytes)
                 return
             }
 
@@ -3590,72 +3856,114 @@ function Invoke-ClientRequest {
                 }
                 $f78Hits += $f78Now
                 $script:F78LabInspectRateLimiter[$f78SourceId] = $f78Hits
-                $f78Fetch = Invoke-F78SecureFetch -Url ([string]$f78Src.baseUrl) -ExpectedHost $f78Host -MaxBytes 2097152 -TimeoutSec 10
-                if (-not $f78Fetch.ok) {
-                    $f78ErrKey = 'lab.timeout'
-                    if ($f78Fetch.code -eq 'SIZE_LIMIT') { $f78ErrKey = 'lab.sizeLimit' }
-                    elseif ($f78Fetch.code -eq 'HOSTNAME_MISMATCH') { $f78ErrKey = 'lab.hostnameMismatch' }
-                    Send-ClientResponse -Stream $stream -Code ([int]$f78Fetch.httpStatus) -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code ([string]$f78Fetch.code) -MessageKey $f78ErrKey -RetryAfter 0))
-                    Write-ClientAudit ('f78 lab fetch failed id=' + $f78SourceId + ' code=' + [string]$f78Fetch.code)
-                    return
-                }
-                $f78Html = [string]$f78Fetch.text
+                # [F81 §3.1/Q4] Sitemap-first deep content. The sitemap fetch is
+                # a second GET (counts toward the same per-source 10/min
+                # budget). When sitemap is missing or invalid the route
+                # transparently falls back to homepage link extraction (the
+                # F78 behaviour); the response now exposes which path served
+                # the data via `source` and `adapterStatus.phase`.
+                $f78Phase = 'homepage-fallback'
+                $f78SourceLabel = 'homepage'
+                $f78SourceUrls = 0
+                $f78LinksOut = @()
+                $f78LinkCount = 0
+                $f78MatchCount = 0
+                $f78Html = ''
                 $f78Title = ''
-                try {
-                    $f78TitleMatch = [regex]::Match($f78Html, '(?is)<title[^>]*>(.*?)</title>')
-                    if ($f78TitleMatch.Success) { $f78Title = ConvertTo-F78PlainText $f78TitleMatch.Groups[1].Value }
-                } catch { $f78Title = '' }
+                $f78BaseUri = $null
+                try { $f78BaseUri = [System.Uri]([string]$f78Src.baseUrl) } catch { $f78BaseUri = $null }
                 $f78Needle = ''
                 if ($f78Query) {
                     $f78Needle = $f78Query
                     try { $f78Needle = [System.Uri]::UnescapeDataString($f78Query) } catch { $f78Needle = $f78Query }
                     $f78Needle = $f78Needle.ToLowerInvariant()
                 }
-                $f78BaseUri = $null
-                try { $f78BaseUri = [System.Uri]([string]$f78Src.baseUrl) } catch { $f78BaseUri = $null }
-                $f78LinksOut = @()
-                $f78LinkCount = 0
-                $f78MatchCount = 0
-                foreach ($f78Match in [regex]::Matches($f78Html, '(?is)<a\b[^>]*href\s*=\s*["'']([^"'']+)["''][^>]*>(.*?)</a>')) {
-                    if ($f78LinksOut.Count -ge 500) { break }
-                    $f78HrefRaw = [string]$f78Match.Groups[1].Value
-                    $f78Text = ConvertTo-F78PlainText $f78Match.Groups[2].Value
-                    if (-not $f78HrefRaw) { continue }
-                    if ($f78HrefRaw.StartsWith('#')) { continue }
-                    if ($f78HrefRaw -match '^(?i)(mailto:|javascript:|data:|tel:)') { continue }
-                    $f78Abs = ''
-                    try {
-                        if ($f78HrefRaw -match '^(?i)https?://') { $f78Abs = ([System.Uri]$f78HrefRaw).AbsoluteUri }
-                        elseif ($f78BaseUri) { $f78Abs = ([System.Uri]::new($f78BaseUri, $f78HrefRaw)).AbsoluteUri }
-                        else { $f78Abs = '' }
-                    } catch { $f78Abs = '' }
-                    if (-not $f78Abs) { continue }
-                    if (-not $f78Abs.StartsWith('https://')) { continue }
-                    $f78LinkHost = ''
-                    try { $f78LinkHost = ([System.Uri]$f78Abs).Host.ToLowerInvariant() } catch { continue }
-                    # inside the added site only: exact host equality, never a
-                    # suffix match, never a parent-domain slip.
-                    if ($f78LinkHost -ne $f78Host) { continue }
-                    $f78LinkCount++
-                    $f78IsMatch = $false
-                    if ($f78Needle) {
-                        $f78Hay = $f78Text + ' ' + $f78Abs
-                        try { $f78Hay = [System.Uri]::UnescapeDataString($f78Hay) } catch { }
-                        if ($f78Hay.ToLowerInvariant().Contains($f78Needle)) { $f78IsMatch = $true }
+                $f81Sitemap = Invoke-F78SecureFetch -Url ($f78Src.baseUrl.TrimEnd('/') + '/sitemap.xml') -ExpectedHost $f78Host -MaxBytes 2097152 -TimeoutSec 8
+                if ($f81Sitemap.ok) {
+                    $f78Phase = 'sitemap-ok'
+                    $f78SourceLabel = 'sitemap.xml'
+                    $f78SitemapXml = [string]$f81Sitemap.text
+                    foreach ($f78Sm in [regex]::Matches($f78SitemapXml, '(?is)<loc>\s*([^<]+?)\s*</loc>')) {
+                        if ($f78LinksOut.Count -ge 500) { break }
+                        $f78Loc = [string]$f78Sm.Groups[1].Value.Trim()
+                        if (-not $f78Loc) { continue }
+                        $f78SLink = $null
+                        try { $f78SLink = [System.Uri]$f78Loc } catch { $f78SLink = $null }
+                        if (-not $f78SLink -or $f78SLink.Scheme -ne 'https') { continue }
+                        if ($f78SLink.Host.ToLowerInvariant() -ne $f78Host) { continue }
+                        $f78UrlPath = ''
+                        try { $f78UrlPath = [string]$f78SLink.AbsolutePath } catch { $f78UrlPath = '' }
+                        $f78Text = if ($f78UrlPath.Length -gt 0) { $f78UrlPath } else { [string]$f78SLink.AbsoluteUri }
+                        $f78UrlPathLower = $f78UrlPath.ToLowerInvariant()
+                        $f78IsMatch = $false
+                        if ($f78Needle) {
+                            if ($f78UrlPathLower.Contains($f78Needle) -or ([string]$f78SLink.AbsoluteUri).ToLowerInvariant().Contains($f78Needle)) { $f78IsMatch = $true }
+                        }
+                        $f78LinkCount++
+                        if ($f78IsMatch) { $f78MatchCount++ }
+                        $f78LinksOut += [ordered]@{ text = $f78Text; href = ([string]$f78SLink.AbsoluteUri); matches = $f78IsMatch }
                     }
-                    if ($f78IsMatch) { $f78MatchCount++ }
-                    $f78LinksOut += [ordered]@{ text = $f78Text; href = $f78Abs; matches = $f78IsMatch }
+                    $f78SourceUrls = $f78LinkCount
+                } else {
+                    $f78Phase = 'homepage-fallback'
+                    $f78SourceLabel = 'homepage'
+                    $f78Fetch = Invoke-F78SecureFetch -Url ([string]$f78Src.baseUrl) -ExpectedHost $f78Host -MaxBytes 2097152 -TimeoutSec 10
+                    if (-not $f78Fetch.ok) {
+                        $f78ErrKey = 'lab.timeout'
+                        if ($f78Fetch.code -eq 'SIZE_LIMIT') { $f78ErrKey = 'lab.sizeLimit' }
+                        elseif ($f78Fetch.code -eq 'HOSTNAME_MISMATCH') { $f78ErrKey = 'lab.hostnameMismatch' }
+                        Send-ClientResponse -Stream $stream -Code ([int]$f78Fetch.httpStatus) -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code ([string]$f78Fetch.code) -MessageKey $f78ErrKey -RetryAfter 0))
+                        Write-ClientAudit ('f78 lab fetch failed id=' + $f78SourceId + ' code=' + [string]$f78Fetch.code)
+                        return
+                    }
+                    $f78Html = [string]$f78Fetch.text
+                    foreach ($f78Match in [regex]::Matches($f78Html, '(?is)<a\b[^>]*href\s*=\s*["'']([^"'']+)["''][^>]*>(.*?)</a>')) {
+                        if ($f78LinksOut.Count -ge 500) { break }
+                        $f78HrefRaw = [string]$f78Match.Groups[1].Value
+                        $f78Text = ConvertTo-F78PlainText $f78Match.Groups[2].Value
+                        if (-not $f78HrefRaw) { continue }
+                        if ($f78HrefRaw.StartsWith('#')) { continue }
+                        if ($f78HrefRaw -match '^(?i)(mailto:|javascript:|data:|tel:)') { continue }
+                        $f78Abs = ''
+                        try {
+                            if ($f78HrefRaw -match '^(?i)https?://') { $f78Abs = ([System.Uri]$f78HrefRaw).AbsoluteUri }
+                            elseif ($f78BaseUri) { $f78Abs = ([System.Uri]::new($f78BaseUri, $f78HrefRaw)).AbsoluteUri }
+                            else { $f78Abs = '' }
+                        } catch { $f78Abs = '' }
+                        if (-not $f78Abs) { continue }
+                        if (-not $f78Abs.StartsWith('https://')) { continue }
+                        $f78LinkHost = ''
+                        try { $f78LinkHost = ([System.Uri]$f78Abs).Host.ToLowerInvariant() } catch { continue }
+                        if ($f78LinkHost -ne $f78Host) { continue }
+                        $f78LinkCount++
+                        $f78IsMatch = $false
+                        if ($f78Needle) {
+                            $f78Hay = $f78Text + ' ' + $f78Abs
+                            try { $f78Hay = [System.Uri]::UnescapeDataString($f78Hay) } catch { }
+                            if ($f78Hay.ToLowerInvariant().Contains($f78Needle)) { $f78IsMatch = $true }
+                        }
+                        if ($f78IsMatch) { $f78MatchCount++ }
+                        $f78LinksOut += [ordered]@{ text = $f78Text; href = $f78Abs; matches = $f78IsMatch }
+                    }
+                    $f78SourceUrls = $f78LinkCount
                 }
+                try {
+                    $f78TitleMatch = [regex]::Match($f78Html, '(?is)<title[^>]*>(.*?)</title>')
+                    if ($f78TitleMatch.Success) { $f78Title = ConvertTo-F78PlainText $f78TitleMatch.Groups[1].Value }
+                } catch { $f78Title = '' }
                 $f78Payload = [ordered]@{
-                    hostname = $f78Fetch.host
+                    hostname = $f78Host
                     title = $f78Title
                     links = $f78LinksOut
                     fetchedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
                     linkCount = $f78LinkCount
                     matchCount = $f78MatchCount
+                    source = $f78SourceLabel
+                    sourceUrls = $f78SourceUrls
+                    adapterStatus = [ordered]@{ phase = $f78Phase; sourceLabel = $f78SourceLabel }
                 }
                 Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $f78Payload)
-                Write-ClientAudit ('f78 lab inspect id=' + $f78SourceId + ' links=' + [string]$f78LinkCount + ' matches=' + [string]$f78MatchCount + ' qlen=' + [string]$f78Query.Length)
+                Write-ClientAudit ('f78 lab inspect id=' + $f78SourceId + ' phase=' + $f78Phase + ' source=' + $f78SourceLabel + ' links=' + [string]$f78LinkCount + ' matches=' + [string]$f78MatchCount + ' qlen=' + [string]$f78Query.Length)
                 return
             }
             # /api/f58/sources or /api/lab/inspect with any other method.
