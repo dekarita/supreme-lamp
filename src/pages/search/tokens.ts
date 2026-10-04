@@ -118,6 +118,46 @@ const MIME_TO_EXT: Record<string, string> = {
   "text/x-chdr": "h",
 };
 
+/** [F84 §2.4] File-ish URL detection for the card's "Download to RDP" button.
+ *  Derived from the SAME MIME_TO_EXT table the extension badge uses, plus the
+ *  compound archives (tar.gz/tgz) that a single extension token cannot express.
+ *  A landing page (archive.org/details/...) is deliberately NOT file-ish: it
+ *  keeps the single "Open in RDP" action. */
+const FILE_EXT_SET = new Set<string>([
+  ...Object.values(MIME_TO_EXT),
+  "gz",
+  "tgz",
+  "tar.gz",
+  "mobi",
+  "azw3",
+  "tar.bz2",
+  "7z",
+  "flac",
+  "opus",
+  "m4b",
+]);
+
+export function fileUrlExtension(raw: string | null | undefined): string | null {
+  const url = validatedHttpsUrl(raw);
+  if (!url) return null;
+  let path = "";
+  try {
+    path = decodeURIComponent(new URL(url).pathname);
+  } catch {
+    return null;
+  }
+  const base = (path.split("/").pop() || "").toLowerCase();
+  if (!base) return null;
+  const compound = base.match(/\.(tar\.gz|tar\.bz2)$/);
+  if (compound) return compound[1];
+  const ext = extensionOf(base);
+  return ext && FILE_EXT_SET.has(ext) ? ext : null;
+}
+
+export function isFileLikeUrl(raw: string | null | undefined): boolean {
+  return fileUrlExtension(raw) !== null;
+}
+
 /** Lowercase file extension for a result card badge (without the dot), or
  *  null when nothing honest can be derived. Order: declared mimeType, then the
  *  https URL path basename, then the title. Landing-page URLs

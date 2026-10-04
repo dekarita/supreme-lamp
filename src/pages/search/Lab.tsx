@@ -14,6 +14,7 @@ import { useTranslation } from "react-i18next";
 import { ArrowLeft } from "lucide-react";
 import { useSearchStore } from "@/stores/searchStore";
 import { useCustomSourcesStore } from "@/stores/customSourcesStore";
+import { useToastStore } from "@/stores/toastStore";
 import { LabInspector } from "./LabInspector";
 import { validatedHttpsUrl, fileExtension, formatActualBytes, licenceStyle, camel } from "@/pages/search/tokens";
 import { launchUrl } from "@/lib/launchUrl";
@@ -23,6 +24,7 @@ export default function Lab() {
   const navigate = useNavigate();
   const { t } = useTranslation();
   const results = useSearchStore((s) => s.results);
+  const push = useToastStore((s) => s.push);
 
   const decodedId = targetId ? decodeURIComponent(targetId) : "";
   const r = decodedId ? results[decodedId] : null;
@@ -128,18 +130,19 @@ export default function Lab() {
             <dt className="text-tertiary">{t("search.lab.sourceUrl")}</dt>
             <dd className="text-primary font-mono truncate">
               {directUrl ? (
-                <a
-                  href={directUrl}
-                  target="_blank"
-                  rel="noopener noreferrer nofollow"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    void launchUrl(directUrl);
+                // [F84 §2.3] Button, not a new-tab anchor: a failed launch
+                // surfaces as a toast instead of a silent local tab.
+                <button
+                  type="button"
+                  data-testid="lab-source-url"
+                  onClick={async () => {
+                    const out = await launchUrl(directUrl);
+                    if (!out.ok) push(t(out.reason || "search.launchUrl.failed") + " — " + t("search.launchUrl.retry"));
                   }}
-                  className="text-accent underline-offset-2 hover:underline"
+                  className="text-accent underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
                 >
                   {directUrl}
-                </a>
+                </button>
               ) : (
                 <span className="text-warning">{t("search.v2.card.urlWithheld")}</span>
               )}

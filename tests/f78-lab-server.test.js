@@ -42,7 +42,10 @@ test('F78-P2-AUTH: dash token is constant-time and never a query credential', ()
 
 test('F78-P3-FETCH: https only, default port, no userinfo, exact host, no redirect follow', () => {
   assert.ok(BLOCK.includes("if (-not $f78Uri -or $f78Uri.Scheme -ne 'https' -or $f78Uri.UserInfo)"), 'the https/userinfo fence is missing');
-  assert.ok(BLOCK.includes('$f78Uri.Host.ToLowerInvariant() -ne $ExpectedHost'), 'the exact-host fence is missing (suffix matching would be a cross-domain slip)');
+  // [F84 §2.2] The fence is still exact-host, minus a leading www. on either
+  // side (Test-F78SameHost); cross-domain is still refused and the
+  // no-suffix/no-wildcard property is asserted in tests/f84-same-host.test.js.
+  assert.ok(BLOCK.includes('Test-F78SameHost -Allowed $ExpectedHost -Actual $f78Uri.Host'), 'the exact-host fence is missing (suffix matching would be a cross-domain slip)');
   assert.ok(BLOCK.includes('$f78Req.AllowAutoRedirect = $false'), 'redirects must not be auto-followed');
   assert.ok(BLOCK.includes("$f78Req.UserAgent = 'GHRDP-Lab/1.0'"), 'the user agent must be a fixed literal');
   assert.ok(!/Authorization\s*=|\.Headers\[.Authorization.\]/.test(BLOCK), 'the helper must never set an Authorization header');
@@ -97,7 +100,7 @@ test('F78-P7-SAVE: name/URL validation is fail-closed and mirrors the client', (
 
 test('F78-P8-LINKS: hrefs stay inside the added host, text/href matching is case-insensitive', () => {
   assert.ok(BLOCK.includes("'(?is)<a\\b[^>]*href\\s*=\\s*[\"'']([^\"'']+)[\"''][^>]*>(.*?)</a>'"), 'the anchor extraction regex is missing');
-  assert.ok(BLOCK.includes('if ($f78LinkHost -ne $f78Host) { continue }'), 'off-host hrefs must be dropped before they are returned');
+  assert.ok(BLOCK.includes('Test-F78SameHost -Allowed $f78Host -Actual $f78LinkHost'), 'off-host hrefs must be dropped before they are returned');
   assert.ok(BLOCK.includes('if (-not $f78Abs.StartsWith(\'https://\')) { continue }'), 'non-https hrefs must be dropped');
   assert.ok(BLOCK.includes('$f78Hay.ToLowerInvariant().Contains($f78Needle)'), 'the match test is not case-insensitive');
   assert.ok(BLOCK.includes('[System.Uri]::UnescapeDataString($f78Query)'), 'the query must be URL-decoded before matching');

@@ -128,7 +128,10 @@ test('F81-PRESERVED-F78: the F78 fences survive untouched', () => {
     "Test-TicketBearer $f78Recv $f78Exp",
     "foreach ($f78Qk in @('key','token','dash-token','dash_token','dashtoken','access-token','access_token','password'))",
     "Invoke-F78SecureFetch -Url ([string]$f78Src.baseUrl)",
-    '$f78LinkHost -ne $f78Host',
+    // [F84 §2.2] the strict href fence was replaced by the www-tolerant
+    // Test-F78SameHost compare; the cross-domain refusal is asserted by
+    // tests/f84-same-host.test.js (openculture.com vs youtube.com stays false).
+    'Test-F78SameHost -Allowed $f78Host -Actual $f78LinkHost',
     "$f78Hits.Count -ge 10",
   ]) {
     assert.ok(SERVER.includes(tok), 'F78 fence regressed: ' + tok);

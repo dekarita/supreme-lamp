@@ -10,7 +10,7 @@ import { useToastStore } from "@/stores/toastStore";
 import { requestFetchStub, requestFetch, isProvenanceBlocked } from "@/lib/fetchStub";
 import { customSources, evaluateResultProvenance } from "@/search/custom-source-store";
 import type { SearchResult } from "@/api/search";
-import { camel, fileExtension, formatActualBytes, licenceStyle, validatedHttpsUrl } from "./tokens";
+import { camel, fileExtension, fileUrlExtension, formatActualBytes, licenceStyle, validatedHttpsUrl } from "./tokens";
 import { launchUrl } from "@/lib/launchUrl";
 
 // [F79 D5/D7] 16px card padding + a 24px inter-result gutter.
@@ -119,6 +119,9 @@ export function ResultsGrid() {
       const direct = validatedHttpsUrl(r.sourceUrl);
       const fetchRec = fetches[r.resultId];
       const ext = fileExtension(r); // [F69 §2.2]
+      // [F84 §2.4] File-ish = a real asset URL (.mp4/.pdf/.zip/... from the
+      // MIME_TO_EXT table), NOT a landing page (archive.org/details/...).
+      const fileish = fileUrlExtension(r.sourceUrl);
       const prov = evaluateResultProvenance(customSources, r);
       const provRow = prov.custom && prov.applies;
       // Client-side provenance-6 check (mirrors server gate) for exe/msi/dmg/iso/zip
@@ -208,20 +211,22 @@ export function ResultsGrid() {
             <div className="flex items-center gap-2 min-w-0 text-xs">
               <span className="text-tertiary shrink-0">{t("search.v2.card.directUrl")}</span>
               {direct ? (
-                <a
+                // [F84 §2.3] NO new-tab anchor on a result card: the only
+                // route out of the dashboard is /api/launch-url. A failed launch
+                // is a visible toast, never a silent local-browser tab.
+                <button
                   id={"f56.search.v2.cardDirectUrl." + sfx}
                   data-testid="card-direct-url"
-                  href={direct}
-                  rel="noopener noreferrer nofollow"
-                  target="_blank"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    void launchUrl(direct);
+                  type="button"
+                  title={direct}
+                  onClick={async () => {
+                    const r = await launchUrl(direct);
+                    if (!r.ok) push(t(r.reason || "search.launchUrl.failed") + " — " + t("search.launchUrl.retry"));
                   }}
-                  className="text-xs text-success truncate underline-offset-2 hover:underline"
+                  className="text-xs text-success truncate underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
                 >
                   {direct}
-                </a>
+                </button>
               ) : (
                 <span id={"f56.search.v2.cardUrlWithheld." + sfx} data-testid="card-url-withheld" className="text-warning truncate">
                   {t("search.v2.card.urlWithheld")}
@@ -303,6 +308,60 @@ export function ResultsGrid() {
               >
                 {t("search.actions.fetch")}
               </button>
+              {/* [F84 §2.4] File URLs get the explicit pair: open the asset in
+                  RDP Chrome, or stream it to the RDP runner's
+                  Desktop\RDP-Downloads folder (the dashboard host disk - never
+                  the operator's local disk). */}
+              <button
+                id={"f56.search.resultOpenRdp." + sfx}
+                data-testid="card-open-rdp"
+                type="button"
+                title={t("search.launchUrl.openInRdp")}
+                aria-label={t("search.launchUrl.openInRdp")}
+                onClick={async () => {
+                  const out = await launchUrl(direct);
+                  if (!out.ok) push(t(out.reason || "search.launchUrl.failed") + " — " + t("search.launchUrl.retry"));
+                }}
+                className="h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                {t("search.launchUrl.openInRdp")}
+              </button>
+              {fileish ? (
+                <button
+                  id={"f56.search.resultDownloadRdp." + sfx}
+                  data-testid="card-download-rdp"
+                  type="button"
+                  title={t("download.toRdp")}
+                  aria-label={t("download.toRdp")}
+                  onClick={async () => {
+                    try {
+                      const out = await requestFetch({
+                        operation: 'start',
+                        requestId: Math.random().toString(36).slice(2, 12),
+                        idempotencyKey: Math.random().toString(36).slice(2, 12),
+                        resultId: r.resultId,
+                        adapterId: r.adapterId,
+                        sourceSnapshotId: (r as any).sourceSnapshotId || 'snap-' + Date.now(),
+                        intent: 'download',
+                        transport: 'https',
+                        mirrorOptIn: false,
+                        provenance: (r as any).provenance,
+                        expectedContentLength: (r as any).sizeBytes,
+                        urlImport: { url: direct },
+                        download: true,
+                      } as any);
+                      const p = (out.data as any)?.path;
+                      if (out.ok && typeof p === 'string') push(t("download.success", { path: p }));
+                      else push(t("download.failed", { reason: out.error?.messageKey || out.error?.code || "transport" }));
+                    } catch {
+                      push(t("download.failed", { reason: "transport" }));
+                    }
+                  }}
+                  className="h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                >
+                  {t("download.toRdp")}
+                </button>
+              ) : null}
               <button
                 id={"f56.search.resultPreview." + sfx}
                 type="button"

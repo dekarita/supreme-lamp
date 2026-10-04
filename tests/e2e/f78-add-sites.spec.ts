@@ -164,13 +164,26 @@ test.describe("F78 stored-website Lab Mode", () => {
     await shot(page, "16-matches-first-toggle");
   });
 
-  test("17 a link opens in a new tab with rel=noopener noreferrer", async ({ page }) => {
+  // [F84 §2.3] The link is no longer an <a target="_blank">: every row click
+  // routes through POST /api/launch-url, so a failed launch can never silently
+  // open the operator's local browser.
+  test("17 a link launches through the server route (no new-tab anchor)", async ({ page }) => {
+    let launched = false;
+    await page.route("**/api/launch-url", async (route) => {
+      launched = true;
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, launched: true }) });
+    });
+    const popups: number[] = [];
+    page.on("popup", () => popups.push(1));
     await page.goto("/#/search/lab/docs-python-org?q=tls");
     const link = page.locator('[data-testid="lab-link-open"]').first();
-    await expect(link).toHaveAttribute("target", "_blank");
-    await expect(link).toHaveAttribute("rel", /noopener/);
-    await expect(link).toHaveAttribute("rel", /noreferrer/);
-    await shot(page, "17-link-target-blank");
+    await expect(link).toHaveJSProperty("tagName", "BUTTON");
+    await expect(link).not.toHaveAttribute("target", "_blank");
+    await expect(link).not.toHaveAttribute("href", /./);
+    await link.click();
+    await expect.poll(() => launched).toBe(true);
+    expect(popups.length).toBe(0);
+    await shot(page, "17-link-launch-url");
   });
 
   test("18 the footer badge carries the ui sha", async ({ page }) => {

@@ -532,7 +532,10 @@
     },
     "launchUrl": {
       "launched": "Launched in this RDP session",
-      "failed": "Could not launch in this session",
+      "failed": "Could not open in RDP",
+      "retry": "Retry",
+      "openInRdp": "Open in RDP",
+      "rateLimited": "Too many launches - retry in a moment",
       "noSession": "No active console session is attached"
     },
       "a11y": {
@@ -1036,5 +1039,15 @@
   "newSiteNameRequired": "A name is required.",
   "newSiteNameTooLong": "The name must be 50 characters or fewer.",
   "newSiteAuthNotAllowed": "Credentials in a URL are refused. Remove user:pass and use the https origin.",
-  "newSiteMaxReached": "Maximum 50 custom sites reached. Delete one before adding another."
+  "newSiteMaxReached": "Maximum 50 custom sites reached. Delete one before adding another.",
+  "addSite": {
+    "autoHttps": "https:// added automatically",
+    "httpsOnly": "HTTPS required - this site only supports insecure HTTP, cannot be stored.",
+    "probeFailed": "Site unreachable over HTTPS"
+  },
+  "download": {
+    "toRdp": "Download to RDP",
+    "success": "Downloaded to RDP: {{path}}",
+    "failed": "Download failed: {{reason}}"
+  }
 }

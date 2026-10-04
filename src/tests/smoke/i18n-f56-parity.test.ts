@@ -33,7 +33,10 @@ describe("i18n F56 parity (byte-verified)", () => {
     // search.openInLabSite + search.labMode.badge = 474 (the lab.*/newSite*
     // keys live OUTSIDE this namespace and are asserted by
     // src/tests/smoke/f78-*.test.tsx).
-    expect(enNew.length).toBe(504); // F81: 482 (F79) + 22 keys (deleteSite, intent, preview, suggestions, history, launchUrl, queryTooShort, newSiteMaxReached, lab.source).
+    // [F84 §2.5] 504 (F81) + 3 search.launchUrl keys (retry, openInRdp,
+    // rateLimited). The new addSite.* / download.* keys live OUTSIDE this
+    // search.* namespace and are asserted by the F84 smoke tests.
+    expect(enNew.length).toBe(507);
   });
 
   it("every si value is non-empty, byte-stable Sinhala or a technical token", () => {

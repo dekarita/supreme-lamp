@@ -19,6 +19,7 @@ import { useNavigate } from "react-router-dom";
 import { ArrowLeft, ExternalLink, FlaskConical, RefreshCw } from "lucide-react";
 import { inspectSource, type CustomSourceRow, type LabError, type LabInspectResult } from "@/api/lab";
 import { launchUrl } from "@/lib/launchUrl";
+import { useToastStore } from "@/stores/toastStore";
 
 const ERROR_KEYS: Record<string, string> = {
   RATE_LIMITED: "lab.rateLimited",
@@ -37,6 +38,7 @@ export interface LabInspectorProps {
 export function LabInspector({ source, query }: LabInspectorProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const push = useToastStore((s) => s.push);
   const [data, setData] = useState<LabInspectResult | null>(null);
   const [error, setError] = useState<LabError | null>(null);
   const [loading, setLoading] = useState(false);
@@ -177,22 +179,23 @@ export function LabInspector({ source, query }: LabInspectorProps) {
                 <span className="text-xs font-mono text-tertiary truncate" title={l.href}>
                   {l.href}
                 </span>
-                <a
+                {/* [F84 §2.3] Button, not a new-tab anchor: every row click
+                    routes through /api/launch-url, and a failure is a visible
+                    toast rather than a silent local-browser tab. */}
+                <button
                   id={"f78.lab.linkOpen." + i}
                   data-testid="lab-link-open"
-                  href={l.href}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    void launchUrl(l.href);
+                  type="button"
+                  onClick={async () => {
+                    const out = await launchUrl(l.href);
+                    if (!out.ok) push(t(out.reason || "search.launchUrl.failed") + " — " + t("search.launchUrl.retry"));
                   }}
                   aria-label={t("lab.openInNewTab") + ": " + (l.text || l.href)}
                   className="ml-auto shrink-0 text-xs text-secondary hover:text-primary inline-flex items-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded px-1"
                 >
                   <ExternalLink className="size-3" aria-hidden />
                   {t("lab.openInNewTab")}
-                </a>
+                </button>
               </li>
             ))}
           </ul>
