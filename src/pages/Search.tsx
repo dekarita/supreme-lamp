@@ -142,6 +142,15 @@ export default function Search() {
 
       <AddSiteQuick open={addSiteOpen} onClose={() => setAddSiteOpen(false)} />
 
+      {/* [F83 §2.1] Stored sites stay visible on the LANDING view too. Before
+          this, <CustomSitesRow/> rendered only inside the results section, so
+          an operator who had added a site saw nothing - not even the F81
+          delete controls - until a query was submitted. The row hides itself
+          when no site is stored (no placeholder), so the landing surface stays
+          bar-only for everyone else. Empty query keeps the "Open <site> in
+          Lab" CTA: no query is invented for a stored site. */}
+      {landing && <CustomSitesRow query="" />}
+
       {landing ? (
         <SearchHero />
       ) : (
