@@ -36,7 +36,10 @@ describe("i18n F56 parity (byte-verified)", () => {
     // [F84 §2.5] 504 (F81) + 3 search.launchUrl keys (retry, openInRdp,
     // rateLimited). The new addSite.* / download.* keys live OUTSIDE this
     // search.* namespace and are asserted by the F84 smoke tests.
-    expect(enNew.length).toBe(507);
+    // [F85 §2/§3] +3 inside search.*: canonicalHost (the visible probe-answered
+    // host on a Your-sites card) + diag.title + diag.noServer (the ?diag=1
+    // banner). 507 -> 510.
+    expect(enNew.length).toBe(510);
   });
 
   it("every si value is non-empty, byte-stable Sinhala or a technical token", () => {

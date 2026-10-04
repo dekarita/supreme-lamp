@@ -818,6 +818,11 @@
     },
     "addSite": "Add site",
     "yourSites": "Your sites",
+    "canonicalHost": "served as {{hostname}}",
+    "diag": {
+      "title": "F84 features active:",
+      "noServer": "server has no /api/version (older than F84)"
+    },
     "deepInspect": "Deep-inspect \u201c{{query}}\u201d on {{hostname}}",
     "openInLabSite": "Open {{hostname}} in Lab",
     "labMode": {
