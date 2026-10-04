@@ -16,6 +16,7 @@ import Keys from "@/pages/Keys";
 import FileExplorer from "@/pages/FileExplorer";
 import Mirror from "@/pages/Mirror";
 import SearchPage from "@/pages/Search";
+import LabPage from "@/pages/search/Lab";
 import Telemetry from "@/pages/Telemetry";
 import Settings from "@/pages/Settings";
 import { useSearchLaneEnabled } from "@/lib/search/lane";
@@ -27,6 +28,12 @@ import { useSearchLaneEnabled } from "@/lib/search/lane";
 function Search() {
   const enabled = useSearchLaneEnabled();
   return enabled ? <SearchPage /> : <Navigate to="/" replace />;
+}
+
+// [F72 §3.1] Lab Mode sub-route guard: same lane check as /search.
+function SearchLab() {
+  const enabled = useSearchLaneEnabled();
+  return enabled ? <LabPage /> : <Navigate to="/" replace />;
 }
 
 export default function App() {
@@ -50,6 +57,8 @@ export default function App() {
           <Route path="/files" element={<FileExplorer />} />
           <Route path="/mirror" element={<Mirror />} />
           <Route path="/search" element={<Search />} />
+          {/* [F72 §3.1] Lab Mode sub-route (Q3: dedicated sub-route, not drawer) */}
+          <Route path="/search/lab/:targetId" element={<SearchLab />} />
           <Route path="/telemetry" element={<Telemetry />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Overview />} />

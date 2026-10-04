@@ -78,8 +78,14 @@ export const EXT_TO_RENDERER: Record<string, PreviewRenderer> = {
   cs: "code",
 };
 
+/** [F72 §1.1] Detect compound extensions (.tar.gz, .tar.xz, .tar.bz2) before
+ *  falling back to the single-dot regex. Returns the compound form (e.g.
+ *  "tar.gz") or the simple extension. */
 export function extensionOf(name: string): string {
-  const m = /\.([A-Za-z0-9]+)$/.exec(String(name || ""));
+  const s = String(name || "").toLowerCase();
+  const compound = /\.tar\.(gz|xz|bz2|zst)$/.exec(s);
+  if (compound) return "tar." + compound[1];
+  const m = /\.([A-Za-z0-9]+)$/.exec(s);
   return m ? m[1].toLowerCase() : "";
 }
 

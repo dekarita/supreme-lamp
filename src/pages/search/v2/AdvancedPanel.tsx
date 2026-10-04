@@ -28,6 +28,22 @@ const CATEGORIES: Category[] = ["books", "audio", "scholarly", "education", "med
 const LICENCES: LicenceTag[] = ["public-domain", "open-access", "creative-commons", "purchase", "own-storage"];
 const SORTS: SortKey[] = ["relevance", "size", "date"];
 
+// [F72 §2.2] File-type filter chip definitions (Q5 operator decision)
+const FILE_EXT_CHIPS: Array<{ ext: string; id: string }> = [
+  { ext: "pdf", id: "pdf" },
+  { ext: "epub", id: "epub" },
+  { ext: "mp3", id: "mp3" },
+  { ext: "mp4", id: "mp4" },
+  { ext: "zip", id: "zip" },
+  { ext: "tar.gz", id: "tarGz" },
+  { ext: "source-code", id: "sourceCode" },
+  { ext: "exe", id: "exe" },
+  { ext: "deb", id: "deb" },
+  { ext: "rpm", id: "rpm" },
+  { ext: "dmg", id: "dmg" },
+  { ext: "msi", id: "msi" },
+];
+
 function formatGb(bytes: number): string {
   if (bytes <= 0) return "0";
   const gb = bytes / (1024 * 1024 * 1024);
@@ -42,7 +58,7 @@ export function AdvancedPanel({ open }: { open: boolean }) {
   const sort = useSearchStore((s) => s.sort);
   const scope = useSearchStore((s) => s.scope);
   const adapterIds = useSearchStore((s) => s.adapterIds);
-  const filterCount = useSearchStore((s) => s.categories.length + s.licenceTags.length + s.adapterIds.length);
+  const filterCount = useSearchStore((s) => s.categories.length + s.licenceTags.length + s.adapterIds.length + s.fileExtensions.length + (s.yearFrom != null || s.yearTo != null ? 1 : 0));
   const toggleCategory = useSearchStore((s) => s.toggleCategory);
   const toggleLicence = useSearchStore((s) => s.toggleLicence);
   const toggleAdapter = useSearchStore((s) => s.toggleAdapter);
@@ -50,6 +66,14 @@ export function AdvancedPanel({ open }: { open: boolean }) {
   const setMaxSizeBytes = useSearchStore((s) => s.setMaxSizeBytes);
   const setSort = useSearchStore((s) => s.setSort);
   const setScope = useSearchStore((s) => s.setScope);
+  // [F72 §2.2] Extended filter state + actions
+  const fileExtensions = useSearchStore((s) => s.fileExtensions);
+  const yearFrom = useSearchStore((s) => s.yearFrom);
+  const yearTo = useSearchStore((s) => s.yearTo);
+  const groupBySource = useSearchStore((s) => s.groupBySource);
+  const toggleFileExtension = useSearchStore((s) => s.toggleFileExtension);
+  const setYearRange = useSearchStore((s) => s.setYearRange);
+  const toggleGroupBySource = useSearchStore((s) => s.toggleGroupBySource);
 
   return (
     <div
@@ -125,6 +149,58 @@ export function AdvancedPanel({ open }: { open: boolean }) {
               {t("search.filters.licence." + camel(l))}
             </button>
           ))}
+        </div>
+
+        {/* [F72 §2.2] File-type filter chips */}
+        <div id="f56.search.v2.fileExtGroup" role="group" aria-label={t("search.a11y.fileExtGroup")} className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-tertiary mr-1">{t("search.filters.fileExt.label")}</span>
+          {FILE_EXT_CHIPS.map((c) => (
+            <button
+              key={c.ext}
+              id={"f56.search.v2.fileExtChip." + c.id}
+              type="button"
+              aria-pressed={fileExtensions.includes(c.ext)}
+              onClick={() => toggleFileExtension(c.ext)}
+              className={"h-11 px-3 rounded-full border text-xs font-mono focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " + (fileExtensions.includes(c.ext) ? "bg-accent/10 border-accent text-accent" : "border-default text-secondary hover:bg-raised")}
+            >
+              {t("search.filters.fileExt." + c.id)}
+            </button>
+          ))}
+        </div>
+
+        {/* [F72 §2.2] Year range + group-by-source toggle */}
+        <div className="flex flex-wrap items-center gap-3">
+          <label htmlFor="f56.search.v2.yearFrom" className="text-xs text-tertiary">{t("search.filters.yearFrom")}</label>
+          <input
+            id="f56.search.v2.yearFrom"
+            type="number"
+            min={1900}
+            max={2099}
+            value={yearFrom ?? ""}
+            onChange={(e) => setYearRange(e.target.value ? Number(e.target.value) : null, yearTo)}
+            placeholder="1900"
+            className="h-11 w-20 px-2 rounded-md border border-default bg-base text-xs text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          />
+          <label htmlFor="f56.search.v2.yearTo" className="text-xs text-tertiary">{t("search.filters.yearTo")}</label>
+          <input
+            id="f56.search.v2.yearTo"
+            type="number"
+            min={1900}
+            max={2099}
+            value={yearTo ?? ""}
+            onChange={(e) => setYearRange(yearFrom, e.target.value ? Number(e.target.value) : null)}
+            placeholder="2099"
+            className="h-11 w-20 px-2 rounded-md border border-default bg-base text-xs text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          />
+          <button
+            id="f56.search.v2.groupBySourceToggle"
+            type="button"
+            aria-pressed={groupBySource}
+            onClick={toggleGroupBySource}
+            className={"h-11 px-3 rounded-full border text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " + (groupBySource ? "bg-accent/10 border-accent text-accent" : "border-default text-secondary hover:bg-raised")}
+          >
+            {t("search.filters.groupBySource")}
+          </button>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">

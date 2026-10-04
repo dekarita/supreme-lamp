@@ -34,12 +34,13 @@ export const MAX_SIZE_BYTES = 100 * GB;
 
 // [F70 §2.2] Default adapter pre-selected when the user types a query and
 // submits without opening Advanced (F68 Extension Rank 1; F69 shipped
-// internet-archive, F70 flips to the first REAL lane): google-books-public is
-// the public Volumes API lane the server actually fans out to (F70 §2.1),
-// so a raw query returns real results with .epub/.pdf file-ext badges instead
-// of a queued stub. The user can still toggle adapter chips in AdvancedPanel;
-// an empty selection fans out to every adapter.
+// internet-archive, F70 flips to the first REAL lane). [F72 §2.1] Now points
+// to the first member of the 5-source TLS-Radar default fan-out pack.
 export const DEFAULT_ADAPTER_ID = "google-books-public";
+
+// [F72 §2.1] Fan-out helper import
+import { resolveFanOutAdapters } from "@/lib/search/fanOut";
+import { scoreResult } from "@/lib/search/relevance";
 
 export function classifyQuery(raw: string): InputKind {
   const q = raw.trim();
@@ -110,6 +111,12 @@ export interface SearchState {
   previewResultId: string;
   // Fetch state - F56-d stub, always defaulting mirror opt-in to false
   fetches: Record<string, FetchRecord>;
+  // [F72 §2.2] Extended filter state: file-type chips, year range, language, group-by
+  fileExtensions: string[];
+  yearFrom: number | null;
+  yearTo: number | null;
+  language: string;
+  groupBySource: boolean;
   // Actions
   setQuery: (raw: string) => void;
   applyPrefill: (raw: string) => void;
@@ -139,6 +146,11 @@ export interface SearchState {
    *  resultId). Used by the DEV fixture stream; F56-d's live partials take
    *  the same path through pollOnce, which always wins (see Search.tsx). */
   ingestResults: (rows: SearchResult[]) => void;
+  // [F72 §2.2] Extended filter actions
+  toggleFileExtension: (ext: string) => void;
+  setYearRange: (from: number | null, to: number | null) => void;
+  setLanguage: (lang: string) => void;
+  toggleGroupBySource: () => void;
 }
 
 export const useSearchStore = create<SearchState>((set, get) => ({
@@ -170,6 +182,12 @@ export const useSearchStore = create<SearchState>((set, get) => ({
   activeRowIndex: -1,
   previewResultId: "",
   fetches: {},
+  // [F72 §2.2] Extended filter defaults
+  fileExtensions: [],
+  yearFrom: null,
+  yearTo: null,
+  language: "",
+  groupBySource: false,
 
   setQuery: (raw) =>
     set({ rawQuery: raw, normalizedQuery: raw.trim(), inputKind: classifyQuery(raw) }),
@@ -226,13 +244,16 @@ export const useSearchStore = create<SearchState>((set, get) => ({
       cancelling: false,
       lastErrorCode: "",
     });
+    // [F72 §2.1] Resolve adapter IDs through the fan-out helper: empty
+    // selection → default TLS-Radar 5-source pack; capped at FAN_OUT_CAP (8).
+    const resolvedAdapters = resolveFanOutAdapters(st.adapterIds);
     const res = await createSearch({
       requestId,
       query,
       scope: st.scope,
       categories: st.categories.length ? st.categories : undefined,
       licenceTags: st.licenceTags.length ? st.licenceTags : undefined,
-      adapterIds: st.adapterIds.length ? st.adapterIds : undefined,
+      adapterIds: resolvedAdapters,
       maxSizeBytes: st.maxSizeBytes,
       sort: st.sort,
       limit: 50,
@@ -339,13 +360,30 @@ export const useSearchStore = create<SearchState>((set, get) => ({
     }
     set({ results, resultOrder });
   },
+
+  // [F72 §2.2] Extended filter actions
+  toggleFileExtension: (ext) => {
+    const cur = get().fileExtensions;
+    set({ fileExtensions: cur.includes(ext) ? cur.filter((x) => x !== ext) : [...cur, ext] });
+  },
+  setYearRange: (from, to) => set({ yearFrom: from, yearTo: to }),
+  setLanguage: (lang) => set({ language: lang }),
+  toggleGroupBySource: () => set({ groupBySource: !get().groupBySource }),
 }));
 
-export type ResultFilters = Pick<SearchState, "results" | "resultOrder" | "categories" | "licenceTags" | "maxSizeBytes" | "sort">;
+export type ResultFilters = Pick<SearchState, "results" | "resultOrder" | "categories" | "licenceTags" | "maxSizeBytes" | "sort"> & {
+  fileExtensions?: string[];
+  yearFrom?: number | null;
+  yearTo?: number | null;
+  language?: string;
+  query?: string;
+};
 
 /** Local filters + stable sort (Plan §B/§D). Applied to received results first;
  *  equal values retain adapter order and result identity order. maxSizeBytes 0
- *  means no cap (decisions.md A1); unknown sizes are never filtered out. */
+ *  means no cap (decisions.md A1); unknown sizes are never filtered out.
+ *  [F72 §2.2] Extended with file-extension chips, year range, language filter,
+ *  and relevance scoring (via scoreResult). */
 export function selectVisibleResults(s: ResultFilters): SearchResult[] {
   const out: SearchResult[] = [];
   for (const id of s.resultOrder) {
@@ -354,12 +392,35 @@ export function selectVisibleResults(s: ResultFilters): SearchResult[] {
     if (s.categories.length && !s.categories.includes(r.category)) continue;
     if (s.licenceTags.length && !s.licenceTags.includes(r.licenceTag)) continue;
     if (s.maxSizeBytes > 0 && r.sizeBytes != null && r.sizeBytes > s.maxSizeBytes) continue;
+    // [F72 §2.2] File extension filter
+    if (s.fileExtensions && s.fileExtensions.length) {
+      const mime = String(r.mimeType || "").toLowerCase();
+      const hasExt = s.fileExtensions.some((ext) => mime.includes(ext) || mime.includes(ext.replace(".", "")));
+      if (!hasExt) continue;
+    }
+    // [F72 §2.2] Year range filter
+    if ((s.yearFrom != null || s.yearTo != null) && r.date) {
+      const year = parseInt(String(r.date).slice(0, 4), 10);
+      if (!isNaN(year)) {
+        if (s.yearFrom != null && year < s.yearFrom) continue;
+        if (s.yearTo != null && year > s.yearTo) continue;
+      }
+    }
     out.push(r);
   }
   if (s.sort === "size") {
     out.sort((a, b) => (b.sizeBytes ?? -1) - (a.sizeBytes ?? -1));
   } else if (s.sort === "date") {
     out.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")));
+  } else if (s.sort === "relevance" && s.query) {
+    // [F72 §2.1] Deterministic relevance sort: score desc, then original order
+    const orderMap = new Map(s.resultOrder.map((id, i) => [id, i]));
+    out.sort((a, b) => {
+      const sa = scoreResult(s.query!, a);
+      const sb = scoreResult(s.query!, b);
+      if (sb !== sa) return sb - sa;
+      return (orderMap.get(a.resultId) ?? 0) - (orderMap.get(b.resultId) ?? 0);
+    });
   }
   return out;
 }

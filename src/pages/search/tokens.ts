@@ -54,7 +54,9 @@ export function formatActualBytes(n: number): string {
 
 /** [F69 §2.2] Common MIME -> display extension (F68 Extension Rank 2). Only the
  *  families the search roster surfaces today; unknown MIMEs fall through to the
- *  URL/title basename so nothing is invented. */
+ *  URL/title basename so nothing is invented.
+ *  [F72 §1.1] Extended with 20+ additional MIME types for archive, executable,
+ *  subtitle, source-code, and compound tar.gz families. */
 const MIME_TO_EXT: Record<string, string> = {
   "application/pdf": "pdf",
   "application/epub+zip": "epub",
@@ -83,6 +85,37 @@ const MIME_TO_EXT: Record<string, string> = {
   "image/gif": "gif",
   "image/webp": "webp",
   "image/svg+xml": "svg",
+  // [F72 §1.1] Archive formats
+  "application/vnd.rar": "rar",
+  "application/x-rar-compressed": "rar",
+  "application/x-7z-compressed": "7z",
+  "application/gzip": "gz",
+  "application/x-tar": "tar",
+  "application/x-xz": "xz",
+  "application/x-bzip2": "bz2",
+  // [F72 §1.1] Package / installer formats
+  "application/vnd.debian.binary-package": "deb",
+  "application/x-rpm": "rpm",
+  "application/vnd.android.package-archive": "apk",
+  "application/x-apple-diskimage": "dmg",
+  "application/x-raw-disk-image": "img",
+  "application/x-msdownload": "exe",
+  "application/x-msi": "msi",
+  // [F72 §1.1] Subtitle formats
+  "application/x-subrip": "srt",
+  "text/vtt": "vtt",
+  // [F72 §1.1] WebAssembly
+  "application/wasm": "wasm",
+  // [F72 §1.1] Source code MIME types
+  "text/x-python": "py",
+  "application/javascript": "js",
+  "application/typescript": "ts",
+  "text/x-go": "go",
+  "text/x-rust": "rs",
+  "text/x-java-source": "java",
+  "text/x-csrc": "c",
+  "text/x-c++src": "cpp",
+  "text/x-chdr": "h",
 };
 
 /** Lowercase file extension for a result card badge (without the dot), or

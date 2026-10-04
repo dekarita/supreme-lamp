@@ -8,7 +8,7 @@
 // ever present on the landing surface. Keyboard hint = "Alt+F opens Search.
 // Enter submits." and nothing else.
 import { useTranslation } from "react-i18next";
-import { Mic, MoreHorizontal, Paperclip, Search as SearchIcon, X } from "lucide-react";
+import { Mic, MoreHorizontal, Paperclip, Search as SearchIcon, X, ExternalLink } from "lucide-react";
 import { useSearchStore } from "@/stores/searchStore";
 import { hostOf, useSearchUiStore } from "@/stores/searchUiStore";
 import { useToastStore } from "@/stores/toastStore";
@@ -216,6 +216,25 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
         <p id="f56.search.keyboardHelp" data-testid="keyboard-help" className="text-xs text-tertiary">
           {t("search.keyboard.help")}
         </p>
+
+        {/* [F72 §2.3] "Open on google.com" navigation button (Q1 operator decision).
+            Always available; zero API cost; opens in new tab. */}
+        <button
+          id="f56.search.v2.googleNav"
+          data-testid="google-nav-button"
+          type="button"
+          title={t("search.googleSearch.hint")}
+          aria-label={t("search.googleSearch.openOnGoogle")}
+          disabled={!rawQuery.trim()}
+          onClick={() => {
+            const q = rawQuery.trim();
+            if (q) window.open("https://www.google.com/search?q=" + encodeURIComponent(q), "_blank", "noopener,noreferrer");
+          }}
+          className="h-11 px-4 rounded-full border border-default text-xs text-secondary hover:bg-raised inline-flex items-center gap-1.5 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          <ExternalLink className="size-3.5" aria-hidden />
+          {t("search.googleSearch.openOnGoogle")}
+        </button>
       </section>
     </div>
   );
