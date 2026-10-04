@@ -362,12 +362,12 @@ export function ResultsGrid() {
   return (
     <div
       id="f56.search.results"
-      role="grid"
-      aria-label={t("search.a11y.resultsGrid")}
-      aria-rowcount={rows.length}
-      data-testid="results-grid"
-      tabIndex={-1}
-      onKeyDown={onKeyDown}
+        role="grid"
+        aria-label={t("search.a11y.resultsGrid")}
+        aria-rowcount={rows.length}
+        data-testid="results-grid"
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
     >
       <FixedSizeList
         height={Math.max(ROW_HEIGHT, Math.min(rows.length, 8) * ROW_HEIGHT)}

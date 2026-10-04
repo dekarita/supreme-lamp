@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "test:smoke": "vitest run",
     "test:e2e": "playwright test",
+    "e2e": "playwright test --config=playwright.e2e-ui.config.ts tests/e2e/",
     "check:regression-ids": "node scripts/check-regression-ids.mjs",
     "check:no-neon-green": "node scripts/check-no-neon-green.mjs",
     "check:bottom-bar": "node scripts/check-bottom-bar-time.mjs",

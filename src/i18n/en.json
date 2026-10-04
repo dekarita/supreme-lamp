@@ -770,6 +770,13 @@
       "encrypting": "Encrypting with F46",
       "postFetch": "Post-fetch mirror check",
       "completed": "Fetch completed"
+    },
+    "addSite": "Add site",
+    "yourSites": "Your sites",
+    "deepInspect": "Deep-inspect \u201c{{query}}\u201d on {{hostname}}",
+    "openInLabSite": "Open {{hostname}} in Lab",
+    "labMode": {
+      "badge": "Lab"
     }
   },
   "files": {
@@ -961,4 +968,29 @@
       }
     }
   }
+,
+  "lab": {
+    "title": "Lab inspector",
+    "query": "Query",
+    "matchCount": "{{matches}} of {{total}} links match \u201c{{query}}\u201d",
+    "matchesFirst": "Matches first",
+    "allLinks": "All {{total}} links",
+    "openInNewTab": "Open in new tab",
+    "refetch": "Refetch",
+    "rateLimited": "Rate limited, retry in {{seconds}}s",
+    "timeout": "The site did not answer within 10s.",
+    "sizeLimit": "The homepage is larger than the 2 MB Lab limit.",
+    "hostnameMismatch": "The response came from a different hostname than the stored site.",
+    "notFound": "No stored site matches this Lab address.",
+    "loading": "Fetching the stored homepage\u2026"
+  },
+  "newSiteName": "Name",
+  "newSiteUrl": "Base URL (https)",
+  "newSiteSave": "Save",
+  "newSiteCancel": "Cancel",
+  "newSiteSuccess": "{{hostname}} added to Your sites.",
+  "newSiteHttpsRequired": "An https:// URL is required.",
+  "newSiteNameRequired": "A name is required.",
+  "newSiteNameTooLong": "The name must be 50 characters or fewer.",
+  "newSiteAuthNotAllowed": "Credentials in a URL are refused. Remove user:pass and use the https origin."
 }

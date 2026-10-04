@@ -1,0 +1,71 @@
+# [F78 §E.4] E2E-UI gate: the stored-website Lab Mode lane (quick-add, Your sites,
+# Lab inspector) driven in a REAL chromium through the vite dev server and the
+# mock dashboard backend. This is a UI gate only - it never touches the runner,
+# the tailnet or main.yml. The F41 smoke lane keeps its own config and stays in
+# launch-gates.yml; this workflow uses playwright.e2e-ui.config.ts via
+# `pnpm run e2e`.
+name: e2e-ui
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  e2e-ui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install dependencies (pnpm, frozen lockfile)
+        run: |
+          set -euo pipefail
+          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+          corepack enable
+          pnpm install --frozen-lockfile
+      - name: Install chromium (playwright)
+        run: |
+          set -euo pipefail
+          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+          corepack enable
+          pnpm exec playwright install --with-deps chromium
+      - name: Build the dashboard bundle (tsc + vite, single file)
+        run: |
+          set -euo pipefail
+          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+          export VITE_BUILD_SHA="${GITHUB_SHA:-dev}"
+          corepack enable
+          pnpm run build
+      - name: Run the F78 E2E specs (vite dev + mock backend on :7331)
+        run: |
+          set -euo pipefail
+          export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+          corepack enable
+          if ! out=$(pnpm run e2e 2>&1); then
+            echo "$out" | tail -80
+            # The sandbox authoring this cannot read runner logs, so the failing
+            # test names ride out as ONE ::error:: annotation.
+            detail=$(printf '%s' "$out" | awk '/^  [0-9]+\) /{f=1} f{print}' | head -c 1700)
+            summary=$(printf '%s' "$out" | tail -c 400)
+            echo "::error::F78-E2E-FAIL::$(printf '%s' "${detail}${summary}" | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g' | iconv -f UTF-8 -t UTF-8 -c)"
+            exit 1
+          fi
+      - name: Upload screenshots (one per assertion)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: screenshots/
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Upload the playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          if-no-files-found: ignore
+          retention-days: 14

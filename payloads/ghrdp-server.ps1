@@ -3315,6 +3315,349 @@ function Invoke-ClientRequest {
                 return
             }
         }
+        # [F78 §4.1] STORED-WEBSITE LAB MODE - the operator's own sites, fetched
+        # server-side so the browser never talks to a third party directly.
+        #   GET  /api/f58/sources  the Lab Mode source list (F58 registry view)
+        #   POST /api/f58/sources  quick-add ONE site (name + https base URL)
+        #   POST /api/lab/inspect  fetch ONE stored homepage and return its links
+        # Posture, fail-closed throughout:
+        #   * dash token required (constant-time compare, never a query credential);
+        #   * the homepage of the stored site is the ONLY thing fetched - no
+        #     search fan-out, no crawling, no cross-domain follow: a href whose
+        #     host differs from the stored hostname is dropped before it is
+        #     returned, and redirects are followed only on the same exact host;
+        #   * Invoke-F78SecureFetch: HTTPS only, 10s timeout, hard 2MB response
+        #     cap (pre-checked against Content-Length AND enforced while reading),
+        #     no cookies (CookieContainer is null), no Authorization header, no
+        #     caller-supplied headers - the UA is a fixed literal;
+        #   * 10 fetches/minute per sourceId; beyond that 429 + retryAfterSeconds;
+        #   * a source only exists here if the SAVE path of this endpoint wrote
+        #     it, and that path also writes the exact-host fence
+        #     ($script:F78AllowHosts) the inspect route re-checks - so a source
+        #     the operator never added can never be inspected, and neither can a
+        #     source whose baseUrl host was later edited out from under it.
+        # State is process-local (like the F58 store module, this block does not
+        # touch the encrypted ~/.ghrdp/sources tree); nothing here logs a
+        # credential, a query string or a response body.
+        if ($path -eq '/api/f58/sources' -or $path -eq '/api/lab/inspect') {
+            if ($parts.method -eq 'OPTIONS') {
+                Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@()) -ExtraHeaders "Access-Control-Allow-Headers: Content-Type, X-Dash-Token`r`nAccess-Control-Max-Age: 600"
+                return
+            }
+            if (-not $script:F78Sources) { $script:F78Sources = @{} }
+            if (-not $script:F78AllowHosts) { $script:F78AllowHosts = @{} }
+            if (-not $script:F78LabInspectRateLimiter) { $script:F78LabInspectRateLimiter = @{} }
+            function New-F78Error {
+                param([string]$Code, [string]$MessageKey, [int]$RetryAfter)
+                $f78Err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = $Code; messageKey = $MessageKey; retryable = ($RetryAfter -gt 0); details = @{} }
+                if ($RetryAfter -gt 0) { $f78Err.retryAfterSeconds = $RetryAfter }
+                return $f78Err
+            }
+            function ConvertTo-F78PlainText {
+                param([string]$Html)
+                if (-not $Html) { return '' }
+                $f78T = [regex]::Replace($Html, '(?is)<[^>]*>', ' ')
+                try { $f78T = [System.Net.WebUtility]::HtmlDecode($f78T) } catch { }
+                $f78T = [regex]::Replace($f78T, '\s+', ' ').Trim()
+                if ($f78T.Length -gt 300) { $f78T = $f78T.Substring(0, 300) }
+                return $f78T
+            }
+            # The hardened fetch: https only, exact host, 10s, 2MB, no cookies /
+            # no auth headers, same-host redirects only (max 3 hops).
+            function Invoke-F78SecureFetch {
+                param([string]$Url, [string]$ExpectedHost, [int]$MaxBytes, [int]$TimeoutSec)
+                try { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12 } catch { }
+                $f78Cur = $Url
+                for ($f78Hop = 0; $f78Hop -lt 3; $f78Hop++) {
+                    $f78Uri = $null
+                    try { $f78Uri = [System.Uri]$f78Cur } catch { $f78Uri = $null }
+                    if (-not $f78Uri -or $f78Uri.Scheme -ne 'https' -or $f78Uri.UserInfo) { return @{ ok = $false; code = 'VALIDATION_ERROR'; httpStatus = 400 } }
+                    if ($f78Uri.Host.ToLowerInvariant() -ne $ExpectedHost) { return @{ ok = $false; code = 'HOSTNAME_MISMATCH'; httpStatus = 403 } }
+                    $f78Req = $null
+                    $f78Resp = $null
+                    try {
+                        $f78Req = [System.Net.HttpWebRequest]::Create($f78Uri)
+                        $f78Req.Method = 'GET'
+                        $f78Req.Timeout = $TimeoutSec * 1000
+                        $f78Req.ReadWriteTimeout = $TimeoutSec * 1000
+                        $f78Req.AllowAutoRedirect = $false
+                        $f78Req.CookieContainer = $null
+                        $f78Req.UserAgent = 'GHRDP-Lab/1.0'
+                        $f78Resp = $f78Req.GetResponse()
+                    } catch {
+                        $f78Msg = ''
+                        try { if ($Error[0] -and $Error[0].Exception) { $f78Msg = [string]$Error[0].Exception.Message } } catch { }
+                        if ($f78Msg -match '(?i)timeout|timed out') { return @{ ok = $false; code = 'TIMEOUT'; httpStatus = 504 } }
+                        return @{ ok = $false; code = 'TRANSPORT_UNAVAILABLE'; httpStatus = 502 }
+                    }
+                    $f78Code = 0
+                    $f78Len = -1
+                    $f78Loc = ''
+                    try { $f78Code = [int]$f78Resp.StatusCode } catch { $f78Code = 0 }
+                    try { $f78Len = [int64]$f78Resp.ContentLength } catch { $f78Len = -1 }
+                    try { $f78Loc = [string]$f78Resp.Headers['Location'] } catch { $f78Loc = '' }
+                    if ($f78Code -ge 300 -and $f78Code -lt 400) {
+                        try { $f78Resp.Close() } catch { }
+                        if (-not $f78Loc) { return @{ ok = $false; code = 'REDIRECT_REFUSED'; httpStatus = 502 } }
+                        try { $f78Cur = ([System.Uri]::new($f78Uri, $f78Loc)).AbsoluteUri } catch { return @{ ok = $false; code = 'REDIRECT_REFUSED'; httpStatus = 502 } }
+                        continue
+                    }
+                    if ($f78Code -ne 200) {
+                        try { $f78Resp.Close() } catch { }
+                        return @{ ok = $false; code = 'HTTP_STATUS'; httpStatus = 502 }
+                    }
+                    if ($f78Len -gt $MaxBytes) {
+                        try { $f78Resp.Close() } catch { }
+                        return @{ ok = $false; code = 'SIZE_LIMIT'; httpStatus = 413 }
+                    }
+                    $f78Stream = $null
+                    $f78Ms = $null
+                    try {
+                        $f78Stream = $f78Resp.GetResponseStream()
+                        $f78Ms = New-Object System.IO.MemoryStream
+                        $f78Buf = New-Object byte[] 16384
+                        while ($true) {
+                            $f78Read = $f78Stream.Read($f78Buf, 0, $f78Buf.Length)
+                            if ($f78Read -le 0) { break }
+                            if (($f78Ms.Length + $f78Read) -gt $MaxBytes) { return @{ ok = $false; code = 'SIZE_LIMIT'; httpStatus = 413 } }
+                            $f78Ms.Write($f78Buf, 0, $f78Read)
+                        }
+                        $f78Bytes = $f78Ms.ToArray()
+                        return @{ ok = $true; code = 'OK'; httpStatus = 200; text = [System.Text.Encoding]::UTF8.GetString($f78Bytes); bytes = $f78Bytes.Length; host = $f78Uri.Host.ToLowerInvariant() }
+                    } catch {
+                        return @{ ok = $false; code = 'TRANSPORT_UNAVAILABLE'; httpStatus = 502 }
+                    } finally {
+                        try { if ($f78Ms) { $f78Ms.Dispose() } } catch { }
+                        try { if ($f78Resp) { $f78Resp.Close() } } catch { }
+                    }
+                }
+                return @{ ok = $false; code = 'REDIRECT_REFUSED'; httpStatus = 502 }
+            }
+            # constant-time dash-token gate (same shape as /api/fetch)
+            $f78Presented = ''
+            try { $f78Presented = [string]$parts.headers['x-dash-token'] } catch { }
+            if (-not $f78Presented) {
+                $f78AuthH = ''
+                try { $f78AuthH = [string]$parts.headers['authorization'] } catch { }
+                if ($f78AuthH -match '^(?i)Bearer\s+(.+)$') { $f78Presented = $Matches[1].Trim() }
+            }
+            $f78TokenOk = $false
+            if ($f78Presented -and $script:Token) {
+                $f78Recv = [System.Text.Encoding]::UTF8.GetBytes($f78Presented)
+                $f78Exp = [System.Text.Encoding]::UTF8.GetBytes([string]$script:Token)
+                if (($f78Recv.Length -eq $f78Exp.Length) -and (Test-TicketBearer $f78Recv $f78Exp)) { $f78TokenOk = $true }
+            }
+            if (-not $f78TokenOk) {
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
+                return
+            }
+            $f78QCred = $false
+            try {
+                foreach ($f78Qk in @('key','token','dash-token','dash_token','dashtoken','access-token','access_token','password')) {
+                    if ($parts.query.ContainsKey($f78Qk)) { $f78QCred = $true; break }
+                }
+            } catch { }
+            if ($f78QCred) {
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
+                return
+            }
+
+            if ($path -eq '/api/f58/sources' -and $parts.method -eq 'GET') {
+                $f78Rows = @()
+                foreach ($f78Key in ($script:F78Sources.Keys | Sort-Object)) {
+                    $f78Row0 = $script:F78Sources[$f78Key]
+                    if ($f78Row0.labMode -ne $true) { continue }
+                    $f78Rows += $f78Row0
+                }
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ sources = $f78Rows; count = $f78Rows.Count }))
+                Write-ClientAudit ('f78 sources listed count=' + [string]$f78Rows.Count)
+                return
+            }
+
+            if ($path -eq '/api/f58/sources' -and $parts.method -eq 'POST') {
+                $f78BodyText = ''
+                try { $f78BodyText = [System.Text.Encoding]::UTF8.GetString($parts.body) } catch { $f78BodyText = '' }
+                $f78Json = $null
+                try { $f78Json = $f78BodyText | ConvertFrom-Json -ErrorAction Stop } catch { $f78Json = $null }
+                if (-not $f78Json) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
+                    return
+                }
+                $f78Name = ''
+                $f78Base = ''
+                try { $f78Name = [string]$f78Json.name } catch { $f78Name = '' }
+                try { $f78Base = [string]$f78Json.baseUrl } catch { $f78Base = '' }
+                $f78Name = $f78Name.Trim()
+                $f78Base = $f78Base.Trim()
+                if (-not $f78Name -or $f78Name.Length -gt 50) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'newSiteNameRequired' -RetryAfter 0))
+                    return
+                }
+                if (-not $f78Base.StartsWith('https://')) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'newSiteHttpsRequired' -RetryAfter 0))
+                    return
+                }
+                $f78Uri = $null
+                try { $f78Uri = [System.Uri]$f78Base } catch { $f78Uri = $null }
+                if (-not $f78Uri -or $f78Uri.Scheme -ne 'https' -or -not $f78Uri.Host) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'newSiteHttpsRequired' -RetryAfter 0))
+                    return
+                }
+                if ($f78Uri.UserInfo) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'newSiteAuthNotAllowed' -RetryAfter 0))
+                    return
+                }
+                $f78Host = $f78Uri.Host.ToLowerInvariant()
+                $f78Origin = ('https://' + $f78Host + $f78Uri.AbsolutePath).TrimEnd('/')
+                $f78IdBase = ($f78Host -replace '[^a-z0-9]+', '-').Trim('-')
+                if (-not $f78IdBase) { $f78IdBase = 'site' }
+                $f78Id = $f78IdBase
+                $f78N = 2
+                while ($script:F78Sources.ContainsKey($f78Id)) { $f78Id = $f78IdBase + '-' + [string]$f78N; $f78N++ }
+                $f78Row = [ordered]@{
+                    id = $f78Id
+                    name = $f78Name
+                    nameKey = 'search.sites.' + $f78Id
+                    baseUrl = $f78Origin
+                    hostname = $f78Host
+                    labMode = $true
+                    category = 'software'
+                    allowedDomains = @($f78Host)
+                    enableState = 'permanent'
+                    addedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+                    addedVia = 'f78-quick-add'
+                }
+                $script:F78Sources[$f78Id] = $f78Row
+                # The save-time host fence: only this line ever adds a host.
+                $script:F78AllowHosts[$f78Host] = $true
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; source = $f78Row }))
+                Write-ClientAudit ('f78 add site host=' + $f78Host + ' id=' + $f78Id)
+                return
+            }
+
+            if ($path -eq '/api/lab/inspect') {
+                if ($parts.method -ne 'POST') {
+                    Send-ClientResponse -Stream $stream -Code 405 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
+                    return
+                }
+                $f78BodyText = ''
+                try { $f78BodyText = [System.Text.Encoding]::UTF8.GetString($parts.body) } catch { $f78BodyText = '' }
+                $f78Json = $null
+                try { $f78Json = $f78BodyText | ConvertFrom-Json -ErrorAction Stop } catch { $f78Json = $null }
+                if (-not $f78Json) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
+                    return
+                }
+                $f78SourceId = ''
+                $f78Query = ''
+                try { $f78SourceId = [string]$f78Json.sourceId } catch { $f78SourceId = '' }
+                try { $f78Query = [string]$f78Json.query } catch { $f78Query = '' }
+                $f78SourceId = $f78SourceId.Trim()
+                $f78Query = $f78Query.Trim()
+                if (-not $f78SourceId) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
+                    return
+                }
+                if (-not $script:F78Sources.ContainsKey($f78SourceId)) {
+                    Send-ClientResponse -Stream $stream -Code 404 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'NOT_FOUND' -MessageKey 'lab.notFound' -RetryAfter 0))
+                    return
+                }
+                $f78Src = $script:F78Sources[$f78SourceId]
+                if ($f78Src.labMode -ne $true) {
+                    Send-ClientResponse -Stream $stream -Code 403 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'FORBIDDEN' -MessageKey 'lab.notFound' -RetryAfter 0))
+                    return
+                }
+                $f78Host = [string]$f78Src.hostname
+                if (-not $f78Host -or -not $script:F78AllowHosts.ContainsKey($f78Host)) {
+                    Send-ClientResponse -Stream $stream -Code 403 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'HOSTNAME_MISMATCH' -MessageKey 'lab.hostnameMismatch' -RetryAfter 0))
+                    return
+                }
+                # 10 fetches/minute per sourceId (the route's whole budget).
+                $f78Now = (Get-Date).ToUniversalTime()
+                $f78Hits = @()
+                if ($script:F78LabInspectRateLimiter.ContainsKey($f78SourceId)) { $f78Hits = @($script:F78LabInspectRateLimiter[$f78SourceId]) }
+                $f78Hits = @($f78Hits | Where-Object { ($f78Now - $_).TotalSeconds -lt 60 })
+                if ($f78Hits.Count -ge 10) {
+                    $f78Retry = [int][Math]::Ceiling(60 - ($f78Now - $f78Hits[0]).TotalSeconds)
+                    if ($f78Retry -lt 1) { $f78Retry = 1 }
+                    Send-ClientResponse -Stream $stream -Code 429 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'RATE_LIMITED' -MessageKey 'lab.rateLimited' -RetryAfter $f78Retry))
+                    Write-ClientAudit ('f78 lab rate-limited id=' + $f78SourceId)
+                    return
+                }
+                $f78Hits += $f78Now
+                $script:F78LabInspectRateLimiter[$f78SourceId] = $f78Hits
+                $f78Fetch = Invoke-F78SecureFetch -Url ([string]$f78Src.baseUrl) -ExpectedHost $f78Host -MaxBytes 2097152 -TimeoutSec 10
+                if (-not $f78Fetch.ok) {
+                    $f78ErrKey = 'lab.timeout'
+                    if ($f78Fetch.code -eq 'SIZE_LIMIT') { $f78ErrKey = 'lab.sizeLimit' }
+                    elseif ($f78Fetch.code -eq 'HOSTNAME_MISMATCH') { $f78ErrKey = 'lab.hostnameMismatch' }
+                    Send-ClientResponse -Stream $stream -Code ([int]$f78Fetch.httpStatus) -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code ([string]$f78Fetch.code) -MessageKey $f78ErrKey -RetryAfter 0))
+                    Write-ClientAudit ('f78 lab fetch failed id=' + $f78SourceId + ' code=' + [string]$f78Fetch.code)
+                    return
+                }
+                $f78Html = [string]$f78Fetch.text
+                $f78Title = ''
+                try {
+                    $f78TitleMatch = [regex]::Match($f78Html, '(?is)<title[^>]*>(.*?)</title>')
+                    if ($f78TitleMatch.Success) { $f78Title = ConvertTo-F78PlainText $f78TitleMatch.Groups[1].Value }
+                } catch { $f78Title = '' }
+                $f78Needle = ''
+                if ($f78Query) {
+                    $f78Needle = $f78Query
+                    try { $f78Needle = [System.Uri]::UnescapeDataString($f78Query) } catch { $f78Needle = $f78Query }
+                    $f78Needle = $f78Needle.ToLowerInvariant()
+                }
+                $f78BaseUri = $null
+                try { $f78BaseUri = [System.Uri]([string]$f78Src.baseUrl) } catch { $f78BaseUri = $null }
+                $f78LinksOut = @()
+                $f78LinkCount = 0
+                $f78MatchCount = 0
+                foreach ($f78Match in [regex]::Matches($f78Html, '(?is)<a\b[^>]*href\s*=\s*["'']([^"'']+)["''][^>]*>(.*?)</a>')) {
+                    if ($f78LinksOut.Count -ge 500) { break }
+                    $f78HrefRaw = [string]$f78Match.Groups[1].Value
+                    $f78Text = ConvertTo-F78PlainText $f78Match.Groups[2].Value
+                    if (-not $f78HrefRaw) { continue }
+                    if ($f78HrefRaw.StartsWith('#')) { continue }
+                    if ($f78HrefRaw -match '^(?i)(mailto:|javascript:|data:|tel:)') { continue }
+                    $f78Abs = ''
+                    try {
+                        if ($f78HrefRaw -match '^(?i)https?://') { $f78Abs = ([System.Uri]$f78HrefRaw).AbsoluteUri }
+                        elseif ($f78BaseUri) { $f78Abs = ([System.Uri]::new($f78BaseUri, $f78HrefRaw)).AbsoluteUri }
+                        else { $f78Abs = '' }
+                    } catch { $f78Abs = '' }
+                    if (-not $f78Abs) { continue }
+                    if (-not $f78Abs.StartsWith('https://')) { continue }
+                    $f78LinkHost = ''
+                    try { $f78LinkHost = ([System.Uri]$f78Abs).Host.ToLowerInvariant() } catch { continue }
+                    # inside the added site only: exact host equality, never a
+                    # suffix match, never a parent-domain slip.
+                    if ($f78LinkHost -ne $f78Host) { continue }
+                    $f78LinkCount++
+                    $f78IsMatch = $false
+                    if ($f78Needle) {
+                        $f78Hay = $f78Text + ' ' + $f78Abs
+                        try { $f78Hay = [System.Uri]::UnescapeDataString($f78Hay) } catch { }
+                        if ($f78Hay.ToLowerInvariant().Contains($f78Needle)) { $f78IsMatch = $true }
+                    }
+                    if ($f78IsMatch) { $f78MatchCount++ }
+                    $f78LinksOut += [ordered]@{ text = $f78Text; href = $f78Abs; matches = $f78IsMatch }
+                }
+                $f78Payload = [ordered]@{
+                    hostname = $f78Fetch.host
+                    title = $f78Title
+                    links = $f78LinksOut
+                    fetchedAt = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+                    linkCount = $f78LinkCount
+                    matchCount = $f78MatchCount
+                }
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $f78Payload)
+                Write-ClientAudit ('f78 lab inspect id=' + $f78SourceId + ' links=' + [string]$f78LinkCount + ' matches=' + [string]$f78MatchCount + ' qlen=' + [string]$f78Query.Length)
+                return
+            }
+            # /api/f58/sources or /api/lab/inspect with any other method.
+            Send-ClientResponse -Stream $stream -Code 405 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
+            return
+        }
         # [remediation] C2 / agent-payload / .bat endpoints removed -> 404
         # (no enrollment, no command queue, no agent hello/status, no diag up/download, no served payloads/bat)
         if ($path -in @('/install.bat','/connect-now.bat','/install.ps1','/client-install.ps1','/api/enroll.ps1','/api/launch.ps1','/launcher.ps1','/api/launcher-hello','/api/agent.ps1','/api/agent-hash','/api/accept.ps1','/api/acceptance.ps1','/api/device-enroll','/api/client-cmd','/api/agent-hello','/api/agent-status','/api/client-status','/api/diag-upload','/api/diag-file')) {

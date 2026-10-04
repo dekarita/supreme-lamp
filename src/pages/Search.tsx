@@ -6,12 +6,15 @@
 // state in searchUiStore, the 5-minute state machine in
 // src/lib/search/progressiveLab.ts, and the fetch action in the src/api/fetch
 // stub (F56-d replaces that one module).
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { Plus } from "lucide-react";
 import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useSearchStore, selectVisibleResults, selectFilterSelectionCount } from "@/stores/searchStore";
 import { useSearchUiStore } from "@/stores/searchUiStore";
 import { CommandBar } from "./search/CommandBar";
+import { AddSiteQuick } from "@/components/search/AddSiteQuick";
+import { CustomSitesRow } from "@/components/search/CustomSitesRow";
 import { SearchHero } from "./search/v2/SearchHero";
 import { ProgressiveLab } from "./search/v2/ProgressiveLab";
 import { OwnCredentialModal } from "./search/v2/OwnCredentialModal";
@@ -41,7 +44,10 @@ export default function Search() {
   const endAnimation = useSearchUiStore((s) => s.endAnimation);
   const backToLanding = useSearchUiStore((s) => s.backToLanding);
   const devFixtureGen = useSearchUiStore((s) => s.devFixtureGen);
+  const lastSubmittedQuery = useSearchStore((s) => s.lastSubmittedQuery);
   const queryRef = useRef<string | null>(null);
+  // [F78 §2.2] "+ Add site" modal state (owned by the page, not the bar).
+  const [addSiteOpen, setAddSiteOpen] = useState(false);
 
   // [F56-c v3] §3 DEV fixture fallback: when a settled search produced zero
   // live results, stream fixture rows into the SAME normalized ingest path so
@@ -112,6 +118,23 @@ export default function Search() {
       </div>
 
       <CommandBar onAnimationEnd={endAnimation} />
+
+      {/* [F78 §2.2] "+ Add site" quick-add entry point, next to the search bar.
+          Opens the two-field modal; the saved source lands in "Your sites". */}
+      <div className="flex items-center justify-end">
+        <button
+          id="f78.search.addSite"
+          data-testid="add-site-button"
+          type="button"
+          onClick={() => setAddSiteOpen(true)}
+          className="h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised inline-flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          <Plus className="size-3.5" aria-hidden />
+          {t("search.addSite")}
+        </button>
+      </div>
+
+      <AddSiteQuick open={addSiteOpen} onClose={() => setAddSiteOpen(false)} />
 
       {landing ? (
         <SearchHero />
@@ -231,6 +254,14 @@ export default function Search() {
                 {t("search.results.noFilterMatch")}
               </p>
             ) : null}
+            {/* [F78 §3.2] "Your sites" sits ABOVE the public adapter results.
+                It is mounted here rather than inside ResultsGrid because the
+                grid only renders when the FEDERATED lane returned rows: the
+                operator's own stored sites must stay reachable even when a
+                query produced zero public results. CustomSitesRow renders
+                nothing at all when no Lab Mode source is stored, so the public
+                lane is unaffected. */}
+            <CustomSitesRow query={lastSubmittedQuery} />
             {totalResults > 0 ? <ResultsGrid /> : null}
           </section>
         </section>

@@ -7,11 +7,13 @@
 // only while open, so no Category/Licence/Size/Sort/Sources/Scope control is
 // ever present on the landing surface. Keyboard hint = "Alt+F opens Search.
 // Enter submits." and nothing else.
+import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { Mic, MoreHorizontal, Paperclip, Search as SearchIcon, X, ExternalLink } from "lucide-react";
 import { useSearchStore } from "@/stores/searchStore";
 import { hostOf, useSearchUiStore } from "@/stores/searchUiStore";
 import { useToastStore } from "@/stores/toastStore";
+import { useCustomSourcesStore } from "@/stores/customSourcesStore";
 import { AdvancedPanel } from "./v2/AdvancedPanel";
 
 export { camel, licenceStyle } from "@/pages/search/tokens";
@@ -34,6 +36,13 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
   const openCredModal = useSearchUiStore((s) => s.openCredModal);
   const enterResults = useSearchUiStore((s) => s.enterResults);
   const pushToast = useToastStore((s) => s.push);
+
+  // [F78 §1.2] The stored-site list is loaded with the bar, so "Your sites"
+  // (and the Lab inspector's source lookup) are never stale on first paint.
+  // A failure is non-fatal here: the list stays empty and the row hides.
+  useEffect(() => {
+    void useCustomSourcesStore.getState().refresh();
+  }, []);
 
   const busy = phase === "queued" || phase === "running" || phase === "partial";
   const landing = view === "landing";

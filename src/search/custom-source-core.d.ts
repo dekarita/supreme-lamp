@@ -33,6 +33,11 @@ export interface SourceExtension {
   addedAt: string;
   source: string;
   enableState: "permanent" | "paused";
+  /** [F78 §1.1] Lab Mode shortcut flag. Absent means true (lab-only source). */
+  labMode?: boolean;
+  /** [F78 §1.1] Auto-derived from baseUrl at save time (never operator-typed). */
+  hostname?: string;
+  [k: string]: unknown;
 }
 
 export interface ProvenanceRecord {
@@ -86,6 +91,17 @@ export interface FanOutPlan {
   dropped: string[];
 }
 
+/** [F78 §1.1] Normalized extension view: labMode always boolean, hostname
+ *  always a lowercase DNS host (possibly "" when baseUrl is unusable). */
+export interface NormalizedExtension {
+  addedAt?: string;
+  source?: string;
+  enableState?: "permanent" | "paused";
+  labMode: boolean;
+  hostname: string;
+  [k: string]: unknown;
+}
+
 export interface RedirectVerdict {
   ok: boolean;
   reason?: string;
@@ -119,6 +135,14 @@ declare const F58: {
   planFanOut(entries: unknown[]): FanOutPlan;
   presetIds(): string[];
   instantiate(presetId: string, opts: Record<string, unknown>): InstantiateResult;
+  /** [F78 §1.1] Hostname derived from a baseUrl ("" when unusable). */
+  hostnameFor(baseUrl: unknown): string;
+  /** [F78 §1.1] labMode default true; hostname lowercased ("" when absent). */
+  normalizeExtension(extension: unknown): NormalizedExtension;
+  /** [F78 §1.1] Save-time shape: derives hostname from baseUrl when absent. */
+  withHostname(baseUrl: unknown, extension: unknown): NormalizedExtension;
+  /** [F78 §1.1] The labMode!==false subset of a registry list. */
+  labSources(list: unknown): unknown[];
 };
 
 export default F58;

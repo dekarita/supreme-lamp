@@ -1,0 +1,26 @@
+{
+  "sources": [
+    {
+      "id": "docs-python-org",
+      "name": "Python docs",
+      "baseUrl": "https://docs.python.org",
+      "hostname": "docs.python.org",
+      "labMode": true,
+      "category": "software",
+      "allowedDomains": ["docs.python.org"],
+      "enableState": "permanent",
+      "addedAt": "2026-10-04T00:00:00Z"
+    },
+    {
+      "id": "si-wikipedia-org",
+      "name": "Sinhala Wikipedia",
+      "baseUrl": "https://si.wikipedia.org",
+      "hostname": "si.wikipedia.org",
+      "labMode": true,
+      "category": "media",
+      "allowedDomains": ["si.wikipedia.org"],
+      "enableState": "permanent",
+      "addedAt": "2026-10-04T00:00:00Z"
+    }
+  ]
+}
