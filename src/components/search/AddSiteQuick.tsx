@@ -36,6 +36,24 @@ const ERROR_KEYS: Record<NewSiteError, string> = {
   network: "search.errors.generic",
 };
 
+// [F84 §2.1] Normalise an operator-typed site URL: a bare domain or a
+// path-only entry gets `https://` prepended, an explicit scheme is preserved
+// (an explicit http:// is kept so the caller can refuse it with a visible
+// "HTTPS required" error instead of silently rewriting the operator's intent).
+export function normalizeUrl(input: string): string {
+  const trimmed = String(input || "").trim();
+  if (!trimmed) return trimmed;
+  // Already has scheme
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  // Bare domain or path-only → prepend https://
+  return "https://" + trimmed.replace(/^\/+/, "");
+}
+
+/** True when the operator explicitly typed an insecure http:// URL. */
+export function isInsecureHttp(input: string): boolean {
+  return /^http:\/\//i.test(String(input || "").trim());
+}
+
 export interface AddSiteQuickProps {
   open: boolean;
   onClose: () => void;
@@ -48,6 +66,9 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
   const [nameError, setNameError] = useState<string | null>(null);
   const [urlError, setUrlError] = useState<string | null>(null);
   const [genericError, setGenericError] = useState<string | null>(null);
+  // [F84 §2.1] Visible "https:// added automatically" hint after a bare-domain
+  // input was normalised (on blur or on save) - fail-visible, never silent.
+  const [autoHttps, setAutoHttps] = useState(false);
   const [saving, setSaving] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
 
@@ -63,6 +84,7 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
     setNameError(null);
     setUrlError(null);
     setGenericError(null);
+    setAutoHttps(false);
     setSaving(false);
     const id = window.setTimeout(() => nameRef.current?.focus(), 0);
     return () => window.clearTimeout(id);
@@ -89,10 +111,27 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
 
   const save = async () => {
     if (saving) return;
+    // [F84 §2.1] Normalise FIRST: "openculture.com" and "/details/x" become
+    // https:// forms before validation, so the bare-domain case is never
+    // rejected for a missing scheme.
+    const normalized = normalizeUrl(url);
+    if (normalized !== url.trim()) {
+      setUrl(normalized);
+      if (normalized.startsWith("https://")) setAutoHttps(true);
+    }
+    // An explicitly typed http:// URL is refused with its own message: the site
+    // only supports insecure HTTP, and we will not silently rewrite it to a
+    // scheme the server would then probe and reject anyway.
+    if (isInsecureHttp(normalized)) {
+      setUrlError("addSite.httpsOnly");
+      setNameError(null);
+      setGenericError(null);
+      return;
+    }
     // Local validation first so the modal never sends a request the server
     // would reject; the server response still drives the inline messages in
     // case a remote-only rule changes later.
-    const invalid = validateNewSite(name, url);
+    const invalid = validateNewSite(name, normalized);
     if (invalid) {
       const key = ERROR_KEYS[invalid];
       if (invalid === "name-required" || invalid === "name-too-long") {
@@ -105,7 +144,7 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
       return;
     }
     setSaving(true);
-    const outcome = await addSite(name, url);
+    const outcome = await addSite(name, normalized);
     setSaving(false);
     if (!outcome.ok) {
       const err = String(outcome.error || "search.errors.generic");
@@ -116,7 +155,10 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
       } else if (
         err === "newSiteHttpsRequired" ||
         err === "newSiteAuthNotAllowed" ||
-        err === "newSiteMaxReached"
+        err === "newSiteMaxReached" ||
+        // [F84 §2.1] The server's HTTPS probe failure arrives as
+        // `errors.url = addSite.probeFailed` and renders under the URL input.
+        err === "addSite.probeFailed"
       ) {
         setUrlError(err);
         setNameError(null);
@@ -197,9 +239,24 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
               onChange={(e) => {
                 setUrl(e.target.value);
                 setUrlError(null);
+                setAutoHttps(false);
+              }}
+              onBlur={() => {
+                // [F84 §2.1] Blur normalisation: bare domains become https://
+                // forms in the input itself (visible, reversible by typing).
+                const normalized = normalizeUrl(url);
+                if (normalized !== url.trim()) {
+                  setUrl(normalized);
+                  if (normalized.startsWith("https://")) setAutoHttps(true);
+                }
               }}
               className={"h-11 px-3 rounded-md border bg-surface font-mono text-sm text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " + (urlError ? "border-danger" : "border-default")}
             />
+            {autoHttps && !urlError ? (
+              <span id="f78.addSite.autoHttps" data-testid="add-site-auto-https" className="text-xs text-tertiary">
+                {t("addSite.autoHttps")}
+              </span>
+            ) : null}
             {urlError ? (
               <span id="f78.addSite.urlError" data-testid="add-site-url-error" role="alert" className="text-xs text-danger">
                 {t(urlError)}

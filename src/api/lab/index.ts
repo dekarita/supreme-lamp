@@ -139,8 +139,13 @@ export async function createCustomSource(name: string, baseUrl: string): Promise
     });
     const body = (await r.json().catch(() => null)) as unknown;
     if (!r.ok) {
-      const env = (body || {}) as { code?: string; messageKey?: string };
-      return offline(String(env.code || "VALIDATION_ERROR"), String(env.messageKey || "search.errors.generic"));
+      const env = (body || {}) as { code?: string; messageKey?: string; errors?: Record<string, string> };
+      // [F84 §2.1] The server probe failure comes back as a per-field key
+      // (`errors.url`), the same envelope shape F81 introduced. Field keys win
+      // over the generic messageKey so the modal can render the specific
+      // reason next to the URL input instead of "Something went wrong".
+      const fieldErr = env.errors ? env.errors.url || env.errors.name : null;
+      return offline(String(env.code || "VALIDATION_ERROR"), String(fieldErr || env.messageKey || "search.errors.generic"));
     }
     const row = asRow((body as { source?: unknown })?.source ?? body);
     return row ? { ok: true, data: row } : offline("INTERNAL_ERROR", "search.errors.generic");

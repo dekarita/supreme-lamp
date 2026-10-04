@@ -59,9 +59,13 @@ describe("F56-c v2 result cards", () => {
     expect(document.getElementById("f56.search.resultCreator.project-gutenberg.g1")?.textContent).toBe("Jane Austen");
     expect(screen.getByTestId("card-bytes").textContent).toContain("412,000 B");
     expect(useSearchStore.getState().results.g1.sizeBytes).toBe(412000);
-    const link = screen.getByTestId("card-direct-url") as HTMLAnchorElement;
-    expect(link.getAttribute("href")).toBe("https://www.gutenberg.org/ebooks/1342");
-    expect(link.getAttribute("rel")).toContain("noopener");
+    // [F84 §2.3] The direct URL is a BUTTON that routes through
+    // /api/launch-url - no target=_blank anchor can silently open the
+    // operator's local browser.
+    const urlBtn = screen.getByTestId("card-direct-url") as HTMLButtonElement;
+    expect(urlBtn.tagName).toBe("BUTTON");
+    expect(urlBtn.textContent).toBe("https://www.gutenberg.org/ebooks/1342");
+    expect(urlBtn.getAttribute("target")).toBeNull();
   });
 
   it("withholds any URL that is not a validated absolute https origin", () => {

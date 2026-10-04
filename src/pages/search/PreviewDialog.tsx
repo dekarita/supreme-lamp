@@ -13,6 +13,8 @@ import { useSearchStore } from "@/stores/searchStore";
 import { camel } from "./CommandBar";
 import { licenceStyle } from "@/pages/search/tokens";
 import { getKey } from "@/lib/api";
+import { launchUrl } from "@/lib/launchUrl";
+import { useToastStore } from "@/stores/toastStore";
 
 interface PreviewState {
   status: "idle" | "loading" | "ok" | "error";
@@ -26,6 +28,7 @@ export function PreviewDialog() {
   const result = useSearchStore((s) => (s.previewResultId ? s.results[s.previewResultId] : null));
   const closePreview = useSearchStore((s) => s.closePreview);
   const closeRef = useRef<HTMLButtonElement | null>(null);
+  const push = useToastStore((s) => s.push);
   const [state, setState] = useState<PreviewState>({ status: "idle", summary: "" });
 
   useEffect(() => {
@@ -76,25 +79,13 @@ export function PreviewDialog() {
   if (!previewResultId || !result) return null;
 
   const direct = result.sourceUrl;
+  // [F84 §2.3] No window.open fallback: the shared launchUrl() contract returns
+  // a reason key and this dialog renders it as a toast (with a Retry hint)
+  // instead of silently opening the link in the operator's local browser.
   const openRdp = async () => {
     if (!direct) return;
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    const key = getKey();
-    if (key) headers["X-Dash-Token"] = key;
-    try {
-      const r = await fetch("/api/launch-url", {
-        method: "POST",
-        cache: "no-store",
-        headers,
-        body: JSON.stringify({ url: direct }),
-      });
-      if (!r.ok) {
-        // Fall back to opening in a new tab if the server route is missing.
-        try { window.open(direct, "_blank", "noopener,noreferrer"); } catch { }
-      }
-    } catch {
-      try { window.open(direct, "_blank", "noopener,noreferrer"); } catch { }
-    }
+    const out = await launchUrl(direct);
+    if (!out.ok) push(t(out.reason || "search.launchUrl.failed") + " — " + t("search.launchUrl.retry"));
   };
 
   return (

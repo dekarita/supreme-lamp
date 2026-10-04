@@ -1889,6 +1889,71 @@ function Invoke-ClientRequest {
                         }
                     }
                 }
+                # [F84 §2.4] download=true: stream the asset onto the RDP
+                # runner's own disk (Desktop\RDP-Downloads) instead of handing
+                # the URL to aria2c. The allowlist + robots + provenance gates
+                # above have already run, so this branch only adds the transfer.
+                $f84Download = $false
+                try { $f84Download = ([string]$parts.query['download']) -eq 'true' } catch { $f84Download = $false }
+                if ($f84Download) {
+                    $f84DestDir = Join-Path $env:USERPROFILE 'Desktop\RDP-Downloads'
+                    if (-not (Test-Path -LiteralPath $f84DestDir)) { New-Item -ItemType Directory -Path $f84DestDir -Force | Out-Null }
+                    $f84Name = 'download.bin'
+                    try {
+                        $f84Base = [string]([System.Uri]$targetUrl).AbsolutePath.Split('/')[-1]
+                        $f84Base = [System.Uri]::UnescapeDataString($f84Base)
+                        $f84Clean = ($f84Base -replace '[^A-Za-z0-9._-]', '_').Trim('.')
+                        if ($f84Clean) { $f84Name = $f84Clean }
+                    } catch { }
+                    if ($f84Name.Length -gt 120) { $f84Name = $f84Name.Substring($f84Name.Length - 120) }
+                    $f84Path = Join-Path $f84DestDir $f84Name
+                    $f84Req = $null
+                    $f84Resp = $null
+                    $f84Bytes = 0
+                    try {
+                        $f84Req = [System.Net.HttpWebRequest]::Create([System.Uri]$targetUrl)
+                        $f84Req.Method = 'GET'
+                        $f84Req.Timeout = 30000
+                        $f84Req.ReadWriteTimeout = 30000
+                        $f84Req.CookieContainer = $null
+                        $f84Req.UserAgent = 'GHRDP-Lab/1.0'
+                        $f84Resp = $f84Req.GetResponse()
+                        # Same-host (www-tolerant) guard on the FINAL response URI:
+                        # an off-host redirect never writes to the RDP disk.
+                        $f84Want = ([string]([System.Uri]$targetUrl).Host).ToLowerInvariant() -replace '^www\.', ''
+                        $f84Got = ''
+                        try { $f84Got = ([string]$f84Resp.ResponseUri.Host).ToLowerInvariant() -replace '^www\.', '' } catch { $f84Got = $f84Want }
+                        if ($f84Got -and $f84Got -ne $f84Want) {
+                            try { $f84Resp.Close() } catch { }
+                            $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'HOSTNAME_MISMATCH'; messageKey = 'lab.hostnameMismatch'; retryable = $false; details = @{ url = $targetUrl; host = $f84Got } }
+                            Send-ClientResponse -Stream $stream -Code 403 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                            return
+                        }
+                        $f84In = $f84Resp.GetResponseStream()
+                        $f84Out = [System.IO.File]::Create($f84Path)
+                        try {
+                            $f84Buf = New-Object byte[] 65536
+                            while ($true) {
+                                $f84Read = $f84In.Read($f84Buf, 0, $f84Buf.Length)
+                                if ($f84Read -le 0) { break }
+                                $f84Out.Write($f84Buf, 0, $f84Read)
+                                $f84Bytes += $f84Read
+                            }
+                        } finally {
+                            try { $f84Out.Dispose() } catch { }
+                            try { $f84In.Dispose() } catch { }
+                            try { $f84Resp.Close() } catch { }
+                        }
+                        Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; path = $f84Path; bytes = $f84Bytes; requestId = $reqId; traceId = $traceId }))
+                        Write-ClientAudit ('f84 download-to-rdp bytes=' + [string]$f84Bytes)
+                        return
+                    } catch {
+                        try { if ($f84Resp) { $f84Resp.Close() } } catch { }
+                        $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'TRANSPORT_UNAVAILABLE'; messageKey = 'download.failed'; retryable = $true; details = @{ url = $targetUrl } }
+                        Send-ClientResponse -Stream $stream -Code 502 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                        return
+                    }
+                }
                 # Own-cred path: decrypts creds in memory using F46 AES-GCM per-run key
                 $ariaOpts = @{}
                 $credUserPlain = $null
@@ -3425,6 +3490,7 @@ function Invoke-ClientRequest {
                     if ($f81Src -and $f81Src.id -and $f81Src.hostname) {
                         $script:F78Sources[[string]$f81Src.id] = $f81Src
                         $script:F78AllowHosts[[string]$f81Src.hostname] = $true
+                        if ($f81Src.canonicalHostname) { $script:F78AllowHosts[[string]$f81Src.canonicalHostname] = $true }
                     }
                 }
             }
@@ -3437,8 +3503,21 @@ function Invoke-ClientRequest {
                 if ($f78T.Length -gt 300) { $f78T = $f78T.Substring(0, 300) }
                 return $f78T
             }
-            # The hardened fetch: https only, exact host, 10s, 2MB, no cookies /
-            # no auth headers, same-host redirects only (max 3 hops).
+            # [F84 §2.2] Same-registrable-domain comparison: a leading `www.`
+            # on EITHER side is stripped before the compare, so
+            # `openculture.com` and `www.openculture.com` are the same site. A
+            # different domain (openculture.com -> youtube.com) is still
+            # refused - the fence stays exact-host-minus-www, never
+            # suffix/wildcard matching.
+            function Test-F78SameHost {
+                param([string]$Allowed, [string]$Actual)
+                $a = ([string]$Allowed).Trim().ToLowerInvariant() -replace '^www\.', ''
+                $b = ([string]$Actual).Trim().ToLowerInvariant() -replace '^www\.', ''
+                if (-not $a -or -not $b) { return $false }
+                return $a -eq $b
+            }
+            # The hardened fetch: https only, same-host (www-tolerant), 10s, 2MB,
+            # no cookies / no auth headers, same-host redirects only (max 3 hops).
             function Invoke-F78SecureFetch {
                 param([string]$Url, [string]$ExpectedHost, [int]$MaxBytes, [int]$TimeoutSec)
                 try { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12 } catch { }
@@ -3447,7 +3526,7 @@ function Invoke-ClientRequest {
                     $f78Uri = $null
                     try { $f78Uri = [System.Uri]$f78Cur } catch { $f78Uri = $null }
                     if (-not $f78Uri -or $f78Uri.Scheme -ne 'https' -or $f78Uri.UserInfo) { return @{ ok = $false; code = 'VALIDATION_ERROR'; httpStatus = 400 } }
-                    if ($f78Uri.Host.ToLowerInvariant() -ne $ExpectedHost) { return @{ ok = $false; code = 'HOSTNAME_MISMATCH'; httpStatus = 403 } }
+                    if (-not (Test-F78SameHost -Allowed $ExpectedHost -Actual $f78Uri.Host)) { return @{ ok = $false; code = 'HOSTNAME_MISMATCH'; httpStatus = 403 } }
                     $f78Req = $null
                     $f78Resp = $null
                     try {
@@ -3598,6 +3677,63 @@ function Invoke-ClientRequest {
                     Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; traceId = ([guid]::NewGuid().ToString('N').Substring(0,12)); errors = $f78FieldErrors }))
                     return
                 }
+                # [F84 §2.1] HTTPS reachability probe BEFORE accepting the site:
+                # a HEAD request to the operator-supplied origin (5s, no
+                # auto-redirect) must answer 200/301/302/307/308 over HTTPS.
+                # Fail-closed: an unreachable site is refused with a per-field
+                # key so the modal renders the reason under the URL input. A
+                # redirect onto the same registrable domain records the host the
+                # server actually answered from as `canonicalHostname`.
+                $f78ProbeOk = $false
+                $f78ProbeReason = 'transport'
+                $f78CanonicalHost = ''
+                try {
+                    $f78ProbeUri = [System.Uri]$f78Base
+                    $f78ProbeReq = [System.Net.HttpWebRequest]::Create($f78ProbeUri)
+                    $f78ProbeReq.Method = 'HEAD'
+                    $f78ProbeReq.Timeout = 5000
+                    $f78ProbeReq.ReadWriteTimeout = 5000
+                    $f78ProbeReq.AllowAutoRedirect = $false
+                    $f78ProbeReq.CookieContainer = $null
+                    $f78ProbeReq.UserAgent = 'GHRDP-Lab/1.0'
+                    $f78ProbeResp = $null
+                    try {
+                        $f78ProbeResp = $f78ProbeReq.GetResponse()
+                    } catch [System.Net.WebException] {
+                        $f78ProbeResp = $_.Exception.Response
+                    }
+                    if ($f78ProbeResp) {
+                        $f78ProbeStatus = 0
+                        try { $f78ProbeStatus = [int]$f78ProbeResp.StatusCode } catch { $f78ProbeStatus = 0 }
+                        if ($f78ProbeStatus -ge 200 -and $f78ProbeStatus -lt 300) {
+                            $f78ProbeOk = $true
+                            $f78CanonicalHost = $f78ProbeUri.Host.ToLowerInvariant()
+                        } elseif ($f78ProbeStatus -eq 301 -or $f78ProbeStatus -eq 302 -or $f78ProbeStatus -eq 307 -or $f78ProbeStatus -eq 308) {
+                            $f78ProbeOk = $true
+                            $f78ProbeLoc = ''
+                            try { $f78ProbeLoc = [string]$f78ProbeResp.Headers['Location'] } catch { $f78ProbeLoc = '' }
+                            if ($f78ProbeLoc) {
+                                try {
+                                    $f78ProbeTarget = ([System.Uri]::new($f78ProbeUri, $f78ProbeLoc)).Host.ToLowerInvariant()
+                                    if ($f78ProbeTarget -and (Test-F78SameHost -Allowed $f78ProbeUri.Host -Actual $f78ProbeTarget)) { $f78CanonicalHost = $f78ProbeTarget }
+                                } catch { $f78ProbeTarget = '' }
+                            }
+                        } else {
+                            $f78ProbeReason = ('HTTP ' + [string]$f78ProbeStatus)
+                        }
+                        try { $f78ProbeResp.Close() } catch { }
+                    } else {
+                        $f78ProbeReason = 'no response'
+                    }
+                } catch {
+                    $f78ProbeReason = 'transport'
+                }
+                if (-not $f78ProbeOk) {
+                    $f78FieldErrors['url'] = 'addSite.probeFailed'
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'addSite.probeFailed'; traceId = ([guid]::NewGuid().ToString('N').Substring(0,12)); errors = $f78FieldErrors; details = [ordered]@{ reason = ('Site unreachable over HTTPS (' + $f78ProbeReason + ')') } }))
+                    Write-ClientAudit ('f84 add site probe failed base=' + $f78Base + ' reason=' + $f78ProbeReason)
+                    return
+                }
                 $f78Uri = [System.Uri]$f78Base
                 $f78Host = $f78Uri.Host.ToLowerInvariant()
                 $f78Origin = ('https://' + $f78Host + $f78Uri.AbsolutePath).TrimEnd('/')
@@ -3612,6 +3748,7 @@ function Invoke-ClientRequest {
                     nameKey = 'search.sites.' + $f78Id
                     baseUrl = $f78Origin
                     hostname = $f78Host
+                    canonicalHostname = $f78CanonicalHost
                     labMode = $true
                     category = 'software'
                     allowedDomains = @($f78Host)
@@ -3622,6 +3759,10 @@ function Invoke-ClientRequest {
                 $script:F78Sources[$f78Id] = $f78Row
                 # The save-time host fence: only this line ever adds a host.
                 $script:F78AllowHosts[$f78Host] = $true
+                # [F84 §2.2] Both the operator-typed host and the host the
+                # server actually answered from (the redirect target) are
+                # accepted on subsequent calls.
+                if ($f78CanonicalHost -and $f78CanonicalHost -ne $f78Host) { $script:F78AllowHosts[$f78CanonicalHost] = $true }
                 # [F81 §1.1/A.1] Persist immediately so a process restart does
                 # not lose the just-added site before the next repo-branch
                 # commit. The commit job (workflow f81-sync-sources) is the
@@ -3890,7 +4031,7 @@ function Invoke-ClientRequest {
                         $f78SLink = $null
                         try { $f78SLink = [System.Uri]$f78Loc } catch { $f78SLink = $null }
                         if (-not $f78SLink -or $f78SLink.Scheme -ne 'https') { continue }
-                        if ($f78SLink.Host.ToLowerInvariant() -ne $f78Host) { continue }
+                        if (-not (Test-F78SameHost -Allowed $f78Host -Actual $f78SLink.Host)) { continue }
                         $f78UrlPath = ''
                         try { $f78UrlPath = [string]$f78SLink.AbsolutePath } catch { $f78UrlPath = '' }
                         $f78Text = if ($f78UrlPath.Length -gt 0) { $f78UrlPath } else { [string]$f78SLink.AbsoluteUri }
@@ -3934,7 +4075,7 @@ function Invoke-ClientRequest {
                         if (-not $f78Abs.StartsWith('https://')) { continue }
                         $f78LinkHost = ''
                         try { $f78LinkHost = ([System.Uri]$f78Abs).Host.ToLowerInvariant() } catch { continue }
-                        if ($f78LinkHost -ne $f78Host) { continue }
+                        if (-not (Test-F78SameHost -Allowed $f78Host -Actual $f78LinkHost)) { continue }
                         $f78LinkCount++
                         $f78IsMatch = $false
                         if ($f78Needle) {

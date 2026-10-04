@@ -24,6 +24,9 @@ export interface FetchStartRequest {
   };
   fileName?: string;
   expectedContentLength?: number;
+  /** [F84 §2.4] download=true streams the bytes to the RDP runner's
+   *  Desktop\RDP-Downloads folder instead of handing the URL to aria2c. */
+  download?: boolean;
   // Own-cred encrypted (F46 per-run key AES-GCM)
   credUserEnc?: string;
   credPassEnc?: string;
@@ -100,6 +103,13 @@ export interface FetchResult {
   error?: FetchErrorEnvelope;
 }
 
+/** [F84 §2.4] Envelope returned when a fetch is a download-to-RDP write. */
+export interface DownloadToRdpResult {
+  ok: true;
+  path: string;
+  bytes: number;
+}
+
 function genId(): string {
   try {
     // Use crypto.randomUUID if available
@@ -140,7 +150,10 @@ export async function requestFetch(req: FetchRequest): Promise<FetchResult> {
   } catch {}
 
   try {
-    const res = await fetch('/api/fetch', {
+    // [F84 §2.4] download=true is a query flag (no credential ever travels in
+    // the query string - the dash token stays in X-Dash-Token).
+    const fetchUrl = (req as any).download === true ? "/api/fetch?download=true" : "/api/fetch";
+    const res = await fetch(fetchUrl, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
@@ -150,6 +163,11 @@ export async function requestFetch(req: FetchRequest): Promise<FetchResult> {
     try { json = JSON.parse(text); } catch { json = null; }
 
     if (res.status === 202 || res.status === 200) {
+      // [F84 §2.4] A download=true response is {ok, path, bytes} - it carries no
+      // fetchId/gid, so it must be accepted on `path` before the aria2 checks.
+      if (json && json.ok && typeof json.path === 'string') {
+        return { ok: true, data: json as unknown as FetchAccepted };
+      }
       if (json && json.fetchId && json.gid) {
         return { ok: true, data: json as FetchAccepted };
       }

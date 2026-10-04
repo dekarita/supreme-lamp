@@ -83,15 +83,23 @@ describe("F78 LabInspector", () => {
     expect(screen.getAllByTestId("lab-link-row")).toHaveLength(3);
   });
 
-  it("every link row opens in a new tab with rel=noopener noreferrer", async () => {
+  it("every link row launches through the server route (no new-tab anchor)", async () => {
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) } as unknown as Response)),
+    );
     inspectSource.mockResolvedValue({ ok: true, data: DATA });
     mount();
     await waitFor(() => expect(screen.getByTestId("lab-link-open")).toBeInTheDocument());
-    const a = screen.getByTestId("lab-link-open");
-    expect(a.getAttribute("target")).toBe("_blank");
-    expect(a.getAttribute("rel")).toContain("noopener");
-    expect(a.getAttribute("rel")).toContain("noreferrer");
-    expect(a.getAttribute("href")).toBe("https://docs.python.org/3/library/ssl.html");
+    // [F84 §2.3] A button, not <a target="_blank">: the row click is a POST to
+    // /api/launch-url and a failure is a visible toast, never a local tab.
+    const btn = screen.getByTestId("lab-link-open");
+    expect(btn.tagName).toBe("BUTTON");
+    expect(btn.getAttribute("target")).toBeNull();
+    fireEvent.click(btn);
+    await waitFor(() => expect(open).not.toHaveBeenCalled());
   });
 
   it("a 429 switches refetch into a visible countdown", async () => {
