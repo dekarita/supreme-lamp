@@ -301,6 +301,12 @@
     "optionsFooter": "A 403 from the runner egress or a 'host requires account token; token-less mode unsupported' reason is a policy dead-end, not a puzzle: host-policy workarounds are refused by design and blocked by a CI gate. Re-dispatch with mirror_enable=false, or move the upload to your own egress."
   },
   "search": {
+    "showProgress": "Show search progress (debug)",
+    "noResults": "No results for '{{query}}'. Try broader terms or",
+    "addCustomSite": "+ Add a custom site",
+    "loading": "Searching...",
+    "openOnGoogle": "Open on google.com",
+    "external": "External",
     "nav": {
       "label": "Search"
     },
@@ -519,6 +525,8 @@
       "externalLink": "opens in a new tab"
     },
     "sources": {
+      "arxivPublic": "arXiv (public)",
+      "wikipediaPublic": "Wikipedia (public)",
       "projectGutenberg": "Project Gutenberg",
       "standardEbooks": "Standard Ebooks",
       "librivox": "LibriVox",
@@ -659,7 +667,7 @@
         "adapters": {
           "label": "Sources",
           "count": "{{count}} selected",
-          "hint": "None selected probes every compiled source."
+          "hint": "None selected searches the five default public sources."
         }
       },
       "import": {

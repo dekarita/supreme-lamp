@@ -53,6 +53,7 @@ export interface SearchResult {
   category: Category;
   title: string;
   creator?: string | null;
+  snippet?: string | null;
   sizeBytes?: number | null;
   contentLength?: number | null;
   licenceTag: LicenceTag;

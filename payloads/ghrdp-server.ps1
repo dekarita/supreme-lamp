@@ -1667,7 +1667,7 @@ function Invoke-ClientRequest {
             # project-gutenberg from the i18n search.sources.* keys); camelCase here 400'd 15 adapters.
             # [F70 §2.1] google-books-public added for the public Volumes API lane
             # (www.googleapis.com; results link out to books.google.com).
-            $allowedAdapters = @('project-gutenberg','standard-ebooks','librivox','ia-open-library','hathitrust','wikisource','doab','arxiv','biorxiv','pubmed-central','doaj','oer-commons','ssrn','internet-archive','blender-studio','wikimedia-commons','sourceforge','github-releases','bandcamp','cc-marked-youtube','kindle-audible','kobo','google-books','google-books-public','sarasavi','vijitha-yapa','godage','overdrive-libby','own-storage','custom')
+            $allowedAdapters = @('project-gutenberg','standard-ebooks','librivox','ia-open-library','hathitrust','wikisource','wikipedia-public','doab','arxiv','arxiv-public','biorxiv','pubmed-central','doaj','oer-commons','ssrn','internet-archive','blender-studio','wikimedia-commons','sourceforge','github-releases','bandcamp','cc-marked-youtube','kindle-audible','kobo','google-books','google-books-public','sarasavi','vijitha-yapa','godage','overdrive-libby','own-storage','custom')
             # [F69 §1.2] resultId -> resolved https URL map. [F70 §1.1] the search
             # lane populates it with result rows (adapterId/sourceUrl/title/
             # mimeType/sizeBytes/createdAt); /api/fetch unwraps row.sourceUrl.
@@ -2240,11 +2240,11 @@ function Invoke-ClientRequest {
             # plus google-books-public. Keep in sync with $allowedAdapters in the
             # /api/fetch block above - tests/f70-search-endpoints.test.js pins the
             # two literals to the same core ids.
-            $searchAllowedAdapters = @('project-gutenberg','standard-ebooks','librivox','ia-open-library','hathitrust','wikisource','doab','arxiv','biorxiv','pubmed-central','doaj','oer-commons','ssrn','internet-archive','blender-studio','wikimedia-commons','sourceforge','github-releases','bandcamp','cc-marked-youtube','kindle-audible','kobo','google-books','google-books-public','sarasavi','vijitha-yapa','godage','overdrive-libby','own-storage','custom')
-            # [F70 §1.1] default fan-out when the request omits adapterIds.
+            $searchAllowedAdapters = @('project-gutenberg','standard-ebooks','librivox','ia-open-library','hathitrust','wikisource','wikipedia-public','doab','arxiv','arxiv-public','biorxiv','pubmed-central','doaj','oer-commons','ssrn','internet-archive','blender-studio','wikimedia-commons','sourceforge','github-releases','bandcamp','cc-marked-youtube','kindle-audible','kobo','google-books','google-books-public','sarasavi','vijitha-yapa','godage','overdrive-libby','own-storage','custom')
+            # [F79 D3] SOURCE OF TRUTH: omitted / empty adapterIds uses only these five.
             # [F72 §1.3] Expanded to the 5-source TLS-Radar default pack:
             # GitHub repos, Internet Archive, arXiv, Wikipedia, Google Books.
-            $script:DefaultAdapterIds = @('github-releases','internet-archive','arxiv','wikisource','google-books-public')
+            $script:DefaultFanOutAdapterIds = @('github-releases','internet-archive','arxiv-public','wikipedia-public','google-books-public')
             # Live phase from the record: cancelled > any result > all-run-failed
             # > empty > running (lanes that never ran keep the search "running").
             function Get-F70SearchPhase {
@@ -2602,8 +2602,8 @@ function Invoke-ClientRequest {
                         $f72ArxivId = ''
                         try { $f72ArxivId = ($f72Entry.id -replace 'http://arxiv.org/abs/', '') } catch { }
                         $f72Rows += @{
-                            adapterId = 'arxiv'
-                            nameKey = 'search.sources.arxiv'
+                            adapterId = 'arxiv-public'
+                            nameKey = 'search.sources.arxivPublic'
                             category = 'scholarly'
                             title = $f72Title
                             creator = $f72Creator
@@ -2664,8 +2664,8 @@ function Invoke-ClientRequest {
                         if ($f72I -lt $f72Urls.Count) { $f72Url = [string]$f72Urls[$f72I] }
                         if (-not $f72Url) { continue }
                         $f72Rows += @{
-                            adapterId = 'wikisource'
-                            nameKey = 'search.sources.wikisource'
+                            adapterId = 'wikipedia-public'
+                            nameKey = 'search.sources.wikipediaPublic'
                             category = 'education'
                             title = $f72Title
                             creator = 'Wikipedia'
@@ -2980,6 +2980,10 @@ function Invoke-ClientRequest {
                 try {
                     foreach ($a in @($f70Json.adapterIds)) {
                         $as = [string]$a
+                        # [F79 D3] Accept legacy Advanced ids, but emit canonical
+                        # public ids in acceptedAdapterIds, status rows and results.
+                        if ($as -eq 'arxiv') { $as = 'arxiv-public' }
+                        if ($as -eq 'wikisource') { $as = 'wikipedia-public' }
                         if ($as) { $f70ReqAdapters += $as }
                     }
                 } catch { }
@@ -3050,7 +3054,7 @@ function Invoke-ClientRequest {
                 # searchId + record, then the fan-out.
                 $f70SearchId = [guid]::NewGuid().ToString('N')
                 $f70Adapters = @($f70ReqAdapters | Select-Object -Unique)
-                if ($f70Adapters.Count -eq 0) { $f70Adapters = @($script:DefaultAdapterIds) }
+                if ($f70Adapters.Count -eq 0) { $f70Adapters = @($script:DefaultFanOutAdapterIds) }
                 $f70Now = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
                 $f70Rec = @{
                     query = $f70Query
@@ -3129,13 +3133,13 @@ function Invoke-ClientRequest {
                     }
                 }
                 # [F72 §1.3] arXiv adapter fan-out (F71 §C 2.6).
-                if ($f70Adapters -contains 'arxiv') {
+                if ($f70Adapters -contains 'arxiv-public') {
                     $f72AxHelper = $null
                     try { $f72AxHelper = Get-Command -Name Invoke-F72ArxivSearch -ErrorAction Stop } catch { $f72AxHelper = $null }
                     if ($f72AxHelper) {
                         $f72Ax = Invoke-F72ArxivSearch -Query $f70Query -Limit $f70Limit
-                        $f70Rec.adapterStatuses['arxiv'].status = [string]$f72Ax.status
-                        if ($f72Ax.lastErrorCode) { $f70Rec.adapterStatuses['arxiv'].lastErrorCode = [string]$f72Ax.lastErrorCode }
+                        $f70Rec.adapterStatuses['arxiv-public'].status = [string]$f72Ax.status
+                        if ($f72Ax.lastErrorCode) { $f70Rec.adapterStatuses['arxiv-public'].lastErrorCode = [string]$f72Ax.lastErrorCode }
                         foreach ($f70Row in @($f72Ax.rows)) {
                             if (-not $f70Row) { continue }
                             $f70ResultId = 'f72-ax-' + [guid]::NewGuid().ToString('N').Substring(0,14)
@@ -3143,17 +3147,17 @@ function Invoke-ClientRequest {
                             $f70Rec.resultOrder += $f70ResultId
                             $script:F56dResultsMap[$f70ResultId] = $f70Row
                         }
-                        $f70Rec.adapterStatuses['arxiv'].resultCount = @($f72Ax.rows).Count
+                        $f70Rec.adapterStatuses['arxiv-public'].resultCount = @($f72Ax.rows).Count
                     }
                 }
                 # [F72 §1.3] Wikipedia adapter fan-out (F71 §C 2.8).
-                if ($f70Adapters -contains 'wikisource') {
+                if ($f70Adapters -contains 'wikipedia-public') {
                     $f72WpHelper = $null
                     try { $f72WpHelper = Get-Command -Name Invoke-F72WikipediaSearch -ErrorAction Stop } catch { $f72WpHelper = $null }
                     if ($f72WpHelper) {
                         $f72Wp = Invoke-F72WikipediaSearch -Query $f70Query -Limit $f70Limit
-                        $f70Rec.adapterStatuses['wikisource'].status = [string]$f72Wp.status
-                        if ($f72Wp.lastErrorCode) { $f70Rec.adapterStatuses['wikisource'].lastErrorCode = [string]$f72Wp.lastErrorCode }
+                        $f70Rec.adapterStatuses['wikipedia-public'].status = [string]$f72Wp.status
+                        if ($f72Wp.lastErrorCode) { $f70Rec.adapterStatuses['wikipedia-public'].lastErrorCode = [string]$f72Wp.lastErrorCode }
                         foreach ($f70Row in @($f72Wp.rows)) {
                             if (-not $f70Row) { continue }
                             $f70ResultId = 'f72-wp-' + [guid]::NewGuid().ToString('N').Substring(0,14)
@@ -3161,7 +3165,7 @@ function Invoke-ClientRequest {
                             $f70Rec.resultOrder += $f70ResultId
                             $script:F56dResultsMap[$f70ResultId] = $f70Row
                         }
-                        $f70Rec.adapterStatuses['wikisource'].resultCount = @($f72Wp.rows).Count
+                        $f70Rec.adapterStatuses['wikipedia-public'].resultCount = @($f72Wp.rows).Count
                     }
                 }
                 $resp = [ordered]@{

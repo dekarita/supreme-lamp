@@ -92,7 +92,7 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
             setAdvanced(false);
           }
         }}
-        className={"flex flex-col gap-2 " + (landing ? "w-[60%] max-w-3xl" : "w-full")}
+        className="w-full max-w-[760px] flex flex-col gap-2"
       >
         <form
           onSubmit={(e) => {
@@ -222,9 +222,9 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
             here exactly once (AdvancedPanel keeps the frozen id inventory). */}
         {advancedOpen ? <AdvancedPanel open={advancedOpen} /> : null}
 
-        <p id="f56.search.keyboardHelp" data-testid="keyboard-help" className="text-xs text-tertiary">
-          {t("search.keyboard.help")}
-        </p>
+        {/* [F79 D6] Secondary external link, never the full-width primary CTA. */}
+        <div id="f79.search.externalRow" data-testid="search-external-row" className="flex flex-wrap items-center gap-3 text-xs text-tertiary">
+        <span>{t("search.external")}</span>
 
         {/* [F72 §2.3] "Open on google.com" navigation button (Q1 operator decision).
             Always available; zero API cost; opens in new tab. */}
@@ -233,17 +233,21 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
           data-testid="google-nav-button"
           type="button"
           title={t("search.googleSearch.hint")}
-          aria-label={t("search.googleSearch.openOnGoogle")}
+          aria-label={t("search.openOnGoogle")}
           disabled={!rawQuery.trim()}
           onClick={() => {
             const q = rawQuery.trim();
             if (q) window.open("https://www.google.com/search?q=" + encodeURIComponent(q), "_blank", "noopener,noreferrer");
           }}
-          className="h-11 px-4 rounded-full border border-default text-xs text-secondary hover:bg-raised inline-flex items-center gap-1.5 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          className="min-h-11 px-2 rounded-full text-xs text-tertiary hover:text-secondary hover:bg-raised inline-flex items-center gap-1.5 disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         >
           <ExternalLink className="size-3.5" aria-hidden />
-          {t("search.googleSearch.openOnGoogle")}
+          {t("search.openOnGoogle")}
         </button>
+        <p id="f56.search.keyboardHelp" data-testid="keyboard-help" className="text-xs text-tertiary">
+          {t("search.keyboard.help")}
+        </p>
+        </div>
       </section>
     </div>
   );
