@@ -2628,15 +2628,16 @@ jobs:
           set -euo pipefail
           sh=src/components/layout/AppShell.tsx
           app=src/App.tsx
-          # §1 sidebar: exactly 9 entries in locked order; the original 7 stay
-          # untouched; File Explorer above Mirror (Alt+E) and Search above
-          # Telemetry (Alt+F) carry their additive f57/f56 nav ids.
+          # §1 sidebar: exactly 9 entries in locked order. [F76 §2.1] Search moved
+          # to slot 2 (directly under Overview) so it is visible without scrolling;
+          # the other entries keep their F56-c relative order. File Explorer above
+          # Mirror (Alt+E) and Search (Alt+F) carry their additive f57/f56 nav ids.
           python3 -c '
           import re
           src = open("src/components/layout/AppShell.tsx", encoding="utf-8").read()
           nav = src.split("const NAV: NavItem[]")[1].split("];")[0]
           tos = re.findall(r"to: \"([^\"]+)\"", nav)
-          expect = ["/", "/sessions", "/connections", "/keys", "/files", "/mirror", "/search", "/telemetry", "/settings"]
+          expect = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/settings"]
           assert tos == expect, ("sidebar order drifted", tos)
           assert "id: \"f57.explorer.nav\"" in nav and "hint: \"Alt+E\"" in nav, "files entry"
           assert "id: \"f56.search.nav\"" in nav and "hint: \"Alt+F\"" in nav, "search entry"

@@ -42,12 +42,17 @@ export function useDashboardPolling(): void {
         // (raw SEARCH_INPUT string). Typed here so the boot read stays compile-checked.
         const diag = await getJson<{ searchEnabled?: boolean | string | number; searchInput?: string }>("/diag");
         if (alive && diag) {
-          const enabled = !!(diag.searchEnabled === true || diag.searchEnabled === 'true' || diag.searchEnabled === 1);
-          // @ts-ignore
-          if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_ENABLED = enabled;
+          // [F76 §1.2] Write the lane flag ONLY on an explicit /diag answer. A payload
+          // that omits searchEnabled must not be read as false - that hid the Search
+          // entry (lane.ts:7-9: "only an EXPLICIT false hides the lane").
+          if (diag.searchEnabled !== undefined) {
+            const enabled = !!(diag.searchEnabled === true || diag.searchEnabled === 'true' || diag.searchEnabled === 1);
+            // @ts-ignore
+            if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_ENABLED = enabled;
+            announceSearchLane(); // [F69 §1.4] let the sidebar/route re-read the flag
+          }
           // @ts-ignore
           if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_INPUT = diag.searchInput || '';
-          announceSearchLane(); // [F69 §1.4] let the sidebar/route re-read the flag
         }
       } catch {}
     };
