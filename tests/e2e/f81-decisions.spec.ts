@@ -56,6 +56,16 @@ test.describe("F81 decisions (15)", () => {
     await shot(page, "delete-trash-button");
   });
 
+  // [F83 §2.3] The landing view (no submitted query) must show the stored-site
+  // row too. The mock backend seeds the "demo" source, so the same trash button
+  // the Q3 test asserts on must already be reachable without searching first.
+  test("Q3b landing: custom sites row shows on landing when sites exist", async ({ page }) => {
+    await page.goto("/#/search");
+    await expect(page.getByTestId("your-sites-row")).toBeVisible();
+    await expect(page.getByTestId("your-site-delete-demo")).toBeVisible();
+    await shot(page, "landing-with-sites");
+  });
+
   test("Q6 query gate: typing 1-2 chars shows the inline hint, not a submit", async ({ page }) => {
     await page.goto("/#/search");
     await page.getByTestId("search-query").fill("hi");
