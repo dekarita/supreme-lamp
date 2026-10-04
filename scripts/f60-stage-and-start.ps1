@@ -194,6 +194,10 @@ function Stage-F60UiBundle {
     $pick = $null
     if ($want) { $pick = @($assets | Where-Object { [string]$_.name -eq $want } | Select-Object -First 1) }
     if (-not $pick) {
+        # [F77 §2.5] the cross-sha "newest asset" pick is only allowed when NO
+        # commit was pinned. With -UiBundleSha set, a miss throws instead of
+        # silently staging another commit's dashboard (the stale-bundle class).
+        if ($want) { throw ('[F77 ui] release ' + $Tag + ' has no ' + $want + ' - the bundle for this commit was never published (build-ui.yml still running or skipped by its paths filter); refusing to stage a bundle from another commit. Dispatch build-ui.yml for this sha and re-run.') }
         $cands = @($assets | Where-Object { ([string]$_.name) -like 'ui-dist-*.zip' -and ([string]$_.name) -notlike '*.sha256' })
         if (@($cands).Count -eq 0) { throw ('[F60 ui] release ' + $Tag + ' has no ui-dist-*.zip asset') }
         $pick = @($cands | Sort-Object -Property name -Descending | Select-Object -First 1)

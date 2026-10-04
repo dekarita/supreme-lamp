@@ -12,7 +12,6 @@ import { useTelemetryStore } from "@/stores/telemetryStore";
 import { useSessionStore } from "@/stores/sessionStore";
 import { Chip } from "@/components/primitives/Chip";
 import { cn } from "@/lib/cn";
-import { useSearchLaneEnabled } from "@/lib/search/lane";
 import { fmtHMS, pad2 } from "@/lib/format";
 import { elapsedSeconds, remainingSeconds } from "@/stores/telemetryStore";
 import { logonRowText, rdpUsageSeconds } from "@/lib/domain/native";
@@ -153,6 +152,11 @@ function TopBar() {
 // f57.explorer.nav / f56.search.nav). labelKey is additive: it lets the Search
 // item render the dedicated sidebar.search catalog entry while nav.search stays
 // the fallback (and the F56 i18n parity namespace keeps counting nav.search).
+// [F77 §2.4] the 7-char sha of the ui bundle, stamped by vite.config define from
+// build-ui.yml's GITHUB_SHA (fallback path in main.yml exports it too). "dev"
+// means the operator is looking at an un-stamped local build.
+const UI_SHA7: string = (import.meta.env.VITE_BUILD_SHA as string | undefined) || "dev";
+
 interface NavItem {
   to: string;
   key: string;
@@ -180,10 +184,22 @@ function Sidebar() {
   const toggleCollapsed = useSidebarStore((s) => s.toggleCollapsed);
   const mobileOpen = useSidebarStore((s) => s.mobileOpen);
   const setMobileOpen = useSidebarStore((s) => s.setMobileOpen);
-  // [F69 §1.4] search_enable=false (/diag searchEnabled -> window.__GHRDP_SEARCH_ENABLED)
-  // hides the Search entry; the NAV constant itself stays the locked 9-entry list.
-  const searchLane = useSearchLaneEnabled();
-  const visibleNav = searchLane ? NAV : NAV.filter((item) => item.to !== "/search");
+  // [F77 §2.1] NO visibility gate on the Search entry (was: F69 §1.4 lane flag +
+  // F76 filter). NAV is the locked 9-entry list and every item renders; there is
+  // no lane/gate/enabled field left on any entry, so no /diag answer, store
+  // field or cached flag can drop an item. Other lanes were never filtered here.
+  const visibleNav = NAV;
+  // [F77 §2.2] one-shot purge of lane flags an OLDER bundle may have cached in this
+  // browser (the stale-dashboard vector). Idempotent; storage-less hosts ignored.
+  useEffect(() => {
+    try {
+      window.localStorage.removeItem("__GHRDP_SEARCH_ENABLED");
+      window.localStorage.removeItem("f56.search.enabled");
+      window.localStorage.removeItem("ghrdp.lane.search");
+    } catch {
+      /* private mode / no storage: nothing to purge */
+    }
+  }, []);
 
   return (
     <>
@@ -310,6 +326,15 @@ function BottomBar() {
       </span>
       <span id="status-clock" className="ml-auto font-mono text-xs text-tertiary whitespace-nowrap">
         <span id="bottomClock">{clockText(now)}</span>
+      </span>
+      {/* [F77 §2.4] which ui-dist-<sha> bundle is actually loaded (hard-reload proof) */}
+      <span
+        id="uiShaBadge"
+        data-testid="ui-sha-badge"
+        title={"ui bundle sha " + UI_SHA7}
+        className="font-mono text-[10px] text-tertiary whitespace-nowrap"
+      >
+        {"ui: " + UI_SHA7}
       </span>
     </footer>
   );

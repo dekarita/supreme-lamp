@@ -26,6 +26,13 @@ export default defineConfig({
   ],
   define: {
     __BUILD_SHA__: JSON.stringify(buildSha),
+    // [F77 §2.4] the footer badge's 7-char stamp. build-ui.yml exports
+    // VITE_BUILD_SHA=$GITHUB_SHA (and main.yml's fallback build does the same);
+    // reading GITHUB_SHA directly keeps a plain `GITHUB_SHA=… vite build` honest.
+    // Missing -> "dev", so an un-stamped bundle is visible as such, not silent.
+    "import.meta.env.VITE_BUILD_SHA": JSON.stringify(
+      (process.env.VITE_BUILD_SHA || process.env.GITHUB_SHA || "dev").slice(0, 7)
+    ),
   },
   resolve: {
     alias: { "@": resolve(__dirname, "src") },

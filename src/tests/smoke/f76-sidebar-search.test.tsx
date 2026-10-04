@@ -129,11 +129,14 @@ describe("F76 §1.2 lane flag only follows an EXPLICIT /diag answer", () => {
     expect(sidebarHrefs(container)).toContain("/search");
   });
 
-  it("explicit searchEnabled=false still hides the entry (F69 §1.4 contract kept)", async () => {
+  // [F77 §2.1 SUPERSEDED PIN] was: "explicit searchEnabled=false still hides the
+  // entry (F69 §1.4 contract kept)". The hide is gone; the mirror is diag-only.
+  it("explicit searchEnabled=false stays mirrored for diag and never hides the entry", async () => {
     stubDiag({ searchEnabled: false, searchInput: "" });
     const { container } = render(<App />);
-    await waitFor(() => expect(sidebarHrefs(container)).not.toContain("/search"));
-    expect((window as Any).__GHRDP_SEARCH_ENABLED).toBe(false);
-    expect(document.getElementById("f56.search.nav")).toBeNull();
+    await waitFor(() => expect((window as Any).__GHRDP_SEARCH_ENABLED).toBe(false));
+    expect(sidebarHrefs(container)).toContain("/search");
+    expect(document.getElementById("f56.search.nav")).not.toBeNull();
+    expect(sidebarHrefs(container)).toEqual(F76_ORDER);
   });
 });

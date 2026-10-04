@@ -159,13 +159,13 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       set({ diagText: d ? JSON.stringify(d, null, 2) : "Diagnostics failed - server not reachable." });
       try {
         // [F56-d §3] Search surface reads window.__GHRDP_SEARCH_ENABLED from /diag.
-        // [F76 §1.2] Only an explicit answer moves the lane flag (lane.ts:7-9): a
-        // /diag payload without searchEnabled must not hide the Search entry.
+        // [F77 §2.3] Diagnostic mirror only (see useDashboardPolling): the flag no
+        // longer moves any UI decision - the Search entry + routes are unconditional.
         if (d && d.searchEnabled !== undefined) {
           const enabled = !!(d.searchEnabled === true || d.searchEnabled === 'true');
           // @ts-ignore
           if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_ENABLED = enabled;
-          announceSearchLane(); // [F69 §1.4] let the sidebar/route re-read the flag
+          announceSearchLane(); // [F77] no-op (lane.ts); kept for the diag subscribers
         }
         // Also set searchInput echo for SEARCH_INPUT propagation lab
         // @ts-ignore
