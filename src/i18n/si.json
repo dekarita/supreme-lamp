@@ -724,6 +724,11 @@
     },
     "addSite": "නව අඩවියක් එක්කරන්න",
     "yourSites": "ඔබේ අඩවි",
+    "canonicalHost": "{{hostname}} ලෙස සේවා කරයි",
+    "diag": {
+      "title": "F84 විශේෂාංග ක්‍රියාත්මකයි:",
+      "noServer": "සේවාදායකයේ /api/version නොමැත (F84 ට පැරණි)"
+    },
     "deepInspect": "{{hostname}} තුළ “{{query}}” ගේබීරව පරීක්ෂා කරන්න",
     "openInLabSite": "{{hostname}} ලැබ් තුළ විවෘත කරන්න",
     "labMode": {

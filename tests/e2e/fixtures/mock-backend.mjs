@@ -19,6 +19,9 @@ const readJson = (name) => JSON.parse(readFileSync(join(HERE, name), "utf8"));
 /** Added at runtime by POST /api/f58/sources so the "add then card appears"
  *  flow is observable without mutating the fixture file on disk. */
 const added = [];
+/** [F85 §4] Ids the spec deleted through the UI: a pre-seeded row must STAY
+ *  deleted for the rest of the run, exactly like the server's persisted store. */
+const deleted = new Set();
 // [F79 D3] Derive mock defaults from the server, not a second hardcoded pack.
 const serverSource = readFileSync(new URL("../../../payloads/ghrdp-server.ps1", import.meta.url), "utf8");
 const defaultLiteral = serverSource.match(/\$script:DefaultFanOutAdapterIds\s*=\s*@\(([^)]*)\)/);
@@ -35,11 +38,40 @@ const adapterRows = (ids, status, results = []) => ids.map((adapterId) => ({
 
 function sources() {
   // Source ids are unique in production; a quick-add must not duplicate DOM ids.
-  return [...new Map([...readJson("sources.json").sources, ...added].map((s) => [s.id, s])).values()];
+  // [F85 §4] The pre-seeded set is the FIN10 operator fixture UNIONed with the
+  // F78 servers, so the existing F78/F81 specs keep their rows while the F85
+  // spec can assert one card per real site.
+  const seeded = [...readJson("sources.json").sources, ...readJson("f85-sites.json").sources];
+  return [...new Map([...seeded, ...added].map((s) => [s.id, s])).values()].filter((s) => !deleted.has(s.id));
 }
 
-function labInspect() {
-  return readJson("lab-inspect.json");
+/** [F85 §4] The fixture also lists the operator's bare domains verbatim, so a
+ *  spec can loop the SAME names the operator will type by hand. */
+function f85Sites() {
+  return readJson("f85-sites.json").sites;
+}
+
+/** [F85 §4] Bare-domain normalisation mirroring the shipped client contract
+ *  (src/components/search/AddSiteQuick.tsx normalizeUrl): an explicit scheme is
+ *  preserved, anything else gains https://. An explicit http:// is NOT
+ *  rewritten - it is refused, exactly like the server. */
+function normalizeUrl(input) {
+  const t = String(input || "").trim();
+  if (!t) return t;
+  if (/^https?:\/\//i.test(t)) return t;
+  return "https://" + t.replace(/^\/+/, "");
+}
+
+/** [F85 §4] The Lab inspect response answers from the www.<host> form of the
+ *  requested source. That is the real-world shape F84's www-tolerant same-host
+ *  fence exists for: a bare-stored site whose server redirects to www must not
+ *  surface lab.hostnameMismatch. Asserting the LINKS outside to the F78 fixture
+ *  keeps the F78 match-count assertions byte-identical. */
+function labInspect(sourceId) {
+  const fixture = readJson("lab-inspect.json");
+  const row = sources().find((s) => s.id === sourceId);
+  const host = (row && row.hostname) || fixture.hostname;
+  return { ...fixture, hostname: host.startsWith("www.") ? host : "www." + host };
 }
 
 function send(res, code, body) {
@@ -85,6 +117,23 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  if (path.startsWith("/api/f58/sources/") && req.method === "DELETE") {
+    // [F85 §4] Mirrors the shipped route: delete exactly one row, 404 on an
+    // unknown id. The F85 spec's per-site flow (add -> delete -> gone) needs a
+    // real handler, not a page.route stub.
+    const id = decodeURIComponent(path.slice("/api/f58/sources/".length));
+    const known = sources().some((s) => s.id === id);
+    if (!known) {
+      send(res, 404, { code: "NOT_FOUND", messageKey: "search.errors.generic", retryable: false });
+      return;
+    }
+    deleted.add(id);
+    const idx = added.findIndex((s) => s.id === id);
+    if (idx >= 0) added.splice(idx, 1);
+    send(res, 200, { ok: true, deletedId: id });
+    return;
+  }
+
   if (path === "/api/f58/sources" && req.method === "GET") {
     send(res, 200, { sources: sources(), count: sources().length });
     return;
@@ -96,6 +145,9 @@ const server = createServer(async (req, res) => {
       send(res, 400, { code: "VALIDATION_ERROR", messageKey: "newSiteNameRequired", retryable: false });
       return;
     }
+    // [F85 §4] Normalise FIRST (bare domain -> https://<site>), then refuse an
+    // explicit http:// with 400 - the operator-visible contract F84 shipped.
+    body.baseUrl = normalizeUrl(body.baseUrl);
     if (!body.baseUrl.startsWith("https://") || body.baseUrl.includes("@")) {
       // The mock mirrors the shipped refusal ORDER: https first, then userinfo.
       const messageKey = body.baseUrl.startsWith("https://") ? "newSiteAuthNotAllowed" : "newSiteHttpsRequired";
@@ -117,6 +169,9 @@ const server = createServer(async (req, res) => {
       name: body.name,
       baseUrl: body.baseUrl.replace(/\/+$/, ""),
       hostname,
+      // [F85 §4] The bare-stored site answered from www.<host>: the save-time
+      // probe target the server stores and allowlists alongside the typed host.
+      canonicalHostname: "www." + hostname,
       labMode: true,
       category: "software",
       allowedDomains: [hostname],
@@ -130,7 +185,6 @@ const server = createServer(async (req, res) => {
 
   if (path === "/api/lab/inspect" && req.method === "POST") {
     const body = await readBody(req);
-    const fixture = labInspect();
     if (!body || !body.sourceId) {
       send(res, 400, { code: "VALIDATION_ERROR", messageKey: "search.errors.validation", retryable: false });
       return;
@@ -139,6 +193,7 @@ const server = createServer(async (req, res) => {
       send(res, 429, { code: "RATE_LIMITED", messageKey: "lab.rateLimited", retryable: true, retryAfterSeconds: 42 });
       return;
     }
+    const fixture = labInspect(String(body.sourceId));
     const query = String(body.query || "").trim().toLowerCase();
     const links = fixture.links.map((l) => ({
       text: l.text,
@@ -189,7 +244,28 @@ const server = createServer(async (req, res) => {
     }
     const loading = search.query === "f79-loading";
     const empty = search.query === "xyz";
-    const results = loading || empty || search.cancelled ? [] : readJson("f79-results.json").results;
+    // [F85 §4] "f85 <site>" returns a file-ish row ON that site's host, which is
+    // the only way to reach the F84 "Download to RDP" button end to end (the F79
+    // fixture rows are landing pages on purpose - they keep the single Open
+    // action). Nothing else in the lane changes.
+    const f85Match = /^f85\s+(\S+)$/.exec(search.query.trim());
+    const f85Results = f85Match
+      ? [{
+          resultId: "f85-file-1",
+          adapterId: "custom",
+          nameKey: "search.sources.custom",
+          category: "software",
+          title: f85Match[1] + " public media bundle",
+          creator: "Operator fixture",
+          snippet: "A file-ish result on the stored site: the F84 download path.",
+          sizeBytes: 12345,
+          licenceTag: "open-access",
+          sourceSnapshotId: "f85-snapshot-1",
+          sourceUrl: "https://" + f85Match[1] + "/media/sample.pdf",
+          date: "2026-10-04",
+        }]
+      : null;
+    const results = loading || empty || search.cancelled ? [] : f85Results || readJson("f79-results.json").results;
     const phase = search.cancelled ? "cancelled" : loading ? "running" : "complete";
     send(res, 200, {
       searchId, phase, queryGeneration: 1, results,
@@ -204,6 +280,35 @@ const server = createServer(async (req, res) => {
     const search = searches.get(body?.searchId);
     if (search) search.cancelled = true;
     send(res, 200, { searchId: body?.searchId, cancellationState: "cancelled" });
+    return;
+  }
+
+  // [F85 §3] The diagnostic-banner contract, mirroring the shipped
+  // payloads/ghrdp-server.ps1 /api/version route (features object + sha7).
+  if (path === "/api/version") {
+    send(res, 200, {
+      ok: true,
+      server: "mock",
+      sha: "f85mock0000000000000000000000000000000",
+      sha7: "f85mock",
+      features: { autoHttps: true, wwwTolerance: true, noFallback: true, downloadToRdp: true },
+    });
+    return;
+  }
+
+  // [F85 §4] Download-to-RDP: the shipped server writes the bytes to
+  // %USERPROFILE%\Desktop\RDP-Downloads and answers {ok, path, bytes}. The mock
+  // answers the same envelope so the F85 spec can assert the button, the
+  // request flag and the success toast end to end.
+  if (path === "/api/fetch" && req.method === "POST" && url.searchParams.get("download") === "true") {
+    const body = await readBody(req);
+    const url0 = String(body?.urlImport?.url || "");
+    const fileName = (url0.split("/").pop() || "mock.bin").replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+|\.+$/g, "") || "mock.bin";
+    send(res, 200, {
+      ok: true,
+      path: "C:\\Users\\runner\\Desktop\\RDP-Downloads\\" + fileName,
+      bytes: 12345,
+    });
     return;
   }
 

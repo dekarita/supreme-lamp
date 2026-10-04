@@ -7,6 +7,12 @@ import "./styles/globals.css";
 import "./i18n";
 import App from "./App";
 import { useLangStore } from "@/stores/prefsStore";
+import { installLaunchUrlHandle } from "@/lib/launchUrl";
+
+// [F85 §3] Install the feature-detection handle for the diag banner BEFORE the
+// root renders (see the comment in src/lib/launchUrl.ts: the banner proves the
+// no-fallback contract from the running bundle, not from a server flag).
+installLaunchUrlHandle();
 
 // Sync the persisted language into i18next + <html lang>.
 const initialLang = useLangStore.getState().lang;
