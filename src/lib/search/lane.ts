@@ -1,40 +1,34 @@
-// [F69 §1.4] Search lane flag (F68 audit §H.5). /diag echoes the dispatch input
-// search_enable as `searchEnabled`; the pollers write it to
-// window.__GHRDP_SEARCH_ENABLED (F56-d §3 contract, kept verbatim) and then call
-// announceSearchLane() so React surfaces (sidebar entry, /search route) can
-// subscribe instead of reading a dead window property once at mount.
-//
-// Semantics: only an EXPLICIT `false` hides the lane. `undefined` (flag not read
-// yet, tests, static preview) keeps Search available so boot never flashes the
-// entry away and the locked 9-entry sidebar stays intact by default.
+// [F77 §2.2] The Search lane is HARDCODED ENABLED. History: F56-d §3 read the
+// /diag echo once at boot, F69 §1.4 made it reactive through
+// window.__GHRDP_SEARCH_ENABLED and F76 §1.2 narrowed the hide to an EXPLICIT
+// false. Every one of those could still flash the entry away - a stale bundle,
+// an old cached false, or a /diag served before the dispatch input landed. From
+// F77 on, NOTHING in the UI may hide Search: no window read, no
+// localStorage/sessionStorage read, no store field. window
+// .__GHRDP_SEARCH_ENABLED stays a pure /diag mirror for the diagnostics drawer
+// and the labs (main.yml's F56-d gate pins its presence at
+// src/stores/sessionStore.ts + src/hooks/useDashboardPolling.ts); it is
+// informational and has no consumer here.
 import { useSyncExternalStore } from "react";
 
+/** Kept for source compatibility: the pollers still announce the diag mirror. */
 export const SEARCH_LANE_EVENT = "ghrdp:search-lane";
 
-type LaneWindow = Window & { __GHRDP_SEARCH_ENABLED?: unknown };
-
+/** [F77] Constant true. A function (not a const) so call sites stay typed. */
 export function isSearchLaneEnabled(): boolean {
-  if (typeof window === "undefined") return true;
-  return (window as LaneWindow).__GHRDP_SEARCH_ENABLED !== false;
+  return true;
 }
 
-/** Notify subscribers after a poller updated window.__GHRDP_SEARCH_ENABLED. */
+/** [F77 §2.3] No-op: the lane cannot change, so there is nothing to announce. */
 export function announceSearchLane(): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.dispatchEvent(new Event(SEARCH_LANE_EVENT));
-  } catch {
-    /* non-DOM host: nothing to notify */
-  }
+  /* intentionally empty - the flag no longer drives any UI decision */
 }
 
-function subscribe(onChange: () => void): () => void {
-  if (typeof window === "undefined") return () => {};
-  window.addEventListener(SEARCH_LANE_EVENT, onChange);
-  return () => window.removeEventListener(SEARCH_LANE_EVENT, onChange);
+function subscribeSearchLane(_onChange: () => void): () => void {
+  return () => {};
 }
 
-/** Reactive view of the lane flag; re-renders when a poller announces a change. */
+/** [F77] Reactive signature kept (labs + drawer subscribe to it); value is true. */
 export function useSearchLaneEnabled(): boolean {
-  return useSyncExternalStore(subscribe, isSearchLaneEnabled, () => true);
+  return useSyncExternalStore(subscribeSearchLane, isSearchLaneEnabled, isSearchLaneEnabled);
 }

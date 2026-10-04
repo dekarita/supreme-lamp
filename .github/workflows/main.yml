@@ -56,6 +56,11 @@ jobs:
   # critical path except rdp's needs. Root cause of the F42 operator banner:
   # vite build lived only in launch-gates; the production rdp job had no
   # dist-ui artifact to stage, so ui-v2.html was absent on every dispatch.
+  # [F77 §2.6] Operator order (docs/f77-deploy-order.md): merge PR -> wait for
+  # build-ui.yml GREEN on main -> confirm ui-dist-<merge-sha>.zip on the release ->
+  # dispatch main.yml -> hard-reload the dashboard and read the footer "ui: <sha7>".
+  # A dispatch that races build-ui is now polled for (guard above), and the UI-sha
+  # footer badge makes a stale bundle visible without opening devtools.
   build-ui:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -92,8 +97,23 @@ jobs:
           set -euo pipefail
           asset="ui-dist-${GITHUB_SHA}.zip"
           mkdir -p "$RUNNER_TEMP/ui-dl"
-          if ! gh release download ui-dist --pattern "$asset" --pattern "${asset}.sha256" --dir "$RUNNER_TEMP/ui-dl" --clobber 2>/dev/null; then
-            echo "::warning::[F59 ui-prebuilt] no release asset ${asset} (build-ui.yml publishes one per push to main) - falling back to an on-runner build"
+          # [F77 §2.5] DEPLOY-RACE GUARD. A miss used to be treated as "build it
+          # here", which is fine on its own but is also what let a dispatch that
+          # STARTED BEFORE build-ui.yml finished fall behind. So: poll the release
+          # for up to 180s (3 x 60s, the CI-poll budget) for the asset of THIS sha.
+          hit=0
+          for i in 1 2 3; do
+            if gh release download ui-dist --pattern "$asset" --pattern "${asset}.sha256" --dir "$RUNNER_TEMP/ui-dl" --clobber 2>/dev/null; then hit=1; break; fi
+            run_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&workflow=build-ui.yml" --jq '.workflow_runs[0].id' 2>/dev/null || true)
+            echo "[F77 ui-prebuilt] ${asset} absent (poll ${i}/3); build-ui.yml run for this sha = ${run_id:-none}"
+            [ "$i" -lt 3 ] && sleep 60
+          done
+          if [ "$hit" -ne 1 ]; then
+            # [F77 §2.5] NEVER another commit's bundle: the silent cross-sha pick is
+            # exactly the stale-dashboard bug this guard closes. The only allowed
+            # fallback is an on-runner build OF THIS SHA (below), and the operator
+            # gets the exact recovery order in the log.
+            echo "::error::[F77 ui-prebuilt] ui-dist-<sha>.zip not published for ${GITHUB_SHA} after 180s; dispatch build-ui.yml manually and re-run main.yml. Falling back to an on-runner build of this exact sha (never a different sha's bundle)."
             echo 'hit=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi

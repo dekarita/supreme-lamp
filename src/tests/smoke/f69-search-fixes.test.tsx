@@ -79,30 +79,33 @@ describe("F69 §1.3 dev fixture stream on failed dispatch", () => {
 });
 
 describe("F69 §1.4 search_enable lane flag", () => {
-  it("undefined keeps the locked 9-entry sidebar; explicit false hides /search and redirects", async () => {
+  // [F77 §2.1/§2.2 SUPERSEDED PIN] this cell used to assert that an explicit
+  // searchEnabled=false dropped the entry to 8 and redirected /search. That hide
+  // is the bug F77 removes: the lane is hardcoded, so the same inputs must now
+  // keep all 9 entries AND land on the live search surface.
+  it("9 entries survive any /diag answer; false is diagnostic-only", async () => {
     expect(isSearchLaneEnabled()).toBe(true);
     const { container } = render(<App />);
     const links = () => Array.from(container.querySelectorAll('[data-testid="sidebar"] nav a')).map((a) => (a.getAttribute("href") || "").replace(/^#/, ""));
     expect(links().length).toBe(9);
     expect(links()).toContain("/search");
 
-    // poller reports search_enable=false -> entry disappears without a remount
+    // the poller mirror flips to false -> NOTHING moves in the UI
     await act(async () => {
       (window as Any).__GHRDP_SEARCH_ENABLED = false;
       announceSearchLane();
     });
-    expect(isSearchLaneEnabled()).toBe(false);
-    expect(links().length).toBe(8);
-    expect(links()).not.toContain("/search");
-    expect(document.getElementById("f56.search.nav")).toBeNull();
+    expect(isSearchLaneEnabled()).toBe(true);
+    expect(links().length).toBe(9);
+    expect(links()).toContain("/search");
+    expect(document.getElementById("f56.search.nav")).not.toBeNull();
 
-    // Alt+F deep link degrades to the Overview redirect, never a search surface
+    // Alt+F reaches the search surface even with the flag false
     await act(async () => {
       fireEvent.keyDown(window, { key: "f", altKey: true });
     });
-    expect(screen.queryByTestId("search-page")).toBeNull();
+    expect(screen.queryByTestId("search-page")).not.toBeNull();
 
-    // flag flips back -> entry returns
     await act(async () => {
       (window as Any).__GHRDP_SEARCH_ENABLED = true;
       announceSearchLane();

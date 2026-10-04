@@ -42,14 +42,17 @@ export function useDashboardPolling(): void {
         // (raw SEARCH_INPUT string). Typed here so the boot read stays compile-checked.
         const diag = await getJson<{ searchEnabled?: boolean | string | number; searchInput?: string }>("/diag");
         if (alive && diag) {
-          // [F76 §1.2] Write the lane flag ONLY on an explicit /diag answer. A payload
-          // that omits searchEnabled must not be read as false - that hid the Search
-          // entry (lane.ts:7-9: "only an EXPLICIT false hides the lane").
+          // [F77 §2.3] This write is a DIAGNOSTIC MIRROR ONLY: lane.ts is hardcoded
+          // enabled and no UI path reads this property, so a false /diag answer can
+          // neither hide the sidebar entry nor redirect /search. (F76 §1.2 had
+          // narrowed the write to an explicit answer; that was still one bad /diag
+          // away from an invisible Search.) F56-d gate launch-gates.yml:3125 pins
+          // the mirror's presence in this file + sessionStore, so it stays.
           if (diag.searchEnabled !== undefined) {
             const enabled = !!(diag.searchEnabled === true || diag.searchEnabled === 'true' || diag.searchEnabled === 1);
             // @ts-ignore
             if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_ENABLED = enabled;
-            announceSearchLane(); // [F69 §1.4] let the sidebar/route re-read the flag
+            announceSearchLane(); // [F77] no-op (lane.ts); kept for the diag subscribers
           }
           // @ts-ignore
           if (typeof window !== 'undefined') (window as any).__GHRDP_SEARCH_INPUT = diag.searchInput || '';

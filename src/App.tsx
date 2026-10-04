@@ -1,7 +1,7 @@
 // [F41 plan §2] App - HashRouter (the dashboard is served from a single URL;
 // hash routes keep deep links working without server rewrites) + AppShell
 // routes + toasts + diag side drawer + polling.
-import { HashRouter, Navigate, Route, Routes } from "react-router-dom";
+import { HashRouter, Route, Routes } from "react-router-dom";
 import { useEffect } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import { Toasts } from "@/components/primitives/Feedback";
@@ -19,21 +19,17 @@ import SearchPage from "@/pages/Search";
 import LabPage from "@/pages/search/Lab";
 import Telemetry from "@/pages/Telemetry";
 import Settings from "@/pages/Settings";
-import { useSearchLaneEnabled } from "@/lib/search/lane";
-
-// [F69 §1.4] /search honours the dispatch lane (F68 §H.5): when /diag reported
-// searchEnabled=false (window.__GHRDP_SEARCH_ENABLED === false) the route falls
-// back to Overview instead of rendering the search surface. The route itself
-// stays registered so deep links and Alt+F degrade to a redirect, never a 404.
+// [F77 §2.1] The /search + /search/lab routes are UNCONDITIONAL. The F69 §1.4 /
+// F72 §3.1 lane guards redirected both to Overview whenever /diag echoed
+// searchEnabled=false, which is the same stale-flag failure class as the hidden
+// sidebar entry: a runner that answered /diag before the dispatch input landed
+// pinned the whole surface away. The Navigate import stays (the catch-all route).
 function Search() {
-  const enabled = useSearchLaneEnabled();
-  return enabled ? <SearchPage /> : <Navigate to="/" replace />;
+  return <SearchPage />;
 }
 
-// [F72 §3.1] Lab Mode sub-route guard: same lane check as /search.
 function SearchLab() {
-  const enabled = useSearchLaneEnabled();
-  return enabled ? <LabPage /> : <Navigate to="/" replace />;
+  return <LabPage />;
 }
 
 export default function App() {
