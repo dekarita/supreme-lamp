@@ -70,8 +70,22 @@ function normalizeUrl(input) {
 function labInspect(sourceId) {
   const fixture = readJson("lab-inspect.json");
   const row = sources().find((s) => s.id === sourceId);
-  const host = (row && row.hostname) || fixture.hostname;
-  return { ...fixture, hostname: host.startsWith("www.") ? host : "www." + host };
+  const bare = (row && row.hostname) || fixture.hostname;
+  const host = bare.startsWith("www.") ? bare : "www." + bare;
+  // A real inspect returns the REQUESTED site's own links (the shipped server
+  // drops off-host hrefs before answering). Keep the F78 fixture's texts and
+  // path basenames - the F78 match/count assertions depend on both - and move
+  // every href onto this site's www host so the response is host-coherent.
+  const links = fixture.links.map((l) => {
+    let base = l.href;
+    try {
+      base = new URL(l.href).pathname.split("/").filter(Boolean).pop() || "index.html";
+    } catch {
+      base = "index.html";
+    }
+    return { text: l.text, href: "https://" + host + "/" + base };
+  });
+  return { ...fixture, hostname: host, links };
 }
 
 function send(res, code, body) {
@@ -252,8 +266,11 @@ const server = createServer(async (req, res) => {
     const f85Results = f85Match
       ? [{
           resultId: "f85-file-1",
-          adapterId: "custom",
-          nameKey: "search.sources.custom",
+          // One of the mock's canonical fan-out adapters, so the row carries a
+          // real adapter status + translated source badge (a made-up adapter id
+          // would render a raw i18n key in the card).
+          adapterId: "internet-archive",
+          nameKey: "search.sources.internetArchive",
           category: "software",
           title: f85Match[1] + " public media bundle",
           creator: "Operator fixture",

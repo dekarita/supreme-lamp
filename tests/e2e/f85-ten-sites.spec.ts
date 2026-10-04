@@ -96,8 +96,11 @@ test.describe("F85 operator fixture: every domain, end to end", () => {
       await expect(page.getByTestId("your-site-card-" + id)).toContainText(site);
 
       // 3. LAB: the mock answers from www.<site> - the F84 www-tolerant fence
-      //    must keep the Lab working and show NO hostname error.
-      await page.goto("/#/search/lab/" + id + "?q=free");
+      //    must keep the Lab working and show NO hostname error. The query is
+      //    "tls", which the fixture's own link text carries, so the matching
+      //    list is non-empty; the hostname assertion is the www proof itself.
+      await page.goto("/#/search/lab/" + id + "?q=tls");
+      await expect(page.getByTestId("lab-hostname")).toHaveText("www." + site);
       await expect(page.getByTestId("lab-link-list")).toBeVisible();
       await expect(page.getByText("different hostname")).toHaveCount(0);
 
