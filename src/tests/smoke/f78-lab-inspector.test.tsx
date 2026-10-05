@@ -7,6 +7,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import "@/i18n";
 import { LabInspector } from "@/pages/search/LabInspector";
+import { VIEWING_MODE_STORAGE_KEY } from "@/lib/launchUrl";
 import type { CustomSourceRow, LabInspectResult } from "@/api/lab";
 
 const inspectSource = vi.fn();
@@ -84,6 +85,10 @@ describe("F78 LabInspector", () => {
   });
 
   it("every link row launches through the server route (no new-tab anchor)", async () => {
+    // [F90 §C.2] jsdom's hostname is `localhost`, which F90 reads as Mode A
+    // (in-session browser) where a window.open IS the correct launch. This case
+    // is about the server-ladder contract, so the mode is pinned to Mode C.
+    window.localStorage.setItem(VIEWING_MODE_STORAGE_KEY, "unknown");
     const open = vi.fn();
     vi.stubGlobal("open", open);
     vi.stubGlobal(

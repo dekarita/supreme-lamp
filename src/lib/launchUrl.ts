@@ -12,9 +12,138 @@
 // visible reason key the caller renders in a toast (with a Retry affordance).
 // `reason` is an i18n key, never an English literal.
 import { getKey } from "@/lib/api";
+import { useLaunchChoiceStore } from "@/stores/launchChoiceStore";
 
 const SAFE_SCHEME = /^https:\/\//i;
 const MAX_LEN = 2048;
+
+// ===========================================================================
+// [F90 §C.1] VIEWING MODE - "whose browser is running this dashboard?"
+//
+// This is the question the whole launch feature turns on, and it cannot be
+// answered from the hostname alone, so it is answered from three signals in
+// priority order. Anything unproven degrades to "unknown", which keeps the
+// F86 backend ladder (the behaviour that already works today).
+// ===========================================================================
+export type ViewingMode = "web-desktop" | "tailscale-local" | "unknown";
+
+const LOCAL_HOST = /^localhost$|^127\.0\.0\.1$/i;
+const TAILNET_HOST = /\.tail[a-z0-9]+\.ts\.net$/i;
+const PRIVATE_HOST = /^(10|172|192)\./i;
+
+/**
+ * The runner's remote desktop runs at a handful of FIXED geometries with a
+ * device pixel ratio of exactly 1 (no OS or browser scaling is applied inside
+ * the session). A laptop browser almost always reports a fractional or >1 ratio,
+ * or a viewport shaped by a window the operator resized. Matching both is a
+ * heuristic, not a proof - which is why the badge (§C.3) is CLICKABLE and the
+ * operator's choice wins over every signal below.
+ */
+const SESSION_GEOMETRIES: ReadonlyArray<readonly [number, number]> = [
+  [1024, 768],
+  [1280, 720],
+  [1280, 800],
+  [1280, 1024],
+  [1366, 768],
+  [1600, 900],
+  [1920, 1080],
+];
+
+export const VIEWING_MODE_STORAGE_KEY = "f90.viewingMode";
+export const VIEWING_MODE_PARAM = "viewingMode";
+
+function readStoredMode(): ViewingMode | null {
+  try {
+    const v = window.localStorage.getItem(VIEWING_MODE_STORAGE_KEY);
+    if (v === "web-desktop" || v === "tailscale-local" || v === "unknown") return v;
+  } catch {
+    // A locked-down storage area is not a reason to break the page.
+  }
+  return null;
+}
+
+export function setViewingMode(mode: ViewingMode): void {
+  try {
+    window.localStorage.setItem(VIEWING_MODE_STORAGE_KEY, mode);
+  } catch {
+    /* ignore */
+  }
+}
+
+export function isRunnerSizedViewport(w: number, h: number, dpr: number): boolean {
+  if (dpr !== 1) return false;
+  return SESSION_GEOMETRIES.some(([gw, gh]) => gw === w && gh === h);
+}
+
+/**
+ * [F90 §C.1] Returns the mode, or "unknown" when nothing is provable.
+ *
+ *   1. an explicit operator choice (URL param or localStorage) always wins;
+ *   2. loopback means the browser IS the session - a laptop cannot load the
+ *      runner's own 127.0.0.1, so this one is proof, not a guess;
+ *   3. a tailnet / RFC1918 host is ambiguous, so it needs the viewport to look
+ *      like the fixed session geometry before claiming "web-desktop".
+ */
+/** [F90 §C.1] Raw detection: what the signals SAY, before any safety gate. */
+export function detectViewingMode(search?: string): ViewingMode {
+  if (typeof window === "undefined") return "unknown";
+  const params = new URLSearchParams(search ?? window.location.search);
+  const forced = params.get(VIEWING_MODE_PARAM);
+  if (forced === "web-desktop" || forced === "tailscale-local" || forced === "unknown") return forced;
+
+  const stored = readStoredMode();
+  if (stored) return stored;
+
+  const host = String(window.location.hostname || "");
+  if (LOCAL_HOST.test(host) && isRunnerSizedViewport(window.innerWidth, window.innerHeight, window.devicePixelRatio)) {
+    return "web-desktop";
+  }
+  if (TAILNET_HOST.test(host) || PRIVATE_HOST.test(host)) {
+    return isRunnerSizedViewport(window.innerWidth, window.innerHeight, window.devicePixelRatio)
+      ? "web-desktop"
+      : "tailscale-local";
+  }
+  return "unknown";
+}
+
+export interface ViewingModeState {
+  /** The mode `launchUrl()` will ACT ON. */
+  mode: ViewingMode;
+  /** What the hostname + viewport signals alone suggested. */
+  detected: ViewingMode;
+  /** True when the mode came from the operator (URL param or a stored choice). */
+  confirmed: boolean;
+}
+
+/**
+ * [F90 §C.1] The mode the launch path is allowed to act on.
+ *
+ * `web-desktop` is the one mode that CHANGES behaviour (it opens the link in
+ * the dashboard's own browser and skips the server ladder), so a guess is not
+ * good enough for it. The cost of being wrong is asymmetric:
+ *
+ *   false "web-desktop" -> the link opens in whatever browser is running the
+ *                          dashboard, which is EXACTLY the silent
+ *                          wrong-machine failure F84/F85 removed;
+ *   false "unknown"     -> the server ladder runs, which is today's behaviour
+ *                          and is correct in every case.
+ *
+ * So an inferred "web-desktop" is downgraded to "unknown" until the operator
+ * confirms it (badge, or ?viewingMode=web-desktop). Everything else - including
+ * "tailscale-local", which only ever ADDS an explicit choice and never opens a
+ * window - is acted on as detected.
+ */
+export function resolveViewingMode(search?: string): ViewingModeState {
+  if (typeof window === "undefined") return { mode: "unknown", detected: "unknown", confirmed: false };
+  const params = new URLSearchParams(search ?? window.location.search);
+  const forced = params.get(VIEWING_MODE_PARAM);
+  const stored = readStoredMode();
+  const confirmed =
+    forced === "web-desktop" || forced === "tailscale-local" || forced === "unknown" || stored !== null;
+  const detected = detectViewingMode(search);
+  const mode = confirmed ? detected : detected === "web-desktop" ? "unknown" : detected;
+  return { mode, detected, confirmed };
+}
 
 export interface LaunchOutcome {
   ok: boolean;
@@ -27,6 +156,16 @@ export interface LaunchOutcome {
   tier?: number;
   /** [F87 §D.2] The rung's detail string (e.g. "direct-spawn"). */
   tierDetail?: string;
+  /** [F90 §C.1] The viewing mode the launch was resolved under. */
+  mode?: ViewingMode;
+  /** [F90 §C.2] true when the link was opened by the dashboard's OWN browser
+   *  (web-desktop): no server round trip, no rung. */
+  viaWindowOpen?: boolean;
+  /** [F90 §C.2] true when the operator must choose explicitly; the URL is
+   *  carried on the outcome and nothing has been opened. */
+  needsChoice?: boolean;
+  /** [F90 §C.2] the URL awaiting the operator's decision. */
+  url?: string;
 }
 
 export function isSafeLaunchUrl(raw: string): boolean {
@@ -74,6 +213,9 @@ export function launchFailureToast(
   out: LaunchOutcome,
   t: (key: string, opts?: Record<string, unknown>) => string,
 ): string {
+  // [F90 §C.2] a pending operator choice is not a failure toast - the modal is
+  // already on screen; a second "could not open in RDP" line would contradict it.
+  if (out.needsChoice) return "";
   if (typeof out.tier === "number" && out.tier >= 0) {
     return t("search.launchUrl.failedTier", { tier: out.tier, reason: t(out.reason || "search.launchUrl.failed") });
   }
@@ -83,6 +225,37 @@ export function launchFailureToast(
 export async function launchUrl(raw: string): Promise<LaunchOutcome> {
   const url = String(raw || "").trim();
   if (!isSafeLaunchUrl(url)) return { ok: false, reason: "search.launchUrl.failed", code: "VALIDATION_ERROR" };
+
+  // [F90 §C.2] Mode A - the dashboard IS the RDP session's browser, so a plain
+  // window.open lands in that same browser. No round trip, no rung that can
+  // fail. A blocked popup is NOT a silent fallback: it falls through to the
+  // ladder below rather than pretending it worked.
+  const { mode } = resolveViewingMode();
+  if (mode === "web-desktop") {
+    try {
+      const win = window.open(url, "_blank", "noopener,noreferrer");
+      if (win) return { ok: true, mode, viaWindowOpen: true };
+    } catch {
+      /* fall through to the ladder */
+    }
+  }
+
+  const out = await launchUrlViaServer(url);
+  out.mode = mode;
+
+  // [F90 §C.2] Mode B - the ladder could not reach a desktop and the dashboard
+  // is running in the OPERATOR's own browser. window.open here would open the
+  // link on the wrong machine and look like a success, so instead of guessing
+  // we hand the URL to the operator.
+  if (!out.ok && mode === "tailscale-local") {
+    const reason = out.reason || "search.launchUrl.failed";
+    useLaunchChoiceStore.getState().open(url, reason);
+    return { ok: false, mode, needsChoice: true, url, reason, code: out.code };
+  }
+  return out;
+}
+
+async function launchUrlViaServer(url: string): Promise<LaunchOutcome> {
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   const key = getKey();
   if (key) headers["X-Dash-Token"] = key;

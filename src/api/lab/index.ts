@@ -58,6 +58,12 @@ export interface LabInspectResult {
   /** [F88 §A.3] The visible "Source:" line + timing. */
   sourceDisplay?: string;
   sourceStrategy?: string;
+  /** [F90 §B.2] the README's owning repo ("sindresorhus/awesome"), from the
+   *  hint's declared redirectTo - so the Lab can NAME the real source. */
+  sourceRepo?: string;
+  /** [F90 §B.2/§D] sub-items found in the matched markdown section (row 0, the
+   *  section link itself, is not counted). */
+  sourceItemCount?: number;
   tookMs?: number;
   /** [F88 §A.3] One entry per source actually fetched - the Lab tabs across them. */
   sourceSets?: LabSourceSet[];
