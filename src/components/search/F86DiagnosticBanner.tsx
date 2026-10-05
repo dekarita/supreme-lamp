@@ -22,7 +22,10 @@ import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { apiBase } from "@/lib/api";
-import { launchUrl } from "@/lib/launchUrl";
+// [F91 §B.2] the diag test button opens in MIRROR MODE (local tab + launcher
+// queue), and the banner gained the launcher-service line the F91 operator
+// verify step reads ("Launcher: running, heartbeat 2s ago, queue depth 0").
+import { openMirrored } from "@/lib/launchUrl";
 
 /** Same source as the F77 bottom-bar badge (src/components/layout/AppShell.tsx). */
 export const UI_SHA7: string = (import.meta.env.VITE_BUILD_SHA as string | undefined) || "dev";
@@ -110,6 +113,8 @@ export function F86DiagnosticBanner() {
   // [F87 §D.1] the "test launch" outcome + the download-dir probe.
   const [testLaunch, setTestLaunch] = useState<{ busy: boolean; text: string; ok: boolean | null }>({ busy: false, text: "", ok: null });
   const [dir, setDir] = useState<{ path: string; ok: boolean | null }>({ path: "", ok: null });
+  // [F91 §A.4] GET /api/launcher/health - the persistent launcher service state.
+  const [launcher, setLauncher] = useState<{ serviceRunning: boolean; heartbeatAge: number; queueDepth: number; taskExists: boolean } | null>(null);
   const enabled = params.get("diag") === "1";
 
   useEffect(() => {
@@ -132,6 +137,15 @@ export function F86DiagnosticBanner() {
       } catch {
         if (alive) setDiag(null);
       }
+      // [F91 §A.4] the launcher line. A pre-F91 server answers 404: the row then
+      // says "launcher: absent" (the mirror toast's offline half), never a guess.
+      try {
+        const r3 = await fetch(apiBase() + "/api/launcher/health", { cache: "no-store" });
+        const body3 = (await r3.json().catch(() => null)) as { serviceRunning?: boolean; heartbeatAge?: number; queueDepth?: number; taskExists?: boolean } | null;
+        if (alive && r3.ok && body3) setLauncher({ serviceRunning: body3.serviceRunning === true, heartbeatAge: Number(body3.heartbeatAge ?? -1), queueDepth: Number(body3.queueDepth ?? 0), taskExists: body3.taskExists === true });
+      } catch {
+        if (alive) setLauncher(null);
+      }
       if (alive) setProbed(true);
     })();
     return () => {
@@ -141,14 +155,16 @@ export function F86DiagnosticBanner() {
 
   if (!enabled) return null;
 
-  // [F87 §D.1] One real launch of example.com through the F86 ladder; the
-  // chip reports the rung that answered (or the failure key) - the two-second
-  // "does a window open in RDP" check the operator does first.
+  // [F91 §B.2] The diag test click is a MIRROR click: example.com must open in
+  // the dashboard's browser AND in the RDP session (via the launcher queue).
+  // The chip reports both halves; a missing/offline launcher shows the reason
+  // as an info line - the F87 "test launch failed" error state is retired.
   const runTestLaunch = async () => {
     setTestLaunch({ busy: true, text: "...", ok: null });
-    const out = await launchUrl(DIAG_TEST_LAUNCH_URL);
-    if (out.ok) setTestLaunch({ busy: false, ok: true, text: t("search.diag.testLaunchOk", { tier: out.tier || "?" }) });
-    else setTestLaunch({ busy: false, ok: false, text: t("search.diag.testLaunchFail", { reason: t(out.reason || "search.launchUrl.failed") }) });
+    const out = await openMirrored(DIAG_TEST_LAUNCH_URL);
+    if (out.localOpened && out.rdpOk) setTestLaunch({ busy: false, ok: true, text: t("mirror.openedBoth") });
+    else if (out.localOpened) setTestLaunch({ busy: false, ok: false, text: t("mirror.rdpOffline", { reason: out.rdpReason || "offline" }) });
+    else setTestLaunch({ busy: false, ok: false, text: t("mirror.blocked") });
     // re-read the diag so "Last launch" and the history follow.
     try {
       const r2 = await fetch(apiBase() + "/api/launch-url/diag", { cache: "no-store" });
@@ -245,6 +261,14 @@ export function F86DiagnosticBanner() {
       {probed && !version ? <span data-testid="f85-diag-server-missing"> ({t("search.diag.noServer")})</span> : null}
       {/* [F87 §D.1] second line: test launch, last five launches, download dir, self-test shortcut */}
       <div className="basis-full flex flex-wrap items-center gap-x-2 gap-y-1 pt-1 border-t border-default">
+        {/* [F91 §A.4] the operator's step-5 verify line. */}
+        <span data-testid="f91-diag-launcher" data-ok={launcher && launcher.serviceRunning ? "1" : "0"} className={launcher && launcher.serviceRunning ? "text-primary" : "text-warning"}>
+          {t("mirror.launcherLine", {
+            state: launcher ? (launcher.serviceRunning ? t("mirror.launcherRunning") : launcher.taskExists ? t("mirror.launcherStale") : t("mirror.launcherMissing")) : t("mirror.launcherAbsent"),
+            age: launcher && launcher.heartbeatAge >= 0 ? Math.round(launcher.heartbeatAge / 1000) : "-",
+            depth: launcher ? launcher.queueDepth : "-",
+          })}
+        </span>
         <button
           id="f87.diag.testLaunch"
           data-testid="f87-diag-test-launch"

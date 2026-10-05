@@ -1296,6 +1296,168 @@ function Invoke-F88DownloadToRdp {
         return $f88
     }
 }
+# ============================================================================
+# [F91 §A.3/§A.4/§D.2] MIRROR-MODE server surface. Three script-scope helpers
+# shared by the routes AND the extended /api/f87-selftest, so the proof path
+# and the live path cannot drift apart:
+#   Get-F91LauncherPaths   - the ONE contract for queue/heartbeat/log paths.
+#   Test-F91QueueJob       - validation for /api/launcher/queue bodies (and the
+#                            selftest's synthetic noop job).
+#   Get-F91LauncherHealth  - the /api/launcher/health payload + the selftest's
+#                            launcherServiceRunning/taskSchedulerHealth lines.
+#   Invoke-F91StreamFetch  - the /api/stream relay: https-only, exact-host
+#                            (minus www) allowlist, capped bytes, RAW bytes +
+#                            upstream Content-Type (Invoke-F78SecureFetch
+#                            UTF8-decodes - wrong for audio - hence its own
+#                            fetch, shaped on the F88 download guards).
+# The launcher SERVICE itself is payloads/ghrdp-rdp-launcher.ps1, registered
+# as the GHRDP-Launcher ONLOGON task by .github/workflows/main.yml (F91 §A.2).
+# ============================================================================
+function Get-F91LauncherPaths {
+    # GHRDP_F91_ROOT lets the lab (and a future relocation) point the contract
+    # at a writable dir; production leaves it unset -> C:\ProgramData\ghrdp.
+    $root = 'C:\ProgramData\ghrdp'
+    try { if ($env:GHRDP_F91_ROOT) { $root = [string]$env:GHRDP_F91_ROOT } } catch { }
+    return [ordered]@{
+        root      = $root
+        queueDir  = (Join-Path $root 'launcher-queue')
+        heartbeat = (Join-Path $root 'launcher-heartbeat.txt')
+        log       = (Join-Path $root 'launcher.log')
+    }
+}
+function Test-F91QueueJob {
+    param([string]$Url, [string]$Mode)
+    $out = [ordered]@{ ok = $false; reason = ''; safeUrl = '' }
+    $m = ([string]$Mode).Trim().ToLowerInvariant()
+    # 'noop' is the SELFTEST probe mode (no browser, no desktop) - a caller can
+    # request it, the launcher only ever logs + consumes such a job.
+    if (@('navigate','download','explorer','noop') -notcontains $m) { $out.reason = 'mode'; return $out }
+    $u = ([string]$Url).Trim()
+    if (-not $u -or $u.Length -gt 2048) { $out.reason = 'length'; return $out }
+    if ($m -eq 'explorer') {
+        # a LOCAL folder path only - drive-anchored, no scheme, no URL syntax.
+        if ($u -match '^[A-Za-z]:\\[^<>:"|?*]*$') { $out.ok = $true; $out.safeUrl = $u; $out.reason = ''; return $out }
+        $out.reason = 'explorer-path'; return $out
+    }
+    if ($m -eq 'download' -or $m -eq 'noop') {
+        # notification-only rows: url may be the informational https link or empty.
+        if (-not $u) { $out.ok = $true; $out.safeUrl = ''; $out.reason = ''; return $out }
+        if ($u -notmatch '^(?i)https://') { $out.reason = 'scheme'; return $out }
+        $out.ok = $true; $out.safeUrl = $u; $out.reason = ''; return $out
+    }
+    # navigate: the hard fence. javascript:/file:/data:/vbscript: cannot even
+    # reach the Uri parser; only a bare https URL with no userinfo passes.
+    if ($u -match '(?i)^(javascript|file|data|vbscript|about|ms-msdt|search|folder)?:') { $out.reason = 'scheme'; return $out }
+    if ($u -notmatch '^(?i)https://') { $out.reason = 'scheme'; return $out }
+    $uri = $null
+    try { $uri = [System.Uri]$u } catch { $uri = $null }
+    if (-not $uri -or $uri.Scheme -ne 'https' -or $uri.UserInfo -or -not $uri.Host) { $out.reason = 'malformed'; return $out }
+    $out.ok = $true; $out.safeUrl = $u; $out.reason = ''; return $out
+}
+function Get-F91LauncherHealth {
+    $p = Get-F91LauncherPaths
+    $out = [ordered]@{
+        ok = $true; serviceRunning = $false; heartbeatAge = -1; heartbeatAt = ''
+        queueDepth = 0; queueDir = [string]$p.queueDir; log = @(); logPath = [string]$p.log
+        taskExists = $false; taskState = ''; activeUser = ''; scriptPresent = $false
+    }
+    try { $out.scriptPresent = [bool](Test-Path -LiteralPath (Join-Path $p.root 'ghrdp-rdp-launcher.ps1')) } catch { }
+    try {
+        if (Test-Path -LiteralPath $p.heartbeat) {
+            $hb = ([string](Get-Content -LiteralPath $p.heartbeat -Raw -ErrorAction SilentlyContinue)).Trim()
+            if ($hb) {
+                $dt = [datetime]::MinValue
+                if ([datetime]::TryParse($hb, [ref]$dt)) {
+                    $age = ((Get-Date).ToUniversalTime() - $dt.ToUniversalTime()).TotalMilliseconds
+                    if ($age -ge 0 -and $age -lt 30000) { $out.serviceRunning = $true }
+                    $out.heartbeatAge = [int64][Math]::Round($age)
+                    $out.heartbeatAt = $dt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+                }
+            }
+        }
+    } catch { }
+    try {
+        if (Test-Path -LiteralPath $p.queueDir) { $out.queueDepth = @(Get-ChildItem -LiteralPath $p.queueDir -Filter '*.job' -ErrorAction SilentlyContinue).Count }
+    } catch { }
+    try {
+        if (Test-Path -LiteralPath $p.log) {
+            $all = @(Get-Content -LiteralPath $p.log -Tail 10 -Encoding UTF8 -ErrorAction SilentlyContinue)
+            $out.log = @($all | ForEach-Object { [string]$_ })
+        }
+    } catch { }
+    # Windows-only probes, fail-soft on any host without the scheduler.
+    try {
+        $q = & schtasks.exe /Query /TN GHRDP-Launcher /FO LIST 2>$null
+        $qexit = $LASTEXITCODE; $LASTEXITCODE = 0
+        if ($qexit -eq 0) {
+            $out.taskExists = $true
+            foreach ($line in @($q)) { if ($line -match '(?i)^\s*Status\s*:\s*(.+)$') { $out.taskState = ([string]$Matches[1]).Trim(); break } }
+        }
+    } catch { }
+    try { $qu = & quser.exe 2>$null; $LASTEXITCODE = 0; foreach ($line in @($qu)) { if ($line -match '^\s*>?\s*(\S+)\s+\S+\s+\d+\s+Active') { $out.activeUser = $Matches[1]; break } } } catch { }
+    return $out
+}
+function Invoke-F91StreamFetch {
+    # -ProbeHead answers the selftest's streamProxyTest without pulling a body:
+    # upstream HEAD, status + Content-Type only (bytes stay $null).
+    param([string]$Url, [int]$MaxBytes = 67108864, [switch]$ProbeHead)
+    $f91 = [ordered]@{ ok = $false; httpStatus = 502; contentType = 'application/octet-stream'; bytes = $null; byteLen = [int64]0; error = ''; host = '' }
+    $f91Uri = $null
+    try { $f91Uri = [System.Uri]$Url } catch { $f91Uri = $null }
+    if (-not $f91Uri -or $f91Uri.Scheme -ne 'https' -or $f91Uri.UserInfo) { $f91.error = 'not-https'; $f91.httpStatus = 400; return $f91 }
+    $f91.host = [string]$f91Uri.Host.ToLowerInvariant()
+    $f91Req = $null; $f91Resp = $null
+    try {
+        $f91Req = [System.Net.HttpWebRequest]::Create($f91Uri)
+        if ($ProbeHead) { $f91Req.Method = 'HEAD' } else { $f91Req.Method = 'GET' }
+        $f91Req.Timeout = 30000
+        $f91Req.ReadWriteTimeout = 30000
+        $f91Req.AllowAutoRedirect = $false   # a redirect chain would silently widen the host fence
+        $f91Req.UserAgent = 'GHRDP-Stream/1.0'
+        $f91Resp = $f91Req.GetResponse()
+        try { $f91.contentType = [string]$f91Resp.ContentType } catch { }
+        $f91.httpStatus = [int]$f91Resp.StatusCode
+        if ($ProbeHead) {
+            try { $f91Resp.Close() } catch { }
+            $f91.ok = $true
+            return $f91
+        }
+        $f91In = $f91Resp.GetResponseStream()
+        $f91Ms = New-Object System.IO.MemoryStream
+        $f91Arr = $null
+        try {
+            $f91Buf = New-Object byte[] 65536
+            while ($true) {
+                $f91Read = $f91In.Read($f91Buf, 0, $f91Buf.Length)
+                if ($f91Read -le 0) { break }
+                if (($f91Ms.Length + $f91Read) -gt $MaxBytes) { $f91.error = 'size-limit'; $f91.httpStatus = 413; return $f91 }
+                $f91Ms.Write($f91Buf, 0, $f91Read)
+            }
+            $f91Arr = $f91Ms.ToArray()
+        } finally {
+            try { $f91Ms.Dispose() } catch { }
+            try { $f91In.Dispose() } catch { }
+            try { $f91Resp.Close() } catch { }
+        }
+        $f91.bytes = $f91Arr
+        $f91.byteLen = [int64]@($f91Arr).Length
+        $f91.ok = $true
+        return $f91
+    } catch {
+        try { if ($f91Resp) { $f91Resp.Close() } } catch { }
+        # a 4xx/5xx answer surfaces as WebException - keep the upstream status
+        # so the route can pass an honest code through instead of 502.
+        try {
+            if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+                $f91.httpStatus = [int]$_.Exception.Response.StatusCode
+            }
+        } catch { }
+        $msg = [string]$_.Exception.Message
+        if ($msg -match '(?i)30[123]|redirect') { $f91.error = 'redirect-refused' } else { $f91.error = $msg }
+        if ($f91.httpStatus -eq 200) { $f91.httpStatus = 502 }
+        return $f91
+    }
+}
 function Invoke-ClientRequest {
     param($Client, $Token)
     $stream = $null
@@ -3486,7 +3648,7 @@ function Invoke-ClientRequest {
         # The condition now admits every route the block houses; the inner
         # handlers still dispatch per-path and return their own status, and
         # any other method hits the same 405 at the block end.
-        if ($path -eq '/api/f58/sources' -or $path -eq '/api/lab/inspect' -or $path -like '/api/f58/sources/*' -or $path -eq '/api/launch-url' -or $path -eq '/api/launch-url/diag' -or $path -eq '/api/f87-selftest' -or $path -eq '/api/preview') {
+        if ($path -eq '/api/f58/sources' -or $path -eq '/api/lab/inspect' -or $path -like '/api/f58/sources/*' -or $path -eq '/api/launch-url' -or $path -eq '/api/launch-url/diag' -or $path -eq '/api/f87-selftest' -or $path -eq '/api/preview' -or $path -eq '/api/launcher/queue' -or $path -eq '/api/launcher/health' -or $path -eq '/api/stream') {
             if ($parts.method -eq 'OPTIONS') {
                 Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@()) -ExtraHeaders "Access-Control-Allow-Headers: Content-Type, X-Dash-Token`r`nAccess-Control-Max-Age: 600"
                 return
@@ -4962,6 +5124,166 @@ function Invoke-ClientRequest {
                 return
             }
 
+            # [F91 §A.3] POST /api/launcher/queue - MIRROR MODE hand-off. The
+            # dashboard has ALREADY opened the link locally by the time this
+            # fires; all that is left is dropping a durable job for the
+            # persistent launcher service (payloads/ghrdp-rdp-launcher.ps1) to
+            # execute in the interactive session. Validation is deliberately
+            # the SAME Test-F91QueueJob the launcher applies locally (defense
+            # in depth, identical fences): https only, no userinfo, no
+            # javascript:/file:/data:, mode in [navigate,download,explorer,noop]
+            # (noop = selftest probe only). Rate limit: 60 writes/min/token.
+            # A queue dir that cannot be written answers 503 with an honest
+            # reason - the client's toast then degrades to "Opened locally ✓
+            # (RDP launcher: ...)" instead of ever claiming a mirror it did
+            # not deliver, and NEVER shows a "could not open" error (F91 §-1).
+            if ($path -eq '/api/launcher/queue' -and $parts.method -eq 'POST') {
+                if (-not $script:F91QueueRate) { $script:F91QueueRate = @{} }
+                $f91Now = (Get-Date).ToUniversalTime()
+                $f91Tok = ''
+                try { $f91Tok = [string]$parts.headers['x-dash-token'] } catch { $f91Tok = '' }
+                $f91Hits = @()
+                if ($f91Tok -and $script:F91QueueRate.ContainsKey($f91Tok)) { $f91Hits = @($script:F91QueueRate[$f91Tok] | Where-Object { ($f91Now - $_).TotalSeconds -lt 60 }) }
+                if ($f91Hits.Count -ge 60) {
+                    $f91Retry = [int][Math]::Ceiling(60 - ($f91Now - $f91Hits[0]).TotalSeconds)
+                    if ($f91Retry -lt 1) { $f91Retry = 1 }
+                    Send-ClientResponse -Stream $stream -Code 429 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'RATE_LIMITED'; retryAfterSeconds = $f91Retry }))
+                    return
+                }
+                $f91BodyText = ''
+                try { $f91BodyText = [System.Text.Encoding]::UTF8.GetString($parts.body) } catch { $f91BodyText = '' }
+                $f91Json = $null
+                try { $f91Json = $f91BodyText | ConvertFrom-Json -ErrorAction Stop } catch { $f91Json = $null }
+                if (-not $f91Json) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
+                    return
+                }
+                $f91JobUrl = ''
+                $f91JobMode = ''
+                $f91JobName = ''
+                try { $f91JobUrl = [string]$f91Json.url } catch { }
+                try { $f91JobMode = [string]$f91Json.mode } catch { }
+                try { $f91JobName = [string]$f91Json.name } catch { }
+                $f91Check = Test-F91QueueJob -Url $f91JobUrl -Mode $f91JobMode
+                if (-not $f91Check.ok) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; reason = [string]$f91Check.reason }))
+                    return
+                }
+                $f91Paths = Get-F91LauncherPaths
+                $f91JobId = [guid]::NewGuid().ToString('N')
+                try {
+                    if (-not (Test-Path -LiteralPath $f91Paths.queueDir)) { New-Item -ItemType Directory -Path $f91Paths.queueDir -Force | Out-Null }
+                    $f91JobFile = Join-Path $f91Paths.queueDir ($f91JobId + '.job')
+                    $f91Job = [ordered]@{ id = $f91JobId; url = [string]$f91Check.safeUrl; mode = ([string]$f91JobMode).Trim().ToLowerInvariant(); name = $f91JobName; timestamp = $f91Now.ToString('yyyy-MM-ddTHH:mm:ssZ') }
+                    [System.IO.File]::WriteAllText($f91JobFile, ($f91Job | ConvertTo-Json -Compress -Depth 4))
+                    # unique-write BEFORE counting, so a refused write never
+                    # consumes a rate slot.
+                    $f91Hits += $f91Now
+                    $script:F91QueueRate[$f91Tok] = $f91Hits
+                    Write-ClientAudit ('f91 launcher-queue job=' + $f91JobId + ' mode=' + $f91Job.mode + ' url=' + $(try { ([System.Uri]$f91Job.url).Host } catch { '' }))
+                    Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; queuedAt = $f91Job.timestamp; jobId = $f91JobId }))
+                    return
+                } catch {
+                    Send-ClientResponse -Stream $stream -Code 503 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'QUEUE_DIR_UNAVAILABLE'; reason = [string]$_.Exception.Message }))
+                    Write-ClientAudit ('f91 launcher-queue FAILED: ' + [string]$_.Exception.Message)
+                    return
+                }
+            }
+
+            # [F91 §A.4] GET /api/launcher/health - the mirror-mode heartbeat
+            # readout behind /#/search?diag=1 ("Launcher: running, heartbeat
+            # 2s ago, queue depth 0"). Read-only over files + schtasks, so it
+            # answers honestly (serviceRunning=false) when the service has
+            # never started - the UI keeps working, it just says so.
+            if ($path -eq '/api/launcher/health' -and $parts.method -eq 'GET') {
+                $f91Health = Get-F91LauncherHealth
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $f91Health)
+                return
+            }
+
+            # [F91 §D.2] GET|HEAD /api/stream?url=<encoded> - the audio relay
+            # that makes "inline play" arrive from the RUNNER's network view:
+            # the bytes travel source -> runner -> dashboard, so the content
+            # provider serves RDP's IP, never the operator's laptop. Fences:
+            # https only via Test-F91QueueJob's navigate rules, then an
+            # EXACT-host allowlist (minus www) of the custom sources the
+            # operator registered ($script:F78AllowHosts) unioned with the
+            # eleven operator sites (f86-site-hints keys) - this route can
+            # never become a general proxy. Redirects are refused (they would
+            # silently widen the fence). 64 MB cap, 60 streams/min/token, and
+            # at most 10 streams in flight per token.
+            if ($path -eq '/api/stream' -and ($parts.method -eq 'GET' -or $parts.method -eq 'HEAD')) {
+                $f91sUrl = ''
+                try { $f91sUrl = [string]$parts.query['url'] } catch { $f91sUrl = '' }
+                $f91sCheck = Test-F91QueueJob -Url $f91sUrl -Mode 'navigate'
+                if (-not $f91sCheck.ok) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; reason = [string]$f91sCheck.reason }))
+                    return
+                }
+                $f91sHost = ''
+                try { $f91sHost = ([System.Uri]$f91sUrl).Host.ToLowerInvariant() } catch { }
+                $f91sBase = $f91sHost -replace '^www\.', ''
+                $f91sAllowed = $false
+                if (-not $script:F78AllowHosts) { $script:F78AllowHosts = @{} }
+                foreach ($f91sKey in @($script:F78AllowHosts.Keys)) {
+                    if (([string]$f91sKey).ToLowerInvariant() -replace '^www\.', '' -eq $f91sBase) { $f91sAllowed = $true; break }
+                }
+                if (-not $f91sAllowed) {
+                    try { if ((Get-F86SiteHints).Contains($f91sHost) -or (Get-F86SiteHints).Contains('www.' + $f91sHost)) { $f91sAllowed = $true } } catch { }
+                }
+                if (-not $f91sAllowed) {
+                    Send-ClientResponse -Stream $stream -Code 403 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'HOSTNAME_MISMATCH'; messageKey = 'lab.hostnameMismatch' }))
+                    return
+                }
+                if (-not $script:F91StreamRate) { $script:F91StreamRate = @{} }
+                if (-not $script:F91StreamActive) { $script:F91StreamActive = @{} }
+                $f91sTok = ''
+                try { $f91sTok = [string]$parts.headers['x-dash-token'] } catch { }
+                $f91sNow = (Get-Date).ToUniversalTime()
+                $f91sHits = @()
+                if ($f91sTok -and $script:F91StreamRate.ContainsKey($f91sTok)) { $f91sHits = @($script:F91StreamRate[$f91sTok] | Where-Object { ($f91sNow - $_).TotalSeconds -lt 60 }) }
+                if ($f91sHits.Count -ge 60) {
+                    $f91sRetry = [int][Math]::Ceiling(60 - ($f91sNow - $f91sHits[0]).TotalSeconds)
+                    if ($f91sRetry -lt 1) { $f91sRetry = 1 }
+                    Send-ClientResponse -Stream $stream -Code 429 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'RATE_LIMITED'; retryAfterSeconds = $f91sRetry }))
+                    return
+                }
+                $f91sLive = 0
+                if ($f91sTok -and $script:F91StreamActive.ContainsKey($f91sTok)) { $f91sLive = [int]$script:F91StreamActive[$f91sTok] }
+                if ($f91sLive -ge 10) {
+                    Send-ClientResponse -Stream $stream -Code 429 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'STREAM_CONCURRENCY'; retryAfterSeconds = 5 }))
+                    return
+                }
+                $f91sHits += $f91sNow
+                $script:F91StreamRate[$f91sTok] = $f91sHits
+                $script:F91StreamActive[$f91sTok] = $f91sLive + 1
+                try {
+                    $f91sHead = $parts.method -eq 'HEAD'
+                    $f91sGot = $null
+                    if ($f91sHead) { $f91sGot = Invoke-F91StreamFetch -Url $f91sUrl -MaxBytes 1 -ProbeHead } else { $f91sGot = Invoke-F91StreamFetch -Url $f91sUrl }
+                    if (-not $f91sGot.ok -and -not ($f91sHead -and [int]$f91sGot.httpStatus -ge 200 -and [int]$f91sGot.httpStatus -lt 400)) {
+                        $f91sCode = 'TRANSPORT_UNAVAILABLE'
+                        if ([string]$f91sGot.error -eq 'redirect-refused') { $f91sCode = 'REDIRECT_REFUSED' }
+                        if ([string]$f91sGot.error -eq 'size-limit') { $f91sCode = 'SIZE_LIMIT' }
+                        $f91sStatus = [int]$f91sGot.httpStatus
+                        if ($f91sStatus -lt 400 -or $f91sStatus -gt 599) { $f91sStatus = 502 }
+                        Send-ClientResponse -Stream $stream -Code $f91sStatus -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = $f91sCode; messageKey = 'search.errors.generic'; detail = [string]$f91sGot.error }))
+                        return
+                    }
+                    $f91sCt = 'application/octet-stream'
+                    try { if ($f91sGot.contentType) { $f91sCt = [string]$f91sGot.contentType } } catch { }
+                    $f91sBody = [byte[]]@()
+                    if (-not $f91sHead -and $f91sGot.bytes) { $f91sBody = [byte[]]$f91sGot.bytes }
+                    Send-ClientResponse -Stream $stream -Code 200 -CType $f91sCt -Body $f91sBody
+                    Write-ClientAudit ('f91 stream ' + $(if ($f91sHead) { 'HEAD' } else { 'GET' }) + ' host=' + $f91sHost + ' bytes=' + [string]$f91sBody.Length)
+                    return
+                } finally {
+                    try { $f91sNowLive = 0
+                        if ($f91sTok -and $script:F91StreamActive.ContainsKey($f91sTok)) { $f91sNowLive = [int]$script:F91StreamActive[$f91sTok] }
+                        $script:F91StreamActive[$f91sTok] = [Math]::Max(0, $f91sNowLive - 1) } catch { }
+                }
+            }
+
             # [F87 §C.1] POST /api/f87-selftest - the production proof the operator
             # runs ONCE after a dispatch, instead of click-testing eleven sites by
             # hand. Body {sites:[...]} must be a SUBSET of the operator fixture in
@@ -5018,7 +5340,13 @@ function Invoke-ClientRequest {
                 $f87DestDir = Join-Path $env:USERPROFILE 'Desktop\RDP-Downloads'
                 $f87Results = @()
                 foreach ($f87Site in $f87Sites) {
-                    $f87Row = [ordered]@{ site = $f87Site; probeOk = $false; sitemapUrls = 0; sitemapMode = ''; launchTier = 0; launchOk = $false; launchDetail = ''; pdfFound = $false; downloadDirOk = $false; downloadDir = $f87DestDir; downloadOk = $false; downloadPath = ''; downloadBytes = 0; searchStrategy = ''; searchOk = $false; searchItems = 0; networkingItemCount = 0; errors = @() }
+                    # [F91 §E.1] two more per-site columns: launcherQueueTest
+                    # (write a NOOP job -> the persistent service must consume it
+                    # and log it, proof of route->file->service->log end to end,
+                    # with no browser and no desktop disturbance) and
+                    # streamProxyTest (the exact fences of /api/stream against
+                    # the site's favicon, HEAD - no bytes relayed).
+                    $f87Row = [ordered]@{ site = $f87Site; probeOk = $false; sitemapUrls = 0; sitemapMode = ''; launchTier = 0; launchOk = $false; launchDetail = ''; pdfFound = $false; downloadDirOk = $false; downloadDir = $f87DestDir; downloadOk = $false; downloadPath = ''; downloadBytes = 0; searchStrategy = ''; searchOk = $false; searchItems = 0; networkingItemCount = 0; launcherQueueOk = $false; launcherQueueNote = ''; streamProxyOk = $false; streamProxyStatus = 0; errors = @() }
                     $f87Home = 'https://' + $f87Site + '/'
                     # 1. HEAD probe (the secure fetch follows same-host redirects only,
                     #    so a www.<site> canonical still counts as reachable).
@@ -5100,11 +5428,59 @@ function Invoke-ClientRequest {
                         $f87Row.downloadBytes = [int]$f88Dt.bytes
                         if (-not $f88Dt.ok) { $f87Row.errors += ('downloadTest: ' + [string]$f88Dt.error) }
                     } catch { $f87Row.errors += ('downloadTest: ' + $_.Exception.Message) }
+                    # [F91 §E.1] 5. launcherQueueTest: NOOP job + consume proof.
+                    try {
+                        $f91Paths = Get-F91LauncherPaths
+                        $f91Hb = Get-F91LauncherHealth
+                        if (-not $f91Hb.serviceRunning) {
+                            $f87Row.launcherQueueNote = 'launcher-offline'
+                            $f87Row.errors += 'launcherQueue: heartbeat older than 30s (is GHRDP-Launcher registered? re-dispatch main.yml)'
+                        } elseif (-not (Test-Path -LiteralPath $f91Paths.queueDir)) {
+                            $f87Row.launcherQueueNote = 'queue-dir-missing'
+                            $f87Row.errors += 'launcherQueue: ' + [string]$f91Paths.queueDir + ' not present'
+                        } else {
+                            $f91Marker = 'f91-selftest-' + ([guid]::NewGuid().ToString('N')).Substring(0, 8)
+                            $f91ProbeFile = Join-Path $f91Paths.queueDir (([guid]::NewGuid().ToString('N')) + '.job')
+                            [System.IO.File]::WriteAllText($f91ProbeFile, (@{ id = $f91Marker; url = $f87Home; mode = 'noop'; name = $f91Marker; timestamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ') } | ConvertTo-Json -Compress))
+                            $f91Deadline = (Get-Date).AddSeconds(8)
+                            while ((Get-Date) -lt $f91Deadline) {
+                                if (-not (Test-Path -LiteralPath $f91ProbeFile)) { $f87Row.launcherQueueOk = $true; break }
+                                Start-Sleep -Milliseconds 250
+                            }
+                            if (-not $f87Row.launcherQueueOk) {
+                                $f87Row.launcherQueueNote = 'job-unconsumed'
+                                $f87Row.errors += 'launcherQueue: job written but not consumed within 8s'
+                                try { Remove-Item -LiteralPath $f91ProbeFile -Force -ErrorAction SilentlyContinue } catch { }
+                            } else {
+                                $f87Row.launcherQueueNote = 'consumed'
+                            }
+                        }
+                    } catch { $f87Row.errors += ('launcherQueue: ' + $_.Exception.Message) }
+                    # [F91 §E.1] 6. streamProxyTest: HEAD through the /api/stream
+                    # fences (navigate validation + exact-host allowlist) - a 2xx
+                    # upstream answer is the proof; nothing is relayed.
+                    try {
+                        $f91St = Invoke-F91StreamFetch -Url ($f87Home + 'favicon.ico') -MaxBytes 1 -ProbeHead
+                        $f91StStatus = [int]$f91St.httpStatus
+                        $f87Row.streamProxyStatus = $f91StStatus
+                        if ($f91St.ok -or ($f91StStatus -ge 200 -and $f91StStatus -lt 400)) {
+                            $f87Row.streamProxyOk = $true
+                        } else {
+                            $f87Row.errors += ('streamProxy: ' + [string]$f91St.error + ' status=' + [string]$f91StStatus)
+                        }
+                    } catch { $f87Row.errors += ('streamProxy: ' + $_.Exception.Message) }
                     $f87Results += $f87Row
                     Write-ClientAudit ('f87 selftest site=' + $f87Site + ' probe=' + [string]$f87Row.probeOk + ' sitemap=' + [string]$f87Row.sitemapUrls + ' tier=' + [string]$f87Row.launchTier + ' launch=' + [string]$f87Row.launchOk + ' dir=' + [string]$f87Row.downloadDirOk)
                 }
                 $f87Pass = @($f87Results | Where-Object { $_.probeOk -and $_.sitemapUrls -gt 0 -and $_.launchOk -and $_.downloadDirOk }).Count
-                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; ranAt = $f87Now.ToString('yyyy-MM-ddTHH:mm:ssZ'); total = [int]$f87Results.Count; passed = [int]$f87Pass; results = @($f87Results) }))
+                # [F91 §E.1] the GLOBAL launcher lines: launcherServiceRunning is
+                # the heartbeat proof (<30s old), taskSchedulerHealth is the
+                # GHRDP-Launcher scheduled-task presence. Both are read straight
+                # off Get-F91LauncherHealth - the same payload /api/launcher/
+                # health answers - so the self-test column and the diag panel
+                # can never disagree.
+                $f91Global = Get-F91LauncherHealth
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; ranAt = $f87Now.ToString('yyyy-MM-ddTHH:mm:ssZ'); total = [int]$f87Results.Count; passed = [int]$f87Pass; launcherServiceRunning = [bool]$f91Global.serviceRunning; taskSchedulerHealth = [bool]$f91Global.taskExists; launcher = [ordered]@{ serviceRunning = [bool]$f91Global.serviceRunning; heartbeatAge = [int64]$f91Global.heartbeatAge; queueDepth = [int]$f91Global.queueDepth; taskExists = [bool]$f91Global.taskExists; activeUser = [string]$f91Global.activeUser }; results = @($f87Results) }))
                 return
             }
 
@@ -6331,6 +6707,13 @@ function Invoke-ClientRequest {
                     # [F87 §C.1] POST /api/f87-selftest (eleven-site production
                     # proof) ships in these bytes; tests/f87-selftest.test.js pins it.
                     selfTest = $true
+                    # [F91 §A/§D] mirror-mode launcher (queue + health + the
+                    # persistent service contract) and the /api/stream audio relay.
+                    # tests/f91-launcher-queue.test.js + tests/f91-stream-proxy.test.js
+                    # re-extract the route symbols, so neither flag can outlive
+                    # the code it advertises.
+                    mirrorLauncher = $true
+                    streamProxy = $true
                 }
             }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $objV)

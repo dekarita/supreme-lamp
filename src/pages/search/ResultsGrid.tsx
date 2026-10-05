@@ -1,6 +1,6 @@
 // [F56-d] Result CARDS - Fetch button now real: calls POST /api/fetch via aria2c lane.
 // Provenance-6 gate server-side + client-side disable. Existing ARIA grid semantics unchanged.
-import { forwardRef, useCallback, useEffect, useMemo, useState, type HTMLAttributes, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { forwardRef, useCallback, useEffect, useMemo, type HTMLAttributes, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { ExternalLink, FlaskConical } from "lucide-react";
@@ -11,7 +11,12 @@ import { requestFetchStub, requestFetch, isProvenanceBlocked } from "@/lib/fetch
 import { customSources, evaluateResultProvenance } from "@/search/custom-source-store";
 import type { SearchResult } from "@/api/search";
 import { camel, fileExtension, fileUrlExtension, formatActualBytes, licenceStyle, validatedHttpsUrl } from "./tokens";
-import { launchFailureToast, launchUrl } from "@/lib/launchUrl";
+// [F91 §B.1] Mirror Mode: openMirrored() replaces launchUrl() for every result
+// click (local tab + queue-to-RDP, success-first toast, no error path). The
+// download toast gains the §C.2 "Open in RDP File Explorer" action.
+import { dirnameWindows, openMirrored, queueLauncherJob } from "@/lib/launchUrl";
+import { hasMediaRoute } from "@/lib/streamRouter";
+import { StreamCard } from "@/components/search/StreamCard";
 
 // [F79 D5/D7] 16px card padding + a 24px inter-result gutter.
 export const CARD_HEIGHT = 216;
@@ -47,8 +52,6 @@ export function ResultsGrid() {
   const submit = useSearchStore((s) => s.submit);
   const push = useToastStore((s) => s.push);
   const navigate = useNavigate();
-  // [F87 §D.2] per-card "opened via tier N" text (the lightning button's tooltip).
-  const [launchTiers, setLaunchTiers] = useState<Record<string, string>>({});
 
   const fileExtensions = useSearchStore((s) => s.fileExtensions);
   const yearFrom = useSearchStore((s) => s.yearFrom);
@@ -239,8 +242,9 @@ export function ResultsGrid() {
                   type="button"
                   title={direct}
                   onClick={async () => {
-                    const r = await launchUrl(direct);
-                    if (!r.ok) push(launchFailureToast(r, t));
+                    // [F91 §B.1] the plain direct-url click is a MIRROR click:
+                    // local tab opens now, the RDP half rides the launcher queue.
+                    await openMirrored(direct, { push, t });
                   }}
                   className="text-xs text-success truncate underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
                 >
@@ -331,45 +335,23 @@ export function ResultsGrid() {
                   RDP Chrome, or stream it to the RDP runner's
                   Desktop\RDP-Downloads folder (the dashboard host disk - never
                   the operator's local disk). */}
+              {/* [F91 §B.2] "Open in RDP" becomes a plain "Open" - under the
+                  hood it is MIRROR MODE (local tab + launcher queue). The ⚡
+                  tier button is RETIRED: its whole purpose was diagnosing
+                  which ladder rung opened the window, and mirror mode has no
+                  ladder to fail - the id and data-testid stay stable. */}
               <button
                 id={"f56.search.resultOpenRdp." + sfx}
                 data-testid="card-open-rdp"
                 type="button"
-                title={t("search.launchUrl.openInRdp")}
-                aria-label={t("search.launchUrl.openInRdp")}
+                title={t("mirror.openHint")}
+                aria-label={t("mirror.open")}
                 onClick={async () => {
-                  const out = await launchUrl(direct);
-                  if (!out.ok) push(launchFailureToast(out, t));
+                  await openMirrored(direct, { push, t });
                 }}
                 className="h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
-                {t("search.launchUrl.openInRdp")}
-              </button>
-              {/* [F87 §D.2] The tier-proof launch: same launchUrl(), but the
-                  rung that did the work is shown right here as the tooltip
-                  ("opened via tier 1"), so the operator sees WHICH tier worked
-                  without opening ?diag=1. */}
-              <button
-                id={"f87.search.resultLaunchTier." + sfx}
-                data-testid="card-launch-tier"
-                type="button"
-                title={launchTiers[sfx] || t("search.launchUrl.tierProbe")}
-                aria-label={t("search.launchUrl.tierProbe")}
-                data-tier={launchTiers[sfx] ? launchTiers[sfx].replace(/\D+/g, "") : ""}
-                onClick={async () => {
-                  const out = await launchUrl(direct);
-                  if (!out.ok) {
-                    setLaunchTiers((m) => ({ ...m, [sfx]: t("search.launchUrl.failed") }));
-                    push(launchFailureToast(out, t));
-                    return;
-                  }
-                  const text = t("search.launchUrl.openedViaTier", { tier: out.tier || "?" });
-                  setLaunchTiers((m) => ({ ...m, [sfx]: text }));
-                  push(text);
-                }}
-                className="h-11 w-11 rounded-md border border-default text-sm text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-              >
-                {"\u26A1"}
+                {t("mirror.open")}
               </button>
               {fileish ? (
                 <button
@@ -396,8 +378,15 @@ export function ResultsGrid() {
                         download: true,
                       } as any);
                       const p = (out.data as any)?.path;
-                      if (out.ok && typeof p === 'string') push(t("download.success", { path: p }));
-                      else push(t("download.failed", { reason: out.error?.messageKey || out.error?.code || "transport" }));
+                      if (out.ok && typeof p === 'string') {
+                        // [F91 §C.2] the toast names the WRITTEN path and carries
+                        // one action: queue an explorer job so the launcher opens
+                        // File Explorer on the folder inside the RDP session.
+                        push(t("download.success", { path: p }), "ok", {
+                          label: t("mirror.openInExplorer"),
+                          onClick: () => void queueLauncherJob(dirnameWindows(p), "explorer", String(p).split(/[\\/]/).pop() || ""),
+                        });
+                      } else push(t("download.failed", { reason: out.error?.messageKey || out.error?.code || "transport" }));
                     } catch {
                       push(t("download.failed", { reason: "transport" }));
                     }
@@ -406,6 +395,12 @@ export function ResultsGrid() {
                 >
                   {t("download.toRdp")}
                 </button>
+              ) : null}
+              {/* [F91 §D.3] smart streaming: inline <audio> via /api/stream for
+                  audio files, "Watch in RDP" for video/live. Renders nothing for
+                  generic rows, so non-media cards are DOM-identical to F88. */}
+              {direct && hasMediaRoute(direct, r.mimeType) ? (
+                <StreamCard url={direct} mimeType={r.mimeType} title={r.title} suffix={sfx} />
               ) : null}
               <button
                 id={"f56.search.resultPreview." + sfx}

@@ -77,7 +77,14 @@ test('F87-C1-ROUTE: [F88 §C.2 supersession] the self-test ships the four probes
 test('F87-C1-SHAPE: the response carries results[{site, probeOk, sitemapUrls, launchTier, launchOk, downloadDirOk, errors[]}] + ok/ranAt/total/passed', () => {
   for (const f of ['site = $f87Site', 'probeOk = $false', 'sitemapUrls = 0', 'launchTier = 0', 'launchOk = $false', 'downloadDirOk = $false', 'errors = @()'])
     assert.ok(ROUTE.includes(f), 'result row lacks ' + f);
-  assert.ok(ROUTE.includes("[ordered]@{ ok = $true; ranAt = $f87Now.ToString('yyyy-MM-ddTHH:mm:ssZ'); total = [int]$f87Results.Count; passed = [int]$f87Pass; results = @($f87Results) }"));
+  // [F91 §E.1] the envelope GAINS the global launcher lines, so the pin is
+  // split: the F87 prefix is verbatim-unchanged, results[] still terminates the
+  // object, and the three F91 keys must be present (an absent field is the
+  // panel's red, so the server has to answer them).
+  assert.ok(ROUTE.includes("[ordered]@{ ok = $true; ranAt = $f87Now.ToString('yyyy-MM-ddTHH:mm:ssZ'); total = [int]$f87Results.Count; passed = [int]$f87Pass;"));
+  assert.ok(ROUTE.includes("results = @($f87Results) }"), "results[] must still terminate the envelope");
+  for (const k of ["launcherServiceRunning = [bool]$f91Global.serviceRunning", "taskSchedulerHealth = [bool]$f91Global.taskExists", "launcher = [ordered]@{ serviceRunning"])
+    assert.ok(ROUTE.includes(k), "the F91 global lines are missing: " + k);
   assert.ok(SERVER.includes('selfTest = $true'), '/api/version must advertise features.selfTest');
 });
 

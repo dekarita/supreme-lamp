@@ -294,3 +294,146 @@ async function launchUrlViaServer(url: string): Promise<LaunchOutcome> {
     return { ok: false, reason: "search.launchUrl.failed", code: "transport" };
   }
 }
+
+// ===========================================================================
+// [F91 §B.1] MIRROR MODE - the operator's final launch architecture.
+//
+// WHY this exists (all four operator decisions land here): clicking a result
+// used to be ONE attempt to make the runner open a window, and every failure
+// class (no console user, dead ladder, offline server) landed on the operator
+// as an error toast. Mirror mode splits the click in two INDEPENDENT halves:
+//
+//   1. the local browser opens IMMEDIATELY - the user sees their result
+//      without waiting on anything, and
+//   2. the same URL is queued to the persistent launcher service on the runner
+//      (payloads/ghrdp-rdp-launcher.ps1 drains C:\ProgramData\ghrdp\
+//      launcher-queue within ~500 ms and opens it in the session's Edge/Chrome).
+//
+// The queue half is BEST-EFFORT: if it fails (route down, service not
+// installed yet, rate limit) the toast says "Opened locally ✓ (RDP launcher:
+// <reason>)" - an INFO line, never an error, and never "Could not open in
+// RDP" (F91 §-1 replaces that string repo-wide). The F84/F85 no-fallback
+// contract is NOT weakened: `launchUrl()` above still never opens a local tab
+// after a failed server call, and the F86 banner keeps using it as the pure
+// ladder probe. openMirrored is a DIFFERENT, explicitly operator-approved
+// semantic: local open is the DESIGN, not a fallback.
+// ===========================================================================
+export interface MirrorOutcome {
+  /** true when the local tab was opened (false only when the URL fails the
+   *  https validation, in which case NOTHING is queued either). */
+  localOpened: boolean;
+  /** true when the RDP launcher accepted (200) the queue write. */
+  rdpOk: boolean;
+  /** machine-readable queue failure marker (logs/tests, never user text). */
+  rdpReason: string;
+  /** the queue job id, when the write succeeded. */
+  jobId?: string;
+}
+
+export type LauncherMode = "navigate" | "download" | "explorer" | "noop";
+
+/** Explorer jobs carry a LOCAL folder path (never a URL); mirror the exact
+ *  server fence (Test-F91QueueJob) client-side so a bad path is refused here
+ *  with a visible reason instead of silently 400ing. */
+export function isSafeExplorerPath(raw: string): boolean {
+  const p = String(raw || "").trim();
+  return /^[A-Za-z]:\\[^<>:"|?*]*$/.test(p);
+}
+
+/** POST /api/launcher/queue - the ONLY way anything on this side reaches the
+ *  RDP session's desktop. 3 s bound so a dead runner slows down nothing. */
+export async function queueLauncherJob(
+  url: string,
+  mode: LauncherMode,
+  name = "",
+): Promise<{ ok: boolean; reason: string; jobId?: string }> {
+  const value = String(url || "").trim();
+  if (mode === "explorer") {
+    if (!isSafeExplorerPath(value)) return { ok: false, reason: "invalid-path" };
+  } else if (mode === "navigate") {
+    if (!isSafeLaunchUrl(value)) return { ok: false, reason: "validation" };
+  } else if (value && !isSafeLaunchUrl(value)) {
+    return { ok: false, reason: "validation" };
+  }
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const key = getKey();
+  if (key) headers["X-Dash-Token"] = key;
+  const signal =
+    typeof AbortSignal !== "undefined" && typeof (AbortSignal as unknown as { timeout?: unknown }).timeout === "function"
+      ? (AbortSignal as unknown as { timeout: (ms: number) => AbortSignal }).timeout(3000)
+      : undefined;
+  try {
+    const res = await fetch("/api/launcher/queue", {
+      method: "POST",
+      cache: "no-store",
+      headers,
+      body: JSON.stringify({ url: value, mode, name }),
+      ...(signal ? { signal } : {}),
+    });
+    let body: { jobId?: string } | null = null;
+    try {
+      body = (await res.json()) as { jobId?: string } | null;
+    } catch {
+      body = null;
+    }
+    if (res.ok) return { ok: true, reason: "", jobId: body?.jobId };
+    return { ok: false, reason: "queue-" + String(res.status) };
+  } catch {
+    return { ok: false, reason: "queue-timeout" };
+  }
+}
+
+/** The folder part of a Windows path, for the download toast's
+ *  "Open in RDP File Explorer" action (C:\...\RDP-Downloads\file.mp3 ->
+ *  C:\...\RDP-Downloads). */
+export function dirnameWindows(path: string): string {
+  const p = String(path || "").replace(/[\\/]+$/, "");
+  const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"));
+  if (i === 2 && /^[A-Za-z]:/.test(p)) return p.slice(0, 3); // C:\ root keeps its separator (the explorer fence needs it)
+  return i > 1 ? p.slice(0, i) : p;
+}
+
+/** Mirror-mode toast text, success-first (F91 §-1): BOTH halves pass ->
+ *  mirror.openedBoth; queue half failed -> mirror.rdpOffline naming WHY.
+ *  An unvalidated URL never opened anything -> mirror.blocked. */
+export function mirrorToastText(out: MirrorOutcome, t: (key: string, opts?: Record<string, unknown>) => string): string {
+  if (!out.localOpened) return t("mirror.blocked");
+  if (out.rdpOk) return t("mirror.openedBoth");
+  return t("mirror.rdpOffline", { reason: out.rdpReason || "offline" });
+}
+
+/**
+ * [F91 §B.1] openMirrored(url): local tab FIRST (always, for a valid https
+ * URL), queue-to-RDP in flight, success-first toast either way.
+ */
+export async function openMirrored(
+  raw: string,
+  opts?: {
+    push?: (msg: string, kind?: "ok" | "warn" | "bad" | "") => void;
+    t?: (key: string, options?: Record<string, unknown>) => string;
+  },
+): Promise<MirrorOutcome> {
+  const url = String(raw || "").trim();
+  if (!isSafeLaunchUrl(url)) {
+    // NOT a "could not open" - the dashboard refused a URL that is not a
+    // plain https link; nothing was opened ANYWHERE, and the reason is shown.
+    const out: MirrorOutcome = { localOpened: false, rdpOk: false, rdpReason: "invalid-url" };
+    if (opts?.push && opts?.t) opts.push(mirrorToastText(out, opts.t), "warn");
+    return out;
+  }
+  // 1. local open FIRST - the user's half never waits on the runner's half.
+  let localOpened = false;
+  try {
+    const win = window.open(url, "_blank", "noopener,noreferrer");
+    localOpened = true;
+    void win;
+  } catch {
+    localOpened = false;
+  }
+  // 2. the RDP half, with its own 3 s bound (inside queueLauncherJob).
+  const queued = await queueLauncherJob(url, "navigate");
+  const out: MirrorOutcome = { localOpened, rdpOk: queued.ok, rdpReason: queued.ok ? "" : queued.reason, jobId: queued.jobId };
+  // 3. the toast - success-first, and the ONLY place either half is reported.
+  if (opts?.push && opts?.t) opts.push(mirrorToastText(out, opts.t), out.rdpOk ? "ok" : "");
+  return out;
+}

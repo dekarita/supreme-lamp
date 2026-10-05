@@ -60,6 +60,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** The launch-url calls the F86 spec inspects (tier proof). */
 const launchCalls = [];
+// [F91] every /api/launcher/queue job ever accepted, in order. The mirror-mode
+// spec asserts the RDP half of a click lands here; navigate jobs ALSO record a
+// launchCall so the F86/F88 specs' launch-readback keeps proving "the RDP side
+// was asked" through the new transport.
+const f91Jobs = [];
+let f91JobSeq = 1;
 /** [F87 §C.1] token -> last self-test run (ms), for the 1/min mirror. */
 const selfTestRuns = new Map();
 /** Added at runtime by POST /api/f58/sources so the "add then card appears"
@@ -190,7 +196,66 @@ const server = createServer(async (req, res) => {
     const id = decodeURIComponent(path.slice("/api/f58/sources/".length));
     const known = sources().some((s) => s.id === id);
     if (!known) {
-      send(res, 404, { code: "NOT_FOUND", messageKey: "search.errors.generic", retryable: false });
+      // [F91 §A.3] launcher queue: validation mirrors Test-F91QueueJob (mode set,
+  // https-only navigate, explorer takes a Windows folder path ONLY), then the
+  // job is accepted "as drained". The selftest noop mode is accepted too.
+  if (path === "/api/launcher/queue" && req.method === "POST") {
+    const body = await readBody(req);
+    const mode = String(body?.mode || "").toLowerCase();
+    const target = String(body?.url || "").trim();
+    const MODES = ["navigate", "download", "explorer", "noop"];
+    const okMode = MODES.includes(mode);
+    const okTarget =
+      mode === "explorer" ? /^[A-Za-z]:\\[^<>:"|?*]*$/.test(target)
+      : (mode === "download" || mode === "noop") ? (target === "" || target.startsWith("https://"))
+      : target.startsWith("https://") && !/[?&]#[^#]*$/.test(target) && target.length <= 2048 && !target.includes("@");
+    if (!okMode || !okTarget) {
+      send(res, 400, { code: "VALIDATION_ERROR", reason: !okMode ? "mode" : "url" });
+      return;
+    }
+    const jobId = "f91-job-" + f91JobSeq++;
+    f91Jobs.push({ id: jobId, url: target, mode, name: String(body?.name || ""), at: new Date().toISOString() });
+    if (mode === "navigate") launchCalls.push({ url: target, at: new Date().toISOString() });
+    send(res, 200, { ok: true, queuedAt: new Date().toISOString(), jobId });
+    return;
+  }
+  if (path === "/api/launcher/health" && req.method === "GET") {
+    send(res, 200, { ok: true, serviceRunning: true, heartbeatAge: 2000, heartbeatAt: new Date().toISOString(), queueDepth: 0, queueDir: "C:\\ProgramData\\ghrdp\\launcher-queue", log: ["<mock> startup launcher-service"], logPath: "C:\\ProgramData\\ghrdp\\launcher.log", taskExists: true, taskState: "Running", activeUser: "runner", scriptPresent: true });
+    return;
+  }
+  if (path === "/__f91/jobs") {
+    send(res, 200, { jobs: f91Jobs });
+    return;
+  }
+  // [F91 §D.2] stream relay: exact-host allowlist (the eleven + added custom
+  // hosts), then a 2 KB audio/ogg stub so the inline <audio> element has real
+  // bytes; HEAD answers headers only. Off-allowlist -> 403 like the server.
+  if (path === "/api/stream" && (req.method === "GET" || req.method === "HEAD")) {
+    let host = "";
+    try {
+      const u = new URL(url.searchParams.get("url") || "");
+      if (u.protocol !== "https:" || u.username) throw new Error("bad");
+      host = u.hostname.toLowerCase().replace(/^www\./, "");
+    } catch {
+      send(res, 400, { code: "VALIDATION_ERROR" });
+      return;
+    }
+    const known = new Set([...F87_SITES.map((x) => x.replace(/^www\./, "")), "example.com", "127.0.0.1", "localhost"]);
+    if (!known.has(host)) {
+      send(res, 403, { code: "HOSTNAME_MISMATCH", messageKey: "lab.hostnameMismatch" });
+      return;
+    }
+    if (req.method === "HEAD") {
+      res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": "0" });
+      res.end();
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": "2048" });
+    res.end(Buffer.alloc(2048, 7));
+    return;
+  }
+
+  send(res, 404, { code: "NOT_FOUND", messageKey: "search.errors.generic", retryable: false });
       return;
     }
     deleted.add(id);
@@ -426,7 +491,66 @@ const server = createServer(async (req, res) => {
     const searchId = url.searchParams.get("searchId");
     const search = searches.get(searchId);
     if (!search) {
-      send(res, 404, { code: "NOT_FOUND", messageKey: "search.errors.generic", retryable: false });
+      // [F91 §A.3] launcher queue: validation mirrors Test-F91QueueJob (mode set,
+  // https-only navigate, explorer takes a Windows folder path ONLY), then the
+  // job is accepted "as drained". The selftest noop mode is accepted too.
+  if (path === "/api/launcher/queue" && req.method === "POST") {
+    const body = await readBody(req);
+    const mode = String(body?.mode || "").toLowerCase();
+    const target = String(body?.url || "").trim();
+    const MODES = ["navigate", "download", "explorer", "noop"];
+    const okMode = MODES.includes(mode);
+    const okTarget =
+      mode === "explorer" ? /^[A-Za-z]:\\[^<>:"|?*]*$/.test(target)
+      : (mode === "download" || mode === "noop") ? (target === "" || target.startsWith("https://"))
+      : target.startsWith("https://") && !/[?&]#[^#]*$/.test(target) && target.length <= 2048 && !target.includes("@");
+    if (!okMode || !okTarget) {
+      send(res, 400, { code: "VALIDATION_ERROR", reason: !okMode ? "mode" : "url" });
+      return;
+    }
+    const jobId = "f91-job-" + f91JobSeq++;
+    f91Jobs.push({ id: jobId, url: target, mode, name: String(body?.name || ""), at: new Date().toISOString() });
+    if (mode === "navigate") launchCalls.push({ url: target, at: new Date().toISOString() });
+    send(res, 200, { ok: true, queuedAt: new Date().toISOString(), jobId });
+    return;
+  }
+  if (path === "/api/launcher/health" && req.method === "GET") {
+    send(res, 200, { ok: true, serviceRunning: true, heartbeatAge: 2000, heartbeatAt: new Date().toISOString(), queueDepth: 0, queueDir: "C:\\ProgramData\\ghrdp\\launcher-queue", log: ["<mock> startup launcher-service"], logPath: "C:\\ProgramData\\ghrdp\\launcher.log", taskExists: true, taskState: "Running", activeUser: "runner", scriptPresent: true });
+    return;
+  }
+  if (path === "/__f91/jobs") {
+    send(res, 200, { jobs: f91Jobs });
+    return;
+  }
+  // [F91 §D.2] stream relay: exact-host allowlist (the eleven + added custom
+  // hosts), then a 2 KB audio/ogg stub so the inline <audio> element has real
+  // bytes; HEAD answers headers only. Off-allowlist -> 403 like the server.
+  if (path === "/api/stream" && (req.method === "GET" || req.method === "HEAD")) {
+    let host = "";
+    try {
+      const u = new URL(url.searchParams.get("url") || "");
+      if (u.protocol !== "https:" || u.username) throw new Error("bad");
+      host = u.hostname.toLowerCase().replace(/^www\./, "");
+    } catch {
+      send(res, 400, { code: "VALIDATION_ERROR" });
+      return;
+    }
+    const known = new Set([...F87_SITES.map((x) => x.replace(/^www\./, "")), "example.com", "127.0.0.1", "localhost"]);
+    if (!known.has(host)) {
+      send(res, 403, { code: "HOSTNAME_MISMATCH", messageKey: "lab.hostnameMismatch" });
+      return;
+    }
+    if (req.method === "HEAD") {
+      res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": "0" });
+      res.end();
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": "2048" });
+    res.end(Buffer.alloc(2048, 7));
+    return;
+  }
+
+  send(res, 404, { code: "NOT_FOUND", messageKey: "search.errors.generic", retryable: false });
       return;
     }
     const loading = search.query === "f79-loading";
@@ -481,7 +605,7 @@ const server = createServer(async (req, res) => {
       server: "mock",
       sha: "f85mock0000000000000000000000000000000",
       sha7: "f85mock",
-      features: { autoHttps: true, wwwTolerance: true, noFallback: true, downloadToRdp: true, launchTiers: true, selfTest: true },
+      features: { autoHttps: true, wwwTolerance: true, noFallback: true, downloadToRdp: true, launchTiers: true, selfTest: true, mirrorLauncher: true, streamProxy: true },
     });
     return;
   }
@@ -551,12 +675,24 @@ const server = createServer(async (req, res) => {
     const results = [...new Set(requested)].map((site) => {
       const urls = f86SitemapRows(site);
       launchCalls.push({ url: "https://" + site + "/", at: new Date().toISOString() });
+      const audioN = urls.filter((u) => /\.(mp3|m4a|flac|ogg|wav|opus)(\?|$)/i.test(u)).length;
       return {
         site, probeOk: true, sitemapUrls: urls.length, sitemapMode: "urlset", launchTier: 1, launchOk: true, launchDetail: "direct-spawn",
         pdfFound: urls.some((u) => /\.pdf(\?|$)/i.test(u)), downloadDirOk: true, downloadDir: "C:\\Users\\runner\\Desktop\\RDP-Downloads", errors: [],
+        // [F91 §E.1] the extended columns, mirrored from the shipped route.
+        searchStrategy: site === "awesome.re" ? "markdown-section" : "probe", searchOk: true, searchItems: 12,
+        networkingItemCount: site === "awesome.re" ? 96 : 0,
+        launcherQueueOk: true, launcherQueueNote: "consumed",
+        downloadOk: true, downloadPath: "C:\\Users\\runner\\Desktop\\RDP-Downloads\\robots.txt", downloadBytes: 128,
+        streamProxyOk: true, streamProxyStatus: 200,
+        audioRows: audioN,
       };
     });
-    send(res, 200, { ok: true, ranAt: new Date().toISOString(), total: results.length, passed: results.length, results });
+    send(res, 200, {
+      ok: true, ranAt: new Date().toISOString(), total: results.length, passed: results.length, results,
+      launcherServiceRunning: true, taskSchedulerHealth: true,
+      launcher: { serviceRunning: true, heartbeatAge: 2000, queueDepth: 0, taskExists: true, activeUser: "runner" },
+    });
     return;
   }
 
@@ -580,6 +716,65 @@ const server = createServer(async (req, res) => {
       verified: true,
       writeTime: new Date().toISOString(),
     });
+    return;
+  }
+
+  // [F91 §A.3] launcher queue: validation mirrors Test-F91QueueJob (mode set,
+  // https-only navigate, explorer takes a Windows folder path ONLY), then the
+  // job is accepted "as drained". The selftest noop mode is accepted too.
+  if (path === "/api/launcher/queue" && req.method === "POST") {
+    const body = await readBody(req);
+    const mode = String(body?.mode || "").toLowerCase();
+    const target = String(body?.url || "").trim();
+    const MODES = ["navigate", "download", "explorer", "noop"];
+    const okMode = MODES.includes(mode);
+    const okTarget =
+      mode === "explorer" ? /^[A-Za-z]:\\[^<>:"|?*]*$/.test(target)
+      : (mode === "download" || mode === "noop") ? (target === "" || target.startsWith("https://"))
+      : target.startsWith("https://") && !/[?&]#[^#]*$/.test(target) && target.length <= 2048 && !target.includes("@");
+    if (!okMode || !okTarget) {
+      send(res, 400, { code: "VALIDATION_ERROR", reason: !okMode ? "mode" : "url" });
+      return;
+    }
+    const jobId = "f91-job-" + f91JobSeq++;
+    f91Jobs.push({ id: jobId, url: target, mode, name: String(body?.name || ""), at: new Date().toISOString() });
+    if (mode === "navigate") launchCalls.push({ url: target, at: new Date().toISOString() });
+    send(res, 200, { ok: true, queuedAt: new Date().toISOString(), jobId });
+    return;
+  }
+  if (path === "/api/launcher/health" && req.method === "GET") {
+    send(res, 200, { ok: true, serviceRunning: true, heartbeatAge: 2000, heartbeatAt: new Date().toISOString(), queueDepth: 0, queueDir: "C:\\ProgramData\\ghrdp\\launcher-queue", log: ["<mock> startup launcher-service"], logPath: "C:\\ProgramData\\ghrdp\\launcher.log", taskExists: true, taskState: "Running", activeUser: "runner", scriptPresent: true });
+    return;
+  }
+  if (path === "/__f91/jobs") {
+    send(res, 200, { jobs: f91Jobs });
+    return;
+  }
+  // [F91 §D.2] stream relay: exact-host allowlist (the eleven + added custom
+  // hosts), then a 2 KB audio/ogg stub so the inline <audio> element has real
+  // bytes; HEAD answers headers only. Off-allowlist -> 403 like the server.
+  if (path === "/api/stream" && (req.method === "GET" || req.method === "HEAD")) {
+    let host = "";
+    try {
+      const u = new URL(url.searchParams.get("url") || "");
+      if (u.protocol !== "https:" || u.username) throw new Error("bad");
+      host = u.hostname.toLowerCase().replace(/^www\./, "");
+    } catch {
+      send(res, 400, { code: "VALIDATION_ERROR" });
+      return;
+    }
+    const known = new Set([...F87_SITES.map((x) => x.replace(/^www\./, "")), "example.com", "127.0.0.1", "localhost"]);
+    if (!known.has(host)) {
+      send(res, 403, { code: "HOSTNAME_MISMATCH", messageKey: "lab.hostnameMismatch" });
+      return;
+    }
+    if (req.method === "HEAD") {
+      res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": "0" });
+      res.end();
+      return;
+    }
+    res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": "2048" });
+    res.end(Buffer.alloc(2048, 7));
     return;
   }
 

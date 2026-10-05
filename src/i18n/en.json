@@ -98,6 +98,23 @@
     "notStored": "not stored"
   },
   "mirror": {
+    "open": "Open",
+    "openHint": "Open locally + mirror into RDP",
+    "openedLocal": "Opened locally \u2713",
+    "mirroredRdp": "Mirrored to RDP \u2713",
+    "openedBoth": "Opened locally \u2713 + Mirrored to RDP \u2713",
+    "rdpOffline": "Opened locally \u2713 (RDP launcher: {{reason}})",
+    "blocked": "Refused: not a plain https link - nothing was opened",
+    "openInExplorer": "Open in RDP",
+    "watchInRdp": "\u25B6 Watch in RDP",
+    "watchLiveInRdp": "\u25B6 Watch Live in RDP",
+    "audioPlayLabel": "Inline audio via RDP",
+    "audioStreamFailed": "\u26A0 Stream failed - Watch in RDP",
+    "launcherLine": "Launcher: {{state}}, heartbeat {{age}}s ago, queue depth {{depth}}",
+    "launcherRunning": "running \u2713",
+    "launcherStale": "task installed, heartbeat stale",
+    "launcherMissing": "queued-only (service not draining)",
+    "launcherAbsent": "absent (pre-F91 server)",
     "title": "Mirror",
     "titleLong": "Mirror - AES-256 encrypted runner upload",
     "titlePlain": "Mirror - plaintext runner upload (no AES-256)",
@@ -1084,7 +1101,12 @@
       "sitemapUrls": "Sitemap URLs",
       "launchTier": "Launch tier",
       "downloadDir": "Download dir",
-      "awesomeItems": "awesome.re items"
+      "awesomeItems": "awesome.re items",
+      "search": "Search endpoint",
+      "launcherQueue": "Launcher queue",
+      "download": "Download",
+      "streamProxy": "Stream proxy",
+      "launcherNote": "launcher service: {{state}} | heartbeat {{age}}s | queue {{depth}}"
     }
   },
   "viewingMode": {

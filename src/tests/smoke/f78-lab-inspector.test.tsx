@@ -7,7 +7,6 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import "@/i18n";
 import { LabInspector } from "@/pages/search/LabInspector";
-import { VIEWING_MODE_STORAGE_KEY } from "@/lib/launchUrl";
 import type { CustomSourceRow, LabInspectResult } from "@/api/lab";
 
 const inspectSource = vi.fn();
@@ -84,27 +83,29 @@ describe("F78 LabInspector", () => {
     expect(screen.getAllByTestId("lab-link-row")).toHaveLength(3);
   });
 
-  it("every link row launches through the server route (no new-tab anchor)", async () => {
-    // [F90 §C.2] jsdom's hostname is `localhost`, which F90 reads as Mode A
-    // (in-session browser) where a window.open IS the correct launch. This case
-    // is about the server-ladder contract, so the mode is pinned to Mode C.
-    window.localStorage.setItem(VIEWING_MODE_STORAGE_KEY, "unknown");
+  it("every link row MIRROR-opens: local tab + POST /api/launcher/queue, never an anchor [F91]", async () => {
+    // [F91 §B.2] the lab row's open button is mirror mode now: the local tab is
+    // the design half (window.open fires FIRST) and the RDP half is the queue
+    // POST. The F84 contract that survives unchanged: the row is a BUTTON, not
+    // an <a target="_blank">, so nothing navigates the dashboard itself.
     const open = vi.fn();
     vi.stubGlobal("open", open);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true }) } as unknown as Response)),
-    );
+    const fetchFn = vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, jobId: "j1" }) } as unknown as Response));
+    vi.stubGlobal("fetch", fetchFn);
     inspectSource.mockResolvedValue({ ok: true, data: DATA });
     mount();
     await waitFor(() => expect(screen.getByTestId("lab-link-open")).toBeInTheDocument());
-    // [F84 §2.3] A button, not <a target="_blank">: the row click is a POST to
-    // /api/launch-url and a failure is a visible toast, never a local tab.
     const btn = screen.getByTestId("lab-link-open");
     expect(btn.tagName).toBe("BUTTON");
     expect(btn.getAttribute("target")).toBeNull();
     fireEvent.click(btn);
-    await waitFor(() => expect(open).not.toHaveBeenCalled());
+    await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
+    expect(String(open.mock.calls[0][2])).toContain("noopener");
+    const queueCall = fetchFn.mock.calls.find((c) => String(c[0]).endsWith("/api/launcher/queue"));
+    expect(queueCall, "the lab-row click must queue a navigate job for the RDP launcher").toBeTruthy();
+    const sent = JSON.parse(String((queueCall![1] as RequestInit).body));
+    expect(sent.mode).toBe("navigate");
+    expect(sent.url).toMatch(/^https:\/\//);
   });
 
   it("a 429 switches refetch into a visible countdown", async () => {

@@ -558,6 +558,7 @@ function Get-F60StageList {
         'payloads/ghrdp-launcher.ps1',
         'payloads/ghrdp-client-install.ps1',
         'payloads/ghrdp-rdp-launcher.cs',
+        'payloads/ghrdp-rdp-launcher.ps1',
         'payloads/install.cmd',
         'payloads/DEBUG-GHRDP.ps1',
         'payloads/DEBUG-GHRDP.bat',

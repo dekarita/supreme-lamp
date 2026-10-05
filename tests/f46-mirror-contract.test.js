@@ -94,7 +94,10 @@ test("F46-4 the worker never uses evasion patterns", () => {
     const body = code(text);
     assert.ok(!/Mozilla\/\d/.test(body), `${name}: a spoofed browser User-Agent must not appear`);
     assert.ok(!/\$headers\[.X-Forwarded-For/.test(body), `${name}: header spoofing must not appear`);
-    assert.ok(!/proxy\s*=|WebProxy|\[System\.Net\.WebProxy\]/i.test(body), `${name}: proxy rotation must not appear`);
+    // [F91] a word-boundary lookbehind: `streamProxy = $true` (a /api/version
+    // feature flag for the audio relay) is not `proxy =` and was never the
+    // evasion this gate bans; an actual proxy assignment still trips it.
+    assert.ok(!/(?<![A-Za-z0-9_.-])proxy\s*=|WebProxy|\[System\.Net\.WebProxy\]/i.test(body), `${name}: proxy rotation must not appear`);
     assert.ok(!/rotat/i.test(body), `${name}: identity/IP rotation must not appear`);
   }
   assert.ok(!/-A 'Mozilla/.test(watcher), "the watcher must not spoof a User-Agent in its link check");

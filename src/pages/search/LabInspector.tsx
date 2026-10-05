@@ -23,9 +23,14 @@ import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Download, ExternalLink, FlaskConical, RefreshCw } from "lucide-react";
 import { inspectResultUrl, inspectSource, type CustomSourceRow, type LabError, type LabInspectResult } from "@/api/lab";
-import { launchFailureToast, launchUrl } from "@/lib/launchUrl";
+// [F91 §B.2/§C.2] mirror open + the "Open in RDP File Explorer" toast action.
+import { dirnameWindows, openMirrored, queueLauncherJob } from "@/lib/launchUrl";
 import { requestFetch } from "@/lib/fetchStub";
 import { isFileLikeUrl } from "./tokens";
+// [F91 §D.3] media rows in the Lab list gain the SAME smart-streaming control
+// the result cards show (inline audio via /api/stream, Watch-in-RDP buttons).
+import { hasMediaRoute } from "@/lib/streamRouter";
+import { StreamCard } from "@/components/search/StreamCard";
 import { useToastStore } from "@/stores/toastStore";
 
 const ERROR_KEYS: Record<string, string> = {
@@ -291,7 +296,12 @@ export function LabInspector(props: LabInspectorProps) {
                           download: true,
                         } as any);
                         const p = (out.data as any)?.path;
-                        if (out.ok && typeof p === "string") push(t("download.success", { path: p }));
+                        if (out.ok && typeof p === "string")
+                          // [F91 §C.2] the same actionable download toast as the cards.
+                          push(t("download.success", { path: p }), "ok", {
+                            label: t("mirror.openInExplorer"),
+                            onClick: () => void queueLauncherJob(dirnameWindows(p), "explorer", String(p).split(/[\\/]/).pop() || ""),
+                          });
                         else push(t("download.failed", { reason: out.error?.messageKey || out.error?.code || "transport" }));
                       } catch {
                         push(t("download.failed", { reason: "transport" }));
@@ -303,16 +313,17 @@ export function LabInspector(props: LabInspectorProps) {
                     {t("download.toRdp")}
                   </button>
                 ) : null}
-                {/* [F84 §2.3] Button, not a new-tab anchor: every row click
-                    routes through /api/launch-url, and a failure is a visible
-                    toast rather than a silent local-browser tab. */}
+                {/* [F91 §B.2] Button, not a new-tab anchor (F84 rule kept).
+                    The click itself is MIRROR MODE now: the local tab is the
+                    design, /api/launcher/queue mirrors it into the RDP session,
+                    and a dead launcher degrades to an info line - never the
+                    retired "could not open" error. */}
                 <button
                   id={"f78.lab.linkOpen." + i}
                   data-testid="lab-link-open"
                   type="button"
                   onClick={async () => {
-                    const out = await launchUrl(l.href);
-                    if (!out.ok) push(launchFailureToast(out, t));
+                    await openMirrored(l.href, { push, t });
                   }}
                   aria-label={t("lab.openInNewTab") + ": " + (l.text || l.href)}
                   className="ml-auto shrink-0 text-xs text-secondary hover:text-primary inline-flex items-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded px-1"
@@ -320,6 +331,9 @@ export function LabInspector(props: LabInspectorProps) {
                   <ExternalLink className="size-3" aria-hidden />
                   {t("lab.openInNewTab")}
                 </button>
+                {hasMediaRoute(l.href) ? (
+                  <StreamCard url={l.href} title={l.text} suffix={"lab" + i} />
+                ) : null}
               </li>
             ))}
           </ul>

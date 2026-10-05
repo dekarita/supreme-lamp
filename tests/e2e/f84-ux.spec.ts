@@ -93,12 +93,14 @@ test.describe("F84 UX hardening", () => {
     await shot(page, "www-tolerance");
   });
 
-  test("4. a result link click calls /api/launch-url and opens no new tab", async ({ page }) => {
+  test("4. [F91 mirror] a result link click queues /api/launcher/queue AND opens the local tab", async ({ page }) => {
     let launched = false;
-    await page.route("**/api/launch-url", async (route) => {
+    await page.route("**/api/launcher/queue", async (route) => {
       launched = true;
-      expect(route.request().postDataJSON().url).toMatch(/^https:\/\//);
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, launched: true }) });
+      const body = route.request().postDataJSON();
+      expect(body.url).toMatch(/^https:\/\//);
+      expect(body.mode).toBe("navigate");
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, jobId: "j-e2e" }) });
     });
     const tabs: number[] = [];
     page.on("popup", (p) => tabs.push(1));
@@ -107,6 +109,9 @@ test.describe("F84 UX hardening", () => {
     if ((await link.count()) > 0) {
       await link.click();
       await expect.poll(() => launched).toBe(true);
+      // [F91 §B] the local half is the DESIGN: a popup MUST open. (The F84
+      // "opens no new tab" contract belonged to the single-attempt launch.)
+      await expect.poll(() => tabs.length).toBeGreaterThan(0);
     } else {
       // No seeded result row in this run: assert the contract directly.
       const ok = await page.evaluate(async () => {
@@ -119,13 +124,12 @@ test.describe("F84 UX hardening", () => {
       });
       expect(ok).toBe(true);
     }
-    expect(tabs.length).toBe(0);
     await shot(page, "launch-no-new-tab");
   });
 
-  test("5. a failing launch shows a toast and opens no new tab", async ({ page }) => {
-    await page.route("**/api/launch-url", (route) =>
-      route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ code: "LAUNCH_FAILED", messageKey: "launchUrl.failed" }) }),
+  test("5. [F91 §-1] a dead launcher is an INFO line - the local tab still opens, the banned string never renders", async ({ page }) => {
+    await page.route("**/api/launcher/queue", (route) =>
+      route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ code: "QUEUE_DIR_UNAVAILABLE" }) }),
     );
     const tabs: number[] = [];
     page.on("popup", (p) => tabs.push(1));
@@ -133,19 +137,24 @@ test.describe("F84 UX hardening", () => {
     const link = page.getByTestId("card-direct-url").first();
     if ((await link.count()) > 0) {
       await link.click();
-      await expect(page.locator("#toasts")).toContainText("Could not open in RDP");
+      await expect(page.locator("#toasts")).toContainText("Opened locally");
+      expect(await page.locator("#toasts").textContent()).not.toMatch(/Could not open/);
+      await expect.poll(() => tabs.length).toBeGreaterThan(0);
     } else {
       const out = await page.evaluate(async () => {
-        const r = await fetch("/api/launch-url", {
+        // [F91] the offline half: an EXPLORER job for an https path is refused
+        // by the queue fence (400) - the mirror contract never fakes ok.
+        const r = await fetch("/api/launcher/queue", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: "https://openculture.com/a.mp4" }),
+          body: JSON.stringify({ url: "https://openculture.com/a.mp4", mode: "explorer" }),
         });
         return r.status;
       });
-      expect(out).toBe(500);
+      expect(out).toBe(400);
     }
-    expect(tabs.length).toBe(0);
+    // [F91] the fallback branch only ever runs with zero seeded rows; the local
+    // tab rule is proven by the row branch above + the vitest toast suite.
     await shot(page, "launch-failure-toast");
   });
 
