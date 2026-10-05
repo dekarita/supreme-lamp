@@ -45,7 +45,13 @@ describe("i18n F56 parity (byte-verified)", () => {
     // placeholder no longer exists in either catalog; a result-id route renders
     // the real inspector, whose lab.resultContext key lives outside search.*).
     // 510 -> 511.
-    expect(enNew.length).toBe(511);
+    // [F87 §C.3/§D] +9 inside search.*: diag.shaMismatch, diag.testLaunch,
+    // diag.testLaunchOk, diag.testLaunchFail, diag.recent, diag.downloadDir,
+    // diag.selfTestShortcut (the expanded ?diag=1 banner) + launchUrl.tierProbe,
+    // launchUrl.openedViaTier (the per-card lightning button). The selfTest.*
+    // panel keys live OUTSIDE search.* and are asserted by
+    // tests/f87-selftest-panel.test.tsx. 511 -> 520.
+    expect(enNew.length).toBe(520);
   });
 
   it("every si value is non-empty, byte-stable Sinhala or a technical token", () => {

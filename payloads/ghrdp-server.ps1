@@ -4435,6 +4435,112 @@ function Invoke-ClientRequest {
                 return
             }
 
+            # [F87 §C.1] POST /api/f87-selftest - the production proof the operator
+            # runs ONCE after a dispatch, instead of click-testing eleven sites by
+            # hand. Body {sites:[...]} must be a SUBSET of the operator fixture in
+            # payloads/data/f86-site-hints.json (anything else -> 400, so this can
+            # never become a generic crawler). Per site, in order:
+            #   1. HEAD probe of https://<site>/ through the F78 secure fetch
+            #      (https only, same-host redirects, no cookies)   -> probeOk
+            #   2. /sitemap.xml via the F86 index-aware fetch (recursive for a
+            #      <sitemapindex>, 5 sub-sitemaps, 2000 cap)         -> sitemapUrls
+            #      (thin/no sitemap -> the F86 per-site hint paths are tried)
+            #   3. Invoke-F86LaunchUrl on the homepage: the real ladder, the real
+            #      rung number                                      -> launchTier/launchOk
+            #   4. download-to-RDP STUB: if the sitemap carried a .pdf URL, the F84
+            #      target directory is created/verified writable (a zero-byte
+            #      probe file, removed again). NOTHING is downloaded.  -> downloadDirOk
+            # Expensive (eleven real fetches + eleven launches), so it is rate
+            # limited to 1 call / 60 s per X-Dash-Token (429 + retryAfterSeconds).
+            # Same dash-token gate as every other /api route in this file.
+            if ($path -eq '/api/f87-selftest' -and $parts.method -eq 'POST') {
+                if (-not $script:F87SelfTestRate) { $script:F87SelfTestRate = @{} }
+                $f87Now = (Get-Date).ToUniversalTime()
+                $f87Tok = ''
+                try { $f87Tok = [string]$parts.headers['x-dash-token'] } catch { $f87Tok = '' }
+                if ($script:F87SelfTestRate.ContainsKey($f87Tok)) {
+                    $f87Age = ($f87Now - $script:F87SelfTestRate[$f87Tok]).TotalSeconds
+                    if ($f87Age -lt 60) {
+                        $f87Retry = [int][Math]::Ceiling(60 - $f87Age)
+                        if ($f87Retry -lt 1) { $f87Retry = 1 }
+                        Send-ClientResponse -Stream $stream -Code 429 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'RATE_LIMITED'; messageKey = 'selfTest.rateLimited'; retryAfterSeconds = $f87Retry }))
+                        return
+                    }
+                }
+                $f87BodyText = ''
+                try { $f87BodyText = [System.Text.Encoding]::UTF8.GetString($parts.body) } catch { $f87BodyText = '' }
+                $f87Json = $null
+                try { $f87Json = $f87BodyText | ConvertFrom-Json -ErrorAction Stop } catch { $f87Json = $null }
+                $f87Requested = @()
+                try { if ($f87Json -and $f87Json.sites) { $f87Requested = @($f87Json.sites) } } catch { $f87Requested = @() }
+                # The allowlist IS the operator fixture: the keys of f86-site-hints.json.
+                $f87Allowed = @()
+                try { $f87Allowed = @((Get-F86SiteHints).Keys | ForEach-Object { [string]$_ } | Sort-Object) } catch { $f87Allowed = @() }
+                $f87Sites = @()
+                $f87Bad = @()
+                foreach ($f87Raw in $f87Requested) {
+                    $f87Site = ([string]$f87Raw).Trim().ToLowerInvariant() -replace '^https?://', '' -replace '^www\.', '' -replace '/.*$', ''
+                    if (-not $f87Site) { continue }
+                    if ($f87Allowed -contains $f87Site) { if ($f87Sites -notcontains $f87Site) { $f87Sites += $f87Site } } else { $f87Bad += $f87Site }
+                }
+                if ($f87Bad.Count -gt 0 -or $f87Sites.Count -eq 0 -or $f87Sites.Count -gt 11) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'selfTest.invalidSites'; rejected = @($f87Bad); allowed = @($f87Allowed) }))
+                    return
+                }
+                $script:F87SelfTestRate[$f87Tok] = $f87Now
+                $f87DestDir = Join-Path $env:USERPROFILE 'Desktop\RDP-Downloads'
+                $f87Results = @()
+                foreach ($f87Site in $f87Sites) {
+                    $f87Row = [ordered]@{ site = $f87Site; probeOk = $false; sitemapUrls = 0; sitemapMode = ''; launchTier = 0; launchOk = $false; launchDetail = ''; pdfFound = $false; downloadDirOk = $false; downloadDir = $f87DestDir; errors = @() }
+                    $f87Home = 'https://' + $f87Site + '/'
+                    # 1. HEAD probe (the secure fetch follows same-host redirects only,
+                    #    so a www.<site> canonical still counts as reachable).
+                    try {
+                        $f87Probe = Invoke-F78SecureFetch -Url $f87Home -ExpectedHost $f87Site -MaxBytes 65536 -TimeoutSec 8
+                        $f87Row.probeOk = [bool]$f87Probe.ok
+                        if (-not $f87Probe.ok) { $f87Row.errors += ('probe: ' + [string]$f87Probe.error) }
+                    } catch { $f87Row.errors += ('probe: ' + $_.Exception.Message) }
+                    # 2. sitemap.xml (index-aware), then the per-site hint paths.
+                    $f87Urls = @()
+                    try {
+                        $f87Map = Invoke-F86SitemapFetch -Url ($f87Home + 'sitemap.xml') -f78Host $f87Site
+                        if ($f87Map.ok) { $f87Urls = @($f87Map.urls); $f87Row.sitemapMode = [string]$f87Map.mode }
+                        if ($f87Urls.Count -lt 50) {
+                            $f87Hint = Get-F86SiteHint -HostName $f87Site
+                            foreach ($f87HintPath in @(Get-F86HintList -Hint $f87Hint -Field 'sitemapPaths' -Max 3)) {
+                                $f87Alt = Invoke-F86SitemapFetch -Url ('https://' + $f87Site + [string]$f87HintPath) -f78Host $f87Site
+                                if ($f87Alt.ok -and $f87Alt.urls.Count -gt $f87Urls.Count) { $f87Urls = @($f87Alt.urls); $f87Row.sitemapMode = 'hint:' + [string]$f87HintPath }
+                                if ($f87Urls.Count -ge 50) { break }
+                            }
+                        }
+                    } catch { $f87Row.errors += ('sitemap: ' + $_.Exception.Message) }
+                    $f87Row.sitemapUrls = [int]$f87Urls.Count
+                    if ($f87Urls.Count -eq 0) { $f87Row.errors += 'sitemap: no URLs found' }
+                    # 3. The real launch ladder on the homepage.
+                    try {
+                        $f87Launch = Invoke-F86LaunchUrl -Url $f87Home
+                        $f87Row.launchTier = [int]$f87Launch.tier
+                        $f87Row.launchOk = [bool]$f87Launch.ok
+                        $f87Row.launchDetail = [string]$f87Launch.detail
+                        if (-not $f87Launch.ok) { $f87Row.errors += ('launch: ' + [string]$f87Launch.detail) }
+                    } catch { $f87Row.errors += ('launch: ' + $_.Exception.Message) }
+                    # 4. download-to-RDP stub: directory present + writable, no bytes fetched.
+                    foreach ($f87U in $f87Urls) { if (([string]$f87U) -match '(?i)\.pdf(\?|$)') { $f87Row.pdfFound = $true; break } }
+                    try {
+                        if (-not (Test-Path -LiteralPath $f87DestDir)) { New-Item -ItemType Directory -Path $f87DestDir -Force | Out-Null }
+                        $f87ProbeFile = Join-Path $f87DestDir ('.f87-writable-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+                        [System.IO.File]::WriteAllBytes($f87ProbeFile, [byte[]]@())
+                        Remove-Item -LiteralPath $f87ProbeFile -Force -ErrorAction SilentlyContinue
+                        $f87Row.downloadDirOk = $true
+                    } catch { $f87Row.errors += ('downloadDir: ' + $_.Exception.Message) }
+                    $f87Results += $f87Row
+                    Write-ClientAudit ('f87 selftest site=' + $f87Site + ' probe=' + [string]$f87Row.probeOk + ' sitemap=' + [string]$f87Row.sitemapUrls + ' tier=' + [string]$f87Row.launchTier + ' launch=' + [string]$f87Row.launchOk + ' dir=' + [string]$f87Row.downloadDirOk)
+                }
+                $f87Pass = @($f87Results | Where-Object { $_.probeOk -and $_.sitemapUrls -gt 0 -and $_.launchOk -and $_.downloadDirOk }).Count
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; ranAt = $f87Now.ToString('yyyy-MM-ddTHH:mm:ssZ'); total = [int]$f87Results.Count; passed = [int]$f87Pass; results = @($f87Results) }))
+                return
+            }
+
             # [F81 §3.2/Q8] POST /api/preview — fetch the first ~500 chars of
             # text for a public source URL. The route is gated by the same
             # X-Dash-Token used everywhere else, only serves the summary
@@ -5587,6 +5693,9 @@ function Invoke-ClientRequest {
                     # are in these bytes; tests/f86-launch-url-tier1.test.js
                     # re-extracts the ladder symbols so the flag cannot outlive them.
                     launchTiers = $true
+                    # [F87 §C.1] POST /api/f87-selftest (eleven-site production
+                    # proof) ships in these bytes; tests/f87-selftest.test.js pins it.
+                    selfTest = $true
                 }
             }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $objV)

@@ -536,7 +536,9 @@
       "retry": "Retry",
       "openInRdp": "Open in RDP",
       "rateLimited": "Too many launches - retry in a moment",
-      "noSession": "No active console session is attached"
+      "noSession": "No active console session is attached",
+      "tierProbe": "Open in RDP and show the launch tier",
+      "openedViaTier": "opened via tier {{tier}}"
     },
       "a11y": {
         "commandBar": "Search command bar",
@@ -822,7 +824,14 @@
       "title": "F84 features active:",
       "noServer": "server has no /api/version (older than F84)",
       "launchTier": "Launch tier: {{tier}}",
-      "lastLaunch": "Last launch: {{at}} {{result}}"
+      "lastLaunch": "Last launch: {{at}} {{result}}",
+      "shaMismatch": "ui/server sha mismatch - hard-reload (Ctrl+Shift+R) or wait for build-ui",
+      "testLaunch": "test launch (example.com)",
+      "testLaunchOk": "example.com opened via tier {{tier}}",
+      "testLaunchFail": "test launch failed: {{reason}}",
+      "recent": "Last launches:",
+      "downloadDir": "download dir",
+      "selfTestShortcut": "Run 11-site self-test"
     },
     "deepInspect": "Deep-inspect \u201c{{query}}\u201d on {{hostname}}",
     "openInLabSite": "Open {{hostname}} in Lab",
@@ -1056,5 +1065,21 @@
     "toRdp": "Download to RDP",
     "success": "Downloaded to RDP: {{path}}",
     "failed": "Download failed: {{reason}}"
+  },
+  "selfTest": {
+    "title": "F87 eleven-site self-test",
+    "runButton": "Run self-test",
+    "inProgress": "Self-test running (30-60 s)...",
+    "summary": "{{passed}} of {{total}} sites pass all four checks",
+    "rateLimited": "Self-test already ran - retry in {{seconds}} s",
+    "failed": "Self-test failed ({{code}})",
+    "invalidSites": "Only the eleven operator sites can be self-tested",
+    "column": {
+      "site": "Site",
+      "https": "HTTPS?",
+      "sitemapUrls": "Sitemap URLs",
+      "launchTier": "Launch tier",
+      "downloadDir": "Download dir"
+    }
   }
 }

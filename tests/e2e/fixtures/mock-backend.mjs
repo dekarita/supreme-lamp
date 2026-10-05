@@ -16,12 +16,38 @@ const PORT = Number(process.env.F78_MOCK_PORT || 7331);
 
 const readJson = (name) => JSON.parse(readFileSync(join(HERE, name), "utf8"));
 
-/** [F86 §D] The per-site sitemap fixtures: 52 URLs each (pages + .mp3/.mp4/.pdf),
- *  the exact corpus the ten-site deep spec asserts (>= 50 URLs per site). */
-function f86SitemapRows(site) {
+/** [F87 §B.1/B.3] The eleven operator domains, read from the SAME fixture the
+ *  F85 spec loops (f85-sites.json `sites`), so the mock's allowlist cannot
+ *  drift from the list the operator types by hand. */
+const F87_SITES = readJson("f85-sites.json").sites.map((s) => String(s).toLowerCase());
+
+/** [F87 §B.1] hostname -> operator site. Lowercase, "www." stripped, exact match
+ *  against the eleven; "" when the host is not one of them. */
+function f87SiteOfHost(hostname) {
+  const h = String(hostname || "").trim().toLowerCase().replace(/^www\./, "");
+  return F87_SITES.includes(h) ? h : "";
+}
+
+/** [F87 §B.3] hostname -> fixture file: dots become dashes, so the file name
+ *  equals the source id the UI routes on (/#/search/lab/<openculture-com>). */
+const f87FixtureName = (hostname) => String(hostname).replace(/\./g, "-") + ".xml";
+
+/** [F87 §B.1] source id -> operator site (the reverse of the id derivation the
+ *  POST /api/f58/sources route applies: "pluto-tv" -> "pluto.tv"). Lets the deep
+ *  lane answer for a site even when the stored row is not resolvable. */
+function f87SiteOfId(sourceId) {
+  const id = String(sourceId || "").trim().toLowerCase();
+  return F87_SITES.find((s) => s.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") === id) || "";
+}
+
+/** [F86 §D + F87 §B.4] The per-site sitemap fixtures: 60 REAL-shaped URLs each
+ *  (the site's own path grammar: archive.org/details/..., gutenberg.org/ebooks/...,
+ *  plus a few same-host .pdf/.mp3/.mp4 rows), the corpus the ten-site deep spec
+ *  asserts (>= 50 URLs per site). Looked up by HOSTNAME (dots -> dashes). */
+function f86SitemapRows(hostname) {
   let xml = "";
   try {
-    xml = readFileSync(join(HERE, "f86-sitemaps", site + ".xml"), "utf8");
+    xml = readFileSync(join(HERE, "f86-sitemaps", f87FixtureName(hostname)), "utf8");
   } catch {
     return [];
   }
@@ -30,8 +56,12 @@ function f86SitemapRows(site) {
   return out;
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 /** The launch-url calls the F86 spec inspects (tier proof). */
 const launchCalls = [];
+/** [F87 §C.1] token -> last self-test run (ms), for the 1/min mirror. */
+const selfTestRuns = new Map();
 /** Added at runtime by POST /api/f58/sources so the "add then card appears"
  *  flow is observable without mutating the fixture file on disk. */
 const added = [];
@@ -214,6 +244,16 @@ const server = createServer(async (req, res) => {
       enableState: "permanent",
       addedAt: new Date().toISOString(),
     };
+    // [F87 §A/§B.1 ROOT CAUSE] Re-adding a site the operator deleted earlier
+    // must make it LIVE again - exactly what the shipped server does (its store
+    // has no tombstones). The F85 spec deletes all eleven sites through the UI
+    // and the F86 spec re-adds them afterwards (one worker, files run in
+    // alphabetical order); with a permanent tombstone the re-added row was
+    // filtered out of GET /api/f58/sources, the Lab page rendered "not found",
+    // never POSTed /api/lab/inspect, and the ten-site spec timed out at
+    // page.waitForResponse (openculture.com / pluto.tv / freemusicarchive.org
+    // on the CI run; all eleven locally).
+    deleted.delete(row.id);
     added.push(row);
     send(res, 200, { ok: true, source: row });
     return;
@@ -230,17 +270,26 @@ const server = createServer(async (req, res) => {
     const f86Query = String(body?.query || "");
     const f86Deep = Boolean(body && body.sourceUrl) || /^f86/.test(f86Query.trim());
     if (f86Deep) {
+      // [F87 §B.1] Resolve the SITE from the hostname of body.sourceUrl first
+      // (lowercase, "www." stripped, matched against the eleven), then from the
+      // stored row's hostname, then from the id itself ("pluto-tv" -> pluto.tv).
+      // The lane never 404s: an unknown host answers the archive.org corpus,
+      // so the deep inspector always has >= 60 rows to render.
       let host = "";
       try {
-        host = body.sourceUrl ? new URL(String(body.sourceUrl)).hostname.replace(/^www\./, "") : "";
+        host = body.sourceUrl ? f87SiteOfHost(new URL(String(body.sourceUrl)).hostname) : "";
       } catch {
         host = "";
       }
       if (!host && body.sourceId) {
         const row = sources().find((x) => x.id === body.sourceId);
-        host = row ? String(row.hostname).replace(/^www\./, "") : "";
+        host = row ? f87SiteOfHost(String(row.hostname)) : "";
+        if (!host) host = f87SiteOfId(body.sourceId);
       }
       if (!host) host = "archive.org";
+      // [F87 §B.1] 100 ms of real latency: the UI must show its loading state
+      // and settle from server data, never from a same-tick response.
+      await sleep(100);
       const urls = f86SitemapRows(host);
       const q = f86Query.replace(/^f86[^ ]*/, "").trim().toLowerCase();
       const links = urls.map((href) => ({ href, text: href.split("/").pop() || href, matches: Boolean(q) && href.toLowerCase().includes(q) }));
@@ -368,7 +417,7 @@ const server = createServer(async (req, res) => {
       server: "mock",
       sha: "f85mock0000000000000000000000000000000",
       sha7: "f85mock",
-      features: { autoHttps: true, wwwTolerance: true, noFallback: true, downloadToRdp: true, launchTiers: true },
+      features: { autoHttps: true, wwwTolerance: true, noFallback: true, downloadToRdp: true, launchTiers: true, selfTest: true },
     });
     return;
   }
@@ -411,6 +460,39 @@ const server = createServer(async (req, res) => {
       errorHistory: [],
       history: [],
     });
+    return;
+  }
+
+  // [F87 §C.1] The self-test lane: the SAME envelope the shipped route answers
+  // ({ok, ranAt, total, passed, results[]}), one row per requested site, the
+  // sitemap count read from the site's own fixture, tier 1 for every launch.
+  // Subset validation and the 1/min rate limit are mirrored so the panel's
+  // error states are reachable end to end.
+  if (path === "/api/f87-selftest" && req.method === "POST") {
+    const body = await readBody(req);
+    const requested = Array.isArray(body?.sites) ? body.sites.map((s) => String(s).trim().toLowerCase().replace(/^www\./, "")) : [];
+    const rejected = requested.filter((s) => !F87_SITES.includes(s));
+    if (!requested.length || rejected.length) {
+      send(res, 400, { code: "VALIDATION_ERROR", messageKey: "selfTest.invalidSites", rejected, allowed: F87_SITES });
+      return;
+    }
+    const tok = String(req.headers["x-dash-token"] || "");
+    const now = Date.now();
+    if (selfTestRuns.has(tok) && now - selfTestRuns.get(tok) < 60_000 && url.searchParams.get("noRateLimit") !== "1") {
+      send(res, 429, { code: "RATE_LIMITED", messageKey: "selfTest.rateLimited", retryAfterSeconds: Math.ceil((60_000 - (now - selfTestRuns.get(tok))) / 1000) });
+      return;
+    }
+    selfTestRuns.set(tok, now);
+    await sleep(150);
+    const results = [...new Set(requested)].map((site) => {
+      const urls = f86SitemapRows(site);
+      launchCalls.push({ url: "https://" + site + "/", at: new Date().toISOString() });
+      return {
+        site, probeOk: true, sitemapUrls: urls.length, sitemapMode: "urlset", launchTier: 1, launchOk: true, launchDetail: "direct-spawn",
+        pdfFound: urls.some((u) => /\.pdf(\?|$)/i.test(u)), downloadDirOk: true, downloadDir: "C:\\Users\\runner\\Desktop\\RDP-Downloads", errors: [],
+      };
+    });
+    send(res, 200, { ok: true, ranAt: new Date().toISOString(), total: results.length, passed: results.length, results });
     return;
   }
 

@@ -1,6 +1,6 @@
 // [F56-d] Result CARDS - Fetch button now real: calls POST /api/fetch via aria2c lane.
 // Provenance-6 gate server-side + client-side disable. Existing ARIA grid semantics unchanged.
-import { forwardRef, useCallback, useEffect, useMemo, type HTMLAttributes, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { forwardRef, useCallback, useEffect, useMemo, useState, type HTMLAttributes, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { ExternalLink, FlaskConical } from "lucide-react";
@@ -47,6 +47,8 @@ export function ResultsGrid() {
   const submit = useSearchStore((s) => s.submit);
   const push = useToastStore((s) => s.push);
   const navigate = useNavigate();
+  // [F87 §D.2] per-card "opened via tier N" text (the lightning button's tooltip).
+  const [launchTiers, setLaunchTiers] = useState<Record<string, string>>({});
 
   const fileExtensions = useSearchStore((s) => s.fileExtensions);
   const yearFrom = useSearchStore((s) => s.yearFrom);
@@ -342,6 +344,32 @@ export function ResultsGrid() {
                 className="h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
                 {t("search.launchUrl.openInRdp")}
+              </button>
+              {/* [F87 §D.2] The tier-proof launch: same launchUrl(), but the
+                  rung that did the work is shown right here as the tooltip
+                  ("opened via tier 1"), so the operator sees WHICH tier worked
+                  without opening ?diag=1. */}
+              <button
+                id={"f87.search.resultLaunchTier." + sfx}
+                data-testid="card-launch-tier"
+                type="button"
+                title={launchTiers[sfx] || t("search.launchUrl.tierProbe")}
+                aria-label={t("search.launchUrl.tierProbe")}
+                data-tier={launchTiers[sfx] ? launchTiers[sfx].replace(/\D+/g, "") : ""}
+                onClick={async () => {
+                  const out = await launchUrl(direct);
+                  if (!out.ok) {
+                    setLaunchTiers((m) => ({ ...m, [sfx]: t("search.launchUrl.failed") }));
+                    push(t(out.reason || "search.launchUrl.failed") + " — " + t("search.launchUrl.retry"));
+                    return;
+                  }
+                  const text = t("search.launchUrl.openedViaTier", { tier: out.tier || "?" });
+                  setLaunchTiers((m) => ({ ...m, [sfx]: text }));
+                  push(text);
+                }}
+                className="h-11 w-11 rounded-md border border-default text-sm text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+              >
+                {"\u26A1"}
               </button>
               {fileish ? (
                 <button

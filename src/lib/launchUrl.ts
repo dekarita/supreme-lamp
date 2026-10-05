@@ -22,6 +22,11 @@ export interface LaunchOutcome {
   reason?: string;
   /** Server code or a transport marker, for logs/tests only. */
   code?: string;
+  /** [F87 §D.2] The F86 ladder rung that did the work (1-3), from the 200
+   *  body, so a result card can say "opened via tier N" without the banner. */
+  tier?: number;
+  /** [F87 §D.2] The rung's detail string (e.g. "direct-spawn"). */
+  tierDetail?: string;
 }
 
 export function isSafeLaunchUrl(raw: string): boolean {
@@ -75,8 +80,22 @@ export async function launchUrl(raw: string): Promise<LaunchOutcome> {
       headers,
       body: JSON.stringify({ url }),
     });
-    if (r.ok) return { ok: true };
-    const body = (await r.json().catch(() => null)) as { code?: string; messageKey?: string } | null;
+    // [F87 §B/§D.2] ALWAYS consume the body. The F86 200 carries {tier,
+    // tierDetail}; and an unread fetch body keeps the request "loading" in
+    // Chromium, which is exactly what left the ten-site spec's response read
+    // hanging. A malformed body is still a successful launch.
+    let body: { code?: string; messageKey?: string; tier?: number; tierDetail?: string } | null = null;
+    try {
+      body = (await r.json()) as { code?: string; messageKey?: string; tier?: number; tierDetail?: string } | null;
+    } catch {
+      body = null;
+    }
+    if (r.ok) {
+      const out: LaunchOutcome = { ok: true };
+      if (typeof body?.tier === "number" && body.tier > 0) out.tier = body.tier;
+      if (typeof body?.tierDetail === "string" && body.tierDetail) out.tierDetail = body.tierDetail;
+      return out;
+    }
     const code = String(body?.code || String(r.status));
     return { ok: false, reason: reasonForCode(code), code };
   } catch {

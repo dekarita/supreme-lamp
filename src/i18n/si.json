@@ -442,7 +442,9 @@
       "retry": "නැවත උත්සාහ කරන්න",
       "openInRdp": "RDP තුළ විවෘත කරන්න",
       "rateLimited": "දියත් කිරීම් ඉතා වැඩියි - මොහොතකින් නැවත උත්සාහ කරන්න",
-      "noSession": "සක්‍රිය කොන්සෝල් සැසියක් සම්බන්ධ නැත"
+      "noSession": "සක්‍රිය කොන්සෝල් සැසියක් සම්බන්ධ නැත",
+      "tierProbe": "RDP තුළ විවෘත කර දියත් කිරීමේ ස්ථරය පෙන්වන්න",
+      "openedViaTier": "ස්ථරය {{tier}} හරහා විවෘත විය"
     },
     "a11y": {
       "commandBar": "සෙවුම් විධාන තීරුව",
@@ -728,7 +730,14 @@
       "title": "F84 විශේෂාංග ක්‍රියාත්මකයි:",
       "noServer": "සේවාදායකයේ /api/version නොමැත (F84 ට පැරණි)",
       "launchTier": "දියත් මට්ටම: {{tier}}",
-      "lastLaunch": "අවසන් දියත් කිරීම: {{at}} {{result}}"
+      "lastLaunch": "අවසන් දියත් කිරීම: {{at}} {{result}}",
+      "shaMismatch": "ui/server sha නොගැලපේ - Ctrl+Shift+R ඔබන්න හෝ build-ui සඳහා රැඳී සිටින්න",
+      "testLaunch": "පරීක්ෂණ දියත් කිරීම (example.com)",
+      "testLaunchOk": "example.com ස්ථරය {{tier}} හරහා විවෘත විය",
+      "testLaunchFail": "පරීක්ෂණ දියත් කිරීම අසාර්ථකයි: {{reason}}",
+      "recent": "අවසන් දියත් කිරීම්:",
+      "downloadDir": "බාගැනීම් ෆෝල්ඩරය",
+      "selfTestShortcut": "අඩවි 11 ස්වයං පරීක්ෂණය ධාවනය කරන්න"
     },
     "deepInspect": "{{hostname}} තුළ “{{query}}” ගේබීරව පරීක්ෂා කරන්න",
     "openInLabSite": "{{hostname}} ලැබ් තුළ විවෘත කරන්න",
@@ -962,5 +971,21 @@
     "toRdp": "RDP වෙත බාගන්න",
     "success": "RDP වෙත බාගත කරන ලදී: {{path}}",
     "failed": "බාගැනීම අසාර්ථකයි: {{reason}}"
+  },
+  "selfTest": {
+    "title": "F87 අඩවි එකොළහේ ස්වයං පරීක්ෂණය",
+    "runButton": "ස්වයං පරීක්ෂණය ධාවනය කරන්න",
+    "inProgress": "ස්වයං පරීක්ෂණය ධාවනය වෙමින් (තත්පර 30-60)...",
+    "summary": "අඩවි {{total}} අතරින් {{passed}} ක් පරීක්ෂණ හතරම සමත්",
+    "rateLimited": "ස්වයං පරීක්ෂණය දැනටමත් ධාවනය විය - තත්පර {{seconds}} කින් නැවත උත්සාහ කරන්න",
+    "failed": "ස්වයං පරීක්ෂණය අසාර්ථකයි ({{code}})",
+    "invalidSites": "ක්‍රියාකරු අඩවි එකොළහ පමණක් ස්වයං පරීක්ෂා කළ හැක",
+    "column": {
+      "site": "අඩවිය",
+      "https": "HTTPS?",
+      "sitemapUrls": "Sitemap URL",
+      "launchTier": "දියත් කිරීමේ ස්ථරය",
+      "downloadDir": "බාගැනීම් ෆෝල්ඩරය"
+    }
   }
 }

@@ -13,9 +13,16 @@
 //   4. the file-ish lane still renders "Download to RDP" for the same site
 //   5. one screenshot per site: screenshots/f86-<site>-deep.png
 //
-// The deep lane's corpus is tests/e2e/fixtures/f86-sitemaps/<site>.xml (52 URLs:
-// pages + .mp3/.mp4/.pdf), served by the mock for `q=f86...` and for
+// The deep lane's corpus is tests/e2e/fixtures/f86-sitemaps/<host-with-dashes>.xml
+// (F87 §B.4: 60 URLs per site in the site's REAL path grammar - archive.org/
+// details/..., gutenberg.org/ebooks/..., pluto.tv/us/on-demand/... - plus a few
+// same-host .pdf/.mp3/.mp4 rows), served by the mock for `q=f86...` and for
 // body.sourceUrl requests - the same two shapes the shipped server answers.
+//
+// [F87 §B.2] Step 2 asserts UI STATE (the rendered list), not a captured
+// response: `page.waitForResponse` raced the hash navigation and the F85 spec's
+// deletes (see mock-backend.mjs POST /api/f58/sources), and a race is not a
+// proof. The list the operator sees IS the proof.
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync, readFileSync, readdirSync } from "node:fs";
 
@@ -37,7 +44,25 @@ const OPERATOR_FIXTURE = [
 
 const SITES = OPERATOR_FIXTURE;
 const idOf = (site: string) => site.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-const sitemapOf = (site: string) => readFileSync(`tests/e2e/fixtures/f86-sitemaps/${site}.xml`, "utf8");
+/** [F87 §B.3] hostname -> fixture file, the SAME rule the mock applies. */
+const fixtureOf = (site: string) => site.replace(/\./g, "-") + ".xml";
+const sitemapOf = (site: string) => readFileSync(`tests/e2e/fixtures/f86-sitemaps/${fixtureOf(site)}`, "utf8");
+/** [F87 §B.4] A query term that really occurs in the site's own URL grammar,
+ *  so the "matches first" list is non-empty and the screenshot is believable. */
+const QUERY_OF: Record<string, string> = {
+  "openculture.com": "free",
+  "archive.org": "details",
+  "openverse.org": "image",
+  "awesome.re": "awesome",
+  "gutenberg.org": "ebooks",
+  "standardebooks.org": "ebooks",
+  "librivox.org": "author",
+  "openlibrary.org": "works",
+  "tubitv.com": "movies",
+  "pluto.tv": "on-demand",
+  "freemusicarchive.org": "music",
+};
+const labUrlOf = (site: string) => "/#/search/lab/" + idOf(site) + "?q=f86+" + encodeURIComponent(QUERY_OF[site] || "free");
 const locsOf = (site: string) => (sitemapOf(site).match(/<loc>[^<]+<\/loc>/g) || []).length;
 
 async function shot(page: Page, site: string) {
@@ -52,18 +77,28 @@ async function runQuery(page: Page, query: string) {
 }
 
 test.describe("F86 ten-site deep inspection", () => {
-  test("0 the fixture set covers the operator list and every sitemap has >= 50 URLs", () => {
+  test("0 the fixture set covers the operator list and every sitemap has >= 60 real-shaped URLs", () => {
     expect(SITES.length).toBeGreaterThanOrEqual(10);
     const files = readdirSync("tests/e2e/fixtures/f86-sitemaps");
     for (const site of SITES) {
-      expect(files).toContain(`${site}.xml`);
-      expect(locsOf(site)).toBeGreaterThanOrEqual(50);
+      expect(files).toContain(fixtureOf(site));
+      expect(locsOf(site)).toBeGreaterThanOrEqual(60);
+      // [F87 §B.4] real sitemap snippets: every row is an https URL on the
+      // site's own host (www-tolerant), none is the old synthetic /item/NNN.
+      const xml = sitemapOf(site);
+      const locs = xml.match(/<loc>[^<]+<\/loc>/g) || [];
+      for (const loc of locs) {
+        const href = loc.replace(/<\/?loc>/g, "");
+        expect(href.startsWith("https://")).toBe(true);
+        expect(new URL(href).hostname.replace(/^www\./, "")).toBe(site);
+        expect(href).not.toMatch(/\/item\/\d{3}$/);
+      }
+      expect(locs.filter((l) => l.toLowerCase().includes(QUERY_OF[site])).length).toBeGreaterThan(0);
     }
   });
 
   for (const site of SITES) {
     test(`${site}: add -> Lab >= 50 URLs -> row opens in RDP (tier) -> download`, async ({ page }) => {
-      const id = idOf(site);
 
       // 1. ADD: the bare domain (exactly what the operator types) normalises to
       //    https:// and is saved on the server.
@@ -79,21 +114,26 @@ test.describe("F86 ten-site deep inspection", () => {
       expect(JSON.parse(req.postData() || "{}").baseUrl).toBe("https://" + site);
       await expect(page.locator('[id="f78.addSite.modal"]')).toHaveCount(0);
 
-      // 2. LAB DEEP: the f86 lane answers the site's own 52-URL corpus. The
-      //    operator bar is >= 50 URLs, read off the match-count line the
-      //    inspector renders from server data (never from a hard-coded number).
-      const [inspectRes] = await Promise.all([
-        page.waitForResponse((r) => r.url().includes("/api/lab/inspect") && r.request().method() === "POST"),
-        page.goto("/#/search/lab/" + id + "?q=f86+sample"),
-      ]);
-      await expect(page.getByTestId("lab-link-list")).toBeVisible();
-      // The operator bar: the inspect that fed this list returned >= 50 URLs.
-      const inspected = (await inspectRes.json()) as { linkCount?: number; source?: string };
-      expect(Number(inspected.linkCount || 0)).toBeGreaterThanOrEqual(50);
-      expect(inspected.source || "").toContain("sitemap");
-      expect(await page.getByTestId("lab-link-row").count()).toBeGreaterThan(0);
+      // 2. LAB DEEP: the f86 lane answers the site's own 60-URL corpus. The
+      //    operator bar is >= 50 URLs, read off the RENDERED list and the
+      //    match-count line (both come from server data, never from a
+      //    hard-coded number). No waitForResponse: UI state is the assertion.
+      await page.goto(labUrlOf(site));
+      await expect(page.getByTestId("lab-link-list")).toBeVisible({ timeout: 20_000 });
+      await expect(page.getByTestId("lab-match-count")).toBeVisible({ timeout: 20_000 });
+      // "{matches} of {total} links match" - the total is the inspect's linkCount.
+      const countLine = (await page.getByTestId("lab-match-count").textContent()) || "";
+      const total = Number((/of\s+(\d+)/.exec(countLine) || [])[1] || 0);
+      expect(total).toBeGreaterThanOrEqual(50);
       // The deep crawl is visible as a real source, not as a homepage fallback.
       await expect(page.getByTestId("lab-source")).toContainText("sitemap");
+      // The matching rows (the per-site query term) are on screen...
+      expect(await page.getByTestId("lab-link-row").count()).toBeGreaterThan(0);
+      // ...and with "matches first" off the WHOLE corpus is: >= 50 <li> rows.
+      await page.getByTestId("lab-matches-first").uncheck();
+      const linkCount = await page.getByTestId("lab-link-list").locator("li").count();
+      expect(linkCount).toBeGreaterThanOrEqual(50);
+      await page.getByTestId("lab-matches-first").check();
 
       // 3. OPEN: the first matching row must POST /api/launch-url and the
       //    response must carry the F86 tier (1-3), which is the proof that the
@@ -102,7 +142,11 @@ test.describe("F86 ten-site deep inspection", () => {
       const launchRes = page.waitForResponse((r) => r.url().includes("/api/launch-url") && r.request().method() === "POST");
       await page.getByTestId("lab-link-open").first().click();
       const post = await launchReq;
-      expect(String(post.postData() || "")).toContain("https://" + site);
+      // The row's href is on THIS site (www-tolerant, exactly like the F84
+      // same-host fence: openculture.com and gutenberg.org canonicalise to www).
+      const postedUrl = String((JSON.parse(post.postData() || "{}") as { url?: string }).url || "");
+      expect(new URL(postedUrl).hostname.replace(/^www\./, "")).toBe(site);
+      expect(postedUrl.startsWith("https://")).toBe(true);
       const launchBody = (await (await launchRes).json()) as { ok?: boolean; tier?: number; tierDetail?: string };
       expect(launchBody.ok).toBe(true);
       expect([1, 2, 3]).toContain(launchBody.tier);
@@ -113,8 +157,9 @@ test.describe("F86 ten-site deep inspection", () => {
       await expect(page.getByTestId("card-download-rdp").first()).toBeVisible();
 
       // 5. SCREENSHOT of the inspector view (full page, per site).
-      await page.goto("/#/search/lab/" + id + "?q=f86+sample");
-      await expect(page.getByTestId("lab-link-list")).toBeVisible();
+      await page.goto(labUrlOf(site));
+      await expect(page.getByTestId("lab-link-list")).toBeVisible({ timeout: 20_000 });
+      await expect(page.getByTestId("lab-link-row").first()).toBeVisible();
       await shot(page, site);
     });
   }
