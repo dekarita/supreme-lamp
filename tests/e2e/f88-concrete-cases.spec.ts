@@ -65,10 +65,16 @@ test.describe("F88 concrete operator cases", () => {
     // Back on the search set, matches-first is already OFF: the file-ish row
     // carries the F88 Download button; posting it proves the download=true
     // lane and the success toast names the RDP folder.
-    const dl = page.getByTestId("lab-link-download");
-    await expect(dl).toHaveCount(1);
+    // Scope to the .mp3 row (walter_kaufmanns_lectures.html is also
+    // file-like per F84 MIME_TO_EXT, so page-level toHaveCount(1) fails.
+    // Scope the assert + click to the audio row.)
+    const mp3Row = page.locator(
+      "li[data-testid=lab-link-row]",
+      { hasText: ".mp3" },
+    );
+    await expect(mp3Row.getByTestId("lab-link-download")).toBeVisible();
     const posted = page.waitForRequest((r) => r.url().includes("/api/fetch?download=true") && r.method() === "POST");
-    await dl.click();
+    await mp3Row.getByTestId("lab-link-download").click();
     const req = await posted;
     expect(JSON.parse(req.postData() || "{}").urlImport.url).toContain("platos-republic-lecture.mp3");
     await expect(page.locator("#toasts")).toContainText("RDP-Downloads");
