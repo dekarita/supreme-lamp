@@ -87,7 +87,7 @@ describe("F69 §1.4 search_enable lane flag", () => {
     expect(isSearchLaneEnabled()).toBe(true);
     const { container } = render(<App />);
     const links = () => Array.from(container.querySelectorAll('[data-testid="sidebar"] nav a')).map((a) => (a.getAttribute("href") || "").replace(/^#/, ""));
-    expect(links().length).toBe(9);
+    expect(links().length).toBe(10); // [F92] +/health
     expect(links()).toContain("/search");
 
     // the poller mirror flips to false -> NOTHING moves in the UI
@@ -96,7 +96,7 @@ describe("F69 §1.4 search_enable lane flag", () => {
       announceSearchLane();
     });
     expect(isSearchLaneEnabled()).toBe(true);
-    expect(links().length).toBe(9);
+    expect(links().length).toBe(10); // [F92] +/health
     expect(links()).toContain("/search");
     expect(document.getElementById("f56.search.nav")).not.toBeNull();
 
@@ -110,7 +110,7 @@ describe("F69 §1.4 search_enable lane flag", () => {
       (window as Any).__GHRDP_SEARCH_ENABLED = true;
       announceSearchLane();
     });
-    expect(links().length).toBe(9);
+    expect(links().length).toBe(10); // [F92] +/health
   });
 });
 

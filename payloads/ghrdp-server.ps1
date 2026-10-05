@@ -5,6 +5,391 @@ param(
     [int]$LimitMinutes = 350
 )
 $ErrorActionPreference = 'Continue'
+# =============================================================================
+# [F92 §1.1] TLS + progress + encoding defaults applied once per server
+# process. Tls13 is best-effort: .NET Framework 4.x on older hosts has no
+# Tls13 member, so it is added only when the enum actually exists (a hard
+# failure here would take the whole server down at line 8).
+# =============================================================================
+try {
+    [Net.ServicePointManager]::SecurityProtocol =
+        [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    if ([enum]::GetNames([Net.SecurityProtocolType]) -contains 'Tls13') {
+        [Net.ServicePointManager]::SecurityProtocol =
+            [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls13
+    }
+} catch { }
+$ProgressPreference = 'SilentlyContinue'
+try {
+    $OutputEncoding = [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+} catch {
+    $OutputEncoding = [Text.UTF8Encoding]::new($false)
+}
+# [F92 §2.3] nuke any stray Session 0 msedge processes left over from pre-F92
+# runs (the session-0 browser graveyard the ONLOGON task makes obsolete).
+try {
+    Get-Process msedge -ErrorAction SilentlyContinue |
+        Where-Object { $_.SessionId -eq 0 } | Stop-Process -Force -ErrorAction SilentlyContinue
+} catch { }
+# [F92 §2.4] the user-session flag: TRUE when this process runs in an
+# interactive session (SessionId != 0), i.e. when the F92 GHRDP-Server
+# ONLOGON task owns the server. It is what arms the single-rung launch path.
+$script:F92InUserSession = $false
+try { $script:F92InUserSession = ((Get-Process -Id $PID).SessionId -ne 0) } catch { }
+# =============================================================================
+# [F92 §1.3] Central endpoint map. Every search site's URL template lives
+# HERE, so an upstream drift is a one-line fix (F92's whole point: the next
+# fix is scoped to one cell). Templates verified Oct 2026.
+# =============================================================================
+$Script:F92Endpoints = @{
+    openculture      = @{ Base='https://www.openculture.com/'; QueryParam='s';           JsonPath=$null;                      KnownGoodQuery='Walter Kaufmann';         Expect='/walter_kaufmanns_lectures.html'; ExpectMatch='walter_kaufmanns_lectures' }
+    archive          = @{ Base='https://archive.org/advancedsearch.php'; QueryParam='q'; JsonPath='.response.docs[*].identifier'; KnownGoodQuery='title:"A Matter of Life and Death"'; Expect='matteroflife'; ExpectMatch=$null }
+    openverse        = @{ Base='https://api.openverse.org/v1/images/'; QueryParam='q';   JsonPath='.results[*].foreign_landing_url'; KnownGoodQuery="Saturn's Rings in Ultraviolet Light"; Expect='Saturn'; ExpectMatch=$null }
+    awesome          = @{ Base='https://raw.githubusercontent.com/sindresorhus/awesome/main/readme.md'; QueryParam=$null; JsonPath=$null; KnownGoodQuery='networking'; Expect='PCAPTools'; ExpectMatch='PCAPTools|Network' }
+    gutenberg        = @{ Base='https://gutendex.com/books/'; QueryParam='search';       JsonPath='.results[*].title';         KnownGoodQuery='sherlock holmes';         Expect='Sherlock'; ExpectMatch=$null }
+    standardebooks   = @{ Base='https://standardebooks.org/ebooks'; QueryParam='query';  JsonPath=$null;                      KnownGoodQuery='dickens';                 Expect='dickens'; ExpectMatch=$null }
+    librivox         = @{ Base='https://librivox.org/api/feed/audiobooks/'; QueryParam='title'; Extras='&format=json';         JsonPath='.books[*].title';           KnownGoodQuery='pride and prejudice';     Expect='Pride'; ExpectMatch=$null }
+    openlibrary      = @{ Base='https://openlibrary.org/search.json'; QueryParam='q';    Extras='&fields=key,title,author_name,cover_i,ia&limit=10'; JsonPath='.docs[*].title'; KnownGoodQuery='the lord of the rings'; Expect='Lord of the Rings'; ExpectMatch=$null }
+    tubitv           = @{ Base='https://tubitv.com/search/'; QueryParam=$null; RequiresBrowser=$true;                          KnownGoodQuery='office';                  Expect=$null; ExpectMatch=$null }
+    pluto            = @{ Base='https://pluto.tv/en/search/details'; QueryParam='query'; RequiresBrowser=$true;                KnownGoodQuery='office';                  Expect=$null; ExpectMatch=$null }
+    freemusicarchive = @{ Base='https://freemusicarchive.org/search/'; QueryParam='quicksearch'; JsonPath=$null;              KnownGoodQuery='moonlight';               Expect='moonlight'; ExpectMatch=$null }
+}
+# short-name <-> operator host aliases (the hint table keys sites by host).
+$Script:F92HostAlias = @{
+    'openculture.com'='openculture'; 'archive.org'='archive'; 'openverse.org'='openverse'
+    'awesome.re'='awesome'; 'gutenberg.org'='gutenberg'; 'standardebooks.org'='standardebooks'
+    'librivox.org'='librivox'; 'openlibrary.org'='openlibrary'; 'tubitv.com'='tubitv'
+    'pluto.tv'='pluto'; 'freemusicarchive.org'='freemusicarchive'
+}
+function Resolve-F92EndpointKey {
+    param([string]$Name)
+    $n = ([string]$Name).Trim().ToLowerInvariant()
+    try { $n = ($n -replace '^www\.', '') } catch { }
+    if ($Script:F92Endpoints.ContainsKey($n)) { return $n }
+    if ($Script:F92HostAlias.ContainsKey($n)) { return [string]$Script:F92HostAlias[$n] }
+    return $n
+}
+# =============================================================================
+# [F92 §1.2] Single hardened wrapper for every outbound HTTP call made by the
+# F92 self-test + fanout. Returns the uniform shape below on BOTH success and
+# failure so callers never exception-traverse $Error. PS 5.1 and PS 7 safe:
+# header lookup is case-insensitive and array-tolerant, error status is read
+# from whichever exception type the runtime hands back.
+# =============================================================================
+function Get-F92HeaderValue {
+    param($Headers, [string]$Name)
+    if (-not $Headers) { return $null }
+    try {
+        foreach ($k in @($Headers.Keys)) {
+            if ($k -and ([string]$k) -ieq $Name) {
+                $v = $Headers[$k]
+                if ($v -is [array]) { if (@($v).Count -gt 0) { return [string]@($v)[0] }; return $null }
+                return [string]$v
+            }
+        }
+    } catch { }
+    return $null
+}
+function Invoke-F92Http {
+    param(
+        [Parameter(Mandatory)][string]$Uri,
+        [string]$Method        = 'GET',
+        [hashtable]$Headers    = @{},
+        [object]$Body          = $null,
+        [int]$TimeoutSec       = 20,
+        [string]$UserAgent     = '',
+        [string]$Accept        = 'application/json, text/html;q=0.9, */*;q=0.5'
+    )
+    if (-not $UserAgent) {
+        $shaPart = 'dev'
+        try { if ($env:GITHUB_SHA) { $shaPart = [string]$env:GITHUB_SHA } } catch { }
+        $UserAgent = 'supreme-lamp-F92/' + $shaPart + ' (+https://github.com/dekarita/supreme-lamp)'
+    }
+    $start = [DateTime]::UtcNow
+    $h = @{}
+    if ($Headers) { foreach ($k in $Headers.Keys) { $h[$k] = $Headers[$k] } }
+    if (-not $h.ContainsKey('Accept')) { $h['Accept'] = $Accept }
+    try {
+        $resp = $null
+        if ($null -ne $Body) {
+            $resp = Invoke-WebRequest -Uri $Uri -Method $Method -Headers $h -Body $Body `
+                -UserAgent $UserAgent -UseBasicParsing -MaximumRedirection 5 `
+                -TimeoutSec $TimeoutSec -ErrorAction Stop
+        } else {
+            $resp = Invoke-WebRequest -Uri $Uri -Method $Method -Headers $h `
+                -UserAgent $UserAgent -UseBasicParsing -MaximumRedirection 5 `
+                -TimeoutSec $TimeoutSec -ErrorAction Stop
+        }
+        $elapsed = ([DateTime]::UtcNow - $start).TotalMilliseconds
+        $bytes = 0
+        try { $bytes = [int]$resp.RawContentLength } catch { try { $bytes = [Text.Encoding]::UTF8.GetByteCount([string]$resp.Content) } catch { $bytes = 0 } }
+        return [pscustomobject]@{
+            Ok         = $true
+            HttpStatus = [int]$resp.StatusCode
+            CfRay      = Get-F92HeaderValue -Headers $resp.Headers -Name 'cf-ray'
+            ElapsedMs  = [int]$elapsed
+            Bytes      = $bytes
+            Content    = [string]$resp.Content
+            Headers    = $resp.Headers
+            Error      = $null
+        }
+    } catch {
+        $elapsed = ([DateTime]::UtcNow - $start).TotalMilliseconds
+        $status  = $null
+        try { $status = [int]$_.Exception.Response.StatusCode } catch { $status = $null }
+        return [pscustomobject]@{
+            Ok         = $false
+            HttpStatus = $status
+            CfRay      = $null
+            ElapsedMs  = [int]$elapsed
+            Bytes      = 0
+            Content    = $null
+            Headers    = $null
+            Error      = $_.Exception.Message
+        }
+    }
+}
+# walk a dotted JsonPath with a terminal [*] (F92 §1.3 table syntax, e.g.
+# '.response.docs[*].identifier'); returns a flat string array.
+function Resolve-F92JsonPath {
+    param($Json, [string]$Path)
+    $cur = @($Json)
+    foreach ($seg in (([string]$Path) -split '\.')) {
+        if (-not $seg) { continue }
+        $field = $seg
+        $expand = $false
+        if ($field -match '^(.+?)\[\*\]$') { $field = $Matches[1]; $expand = $true }
+        $next = @()
+        foreach ($c in $cur) {
+            if ($null -eq $c) { continue }
+            $v = $null
+            try { $v = $c.$field } catch { $v = $null }
+            if ($null -eq $v) { continue }
+            if ($expand -or ($v -is [System.Array])) { $next += @($v) } else { $next += $v }
+        }
+        $cur = @($next)
+        if ($cur.Count -eq 0) { break }
+    }
+    return @($cur)
+}
+# =============================================================================
+# [F92 §1.4] Fanout search on TOP of Invoke-F92Http + the F92Endpoints map.
+# Every query goes through [Uri]::EscapeDataString. Each adapter emits
+# [pscustomobject]@{ Site; Strategy; Diag; Results } with Strategy in
+# api|html|markdown|browser-required; Ok/ExpectHit are F92 additions the
+# self-test reads. `awesome` is a pure-regex Markdown scan - NO HTML parser.
+# `openverse` carries Authorization: Bearer $env:OPENVERSE_TOKEN when set.
+# The pre-F92 Invoke-F88SiteSearch stays intact: it is the PRODUCT path the
+# Lab/selftest routes pin (tests/f88-site-search.test.js); F92 is the
+# hardened diagnostics + search surface.
+# =============================================================================
+function Invoke-F92SiteSearch {
+    param([string]$Site, [string]$Query)
+    $key = Resolve-F92EndpointKey -Name $Site
+    $out = [ordered]@{ Site = $key; Strategy = ''; Diag = ''; Results = @(); Ok = $false; ExpectHit = $false }
+    if (-not $Script:F92Endpoints.ContainsKey($key)) { $out.Diag = 'unknown-site: ' + $key; return [pscustomobject]$out }
+    $spec = $Script:F92Endpoints[$key]
+    $q = ''
+    try { $q = [Uri]::EscapeDataString([string]$Query) } catch { $q = [Uri]::EscapeDataString('') }
+    if ($spec.RequiresBrowser) {
+        $out.Strategy = 'browser-required'
+        $out.Diag = 'Site ' + $key + ' is JS-rendered; verified by nightly Playwright (e2e-real-sites.yml), not by CI fetchers.'
+        return [pscustomobject]$out
+    }
+    $uri = [string]$spec.Base
+    if ($spec.QueryParam) {
+        $uri = [string]$spec.Base + '?' + [string]$spec.QueryParam + '=' + $q
+        if ($spec.Extras) { $uri = $uri + [string]$spec.Extras }
+    }
+    $hdrs = @{}
+    if ($key -eq 'openverse') {
+        try { if ($env:OPENVERSE_TOKEN) { $hdrs['Authorization'] = 'Bearer ' + [string]$env:OPENVERSE_TOKEN } } catch { }
+    }
+    $r = Invoke-F92Http -Uri $uri -Headers $hdrs
+    if (-not $r.Ok) {
+        $out.Strategy = $(if ($spec.JsonPath) { 'api' } else { 'html' })
+        $out.Diag = 'HTTP error after ' + $r.ElapsedMs + 'ms: ' + [string]$r.Error + ' (cf-ray=' + [string]$r.CfRay + ')'
+        return [pscustomobject]$out
+    }
+    $out.Diag = 'http=' + $r.HttpStatus + ' bytes=' + $r.Bytes + ' ms=' + $r.ElapsedMs
+    if ($r.CfRay) { $out.Diag = $out.Diag + ' cf-ray=' + [string]$r.CfRay }
+    $rows = @()
+    $content = [string]$r.Content
+    if ($spec.JsonPath) {
+        $out.Strategy = 'api'
+        $json = $null
+        try { $json = $content | ConvertFrom-Json -ErrorAction Stop } catch { $json = $null }
+        if ($json) {
+            foreach ($v in @(Resolve-F92JsonPath -Json $json -Path ([string]$spec.JsonPath))) {
+                if ($rows.Count -ge 50) { break }
+                $s = [string]$v
+                if (-not $s) { continue }
+                $href = ''
+                try { if ($s -match '^https?://') { $href = $s } } catch { }
+                $rows += [ordered]@{ text = $s; href = $href }
+            }
+        } else { $out.Diag = $out.Diag + ' json-parse-failed' }
+    }
+    elseif ($key -eq 'awesome') {
+        # [F92 §1.4] Markdown link regex over the RAW readme - deliberately no
+        # HTML parser: the source is markdown and a parser is one more drift surface.
+        $out.Strategy = 'markdown'
+        foreach ($m in [regex]::Matches($content, '\[([^\]]+)\]\((https?://[^)]+)\)')) {
+            if ($rows.Count -ge 50) { break }
+            $rows += [ordered]@{ text = ([string]$m.Groups[1].Value).Trim(); href = ([string]$m.Groups[2].Value).Trim() }
+        }
+    }
+    else {
+        $out.Strategy = 'html'
+        foreach ($m in [regex]::Matches($content, '(?is)<a\b[^>]*href\s*=\s*["'']([^"'']+)["''][^>]*>(.*?)</a>')) {
+            if ($rows.Count -ge 50) { break }
+            $hrefRaw = [string]$m.Groups[1].Value
+            if (-not $hrefRaw -or $hrefRaw.StartsWith('#')) { continue }
+            if ($hrefRaw -match '^(?i)mailto:|javascript:|data:|tel:') { continue }
+            $abs = ''
+            try {
+                if ($hrefRaw -match '^(?i)https://') { $abs = ([System.Uri]$hrefRaw).AbsoluteUri }
+                elseif ($hrefRaw -match '^(?i)http://') { $abs = 'https://' + $hrefRaw.Substring(7) }
+                else {
+                    $baseUri = $null
+                    try { $baseUri = [System.Uri]$uri } catch { $baseUri = $null }
+                    if ($baseUri) { $abs = ([System.Uri]::new($baseUri, $hrefRaw)).AbsoluteUri }
+                }
+            } catch { $abs = '' }
+            if (-not $abs -or -not $abs.StartsWith('https://')) { continue }
+            $text = ([regex]::Replace([string]$m.Groups[2].Value, '<[^>]+>', '') -replace '\s+', ' ').Trim()
+            $rows += [ordered]@{ text = $(if ($text) { $text } else { $abs }); href = $abs }
+        }
+    }
+    $out.Results = @($rows)
+    $out.Ok = $true
+    $expectPat = $(if ($spec.ExpectMatch) { [string]$spec.ExpectMatch } elseif ($spec.Expect) { [regex]::Escape([string]$spec.Expect) } else { '' })
+    if ($expectPat -and $content -and ($content -match $expectPat)) { $out.ExpectHit = $true }
+    return [pscustomobject]$out
+}
+function New-F92Check {
+    param([string]$Status, $ObservedValue, [string]$ObservedUnit, [string]$Output, [string]$ComponentType = 'component', $AffectedEndpoints = $null)
+    $c = [ordered]@{
+        componentType = $ComponentType
+        status        = $Status
+        observedValue = $ObservedValue
+        observedUnit  = $ObservedUnit
+        time          = (Get-Date).ToUniversalTime().ToString('o')
+    }
+    if ($Output) { $c['output'] = $Output }
+    if ($AffectedEndpoints) { $c['affectedEndpoints'] = @($AffectedEndpoints) }
+    return @($c)
+}
+# =============================================================================
+# [F92 §5] application/health+json self-test (IETF draft in-place format).
+# 11 search:<site> entries + launcher:status + download:writable +
+# streaming:proxy + version:match. 200 while nothing fails, 503 on any fail.
+# Route: GET /api/f92-selftest?frontendSha=<sha>. Cache-Control stays
+# no-store (the Send-ClientResponse contract) and X-Correlation-ID echoes.
+# =============================================================================
+function Invoke-F92Selftest {
+    param([string]$FrontendSha)
+    $corrId = [guid]::NewGuid().ToString()
+    $checks = [ordered]@{}
+    foreach ($name in @($Script:F92Endpoints.Keys | Sort-Object)) {
+        $spec = $Script:F92Endpoints[$name]
+        if ($spec.RequiresBrowser) {
+            $checks["search:$name"] = New-F92Check -Status 'warn' -ObservedValue 0 -ObservedUnit 'results' -Output ("Site $name is JS-rendered; verified by nightly Playwright, not CI. See /#/health.") -AffectedEndpoints ("/#/search?site=" + $name)
+            continue
+        }
+        $s = $null
+        try { $s = Invoke-F92SiteSearch -Site $name -Query ([string]$spec.KnownGoodQuery) } catch { $s = $null }
+        $status = 'fail'; $obsCount = 0; $outputMsg = $null
+        if ($s -and $s.Ok) {
+            $obsCount = @($s.Results).Count
+            if ($s.ExpectHit -or $obsCount -gt 0) { $status = 'pass' }
+            if (-not $s.ExpectHit -and $obsCount -gt 0) {
+                $status = 'warn'
+                $outputMsg = "Site $name returned $obsCount results but expected pattern '$($spec.Expect)' not present. Fix: run UPDATE_HAR=1 nightly to refresh fixture; open the endpoint URL in a browser. $($s.Diag)"
+            } elseif ($obsCount -eq 0 -and $s.ExpectHit) { $status = 'warn'
+                $outputMsg = "Site $name matched the expected pattern but produced 0 result rows (parser drift?). $($s.Diag)"
+            } elseif ($obsCount -eq 0) {
+                $status = 'warn'
+                $outputMsg = "Site $name answered 200 with 0 results. Fix: check the site in a browser, then re-run nightly; if the shape changed, patch `$Script:F92Endpoints['$name'] only. $($s.Diag)"
+            }
+        } elseif ($s) {
+            $outputMsg = "Site $name HTTP error: $($s.Diag). Fix: verify TLS1.2+ is offered by Invoke-F92Http at the top of this file, inspect cf-ray, see docs/sites.md#$name."
+        } else {
+            $outputMsg = "Site $name search threw; see server log. Fix: re-run GET /api/f92-selftest?debug=1."
+        }
+        $checks["search:$name"] = New-F92Check -Status $status -ObservedValue $obsCount -ObservedUnit 'results' -Output $outputMsg -AffectedEndpoints ("/#/search?site=" + $name)
+    }
+    # launcher:status (F92 user-session ONLOGON task, payloads/register-ghrdp-task.ps1)
+    $taskState = ''
+    $taskErr = ''
+    try {
+        $t = Get-ScheduledTask -TaskName 'GHRDP-Server' -ErrorAction Stop
+        $taskState = [string]$t.State
+    } catch { $taskErr = $_.Exception.Message }
+    $launcherOut = $null
+    if (-not $taskState) { $launcherOut = "Launcher: scheduled task GHRDP-Server not registered. Fix: Actions -> main.yml -> Run workflow (the F92 bootstrap step registers it). Or manually: pwsh payloads/register-ghrdp-task.ps1." }
+    $checks['launcher:status'] = New-F92Check -Status $(if ($taskState -in @('Running','Ready')) { 'pass' } else { 'fail' }) -ObservedValue $(if ($taskState) { $taskState } else { 'not registered' }) -ObservedUnit '' -Output $launcherOut -ComponentType 'system'
+    # download:writable
+    $dir = [string]$env:DOWNLOAD_DIR
+    if (-not $dir) { $dir = [string]$Root }
+    $dlOut = $null
+    $dlOk = $false
+    try {
+        if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
+        $probe = Join-Path $dir ('.f92-probe-' + $corrId)
+        Set-Content -Path $probe -Value 'ok' -ErrorAction Stop
+        Remove-Item $probe -ErrorAction SilentlyContinue
+        $dlOk = $true
+    } catch { $dlOut = "Download dir not writable: $($_.Exception.Message). Fix: icacls `"$dir`" /grant Users:F. See docs/paths.md." }
+    $checks['download:writable'] = New-F92Check -Status $(if ($dlOk) { 'pass' } else { 'fail' }) -ObservedValue 0 -ObservedUnit 'bytes' -Output $dlOut -ComponentType 'datastore'
+    # streaming:proxy - the configured relay, or (when STREAM_PORT is unset)
+    # the F91 launcher/queue heartbeat as the on-product proxy of "the async
+    # plumbing is alive". Either way: fail-visible, never a silent pass.
+    $stStatus = 'fail'; $stObs = ''; $stOut = $null
+    if ($env:STREAM_PORT) {
+        $sp = Invoke-F92Http -Uri ('http://localhost:' + [string]$env:STREAM_PORT + '/health') -TimeoutSec 3
+        if ($sp.Ok -and $sp.HttpStatus -eq 200) { $stStatus = 'pass'; $stObs = '200' }
+        else { $stOut = "Streaming proxy: $($sp.Error) (status=$($sp.HttpStatus)). Fix: restart Start-StreamingProxy, re-run main.yml. See docs/streaming.md." }
+    } else {
+        $hb = $null
+        try { $hb = Get-F91LauncherHealth } catch { $hb = $null }
+        if ($hb -and [bool]$hb.serviceRunning) { $stStatus = 'pass'; $stObs = 'launcher-heartbeat' }
+        else { $stOut = 'No STREAM_PORT configured and the F91 launcher heartbeat is stale (>30s): the queue/stream plumbing is down. Fix: re-dispatch main.yml (it registers GHRDP-Launcher).' }
+    }
+    $checks['streaming:proxy'] = New-F92Check -Status $stStatus -ObservedValue $stObs -ObservedUnit '' -Output $stOut
+    # version:match (same sha source as /api/version)
+    $backendSha = ''
+    try { $backendSha = [string]$env:GHRDP_BUILD_SHA } catch { }
+    if (-not $backendSha) { try { $backendSha = [string]$env:GITHUB_SHA } catch { } }
+    if (-not $backendSha) { $backendSha = 'dev' }
+    $verStatus = 'pass'; $verOut = $null
+    if ($FrontendSha -and $FrontendSha -ne $backendSha) {
+        $verStatus = 'fail'
+        $verOut = "Version mismatch: backend $backendSha != frontend $FrontendSha. Fix: Actions -> main.yml -> Run workflow to atomically rebuild both."
+    }
+    $checks['version:match'] = New-F92Check -Status $verStatus -ObservedValue ([ordered]@{ backend = $backendSha; frontend = $FrontendSha }) -ObservedUnit '' -Output $verOut -ComponentType 'system'
+    # rollup
+    $allStatuses = @($checks.Values | ForEach-Object { $_[0].status })
+    $overall = 'pass'
+    if ($allStatuses -contains 'fail') { $overall = 'fail' } elseif ($allStatuses -contains 'warn') { $overall = 'warn' }
+    $body = [ordered]@{
+        status      = $overall
+        version     = '1'
+        releaseId   = $backendSha
+        serviceId   = 'dekarita-supreme-lamp'
+        description = 'F92 self-test; see /#/health'
+        notes       = @('correlation-id: ' + $corrId)
+        checks      = $checks
+        links       = @{ about = '/#/health' }
+    }
+    $code = 200
+    if ($overall -eq 'fail') { $code = 503 }
+    return [ordered]@{
+        Code   = $code
+        CorrId = $corrId
+        Body   = ConvertTo-JsonBytes $body
+    }
+}
 $script:CfgPath = Join-Path $Root 'config.json'
 $script:ProgPath = Join-Path $Root 'progress.json'
 $script:UiPath = Join-Path $Root 'ui.html'
@@ -3648,7 +4033,7 @@ function Invoke-ClientRequest {
         # The condition now admits every route the block houses; the inner
         # handlers still dispatch per-path and return their own status, and
         # any other method hits the same 405 at the block end.
-        if ($path -eq '/api/f58/sources' -or $path -eq '/api/lab/inspect' -or $path -like '/api/f58/sources/*' -or $path -eq '/api/launch-url' -or $path -eq '/api/launch-url/diag' -or $path -eq '/api/f87-selftest' -or $path -eq '/api/preview' -or $path -eq '/api/launcher/queue' -or $path -eq '/api/launcher/health' -or $path -eq '/api/stream') {
+        if ($path -eq '/api/f58/sources' -or $path -eq '/api/lab/inspect' -or $path -like '/api/f58/sources/*' -or $path -eq '/api/launch-url' -or $path -eq '/api/launch-url/diag' -or $path -eq '/api/f87-selftest' -or $path -eq '/api/preview' -or $path -eq '/api/launcher/queue' -or $path -eq '/api/launcher/health' -or $path -eq '/api/stream' -or $path -eq '/api/f92-selftest') {
             if ($parts.method -eq 'OPTIONS') {
                 Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@()) -ExtraHeaders "Access-Control-Allow-Headers: Content-Type, X-Dash-Token`r`nAccess-Control-Max-Age: 600"
                 return
@@ -4970,6 +5355,36 @@ function Invoke-ClientRequest {
                     Initialize-F86LaunchRuntime
                     $f86Attempts = @()
                     $f86Result = [ordered]@{ ok = $false; tier = 0; detail = 'no-tier-succeeded'; browser = ''; pid = 0; attempts = @() }
+                    # [F92 §2.4] USER-SESSION FAST PATH. When the F92
+                    # GHRDP-Server ONLOGON task owns this process we are ALREADY
+                    # in the interactive session (SessionId != 0), so the simple
+                    # in-session Start-Process spawn is the ONLY path needed -
+                    # no cross-session mechanics, no task detour. The Tier 1
+                    # rung is exactly that spawn with PID proof, so the fast
+                    # path runs Tier 1 once and returns on success. If the
+                    # server is still the pre-F92 SYSTEM session-0 task (or the
+                    # spawn fails), the full 0..4 ladder below runs UNCHANGED -
+                    # the ladder's symbols are load-bearing for
+                    # tests/f86-launch-url-tier1.test.js + f88-site-search
+                    # §B, and the honest 503 for "no interactive session" only
+                    # comes from that ladder, so it stays as the fallback.
+                    if ($script:F92InUserSession -and $ForceTier -eq 0) {
+                        $f92T1 = $null
+                        try { $f92T1 = Invoke-F86LaunchTier1 -Url $Url } catch { $f92T1 = $null }
+                        if ($f92T1 -and [bool]$f92T1.ok) {
+                            $f86Result.ok = $true
+                            $f86Result.tier = 1
+                            $f86Result.detail = 'f92-user-session: ' + [string]$f92T1.detail
+                            $f86Result.browser = [string]$f92T1.browser
+                            $f86Result.pid = [int]$f92T1.pid
+                            $f86Result.attempts = @([ordered]@{ tier = 1; ok = $true; detail = 'f92-user-session direct Start-Process (ladder skipped)' })
+                            Write-F86LaunchLog -Kind 'launch' -Url $Url -Tier 1 -Detail 'f92-user-session direct spawn' -Ok $true
+                            Write-F88VerboseLaunchLog -Line ('f92 fast-path ok tier=1 detail=' + [string]$f92T1.detail)
+                            $script:F86LastLaunch = [ordered]@{ at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); ok = $true; tier = 1; detail = 'f92-user-session' }
+                            return $f86Result
+                        }
+                        Write-F88VerboseLaunchLog -Line ('f92 fast-path miss - falling through to the ladder: ' + $(if ($f92T1) { [string]$f92T1.detail } else { 'tier1 threw' }))
+                    }
                     # [F88 §B.2/B.3] the ladder is now 0(user session),1,2,3,4(Shell COM).
                     foreach ($f86Tier in @(0, 1, 2, 3, 4)) {
                         if ($ForceTier -gt 0 -and $f86Tier -ne $ForceTier) { continue }
@@ -5302,6 +5717,24 @@ function Invoke-ClientRequest {
             # Expensive (eleven real fetches + eleven launches), so it is rate
             # limited to 1 call / 60 s per X-Dash-Token (429 + retryAfterSeconds).
             # Same dash-token gate as every other /api route in this file.
+            # [F92 §5.2] GET /api/f92-selftest - application/health+json.
+            # Same block housing as the F87 proof so every helper it needs is
+            # already defined by the time this runs; the gate admits the route.
+            # No rate limit: the dashboard polls it every 15s and the smoke
+            # gate retries every 2s while waiting for boot.
+            if ($path -eq '/api/f92-selftest' -and $parts.method -eq 'GET') {
+                $f92Sha = ''
+                try { if ($parts.query.ContainsKey('frontendsha')) { $f92Sha = [string]$parts.query['frontendsha'] } } catch { $f92Sha = '' }
+                $f92Out = $null
+                try { $f92Out = Invoke-F92Selftest -FrontendSha $f92Sha } catch { $f92Out = $null }
+                if (-not $f92Out) {
+                    Send-ClientResponse -Stream $stream -Code 500 -CType 'application/health+json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ status = 'fail'; error = 'f92-selftest threw: see server log' }))
+                    return
+                }
+                Send-ClientResponse -Stream $stream -Code ([int]$f92Out.Code) -CType 'application/health+json; charset=utf-8' -Body ([byte[]]$f92Out.Body) -ExtraHeaders ('X-Correlation-ID: ' + [string]$f92Out.CorrId)
+                Write-ClientAudit ('f92 selftest status=' + [string]$f92Out.Code + ' corr=' + [string]$f92Out.CorrId)
+                return
+            }
             if ($path -eq '/api/f87-selftest' -and $parts.method -eq 'POST') {
                 if (-not $script:F87SelfTestRate) { $script:F87SelfTestRate = @{} }
                 $f87Now = (Get-Date).ToUniversalTime()

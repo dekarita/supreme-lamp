@@ -1,0 +1,50 @@
+# [F92 §4.5] Nightly real-site drift check. Records HAR fixtures against the
+# eleven live search sites via UPDATE_HAR, uploads them as an artifact (the
+# fixture-refresh PR consumes them), and opens an issue on failure so drift
+# page-opens instead of rotting in run logs. Jittered start (0-300s) so the
+# fleet never hammers one site at a round minute.
+name: e2e-real-sites (F92 nightly HAR)
+on:
+  schedule: [{ cron: '37 2 * * *' }]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write   # drift issue on failure
+
+concurrency:
+  group: e2e-real-sites
+  cancel-in-progress: false
+
+jobs:
+  real:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'pnpm' }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install chromium
+      - name: Jitter
+        run: sleep $((RANDOM % 300))
+      - name: Record HARs
+        run: UPDATE_HAR=1 pnpm exec playwright test --config tests/e2e/playwright.config.ts | tee playwright-results.json
+        env:
+          OPENVERSE_TOKEN: ${{ secrets.OPENVERSE_TOKEN }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-hars-${{ github.run_id }}
+          path: tests/e2e/fixtures/*.har
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Open issue on failure
+        if: failure()
+        uses: peter-evans/create-issue-from-file@v5
+        with:
+          title: "F92 nightly real-site drift"
+          content-filepath: playwright-results.json
+          labels: |
+            f92-health

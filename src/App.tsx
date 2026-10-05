@@ -17,6 +17,9 @@ import FileExplorer from "@/pages/FileExplorer";
 import Mirror from "@/pages/Mirror";
 import SearchPage from "@/pages/Search";
 import LabPage from "@/pages/search/Lab";
+// [F92 §6] self-test dashboard + the full-screen stale-bundle gate.
+import HealthPage from "@/pages/Health";
+import { VersionGate } from "@/components/domain/F92VersionGate";
 import Telemetry from "@/pages/Telemetry";
 import Settings from "@/pages/Settings";
 // [F77 §2.1] The /search + /search/lab routes are UNCONDITIONAL. The F69 §1.4 /
@@ -56,12 +59,16 @@ export default function App() {
           {/* [F72 §3.1] Lab Mode sub-route (Q3: dedicated sub-route, not drawer) */}
           <Route path="/search/lab/:targetId" element={<SearchLab />} />
           <Route path="/telemetry" element={<Telemetry />} />
+          <Route path="/health" element={<HealthPage />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Overview />} />
         </Route>
       </Routes>
       <Toasts />
       <DiagSideDrawer />
+      {/* [F92 §6.4] full-screen modal iff /api/f92-selftest says the bundle
+          and the backend were built from different commits. */}
+      <VersionGate />
       </HashRouter>
     </>
   );

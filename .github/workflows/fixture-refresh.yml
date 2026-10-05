@@ -1,0 +1,38 @@
+# [F92 §4.6] Weekly fixture refresh as a PR (Mon 04:19 UTC). Re-records the
+# HAR fixtures nightly workflow produced last, opened as `chore:` PR touching
+# ONLY tests/e2e/fixtures - never product code, so it can merge on sight.
+name: fixture-refresh (F92 weekly HAR PR)
+on:
+  schedule: [{ cron: '19 4 * * 1' }]
+  workflow_dispatch:
+
+permissions:
+  contents: write   # push the refresh branch + open the PR
+  pull-requests: write
+
+concurrency:
+  group: fixture-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20', cache: 'pnpm' }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install chromium
+      - name: Re-record fixtures (never fail the refresh lane on drift)
+        run: UPDATE_HAR=1 pnpm exec playwright test --config tests/e2e/playwright.config.ts || true
+        env:
+          OPENVERSE_TOKEN: ${{ secrets.OPENVERSE_TOKEN }}
+      - uses: peter-evans/create-pull-request@v6
+        with:
+          title: "chore: refresh e2e HAR fixtures"
+          branch: chore/fixture-refresh
+          commit-message: "chore: refresh e2e HAR fixtures"
+          add-paths: |
+            tests/e2e/fixtures/*.har

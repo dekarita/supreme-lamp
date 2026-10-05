@@ -33,6 +33,11 @@ export default defineConfig({
     "import.meta.env.VITE_BUILD_SHA": JSON.stringify(
       (process.env.VITE_BUILD_SHA || process.env.GITHUB_SHA || "dev").slice(0, 7)
     ),
+    // [F92 §6.1] the FULL sha for /api/f92-selftest?frontendSha= - the server
+    // compares full shas, a 7-char prefix would collide across force-pushes.
+    "import.meta.env.VITE_GIT_SHA": JSON.stringify(
+      process.env.VITE_BUILD_SHA || process.env.GITHUB_SHA || "dev"
+    ),
   },
   resolve: {
     alias: { "@": resolve(__dirname, "src") },
