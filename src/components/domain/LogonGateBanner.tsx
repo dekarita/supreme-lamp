@@ -17,6 +17,8 @@ import { AlertTriangle, ExternalLink } from "lucide-react";
 import { useSessionStore } from "@/stores/sessionStore";
 import { validWebdeskUrl } from "@/lib/domain/native";
 import { openWebDesktop } from "@/lib/openWebDesktop";
+// [F95 §3.3 / R3] the manual WEB DESKTOP assertion.
+import { readManualWebDesktop, setManualWebDesktop } from "@/lib/launchUrl";
 
 export function LogonGateBanner() {
   const { t } = useTranslation();
@@ -28,6 +30,8 @@ export function LogonGateBanner() {
   // URL for the operator to open by hand - never a silent no-op.
   const [blocked, setBlocked] = useState(false);
   const [opened, setOpened] = useState(false);
+  // [F95 §3.3 / R3] epoch-ms stamp of the operator's manual assertion.
+  const [manualAsserted, setManualAsserted] = useState(() => readManualWebDesktop());
   const authLast = (s.rdpListener && s.rdpListener.authLast) || null;
   // Unknown (no scan yet) is NOT a banner: only evidence speaks. "none" and
   // "failed" both mean no RDP user is logged in.
@@ -85,11 +89,40 @@ export function LogonGateBanner() {
             {webdeskUrl}
           </a>
           <span className="text-xs text-tertiary">{t("webdeskBlocked.copyHint")}</span>
+          {/* [F95 §3.3 / R3] the missing manual override. Opening noVNC by hand
+              used to change nothing the dashboard could see, so this banner
+              stayed up and the badge stayed "Tailscale local" on a machine the
+              operator was demonstrably inside. */}
+          <button
+            type="button"
+            id="f95.logonGate.webdeskManual"
+            data-testid="logon-gate-webdesk-manual"
+            onClick={() => {
+              setManualWebDesktop(true);
+              setManualAsserted(readManualWebDesktop());
+            }}
+            className="px-2 py-0.5 text-xs rounded border border-accent/60 text-accent font-medium hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            {t("webdeskBlocked.manualOpened")}
+          </button>
         </div>
       ) : null}
       {opened ? (
         <span id="f94.logonGate.webdeskOpened" data-testid="logon-gate-webdesk-opened" role="status" className="sr-only">
           web-desktop-opened
+        </span>
+      ) : null}
+      {/* [F95 §3.3 / R3] confirmation that the manual assertion took. Without
+          this the click is indistinguishable from the click that did nothing. */}
+      {manualAsserted ? (
+        <span
+          id="f95.logonGate.webdeskManualAsserted"
+          data-testid="logon-gate-webdesk-manual-asserted"
+          role="status"
+          className="w-full text-xs text-accent"
+        >
+          {t("viewingMode.manual.on")} - {t("viewingMode.manual.since")}{" "}
+          {new Date(Number(manualAsserted)).toLocaleTimeString()}
         </span>
       ) : null}
     </div>

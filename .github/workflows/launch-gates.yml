@@ -92,7 +92,19 @@ jobs:
           grep -q 'rdpLogonAgeSec' payloads/ghrdp-server.ps1
           grep -q 'pingPath' payloads/ghrdp-server.ps1
           grep -q 'dash-client-ip.txt' payloads/ghrdp-server.ps1
-          grep -q 'LogonType=10' payloads/ghrdp-server.ps1
+          # [F95 §3.1 / R1] SUPERSEDED PIN (rewritten in place, not deleted).
+          # Was: grep -q 'LogonType=10' payloads/ghrdp-server.ps1
+          # That pin is what kept the logon probe over-strict: it rewarded the
+          # very filter that made an AutoAdminLogon (LogonType 2) desktop read
+          # as "no user logged in". The pin now asserts the ACCEPTED SET and
+          # forbids a bare type-10-only Win32_LogonSession filter from coming
+          # back.
+          grep -q "GhrdpLogonSessionWql = 'LogonType=2 OR LogonType=10 OR LogonType=11'" payloads/ghrdp-server.ps1
+          grep -q "GhrdpInteractiveLogonTypes = @('2', '10', '11')" payloads/ghrdp-server.ps1
+          if grep -qE "Win32_LogonSession -Filter 'LogonType=10'" payloads/ghrdp-server.ps1; then
+            echo 'F95/R1: a type-10-only Win32_LogonSession filter is back - autologon (type 2) would read as no session' >&2
+            exit 1
+          fi
           grep -q 'rdpLogonAgeSec' payloads/ui.html
           grep -q 'UDP 41641' payloads/ui.html
           grep -q 'compression=6' payloads/ui.html

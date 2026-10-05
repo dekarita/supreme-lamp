@@ -52,7 +52,17 @@ describe("i18n F56 parity (byte-verified)", () => {
     // panel keys live OUTSIDE search.* and are asserted by
     // tests/f87-selftest-panel.test.tsx. 511 -> 520 -> 522 ([F88] +
     // search.launchUrl.failedTier + search.diag.verboseLog).
-    expect(enNew.length).toBe(522);
+    // [F95 §3.5 / R5] +6 inside search.errors: sessionExpired (401),
+    // notFound (404), payloadTooLarge (413), rateLimitedGeneric (429),
+    // serverError (5xx) and connectionLost (a thrown fetch). Before this the
+    // classifier fell through to search.errors.generic for ALL of them, so an
+    // expired session, a rate limit and a dead connection all rendered as
+    // "Something went wrong." - the operator's verbatim symptom. The generic
+    // key stays, reserved for a status the table does not know (418/451).
+    // The activity.wsReconnect / webdeskBlocked.manualOpened /
+    // viewingMode.manual.* keys live OUTSIDE search.* and are asserted by
+    // src/tests/smoke/f95-root-causes.test.tsx. 522 -> 528.
+    expect(enNew.length).toBe(528);
   });
 
   it("every si value is non-empty, byte-stable Sinhala or a technical token", () => {

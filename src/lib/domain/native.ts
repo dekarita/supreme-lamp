@@ -211,6 +211,8 @@ export function logonRowText(authLast: Any, collector: Any, _nowMs?: number): {
   eventTs?: string;
   scanTs?: string;
   sub?: string;
+  /** [F95 §3.1 / R1] the accepted LogonType the verdict came from, "" if none. */
+  logonType?: string;
 } {
   const c = collector || {};
   const up = typeof c.uptimeSec === "number" ? c.uptimeSec : null;
@@ -223,17 +225,28 @@ export function logonRowText(authLast: Any, collector: Any, _nowMs?: number): {
   if (!authLast.scanTs) return { text: "logon collector not running (the last scan carried no scanTs)", red: true, dead: true };
   const scanned = "scanned " + authLast.scanTs;
   const sub = authLast.sub ? " sub=" + authLast.sub + (authLast.subMeaning ? " (" + authLast.subMeaning + ")" : "") : "";
+  // [F95 §3.1 / R1] name WHICH logon type the verdict came from, so
+  // "success" is not a bare word: an AutoAdminLogon desktop (type 2) and a
+  // real inbound RDP client (type 10) are different facts.
+  const lt = String(authLast.logonType || "").trim();
+  const ltNote = lt ? " [LogonType " + lt + (authLast.logonKind ? " " + authLast.logonKind : "") + "]" : "";
   if (authLast.result === "success")
-    return { text: "success at " + (authLast.eventTs || "?") + " - " + scanned + pe, red: false, result: "success", eventTs: authLast.eventTs || "", scanTs: authLast.scanTs, sub: authLast.sub || "" };
+    return { text: "success at " + (authLast.eventTs || "?") + ltNote + " - " + scanned + pe, red: false, result: "success", eventTs: authLast.eventTs || "", scanTs: authLast.scanTs, sub: authLast.sub || "", logonType: lt };
   if (authLast.result === "failed")
-    return { text: "failed" + sub + " at " + (authLast.eventTs || "?") + " - " + scanned + pe, red: true, result: "failed", eventTs: authLast.eventTs || "", scanTs: authLast.scanTs, sub: authLast.sub || "" };
+    return { text: "failed" + sub + " at " + (authLast.eventTs || "?") + " - " + scanned + pe, red: true, result: "failed", eventTs: authLast.eventTs || "", scanTs: authLast.scanTs, sub: authLast.sub || "", logonType: lt };
   return {
-    text: "none yet - " + scanned + " (no type-10 4624 and no 4625 since " + (authLast.windowStart || "the scan window start") + ")" + pe,
+    // [F95 §3.1 / R1] was "(no type-10 4624 and no 4625 since ...)". That text
+    // was the operator's verbatim banner line and it was TRUE about the filter
+    // and WRONG about the machine: the collector had never been allowed to
+    // count the autologon (type 2) it was standing on. The row now names all
+    // three accepted types so a future over-strict filter is visible here.
+    text: "none yet - " + scanned + " (no interactive 4624 [LogonType 2/10/11] and no 4625 since " + (authLast.windowStart || "the scan window start") + ")" + pe,
     red: false,
     result: "none",
     eventTs: "",
     scanTs: authLast.scanTs,
     sub: "",
+    logonType: "",
   };
 }
 

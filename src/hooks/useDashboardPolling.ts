@@ -6,6 +6,9 @@
 import { useEffect } from "react";
 import { announceSearchLane } from "@/lib/search/lane";
 import { configUrl, getJson, nativeStatusUrl } from "@/lib/api";
+// [F95 §3.4 / R4] the dash token the /ws upgrade needs (and the storage key to
+// watch so a token change rebuilds the socket instead of silently failing).
+import { DASH_TOKEN_STORAGE_KEY, getDashToken } from "@/lib/dashToken";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useTelemetryStore } from "@/stores/telemetryStore";
 import type { WireState } from "@/lib/domain/connProbe";
@@ -135,6 +138,28 @@ export function useDashboardPolling(): void {
     let wsRetry = 0;
     let wsAttempt = 0;
     let wsConnecting = false;
+    // [F95 §3.4 / R4] THE TOKEN.
+    //
+    // ROOT CAUSE of the bridge dropping on a Tailscale page: the URL was built
+    // as `<proto>//<host>/ws` with NO credential on it. The REST lane has always
+    // sent one (src/api/search/index.ts adds `X-Dash-Token` from getKey()), so
+    // on any deployment that requires the dash token the /ws upgrade is
+    // rejected while /api/progress keeps working - which is precisely the
+    // asymmetric symptom the operator saw ("ws: idle" next to live data).
+    // A WebSocket cannot set request headers from the browser, so the token
+    // travels twice: in the query string AND as the first frame after open
+    // (a server that only reads one of the two still authenticates).
+    const wsUrl = (): string => {
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const base = proto + "//" + location.host + "/ws";
+      let token = "";
+      try {
+        token = getDashToken();
+      } catch {
+        token = "";
+      }
+      return token ? base + "?key=" + encodeURIComponent(token) : base;
+    };
     const connectWs = () => {
       // [F94 §3.5] REMOVED the `&& wsLive` precondition: it made the socket
       // depend on the very flag the socket was supposed to set, so with
@@ -143,11 +168,26 @@ export function useDashboardPolling(): void {
       if (!alive || ws || wsConnecting) return;
       try {
         wsConnecting = true;
-        ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+        ws = new WebSocket(wsUrl());
         ws.onopen = () => {
           wsAttempt = 0;
           wsConnecting = false;
           useTelemetryStore.getState().setWsLive(true);
+          // [F95 §3.4 / R4] ladder reset: a successful open means we are not
+          // disconnected, however many tries it took to get here.
+          useTelemetryStore.getState().setWsDead(false);
+          useTelemetryStore.getState().setWsAttempts(0);
+          // [F95 §3.4 / R4] backup auth frame. Sent immediately so a server
+          // that authenticates on first-message (rather than on the upgrade
+          // request) still accepts the socket.
+          try {
+            const token = getDashToken();
+            if (token && ws && ws.readyState === 1) {
+              ws.send(JSON.stringify({ type: "hello", key: token }));
+            }
+          } catch {
+            /* a send failure here is not fatal - the URL already carried it */
+          }
         };
         ws.onmessage = (evt) => {
           try {
@@ -174,8 +214,16 @@ export function useDashboardPolling(): void {
           useTelemetryStore.getState().setWsLive(false);
           void probeHealth();
           // [F93 §3.2] same ladder as the progress lane (capped at 30s).
-          const step = RECONNECT_LADDER[Math.min(wsAttempt, RECONNECT_LADDER.length - 1)];
+          // [F95 §3.4 / R4] the ladder used to retry FOREVER and SILENTLY. Now
+          // exhausting it publishes wsDead, which the UI renders as an explicit
+          // "disconnected [Reconnect]" instead of a pill that just sits at
+          // "idle" with no story behind it.
           wsAttempt += 1;
+          useTelemetryStore.getState().setWsAttempts(wsAttempt);
+          if (wsAttempt > RECONNECT_LADDER.length) {
+            useTelemetryStore.getState().setWsDead(true, "ladder-exhausted");
+          }
+          const step = RECONNECT_LADDER[Math.min(wsAttempt, RECONNECT_LADDER.length - 1)];
           wsRetry = window.setTimeout(connectWs, step) as unknown as number;
         };
         ws.onerror = () => {
@@ -191,6 +239,49 @@ export function useDashboardPolling(): void {
         useTelemetryStore.getState().setWsLive(false);
       }
     };
+    /** [F95 §3.4 / R4] drop whatever is in flight so connectWs() runs now. */
+    const resetWs = (reason: string) => {
+      if (wsRetry) {
+        window.clearTimeout(wsRetry);
+        wsRetry = 0;
+      }
+      if (ws) {
+        try {
+          ws.onclose = null;
+          ws.close();
+        } catch {
+          /* ignore */
+        }
+        ws = null;
+      }
+      wsConnecting = false;
+      wsAttempt = 0;
+      useTelemetryStore.getState().setWsAttempts(0);
+      useTelemetryStore.getState().setWsDead(false, reason);
+      connectWs();
+    };
+    // [F95 §3.4 / R4] A token that changes under a live socket leaves the old
+    // credential in the URL, so the next reconnect fails for a reason the
+    // operator cannot see. Rebuild immediately on either signal:
+    //   * a `storage` event - the token was written from ANOTHER tab;
+    //   * wsReconnectNonce - the operator pressed the Reconnect button.
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === DASH_TOKEN_STORAGE_KEY) resetWs("token-changed");
+    };
+    try {
+      window.addEventListener("storage", onStorage);
+    } catch {
+      /* no storage events in this environment */
+    }
+    let lastNonce = useTelemetryStore.getState().wsReconnectNonce;
+    const nonceWatcher = window.setInterval(() => {
+      const n = useTelemetryStore.getState().wsReconnectNonce;
+      if (n !== lastNonce) {
+        lastNonce = n;
+        resetWs("manual-reconnect");
+      }
+    }, 1000);
+
     // [F94 §3.5] The starter no longer requires wsLive - it only needs no
     // socket in flight.
     const wsStarter = window.setInterval(() => {
@@ -205,6 +296,13 @@ export function useDashboardPolling(): void {
       alive = false;
       timers.forEach((t) => window.clearInterval(t));
       window.clearInterval(wsStarter);
+      // [F95 §3.4 / R4] the token-change + manual-reconnect watchers.
+      window.clearInterval(nonceWatcher);
+      try {
+        window.removeEventListener("storage", onStorage);
+      } catch {
+        /* ignore */
+      }
       if (progressTimer) window.clearTimeout(progressTimer);
       if (wsRetry) window.clearTimeout(wsRetry);
       if (ws) ws.close();

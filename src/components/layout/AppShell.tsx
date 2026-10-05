@@ -56,6 +56,11 @@ function TopBar() {
   const setMobileOpen = useSidebarStore((s) => s.setMobileOpen);
   const wsLive = useTelemetryStore((s) => s.wsLive);
   const wsAvailable = useTelemetryStore((s) => s.wsAvailable);
+  // [F95 §3.4 / R4] ladder-exhausted state + the operator's Reconnect button.
+  const wsDead = useTelemetryStore((s) => s.wsDead);
+  const wsDeadReason = useTelemetryStore((s) => s.wsDeadReason);
+  const wsAttempts = useTelemetryStore((s) => s.wsAttempts);
+  const requestWsReconnect = useTelemetryStore((s) => s.requestWsReconnect);
   const progressLost = useTelemetryStore((s) => s.progressLost);
   const mirror = useTelemetryStore((s) => s.mirror);
   const serverNow = useTelemetryStore((s) => s.serverNow);
@@ -97,18 +102,44 @@ function TopBar() {
             socket and names the endpoint's absence when that is the answer. */}
         <Chip
           id="pillRust"
-          tone={wsLive ? "success" : wsAvailable ? "warning" : "neutral"}
+          tone={wsLive ? "success" : wsDead ? "danger" : wsAvailable ? "warning" : "neutral"}
           dot
           title={
             wsLive
               ? "WebSocket bridge connected (/ws open)"
-              : wsAvailable
-                ? "The server advertises /ws but no socket is open yet - retrying on the 1s/3s/10s/30s ladder"
-                : "This server exposes no /ws endpoint (the PowerShell dashboard server replies ws=false); live progress arrives by HTTP polling every 3s"
+              : wsDead
+                ? "WebSocket bridge DISCONNECTED - the 1s/3s/10s/30s reconnect ladder was exhausted after " +
+                  wsAttempts +
+                  " attempts (" + (wsDeadReason || "ladder-exhausted") + "). Use Reconnect, or reload with the dashboard ?key= if the session expired."
+                : wsAvailable
+                  ? "The server advertises /ws but no socket is open yet - retrying on the 1s/3s/10s/30s ladder"
+                  : "This server exposes no /ws endpoint (the PowerShell dashboard server replies ws=false); live progress arrives by HTTP polling every 3s"
           }
         >
-          {t("activity.websocket")}: {wsLive ? "live" : wsAvailable ? "idle (retrying)" : "idle (no endpoint)"}
+          {/* [F95 §3.4 / R4] "idle (no endpoint)" was the operator's verbatim
+              pill text and it was a dead end: the socket could fail forever and
+              still read "idle". A dead bridge now says DISCONNECTED and offers
+              the one action that fixes it. */}
+          {t("activity.websocket")}:{" "}
+          {wsLive
+            ? "live"
+            : wsDead
+              ? "DISCONNECTED"
+              : wsAvailable
+                ? "idle (retrying)"
+                : "idle (no endpoint)"}
         </Chip>
+        {wsDead ? (
+          <button
+            type="button"
+            id="f95.wsReconnect"
+            data-testid="ws-reconnect"
+            onClick={() => requestWsReconnect()}
+            className="px-2 py-0.5 text-xs rounded-md border border-danger/50 text-danger font-medium hover:bg-danger/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent whitespace-nowrap"
+          >
+            {t("activity.wsReconnect")}
+          </button>
+        ) : null}
         <Chip id="pillClock" tone="neutral" dot title="Server-side timestamp of the data below" className="font-mono">
           {t("activity.clock")}: {clockText(serverNow())}
         </Chip>
