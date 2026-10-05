@@ -131,9 +131,13 @@ test.describe("F85 operator fixture: every domain, end to end", () => {
     });
   }
 
-  test("banner: /#/search?diag=1 shows a verified mark per F84 feature", async ({ page }) => {
+  test("banner: /#/search?diag=1 shows a verified mark per F84 feature + the F86 launch tier", async ({ page }) => {
     await page.goto("/#/search?diag=1");
-    const banner = page.getByTestId("f85-diag-banner");
+    // [F86 §A.3] The Search surface now renders F86DiagnosticBanner (the F85
+    // component stays in the tree for its unit pins). The container testid is
+    // f86-diag-banner; the four per-feature marks keep their f85-diag-* ids so
+    // the F84 evidence this cell exists for is unchanged.
+    const banner = page.getByTestId("f86-diag-banner");
     await expect(banner).toBeVisible();
     // Every mark comes from a real probe (server features + the running bundle).
     await expect(page.getByTestId("f85-diag-autoHttps")).toHaveAttribute("data-ok", "1");
@@ -141,10 +145,14 @@ test.describe("F85 operator fixture: every domain, end to end", () => {
     await expect(page.getByTestId("f85-diag-noFallback")).toHaveAttribute("data-ok", "1");
     await expect(page.getByTestId("f85-diag-downloadToRdp")).toHaveAttribute("data-ok", "1");
     await expect(page.getByTestId("f85-diag-sha")).toContainText("ui: ");
+    // [F86 §A.3] the launch-path chips: tier 1-3 from /api/launch-url/diag and
+    // the last-launch line. The mock answers tier 1.
+    await expect(page.getByTestId("f86-diag-launch-tier")).toHaveAttribute("data-tier", /^[123]$/);
+    await expect(page.getByTestId("f86-diag-last-launch")).toContainText("Last launch:");
     await shot(page, "diagnostic-banner");
 
     // And it must NOT leak into the operator's normal surface.
     await page.goto("/#/search");
-    await expect(page.getByTestId("f85-diag-banner")).toHaveCount(0);
+    await expect(page.getByTestId("f86-diag-banner")).toHaveCount(0);
   });
 });

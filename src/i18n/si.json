@@ -696,7 +696,6 @@
       "openInLab": "Lab හි විවෘත කරන්න",
       "backToResults": "ප්‍රතිඵල වෙත ආපසු",
       "title": "Lab මාදිලිය - ගැඹුරු පරීක්ෂක",
-      "comingSoon": "සම්පූර්ණ පරීක්ෂකය F75 හි පැමිණේ. ප්‍රතිඵල පාර-අයිතිය පහත දැක්වේ.",
       "metadata": "පාර-අයිතිය",
       "sourceUrl": "මූලාශ්‍ර URL",
       "adapter": "අනුවර්තකය",
@@ -727,7 +726,9 @@
     "canonicalHost": "{{hostname}} ලෙස සේවා කරයි",
     "diag": {
       "title": "F84 විශේෂාංග ක්‍රියාත්මකයි:",
-      "noServer": "සේවාදායකයේ /api/version නොමැත (F84 ට පැරණි)"
+      "noServer": "සේවාදායකයේ /api/version නොමැත (F84 ට පැරණි)",
+      "launchTier": "දියත් මට්ටම: {{tier}}",
+      "lastLaunch": "අවසන් දියත් කිරීම: {{at}} {{result}}"
     },
     "deepInspect": "{{hostname}} තුළ “{{query}}” ගේබීරව පරීක්ෂා කරන්න",
     "openInLabSite": "{{hostname}} ලැබ් තුළ විවෘත කරන්න",
@@ -927,6 +928,7 @@
 ,
   "lab": {
     "title": "ලැබ් පරීක්ෂකය",
+    "resultContext": "{{adapter}} වෙතින් {{title}} පරීක්ෂා කරමින්",
     "query": "විමසීම",
     "matchCount": "සබැඳුම් {{total}} අතරින් {{matches}} ක් “{{query}}” හා ගැලපෙයි",
     "matchesFirst": "ගැලපෙන ඒවා මොටුවෙන්",

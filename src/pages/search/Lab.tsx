@@ -1,6 +1,8 @@
-// [F78 §4.2] Lab Mode entry point. Two shapes share this route:
-//   * /search/lab/<resultId>            - the F72/F74 result-metadata view below
-//     (kept byte-for-byte; it is the "Open in Lab" target of a public result);
+// [F78 §4.2 / F86 §B.2] Lab Mode entry point. Two shapes share this route:
+//   * /search/lab/<resultId>            - the DEEP inspector over the result's
+//     own sourceUrl (the same LabInspector pipeline a stored site uses), with
+//     the result metadata card kept below it. The old "Full inspector coming in
+//     F75" placeholder is deleted: a result now renders real inspector output;
 //   * /search/lab/<sourceId>?q=<query>  - F78: the STORED-site inspector for an
 //     operator-added Lab Mode source (src/pages/search/LabInspector.tsx), which
 //     fetches that one site's homepage through POST /api/lab/inspect and lists
@@ -78,7 +80,16 @@ export default function Lab() {
         {t("search.lab.title")}
       </h1>
 
-      <p className="text-sm text-tertiary">{t("search.lab.comingSoon")}</p>
+      {r && directUrl ? (
+        // [F86 §B.2] The result's sourceUrl is the "site baseUrl": the very same
+        // deep-inspector component the stored-site route renders, so the F74/F75
+        // placeholder text is gone and a result-id navigation produces a real
+        // link list (plus "Inspecting <title> from <adapter>" context).
+        <LabInspector
+          result={{ title: r.title, sourceUrl: directUrl, adapterKey: r.nameKey }}
+          query={q}
+        />
+      ) : null}
 
       {r ? (
         <div

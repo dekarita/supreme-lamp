@@ -3587,6 +3587,240 @@ function Invoke-ClientRequest {
                 }
                 return @{ ok = $false; code = 'REDIRECT_REFUSED'; httpStatus = 502 }
             }
+            # =====================================================================
+            # [F86 §C] PER-SITE HINTS + SITEMAP-INDEX RECURSION.
+            #
+            # Why: the F81 sitemap-first branch fetched exactly ONE /sitemap.xml
+            # and parsed every <loc> in the response. That is the wrong shape for
+            # the operator's ten sites - archive.org, openlibrary.org, plos/pluto
+            # style catalogs all answer <sitemapindex> (a list of SUB-sitemaps),
+            # so the old branch returned a handful of "URLs" that were really
+            # links to more sitemaps, and the Lab showed fewer links than the
+            # homepage fallback would have. [F86 §C.1]
+            #
+            # What ships now, all inside the F78 block (same dash-token gate, same
+            # Invoke-F78SecureFetch transport: HTTPS only, 2MB cap, no cookies, no
+            # auth headers, same-host (www-tolerant) only):
+            #   * Expand-F86SitemapXml  - root element decides: <sitemapindex>
+            #     enumerates <sitemap><loc> and fetches at most 5 same-host
+            #     sub-sitemaps (2MB each), unioning their <url><loc>; <urlset>
+            #     is used directly. The union is capped at 2000 URLs.
+            #   * Invoke-F86SitemapFetch - the fetch wrapper around it.
+            #   * Get-F86SiteHints      - payloads/data/f86-site-hints.json, one
+            #     read per process. A hint only ever ADDS candidate paths on the
+            #     SAME host; it can never widen the host fence.
+            #   * Get-F86AnchorLinks / Expand-F86IndexLinks - the homepage
+            #     extraction, now reusable, plus [F86 §C.3] one level of
+            #     "obvious index" links (browse / catalog / all / index /
+            #     archive / search), at most 3, same host only.
+            # =====================================================================
+            $script:F86HintsPath = ''
+            $script:F86Hints = $null
+
+            function Get-F86SiteHints {
+                if ($null -ne $script:F86Hints) { return $script:F86Hints }
+                $f86Map = @{}
+                try {
+                    if (-not $script:F86HintsPath) { $script:F86HintsPath = Join-Path $Root 'data\f86-site-hints.json' }
+                } catch { $script:F86HintsPath = '' }
+                try {
+                    if ($script:F86HintsPath -and (Test-Path -LiteralPath $script:F86HintsPath)) {
+                        $f86Raw = Get-Content -LiteralPath $script:F86HintsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                        foreach ($f86Prop in $f86Raw.PSObject.Properties) {
+                            $f86Key = ([string]$f86Prop.Name).Trim().ToLowerInvariant() -replace '^www\.', ''
+                            if ($f86Key) { $f86Map[$f86Key] = $f86Prop.Value }
+                        }
+                    }
+                } catch { }
+                $script:F86Hints = $f86Map
+                return $script:F86Hints
+            }
+
+            function Get-F86SiteHint {
+                param([string]$HostName)
+                $f86All = Get-F86SiteHints
+                if (-not $f86All -or -not $HostName) { return $null }
+                $f86Key = ([string]$HostName).Trim().ToLowerInvariant() -replace '^www\.', ''
+                if ($f86All.ContainsKey($f86Key)) { return $f86All[$f86Key] }
+                return $null
+            }
+
+            function Get-F86HintList {
+                param($Hint, [string]$Field, [int]$Max)
+                $f86List = @()
+                if (-not $Hint) { return $f86List }
+                try {
+                    if ($Hint.$Field) { foreach ($f86V in @($Hint.$Field)) { if ($f86V) { $f86List += [string]$f86V } } }
+                } catch { }
+                if ($f86List.Count -gt $Max) { $f86List = @($f86List[0..($Max - 1)]) }
+                return $f86List
+            }
+
+            function Expand-F86HintPath {
+                param([string]$Template, [string]$Query)
+                $f86Encoded = ''
+                try { $f86Encoded = [System.Uri]::EscapeDataString([string]$Query) } catch { $f86Encoded = '' }
+                return ([string]$Template).Replace('{{q}}', $f86Encoded)
+            }
+
+            # [F86 §C.1] Root-element switch + at most 5 same-host sub-sitemaps,
+            # union capped at 2000 URLs. Never fetches off-host: every <loc> that
+            # is about to be fetched passes the same Test-F78SameHost fence the
+            # F81 sitemap branch used for its rows.
+            function Expand-F86SitemapXml {
+                param([string]$Xml, [string]$SourceUrl, [string]$f78Host)
+                $f86R = [ordered]@{ urls = @(); mode = 'urlset'; fetched = 0; subSitemaps = 0; capHit = $false }
+                $f86Locs = New-Object System.Collections.ArrayList
+                $f86Xml = [string]$Xml
+                if ($f86Xml -match '(?is)<sitemapindex[\s>]') {
+                    $f86R.mode = 'sitemapindex'
+                    # The <sitemap><loc> entries are the sub-sitemaps. A document
+                    # that says <sitemapindex> but has no <sitemap> wrapper (a
+                    # cache-shifted copy) degrades to a flat <loc> scan.
+                    $f86Subs = @()
+                    foreach ($f86M in [regex]::Matches($f86Xml, '(?is)<sitemap\b[^>]*>.*?<loc>\s*([^<]+?)\s*</loc>')) { $f86Subs += [string]$f86M.Groups[1].Value.Trim() }
+                    if ($f86Subs.Count -eq 0) {
+                        foreach ($f86M in [regex]::Matches($f86Xml, '(?is)<loc>\s*([^<]+?)\s*</loc>')) { $f86Subs += [string]$f86M.Groups[1].Value.Trim() }
+                    }
+                    $f86Taken = 0
+                    foreach ($f86Sub in $f86Subs) {
+                        if ($f86Taken -ge 5) { break }
+                        $f78SLink = $null
+                        try { $f78SLink = [System.Uri]$f86Sub } catch { $f78SLink = $null }
+                        if (-not $f78SLink -or $f78SLink.Scheme -ne 'https') { continue }
+                        if (-not (Test-F78SameHost -Allowed $f78Host -Actual $f78SLink.Host)) { continue }
+                        $f86Taken++
+                        $f86R.subSitemaps++
+                        $f86SubFetch = Invoke-F78SecureFetch -Url ([string]$f78SLink.AbsoluteUri) -ExpectedHost $f78Host -MaxBytes 2097152 -TimeoutSec 8
+                        if (-not $f86SubFetch.ok) { continue }
+                        $f86R.fetched++
+                        foreach ($f86M in [regex]::Matches([string]$f86SubFetch.text, '(?is)<loc>\s*([^<]+?)\s*</loc>')) {
+                            if ($f86Locs.Count -ge 2000) { $f86R.capHit = $true; break }
+                            $f86Loc = [string]$f86M.Groups[1].Value.Trim()
+                            if ($f86Loc) { [void]$f86Locs.Add($f86Loc) }
+                        }
+                        if ($f86R.capHit) { break }
+                    }
+                } else {
+                    foreach ($f86M in [regex]::Matches($f86Xml, '(?is)<loc>\s*([^<]+?)\s*</loc>')) {
+                        if ($f86Locs.Count -ge 2000) { $f86R.capHit = $true; break }
+                        $f86Loc = [string]$f86M.Groups[1].Value.Trim()
+                        if ($f86Loc) { [void]$f86Locs.Add($f86Loc) }
+                    }
+                }
+                $f86R.urls = @($f86Locs)
+                return $f86R
+            }
+
+            function Invoke-F86SitemapFetch {
+                param([string]$Url, [string]$f78Host)
+                $f86R = [ordered]@{ urls = @(); mode = ''; fetched = 0; subSitemaps = 0; capHit = $false; ok = $false }
+                $f86First = Invoke-F78SecureFetch -Url $Url -ExpectedHost $f78Host -MaxBytes 2097152 -TimeoutSec 8
+                if (-not $f86First.ok) { return $f86R }
+                $f86Expanded = Expand-F86SitemapXml -Xml ([string]$f86First.text) -SourceUrl $Url -f78Host $f78Host
+                $f86R.urls = @($f86Expanded.urls)
+                $f86R.mode = [string]$f86Expanded.mode
+                $f86R.fetched = [int]$f86Expanded.fetched + 1
+                $f86R.subSitemaps = [int]$f86Expanded.subSitemaps
+                $f86R.capHit = [bool]$f86Expanded.capHit
+                $f86R.ok = ($f86R.urls.Count -gt 0)
+                return $f86R
+            }
+
+            # One anchor pass over an HTML document: absolute, https, same-host
+            # (www-tolerant) only. The shape is the F78/F81 one - the off-host
+            # href fence and the https-only fence are unchanged.
+            function Get-F86AnchorLinks {
+                param([string]$Html, [System.Uri]$BaseUri, [string]$f78Host)
+                $f86Rows = @()
+                foreach ($f86Match in [regex]::Matches([string]$Html, '(?is)<a\b[^>]*href\s*=\s*["'']([^"'']+)["''][^>]*>(.*?)</a>')) {
+                    $f86HrefRaw = [string]$f86Match.Groups[1].Value
+                    $f86Text = ConvertTo-F78PlainText $f86Match.Groups[2].Value
+                    if (-not $f86HrefRaw) { continue }
+                    if ($f86HrefRaw.StartsWith('#')) { continue }
+                    if ($f86HrefRaw -match '^(?i)(mailto:|javascript:|data:|tel:)') { continue }
+                    $f86Abs = ''
+                    try {
+                        if ($f86HrefRaw -match '^(?i)https?://') { $f86Abs = ([System.Uri]$f86HrefRaw).AbsoluteUri }
+                        elseif ($BaseUri) { $f86Abs = ([System.Uri]::new($BaseUri, $f86HrefRaw)).AbsoluteUri }
+                        else { $f86Abs = '' }
+                    } catch { $f86Abs = '' }
+                    if (-not $f86Abs) { continue }
+                    if (-not $f86Abs.StartsWith('https://')) { continue }
+                    $f86LinkHost = ''
+                    try { $f86LinkHost = ([System.Uri]$f86Abs).Host.ToLowerInvariant() } catch { continue }
+                    if (-not (Test-F78SameHost -Allowed $f78Host -Actual $f86LinkHost)) { continue }
+                    $f86Rows += [ordered]@{ text = $f86Text; href = $f86Abs }
+                }
+                return $f86Rows
+            }
+
+            # [F86 §C.3] One level of "obvious index" links: the homepage of a
+            # large catalog often links its real content behind /browse,
+            # /catalog, /all, /index, /archive or /search. At most 3 such pages
+            # are fetched, same host, and their anchors are unioned.
+            function Expand-F86IndexLinks {
+                param([string]$Html, [System.Uri]$BaseUri, [string]$f78Host)
+                $f86Rows = @()
+                $f86Seen = @{}
+                $f86Taken = 0
+                $f86IndexRe = '(?i)(browse|catalog|all|index|archive|search)'
+                foreach ($f86Anchor in @(Get-F86AnchorLinks -Html $Html -BaseUri $BaseUri -f78Host $f78Host)) {
+                    if ($f86Taken -ge 3) { break }
+                    $f86Href = [string]$f86Anchor.href
+                    $f86Text = [string]$f86Anchor.text
+                    if ($f86Href -match '\.(jpg|jpeg|png|gif|svg|css|js|ico|woff2?|ttf|mp3|mp4|pdf)([?#]|$)') { continue }
+                    if (-not (($f86Text -match $f86IndexRe) -or ($f86Href -match $f86IndexRe))) { continue }
+                    if ($f86Seen.ContainsKey($f86Href)) { continue }
+                    $f86Seen[$f86Href] = $true
+                    $f86Taken++
+                    $f86Fetch = Invoke-F78SecureFetch -Url $f86Href -ExpectedHost $f78Host -MaxBytes 2097152 -TimeoutSec 8
+                    if (-not $f86Fetch.ok) { continue }
+                    $f86Base = $null
+                    try { $f86Base = [System.Uri]$f86Href } catch { $f86Base = $BaseUri }
+                    foreach ($f86Row in @(Get-F86AnchorLinks -Html ([string]$f86Fetch.text) -BaseUri $f86Base -f78Host $f78Host)) { $f86Rows += $f86Row }
+                }
+                return $f86Rows
+            }
+
+            # The match test, shared by the sitemap rows and the anchor rows:
+            # case-insensitive substring first (the F81 behaviour, pinned by
+            # tests/f78-lab-server.test.js) then a tokenized fallback so a
+            # relevance-mode query ("gutenberg shakespeare") still highlights
+            # the rows it was meant to find. [F86 §C.1]
+            function Test-F86QueryMatch {
+                param([string]$f78Hay, [string]$f78Needle)
+                if (-not $f78Needle) { return $false }
+                $f86Hay = [string]$f78Hay
+                try { $f86Hay = [System.Uri]::UnescapeDataString($f86Hay) } catch { }
+                $f86Hay = $f86Hay.ToLowerInvariant()
+                if ($f86Hay.ToLowerInvariant().Contains($f78Needle)) { return $true }
+                foreach ($f86Tok in @($f78Needle -split '\s+')) {
+                    if ($f86Tok.Length -ge 3 -and $f86Hay.Contains($f86Tok)) { return $true }
+                }
+                return $false
+            }
+
+            # Dedupe by href + bound the returned rows (the F81 500-row payload
+            # cap is unchanged) and compute each row's `matches` flag.
+            function Merge-F86LinkRows {
+                param($Rows, [string]$f78Needle)
+                $f78LinksOut = @()
+                $f78MatchCount = 0
+                $f86SeenHref = @{}
+                foreach ($f86Row in @($Rows)) {
+                    if (-not $f86Row -or -not $f86Row.href) { continue }
+                    $f86Href = [string]$f86Row.href
+                    if ($f86SeenHref.ContainsKey($f86Href)) { continue }
+                    $f86SeenHref[$f86Href] = $true
+                    if ($f78LinksOut.Count -ge 500) { break }
+                    $f86Text = [string]$f86Row.text
+                    $f86IsMatch = (Test-F86QueryMatch -f78Hay ($f86Text + ' ' + $f86Href) -f78Needle $f78Needle)
+                    if ($f86IsMatch) { $f78MatchCount++ }
+                    $f78LinksOut += [ordered]@{ text = $f86Text; href = $f86Href; matches = $f86IsMatch }
+                }
+                return [ordered]@{ links = @($f78LinksOut); count = $f78LinksOut.Count; matches = $f78MatchCount }
+            }
             # constant-time dash-token gate (same shape as /api/fetch)
             $f78Presented = ''
             try { $f78Presented = [string]$parts.headers['x-dash-token'] } catch { }
@@ -3809,13 +4043,297 @@ function Invoke-ClientRequest {
                 return
             }
 
-            # [F81 §4.2/D.2 Q1=B] POST /api/launch-url — open a URL inside the
-            # interactive RDP session. The same one-shot scheduled-task pattern
-            # used for /api/terminal/run (Interactive logon, RunLevel Highest)
-            # launches `start chrome.exe <url>` for the user who owns the
-            # active console session. Sanitisation: https only, no userinfo,
-            # <= 2048 chars; the URL is URL-encoded for the cmd line. Rate
-            # limit: 20 calls / 60s per X-Dash-Token.
+            # =====================================================================
+            # [F86 §A] LAUNCH-URL HARDENING - THE THREE-TIER LADDER.
+            #
+            # WHY IT EXISTS: the F81 route was ONE mechanism - a one-shot
+            # Interactive scheduled task running `cmd /c start "" "<url>"`. On a
+            # runner where the dashboard token owner has no interactive logon the
+            # task registers (200 OK), Start-ScheduledTask answers, and the task
+            # body silently never runs: the operator sees the success toast and
+            # no window. That is the worst failure shape there is. [F86 §A.1]
+            #
+            # The ladder tries, in order, and reports which rung actually did the
+            # work (the response now carries tier + tierDetail):
+            #   TIER 1  direct process spawn as the ghrdp-server user itself
+            #           (a direct <browser> --new-window <url> spawn, PID proof;
+            #           cmd.exe /c start msedge.exe is the second form).
+            #   TIER 2  the F81 interactive scheduled task, now run INSIDE the
+            #           ladder: schedsvc starts the task in the console user's
+            #           own session, which is the rung that reaches a desktop
+            #           this process cannot touch. The F86 brief's alternative
+            #           rung (keyboard injection into the focused window) is
+            #           deliberately NOT implemented: the F19 gate in
+            #           tests/f19-dns-launcher.test.js:249-252 bans those
+            #           identifiers in this very file, and that guard is older
+            #           and stronger than this phase.
+            #   TIER 3  a named pipe to a persistent "browser-opener" helper
+            #           (payloads/ghrdp-browser-helper.ps1) started once per
+            #           process; the helper launches in whatever desktop context
+            #           it owns and answers OK <pid> / ERR <reason>.
+            # Boot probe (cached): interactive desktop -> Tier 1 is the expected
+            # rung; console user only -> Tier 2; nothing -> Tier 3 is attempted
+            # anyway and a total failure answers 503 reason="no interactive
+            # session" instead of a fake success. Every attempt is appended to
+            # %USERPROFILE%\.ghrdp\launch-url.log (host + path only - never the
+            # query string) and kept in an in-memory ring for /diag.
+            # =====================================================================
+            if (-not $script:F86LaunchReady) {
+                $script:F86LaunchReady = $true
+                $script:F86LogPath = ''
+                $script:F86History = @()
+                $script:F86LastLaunch = $null
+                $script:F86TierActive = 0
+                $script:F86Probed = $false
+                $script:F86Interactive = $false
+                $script:F86SessionId = -1
+                $script:F86ActiveUser = ''
+                $script:F86Browsers = [ordered]@{ msedge = ''; chrome = ''; firefox = '' }
+                $script:F86PipeName = 'ghrdp-browser-opener-f86'
+                $script:F86PipeReady = $false
+
+                function Resolve-F86BrowserPath {
+                    param([string]$Name)
+                    $f86Found = ''
+                    try {
+                        $f86Cmd = Get-Command ($Name + '.exe') -ErrorAction SilentlyContinue
+                        if ($f86Cmd -and $f86Cmd.Source) { $f86Found = [string]$f86Cmd.Source }
+                    } catch { $f86Found = '' }
+                    if ($f86Found -and (Test-Path -LiteralPath $f86Found)) { return $f86Found }
+                    $f86Pfx = ''
+                    $f86Pfx86 = ''
+                    $f86Local = ''
+                    try { $f86Pfx = [string]$env:ProgramFiles } catch { $f86Pfx = '' }
+                    try { $f86Pfx86 = [string]${env:ProgramFiles(x86)} } catch { $f86Pfx86 = '' }
+                    try { $f86Local = [string]$env:LOCALAPPDATA } catch { $f86Local = '' }
+                    $f86Guesses = @()
+                    if ($Name -eq 'msedge') {
+                        $f86Guesses = @("$f86Pfx\Microsoft\Edge\Application\msedge.exe", "$f86Pfx86\Microsoft\Edge\Application\msedge.exe", "$f86Local\Microsoft\Edge\Application\msedge.exe")
+                    } elseif ($Name -eq 'chrome') {
+                        $f86Guesses = @("$f86Pfx\Google\Chrome\Application\chrome.exe", "$f86Pfx86\Google\Chrome\Application\chrome.exe", "$f86Local\Google\Chrome\Application\chrome.exe")
+                    } else {
+                        $f86Guesses = @("$f86Pfx\Mozilla Firefox\firefox.exe", "$f86Pfx86\Mozilla Firefox\firefox.exe")
+                    }
+                    foreach ($f86G in @($f86Guesses)) {
+                        if (-not $f86G) { continue }
+                        if (Test-Path -LiteralPath $f86G) { return $f86G }
+                    }
+                    return ''
+                }
+
+                function Get-F86PreferredBrowser {
+                    foreach ($f86N in @('msedge', 'chrome', 'firefox')) {
+                        if ($script:F86Browsers[$f86N]) { return [ordered]@{ name = $f86N; path = [string]$script:F86Browsers[$f86N] } }
+                    }
+                    return [ordered]@{ name = ''; path = '' }
+                }
+
+                function Write-F86LaunchLog {
+                    param([string]$Kind, [string]$Url, [int]$Tier, [string]$Detail, [bool]$Ok)
+                    $f86Stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+                    $f86Host = ''
+                    $f86Path = ''
+                    try { if ($Url) { $f86Host = ([System.Uri]$Url).Host } } catch { $f86Host = '' }
+                    try { if ($Url) { $f86Path = ([System.Uri]$Url).AbsolutePath } } catch { $f86Path = '' }
+                    $f86Outcome = 'fail'
+                    if ($Ok) { $f86Outcome = 'ok' }
+                    $f86Entry = [ordered]@{ at = $f86Stamp; kind = $Kind; host = $f86Host; path = $f86Path; tier = $Tier; ok = $Ok; detail = $Detail }
+                    try {
+                        $f86Keep = @($script:F86History) + @($f86Entry)
+                        if ($f86Keep.Count -gt 25) { $f86Keep = @($f86Keep[($f86Keep.Count - 25)..($f86Keep.Count - 1)]) }
+                        $script:F86History = @($f86Keep)
+                    } catch { }
+                    try {
+                        if ($script:F86LogPath) {
+                            $f86Line = $f86Stamp + ' kind=' + $Kind + ' tier=' + [string]$Tier + ' outcome=' + $f86Outcome + ' host=' + $f86Host + ' path=' + $f86Path + ' detail=' + $Detail
+                            Add-Content -LiteralPath $script:F86LogPath -Value $f86Line -Encoding UTF8 -ErrorAction SilentlyContinue
+                        }
+                    } catch { }
+                }
+
+                function Initialize-F86LaunchRuntime {
+                    if ($script:F86Probed) { return }
+                    $script:F86Probed = $true
+                    try {
+                        $f86Dir = ''
+                        try { $f86Dir = [Environment]::GetFolderPath('UserProfile') } catch { $f86Dir = '' }
+                        if (-not $f86Dir) { try { $f86Dir = [string]$env:USERPROFILE } catch { $f86Dir = '' } }
+                        if ($f86Dir) {
+                            $f86LogDir = Join-Path $f86Dir '.ghrdp'
+                            if (-not (Test-Path -LiteralPath $f86LogDir)) { New-Item -ItemType Directory -Path $f86LogDir -Force | Out-Null }
+                            $script:F86LogPath = Join-Path $f86LogDir 'launch-url.log'
+                        }
+                    } catch { $script:F86LogPath = '' }
+                    foreach ($f86N in @('msedge', 'chrome', 'firefox')) { $script:F86Browsers[$f86N] = Resolve-F86BrowserPath -Name $f86N }
+                    # [F86 §A.2] the boot probe: which rung can physically work?
+                    $f86Sess = -1
+                    try { $f86Self = Get-Process -Id $PID -ErrorAction SilentlyContinue; if ($f86Self) { $f86Sess = [int]$f86Self.SessionId } } catch { $f86Sess = -1 }
+                    $script:F86SessionId = $f86Sess
+                    $f86UserInteractive = $false
+                    try { $f86UserInteractive = [bool][Environment]::UserInteractive } catch { $f86UserInteractive = $false }
+                    $f86ConsoleUser = ''
+                    try {
+                        $f86Q = & quser.exe 2>$null
+                        $LASTEXITCODE = 0
+                        foreach ($f86Line in @($f86Q)) {
+                            if ($f86Line -match '^\s*>?\s*(\S+)\s+\S+\s+\d+\s+Active') { $f86ConsoleUser = $Matches[1]; break }
+                        }
+                    } catch { $f86ConsoleUser = '' }
+                    $script:F86ActiveUser = $f86ConsoleUser
+                    $script:F86Interactive = [bool]($f86UserInteractive -and $f86Sess -gt 0)
+                    # Tier 1 is only the EXPECTED rung on an interactive desktop;
+                    # a console-only logon expects Tier 2/2b; a session-0 service
+                    # with no logon cannot use 1 or 2 at all, so Tier 3 leads.
+                    $f86Expected = 3
+                    if ($script:F86Interactive) { $f86Expected = 1 }
+                    elseif ($f86ConsoleUser) { $f86Expected = 2 }
+                    $script:F86TierActive = $f86Expected
+                    if (-not $script:F86Interactive) { [void](Start-F86BrowserHelper) }
+                    Write-F86LaunchLog -Kind 'probe' -Url '' -Tier $f86Expected -Detail ('session=' + [string]$f86Sess + ' userInteractive=' + [string]$f86UserInteractive + ' consoleUser=' + $f86ConsoleUser + ' browsers=' + [string]$script:F86Browsers['msedge'] + ',' + [string]$script:F86Browsers['chrome'] + ',' + [string]$script:F86Browsers['firefox'] + ' pipe=' + [string]$script:F86PipeReady) -Ok $true
+                }
+
+                function Start-F86BrowserHelper {
+                    if ($script:F86PipeReady) { return $true }
+                    $f86Helper = ''
+                    try { $f86Helper = Join-Path $Root 'ghrdp-browser-helper.ps1' } catch { $f86Helper = '' }
+                    if (-not $f86Helper -or -not (Test-Path -LiteralPath $f86Helper)) {
+                        Write-F86LaunchLog -Kind 'helper' -Url '' -Tier 3 -Detail 'helper-script-missing' -Ok $false
+                        return $false
+                    }
+                    foreach ($f86Exe in @('powershell.exe', 'pwsh.exe')) {
+                        try {
+                            Start-Process -FilePath $f86Exe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-WindowStyle', 'Hidden', '-File', $f86Helper, '-PipeName', $script:F86PipeName) -WindowStyle Hidden | Out-Null
+                            $script:F86PipeReady = $true
+                            Write-F86LaunchLog -Kind 'helper' -Url '' -Tier 3 -Detail ('helper-started:' + $f86Exe) -Ok $true
+                            return $true
+                        } catch { continue }
+                    }
+                    Write-F86LaunchLog -Kind 'helper' -Url '' -Tier 3 -Detail 'helper-start-failed' -Ok $false
+                    return $false
+                }
+
+                function Invoke-F86LaunchTier1 {
+                    param([string]$Url)
+                    $f86Out = [ordered]@{ ok = $false; tier = 1; detail = 'no-browser'; browser = ''; pid = 0 }
+                    $f86Pick = Get-F86PreferredBrowser
+                    if (-not $f86Pick.path) { $f86Out.detail = 'no-browser-found'; return $f86Out }
+                    try {
+                        $f86Proc = Start-Process -FilePath ([string]$f86Pick.path) -ArgumentList @('--new-window', $Url) -NoNewWindow -PassThru -ErrorAction Stop
+                        if ($f86Proc -and $f86Proc.Id -gt 0) {
+                            $f86Out.ok = $true
+                            $f86Out.browser = [string]$f86Pick.name
+                            $f86Out.pid = [int]$f86Proc.Id
+                            $f86Out.detail = 'direct-spawn'
+                            return $f86Out
+                        }
+                    } catch { $f86Out.detail = ('direct-spawn-failed: ' + [string]$_.Exception.Message) }
+                    try {
+                        $f86CmdArg = '/c start msedge.exe --new-window "' + $Url.Replace('"', '%22') + '"'
+                        $f86Proc2 = Start-Process -FilePath 'cmd.exe' -ArgumentList $f86CmdArg -NoNewWindow -PassThru -ErrorAction Stop
+                        if ($f86Proc2 -and $f86Proc2.Id -gt 0) {
+                            $f86Out.ok = $true
+                            $f86Out.browser = 'cmd-start'
+                            $f86Out.pid = [int]$f86Proc2.Id
+                            $f86Out.detail = 'cmd-start'
+                            return $f86Out
+                        }
+                    } catch { $f86Out.detail = ([string]$f86Out.detail + ' | cmd-start-failed: ' + [string]$_.Exception.Message) }
+                    return $f86Out
+                }
+
+                function Invoke-F86LaunchTier2 {
+                    param([string]$Url, [string]$f81ActiveUser)
+                    $f86Out = [ordered]@{ ok = $false; tier = 2; detail = 'no-active-session'; browser = 'shell'; pid = 0 }
+                    if (-not $f81ActiveUser) { return $f86Out }
+                    $f81Tid = [guid]::NewGuid().ToString('N').Substring(0, 8)
+                    $f81TaskName = 'GhrdpLaunch-' + $f81Tid
+                    # The launched process is `cmd /c start "" "<url>"` - the
+                    # empty title argument is the conventional way to start a URL
+                    # via the shell's URL handler. URL-encoded for the command
+                    # line; quoting is escaped to keep cmd-line injection
+                    # impossible regardless of URL content.
+                    $f81EscUrl = $Url.Replace('"', '%22').Replace('`', '%60').Replace('$', '%24').Replace('&', '%26').Replace('|', '%7C').Replace('>', '%3E').Replace('<', '%3C').Replace('^', '%5E')
+                    $f81Cmd = 'cmd.exe /c start "" "' + $f81EscUrl + '"'
+                    $f81TaskAction = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/c "' + $f81Cmd + '"')
+                    $f81Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(1)
+                    $f81Principal = New-ScheduledTaskPrincipal -UserId $f81ActiveUser -LogonType Interactive -RunLevel Highest
+                    $f81Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::FromSeconds(15))
+                    try {
+                        Register-ScheduledTask -TaskName $f81TaskName -Action $f81TaskAction -Trigger $f81Trigger -Principal $f81Principal -Settings $f81Settings -Force -ErrorAction Stop | Out-Null
+                        Start-ScheduledTask -TaskName $f81TaskName -ErrorAction Stop | Out-Null
+                        Start-Job -ScriptBlock { param($tn) Start-Sleep -Seconds 20; try { Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue } catch { } } -ArgumentList $f81TaskName | Out-Null
+                        $f86Out.ok = $true
+                        $f86Out.detail = 'scheduled-task'
+                    } catch {
+                        try { Unregister-ScheduledTask -TaskName $f81TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
+                        $f86Out.detail = ('scheduled-task-failed: ' + [string]$_.Exception.Message)
+                    }
+                    return $f86Out
+                }
+
+                function Invoke-F86LaunchTier3 {
+                    param([string]$Url)
+                    $f86Out = [ordered]@{ ok = $false; tier = 3; detail = 'pipe-unavailable'; browser = 'helper'; pid = 0 }
+                    if (-not $script:F86PipeReady) { [void](Start-F86BrowserHelper) }
+                    if (-not $script:F86PipeReady) { return $f86Out }
+                    $f86Pipe = $null
+                    try {
+                        $f86Pipe = New-Object System.IO.Pipes.NamedPipeClientStream('.', $script:F86PipeName, [System.IO.Pipes.PipeDirection]::InOut)
+                        $f86Pipe.Connect(1500)
+                        $f86Writer = New-Object System.IO.StreamWriter($f86Pipe)
+                        $f86Writer.AutoFlush = $true
+                        $f86Writer.WriteLine($Url)
+                        $f86Reader = New-Object System.IO.StreamReader($f86Pipe)
+                        $f86Reply = [string]$f86Reader.ReadLine()
+                        if ($f86Reply -and $f86Reply.StartsWith('OK')) {
+                            $f86Out.ok = $true
+                            $f86Out.detail = 'named-pipe-helper'
+                        } else {
+                            $f86Out.detail = ('named-pipe-refused: ' + $f86Reply)
+                        }
+                    } catch { $f86Out.detail = ('named-pipe-failed: ' + [string]$_.Exception.Message) }
+                    finally { if ($f86Pipe) { try { $f86Pipe.Dispose() } catch { } } }
+                    return $f86Out
+                }
+
+                function Invoke-F86LaunchUrl {
+                    param([string]$Url, [int]$ForceTier)
+                    Initialize-F86LaunchRuntime
+                    $f86Attempts = @()
+                    $f86Result = [ordered]@{ ok = $false; tier = 0; detail = 'no-tier-succeeded'; browser = ''; pid = 0; attempts = @() }
+                    foreach ($f86Tier in @(1, 2, 3)) {
+                        if ($ForceTier -gt 0 -and $f86Tier -ne $ForceTier) { continue }
+                        $f86Outcome = $null
+                        if ($f86Tier -eq 1) {
+                            $f86Outcome = Invoke-F86LaunchTier1 -Url $Url
+                        } elseif ($f86Tier -eq 2) {
+                            $f86Outcome = Invoke-F86LaunchTier2 -Url $Url -f81ActiveUser $script:F86ActiveUser
+                        } else {
+                            $f86Outcome = Invoke-F86LaunchTier3 -Url $Url
+                        }
+                        $f86Attempts += [ordered]@{ tier = $f86Tier; ok = [bool]$f86Outcome.ok; detail = [string]$f86Outcome.detail }
+                        Write-F86LaunchLog -Kind 'launch' -Url $Url -Tier $f86Tier -Detail ([string]$f86Outcome.detail) -Ok ([bool]$f86Outcome.ok)
+                        if ($f86Outcome.ok) {
+                            $f86Result.ok = $true
+                            $f86Result.tier = $f86Tier
+                            $f86Result.detail = [string]$f86Outcome.detail
+                            $f86Result.browser = [string]$f86Outcome.browser
+                            $f86Result.pid = [int]$f86Outcome.pid
+                            break
+                        }
+                    }
+                    $f86Result.attempts = @($f86Attempts)
+                    $script:F86LastLaunch = [ordered]@{ at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); ok = [bool]$f86Result.ok; tier = [int]$f86Result.tier; detail = [string]$f86Result.detail }
+                    return $f86Result
+                }
+            }
+
+            # [F86 §A.2] POST /api/launch-url - the route is unchanged in its
+            # validation (https only, no userinfo, <=2048, 20 calls / 60s per
+            # X-Dash-Token) and unchanged in its response envelope; what changed
+            # is the MECHANISM behind it: the ladder above replaces the single
+            # scheduled-task attempt, and the response now carries the rung that
+            # worked (tier + tierDetail) so /search?diag=1 can show it.
             if ($path -eq '/api/launch-url' -and $parts.method -eq 'POST') {
                 if (-not $script:F81LaunchRate) { $script:F81LaunchRate = @{} }
                 $f81Now = (Get-Date).ToUniversalTime()
@@ -3851,45 +4369,70 @@ function Invoke-ClientRequest {
                     Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'newSiteAuthNotAllowed' }))
                     return
                 }
-                # Resolve active console user (same quser scan the terminal
-                # route uses) so the scheduled task runs in the right session.
+                # Resolve active console user (same quser scan the terminal route
+                # uses): Tier 2 needs the account, and its absence is what turns
+                # a total ladder failure into the honest 503 below.
                 $f81ActiveUser = ''
                 try { $qu = & quser.exe 2>$null; $LASTEXITCODE = 0; foreach ($line in @($qu)) { if ($line -match '^\s*>?\s*(\S+)\s+\S+\s+\d+\s+Active') { $f81ActiveUser = $Matches[1]; break } } } catch { }
-                if (-not $f81ActiveUser) {
-                    Send-ClientResponse -Stream $stream -Code 503 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'NO_ACTIVE_SESSION'; messageKey = 'launchUrl.noSession' }))
-                    Write-ClientAudit ('f81 launch-url refused: no active user session url=' + $f81Host)
-                    return
-                }
                 $f81Hits += $f81Now
                 $script:F81LaunchRate[$f81Tok] = $f81Hits
-                $f81Tid = [guid]::NewGuid().ToString('N').Substring(0, 8)
-                $f81TaskName = 'GhrdpLaunch-' + $f81Tid
-                # The launched process is `cmd /c start "" "<url>"` — the
-                # empty title argument is the conventional way to start an
-                # URL via the shell's URL handler. URL-encoded for the
-                # command line; quoting is escaped to keep cmd-line
-                # injection impossible regardless of URL content.
-                $f81EscUrl = $f81Url.Replace('"', '%22').Replace('`', '%60').Replace('$', '%24').Replace('&', '%26').Replace('|', '%7C').Replace('>', '%3E').Replace('<', '%3C').Replace('^', '%5E')
-                $f81Cmd = 'cmd.exe /c start "" "' + $f81EscUrl + '"'
-                $f81TaskAction = New-ScheduledTaskAction -Execute 'cmd.exe' -Argument ('/c "' + $f81Cmd + '"')
-                $f81Trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(1)
-                $f81Principal = New-ScheduledTaskPrincipal -UserId $f81ActiveUser -LogonType Interactive -RunLevel Highest
-                $f81Settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::FromSeconds(15))
-                Register-ScheduledTask -TaskName $f81TaskName -Action $f81TaskAction -Trigger $f81Trigger -Principal $f81Principal -Settings $f81Settings -Force -ErrorAction Stop | Out-Null
-                try {
-                    Start-ScheduledTask -TaskName $f81TaskName -ErrorAction Stop | Out-Null
-                    # Auto-cleanup: drop the task after a short window so we
-                    # don't accumulate dead one-shot tasks.
-                    Start-Job -ScriptBlock { param($tn) Start-Sleep -Seconds 20; try { Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue } catch { } } -ArgumentList $f81TaskName | Out-Null
-                    Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; launched = $true; user = $f81ActiveUser; taskName = $f81TaskName }))
-                    Write-ClientAudit ('f81 launch-url user=' + $f81ActiveUser + ' host=' + $f81Uri.Host)
-                    return
-                } catch {
-                    try { Unregister-ScheduledTask -TaskName $f81TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch { }
-                    Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'LAUNCH_FAILED'; messageKey = 'launchUrl.failed' }))
-                    Write-ClientAudit ('f81 launch-url failed user=' + $f81ActiveUser + ' host=' + $f81Uri.Host + ' err=' + [string]$_.Exception.Message)
+                $f86Attempt = Invoke-F86LaunchUrl -Url $f81Url
+                if ($f86Attempt.ok) {
+                    Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; launched = $true; tier = [int]$f86Attempt.tier; tierDetail = [string]$f86Attempt.detail; browser = [string]$f86Attempt.browser; pid = [int]$f86Attempt.pid; user = $f81ActiveUser; attempts = @($f86Attempt.attempts) }))
+                    Write-ClientAudit ('f81 launch-url user=' + $f81ActiveUser + ' host=' + $f81Uri.Host + ' tier=' + [string]$f86Attempt.tier + ' detail=' + [string]$f86Attempt.detail)
                     return
                 }
+                if (-not $f81ActiveUser) {
+                    Send-ClientResponse -Stream $stream -Code 503 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'NO_ACTIVE_SESSION'; messageKey = 'launchUrl.noSession'; reason = 'no interactive session'; tier = [int]$f86Attempt.tier; attempts = @($f86Attempt.attempts) }))
+                    Write-ClientAudit ('f81 launch-url refused: no interactive session host=' + $f81Uri.Host)
+                    return
+                }
+                Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'LAUNCH_FAILED'; messageKey = 'launchUrl.failed'; tier = [int]$f86Attempt.tier; attempts = @($f86Attempt.attempts) }))
+                Write-ClientAudit ('f81 launch-url failed user=' + $f81ActiveUser + ' host=' + $f81Uri.Host + ' detail=' + [string]$f86Attempt.detail)
+                return
+            }
+
+            # [F86 §A.3] GET /api/launch-url/diag - the launch-path diagnostic
+            # surface behind /#/search?diag=1. It reports the boot probe, the
+            # browser paths that were actually resolved, the last launch outcome
+            # and the failed attempts, so "Could not open in RDP" stops being a
+            # one-line toast with no next step. Gated by the same dash-token gate
+            # as every other /api route in this file.
+            if ($path -eq '/api/launch-url/diag' -and $parts.method -eq 'GET') {
+                Initialize-F86LaunchRuntime
+                $f86Errors = @()
+                foreach ($f86H in @($script:F86History)) {
+                    if ($f86H -and -not $f86H.ok) { $f86Errors += $f86H }
+                }
+                if ($f86Errors.Count -gt 10) { $f86Errors = @($f86Errors[($f86Errors.Count - 10)..($f86Errors.Count - 1)]) }
+                $f86Last = $script:F86LastLaunch
+                $f86DiagOut = [ordered]@{
+                    ok = $true
+                    activeTier = [int]$script:F86TierActive
+                    lastLaunchAt = ''
+                    lastResult = ''
+                    lastTier = 0
+                    lastDetail = ''
+                    chromePath = [string]$script:F86Browsers['chrome']
+                    msedgePath = [string]$script:F86Browsers['msedge']
+                    firefoxPath = [string]$script:F86Browsers['firefox']
+                    interactiveSessionDetected = [bool]$script:F86Interactive
+                    sessionId = [int]$script:F86SessionId
+                    activeUser = [string]$script:F86ActiveUser
+                    pipeReady = [bool]$script:F86PipeReady
+                    pipeName = [string]$script:F86PipeName
+                    logPath = [string]$script:F86LogPath
+                    errorHistory = @($f86Errors)
+                    history = @($script:F86History)
+                }
+                if ($f86Last) {
+                    $f86DiagOut.lastLaunchAt = [string]$f86Last.at
+                    $f86DiagOut.lastTier = [int]$f86Last.tier
+                    $f86DiagOut.lastDetail = [string]$f86Last.detail
+                    if ($f86Last.ok) { $f86DiagOut.lastResult = 'ok' } else { $f86DiagOut.lastResult = 'fail' }
+                }
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $f86DiagOut)
+                return
             }
 
             # [F81 §3.2/Q8] POST /api/preview — fetch the first ~500 chars of
@@ -3960,10 +4503,14 @@ function Invoke-ClientRequest {
                     return
                 }
                 $f78SourceId = ''
+                $f78SourceUrl = ''
                 $f78Query = ''
                 try { $f78SourceId = [string]$f78Json.sourceId } catch { $f78SourceId = '' }
+                try { $f78SourceUrl = [string]$f78Json.sourceUrl } catch { $f78SourceUrl = '' }
                 try { $f78Query = [string]$f78Json.query } catch { $f78Query = '' }
                 $f78SourceId = $f78SourceId.Trim()
+                $f78SourceUrl = $f78SourceUrl.Trim()
+                if ($f78SourceUrl.Length -gt 2048) { $f78SourceUrl = $f78SourceUrl.Substring(0, 2048) }
                 $f78Query = $f78Query.Trim()
                 if (-not $f78SourceId) {
                     Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
@@ -4087,6 +4634,222 @@ function Invoke-ClientRequest {
                         $f78LinksOut += [ordered]@{ text = $f78Text; href = $f78Abs; matches = $f78IsMatch }
                     }
                     $f78SourceUrls = $f78LinkCount
+                }
+                try {
+                    $f78TitleMatch = [regex]::Match($f78Html, '(?is)<title[^>]*>(.*?)</title>')
+                    if ($f78TitleMatch.Success) { $f78Title = ConvertTo-F78PlainText $f78TitleMatch.Groups[1].Value }
+                } catch { $f78Title = '' }
+                if (-not $f78SourceId -and -not $f78SourceUrl) {
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
+                    return
+                }
+                $f78ResultMode = $false
+                if ($f78SourceId) {
+                    if (-not $script:F78Sources.ContainsKey($f78SourceId)) {
+                        Send-ClientResponse -Stream $stream -Code 404 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'NOT_FOUND' -MessageKey 'lab.notFound' -RetryAfter 0))
+                        return
+                    }
+                    $f78Src = $script:F78Sources[$f78SourceId]
+                    if ($f78Src.labMode -ne $true) {
+                        Send-ClientResponse -Stream $stream -Code 403 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'FORBIDDEN' -MessageKey 'lab.notFound' -RetryAfter 0))
+                        return
+                    }
+                    $f78Host = [string]$f78Src.hostname
+                    if (-not $f78Host -or -not $script:F78AllowHosts.ContainsKey($f78Host)) {
+                        Send-ClientResponse -Stream $stream -Code 403 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'HOSTNAME_MISMATCH' -MessageKey 'lab.hostnameMismatch' -RetryAfter 0))
+                        return
+                    }
+                } else {
+                    # [F86 §B.2] RESULT-VIEW mode. The Lab opened on a RESULT id
+                    # (not a stored site), so the client sends the result's own
+                    # sourceUrl and the server inspects THAT page: same transport
+                    # as /api/preview (https only, no userinfo, <=2048, 2MB cap,
+                    # ExpectedHost is the URL's own host), same same-host href
+                    # fence, same 500-row payload cap. No sitemap crawl runs here
+                    # - the target is one page, not a site root - and the
+                    # 10-fetches/minute limiter keys on the host instead of a
+                    # sourceId.
+                    if (-not $f78SourceUrl.StartsWith('https://')) {
+                        Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'newSiteHttpsRequired' }))
+                        return
+                    }
+                    $f78ResultUri = $null
+                    try { $f78ResultUri = [System.Uri]$f78SourceUrl } catch { $f78ResultUri = $null }
+                    if (-not $f78ResultUri -or $f78ResultUri.Scheme -ne 'https' -or $f78ResultUri.UserInfo) {
+                        Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'newSiteAuthNotAllowed' }))
+                        return
+                    }
+                    $f78Host = [string]$f78ResultUri.Host.ToLowerInvariant()
+                    if (-not $f78Host) {
+                        Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
+                        return
+                    }
+                    $f78ResultMode = $true
+                    $f78Src = [ordered]@{
+                        id = ('f86-result-' + $f78Host)
+                        name = $f78Host
+                        baseUrl = $f78SourceUrl
+                        hostname = $f78Host
+                        labMode = $true
+                        resultMode = $true
+                    }
+                }
+                # 10 fetches/minute per inspected key (the route's whole budget):
+                # the stored sourceId, or the host for a result-view inspection.
+                $f78RateKey = $f78SourceId
+                if (-not $f78RateKey) { $f78RateKey = 'url:' + $f78Host }
+                $f78Now = (Get-Date).ToUniversalTime()
+                $f78Hits = @()
+                if ($script:F78LabInspectRateLimiter.ContainsKey($f78RateKey)) { $f78Hits = @($script:F78LabInspectRateLimiter[$f78RateKey]) }
+                $f78Hits = @($f78Hits | Where-Object { ($f78Now - $_).TotalSeconds -lt 60 })
+                if ($f78Hits.Count -ge 10) {
+                    $f78Retry = [int][Math]::Ceiling(60 - ($f78Now - $f78Hits[0]).TotalSeconds)
+                    if ($f78Retry -lt 1) { $f78Retry = 1 }
+                    Send-ClientResponse -Stream $stream -Code 429 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'RATE_LIMITED' -MessageKey 'lab.rateLimited' -RetryAfter $f78Retry))
+                    Write-ClientAudit ('f78 lab rate-limited id=' + $f78RateKey)
+                    return
+                }
+                $f78Hits += $f78Now
+                $script:F78LabInspectRateLimiter[$f78RateKey] = $f78Hits
+                # [F86 §C.1] SITEMAP-INDEX RECURSION + PER-SITE HINTS. The F81
+                # branch fetched /sitemap.xml once and treated every <loc> as a
+                # result row - but a <sitemapindex> answers with SUB-SITEMAP
+                # urls, so the ten operator sites landed on "12 links". Now the
+                # response ROOT decides: <sitemapindex> enumerates <sitemap><loc>
+                # and fetches up to 5 same-host sub-sitemaps (2MB each) unioning
+                # their <url><loc>; <urlset> is used directly. The union is capped
+                # at 2000 URLs. [F86 §C.2] When the host has a hint entry, its
+                # sitemapPaths are tried too and - if the result is still thin
+                # (< 50 URLs) - its searchPaths (query substituted) and
+                # catalogPaths are fetched and their anchors unioned. Thin-ness is
+                # measured on candidate URLs, the returned rows stay capped at 500.
+                $f78Phase = 'homepage-fallback'
+                $f78SourceLabel = 'homepage'
+                $f78SourceUrls = 0
+                $f78LinksOut = @()
+                $f78LinkCount = 0
+                $f78MatchCount = 0
+                $f78Html = ''
+                $f78Title = ''
+                $f78BaseUri = $null
+                try { $f78BaseUri = [System.Uri]([string]$f78Src.baseUrl) } catch { $f78BaseUri = $null }
+                $f78Needle = ''
+                if ($f78Query) {
+                    $f78Needle = $f78Query
+                    try { $f78Needle = [System.Uri]::UnescapeDataString($f78Query) } catch { $f78Needle = $f78Query }
+                    $f78Needle = $f78Needle.ToLowerInvariant()
+                }
+                $f78CandidateUrls = @()
+                $f78Hint = $null
+                if (-not $f78ResultMode) { $f78Hint = Get-F86SiteHint -HostName $f78Host }
+                if (-not $f78ResultMode) {
+                    # The F81 default fetch, unchanged in form: the root sitemap
+                    # is always tried first.
+                    $f81Sitemap = Invoke-F78SecureFetch -Url ($f78Src.baseUrl.TrimEnd('/') + '/sitemap.xml') -ExpectedHost $f78Host -MaxBytes 2097152 -TimeoutSec 8
+                    if ($f81Sitemap.ok) {
+                        $f78Expanded = Expand-F86SitemapXml -Xml ([string]$f81Sitemap.text) -SourceUrl ($f78Src.baseUrl.TrimEnd('/') + '/sitemap.xml') -f78Host $f78Host
+                        $f78CandidateUrls = @($f78Expanded.urls)
+                        $f78Phase = 'sitemap-ok'
+                        $f78SourceLabel = 'sitemap.xml'
+                    }
+                    # [F86 §C.2] extra hint sitemap paths (same host, max 3). The
+                    # default path above is skipped here so it is never fetched
+                    # twice inside the same 10-fetch budget.
+                    foreach ($f78SmPath in @(Get-F86HintList -Hint $f78Hint -Field 'sitemapPaths' -Max 3)) {
+                        if ($f78CandidateUrls.Count -ge 2000) { break }
+                        if ($f78SmPath -eq '/sitemap.xml') { continue }
+                        $f78SmUrl = ''
+                        try { $f78SmUrl = ([System.Uri]::new($f78BaseUri, $f78SmPath)).AbsoluteUri } catch { $f78SmUrl = $f78Src.baseUrl.TrimEnd('/') + $f78SmPath }
+                        $f78Crawl = Invoke-F86SitemapFetch -Url $f78SmUrl -f78Host $f78Host
+                        if ($f78Crawl.urls.Count -gt 0) {
+                            $f78CandidateUrls = @($f78CandidateUrls) + @($f78Crawl.urls)
+                            if ($f78Phase -ne 'sitemap-ok') { $f78Phase = 'sitemap-ok' }
+                            if ($f78SourceLabel -eq 'homepage') { $f78SourceLabel = $f78SmPath }
+                        }
+                    }
+                    if ($f78CandidateUrls.Count -gt 0) { $f78SourceUrls = $f78CandidateUrls.Count }
+                }
+                # [F86 §C.2] Thin sitemap (< 50 URLs) -> the hint's search pages,
+                # with {{q}} URL-encoded and substituted server-side.
+                if (-not $f78ResultMode -and $f78CandidateUrls.Count -lt 50) {
+                    foreach ($f78Sp in @(Get-F86HintList -Hint $f78Hint -Field 'searchPaths' -Max 2)) {
+                        if ($f78CandidateUrls.Count -ge 2000) { break }
+                        $f78SpRel = Expand-F86HintPath -Template $f78Sp -Query $f78Query
+                        $f78SpUrl = ''
+                        try { $f78SpUrl = ([System.Uri]::new($f78BaseUri, $f78SpRel)).AbsoluteUri } catch { $f78SpUrl = $f78Src.baseUrl.TrimEnd('/') + $f78SpRel }
+                        $f78SpFetch = Invoke-F78SecureFetch -Url $f78SpUrl -ExpectedHost $f78Host -MaxBytes 2097152 -TimeoutSec 10
+                        if (-not $f78SpFetch.ok) { continue }
+                        $f78SpBase = $null
+                        try { $f78SpBase = [System.Uri]$f78SpUrl } catch { $f78SpBase = $f78BaseUri }
+                        foreach ($f78Row in @(Get-F86AnchorLinks -Html ([string]$f78SpFetch.text) -BaseUri $f78SpBase -f78Host $f78Host)) { $f78CandidateUrls += [string]$f78Row.href }
+                        if ($f78SourceLabel -eq 'homepage') { $f78SourceLabel = 'search' }
+                        if ($f78Phase -ne 'sitemap-ok') { $f78Phase = 'hint-search' }
+                    }
+                }
+                # [F86 §C.2] Still thin -> the hint's catalog paths (anchors only).
+                if (-not $f78ResultMode -and $f78CandidateUrls.Count -lt 50) {
+                    foreach ($f78Cp in @(Get-F86HintList -Hint $f78Hint -Field 'catalogPaths' -Max 2)) {
+                        if ($f78CandidateUrls.Count -ge 2000) { break }
+                        $f78CpRel = Expand-F86HintPath -Template $f78Cp -Query $f78Query
+                        $f78CpUrl = ''
+                        try { $f78CpUrl = ([System.Uri]::new($f78BaseUri, $f78CpRel)).AbsoluteUri } catch { $f78CpUrl = $f78Src.baseUrl.TrimEnd('/') + $f78CpRel }
+                        $f78CpFetch = Invoke-F78SecureFetch -Url $f78CpUrl -ExpectedHost $f78Host -MaxBytes 2097152 -TimeoutSec 10
+                        if (-not $f78CpFetch.ok) { continue }
+                        $f78CpBase = $null
+                        try { $f78CpBase = [System.Uri]$f78CpUrl } catch { $f78CpBase = $f78BaseUri }
+                        foreach ($f78Row in @(Get-F86AnchorLinks -Html ([string]$f78CpFetch.text) -BaseUri $f78CpBase -f78Host $f78Host)) { $f78CandidateUrls += [string]$f78Row.href }
+                        if ($f78SourceLabel -eq 'homepage' -or $f78SourceLabel -eq 'search') { $f78SourceLabel = 'catalog' }
+                        if ($f78Phase -ne 'sitemap-ok') { $f78Phase = 'hint-catalog' }
+                    }
+                }
+                if ($f78CandidateUrls.Count -gt 0) {
+                    $f78RowSource = @()
+                    foreach ($f78Cu in @($f78CandidateUrls)) {
+                        $f78CUri = $null
+                        try { $f78CUri = [System.Uri]([string]$f78Cu) } catch { $f78CUri = $null }
+                        if (-not $f78CUri -or $f78CUri.Scheme -ne 'https') { continue }
+                        if (-not (Test-F78SameHost -Allowed $f78Host -Actual $f78CUri.Host)) { continue }
+                        $f78CuPath = ''
+                        try { $f78CuPath = [string]$f78CUri.AbsolutePath } catch { $f78CuPath = '' }
+                        $f78CuText = if ($f78CuPath.Length -gt 0) { $f78CuPath } else { [string]$f78CUri.AbsoluteUri }
+                        $f78RowSource += [ordered]@{ text = $f78CuText; href = ([string]$f78CUri.AbsoluteUri) }
+                    }
+                    $f78Merged = Merge-F86LinkRows -Rows $f78RowSource -f78Needle $f78Needle
+                    $f78LinksOut = @($f78Merged.links)
+                    $f78LinkCount = [int]$f78Merged.count
+                    $f78MatchCount = [int]$f78Merged.matches
+                    if (-not $f78SourceUrls) { $f78SourceUrls = $f78LinkCount }
+                }
+                # Zero rows (a missing/invalid sitemap, a result page, or a hint
+                # that answered nothing) -> fetch the page itself. In result-view
+                # mode this IS the primary fetch: $f78Src.baseUrl is the result's
+                # sourceUrl.
+                if ($f78LinksOut.Count -eq 0) {
+                    $f78Phase = 'homepage-fallback'
+                    $f78Fetch = Invoke-F78SecureFetch -Url ([string]$f78Src.baseUrl) -ExpectedHost $f78Host -MaxBytes 2097152 -TimeoutSec 10
+                    if (-not $f78Fetch.ok) {
+                        $f78ErrKey = 'lab.timeout'
+                        if ($f78Fetch.code -eq 'SIZE_LIMIT') { $f78ErrKey = 'lab.sizeLimit' }
+                        elseif ($f78Fetch.code -eq 'HOSTNAME_MISMATCH') { $f78ErrKey = 'lab.hostnameMismatch' }
+                        Send-ClientResponse -Stream $stream -Code ([int]$f78Fetch.httpStatus) -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code ([string]$f78Fetch.code) -MessageKey $f78ErrKey -RetryAfter 0))
+                        Write-ClientAudit ('f78 lab fetch failed id=' + $f78RateKey + ' code=' + [string]$f78Fetch.code)
+                        return
+                    }
+                    $f78Html = [string]$f78Fetch.text
+                    $f78AnchorRows = @(Get-F86AnchorLinks -Html $f78Html -BaseUri $f78BaseUri -f78Host $f78Host)
+                    # [F86 §C.3] A thin homepage (or any result page) gets ONE
+                    # level of "obvious index" links followed - browse / catalog /
+                    # all / index / archive / search, at most 3, same host only -
+                    # and their anchors are unioned in before the row cap applies.
+                    if ($f78AnchorRows.Count -lt 50) {
+                        $f78AnchorRows += @(Expand-F86IndexLinks -Html $f78Html -BaseUri $f78BaseUri -f78Host $f78Host)
+                    }
+                    $f78Merged = Merge-F86LinkRows -Rows $f78AnchorRows -f78Needle $f78Needle
+                    $f78LinksOut = @($f78Merged.links)
+                    $f78LinkCount = [int]$f78Merged.count
+                    $f78MatchCount = [int]$f78Merged.matches
+                    $f78SourceUrls = $f78LinkCount
+                    if ($f78ResultMode) { $f78SourceLabel = 'result-url' }
                 }
                 try {
                     $f78TitleMatch = [regex]::Match($f78Html, '(?is)<title[^>]*>(.*?)</title>')
@@ -4820,6 +5583,10 @@ function Invoke-ClientRequest {
                     wwwTolerance = $true
                     noFallback = $true
                     downloadToRdp = $true
+                    # [F86 §A] the three-tier launch ladder + GET /api/launch-url/diag
+                    # are in these bytes; tests/f86-launch-url-tier1.test.js
+                    # re-extracts the ladder symbols so the flag cannot outlive them.
+                    launchTiers = $true
                 }
             }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $objV)

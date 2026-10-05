@@ -242,3 +242,54 @@ export async function inspectSource(sourceId: string, query: string): Promise<La
     return offline("TIMEOUT", "lab.timeout");
   }
 }
+
+/**
+ * [F86 §B.2] Result-view inspection. The Lab opens on a RESULT id (not a stored
+ * site), so there is no sourceId to send: the result's own `sourceUrl` travels
+ * as the payload instead and the server inspects THAT page (same transport
+ * fences as /api/preview: https only, no userinfo, <=2048, 2MB cap, same-host
+ * hrefs only). The response shape is byte-identical to inspectSource()'s, which
+ * is exactly what lets both Lab surfaces render the same deep inspector.
+ */
+export async function inspectResultUrl(sourceUrl: string, query: string): Promise<LabResult<LabInspectResult>> {
+  const url = String(sourceUrl || "").trim();
+  if (!/^https:\/\//i.test(url) || url.length > 2048) return { ok: false, error: { code: "VALIDATION_ERROR", messageKey: "search.errors.validation" } };
+  try {
+    const r = await fetch(apiBase() + LAB_INSPECT_PATH, {
+      method: "POST",
+      cache: "no-store",
+      headers: { "Content-Type": "application/json", ...dashHeaders() },
+      body: JSON.stringify({ sourceUrl: url, query: String(query || "") }),
+    });
+    const body = (await r.json().catch(() => null)) as unknown;
+    if (!r.ok) {
+      const env = (body || {}) as { code?: string; messageKey?: string; retryAfterSeconds?: number };
+      return {
+        ok: false,
+        error: {
+          code: String(env.code || (r.status === 429 ? "RATE_LIMITED" : "INTERNAL_ERROR")),
+          messageKey: String(env.messageKey || (r.status === 429 ? "lab.rateLimited" : "search.errors.generic")),
+          retryAfterSeconds: typeof env.retryAfterSeconds === "number" ? env.retryAfterSeconds : r.status === 429 ? 60 : undefined,
+        },
+      };
+    }
+    const d = (body || {}) as Partial<LabInspectResult>;
+    const links = Array.isArray(d.links) ? d.links.filter((l) => l && typeof l.href === "string").map((l) => ({ text: String(l.text ?? ""), href: String(l.href), matches: Boolean(l.matches) })) : [];
+    return {
+      ok: true,
+      data: {
+        hostname: String(d.hostname ?? ""),
+        title: String(d.title ?? ""),
+        links,
+        fetchedAt: String(d.fetchedAt ?? ""),
+        linkCount: typeof d.linkCount === "number" ? d.linkCount : links.length,
+        matchCount: typeof d.matchCount === "number" ? d.matchCount : links.filter((l) => l.matches).length,
+        source: typeof d.source === "string" ? d.source : undefined,
+        sourceUrls: typeof d.sourceUrls === "number" ? d.sourceUrls : undefined,
+        adapterStatus: d.adapterStatus && typeof d.adapterStatus === "object" ? (d.adapterStatus as { phase: string; sourceLabel: string }) : undefined,
+      },
+    };
+  } catch {
+    return offline("TIMEOUT", "lab.timeout");
+  }
+}

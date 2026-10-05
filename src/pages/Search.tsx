@@ -23,7 +23,7 @@ import { AdapterStatusList } from "./search/AdapterStatusList";
 import { ResultsGrid } from "./search/ResultsGrid";
 import { PreviewDialog } from "./search/PreviewDialog";
 import { BottomProgressRail } from "./search/BottomProgressRail";
-import { F85DiagnosticBanner } from "@/components/search/F85DiagnosticBanner";
+import { F86DiagnosticBanner } from "@/components/search/F86DiagnosticBanner";
 import { DEV_FIXTURE_ROWS, DEV_FIXTURE_TICK_MS, isDevMode, shouldStreamDevFixture } from "./search/devFixture";
 
 const POLL_MS = 2000;
@@ -121,7 +121,7 @@ export default function Search() {
       {/* [F85 §3] ?diag=1-only diagnostic banner: "which F84 features are live
           in THIS bundle + THIS server". Renders nothing otherwise, so the
           normal surface (and every existing screenshot) is untouched. */}
-      <F85DiagnosticBanner />
+      <F86DiagnosticBanner />
       {/* §2: landing surface = title, the all-in-one bar, one sub-line and
           three quiet chips. NOTHING else (no chips, no sliders, no caps). */}
       <div id="f56.search.v2.landing" hidden={!landing} className={landing ? "flex flex-col items-center" : "hidden"}>

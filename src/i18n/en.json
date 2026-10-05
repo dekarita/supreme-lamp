@@ -790,7 +790,6 @@
       "openInLab": "Open in Lab",
       "backToResults": "Back to results",
       "title": "Lab Mode - Deep Inspector",
-      "comingSoon": "Full inspector coming in F75. Result metadata shown below.",
       "metadata": "Metadata",
       "sourceUrl": "Source URL",
       "adapter": "Adapter",
@@ -821,7 +820,9 @@
     "canonicalHost": "served as {{hostname}}",
     "diag": {
       "title": "F84 features active:",
-      "noServer": "server has no /api/version (older than F84)"
+      "noServer": "server has no /api/version (older than F84)",
+      "launchTier": "Launch tier: {{tier}}",
+      "lastLaunch": "Last launch: {{at}} {{result}}"
     },
     "deepInspect": "Deep-inspect \u201c{{query}}\u201d on {{hostname}}",
     "openInLabSite": "Open {{hostname}} in Lab",
@@ -1021,6 +1022,7 @@
 ,
   "lab": {
     "title": "Lab inspector",
+    "resultContext": "Inspecting {{title}} from {{adapter}}",
     "query": "Query",
     "matchCount": "{{matches}} of {{total}} links match \u201c{{query}}\u201d",
     "matchesFirst": "Matches first",
