@@ -953,7 +953,8 @@
     "hostnameMismatch": "ප්‍රතිචාරය ගබඩාගත් අඩවියට වෙනස් hostname එකකින් ලැබුණි.",
     "notFound": "මෙම ලැබ් ලිපිනයට ගබඩාගත් අඩවියක් නොමැත.",
     "loading": "ගබඩාගත් මුල් පිටුව ලබාගනිමින්…",
-    "source": "මූලාශ්‍රය: {{source}} (URL {{count}})"
+    "source": "මූලාශ්‍රය: {{source}} (URL {{count}})",
+      "sourceCrossDomain": "මූලාශ්‍රය: GitHub README ({{repo}}) — {{section}} කොටසේ අයිතම {{count}}"
   },
   "newSiteName": "නාමය",
   "newSiteUrl": "මූල යුආර්එල් (https)",
@@ -988,7 +989,37 @@
       "https": "HTTPS?",
       "sitemapUrls": "Sitemap URL",
       "launchTier": "දියත් කිරීමේ ස්ථරය",
-      "downloadDir": "බාගැනීම් ෆෝල්ඩරය"
+      "downloadDir": "බාගැනීම් ෆෝල්ඩරය",
+      "awesomeItems": "awesome.re අයිතම"
+    }
+  },
+  "viewingMode": {
+    "badge": {
+      "prefix": "දර්ශනය",
+      "webDesktop": "WEB DESKTOP",
+      "tailscaleLocal": "Tailscale local",
+      "unknown": "Unknown",
+      "unconfirmed": "(හඳුනා ගැනිණි - තහවුරු කිරීමට ඔබන්න)",
+      "urlParam": "?{{param}}=web-desktop සමඟ එකක් බලෙන් යොදන්න"
+    },
+    "help": {
+      "webDesktop": "සබැඳි RDP සැසියේම බ්‍රවුසරය තුළ විවෘත වේ.",
+      "tailscaleLocal": "විකල්ප බැලීමට බැජ් එක ඔබන්න; සබැඳි ඔබේම බ්‍රවුසරයේ විවෘත විය හැක.",
+      "unknown": "සබැඳිය කොහේ විවෘත වේදැයි සේවාදායක පඩිපෙළ තීරණය කරයි."
+    },
+    "hint": {
+      "body": "\u201cOpen in RDP\u201d සැබවින්ම RDP තුළ විවෘත කිරීමට, මෙම ඩෑෂ්බෝඩ් එක WEB DESKTOP හරහා බලන්න (Mission Control හි වම් පැති තීරුව).",
+      "learnMore": "තව දැනගන්න",
+      "dismiss": "හරි"
+    },
+    "choice": {
+      "title": "ඔබ Tailscale හරහා බලමින් සිටී",
+      "body": "මෙලෙස විවෘත කළ සබැඳි ඔබේම බ්‍රවුසරයේ, RDP තුළ නොව, විවෘත වේ. කුමක් කළ යුතුදැයි තෝරන්න:",
+      "copy": "URL එක පසුරු පුවරුවට පිටපත් කරන්න",
+      "copied": "පිටපත් විය",
+      "switch": "WEB DESKTOP වෙත මාරු වන්න",
+      "openAnyway": "ඕනෑම විටෙක මගේ බ්‍රවුසරයේ විවෘත කරන්න",
+      "dismiss": "අහක් කරන්න"
     }
   }
 }

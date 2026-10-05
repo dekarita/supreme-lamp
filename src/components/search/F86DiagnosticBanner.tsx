@@ -322,3 +322,109 @@ export function F86DiagnosticBanner() {
 }
 
 export default F86DiagnosticBanner;
+
+// ===========================================================================
+// [F90 §C.3] VIEWING-MODE BADGE - persistent, NOT gated behind ?diag=1.
+//
+// The F86 banner above is deliberately diag-only (it renders nothing unless
+// asked, so the normal surface and every existing screenshot stay byte-identical).
+// This badge is the opposite on purpose: "where will my link open?" is the one
+// fact the operator needs BEFORE clicking, so it is always on screen.
+//
+// It is also CLICKABLE. Detection is a heuristic (loopback is proof, a tailnet
+// host plus a session-shaped viewport is only a strong hint), so the operator's
+// explicit choice is stored and beats every signal on the next load. A badge
+// that lies about the mode is worse than no badge.
+// ===========================================================================
+import {
+  VIEWING_MODE_PARAM,
+  resolveViewingMode,
+  setViewingMode,
+  type ViewingMode,
+} from "@/lib/launchUrl";
+
+const MODE_META: Record<ViewingMode, { tone: string; labelKey: string; helpKey: string }> = {
+  "web-desktop": {
+    tone: "border-emerald-500/60 text-emerald-400",
+    labelKey: "viewingMode.badge.webDesktop",
+    helpKey: "viewingMode.help.webDesktop",
+  },
+  "tailscale-local": {
+    tone: "border-amber-500/60 text-amber-400",
+    labelKey: "viewingMode.badge.tailscaleLocal",
+    helpKey: "viewingMode.help.tailscaleLocal",
+  },
+  unknown: {
+    tone: "border-default text-secondary",
+    labelKey: "viewingMode.badge.unknown",
+    helpKey: "viewingMode.help.unknown",
+  },
+};
+
+export function F90ViewingModeBadge() {
+  const { t } = useTranslation();
+  const [state, setState] = useState(() => resolveViewingMode());
+  const [open, setOpen] = useState(false);
+  // The badge reports the mode the LAUNCH will act on (never the raw guess), so
+  // it can never promise an in-RDP open the code is not going to perform.
+  const mode = state.mode;
+  const unconfirmedWebDesktop = state.detected === "web-desktop" && !state.confirmed && mode === "unknown";
+  const meta = MODE_META[mode];
+
+  const choose = (next: ViewingMode) => {
+    setViewingMode(next);
+    setState({ mode: next, detected: state.detected, confirmed: true });
+    setOpen(false);
+  };
+
+  return (
+    <div className="fixed top-3 right-3 z-40 flex flex-col items-end gap-1">
+      <button
+        id="f90.viewingMode.badge"
+        data-testid="f90-viewing-mode-badge"
+        data-mode={mode}
+        type="button"
+        title={t(meta.helpKey)}
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+        className={
+          "h-7 px-2 rounded-md border bg-surface text-[11px] font-mono inline-flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " +
+          meta.tone
+        }
+      >
+        <span aria-hidden>{mode === "web-desktop" ? "✓" : mode === "tailscale-local" ? "!" : "?"}</span>
+        {t("viewingMode.badge.prefix")}: {t(meta.labelKey)}
+        {unconfirmedWebDesktop ? <span className="text-tertiary">{t("viewingMode.badge.unconfirmed")}</span> : null}
+      </button>
+
+      {open ? (
+        <div
+          data-testid="f90-viewing-mode-menu"
+          role="menu"
+          className="w-64 rounded-md border border-default bg-surface p-2 flex flex-col gap-1 text-xs shadow-lg"
+        >
+          <p className="text-tertiary px-1 pb-1">{t(meta.helpKey)}</p>
+          {(Object.keys(MODE_META) as ViewingMode[]).map((m) => (
+            <button
+              key={m}
+              type="button"
+              role="menuitem"
+              data-testid={"f90-viewing-mode-pick-" + m}
+              onClick={() => choose(m)}
+              className={
+                "h-8 px-2 rounded text-left hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " +
+                (m === mode ? "text-primary" : "text-secondary")
+              }
+            >
+              {m === mode ? "• " : ""}
+              {t(MODE_META[m].labelKey)}
+            </button>
+          ))}
+          <p className="text-tertiary px-1 pt-1 border-t border-default">
+            {t("viewingMode.badge.urlParam", { param: VIEWING_MODE_PARAM })}
+          </p>
+        </div>
+      ) : null}
+    </div>
+  );
+}

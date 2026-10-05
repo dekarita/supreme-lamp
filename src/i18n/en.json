@@ -1047,7 +1047,8 @@
     "hostnameMismatch": "The response came from a different hostname than the stored site.",
     "notFound": "No stored site matches this Lab address.",
     "loading": "Fetching the stored homepage\u2026",
-    "source": "Source: {{source}} ({{count}} URLs)"
+    "source": "Source: {{source}} ({{count}} URLs)",
+      "sourceCrossDomain": "Source: GitHub README ({{repo}}) — {{count}} items in {{section}}"
   },
   "newSiteName": "Name",
   "newSiteUrl": "Base URL (https)",
@@ -1082,7 +1083,37 @@
       "https": "HTTPS?",
       "sitemapUrls": "Sitemap URLs",
       "launchTier": "Launch tier",
-      "downloadDir": "Download dir"
+      "downloadDir": "Download dir",
+      "awesomeItems": "awesome.re items"
+    }
+  },
+  "viewingMode": {
+    "badge": {
+      "prefix": "Viewing",
+      "webDesktop": "WEB DESKTOP",
+      "tailscaleLocal": "Tailscale local",
+      "unknown": "Unknown",
+      "unconfirmed": "(detected - click to confirm)",
+      "urlParam": "Force one with ?{{param}}=web-desktop"
+    },
+    "help": {
+      "webDesktop": "Links open inside the RDP session's own browser.",
+      "tailscaleLocal": "Click the badge to see options; links may open in your own browser.",
+      "unknown": "The server ladder decides where the link opens."
+    },
+    "hint": {
+      "body": "To make \u201cOpen in RDP\u201d actually open inside RDP, view this dashboard through WEB DESKTOP (left sidebar in Mission Control).",
+      "learnMore": "Learn more",
+      "dismiss": "Got it"
+    },
+    "choice": {
+      "title": "You are viewing via Tailscale",
+      "body": "Links opened this way land in your own browser, not inside RDP. Choose what to do:",
+      "copy": "Copy URL to clipboard",
+      "copied": "Copied",
+      "switch": "Switch to WEB DESKTOP",
+      "openAnyway": "Open anyway in my browser",
+      "dismiss": "Dismiss"
     }
   }
 }

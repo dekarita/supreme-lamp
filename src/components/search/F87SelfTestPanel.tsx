@@ -44,6 +44,13 @@ export interface SelfTestRow {
   pdfFound?: boolean;
   downloadDirOk?: boolean;
   downloadDir?: string;
+  /** [F90 §D] per-site search proof: strategy, whether it ran, item count. */
+  searchStrategy?: string;
+  searchOk?: boolean;
+  searchItems?: number;
+  /** [F90 §D] awesome.re's operator-visible column: items under the
+   *  Networking H2 of the resolved sindresorhus/awesome README. 0 = no proof. */
+  networkingItemCount?: number;
   errors?: string[];
 }
 
@@ -87,15 +94,21 @@ export async function runSelfTest(sites: readonly string[] = F87_SITES): Promise
 }
 
 /** A cell's pass/fail, read ONLY from server data (an absent field is a fail). */
-export function cellOk(row: SelfTestRow, col: "https" | "sitemapUrls" | "launchTier" | "downloadDir"): boolean {
+export function cellOk(row: SelfTestRow, col: "https" | "sitemapUrls" | "launchTier" | "downloadDir" | "awesomeItems"): boolean {
   if (col === "https") return row.probeOk === true;
   if (col === "sitemapUrls") return typeof row.sitemapUrls === "number" && row.sitemapUrls > 0;
   if (col === "launchTier") return row.launchOk === true && typeof row.launchTier === "number" && row.launchTier >= 1 && row.launchTier <= 3;
+  if (col === "awesomeItems") {
+    // Only awesome.re's markdown-section strategy is asked for this proof; the
+    // other ten sites are not judged on a column that does not apply to them.
+    if (row.site !== "awesome.re") return true;
+    return typeof row.networkingItemCount === "number" && row.networkingItemCount > 0;
+  }
   return row.downloadDirOk === true;
 }
 
 export function rowOk(row: SelfTestRow): boolean {
-  return cellOk(row, "https") && cellOk(row, "sitemapUrls") && cellOk(row, "launchTier") && cellOk(row, "downloadDir");
+  return cellOk(row, "https") && cellOk(row, "sitemapUrls") && cellOk(row, "launchTier") && cellOk(row, "downloadDir") && cellOk(row, "awesomeItems");
 }
 
 export function F87SelfTestPanel() {
@@ -189,6 +202,7 @@ export function F87SelfTestPanel() {
               <th className="py-1 pr-2">{t("selfTest.column.sitemapUrls")}</th>
               <th className="py-1 pr-2">{t("selfTest.column.launchTier")}</th>
               <th className="py-1 pr-2">{t("selfTest.column.downloadDir")}</th>
+              <th className="py-1 pr-2">{t("selfTest.column.awesomeItems")}</th>
             </tr>
           </thead>
           <tbody>
@@ -221,13 +235,27 @@ export function F87SelfTestPanel() {
                   <td className="py-1 pr-2" data-ok={cellOk(row, "downloadDir") ? "1" : "0"} title={cellOk(row, "downloadDir") ? row.downloadDir : err}>
                     <span className={cellOk(row, "downloadDir") ? "text-primary" : "text-danger"}>{mark(cellOk(row, "downloadDir"))}</span>
                   </td>
+                  <td
+                    className="py-1 pr-2"
+                    data-testid={"f87-selftest-awesome-" + row.site.replace(/[^a-z0-9]+/g, "-")}
+                    data-ok={cellOk(row, "awesomeItems") ? "1" : "0"}
+                    title={row.site === "awesome.re" ? row.searchStrategy || err : undefined}
+                  >
+                    {row.site === "awesome.re" ? (
+                      <span className={cellOk(row, "awesomeItems") ? "text-primary" : "text-danger"}>
+                        {cellOk(row, "awesomeItems") ? row.networkingItemCount : mark(false) + " " + (row.networkingItemCount ?? 0)}
+                      </span>
+                    ) : (
+                      <span className="text-tertiary" aria-hidden>—</span>
+                    )}
+                  </td>
                 </tr>
               );
             })}
             {rows.map((row) =>
               open === row.site && errText(row) ? (
                 <tr key={row.site + "#detail"} data-testid={"f87-selftest-detail-" + row.site.replace(/[^a-z0-9]+/g, "-")}>
-                  <td colSpan={5} className="py-1 pr-2 text-danger whitespace-pre-wrap">
+                  <td colSpan={6} className="py-1 pr-2 text-danger whitespace-pre-wrap">
                     {errText(row)}
                   </td>
                 </tr>

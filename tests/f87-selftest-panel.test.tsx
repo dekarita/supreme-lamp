@@ -21,7 +21,11 @@ function mount(entry: string) {
 
 const okRow = (site: string, over: Record<string, unknown> = {}) => ({
   site, probeOk: true, sitemapUrls: 1234, launchTier: 1, launchOk: true, launchDetail: "direct-spawn", downloadDirOk: true,
-  downloadDir: "C:\\Users\\runner\\Desktop\\RDP-Downloads", errors: [], ...over,
+  downloadDir: "C:\\Users\\runner\\Desktop\\RDP-Downloads", errors: [],
+  // [F90 §D] awesome.re's row carries the cross-domain README proof: the
+  // strategy that ran and how many items the Networking section resolved to.
+  ...(site === "awesome.re" ? { searchStrategy: "markdown-section", searchOk: true, searchItems: 12, networkingItemCount: 12 } : {}),
+  ...over,
 });
 
 function stubFetch(status: number, body: unknown) {

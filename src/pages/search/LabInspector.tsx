@@ -176,6 +176,28 @@ export function LabInspector(props: LabInspectorProps) {
             })}
           </span>
         ) : null}
+        {/* [F90 §B.2] markdown-section names the REAL source. awesome.re is a
+            redirect service: its content is the sindresorhus/awesome README on
+            raw.githubusercontent.com, so "Source: <host> README" would be a lie
+            and the cross-domain read used to be reported as a hostname error.
+            This line states the repo and the item count instead - and because
+            the strategy is the reason the read is cross-domain, it is never
+            rendered as a red "different hostname" failure. */}
+        {data && (data as any).sourceStrategy === "markdown-section" ? (
+          <span
+            id="f78.lab.sourceCrossDomain"
+            data-testid="lab-source-cross-domain"
+            data-repo={(data as any).sourceRepo || ""}
+            data-items={String((data as any).sourceItemCount ?? 0)}
+            className="ml-2 text-secondary"
+          >
+            {t("lab.sourceCrossDomain", {
+              repo: (data as any).sourceRepo || "unknown/repo",
+              count: (data as any).sourceItemCount ?? 0,
+              section: (data as any).sourceDisplay || "",
+            })}
+          </span>
+        ) : null}
       </p>
 
       {cooldown > 0 ? (

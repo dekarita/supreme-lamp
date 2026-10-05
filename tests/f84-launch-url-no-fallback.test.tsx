@@ -1,11 +1,20 @@
 // [F84 §2.3] The launchUrl() contract must NEVER fall back to window.open:
 // a failure returns {ok:false, reason} so the caller can toast it, and no new
 // browser tab is ever opened by the dashboard.
+//
+// [F90 §C.2] These three cases exercise the SERVER LADDER (Mode C, "unknown"),
+// so the mode is pinned explicitly. In jsdom the hostname is `localhost`, which
+// F90 correctly reads as Mode A (the dashboard IS the session's browser) - and
+// in Mode A a successful window.open is the intended behaviour, not a fallback.
+// The F84 guard that still has to hold in every mode is pinned structurally in
+// tests/f85-f84-symbols.test.js: no window.open may appear after the ladder
+// call, and the tailscale-local branch may not open a window at all.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { launchUrl } from "@/lib/launchUrl";
+import { launchUrl, VIEWING_MODE_STORAGE_KEY, type ViewingMode } from "@/lib/launchUrl";
 
 beforeEach(() => {
   vi.restoreAllMocks();
+  window.localStorage.setItem(VIEWING_MODE_STORAGE_KEY, "unknown" satisfies ViewingMode);
 });
 
 describe("F84 launchUrl (no silent fallback)", () => {
@@ -30,7 +39,7 @@ describe("F84 launchUrl (no silent fallback)", () => {
       vi.fn(() => Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({ code: "NO_ACTIVE_SESSION" }) } as unknown as Response)),
     );
     const out = await launchUrl("https://openculture.com/a");
-    expect(out).toEqual({ ok: false, reason: "search.launchUrl.noSession", code: "NO_ACTIVE_SESSION" });
+    expect(out).toEqual({ ok: false, reason: "search.launchUrl.noSession", code: "NO_ACTIVE_SESSION", mode: "unknown" });
     expect(open).not.toHaveBeenCalled();
   });
 

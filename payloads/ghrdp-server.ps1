@@ -3594,17 +3594,76 @@ function Invoke-ClientRequest {
                 if (-not $a -or -not $b) { return $false }
                 return $a -eq $b
             }
+            # =====================================================================
+            # [F90 §B.1] CROSS-DOMAIN READ, NARROWED TO ONE LITERAL HOST.
+            #
+            # Why: the awesome.re operator site IS a redirect service - its
+            # content is the sindresorhus/awesome README, which lives on
+            # raw.githubusercontent.com. The markdown-section search strategy
+            # therefore has to fetch OFF the operator's host, and the F78 fence
+            # (exact-host-minus-www) correctly refused it: awesome.re searches
+            # came back HOSTNAME_MISMATCH and the Lab fell back to a sitemap the
+            # site does not really have.
+            #
+            # What ships now, and what it still CANNOT do:
+            #   * the widening is a LITERAL host, never a pattern, never a
+            #     suffix/wildcard match: raw.githubusercontent.com exactly;
+            #   * it applies ONLY to a fetch that opts in per-call
+            #     (-AllowCrossDomain), and only the markdown-section strategy
+            #     opts in;
+            #   * every redirect hop is re-checked, so the only off-site host
+            #     reachable on such a fetch is that one literal - no
+            #     github.com, no gist.github.com, no objects.githubusercontent;
+            #   * Register-F88CrossDomainHost records what one SUCCESSFUL
+            #     markdown-section fetch actually resolved to, scoped to the
+            #     operator source's own hostname, so a LATER /api/lab/inspect
+            #     on that same source accepts those hosts too. It is
+            #     proof-gated (registered only after ok=$true) and per-source:
+            #     it can never widen the fence for another site.
+            # =====================================================================
+            $script:F78CrossDomainHost = 'raw.githubusercontent.com'
+            $script:F88CrossDomainHosts = @{}
+            function Test-F78AllowedHost {
+                param([string]$ExpectedHost, [string]$ActualHost, [bool]$AllowCrossDomain)
+                $f78A = ([string]$ActualHost).Trim().ToLowerInvariant()
+                if (-not $f78A) { return $false }
+                if ($AllowCrossDomain -and $f78A -eq $script:F78CrossDomainHost) { return $true }
+                $f78Key = ([string]$ExpectedHost).Trim().ToLowerInvariant() -replace '^www\.', ''
+                if ($f78Key -and $script:F88CrossDomainHosts.ContainsKey($f78Key)) {
+                    foreach ($f78H in @($script:F88CrossDomainHosts[$f78Key])) {
+                        if ($f78A -eq ([string]$f78H)) { return $true }
+                    }
+                }
+                return $false
+            }
+            function Register-F88CrossDomainHost {
+                param([string]$ForHost, [string[]]$Hosts)
+                $f78Key = ([string]$ForHost).Trim().ToLowerInvariant() -replace '^www\.', ''
+                if (-not $f78Key) { return }
+                if (-not $script:F88CrossDomainHosts.ContainsKey($f78Key)) { $script:F88CrossDomainHosts[$f78Key] = New-Object System.Collections.ArrayList }
+                foreach ($f78H in @($Hosts)) {
+                    $f78N = ([string]$f78H).Trim().ToLowerInvariant() -replace '^www\.', ''
+                    if (-not $f78N) { continue }
+                    if ($script:F88CrossDomainHosts[$f78Key] -notcontains $f78N) { [void]$script:F88CrossDomainHosts[$f78Key].Add($f78N) }
+                }
+            }
             # The hardened fetch: https only, same-host (www-tolerant), 10s, 2MB,
             # no cookies / no auth headers, same-host redirects only (max 3 hops).
             function Invoke-F78SecureFetch {
-                param([string]$Url, [string]$ExpectedHost, [int]$MaxBytes, [int]$TimeoutSec)
+                param([string]$Url, [string]$ExpectedHost, [int]$MaxBytes, [int]$TimeoutSec, [switch]$AllowCrossDomain)
                 try { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor [System.Net.SecurityProtocolType]::Tls12 } catch { }
                 $f78Cur = $Url
                 for ($f78Hop = 0; $f78Hop -lt 3; $f78Hop++) {
                     $f78Uri = $null
                     try { $f78Uri = [System.Uri]$f78Cur } catch { $f78Uri = $null }
                     if (-not $f78Uri -or $f78Uri.Scheme -ne 'https' -or $f78Uri.UserInfo) { return @{ ok = $false; code = 'VALIDATION_ERROR'; httpStatus = 400 } }
-                    if (-not (Test-F78SameHost -Allowed $ExpectedHost -Actual $f78Uri.Host)) { return @{ ok = $false; code = 'HOSTNAME_MISMATCH'; httpStatus = 403 } }
+                    # [F90 §B.1] exact-host-minus-www stays the rule; the one
+                    # literal cross-domain host is allowed ONLY for this fetch
+                    # (-AllowCrossDomain) or for hosts this source already
+                    # PROVED it resolves to. Re-checked on every redirect hop.
+                    $f78HostOk = Test-F78SameHost -Allowed $ExpectedHost -Actual $f78Uri.Host
+                    if (-not $f78HostOk) { $f78HostOk = Test-F78AllowedHost -ExpectedHost $ExpectedHost -ActualHost $f78Uri.Host -AllowCrossDomain ([bool]$AllowCrossDomain) }
+                    if (-not $f78HostOk) { return @{ ok = $false; code = 'HOSTNAME_MISMATCH'; httpStatus = 403 } }
                     $f78Req = $null
                     $f78Resp = $null
                     try {
@@ -3765,7 +3824,7 @@ function Invoke-ClientRequest {
             # in the inspect route).
             function Invoke-F88SiteSearch {
                 param([string]$HostName, [string]$Query, [string]$BaseUrl)
-                $f88Out = [ordered]@{ ok = $false; strategy = ''; label = ''; section = ''; rows = @(); error = '' }
+                $f88Out = [ordered]@{ ok = $false; strategy = ''; label = ''; section = ''; rows = @(); itemCount = 0; repo = ''; error = '' }
                 $f88Hint = Get-F86SiteHint -HostName $HostName
                 if (-not $f88Hint) { $f88Out.error = 'no-hint'; return $f88Out }
                 $f88Strategy = ''
@@ -3773,6 +3832,12 @@ function Invoke-ClientRequest {
                 if (-not $f88Strategy) { $f88Out.error = 'no-strategy'; return $f88Out }
                 if (-not $Query) { $f88Out.error = 'no-query'; return $f88Out }
                 $f88Out.strategy = $f88Strategy
+                # [F90 §B.2/§D] the README's owning repo ("sindresorhus/awesome"
+                # for awesome.re), taken from the hint's declared redirectTo so
+                # the Lab can name the source the operator actually sees.
+                $f88Repo = ''
+                try { $f88Repo = ([System.Uri]([string]$f88Hint.redirectTo)).AbsolutePath.Trim('/') } catch { $f88Repo = '' }
+                if ($f88Repo) { $f88Out.repo = $f88Repo }
                 $f88Rows = @()
                 # [F88 §1.2] form-style encoding (%20 -> +) so the rendered link
                 # matches the operator's expected URL literally
@@ -3843,8 +3908,20 @@ function Invoke-ClientRequest {
                         if (-not $f88ReadmeUrl.StartsWith('https://')) { $f88Out.error = 'readme-not-https'; return $f88Out }
                         $f88RmHost = ''
                         try { $f88RmHost = ([System.Uri]$f88ReadmeUrl).Host } catch { $f88Out.error = 'readme-url'; return $f88Out }
-                        $f88Fetch = Invoke-F78SecureFetch -Url $f88ReadmeUrl -ExpectedHost $f88RmHost -MaxBytes 2097152 -TimeoutSec 10
+                        # [F90 §B.1] the ONE cross-domain read in the product:
+                        # the README lives on raw.githubusercontent.com while the
+                        # operator site is awesome.re, so this fetch opts in.
+                        $f88Fetch = Invoke-F78SecureFetch -Url $f88ReadmeUrl -ExpectedHost $f88RmHost -MaxBytes 2097152 -TimeoutSec 10 -AllowCrossDomain
                         if (-not $f88Fetch.ok) { $f88Out.error = ('readme-fetch:' + [string]$f88Fetch.code); return $f88Out }
+                        # [F90 §B.1] remember BOTH hosts for later calls on this
+                        # source: the README host that answered AND the hint's
+                        # declared redirectTo host (github.com for awesome.re),
+                        # so a subsequent /api/lab/inspect on the same
+                        # operator-added source is not blocked by the fence it
+                        # just proved. Scoped to $HostName - never global.
+                        $f88RedirectHost = ''
+                        try { $f88RedirectHost = ([System.Uri]([string]$f88Hint.redirectTo)).Host } catch { $f88RedirectHost = '' }
+                        Register-F88CrossDomainHost -ForHost $HostName -Hosts @([string]$f88Fetch.host, $f88RedirectHost)
                         $f88SecRe = ([string]$f88Hint.sectionMatcher).Replace('{{q}}', [regex]::Escape($Query))
                         $f88SecMatch = [regex]::Match([string]$f88Fetch.text, '(?im)' + $f88SecRe)
                         if (-not $f88SecMatch.Success) { $f88Out.error = 'section-not-found'; return $f88Out }
@@ -3868,6 +3945,10 @@ function Invoke-ClientRequest {
                             if (-not $f88SubHref.StartsWith('https://')) { continue }
                             $f88Rows += [ordered]@{ text = $f88SubTitle; href = $f88SubHref; snippet = '' }
                         }
+                        # [F90 §D] row 0 is the section link itself, not an item,
+                        # so the item count is rows-1. The self-test reads this
+                        # as networkingItemCount.
+                        $f88Out.itemCount = [Math]::Max(0, $f88Rows.Count - 1)
                         $f88Out.label = 'GitHub README section - ' + $f88SectionName
                     }
                     elseif ($f88Strategy -eq 'html') {
@@ -4937,7 +5018,7 @@ function Invoke-ClientRequest {
                 $f87DestDir = Join-Path $env:USERPROFILE 'Desktop\RDP-Downloads'
                 $f87Results = @()
                 foreach ($f87Site in $f87Sites) {
-                    $f87Row = [ordered]@{ site = $f87Site; probeOk = $false; sitemapUrls = 0; sitemapMode = ''; launchTier = 0; launchOk = $false; launchDetail = ''; pdfFound = $false; downloadDirOk = $false; downloadDir = $f87DestDir; downloadOk = $false; downloadPath = ''; downloadBytes = 0; errors = @() }
+                    $f87Row = [ordered]@{ site = $f87Site; probeOk = $false; sitemapUrls = 0; sitemapMode = ''; launchTier = 0; launchOk = $false; launchDetail = ''; pdfFound = $false; downloadDirOk = $false; downloadDir = $f87DestDir; downloadOk = $false; downloadPath = ''; downloadBytes = 0; searchStrategy = ''; searchOk = $false; searchItems = 0; networkingItemCount = 0; errors = @() }
                     $f87Home = 'https://' + $f87Site + '/'
                     # 1. HEAD probe (the secure fetch follows same-host redirects only,
                     #    so a www.<site> canonical still counts as reachable).
@@ -4962,6 +5043,33 @@ function Invoke-ClientRequest {
                     } catch { $f87Row.errors += ('sitemap: ' + $_.Exception.Message) }
                     $f87Row.sitemapUrls = [int]$f87Urls.Count
                     if ($f87Urls.Count -eq 0) { $f87Row.errors += 'sitemap: no URLs found' }
+                    # [F90 §D] The per-site SEARCH proof. awesome.re is the site
+                    # that proves the F90 cross-domain fix: it has no real
+                    # sitemap of its own, its content is the sindresorhus/awesome
+                    # README on raw.githubusercontent.com, and its hint is the
+                    # markdown-section strategy. Running the real strategy here
+                    # (not a sitemap proxy) is the only thing that can show
+                    # "the README fetched AND the Networking section has N items".
+                    try {
+                        $f87Hint = Get-F86SiteHint -HostName $f87Site
+                        if ($f87Hint) {
+                            $f87Row.searchStrategy = [string]$f87Hint.searchStrategy
+                            $f87ProbeQuery = 'networking'
+                            $f87Search = Invoke-F88SiteSearch -HostName $f87Site -Query $f87ProbeQuery -BaseUrl $f87Home
+                            if ($f87Search -and $f87Search.ok) {
+                                $f87Row.searchOk = $true
+                                $f87Row.searchItems = [int]$f87Search.itemCount
+                            } else {
+                                $f87Row.errors += ('search: ' + $(if ($f87Search) { [string]$f87Search.error } else { 'no-result' }))
+                            }
+                        }
+                    } catch { $f87Row.errors += ('search: ' + $_.Exception.Message) }
+                    if ($f87Site -eq 'awesome.re') {
+                        # The operator-visible proof column: items under the
+                        # Networking H2 of the resolved README.
+                        $f87Row.networkingItemCount = [int]$f87Row.searchItems
+                        if ($f87Row.networkingItemCount -le 0) { $f87Row.errors += 'awesome.re: no Networking items resolved' }
+                    }
                     # 3. The real launch ladder on the homepage.
                     try {
                         $f87Launch = Invoke-F86LaunchUrl -Url $f87Home
@@ -5091,7 +5199,14 @@ function Invoke-ClientRequest {
                     return
                 }
                 $f78Host = [string]$f78Src.hostname
-                if (-not $f78Host -or -not $script:F78AllowHosts.ContainsKey($f78Host)) {
+                # [F90 §B.1] same fence as before, plus the hosts THIS source
+                # already proved it resolves to (registered only after a
+                # successful cross-domain markdown-section fetch). Scoped to the
+                # source's own hostname, so it never widens another site.
+                $f78HostAllowed = $false
+                if ($f78Host -and $script:F78AllowHosts.ContainsKey($f78Host)) { $f78HostAllowed = $true }
+                if (-not $f78HostAllowed -and $f78Host -and $script:F88CrossDomainHosts.ContainsKey($f78Host.ToLowerInvariant())) { $f78HostAllowed = $true }
+                if (-not $f78HostAllowed) {
                     Send-ClientResponse -Stream $stream -Code 403 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'HOSTNAME_MISMATCH' -MessageKey 'lab.hostnameMismatch' -RetryAfter 0))
                     return
                 }
@@ -5486,6 +5601,8 @@ function Invoke-ClientRequest {
                     sourceUrls = $f78SourceUrls
                     sourceDisplay = $f88Display
                     sourceStrategy = $f88StrategyOut
+                    sourceRepo = $(if ($f88Search) { [string]$f88Search.repo } else { '' })
+                    sourceItemCount = $(if ($f88Search) { [int]$f88Search.itemCount } else { 0 })
                     tookMs = [int]$f88Sw.ElapsedMilliseconds
                     sourceSets = @($f88SourceSets)
                     adapterStatus = [ordered]@{ phase = $f78Phase; sourceLabel = $f78SourceLabel }

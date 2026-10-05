@@ -23,11 +23,80 @@ import { AdapterStatusList } from "./search/AdapterStatusList";
 import { ResultsGrid } from "./search/ResultsGrid";
 import { PreviewDialog } from "./search/PreviewDialog";
 import { BottomProgressRail } from "./search/BottomProgressRail";
-import { F86DiagnosticBanner } from "@/components/search/F86DiagnosticBanner";
+import { F86DiagnosticBanner, F90ViewingModeBadge } from "@/components/search/F86DiagnosticBanner";
 import { F87SelfTestPanel } from "@/components/search/F87SelfTestPanel";
+import { F90LaunchChoiceModal } from "@/components/search/F90LaunchChoiceModal";
+import { resolveViewingMode } from "@/lib/launchUrl";
 import { DEV_FIXTURE_ROWS, DEV_FIXTURE_TICK_MS, isDevMode, shouldStreamDevFixture } from "./search/devFixture";
 
 const POLL_MS = 2000;
+
+// [F90 §C.4] The one-time "you are watching through Tailscale" hint.
+//
+// WHY: every "Open in RDP" button is a promise about WHICH browser opens the
+// link. Viewed over Tailscale that promise can only be kept by the server's
+// ladder, and when the ladder cannot reach a desktop the operator sees a modal
+// instead. Neither is obvious the first time, so the hint is shown once and the
+// dismissal is remembered - it is not a nag and it is not a blocker.
+const F90_HINT_SEEN_KEY = "f90.hintSeen";
+
+function F90TailscaleHint() {
+  const { t } = useTranslation();
+  const [mode, setMode] = useState<"tailscale-local" | null>(null);
+
+  useEffect(() => {
+    let seen = false;
+    try {
+      seen = window.localStorage.getItem(F90_HINT_SEEN_KEY) === "1";
+    } catch {
+      seen = false;
+    }
+    const { mode } = resolveViewingMode();
+    setMode(seen ? null : mode === "tailscale-local" ? mode : null);
+  }, []);
+
+  if (mode !== "tailscale-local") return null;
+
+  const dismiss = () => {
+    try {
+      window.localStorage.setItem(F90_HINT_SEEN_KEY, "1");
+    } catch {
+      /* a denied storage area simply means the hint returns next visit */
+    }
+    setMode(null);
+  };
+
+  return (
+    <div
+      id="f90.tailscaleHint"
+      data-testid="f90-tailscale-hint"
+      role="status"
+      className="rounded-md border border-amber-500/50 bg-amber-500/10 p-3 flex items-start gap-3 text-xs"
+    >
+      <span aria-hidden className="text-sm leading-none">💡</span>
+      <p className="flex-1 text-secondary">
+        {t("viewingMode.hint.body")}{" "}
+        <a
+          href="https://github.com/dekarita/supreme-lamp/blob/main/PROJECT-CONTEXT-v2-CANONICAL.md"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline text-primary"
+        >
+          {t("viewingMode.hint.learnMore")}
+        </a>
+      </p>
+      <button
+        id="f90.tailscaleHint.dismiss"
+        data-testid="f90-tailscale-hint-dismiss"
+        type="button"
+        onClick={dismiss}
+        className="h-7 px-2 rounded border border-default text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+      >
+        {t("viewingMode.hint.dismiss")}
+      </button>
+    </div>
+  );
+}
 
 export default function Search() {
   const { t } = useTranslation();
@@ -118,6 +187,11 @@ export default function Search() {
   const landing = view === "landing";
 
   return (
+    <>
+    {/* [F90 §C.3] persistent viewing-mode badge: always visible, never diag-gated. */}
+    <F90ViewingModeBadge />
+    {/* [F90 §C.2] the explicit "where should this link open?" modal. */}
+    <F90LaunchChoiceModal />
     <div id="f56.search.view" data-testid="search-page" data-view={view} className="mx-auto w-full max-w-[760px] flex flex-col gap-6">
       {/* [F85 §3] ?diag=1-only diagnostic banner: "which F84 features are live
           in THIS bundle + THIS server". Renders nothing otherwise, so the
@@ -125,6 +199,8 @@ export default function Search() {
       <F86DiagnosticBanner />
       {/* [F87 §C.2] ?selftest=1-only eleven-site production proof. */}
       <F87SelfTestPanel />
+      {/* [F90 §C.4] one-time "view through WEB DESKTOP" hint (tailscale only). */}
+      <F90TailscaleHint />
       {/* §2: landing surface = title, the all-in-one bar, one sub-line and
           three quiet chips. NOTHING else (no chips, no sliders, no caps). */}
       <div id="f56.search.v2.landing" hidden={!landing} className={landing ? "flex flex-col items-center" : "hidden"}>
@@ -292,5 +368,6 @@ export default function Search() {
       ) : null}
       <OwnCredentialModal />
     </div>
+    </>
   );
 }

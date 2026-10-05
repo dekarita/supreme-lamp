@@ -61,7 +61,33 @@ test("F85-5: launchUrl() has no window.open fallback, and main.tsx installs the 
   // Comments may NAME the removed API (the F84 rationale does); the CODE must
   // not call it, so strip every //-comment line before the check.
   const launchCode = LAUNCH.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
-  assert.ok(!/window\.open/.test(launchCode), "window.open came back into src/lib/launchUrl.ts");
+
+  // [F90 §C.2] Mode A calls window.open on purpose: when the dashboard IS the
+  // RDP session's browser, that call lands in the session, and it is the one
+  // path that cannot be broken by a server that cannot reach a desktop.
+  //
+  // The F85 invariant was never "never call window.open" - it was "never let a
+  // FAILED server call silently open the link in the operator's local browser,
+  // which looks like success". So the flat grep is replaced by a structural
+  // assertion that is STRICTER than the one it replaces:
+  const calls = launchCode.match(/window\.open\(/g) || [];
+  assert.strictEqual(calls.length, 1, "launchUrl.ts must have exactly one window.open call site (Mode A only)");
+
+  const serverCall = launchCode.indexOf("await launchUrlViaServer(url)");
+  assert.ok(serverCall > 0, "the server ladder call is missing");
+  const before = launchCode.slice(0, serverCall);
+  const after = launchCode.slice(serverCall);
+  assert.ok(/window\.open\(/.test(before), "Mode A's window.open must run BEFORE the server call");
+  // <- the actual F84/F85 guard: no window.open anywhere after the ladder.
+  assert.ok(!/window\.open/.test(after), "window.open came back AFTER the server call - that is the silent fallback");
+
+  const modeA = before.slice(before.indexOf('if (mode === "web-desktop") {'));
+  assert.ok(/window\.open\(/.test(modeA), "Mode A's window.open is not inside its mode guard");
+  assert.ok(/if \(win\) return/.test(modeA), "a blocked popup must fall through to the ladder, not report success");
+
+  const modeB = after.slice(after.indexOf('mode === "tailscale-local"'));
+  assert.ok(!/window\.open/.test(modeB), "tailscale-local must never open a window - it asks the operator instead");
+
   assert.match(LAUNCH, /export function installLaunchUrlHandle/, "the feature-detection installer is missing");
   assert.match(MAIN, /installLaunchUrlHandle\(\);/, "src/main.tsx does not install the handle");
 });
