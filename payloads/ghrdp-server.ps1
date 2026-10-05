@@ -406,6 +406,14 @@ $script:InstPath = Join-Path $Root 'ghrdp-install.ps1'
 # else under /dl (including every other file in $Root) is a 404.
 $script:DlNames = @('ghrdp-handler-kit.zip', 'install.cmd', 'ghrdp-rdp-launcher.cs')
 $script:OkFile = Join-Path $Root 'server-ok.txt'
+# [F96 §2.1] SERVER-SIDE TRUTH about the browser socket lane. /health hardcodes
+# `ws = $false` and NO route in this file answers /ws (there is no RFC6455
+# upgrade path anywhere), so every browser `new WebSocket('/ws')` closes at the
+# handshake. The F95/R4 client work (token in the URL + hello frame + explicit
+# wsDead state) is correct but cannot make a connection that the server has no
+# code to accept. Reported verbatim in /api/diag/comprehensive so a red WS chip
+# is attributed to the right side; asserted by tests/f96-diagnostic-bundle.test.js.
+$script:F96WsUpgradeSupported = $false
 $script:FlushFlag = Join-Path $Root 'flush.flag'
 # [F28 §1] Server start clock + the logon-result state file. The 30s scan tick
 # runs in THIS process from start (see the listener loop), so the logon verdict
@@ -7178,6 +7186,451 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $ns)
             return
         }
+
+        # =====================================================================
+        # [F96 §2.1] GET /api/diag/comprehensive - THE ONE-PASTE BUNDLE.
+        #
+        # WHY THIS EXISTS: F93-F95 were each diagnosed from a screenshot, because
+        # the operator cannot paste code, run a debugger, or open the runner's
+        # logs. Every residual symptom ("No user logged into RDP yet", "ws:
+        # idle", "Something went wrong") is a subsystem the server ALREADY holds
+        # evidence for, scattered across state files and live probes. This route
+        # collects that evidence into ONE JSON document so the operator clicks
+        # Download on Overview and pastes the file whole.
+        #
+        # LIVE probes (scheduled task, registry AutoAdminLogon, process table,
+        # Win32_LogonSession, host/OS/PS versions, a bounded Security-log scan)
+        # versus COPIED state (rdp-logon.json = the F28 scanner's verdict,
+        # watcher-supervisor.json = the F95 verdict + F96 attempt counters,
+        # progress.json = the watcher heartbeat, and the F92 selftest MEMO for
+        # per-site search reachability - reused ON PURPOSE, because a fresh
+        # 11-site fanout inside a diagnostic route would be the very stampede
+        # F93 §3.2 removed).
+        #
+        # HONESTY RULES (the house style of this file):
+        #   * every block has its own try/catch, so one dead probe degrades into
+        #     a named error inside its own key instead of a 500 for the bundle;
+        #   * anything the server never observed is null/[] - never a fabricated
+        #     green. Specifically stepsCompleted/stepsFailed stay EMPTY because
+        #     no bootstrap manifest is persisted anywhere; the three booleans
+        #     beside them are live probes and say so in `note`;
+        #   * no password, dash token, credential or query string is read into
+        #     the bundle. Usernames, hostnames and IP addresses only.
+        #
+        # CLIENT-MERGED KEYS: webSocket.status/lastConnect/lastDisconnect/
+        # disconnectReason/reconnectAttempts and viewingMode.detected/
+        # manualOverride describe the OPERATOR'S BROWSER, which the server
+        # cannot see. This route answers the server half (does the endpoint
+        # exist? is it advertised? does this build serve an upgrade at all?);
+        # the Overview download handler merges the live client state over it
+        # before the file is written, so the pasted bundle carries both halves.
+        #
+        # Rate limit: 10/minute. An operator clicking twice costs nothing; a
+        # stuck retry loop must never hammer WMI or the Security log.
+        # =====================================================================
+        if ($path -eq '/api/diag/comprehensive') {
+            if ($parts.method -ne 'GET') {
+                Send-ClientResponse -Stream $stream -Code 405 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ code = 'VALIDATION_ERROR'; messageKey = 'diag.methodNotAllowed' })
+                return
+            }
+            $f96Now = (Get-Date).ToUniversalTime()
+            if (-not $script:F96DiagHits) { $script:F96DiagHits = @() }
+            $f96Kept = @()
+            foreach ($h in @($script:F96DiagHits)) {
+                try { if ((($f96Now - $h).TotalSeconds) -lt 60) { $f96Kept += $h } } catch { }
+            }
+            $script:F96DiagHits = $f96Kept
+            if (@($script:F96DiagHits).Count -ge 10) {
+                Send-ClientResponse -Stream $stream -Code 429 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ code = 'RATE_LIMITED'; messageKey = 'diag.rateLimited'; retryAfterSeconds = 10 })
+                return
+            }
+            $script:F96DiagHits += $f96Now
+
+            $f96Advisory = New-Object System.Collections.ArrayList
+            function Add-F96Note([string]$Text) {
+                if ($Text) { [void]$f96Advisory.Add([string]$Text) }
+            }
+
+            # ---- version --------------------------------------------------
+            $f96Version = [ordered]@{ gitSha = ''; buildTime = ''; uiSha = ''; serverSha = '' }
+            try {
+                $f96Cfg = Read-JsonFile -Path $script:CfgPath
+                if ($f96Cfg -and $f96Cfg.PSObject.Properties['commit']) {
+                    $f96Version.gitSha = [string]$f96Cfg.commit
+                    $f96Version.serverSha = [string]$f96Cfg.commit
+                }
+            } catch { Add-F96Note 'version: config.json unreadable' }
+            try {
+                $f96SrvFile = Join-Path $Root 'ghrdp-server.ps1'
+                if (Test-Path -LiteralPath $f96SrvFile) { $f96Version.buildTime = (Get-Item -LiteralPath $f96SrvFile).LastWriteTimeUtc.ToString('o') }
+            } catch { }
+            try {
+                # uiSha is read from the file the browser ACTUALLY receives, not
+                # from a build log: the F38 "ghrdp-build" meta is stamped with
+                # VITE_BUILD_SHA at build time, so this is proof of the served
+                # bundle. v1 first only when v2 is absent (same selection rule
+                # as the / route).
+                $f96UiFile = $script:UiV2Path
+                if (-not (Test-Path -LiteralPath $f96UiFile)) { $f96UiFile = $script:UiPath }
+                if (Test-Path -LiteralPath $f96UiFile) {
+                    $f96Html = [System.IO.File]::ReadAllText($f96UiFile)
+                    $f96M = [regex]::Match($f96Html, 'name="ghrdp-build"\s+content="([^"]+)"')
+                    if ($f96M.Success) { $f96Version.uiSha = [string]$f96M.Groups[1].Value }
+                }
+            } catch { }
+
+            # ---- logon ----------------------------------------------------
+            # The verdict comes from the persisted F28 scanner (one writer, so
+            # the bundle can never disagree with the banner); the per-type raw
+            # counts come from a BOUNDED live re-scan, because the state file
+            # deliberately persists only count4624/count4625. If the re-scan is
+            # denied (SeSecurityPrivilege), the counts are null and the reason
+            # is named - never zeros that read as "no logons happened".
+            $f96Logon = [ordered]@{
+                detected       = $false
+                logonType      = $null
+                logonKind      = $null
+                lastEvent      = $null
+                rawEventCount  = [ordered]@{ type2 = $null; type10 = $null; type11 = $null; excluded = $null }
+                scannerStatus  = 'error'
+                scannerError   = $null
+                windowSec      = $script:F28WindowSec
+                scanTs         = $null
+            }
+            try {
+                $f96Lc = Get-RdpLogonCollectorState -StatePath $script:LogonStatePath -ServerStartedUtc $script:ServerStartedUtc
+                $f96Al = $f96Lc.authLast
+                if ($f96Al) {
+                    $f96Logon.detected = ($null -ne $f96Al.result -and [string]$f96Al.result -eq 'success')
+                    if ($f96Al.PSObject.Properties['logonType'] -and [string]$f96Al.logonType) { $f96Logon.logonType = [string]$f96Al.logonType }
+                    if ($f96Al.PSObject.Properties['logonKind'] -and [string]$f96Al.logonKind) { $f96Logon.logonKind = [string]$f96Al.logonKind }
+                    if ($f96Al.PSObject.Properties['scanTs']) { $f96Logon.scanTs = [string]$f96Al.scanTs }
+                    $f96Logon.scannerStatus = $(if ($f96Lc.logonCollector -and $f96Lc.logonCollector.alive) { 'ok' } else { 'error' })
+                    $f96Logon.scannerError = $(if ($f96Al.PSObject.Properties['probeError'] -and [string]$f96Al.probeError) { [string]$f96Al.probeError } else { $null })
+                    if (-not $f96Logon.scannerError -and $f96Lc.logonCollector -and [string]$f96Lc.logonCollector.probeError) { $f96Logon.scannerError = [string]$f96Lc.logonCollector.probeError }
+                    if ($f96Al.PSObject.Properties['eventTs'] -and [string]$f96Al.eventTs) {
+                        $f96Logon.lastEvent = [ordered]@{ time = [string]$f96Al.eventTs; user = $null; logonType = $f96Logon.logonType; ipAddress = $null }
+                    }
+                } else {
+                    Add-F96Note 'logon: no rdp-logon.json yet - the F28 scanner has not completed its first tick'
+                }
+            } catch { Add-F96Note ('logon: collector read failed - ' + $_.Exception.Message) }
+            $f96Type2 = $null; $f96Type10 = $null; $f96Type11 = $null; $f96Excluded = $null
+            $f96LiveUser = $null; $f96LiveIp = $null; $f96LiveTime = ''; $f96LiveType = ''
+            try {
+                $f96Since = $script:ServerStartedUtc.AddSeconds(-1 * $script:F28WindowSec)
+                $f96Evs = @(Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = @(4624); StartTime = $f96Since.ToLocalTime() } -MaxEvents 400 -ErrorAction Stop)
+                $f96Type2 = 0; $f96Type10 = 0; $f96Type11 = 0; $f96Excluded = 0
+                $f96BestTicks = -1
+                foreach ($f96Ev in $f96Evs) {
+                    $f96X = $null
+                    try { $f96X = [xml]$f96Ev.ToXml() } catch { continue }
+                    $f96Lt = ''; $f96Ip = ''; $f96Usr = ''; $f96When = ''
+                    try {
+                        foreach ($f96D in @($f96X.SelectNodes("//*[local-name()='Data']"))) {
+                            $f96N = [string]$f96D.GetAttribute('Name')
+                            if ($f96N -eq 'LogonType') { $f96Lt = ([string]$f96D.InnerText).Trim() }
+                            elseif ($f96N -eq 'IpAddress') { $f96Ip = ([string]$f96D.InnerText).Trim() }
+                            elseif ($f96N -eq 'TargetUserName') { $f96Usr = ([string]$f96D.InnerText).Trim() }
+                        }
+                    } catch { }
+                    try { $f96When = [string]$f96Ev.TimeCreated.ToUniversalTime().ToString('o') } catch { $f96When = '' }
+                    $f96Ticks = -1
+                    try { $f96Ticks = $f96Ev.TimeCreated.Ticks } catch { }
+                    if (Test-GhrdpInteractiveLogonType -LogonType $f96Lt) {
+                        if ($f96Lt -eq '2') { $f96Type2 = [int]$f96Type2 + 1 }
+                        elseif ($f96Lt -eq '10') { $f96Type10 = [int]$f96Type10 + 1 }
+                        elseif ($f96Lt -eq '11') { $f96Type11 = [int]$f96Type11 + 1 }
+                        if ($f96Ticks -gt $f96BestTicks) {
+                            $f96BestTicks = $f96Ticks
+                            $f96LiveTime = $f96When; $f96LiveType = $f96Lt; $f96LiveUser = $f96Usr; $f96LiveIp = $f96Ip
+                        }
+                    } else {
+                        $f96Excluded = [int]$f96Excluded + 1
+                    }
+                }
+                $f96Logon.rawEventCount = [ordered]@{ type2 = $f96Type2; type10 = $f96Type10; type11 = $f96Type11; excluded = $f96Excluded }
+                if ($f96LiveTime) {
+                    # The live event is richer than the persisted verdict (it
+                    # carries user + IP), so it wins when it exists; when the
+                    # live scan was denied, the persisted eventTs above stands
+                    # on its own with null user/IP rather than invented values.
+                    $f96Logon.lastEvent = [ordered]@{ time = $f96LiveTime; user = $f96LiveUser; logonType = $f96LiveType; ipAddress = $f96LiveIp }
+                }
+            } catch {
+                $f96Logon.rawEventCount = [ordered]@{ type2 = $null; type10 = $null; type11 = $null; excluded = $null; error = 'security-log-unreadable' }
+                Add-F96Note 'logon: live re-scan denied (SeSecurityPrivilege) - per-type counts are null, not zero'
+            }
+
+            # ---- watcher --------------------------------------------------
+            $f96Watcher = [ordered]@{
+                scheduledTaskExists      = $false
+                scheduledTaskState       = 'Unknown'
+                scheduledTaskLastResult  = $null
+                startupShortcutExists    = $false
+                startupShortcutPaths     = @()
+                watcherProcessRunning    = $false
+                watcherProcessPid        = $null
+                watcherProcessSource     = ''
+                watcherLastHeartbeat     = $null
+                watcherHeartbeatAgeSec   = $null
+                watcherAlive             = $false
+                supervisorAttempts       = [ordered]@{ taskStart = 0; schtasksRun = 0; directInvoke = 0 }
+                supervisorLastAction     = 'none'
+                supervisorAt             = $null
+                supervisorDetail         = ''
+            }
+            try {
+                $f96Task = Get-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction SilentlyContinue
+                if ($f96Task) {
+                    $f96Watcher.scheduledTaskExists = $true
+                    $f96Watcher.scheduledTaskState = [string]$f96Task.State
+                    try {
+                        $f96Info = Get-ScheduledTaskInfo -TaskName 'GhrdpWatcher' -ErrorAction SilentlyContinue
+                        if ($f96Info) { $f96Watcher.scheduledTaskLastResult = [int64]$f96Info.LastTaskResult }
+                    } catch { }
+                }
+            } catch { Add-F96Note ('watcher: scheduled-task probe failed - ' + $_.Exception.Message) }
+            try {
+                # The F95 workflow writes this for the RDP user's real profile;
+                # the watcher's own first-run setup writes the same name. Probe
+                # every profile so a wrong `$user` in the workflow is visible
+                # instead of silently absent.
+                foreach ($f96Prof in @(Get-ChildItem -LiteralPath 'C:\Users' -Directory -ErrorAction SilentlyContinue)) {
+                    $f96Lnk = Join-Path $f96Prof.FullName 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\GHRDP Watcher.lnk'
+                    if (Test-Path -LiteralPath $f96Lnk) {
+                        $f96Watcher.startupShortcutExists = $true
+                        $f96Watcher.startupShortcutPaths += $f96Lnk
+                    }
+                }
+            } catch { }
+            try {
+                $f96Procs = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe' OR Name='pwsh.exe'" -ErrorAction SilentlyContinue)
+                foreach ($f96P in $f96Procs) {
+                    $f96Cmd = ''
+                    try { $f96Cmd = [string]$f96P.CommandLine } catch { }
+                    if ($f96Cmd -and ($f96Cmd -like '*ghrdp-watcher.ps1*')) {
+                        $f96Watcher.watcherProcessRunning = $true
+                        $f96Watcher.watcherProcessPid = [int]$f96P.ProcessId
+                        $f96Watcher.watcherProcessSource = 'cmdline:ghrdp-watcher.ps1'
+                        break
+                    }
+                }
+            } catch { Add-F96Note 'watcher: process probe failed (CIM) - liveness falls back to the heartbeat below' }
+            try {
+                # The watcher's own heartbeat, the same signal the F95
+                # supervisor measures liveness from.
+                $f96Prog = Read-JsonFile -Path $script:ProgPath
+                if ($f96Prog -and $f96Prog.PSObject.Properties['ts']) {
+                    $f96Hb = [string]$f96Prog.ts
+                    $f96Watcher.watcherLastHeartbeat = $f96Hb
+                    try {
+                        $f96Age = [int]((Get-Date) - [datetime]$f96Hb).TotalSeconds
+                        $f96Watcher.watcherHeartbeatAgeSec = $f96Age
+                        $f96Watcher.watcherAlive = ($f96Age -le $script:F95SupStaleSec)
+                    } catch { $f96Watcher.watcherAlive = $false }
+                } else {
+                    Add-F96Note 'watcher: no progress.json heartbeat - the watcher has never written one'
+                }
+            } catch { }
+            try {
+                $f96Sup = Read-JsonFile -Path $script:F95SupStatePath
+                if ($f96Sup) {
+                    if ($f96Sup.PSObject.Properties['action']) { $f96Watcher.supervisorLastAction = [string]$f96Sup.action }
+                    if ($f96Sup.PSObject.Properties['at']) { $f96Watcher.supervisorAt = [string]$f96Sup.at }
+                    if ($f96Sup.PSObject.Properties['detail']) { $f96Watcher.supervisorDetail = [string]$f96Sup.detail }
+                    if ($f96Sup.PSObject.Properties['attempts']) {
+                        foreach ($f96K in @('taskStart', 'schtasksRun', 'directInvoke')) {
+                            if ($f96Sup.attempts.PSObject.Properties[$f96K]) { $f96Watcher.supervisorAttempts[$f96K] = [int]$f96Sup.attempts.$f96K }
+                        }
+                    }
+                } else {
+                    Add-F96Note 'watcher: no watcher-supervisor.json yet - the supervisor ticks every 60s from server start'
+                }
+            } catch { }
+
+            # ---- webSocket (server half; the client merge overwrites status) ----
+            $f96Ws = [ordered]@{
+                endpoint              = '/ws'
+                status                = 'unknown'
+                serverUpgradeSupported = $script:F96WsUpgradeSupported
+                advertisedByHealth    = $false
+                healthWsFlag          = $false
+                lastConnect           = $null
+                lastDisconnect        = $null
+                disconnectReason      = $null
+                reconnectAttempts     = 0
+                note                  = ''
+            }
+            if (-not $script:F96WsUpgradeSupported) {
+                $f96Ws.note = 'This server build has NO RFC6455 upgrade path: /health hardcodes ws=false and no route answers /ws, so every browser /ws attempt closes immediately. The F95/R4 client fix (token + hello frame + reconnect ladder) is correct but cannot succeed against this build. Either implement the upgrade lane or delete the client socket lane - see the F96 follow-up issue.'
+                Add-F96Note 'webSocket: server has no upgrade path - a red WS chip is CORRECT for this build, not a client bug'
+            }
+
+            # ---- viewingMode (server half; the client merge overwrites detected) ----
+            $f96View = [ordered]@{ detected = 'UNKNOWN'; manualOverride = $null; detectionReasoning = @() }
+            try {
+                $f96Host = ''
+                try { $f96Host = [string]$parts.headers['host'] } catch { $f96Host = '' }
+                $f96Reason = New-Object System.Collections.ArrayList
+                [void]$f96Reason.Add('server-side: the browser hostname, viewport and dpr that decide this mode are not visible to the server')
+                [void]$f96Reason.Add('client merge: the Overview download handler overwrites detected/manualOverride with resolveViewingMode() + readManualWebDesktop() before writing the file')
+                if ($f96Host) { [void]$f96Reason.Add('request Host header: ' + $f96Host + ' (a 100.64/10 address = Tailscale local; a *.ts.net name = the FQDN lane)') }
+                $f96View.detectionReasoning = @($f96Reason)
+            } catch { }
+
+            # ---- searchEndpoints ------------------------------------------
+            # From the F92 selftest MEMO. memoPresent=false is a real answer
+            # ("the selftest has not run since server start"), not a failure.
+            $f96Search = [ordered]@{ memoPresent = $false; memoAgeSec = $null; memoStatus = $null; perSiteStatus = [ordered]@{} }
+            try {
+                if ($script:F92SelftestCache -and $script:F92SelftestCache.Body) {
+                    $f96Search.memoPresent = $true
+                    try { $f96Search.memoAgeSec = [int]((Get-Date).ToUniversalTime() - $script:F92SelftestCacheAt).TotalSeconds } catch { }
+                    $f96Sb = [System.Text.Encoding]::UTF8.GetString([byte[]]$script:F92SelftestCache.Body) | ConvertFrom-Json
+                    if ($f96Sb.PSObject.Properties['status']) { $f96Search.memoStatus = [string]$f96Sb.status }
+                    if ($f96Sb.PSObject.Properties['checks']) {
+                        foreach ($f96P2 in @($f96Sb.checks.PSObject.Properties)) {
+                            $f96Name = [string]$f96P2.Name
+                            if (-not $f96Name.StartsWith('search:')) { continue }
+                            $f96Site = $f96Name.Substring(7)
+                            $f96Chk = @($f96P2.Value)[0]
+                            $f96Reach = $false
+                            $f96LastErr = $null
+                            $f96Bytes = $null
+                            if ($f96Chk) {
+                                $f96St = [string]$f96Chk.status
+                                $f96Reach = ($f96St -eq 'pass' -or $f96St -eq 'warn')
+                                if ($f96Chk.PSObject.Properties['observedValue']) { $f96Bytes = $f96Chk.observedValue }
+                                if ($f96Chk.PSObject.Properties['output'] -and [string]$f96Chk.output) { $f96LastErr = [string]$f96Chk.output }
+                                $f96Search.perSiteStatus[$f96Site] = [ordered]@{
+                                    reachable      = $f96Reach
+                                    httpStatus     = $null
+                                    results        = $f96Bytes
+                                    lastError      = $(if ($f96Reach) { $null } else { $f96LastErr })
+                                    lastSuccessUtc = $(if ($f96Reach) { [string]$f96Chk.time } else { $null })
+                                    checkStatus    = $f96St
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    Add-F96Note 'search: no F92 selftest memo yet - per-site status is empty until /api/f92-selftest runs once'
+                }
+            } catch { Add-F96Note ('search: memo parse failed - ' + $_.Exception.Message) }
+
+            # ---- mainYmlBootstrap ----------------------------------------
+            # No manifest is persisted by main.yml, so the two step arrays stay
+            # EMPTY (honest) and the three booleans are LIVE probes of the
+            # OUTCOME main.yml is supposed to produce. `note` says exactly that,
+            # so an empty array can never be misread as "nothing ran".
+            $f96Boot = [ordered]@{
+                stepsCompleted        = @()
+                stepsFailed           = @()
+                autologonConfigured   = $false
+                autologonUser         = $null
+                watcherTaskRegistered = $false
+                startupShortcutWritten = $false
+                note                  = 'main.yml persists no bootstrap manifest, so stepsCompleted/stepsFailed are empty by design; the three booleans are live outcome probes.'
+            }
+            try {
+                $f96Wk = Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon' -ErrorAction Stop
+                if ($f96Wk.AutoAdminLogon) { $f96Boot.autologonConfigured = ([string]$f96Wk.AutoAdminLogon -eq '1') }
+                if ($f96Wk.DefaultUserName) { $f96Boot.autologonUser = [string]$f96Wk.DefaultUserName }
+            } catch { Add-F96Note 'bootstrap: Winlogon registry unreadable - autologon state unknown' }
+            $f96Boot.watcherTaskRegistered = $f96Watcher.scheduledTaskExists
+            $f96Boot.startupShortcutWritten = $f96Watcher.startupShortcutExists
+            if ($f96Boot.autologonConfigured -and -not $f96Logon.detected) {
+                Add-F96Note 'bootstrap: AutoAdminLogon=1 but the F28 scanner has no accepted interactive logon yet - the autologon has not produced a type 2/10/11 4624 inside the window'
+            }
+
+            # ---- recent errors -------------------------------------------
+            $f96Errors = New-Object System.Collections.ArrayList
+            function Add-F96Err([string]$Level, [string]$Source, [string]$Message) {
+                $m = ([string]$Message).Trim()
+                if (-not $m) { return }
+                if ($m.Length -gt 500) { $m = $m.Substring(0, 500) }
+                [void]$f96Errors.Add([ordered]@{ timestamp = (Get-Date).ToUniversalTime().ToString('o'); level = $Level; source = $Source; message = $m })
+            }
+            if ($f96Watcher.supervisorLastAction -eq 'failed') { Add-F96Err 'error' 'watcher-supervisor' ('all three escalation routes failed: ' + $f96Watcher.supervisorDetail) }
+            if ($f96Logon.scannerError) { Add-F96Err 'error' 'logon-scanner' ([string]$f96Logon.scannerError) }
+            try {
+                $f96WdErr = Join-Path $Root 'webdesk\webdesk-error.txt'
+                if (Test-Path -LiteralPath $f96WdErr) {
+                    $f96WdTxt = ([System.IO.File]::ReadAllText($f96WdErr)).Trim()
+                    if ($f96WdTxt) { Add-F96Err 'error' 'webdesk-error.txt' $f96WdTxt }
+                }
+            } catch { }
+            foreach ($f96Log in @('launch-url.log', 'client-audit.log', 'rdp-token-audit.log')) {
+                try {
+                    $f96Lp = Join-Path $Root $f96Log
+                    if (-not (Test-Path -LiteralPath $f96Lp)) { continue }
+                    foreach ($f96Line in @(Get-Content -LiteralPath $f96Lp -Tail 20 -Encoding UTF8 -ErrorAction SilentlyContinue)) {
+                        if (-not ([string]$f96Line).Trim()) { continue }
+                        $f96Lvl = 'info'
+                        if (([string]$f96Line) -match '(?i)error|fail|threw|denied|timeout|refused') { $f96Lvl = 'error' }
+                        Add-F96Err $f96Lvl $f96Log ([string]$f96Line)
+                    }
+                } catch { }
+            }
+            $f96ErrOut = @()
+            if ($f96Errors.Count -gt 50) { $f96ErrOut = @($f96Errors[($f96Errors.Count - 50)..($f96Errors.Count - 1)]) } else { $f96ErrOut = @($f96Errors) }
+
+            # ---- runnerInfo ----------------------------------------------
+            $f96Runner = [ordered]@{
+                hostname          = ''
+                osVersion         = ''
+                uptime            = ''
+                uptimeSec         = 0
+                powershellVersion = ''
+                netVersion        = ''
+                activeUsers       = @()
+            }
+            try { $f96Runner.hostname = [string]$env:COMPUTERNAME } catch { }
+            try { $f96Runner.osVersion = [string][System.Environment]::OSVersion.VersionString } catch { }
+            try {
+                $f96Up = [int64]([System.Environment]::TickCount64 / 1000)
+                $f96Runner.uptimeSec = $f96Up
+                $ts = [TimeSpan]::FromSeconds($f96Up)
+                $f96Runner.uptime = ([int]$ts.TotalDays).ToString() + 'd ' + $ts.Hours.ToString() + 'h ' + $ts.Minutes.ToString() + 'm'
+            } catch { }
+            try { $f96Runner.powershellVersion = [string]$PSVersionTable.PSVersion.ToString() } catch { }
+            try { $f96Runner.netVersion = [string][System.Environment]::Version.ToString() } catch { }
+            try {
+                $f96Users = @()
+                foreach ($f96S in @(Get-CimInstance -ClassName Win32_LogonSession -Filter $script:GhrdpLogonSessionWql -ErrorAction SilentlyContinue)) {
+                    $f96Acct = $null
+                    try {
+                        $f96A = @(Get-CimAssociatedInstance -InputObject $f96S -ResultClassName Win32_Account -ErrorAction SilentlyContinue)
+                        if ($f96A.Count -gt 0) { $f96Acct = [string]$f96A[0].Name }
+                    } catch { }
+                    $f96Users += [ordered]@{
+                        user      = $f96Acct
+                        sessionId = [int64]$f96S.LogonId
+                        logonType = [int]$f96S.LogonType
+                        state     = 'active'
+                    }
+                }
+                $f96Runner.activeUsers = @($f96Users)
+            } catch { Add-F96Note 'runner: Win32_LogonSession probe failed' }
+
+            $f96Bundle = [ordered]@{
+                bundleGeneratedAt = (Get-Date).ToUniversalTime().ToString('o')
+                bundleVersion     = 'f96/1'
+                version           = $f96Version
+                logon             = $f96Logon
+                watcher           = $f96Watcher
+                webSocket         = $f96Ws
+                viewingMode       = $f96View
+                searchEndpoints   = $f96Search
+                mainYmlBootstrap  = $f96Boot
+                recentErrors      = @($f96ErrOut)
+                runnerInfo        = $f96Runner
+                advisories        = @($f96Advisory)
+            }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $f96Bundle)
+            return
+        }
         # [F30 §2.2] GET /api/purge-stale-creds - dash-token gated (bearer header,
         # the SAME gate as /api/rdp-token): tailnet reachability alone must never
         # hand out a credential-deleting command. Returns the ONE-LINE local
@@ -8290,10 +8743,31 @@ try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-Exec
 $script:F95SupIntervalSec = 60
 $script:F95SupStaleSec = 180
 $script:F95SupStatePath = Join-Path $Root 'watcher-supervisor.json'
+# [F96 §4] HOW the watcher was resurrected, not just that it was. The F95
+# verdict file only carried the LAST action, so a bundle read after a
+# successful task-start could not tell "the task route works" from "we have
+# fallen all the way through to the direct invoke for the tenth time" - and
+# those two need opposite fixes. Counters are persisted inside the same
+# verdict file the supervisor already writes every tick, so a server restart
+# does not reset the story; absent counters (a file written by the F95 build)
+# read back as zeros, never as a fabricated success.
+$script:F96SupAttempts = [ordered]@{ taskStart = 0; schtasksRun = 0; directInvoke = 0 }
+$script:F96SupAttemptsLoaded = $false
 function Invoke-F95WatcherSupervise {
     $now = Get-Date
     $state = [ordered]@{ at = ''; alive = $false; heartbeatAgeSec = -1; action = 'none'; detail = '' }
     $state.at = $now.ToUniversalTime().ToString('o')
+    if (-not $script:F96SupAttemptsLoaded) {
+        $script:F96SupAttemptsLoaded = $true
+        try {
+            $prev = Read-JsonFile -Path $script:F95SupStatePath
+            if ($prev -and $prev.PSObject.Properties['attempts']) {
+                foreach ($k in @('taskStart', 'schtasksRun', 'directInvoke')) {
+                    if ($prev.attempts.PSObject.Properties[$k]) { $script:F96SupAttempts[$k] = [int]$prev.attempts.$k }
+                }
+            }
+        } catch { }
+    }
     try {
         $prog = Read-JsonFile -Path $script:ProgPath
         if ($prog -and $prog.ts) {
@@ -8314,6 +8788,7 @@ function Invoke-F95WatcherSupervise {
             Start-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction Stop
             $started = $true
             $state.action = 'task-start'
+            $script:F96SupAttempts.taskStart = [int]$script:F96SupAttempts.taskStart + 1
             $state.detail = 'Start-ScheduledTask GhrdpWatcher issued (heartbeat was ' + $state.heartbeatAgeSec + 's)'
         } catch {
             $state.detail = 'task start failed: ' + $_.Exception.Message
@@ -8324,6 +8799,7 @@ function Invoke-F95WatcherSupervise {
                 $LASTEXITCODE = 0
                 $started = $true
                 $state.action = 'schtasks-run'
+                $script:F96SupAttempts.schtasksRun = [int]$script:F96SupAttempts.schtasksRun + 1
                 $state.detail = $state.detail + ' | schtasks /Run issued'
             } catch {
                 $state.detail = $state.detail + ' | schtasks /Run failed: ' + $_.Exception.Message
@@ -8341,6 +8817,7 @@ function Invoke-F95WatcherSupervise {
                 Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$watcherSrc -WindowStyle Hidden -ErrorAction Stop | Out-Null
                 $started = $true
                 $state.action = 'direct-invoke'
+                $script:F96SupAttempts.directInvoke = [int]$script:F96SupAttempts.directInvoke + 1
                 $state.detail = $state.detail + ' | invoked ' + $watcherSrc + ' directly'
             } catch {
                 $state.detail = $state.detail + ' | direct invoke failed: ' + $_.Exception.Message
@@ -8348,6 +8825,13 @@ function Invoke-F95WatcherSupervise {
         }
         if (-not $started) { $state.action = 'failed' }
         Write-Host ('[F95] watcher supervisor: alive=' + $state.alive + ' heartbeat=' + $state.heartbeatAgeSec + 's action=' + $state.action)
+    }
+    # [F96 §4] the counters ride along with the verdict, so /api/diag/comprehensive
+    # (and /diag) can report the escalation HISTORY, not only the last action.
+    $state['attempts'] = [ordered]@{
+        taskStart    = [int]$script:F96SupAttempts.taskStart
+        schtasksRun  = [int]$script:F96SupAttempts.schtasksRun
+        directInvoke = [int]$script:F96SupAttempts.directInvoke
     }
     try { [System.IO.File]::WriteAllText($script:F95SupStatePath, ($state | ConvertTo-Json -Compress), $script:NoBom) } catch { }
     return $state

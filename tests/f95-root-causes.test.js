@@ -35,10 +35,18 @@ test("F95-R1 FILTER: the accepted set is 2/10/11 and a bare type-10 filter canno
     !/Win32_LogonSession -Filter 'LogonType=10'/.test(SERVER),
     "a type-10-only Win32_LogonSession filter is back - an autologon desktop would read as no session"
   );
+  // [F96 §2.1] SUPERSEDED PIN (rewritten in place, not deleted - the F95
+  // convention this repository uses for every pin a later feature outgrows).
+  // Was `2` = the two CIM probes F95 itself introduced. F96's diagnostic bundle
+  // adds a THIRD probe (runnerInfo.activeUsers) and it uses the SAME shared WQL,
+  // so the invariant this assertion exists for - "no probe may filter on a
+  // literal LogonType=10" - is intact and still asserted by the negative test
+  // above. Keeping the old count would fail on a change that makes the F95 fix
+  // MORE visible, which is the opposite of what the pin is for.
   assert.equal(
     (SERVER.match(/Win32_LogonSession -Filter \$script:GhrdpLogonSessionWql/g) || []).length,
-    2,
-    "both Win32_LogonSession probes must use the shared WQL"
+    3,
+    "all three Win32_LogonSession probes must use the shared WQL (F95: 2, F96: +runnerInfo.activeUsers)"
   );
   // The F28 collector's pre-filter no longer drops non-10 events.
   assert.ok(

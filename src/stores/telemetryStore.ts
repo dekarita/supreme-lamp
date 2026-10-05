@@ -41,6 +41,17 @@ interface TelemetryState {
   wsAttempts: number;
   /** [F95 §3.4 / R4] why the last attempt failed, machine-readable. */
   wsDeadReason: string;
+  /** [F96 §2.1] epoch-ms of the last successful /ws open. Feeds the diagnostic
+   *  bundle's webSocket.lastConnect - without it the bundle could only say
+   *  "not connected", never whether it EVER connected. */
+  wsLastConnectAt: number | null;
+  /** [F96 §2.1] epoch-ms of the last /ws close. */
+  wsLastDisconnectAt: number | null;
+  /** [F96 §2.1] close code + reason of the last /ws close, as the browser
+   *  reported them (e.g. "1006" / ""). This is the ONLY witness of why the
+   *  socket died; the reconnect ladder cannot distinguish a refused upgrade
+   *  from a network drop. */
+  wsLastDisconnectReason: string;
   rdpUsage: UsageState | null;
   rdpLogonFallback: { sec: number; at: number } | null;
   usageFrozen: boolean;
@@ -54,6 +65,10 @@ interface TelemetryState {
    *  successful open). */
   setWsDead: (v: boolean, reason?: string) => void;
   setWsAttempts: (n: number) => void;
+  /** [F96 §2.1] record a successful socket open. */
+  setWsConnectedAt: (atMs: number) => void;
+  /** [F96 §2.1] record a socket close with the browser's own code/reason. */
+  setWsDisconnectedAt: (atMs: number, reason: string) => void;
   /** [F95 §3.4 / R4] manual reconnect requested by the operator. Bumped so the
    *  polling hook can watch it and rebuild the socket immediately. */
   wsReconnectNonce: number;
@@ -83,6 +98,9 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   wsDead: false,
   wsAttempts: 0,
   wsDeadReason: "",
+  wsLastConnectAt: null,
+  wsLastDisconnectAt: null,
+  wsLastDisconnectReason: "",
   wsReconnectNonce: 0,
   rdpUsage: null,
   rdpLogonFallback: null,
@@ -134,6 +152,8 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   setWsAvailable: (v) => set({ wsAvailable: v }),
   setWsDead: (v, reason) => set({ wsDead: v, wsDeadReason: v ? String(reason || "ladder-exhausted") : "" }),
   setWsAttempts: (n) => set({ wsAttempts: n }),
+  setWsConnectedAt: (atMs) => set({ wsLastConnectAt: atMs }),
+  setWsDisconnectedAt: (atMs, reason) => set({ wsLastDisconnectAt: atMs, wsLastDisconnectReason: String(reason || "") }),
   requestWsReconnect: () => set((st) => ({ wsReconnectNonce: st.wsReconnectNonce + 1, wsDead: false })),
   setUsage: (u) => set({ rdpUsage: u }),
   setLogonFallback: (v) => set({ rdpLogonFallback: v }),

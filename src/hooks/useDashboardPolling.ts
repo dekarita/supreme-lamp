@@ -173,6 +173,10 @@ export function useDashboardPolling(): void {
           wsAttempt = 0;
           wsConnecting = false;
           useTelemetryStore.getState().setWsLive(true);
+          // [F96 §2.1] witness the open, so the diagnostic bundle can prove the
+          // socket EVER came up (and when); a null here with a dead socket is
+          // the difference between "refused" and "dropped".
+          useTelemetryStore.getState().setWsConnectedAt(Date.now());
           // [F95 §3.4 / R4] ladder reset: a successful open means we are not
           // disconnected, however many tries it took to get here.
           useTelemetryStore.getState().setWsDead(false);
@@ -204,7 +208,16 @@ export function useDashboardPolling(): void {
             } catch {}
           } catch {}
         };
-        ws.onclose = () => {
+        ws.onclose = (evt?: CloseEvent) => {
+          // [F96 §2.1] the browser's own close code/reason, captured BEFORE the
+          // handle is released - this is the only record of WHY it closed.
+          try {
+            const code = evt && typeof evt.code === "number" ? String(evt.code) : "";
+            const why = evt && evt.reason ? String(evt.reason) : "";
+            useTelemetryStore.getState().setWsDisconnectedAt(Date.now(), (code + (why ? " " + why : "")).trim());
+          } catch {
+            useTelemetryStore.getState().setWsDisconnectedAt(Date.now(), "");
+          }
           // [F94 §3.5] `ws` MUST be released here. It never was, so the
           // reconnect interval's `&& !ws` guard was false after the very first
           // close and the bridge could never come back - the pill stayed

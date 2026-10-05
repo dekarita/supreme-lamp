@@ -1,6 +1,8 @@
 // [F41 plan §5.1] Overview (/) - the landing route; carries ALL 219 regression
 // ids via the domain components + page furniture.
 import { PrimaryActions } from "@/components/domain/PrimaryActions";
+// [F96 §2.2/§2.3] the one-paste diagnostic bundle + at-a-glance strip.
+import { DiagBundleCard } from "@/components/domain/DiagBundleCard";
 import { ConnectionCard } from "@/components/domain/ConnectionCard";
 import { KeysCard } from "@/components/domain/KeysCard";
 import { WebDesktopCard } from "@/components/domain/WebDesktopCard";
@@ -24,6 +26,10 @@ export default function Overview() {
   return (
     <div>
       <PrimaryActions />
+
+      {/* [F96 §2.2] FIRST thing on Overview on purpose: it is the only control
+          the operator can use to hand a whole failure to Claude in one click. */}
+      <DiagBundleCard />
 
       {/* Secondary row: Keys | Web Desktop | Mirror */}
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 mb-4">
