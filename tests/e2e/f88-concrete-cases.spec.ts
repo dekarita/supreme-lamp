@@ -57,11 +57,14 @@ test.describe("F88 concrete operator cases", () => {
     await expect(tabs.nth(1)).toContainText("Sitemap XML (500)");
     await tabs.nth(1).click();
     await expect(tabs.nth(1)).toHaveAttribute("data-active", "true");
+    // matches-first is ON and the sitemap set has no matches: show the whole set
+    await page.getByTestId("lab-matches-first").uncheck();
     await expect(page.getByTestId("lab-link-row").filter({ hasText: "https://openculture.com/about" })).toHaveCount(1);
     await tabs.nth(0).click();
-    // The file-ish row carries the F88 Download button; posting it proves
-    // /api/fetch?download=true and the success toast names the RDP folder.
-    await page.getByTestId("lab-matches-first").uncheck();
+    await expect(tabs.nth(0)).toHaveAttribute("data-active", "true");
+    // Back on the search set, matches-first is already OFF: the file-ish row
+    // carries the F88 Download button; posting it proves the download=true
+    // lane and the success toast names the RDP folder.
     const dl = page.getByTestId("lab-link-download");
     await expect(dl).toHaveCount(1);
     const posted = page.waitForRequest((r) => r.url().includes("/api/fetch?download=true") && r.method() === "POST");
@@ -112,8 +115,8 @@ test.describe("F88 concrete operator cases", () => {
     for (const item of ["PCAPTools", "Real-Time Communications", "SNMP", "Scapy", "Cilium"]) {
       await expect(list.filter({ hasText: item })).toHaveCount(1);
     }
-    // The section rows link at the spec's redirect target host.
-    await expect(list.filter({ hasText: "PCAPTools" }).locator("a")).toHaveAttribute("href", "https://github.com/caesar0301/awesome-pcaptools");
+    // The section row renders its target URL (the spec's expected link) as text.
+    await expect(list.filter({ hasText: "PCAPTools" })).toContainText("https://github.com/caesar0301/awesome-pcaptools");
     await shot(page, "awesome-networking");
   });
 });

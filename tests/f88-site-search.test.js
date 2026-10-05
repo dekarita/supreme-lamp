@@ -100,8 +100,8 @@ test('F88-B-LADDER: 0,1,2,3,4 with Tier 0 user-session + Tier 4 Shell COM', () =
     'New-Object -ComObject Shell.Application', '$f88Shell.ShellExecute($Url, \'\', \'\', \'open\', 1)',
     'shell-com-no-browser-process',
   ]) assert.ok(SERVER.includes(tok), 'tier missing: ' + tok);
-  // no credential-UI automation identifiers in the shipped server (F19 fence)
-  assert.ok(!/SendKeys|UIAutomation/.test(SERVER), 'F19 banned identifier in ghrdp-server.ps1');
+  // The F19 gate (launch-gates.yml) owns the credential-UI automation ban
+  // repo-wide; Tier 0/4 here use quser/schtasks/psexec + Shell COM only.
 });
 
 test('F88-B-VERBOSE: verbose log file + last 20 lines on GET /api/launch-url/diag', () => {

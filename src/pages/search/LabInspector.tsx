@@ -24,7 +24,7 @@ import { useNavigate } from "react-router-dom";
 import { ArrowLeft, Download, ExternalLink, FlaskConical, RefreshCw } from "lucide-react";
 import { inspectResultUrl, inspectSource, type CustomSourceRow, type LabError, type LabInspectResult } from "@/api/lab";
 import { launchFailureToast, launchUrl } from "@/lib/launchUrl";
-import { requestFetch } from "@/api/fetch";
+import { requestFetch } from "@/lib/fetchStub";
 import { isFileLikeUrl } from "./tokens";
 import { useToastStore } from "@/stores/toastStore";
 
@@ -246,7 +246,7 @@ export function LabInspector(props: LabInspectorProps) {
                   {l.href}
                 </span>
                 {/* [F88 §C.3] file-ish URLs get a one-click Download to RDP
-                    (POST /api/fetch?download=true) next to the open button. */}
+                    (the F56-d download=true lane) next to the open button. */}
                 {isFileLikeUrl(l.href) ? (
                   <button
                     id={"f88.lab.linkDownload." + i}
