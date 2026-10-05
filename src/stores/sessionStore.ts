@@ -6,6 +6,7 @@
 import { create } from "zustand";
 import { announceSearchLane } from "@/lib/search/lane";
 import { postRdpToken, launchProto, mintTraceId, fetchPurgeCommand } from "@/lib/api";
+import { hasDashToken } from "@/lib/dashToken";
 import { FQDN_RE, CGNAT_RE, parseTsUtc } from "@/lib/format";
 import { ghrdpRdpUrl, ghrdpRecredUrl, beaconModel, authDiscriminator, type AuthDiscriminator } from "@/lib/domain/native";
 import { telescopeTimeline, type TelTimeline } from "@/lib/domain/telescope";
@@ -183,10 +184,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     const st = get();
     const fqdn = st.fqdn;
     const user = st.user || "rdpuser";
-    if (!FQDN_RE.test(fqdn)) return;
+    // [F94 §3.3] This used to be a bare `return`: the operator clicked
+    // WINDOWS AUTO-LOGIN and NOTHING happened - no note, no toast, no log. A
+    // guard that can refuse must always SAY SO, so every exit path below
+    // writes a visible reason into #winAutoNote.
+    if (!FQDN_RE.test(fqdn)) {
+      st.setAutoLoginNote("AUTO-LOGIN refused: the runner FQDN is missing or malformed - reload /api/native-status or re-dispatch the deploy workflow");
+      return;
+    }
     const ticket = await postRdpToken();
     if (!ticket.ok) {
-      st.setAutoLoginNote("ticket-issue failed - check dashboard authorization and direct tailnet access");
+      // [F94 §3.1] No dashboard token is the single most likely cause, and it
+      // is recoverable in one click - say which one it is instead of the old
+      // catch-all "check dashboard authorization".
+      const noToken = !hasDashToken();
+      st.setAutoLoginNote(
+        noToken
+          ? "AUTO-LOGIN refused: no dashboard token (?key=) - the token gate on this page lets you paste the key from the main.yml run log"
+          : "ticket-issue failed - check dashboard authorization and direct tailnet access",
+      );
       return;
     }
     const trace = mintTraceId("client");

@@ -29,6 +29,10 @@ interface TelemetryState {
   rttSamples: number[];
   httpRtt: number | null;
   wsLive: boolean;
+  /** [F94 §3.5] Does the SERVER advertise a /ws endpoint? Informational only:
+   *  it must never gate whether we TRY to connect (that gate was the deadlock
+   *  that left the pill reading "idle" forever). */
+  wsAvailable: boolean;
   rdpUsage: UsageState | null;
   rdpLogonFallback: { sec: number; at: number } | null;
   usageFrozen: boolean;
@@ -37,6 +41,7 @@ interface TelemetryState {
   setLogPaused: (v: boolean) => void;
   setWire: (w: WireState | null | undefined, httpRtt: number | null) => void;
   setWsLive: (v: boolean) => void;
+  setWsAvailable: (v: boolean) => void;
   setUsage: (u: UsageState | null) => void;
   setLogonFallback: (v: { sec: number; at: number } | null) => void;
   setUsageFrozen: (v: boolean) => void;
@@ -58,6 +63,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   rttSamples: [],
   httpRtt: null,
   wsLive: false,
+  wsAvailable: false,
   rdpUsage: null,
   rdpLogonFallback: null,
   usageFrozen: false,
@@ -105,6 +111,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   },
 
   setWsLive: (v) => set({ wsLive: v }),
+  setWsAvailable: (v) => set({ wsAvailable: v }),
   setUsage: (u) => set({ rdpUsage: u }),
   setLogonFallback: (v) => set({ rdpLogonFallback: v }),
   setUsageFrozen: (v) => set({ usageFrozen: v }),

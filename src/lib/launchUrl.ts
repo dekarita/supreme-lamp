@@ -13,6 +13,9 @@
 // `reason` is an i18n key, never an English literal.
 import { getKey } from "@/lib/api";
 import { useLaunchChoiceStore } from "@/stores/launchChoiceStore";
+// [F94 §3.6] CGNAT_RE: the tailnet range (100.64.0.0/10) viewing-mode detection
+// must recognise, or a production tailnet-IP dashboard reads as "public".
+import { CGNAT_RE } from "@/lib/format";
 
 const SAFE_SCHEME = /^https:\/\//i;
 const MAX_LEN = 2048;
@@ -29,6 +32,11 @@ export type ViewingMode = "web-desktop" | "tailscale-local" | "unknown";
 
 const LOCAL_HOST = /^localhost$|^127\.0\.0\.1$/i;
 const TAILNET_HOST = /\.tail[a-z0-9]+\.ts\.net$/i;
+// [F94 §3.6] CGNAT (100.64.0.0/10) is the TAILSCALE range - the exact address a
+// production WEB DESKTOP dashboard is served from. Missing it classified every
+// tailnet-IP dashboard as "public", so detection fell through to "unknown" on
+// the real deployment and the badge was unexplainable. Reuses the repo's single
+// CGNAT_RE (src/lib/format.ts) rather than a second copy of the octet maths.
 const PRIVATE_HOST = /^(10|172|192)\./i;
 
 /**
@@ -98,12 +106,147 @@ export function detectViewingMode(search?: string): ViewingMode {
   if (LOCAL_HOST.test(host) && isRunnerSizedViewport(window.innerWidth, window.innerHeight, window.devicePixelRatio)) {
     return "web-desktop";
   }
-  if (TAILNET_HOST.test(host) || PRIVATE_HOST.test(host)) {
+  if (TAILNET_HOST.test(host) || PRIVATE_HOST.test(host) || CGNAT_RE.test(host)) {
     return isRunnerSizedViewport(window.innerWidth, window.innerHeight, window.devicePixelRatio)
       ? "web-desktop"
       : "tailscale-local";
   }
   return "unknown";
+}
+
+// ===========================================================================
+// [F94 §3.6] VIEWING MODE DIAGNOSIS - "Unknown" must never be a dead end.
+//
+// The operator's badge read "දර්ශනය: Unknown" with nothing else: no reason, no
+// signal list, no way to tell a genuinely ambiguous host from a bug. Detection
+// kept three signals (hostname, viewport geometry, device pixel ratio) and
+// discarded the reasoning that produced the answer, so a laptop on a public
+// preview host and a runner session with a fractional DPR both collapsed into
+// the same word.
+//
+// `explainViewingMode()` keeps the F90 decision EXACTLY as it was (same mode,
+// same safety gate - `resolveViewingMode()` is untouched and still the thing
+// the launch path calls) and ADDS the reasoning as data: a display label, a
+// machine-readable reason, and the raw signals. The badge renders all three.
+// ===========================================================================
+
+export type HostKind = "loopback" | "tailnet" | "private" | "public" | "empty";
+
+export interface ViewingModeSignals {
+  host: string;
+  hostKind: HostKind;
+  /** true when the dashboard is running inside another page's frame. */
+  framed: boolean;
+  /** true when the viewport exactly matches a known session geometry @ dpr 1. */
+  runnerSized: boolean;
+  dpr: number;
+  viewport: string;
+  /** true when the stored/URL operator choice overrode the signals. */
+  confirmed: boolean;
+}
+
+export interface ViewingModeDiagnosis {
+  /** The mode the launch path acts on (identical to resolveViewingMode().mode). */
+  mode: ViewingMode;
+  /** What the signals alone suggested. */
+  detected: ViewingMode;
+  /** Operator-facing label: LOCAL DEV | WEB DESKTOP | Tailscale local |
+   *  "Unknown - ambiguous signals". Never a bare "Unknown". */
+  label: string;
+  /** Machine-readable reason, safe to log and to show. */
+  reason: string;
+  signals: ViewingModeSignals;
+}
+
+export function hostKindOf(host: string): HostKind {
+  const h = String(host || "").toLowerCase();
+  if (!h) return "empty";
+  if (LOCAL_HOST.test(h)) return "loopback";
+  if (TAILNET_HOST.test(h)) return "tailnet";
+  if (CGNAT_RE.test(h)) return "tailnet"; // 100.64/10 IS the tailnet, not generic RFC1918
+  if (PRIVATE_HOST.test(h)) return "private";
+  return "public";
+}
+
+/** True when this page is inside a frame (a parent document exists). */
+export function isFramed(): boolean {
+  try {
+    if (typeof window === "undefined") return false;
+    return window.self !== window.top;
+  } catch {
+    // A cross-origin parent throws on the read - which itself proves there IS
+    // a parent document.
+    return true;
+  }
+}
+
+/**
+ * [F94 §3.6] The diagnosis. `label` is always specific: a loopback host is
+ * LOCAL DEV even when the geometry does not match a runner session (the
+ * browser is on the machine the dashboard is served from), a tailnet host
+ * without a parent frame is Tailscale local, and anything else names its
+ * signals instead of hiding behind one word.
+ */
+export function explainViewingMode(search?: string): ViewingModeDiagnosis {
+  const state = resolveViewingMode(search);
+  const host = typeof window !== "undefined" ? String(window.location.hostname || "") : "";
+  const kind = hostKindOf(host);
+  const dpr = typeof window !== "undefined" ? Number(window.devicePixelRatio || 1) : 1;
+  const vw = typeof window !== "undefined" ? Number(window.innerWidth || 0) : 0;
+  const vh = typeof window !== "undefined" ? Number(window.innerHeight || 0) : 0;
+  const framed = isFramed();
+  const runnerSized = isRunnerSizedViewport(vw, vh, dpr);
+  const signals: ViewingModeSignals = {
+    host,
+    hostKind: kind,
+    framed,
+    runnerSized,
+    dpr,
+    viewport: vw + "x" + vh,
+    confirmed: state.confirmed,
+  };
+
+  // 1. loopback -> LOCAL DEV (the browser is on the serving machine; a laptop
+  //    cannot load someone else's 127.0.0.1).
+  if (kind === "loopback") {
+    return {
+      ...state,
+      label: "LOCAL DEV",
+      reason: runnerSized
+        ? "loopback-host+runner-sized-viewport"
+        : "loopback-host-not-runner-sized-viewport(" + signals.viewport + "@dpr" + dpr + ")",
+      signals,
+    };
+  }
+  // 2. tailnet / RFC1918 -> the operator's own machine unless the geometry says
+  //    otherwise; a parent frame corroborates an embedded session view.
+  if (kind === "tailnet" || kind === "private") {
+    if (state.detected === "web-desktop") {
+      return {
+        ...state,
+        label: "WEB DESKTOP",
+        reason: kind + "-host+runner-sized-viewport" + (framed ? "+framed" : ""),
+        signals,
+      };
+    }
+    return {
+      ...state,
+      label: "Tailscale local",
+      reason: kind + "-host+viewport-" + signals.viewport + "@dpr" + dpr + "-not-a-session-geometry",
+      signals,
+    };
+  }
+  // 3. everything else: name the ambiguity instead of shrugging.
+  const why =
+    kind === "empty"
+      ? "no-hostname-available"
+      : "public-host(" + host + ")+viewport-" + signals.viewport + "@dpr" + dpr + (framed ? "+framed" : "+top-level");
+  return {
+    ...state,
+    label: "Unknown - ambiguous signals",
+    reason: why,
+    signals,
+  };
 }
 
 export interface ViewingModeState {

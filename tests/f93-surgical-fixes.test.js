@@ -9,6 +9,7 @@ const SERVER = readFileSync("payloads/ghrdp-server.ps1", "utf8");
 const HOOK = readFileSync("src/hooks/useDashboardPolling.ts", "utf8");
 const MODAL = readFileSync("src/components/search/AddSiteQuick.tsx", "utf8");
 const BANNER = readFileSync("src/components/domain/LogonGateBanner.tsx", "utf8");
+const OPENER = readFileSync("src/lib/openWebDesktop.ts", "utf8");
 const SHELL = readFileSync("src/components/layout/AppShell.tsx", "utf8");
 const LABAPI = readFileSync("src/api/lab/index.ts", "utf8");
 const EN = JSON.parse(readFileSync("src/i18n/en.json", "utf8"));
@@ -60,7 +61,21 @@ test("F93-2 BANNER: every route, self-hiding, button opens the validated WEB DES
   assert.ok(SHELL.includes("<LogonGateBanner />"), "banner not mounted in the shell");
   assert.ok(BANNER.includes('authLast.result === "success"'), "banner does not hide on success");
   assert.ok(BANNER.includes("validWebdeskUrl(s.webdeskUrl)"), "banner does not use the validated webdesk url");
-  assert.ok(BANNER.includes('window.open(webdeskUrl, "_blank", "noopener")'), "banner button does not open the webdesk");
+  // [F94 §3.2] SUPERSEDED PIN (updated in place, never deleted). The old pin
+  // asserted the literal `window.open(webdeskUrl, "_blank", "noopener")`, which
+  // is the exact line that made the button dead: window.open() returns null when
+  // the browser blocks the popup and the handler DISCARDED that return value, so
+  // the operator clicked and nothing at all happened. The banner now opens
+  // through the shared opener, which reports the block so the URL can be shown.
+  // What the pin was PROTECTING - the banner opens the VALIDATED webdesk URL and
+  // never a raw config string - is still asserted, one line above and below.
+  assert.ok(BANNER.includes("validWebdeskUrl(s.webdeskUrl)"), "banner does not use the validated webdesk url");
+  assert.ok(BANNER.includes("openWebDesktop(webdeskUrl)"), "banner button does not open the webdesk");
+  assert.ok(BANNER.includes("out.opened"), "banner ignores whether the popup actually opened");
+  assert.ok(BANNER.includes("logon-gate-webdesk-blocked"), "a blocked popup leaves the operator with no URL");
+  assert.ok(OPENER.includes('window.open(url, "_blank", "noopener,noreferrer,width=1280,height=800")'), "opener dropped the noopener/noreferrer contract");
+  assert.ok(OPENER.includes("if (!win) return { opened: false, blocked: true"), "a null window handle is not reported as blocked");
+  assert.ok(OPENER.includes("validWebdeskUrl(raw)"), "opener does not apply the WEB DESKTOP allowlist (tailnet-http is legitimate; an https-only fence would refuse every real URL)");
   assert.ok(MODAL.includes("/api/launcher/health"), "modal does not read launcher health");
   assert.ok(MODAL.includes('if (alive && j && j.serviceRunning === false) setLauncherOffline(true)'), "modal launcher hint missing");
   for (const k of ["title", "message", "button", "noUrl"]) {

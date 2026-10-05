@@ -4,7 +4,8 @@
 // Functional parity (§3): #btnWinAuto fires the EXISTING ticket flow
 // (POST /api/rdp-token -> ghrdp://rdp?server&user&t), #btnWebDesktop opens the
 // validated noVNC URL, #btnFixReconnect is conditional on 0xC000006A+chain.
-import { AlertTriangle, Globe, Monitor, RefreshCw } from "lucide-react";
+import { useState } from "react";
+import { AlertTriangle, ExternalLink, Globe, Monitor, RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useTelemetryStore } from "@/stores/telemetryStore";
@@ -14,6 +15,8 @@ import { CopyLink } from "@/components/primitives/Copy";
 import { cn } from "@/lib/cn";
 import { FQDN_RE, SESSION_WINDOW_MS } from "@/lib/format";
 import { credsspChip, recoveryDecision, validFqdnUser, validWebdeskUrl } from "@/lib/domain/native";
+// [F94 §3.2/§3.3] the two buttons the operator reported as dead.
+import { openWebDesktop } from "@/lib/openWebDesktop";
 import { useNow } from "@/lib/useNow";
 
 export function PrimaryActions() {
@@ -31,6 +34,9 @@ export function PrimaryActions() {
   const runStartedAtMs = useTelemetryStore((s) => s.runStartedAtMs);
   const sessionExpired = useTelemetryStore((s) => s.sessionExpired);
   const setSessionExpired = useTelemetryStore((s) => s.setSessionExpired);
+  // [F94 §3.2] non-empty when the browser blocked the WEB DESKTOP popup; the
+  // URL is then rendered on the page so the operator can still get there.
+  const [webdeskBlocked, setWebdeskBlocked] = useState("");
   useNow(1000);
 
   const s = native || {};
@@ -55,6 +61,18 @@ export function PrimaryActions() {
       : credOkLocal
         ? "RDP LISTENER probe not all green (listening/fw/cert/nla) - fix the failed field in the RDP LISTENER row; AUTO-LOGIN stays disabled"
         : "fullscreen native mstsc via one-time ticket; Windows prompts for your password (cmdkey) only if redemption fails";
+
+  // [F94 §3.3] WHY is AUTO-LOGIN dead? The operator reported a button that did
+  // not respond to clicks: it was `disabled`, and a disabled <button> swallows
+  // the click entirely - no hover reason, no tooltip, no toast. Every failing
+  // gate is now named (this is the tooltip AND the on-page diagnostic), so a
+  // dead button always says which gate killed it.
+  const autoBlockers: string[] = [];
+  if (!credOkLocal) autoBlockers.push(t("autoLoginBlocked.credentials"));
+  if (!runnerDnsOk) autoBlockers.push(t("autoLoginBlocked.dns"));
+  if (!listenerOkFlag) autoBlockers.push(t("autoLoginBlocked.listener"));
+  const autoWhy = autoBlockers.join("; ");
+  const autoTitle = autoOk ? autoNote : t("autoLoginBlocked.title") + " " + autoWhy;
 
   // Session-expired banner (F34 window).
   if (runStartedAtMs) {
@@ -102,6 +120,8 @@ export function PrimaryActions() {
             icon={<Monitor className="size-4" aria-hidden />}
             onClick={() => void fireAutoLogin()}
             aria-disabled={!autoOk}
+            title={autoTitle}
+            data-why={autoWhy || undefined}
           >
             {t("actions.autoLogin")}
           </Button>
@@ -112,8 +132,13 @@ export function PrimaryActions() {
             disabled={!webdeskUrl}
             icon={<Globe className="size-4" aria-hidden />}
             onClick={() => {
-              if (webdeskUrl) window.open(webdeskUrl, "_blank", "noopener");
+              if (!webdeskUrl) return;
+              // [F94 §3.2] the old handler was a bare window.open() whose null
+              // (popup-blocked) return was discarded: click, nothing, silence.
+              const out = openWebDesktop(webdeskUrl);
+              setWebdeskBlocked(!out.opened ? webdeskUrl : "");
             }}
+            title={webdeskUrl || t("logonGate.noUrl")}
           >
             {t("actions.webDesktop")}
           </Button>
@@ -133,8 +158,50 @@ export function PrimaryActions() {
 
       <div className="mt-2 flex flex-col gap-1 text-xs text-secondary">
         <span id="winAutoNote">{autoLogin.note || autoNote}</span>
+        {/* [F94 §3.3] AUTO-LOGIN is a disabled button when any gate fails, and a
+            disabled button cannot explain itself. This line always says which
+            gate failed, so the operator never has to guess why it is dead. */}
+        {!autoOk ? (
+          <span id="f94.autoLoginBlocked" data-testid="auto-login-blocked" role="status" className="text-warning">
+            {t("autoLoginBlocked.title")} {autoWhy}
+          </span>
+        ) : null}
         <span id="autoLoginStatus" className="text-tertiary">{autoLogin.helloSeen ? "launcher beacon received" : ""}</span>
       </div>
+
+      {/* [F94 §3.2] Popup-blocked fallback for the WEB DESKTOP button. */}
+      {webdeskBlocked ? (
+        <div
+          id="f94.webdeskBlocked"
+          data-testid="webdesk-blocked"
+          role="alert"
+          className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2"
+        >
+          <AlertTriangle className="size-3.5 text-warning shrink-0" aria-hidden />
+          <span className="text-xs font-medium text-warning">{t("webdeskBlocked.title")}</span>
+          <span className="text-xs text-secondary">{t("webdeskBlocked.message")}</span>
+          <a
+            id="f94.webdeskBlockedLink"
+            data-testid="webdesk-blocked-link"
+            href={webdeskBlocked}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 font-mono text-xs text-accent underline break-all"
+          >
+            <ExternalLink className="size-3" aria-hidden />
+            {webdeskBlocked}
+          </a>
+          <button
+            type="button"
+            id="f94.webdeskRetry"
+            data-testid="webdesk-blocked-retry"
+            onClick={() => setWebdeskBlocked("")}
+            className="px-2 py-0.5 text-xs rounded border border-default text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            {t("webdeskBlocked.retry")}
+          </button>
+        </div>
+      ) : null}
 
       {/* F28 recovery row - shown only on the correlated wrong-password failure */}
       <div

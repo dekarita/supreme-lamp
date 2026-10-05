@@ -13,6 +13,7 @@
 // with validateNewSite() before any network call; the server re-validates.
 import { apiBase, getKey } from "@/lib/api";
 import F58 from "@/search/custom-source-core";
+import { hasDashToken } from "@/lib/dashToken";
 
 export const SOURCES_PATH = "/api/f58/sources";
 export const LAB_INSPECT_PATH = "/api/lab/inspect";
@@ -158,10 +159,35 @@ function offline<T>(code: string, messageKey: string, fieldErrors?: { name?: str
   return { ok: false, error: { code, messageKey, ...(fieldErrors ? { fieldErrors } : {}) } };
 }
 
+/**
+ * [F94 §3.7] "යම් දෝෂයක් සිදු විය" ("Something went wrong") for EVERYTHING.
+ *
+ * Every transport failure in this file collapsed to the same generic key, so a
+ * rate limit, a dead server and a missing dashboard token were indistinguishable
+ * - and the missing token was by far the most common cause (the server answers
+ * 403 to every unauthenticated write). The operator then had nothing to act on.
+ *
+ * This resolver keeps `search.errors.generic` for the genuinely unknown case and
+ * upgrades the three causes that have a concrete, one-click remedy.
+ */
+export function transportErrorKey(status: number): string {
+  if (status === 429) return "lab.rateLimited";
+  if (status === 401 || status === 403) return "addSite.authMissing";
+  if (status === 404 || status === 410) return "lab.routeMissing";
+  return "search.errors.generic";
+}
+
+/** A network-level failure (no response at all): the server is unreachable. */
+export function unreachableErrorKey(): string {
+  // No token + no server both look like a fetch rejection, so name the token
+  // case first: it is the one the operator can fix without leaving the page.
+  return hasDashToken() ? "search.errors.generic" : "addSite.authMissing";
+}
+
 export async function listCustomSources(): Promise<LabResult<CustomSourceRow[]>> {
   try {
     const r = await fetch(apiBase() + SOURCES_PATH, { method: "GET", cache: "no-store", headers: dashHeaders() });
-    if (!r.ok) return offline(r.status === 429 ? "RATE_LIMITED" : "TRANSPORT_UNAVAILABLE", "search.errors.generic");
+    if (!r.ok) return offline(r.status === 429 ? "RATE_LIMITED" : "TRANSPORT_UNAVAILABLE", transportErrorKey(r.status));
     const body = (await r.json()) as unknown;
     const rawList = Array.isArray(body) ? body : Array.isArray((body as { sources?: unknown[] })?.sources) ? (body as { sources: unknown[] }).sources : [];
     const rows = rawList.map(asRow).filter((x): x is CustomSourceRow => x !== null);
@@ -214,7 +240,7 @@ export async function createCustomSource(name: string, baseUrl: string): Promise
     const row = asRow((body as { source?: unknown })?.source ?? body);
     return row ? { ok: true, data: row } : offline("INTERNAL_ERROR", "search.errors.generic");
   } catch {
-    return offline("TRANSPORT_UNAVAILABLE", "search.errors.generic");
+    return offline("TRANSPORT_UNAVAILABLE", unreachableErrorKey());
   }
 }
 

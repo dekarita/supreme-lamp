@@ -8,14 +8,19 @@
 // this origin; v1 kept an explicit :7331 for the dual-port layout, and we keep
 // that fallback when the page is opened on a non-API port.
 
+import { getDashToken } from "@/lib/dashToken";
+
+// [F94 §3.1] getKey() now resolves through the shared dash-token module:
+// query string -> hash -> localStorage. Reading ONLY location.search meant a
+// URL re-shared without its query silently lost the token, and every write
+// route then answered 403 ("Dashboard permission missing"), which the operator
+// saw as eight unrelated bugs. The fallback chain is in src/lib/dashToken.ts;
+// this wrapper keeps every existing call site and its `if (key)` guard intact.
 export function getKey(): string {
-  const m = location.search.match(/[?&]key=([^&]+)/);
-  try {
-    return m ? decodeURIComponent(m[1]) : "";
-  } catch {
-    return "";
-  }
+  return getDashToken();
 }
+
+export { getDashToken, hasDashToken, storeDashToken, clearDashToken, dashTokenDebug } from "@/lib/dashToken";
 
 export function apiBase(): string {
   if (location.port === "7331" || location.port === "7332" || location.protocol === "https:") {

@@ -17,6 +17,7 @@ export function useDashboardPolling(): void {
   const setProgress = useTelemetryStore((s) => s.setProgress);
   const setWire = useTelemetryStore((s) => s.setWire);
   const setWsLive = useTelemetryStore((s) => s.setWsLive);
+  const setWsAvailable = useTelemetryStore((s) => s.setWsAvailable);
 
   useEffect(() => {
     let alive = true;
@@ -74,9 +75,15 @@ export function useDashboardPolling(): void {
         const r = await fetch("/health", { cache: "no-store", signal: ctl?.signal });
         if (timer) window.clearTimeout(timer);
         const j = (await r.json()) as { ok?: boolean; ws?: boolean };
-        if (alive) setWsLive(!!(j && j.ok === true && j.ws === true));
+        // [F94 §3.5] /health's `ws` flag means "the server ADVERTISES a /ws
+        // endpoint" - it is INFORMATIONAL and must never be written into
+        // wsLive (which means "our socket is open"). Writing it there was the
+        // deadlock: payloads/ghrdp-server.ps1 hardcodes ws=$false, and
+        // connectWs() refused to run unless wsLive was already true, so the
+        // socket could never open and the pill read "idle" permanently.
+        if (alive) setWsAvailable(!!(j && j.ok === true && j.ws === true));
       } catch {
-        if (alive) setWsLive(false);
+        if (alive) setWsAvailable(false);
       }
     };
 
@@ -127,12 +134,19 @@ export function useDashboardPolling(): void {
     let ws: WebSocket | null = null;
     let wsRetry = 0;
     let wsAttempt = 0;
+    let wsConnecting = false;
     const connectWs = () => {
-      if (!alive || !useTelemetryStore.getState().wsLive) return;
+      // [F94 §3.5] REMOVED the `&& wsLive` precondition: it made the socket
+      // depend on the very flag the socket was supposed to set, so with
+      // /health's hardcoded ws=$false the bridge could never come up.
+      // Also refuse to pile up a second socket while one is mid-handshake.
+      if (!alive || ws || wsConnecting) return;
       try {
+        wsConnecting = true;
         ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
         ws.onopen = () => {
           wsAttempt = 0;
+          wsConnecting = false;
           useTelemetryStore.getState().setWsLive(true);
         };
         ws.onmessage = (evt) => {
@@ -151,18 +165,41 @@ export function useDashboardPolling(): void {
           } catch {}
         };
         ws.onclose = () => {
+          // [F94 §3.5] `ws` MUST be released here. It never was, so the
+          // reconnect interval's `&& !ws` guard was false after the very first
+          // close and the bridge could never come back - the pill stayed
+          // "idle" for the whole run even on a healthy server.
+          ws = null;
+          wsConnecting = false;
+          useTelemetryStore.getState().setWsLive(false);
           void probeHealth();
           // [F93 §3.2] same ladder as the progress lane (capped at 30s).
           const step = RECONNECT_LADDER[Math.min(wsAttempt, RECONNECT_LADDER.length - 1)];
           wsAttempt += 1;
           wsRetry = window.setTimeout(connectWs, step) as unknown as number;
         };
-        ws.onerror = () => {};
-      } catch {}
+        ws.onerror = () => {
+          // A failed handshake also fires onclose in every browser we target,
+          // so this only guards against a synchronous throw below.
+          wsConnecting = false;
+        };
+      } catch {
+        // The constructor threw (blocked/insecure origin): drop the handle so
+        // the ladder below can retry instead of latching on a dead object.
+        ws = null;
+        wsConnecting = false;
+        useTelemetryStore.getState().setWsLive(false);
+      }
     };
+    // [F94 §3.5] The starter no longer requires wsLive - it only needs no
+    // socket in flight.
     const wsStarter = window.setInterval(() => {
-      if (useTelemetryStore.getState().wsLive && !ws) connectWs();
+      if (!ws && !wsConnecting) connectWs();
     }, 5000);
+    // [F94 §3.5] Bootstrap the bridge on the FIRST tick rather than waiting for
+    // a /health answer that the shipped server never sets true. (After the
+    // connectWs definition - `const` arrows are not hoisted.)
+    connectWs();
 
     return () => {
       alive = false;
@@ -172,5 +209,5 @@ export function useDashboardPolling(): void {
       if (wsRetry) window.clearTimeout(wsRetry);
       if (ws) ws.close();
     };
-  }, [setConfig, setNativeStatus, markNativeLost, setProgress, setWire, setWsLive]);
+  }, [setConfig, setNativeStatus, markNativeLost, setProgress, setWire, setWsLive, setWsAvailable]);
 }

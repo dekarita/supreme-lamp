@@ -18,7 +18,7 @@
 // named-pipe helper). A tier line showing "3" plus "Last launch: ... fail" is the
 // honest "no interactive session" case the F86 spec asks to see instead of a
 // silent toast. `ui: <sha7>` stays comparable with the merge sha, exactly like F85.
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { apiBase } from "@/lib/api";
@@ -362,6 +362,7 @@ export default F86DiagnosticBanner;
 // ===========================================================================
 import {
   VIEWING_MODE_PARAM,
+  explainViewingMode,
   resolveViewingMode,
   setViewingMode,
   type ViewingMode,
@@ -388,6 +389,10 @@ const MODE_META: Record<ViewingMode, { tone: string; labelKey: string; helpKey: 
 export function F90ViewingModeBadge() {
   const { t } = useTranslation();
   const [state, setState] = useState(() => resolveViewingMode());
+  // [F94 §3.6] The badge used to print one bare word ("Unknown") with no
+  // reasoning. `explainViewingMode()` returns the SAME decision plus the label,
+  // the reason and the raw signals, so an ambiguous case is diagnosable.
+  const diag = useMemo(() => explainViewingMode(), [state]);
   const [open, setOpen] = useState(false);
   // The badge reports the mode the LAUNCH will act on (never the raw guess), so
   // it can never promise an in-RDP open the code is not going to perform.
@@ -408,8 +413,9 @@ export function F90ViewingModeBadge() {
         data-testid="f90-viewing-mode-badge"
         data-mode={mode}
         type="button"
-        title={t(meta.helpKey)}
+        title={t(meta.helpKey) + " (" + diag.reason + ")"}
         aria-expanded={open}
+        data-reason={diag.reason}
         onClick={() => setOpen((v) => !v)}
         className={
           "h-7 px-2 rounded-md border bg-surface text-[11px] font-mono inline-flex items-center gap-1.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " +
@@ -417,7 +423,7 @@ export function F90ViewingModeBadge() {
         }
       >
         <span aria-hidden>{mode === "web-desktop" ? "✓" : mode === "tailscale-local" ? "!" : "?"}</span>
-        {t("viewingMode.badge.prefix")}: {t(meta.labelKey)}
+        {t("viewingMode.badge.prefix")}: {diag.label}
         {unconfirmedWebDesktop ? <span className="text-tertiary">{t("viewingMode.badge.unconfirmed")}</span> : null}
       </button>
 
@@ -428,6 +434,13 @@ export function F90ViewingModeBadge() {
           className="w-64 rounded-md border border-default bg-surface p-2 flex flex-col gap-1 text-xs shadow-lg"
         >
           <p className="text-tertiary px-1 pb-1">{t(meta.helpKey)}</p>
+          {/* [F94 §3.6] The signals behind the decision, on one line each. */}
+          <p id="f94.viewingMode.reason" data-testid="f90-viewing-mode-reason" className="font-mono text-tertiary px-1 pb-1 break-all">
+            {diag.reason}
+          </p>
+          <p className="text-tertiary px-1 pb-1">
+            host={diag.signals.host || "(none)"} kind={diag.signals.hostKind} framed={String(diag.signals.framed)} dpr={String(diag.signals.dpr)} viewport={diag.signals.viewport}
+          </p>
           {(Object.keys(MODE_META) as ViewingMode[]).map((m) => (
             <button
               key={m}

@@ -55,6 +55,7 @@ function TopBar() {
   const toggleLang = useLangStore((s) => s.toggle);
   const setMobileOpen = useSidebarStore((s) => s.setMobileOpen);
   const wsLive = useTelemetryStore((s) => s.wsLive);
+  const wsAvailable = useTelemetryStore((s) => s.wsAvailable);
   const progressLost = useTelemetryStore((s) => s.progressLost);
   const mirror = useTelemetryStore((s) => s.mirror);
   const serverNow = useTelemetryStore((s) => s.serverNow);
@@ -90,8 +91,23 @@ function TopBar() {
         <Chip id="pillWatcher" tone={watcherActive ? "success" : "neutral"} dot title="Watcher heartbeats every 5s. ACTIVE = heartbeat younger than 15s">
           {t("activity.watcher")}: {watcherActive ? "ACTIVE" : "IDLE"}
         </Chip>
-        <Chip id="pillRust" tone={wsLive ? "success" : "neutral"} dot title="Rust WebSocket bridge (port 7332). LIVE = /ws connected">
-          {t("activity.websocket")}: {wsLive ? "live" : "idle"}
+        {/* [F94 §3.5] "idle" used to be permanent and unexplained: /health
+            hardcodes ws=$false and the connect path was gated on that flag, so
+            the socket never opened. Now the pill reports the REAL state of our
+            socket and names the endpoint's absence when that is the answer. */}
+        <Chip
+          id="pillRust"
+          tone={wsLive ? "success" : wsAvailable ? "warning" : "neutral"}
+          dot
+          title={
+            wsLive
+              ? "WebSocket bridge connected (/ws open)"
+              : wsAvailable
+                ? "The server advertises /ws but no socket is open yet - retrying on the 1s/3s/10s/30s ladder"
+                : "This server exposes no /ws endpoint (the PowerShell dashboard server replies ws=false); live progress arrives by HTTP polling every 3s"
+          }
+        >
+          {t("activity.websocket")}: {wsLive ? "live" : wsAvailable ? "idle (retrying)" : "idle (no endpoint)"}
         </Chip>
         <Chip id="pillClock" tone="neutral" dot title="Server-side timestamp of the data below" className="font-mono">
           {t("activity.clock")}: {clockText(serverNow())}
