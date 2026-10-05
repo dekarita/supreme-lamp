@@ -13,7 +13,8 @@ import { useSearchStore } from "@/stores/searchStore";
 import { camel } from "./CommandBar";
 import { licenceStyle } from "@/pages/search/tokens";
 import { getKey } from "@/lib/api";
-import { launchFailureToast, launchUrl } from "@/lib/launchUrl";
+// [F91 §B.2] the preview dialog open button joins mirror mode.
+import { openMirrored } from "@/lib/launchUrl";
 import { useToastStore } from "@/stores/toastStore";
 
 interface PreviewState {
@@ -79,13 +80,12 @@ export function PreviewDialog() {
   if (!previewResultId || !result) return null;
 
   const direct = result.sourceUrl;
-  // [F84 §2.3] No window.open fallback: the shared launchUrl() contract returns
-  // a reason key and this dialog renders it as a toast (with a Retry hint)
-  // instead of silently opening the link in the operator's local browser.
+  // [F91 §B.1] Mirror Mode supersedes the F84 §2.3 no-fallback rule FOR THIS
+  // BUTTON (operator decision F91-2): the local tab is the DESIGN, the RDP
+  // queue is the bonus - a failed queue is an info line, never an error.
   const openRdp = async () => {
     if (!direct) return;
-    const out = await launchUrl(direct);
-    if (!out.ok) push(launchFailureToast(out, t));
+    await openMirrored(direct, { push, t });
   };
 
   return (

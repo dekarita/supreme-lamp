@@ -19,7 +19,8 @@ import { useCustomSourcesStore } from "@/stores/customSourcesStore";
 import { useToastStore } from "@/stores/toastStore";
 import { LabInspector } from "./LabInspector";
 import { validatedHttpsUrl, fileExtension, formatActualBytes, licenceStyle, camel } from "@/pages/search/tokens";
-import { launchFailureToast, launchUrl } from "@/lib/launchUrl";
+// [F91 §B.2] mirror mode for the source-url click (local tab + launcher queue).
+import { openMirrored } from "@/lib/launchUrl";
 
 export default function Lab() {
   const { targetId } = useParams<{ targetId: string }>();
@@ -147,8 +148,7 @@ export default function Lab() {
                   type="button"
                   data-testid="lab-source-url"
                   onClick={async () => {
-                    const out = await launchUrl(directUrl);
-                    if (!out.ok) push(launchFailureToast(out, t));
+                    await openMirrored(directUrl, { push, t });
                   }}
                   className="text-accent underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
                 >

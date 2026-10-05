@@ -24,7 +24,15 @@ const okRow = (site: string, over: Record<string, unknown> = {}) => ({
   downloadDir: "C:\\Users\\runner\\Desktop\\RDP-Downloads", errors: [],
   // [F90 §D] awesome.re's row carries the cross-domain README proof: the
   // strategy that ran and how many items the Networking section resolved to.
-  ...(site === "awesome.re" ? { searchStrategy: "markdown-section", searchOk: true, searchItems: 12, networkingItemCount: 12 } : {}),
+  // [F91 §E] every site now runs the search probe, and the F91 columns
+  // (Search | Launcher Queue | Download | Stream Proxy) join rowOk, so the
+  // reference row carries all of them - an absent field is STILL a fail:
+  // the "absent = fail" case below proves it by omitting them.
+  searchStrategy: site === "awesome.re" ? "markdown-section" : "html", searchOk: true, searchItems: 12,
+  ...(site === "awesome.re" ? { networkingItemCount: 12 } : {}),
+  launcherQueueOk: true, launcherQueueNote: "consumed",
+  downloadOk: true, downloadPath: "C:\\Users\\runner\\Desktop\\RDP-Downloads\\robots.txt", downloadBytes: 128,
+  streamProxyOk: true, streamProxyStatus: 200,
   ...over,
 });
 
@@ -95,5 +103,32 @@ describe("F87 self-test panel", () => {
     expect(cellOk({ site: "x", launchOk: true, launchTier: 4 }, "launchTier")).toBe(false);
     expect(cellOk({ site: "x", launchOk: true, launchTier: 3 }, "launchTier")).toBe(true);
     expect(cellOk({ site: "x", downloadDirOk: true }, "downloadDir")).toBe(true);
+  });
+
+  it("[F91 §E] the four new columns judge ONLY their own server fields", () => {
+    // absent = red, and the row stays red even when every F88 column is green.
+    expect(cellOk({ site: "x" }, "launcherQueue")).toBe(false);
+    expect(cellOk({ site: "x" }, "download")).toBe(false);
+    expect(cellOk({ site: "x" }, "streamProxy")).toBe(false);
+    expect(cellOk({ site: "x" }, "search")).toBe(false);
+    expect(cellOk({ site: "x", launcherQueueOk: true }, "launcherQueue")).toBe(true);
+    expect(cellOk({ site: "x", downloadOk: true }, "download")).toBe(true);
+    expect(cellOk({ site: "x", streamProxyOk: true }, "streamProxy")).toBe(true);
+    expect(cellOk({ site: "x", searchOk: true }, "search")).toBe(true);
+    expect(rowOk(okRow("archive.org", { streamProxyOk: false }))).toBe(false);
+    expect(rowOk(okRow("archive.org", { launcherQueueNote: "launcher-offline" }))).toBe(true); // note is context, verdict is the field
+  });
+
+  it("[F91 §E] the global launcher line renders serviceRunning + queue depth", async () => {
+    stubFetch(200, {
+      ok: true, total: 1, passed: 1,
+      results: [okRow("archive.org")],
+      launcher: { serviceRunning: true, heartbeatAge: 2000, queueDepth: 0, taskExists: true },
+    });
+    mount("/search?selftest=1");
+    fireEvent.click(screen.getByTestId("f87-selftest-run"));
+    const note = await screen.findByTestId("f91-selftest-launcher-note");
+    expect(note.getAttribute("data-ok")).toBe("1");
+    expect(note.textContent).toContain("queue 0");
   });
 });

@@ -56,6 +56,23 @@
     "ticketAudit": "ටිකට් අගයකිරීම"
   },
   "mirror": {
+    "open": "විවෘත කරන්න",
+    "openHint": "ස්ථානීයව විවෘත කර RDP වෙත දර්පණය කරන්න",
+    "openedLocal": "ස්ථානීයව විවෘත විය \u2713",
+    "mirroredRdp": "RDP වෙත දර්පණය විය \u2713",
+    "openedBoth": "ස්ථානීයව විවෘත විය \u2713 + RDP වෙත දර්පණය විය \u2713",
+    "rdpOffline": "ස්ථානීයව විවෘත විය \u2713 (RDP දාවක: {{reason}})",
+    "blocked": "ප්‍රතික්ෂේප: සාමාන්‍ය https සබැඳියක් නොවේ - කිසිවක් විවෘත විය නැත",
+    "openInExplorer": "RDP හි විවෘත කරන්න",
+    "watchInRdp": "\u25B6 RDP හි නරඹන්න",
+    "watchLiveInRdp": "\u25B6 සජීවී RDP හි නරඹන්න",
+    "audioPlayLabel": "RDP හරහා අන්තර්ගත ශ්‍රව්‍යය",
+    "audioStreamFailed": "\u26A0 ප්‍රවාහය අසාර්ථකයි - RDP හි නරඹන්න",
+    "launcherLine": "දාවක: {{state}}, හෘදස්පන්දුව තත්පර {{age}}කට පෙර, පෝලිම {{depth}}",
+    "launcherRunning": "ක්‍රියාත්මකයි \u2713",
+    "launcherStale": "කාර්ය ස්ථාපනයයි, හෘදස්පන්දුව පැරණියි",
+    "launcherMissing": "පෝලිම පමණයි (සේවාව කියවන්නේ නැත)",
+    "launcherAbsent": "නැත (F91-ට පෙර සේවාදායකය)",
     "title": "දර්පණය",
     "titlePlain": "Mirror - plaintext runner upload (no AES-256)",
     "titleEncryptLocked": "Mirror - AES-256 requested but unavailable in this build (plaintext refused)",
@@ -990,7 +1007,12 @@
       "sitemapUrls": "Sitemap URL",
       "launchTier": "දියත් කිරීමේ ස්ථරය",
       "downloadDir": "බාගැනීම් ෆෝල්ඩරය",
-      "awesomeItems": "awesome.re අයිතම"
+      "awesomeItems": "awesome.re අයිතම",
+      "search": "Search endpoint",
+      "launcherQueue": "Launcher queue",
+      "download": "Download",
+      "streamProxy": "Stream proxy",
+      "launcherNote": "launcher service: {{state}} | heartbeat {{age}}s | queue {{depth}}"
     }
   },
   "viewingMode": {

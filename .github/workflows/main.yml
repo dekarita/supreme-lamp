@@ -2106,6 +2106,9 @@ jobs:
           echo '[webdesk] ghrdp-pub2.ps1 + ghrdp-bootstrap-session.ps1 staged'
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-launcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-launcher.ps1"
+          # [F91 §A.2] the persistent launcher SERVICE (queue reader + heartbeat)
+          # that makes mirror mode work; registered as GHRDP-Launcher below.
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-rdp-launcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-rdp-launcher.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-client-install.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-client-install.ps1"
           # [remediation] ghrdp-launch.ps1 staging removed (banned old-helper duplicate deleted; superseded by helper-ghrdp-connect.ps1)
           cp "$GITHUB_WORKSPACE/payloads/helper-ghrdp-connect.ps1" "$RUNNER_TEMP/ghrdp-stage/helper-ghrdp-connect.ps1"
@@ -4406,6 +4409,70 @@ jobs:
           Write-Host '  (a) startup-folder shortcut - created by the watcher itself at first logon'
           Write-Host '  (b) ONLOGON scheduled task running as the RDP user (above)'
           Write-Host '  (c) dashboard Start-watcher button + servers auto-heal the task every 60s'
+          exit 0
+
+      # [F91 §A.2] Persistent launcher SERVICE for MIRROR MODE. The script lives
+      # at C:\ProgramData\ghrdp\ (NOT C:\ghrdp) because the queue + heartbeat +
+      # log under ProgramData must be writable by BOTH the SYSTEM-run server and
+      # the Interactive-task runner user without ACL gymnastics. Registered
+      # ONLOGON with a hidden window (F11-5.3: every host-helper launch in this
+      # workflow stays -WindowStyle Hidden) and started once right here so the
+      # dashboard's first /api/launcher/queue of THIS dispatch already drains.
+      # Verification below reads the task's LAST TASK RESULT/STATE back; a task
+      # that never registered prints a loud ::warning:: - the dashboard's
+      # mirror toast degrades to "RDP launcher: offline", never a hard error.
+      - name: Register GHRDP-Launcher service (F91 mirror mode)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $user = $env:RDP_USER
+          $pdDir = 'C:\ProgramData\ghrdp'
+          New-Item -ItemType Directory -Path $pdDir -Force | Out-Null
+          New-Item -ItemType Directory -Path (Join-Path $pdDir 'launcher-queue') -Force | Out-Null
+          $src = Join-Path $pdDir 'ghrdp-rdp-launcher.ps1'
+          $staged = 'C:\ghrdp\ghrdp-rdp-launcher.ps1'
+          if (Test-Path -LiteralPath $staged) {
+              Copy-Item -LiteralPath $staged -Destination $src -Force
+              Write-Host '[f91] launcher script staged to' $src
+          } else {
+              Write-Host '::warning::[f91] ghrdp-rdp-launcher.ps1 missing at C:\ghrdp - launcher service cannot start (mirror mode degrades to local-open only)'
+          }
+          $pwshPath = 'powershell.exe'
+          try { $c = Get-Command pwsh.exe -ErrorAction Stop; if ($c) { $pwshPath = $c.Source } } catch { }
+          $tr = ('powershell.exe -NoProfile -WindowStyle Hidden -File "{0}"' -f $src)
+          $registered = $false
+          try {
+              $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -WindowStyle Hidden -File "{0}"' -f $src)
+              $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+              $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+              $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero) -RestartInterval (New-TimeSpan -Minutes 1) -RestartCount 999
+              Register-ScheduledTask -TaskName 'GHRDP-Launcher' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+              $registered = $true
+              Write-Host '[f91] GHRDP-Launcher ONLOGON task registered (no time limit, auto-restart 1m)'
+          } catch {
+              Write-Host ('[f91] Register-ScheduledTask failed: ' + $_.Exception.Message)
+          }
+          if (-not $registered) {
+              try {
+                  & schtasks.exe /Create /F /SC ONLOGON /TN GHRDP-Launcher /RL HIGHEST /TR ('"{0}"' -f ($tr -replace '"','\"')) 2>$null
+                  if ($LASTEXITCODE -eq 0) { $registered = $true; Write-Host '[f91] schtasks ONLOGON fallback registered' }
+              } catch { Write-Host ('[f91] schtasks fallback failed: ' + $_.Exception.Message) }
+              $LASTEXITCODE = 0
+          }
+          if ($registered) {
+              try { & schtasks.exe /Run /TN GHRDP-Launcher 2>$null; $LASTEXITCODE = 0 } catch { }
+              Start-Sleep -Seconds 6
+              $info = $null
+              try { $info = Get-ScheduledTaskInfo -TaskName 'GHRDP-Launcher' -ErrorAction Stop } catch { }
+              if ($info) {
+                  Write-Host ('[f91] task health: State=' + [string]$info.State + ' LastRun=' + [string]$info.LastRunTime + ' LastResult=' + [string]$info.LastTaskResult)
+                  if ($info.State -eq 'Running') { Write-Host '[f91] launcher service RUNNING (heartbeat will be <30s old)' }
+              }
+              $hb = Join-Path $pdDir 'launcher-heartbeat.txt'
+              if (Test-Path -LiteralPath $hb) { Write-Host ('[f91] heartbeat file present: ' + [string](Get-Content -LiteralPath $hb -Raw)) }
+          } else {
+              Write-Host '::warning::[f91] GHRDP-Launcher task NOT registered - /api/launcher/health will report taskExists=false'
+          }
           exit 0
 
       - name: Register GhrdpWebDesk task (active-user Interactive principal)

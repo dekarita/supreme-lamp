@@ -26,6 +26,10 @@ function stubRoutes(launchStatus = 200, serverSha = UI_SHA7) {
     if (url.endsWith("/api/version")) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ sha7: serverSha, features: { autoHttps: true, wwwTolerance: true, noFallback: true, downloadToRdp: true, launchTiers: true, selfTest: true } }) } as unknown as Response);
     if (url.endsWith("/api/launch-url/diag")) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ activeTier: 1, lastLaunchAt: "2026-10-05T00:07:00Z", lastResult: "ok", history: HISTORY }) } as unknown as Response);
     if (url.endsWith("/api/launch-url") && init?.method === "POST") return Promise.resolve({ ok: launchStatus === 200, status: launchStatus, json: () => Promise.resolve(launchStatus === 200 ? { ok: true, tier: 2, tierDetail: "schtasks-interactive" } : { code: "NO_ACTIVE_SESSION" }) } as unknown as Response);
+    // [F91 §B.2] the diag test button now MIRROR-opens: the queue POST is the
+    // RDP half. launchStatus steers it too (200 = both halves, else offline).
+    if (url.endsWith("/api/launcher/queue") && init?.method === "POST") return Promise.resolve({ ok: launchStatus === 200, status: launchStatus === 200 ? 200 : 503, json: () => Promise.resolve(launchStatus === 200 ? { ok: true, jobId: "j-diag" } : { code: "QUEUE_DIR_UNAVAILABLE" }) } as unknown as Response);
+    if (url.endsWith("/api/launcher/health")) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ serviceRunning: true, heartbeatAge: 2000, queueDepth: 0, taskExists: true }) } as unknown as Response);
     if (url.includes("/api/f87-selftest")) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, results: [{ site: "archive.org", downloadDir: "C:\\Users\\runner\\Desktop\\RDP-Downloads", downloadDirOk: true }] }) } as unknown as Response);
     return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as unknown as Response);
   });
@@ -65,23 +69,38 @@ describe("F87 expanded diagnostic banner", () => {
     else expect(screen.getByTestId("f87-diag-sha-mismatch").textContent).toContain("sha mismatch");
   });
 
-  it("test launch POSTs example.com through launchUrl and reports the rung; a failure reports the reason", async () => {
+  it("[F91 §B.2] test launch MIRROR-opens example.com: local tab + queue job; an offline launcher degrades, never errors", async () => {
     const fn = stubRoutes(200);
+    const opened: string[] = [];
+    vi.stubGlobal("open", vi.fn((u: string) => { opened.push(String(u)); return {}; }));
     mount("/search?diag=1");
     fireEvent.click(await screen.findByTestId("f87-diag-test-launch"));
     const out = await screen.findByTestId("f87-diag-test-launch-result");
     await waitFor(() => expect(out.getAttribute("data-ok")).toBe("1"));
-    expect(out.textContent).toContain("tier 2");
-    const post = fn.mock.calls.find((c) => String(c[0]).endsWith("/api/launch-url") && (c[1] as RequestInit)?.method === "POST");
-    expect(post).toBeTruthy();
-    expect(JSON.parse(String((post![1] as RequestInit).body)).url).toBe(DIAG_TEST_LAUNCH_URL);
+    // mirror wording, not a tier line: the operator's step-6 expected text.
+    expect(out.textContent).toContain("Mirrored to RDP");
+    expect(opened).toContain(DIAG_TEST_LAUNCH_URL);
+    const post = fn.mock.calls.find((c) => String(c[0]).endsWith("/api/launcher/queue") && (c[1] as RequestInit)?.method === "POST");
+    expect(post, "the diag click must queue a navigate job for the launcher service").toBeTruthy();
+    const sent = JSON.parse(String((post![1] as RequestInit).body));
+    expect(sent.url).toBe(DIAG_TEST_LAUNCH_URL);
+    expect(sent.mode).toBe("navigate");
     expect(DIAG_TEST_LAUNCH_URL).toBe("https://example.com/");
+    // [F91 §A.4] the launcher line from /api/launcher/health.
+    const line = screen.getByTestId("f91-diag-launcher");
+    expect(line.getAttribute("data-ok")).toBe("1");
+    expect(line.textContent).toContain("queue depth 0");
 
+    // queue write refused -> the chip shows the REASON as info (data-ok 0) but
+    // the LOCAL half still opened; there is no "could not open" state any more.
     stubRoutes(503);
+    vi.stubGlobal("open", vi.fn(() => ({})));
     mount("/search?diag=1");
     fireEvent.click((await screen.findAllByTestId("f87-diag-test-launch"))[1]);
     const bad = (await screen.findAllByTestId("f87-diag-test-launch-result"))[1];
     await waitFor(() => expect(bad.getAttribute("data-ok")).toBe("0"));
+    expect(bad.textContent).toContain("Opened locally");
+    expect(bad.textContent).not.toContain("Could not open in RDP");
   });
 
   it("the download-dir probe shows path + writable mark, and the shortcut navigates to ?selftest=1", async () => {

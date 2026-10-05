@@ -57,29 +57,31 @@ test("F85-4: /api/fetch?download=true writes to Desktop\\RDP-Downloads with a sa
   assert.match(RESULTS, /download\.success/, "the UI does not toast the written path");
 });
 
-test("F85-5: launchUrl() has no window.open fallback, and main.tsx installs the detection handle", () => {
+test("F85-5: launchUrl() keeps its no-window.open-fallback contract; mirror mode is a SEPARATE, local-first call site [F91]", () => {
   // Comments may NAME the removed API (the F84 rationale does); the CODE must
   // not call it, so strip every //-comment line before the check.
   const launchCode = LAUNCH.split("\n").filter((l) => !l.trim().startsWith("//")).join("\n");
 
-  // [F90 §C.2] Mode A calls window.open on purpose: when the dashboard IS the
-  // RDP session's browser, that call lands in the session, and it is the one
-  // path that cannot be broken by a server that cannot reach a desktop.
-  //
-  // The F85 invariant was never "never call window.open" - it was "never let a
-  // FAILED server call silently open the link in the operator's local browser,
-  // which looks like success". So the flat grep is replaced by a structural
-  // assertion that is STRICTER than the one it replaces:
+  // [F90 §C.2] Mode A calls window.open on purpose; [F91 §B.1] openMirrored
+  // calls it on purpose TOO - mirror mode's local half is the DESIGN, not a
+  // fallback (operator decision F91-2). The F85 invariant was never "never
+  // call window.open" - it is "launchUrl() must never let a FAILED server call
+  // silently open the operator's local browser". So the count is now exactly
+  // TWO call sites, and the structural guard is scoped INSIDE launchUrl():
   const calls = launchCode.match(/window\.open\(/g) || [];
-  assert.strictEqual(calls.length, 1, "launchUrl.ts must have exactly one window.open call site (Mode A only)");
+  assert.strictEqual(calls.length, 2, "launchUrl.ts must have exactly two window.open call sites (F90 Mode A + F91 openMirrored)");
 
-  const serverCall = launchCode.indexOf("await launchUrlViaServer(url)");
+  const launchBody = launchCode.slice(launchCode.indexOf("export async function launchUrl("), launchCode.indexOf("async function launchUrlViaServer"));
+  assert.ok(launchBody.length > 200, "the launchUrl() body could not be extracted");
+  const serverCall = launchBody.indexOf("await launchUrlViaServer(url)");
   assert.ok(serverCall > 0, "the server ladder call is missing");
-  const before = launchCode.slice(0, serverCall);
-  const after = launchCode.slice(serverCall);
+  const before = launchBody.slice(0, serverCall);
+  const after = launchBody.slice(serverCall);
   assert.ok(/window\.open\(/.test(before), "Mode A's window.open must run BEFORE the server call");
-  // <- the actual F84/F85 guard: no window.open anywhere after the ladder.
+  // <- the actual F84/F85 guard, unchanged: no window.open anywhere in
+  // launchUrl() after the ladder. Mirror mode CANNOT be reached from here.
   assert.ok(!/window\.open/.test(after), "window.open came back AFTER the server call - that is the silent fallback");
+  assert.ok(!/openMirrored/.test(launchBody), "launchUrl() must not call openMirrored - the ladder's failure contract stays its own");
 
   const modeA = before.slice(before.indexOf('if (mode === "web-desktop") {'));
   assert.ok(/window\.open\(/.test(modeA), "Mode A's window.open is not inside its mode guard");
@@ -87,6 +89,20 @@ test("F85-5: launchUrl() has no window.open fallback, and main.tsx installs the 
 
   const modeB = after.slice(after.indexOf('mode === "tailscale-local"'));
   assert.ok(!/window\.open/.test(modeB), "tailscale-local must never open a window - it asks the operator instead");
+
+  // [F91] mirror mode: local open FIRST, queue POST after, and NO other
+  // window.open in the module.
+  const mirrorBody = launchCode.slice(launchCode.indexOf("export async function openMirrored("));
+  assert.ok(mirrorBody.length > 200, "openMirrored() is missing");
+  const mirrorOpen = mirrorBody.indexOf("window.open(");
+  // openMirrored delegates the queue write to queueLauncherJob() (shared with
+  // the explorer/download jobs); the ORDER that matters is local-open first.
+  const mirrorQueue = mirrorBody.indexOf('queueLauncherJob(url, "navigate")');
+  assert.ok(mirrorOpen > 0 && mirrorQueue > mirrorOpen, "mirror mode must open locally BEFORE queueing to the launcher");
+  assert.ok(launchCode.includes('fetch("/api/launcher/queue"'), "the launcher queue POST is missing");
+  assert.ok(launchCode.includes("export async function queueLauncherJob("), "queueLauncherJob() is not exported");
+  assert.strictEqual((mirrorBody.match(/window\.open\(/g) || []).length, 1, "mirror mode must have exactly one window.open");
+  assert.ok(/noopener/.test(mirrorBody.slice(mirrorOpen, mirrorOpen + 120)), "the mirror popup must keep the noopener features");
 
   assert.match(LAUNCH, /export function installLaunchUrlHandle/, "the feature-detection installer is missing");
   assert.match(MAIN, /installLaunchUrlHandle\(\);/, "src/main.tsx does not install the handle");

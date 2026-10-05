@@ -157,6 +157,20 @@ export function Toasts() {
           onClick={() => dismiss(t.id)}
         >
           {t.msg}
+          {t.action ? (
+            <button
+              type="button"
+              data-testid="toast-action"
+              className="ml-2 underline underline-offset-2 font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
+              onClick={(e) => {
+                e.stopPropagation();
+                t.action?.onClick();
+                dismiss(t.id);
+              }}
+            >
+              {t.action.label}
+            </button>
+          ) : null}
         </div>
       ))}
     </div>
