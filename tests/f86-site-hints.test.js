@@ -1,6 +1,7 @@
 // [F86 §C.2/C.4] PER-SITE HINTS for the operator's ten-site fixture.
 //
-// payloads/data/f86-site-hints.json is the file the server reads at boot
+// payloads/data/f88-site-hints.json is the file the server reads at boot
+// [F88 §A.1] renamed from f86-site-hints.json when the search strategies landed.
 // (Get-F86SiteHints, one read per process). This test proves three things:
 //   1. the file is VALID JSON and covers every domain of the operator fixture;
 //   2. each covered site produces the exact sitemap/search/catalog URL the
@@ -13,7 +14,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
-const HINTS = JSON.parse(fs.readFileSync('payloads/data/f86-site-hints.json', 'utf8'));
+const HINTS = JSON.parse(fs.readFileSync('payloads/data/f88-site-hints.json', 'utf8'));
 const SERVER = fs.readFileSync('payloads/ghrdp-server.ps1', 'utf8').replace(/\r\n?/g, '\n');
 const START = SERVER.indexOf('# [F86 §C] PER-SITE HINTS + SITEMAP-INDEX RECURSION');
 const END = SERVER.indexOf('# constant-time dash-token gate', START);
@@ -57,7 +58,7 @@ test('F86-C2-FILE: every operator site has a hint entry with a sitemap path', ()
 test('F86-C2-URL: each hinted search path produces the expected query URL', () => {
   const q = 'public domain film';
   const expected = {
-    'archive.org': 'https://archive.org/search?query=public%20domain%20film',
+    'archive.org': 'https://archive.org/search?query=public%20domain%20film&tab=all', // [F88] the operator's expected result URL carries tab=all
     'gutenberg.org': 'https://gutenberg.org/ebooks/search/?query=public%20domain%20film',
     'librivox.org': 'https://librivox.org/search?primary_key=public%20domain%20film&search_category=title&search_page=1&search_form=advanced',
     'freemusicarchive.org': 'https://freemusicarchive.org/search?quicksearch=public%20domain%20film',
@@ -83,7 +84,7 @@ test('F86-C2-URL: each hinted search path produces the expected query URL', () =
 test('F86-C2-SHIPPED: the server loads the JSON and consults it before/after the sitemap', () => {
   for (const tok of [
     'function Get-F86SiteHints',
-    "$script:F86HintsPath = Join-Path $Root 'data\\f86-site-hints.json'",
+    "$script:F86HintsPath = Join-Path $Root 'data\\f88-site-hints.json'",
     'function Get-F86SiteHint',
     'function Get-F86HintList',
     'function Expand-F86HintPath',

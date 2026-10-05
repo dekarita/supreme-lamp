@@ -13,7 +13,7 @@ import { useSearchStore } from "@/stores/searchStore";
 import { camel } from "./CommandBar";
 import { licenceStyle } from "@/pages/search/tokens";
 import { getKey } from "@/lib/api";
-import { launchUrl } from "@/lib/launchUrl";
+import { launchFailureToast, launchUrl } from "@/lib/launchUrl";
 import { useToastStore } from "@/stores/toastStore";
 
 interface PreviewState {
@@ -85,7 +85,7 @@ export function PreviewDialog() {
   const openRdp = async () => {
     if (!direct) return;
     const out = await launchUrl(direct);
-    if (!out.ok) push(t(out.reason || "search.launchUrl.failed") + " — " + t("search.launchUrl.retry"));
+    if (!out.ok) push(launchFailureToast(out, t));
   };
 
   return (

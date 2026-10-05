@@ -45,13 +45,14 @@ test("F85-3: the probe-answered host is stored AND allowlisted", () => {
 });
 
 test("F85-4: /api/fetch?download=true writes to Desktop\\RDP-Downloads with a sanitised name", () => {
-  const i = SERVER.indexOf("$f84DestDir = Join-Path $env:USERPROFILE 'Desktop\\RDP-Downloads'");
-  assert.ok(i > 0, "the download destination is missing");
-  const body = SERVER.slice(i, i + 2600);
+  const i = SERVER.indexOf("function Invoke-F88DownloadToRdp");
+  assert.ok(i > 0, "the F88 shared download helper is missing");
+  const body = SERVER.slice(i, i + 6000);
   assert.match(body, /-replace '\[\^A-Za-z0-9\._-\]', '_'/, "the filename sanitiser is missing (path traversal)");
   assert.match(body, /Trim\('\.'\)/, "leading/trailing dots are not trimmed ('.'/'..' filenames)");
   assert.match(body, /Test-F78SameHost|ToLowerInvariant\(\) -replace '\^www\\\.'/, "the www-tolerant final-host guard is missing");
-  assert.match(SERVER, /ok = \$true; path = \$f84Path; bytes = \$f84Bytes/, "the {ok,path,bytes} envelope is missing");
+  assert.match(SERVER, /path = \[string\]\$f88Dl\.path; bytes = \[int64\]\$f88Dl\.bytes/, "the {ok,path,bytes} envelope is missing");
+  assert.match(SERVER, /DOWNLOAD_VERIFY_FAILED/, "[F88 §C.1] the verification-failure code is missing");
   assert.match(RESULTS, /download: true/, "the UI does not send download=true");
   assert.match(RESULTS, /download\.success/, "the UI does not toast the written path");
 });

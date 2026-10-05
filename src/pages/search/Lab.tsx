@@ -19,7 +19,7 @@ import { useCustomSourcesStore } from "@/stores/customSourcesStore";
 import { useToastStore } from "@/stores/toastStore";
 import { LabInspector } from "./LabInspector";
 import { validatedHttpsUrl, fileExtension, formatActualBytes, licenceStyle, camel } from "@/pages/search/tokens";
-import { launchUrl } from "@/lib/launchUrl";
+import { launchFailureToast, launchUrl } from "@/lib/launchUrl";
 
 export default function Lab() {
   const { targetId } = useParams<{ targetId: string }>();
@@ -148,7 +148,7 @@ export default function Lab() {
                   data-testid="lab-source-url"
                   onClick={async () => {
                     const out = await launchUrl(directUrl);
-                    if (!out.ok) push(t(out.reason || "search.launchUrl.failed") + " — " + t("search.launchUrl.retry"));
+                    if (!out.ok) push(launchFailureToast(out, t));
                   }}
                   className="text-accent underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
                 >

@@ -17,14 +17,17 @@ const SI = JSON.parse(fs.readFileSync('src/i18n/si.json', 'utf8'));
 test('F84-DL-SERVER: download=true streams to Desktop\\RDP-Downloads', () => {
   assert.ok(SERVER.includes("Join-Path $env:USERPROFILE 'Desktop\\RDP-Downloads'"), 'RDP-Downloads destination missing');
   assert.ok(SERVER.includes("$f84Download = ([string]$parts.query['download']) -eq 'true'"), 'download query flag missing');
-  assert.ok(SERVER.includes('$f84Bytes += $f84Read'), 'no streaming write loop');
-  assert.ok(SERVER.includes('path = $f84Path; bytes = $f84Bytes'), 'no {path,bytes} response envelope');
-  assert.ok(SERVER.includes("$f84Clean = ($f84Base -replace '[^A-Za-z0-9._-]', '_').Trim('.')"), 'filename is not sanitised');
+  // [F88 §C.1] the transfer moved into the shared verified helper.
+  assert.ok(SERVER.includes('$f88Written += $f88Read'), 'no streaming write loop');
+  assert.ok(SERVER.includes('path = [string]$f88Dl.path; bytes = [int64]$f88Dl.bytes'), 'no {path,bytes} response envelope');
+  assert.ok(SERVER.includes('verified = [bool]$f88Dl.verified; writeTime = [string]$f88Dl.writeTime'), 'no F88 verification fields');
+  assert.ok(SERVER.includes("$f88Clean = ($f88Base -replace '[^A-Za-z0-9._-]', '_').Trim('.')"), 'filename is not sanitised');
+  assert.ok(SERVER.includes('function Invoke-F88DownloadToRdp'), 'the shared download helper is missing');
   assert.ok(SERVER.includes('f84 download-to-rdp bytes='), 'no audit line');
 });
 
 test('F84-DL-SERVER: an off-host redirect still refuses to write', () => {
-  assert.ok(SERVER.includes('$f84Want = ([string]([System.Uri]$targetUrl).Host).ToLowerInvariant() -replace \'^www\\.\', \'\''), 'final-host guard missing');
+  assert.ok(SERVER.includes('if (-not (& $f88Same $f88Uri.Host $f88Got))'), 'final-host guard missing');
   assert.ok(SERVER.includes("code = 'HOSTNAME_MISMATCH'"), 'off-host refusal code missing');
 });
 

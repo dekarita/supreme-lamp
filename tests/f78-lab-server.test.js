@@ -15,7 +15,9 @@ const EN = JSON.parse(fs.readFileSync('src/i18n/en.json', 'utf8'));
 const SI = JSON.parse(fs.readFileSync('src/i18n/si.json', 'utf8'));
 
 function block() {
-  const start = SERVER.indexOf("if ($path -eq '/api/f58/sources' -or $path -eq '/api/lab/inspect') {");
+  // [F88 §B.1] the gate now also admits the routes the block houses (launch-url,
+  // diag, selftest, preview, sources/<id> DELETE) - anchor on the stable prefix.
+  const start = SERVER.indexOf("if ($path -eq '/api/f58/sources' -or $path -eq '/api/lab/inspect' -or");
   assert.ok(start > 0, 'the F78 route block is missing');
   // The block ends at the remediation marker that follows it.
   const end = SERVER.indexOf('# [remediation] C2 / agent-payload / .bat endpoints removed', start);

@@ -2,7 +2,7 @@
 // counts. The route is the operator's one-click production proof, so this file
 // proves (1) the route ships in payloads/ghrdp-server.ps1 with the four probes
 // in order, (2) the body is validated as a SUBSET of the eleven operator sites
-// (the allowlist is payloads/data/f86-site-hints.json - the same file the Lab
+// (the allowlist is payloads/data/f88-site-hints.json - the same file the Lab
 // hints read), (3) the response shape the panel renders, (4) the 1 call / 60 s
 // per-token rate limit, (5) the download stub never downloads, and (6) the
 // e2e mock answers the same envelope with the same fixture names.
@@ -12,7 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const SERVER = fs.readFileSync('payloads/ghrdp-server.ps1', 'utf8').replace(/\r\n?/g, '\n');
-const HINTS = JSON.parse(fs.readFileSync('payloads/data/f86-site-hints.json', 'utf8'));
+const HINTS = JSON.parse(fs.readFileSync('payloads/data/f88-site-hints.json', 'utf8'));
 const MOCK = fs.readFileSync('tests/e2e/fixtures/mock-backend.mjs', 'utf8');
 const SITES = ['openculture.com', 'archive.org', 'openverse.org', 'awesome.re', 'gutenberg.org', 'standardebooks.org',
   'librivox.org', 'openlibrary.org', 'tubitv.com', 'pluto.tv', 'freemusicarchive.org'];
@@ -49,7 +49,7 @@ function makeLimiter(now = () => Date.now()) {
   };
 }
 
-test('F87-C1-ROUTE: the self-test route ships with the four probes in order and the real ladder', () => {
+test('F87-C1-ROUTE: [F88 §C.2 supersession] the self-test ships the four probes + the real downloadTest', () => {
   for (const tok of [
     "Invoke-F78SecureFetch -Url $f87Home -ExpectedHost $f87Site -MaxBytes 65536 -TimeoutSec 8",
     "Invoke-F86SitemapFetch -Url ($f87Home + 'sitemap.xml') -f78Host $f87Site",
@@ -58,14 +58,20 @@ test('F87-C1-ROUTE: the self-test route ships with the four probes in order and 
     "Join-Path $env:USERPROFILE 'Desktop\\RDP-Downloads'",
     '[System.IO.File]::WriteAllBytes($f87ProbeFile, [byte[]]@())',
     'Remove-Item -LiteralPath $f87ProbeFile -Force',
+    // [F88 §C.2] step 5: a REAL download through the shared verified helper
+    "Invoke-F88DownloadToRdp -Url ($f87Home + 'robots.txt') -ExpectedHost $f87Site",
+    '$f87Row.downloadOk = [bool]$f88Dt.ok',
     "(?i)\\.pdf(\\?|$)",
   ]) assert.ok(ROUTE.includes(tok), 'route does not pin: ' + tok);
-  const order = ['probeOk = [bool]$f87Probe.ok', '$f87Row.sitemapUrls = [int]$f87Urls.Count', '$f87Row.launchTier = [int]$f87Launch.tier', '$f87Row.downloadDirOk = $true']
+  const order = ['probeOk = [bool]$f87Probe.ok', '$f87Row.sitemapUrls = [int]$f87Urls.Count', '$f87Row.launchTier = [int]$f87Launch.tier', '$f87Row.downloadDirOk = $true', '$f87Row.downloadOk = [bool]$f88Dt.ok']
     .map((t) => ROUTE.indexOf(t));
   assert.ok(order.every((i) => i > 0), 'a probe is missing');
-  assert.deepEqual([...order].sort((a, b) => a - b), order, 'probe order must be HEAD -> sitemap -> launch -> download dir');
-  // the stub never transfers bytes: no download call, no Invoke-WebRequest in the route.
-  assert.ok(!/Invoke-WebRequest|DownloadFile|\?download=true/.test(ROUTE), 'the self-test must not download anything');
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'probe order must be HEAD -> sitemap -> launch -> download dir -> downloadTest');
+  // [F88 §C.2 supersedes the F87 'never downloads' stub] the download runs
+  // through the SHARED verified helper - still no Invoke-WebRequest, no
+  // DownloadFile, no ?download=true re-entry from inside the server.
+  assert.ok(!/Invoke-WebRequest|DownloadFile|\?download=true/.test(ROUTE), 'the self-test must download only via Invoke-F88DownloadToRdp');
+  assert.ok(SERVER.includes('function Invoke-F88DownloadToRdp'), 'the shared helper is missing');
 });
 
 test('F87-C1-SHAPE: the response carries results[{site, probeOk, sitemapUrls, launchTier, launchOk, downloadDirOk, errors[]}] + ok/ranAt/total/passed', () => {
@@ -75,7 +81,7 @@ test('F87-C1-SHAPE: the response carries results[{site, probeOk, sitemapUrls, la
   assert.ok(SERVER.includes('selfTest = $true'), '/api/version must advertise features.selfTest');
 });
 
-test('F87-C1-SUBSET: the body is validated as a subset of the eleven operator sites (allowlist = f86-site-hints.json)', () => {
+test('F87-C1-SUBSET: the body is validated as a subset of the eleven operator sites (allowlist = f88-site-hints.json)', () => {
   assert.deepEqual(Object.keys(HINTS).sort(), [...SITES].sort(), 'the hints file IS the operator fixture');
   assert.ok(ROUTE.includes('(Get-F86SiteHints).Keys'), 'the allowlist must come from the hints file, not a second literal');
   assert.ok(ROUTE.includes("messageKey = 'selfTest.invalidSites'"), 'an off-list site must be a 400 with a key');

@@ -444,7 +444,8 @@
       "rateLimited": "දියත් කිරීම් ඉතා වැඩියි - මොහොතකින් නැවත උත්සාහ කරන්න",
       "noSession": "සක්‍රිය කොන්සෝල් සැසියක් සම්බන්ධ නැත",
       "tierProbe": "RDP තුළ විවෘත කර දියත් කිරීමේ ස්ථරය පෙන්වන්න",
-      "openedViaTier": "ස්ථරය {{tier}} හරහා විවෘත විය"
+      "openedViaTier": "ස්ථරය {{tier}} හරහා විවෘත විය",
+      "failedTier": "RDP තුළ විවෘත කළ නොහැක (ස්ථරය {{tier}} අසාර්ථකයි): {{reason}}. නැවත උත්සාහ කරන්න, නැතහොත් විස්තර සඳහා /#/search?diag=1 බලන්න."
     },
     "a11y": {
       "commandBar": "සෙවුම් විධාන තීරුව",
@@ -737,7 +738,8 @@
       "testLaunchFail": "පරීක්ෂණ දියත් කිරීම අසාර්ථකයි: {{reason}}",
       "recent": "අවසන් දියත් කිරීම්:",
       "downloadDir": "බාගැනීම් ෆෝල්ඩරය",
-      "selfTestShortcut": "අඩවි 11 ස්වයං පරීක්ෂණය ධාවනය කරන්න"
+      "selfTestShortcut": "අඩවි 11 ස්වයං පරීක්ෂණය ධාවනය කරන්න",
+      "verboseLog": "විස්තරාත්මක launch-url ලොග් (අවසන් පේළි 20)"
     },
     "deepInspect": "{{hostname}} තුළ “{{query}}” ගේබීරව පරීක්ෂා කරන්න",
     "openInLabSite": "{{hostname}} ලැබ් තුළ විවෘත කරන්න",
@@ -937,6 +939,7 @@
 ,
   "lab": {
     "title": "ලැබ් පරීක්ෂකය",
+    "sourceLine": "මූලාශ්‍රය: {{source}} — {{seconds}} තත්පරයකින් ප්‍රතිඵල {{count}}",
     "resultContext": "{{adapter}} වෙතින් {{title}} පරීක්ෂා කරමින්",
     "query": "විමසීම",
     "matchCount": "සබැඳුම් {{total}} අතරින් {{matches}} ක් “{{query}}” හා ගැලපෙයි",

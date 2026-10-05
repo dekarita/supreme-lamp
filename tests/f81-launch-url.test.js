@@ -18,7 +18,7 @@ function f81block() {
   // sitemap code is in /api/lab/inspect, which is AFTER the helpers, so
   // we read the whole F78 block (anchored by the F78 route gate) to
   // ensure we also see the sitemap-first branch.
-  const start = SERVER.indexOf("if ($path -eq '/api/f58/sources' -or $path -eq '/api/lab/inspect')");
+  const start = SERVER.indexOf("if ($path -eq '/api/f58/sources' -or $path -eq '/api/lab/inspect' -or");
   assert.ok(start > 0, 'F78 block missing');
   const end = SERVER.indexOf('# [remediation] C2 / agent-payload / .bat endpoints removed', start);
   assert.ok(end > start, 'F78 block end marker missing');

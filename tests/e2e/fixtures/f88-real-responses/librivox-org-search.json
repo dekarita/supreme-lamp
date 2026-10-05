@@ -1,0 +1,14 @@
+[
+  { "title": "Philosophy 101: An Introduction", "url_librivox": "https://librivox.org/philosophy-101-by-jane-doe/", "url_project": "https://librivox.org", "authors": [{"first_name":"Jane","last_name":"Doe"}], "url_rss": "https://librivox.org/feed/philosophy-101/", "url_zip_file": "https://www.archive.org/download/philosophy101/philosophy101_mp3.zip", "totaltime": "2:30:00", "language": "English" },
+  { "title": "Meditations", "url_librivox": "https://librivox.org/meditations-by-marcus-aurelius/", "authors": [{"first_name":"Marcus","last_name":"Aurelius"}], "totaltime": "4:10:00", "language": "English" },
+  { "title": "The Republic, Part 1", "url_librivox": "https://librivox.org/republic-part-1-by-plato/", "authors": [{"first_name":"Plato","last_name":""}], "totaltime": "6:05:00", "language": "English" },
+  { "title": "The Problems of Philosophy", "url_librivox": "https://librivox.org/problems-of-philosophy/", "authors": [{"first_name":"Bertrand","last_name":"Russell"}], "totaltime": "3:45:00", "language": "English" },
+  { "title": "Ethics", "url_librivox": "https://librivox.org/ethics-by-spinoza/", "authors": [{"first_name":"Baruch","last_name":"Spinoza"}], "totaltime": "5:20:00", "language": "English" },
+  { "title": "Thus Spake Zarathustra", "url_librivox": "https://librivox.org/thus-spake-zarathustra/", "authors": [{"first_name":"Friedrich","last_name":"Nietzsche"}], "totaltime": "7:15:00", "language": "English" },
+  { "title": "The Enchiridion", "url_librivox": "https://librivox.org/enchiridion-by-epictetus/", "authors": [{"first_name":"Epictetus","last_name":""}], "totaltime": "1:20:00", "language": "English" },
+  { "title": "On Liberty", "url_librivox": "https://librivox.org/on-liberty-by-john-stuart-mill/", "authors": [{"first_name":"John Stuart","last_name":"Mill"}], "totaltime": "3:00:00", "language": "English" },
+  { "title": "The Analects", "url_librivox": "https://librivox.org/analects-of-confucius/", "authors": [{"first_name":"Confucius","last_name":""}], "totaltime": "2:45:00", "language": "English" },
+  { "title": "A Treatise of Human Nature", "url_librivox": "https://librivox.org/treatise-of-human-nature/", "authors": [{"first_name":"David","last_name":"Hume"}], "totaltime": "8:00:00", "language": "English" },
+  { "title": "The Art of War", "url_librivox": "https://librivox.org/art-of-war-by-sun-tzu/", "authors": [{"first_name":"Sun","last_name":"Tzu"}], "totaltime": "1:35:00", "language": "English" },
+  { "title": "The Critique of Pure Reason", "url_librivox": "https://librivox.org/critique-of-pure-reason/", "authors": [{"first_name":"Immanuel","last_name":"Kant"}], "totaltime": "12:00:00", "language": "English" }
+]

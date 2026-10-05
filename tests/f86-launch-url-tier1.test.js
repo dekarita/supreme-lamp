@@ -114,19 +114,20 @@ test('F86-A2-TIER3: the named-pipe helper is started once and the server waits f
   assert.ok(HELPER.includes("$url.StartsWith('https://')"), 'the helper must refuse non-https urls');
 });
 
-test('F86-A2-ORDER: the ladder runs 1 -> 2 -> 3 and the first success wins', () => {
-  assert.ok(BLOCK.includes('foreach ($f86Tier in @(1, 2, 3)) {'), 'the ladder order is not 1,2,3');
+test('F86-A2-ORDER: [F88 supersession] the ladder runs 0,1,2,3,4 and the first success wins', () => {
+  assert.ok(BLOCK.includes('foreach ($f86Tier in @(0, 1, 2, 3, 4)) {'), 'the ladder order is not 0,1,2,3,4');
   assert.ok(BLOCK.includes('if ($f86Outcome.ok) {'), 'the first-success gate is missing');
   assert.ok(BLOCK.includes('$f86Result.tier = $f86Tier'), 'the winning tier is not recorded');
-  // Mirror: a ladder of three rungs where only the third works reports tier 3.
+  // Mirror: first success wins across the five rungs (0 user-session, 4 Shell COM).
   const ladder = (results) => {
-    for (const tier of [1, 2, 3]) if (results[tier]) return tier;
-    return 0;
+    for (const tier of [0, 1, 2, 3, 4]) if (results[tier]) return tier;
+    return -1;
   };
+  assert.equal(ladder({ 4: true }), 4);
   assert.equal(ladder({ 3: true }), 3);
-  assert.equal(ladder({ 2: true, 3: true }), 2);
-  assert.equal(ladder({ 1: true }), 1);
-  assert.equal(ladder({}), 0);
+  assert.equal(ladder({ 1: true, 3: true }), 1);
+  assert.equal(ladder({ 0: true }), 0);
+  assert.equal(ladder({}), -1);
 });
 
 test('F86-A2-LOG: every attempt appends to %USERPROFILE%\.ghrdp\launch-url.log', () => {
@@ -148,8 +149,8 @@ test('F86-A3-DIAG: GET /api/launch-url/diag answers every field the banner reads
   assert.ok(BLOCK.includes("$f86DiagOut.lastResult = 'fail'"), 'the last result is never fail');
 });
 
-test('F86-A2-503: a total failure answers 503 reason="no interactive session", never a fake ok', () => {
-  assert.ok(BLOCK.includes("reason = 'no interactive session'"), 'the honest 503 reason is missing');
+test('F86-A2-503: a total failure answers 503 reason=[F88] no-active-rdp-session, never a fake ok', () => {
+  assert.ok(BLOCK.includes("reason = 'no-active-rdp-session; connect via WEB DESKTOP first'"), 'the honest 503 reason is missing');
   assert.ok(BLOCK.includes("code = 'NO_ACTIVE_SESSION'"), 'NO_ACTIVE_SESSION is missing');
   assert.ok(BLOCK.includes("code = 'LAUNCH_FAILED'"), 'the 500 LAUNCH_FAILED branch is missing');
   assert.ok(BLOCK.includes('tierDetail = [string]$f86Attempt.detail'), 'the success envelope does not carry the rung');

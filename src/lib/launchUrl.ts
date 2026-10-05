@@ -67,6 +67,19 @@ export function installLaunchUrlHandle(): void {
   }
 }
 
+// [F88 §B.4] The visible failure line: the rung that failed + the reason +
+// a 1-click pointer to the diag panel (/#/search?diag=1). No tier in the
+// outcome (validation/transport) falls back to the F84 reason + retry line.
+export function launchFailureToast(
+  out: LaunchOutcome,
+  t: (key: string, opts?: Record<string, unknown>) => string,
+): string {
+  if (typeof out.tier === "number" && out.tier >= 0) {
+    return t("search.launchUrl.failedTier", { tier: out.tier, reason: t(out.reason || "search.launchUrl.failed") });
+  }
+  return t(out.reason || "search.launchUrl.failed") + " — " + t("search.launchUrl.retry");
+}
+
 export async function launchUrl(raw: string): Promise<LaunchOutcome> {
   const url = String(raw || "").trim();
   if (!isSafeLaunchUrl(url)) return { ok: false, reason: "search.launchUrl.failed", code: "VALIDATION_ERROR" };
@@ -84,7 +97,7 @@ export async function launchUrl(raw: string): Promise<LaunchOutcome> {
     // tierDetail}; and an unread fetch body keeps the request "loading" in
     // Chromium, which is exactly what left the ten-site spec's response read
     // hanging. A malformed body is still a successful launch.
-    let body: { code?: string; messageKey?: string; tier?: number; tierDetail?: string } | null = null;
+    let body: { code?: string; messageKey?: string; tier?: number; tierDetail?: string; reason?: string } | null = null;
     try {
       body = (await r.json()) as { code?: string; messageKey?: string; tier?: number; tierDetail?: string } | null;
     } catch {
@@ -97,7 +110,11 @@ export async function launchUrl(raw: string): Promise<LaunchOutcome> {
       return out;
     }
     const code = String(body?.code || String(r.status));
-    return { ok: false, reason: reasonForCode(code), code };
+    // [F88 §B.4] the 500/503 bodies carry `tier` (the last rung that tried) -
+    // surface it so the toast can name the failed rung.
+    const out: LaunchOutcome = { ok: false, reason: reasonForCode(code), code };
+    if (typeof body?.tier === "number" && body.tier >= 0 && out.tier === undefined) out.tier = body.tier;
+    return out;
   } catch {
     // No window.open. A dropped connection is a visible failure, not a
     // silent switch to the operator's local browser.

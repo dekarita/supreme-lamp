@@ -1,0 +1,164 @@
+{
+  "openculture.com": {
+    "sitemapPaths": [
+      "/sitemap.xml"
+    ],
+    "searchPaths": [
+      "/search?q={{q}}"
+    ],
+    "catalogPaths": [
+      "/"
+    ],
+    "searchStrategy": "html",
+    "searchEndpoint": "https://www.openculture.com/?s={{q}}",
+    "resultSelector": "article.post h2 a",
+    "titleAttr": "textContent",
+    "urlAttr": "href",
+    "fallback": "sitemap"
+  },
+  "archive.org": {
+    "sitemapPaths": [
+      "/sitemap.xml"
+    ],
+    "searchPaths": [
+      "/search?query={{q}}&tab=all"
+    ],
+    "catalogPaths": [
+      "/details/"
+    ],
+    "advancedApi": "/advancedsearch.php?q={{q}}&output=json",
+    "searchStrategy": "json",
+    "searchEndpoint": "https://archive.org/advancedsearch.php?q={{q}}&output=json&rows=50",
+    "resultsPath": "response.docs",
+    "mapTitle": "title",
+    "mapUrl": "https://archive.org/details/{{identifier}}",
+    "fallback": "sitemap"
+  },
+  "openverse.org": {
+    "sitemapPaths": [
+      "/sitemap.xml"
+    ],
+    "searchPaths": [
+      "/search?q={{q}}"
+    ],
+    "searchStrategy": "json",
+    "searchEndpoint": "https://api.openverse.org/v1/images/?q={{q}}&page_size=50",
+    "resultsPath": "results",
+    "mapTitle": "title",
+    "mapUrl": "foreign_landing_url",
+    "fallback": "sitemap"
+  },
+  "awesome.re": {
+    "sitemapPaths": [
+      "/sitemap.xml"
+    ],
+    "catalogPaths": [
+      "/"
+    ],
+    "searchStrategy": "markdown-section",
+    "redirectTo": "https://github.com/sindresorhus/awesome",
+    "readmeUrl": "https://raw.githubusercontent.com/sindresorhus/awesome/main/readme.md",
+    "sectionMatcher": "^##\\s+{{q}}",
+    "subItemPattern": "^\\s*-\\s*\\[(.+?)\\]\\((.+?)\\)",
+    "fallback": "sitemap"
+  },
+  "gutenberg.org": {
+    "sitemapPaths": [
+      "/sitemap.xml"
+    ],
+    "searchPaths": [
+      "/ebooks/search/?query={{q}}"
+    ],
+    "catalogPaths": [
+      "/browse/scores/top",
+      "/ebooks/"
+    ],
+    "searchStrategy": "html",
+    "searchEndpoint": "https://www.gutenberg.org/ebooks/search/?query={{q}}",
+    "resultSelector": "li.booklink h2.title a",
+    "fallback": "sitemap"
+  },
+  "librivox.org": {
+    "sitemapPaths": [
+      "/sitemap.xml"
+    ],
+    "searchPaths": [
+      "/search?primary_key={{q}}&search_category=title&search_page=1&search_form=advanced"
+    ],
+    "searchStrategy": "json",
+    "searchEndpoint": "https://librivox.org/api/feed/audiobooks/?title={{q}}&format=json",
+    "resultsPath": "books",
+    "mapTitle": "title",
+    "mapUrl": "url_librivox",
+    "fallback": "sitemap"
+  },
+  "openlibrary.org": {
+    "sitemapPaths": [
+      "/sitemap.xml"
+    ],
+    "searchPaths": [
+      "/search?q={{q}}"
+    ],
+    "catalogPaths": [
+      "/trending",
+      "/subjects"
+    ],
+    "searchStrategy": "json",
+    "searchEndpoint": "https://openlibrary.org/search.json?q={{q}}&limit=50",
+    "resultsPath": "docs",
+    "mapTitle": "title",
+    "mapUrl": "https://openlibrary.org{{key}}",
+    "fallback": "sitemap"
+  },
+  "standardebooks.org": {
+    "sitemapPaths": [
+      "/sitemap.xml"
+    ],
+    "searchPaths": [
+      "/ebooks?query={{q}}"
+    ],
+    "catalogPaths": [
+      "/ebooks"
+    ],
+    "searchStrategy": "html",
+    "searchEndpoint": "https://standardebooks.org/ebooks?query={{q}}",
+    "resultSelector": "ol.ebooks-list li a",
+    "fallback": "sitemap"
+  },
+  "freemusicarchive.org": {
+    "sitemapPaths": [
+      "/sitemap.xml"
+    ],
+    "searchPaths": [
+      "/search?quicksearch={{q}}"
+    ],
+    "searchStrategy": "html",
+    "searchEndpoint": "https://freemusicarchive.org/search?quicksearch={{q}}",
+    "resultSelector": ".search-results .track-title a",
+    "fallback": "sitemap"
+  },
+  "tubitv.com": {
+    "sitemapPaths": [
+      "/sitemap.xml"
+    ],
+    "searchPaths": [
+      "/search?q={{q}}"
+    ],
+    "searchStrategy": "html",
+    "searchEndpoint": "https://tubitv.com/search/{{q}}",
+    "resultSelector": "[data-testid='content-tile'] a",
+    "fallback": "homepage"
+  },
+  "pluto.tv": {
+    "sitemapPaths": [
+      "/sitemap.xml"
+    ],
+    "searchPaths": [
+      "/search?q={{q}}"
+    ],
+    "searchStrategy": "html",
+    "searchEndpoint": "https://pluto.tv/en/search/{{q}}",
+    "resultSelector": ".search-results a",
+    "fallback": "homepage"
+  }
+}

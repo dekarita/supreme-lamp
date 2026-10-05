@@ -6,7 +6,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 
 const SERVER = fs.readFileSync('payloads/ghrdp-server.ps1', 'utf8').replace(/\r\n?/g, '\n');
-const START = SERVER.indexOf("if ($path -eq '/api/f58/sources' -or $path -eq '/api/lab/inspect')");
+const START = SERVER.indexOf("if ($path -eq '/api/f58/sources' -or $path -eq '/api/lab/inspect' -or");
 const END = SERVER.indexOf('# [remediation] C2 / agent-payload / .bat endpoints removed', START);
 assert.ok(START > 0 && END > START, 'F78 block not found');
 const BLOCK = SERVER.slice(START, END);
