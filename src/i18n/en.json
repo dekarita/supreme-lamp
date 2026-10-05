@@ -1206,5 +1206,20 @@
     "message": "Launcher service offline. \"Open in RDP\" and downloads will fail.",
     "button": "Open WEB DESKTOP to log in",
     "noUrl": "WEB DESKTOP is not deployed yet - open Overview for the deployment status."
+  },
+  "diagBundle": {
+    "download": "⬇ Download Diagnostic Bundle (for Claude)",
+    "fetching": "Collecting…",
+    "hint": "One JSON file covering launcher, watcher, WebSocket, logon, search and runner state.",
+    "downloaded": "Downloaded {{file}} — paste its contents to Claude for analysis.",
+    "notFetched": "No bundle fetched yet — the dots below stay amber until you download once.",
+    "showDetails": "Show details",
+    "hideDetails": "Hide details",
+    "detailsTitle": "Diagnostic bundle — at a glance",
+    "errors": {
+      "rateLimited": "Diagnostic bundle rate limit hit (10/minute) — wait a few seconds and click again.",
+      "server": "The server refused the diagnostic bundle — check the dashboard token and retry.",
+      "transport": "Connection to the server was lost — reconnect, then download the bundle again."
+    }
   }
 }
