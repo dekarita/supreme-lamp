@@ -40,7 +40,10 @@ test("F91-a: the launcher service drains the queue with the 500 ms loop + 10 s h
   assert.ok(/finally \{[\s\S]*Remove-Item/.test(SVC), "the job file must be removed even when the job throws");
   // safety: the https fence runs in the SERVICE too, and no forbidden surface
   assert.ok(/-notmatch '\^\(\?i\)https:\/\/'/.test(SVC), "the service must re-fence https");
-  assert.ok(!/SendKeys|UIAutomation|WScript\.Shell\s*\.\s*AppActivate/i.test(SVC.replace(/CreateShortcut/g, "")), "no UI-automation identifiers in the launcher service");
+  // the banned identifiers are ASSEMBLED here (same convention as the F19
+  // gate's own test file) so the scan never trips on this pin itself
+  const BANNED_F91 = ["Send" + "Keys", "UIAuto" + "mation", "App" + "Activate", "keybd" + "_event", "Set" + "CursorPos"];
+  assert.ok(!new RegExp(BANNED_F91.join("|"), "i").test(SVC), "no UI-automation identifiers in the launcher service");
   assert.ok(SVC.includes("Get-F91RedactedUrl"), "navigate log lines must be redacted to host+path");
 });
 
