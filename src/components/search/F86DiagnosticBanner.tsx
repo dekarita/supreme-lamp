@@ -25,7 +25,7 @@ import { apiBase } from "@/lib/api";
 import { launchUrl } from "@/lib/launchUrl";
 
 /** Same source as the F77 bottom-bar badge (src/components/layout/AppShell.tsx). */
-const UI_SHA7: string = (import.meta.env.VITE_BUILD_SHA as string | undefined) || "dev";
+export const UI_SHA7: string = (import.meta.env.VITE_BUILD_SHA as string | undefined) || "dev";
 
 interface VersionFeatures {
   autoHttps?: boolean;

@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import "@/i18n";
-import { DIAG_TEST_LAUNCH_URL, F86DiagnosticBanner, lastFiveLaunches } from "@/components/search/F86DiagnosticBanner";
+import { DIAG_TEST_LAUNCH_URL, F86DiagnosticBanner, UI_SHA7, lastFiveLaunches } from "@/components/search/F86DiagnosticBanner";
 
 function mount(entry: string) {
   return render(
@@ -20,7 +20,7 @@ function mount(entry: string) {
 
 const HISTORY = [1, 2, 3, 4, 5, 6, 7].map((i) => ({ at: `2026-10-05T00:0${i}:00Z`, host: `site${i}.org`, tier: (i % 3) + 1, ok: i !== 6, detail: "x" }));
 
-function stubRoutes(launchStatus = 200, serverSha = "abc1234") {
+function stubRoutes(launchStatus = 200, serverSha = UI_SHA7) {
   const fn = vi.fn((input: string, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith("/api/version")) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ sha7: serverSha, features: { autoHttps: true, wwwTolerance: true, noFallback: true, downloadToRdp: true, launchTiers: true, selfTest: true } }) } as unknown as Response);
@@ -52,8 +52,17 @@ describe("F87 expanded diagnostic banner", () => {
     expect(screen.getAllByTestId("f87-diag-recent-row").length).toBe(5);
     expect(screen.getAllByTestId("f87-diag-recent-row")[1].getAttribute("data-ok")).toBe("0");
     expect(screen.getByTestId("f87-diag-recent").textContent).toContain("site7.org t2 ok");
-    // the test bundle's VITE_BUILD_SHA is "dev": a mismatch can never be claimed from a dev build
+    // server sha == this bundle's sha: no mismatch claimed
     expect(screen.queryByTestId("f87-diag-sha-mismatch")).toBeNull();
+  });
+
+  it("warns on a ui/server sha mismatch only from a real build sha (never from a dev bundle)", async () => {
+    stubRoutes(200, "0000000");
+    mount("/search?diag=1");
+    await waitFor(() => expect(screen.getByTestId("f86-diag-banner").getAttribute("data-probed")).toBe("1"));
+    // CI builds carry VITE_BUILD_SHA (-> warning); a local dev bundle ("dev") must stay silent.
+    if (UI_SHA7 === "dev") expect(screen.queryByTestId("f87-diag-sha-mismatch")).toBeNull();
+    else expect(screen.getByTestId("f87-diag-sha-mismatch").textContent).toContain("sha mismatch");
   });
 
   it("test launch POSTs example.com through launchUrl and reports the rung; a failure reports the reason", async () => {
