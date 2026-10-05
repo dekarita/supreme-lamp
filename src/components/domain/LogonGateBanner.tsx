@@ -11,15 +11,23 @@
 // It hides itself the moment /api/native-status reports a type-10 4624
 // success - there is no dismiss button and no localStorage opt-out, so the
 // banner can never lie for longer than one poll (15s).
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, ExternalLink } from "lucide-react";
 import { useSessionStore } from "@/stores/sessionStore";
 import { validWebdeskUrl } from "@/lib/domain/native";
+import { openWebDesktop } from "@/lib/openWebDesktop";
 
 export function LogonGateBanner() {
   const { t } = useTranslation();
   const native = useSessionStore((s) => s.native);
   const s = native || {};
+  // [F94 §3.2] "Open WEB DESKTOP does nothing": window.open() returns null when
+  // the browser blocks the popup and the old handler threw that away, so the
+  // click produced NO tab and NO error. A block now falls back to showing the
+  // URL for the operator to open by hand - never a silent no-op.
+  const [blocked, setBlocked] = useState(false);
+  const [opened, setOpened] = useState(false);
   const authLast = (s.rdpListener && s.rdpListener.authLast) || null;
   // Unknown (no scan yet) is NOT a banner: only evidence speaks. "none" and
   // "failed" both mean no RDP user is logged in.
@@ -42,7 +50,11 @@ export function LogonGateBanner() {
           type="button"
           id="f93.logonGate.openWebdesk"
           data-testid="logon-gate-open-webdesk"
-          onClick={() => window.open(webdeskUrl, "_blank", "noopener")}
+          onClick={() => {
+            const out = openWebDesktop(webdeskUrl);
+            setOpened(out.opened);
+            setBlocked(!out.opened);
+          }}
           className="ml-auto px-2 py-1 text-xs rounded-md font-medium text-white bg-accent hover:bg-accent-hover focus-visible:ring-2 focus-visible:ring-accent"
         >
           {t("logonGate.button")}
@@ -50,6 +62,36 @@ export function LogonGateBanner() {
       ) : (
         <span className="ml-auto text-xs text-tertiary">{t("logonGate.noUrl")}</span>
       )}
+      {/* [F94 §3.2] Popup-blocked fallback: the URL is on screen, copyable,
+          and never hidden behind a button that already failed once. */}
+      {blocked && webdeskUrl ? (
+        <div
+          id="f94.logonGate.webdeskBlocked"
+          data-testid="logon-gate-webdesk-blocked"
+          role="alert"
+          className="w-full flex flex-wrap items-center gap-2 rounded border border-warning/40 bg-warning/10 px-2 py-1.5"
+        >
+          <span className="text-xs font-medium text-warning">{t("webdeskBlocked.title")}</span>
+          <span className="text-xs text-secondary">{t("webdeskBlocked.message")}</span>
+          <a
+            id="f94.logonGate.webdeskBlockedLink"
+            data-testid="logon-gate-webdesk-blocked-link"
+            href={webdeskUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 font-mono text-xs text-accent underline break-all"
+          >
+            <ExternalLink className="size-3" aria-hidden />
+            {webdeskUrl}
+          </a>
+          <span className="text-xs text-tertiary">{t("webdeskBlocked.copyHint")}</span>
+        </div>
+      ) : null}
+      {opened ? (
+        <span id="f94.logonGate.webdeskOpened" data-testid="logon-gate-webdesk-opened" role="status" className="sr-only">
+          web-desktop-opened
+        </span>
+      ) : null}
     </div>
   );
 }

@@ -2277,11 +2277,36 @@ function Invoke-ClientRequest {
                     if ([bool]$searchCfg.searchEnabled) { $searchEnabledFlag = $true }
                 }
             } catch { }
+            # [F94 §1.7] /diag grew the RECOVERY FIELDS the dashboard needs when
+            # its own URL arrives without ?key= (the single cause behind eight of
+            # the operator's reported symptoms). Both are READ-ONLY and
+            # SECRET-FREE: $wd is the WEB DESKTOP noVNC URL already published to
+            # /api/native-status, and $dashTokenRequired answers "does this server
+            # demand a token for writes?" - it is derived from the config's
+            # dashToken presence and NEVER contains the token itself. Exposing
+            # the token here would put a bearer credential in a URL-friendly
+            # endpoint, which is exactly what this project refuses to do; the
+            # operator recovers by pasting the key from the run log (the F94
+            # token gate) or by reopening the URL main.yml printed.
+            $diagDashTokenRequired = $false
+            try {
+                $diagTok = ''
+                if ($cfg -and $cfg.PSObject.Properties['dashToken']) { $diagTok = [string]$cfg.dashToken }
+                if (-not $diagTok) { $diagTok = [string]$script:Token }
+                $diagDashTokenRequired = [bool]($diagTok -ne '')
+            } catch { $diagDashTokenRequired = $false }
+            $diagWebdeskUrl = ''
+            try {
+                $diagCfgN = Read-JsonFile -Path $script:CfgPath
+                if ($diagCfgN -and $diagCfgN.PSObject.Properties['webdeskUrl']) { $diagWebdeskUrl = [string]$diagCfgN.webdeskUrl }
+            } catch { $diagWebdeskUrl = '' }
             $d = [ordered]@{
                 serverTs = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
                 port = $Port
                 pid = $PID
                 rust7332Listening = $listen7332
+                webDesktopUrl = [string]$diagWebdeskUrl
+                dashTokenRequired = [bool]$diagDashTokenRequired
                 watcherTask = $watcherState
                 progressAgeSeconds = $progAge
                 watcherAlive = [bool]$prog.alive

@@ -22,6 +22,11 @@ import HealthPage from "@/pages/Health";
 import { VersionGate } from "@/components/domain/F92VersionGate";
 import Telemetry from "@/pages/Telemetry";
 import Settings from "@/pages/Settings";
+// [F94 §3.1] The dashboard-token gate: mounted at the ROOT, outside the router,
+// so it renders on every route and before any page can attempt a write the
+// server would refuse with a 403. One missing ?key= produced eight of the
+// operator's reported symptoms; this is where that chain is cut.
+import { DashTokenGate } from "@/components/domain/DashTokenGate";
 // [F77 §2.1] The /search + /search/lab routes are UNCONDITIONAL. The F69 §1.4 /
 // F72 §3.1 lane guards redirected both to Overview whenever /diag echoed
 // searchEnabled=false, which is the same stale-flag failure class as the hidden
@@ -69,6 +74,9 @@ export default function App() {
       {/* [F92 §6.4] full-screen modal iff /api/f92-selftest says the bundle
           and the backend were built from different commits. */}
       <VersionGate />
+      {/* [F94 §3.1] Last, so it paints on top: an unauthorised dashboard has
+          nothing useful to show behind a modal it cannot dismiss. */}
+      <DashTokenGate />
       </HashRouter>
     </>
   );

@@ -4474,6 +4474,102 @@ jobs:
       # Verification below reads the task's LAST TASK RESULT/STATE back; a task
       # that never registered prints a loud ::warning:: - the dashboard's
       # mirror toast degrades to "RDP launcher: offline", never a hard error.
+      # ------------------------------------------------------------------
+      # [F94 §3.4] WINDOWS AUTO-LOGON ARMING + LOGON PROOF.
+      #
+      # ROOT CAUSE of "LAST LOGON none yet": the F91 launcher is an ONLOGON
+      # task, and on a GitHub-hosted Windows runner NOTHING EVER LOGS ON. The
+      # workflow runs under the runner service; AutoAdminLogon was never
+      # configured; Start-F93LauncherLogonWatch (ghrdp-server.ps1) only WATCHES
+      # for a type-10 4624, it cannot create one. So the launcher never starts
+      # and every mirror-mode queue write lands in a directory nobody drains.
+      #
+      # HONEST SCOPE: AutoAdminLogon only takes effect on the NEXT logon or
+      # reboot, and a reboot would end this job. This step therefore does the
+      # three things that ARE true and verifiable now, and FAILS LOUDLY when
+      # the logon cannot be proven:
+      #   1. arms AutoAdminLogon in the registry (write + READ-BACK proof);
+      #   2. waits up to 60s for a type-10 4624 in the Security log;
+      #   3. emits ::error:: with the exact reason when it does not arrive, so
+      #      the dashboard's yellow logon banner (which is driven by that same
+      #      evidence, never by a guess) has a real cause behind it.
+      # No security control is weakened: NLA/CredSSP/TLS are untouched, the
+      # password is written only to the Winlogon registry values designed to
+      # hold it and is NEVER echoed to the log, and the account is the runner's
+      # own local user that the RDP listener already authenticates.
+      # ------------------------------------------------------------------
+      - name: Arm Windows Auto-Logon and prove a type-10 4624 (F94)
+        shell: pwsh
+        env:
+          RDP_USER: ${{ env.RDP_USER }}
+          RDP_PASS: ${{ env.RDP_PASS }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $user = $env:RDP_USER
+          $pass = $env:RDP_PASS
+          $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+
+          if (-not $user -or -not $pass) {
+            Write-Host '::error::[f94] RDP_USER/RDP_PASS missing - cannot arm AutoAdminLogon. The launcher (an ONLOGON task) will not start; log in via WEB DESKTOP.'
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '[f94] Auto-Logon: NOT ARMED (no credentials in scope). Log in via WEB DESKTOP.'
+            exit 0
+          }
+
+          # 1. Arm AutoAdminLogon, then READ IT BACK - a write nobody verifies
+          #    is the same class of silent failure as the launcher itself.
+          $armed = $false
+          $armReason = ''
+          try {
+            Set-ItemProperty -Path $winlogon -Name 'AutoAdminLogon'    -Value '1'          -Type String -Force -ErrorAction Stop
+            Set-ItemProperty -Path $winlogon -Name 'DefaultUserName'   -Value $user        -Type String -Force -ErrorAction Stop
+            Set-ItemProperty -Path $winlogon -Name 'DefaultPassword'   -Value $pass        -Type String -Force -ErrorAction Stop
+            Set-ItemProperty -Path $winlogon -Name 'DefaultDomainName' -Value $env:COMPUTERNAME -Type String -Force -ErrorAction Stop
+            $rb = Get-ItemProperty -Path $winlogon -ErrorAction Stop
+            # The password is deliberately NOT compared or printed here; only
+            # the three non-secret values are verified and reported.
+            $armed = ([string]$rb.AutoAdminLogon -eq '1' -and [string]$rb.DefaultUserName -eq $user)
+            if (-not $armed) { $armReason = 'registry read-back did not match the values written' }
+          } catch {
+            $armReason = $_.Exception.Message
+          }
+
+          if ($armed) { Write-Host '[f94] AutoAdminLogon ARMED (verified by read-back) for' $user }
+          else { Write-Host ('::warning::[f94] AutoAdminLogon NOT armed: ' + $armReason) }
+
+          # 2. Look for an INTERACTIVE (type-10) 4624 - the only evidence the
+          #    dashboard's LAST LOGON row and logon banner trust.
+          $type10 = $null
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-Date) -lt $deadline) {
+            try {
+              $ev = Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 4624 } -MaxEvents 60 -ErrorAction SilentlyContinue
+              foreach ($e in @($ev)) {
+                $xml = [xml]$e.ToXml()
+                $nodes = $xml.Event.EventData.Data
+                $lt = $null
+                foreach ($n in $nodes) { if ($n.Name -eq 'LogonType') { $lt = [string]$n.'#text' } }
+                if ($lt -eq '10') { $type10 = $e; break }
+              }
+            } catch { }
+            if ($type10) { break }
+            Start-Sleep -Seconds 5
+          }
+
+          if ($type10) {
+            Write-Host ('[f94] type-10 4624 present at ' + $type10.TimeCreated.ToString('o') + ' - an interactive session exists, the ONLOGON launcher can run.')
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('[f94] Auto-Logon: interactive logon CONFIRMED (' + $type10.TimeCreated.ToString('o') + ').')
+            exit 0
+          }
+
+          # 3. Say exactly what happened. This is NOT a job failure - the
+          #    dashboard must still come up so the operator can log in through
+          #    WEB DESKTOP - but it must never be silent.
+          $q = ''
+          try { $q = (@(& quser.exe 2>$null) -join ' | ') } catch { $q = '(quser unavailable)' }
+          Write-Host ('::error::[f94] NO interactive logon within 60s - launcher offline. AutoAdminLogon armed=' + $armed + '; quser: ' + $q + '. AutoAdminLogon only applies to the NEXT logon/reboot, and a reboot would end this job, so log in via the WEB DESKTOP button on the dashboard (the F94 fix makes that button report a blocked popup instead of doing nothing).')
+          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('[f94] Auto-Logon: NOT CONFIRMED within 60s (armed=' + $armed + '). Log in via WEB DESKTOP; the launcher starts on that logon.')
+          exit 0
+
       - name: Register GHRDP-Launcher service (F91 mirror mode)
         shell: pwsh
         run: |

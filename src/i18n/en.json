@@ -1066,7 +1066,8 @@
     "notFound": "No stored site matches this Lab address.",
     "loading": "Fetching the stored homepage…",
     "source": "Source: {{source}} ({{count}} URLs)",
-    "sourceCrossDomain": "Source: GitHub README ({{repo}}) — {{count}} items in {{section}}"
+    "sourceCrossDomain": "Source: GitHub README ({{repo}}) — {{count}} items in {{section}}",
+    "routeMissing": "This dashboard is older than the server (route not found). Re-dispatch the deploy workflow to refresh it."
   },
   "newSiteName": "Name",
   "newSiteUrl": "Base URL (https)",
@@ -1151,6 +1152,39 @@
       "openAnyway": "Open anyway in my browser",
       "dismiss": "Dismiss"
     }
+  },
+  "dashToken": {
+    "title": "Dashboard token missing",
+    "message": "This dashboard URL was opened without its auth key, so the server will refuse every write. Paste the key printed by the main.yml run log to continue.",
+    "shape": "Token source: {source}, length: {length}",
+    "enter": "Enter key manually",
+    "actions": "Return to GitHub Actions",
+    "inputLabel": "Dashboard key",
+    "placeholder": "paste the ?key= value from the run log",
+    "inputHelp": "Stored on this device only. The key never appears in a URL this page builds, and it is never logged.",
+    "save": "Continue",
+    "cancel": "Back",
+    "forget": "Forget a previously saved key",
+    "empty": "Paste the key first.",
+    "tooShort": "That is too short to be the dashboard key.",
+    "storeFailed": "This browser refused to store the key, so it would be lost on refresh. Allow storage for this page and try again."
+  },
+  "webdeskBlocked": {
+    "title": "WEB DESKTOP could not be opened",
+    "message": "The browser blocked the new window. Open this URL manually to reach the RDP session:",
+    "retry": "Try again",
+    "copyHint": "Copy the URL and paste it into a new tab."
+  },
+  "autoLoginBlocked": {
+    "title": "WINDOWS AUTO-LOGIN is unavailable because:",
+    "fqdn": "the runner FQDN is missing or malformed",
+    "listener": "the RDP LISTENER probe is not all green",
+    "dns": "the runner tailnet IP did not resolve",
+    "credentials": "the FQDN/user pair failed validation"
+  },
+  "viewing": {
+    "localDev": "LOCAL DEV",
+    "ambiguous": "UNKNOWN - ambiguous signals"
   },
   "logonGate": {
     "title": "No user logged into RDP yet",
