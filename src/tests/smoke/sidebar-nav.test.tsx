@@ -9,7 +9,7 @@ import App from "@/App";
 import { useSearchStore } from "@/stores/searchStore";
 
 // [F76 §3.E] Search is the high-frequency surface: slot 2, under Overview.
-const ORDER = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/settings"];
+const ORDER = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/health", "/settings"]; // [F92] +/health (was locked F76 nine)
 
 describe("sidebar navigation (F56-c / F76 order)", () => {
   it("renders 9 entries in the F76 order with the two new routes wired", () => {
@@ -17,7 +17,7 @@ describe("sidebar navigation (F56-c / F76 order)", () => {
     const nav = container.querySelector('[data-testid="sidebar"] nav');
     expect(nav).not.toBeNull();
     const links = Array.from(nav?.querySelectorAll("a") || []);
-    expect(links.length).toBe(9);
+    expect(links.length).toBe(10); // [F92] +/health
     const hrefs = links.map((a) => (a.getAttribute("href") || "").replace(/^#/, ""));
     expect(hrefs).toEqual(ORDER);
     expect(document.getElementById("f57.explorer.nav")).not.toBeNull();

@@ -469,6 +469,46 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  // [F92 §6] GET /api/f92-selftest - the exact application/health+json the
+  // production route emits (payloads/ghrdp-server.ps1, Invoke-F92Selftest):
+  // checks keyed search:<site> + the four system rows, arrays per the IETF
+  // draft, 9 pass + 2 warn (tubitv/pluto are browser-required by design).
+  // The mock mirrors the envelope so /#/health and VersionGate run against
+  // the real shape in e2e, and assert-selftest.js can parse the same JSON.
+  if (path === "/api/f92-selftest" && req.method === "GET") {
+    const nowIso = new Date().toISOString();
+    const mk = (status, observedValue, output) => [
+      { componentType: "component", status, observedValue, observedUnit: "results", time: nowIso, ...(output ? { output } : {}) },
+    ];
+    const checks = {};
+    for (const s of [
+      "archive", "awesome", "freemusicarchive", "gutenberg", "librivox",
+      "openculture", "openlibrary", "openverse", "standardebooks",
+    ]) {
+      checks["search:" + s] = mk("pass", 5, undefined);
+    }
+    checks["search:tubitv"] = mk("warn", 0, "Site tubitv is JS-rendered; verified by nightly Playwright, not CI. See /#/health.");
+    checks["search:pluto"] = mk("warn", 0, "Site pluto is JS-rendered; verified by nightly Playwright, not CI. See /#/health.");
+    checks["launcher:status"] = [{ componentType: "system", status: "pass", observedValue: "Running", time: nowIso }];
+    checks["download:writable"] = [{ componentType: "datastore", status: "pass", observedValue: 0, observedUnit: "bytes", time: nowIso }];
+    checks["streaming:proxy"] = [{ componentType: "component", status: "pass", observedValue: "launcher-heartbeat", time: nowIso }];
+    checks["version:match"] = [{ componentType: "system", status: "pass", observedValue: { backend: "mockbackend000000000000000000000000000000", frontend: url.searchParams.get("frontendSha") || "dev" }, time: nowIso }];
+    res.setHeader("Content-Type", "application/health+json");
+    res.setHeader("Cache-Control", "max-age=10");
+    res.setHeader("X-Correlation-ID", "mock-f92");
+    send(res, 200, {
+      status: "warn",
+      version: "1",
+      releaseId: "mockbackend000000000000000000000000000000",
+      serviceId: "dekarita-supreme-lamp",
+      description: "F92 self-test; see /#/health",
+      notes: ["correlation-id: mock-f92"],
+      checks,
+      links: { about: "/#/health" },
+    });
+    return;
+  }
+
   if (path === "/api/search" && req.method === "POST") {
     const body = await readBody(req);
     const requestedAdapterIds = Array.isArray(body?.adapterIds) ? body.adapterIds : [];

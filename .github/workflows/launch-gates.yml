@@ -2637,12 +2637,15 @@ jobs:
           src = open("src/components/layout/AppShell.tsx", encoding="utf-8").read()
           nav = src.split("const NAV: NavItem[]")[1].split("];")[0]
           tos = re.findall(r"to: \"([^\"]+)\"", nav)
-          expect = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/settings"]
+          # [F92 §6.3] +1: the /health nav entry (locked-order contract
+          # follows the AppShell; the four smoke-test ORDER arrays got the
+          # same bump). Everything F56-c pinned before still asserts.
+          expect = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/health", "/settings"]
           assert tos == expect, ("sidebar order drifted", tos)
           assert "id: \"f57.explorer.nav\"" in nav and "hint: \"Alt+E\"" in nav, "files entry"
           assert "id: \"f56.search.nav\"" in nav and "hint: \"Alt+F\"" in nav, "search entry"
           assert "icon: Folder" in nav and "icon: Search" in nav, "icons"
-          print("F56-c sidebar: 9 entries, order locked")
+          print("F56-c sidebar: 10 entries (F92 +/health), order locked")
           '
           # §1 routes + hotkeys + palette prefill
           grep -qF 'path="/files" element={<FileExplorer />' "$app"

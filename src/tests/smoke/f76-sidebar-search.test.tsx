@@ -21,7 +21,7 @@ type Any = any;
 const SINHALA = /[\u0D80-\u0DFF]/;
 
 // [F76 §3.E] exact sidebar order demanded by the ticket.
-const F76_ORDER = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/settings"];
+const F76_ORDER = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/health", "/settings"]; // [F92] +/health
 
 function sidebarHrefs(container: HTMLElement): string[] {
   return Array.from(container.querySelectorAll('[data-testid="sidebar"] nav a')).map((a) =>

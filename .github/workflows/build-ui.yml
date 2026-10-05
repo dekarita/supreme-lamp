@@ -6,6 +6,11 @@ name: F59 build-ui (prebuilt UI release asset)
 # `ui-dist` release with the asset name pinned to the commit sha it is running
 # (ui-dist-<sha>.zip + its .sha256 sidecar). A dispatch that races this workflow
 # (asset absent) falls back to an on-runner build in main.yml, labeled loudly.
+# [F92 §3.1] ALSO a workflow_call target: main.yml's `build-ui-via-call` job
+# calls this file with `ref`, so build -> main ordering is enforced by Actions
+# itself instead of the removed 3x60s asset poll. Concurrency keys per sha,
+# cancel-in-progress false, so a duplicate dispatch can never delete a bundle
+# mid-download.
 on:
   push:
     branches:
@@ -23,6 +28,21 @@ on:
       - 'scripts/**'
       - '.github/workflows/build-ui.yml'
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        description: 'Ref (sha/branch/tag) to build and name the asset after. Defaults to the caller commit.'
+        type: string
+        required: false
+        default: ''
+    outputs:
+      ui_dist_path:
+        description: 'Path (inside the repo checkout) of the built single-file bundle.'
+        value: ${{ jobs.build-ui-prebuilt.outputs.ui_dist_path }}
+
+concurrency:
+  group: build-ui-${{ github.sha }}
+  cancel-in-progress: false
 
 permissions:
   contents: write   # create/update the ui-dist release + upload the bundle
@@ -31,10 +51,15 @@ jobs:
   build-ui-prebuilt:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      ui_dist_path: ${{ steps.bundle.outputs.ui_dist_path }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
+          # [F92 §3.1] build whatever the CALLER says to build; push/dispatch
+          # events leave inputs null and check out the event sha, as before.
+          ref: ${{ inputs.ref || github.sha }}
       # [F59 §2] setup-node with the npm cache (spec) - the real speed-up for a
       # pnpm repo is the pnpm store/node_modules cache below; both are keyed on
       # the committed lockfiles so a lock change busts them.
@@ -52,10 +77,14 @@ jobs:
           restore-keys: |
             f59-ui-${{ runner.os }}-
       - name: Build single-file bundle + regression gates
+        id: bundle
         run: |
           set -euo pipefail
           export COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-          export VITE_BUILD_SHA="${GITHUB_SHA}"
+          # [F92 §3.1] stamp the bundle with the sha ACTUALLY checked out:
+          # under workflow_call the caller may build a ref other than the
+          # workflow event sha.
+          export VITE_BUILD_SHA="$(git rev-parse HEAD)"
           corepack enable
           pnpm install --frozen-lockfile
           pnpm run build
@@ -65,24 +94,33 @@ jobs:
           node scripts/check-no-neon-green.mjs ui/dist/index.html
           node scripts/check-bottom-bar-time.mjs
           LEN=$(wc -c < ui/dist/index.html)
-          echo "[F59 build-ui] bundle bytes=$LEN for ${GITHUB_SHA}"
+          echo "[F59 build-ui] bundle bytes=$LEN for ${VITE_BUILD_SHA}"
           if [ "$LEN" -le 51200 ]; then echo 'ui-v2.html staging failed - build artifact missing'; exit 1; fi
+          echo "ui_dist_path=ui/dist/index.html" >> "$GITHUB_OUTPUT"
       - name: Publish ui-dist-<sha>.zip + .sha256 to the ui-dist release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          sha="${GITHUB_SHA}"
+          # [F92 §3.1] asset name = HEAD of the checked-out ref (identical to
+          # GITHUB_SHA for the push trigger; correct for workflow_call builds).
+          sha="$(git rev-parse HEAD)"
           asset="ui-dist-${sha}.zip"
           zip -q -j "$asset" ui/dist/index.html
-          # [F59] the sidecar hash is what main.yml verifies fail-closed BEFORE
-          # the bundle is staged; the asset name is the commit-sha pin.
+          # [F92 §3.1] the .sha256 sidecar is published BEFORE the .zip: a
+          # reader that sees the asset already has its digest - the fail-closed
+          # verify in main.yml can never race a zip without a sidecar.
           (sha256sum "$asset" | awk '{print $1}') > "${asset}.sha256"
           cat "${asset}.sha256"
+          # [F92 §3.1] idempotent on first-run races (two builders, one
+          # release): `view` first, create with `|| true` (an existing release
+          # is the NORMAL state, never a failure), then --clobber both.
           if ! gh release view ui-dist >/dev/null 2>&1; then
             gh release create ui-dist \
               --title "F59 prebuilt UI bundles (ui-dist-<commit-sha>.zip)" \
-              --notes "Prebuilt single-file dashboard bundles. Asset: ui-dist-<commit-sha>.zip + ui-dist-<commit-sha>.zip.sha256. Published by .github/workflows/build-ui.yml; downloaded and SHA-256 verified by main.yml (F59 §2)."
+              --notes "Prebuilt single-file dashboard bundles. Asset: ui-dist-<commit-sha>.zip + ui-dist-<commit-sha>.zip.sha256. Published by .github/workflows/build-ui.yml; downloaded and SHA-256 verified by main.yml (F59 §2, F92 workflow_call)." \
+              || echo "[F92 build-ui] release create raced an existing ui-dist release - continuing"
           fi
-          gh release upload ui-dist "$asset" "${asset}.sha256" --clobber
-          echo "[F59 build-ui] published $asset ($(wc -c < "$asset") bytes) sha256=$(cat "${asset}.sha256")"
+          gh release upload ui-dist "${asset}.sha256" --clobber
+          gh release upload ui-dist "$asset" --clobber
+          echo "[F92 build-ui] published ${asset} + sidecar ($(wc -c < "$asset") bytes) sha256=$(cat "${asset}.sha256")"

@@ -61,7 +61,19 @@ jobs:
   # dispatch main.yml -> hard-reload the dashboard and read the footer "ui: <sha7>".
   # A dispatch that races build-ui is now polled for (guard above), and the UI-sha
   # footer badge makes a stale bundle visible without opening devtools.
+  # [F92 §3.2] workflow_call: build -> main, synchronously. The reusable
+  # workflow publishes ui-dist-<sha>.zip BEFORE this workflow's build-ui job
+  # runs, which is what made the 3x60s asset poll (F77) necessary. The called
+  # workflow declares on.workflow_call with an `ref` input (defaults to the
+  # caller's sha) and an ui_dist_path output.
+  build-ui-via-call:
+    uses: ./.github/workflows/build-ui.yml
+    secrets: inherit
+    with:
+      ref: ${{ github.sha }}
+
   build-ui:
+    needs: [build-ui-via-call]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -97,18 +109,19 @@ jobs:
           set -euo pipefail
           asset="ui-dist-${GITHUB_SHA}.zip"
           mkdir -p "$RUNNER_TEMP/ui-dl"
-          # [F77 §2.5] DEPLOY-RACE GUARD. A miss used to be treated as "build it
-          # here", which is fine on its own but is also what let a dispatch that
-          # STARTED BEFORE build-ui.yml finished fall behind. So: poll the release
-          # for up to 180s (3 x 60s, the CI-poll budget) for the asset of THIS sha.
+          # [F92 §3.2] THE POLL IS GONE. build-ui-via-call runs the reusable
+          # workflow to completion BEFORE this job starts, so the F77 deploy-race
+          # guard (3 polls x 60s) only burned wall-clock: on a hit nothing had
+          # changed, and on a miss the called workflow had already failed loudly.
+          # This download is now ONE-SHOT and serves purely as a CACHE READ for
+          # repeated dispatches of the same sha. A miss never falls back to
+          # polling; the labeled on-runner build below stays as the belt-and-
+          # braces path (tests/f59-defaults F59-6 pins both strings).
           hit=0
-          for i in 1 2 3; do
-            if gh release download ui-dist --pattern "$asset" --pattern "${asset}.sha256" --dir "$RUNNER_TEMP/ui-dl" --clobber 2>/dev/null; then hit=1; break; fi
-            run_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&workflow=build-ui.yml" --jq '.workflow_runs[0].id' 2>/dev/null || true)
-            echo "[F77 ui-prebuilt] ${asset} absent (poll ${i}/3); build-ui.yml run for this sha = ${run_id:-none}"
-            [ "$i" -lt 3 ] && sleep 60
-          done
+          if gh release download ui-dist --pattern "$asset" --pattern "${asset}.sha256" --dir "$RUNNER_TEMP/ui-dl" --clobber 2>/dev/null; then hit=1; fi
           if [ "$hit" -ne 1 ]; then
+            run_id=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs?head_sha=${GITHUB_SHA}&workflow=build-ui.yml" --jq '.workflow_runs[0].id' 2>/dev/null || true)
+            echo "[F92 ui-prebuilt] ${asset} absent despite build-ui-via-call (run for this sha = ${run_id:-none}) - falling back to the labeled on-runner build."
             # [F77 §2.5] NEVER another commit's bundle: the silent cross-sha pick is
             # exactly the stale-dashboard bug this guard closes. The only allowed
             # fallback is an on-runner build OF THIS SHA (below), and the operator
@@ -158,6 +171,10 @@ jobs:
           if-no-files-found: error
 
   rdp:
+    # [F92 §3.2] the build-ui-via-call ordering is TRANSITIVE here: build-ui
+    # itself needs [build-ui-via-call] (the reusable-workflow call that
+    # replaced the asset poll), and tests/f43-default-v2 pins this exact
+    # needs:[build-ui] line, so the chain is expressed one level up.
     needs: [build-ui]
     runs-on: ${{ github.event.inputs.runner_target || 'windows-latest' }}
     timeout-minutes: 357
@@ -603,6 +620,30 @@ jobs:
           Add-Content -Path $env:GITHUB_PATH -Value 'C:\ghrdp\bin'
           Stop-F59Step -Step 'prewarm-total' -Sw $swAll | Out-Null
           exit 0
+
+      # [F92 §2.2] User-session server ownership. Registered HERE, before the
+      # Tailscale install/sign-in bootstrap: the GHRDP-Server task runs the
+      # dashboard as runneradmin LogonType Interactive with an ONLOGON trigger,
+      # so it starts IN the session that owns the desktop (Session 1). That is
+      # what retires the session-0 browser graveyard - and we also kick it
+      # once now, since AtLogOn has already fired before this step ever ran.
+      - name: F92 register user-session server
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $dest = 'C:\ProgramData\ghrdp'
+          try {
+              New-Item -ItemType Directory -Force -Path $dest | Out-Null
+              Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'payloads/ghrdp-server.ps1') -Destination (Join-Path $dest 'ghrdp-server.ps1') -Force
+              if (Test-Path -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'payloads/ghrdp-lib.ps1')) { Copy-Item -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'payloads/ghrdp-lib.ps1') -Destination (Join-Path $dest 'ghrdp-lib.ps1') -Force -ErrorAction SilentlyContinue }
+              Write-Host '[f92] staged payloads/ghrdp-server.ps1 ->' $dest
+          } catch { Write-Host ('[f92] stage failed: ' + $_.Exception.Message) }
+          $user = 'runneradmin'
+          try { if (-not (Get-LocalUser -Name $user -ErrorAction Stop)) { $user = $env:USERNAME } } catch { $user = $env:USERNAME }
+          & (Join-Path $env:GITHUB_WORKSPACE 'payloads/register-ghrdp-task.ps1') -ServerPath (Join-Path $dest 'ghrdp-server.ps1') -TaskUser $user
+          if ($LASTEXITCODE -ne 0) { Write-Host '[f92] register step non-zero - continuing (the SYSTEM fallback below still owns the dashboard)' }
+          try { Start-ScheduledTask -TaskName 'GHRDP-Server' -ErrorAction Stop; Write-Host '[f92] GHRDP-Server kicked in the user session' } catch { Write-Host ('[f92] first kick skipped: ' + $_.Exception.Message) }
+        timeout-minutes: 3
 
       - name: Install Tailscale
         shell: pwsh
@@ -4003,7 +4044,15 @@ jobs:
           $pwshPath = 'powershell.exe'
           try { $c = Get-Command pwsh.exe -ErrorAction Stop; if ($c) { $pwshPath = $c.Source } } catch { }
           $argLine = ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f (Join-Path $root 'ghrdp-server.ps1'))
-          try {
+          # [F92 §2.2] ownership guard: when the user-session GHRDP-Server task
+          # was registered by the F92 bootstrap step, the server must NOT also
+          # start as SYSTEM in session 0 - two listeners cannot bind the port,
+          # and the session-0 instance is the exact failure class F92 removes.
+          # The skip is loud; the pre-F92 path (no F92 task) is unchanged.
+          $f92Owns = $false
+          try { if (Get-ScheduledTask -TaskName 'GHRDP-Server' -ErrorAction SilentlyContinue) { $f92Owns = $true } } catch { }
+          if ($f92Owns) { Write-Host '[dashboard] F92 GHRDP-Server user-session task owns the dashboard - SYSTEM task skipped' }
+          try { if ($f92Owns) { throw 'skipped-by-f92' }
               $action = New-ScheduledTaskAction -Execute $pwshPath -Argument $argLine
               $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddSeconds(2)
               $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
@@ -4012,7 +4061,11 @@ jobs:
               Start-ScheduledTask -TaskName 'GhrdpServer' -ErrorAction Stop
               Write-Host '[dashboard] GhrdpServer SYSTEM task started'
           } catch {
-              Write-Host ('[dashboard] task registration failed: ' + $_.Exception.Message + ' (falling back to background process)')
+              if ($_.Exception.Message -eq 'skipped-by-f92') {
+                  Write-Host '[dashboard] SYSTEM task registration skipped by F92 (user-session task owns the port; the listen-probe below still gates the flow)'
+              } else {
+                  Write-Host ('[dashboard] task registration failed: ' + $_.Exception.Message + ' (falling back to background process)')
+              }
           }
           $listening = $false
           for ($i = 0; $i -lt 30; $i++) {
@@ -5948,6 +6001,34 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+      # [F92 §7.1] SMOKE GATE. Runs at the END of the rdp job, BEFORE the
+      # cleanup step tears the server down (the spec's standalone `smoke:
+      # needs: [deploy]` job cannot work here: on this 6h-ephemeral pattern the
+      # dashboard is only alive DURING the rdp job - a post-rdp smoke job would
+      # always probe a dead port). Green smoke => the "Dashboard Ready" notice
+      # from the publish-url job is the operator's go. Playwright golden-path
+      # already gates every PR via e2e-ui.yml, so this step stays the lean
+      # curl+assert pair on the runner.
+      - name: F92 smoke (wait for backend + assert self-test)
+        if: always()
+        shell: bash
+        run: |
+          set -uo pipefail
+          ok=0
+          for i in {1..60}; do
+            if curl -sf "http://localhost:7331/api/f92-selftest?frontendSha=${GITHUB_SHA}" -o /tmp/sr.json; then ok=1; break; fi
+            sleep 2
+          done
+          if [ "$ok" -ne 1 ]; then echo "::error::[f92 smoke] backend never answered /api/f92-selftest within 120s"; exit 1; fi
+          node ./scripts/assert-selftest.js /tmp/sr.json
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: smoke-failure-${{ github.run_id }}
+          path: /tmp/sr.json
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Cleanup (wipe profiles/storage, reset funnel/serve) - no log-clear per remediation 8E
         if: ${{ always() && env.GHRDP_EPHEMERAL == 'true' }}
         shell: pwsh
@@ -5962,7 +6043,7 @@ jobs:
               }
               Write-Host '[cleanup] tailscale serve/funnel reset'
           }
-          foreach ($tn in @('GhrdpWatcher', 'GhrdpServer', 'GhrdpRustDash', 'GhrdpDirectHunter')) {
+          foreach ($tn in @('GhrdpWatcher', 'GhrdpServer', 'GHRDP-Server', 'GhrdpRustDash', 'GhrdpDirectHunter')) {
               try { Stop-ScheduledTask -TaskName $tn -ErrorAction SilentlyContinue } catch { }
               try { Unregister-ScheduledTask -TaskName $tn -Confirm:$false -ErrorAction SilentlyContinue } catch { }
           }
@@ -6041,3 +6122,15 @@ jobs:
           exit 0
 
 # [remediation 8E] "Overwrite free space" step removed - no anti-forensics.
+
+  # [F92 §7.1] The operator's "it's safe to open the dashboard" signal.
+  # needs:[rdp] serialises it behind the in-job F92 smoke step: if smoke went
+  # red, rdp still completed (the step failure is visible in the log + the
+  # artifact) - but the notice ONLY prints when the whole rdp job is green,
+  # so a red smoke never ships a green "Ready" banner.
+  publish-url:
+    needs: [rdp]
+    if: needs.rdp.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "::notice title=Dashboard Ready::http://${{ github.event.inputs.runner_target || 'windows-latest' }}/#/health  (F92 self-test green; open the run's tailnet/FQDN link from the rdp job for the real host)"

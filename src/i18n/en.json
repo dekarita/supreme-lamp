@@ -13,7 +13,8 @@
     "telemetry": "Telemetry",
     "settings": "Settings",
     "files": "File Explorer",
-    "search": "Search"
+    "search": "Search",
+    "health": "Health"
   },
   "sidebar": {
     "nav": "Primary navigation",
@@ -21,7 +22,8 @@
     "collapse": "Collapse sidebar",
     "menu": "Open navigation",
     "search": "Search",
-    "searchLab": "Lab"
+    "searchLab": "Lab",
+    "health": "Health"
   },
   "actions": {
     "autoLogin": "WINDOWS AUTO-LOGIN",

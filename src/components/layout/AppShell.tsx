@@ -175,6 +175,9 @@ const NAV: NavItem[] = [
   { to: "/files", key: "nav.files", icon: Folder, id: "f57.explorer.nav", hint: "Alt+E" },
   { to: "/mirror", key: "nav.mirror", icon: Database },
   { to: "/telemetry", key: "nav.telemetry", icon: Zap },
+  // [F92 §6.3] the self-test dashboard (/#/health): one row per F92 check,
+  // each row's "fix" cell names the one-cell patch. Runs §13 step 4-6.
+  { to: "/health", key: "nav.health", labelKey: "sidebar.health", icon: Activity, id: "f92.health.nav" },
   { to: "/settings", key: "nav.settings", icon: Settings },
 ];
 
