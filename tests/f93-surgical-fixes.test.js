@@ -46,11 +46,31 @@ test("F93-1 CLIENT: per-field errors win, reasons render as sentences, auth is n
   }
 });
 
-test("F93-2 LAUNCHER: logon watcher polls every 10s for type-10 4624 and starts the task", () => {
+test("F93-2 LAUNCHER: logon watcher polls every 10s for an INTERACTIVE 4624 and starts the task", () => {
   assert.ok(SERVER.includes("function Start-F93LauncherLogonWatch"), "watcher missing");
   assert.ok(SERVER.includes("Start-Sleep -Seconds 10"), "watcher is not 10s cadence");
   assert.ok(SERVER.includes("LogName = 'Security'; Id = 4624"), "watcher does not read 4624");
-  assert.ok(SERVER.includes("if ($lt -eq '10') { $fired = $true; break }"), "watcher does not require LogonType 10");
+  // [F95 §3.1 / R1] SUPERSEDED PIN (updated in place, never deleted). Was:
+  //   assert.ok(SERVER.includes("if ($lt -eq '10') { $fired = $true; break }"))
+  // That pin REWARDED the bug. LogonType 10 (RemoteInteractive) is written only
+  // by an inbound RDP client; Windows AutoAdminLogon - the thing main.yml's
+  // "Arm Windows Auto-Logon" step configures - writes LogonType 2, and a cached
+  // sign-in writes 11. So on the exact runner F94 built, this watcher could
+  // never fire and the launcher stayed unstarted while a real desktop was on
+  // screen. The pin now asserts the accepted set 2/10/11 AND forbids a bare
+  // type-10 equality check from coming back.
+  assert.ok(
+    SERVER.includes("$okTypes = @('2', '10', '11')"),
+    "watcher does not accept LogonType 2/10/11"
+  );
+  assert.ok(
+    SERVER.includes("if ($okTypes -contains ([string]$lt).Trim()) { $fired = $true; break }"),
+    "watcher does not fire on the accepted logon types"
+  );
+  assert.ok(
+    !/if \(\$lt -eq '10'\) \{ \$fired = \$true/.test(SERVER),
+    "a type-10-only check is back in the logon watcher - autologon (type 2) would never arm the launcher"
+  );
   assert.ok(SERVER.includes("/SC ONLOGON /TN GHRDP-Launcher"), "watcher cannot register the task");
   assert.ok(SERVER.includes("Start-ScheduledTask -TaskName 'GHRDP-Launcher'"), "watcher does not start the task");
   assert.ok(SERVER.includes("autoStarted = $false; autoStartedAt = ''"), "health lacks autoStarted");

@@ -251,7 +251,8 @@
     "mirror": "mirror",
     "watcher": "watcher",
     "websocket": "ws",
-    "clock": "clock"
+    "clock": "clock",
+    "wsReconnect": "Reconnect"
   },
   "errors": {
     "authFailure": "Authentication failed",
@@ -519,6 +520,12 @@
       "fetchCancelled": "Fetch cancelled.",
       "classifierBlocked": "Blocked after intent confirmation.",
       "queryTooShort": "Type at least 3 characters before searching.",
+      "sessionExpired": "Session expired - reload the dashboard with its ?key= from the main.yml run log.",
+      "notFound": "That endpoint does not exist on this server.",
+      "payloadTooLarge": "The request was too large for the server to accept.",
+      "rateLimitedGeneric": "Rate limited - wait for the retry window, then try again.",
+      "serverError": "The server returned an error. Live progress still arrives by HTTP polling.",
+      "connectionLost": "Connection to the dashboard server was lost - use Reconnect in the top bar first, then retry.",
       "generic": "Something went wrong."
     },
     "deleteSite": {
@@ -1151,6 +1158,13 @@
       "switch": "Switch to WEB DESKTOP",
       "openAnyway": "Open anyway in my browser",
       "dismiss": "Dismiss"
+    },
+    "manual": {
+      "prefix": "Viewing mode:",
+      "on": "✓ WEB DESKTOP (manual) - click to withdraw",
+      "off": "I'm in WEB DESKTOP now",
+      "since": "asserted at",
+      "hint": "Use this when you opened noVNC by hand and the badge still says Tailscale local."
     }
   },
   "dashToken": {
@@ -1173,7 +1187,8 @@
     "title": "WEB DESKTOP could not be opened",
     "message": "The browser blocked the new window. Open this URL manually to reach the RDP session:",
     "retry": "Try again",
-    "copyHint": "Copy the URL and paste it into a new tab."
+    "copyHint": "Copy the URL and paste it into a new tab.",
+    "manualOpened": "✓ I opened WEB DESKTOP manually"
   },
   "autoLoginBlocked": {
     "title": "WINDOWS AUTO-LOGIN is unavailable because:",

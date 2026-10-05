@@ -60,6 +60,55 @@ const SESSION_GEOMETRIES: ReadonlyArray<readonly [number, number]> = [
 export const VIEWING_MODE_STORAGE_KEY = "f90.viewingMode";
 export const VIEWING_MODE_PARAM = "viewingMode";
 
+// ===========================================================================
+// [F95 §3.3 / R3] MANUAL WEB DESKTOP ASSERTION.
+//
+// ROOT CAUSE: "Open WEB DESKTOP" calls window.open(), Chrome's popup blocker
+// returns null, the banner shows the URL to copy - and then the dashboard has
+// NO WAY TO LEARN that the operator opened noVNC by hand. So the badge keeps
+// reading "Tailscale local" and the logon banner keeps warning, on a machine
+// the operator is demonstrably sitting inside.
+//
+// setViewingMode()/readStoredMode() already existed and already beat every
+// signal - nothing in the blocked banners called them. This is the missing
+// write side, plus a stamp so the badge can say the mode was ASSERTED rather
+// than INFERRED (an asserted mode must never look like a measurement).
+// ===========================================================================
+export const MANUAL_WEBDESKTOP_KEY = "f95.manualWebDesktop";
+
+/** Read the manual assertion stamp (epoch ms as a string), or "" when absent. */
+export function readManualWebDesktop(): string {
+  try {
+    return String(window.localStorage.getItem(MANUAL_WEBDESKTOP_KEY) || "");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Assert (or clear) "I am looking at the WEB DESKTOP now".
+ *
+ * `true`  -> stores the mode as web-desktop (which resolveViewingMode honours
+ *            over every signal) plus a timestamp, and returns the stamp.
+ * `false` -> clears both, so the badge falls back to signal detection.
+ * Returns the stamp that is now stored ("" when cleared or storage is locked).
+ */
+export function setManualWebDesktop(on: boolean): string {
+  try {
+    if (on) {
+      const stamp = String(Date.now());
+      window.localStorage.setItem(VIEWING_MODE_STORAGE_KEY, "web-desktop");
+      window.localStorage.setItem(MANUAL_WEBDESKTOP_KEY, stamp);
+      return stamp;
+    }
+    window.localStorage.removeItem(VIEWING_MODE_STORAGE_KEY);
+    window.localStorage.removeItem(MANUAL_WEBDESKTOP_KEY);
+  } catch {
+    /* a locked-down storage area must not break the page */
+  }
+  return "";
+}
+
 function readStoredMode(): ViewingMode | null {
   try {
     const v = window.localStorage.getItem(VIEWING_MODE_STORAGE_KEY);
@@ -143,6 +192,9 @@ export interface ViewingModeSignals {
   viewport: string;
   /** true when the stored/URL operator choice overrode the signals. */
   confirmed: boolean;
+  /** [F95 §3.3 / R3] epoch-ms stamp when the operator asserted WEB DESKTOP
+   *  by hand (popup blocked, opened noVNC manually); "" otherwise. */
+  manual?: string;
 }
 
 export interface ViewingModeDiagnosis {
@@ -196,6 +248,8 @@ export function explainViewingMode(search?: string): ViewingModeDiagnosis {
   const vh = typeof window !== "undefined" ? Number(window.innerHeight || 0) : 0;
   const framed = isFramed();
   const runnerSized = isRunnerSizedViewport(vw, vh, dpr);
+  // [F95 §3.3 / R3] an asserted mode must never look like a measurement.
+  const manualStamp = readManualWebDesktop();
   const signals: ViewingModeSignals = {
     host,
     hostKind: kind,
@@ -204,11 +258,24 @@ export function explainViewingMode(search?: string): ViewingModeDiagnosis {
     dpr,
     viewport: vw + "x" + vh,
     confirmed: state.confirmed,
+    manual: manualStamp,
   };
 
+  // [F95 §3.3 / R3] "(manual)" marks a mode the OPERATOR asserted, so the
+  // badge can never pass an assertion off as a measurement.
+  const manualTag = manualStamp ? " (manual)" : "";
+  const manualReason = manualStamp ? "+operator-asserted@" + manualStamp : "";
   // 1. loopback -> LOCAL DEV (the browser is on the serving machine; a laptop
   //    cannot load someone else's 127.0.0.1).
   if (kind === "loopback") {
+    if (manualStamp) {
+      return {
+        ...state,
+        label: "WEB DESKTOP (manual)",
+        reason: "loopback-host+operator-asserted@" + manualStamp,
+        signals,
+      };
+    }
     return {
       ...state,
       label: "LOCAL DEV",
@@ -224,8 +291,8 @@ export function explainViewingMode(search?: string): ViewingModeDiagnosis {
     if (state.detected === "web-desktop") {
       return {
         ...state,
-        label: "WEB DESKTOP",
-        reason: kind + "-host+runner-sized-viewport" + (framed ? "+framed" : ""),
+        label: "WEB DESKTOP" + manualTag,
+        reason: kind + "-host+runner-sized-viewport" + (framed ? "+framed" : "") + manualReason,
         signals,
       };
     }

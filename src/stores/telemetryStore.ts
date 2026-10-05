@@ -33,6 +33,14 @@ interface TelemetryState {
    *  it must never gate whether we TRY to connect (that gate was the deadlock
    *  that left the pill reading "idle" forever). */
   wsAvailable: boolean;
+  /** [F95 §3.4 / R4] the reconnect ladder is EXHAUSTED. Distinct from
+   *  `wsLive === false`, which is also true during a healthy retry: this one
+   *  means "stop pretending, tell the operator and offer a button". */
+  wsDead: boolean;
+  /** [F95 §3.4 / R4] how many consecutive reconnect attempts have failed. */
+  wsAttempts: number;
+  /** [F95 §3.4 / R4] why the last attempt failed, machine-readable. */
+  wsDeadReason: string;
   rdpUsage: UsageState | null;
   rdpLogonFallback: { sec: number; at: number } | null;
   usageFrozen: boolean;
@@ -42,6 +50,14 @@ interface TelemetryState {
   setWire: (w: WireState | null | undefined, httpRtt: number | null) => void;
   setWsLive: (v: boolean) => void;
   setWsAvailable: (v: boolean) => void;
+  /** [F95 §3.4 / R4] publish the ladder-exhausted state (attempts reset on any
+   *  successful open). */
+  setWsDead: (v: boolean, reason?: string) => void;
+  setWsAttempts: (n: number) => void;
+  /** [F95 §3.4 / R4] manual reconnect requested by the operator. Bumped so the
+   *  polling hook can watch it and rebuild the socket immediately. */
+  wsReconnectNonce: number;
+  requestWsReconnect: () => void;
   setUsage: (u: UsageState | null) => void;
   setLogonFallback: (v: { sec: number; at: number } | null) => void;
   setUsageFrozen: (v: boolean) => void;
@@ -64,6 +80,10 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   httpRtt: null,
   wsLive: false,
   wsAvailable: false,
+  wsDead: false,
+  wsAttempts: 0,
+  wsDeadReason: "",
+  wsReconnectNonce: 0,
   rdpUsage: null,
   rdpLogonFallback: null,
   usageFrozen: false,
@@ -112,6 +132,9 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
 
   setWsLive: (v) => set({ wsLive: v }),
   setWsAvailable: (v) => set({ wsAvailable: v }),
+  setWsDead: (v, reason) => set({ wsDead: v, wsDeadReason: v ? String(reason || "ladder-exhausted") : "" }),
+  setWsAttempts: (n) => set({ wsAttempts: n }),
+  requestWsReconnect: () => set((st) => ({ wsReconnectNonce: st.wsReconnectNonce + 1, wsDead: false })),
   setUsage: (u) => set({ rdpUsage: u }),
   setLogonFallback: (v) => set({ rdpLogonFallback: v }),
   setUsageFrozen: (v) => set({ usageFrozen: v }),

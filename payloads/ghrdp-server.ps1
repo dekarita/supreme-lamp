@@ -716,6 +716,42 @@ function Get-RdpLogonSubMeaning {
         default { if ($Code) { return 'other' } return '' }
     }
 }
+# ---------------------------------------------------------------------------
+# [F95 §3.1 / R1] WHICH LOGON TYPES PROVE AN INTERACTIVE SESSION.
+#
+# ROOT CAUSE: the F28 collector accepted ONLY LogonType 10 (RemoteInteractive).
+# Windows AutoAdminLogon - the very thing main.yml's "Arm Windows Auto-Logon"
+# step (F94) configures on the runner - writes LogonType 2 (Interactive), and a
+# cached-credential sign-in writes LogonType 11 (CachedInteractive). A physical
+# console sign-in, Parsec and Tailscale SSH-to-desktop all land on 2 as well.
+# LogonType 10 is written ONLY by an inbound RDP client. So on exactly the
+# runner F94 was built to create, the detector could never fire and the
+# dashboard read "No user logged into RDP yet" while a real interactive desktop
+# was on screen (the operator's noVNC screenshot: Firefox, Chrome, R 4.6.1,
+# Unity Hub, PowerShell and the GHRDP Start icon all visible).
+#
+# The accepted set is 2/10/11 - the three types that mean "a human is at this
+# desktop right now". Service (5), network (3), batch (4), unlock (7) and
+# new-credentials (9) stay EXCLUDED: none of them creates a desktop an ONLOGON
+# task can run in.
+# ---------------------------------------------------------------------------
+$script:GhrdpInteractiveLogonTypes = @('2', '10', '11')
+function Test-GhrdpInteractiveLogonType {
+    param([string]$LogonType)
+    return ($script:GhrdpInteractiveLogonTypes -contains ([string]$LogonType).Trim())
+}
+function Get-GhrdpInteractiveLogonTypeLabel {
+    param([string]$LogonType)
+    switch (([string]$LogonType).Trim()) {
+        '2'  { return 'interactive' }
+        '10' { return 'remote-interactive' }
+        '11' { return 'cached-interactive' }
+        default { return '' }
+    }
+}
+# The WQL form of the same set, for the Win32_LogonSession probes. Kept next to
+# the array so the two can never drift.
+$script:GhrdpLogonSessionWql = 'LogonType=2 OR LogonType=10 OR LogonType=11'
 function Get-RdpLogonAuthLast {
     # Pure: items in, verdict out. scanTs is ALWAYS stamped - the only way the
     # dashboard can tell "scanned, nothing yet" from "collector not running".
@@ -728,9 +764,14 @@ function Get-RdpLogonAuthLast {
     $okWhen = $null; $okTs = ''
     $failWhen = $null; $failTs = ''; $failSub = ''
     $c4624 = 0; $c4625 = 0
+    # [F95 §3.1 / R1] lastLogonType: WHICH of 2/10/11 was seen, so the banner
+    # can say "interactive" instead of a bare "yes".
+    $lastLogonType = ''; $lastLogonKind = ''
     foreach ($it in @($Items)) {
         if (-not $it) { continue }
-        if ([string]$it.logonType -ne '10' -and [string]$it.id -eq '4624') { continue }
+        # [F95 §3.1 / R1] was `-ne '10'`: that dropped every autologon (type 2)
+        # and cached (type 11) event before the window check could run.
+        if (-not (Test-GhrdpInteractiveLogonType -LogonType ([string]$it.logonType)) -and [string]$it.id -eq '4624') { continue }
         $when = $null
         try {
             $when = [datetime]::Parse([string]$it.timeUtc, [System.Globalization.CultureInfo]::InvariantCulture,
@@ -741,11 +782,20 @@ function Get-RdpLogonAuthLast {
             if ($when -gt $nowUtc.AddSeconds(120)) { continue }
         }
         if ([string]$it.id -eq '4624') {
-            # LogonType 10 (RemoteInteractive) only: a console/service logon is
-            # never an RDP success.
-            if ([string]$it.logonType -eq '10') {
+            # [F95 §3.1 / R1] Was: "LogonType 10 (RemoteInteractive) only: a
+            # console/service logon is never an RDP success." That held a real
+            # fact (a SERVICE/NETWORK logon is not a desktop) but drew the line
+            # in the wrong place - LogonType 2 (Interactive, which is what
+            # AutoAdminLogon writes) and 11 (CachedInteractive) ARE a desktop.
+            # Service/batch/network/unlock types are still excluded by
+            # Test-GhrdpInteractiveLogonType.
+            if (Test-GhrdpInteractiveLogonType -LogonType ([string]$it.logonType)) {
                 $c4624++
-                if (($null -eq $okWhen) -or ($null -eq $when) -or ($when -ge $okWhen)) { $okWhen = $when; $okTs = [string]$it.timeUtc }
+                if (($null -eq $okWhen) -or ($null -eq $when) -or ($when -ge $okWhen)) {
+                    $okWhen = $when; $okTs = [string]$it.timeUtc
+                    $lastLogonType = ([string]$it.logonType).Trim()
+                    $lastLogonKind = (Get-GhrdpInteractiveLogonTypeLabel -LogonType $lastLogonType)
+                }
             }
             continue
         }
@@ -772,6 +822,12 @@ function Get-RdpLogonAuthLast {
         count4625   = $c4625
         subMeaning  = (Get-RdpLogonSubMeaning -Code $sub)
         probeError  = $ProbeError
+        # [F95 §3.1 / R1] WHICH logon the verdict came from ('2'/'10'/'11' or
+        # '' when nothing was seen). Surfaced at
+        # rdpListener.authLast.logonType so the banner can name it instead of
+        # leaving the operator to guess why it says what it says.
+        logonType   = $lastLogonType
+        logonKind   = $lastLogonKind
     }
 }
 function Update-RdpLogonAuthLast {
@@ -1770,15 +1826,20 @@ function Start-F93LauncherLogonWatch {
                 try {
                     $since = (Get-Date).AddMinutes(-30)
                     $ev = @(Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 4624; StartTime = $since } -MaxEvents 300 -ErrorAction Stop)
+                    # [F95 §3.1 / R1] 2 (Interactive - what AutoAdminLogon
+                    # writes), 10 (RemoteInteractive) and 11
+                    # (CachedInteractive). Inlined as a literal because this
+                    # block runs in a Start-Job runspace that cannot see the
+                    # dot-sourced $script:GhrdpInteractiveLogonTypes; the
+                    # launch-gates F95 pin keeps the two lists identical.
+                    $okTypes = @('2', '10', '11')
                     foreach ($e in $ev) {
-                        # LogonType 10 only - a console/service logon is never an
-                        # RDP session (same discriminator as the F28 collector).
                         $lt = ''
                         try {
                             $x = [xml]$e.ToXml()
                             foreach ($d in $x.Event.EventData.Data) { if ($d.Name -eq 'LogonType') { $lt = [string]$d.'#text'; break } }
                         } catch { $lt = '' }
-                        if ($lt -eq '10') { $fired = $true; break }
+                        if ($okTypes -contains ([string]$lt).Trim()) { $fired = $true; break }
                     }
                 } catch { $fired = $false }
                 if ($fired) {
@@ -2310,6 +2371,10 @@ function Invoke-ClientRequest {
                 watcherTask = $watcherState
                 progressAgeSeconds = $progAge
                 watcherAlive = [bool]$prog.alive
+                # [F95 §3.2 / R2] what the watcher supervisor last decided, so
+                # "watcher: IDLE" carries a reason (task-start / schtasks-run /
+                # direct-invoke / failed) instead of being a dead end.
+                watcherSupervisor = $(try { Read-JsonFile -Path $script:F95SupStatePath } catch { $null })
                 mirrorHosts = @($mirrorRows)
                 mirrorAttempts = @($mirrorAttempts)
                 mirrorDiag = $prog.mirrorDiag
@@ -6888,12 +6953,14 @@ function Invoke-ClientRequest {
             }
             # [F9o] No URL => no auth mode (a blanked URL must not keep a stale 'vnc').
             if (-not $wd) { $wda = '' }
-            # [F10-2 §2.1] RDP LOGON AGE: newest LogonType 10 (RemoteInteractive)
-            # Win32_LogonSession StartTime -> age in seconds ($null = no RDP
-            # session; the UI keeps --:--:-- until the first non-null value).
+            # [F10-2 §2.1] RDP LOGON AGE: newest interactive Win32_LogonSession
+            # StartTime -> age in seconds ($null = no session; the UI keeps
+            # --:--:-- until the first non-null value).
+            # [F95 §3.1 / R1] the filter was 'LogonType=10' only, so an
+            # AutoAdminLogon (type 2) desktop reported no session at all.
             $rdpLogonAgeSec = $null
             try {
-                $ls = Get-CimInstance -ClassName Win32_LogonSession -Filter 'LogonType=10' -ErrorAction Stop
+                $ls = Get-CimInstance -ClassName Win32_LogonSession -Filter $script:GhrdpLogonSessionWql -ErrorAction Stop
                 if ($ls) {
                     $newest = ($ls | Sort-Object StartTime -Descending | Select-Object -First 1).StartTime
                     if ($newest) {
@@ -7348,15 +7415,21 @@ function Invoke-ClientRequest {
             $since = [DateTime]::UtcNow.AddMinutes(-2)
             if ($sinceIso) { try { $since = [DateTime]::Parse($sinceIso).ToUniversalTime() } catch { } }
             $connected = $false; $ts = ''; $ageSec = -1; $ip = ''; $checked = 0
+            $ltSeen = ''
             try {
                 $filter = @{ LogName='Security'; Id=4624; StartTime=$since.ToLocalTime() }
                 $events = Get-WinEvent -FilterHashtable $filter -MaxEvents 80 -ErrorAction SilentlyContinue
                 foreach ($ev in @($events)) {
                     $checked++
                     $msg = [string]$ev.Message
-                    if ($msg -notmatch 'Logon Type:\s+10') { continue }
+                    # [F95 §3.1 / R1] was 'Logon Type:\s+10'. The rendered
+                    # message carries the numeric type, so accept the same
+                    # 2/10/11 set as the F28 collector. \b stops '10' from
+                    # matching inside a longer number.
+                    if ($msg -notmatch 'Logon Type:\s+(2|10|11)\b') { continue }
                     if ($userQ -and $msg -notmatch [regex]::Escape($userQ)) { continue }
                     $connected = $true
+                    $ltSeen = [string]$Matches[1]
                     $ts = $ev.TimeCreated.ToUniversalTime().ToString('o')
                     $ageSec = [int]((Get-Date) - $ev.TimeCreated).TotalSeconds
                     if ($msg -match 'Source Network Address:\s+(\S+)') { $ip = $Matches[1] }
@@ -7371,7 +7444,8 @@ function Invoke-ClientRequest {
                 user       = $userQ
                 since      = $since.ToString('o')
                 checked    = $checked
-                note       = 'Runner-side Security 4624 LogonType 10; requires SeSecurityPrivilege on server process'
+                logonType  = $ltSeen
+                note       = 'Runner-side Security 4624 LogonType 2/10/11 (F95: was type-10 only); requires SeSecurityPrivilege on server process'
             }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $body)
             return
@@ -8071,7 +8145,9 @@ function Test-RdpConnected {
     if ($q -match '(?im)rdp-tcp#\d+\s+\S.*?\sActive') { return $true }
     if ($q -match '(?im)rdp-tcp') { return $false }
   } catch { }
-  try { return [bool](Get-CimInstance -ClassName Win32_LogonSession -Filter 'LogonType=10' -ErrorAction Stop) } catch { return $false }
+  # [F95 §3.1 / R1] was -Filter 'LogonType=10': an autologon (type 2) desktop
+  # read as "not connected" even with a full interactive session on screen.
+  try { return [bool](Get-CimInstance -ClassName Win32_LogonSession -Filter $script:GhrdpLogonSessionWql -ErrorAction Stop) } catch { return $false }
 }
 function Test-WebdeskClient {
   try {
@@ -8194,6 +8270,88 @@ while($true){
 $probePath = Join-Path $Root 'conn-probe.ps1'
 [System.IO.File]::WriteAllText($probePath, $probeScript, $script:NoBom)
 try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$probePath -WindowStyle Hidden } catch { }
+# ---------------------------------------------------------------------------
+# [F95 §3.2 / R2] WATCHER SUPERVISOR.
+#
+# The 60s heal used to be a blind `Start-ScheduledTask -TaskName GhrdpWatcher`.
+# That has two failure modes the operator actually hit:
+#   * an ONLOGON task cannot start while nobody is logged on, so the call
+#     silently no-ops and the dashboard keeps reading "watcher: IDLE";
+#   * it never checks whether the watcher is ALIVE, so a crashed watcher and a
+#     healthy one look identical to the heal.
+# This supervisor (1) measures liveness from the watcher's own progress.json
+# heartbeat, (2) tries the scheduled task, and (3) falls back to invoking
+# C:\ghrdp\ghrdp-watcher.ps1 directly when the task route fails. It writes
+# watcher-supervisor.json so /diag can prove what it did - a supervisor that
+# cannot report its own verdict is indistinguishable from no supervisor.
+# ghrdp-watcher.ps1 owns a single-instance mutex (Local\GhrdpWatcherSingleInstance)
+# and exits immediately when it is already held, so an over-eager start is safe.
+# ---------------------------------------------------------------------------
+$script:F95SupIntervalSec = 60
+$script:F95SupStaleSec = 180
+$script:F95SupStatePath = Join-Path $Root 'watcher-supervisor.json'
+function Invoke-F95WatcherSupervise {
+    $now = Get-Date
+    $state = [ordered]@{ at = ''; alive = $false; heartbeatAgeSec = -1; action = 'none'; detail = '' }
+    $state.at = $now.ToUniversalTime().ToString('o')
+    try {
+        $prog = Read-JsonFile -Path $script:ProgPath
+        if ($prog -and $prog.ts) {
+            try {
+                $age = [int]((Get-Date) - [datetime]$prog.ts).TotalSeconds
+                $state.heartbeatAgeSec = $age
+                $state.alive = ($age -le $script:F95SupStaleSec)
+            } catch { $state.alive = $false }
+        }
+    } catch { $state.alive = $false }
+    if ($state.alive) {
+        $state.action = 'none'
+        $state.detail = 'heartbeat ' + $state.heartbeatAgeSec + 's old - watcher alive'
+    } else {
+        $watcherSrc = 'C:\ghrdp\ghrdp-watcher.ps1'
+        $started = $false
+        try {
+            Start-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction Stop
+            $started = $true
+            $state.action = 'task-start'
+            $state.detail = 'Start-ScheduledTask GhrdpWatcher issued (heartbeat was ' + $state.heartbeatAgeSec + 's)'
+        } catch {
+            $state.detail = 'task start failed: ' + $_.Exception.Message
+        }
+        if (-not $started) {
+            try {
+                & schtasks.exe /Run /TN GhrdpWatcher 2>$null
+                $LASTEXITCODE = 0
+                $started = $true
+                $state.action = 'schtasks-run'
+                $state.detail = $state.detail + ' | schtasks /Run issued'
+            } catch {
+                $state.detail = $state.detail + ' | schtasks /Run failed: ' + $_.Exception.Message
+            }
+        }
+        if (-not $started -and (Test-Path -LiteralPath $watcherSrc)) {
+            # Last resort: run the script directly. Detached + hidden so the
+            # server's accept loop is never blocked by it.
+            try {
+                # Single line on purpose: the F11-5.3 launch-gates pin greps
+                # this file per-line for the launcher call together with
+                # `-WindowStyle Hidden` (same form as the wire-probe launch
+                # below the accept loop), so a backtick continuation - or even
+                # a comment naming the call - would read as an unhidden launch.
+                Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$watcherSrc -WindowStyle Hidden -ErrorAction Stop | Out-Null
+                $started = $true
+                $state.action = 'direct-invoke'
+                $state.detail = $state.detail + ' | invoked ' + $watcherSrc + ' directly'
+            } catch {
+                $state.detail = $state.detail + ' | direct invoke failed: ' + $_.Exception.Message
+            }
+        }
+        if (-not $started) { $state.action = 'failed' }
+        Write-Host ('[F95] watcher supervisor: alive=' + $state.alive + ' heartbeat=' + $state.heartbeatAgeSec + 's action=' + $state.action)
+    }
+    try { [System.IO.File]::WriteAllText($script:F95SupStatePath, ($state | ConvertTo-Json -Compress), $script:NoBom) } catch { }
+    return $state
+}
 $start = Get-Date
 $limit = New-TimeSpan -Minutes $LimitMinutes
 $lastHeal = Get-Date
@@ -8225,9 +8383,12 @@ while (((Get-Date) - $start) -lt $limit) {
         $lastTelScan = Get-Date
         try { Update-RdpListenerTelescope -StatePath $script:F37TelStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
     }
-    if (((Get-Date) - $lastHeal).TotalSeconds -ge 60) {
+    # [F95 §3.2 / R2] was a blind `Start-ScheduledTask -TaskName GhrdpWatcher`
+    # with no liveness check and no fallback when the task route is unavailable
+    # (which is exactly the state of an ONLOGON task while nobody is logged on).
+    if (((Get-Date) - $lastHeal).TotalSeconds -ge $script:F95SupIntervalSec) {
         $lastHeal = Get-Date
-        try { Start-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction SilentlyContinue } catch { }
+        try { Invoke-F95WatcherSupervise | Out-Null } catch { }
     }
     Start-Sleep -Milliseconds 50
 }

@@ -141,6 +141,41 @@ function envelopeFor(requestId: string, code: string, messageKey: string, retrya
   return { requestId, traceId: "", code, messageKey, retryable, retryAfterSeconds };
 }
 
+/**
+ * [F95 §3.5 / R5] THE SPECIFIC MESSAGE FOR A STATUS CODE.
+ *
+ * ROOT CAUSE of "Something went wrong. Retry" for everything: the non-2xx arm
+ * fell back to `search.errors.generic` whenever the SERVER did not supply a
+ * messageKey - which it does not for 401 or 404 - and the `catch` arm used the
+ * generic key for every thrown fetch. So an expired session, a rate limit and
+ * a dead connection all rendered as one sentence and the operator could not
+ * tell which action to take.
+ *
+ * This table is consulted ONLY as a fallback: a messageKey the server DID send
+ * still wins, because it knows more about its own failure than a status code
+ * does. `search.errors.generic` is now reserved for genuinely unknown errors.
+ */
+export function statusMessageKey(status: number): { code: string; messageKey: string; retryable: boolean } {
+  if (status === 401 || status === 403) return { code: "UNAUTHENTICATED", messageKey: "search.errors.sessionExpired", retryable: false };
+  if (status === 404) return { code: "NOT_FOUND", messageKey: "search.errors.notFound", retryable: false };
+  if (status === 400 || status === 422) return { code: "VALIDATION_ERROR", messageKey: "search.errors.validation", retryable: false };
+  if (status === 413) return { code: "PAYLOAD_TOO_LARGE", messageKey: "search.errors.payloadTooLarge", retryable: false };
+  if (status === 429) return { code: "RATE_LIMITED", messageKey: "search.errors.rateLimitedGeneric", retryable: true };
+  if (status >= 500 && status <= 599) return { code: "SERVER_ERROR", messageKey: "search.errors.serverError", retryable: true };
+  return { code: "INTERNAL_ERROR", messageKey: "search.errors.generic", retryable: false };
+}
+
+/**
+ * [F95 §3.5 / R5] A thrown fetch is NOT "something went wrong": it means the
+ * request never reached the server, i.e. the connection is gone. The dashboard
+ * already knows this state independently (the F95 WS reconnect ladder publishes
+ * `wsDead`), so name it and point at the Reconnect control instead of asking
+ * the operator to retry an action that cannot succeed.
+ */
+export function transportErrorKey(): { code: string; messageKey: string } {
+  return { code: "TRANSPORT_UNAVAILABLE", messageKey: "search.errors.connectionLost" };
+}
+
 async function callApi<T>(path: string, requestId: string, init: RequestInit): Promise<ApiResult<T>> {
   const key = getKey();
   try {
@@ -161,18 +196,23 @@ async function callApi<T>(path: string, requestId: string, init: RequestInit): P
     }
     if (r.ok) return { ok: true, data: body as T };
     const env = (body || {}) as Partial<ErrorEnvelope>;
+    // [F95 §3.5 / R5] status-specific fallback; an explicit server messageKey
+    // still wins over it.
+    const cls = statusMessageKey(r.status);
     return {
       ok: false,
       error: envelopeFor(
         String(env.requestId || requestId),
-        String(env.code || (r.status === 429 ? "RATE_LIMITED" : "INTERNAL_ERROR")),
-        String(env.messageKey || "search.errors.generic"),
-        Boolean(env.retryable),
+        String(env.code || cls.code),
+        String(env.messageKey || cls.messageKey),
+        typeof env.retryable === "boolean" ? env.retryable : cls.retryable,
         typeof env.retryAfterSeconds === "number" ? env.retryAfterSeconds : undefined
       ),
     };
   } catch {
-    return { ok: false, error: envelopeFor(requestId, "INTERNAL_ERROR", "search.errors.generic", true) };
+    // [F95 §3.5 / R5] was INTERNAL_ERROR + generic for every thrown fetch.
+    const cls = transportErrorKey();
+    return { ok: false, error: envelopeFor(requestId, cls.code, cls.messageKey, true) };
   }
 }
 

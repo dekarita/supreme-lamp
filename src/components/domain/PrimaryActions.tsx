@@ -17,6 +17,8 @@ import { FQDN_RE, SESSION_WINDOW_MS } from "@/lib/format";
 import { credsspChip, recoveryDecision, validFqdnUser, validWebdeskUrl } from "@/lib/domain/native";
 // [F94 §3.2/§3.3] the two buttons the operator reported as dead.
 import { openWebDesktop } from "@/lib/openWebDesktop";
+// [F95 §3.3 / R3] the manual WEB DESKTOP assertion the blocked banner was missing.
+import { readManualWebDesktop, setManualWebDesktop } from "@/lib/launchUrl";
 import { useNow } from "@/lib/useNow";
 
 export function PrimaryActions() {
@@ -37,6 +39,9 @@ export function PrimaryActions() {
   // [F94 §3.2] non-empty when the browser blocked the WEB DESKTOP popup; the
   // URL is then rendered on the page so the operator can still get there.
   const [webdeskBlocked, setWebdeskBlocked] = useState("");
+  // [F95 §3.3 / R3] epoch-ms stamp of the operator's "I opened it manually"
+  // assertion. Non-empty => the badge reads WEB DESKTOP (manual).
+  const [manualAsserted, setManualAsserted] = useState(() => readManualWebDesktop());
   useNow(1000);
 
   const s = native || {};
@@ -193,6 +198,23 @@ export function PrimaryActions() {
           </a>
           <button
             type="button"
+            id="f95.webdeskManual"
+            data-testid="webdesk-blocked-manual"
+            onClick={() => {
+              // [F95 §3.3 / R3] The operator opened noVNC by hand. Record it:
+              // the badge flips to "WEB DESKTOP (manual)" and stays there until
+              // they say otherwise, instead of reading "Tailscale local" for
+              // the rest of the run.
+              setManualWebDesktop(true);
+              setManualAsserted(readManualWebDesktop());
+              setWebdeskBlocked("");
+            }}
+            className="px-2 py-0.5 text-xs rounded border border-accent/60 text-accent font-medium hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            {t("webdeskBlocked.manualOpened")}
+          </button>
+          <button
+            type="button"
             id="f94.webdeskRetry"
             data-testid="webdesk-blocked-retry"
             onClick={() => setWebdeskBlocked("")}
@@ -202,6 +224,44 @@ export function PrimaryActions() {
           </button>
         </div>
       ) : null}
+
+      {/* [F95 §3.3 / R3] ALWAYS-VISIBLE manual WEB DESKTOP toggle. It is not
+          gated on the popup having been blocked: the operator may have reached
+          noVNC through a bookmark, a second monitor or a plain reload, in which
+          case no banner ever appears and there was previously no way at all to
+          tell the dashboard. One click asserts the mode, one click withdraws it. */}
+      <div
+        id="f95.viewingModeToggle"
+        data-testid="viewing-mode-toggle"
+        className="mt-2 flex flex-wrap items-center gap-2 rounded-md border border-default bg-surface px-3 py-1.5"
+      >
+        <span className="text-xs text-tertiary">{t("viewingMode.manual.prefix")}</span>
+        <button
+          type="button"
+          id="f95.viewingModeToggleBtn"
+          data-testid="viewing-mode-toggle-btn"
+          aria-pressed={!!manualAsserted}
+          onClick={() => {
+            const stamp = setManualWebDesktop(!manualAsserted);
+            setManualAsserted(stamp);
+          }}
+          className={
+            "px-2 py-0.5 text-xs rounded border font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " +
+            (manualAsserted
+              ? "border-accent/60 text-accent bg-accent/10"
+              : "border-default text-secondary hover:bg-raised")
+          }
+        >
+          {manualAsserted ? t("viewingMode.manual.on") : t("viewingMode.manual.off")}
+        </button>
+        {manualAsserted ? (
+          <span id="f95.viewingModeManualStamp" data-testid="viewing-mode-manual-stamp" className="text-xs text-tertiary">
+            {t("viewingMode.manual.since")} {new Date(Number(manualAsserted)).toLocaleTimeString()}
+          </span>
+        ) : (
+          <span className="text-xs text-tertiary">{t("viewingMode.manual.hint")}</span>
+        )}
+      </div>
 
       {/* F28 recovery row - shown only on the correlated wrong-password failure */}
       <div

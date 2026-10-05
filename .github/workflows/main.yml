@@ -4453,15 +4453,102 @@ jobs:
               try {
                   & schtasks.exe /Create /F /SC ONLOGON /TN GhrdpWatcher /TR ('"{0}" {1}' -f $pwshPath, $argLine) 2>$null
                   $LASTEXITCODE = 0
+                  $registered = $true
                   Write-Host '[watcher] schtasks ONLOGON fallback registered'
               } catch {
                   Write-Host ('[watcher] schtasks fallback failed: ' + $_.Exception.Message)
               }
           }
+
+          # ------------------------------------------------------------------
+          # [F95 §3.2 / R2] START IT NOW, AND MAKE THE SHORTCUT OURS.
+          #
+          # ROOT CAUSE of "watcher: IDLE" on a desktop the operator could see
+          # through noVNC: this step REGISTERED GhrdpWatcher and then stopped.
+          # An ONLOGON task only fires on the NEXT logon, so until somebody
+          # signed in the watcher was never running - and the one thing that
+          # starts it unconditionally was the desktop shortcut
+          # "GHRDP Start (watcher + dashboard).lnk", i.e. a human click. The
+          # old log line even claimed a "startup-folder shortcut" as mechanism
+          # (a), but that shortcut is written BY THE WATCHER ITSELF
+          # (payloads/ghrdp-watcher.ps1, first-run setup) - circular.
+          #
+          # Fixes, in the order the operator will feel them:
+          #   (1) start the task immediately, so THIS dispatch already has a
+          #       live watcher instead of one that waits for a logon;
+          #   (2) write the Startup-folder shortcut HERE, so it exists even on
+          #       a watcher that has never run once;
+          #   (3) if both fail, say so loudly instead of printing a coverage
+          #       claim that is not true.
+          # The single-instance mutex in ghrdp-watcher.ps1 makes the extra
+          # start harmless: a second invocation exits immediately.
+          # ------------------------------------------------------------------
+          $started = $false
+          if ($registered) {
+              try {
+                  Start-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction Stop
+                  $started = $true
+                  Write-Host '[watcher] GhrdpWatcher STARTED now (not waiting for a logon)'
+              } catch {
+                  Write-Host ('[watcher] Start-ScheduledTask failed: ' + $_.Exception.Message)
+              }
+          }
+          if (-not $started) {
+              try {
+                  & schtasks.exe /Run /TN GhrdpWatcher 2>$null
+                  $LASTEXITCODE = 0
+                  $started = $true
+                  Write-Host '[watcher] schtasks /Run fallback started the watcher'
+              } catch {
+                  Write-Host ('[watcher] schtasks /Run fallback failed: ' + $_.Exception.Message)
+              }
+          }
+          if (-not $started) {
+              Write-Host ('::warning::[watcher] GhrdpWatcher could not be started at bootstrap - ' +
+                'the watcher will only come up on the next interactive logon or via the dashboard Start-watcher button')
+          }
+
+          # (2) Startup-folder shortcut, written by the WORKFLOW for the RDP
+          # user's real profile. Redundant with the ONLOGON task by design: the
+          # task is the primary, this survives a task that fails to register.
+          try {
+              $profRoot = 'C:\Users'
+              $targetProf = ''
+              if ($user) {
+                  $leaf = ([string]$user -split '\\')[-1]
+                  $cand = Join-Path $profRoot $leaf
+                  if (Test-Path -LiteralPath $cand) { $targetProf = $cand }
+              }
+              if (-not $targetProf) {
+                  try { $targetProf = [string]((Get-CimInstance -ClassName Win32_UserProfile -Filter 'Special=False' -ErrorAction Stop | Select-Object -First 1).LocalPath) } catch { }
+              }
+              if ($targetProf) {
+                  $suDir = Join-Path $targetProf 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup'
+                  New-Item -ItemType Directory -Path $suDir -Force -ErrorAction SilentlyContinue | Out-Null
+                  $suLnk = Join-Path $suDir 'GHRDP Watcher.lnk'
+                  if (-not (Test-Path -LiteralPath $suLnk)) {
+                      $ws = New-Object -ComObject WScript.Shell
+                      $sc = $ws.CreateShortcut($suLnk)
+                      $sc.TargetPath = $pwshPath
+                      $sc.Arguments = $argLine
+                      $sc.WorkingDirectory = 'C:\ghrdp'
+                      $sc.WindowStyle = 7
+                      $sc.Save()
+                      Write-Host ('[watcher] Startup-folder shortcut written at ' + $suLnk)
+                  } else {
+                      Write-Host '[watcher] Startup-folder shortcut already present'
+                  }
+              } else {
+                  Write-Host '[watcher] no user profile resolved - Startup shortcut skipped (the ONLOGON task above still covers it)'
+              }
+          } catch {
+              Write-Host ('[watcher] Startup shortcut failed: ' + $_.Exception.Message)
+          }
+
           Write-Host '[watcher] autostart coverage (3 mechanisms):'
-          Write-Host '  (a) startup-folder shortcut - created by the watcher itself at first logon'
-          Write-Host '  (b) ONLOGON scheduled task running as the RDP user (above)'
-          Write-Host '  (c) dashboard Start-watcher button + servers auto-heal the task every 60s'
+          Write-Host ('  (a) startup-folder shortcut - written HERE by the workflow (F95; it used to be written by the watcher itself, which is circular)')
+          Write-Host ('  (b) ONLOGON scheduled task running as the RDP user - registered AND started above (started=' + $started + ')')
+          Write-Host '  (c) dashboard Start-watcher button + the F95 server-side watcher supervisor'
           exit 0
 
       # [F91 §A.2] Persistent launcher SERVICE for MIRROR MODE. The script lives
