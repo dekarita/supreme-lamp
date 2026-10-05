@@ -11,6 +11,7 @@ import { useThemeStore, useScaleStore, useLangStore, useSidebarStore } from "@/s
 import { useTelemetryStore } from "@/stores/telemetryStore";
 import { useSessionStore } from "@/stores/sessionStore";
 import { Chip } from "@/components/primitives/Chip";
+import { LogonGateBanner } from "@/components/domain/LogonGateBanner";
 import { cn } from "@/lib/cn";
 import { fmtHMS, pad2 } from "@/lib/format";
 import { elapsedSeconds, remainingSeconds } from "@/stores/telemetryStore";
@@ -376,6 +377,9 @@ export function AppShell() {
         {t("app.skipToMain")}
       </a>
       <TopBar />
+      {/* [F93 §2.1] Logon gate banner: top of EVERY route, self-hiding once a
+          type-10 4624 is observed (no dismiss, no stale opt-out). */}
+      <LogonGateBanner />
       <div className="flex flex-1 min-h-0">
         <Sidebar />
         <Main />

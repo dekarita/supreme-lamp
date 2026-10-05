@@ -32,10 +32,7 @@ export function useDashboardPolling(): void {
       if (s) setNativeStatus(s);
       else markNativeLost();
     };
-    const pollProgress = async () => {
-      const d = await getJson("/api/progress");
-      if (alive) setProgress(d);
-    };
+
     const pollDiagForSearch = async () => {
       try {
         // [F56-d §3] /diag echoes the dispatch lane: searchEnabled (boolean) + searchInput
@@ -83,26 +80,61 @@ export function useDashboardPolling(): void {
       }
     };
 
+    // [F93 §3.2] EXPLICIT RECONNECT with linear backoff.
+    // The F92 report "connection: lost (retrying)" was one failed /api/progress
+    // poll away from a red chip with no retry story. Now the progress lane
+    // retries on the 1s -> 3s -> 10s -> 30s ladder and only reports the
+    // connection as lost once that whole ladder is exhausted; the first
+    // success resets it. The 2s /ping cadence dropped to 5s (12/min), so the
+    // dashboard stays far below the server's per-route budget.
+    const RECONNECT_LADDER = [1000, 3000, 10000, 30000];
+    let progressFail = 0;
+    let progressTimer = 0;
+    const progressLoop = async () => {
+      const d = await getJson("/api/progress");
+      if (!alive) return;
+      if (d) {
+        progressFail = 0;
+        setProgress(d);
+        progressTimer = window.setTimeout(progressLoop, 3000) as unknown as number;
+        return;
+      }
+      if (progressFail < RECONNECT_LADDER.length) {
+        const delay = RECONNECT_LADDER[progressFail];
+        progressFail += 1;
+        progressTimer = window.setTimeout(progressLoop, delay) as unknown as number;
+        return;
+      }
+      // Ladder exhausted: report the loss (the chip turns red here), then keep
+      // probing at the slowest step so recovery is automatic, never manual.
+      progressFail += 1;
+      setProgress(null);
+      progressTimer = window.setTimeout(progressLoop, RECONNECT_LADDER[RECONNECT_LADDER.length - 1]) as unknown as number;
+    };
+
     void pollConfig();
     void pollNative();
-    void pollProgress();
+    void progressLoop();
     void pollDiagForSearch();
     void probeHealth();
     timers.push(window.setInterval(pollConfig, 15000));
     timers.push(window.setInterval(pollNative, 15000));
     timers.push(window.setInterval(pollNative, 10000));
-    timers.push(window.setInterval(pollProgress, 3000));
-    timers.push(window.setInterval(pollPing, 2000));
+    timers.push(window.setInterval(pollPing, 5000));
     timers.push(window.setInterval(probeHealth, 30000));
     timers.push(window.setInterval(pollDiagForSearch, 15000));
 
     let ws: WebSocket | null = null;
     let wsRetry = 0;
+    let wsAttempt = 0;
     const connectWs = () => {
       if (!alive || !useTelemetryStore.getState().wsLive) return;
       try {
         ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
-        ws.onopen = () => useTelemetryStore.getState().setWsLive(true);
+        ws.onopen = () => {
+          wsAttempt = 0;
+          useTelemetryStore.getState().setWsLive(true);
+        };
         ws.onmessage = (evt) => {
           try {
             const data = JSON.parse(evt.data as string);
@@ -120,7 +152,10 @@ export function useDashboardPolling(): void {
         };
         ws.onclose = () => {
           void probeHealth();
-          wsRetry = window.setTimeout(connectWs, 2000) as unknown as number;
+          // [F93 §3.2] same ladder as the progress lane (capped at 30s).
+          const step = RECONNECT_LADDER[Math.min(wsAttempt, RECONNECT_LADDER.length - 1)];
+          wsAttempt += 1;
+          wsRetry = window.setTimeout(connectWs, step) as unknown as number;
         };
         ws.onerror = () => {};
       } catch {}
@@ -133,6 +168,7 @@ export function useDashboardPolling(): void {
       alive = false;
       timers.forEach((t) => window.clearInterval(t));
       window.clearInterval(wsStarter);
+      if (progressTimer) window.clearTimeout(progressTimer);
       if (wsRetry) window.clearTimeout(wsRetry);
       if (ws) ws.close();
     };

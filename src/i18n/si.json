@@ -58,18 +58,18 @@
   "mirror": {
     "open": "විවෘත කරන්න",
     "openHint": "ස්ථානීයව විවෘත කර RDP වෙත දර්පණය කරන්න",
-    "openedLocal": "ස්ථානීයව විවෘත විය \u2713",
-    "mirroredRdp": "RDP වෙත දර්පණය විය \u2713",
-    "openedBoth": "ස්ථානීයව විවෘත විය \u2713 + RDP වෙත දර්පණය විය \u2713",
-    "rdpOffline": "ස්ථානීයව විවෘත විය \u2713 (RDP දාවක: {{reason}})",
+    "openedLocal": "ස්ථානීයව විවෘත විය ✓",
+    "mirroredRdp": "RDP වෙත දර්පණය විය ✓",
+    "openedBoth": "ස්ථානීයව විවෘත විය ✓ + RDP වෙත දර්පණය විය ✓",
+    "rdpOffline": "ස්ථානීයව විවෘත විය ✓ (RDP දාවක: {{reason}})",
     "blocked": "ප්‍රතික්ෂේප: සාමාන්‍ය https සබැඳියක් නොවේ - කිසිවක් විවෘත විය නැත",
     "openInExplorer": "RDP හි විවෘත කරන්න",
-    "watchInRdp": "\u25B6 RDP හි නරඹන්න",
-    "watchLiveInRdp": "\u25B6 සජීවී RDP හි නරඹන්න",
+    "watchInRdp": "▶ RDP හි නරඹන්න",
+    "watchLiveInRdp": "▶ සජීවී RDP හි නරඹන්න",
     "audioPlayLabel": "RDP හරහා අන්තර්ගත ශ්‍රව්‍යය",
-    "audioStreamFailed": "\u26A0 ප්‍රවාහය අසාර්ථකයි - RDP හි නරඹන්න",
+    "audioStreamFailed": "⚠ ප්‍රවාහය අසාර්ථකයි - RDP හි නරඹන්න",
     "launcherLine": "දාවක: {{state}}, හෘදස්පන්දුව තත්පර {{age}}කට පෙර, පෝලිම {{depth}}",
-    "launcherRunning": "ක්‍රියාත්මකයි \u2713",
+    "launcherRunning": "ක්‍රියාත්මකයි ✓",
     "launcherStale": "කාර්ය ස්ථාපනයයි, හෘදස්පන්දුව පැරණියි",
     "launcherMissing": "පෝලිම පමණයි (සේවාව කියවන්නේ නැත)",
     "launcherAbsent": "නැත (F91-ට පෙර සේවාදායකය)",
@@ -952,8 +952,7 @@
         "unsupported": "එම මෙහෙයුමට සහාය නොදක්වයි"
       }
     }
-  }
-,
+  },
   "lab": {
     "title": "ලැබ් පරීක්ෂකය",
     "sourceLine": "මූලාශ්‍රය: {{source}} — {{seconds}} තත්පරයකින් ප්‍රතිඵල {{count}}",
@@ -971,7 +970,7 @@
     "notFound": "මෙම ලැබ් ලිපිනයට ගබඩාගත් අඩවියක් නොමැත.",
     "loading": "ගබඩාගත් මුල් පිටුව ලබාගනිමින්…",
     "source": "මූලාශ්‍රය: {{source}} (URL {{count}})",
-      "sourceCrossDomain": "මූලාශ්‍රය: GitHub README ({{repo}}) — {{section}} කොටසේ අයිතම {{count}}"
+    "sourceCrossDomain": "මූලාශ්‍රය: GitHub README ({{repo}}) — {{section}} කොටසේ අයිතම {{count}}"
   },
   "newSiteName": "නාමය",
   "newSiteUrl": "මූල යුආර්එල් (https)",
@@ -986,7 +985,20 @@
   "addSite": {
     "autoHttps": "https:// ස්වයංක්‍රීයව එකතු කරන ලදී",
     "httpsOnly": "HTTPS අවශ්‍යයි - මෙම අඩවිය ආරක්ෂිත නොවන HTTP පමණක් සපයයි, ගබඩා කළ නොහැක.",
-    "probeFailed": "HTTPS හරහා අඩවියට ළඟා විය නොහැක"
+    "probeFailed": "HTTPS හරහා අඩවියට ළඟා විය නොහැක",
+    "authMissing": "උපකරණ පුවරු අවසරය නොමැත (?key=... සමඟ නැවත විවෘත කරන්න). අඩවිය සුරකින ලදි නැත.",
+    "launcherOffline": "අඩවිය එක් කිරීම හරි, නමුත් WEB DESKTOP හරහා ලොග් වන තෙක් \"Open in RDP\" සහ බාගැනීම් අසාර්ථක වේ.",
+    "reason": {
+      "cloudflareChallenge": "අඩවිය Cloudflare අභියෝගයක් ලබා දුන්නේය, පිටුව නොවේ.",
+      "dnsNxdomain": "එම සත්කාරක නාමය විසඳා ගත නොහැක (DNS NXDOMAIN).",
+      "sslCertInvalid": "අඩවියේ HTTPS සහතිකය වලංගු නොවේ.",
+      "timeout10s": "අඩවිය තත්පර 10 ක් තුළ පිළිතුරු දුන්නේ නැත.",
+      "http5xx": "අඩවිය සේවාදායක දෝෂයක් ලබා දුන්නේය (HTTP 5xx).",
+      "redirectLoop": "අඩවිය නැවත යොමු ලූපයක් සාදයි (පියවර 10 ට වැඩි).",
+      "noResponse": "අඩවිය HTTPS හරහා පිළිතුරු නොදී සම්බන්ධතාවය වසා දැමුවේය.",
+      "httpStatus": "අඩවිය HTTPS ඉල්ලීම ප්‍රතික්ෂේප කළේය (HTTP {{code}}).",
+      "other": "අඩවියට HTTPS හරහා ළඟා විය නොහැක ({{reason}})."
+    }
   },
   "download": {
     "toRdp": "RDP වෙත බාගන්න",
@@ -1030,7 +1042,7 @@
       "unknown": "සබැඳිය කොහේ විවෘත වේදැයි සේවාදායක පඩිපෙළ තීරණය කරයි."
     },
     "hint": {
-      "body": "\u201cOpen in RDP\u201d සැබවින්ම RDP තුළ විවෘත කිරීමට, මෙම ඩෑෂ්බෝඩ් එක WEB DESKTOP හරහා බලන්න (Mission Control හි වම් පැති තීරුව).",
+      "body": "“Open in RDP” සැබවින්ම RDP තුළ විවෘත කිරීමට, මෙම ඩෑෂ්බෝඩ් එක WEB DESKTOP හරහා බලන්න (Mission Control හි වම් පැති තීරුව).",
       "learnMore": "තව දැනගන්න",
       "dismiss": "හරි"
     },
@@ -1043,5 +1055,11 @@
       "openAnyway": "ඕනෑම විටෙක මගේ බ්‍රවුසරයේ විවෘත කරන්න",
       "dismiss": "අහක් කරන්න"
     }
+  },
+  "logonGate": {
+    "title": "තවම RDP වෙත පිවිසුණු පරිශීලකයෙක් නැත",
+    "message": "Launcher සේවාව ක්‍රියා විරහිතයි. \"Open in RDP\" සහ බාගැනීම් අසාර්ථක වේ.",
+    "button": "පිවිසෙන්න WEB DESKTOP විවෘත කරන්න",
+    "noUrl": "WEB DESKTOP තවම ස්ථාපනය කර නැත - Overview පිටුව බලන්න."
   }
 }

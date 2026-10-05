@@ -36,6 +36,35 @@ const ERROR_KEYS: Record<NewSiteError, string> = {
   network: "search.errors.generic",
 };
 
+// [F93 §1.3] The F93 server answers a probe refusal with a CONCRETE reason code
+// in errors.url instead of a shrug. Every code the server can emit maps to a
+// full sentence here; anything unknown renders its own name rather than the
+// generic "rejected by validation" line.
+const REASON_KEYS: Record<string, string> = {
+  "cloudflare-challenge": "addSite.reason.cloudflareChallenge",
+  "dns-nxdomain": "addSite.reason.dnsNxdomain",
+  "ssl-cert-invalid": "addSite.reason.sslCertInvalid",
+  "timeout-10s": "addSite.reason.timeout10s",
+  "http-5xx": "addSite.reason.http5xx",
+  "redirect-loop": "addSite.reason.redirectLoop",
+  "no-response": "addSite.reason.noResponse",
+  "http-error": "addSite.reason.noResponse",
+};
+
+/** [F93 §1.3] Turn a server reason code into visible text; i18n keys that are
+ *  not reason codes still go through t() unchanged. */
+export function reasonText(t: (k: string, o?: { code?: string; reason?: string }) => string, code: string): string {
+  if (REASON_KEYS[code]) return t(REASON_KEYS[code]);
+  const http = /^http-(\d{3})$/.exec(code);
+  if (http) return t("addSite.reason.httpStatus", { code: http[1] });
+  return t("addSite.reason.other", { reason: code });
+}
+
+/** True when a server-returned key is a concrete probe reason, not an i18n key. */
+export function isProbeReason(code: string): boolean {
+  return !!REASON_KEYS[code] || /^http-\d{3}$/.test(code);
+}
+
 // [F84 §2.1] Normalise an operator-typed site URL: a bare domain or a
 // path-only entry gets `https://` prepended, an explicit scheme is preserved
 // (an explicit http:// is kept so the caller can refuse it with a visible
@@ -70,7 +99,14 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
   // input was normalised (on blur or on save) - fail-visible, never silent.
   const [autoHttps, setAutoHttps] = useState(false);
   const [saving, setSaving] = useState(false);
+  // [F93 §2.3] Informational only: adding a site is fine while nobody is
+  // logged into RDP, but "Open in RDP" cannot work until they are. Never blocks.
+  const [launcherOffline, setLauncherOffline] = useState(false);
   const nameRef = useRef<HTMLInputElement>(null);
+
+  // [F93 §1.3] One text resolver: known i18n keys render as themselves, probe
+  // reason codes render as a real sentence (never "rejected by validation").
+  const text = (v: string) => (isProbeReason(v) ? reasonText(t as unknown as (k: string, o?: { code?: string; reason?: string }) => string, v) : t(v));
 
   const addSite = useCustomSourcesStore((s) => s.addSite);
   const labCount = useCustomSourcesStore((s) => s.labSources.length);
@@ -87,7 +123,24 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
     setAutoHttps(false);
     setSaving(false);
     const id = window.setTimeout(() => nameRef.current?.focus(), 0);
-    return () => window.clearTimeout(id);
+    // [F93 §2.3] One read per open; a failure leaves the hint hidden (never a
+    // false alarm) and an unmounted modal cannot set state.
+    let alive = true;
+    setLauncherOffline(false);
+    void (async () => {
+      try {
+        const r = await fetch("/api/launcher/health", { cache: "no-store" });
+        if (!r.ok) return;
+        const j = (await r.json()) as { serviceRunning?: boolean };
+        if (alive && j && j.serviceRunning === false) setLauncherOffline(true);
+      } catch {
+        /* offline: no hint */
+      }
+    })();
+    return () => {
+      alive = false;
+      window.clearTimeout(id);
+    };
   }, [open]);
 
   useEffect(() => {
@@ -148,6 +201,16 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
     setSaving(false);
     if (!outcome.ok) {
       const err = String(outcome.error || "search.errors.generic");
+      // [F93 §1.3] Per-field envelope first (errors.name / errors.url): each
+      // failing field is marked with ITS reason and the generic line is
+      // reserved for responses that carried no per-field information at all.
+      const fe = outcome.fieldErrors || null;
+      if (fe && (fe.name || fe.url)) {
+        setNameError(fe.name ? String(fe.name) : null);
+        setUrlError(fe.url ? String(fe.url) : null);
+        setGenericError(null);
+        return;
+      }
       if (err === "newSiteNameRequired" || err === "newSiteNameTooLong") {
         setNameError(err);
         setUrlError(null);
@@ -221,7 +284,7 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
             />
             {nameError ? (
               <span id="f78.addSite.nameError" data-testid="add-site-name-error" role="alert" className="text-xs text-danger">
-                {t(nameError)}
+                {text(nameError)}
               </span>
             ) : null}
           </label>
@@ -259,7 +322,7 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
             ) : null}
             {urlError ? (
               <span id="f78.addSite.urlError" data-testid="add-site-url-error" role="alert" className="text-xs text-danger">
-                {t(urlError)}
+                {text(urlError)}
               </span>
             ) : null}
             {/* [F82 §2.1] The F78 backwards-compat `add-site-error` testid now
@@ -288,7 +351,15 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
               per-field red spans above are untouched. */}
           {anyError ? (
             <p id="f78.addSite.error" data-testid="add-site-error" role="alert" className="text-xs text-danger/80 bg-danger/10 rounded p-2">
-              {t(anyError)}
+              {text(anyError)}
+            </p>
+          ) : null}
+
+          {/* [F93 §2.3] Launcher offline is a WARNING, never a block: the site
+              is stored either way, only "Open in RDP" needs a logged-in user. */}
+          {launcherOffline ? (
+            <p id="f93.addSite.launcherOffline" data-testid="add-site-launcher-offline" role="status" className="text-xs text-warning bg-warning/10 rounded p-2">
+              {t("addSite.launcherOffline")}
             </p>
           ) : null}
 

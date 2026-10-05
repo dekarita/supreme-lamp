@@ -78,6 +78,11 @@ test('F84-NORM: blur + save both normalise, and the server probes HTTPS on save'
   assert.ok(SRC.includes('setUrlError("addSite.httpsOnly")'), 'insecure-http refusal missing');
   assert.ok(SRC.includes('data-testid="add-site-auto-https"'), 'autoHttps hint missing');
   assert.ok(SERVER.includes("$f78FieldErrors['url'] = 'addSite.probeFailed'"), 'server probe refusal missing');
-  assert.ok(SERVER.includes("$f78ProbeReq.Method = 'HEAD'"), 'server probe is not a HEAD request');
-  assert.ok(SERVER.includes('$f78ProbeReq.Timeout = 5000'), 'server probe is not 5s-bounded');
+  // [F93 §1.2 SUPERSEDES the F84 HEAD/5s pins - rewritten in place, never
+  // deleted]: a HEAD is what Cloudflare-class CDNs refuse first, and 5s was
+  // too tight for a redirect ladder. The probe is now GET, 10s-bounded, and
+  // follows up to 10 redirects (the F93 pin test owns the 2xx/3xx acceptance).
+  assert.ok(SERVER.includes("$f78ProbeReq.Method = 'GET'"), 'server probe is not a GET request');
+  assert.ok(SERVER.includes('$f78ProbeReq.Timeout = 10000'), 'server probe is not 10s-bounded');
+  assert.ok(SERVER.includes('$f78ProbeReq.MaximumAutomaticRedirections = 10'), 'server probe does not follow redirects');
 });

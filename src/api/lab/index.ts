@@ -81,6 +81,10 @@ export interface LabError {
   code: string;
   messageKey: string;
   retryAfterSeconds?: number;
+  /** [F93 §1.3] Per-field errors as the server sent them (errors.name /
+   *  errors.url). The modal renders each under its own input; the generic
+   *  messageKey line is only used when this object is absent/empty. */
+  fieldErrors?: { name?: string; url?: string };
 }
 
 export type LabResult<T> = { ok: true; data: T } | { ok: false; error: LabError };
@@ -150,8 +154,8 @@ function canonicalOf(hostname: string, raw: unknown): string | undefined {
   return c;
 }
 
-function offline<T>(code: string, messageKey: string): LabResult<T> {
-  return { ok: false, error: { code, messageKey } };
+function offline<T>(code: string, messageKey: string, fieldErrors?: { name?: string; url?: string }): LabResult<T> {
+  return { ok: false, error: { code, messageKey, ...(fieldErrors ? { fieldErrors } : {}) } };
 }
 
 export async function listCustomSources(): Promise<LabResult<CustomSourceRow[]>> {
@@ -182,13 +186,30 @@ export async function createCustomSource(name: string, baseUrl: string): Promise
     });
     const body = (await r.json().catch(() => null)) as unknown;
     if (!r.ok) {
-      const env = (body || {}) as { code?: string; messageKey?: string; errors?: Record<string, string> };
+      const env = (body || {}) as { code?: string; messageKey?: string; errors?: Record<string, string>; details?: { reason?: string; detail?: string } };
       // [F84 §2.1] The server probe failure comes back as a per-field key
       // (`errors.url`), the same envelope shape F81 introduced. Field keys win
       // over the generic messageKey so the modal can render the specific
       // reason next to the URL input instead of "Something went wrong".
-      const fieldErr = env.errors ? env.errors.url || env.errors.name : null;
-      return offline(String(env.code || "VALIDATION_ERROR"), String(fieldErr || env.messageKey || "search.errors.generic"));
+      // [F93 §1.3] The F93 server sends a CONCRETE reason code in errors.url
+      // (cloudflare-challenge | dns-nxdomain | ssl-cert-invalid | timeout-10s |
+      // http-5xx | redirect-loop | http-<code> | no-response) and mirrors it in
+      // details.reason - both are carried through verbatim, so the modal never
+      // has to fall back to the generic line when a reason exists. A 401/403 is
+      // the dashboard-token gate, not a field problem: that is named too,
+      // instead of masquerading as "rejected by validation".
+      if (r.status === 401 || r.status === 403) {
+        return offline("AUTH_REQUIRED", "addSite.authMissing");
+      }
+      const fieldErrors: { name?: string; url?: string } = {};
+      if (env.errors && typeof env.errors === "object") {
+        if (env.errors.url) fieldErrors.url = String(env.errors.url);
+        if (env.errors.name) fieldErrors.name = String(env.errors.name);
+      }
+      if (!fieldErrors.url && env.details && env.details.reason) fieldErrors.url = String(env.details.reason);
+      const fieldErr = fieldErrors.url || fieldErrors.name || null;
+      const hasField = !!(fieldErrors.url || fieldErrors.name);
+      return offline(String(env.code || "VALIDATION_ERROR"), String(fieldErr || env.messageKey || "search.errors.generic"), hasField ? fieldErrors : undefined);
     }
     const row = asRow((body as { source?: unknown })?.source ?? body);
     return row ? { ok: true, data: row } : offline("INTERNAL_ERROR", "search.errors.generic");
