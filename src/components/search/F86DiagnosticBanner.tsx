@@ -60,6 +60,9 @@ interface LaunchDiag {
   logPath?: string;
   /** [F87 §D.1] the server's launch history (newest last). */
   history?: LaunchHistoryRow[];
+  /** [F88 §B.1] last 20 lines of %USERPROFILE%\.ghrdp\launch-url-verbose.log. */
+  verboseLog?: string[];
+  verboseLogPath?: string;
 }
 
 /** [F87 §D.1] A self-test row, used only for the download-dir probe here. */
@@ -193,7 +196,7 @@ export function F86DiagnosticBanner() {
   ];
   const activeCount = features.filter((x) => x.ok).length;
   const tier = typeof diag?.activeTier === "number" && diag.activeTier > 0 ? String(diag.activeTier) : "?";
-  const tierOk = tier === "1" || tier === "2";
+  const tierOk = tier === "0" || tier === "1" || tier === "2";
   const lastAt = diag?.lastLaunchAt || "";
   const lastResult = diag?.lastResult || "";
   const serverSha = version?.sha7 || "";
@@ -292,6 +295,28 @@ export function F86DiagnosticBanner() {
           {t("search.diag.selfTestShortcut")}
         </button>
       </div>
+      {/* [F88 §B.4] verbose launch-url log: last 20 lines, copyable for F89. */}
+      <details id="f88.diag.verboseLog" data-testid="f88-verbose-log" className="basis-full pt-1 border-t border-default">
+        <summary className="cursor-pointer text-primary select-none">{t("search.diag.verboseLog")}</summary>
+        <pre data-testid="f88-verbose-log-body" className="mt-1 whitespace-pre-wrap text-[10px] text-tertiary max-h-40 overflow-auto">
+          {(diag?.verboseLog ?? []).join("\n") || "—"}
+        </pre>
+        <button
+          id="f88.diag.verboseCopy"
+          data-testid="f88-verbose-log-copy"
+          type="button"
+          onClick={() => {
+            try {
+              void navigator.clipboard?.writeText((diag?.verboseLog ?? []).join("\n"));
+            } catch {
+              /* clipboard can be denied; the log stays visible to select */
+            }
+          }}
+          className="mt-1 h-8 px-2 rounded border border-default text-primary hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          {t("copy.action")}
+        </button>
+      </details>
     </div>
   );
 }

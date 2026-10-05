@@ -538,7 +538,8 @@
       "rateLimited": "Too many launches - retry in a moment",
       "noSession": "No active console session is attached",
       "tierProbe": "Open in RDP and show the launch tier",
-      "openedViaTier": "opened via tier {{tier}}"
+      "openedViaTier": "opened via tier {{tier}}",
+      "failedTier": "Could not open in RDP (tier {{tier}} failed): {{reason}}. Retry, or see /#/search?diag=1 for details."
     },
       "a11y": {
         "commandBar": "Search command bar",
@@ -831,7 +832,8 @@
       "testLaunchFail": "test launch failed: {{reason}}",
       "recent": "Last launches:",
       "downloadDir": "download dir",
-      "selfTestShortcut": "Run 11-site self-test"
+      "selfTestShortcut": "Run 11-site self-test",
+      "verboseLog": "Verbose launch-url log (last 20 lines)"
     },
     "deepInspect": "Deep-inspect \u201c{{query}}\u201d on {{hostname}}",
     "openInLabSite": "Open {{hostname}} in Lab",
@@ -1031,6 +1033,7 @@
 ,
   "lab": {
     "title": "Lab inspector",
+    "sourceLine": "Source: {{source}} — {{count}} results in {{seconds}}s",
     "resultContext": "Inspecting {{title}} from {{adapter}}",
     "query": "Query",
     "matchCount": "{{matches}} of {{total}} links match \u201c{{query}}\u201d",

@@ -21,9 +21,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, ExternalLink, FlaskConical, RefreshCw } from "lucide-react";
+import { ArrowLeft, Download, ExternalLink, FlaskConical, RefreshCw } from "lucide-react";
 import { inspectResultUrl, inspectSource, type CustomSourceRow, type LabError, type LabInspectResult } from "@/api/lab";
-import { launchUrl } from "@/lib/launchUrl";
+import { launchFailureToast, launchUrl } from "@/lib/launchUrl";
+import { requestFetch } from "@/api/fetch";
+import { isFileLikeUrl } from "./tokens";
 import { useToastStore } from "@/stores/toastStore";
 
 const ERROR_KEYS: Record<string, string> = {
@@ -60,6 +62,7 @@ export function LabInspector(props: LabInspectorProps) {
   const [loading, setLoading] = useState(false);
   const [matchesFirst, setMatchesFirst] = useState(true);
   const [allOpen, setAllOpen] = useState(false);
+  const [activeSet, setActiveSet] = useState(0); // [F88 §A.3] source tab
   const [cooldown, setCooldown] = useState(0);
   const alive = useRef(true);
 
@@ -76,6 +79,7 @@ export function LabInspector(props: LabInspectorProps) {
     setLoading(false);
     if (res.ok) {
       setData(res.data);
+      setActiveSet(0);
       return;
     }
     setError(res.error);
@@ -97,7 +101,11 @@ export function LabInspector(props: LabInspectorProps) {
     return () => window.clearInterval(id);
   }, [cooldown]);
 
-  const links = data?.links ?? [];
+  // [F88 §A.3] When the payload carries sourceSets, the visible list is the
+  // ACTIVE tab's rows; otherwise the primary links (byte-compatible with F86).
+  const sets = data?.sourceSets ?? [];
+  const active = sets.length > 0 && activeSet < sets.length ? sets[activeSet] : null;
+  const links = active ? active.links : data?.links ?? [];
   const matches = useMemo(() => links.filter((l) => l.matches), [links]);
   const others = useMemo(() => links.filter((l) => !l.matches), [links]);
   // §4.2 "Matches first" ON = the list IS the matching set; the rest of the
@@ -158,12 +166,45 @@ export function LabInspector(props: LabInspectorProps) {
             {t("lab.source", { source: (data as any).source, count: (data as any).sourceUrls || data.linkCount })}
           </span>
         ) : null}
+        {/* [F88 §A.3] the visible Source line: strategy + results + timing. */}
+        {data && (data as any).sourceDisplay ? (
+          <span id="f78.lab.sourceLine" data-testid="lab-source-line" className="ml-2 text-tertiary">
+            {t("lab.sourceLine", {
+              source: (data as any).sourceDisplay,
+              count: (data as any).sourceUrls || data.linkCount,
+              seconds: (((data as any).tookMs ?? 0) / 1000).toFixed(1),
+            })}
+          </span>
+        ) : null}
       </p>
 
       {cooldown > 0 ? (
         <p id="f78.lab.rateLimited" data-testid="lab-rate-limited" role="status" className="text-xs text-warning">
           {t("lab.rateLimited", { seconds: cooldown })}
         </p>
+      ) : null}
+
+      {/* [F88 §A.3] one tab per source actually fetched (>= 2 only). */}
+      {sets.length > 1 ? (
+        <div id="f78.lab.sourceTabs" data-testid="lab-source-tabs" className="flex flex-wrap gap-2" role="tablist">
+          {sets.map((st, i) => (
+            <button
+              key={st.key + "#" + i}
+              type="button"
+              role="tab"
+              aria-selected={i === activeSet}
+              data-testid="lab-source-tab"
+              data-active={i === activeSet ? "true" : "false"}
+              onClick={() => setActiveSet(i)}
+              className={
+                "h-9 px-2.5 rounded-md border text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent " +
+                (i === activeSet ? "border-accent bg-accent/10 text-primary" : "border-default text-secondary hover:bg-raised")
+              }
+            >
+              {st.label} ({st.count})
+            </button>
+          ))}
+        </div>
       ) : null}
 
       {loading && !data ? (
@@ -204,6 +245,42 @@ export function LabInspector(props: LabInspectorProps) {
                 <span className="text-xs font-mono text-tertiary truncate" title={l.href}>
                   {l.href}
                 </span>
+                {/* [F88 §C.3] file-ish URLs get a one-click Download to RDP
+                    (POST /api/fetch?download=true) next to the open button. */}
+                {isFileLikeUrl(l.href) ? (
+                  <button
+                    id={"f88.lab.linkDownload." + i}
+                    data-testid="lab-link-download"
+                    type="button"
+                    title={t("download.toRdp")}
+                    aria-label={t("download.toRdp") + ": " + (l.text || l.href)}
+                    onClick={async () => {
+                      try {
+                        const out = await requestFetch({
+                          operation: "start",
+                          requestId: Math.random().toString(36).slice(2, 12),
+                          idempotencyKey: Math.random().toString(36).slice(2, 12),
+                          adapterId: "lab",
+                          sourceSnapshotId: "lab-f88",
+                          intent: "download",
+                          transport: "https",
+                          mirrorOptIn: false,
+                          urlImport: { url: l.href },
+                          download: true,
+                        } as any);
+                        const p = (out.data as any)?.path;
+                        if (out.ok && typeof p === "string") push(t("download.success", { path: p }));
+                        else push(t("download.failed", { reason: out.error?.messageKey || out.error?.code || "transport" }));
+                      } catch {
+                        push(t("download.failed", { reason: "transport" }));
+                      }
+                    }}
+                    className="ml-auto shrink-0 h-8 px-2 rounded-md border border-default text-xs text-secondary hover:bg-raised inline-flex items-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  >
+                    <Download className="size-3" aria-hidden />
+                    {t("download.toRdp")}
+                  </button>
+                ) : null}
                 {/* [F84 §2.3] Button, not a new-tab anchor: every row click
                     routes through /api/launch-url, and a failure is a visible
                     toast rather than a silent local-browser tab. */}
@@ -213,7 +290,7 @@ export function LabInspector(props: LabInspectorProps) {
                   type="button"
                   onClick={async () => {
                     const out = await launchUrl(l.href);
-                    if (!out.ok) push(t(out.reason || "search.launchUrl.failed") + " — " + t("search.launchUrl.retry"));
+                    if (!out.ok) push(launchFailureToast(out, t));
                   }}
                   aria-label={t("lab.openInNewTab") + ": " + (l.text || l.href)}
                   className="ml-auto shrink-0 text-xs text-secondary hover:text-primary inline-flex items-center gap-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded px-1"

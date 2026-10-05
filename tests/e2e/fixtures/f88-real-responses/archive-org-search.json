@@ -1,0 +1,20 @@
+{
+  "response": {
+    "numFound": 214,
+    "start": 0,
+    "docs": [
+      { "identifier": "a-matter-of-life-and-death-1946", "title": "A Matter of Life and Death", "description": "1946 fantasy romance film directed by Powell and Pressburger" },
+      { "identifier": "matter-of-life-and-death", "title": "A Matter of Life and Death", "description": "Brian Nissen radio play" },
+      { "identifier": "matteroflifeanddeath_201501", "title": "A Matter of Life and Death" },
+      { "identifier": "amatteroflifeanddeath", "title": "A Matter of Life and Death (screenplay)" },
+      { "identifier": "78rpm_matter-of-life", "title": "Matter of Life and Death" },
+      { "identifier": "schaeffer_matter_life_death", "title": "Of Life and Death" },
+      { "identifier": "lifeanddeathoftime", "title": "On Life and Death" },
+      { "identifier": "history-of-life-and-death", "title": "A History of Life and Death" },
+      { "identifier": "games-of-life-and-death", "title": "Games of Life and Death" },
+      { "identifier": "matter_of_life_doc", "title": "Matter of Life and Death documentary" },
+      { "identifier": "night-of-living-dead", "title": "Night of the Living Dead" },
+      { "identifier": "its-a-wonderful-life", "title": "It's a Wonderful Life" }
+    ]
+  }
+}

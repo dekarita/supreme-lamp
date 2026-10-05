@@ -11,7 +11,7 @@ import { requestFetchStub, requestFetch, isProvenanceBlocked } from "@/lib/fetch
 import { customSources, evaluateResultProvenance } from "@/search/custom-source-store";
 import type { SearchResult } from "@/api/search";
 import { camel, fileExtension, fileUrlExtension, formatActualBytes, licenceStyle, validatedHttpsUrl } from "./tokens";
-import { launchUrl } from "@/lib/launchUrl";
+import { launchFailureToast, launchUrl } from "@/lib/launchUrl";
 
 // [F79 D5/D7] 16px card padding + a 24px inter-result gutter.
 export const CARD_HEIGHT = 216;
@@ -240,7 +240,7 @@ export function ResultsGrid() {
                   title={direct}
                   onClick={async () => {
                     const r = await launchUrl(direct);
-                    if (!r.ok) push(t(r.reason || "search.launchUrl.failed") + " — " + t("search.launchUrl.retry"));
+                    if (!r.ok) push(launchFailureToast(r, t));
                   }}
                   className="text-xs text-success truncate underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
                 >
@@ -339,7 +339,7 @@ export function ResultsGrid() {
                 aria-label={t("search.launchUrl.openInRdp")}
                 onClick={async () => {
                   const out = await launchUrl(direct);
-                  if (!out.ok) push(t(out.reason || "search.launchUrl.failed") + " — " + t("search.launchUrl.retry"));
+                  if (!out.ok) push(launchFailureToast(out, t));
                 }}
                 className="h-11 px-3 rounded-md border border-default text-xs text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
               >
@@ -360,7 +360,7 @@ export function ResultsGrid() {
                   const out = await launchUrl(direct);
                   if (!out.ok) {
                     setLaunchTiers((m) => ({ ...m, [sfx]: t("search.launchUrl.failed") }));
-                    push(t(out.reason || "search.launchUrl.failed") + " — " + t("search.launchUrl.retry"));
+                    push(launchFailureToast(out, t));
                     return;
                   }
                   const text = t("search.launchUrl.openedViaTier", { tier: out.tier || "?" });

@@ -259,6 +259,63 @@ const server = createServer(async (req, res) => {
     return;
   }
 
+  /** [F88 §A] The four operator cases, keyed by the query the spec types.
+   *  Returns the FULL F88 inspect payload (sourceDisplay/sourceSets/tookMs)
+   *  or null so every other query keeps its F78/F86 lane untouched. */
+  function f88InspectPayload(q) {
+    const norm = q.replace(/^f88\s+/, "").trim().toLowerCase();
+    const set = (label, strategy, count, links) => ({ key: strategy === "html" ? "search-endpoint" : "search-endpoint", label, strategy, count, links });
+    const landing = (host, slug, text, matches) => ({ text, href: "https://" + host + "/" + slug, matches });
+    if (norm === "free online philosophy courses") {
+      const search = set("HTML search endpoint", "html", 42, [
+        { text: "Free Online Philosophy Courses", href: "https://www.openculture.com/freeonlinecourses", matches: true },
+        { text: "Walter Kaufmann's Lectures on Nietzsche", href: "https://www.openculture.com/2011/04/walter_kaufmanns_lectures.html", matches: true },
+        landing("www.openculture.com", "philosophy", "Philosophy", false),
+        landing("www.openculture.com", "category/philosophy", "Philosophy category", false),
+        { text: "platos-republic-lecture.mp3", href: "https://www.openculture.com/audio/platos-republic-lecture.mp3", matches: false },
+      ]);
+      const sitemap = set("Sitemap XML", "sitemap", 500, [landing("openculture.com", "about", "About", false), landing("openculture.com", "category/philosophy", "category/philosophy", false)]);
+      return { hostname: "www.openculture.com", title: "Open Culture", fetchedAt: new Date().toISOString(), linkCount: 42, matchCount: 2, source: "search-endpoint", sourceUrls: 42, sourceDisplay: "HTML search endpoint", sourceStrategy: "html", tookMs: 1200, sourceSets: [search, sitemap], links: search.links, adapterStatus: { phase: "search-endpoint", sourceLabel: "search-endpoint" } };
+    }
+    if (norm === "a matter of life and death") {
+      const ids = ["matter-of-life-and-death-1946", "matter-of-life-and-death-blu", "a-matter-of-life-and-death", "matter-life-death-1946-re", "matter-life-death-interview", "matter-life-death-score", "matter-life-death-1951", "matter-life-death-uk", "death-life-matter-doc", "matter-life-death-restored"];
+      const search = set("JSON search endpoint", "json", 120, [
+        ...ids.map((id) => ({ text: id, href: "https://archive.org/details/" + id, matches: true })),
+        { text: "MatterOfLifeAndDeath.mp4", href: "https://archive.org/download/matter-of-life-and-death-1946/MatterOfLifeAndDeath.mp4", matches: false },
+      ]);
+      const sitemap = set("Sitemap XML", "sitemap", 900, [landing("archive.org", "about", "About", false)]);
+      return { hostname: "archive.org", title: "Internet Archive", fetchedAt: new Date().toISOString(), linkCount: 120, matchCount: 10, source: "search-endpoint", sourceUrls: 120, sourceDisplay: "JSON search endpoint", sourceStrategy: "json", tookMs: 840, sourceSets: [search, sitemap], links: search.links, adapterStatus: { phase: "search-endpoint", sourceLabel: "search-endpoint" } };
+    }
+    if (norm === "saturn's rings in ultraviolet light") {
+      const n = Array.from({ length: 12 }, (_, i) => ({
+        text: "saturn-ring-uv-" + (i + 1) + ".jpg",
+        href: "https://images-assets.nasa.gov/image/PIA" + (12000 + i) + "/PIA" + (12000 + i) + "~medium.jpg",
+        matches: true,
+      }));
+      const search = set("JSON search endpoint", "json", 21, n);
+      const home = set("Homepage fallback", "sitemap", 60, [landing("openverse.org", "images", "Images", false)]);
+      return { hostname: "openverse.org", title: "Openverse", fetchedAt: new Date().toISOString(), linkCount: 21, matchCount: 12, source: "search-endpoint", sourceUrls: 21, sourceDisplay: "JSON search endpoint", sourceStrategy: "json", tookMs: 620, sourceSets: [search, home], links: search.links, adapterStatus: { phase: "search-endpoint", sourceLabel: "search-endpoint" } };
+    }
+    if (norm === "networking") {
+      const items = [
+        ["Software-Defined Networking", "https://github.com/sindresorhus/awesome/tree/main#software-defined-networking"],
+        ["PCAPTools", "https://github.com/caesar0301/awesome-pcaptools"],
+        ["Real-Time Communications", "https://github.com/sindresorhus/awesome/tree/main#real-time-communications"],
+        ["SNMP", "https://github.com/sindresorhus/awesome/tree/main#snmp"],
+        ["Scapy", "https://github.com/secdev/scapy"],
+        ["Cilium", "https://github.com/cilium/cilium"],
+        ["Networking resources", "https://github.com/sindresorhus/awesome/tree/main#networking"],
+        ["Nmap", "https://nmap.org/"],
+        ["Wireshark", "https://www.wireshark.org/"],
+        ["CoreDNS", "https://github.com/coredns/coredns"],
+      ];
+      const search = set("GitHub README section - Networking", "markdown-section", 34, items.map(([text, href]) => ({ text, href, matches: true })));
+      const home = set("Homepage fallback", "sitemap", 10, [landing("awesome.re", "", "awesome", false)]);
+      return { hostname: "awesome.re", title: "awesome", fetchedAt: new Date().toISOString(), linkCount: 34, matchCount: 10, source: "search-endpoint", sourceUrls: 34, sourceDisplay: "GitHub README section - Networking", sourceStrategy: "markdown-section", tookMs: 410, sourceSets: [search, home], links: search.links, adapterStatus: { phase: "search-endpoint", sourceLabel: "search-endpoint" } };
+    }
+    return null;
+  }
+
   if (path === "/api/lab/inspect" && req.method === "POST") {
     const body = await readBody(req);
     // [F86 §B.2/§D] RESULT-VIEW + DEEP lanes. A body.sourceUrl (the result id
@@ -268,6 +325,13 @@ const server = createServer(async (req, res) => {
     // request keeps the F78/F85 shape byte-for-byte, so those suites cannot
     // drift because of this branch.
     const f86Query = String(body?.query || "");
+    // [F88 §A] the four operator cases answer with the search-endpoint shape.
+    const f88 = f88InspectPayload(f86Query);
+    if (f88) {
+      await sleep(100);
+      send(res, 200, f88);
+      return;
+    }
     const f86Deep = Boolean(body && body.sourceUrl) || /^f86/.test(f86Query.trim());
     if (f86Deep) {
       // [F87 §B.1] Resolve the SITE from the hostname of body.sourceUrl first
@@ -513,6 +577,8 @@ const server = createServer(async (req, res) => {
       ok: true,
       path: "C:\\Users\\runner\\Desktop\\RDP-Downloads\\" + fileName,
       bytes: 12345,
+      verified: true,
+      writeTime: new Date().toISOString(),
     });
     return;
   }

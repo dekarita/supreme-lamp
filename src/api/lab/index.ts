@@ -55,6 +55,20 @@ export interface LabInspectResult {
   sourceUrls?: number;
   /** [F81 §3.1/Q4] Adapter-status style phase tag for UI display. */
   adapterStatus?: { phase: string; sourceLabel: string };
+  /** [F88 §A.3] The visible "Source:" line + timing. */
+  sourceDisplay?: string;
+  sourceStrategy?: string;
+  tookMs?: number;
+  /** [F88 §A.3] One entry per source actually fetched - the Lab tabs across them. */
+  sourceSets?: LabSourceSet[];
+}
+
+export interface LabSourceSet {
+  key: string;
+  label: string;
+  strategy: string;
+  count: number;
+  links: LabLink[];
 }
 
 export interface LabError {
@@ -236,6 +250,10 @@ export async function inspectSource(sourceId: string, query: string): Promise<La
         source: typeof d.source === "string" ? d.source : undefined,
         sourceUrls: typeof d.sourceUrls === "number" ? d.sourceUrls : undefined,
         adapterStatus: d.adapterStatus && typeof d.adapterStatus === "object" ? (d.adapterStatus as { phase: string; sourceLabel: string }) : undefined,
+        sourceDisplay: typeof d.sourceDisplay === "string" ? d.sourceDisplay : undefined,
+        sourceStrategy: typeof d.sourceStrategy === "string" ? d.sourceStrategy : undefined,
+        tookMs: typeof d.tookMs === "number" ? d.tookMs : undefined,
+        sourceSets: Array.isArray(d.sourceSets) ? d.sourceSets.filter((s) => s && typeof s.key === "string" && Array.isArray(s.links)).map((s) => ({ key: String(s.key), label: String(s.label ?? ""), strategy: String(s.strategy ?? ""), count: typeof s.count === "number" ? s.count : s.links.length, links: s.links.filter((l) => l && typeof l.href === "string").map((l) => ({ text: String(l.text ?? ""), href: String(l.href), matches: Boolean(l.matches) })) })) : undefined,
       },
     };
   } catch {
@@ -287,6 +305,10 @@ export async function inspectResultUrl(sourceUrl: string, query: string): Promis
         source: typeof d.source === "string" ? d.source : undefined,
         sourceUrls: typeof d.sourceUrls === "number" ? d.sourceUrls : undefined,
         adapterStatus: d.adapterStatus && typeof d.adapterStatus === "object" ? (d.adapterStatus as { phase: string; sourceLabel: string }) : undefined,
+        sourceDisplay: typeof d.sourceDisplay === "string" ? d.sourceDisplay : undefined,
+        sourceStrategy: typeof d.sourceStrategy === "string" ? d.sourceStrategy : undefined,
+        tookMs: typeof d.tookMs === "number" ? d.tookMs : undefined,
+        sourceSets: Array.isArray(d.sourceSets) ? d.sourceSets.filter((s) => s && typeof s.key === "string" && Array.isArray(s.links)).map((s) => ({ key: String(s.key), label: String(s.label ?? ""), strategy: String(s.strategy ?? ""), count: typeof s.count === "number" ? s.count : s.links.length, links: s.links.filter((l) => l && typeof l.href === "string").map((l) => ({ text: String(l.text ?? ""), href: String(l.href), matches: Boolean(l.matches) })) })) : undefined,
       },
     };
   } catch {

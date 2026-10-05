@@ -1,0 +1,18 @@
+{
+  "numFound": 245193,
+  "start": 0,
+  "docs": [
+    { "key": "/works/OL52918W", "title": "Philosophy", "author_name": ["Edmund Husserl"], "first_publish_year": 1911 },
+    { "key": "/works/OL26275203W", "title": "A History of Philosophy", "author_name": ["Copleston, Frederick"], "first_publish_year": 1946 },
+    { "key": "/works/OL45804W", "title": "The Philosophy of Plato", "author_name": ["Plato", "Giovanni Reale"], "first_publish_year": -380 },
+    { "key": "/works/OL1161473W", "title": "Philosophy Explained", "author_name": ["Nicholas Rescher"], "first_publish_year": 1985 },
+    { "key": "/works/OL27118185W", "title": "Introductory Philosophy", "author_name": ["David Hume"], "first_publish_year": 1748 },
+    { "key": "/works/OL93331W", "title": "Ten Days That Shook Philosophy", "author_name": ["Simon Blackburn"], "first_publish_year": 2001 },
+    { "key": "/works/OL1986844W", "title": "The Archaeology of Knowledge", "author_name": ["Michel Foucault"], "first_publish_year": 1969 },
+    { "key": "/works/OL54769W", "title": "Being and Time", "author_name": ["Martin Heidegger"], "first_publish_year": 1927 },
+    { "key": "/works/OL1178887W", "title": "Beyond Good and Evil", "author_name": ["Friedrich Nietzsche"], "first_publish_year": 1886 },
+    { "key": "/works/OL4447440W", "title": "The Open Society and Its Enemies", "author_name": ["Karl Popper"], "first_publish_year": 1945 },
+    { "key": "/works/OL20187166W", "title": "Justice: What's the Right Thing to Do?", "author_name": ["Michael Sandel"], "first_publish_year": 2009 },
+    { "key": "/works/OL1375473W", "title": "Meditations on First Philosophy", "author_name": ["René Descartes"], "first_publish_year": 1641 }
+  ]
+}

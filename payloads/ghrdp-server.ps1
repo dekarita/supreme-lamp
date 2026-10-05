@@ -1199,6 +1199,103 @@ function Remove-CredKeys {
     } catch { }
     return $Obj
 }
+# [F88 §C.1/C.2] Invoke-F88DownloadToRdp - the ONE verified transfer behind
+# /api/fetch?download=true AND the F87 selftest's per-site downloadTest.
+# HTTPS only, no userinfo, exact-host-minus-www guard on BOTH the request URL
+# and the final response URI (an off-host redirect never writes), sanitized
+# file name under Desktop\RDP-Downloads (or an explicit DestDir), and - the
+# F88 proof step - the file is re-stat'ed after the write: path exists AND
+# on-disk length == bytes written. Only then is ok=true returned; a miss
+# returns the specific reason so the caller can answer 500 instead of a fake
+# success. Defined at script scope so BOTH the /api/fetch route (outside the
+# F78 block) and the selftest (inside it) call the same code.
+function Invoke-F88DownloadToRdp {
+    param([string]$Url, [string]$ExpectedHost, [string]$DestDir)
+    $f88 = [ordered]@{ ok = $false; path = ''; bytes = [int64]0; verified = $false; writeTime = ''; error = ''; httpStatus = 500 }
+    $f88Uri = $null
+    try { $f88Uri = [System.Uri]$Url } catch { $f88Uri = $null }
+    if (-not $f88Uri -or $f88Uri.Scheme -ne 'https' -or $f88Uri.UserInfo) { $f88.error = 'not-https'; $f88.httpStatus = 400; return $f88 }
+    $f88Same = {
+        param($f88Allowed, $f88Actual)
+        if (-not $f88Allowed) { return $true }
+        $f88A = ([string]$f88Allowed).ToLowerInvariant() -replace '^www\.', ''
+        $f88B = ([string]$f88Actual).ToLowerInvariant() -replace '^www\.', ''
+        return ($f88A -eq $f88B)
+    }
+    if (-not (& $f88Same $ExpectedHost $f88Uri.Host)) { $f88.error = 'hostname-mismatch'; $f88.httpStatus = 403; return $f88 }
+    $f88Dir = [string]$DestDir
+    if (-not $f88Dir) { $f88Dir = Join-Path $env:USERPROFILE 'Desktop\RDP-Downloads' }
+    try { if (-not (Test-Path -LiteralPath $f88Dir)) { New-Item -ItemType Directory -Path $f88Dir -Force | Out-Null } } catch { }
+    $f88Name = 'download.bin'
+    try {
+        $f88Base = [string]$f88Uri.AbsolutePath.Split('/')[-1]
+        $f88Base = [System.Uri]::UnescapeDataString($f88Base)
+        $f88Clean = ($f88Base -replace '[^A-Za-z0-9._-]', '_').Trim('.')
+        if ($f88Clean) { $f88Name = $f88Clean }
+    } catch { }
+    if ($f88Name.Length -gt 120) { $f88Name = $f88Name.Substring($f88Name.Length - 120) }
+    $f88Path = Join-Path $f88Dir $f88Name
+    $f88.path = $f88Path
+    $f88Req = $null
+    $f88Resp = $null
+    $f88Written = [int64]0
+    try {
+        $f88Req = [System.Net.HttpWebRequest]::Create($f88Uri)
+        $f88Req.Method = 'GET'
+        $f88Req.Timeout = 30000
+        $f88Req.ReadWriteTimeout = 30000
+        $f88Req.CookieContainer = $null
+        $f88Req.UserAgent = 'GHRDP-Lab/1.0'
+        $f88Resp = $f88Req.GetResponse()
+        # same-host (www-tolerant) guard on the FINAL response URI
+        $f88Got = ''
+        try { $f88Got = ([string]$f88Resp.ResponseUri.Host) } catch { $f88Got = $f88Uri.Host }
+        if (-not (& $f88Same $f88Uri.Host $f88Got)) {
+            try { $f88Resp.Close() } catch { }
+            $f88.error = 'hostname-mismatch'; $f88.httpStatus = 403
+            return $f88
+        }
+        $f88In = $f88Resp.GetResponseStream()
+        $f88Out = [System.IO.File]::Create($f88Path)
+        try {
+            $f88Buf = New-Object byte[] 65536
+            while ($true) {
+                $f88Read = $f88In.Read($f88Buf, 0, $f88Buf.Length)
+                if ($f88Read -le 0) { break }
+                $f88Out.Write($f88Buf, 0, $f88Read)
+                $f88Written += $f88Read
+            }
+        } finally {
+            try { $f88Out.Dispose() } catch { }
+            try { $f88In.Dispose() } catch { }
+            try { $f88Resp.Close() } catch { }
+        }
+        # [F88 §C.1] the verification: exists + size matches, else specific error
+        if (-not (Test-Path -LiteralPath $f88Path)) {
+            $f88.error = 'file-missing-after-write'
+            return $f88
+        }
+        $f88Fi = $null
+        try { $f88Fi = Get-Item -LiteralPath $f88Path -Force } catch { $f88Fi = $null }
+        if (-not $f88Fi) { $f88.error = 'file-stat-failed'; return $f88 }
+        if ([int64]$f88Fi.Length -ne [int64]$f88Written) {
+            $f88.error = ('size-mismatch disk=' + [string]$f88Fi.Length + ' written=' + [string]$f88Written)
+            return $f88
+        }
+        $f88.ok = $true
+        $f88.verified = $true
+        $f88.path = $f88Path
+        $f88.bytes = [int64]$f88Written
+        $f88.writeTime = $f88Fi.LastWriteTimeUtc.ToString('yyyy-MM-ddTHH:mm:ssZ')
+        $f88.httpStatus = 200
+        return $f88
+    } catch {
+        try { if ($f88Resp) { $f88Resp.Close() } } catch { }
+        $f88.error = ('transfer: ' + [string]$_.Exception.Message)
+        $f88.httpStatus = 502
+        return $f88
+    }
+}
 function Invoke-ClientRequest {
     param($Client, $Token)
     $stream = $null
@@ -1896,63 +1993,34 @@ function Invoke-ClientRequest {
                 $f84Download = $false
                 try { $f84Download = ([string]$parts.query['download']) -eq 'true' } catch { $f84Download = $false }
                 if ($f84Download) {
-                    $f84DestDir = Join-Path $env:USERPROFILE 'Desktop\RDP-Downloads'
-                    if (-not (Test-Path -LiteralPath $f84DestDir)) { New-Item -ItemType Directory -Path $f84DestDir -Force | Out-Null }
-                    $f84Name = 'download.bin'
-                    try {
-                        $f84Base = [string]([System.Uri]$targetUrl).AbsolutePath.Split('/')[-1]
-                        $f84Base = [System.Uri]::UnescapeDataString($f84Base)
-                        $f84Clean = ($f84Base -replace '[^A-Za-z0-9._-]', '_').Trim('.')
-                        if ($f84Clean) { $f84Name = $f84Clean }
-                    } catch { }
-                    if ($f84Name.Length -gt 120) { $f84Name = $f84Name.Substring($f84Name.Length - 120) }
-                    $f84Path = Join-Path $f84DestDir $f84Name
-                    $f84Req = $null
-                    $f84Resp = $null
-                    $f84Bytes = 0
-                    try {
-                        $f84Req = [System.Net.HttpWebRequest]::Create([System.Uri]$targetUrl)
-                        $f84Req.Method = 'GET'
-                        $f84Req.Timeout = 30000
-                        $f84Req.ReadWriteTimeout = 30000
-                        $f84Req.CookieContainer = $null
-                        $f84Req.UserAgent = 'GHRDP-Lab/1.0'
-                        $f84Resp = $f84Req.GetResponse()
-                        # Same-host (www-tolerant) guard on the FINAL response URI:
-                        # an off-host redirect never writes to the RDP disk.
-                        $f84Want = ([string]([System.Uri]$targetUrl).Host).ToLowerInvariant() -replace '^www\.', ''
-                        $f84Got = ''
-                        try { $f84Got = ([string]$f84Resp.ResponseUri.Host).ToLowerInvariant() -replace '^www\.', '' } catch { $f84Got = $f84Want }
-                        if ($f84Got -and $f84Got -ne $f84Want) {
-                            try { $f84Resp.Close() } catch { }
-                            $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'HOSTNAME_MISMATCH'; messageKey = 'lab.hostnameMismatch'; retryable = $false; details = @{ url = $targetUrl; host = $f84Got } }
-                            Send-ClientResponse -Stream $stream -Code 403 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
-                            return
-                        }
-                        $f84In = $f84Resp.GetResponseStream()
-                        $f84Out = [System.IO.File]::Create($f84Path)
-                        try {
-                            $f84Buf = New-Object byte[] 65536
-                            while ($true) {
-                                $f84Read = $f84In.Read($f84Buf, 0, $f84Buf.Length)
-                                if ($f84Read -le 0) { break }
-                                $f84Out.Write($f84Buf, 0, $f84Read)
-                                $f84Bytes += $f84Read
-                            }
-                        } finally {
-                            try { $f84Out.Dispose() } catch { }
-                            try { $f84In.Dispose() } catch { }
-                            try { $f84Resp.Close() } catch { }
-                        }
-                        Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; path = $f84Path; bytes = $f84Bytes; requestId = $reqId; traceId = $traceId }))
-                        Write-ClientAudit ('f84 download-to-rdp bytes=' + [string]$f84Bytes)
-                        return
-                    } catch {
-                        try { if ($f84Resp) { $f84Resp.Close() } } catch { }
-                        $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'TRANSPORT_UNAVAILABLE'; messageKey = 'download.failed'; retryable = $true; details = @{ url = $targetUrl } }
-                        Send-ClientResponse -Stream $stream -Code 502 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    # [F88 §C.1] The transfer + on-disk verification live in the
+                    # shared Invoke-F88DownloadToRdp (script scope): the file is
+                    # re-stat'ed after the write (exists + size == bytes written)
+                    # and ONLY then ok=true - a miss answers 500 with the exact
+                    # reason instead of a fake success. Envelopes for the
+                    # host/transport failures stay byte-compatible with F84.
+                    $f84WantHost = ''
+                    try { $f84WantHost = ([System.Uri]$targetUrl).Host } catch { $f84WantHost = '' }
+                    $f88Dl = Invoke-F88DownloadToRdp -Url $targetUrl -ExpectedHost $f84WantHost -DestDir ''
+                    if ($f88Dl.ok) {
+                        Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $true; path = [string]$f88Dl.path; bytes = [int64]$f88Dl.bytes; verified = [bool]$f88Dl.verified; writeTime = [string]$f88Dl.writeTime; requestId = $reqId; traceId = $traceId }))
+                        Write-ClientAudit ('f84 download-to-rdp bytes=' + [string]$f88Dl.bytes + ' verified=true')
                         return
                     }
+                    if ([string]$f88Dl.error -eq 'hostname-mismatch') {
+                        $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'HOSTNAME_MISMATCH'; messageKey = 'lab.hostnameMismatch'; retryable = $false; details = @{ url = $targetUrl } }
+                        Send-ClientResponse -Stream $stream -Code 403 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                        return
+                    }
+                    if ([string]$f88Dl.error -match '^(file-missing-after-write|size-mismatch|file-stat-failed)') {
+                        $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'DOWNLOAD_VERIFY_FAILED'; messageKey = 'download.failed'; retryable = $false; details = @{ url = $targetUrl; path = [string]$f88Dl.path; reason = [string]$f88Dl.error } }
+                        Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                        Write-ClientAudit ('f84 download verify FAILED reason=' + [string]$f88Dl.error)
+                        return
+                    }
+                    $err = [ordered]@{ requestId = $reqId; traceId = $traceId; code = 'TRANSPORT_UNAVAILABLE'; messageKey = 'download.failed'; retryable = $true; details = @{ url = $targetUrl } }
+                    Send-ClientResponse -Stream $stream -Code 502 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
+                    return
                 }
                 # Own-cred path: decrypts creds in memory using F46 AES-GCM per-run key
                 $ariaOpts = @{}
@@ -3408,7 +3476,17 @@ function Invoke-ClientRequest {
         # State is process-local (like the F58 store module, this block does not
         # touch the encrypted ~/.ghrdp/sources tree); nothing here logs a
         # credential, a query string or a response body.
-        if ($path -eq '/api/f58/sources' -or $path -eq '/api/lab/inspect') {
+        # [F88 §B.1] This block houses MORE than the two routes its condition
+        # used to name: /api/f58/sources/<id> DELETE, /api/launch-url,
+        # /api/launch-url/diag, /api/f87-selftest and /api/preview all live
+        # inside it, together with every F78-F88 helper they call. With the
+        # narrow condition those paths SKIPPED the block on a real runner and
+        # fell through to the generic 404 - the "200 but no browser opens"
+        # class of dead route (and a silently dead DELETE/selftest/preview).
+        # The condition now admits every route the block houses; the inner
+        # handlers still dispatch per-path and return their own status, and
+        # any other method hits the same 405 at the block end.
+        if ($path -eq '/api/f58/sources' -or $path -eq '/api/lab/inspect' -or $path -like '/api/f58/sources/*' -or $path -eq '/api/launch-url' -or $path -eq '/api/launch-url/diag' -or $path -eq '/api/f87-selftest' -or $path -eq '/api/preview') {
             if ($parts.method -eq 'OPTIONS') {
                 Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@()) -ExtraHeaders "Access-Control-Allow-Headers: Content-Type, X-Dash-Token`r`nAccess-Control-Max-Age: 600"
                 return
@@ -3606,7 +3684,7 @@ function Invoke-ClientRequest {
             #     sub-sitemaps (2MB each), unioning their <url><loc>; <urlset>
             #     is used directly. The union is capped at 2000 URLs.
             #   * Invoke-F86SitemapFetch - the fetch wrapper around it.
-            #   * Get-F86SiteHints      - payloads/data/f86-site-hints.json, one
+            #   * Get-F86SiteHints      - payloads/data/f88-site-hints.json, one
             #     read per process. A hint only ever ADDS candidate paths on the
             #     SAME host; it can never widen the host fence.
             #   * Get-F86AnchorLinks / Expand-F86IndexLinks - the homepage
@@ -3621,7 +3699,7 @@ function Invoke-ClientRequest {
                 if ($null -ne $script:F86Hints) { return $script:F86Hints }
                 $f86Map = @{}
                 try {
-                    if (-not $script:F86HintsPath) { $script:F86HintsPath = Join-Path $Root 'data\f86-site-hints.json' }
+                    if (-not $script:F86HintsPath) { $script:F86HintsPath = Join-Path $Root 'data\f88-site-hints.json' }
                 } catch { $script:F86HintsPath = '' }
                 try {
                     if ($script:F86HintsPath -and (Test-Path -LiteralPath $script:F86HintsPath)) {
@@ -3661,6 +3739,215 @@ function Invoke-ClientRequest {
                 $f86Encoded = ''
                 try { $f86Encoded = [System.Uri]::EscapeDataString([string]$Query) } catch { $f86Encoded = '' }
                 return ([string]$Template).Replace('{{q}}', $f86Encoded)
+            }
+
+            # [F88 §1.2] PER-SITE SEARCH ENDPOINT. One switch over the hint's
+            # searchStrategy (payloads/data/f88-site-hints.json):
+            #   html             - fetch searchEndpoint, anchor-parse, keep the
+            #                      anchors that satisfy the resultSelector's
+            #                      parent chain (a soft CSS window check - tag /
+            #                      .class / [attr='v'] parts each must appear in
+            #                      the 800 chars before the anchor), rows
+            #                      {text, href} same-host fenced like F78.
+            #   json             - fetch, walk resultsPath ('response.docs'),
+            #                      title from mapTitle, url from mapUrl: a
+            #                      https:// template with {{field}} placeholders,
+            #                      or a row field name (foreign_landing_url).
+            #   markdown-section - fetch the hint's declared readmeUrl (a
+            #                      repo-owned https URL - strategy-declared, not
+            #                      a free cross-domain crawl), find the H2 the
+            #                      sectionMatcher names, collect subItemPattern
+            #                      bullets until the next H2.
+            # Rows are https-only, never carry userinfo, and are capped at 50.
+            # The function returns [ordered]@{ ok, strategy, label, section,
+            # rows, error } - ok=false (with the reason) means the caller falls
+            # back to the F86 sitemap ladder (the spec's <5-results rule lives
+            # in the inspect route).
+            function Invoke-F88SiteSearch {
+                param([string]$HostName, [string]$Query, [string]$BaseUrl)
+                $f88Out = [ordered]@{ ok = $false; strategy = ''; label = ''; section = ''; rows = @(); error = '' }
+                $f88Hint = Get-F86SiteHint -HostName $HostName
+                if (-not $f88Hint) { $f88Out.error = 'no-hint'; return $f88Out }
+                $f88Strategy = ''
+                try { $f88Strategy = [string]$f88Hint.searchStrategy } catch { $f88Strategy = '' }
+                if (-not $f88Strategy) { $f88Out.error = 'no-strategy'; return $f88Out }
+                if (-not $Query) { $f88Out.error = 'no-query'; return $f88Out }
+                $f88Out.strategy = $f88Strategy
+                $f88Rows = @()
+                # [F88 §1.2] form-style encoding (%20 -> +) so the rendered link
+                # matches the operator's expected URL literally
+                # (archive.org/search?query=A+Matter+of+Life+and+Death&tab=all).
+                $f88QEnc = ''
+                try { $f88QEnc = ([System.Uri]::EscapeDataString([string]$Query)).Replace('%20', '+') } catch { $f88QEnc = '' }
+                try {
+                    if ($f88Strategy -eq 'json') {
+                        $f88Ep = Expand-F86HintPath -Template ([string]$f88Hint.searchEndpoint) -Query $Query
+                        $f88EpHost = ''
+                        try { $f88EpHost = ([System.Uri]$f88Ep).Host } catch { $f88EpHost = $HostName }
+                        $f88Fetch = Invoke-F78SecureFetch -Url $f88Ep -ExpectedHost $f88EpHost -MaxBytes 2097152 -TimeoutSec 10
+                        if (-not $f88Fetch.ok) { $f88Out.error = ('json-fetch:' + [string]$f88Fetch.code); return $f88Out }
+                        $f88Json = $null
+                        try { $f88Json = ([string]$f88Fetch.text) | ConvertFrom-Json -ErrorAction Stop } catch { $f88Json = $null }
+                        if (-not $f88Json) { $f88Out.error = 'json-parse'; return $f88Out }
+                        $f88List = $f88Json
+                        foreach ($f88Seg in @(([string]$f88Hint.resultsPath) -split '\.')) {
+                            if (-not $f88Seg) { continue }
+                            try { $f88List = $f88List.$f88Seg } catch { $f88List = $null }
+                            if ($null -eq $f88List) { break }
+                        }
+                        if ($null -eq $f88List) { $f88Out.error = 'json-results-path'; return $f88Out }
+                        $f88MapTitle = [string]$f88Hint.mapTitle
+                        $f88MapUrl = [string]$f88Hint.mapUrl
+                        foreach ($f88Row in @($f88List)) {
+                            if ($f88Rows.Count -ge 50) { break }
+                            if ($null -eq $f88Row) { continue }
+                            $f88Title = ''
+                            try { $f88Title = [string]$f88Row.$f88MapTitle } catch { $f88Title = '' }
+                            $f88Url = ''
+                            if ($f88MapUrl -match '^\{\{(.+?)\}\}$') {
+                                # bare {{field}} – resolve against the site base
+                                $f88Field = $Matches[1]
+                                try { $f88Url = [string]$f88Row.$f88Field } catch { $f88Url = '' }
+                                if ($f88Url -and -not $f88Url.StartsWith('https://')) {
+                                    try { $f88Url = ([System.Uri]::new([System.Uri]$BaseUrl, $f88Url)).AbsoluteUri } catch { $f88Url = '' }
+                                }
+                            } elseif ($f88MapUrl -match '\{\{') {
+                                # template with {{field}} placeholders (mapUrl owns the host)
+                                $f88Url = [regex]::Replace([string]$f88MapUrl, '\{\{(.+?)\}\}', {
+                                    param($f88M)
+                                    $f88F = $f88M.Groups[1].Value
+                                    $f88V = ''
+                                    try { $f88V = [string]$f88Row.$f88F } catch { $f88V = '' }
+                                    try { $f88V = [System.Uri]::EscapeDataString($f88V) } catch { }
+                                    return $f88V
+                                })
+                            } else {
+                                # field name carrying the full URL (openverse foreign_landing_url)
+                                try { $f88Url = [string]$f88Row.$f88MapUrl } catch { $f88Url = '' }
+                                if ($f88Url -and -not $f88Url.StartsWith('https://')) {
+                                    try { $f88Url = ([System.Uri]::new([System.Uri]$BaseUrl, $f88Url)).AbsoluteUri } catch { $f88Url = '' }
+                                }
+                            }
+                            if (-not $f88Url -or -not $f88Url.StartsWith('https://')) { continue }
+                            try { if ([System.Uri]$f88Url) { if (([System.Uri]$f88Url).UserInfo) { continue } } } catch { continue }
+                            $f88Snippet = ''
+                            foreach ($f88F in @('description', 'excerpt', 'artist', 'creator', 'subject')) {
+                                try { if ($f88Row.$f88F) { $f88Snippet = [string]$f88Row.$f88F; break } } catch { }
+                            }
+                            $f88Rows += [ordered]@{ text = $(if ($f88Title) { $f88Title } else { $f88Url }); href = $f88Url; snippet = $f88Snippet }
+                        }
+                        $f88Out.label = 'JSON search endpoint'
+                    }
+                    elseif ($f88Strategy -eq 'markdown-section') {
+                        $f88ReadmeUrl = [string]$f88Hint.readmeUrl
+                        if (-not $f88ReadmeUrl.StartsWith('https://')) { $f88Out.error = 'readme-not-https'; return $f88Out }
+                        $f88RmHost = ''
+                        try { $f88RmHost = ([System.Uri]$f88ReadmeUrl).Host } catch { $f88Out.error = 'readme-url'; return $f88Out }
+                        $f88Fetch = Invoke-F78SecureFetch -Url $f88ReadmeUrl -ExpectedHost $f88RmHost -MaxBytes 2097152 -TimeoutSec 10
+                        if (-not $f88Fetch.ok) { $f88Out.error = ('readme-fetch:' + [string]$f88Fetch.code); return $f88Out }
+                        $f88SecRe = ([string]$f88Hint.sectionMatcher).Replace('{{q}}', [regex]::Escape($Query))
+                        $f88SecMatch = [regex]::Match([string]$f88Fetch.text, '(?im)' + $f88SecRe)
+                        if (-not $f88SecMatch.Success) { $f88Out.error = 'section-not-found'; return $f88Out }
+                        $f88SectionName = ''
+                        try { $f88SectionName = ($f88SecMatch.Value -replace '^##\s+', '').Trim() } catch { $f88SectionName = $Query }
+                        $f88Out.section = $f88SectionName
+                        $f88End = [regex]::Match([string]$f88Fetch.text.Substring($f88SecMatch.Index), '(?m)^##\s+')
+                        $f88Len = [string]$f88Fetch.text.Length - $f88SecMatch.Index
+                        if ($f88End.Success -and $f88End.Index -gt 0) { $f88Len = $f88End.Index }
+                        $f88SectionText = [string]$f88Fetch.text.Substring($f88SecMatch.Index, [int]$f88Len)
+                        # the section row itself: the declared redirectTo host + anchor
+                        $f88Anchor = ''
+                        try { $f88Anchor = ($f88SectionName.ToLowerInvariant() -replace '[^a-z0-9\s-]', '' -replace '\s+', '-').Trim('-') } catch { $f88Anchor = '' }
+                        $f88SectionHref = ([string]$f88Hint.redirectTo).TrimEnd('/') + $(if ($f88Anchor) { '#' + $f88Anchor } else { '' })
+                        $f88Rows += [ordered]@{ text = ($f88SectionName + ' (' + $f88RmHost + ' README section)'); href = $f88SectionHref; snippet = 'section' }
+                        $f88SubRe = [string]$f88Hint.subItemPattern
+                        foreach ($f88Sm in [regex]::Matches($f88SectionText, $f88SubRe)) {
+                            if ($f88Rows.Count -ge 50) { break }
+                            $f88SubTitle = $f88Sm.Groups[1].Value.Trim()
+                            $f88SubHref = $f88Sm.Groups[2].Value.Trim()
+                            if (-not $f88SubHref.StartsWith('https://')) { continue }
+                            $f88Rows += [ordered]@{ text = $f88SubTitle; href = $f88SubHref; snippet = '' }
+                        }
+                        $f88Out.label = 'GitHub README section - ' + $f88SectionName
+                    }
+                    elseif ($f88Strategy -eq 'html') {
+                        $f88Ep = Expand-F86HintPath -Template ([string]$f88Hint.searchEndpoint) -Query $Query
+                        $f88EpHost = ''
+                        try { $f88EpHost = ([System.Uri]$f88Ep).Host } catch { $f88EpHost = $HostName }
+                        $f88Fetch = Invoke-F78SecureFetch -Url $f88Ep -ExpectedHost $f88EpHost -MaxBytes 2097152 -TimeoutSec 10
+                        if (-not $f88Fetch.ok) { $f88Out.error = ('html-fetch:' + [string]$f88Fetch.code); return $f88Out }
+                        $f88Html = [string]$f88Fetch.text
+                        $f88Selector = [string]$f88Hint.resultSelector
+                        $f88SelParts = @()
+                        if ($f88Selector) { $f88SelParts = @($f88Selector -split '\s+' | Where-Object { $_ }) }
+                        $f88Parents = @()
+                        if ($f88SelParts.Count -gt 1) { $f88Parents = @($f88SelParts[0..($f88SelParts.Count - 2)]) }
+                        $f88Base = $null
+                        try { $f88Base = [System.Uri]$f88Ep } catch { $f88Base = $null }
+                        foreach ($f88Am in [regex]::Matches($f88Html, '(?is)<a\b[^>]*href\s*=\s*["'']([^"'']+)["''][^>]*>(.*?)</a>')) {
+                            if ($f88Rows.Count -ge 50) { break }
+                            $f88HrefRaw = [string]$f88Am.Groups[1].Value
+                            if (-not $f88HrefRaw -or $f88HrefRaw.StartsWith('#')) { continue }
+                            if ($f88HrefRaw -match '^(?i)mailto:|javascript:|data:|tel:') { continue }
+                            $f88Abs = ''
+                            try {
+                                if ($f88HrefRaw -match '^(?i)https?://') { $f88Abs = ([System.Uri]$f88HrefRaw).AbsoluteUri }
+                                elseif ($f88Base) { $f88Abs = ([System.Uri]::new($f88Base, $f88HrefRaw)).AbsoluteUri }
+                            } catch { $f88Abs = '' }
+                            if (-not $f88Abs -or -not $f88Abs.StartsWith('https://')) { continue }
+                            $f88LinkHost = ''
+                            try { $f88LinkHost = ([System.Uri]$f88Abs).Host.ToLowerInvariant() } catch { continue }
+                            # same-host-minus-www fence (F78) on every html row
+                            if (-not (Test-F78SameHost -Allowed $HostName -Actual $f88LinkHost)) { continue }
+                            # soft resultSelector check: each parent part must
+                            # appear in the window right before this anchor.
+                            if ($f88Parents.Count -gt 0) {
+                                $f88WinStart = [Math]::Max(0, $f88Am.Index - 800)
+                                $f88Win = $f88Html.Substring($f88WinStart, $f88Am.Index - $f88WinStart)
+                                $f88SelOk = $true
+                                foreach ($f88Part in $f88Parents) {
+                                    $f88PartRe = $null
+                                    if ($f88Part -match '^([a-zA-Z0-9]+)\.([a-zA-Z0-9-]+)$') { $f88PartRe = '<' + $Matches[1] + '\b[^>]*class\s*=\s*["''][^"'']*\b' + [regex]::Escape($Matches[2]) + '\b' }
+                                    elseif ($f88Part -match '^\.([a-zA-Z0-9-]+)$') { $f88PartRe = '<[a-zA-Z0-9]+\b[^>]*class\s*=\s*["''][^"'']*\b' + [regex]::Escape($Matches[1]) + '\b' }
+                                    elseif ($f88Part -match '^\[([a-zA-Z0-9-]+)\s*=\s*[''"]([^''"]+)[''"]\]$') { $f88PartRe = '<[a-zA-Z0-9]+\b[^>]*' + [regex]::Escape($Matches[1]) + '\s*=\s*["'']' + [regex]::Escape($Matches[2]) + '["'']' }
+                                    elseif ($f88Part -match '^([a-zA-Z0-9]+)$') { $f88PartRe = '<' + $Matches[1] + '\b' }
+                                    if ($f88PartRe -and -not [regex]::IsMatch($f88Win, '(?i)' + $f88PartRe)) { $f88SelOk = $false; break }
+                                }
+                                if (-not $f88SelOk) { continue }
+                            }
+                            $f88Text = ConvertTo-F78PlainText ([string]$f88Am.Groups[2].Value)
+                            $f88Rows += [ordered]@{ text = $(if ($f88Text) { $f88Text } else { $f88Abs }); href = $f88Abs; snippet = '' }
+                        }
+                        $f88Out.label = 'HTML search endpoint'
+                    }
+                    else {
+                        $f88Out.error = 'unknown-strategy'
+                    }
+                } catch {
+                    $f88Out.error = ('search-failed: ' + [string]$_.Exception.Message)
+                }
+                # [F88 §1.2] row 0 = the site's OWN human-facing search page
+                # (form-encoded query), so the operator's expected result URL is
+                # always renderable even when the endpoint is a JSON API.
+                $f88PageRow = @()
+                $f88PageTpl = ''
+                try { $f88PageTpl = [string](@($f88Hint.searchPaths)[0]) } catch { $f88PageTpl = '' }
+                if (-not $f88PageTpl) {
+                    try { if ($f88Hint.searchEndpoint -and ([System.Uri]$f88Hint.searchEndpoint).AbsolutePath -ne '/') { $f88PageTpl = $f88Hint.searchEndpoint } } catch { }
+                }
+                if ($f88PageTpl -and $f88PageTpl -match '\{\{q\}\}') {
+                    $f88PageUrl = $f88PageTpl.Replace('{{q}}', $f88QEnc)
+                    if ($f88PageUrl.StartsWith('/')) { $f88PageUrl = $BaseUrl.TrimEnd('/') + $f88PageUrl }
+                    try { if (([System.Uri]$f88PageUrl).Scheme -eq 'https') { $f88PageRow = @([ordered]@{ text = ('Search: ' + $Query); href = $f88PageUrl; snippet = 'search-page' }) } } catch { }
+                }
+                if (@($f88Rows).Count -eq 0) {
+                    if ($f88Out.error) { return $f88Out }
+                    $f88Out.error = 'no-rows'
+                    return $f88Out
+                }
+                $f88Out.ok = $true
+                $f88Out.rows = @($f88PageRow) + @($f88Rows)
+                return $f88Out
             }
 
             # [F86 §C.1] Root-element switch + at most 5 same-host sub-sitemaps,
@@ -4162,6 +4449,10 @@ function Invoke-ClientRequest {
                             $f86LogDir = Join-Path $f86Dir '.ghrdp'
                             if (-not (Test-Path -LiteralPath $f86LogDir)) { New-Item -ItemType Directory -Path $f86LogDir -Force | Out-Null }
                             $script:F86LogPath = Join-Path $f86LogDir 'launch-url.log'
+                            # [F88 §B.1] the VERBOSE tier log: PID / process
+                            # name / failure text per rung, host+path only (the
+                            # query string is never logged - F86 rule kept).
+                            $script:F88VerboseLogPath = Join-Path $f86LogDir 'launch-url-verbose.log'
                         }
                     } catch { $script:F86LogPath = '' }
                     foreach ($f86N in @('msedge', 'chrome', 'firefox')) { $script:F86Browsers[$f86N] = Resolve-F86BrowserPath -Name $f86N }
@@ -4296,23 +4587,164 @@ function Invoke-ClientRequest {
                     return $f86Out
                 }
 
+                function Write-F88VerboseLaunchLog {
+                    param([string]$Line)
+                    try {
+                        if ($script:F88VerboseLogPath) {
+                            $f88Stamp = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+                            Add-Content -LiteralPath $script:F88VerboseLogPath -Value ($f88Stamp + ' ' + $Line) -Encoding UTF8 -ErrorAction SilentlyContinue
+                        }
+                    } catch { }
+                }
+
+                function Invoke-F88LaunchInUserSession {
+                    # [F88 §B.2] Tier 0 - spawn the browser in the ACTIVE
+                    # user's logon session BEFORE the session-0 ladder rungs.
+                    # 1. quser gives the active user + session id (the same
+                    #    scan Initialize-F86LaunchRuntime runs, plus the ID).
+                    # 2. A one-shot /RU <user> /RL HIGHEST scheduled task runs
+                    #    `cmd /c start <browser> "<url>"` (the spec's schtasks
+                    #    rung; psexec -s -i <session> is used when present).
+                    # 3. A browser process for THAT session within 3s is the
+                    #    verification - no fake ok.
+                    param([string]$Url)
+                    $f88Out = [ordered]@{ ok = $false; tier = 0; detail = 'no-active-rdp-session; connect via WEB DESKTOP first'; browser = ''; pid = 0 }
+                    $f88User = ''
+                    $f88Session = -1
+                    try {
+                        $f88Q = & quser.exe 2>$null
+                        $LASTEXITCODE = 0
+                        foreach ($f88Line in @($f88Q)) {
+                            if ($f88Line -match '^\s*>?\s*(\S+)\s+\S+\s+(\d+)\s+(Active|Disc)') {
+                                $f88User = $Matches[1]
+                                $f88Session = [int]$Matches[2]
+                                if ($f88Line -match 'Active') { break }
+                            }
+                        }
+                    } catch { $f88User = '' }
+                    if (-not $f88User -or $f88Session -lt 0) { return $f88Out }
+                    $f88Pick = Get-F86PreferredBrowser
+                    $f88Browser = 'msedge.exe'
+                    if ($f88Pick.name -eq 'chrome') { $f88Browser = 'chrome.exe' }
+                    elseif ($f88Pick.name -eq 'firefox') { $f88Browser = 'firefox.exe' }
+                    $f88EscUrl = $Url.Replace('"', '%22').Replace('`', '%60').Replace('$', '%24').Replace('&', '%26').Replace('|', '%7C').Replace('>', '%3E').Replace('<', '%3C').Replace('^', '%5E')
+                    $f88TaskName = 'f88-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+                    $f88TaskOk = $false
+                    $f88TaskDetail = ''
+                    try {
+                        $f88Tr = 'cmd.exe /c start ' + $f88Browser + ' "' + $f88EscUrl + '"'
+                        $f88At = (Get-Date).AddSeconds(30).ToString('HH:mm:ss')
+                        & schtasks.exe /Create /TN $f88TaskName /SC ONCE /ST $f88At /TR $f88Tr /RU $f88User /RL HIGHEST /F 2>$null | Out-Null
+                        if ($LASTEXITCODE -eq 0) {
+                            & schtasks.exe /Run $f88TaskName 2>$null | Out-Null
+                            $f88TaskOk = ($LASTEXITCODE -eq 0)
+                            if (-not $f88TaskOk) { $f88TaskDetail = 'schtasks-run-failed:' + [string]$LASTEXITCODE }
+                        } else {
+                            $f88TaskDetail = 'schtasks-create-failed:' + [string]$LASTEXITCODE
+                        }
+                    } catch { $f88TaskDetail = 'schtasks-threw:' + [string]$_.Exception.Message }
+                    # psexec rung (spec B.2 option 1) when the tool exists.
+                    if (-not $f88TaskOk) {
+                        $f88Ps = ''
+                        foreach ($f88Cand in @((Join-Path $env:SystemRoot 'System32\psexec.exe'), 'psexec.exe')) {
+                            if ($f88Cand -eq 'psexec.exe') { $f88Ps = $f88Cand; break }
+                            if (Test-Path -LiteralPath $f88Cand) { $f88Ps = $f88Cand; break }
+                        }
+                        if ($f88Ps) {
+                            try {
+                                & $f88Ps -accepteula -s -i ([string]$f88Session) -d $f88Browser $f88EscUrl 2>$null | Out-Null
+                                if ($LASTEXITCODE -eq 0) { $f88TaskOk = $true; $f88TaskDetail = 'psexec-session-spawn' }
+                                else { $f88TaskDetail = 'psexec-failed:' + [string]$LASTEXITCODE }
+                            } catch { $f88TaskDetail = 'psexec-threw:' + [string]$_.Exception.Message }
+                        }
+                    }
+                    # verification: a browser process exists in the TARGET logon
+                    # session within 3s (an already-running browser counts).
+                    $f88FoundPid = 0
+                    $f88FoundName = ''
+                    foreach ($f88Wait in 1..10) {
+                        try {
+                            foreach ($f88Proc in @(Get-Process -Name msedge, chrome, firefox, iexplore -ErrorAction SilentlyContinue)) {
+                                if ([int]$f88Proc.SessionId -eq $f88Session) { $f88FoundPid = [int]$f88Proc.Id; $f88FoundName = [string]$f88Proc.ProcessName; break }
+                            }
+                        } catch { }
+                        if ($f88FoundPid -gt 0) { break }
+                        Start-Sleep -Milliseconds 300
+                    }
+                    if ($f88FoundPid -gt 0) {
+                        $f88Out.ok = $true
+                        $f88Out.browser = $f88FoundName
+                        $f88Out.pid = $f88FoundPid
+                        $f88Out.detail = 'user-session:' + $f88TaskDetail + ':session=' + [string]$f88Session
+                    } else {
+                        $f88Out.detail = 'user-session-no-browser:' + $f88TaskDetail + ':session=' + [string]$f88Session
+                    }
+                    # best-effort cleanup of the one-shot task
+                    if ($f88TaskName) {
+                        Start-Job -ScriptBlock { param($tn) Start-Sleep -Seconds 25; try { & schtasks.exe /Delete /TN $tn /F 2>$null | Out-Null } catch { } } -ArgumentList $f88TaskName | Out-Null
+                    }
+                    return $f88Out
+                }
+
+                function Invoke-F88LaunchTier4 {
+                    # [F88 §B.3] Tier 4 - the Shell.Application COM object runs
+                    # ShellExecute(url) exactly like a double-click on the URL.
+                    # It runs after the F86 rungs; ok is ONLY claimed when a
+                    # browser process is observed in this server's session
+                    # within 3s (no fake ok on a headless runner).
+                    param([string]$Url)
+                    $f88Out = [ordered]@{ ok = $false; tier = 4; detail = 'shell-com'; browser = ''; pid = 0 }
+                    try {
+                        $f88Shell = New-Object -ComObject Shell.Application
+                        $f88Shell.ShellExecute($Url, '', '', 'open', 1)
+                        $f88Out.detail = 'shell-com-executed'
+                    } catch {
+                        $f88Out.detail = 'shell-com-failed: ' + [string]$_.Exception.Message
+                        return $f88Out
+                    }
+                    $f88Sess = [int]$script:F86SessionId
+                    foreach ($f88Wait in 1..10) {
+                        try {
+                            foreach ($f88Proc in @(Get-Process -Name msedge, chrome, firefox, iexplore -ErrorAction SilentlyContinue)) {
+                                if ([int]$f88Proc.SessionId -eq $f88Sess) {
+                                    $f88Out.ok = $true
+                                    $f88Out.browser = [string]$f88Proc.ProcessName
+                                    $f88Out.pid = [int]$f88Proc.Id
+                                    $f88Out.detail = 'shell-com-browser-seen'
+                                    break
+                                }
+                            }
+                        } catch { }
+                        if ($f88Out.ok) { break }
+                        Start-Sleep -Milliseconds 300
+                    }
+                    if (-not $f88Out.ok) { $f88Out.detail = 'shell-com-no-browser-process' }
+                    return $f88Out
+                }
+
                 function Invoke-F86LaunchUrl {
                     param([string]$Url, [int]$ForceTier)
                     Initialize-F86LaunchRuntime
                     $f86Attempts = @()
                     $f86Result = [ordered]@{ ok = $false; tier = 0; detail = 'no-tier-succeeded'; browser = ''; pid = 0; attempts = @() }
-                    foreach ($f86Tier in @(1, 2, 3)) {
+                    # [F88 §B.2/B.3] the ladder is now 0(user session),1,2,3,4(Shell COM).
+                    foreach ($f86Tier in @(0, 1, 2, 3, 4)) {
                         if ($ForceTier -gt 0 -and $f86Tier -ne $ForceTier) { continue }
                         $f86Outcome = $null
-                        if ($f86Tier -eq 1) {
+                        if ($f86Tier -eq 0) {
+                            $f86Outcome = Invoke-F88LaunchInUserSession -Url $Url
+                        } elseif ($f86Tier -eq 1) {
                             $f86Outcome = Invoke-F86LaunchTier1 -Url $Url
                         } elseif ($f86Tier -eq 2) {
                             $f86Outcome = Invoke-F86LaunchTier2 -Url $Url -f81ActiveUser $script:F86ActiveUser
-                        } else {
+                        } elseif ($f86Tier -eq 3) {
                             $f86Outcome = Invoke-F86LaunchTier3 -Url $Url
+                        } else {
+                            $f86Outcome = Invoke-F88LaunchTier4 -Url $Url
                         }
                         $f86Attempts += [ordered]@{ tier = $f86Tier; ok = [bool]$f86Outcome.ok; detail = [string]$f86Outcome.detail }
                         Write-F86LaunchLog -Kind 'launch' -Url $Url -Tier $f86Tier -Detail ([string]$f86Outcome.detail) -Ok ([bool]$f86Outcome.ok)
+                        Write-F88VerboseLaunchLog -Line ('tier=' + [string]$f86Tier + ' ok=' + [string]$f86Outcome.ok + ' browser=' + [string]$f86Outcome.browser + ' pid=' + [string]$f86Outcome.pid + ' detail=' + [string]$f86Outcome.detail + ' host=' + [string]$(try { ([System.Uri]$Url).Host } catch { '' }) + ' path=' + [string]$(try { ([System.Uri]$Url).AbsolutePath } catch { '' }))
                         if ($f86Outcome.ok) {
                             $f86Result.ok = $true
                             $f86Result.tier = $f86Tier
@@ -4323,6 +4755,7 @@ function Invoke-ClientRequest {
                         }
                     }
                     $f86Result.attempts = @($f86Attempts)
+                    Write-F88VerboseLaunchLog -Line ('ladder-result ok=' + [string]$f86Result.ok + ' tier=' + [string]$f86Result.tier + ' detail=' + [string]$f86Result.detail)
                     $script:F86LastLaunch = [ordered]@{ at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); ok = [bool]$f86Result.ok; tier = [int]$f86Result.tier; detail = [string]$f86Result.detail }
                     return $f86Result
                 }
@@ -4383,8 +4816,8 @@ function Invoke-ClientRequest {
                     return
                 }
                 if (-not $f81ActiveUser) {
-                    Send-ClientResponse -Stream $stream -Code 503 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'NO_ACTIVE_SESSION'; messageKey = 'launchUrl.noSession'; reason = 'no interactive session'; tier = [int]$f86Attempt.tier; attempts = @($f86Attempt.attempts) }))
-                    Write-ClientAudit ('f81 launch-url refused: no interactive session host=' + $f81Uri.Host)
+                    Send-ClientResponse -Stream $stream -Code 503 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'NO_ACTIVE_SESSION'; messageKey = 'launchUrl.noSession'; reason = 'no-active-rdp-session; connect via WEB DESKTOP first'; tier = [int]$f86Attempt.tier; attempts = @($f86Attempt.attempts) }))
+                    Write-ClientAudit ('f81 launch-url refused: no-active-rdp-session host=' + $f81Uri.Host)
                     return
                 }
                 Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'LAUNCH_FAILED'; messageKey = 'launchUrl.failed'; tier = [int]$f86Attempt.tier; attempts = @($f86Attempt.attempts) }))
@@ -4422,9 +4855,22 @@ function Invoke-ClientRequest {
                     pipeReady = [bool]$script:F86PipeReady
                     pipeName = [string]$script:F86PipeName
                     logPath = [string]$script:F86LogPath
+                    verboseLogPath = [string]$script:F88VerboseLogPath
                     errorHistory = @($f86Errors)
                     history = @($script:F86History)
                 }
+                # [F88 §B.1] last 20 lines of the verbose tier log, so the
+                # diagnostic banner can show them + "Copy to clipboard"
+                # without another endpoint.
+                $f88VerboseLines = @()
+                try {
+                    if ($script:F88VerboseLogPath -and (Test-Path -LiteralPath $script:F88VerboseLogPath)) {
+                        $f88VerboseAll = @(Get-Content -LiteralPath $script:F88VerboseLogPath -Encoding UTF8 -ErrorAction SilentlyContinue)
+                        if ($f88VerboseAll.Count -gt 20) { $f88VerboseLines = @($f88VerboseAll[($f88VerboseAll.Count - 20)..($f88VerboseAll.Count - 1)]) }
+                        else { $f88VerboseLines = @($f88VerboseAll) }
+                    }
+                } catch { $f88VerboseLines = @() }
+                $f88DiagOut.verboseLog = @($f88VerboseLines)
                 if ($f86Last) {
                     $f86DiagOut.lastLaunchAt = [string]$f86Last.at
                     $f86DiagOut.lastTier = [int]$f86Last.tier
@@ -4438,7 +4884,7 @@ function Invoke-ClientRequest {
             # [F87 §C.1] POST /api/f87-selftest - the production proof the operator
             # runs ONCE after a dispatch, instead of click-testing eleven sites by
             # hand. Body {sites:[...]} must be a SUBSET of the operator fixture in
-            # payloads/data/f86-site-hints.json (anything else -> 400, so this can
+            # payloads/data/f88-site-hints.json (anything else -> 400, so this can
             # never become a generic crawler). Per site, in order:
             #   1. HEAD probe of https://<site>/ through the F78 secure fetch
             #      (https only, same-host redirects, no cookies)   -> probeOk
@@ -4473,7 +4919,7 @@ function Invoke-ClientRequest {
                 try { $f87Json = $f87BodyText | ConvertFrom-Json -ErrorAction Stop } catch { $f87Json = $null }
                 $f87Requested = @()
                 try { if ($f87Json -and $f87Json.sites) { $f87Requested = @($f87Json.sites) } } catch { $f87Requested = @() }
-                # The allowlist IS the operator fixture: the keys of f86-site-hints.json.
+                # The allowlist IS the operator fixture: the keys of f88-site-hints.json.
                 $f87Allowed = @()
                 try { $f87Allowed = @((Get-F86SiteHints).Keys | ForEach-Object { [string]$_ } | Sort-Object) } catch { $f87Allowed = @() }
                 $f87Sites = @()
@@ -4491,7 +4937,7 @@ function Invoke-ClientRequest {
                 $f87DestDir = Join-Path $env:USERPROFILE 'Desktop\RDP-Downloads'
                 $f87Results = @()
                 foreach ($f87Site in $f87Sites) {
-                    $f87Row = [ordered]@{ site = $f87Site; probeOk = $false; sitemapUrls = 0; sitemapMode = ''; launchTier = 0; launchOk = $false; launchDetail = ''; pdfFound = $false; downloadDirOk = $false; downloadDir = $f87DestDir; errors = @() }
+                    $f87Row = [ordered]@{ site = $f87Site; probeOk = $false; sitemapUrls = 0; sitemapMode = ''; launchTier = 0; launchOk = $false; launchDetail = ''; pdfFound = $false; downloadDirOk = $false; downloadDir = $f87DestDir; downloadOk = $false; downloadPath = ''; downloadBytes = 0; errors = @() }
                     $f87Home = 'https://' + $f87Site + '/'
                     # 1. HEAD probe (the secure fetch follows same-host redirects only,
                     #    so a www.<site> canonical still counts as reachable).
@@ -4533,6 +4979,19 @@ function Invoke-ClientRequest {
                         Remove-Item -LiteralPath $f87ProbeFile -Force -ErrorAction SilentlyContinue
                         $f87Row.downloadDirOk = $true
                     } catch { $f87Row.errors += ('downloadDir: ' + $_.Exception.Message) }
+                    # [F88 §C.2] REAL download proof: GET the site's robots.txt
+                    # through the SAME verified transfer the /api/fetch
+                    # download=true branch uses (Invoke-F88DownloadToRdp) and
+                    # confirm the bytes landed in Desktop\RDP-Downloads -
+                    # downloadOk/downloadPath/downloadBytes are the operator-
+                    # visible proof of a write.
+                    try {
+                        $f88Dt = Invoke-F88DownloadToRdp -Url ($f87Home + 'robots.txt') -ExpectedHost $f87Site -DestDir $f87DestDir
+                        $f87Row.downloadOk = [bool]$f88Dt.ok
+                        $f87Row.downloadPath = [string]$f88Dt.path
+                        $f87Row.downloadBytes = [int]$f88Dt.bytes
+                        if (-not $f88Dt.ok) { $f87Row.errors += ('downloadTest: ' + [string]$f88Dt.error) }
+                    } catch { $f87Row.errors += ('downloadTest: ' + $_.Exception.Message) }
                     $f87Results += $f87Row
                     Write-ClientAudit ('f87 selftest site=' + $f87Site + ' probe=' + [string]$f87Row.probeOk + ' sitemap=' + [string]$f87Row.sitemapUrls + ' tier=' + [string]$f87Row.launchTier + ' launch=' + [string]$f87Row.launchOk + ' dir=' + [string]$f87Row.downloadDirOk)
                 }
@@ -4848,7 +5307,33 @@ function Invoke-ClientRequest {
                 $f78CandidateUrls = @()
                 $f78Hint = $null
                 if (-not $f78ResultMode) { $f78Hint = Get-F86SiteHint -HostName $f78Host }
+                # [F88 §1.2] SEARCH-ENDPOINT FIRST. With a typed query and a
+                # declared searchStrategy the endpoint answer is the PRIMARY
+                # source; the F86 sitemap/hint ladder below runs only as the
+                # fallback when the search yields < 5 rows or fails (spec A.2).
+                # Every source actually fetched is also returned as its own
+                # sourceSets entry so the Lab can tab between them (spec A.3).
+                $f88Sw = [System.Diagnostics.Stopwatch]::StartNew()
+                $f88Search = $null
+                $f88Primary = $false
+                if (-not $f78ResultMode -and $f78Query) {
+                    try { $f88Search = Invoke-F88SiteSearch -HostName $f78Host -Query $f78Query -BaseUrl ([string]$f78Src.baseUrl) } catch { $f88Search = $null }
+                }
+                $f88SearchRows = @()
+                if ($f88Search -and $f88Search.ok) { $f88SearchRows = @($f88Search.rows) }
+                if ($f88SearchRows.Count -ge 5) {
+                    $f88Primary = $true
+                    $f78Phase = 'search-endpoint'
+                    $f78SourceLabel = 'search-endpoint'
+                    $f88MergedS = Merge-F86LinkRows -Rows $f88SearchRows -f78Needle $f78Needle
+                    $f78LinksOut = @($f88MergedS.links)
+                    $f78LinkCount = [int]$f88MergedS.count
+                    $f88MatchCount = [int]$f88MergedS.matches
+                    $f78MatchCount = $f88MatchCount
+                    $f78SourceUrls = $f78LinkCount
+                }
                 if (-not $f78ResultMode) {
+                    if (-not $f88Primary) {
                     # The F81 default fetch, unchanged in form: the root sitemap
                     # is always tried first.
                     $f81Sitemap = Invoke-F78SecureFetch -Url ($f78Src.baseUrl.TrimEnd('/') + '/sitemap.xml') -ExpectedHost $f78Host -MaxBytes 2097152 -TimeoutSec 8
@@ -4874,10 +5359,12 @@ function Invoke-ClientRequest {
                         }
                     }
                     if ($f78CandidateUrls.Count -gt 0) { $f78SourceUrls = $f78CandidateUrls.Count }
+                    }
                 }
                 # [F86 §C.2] Thin sitemap (< 50 URLs) -> the hint's search pages,
-                # with {{q}} URL-encoded and substituted server-side.
-                if (-not $f78ResultMode -and $f78CandidateUrls.Count -lt 50) {
+                # with {{q}} URL-encoded and substituted server-side. Skipped
+                # when [F88] the search endpoint already served the rows.
+                if (-not $f78ResultMode -and -not $f88Primary -and $f78CandidateUrls.Count -lt 50) {
                     foreach ($f78Sp in @(Get-F86HintList -Hint $f78Hint -Field 'searchPaths' -Max 2)) {
                         if ($f78CandidateUrls.Count -ge 2000) { break }
                         $f78SpRel = Expand-F86HintPath -Template $f78Sp -Query $f78Query
@@ -4893,7 +5380,7 @@ function Invoke-ClientRequest {
                     }
                 }
                 # [F86 §C.2] Still thin -> the hint's catalog paths (anchors only).
-                if (-not $f78ResultMode -and $f78CandidateUrls.Count -lt 50) {
+                if (-not $f78ResultMode -and -not $f88Primary -and $f78CandidateUrls.Count -lt 50) {
                     foreach ($f78Cp in @(Get-F86HintList -Hint $f78Hint -Field 'catalogPaths' -Max 2)) {
                         if ($f78CandidateUrls.Count -ge 2000) { break }
                         $f78CpRel = Expand-F86HintPath -Template $f78Cp -Query $f78Query
@@ -4961,6 +5448,33 @@ function Invoke-ClientRequest {
                     $f78TitleMatch = [regex]::Match($f78Html, '(?is)<title[^>]*>(.*?)</title>')
                     if ($f78TitleMatch.Success) { $f78Title = ConvertTo-F78PlainText $f78TitleMatch.Groups[1].Value }
                 } catch { $f78Title = '' }
+                # [F88 §1.3] The visible "Source:" line + one sourceSets entry
+                # per source actually fetched (search endpoint first, fallback
+                # ladder when it ran) - the Lab tabs across them (spec A.3).
+                try { $f88Sw.Stop() } catch { }
+                $f88Display = ''
+                $f88StrategyOut = 'sitemap'
+                $f88SourceSets = @()
+                if ($f88Primary) {
+                    $f88Display = [string]$f88Search.label
+                    $f88StrategyOut = [string]$f88Search.strategy
+                    if (-not $f88Display) { $f88Display = 'Search endpoint' }
+                } else {
+                    $f88FbKey = [string]$f78SourceLabel
+                    $f88FbDisplay = [string]$f78SourceLabel
+                    $f88FbStrategy = 'sitemap'
+                    if ($f78SourceLabel -eq 'homepage' -or $f78SourceLabel -eq 'result-url') { $f88FbKey = 'homepage'; $f88FbDisplay = 'Homepage'; $f88FbStrategy = 'homepage' }
+                    elseif ($f78SourceLabel -eq 'search' -or $f78SourceLabel -eq 'catalog') { $f88FbDisplay = ('Hint ' + $f78SourceLabel + ' pages'); $f88FbStrategy = 'fallback' }
+                    elseif ($f78SourceLabel -notmatch '(?i)sitemap') { $f88FbStrategy = 'fallback' }
+                    else { $f88FbDisplay = 'Sitemap XML'; $f88FbKey = 'sitemap'; $f88FbStrategy = 'sitemap' }
+                    $f88Display = $f88FbDisplay
+                    $f88StrategyOut = $f88FbStrategy
+                    $f88SourceSets += [ordered]@{ key = $f88FbKey; label = $f88FbDisplay; strategy = $f88FbStrategy; count = [int]$f78LinkCount; links = @($f78LinksOut) }
+                }
+                if ($f88Search -and @($f88Search.rows).Count -gt 0) {
+                    $f88SetM = Merge-F86LinkRows -Rows (@($f88Search.rows)) -f78Needle $f78Needle
+                    $f88SourceSets = @([ordered]@{ key = 'search-endpoint'; label = $(if ($f88Search.label) { [string]$f88Search.label } else { 'Search endpoint' }); strategy = [string]$f88Search.strategy; count = [int]$f88SetM.count; links = @($f88SetM.links) }) + @($f88SourceSets)
+                }
                 $f78Payload = [ordered]@{
                     hostname = $f78Host
                     title = $f78Title
@@ -4970,6 +5484,10 @@ function Invoke-ClientRequest {
                     matchCount = $f78MatchCount
                     source = $f78SourceLabel
                     sourceUrls = $f78SourceUrls
+                    sourceDisplay = $f88Display
+                    sourceStrategy = $f88StrategyOut
+                    tookMs = [int]$f88Sw.ElapsedMilliseconds
+                    sourceSets = @($f88SourceSets)
                     adapterStatus = [ordered]@{ phase = $f78Phase; sourceLabel = $f78SourceLabel }
                 }
                 Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $f78Payload)
