@@ -5358,7 +5358,7 @@ function Invoke-ClientRequest {
                     # [F92 §2.4] USER-SESSION FAST PATH. When the F92
                     # GHRDP-Server ONLOGON task owns this process we are ALREADY
                     # in the interactive session (SessionId != 0), so the simple
-                    # in-session Start-Process spawn is the ONLY path needed -
+                    # direct in-session spawn is the ONLY path needed -
                     # no cross-session mechanics, no task detour. The Tier 1
                     # rung is exactly that spawn with PID proof, so the fast
                     # path runs Tier 1 once and returns on success. If the
@@ -5377,7 +5377,7 @@ function Invoke-ClientRequest {
                             $f86Result.detail = 'f92-user-session: ' + [string]$f92T1.detail
                             $f86Result.browser = [string]$f92T1.browser
                             $f86Result.pid = [int]$f92T1.pid
-                            $f86Result.attempts = @([ordered]@{ tier = 1; ok = $true; detail = 'f92-user-session direct Start-Process (ladder skipped)' })
+                            $f86Result.attempts = @([ordered]@{ tier = 1; ok = $true; detail = 'f92-user-session direct spawn (ladder skipped)' })
                             Write-F86LaunchLog -Kind 'launch' -Url $Url -Tier 1 -Detail 'f92-user-session direct spawn' -Ok $true
                             Write-F88VerboseLaunchLog -Line ('f92 fast-path ok tier=1 detail=' + [string]$f92T1.detail)
                             $script:F86LastLaunch = [ordered]@{ at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); ok = $true; tier = 1; detail = 'f92-user-session' }
