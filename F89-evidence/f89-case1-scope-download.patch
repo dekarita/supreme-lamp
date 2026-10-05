@@ -1,0 +1,19 @@
+diff --git a/tests/e2e/f88-concrete-cases.spec.ts b/tests/e2e/f88-concrete-cases.spec.ts
+index 70414285..31e8db1c 100644
+--- a/tests/e2e/f88-concrete-cases.spec.ts
++++ b/tests/e2e/f88-concrete-cases.spec.ts
+@@ -65,8 +65,12 @@ test.describe("F88 concrete operator cases", () => {
+     // Back on the search set, matches-first is already OFF: the file-ish row
+     // carries the F88 Download button; posting it proves the download=true
+     // lane and the success toast names the RDP folder.
+-    const dl = page.getByTestId("lab-link-download");
+-    await expect(dl).toHaveCount(1);
++    // [F89] TWO rows in this set are file-like (the .html lecture page and the
++    // .mp3 audio), so scope the assertion + the click to the .mp3 row instead
++    // of every lab-link-download button in the list.
++    const mp3Row = page.locator('[data-testid=lab-link-row]:has-text(".mp3")');
++    const dl = mp3Row.getByTestId("lab-link-download");
++    await expect(dl).toBeVisible();
+     const posted = page.waitForRequest((r) => r.url().includes("/api/fetch?download=true") && r.method() === "POST");
+     await dl.click();
+     const req = await posted;
