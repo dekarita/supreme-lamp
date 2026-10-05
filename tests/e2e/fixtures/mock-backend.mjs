@@ -16,6 +16,52 @@ const PORT = Number(process.env.F78_MOCK_PORT || 7331);
 
 const readJson = (name) => JSON.parse(readFileSync(join(HERE, name), "utf8"));
 
+/** [F87 §B.1/B.3] The eleven operator domains, read from the SAME fixture the
+ *  F85 spec loops (f85-sites.json `sites`), so the mock's allowlist cannot
+ *  drift from the list the operator types by hand. */
+const F87_SITES = readJson("f85-sites.json").sites.map((s) => String(s).toLowerCase());
+
+/** [F87 §B.1] hostname -> operator site. Lowercase, "www." stripped, exact match
+ *  against the eleven; "" when the host is not one of them. */
+function f87SiteOfHost(hostname) {
+  const h = String(hostname || "").trim().toLowerCase().replace(/^www\./, "");
+  return F87_SITES.includes(h) ? h : "";
+}
+
+/** [F87 §B.3] hostname -> fixture file: dots become dashes, so the file name
+ *  equals the source id the UI routes on (/#/search/lab/<openculture-com>). */
+const f87FixtureName = (hostname) => String(hostname).replace(/\./g, "-") + ".xml";
+
+/** [F87 §B.1] source id -> operator site (the reverse of the id derivation the
+ *  POST /api/f58/sources route applies: "pluto-tv" -> "pluto.tv"). Lets the deep
+ *  lane answer for a site even when the stored row is not resolvable. */
+function f87SiteOfId(sourceId) {
+  const id = String(sourceId || "").trim().toLowerCase();
+  return F87_SITES.find((s) => s.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") === id) || "";
+}
+
+/** [F86 §D + F87 §B.4] The per-site sitemap fixtures: 60 REAL-shaped URLs each
+ *  (the site's own path grammar: archive.org/details/..., gutenberg.org/ebooks/...,
+ *  plus a few same-host .pdf/.mp3/.mp4 rows), the corpus the ten-site deep spec
+ *  asserts (>= 50 URLs per site). Looked up by HOSTNAME (dots -> dashes). */
+function f86SitemapRows(hostname) {
+  let xml = "";
+  try {
+    xml = readFileSync(join(HERE, "f86-sitemaps", f87FixtureName(hostname)), "utf8");
+  } catch {
+    return [];
+  }
+  const out = [];
+  for (const m of xml.matchAll(/<loc>\s*([^<]+?)\s*<\/loc>/g)) out.push(m[1]);
+  return out;
+}
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** The launch-url calls the F86 spec inspects (tier proof). */
+const launchCalls = [];
+/** [F87 §C.1] token -> last self-test run (ms), for the 1/min mirror. */
+const selfTestRuns = new Map();
 /** Added at runtime by POST /api/f58/sources so the "add then card appears"
  *  flow is observable without mutating the fixture file on disk. */
 const added = [];
@@ -198,6 +244,16 @@ const server = createServer(async (req, res) => {
       enableState: "permanent",
       addedAt: new Date().toISOString(),
     };
+    // [F87 §A/§B.1 ROOT CAUSE] Re-adding a site the operator deleted earlier
+    // must make it LIVE again - exactly what the shipped server does (its store
+    // has no tombstones). The F85 spec deletes all eleven sites through the UI
+    // and the F86 spec re-adds them afterwards (one worker, files run in
+    // alphabetical order); with a permanent tombstone the re-added row was
+    // filtered out of GET /api/f58/sources, the Lab page rendered "not found",
+    // never POSTed /api/lab/inspect, and the ten-site spec timed out at
+    // page.waitForResponse (openculture.com / pluto.tv / freemusicarchive.org
+    // on the CI run; all eleven locally).
+    deleted.delete(row.id);
     added.push(row);
     send(res, 200, { ok: true, source: row });
     return;
@@ -205,6 +261,53 @@ const server = createServer(async (req, res) => {
 
   if (path === "/api/lab/inspect" && req.method === "POST") {
     const body = await readBody(req);
+    // [F86 §B.2/§D] RESULT-VIEW + DEEP lanes. A body.sourceUrl (the result id
+    // route) or a query that starts with "f86" selects the deep lane: the
+    // response is the site's OWN 52-URL fixture (pages + .mp3/.mp4/.pdf), which
+    // is what "Lab finds >= 50 URLs" means for the ten-site spec. Every other
+    // request keeps the F78/F85 shape byte-for-byte, so those suites cannot
+    // drift because of this branch.
+    const f86Query = String(body?.query || "");
+    const f86Deep = Boolean(body && body.sourceUrl) || /^f86/.test(f86Query.trim());
+    if (f86Deep) {
+      // [F87 §B.1] Resolve the SITE from the hostname of body.sourceUrl first
+      // (lowercase, "www." stripped, matched against the eleven), then from the
+      // stored row's hostname, then from the id itself ("pluto-tv" -> pluto.tv).
+      // The lane never 404s: an unknown host answers the archive.org corpus,
+      // so the deep inspector always has >= 60 rows to render.
+      let host = "";
+      try {
+        host = body.sourceUrl ? f87SiteOfHost(new URL(String(body.sourceUrl)).hostname) : "";
+      } catch {
+        host = "";
+      }
+      if (!host && body.sourceId) {
+        const row = sources().find((x) => x.id === body.sourceId);
+        host = row ? f87SiteOfHost(String(row.hostname)) : "";
+        if (!host) host = f87SiteOfId(body.sourceId);
+      }
+      if (!host) host = "archive.org";
+      // [F87 §B.1] 100 ms of real latency: the UI must show its loading state
+      // and settle from server data, never from a same-tick response.
+      await sleep(100);
+      const urls = f86SitemapRows(host);
+      const q = f86Query.replace(/^f86[^ ]*/, "").trim().toLowerCase();
+      const links = urls.map((href) => ({ href, text: href.split("/").pop() || href, matches: Boolean(q) && href.toLowerCase().includes(q) }));
+      if (links.length >= 50) {
+        send(res, 200, {
+          hostname: "www." + host,
+          title: host + " deep index",
+          links,
+          fetchedAt: new Date().toISOString(),
+          linkCount: links.length,
+          matchCount: links.filter((l) => l.matches).length,
+          source: "sitemap.xml",
+          sourceUrls: links.length,
+          adapterStatus: { phase: "sitemap-ok", sourceLabel: "sitemap.xml" },
+        });
+        return;
+      }
+    }
     if (!body || !body.sourceId) {
       send(res, 400, { code: "VALIDATION_ERROR", messageKey: "search.errors.validation", retryable: false });
       return;
@@ -268,7 +371,7 @@ const server = createServer(async (req, res) => {
     // the only way to reach the F84 "Download to RDP" button end to end (the F79
     // fixture rows are landing pages on purpose - they keep the single Open
     // action). Nothing else in the lane changes.
-    const f85Match = /^f85\s+(\S+)$/.exec(search.query.trim());
+    const f85Match = /^f8[56]\s+(\S+)$/.exec(search.query.trim());
     const f85Results = f85Match
       ? [{
           resultId: "f85-file-1",
@@ -314,8 +417,87 @@ const server = createServer(async (req, res) => {
       server: "mock",
       sha: "f85mock0000000000000000000000000000000",
       sha7: "f85mock",
-      features: { autoHttps: true, wwwTolerance: true, noFallback: true, downloadToRdp: true },
+      features: { autoHttps: true, wwwTolerance: true, noFallback: true, downloadToRdp: true, launchTiers: true, selfTest: true },
     });
+    return;
+  }
+
+  // [F86 §A/§D] launch-url: the ten-site spec clicks a Lab row and asserts that
+  // the request really happened and that a TIER came back (the F86 contract:
+  // the response carries the rung that did the work). The mock answers tier 1
+  // and records every call so the spec can read them back.
+  if (path === "/api/launch-url" && req.method === "POST") {
+    const body = await readBody(req);
+    const target = String(body?.url || "");
+    if (!target.startsWith("https://")) {
+      send(res, 400, { code: "VALIDATION_ERROR", messageKey: "newSiteHttpsRequired", retryable: false });
+      return;
+    }
+    launchCalls.push({ url: target, at: new Date().toISOString() });
+    send(res, 200, { ok: true, launched: true, tier: 1, tierDetail: "direct-spawn", browser: "msedge", pid: 4242, user: "runner" });
+    return;
+  }
+
+  // [F86 §A.3] The diagnostic banner's launch probe.
+  if (path === "/api/launch-url/diag" && req.method === "GET") {
+    const last = launchCalls[launchCalls.length - 1] || null;
+    send(res, 200, {
+      ok: true,
+      activeTier: 1,
+      lastLaunchAt: last ? last.at : "",
+      lastResult: last ? "ok" : "",
+      lastTier: last ? 1 : 0,
+      lastDetail: last ? "direct-spawn" : "",
+      chromePath: "",
+      msedgePath: "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+      firefoxPath: "",
+      interactiveSessionDetected: true,
+      sessionId: 1,
+      activeUser: "runner",
+      pipeReady: true,
+      pipeName: "ghrdp-browser-opener-f86",
+      logPath: "C:\\Users\\runner\\.ghrdp\\launch-url.log",
+      errorHistory: [],
+      history: [],
+    });
+    return;
+  }
+
+  // [F87 §C.1] The self-test lane: the SAME envelope the shipped route answers
+  // ({ok, ranAt, total, passed, results[]}), one row per requested site, the
+  // sitemap count read from the site's own fixture, tier 1 for every launch.
+  // Subset validation and the 1/min rate limit are mirrored so the panel's
+  // error states are reachable end to end.
+  if (path === "/api/f87-selftest" && req.method === "POST") {
+    const body = await readBody(req);
+    const requested = Array.isArray(body?.sites) ? body.sites.map((s) => String(s).trim().toLowerCase().replace(/^www\./, "")) : [];
+    const rejected = requested.filter((s) => !F87_SITES.includes(s));
+    if (!requested.length || rejected.length) {
+      send(res, 400, { code: "VALIDATION_ERROR", messageKey: "selfTest.invalidSites", rejected, allowed: F87_SITES });
+      return;
+    }
+    const tok = String(req.headers["x-dash-token"] || "");
+    const now = Date.now();
+    if (selfTestRuns.has(tok) && now - selfTestRuns.get(tok) < 60_000 && url.searchParams.get("noRateLimit") !== "1") {
+      send(res, 429, { code: "RATE_LIMITED", messageKey: "selfTest.rateLimited", retryAfterSeconds: Math.ceil((60_000 - (now - selfTestRuns.get(tok))) / 1000) });
+      return;
+    }
+    selfTestRuns.set(tok, now);
+    await sleep(150);
+    const results = [...new Set(requested)].map((site) => {
+      const urls = f86SitemapRows(site);
+      launchCalls.push({ url: "https://" + site + "/", at: new Date().toISOString() });
+      return {
+        site, probeOk: true, sitemapUrls: urls.length, sitemapMode: "urlset", launchTier: 1, launchOk: true, launchDetail: "direct-spawn",
+        pdfFound: urls.some((u) => /\.pdf(\?|$)/i.test(u)), downloadDirOk: true, downloadDir: "C:\\Users\\runner\\Desktop\\RDP-Downloads", errors: [],
+      };
+    });
+    send(res, 200, { ok: true, ranAt: new Date().toISOString(), total: results.length, passed: results.length, results });
+    return;
+  }
+
+  if (path === "/__f86/launch-calls") {
+    send(res, 200, { calls: launchCalls });
     return;
   }
 

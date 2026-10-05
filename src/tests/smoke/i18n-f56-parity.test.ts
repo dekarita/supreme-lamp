@@ -39,7 +39,19 @@ describe("i18n F56 parity (byte-verified)", () => {
     // [F85 §2/§3] +3 inside search.*: canonicalHost (the visible probe-answered
     // host on a Your-sites card) + diag.title + diag.noServer (the ?diag=1
     // banner). 507 -> 510.
-    expect(enNew.length).toBe(510);
+    // [F86 §A.3/§B.2] net +1 inside search.*: +2 (diag.launchTier +
+    // diag.lastLaunch, the launch-path chips the F86 banner adds) -1
+    // (search.lab.comingSoon is DELETED - the "Full inspector coming in F75"
+    // placeholder no longer exists in either catalog; a result-id route renders
+    // the real inspector, whose lab.resultContext key lives outside search.*).
+    // 510 -> 511.
+    // [F87 §C.3/§D] +9 inside search.*: diag.shaMismatch, diag.testLaunch,
+    // diag.testLaunchOk, diag.testLaunchFail, diag.recent, diag.downloadDir,
+    // diag.selfTestShortcut (the expanded ?diag=1 banner) + launchUrl.tierProbe,
+    // launchUrl.openedViaTier (the per-card lightning button). The selfTest.*
+    // panel keys live OUTSIDE search.* and are asserted by
+    // tests/f87-selftest-panel.test.tsx. 511 -> 520.
+    expect(enNew.length).toBe(520);
   });
 
   it("every si value is non-empty, byte-stable Sinhala or a technical token", () => {
