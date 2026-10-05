@@ -1739,13 +1739,90 @@ function Test-F91QueueJob {
     if (-not $uri -or $uri.Scheme -ne 'https' -or $uri.UserInfo -or -not $uri.Host) { $out.reason = 'malformed'; return $out }
     $out.ok = $true; $out.safeUrl = $u; $out.reason = ''; return $out
 }
+function Get-F93LauncherAutoStartPath {
+    [string]$root = ''
+    try { $root = [string](Get-F91LauncherPaths).root } catch { $root = '' }
+    if (-not $root) { $root = Join-Path $env:ProgramData 'ghrdp' }
+    return (Join-Path $root 'launcher-autostart.json')
+}
+# [F93 §2.2] LAUNCHER AUTO-START ON LOGON DETECTION.
+# Why: the F91 launcher is an ONLOGON scheduled task - it only ever starts if
+# somebody logs into the RDP session. On a fresh runner nobody has, so the
+# heartbeat is stale, /api/launcher/health says serviceRunning=false, and every
+# "Open in RDP" queues into a service that is not running (the exact operator
+# report "no user is logged in -> launcher cannot work"). This watcher polls
+# the Security log every 10s for a type-10 4624 (RemoteInteractive logon); on
+# the FIRST one it registers GHRDP-Launcher if missing and starts it
+# immediately, then writes launcher-autostart.json (autoStarted=true) so
+# /api/launcher/health can prove it. It never touches credentials, never types
+# into a UI, and stops polling after it fires. Started lazily on the first
+# health read (i.e. at server boot + first dashboard poll) so dot-sourcing the
+# file in labs never spawns a job.
+function Start-F93LauncherLogonWatch {
+    if ($script:F93LogonWatchStarted) { return }
+    $script:F93LogonWatchStarted = $true
+    try {
+        $script:F93LogonWatchJob = Start-Job -Name 'ghrdp-f93-logon-watch' -ScriptBlock {
+            $statePath = Join-Path $env:ProgramData 'ghrdp\launcher-autostart.json'
+            $src = Join-Path $env:ProgramData 'ghrdp\ghrdp-rdp-launcher.ps1'
+            while ($true) {
+                $fired = $false
+                try {
+                    $since = (Get-Date).AddMinutes(-30)
+                    $ev = @(Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = 4624; StartTime = $since } -MaxEvents 300 -ErrorAction Stop)
+                    foreach ($e in $ev) {
+                        # LogonType 10 only - a console/service logon is never an
+                        # RDP session (same discriminator as the F28 collector).
+                        $lt = ''
+                        try {
+                            $x = [xml]$e.ToXml()
+                            foreach ($d in $x.Event.EventData.Data) { if ($d.Name -eq 'LogonType') { $lt = [string]$d.'#text'; break } }
+                        } catch { $lt = '' }
+                        if ($lt -eq '10') { $fired = $true; break }
+                    }
+                } catch { $fired = $false }
+                if ($fired) {
+                    try {
+                        $q = & schtasks.exe /Query /TN GHRDP-Launcher 2>$null
+                        $exists = ($LASTEXITCODE -eq 0); $LASTEXITCODE = 0
+                        if (-not $exists -and (Test-Path -LiteralPath $src)) {
+                            $tr = ('powershell.exe -NoProfile -WindowStyle Hidden -File "{0}"' -f $src)
+                            & schtasks.exe /Create /F /SC ONLOGON /TN GHRDP-Launcher /RL HIGHEST /TR ('"{0}"' -f ($tr -replace '"', '\"')) 2>$null
+                            $LASTEXITCODE = 0
+                        }
+                        try { Start-ScheduledTask -TaskName 'GHRDP-Launcher' -ErrorAction Stop } catch { & schtasks.exe /Run /TN GHRDP-Launcher 2>$null; $LASTEXITCODE = 0 }
+                        $dir = Split-Path -Parent $statePath
+                        if ($dir -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+                        [System.IO.File]::WriteAllText($statePath, (ConvertTo-Json -Compress -InputObject @{ autoStarted = $true; at = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'); taskExisted = $exists }))
+                        break
+                    } catch { }
+                }
+                Start-Sleep -Seconds 10
+            }
+        }
+    } catch { }
+}
 function Get-F91LauncherHealth {
+    Start-F93LauncherLogonWatch
     $p = Get-F91LauncherPaths
     $out = [ordered]@{
         ok = $true; serviceRunning = $false; heartbeatAge = -1; heartbeatAt = ''
         queueDepth = 0; queueDir = [string]$p.queueDir; log = @(); logPath = [string]$p.log
         taskExists = $false; taskState = ''; activeUser = ''; scriptPresent = $false
+        autoStarted = $false; autoStartedAt = ''
     }
+    # [F93 §2.2] proof that the logon watcher fired (file written by the job,
+    # so this read is truthful even across the job/runspace boundary).
+    try {
+        $f93AutoPath = Get-F93LauncherAutoStartPath
+        if (Test-Path -LiteralPath $f93AutoPath) {
+            $f93Auto = ([string](Get-Content -LiteralPath $f93AutoPath -Raw -ErrorAction SilentlyContinue)) | ConvertFrom-Json
+            if ($f93Auto -and $f93Auto.autoStarted -eq $true) {
+                $out.autoStarted = $true
+                $out.autoStartedAt = [string]$f93Auto.at
+            }
+        }
+    } catch { }
     try { $out.scriptPresent = [bool](Test-Path -LiteralPath (Join-Path $p.root 'ghrdp-rdp-launcher.ps1')) } catch { }
     try {
         if (Test-Path -LiteralPath $p.heartbeat) {
@@ -4777,6 +4854,30 @@ function Invoke-ClientRequest {
                 return
             }
 
+            # [F93 §1.2] Concrete probe-reason classifier. Every add-site
+            # refusal must name WHY in errors.url - the F92 operator report was
+            # "rejected by validation" with no field-level reason, which is
+            # unactionable. 'http-error' is an internal sentinel: the caller
+            # re-runs the classifier with the ProtocolError's status code.
+            function Get-F93ProbeReason {
+                param([int]$HttpStatus = 0, $Except = $null, $Response = $null)
+                $f93Status = -1; $f93Msg = ''
+                try { if ($Except) { $f93Status = [int]$Except.Status; $f93Msg = [string]$Except.Message } } catch { }
+                if ($f93Status -eq 6) { return 'dns-nxdomain' }
+                if ($f93Status -eq 9) { return 'redirect-loop' }
+                if ($f93Status -eq 10 -or $f93Status -eq 11) { return 'ssl-cert-invalid' }
+                if ($f93Status -eq 14 -or $f93Msg -match '(?i)timeout|timed out') { return 'timeout-10s' }
+                if ($HttpStatus -ge 500) { return 'http-5xx' }
+                if ($HttpStatus -ge 400) {
+                    $f93Cf = ''
+                    try { if ($Response) { $f93Cf = ([string]$Response.Headers['cf-ray'] + ' ' + [string]$Response.Headers['server']) } } catch { }
+                    if ($f93Cf -match '(?i)cf-ray|cloudflare') { return 'cloudflare-challenge' }
+                    return ('http-' + [string]$HttpStatus)
+                }
+                if ($HttpStatus -gt 0) { return ('http-' + [string]$HttpStatus) }
+                if ($Except) { return 'http-error' }
+                return 'no-response'
+            }
             if ($path -eq '/api/f58/sources' -and $parts.method -eq 'POST') {
                 $f78BodyText = ''
                 try { $f78BodyText = [System.Text.Encoding]::UTF8.GetString($parts.body) } catch { $f78BodyText = '' }
@@ -4826,23 +4927,30 @@ function Invoke-ClientRequest {
                     Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; traceId = ([guid]::NewGuid().ToString('N').Substring(0,12)); errors = $f78FieldErrors }))
                     return
                 }
-                # [F84 §2.1] HTTPS reachability probe BEFORE accepting the site:
-                # a HEAD request to the operator-supplied origin (5s, no
-                # auto-redirect) must answer 200/301/302/307/308 over HTTPS.
-                # Fail-closed: an unreachable site is refused with a per-field
-                # key so the modal renders the reason under the URL input. A
-                # redirect onto the same registrable domain records the host the
-                # server actually answered from as `canonicalHostname`.
+                # [F93 §1.2] HTTPS reachability probe BEFORE accepting the site.
+                # F93 SUPERSEDES the F84 HEAD probe (pins rewritten in
+                # tests/f84-url-normalize.test.js, never deleted): a HEAD is the
+                # request real CDNs refuse first (Cloudflare answers 403 to
+                # HEAD while GET is fine) and the old no-auto-redirect shape
+                # needed the caller to interpret every 3xx hop itself.
+                # Now: GET, up to 10 automatic redirects, 10s, and ANY 2xx/3xx
+                # counts as reachable. A refusal names a CONCRETE machine reason
+                # in errors.url: cloudflare-challenge | dns-nxdomain |
+                # ssl-cert-invalid | timeout-10s | http-5xx | redirect-loop |
+                # http-<code> - never the bare generic. The redirect target
+                # (same-site, www-tolerant) still records `canonicalHostname`.
                 $f78ProbeOk = $false
-                $f78ProbeReason = 'transport'
+                $f78ProbeReason = 'no-response'
+                $f78ProbeDetail = ''
                 $f78CanonicalHost = ''
                 try {
                     $f78ProbeUri = [System.Uri]$f78Base
                     $f78ProbeReq = [System.Net.HttpWebRequest]::Create($f78ProbeUri)
-                    $f78ProbeReq.Method = 'HEAD'
-                    $f78ProbeReq.Timeout = 5000
-                    $f78ProbeReq.ReadWriteTimeout = 5000
-                    $f78ProbeReq.AllowAutoRedirect = $false
+                    $f78ProbeReq.Method = 'GET'
+                    $f78ProbeReq.Timeout = 10000
+                    $f78ProbeReq.ReadWriteTimeout = 10000
+                    $f78ProbeReq.AllowAutoRedirect = $true
+                    $f78ProbeReq.MaximumAutomaticRedirections = 10
                     $f78ProbeReq.CookieContainer = $null
                     $f78ProbeReq.UserAgent = 'GHRDP-Lab/1.0'
                     $f78ProbeResp = $null
@@ -4850,37 +4958,51 @@ function Invoke-ClientRequest {
                         $f78ProbeResp = $f78ProbeReq.GetResponse()
                     } catch [System.Net.WebException] {
                         $f78ProbeResp = $_.Exception.Response
+                        $f78ProbeReason = Get-F93ProbeReason -Except $_.Exception
+                        if ($f78ProbeReason -eq 'http-error') {
+                            $f78ProbeStatus0 = 0
+                            try { $f78ProbeStatus0 = [int]$_.Exception.Response.StatusCode } catch { $f78ProbeStatus0 = 0 }
+                            $f78ProbeReason = Get-F93ProbeReason -HttpStatus $f78ProbeStatus0 -Except $_.Exception -Response $_.Exception.Response
+                        }
+                        try { $f78ProbeDetail = [string]$_.Exception.Message } catch { }
                     }
                     if ($f78ProbeResp) {
                         $f78ProbeStatus = 0
                         try { $f78ProbeStatus = [int]$f78ProbeResp.StatusCode } catch { $f78ProbeStatus = 0 }
-                        if ($f78ProbeStatus -ge 200 -and $f78ProbeStatus -lt 300) {
+                        # [F93 §1.2] any 2xx OR 3xx is reachable (a 3xx that
+                        # survived the ladder has no Location - still a live
+                        # HTTPS origin, not a dead site).
+                        if ($f78ProbeStatus -ge 200 -and $f78ProbeStatus -lt 400) {
                             $f78ProbeOk = $true
                             $f78CanonicalHost = $f78ProbeUri.Host.ToLowerInvariant()
-                        } elseif ($f78ProbeStatus -eq 301 -or $f78ProbeStatus -eq 302 -or $f78ProbeStatus -eq 307 -or $f78ProbeStatus -eq 308) {
-                            $f78ProbeOk = $true
-                            $f78ProbeLoc = ''
-                            try { $f78ProbeLoc = [string]$f78ProbeResp.Headers['Location'] } catch { $f78ProbeLoc = '' }
-                            if ($f78ProbeLoc) {
-                                try {
-                                    $f78ProbeTarget = ([System.Uri]::new($f78ProbeUri, $f78ProbeLoc)).Host.ToLowerInvariant()
-                                    if ($f78ProbeTarget -and (Test-F78SameHost -Allowed $f78ProbeUri.Host -Actual $f78ProbeTarget)) { $f78CanonicalHost = $f78ProbeTarget }
-                                } catch { $f78ProbeTarget = '' }
-                            }
+                            try {
+                                $f78FinalUri = $f78ProbeResp.ResponseUri
+                                if ($f78FinalUri -and $f78FinalUri.Host) {
+                                    $f78FinalHost = $f78FinalUri.Host.ToLowerInvariant()
+                                    if ($f78FinalHost -and (Test-F78SameHost -Allowed $f78ProbeUri.Host -Actual $f78FinalHost)) { $f78CanonicalHost = $f78FinalHost }
+                                }
+                            } catch { }
                         } else {
-                            $f78ProbeReason = ('HTTP ' + [string]$f78ProbeStatus)
+                            $f78ProbeReason = Get-F93ProbeReason -HttpStatus $f78ProbeStatus -Response $f78ProbeResp
+                            $f78ProbeDetail = ('HTTP ' + [string]$f78ProbeStatus)
                         }
                         try { $f78ProbeResp.Close() } catch { }
-                    } else {
-                        $f78ProbeReason = 'no response'
+                    } elseif ($f78ProbeReason -eq 'no-response') {
+                        $f78ProbeDetail = 'no response object'
                     }
                 } catch {
-                    $f78ProbeReason = 'transport'
+                    $f78ProbeReason = 'no-response'
+                    try { $f78ProbeDetail = [string]$_.Exception.Message } catch { }
                 }
                 if (-not $f78ProbeOk) {
+                    # [F84 §2.1 pin, kept] the messageKey stays the F84 key so an
+                    # older client/bundle still renders a specific line; the
+                    # per-field value is REPLACED by the F93 concrete reason so
+                    # the operator reads "cloudflare-challenge", not a shrug.
                     $f78FieldErrors['url'] = 'addSite.probeFailed'
-                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'addSite.probeFailed'; traceId = ([guid]::NewGuid().ToString('N').Substring(0,12)); errors = $f78FieldErrors; details = [ordered]@{ reason = ('Site unreachable over HTTPS (' + $f78ProbeReason + ')') } }))
-                    Write-ClientAudit ('f84 add site probe failed base=' + $f78Base + ' reason=' + $f78ProbeReason)
+                    if ($f78ProbeReason) { $f78FieldErrors['url'] = $f78ProbeReason }
+                    Send-ClientResponse -Stream $stream -Code 400 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ code = 'VALIDATION_ERROR'; messageKey = 'addSite.probeFailed'; traceId = ([guid]::NewGuid().ToString('N').Substring(0,12)); errors = $f78FieldErrors; details = [ordered]@{ reason = [string]$f78ProbeReason; detail = [string]$f78ProbeDetail } }))
+                    Write-ClientAudit ('f93 add site probe failed base=' + $f78Base + ' reason=' + $f78ProbeReason + ' detail=' + $f78ProbeDetail)
                     return
                 }
                 $f78Uri = [System.Uri]$f78Base
@@ -5725,8 +5847,24 @@ function Invoke-ClientRequest {
             if ($path -eq '/api/f92-selftest' -and $parts.method -eq 'GET') {
                 $f92Sha = ''
                 try { if ($parts.query.ContainsKey('frontendsha')) { $f92Sha = [string]$parts.query['frontendsha'] } } catch { $f92Sha = '' }
+                # [F93 §3.2] 20s MEMO. The F92 selftest is an 11-site live
+                # fanout; the dashboard hits it from /#/health AND the version
+                # gate, and an uncached fanout per poll starves the request
+                # loop - the failing /api/progress polls that is exactly what
+                # lit the "connection: lost (retrying)" chip. 20s keeps the
+                # operator's click-fresh data while removing the stampede.
+                $f92Now = (Get-Date).ToUniversalTime()
                 $f92Out = $null
-                try { $f92Out = Invoke-F92Selftest -FrontendSha $f92Sha } catch { $f92Out = $null }
+                if ($script:F92SelftestCache -and [string]$script:F92SelftestCacheSha -eq $f92Sha -and ((($f92Now - $script:F92SelftestCacheAt).TotalSeconds) -lt 20)) {
+                    $f92Out = $script:F92SelftestCache
+                } else {
+                    try { $f92Out = Invoke-F92Selftest -FrontendSha $f92Sha } catch { $f92Out = $null }
+                    if ($f92Out) {
+                        $script:F92SelftestCache = $f92Out
+                        $script:F92SelftestCacheAt = $f92Now
+                        $script:F92SelftestCacheSha = $f92Sha
+                    }
+                }
                 if (-not $f92Out) {
                     Send-ClientResponse -Stream $stream -Code 500 -CType 'application/health+json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ status = 'fail'; error = 'f92-selftest threw: see server log' }))
                     return

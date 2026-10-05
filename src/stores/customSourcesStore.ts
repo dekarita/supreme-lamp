@@ -28,6 +28,9 @@ export const MAX_CUSTOM_SITES = 50;
 export interface AddSiteOutcome {
   ok: boolean;
   error: NewSiteError | string | null;
+  /** [F93 §1.3] Per-field reasons (errors.name / errors.url) carried verbatim
+   *  from the server envelope so the modal can mark the exact failing input. */
+  fieldErrors?: { name?: string; url?: string } | null;
   source: CustomSourceRow | null;
 }
 
@@ -64,19 +67,19 @@ export const useCustomSourcesStore = create<CustomSourcesState>((set, get) => ({
 
   addSite: async (name, baseUrl) => {
     const invalid = validateNewSite(name, baseUrl);
-    if (invalid) return { ok: false, error: invalid, source: null };
+    if (invalid) return { ok: false, error: invalid, fieldErrors: null, source: null };
     // [F81 §5.0/Q10] Client-side cap mirror. The server enforces this too
     // (409 + MAX_SITES), but the modal disables Save before the request
     // ever fires so the operator sees the cap immediately.
     if (get().labSources.length >= MAX_CUSTOM_SITES) {
-      return { ok: false, error: "newSiteMaxReached", source: null };
+      return { ok: false, error: "newSiteMaxReached", fieldErrors: null, source: null };
     }
     const res = await createCustomSource(name, baseUrl);
-    if (!res.ok) return { ok: false, error: res.error.messageKey, source: null };
+    if (!res.ok) return { ok: false, error: res.error.messageKey, fieldErrors: res.error.fieldErrors || null, source: null };
     // §1.2: a successful save re-loads the list, so the new card appears even if
     // the server derived the id/hostname itself.
     await get().refresh();
-    return { ok: true, error: null, source: res.data };
+    return { ok: true, error: null, fieldErrors: null, source: res.data };
   },
 
   removeSite: async (sourceId) => {

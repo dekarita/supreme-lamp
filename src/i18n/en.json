@@ -102,18 +102,18 @@
   "mirror": {
     "open": "Open",
     "openHint": "Open locally + mirror into RDP",
-    "openedLocal": "Opened locally \u2713",
-    "mirroredRdp": "Mirrored to RDP \u2713",
-    "openedBoth": "Opened locally \u2713 + Mirrored to RDP \u2713",
-    "rdpOffline": "Opened locally \u2713 (RDP launcher: {{reason}})",
+    "openedLocal": "Opened locally ✓",
+    "mirroredRdp": "Mirrored to RDP ✓",
+    "openedBoth": "Opened locally ✓ + Mirrored to RDP ✓",
+    "rdpOffline": "Opened locally ✓ (RDP launcher: {{reason}})",
     "blocked": "Refused: not a plain https link - nothing was opened",
     "openInExplorer": "Open in RDP",
-    "watchInRdp": "\u25B6 Watch in RDP",
-    "watchLiveInRdp": "\u25B6 Watch Live in RDP",
+    "watchInRdp": "▶ Watch in RDP",
+    "watchLiveInRdp": "▶ Watch Live in RDP",
     "audioPlayLabel": "Inline audio via RDP",
-    "audioStreamFailed": "\u26A0 Stream failed - Watch in RDP",
+    "audioStreamFailed": "⚠ Stream failed - Watch in RDP",
     "launcherLine": "Launcher: {{state}}, heartbeat {{age}}s ago, queue depth {{depth}}",
-    "launcherRunning": "running \u2713",
+    "launcherRunning": "running ✓",
     "launcherStale": "task installed, heartbeat stale",
     "launcherMissing": "queued-only (service not draining)",
     "launcherAbsent": "absent (pre-F91 server)",
@@ -560,15 +560,15 @@
       "openedViaTier": "opened via tier {{tier}}",
       "failedTier": "Could not open in RDP (tier {{tier}} failed): {{reason}}. Retry, or see /#/search?diag=1 for details."
     },
-      "a11y": {
-        "commandBar": "Search command bar",
-        "queryInput": "Search query input",
-        "queryDescription": "Type a query and press Enter to search. HTTPS URLs enter URL import.",
-        "categoryGroup": "Category filters",
-        "licenceGroup": "Licence filters",
-        "fileExtGroup": "File type filters",
-        "sizeSlider": "Maximum size slider",
-        "sortSelector": "Sort order",
+    "a11y": {
+      "commandBar": "Search command bar",
+      "queryInput": "Search query input",
+      "queryDescription": "Type a query and press Enter to search. HTTPS URLs enter URL import.",
+      "categoryGroup": "Category filters",
+      "licenceGroup": "Licence filters",
+      "fileExtGroup": "File type filters",
+      "sizeSlider": "Maximum size slider",
+      "sortSelector": "Sort order",
       "adapterStatusList": "Adapter status list",
       "resultsGrid": "Search results grid",
       "resultRow": "Search result row",
@@ -854,7 +854,7 @@
       "selfTestShortcut": "Run 11-site self-test",
       "verboseLog": "Verbose launch-url log (last 20 lines)"
     },
-    "deepInspect": "Deep-inspect \u201c{{query}}\u201d on {{hostname}}",
+    "deepInspect": "Deep-inspect “{{query}}” on {{hostname}}",
     "openInLabSite": "Open {{hostname}} in Lab",
     "labMode": {
       "badge": "Lab"
@@ -1048,14 +1048,13 @@
         "unsupported": "That operation is not supported"
       }
     }
-  }
-,
+  },
   "lab": {
     "title": "Lab inspector",
     "sourceLine": "Source: {{source}} — {{count}} results in {{seconds}}s",
     "resultContext": "Inspecting {{title}} from {{adapter}}",
     "query": "Query",
-    "matchCount": "{{matches}} of {{total}} links match \u201c{{query}}\u201d",
+    "matchCount": "{{matches}} of {{total}} links match “{{query}}”",
     "matchesFirst": "Matches first",
     "allLinks": "All {{total}} links",
     "openInNewTab": "Open in new tab",
@@ -1065,9 +1064,9 @@
     "sizeLimit": "The homepage is larger than the 2 MB Lab limit.",
     "hostnameMismatch": "The response came from a different hostname than the stored site.",
     "notFound": "No stored site matches this Lab address.",
-    "loading": "Fetching the stored homepage\u2026",
+    "loading": "Fetching the stored homepage…",
     "source": "Source: {{source}} ({{count}} URLs)",
-      "sourceCrossDomain": "Source: GitHub README ({{repo}}) — {{count}} items in {{section}}"
+    "sourceCrossDomain": "Source: GitHub README ({{repo}}) — {{count}} items in {{section}}"
   },
   "newSiteName": "Name",
   "newSiteUrl": "Base URL (https)",
@@ -1082,7 +1081,20 @@
   "addSite": {
     "autoHttps": "https:// added automatically",
     "httpsOnly": "HTTPS required - this site only supports insecure HTTP, cannot be stored.",
-    "probeFailed": "Site unreachable over HTTPS"
+    "probeFailed": "Site unreachable over HTTPS",
+    "authMissing": "Dashboard authorization missing (open this dashboard with ?key=...). The site was NOT saved.",
+    "launcherOffline": "Adding the site is fine, but \"Open in RDP\" and downloads will fail until you log in via WEB DESKTOP.",
+    "reason": {
+      "cloudflareChallenge": "The site answered a Cloudflare challenge, not the page (try again later or from another network).",
+      "dnsNxdomain": "That hostname does not resolve (DNS NXDOMAIN) - check the spelling.",
+      "sslCertInvalid": "The site's HTTPS certificate is invalid or untrusted.",
+      "timeout10s": "The site did not answer within 10 seconds.",
+      "http5xx": "The site answered with a server error (HTTP 5xx).",
+      "redirectLoop": "The site redirects in a loop (more than 10 hops).",
+      "noResponse": "The site closed the connection without answering over HTTPS.",
+      "httpStatus": "The site refused the request over HTTPS (HTTP {{code}}).",
+      "other": "The site could not be reached over HTTPS ({{reason}})."
+    }
   },
   "download": {
     "toRdp": "Download to RDP",
@@ -1126,7 +1138,7 @@
       "unknown": "The server ladder decides where the link opens."
     },
     "hint": {
-      "body": "To make \u201cOpen in RDP\u201d actually open inside RDP, view this dashboard through WEB DESKTOP (left sidebar in Mission Control).",
+      "body": "To make “Open in RDP” actually open inside RDP, view this dashboard through WEB DESKTOP (left sidebar in Mission Control).",
       "learnMore": "Learn more",
       "dismiss": "Got it"
     },
@@ -1139,5 +1151,11 @@
       "openAnyway": "Open anyway in my browser",
       "dismiss": "Dismiss"
     }
+  },
+  "logonGate": {
+    "title": "No user logged into RDP yet",
+    "message": "Launcher service offline. \"Open in RDP\" and downloads will fail.",
+    "button": "Open WEB DESKTOP to log in",
+    "noUrl": "WEB DESKTOP is not deployed yet - open Overview for the deployment status."
   }
 }

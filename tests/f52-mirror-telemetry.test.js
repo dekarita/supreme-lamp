@@ -95,7 +95,13 @@ test('F52-SOCKET-SOURCE RESULT: counter updates AFTER outgoing WriteAsync and Fl
   assert.match(watcher, /stallRecords/);
   assert.match(read('payloads/ghrdp-server.ps1'), /\$path -eq '\/mirror'/);
   assert.match(ui, /setInterval\(poll,3000\)/);
-  assert.match(read('src/hooks/useDashboardPolling.ts'), /setInterval\(pollProgress, 3000\)/);
+  // [F93 §3.2 SUPERSEDES the F52 fixed-interval pin - rewritten in place]: the
+  // progress lane is a self-scheduling loop now (3s healthy, 1s/3s/10s/30s
+  // reconnect ladder), so the 3s cadence is asserted on the loop, not on a
+  // setInterval that no longer exists.
+  const polling = read('src/hooks/useDashboardPolling.ts');
+  assert.match(polling, /setTimeout\(progressLoop, 3000\)/);
+  assert.match(polling, /const RECONNECT_LADDER = \[1000, 3000, 10000, 30000\];/);
 });
 test('F52-CAPS-SOURCE RESULT: matrix bytes, zero-upload preflight, null is not unlimited', () => {
   assert.match(mod, /function Get-F52ServersCap/);
