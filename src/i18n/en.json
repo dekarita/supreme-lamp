@@ -14,7 +14,8 @@
     "settings": "Settings",
     "files": "File Explorer",
     "search": "Search",
-    "health": "Health"
+    "health": "Health",
+    "collector": "Diagnosis Collector"
   },
   "sidebar": {
     "nav": "Primary navigation",
@@ -23,7 +24,8 @@
     "menu": "Open navigation",
     "search": "Search",
     "searchLab": "Lab",
-    "health": "Health"
+    "health": "Health",
+    "collector": "Run a full 17-feature end-to-end check (60-120s)"
   },
   "actions": {
     "autoLogin": "WINDOWS AUTO-LOGIN",
@@ -1221,5 +1223,67 @@
       "server": "The server refused the diagnostic bundle — check the dashboard token and retry.",
       "transport": "Connection to the server was lost — reconnect, then download the bundle again."
     }
+  },
+  "collector": {
+    "run": "▶ Run Full Diagnosis Collector (60-120s)",
+    "running": "Running… (60-120s)",
+    "starting": "Starting…",
+    "hint": "Runs INSIDE the box as a child process: 17 real probes across every dashboard feature. The dashboard stays responsive because the collector never runs in the server's request loop.",
+    "state": {
+      "never-run": "No run yet",
+      "running": "Running",
+      "done": "Done",
+      "stalled": "Stalled (no progress for >180s)"
+    },
+    "neverRun": "No collector run yet. Press the button; the report lands here and is downloadable as JSON + Markdown.",
+    "stale": "The run stalled: no progress update for more than 180s. The partial results below are the truth of what completed.",
+    "critical": "Critical issues",
+    "recommendations": "Recommendations",
+    "issue": "Issue",
+    "downloadJson": "Download JSON",
+    "downloadMd": "Download Markdown",
+    "card": {
+      "total": "features",
+      "passed": "passed",
+      "failed": "failed",
+      "warnings": "warnings",
+      "skipped": "skipped"
+    },
+    "table": {
+      "feature": "Feature",
+      "status": "Status",
+      "detail": "Detail",
+      "ms": "Time",
+      "issue": "Issue",
+      "expand": "diagnostics"
+    },
+    "feature": {
+      "launcher": "Launcher",
+      "watcher": "Watcher",
+      "webSocket": "WebSocket",
+      "logon": "Logon",
+      "searchEndpoints": "Search endpoints",
+      "downloadToRdp": "Download to RDP",
+      "labInspector": "Lab inspector",
+      "mirrorApi": "Mirror API",
+      "fileExplorer": "File explorer",
+      "telemetry": "Telemetry",
+      "viewingMode": "Viewing mode",
+      "autologonConfig": "Auto-logon",
+      "dashTokenRotation": "Dash token",
+      "sidebarRoutes": "Sidebar routes",
+      "healthEndpoint": "/health",
+      "selfTest": "Self-test",
+      "serverEcho": "Server echo"
+    },
+    "errors": {
+      "auth": "The server refused the dash token - reopen the dashboard with its ?key= URL (F99 B5).",
+      "missing": "The collector script is not staged on the box (COLLECTOR_MISSING); re-dispatch main.yml.",
+      "rate_limited": "A run already happened in the last 5 minutes - wait, then run again.",
+      "run_in_progress": "A run is already in progress; its live progress is shown below.",
+      "download": "Download failed:",
+      "generic": "The collector could not start."
+    },
+    "footer": "Every red row names the Issue its fix belongs to (references {{issues}})."
   }
 }

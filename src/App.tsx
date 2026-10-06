@@ -19,6 +19,10 @@ import SearchPage from "@/pages/Search";
 import LabPage from "@/pages/search/Lab";
 // [F92 §6] self-test dashboard + the full-screen stale-bundle gate.
 import HealthPage from "@/pages/Health";
+// [F99 §3.2] the Diagnosis Collector page (sidebar entry sits right after
+// Health): POST /api/collector/run drives 17 end-to-end probes and this page
+// renders the per-feature verdict, the summary and the two report downloads.
+import CollectorPage from "@/pages/Collector";
 import { VersionGate } from "@/components/domain/F92VersionGate";
 import Telemetry from "@/pages/Telemetry";
 import Settings from "@/pages/Settings";
@@ -65,6 +69,7 @@ export default function App() {
           <Route path="/search/lab/:targetId" element={<SearchLab />} />
           <Route path="/telemetry" element={<Telemetry />} />
           <Route path="/health" element={<HealthPage />} />
+          <Route path="/collector" element={<CollectorPage />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Overview />} />
         </Route>

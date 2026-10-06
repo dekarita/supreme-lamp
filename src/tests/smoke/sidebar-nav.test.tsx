@@ -1,5 +1,6 @@
 // [F56-c] Sidebar + routes + keyboard + palette prefill (session §4).
-// 9 entries in locked order; the original 7 keep their to=/key=/icon= exactly.
+// The locked order (grew 7 -> 9 with F76, +/health in F92, +/collector in
+// F99); every earlier entry keeps its to=/key=/icon= exactly.
 // [F76 §2.1] Search moved to slot 2 (directly under Overview) - F76 order below.
 // Alt+E opens File Explorer, Alt+F opens Search; Ctrl+K palette prefills
 // /search WITHOUT submitting (Plan §D).
@@ -9,15 +10,19 @@ import App from "@/App";
 import { useSearchStore } from "@/stores/searchStore";
 
 // [F76 §3.E] Search is the high-frequency surface: slot 2, under Overview.
-const ORDER = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/health", "/settings"]; // [F92] +/health (was locked F76 nine)
+// [F99 §3.2] +/collector: the Diagnosis Collector sits immediately after
+// /health (the page that runs the 17-feature end-to-end check). This is the
+// FOURTH authorized growth of the locked list; every earlier entry keeps its
+// to=/key=/icon= exactly.
+const ORDER = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/health", "/collector", "/settings"]; // [F99] +/collector
 
 describe("sidebar navigation (F56-c / F76 order)", () => {
-  it("renders 9 entries in the F76 order with the two new routes wired", () => {
+  it("renders the locked order with the two new routes wired", () => {
     const { container } = render(<App />);
     const nav = container.querySelector('[data-testid="sidebar"] nav');
     expect(nav).not.toBeNull();
     const links = Array.from(nav?.querySelectorAll("a") || []);
-    expect(links.length).toBe(10); // [F92] +/health
+    expect(links.length).toBe(11); // [F92] +/health, [F99] +/collector
     const hrefs = links.map((a) => (a.getAttribute("href") || "").replace(/^#/, ""));
     expect(hrefs).toEqual(ORDER);
     expect(document.getElementById("f57.explorer.nav")).not.toBeNull();

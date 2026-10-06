@@ -565,7 +565,7 @@ jobs:
 
           $psJob = Start-Job -ArgumentList $env:GITHUB_WORKSPACE -ScriptBlock {
               $ws = $args[0]
-              $files = @('payloads/ghrdp-lib.ps1', 'payloads/ghrdp-server.ps1', 'payloads/ghrdp-watcher.ps1', 'payloads/ghrdp-mirror.ps1', 'payloads/ghrdp-qbt.ps1', 'payloads/ghrdp-aria2.ps1')
+              $files = @('payloads/ghrdp-lib.ps1', 'payloads/ghrdp-server.ps1', 'payloads/ghrdp-watcher.ps1', 'payloads/ghrdp-mirror.ps1', 'payloads/ghrdp-qbt.ps1', 'payloads/ghrdp-aria2.ps1', 'payloads/ghrdp-collector.ps1')
               $errs = 0
               foreach ($f in $files) {
                   $p = Join-Path $ws $f
@@ -2165,6 +2165,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-watcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-watcher.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-rdp-first-login.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-rdp-first-login.ps1"
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-collector.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-collector.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-pub2.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-pub2.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-bootstrap-session.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-bootstrap-session.ps1"
           echo '[watcher] ghrdp-watcher.ps1 written'
@@ -4137,6 +4138,76 @@ jobs:
               Add-F59Timing -Step 'dashboard-reachable-from-job-start' -Seconds $reach
               Write-Host ('::notice title=F59 dashboard-reachable::' + $reach + 's from job start')
           }
+
+          # ------------------------------------------------------------------
+          # [F99 §2.5 / B5] DASH-TOKEN ROUND TRIP - the check whose absence let
+          # the bundle's `3x 401 (dash token invalid)` reach the operator.
+          #
+          # WHY THIS STEP EXISTS: the dashboard server is started EARLY (the F92
+          # task above, plus the SYSTEM task here) while dash-token.txt is written
+          # far above/below it; a server that read the token file before it
+          # existed runs with an EMPTY expectation, and every request that
+          # PRESENTS a token is then refused while token-less requests pass.
+          # F99's server-side validator re-reads the file on change, and this
+          # step proves the recovery on the REAL running server: present the
+          # token from disk and require HTTP 200 on GET /api/mirror/status.
+          # A refusal is not silent: it warns with the status AND restarts the
+          # dashboard task once, then re-checks - the same one-click recovery the
+          # operator would otherwise have to perform by hand.
+          # ------------------------------------------------------------------
+          try {
+              $tokFile = 'C:\ghrdp\dash-token.txt'
+              if (-not (Test-Path -LiteralPath $tokFile)) {
+                  Write-Host '::warning::[f99] dash-token.txt is missing - the dashboard cannot authorise any write (B5). It is written by the F49 config stage.'
+              } else {
+                  $tok = ([System.IO.File]::ReadAllText($tokFile)).Trim()
+                  function Test-F99TokenRoundTrip {
+                      param([string]$Token)
+                      $res = [ordered]@{ status = 0; ok = $false; error = '' }
+                      try {
+                          $h = @{ 'X-Dash-Token' = $Token }
+                          $r = Invoke-WebRequest -Uri 'http://127.0.0.1:7331/api/mirror/status' -Headers $h -TimeoutSec 8 -UseBasicParsing -ErrorAction Stop
+                          $res.status = [int]$r.StatusCode
+                          $res.ok = ($res.status -eq 200)
+                      } catch {
+                          $res.error = $_.Exception.Message
+                          try { if ($_.Exception.Response -and $_.Exception.Response.StatusCode) { $res.status = [int]$_.Exception.Response.StatusCode } } catch { }
+                      }
+                      return $res
+                  }
+                  $rt = Test-F99TokenRoundTrip -Token $tok
+                  if ($rt.ok) {
+                      Write-Host ('[f99] dash-token round trip PASS: GET /api/mirror/status = ' + [string]$rt.status + ' with the token from C:\ghrdp\dash-token.txt')
+                      Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '[f99] Dash token: ROUND TRIP PASS (mirror/status 200 with the on-disk token).'
+                  } else {
+                      Write-Host ('::warning::[f99] dash-token round trip FAILED (status=' + [string]$rt.status + ' error=' + $rt.error + ') - restarting the dashboard task and retrying once (B5 recovery)')
+                      try { Stop-ScheduledTask -TaskName 'GhrdpServer' -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 } catch { }
+                      try { Start-ScheduledTask -TaskName 'GhrdpServer' -ErrorAction Stop } catch { try { & schtasks.exe /Run /TN GhrdpServer 2>$null; $LASTEXITCODE = 0 } catch { } }
+                      Start-Sleep -Seconds 6
+                      $rt2 = Test-F99TokenRoundTrip -Token $tok
+                      if ($rt2.ok) {
+                          Write-Host ('[f99] dash-token round trip PASS after a dashboard restart (status=' + [string]$rt2.status + ')')
+                          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '[f99] Dash token: ROUND TRIP PASS after restart.'
+                      } else {
+                          Write-Host ('::warning::[f99] dash-token round trip STILL failing (status=' + [string]$rt2.status + ' error=' + $rt2.error + '). The Diagnosis Collector (/#/collector) reports dashTokenRotation with both route verdicts and the server self-check; /api/diag carries dashTokenVerify.')
+                          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('[f99] Dash token: ROUND TRIP FAILED (status=' + [string]$rt2.status + ') - see /api/diag.dashTokenVerify.')
+                      }
+                  }
+                  # [F99 §2.1 / B1] WebSocket lane proof: /health must report ws=true
+                  # now that the upgrade route exists.
+                  try {
+                      $h2 = Invoke-WebRequest -Uri 'http://127.0.0.1:7331/health' -TimeoutSec 6 -UseBasicParsing -ErrorAction Stop
+                      $hj = $null
+                      try { $hj = $h2.Content | ConvertFrom-Json } catch { }
+                      if ($hj) {
+                          Write-Host ('[f99] /health: ws=' + [string]$hj.ws + ' wsPath=' + [string]$hj.wsPath + ' clients=' + [string]$hj.wsClients)
+                          Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('[f99] WebSocket lane: ws=' + [string]$hj.ws + ' at ' + [string]$hj.wsPath + ' (RFC6455).')
+                      }
+                  } catch { Write-Host ('::warning::[f99] /health probe failed: ' + $_.Exception.Message) }
+              }
+          } catch {
+              Write-Host ('::warning::[f99] dash-token round-trip step failed: ' + $_.Exception.Message)
+          }
           exit 0
 
       - name: Start Rust WebSocket dashboard (build, verify, GhrdpRustDash, acceptance, advertise)
@@ -4461,17 +4532,83 @@ jobs:
           $pwshPath = 'powershell.exe'
           try { $c = Get-Command pwsh.exe -ErrorAction Stop; if ($c) { $pwshPath = $c.Source } } catch { }
           $argLine = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-watcher.ps1"'
+          # [F99 §2.2 / B2] THE TRIGGER MUST BELONG TO THE USER WHO LOGS ON.
+          #
+          # EVIDENCE: scheduledTaskLastResult=267011 (SCHED_S_TASK_HAS_NOT_RUN),
+          # supervisorAttempts.taskStart=7, watcherProcessRunning=false,
+          # heartbeat=null. 267011 is not a failure - it means the trigger has
+          # NEVER fired, and seven Start-ScheduledTask calls cannot make a task
+          # whose ONLOGON trigger is bound to a user who never signs in.
+          # Pre-F99 this bound the task to $env:RDP_USER ('rdp'+guid) while the
+          # desktop belongs to the runner account. Resolve the ACTIVE user first
+          # and fall back to SYSTEM/AtStartup when there is none.
+          $sessionUser = ''
+          try {
+              $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+              if ($cs -and $cs.UserName) { $sessionUser = ([string]$cs.UserName).Trim() }
+          } catch { }
+          if (-not $sessionUser) {
+              try {
+                  foreach ($line in @(& quser.exe 2>$null)) {
+                      $parts = ($line -replace '^\s*>?\s*', '') -split '\s+'
+                      if ($parts.Count -ge 4 -and ($parts -contains 'Active')) { $sessionUser = [string]$parts[0]; break }
+                  }
+              } catch { }
+          }
+          $taskUser = $user
+          if ($sessionUser) { $taskUser = $sessionUser }
+          elseif ($env:USERNAME) { $taskUser = $env:USERNAME }
+          # The action path must exist: a task pointing at a missing script is
+          # exactly the silent 0x80070002 class this step used to hide.
+          $watcherPath = 'C:\ghrdp\ghrdp-watcher.ps1'
+          $watcherPathOk = [bool](Test-Path -LiteralPath $watcherPath)
+          if (-not $watcherPathOk) { Write-Host ('::warning::[f99] ' + $watcherPath + ' does not exist - the watcher task would fail with 0x80070002') }
+          Write-Host ('[f99] watcher task target user: ' + $taskUser + ' (sessionUser=' + $(if ($sessionUser) { $sessionUser } else { '(none)' }) + ' rdpUser=' + $user + ' actionPathOk=' + $watcherPathOk + ')')
           $registered = $false
           try {
-              $action = New-ScheduledTaskAction -Execute $pwshPath -Argument $argLine
-              $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
-              $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+              $action = New-ScheduledTaskAction -Execute $pwshPath -Argument $argLine -WorkingDirectory 'C:\ghrdp'
+              $trigger = New-ScheduledTaskTrigger -AtLogOn -User $taskUser
+              $principal = New-ScheduledTaskPrincipal -UserId $taskUser -LogonType Interactive -RunLevel Highest
               $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 6)
               Register-ScheduledTask -TaskName 'GhrdpWatcher' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
               $registered = $true
-              Write-Host '[watcher] GhrdpWatcher ONLOGON task registered for the RDP user'
+              Write-Host ('[watcher] GhrdpWatcher ONLOGON task registered for ' + $taskUser)
           } catch {
               Write-Host ('[watcher] Register-ScheduledTask failed: ' + $_.Exception.Message)
+          }
+          # [F99 §2.2] READ THE TASK BACK. The pre-F99 step registered and hoped;
+          # the bundle then showed 267011 with no way to tell why. Export the XML
+          # (the artefact Export-ScheduledTask prints), print the trigger/principal
+          # and the last task result, and record it to watcher-task.xml.
+          if ($registered) {
+              try {
+                  $tb = Get-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction Stop
+                  $tinfo = $null
+                  try { $tinfo = Get-ScheduledTaskInfo -TaskName 'GhrdpWatcher' -ErrorAction SilentlyContinue } catch { }
+                  $tTrig = @()
+                  try { foreach ($tg in @($tb.Triggers)) { $tTrig += [string]$tg.CimClass.CimClassName } } catch { }
+                  $tUser = ''
+                  try { $tUser = [string]$tb.Principal.UserId } catch { }
+                  $tLogon = ''
+                  try { $tLogon = [string]$tb.Principal.LogonType } catch { }
+                  $tResult = ''
+                  if ($tinfo) { $tResult = [string]$tinfo.LastTaskResult }
+                  Write-Host ('[f99] GhrdpWatcher read-back: state=' + [string]$tb.State + ' principal=' + $tUser + '/' + $tLogon + ' triggers=' + ($tTrig -join ',') + ' lastTaskResult=' + $tResult)
+                  try {
+                      if (Get-Command Export-ScheduledTask -ErrorAction SilentlyContinue) {
+                          $xml = Export-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction Stop
+                          [System.IO.File]::WriteAllText('C:\ghrdp\watcher-task.xml', [string]$xml)
+                          Write-Host '[f99] exported the registered task XML to C:\ghrdp\watcher-task.xml'
+                      }
+                  } catch { Write-Host ('[f99] Export-ScheduledTask failed: ' + $_.Exception.Message) }
+                  # 267011 with a principal that is not the session user = the
+                  # trigger can never fire. Say it, with the fix.
+                  $tLeaf = $(if ($tUser) { ([string]$tUser -split '\\')[-1] } else { '' })
+                  $sLeaf = $(if ($sessionUser) { ([string]$sessionUser -split '\\')[-1] } else { '' })
+                  if ($tResult -eq '267011' -and $tLeaf -and $sLeaf -and ($tLeaf -ine $sLeaf)) {
+                      Write-Host ('::warning::[f99] watcher diagnose: SCHED_S_TASK_HAS_NOT_RUN + principal mismatch (task=' + $tLeaf + ' active=' + $sLeaf + ') - register the task for ' + $sLeaf + ' or as SYSTEM/AtStartup; the F95 supervisor will otherwise keep issuing starts that cannot succeed (this is F99/B2)')
+                  }
+              } catch { Write-Host ('[f99] watcher read-back failed: ' + $_.Exception.Message) }
           }
           if (-not $registered) {
               try {
@@ -4589,10 +4726,14 @@ jobs:
           #   server needs logon -> logon needs watcher -> watcher needs server
           # by providing a fourth path that needs none of them.
           # ------------------------------------------------------------------
-          if (-not $started) {
+          # [F99 §2.2] ALSO register the SYSTEM fallback when NO session user could
+          # be resolved: an ONLOGON task bound to a guess is exactly the 267011
+          # state the bundle reported, and an AtStartup/SYSTEM task needs no
+          # interactive session at all.
+          if ((-not $started) -or (-not $sessionUser)) {
               $sysRegistered = $false
               try {
-                  $sysAction = New-ScheduledTaskAction -Execute $pwshPath -Argument $argLine
+                  $sysAction = New-ScheduledTaskAction -Execute $pwshPath -Argument $argLine -WorkingDirectory 'C:\ghrdp'
                   $sysTrigger = New-ScheduledTaskTrigger -AtStartup
                   $sysPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
                   $sysSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 6)
@@ -4612,18 +4753,40 @@ jobs:
               }
           }
 
-          # [F98 §2.3] write dashboard-url.txt for the first-login script (§2.4)
+          # [F99 §4.2] write dashboard-url.txt for the first-login script (§4.1).
+          #
+          # TWO FIXES OVER F98:
+          #  (1) the LOCAL server URL wins for the kiosk. The first-login script
+          #      runs INSIDE the box, so http://127.0.0.1:7331/ cannot depend on
+          #      Tailscale being up or on the tailnet ACL; the tailnet URL stays
+          #      as the fallback for the operator's own browser.
+          #  (2) THE TOKEN IS PART OF THE URL. F98 wrote a bare `:7333/`, and the
+          #      F94 DashTokenGate then painted its blocking modal over the very
+          #      dashboard the first-login script had just opened. The URL below
+          #      is the same key the run log prints; it is written to the runner's
+          #      own disk (never to an artifact, never to a repo file).
           try {
               $dashUrl = ''
-              if ($env:TS_TAILNET_IP) { $dashUrl = 'http://' + $env:TS_TAILNET_IP + ':7333/' }
-              elseif ($ip) { $dashUrl = 'http://' + $ip + ':7333/' }
-              if ($dashUrl) {
-                  New-Item -ItemType Directory -Path 'C:\ProgramData\ghrdp' -Force -ErrorAction SilentlyContinue | Out-Null
-                  Set-Content -Path 'C:\ProgramData\ghrdp\dashboard-url.txt' -Value $dashUrl -Force
-                  Write-Host ('[F98] dashboard-url.txt written: ' + $dashUrl)
+              $dashTok = ''
+              try {
+                  $cfgTokFile = 'C:\ghrdp\dash-token.txt'
+                  if (Test-Path -LiteralPath $cfgTokFile) { $dashTok = ([System.IO.File]::ReadAllText($cfgTokFile)).Trim() }
+              } catch { $dashTok = '' }
+              $keyQ = ''
+              if ($dashTok) { $keyQ = '?key=' + $dashTok }
+              $dashUrl = 'http://127.0.0.1:7331/' + $keyQ
+              if ($env:TS_TAILNET_IP -or $ip) {
+                  $tail = ''
+                  if ($env:TS_TAILNET_IP) { $tail = [string]$env:TS_TAILNET_IP } else { $tail = [string]$ip }
+                  try {
+                      [System.IO.File]::WriteAllText('C:\ProgramData\ghrdp\dashboard-url-tailnet.txt', ('http://' + $tail + ':7331/' + $keyQ))
+                  } catch { }
               }
+              New-Item -ItemType Directory -Path 'C:\ProgramData\ghrdp' -Force -ErrorAction SilentlyContinue | Out-Null
+              [System.IO.File]::WriteAllText('C:\ProgramData\ghrdp\dashboard-url.txt', $dashUrl, (New-Object System.Text.UTF8Encoding($false)))
+              Write-Host ('[F99] dashboard-url.txt written: http://127.0.0.1:7331/ (key present: ' + [bool]$dashTok + ')')
           } catch {
-              Write-Host ('[F98] dashboard-url.txt write failed: ' + $_.Exception.Message)
+              Write-Host ('[F99] dashboard-url.txt write failed: ' + $_.Exception.Message)
           }
 
           # ------------------------------------------------------------------
@@ -4642,9 +4805,26 @@ jobs:
               $stageScript = Join-Path $env:RUNNER_TEMP 'ghrdp-stage\ghrdp-rdp-first-login.ps1'
               if (Test-Path -LiteralPath $stageScript) {
                   Copy-Item -LiteralPath $stageScript -Destination $firstLoginScript -Force -ErrorAction Stop
-                  Write-Host ('[F98] first-login script deployed to ' + $firstLoginScript)
+                  Write-Host ('[F98/F99] first-login script deployed to ' + $firstLoginScript)
               } else {
-                  Write-Host '[F98] first-login script not found in stage - skipped deployment'
+                  Write-Host '[F98/F99] first-login script not found in stage - skipped deployment'
+              }
+
+              # [F99 §3.1] THE DIAGNOSIS COLLECTOR lands at C:\ghrdp (the
+              # server's $Root) so POST /api/collector/run can spawn it. Without
+              # this copy the button would answer 503 COLLECTOR_MISSING with the
+              # exact path it wanted - never a silent no-op.
+              try {
+                  $collectorScript = 'C:\ghrdp\ghrdp-collector.ps1'
+                  $stageCollector = Join-Path $env:RUNNER_TEMP 'ghrdp-stage\ghrdp-collector.ps1'
+                  if (Test-Path -LiteralPath $stageCollector) {
+                      Copy-Item -LiteralPath $stageCollector -Destination $collectorScript -Force -ErrorAction Stop
+                      Write-Host ('[F99] collector deployed to ' + $collectorScript)
+                  } else {
+                      Write-Host '::warning::[F99] ghrdp-collector.ps1 not found in stage - the Diagnosis Collector will answer 503 until it is staged'
+                  }
+              } catch {
+                  Write-Host ('::warning::[F99] collector deploy failed: ' + $_.Exception.Message)
               }
 
               # Register as ONLOGON task (redundant with Startup folder).
@@ -4716,7 +4896,7 @@ jobs:
       # hold it and is NEVER echoed to the log, and the account is the runner's
       # own local user that the RDP listener already authenticates.
       # ------------------------------------------------------------------
-      - name: Arm Windows Auto-Logon and prove a type-10 4624 (F94)
+      - name: Arm Windows Auto-Logon for the ACTIVE user and prove an interactive 4624 (F99 §2.4)
         shell: pwsh
         env:
           RDP_USER: ${{ env.RDP_USER }}
@@ -4727,36 +4907,116 @@ jobs:
           $pass = $env:RDP_PASS
           $winlogon = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
 
-          if (-not $user -or -not $pass) {
-            Write-Host '::error::[f94] RDP_USER/RDP_PASS missing - cannot arm AutoAdminLogon. The launcher (an ONLOGON task) will not start; log in via WEB DESKTOP.'
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '[f94] Auto-Logon: NOT ARMED (no credentials in scope). Log in via WEB DESKTOP.'
-            exit 0
+          # [F99 §2.4 / B4] THE AUTOLOGON USER MUST BE THE USER WHO LOGS ON.
+          #
+          # EVIDENCE (F96 bundle): mainYmlBootstrap.autologonUser = "rdpb2e2fa"
+          # (the per-run account this job creates two hundred steps above) while
+          # runnerInfo.activeUsers[0].user = "runneradmin" - the account that
+          # actually owns Session 1. Arming AutoAdminLogon for the generated
+          # account CLOBBERS the image's own working pair and leaves every
+          # user-scoped artifact (watcher/launcher ONLOGON tasks, Startup
+          # shortcuts) bound to an account that never signs in. That is also the
+          # mechanism behind the F99 §2.2 task result 267011.
+          #
+          # The safe order is: READ the existing pair, resolve the ACTIVE session
+          # user, and only write the generated pair when the generated account IS
+          # the desktop owner. Otherwise the existing pair is PRESERVED (its
+          # password is not knowable from here - guessing one would be worse than
+          # the bug) and the mismatch is reported as machine-readable state.
+          $activeSessionUser = ''
+          try {
+            $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+            if ($cs -and $cs.UserName) { $activeSessionUser = ([string]$cs.UserName).Trim() }
+          } catch { }
+          if (-not $activeSessionUser) {
+            try {
+              foreach ($line in @(& quser.exe 2>$null)) {
+                $parts = ($line -replace '^\s*>?\s*', '') -split '\s+'
+                if ($parts.Count -ge 4 -and ($parts -contains 'Active')) { $activeSessionUser = [string]$parts[0]; break }
+              }
+            } catch { }
           }
-
-          # 1. Arm AutoAdminLogon, then READ IT BACK - a write nobody verifies
-          #    is the same class of silent failure as the launcher itself.
+          $before = $null
+          try { $before = Get-ItemProperty -Path $winlogon -ErrorAction Stop } catch { $before = $null }
+          $beforeUser = ''
+          if ($before) { $beforeUser = [string]$before.DefaultUserName }
+          $beforeAuto = ''
+          if ($before) { $beforeAuto = [string]$before.AutoAdminLogon }
+          $activeLeaf = ''
+          if ($activeSessionUser) { $activeLeaf = ([string]$activeSessionUser -split '\\')[-1] }
+          $userLeaf = ''
+          if ($user) { $userLeaf = ([string]$user -split '\\')[-1] }
+          $activeIsGenerated = ($userLeaf -and $activeLeaf -and ($userLeaf -ieq $activeLeaf))
+          Write-Host ('[f99] autologon target resolution: RDP_USER=' + $user + ' activeSessionUser=' + $(if ($activeSessionUser) { $activeSessionUser } else { '(none)' }) + ' existingDefaultUser=' + $beforeUser)
           $armed = $false
           $armReason = ''
-          try {
-            Set-ItemProperty -Path $winlogon -Name 'AutoAdminLogon'    -Value '1'          -Type String -Force -ErrorAction Stop
-            Set-ItemProperty -Path $winlogon -Name 'DefaultUserName'   -Value $user        -Type String -Force -ErrorAction Stop
-            Set-ItemProperty -Path $winlogon -Name 'DefaultPassword'   -Value $pass        -Type String -Force -ErrorAction Stop
-            Set-ItemProperty -Path $winlogon -Name 'DefaultDomainName' -Value $env:COMPUTERNAME -Type String -Force -ErrorAction Stop
-            $rb = Get-ItemProperty -Path $winlogon -ErrorAction Stop
-            # The password is deliberately NOT compared or printed here; only
-            # the three non-secret values are verified and reported.
-            $armed = ([string]$rb.AutoAdminLogon -eq '1' -and [string]$rb.DefaultUserName -eq $user)
-            if (-not $armed) { $armReason = 'registry read-back did not match the values written' }
-          } catch {
-            $armReason = $_.Exception.Message
+          $autologonUser = ''
+          $preservedExisting = $false
+          if ($activeLeaf -and -not $activeIsGenerated) {
+            # The desktop belongs to another account (a hosted runner image:
+            # runneradmin). Keep the pair that boots it; never overwrite it with
+            # the generated account.
+            $preservedExisting = $true
+            $autologonUser = $beforeUser
+            $armed = ($beforeAuto -eq '1' -and $beforeUser -and (([string]$beforeUser -split '\\')[-1] -ieq $activeLeaf))
+            if (-not $armed) {
+              $armReason = 'the existing AutoAdminLogon pair does not match the active user (AutoAdminLogon=' + $beforeAuto + ' DefaultUserName=' + $beforeUser + ' active=' + $activeSessionUser + '); the password of the active account is not knowable from this job, so it was deliberately NOT overwritten'
+            }
+            Write-Host ('[f99] AutoAdminLogon PRESERVED for the active desktop user (' + $beforeUser + ', AutoAdminLogon=' + $beforeAuto + '); the generated account ' + $user + ' must not hijack it')
+          } else {
+            if (-not $user -or -not $pass) {
+              Write-Host '::error::[f94] RDP_USER/RDP_PASS missing - cannot arm AutoAdminLogon. The launcher (an ONLOGON task) will not start; log in via WEB DESKTOP.'
+              Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value '[f94] Auto-Logon: NOT ARMED (no credentials in scope). Log in via WEB DESKTOP.'
+              exit 0
+            }
+            # 1. Arm AutoAdminLogon, then READ IT BACK - a write nobody verifies
+            #    is the same class of silent failure as the launcher itself.
+            try {
+              Set-ItemProperty -Path $winlogon -Name 'AutoAdminLogon'    -Value '1'          -Type String -Force -ErrorAction Stop
+              Set-ItemProperty -Path $winlogon -Name 'DefaultUserName'   -Value $user        -Type String -Force -ErrorAction Stop
+              Set-ItemProperty -Path $winlogon -Name 'DefaultPassword'   -Value $pass        -Type String -Force -ErrorAction Stop
+              Set-ItemProperty -Path $winlogon -Name 'DefaultDomainName' -Value $env:COMPUTERNAME -Type String -Force -ErrorAction Stop
+              $rb = Get-ItemProperty -Path $winlogon -ErrorAction Stop
+              # The password is deliberately NOT compared or printed here; only
+              # the three non-secret values are verified and reported.
+              $armed = ([string]$rb.AutoAdminLogon -eq '1' -and [string]$rb.DefaultUserName -eq $user)
+              $autologonUser = [string]$rb.DefaultUserName
+              if (-not $armed) { $armReason = 'registry read-back did not match the values written' }
+            } catch {
+              $armReason = $_.Exception.Message
+            }
           }
+          # [F99 §2.4] machine-readable state for the dashboard + the collector:
+          # autologonConfig.userMatches is exactly this comparison.
+          try {
+            $stateDir = 'C:\ProgramData\ghrdp'
+            New-Item -ItemType Directory -Path $stateDir -Force -ErrorAction SilentlyContinue | Out-Null
+            $status = [ordered]@{
+              at                  = (Get-Date).ToUniversalTime().ToString('o')
+              autoAdminLogon      = $(if ($preservedExisting) { $beforeAuto } else { '1' })
+              defaultUserName     = $autologonUser
+              generatedUser       = $user
+              activeSessionUser   = $activeSessionUser
+              userMatches         = $(if ($autologonUser -and $activeLeaf) { (([string]$autologonUser -split '\\')[-1] -ieq $activeLeaf) } else { $null })
+              preservedExisting   = $preservedExisting
+              armed               = $armed
+              reason              = $armReason
+              passwordVerified    = 'never - DefaultPassword is written only for the generated account and is not read back'
+            }
+            [System.IO.File]::WriteAllText((Join-Path $stateDir 'autologon-status.json'), ($status | ConvertTo-Json -Compress))
+            Write-Host ('[f99] autologon-status.json: userMatches=' + [string]$status.userMatches + ' defaultUser=' + [string]$status.defaultUserName + ' active=' + [string]$status.activeSessionUser)
+          } catch { Write-Host ('[f99] autologon-status.json write failed: ' + $_.Exception.Message) }
 
-          if ($armed) { Write-Host '[f94] AutoAdminLogon ARMED (verified by read-back) for' $user }
+          if ($armed) { Write-Host '[f94] AutoAdminLogon ARMED (verified by read-back) for' $autologonUser }
           else { Write-Host ('::warning::[f94] AutoAdminLogon NOT armed: ' + $armReason) }
 
-          # 2. Look for an INTERACTIVE (type-10) 4624 - the only evidence the
-          #    dashboard's LAST LOGON row and logon banner trust.
+          # 2. Look for an INTERACTIVE 4624 - types 2/10/11, the same accepted
+          #    set the F95 R1 server-side scanner uses. A type-10-only wait (the
+          #    pre-F99 code) could never be satisfied by an AutoAdminLogon
+          #    (type 2) desktop, which is the F95/B3 root cause reproduced in
+          #    the workflow itself.
           $type10 = $null
+          $seenType = ''
           $deadline = (Get-Date).AddSeconds(60)
           while ((Get-Date) -lt $deadline) {
             try {
@@ -4766,7 +5026,7 @@ jobs:
                 $nodes = $xml.Event.EventData.Data
                 $lt = $null
                 foreach ($n in $nodes) { if ($n.Name -eq 'LogonType') { $lt = [string]$n.'#text' } }
-                if ($lt -eq '10') { $type10 = $e; break }
+                if (@('2', '10', '11') -contains ([string]$lt).Trim()) { $type10 = $e; $seenType = ([string]$lt).Trim(); break }
               }
             } catch { }
             if ($type10) { break }
@@ -4774,8 +5034,8 @@ jobs:
           }
 
           if ($type10) {
-            Write-Host ('[f94] type-10 4624 present at ' + $type10.TimeCreated.ToString('o') + ' - an interactive session exists, the ONLOGON launcher can run.')
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('[f94] Auto-Logon: interactive logon CONFIRMED (' + $type10.TimeCreated.ToString('o') + ').')
+            Write-Host ('[f99] interactive 4624 present at ' + $type10.TimeCreated.ToString('o') + ' (LogonType ' + $seenType + '; accepted set 2/10/11) - an interactive session exists, the ONLOGON launcher can run.')
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('[f94] Auto-Logon: interactive logon CONFIRMED (type ' + $seenType + ', ' + $type10.TimeCreated.ToString('o') + ').')
             exit 0
           }
 
@@ -4784,7 +5044,7 @@ jobs:
           #    WEB DESKTOP - but it must never be silent.
           $q = ''
           try { $q = (@(& quser.exe 2>$null) -join ' | ') } catch { $q = '(quser unavailable)' }
-          Write-Host ('::error::[f94] NO interactive logon within 60s - launcher offline. AutoAdminLogon armed=' + $armed + '; quser: ' + $q + '. AutoAdminLogon only applies to the NEXT logon/reboot, and a reboot would end this job, so log in via the WEB DESKTOP button on the dashboard (the F94 fix makes that button report a blocked popup instead of doing nothing).')
+          Write-Host ('::error::[f99] NO interactive (2/10/11) 4624 within 60s - launcher offline. AutoAdminLogon armed=' + $armed + ' defaultUser=' + $autologonUser + ' active=' + $activeSessionUser + '; quser: ' + $q + '. If the active session belongs to another account, the autologon pair was deliberately preserved (F99 §2.4); log in via the WEB DESKTOP button on the dashboard so the ONLOGON launcher can bind to that user.')
           Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value ('[f94] Auto-Logon: NOT CONFIRMED within 60s (armed=' + $armed + '). Log in via WEB DESKTOP; the launcher starts on that logon.')
           exit 0
 

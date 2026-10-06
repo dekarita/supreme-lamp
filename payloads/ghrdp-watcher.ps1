@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Root = 'C:\ghrdp',
     [int]$MaxMinutes = 340
 )
@@ -21,6 +21,14 @@ if (Test-Path -LiteralPath $global:GhrdpMirrorModulePath) {
     }
 }
 $global:GhrdpCfgPath = Join-Path $Root 'config.json'
+# [F99 §2.3 / B3] THE interactive-logon set, identical to ghrdp-server.ps1's
+# $script:GhrdpInteractiveLogonTypes/@('2','10','11') and its Win32_LogonSession
+# WQL. The watcher cannot dot-source the server (it is launched standalone by a
+# scheduled task), so the literal is duplicated ON PURPOSE and pinned by
+# tests/f99-watcher-diagnose.test.js.
+$script:GhrdpInteractiveLogonTypes = @('2', '10', '11')
+$script:GhrdpLogonSessionWql = 'LogonType=2 OR LogonType=10 OR LogonType=11'
+
 function Resolve-RealProfile {
     param([string]$User)
     try {
@@ -363,7 +371,13 @@ try {
             }
         } catch { }
         try {
-            $s = Get-CimInstance Win32_LogonSession -Filter "LogonType = 10" -ErrorAction SilentlyContinue
+            # [F99 §2.3 / B3] was: -Filter "LogonType = 10". A strict RemoteInteractive
+            # filter misses the AutoAdminLogon session (type 2) this very workflow
+            # arms, which is how a live desktop came to be reported as "no logon".
+            # The set is the same one the server uses (Test-GhrdpInteractiveLogonType /
+            # $script:GhrdpLogonSessionWql); tests/f99-watcher-diagnose.test.js keeps
+            # the two in sync so a future edit cannot silently re-narrow it.
+            $s = Get-CimInstance Win32_LogonSession -Filter $script:GhrdpLogonSessionWql -ErrorAction SilentlyContinue
             if ($s) { return $true }
         } catch { }
         try { $est = Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue; if ($est) { return $true } } catch { }

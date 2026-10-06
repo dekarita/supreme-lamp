@@ -30,7 +30,13 @@ test('F49-1 the three routes plus the CORS preflight exist on the PS dashboard',
 test('F49-2 POSTs require the presented dash token (no tailnet fallback)', () => {
   assert.ok(srv.includes('dashboard authorization required (X-Dash-Token or Bearer)'), 'the POST 401 needle is missing');
   assert.ok(srv.includes("parts.headers['x-dash-token']"), 'X-Dash-Token is never read');
-  assert.ok(srv.includes('Test-TicketBearer $mRecv $mExp'), 'the token compare is not constant-time');
+  // [F99 §2.5 / B5] the route-local compare moved into ONE shared validator
+  // (rotation-aware: it resolves dash-token.txt + config.json on every verify).
+  // The constant-time property is asserted where it now lives.
+  assert.ok(srv.includes('$mTokenOk = Test-GhrdpDashToken -Presented $mPresented'), 'the mirror route does not use the shared F99 validator');
+  assert.ok(srv.includes('function Test-GhrdpDashToken'), 'the shared F99 dash-token validator is missing');
+  assert.ok(/function Test-GhrdpDashToken[\s\S]*?Test-TicketBearer \$recv \$exp/.test(srv), 'the shared validator is not constant-time');
+  assert.ok(srv.includes('Get-F99ExpectedDashTokens'), 'the validator does not resolve the expected tokens (B5: a server that started before dash-token.txt existed must recover)');
 });
 
 test('F49-3 POSTs require the per-process CSRF token', () => {

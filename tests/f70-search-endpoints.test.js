@@ -61,7 +61,10 @@ test('F70-P1-GATES: method, query-credential, constant-time token and validation
     assert.ok(block.includes(qk), 'query-credential refusal covers ' + qk);
   }
   assert.ok(block.includes('-Code 401'), 'query credentials refused with 401');
-  assert.ok(block.includes('Test-TicketBearer $f70Recv $f70Exp'), 'constant-time dash-token verify');
+  // [F99 §2.5 / B5] the verification is the shared, rotation-aware validator;
+  // constant-time comparison now lives inside Test-GhrdpDashToken.
+  assert.ok(block.includes('$f70TokOk = Test-GhrdpDashToken -Presented $f70Tok'), 'the search route does not use the shared F99 validator');
+  assert.ok(SERVER.includes('function Test-GhrdpDashToken'), 'the shared F99 dash-token validator is missing');
   assert.ok(block.includes('-Code 403'), 'invalid dash token -> 403');
   // validation order: query -> adapterIds -> scope -> limit
   assert.ok(block.indexOf("'query required'") < block.indexOf("code = 'UNKNOWN_SOURCE'"), 'query validated before adapterIds');

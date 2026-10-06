@@ -1,0 +1,76 @@
+<!--
+  [F99 §2.2 / B2] REFERENCE dump of the GhrdpWatcher scheduled task.
+
+  PROVENANCE, STATED HONESTLY: this is the XML SHAPE the F99 registration in
+  .github/workflows/main.yml produces (task name, action, ONLOGON trigger with
+  the resolved session user, Interactive/Highest principal, 6h execution limit).
+  The DISPATCH-TIME dump is written by that step to C:\ghrdp\watcher-task.xml
+  via Export-ScheduledTask and is what the diagnostic bundle and
+  Invoke-F99WatcherDiagnose read; this file is the repo-side reference so a
+  reviewer can see exactly what is registered without an RDP session.
+
+  WHY THE SHAPE MATTERS (evidence: F96 bundle 2026-10-06T13:13:06Z):
+    * scheduledTaskLastResult = 267011 (0x00041303 SCHED_S_TASK_HAS_NOT_RUN)
+      and supervisorAttempts.taskStart = 7 - the trigger had NEVER fired, which
+      is not a failure code: it is what an ONLOGON trigger bound to the wrong
+      user looks like. <UserId> below must therefore be the user who actually
+      signs in (the ACTIVE session user, e.g. runneradmin on a hosted runner),
+      NOT the generated 'rdp'+guid account.
+    * <LogonType>Interactive</LogonType> + <RunLevel>Highest</RunLevel> is the
+      pair that Start-ScheduledTask can execute in Session 1.
+    * <WorkingDirectory>C:\ghrdp</WorkingDirectory> must exist or the task dies
+      with 0x8007010b (ERROR_DIRECTORY, 2147942667).
+    * <ExecutionTimeLimit>PT6H</ExecutionTimeLimit> outlives the 340-minute
+      watcher budget.
+  When the active-session user cannot be resolved at bootstrap, main.yml
+  registers the SYSTEM fallback task GhrdpWatcherSystem (AtStartup) instead;
+  that registration is intentionally NOT represented here because it has a
+  different principal and trigger by design.
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>2026-10-06T00:00:00</Date>
+    <Author>GHRDP F99 bootstrap</Author>
+    <Description>GHRDP watcher autostart (F99 §2.2). Bound to the ACTIVE session user; read back and exported by main.yml, diagnosed by Invoke-F99WatcherDiagnose.</Description>
+    <URI>\GhrdpWatcher</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>RUNNER_SESSION_USER</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>RUNNER_SESSION_USER</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT6H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-watcher.ps1"</Arguments>
+      <WorkingDirectory>C:\ghrdp</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

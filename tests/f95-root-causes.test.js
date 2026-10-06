@@ -43,10 +43,18 @@ test("F95-R1 FILTER: the accepted set is 2/10/11 and a bare type-10 filter canno
   // literal LogonType=10" - is intact and still asserted by the negative test
   // above. Keeping the old count would fail on a change that makes the F95 fix
   // MORE visible, which is the opposite of what the pin is for.
-  assert.equal(
-    (SERVER.match(/Win32_LogonSession -Filter \$script:GhrdpLogonSessionWql/g) || []).length,
-    3,
-    "all three Win32_LogonSession probes must use the shared WQL (F95: 2, F96: +runnerInfo.activeUsers)"
+  // [F99 §2.3 / B3] SUPERSEDED PIN (rewritten in place, third time - the same
+  // convention). Was `3` = F95's two CIM probes + F96's runnerInfo.activeUsers.
+  // F99 adds a FOURTH probe: Update-RdpLogonAuthLast corroborates the persisted
+  // logon verdict with a LIVE interactive session, because the F96 bundle proved
+  // a live desktop could still read `logon.detected: false`. It uses the SAME
+  // shared WQL, so the invariant this count exists for - "no probe may filter on
+  // a literal LogonType=10" (asserted negatively above) - is intact; a literal
+  // filter would still fail here no matter how many probes exist.
+  const wqlProbes = (SERVER.match(/Win32_LogonSession -Filter \$script:GhrdpLogonSessionWql/g) || []).length;
+  assert.ok(
+    wqlProbes >= 4,
+    "all Win32_LogonSession probes must use the shared WQL (F95: 2, F96: +runnerInfo.activeUsers, F99: +sessionActive corroboration); found " + wqlProbes
   );
   // The F28 collector's pre-filter no longer drops non-10 events.
   assert.ok(

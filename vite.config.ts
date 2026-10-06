@@ -63,7 +63,7 @@ export default defineConfig({
     environment: "jsdom",
     globals: true,
     setupFiles: ["./src/tests/setup.ts"],
-    include: ["src/tests/smoke/**/*.test.ts", "src/tests/smoke/**/*.test.tsx", "tests/f79-*.test.ts", "tests/f79-*.test.tsx", "tests/f84-*.test.ts", "tests/f84-*.test.tsx", "tests/f87-*.test.ts", "tests/f87-*.test.tsx"],
+    include: ["src/tests/smoke/**/*.test.ts", "src/tests/smoke/**/*.test.tsx", "tests/f79-*.test.ts", "tests/f79-*.test.tsx", "tests/f84-*.test.ts", "tests/f84-*.test.tsx", "tests/f87-*.test.ts", "tests/f87-*.test.tsx", "tests/f99-*.test.ts", "tests/f99-*.test.tsx"],
     css: false,
   },
 });

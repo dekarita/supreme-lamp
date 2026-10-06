@@ -21,7 +21,7 @@ type Any = any;
 const SINHALA = /[\u0D80-\u0DFF]/;
 
 // [F76 §3.E] exact sidebar order demanded by the ticket.
-const F76_ORDER = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/health", "/settings"]; // [F92] +/health
+const F76_ORDER = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/health", "/collector", "/settings"]; // [F92] +/health, [F99] +/collector
 
 function sidebarHrefs(container: HTMLElement): string[] {
   return Array.from(container.querySelectorAll('[data-testid="sidebar"] nav a')).map((a) =>
@@ -55,7 +55,7 @@ afterEach(() => {
 });
 
 describe("F76 §2.1 sidebar Search entry", () => {
-  it("renders 9 entries in the F76 order with Search directly under Overview", () => {
+  it("renders the F76 order (Search directly under Overview) with every later entry appended", () => {
     const { container } = render(<App />);
     expect(sidebarHrefs(container)).toEqual(F76_ORDER);
     // label comes from the dedicated sidebar.search key (definitive English string)
