@@ -99,10 +99,19 @@ export function setManualWebDesktop(on: boolean): string {
       const stamp = String(Date.now());
       window.localStorage.setItem(VIEWING_MODE_STORAGE_KEY, "web-desktop");
       window.localStorage.setItem(MANUAL_WEBDESKTOP_KEY, stamp);
+      // [F98 §2.1 / P1] notify same-tab listeners (the LogonGateBanner)
+      // that the manual assertion changed. A storage event only fires for
+      // CROSS-TAB writes, so a custom event bridges the same-tab gap.
+      try {
+        window.dispatchEvent(new CustomEvent("f98:manualWebDesktopChanged", { detail: { on, stamp } }));
+      } catch { /* ignore */ }
       return stamp;
     }
     window.localStorage.removeItem(VIEWING_MODE_STORAGE_KEY);
     window.localStorage.removeItem(MANUAL_WEBDESKTOP_KEY);
+    try {
+      window.dispatchEvent(new CustomEvent("f98:manualWebDesktopChanged", { detail: { on: false, stamp: "" } }));
+    } catch { /* ignore */ }
   } catch {
     /* a locked-down storage area must not break the page */
   }

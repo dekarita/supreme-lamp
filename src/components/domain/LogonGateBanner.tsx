@@ -11,7 +11,7 @@
 // It hides itself the moment /api/native-status reports a type-10 4624
 // success - there is no dismiss button and no localStorage opt-out, so the
 // banner can never lie for longer than one poll (15s).
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { AlertTriangle, ExternalLink } from "lucide-react";
 import { useSessionStore } from "@/stores/sessionStore";
@@ -32,10 +32,26 @@ export function LogonGateBanner() {
   const [opened, setOpened] = useState(false);
   // [F95 §3.3 / R3] epoch-ms stamp of the operator's manual assertion.
   const [manualAsserted, setManualAsserted] = useState(() => readManualWebDesktop());
+  // [F98 §2.1 / P1] re-read the manual assertion when another component
+  // (PrimaryActions) asserts it in the same tab. Without this the banner
+  // stayed visible for up to 15s (the native-status poll cadence).
+  useEffect(() => {
+    const handler = () => setManualAsserted(readManualWebDesktop());
+    window.addEventListener("f98:manualWebDesktopChanged", handler);
+    return () => window.removeEventListener("f98:manualWebDesktopChanged", handler);
+  }, []);
   const authLast = (s.rdpListener && s.rdpListener.authLast) || null;
   // Unknown (no scan yet) is NOT a banner: only evidence speaks. "none" and
   // "failed" both mean no RDP user is logged in.
   if (!authLast || authLast.result === "success") return null;
+  // [F98 §2.1 / P1] the manual WEB DESKTOP assertion is an OPERATOR claim
+  // ("I am inside the session now") that must suppress this banner even
+  // though /api/native-status still reports no type-10 4624. The F95 override
+  // only flipped viewingMode; the logon banner ignored it, so the operator
+  // saw "No user logged into RDP yet" AFTER confirming they were logged in.
+  // Read directly from localStorage (not just the local state) so an assertion
+  // made in PrimaryActions.tsx also suppresses this banner on the next render.
+  if (manualAsserted || readManualWebDesktop()) return null;
   const webdeskUrl = validWebdeskUrl(s.webdeskUrl);
   return (
     <div
