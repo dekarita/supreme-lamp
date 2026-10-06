@@ -575,6 +575,7 @@ function Get-F60StageList {
         'payloads/ghrdp-install.template.ps1',
         'payloads/helper-ghrdp-connect.ps1',
         'payloads/ghrdp-rdp-first-login.ps1',
+        'payloads/ghrdp-collector.ps1',
         'scripts/serve-dist.mjs',
         'scripts/f59-verify-sha256.mjs',
         'scripts/f60-health.ps1',

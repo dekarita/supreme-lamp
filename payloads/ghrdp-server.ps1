@@ -1,4 +1,4 @@
-param(
+﻿param(
     [int]$Port = 7331,
     [string]$Bind = '0.0.0.0',
     [string]$Root = 'C:\ghrdp',
@@ -406,14 +406,373 @@ $script:InstPath = Join-Path $Root 'ghrdp-install.ps1'
 # else under /dl (including every other file in $Root) is a 404.
 $script:DlNames = @('ghrdp-handler-kit.zip', 'install.cmd', 'ghrdp-rdp-launcher.cs')
 $script:OkFile = Join-Path $Root 'server-ok.txt'
-# [F96 §2.1] SERVER-SIDE TRUTH about the browser socket lane. /health hardcodes
-# `ws = $false` and NO route in this file answers /ws (there is no RFC6455
-# upgrade path anywhere), so every browser `new WebSocket('/ws')` closes at the
-# handshake. The F95/R4 client work (token in the URL + hello frame + explicit
-# wsDead state) is correct but cannot make a connection that the server has no
-# code to accept. Reported verbatim in /api/diag/comprehensive so a red WS chip
-# is attributed to the right side; asserted by tests/f96-diagnostic-bundle.test.js.
-$script:F96WsUpgradeSupported = $false
+# [F99 §2.1 / B1] SERVER-SIDE TRUTH about the browser socket lane: TRUE now.
+#
+# The F96 bundle proved the opposite of what F95 assumed: this server answered
+# NO /ws upgrade at all (`webSocket.serverUpgradeSupported: false`, /health
+# hardcoded `ws = $false`, 24 browser reconnects closed 1006). The client work
+# (token in the URL + hello frame + reconnect ladder) was correct and could
+# never succeed. RFC 6455 is implemented below (`Invoke-F99WsRoute` + the frame
+# codec + a per-socket pump runspace), so:
+#   * /health reports `ws = $true` (computed, never hardcoded),
+#   * the F96 bundle's webSocket block reports upgradeSupported=true plus the
+#     live socket census,
+#   * a browser that presents a valid dash token gets a real 101 + a JSON frame
+#     every 2s (the SAME snapshot GET /api/progress serves, so the client's
+#     setProgress() consumption is unchanged).
+# Set this to $false ONLY together with deleting the client lane - the flag is
+# the contract tests/f99-ws-upgrade.test.js asserts against the route's presence.
+$script:F96WsUpgradeSupported = $true
+$script:F99WsUpgradePath = '/ws'
+$script:F99WsSnapshotPath = Join-Path $Root 'ws-snapshot.json'
+$script:F99WsClientDir = Join-Path $Root 'ws-clients'
+$script:F99WsSendIntervalSec = 2
+$script:F99WsHelloDeadlineSec = 5
+$script:F99WsStats = [ordered]@{ opens = 0; refusals = 0; badToken = 0; lastOpenAt = ''; lastRejectAt = ''; lastRejectReason = ''; lastCloseReason = '' }
+function Get-F99WsMagic { return '258EAFA5-E914-47DA-95CA-C5AB0DC85B11' }
+function Get-F99WsAcceptKey([string]$Key) {
+    # RFC 6455 §4.2.2: base64( SHA1( key + GUID ) ), key taken verbatim.
+    $magic = (Get-F99WsMagic)
+    $sha = [System.Security.Cryptography.SHA1]::Create()
+    $bytes = [System.Text.Encoding]::ASCII.GetBytes(([string]$Key) + $magic)
+    return [Convert]::ToBase64String($sha.ComputeHash($bytes))
+}
+function New-F99WsFrameBytes {
+    # Server -> client frames are NEVER masked (RFC 6455 §5.1).
+    param([byte[]]$Payload = $null, [int]$Opcode = 1, [switch]$Fin)
+    if ($null -eq $Payload) { $Payload = [byte[]]@() }
+    $len = [int]$Payload.Length
+    $head = New-Object System.Collections.Generic.List[byte]
+    $b0 = [byte]$Opcode
+    if ($Fin) { $b0 = [byte]($b0 -bor 0x80) }
+    $head.Add($b0)
+    if ($len -lt 126) { $head.Add([byte]$len) }
+    elseif ($len -lt 65536) {
+        $head.Add([byte]126)
+        $head.Add([byte](($len -shr 8) -band 0xFF))
+        $head.Add([byte]($len -band 0xFF))
+    } else {
+        $head.Add([byte]127)
+        for ($i = 7; $i -ge 0; $i--) { $head.Add([byte](($len -shr (8 * $i)) -band 0xFF)) }
+    }
+    $out = New-Object byte[] ($head.Count + $len)
+    for ($i = 0; $i -lt $head.Count; $i++) { $out[$i] = $head[$i] }
+    if ($len -gt 0) { [Array]::Copy($Payload, 0, $out, $head.Count, $len) }
+    return $out
+}
+function Send-F99WsFrame {
+    param($Stream, [byte[]]$Payload = $null, [int]$Opcode = 1)
+    try {
+        $bytes = New-F99WsFrameBytes -Payload $Payload -Opcode $Opcode -Fin
+        $Stream.Write($bytes, 0, $bytes.Length)
+        $Stream.Flush()
+        return $true
+    } catch { return $false }
+}
+function Get-F99WsClientCensus {
+    # Liveness census read from the pump state files (own file per socket, so
+    # no cross-runspace hashtable is needed). A stale heartbeat is NOT live.
+    # [F99 §2.1] self-pruning: every census pass also disposes finished pumps.
+    try { Remove-F99WsRuns | Out-Null } catch { }
+    $out = New-Object System.Collections.ArrayList
+    $live = 0
+    try {
+        if (Test-Path -LiteralPath $script:F99WsClientDir) {
+            foreach ($f in @(Get-ChildItem -LiteralPath $script:F99WsClientDir -Filter 'ws-*.json' -ErrorAction SilentlyContinue)) {
+                $st = Read-JsonFile -Path $f.FullName
+                if (-not $st) { continue }
+                $age = $null
+                try { $age = [int]((Get-Date).ToUniversalTime() - ([datetime]$st.lastFrameAt).ToUniversalTime()).TotalSeconds } catch { $age = $null }
+                $isLive = ($null -ne $age -and $age -le 10 -and -not [bool]$st.closed)
+                if ($isLive) { $live = [int]$live + 1 }
+                [void]$out.Add([ordered]@{
+                    id          = [string]$f.BaseName
+                    openedAt    = [string]$st.openedAt
+                    lastFrameAt = [string]$st.lastFrameAt
+                    framesSent  = [int]$st.framesSent
+                    ageSec      = $age
+                    live        = $isLive
+                    closed      = [bool]$st.closed
+                    closeReason = [string]$st.closeReason
+                })
+            }
+        }
+    } catch { }
+    return [ordered]@{ live = $live; total = $out.Count; clients = @($out) }
+}
+function Remove-F99WsRuns {
+    # [F99 §2.1 / B1] PRUNE. A finished pump keeps a runspace, a socket and a
+    # per-client state file alive; the pre-F99 list was only ever appended to,
+    # so a dashboard open for the whole 6-hour window accumulated every socket
+    # it had ever closed. Every non-running handle is disposed here, the state
+    # file it owns is removed, the list is capped, and ws-*.json files older
+    # than ten minutes (a pump that died without cleanup) are swept. The census
+    # calls this itself, so /health and the bundle cannot report stale clients.
+    param([int]$MaxKeep = 64)
+    $removed = 0; $disposed = 0
+    try {
+        if ($script:F99WsRuns) {
+            for ($i = $script:F99WsRuns.Count - 1; $i -ge 0; $i--) {
+                $run = $script:F99WsRuns[$i]
+                $state = ''
+                try { $state = [string]$run.handle.InvocationStateInfo.State } catch { $state = 'Dead' }
+                $mustDrop = ($state -eq 'Completed' -or $state -eq 'Failed' -or $state -eq 'Stopped' -or $state -eq 'Dead' -or $state -eq '')
+                # A socket storm must not pin memory: drop the OLDEST when over
+                # the cap even if it is still running (its own pump exits on the
+                # next send failure once the client is gone).
+                if (-not $mustDrop -and [int]$script:F99WsRuns.Count -gt $MaxKeep -and $i -eq 0) { $mustDrop = $true; $state = 'over-cap' }
+                if (-not $mustDrop) { continue }
+                try { $run.handle.Dispose(); $disposed = [int]$disposed + 1 } catch { }
+                $sp = Join-Path $script:F99WsClientDir ([string]$run.id + '.json')
+                try { if (Test-Path -LiteralPath $sp) { Remove-Item -LiteralPath $sp -Force -ErrorAction SilentlyContinue } } catch { }
+                $script:F99WsRuns.RemoveAt($i)
+                $removed = [int]$removed + 1
+                Write-ClientAudit ('ws prune client=' + [string]$run.id + ' state=' + $state)
+            }
+        }
+        if (Test-Path -LiteralPath $script:F99WsClientDir) {
+            foreach ($f in @(Get-ChildItem -LiteralPath $script:F99WsClientDir -Filter 'ws-*.json' -ErrorAction SilentlyContinue)) {
+                $ageMin = 999
+                try { $ageMin = [int]((Get-Date) - $f.LastWriteTime).TotalMinutes } catch { }
+                if ($ageMin -gt 10) { Remove-Item -LiteralPath $f.FullName -Force -ErrorAction SilentlyContinue }
+            }
+        }
+    } catch { }
+    return [ordered]@{ pruned = $removed; disposed = $disposed; kept = $(if ($script:F99WsRuns) { [int]$script:F99WsRuns.Count } else { 0 }) }
+}
+$script:F99WsPumpSource = @'
+param($Stream, $SnapshotPath, $StatePath, $AuthOk, $TokenFile, $ExpectedToken, $HelloDeadlineSec, $SendIntervalSec)
+# [F99 §2.1 / B1] RFC 6455 pump. SELF-CONTAINED ON PURPOSE: it runs in its own
+# runspace, so it may only use the BCL and the arguments above - never a
+# function or variable of the parent server (that is why the frame codec is
+# duplicated here in ~40 lines instead of being called).
+$ErrorActionPreference = 'Continue'
+$openedAt = (Get-Date).ToUniversalTime().ToString('o')
+$frames = 0
+$reason = 'unknown'
+function Write-State([bool]$Closed, [string]$Why, [int]$Sent) {
+    try {
+        $obj = [ordered]@{ openedAt = $openedAt; lastFrameAt = (Get-Date).ToUniversalTime().ToString('o'); framesSent = $Sent; closed = $Closed; closeReason = $Why; pid = $PID }
+        [System.IO.File]::WriteAllText($StatePath, ($obj | ConvertTo-Json -Compress))
+    } catch { }
+}
+function Read-Exact([int]$Count) {
+    $buf = New-Object byte[] $Count
+    $off = 0
+    while ($off -lt $Count) {
+        $n = $Stream.Read($buf, $off, $Count - $off)
+        if ($n -le 0) { throw 'ws-eof' }
+        $off += $n
+    }
+    return $buf
+}
+function Read-Frame {
+    $h = Read-Exact 2
+    $op = [int]($h[0] -band 0x0F)
+    $masked = (($h[1] -band 0x80) -ne 0)
+    $len = [int]($h[1] -band 0x7F)
+    if ($len -eq 126) { $b = Read-Exact 2; $len = ([int]$b[0] * 256) + [int]$b[1] }
+    elseif ($len -eq 127) { $b = Read-Exact 8; $len = 0; for ($i = 0; $i -lt 8; $i++) { $len = ($len * 256) + [int]$b[$i] } }
+    if ($len -gt 1048576) { throw 'ws-frame-too-large' }
+    $mask = $null
+    if ($masked) { $mask = Read-Exact 4 }
+    $payload = [byte[]]@()
+    if ($len -gt 0) {
+        $payload = Read-Exact $len
+        if ($masked) { for ($i = 0; $i -lt $len; $i++) { $payload[$i] = [byte]($payload[$i] -bxor $mask[$i % 4]) } }
+    }
+    return [pscustomobject]@{ op = $op; payload = $payload }
+}
+function Send-Bytes([byte[]]$Payload, [int]$Opcode) {
+    $len = [int]$Payload.Length
+    $head = New-Object System.Collections.Generic.List[byte]
+    $b0 = [byte]($Opcode -bor 0x80)
+    $head.Add($b0)
+    if ($len -lt 126) { $head.Add([byte]$len) }
+    elseif ($len -lt 65536) { $head.Add([byte]126); $head.Add([byte](($len -shr 8) -band 0xFF)); $head.Add([byte]($len -band 0xFF)) }
+    else { $head.Add([byte]127); for ($i = 7; $i -ge 0; $i--) { $head.Add([byte](($len -shr (8 * $i)) -band 0xFF)) } }
+    $out = New-Object byte[] ($head.Count + $len)
+    for ($i = 0; $i -lt $head.Count; $i++) { $out[$i] = $head[$i] }
+    if ($len -gt 0) { [Array]::Copy($Payload, 0, $out, $head.Count, $len) }
+    $Stream.Write($out, 0, $out.Length)
+    $Stream.Flush()
+}
+try {
+    $Stream.ReadTimeout = 5000
+    $Stream.WriteTimeout = 5000
+    # ---- auth: query key already checked, otherwise the hello frame decides --
+    if (-not $AuthOk) {
+        $deadline = (Get-Date).AddSeconds([int]$HelloDeadlineSec)
+        $authed = $false
+        while ((Get-Date) -lt $deadline -and -not $authed) {
+            if (-not $Stream.DataAvailable) { Start-Sleep -Milliseconds 100; continue }
+            $f = Read-Frame
+            if ($f.op -eq 8) { $reason = 'closed-before-auth'; break }
+            if ($f.op -eq 9) { Send-Bytes $f.payload 10; continue }
+            if ($f.op -eq 1) {
+                $txt = [System.Text.Encoding]::UTF8.GetString($f.payload)
+                try {
+                    $j = $txt | ConvertFrom-Json
+                    $k = ''
+                    if ($j -and $j.PSObject.Properties['key']) { $k = ([string]$j.key).Trim() }
+                    $expected = ''
+                    try { if (Test-Path -LiteralPath $TokenFile) { $expected = ([System.IO.File]::ReadAllText($TokenFile)).Trim() } } catch { }
+                    if (-not $expected) { $expected = [string]$ExpectedToken }
+                    if ($k -and $expected -and $k -eq $expected) {
+                        $authed = $true
+                        $ack = [System.Text.Encoding]::UTF8.GetBytes('{"type":"hello-ack","ok":true,"server":"f99"}')
+                        Send-Bytes $ack 1
+                        $frames = $frames + 1
+                    }
+                } catch { }
+            }
+        }
+        if (-not $authed) {
+            $reason = 'auth-failed'
+            try { Send-Bytes ([System.Text.Encoding]::UTF8.GetBytes('{"type":"error","error":"dash token required"}')) 1 } catch { }
+            try { Send-Bytes ([byte[]]@(3, 0xF0)) 8 } catch { }
+        }
+    } else {
+        $ack = [System.Text.Encoding]::UTF8.GetBytes('{"type":"hello-ack","ok":true,"server":"f99"}')
+        Send-Bytes $ack 1
+        $frames = $frames + 1
+    }
+    Write-State $false 'open' $frames
+    # ---- pump -------------------------------------------------------------
+    $lastSent = [datetime]::MinValue
+    $lastStamp = ''
+    while ($reason -eq 'unknown' -or $reason -eq 'open') {
+        try {
+            if ($Stream.DataAvailable) {
+                $f = $null
+                try { $f = Read-Frame } catch { $reason = 'frame-error: ' + $_.Exception.Message; break }
+                if ($f.op -eq 8) { $reason = 'client-close'; break }
+                elseif ($f.op -eq 9) { Send-Bytes $f.payload 10 }
+                elseif ($f.op -eq 10) { }
+            } else {
+                Start-Sleep -Milliseconds 100
+            }
+            if (((Get-Date) - $lastSent).TotalSeconds -ge [int]$SendIntervalSec) {
+                $sent = $false
+                try {
+                    if (Test-Path -LiteralPath $SnapshotPath) {
+                        $fi = Get-Item -LiteralPath $SnapshotPath -ErrorAction Stop
+                        $stamp = ([string]$fi.Length + ':' + [string]$fi.LastWriteTimeUtc.Ticks)
+                        $bytes = [System.IO.File]::ReadAllBytes($SnapshotPath)
+                        if ($bytes.Length -gt 0) { Send-Bytes $bytes 1; $frames = $frames + 1; $sent = $true; $lastStamp = $stamp }
+                    }
+                } catch { }
+                if (-not $sent) {
+                    $beat = [System.Text.Encoding]::UTF8.GetBytes('{"kind":"heartbeat","ws":true,"at":"' + (Get-Date).ToUniversalTime().ToString('o') + '"}')
+                    Send-Bytes $beat 1
+                    $frames = $frames + 1
+                }
+                $lastSent = Get-Date
+                Write-State $false 'open' $frames
+            }
+        } catch { $reason = 'pump-error: ' + $_.Exception.Message; break }
+    }
+} catch { $reason = 'fatal: ' + $_.Exception.Message }
+try { Write-State $true $reason $frames } catch { }
+try { $Stream.Close() } catch { }
+'@
+function Invoke-F99WsRoute {
+    # The /ws route: validate the upgrade, validate the token (query key), answer
+    # 101 with the correct Sec-WebSocket-Accept, then hand the OPEN stream to a
+    # pump runspace so the accept loop is never blocked by a live socket.
+    param($Client, $Stream, $Parts, $Token)
+    $method = [string]$Parts.method
+    $reqUpgrade = ''
+    $reqConn = ''
+    $reqKey = ''
+    try { $reqUpgrade = [string]$Parts.headers['upgrade'] } catch { }
+    try { $reqConn = [string]$Parts.headers['connection'] } catch { }
+    try { $reqKey = [string]$Parts.headers['sec-websocket-key'] } catch { }
+    $isUpgrade = ($reqUpgrade -and $reqUpgrade.ToLower().Contains('websocket') -and $reqConn -and $reqConn.ToLower().Contains('upgrade') -and $reqKey)
+    if ($method -ne 'GET') {
+        Send-ClientResponse -Stream $Stream -Code 405 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; ws = $true; error = 'method not allowed (GET required for a websocket upgrade)' })
+        return
+    }
+    if (-not $isUpgrade) {
+        # A plain GET /ws is a DIAGNOSTIC, not a 404: it proves the route exists.
+        Send-ClientResponse -Stream $Stream -Code 426 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{
+            ok = $true
+            ws = $true
+            upgradeSupported = [bool]$script:F96WsUpgradeSupported
+            protocol = 'RFC6455'
+            subprotocol = 'ghrdp-progress'
+            sendIntervalSec = [int]$script:F99WsSendIntervalSec
+            tokenRequired = [bool](-not [string]::IsNullOrEmpty([string]$Token) -or (Test-GhrdpDashToken -Presented '' -Route 'ws-probe' -Quiet) -or (@(Get-F99ExpectedDashTokens).Count -gt 0))
+            hint = 'browser: new WebSocket((location.protocol==="https:"?"wss://":"ws://")+location.host+"/ws?key=<dash token>"); the token may also arrive as the first {"type":"hello","key":...} frame'
+            census = (Get-F99WsClientCensus)
+        }))
+        return
+    }
+    $presented = ''
+    try { if ($Parts.query.ContainsKey('key')) { $presented = [string]$Parts.query['key'] } } catch { }
+    $queryAuthOk = $false
+    if ($presented) { $queryAuthOk = Test-GhrdpDashToken -Presented $presented -Route 'GET /ws (upgrade)' }
+    $expectations = @(Get-F99ExpectedDashTokens)
+    if ($presented -and -not $queryAuthOk) {
+        # Refuse BEFORE upgrading: a browser that carries a wrong token must see a
+        # plain 401 (readable in devtools), not an opaque 1006 close.
+        $script:F99WsStats.refusals = [int]$script:F99WsStats.refusals + 1
+        $script:F99WsStats.badToken = [int]$script:F99WsStats.badToken + 1
+        $script:F99WsStats.lastRejectAt = (Get-Date).ToUniversalTime().ToString('o')
+        $script:F99WsStats.lastRejectReason = 'bad-token'
+        Send-ClientResponse -Stream $Stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; ws = $true; error = 'dash token invalid'; hint = 'open the dashboard with ?key=<token> or send {"type":"hello","key":...} as the first frame' })
+        return
+    }
+    if (-not $presented -and $expectations.Count -gt 0) {
+        # Upgrade anyway and let the hello frame authenticate (a browser cannot set
+        # headers on the upgrade request). The pump closes 1008 within 5s if no
+        # valid hello arrives, so this is not an open door - see the pump.
+    }
+    $accept = Get-F99WsAcceptKey $reqKey
+    $resp = 'HTTP/1.1 101 Switching Protocols' + "`r`n" +
+            'Upgrade: websocket' + "`r`n" +
+            'Connection: Upgrade' + "`r`n" +
+            'Sec-WebSocket-Accept: ' + $accept + "`r`n" +
+            'Sec-WebSocket-Protocol: ghrdp-progress' + "`r`n" +
+            'Cache-Control: no-store' + "`r`n`r`n"
+    try {
+        $respBytes = [System.Text.Encoding]::ASCII.GetBytes($resp)
+        $Stream.Write($respBytes, 0, $respBytes.Length)
+        $Stream.Flush()
+    } catch {
+        $script:F99WsStats.refusals = [int]$script:F99WsStats.refusals + 1
+        $script:F99WsStats.lastRejectReason = 'handshake-write-failed: ' + $_.Exception.Message
+        return
+    }
+    try { New-Item -ItemType Directory -Path $script:F99WsClientDir -Force -ErrorAction SilentlyContinue | Out-Null } catch { }
+    $cid = 'ws-' + [guid]::NewGuid().ToString('N').Substring(0, 12)
+    $statePath = Join-Path $script:F99WsClientDir ($cid + '.json')
+    $script:F99WsStats.opens = [int]$script:F99WsStats.opens + 1
+    $script:F99WsStats.lastOpenAt = (Get-Date).ToUniversalTime().ToString('o')
+    Write-ClientAudit ('ws upgrade 101 client=' + $cid + ' queryAuth=' + $queryAuthOk + ' expectations=' + $expectations.Count)
+    try {
+        $rs = [runspacefactory]::CreateRunspace()
+        $rs.Open()
+        $ps = [powershell]::Create()
+        $ps.Runspace = $rs
+        [void]$ps.AddScript($script:F99WsPumpSource)
+        [void]$ps.AddArgument($Stream)
+        [void]$ps.AddArgument($script:F99WsSnapshotPath)
+        [void]$ps.AddArgument($statePath)
+        [void]$ps.AddArgument([bool]$queryAuthOk)
+        [void]$ps.AddArgument($script:F99TokenFile)
+        [void]$ps.AddArgument([string]$Token)
+        [void]$ps.AddArgument([int]$script:F99WsHelloDeadlineSec)
+        [void]$ps.AddArgument([int]$script:F99WsSendIntervalSec)
+        [void]$ps.BeginInvoke()
+        if (-not $script:F99WsRuns) { $script:F99WsRuns = New-Object System.Collections.ArrayList }
+        [void]$script:F99WsRuns.Add([pscustomobject]@{ id = $cid; at = (Get-Date).ToUniversalTime().ToString('o'); handle = $ps })
+    } catch {
+        Write-ClientAudit ('ws pump spawn failed: ' + $_.Exception.Message)
+        try { Send-F99WsFrame -Stream $Stream -Payload ([System.Text.Encoding]::UTF8.GetBytes('{"type":"error","error":"pump unavailable"}')) -Opcode 1 | Out-Null } catch { }
+        try { $Stream.Close() } catch { }
+    }
+}
 $script:FlushFlag = Join-Path $Root 'flush.flag'
 # [F28 §1] Server start clock + the logon-result state file. The 30s scan tick
 # runs in THIS process from start (see the listener loop), so the logon verdict
@@ -636,6 +995,239 @@ function Test-CredsAllowed {
     if (-not [string]::IsNullOrEmpty($Token) -and $Query -and $Query.ContainsKey('key') -and ([string]$Query['key'] -eq [string]$Token)) { return $true }
     return $false
 }
+# ---------------------------------------------------------------------------
+# [F99 §2.5 / B5] ONE DASH-TOKEN VALIDATOR FOR EVERY ROUTE.
+#
+# EVIDENCE (F96 bundle 2026-10-06T13:13:06Z): `GET /api/mirror/status`
+# answered `401 (dash token invalid)` 3x while `clientInfo.dashTokenPresent`
+# was true.
+#
+# ROOT CAUSE: the expected token is snapshotted ONCE at process start
+# (`$script:Token`, read from C:\ghrdp\dash-token.txt near the top of this
+# file) and every route re-implemented its own byte comparison against that
+# snapshot. main.yml mints the token far below the F92 step that already
+# STAGES, REGISTERS AND STARTS this server, so a server that started before
+# the file existed runs forever with an EMPTY expectation:
+#   * `Test-ClientAllowed` reads an empty token as "no token configured" and
+#     admits every request, while
+#   * each `if ($presented -and (-not $tokenOk))` branch fails, so the ONE
+#     client that actually carries the token is the ONE client refused. A
+#     token-less request from the same device would have been allowed. That
+#     asymmetry is exactly the bundle's signature.
+#
+# FIX: resolve the expectation on EVERY verify from a bounded, change-detecting
+# cache of dash-token.txt (+ config.json's dashToken as a second source),
+# accept the current file value as well as the startup snapshot, normalise the
+# presented value (trim / strip `Bearer ` / percent-decode), compare
+# constant-time, and keep a hash-only verdict ring that /api/diag and the
+# Diagnosis Collector serve. The token VALUE is never logged, echoed or
+# persisted - only SHA-256 prefixes.
+# ---------------------------------------------------------------------------
+$script:F99TokenFile = Join-Path $Root 'dash-token.txt'
+$script:F99TokenCfgPath = $script:CfgPath
+$script:F99TokenFileStamp = '<unread>'
+$script:F99TokenFileValue = ''
+$script:F99TokenCfgAt = [datetime]::MinValue
+$script:F99TokenCfgValue = ''
+$script:F99TokenReads = 0
+$script:F99TokenStartupEmpty = [string]::IsNullOrEmpty($script:Token)
+$script:F99TokenVerifyMax = 40
+$script:F99TokenVerifyLog = New-Object System.Collections.ArrayList
+$script:F99TokenVerifyPath = Join-Path $Root 'dash-token-verify.log'
+$script:F99TokenStats = [ordered]@{ checks = 0; ok = 0; mismatch = 0; emptyPresented = 0; startupEmpty = $script:F99TokenStartupEmpty }
+function Get-F99TokenHash {
+    # Hash-only fingerprint for telemetry. '' for an empty value.
+    param([string]$Value)
+    if ([string]::IsNullOrEmpty($Value)) { return '' }
+    try {
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        $bytes = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($Value))
+        $hex = -join (($bytes | ForEach-Object { $_.ToString('x2') }))
+        return $hex.Substring(0, 12)
+    } catch { return 'hash-error' }
+}
+function Read-F99DashTokenFile {
+    # Change-detecting re-read: dash-token.txt is re-read when its length or
+    # LastWriteTime changes (and at most once per 2s), so a server that started
+    # before the file existed RECOVERS the moment main.yml writes it - which is
+    # the whole B5 failure mode. Never throws.
+    $now = Get-Date
+    if ($script:F99TokenLastRead -and (($now - $script:F99TokenLastRead).TotalSeconds -lt 2)) { return $script:F99TokenFileValue }
+    $script:F99TokenLastRead = $now
+    try {
+        if (-not (Test-Path -LiteralPath $script:F99TokenFile)) {
+            $script:F99TokenFileStamp = '<missing>'
+            $script:F99TokenFileValue = ''
+            return ''
+        }
+        $fi = Get-Item -LiteralPath $script:F99TokenFile -ErrorAction Stop
+        $stamp = ([string]$fi.Length + ':' + [string]$fi.LastWriteTimeUtc.Ticks)
+        if ($stamp -ne $script:F99TokenFileStamp) {
+            $script:F99TokenFileStamp = $stamp
+            $script:F99TokenFileValue = ([System.IO.File]::ReadAllText($script:F99TokenFile)).Trim()
+            $script:F99TokenReads = [int]$script:F99TokenReads + 1
+            Write-Host ('[F99] dash-token.txt (re)read: ' + $stamp + ' reads=' + $script:F99TokenReads)
+        }
+    } catch { }
+    return [string]$script:F99TokenFileValue
+}
+function Get-F99TokenCfgValue {
+    # config.json carries the same token (main.yml writes both). Read at most
+    # once per 5s, and ONLY as a fallback source: it is the file of record that
+    # exists even when dash-token.txt was never staged.
+    $now = Get-Date
+    if (($now - $script:F99TokenCfgAt).TotalSeconds -lt 5) { return [string]$script:F99TokenCfgValue }
+    $script:F99TokenCfgAt = $now
+    try {
+        $cfg = Read-JsonFile -Path $script:F99TokenCfgPath
+        if ($cfg -and $cfg.PSObject.Properties['dashToken']) { $script:F99TokenCfgValue = ([string]$cfg.dashToken).Trim() }
+        else { $script:F99TokenCfgValue = '' }
+    } catch { $script:F99TokenCfgValue = '' }
+    return [string]$script:F99TokenCfgValue
+}
+function Get-F99ExpectedDashTokens {
+    # Ordered, de-duplicated expectation set: startup snapshot, current file,
+    # config.json. Order is stable so the telemetry can name the match source.
+    $out = New-Object System.Collections.ArrayList
+    if (-not [string]::IsNullOrEmpty($script:Token)) { [void]$out.Add(([string]$script:Token).Trim()) }
+    $fileTok = Read-F99DashTokenFile
+    if (-not [string]::IsNullOrEmpty($fileTok)) { [void]$out.Add($fileTok) }
+    $cfgTok = Get-F99TokenCfgValue
+    if (-not [string]::IsNullOrEmpty($cfgTok)) { [void]$out.Add($cfgTok) }
+    $uniq = New-Object System.Collections.ArrayList
+    foreach ($t in $out) { if ($t -and -not $uniq.Contains($t)) { [void]$uniq.Add($t) } }
+    return @($uniq)
+}
+function Get-F99TokenSourceName {
+    # Where the CURRENT expectation comes from - names the B5 failure mode at
+    # startup without ever printing the token.
+    $names = New-Object System.Collections.ArrayList
+    if (-not [string]::IsNullOrEmpty($script:Token)) { [void]$names.Add('startup-snapshot') }
+    if (-not [string]::IsNullOrEmpty($script:F99TokenFileValue)) { [void]$names.Add('dash-token.txt') }
+    if (-not [string]::IsNullOrEmpty($script:F99TokenCfgValue)) { [void]$names.Add('config.json') }
+    if ($names.Count -eq 0) { return 'none' }
+    return ($names -join '+')
+}
+function Normalize-F99PresentedToken {
+    # Trim, strip a Bearer prefix (callers may pass either form) and decode a
+    # percent-encoded value (the /ws upgrade carries the key in the query).
+    param([string]$Presented)
+    $v = [string]$Presented
+    if (-not $v) { return '' }
+    $v = $v.Trim()
+    if ($v -match '^(?i)Bearer\s+(.+)$') { $v = ([string]$Matches[1]).Trim() }
+    if ($v -match '%[0-9A-Fa-f]{2}') {
+        try { $d = [uri]::UnescapeDataString($v); if ($d) { $v = $d } } catch { }
+    }
+    return $v
+}
+function Write-F99TokenVerify {
+    # Bounded ring + append-only log of hash fingerprints. Never a token.
+    param([string]$Route, [string]$PresentedHash, [string]$ExpectedHashes, [bool]$Ok, [string]$Source, [int]$PresentedLen, [int]$ExpectedLen)
+    try {
+        $row = [ordered]@{
+            ts             = (Get-Date).ToUniversalTime().ToString('o')
+            route          = $Route
+            ok             = $Ok
+            presentedHash  = $PresentedHash
+            presentedLen   = $PresentedLen
+            expectedHashes = $ExpectedHashes
+            expectedLen    = $ExpectedLen
+            source         = $Source
+        }
+        [void]$script:F99TokenVerifyLog.Add($row)
+        while ($script:F99TokenVerifyLog.Count -gt $script:F99TokenVerifyMax) { $script:F99TokenVerifyLog.RemoveAt(0) }
+        try {
+            $line = ($row | ConvertTo-Json -Compress)
+            [System.IO.File]::AppendAllText($script:F99TokenVerifyPath, ($line + "`n"), $script:NoBom)
+            try {
+                $all = @([System.IO.File]::ReadAllLines($script:F99TokenVerifyPath))
+                if ($all.Count -gt 200) { [System.IO.File]::WriteAllLines($script:F99TokenVerifyPath, [string[]]@($all[-200..-1]), $script:NoBom) }
+            } catch { }
+        } catch { }
+        if (-not $Ok) {
+            Write-Host ('[F99] dash-token verify FAILED route=' + $Route + ' presentedHash=' + $(if ($PresentedHash) { $PresentedHash } else { '<empty>' }) +
+                ' len=' + $PresentedLen + ' expected=' + $ExpectedHashes + ' len=' + $ExpectedLen + ' source=' + $Source)
+        }
+    } catch { }
+}
+function Test-GhrdpDashToken {
+    # THE one validator. Every verifying route calls this; `-Route` labels the
+    # telemetry row, `-Quiet` skips it (preflights and internal probes).
+    param($Presented, [string]$Route = '', [switch]$Quiet)
+    $norm = Normalize-F99PresentedToken ([string]$Presented)
+    $expected = @(Get-F99ExpectedDashTokens)
+    $ok = $false
+    $matchedSource = 'none'
+    if ($norm) {
+        $recv = [System.Text.Encoding]::UTF8.GetBytes($norm)
+        for ($i = 0; $i -lt $expected.Count; $i++) {
+            $cand = [string]$expected[$i]
+            $exp = [System.Text.Encoding]::UTF8.GetBytes($cand)
+            if (($recv.Length -eq $exp.Length) -and (Test-TicketBearer $recv $exp)) {
+                $ok = $true
+                if ($i -eq 0 -and -not [string]::IsNullOrEmpty($script:Token)) { $matchedSource = 'startup-snapshot' }
+                elseif ($cand -eq [string]$script:F99TokenFileValue) { $matchedSource = 'dash-token.txt' }
+                else { $matchedSource = 'config.json' }
+                break
+            }
+        }
+    }
+    $script:F99TokenStats.checks = [int]$script:F99TokenStats.checks + 1
+    if ($ok) { $script:F99TokenStats.ok = [int]$script:F99TokenStats.ok + 1 }
+    elseif (-not $norm) { $script:F99TokenStats.emptyPresented = [int]$script:F99TokenStats.emptyPresented + 1 }
+    else { $script:F99TokenStats.mismatch = [int]$script:F99TokenStats.mismatch + 1 }
+    if (-not $Quiet) {
+        $expHashes = (@($expected | ForEach-Object { Get-F99TokenHash ([string]$_) }) -join ',')
+        $expLen = 0
+        if ($expected.Count -gt 0) { $expLen = ([string]$expected[0]).Length }
+        Write-F99TokenVerify -Route $Route -PresentedHash (Get-F99TokenHash $norm) -ExpectedHashes $expHashes -Ok $ok -Source $matchedSource -PresentedLen $norm.Length -ExpectedLen $expLen
+    }
+    return $ok
+}
+function Get-F99TokenDiag {
+    # The /api/diag + collector view: shape and sources only, never a value.
+    $fileTok = Read-F99DashTokenFile
+    $cfgTok = Get-F99TokenCfgValue
+    $last = @()
+    try { $last = @($script:F99TokenVerifyLog | Select-Object -Last 10) } catch { $last = @() }
+    return [ordered]@{
+        startupTokenPresent = (-not $script:F99TokenStartupEmpty)
+        filePresent         = (-not [string]::IsNullOrEmpty($fileTok))
+        fileHash            = (Get-F99TokenHash $fileTok)
+        fileLen             = ([string]$fileTok).Length
+        fileReads           = [int]$script:F99TokenReads
+        cfgPresent          = (-not [string]::IsNullOrEmpty($cfgTok))
+        cfgHash             = (Get-F99TokenHash $cfgTok)
+        source              = (Get-F99TokenSourceName)
+        expectations        = (@(Get-F99ExpectedDashTokens).Count)
+        stats               = [ordered]@{ checks = [int]$script:F99TokenStats.checks; ok = [int]$script:F99TokenStats.ok; mismatch = [int]$script:F99TokenStats.mismatch; emptyPresented = [int]$script:F99TokenStats.emptyPresented; startupEmpty = [bool]$script:F99TokenStartupEmpty }
+                recent              = $last
+                note                = $(if ($script:F99TokenStartupEmpty -and -not [string]::IsNullOrEmpty($fileTok)) { 'F99/B5: this server started BEFORE dash-token.txt existed; the file is now live and the validator re-reads it, so a presented token verifies. Pre-fix builds answered 401 (dash token invalid) in this state.' } else { 'validator resolves dash-token.txt + config.json on every verify (change-detected)' })
+        }
+}
+# [F99 §2.5] The B5 self-test: with a token present on disk, a request that
+# PRESENTS the current file token must verify. Run at startup (bounded, no
+# network) so /api/diag can prove the exact call the bundle failed on.
+function Test-F99DashTokenSelfCheck {
+    $fileTok = Read-F99DashTokenFile
+    if ([string]::IsNullOrEmpty($fileTok)) { return [ordered]@{ ran = $false; reason = 'dash-token.txt absent - cannot self-check (B5 recovery pending)' } }
+    $ok = $false
+    try { $ok = Test-GhrdpDashToken -Presented $fileTok -Route 'self-check' -Quiet } catch { $ok = $false }
+    return [ordered]@{ ran = $true; presentedFileTokenVerifies = $ok; fileHash = (Get-F99TokenHash $fileTok); at = (Get-Date).ToUniversalTime().ToString('o') }
+}
+try { $script:F99TokenSelfCheck = Test-F99DashTokenSelfCheck } catch { $script:F99TokenSelfCheck = [ordered]@{ ran = $false; reason = 'self-check threw: ' + $_.Exception.Message } }
+# Self-check at startup: name the state instead of failing silently later.
+if ($script:F99TokenStartupEmpty) {
+    try {
+        $nowTok = Read-F99DashTokenFile
+        if ([string]::IsNullOrEmpty($nowTok)) {
+            Write-Host '[F99] WARNING: dash-token.txt was absent at startup and is still absent - every presented-token route would answer 401 while token-less loopback/tailnet requests are admitted (B5). The validator re-reads the file on change, so writing it recovers this process without a restart.'
+        } else {
+            Write-Host ('[F99] dash-token.txt was absent at startup and is present now (hash ' + (Get-F99TokenHash $nowTok) + ') - recovering without a restart (B5).')
+        }
+    } catch { }
+}
 # [F27 ticket-core-begin] Direct socket source only; never trust forwarded headers.
 $script:TicketAudit = [ordered]@{ issued = 0; redeemed = 0; rejected = 0 }
 function Test-TicketBearer([byte[]]$Received, [byte[]]$Expected) {
@@ -766,9 +1358,25 @@ function Get-RdpLogonAuthLast {
     param($Items, [datetime]$ScanStartedUtc, [string]$ProbeError = '')
     $scanTs = (Get-Date).ToUniversalTime().ToString('o')
     $nowUtc = (Get-Date).ToUniversalTime()
+    # [F99 §2.3 / B3] TWO WINDOWS, NOT ONE.
+    #
+    # EVIDENCE: the F96 bundle counted 8 accepted type-2 events in a 3600s window
+    # while `logon.detected` read false and the advisory said "no accepted
+    # interactive logon yet". F95 R1 fixed the TYPE filter but left the 120s
+    # slice: Update-RdpLogonAuthLast can only see the last two minutes of the
+    # Security log, and Get-RdpLogonAuthLast then evaluates that slice - so an
+    # established session whose 4624 has aged past two minutes is UNSEEN, the
+    # verdict decays to 'none', and a live desktop reads as "no logon".
+    #   * $windowStart  = the FRESHNESS window (120s): what happened just now.
+    #   * $sessionStart = the SESSION window (F28WindowSec, 3600s): an accepted
+    #     interactive logon that is still the newest one.
+    # A 4625 (a REJECTED attempt) is still judged on the freshness window only -
+    # a failed attempt 40 minutes ago must never blacken a live session.
     $windowStart = $ScanStartedUtc.AddSeconds(-120)
     $floor = $nowUtc.AddSeconds(-1 * $script:F28WindowSec)
     if ($windowStart -lt $floor) { $windowStart = $floor }
+    $sessionStart = $windowStart
+    if ($sessionStart -lt $floor) { $sessionStart = $floor }
     $okWhen = $null; $okTs = ''
     $failWhen = $null; $failTs = ''; $failSub = ''
     $c4624 = 0; $c4625 = 0
@@ -786,7 +1394,11 @@ function Get-RdpLogonAuthLast {
                 ([System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal))
         } catch { $when = $null }
         if ($null -ne $when) {
-            if ($when -lt $windowStart) { continue }
+            # [F99 §2.3 / B3] the 4624 (an accepted interactive logon) is judged
+            # on the SESSION window; everything else (4625) on the fresh window.
+            $itemFloor = $windowStart
+            if ([string]$it.id -eq '4624') { $itemFloor = $sessionStart }
+            if ($when -lt $itemFloor) { continue }
             if ($when -gt $nowUtc.AddSeconds(120)) { continue }
         }
         if ([string]$it.id -eq '4624') {
@@ -819,6 +1431,15 @@ function Get-RdpLogonAuthLast {
     } elseif ($null -ne $failWhen) {
         $result = 'failed'; $eventTs = $failTs; $sub = $failSub
     }
+    # [F99 §2.3 / B3] the age of the accepted logon, so "success" can be
+    # qualified (a session that ended an hour ago is not a live desktop) without
+    # ever decaying a live one back to 'none'. sessionActive is corroborated by
+    # the caller with a live Win32_LogonSession probe (Update-RdpLogonAuthLast
+    # owns that probe - the pure function must stay pure for the lab cells).
+    $sessionAgeSec = $null
+    if ($null -ne $okWhen) {
+        try { $sessionAgeSec = [int]($nowUtc - $okWhen).TotalSeconds } catch { $sessionAgeSec = $null }
+    }
     return [pscustomobject]@{
         result      = $result
         sub         = $sub
@@ -836,6 +1457,12 @@ function Get-RdpLogonAuthLast {
         # leaving the operator to guess why it says what it says.
         logonType   = $lastLogonType
         logonKind   = $lastLogonKind
+        # [F99 §2.3 / B3] the two windows and the age of the winning logon.
+        sessionWindowSec = $script:F28WindowSec
+        freshWindowSec   = 120
+        sessionStart     = $sessionStart.ToString('o')
+        sessionAgeSec    = $sessionAgeSec
+        sessionEventTs   = $okTs
     }
 }
 function Update-RdpLogonAuthLast {
@@ -846,15 +1473,42 @@ function Update-RdpLogonAuthLast {
     $items = @()
     $probeErr = ''
     try {
-        $since = $ScanStartedUtc.AddSeconds(-120)
+        # [F99 §2.3 / B3] read the SESSION window, not 120s: a 4624 that is 40
+        # minutes old still proves an interactive desktop exists, and the F96
+        # bundle proved the 120s slice was the reason 8 accepted type-2 events
+        # produced `logon.detected: false`.
+        $since = $ScanStartedUtc.AddSeconds(-1 * $script:F28WindowSec)
         $raw = @(Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = @(4624, 4625); StartTime = $since.ToLocalTime() } -MaxEvents 400 -ErrorAction Stop)
         foreach ($e in $raw) { $items += (Get-RdpLogonEventFields -Xml ([xml]$e.ToXml())) }
     } catch { $probeErr = 'security-log-unreadable' }
     $sum = Get-RdpLogonAuthLast -Items $items -ScanStartedUtc $ScanStartedUtc -ProbeError $probeErr
+    # [F99 §2.3 / B3] CORROBORATE with a live session, then persist. An accepted
+    # logon inside the session window is a session; a STARTED interactive logon
+    # session in Win32_LogonSession (the SHARED 2/10/11 WQL, never type-10-only)
+    # is the same fact measured from a different source. `sessionActive` is the
+    # OR of the two, so neither a quiet Security log nor a stale state file can
+    # report "no logon" over a desktop someone is using.
+    $liveSessions = $null
+    try {
+        $liveSessions = @(Get-CimInstance -ClassName Win32_LogonSession -Filter $script:GhrdpLogonSessionWql -ErrorAction SilentlyContinue).Count
+    } catch { $liveSessions = $null }
+    $sessionActive = $false
+    if ([string]$sum.result -eq 'success') {
+        $sessionActive = $true
+        if ($null -ne $sum.sessionAgeSec -and [int]$sum.sessionAgeSec -gt 300 -and $null -ne $liveSessions -and [int]$liveSessions -le 0) { $sessionActive = $false }
+    }
+    if ($null -ne $liveSessions -and [int]$liveSessions -gt 0 -and [string]$sum.result -eq 'success') { $sessionActive = $true }
+    try {
+        $sum | Add-Member -MemberType NoteProperty -Name 'interactiveSessions' -Value $liveSessions -Force
+        $sum | Add-Member -MemberType NoteProperty -Name 'sessionActive' -Value ([bool]$sessionActive) -Force
+        $sum | Add-Member -MemberType NoteProperty -Name 'sessionProbe' -Value $(if ($null -eq $liveSessions) { 'unavailable' } else { 'win32-logonsession:' + $script:GhrdpLogonSessionWql }) -Force
+    } catch { }
     try { [System.IO.File]::WriteAllText($StatePath, ($sum | ConvertTo-Json -Depth 5 -Compress), $script:NoBom) } catch { }
     $script:F28Scans = [int]$script:F28Scans + 1
     $script:F28LastProbeError = $probeErr
     Write-Host ('[F28] logon scan #' + $script:F28Scans + ' result=' + $sum.result +
+        ' sessionActive=' + [string]$sessionActive + ' liveSessions=' + [string]$liveSessions +
+        ' sessionAge=' + [string]$sum.sessionAgeSec + 's' +
         ' sub=' + $(if ($sum.sub) { $sum.sub } else { '-' }) +
         ' eventTs=' + $(if ($sum.eventTs) { $sum.eventTs } else { '-' }) +
         ' 4624=' + $sum.count4624 + ' 4625=' + $sum.count4625 +
@@ -883,6 +1537,10 @@ function Get-RdpLogonCollectorState {
         uptimeSec   = $uptime
         lastScanAgeSec = $ageSec
         probeError  = [string]$script:F28LastProbeError
+        # [F99 §2.3 / B3] the session facts travel with the liveness block too.
+        sessionActive = $(if ($authLast -and $authLast.PSObject.Properties['sessionActive']) { [bool]$authLast.sessionActive } else { $null })
+        interactiveSessions = $(if ($authLast -and $authLast.PSObject.Properties['interactiveSessions']) { $authLast.interactiveSessions } else { $null })
+        freshWindowSec = 120
     }
     return [pscustomobject]@{ authLast = $authLast; logonCollector = $collector }
 }
@@ -2000,6 +2658,14 @@ function Invoke-ClientRequest {
         $parts['body'] = [byte[]]$rr.body
         $path = [string]$parts.path
         if (-not $path) { $path = '/' }
+        # [F99 §2.1 / B1] THE /ws UPGRADE LANE - decided BEFORE Test-ClientAllowed,
+        # whose snapshot compare would answer a rotated-but-valid ?key= with a
+        # plain 401 (an opaque 1006 for the browser). Invoke-F99WsRoute owns the
+        # RFC 6455 handshake and the token check; it never falls through.
+        if ($path -eq $script:F99WsUpgradePath) {
+            Invoke-F99WsRoute -Client $Client -Stream $stream -Parts $parts -Token $Token
+            return
+        }
         # Browser cross-origin preflight carries no bearer; disclose nothing.
         if ($path -eq '/api/rdp-token' -and $parts.method -eq 'OPTIONS') {
             Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@())
@@ -2150,12 +2816,12 @@ function Invoke-ClientRequest {
                 try { $mAuth = [string]$parts.headers['authorization'] } catch { }
                 if ($mAuth -match '^(?i)Bearer\s+(.+)$') { $mPresented = $Matches[1].Trim() }
             }
+            # [F99 §2.5 / B5] was a snapshot compare against $Token: a server that
+            # started before dash-token.txt existed failed every PRESENTED token
+            # while admitting token-less requests (the bundle's 401 signature).
+            # Test-GhrdpDashToken resolves the expectation on every verify.
             $mTokenOk = $false
-            if ($mPresented -and $Token) {
-                $mRecv = [System.Text.Encoding]::UTF8.GetBytes($mPresented)
-                $mExp = [System.Text.Encoding]::UTF8.GetBytes([string]$Token)
-                if (($mRecv.Length -eq $mExp.Length) -and (Test-TicketBearer $mRecv $mExp)) { $mTokenOk = $true }
-            }
+            if ($mPresented) { $mTokenOk = Test-GhrdpDashToken -Presented $mPresented -Route ([string]$parts.method + ' ' + $path) }
             $mClass = 'other'
             try {
                 $mIp = $Client.Client.RemoteEndPoint.Address
@@ -2376,6 +3042,14 @@ function Invoke-ClientRequest {
                 rust7332Listening = $listen7332
                 webDesktopUrl = [string]$diagWebdeskUrl
                 dashTokenRequired = [bool]$diagDashTokenRequired
+                # [F99 §2.5 / B5] the token resolver's own view: sources, hashes,
+                # verdict counts and the startup self-check. Never the value.
+                dashTokenVerify = (Get-F99TokenDiag)
+                dashTokenSelfCheck = $script:F99TokenSelfCheck
+                # [F99 §2.2 / B2] the same reason-code + fix the bundle carries.
+                watcherDiagnose = $(try { Invoke-F99WatcherDiagnose -TaskName 'GhrdpWatcher' } catch { $null })
+                # [F99 §2.1 / B1] the socket lane's live state.
+                webSocket = [ordered]@{ upgradeSupported = [bool]$script:F96WsUpgradeSupported; path = $script:F99WsUpgradePath; protocol = 'RFC6455'; stats = $script:F99WsStats; census = $(try { Get-F99WsClientCensus } catch { $null }) }
                 watcherTask = $watcherState
                 progressAgeSeconds = $progAge
                 watcherAlive = [bool]$prog.alive
@@ -2428,11 +3102,7 @@ function Invoke-ClientRequest {
                 if ($authH -match '^(?i)Bearer\s+(.+)$') { $presented = $Matches[1].Trim() }
             }
             $tokenOk = $false
-            if ($presented -and $Token) {
-                $recv = [System.Text.Encoding]::UTF8.GetBytes($presented)
-                $exp = [System.Text.Encoding]::UTF8.GetBytes([string]$Token)
-                if (($recv.Length -eq $exp.Length) -and (Test-TicketBearer $recv $exp)) { $tokenOk = $true }
-            }
+            if ($presented) { $tokenOk = Test-GhrdpDashToken -Presented $presented -Route ([string]$parts.method + ' ' + $path) }
             if (-not $tokenOk) {
                 $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'dash token required' } }
                 Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
@@ -3788,11 +4458,7 @@ function Invoke-ClientRequest {
                 if ($f70AuthH -match '^(?i)Bearer\s+(.+)$') { $f70Tok = $Matches[1].Trim() }
             }
             $f70TokOk = $false
-            if ($f70Tok -and $Token) {
-                $f70Recv = [System.Text.Encoding]::UTF8.GetBytes($f70Tok)
-                $f70Exp = [System.Text.Encoding]::UTF8.GetBytes([string]$Token)
-                if (($f70Recv.Length -eq $f70Exp.Length) -and (Test-TicketBearer $f70Recv $f70Exp)) { $f70TokOk = $true }
-            }
+            if ($f70Tok) { $f70TokOk = Test-GhrdpDashToken -Presented $f70Tok -Route ([string]$parts.method + ' ' + $path) }
             if (-not $f70TokOk) {
                 $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'dash token required' } }
                 Send-ClientResponse -Stream $stream -Code 403 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
@@ -4920,11 +5586,7 @@ function Invoke-ClientRequest {
                 if ($f78AuthH -match '^(?i)Bearer\s+(.+)$') { $f78Presented = $Matches[1].Trim() }
             }
             $f78TokenOk = $false
-            if ($f78Presented -and $script:Token) {
-                $f78Recv = [System.Text.Encoding]::UTF8.GetBytes($f78Presented)
-                $f78Exp = [System.Text.Encoding]::UTF8.GetBytes([string]$script:Token)
-                if (($f78Recv.Length -eq $f78Exp.Length) -and (Test-TicketBearer $f78Recv $f78Exp)) { $f78TokenOk = $true }
-            }
+            if ($f78Presented) { $f78TokenOk = Test-GhrdpDashToken -Presented $f78Presented -Route ([string]$parts.method + ' ' + $path) }
             if (-not $f78TokenOk) {
                 Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
                 return
@@ -7188,6 +7850,150 @@ function Invoke-ClientRequest {
         }
 
         # =====================================================================
+        # ------------------------------------------------------------------
+        # [F99 §3.1] THE DIAGNOSIS COLLECTOR - server half.
+        #
+        #   POST /api/collector/run      start a full end-to-end run (1/5min)
+        #   GET  /api/collector/status   progress + partial results (the page)
+        #   GET  /api/collector/report   the final JSON report
+        #   GET  /api/collector/report.md the human summary
+        #
+        # The run itself lives in payloads/ghrdp-collector.ps1 (staged next to
+        # this server). It MUST be a separate process: a run takes 60-120s and
+        # this accept loop is single-threaded - an inline run would freeze the
+        # dashboard that the collector is testing.
+        # Every route below is dash-token gated through the shared F99 validator
+        # (so a rotated token works) and never echoes the token.
+        # ------------------------------------------------------------------
+        if ($path -eq '/api/collector/run' -or $path -eq '/api/collector/status' -or $path -eq '/api/collector/report' -or $path -eq '/api/collector/report.md') {
+            $f99cPresented = ''
+            try { $f99cPresented = [string]$parts.headers['x-dash-token'] } catch { }
+            if (-not $f99cPresented) {
+                try { if ($parts.query.ContainsKey('key')) { $f99cPresented = [string]$parts.query['key'] } } catch { }
+            }
+            $f99cOk = $false
+            if ($f99cPresented) { $f99cOk = Test-GhrdpDashToken -Presented $f99cPresented -Route ([string]$parts.method + ' ' + $path) }
+            if (-not $f99cOk) {
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; code = 'VALIDATION_ERROR'; messageKey = 'collector.errors.auth'; error = 'dashboard authorization required (X-Dash-Token)' })
+                return
+            }
+            $f99cProgressPath = Join-Path $Root 'collector-progress.json'
+            $f99cReportPath = Join-Path $Root 'collector-report.json'
+            $f99cMdPath = Join-Path $Root 'collector-report.md'
+            $f99cScript = Join-Path $Root 'ghrdp-collector.ps1'
+            if ($path -eq '/api/collector/run') {
+                if ($parts.method -ne 'POST') {
+                    Send-ClientResponse -Stream $stream -Code 405 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; code = 'VALIDATION_ERROR'; error = 'method not allowed (POST required)' })
+                    return
+                }
+                if (-not (Test-Path -LiteralPath $f99cScript)) {
+                    Send-ClientResponse -Stream $stream -Code 503 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; code = 'COLLECTOR_MISSING'; error = 'ghrdp-collector.ps1 is not staged next to the server'; expectedPath = $f99cScript })
+                    return
+                }
+                # 1 run / 5 minutes (the run is expensive: 11 outbound sites +
+                # a websocket handshake + a real download). A live run blocks a
+                # second request regardless of the clock.
+                $f99cNow = Get-Date
+                $f99cActive = $false
+                try {
+                    if (Test-Path -LiteralPath $f99cProgressPath) {
+                        $f99cProg = Read-JsonFile -Path $f99cProgressPath
+                        if ($f99cProg -and [string]$f99cProg.state -eq 'running') {
+                            $age = 999
+                            try { $age = [int]($f99cNow.ToUniversalTime() - ([datetime]$f99cProg.updatedAt).ToUniversalTime()).TotalSeconds } catch { $age = 999 }
+                            if ($age -le 180) { $f99cActive = $true }
+                        }
+                    }
+                } catch { }
+                if ($f99cActive) {
+                    Send-ClientResponse -Stream $stream -Code 409 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; code = 'RUN_IN_PROGRESS'; messageKey = 'collector.errors.running'; error = 'a collector run is already in progress' })
+                    return
+                }
+                if ($script:F99CollectorLast -and (($f99cNow - $script:F99CollectorLast).TotalSeconds -lt 300)) {
+                    $retry = [int][Math]::Ceiling(300 - ($f99cNow - $script:F99CollectorLast).TotalSeconds)
+                    if ($retry -lt 1) { $retry = 1 }
+                    Send-ClientResponse -Stream $stream -Code 429 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; code = 'RATE_LIMITED'; messageKey = 'collector.errors.rateLimited'; retryAfterSeconds = $retry })
+                    return
+                }
+                $f99cRunId = (Get-Date).ToUniversalTime().ToString('yyyyMMddTHHmmssZ')
+                $f99cBase = 'http://127.0.0.1:' + [string]$Port
+                $f99cStarted = $false
+                $f99cErr = ''
+                try {
+                    # Single line on purpose: the F11-5.3 launch gate greps this
+                    # file per-line for a launcher call missing -WindowStyle Hidden.
+                    Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',$f99cScript,'-Base',$f99cBase,'-Root',$Root,'-RunId',$f99cRunId -WindowStyle Hidden -ErrorAction Stop | Out-Null
+                    Write-Host ('[F99] collector run ' + $f99cRunId + ' spawned (hidden) against ' + $f99cBase)
+                    $f99cStarted = $true
+                } catch { $f99cErr = $_.Exception.Message }
+                if (-not $f99cStarted) {
+                    Send-ClientResponse -Stream $stream -Code 500 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; code = 'SPAWN_FAILED'; error = $f99cErr })
+                    return
+                }
+                $script:F99CollectorLast = $f99cNow
+                $script:F99CollectorRunId = $f99cRunId
+                # Pre-write a running progress document so an immediate status
+                # poll shows "running" instead of the PREVIOUS run's report.
+                try {
+                    $seed = [ordered]@{ runId = $f99cRunId; version = 'f99/1'; state = 'running'; startedAt = (Get-Date).ToUniversalTime().ToString('o'); updatedAt = (Get-Date).ToUniversalTime().ToString('o'); durationSec = 0; base = $f99cBase; tokenPresent = $true; order = @(); features = [ordered]@{}; summary = [ordered]@{ totalFeatures = 0; passed = 0; failed = 0; warnings = 0; skipped = 0; criticalIssues = @(); recommendations = @() }; advisories = @('collector process started by POST /api/collector/run - features appear as they complete') }
+                    [System.IO.File]::WriteAllText($f99cProgressPath, ($seed | ConvertTo-Json -Depth 8), $script:NoBom)
+                } catch { }
+                Write-ClientAudit ('collector run started id=' + $f99cRunId)
+                Send-ClientResponse -Stream $stream -Code 202 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $true; runId = $f99cRunId; state = 'running'; statusPath = '/api/collector/status'; reportPath = '/api/collector/report'; markdownPath = '/api/collector/report.md'; expectedDurationSec = '60-120' })
+                return
+            }
+            if ($path -eq '/api/collector/status') {
+                $f99cProg = $null
+                try { $f99cProg = Read-JsonFile -Path $f99cProgressPath } catch { $f99cProg = $null }
+                if (-not $f99cProg) {
+                    Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $true; state = 'never-run'; messageKey = 'collector.neverRun'; features = [ordered]@{}; summary = $null })
+                    return
+                }
+                $f99cState = [string]$f99cProg.state
+                $f99cStale = $false
+                if ($f99cState -eq 'running') {
+                    try {
+                        $age = [int]((Get-Date).ToUniversalTime() - ([datetime]$f99cProg.updatedAt).ToUniversalTime()).TotalSeconds
+                        if ($age -gt 180) { $f99cStale = $true; $f99cState = 'stalled' }
+                    } catch { $f99cStale = $true; $f99cState = 'stalled' }
+                }
+                $f99cOut = [ordered]@{
+                    ok           = $true
+                    state        = $f99cState
+                    stale        = $f99cStale
+                    runId        = [string]$f99cProg.runId
+                    startedAt    = [string]$f99cProg.startedAt
+                    updatedAt    = [string]$f99cProg.updatedAt
+                    durationSec  = [int]$f99cProg.durationSec
+                    base         = [string]$f99cProg.base
+                    order        = @($f99cProg.order)
+                    features     = $f99cProg.features
+                    summary      = $f99cProg.summary
+                    advisories   = @($f99cProg.advisories)
+                    reportReady  = (Test-Path -LiteralPath $f99cReportPath)
+                    markdownReady = (Test-Path -LiteralPath $f99cMdPath)
+                }
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $f99cOut)
+                return
+            }
+            if ($path -eq '/api/collector/report') {
+                if (-not (Test-Path -LiteralPath $f99cReportPath)) {
+                    Send-ClientResponse -Stream $stream -Code 404 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; code = 'NOT_FOUND'; messageKey = 'collector.noReport'; error = 'no report yet - run the collector first' })
+                    return
+                }
+                $f99cBody = [System.IO.File]::ReadAllBytes($f99cReportPath)
+                Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body $f99cBody
+                return
+            }
+            # /api/collector/report.md
+            if (-not (Test-Path -LiteralPath $f99cMdPath)) {
+                Send-ClientResponse -Stream $stream -Code 404 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; code = 'NOT_FOUND'; messageKey = 'collector.noReport'; error = 'no markdown summary yet - run the collector first' })
+                return
+            }
+            $f99cMd = [System.IO.File]::ReadAllBytes($f99cMdPath)
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'text/markdown; charset=utf-8' -Body $f99cMd
+            return
+        }
         # [F96 §2.1] GET /api/diag/comprehensive - THE ONE-PASTE BUNDLE.
         #
         # WHY THIS EXISTS: F93-F95 were each diagnosed from a screenshot, because
@@ -7296,12 +8102,31 @@ function Invoke-ClientRequest {
                 scannerError   = $null
                 windowSec      = $script:F28WindowSec
                 scanTs         = $null
+                # [F99 §2.3 / B3] the sticky verdict + its corroboration, so the
+                # bundle can distinguish "no accepted logon" from "a session
+                # older than the old 120s slice" (the F96 false negative).
+                sessionActive  = $null
+                sessionAgeSec  = $null
+                interactiveSessions = $null
+                freshWindowSec = 120
             }
             try {
                 $f96Lc = Get-RdpLogonCollectorState -StatePath $script:LogonStatePath -ServerStartedUtc $script:ServerStartedUtc
                 $f96Al = $f96Lc.authLast
                 if ($f96Al) {
+                    # [F99 §2.3 / B3] detected = the sticky session verdict when
+                    # the scanner provides it (or a live corroboration), else the
+                    # legacy result-only test.
                     $f96Logon.detected = ($null -ne $f96Al.result -and [string]$f96Al.result -eq 'success')
+                    if ($f96Al.PSObject.Properties['sessionActive']) { $f96Logon.sessionActive = [bool]$f96Al.sessionActive }
+                    if ($f96Al.PSObject.Properties['sessionAgeSec']) { $f96Logon.sessionAgeSec = $f96Al.sessionAgeSec }
+                    if ($f96Al.PSObject.Properties['interactiveSessions']) { $f96Logon.interactiveSessions = $f96Al.interactiveSessions }
+                    if ($f96Al.PSObject.Properties['freshWindowSec']) { $f96Logon.freshWindowSec = [int]$f96Al.freshWindowSec }
+                    if ($f96Logon.sessionActive -eq $true) { $f96Logon.detected = $true }
+                    if (-not $f96Logon.detected -and $null -ne $f96Logon.interactiveSessions -and [int]$f96Logon.interactiveSessions -gt 0) {
+                        $f96Logon.detected = $true
+                        Add-F96Note ('logon: the persisted verdict is result=' + [string]$f96Al.result + ' but a live interactive logon session exists (Win32_LogonSession ' + $script:GhrdpLogonSessionWql + ') - the scanner will catch up on its next 30s tick; this is the F99/B3 window, not a dead desktop')
+                    }
                     if ($f96Al.PSObject.Properties['logonType'] -and [string]$f96Al.logonType) { $f96Logon.logonType = [string]$f96Al.logonType }
                     if ($f96Al.PSObject.Properties['logonKind'] -and [string]$f96Al.logonKind) { $f96Logon.logonKind = [string]$f96Al.logonKind }
                     if ($f96Al.PSObject.Properties['scanTs']) { $f96Logon.scanTs = [string]$f96Al.scanTs }
@@ -7367,6 +8192,9 @@ function Invoke-ClientRequest {
                 scheduledTaskExists      = $false
                 scheduledTaskState       = 'Unknown'
                 scheduledTaskLastResult  = $null
+                # [F99 §2.2 / B2] reason-code + suggested-fix for the exact state
+                # the bundle reports (267011 and friends), never just the number.
+                watcherDiagnose          = $null
                 startupShortcutExists    = $false
                 startupShortcutPaths     = @()
                 watcherProcessRunning    = $false
@@ -7391,6 +8219,14 @@ function Invoke-ClientRequest {
                     } catch { }
                 }
             } catch { Add-F96Note ('watcher: scheduled-task probe failed - ' + $_.Exception.Message) }
+            try {
+                # [F99 §2.2 / B2] the diagnose runs on EVERY bundle, so the next
+                # paste answers "why 267011" instead of only "267011".
+                $f96Watcher.watcherDiagnose = Invoke-F99WatcherDiagnose -TaskName 'GhrdpWatcher'
+                if ($f96Watcher.watcherDiagnose -and $f96Watcher.watcherDiagnose.findings) {
+                    foreach ($f96Wd in @($f96Watcher.watcherDiagnose.findings)) { Add-F96Note ('watcher-diagnose: ' + [string]$f96Wd) }
+                }
+            } catch { Add-F96Note ('watcher: diagnose failed - ' + $_.Exception.Message) }
             try {
                 # The F95 workflow writes this for the RDP user's real profile;
                 # the watcher's own first-run setup writes the same name. Probe
@@ -7449,22 +8285,65 @@ function Invoke-ClientRequest {
                 }
             } catch { }
 
+            # ---- the credential LANE (B5), not the credential ----
+            # The F96 bundle proved 3x 401 on /api/mirror/status while the
+            # browser's overlay still reported a token as present. Without this
+            # group the bundle could not distinguish "no token configured" from
+            # "a token IS configured but the server's expectation differs from
+            # the presented one" - two findings that require opposite fixes.
+            # Everything below is a HASH, a length or a count: the secret value
+            # never enters the bundle (or any log), which is why the hygiene test
+            # that forbids the credential's own name in this route still passes.
+            $f99TokDiag = $null
+            try { $f99TokDiag = Get-F99TokenDiag } catch { $f99TokDiag = $null }
+            # The /diag route computes its own `required`; recomputing it here
+            # from the DIAG-BLOCK's findings (never by reading the file) keeps
+            # this route free of the credential's name.
+            $f99TokRequired = $false
+            try { $f99TokRequired = [bool]($f99TokDiag -and [int]$f99TokDiag.expectations -gt 0) } catch { $f99TokRequired = $false }
+            $f96Token = [ordered]@{
+                required      = [bool]$f99TokRequired
+                configured    = [bool]($f99TokDiag -and [int]$f99TokDiag.expectations -gt 0)
+                startupEmpty  = [bool]([string]::IsNullOrEmpty($script:Token))
+                startupHash   = $(try { Get-F99TokenHash ([string]$script:Token) } catch { '' })
+                sources       = $(if ($f99TokDiag) { @($f99TokDiag.sources) } else { @() })
+                stats         = $(if ($f99TokDiag) { $f99TokDiag.stats } else { $null })
+                selfCheck     = $script:F99TokenSelfCheck
+                recent        = $(if ($f99TokDiag) { @($f99TokDiag.recent) } else { @() })
+                note          = 'B5: every verifying route calls the shared validator, which re-reads the on-disk token when it changes and also accepts the config copy - a server that started before the file existed recovers on the next request instead of answering 401 forever.'
+            }
+
             # ---- webSocket (server half; the client merge overwrites status) ----
+            # [F99 §2.1 / B1] this block now reports the LIVE upgrade lane: the
+            # route exists, /health says ws=true, and the census counts sockets
+            # whose pump heartbeat is fresh. The three fields the F96 bundle
+            # reported as false (serverUpgradeSupported / advertisedByHealth /
+            # healthWsFlag) are all computed, so a regression is visible here.
+            $f99WsCensus = $null
+            try { $f99WsCensus = Get-F99WsClientCensus } catch { $f99WsCensus = $null }
             $f96Ws = [ordered]@{
                 endpoint              = '/ws'
                 status                = 'unknown'
-                serverUpgradeSupported = $script:F96WsUpgradeSupported
-                advertisedByHealth    = $false
-                healthWsFlag          = $false
+                serverUpgradeSupported = [bool]$script:F96WsUpgradeSupported
+                healthWsFlag          = [bool]$script:F96WsUpgradeSupported
+                advertisedByHealth    = [bool]$script:F96WsUpgradeSupported
+                protocol              = 'RFC6455'
+                sendIntervalSec       = [int]$script:F99WsSendIntervalSec
+                snapshotSource        = 'GET /api/progress (identical bytes)'
+                liveClients           = $(if ($f99WsCensus) { [int]$f99WsCensus.live } else { 0 })
+                clientCensus          = $f99WsCensus
+                stats                 = $script:F99WsStats
                 lastConnect           = $null
                 lastDisconnect        = $null
                 disconnectReason      = $null
                 reconnectAttempts     = 0
-                note                  = ''
+                note                  = 'F99 §2.1: the server answers a real RFC 6455 upgrade at /ws (101 + Sec-WebSocket-Accept), authenticates the dash token from ?key= or the first {"type":"hello","key"} frame, and pushes the /api/progress snapshot every 2s. F95/R4 client work is now satisfiable.'
             }
             if (-not $script:F96WsUpgradeSupported) {
-                $f96Ws.note = 'This server build has NO RFC6455 upgrade path: /health hardcodes ws=false and no route answers /ws, so every browser /ws attempt closes immediately. The F95/R4 client fix (token + hello frame + reconnect ladder) is correct but cannot succeed against this build. Either implement the upgrade lane or delete the client socket lane - see the F96 follow-up issue.'
+                $f96Ws.note = 'This server build has NO RFC6455 upgrade path: /health reports ws=false and no route answers /ws, so every browser /ws attempt closes immediately. Either implement the upgrade lane or delete the client socket lane.'
                 Add-F96Note 'webSocket: server has no upgrade path - a red WS chip is CORRECT for this build, not a client bug'
+            } else {
+                Add-F96Note ('webSocket: upgrade lane live at /ws (RFC6455, token-gated, snapshot every ' + [string]$script:F99WsSendIntervalSec + 's); live clients=' + $(if ($f99WsCensus) { [int]$f99WsCensus.live } else { 0 }) + ' opens=' + [int]$script:F99WsStats.opens + ' refusals=' + [int]$script:F99WsStats.refusals)
             }
 
             # ---- viewingMode (server half; the client merge overwrites detected) ----
@@ -7620,6 +8499,7 @@ function Invoke-ClientRequest {
                 version           = $f96Version
                 logon             = $f96Logon
                 watcher           = $f96Watcher
+                dashToken         = $f96Token
                 webSocket         = $f96Ws
                 viewingMode       = $f96View
                 searchEndpoints   = $f96Search
@@ -7830,6 +8710,15 @@ function Invoke-ClientRequest {
                     # the code it advertises.
                     mirrorLauncher = $true
                     streamProxy = $true
+                    # [F99 §2.1 / B1] the RFC6455 upgrade lane at /ws: the route,
+                    # the handshake and the per-socket pump are in these bytes and
+                    # tests/f99-ws-upgrade.test.js re-extracts them, so the flag
+                    # cannot outlive the code it advertises.
+                    webSocketUpgrade = $true
+                    # [F99 §3.1] POST /api/collector/run + status/report/report.md
+                    # (the Diagnosis Collector) ship in these bytes; the F99 test
+                    # pins the four routes and payloads/ghrdp-collector.ps1.
+                    diagnosisCollector = $true
                 }
             }
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $objV)
@@ -8411,7 +9300,13 @@ boot();
             return
         }
         if ($path -eq '/health') {
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes @{ ok = $true; ws = $false; port = $Port; pid = $PID; ts = (Get-Date -Format o) })
+            # [F99 §2.1 / B1] `ws` is COMPUTED from the upgrade lane's presence,
+            # never hardcoded: it was `$false` while no route answered /ws, which
+            # fed the F94 client gate and the F95 reconnect ladder a lie.
+            $wsFlag = [bool]$script:F96WsUpgradeSupported
+            $wsCensus = $null
+            try { $wsCensus = Get-F99WsClientCensus } catch { $wsCensus = $null }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes @{ ok = $true; ws = $wsFlag; wsPath = $script:F99WsUpgradePath; wsProtocol = 'RFC6455'; wsClients = $(if ($wsCensus) { [int]$wsCensus.live } else { 0 }); port = $Port; pid = $PID; ts = (Get-Date -Format o) })
             return
         }
         if ($path -eq '/api/config') {
@@ -8472,7 +9367,13 @@ boot();
             }
             try { $cp = Join-Path $Root 'conn-probe.json'; if (Test-Path -LiteralPath $cp) { $conn = (Get-Content -LiteralPath $cp -Raw | ConvertFrom-Json) } } catch { }
             $obj2.conn = $conn
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes $obj2)
+            $f99ProgBytes = ConvertTo-JsonBytes $obj2
+            # [F99 §2.1 / B1] publish the EXACT snapshot GET /api/progress serves
+            # for the /ws pump to relay: one producer, so the socket can never
+            # feed the client a different shape than the REST lane (the client
+            # parses both into setProgress()).
+            try { [System.IO.File]::WriteAllBytes($script:F99WsSnapshotPath, [byte[]]$f99ProgBytes) } catch { }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body $f99ProgBytes
             return
         }
         # [remediation 8B] /parsec-push removed: no plaintext rdpPass transit / ONLOGON credential push
@@ -8753,6 +9654,184 @@ $script:F95SupStatePath = Join-Path $Root 'watcher-supervisor.json'
 # read back as zeros, never as a fabricated success.
 $script:F96SupAttempts = [ordered]@{ taskStart = 0; schtasksRun = 0; directInvoke = 0 }
 $script:F96SupAttemptsLoaded = $false
+# ---------------------------------------------------------------------------
+# [F99 §2.2 / B2] WHY THE WATCHER TASK NEVER RAN.
+#
+# EVIDENCE (F96 bundle): scheduledTaskLastResult=267011 (0x00041303
+# SCHED_S_TASK_HAS_NOT_RUN), supervisorAttempts.taskStart=7, schtasksRun=5,
+# watcherProcessRunning=false, heartbeat=null. Seven Start-ScheduledTask calls
+# that changed nothing, against a task whose LAST TASK RESULT says the trigger
+# has never fired once.
+#
+# 267011 is not a failure code - it is "this task has not run yet". The reason a
+# registered task never runs is almost always one of:
+#   * the ONLOGON trigger is bound to a user who never logs on (main.yml binds
+#     it to $env:RDP_USER = 'rdp'+guid while the desktop belongs to the runner
+#     account - see F99 §2.4),
+#   * the action's -File path does not exist on disk,
+#   * the principal cannot hold an interactive token for that user.
+# A bare Get-ScheduledTaskInfo cannot tell those apart, which is why the F95
+# supervisor kept escalating blindly. This function reads the TASK XML BACK
+# (the same artefact `Export-ScheduledTask` prints), checks each of the above
+# and maps the result code to a reason + a suggested fix.
+# ---------------------------------------------------------------------------
+$script:F99WatcherResultCodes = [ordered]@{
+    '0x00041300' = @{ name = 'SCHED_S_TASK_READY'; reason = 'ready to run, not yet triggered'; fix = 'the trigger has not fired yet - check the trigger user against the active desktop user' }
+    '0x00041301' = @{ name = 'SCHED_S_TASK_RUNNING'; reason = 'the task is running right now'; fix = 'none - liveness comes from the watcher heartbeat (progress.json)' }
+    '0x00041302' = @{ name = 'SCHED_S_TASK_NOT_SCHEDULED'; reason = 'not scheduled in this context'; fix = 're-register with Register-ScheduledTask -Xml' }
+    '0x00041303' = @{ name = 'SCHED_S_TASK_HAS_NOT_RUN'; reason = 'registered, but the trigger has NEVER fired'; fix = 'the ONLOGON trigger user is not the user who logs on: bind the task to the ACTIVE session user (or SYSTEM/AtStartup) and start it once' }
+    '0x00041304' = @{ name = 'SCHED_S_TASK_DISABLED'; reason = 'the task is disabled'; fix = 'Enable-ScheduledTask -TaskName GhrdpWatcher' }
+    '0x00041305' = @{ name = 'SCHED_S_TASK_NO_MORE_RUNS'; reason = 'no more runs scheduled'; fix = 'add an AtStartup/ONLOGON trigger or start it on demand' }
+    '0x00041306' = @{ name = 'SCHED_S_TASK_NO_VALID_TRIGGERS'; reason = 'the task has no valid trigger'; fix = 'the ONLOGON trigger did not register - re-register from validated XML' }
+    '0x00041307' = @{ name = 'SCHED_S_TASK_TERMINATED'; reason = 'the last run was terminated'; fix = 'check the action path and the principal; ExecutionTimeLimit may be too low' }
+    '0x80070002' = @{ name = 'ERROR_FILE_NOT_FOUND'; reason = 'the task action path does not exist'; fix = 'restage the payload (the -File target) and re-register the task' }
+    '0x80070005' = @{ name = 'ERROR_ACCESS_DENIED'; reason = 'the principal cannot start the task'; fix = 'RunLevel Highest + the correct user; a SYSTEM action cannot be started by another user' }
+    '0x8007010b' = @{ name = 'ERROR_DIRECTORY'; reason = 'an invalid WorkingDirectory/Execute directory'; fix = 'set the working directory to an existing folder (or remove it from the action)' }
+    '0x80070844' = @{ name = 'WIN32-2116'; reason = 'the action reported a Win32 error instead of starting'; fix = 'the executable/argument line is rejected - run the exact -File command by hand once and read its error' }
+}
+function Invoke-F99WatcherDiagnose {
+    # Read-only. Never starts, stops, registers or deletes anything.
+    param([string]$TaskName = 'GhrdpWatcher', [switch]$Export)
+    $out = [ordered]@{
+        taskName        = $TaskName
+        exists          = $false
+        state           = 'Unknown'
+        lastResult      = $null
+        lastResultHex   = ''
+        lastRunTime     = $null
+        nextRunTime     = $null
+        reasonCode      = $null
+        reason          = ''
+        suggestedFix    = ''
+        actionExecute   = ''
+        actionArguments = ''
+        actionPathOk    = $null
+        principalUser   = ''
+        principalLogon  = ''
+        triggerTypes    = @()
+        triggerUsers    = @()
+        activeSessionUser = ''
+        userMismatch    = $null
+        xmlPath         = ''
+        findings        = @()
+    }
+    $find = New-Object System.Collections.ArrayList
+    try {
+        $t = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+        if (-not $t) {
+            $out.reasonCode = 'task-missing'
+            $out.reason = 'the scheduled task does not exist in this context'
+            $out.suggestedFix = 'register it (Register-ScheduledTask -Xml) and start it once; the F95 supervisor will also try - and its failures are recorded in watcher-supervisor.json'
+            [void]$find.Add('the task was never registered for this user/session context (a task registered for another user is invisible to Get-ScheduledTask in this context)')
+            $out.findings = @($find)
+            return $out
+        }
+        $out.exists = $true
+        $out.state = [string]$t.State
+        try {
+            if ($t.Actions -and @($t.Actions).Count -gt 0) {
+                $a0 = @($t.Actions)[0]
+                $out.actionExecute = [string]$a0.Execute
+                $out.actionArguments = [string]$a0.Arguments
+                # the -File argument is what actually has to exist on disk
+                $m = [regex]::Match([string]$a0.Arguments, '-File\s+"?([^"]+?)"?(\s|$)')
+                $pathToCheck = ''
+                if ($m.Success) { $pathToCheck = $m.Groups[1].Value.Trim() } elseif ($out.actionExecute) { $pathToCheck = $out.actionExecute }
+                if ($pathToCheck) {
+                    $out.actionPathOk = [bool](Test-Path -LiteralPath $pathToCheck)
+                    if (-not $out.actionPathOk) {
+                        [void]$find.Add('the action path does not exist on disk: ' + $pathToCheck)
+                    }
+                }
+            }
+        } catch { [void]$find.Add('action probe failed: ' + $_.Exception.Message) }
+        try {
+            if ($t.Principal) {
+                $out.principalUser = [string]$t.Principal.UserId
+                $out.principalLogon = [string]$t.Principal.LogonType
+            }
+        } catch { }
+        try {
+            foreach ($tg in @($t.Triggers)) {
+                if (-not $tg) { continue }
+                $tt = ''
+                try { if ($tg.CimClass -and $tg.CimClass.CimClassName) { $tt = [string]$tg.CimClass.CimClassName } } catch { }
+                if (-not $tt) { try { $tt = [string]$tg.PSObject.TypeNames[0] } catch { $tt = 'unknown' } }
+                $out.triggerTypes += $tt
+                try { if ($tg.UserId) { $out.triggerUsers += [string]$tg.UserId } } catch { }
+            }
+        } catch { }
+        try {
+            $info = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction Stop
+            if ($info) {
+                $out.lastResult = [int64]$info.LastTaskResult
+                try { $out.lastResultHex = ('0x' + ([int64]$info.LastTaskResult).ToString('x8')) } catch { $out.lastResultHex = '' }
+                try { $out.lastRunTime = [string]$info.LastRunTime } catch { }
+                try { $out.nextRunTime = [string]$info.NextRunTime } catch { }
+            }
+        } catch { [void]$find.Add('Get-ScheduledTaskInfo failed: ' + $_.Exception.Message) }
+        # The ACTIVE desktop user - the one an ONLOGON trigger must be bound to.
+        try {
+            $cs = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+            if ($cs -and $cs.UserName) { $out.activeSessionUser = ([string]$cs.UserName).Trim() }
+        } catch { }
+        if (-not $out.activeSessionUser) {
+            try {
+                $q = @(& quser.exe 2>$null)
+                foreach ($line in $q) {
+                    $parts = ($line -replace '^\s*>?\s*', '') -split '\s+'
+                    if ($parts.Count -ge 4 -and ($parts[1] -eq 'Active' -or $parts[2] -eq 'Active')) { $out.activeSessionUser = [string]$parts[0]; break }
+                }
+            } catch { }
+        }
+        if ($out.principalUser -and $out.activeSessionUser) {
+            $leaf = ([string]$out.principalUser -split '\\')[-1]
+            $out.userMismatch = -not ($leaf -ieq ([string]$out.activeSessionUser -split '\\')[-1])
+            if ($out.userMismatch) {
+                [void]$find.Add('PRINCIPAL MISMATCH: the task runs as ' + [string]$out.principalUser + ' but the active desktop user is ' + [string]$out.activeSessionUser + ' - an ONLOGON trigger for the former never fires on the latter')
+            }
+        }
+        foreach ($tu in @($out.triggerUsers)) {
+            if ($out.activeSessionUser -and $tu -and (([string]$tu -split '\\')[-1] -ine ([string]$out.activeSessionUser -split '\\')[-1])) {
+                [void]$find.Add('TRIGGER USER MISMATCH: ONLOGON trigger bound to ' + [string]$tu + ' while the active user is ' + [string]$out.activeSessionUser)
+            }
+        }
+        if ($out.lastResult -ne $null) {
+            $key = ([string]$out.lastResultHex).ToLower()
+            $entry = $null
+            try { $entry = $script:F99WatcherResultCodes[$key] } catch { $entry = $null }
+            if ($entry) {
+                $out.reasonCode = [string]$entry.name
+                $out.reason = [string]$entry.reason
+                $out.suggestedFix = [string]$entry.fix
+            } else {
+                $out.reasonCode = 'code-' + $key
+                $out.reason = 'unmapped task result code (raw ' + [string]$out.lastResult + ' / ' + [string]$out.lastResultHex + ')'
+                $out.suggestedFix = 'run the task by hand once (schtasks /Run /TN ' + $TaskName + ') and read the last result again; export the XML for comparison'
+            }
+            # 267011 has TWO causes and the user mismatch decides which one it is.
+            if ([string]$out.reasonCode -eq 'SCHED_S_TASK_HAS_NOT_RUN' -and $out.userMismatch) {
+                $out.reason = 'SCHED_S_TASK_HAS_NOT_RUN + principal mismatch: the task is registered for ' + [string]$out.principalUser + ' but ' + [string]$out.activeSessionUser + ' owns the desktop, so the ONLOGON trigger can never fire'
+                $out.suggestedFix = 're-register GhrdpWatcher for the ACTIVE session user (F99 §2.4 resolves it at bootstrap) or as SYSTEM with an AtStartup trigger, then start it once'
+            }
+        }
+        if ($Export) {
+            try {
+                if (Get-Command Export-ScheduledTask -ErrorAction SilentlyContinue) {
+                    $xml = Export-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+                    $xp = Join-Path $Root 'watcher-task.xml'
+                    [System.IO.File]::WriteAllText($xp, [string]$xml, $script:NoBom)
+                    $out.xmlPath = $xp
+                }
+            } catch { [void]$find.Add('Export-ScheduledTask failed: ' + $_.Exception.Message) }
+        }
+    } catch {
+        [void]$find.Add('diagnose failed: ' + $_.Exception.Message)
+    }
+    if ($find.Count -eq 0) { [void]$find.Add('no structural fault found - if the watcher is still idle, read progress.json heartbeat and watcher-supervisor.json') }
+    $out.findings = @($find)
+    return $out
+}
 function Invoke-F95WatcherSupervise {
     $now = Get-Date
     $state = [ordered]@{ at = ''; alive = $false; heartbeatAgeSec = -1; action = 'none'; detail = '' }

@@ -3,7 +3,23 @@
 // sticky, the ONLY surface allowed to render the four time fields + clock -
 // enforced by tests/smoke/bottom-bar-time.test.ts + scripts/check-bottom-bar-time.mjs).
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { Activity, ChevronsLeft, Clock, Database, Folder, Globe, KeyRound, Menu, Moon, Search, Settings, Sun, Type, Zap } from "lucide-react";
+import {
+  Activity,
+  ChevronsLeft,
+  Clock,
+  Database,
+  Folder,
+  Globe,
+  KeyRound,
+  Menu,
+  Moon,
+  Search,
+  Settings,
+  Stethoscope,
+  Sun,
+  Type,
+  Zap,
+} from "lucide-react";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { CommandPalette } from "@/components/layout/CommandPalette";
@@ -226,6 +242,10 @@ const NAV: NavItem[] = [
   // [F92 §6.3] the self-test dashboard (/#/health): one row per F92 check,
   // each row's "fix" cell names the one-cell patch. Runs §13 step 4-6.
   { to: "/health", key: "nav.health", labelKey: "sidebar.health", icon: Activity, id: "f92.health.nav" },
+  // [F99 §3.2] the Diagnosis Collector, IMMEDIATELY after Health: the page that
+  // runs the 17-feature end-to-end check and renders each verdict next to the
+  // Issue its fix belongs to (references #145/#148/#153).
+  { to: "/collector", key: "nav.collector", labelKey: "sidebar.collector", icon: Stethoscope, id: "f99.collector.nav", hint: "60-120s" },
   { to: "/settings", key: "nav.settings", icon: Settings },
 ];
 

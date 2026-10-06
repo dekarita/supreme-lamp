@@ -100,12 +100,22 @@ test("F96-shape: watcher reports task, shortcut, process, heartbeat AND escalati
 });
 
 test("F96-shape: webSocket reports the SERVER truth about the upgrade lane", () => {
-  assert.ok(SERVER.includes("$script:F96WsUpgradeSupported = $false"), "the server-side upgrade fact is not declared");
+  // [F99 §2.1 / B1] REWRITTEN IN PLACE, never deleted. This test used to pin
+  // the honest-but-fatal state `$script:F96WsUpgradeSupported = $false` (no
+  // /ws route existed at all). F99 implements the RFC 6455 lane, so the same
+  // assertion now pins the opposite truth AND the route that makes it true:
+  // a flag without a route would be exactly the lie the F96 bundle exposed.
+  assert.ok(SERVER.includes("$script:F96WsUpgradeSupported = $true"), "the upgrade lane is not declared supported");
+  assert.ok(SERVER.includes("function Invoke-F99WsRoute"), "the /ws route handler is missing");
+  assert.ok(SERVER.includes("function Get-F99WsAcceptKey") && SERVER.includes("Sec-WebSocket-Accept"), "the RFC 6455 handshake is incomplete");
+  assert.ok(SERVER.includes("if ($path -eq $script:F99WsUpgradePath)"), "the dispatcher does not route /ws to the upgrade handler");
+  assert.ok(SERVER.includes("$script:F99WsPumpSource"), "the per-socket frame pump is missing");
   for (const k of ["endpoint", "status", "serverUpgradeSupported", "advertisedByHealth", "lastConnect", "lastDisconnect", "disconnectReason", "reconnectAttempts"]) {
     assert.ok(SERVER.includes(k), "webSocket block is missing " + k);
   }
   // The finding must be stated in words the operator can act on.
-  assert.ok(/RFC6455 upgrade path/.test(SERVER), "the no-upgrade finding is not explained in the bundle");
+  assert.ok(/RFC6455/.test(SERVER), "the RFC6455 finding is not named in the bundle");
+  assert.ok(/upgrade lane live at \/ws/.test(SERVER), "the bundle does not state that the upgrade lane is live");
 });
 
 test("F96-shape: searchEndpoints reuses the F92 memo instead of fanning out", () => {

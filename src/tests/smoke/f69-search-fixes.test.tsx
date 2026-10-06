@@ -82,12 +82,13 @@ describe("F69 §1.4 search_enable lane flag", () => {
   // [F77 §2.1/§2.2 SUPERSEDED PIN] this cell used to assert that an explicit
   // searchEnabled=false dropped the entry to 8 and redirected /search. That hide
   // is the bug F77 removes: the lane is hardcoded, so the same inputs must now
-  // keep all 9 entries AND land on the live search surface.
-  it("9 entries survive any /diag answer; false is diagnostic-only", async () => {
+  // keep EVERY locked entry (9 original + /health + [F99] /collector) AND land
+  // on the live search surface.
+  it("every locked entry survives any /diag answer; false is diagnostic-only", async () => {
     expect(isSearchLaneEnabled()).toBe(true);
     const { container } = render(<App />);
     const links = () => Array.from(container.querySelectorAll('[data-testid="sidebar"] nav a')).map((a) => (a.getAttribute("href") || "").replace(/^#/, ""));
-    expect(links().length).toBe(10); // [F92] +/health
+    expect(links().length).toBe(11); // [F92] +/health, [F99] +/collector
     expect(links()).toContain("/search");
 
     // the poller mirror flips to false -> NOTHING moves in the UI
@@ -96,7 +97,7 @@ describe("F69 §1.4 search_enable lane flag", () => {
       announceSearchLane();
     });
     expect(isSearchLaneEnabled()).toBe(true);
-    expect(links().length).toBe(10); // [F92] +/health
+    expect(links().length).toBe(11); // [F92] +/health, [F99] +/collector
     expect(links()).toContain("/search");
     expect(document.getElementById("f56.search.nav")).not.toBeNull();
 
@@ -110,7 +111,7 @@ describe("F69 §1.4 search_enable lane flag", () => {
       (window as Any).__GHRDP_SEARCH_ENABLED = true;
       announceSearchLane();
     });
-    expect(links().length).toBe(10); // [F92] +/health
+    expect(links().length).toBe(11); // [F92] +/health, [F99] +/collector
   });
 });
 

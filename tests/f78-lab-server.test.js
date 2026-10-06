@@ -36,8 +36,15 @@ test('F78-P1-ROUTES: three routes, one block, after the search lane', () => {
 
 test('F78-P2-AUTH: dash token is constant-time and never a query credential', () => {
   assert.ok(BLOCK.includes("$parts.headers['x-dash-token']"), 'the dash token header is not read');
-  assert.ok(BLOCK.includes('Test-TicketBearer $f78Recv $f78Exp'), 'the token compare is not the shipped constant-time compare');
-  assert.ok(/\(\$f78Recv\.Length -eq \$f78Exp\.Length\)/.test(BLOCK), 'the length guard is missing');
+  // [F99 §2.5 / B5] the F78 route now calls the ONE shared validator; the
+  // constant-time compare lives inside Test-GhrdpDashToken (asserted below),
+  // and the route still refuses a query credential outright.
+  assert.ok(BLOCK.includes('$f78TokenOk = Test-GhrdpDashToken -Presented $f78Presented'), 'the F78 route does not use the shared F99 validator');
+  assert.ok(SERVER.includes('function Test-GhrdpDashToken'), 'the shared F99 dash-token validator is missing');
+  assert.ok(/function Test-GhrdpDashToken[\s\S]*?Test-TicketBearer \$recv \$exp/.test(SERVER), 'the shared validator is not constant-time');
+  // The length guard moved WITH the compare: an unequal length must never be
+  // compared byte-by-byte (that is what leaks a timing signal).
+  assert.ok(/\(\$recv\.Length -eq \$exp\.Length\)/.test(SERVER), 'the length guard is missing from the shared validator');
   assert.ok(BLOCK.includes("foreach ($f78Qk in @('key','token','dash-token','dash_token','dashtoken','access-token','access_token','password'))"), 'the query-credential refusal set changed');
   assert.ok(BLOCK.includes('-Code 401'), 'the token gate must answer 401');
 });
