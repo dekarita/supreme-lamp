@@ -2640,7 +2640,7 @@ jobs:
           set -euo pipefail
           sh=src/components/layout/AppShell.tsx
           app=src/App.tsx
-          # §1 sidebar: exactly 9 entries in locked order. [F76 §2.1] Search moved
+          # §1 sidebar: entries in locked order. [F76 §2.1] Search moved
           # to slot 2 (directly under Overview) so it is visible without scrolling;
           # the other entries keep their F56-c relative order. File Explorer above
           # Mirror (Alt+E) and Search (Alt+F) carry their additive f57/f56 nav ids.
@@ -2649,10 +2649,9 @@ jobs:
           src = open("src/components/layout/AppShell.tsx", encoding="utf-8").read()
           nav = src.split("const NAV: NavItem[]")[1].split("];")[0]
           tos = re.findall(r"to: \"([^\"]+)\"", nav)
-          # [F92 §6.3] +1: the /health nav entry (locked-order contract
-          # follows the AppShell; the four smoke-test ORDER arrays got the
-          # same bump). Everything F56-c pinned before still asserts.
-          expect = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/health", "/settings"]
+          # [F92 §6.3] +/health; [F99] +/collector (locked-order contract
+          # follows the AppShell; smoke-test ORDER arrays kept in sync).
+          expect = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/health", "/collector", "/settings"]
           assert tos == expect, ("sidebar order drifted", tos)
           assert "id: \"f57.explorer.nav\"" in nav and "hint: \"Alt+E\"" in nav, "files entry"
           assert "id: \"f56.search.nav\"" in nav and "hint: \"Alt+F\"" in nav, "search entry"

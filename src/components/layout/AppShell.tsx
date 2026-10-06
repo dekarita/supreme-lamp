@@ -3,7 +3,7 @@
 // sticky, the ONLY surface allowed to render the four time fields + clock -
 // enforced by tests/smoke/bottom-bar-time.test.ts + scripts/check-bottom-bar-time.mjs).
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { Activity, ChevronsLeft, Clock, Database, Folder, Globe, KeyRound, Menu, Moon, Search, Settings, Sun, Type, Zap } from "lucide-react";
+import { Activity, ChevronsLeft, ClipboardList, Clock, Database, Folder, Globe, KeyRound, Menu, Moon, Search, Settings, Sun, Type, Zap } from "lucide-react";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { CommandPalette } from "@/components/layout/CommandPalette";
@@ -17,6 +17,7 @@ import { fmtHMS, pad2 } from "@/lib/format";
 import { elapsedSeconds, remainingSeconds } from "@/stores/telemetryStore";
 import { logonRowText, rdpUsageSeconds } from "@/lib/domain/native";
 import { useNow } from "@/lib/useNow";
+import { logButtonAction } from "@/lib/collectorAgent";
 
 function clockText(ms: number): string {
   const d = new Date(ms);
@@ -134,7 +135,17 @@ function TopBar() {
             type="button"
             id="f95.wsReconnect"
             data-testid="ws-reconnect"
-            onClick={() => requestWsReconnect()}
+            onClick={() => {
+              const _start = performance.now();
+              requestWsReconnect();
+              logButtonAction({
+                feature: "websocket",
+                action: "reconnect",
+                params: {},
+                result: { requested: true },
+                elapsedMs: Math.round(performance.now() - _start),
+              });
+            }}
             className="px-2 py-0.5 text-xs rounded-md border border-danger/50 text-danger font-medium hover:bg-danger/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent whitespace-nowrap"
           >
             {t("activity.wsReconnect")}
@@ -226,6 +237,8 @@ const NAV: NavItem[] = [
   // [F92 §6.3] the self-test dashboard (/#/health): one row per F92 check,
   // each row's "fix" cell names the one-cell patch. Runs §13 step 4-6.
   { to: "/health", key: "nav.health", labelKey: "sidebar.health", icon: Activity, id: "f92.health.nav" },
+  // [F99 §3] Collector — live feature probes (POST /api/collector/run 1/5 min)
+  { to: "/collector", key: "nav.collector", labelKey: "sidebar.collector", icon: ClipboardList, id: "f99.collector.nav" },
   { to: "/settings", key: "nav.settings", icon: Settings },
 ];
 

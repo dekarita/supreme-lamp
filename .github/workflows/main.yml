@@ -2165,6 +2165,10 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-watcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-watcher.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-rdp-first-login.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-rdp-first-login.ps1"
+          # [F99] hardened watcher task XML for Register-ScheduledTask -Xml
+          mkdir -p "$RUNNER_TEMP/ghrdp-stage/docs"
+          cp "$GITHUB_WORKSPACE/docs/f99-watcher-task.xml" "$RUNNER_TEMP/ghrdp-stage/docs/f99-watcher-task.xml" 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE/docs/f99-watcher-task.xml" "$RUNNER_TEMP/ghrdp-stage/docs-f99-watcher-task.xml" 2>/dev/null || true
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-pub2.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-pub2.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-bootstrap-session.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-bootstrap-session.ps1"
           echo '[watcher] ghrdp-watcher.ps1 written'
@@ -4453,7 +4457,7 @@ jobs:
               ForEach-Object { try { Unregister-ScheduledTask -TaskName $_.TaskName -Confirm:$false -ErrorAction SilentlyContinue } catch { } }
             Write-Host '[terminal] pruned any stale GhrdpTerm-* scheduled tasks'
           } catch { }
-      - name: Register watcher autostart (ONLOGON)
+      - name: Register watcher autostart (ONLOGON) [F99 B2 hardened]
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Continue'
@@ -4461,17 +4465,64 @@ jobs:
           $pwshPath = 'powershell.exe'
           try { $c = Get-Command pwsh.exe -ErrorAction Stop; if ($c) { $pwshPath = $c.Source } } catch { }
           $argLine = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-watcher.ps1"'
-          $registered = $false
+          # [F99 B2/B4] resolve ACTIVE desktop user (runneradmin) vs generated rdp user
+          $watchUser = $user
           try {
+            $q = & quser.exe 2>$null; $LASTEXITCODE=0
+            foreach ($line in @($q)) { if ($line -match '^\s*>?\s*(\S+)\s+\S+\s+\d+\s+Active') { $watchUser = $Matches[1]; break } }
+          } catch { }
+          if (-not $watchUser) { try { $watchUser = (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName.Split('\')[-1] } catch { } }
+          if (-not $watchUser) { $watchUser = 'runneradmin' }
+          Write-Host ('[F99] watcher target user: generated=' + $user + ' active=' + $watchUser)
+          $registered = $false
+          # (a) Hardened XML import — guarantees Principal/UserId, LogonType InteractiveToken, RunLevel Highest,
+          # AllowStartOnDemand true, Exec path C:\ghrdp\ghrdp-watcher.ps1
+          # [F100] Default task XML (here-string at body column 0, pattern matches direct-hunter).
+          $xmlTemplateDefault = @'
+          <?xml version="1.0" encoding="UTF-16"?>
+          <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+            <RegistrationInfo><Author>GH-RDP</Author><Description>GHRDP watcher (F99 inline)</Description><URI>\GhrdpWatcher</URI></RegistrationInfo>
+            <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>runneradmin</UserId></LogonTrigger></Triggers>
+            <Principals><Principal id="Author"><UserId>runneradmin</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
+            <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfGoingOnBatteries><StopIfGoingOnBatteries>false</DisallowStartIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>false</Hidden><RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>false</WakeToRun><ExecutionTimeLimit>PT6H</ExecutionTimeLimit><Priority>7</Priority></Settings>
+            <Actions Context="Author"><Exec><Command>powershell.exe</Command><Arguments>-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-watcher.ps1"</Arguments><WorkingDirectory>C:\ghrdp</WorkingDirectory></Exec></Actions>
+          </Task>
+          '@
+          $xmlTemplateDefault = ($xmlTemplateDefault -split "`r?`n" | ForEach-Object { $_ -replace '^\s{10}', '' }) -join "`r`n"
+          try {
+              $xmlTemplate = $null
+              $candidates = @(
+                  (Join-Path $env:GITHUB_WORKSPACE 'docs/f99-watcher-task.xml'),
+                  (Join-Path $env:RUNNER_TEMP 'ghrdp-stage/docs/f99-watcher-task.xml'),
+                  'C:\ghrdp\docs-f99-watcher-task.xml'
+              )
+              foreach ($cand in $candidates) { if (Test-Path -LiteralPath $cand) { $xmlTemplate = Get-Content -LiteralPath $cand -Raw -ErrorAction Stop; break } }
+              if (-not $xmlTemplate) { $xmlTemplate = $xmlTemplateDefault }
+            $xmlPatched = $xmlTemplate.Replace('runneradmin', $watchUser).Replace('powershell.exe', $pwshPath)
+            Register-ScheduledTask -TaskName 'GhrdpWatcher' -Xml $xmlPatched -Force -ErrorAction Stop | Out-Null
+            $registered = $true
+            Write-Host ('[F99] GhrdpWatcher ONLOGON registered via -Xml for ' + $watchUser + ' (AllowStartOnDemand=true, InteractiveToken/Highest)')
+            try {
+              $back = Get-ScheduledTask -TaskName 'GhrdpWatcher' -ErrorAction Stop
+              Write-Host ('[F99] verify: Principal=' + $back.Principal.UserId + ' LogonType=' + $back.Principal.LogonType + ' RunLevel=' + $back.Principal.RunLevel)
+            } catch { Write-Host '[F99] verify read-back failed' }
+          } catch {
+            Write-Host ('[F99] Register-ScheduledTask -Xml failed: ' + $_.Exception.Message)
+          }
+          if (-not $registered) {
+            try {
               $action = New-ScheduledTaskAction -Execute $pwshPath -Argument $argLine
-              $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
-              $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
-              $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 6)
+              $trigger = New-ScheduledTaskTrigger -AtLogOn -User $watchUser
+              $principal = New-ScheduledTaskPrincipal -UserId $watchUser -LogonType Interactive -RunLevel Highest
+              $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -AllowStartOnDemand -ExecutionTimeLimit (New-TimeSpan -Hours 6)
+              try { $settings.AllowStartOnDemand = $true } catch { }
+              $settings.StartWhenAvailable = $true
               Register-ScheduledTask -TaskName 'GhrdpWatcher' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
               $registered = $true
-              Write-Host '[watcher] GhrdpWatcher ONLOGON task registered for the RDP user'
-          } catch {
+              Write-Host ('[F99] GhrdpWatcher ONLOGON registered via New-ScheduledTask* fallback for ' + $watchUser)
+            } catch {
               Write-Host ('[watcher] Register-ScheduledTask failed: ' + $_.Exception.Message)
+            }
           }
           if (-not $registered) {
               try {
@@ -4483,7 +4534,6 @@ jobs:
                   Write-Host ('[watcher] schtasks fallback failed: ' + $_.Exception.Message)
               }
           }
-
           # ------------------------------------------------------------------
           # [F95 §3.2 / R2] START IT NOW, AND MAKE THE SHORTCUT OURS.
           #
@@ -4733,29 +4783,56 @@ jobs:
             exit 0
           }
 
+          # [F99 §2.4 / B4] Autologon user mismatch: $user is the per-run generated rdp account
+          # (rdpb2e2fa) but the interactive desktop on a hosted runner belongs to
+          # runneradmin — so the ONLOGON tasks never fire for the user that is
+          # actually signed in. Resolve the ACTIVE session user via quser and arm
+          # AutoAdminLogon for THAT user, syncing its password so the credential
+          # is valid. If no active user is found, fall back to runneradmin.
+          $activeUser = ''
+          try {
+            $q = & quser.exe 2>$null; $LASTEXITCODE=0
+            foreach ($line in @($q)) { if ($line -match '^\s*>?\s*(\S+)\s+\S+\s+\d+\s+Active') { $activeUser = $Matches[1]; break } }
+          } catch { $activeUser='' }
+          if (-not $activeUser) {
+            try { $activeUser = (Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue).UserName.Split('\')[-1] } catch { }
+          }
+          if (-not $activeUser) { $activeUser = 'runneradmin' }
+          # Sync the active user's password to $pass so DefaultPassword is valid
+          try {
+            $sec = ConvertTo-SecureString $pass -AsPlainText -Force
+            Set-LocalUser -Name $activeUser -Password $sec -ErrorAction Stop | Out-Null
+            Write-Host ("[F99] synced password for autologon user " + $activeUser)
+          } catch {
+            try { & net.exe user $activeUser $pass 2>$null | Out-Null; $LASTEXITCODE=0; Write-Host ("[F99] synced password via net user for " + $activeUser) } catch { Write-Host ("[F99] password sync for " + $activeUser + " failed: " + $_.Exception.Message) }
+          }
+          # For diagnostics, also expose the mapping
+          Write-Host ("[F99] autologon target: generated=" + $user + " active=" + $activeUser)
+
           # 1. Arm AutoAdminLogon, then READ IT BACK - a write nobody verifies
           #    is the same class of silent failure as the launcher itself.
           $armed = $false
           $armReason = ''
+          $autologonUser = $activeUser
           try {
             Set-ItemProperty -Path $winlogon -Name 'AutoAdminLogon'    -Value '1'          -Type String -Force -ErrorAction Stop
-            Set-ItemProperty -Path $winlogon -Name 'DefaultUserName'   -Value $user        -Type String -Force -ErrorAction Stop
+            Set-ItemProperty -Path $winlogon -Name 'DefaultUserName'   -Value $autologonUser -Type String -Force -ErrorAction Stop
             Set-ItemProperty -Path $winlogon -Name 'DefaultPassword'   -Value $pass        -Type String -Force -ErrorAction Stop
             Set-ItemProperty -Path $winlogon -Name 'DefaultDomainName' -Value $env:COMPUTERNAME -Type String -Force -ErrorAction Stop
             $rb = Get-ItemProperty -Path $winlogon -ErrorAction Stop
             # The password is deliberately NOT compared or printed here; only
             # the three non-secret values are verified and reported.
-            $armed = ([string]$rb.AutoAdminLogon -eq '1' -and [string]$rb.DefaultUserName -eq $user)
+            $armed = ([string]$rb.AutoAdminLogon -eq '1' -and [string]$rb.DefaultUserName -eq $autologonUser)
             if (-not $armed) { $armReason = 'registry read-back did not match the values written' }
           } catch {
             $armReason = $_.Exception.Message
           }
 
-          if ($armed) { Write-Host '[f94] AutoAdminLogon ARMED (verified by read-back) for' $user }
+          if ($armed) { Write-Host ('[F99] AutoAdminLogon ARMED (verified by read-back) for ' + $autologonUser + ' (generated ' + $user + ' mapped to active)') }
           else { Write-Host ('::warning::[f94] AutoAdminLogon NOT armed: ' + $armReason) }
 
-          # 2. Look for an INTERACTIVE (type-10) 4624 - the only evidence the
-          #    dashboard's LAST LOGON row and logon banner trust.
+          # 2. Look for an INTERACTIVE (type 2/10/11) 4624 - [F99 §2.3] was type-10 only,
+          #    so an AutoAdminLogon (type 2) desktop read as no session.
           $type10 = $null
           $deadline = (Get-Date).AddSeconds(60)
           while ((Get-Date) -lt $deadline) {
@@ -4766,7 +4843,7 @@ jobs:
                 $nodes = $xml.Event.EventData.Data
                 $lt = $null
                 foreach ($n in $nodes) { if ($n.Name -eq 'LogonType') { $lt = [string]$n.'#text' } }
-                if ($lt -eq '10') { $type10 = $e; break }
+                if ($lt -eq '2' -or $lt -eq '10' -or $lt -eq '11') { $type10 = $e; break }
               }
             } catch { }
             if ($type10) { break }

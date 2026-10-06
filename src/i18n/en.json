@@ -14,7 +14,8 @@
     "settings": "Settings",
     "files": "File Explorer",
     "search": "Search",
-    "health": "Health"
+    "health": "Health",
+    "collector": "Collector"
   },
   "sidebar": {
     "nav": "Primary navigation",
@@ -23,7 +24,8 @@
     "menu": "Open navigation",
     "search": "Search",
     "searchLab": "Lab",
-    "health": "Health"
+    "health": "Health",
+    "collector": "Collector"
   },
   "actions": {
     "autoLogin": "WINDOWS AUTO-LOGIN",
@@ -1221,5 +1223,29 @@
       "server": "The server refused the diagnostic bundle — check the dashboard token and retry.",
       "transport": "Connection to the server was lost — reconnect, then download the bundle again."
     }
+  },
+  "collector": {
+    "title": "Collector — Diagnosis Run",
+    "controls": "Controls",
+    "run": "Run diagnosis (POST /api/collector/run)",
+    "running": "Running…",
+    "downloadJson": "Download JSON",
+    "downloadNdjson": "Download NDJSON",
+    "hint": "Probes launcher, watcher, WebSocket, logon (type 2/10/11), 11 search endpoints, download, lab, mirror, file-explorer, telemetry, viewingMode, autologon, token rotation and sidebar routes — one file to paste to Claude.",
+    "retryAfter": "Retry after {{s}}s (1 per 5 min)",
+    "lastRun": "Last run: {{ts}}",
+    "noRun": "No run yet",
+    "summary": "Summary",
+    "total": "Total",
+    "passed": "Passed",
+    "failed": "Failed",
+    "critical": "Critical issues",
+    "recommendations": "Recommendations",
+    "features": "Features",
+    "feature": "Feature",
+    "status": "Status",
+    "detail": "Detail",
+    "empty": "No report yet — click Run diagnosis to probe all systems. Rate limit 1 per 5 minutes (HTTP 429).",
+    "rawJson": "Raw JSON"
   }
 }

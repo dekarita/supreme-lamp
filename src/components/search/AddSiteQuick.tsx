@@ -27,6 +27,7 @@ import { NEW_SITE_NAME_MAX, validateNewSite, type NewSiteError } from "@/api/lab
 import F58 from "@/search/custom-source-core";
 import { MAX_CUSTOM_SITES, useCustomSourcesStore } from "@/stores/customSourcesStore";
 import { useToastStore } from "@/stores/toastStore";
+import { logButtonAction } from "@/lib/collectorAgent";
 
 const ERROR_KEYS: Record<NewSiteError, string> = {
   "name-required": "newSiteNameRequired",
@@ -197,8 +198,21 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
       return;
     }
     setSaving(true);
+    const _start = performance.now();
     const outcome = await addSite(name, normalized);
+    const _elapsed = Math.round(performance.now() - _start);
     setSaving(false);
+    // [F100] log the add-site action with result (ok / error code)
+    try {
+      logButtonAction({
+        feature: "add-site",
+        action: "save",
+        params: { url: normalized, name },
+        result: { ok: !!outcome.ok, hostname: outcome.source?.hostname, status: outcome.ok ? 200 : 400 },
+        elapsedMs: _elapsed,
+        error: outcome.ok ? undefined : String(outcome.error || "failed"),
+      });
+    } catch { /* telemetry never blocks */ }
     if (!outcome.ok) {
       const err = String(outcome.error || "search.errors.generic");
       // [F93 §1.3] Per-field envelope first (errors.name / errors.url): each

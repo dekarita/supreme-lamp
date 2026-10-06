@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<!--
+  [F99 §2.2 / B2] Hardened watcher scheduled-task XML.
+
+  Root cause of 267011 (Task has not yet run) with IDLE watcher:
+    * GhrdpWatcher was registered as ONLOGON for a generated rdp* user that never
+      logs on interactively; runneradmin is the user that actually owns the desktop.
+    * AllowStartOnDemand was not explicit, so schtasks /Run could be ignored.
+    * The task was re-registered each run with New-ScheduledTask* which did not
+      guarantee Principal.UserId, RunLevel, AllowStartOnDemand, ExecutionTimeLimit
+      stayed correct after an OS upgrade.
+
+  Fix:
+    * Principal UserId = runneradmin, LogonType = InteractiveToken, RunLevel = HighestAvailable
+    * ExecutionTimeLimit 6h, AllowStartOnDemand true, StartWhenAvailable true, MultipleInstances IgnoreNew
+    * Single LogonTrigger for runneradmin; workflow replaces {{USER}} with the active user (runneradmin)
+      and registers via Register-ScheduledTask -Xml (hardened path). Workflow also verifies
+      the registration by reading it back and falls back to schtasks /Create if the Xml import fails.
+-->
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>2026-01-01T00:00:00</Date>
+    <Author>GH-RDP</Author>
+    <Description>GHRDP watcher - keep-alive + mirror uploader (F99 hardened)</Description>
+    <URI>\GhrdpWatcher</URI>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <UserId>runneradmin</UserId>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <UserId>runneradmin</UserId>
+      <LogonType>InteractiveToken</LogonType>
+      <RunLevel>HighestAvailable</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>
+    <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
+    <StopIfGoingOnBatteries>false</StopIfGoingOnBatteries>
+    <AllowHardTerminate>true</AllowHardTerminate>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable>
+    <IdleSettings>
+      <StopOnIdleEnd>false</StopOnIdleEnd>
+      <RestartOnIdle>false</RestartOnIdle>
+    </IdleSettings>
+    <AllowStartOnDemand>true</AllowStartOnDemand>
+    <Enabled>true</Enabled>
+    <Hidden>false</Hidden>
+    <RunOnlyIfIdle>false</RunOnlyIfIdle>
+    <WakeToRun>false</WakeToRun>
+    <ExecutionTimeLimit>PT6H</ExecutionTimeLimit>
+    <Priority>7</Priority>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>powershell.exe</Command>
+      <Arguments>-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-watcher.ps1"</Arguments>
+      <WorkingDirectory>C:\ghrdp</WorkingDirectory>
+    </Exec>
+  </Actions>
+</Task>

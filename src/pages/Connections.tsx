@@ -10,6 +10,7 @@ import { ConnectionCard } from "@/components/domain/ConnectionCard";
 import { DiagnosticsDrawer } from "@/components/domain/DiagnosticsDrawer";
 import { useSessionStore } from "@/stores/sessionStore";
 import { Chip } from "@/components/primitives/Chip";
+import { logButtonAction } from "@/lib/collectorAgent";
 
 export default function Connections() {
   const { t } = useTranslation();
@@ -30,7 +31,22 @@ export default function Connections() {
       <Card title="Quick actions" className="mb-4">
         <div className="flex flex-wrap gap-2">
           <CopyButton value={mstsc} label="mstsc command" size="md" />
-          <Button variant="secondary" size="sm" onClick={() => window.open(ip ? "http://" + ip + ":7331/rdp" : "/rdp", "_blank", "noopener")}>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              const _start = performance.now();
+              const url = ip ? "http://" + ip + ":7331/rdp" : "/rdp";
+              window.open(url, "_blank", "noopener");
+              logButtonAction({
+                feature: "launcher",
+                action: "downloadRdp",
+                params: { url },
+                result: { ok: true },
+                elapsedMs: Math.round(performance.now() - _start),
+              });
+            }}
+          >
             {t("actions.download")} .rdp
           </Button>
         </div>

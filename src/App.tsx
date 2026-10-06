@@ -22,6 +22,7 @@ import HealthPage from "@/pages/Health";
 import { VersionGate } from "@/components/domain/F92VersionGate";
 import Telemetry from "@/pages/Telemetry";
 import Settings from "@/pages/Settings";
+import Collector from "@/pages/Collector";
 // [F94 §3.1] The dashboard-token gate: mounted at the ROOT, outside the router,
 // so it renders on every route and before any page can attempt a write the
 // server would refuse with a 403. One missing ?key= produced eight of the
@@ -65,6 +66,7 @@ export default function App() {
           <Route path="/search/lab/:targetId" element={<SearchLab />} />
           <Route path="/telemetry" element={<Telemetry />} />
           <Route path="/health" element={<HealthPage />} />
+          <Route path="/collector" element={<Collector />} />
           <Route path="/settings" element={<Settings />} />
           <Route path="*" element={<Overview />} />
         </Route>
