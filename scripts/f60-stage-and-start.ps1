@@ -83,7 +83,8 @@ $script:F60PayloadList = @(
     'payloads/f59-timing.ps1',
     'payloads/f60-warm-pins.json',
     'payloads/ghrdp-install.template.ps1',
-    'payloads/helper-ghrdp-connect.ps1'
+    'payloads/helper-ghrdp-connect.ps1',
+    'payloads/ghrdp-rdp-first-login.ps1'
 )
 $script:F60ToolList = @(
     'scripts/serve-dist.mjs',
