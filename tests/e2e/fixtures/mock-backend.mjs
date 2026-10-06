@@ -619,7 +619,29 @@ const server = createServer(async (req, res) => {
           date: "2026-10-04",
         }]
       : null;
-    const results = loading || empty || search.cancelled ? [] : f85Results || readJson("f79-results.json").results;
+    // [F102] The Collector's probe query (COLLECTOR_PROBE_QUERY in
+    // src/lib/collectorAgent.ts) gets one direct .mp4 row on top of the F79
+    // rows - the shape a real "public domain film" search returns. That row
+    // carries every result-card button the Collector clicks for real: Fetch,
+    // Open in RDP, Download to RDP (file-ish), Watch in RDP (video), Preview
+    // and Open in Lab.
+    const f102Results = search.query.trim().toLowerCase() === "public domain film"
+      ? [{
+          resultId: "f102-film-1",
+          adapterId: "internet-archive",
+          nameKey: "search.sources.internetArchive",
+          category: "software",
+          title: "Public domain film reel (F102 probe)",
+          creator: "Operator fixture",
+          snippet: "A direct .mp4 file: download-to-RDP and watch-in-RDP both apply.",
+          sizeBytes: 4096000,
+          licenceTag: "open-access",
+          sourceSnapshotId: "f102-snapshot-1",
+          sourceUrl: "https://archive.org/download/f102-probe/film.mp4",
+          date: "2026-10-06",
+        }, ...readJson("f79-results.json").results]
+      : null;
+    const results = loading || empty || search.cancelled ? [] : f85Results || f102Results || readJson("f79-results.json").results;
     const phase = search.cancelled ? "cancelled" : loading ? "running" : "complete";
     send(res, 200, {
       searchId, phase, queryGeneration: 1, results,

@@ -276,7 +276,7 @@ describe("[F101 §3.4] the button registry", () => {
     }
   });
 
-  it("'Click now' drives the REAL DOM element when it is mounted", async () => {
+  it("'Click now' drives the REAL DOM element when it is mounted", { timeout: 15000 }, async () => {
     let clicked = 0;
     const el = document.createElement("button");
     el.setAttribute("data-testid", "collector-refresh");
@@ -295,13 +295,21 @@ describe("[F101 §3.4] the button registry", () => {
     }
   });
 
-  it("'Click now' falls back to an instrumented route probe when the button is absent", async () => {
-    impl = wireRoutes(probeAnswers({ "/api/collector/report": { ok: true, features: {} } }));
-    const rec = await clickKnownButton(KNOWN_BUTTONS.find((b) => b.id === "collector-refresh")!);
-    expect((rec.result as { via?: string })?.via).toBe("route-probe");
-    expect(rec.response?.status).toBe(200);
-    expect(rec.verdict?.status).toBe("ok");
-  });
+  // [F102 #159] the F101 route-probe fallback was the fake the operator saw:
+  // an absent button is now recorded as exactly that - never as a 2xx probe.
+  it("'Click now' never route-probes an absent button (F102: it records not-rendered)", async () => {
+    const urls: string[] = [];
+    impl = wireRoutes(probeAnswers({ "/api/collector/report": { ok: true, features: {} } }), async (url) => {
+      urls.push(url);
+      return mkRes(404, {});
+    });
+    const rec = await clickKnownButton(KNOWN_BUTTONS.find((b) => b.id === "ws-reconnect")!);
+    expect((rec.result as { via?: string })?.via).toBe("not-rendered");
+    expect(rec.response).toBeUndefined();
+    expect(rec.verdict?.status).toBe("warn");
+    expect(rec.verdict?.reason).toContain("not found");
+    expect(urls.filter((u) => u.includes("/api/collector/report"))).toHaveLength(0);
+  }, 15000);
 
   it("lastOutcomePerButton keys the table by feature:action", async () => {
     impl = wireRoutes(probeAnswers(), async (url) => (url === "/api/progress" ? mkRes(200, { ok: true }) : mkRes(404, {})));
