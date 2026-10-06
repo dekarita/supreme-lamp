@@ -460,10 +460,9 @@ export async function launchUrl(raw: string): Promise<LaunchOutcome> {
   if (mode === "web-desktop") {
     try {
       const win = window.open(url, "_blank", "noopener,noreferrer");
-      if (win) {
-        _log({ feature: "launcher", action: "openUrl", params: { url }, result: { ok: true, mode, tier: "webdesk-local" }, elapsedMs: Math.round(performance.now() - _start) });
-        return { ok: true, mode, viaWindowOpen: true };
-      }
+      // [F100] telemetry (async, never blocks)
+      if (win) { void import("@/lib/collectorAgent").then((m) => { try { m.logButtonAction({ feature: "launcher", action: "openUrl", params: { url }, result: { ok: true, mode, tier: "webdesk-local" }, elapsedMs: Math.round(performance.now() - _start) }); } catch { /* */ } }).catch(() => { /* */ }); }
+      if (win) return { ok: true, mode, viaWindowOpen: true };
     } catch {
       /* fall through to the ladder */
     }
