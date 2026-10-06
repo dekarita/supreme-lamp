@@ -18,6 +18,14 @@ export interface MirrorStatus {
   source: string;
   at: string;
   pending: boolean;
+  /** [F101 §2.1 / N1] false when the server has no mirror module loaded. The
+   *  status route then answers 200 (not 503) with `reason` + `advice`, so the
+   *  UI renders a neutral "Mirror: disabled" line and stops treating the poll
+   *  as an error. Absent on a pre-F101 server. */
+  available?: boolean;
+  reason?: string;
+  advice?: string;
+  loadError?: string;
 }
 
 export interface MirrorOptState {
@@ -59,7 +67,41 @@ export async function getMirrorStatus(): Promise<MirrorOptState | null> {
       continue;
     }
     if (!r || r.status === 404) continue;
-    if (!r.ok) return null;
+    // [F101 §2.1 / N1] A pre-F101 server answers 503 when the mirror module is
+    // not loaded. Read the reason out of it instead of collapsing to null, so
+    // even against an older server the card says WHY instead of showing the
+    // pre-F49 legacy path (and the operator stops polling a route that can
+    // never answer 200 on this run).
+    if (!r.ok) {
+      if (r.status === 503) {
+        let e: { reason?: string; advice?: string; error?: string } | null = null;
+        try {
+          e = (await r.json()) as { reason?: string; advice?: string; error?: string };
+        } catch {
+          e = null;
+        }
+        if (e && (e.reason || e.error)) {
+          return {
+            status: {
+              ok: false,
+              enabled: false,
+              available: false,
+              mirror: false,
+              hosts: [],
+              host: "",
+              scope: "",
+              source: "off",
+              at: "",
+              pending: false,
+              reason: e.reason || "mirror-module-not-installed",
+              advice: e.advice || String(e.error || ""),
+            },
+            csrf: "",
+          };
+        }
+      }
+      return null;
+    }
     let j: MirrorStatus | null = null;
     try {
       j = (await r.json()) as MirrorStatus;

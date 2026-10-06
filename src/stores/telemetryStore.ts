@@ -52,6 +52,11 @@ interface TelemetryState {
    *  socket died; the reconnect ladder cannot distinguish a refused upgrade
    *  from a network drop. */
   wsLastDisconnectReason: string;
+  /** [F101 §2.4 / N4] epoch-ms of the last keepalive seen from the server
+   *  (the app-level {"type":"ping"} every 20s, or ANY frame). The watchdog in
+   *  useDashboardPolling force-reconnects 30s after this stops moving, which
+   *  is what turns a half-open socket from "idle forever" into a recovery. */
+  wsLastPingAt: number | null;
   rdpUsage: UsageState | null;
   rdpLogonFallback: { sec: number; at: number } | null;
   usageFrozen: boolean;
@@ -67,6 +72,8 @@ interface TelemetryState {
   setWsAttempts: (n: number) => void;
   /** [F96 §2.1] record a successful socket open. */
   setWsConnectedAt: (atMs: number) => void;
+  /** [F101 §2.4 / N4] record a keepalive receipt (server PING or any frame). */
+  setWsLastPingAt: (atMs: number) => void;
   /** [F96 §2.1] record a socket close with the browser's own code/reason. */
   setWsDisconnectedAt: (atMs: number, reason: string) => void;
   /** [F95 §3.4 / R4] manual reconnect requested by the operator. Bumped so the
@@ -101,6 +108,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   wsLastConnectAt: null,
   wsLastDisconnectAt: null,
   wsLastDisconnectReason: "",
+  wsLastPingAt: null,
   wsReconnectNonce: 0,
   rdpUsage: null,
   rdpLogonFallback: null,
@@ -154,6 +162,7 @@ export const useTelemetryStore = create<TelemetryState>((set, get) => ({
   setWsAttempts: (n) => set({ wsAttempts: n }),
   setWsConnectedAt: (atMs) => set({ wsLastConnectAt: atMs }),
   setWsDisconnectedAt: (atMs, reason) => set({ wsLastDisconnectAt: atMs, wsLastDisconnectReason: String(reason || "") }),
+  setWsLastPingAt: (atMs) => set({ wsLastPingAt: atMs }),
   requestWsReconnect: () => set((st) => ({ wsReconnectNonce: st.wsReconnectNonce + 1, wsDead: false })),
   setUsage: (u) => set({ rdpUsage: u }),
   setLogonFallback: (v) => set({ rdpLogonFallback: v }),

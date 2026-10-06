@@ -1,6 +1,6 @@
 // [F84 §2.1] Vitest-runt coverage for the AddSiteQuick normalisation UX.
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import "@/i18n";
 import { AddSiteQuick, isInsecureHttp, normalizeUrl } from "@/components/search/AddSiteQuick";
@@ -64,7 +64,11 @@ describe("F84 AddSiteQuick normalisation", () => {
     fireEvent.change(screen.getByTestId("add-site-name"), { target: { value: "Demo" } });
     fireEvent.change(screen.getByTestId("add-site-url"), { target: { value: "openculture.com" } });
     fireEvent.click(screen.getByTestId("add-site-save"));
-    await Promise.resolve();
+    // [F101 §3.2] SUPERSEDED WAIT (updated, not deleted): Add site save now
+    // runs through instrumentButton(), which probes the four services BEFORE
+    // the request goes out so the row can carry a preCheck. One microtask no
+    // longer covers that, so wait for the POST to actually leave the modal.
+    await waitFor(() => expect(posted.length).toBeGreaterThan(0));
     expect(normalizeUrl("openculture.com")).toBe("https://openculture.com");
     expect(posted.length > 0 ? posted[0] : "").toContain("https://openculture.com");
     expect(isInsecureHttp("https://openculture.com")).toBe(false);

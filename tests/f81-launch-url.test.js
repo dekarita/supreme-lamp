@@ -125,7 +125,10 @@ test('F81-E1-FIELD-ERRORS: POST /api/f58/sources returns errors{name,url} envelo
 
 test('F81-PRESERVED-F78: the F78 fences survive untouched', () => {
   for (const tok of [
-    "Test-TicketBearer $f78Recv $f78Exp",
+    // [F101 §2.2] SUPERSEDED TOKEN (updated, not deleted): the lane's literal
+    // boot-snapshot compare was the N2 auth bug; the shared refresh-aware
+    // validator replaces it and keeps the compare constant-time.
+    "Test-GhrdpDashToken -Presented $f78Presented -SnapshotToken $script:Token",
     "foreach ($f78Qk in @('key','token','dash-token','dash_token','dashtoken','access-token','access_token','password'))",
     "Invoke-F78SecureFetch -Url ([string]$f78Src.baseUrl)",
     // [F84 §2.2] the strict href fence was replaced by the www-tolerant

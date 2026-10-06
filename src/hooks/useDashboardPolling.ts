@@ -177,6 +177,10 @@ export function useDashboardPolling(): void {
           // socket EVER came up (and when); a null here with a dead socket is
           // the difference between "refused" and "dropped".
           useTelemetryStore.getState().setWsConnectedAt(Date.now());
+          // [F101 §2.4 / N4] seed the keepalive clock so the 30s watchdog does
+          // not fire against a socket that just opened and has not been pinged
+          // yet (the server's first PING lands within 20s).
+          useTelemetryStore.getState().setWsLastPingAt(Date.now());
           // [F95 §3.4 / R4] ladder reset: a successful open means we are not
           // disconnected, however many tries it took to get here.
           useTelemetryStore.getState().setWsDead(false);
@@ -196,6 +200,26 @@ export function useDashboardPolling(): void {
         ws.onmessage = (evt) => {
           try {
             const data = JSON.parse(evt.data as string);
+            // [F101 §2.4 / N4] keepalive. The server PINGs every 20s: a real
+            // RFC6455 PING frame (answered by the browser below the JS API) AND
+            // an application-level {"type":"ping"} which is the only liveness
+            // signal JS can see. Answer it with a PONG frame-text, stamp the
+            // receipt, and let the watchdog below force a reconnect when the
+            // pings stop - that is how a half-open socket (the F99 close=1005
+            // "idle" case) gets noticed in 30s instead of never.
+            if (data && typeof data === "object" && (data as { type?: string }).type === "ping") {
+              useTelemetryStore.getState().setWsLastPingAt(Date.now());
+              try {
+                if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+              } catch {
+                /* a lost pong is what the watchdog is for */
+              }
+              return;
+            }
+            // An echoed pong of our own carries no progress; drop it silently.
+            if (data && typeof data === "object" && (data as { type?: string }).type === "pong") return;
+            // Any other frame is also proof of liveness.
+            useTelemetryStore.getState().setWsLastPingAt(Date.now());
             setProgress(data);
             // [F56-d] File-arrival event via ws progress mirrorDiag for Fetched-root
             try {
@@ -304,6 +328,29 @@ export function useDashboardPolling(): void {
         resetWs("manual-reconnect");
       }
     }, 1000);
+
+    // [F101 §2.4 / N4] KEEPALIVE WATCHDOG. The F99 bundle's last evidence was
+    // `status="idle"`, `reconnectAttempts=1`, `close=1005`: the socket went
+    // half-open and nothing on the client noticed, because the only reconnect
+    // trigger was the browser's own onclose. The server now PINGs every 20s
+    // (RFC6455 PING + an app-level {"type":"ping"} JS can see and answers with
+    // a PONG); if 30s pass with no ping - or no frame at all - we drop the
+    // socket ourselves and run the ladder again.
+    const WS_PING_TIMEOUT_MS = 30000;
+    const pingWatchdog = window.setInterval(() => {
+      if (!ws || ws.readyState !== 1) return;
+      const last = useTelemetryStore.getState().wsLastPingAt;
+      if (last == null) return;
+      if (Date.now() - last > WS_PING_TIMEOUT_MS) {
+        try {
+          useTelemetryStore.getState().setWsDead(true, "no-ping-30s");
+        } catch {
+          /* store write failures must not wedge the watchdog */
+        }
+        resetWs("no-ping-30s");
+      }
+    }, 5000);
+    timers.push(pingWatchdog);
 
     // [F94 §3.5] The starter no longer requires wsLive - it only needs no
     // socket in flight.

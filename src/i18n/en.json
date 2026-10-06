@@ -150,8 +150,8 @@
     "optInBody": "This enables the token-less guest upload (no account, no credential) for THIS RUN ONLY and uploads everything now. The opt-in is recorded in the mirror ledger ([mirror] RUNTIME OPT-IN). The dispatch default stays off.",
     "enableUpload": "Enable & Upload",
     "optInCancel": "Cancel",
-    "optOut": "Disable mirror for this run"
-  },
+    "optOut": "Disable mirror for this run",
+    "moduleMissing": "Mirror: disabled — the mirror module is not installed on this run"  },
   "logs": {
     "title": "Logs",
     "logonEvents": "Logon Events",
@@ -1246,6 +1246,12 @@
     "status": "Status",
     "detail": "Detail",
     "empty": "No report yet — click Run diagnosis to probe all systems. Rate limit 1 per 5 minutes (HTTP 429).",
-    "rawJson": "Raw JSON"
+    "rawJson": "Raw JSON",
+    "verdict": "Verdict",
+    "allButtons": "All known buttons",
+    "button": "Button",
+    "lastClicked": "Last clicked",
+    "lastResult": "Last result",
+    "liveState": "Live state"
   }
 }

@@ -61,7 +61,17 @@ test('F70-P1-GATES: method, query-credential, constant-time token and validation
     assert.ok(block.includes(qk), 'query-credential refusal covers ' + qk);
   }
   assert.ok(block.includes('-Code 401'), 'query credentials refused with 401');
-  assert.ok(block.includes('Test-TicketBearer $f70Recv $f70Exp'), 'constant-time dash-token verify');
+  // [F101 §2.3] SUPERSEDED PIN (updated, not deleted). This lane used to run
+  // its OWN literal compare against the boot-time snapshot, which is exactly
+  // the F99 bundle's N3: a token rotated mid-run answered 403 here while the
+  // mirror lane (on the F99 refresh-aware validator) accepted the same token.
+  // The constant-time PROPERTY is unchanged - it now lives in the shared
+  // validator, which still compares through Test-TicketBearer behind the same
+  // length guard.
+  assert.ok(block.includes('Test-GhrdpDashToken -Presented $f70Tok -SnapshotToken $Token'), 'the search lane is not on the shared refresh-aware validator');
+  assert.ok(SERVER.includes('function Test-GhrdpDashToken'), 'the shared validator is missing');
+  assert.ok(SERVER.includes('if (Test-TicketBearer $recv $exb) { return $true }'), 'the shared validator is no longer constant-time');
+  assert.ok(/if \(\$recv\.Length -ne \$exb\.Length\) \{ continue \}/.test(SERVER), 'the shared validator lost its length guard');
   assert.ok(block.includes('-Code 403'), 'invalid dash token -> 403');
   // validation order: query -> adapterIds -> scope -> limit
   assert.ok(block.indexOf("'query required'") < block.indexOf("code = 'UNKNOWN_SOURCE'"), 'query validated before adapterIds');
