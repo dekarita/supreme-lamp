@@ -216,3 +216,26 @@ test('F58-PROVENANCE: PROVENANCE-6 is fail-closed for executables (9 cells)', ()
   }
   assert.equal(F58.evaluateProvenance('book.epub', {}).applies, false);
 });
+
+// [F97] The runner blob envelope must AUTHENTICATE before it returns plaintext.
+// Root cause of the CI regression this pins: AES-256-CBC + PKCS7 with a foreign
+// key "decrypts successfully" whenever the final block happens to decode as valid
+// padding (~1/256 per attempt), which reddened launch-gates/windows-native on main
+// as WRONG-KEY-REFUSED. The shipped module now frames the plaintext with an HMAC
+// tag, and the lab has a deterministic tamper cell; neither may be removed.
+test('F58-BLOB-AUTH: the store refuses a foreign key/tampered ciphertext deterministically', () => {
+  const mod = fs.readFileSync('payloads/ghrdp-sources.ps1', 'utf8');
+  const lab = fs.readFileSync('tests/f58-source-store.ps1', 'utf8');
+  assert.ok(mod.includes('function Get-F58MacKey'), 'the domain-separated MAC key derivation is missing');
+  assert.ok(mod.includes("$script:F58MacTag = 'F58A1|'"), 'the framed-plaintext tag is missing');
+  assert.ok(mod.includes('HMACSHA256'), 'the HMAC primitive is missing');
+  assert.ok(lab.includes("'AUTH-TAMPER-REFUSED'"), 'the deterministic tamper cell is missing');
+  const unprotect = mod.slice(mod.indexOf('function Unprotect-F58Blob'), mod.indexOf('function Write-F58StoreFile'));
+  const sealCheck = unprotect.indexOf('if ($tag -cne $expect)');
+  const bodyReturn = unprotect.indexOf('return $body');
+  assert.ok(sealCheck >= 0, 'the HMAC seal check is missing from Unprotect-F58Blob');
+  assert.ok(bodyReturn > sealCheck, 'the seal must be checked before the plaintext is returned');
+  // no unauthenticated decrypt path: the raw decrypt result may never be returned
+  assert.ok(!/TransformFinalBlock\([^)]*\)\s*\r?\n\s*return \[System\.Text\.Encoding\]::UTF8\.GetString/.test(unprotect),
+    'an unauthenticated decrypt path is back');
+});

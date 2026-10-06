@@ -33,8 +33,15 @@ $swWall = [System.Diagnostics.Stopwatch]::StartNew()
 $jobs = @()
 foreach ($leg in @('tailscale-msi', 'prebuilt-binaries', 'ps-parse')) {
     $jobs += Start-Job -ArgumentList $leg -ScriptBlock {
+        $t0 = [datetime]::UtcNow
+        $t = [System.Diagnostics.Stopwatch]::StartNew()
         Start-Sleep -Seconds 3
-        return @{ leg = $args[0]; ready = $true }
+        $t.Stop()
+        # [F97] each leg carries its own window + measured body time, so the
+        # concurrency proof is an INTERVAL OVERLAP instead of a wall-clock
+        # threshold (Start-Job process spawn costs 2-6s each on a loaded
+        # windows-latest VM and used to redden A3 on main with wall=17s).
+        return @{ leg = $args[0]; ready = $true; t0 = $t0.ToString('o'); t1 = [datetime]::UtcNow.ToString('o'); sec = [math]::Round($t.Elapsed.TotalSeconds, 2) }
     }
 }
 $null = Wait-Job -Job $jobs -Timeout 60
@@ -44,7 +51,20 @@ $swWall.Stop()
 $allReady = (@($results | Where-Object { $_.ready }).Count -eq 3)
 Check 'A1 three legs complete before the gate' (($states | Where-Object { $_ -ne 'Completed' }).Count -eq 0) ('states=' + ($states -join ','))
 Check 'A2 every leg reports ready' $allReady ('ready=' + @($results | Where-Object { $_.ready }).Count)
-Check 'A3 concurrency is real (wall < serial sum 9s)' ($swWall.Elapsed.TotalSeconds -lt 9) ('wall=' + [math]::Round($swWall.Elapsed.TotalSeconds, 1) + 's')
+# [F97] A3 is now an overlap proof: the three leg windows must share a common
+# instant (that IS concurrency), and each leg body must have slept its full 3s
+# window. A fixed wall-clock budget cannot distinguish "not concurrent" from
+# "concurrent but the runner is slow to spawn the job processes" - on the F95
+# post-merge main run it read wall=17s while the legs themselves overlapped.
+$legs = @($results | Where-Object { $_.t0 -and $_.t1 })
+$overlapSec = 0.0
+if ($legs.Count -eq 3) {
+    $startMax = (@($legs | ForEach-Object { [datetime]::Parse($_.t0) }) | Sort-Object)[-1]
+    $endMin = (@($legs | ForEach-Object { [datetime]::Parse($_.t1) }) | Sort-Object)[0]
+    $overlapSec = ($endMin - $startMax).TotalSeconds
+}
+Check 'A3 concurrency is real (the three leg windows overlap)' ($legs.Count -eq 3 -and $overlapSec -gt 0) ('common wall=' + [math]::Round($overlapSec, 1) + 's; wall=' + [math]::Round($swWall.Elapsed.TotalSeconds, 1) + 's')
+Check 'A4 every leg body slept the full 3s window' ((@($legs | Where-Object { $_.sec -ge 2.5 }).Count) -eq 3) ('sec=' + (@($legs | ForEach-Object { $_.sec }) -join ','))
 $jobs | Remove-Job -Force -ErrorAction SilentlyContinue
 
 # ---- B. fail-closed asset verification -----------------------------------------
