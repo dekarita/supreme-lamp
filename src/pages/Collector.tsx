@@ -4,7 +4,7 @@
 // [F100 §3.3] Adds "Recent user actions" table - every button click is logged
 // via collectorAgent.ts and can be replayed; "▶ Replay all" + "🗑 Clear" buttons.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { apiBase, getDashToken } from "@/lib/api";
 import { Card } from "@/components/primitives/Data";
@@ -15,8 +15,23 @@ import {
   clearActions,
   subscribeToActions,
   replayAllActions,
+  installFetchObserver,
+  clickKnownButton,
+  lastOutcomePerButton,
+  KNOWN_BUTTONS,
   type ButtonAction,
 } from "@/lib/collectorAgent";
+
+// [F101 §3.3] the six tabs every action row expands into
+const DEEP_TABS = ["preCheck", "request", "response", "postCheck", "services", "verdict"] as const;
+type DeepTab = (typeof DEEP_TABS)[number];
+
+function verdictTone(v?: ButtonAction["verdict"]) {
+  if (!v) return "neutral" as const;
+  if (v.status === "ok") return "success" as const;
+  if (v.status === "fail") return "danger" as const;
+  return "warning" as const;
+}
 
 type FeatureStatus = "pass" | "fail" | "warn" | string;
 
@@ -64,9 +79,17 @@ export default function Collector() {
   const [retryAfter, setRetryAfter] = useState<number | null>(null);
   const [replaying, setReplaying] = useState(false);
   const [actions, setActions] = useState<ButtonAction[]>(() => getRecordedActions());
+  // [F101 §3.3] which row is expanded and which of its six tabs is showing
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [deepTab, setDeepTab] = useState<DeepTab>("verdict");
+  const [clickingNow, setClickingNow] = useState<string | null>(null);
 
   // Subscribe to live action updates from collectorAgent.
   useEffect(() => {
+    // [F101 §3.2] arm the fetch observer on mount so every button click on
+    // every page - not just the ones driven from this table - is recorded with
+    // its real request/response.
+    installFetchObserver();
     return subscribeToActions(setActions);
   }, []);
 
@@ -81,6 +104,41 @@ export default function Collector() {
   // handler not wired)" so the operator sees which actions need manual click.
   const replayHandlers = useMemo(() => {
     return {} as Record<string, (p: Record<string, unknown>) => unknown | Promise<unknown>>;
+  }, []);
+
+  /** [F101 §3.4] "Click now": exercise one known button and record the full
+   *  pre/req/resp/post breakdown, exactly as a real operator click would. */
+  const handleClickNow = useCallback(async (btnId: string) => {
+    const btn = KNOWN_BUTTONS.find((b) => b.id === btnId);
+    if (!btn) return;
+    setClickingNow(btnId);
+    setError(null);
+    try {
+      const rec = await clickKnownButton(btn);
+      setExpandedId(rec.id);
+      setDeepTab("verdict");
+    } catch (e) {
+      setError(String((e as Error)?.message || e));
+    } finally {
+      setClickingNow(null);
+    }
+  }, []);
+
+  /** [F101 §3.4] exercise EVERY known button in one pass, one row each. */
+  const handleClickAll = useCallback(async () => {
+    setClickingNow("__all__");
+    setError(null);
+    try {
+      // clickKnownButton() already records one deeply-instrumented row each,
+      // so this loop must NOT wrap it again (that would double-record).
+      for (const btn of KNOWN_BUTTONS) {
+        await clickKnownButton(btn);
+      }
+    } catch (e) {
+      setError(String((e as Error)?.message || e));
+    } finally {
+      setClickingNow(null);
+    }
   }, []);
 
   const handleReplayAll = useCallback(async () => {
@@ -290,29 +348,213 @@ export default function Collector() {
                   <th className="py-1 pr-2">{t("collector.params", { defaultValue: "Params" })}</th>
                   <th className="py-1 pr-2">{t("collector.result", { defaultValue: "Result" })}</th>
                   <th className="py-1 pr-2">{t("collector.elapsed", { defaultValue: "ms" })}</th>
+                  <th className="py-1 pr-2">{t("collector.verdict", { defaultValue: "Verdict" })}</th>
                   <th className="py-1"></th>
                 </tr>
               </thead>
               <tbody>
-                {actions.slice(-50).reverse().map((a) => (
-                  <tr key={a.id} className="border-b border-default/50" data-testid={"collector-action-row-" + a.id}>
-                    <td className="py-1 pr-2 font-mono text-tertiary" title={a.ts}>{new Date(a.ts).toLocaleTimeString()}</td>
-                    <td className="py-1 pr-2 font-mono">{a.feature}</td>
-                    <td className="py-1 pr-2 font-mono">{a.action}</td>
-                    <td className="py-1 pr-2 font-mono truncate max-w-[20ch]" title={a.params ? JSON.stringify(a.params) : ""}>{a.params ? JSON.stringify(a.params).slice(0, 80) : "—"}</td>
-                    <td className={"py-1 pr-2 font-mono truncate max-w-[30ch] " + (a.error ? "text-danger" : "")} title={a.error ? a.error : a.result ? JSON.stringify(a.result) : ""}>
-                      {a.error ? ("ERR: " + a.error).slice(0, 80) : a.result ? JSON.stringify(a.result).slice(0, 80) : "—"}
-                    </td>
-                    <td className="py-1 pr-2 font-mono">{a.elapsedMs ?? "—"}</td>
-                    <td className="py-1">
-                      <span className="text-[10px] text-tertiary">replay</span>
-                    </td>
-                  </tr>
-                ))}
+                {actions.slice(-50).reverse().map((a) => {
+                  const open = expandedId === a.id;
+                  return (
+                    <Fragment key={a.id}>
+                      {/* [F101 §3.3] the row itself is the affordance: click it
+                          for the full breakdown instead of "add-site save -> ERR". */}
+                      <tr
+                        className={"border-b border-default/50 cursor-pointer " + (open ? "bg-raised/60" : "hover:bg-raised/40")}
+                        data-testid={"collector-action-row-" + a.id}
+                        onClick={() => { setExpandedId(open ? null : a.id); setDeepTab("verdict"); }}
+                        aria-expanded={open}
+                      >
+                        <td className="py-1 pr-2 font-mono text-tertiary" title={a.ts}>{new Date(a.ts).toLocaleTimeString()}</td>
+                        <td className="py-1 pr-2 font-mono">{a.feature}</td>
+                        <td className="py-1 pr-2 font-mono">{a.action}</td>
+                        <td className="py-1 pr-2 font-mono truncate max-w-[20ch]" title={a.params ? JSON.stringify(a.params) : ""}>{a.params ? JSON.stringify(a.params).slice(0, 80) : "—"}</td>
+                        <td className={"py-1 pr-2 font-mono truncate max-w-[30ch] " + (a.error ? "text-danger" : "")} title={a.error ? a.error : a.result ? JSON.stringify(a.result) : ""}>
+                          {a.error ? ("ERR: " + a.error).slice(0, 80) : a.result ? JSON.stringify(a.result).slice(0, 80) : "—"}
+                        </td>
+                        <td className="py-1 pr-2 font-mono">{a.elapsedMs ?? "—"}</td>
+                        <td className="py-1 pr-2">
+                          <Chip tone={verdictTone(a.verdict)}>{a.verdict ? a.verdict.status : "n/a"}</Chip>
+                        </td>
+                        <td className="py-1">
+                          <span className="text-[10px] text-tertiary">{open ? "▾ hide" : "▸ expand"}</span>
+                        </td>
+                      </tr>
+                      {open ? (
+                        <tr className="border-b border-default" data-testid={"collector-action-detail-" + a.id}>
+                          <td colSpan={8} className="p-0">
+                            <div className="p-2 bg-sunken/40">
+                              <div className="flex flex-wrap gap-1 mb-2" role="tablist" aria-label="action breakdown">
+                                {DEEP_TABS.map((tb) => (
+                                  <button
+                                    key={tb}
+                                    type="button"
+                                    role="tab"
+                                    aria-selected={deepTab === tb}
+                                    data-testid={"collector-tab-" + tb}
+                                    onClick={() => setDeepTab(tb)}
+                                    className={
+                                      "px-2 py-0.5 rounded text-[11px] font-mono border " +
+                                      (deepTab === tb ? "border-accent text-primary bg-raised" : "border-default text-tertiary hover:text-secondary")
+                                    }
+                                  >
+                                    {tb}
+                                  </button>
+                                ))}
+                              </div>
+                              {deepTab === "verdict" ? (
+                                <div
+                                  data-testid="collector-verdict"
+                                  className={
+                                    "rounded border p-2 text-xs " +
+                                    (a.verdict?.status === "ok"
+                                      ? "border-success/40 bg-success/10 text-primary"
+                                      : a.verdict?.status === "fail"
+                                      ? "border-danger/50 bg-danger/10 text-primary"
+                                      : a.verdict?.status === "warn"
+                                      ? "border-warning/50 bg-warning/10 text-primary"
+                                      : "border-default bg-raised/60 text-secondary")
+                                  }
+                                >
+                                  <div className="font-semibold">
+                                    {a.verdict ? a.verdict.status.toUpperCase() : "NO VERDICT"}
+                                    {a.verdict ? " — " + a.verdict.reason : " (this row predates F101 deep logging: click the button again to capture it)"}
+                                  </div>
+                                  {a.verdict ? (
+                                    <>
+                                      <div className="mt-1 font-mono text-[11px] text-secondary">Suggested fix: {a.verdict.suggestedFix}</div>
+                                      {a.verdict.relatedIssue ? (
+                                        <div className="mt-1 text-[11px]">
+                                          Related issue:{" "}
+                                          <a className="text-accent underline" href={"https://github.com/dekarita/supreme-lamp/issues/" + a.verdict.relatedIssue.replace("#", "")} target="_blank" rel="noreferrer">
+                                            {a.verdict.relatedIssue}
+                                          </a>
+                                        </div>
+                                      ) : null}
+                                    </>
+                                  ) : null}
+                                </div>
+                              ) : deepTab === "services" ? (
+                                <div className="overflow-x-auto">
+                                  <table className="w-full text-[11px] font-mono border-collapse" data-testid="collector-services">
+                                    <thead>
+                                      <tr className="text-left text-tertiary border-b border-default/50">
+                                        <th className="py-1 pr-3">service</th>
+                                        <th className="py-1 pr-3">pre</th>
+                                        <th className="py-1 pr-3">post</th>
+                                        <th className="py-1 pr-3">latencyMs</th>
+                                        <th className="py-1">lastCheck</th>
+                                      </tr>
+                                    </thead>
+                                    <tbody>
+                                      {(a.serviceDependencies || []).map((d) => (
+                                        <tr key={d.name} className="border-b border-default/30">
+                                          <td className="py-1 pr-3">{d.name}</td>
+                                          <td className="py-1 pr-3">{a.preCheck ? (a.preCheck.serviceStates as unknown as Record<string, string>)[d.name] ?? "—" : "—"}</td>
+                                          <td className="py-1 pr-3">{a.postCheck ? (a.postCheck.newServiceStates as unknown as Record<string, string>)[d.name] ?? "—" : "—"}</td>
+                                          <td className="py-1 pr-3">{d.latencyMs ?? "—"}</td>
+                                          <td className="py-1 text-tertiary">{d.lastCheckTs}</td>
+                                        </tr>
+                                      ))}
+                                      {(a.serviceDependencies || []).length === 0 ? (
+                                        <tr><td colSpan={5} className="py-1 text-tertiary">no service dependencies captured</td></tr>
+                                      ) : null}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              ) : (
+                                <pre
+                                  data-testid={"collector-deep-" + deepTab}
+                                  className="p-2 bg-raised rounded text-[11px] font-mono overflow-auto max-h-[40vh] whitespace-pre-wrap break-all"
+                                >
+                                  {JSON.stringify(a[deepTab] ?? null, null, 2)}
+                                </pre>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ) : null}
+                    </Fragment>
+                  );
+                })}
               </tbody>
             </table>
           </div>
         )}
+      </Card>
+
+      {/* [F101 §3.4] EVERY button in the dashboard, with a Click now that
+          drives the real DOM element (or probes the route when the button is
+          not mounted here) and records the full pre/req/resp/post row above. */}
+      <Card title={t("collector.allButtons", { defaultValue: "All known buttons" })}>
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={handleClickAll}
+            disabled={clickingNow !== null}
+            data-testid="collector-click-all"
+          >
+            {clickingNow === "__all__" ? "▶ Clicking all…" : "▶ Click every button"}
+          </Button>
+          <span className="text-xs text-tertiary">
+            {KNOWN_BUTTONS.length} buttons registered · a green row means the click produced a 2xx and consistent service states
+          </span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs border-collapse" data-testid="collector-known-buttons">
+            <thead>
+              <tr className="text-left border-b border-default">
+                <th className="py-1 pr-2">{t("collector.feature", { defaultValue: "Feature" })}</th>
+                <th className="py-1 pr-2">{t("collector.button", { defaultValue: "Button" })}</th>
+                <th className="py-1 pr-2">{t("collector.lastClicked", { defaultValue: "Last clicked" })}</th>
+                <th className="py-1 pr-2">{t("collector.lastResult", { defaultValue: "Last result" })}</th>
+                <th className="py-1 pr-2">{t("collector.liveState", { defaultValue: "Live state" })}</th>
+                <th className="py-1"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {KNOWN_BUTTONS.map((btn) => {
+                const last = lastOutcomePerButton(actions)[btn.feature + ":" + btn.action];
+                const mounted = typeof document !== "undefined" && !!document.querySelector('[data-testid="' + btn.testId + '"]');
+                return (
+                  <tr key={btn.id} className="border-b border-default/50" data-testid={"collector-known-row-" + btn.id}>
+                    <td className="py-1 pr-2 font-mono">{btn.feature}</td>
+                    <td className="py-1 pr-2">
+                      <span className="font-mono">{btn.label}</span>
+                      <span className="ml-1 text-[10px] text-tertiary font-mono">{btn.testId}</span>
+                    </td>
+                    <td className="py-1 pr-2 font-mono text-tertiary">{last ? new Date(last.ts).toLocaleTimeString() : "—"}</td>
+                    <td className="py-1 pr-2">
+                      {last ? (
+                        <Chip tone={verdictTone(last.verdict)}>
+                          {(last.verdict ? last.verdict.status : "n/a") + (last.response ? " · " + last.response.status : "")}
+                        </Chip>
+                      ) : (
+                        <span className="text-tertiary">never clicked</span>
+                      )}
+                    </td>
+                    <td className="py-1 pr-2 font-mono text-[10px]">
+                      {mounted ? <span className="text-success">mounted</span> : <span className="text-tertiary">route-probe</span>}
+                      {btn.mutating ? <span className="ml-1 text-warning" title="this click changes state">mutating</span> : null}
+                    </td>
+                    <td className="py-1">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => void handleClickNow(btn.id)}
+                        disabled={clickingNow !== null}
+                        data-testid={"collector-click-now-" + btn.id}
+                      >
+                        {clickingNow === btn.id ? "…" : "Click now"}
+                      </Button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </Card>
 
       {summary ? (

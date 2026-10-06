@@ -68,6 +68,13 @@ export function MirrorCard() {
   // [F49] disabled => the ConfirmModal opens FIRST; enabled (or a status we
   // could not read) => the legacy flush, unchanged.
   async function onUploadNow() {
+    // [F101 §2.1 / N1] with no mirror module there is nothing to converge:
+    // POST /api/mirror/enable would 503. Say so instead of opening a modal
+    // that cannot succeed on this run.
+    if (optIn && optIn.status.available === false) {
+      toast.warn(t("mirror.moduleMissing"));
+      return;
+    }
     if (optIn && !optIn.status.enabled) {
       setModalOpen(true);
       return;
@@ -130,9 +137,20 @@ export function MirrorCard() {
 
   return (
     <Card id="sec-mirror" title={claimTitle} icon={<Upload className="size-4 text-tertiary" aria-hidden />} className="mb-4">
+      {/* [F101 §2.1 / N1] MODULE NOT INSTALLED is a neutral fact, not an error.
+          The F99 bundle logged 7+ 503s from this poll; the status route now
+          answers 200 {enabled:false, available:false, reason, advice} and the
+          card renders one quiet line instead of an error, and never offers the
+          enable action (it would 503 on this run). */}
+      {optIn && optIn.status.available === false && (
+        <div role="status" data-testid="mirror-module-missing-banner" className="mb-4 rounded-md border border-default bg-raised/60 px-3 py-2 text-sm text-secondary">
+          <b className="text-primary">{t("mirror.moduleMissing")}</b>
+          {optIn.status.advice ? <p className="mt-1 font-mono text-xs text-tertiary">{optIn.status.advice}</p> : null}
+        </div>
+      )}
       {/* [F49] the disabled banner: default-off is the shipped state, so the
           page says so and points at the one-click opt-in (not a silent no-op). */}
-      {optIn && !optIn.status.enabled && (
+      {optIn && !optIn.status.enabled && optIn.status.available !== false && (
         <div role="status" data-testid="mirror-disabled-banner" className="mb-4 rounded-md border border-default bg-raised/60 px-3 py-2 text-sm text-primary">
           {t("mirror.optInBanner")}
           <p className="mt-1">Downloads auto-upload is always ON and encrypted; OFF applies to manual roots only.</p>

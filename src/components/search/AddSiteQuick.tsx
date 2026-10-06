@@ -25,9 +25,9 @@ import { useTranslation } from "react-i18next";
 import { X } from "lucide-react";
 import { NEW_SITE_NAME_MAX, validateNewSite, type NewSiteError } from "@/api/lab";
 import F58 from "@/search/custom-source-core";
-import { MAX_CUSTOM_SITES, useCustomSourcesStore } from "@/stores/customSourcesStore";
+import { MAX_CUSTOM_SITES, useCustomSourcesStore, type AddSiteOutcome } from "@/stores/customSourcesStore";
 import { useToastStore } from "@/stores/toastStore";
-import { logButtonAction } from "@/lib/collectorAgent";
+import { instrumentButton } from "@/lib/collectorAgent";
 
 const ERROR_KEYS: Record<NewSiteError, string> = {
   "name-required": "newSiteNameRequired",
@@ -198,21 +198,22 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
       return;
     }
     setSaving(true);
-    const _start = performance.now();
-    const outcome = await addSite(name, normalized);
-    const _elapsed = Math.round(performance.now() - _start);
-    setSaving(false);
-    // [F100] log the add-site action with result (ok / error code)
-    try {
-      logButtonAction({
-        feature: "add-site",
-        action: "save",
-        params: { url: normalized, name },
-        result: { ok: !!outcome.ok, hostname: outcome.source?.hostname, status: outcome.ok ? 200 : 400 },
-        elapsedMs: _elapsed,
-        error: outcome.ok ? undefined : String(outcome.error || "failed"),
-      });
-    } catch { /* telemetry never blocks */ }
+    // [F101 §3.2] THE OPERATOR'S PRIMARY WORKFLOW, DEEPLY INSTRUMENTED. The F99
+    // evidence for N2 was a single Collector line - "ERR: addSite.authMissing
+    // 48559ms" - which said that the save failed and nothing about why. The
+    // same click now records preCheck (services + token presence), the exact
+    // POST /api/f58/sources request with the token MASKED, the response status
+    // and body, the postCheck service diff, the dependency latencies and a
+    // verdict with a suggested fix and the tracking issue.
+    const wrapped = await instrumentButton("add-site", "save", () => addSite(name, normalized), {
+      params: { url: normalized, name },
+      sideEffects: ["customSourceSaved", "allowHostExtended"],
+    }).finally(() => setSaving(false));
+    const outcome: AddSiteOutcome = wrapped.result ?? {
+      ok: false,
+      error: String(wrapped.error || "search.errors.generic"),
+      source: null,
+    };
     if (!outcome.ok) {
       const err = String(outcome.error || "search.errors.generic");
       // [F93 §1.3] Per-field envelope first (errors.name / errors.url): each

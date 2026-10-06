@@ -36,8 +36,14 @@ test('F78-P1-ROUTES: three routes, one block, after the search lane', () => {
 
 test('F78-P2-AUTH: dash token is constant-time and never a query credential', () => {
   assert.ok(BLOCK.includes("$parts.headers['x-dash-token']"), 'the dash token header is not read');
-  assert.ok(BLOCK.includes('Test-TicketBearer $f78Recv $f78Exp'), 'the token compare is not the shipped constant-time compare');
-  assert.ok(/\(\$f78Recv\.Length -eq \$f78Exp\.Length\)/.test(BLOCK), 'the length guard is missing');
+  // [F101 §2.2] SUPERSEDED PIN (updated, not deleted). The F99 bundle's N2 was
+  // THIS lane comparing the presented token against the boot-time snapshot
+  // only, so a token rotated mid-run answered 401 and the modal said
+  // "addSite.authMissing" with no reason. The compare is still constant-time;
+  // it now goes through the SHARED refresh-aware validator.
+  assert.ok(BLOCK.includes('Test-GhrdpDashToken -Presented $f78Presented -SnapshotToken $script:Token'), 'the lane is not on the shared refresh-aware validator');
+  assert.ok(SERVER.includes('if (Test-TicketBearer $recv $exb) { return $true }'), 'the shared validator is no longer constant-time');
+  assert.ok(/if \(\$recv\.Length -ne \$exb\.Length\) \{ continue \}/.test(SERVER), 'the shared validator lost its length guard');
   assert.ok(BLOCK.includes("foreach ($f78Qk in @('key','token','dash-token','dash_token','dashtoken','access-token','access_token','password'))"), 'the query-credential refusal set changed');
   assert.ok(BLOCK.includes('-Code 401'), 'the token gate must answer 401');
 });

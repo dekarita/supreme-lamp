@@ -12,7 +12,7 @@
 // Params can be a static object OR a function that receives the event and
 // returns the params object (useful when params depend on current state).
 
-import { logButtonAction } from "./collectorAgent";
+import { instrumentButton } from "./collectorAgent";
 
 type Handler<E, R> = (e: E) => R | Promise<R>;
 
@@ -24,28 +24,17 @@ interface LogMeta {
 
 export function withActionLog<E, R>(meta: LogMeta, handler?: Handler<E, R>): Handler<E, R | undefined> {
   return async function (this: unknown, e: E) {
-    const start = performance.now();
-    let result: unknown;
-    let error: string | undefined;
-    try {
-      if (handler) {
-        result = await handler.call(this, e);
-      }
-    } catch (err) {
-      error = String((err as Error)?.message || err);
-      throw err;
-    } finally {
-      const elapsedMs = Math.round(performance.now() - start);
-      const params = typeof meta.params === "function" ? (meta.params as (e: E) => Record<string, unknown>)(e) : meta.params;
-      logButtonAction({
-        feature: meta.feature,
-        action: meta.action,
-        params,
-        result,
-        elapsedMs,
-        error,
-      });
-    }
-    return result as R;
+    const params = typeof meta.params === "function" ? (meta.params as (e: E) => Record<string, unknown>)(e) : meta.params;
+    // [F101 §3.2] This is now the DEEP wrapper: the same signature the F100
+    // call sites were written against, but the record it writes carries
+    // preCheck / request / response / postCheck / serviceDependencies / verdict
+    // instead of just {feature, action, params, result}. The re-throw contract
+    // is preserved so existing error semantics do not change.
+    const out = await instrumentButton(meta.feature, meta.action, async () => {
+      if (!handler) return undefined as R | undefined;
+      return await handler.call(this, e);
+    }, { params });
+    if (out.error) throw new Error(out.error);
+    return out.result as R | undefined;
   };
 }

@@ -414,6 +414,19 @@ $script:OkFile = Join-Path $Root 'server-ok.txt'
 # serverUpgradeSupported to true. See Invoke-F99WebSocketUpgrade below.
 $script:F96WsUpgradeSupported = $true
 $script:F99WsUpgradeSupported = $true
+# [F101 §2.4 / N4] WebSocket keepalive tunables. The F99 bundle showed the
+# socket going "idle" with close=1005 (NO status) - the F99 loop capped the
+# connection at 45s and then wrote a bare `0x88 0x00` close frame, which the
+# browser surfaces as 1005 "no status received", and nothing at the protocol
+# level proved the peer was still there. Now: a real RFC6455 PING (opcode 0x9)
+# every 20s plus an application-level {"type":"ping"} the browser half can see
+# and answer, the socket stays up for up to 30 min while the client keeps
+# answering, an idle peer is dropped after 90s of silence, and every close
+# carries a real 1000 status so the dashboard can tell "server said goodbye"
+# from "the connection vanished".
+$script:F99WsPingIntervalSec = 20
+$script:F99WsIdleTimeoutSec = 90
+$script:F99WsMaxLifetimeSec = 1800
 function Invoke-F99WebSocketUpgrade {
     param($Client, $Stream, $Parts, $Token)
     try {
@@ -482,15 +495,37 @@ function Invoke-F99WebSocketUpgrade {
                 $Stream.Flush()
             } catch { }
         }
-        $diagInit = ([ordered]@{ ok=$true; ts=(Get-Date -Format o); ws='connected'; note='F99 ws upgrade live'; heartbeat=$true } | ConvertTo-Json -Compress)
+        # [F101 §2.4 / N4] keepalive. A real RFC6455 PING (opcode 0x9) every
+        # 20s plus an application-level {"type":"ping"} the browser half can
+        # actually observe (browsers answer protocol PINGs below the JS API, so
+        # a JSON ping is the only thing the dashboard can watchdog on), PONG
+        # accounting on both opcodes, a 30-minute ceiling, an idle drop after
+        # 90s of client silence, and a close frame that CARRIES A STATUS CODE -
+        # the F99 `0x88 0x00` close is precisely what the bundle reported as
+        # close=1005 "no status received".
+        function Send-F99WsPing {
+            try {
+                $pf = [byte[]]@(0x89,0x00)
+                $Stream.Write($pf,0,$pf.Length)
+                $Stream.Flush()
+            } catch { }
+        }
+        $diagInit = ([ordered]@{ ok=$true; ts=(Get-Date -Format o); ws='connected'; note='F99 ws upgrade live'; heartbeat=$true; pingIntervalSec=[int]$script:F99WsPingIntervalSec } | ConvertTo-Json -Compress)
         Send-F99WsText $diagInit
+        Send-F99WsPing
+        $lastPing = Get-Date
+        $lastClientFrame = Get-Date
+        $pongCount = 0
+        $pingCount = 1
+        $f99CloseStatus = 1000
         $buf = New-Object byte[] 4096
         try { $Stream.ReadTimeout = 2000 } catch { }
-        while (((Get-Date) - $start).TotalSeconds -lt 45) {
+        while ((((Get-Date) - $start).TotalSeconds -lt [int]$script:F99WsMaxLifetimeSec) -and (((Get-Date) - $lastClientFrame).TotalSeconds -lt [int]$script:F99WsIdleTimeoutSec)) {
             try {
                 if ($Client.Client.Available -gt 0 -or $Stream.DataAvailable) {
                     $n = 0; try { $n = $Stream.Read($buf,0,$buf.Length) } catch { break }
-                    if ($n -le 0) { break }
+                    if ($n -le 0) { $f99CloseStatus = 1006; break }
+                    $lastClientFrame = Get-Date
                     if ($n -ge 2) {
                         $opcode = $buf[0] -band 0x0F
                         $masked = ($buf[1] -band 0x80) -ne 0
@@ -510,10 +545,18 @@ function Invoke-F99WebSocketUpgrade {
                                 $pong = @(); $pong += [byte]0x8A; if ($payloadLen -lt 126) { $pong+=[byte]$payloadLen } else { $pong+=[byte]126; $b=[BitConverter]::GetBytes([uint16]$payloadLen); [Array]::Reverse($b); $pong+=$b }
                                 $pb=[byte[]]$pong; $Stream.Write($pb,0,$pb.Length); if ($payloadLen -gt 0) { $Stream.Write($payload,0,$payloadLen) }; $Stream.Flush(); continue
                             }
+                            # [F101] the client's own PONG frame: liveness only, never echoed.
+                            if ($opcode -eq 10) { $pongCount++; continue }
                             if ($text -match '"type"\s*:\s*"hello"' -or $text -match 'hello') {
                                 if (-not $helloEchoed) { Send-F99WsText '{"type":"hello-ack","ok":true}'; $helloEchoed=$true }
+                            } elseif ($text -match '"type"\s*:\s*"pong"') {
+                                # [F101] application-level PONG (the browser half
+                                # answers the JSON ping; it cannot answer a
+                                # protocol PING from JS). Counted, not echoed.
+                                $pongCount++
                             } else { Send-F99WsText $text }
                         } elseif ($opcode -eq 8) { break }
+                        elseif ($opcode -eq 10) { $pongCount++ }
                     }
                 }
             } catch { }
@@ -522,9 +565,23 @@ function Invoke-F99WebSocketUpgrade {
                 Send-F99WsText $diag2
                 $lastDiag = Get-Date
             }
+            if (((Get-Date) - $lastPing).TotalSeconds -ge [int]$script:F99WsPingIntervalSec) {
+                $pingCount++
+                Send-F99WsPing
+                Send-F99WsText ([ordered]@{ type='ping'; ok=$true; ts=(Get-Date -Format o); ping=$pingCount; pongSeen=$pongCount; uptimeSec=[int]((Get-Date)-$start).TotalSeconds } | ConvertTo-Json -Compress)
+                $lastPing = Get-Date
+            }
             Start-Sleep -Milliseconds 100
         }
-        try { $close=[byte[]]@(0x88,0x00); $Stream.Write($close,0,$close.Length); $Stream.Flush() } catch { }
+        if (((Get-Date) - $start).TotalSeconds -ge [int]$script:F99WsMaxLifetimeSec) { $f99CloseStatus = 1001 }
+        if (((Get-Date) - $lastClientFrame).TotalSeconds -ge [int]$script:F99WsIdleTimeoutSec) { $f99CloseStatus = 1001 }
+        try {
+            $sc = [BitConverter]::GetBytes([uint16]$f99CloseStatus)
+            [Array]::Reverse($sc)
+            $close = [byte[]](@([byte]0x88, [byte]0x02) + @($sc))
+            $Stream.Write($close,0,$close.Length); $Stream.Flush()
+        } catch { }
+        try { Write-ClientAudit ('ws closed status=' + [string]$f99CloseStatus + ' uptimeSec=' + [int]((Get-Date)-$start).TotalSeconds + ' pings=' + [string]$pingCount + ' pongs=' + [string]$pongCount) } catch { }
         return $true
     } catch { return $false }
 }
@@ -2395,8 +2452,29 @@ function Invoke-ClientRequest {
                 # GET succeeded — record success telemetry when token was presented
                 if ($mPresented -and $mTokenOk) { try { Add-F99TokenTelemetry -Route $path -Presented $mPresented -SnapshotToken $Token -Valid $true } catch { } }
             }
+            # [F101 §2.1 / N1] The F99 bundle showed 7+ `503 (module missing)`
+            # answers against a route that had just AUTHENTICATED the caller
+            # (dashTokenTelemetry valid=true). A READ of a module that is
+            # simply not installed is not a failure, and a 503 makes the
+            # dashboard treat it as one: it keeps polling, keeps logging an
+            # error and shows nothing actionable. The status route therefore
+            # now answers 200 with an explicit disabled envelope (same shape
+            # the caller already parses, plus `available`/`reason`/`advice`),
+            # so the UI renders "Mirror: disabled", STOPS polling and never
+            # logs an error. POST enable/disable still refuse - you cannot
+            # converge a module that is absent - but they now name the reason
+            # and the fix instead of the bare module-load string.
             if (-not $script:F46MirrorReady) {
-                Send-ClientResponse -Stream $stream -Code 503 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes @{ ok = $false; error = ('mirror module unavailable: ' + [string]$script:F46MirrorLoadError) })
+                $mDisabledReason = 'mirror-module-not-installed'
+                $mDisabledAdvice = '/api/mirror/status is a stub on this run: ghrdp-mirror.ps1 is not next to the server, so the mirror module is not loaded. Stage payloads/ghrdp-mirror.ps1 (main.yml MIRROR=1) to enable it.'
+                if ($path -eq '/api/mirror/status') {
+                    $mDisBody = [ordered]@{ ok = $true; enabled = $false; available = $false; mirror = $false; hosts = @(); host = ''; scope = [string]$script:F49OptInScope; source = 'off'; at = ''; pending = $false; reason = $mDisabledReason; advice = $mDisabledAdvice; loadError = [string]$script:F46MirrorLoadError }
+                    $mDisExtra = ('X-CSRF-Token: ' + [string]$script:FxCsrf + "`r`n" + 'Access-Control-Expose-Headers: X-CSRF-Token' + "`r`n" + 'Set-Cookie: ghrdp_mirror_csrf=' + [string]$script:FxCsrf + '; Path=/; SameSite=Strict')
+                    Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $mDisBody) -ExtraHeaders $mDisExtra
+                    Write-ClientAudit ('mirror GET /api/mirror/status -> 200 (module not installed, disabled)')
+                    return
+                }
+                Send-ClientResponse -Stream $stream -Code 503 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes [ordered]@{ ok = $false; error = ('mirror module unavailable: ' + [string]$script:F46MirrorLoadError); reason = $mDisabledReason; advice = $mDisabledAdvice })
                 Write-ClientAudit ('mirror ' + [string]$parts.method + ' ' + $path + ' -> 503 (module missing)')
                 return
             }
@@ -3977,8 +4055,17 @@ function Invoke-ClientRequest {
                 Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
                 return
             }
-            # [F70 §1.1] constant-time X-Dash-Token verify (Test-TicketBearer over
-            # UTF8 bytes, identical to /api/fetch). Missing or invalid -> 403.
+            # [F70 §1.1 + F101 §2.3 / N3] constant-time X-Dash-Token verify.
+            # Missing or invalid -> 403 (this lane's frozen status).
+            # F101: the comparator is now the SHARED refresh-aware
+            # Test-GhrdpDashToken (snapshot UNION dash-token.txt UNION
+            # config.json dashToken) - the F70 lane kept the boot-snapshot-only
+            # literal compare, which is exactly why the F99 bundle saw
+            # `search auth refused ... -> 403` at 15:59:23 for a token that
+            # mirror accepted in the same run. The `reason` string stays
+            # 'dash token required' (frozen client/mock contract); the specific
+            # cause lands in details.detail and every refusal is recorded in
+            # the F99 telemetry ring so /api/diag can show it.
             $f70Tok = ''
             try { $f70Tok = [string]$parts.headers['x-dash-token'] } catch { }
             if (-not $f70Tok) {
@@ -3987,17 +4074,20 @@ function Invoke-ClientRequest {
                 if ($f70AuthH -match '^(?i)Bearer\s+(.+)$') { $f70Tok = $Matches[1].Trim() }
             }
             $f70TokOk = $false
-            if ($f70Tok -and $Token) {
-                $f70Recv = [System.Text.Encoding]::UTF8.GetBytes($f70Tok)
-                $f70Exp = [System.Text.Encoding]::UTF8.GetBytes([string]$Token)
-                if (($f70Recv.Length -eq $f70Exp.Length) -and (Test-TicketBearer $f70Recv $f70Exp)) { $f70TokOk = $true }
+            if ($f70Tok) {
+                try { $f70TokOk = Test-GhrdpDashToken -Presented $f70Tok -SnapshotToken $Token } catch { $f70TokOk = $false }
             }
             if (-not $f70TokOk) {
-                $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'VALIDATION_ERROR'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'dash token required' } }
+                try { Add-F99TokenTelemetry -Route $path -Presented $f70Tok -SnapshotToken $Token -Valid $false } catch { }
+                $f70Why = 'token-not-presented'
+                if ($f70Tok) { $f70Why = 'token-mismatch-after-refresh-aware-compare' }
+                if (-not $Token -and -not $f70Tok) { $f70Why = 'server-has-no-dash-token' }
+                $err = [ordered]@{ requestId = ''; traceId = [guid]::NewGuid().ToString('N').Substring(0,12); code = 'AUTH_REQUIRED'; messageKey = 'search.errors.validation'; retryable = $false; details = @{ reason = 'dash token required'; detail = $f70Why; presentedHash = $(Get-F99DashTokenHash $f70Tok); expectedHash = $(Get-F99DashTokenHash $Token) } }
                 Send-ClientResponse -Stream $stream -Code 403 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $err)
-                Write-ClientAudit ('search auth refused ' + $path + ' -> 403')
+                Write-ClientAudit ('search auth refused ' + $path + ' -> 403 (' + $f70Why + ')')
                 return
             }
+            try { if ($f70Tok) { Add-F99TokenTelemetry -Route $path -Presented $f70Tok -SnapshotToken $Token -Valid $true } } catch { }
             if (-not $script:F56dSearchMap) { $script:F56dSearchMap = @{} }
             if (-not $script:F56dResultsMap) { $script:F56dResultsMap = @{} }
             if ($path -eq '/api/search') {
@@ -5118,16 +5208,34 @@ function Invoke-ClientRequest {
                 try { $f78AuthH = [string]$parts.headers['authorization'] } catch { }
                 if ($f78AuthH -match '^(?i)Bearer\s+(.+)$') { $f78Presented = $Matches[1].Trim() }
             }
+            # [F101 §2.2 / N2] REFRESH-AWARE TOKEN GATE. This block compared the
+            # presented dash token against the BOOT-TIME snapshot
+            # ($script:Token, read once when the process started) with a raw
+            # Test-TicketBearer, while F99 shipped the refresh-aware
+            # Test-GhrdpDashToken (snapshot UNION dash-token.txt UNION
+            # config.json dashToken) and wired it into the mirror route only.
+            # That single asymmetry is the F99 bundle's N2: the operator's
+            # Add-site of openculture.com was recorded as
+            # `ERR: addSite.authMissing` (48559ms) while the very same token
+            # read valid=true in dashTokenTelemetry. Same comparator now, plus
+            # the F99 telemetry entry, plus an AUTH_REQUIRED code so the modal
+            # can tell "wrong token" from "bad field" (the client maps
+            # 401/403 -> addSite.authMissing and the modal shows the remedy).
             $f78TokenOk = $false
-            if ($f78Presented -and $script:Token) {
-                $f78Recv = [System.Text.Encoding]::UTF8.GetBytes($f78Presented)
-                $f78Exp = [System.Text.Encoding]::UTF8.GetBytes([string]$script:Token)
-                if (($f78Recv.Length -eq $f78Exp.Length) -and (Test-TicketBearer $f78Recv $f78Exp)) { $f78TokenOk = $true }
+            if ($f78Presented) {
+                try { $f78TokenOk = Test-GhrdpDashToken -Presented $f78Presented -SnapshotToken $script:Token } catch { $f78TokenOk = $false }
             }
             if (-not $f78TokenOk) {
-                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes (New-F78Error -Code 'VALIDATION_ERROR' -MessageKey 'search.errors.validation' -RetryAfter 0))
+                try { Add-F99TokenTelemetry -Route $path -Presented $f78Presented -SnapshotToken $script:Token -Valid $false } catch { }
+                $f78AuthReason = 'dash-token-required'
+                if ($f78Presented) { $f78AuthReason = 'dash-token-mismatch' }
+                $f78AuthErr = New-F78Error -Code 'AUTH_REQUIRED' -MessageKey 'addSite.authMissing' -RetryAfter 0
+                $f78AuthErr.details = [ordered]@{ reason = $f78AuthReason; presentedHash = $(Get-F99DashTokenHash $f78Presented); expectedHash = $(Get-F99DashTokenHash $script:Token) }
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $f78AuthErr)
+                Write-ClientAudit ('lab ' + [string]$parts.method + ' ' + $path + ' -> 401 (' + $f78AuthReason + ')')
                 return
             }
+            try { if ($f78Presented) { Add-F99TokenTelemetry -Route $path -Presented $f78Presented -SnapshotToken $script:Token -Valid $true } } catch { }
             $f78QCred = $false
             try {
                 foreach ($f78Qk in @('key','token','dash-token','dash_token','dashtoken','access-token','access_token','password')) {
