@@ -271,7 +271,17 @@ export function useDashboardPolling(): void {
       wsAttempt = 0;
       useTelemetryStore.getState().setWsAttempts(0);
       useTelemetryStore.getState().setWsDead(false, reason);
-      connectWs();
+      // [F98 §2.2 / P2] SMALL DELAY before reconnect: some browsers still
+      // fire the onclose event after we null the handler, which re-arms the
+      // ladder timer and races with the immediate connectWs(). A 100ms delay
+      // ensures the old socket is fully released before the new handshake.
+      // Telemetry: record the reconnect request time for diagnostic bundles.
+      try {
+        (window as any).__f98_lastWsReconnectAt = Date.now();
+      } catch { /* ignore */ }
+      window.setTimeout(() => {
+        if (alive) connectWs();
+      }, 100);
     };
     // [F95 §3.4 / R4] A token that changes under a live socket leaves the old
     // credential in the URL, so the next reconnect fails for a reason the

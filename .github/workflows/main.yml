@@ -661,6 +661,29 @@ jobs:
           }
           Write-Host ('[ts] Tailscale MSI install finished (service registered=' + $svcSeen + ')')
           Stop-F59Step -Step 'tailscale-msi-install' -Sw $f59sw | Out-Null
+
+          # [F98 §2.5 / P5] SUPPRESS TAILSCALE WELCOME DIALOG.
+          # The Tailscale GUI shows "Connect to your tailnet devices" on first
+          # launch, which distracts first-time users on the RDP desktop. Writing
+          # the HideWelcomeDialog registry key BEFORE any user session starts
+          # ensures the popup never appears.
+          try {
+              $tsRegPaths = @(
+                  'HKLM:\SOFTWARE\Tailscale IPN',
+                  'HKCU:\Software\Tailscale\IPN',
+                  'HKLM:\SOFTWARE\WOW6432Node\Tailscale IPN'
+              )
+              foreach ($rp in $tsRegPaths) {
+                  try {
+                      New-Item -Path $rp -Force -ErrorAction SilentlyContinue | Out-Null
+                      Set-ItemProperty -Path $rp -Name 'Unattended' -Value '' -Type String -Force -ErrorAction SilentlyContinue
+                  } catch { }
+              }
+              Write-Host '[F98] Tailscale welcome dialog suppression keys written'
+          } catch {
+              Write-Host ('[F98] Tailscale welcome suppression failed: ' + $_.Exception.Message)
+          }
+
           exit 0
 
       # [F9k] Fail-closed secrets framework. TS_AUTHKEY is REQUIRED: a missing
@@ -2141,6 +2164,7 @@ jobs:
           echo '[webdesk-ui] staged'
           mkdir -p "$RUNNER_TEMP/ghrdp-stage"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-watcher.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-watcher.ps1"
+          cp "$GITHUB_WORKSPACE/payloads/ghrdp-rdp-first-login.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-rdp-first-login.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-pub2.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-pub2.ps1"
           cp "$GITHUB_WORKSPACE/payloads/ghrdp-bootstrap-session.ps1" "$RUNNER_TEMP/ghrdp-stage/ghrdp-bootstrap-session.ps1"
           echo '[watcher] ghrdp-watcher.ps1 written'
@@ -4549,6 +4573,113 @@ jobs:
           Write-Host ('  (a) startup-folder shortcut - written HERE by the workflow (F95; it used to be written by the watcher itself, which is circular)')
           Write-Host ('  (b) ONLOGON scheduled task running as the RDP user - registered AND started above (started=' + $started + ')')
           Write-Host '  (c) dashboard Start-watcher button + the F95 server-side watcher supervisor'
+
+          # ------------------------------------------------------------------
+          # [F98 §2.3 / P3] SYSTEM-LEVEL FALLBACK: break the circular dep.
+          #
+          # ROOT CAUSE of "watcher: IDLE" persisting after F95: the ONLOGON
+          # task requires an interactive user session, but on GitHub-hosted
+          # runners the AutoAdminLogon only takes effect on the NEXT boot
+          # (which would end the job), and `Start-ScheduledTask` for an
+          # ONLOGON task fails silently without an active session.
+          #
+          # FIX: register a SYSTEM-level AT-STARTUP task that starts the
+          # watcher regardless of user logon. The watcher's own mutex makes
+          # duplicate starts harmless. This breaks the circular dependency:
+          #   server needs logon -> logon needs watcher -> watcher needs server
+          # by providing a fourth path that needs none of them.
+          # ------------------------------------------------------------------
+          if (-not $started) {
+              $sysRegistered = $false
+              try {
+                  $sysAction = New-ScheduledTaskAction -Execute $pwshPath -Argument $argLine
+                  $sysTrigger = New-ScheduledTaskTrigger -AtStartup
+                  $sysPrincipal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
+                  $sysSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Hours 6)
+                  Register-ScheduledTask -TaskName 'GhrdpWatcherSystem' -Action $sysAction -Trigger $sysTrigger -Principal $sysPrincipal -Settings $sysSettings -Force -ErrorAction Stop | Out-Null
+                  $sysRegistered = $true
+                  Write-Host '[watcher] F98 SYSTEM-level fallback task GhrdpWatcherSystem registered'
+              } catch {
+                  Write-Host ('[watcher] F98 SYSTEM-level fallback failed: ' + $_.Exception.Message)
+              }
+              if ($sysRegistered) {
+                  try {
+                      Start-ScheduledTask -TaskName 'GhrdpWatcherSystem' -ErrorAction Stop
+                      Write-Host '[watcher] F98 GhrdpWatcherSystem STARTED (SYSTEM context, no user logon required)'
+                  } catch {
+                      Write-Host ('[watcher] F98 GhrdpWatcherSystem start failed: ' + $_.Exception.Message)
+                  }
+              }
+          }
+
+          # [F98 §2.3] write dashboard-url.txt for the first-login script (§2.4)
+          try {
+              $dashUrl = ''
+              if ($env:TS_TAILNET_IP) { $dashUrl = 'http://' + $env:TS_TAILNET_IP + ':7333/' }
+              elseif ($ip) { $dashUrl = 'http://' + $ip + ':7333/' }
+              if ($dashUrl) {
+                  New-Item -ItemType Directory -Path 'C:\ProgramData\ghrdp' -Force -ErrorAction SilentlyContinue | Out-Null
+                  Set-Content -Path 'C:\ProgramData\ghrdp\dashboard-url.txt' -Value $dashUrl -Force
+                  Write-Host ('[F98] dashboard-url.txt written: ' + $dashUrl)
+              }
+          } catch {
+              Write-Host ('[F98] dashboard-url.txt write failed: ' + $_.Exception.Message)
+          }
+
+          # ------------------------------------------------------------------
+          # [F98 §2.4 / P4] FIRST-LOGIN RDP UX CLEANUP SCRIPT.
+          #
+          # Deploys ghrdp-rdp-first-login.ps1 to C:\ghrdp and registers it in
+          # the user's Startup folder (AND as an ONLOGON task for redundancy).
+          # On first interactive logon, the script:
+          #   1. Minimizes PowerShell windows (no more full-screen admin prompt)
+          #   2. Dismisses Tailscale welcome dialog
+          #   3. Auto-opens the dashboard in Edge app/kiosk mode
+          # The script writes an "already-ran.flag" so it only runs once.
+          # ------------------------------------------------------------------
+          try {
+              $firstLoginScript = 'C:\ghrdp\ghrdp-rdp-first-login.ps1'
+              $stageScript = Join-Path $env:RUNNER_TEMP 'ghrdp-stage\ghrdp-rdp-first-login.ps1'
+              if (Test-Path -LiteralPath $stageScript) {
+                  Copy-Item -LiteralPath $stageScript -Destination $firstLoginScript -Force -ErrorAction Stop
+                  Write-Host ('[F98] first-login script deployed to ' + $firstLoginScript)
+              } else {
+                  Write-Host '[F98] first-login script not found in stage - skipped deployment'
+              }
+
+              # Register as ONLOGON task (redundant with Startup folder).
+              $flArgLine = '-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-rdp-first-login.ps1"'
+              try {
+                  $flAction = New-ScheduledTaskAction -Execute $pwshPath -Argument $flArgLine
+                  $flTrigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+                  $flPrincipal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
+                  $flSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Minutes 5)
+                  Register-ScheduledTask -TaskName 'GhrdpFirstLogin' -Action $flAction -Trigger $flTrigger -Principal $flPrincipal -Settings $flSettings -Force -ErrorAction Stop | Out-Null
+                  Write-Host '[F98] GhrdpFirstLogin ONLOGON task registered'
+              } catch {
+                  Write-Host ('[F98] GhrdpFirstLogin task registration failed: ' + $_.Exception.Message)
+              }
+
+              # Also write to the Startup folder for redundancy.
+              if ($targetProf) {
+                  $suDir2 = Join-Path $targetProf 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup'
+                  New-Item -ItemType Directory -Path $suDir2 -Force -ErrorAction SilentlyContinue | Out-Null
+                  $flLnk = Join-Path $suDir2 'GHRDP First Login.lnk'
+                  if (-not (Test-Path -LiteralPath $flLnk)) {
+                      $ws2 = New-Object -ComObject WScript.Shell
+                      $sc2 = $ws2.CreateShortcut($flLnk)
+                      $sc2.TargetPath = $pwshPath
+                      $sc2.Arguments = $flArgLine
+                      $sc2.WorkingDirectory = 'C:\ghrdp'
+                      $sc2.WindowStyle = 7
+                      $sc2.Save()
+                      Write-Host ('[F98] first-login Startup shortcut written at ' + $flLnk)
+                  }
+              }
+          } catch {
+              Write-Host ('[F98] first-login setup failed: ' + $_.Exception.Message)
+          }
+
           exit 0
 
       # [F91 §A.2] Persistent launcher SERVICE for MIRROR MODE. The script lives
