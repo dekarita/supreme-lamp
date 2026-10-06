@@ -3015,6 +3015,15 @@ jobs:
             grep -qF "function $fn" "$mod" || { echo "F58: $mod lost $fn" >&2; exit 1; }
           done
           grep -qF 'no plaintext fallthrough' "$mod"
+          # [F97] the blob envelope must AUTHENTICATE: the inner F58A1 HMAC
+          # framing + its domain-separated key + the lab's deterministic tamper
+          # cell are pinned here, so the ~1/256 PKCS7 coin flip that reddened
+          # windows-native/WRONG-KEY-REFUSED on main can never come back.
+          grep -qF 'function Get-F58MacKey' "$mod"
+          grep -qF 'F58MacTag' "$mod"
+          grep -qF 'if ($tag -cne $expect)' "$mod"
+          grep -qF 'instead of depending on PKCS7 padding luck' "$mod"
+          grep -qF 'AUTH-TAMPER-REFUSED' "$lab"
           grep -qF "sources-url-not-https" "$mod"
           grep -qF 'sources-url-ip-literal' "$mod"
           if grep -nE 'ConvertFrom-SecureString|ClipBoard|ExportClixml|ConvertTo-SecureString' "$mod"; then
@@ -3190,6 +3199,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # [F97] the parallel-prewarm lab proves concurrency by INTERVAL OVERLAP
+          # (never a fixed wall-clock budget: Start-Job spawn cost reddened main
+          # with wall=17s while the three leg windows did overlap).
+          grep -qF 'the three leg windows overlap' tests/f59-prewarm-parallel.ps1
+          grep -qF 'every leg body slept the full 3s window' tests/f59-prewarm-parallel.ps1
+          if grep -qF 'wall < serial sum 9s' tests/f59-prewarm-parallel.ps1; then
+            echo 'F97: the fixed 9s wall budget is back (flaky on loaded runners)' >&2
+            exit 1
+          fi
           node --test tests/f59-defaults.test.js tests/f59-verify-failclosed.test.js
           node --test tests/f48-tokenless-mirror.test.js tests/f46-mirror-contract.test.js tests/f52-mirror-telemetry.test.js
           for f in payloads/f59-prebuilt-pins.json payloads/f59-prebuilt-verify.ps1 payloads/f59-timing.ps1 \

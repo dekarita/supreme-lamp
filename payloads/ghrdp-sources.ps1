@@ -24,6 +24,7 @@ Set-StrictMode -Version Latest
 
 $script:F58Iterations = 100000
 $script:F58MaxBytes = 4194304
+$script:F58MacTag = 'F58A1|'  # [F97] inner authentication tag (see Protect/Unprotect)
 
 function Get-F58StoreDir {
     if ($env:GHRDP_SOURCE_STORE_DIR) { return $env:GHRDP_SOURCE_STORE_DIR }
@@ -64,9 +65,23 @@ function Get-F58KeyMaterial {
     try { return $kdf.GetBytes(32) } finally { $kdf.Dispose() }
 }
 
+function Get-F58MacKey {
+    # [F97] Domain-separated MAC key: the SAME PBKDF2 stream as the AES key, but
+    # the upper 32 bytes, so AES-256-CBC and HMAC-SHA256 never share key material.
+    param([byte[]]$Key, [byte[]]$Salt)
+    $kdf = New-Object System.Security.Cryptography.Rfc2898DeriveBytes -ArgumentList @($Key, $Salt, [int]$script:F58Iterations, [System.Security.Cryptography.HashAlgorithmName]::SHA256)
+    try {
+        $material = $kdf.GetBytes(64)
+        return ,[byte[]]($material[32..63])
+    } finally { $kdf.Dispose() }
+}
+
 function Protect-F58Blob {
     # v1:<salt>:<iv>:<ciphertext>, all base64. AES-256-CBC + PKCS7, fresh salt and
-    # IV per call (no IV reuse across revisions of the same source).
+    # IV per call (no IV reuse across revisions of the same source). [F97] the
+    # plaintext is framed as <F58A1|><json>|<hmac> INSIDE the ciphertext, so the
+    # envelope is authenticated: a foreign key or a flipped ciphertext byte is
+    # refused deterministically instead of depending on PKCS7 padding luck.
     param([string]$Plain, [byte[]]$Key)
     if (-not $Plain) { throw 'F58: Protect-F58Blob requires a non-empty plaintext' }
     if (-not $Key -or $Key.Length -ne 32) { throw 'F58: the per-run key must be 32 bytes' }
@@ -80,16 +95,21 @@ function Protect-F58Blob {
         $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
         $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
         $enc = $aes.CreateEncryptor()
-        $plainBytes = [System.Text.Encoding]::UTF8.GetBytes($Plain)
+        $macKey = Get-F58MacKey -Key $Key -Salt $salt
+        $hmac = New-Object System.Security.Cryptography.HMACSHA256 -ArgumentList @(,$macKey)
+        try { $macBytes = $hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($script:F58MacTag + $Plain)) } finally { $hmac.Dispose() }
+        $framed = $script:F58MacTag + $Plain + '|' + (ConvertTo-F58Base64UrlSafe $macBytes)
+        $plainBytes = [System.Text.Encoding]::UTF8.GetBytes($framed)
         $cipherBytes = $enc.TransformFinalBlock($plainBytes, 0, $plainBytes.Length)
         return ('v1:' + (ConvertTo-F58Base64UrlSafe $salt) + ':' + (ConvertTo-F58Base64UrlSafe $iv) + ':' + (ConvertTo-F58Base64UrlSafe $cipherBytes))
     } finally { $aes.Dispose() }
 }
 
 function Unprotect-F58Blob {
-    # Fail-closed: ANY problem (bad envelope, wrong key, torn ciphertext) returns
-    # $null. There is no fallthrough path that would keep a half-decrypted blob,
-    # and nothing is ever written from this function.
+    # Fail-closed: ANY problem (bad envelope, wrong key, torn/flipped ciphertext,
+    # unauthenticated framing) returns $null. The HMAC tag is verified BEFORE any
+    # plaintext is returned, so there is no unauthenticated decrypt path and no
+    # plaintext fallthrough, and nothing is ever written from this function.
     param([string]$Cipher, [byte[]]$Key)
     try {
         if (-not $Cipher) { return $null }
@@ -107,7 +127,17 @@ function Unprotect-F58Blob {
             $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
             $dec = $aes.CreateDecryptor()
             $plainBytes = $dec.TransformFinalBlock($cipherBytes, 0, $cipherBytes.Length)
-            return [System.Text.Encoding]::UTF8.GetString($plainBytes)
+            $framed = [System.Text.Encoding]::UTF8.GetString($plainBytes)
+            if (-not $framed.StartsWith($script:F58MacTag)) { return $null }
+            $cut = $framed.LastIndexOf('|')
+            if ($cut -le $script:F58MacTag.Length) { return $null }
+            $body = $framed.Substring($script:F58MacTag.Length, $cut - $script:F58MacTag.Length)
+            $tag = $framed.Substring($cut + 1)
+            $macKey = Get-F58MacKey -Key $Key -Salt $salt
+            $hmac = New-Object System.Security.Cryptography.HMACSHA256 -ArgumentList @(,$macKey)
+            try { $expect = ConvertTo-F58Base64UrlSafe ($hmac.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($script:F58MacTag + $body))) } finally { $hmac.Dispose() }
+            if ($tag -cne $expect) { return $null }
+            return $body
         } finally { $aes.Dispose() }
     } catch {
         return $null

@@ -41,6 +41,16 @@ try {
     Ok ($null -eq (Unprotect-F58Blob -Cipher $torn -Key $key)) 'TORN-CIPHER-REFUSED' 'a truncated envelope is refused'
     Ok ($null -eq (Unprotect-F58Blob -Cipher 'not-an-envelope' -Key $key)) 'BAD-ENVELOPE-REFUSED' 'a non-v1 payload is refused'
 
+    # [F97] Deterministic authenticity: flipping a ciphertext byte that leaves the
+    # PKCS7 padding valid must STILL be refused. Before F97 the wrong-key/tamper
+    # refusal was a ~1/256 coin flip (CBC+PKCS7 decrypts to garbage whenever the
+    # last block decodes as valid padding) - that coin flip is what reddened
+    # launch-gates/windows-native on main as "WRONG-KEY-REFUSED".
+    $flip = [System.Convert]::FromBase64String($cipher.Split(':')[3])
+    $flip[0] = ($flip[0] -bxor 0xFF)
+    $flipped = 'v1:' + $cipher.Split(':')[1] + ':' + $cipher.Split(':')[2] + ':' + (ConvertTo-F58Base64UrlSafe $flip)
+    Ok ($null -eq (Unprotect-F58Blob -Cipher $flipped -Key $key)) 'AUTH-TAMPER-REFUSED' 'a flipped ciphertext byte is refused (authenticated envelope, not padding luck)'
+
     # ---- 3. write-verify: sidecar digest of the WRITTEN bytes, read back
     $w = Write-F58StoreFile -Dir $dir -Name 'operator-cache' -Json $cipher -Key $key
     Ok ($w.ok -eq $true) 'WRITE-OK' 'atomic write + sidecar digest'
@@ -114,7 +124,7 @@ if ($script:fails -gt 0) {
 }
 # One summary annotation: the run-log blob is not reachable from the session
 # sandbox, so the check-run itself must carry the cell count (F50 lesson).
-$cells = 24
+$cells = 25  # [F97] +1: AUTH-TAMPER-REFUSED (deterministic authenticity cell)
 Write-Host ('::notice title=F58 result::PASS=' + $cells + ' FAIL=0 exit=0 (round-trip, fail-closed decrypt, write-verify, tamper refusal, no-plaintext-on-disk, digest parity, startup ladder, store guards, bounded blob)')
 Write-Host '[F58] PS lab PASS: round-trip, fail-closed decrypt, write-verify, tamper refusal, no plaintext on disk, cross-runtime digest parity, startup fallback ladder, store guards'
 exit 0
