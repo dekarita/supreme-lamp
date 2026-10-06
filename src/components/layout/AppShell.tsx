@@ -17,6 +17,7 @@ import { fmtHMS, pad2 } from "@/lib/format";
 import { elapsedSeconds, remainingSeconds } from "@/stores/telemetryStore";
 import { logonRowText, rdpUsageSeconds } from "@/lib/domain/native";
 import { useNow } from "@/lib/useNow";
+import { logButtonAction } from "@/lib/collectorAgent";
 
 function clockText(ms: number): string {
   const d = new Date(ms);
@@ -134,7 +135,17 @@ function TopBar() {
             type="button"
             id="f95.wsReconnect"
             data-testid="ws-reconnect"
-            onClick={() => requestWsReconnect()}
+            onClick={() => {
+              const _start = performance.now();
+              requestWsReconnect();
+              logButtonAction({
+                feature: "websocket",
+                action: "reconnect",
+                params: {},
+                result: { requested: true },
+                elapsedMs: Math.round(performance.now() - _start),
+              });
+            }}
             className="px-2 py-0.5 text-xs rounded-md border border-danger/50 text-danger font-medium hover:bg-danger/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent whitespace-nowrap"
           >
             {t("activity.wsReconnect")}

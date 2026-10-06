@@ -443,7 +443,14 @@ export function launchFailureToast(
 
 export async function launchUrl(raw: string): Promise<LaunchOutcome> {
   const url = String(raw || "").trim();
-  if (!isSafeLaunchUrl(url)) return { ok: false, reason: "search.launchUrl.failed", code: "VALIDATION_ERROR" };
+  const _start = performance.now();
+  const _log = (rec: { feature: string; action: string; params?: Record<string, unknown>; result?: unknown; elapsedMs?: number; error?: string }) => {
+    void import("@/lib/collectorAgent").then((m) => { try { m.logButtonAction(rec); } catch { /* */ } }).catch(() => { /* */ });
+  };
+  if (!isSafeLaunchUrl(url)) {
+    _log({ feature: "launcher", action: "openUrl", params: { url }, result: { ok: false, code: "VALIDATION_ERROR" }, elapsedMs: Math.round(performance.now() - _start), error: "unsafe URL" });
+    return { ok: false, reason: "search.launchUrl.failed", code: "VALIDATION_ERROR" };
+  }
 
   // [F90 §C.2] Mode A - the dashboard IS the RDP session's browser, so a plain
   // window.open lands in that same browser. No round trip, no rung that can
@@ -453,7 +460,10 @@ export async function launchUrl(raw: string): Promise<LaunchOutcome> {
   if (mode === "web-desktop") {
     try {
       const win = window.open(url, "_blank", "noopener,noreferrer");
-      if (win) return { ok: true, mode, viaWindowOpen: true };
+      if (win) {
+        _log({ feature: "launcher", action: "openUrl", params: { url }, result: { ok: true, mode, tier: "webdesk-local" }, elapsedMs: Math.round(performance.now() - _start) });
+        return { ok: true, mode, viaWindowOpen: true };
+      }
     } catch {
       /* fall through to the ladder */
     }
@@ -469,8 +479,10 @@ export async function launchUrl(raw: string): Promise<LaunchOutcome> {
   if (!out.ok && mode === "tailscale-local") {
     const reason = out.reason || "search.launchUrl.failed";
     useLaunchChoiceStore.getState().open(url, reason);
+    _log({ feature: "launcher", action: "openUrl", params: { url }, result: { ok: false, mode, tier: out.tier, code: out.code, needsChoice: true }, elapsedMs: Math.round(performance.now() - _start), error: reason });
     return { ok: false, mode, needsChoice: true, url, reason, code: out.code };
   }
+  _log({ feature: "launcher", action: "openUrl", params: { url }, result: { ok: out.ok, mode, tier: out.tier, code: out.code }, elapsedMs: Math.round(performance.now() - _start), error: out.ok ? undefined : String(out.reason || out.code || "failed") });
   return out;
 }
 

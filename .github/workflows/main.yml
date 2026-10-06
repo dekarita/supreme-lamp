@@ -4477,26 +4477,27 @@ jobs:
           $registered = $false
           # (a) Hardened XML import — guarantees Principal/UserId, LogonType InteractiveToken, RunLevel Highest,
           # AllowStartOnDemand true, Exec path C:\ghrdp\ghrdp-watcher.ps1
+          # [F100] Default task XML (here-string at body column 0, pattern matches direct-hunter).
+          $xmlTemplateDefault = @'
+          <?xml version="1.0" encoding="UTF-16"?>
+          <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+            <RegistrationInfo><Author>GH-RDP</Author><Description>GHRDP watcher (F99 inline)</Description><URI>\GhrdpWatcher</URI></RegistrationInfo>
+            <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>runneradmin</UserId></LogonTrigger></Triggers>
+            <Principals><Principal id="Author"><UserId>runneradmin</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
+            <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfGoingOnBatteries><StopIfGoingOnBatteries>false</DisallowStartIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>false</Hidden><RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>false</WakeToRun><ExecutionTimeLimit>PT6H</ExecutionTimeLimit><Priority>7</Priority></Settings>
+            <Actions Context="Author"><Exec><Command>powershell.exe</Command><Arguments>-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-watcher.ps1"</Arguments><WorkingDirectory>C:\ghrdp</WorkingDirectory></Exec></Actions>
+          </Task>
+          '@
+          $xmlTemplateDefault = ($xmlTemplateDefault -split "`r?`n" | ForEach-Object { $_ -replace '^\s{10}', '' }) -join "`r`n"
           try {
-            $xmlTemplate = $null
-            $candidates = @(
-              (Join-Path $env:GITHUB_WORKSPACE 'docs/f99-watcher-task.xml'),
-              (Join-Path $env:RUNNER_TEMP 'ghrdp-stage/docs/f99-watcher-task.xml'),
-              'C:\ghrdp\docs-f99-watcher-task.xml'
-            )
-            foreach ($cand in $candidates) { if (Test-Path -LiteralPath $cand) { $xmlTemplate = Get-Content -LiteralPath $cand -Raw -ErrorAction Stop; break } }
-            if (-not $xmlTemplate) {
-              $xmlTemplate = @'
-<?xml version="1.0" encoding="UTF-16"?>
-<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
-  <RegistrationInfo><Author>GH-RDP</Author><Description>GHRDP watcher (F99 inline)</Description><URI>\GhrdpWatcher</URI></RegistrationInfo>
-  <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>runneradmin</UserId></LogonTrigger></Triggers>
-  <Principals><Principal id="Author"><UserId>runneradmin</UserId><LogonType>InteractiveToken</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>
-  <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><AllowHardTerminate>true</AllowHardTerminate><StartWhenAvailable>true</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><IdleSettings><StopOnIdleEnd>false</StopOnIdleEnd><RestartOnIdle>false</RestartOnIdle></IdleSettings><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>false</Hidden><RunOnlyIfIdle>false</RunOnlyIfIdle><WakeToRun>false</WakeToRun><ExecutionTimeLimit>PT6H</ExecutionTimeLimit><Priority>7</Priority></Settings>
-  <Actions Context="Author"><Exec><Command>powershell.exe</Command><Arguments>-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\ghrdp\ghrdp-watcher.ps1"</Arguments><WorkingDirectory>C:\ghrdp</WorkingDirectory></Exec></Actions>
-</Task>
-'@
-            }
+              $xmlTemplate = $null
+              $candidates = @(
+                  (Join-Path $env:GITHUB_WORKSPACE 'docs/f99-watcher-task.xml'),
+                  (Join-Path $env:RUNNER_TEMP 'ghrdp-stage/docs/f99-watcher-task.xml'),
+                  'C:\ghrdp\docs-f99-watcher-task.xml'
+              )
+              foreach ($cand in $candidates) { if (Test-Path -LiteralPath $cand) { $xmlTemplate = Get-Content -LiteralPath $cand -Raw -ErrorAction Stop; break } }
+              if (-not $xmlTemplate) { $xmlTemplate = $xmlTemplateDefault }
             $xmlPatched = $xmlTemplate.Replace('runneradmin', $watchUser).Replace('powershell.exe', $pwshPath)
             Register-ScheduledTask -TaskName 'GhrdpWatcher' -Xml $xmlPatched -Force -ErrorAction Stop | Out-Null
             $registered = $true

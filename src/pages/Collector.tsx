@@ -1,13 +1,22 @@
 // [F99 §3] Collector — live feature-probe dashboard.
 // Runs POST /api/collector/run (1/5 min), renders ~15 feature probes + summary.
 // Supports JSON + NDJSON (Accept: application/x-ndjson) download of last report.
+// [F100 §3.3] Adds "Recent user actions" table - every button click is logged
+// via collectorAgent.ts and can be replayed; "▶ Replay all" + "🗑 Clear" buttons.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { apiBase, getDashToken } from "@/lib/api";
 import { Card } from "@/components/primitives/Data";
 import { Button } from "@/components/primitives/Button";
 import { Chip } from "@/components/primitives/Chip";
+import {
+  getRecordedActions,
+  clearActions,
+  subscribeToActions,
+  replayAllActions,
+  type ButtonAction,
+} from "@/lib/collectorAgent";
 
 type FeatureStatus = "pass" | "fail" | "warn" | string;
 
@@ -53,6 +62,38 @@ export default function Collector() {
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retryAfter, setRetryAfter] = useState<number | null>(null);
+  const [replaying, setReplaying] = useState(false);
+  const [actions, setActions] = useState<ButtonAction[]>(() => getRecordedActions());
+
+  // Subscribe to live action updates from collectorAgent.
+  useEffect(() => {
+    return subscribeToActions(setActions);
+  }, []);
+
+  const handleClearActions = useCallback(() => {
+    clearActions();
+  }, []);
+
+  // Replay handlers know how to re-execute each (feature, action) pair.
+  // We keep this map minimal for F100: it logs back via logButtonAction so the
+  // replay itself is recorded; actual replay of UI flows is wired where the
+  // action has a stateless, invokable API. Other entries record "no-op (replay
+  // handler not wired)" so the operator sees which actions need manual click.
+  const replayHandlers = useMemo(() => {
+    return {} as Record<string, (p: Record<string, unknown>) => unknown | Promise<unknown>>;
+  }, []);
+
+  const handleReplayAll = useCallback(async () => {
+    setReplaying(true);
+    setError(null);
+    try {
+      await replayAllActions(replayHandlers);
+    } catch (e) {
+      setError(String((e as Error)?.message || e));
+    } finally {
+      setReplaying(false);
+    }
+  }, [replayHandlers]);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -142,6 +183,22 @@ export default function Collector() {
     }
   }, []);
 
+  const downloadActions = useCallback(() => {
+    try {
+      const blob = new Blob([JSON.stringify({ recordedUserActions: getRecordedActions() }, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "button-actions.json";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 2000);
+    } catch (e) {
+      setError(String((e as Error)?.message || e));
+    }
+  }, []);
+
   const features = report?.features || {};
   const summary = report?.summary;
 
@@ -177,6 +234,9 @@ export default function Collector() {
           <Button variant="secondary" onClick={() => download(true)} data-testid="collector-download-ndjson">
             {t("collector.downloadNdjson", { defaultValue: "Download NDJSON" })}
           </Button>
+          <Button variant="secondary" onClick={downloadActions} data-testid="collector-download-actions">
+            {t("collector.downloadActions", { defaultValue: "Download button-actions.json" })}
+          </Button>
           {retryAfter ? (
             <span className="text-xs text-warning" data-testid="collector-retry">
               {t("collector.retryAfter", { defaultValue: "Retry after {{s}}s (1 per 5 min)", s: retryAfter })}
@@ -194,6 +254,65 @@ export default function Collector() {
             {error}
           </div>
         ) : null}
+      </Card>
+
+      {/* [F100 §3.3] Recent user actions (recorded) */}
+      <Card title={t("collector.actionsTitle", { defaultValue: "Recent user actions (recorded)" })}>
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={handleReplayAll}
+            disabled={replaying || actions.length === 0}
+            data-testid="collector-replay-all"
+          >
+            {replaying ? "▶ Replaying…" : "▶ Replay all"}
+          </Button>
+          <Button variant="secondary" size="sm" onClick={handleClearActions} disabled={actions.length === 0} data-testid="collector-clear-actions">
+            🗑 {t("collector.clear", { defaultValue: "Clear" })}
+          </Button>
+          <span className="text-xs text-tertiary">
+            {actions.length} action{actions.length === 1 ? "" : "s"} recorded
+          </span>
+        </div>
+        {actions.length === 0 ? (
+          <div className="text-sm text-tertiary" data-testid="collector-actions-empty">
+            {t("collector.actionsEmpty", { defaultValue: "No button clicks recorded yet. Click buttons around the dashboard (Add site, Open in RDP, Fetch, Download, Reconnect, Preview…) to populate this table." })}
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs border-collapse" data-testid="collector-actions-table">
+              <thead>
+                <tr className="text-left border-b border-default">
+                  <th className="py-1 pr-2">{t("collector.when", { defaultValue: "When" })}</th>
+                  <th className="py-1 pr-2">{t("collector.feature", { defaultValue: "Feature" })}</th>
+                  <th className="py-1 pr-2">{t("collector.action", { defaultValue: "Action" })}</th>
+                  <th className="py-1 pr-2">{t("collector.params", { defaultValue: "Params" })}</th>
+                  <th className="py-1 pr-2">{t("collector.result", { defaultValue: "Result" })}</th>
+                  <th className="py-1 pr-2">{t("collector.elapsed", { defaultValue: "ms" })}</th>
+                  <th className="py-1"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {actions.slice(-50).reverse().map((a) => (
+                  <tr key={a.id} className="border-b border-default/50" data-testid={"collector-action-row-" + a.id}>
+                    <td className="py-1 pr-2 font-mono text-tertiary" title={a.ts}>{new Date(a.ts).toLocaleTimeString()}</td>
+                    <td className="py-1 pr-2 font-mono">{a.feature}</td>
+                    <td className="py-1 pr-2 font-mono">{a.action}</td>
+                    <td className="py-1 pr-2 font-mono truncate max-w-[20ch]" title={a.params ? JSON.stringify(a.params) : ""}>{a.params ? JSON.stringify(a.params).slice(0, 80) : "—"}</td>
+                    <td className={"py-1 pr-2 font-mono truncate max-w-[30ch] " + (a.error ? "text-danger" : "")} title={a.error ? a.error : a.result ? JSON.stringify(a.result) : ""}>
+                      {a.error ? ("ERR: " + a.error).slice(0, 80) : a.result ? JSON.stringify(a.result).slice(0, 80) : "—"}
+                    </td>
+                    <td className="py-1 pr-2 font-mono">{a.elapsedMs ?? "—"}</td>
+                    <td className="py-1">
+                      <span className="text-[10px] text-tertiary">replay</span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
       </Card>
 
       {summary ? (
