@@ -14,7 +14,7 @@ import { isSearchLaneEnabled } from "@/lib/search/lane";
 
 type Any = any;
 const CACHE_KEYS = ["__GHRDP_SEARCH_ENABLED", "f56.search.enabled", "ghrdp.lane.search"];
-const F77_ORDER = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/health", "/settings"]; // [F92] +/health
+const F77_ORDER = ["/", "/search", "/sessions", "/connections", "/keys", "/files", "/mirror", "/telemetry", "/health", "/collector", "/settings"]; // [F92] +/health [F99] +/collector
 
 /** vitest runs from the repo root (same assumption as scripts/check-*.mjs). */
 function read(rel: string): string {
@@ -139,6 +139,6 @@ describe("F77 §2.1 no visibility condition survives", () => {
     await waitFor(() => expect((window as Any).__GHRDP_SEARCH_ENABLED).toBe(false));
     expect(container.querySelector('[data-testid="ui-sha-badge"]')).not.toBeNull();
     // [F92 §6.3] +1 for the /#/health nav entry (was the locked F77 nine).
-    expect(sidebarHrefs(container).length).toBe(10);
+    expect(sidebarHrefs(container).length).toBe(11); // [F99] +/collector
   });
 });

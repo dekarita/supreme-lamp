@@ -362,8 +362,9 @@ try {
                 }
             }
         } catch { }
+        # [F99 §2.3] B3 unify with F95 R1: was LogonType=10 only — dropped autologon type 2/11
         try {
-            $s = Get-CimInstance Win32_LogonSession -Filter "LogonType = 10" -ErrorAction SilentlyContinue
+            $s = Get-CimInstance Win32_LogonSession -Filter "LogonType=2 OR LogonType=10 OR LogonType=11" -ErrorAction SilentlyContinue
             if ($s) { return $true }
         } catch { }
         try { $est = Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue; if ($est) { return $true } } catch { }

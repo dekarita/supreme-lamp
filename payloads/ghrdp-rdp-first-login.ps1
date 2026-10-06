@@ -44,7 +44,9 @@ try {
 } catch { }
 
 # -----------------------------------------------------------------------
-# STEP 1: MINIMIZE PowerShell / CMD windows (Win32 ShowWindow SW_MINIMIZE=6)
+# STEP 1: HIDE PowerShell / CMD windows (Win32 ShowWindow SW_HIDE=0) [F99]
+# F98 used SW_MINIMIZE=6 which left a taskbar button on the RDP desktop.
+# F99 hides entirely so the Operator sees a clean desktop.
 # -----------------------------------------------------------------------
 try {
     Add-Type -TypeDefinition @'
@@ -67,8 +69,8 @@ public class GhrdpWindowHelper {
         try {
             $h = $p.MainWindowHandle
             if ($h -and $h -ne [IntPtr]::Zero) {
-                # SW_MINIMIZE = 6
-                [GhrdpWindowHelper]::ShowWindow($h, 6) | Out-Null
+                # SW_HIDE = 0 [F99]
+                [GhrdpWindowHelper]::ShowWindow($h, 0) | Out-Null
                 $minimized++
             }
         } catch { }

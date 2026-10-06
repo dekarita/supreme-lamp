@@ -3,7 +3,7 @@
 // sticky, the ONLY surface allowed to render the four time fields + clock -
 // enforced by tests/smoke/bottom-bar-time.test.ts + scripts/check-bottom-bar-time.mjs).
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { Activity, ChevronsLeft, Clock, Database, Folder, Globe, KeyRound, Menu, Moon, Search, Settings, Sun, Type, Zap } from "lucide-react";
+import { Activity, ChevronsLeft, ClipboardList, Clock, Database, Folder, Globe, KeyRound, Menu, Moon, Search, Settings, Sun, Type, Zap } from "lucide-react";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { CommandPalette } from "@/components/layout/CommandPalette";
@@ -226,6 +226,8 @@ const NAV: NavItem[] = [
   // [F92 §6.3] the self-test dashboard (/#/health): one row per F92 check,
   // each row's "fix" cell names the one-cell patch. Runs §13 step 4-6.
   { to: "/health", key: "nav.health", labelKey: "sidebar.health", icon: Activity, id: "f92.health.nav" },
+  // [F99 §3] Collector — live feature probes (POST /api/collector/run 1/5 min)
+  { to: "/collector", key: "nav.collector", labelKey: "sidebar.collector", icon: ClipboardList, id: "f99.collector.nav" },
   { to: "/settings", key: "nav.settings", icon: Settings },
 ];
 

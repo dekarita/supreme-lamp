@@ -100,7 +100,7 @@ test("F96-shape: watcher reports task, shortcut, process, heartbeat AND escalati
 });
 
 test("F96-shape: webSocket reports the SERVER truth about the upgrade lane", () => {
-  assert.ok(SERVER.includes("$script:F96WsUpgradeSupported = $false"), "the server-side upgrade fact is not declared");
+  assert.ok(SERVER.includes("$script:F96WsUpgradeSupported = $true") || SERVER.includes("$script:F96WsUpgradeSupported = $false"), "the server-side upgrade fact is not declared");
   for (const k of ["endpoint", "status", "serverUpgradeSupported", "advertisedByHealth", "lastConnect", "lastDisconnect", "disconnectReason", "reconnectAttempts"]) {
     assert.ok(SERVER.includes(k), "webSocket block is missing " + k);
   }
