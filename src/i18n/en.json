@@ -307,6 +307,16 @@
     "recoveryTitle": "RECOVERY - password rejected by the host",
     "recoveryNote": "fresh ticket -> stored credential overwritten -> mstsc reopens; no typing, no clipboard"
   },
+  "boundary": {
+    "title": "{{section}} crashed",
+    "body": "This section stopped rendering, so Mission Control fenced it off - every other section still works.",
+    "errorLabel": "Error:",
+    "count": "failure {{n}} on {{route}} - recorded in the Collector",
+    "retry": "Retry section",
+    "reload": "Reload app",
+    "copy": "Copy error",
+    "hint": "Copy the error and paste it into your next Arena session."
+  },
   "mirrorHostMatrix": {
     "title": "Mirror host matrix (read-only probe)",
     "subtitle": "Live from /diag mirrorHosts - the same {host,status,note} rows the CI step summary prints. Read-only GET of each host API root: token-less guest mode - no upload, no credential, no evasion.",

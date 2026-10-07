@@ -165,7 +165,14 @@ export function SchannelTable({ maxHeight }: { maxHeight?: string }) {
 
 export function BeaconJsonlViewer() {
   const native = useSessionStore((s) => s.native);
-  const chain = Array.isArray((native && native.handlerChain) || []) ? (native.handlerChain as Any[]) : [];
+  // [F105 §2.5 / step-2 handoff] `Array.isArray((native && native.handlerChain) || [])`
+  // was ALWAYS true - the `|| []` made the guard vacuous - so with an empty
+  // store (native === null) the true branch dereferenced `native.handlerChain`
+  // and the Telemetry page threw on mount, taking the whole tree down with it
+  // (React unmounts everything when nothing catches). The check now tests the
+  // value it dereferences, and keeps the original contract exactly: an array
+  // passes through, anything else (null, object, string, undefined) is [].
+  const chain: Any[] = Array.isArray((native as Any)?.handlerChain) ? ((native as Any).handlerChain as Any[]) : [];
   const beacons = asList(native && native.launcher && native.launcher.beacons);
   const lines: string[] = [];
   chain.forEach((e) => lines.push(JSON.stringify({ src: "chain", ts: e.ts, details: e.details })));

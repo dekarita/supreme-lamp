@@ -86,8 +86,12 @@ describe("F76 §1.3 route registration (source-pinned + rendered)", () => {
   it("App.tsx registers /search and /search/lab/:targetId with the Lab import", () => {
     const app = fs.readFileSync(path.resolve(__dirname, "../../App.tsx"), "utf8");
     expect(app).toContain('import LabPage from "@/pages/search/Lab"');
-    expect(app).toMatch(/<Route path="\/search" element=\{<Search \/>\} \/>/);
-    expect(app).toMatch(/<Route path="\/search\/lab\/:targetId" element=\{<SearchLab \/>\} \/>/);
+    // [F105 §2.3] the pin is unchanged in INTENT (both routes registered,
+    // unconditionally, Lab on the sub-route) and is now stricter: the element
+    // expression is pinned verbatim, so the search routes cannot lose their
+    // FeatureBoundary fence without failing here.
+    expect(app).toMatch(/<Route path="\/search" element=\{fence\("search", <SearchPage \/>\)\} \/>/);
+    expect(app).toMatch(/<Route path="\/search\/lab\/:targetId" element=\{fence\("search", <LabPage \/>\)\} \/>/);
   });
 
   it("/search/lab/:targetId renders the Lab scaffold", async () => {

@@ -10,29 +10,7 @@
 > determination = first unchecked box below; fall back to #165's body only if this file is missing,
 > then cross-check the newest "§3 tracking-issue handoff" comment on the PR this step shipped in.
 
-**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 11:0xZ by arena/bd2c6418-supreme-lamp (step 3)
-
-## §OPERATOR-ASSERTIONS (operator-only writes)
-
-Seeded from the operator's step-5 prompt, because **the section did not exist in this file before this
-session** (the prompt assumed it did; recorded as drift below, not silently invented). Sessions may read
-this section and may append corrections with a date - they may not rewrite it.
-
-1. **`GH_PAT`**: created and stored as a **Cloudflare Worker environment variable** (`worker.js:92`,
-   behind `/dispatch`, `/cancel`, `/workflow`). It is **not** an Actions secret, no workflow reads
-   `secrets.GH_PAT`, and `gh api /repos/…/actions/secrets` is 403 for a session token. Step 3's halt
-   record below is the falsification; this bullet is the operator's confirmation of the same fact.
-2. **GitHub Pages**: the operator's assertion says "see assertions" - **no state was actually supplied**,
-   and `dekarita/supreme-lamp` Pages is still unverified by any session. Step 7 (F108) is the first step
-   that needs it, so this is an operator item with a deadline, not a blocker today.
-3. **Labels**: `POST /repos/…/labels` (create) and `POST /issues/<n>/labels` **work** with the session
-   token **on pull requests** and on issues created in the same session; `#163`/`#165` remain 403
-   (plain issues the token did not create). Confirmed again in step 3 (PR label applied; #169 label
-   applied); `PATCH /issues/165` remains 403 and is never retried.
-4. **Step 3 decision (the blocker this session inherited)**: #169 option **(d) - no upload at all**:
-   build the `.mcrec` in the tab, copy it with the existing clipboard primitive, paste it into Arena.
-   Written by the operator into #169's body during step 4's session; step 3 executed it and shipped
-   no upload path, no new secret, no new endpoint.
+**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 10:05Z by arena/75bc347b-supreme-lamp
 
 ## Phase 1 — Immediate value
 - [x] **Step 1 — F-TESTID** · landed on `arena/ad1df050-supreme-lamp`, PR **#166**, head `5cf005a`
@@ -64,12 +42,16 @@ this section and may append corrections with a date - they may not rewrite it.
     `tests/f104-global-click.test.js` F104-f (call shape, made stricter)
 
 ## Phase 2 — Observatory core
-- [ ] **Step 4 — F105** · ETA 90min · Feature Registry + 11 FeatureBoundaries
-  · **OPEN as PR #170** (`arena/75bc347b`, head `f6a3d8a`, 16 files, +1691/−28). **NOT merged, and not
-    mergeable as-is: `mergeStateStatus=DIRTY`** (textual conflicts in `docs/OBSERVATORY-STATE.md` and
-    `src/i18n/si.json` against the now-merged #167). Its own checks were green at the pin: `gates` ✅
-    2m54s · `windows-native` ✅ 10m57s · `f56d/f57/f60` ✅ · `e2e-ui` pending. **Operator action: rebase
-    #170 onto `main` (keep #167's step-2 block *and* #170's step-4 block) or close it.**
+- [x] **Step 4 — F105** · landed on `arena/75bc347b-supreme-lamp`, PR **#170** (in review, NOT merged)
+  · registry `src/lib/feature-registry.json` + typed face `src/lib/featureRegistry.ts` (11 sections, source-cited DAG)
+  · 11 `FeatureBoundary` fences wired in `App.tsx` (zero DOM delta when healthy) + crash channel `src/lib/featureBoundary.ts` (window event → Collector row)
+  · **step-2 handoff RESOLVED**: the `/#/telemetry` empty-store crash (`LogPanel.tsx:168`, always-true `Array.isArray((native && native.handlerChain) || [])` guard) is fixed at the root, with the fence as the second line of defence
+  · gates: `tests/f105-feature-registry.test.js` (11 rules, auto-run by launch-gates) + `src/tests/smoke/f105-feature-boundaries.test.tsx` (26 tests, DOM-proven)
+  · Node 634/634 · Vitest 1030/1030 (79 files) · tsc 0 · build 1016.92 kB · regression-ids 219/219 · 12 falsifications, 3 loopholes tightened
+  · CI on the code head `1a54b2c`: `gates` ✅ · `windows-native` ✅ · `launch-gates`(PR) ✅ · `e2e-ui` ⚠️ AMBER-INHERITED
+    (cancelled by its own 25-min timeout at 10:32:45Z, zero failed steps — the `main` baseline is 0/5 cancelled).
+    `F59 build-ui` + `autologin-lab` ✅ on the preceding head `8402559`. One supersede: `8402559` → `1a54b2c`
+    (the F56-c pin fix below). Mergeable by the §4 criteria (only RED-NEW blocks).
 - [ ] **Step 5 — F106** · ETA 120min · `/#/lab/<section>` isolated test pages × 11
   · **HARD-BLOCKED on step 4 landing**: `src/components/primitives/FeatureBoundary.tsx` and
     `src/lib/featureRegistry.ts` exist **only on PR #170's branch** - on `main` there is no
@@ -84,147 +66,41 @@ this section and may append corrections with a date - they may not rewrite it.
 - [ ] **Step 9 — F110** · ETA 150min · Live Patch Protocol (module federation)
 - [ ] **Step 10 — F111** · ETA 60min · CI Inventory Gate (PR validates #163 drift)
 
-## Step 3 execution record — F-DVR-LITE (2026-10-07 11:05Z, `arena/bd2c6418-supreme-lamp`)
-
-**What shipped.** The diagnostic DVR, as option (d) of #169: the last 30 s of clicks, assembled in the
-tab, copied through the existing clipboard primitive, pasted into Arena by the operator. Nothing else.
-| file | role |
-|---|---|
-| `src/lib/dvr-core.js` (+ `.d.ts`) | the pure ring: 30 s window **and** 200-entry cap, `mcrec` v1 bundle, base64 + `mcrec1:<codec>:` paste envelope. Plain JS so the `node --test` job can *execute* the shipped rules with no DOM and no build - the F58 precedent. |
-| `src/lib/dvr.ts` | the wiring: `installDvr(inner)` **decorates** the recorder F104 already receives by injection (extend-never-replace, the rule #168 derived); `installDvrObservers()` counts DOM mutations and records route changes; `dvrReport()` builds the exact bytes Copy writes. |
-| `src/components/domain/DvrFab.tsx` | FAB + `Modal` panel: counts, codec, char count, the real envelope preview, Copy, Clear, pause. The preview **is** the payload. |
-| `src/main.tsx`, `src/App.tsx` | one decoration at the F104 seam (inside the existing kill-flag guard, plus a DVR-specific `VITE_DVR_ENABLED`), one chrome mount beside `CollectorRunBridge`. |
-| `src/i18n/{en,si}.json` | 21 `dvr.*` keys in **both** catalogs, with the parity count lock moved 949 → 970 in the same commit. |
-
-**PRE-STEP (all 8 checks, as the prompt demands):**
-- `§SPEC-REALITY` - **4 drifts**: (1) #167/#168 are **merged** and the roadmap said open; (2) PR #170 is
-  **CONFLICTING**, not mergeable; (3) `docs/CI-GATE-BRITTLENESS.md` and `§OPERATOR-ASSERTIONS` did not
-  exist although the prompt assumed both; (4) on `main` there is no `FeatureBoundary`/`featureRegistry`,
-  so step 5 has a **hard** (not soft) dependency on #170. Also re-confirmed the standing drifts: smoke
-  tests live in `src/tests/smoke/`, the ledger has **10** steps.
-- `§INVENTORY-RE-DERIVE` - #163 §2 + F104's 219-id/174-button ledger re-read; hidden class re-checked
-  (the 16 `collector.*` defaultValue-only keys from step 2 are real catalog entries now, so the DVR panel
-  could be `t()`-driven from day one with no new default-only string).
-- `§SECRET-ENUM` - 7-location search re-run for `GH_PAT`, `dvr`, `upload`, `token`: **no** credential is
-  needed by option (d) and none was added. The only credential in scope remains the Cloudflare Worker var
-  (`worker.js:92`) which this step never reads.
-- `§ARCH-FEASIBILITY` - verified 3 ways: `installGlobalClickCapture(recorder)` takes an **injected**
-  `GlobalClickRecorder` (read the module, not the summary); `CompressionStream` exists in Node 22 (probed)
-  and is absent in jsdom (so the plain codec is a real path, and it is DOM-tested); the toast + `copyText`
-  primitives exist and are the F27/F41 egress. **Feasible.**
-- `§SECURITY-REMEDIATION-CHECK` - clear: no endpoint, no `fetch`, no storage, no DOM text, no re-added
-  `/api/diag-upload` class. Asserted by gate, not by comment (`F-DVR-f`, `F-DVR-g`).
-- `§CI-PIN-DETECTION` - **3 pins** evaluated: F56-c's `src/App.tsx` route greps (kept byte-true; the F56-c
-  step was extracted and re-run locally → PASS), `tests/f104-global-click.test.js` F104-f **call shape**
-  (updated same-commit, stricter), `tests/f-i18n-parity.test.js` **count lock** (949 → 970, same commit).
-- `§FACT-REFRESH` - labels re-tested: PR label + new-issue label work; #163/#165 stay 403. Roadmap status
-  re-tested against the API (see drifts above).
-- `§PRIMITIVE-AUDIT` - extended, not replaced: F104 recorder (decoration), `Modal` + `Toasts`
-  (F41/F91), `copyText` (F27), the `tests/*.test.js` glob (launch-gates:2449) and the
-  `src/tests/smoke/**` vitest glob (:2478). **No new dependency.**
-
-**Falsification (§FALSIFY-3, 3+ per gate): 22 mutations, 22 caught, 0 missed.**
-- `tests/f-dvr-lite.test.js` (10): window eviction disabled; window constant 30 s → 10 s; a `fetch()`
-  added to the core; format tag drifted; the cap keeping the *oldest*; F104 handed the **undecorated**
-  recorder; a `dvr-*` testid dropped into F104's blind spot; the FAB using the raw clipboard API; a `si`
-  translation deleted; DOM text captured in `dvr.ts`.
-- `src/tests/smoke/f-dvr-lite.test.tsx` (6): `update()` no longer forwarded to the store; the pause
-  switch made a no-op; the panel previewing a **summary** instead of the payload; opening the panel
-  calling `fetch("/api/f-dvr/upload")`; the mutation counter dead; the panel testid renamed.
-- vacuity probes (6): count lock moved to a wrong number; a key added to `en.json` only; two testids
-  made equal; the plain-codec fallback deleted (caught by **both** gates after a same-session tightening);
-  an extra fingerprint key added to the bundle target. Two of these were *found* by this session's own
-  mutation run (the fallback was initially only caught by the DOM gate) - the fix was a stricter static
-  pin, not a weaker assertion.
-- **Loopholes tightened (4)**: (1) forbidden-token scans now strip comments first (the gate is about a
-  file's actions, not its prose) which is what makes the `fetch`/`navigator.clipboard` mutations
-  catchable *without* deleting the privacy comment; (2) the bundle-target check became a closed key-set
-  assertion instead of a substring scan (a substring scan would have passed a `timezone` key); (3) the
-  over-broad `.value` ban was narrowed to DOM APIs so the claim could stay strong; (4) the count-lock
-  assertion was verified non-vacuous (it fails, loudly, when the lock and the catalogs disagree).
-
-**Non-regression (positive proof).** `node --test tests/*.test.js` **640/640** (main baseline 629 +
-this step's 11) · `pnpm`/`npx vitest run` **1033/1033, 80 files** (baseline 1023/79 → +10 DVR tests, no
-losses) · `tsc -p tsconfig.build.json` **0** · `vite build` **1,023.94 kB** single file · `check-regression-ids`
-219=219 · `check-no-neon-green` OK · `check-bottom-bar-time` OK · `check-fx-ids` PASS (10 ids + 1 class) ·
-**F56-c launch-gates step re-run locally: PASS** (10 sidebar entries order-locked, 528 keys × 2 catalogs,
-92 additive ids). `tests/f104-global-click.test.js` 14/14 and `tests/f-i18n-parity.test.js` 6/6 pass with
-their updated pins - the pins that this step moved were re-run, not assumed.
-
-**Handoffs.** Resolved: the step-3 "GH_PAT secret" premise (was false; option (d) needs no credential).
-Recorded: (1) the DVR deliberately captures no DOM content → **F107** owns content capture and must
-enumerate its own privacy surface; (2) the DVR is mounted as **chrome**, so it stays outside the 11
-`FeatureBoundary` fences - see the fence-coverage tracker; (3) `docs/CI-GATE-BRITTLENESS.md` now exists
-and every later step must consult it (F106 and F108 both edit `src/App.tsx`).
-
-## Step 3 halt record — F-DVR-LITE (2026-10-07, `arena/6f15a7da-supreme-lamp`) — HISTORY, superseded by the execution record above
-Halted in §0.3 PRE-STEP, before writing code: the spec's own halt condition fired, and the design it
-prescribes cannot be built as written. §-1 "preserve the security guards" outranks shipping the step.
-1. **GH_PAT is not an Actions secret.** `gh api /repos/dekarita/supreme-lamp/actions/secrets` → 403
-   `Resource not accessible by integration` (a session can neither list nor mint it), and **no
-   workflow in the repo reads `secrets.GH_PAT`**. Its only consumer is `worker.js:92` (`env.GH_PAT`)
-   — a *Cloudflare Worker* env var backing `/dispatch`, `/cancel`, `/workflow` against `main.yml`.
-   `ghrdp-server.ps1` has no GitHub-credential plumbing at all (only `GITHUB_SHA` + `GHRDP_*`), so
-   "GET /api/f-dvr/github-token → masked presence" has no source to mask, and "waiting for the
-   operator to add the secret" would not have unblocked anything.
-2. **The server-side GitHub write path was removed by a prior remediation on purpose.** `Put-GhFile`
-   and `Publish-GithubPagesData` (`payloads/ghrdp-lib.ps1:751,844`) open with
-   `throw 'GHRDP: mirror/publish path removed per remediation (function neutered).'`, and
-   `/api/diag-upload` + `/api/diag-file` are hard-404'd by the remediation guard
-   (`ghrdp-server.ps1:6972`). `/api/f-dvr/upload` is that same endpoint class re-added; it needs
-   sign-off, not a PR.
-3. **There is no REST endpoint that attaches a file to an issue comment**, so "upload .mcrec to
-   #165 as comment … return the URL" is unimplementable as specified. Falsified 3×: `gh issue
-   comment --help` has no attachment flag; `gh api POST /upload/policies/assets` → 404 (the web
-   paperclip rides a browser-session asset pipeline, not the API); community #46951/#28219 confirm
-   the omission is deliberate. Any of these is a *spec change to choose from*: (a) gist-per-bundle
-   minted by the Worker; (b) Contents-API commit onto an orphan `dvr` branch; (c) release asset on
-   a rolling `dvr-bundles` release; (d) **no upload at all** — copy the `.mcrec` and let the
-   operator paste it into Arena, which is 0 new secrets and 0 new endpoints on a tailnet box, i.e.
-   the only option that fully respects guards (1)-(2). (d) is the recommendation.
-**Frontend half is unblocked and ready.** `installGlobalClickCapture(recorder, opts)` takes an
-injected `GlobalClickRecorder {record, update}`, so a DVR ring **can extend without replacing**
-F104; re-derived constants are window 10s / dedup 500ms / 50-exchange cap (the "30s" in the spec is
-the DVR's own window, not F104's) and the blind spot is exactly `[data-collector-ignore]`,
-`[data-testid^='collector-']`, `[data-testid^='click-now-']`. Toast primitive exists and is
-globally mounted (`primitives/Feedback` `<Toasts/>` at `App.tsx:75`, `useToast`); clipboard exists
-(`src/lib/clipboard.ts#copyText`); **no FAB and no upload util exist**. `CompressionStream` is
-present in the Node 22 vitest env and in Chromium, so a gzipped `.mcrec` costs no new dependency.
-**Gate placement, re-derived**: `tests/f-dvr-upload.test.js` is auto-run by
-`node --test tests/*.test.js` (`launch-gates.yml:2449`) and any `src/tests/smoke/f-dvr-*.test.tsx`
-by `pnpm exec vitest run` — **not** `tests/smoke/`, which does not exist. Playwright sets
-`testDir: "tests/e2e"` with no `testMatch`, so `tests/e2e/*.spec.ts` is auto-picked-up by
-`pnpm run e2e`; since that job is the 25-min self-canceller, an e2e-only DVR proof would be
-unfalsifiable in CI — keep it behind the two CI globs plus a jsdom DOM gate.
-**Baseline main CI `4be94a7` (last 5 `push:main` each)**: launch-gates 5/5 GREEN · build-ui 5/5
-GREEN · e2e-ui 0/5 `cancelled` (RED-INHERITED). Local on the same sha: Node 623/623 · Vitest
-1004/1004 (78 files) · tsc 0. **Ledger count drift**: the shipped file has **10** steps, not 11 —
-the repo folded F111's e2e re-plan into Step 10 — so numbering here follows the file, not the prompt.
-
-**Blocker filed**: #169 (operator decision on the upload target; (d) clipboard-only recommended).
-**Corrected standing fact — labels are NOT uniformly operator-only** (re-tested this session):
-`POST /repos/.../labels` (create) works, and `POST /repos/.../issues/<N>/labels` works on a
-**pull request** (#166 #167 #168 are now labelled `f-observatory` by the session) but returns `403`
-on a **plain issue** — including an issue the same session just created (#169). So #163/#165 labels
-stay manual, PR labels do not, and `f-observatory` + `blocked` now exist as repo labels for reuse.
-`PATCH /issues/165` was attempted once, returned `403`, and is not retried; this file wins.
-`gh gist create` is also `403`, so the session trace is inlined in the PR comment instead of linked.
-
-### Session 2026-10-07 08:52Z — Step 3 — F-DVR-LITE — **HALTED BLOCKED in PRE-STEP**
-- Branch `arena/6f15a7da-supreme-lamp` · PR #168 (docs-only) · blocker #169 · no feature code shipped
-- Spec drift: `tests/smoke/` does not exist (smoke lives in `src/tests/smoke/`); the ledger has **10**
-  steps, not 11; "GH_PAT Actions secret" is wrong — it is a Cloudflare Worker var (`worker.js:92`)
-- Primitive audit ✓: toast + `copyText` exist, F104 recorder is injectable (extend-not-replace works);
-  **no** FAB and **no** upload util exist
-- Halt reason (each falsified 3×): no REST endpoint attaches a file to an issue comment; the server's
-  GitHub write path is neutered by remediation (`ghrdp-lib.ps1:751,844` throw, `ghrdp-server.ps1:6972`
-  404s `/api/diag-upload`); §-1 "preserve the security guards" outranks shipping the step
-- Non-regression proof: diff is docs + `.gitignore` only — `src/`, `tests/`, `payloads/`, `worker.js`
-  byte-identical to `main`; on the same base locally Node 623/623 · Vitest 1004/1004 (78 files) · tsc 0
-- CI on `c4359fe` (head never changed; 0 supersedes): `gates` **GREEN** 2m · `windows-native` **GREEN** 10m
-  · `e2e-ui` **AMBER-INHERITED** (cancelled by its own 25-min timeout, zero failed steps — identical to
-  baseline main, which is 0/5 cancelled) → mergeable by the §4 criteria
-- Budget: ~35 min of 120. Nothing was hard-earned by writing code that the falsification says must not ship.
+## Step 4 record — F105 Feature Registry + 11 FeatureBoundaries (2026-10-07, `arena/75bc347b-supreme-lamp`)
+Shipped, not just fenced: the registry is the machine-readable form of #163, and every DAG edge carries a
+**source citation** (`evidence[]` = file + symbol) that a gate resolves, so an invented dependency cannot be
+added quietly. Ownership is a **partition of `src/pages/**`** (every page file, exactly one owner) - a 12th
+page with no registry entry now fails CI, which is the shape F111 will formalise.
+**The boundary is invisible when healthy.** It returns `children` directly (no wrapper node), so no layout or
+regression-id test can be disturbed by it; the fact that it is alive is observable instead through the
+**mount ledger** (`registerMountedFeature`), which is what the smoke gate uses to prove all 11 fences are
+mounted on the 11 routes - and what F109's HUD can read to say which sections are live.
+**The crash channel is a window event, never an upload.** `ghrdp:feature-boundary-error` → one Collector row
+(`source: "feature-boundary"`, fail verdict, #165) → the operator can also Copy the error out of the card,
+which is option (d) of #169 reused for diagnostics. Statically enforced: no `fetch`/`XHR`/`sendBeacon`/
+storage/`dangerouslySetInnerHTML` in the new files, and no endpoint in the registry may be a `diag-upload`/
+`diag-file`/`f-dvr`/upload class route (the remediated class of #168/#169).
+**Handoff resolved (2 → 4).** `/#/telemetry` used to throw on a standalone mount with an empty store
+(`BeaconJsonlViewer` dereferenced a null `handlerChain`) and React unmounted the whole app. Root cause fixed
+(`LogPanel.tsx:168`: the guard `Array.isArray((native && native.handlerChain) || [])` was always true, so the
+true branch dereferenced `null`) **and** the section is fenced, so a future crash there degrades to a card.
+**Handoffs recorded (for later steps, NOT done here).**
+1. **Global chrome is intentionally unfenced.** `Toasts`, `DiagSideDrawer`, `CollectorRunBridge`,
+   `F92VersionGate`, `DashTokenGate` and `AppShell` live outside `<Routes>`; the 11 fences bound the 11
+   *sections* only. A crash in one of those overlays still blanks the app - candidate for F109's HUD step.
+2. **The registry does not carry storage keys.** The 14 live `localStorage` keys of #163 §3.8 are reached
+   through `lib/` constants, not string literals in the page files the registry owns, so declaring them here
+   would have been an unverifiable claim. F107 (DVR) must derive them from source, per key, with the same
+   citation discipline this step used for DAG edges.
+3. **Playwright cannot run locally** (no Chromium in this sandbox): the F105 proof is the Node + vitest pair,
+   and `tests/e2e` is the 25-min self-canceller - so no e2e proof was added for a fence that jsdom already
+   exercises end to end.
+4. **CI owns source pins too, and its steps are `set -e`**: the first CI run of this PR was RED-NEW - not a
+   product defect, but `launch-gates.yml`'s F56-c step grep-ing `path="/search" element={<Search />` verbatim.
+   That pin (and F76's twin in `src/tests/`) is updated in this PR in intent-preserving form and is now
+   STRICTER (it pins the fence as well). Everything after a failing step is skipped, so the remaining skipped
+   gates (v2/v3, F58, F59, F57, F62) were re-run locally from the extracted step bodies before the re-push -
+   all PASS. A future route-wiring change must expect this step.
 
 ## Standing facts the next session should not rediscover
 - **`e2e-ui` is red on `main` for reasons no step can fix**: it is cancelled by its own
@@ -234,29 +110,61 @@ stay manual, PR labels do not, and `f-observatory` + `blocked` now exist as repo
 - **Labels are operator-only** (403 for `roadmap`/`observatory`/`f-observatory`/`meta-issue`; see #164).
 - A session NEVER merges a PR and NEVER dispatches `main.yml`. `STATE.md` stays ≤60 lines (fold new
   entries into the last line, as F101/F104 did).
-- **Inventory drift, for #163/F112**: button sites were 174/76 vs #163's 150/63 (step 1) and the i18n gap is 88 vs 72
-  (step 2). A future F112 must therefore diff *derived* counts against #163 AND forbid a string living only in a
-  `defaultValue` — the 16-key class no key-set audit can see.
-- **i18n is closed and now ratcheted** (step 2 / #167): 949 en / 949 si, key-set identical. Do NOT re-add a
-  `si` value that is byte-identical English prose — `ACCEPTED_ENGLISH_PROSE` in `tests/f-i18n-parity.test.js` is a
-  22-entry shrink-only debt list (mirrorHostMatrix/*, banners/*, egress.line, search.fetch/*, files.v2.*, …); adding a
-  23rd fails CI. `fallbackLng:"en"` in `src/i18n/index.ts` stays, so a future hole is silent at runtime and loud in CI.
-  `i18n-f56-parity.test.ts`'s 528-key `search.*`/`files.*` lock is intact; the repo-wide gate was added beside it.
-- **Step 4 starts with a known crash to bound**: `src/pages/Telemetry.tsx` throws on a standalone mount with an empty
-  store (`BeaconJsonlViewer` dereferences a null `handlerChain`, React unmounts the tree). Found by the step-2 DOM gate;
-  it is the failure class F105 `FeatureBoundary` exists for, and `tests/smoke`-style mounting is how to prove the boundary holds.
-- **Step 3 inherits a localisable Collector**: the 16 `collector.*` keys are real catalog entries now, so the DVR FAB
-  and its preview/confirm panel can be `t()`-driven from day one; the `defaultValue`s in `Collector.tsx` are redundant nets.
-- **A gate that no one has to remember beats a new CI step**: put repo-wide static checks in `tests/*.test.js` — the
-  launch-gates job already runs `node --test tests/*.test.js`. Any `src/tests/smoke/**.test.tsx` is picked up by
-  `pnpm exec vitest run` in the same job. Both step-2 gates ride on globs, so neither can be dropped by a future edit.
-- **DOM gates must read attributes, not just text** — `placeholder`/`title`/`aria-label` hold a real share of the UI copy
-  (that one change took step 2's proven coverage from 59 to 70 keys). Assert both languages: `si` present AND `en` absent
-  is what distinguishes a live switch from a bilingual constant.
+- **Step 2 needs no re-derivation**: #163 §3.6 lists all 72 missing-in-`si` keys verbatim
+  (933 en / 861 si). Keep the existing `i18n-f56-parity.test.ts` `search.*`/`files.*` gate intact and
+  add a repo-wide en↔si key-set gate beside it, or the 72-key class of drift returns.
+- **F105 owns the section map now**: `src/lib/feature-registry.json` is the machine-readable #163 (11 sections,
+  routes, owned `src/pages/**` globs, stores, endpoints, DAG, evidence citations). Read it before re-deriving
+  anything about sections; `featureByRoute()` + `featureLabPath()` are the F106/F108 entry points, and
+  `/#/lab/<feature>` is reserved as the F106 pattern (the existing `/#/search/lab/:targetId` stays the search
+  feature's own sub-route).
+- **Rule f got stricter** (F105 falsification M7): `tests/f-testid-coverage.test.js` now also rejects a DERIVED
+  id whose literal prefix is `collector-`/`click-now-` - previously only literal attributes were scanned, so
+  `data-testid={"collector-x" + id}` could walk a whole component into the F104 blind spot unnoticed.
+- **Route wiring is pinned in THREE places, not one**: `src/App.tsx` is read verbatim by `launch-gates.yml`'s
+  F56-c step (a shell `grep -qF`, `set -e`), by `src/tests/smoke/f76-sidebar-search.test.tsx`, and now by
+  `tests/f105-feature-registry.test.js` (13 `fence()` calls). Change a route element and all three move
+  together - and extract/run the workflow step locally first, because a failure there skips every later gate.
+- **Boundary test ids are `feature-boundary-<id>` (+ `-retry`/`-reload`/`-copy`)** and are deliberately NOT in
+  the capture ignore-list, so the fence's own buttons stay in the DVR. The component repeats the prefix literal
+  (the F-TESTID rule only accepts `"prefix-" + expr`); `tests/f105-feature-registry.test.js` F105-k asserts the
+  two copies are byte-equal.
 - **Step 3/6/7 hook**: F104 `globalClickCapture` ignores `collector-`/`click-now-` test-id prefixes;
   `tests/f-testid-coverage.test.js` rule f enforces that no ordinary button is ever named into that
   blind spot, so DVR/replay bundles keep 100% click coverage by construction.
 
+### Session 2026-10-07 10:05Z — Step 4 — F105 Feature Registry + 11 FeatureBoundaries — **COMPLETE**
+- Branch `arena/75bc347b-supreme-lamp` · PR **#170** · base `4be94a7` · labels `f-observatory` + `observatory` applied by the session
+- PRE-STEP (§0.3): SPEC-REALITY: `tests/smoke/` does not exist (vitest globs are `src/tests/smoke/**`), and the
+  ledger has 10 steps, not 11 - both already recorded by steps 2/3 · INVENTORY-RE-DERIVE: 11 pages + 11 sidebar
+  entries re-derived from `App.tsx`/`AppShell`; 88-key i18n drift is step 2's, untouched here · SECRET-ENUM: N/A
+  (no credential in this step; #169's GH_PAT finding stands) · ARCH-FEASIBILITY: React 18 error boundaries
+  (`getDerivedStateFromError`/`componentDidCatch`) are the official mechanism, and no repo code had one yet
+  (grep: 0 hits) - this step authors the first, so the mechanism was verified against source, not assumed ·
+  SECURITY-REMEDIATION-CHECK: no new route/endpoint; the new files are fenced by a static no-network rule and
+  the registry cannot declare a remediated endpoint class · FACT-REFRESH: labels - re-tested, PR labels work,
+  plain-issue labels still 403 (see below) · PRIMITIVE-AUDIT: `CopyButton`/`Button`/`Toasts`/`copyText` exist
+  and are reused; `LogPanel`'s `asList` exists but does NOT preserve the array-only contract, so the fix uses
+  an explicit `Array.isArray` · DEP-VERIFY: step 1 merged ✓; step 2 (#167) is a SOFT dep for this step (F105
+  needs `nav.*` keys, which exist in `en` on main) - one si gap remains, `nav.health`, owned by #167 and
+  pinned as a known allowance in the smoke gate rather than re-fixed here.
+- Blocker classification: soft (step 2 unmerged, does not block); step 3 stays BLOCKED on #169 (operator)
+- Gates: 11 Node rules + 26 vitest assertions added; falsified 12 ways (unwrap a route, revert the LogPanel fix,
+  break an evidence symbol, add a `fetch()`, drift a route, invent an edge, blind-spot the ids, add a DOM
+  wrapper, drop in an unregistered page), 3 loopholes found and tightened (derived-id blind spot, unevidenced
+  edge not caught at runtime, route sweep hand-copied instead of registry-derived)
+- Non-regression: healthy boundary renders byte-identical `innerHTML`; `ids-regression` 219/219 unchanged;
+  `f76`'s route pin updated in INTENT-PRESERVING form (same routes, stricter literal, now pins the fence too)
+- Handoffs: resolved `2 → 4` (Telemetry crash); recorded 3 (global chrome unfenced, storage keys for F107,
+  no local Playwright)
+- CI run 1 (`8402559`, superseded by the run-2 fix): `F59 build-ui` ✅ · `autologin-lab` ✅ · `gates` ❌
+  **RED-NEW** at "F56-c sidebar + search + file-explorer shell gates" (stale route pin, see handoff 4) ·
+  `windows-native` still running when the head was replaced.
+- CI run 2 (code head `1a54b2c`, the one to judge): `gates` ✅ · `windows-native` ✅ · `launch-gates`(PR) ✅ ·
+  `e2e-ui` ⚠️ AMBER-INHERITED (self-cancelled 10:32:45Z, zero failed steps; `main` 0/5 cancelled) →
+  **mergeable**. Post-watch docs-only commit (this one) records the classification; no source file changed in it.
+- Session log comment: PR #170 comment `#issuecomment-6036119782` (§3.4 + §7 full trace, incl. the CI verdict).
+- Budget: ~52 min of 120
 ## §Baseline-main-CI (recorded by sessions, re-measured when the §4.2 pattern changes)
 
 | sha / when | launch-gates `gates` | `windows-native` | `build-ui` | `e2e-ui` |
