@@ -1270,5 +1270,28 @@
     "wire": "Wire",
     "hostPage": "Host page",
     "handler": "Status"
+  },
+  "dvr": {
+    "fab": "DVR",
+    "open": "Open the DVR — the last 30 s of clicks",
+    "title": "Diagnostic DVR (last 30 s)",
+    "privacy": "Nothing has left this machine. The {{format}} bundle is assembled in this tab and is only copied to your clipboard when you press Copy — no upload, no endpoint, no token.",
+    "statEvents": "{{n}} events captured",
+    "statClicks": "{{n}} clicks",
+    "statSettled": "{{n}} settled (fetch/popup observation closed)",
+    "statRoute": "route {{route}}",
+    "statSpan": "span {{seconds}} s",
+    "statMutations": "{{n}} DOM updates",
+    "statPayload": "payload {{codec}} · {{chars}} chars",
+    "empty": "No clicks captured yet — use the dashboard, then reopen this panel.",
+    "loading": "Assembling the bundle…",
+    "pause": "Pause recording",
+    "resume": "Resume recording",
+    "lastActivity": "activity recorded after the last event",
+    "copy": "Copy .mcrec",
+    "copyLabel": "DVR bundle",
+    "copied": "Copied {{chars}} characters ({{codec}}) — paste it into Arena",
+    "copyFailed": "Copy failed — select the preview and copy it by hand",
+    "clear": "Clear"
   }
 }

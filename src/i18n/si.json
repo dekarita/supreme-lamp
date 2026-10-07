@@ -1270,5 +1270,28 @@
     "optionSelfHosted": "Point the mirror at a self-hosted operator target you control.",
     "optionTokenFuture": "Token mode is a separate future decision, out of scope here (this build never accepts or stores a host token).",
     "optionsFooter": "A 403 from the runner egress or a 'host requires account token; token-less mode unsupported' reason is a policy dead-end, not a puzzle: host-policy workarounds are refused by design and blocked by a CI gate. Re-dispatch with mirror_enable=false, or move the upload to your own egress."
+  },
+  "dvr": {
+    "fab": "DVR",
+    "open": "DVR විවෘත කරන්න — අවසන් තත්පර 30 ක ක්ලික් වාර්තාව",
+    "title": "රෝග විනිශ්චය DVR (අවසන් තත්පර 30)",
+    "privacy": "මෙම යන්ත්‍රයෙන් කිසිවක් පිටව නොගොස් ඇත. {{format}} බණ්ඩලය මෙම ටැබය තුළම සකස් වන අතර, Copy එබූ විට පමණක් පසුරු පුවරුවට පිටපත් වේ — upload එකක් නැත, endpoint එකක් නැත, token එකක් නැත.",
+    "statEvents": "සිදුවීම් {{n}} ක් ග්‍රහණය කර ඇත",
+    "statClicks": "ක්ලික් {{n}} ක්",
+    "statSettled": "තහවුරු වූ {{n}} ක් (fetch/popup නිරීක්ෂණය අවසන්)",
+    "statRoute": "මාර්ගය {{route}}",
+    "statSpan": "ආවරණය තත්පර {{seconds}} ක්",
+    "statMutations": "DOM යාවත්කාලීන {{n}} ක්",
+    "statPayload": "payload {{codec}} · අක්ෂර {{chars}}",
+    "empty": "තවම ක්ලික් ග්‍රහණය වී නැත — උපකරණ පුවරුව භාවිත කර නැවත මෙම පැනලය විවෘත කරන්න.",
+    "loading": "බණ්ඩලය සකසමින්…",
+    "pause": "පටිගත කිරීම නවත්වන්න",
+    "resume": "පටිගත කිරීම නැවත අරඹන්න",
+    "lastActivity": "අවසන් සිදුවීමෙන් පසු ක්‍රියාකාරකම් සටහන් විය",
+    "copy": ".mcrec පිටපත් කරන්න",
+    "copyLabel": "DVR බණ්ඩලය",
+    "copied": "අක්ෂර {{chars}} ක් පිටපත් විය ({{codec}}) — Arena වෙත අලවන්න",
+    "copyFailed": "පිටපත් කිරීම අසාර්ථක විය — පෙරදසුන අතින් තෝරා පිටපත් කරන්න",
+    "clear": "හිස් කරන්න"
   }
 }

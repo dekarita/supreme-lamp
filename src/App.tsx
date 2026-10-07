@@ -7,6 +7,7 @@ import { AppShell } from "@/components/layout/AppShell";
 import { Toasts } from "@/components/primitives/Feedback";
 import { DiagSideDrawer } from "@/components/domain/DiagSideDrawer";
 import { CollectorRunBridge } from "@/components/domain/CollectorRunBridge";
+import { DvrFab } from "@/components/domain/DvrFab";
 import { useDashboardPolling } from "@/hooks/useDashboardPolling";
 import { useLangStore } from "@/stores/prefsStore";
 import i18n from "@/i18n";
@@ -76,6 +77,11 @@ export default function App() {
       <DiagSideDrawer />
       {/* [F102 §2.1] Collector "Click now" navigates to the button's page */}
       <CollectorRunBridge />
+      {/* [F-DVR-LITE §4] The diagnostic DVR handle: last 30 s of clicks, assembled
+          in this tab and only ever copied by the operator (#169 option (d)). Mounted
+          as chrome, like the bridge above, so every section route has it and no
+          FeatureBoundary fence has to know about it. */}
+      <DvrFab />
       {/* [F92 §6.4] full-screen modal iff /api/f92-selftest says the bundle
           and the backend were built from different commits. */}
       <VersionGate />

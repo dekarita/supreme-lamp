@@ -69,9 +69,20 @@ test("F104-e: the store grew source + updateAction, and id/ts can never be patch
 test("F104-f: main.tsx bootstraps the capture behind the F104 kill flag", () => {
   assert.ok(MAIN.includes('import { installGlobalClickCapture } from "@/lib/globalClickCapture";'), "main.tsx does not import the installer");
   assert.ok(MAIN.includes('VITE_F104_GLOBAL_CAPTURE !== "false"'), "the kill flag is missing");
-  assert.ok(MAIN.includes("installGlobalClickCapture({"), "the installer is never called");
+  assert.ok(MAIN.includes("installGlobalClickCapture("), "the installer is never called");
+  // [F-DVR-LITE / Observatory step 3] SAME-PR pin update ($CI-PIN-DETECTION). The
+  // original pin here was the literal `installGlobalClickCapture({` - an inline
+  // object argument. Step 3 gives that recorder a name so the DVR can DECORATE it
+  // (installDvr returns a recorder of the same shape), which is exactly the
+  // "extend, never replace" rule #168 derived. The pin is replaced, never dropped,
+  // and is now STRICTER than before: the two method bodies are still pinned
+  // verbatim, the argument must be the DVR-decorated recorder, and nothing else may
+  // be passed to the installer - so a future wrapper that swallows rows fails here.
+  assert.ok(MAIN.includes("const recorder: GlobalClickRecorder = {"), "the recorder must stay a named, typed object literal");
   assert.ok(MAIN.includes("record: (rec) => logButtonAction(rec)"), "records must flow through logButtonAction");
   assert.ok(MAIN.includes("update: (id, patch) => updateRecordedAction(id, patch)"), "window-close must flow through updateRecordedAction");
+  assert.ok(MAIN.includes("installGlobalClickCapture(installDvr(recorder, { enabled:"), "the installer must receive the DVR-decorated recorder");
+  assert.ok(!/installGlobalClickCapture\((?!installDvr\(recorder)/.test(MAIN), "no expression other than the decorated recorder may reach the installer");
 });
 
 test("F104-g: the Collector renders Global clicks below Recent actions, and its own root is ignored", () => {
