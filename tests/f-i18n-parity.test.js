@@ -61,7 +61,7 @@ const SI_FILE = "src/i18n/si.json";
 // mockOn, mockOff, mockHint, mockHintRead, mocksOff, readsOnly, noRequests,
 // clearLedger, copyReport, unknown, unknownBody, mockBadge + 4 x scenario.*.
 // 978 + 23 = 1001.
-const EXPECTED_FLAT_KEYS = 1001;
+const EXPECTED_FLAT_KEYS = 1010;
 
 // Legacy untranslated si values (byte-identical to en). Frozen deliberately:
 // operator-owned copy that predates this step (mirrorHostMatrix/*, egress.line,
