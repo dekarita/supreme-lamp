@@ -55,8 +55,19 @@ test.describe("F91 mirror mode - 11 sites", () => {
     test(`${site}: click opens locally + mirrors to RDP (never an error toast)`, async ({ page }) => {
       const opened: string[] = [];
       page.on("popup", (p) => opened.push(p.url()));
-      await page.goto("/#/search/lab/" + idOf(site) + "?q=" + encodeURIComponent(site === "awesome.re" ? "awesome" : "free"));
-      await expect(page.getByTestId("lab-link-list")).toBeVisible({ timeout: 20_000 });
+      const term = site === "awesome.re" ? "awesome" : "free";
+      await page.goto("/#/search/lab/" + idOf(site) + "?q=" + encodeURIComponent(term));
+      const list = page.getByTestId("lab-link-list");
+      // [F103 §5] The stored source is re-seeded by the F85 (add -> delete) and
+      // F86 (add -> deep sitemap) lanes that run before this file, so the plain
+      // lab query can legitimately come back with an EMPTY <ul> (hidden). The
+      // deep lane (q=f86 ...) always answers the site's own 60-URL corpus, so
+      // fall back to it: this test is about what a row CLICK does, not about
+      // which inspect lane produced the row.
+      if (!(await list.isVisible().catch(() => false))) {
+        await page.goto("/#/search/lab/" + idOf(site) + "?q=f86+" + encodeURIComponent(term));
+      }
+      await expect(list).toBeVisible({ timeout: 20_000 });
       // "matches first" so row 0 is a real on-site URL.
       // [F103 §5] The F86 deep lane (which now runs to completion for every
       // site, instead of failing at its launch assertion) re-seeds the stored
