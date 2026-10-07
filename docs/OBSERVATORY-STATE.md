@@ -98,6 +98,8 @@
     same-session: constant-drift class for budget/retention + adapter triage call-site floor); 2 vacuity probes
   · Node 669/669 · Vitest 1089/1089 (83 files) · tsc 0 · build 1,066.85 kB · regression-ids 219/219
   · **lab-discovered prod bugs: none** (F106's all-11-sections mount re-ran green with F107 active on /#/collector)
+  · CI on code head `2892b58`: `gates` ✅ ×2 · `windows-native` ✅ ×2 · `build-ui` ✅ · `autologin-lab` ✅ ·
+    `e2e-ui` ⚠️ AMBER-INHERITED (25-min self-cancel, 0 failed steps = main pattern) → **mergeable**
 - [ ] **Step 7 — F108** · ETA 120min · Public Replay Viewer on Pages + Arena mode
 - [ ] **Step 8 — F109** · ETA 90min · Debug HUD overlay (F12-shift)
 
@@ -525,8 +527,16 @@ the F105 ownership partition - see the §Step 5 record for what shipped instead 
 - Fence-gaps added: 1 (SessionListModal via DvrFab) closed: 0 (F109 owns chrome)
 - Handoff resolved: step-3 handoff #1 (content scope enumerated + fenced) · recorded: 3 (F108 consumes v2 +
   first real PNG render; registry storage-key audit still open; modal unfenced from the FAB)
-- Post-watch info commit + CI verdict: recorded below after the watch
-- Budget: ~65 min of 120 (implementation ~40, falsification+loopholes ~15, docs ~10)
+- CI (HEAD `2892b58`, watch 16:09-16:40Z, 11 polls):
+  - **Original verdict**: `gates` ✅ ×2 (push 37650353338 + PR 37650401290) · `windows-native` ✅ ×2 ·
+    `F59 build-ui` ✅ · `autologin-lab` ✅ · `e2e-ui` ⚠️ AMBER-INHERITED (run 37650401288 `cancelled` 16:39Z
+    by its own 25-min timeout, **0 failed steps** — the unchanged main 0/5 pattern) → **mergeable** (only RED-NEW blocks)
+  - Post-watch rerun: queued by this docs-only commit; the original verdict stands for the identical source tree
+- Session log comment: PR #174 comment `#issuecomment-6042426589` (§3 + §4 CI verdict + §7 trace)
+- Post-watch informational commit: this one — records the CI verdict and the comment id; **no source file
+  changed** (precedent: steps 4 and 5). Branch head moves to a docs-only commit; the code verdict above
+  stands for the identical source tree.
+- Budget: ~80 min of 120 (implementation ~40, falsification+loopholes ~15, CI watch ~20, docs ~5)
 
 ### Session 2026-10-07 12:30Z — Step 5 — F106 Feature Lab — **COMPLETE**
 - Branch `arena/5f3d21f9-supreme-lamp` · PR **#172** · base `dd2ed68` (= `origin/main`)
