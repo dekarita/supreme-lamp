@@ -10,6 +10,7 @@ import { useLangStore } from "@/stores/prefsStore";
 import { installLaunchUrlHandle } from "@/lib/launchUrl";
 import { installGlobalClickCapture } from "@/lib/globalClickCapture";
 import { logButtonAction, updateRecordedAction } from "@/lib/collectorAgent";
+import { installFeatureBoundaryReporter } from "@/lib/featureBoundary";
 
 // [F85 §3] Install the feature-detection handle for the diag banner BEFORE the
 // root renders (see the comment in src/lib/launchUrl.ts: the banner proves the
@@ -31,6 +32,17 @@ if (import.meta.env.VITE_F104_GLOBAL_CAPTURE !== "false") {
   } catch {
     /* telemetry must never break the app */
   }
+}
+
+// [F105 §4.4] FeatureBoundary failures are published as window events
+// (src/lib/featureBoundary.ts). This is the F100/F101/F104 consumer: one
+// Collector row per distinct failure, so a crashed section is visible in the
+// same feed as a failed click - and in the clipboard .mcrec a DVR session
+// produces. Idempotent; no network, no storage, no endpoint.
+try {
+  installFeatureBoundaryReporter();
+} catch {
+  /* diagnostics must never break the app */
 }
 
 // Sync the persisted language into i18next + <html lang>.

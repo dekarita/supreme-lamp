@@ -1167,6 +1167,16 @@
   "egress": {
     "line": "Uploads execute ON THE RUNNER (egress IP {{ip}}) - your PC's connection is never used for uploads."
   },
+  "boundary": {
+    "title": "{{section}} ක්‍රියාවිරහිත විය",
+    "body": "මෙම කොටස render වීම නතර වූ නිසා Mission Control එය වෙන් කළේය - අනෙක් සියලුම කොටස් තවමත් ක්‍රියාත්මකයි.",
+    "errorLabel": "දෝෂය:",
+    "count": "{{route}} හි {{n}} වන අසාර්ථකත්වය - Collector හි සටහන් විය",
+    "retry": "කොටස නැවත උත්සාහ කරන්න",
+    "reload": "යෙජුම නැවත පූරණය කරන්න",
+    "copy": "දෝෂය පිටපත් කරන්න",
+    "hint": "දෝෂය පිටපත් කර ඔබේ ඊළඟ Arena සැසියට අලවන්න."
+  },
   "mirrorHostMatrix": {
     "title": "Mirror host matrix (read-only probe)",
     "subtitle": "Live from /diag mirrorHosts - the same {host,status,note} rows the CI step summary prints. Read-only GET of each host API root: token-less guest mode - no upload, no credential, no evasion.",

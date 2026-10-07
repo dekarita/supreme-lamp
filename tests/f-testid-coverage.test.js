@@ -217,6 +217,13 @@ test("F-TESTID-f: no new test id can fall into the F104 capture blind spots", ()
     for (const m of s.text.matchAll(/data-testid="([^"]*)"/g)) {
       if (IGNORED_PREFIXES.some((p) => m[1].startsWith(p))) offenders.push(s.file + ":" + s.line + " -> " + m[1]);
     }
+    // [F105 hardening] the DERIVED form matters too: `data-testid={"collector-" + id}`
+    // renders an id the capture ignores, but it is an expression, so a scan of
+    // literal attributes alone never sees it. Falsification M7 walked a whole
+    // boundary into the blind spot this way while rule f stayed green.
+    for (const m of s.text.matchAll(/data-testid=\{"([a-z0-9-]+)"\s*\+/g)) {
+      if (IGNORED_PREFIXES.some((p) => m[1].startsWith(p))) offenders.push(s.file + ":" + s.line + " -> derived " + m[1] + "…");
+    }
   }
   assert.deepEqual(offenders, [], "buttons named into the capture ignore-list: " + offenders.join(", "));
   const CAP = read("src/lib/globalClickCapture.ts");
