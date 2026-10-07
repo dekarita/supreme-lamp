@@ -1,15 +1,16 @@
 # Mission Control Observatory — orchestrator state (mirror of #165)
 
-> **Why this file exists.** `POST /repos/.../issues/165/labels` and `PATCH /repos/.../issues/165`
-> both return `403 Resource not accessible by integration` for the Arena session token, while
-> `POST .../issues` and `POST .../issues/165/comments` succeed. The tracking issue can therefore be
-> **created and commented on but not edited**, so the checkbox state cannot be kept there by a
-> session. This file is the authoritative, mergeable mirror: a session that cannot PATCH the issue
-> MUST update this file in its own PR and append the session log as an issue comment.
-> The next session's §1 step determination = first unchecked box below (fall back to #165's body only
-> if this file is missing), then cross-check #165's newest session-log comment.
+> **Why this file exists.** For an Arena session token on this repo `POST /repos/.../issues` (create)
+> and `POST /repos/.../pulls/<n>/comments` (PR comment) succeed, while `PATCH /repos/.../issues/165`,
+> `POST /repos/.../issues/165/labels` **and `POST /repos/.../issues/165/comments` all return**
+> `403 Resource not accessible by integration` — a session can therefore create #165 but neither tick
+> its box nor append its session log there. So the checklist cannot live only in an issue body: this
+> file is the authoritative, mergeable mirror. A session MUST update it in its own PR and post its
+> session log as a comment on **that PR** (which is what #166 carries). Next session's §1 step
+> determination = first unchecked box below; fall back to #165's body only if this file is missing,
+> then cross-check the newest "§3 tracking-issue handoff" comment on the PR this step shipped in.
 
-**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 07:14Z
+**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 07:18Z
 
 ## Phase 1 — Immediate value
 - [x] **Step 1 — F-TESTID** · landed on `arena/ad1df050-supreme-lamp`, PR **#166**, head `5cf005a`
