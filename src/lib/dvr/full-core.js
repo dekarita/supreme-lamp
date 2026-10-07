@@ -5,6 +5,12 @@ export const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 const enc = new TextEncoder();
 export const sizeOf = (value) => enc.encode(JSON.stringify(value)).length;
 
+// HashRouter routes may contain ?token=...; persist only the route, never its
+// query. Apply to both the v1 ring and the v2 long-lived session target.
+export function safeRoute(value) {
+  return String(value == null ? "" : value).split("?", 1)[0].slice(0, 256);
+}
+
 // A path is relative to #root, never a selector or page text. Paths of 16 bits
 // per level, bounded depth; mutations to sensitive subtrees are excluded upstream.
 export function mutationDiff(record, root) {

@@ -9,7 +9,9 @@ const core = () => import(path.join(root, "src/lib/dvr/full-core.js"));
 const code = text => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
 test("F107-a: structural diffs roundtrip without content or attributes values", async () => {
-  const { mutationDiff, validDiff } = await core();
+  const { mutationDiff, validDiff, safeRoute } = await core();
+  assert.equal(safeRoute("#/collector?token=SECRET"), "#/collector");
+  assert.equal(safeRoute("#/collector"), "#/collector");
   const top = { nodeType: 1, parentNode: null, childNodes: [] };
   const child = { nodeType: 1, parentNode: top, childNodes: [], tagName: "DIV" };
   top.childNodes.push(child);

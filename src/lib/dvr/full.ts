@@ -1,6 +1,6 @@
 // F107 full capture is OPT-IN. The F-DVR-LITE ring and clipboard path stay
 // independent: denied storage/quota/rasterization never breaks F104 or v1.
-import { appendBounded, type FullEntry, type FullSession } from "./full-core";
+import { appendBounded, safeRoute, type FullEntry, type FullSession } from "./full-core";
 import { observeMutations } from "./mutations";
 import { captureThumbnail } from "./screenshots";
 import { saveSession, getSession, listSessions } from "./storage";
@@ -53,7 +53,7 @@ async function beginFullDvr(): Promise<void> {
     if (!session) {
       session = {
         id: crypto.randomUUID(), createdAt: Date.now(), updatedAt: Date.now(),
-        target: { route: window.location.hash || window.location.pathname, lang: document.documentElement.lang || "en", ui: "v2" },
+        target: { route: safeRoute(window.location.hash || window.location.pathname), lang: document.documentElement.lang || "en", ui: "v2" },
         features: registry.features.map(f => f.id), timeline: [],
       };
       await saveSession(session); // fail closed: never say "recording" without durable storage

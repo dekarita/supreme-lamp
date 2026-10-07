@@ -109,6 +109,19 @@ describe("F107 full DVR: real root observer, click rasterization, persistence", 
     view.unmount();
   });
 
+  it("never persists route query credentials in v2 targets or click frames", async () => {
+    window.location.hash = "#/collector?token=PRIVATE-QUERY-VALUE";
+    await startFullDvr();
+    const recorder = installDvr({
+      record: (rec) => ({ id: "route1", ts: new Date().toISOString(), ...rec }),
+      update: vi.fn(),
+    });
+    recorder.record({ feature: "global", action: "click", params: { testId: "real-action" } });
+    const saved = (await currentFullSession())!;
+    expect(exportSession(saved)).not.toContain("PRIVATE-QUERY-VALUE");
+    expect(saved.target.route).toBe("#/collector");
+  });
+
   it("deduplicates concurrent starts so both callers share one durable session", async () => {
     const first = startFullDvr();
     const second = startFullDvr();

@@ -43,6 +43,7 @@ import {
 import type { ButtonAction } from "./collectorAgent";
 import type { GlobalClickRecorder } from "./globalClickCapture";
 import { recordFullClick, recordFullSettle } from "./dvr/full";
+import { safeRoute } from "./dvr/full-core";
 
 /** [F-DVR-LITE §3.1] the codec tags the envelope can carry. */
 export type DvrCodec = "gzip" | "plain";
@@ -83,7 +84,7 @@ let listeners = new Set<() => void>();
 function currentRoute(): string {
   try {
     if (typeof window === "undefined") return "";
-    return String(window.location.hash || window.location.pathname || "");
+    return safeRoute(window.location.hash || window.location.pathname || "");
   } catch {
     return "";
   }

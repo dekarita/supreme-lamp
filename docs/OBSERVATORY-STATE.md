@@ -87,7 +87,7 @@
   · **NOT done, on purpose**: no Playwright spec (`tests/e2e/f106-mock-controls.spec.ts` was the prompt's
     third gate). No Chromium in this sandbox, and `e2e-ui` is the 25-min self-canceller - an un-runnable
     spec is not evidence, so the transport-level proof lives in the jsdom suite instead. Handoff below.
-- [x] **Step 6 — F107** · Full DVR v2: opt-in structural DOM diffs + 320×240 rasterized thumbnails + local IndexedDB sessions (PR pending; no merge by session)
+- [x] **Step 6 — F107** · Full DVR v2: opt-in structural DOM diffs + 320×240 rasterized thumbnails + local IndexedDB sessions (PR **#173**, no merge by session)
 - [ ] **Step 7 — F108** · ETA 120min · Public Replay Viewer on Pages + Arena mode
 - [ ] **Step 8 — F109** · ETA 90min · Debug HUD overlay (F12-shift)
 
@@ -333,7 +333,9 @@ structural diffs (paths, tags, attribute names, never values/free text), masks m
 rasterization, and writes click, mutation, settle, and 320×240 screenshot frames to local IndexedDB. No upload,
 new endpoint, token, Worker or GitHub write. The modal warns that screenshots can still contain private text;
 export is a user-initiated `.mcrec` v2 JSON download. 5 MB/session (oldest frame evicted, oversize frame
-rejected), 30-day last-activity expiry, quota failure stops full recording but leaves v1 working. The Collector
+rejected), 30-day last-activity expiry, quota failure stops full recording but leaves v1 working. A post-watch privacy probe proved that
+HashRouter `?token=` query strings were persisted in both v1 routes and v2 target/click frames; the new
+`safeRoute()` pure-core sanitizer now strips queries before either recorder stores them (red-before-green DOM test). The Collector
 and FAB both expose the same session list (export/delete); an active session cannot resurrect after deletion.
 The pure-JS core is exercised by `node --test`; the real observer, rasterizer seam, IDB transactions, reload,
 quota failure, and `/#/lab/collector` mount are exercised by Vitest. Screenshot rasterization uses html2canvas
@@ -405,12 +407,14 @@ the F105 ownership partition - see the §Step 5 record for what shipped instead 
 
 ## Session log
 
-### Session 2026-10-07 — Step 6 — F107 Full DVR — COMPLETE (PR pending CI)
-- Branch `arena/66a13a8c-supreme-lamp` · PR pending · main baseline GREEN · #172 merged (prompt-staleness 1 roadmap correction; OPERATOR-ASSERTIONS migration needed).
+### Session 2026-10-07 — Step 6 — F107 Full DVR — COMPLETE (PR #173; final source watch pending)
+- Branch `arena/66a13a8c-supreme-lamp` · PR #173 · main baseline GREEN · #172 merged (prompt-staleness 1 roadmap correction; OPERATOR-ASSERTIONS migration needed).
 - PRE-STEP: ten checks recorded above; spec drift 2 (no pre-existing full-DVR folder; canvas alone cannot rasterize DOM); inventory-hidden drift 1 (private pixel data), security clear, arch verified, secret enum 7 name-only locations (repo Actions secrets API 403, no credential required).
 - Gates: Node pure-core/format/wiring and DOM actual observer/thumbnail/IDB/reload/quota/collector-lab; falsify 5/5 caught, 1 loophole fixed; vacuity 2/2; lab-discovered prod bugs: none.
-- CI pins updated same PR: F-i18n count and F57 dependency; F-TESTID respected without changing pin. Non-regression: Node **663/663**, Vitest **1089/1089** (83 files), tsc 0, build 1,257.86 kB, 219/219 regression IDs, no-neon-green/bottom-bar/fx-ids PASS; v1 F-DVR and F104 suites plus F105/F106 boundary/lab tests passed.
+- CI pins updated same PR: F-i18n count and F57 dependency; F-TESTID respected without changing pin. Non-regression: Node **663/663**, Vitest **1090/1090** (83 files), tsc 0, build 1,258.21 kB, 219/219 regression IDs, no-neon-green/bottom-bar/fx-ids PASS; v1 F-DVR and F104 suites plus F105/F106 boundary/lab tests passed.
+- CI original verdict (code head `b9734d6`): launch-gates gates ✅×2, windows-native ✅×2, proof ✅, build-ui ✅, e2e-ui AMBER-INHERITED (cancelled at its 25-min timeout, same as main 5/5; no failed step). Privacy hardening changed source **after** the watch; final-source rerun pending and MUST be recorded separately.
 - Handoff: Pages unverified for F108, F110 estimate > cap; shipped patterns: opt-in local diagnostics and single ordered IDB writer; cross-session lessons above. No main red repair.
+- Post-watch privacy audit: reproduced a persisted query credential in v2 target AND click route, then root-fixed v1/v2 through shared `safeRoute` with regression proof; no lab prod crash.
 - Merge-order: #171/#172 merged; no other open hard-dep PR. Issue #165 write expected 403; authoritative mirror is this file. No PR merge or main.yml dispatch.
 
 

@@ -10,6 +10,7 @@ export interface FullSession {
   timeline: FullEntry[];
 }
 export declare function sizeOf(value: unknown): number;
+export declare function safeRoute(value: unknown): string;
 export declare function mutationDiff(record: MutationRecord, root: Node): Diff | null;
 export declare function validDiff(diff: Diff): boolean;
 export declare function buildFullBundle(session: FullSession): {
