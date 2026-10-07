@@ -57,8 +57,19 @@ test.describe("F91 mirror mode - 11 sites", () => {
       page.on("popup", (p) => opened.push(p.url()));
       await page.goto("/#/search/lab/" + idOf(site) + "?q=" + encodeURIComponent(site === "awesome.re" ? "awesome" : "free"));
       await expect(page.getByTestId("lab-link-list")).toBeVisible({ timeout: 20_000 });
-      // "matches first" so row 0 is a real on-site URL
-      const first = page.getByTestId("lab-link-open").first();
+      // "matches first" so row 0 is a real on-site URL.
+      // [F103 §5] The F86 deep lane (which now runs to completion for every
+      // site, instead of failing at its launch assertion) re-seeds the stored
+      // corpus with the site's F86 sitemap, whose paths need not contain this
+      // spec's query term. When "matches first" therefore filters everything
+      // away, fall back to the full link list: this test is about the LAUNCH
+      // behaviour of an on-site row, not about the match filter.
+      let first = page.getByTestId("lab-link-open").first();
+      if (!(await first.isVisible().catch(() => false))) {
+        const toggle = page.getByTestId("lab-matches-first");
+        if (await toggle.isVisible().catch(() => false)) await toggle.uncheck();
+        first = page.getByTestId("lab-link-open").first();
+      }
       await expect(first).toBeVisible();
       await first.click();
       // RDP half: a navigate job for that site's own URL landed in the queue.
