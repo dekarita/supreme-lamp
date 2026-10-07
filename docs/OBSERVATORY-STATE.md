@@ -11,6 +11,12 @@
 > then cross-check the newest "§3 tracking-issue handoff" comment on the PR this step shipped in.
 
 **Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 16:20Z by arena/fa27adb3-supreme-lamp
+**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 by arena/66a13a8c-supreme-lamp
+
+## §OPERATOR-ASSERTIONS (v7 migration; verify independently)
+- GH_PAT: operator previously reported Worker environment variable; **not used** by F107. No secret value was read or stored.
+- Pages: `GET /repos/dekarita/supreme-lamp/pages` returned 404 for this integration on 2026-10-07. Availability **unverified**, operator must confirm before F108.
+- Labels: previous sessions recorded PR/new issue writes succeed but #163/#164/#165 return 403. #169 is closed on GitHub; operator made that decision.
 
 ## Phase 1 — Immediate value
 - [x] **Step 1 — F-TESTID** · landed on `arena/ad1df050-supreme-lamp`, PR **#166**, head `5cf005a`
@@ -100,6 +106,7 @@
   · **lab-discovered prod bugs: none** (F106's all-11-sections mount re-ran green with F107 active on /#/collector)
   · CI on code head `2892b58`: `gates` ✅ ×2 · `windows-native` ✅ ×2 · `build-ui` ✅ · `autologin-lab` ✅ ·
     `e2e-ui` ⚠️ AMBER-INHERITED (25-min self-cancel, 0 failed steps = main pattern) → **mergeable**
+- [x] **Step 6 — F107** · Full DVR v2: opt-in structural DOM diffs + 320×240 rasterized thumbnails + local IndexedDB sessions (PR **#173**, no merge by session)
 - [ ] **Step 7 — F108** · ETA 120min · Public Replay Viewer on Pages + Arena mode
 - [ ] **Step 8 — F109** · ETA 90min · Debug HUD overlay (F12-shift)
 
@@ -430,7 +437,53 @@ main (18660d9)
                  the state-file block by keeping BOTH step blocks.
 ```
 
-## §Shipped-patterns (v6 — design patterns formalized by a step, reusable by the next one)
+## Step 6 record — F107 Full DVR v2 (2026-10-07, arena/66a13a8c-supreme-lamp)
+The F-DVR-LITE v1 recorder, 30-second/200-entry ring, and WYSIWYG clipboard copy remain unchanged. F107
+is **opt-in** because screenshots can contain private data: starting full capture observes only `#root`, stores
+structural diffs (paths, tags, attribute names, never values/free text), masks marked/private form nodes from
+rasterization, and writes click, mutation, settle, and 320×240 screenshot frames to local IndexedDB. No upload,
+new endpoint, token, Worker or GitHub write. The modal warns that screenshots can still contain private text;
+export is a user-initiated `.mcrec` v2 JSON download. 5 MB/session (oldest frame evicted, oversize frame
+rejected), 30-day last-activity expiry, quota failure stops full recording but leaves v1 working. A post-watch privacy probe proved that
+HashRouter `?token=` query strings were persisted in both v1 routes and v2 target/click frames; the new
+`safeRoute()` pure-core sanitizer now strips queries before either recorder stores them (red-before-green DOM test). The Collector
+and FAB both expose the same session list (export/delete); an active session cannot resurrect after deletion.
+The pure-JS core is exercised by `node --test`; the real observer, rasterizer seam, IDB transactions, reload,
+quota failure, and `/#/lab/collector` mount are exercised by Vitest. Screenshot rasterization uses html2canvas
+(native canvas has no DOM draw API); `tests/f57-explorer-ops.test.js` pins this *single* dependency exception.
+
+## §PRE-STEP — Step 6 (all 10)
+1. SPEC-REALITY: `dvr-core.js`, `DvrFab.tsx`, `Collector.tsx`, `src/tests/smoke` exist; no pre-existing `src/lib/dvr/` folder; html2canvas not bundled on entry.
+2. INVENTORY-RE-DERIVE: v1 30s/200 entries, descriptor-only; hidden content class = private form fields, DOM text, rasterized pixels, cross-origin assets. v2 is opt-in and structural-only for diffs.
+3. SECRET-ENUM: no credential dependency, but 7 name-only locations checked: tracked env paths 0, workspace env paths 0, repo Actions secret listing 403 (inaccessible), repo environment count 1, workflows with secret refs 11, state GH_PAT assertion 1, tracked Worker/secret config paths 0. No secret values inspected; Worker assertion unused.
+4. ARCH-FEASIBILITY: existing F104 injected recorder + existing churn observer; MutationObserver available; canvas cannot rasterize DOM, html2canvas does; fake-indexeddb tests local IDB and quota branch.
+5. SECURITY-REMEDIATION-CHECK: no upload route/network primitive; only local IDB, explicit download/copy; field/private nodes masked; v1 privacy gate unchanged.
+6. CI-PIN-DETECTION: count lock 1001→1010 (measured 1010 each), F57 dependency freeze updated with one cited exception, F-TESTID derived IDs kept valid; F-DVR v1 source/privacy pins untouched.
+7. FACT-REFRESH: #169 closed; #172 merged; main launch-gates + build-ui + autologin-lab latest success; Pages 404 (not proof disabled); old-issue label 403 not reattempted.
+8. PRIMITIVE-AUDIT: reuse v1 ring/observer/decorator, Modal, Collector, FeatureLab, i18n parity; extend rather than replace F104. New pure v2 core shared between runtime and Node gate.
+9. MERGE-STATE-CHECK: #171 and #172 merged, no hard-dep conflict. Merge order **independent of #172** (already merged); depends on #171 (merged).
+10. MAIN-BASELINE-CHECK: main `8ee3b4644` launch-gates `37624201247` gates + windows-native GREEN; build-ui/autologin-lab latest success. No inherited red repair this session.
+
+## §HALFWAY-RECONCILIATION (v7)
+Ledger and prompt both list 10 steps; steps 1–5 merged (50% entry), #172 was incorrectly still called open.
+Remaining ETA by ledger: 90+120+90+150+60 = **510 min** across five steps; observed step-3 ~95min,
+step-5 ~25min (60min mean over two measured code sessions; others unknown). Step 9's 150min estimate exceeds
+the 120min/session cap and needs re-scope. Pages is still operator-manual before F108; issue labels remain manual.
+
+## §Quality-metrics (v7)
+- Step 6: falsifications 5/5 caught after one gate loophole was tightened (commented-out integration initially passed a source grep); vacuity probes 2/2 caught; main-baseline-red-on-entry: no. Budget: see session log.
+
+## §Closable-blockers (v7)
+- #169: closed by operator; no further action. Pages before F108 is **not** resolved by F107.
+
+## §Cross-session-learning (v7)
+- Test source scans must strip comments; a commented-out integration call can pass a naïve text grep.
+- Canvas cannot rasterize arbitrary DOM; prove the dependency exception rather than pretending `drawImage(root)` works.
+
+## §Shipped-patterns (v7; earlier v6 records retained below)
+- {name: "Opt-in local diagnostic content", why: "pixel data may contain secrets; never silently capture", file: "src/lib/dvr/full.ts:38", reusable_in_steps: [F108, F109]}
+- {name: "Serialized bounded local writer", why: "a slow old transaction must not overwrite a newer session; quota stops only full capture", file: "src/lib/dvr/full.ts:33", reusable_in_steps: [F108, F109]}
+
 
 1. **A parameterised route builds its own fence** (step 5). `fence("id", …)` is for literal routes; a route
    whose feature is a PARAMETER must construct `<FeatureBoundary feature={resolved}>` from the value, or it
@@ -537,6 +590,16 @@ the F105 ownership partition - see the §Step 5 record for what shipped instead 
   changed** (precedent: steps 4 and 5). Branch head moves to a docs-only commit; the code verdict above
   stands for the identical source tree.
 - Budget: ~80 min of 120 (implementation ~40, falsification+loopholes ~15, CI watch ~20, docs ~5)
+### Session 2026-10-07 — Step 6 — F107 Full DVR — COMPLETE (PR #173; final source watch pending)
+- Branch `arena/66a13a8c-supreme-lamp` · PR #173 · main baseline GREEN · #172 merged (prompt-staleness 1 roadmap correction; OPERATOR-ASSERTIONS migration needed).
+- PRE-STEP: ten checks recorded above; spec drift 2 (no pre-existing full-DVR folder; canvas alone cannot rasterize DOM); inventory-hidden drift 1 (private pixel data), security clear, arch verified, secret enum 7 name-only locations (repo Actions secrets API 403, no credential required).
+- Gates: Node pure-core/format/wiring and DOM actual observer/thumbnail/IDB/reload/quota/collector-lab; falsify 5/5 caught, 1 loophole fixed; vacuity 2/2; lab-discovered prod bugs: none.
+- CI pins updated same PR: F-i18n count and F57 dependency; F-TESTID respected without changing pin. Non-regression: Node **663/663**, Vitest **1090/1090** (83 files), tsc 0, build 1,258.21 kB, 219/219 regression IDs, no-neon-green/bottom-bar/fx-ids PASS; v1 F-DVR and F104 suites plus F105/F106 boundary/lab tests passed.
+- CI original verdict (code head `b9734d6`): launch-gates gates ✅×2, windows-native ✅×2, proof ✅, build-ui ✅, e2e-ui AMBER-INHERITED (cancelled at its 25-min timeout, same as main 5/5; no failed step). Privacy hardening changed source **after** the watch; final-source rerun pending and MUST be recorded separately.
+- Handoff: Pages unverified for F108, F110 estimate > cap; shipped patterns: opt-in local diagnostics and single ordered IDB writer; cross-session lessons above. No main red repair.
+- Post-watch privacy audit: reproduced a persisted query credential in v2 target AND click route, then root-fixed v1/v2 through shared `safeRoute` with regression proof; no lab prod crash.
+- Merge-order: #171/#172 merged; no other open hard-dep PR. Issue #165 write expected 403; authoritative mirror is this file. No PR merge or main.yml dispatch.
+
 
 ### Session 2026-10-07 12:30Z — Step 5 — F106 Feature Lab — **COMPLETE**
 - Branch `arena/5f3d21f9-supreme-lamp` · PR **#172** · base `dd2ed68` (= `origin/main`)

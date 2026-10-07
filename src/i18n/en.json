@@ -1305,6 +1305,16 @@
     "copyFailed": "Copy failed — select the preview and copy it by hand",
     "clear": "Clear",
     "sessions": "Sessions…"
+    "fullWarning": "Optional full capture stores structural DOM changes and 320×240 screenshots on this device. Screenshots may contain private information. Review before exporting; nothing uploads automatically.",
+    "fullStart": "Start full capture (local only)",
+    "fullStop": "Stop full capture",
+    "sessions": "DVR sessions",
+    "sessionsHint": "View, export or delete saved sessions (5 MB/session, 30 days).",
+    "sessionsError": "Local session storage is unavailable.",
+    "sessionsEmpty": "No saved sessions.",
+    "export": "Export .mcrec v2",
+    "delete": "Delete",
+    "clear": "Clear"
   },
   "dvrSessions": {
     "title": "DVR sessions",
