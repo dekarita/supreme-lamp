@@ -16,8 +16,30 @@
 - [x] **Step 1 — F-TESTID** · landed on `arena/ad1df050-supreme-lamp`, PR **#166**, head `5cf005a`
   · CI: `gates` ✅ 1m44s · `windows-native` ✅ · `e2e-ui` ⚠️ pre-existing 25-min self-cancel (see below)
   · measured gap was **76 missing of 174 button sites**, not 63 of 150 (see #163 §4 correction in the PR body)
-- [ ] **Step 2 — F-I18N-SI-72** · ETA 30min · 72 missing `si` keys + en/si parity gate
-- [ ] **Step 3 — F-DVR-LITE** · ETA 90min · Share-with-AI button + GitHub attachment upload
+- [x] **Step 2 — F-I18N-SI-72** · landed on `arena/0648e4eb-supreme-lamp`, PR **#167**, head `2955bb9`
+  · closed **88** keys, not 72: the 72 en-only keys of #163 §3.6 (re-derived exactly: 933/861) **plus 16 `collector.*` keys in NEITHER catalog**,
+    surviving only as `t("k",{defaultValue})` — invisible to any key-set diff and unreachable by a translator
+  · gates: `tests/f-i18n-parity.test.js` (6 rules, auto-run by launch-gates `node --test tests/*.test.js`) +
+    `src/tests/smoke/f-i18n-render.test.tsx` (9 surfaces × both languages, 70/88 strings DOM-proven, 4 falsifications)
+  · Node 629/629 · Vitest 1023/1023 (79 files) · tsc 0 · build 1012.67 kB · regression-ids 219/219
+  · CI on `2955bb9`: `gates` ✅ 6m · `windows-native` ✅ 11m · `build-ui` ✅ · `e2e-ui` ⚠️ AMBER-INHERITED (cancelled by its own
+    25-min timeout at 08:29:18Z with ZERO failed steps — identical to `main`, where the last 5 runs are 0/5 `cancelled`).
+    Baseline recorded this session: launch-gates 5/5 GREEN, build-ui 5/5 GREEN, e2e-ui 0/5 RED-INHERITED.
+  · #165 mirror PATCH attempted once → 403 `Resource not accessible by integration` (expected, not retried; this file wins)
+  · spec drift corrected: catalogs are `src/i18n/{en,si}.json` (not `.ts`) and smoke tests live in `src/tests/smoke/` (there is no `tests/smoke/`)
+- [x] **Step 3 — F-DVR-LITE** · landed on `arena/bd2c6418-supreme-lamp`, PR **#171**, code head `af6cbf4` (this state-file commit is the head of the PR)
+  · executed as **#169 option (d)** (operator decision): the last 30 s of clicks, assembled in the tab,
+    copied with `lib/clipboard` - **no upload, no endpoint, no token, no storage, no DOM content**
+  · new: `src/lib/dvr-core.js` (+`.d.ts`, pure ring: 30 s / 200 entries / `mcrec` v1), `src/lib/dvr.ts`
+    (decorates F104's injected recorder - extend, never replace), `src/components/domain/DvrFab.tsx`
+    (FAB + Modal panel + preview + Copy + Clear + pause), 21 `dvr.*` strings in **both** catalogs
+  · gates: `tests/f-dvr-lite.test.js` (11 tests: 5 behavioural against the real ring + 6 wiring/privacy)
+    and `src/tests/smoke/f-dvr-lite.test.tsx` (10 DOM tests against the real F104)
+  · node 640/640 · vitest 1033/1033 (80 files) · `tsc -p tsconfig.build.json` 0 · build 1,023.94 kB
+    · regression-ids 219/219 · F56-c launch-gates step re-run **locally: PASS**
+  · falsified **22 ways, 0 missed** (16 + 6 vacuity probes); 4 loopholes found and tightened same-session
+  · CI-pins updated in the same commit: `tests/f-i18n-parity.test.js` count lock 949 → 970,
+    `tests/f104-global-click.test.js` F104-f (call shape, made stricter)
 
 ## Phase 2 — Observatory core
 - [x] **Step 4 — F105** · landed on `arena/75bc347b-supreme-lamp`, PR **#170** (in review, NOT merged)
@@ -31,6 +53,11 @@
     `F59 build-ui` + `autologin-lab` ✅ on the preceding head `8402559`. One supersede: `8402559` → `1a54b2c`
     (the F56-c pin fix below). Mergeable by the §4 criteria (only RED-NEW blocks).
 - [ ] **Step 5 — F106** · ETA 120min · `/#/lab/<section>` isolated test pages × 11
+  · **HARD-BLOCKED on step 4 landing**: `src/components/primitives/FeatureBoundary.tsx` and
+    `src/lib/featureRegistry.ts` exist **only on PR #170's branch** - on `main` there is no
+    `featureRegistry.ts` and no `featureBoundary.ts`, so `featureLabPath()` and `fence()` do not exist
+    to build on. Re-derived this session (§SPEC-REALITY). Not a soft dependency: F106 without the
+    primitive would either duplicate it (a second source of truth for the same 11 sections) or fork it.
 - [ ] **Step 6 — F107** · ETA 90min · Full DVR: DOM mutations + screenshots + IndexedDB
 - [ ] **Step 7 — F108** · ETA 120min · Public Replay Viewer on Pages + Arena mode
 - [ ] **Step 8 — F109** · ETA 90min · Debug HUD overlay (F12-shift)
@@ -138,3 +165,111 @@ true branch dereferenced `null`) **and** the section is fenced, so a future cras
   **mergeable**. Post-watch docs-only commit (this one) records the classification; no source file changed in it.
 - Session log comment: PR #170 comment `#issuecomment-6036119782` (§3.4 + §7 full trace, incl. the CI verdict).
 - Budget: ~52 min of 120
+## §Baseline-main-CI (recorded by sessions, re-measured when the §4.2 pattern changes)
+
+| sha / when | launch-gates `gates` | `windows-native` | `build-ui` | `e2e-ui` |
+|---|---|---|---|---|
+| `4be94a7` (last 5 `push:main`, recorded by step 3's halt session) | 5/5 GREEN | - | 5/5 GREEN | 0/5 `cancelled` (RED-INHERITED) |
+| `2955bb9` (#167 head, step 2 session) | GREEN 6m | GREEN 11m | GREEN | AMBER-INHERITED (25-min self-cancel, 0 failed steps) |
+| `18660d9` (main at step 3 start) | not re-measured this session | - | - | see §4.2 |
+
+**§4.2 arrival pattern (unchanged)**: `e2e-ui` cancels itself at `timeout-minutes: 25` with **zero failed
+steps** - acceptable for merge until F111 re-plans that job; after a step lands, the baseline is
+re-measured from the newest `push:main` runs. Only **RED-NEW** blocks.
+
+## §CI-GATE-BRITTLENESS inventory
+
+**Built this session** (the file did not exist): `docs/CI-GATE-BRITTLENESS.md` - methodology, measured
+counts (431 pin lines repo-wide, 423 of them in `launch-gates.yml`, 214 fixed-string), the 8 HIGH
+brittleness pins, the MED families, and a **file → pins that will evaluate it** index. Standing
+consequences for the roadmap: F106 and F108 both edit `src/App.tsx` (2 F56-c element pins + the
+`f76-sidebar-search` source pin), F106 must re-run the F56-c step locally, and F111 is the step that
+should migrate text pins into `tests/*.test.js` or `scripts/check-*.mjs`.
+
+## §Handoff-findings
+
+**Resolved by step 3:** the halt session's premise that step 3 needed a `GH_PAT` Actions secret - false;
+option (d) needs no credential at all. #169's decision is implemented and the issue can be closed by the
+operator once this PR lands.
+
+**Recorded for later steps:**
+1. **F107 (step 6) owns DOM *content* capture.** The DVR deliberately stores counts and descriptors only
+   (`F-DVR-g` forbids `innerHTML`/`textContent`/`querySelector`/`getAttribute` in `dvr.ts`). F107 must
+   enumerate its own privacy surface and extend the same two gate files rather than weakening them.
+2. **F109 (step 8) owns the un-fenced chrome** (see the tracker below); the DVR FAB is now one of those
+   surfaces.
+3. **F108 (step 7) needs GitHub Pages**, which no session has verified as enabled - operator item.
+4. **PR #170 must be rebased before step 5 can start.** Operator decision; the conflicts are purely
+   textual (state file + `si.json`) and the resolution is "keep both steps' blocks".
+
+## §Fence-coverage-gap tracker (v5)
+
+Every UI surface that is **not** behind a `FeatureBoundary` once step 4 lands (derived from PR #170's
+description, not from invented memory), with the target fencing step:
+
+| surface | where | fenced? | target |
+|---|---|---|---|
+| 11 section routes (`/`, `/search`, `/sessions`, `/connections`, `/keys`, `/files`, `/mirror`, `/telemetry`, `/health`, `/collector`, `/settings`) | `src/App.tsx` | yes (PR #170) | landed with step 4 |
+| `Toasts`, `DiagSideDrawer`, `CollectorRunBridge`, `F92VersionGate`, `DashTokenGate`, `AppShell` | `src/App.tsx` chrome | **no** | F109 |
+| **`DvrFab`** (added by step 3) | `src/App.tsx` chrome | **no** - mounted beside `CollectorRunBridge`, deliberately outside the fences (a crash in a section must still leave the Copy handle reachable) | F109 |
+| `CommandPalette` | `src/components/layout/AppShell.tsx` | **no** | F109 |
+| 11 `/#/lab/<section>` pages | not built | n/a | F106 builds them **inside** the fence it inherits from step 4 |
+
+## §Budget-actual-tracking (v5)
+
+| step | expected ETA | actual used | delta | notes |
+|---|---|---|---|---|
+| 1 F-TESTID | 60 min | ~? | - | PR #166 |
+| 2 F-I18N-SI-72 | 90 min | ~? | - | PR #167 |
+| 3 F-DVR-LITE (halt) | 90 min | ~35 min | −55 | nothing shipped on purpose; halt was the correct outcome |
+| **3 F-DVR-LITE (option d)** | 90 min | **~95 min** | +5 | one re-verification pass (16 + 6 mutations) and 4 same-commit CI-pin updates; the extra ~5 min is the falsification, and it found one real gate hole |
+| 4 F105 | 90 min | ~? | - | PR #170 (not merged) |
+
+## §Merge-order-graph (v5)
+
+```
+main (18660d9)
+ ├─ #167 step 2  MERGED ─┐
+ ├─ #168 step 3 halt MERGED ─┤  (docs only)
+ ├─ PR #170 step 4 F105  OPEN · CONFLICTING  ← must be rebased by the operator
+ │      │  (provides FeatureBoundary + featureRegistry)
+ │      └─> step 5 F106  HARD-BLOCKED until #170 lands
+ └─ PR #171 step 3 F-DVR-LITE (option d)  OPEN · independent
+        touches: src/lib/dvr*.{js,ts,d.ts}, src/components/domain/DvrFab.tsx,
+                 src/main.tsx (F104 seam), src/App.tsx (chrome mount), i18n × 2,
+                 tests/f-dvr-lite.test.js, src/tests/smoke/f-dvr-lite.test.tsx,
+                 tests/f-i18n-parity.test.js (count lock), tests/f104-global-click.test.js (call-shape pin),
+                 docs/CI-GATE-BRITTLENESS.md, docs/OBSERVATORY-STATE.md (this file)
+        conflicts with #170: docs/OBSERVATORY-STATE.md (both rewrite the roadmap block) and NOTHING else -
+                 step 3 changes a *different* i18n key namespace (dvr.*) and a different App.tsx region
+                 (the chrome block), so the two can merge in either order; whoever merges second resolves
+                 the state-file block by keeping BOTH step blocks.
+```
+
+## Session log
+
+### Session 2026-10-07 11:05Z — Step 3 — F-DVR-LITE (option (d)) — **COMPLETE**
+- Branch `arena/bd2c6418-supreme-lamp` · PR #171 · code head `af6cbf4` · status **WHILE-WAITING-FALL-THROUGH**
+  (step 5 was the prompted next step; it is hard-blocked on #170, so §0.5 fell through to the first
+  unchecked box with no hard blocker - step 3, now unblocked by the operator's #169 decision)
+- PRE-STEP (8 checks): spec-reality **4 drifts** (see execution record) · inventory-re-derive ✓ (no new
+  hidden class) · secret-enum **7 locations, 0 hits, nothing added** · arch-feasibility **verified** ·
+  security-remediation **clear** · ci-pin-detection **3 pins, all updated/verified same-commit** ·
+  fact-refresh (labels work on PRs + new issues; #163/#165 403) · primitive-audit ✓ (4 primitives
+  extended, 0 replaced)
+- Blocker classification: **soft** (step 5 → hard on #170; step 3 itself: none after the operator's answer)
+- Gates added: **2** (`tests/f-dvr-lite.test.js` 11 tests, `src/tests/smoke/f-dvr-lite.test.tsx` 10 tests),
+  each falsified ≥3 times; **22 mutations / 22 caught / 0 missed**; 4 loopholes tightened
+- Non-regression proofs: 7 (node, vitest, tsc, build, regression-ids, 3 script gates, F56-c step)
+- CI-pins updated in the same PR: 2 (i18n count lock, F104-f call shape) · skipped-gate local coverage:
+  F56-c step extracted from `launch-gates.yml` and run locally → PASS
+- Merge-order: **independent of #170** (documented in §Merge-order-graph; state-file conflict is textual)
+- Reclaimed budget: the mutation runs (16 + 6) and the CI-brittleness inventory - ~20 min of §HARDEN
+  work, not §REFLECT, because a real gate hole was found (the plain-codec fallback) and fixed
+- Handoff resolved: 1 (GH_PAT premise) · recorded: 3 (F107 content capture, F109 chrome fences, Pages
+  for F108) · fence-gaps added: 2 (`DvrFab`, plus the tracker itself) · standing facts corrected: 3
+  (#167/#168 merged, #170 conflicting, OPERATOR-ASSERTIONS/CI-GATE-BRITTLENESS had to be created)
+- Blockers created: **none** (the step shipped) · labels-applied: PR + (none new) · mirror: `PATCH
+  /issues/165` not attempted this session (this file is authoritative and #165 stays frozen)
+- Post-watch informational commit: recorded in the PR comment after the CI watch
+- Budget: ~95 min of 120

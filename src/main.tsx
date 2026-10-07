@@ -9,6 +9,10 @@ import App from "./App";
 import { useLangStore } from "@/stores/prefsStore";
 import { installLaunchUrlHandle } from "@/lib/launchUrl";
 import { installGlobalClickCapture } from "@/lib/globalClickCapture";
+// [F-DVR-LITE] type-only import on its own line: F104's gate pins the installer
+// import verbatim, and the DVR extends that call rather than rewriting it.
+import type { GlobalClickRecorder } from "@/lib/globalClickCapture";
+import { installDvr, installDvrObservers } from "@/lib/dvr";
 import { logButtonAction, updateRecordedAction } from "@/lib/collectorAgent";
 import { installFeatureBoundaryReporter } from "@/lib/featureBoundary";
 
@@ -23,12 +27,19 @@ installLaunchUrlHandle();
 // per-build with VITE_F104_GLOBAL_CAPTURE=false; the collector's own UI is
 // invisible to the capture (see GLOBAL_CLICK_IGNORE) so the store can never
 // feed itself.
+// [F-DVR-LITE §3.2] The recorder is DECORATED, not replaced: the DVR wraps the
+// exact object F104 is handed, so the collector keeps every row it had and the
+// 30 s ring additionally holds what happened just before the operator noticed
+// something was wrong. Killable separately with VITE_DVR_ENABLED=false; when the
+// DVR is off the recorder handed over is F104's own, unchanged.
 if (import.meta.env.VITE_F104_GLOBAL_CAPTURE !== "false") {
   try {
-    installGlobalClickCapture({
+    const recorder: GlobalClickRecorder = {
       record: (rec) => logButtonAction(rec),
       update: (id, patch) => updateRecordedAction(id, patch),
-    });
+    };
+    installGlobalClickCapture(installDvr(recorder, { enabled: import.meta.env.VITE_DVR_ENABLED !== "false" }));
+    installDvrObservers();
   } catch {
     /* telemetry must never break the app */
   }
