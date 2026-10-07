@@ -3,11 +3,16 @@
 // sticky, the ONLY surface allowed to render the four time fields + clock -
 // enforced by tests/smoke/bottom-bar-time.test.ts + scripts/check-bottom-bar-time.mjs).
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { Activity, ChevronsLeft, ClipboardList, Clock, Database, Folder, Globe, KeyRound, Menu, Moon, Search, Settings, Sun, Type, Zap } from "lucide-react";
+import { Activity, ChevronsLeft, ClipboardList, Clock, Database, FlaskConical, Folder, Globe, KeyRound, Menu, Moon, Search, Settings, Sun, Type, Zap } from "lucide-react";
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { CommandPalette } from "@/components/layout/CommandPalette";
 import { useThemeStore, useScaleStore, useLangStore, useSidebarStore } from "@/stores/prefsStore";
+// [F106 §5] The Labs entry: flag-gated (VITE_F106_LABS) or shown while the operator
+// is inside the lab, and rendered OUTSIDE <nav> on purpose - the 11-entry NAV list
+// is a locked contract (F56-c + two smoke suites pin every href and the order), so
+// the lab must not become a 12th entry by accident. See src/lib/lab/labFlags.ts.
+import { labEntryVisible, labIndexRoute } from "@/lib/lab/labFlags";
 import { useTelemetryStore } from "@/stores/telemetryStore";
 import { useSessionStore } from "@/stores/sessionStore";
 import { Chip } from "@/components/primitives/Chip";
@@ -252,6 +257,8 @@ function Sidebar() {
   const toggleCollapsed = useSidebarStore((s) => s.toggleCollapsed);
   const mobileOpen = useSidebarStore((s) => s.mobileOpen);
   const setMobileOpen = useSidebarStore((s) => s.setMobileOpen);
+  // [F106 §5] the Labs entry navigates imperatively (it is a button, not a link)
+  const navigate = useNavigate();
   // [F77 §2.1] NO visibility gate on the Search entry (was: F69 §1.4 lane flag +
   // F76 filter). NAV is the locked 9-entry list and every item renders; there is
   // no lane/gate/enabled field left on any entry, so no /diag answer, store
@@ -311,6 +318,25 @@ function Sidebar() {
             );
           })}
         </nav>
+        {/* [F106 §5] The lab entry. A BUTTON, not a NavLink, and outside <nav>: the
+            locked 11-entry list (and every test that counts `nav a`) is untouched.
+            Hidden by default - the lab's stable entry point is the deep link
+            `/#/lab`; this appears when VITE_F106_LABS=true or when the operator is
+            already on a lab route (so there is a way back to the index). */}
+        {labEntryVisible() ? (
+          <button
+            type="button"
+            data-testid="lab-nav-entry"
+            onClick={() => {
+              setMobileOpen(false);
+              navigate(labIndexRoute());
+            }}
+            className="mx-2 mb-1 flex items-center gap-3 px-3 py-2 rounded-md text-sm text-secondary hover:bg-raised hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          >
+            <FlaskConical className="size-5 shrink-0" aria-hidden />
+            <span className={cn("truncate", collapsed && "lg:hidden")}>{t("featureLab.entry")}</span>
+          </button>
+        ) : null}
         <button
           type="button"
           onClick={toggleCollapsed}

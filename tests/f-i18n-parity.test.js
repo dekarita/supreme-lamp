@@ -46,7 +46,22 @@ const SI_FILE = "src/i18n/si.json";
 // the same commit as the DVR UI that calls them (the panel is t()-driven from day
 // one - the lesson step 2 learned about `collector.*` surviving only as a
 // defaultValue). 949 + 21 = 970.
-const EXPECTED_FLAT_KEYS = 970;
+//
+// [F105 repair / Observatory step 5] 970 -> 978 was LOST IN THE MERGE. Step 4
+// (#170) added the 8 `boundary.*` keys while its branch predated step 3's 970
+// lock; the rebase resolution kept #171's 970 and dropped F105's bump, so main
+// shipped RED: `gates` failed at "Native UI and VPS contracts (Node)"
+// (F-I18N-a + F-DVR-k), which SKIPS every later step in that job. Step 5 carries
+// the repair because it has to touch this lock anyway.
+//
+// [F106 / Observatory step 5] + 23 `featureLab.*` keys (the lab index, the
+// controls panel, the 4 scenario labels), added to BOTH catalogs in the same
+// commit as the components that call them - each key is t()-driven from day one.
+// The 23 are: entry, indexTitle, indexIntro, openReal, back, meta, mockTitle,
+// mockOn, mockOff, mockHint, mockHintRead, mocksOff, readsOnly, noRequests,
+// clearLedger, copyReport, unknown, unknownBody, mockBadge + 4 x scenario.*.
+// 978 + 23 = 1001.
+const EXPECTED_FLAT_KEYS = 1001;
 
 // Legacy untranslated si values (byte-identical to en). Frozen deliberately:
 // operator-owned copy that predates this step (mirrorHostMatrix/*, egress.line,
