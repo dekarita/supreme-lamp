@@ -273,6 +273,8 @@ test("F103-R4: the four stale e2e expectations are updated to current reality", 
   // §5.2 launch-url -> launch-url|launcher/queue
   assert.ok(F78.includes("launch-url|launcher"), "f78 #17 still waits only for /api/launch-url");
   assert.ok(F86.includes("LAUNCH_ROUTE") && F86.includes("launch-url|launcher"), "f86 still waits only for /api/launch-url");
+  // and it asserts the queue contract (jobId) when the queue lane answered
+  assert.ok(F86.includes('res.url().includes("/api/launcher/queue")') && F86.includes("launchBody.jobId"), "f86 still demands a `tier` the F91 queue never returns");
   // §5.3 f84 #5: 400 -> [400, 503]
   assert.ok(F84.includes("expect([400, 503]).toContain(out)"), "f84 #5 still demands exactly 400");
   assert.ok(F84.includes("mirror module is missing"), "f84 #5 lost the reason comment");

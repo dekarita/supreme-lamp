@@ -159,10 +159,22 @@ test.describe("F86 ten-site deep inspection", () => {
       const postedUrl = String((JSON.parse(post.postData() || "{}") as { url?: string }).url || "");
       expect(new URL(postedUrl).hostname.replace(/^www\./, "")).toBe(site);
       expect(postedUrl.startsWith("https://")).toBe(true);
-      const launchBody = (await (await launchRes).json()) as { ok?: boolean; tier?: number; tierDetail?: string };
+      const res = await launchRes;
+      const launchBody = (await res.json()) as { ok?: boolean; tier?: number; tierDetail?: string; jobId?: string; queuedAt?: string };
       expect(launchBody.ok).toBe(true);
-      expect([1, 2, 3]).toContain(launchBody.tier);
-      expect(typeof launchBody.tierDetail).toBe("string");
+      // [F103 §5.2] F91 replaced the single-attempt POST /api/launch-url (which
+      // answered with the F86 tier ladder 1-3) by POST /api/launcher/queue
+      // (which answers with the queued jobId). The proof is the same - the
+      // launch really ran a rung instead of silently failing - but the field
+      // depends on WHICH lane answered, so assert per lane instead of
+      // demanding a `tier` the queue contract never had.
+      if (res.url().includes("/api/launcher/queue")) {
+        expect(typeof launchBody.jobId).toBe("string");
+        expect(String(launchBody.jobId).length).toBeGreaterThan(0);
+      } else {
+        expect([1, 2, 3]).toContain(launchBody.tier);
+        expect(typeof launchBody.tierDetail).toBe("string");
+      }
 
       // 4. DOWNLOAD: a file-ish row on this site still renders the F84 button.
       await runQuery(page, "f86 " + site);
