@@ -106,8 +106,9 @@ test('F57-INVARIANTS: undo=20, retention=30d, roots=6, durable queue', () => {
   assert.ok(PAGE.includes('tinykeys') && PAGE.includes('F2') && PAGE.includes('Shift+Delete') && PAGE.includes('mod+z'));
 });
 
-test('F57-NO-NEW-DEP: the single-file bundle keeps its frozen dependency set', () => {
+test('F57-NO-NEW-DEP: explorer dependency set is frozen; F107 rasterizer is the only allowed addition', () => {
   assert.deepEqual(Object.keys(PKG.dependencies).sort(), [
+    'html2canvas', // F107: actual DOM rasterizer; native canvas cannot draw a DOM tree
     'i18next',
     'lucide-react',
     'react',
@@ -117,6 +118,7 @@ test('F57-NO-NEW-DEP: the single-file bundle keeps its frozen dependency set', (
     'react-window',
     'zustand',
   ]);
+  assert.ok(read('src/lib/dvr/screenshots.ts').includes('import("html2canvas")'), 'the F107 exception must serve the screenshot capture');
   assert.ok(!JSON.stringify(PKG).includes('tinykeys'), 'keyboard shortcuts stay in-repo (src/pages/file-explorer/keymap.ts)');
   assert.ok(!JSON.stringify(PKG).includes('marked'), 'markdown rendering stays in-repo (src/lib/explorer/preview.ts)');
 });

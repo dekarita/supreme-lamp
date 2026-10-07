@@ -29,6 +29,7 @@ import {
   type ButtonAction,
 } from "@/lib/collectorAgent";
 import { GLOBAL_CLICK_SOURCE } from "@/lib/globalClickCapture";
+import { SessionListModal } from "@/components/dvr/SessionListModal";
 
 // [F101 §3.3] the six tabs every action row expands into
 const DEEP_TABS = ["preCheck", "request", "response", "postCheck", "services", "verdict"] as const;
@@ -81,6 +82,7 @@ function statusLabel(s?: string) {
 export default function Collector() {
   const { t } = useTranslation();
   const [report, setReport] = useState<CollectorReport | null>(null);
+  const [dvrSessionsOpen, setDvrSessionsOpen] = useState(false);
   const [status, setStatus] = useState<{ lastRunAt?: string; nextRunAvailableAt?: string; retryAfterSec?: number } | null>(null);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -302,6 +304,10 @@ export default function Collector() {
         </span>
       </div>
 
+      <Card title={t("dvr.sessions")}>
+        <button type="button" data-testid="collector-dvr-sessions" className="underline text-sm" onClick={() => setDvrSessionsOpen(true)}>{t("dvr.sessionsHint")}</button>
+      </Card>
+      <SessionListModal open={dvrSessionsOpen} onClose={() => setDvrSessionsOpen(false)} />
       <Card title={t("collector.controls", { defaultValue: "Controls" })}>
         <div className="flex flex-wrap items-center gap-2">
           <Button
