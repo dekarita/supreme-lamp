@@ -10,7 +10,7 @@
 > determination = first unchecked box below; fall back to #165's body only if this file is missing,
 > then cross-check the newest "§3 tracking-issue handoff" comment on the PR this step shipped in.
 
-**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 12:30Z by arena/5f3d21f9-supreme-lamp
+**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 12:55Z by arena/5f3d21f9-supreme-lamp
 
 ## Phase 1 — Immediate value
 - [x] **Step 1 — F-TESTID** · landed on `arena/ad1df050-supreme-lamp`, PR **#166**, head `5cf005a`
@@ -75,6 +75,10 @@
     (falsification M8: dropping the single-install guard was invisible → the gate now pins
     `if (installs === 1)` and the DOM suite proves a double install does not double-record)
   · Node 660/660 · Vitest 1080/1080 (82 files) · tsc 0 · build 1,044.71 kB · regression-ids 219/219
+  · CI on the code head `6f1c194` (watch closed at poll 18, 12:49Z): `gates` ✅ ×2 (push + PR) ·
+    `windows-native` ✅ ×2 · `proof` ✅ · `F59 build-ui` ✅ · `autologin-lab` ✅ · `e2e-ui`
+    ⚠️ AMBER-INHERITED — `cancelled` at 12:48:55Z by its own `timeout-minutes: 25` (1519 s,
+    **0 failed steps**), byte-for-byte the `main` baseline → **mergeable** by the §4 criteria (only RED-NEW blocks)
   · **NOT done, on purpose**: no Playwright spec (`tests/e2e/f106-mock-controls.spec.ts` was the prompt's
     third gate). No Chromium in this sandbox, and `e2e-ui` is the 25-min self-canceller - an un-runnable
     spec is not evidence, so the transport-level proof lives in the jsdom suite instead. Handoff below.
@@ -207,7 +211,8 @@ true branch dereferenced `null`) **and** the section is fenced, so a future cras
 | `2955bb9` (#167 head, step 2 session) | GREEN 6m | GREEN 11m | GREEN | AMBER-INHERITED (25-min self-cancel, 0 failed steps) |
 | `18660d9` (main at step 3 start) | not re-measured this session | - | - | see §4.2 |
 | `dd2ed68` (main at step 5 start = #170 merge) | **0/1 RED — `failure`** at "Native UI and VPS contracts (Node)": F-I18N-a + F-DVR-k (lock 970 vs 978 keys) - **the merge lost step 4's lock bump**, 649/651 node tests; every later step in the job skipped | in_progress | GREEN (`build-ui-prebuilt`) | in_progress |
-| `dd2ed68` + step 5 (`arena/5f3d21f9-supreme-lamp`) | node 660/660, lock 1001, i18n parity green | see PR | GREEN | see PR |
+| `dd2ed68` + step 5 branch (local evidence, pre-CI) | node 660/660, lock 1001, i18n parity green | - | - | - |
+| `6f1c194` (#172 head, step 5 session, post-watch) | GREEN ×2 (push + PR) | GREEN ×2 | GREEN (`build-ui-prebuilt`) | AMBER-INHERITED (self-cancel 12:48:55Z, 1519 s, 0 failed steps) |
 
 **§4.2 arrival pattern (unchanged)**: `e2e-ui` cancels itself at `timeout-minutes: 25` with **zero failed
 steps** - acceptable for merge until F111 re-plans that job; after a step lands, the baseline is
@@ -393,8 +398,14 @@ the F105 ownership partition - see the §Step 5 record for what shipped instead 
 - Handoff resolved: #170's step-5 hard blocker; recorded: 3 (no Playwright spec + why, reads-only
   scenarios, `/#/health` needed a guard)
 - Standing facts corrected: 2 (main's red `gates` + its cause; the count-lock-after-merge lesson)
+- CI watch (closed 12:49Z, poll 18/20): `gates` ✅ ×2 · `windows-native` ✅ ×2 · `proof` ✅ ·
+  `F59 build-ui` ✅ · `autologin-lab` ✅ · `e2e-ui` ⚠️ AMBER-INHERITED (cancelled 12:48:55Z by
+  its own 25-min timeout, 1519 s, 0 failed steps — matches `main` 0/5) → **mergeable**, no RED-NEW
 - Blockers created: **none** · labels-applied: PR only (issue labels remain 403)
 - Budget: **~25 min** of 120 - most of it in the falsification pass (18 mutations) and the `/api/f92-selftest` root cause, not in writing the lab
+
+- Session log comment: PR #172 comment `#issuecomment-6038275132` (§3 + §4 CI verdict + §7 trace)
+- Post-watch informational commit: this one — records the CI verdict and the comment id; **no source file changed** (precedent: step 4). Branch head moves to a docs-only commit; the code verdict above stands for the identical source tree.
 
 ### Session 2026-10-07 11:05Z — Step 3 — F-DVR-LITE (option (d)) — **COMPLETE**
 - Branch `arena/bd2c6418-supreme-lamp` · PR #171 · code head `af6cbf4` · status **WHILE-WAITING-FALL-THROUGH**
