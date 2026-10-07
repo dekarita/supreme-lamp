@@ -82,6 +82,32 @@ test("F91-p: i18n - the four operator-named keys + siblings exist in BOTH catalo
   assert.ok(SI.selfTest?.column?.launcherQueue, "si selfTest F91 column labels missing");
 });
 
+
+test("F91-r [F104 §1]: the popup opens synchronously and a blocked popup is honest, never fake-green", () => {
+  const body = code(LAUNCH);
+  const mirrorBody = body.slice(body.indexOf("export async function openMirrored("));
+  assert.ok(mirrorBody.length > 200, "openMirrored() is missing");
+  // the return value is the proof: null (or a throw) means the blocker ate it
+  assert.ok(mirrorBody.includes("if (win) localOpened = true;"), "window.open's return value is not honoured");
+  assert.ok(mirrorBody.includes("popupBlocked = true"), "a blocked popup is not named");
+  assert.ok(body.includes("popupBlocked?: boolean"), "MirrorOutcome.popupBlocked missing");
+  // the RDP half still runs after a block (the halves are independent)
+  const openAt = mirrorBody.indexOf("window.open(");
+  const queueAt = mirrorBody.indexOf('queueLauncherJob(url, "navigate")');
+  assert.ok(openAt > 0 && queueAt > openAt, "local-open-first order drifted");
+  // the toast branch: actionable info with the RDP half's fate, never banned
+  assert.ok(body.includes('t("mirror.popupBlocked", { rdp'), "the blocked branch does not use mirror.popupBlocked");
+  assert.ok(body.includes('t("mirror.mirroredRdp")'), "the blocked toast must interpolate the mirrored half");
+  for (const [name, cat] of [["en", EN], ["si", SI]]) {
+    assert.ok(typeof cat.mirror?.popupBlocked === "string" && cat.mirror.popupBlocked, name + " mirror.popupBlocked missing");
+    assert.ok(cat.mirror.popupBlocked.includes("{{rdp}}"), name + " popupBlocked must interpolate {{rdp}}");
+    assert.ok(!cat.mirror.popupBlocked.toLowerCase().includes("could not open"), name + " popupBlocked reuses the retired error");
+  }
+  // the diag chip names the block too (not the "not a plain https link" text)
+  assert.ok(BANNER.includes("out.popupBlocked"), "the diag chip ignores the blocked branch");
+  assert.ok(BANNER.includes('t("mirror.popupBlocked"'), "the diag chip does not use mirror.popupBlocked");
+});
+
 test("F91-q: the diag surface reports the launcher line (operator step 5)", () => {
   assert.ok(BANNER.includes("/api/launcher/health"), "the banner never asks the launcher health route");
   assert.ok(BANNER.includes('data-testid="f91-diag-launcher"'), "the launcher line is not rendered");

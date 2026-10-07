@@ -40,6 +40,11 @@ export interface ButtonAction {
   result?: unknown;
   elapsedMs?: number;
   error?: string;
+  /** [F104 §3] where the row came from. "global-click-capture" = the
+   *  document-level listener caught a real user click anywhere in Mission
+   *  Control; undefined = the F100/F101/F102 instrumented paths. The
+   *  Collector page renders the two provenances in separate sections. */
+  source?: string;
   // ---------------------------------------------------------------------------
   // [F101 §3.1 / N5] DEEP INSTRUMENTATION. The F100 row was
   // {feature, action, params, result}: enough to know THAT a click failed,
@@ -159,6 +164,9 @@ interface CollectorState {
   /** row the Collector page re-opens after a click navigated away and back */
   focusId: string | null;
   addAction: (a: ButtonAction) => void;
+  /** [F104 §3] patch one row in place (the global observer fills its row in
+   *  when the observation window closes). A no-op for unknown ids. */
+  updateAction: (id: string, patch: Partial<ButtonAction>) => void;
   clear: () => void;
 }
 
@@ -306,6 +314,18 @@ export const useCollectorStore = create<CollectorState>()(
             if (cutAt > 0 && next[cutAt - 1]) next[cutAt - 1] = slimAction(next[cutAt - 1]);
             return { actions: next };
           }),
+        // [F104 §3] in-place patch: the ONLY writer is the global observer
+        // closing its window. The patched row is re-slimmed when it is old,
+        // exactly like addAction, so the quota posture cannot drift.
+        updateAction: (id, patch) =>
+          set((s) => {
+            const idx = s.actions.findIndex((a) => a.id === id);
+            if (idx < 0) return {};
+            const next = s.actions.slice();
+            const merged: ButtonAction = { ...next[idx], ...patch, id: next[idx].id, ts: next[idx].ts };
+            next[idx] = idx < next.length - FULL_BODY_ROWS ? slimAction(merged) : merged;
+            return { actions: next };
+          }),
         clear: () => set({ actions: [] }),
       };
     },
@@ -402,6 +422,16 @@ export function logButtonAction(rec: Omit<ButtonAction, "id" | "ts">): ButtonAct
 export function clearActions() {
   useCollectorStore.getState().clear();
   useCollectorStore.setState({ notice: null });
+  syncPersistError();
+}
+
+/**
+ * [F104 §3] Patch one recorded row (the global observer fills its row in when
+ * the observation window closes). Unknown ids are ignored; id/ts are pinned
+ * and can never be patched.
+ */
+export function updateRecordedAction(id: string, patch: Partial<ButtonAction>): void {
+  useCollectorStore.getState().updateAction(id, patch);
   syncPersistError();
 }
 

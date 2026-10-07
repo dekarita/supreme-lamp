@@ -552,6 +552,10 @@ export interface MirrorOutcome {
   /** true when the local tab was opened (false only when the URL fails the
    *  https validation, in which case NOTHING is queued either). */
   localOpened: boolean;
+  /** [F104 §1] true when window.open returned null - the browser's popup
+   *  blocker ate the local half. The RDP half still runs (best effort) and
+   *  the toast names the block as an INFO line, never the retired error. */
+  popupBlocked?: boolean;
   /** true when the RDP launcher accepted (200) the queue write. */
   rdpOk: boolean;
   /** machine-readable queue failure marker (logs/tests, never user text). */
@@ -625,9 +629,18 @@ export function dirnameWindows(path: string): string {
 
 /** Mirror-mode toast text, success-first (F91 §-1): BOTH halves pass ->
  *  mirror.openedBoth; queue half failed -> mirror.rdpOffline naming WHY.
- *  An unvalidated URL never opened anything -> mirror.blocked. */
+ *  An unvalidated URL never opened anything -> mirror.blocked.
+ *  [F104 §1] a BLOCKED popup -> mirror.popupBlocked (actionable info: allow
+ *  popups + retry), with the RDP half's fate interpolated - never the
+ *  retired "Could not open" error. */
 export function mirrorToastText(out: MirrorOutcome, t: (key: string, opts?: Record<string, unknown>) => string): string {
-  if (!out.localOpened) return t("mirror.blocked");
+  if (!out.localOpened) {
+    if (out.popupBlocked) {
+      const rdp = out.rdpOk ? t("mirror.mirroredRdp") : out.rdpReason || "offline";
+      return t("mirror.popupBlocked", { rdp });
+    }
+    return t("mirror.blocked");
+  }
   if (out.rdpOk) return t("mirror.openedBoth");
   return t("mirror.rdpOffline", { reason: out.rdpReason || "offline" });
 }
@@ -651,19 +664,34 @@ export async function openMirrored(
     if (opts?.push && opts?.t) opts.push(mirrorToastText(out, opts.t), "warn");
     return out;
   }
-  // 1. local open FIRST - the user's half never waits on the runner's half.
+  // 1. local open FIRST - SYNCHRONOUSLY, before the first await, so the
+  // browser still honours the click's user activation (an awaited fetch
+  // BEFORE this line is what lets a popup blocker eat the tab). [F104 §1]
+  // the return value is the proof: null means the blocker ate it, and
+  // claiming success on a null handle is the fake-green this fix removes.
   let localOpened = false;
+  let popupBlocked = false;
   try {
     const win = window.open(url, "_blank", "noopener,noreferrer");
-    localOpened = true;
-    void win;
+    if (win) localOpened = true;
+    else popupBlocked = true;
   } catch {
-    localOpened = false;
+    popupBlocked = true;
   }
-  // 2. the RDP half, with its own 3 s bound (inside queueLauncherJob).
+  // 2. the RDP half, with its own 3 s bound (inside queueLauncherJob). It
+  // runs even when the popup was blocked - the halves are independent.
   const queued = await queueLauncherJob(url, "navigate");
-  const out: MirrorOutcome = { localOpened, rdpOk: queued.ok, rdpReason: queued.ok ? "" : queued.reason, jobId: queued.jobId };
+  const out: MirrorOutcome = {
+    localOpened,
+    popupBlocked: popupBlocked || undefined,
+    rdpOk: queued.ok,
+    rdpReason: queued.ok ? "" : queued.reason,
+    jobId: queued.jobId,
+  };
   // 3. the toast - success-first, and the ONLY place either half is reported.
-  if (opts?.push && opts?.t) opts.push(mirrorToastText(out, opts.t), out.rdpOk ? "ok" : "");
+  if (opts?.push && opts?.t) {
+    const tone = out.localOpened ? (out.rdpOk ? "ok" : "") : "warn";
+    opts.push(mirrorToastText(out, opts.t), tone);
+  }
   return out;
 }

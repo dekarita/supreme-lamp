@@ -103,6 +103,10 @@ test("F85-5: launchUrl() keeps its no-window.open-fallback contract; mirror mode
   assert.ok(launchCode.includes("export async function queueLauncherJob("), "queueLauncherJob() is not exported");
   assert.strictEqual((mirrorBody.match(/window\.open\(/g) || []).length, 1, "mirror mode must have exactly one window.open");
   assert.ok(/noopener/.test(mirrorBody.slice(mirrorOpen, mirrorOpen + 120)), "the mirror popup must keep the noopener features");
+  // [F104 §1] the return value is the proof: a null handle (or a throw) is a
+  // NAMED block, and the RDP half still runs after it (halves independent).
+  assert.ok(/if \(win\) localOpened = true;/.test(mirrorBody), "mirror mode must honour window.open's return value");
+  assert.ok(mirrorBody.includes("popupBlocked = true"), "a blocked popup must set popupBlocked");
 
   assert.match(LAUNCH, /export function installLaunchUrlHandle/, "the feature-detection installer is missing");
   assert.match(MAIN, /installLaunchUrlHandle\(\);/, "src/main.tsx does not install the handle");

@@ -162,8 +162,14 @@ export function F86DiagnosticBanner() {
   const runTestLaunch = async () => {
     setTestLaunch({ busy: true, text: "...", ok: null });
     const out = await openMirrored(DIAG_TEST_LAUNCH_URL);
+    // [F104 §1] a blocked popup is its own chip: actionable info (allow
+    // popups + retry) with the RDP half's fate - never the retired error,
+    // and never the "not a plain https link" text (the URL was valid).
     if (out.localOpened && out.rdpOk) setTestLaunch({ busy: false, ok: true, text: t("mirror.openedBoth") });
-    else if (out.localOpened) setTestLaunch({ busy: false, ok: false, text: t("mirror.rdpOffline", { reason: out.rdpReason || "offline" }) });
+    else if (out.popupBlocked) {
+      const rdp = out.rdpOk ? t("mirror.mirroredRdp") : out.rdpReason || "offline";
+      setTestLaunch({ busy: false, ok: false, text: t("mirror.popupBlocked", { rdp }) });
+    } else if (out.localOpened) setTestLaunch({ busy: false, ok: false, text: t("mirror.rdpOffline", { reason: out.rdpReason || "offline" }) });
     else setTestLaunch({ busy: false, ok: false, text: t("mirror.blocked") });
     // re-read the diag so "Last launch" and the history follow.
     try {
