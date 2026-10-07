@@ -64,6 +64,12 @@ true branch dereferenced `null`) **and** the section is fenced, so a future cras
 3. **Playwright cannot run locally** (no Chromium in this sandbox): the F105 proof is the Node + vitest pair,
    and `tests/e2e` is the 25-min self-canceller - so no e2e proof was added for a fence that jsdom already
    exercises end to end.
+4. **CI owns source pins too, and its steps are `set -e`**: the first CI run of this PR was RED-NEW - not a
+   product defect, but `launch-gates.yml`'s F56-c step grep-ing `path="/search" element={<Search />` verbatim.
+   That pin (and F76's twin in `src/tests/`) is updated in this PR in intent-preserving form and is now
+   STRICTER (it pins the fence as well). Everything after a failing step is skipped, so the remaining skipped
+   gates (v2/v3, F58, F59, F57, F62) were re-run locally from the extracted step bodies before the re-push -
+   all PASS. A future route-wiring change must expect this step.
 
 ## Standing facts the next session should not rediscover
 - **`e2e-ui` is red on `main` for reasons no step can fix**: it is cancelled by its own
@@ -84,6 +90,10 @@ true branch dereferenced `null`) **and** the section is fenced, so a future cras
 - **Rule f got stricter** (F105 falsification M7): `tests/f-testid-coverage.test.js` now also rejects a DERIVED
   id whose literal prefix is `collector-`/`click-now-` - previously only literal attributes were scanned, so
   `data-testid={"collector-x" + id}` could walk a whole component into the F104 blind spot unnoticed.
+- **Route wiring is pinned in THREE places, not one**: `src/App.tsx` is read verbatim by `launch-gates.yml`'s
+  F56-c step (a shell `grep -qF`, `set -e`), by `src/tests/smoke/f76-sidebar-search.test.tsx`, and now by
+  `tests/f105-feature-registry.test.js` (13 `fence()` calls). Change a route element and all three move
+  together - and extract/run the workflow step locally first, because a failure there skips every later gate.
 - **Boundary test ids are `feature-boundary-<id>` (+ `-retry`/`-reload`/`-copy`)** and are deliberately NOT in
   the capture ignore-list, so the fence's own buttons stay in the DVR. The component repeats the prefix literal
   (the F-TESTID rule only accepts `"prefix-" + expr`); `tests/f105-feature-registry.test.js` F105-k asserts the
@@ -116,4 +126,7 @@ true branch dereferenced `null`) **and** the section is fenced, so a future cras
   `f76`'s route pin updated in INTENT-PRESERVING form (same routes, stricter literal, now pins the fence too)
 - Handoffs: resolved `2 → 4` (Telemetry crash); recorded 3 (global chrome unfenced, storage keys for F107,
   no local Playwright)
-- Budget: ~75 min of 120
+- CI run 1 (`8402559`, superseded by the run-2 fix): `F59 build-ui` ✅ · `autologin-lab` ✅ · `gates` ❌
+  **RED-NEW** at "F56-c sidebar + search + file-explorer shell gates" (stale route pin, see handoff 4) ·
+  `windows-native` still running when the head was replaced. Fix pushed as run 2.
+- Budget: ~100 min of 120

@@ -2659,8 +2659,13 @@ jobs:
           print("F56-c sidebar: 10 entries (F92 +/health), order locked")
           '
           # §1 routes + hotkeys + palette prefill
-          grep -qF 'path="/files" element={<FileExplorer />' "$app"
-          grep -qF 'path="/search" element={<Search />' "$app"
+          # [F105 §2.3] the element expression is pinned VERBATIM and is now
+          # stricter than before: the route can no longer lose its
+          # FeatureBoundary fence without failing this gate (the old grep only
+          # matched the page element). Intent is unchanged - both routes are
+          # still registered, unconditionally.
+          grep -qF 'path="/files" element={fence("files", <FileExplorer />)}' "$app"
+          grep -qF 'path="/search" element={fence("search", <SearchPage />)}' "$app"
           grep -qF 'navigate("/files")' "$sh"
           grep -qF 'navigate("/search")' "$sh"
           test -f src/components/layout/CommandPalette.tsx
