@@ -17,3 +17,6 @@ test-results/
 
 # [F78] playwright screenshot output (CI uploads it as the "screenshots" artifact)
 screenshots/
+
+# [F-OBSERVATORY] per-session audit artifacts stay local; they are posted to each step PR, not committed.
+tmp/
