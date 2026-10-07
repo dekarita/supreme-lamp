@@ -16,8 +16,6 @@ import { Radio } from "lucide-react";
 import { Modal } from "@/components/primitives/Feedback";
 import { copyText } from "@/lib/clipboard";
 import { cn } from "@/lib/cn";
-import { SessionListModal } from "@/components/dvr/SessionListModal";
-import { fullDvrState, subscribeFullDvr, startFullDvr, stopFullDvr } from "@/lib/dvr/full";
 import {
   DVR_ENVELOPE_FORMAT,
   clearDvr,
@@ -41,9 +39,6 @@ export function DvrFab() {
   const { t } = useTranslation();
   const snap = useSyncExternalStore(subscribeDvr, dvrSnapshot, dvrSnapshot);
   const [open, setOpen] = useState(false);
-  const [sessionsOpen, setSessionsOpen] = useState(false);
-  const [full, setFull] = useState(fullDvrState());
-  useEffect(() => subscribeFullDvr(() => setFull(fullDvrState())), []);
   const [report, setReport] = useState<DvrReport | null>(null);
   const [copied, setCopied] = useState("");
   const [recording, setRecording] = useState(isDvrRecording());
@@ -129,7 +124,6 @@ export function DvrFab() {
         </span>
       </button>
 
-      <SessionListModal open={sessionsOpen} onClose={() => setSessionsOpen(false)} />
       <Modal
         open={open}
         title={t("dvr.title")}
@@ -186,17 +180,6 @@ export function DvrFab() {
               <span data-testid="dvr-last" className="text-[10px] text-tertiary">
                 {lastAt ? t("dvr.lastActivity") : ""}
               </span>
-            </div>
-            <div className="space-y-1 border-t border-default pt-2 text-xs">
-              <p data-testid="dvr-full-warning" className="text-warning">{t("dvr.fullWarning")}</p>
-              <button type="button" data-testid="dvr-full-toggle" aria-pressed={full.enabled}
-                onClick={() => { if (full.enabled) stopFullDvr(); else void startFullDvr(); }}
-                className="underline focus-visible:ring-2 focus-visible:ring-accent">
-                {full.enabled ? t("dvr.fullStop") : t("dvr.fullStart")}
-              </button>
-              {full.error && <p role="alert" data-testid="dvr-full-error">{full.error}</p>}
-              <button type="button" data-testid="dvr-sessions-open" className="ml-4 underline"
-                onClick={() => { setOpen(false); setSessionsOpen(true); }}>{t("dvr.sessions")}</button>
             </div>
             {copied ? (
               <p data-testid="dvr-copied" className="text-xs text-success">

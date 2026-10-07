@@ -61,8 +61,23 @@ const SI_FILE = "src/i18n/si.json";
 // mockOn, mockOff, mockHint, mockHintRead, mocksOff, readsOnly, noRequests,
 // clearLedger, copyReport, unknown, unknownBody, mockBadge + 4 x scenario.*.
 // 978 + 23 = 1001.
-const EXPECTED_FLAT_KEYS = 1022;
-const EXPECTED_FLAT_KEYS = 1010;
+//
+// [F107 / Observatory step 6] + 21 keys (`dvr.sessions` + `dvrSessions.*` x 20)
+// = 1022 on the step-6 branch.
+//
+// [step-6 DOUBLE-MERGE repair] Step 6 shipped TWICE: #173 (arena/66a13a8c) and
+// #174 (arena/fa27adb3) are two independent F107 implementations, and the
+// operator merged both. #174's branch then merged main "accept both", which
+// left this file declaring `EXPECTED_FLAT_KEYS` TWICE (1022 and 1010) - a hard
+// SyntaxError that killed the whole `gates` job at its first node step, and the
+// same resolution left BOTH catalogs unparseable (a missing comma plus duplicate
+// `dvr.sessions`/`dvr.clear` keys). Repaired per §COUNT-LOCK-AS-COMPUTED-
+// INVARIANT: the lock is a MEASUREMENT of the current catalogs, never a merge
+// side and never previous + delta. The catalogs now carry the UNION of both
+// branches' keys, verified lossless (0 keys lost vs #173's 1010, 0 vs #174's
+// 1022, 0 invented).
+// measured 2026-10-07 at HEAD e6dc5bd (post-#174 merge), = 1030
+const EXPECTED_FLAT_KEYS = 1030;
 
 // Legacy untranslated si values (byte-identical to en). Frozen deliberately:
 // operator-owned copy that predates this step (mirrorHostMatrix/*, egress.line,
