@@ -1253,6 +1253,22 @@
     "button": "Button",
     "lastClicked": "Last clicked",
     "lastResult": "Last result",
-    "liveState": "Live state"
+    "liveState": "Live state",
+    "downloadActions": "Download button-actions.json",
+    "actionsTitle": "Recent user actions (recorded)",
+    "actionsEmpty": "No button clicks recorded yet. Click buttons around the dashboard (Add site, Open in RDP, Fetch, Download, Reconnect, Preview…) to populate this table.",
+    "globalTitle": "Global clicks (auto-captured)",
+    "globalEmpty": "No clicks captured yet. Click any button anywhere in the dashboard (not on this page), then come back here.",
+    "clear": "Clear",
+    "when": "When",
+    "action": "Action",
+    "params": "Params",
+    "result": "Result",
+    "elapsed": "ms",
+    "control": "Control",
+    "route": "Route",
+    "wire": "Wire",
+    "hostPage": "Host page",
+    "handler": "Status"
   }
 }
