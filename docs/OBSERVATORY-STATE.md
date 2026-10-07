@@ -10,13 +10,23 @@
 > determination = first unchecked box below; fall back to #165's body only if this file is missing,
 > then cross-check the newest "§3 tracking-issue handoff" comment on the PR this step shipped in.
 
-**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 16:20Z by arena/fa27adb3-supreme-lamp
-**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 by arena/66a13a8c-supreme-lamp
+**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 22:55Z by arena/89b9650b-supreme-lamp (step-6 double-merge repair, PR #175)
 
-## §OPERATOR-ASSERTIONS (v7 migration; verify independently)
-- GH_PAT: operator previously reported Worker environment variable; **not used** by F107. No secret value was read or stored.
-- Pages: `GET /repos/dekarita/supreme-lamp/pages` returned 404 for this integration on 2026-10-07. Availability **unverified**, operator must confirm before F108.
-- Labels: previous sessions recorded PR/new issue writes succeed but #163/#164/#165 return 403. #169 is closed on GitHub; operator made that decision.
+## §OPERATOR-ASSERTIONS (v8; verify independently)
+- GH_PAT: operator previously reported Worker environment variable; **not used** by F107 or by this repair. No secret value was read or stored.
+- **Pages: ENABLED — the standing "unverified/required" assertion is now CORRECTED.** `GET /repos/dekarita/supreme-lamp` returns
+  `has_pages: true` and this integration holds `admin: true`; `GET /repos/.../pages` still returns 404, which is a **token-scope
+  artifact** (the Pages endpoints need a `pages: read` permission this installation lacks), NOT evidence that Pages is off.
+  Publish root is **`main` / `docs`**: `docs/.nojekyll` is tracked (that file only exists to configure a Pages site served from
+  its own folder), `docs/` is a committed static site (`index.html` → `explorer.html`, `search.html`, `archive.html`,
+  `decrypt.html`, `sw.js`, `*.json`), and there is **no `gh-pages` branch** (30 branches: `main` + 29 `arena/*`) and **no
+  Pages deploy workflow**. ⇒ **Step 7 F108 is NOT blocked on Pages.**
+  ⚠️ **Constraint F108 must respect**: because the source is a branch folder, `actions/deploy-pages` is the WRONG mechanism —
+  switching the repo to `source: workflow` would take the existing `docs/` site down. The viewer belongs at
+  `docs/replay/index.html` (served as `/replay/` under the site root), committed like every other file in `docs/`.
+- Labels: PR labels **work** (re-verified this session: `f-observatory` + `observatory` applied to PR #175 via
+  `POST /issues/175/labels`; `gh pr edit --add-label` fails on the Projects-classic deprecation, so use the REST call).
+  Plain-issue labels on #163/#164/#165 remain 403. #169 is closed; operator decision.
 
 ## Phase 1 — Immediate value
 - [x] **Step 1 — F-TESTID** · landed on `arena/ad1df050-supreme-lamp`, PR **#166**, head `5cf005a`
@@ -107,12 +117,186 @@
   · CI on code head `2892b58`: `gates` ✅ ×2 · `windows-native` ✅ ×2 · `build-ui` ✅ · `autologin-lab` ✅ ·
     `e2e-ui` ⚠️ AMBER-INHERITED (25-min self-cancel, 0 failed steps = main pattern) → **mergeable**
 - [x] **Step 6 — F107** · Full DVR v2: opt-in structural DOM diffs + 320×240 rasterized thumbnails + local IndexedDB sessions (PR **#173**, no merge by session)
-- [ ] **Step 7 — F108** · ETA 120min · Public Replay Viewer on Pages + Arena mode
+- [x] **Step 6 REPAIR — double-merge de-duplication** · `arena/89b9650b-supreme-lamp`, PR **#175** · step 6 shipped TWICE
+  (#173 `arena/66a13a8c` + #174 `arena/fa27adb3`, two independent F107 implementations, both merged); #174's in-branch
+  "accept both" resolution left main red on **all four** workflows and the tree non-compiling. #174 kept as canonical,
+  #173's browser half retired, #173's `safeRoute` privacy fix preserved as `src/lib/dvr/routeCore.js`. See the session record below.
+- [ ] **Step 7 — F108** · ETA 120min · Public Replay Viewer on Pages + Arena mode — **next actionable, NOT blocked on Pages**
+  (see §OPERATOR-ASSERTIONS: Pages is enabled and publishes `main`/`docs`, so the viewer ships as `docs/replay/index.html`;
+  do NOT add an `actions/deploy-pages` workflow). §PRE-STEP was run this session: all 8 planned paths are collision-free,
+  both envelope tags (`mcrec1:` v1 clipboard, `mcrec2:` v2 export) confirmed present, and there is now exactly **ONE** v2
+  producer (`exportCore.js`), so the viewer's reader contract is unambiguous.
 - [ ] **Step 8 — F109** · ETA 90min · Debug HUD overlay (F12-shift)
 
 ## Phase 3 — Advanced
 - [ ] **Step 9 — F110** · ETA 150min · Live Patch Protocol (module federation)
 - [ ] **Step 10 — F111** · ETA 60min · CI Inventory Gate (PR validates #163 drift)
+
+## Session 2026-10-07 22:27Z — Step 6 REPAIR (double-merge de-duplication) — **COMPLETE**, PR #175
+
+### What was found on entry (§0.3 §MAIN-BASELINE-GREEN-CHECK → **RED, all four workflows**)
+`main` at `e6dc5bd` (the #174 merge, 22:27:00Z) was red everywhere, and `e2e-ui` was **not** the familiar 25-min
+self-cancel — it died at *"Install dependencies (pnpm, frozen lockfile)"* in 13 s:
+
+| workflow | verdict on `e6dc5bd` | failing step | cause |
+|---|---|---|---|
+| `F59 build-ui` | ❌ failure (16 s) | Build single-file bundle | `pnpm install --frozen-lockfile` |
+| `e2e-ui` | ❌ failure (13 s) | Install dependencies | `pnpm install --frozen-lockfile` |
+| `launch-gates` / `gates` | ❌ failure | F48 token-less mirror gates | `src/i18n/en.json` SyntaxError → F48-10 + F48-14 |
+| `launch-gates` / `windows-native` | ❌ failure | F45 S4 Explorer file-API routes | 2/138, fx-lab timing (`server-ok.txt absent`, `missing [fx op=]`) — no `payloads/` file is touched by #174; classified flake, PR #175's own run is the evidence |
+
+### Root cause: Observatory step 6 shipped TWICE
+#173 (`arena/66a13a8c`, head `4ff03c1`) and #174 (`arena/fa27adb3`, head `b145098`) are **two independent F107
+implementations**, and the operator merged both. #174's branch then merged `main` with an *accept-both-sides*
+resolution (`b145098`), which put four damage classes on main at once:
+
+1. `package.json` declared `fake-indexeddb` **twice** (`^6.2.5` + `6.2.4`); `pnpm-lock.yaml` carried both resolutions
+   under one importer key. **Duplicate JSON keys parse fine** (last wins) → no in-repo gate could see it; the slowest
+   possible detector (`--frozen-lockfile`, minutes into a runner job) was the one that did.
+2. `src/i18n/{en,si}.json` were **not valid JSON**: side B's `dvr` tail concatenated onto side A's block with no comma,
+   plus duplicate `dvr.sessions` / `dvr.clear`.
+3. `tests/f-i18n-parity.test.js` declared `const EXPECTED_FLAT_KEYS` **twice** (1022 + 1010) — a count lock resolved by
+   keeping both sides is a hard SyntaxError, and it killed the whole `gates` node lane at once.
+4. `src/lib/dvr/{export,mutations,storage}.ts` had side B's chunk inserted **before the file's closing brace**
+   (tsc `TS1005` ×3); `SessionListModal.tsx` carried two components; `Collector.tsx` two cards + two `dvrSessionsOpen`
+   states + two modal mounts; `dvr-sessions-open` existed in two files (F-TESTID-d). Two incompatible DVRs in one tree —
+   `listSessions(db)` vs `listSessions(now)` cannot share a module.
+
+### The repair (one implementation survives; nothing of value is lost)
+- **#174 is canonical** — it is what `main.tsx` wires (`installDvrFull` behind `VITE_DVR_ENABLED` + `VITE_F107_FULL_DVR`),
+  what this file's roadmap checkbox describes (four plain-JS cores the Node gate executes), and what step 7 F108 is
+  specced against (`validateBundleV2`, `.mcrec v2` export). Its files were restored **byte-for-byte from `4cbadb2`**
+  (`git checkout 4cbadb2 -- <9 paths>`), never hand-retyped.
+- **#173's browser half retired**: `full.ts` deleted; `export.ts`, `mutations.ts`, `storage.ts`, `screenshots.ts`,
+  `SessionListModal.tsx`, `DvrFab.tsx`, `Collector.tsx` restored to the surviving variant.
+- **#173's privacy fix KEPT, not buried with it**: `safeRoute` (strip `?token=` from a HashRouter route before it is
+  recorded) now lives in its own pure core **`src/lib/dvr/routeCore.js`** (+`.d.ts`), still called at the read site in
+  `dvr.ts` (`currentRoute()`), so it covers the v1 clipboard ring **and** the v2 timeline that rides it. The rest of
+  `full-core.js` is retired **on purpose**: `buildFullBundle` was a SECOND `.mcrec` v2 producer, and two shapes under one
+  envelope tag is a reader hazard for F108.
+- **`html2canvas` removed from `dependencies`** — its only consumer was the retired rasterizer. The surviving pipeline is
+  SVG foreignObject → canvas with the documented `setShotRasterizer` seam. `tests/f57-explorer-ops.test.js`'s freeze pin
+  was updated **in the same commit** and now asserts the *absence*, so a re-addition needs a cited consumer.
+- **Lockfiles REGENERATED, never hand-merged** (§LOCK-FILE-REGENERATION-DISCIPLINE): `pnpm install --lockfile-only` +
+  `npm install --package-lock-only`. Both agree with `package.json` specifier-for-specifier, and MH-b now locks that.
+- **Catalogs repaired to the UNION, verified lossless**: **1030** keys each — 0 lost vs #173's 1010, 0 lost vs #174's
+  1022, 0 invented; the `dvr` namespace is byte-identical to main's pre-damage version (diffed, not assumed).
+- **Count lock re-MEASURED, never incremented** (§COUNT-LOCK-AS-COMPUTED-INVARIANT): `EXPECTED_FLAT_KEYS = 1030`, ONE
+  declaration, with `// measured 2026-10-07 at HEAD e6dc5bd … = 1030` above it.
+
+### Gates added: 1 file / 5 rules — `tests/merge-hygiene.test.js` (auto-run by `node --test tests/*.test.js`)
+- **MH-a** no duplicate key anywhere in `package.json` — a raw-text scanner, because `JSON.parse` hides last-wins
+  duplicates — + literal pins (`fake-indexeddb` = `6.2.4`, `html2canvas` absent, `packageManager` = `pnpm@9.15.9`).
+- **MH-b** BOTH lockfiles agree with `package.json` specifier-for-specifier, and no orphan `fake-indexeddb@6.2.5`
+  resolution survives → a stale lock now fails in the **fast node lane**, not minutes into a runner job.
+- **MH-c** both catalogs parse, no duplicate key at any depth, and the count lock is declared **exactly once** and equals
+  the measured size (read from the parity gate — a second copy of the number in this file would be its own drift hazard).
+- **MH-d** the retired variant stays retired: `full.ts`/`full-core.*` absent, one `listSessions`, one `saveSession`, no
+  `ghrdp-dvr-v2`, one `SessionListModal` (+ one default export), one Collector state/card/mount, one
+  `dvr-sessions-open` repo-wide (in `Collector.tsx`, with the FAB keeping the distinct `dvr-sessions-button`), and no
+  second `buildFullBundle`.
+- **MH-e** the sanitizer survived **and is still called**: behaviour pinned with literals
+  (`#/collector?token=SECRET` → `#/collector`, `SAFE_ROUTE_MAX_CHARS` = `256`, a 400-char route cut to 256) plus the
+  import and the call site asserted **separately**, so a refactor cannot keep one and drop the other.
+
+### v8 session fields
+- §OWN-PR-CONFLICT-preemption: rebased on latest `main` before pushing (branch base = `e6dc5bd` = current head; no rebase
+  needed). Conflict surface vs open PRs: **0 files** — no open PR touches `src/lib/dvr/*`, the catalogs' `dvr` namespace,
+  `package.json` or `Collector.tsx`'s DVR card. #175 is independent of every open PR and should merge FIRST.
+- §FILE-PATH-COLLISIONS: **none** for this repair. New paths created: `src/lib/dvr/routeCore.js`, `routeCore.d.ts`,
+  `tests/merge-hygiene.test.js` (all verified absent from `main` via `git ls-files` first). Paths DELETED: `full.ts`,
+  `full-core.js`, `full-core.d.ts`.
+- §LITERAL-PINS-FOR-CONSTANTS: **7** constants pinned literally (`6.2.4`, `pnpm@9.15.9`, `1030`, `256`,
+  `#/collector?token=SECRET` → `#/collector`, absence of `html2canvas`, absence of `ghrdp-dvr-v2`).
+- §UI-ACCUMULATOR-FILES-TOUCHED: `src/pages/Collector.tsx` (section-insert → **de-duplicated to one card**, see the new
+  registry below) and `src/i18n/{en,si}.json` (namespace → union). `src/App.tsx` NOT touched.
+- §LOCK-FILE-REGEN: **yes** — both `pnpm-lock.yaml` and `package-lock.json`, regenerated not merged.
+- §FALSIFICATION-BUDGET-RATIO: falsification ≈ 12 min of ≈ 45 min total = **≈27%** (just under the 30-40% target; the
+  over-spend was diagnosis — four independent damage classes had to be identified before any mutation could be written).
+- §FALSIFY-3: **9/9 caught, 0 missed** — duplicate dep re-added · lock specifier drifted · `en.json` comma removed ·
+  `si.json` key duplicated · count lock re-duplicated · `full.ts` resurrected · testid re-duplicated into the FAB ·
+  `safeRoute` call site dropped **while keeping the import** (the loophole class MH-e exists for) · `SAFE_ROUTE_MAX_CHARS`
+  drifted 256→512 (caught by the literal pin).
+- §VACUITY-PROBES: MH-d's "files absent" and MH-b's "no orphan resolution" are absence-assertions, so each was probed by
+  re-creating the thing it denies (M6 resurrected `full.ts`; M1/M2 re-added the dep and the stale specifier) — all failed
+  when the damage was present, i.e. none is vacuous.
+- prompt-staleness-corrections: **2** — (a) the prompt called step 6 "🟡 PR #174 (conflicts resolved … then merged)":
+  #174 was **already MERGED** at 22:27:00Z, 27 s before this session's first command; (b) §OPERATOR-ASSERTIONS'
+  "GitHub Pages … REQUIRED for step 7 / unverified" is **wrong in the blocking direction** — Pages is enabled, so step 7
+  needs no blocker sub-issue and no §WHILE-WAITING fall-through to step 9.
+- pre-step-11-checks: **all pass** (run for step 7, recorded below, since step 7 was the prompted step and the repair is
+  its precondition) · main-baseline-on-entry: **RED-repaired** · inherited-red-repairs: **4 damage classes / 4 workflows**
+- spec-drift: **3** (step 7): `actions/deploy-pages` is unusable with a branch-folder Pages source; the viewer artifact
+  must be committed under `docs/`, not deployed by a workflow; and `vite.config.ts` should NOT gain a second entry (it is
+  pinned by `build-ui.yml`'s path filter and by F59's single-file contract — a separate config or a standalone builder is
+  the safe route).
+- primitive-audit: ✓ (`exportCore.validateBundleV2`, `dvr-core.decodeEnvelope`, `routeCore.safeRoute`, the `*Core.js` +
+  hand-written `.d.ts` convention, the "plain-JS core the Node gate EXECUTES" pattern) — 0 replaced.
+- secret-enum-locations-checked: **0 needed** (no credential in this repair; nothing read, stored or added).
+- arch-feasibility: **verified** (Pages publish path derived from tracked evidence: `docs/.nojekyll` + committed `docs/`
+  site + no `gh-pages` branch + no deploy workflow).
+- security-remediation: **clear, and one remediation PRESERVED** — the `?token=` route leak fixed by #173 survives as
+  `routeCore.safeRoute`, pinned behaviourally and at its call site (MH-e). No new endpoint, no upload, no storage.
+- ci-pins-detected: **2**, both updated in this same PR (F57's dependency freeze; the i18n count lock) · ci-pins-updated-same-pr: **2**
+- non-regress-proofs: **7** — `pnpm install --frozen-lockfile` PASS (the failing CI step) · tsc 0 (was TS1005 ×3) ·
+  node **674/674** (was 652/656 + SyntaxError) · vitest **1089/1089** (83 files) · vite build **1,068.26 kB** ·
+  regression-ids **219/219** + fx-ids + no-neon-green + bottom-bar PASS · the extracted `launch-gates` **F48** step PASS.
+- lab-discovered-prod-bugs: n/a (no lab run this session) · shipped-patterns-added: **2** · cross-session-learning-added: **3**
+- merge-order: **independent — merge FIRST** · blockers-created: **none** · labels-applied: PR (`f-observatory`, `observatory`)
+- next-actionable-step: **7 (F108)**, unblocked, with its §PRE-STEP already run.
+
+### §PRE-STEP for step 7 F108 (run this session so the next one can execute directly)
+1. §SPEC-REALITY: **3 drifts** (above). 2. §INVENTORY-RE-DERIVE: both envelope tags confirmed in source —
+   `mcrec1:` (step 3 clipboard, `src/lib/dvr-core.js`) and `mcrec2:` (step 6 export, `src/lib/dvr/exportCore.js`);
+   after this repair there is exactly **ONE** v2 producer, so the viewer needs one v2 reader (`validateBundleV2`) + the v1
+   `decodeEnvelope` path. Hidden class: v2 bundles carry base64 PNG thumbs — a public viewer must not leak them by URL.
+3. §SECRET-ENUM: N/A (static site, no credential; Pages publishes with GitHub's own token).
+4. §ARCH-FEASIBILITY: **verified** — publish path `docs/replay/index.html`; `docs/.nojekyll` already disables Jekyll, so a
+   subdirectory with its own `index.html` serves as-is.
+5. §SECURITY-REMEDIATION-CHECK: clear (no endpoint, no upload). 6. §CI-PIN-DETECTION: no existing workflow mentions
+   `replay`, `docs/replay` or a Pages deploy → a new build/verify step collides with nothing; note `build-ui.yml`'s path
+   filter includes `vite.config.ts` and `scripts/**`.
+7. §FACT-REFRESH: PR labels work (REST), Pages enabled. 8. §PRIMITIVE-AUDIT: ✓ above.
+9. §MERGE-STATE-CHECK: steps 1-6 merged; #175 (this repair) must merge before F108 can build.
+10. §MAIN-BASELINE-CHECK: RED on entry → repaired here.
+11. §FILE-PATH-COLLISION-CHECK: all 8 planned paths **0 tracked files** — `src/replay/`, `docs/REPLAY.md`, `docs/replay/`,
+   `.github/workflows/replay-viewer.yml`, `tests/f108-replay-core.test.js`, `src/tests/smoke/f108-replay-dom.test.tsx`,
+   `tests/e2e/f108-replay-full.spec.ts`, `vite.replay.config.ts`. No collision, no rename needed.
+
+## §UI-ACCUMULATOR-FILES (v8)
+Files that grow by one block per step. The double merge is what happens when two sessions append to one of these without
+markers, so the strategy column is now normative.
+
+| file | growth pattern | last touching step | merge conflict strategy |
+|---|---|---|---|
+| `docs/OBSERVATORY-STATE.md` | one session record + checkbox line per step | step-6 repair (#175) | **keep both blocks**; never rewrite another step's record |
+| `src/i18n/en.json` / `si.json` | one namespace per step (`dvr.*`, `dvrSessions.*`, `featureLab.*`, `boundary.*`) | step-6 repair (#175) | **keep both namespaces**, then RE-MEASURE the count lock; a missing comma here is a hard SyntaxError that kills the whole node lane |
+| `src/pages/Collector.tsx` | one `<Card>` per step, appended before the closing `</div>` | step-6 repair (#175) — **de-duplicated from two DVR cards to one** | **append, never interleave**; one card + one state + one modal mount per feature |
+| `src/App.tsx` | one fenced route per step | step 5 (F106 lab routes) | append inside `<Routes>`; **3 artifacts pin it** (`launch-gates` F56-c `grep -qF`, `f76-sidebar-search`, `f105-feature-registry` 13 `fence()` calls) |
+| `package.json` + both lockfiles | one dependency per step | step-6 repair (#175) | **NEVER accept both sides**; regenerate (`pnpm install --lockfile-only`) — MH-a/MH-b now fail on a duplicate key or a stale lock |
+| `tests/f-i18n-parity.test.js` | the count lock moves with every catalog edit | step-6 repair (#175) | one `const EXPECTED_FLAT_KEYS` declaration, value = measured count |
+
+Recommended from now on: wrap a step's appended block in `<!-- F108-begin --> … <!-- F108-end -->` (docs) or a
+`// [F108 §n] begin|end` comment pair (source), so a merge is append-vs-append and resolvable by "accept both".
+
+## §FILE-PATH-COLLISION-REGISTRY (v8)
+Every path a session created or deleted, so a future "new file" cannot silently replace or orphan an existing one.
+
+| step / PR | created | deleted / retired |
+|---|---|---|
+| 3 F-DVR-LITE (#171) | `src/lib/dvr-core.js` (+`.d.ts`), `src/lib/dvr.ts`, `src/components/domain/DvrFab.tsx`, `tests/f-dvr-lite.test.js`, `src/tests/smoke/f-dvr-lite.test.tsx` | — |
+| 4 F105 (#170) | `src/lib/feature-registry.json`, `src/lib/featureRegistry.ts`, `src/lib/featureBoundary.ts`, `src/components/primitives/FeatureBoundary.tsx`, 2 gates | — |
+| 5 F106 (#172) | `src/components/lab/{LabRoute,FeatureLab,LabControls}.tsx`, `src/lib/lab/{labCore.js,mockBackend.ts,labStore.ts,labFlags.ts}`, 2 gates | — |
+| 6 F107 (#174, canonical) | `src/lib/dvr/{mutationCore,screenshotCore,storageCore,exportCore}.js` (+`.d.ts`), `session.ts`, `src/components/dvr/SessionListModal.tsx`, 2 gates | — |
+| 6 F107 (#173, **RETIRED by #175**) | — | `src/lib/dvr/full.ts`, `src/lib/dvr/full-core.js`, `full-core.d.ts` (superseded by #174's `session.ts` + cores; **do not resurrect** — MH-d fails) |
+| 6 REPAIR (#175) | `src/lib/dvr/routeCore.js` (+`.d.ts`), `tests/merge-hygiene.test.js` | the three above; `html2canvas` dependency |
+| 7 F108 (planned, verified collision-free) | `src/replay/*`, `docs/replay/index.html`, `docs/REPLAY.md`, `.github/workflows/replay-viewer.yml`, 2-3 gates | — |
+
+## §LOCK-FILE-REGENERATION-LOG (v8)
+| date | lock | why | command |
+|---|---|---|---|
+| 2026-10-07 | `pnpm-lock.yaml` + `package-lock.json` | the #174 merge hand-merged both (duplicate `fake-indexeddb` key + two resolutions); `--frozen-lockfile` failed on `main` in two workflows | `pnpm install --lockfile-only` + `npm install --package-lock-only` |
+| 2026-10-07 | both | `html2canvas` retired with the duplicate step-6 variant (no consumer left) | same two commands |
 
 ## Step 4 record — F105 Feature Registry + 11 FeatureBoundaries (2026-10-07, `arena/75bc347b-supreme-lamp`)
 Shipped, not just fenced: the registry is the machine-readable form of #163, and every DAG edge carries a
@@ -237,9 +421,26 @@ consumer of the PNG thumbs.
 - **The `.mcrec` versions are closed tags**: `mcrec1:` is the FAB's clipboard envelope (step 3, pinned),
   `mcrec2:` is the Full DVR export envelope (step 6). `validateBundleV2` refuses anything with
   `version !== 2`; a step that bumps the bundle shape must move `DVR_BUNDLE_V2_VERSION` AND the gate.
-- **The count lock is now 1022** (`tests/f-i18n-parity.test.js`): 1001 + this step's 21 keys
-  (`dvr.sessions` + `dvrSessions.*` × 20). §LOCK-ARITHMETIC held: measured from the CURRENT catalogs,
-  never incremented. F-DVR-k and F107-g both cross-check the lock against the real count.
+  **Since #175 there is exactly ONE v2 producer** (`src/lib/dvr/exportCore.js`): the retired #173 variant's
+  `buildFullBundle` also claimed `version: 2` with a different shape, which would have made F108's reader
+  contract ambiguous. MH-d pins the absence of a second producer.
+- **The count lock is now 1030** (`tests/f-i18n-parity.test.js`, ONE declaration): the union of the two step-6
+  branches (#173's 1010 + #174's 1022 → 1030 distinct keys, verified lossless both directions).
+  §COUNT-LOCK-AS-COMPUTED-INVARIANT held: measured from the CURRENT catalogs, never incremented, never
+  "previous lock + delta". F-DVR-k reads the constant by regex, MH-c asserts it is declared exactly once and
+  equals the measured size — so a duplicated lock is now a gate failure, not a SyntaxError in CI.
+- **There is ONE Full DVR implementation** (#174's: `session.ts` + `mutationCore`/`screenshotCore`/`storageCore`/
+  `exportCore` + `mutations.ts`/`screenshots.ts`/`storage.ts`/`export.ts`, IndexedDB `ghrdp-dvr` v1). The #173
+  variant (`full.ts` + `full-core.js`, IndexedDB `ghrdp-dvr-v2`) is **retired**; `tests/merge-hygiene.test.js`
+  MH-d fails if its files come back. Its one surviving contribution is the route sanitizer, now
+  **`src/lib/dvr/routeCore.js` → `safeRoute()`**, called from `dvr.ts`'s `currentRoute()` (so v1 and v2 both
+  record query-stripped routes) and pinned behaviourally + at the call site by MH-e.
+- **`html2canvas` is no longer a dependency.** It was admitted as the single F57 exception for the retired
+  variant's rasterizer. The surviving screenshot pipeline is SVG foreignObject → canvas → `toDataURL("image/png")`
+  with the documented `setShotRasterizer` seam and an honest-failure branch. If F108 finds the foreignObject
+  pipeline cannot rasterize the real dashboard (external/cross-origin assets taint the canvas), that seam is
+  where an html2canvas-backed rasterizer goes — and the dependency must come back with a cited consumer,
+  because F57 now asserts its ABSENCE.
 - **The DVR's IndexedDB is `ghrdp-dvr` v1** (stores `sessions`/`shots`; shot keys `<sessionId>/<seq>`).
   `fake-indexeddb` is a devDependency used ONLY by the DOM gate — the browser never ships it.
 
@@ -286,10 +487,19 @@ consumer of the PNG thumbs.
 | `dd2ed68` + step 5 branch (local evidence, pre-CI) | node 660/660, lock 1001, i18n parity green | - | - | - |
 | `6f1c194` (#172 head, step 5 session, post-watch) | GREEN ×2 (push + PR) | GREEN ×2 | GREEN (`build-ui-prebuilt`) | AMBER-INHERITED (self-cancel 12:48:55Z, 1519 s, 0 failed steps) |
 | `8ee3b464` (#172 MERGE commit = main at step 6 entry, 16:00Z) | **GREEN** (run 37624201247, 12:52Z) | GREEN (same run) | GREEN | AMBER-INHERITED (`cancelled` — the unchanged 25-min self-cancel pattern) |
+| `30bd4d4` (#173 MERGE commit, 22:15Z) | GREEN (37695006738) | GREEN | GREEN (37695006787) | in_progress at the time #174 merged |
+| **`e6dc5bd` (#174 MERGE commit = main at this session's entry, 22:27Z)** | ❌ **RED-NEW** — `gates` failed at "F48 token-less mirror gates" (`src/i18n/en.json` SyntaxError → F48-10 + F48-14); `windows-native` ❌ at F45 S4 (2/138, fx-lab timing) | ❌ **RED-NEW** | ❌ **RED-NEW** — `pnpm install --frozen-lockfile` (16 s) | ❌ **RED-NEW** — the SAME frozen-lockfile install (13 s), **not** the 25-min self-cancel |
+| `d8aba1f` (#175, this repair) — LOCAL evidence | node **674/674** · extracted F48 step **PASS** | n/a locally (no Windows) | vite build **1,068.26 kB** · regression-ids 219/219 · fx-ids/no-neon-green/bottom-bar PASS · `--frozen-lockfile` PASS | vitest **1089/1089** (83 files) · tsc 0 |
 
 **§4.2 arrival pattern (unchanged)**: `e2e-ui` cancels itself at `timeout-minutes: 25` with **zero failed
 steps** - acceptable for merge until F111 re-plans that job; after a step lands, the baseline is
 re-measured from the newest `push:main` runs. Only **RED-NEW** blocks.
+
+**#175 COROLLARY — read the FAILURE MODE, not just the colour.** On `e6dc5bd` `e2e-ui` was `failure` in 13 s
+with a *named* failed step ("Install dependencies (pnpm, frozen lockfile)"). That is NOT the inherited
+25-min/zero-failed-steps pattern and must never be classified as AMBER-INHERITED: a fast failure with a named
+step is RED-NEW until proven otherwise. Discriminator: duration < 2 min **and** ≥1 failed step ⇒ RED-NEW;
+duration ≈ 25 min **and** 0 failed steps ⇒ inherited self-cancel.
 
 ## §CI-GATE-BRITTLENESS inventory
 
@@ -337,12 +547,31 @@ operator once this PR lands.
    (`mcrec1:`) must keep decoding through step 3's `decodeEnvelope`. The Replay Viewer is the first real
    consumer of the PNG thumbs - jsdom could only prove the seam + honest-failure, so the first browser-render
    test of the SVG-foreignObject pipeline happens there (operator-visible thumbs = the proof).
+   **#175 UPDATE — three things F108 must know before it writes a line**: (a) there is now exactly ONE v2
+   producer (`exportCore.js`), so one reader is enough; (b) **Pages publishes `main`/`docs`**, therefore the
+   viewer ships as a committed `docs/replay/index.html` and **must not** add an `actions/deploy-pages`
+   workflow (switching the Pages source to `workflow` would take the existing `docs/` site down); (c) a public
+   viewer renders base64 PNG thumbs that may contain private pixels — the load path must stay a local
+   `File`/`FileReader` (or an explicit operator paste), never a URL-fetchable bundle, or a `.mcrec` becomes a
+   public leak. All 8 planned paths are collision-free (§FILE-PATH-COLLISION-REGISTRY).
 9. **Registry storage-key audit (step 4 handoff 2) is still open**: `feature-registry.json` carries no
    storage keys; the 14 `localStorage` keys of #163 §3.8 + the `ghrdp-dvr` IndexedDB need a cited audit.
    F107 deliberately did not widen the registry schema (that would have moved F105's gates); F109/F111 own it.
 10. **F109 owns the SessionListModal's unfenced mount**: the modal renders from `DvrFab` (chrome, unfenced by
     design) and from the Collector page (fenced). A crash inside it while opened from the FAB still blanks the
     app until F109 fences the chrome.
+11. **The surviving Full DVR has NO runtime off switch** (new with #175). `installDvrFull()` runs automatically
+    from `main.tsx` behind two BUILD-time kill flags (`VITE_DVR_ENABLED`, `VITE_F107_FULL_DVR`); the retired
+    #173 variant had a FAB toggle (`dvr-full-toggle` + `dvr.fullWarning`/`fullStart`/`fullStop`, whose i18n keys
+    still exist in both catalogs and are now unreferenced). An operator who wants capture off must rebuild.
+    F109's HUD is the natural home for a runtime stop; whoever adds it should reuse those three keys rather
+    than inventing new ones (the count lock would move again).
+12. **The roadmap can schedule the SAME step twice, and nothing detects it** (process hazard, new with #175).
+    Two sessions ran step 6 in parallel (`arena/66a13a8c` → #173, `arena/fa27adb3` → #174), both titled
+    "F107: Full DVR v2 …", and both were merged 12 minutes apart. Neither PR's CI could see the other: each was
+    green on its own base. F111 (CI Inventory Gate) is the step that should fail a PR whose title/feature id
+    matches an already-merged one, or at minimum label it `duplicate-step` for the operator. Until then the
+    operator's pre-merge check is: `gh pr list --state open --search "F107 in:title"`.
 
 ## §Fence-coverage-gap tracker (v5)
 
@@ -366,6 +595,7 @@ description, not from invented memory), with the target fencing step:
 | step 3 (option d) | 4 | 22/22 | n/a (pre-baseline-table) | ~95/120 |
 | step 5 F106 | 1 | 18/18 | RED-repaired (lock drift) | ~25/120 |
 | **step 6 F107** | **3** (constant-drift class ×2 + triage call-site floor) | **16/16** | GREEN | ~65/120 |
+| **step 6 REPAIR (#175)** | **1** (MH-e: an import-only pin would have passed while the `safeRoute` **call site** was dropped — the import and the call are now asserted separately) | **9/9** | **RED-repaired (all 4 workflows)** | ~45/120 |
 
 Trend: gate quality is holding (every session finds at least one real hole in its OWN gate before push);
 main-baseline-red frequency is 1/3 sessions (step 5), and the §LOCK-ARITHMETIC rule introduced after it has
@@ -381,11 +611,31 @@ held since (step 6 measured 1001 + 21, never incremented).
    ring entries for later tests. `__reset*ForTests` clears state, never listeners.
 3. **A behavioural assertion that reads the same constant it would mutate is blind to constant drift**
    (step 6, M4/M5): always pin spec constants as literals beside their behaviour tests.
+4. **Duplicate JSON keys are invisible to every parse-based gate** (#175). `JSON.parse` keeps the last one and
+   says nothing, so `package.json` shipped to main declaring `fake-indexeddb` twice and the only thing that
+   noticed was `pnpm install --frozen-lockfile` — the slowest, most expensive detector in the repo. Scan the
+   RAW TEXT for duplicate keys (MH-a/MH-c) and assert the lockfiles agree with `package.json`
+   specifier-for-specifier (MH-b), so the failure lands in the fast node lane with the file name in it.
+5. **"Accept both sides" is a valid strategy for prose and a fatal one for code** (#175). It worked for the
+   docs and for the i18n key *union*; it produced invalid JSON in the catalogs, a doubly-declared count lock,
+   three files whose appended chunk landed *before* the closing brace, two components with one name, and two
+   functions with one name and incompatible signatures. Rule for the next merge: union the DATA, choose ONE
+   side of the CODE, and prove the choice by running tsc + the node lane + vitest before pushing.
+6. **A retired implementation's fixes must be harvested, not deleted with it** (#175). The duplicate step-6
+   variant carried the only `?token=` route sanitizer in the tree; retiring the variant wholesale would have
+   silently re-opened a persisted-credential leak. Before deleting a superseded file, grep it for anything a
+   *security* or *privacy* gate pins, and give that piece a home in the surviving design (`routeCore.js`).
+7. **Read the failure MODE, not the colour** (#175). `e2e-ui` being red is normally the inherited 25-min
+   self-cancel; on `e6dc5bd` it was `failure` in 13 s with a named step. Duration + failed-step count is the
+   discriminator (see the §4.2 corollary), and mis-classifying it as AMBER-INHERITED would have left main red.
 
-## §Closable-blockers (v7)
-- **#169 (F-DVR architecture decision)**: option (d) shipped in step 3 (#171) and extended by step 6 (#173);
-  the issue was CLOSABLE since step 3 — operator decision unchanged.
-- No new blockers created by step 6.
+## §Closable-blockers (v8)
+- **#169 (F-DVR architecture decision)**: option (d) shipped in step 3 (#171) and extended by step 6 (#174);
+  closed by the operator. No further action.
+- **The "GitHub Pages must be enabled before step 7" blocker is DISSOLVED, not closed by an operator**: Pages
+  was already enabled (#175 verified `has_pages: true` + derived the publish root from tracked evidence).
+  Three sessions carried it as an open operator item; it never was one. Step 7 needs no sub-issue.
+- No new blockers created by #175. The only thing standing between `main` and a readable CI signal is #175 itself.
 
 ## §Budget-actual-tracking (v5)
 
@@ -398,8 +648,33 @@ held since (step 6 measured 1001 + 21, never incremented).
 | 4 F105 | 90 min | ~? | - | PR #170 (not merged) |
 | **5 F106** | 120 min | **~25 min** | -75 | PR #172; the falsification pass (18 mutations + 5 vacuity probes) and the extra `/api/f92-selftest` root-cause dig are the two deliberate over-spends |
 | **6 F107** | 90 min | **~65 min** | -25 | PR #173; the delta is the 16-mutation falsification pass (3 first-pass loopholes pinned same-session) + the fake-indexeddb bring-up |
+| **6 REPAIR** | 0 min (unscheduled — main was red on entry) | **~45 min** | +45 | PR #175; ~20 min of it was DIAGNOSIS (four independent damage classes, two of which no in-repo gate could see), ~12 min falsification (9 mutations), ~13 min repair + verification. Bought back every later session's CI signal |
 
-## §Merge-order-graph (v7)
+## §Merge-order-graph (v8)
+
+```
+main (e6dc5bd = #174 merge — RED on all four workflows; #175 repairs it)
+
+steps 1-6 MERGED: #166 · #167 · #168 · #171 · #170 · #172 · #173 · #174
+                  (step 6 shipped twice: #173 AND #174 — see handoff #12)
+
+#175  step-6 REPAIR  ← MERGE THIS FIRST, it is independent of every open PR
+      touches: package.json + BOTH lockfiles (regenerated), src/i18n/{en,si}.json (union, 1030),
+               src/lib/dvr/{export,mutations,storage,screenshots}.ts, src/lib/dvr.ts,
+               src/components/{domain/DvrFab,dvr/SessionListModal}.tsx, src/pages/Collector.tsx,
+               tests/{f107-dvr-full,f-i18n-parity,f57-explorer-ops}.test.js,
+               src/tests/smoke/f107-dvr-full.test.tsx
+      creates: src/lib/dvr/routeCore.{js,d.ts}, tests/merge-hygiene.test.js
+      deletes: src/lib/dvr/full.ts, full-core.{js,d.ts}
+      Nothing else can be trusted until this lands: main cannot install, compile, build or gate.
+
+next: step 7 F108 (HARD-depends on #175 — the tree must compile; SOFT-depends on nothing else:
+      Pages is ENABLED and publishes main/docs, so no operator action is needed. Design constraint:
+      ship docs/replay/index.html, do NOT add actions/deploy-pages)
+      · step 8 F109 (after 1-7; now also owns handoffs #10, #11) · steps 9/10 independent
+```
+
+### Previous graph (v7, for the record)
 
 ```
 main (8ee3b464 = #172 merge, GREEN; + 8b52e59 status-update docs commit)
@@ -510,8 +785,34 @@ the 120min/session cap and needs re-scope. Pages is still operator-manual before
 8. **Spec constants need literal drift locks** (step 6, loopholes M4/M5/M11). A behavioural test that reads
    the same constant a mutation moves can never see the drift - pin the literal (`5_000_000`, `30`) beside
    the behaviour, the way F-DVR-a pins `30_000`/`200`.
+9. **Restore, don't retype** (#175). When a merge mangles files that existed intact on one side, recover them
+   with `git checkout <that-side's-tip> -- <paths>` and prove the result with the suites. Nine files came back
+   byte-for-byte from `4cbadb2` in one command; hand-editing them would have introduced a third variant.
+10. **Gate the ABSENCE of what you retired** (#175). Deleting a duplicate implementation is not enough — the
+    next merge can put it straight back. MH-d asserts the retired files do not exist, that the retired DB name
+    (`ghrdp-dvr-v2`) and the second bundle builder (`buildFullBundle`) appear nowhere, and F57 now asserts
+    `html2canvas` is ABSENT from `package.json`. An absence-pin turns "we chose one" into something CI enforces.
 
-## §Prompt-staleness-findings (v7)
+## §Prompt-staleness-findings (v8)
+
+**Step-6 REPAIR session (2026-10-07 22:27Z, v8 prompt)**: **TWO corrections, one of them load-bearing.**
+1. The prompt's roadmap said step 6 was "🟡 PR #174 (conflicts resolved by operator or next session, then
+   merged)". **#174 was already MERGED** at 22:27:00Z — 27 seconds before this session's first command — so
+   §MERGE-CONFLICT-ESCALATION-SELF had no subject: there was no open own-PR to rebase. Progress at entry was
+   therefore 6/10 (60%) as the prompt computed, but the *reason* the next step could not start was different
+   from the one the prompt predicted: not an unmerged PR, but a **red main** caused by that very merge.
+2. §OPERATOR-ASSERTIONS said GitHub Pages availability was unverified and "REQUIRED for step 7", and §1
+   instructed: if Pages is not enabled → create a blocker sub-issue and fall through to step 9 F110.
+   **Pages IS enabled** (`has_pages: true`, this integration has `admin: true`), so the fall-through was
+   unnecessary and no blocker sub-issue was created. The 404 that previous sessions recorded from
+   `GET /repos/.../pages` is a **token-scope artifact** (the Pages endpoints need a `pages: read` permission
+   this installation lacks) — three sessions nearly made a decision on it. Evidence for the publish root is
+   in §OPERATOR-ASSERTIONS above (`docs/.nojekyll` + committed `docs/` site + no `gh-pages` branch + no
+   deploy workflow), and it changes F108's DESIGN, not just its go/no-go: the viewer must be committed under
+   `docs/replay/`, and an `actions/deploy-pages` workflow would break the existing site.
+3. Not a staleness item but worth recording: the prompt's §CURRENT-ROADMAP-STATUS listed "Step 6 F107 Full DVR:
+   🟡 PR #174" while the state file's own step-6 checkbox said "PR **#173**". Both were true — that is the
+   double merge. Neither document contained the word "duplicate", which is why handoff #12 now exists.
 
 **Step 6 session (2026-10-07 16:00Z, v7 prompt)**: ONE correction. The prompt claimed step 5 F106 PR #172
 was "🟡 OPEN, awaiting operator merge"; GitHub showed it **MERGED** at 12:52:40Z (merge commit `8ee3b464`,
