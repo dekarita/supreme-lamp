@@ -118,6 +118,7 @@ export function PrimaryActions() {
         </div>
         <div className="flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-2">
           <Button
+            data-testid="overview-auto-login"
             id="btnWinAuto"
             variant="primary"
             size="lg"
@@ -131,6 +132,7 @@ export function PrimaryActions() {
             {t("actions.autoLogin")}
           </Button>
           <Button
+            data-testid="overview-web-desktop"
             id="btnWebDesk"
             variant="outline"
             size="lg"
@@ -148,6 +150,7 @@ export function PrimaryActions() {
             {t("actions.webDesktop")}
           </Button>
           <Button
+            data-testid="overview-fix-reconnect"
             id="btnFixReconnect"
             variant="danger"
             size="lg"
@@ -284,7 +287,7 @@ export function PrimaryActions() {
           <code id="recoveryCmdkey" className="font-mono text-xs bg-sunken border border-default rounded px-2 py-1">
             {"cmdkey /generic:TERMSRV/" + (fqdn || "<fqdn>") + " /user:" + (user || "<user>") + " /pass"}
           </code>
-          <CopyLink value={() => "cmdkey /generic:TERMSRV/" + fqdn + " /user:" + user + " /pass"} />
+          <CopyLink value={() => "cmdkey /generic:TERMSRV/" + fqdn + " /user:" + user + " /pass"} data-testid="overview-copy-cmdkey" />
         </span>
       </div>
 

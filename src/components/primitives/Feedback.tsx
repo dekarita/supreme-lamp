@@ -99,7 +99,7 @@ export function Modal({
           <h2 id={titleId} className="text-base font-semibold text-primary">
             {title}
           </h2>
-          <button type="button" onClick={onClose} aria-label="Close" className="text-tertiary hover:text-primary focus-visible:ring-2 focus-visible:ring-accent rounded">
+          <button type="button" data-testid="modal-close" onClick={onClose} aria-label="Close" className="text-tertiary hover:text-primary focus-visible:ring-2 focus-visible:ring-accent rounded">
             <X className="size-4" aria-hidden />
           </button>
         </div>
@@ -113,6 +113,7 @@ export function Modal({
             {secondary && (
               <button
                 type="button"
+                data-testid="modal-secondary"
                 onClick={secondary.onClick}
                 className="px-3 py-2 text-sm rounded-md border border-default bg-surface text-primary hover:bg-raised focus-visible:ring-2 focus-visible:ring-accent"
               >
@@ -122,6 +123,7 @@ export function Modal({
             {primary && (
               <button
                 type="button"
+                data-testid="modal-primary"
                 onClick={primary.onClick}
                 className={cn(
                   "px-3 py-2 text-sm rounded-md font-medium text-white focus-visible:ring-2 focus-visible:ring-accent",

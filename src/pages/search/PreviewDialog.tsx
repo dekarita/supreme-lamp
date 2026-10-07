@@ -146,6 +146,7 @@ export function PreviewDialog() {
             </p>
           ) : null}
           <button
+            data-testid="search-preview-cancel"
             ref={closeRef}
             type="button"
             onClick={closePreview}

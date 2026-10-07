@@ -188,6 +188,7 @@ export function CommandBar({ onAnimationEnd }: { onAnimationEnd?: () => void } =
             <Mic className="size-4 mx-auto" aria-hidden />
           </button>
           <button
+            data-testid="search-query-clear"
             id="f56.search.queryClear"
             type="button"
             aria-label={t("search.query.clear")}

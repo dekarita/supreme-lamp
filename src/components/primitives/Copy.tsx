@@ -12,18 +12,24 @@ export function CopyButton({
   size = "sm",
   className,
   id,
+  "data-testid": dataTestId,
 }: {
   value: string | (() => string);
   label?: string;
   size?: "sm" | "md" | "lg";
   className?: string;
   id?: string;
+  // [F-TESTID] the copy primitive is the single biggest button gap in the
+  // inventory (26 call sites, none test-id'd); the prop is forwarded so every
+  // copy affordance is addressable by the Observatory and F104 capture.
+  "data-testid"?: string;
 }) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   return (
     <IconButton
       id={id}
+      data-testid={dataTestId}
       icon={copied ? <Check /> : <Copy />}
       label={copied ? t("copy.copied") : label || t("copy.action")}
       size={size}
@@ -42,12 +48,25 @@ export function CopyButton({
 
 // Text-link copy affordance used inside copy-line rows (v1 parity: the word
 // "copy" stays the accessible name).
-export function CopyLink({ value, className, id, label }: { value: string | (() => string); className?: string; id?: string; label?: string }) {
+export function CopyLink({
+  value,
+  className,
+  id,
+  label,
+  "data-testid": dataTestId,
+}: {
+  value: string | (() => string);
+  className?: string;
+  id?: string;
+  label?: string;
+  "data-testid"?: string;
+}) {
   const { t } = useTranslation();
   const [copied, setCopied] = useState(false);
   return (
     <a
       id={id}
+      data-testid={dataTestId}
       href="javascript:void(0)"
       onClick={(e) => {
         e.preventDefault();

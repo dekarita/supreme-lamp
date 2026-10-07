@@ -23,14 +23,14 @@ export function ManualVerifyDrawer() {
             <code id="manualVerifyCmdkey" className="font-mono bg-sunken border border-default rounded px-1.5 py-0.5">
               {cmdkeyDelete}
             </code>
-            <CopyButton value={cmdkeyDelete} className="inline-flex ml-1" /> Then click WINDOWS AUTO-LOGIN again
+            <CopyButton value={cmdkeyDelete} className="inline-flex ml-1" data-testid="overview-copy-cmdkey-delete" /> Then click WINDOWS AUTO-LOGIN again
           </li>
           <li id="manualVerifyStill">
             If still failing, copy this and paste to the session:{" "}
             <code id="manualVerifySchannel" className="font-mono bg-sunken border border-default rounded px-1.5 py-0.5 break-all">
               {schannel}
             </code>
-            <CopyButton value={schannel} className="inline-flex ml-1" />
+            <CopyButton value={schannel} className="inline-flex ml-1" data-testid="overview-copy-schannel-check" />
           </li>
         </ol>
       </details>

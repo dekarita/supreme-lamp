@@ -270,6 +270,7 @@ export function AddSiteQuick({ open, onClose }: AddSiteQuickProps) {
             {t("search.addSite")}
           </h2>
           <button
+            data-testid="add-site-cancel-x"
             type="button"
             id="f78.addSite.cancelX"
             aria-label={t("newSiteCancel")}

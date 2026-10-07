@@ -78,6 +78,7 @@ export function Tabs({ label, tabs, initial, className }: { label: string; tabs:
             key={tb.id}
             role="tab"
             type="button"
+            data-testid={"tab-" + tb.id}
             aria-selected={active === tb.id}
             aria-controls={`panel-${tb.id}`}
             id={`tab-${tb.id}`}

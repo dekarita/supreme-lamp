@@ -75,7 +75,7 @@ export function LauncherBeaconViewer() {
             <code id="liveDispatchAclCmd" className="font-mono text-xs bg-sunken border border-default rounded px-2 py-1">
               {`wevtutil qe System /q:"*[System[Provider[@Name='Schannel']]]" /c:10 /f:text | findstr "36870 36871"`}
             </code>
-            <CopyButton value={`wevtutil qe System /q:"*[System[Provider[@Name='Schannel']]]" /c:10 /f:text | findstr "36870 36871"`} />
+            <CopyButton value={`wevtutil qe System /q:"*[System[Provider[@Name='Schannel']]]" /c:10 /f:text | findstr "36870 36871"`} data-testid="telemetry-copy-schannel-cmd" />
           </span>
         </div>
 
@@ -91,7 +91,7 @@ export function LauncherBeaconViewer() {
           <span id="winBeacon" className={cn("font-mono text-xs", beacon.tone === "bad" ? "text-danger" : "text-secondary")}>
             {beacon.text}
           </span>
-          <Button id="btnRunCheck" variant="secondary" size="sm" icon={<ShieldCheck className="size-3.5" aria-hidden />} title="fires ghrdp://check - a MessageBox on this PC proves the launcher exe runs (no server needed)" onClick={fireRunCheck}>
+          <Button id="btnRunCheck" variant="secondary" size="sm" icon={<ShieldCheck className="size-3.5" aria-hidden />} title="fires ghrdp://check - a MessageBox on this PC proves the launcher exe runs (no server needed)" onClick={fireRunCheck} data-testid="telemetry-run-check">
             {t("actions.runCheck")}
           </Button>
           <span className="text-xs text-tertiary">
@@ -100,7 +100,7 @@ export function LauncherBeaconViewer() {
               {LAUNCHER_LOG}
             </code>
           </span>
-          <CopyButton value={LAUNCHER_LOG} />
+          <CopyButton value={LAUNCHER_LOG} data-testid="telemetry-copy-launcher-log" />
         </div>
         <div id="winBeaconStall" className={cn("text-xs text-danger", beacon.stall ? "" : "hidden")}>
           {beacon.stall}

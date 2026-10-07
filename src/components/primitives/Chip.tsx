@@ -74,16 +74,19 @@ export function Toggle({
   onChange,
   label,
   disabled,
+  "data-testid": dataTestId,
 }: {
   checked: boolean;
   onChange: (v: boolean) => void;
   label: string;
   disabled?: boolean;
+  "data-testid"?: string;
 }) {
   return (
     <button
       type="button"
       role="switch"
+      data-testid={dataTestId}
       aria-checked={checked}
       aria-label={label}
       disabled={disabled}

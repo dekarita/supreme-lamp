@@ -48,17 +48,17 @@ export default function Settings() {
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-sm font-medium w-40">{t("pages.settings.theme")}</span>
-            <Button variant={theme === "dark" ? "primary" : "secondary"} size="sm" onClick={() => setTheme("dark")}>
+            <Button variant={theme === "dark" ? "primary" : "secondary"} size="sm" onClick={() => setTheme("dark")} data-testid="settings-theme-dark">
               {t("toggle.theme.dark")}
             </Button>
-            <Button variant={theme === "light" ? "primary" : "secondary"} size="sm" onClick={() => setTheme("light")}>
+            <Button variant={theme === "light" ? "primary" : "secondary"} size="sm" onClick={() => setTheme("light")} data-testid="settings-theme-light">
               {t("toggle.theme.light")}
             </Button>
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-sm font-medium w-40">{t("pages.settings.textScale")}</span>
             {SCALES.map((sc) => (
-              <Button key={sc} variant={scale === sc ? "primary" : "secondary"} size="sm" onClick={() => setScale(sc)}>
+              <Button key={sc} variant={scale === sc ? "primary" : "secondary"} size="sm" onClick={() => setScale(sc)} data-testid={"settings-text-scale-" + sc}>
                 {t("toggle.scale." + sc)}
               </Button>
             ))}
@@ -68,7 +68,7 @@ export default function Settings() {
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <span className="text-sm font-medium w-40">{t("pages.settings.language")}</span>
-            <Toggle checked={lang === "si"} onChange={(v) => setLang(v ? "si" : "en")} label={t("toggle.language.label")} />
+            <Toggle checked={lang === "si"} onChange={(v) => setLang(v ? "si" : "en")} label={t("toggle.language.label")} data-testid="settings-language-toggle" />
             <span className="text-sm text-secondary">{lang === "si" ? "සිංහල" : "English"}</span>
             <Chip tone="warning">Sinhala strings marked for operator native review</Chip>
           </div>

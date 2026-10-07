@@ -32,8 +32,8 @@ export function LogPanel() {
       <div className="flex items-center justify-between gap-2 mb-2">
         <span className="text-xs text-tertiary">{lines.length ? lines.length + " lines" : "waiting for the watcher..."}</span>
         <div className="flex gap-1">
-          <CopyButton value={() => lines.join("\n")} label="copy log" />
-          <Button id="logPauseBtn" variant={paused ? "outline" : "secondary"} size="sm" onClick={() => setPaused(!paused)}>
+          <CopyButton value={() => lines.join("\n")} label="copy log" data-testid="overview-log-copy" />
+          <Button id="logPauseBtn" variant={paused ? "outline" : "secondary"} size="sm" onClick={() => setPaused(!paused)} data-testid="overview-log-pause">
             {paused ? t("actions.resumeLog") : t("actions.pauseLog")}
           </Button>
         </div>

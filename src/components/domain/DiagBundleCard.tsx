@@ -56,6 +56,7 @@ export function DiagBundleCard() {
     <div id="f96.diagBundle" className="glass rounded-xl border border-default p-4 mb-4">
       <div className="flex flex-wrap items-center gap-3">
         <button
+          data-testid="overview-download-diag"
           id="f96.downloadDiag"
           type="button"
           onClick={onDownload}
@@ -94,6 +95,7 @@ export function DiagBundleCard() {
           </span>
         </span>
         <button
+          data-testid="overview-diag-expand"
           id="f96.diagExpand"
           type="button"
           onClick={() => setOpen((v) => !v)}

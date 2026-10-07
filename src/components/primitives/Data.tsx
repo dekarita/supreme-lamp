@@ -79,10 +79,11 @@ export function MaskedField({
         <IconButton
           icon={revealed ? <EyeOff /> : <Eye />}
           label={revealed ? t("field.hide") : t("field.reveal")}
+          data-testid={"field-reveal-" + id}
           onClick={() => setRevealed((v) => !v)}
         />
       )}
-      {value && <CopyButton value={value} label={t(labelKey)} />}
+      {value && <CopyButton value={value} label={t(labelKey)} data-testid={"field-copy-" + id} />}
     </div>
   );
 }
@@ -242,8 +243,8 @@ export function DataTable<T extends { id: string | number }>({
           className="flex-1 min-w-0 bg-transparent border border-strong rounded-md px-2 py-1 text-sm text-primary placeholder:text-tertiary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
         />
         <div className="flex gap-1">
-          <IconButton icon={<LayoutList className="size-4" />} label={t("table.density.comfortable")} onClick={() => { setDensity("comfortable"); try { localStorage.setItem("tableDensity", "comfortable"); } catch { /* ignore */ } }} />
-          <IconButton icon={<AlignJustify className="size-4" />} label={t("table.density.compact")} onClick={() => { setDensity("compact"); try { localStorage.setItem("tableDensity", "compact"); } catch { /* ignore */ } }} />
+          <IconButton data-testid="table-density-comfortable" icon={<LayoutList className="size-4" />} label={t("table.density.comfortable")} onClick={() => { setDensity("comfortable"); try { localStorage.setItem("tableDensity", "comfortable"); } catch { /* ignore */ } }} />
+          <IconButton data-testid="table-density-compact" icon={<AlignJustify className="size-4" />} label={t("table.density.compact")} onClick={() => { setDensity("compact"); try { localStorage.setItem("tableDensity", "compact"); } catch { /* ignore */ } }} />
         </div>
       </div>
       <div className={cn("overflow-auto", maxHeight)}>
