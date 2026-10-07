@@ -106,9 +106,16 @@ test('F57-INVARIANTS: undo=20, retention=30d, roots=6, durable queue', () => {
   assert.ok(PAGE.includes('tinykeys') && PAGE.includes('F2') && PAGE.includes('Shift+Delete') && PAGE.includes('mod+z'));
 });
 
-test('F57-NO-NEW-DEP: explorer dependency set is frozen; F107 rasterizer is the only allowed addition', () => {
+test('F57-NO-NEW-DEP: explorer dependency set is frozen (the F107 rasterizer exception was RETIRED with the duplicate step-6 variant)', () => {
+  // [step-6 double-merge repair] `html2canvas` was admitted as the single F107
+  // dependency exception for the FIRST step-6 implementation (#173), whose
+  // screenshots.ts called `import("html2canvas")`. That variant is retired: the
+  // surviving F107 (#174) rasterizes through SVG foreignObject -> canvas with a
+  // documented seam (`setShotRasterizer`) and an honest-failure branch, so the
+  // exception has no consumer left. The freeze is therefore TIGHTER again, and
+  // the pin below asserts the absence explicitly - a re-addition must come back
+  // with a cited consumer, not silently.
   assert.deepEqual(Object.keys(PKG.dependencies).sort(), [
-    'html2canvas', // F107: actual DOM rasterizer; native canvas cannot draw a DOM tree
     'i18next',
     'lucide-react',
     'react',
@@ -118,7 +125,10 @@ test('F57-NO-NEW-DEP: explorer dependency set is frozen; F107 rasterizer is the 
     'react-window',
     'zustand',
   ]);
-  assert.ok(read('src/lib/dvr/screenshots.ts').includes('import("html2canvas")'), 'the F107 exception must serve the screenshot capture');
+  assert.ok(!JSON.stringify(PKG).includes('html2canvas'), 'the retired rasterizer dependency must not linger unused in package.json');
+  assert.ok(!read('src/lib/dvr/screenshots.ts').includes('html2canvas'), 'the surviving screenshot pipeline must not name the retired dependency');
+  // The seam that a future rasterizer (html2canvas or otherwise) must use stays.
+  assert.ok(read('src/lib/dvr/screenshots.ts').includes('export function setShotRasterizer'), 'the documented rasterizer seam must survive');
   assert.ok(!JSON.stringify(PKG).includes('tinykeys'), 'keyboard shortcuts stay in-repo (src/pages/file-explorer/keymap.ts)');
   assert.ok(!JSON.stringify(PKG).includes('marked'), 'markdown rendering stays in-repo (src/lib/explorer/preview.ts)');
 });
