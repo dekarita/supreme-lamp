@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- [F108 §4] The reader is a local, offline tool. This policy is the machine
+         half of that promise: no remote script, no remote style, no remote image,
+         and - the one that matters for a diagnostics page - NO CONNECT-SRC AT
+         ALL, so not even a compromised dependency inside this origin could post a
+         bundle anywhere. Thumbnails are data: URLs only. Tests assert these
+         directives literally (tests/f108-replay-core.test.js). -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'; object-src 'none'"
+    />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="color-scheme" content="dark light" />
+    <title>GHRDP .mcrec Replay Viewer</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <main id="replay-app" class="wrap">
+      <header class="head">
+        <h1>.mcrec Replay Viewer</h1>
+        <p class="sub">
+          Reads a GHRDP diagnostic recording (<code>mcrec1</code> clipboard line or <code>mcrec2</code> / <code>.mcrec</code>
+          export file) and replays it here. This page has no network access: the bundle is parsed in your browser and
+          never leaves it.
+        </p>
+      </header>
+      <noscript>
+        <p class="error">This viewer needs JavaScript. Nothing is sent anywhere; the file is read locally.</p>
+      </noscript>
+      <section id="replay-panel-input" class="card">
+        <h2>1. Open a recording</h2>
+        <label class="field" for="replay-input">
+          <span>Paste a bundle line (<code>mcrec1:</code> / <code>mcrec2:</code>) or the exported JSON</span>
+          <textarea id="replay-input" rows="4" spellcheck="false" placeholder="mcrec1:gzip:H4sIAAAA…"></textarea>
+        </label>
+        <div class="row">
+          <button type="button" id="replay-read">Read pasted text</button>
+          <button type="button" id="replay-load-clipboard">Read from clipboard</button>
+          <label class="file">
+            <span>…or choose a file</span>
+            <input type="file" id="replay-file" accept=".mcrec,.json,.txt,application/json,text/plain" />
+          </label>
+        </div>
+        <p id="replay-status" class="status" role="status" aria-live="polite">No bundle loaded yet.</p>
+        <p id="replay-sample" class="note">
+          No recording handy? <a href="./sample.mcrec" download>Download the synthetic sample</a> (3 kB, fabricated - no
+          real session data) and choose it above.
+        </p>
+        <p id="replay-verdict" class="verdict" hidden></p>
+        <p class="privacy" id="replay-privacy">
+          Privacy: this page contains no <code>fetch</code>, no upload endpoint and no analytics. Records are read
+          locally; screenshots are rendered only from fenced <code>data:</code> PNG thumbnails.
+        </p>
+      </section>
+      <section id="replay-panel-result" class="card" hidden>
+        <h2>2. Read the recording</h2>
+        <div class="tabs" role="tablist" aria-label="Replay sections">
+          <button type="button" role="tab" id="replay-tab-timeline" data-testid="replay-tab-timeline" aria-selected="true">
+            Timeline
+          </button>
+          <button type="button" role="tab" id="replay-tab-shots" data-testid="replay-tab-shots" aria-selected="false">
+            Screenshots
+          </button>
+          <button type="button" role="tab" id="replay-tab-dom" data-testid="replay-tab-dom" aria-selected="false">
+            DOM updates
+          </button>
+          <button type="button" role="tab" id="replay-tab-storage" data-testid="replay-tab-storage" aria-selected="false">
+            Stored sessions
+          </button>
+          <button type="button" role="tab" id="replay-tab-features" data-testid="replay-tab-features" aria-selected="false">
+            Features
+          </button>
+          <button type="button" role="tab" id="replay-tab-summary" data-testid="replay-tab-summary" aria-selected="false">
+            Arena summary
+          </button>
+        </div>
+        <div id="replay-panel-timeline" class="panel" role="tabpanel" aria-labelledby="replay-tab-timeline">
+          <div class="scrub">
+            <button type="button" id="replay-prev">◀ previous event</button>
+            <input type="range" id="replay-scrubber" min="0" max="0" value="0" step="1" aria-label="Timeline position" />
+            <button type="button" id="replay-next">next event ▶</button>
+          </div>
+          <div id="replay-entry" class="entry"></div>
+          <ol id="replay-rows" class="rows"></ol>
+          <p id="replay-rows-note" class="note" hidden></p>
+        </div>
+        <div id="replay-panel-shots" class="panel" role="tabpanel" aria-labelledby="replay-tab-shots" hidden>
+          <p id="replay-shots-note" class="note"></p>
+          <div id="replay-shots" class="shots"></div>
+        </div>
+        <div id="replay-panel-dom" class="panel" role="tabpanel" aria-labelledby="replay-tab-dom" hidden>
+          <table class="grid" id="replay-mutations"></table>
+        </div>
+        <div id="replay-panel-storage" class="panel" role="tabpanel" aria-labelledby="replay-tab-storage" hidden>
+          <table class="grid" id="replay-sessions"></table>
+        </div>
+        <div id="replay-panel-features" class="panel" role="tabpanel" aria-labelledby="replay-tab-features" hidden>
+          <table class="grid" id="replay-features"></table>
+        </div>
+        <div id="replay-panel-summary" class="panel" role="tabpanel" aria-labelledby="replay-tab-summary" hidden>
+          <div class="row">
+            <button type="button" id="replay-copy-summary">Copy text summary</button>
+            <span id="replay-copy-status" class="note" role="status" aria-live="polite"></span>
+          </div>
+          <pre id="replay-summary" tabindex="0"></pre>
+        </div>
+      </section>
+      <footer class="foot">
+        <p>
+          Sources: <a href="../REPLAY.md">docs/REPLAY.md</a> · the reader is
+          <a href="../replay/vendor/replay/replayCore.js">replayCore.js</a> (a byte-identical copy of
+          <code>src/replay/replayCore.js</code>, pinned by the F108 gate). Recorder: F107 Full DVR / step-3 DVR lite. No
+          server, no token, no upload.
+        </p>
+      </footer>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
