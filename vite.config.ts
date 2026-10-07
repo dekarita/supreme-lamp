@@ -50,6 +50,11 @@ export default defineConfig({
     proxy: {
       "/api": "http://127.0.0.1:7331",
       "/diag": "http://127.0.0.1:7331",
+      // [F103 §5] the F91 e2e reads the mock launcher queue through
+      // /__f91/jobs; without a proxy entry the page got the SPA's index.html
+      // and every f91 site test died on `.json()` (the rest of the file then
+      // skipped, which is part of what kept e2e-ui red).
+      "/__f91": "http://127.0.0.1:7331",
     },
   },
   preview: { host: "0.0.0.0", allowedHosts: [".e2b.app"] },

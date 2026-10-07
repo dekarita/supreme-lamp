@@ -127,6 +127,8 @@ export interface Verdict {
   reason: string;
   suggestedFix: string;
   relatedIssue: string | null;
+  /** [F103 §4] set for status=0 verdicts: mixed-content | cors-preflight | network. */
+  category?: ReachabilityCategory;
 }
 
 // =============================================================================
@@ -357,6 +359,30 @@ export function subscribeToActions(fn: Listener): () => void {
   });
 }
 
+/** [F103 §6 / R5] Read the persisted rows SYNCHRONOUSLY, straight out of
+ *  localStorage, without waiting for (or depending on) zustand's rehydrate.
+ *  Collector.tsx calls this in a useState initializer so the very first render
+ *  after a refresh already paints the rows: the operator must never see the
+ *  empty-table flash that made a working page "still look fake". Falls back to
+ *  the store (and to []) if storage is unavailable or malformed. */
+export function loadActionsFromLocalStorage(): ButtonAction[] {
+  try {
+    const raw = safeLocalStorage.getItem(COLLECTOR_STORE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(String(raw)) as { state?: { actions?: ButtonAction[] } };
+      const rows = parsed?.state?.actions;
+      if (Array.isArray(rows)) return rows as ButtonAction[];
+    }
+  } catch {
+    /* fall through to the store snapshot */
+  }
+  try {
+    return useCollectorStore.getState().actions;
+  } catch {
+    return [];
+  }
+}
+
 /** Get a snapshot of all recorded actions. */
 export function getRecordedActions(): ButtonAction[] {
   return useCollectorStore.getState().actions;
@@ -419,6 +445,8 @@ export function clearActions() {
 
 import { apiBase, getDashToken, hasDashToken } from "@/lib/api";
 import { useTelemetryStore } from "@/stores/telemetryStore";
+// [F103 §4] status=0 is three different bugs wearing the same mask.
+import { classifyStatus0Cached, probeOptions, type ReachabilityCategory } from "@/lib/reachability";
 
 const PROBE_TIMEOUT_MS = 2500;
 const BODY_CAPTURE_CHARS = 2000;
@@ -601,6 +629,10 @@ export async function captureServiceStates(): Promise<ProbeSet> {
     deps.push({ name, state, lastCheckTs: nowIso, latencyMs, errorRate });
   };
 
+  // [F103 §4] warm the preflight probe BEFORE any verdict is written: when
+  // /api/health answers status=0 the classifier needs to know whether OPTIONS
+  // is the thing that is broken.
+  if (health.status === 0) { try { await probeOptions(); } catch { /* best effort */ } }
   if (health.status === 0) states.health = "unreachable";
   else if (health.status >= 200 && health.status < 300) states.health = "ok";
   else states.health = "degraded";
@@ -681,8 +713,23 @@ export function classifyFailure(status: number, body: string, failed: string): V
     return { status: "fail", reason: "the route does not exist on this server build (HTTP " + status + ")", suggestedFix: "The UI is newer than the deployed server. Dispatch main.yml fresh so the runner stages the current payloads/ghrdp-server.ps1.", relatedIssue: null };
   }
   if (status === 0) {
-    return { status: "fail", reason: "no HTTP response at all" + (failed ? " (" + failed + ")" : ""), suggestedFix: "The server is unreachable from this tab: check the runner is up, the port is the advertised one, and the page is not blocked by a mixed-content or CORS refusal.", relatedIssue: null };
+    // [F103 §4] REPLACES the generic "no HTTP response at all" verdict. The
+    // operator's 18 records all said status=0 and all had the SAME cause (a
+    // CORS preflight the backend never answered), but the old sentence listed
+    // three possible causes and fixed none of them. Now the category is
+    // measured: mixed-content is decided from the two origins, cors-preflight
+    // from the cached OPTIONS probe, network only when neither applies.
+    const wsLive = (() => { try { return useTelemetryStore.getState().wsLive === true; } catch { return false; } })();
+    const c = classifyStatus0Cached(failed, wsLive);
+    return {
+      status: "fail",
+      reason: c.reason,
+      suggestedFix: c.suggestedFix,
+      relatedIssue: c.category === "cors-preflight" ? "#159" : null,
+      category: c.category,
+    };
   }
+
   if (status >= 500) {
     return { status: "fail", reason: "server error (HTTP " + status + ")", suggestedFix: "Paste the response body below into a new issue: a 5xx from the PowerShell server is always a code path, never a configuration problem.", relatedIssue: null };
   }

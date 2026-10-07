@@ -93,7 +93,11 @@ test("F102-R3: rows persist through zustand persist under f102-collector-actions
   // replay/clickNow ids can no longer collide inside one millisecond
   assert.ok(!AGENT.includes('"_r"'), "the colliding F100 replay id is back");
   // the page reads the store and shows the rehydration chip
-  assert.ok(COLLECTOR.includes("const actions = useCollectorStore((s) => s.actions);"));
+  // [F103 §6] SUPERSEDED, NOT DELETED: the page still reads the store, but the
+  // FIRST render now comes from a synchronous localStorage read so the
+  // operator never sees a flash of the empty table after a refresh.
+  assert.ok(COLLECTOR.includes("const liveActions = useCollectorStore((s) => s.actions);"));
+  assert.ok(COLLECTOR.includes("useState<ButtonAction[]>(() => loadActionsFromLocalStorage())"));
   assert.ok(COLLECTOR.includes('data-testid="collector-rehydrated"'));
   assert.ok(COLLECTOR.includes("Rehydrated from localStorage"));
   assert.ok(COLLECTOR.includes('data-testid="collector-persist-error"'));

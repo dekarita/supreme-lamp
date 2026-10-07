@@ -13,8 +13,22 @@ import { apiBase, getDashToken } from "@/lib/api";
 import { Card } from "@/components/primitives/Data";
 import { Button } from "@/components/primitives/Button";
 import { Chip } from "@/components/primitives/Chip";
+import { useTelemetryStore } from "@/stores/telemetryStore";
+// [F103 §3] the reachability probes shared with the banner + the classifier
+import {
+  backendOrigin,
+  pageOrigin,
+  isMixedContent,
+  probeHealth,
+  probeOptions,
+  classifyStatus0Cached,
+  fetchCorsConfig,
+  type ProbeResult,
+  type CorsConfig,
+} from "@/lib/reachability";
 import {
   getRecordedActions,
+  loadActionsFromLocalStorage,
   clearActions,
   replayAllActions,
   installFetchObserver,
@@ -77,6 +91,79 @@ function statusLabel(s?: string) {
   return s;
 }
 
+/** [F103 §3 / R2] Everything needed to tell the three status=0 causes apart,
+ *  on one panel: the two origins, the last OPTIONS preflight, the last GET
+ *  /api/health (with its response headers), the WS state (live is NORMAL even
+ *  when every fetch is blocked — WS never preflights) and the CORS allowlist
+ *  the server says is in effect. */
+function ReachabilityTroubleshooter() {
+  const [health, setHealth] = useState<ProbeResult | null>(null);
+  const [options, setOptions] = useState<ProbeResult | null>(null);
+  const [cors, setCors] = useState<CorsConfig | null>(null);
+  const [verdict, setVerdict] = useState<{ category: string; reason: string; suggestedFix: string } | null>(null);
+  const wsLive = useTelemetryStore((s) => s.wsLive);
+
+  const probeAll = useCallback(async () => {
+    const h = await probeHealth(2000);
+    setHealth(h);
+    const o = await probeOptions("/api/health", 2000);
+    setOptions(o);
+    setVerdict(h.ok ? null : classifyStatus0Cached(h.error ?? undefined, wsLive === true));
+    setCors(await fetchCorsConfig(getDashToken()));
+  }, [wsLive]);
+
+  useEffect(() => { void probeAll(); }, [probeAll]);
+
+  const row = (k: string, v: React.ReactNode) => (
+    <tr className="border-b border-default/50">
+      <td className="py-1 pr-3 text-secondary whitespace-nowrap">{k}</td>
+      <td className="py-1 font-mono break-all">{v}</td>
+    </tr>
+  );
+  const fmt = (p: ProbeResult | null) =>
+    p ? (p.ok ? "ok " : "FAILED ") + "status=" + p.status + " elapsedMs=" + (p.elapsedMs ?? "null") + (p.error ? " error=" + p.error : "") : "—";
+
+  return (
+    <Card title="Reachability troubleshooter (F103)">
+      <div data-testid="reachability-troubleshoot-panel">
+        <table className="w-full text-xs border-collapse">
+          <tbody>
+            {row("Current origin", pageOrigin())}
+            {row("Backend URL", backendOrigin())}
+            {row("Mixed content", isMixedContent() ? "YES — an HTTPS page may not call an HTTP backend" : "no")}
+            {row("Last OPTIONS /api/health", <span data-testid="reach-options">{fmt(options)}</span>)}
+            {row("Last GET /api/health", <span data-testid="reach-health">{fmt(health)}</span>)}
+            {row(
+              "Health response headers",
+              health && Object.keys(health.headers).length
+                ? Object.entries(health.headers).map(([k, v]) => k + ": " + v).join(" | ")
+                : "(none visible — a blocked request exposes no headers)"
+            )}
+            {row("WebSocket", (wsLive ? "live" : "not live") + " — ws=live is NORMAL even when every fetch is blocked (WS sends no CORS preflight)")}
+            {row(
+              "CORS allowlist in effect",
+              cors ? cors.allowlist.join(", ") + "  [allow-headers: " + cors.allowHeaders + "]" : "(could not read /api/f103/cors-config — unreachable or no dash token)"
+            )}
+            {row("This origin allowed", cors ? String(cors.originAllowed) : "unknown")}
+          </tbody>
+        </table>
+        {verdict ? (
+          <div data-testid="reach-verdict" className="mt-3 p-2 rounded bg-warning/10 text-xs">
+            <div><strong>Category:</strong> <span data-testid="reach-category">{verdict.category}</span></div>
+            <div className="mt-1">{verdict.reason}</div>
+            <div className="mt-1 text-secondary">Fix: {verdict.suggestedFix}</div>
+          </div>
+        ) : (
+          <div className="mt-3 text-xs text-success" data-testid="reach-ok">/api/health answered — the backend is reachable from this origin.</div>
+        )}
+        <div className="mt-3">
+          <Button size="sm" variant="secondary" onClick={() => void probeAll()} data-testid="reach-reprobe">Re-probe</Button>
+        </div>
+      </div>
+    </Card>
+  );
+}
+
 export default function Collector() {
   const { t } = useTranslation();
   const [report, setReport] = useState<CollectorReport | null>(null);
@@ -87,8 +174,32 @@ export default function Collector() {
   const [replaying, setReplaying] = useState(false);
   // [F102 §2.2] rows come straight from the persisted store: it hydrated from
   // localStorage synchronously, before this component's first paint.
-  const actions = useCollectorStore((s) => s.actions);
+  // [F103 §6 / R5] SYNC-BEFORE-PAINT. F102 hydrated the store from
+  // localStorage inside create(), but the page still read the rows through a
+  // subscription, so any environment where hydration resolves a tick late
+  // (zustand's async-storage path, a storage adapter that defers, StrictMode's
+  // double-mount) painted an EMPTY table first and the operator saw a flash of
+  // "no rows" on every refresh — i.e. "refresh still looks fake". The initial
+  // snapshot is now taken SYNCHRONOUSLY in a useState initializer, which runs
+  // during the first render, and is used until the live store has rows.
+  const [initialActions] = useState<ButtonAction[]>(() => loadActionsFromLocalStorage());
+  const liveActions = useCollectorStore((s) => s.actions);
+  // Once the store itself changes (a click recorded, Clear pressed, hydration
+  // landed) the store is the only truth; the synchronous snapshot is just the
+  // bridge across the very first render.
+  const [storeTouched, setStoreTouched] = useState(false);
+  useEffect(() => {
+    if (useCollectorStore.getState().actions.length > 0) { setStoreTouched(true); return; }
+    return useCollectorStore.subscribe((st, prev) => {
+      if (st.actions !== prev.actions) setStoreTouched(true);
+    });
+  }, []);
+  const actions = storeTouched || liveActions.length > 0 ? liveActions : initialActions;
   const hydration = useCollectorStore((s) => s.hydration);
+  // [F103 §3] /#/collector?troubleshoot=reachability deep link from the banner
+  const [troubleshoot] = useState<boolean>(() => {
+    try { return /[?&]troubleshoot=reachability/.test(location.hash) || /[?&]troubleshoot=reachability/.test(location.search); } catch { return false; }
+  });
   const persistError = useCollectorStore((s) => s.persistError);
   const notice = useCollectorStore((s) => s.notice);
   const clickRun = useCollectorStore((s) => s.running);
@@ -337,6 +448,9 @@ export default function Collector() {
           </div>
         ) : null}
       </Card>
+
+      {/* [F103 §3] Reachability troubleshooter — the banner's [Troubleshoot] */}
+      {troubleshoot ? <ReachabilityTroubleshooter /> : null}
 
       {/* [F100 §3.3] Recent user actions (recorded) */}
       <Card title={t("collector.actionsTitle", { defaultValue: "Recent user actions (recorded)" })}>

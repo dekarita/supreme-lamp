@@ -1807,6 +1807,72 @@ $head = $acc.ToString()
 if ($idx -ge 0) { $head = $head.Substring(0, $idx + 4) }
 return @{ head = $head; body = $bodyBytes.ToArray() }
 }
+# =============================================================================
+# [F103 §2] CORS preflight + origin allowlist.
+# ROOT CAUSE (operator bundle fdd57261-button-actions.json, 18/18 records):
+# the dashboard is served from one origin and this server answers on another
+# (http://100.83.53.46:7331). Every dashboard fetch carries the custom header
+# X-Dash-Token, which forces a CORS *preflight* OPTIONS. Before F103 only
+# /api/rdp-token, /api/mirror/*, the F70 search lane and the F58 lab lane
+# answered OPTIONS - every other route fell through to Test-ClientAllowed,
+# which 401'd the (deliberately tokenless) preflight. Worse, the global header
+# block advertised `Access-Control-Allow-Headers: Content-Type, Authorization`,
+# so even a 200 preflight would NOT have authorised X-Dash-Token, and
+# `Access-Control-Allow-Origin: *` can never be combined with credentials.
+# Result in the browser: the real request is cancelled before it leaves, the
+# fetch rejects with a TypeError and the collector records status=0 /
+# elapsedMs=null - exactly the 18 records. WebSockets never preflight, which is
+# why ws=live looked healthy throughout.
+# FIX: one allowlist, one header builder, one global OPTIONS short-circuit that
+# runs BEFORE any auth or route dispatch, and X-Dash-Token in Allow-Headers on
+# every response.
+# =============================================================================
+$script:F103_CORS_ALLOWLIST = @(
+    'http://100.83.53.46:7331',
+    'http://127.0.0.1:5173',
+    'http://localhost:5173',
+    'http://127.0.0.1:7331',
+    'http://localhost:7331',
+    'https://supreme-lamp.pages.dev',
+    'https://dekarita.github.io'
+)
+$script:F103_CORS_ALLOW_HEADERS = 'Content-Type, Authorization, X-Dash-Token, X-CSRF-Token, X-Requested-With'
+$script:F103_CORS_ALLOW_METHODS = 'GET, POST, PUT, DELETE, OPTIONS'
+$script:F103_CORS_MAX_AGE = '3600'
+# Per-request origin, set by Invoke-ClientRequest so every Send-ClientResponse
+# can echo it without touching ~200 call sites.
+$script:F103CurrentOrigin = ''
+function Test-F103CorsOrigin {
+    param([string]$Origin)
+    $o = ([string]$Origin).Trim()
+    if (-not $o) { return $false }
+    foreach ($a in $script:F103_CORS_ALLOWLIST) {
+        if ([string]::Equals($a, $o, [System.StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    # Any tailnet (100.64.0.0/10) origin on this port is the same deployment
+    # reached by a different tailscale IP; treat it as first-party.
+    if ($o -match '^http://100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d{1,3}\.\d{1,3}(:\d+)?$') { return $true }
+    return $false
+}
+function Get-F103CorsHeaderLines {
+    # Returns the raw CORS header lines (no trailing CRLF) for $Origin.
+    # Allowlisted origin  -> echo it + credentials (required for cookies/CSRF).
+    # Unknown/absent      -> wildcard, no credentials (pre-F103 behaviour).
+    param([string]$Origin)
+    $lines = @()
+    if (Test-F103CorsOrigin -Origin $Origin) {
+        $lines += ('Access-Control-Allow-Origin: ' + ([string]$Origin).Trim())
+        $lines += 'Vary: Origin'
+        $lines += 'Access-Control-Allow-Credentials: true'
+    } else {
+        $lines += 'Access-Control-Allow-Origin: *'
+        $lines += 'Vary: Origin'
+    }
+    $lines += ('Access-Control-Allow-Methods: ' + $script:F103_CORS_ALLOW_METHODS)
+    $lines += ('Access-Control-Allow-Headers: ' + $script:F103_CORS_ALLOW_HEADERS)
+    $lines += ('Access-Control-Max-Age: ' + $script:F103_CORS_MAX_AGE)
+    return ($lines -join "`r`n")
+}
 function Send-ClientResponse {
     # [F14 §2] $ExtraHeaders carries EXTRA raw header lines (CRLF-less; one per
     # line, appended verbatim). Empty by default, so every existing call site
@@ -1838,7 +1904,16 @@ function Send-ClientResponse {
     # fx response arrived with an empty body.
     $tail = ''
     if ($ExtraHeaders) { $tail = "`r`n" }
-    $hdr = "HTTP/1.1 $Code $status`r`nContent-Type: $CType`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`nCache-Control: no-store`r`nAccess-Control-Allow-Origin: *`r`nAccess-Control-Allow-Headers: Content-Type, Authorization`r`nAccess-Control-Allow-Methods: GET,POST,OPTIONS`r`n$ExtraHeaders$tail`r`n"
+    # [F103 §2] the CORS block is now built per-origin (echo + credentials for
+    # an allowlisted origin, wildcard otherwise) and ALWAYS advertises
+    # X-Dash-Token in Allow-Headers.
+    # The harnesses that import individual functions out of this file (F27
+    # tests/f27-windows.ps1) may not carry the builder; fall back to a static
+    # block that still advertises X-Dash-Token.
+    $f103Cors = ''
+    try { $f103Cors = Get-F103CorsHeaderLines -Origin $script:F103CurrentOrigin } catch { $f103Cors = '' }
+    if (-not $f103Cors) { $f103Cors = "Access-Control-Allow-Origin: *`r`nVary: Origin`r`nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS`r`nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Dash-Token, X-CSRF-Token, X-Requested-With`r`nAccess-Control-Max-Age: 3600" }
+    $hdr = "HTTP/1.1 $Code $status`r`nContent-Type: $CType`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`nCache-Control: no-store`r`n$f103Cors`r`n$ExtraHeaders$tail`r`n"
     $hb = [System.Text.Encoding]::ASCII.GetBytes($hdr)
     $Stream.Write($hb, 0, $hb.Length)
     if ($Body.Length -gt 0) { $Stream.Write($Body, 0, $Body.Length) }
@@ -2237,9 +2312,19 @@ function Invoke-ClientRequest {
         $parts['body'] = [byte[]]$rr.body
         $path = [string]$parts.path
         if (-not $path) { $path = '/' }
-        # Browser cross-origin preflight carries no bearer; disclose nothing.
-        if ($path -eq '/api/rdp-token' -and $parts.method -eq 'OPTIONS') {
+        # [F103 §2] capture the request Origin FIRST so every response built by
+        # Send-ClientResponse (including 401/404/500 paths) carries the right
+        # CORS block, then answer the preflight BEFORE any auth or dispatch.
+        $script:F103CurrentOrigin = ''
+        try { if ($parts.headers.ContainsKey('origin')) { $script:F103CurrentOrigin = [string]$parts.headers['origin'] } } catch { }
+        if ($parts.method -eq 'OPTIONS') {
+            # A browser preflight is deliberately credential-less: it carries no
+            # X-Dash-Token and no cookie, so it MUST NOT reach Test-ClientAllowed
+            # (pre-F103 it did, got 401, and the browser cancelled the real
+            # request -> the collector's status=0 rows). It discloses nothing:
+            # the body is empty and the only headers are the CORS block.
             Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@())
+            try { Write-ClientAudit ('F103 preflight OPTIONS ' + $path + ' origin=' + $script:F103CurrentOrigin + ' -> 204') } catch { }
             return
         }
         if (-not (Test-ClientAllowed -Client $Client -Query $parts.query -Token $Token)) {
@@ -8918,9 +9003,43 @@ boot();
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes @{ ok = $true; ts = (Get-Date -Format o); wire = $script:Wire })
             return
         }
-        if ($path -eq '/health') {
+        if ($path -eq '/health' -or $path -eq '/api/health') {
             # [F99 §2.1] was hardcoded ws=false; now computed from the upgrade feature flag
-            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes @{ ok = $true; ws = [bool]$script:F96WsUpgradeSupported; port = $Port; pid = $PID; ts = (Get-Date -Format o) })
+            # [F103 §2] /api/health is the alias the dashboard + the F103
+            # reachability banner poll. Before F103 NO route answered
+            # /api/health at all, so even a CORS-clean browser got a 404 and
+            # the collector logged "/api/health did not answer".
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes @{ ok = $true; ws = [bool]$script:F96WsUpgradeSupported; port = $Port; pid = $PID; ts = (Get-Date -Format o); cors = $true })
+            return
+        }
+        if ($path -eq '/api/f103/cors-config') {
+            # [F103 §3] the troubleshooter reads the allowlist actually in
+            # effect. Token-gated: it names the deployment's origins.
+            $f103Tok = ''
+            try { if ($parts.headers.ContainsKey('x-dash-token')) { $f103Tok = [string]$parts.headers['x-dash-token'] } } catch { }
+            if (-not $f103Tok) {
+                try {
+                    if ($parts.headers.ContainsKey('authorization')) {
+                        $f103Auth = [string]$parts.headers['authorization']
+                        if ($f103Auth -match '^(?i)bearer\s+(.+)$') { $f103Tok = $Matches[1].Trim() }
+                    }
+                } catch { }
+            }
+            if (-not (Test-GhrdpDashToken -Presented $f103Tok -SnapshotToken $Token)) {
+                Send-ClientResponse -Stream $stream -Code 401 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{ ok = $false; error = 'AUTH_REQUIRED'; reason = 'dash token required'; advice = 'Send X-Dash-Token (or Authorization: Bearer <token>).' }))
+                return
+            }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{
+                        ok              = $true
+                        allowlist       = @($script:F103_CORS_ALLOWLIST)
+                        allowHeaders    = $script:F103_CORS_ALLOW_HEADERS
+                        allowMethods    = $script:F103_CORS_ALLOW_METHODS
+                        maxAge          = $script:F103_CORS_MAX_AGE
+                        tailnetWildcard = '100.64.0.0/10 on any port'
+                        requestOrigin   = [string]$script:F103CurrentOrigin
+                        originAllowed   = [bool](Test-F103CorsOrigin -Origin $script:F103CurrentOrigin)
+                        ts              = (Get-Date -Format o)
+                    }))
             return
         }
         if ($path -eq '/api/config') {
