@@ -13,6 +13,8 @@ import { installGlobalClickCapture } from "@/lib/globalClickCapture";
 // import verbatim, and the DVR extends that call rather than rewriting it.
 import type { GlobalClickRecorder } from "@/lib/globalClickCapture";
 import { installDvr, installDvrObservers } from "@/lib/dvr";
+// [F107 §3] Full DVR session lifecycle (mutations + screenshots + IndexedDB).
+import { installDvrFull } from "@/lib/dvr/session";
 import { logButtonAction, updateRecordedAction } from "@/lib/collectorAgent";
 import { installFeatureBoundaryReporter } from "@/lib/featureBoundary";
 
@@ -40,6 +42,14 @@ if (import.meta.env.VITE_F104_GLOBAL_CAPTURE !== "false") {
     };
     installGlobalClickCapture(installDvr(recorder, { enabled: import.meta.env.VITE_DVR_ENABLED !== "false" }));
     installDvrObservers();
+    // [F107 §3] Full DVR rides the same decorated recorder (via the onDvrEntry
+    // seam - no second click listener): DOM-mutation descriptors, one click
+    // screenshot per click, and IndexedDB session persistence. Killable with
+    // VITE_F107_FULL_DVR=false; it also needs the DVR itself to be on, because
+    // its only input is the ring the DVR fills.
+    if (import.meta.env.VITE_DVR_ENABLED !== "false" && import.meta.env.VITE_F107_FULL_DVR !== "false") {
+      installDvrFull();
+    }
   } catch {
     /* telemetry must never break the app */
   }

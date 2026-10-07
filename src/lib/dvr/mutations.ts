@@ -1,0 +1,95 @@
+// [F107 §2] mutations.ts - the browser half of Full DVR's DOM observation.
+//
+// WHAT IT IS. A MutationObserver attached to the React root (#root, with
+// document.body as the fallback for hosts that mount elsewhere) whose batches are
+// converted by the SHIPPED pure core (src/lib/dvr/mutationCore.js) into bounded
+// descriptors: tag name + attribute NAME + child counts. The step-3 observer in
+// dvr.ts keeps COUNTING (F-DVR-g pins it); this one RECORDS - the deliberate,
+// enumerated content scope #169's handoff assigned to F107.
+//
+// WHAT IT IS NOT. No node text, no attribute values, no clone of the tree
+// (mutationCore.js is scanned for that class, and so is this file). A React
+// commit storm is folded into the last descriptor of the batch, and the session
+// buffer is newest-win capped - observation can never grow a session past the
+// arithmetic storageCore.js pins.
+import {
+  MUTATION_SESSION_CAP,
+  appendMutations,
+  recordMutations,
+  type MutationDescriptor,
+} from "./mutationCore";
+
+/** The root the observer attaches to; the React mount point (index.html). */
+export const DVR_MUTATION_ROOT_ID = "root";
+
+function findRoot(): Node | null {
+  try {
+    if (typeof document === "undefined") return null;
+    return document.getElementById(DVR_MUTATION_ROOT_ID) || document.body;
+  } catch {
+    return null;
+  }
+}
+
+export interface MutationRecorder {
+  /** Descriptors recorded so far (newest last), capped. */
+  list(): MutationDescriptor[];
+  /** Total descriptors seen, including evicted ones. */
+  total(): number;
+  /** The node the observer is attached to (null when the host had none). */
+  rootName(): string;
+  /** Stop observing; idempotent. */
+  uninstall(): void;
+}
+
+/**
+ * Attach the recorder. `onBatch` (optional) is notified with each batch's
+ * descriptors so a session can persist them without polling. Returns a handle;
+ * on a host without MutationObserver the handle is inert (never throws).
+ */
+export function installMutationRecorder(onBatch?: (batch: MutationDescriptor[]) => void): MutationRecorder {
+  let buffer: MutationDescriptor[] = [];
+  let totalSeen = 0;
+  let rootName = "";
+  let dispose: (() => void) | null = null;
+  try {
+    const root = findRoot();
+    if (root && typeof MutationObserver === "function") {
+      rootName = String((root as Element).nodeName || "node").toLowerCase();
+      const obs = new MutationObserver((records) => {
+        try {
+          const batch = recordMutations(records as unknown as Parameters<typeof recordMutations>[0], {
+            now: Date.now(),
+          });
+          if (batch.length === 0) return;
+          totalSeen += batch.length;
+          buffer = appendMutations(buffer, batch, { sessionCap: MUTATION_SESSION_CAP });
+          if (onBatch) onBatch(batch);
+        } catch {
+          /* observation must never break the page it observes */
+        }
+      });
+      // Same option set step 3 pinned for counting, so the two observers see the
+      // same event population (one counts, one records).
+      obs.observe(root, { childList: true, subtree: true, characterData: true, attributes: true });
+      dispose = () => obs.disconnect();
+    }
+  } catch {
+    /* a locked-down host still gets an inert handle */
+  }
+  return {
+    list: () => buffer.slice(),
+    total: () => totalSeen,
+    rootName: () => rootName,
+    uninstall: () => {
+      if (dispose) {
+        try {
+          dispose();
+        } catch {
+          /* ignore */
+        }
+        dispose = null;
+      }
+    },
+  };
+}

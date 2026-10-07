@@ -89,15 +89,17 @@ Representative families in `launch-gates.yml` (each family is dozens of lines):
 | `STATE.md` | `wc -l ≤ 60` (twice) | **HIGH** (line budget) |
 | `docs/OBSERVATORY-STATE.md` | no CI pin; its contract is the §1 step determination + the ≤60-line rule applies to `STATE.md` only | LOW |
 | `package.json` | `grep -qF '"react-window"'`; `pnpm exec vitest run` globs; `node --test tests/*.test.js` | LOW |
+| `src/lib/dvr/*` (step 6) | `tests/f107-dvr-full.test.js` (9 rules: privacy fence, wiring, i18n, LITE-posture lock); `tests/f-dvr-lite.test.js` (F107-h keeps the three LITE files posture-identical); `src/tests/smoke/f107-dvr-full.test.tsx` | MED (own gate owns the surface) |
+| `src/components/dvr/SessionListModal.tsx`, `src/pages/Collector.tsx` (F107 card), `src/components/domain/DvrFab.tsx` (Sessions handle) | F107-g/i testid + i18n pins; `f-testid-coverage` rules (no `collector-`/`click-now-` ids outside the blind spot's owners) | MED |
 
 ## 6. Standing warnings for the remaining Observatory steps
 
 - **F106 (step 5) adds 11 routes to `src/App.tsx`.** It must (a) keep the two F56-c element expressions
   byte-true, (b) re-run the F56-c step locally, and (c) re-check `f76-sidebar-search` - the same three
   obligations step 3 discharged and step 4's PR #170 had to repair.
-- **F107 (step 6) adds storage keys.** No CI pin forbids `localStorage`, but `src/stores/searchUiStore.ts`
-  and `src/lib/fetchStub.ts` are inside a `grep -RnE 'localStorage|sessionStorage'` refusal set (F56-c v2):
-  adding a *new* storage key elsewhere is fine, adding one to those two files is not.
+- ~~**F107 (step 6) adds storage keys.**~~ **DISCHARGED (step 6, PR #173)**: F107 used IndexedDB
+  (`ghrdp-dvr`), not `localStorage`/`sessionStorage`, so the F56-c v2 refusal set was never touched;
+  F107-e additionally bans web-storage tokens in every `src/lib/dvr/*` file going forward.
 - **F108/F109 (steps 7-8) mount new chrome.** `src/App.tsx`'s chrome block is unpinned beyond
   `f102-real-buttons`'s single `includes()` - but the bottom-bar script gate and `ids-regression` (219 ids)
   both walk the rendered DOM, so anything mounted globally must add **no new `id`** and render **no clock
