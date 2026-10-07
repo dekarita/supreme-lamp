@@ -29,6 +29,9 @@ import {
   subscribeDvr,
   type DvrReport,
 } from "@/lib/dvr";
+// [F107 §4] The panel grows a Sessions handle: the FAB stays the operator's
+// single DVR entry point, and the stored-session list opens from it.
+import { SessionListModal } from "@/components/dvr/SessionListModal";
 
 /** How much of the envelope the panel prints before it says "…" - enough to prove
  *  the payload is the real thing, short enough to keep the modal readable. */
@@ -44,6 +47,8 @@ export function DvrFab() {
   const [report, setReport] = useState<DvrReport | null>(null);
   const [copied, setCopied] = useState("");
   const [recording, setRecording] = useState(isDvrRecording());
+  // [F107 §4] stored-session list, opened from inside the panel
+  const [sessionsOpen, setSessionsOpen] = useState(false);
 
   // Assemble the bundle when the panel opens, and re-assemble after every change
   // that happened while it was open (the count is the dependency that moves).
@@ -170,6 +175,14 @@ export function DvrFab() {
               >
                 {recording ? t("dvr.pause") : t("dvr.resume")}
               </button>
+              <button
+                type="button"
+                data-testid="dvr-sessions-button"
+                onClick={() => setSessionsOpen(true)}
+                className="text-xs text-secondary hover:text-primary underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
+              >
+                {t("dvr.sessions")}
+              </button>
               <span data-testid="dvr-last" className="text-[10px] text-tertiary">
                 {lastAt ? t("dvr.lastActivity") : ""}
               </span>
@@ -196,6 +209,10 @@ export function DvrFab() {
         secondary={{ label: t("dvr.clear"), onClick: onClear }}
         primary={{ label: t("dvr.copy"), onClick: () => void onCopy() }}
       />
+
+      {/* [F107 §4] the stored-session list; mounted beside the panel so opening
+          it never unmounts the live-ring preview above. */}
+      <SessionListModal open={sessionsOpen} onClose={() => setSessionsOpen(false)} />
     </>
   );
 }

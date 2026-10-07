@@ -80,6 +80,10 @@ let recording = true;
 let mutations = 0;
 let lastMutationAt = 0;
 let listeners = new Set<() => void>();
+// [F107 §3.2] Entry-level subscribers: Full DVR's session recorder rides the SAME
+// ring pushes step 3's FAB renders (no second click listener, no fork of F104 -
+// the F-DVR-h contract holds). A subscriber sees the stored entry after seq/at.
+let entryListeners = new Set<(entry: DvrCoreEntry) => void>();
 
 function currentRoute(): string {
   try {
@@ -148,8 +152,16 @@ function recompute(): void {
 function push(entry: Omit<DvrCoreEntry, "seq" | "at">): void {
   if (!recording) return;
   try {
-    ring.push({ ...entry, route: currentRoute() }, Date.now());
+    const stored = ring.push({ ...entry, route: currentRoute() }, Date.now());
     recompute();
+    // [F107 §3.2] notify after recompute, one listener fault never breaks the rest
+    for (const fn of Array.from(entryListeners)) {
+      try {
+        fn(stored);
+      } catch {
+        /* a subscriber must never break the recorder */
+      }
+    }
   } catch {
     /* the DVR must never break a page it is recording */
   }
@@ -164,6 +176,16 @@ export function subscribeDvr(fn: () => void): () => void {
   listeners.add(fn);
   return () => {
     listeners.delete(fn);
+  };
+}
+
+/** [F107 §3.2] Subscribe to every entry the ring stores (click/settle/route).
+ *  The Full DVR session recorder is the production subscriber; the DOM gate uses
+ *  the same seam to prove "click observed -> entry added" without a fork. */
+export function onDvrEntry(fn: (entry: DvrCoreEntry) => void): () => void {
+  entryListeners.add(fn);
+  return () => {
+    entryListeners.delete(fn);
   };
 }
 
@@ -363,6 +385,7 @@ export function __resetDvrForTests(): void {
   lastMutationAt = 0;
   recording = true;
   listeners = new Set<() => void>();
+  entryListeners = new Set<() => void>();
   recompute();
 }
 

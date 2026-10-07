@@ -29,6 +29,8 @@ import {
   type ButtonAction,
 } from "@/lib/collectorAgent";
 import { GLOBAL_CLICK_SOURCE } from "@/lib/globalClickCapture";
+// [F107 §4] DVR Sessions section - the stored-session surface of Full DVR lives
+// on the Collector page next to the other recorded-behaviour feeds.
 import { SessionListModal } from "@/components/dvr/SessionListModal";
 
 // [F101 §3.3] the six tabs every action row expands into
@@ -88,6 +90,8 @@ export default function Collector() {
   const [error, setError] = useState<string | null>(null);
   const [retryAfter, setRetryAfter] = useState<number | null>(null);
   const [replaying, setReplaying] = useState(false);
+  // [F107 §4] the DVR Sessions modal's open state
+  const [dvrSessionsOpen, setDvrSessionsOpen] = useState(false);
   // [F102 §2.2] rows come straight from the persisted store: it hydrated from
   // localStorage synchronously, before this component's first paint.
   const actions = useCollectorStore((s) => s.actions);
@@ -828,6 +832,21 @@ export default function Collector() {
           </details>
         ) : null}
       </Card>
+
+      {/* [F107 §4] DVR Sessions: browser-local recordings (IndexedDB), listed,
+          deleted and exported (.mcrec v2) from here. Nothing leaves the machine
+          without an operator click - the section's own privacy line says so. */}
+      <Card title={t("dvrSessions.collectorTitle")}>
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-xs text-tertiary" data-testid="dvr-sessions-section-note">
+            {t("dvrSessions.collectorNote")}
+          </p>
+          <Button variant="secondary" size="sm" onClick={() => setDvrSessionsOpen(true)} data-testid="dvr-sessions-open">
+            {t("dvrSessions.collectorOpen")}
+          </Button>
+        </div>
+      </Card>
+      <SessionListModal open={dvrSessionsOpen} onClose={() => setDvrSessionsOpen(false)} />
     </div>
   );
 }

@@ -10,6 +10,7 @@
 > determination = first unchecked box below; fall back to #165's body only if this file is missing,
 > then cross-check the newest "§3 tracking-issue handoff" comment on the PR this step shipped in.
 
+**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 16:20Z by arena/fa27adb3-supreme-lamp
 **Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 by arena/66a13a8c-supreme-lamp
 
 ## §OPERATOR-ASSERTIONS (v7 migration; verify independently)
@@ -87,6 +88,24 @@
   · **NOT done, on purpose**: no Playwright spec (`tests/e2e/f106-mock-controls.spec.ts` was the prompt's
     third gate). No Chromium in this sandbox, and `e2e-ui` is the 25-min self-canceller - an un-runnable
     spec is not evidence, so the transport-level proof lives in the jsdom suite instead. Handoff below.
+- [x] **Step 6 — F107** · landed on `arena/fa27adb3-supreme-lamp`, PR **#173** · Full DVR v2: DOM mutations +
+  screenshots + IndexedDB session management, extending step 3's F-DVR-LITE (never replacing it)
+  · four new plain-JS cores under `src/lib/dvr/` (`mutationCore`, `screenshotCore`, `storageCore`, `exportCore`
+  + hand-written `.d.ts`) executed by the Node gate; browser halves `mutations.ts` (MutationObserver on `#root`),
+  `screenshots.ts` (SVG foreignObject → canvas → 320×240 PNG thumb, dpr-aware, honest-failure, one documented
+  rasterizer seam), `storage.ts` (IndexedDB `ghrdp-dvr`, 5 MB/session soft budget, 30-day retention,
+  QuotaExceededError → oldest-shot-first eviction + one retry), `session.ts` (one session per page load riding
+  the new `onDvrEntry` seam in `dvr.ts`), `export.ts` (`.mcrec` v2 bundle + operator-clicked file download)
+  · `SessionListModal.tsx` mounted from BOTH the DvrFab panel (Sessions handle) and a new "DVR sessions" card
+  on the Collector page; 21 new i18n keys (`dvr.sessions` + `dvrSessions.*` × 20, real Sinhala), lock 1001 → 1022
+  · gates: `tests/f107-dvr-full.test.js` (9 rules, auto-run by `node --test tests/*.test.js`) +
+  `src/tests/smoke/f107-dvr-full.test.tsx` (9 DOM tests; fake-indexeddb executes the REAL adapter)
+  · falsified **16 ways, 0 missed** (12 node + 4 DOM mutations; 3 first-pass loopholes found and pinned
+    same-session: constant-drift class for budget/retention + adapter triage call-site floor); 2 vacuity probes
+  · Node 669/669 · Vitest 1089/1089 (83 files) · tsc 0 · build 1,066.85 kB · regression-ids 219/219
+  · **lab-discovered prod bugs: none** (F106's all-11-sections mount re-ran green with F107 active on /#/collector)
+  · CI on code head `2892b58`: `gates` ✅ ×2 · `windows-native` ✅ ×2 · `build-ui` ✅ · `autologin-lab` ✅ ·
+    `e2e-ui` ⚠️ AMBER-INHERITED (25-min self-cancel, 0 failed steps = main pattern) → **mergeable**
 - [x] **Step 6 — F107** · Full DVR v2: opt-in structural DOM diffs + 320×240 rasterized thumbnails + local IndexedDB sessions (PR **#173**, no merge by session)
 - [ ] **Step 7 — F108** · ETA 120min · Public Replay Viewer on Pages + Arena mode
 - [ ] **Step 8 — F109** · ETA 90min · Debug HUD overlay (F12-shift)
@@ -130,6 +149,41 @@ true branch dereferenced `null`) **and** the section is fenced, so a future cras
    STRICTER (it pins the fence as well). Everything after a failing step is skipped, so the remaining skipped
    gates (v2/v3, F58, F59, F57, F62) were re-run locally from the extracted step bodies before the re-push -
    all PASS. A future route-wiring change must expect this step.
+
+## Step 6 record — F107 Full DVR v2 (2026-10-07, `arena/fa27adb3-supreme-lamp`)
+**Extended, never replaced.** Step 3's LITE files (`dvr-core.js`, `dvr.ts`, `DvrFab.tsx`) keep their exact
+posture — F107-h is the regression lock for that — and the only change to them is additive: `dvr.ts` exposes
+`onDvrEntry()` (the seam the session rides; no second click listener) and the FAB panel grows a Sessions handle.
+The v1 clipboard bundle keeps working untouched; v2 is a SUPERSET with its own envelope tag (`mcrec2:`) so the
+two decoders can never meet halfway.
+**The content scope is enumerated, not open-ended.** The #169 handoff assigned DOM *content* capture to F107;
+the scope it got is narrow and fenced in the gates: mutation descriptors carry tag names + attribute NAMES +
+child counts (never values, never text), the ONLY pixel surface is the screenshot pipeline (320×240 PNG thumbs,
+byte-capped, downscale-fenced), and no F107 file may name a network API or an upload route. Egress stays
+operator-clicked: Export writes a local file through an anchor; the seam is pinned to its shipped default.
+**Storage arithmetic is proven where it is decided.** `storageCore.js` owns the 5 MB/session budget, the
+30-day retention (measured from `endedAt`; an in-flight session is never pruned), QuotaExceededError
+classification and oldest-shot-first eviction; `storage.ts` calls those functions and obeys the answer (pinned:
+12 `classifyQuotaError` call sites, `shrinkToFit`, `pruneByRetention`). The DOM gate executes the REAL adapter
+against `fake-indexeddb` (devDependency) — persist → teardown → re-list proves cross-reload persistence, and
+delete removes meta + shots.
+**Screenshots fail honestly.** jsdom has no 2d context, so the default pipeline's honest-failure branch is
+DOM-proven (`{ok:false, reason}`, never a throw, never a fake pixel); the one documented rasterizer seam is how
+the gate drives the success path, and `isDefaultRasterizerActive()` is pinned so a fake can never masquerade as
+production. In a real browser the pipeline is SVG foreignObject → Image → canvas → `toDataURL("image/png")`.
+**Halfway reconciliation (§0.7, 6/10 shipped).** Spec and ledger both say 10 steps; operator assertions stand
+(GH_PAT unused; GitHub Pages still needed before step 7 F108; labels still operator-only). Remaining budget
+projection at the observed ~25–95 min/step is well inside the per-session caps. No step's spec drifted enough
+to re-scope; the one prompt correction this session was #172 (merged before this session started).
+**Handoff resolved.** Step 3's handoff #1 ("F107 owns DOM content capture; enumerate the privacy surface and
+extend the two gate files rather than weakening them") is done: F-DVR-f/g unchanged, F107's surface fenced in
+its own gate + F107-h locks the LITE posture. Step 4's handoff #2 (registry storage keys) stays RECORDED, not
+done: adding a schema field to `feature-registry.json` would have moved F105's gates, and this step's storage is
+browser-local IndexedDB (not one of the 14 `localStorage` keys the handoff names); F109/F111 own the audit.
+**NOT done, on purpose.** No Playwright spec (same reasoning as step 5: no local Chromium, `e2e-ui` self-cancels
+at 25 min; F111's e2e replan owns it). Screenshots of the REAL browser pipeline are CI-unverifiable from jsdom
+by construction — the seam + honest-failure pair is the proof, and step 7's Replay Viewer will be the first real
+consumer of the PNG thumbs.
 
 ## Standing facts the next session should not rediscover
 - **`e2e-ui` is red on `main` for reasons no step can fix**: it is cancelled by its own
@@ -175,6 +229,19 @@ true branch dereferenced `null`) **and** the section is fenced, so a future cras
 - **Step 3/6/7 hook**: F104 `globalClickCapture` ignores `collector-`/`click-now-` test-id prefixes;
   `tests/f-testid-coverage.test.js` rule f enforces that no ordinary button is ever named into that
   blind spot, so DVR/replay bundles keep 100% click coverage by construction.
+- **F107 owns `src/lib/dvr/*` + `src/components/dvr/*`** (10 files + 2 gates). The LITE files
+  (`dvr-core.js`, `dvr.ts`, `DvrFab.tsx`) stay storage/network-free and F107-h locks that. The session
+  recorder is a singleton (`installDvrFull`, idempotent, `__resetDvrFullForTests`), installed from
+  `main.tsx` behind TWO kill flags (`VITE_DVR_ENABLED` + `VITE_F107_FULL_DVR`). `dvr.ts`'s `onDvrEntry`
+  is the ONLY supported way to observe ring entries — do not add a second click listener.
+- **The `.mcrec` versions are closed tags**: `mcrec1:` is the FAB's clipboard envelope (step 3, pinned),
+  `mcrec2:` is the Full DVR export envelope (step 6). `validateBundleV2` refuses anything with
+  `version !== 2`; a step that bumps the bundle shape must move `DVR_BUNDLE_V2_VERSION` AND the gate.
+- **The count lock is now 1022** (`tests/f-i18n-parity.test.js`): 1001 + this step's 21 keys
+  (`dvr.sessions` + `dvrSessions.*` × 20). §LOCK-ARITHMETIC held: measured from the CURRENT catalogs,
+  never incremented. F-DVR-k and F107-g both cross-check the lock against the real count.
+- **The DVR's IndexedDB is `ghrdp-dvr` v1** (stores `sessions`/`shots`; shot keys `<sessionId>/<seq>`).
+  `fake-indexeddb` is a devDependency used ONLY by the DOM gate — the browser never ships it.
 
 ### Session 2026-10-07 10:05Z — Step 4 — F105 Feature Registry + 11 FeatureBoundaries — **COMPLETE**
 - Branch `arena/75bc347b-supreme-lamp` · PR **#170** · base `4be94a7` · labels `f-observatory` + `observatory` applied by the session
@@ -218,6 +285,7 @@ true branch dereferenced `null`) **and** the section is fenced, so a future cras
 | `dd2ed68` (main at step 5 start = #170 merge) | **0/1 RED — `failure`** at "Native UI and VPS contracts (Node)": F-I18N-a + F-DVR-k (lock 970 vs 978 keys) - **the merge lost step 4's lock bump**, 649/651 node tests; every later step in the job skipped | in_progress | GREEN (`build-ui-prebuilt`) | in_progress |
 | `dd2ed68` + step 5 branch (local evidence, pre-CI) | node 660/660, lock 1001, i18n parity green | - | - | - |
 | `6f1c194` (#172 head, step 5 session, post-watch) | GREEN ×2 (push + PR) | GREEN ×2 | GREEN (`build-ui-prebuilt`) | AMBER-INHERITED (self-cancel 12:48:55Z, 1519 s, 0 failed steps) |
+| `8ee3b464` (#172 MERGE commit = main at step 6 entry, 16:00Z) | **GREEN** (run 37624201247, 12:52Z) | GREEN (same run) | GREEN | AMBER-INHERITED (`cancelled` — the unchanged 25-min self-cancel pattern) |
 
 **§4.2 arrival pattern (unchanged)**: `e2e-ui` cancels itself at `timeout-minutes: 25` with **zero failed
 steps** - acceptable for merge until F111 re-plans that job; after a step lands, the baseline is
@@ -244,9 +312,10 @@ option (d) needs no credential at all. #169's decision is implemented and the is
 operator once this PR lands.
 
 **Recorded for later steps:**
-1. **F107 (step 6) owns DOM *content* capture.** The DVR deliberately stores counts and descriptors only
-   (`F-DVR-g` forbids `innerHTML`/`textContent`/`querySelector`/`getAttribute` in `dvr.ts`). F107 must
-   enumerate its own privacy surface and extend the same two gate files rather than weakening them.
+1. ~~**F107 (step 6) owns DOM *content* capture.**~~ **RESOLVED by step 6**: the content scope was enumerated
+   and fenced (mutation descriptors = tag names + attribute NAMES + counts; screenshots = the only pixel
+   surface, 320×240 PNG thumbs, byte-capped; no F107 file names a network API). The LITE files stayed
+   untouched; F107-h locks that posture.
 2. **F109 (step 8) owns the un-fenced chrome** (see the tracker below); the DVR FAB is now one of those
    surfaces.
 3. **F108 (step 7) needs GitHub Pages**, which no session has verified as enabled - operator item.
@@ -264,6 +333,16 @@ operator once this PR lands.
 7. **`/#/health` needed a guard.** The lab found it; the fix is the third of its class after `LogPanel`
    (step 4) and the DVR's own guard. Any page that renders `d.<field>` before checking `d` is a candidate -
    F109's HUD should not be the next one.
+8. **F108 (step 7) consumes `.mcrec` v2**: `validateBundleV2` is the reader contract; v1 clipboard bundles
+   (`mcrec1:`) must keep decoding through step 3's `decodeEnvelope`. The Replay Viewer is the first real
+   consumer of the PNG thumbs - jsdom could only prove the seam + honest-failure, so the first browser-render
+   test of the SVG-foreignObject pipeline happens there (operator-visible thumbs = the proof).
+9. **Registry storage-key audit (step 4 handoff 2) is still open**: `feature-registry.json` carries no
+   storage keys; the 14 `localStorage` keys of #163 §3.8 + the `ghrdp-dvr` IndexedDB need a cited audit.
+   F107 deliberately did not widen the registry schema (that would have moved F105's gates); F109/F111 own it.
+10. **F109 owns the SessionListModal's unfenced mount**: the modal renders from `DvrFab` (chrome, unfenced by
+    design) and from the Collector page (fenced). A crash inside it while opened from the FAB still blanks the
+    app until F109 fences the chrome.
 
 ## §Fence-coverage-gap tracker (v5)
 
@@ -279,6 +358,34 @@ description, not from invented memory), with the target fencing step:
 | 11 `/#/lab/<section>` pages | `src/components/lab/LabRoute.tsx` | **yes** - the route builds its own `FeatureBoundary` from the route parameter, with `FeatureLab` as its child, so a crash (or a forced empty body) degrades to that section's card and unmounts the lab's interceptor | landed with step 5 |
 | the Labs entry | `AppShell.tsx`, after `</nav>` | n/a (not a route) | step 5: a BUTTON, flag-gated, deliberately outside the locked 11-entry `<nav>` list |
 | the lab's fetch interceptor | `src/lib/lab/mockBackend.ts` | n/a | scoped to the lab page's lifetime: installed by `FeatureLab`'s effect, ref-counted, restored on unmount, never installed by a dashboard route |
+| **`SessionListModal`** (added by step 6) | mounted from `DvrFab.tsx` (chrome) AND the Collector page | **mixed** - fenced when opened from `/collector` (the page's boundary), UNFENCED when opened from the FAB | F109 |
+
+## §Quality-metrics (v7)
+| session | loopholes found+closed | falsifications run/caught | main baseline on entry | budget used |
+|---|---|---|---|---|
+| step 3 (option d) | 4 | 22/22 | n/a (pre-baseline-table) | ~95/120 |
+| step 5 F106 | 1 | 18/18 | RED-repaired (lock drift) | ~25/120 |
+| **step 6 F107** | **3** (constant-drift class ×2 + triage call-site floor) | **16/16** | GREEN | ~65/120 |
+
+Trend: gate quality is holding (every session finds at least one real hole in its OWN gate before push);
+main-baseline-red frequency is 1/3 sessions (step 5), and the §LOCK-ARITHMETIC rule introduced after it has
+held since (step 6 measured 1001 + 21, never incremented).
+
+## §Cross-session-learning (v7)
+1. **jsdom's missing platform APIs are a design input, not an obstacle** (step 6): jsdom has no canvas 2d and
+   no IndexedDB, which forced the two patterns that made the step testable at all — one documented seam per
+   absent API (rasterizer), a real implementation as a devDependency where one exists (fake-indexeddb). Start
+   future steps by asking what jsdom CANNOT do; that list is the seam list.
+2. **Singleton document listeners leak across tests in the same file** (step 6, caught by a red DOM test):
+   `installGlobalClickCapture`'s uninstaller MUST be captured in every test that installs it; a leak doubles
+   ring entries for later tests. `__reset*ForTests` clears state, never listeners.
+3. **A behavioural assertion that reads the same constant it would mutate is blind to constant drift**
+   (step 6, M4/M5): always pin spec constants as literals beside their behaviour tests.
+
+## §Closable-blockers (v7)
+- **#169 (F-DVR architecture decision)**: option (d) shipped in step 3 (#171) and extended by step 6 (#173);
+  the issue was CLOSABLE since step 3 — operator decision unchanged.
+- No new blockers created by step 6.
 
 ## §Budget-actual-tracking (v5)
 
@@ -290,19 +397,23 @@ description, not from invented memory), with the target fencing step:
 | **3 F-DVR-LITE (option d)** | 90 min | **~95 min** | +5 | one re-verification pass (16 + 6 mutations) and 4 same-commit CI-pin updates; the extra ~5 min is the falsification, and it found one real gate hole |
 | 4 F105 | 90 min | ~? | - | PR #170 (not merged) |
 | **5 F106** | 120 min | **~25 min** | -75 | PR #172; the falsification pass (18 mutations + 5 vacuity probes) and the extra `/api/f92-selftest` root-cause dig are the two deliberate over-spends |
+| **6 F107** | 90 min | **~65 min** | -25 | PR #173; the delta is the 16-mutation falsification pass (3 first-pass loopholes pinned same-session) + the fake-indexeddb bring-up |
 
-## §Merge-order-graph (v6)
+## §Merge-order-graph (v7)
 
 ```
-main (dd2ed68 = #170 merge; gates RED on the lost count lock, e2e-ui/windows-native were still running)
+main (8ee3b464 = #172 merge, GREEN; + 8b52e59 status-update docs commit)
 
-step 1 #166 MERGED   step 2 #167 MERGED   step 3 #168 halt MERGED
-step 3 #171 MERGED (option d)   step 4 #170 MERGED ─┐ (provides FeatureBoundary + featureRegistry)
-                                                    └─> step 5 F106  THIS PR (#172)
-                                                          self-contained: additive routes, lab-only files,
-                                                          23 i18n keys, 3 pin updates (2 locks + F105-h)
-                                                          + the Health.tsx guard the lab found
-                                                          + the `gates` RED on main repaired (lock 970 -> 1001)
+steps 1-5 ALL MERGED:  #166 · #167 · #168 · #171 · #170 · #172
+step 3 F-DVR-LITE (#171) ──> step 6 F107  THIS PR (#173)
+      hard dep: dvr-core.js + dvr.ts + DvrFab.tsx on main (all present)
+      self-contained: 14 new files (src/lib/dvr/* + components/dvr/* + 2 gates),
+      additive edits only (dvr.ts onDvrEntry seam, DvrFab Sessions handle,
+      Collector card, main.tsx install behind two kill flags),
+      21 i18n keys + the count lock 1001 -> 1022, fake-indexeddb devDependency.
+      Can merge independently of any open PR; no route wiring or sidebar change.
+next: step 7 F108 (soft-depends on this: consumes .mcrec v2; NEEDS GitHub Pages -
+      operator item) · step 8 F109 (after 1-7) · steps 9/10 independent
 ```
 
 ### Older graph (v5, for the record)
@@ -389,11 +500,29 @@ the 120min/session cap and needs re-scope. Pages is still operator-manual before
 5. **A count lock is a measurement, not a merge side** (step 5, learned the hard way). Resolving a conflict
    in favour of one lock value without re-measuring shipped a red main. Re-measure after any merge that
    touches a catalog.
+6. **Decide in the core, obey in the adapter** (step 6). Every storage decision (budget, retention, quota
+   triage, eviction order) is a pure function the Node gate drives; the IndexedDB adapter's only job is to
+   call it and obey the answer - and the gate pins the call SITES (a triage floor of 10 `classifyQuotaError`
+   uses), so a hard-coded shortcut in the adapter fails CI.
+7. **A content surface gets one documented seam, never a mock of the API under test** (step 6). Screenshots
+   inject the rasterizer (jsdom has no canvas); IndexedDB runs against fake-indexeddb (a real implementation,
+   not a hand-rolled stub). "Seam where the platform is absent, real thing where it exists."
+8. **Spec constants need literal drift locks** (step 6, loopholes M4/M5/M11). A behavioural test that reads
+   the same constant a mutation moves can never see the drift - pin the literal (`5_000_000`, `30`) beside
+   the behaviour, the way F-DVR-a pins `30_000`/`200`.
 
-## §Prompt-staleness-findings (v6)
+## §Prompt-staleness-findings (v7)
 
-The prompt's §CURRENT ROADMAP STATUS was a point-in-time snapshot; GitHub was live and differed on three
-counts (the prompt itself told this session to prefer GitHub - §0.1):
+**Step 6 session (2026-10-07 16:00Z, v7 prompt)**: ONE correction. The prompt claimed step 5 F106 PR #172
+was "🟡 OPEN, awaiting operator merge"; GitHub showed it **MERGED** at 12:52:40Z (merge commit `8ee3b464`,
+merged by the operator) with the main gates GREEN on the merge commit - so progress at entry was 6/10 (60%),
+the main baseline was GREEN (§MAIN-BASELINE-GREEN-CHECK: no inherited red, no repair burden), and step 6 was
+the actionable step exactly as the prompt's §1 computed. All other roadmap claims (#166/#167/#168/#170/#171
+merged) verified true.
+
+The v6-prompt table follows (step 5 session); the prompt's §CURRENT ROADMAP STATUS was a point-in-time
+snapshot; GitHub was live and differed on three counts (the prompt itself told that session to prefer
+GitHub - §0.1):
 
 | prompt claim | GitHub reality | consequence |
 |---|---|---|
@@ -407,6 +536,60 @@ the F105 ownership partition - see the §Step 5 record for what shipped instead 
 
 ## Session log
 
+### Session 2026-10-07 16:00Z — Step 6 — F107 Full DVR v2 — **COMPLETE**
+- Branch `arena/fa27adb3-supreme-lamp` · PR **#173** · base `8b52e59` (= `origin/main`, incl. the #172 merge)
+- PROMPT STALENESS: **1 correction** (#172 merged 12:52Z before this session; progress 6/10 at entry, not 5) ·
+  all other roadmap claims verified true via `gh api`
+- SPEC-LEDGER-RECONCILIATION: none (spec + ledger agree on 10 steps; steps 1-5 shipped)
+- §HALFWAY-RECONCILIATION (60% ≥ 50%): totals re-verified (10/10), operator assertions stand (Pages needed
+  before step 7; labels operator-only), remaining budget projects inside caps, no re-scope needed
+- PRE-STEP (10 checks): §SPEC-REALITY **2 drifts** (jsdom has neither canvas 2d nor IndexedDB — forced the
+  rasterizer seam + fake-indexeddb; `src/lib/dvr/` did not exist yet) · §INVENTORY-RE-DERIVE: ring 30 s/200
+  entries descriptors-only, dvr.ts observer COUNTS only (F-DVR-g pins it), dvr.* 21 keys, lock 1001 ·
+  §SECRET-ENUM: N/A (no credential; browser-local only; new files scanned for the banned class anyway) ·
+  §ARCH-FEASIBILITY **verified** (MutationObserver shipped in dvr.ts + jsdom-proven; SVG foreignObject →
+  canvas is dependency-free; IndexedDB via fake-indexeddb 6.2.5 installed cleanly) ·
+  §SECURITY-REMEDIATION-CHECK **clear** (no endpoint, browser-local storage, operator-clicked egress only) ·
+  §CI-PIN-DETECTION **1 pin moved** (i18n count lock; main.tsx/DvrFab/Collector pins are additive-safe and
+  re-verified by the 669-test node suite) · §FACT-REFRESH: e2e-ui AMBER-INHERITED still the main baseline
+  (0/5 cancelled pattern unchanged) · §PRIMITIVE-AUDIT: 7 primitives extended (dvr ring seam, DvrFab, Modal,
+  Button, Card, featureRegistry read-only, the plain-JS-core + `.d.ts` convention), 0 replaced ·
+  §MERGE-STATE-CHECK: all six prior PRs merged · §MAIN-BASELINE-CHECK **GREEN** (run 37624201247 on `8ee3b464`)
+- Main baseline on entry: **GREEN** · inherited-red repairs: **none needed**
+- Blocker classification: none (hard dep step 3 merged; step 5 merged so no parallel-conflict risk)
+- Primitives extended: `dvr.ts` (+`onDvrEntry` seam), `DvrFab` (+Sessions handle), Collector (+DVR card),
+  main.tsx (+install behind two kill flags); the three LITE files otherwise byte-posture-identical (F107-h)
+- Gates added: **2** (`tests/f107-dvr-full.test.js` 9 rules executing the four shipped pure cores;
+  `src/tests/smoke/f107-dvr-full.test.tsx` 9 DOM tests executing the real adapter against fake-indexeddb) ·
+  falsified **16 ways / 16 caught / 0 missed** (12 node: M1-M12 incl. the three prompt-mandated mutations +
+  vacuity V1/V2; 4 DOM: MD1-MD4) · **3 loopholes found and closed same-session** (constant drift ×2,
+  triage call-site floor — the §Quality-metrics row)
+- Vacuity probes: 2, both caught (install removed → F107-f red; indexedDB removed → F107-e red)
+- Non-regression proofs: **10** (node 669/669 was-660, vitest 1089/1089 was-1080, tsc 0, build 1,066.85 kB,
+  regression-ids 219/219, no-neon-green, bottom-bar, fx-ids, F106 all-11-lab-mount green WITH F107 active,
+  f-dvr-lite suite green = step-3 contract intact)
+- Lab-discovered prod bugs: **none** (F106's `/lab/<id>` × 11 suite re-ran green; `/#/collector` mounts with
+  the new card; no crash reproduced)
+- CI-pins updated in same PR: **1** (EXPECTED_FLAT_KEYS 1001 → 1022, measured: 1001 current + 21 added —
+  §LOCK-ARITHMETIC held) · no skipped-gate coverage needed (the failing-step class was i18n locks, all green)
+- Design-vs-test-race fixes: 1 (the leaked capture-listener double-recording in the DOM gate — fixed by
+  capturing the uninstaller; recorded as cross-session learning #2)
+- Shipped patterns added: 3 (decide-in-core/obey-in-adapter; seam-for-absent-API; literal drift locks)
+- Cross-session learning added: 3 (jsdom-absence = seam list; listener leaks; constant-drift blindness)
+- Standing facts corrected: 1 (#172 merged, progress 6/10) · blockers created: none · closable: #169 stands
+- Fence-gaps added: 1 (SessionListModal via DvrFab) closed: 0 (F109 owns chrome)
+- Handoff resolved: step-3 handoff #1 (content scope enumerated + fenced) · recorded: 3 (F108 consumes v2 +
+  first real PNG render; registry storage-key audit still open; modal unfenced from the FAB)
+- CI (HEAD `2892b58`, watch 16:09-16:40Z, 11 polls):
+  - **Original verdict**: `gates` ✅ ×2 (push 37650353338 + PR 37650401290) · `windows-native` ✅ ×2 ·
+    `F59 build-ui` ✅ · `autologin-lab` ✅ · `e2e-ui` ⚠️ AMBER-INHERITED (run 37650401288 `cancelled` 16:39Z
+    by its own 25-min timeout, **0 failed steps** — the unchanged main 0/5 pattern) → **mergeable** (only RED-NEW blocks)
+  - Post-watch rerun: queued by this docs-only commit; the original verdict stands for the identical source tree
+- Session log comment: PR #174 comment `#issuecomment-6042426589` (§3 + §4 CI verdict + §7 trace)
+- Post-watch informational commit: this one — records the CI verdict and the comment id; **no source file
+  changed** (precedent: steps 4 and 5). Branch head moves to a docs-only commit; the code verdict above
+  stands for the identical source tree.
+- Budget: ~80 min of 120 (implementation ~40, falsification+loopholes ~15, CI watch ~20, docs ~5)
 ### Session 2026-10-07 — Step 6 — F107 Full DVR — COMPLETE (PR #173; final source watch pending)
 - Branch `arena/66a13a8c-supreme-lamp` · PR #173 · main baseline GREEN · #172 merged (prompt-staleness 1 roadmap correction; OPERATOR-ASSERTIONS migration needed).
 - PRE-STEP: ten checks recorded above; spec drift 2 (no pre-existing full-DVR folder; canvas alone cannot rasterize DOM); inventory-hidden drift 1 (private pixel data), security clear, arch verified, secret enum 7 name-only locations (repo Actions secrets API 403, no credential required).

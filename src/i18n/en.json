@@ -152,7 +152,8 @@
     "enableUpload": "Enable & Upload",
     "optInCancel": "Cancel",
     "optOut": "Disable mirror for this run",
-    "moduleMissing": "Mirror: disabled — the mirror module is not installed on this run"  },
+    "moduleMissing": "Mirror: disabled — the mirror module is not installed on this run"
+  },
   "logs": {
     "title": "Logs",
     "logonEvents": "Logon Events",
@@ -1302,6 +1303,8 @@
     "copyLabel": "DVR bundle",
     "copied": "Copied {{chars}} characters ({{codec}}) — paste it into Arena",
     "copyFailed": "Copy failed — select the preview and copy it by hand",
+    "clear": "Clear",
+    "sessions": "Sessions…"
     "fullWarning": "Optional full capture stores structural DOM changes and 320×240 screenshots on this device. Screenshots may contain private information. Review before exporting; nothing uploads automatically.",
     "fullStart": "Start full capture (local only)",
     "fullStop": "Stop full capture",
@@ -1313,31 +1316,53 @@
     "delete": "Delete",
     "clear": "Clear"
   },
-    "featureLab": {
-      "entry": "Labs",
-      "indexTitle": "Feature Lab — pick a section",
-      "indexIntro": "11 harnesses, derived from the F105 feature registry: each one mounts its own section alone, inside the same FeatureBoundary fence the real route uses. Nothing here can reach another section.",
-      "openReal": "Open the real route",
-      "back": "All labs",
-      "meta": "route {{route}} · component {{component}} · fence {{fence}}",
-      "mockTitle": "Mock backend",
-      "mockOn": "Mocking ON",
-      "mockOff": "Mocking OFF",
-      "mockHint": "Force an observed path to empty / 500 / offline to watch the section degrade. Only reads are mocked, every mocked answer is labelled {{header}}, and writes always reach the real server.",
-      "mockHintRead": "Reads may be faked in this tab; writes never are.",
-      "mocksOff": "Mocks are off — this section talks to the real backend.",
-      "readsOnly": "GET only — every write passes through untouched",
-      "noRequests": "Nothing observed yet — this section has not asked the backend for anything.",
-      "clearLedger": "Clear",
-      "copyReport": "Copy lab report",
-      "unknown": "No such feature",
-      "unknownBody": "“{{id}}” is not one of the {{count}} sections the registry declares.",
-      "mockBadge": "mocked: {{scenario}}",
-      "scenario": {
-        "passthrough": "real",
-        "empty200": "empty",
-        "error500": "500",
-        "offline": "offline"
-      }
+  "dvrSessions": {
+    "title": "DVR sessions",
+    "privacy": "Sessions are stored only in this browser (IndexedDB). Export hands you a file; nothing is uploaded.",
+    "loading": "Loading sessions…",
+    "storageUnavailable": "IndexedDB is unavailable here — sessions stay in memory only.",
+    "empty": "No stored sessions yet.",
+    "live": "recording",
+    "rowCounts": "{{clicks}} clicks · {{mutations}} mutations · {{shots}} shots",
+    "rowBytes": "{{kb}} KB",
+    "export": "Export",
+    "delete": "Delete",
+    "refresh": "Refresh",
+    "exportCurrent": "Export current",
+    "close": "Close",
+    "deleted": "Session deleted.",
+    "deleteFailed": "Delete failed.",
+    "exported": "Exported {{file}}.",
+    "exportFailed": "Export failed.",
+    "collectorTitle": "DVR sessions (stored)",
+    "collectorNote": "Recordings live in this browser only. Delete or export them at any time.",
+    "collectorOpen": "Open DVR sessions"
+  },
+  "featureLab": {
+    "entry": "Labs",
+    "indexTitle": "Feature Lab — pick a section",
+    "indexIntro": "11 harnesses, derived from the F105 feature registry: each one mounts its own section alone, inside the same FeatureBoundary fence the real route uses. Nothing here can reach another section.",
+    "openReal": "Open the real route",
+    "back": "All labs",
+    "meta": "route {{route}} · component {{component}} · fence {{fence}}",
+    "mockTitle": "Mock backend",
+    "mockOn": "Mocking ON",
+    "mockOff": "Mocking OFF",
+    "mockHint": "Force an observed path to empty / 500 / offline to watch the section degrade. Only reads are mocked, every mocked answer is labelled {{header}}, and writes always reach the real server.",
+    "mockHintRead": "Reads may be faked in this tab; writes never are.",
+    "mocksOff": "Mocks are off — this section talks to the real backend.",
+    "readsOnly": "GET only — every write passes through untouched",
+    "noRequests": "Nothing observed yet — this section has not asked the backend for anything.",
+    "clearLedger": "Clear",
+    "copyReport": "Copy lab report",
+    "unknown": "No such feature",
+    "unknownBody": "“{{id}}” is not one of the {{count}} sections the registry declares.",
+    "mockBadge": "mocked: {{scenario}}",
+    "scenario": {
+      "passthrough": "real",
+      "empty200": "empty",
+      "error500": "500",
+      "offline": "offline"
     }
+  }
 }
