@@ -26,6 +26,10 @@
   · **step-2 handoff RESOLVED**: the `/#/telemetry` empty-store crash (`LogPanel.tsx:168`, always-true `Array.isArray((native && native.handlerChain) || [])` guard) is fixed at the root, with the fence as the second line of defence
   · gates: `tests/f105-feature-registry.test.js` (11 rules, auto-run by launch-gates) + `src/tests/smoke/f105-feature-boundaries.test.tsx` (26 tests, DOM-proven)
   · Node 634/634 · Vitest 1030/1030 (79 files) · tsc 0 · build 1016.92 kB · regression-ids 219/219 · 12 falsifications, 3 loopholes tightened
+  · CI on the code head `1a54b2c`: `gates` ✅ · `windows-native` ✅ · `launch-gates`(PR) ✅ · `e2e-ui` ⚠️ AMBER-INHERITED
+    (cancelled by its own 25-min timeout at 10:32:45Z, zero failed steps — the `main` baseline is 0/5 cancelled).
+    `F59 build-ui` + `autologin-lab` ✅ on the preceding head `8402559`. One supersede: `8402559` → `1a54b2c`
+    (the F56-c pin fix below). Mergeable by the §4 criteria (only RED-NEW blocks).
 - [ ] **Step 5 — F106** · ETA 120min · `/#/lab/<section>` isolated test pages × 11
 - [ ] **Step 6 — F107** · ETA 90min · Full DVR: DOM mutations + screenshots + IndexedDB
 - [ ] **Step 7 — F108** · ETA 120min · Public Replay Viewer on Pages + Arena mode
@@ -128,5 +132,9 @@ true branch dereferenced `null`) **and** the section is fenced, so a future cras
   no local Playwright)
 - CI run 1 (`8402559`, superseded by the run-2 fix): `F59 build-ui` ✅ · `autologin-lab` ✅ · `gates` ❌
   **RED-NEW** at "F56-c sidebar + search + file-explorer shell gates" (stale route pin, see handoff 4) ·
-  `windows-native` still running when the head was replaced. Fix pushed as run 2.
-- Budget: ~100 min of 120
+  `windows-native` still running when the head was replaced.
+- CI run 2 (code head `1a54b2c`, the one to judge): `gates` ✅ · `windows-native` ✅ · `launch-gates`(PR) ✅ ·
+  `e2e-ui` ⚠️ AMBER-INHERITED (self-cancelled 10:32:45Z, zero failed steps; `main` 0/5 cancelled) →
+  **mergeable**. Post-watch docs-only commit (this one) records the classification; no source file changed in it.
+- Session log comment: PR #170 comment `#issuecomment-6036119782` (§3.4 + §7 full trace, incl. the CI verdict).
+- Budget: ~52 min of 120
