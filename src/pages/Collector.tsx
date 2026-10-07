@@ -28,6 +28,7 @@ import {
   KNOWN_BUTTONS,
   type ButtonAction,
 } from "@/lib/collectorAgent";
+import { GLOBAL_CLICK_SOURCE } from "@/lib/globalClickCapture";
 
 // [F101 §3.3] the six tabs every action row expands into
 const DEEP_TABS = ["preCheck", "request", "response", "postCheck", "services", "verdict"] as const;
@@ -88,6 +89,11 @@ export default function Collector() {
   // [F102 §2.2] rows come straight from the persisted store: it hydrated from
   // localStorage synchronously, before this component's first paint.
   const actions = useCollectorStore((s) => s.actions);
+  // [F104 §3.4] two provenances, two sections: the instrumented F100/F101/F102
+  // rows keep the "Recent user actions" table (and its F102 e2e counts)
+  // byte-identical; the auto-captured rows render below under "Global clicks".
+  const recordedActions = useMemo(() => actions.filter((a) => a.source !== GLOBAL_CLICK_SOURCE), [actions]);
+  const globalActions = useMemo(() => actions.filter((a) => a.source === GLOBAL_CLICK_SOURCE), [actions]);
   const hydration = useCollectorStore((s) => s.hydration);
   const persistError = useCollectorStore((s) => s.persistError);
   const notice = useCollectorStore((s) => s.notice);
@@ -285,7 +291,7 @@ export default function Collector() {
   const summary = report?.summary;
 
   return (
-    <div data-testid="collector-page" className="flex flex-col gap-4">
+    <div data-testid="collector-page" data-collector-ignore className="flex flex-col gap-4">
       <div className="flex items-center gap-3 flex-wrap">
         <h2 className="text-xl font-semibold">{t("collector.title", { defaultValue: "Collector — Diagnosis Run" })}</h2>
         {summary ? (
@@ -345,7 +351,7 @@ export default function Collector() {
             variant="primary"
             size="sm"
             onClick={handleReplayAll}
-            disabled={replaying || actions.length === 0}
+            disabled={replaying || recordedActions.length === 0}
             data-testid="collector-replay-all"
           >
             {replaying ? "▶ Replaying…" : "▶ Replay all"}
@@ -354,7 +360,7 @@ export default function Collector() {
             🗑 {t("collector.clear", { defaultValue: "Clear" })}
           </Button>
           <span className="text-xs text-tertiary" data-testid="collector-actions-count">
-            {actions.length} action{actions.length === 1 ? "" : "s"} recorded
+            {recordedActions.length} action{recordedActions.length === 1 ? "" : "s"} recorded
           </span>
           {/* [F102 §2.2] proof the rows came back from localStorage on load */}
           {hydration ? (
@@ -380,7 +386,7 @@ export default function Collector() {
             {notice}
           </div>
         ) : null}
-        {actions.length === 0 ? (
+        {recordedActions.length === 0 ? (
           <div className="text-sm text-tertiary" data-testid="collector-actions-empty">
             {t("collector.actionsEmpty", { defaultValue: "No button clicks recorded yet. Click buttons around the dashboard (Add site, Open in RDP, Fetch, Download, Reconnect, Preview…) to populate this table." })}
           </div>
@@ -400,7 +406,7 @@ export default function Collector() {
                 </tr>
               </thead>
               <tbody>
-                {actions.slice(-50).reverse().map((a) => {
+                {recordedActions.slice(-50).reverse().map((a) => {
                   const open = expandedId === a.id;
                   return (
                     <Fragment key={a.id}>
@@ -527,6 +533,71 @@ export default function Collector() {
                         </tr>
                       ) : null}
                     </Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
+
+      {/* [F104 §3.4] Global clicks (auto-captured): every REAL button click
+          anywhere in Mission Control lands here with what it did on the wire
+          (fetch round trips) and on screen (popups). Rows persist like every
+          other collector row (F102) and survive a refresh. This Card's own
+          controls are data-collector-ignore'd (page root), so reading this
+          table never writes to it. */}
+      <Card title={t("collector.globalTitle", { defaultValue: "Global clicks (auto-captured)" })}>
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          <span className="text-xs text-tertiary" data-testid="collector-global-count">
+            {globalActions.length} click{globalActions.length === 1 ? "" : "s"} auto-captured
+          </span>
+        </div>
+        {globalActions.length === 0 ? (
+          <div className="text-sm text-tertiary" data-testid="collector-global-empty">
+            {t("collector.globalEmpty", { defaultValue: "No clicks captured yet. Click any button anywhere in the dashboard (not on this page), then come back here." })}
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs border-collapse" data-testid="collector-global-table">
+              <thead>
+                <tr className="text-left border-b border-default">
+                  <th className="py-1 pr-2">{t("collector.when", { defaultValue: "When" })}</th>
+                  <th className="py-1 pr-2">{t("collector.control", { defaultValue: "Control" })}</th>
+                  <th className="py-1 pr-2">{t("collector.route", { defaultValue: "Route" })}</th>
+                  <th className="py-1 pr-2">{t("collector.wire", { defaultValue: "Wire" })}</th>
+                  <th className="py-1 pr-2">{t("collector.elapsed", { defaultValue: "ms" })}</th>
+                  <th className="py-1 pr-2">{t("collector.verdict", { defaultValue: "Verdict" })}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {globalActions.slice(-50).reverse().map((a) => {
+                  const params = (a.params || {}) as { testId?: string; label?: string; text?: string; tag?: string; route?: string; path?: string };
+                  const res = (a.result || {}) as { capturing?: boolean; fetch?: Array<{ url?: string; method?: string; status?: number; elapsedMs?: number }>; opened?: Array<{ url?: string; blocked?: boolean }> };
+                  const fetches = Array.isArray(res.fetch) ? res.fetch : [];
+                  const opens = Array.isArray(res.opened) ? res.opened : [];
+                  const control = params.testId || params.label || params.text || params.tag || a.action;
+                  return (
+                    <tr
+                      key={a.id}
+                      className="border-b border-default/50"
+                      data-testid="collector-global-row"
+                      data-action-id={a.id}
+                      title={params.path || ""}
+                    >
+                      <td className="py-1 pr-2 font-mono text-tertiary" title={a.ts}>{new Date(a.ts).toLocaleTimeString()}</td>
+                      <td className="py-1 pr-2 font-mono truncate max-w-[28ch]" title={control}>{control}</td>
+                      <td className="py-1 pr-2 font-mono truncate max-w-[20ch]" title={params.route || ""}>{params.route || "—"}</td>
+                      <td className="py-1 pr-2 font-mono" title={JSON.stringify({ fetch: fetches, opened: opens }).slice(0, 500)}>
+                        {res.capturing ? "capturing…" : fetches.length + " fetch · " + opens.length + " popup"}
+                      </td>
+                      <td className="py-1 pr-2 font-mono" data-testid="elapsed-ms">{a.elapsedMs ?? "—"}</td>
+                      <td className="py-1 pr-2">
+                        <Chip tone={verdictTone(a.verdict)}>
+                          <span data-testid="verdict">{a.verdict ? a.verdict.status : "…"}</span>
+                        </Chip>
+                      </td>
+                    </tr>
                   );
                 })}
               </tbody>

@@ -22,6 +22,39 @@ async function jobsOf(page: Page): Promise<{ url: string; mode: string }[]> {
   return r.jobs || [];
 }
 
+// [F104 §1.4] Row-visibility helpers. The plain lab query can legitimately
+// match ZERO rows: with "matches first" on, the list IS the matching set, so
+// an empty filter is an empty (invisible) <ul>. Showing the full list is not
+// cheating - this file is about what a row CLICK does, not about the filter.
+async function openRowCount(page: Page): Promise<number> {
+  return page.getByTestId("lab-link-open").count();
+}
+
+async function showFullList(page: Page): Promise<void> {
+  const toggle = page.getByTestId("lab-matches-first");
+  await expect(toggle).toBeVisible({ timeout: 20_000 });
+  if (await toggle.isChecked()) {
+    await toggle.uncheck();
+    await page.waitForTimeout(500);
+  }
+}
+
+async function showAllRows(page: Page): Promise<void> {
+  if ((await openRowCount(page)) > 0) return;
+  await showFullList(page);
+}
+
+// [F104 §1.4] Last resort for the site loop: the deep lane always answers the
+// site's own 60-URL corpus. Re-applies showAllRows after the reload (the
+// checkbox is fresh state on a fresh page).
+async function ensureRows(page: Page, site: string, term: string): Promise<void> {
+  await showAllRows(page);
+  if ((await openRowCount(page)) > 0) return;
+  await page.goto("/#/search/lab/" + idOf(site) + "?q=f86+" + encodeURIComponent(term));
+  await expect(page.getByTestId("lab-inspector")).toBeVisible({ timeout: 20_000 });
+  await showAllRows(page);
+}
+
 test.describe("F91 mirror mode - 11 sites", () => {
   test("0: the mock exposes the launcher lanes (queue, health, jobs)", async ({ page }) => {
     await page.goto("/#/search");
@@ -53,20 +86,31 @@ test.describe("F91 mirror mode - 11 sites", () => {
 
   for (const site of SITES) {
     test(`${site}: click opens locally + mirrors to RDP (never an error toast)`, async ({ page }) => {
-      const opened: string[] = [];
-      page.on("popup", (p) => opened.push(p.url()));
-      await page.goto("/#/search/lab/" + idOf(site) + "?q=" + encodeURIComponent(site === "awesome.re" ? "awesome" : "free"));
+      const term = site === "awesome.re" ? "awesome" : "free";
+      await page.goto("/#/search/lab/" + idOf(site) + "?q=" + encodeURIComponent(term));
+      await expect(page.getByTestId("lab-inspector")).toBeVisible({ timeout: 20_000 });
+      await ensureRows(page, site, term);
       await expect(page.getByTestId("lab-link-list")).toBeVisible({ timeout: 20_000 });
       // "matches first" so row 0 is a real on-site URL
       const first = page.getByTestId("lab-link-open").first();
       await expect(first).toBeVisible();
-      await first.click();
+      // [F104 §1.3] the popup is async delivery: WAIT for the new page instead
+      // of asserting a listener array the event may not have reached yet (that
+      // race was the CI red - the queue job landed while opened.length was
+      // still 0). A blocked popup now fails LOUDLY here instead of flaking.
+      const [popup] = await Promise.all([
+        page.context().waitForEvent("page", { timeout: 15_000 }),
+        first.click(),
+      ]);
+      expect(popup).toBeTruthy();
       // RDP half: a navigate job for that site's own URL landed in the queue.
       await expect
         .poll(async () => (await jobsOf(page)).filter((j) => j.mode === "navigate" && j.url.includes(site)).length, { timeout: 10_000 })
         .toBeGreaterThan(0);
-      // local half: the popup opened (its LOAD may fail in a sandbox; creation is the proof)
-      expect(opened.length).toBeGreaterThan(0);
+      // local half: the popup's URL is the row's own site (its LOAD may fail
+      // in a sandbox; creation + correct target is the proof).
+      await expect.poll(() => popup.url(), { timeout: 10_000 }).not.toBe("about:blank");
+      expect(popup.url()).toContain(site);
       // the toast is success-first and the banned string never appears
       await expect(page.locator("#toasts")).toContainText(/Opened locally|Mirrored/i);
       expect(await page.locator("#toasts").textContent()).not.toMatch(/Could not open/);
@@ -75,9 +119,13 @@ test.describe("F91 mirror mode - 11 sites", () => {
   }
 
   test("download: RDP-Downloads path toast + explorer job from the toast action", async ({ page }) => {
-    // freemusicarchive rows carry /music/.../track.mp3 URLs in the fixture, so
-    // the lab list has a file-ish row with the download button (F88 lane).
-    await page.goto("/#/search/lab/freemusicarchive-org?q=music");
+    // [F104 §1.4] the file-ish row lives in the F88 search-endpoint lane (the
+    // plain + deep lanes carry pages only): archive.org's "a matter of life
+    // and death" case answers an .mp4 row. matches:false, so the full list
+    // must be shown first.
+    await page.goto("/#/search/lab/archive-org?q=" + encodeURIComponent("f88 a matter of life and death"));
+    await expect(page.getByTestId("lab-inspector")).toBeVisible({ timeout: 20_000 });
+    await showFullList(page);
     await expect(page.getByTestId("lab-link-list")).toBeVisible({ timeout: 20_000 });
     const dl = page.getByTestId("lab-link-download").first();
     await expect(dl).toBeVisible();
@@ -96,16 +144,21 @@ test.describe("F91 mirror mode - 11 sites", () => {
   });
 
   test("stream: audio rows render the inline /api/stream player (200 through the relay)", async ({ page }) => {
-    await page.goto("/#/search/lab/freemusicarchive-org?q=music");
+    // [F104 §1.4] the .mp3 row lives in the F88 search-endpoint lane:
+    // openculture's "free online philosophy courses" case (matches:false, so
+    // the full list must be shown first).
+    await page.goto("/#/search/lab/openculture-com?q=" + encodeURIComponent("f88 free online philosophy courses"));
+    await expect(page.getByTestId("lab-inspector")).toBeVisible({ timeout: 20_000 });
+    await showFullList(page);
     await expect(page.getByTestId("lab-link-list")).toBeVisible({ timeout: 20_000 });
     // [F91 §D.3] the Lab list itself carries the inline player for .mp3 rows:
     // an <audio> whose src is the /api/stream relay with the encoded url.
     const audio = page.getByTestId("f91-stream-audio").first();
     await expect(audio).toBeVisible();
-    expect(await audio.getAttribute("src")).toContain("/api/stream?url=https%3A%2F%2Ffreemusicarchive.org");
+    expect(await audio.getAttribute("src")).toContain("/api/stream?url=https%3A%2F%2Fwww.openculture.com");
     // and the relay answers 200 + an audio Content-Type (RDP network view)
     const res = await page.evaluate(async () => {
-      const u = "https://freemusicarchive.org/music/X/Y/track.mp3";
+      const u = "https://www.openculture.com/audio/platos-republic-lecture.mp3";
       const r = await fetch("/api/stream?url=" + encodeURIComponent(u));
       return { status: r.status, ct: r.headers.get("content-type") };
     });
@@ -136,16 +189,28 @@ test.describe("F91 mirror mode - 11 sites", () => {
   });
 
   test("diag: launcher line + test-open mirror flow for example.com", async ({ page }) => {
-    const opened: string[] = [];
-    page.on("popup", (p) => opened.push(p.url()));
+    // [F104 §2] the diag round trip (health read + queue write + popup) gets
+    // the full 45 s: it flaked at the default budget on loaded runners.
+    test.setTimeout(45_000);
     await page.goto("/#/search?diag=1");
     const line = page.getByTestId("f91-diag-launcher");
     await expect(line).toContainText("running");
     await expect(line).toContainText("queue depth 0");
-    await page.getByTestId("f87-diag-test-launch").click();
+    // pin the RDP half to its wire proof BEFORE clicking, and wait for the
+    // popup page instead of an event-listener array (same §1.3 race class).
+    const respPromise = page.waitForResponse(
+      (r) => r.url().includes("/api/launcher/queue") && r.status() === 200,
+      { timeout: 30_000 },
+    );
+    const [popup] = await Promise.all([
+      page.context().waitForEvent("page", { timeout: 30_000 }),
+      page.getByTestId("f87-diag-test-launch").click(),
+    ]);
+    expect((await respPromise).status()).toBe(200);
     await expect(page.getByTestId("f87-diag-test-launch-result")).toHaveAttribute("data-ok", "1", { timeout: 10_000 });
     await expect.poll(async () => (await jobsOf(page)).some((j) => j.url === "https://example.com/")).toBe(true);
-    expect(opened.some((u) => u.includes("example.com"))).toBe(true);
+    await expect.poll(() => popup.url(), { timeout: 10_000 }).not.toBe("about:blank");
+    expect(popup.url()).toContain("example.com");
     await shot(page, "diag-launcher");
   });
 });

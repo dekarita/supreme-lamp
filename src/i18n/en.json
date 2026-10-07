@@ -109,6 +109,7 @@
     "openedBoth": "Opened locally ✓ + Mirrored to RDP ✓",
     "rdpOffline": "Opened locally ✓ (RDP launcher: {{reason}})",
     "blocked": "Refused: not a plain https link - nothing was opened",
+    "popupBlocked": "Popup blocked by the browser - allow popups for this dashboard, then retry (RDP: {{rdp}})",
     "openInExplorer": "Open in RDP",
     "watchInRdp": "▶ Watch in RDP",
     "watchLiveInRdp": "▶ Watch Live in RDP",
