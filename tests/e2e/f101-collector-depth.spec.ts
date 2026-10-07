@@ -4,11 +4,11 @@
 // /#/collector and see the full breakdown - preCheck / request / response /
 // postCheck / services / verdict - instead of "add-site save → ERR".
 //
-// Twelve buttons are exercised through their real "Click now" cells: the ones
-// mounted on this route are DOM-clicked (the same path the operator's mouse
-// takes, recorded by the fetch observer), the rest fall back to an
-// instrumented route probe against the mock backend on :7331. Either way the
-// row must land in "Recent user actions" WITH a verdict.
+// Twelve buttons are exercised through their real "Click now" cells. [F102
+// #159] Every one is now a REAL DOM click: the runner navigates to the
+// button's host page, runs its preconditions, clicks it and comes back (the
+// F101 route-probe fallback is gone). Either way the row must land in "Recent
+// user actions" WITH a verdict.
 import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 
@@ -19,8 +19,9 @@ async function shot(page: Page, name: string) {
 }
 
 /** Twelve registry ids from src/lib/collectorAgent.ts KNOWN_BUTTONS. Only
- *  collector-refresh is mounted on /#/collector; the rest prove the route-probe
- *  fallback, which is what makes the table usable from a single page. */
+ *  collector-refresh is mounted on /#/collector; the rest are reached on their
+ *  host pages by the F102 runner (tests/e2e/f102-all-buttons.spec.ts covers
+ *  all 18 one by one). */
 const CLICK_NOW_IDS = [
   "collector-refresh",
   "lab-refetch",
@@ -54,23 +55,26 @@ test.describe("F101 Collector deep instrumentation", () => {
   });
 
   test("2 Click now on 12 buttons records 12 deeply-instrumented rows", async ({ page }) => {
+    // [F102] each click now visits the button's page and comes back
+    test.setTimeout(240_000);
     await page.goto("/#/collector");
     await expect(page.locator('[data-testid="collector-known-buttons"]')).toBeVisible();
 
     for (const id of CLICK_NOW_IDS) {
-      const before = await page.locator('[data-testid^="collector-action-row-"]').count();
+      const before = await page.locator('[data-testid="collector-action-row"]').count();
       await page.click(`[data-testid="collector-click-now-${id}"]`);
       // the click is recorded and its row auto-expands on the verdict tab
       await expect
-        .poll(async () => page.locator('[data-testid^="collector-action-row-"]').count(), { timeout: 15000 })
+        .poll(async () => page.locator('[data-testid="collector-action-row"]').count(), { timeout: 50000 })
         .toBeGreaterThan(before);
+      await expect(page).toHaveURL(/#\/collector$/);
     }
 
-    const rowCount = await page.locator('[data-testid^="collector-action-row-"]').count();
+    const rowCount = await page.locator('[data-testid="collector-action-row"]').count();
     expect(rowCount).toBeGreaterThanOrEqual(CLICK_NOW_IDS.length);
 
     // every recorded row carries a verdict chip (never the F100 blank)
-    const chips = await page.locator('[data-testid^="collector-action-row-"] td:nth-child(7)').allInnerTexts();
+    const chips = await page.locator('[data-testid="collector-action-row"] td:nth-child(7)').allInnerTexts();
     expect(chips.length).toBeGreaterThanOrEqual(CLICK_NOW_IDS.length);
     for (const c of chips) {
       expect(["ok", "warn", "fail", "n/a"]).toContain(c.trim().toLowerCase());
@@ -83,7 +87,7 @@ test.describe("F101 Collector deep instrumentation", () => {
     await expect(page.locator('[data-testid="collector-known-buttons"]')).toBeVisible();
     await page.click('[data-testid="collector-click-now-collector-refresh"]');
     const detail = page.locator('[data-testid^="collector-action-detail-"]').first();
-    await expect(detail).toBeVisible({ timeout: 15000 });
+    await expect(detail).toBeVisible({ timeout: 45000 });
 
     for (const tab of DEEP_TABS) {
       await expect(page.locator(`[data-testid="collector-tab-${tab}"]`)).toBeVisible();
@@ -122,11 +126,11 @@ test.describe("F101 Collector deep instrumentation", () => {
   test("4 the add-site lane's auth failure carries a fix and a linked issue", async ({ page }) => {
     await page.goto("/#/collector");
     await expect(page.locator('[data-testid="collector-known-buttons"]')).toBeVisible();
-    // add-site-save is not mounted here, so it probes POST-target route GET
-    // /api/f58/sources through the same fence the real save uses.
+    // [F102] add-site-save is not mounted here: the runner opens /#/search,
+    // opens the Add site modal, fills it and presses the real Save.
     await page.click('[data-testid="collector-click-now-add-site-save"]');
     const detail = page.locator('[data-testid^="collector-action-detail-"]').first();
-    await expect(detail).toBeVisible({ timeout: 15000 });
+    await expect(detail).toBeVisible({ timeout: 45000 });
     const verdict = page.locator('[data-testid="collector-verdict"]');
     await expect(verdict).toBeVisible();
     // whatever the mock answers, the verdict must name a remedy - an empty
@@ -141,8 +145,9 @@ test.describe("F101 Collector deep instrumentation", () => {
     await page.click('[data-testid="collector-click-now-collector-refresh"]');
     await expect(page.locator('[data-testid^="collector-action-detail-"]').first()).toBeVisible({ timeout: 15000 });
     const stored = await page.evaluate(() => {
-      const raw = window.localStorage.getItem("ghrdp.collector.actions.v1");
-      return raw ? JSON.parse(raw) : [];
+      // [F102 §2.2] zustand persist envelope under the new key
+      const raw = window.localStorage.getItem("f102-collector-actions-v1");
+      return raw ? JSON.parse(raw).state?.actions ?? [] : [];
     });
     expect(Array.isArray(stored)).toBe(true);
     expect(stored.length).toBeGreaterThan(0);

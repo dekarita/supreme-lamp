@@ -6,6 +6,7 @@ import { useEffect } from "react";
 import { AppShell } from "@/components/layout/AppShell";
 import { Toasts } from "@/components/primitives/Feedback";
 import { DiagSideDrawer } from "@/components/domain/DiagSideDrawer";
+import { CollectorRunBridge } from "@/components/domain/CollectorRunBridge";
 import { useDashboardPolling } from "@/hooks/useDashboardPolling";
 import { useLangStore } from "@/stores/prefsStore";
 import i18n from "@/i18n";
@@ -73,6 +74,8 @@ export default function App() {
       </Routes>
       <Toasts />
       <DiagSideDrawer />
+      {/* [F102 §2.1] Collector "Click now" navigates to the button's page */}
+      <CollectorRunBridge />
       {/* [F92 §6.4] full-screen modal iff /api/f92-selftest says the bundle
           and the backend were built from different commits. */}
       <VersionGate />

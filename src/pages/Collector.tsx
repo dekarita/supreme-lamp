@@ -3,6 +3,9 @@
 // Supports JSON + NDJSON (Accept: application/x-ndjson) download of last report.
 // [F100 §3.3] Adds "Recent user actions" table - every button click is logged
 // via collectorAgent.ts and can be replayed; "▶ Replay all" + "🗑 Clear" buttons.
+// [F102 §2] "Click now" / "Click every button" / "Replay all" perform REAL DOM
+// clicks on the button's host page (collectorAgent.clickKnownButton); rows come
+// from the persisted zustand store, so they survive a refresh (issue #159).
 
 import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -13,11 +16,15 @@ import { Chip } from "@/components/primitives/Chip";
 import {
   getRecordedActions,
   clearActions,
-  subscribeToActions,
   replayAllActions,
   installFetchObserver,
   clickKnownButton,
+  clickAllKnownButtons,
+  isHandlerWired,
+  knownButtonOf,
+  navigateTo,
   lastOutcomePerButton,
+  useCollectorStore,
   KNOWN_BUTTONS,
   type ButtonAction,
 } from "@/lib/collectorAgent";
@@ -78,80 +85,87 @@ export default function Collector() {
   const [error, setError] = useState<string | null>(null);
   const [retryAfter, setRetryAfter] = useState<number | null>(null);
   const [replaying, setReplaying] = useState(false);
-  const [actions, setActions] = useState<ButtonAction[]>(() => getRecordedActions());
-  // [F101 §3.3] which row is expanded and which of its six tabs is showing
-  const [expandedId, setExpandedId] = useState<string | null>(null);
+  // [F102 §2.2] rows come straight from the persisted store: it hydrated from
+  // localStorage synchronously, before this component's first paint.
+  const actions = useCollectorStore((s) => s.actions);
+  const hydration = useCollectorStore((s) => s.hydration);
+  const persistError = useCollectorStore((s) => s.persistError);
+  const notice = useCollectorStore((s) => s.notice);
+  const clickRun = useCollectorStore((s) => s.running);
+  // [F101 §3.3] which row is expanded and which of its six tabs is showing.
+  // [F102] a click that navigated away re-mounts this page: re-open its row.
+  const [expandedId, setExpandedId] = useState<string | null>(() => useCollectorStore.getState().focusId);
   const [deepTab, setDeepTab] = useState<DeepTab>("verdict");
-  const [clickingNow, setClickingNow] = useState<string | null>(null);
+  const [batchRunning, setBatchRunning] = useState(false);
+  // [F102] the runner is global (it survives the route changes it causes), so
+  // "busy" is read from the store, not from this page's local state.
+  const clickingNow: string | null = clickRun ? (batchRunning || clickRun.total ? "__all__" : clickRun.buttonId) : batchRunning ? "__all__" : null;
 
-  // Subscribe to live action updates from collectorAgent.
+  const focusId = useCollectorStore((s) => s.focusId);
+  useEffect(() => {
+    if (focusId) {
+      setExpandedId(focusId);
+      setDeepTab("verdict");
+    }
+  }, [focusId]);
+
   useEffect(() => {
     // [F101 §3.2] arm the fetch observer on mount so every button click on
     // every page - not just the ones driven from this table - is recorded with
     // its real request/response.
     installFetchObserver();
-    return subscribeToActions(setActions);
   }, []);
 
   const handleClearActions = useCallback(() => {
     clearActions();
   }, []);
 
-  // Replay handlers know how to re-execute each (feature, action) pair.
-  // We keep this map minimal for F100: it logs back via logButtonAction so the
-  // replay itself is recorded; actual replay of UI flows is wired where the
-  // action has a stateless, invokable API. Other entries record "no-op (replay
-  // handler not wired)" so the operator sees which actions need manual click.
-  const replayHandlers = useMemo(() => {
-    return {} as Record<string, (p: Record<string, unknown>) => unknown | Promise<unknown>>;
-  }, []);
-
-  /** [F101 §3.4] "Click now": exercise one known button and record the full
-   *  pre/req/resp/post breakdown, exactly as a real operator click would. */
+  /** [F102 §2.1] "Click now": a REAL DOM click on the button's host page
+   *  (navigate → preconditions → click → observe → verdict), then back here. */
   const handleClickNow = useCallback(async (btnId: string) => {
     const btn = KNOWN_BUTTONS.find((b) => b.id === btnId);
-    if (!btn) return;
-    setClickingNow(btnId);
+    if (!btn || !isHandlerWired(btn)) return;
     setError(null);
     try {
       const rec = await clickKnownButton(btn);
+      useCollectorStore.setState({ focusId: rec.id });
       setExpandedId(rec.id);
       setDeepTab("verdict");
     } catch (e) {
       setError(String((e as Error)?.message || e));
-    } finally {
-      setClickingNow(null);
     }
   }, []);
 
-  /** [F101 §3.4] exercise EVERY known button in one pass, one row each. */
+  /** [F102 §2.3] exercise EVERY wired button once (real clicks), aborting
+   *  after 5 identical errors; unwired buttons are skipped, never recorded. */
   const handleClickAll = useCallback(async () => {
-    setClickingNow("__all__");
+    setBatchRunning(true);
     setError(null);
     try {
-      // clickKnownButton() already records one deeply-instrumented row each,
-      // so this loop must NOT wrap it again (that would double-record).
-      for (const btn of KNOWN_BUTTONS) {
-        await clickKnownButton(btn);
-      }
+      // clickAllKnownButtons() records one deeply-instrumented row per click,
+      // so this handler must NOT wrap it again (that would double-record).
+      const out = await clickAllKnownButtons();
+      const last = out.records[out.records.length - 1];
+      if (last) useCollectorStore.setState({ focusId: last.id });
     } catch (e) {
       setError(String((e as Error)?.message || e));
     } finally {
-      setClickingNow(null);
+      setBatchRunning(false);
     }
   }, []);
 
+  /** [F102] Replay = real clicks of each distinct button in the history. */
   const handleReplayAll = useCallback(async () => {
     setReplaying(true);
     setError(null);
     try {
-      await replayAllActions(replayHandlers);
+      await replayAllActions();
     } catch (e) {
       setError(String((e as Error)?.message || e));
     } finally {
       setReplaying(false);
     }
-  }, [replayHandlers]);
+  }, []);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -257,6 +271,16 @@ export default function Collector() {
     }
   }, []);
 
+  // [F102] last outcome per known-button id (rows carry params.knownButton)
+  const lastByButton = useMemo(() => {
+    const out: Record<string, ButtonAction> = {};
+    for (const a of actions) {
+      const b = knownButtonOf(a);
+      if (b) out[b.id] = a;
+    }
+    return out;
+  }, [actions]);
+
   const features = report?.features || {};
   const summary = report?.summary;
 
@@ -329,10 +353,33 @@ export default function Collector() {
           <Button variant="secondary" size="sm" onClick={handleClearActions} disabled={actions.length === 0} data-testid="collector-clear-actions">
             🗑 {t("collector.clear", { defaultValue: "Clear" })}
           </Button>
-          <span className="text-xs text-tertiary">
+          <span className="text-xs text-tertiary" data-testid="collector-actions-count">
             {actions.length} action{actions.length === 1 ? "" : "s"} recorded
           </span>
+          {/* [F102 §2.2] proof the rows came back from localStorage on load */}
+          {hydration ? (
+            <span data-testid="collector-rehydrated" title={"onRehydrateStorage fired at " + hydration.at + " (source: " + hydration.source + ")"}>
+              <Chip tone={hydration.source === "empty" ? "neutral" : "success"}>
+                Rehydrated from localStorage · {hydration.count} action{hydration.count === 1 ? "" : "s"}
+              </Chip>
+            </span>
+          ) : null}
         </div>
+        {persistError ? (
+          <div data-testid="collector-persist-error" className="mb-2 p-2 rounded bg-warning/10 text-warning text-xs font-mono">
+            {persistError}
+          </div>
+        ) : null}
+        {clickRun ? (
+          <div data-testid="collector-running" className="mb-2 p-2 rounded bg-accent/10 text-primary text-xs font-mono">
+            ▶ {clickRun.total ? "[" + clickRun.index + "/" + clickRun.total + "] " : ""}clicking “{clickRun.label}” — {clickRun.step}
+          </div>
+        ) : null}
+        {notice ? (
+          <div data-testid="collector-notice" className="mb-2 p-2 rounded bg-warning/10 text-warning text-xs font-mono">
+            {notice}
+          </div>
+        ) : null}
         {actions.length === 0 ? (
           <div className="text-sm text-tertiary" data-testid="collector-actions-empty">
             {t("collector.actionsEmpty", { defaultValue: "No button clicks recorded yet. Click buttons around the dashboard (Add site, Open in RDP, Fetch, Download, Reconnect, Preview…) to populate this table." })}
@@ -361,7 +408,10 @@ export default function Collector() {
                           for the full breakdown instead of "add-site save -> ERR". */}
                       <tr
                         className={"border-b border-default/50 cursor-pointer " + (open ? "bg-raised/60" : "hover:bg-raised/40")}
-                        data-testid={"collector-action-row-" + a.id}
+                        data-testid="collector-action-row"
+                        data-action-id={a.id}
+                        data-button-id={knownButtonOf(a)?.id ?? ""}
+                        data-via={String((a.result as { via?: unknown } | undefined)?.via ?? "")}
                         onClick={() => { setExpandedId(open ? null : a.id); setDeepTab("verdict"); }}
                         aria-expanded={open}
                       >
@@ -372,9 +422,11 @@ export default function Collector() {
                         <td className={"py-1 pr-2 font-mono truncate max-w-[30ch] " + (a.error ? "text-danger" : "")} title={a.error ? a.error : a.result ? JSON.stringify(a.result) : ""}>
                           {a.error ? ("ERR: " + a.error).slice(0, 80) : a.result ? JSON.stringify(a.result).slice(0, 80) : "—"}
                         </td>
-                        <td className="py-1 pr-2 font-mono">{a.elapsedMs ?? "—"}</td>
+                        <td className="py-1 pr-2 font-mono" data-testid="elapsed-ms">{a.elapsedMs ?? "—"}</td>
                         <td className="py-1 pr-2">
-                          <Chip tone={verdictTone(a.verdict)}>{a.verdict ? a.verdict.status : "n/a"}</Chip>
+                          <Chip tone={verdictTone(a.verdict)}>
+                            <span data-testid="verdict">{a.verdict ? a.verdict.status : "n/a"}</span>
+                          </Chip>
                         </td>
                         <td className="py-1">
                           <span className="text-[10px] text-tertiary">{open ? "▾ hide" : "▸ expand"}</span>
@@ -483,9 +535,10 @@ export default function Collector() {
         )}
       </Card>
 
-      {/* [F101 §3.4] EVERY button in the dashboard, with a Click now that
-          drives the real DOM element (or probes the route when the button is
-          not mounted here) and records the full pre/req/resp/post row above. */}
+      {/* [F101 §3.4 → F102 §2.1] EVERY button in the dashboard. Click now
+          navigates to the button's host page, runs its preconditions and
+          performs a REAL DOM click (no route-probe fallback); Open page shows
+          the button in context. Each click records the full row above. */}
       <Card title={t("collector.allButtons", { defaultValue: "All known buttons" })}>
         <div className="flex flex-wrap items-center gap-2 mb-3">
           <Button
@@ -498,7 +551,7 @@ export default function Collector() {
             {clickingNow === "__all__" ? "▶ Clicking all…" : "▶ Click every button"}
           </Button>
           <span className="text-xs text-tertiary">
-            {KNOWN_BUTTONS.length} buttons registered · a green row means the click produced a 2xx and consistent service states
+            {KNOWN_BUTTONS.length} buttons registered · {KNOWN_BUTTONS.filter(isHandlerWired).length} wired for real DOM clicks · each click opens the button's page, clicks it, and comes back here
           </span>
         </div>
         <div className="overflow-x-auto">
@@ -507,46 +560,73 @@ export default function Collector() {
               <tr className="text-left border-b border-default">
                 <th className="py-1 pr-2">{t("collector.feature", { defaultValue: "Feature" })}</th>
                 <th className="py-1 pr-2">{t("collector.button", { defaultValue: "Button" })}</th>
+                <th className="py-1 pr-2">{t("collector.hostPage", { defaultValue: "Host page" })}</th>
                 <th className="py-1 pr-2">{t("collector.lastClicked", { defaultValue: "Last clicked" })}</th>
                 <th className="py-1 pr-2">{t("collector.lastResult", { defaultValue: "Last result" })}</th>
-                <th className="py-1 pr-2">{t("collector.liveState", { defaultValue: "Live state" })}</th>
+                <th className="py-1 pr-2">{t("collector.handler", { defaultValue: "Status" })}</th>
                 <th className="py-1"></th>
               </tr>
             </thead>
             <tbody>
               {KNOWN_BUTTONS.map((btn) => {
-                const last = lastOutcomePerButton(actions)[btn.feature + ":" + btn.action];
-                const mounted = typeof document !== "undefined" && !!document.querySelector('[data-testid="' + btn.testId + '"]');
+                const last = lastByButton[btn.id] ?? lastOutcomePerButton(actions)[btn.feature + ":" + btn.action];
+                const wired = isHandlerWired(btn);
+                const lastVia = last ? String((last.result as { via?: unknown } | undefined)?.via ?? "") : "";
                 return (
-                  <tr key={btn.id} className="border-b border-default/50" data-testid={"collector-known-row-" + btn.id}>
+                  <tr key={btn.id} className="border-b border-default/50" data-testid={"collector-known-row-" + btn.id} data-wired={wired ? "1" : "0"}>
                     <td className="py-1 pr-2 font-mono">{btn.feature}</td>
                     <td className="py-1 pr-2">
                       <span className="font-mono">{btn.label}</span>
                       <span className="ml-1 text-[10px] text-tertiary font-mono">{btn.testId}</span>
                     </td>
+                    <td className="py-1 pr-2 font-mono text-[10px] text-tertiary">{btn.hostRoute ?? "—"}</td>
                     <td className="py-1 pr-2 font-mono text-tertiary">{last ? new Date(last.ts).toLocaleTimeString() : "—"}</td>
-                    <td className="py-1 pr-2">
+                    <td className="py-1 pr-2" title={last?.verdict?.reason ?? ""}>
                       {last ? (
                         <Chip tone={verdictTone(last.verdict)}>
-                          {(last.verdict ? last.verdict.status : "n/a") + (last.response ? " · " + last.response.status : "")}
+                          {(last.verdict ? last.verdict.status : "n/a") + (last.response ? " · " + last.response.status : "") + (last.elapsedMs != null ? " · " + last.elapsedMs + "ms" : "")}
                         </Chip>
                       ) : (
                         <span className="text-tertiary">never clicked</span>
                       )}
                     </td>
-                    <td className="py-1 pr-2 font-mono text-[10px]">
-                      {mounted ? <span className="text-success">mounted</span> : <span className="text-tertiary">route-probe</span>}
-                      {btn.mutating ? <span className="ml-1 text-warning" title="this click changes state">mutating</span> : null}
+                    <td className="py-1 pr-2 font-mono text-[10px]" data-testid={"collector-handler-" + btn.id}>
+                      {/* [F102 §2.3] an unwired button is never clicked or recorded */}
+                      {!wired ? (
+                        <span className="text-warning">⚠️ Handler pending</span>
+                      ) : lastVia === "not-rendered" ? (
+                        <span className="text-warning" title={last?.verdict?.reason ?? ""}>not rendered last time</span>
+                      ) : lastVia === "disabled" ? (
+                        <span className="text-warning" title={last?.verdict?.reason ?? ""}>disabled last time</span>
+                      ) : (
+                        <span className="text-secondary">real DOM click</span>
+                      )}
+                      {btn.mutating ? <span className="ml-1 text-warning" title="this click changes state on the runner">mutating</span> : null}
                     </td>
-                    <td className="py-1">
+                    <td className="py-1 whitespace-nowrap">
+                      <span className="inline-flex" data-testid={"click-now-" + btn.id}>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => void handleClickNow(btn.id)}
+                          disabled={clickingNow !== null || !wired}
+                          title={wired ? "Open " + (btn.hostRoute ?? "") + ", click [data-testid=" + btn.testId + "] for real, record the result" : "Handler pending - not clickable yet"}
+                          data-testid={"collector-click-now-" + btn.id}
+                        >
+                          {clickingNow === btn.id ? "…" : "Click now"}
+                        </Button>
+                      </span>
+                      {/* [F102 §2.4] see the button in context */}
                       <Button
-                        variant="secondary"
+                        variant="ghost"
                         size="sm"
-                        onClick={() => void handleClickNow(btn.id)}
-                        disabled={clickingNow !== null}
-                        data-testid={"collector-click-now-" + btn.id}
+                        className="ml-1"
+                        onClick={() => void navigateTo(btn.hostRoute ?? "/#/")}
+                        disabled={!btn.hostRoute || clickingNow !== null}
+                        data-testid={"collector-open-page-" + btn.id}
+                        title={"Navigate to " + (btn.hostRoute ?? "")}
                       >
-                        {clickingNow === btn.id ? "…" : "Click now"}
+                        Open page
                       </Button>
                     </td>
                   </tr>

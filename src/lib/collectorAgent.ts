@@ -4,8 +4,32 @@
 // Records are persisted in localStorage (so they survive reloads) and can be replayed.
 // This lets the Collector page present BOTH auto-probe results and user-driven button outcomes,
 // producing 100% feature coverage.
+//
+// [F102 §2.2 / R3] Persistence is now a zustand `persist` store
+// ("f102-collector-actions-v1") over a quota-safe localStorage adapter. The
+// adapter is synchronous, so zustand hydrates the store INSIDE create() - i.e.
+// before React's first paint - and onRehydrateStorage records how many rows
+// came back so the Collector page can show "Rehydrated from localStorage".
+// The F100/F101 key ("ghrdp.collector.actions.v1") is migrated once on first
+// read and then removed, so the operator's existing rows survive the upgrade.
+//
+// [F102 §2.1 / R1+R2] "Click now" is a REAL DOM click: navigate to the
+// button's host page, run its precondition steps, click the element, observe
+// the network + DOM effects, record a verdict. There is no route-probe
+// fallback any more (issue #159): a button that cannot be reached is recorded
+// as exactly that, never as a fake success.
 
-const STORAGE_KEY = "ghrdp.collector.actions.v1";
+import { create } from "zustand";
+import { persist, createJSONStorage, type StateStorage } from "zustand/middleware";
+
+/** [F100] legacy key - read once for migration, then removed. */
+const LEGACY_STORAGE_KEY = "ghrdp.collector.actions.v1";
+/** [F102 §2.2] the zustand persist key. */
+export const COLLECTOR_STORE_KEY = "f102-collector-actions-v1";
+/** [F102 §2.2] row cap (the store keeps the newest 500). */
+export const MAX_ACTIONS = 500;
+/** [F102] tracking issue every F102 verdict links to. */
+export const F102_ISSUE = "#159";
 
 export interface ButtonAction {
   id: string;
@@ -105,144 +129,280 @@ export interface Verdict {
   relatedIssue: string | null;
 }
 
+// =============================================================================
+// [F102 §2.2 / R3] PERSISTED COLLECTOR STORE
+// =============================================================================
+
+/** Live state of the click runner (never persisted). */
+export interface CollectorRunState {
+  buttonId: string;
+  label: string;
+  step: string;
+  index?: number;
+  total?: number;
+  startedAt: string;
+}
+
+/** What onRehydrateStorage saw (never persisted). */
+export interface CollectorHydration {
+  at: string;
+  count: number;
+  source: "localStorage" | "legacy-migration" | "empty";
+}
+
+interface CollectorState {
+  actions: ButtonAction[];
+  running: CollectorRunState | null;
+  notice: string | null;
+  hydration: CollectorHydration | null;
+  persistError: string | null;
+  /** row the Collector page re-opens after a click navigated away and back */
+  focusId: string | null;
+  addAction: (a: ButtonAction) => void;
+  clear: () => void;
+}
+
+let hydrationSource: CollectorHydration["source"] = "localStorage";
+let lastPersistError: string | null = null;
+
+/** Older rows keep a short body so 500 deep rows stay far below the quota. */
+const FULL_BODY_ROWS = 50;
+const OLD_BODY_CHARS = 300;
+
+function slimAction(a: ButtonAction): ButtonAction {
+  const cut = (s: unknown) => (typeof s === "string" && s.length > OLD_BODY_CHARS ? s.slice(0, OLD_BODY_CHARS) + "…" : s);
+  const out: ButtonAction = { ...a };
+  if (out.request) out.request = { ...out.request, body: String(cut(out.request.body) ?? "") };
+  if (out.response) out.response = { ...out.response, body: String(cut(out.response.body) ?? "") };
+  if (out.result !== undefined) {
+    try {
+      const s = JSON.stringify(out.result);
+      if (s && s.length > OLD_BODY_CHARS * 4) out.result = { truncated: true, preview: s.slice(0, OLD_BODY_CHARS) };
+    } catch {
+      out.result = { unserializable: true };
+    }
+  }
+  return out;
+}
+
+function isQuotaError(e: unknown): boolean {
+  const n = String((e as { name?: string })?.name || "");
+  const m = String((e as { message?: string })?.message || e);
+  return /quota/i.test(n) || /quota/i.test(m) || (e as { code?: number })?.code === 22;
+}
+
+function rawStorage(): Storage | null {
+  try {
+    if (typeof window === "undefined" || !window.localStorage) return null;
+    return window.localStorage;
+  } catch {
+    return null; // a locked-down storage area must never break the page
+  }
+}
+
+/**
+ * [F102 §2.2] Quota-safe synchronous localStorage adapter for zustand persist.
+ *   getItem  - first read migrates the F100/F101 array key into the new shape.
+ *   setItem  - on QuotaExceededError the OLDEST rows are slimmed, then halved,
+ *              until the write fits; a write that still fails is surfaced as
+ *              `persistError` instead of being swallowed (the F101 bug class:
+ *              a row that is on screen but silently not persisted).
+ */
+const safeLocalStorage: StateStorage = {
+  getItem(name: string): string | null {
+    const ls = rawStorage();
+    if (!ls) return null;
+    try {
+      const cur = ls.getItem(name);
+      if (cur) {
+        hydrationSource = "localStorage";
+        return cur;
+      }
+      const legacy = ls.getItem(LEGACY_STORAGE_KEY);
+      if (legacy) {
+        const arr = JSON.parse(legacy);
+        if (Array.isArray(arr)) {
+          hydrationSource = "legacy-migration";
+          const migrated = JSON.stringify({ state: { actions: (arr as ButtonAction[]).slice(-MAX_ACTIONS) }, version: 0 });
+          try {
+            ls.setItem(name, migrated);
+            ls.removeItem(LEGACY_STORAGE_KEY);
+          } catch {
+            /* keep the legacy key if the migrated copy does not fit */
+          }
+          return migrated;
+        }
+      }
+      hydrationSource = "empty";
+      return null;
+    } catch {
+      hydrationSource = "empty";
+      return null;
+    }
+  },
+  setItem(name: string, value: string): void {
+    const ls = rawStorage();
+    if (!ls) {
+      lastPersistError = "localStorage unavailable in this tab - rows will not survive a refresh";
+      return;
+    }
+    try {
+      ls.setItem(name, value);
+      lastPersistError = null;
+      return;
+    } catch (e) {
+      if (!isQuotaError(e)) {
+        lastPersistError = "localStorage write failed: " + String((e as Error)?.message || e);
+        return;
+      }
+    }
+    // Quota: slim every row but the newest FULL_BODY_ROWS, then halve.
+    try {
+      const parsed = JSON.parse(value) as { state?: { actions?: ButtonAction[] }; version?: number };
+      let rows = Array.isArray(parsed.state?.actions) ? parsed.state!.actions! : [];
+      rows = rows.map((r, i) => (i < rows.length - FULL_BODY_ROWS ? slimAction(r) : r));
+      for (let attempt = 0; attempt < 8; attempt++) {
+        try {
+          ls.setItem(name, JSON.stringify({ ...parsed, state: { ...parsed.state, actions: rows } }));
+          lastPersistError = attempt === 0 ? null : "localStorage quota: kept the newest " + rows.length + " rows";
+          return;
+        } catch {
+          rows = rows.slice(Math.ceil(rows.length / 2));
+        }
+      }
+      lastPersistError = "localStorage quota exceeded - collector rows are NOT persisted";
+    } catch (e) {
+      lastPersistError = "localStorage write failed: " + String((e as Error)?.message || e);
+    }
+  },
+  removeItem(name: string): void {
+    const ls = rawStorage();
+    try {
+      ls?.removeItem(name);
+    } catch {
+      /* ignore */
+    }
+  },
+};
+
+let setStore: ((partial: Partial<CollectorState>) => void) | null = null;
+
+export const useCollectorStore = create<CollectorState>()(
+  persist(
+    (set) => {
+      setStore = (partial) => set(partial);
+      return {
+        actions: [],
+        running: null,
+        notice: null,
+        hydration: null,
+        persistError: null,
+        focusId: null,
+        addAction: (a) =>
+          set((s) => {
+            const next = [...s.actions.slice(-(MAX_ACTIONS - 1)), a];
+            // keep full bodies only on the newest rows (quota headroom)
+            const cutAt = next.length - FULL_BODY_ROWS;
+            if (cutAt > 0 && next[cutAt - 1]) next[cutAt - 1] = slimAction(next[cutAt - 1]);
+            return { actions: next };
+          }),
+        clear: () => set({ actions: [] }),
+      };
+    },
+    {
+      name: COLLECTOR_STORE_KEY,
+      storage: createJSONStorage(() => safeLocalStorage),
+      // only the rows are persisted; runner/hydration state is per-tab
+      partialize: (s) => ({ actions: s.actions }) as unknown as CollectorState,
+      onRehydrateStorage: () => (state, error) => {
+        const count = state?.actions?.length ?? 0;
+        const info: CollectorHydration = { at: new Date().toISOString(), count, source: error ? "empty" : hydrationSource };
+        try {
+          console.log("[F102] Collector rehydrated:", count, "actions (" + info.source + ")");
+        } catch {
+          /* console may be stubbed */
+        }
+        // hydration is synchronous: setStore exists (the initializer ran first)
+        if (setStore) setStore({ hydration: info });
+      },
+    }
+  )
+);
+
+// [F102 §2.2] keep two tabs in step: another tab's write re-hydrates this one.
+try {
+  if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+    window.addEventListener("storage", (e: StorageEvent) => {
+      if (e.key === COLLECTOR_STORE_KEY) void useCollectorStore.persist.rehydrate();
+    });
+  }
+} catch {
+  /* no window: nothing to sync */
+}
+
+function syncPersistError() {
+  const cur = useCollectorStore.getState().persistError;
+  if (cur !== lastPersistError) useCollectorStore.setState({ persistError: lastPersistError });
+}
+
 type Listener = (actions: ButtonAction[]) => void;
-const listeners = new Set<Listener>();
-
-function readAll(): ButtonAction[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) return parsed as ButtonAction[];
-    return [];
-  } catch {
-    return [];
-  }
-}
-
-function writeAll(actions: ButtonAction[]) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(actions));
-  } catch {
-    // localStorage full / unavailable - keep in-memory
-  }
-}
-
-function notify() {
-  const snap = readAll();
-  listeners.forEach((l) => {
-    try { l(snap); } catch { /* ignore listener errors */ }
-  });
-}
 
 /** Subscribe to action list changes. Returns unsubscribe fn. */
 export function subscribeToActions(fn: Listener): () => void {
-  listeners.add(fn);
-  fn(readAll());
-  return () => listeners.delete(fn);
+  fn(useCollectorStore.getState().actions);
+  return useCollectorStore.subscribe((s, prev) => {
+    if (s.actions !== prev.actions) {
+      try { fn(s.actions); } catch { /* ignore listener errors */ }
+    }
+  });
 }
 
 /** Get a snapshot of all recorded actions. */
 export function getRecordedActions(): ButtonAction[] {
-  return readAll();
+  return useCollectorStore.getState().actions;
 }
+
+function newActionId(): string {
+  // [F102] ids are unique even for rows minted in the same millisecond (the
+  // F100 replay id "act_<ms>_r" collided and duplicated React keys).
+  actionSeq = (actionSeq + 1) % 1e6;
+  return "act_" + Date.now().toString(36) + "_" + actionSeq.toString(36) + "_" + Math.random().toString(36).slice(2, 8);
+}
+let actionSeq = 0;
+
+/**
+ * [F102] While a "Click now" is in flight, records written by the clicked
+ * component's OWN instrumentation (e.g. AddSiteQuick's instrumentButton) are
+ * folded into the click's row as `nested` instead of becoming a second row.
+ */
+interface CaptureContext {
+  nested: ButtonAction[];
+}
+let activeCapture: CaptureContext | null = null;
 
 /** Log a button action. Returns the recorded action (with generated id + ts). */
 export function logButtonAction(rec: Omit<ButtonAction, "id" | "ts">): ButtonAction {
   const action: ButtonAction = {
-    id: "act_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 8),
+    id: newActionId(),
     ts: new Date().toISOString(),
     ...rec,
   };
-  const all = readAll();
-  all.push(action);
-  // Cap at 500 actions to avoid localStorage bloat
-  while (all.length > 500) all.shift();
-  writeAll(all);
-  notify();
+  if (activeCapture) {
+    activeCapture.nested.push(action);
+    return action;
+  }
+  useCollectorStore.getState().addAction(action);
+  // [F102] a Click-now row is the one the Collector page re-opens on return
+  if (action.action.endsWith(".clickNow")) useCollectorStore.setState({ focusId: action.id });
+  syncPersistError();
   return action;
 }
 
 /** Clear all recorded actions. */
 export function clearActions() {
-  writeAll([]);
-  notify();
-}
-
-/**
- * Replay a single action by index. The caller must provide a dispatcher map that
- * knows how to re-execute each (feature, action) pair. This keeps collectorAgent
- * free of UI/store imports - wiring lives in the feature modules.
- *
- *   replayAction(i, {
- *     "add-site:save": (p) => addSite(p.url, p.name),
- *     "launcher:openUrl": (p) => openUrl(p.url),
- *     ...
- *   })
- */
-export async function replayAction(
-  index: number,
-  handlers: Record<string, (params: Record<string, unknown>) => unknown | Promise<unknown>>
-): Promise<ButtonAction | null> {
-  const all = readAll();
-  const src = all[index];
-  if (!src) return null;
-  const key = src.feature + ":" + src.action;
-  const handler = handlers[key];
-  if (!handler) {
-    const err: ButtonAction = {
-      ...src,
-      id: "act_" + Date.now().toString(36) + "_r",
-      ts: new Date().toISOString(),
-      error: "no replay handler for " + key,
-      result: undefined,
-    };
-    const updated = readAll();
-    updated.push(err);
-    writeAll(updated);
-    notify();
-    return err;
-  }
-  const start = performance.now();
-  try {
-    const result = await handler(src.params || {});
-    const elapsedMs = Math.round(performance.now() - start);
-    const rec = logButtonAction({
-      feature: src.feature,
-      action: src.action + ".replay",
-      params: src.params,
-      result,
-      elapsedMs,
-    });
-    return rec;
-  } catch (e) {
-    const elapsedMs = Math.round(performance.now() - start);
-    const rec = logButtonAction({
-      feature: src.feature,
-      action: src.action + ".replay",
-      params: src.params,
-      error: String((e as Error)?.message || e),
-      elapsedMs,
-    });
-    return rec;
-  }
-}
-
-/**
- * Replay ALL recorded actions in sequence. Returns the new replay records.
- */
-export async function replayAllActions(
-  handlers: Record<string, (params: Record<string, unknown>) => unknown | Promise<unknown>>
-): Promise<ButtonAction[]> {
-  const all = readAll();
-  const results: ButtonAction[] = [];
-  // Only replay the original (non-replay) actions.
-  for (let i = 0; i < all.length; i++) {
-    if (all[i].action.endsWith(".replay")) continue;
-    const r = await replayAction(i, handlers);
-    if (r) results.push(r);
-  }
-  return results;
+  useCollectorStore.getState().clear();
+  useCollectorStore.setState({ notice: null });
+  syncPersistError();
 }
 
 // =============================================================================
@@ -291,6 +451,31 @@ export interface CapturedExchange {
   request: RequestRecord;
   response: ResponseRecord | null;
   failed: string;
+  /** [F102] who issued it: the recorder's own service probes, the dashboard's
+   *  background pollers, or the app (a button handler). Only "app" traffic is
+   *  ever attributed to a click. */
+  origin?: "app" | "probe" | "background";
+  /** [F102] performance.now() at start / at response-or-failure. */
+  startedAtPerf: number;
+  endedAtPerf?: number;
+}
+
+/** [F102] The dashboard's interval pollers (useDashboardPolling, VersionGate,
+ *  Health). No known button calls these, so their ticks can never be mistaken
+ *  for the request a click produced. */
+const BACKGROUND_POLL = /^\/(ping|health|diag)(\?|$)|^\/api\/(config|native-status|progress|f92-selftest)(\?|$)/;
+
+/** [F102] >0 while the recorder itself is calling fetch() (set synchronously
+ *  around the call, read synchronously by the observer): tags probe traffic. */
+let probeCallDepth = 0;
+
+function originOf(url: string): "app" | "probe" | "background" {
+  if (probeCallDepth > 0) return "probe";
+  let path = url;
+  try {
+    path = new URL(url, typeof location !== "undefined" ? location.href : "http://localhost/").pathname;
+  } catch { /* relative or malformed: test the raw string */ }
+  return BACKGROUND_POLL.test(path) ? "background" : "app";
 }
 
 let observerInstalled = false;
@@ -328,6 +513,8 @@ export function installFetchObserver(): void {
       request: { method, url, headers: maskHeaders(rawHeaders), body: body.slice(0, BODY_CAPTURE_CHARS), timestamp: new Date(startedAt).toISOString() },
       response: null,
       failed: "",
+      origin: originOf(url),
+      startedAtPerf: typeof performance !== "undefined" ? performance.now() : startedAt,
     };
     exchangeRing.push(rec);
     while (exchangeRing.length > RING_MAX) exchangeRing.shift();
@@ -342,9 +529,11 @@ export function installFetchObserver(): void {
         text = (await clone.text()).slice(0, BODY_CAPTURE_CHARS);
       } catch { /* an unreadable body is still a status we can report */ }
       rec.response = { status, headers, body: text, elapsedMs: Date.now() - startedAt };
+      rec.endedAtPerf = typeof performance !== "undefined" ? performance.now() : Date.now();
       return res;
     } catch (e) {
       rec.failed = String((e as Error)?.message || e);
+      rec.endedAtPerf = typeof performance !== "undefined" ? performance.now() : Date.now();
       throw e;
     }
   };
@@ -368,7 +557,16 @@ async function probe(path: string, token: string): Promise<{ status: number; jso
   try {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (token) headers["X-Dash-Token"] = token;
-    const r = await fetch(apiBase() + path, { cache: "no-store", headers, signal: ctl ? ctl.signal : undefined });
+    // [F102] tag the recorder's own traffic: the flag is set only around the
+    // synchronous fetch() call, which is when the observer reads it.
+    let pending: Promise<Response>;
+    probeCallDepth += 1;
+    try {
+      pending = fetch(apiBase() + path, { cache: "no-store", headers, signal: ctl ? ctl.signal : undefined });
+    } finally {
+      probeCallDepth -= 1;
+    }
+    const r = await pending;
     const text = await r.text().catch(() => "");
     let json: unknown = null;
     try { json = text ? JSON.parse(text) : null; } catch { json = null; }
@@ -573,7 +771,8 @@ export async function instrumentButton<T>(
   const elapsedMs = Math.round(Date.now() - startedAt);
   // Slice the window BEFORE the post-check probes run: those four probes are
   // the recorder's own traffic and must never be mistaken for the button's.
-  const exchanges = ringBetween(mark, ringMark());
+  // [F102] the recorder's own service probes are never the button's request
+  const exchanges = ringBetween(mark, ringMark()).filter((e) => e.origin !== "probe");
   const exchange = exchanges.length ? exchanges[exchanges.length - 1] : null;
   const postProbe = opts.skipPostCheck ? null : await captureServiceStates();
   const newStates = postProbe ? postProbe.states : pre.serviceStates;
@@ -599,15 +798,31 @@ export async function instrumentButton<T>(
 }
 
 // =============================================================================
-// [F101 §3.4] ALL KNOWN BUTTONS
+// [F101 §3.4 → F102 §2.1] ALL KNOWN BUTTONS - REAL DOM CLICKS
 //
-// The operator's ask: one page that can exercise the whole dashboard. Every
-// entry names the real data-testid the button renders with, so "Click now"
-// performs a REAL DOM click (the same code path the operator's mouse takes,
-// which the fetch observer then records). Entries whose button is not mounted
-// on the current route fall back to probing the route directly, so the table
-// still yields a verdict instead of a blank.
+// The operator's ask: one page that can exercise the whole dashboard. F101's
+// table only DOM-clicked the 3 buttons that happen to live on /#/collector and
+// answered the other 15 with an unrelated GET ("route-probe") or a no-op row
+// ("not-mounted") - 32 identical warn rows, zero real clicks (issue #159).
+//
+// F102: every entry names its HOST PAGE and the PRECONDITION STEPS that make
+// the button appear (open the modal, run a probe search, open a Lab, ...).
+// "Click now" navigates there, performs the steps with real DOM events, clicks
+// the element exactly like the operator's mouse would, and records what the
+// click really did: the requests it fired, the DOM effects it caused, the
+// service states before/after and a verdict. A button that cannot be reached is
+// recorded as exactly that (fail/warn + the reason) - never as a fake success.
 // =============================================================================
+
+/** One precondition step, executed with real DOM events. */
+export type PreStep =
+  | { kind: "click"; selector: string; why: string; unless?: string; optional?: boolean }
+  | { kind: "fill"; selector: string; value: string; why: string; onlyIfEmpty?: boolean }
+  | { kind: "waitFor"; selector: string; why: string; timeoutMs?: number; enabled?: boolean; optional?: boolean }
+  /** fill the search bar with the probe query and press the real submit button */
+  | { kind: "search"; query: string; why: string }
+  /** open a Lab page: a stored site's "Open in Lab", else a result's "Open in Lab" */
+  | { kind: "openLab"; why: string; query: string };
 
 export interface KnownButton {
   id: string;
@@ -615,33 +830,102 @@ export interface KnownButton {
   action: string;
   label: string;
   testId: string;
-  /** Route probed when the button is not mounted on this page. */
-  route?: string;
-  method?: string;
-  /** True when the real click mutates state and needs operator-supplied input. */
+  /** [F102] page that renders the button, in dashboard-URL form ("/#/search"). */
+  hostRoute?: string;
+  /** [F102] steps that make the button appear / become enabled. */
+  preSteps?: PreStep[];
+  /** [F102] run preSteps even when the button is already on screen (form fills). */
+  alwaysRunPreSteps?: boolean;
+  /** [F102] the button lives in the app shell (every route): never navigate. */
+  global?: boolean;
+  /** [F102] how long to wait for the target to render (ms). */
+  findTimeoutMs?: number;
+  /** [F102] how long to observe the click's effects (ms). */
+  maxWaitMs?: number;
+  /** [F102] verdict when the element legitimately is not rendered (state-gated). */
+  absentStatus?: VerdictStatus;
+  /** [F102] why the element can be absent - becomes part of the verdict. */
+  absentHint?: string;
+  /** [F102] why the element can be disabled - becomes part of the verdict. */
+  disabledHint?: string;
+  /** True when the real click mutates state on the runner. */
   mutating?: boolean;
+  /** @deprecated F101 route-probe target. F102 never probes instead of clicking. */
+  route?: string;
+  /** @deprecated F101 route-probe method. */
+  method?: string;
 }
 
+/** [F102] The probe query the search-driven buttons use. The mock backend
+ *  (tests/e2e/fixtures/mock-backend.mjs) answers it with a direct .mp4 row on
+ *  top of the F79 rows, the shape a real "public domain film" search returns:
+ *  that single row carries Fetch, Open, Download-to-RDP, Watch-in-RDP,
+ *  Preview and Open-in-Lab. */
+export const COLLECTOR_PROBE_QUERY = "public domain film";
+
+const SEARCH_STEP: PreStep = { kind: "search", query: COLLECTOR_PROBE_QUERY, why: "run the probe search so result cards render" };
+
 export const KNOWN_BUTTONS: KnownButton[] = [
-  { id: "add-site-open", feature: "add-site", action: "openModal", label: "Add site (open modal)", testId: "add-site-button" },
-  { id: "add-site-save", feature: "add-site", action: "save", label: "Add site (save)", testId: "add-site-save", route: "/api/f58/sources", method: "GET", mutating: true },
-  { id: "lab-refetch", feature: "lab", action: "refetch", label: "Lab: refetch", testId: "lab-refetch", route: "/api/f58/sources", method: "GET" },
-  { id: "search-submit", feature: "search", action: "submit", label: "Search: submit", testId: "search-submit", route: "/api/search/status?searchId=collector-probe", method: "GET" },
-  { id: "search-cancel", feature: "search", action: "cancel", label: "Search: cancel", testId: "cancel-search" },
-  { id: "card-open-rdp", feature: "launcher", action: "openUrl", label: "Result: open in RDP", testId: "card-open-rdp", mutating: true },
-  { id: "card-fetch", feature: "fetch", action: "start", label: "Result: fetch", testId: "card-fetch", route: "/api/progress", method: "GET", mutating: true },
-  { id: "card-download-rdp", feature: "download", action: "toRdp", label: "Result: download to RDP", testId: "card-download-rdp", mutating: true },
-  { id: "card-open-lab", feature: "lab", action: "inspect", label: "Result: open in Lab", testId: "card-open-lab", route: "/api/f58/sources", method: "GET" },
-  { id: "diag-test-launch", feature: "diag", action: "testLaunch", label: "Diag: test launch", testId: "f87-diag-test-launch", route: "/api/launch-url/diag", method: "GET", mutating: true },
-  { id: "selftest-run", feature: "selftest", action: "run", label: "F87 self-test", testId: "f87-selftest-run", route: "/api/health", method: "GET", mutating: true },
-  { id: "ws-reconnect", feature: "websocket", action: "reconnect", label: "WebSocket: reconnect", testId: "ws-reconnect", route: "/api/health", method: "GET" },
-  { id: "mirror-disable", feature: "mirror", action: "disable", label: "Mirror: disable", testId: "mirror-disable", route: "/api/mirror/status", method: "GET", mutating: true },
-  { id: "collector-run", feature: "collector", action: "run", label: "Collector: run diagnosis", testId: "collector-run", route: "/api/collector/status", method: "GET" },
-  { id: "collector-refresh", feature: "collector", action: "refresh", label: "Collector: refresh report", testId: "collector-refresh", route: "/api/collector/report", method: "GET" },
-  { id: "collector-download-json", feature: "collector", action: "downloadJson", label: "Collector: download JSON", testId: "collector-download-json" },
-  { id: "preview-open-source", feature: "preview", action: "openSource", label: "Preview: open source", testId: "preview-open-source" },
-  { id: "stream-watch-rdp", feature: "stream", action: "watchRdp", label: "Stream: watch in RDP", testId: "f91-stream-watch-rdp", mutating: true },
+  { id: "add-site-open", feature: "add-site", action: "openModal", label: "Add site (open modal)", testId: "add-site-button", hostRoute: "/#/search" },
+  { id: "add-site-save", feature: "add-site", action: "save", label: "Add site (save)", testId: "add-site-save", hostRoute: "/#/search", mutating: true, alwaysRunPreSteps: true,
+    preSteps: [
+      { kind: "click", selector: '[data-testid="add-site-button"]', unless: '[data-testid="add-site-modal"]', why: "open the Add site modal" },
+      { kind: "waitFor", selector: '[data-testid="add-site-modal"]', why: "wait for the modal" },
+      { kind: "fill", selector: '[data-testid="add-site-name"]', value: "F102 Collector probe", onlyIfEmpty: true, why: "type a site name" },
+      { kind: "fill", selector: '[data-testid="add-site-url"]', value: "example.com", onlyIfEmpty: true, why: "type a site URL" },
+    ],
+  },
+  { id: "lab-refetch", feature: "lab", action: "refetch", label: "Lab: refetch", testId: "lab-refetch", hostRoute: "/#/search", findTimeoutMs: 15000, preSteps: [{ kind: "openLab", query: COLLECTOR_PROBE_QUERY, why: "open a Lab page (stored site, else a result)" }] },
+  { id: "search-submit", feature: "search", action: "submit", label: "Search: submit", testId: "search-submit", hostRoute: "/#/search", preSteps: [{ kind: "fill", selector: '[data-testid="search-query"]', value: COLLECTOR_PROBE_QUERY, onlyIfEmpty: true, why: "type the probe query" }] },
+  { id: "search-cancel", feature: "search", action: "cancel", label: "Search: cancel", testId: "cancel-search", hostRoute: "/#/search", findTimeoutMs: 6000,
+    disabledHint: "Cancel is only enabled while a search is running - the probe search finished before it could be cancelled.",
+    preSteps: [
+      // Cancel lives in the progress header, which only renders with the
+      // Advanced panel's "Show progress" option on (a per-session display toggle).
+      { kind: "click", selector: '[data-testid="bar-icon-drawer"]', unless: '[data-testid="advanced-panel"]', why: "open the Advanced panel" },
+      { kind: "click", selector: '[data-testid="show-progress-toggle"]', unless: '[data-testid="show-progress-toggle"]:checked', why: "turn on Show progress (Cancel lives in the progress header)" },
+      { kind: "fill", selector: '[data-testid="search-query"]', value: COLLECTOR_PROBE_QUERY, why: "type the probe query" },
+      { kind: "click", selector: '[data-testid="search-submit"]', why: "start a search so Cancel becomes enabled" },
+    ],
+  },
+  { id: "card-open-rdp", feature: "launcher", action: "openUrl", label: "Result: open in RDP", testId: "card-open-rdp", hostRoute: "/#/search", mutating: true, findTimeoutMs: 15000, preSteps: [SEARCH_STEP] },
+  { id: "card-fetch", feature: "fetch", action: "start", label: "Result: fetch", testId: "card-fetch", hostRoute: "/#/search", mutating: true, findTimeoutMs: 15000, preSteps: [SEARCH_STEP] },
+  { id: "card-download-rdp", feature: "download", action: "toRdp", label: "Result: download to RDP", testId: "card-download-rdp", hostRoute: "/#/search", mutating: true, findTimeoutMs: 15000, preSteps: [SEARCH_STEP],
+    absentHint: "Download-to-RDP renders only on a result whose URL is a direct file (.pdf/.mp4/.zip/...).",
+  },
+  { id: "card-open-lab", feature: "lab", action: "inspect", label: "Result: open in Lab", testId: "card-open-lab", hostRoute: "/#/search", findTimeoutMs: 15000, preSteps: [SEARCH_STEP] },
+  { id: "diag-test-launch", feature: "diag", action: "testLaunch", label: "Diag: test launch", testId: "f87-diag-test-launch", hostRoute: "/#/search?diag=1", mutating: true },
+  { id: "selftest-run", feature: "selftest", action: "run", label: "F87 self-test", testId: "f87-selftest-run", hostRoute: "/#/search?selftest=1", mutating: true, maxWaitMs: 30000,
+    disabledHint: "The self-test is already running.",
+  },
+  { id: "ws-reconnect", feature: "websocket", action: "reconnect", label: "WebSocket: reconnect", testId: "ws-reconnect", hostRoute: "/#/", global: true, findTimeoutMs: 1500,
+    absentStatus: "warn", absentHint: "Reconnect is rendered only while the WebSocket is DISCONNECTED - a live/retrying socket has nothing to reconnect.",
+  },
+  { id: "mirror-disable", feature: "mirror", action: "disable", label: "Mirror: disable", testId: "mirror-disable", hostRoute: "/#/mirror", mutating: true, findTimeoutMs: 4000,
+    absentStatus: "warn", absentHint: "Disable is rendered only while the mirror is ENABLED (module installed + opted in) - there is nothing to disable.",
+  },
+  { id: "collector-run", feature: "collector", action: "run", label: "Collector: run diagnosis", testId: "collector-run", hostRoute: "/#/collector", maxWaitMs: 30000,
+    disabledHint: "Run diagnosis is rate limited to 1 run per 5 minutes (see 'Retry after' on the Collector page).",
+  },
+  { id: "collector-refresh", feature: "collector", action: "refresh", label: "Collector: refresh report", testId: "collector-refresh", hostRoute: "/#/collector" },
+  { id: "collector-download-json", feature: "collector", action: "downloadJson", label: "Collector: download JSON", testId: "collector-download-json", hostRoute: "/#/collector" },
+  { id: "preview-open-source", feature: "preview", action: "openSource", label: "Preview: open source", testId: "preview-open-source", hostRoute: "/#/search", mutating: true, findTimeoutMs: 15000,
+    preSteps: [
+      SEARCH_STEP,
+      { kind: "waitFor", selector: '[id^="f56.search.resultPreview."]', timeoutMs: 15000, why: "wait for a result's Preview button" },
+      { kind: "click", selector: '[id^="f56.search.resultPreview."]', why: "open the Preview dialog" },
+    ],
+  },
+  { id: "stream-watch-rdp", feature: "stream", action: "watchRdp", label: "Stream: watch in RDP", testId: "f91-stream-watch-rdp", hostRoute: "/#/search", mutating: true, findTimeoutMs: 15000, preSteps: [SEARCH_STEP],
+    absentHint: "Watch in RDP renders only on a video/live result (.mp4/.webm/... or a live-TV host).",
+  },
 ];
+
+/** [F102 §2.3] A button is wired when it names a host page; anything else is
+ *  shown as "⚠️ Handler pending" and is NEVER recorded as a fake action. */
+export function isHandlerWired(btn: KnownButton): boolean {
+  return typeof btn.hostRoute === "string" && btn.hostRoute.length > 0 && btn.testId.length > 0;
+}
 
 function settle(ms: number): Promise<void> {
   return new Promise((res) => {
@@ -649,43 +933,652 @@ function settle(ms: number): Promise<void> {
   });
 }
 
-/** [F101 §3.4] "Click now": a real DOM click when the button is mounted, an
- *  instrumented route probe when it is not. Either way the row is recorded with
- *  the full pre/req/resp/post breakdown. */
-export async function clickKnownButton(btn: KnownButton): Promise<ButtonAction> {
-  const out = await instrumentButton(
-    btn.feature,
-    btn.action + ".clickNow",
-    async () => {
-      let el: Element | null = null;
-      try { el = document.querySelector('[data-testid="' + btn.testId + '"]'); } catch { el = null; }
-      if (el && typeof (el as HTMLElement).click === "function") {
-        (el as HTMLElement).click();
-        await settle(1200);
-        return { via: "dom-click", testId: btn.testId };
-      }
-      if (btn.route) {
-        const headers: Record<string, string> = {};
-        try {
-          const token = getDashToken();
-          if (token) headers["X-Dash-Token"] = token;
-        } catch { /* no token: the probe then proves the auth wall */ }
-        const r = await fetch(apiBase() + btn.route, { method: btn.method || "GET", headers, cache: "no-store" });
-        const text = await r.text().catch(() => "");
-        return { via: "route-probe", route: btn.route, status: r.status, body: text.slice(0, BODY_CAPTURE_CHARS) };
-      }
-      return { via: "not-mounted", testId: btn.testId, note: "button is not on this route and no probe route is defined" };
+/** [F102] wait for the router to paint the new route. */
+function waitForRender(ms: number): Promise<void> {
+  return settle(ms);
+}
+
+// ---------------------------------------------------------------------------
+// Navigation: the router registers its navigate() (CollectorRunBridge inside
+// the HashRouter); outside a router (tests) the hash is set directly.
+// ---------------------------------------------------------------------------
+type Navigator = (path: string) => void;
+let routerNavigate: Navigator | null = null;
+
+/** [F102] called by <CollectorRunBridge/> with react-router's navigate(). */
+export function registerCollectorNavigator(fn: Navigator | null): () => void {
+  routerNavigate = fn;
+  return () => {
+    if (routerNavigate === fn) routerNavigate = null;
+  };
+}
+
+/** "/#/search?diag=1" -> "/search?diag=1" */
+export function routePath(hostRoute: string): string {
+  const p = String(hostRoute || "").replace(/^\/?#/, "");
+  return p.startsWith("/") ? p : "/" + p;
+}
+
+function currentPath(): string {
+  try {
+    const h = String(location.hash || "");
+    return h ? routePath(h) : "/";
+  } catch {
+    return "/";
+  }
+}
+
+/** [F102] SPA navigation to a dashboard route ("/#/search" or "/search"). */
+export async function navigateTo(route: string): Promise<void> {
+  const path = routePath(route);
+  if (currentPath() === path) return;
+  if (routerNavigate) {
+    try {
+      routerNavigate(path);
+    } catch {
+      location.hash = "#" + path;
+    }
+  } else {
+    try { location.hash = "#" + path; } catch { /* no location: tests */ }
+  }
+  await waitForRender(500);
+}
+
+// ---------------------------------------------------------------------------
+// DOM helpers - every interaction is a real DOM event on a real element.
+// ---------------------------------------------------------------------------
+function q(selector: string): HTMLElement | null {
+  try { return document.querySelector(selector) as HTMLElement | null; } catch { return null; }
+}
+
+/** The target element - the SAME lookup the F101 table used, now reached
+ *  after navigating to the host page. */
+function findTarget(btn: KnownButton): HTMLElement | null {
+  let el: Element | null = null;
+  try { el = document.querySelector('[data-testid="' + btn.testId + '"]'); } catch { el = null; }
+  return el as HTMLElement | null;
+}
+
+function isDisabled(el: HTMLElement | null): boolean {
+  if (!el) return false;
+  return (el as HTMLButtonElement).disabled === true || el.getAttribute("aria-disabled") === "true";
+}
+
+async function waitForEl(get: () => HTMLElement | null, timeoutMs: number, needEnabled: boolean): Promise<HTMLElement | null> {
+  const deadline = Date.now() + timeoutMs;
+  let el = get();
+  while (Date.now() < deadline) {
+    el = get();
+    if (el && (!needEnabled || !isDisabled(el))) return el;
+    await settle(100);
+  }
+  return get();
+}
+
+/** React-controlled inputs ignore `el.value = x`; use the native setter + an
+ *  input event, which is what a keystroke produces. */
+function fillInput(el: HTMLElement, value: string): void {
+  const input = el as HTMLInputElement;
+  const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, "value")?.set;
+  try {
+    input.focus();
+  } catch { /* focus is cosmetic */ }
+  if (setter) setter.call(input, value);
+  else input.value = value;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+}
+
+interface StepLog {
+  step: string;
+  outcome: "done" | "skipped" | "failed";
+  detail?: string;
+}
+
+async function runPreStep(step: PreStep, log: StepLog[]): Promise<boolean> {
+  const tag = step.kind + ": " + step.why;
+  if (step.kind === "click") {
+    if (step.unless && q(step.unless)) {
+      log.push({ step: tag, outcome: "skipped", detail: step.unless + " already present" });
+      return true;
+    }
+    const el = await waitForEl(() => q(step.selector), 4000, true);
+    if (!el || isDisabled(el)) {
+      log.push({ step: tag, outcome: "failed", detail: step.selector + (el ? " is disabled" : " not found") });
+      return !!step.optional;
+    }
+    el.click();
+    await settle(250);
+    log.push({ step: tag, outcome: "done" });
+    return true;
+  }
+  if (step.kind === "fill") {
+    const el = await waitForEl(() => q(step.selector), 4000, true);
+    if (!el) {
+      log.push({ step: tag, outcome: "failed", detail: step.selector + " not found" });
+      return false;
+    }
+    if (step.onlyIfEmpty && String((el as HTMLInputElement).value || "").trim()) {
+      log.push({ step: tag, outcome: "skipped", detail: "already filled" });
+      return true;
+    }
+    fillInput(el, step.value);
+    await settle(150);
+    log.push({ step: tag, outcome: "done", detail: JSON.stringify(step.value) });
+    return true;
+  }
+  if (step.kind === "waitFor") {
+    const el = await waitForEl(() => q(step.selector), step.timeoutMs ?? 6000, !!step.enabled);
+    const ok = !!el && (!step.enabled || !isDisabled(el));
+    log.push({ step: tag, outcome: ok ? "done" : "failed", detail: ok ? undefined : step.selector + " did not appear" });
+    return ok || !!step.optional;
+  }
+  if (step.kind === "search") {
+    const input = await waitForEl(() => q('[data-testid="search-query"]'), 4000, false);
+    if (!input) {
+      log.push({ step: tag, outcome: "failed", detail: "search bar not found" });
+      return false;
+    }
+    fillInput(input, step.query);
+    const submit = await waitForEl(() => q('[data-testid="search-submit"]'), 6000, true);
+    if (!submit || isDisabled(submit)) {
+      log.push({ step: tag, outcome: "failed", detail: "search submit is " + (submit ? "disabled" : "missing") });
+      return false;
+    }
+    submit.click();
+    log.push({ step: tag, outcome: "done", detail: JSON.stringify(step.query) });
+    return true;
+  }
+  if (step.kind === "openLab") {
+    let opener = q('[data-testid^="your-site-open-lab-"]');
+    let via = "stored site";
+    if (!opener) {
+      opener = q('[data-testid="card-open-lab"]');
+      via = "result card";
+    }
+    if (!opener) {
+      const searched = await runPreStep({ kind: "search", query: step.query, why: "run the probe search to get a result to open in Lab" }, log);
+      if (!searched) return false;
+      opener = await waitForEl(() => q('[data-testid="card-open-lab"]'), 15000, true);
+      via = "result card";
+    }
+    if (!opener) {
+      log.push({ step: tag, outcome: "failed", detail: "no stored site and no result to open in Lab" });
+      return false;
+    }
+    opener.click();
+    await settle(300);
+    log.push({ step: tag, outcome: "done", detail: "via " + via });
+    return true;
+  }
+  return false;
+}
+
+// ---------------------------------------------------------------------------
+// Effect observation: network (fetch ring) + DOM signature + popups/downloads.
+// ---------------------------------------------------------------------------
+interface EffectProbe {
+  stop: () => void;
+  signature: () => string;
+  popups: string[];
+  downloads: string[];
+}
+
+function textOf(selector: string, max = 400): string {
+  try {
+    return Array.from(document.querySelectorAll(selector))
+      .map((n) => (n.textContent || "").trim())
+      .join(" | ")
+      .slice(0, max);
+  } catch {
+    return "";
+  }
+}
+
+function startEffectProbe(el: HTMLElement): EffectProbe {
+  const popups: string[] = [];
+  const downloads: string[] = [];
+  const origOpen = window.open;
+  try {
+    window.open = function (this: Window, ...args: Parameters<typeof window.open>) {
+      popups.push(String(args[0] ?? ""));
+      return origOpen.apply(this, args);
+    } as typeof window.open;
+  } catch { /* read-only open: popups simply go uncounted */ }
+  const onDocClick = (e: Event) => {
+    const a = (e.target as Element | null)?.closest?.("a[download]") as HTMLAnchorElement | null;
+    if (a) downloads.push(a.getAttribute("download") || a.href);
+  };
+  document.addEventListener("click", onDocClick, true);
+  const signature = () =>
+    JSON.stringify([
+      document.querySelectorAll('[role="dialog"],[role="alertdialog"]').length,
+      textOf("#toasts"),
+      textOf('[role="alert"]'),
+      textOf('[data-testid="status-live"]', 120),
+      String(location.hash || ""),
+      el.isConnected ? [isDisabled(el), el.getAttribute("aria-expanded"), (el.textContent || "").trim().slice(0, 60)].join("|") : "detached",
+      popups.length,
+      downloads.length,
+    ]);
+  return {
+    popups,
+    downloads,
+    signature,
+    stop: () => {
+      try { window.open = origOpen; } catch { /* ignore */ }
+      document.removeEventListener("click", onDocClick, true);
     },
-    { params: { knownButton: btn.id } }
-  );
-  return out.record;
+  };
+}
+
+function describeEffects(before: string, after: string, probe: EffectProbe): string[] {
+  const out: string[] = [];
+  let b: unknown[] = [];
+  let a: unknown[] = [];
+  try { b = JSON.parse(before); a = JSON.parse(after); } catch { return out; }
+  if (a[0] !== b[0]) out.push("dialog " + (Number(a[0]) > Number(b[0]) ? "opened" : "closed") + " (" + b[0] + "→" + a[0] + ")");
+  if (a[1] !== b[1] && a[1]) out.push("toast: " + String(a[1]).slice(-160));
+  if (a[2] !== b[2] && a[2]) out.push("alert: " + String(a[2]).slice(-160));
+  if (a[3] !== b[3] && a[3]) out.push("search status: " + String(a[3]));
+  if (a[4] !== b[4]) out.push("route → " + String(a[4]));
+  if (a[5] !== b[5]) out.push("button state: " + String(b[5]) + " → " + String(a[5]));
+  for (const p of probe.popups) out.push("popup opened: " + p);
+  for (const d of probe.downloads) out.push("download triggered: " + d);
+  return out;
+}
+
+interface WindowResult {
+  exchanges: CapturedExchange[];
+  appExchanges: CapturedExchange[];
+  effects: string[];
+  elapsedMs: number;
+  timedOut: boolean;
+}
+
+/** [F102] Observe the click until the network is idle and the DOM has been
+ *  quiet for QUIET_MS (min MIN_WAIT_MS, max maxWaitMs). elapsedMs is click →
+ *  last observed effect (response landed / DOM changed), never a constant. */
+const MIN_WAIT_MS = 250;
+const QUIET_MS = 450;
+
+async function observeClick(el: HTMLElement, mark: number, maxWaitMs: number): Promise<WindowResult> {
+  const probe = startEffectProbe(el);
+  const before = probe.signature();
+  let lastSig = before;
+  const t0 = performance.now();
+  let lastActivity = -1;
+  let timedOut = false;
+  try {
+    el.click();
+    for (;;) {
+      await settle(50);
+      const now = performance.now();
+      const sig = probe.signature();
+      if (sig !== lastSig) {
+        lastSig = sig;
+        lastActivity = now;
+      }
+      const win = exchangeRing.filter((e) => e.seq > mark && e.origin !== "background");
+      for (const e of win) {
+        const end = e.endedAtPerf ?? e.startedAtPerf;
+        if (end > lastActivity) lastActivity = end;
+      }
+      const inflight = win.some((e) => !e.response && !e.failed);
+      const since = now - (lastActivity >= 0 ? lastActivity : t0);
+      if (now - t0 >= MIN_WAIT_MS && !inflight && since >= QUIET_MS) break;
+      if (now - t0 >= maxWaitMs) {
+        timedOut = inflight;
+        break;
+      }
+    }
+  } finally {
+    probe.stop();
+  }
+  const end = performance.now();
+  const exchanges = exchangeRing.filter((e) => e.seq > mark && e.origin !== "background");
+  const appExchanges = exchanges.filter((e) => e.origin !== "probe");
+  const effects = describeEffects(before, probe.signature(), probe);
+  const effective = lastActivity >= 0 ? lastActivity : end;
+  return {
+    exchanges,
+    appExchanges,
+    effects,
+    elapsedMs: Math.max(1, Math.round((timedOut ? end : effective) - t0)),
+    timedOut,
+  };
+}
+
+function pathOf(url: string): string {
+  try {
+    const u = new URL(url, location.href);
+    return u.pathname + (u.search ? u.search.slice(0, 60) : "");
+  } catch {
+    return url;
+  }
+}
+
+/** [F102] Verdict for a REAL click, from what the click did on the wire and in
+ *  the DOM. ok = the action's request succeeded or it produced its client-side
+ *  effect; fail = a request failed / the handler reported failure; warn = it
+ *  ran but proved nothing (no request, no visible change) or ran unauthenticated. */
+export function classifyFromFetchLog(args: {
+  appExchanges: CapturedExchange[];
+  effects: string[];
+  nested: ButtonAction[];
+  pre: PreCheck;
+  timedOut: boolean;
+  waitedMs: number;
+}): Verdict {
+  const ex = args.appExchanges;
+  const bad = ex.find((e) => !!e.failed || !e.response || e.response.status >= 400);
+  if (bad && !(args.timedOut && !bad.response && !bad.failed)) {
+    const status = bad.response?.status ?? 0;
+    const v = classifyFailure(status, bad.response?.body ?? "", bad.failed);
+    return { ...v, reason: "real click → " + bad.request.method + " " + pathOf(bad.request.url) + " → " + (status || "no response") + ": " + v.reason };
+  }
+  const nestedBad = args.nested.find((n) => n.verdict?.status === "fail" || !!n.error);
+  if (nestedBad) {
+    const v = nestedBad.verdict;
+    return {
+      status: "fail",
+      reason: "real click → the " + nestedBad.feature + ":" + nestedBad.action + " handler reported " + (v ? v.reason : "an error: " + nestedBad.error),
+      suggestedFix: v?.suggestedFix || "Expand the result tab: the handler's own error is recorded there.",
+      relatedIssue: v?.relatedIssue ?? F102_ISSUE,
+    };
+  }
+  if (args.timedOut) {
+    const pending = ex.filter((e) => !e.response && !e.failed).map((e) => e.request.method + " " + pathOf(e.request.url));
+    return {
+      status: "warn",
+      reason: "real click → still waiting after " + args.waitedMs + "ms for " + (pending.join(", ") || "the server"),
+      suggestedFix: "The action is long-running (self-test / diagnosis). Wait and press Click now again, or open the page to watch it finish.",
+      relatedIssue: null,
+    };
+  }
+  const okEx = ex.filter((e) => e.response && e.response.status >= 200 && e.response.status < 400);
+  if (okEx.length) {
+    const first = okEx[0];
+    const what = first.request.method + " " + pathOf(first.request.url) + " → HTTP " + first.response!.status + (okEx.length > 1 ? " (+" + (okEx.length - 1) + " more)" : "");
+    if (!args.pre.tokenPresence) {
+      return { status: "warn", reason: "real click → " + what + ", but without a dash token (loopback/tailnet allowance)", suggestedFix: "Add ?key=<dash token> so the same click works from off-runner.", relatedIssue: null };
+    }
+    return { status: "ok", reason: "real click → " + what + (args.effects.length ? "; " + args.effects[0] : ""), suggestedFix: "None needed.", relatedIssue: null };
+  }
+  if (args.effects.length) {
+    return { status: "ok", reason: "real click → client-side effect: " + args.effects.slice(0, 3).join("; "), suggestedFix: "None needed.", relatedIssue: null };
+  }
+  return {
+    status: "warn",
+    reason: "real click → no request and no visible change within " + args.waitedMs + "ms",
+    suggestedFix: "The handler short-circuited (validation / precondition). Use Open page and click it by hand to see the inline message.",
+    relatedIssue: F102_ISSUE,
+  };
+}
+
+async function capturePreCheck(): Promise<{ pre: PreCheck; probe: ProbeSet }> {
+  const tokenPresent = (() => { try { return hasDashToken(); } catch { return false; } })();
+  const probe = await captureServiceStates();
+  return {
+    probe,
+    pre: {
+      serviceStates: probe.states,
+      tokenPresence: tokenPresent,
+      routeReachable: probe.routeReachable,
+      prerequisites: prerequisiteList(probe, tokenPresent),
+      at: new Date().toISOString(),
+    },
+  };
+}
+
+async function capturePostCheck(pre: PreCheck, effects: string[]): Promise<{ post: PostCheck; probe: ProbeSet }> {
+  const probe = await captureServiceStates();
+  const stateChanged = JSON.stringify(probe.states) !== JSON.stringify(pre.serviceStates);
+  const sideEffects: SideEffect[] = effects.length ? effects.map((what) => ({ what, detected: true })) : [{ what: "visible DOM change", detected: false }];
+  return { probe, post: { sideEffects, newServiceStates: probe.states, stateChanged, at: new Date().toISOString() } };
+}
+
+function setRunning(r: CollectorRunState | null) {
+  useCollectorStore.setState({ running: r });
+}
+
+let clickChain: Promise<unknown> = Promise.resolve();
+
+export interface ClickOptions {
+  /** navigate back to the page the click started from (default true). */
+  returnToOrigin?: boolean;
+  index?: number;
+  total?: number;
+}
+
+/**
+ * [F102 §2.1] "Click now": a REAL DOM click.
+ *   1. navigate to the button's host page (unless it is already on screen)
+ *   2. run the precondition steps (modal, probe search, Lab, ...)
+ *   3. capture pre-state (services, token)
+ *   4. click the element - the operator's code path - observing every request
+ *   5. wait for the network to go idle / the DOM to settle
+ *   6. capture post-state
+ *   7. verdict from the fetch log + DOM effects (+ the handler's own record)
+ *   8. record it, then return to the page the click started from
+ * There is NO route-probe fallback: an unreachable button is recorded as such.
+ */
+export async function clickKnownButton(btnOrId: KnownButton | string, opts: ClickOptions = {}): Promise<ButtonAction> {
+  // one click at a time: a second Click now waits for the first to finish
+  const run = clickChain.then(() => runClick(btnOrId, opts));
+  clickChain = run.catch(() => undefined);
+  return run;
+}
+
+async function runClick(btnOrId: KnownButton | string, opts: ClickOptions): Promise<ButtonAction> {
+  const btn = typeof btnOrId === "string" ? KNOWN_BUTTONS.find((b) => b.id === btnOrId) : btnOrId;
+  if (!btn) throw new Error("Unknown button " + String(btnOrId));
+  if (!isHandlerWired(btn)) throw new Error("Handler pending for " + btn.id + " - not clicked, not recorded");
+  installFetchObserver();
+  const origin = currentPath();
+  const hostRoute = btn.hostRoute as string;
+  const started = performance.now();
+  const steps: StepLog[] = [];
+  const running = (step: string) => setRunning({ buttonId: btn.id, label: btn.label, step, index: opts.index, total: opts.total, startedAt: new Date().toISOString() });
+  try {
+    // 1. host page
+    running("opening " + hostRoute);
+    let el = findTarget(btn);
+    const onScreen = !!el && !isDisabled(el);
+    if (!onScreen && !btn.global) {
+      await navigateTo(hostRoute);
+      el = await waitForEl(() => findTarget(btn), 800, true);
+    }
+    // 2. preconditions
+    if ((btn.preSteps && btn.preSteps.length) && (btn.alwaysRunPreSteps || !el || isDisabled(el))) {
+      for (const step of btn.preSteps) {
+        running(step.why);
+        const ok = await runPreStep(step, steps);
+        if (!ok) break;
+      }
+    }
+    running("waiting for [data-testid=" + btn.testId + "]");
+    el = await waitForEl(() => findTarget(btn), btn.findTimeoutMs ?? 8000, true);
+    const routeNow = String(location.hash || "#/");
+    if (!el || isDisabled(el)) {
+      const disabled = !!el;
+      running("recording " + (disabled ? "disabled" : "missing") + " button");
+      const { pre, probe } = await capturePreCheck();
+      const failedStep = steps.find((s) => s.outcome === "failed");
+      const reason = disabled
+        ? "button [data-testid=" + btn.testId + "] is rendered but DISABLED on " + routeNow + (btn.disabledHint ? " — " + btn.disabledHint : "")
+        : "DOM element [data-testid=" + btn.testId + "] not found on route " + hostRoute + (failedStep ? " (precondition failed: " + failedStep.step + " — " + (failedStep.detail || "") + ")" : "") + (btn.absentHint ? " — " + btn.absentHint : "");
+      const verdict: Verdict = disabled
+        ? { status: "warn", reason, suggestedFix: "Wait for the precondition (rate-limit window / running action) and press Click now again.", relatedIssue: F102_ISSUE }
+        : { status: btn.absentStatus || "fail", reason, suggestedFix: "Button may be hidden by state. Check feature prerequisites" + (btn.absentHint ? "" : " (use Open page to see it in context)") + ".", relatedIssue: F102_ISSUE };
+      return logButtonAction({
+        feature: btn.feature,
+        action: btn.action + ".clickNow",
+        params: { knownButton: btn.id, hostRoute, testId: btn.testId, preSteps: steps },
+        result: { via: disabled ? "disabled" : "not-rendered", route: routeNow, clicked: false },
+        error: disabled ? undefined : "not rendered: [data-testid=" + btn.testId + "] on " + hostRoute,
+        elapsedMs: Math.max(1, Math.round(performance.now() - started)),
+        preCheck: pre,
+        postCheck: { sideEffects: [{ what: "click performed", detected: false }], newServiceStates: pre.serviceStates, stateChanged: false, at: new Date().toISOString() },
+        serviceDependencies: probe.deps,
+        verdict,
+      });
+    }
+    // 3. pre-state
+    running("capturing pre-state");
+    const { pre } = await capturePreCheck();
+    // 4 + 5. the real click, observed (the mark is taken AFTER the pre-probes)
+    running("clicking " + btn.label);
+    el = findTarget(btn) || el;
+    const mark = ringMark();
+    const capture: CaptureContext = { nested: [] };
+    activeCapture = capture;
+    let win: WindowResult;
+    try {
+      win = await observeClick(el, mark, btn.maxWaitMs ?? 8000);
+    } finally {
+      activeCapture = null;
+    }
+    // 6. post-state
+    running("capturing post-state");
+    const { post, probe: postProbe } = await capturePostCheck(pre, win.effects);
+    // 7. verdict
+    const verdict = classifyFromFetchLog({ appExchanges: win.appExchanges, effects: win.effects, nested: capture.nested, pre, timedOut: win.timedOut, waitedMs: win.elapsedMs });
+    const primary = win.appExchanges.find((e) => e.request.method !== "GET") || win.appExchanges[0] || null;
+    // 8. record
+    return logButtonAction({
+      feature: btn.feature,
+      action: btn.action + ".clickNow",
+      params: { knownButton: btn.id, hostRoute, testId: btn.testId, preSteps: steps },
+      result: {
+        via: "dom-click",
+        route: routeNow,
+        clicked: true,
+        effects: win.effects,
+        requests: win.appExchanges.map((e) => ({ method: e.request.method, url: pathOf(e.request.url), status: e.response?.status ?? 0, elapsedMs: e.response?.elapsedMs ?? null, failed: e.failed || undefined })),
+        nested: capture.nested.map((n) => ({ feature: n.feature, action: n.action, verdict: n.verdict?.status ?? null, error: n.error })),
+      },
+      error: verdict.status === "fail" ? verdict.reason.slice(0, 200) : undefined,
+      elapsedMs: win.elapsedMs,
+      preCheck: pre,
+      request: primary ? primary.request : undefined,
+      response: primary ? primary.response ?? undefined : undefined,
+      postCheck: post,
+      serviceDependencies: postProbe.deps,
+      verdict,
+    });
+  } finally {
+    setRunning(null);
+    if (opts.returnToOrigin !== false && currentPath() !== origin) {
+      await navigateTo(origin);
+    }
+  }
+}
+
+/** [F102 §2.3] identical-error signature: the reason with the button-specific
+ *  tokens (testId, route, label, method/path) removed, so "the server refused
+ *  the dash token" five times in a row aborts while five different missing
+ *  buttons do not. */
+function errorSignature(rec: ButtonAction): string | null {
+  if (rec.verdict?.status !== "fail") return null;
+  const r = rec.verdict.reason;
+  const core = r.includes(": ") && r.startsWith("real click → ") ? r.slice(r.indexOf(": ") + 2) : r;
+  return core.replace(/\[data-testid=[^\]]*\]/g, "[el]").replace(/#\/[^\s)]*/g, "#/route");
+}
+
+export const IDENTICAL_ERROR_LIMIT = 5;
+export const ABORT_MESSAGE = "Aborted after 5 identical errors — fix one button at a time.";
+
+export interface BatchResult {
+  records: ButtonAction[];
+  skipped: string[];
+  aborted: string | null;
+}
+
+/** [F102 §2.3] "Click every button": one REAL click per wired button, in
+ *  order, aborting after 5 identical errors; unwired buttons are skipped and
+ *  never recorded. Returns to the starting page once, at the end. */
+export async function clickAllKnownButtons(buttons: KnownButton[] = KNOWN_BUTTONS): Promise<BatchResult> {
+  const origin = currentPath();
+  const records: ButtonAction[] = [];
+  const skipped: string[] = [];
+  let aborted: string | null = null;
+  let lastSig: string | null = null;
+  let streak = 0;
+  useCollectorStore.setState({ notice: null });
+  const wired = buttons.filter((b) => {
+    if (isHandlerWired(b)) return true;
+    skipped.push(b.id);
+    return false;
+  });
+  try {
+    for (let i = 0; i < wired.length; i++) {
+      const rec = await clickKnownButton(wired[i], { returnToOrigin: false, index: i + 1, total: wired.length });
+      records.push(rec);
+      const sig = errorSignature(rec);
+      if (sig && sig === lastSig) streak += 1;
+      else streak = sig ? 1 : 0;
+      lastSig = sig;
+      if (streak >= IDENTICAL_ERROR_LIMIT) {
+        aborted = ABORT_MESSAGE + " (" + String(sig).slice(0, 140) + ")";
+        break;
+      }
+    }
+  } finally {
+    if (currentPath() !== origin) await navigateTo(origin);
+  }
+  const notice = aborted || (skipped.length ? "Skipped " + skipped.length + " button(s) with ⚠️ Handler pending: " + skipped.join(", ") : null);
+  useCollectorStore.setState({ notice });
+  return { records, skipped, aborted };
+}
+
+/** [F102] which known button a recorded row belongs to (new rows carry
+ *  params.knownButton; organic rows match on feature:action). */
+export function knownButtonOf(a: ButtonAction): KnownButton | undefined {
+  const id = (a.params as { knownButton?: unknown } | undefined)?.knownButton;
+  if (typeof id === "string") {
+    const hit = KNOWN_BUTTONS.find((b) => b.id === id);
+    if (hit) return hit;
+  }
+  const action = a.action.replace(/\.(clickNow|replay)$/, "");
+  return KNOWN_BUTTONS.find((b) => b.feature === a.feature && b.action === action);
+}
+
+/**
+ * [F100 → F102] "▶ Replay all" re-runs REAL clicks: each distinct known button
+ * found in the history is clicked once. F100 handed this an empty handler map
+ * and wrote one "no handler" error row per recorded action (the operator's 32
+ * identical rows). Rows that map to no known button are skipped - counted,
+ * never recorded as fake actions.
+ */
+export async function replayAllActions(): Promise<BatchResult> {
+  const seen = new Set<string>();
+  const targets: KnownButton[] = [];
+  let unmatched = 0;
+  for (const a of getRecordedActions()) {
+    const b = knownButtonOf(a);
+    if (!b) {
+      unmatched += 1;
+      continue;
+    }
+    if (!seen.has(b.id)) {
+      seen.add(b.id);
+      targets.push(b);
+    }
+  }
+  const out = await clickAllKnownButtons(targets);
+  if (unmatched && !out.aborted) {
+    useCollectorStore.setState({ notice: "Replayed " + targets.length + " button(s); " + unmatched + " recorded row(s) map to no known button and were skipped (not recorded)." });
+  }
+  return out;
 }
 
 /** Last recorded outcome per known button, for the "All known buttons" table. */
 export function lastOutcomePerButton(actions: ButtonAction[]): Record<string, ButtonAction> {
   const out: Record<string, ButtonAction> = {};
   for (const a of actions) {
-    const key = a.feature + ":" + a.action.replace(/\.clickNow$/, "");
+    const key = a.feature + ":" + a.action.replace(/\.(clickNow|replay)$/, "");
     const prev = out[key];
     if (!prev || new Date(a.ts).getTime() >= new Date(prev.ts).getTime()) out[key] = a;
   }
