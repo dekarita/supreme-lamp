@@ -9,10 +9,12 @@
 > The next session's §1 step determination = first unchecked box below (fall back to #165's body only
 > if this file is missing), then cross-check #165's newest session-log comment.
 
-**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 07:00Z
+**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 07:14Z
 
 ## Phase 1 — Immediate value
-- [x] **Step 1 — F-TESTID** · landed on `arena/ad1df050-supreme-lamp`, PR **#166**, head `b1e7106`
+- [x] **Step 1 — F-TESTID** · landed on `arena/ad1df050-supreme-lamp`, PR **#166**, head `5cf005a`
+  · CI: `gates` ✅ 1m44s · `windows-native` ✅ · `e2e-ui` ⚠️ pre-existing 25-min self-cancel (see below)
+  · measured gap was **76 missing of 174 button sites**, not 63 of 150 (see #163 §4 correction in the PR body)
 - [ ] **Step 2 — F-I18N-SI-72** · ETA 30min · 72 missing `si` keys + en/si parity gate
 - [ ] **Step 3 — F-DVR-LITE** · ETA 90min · Share-with-AI button + GitHub attachment upload
 
