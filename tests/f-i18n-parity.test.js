@@ -42,7 +42,11 @@ const SI_FILE = "src/i18n/si.json";
 
 // Count lock. 933/861 + 16 collector keys added to BOTH catalogs + those same
 // 16 mirrored into si + the 72 gap closed = 949/949. [F-I18N-SI-72]
-const EXPECTED_FLAT_KEYS = 949;
+// [F-DVR-LITE / Observatory step 3] + 21 `dvr.*` keys, added to BOTH catalogs in
+// the same commit as the DVR UI that calls them (the panel is t()-driven from day
+// one - the lesson step 2 learned about `collector.*` surviving only as a
+// defaultValue). 949 + 21 = 970.
+const EXPECTED_FLAT_KEYS = 970;
 
 // Legacy untranslated si values (byte-identical to en). Frozen deliberately:
 // operator-owned copy that predates this step (mirrorHostMatrix/*, egress.line,
