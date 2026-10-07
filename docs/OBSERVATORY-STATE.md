@@ -85,6 +85,22 @@ stay manual, PR labels do not, and `f-observatory` + `blocked` now exist as repo
 `PATCH /issues/165` was attempted once, returned `403`, and is not retried; this file wins.
 `gh gist create` is also `403`, so the session trace is inlined in the PR comment instead of linked.
 
+### Session 2026-10-07 08:52Z — Step 3 — F-DVR-LITE — **HALTED BLOCKED in PRE-STEP**
+- Branch `arena/6f15a7da-supreme-lamp` · PR #168 (docs-only) · blocker #169 · no feature code shipped
+- Spec drift: `tests/smoke/` does not exist (smoke lives in `src/tests/smoke/`); the ledger has **10**
+  steps, not 11; "GH_PAT Actions secret" is wrong — it is a Cloudflare Worker var (`worker.js:92`)
+- Primitive audit ✓: toast + `copyText` exist, F104 recorder is injectable (extend-not-replace works);
+  **no** FAB and **no** upload util exist
+- Halt reason (each falsified 3×): no REST endpoint attaches a file to an issue comment; the server's
+  GitHub write path is neutered by remediation (`ghrdp-lib.ps1:751,844` throw, `ghrdp-server.ps1:6972`
+  404s `/api/diag-upload`); §-1 "preserve the security guards" outranks shipping the step
+- Non-regression proof: diff is docs + `.gitignore` only — `src/`, `tests/`, `payloads/`, `worker.js`
+  byte-identical to `main`; on the same base locally Node 623/623 · Vitest 1004/1004 (78 files) · tsc 0
+- CI on `c4359fe` (head never changed; 0 supersedes): `gates` **GREEN** 2m · `windows-native` **GREEN** 10m
+  · `e2e-ui` **AMBER-INHERITED** (cancelled by its own 25-min timeout, zero failed steps — identical to
+  baseline main, which is 0/5 cancelled) → mergeable by the §4 criteria
+- Budget: ~35 min of 120. Nothing was hard-earned by writing code that the falsification says must not ship.
+
 ## Standing facts the next session should not rediscover
 - **`e2e-ui` is red on `main` for reasons no step can fix**: it is cancelled by its own
   `timeout-minutes: 25` while running the F78+F79 spec group — 0 successes in the last 25 runs on
