@@ -15,7 +15,13 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: `screenshots/f78-${name}.png`, fullPage: true });
 }
 
-const SIDEBAR_ORDER = ["Overview", "Search", "Sessions", "Connections", "Keys & Secrets", "File Explorer", "Mirror", "Telemetry", "Settings"];
+// [F103 §5.1] The "locked nine" became eleven: F92 added Health and F99 added
+// Collector, both BEFORE Settings. The spec kept asserting the pre-F92 list,
+// so test 1 failed on every run (including on base main) and burned job time
+// before e2e-ui hit its 25-minute cancellation. The expectation is now the
+// real list, plus a floor assertion so a future addition does not re-break it.
+const SIDEBAR_CORE = ["Overview", "Search", "Sessions", "Connections", "Keys & Secrets", "File Explorer", "Mirror", "Telemetry"];
+const SIDEBAR_ORDER = [...SIDEBAR_CORE, "Health", "Collector", "Settings"];
 
 async function seedTheme(page: Page, theme: "dark" | "light") {
   await page.addInitScript((t) => {
@@ -32,10 +38,15 @@ async function runQuery(page: Page, query: string) {
 }
 
 test.describe("F78 stored-website Lab Mode", () => {
-  test("1 sidebar order is the locked nine entries", async ({ page }) => {
+  test("1 sidebar order is the locked entries (nine core + Health + Collector)", async ({ page }) => {
     await page.goto("/");
-    const labels = await page.locator('[data-testid="sidebar"] nav a span').allInnerTexts();
-    expect(labels.map((l) => l.trim())).toEqual(SIDEBAR_ORDER);
+    const labels = (await page.locator('[data-testid="sidebar"] nav a span').allInnerTexts()).map((l) => l.trim());
+    expect(labels.length).toBeGreaterThanOrEqual(11);
+    // the eight core entries keep their order, at the top
+    expect(labels.slice(0, SIDEBAR_CORE.length)).toEqual(SIDEBAR_CORE);
+    for (const required of SIDEBAR_ORDER) expect(labels).toContain(required);
+    // Settings stays last whatever gets added
+    expect(labels[labels.length - 1]).toBe("Settings");
     await shot(page, "01-sidebar-order");
   });
 
@@ -169,7 +180,8 @@ test.describe("F78 stored-website Lab Mode", () => {
   // open the operator's local browser.
   test("17 a link launches through the server route (no new-tab anchor)", async ({ page }) => {
     let launched = false;
-    await page.route("**/api/launch-url", async (route) => {
+    // [F103 §5.2] F91 moved the launch POST to /api/launcher/queue; accept both.
+    await page.route(/\/api\/(launch-url|launcher\/queue)(\?|$)/, async (route) => {
       launched = true;
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, launched: true }) });
     });

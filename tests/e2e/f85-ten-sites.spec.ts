@@ -59,6 +59,10 @@ async function runQuery(page: Page, query: string) {
   await expect(page.locator('[id="f78.search.yourSitesRow"]')).toBeVisible();
 }
 
+// [F103 §5.4] same 15s per-test ceiling as f86: ten sites must not be able to
+// walk the e2e-ui job into its 25-minute cancellation.
+test.setTimeout(15_000);
+
 test.describe("F85 operator fixture: every domain, end to end", () => {
   // The fixture list is the source of truth for how many stories run: if the
   // operator edits f85-sites.json, the suite follows without a code change.

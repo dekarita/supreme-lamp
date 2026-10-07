@@ -76,6 +76,15 @@ async function runQuery(page: Page, query: string) {
   await expect(page.locator('[id="f78.search.yourSitesRow"]')).toBeVisible();
 }
 
+// [F103 §5.4] Ten sites x the old 60s-class waits is what pushed e2e-ui past
+// the 25-minute job limit, where GitHub CANCELS the job (red, with no failing
+// assertion to read). Each test gets a hard 15s budget and the in-test waits
+// are trimmed to match: against the local mock backend every step here is
+// sub-second, so a 15s ceiling only ever fires on a real hang.
+test.setTimeout(15_000);
+
+const LAUNCH_ROUTE = /\/api\/(launch-url|launcher\/queue)(\?|$)/;
+
 test.describe("F86 ten-site deep inspection", () => {
   test("0 the fixture set covers the operator list and every sitemap has >= 60 real-shaped URLs", () => {
     expect(SITES.length).toBeGreaterThanOrEqual(10);
@@ -119,8 +128,8 @@ test.describe("F86 ten-site deep inspection", () => {
       //    match-count line (both come from server data, never from a
       //    hard-coded number). No waitForResponse: UI state is the assertion.
       await page.goto(labUrlOf(site));
-      await expect(page.getByTestId("lab-link-list")).toBeVisible({ timeout: 20_000 });
-      await expect(page.getByTestId("lab-match-count")).toBeVisible({ timeout: 20_000 });
+      await expect(page.getByTestId("lab-link-list")).toBeVisible({ timeout: 8_000 });
+      await expect(page.getByTestId("lab-match-count")).toBeVisible({ timeout: 8_000 });
       // "{matches} of {total} links match" - the total is the inspect's linkCount.
       const countLine = (await page.getByTestId("lab-match-count").textContent()) || "";
       const total = Number((/of\s+(\d+)/.exec(countLine) || [])[1] || 0);
@@ -138,8 +147,11 @@ test.describe("F86 ten-site deep inspection", () => {
       // 3. OPEN: the first matching row must POST /api/launch-url and the
       //    response must carry the F86 tier (1-3), which is the proof that the
       //    launch path ran a rung instead of silently failing.
-      const launchReq = page.waitForRequest((r) => r.url().includes("/api/launch-url") && r.method() === "POST");
-      const launchRes = page.waitForResponse((r) => r.url().includes("/api/launch-url") && r.request().method() === "POST");
+      // [F103 §5.2] F91 replaced POST /api/launch-url with POST
+      // /api/launcher/queue; the spec waited only for the old path and hung
+      // until the job-level timeout. Accept EITHER (backward compatible).
+      const launchReq = page.waitForRequest((r) => LAUNCH_ROUTE.test(r.url()) && r.method() === "POST");
+      const launchRes = page.waitForResponse((r) => LAUNCH_ROUTE.test(r.url()) && r.request().method() === "POST");
       await page.getByTestId("lab-link-open").first().click();
       const post = await launchReq;
       // The row's href is on THIS site (www-tolerant, exactly like the F84
@@ -158,7 +170,7 @@ test.describe("F86 ten-site deep inspection", () => {
 
       // 5. SCREENSHOT of the inspector view (full page, per site).
       await page.goto(labUrlOf(site));
-      await expect(page.getByTestId("lab-link-list")).toBeVisible({ timeout: 20_000 });
+      await expect(page.getByTestId("lab-link-list")).toBeVisible({ timeout: 8_000 });
       await expect(page.getByTestId("lab-link-row").first()).toBeVisible();
       await shot(page, site);
     });

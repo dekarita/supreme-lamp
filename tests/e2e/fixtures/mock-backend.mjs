@@ -147,7 +147,7 @@ function send(res, code, body) {
     "Content-Length": Buffer.byteLength(text),
     "Cache-Control": "no-store",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Content-Type, X-Dash-Token",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Dash-Token, X-CSRF-Token, X-Requested-With",
     // [F85 §2] DELETE must be advertised or the browser never sends it: the
     // page runs on :5173 and this mock on :7331, so the F81 confirm-delete
     // (DELETE is NOT a CORS-simple method) is always preflighted. With the old
@@ -181,6 +181,26 @@ const server = createServer(async (req, res) => {
 
   if (req.method === "OPTIONS") {
     send(res, 204, {});
+    return;
+  }
+
+  // [F103 §2] /api/health + /api/f103/cors-config: the dashboard (and the F103
+  // reachability banner) poll these. The mock had NO /api/health at all, which
+  // is exactly the gap the operator's bundle reported on the real server.
+  if (path === "/api/health" || path === "/health") {
+    send(res, 200, { ok: true, ws: true, cors: true, port: 7331, ts: new Date().toISOString() });
+    return;
+  }
+  if (path === "/api/f103/cors-config") {
+    send(res, 200, {
+      ok: true,
+      allowlist: ["http://100.83.53.46:7331", "http://127.0.0.1:5173", "http://localhost:5173", "https://supreme-lamp.pages.dev", "https://dekarita.github.io"],
+      allowHeaders: "Content-Type, Authorization, X-Dash-Token, X-CSRF-Token, X-Requested-With",
+      allowMethods: "GET, POST, PUT, DELETE, OPTIONS",
+      maxAge: "3600",
+      requestOrigin: String(req.headers.origin || ""),
+      originAllowed: true,
+    });
     return;
   }
 

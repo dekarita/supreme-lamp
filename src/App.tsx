@@ -7,6 +7,9 @@ import { AppShell } from "@/components/layout/AppShell";
 import { Toasts } from "@/components/primitives/Feedback";
 import { DiagSideDrawer } from "@/components/domain/DiagSideDrawer";
 import { CollectorRunBridge } from "@/components/domain/CollectorRunBridge";
+// [F103 §3] "the buttons do nothing" was never a button bug: the backend was
+// unreachable from the page's origin. Say so on every route, before the click.
+import { ReachabilityBanner } from "@/components/ReachabilityBanner";
 import { useDashboardPolling } from "@/hooks/useDashboardPolling";
 import { useLangStore } from "@/stores/prefsStore";
 import i18n from "@/i18n";
@@ -54,6 +57,8 @@ export default function App() {
     <>
       <span id="ghrdpBuild" className="hidden" data-build={__BUILD_SHA__} aria-hidden />
       <HashRouter>
+      {/* [F103 §3] above <Routes> so it paints on every page, not just /#/collector */}
+      <ReachabilityBanner />
       <Routes>
         <Route element={<AppShell />}>
           <Route index element={<Overview />} />

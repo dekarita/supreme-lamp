@@ -151,7 +151,11 @@ test.describe("F84 UX hardening", () => {
         });
         return r.status;
       });
-      expect(out).toBe(400);
+      // [F103 §5.3] 503 when the mirror module is missing (F101 N1: the queue
+      // answers QUEUE_DIR_UNAVAILABLE before it can reach the https fence);
+      // 400 otherwise, from the fence itself. Both prove the contract never
+      // fakes ok - and the spec no longer fails on a runner without mirror.
+      expect([400, 503]).toContain(out);
     }
     // [F91] the fallback branch only ever runs with zero seeded rows; the local
     // tab rule is proven by the row branch above + the vitest toast suite.
