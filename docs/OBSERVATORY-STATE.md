@@ -76,6 +76,15 @@ GREEN · e2e-ui 0/5 `cancelled` (RED-INHERITED). Local on the same sha: Node 623
 1004/1004 (78 files) · tsc 0. **Ledger count drift**: the shipped file has **10** steps, not 11 —
 the repo folded F111's e2e re-plan into Step 10 — so numbering here follows the file, not the prompt.
 
+**Blocker filed**: #169 (operator decision on the upload target; (d) clipboard-only recommended).
+**Corrected standing fact — labels are NOT uniformly operator-only** (re-tested this session):
+`POST /repos/.../labels` (create) works, and `POST /repos/.../issues/<N>/labels` works on a
+**pull request** (#166 #167 #168 are now labelled `f-observatory` by the session) but returns `403`
+on a **plain issue** — including an issue the same session just created (#169). So #163/#165 labels
+stay manual, PR labels do not, and `f-observatory` + `blocked` now exist as repo labels for reuse.
+`PATCH /issues/165` was attempted once, returned `403`, and is not retried; this file wins.
+`gh gist create` is also `403`, so the session trace is inlined in the PR comment instead of linked.
+
 ## Standing facts the next session should not rediscover
 - **`e2e-ui` is red on `main` for reasons no step can fix**: it is cancelled by its own
   `timeout-minutes: 25` while running the F78+F79 spec group — 0 successes in the last 25 runs on
