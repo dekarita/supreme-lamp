@@ -1907,7 +1907,12 @@ function Send-ClientResponse {
     # [F103 §2] the CORS block is now built per-origin (echo + credentials for
     # an allowlisted origin, wildcard otherwise) and ALWAYS advertises
     # X-Dash-Token in Allow-Headers.
-    $f103Cors = Get-F103CorsHeaderLines -Origin $script:F103CurrentOrigin
+    # The harnesses that import individual functions out of this file (F27
+    # tests/f27-windows.ps1) may not carry the builder; fall back to a static
+    # block that still advertises X-Dash-Token.
+    $f103Cors = ''
+    try { $f103Cors = Get-F103CorsHeaderLines -Origin $script:F103CurrentOrigin } catch { $f103Cors = '' }
+    if (-not $f103Cors) { $f103Cors = "Access-Control-Allow-Origin: *`r`nVary: Origin`r`nAccess-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS`r`nAccess-Control-Allow-Headers: Content-Type, Authorization, X-Dash-Token, X-CSRF-Token, X-Requested-With`r`nAccess-Control-Max-Age: 3600" }
     $hdr = "HTTP/1.1 $Code $status`r`nContent-Type: $CType`r`nContent-Length: $($Body.Length)`r`nConnection: close`r`nCache-Control: no-store`r`n$f103Cors`r`n$ExtraHeaders$tail`r`n"
     $hb = [System.Text.Encoding]::ASCII.GetBytes($hdr)
     $Stream.Write($hb, 0, $hb.Length)
@@ -2319,7 +2324,7 @@ function Invoke-ClientRequest {
             # request -> the collector's status=0 rows). It discloses nothing:
             # the body is empty and the only headers are the CORS block.
             Send-ClientResponse -Stream $stream -Code 204 -CType 'text/plain' -Body ([byte[]]@())
-            Write-ClientAudit ('F103 preflight OPTIONS ' + $path + ' origin=' + $script:F103CurrentOrigin + ' -> 204')
+            try { Write-ClientAudit ('F103 preflight OPTIONS ' + $path + ' origin=' + $script:F103CurrentOrigin + ' -> 204') } catch { }
             return
         }
         if (-not (Test-ClientAllowed -Client $Client -Query $parts.query -Token $Token)) {

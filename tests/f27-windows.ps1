@@ -42,7 +42,7 @@ function Request-F27([string]$Path, [string]$Method, [string]$Source, [string]$B
 try {
     $stage = 'server route extraction'
     $source = [IO.File]::ReadAllText((Join-Path $repo 'payloads/ghrdp-server.ps1'))
-    Import-Functions $source @('Read-JsonFile','Get-RequestParts','Test-IsLoopbackAddr','Test-ClientAllowed','Test-CredsAllowed','Test-TicketBearer','Test-TicketSource','Write-TicketAudit','Use-RdpTicket','Read-ClientRequest','Send-ClientResponse','ConvertTo-JsonBytes','Invoke-ClientRequest')
+    Import-Functions $source @('Read-JsonFile','Get-RequestParts','Test-IsLoopbackAddr','Test-ClientAllowed','Test-CredsAllowed','Test-TicketBearer','Test-TicketSource','Write-TicketAudit','Use-RdpTicket','Read-ClientRequest','Test-F103CorsOrigin','Get-F103CorsHeaderLines','Send-ClientResponse','ConvertTo-JsonBytes','Invoke-ClientRequest')
     # [F42 §1] REAL unit test of the shipped query parser: the live ticket link
     # '?key=<token>?ui=v2' has a SECOND '?' that is not a separator. Both forms
     # must yield ui=v2 AND a key carrying no leftover '?' / 'ui=' fragment.
