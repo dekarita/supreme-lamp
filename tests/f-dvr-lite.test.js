@@ -229,6 +229,10 @@ test("F-DVR-i: the panel is chrome in App.tsx and its button is addressable", ()
   assert.ok(APP.includes("<CollectorRunBridge />") && APP.indexOf("<CollectorRunBridge />") < APP.indexOf("<DvrFab />"), "the FAB mounts with the existing chrome (after the F102 bridge)");
   assert.ok(FAB.includes("<Modal"), "the panel must reuse the Modal primitive (focus trap + Escape for free)");
   assert.ok(FAB.includes("useSyncExternalStore(subscribeDvr, dvrSnapshot, dvrSnapshot)"), "the FAB must subscribe to the ring, not poll it");
+  // WYSIWYG: Copy must hand over the assembly the panel is SHOWING. Rebuilding at
+  // click time produced a payload the operator never approved - and a red CI run
+  // (see the regression-lock test in the smoke suite).
+  assert.ok(FAB.includes("const r = report ?? (await dvrReport());"), "Copy must reuse the previewed assembly, not rebuild it");
   const ids = [...FAB.matchAll(/data-testid="([^"]+)"/g)].map((m) => m[1]);
   assert.ok(ids.length >= 10, "the panel must stay addressable (found " + ids.length + " testids)");
   for (const want of ["dvr-fab", "dvr-fab-count", "dvr-panel", "dvr-privacy", "dvr-preview", "dvr-copied", "dvr-empty", "dvr-record-toggle"]) {

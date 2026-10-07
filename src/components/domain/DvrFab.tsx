@@ -65,9 +65,14 @@ export function DvrFab() {
   const payload = report ? report.text : "";
   const preview = payload.length > DVR_PREVIEW_CHARS ? payload.slice(0, DVR_PREVIEW_CHARS) + "…" : payload;
 
+  // WYSIWYG: Copy hands over the assembly the panel is CURRENTLY showing, so the
+  // preview is not an approximation of the payload - it is the payload. (Before this,
+  // the panel previewed assembly #1 and copied assembly #2; the two differ from their
+  // first timestamp character on, which is both a UX lie and a racy thing to assert.
+  // The effect above re-assembles whenever the ring moves, so this stays fresh.)
   const onCopy = async (): Promise<void> => {
-    const r = await dvrReport();
-    setReport(r);
+    const r = report ?? (await dvrReport());
+    if (!report) setReport(r);
     const ok = await copyText(r.text, t("dvr.copyLabel"));
     setCopied(ok ? t("dvr.copied", { chars: String(r.chars), codec: r.codec }) : t("dvr.copyFailed"));
   };

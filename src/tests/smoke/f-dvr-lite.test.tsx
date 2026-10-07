@@ -57,6 +57,11 @@ function mountDom(): void {
 }
 
 let uninstallObservers: (() => void) | null = null;
+/** F104's installer is a SINGLETON whose document listener survives
+ *  `__resetGlobalClickCaptureForTests()` (that only clears the installed flag). A
+ *  leaked listener keeps a stale DVR wrapper alive and feeds the shared ring, which
+ *  is exactly the cross-test pollution this variable exists to prevent. */
+let uninstallCapture: (() => void) | null = null;
 /** Node's CompressionStream (absent in jsdom): captured once so a test that stubs
  *  it away can put the REAL global back - never vi.unstubAllGlobals(), which would
  *  also resurrect the real network fetch the setup file stubs out on purpose. */
@@ -76,6 +81,8 @@ beforeEach(() => {
 afterEach(() => {
   uninstallObservers?.();
   uninstallObservers = null;
+  uninstallCapture?.();
+  uninstallCapture = null;
   __resetGlobalClickCaptureForTests();
   __resetDvrForTests();
   vi.stubGlobal("CompressionStream", ORIGINAL_CS);
@@ -119,7 +126,7 @@ describe("F-DVR-LITE: the ring decorates F104 instead of forking it", () => {
   it("records the click the moment F104 sees it, and the verdict when its 10 s window closes", async () => {
     vi.useFakeTimers();
     const inner = stubRecorder();
-    installGlobalClickCapture(installDvr(inner), { trustCheck: false, windowMs: 10_000 });
+    uninstallCapture = installGlobalClickCapture(installDvr(inner), { trustCheck: false, windowMs: 10_000 });
     const button = document.querySelector('[data-testid="ordinary"]') as HTMLButtonElement;
 
     await act(async () => {
@@ -190,7 +197,7 @@ describe("F-DVR-LITE: the ring decorates F104 instead of forking it", () => {
 describe("F-DVR-LITE: the FAB inside the capture, the payload on the clipboard", () => {
   it("clicking the FAB is itself recorded (the FAB is deliberately NOT in F104's blind spot)", async () => {
     const inner = stubRecorder();
-    installGlobalClickCapture(installDvr(inner), { trustCheck: false });
+    uninstallCapture = installGlobalClickCapture(installDvr(inner), { trustCheck: false });
     render(<DvrFab />);
 
     await act(async () => {
@@ -229,12 +236,14 @@ describe("F-DVR-LITE: the FAB inside the capture, the payload on the clipboard",
     await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
 
     const payload = String(writeText.mock.calls[0][0]);
+    // eslint-disable-next-line no-console
     expect(payload.startsWith("mcrec1:")).toBe(true);
     const codec = payload.slice("mcrec1:".length).split(":")[0];
     expect(["gzip", "plain"]).toContain(codec);
     expect(preview.getAttribute("data-codec")).toBe(codec); // the panel told the truth about the codec
     expect(preview.getAttribute("data-chars")).toBe(String(payload.length));
-    // the preview is the payload (or its documented prefix), never a summary
+    // the preview is the payload (or its documented prefix), never a summary - and it
+    // is the SAME assembly, because Copy must not hand over bytes the operator never saw.
     const shown = preview.textContent || "";
     expect(payload.startsWith(shown.replace(/…$/, ""))).toBe(true);
     if (payload.length <= DVR_PREVIEW_CHARS) expect(shown).toBe(payload);
@@ -245,6 +254,51 @@ describe("F-DVR-LITE: the FAB inside the capture, the payload on the clipboard",
     expect(bundle.format).toBe("mcrec");
     expect(bundle.entries.map((e: { testId: string }) => e.testId)).toContain("overview-auto-login");
     expect(await screen.findByTestId("dvr-copied")).toBeTruthy();
+  });
+
+  it("Copy hands over the assembly the panel SHOWED, even seconds later (CI regression lock)", async () => {
+    // This is the failure the first CI run of this PR caught: the panel previewed
+    // assembly #1 and Copy rebuilt assembly #2, so the bytes the operator pasted were
+    // never the bytes they approved - `createdAt` differs by a second and base64
+    // diverges from its first differing character, i.e. inside the visible preview.
+    const writeText = vi.fn((_text: string) => Promise.resolve());
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true, writable: true });
+    vi.stubGlobal("CompressionStream", undefined); // short, deterministic payload
+    installDvr(stubRecorder()).record({
+      feature: "global",
+      action: "click:overview-auto-login",
+      params: { testId: "overview-auto-login" },
+      elapsedMs: 0,
+      source: GLOBAL_CLICK_SOURCE,
+    });
+    render(<DvrFab />);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("dvr-fab"));
+    });
+    const preview = await screen.findByTestId("dvr-preview");
+    await waitFor(() => expect(preview.getAttribute("data-chars")).not.toBe("0"));
+    const shownAtOpen = preview.textContent || "";
+
+    // five seconds pass between the preview and the click on Copy. ONLY Date is
+    // faked: faking setTimeout too would freeze waitFor (the CI regression lock
+    // itself must not depend on the timing it is testing).
+    const realNow = Date.now();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(realNow + 5_000);
+    await act(async () => {
+      fireEvent.click(screen.getByTestId("modal-primary"));
+    });
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+
+    const payload = String(writeText.mock.calls[0][0]);
+    const shown = shownAtOpen.replace(/…$/, "");
+    expect(payload.length).toBeGreaterThan(0);
+    // The copied bytes ARE the previewed bytes: same assembly, same timestamp.
+    // THE regression lock: on the old code this fails, because the rebuilt assembly's
+    // createdAt differs and base64 diverges from its first differing character (~47).
+    expect(payload.startsWith(shown)).toBe(true);
+    expect(shown.length).toBeGreaterThan(200); // non-vacuity: a real prefix was compared
+    if (payload.length <= DVR_PREVIEW_CHARS) expect(payload).toBe(shownAtOpen);
   });
 
   it("assembling, previewing and copying issue no fetch and no XHR (option (d) of #169)", async () => {
