@@ -220,6 +220,16 @@ test("F105-h: every registry route exists in App.tsx and every App.tsx page rout
       knownPaths.add(f.labRoute);
     }
   }
+  // [F106] The lab pattern is ALSO registry-owned (`labRoutePattern`), so the two
+  // routes it expands to are legitimate additions - derived here, never hand-listed,
+  // which is what keeps this rule as strict as it was for every other path. F106's
+  // own gate (tests/f106-lab-routes.test.js) asserts the fence on those two.
+  const labPattern = REGISTRY.labRoutePattern;
+  const labIndexPath = String(labPattern).replace(/\/:[^/]*$/, "") || "/";
+  assert.ok(paths.includes(labPattern), "the registry's labRoutePattern is not registered in App.tsx: " + labPattern);
+  assert.ok(paths.includes(labIndexPath), "the lab index route is missing from App.tsx: " + labIndexPath);
+  knownPaths.add(labPattern);
+  knownPaths.add(labIndexPath);
   for (const p of paths) {
     assert.ok(knownPaths.has(p) || p === "*", "App.tsx renders a page route no feature owns: " + p);
   }

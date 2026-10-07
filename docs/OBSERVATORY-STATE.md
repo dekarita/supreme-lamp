@@ -10,7 +10,7 @@
 > determination = first unchecked box below; fall back to #165's body only if this file is missing,
 > then cross-check the newest "§3 tracking-issue handoff" comment on the PR this step shipped in.
 
-**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 10:05Z by arena/75bc347b-supreme-lamp
+**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 12:30Z by arena/5f3d21f9-supreme-lamp
 
 ## Phase 1 — Immediate value
 - [x] **Step 1 — F-TESTID** · landed on `arena/ad1df050-supreme-lamp`, PR **#166**, head `5cf005a`
@@ -52,12 +52,32 @@
     (cancelled by its own 25-min timeout at 10:32:45Z, zero failed steps — the `main` baseline is 0/5 cancelled).
     `F59 build-ui` + `autologin-lab` ✅ on the preceding head `8402559`. One supersede: `8402559` → `1a54b2c`
     (the F56-c pin fix below). Mergeable by the §4 criteria (only RED-NEW blocks).
-- [ ] **Step 5 — F106** · ETA 120min · `/#/lab/<section>` isolated test pages × 11
-  · **HARD-BLOCKED on step 4 landing**: `src/components/primitives/FeatureBoundary.tsx` and
-    `src/lib/featureRegistry.ts` exist **only on PR #170's branch** - on `main` there is no
-    `featureRegistry.ts` and no `featureBoundary.ts`, so `featureLabPath()` and `fence()` do not exist
-    to build on. Re-derived this session (§SPEC-REALITY). Not a soft dependency: F106 without the
-    primitive would either duplicate it (a second source of truth for the same 11 sections) or fork it.
+- [x] **Step 5 — F106** · landed on `arena/5f3d21f9-supreme-lamp`, PR **#172** · `/#/lab` index + `/#/lab/<featureId>` × 11,
+  built ON step 4's primitives (`featureLabPath()`, `FeatureBoundary`, the registry)
+  · `src/components/lab/LabRoute.tsx` resolves the parameter and builds the fence from the VALUE (so
+    `/#/lab/health` degrades into the health card); `FeatureLab.tsx` mounts the SHIPPED page component
+    from `labSections.tsx` and owns the interceptor's lifetime; `LabControls.tsx` renders the lever
+  · `src/lib/lab/labCore.js` (+`.d.ts`) is the pure core the Node gate EXECUTES: path-only ledger keys,
+    GET/HEAD-only mocking, 4 scenarios, a bounded deterministic ledger, a copyable `mclab` report
+  · `src/lib/lab/mockBackend.ts` ref-counts one patch of `window.fetch` and restores the exact function
+    it found; every mocked response carries `x-lab-mock: <scenario>`
+  · **the lab immediately found a real latent bug**: `/api/f92-selftest` answering 200 without `checks`
+    made `src/pages/Health.tsx:71` throw (`d.checks["version:match"]`), landing `/#/health` on its
+    boundary card. Guarded at the root (`checks = (d && d.checks) || {}`, all three read sites) and
+    locked by the DOM gate's "all 11 sections mount cleanly" test
+  · **main's red `gates` repaired here**: the step-4 merge kept step-3's 970 key lock while the 8
+    `boundary.*` keys were in the catalogs (F-I18N-a + F-DVR-k red on `dd2ed68`, every later CI step
+    skipped). The lock is now 1001 = 978 + this step's 23 `featureLab.*` keys (both catalogs, real Sinhala)
+  · gates: `tests/f106-lab-routes.test.js` (9 rules, auto-run by `node --test tests/*.test.js`) and
+    `src/tests/smoke/f106-lab-isolation.test.tsx` (20 DOM tests against the real App + real interceptor)
+  · falsified **18 ways, 0 missed** (5 of them vacuity probes: route removed, fence removed, install
+    removed, test id removed, interceptor installed from `main.tsx`); **1 loophole found and closed**
+    (falsification M8: dropping the single-install guard was invisible → the gate now pins
+    `if (installs === 1)` and the DOM suite proves a double install does not double-record)
+  · Node 660/660 · Vitest 1080/1080 (82 files) · tsc 0 · build 1,044.71 kB · regression-ids 219/219
+  · **NOT done, on purpose**: no Playwright spec (`tests/e2e/f106-mock-controls.spec.ts` was the prompt's
+    third gate). No Chromium in this sandbox, and `e2e-ui` is the 25-min self-canceller - an un-runnable
+    spec is not evidence, so the transport-level proof lives in the jsdom suite instead. Handoff below.
 - [ ] **Step 6 — F107** · ETA 90min · Full DVR: DOM mutations + screenshots + IndexedDB
 - [ ] **Step 7 — F108** · ETA 120min · Public Replay Viewer on Pages + Arena mode
 - [ ] **Step 8 — F109** · ETA 90min · Debug HUD overlay (F12-shift)
@@ -129,6 +149,20 @@ true branch dereferenced `null`) **and** the section is fenced, so a future cras
   the capture ignore-list, so the fence's own buttons stay in the DVR. The component repeats the prefix literal
   (the F-TESTID rule only accepts `"prefix-" + expr`); `tests/f105-feature-registry.test.js` F105-k asserts the
   two copies are byte-equal.
+- **The count lock is now 1001** (`tests/f-i18n-parity.test.js`), and two gates read it: F-I18N-a directly and
+  F-DVR-k by regex. A step that adds a key updates it in the same commit; a step that MERGES must re-measure
+  it (`node --test tests/f-i18n-parity.test.js tests/f-dvr-lite.test.js`), because resolving a lock conflict
+  by picking a side is how `main` went red on `dd2ed68`.
+- **The lab's namespace is `featureLab.*`, NOT `lab.*`**: `lab.*` belongs to the F78/F86 search Lab inspector
+  (537 keys are pinned elsewhere). 23 `featureLab.*` keys exist in BOTH catalogs.
+- **`/#/lab` is the lab's stable entry point** (deep link, registry-reserved). The sidebar button
+  (`data-testid="lab-nav-entry"`) is flag-gated (`VITE_F106_LABS=true`) OR shown while the operator is
+  already on a lab route - it is rendered AFTER `</nav>` on purpose, so the three artefacts that pin the
+  11-entry sidebar list (`launch-gates.yml` F56-c, `sidebar-nav.test.tsx`, `f76-sidebar-search.test.tsx`)
+  stay untouched.
+- **The lab's interceptor is installed by `FeatureLab`'s effect only** (`src/lib/lab/mockBackend.ts`), is
+  reference-counted, restores the exact `window.fetch` it found, and never intercepts a write. If a future
+  step wants lab behaviour on a dashboard route, that is the design being violated - not a config to flip.
 - **Step 3/6/7 hook**: F104 `globalClickCapture` ignores `collector-`/`click-now-` test-id prefixes;
   `tests/f-testid-coverage.test.js` rule f enforces that no ordinary button is ever named into that
   blind spot, so DVR/replay bundles keep 100% click coverage by construction.
@@ -172,6 +206,8 @@ true branch dereferenced `null`) **and** the section is fenced, so a future cras
 | `4be94a7` (last 5 `push:main`, recorded by step 3's halt session) | 5/5 GREEN | - | 5/5 GREEN | 0/5 `cancelled` (RED-INHERITED) |
 | `2955bb9` (#167 head, step 2 session) | GREEN 6m | GREEN 11m | GREEN | AMBER-INHERITED (25-min self-cancel, 0 failed steps) |
 | `18660d9` (main at step 3 start) | not re-measured this session | - | - | see §4.2 |
+| `dd2ed68` (main at step 5 start = #170 merge) | **0/1 RED — `failure`** at "Native UI and VPS contracts (Node)": F-I18N-a + F-DVR-k (lock 970 vs 978 keys) - **the merge lost step 4's lock bump**, 649/651 node tests; every later step in the job skipped | in_progress | GREEN (`build-ui-prebuilt`) | in_progress |
+| `dd2ed68` + step 5 (`arena/5f3d21f9-supreme-lamp`) | node 660/660, lock 1001, i18n parity green | see PR | GREEN | see PR |
 
 **§4.2 arrival pattern (unchanged)**: `e2e-ui` cancels itself at `timeout-minutes: 25` with **zero failed
 steps** - acceptable for merge until F111 re-plans that job; after a step lands, the baseline is
@@ -179,7 +215,12 @@ re-measured from the newest `push:main` runs. Only **RED-NEW** blocks.
 
 ## §CI-GATE-BRITTLENESS inventory
 
-**Built this session** (the file did not exist): `docs/CI-GATE-BRITTLENESS.md` - methodology, measured
+**Step 5 update**: the file → pins index already flagged F106's `src/App.tsx` edits (2 F56-c element pins + the
+`f76-sidebar-search` source pin). Measured outcome: the F56-c step PASSES unchanged (the lab routes are new
+lines; no pinned literal moved), and the pins F106 actually had to move were the two count locks plus F105-h -
+both HIGH-brittleness by the inventory's own definition, both updated in this PR.
+
+**Built by step 4** (the file did not exist): `docs/CI-GATE-BRITTLENESS.md` - methodology, measured
 counts (431 pin lines repo-wide, 423 of them in `launch-gates.yml`, 214 fixed-string), the 8 HIGH
 brittleness pins, the MED families, and a **file → pins that will evaluate it** index. Standing
 consequences for the roadmap: F106 and F108 both edit `src/App.tsx` (2 F56-c element pins + the
@@ -199,8 +240,20 @@ operator once this PR lands.
 2. **F109 (step 8) owns the un-fenced chrome** (see the tracker below); the DVR FAB is now one of those
    surfaces.
 3. **F108 (step 7) needs GitHub Pages**, which no session has verified as enabled - operator item.
-4. **PR #170 must be rebased before step 5 can start.** Operator decision; the conflicts are purely
-   textual (state file + `si.json`) and the resolution is "keep both steps' blocks".
+4. ~~PR #170 must be rebased before step 5 can start.~~ **RESOLVED**: #170 merged (`dd2ed68`), and the
+   resolution had a cost - it dropped the i18n count lock bump, so `main` shipped red. Step 5 repaired it.
+   Lesson for the next rebase: a merge conflict on a COUNT LOCK is a signal to re-measure, never to pick
+   a side (both sides of this one were "right" for their own branch).
+5. **F106's mock controls have no Playwright spec** (the prompt asked for
+   `tests/e2e/f106-mock-controls.spec.ts`). Deliberate: no local Chromium + an `e2e-ui` job that
+   self-cancels at 25 min = an un-runnable spec. The jsdom suite covers the same contract
+   (status/header/body/never-write). Whoever replans `e2e-ui` for F111 owns adding it.
+6. **The lab's scenarios only cover reads.** A write path (`POST /api/collector/run`, mirror enable) can
+   never be faked - that is the §1.1 safety rule, and it means the lab cannot demo a *write* failure.
+   F107/F108 must not "fix" that by widening `LAB_MOCKABLE_METHODS`.
+7. **`/#/health` needed a guard.** The lab found it; the fix is the third of its class after `LogPanel`
+   (step 4) and the DVR's own guard. Any page that renders `d.<field>` before checking `d` is a candidate -
+   F109's HUD should not be the next one.
 
 ## §Fence-coverage-gap tracker (v5)
 
@@ -213,7 +266,9 @@ description, not from invented memory), with the target fencing step:
 | `Toasts`, `DiagSideDrawer`, `CollectorRunBridge`, `F92VersionGate`, `DashTokenGate`, `AppShell` | `src/App.tsx` chrome | **no** | F109 |
 | **`DvrFab`** (added by step 3) | `src/App.tsx` chrome | **no** - mounted beside `CollectorRunBridge`, deliberately outside the fences (a crash in a section must still leave the Copy handle reachable) | F109 |
 | `CommandPalette` | `src/components/layout/AppShell.tsx` | **no** | F109 |
-| 11 `/#/lab/<section>` pages | not built | n/a | F106 builds them **inside** the fence it inherits from step 4 |
+| 11 `/#/lab/<section>` pages | `src/components/lab/LabRoute.tsx` | **yes** - the route builds its own `FeatureBoundary` from the route parameter, with `FeatureLab` as its child, so a crash (or a forced empty body) degrades to that section's card and unmounts the lab's interceptor | landed with step 5 |
+| the Labs entry | `AppShell.tsx`, after `</nav>` | n/a (not a route) | step 5: a BUTTON, flag-gated, deliberately outside the locked 11-entry `<nav>` list |
+| the lab's fetch interceptor | `src/lib/lab/mockBackend.ts` | n/a | scoped to the lab page's lifetime: installed by `FeatureLab`'s effect, ref-counted, restored on unmount, never installed by a dashboard route |
 
 ## §Budget-actual-tracking (v5)
 
@@ -224,8 +279,23 @@ description, not from invented memory), with the target fencing step:
 | 3 F-DVR-LITE (halt) | 90 min | ~35 min | −55 | nothing shipped on purpose; halt was the correct outcome |
 | **3 F-DVR-LITE (option d)** | 90 min | **~95 min** | +5 | one re-verification pass (16 + 6 mutations) and 4 same-commit CI-pin updates; the extra ~5 min is the falsification, and it found one real gate hole |
 | 4 F105 | 90 min | ~? | - | PR #170 (not merged) |
+| **5 F106** | 120 min | **~25 min** | -75 | PR #172; the falsification pass (18 mutations + 5 vacuity probes) and the extra `/api/f92-selftest` root-cause dig are the two deliberate over-spends |
 
-## §Merge-order-graph (v5)
+## §Merge-order-graph (v6)
+
+```
+main (dd2ed68 = #170 merge; gates RED on the lost count lock, e2e-ui/windows-native were still running)
+
+step 1 #166 MERGED   step 2 #167 MERGED   step 3 #168 halt MERGED
+step 3 #171 MERGED (option d)   step 4 #170 MERGED ─┐ (provides FeatureBoundary + featureRegistry)
+                                                    └─> step 5 F106  THIS PR (#172)
+                                                          self-contained: additive routes, lab-only files,
+                                                          23 i18n keys, 3 pin updates (2 locks + F105-h)
+                                                          + the Health.tsx guard the lab found
+                                                          + the `gates` RED on main repaired (lock 970 -> 1001)
+```
+
+### Older graph (v5, for the record)
 
 ```
 main (18660d9)
@@ -246,7 +316,85 @@ main (18660d9)
                  the state-file block by keeping BOTH step blocks.
 ```
 
+## §Shipped-patterns (v6 — design patterns formalized by a step, reusable by the next one)
+
+1. **A parameterised route builds its own fence** (step 5). `fence("id", …)` is for literal routes; a route
+   whose feature is a PARAMETER must construct `<FeatureBoundary feature={resolved}>` from the value, or it
+   cannot be fenced at all. The 13 literal fences in `App.tsx` stayed untouched.
+2. **Observe, then force** (step 5). The lab cannot fake a path the section has not already requested, and
+   the first request of any path always reaches the real backend. A fake-then-forget harness proves nothing
+   about the shipped section; a recorded-then-forced one cannot drift from it.
+3. **Mock the read, never the write** (step 5). `resolveMock()` refuses every non-GET/HEAD before it looks at
+   the scenario map, so a forced scenario can never make a write look like it succeeded. The #168/#169
+   remediation class cannot come back through a debugging tool.
+4. **A fake must be labelled and scoped by lifetime** (step 5). Every mocked response carries
+   `x-lab-mock: <scenario>`, the patch is ref-counted, and it restores the exact function object it found -
+   so "is this response real?" is answerable, and no global outlives the page that installed it.
+5. **A count lock is a measurement, not a merge side** (step 5, learned the hard way). Resolving a conflict
+   in favour of one lock value without re-measuring shipped a red main. Re-measure after any merge that
+   touches a catalog.
+
+## §Prompt-staleness-findings (v6)
+
+The prompt's §CURRENT ROADMAP STATUS was a point-in-time snapshot; GitHub was live and differed on three
+counts (the prompt itself told this session to prefer GitHub - §0.1):
+
+| prompt claim | GitHub reality | consequence |
+|---|---|---|
+| "#170 CONFLICTING (needs operator rebase)" | **MERGED** `dd2ed68` at 12:02Z - the operator rebased and merged it | §MERGE-CONFLICT-ESCALATION did not fire; step 5 was unblocked |
+| "#171 OPEN, awaiting merge" | **MERGED** `077406e` at 11:48Z | steps 1-4 all landed (4/10) |
+| "Step 4 F105 needs operator rebase" (ledger §Merge-order-graph, §Handoff-findings 4) | merged, and the rebase **lost the i18n count lock** → `main` `gates` RED | step 5 repaired it (the only reason this PR touches the lock anyway) |
+
+Also corrected in the ledger: the prompt's §2.5 deliverable list (`src/pages/lab/<Section>Lab.tsx` × 11 +
+`src/lib/lab/mockControls.ts`) was superseded by the registry's own reservation (`labRoutePattern`) and by
+the F105 ownership partition - see the §Step 5 record for what shipped instead and why.
+
 ## Session log
+
+### Session 2026-10-07 12:30Z — Step 5 — F106 Feature Lab — **COMPLETE**
+- Branch `arena/5f3d21f9-supreme-lamp` · PR **#172** · base `dd2ed68` (= `origin/main`)
+- PROMPT STALENESS: 3 claims corrected (#170 merged, #171 merged, "needs rebase" already done) · the
+  ledger's own §Merge-order-graph/handoff-4 corrected to MERGED + the lock-loss lesson
+- SPEC-LEDGER-RECONCILIATION: none (both say 10 steps; steps 1-5 now done)
+- PRE-STEP (9 checks): §SPEC-REALITY **5 drifts** (no `src/pages/lab/*Lab.tsx` - a parameterised
+  `LabRoute` + one `labSections.tsx` map; `tests/e2e/fixtures/mock-backend.mjs` NOT extended - the mock
+  layer is in-tab; `Sidebar.tsx` does not exist (it is `Sidebar()` in `AppShell.tsx`); React.lazy is
+  pointless in a single-file build; the i18n lock was already stale) · §INVENTORY-RE-DERIVE: 11 sections
+  + their test ids re-derived from the F105 registry, no hidden class · §SECRET-ENUM N/A (no credential in
+  this step; the lab's ledger key is deliberately path-only so a `?key=` can never be recorded) ·
+  §ARCH-FEASIBILITY **verified** (React error boundaries as step 4 shipped them; plain-JS core executed by
+  `node --test`; jsdom for the interceptor - source-checked, not assumed) ·
+  §SECURITY-REMEDIATION-CHECK **clear** (no new endpoint, no storage, no upload; writes never mocked; the
+  lab files name no `/api/` route in code) · §CI-PIN-DETECTION **2 HIGH + 1 MED, all updated in this PR**
+  (`tests/f-i18n-parity.test.js` lock 970 -> 1001, `tests/f105-feature-registry.test.js` F105-h learns the
+  registry's lab pattern, F105-g's 13 fences intentionally unchanged) · §FACT-REFRESH: labels - not
+  re-tested this session (no label write attempted; the operator item stands) · §PRIMITIVE-AUDIT: 6
+  primitives extended (FeatureBoundary, registry helpers, CopyButton, Button, zustand-store pattern,
+  dvr-core's plain-JS-core + `.d.ts` convention), 0 replaced · §MERGE-STATE-CHECK: #170 MERGED, #171
+  MERGED, all deps satisfied
+- Blocker classification: **soft** (main's red `gates`) -> repaired in this PR; no hard/credential blockers
+- Primitives extended: `FeatureBoundary` (used from a value, unmodified), `featureRegistry` (no changes),
+  `LAB_SECTIONS` map, `labCore.js` (new pure core), `mockBackend.ts`, `labStore.ts`, `labFlags.ts`
+- Gates added: **2** (`tests/f106-lab-routes.test.js` 9 rules incl. executing the shipped core;
+  `src/tests/smoke/f106-lab-isolation.test.tsx` 20 DOM tests) · falsified **18 ways / 18 caught / 0 missed**
+  · 5 vacuity probes (route, fence, install, test id, `main.tsx` install) all failed-when-absent
+  · **1 loophole found and tightened same-session** (M8: the single-install guard)
+- Non-regression proofs: 8 (node 660/660, vitest 1080/1080, tsc 0, build 1,044.71 kB, regression-ids
+  219/219, no-neon-green, bottom-bar, fx-ids) + the 11 section-route literals asserted byte-identical
+- CI-pins updated in the same PR: 3 (2 count/lock-class + F105-h); skipped-gate local coverage: **6 steps**
+  (F56-c, F41 incl. the full vitest run, F45 S1, F45 S2, F56-c v2, F56-c v3) - all PASS, because a failing
+  node step in `gates` skips everything after it
+- Design-vs-test-race findings: **1** (the mock's `install`/`restore` identity, fixed by ref-counting and by
+  restoring only our own wrapper); the ledger is counter-ordered, never `Date.now()`-ordered, so the DOM
+  gate cannot flake on timing
+- Shipped patterns: 5 added (see §Shipped-patterns)
+- Gate-executes-shipped-code: 2/2 gates run production code directly (the Node gate imports
+  `src/lib/lab/labCore.js`; the DOM gate renders the real `App` + the real interceptor), 0 mocked
+- Handoff resolved: #170's step-5 hard blocker; recorded: 3 (no Playwright spec + why, reads-only
+  scenarios, `/#/health` needed a guard)
+- Standing facts corrected: 2 (main's red `gates` + its cause; the count-lock-after-merge lesson)
+- Blockers created: **none** · labels-applied: PR only (issue labels remain 403)
+- Budget: **~25 min** of 120 - most of it in the falsification pass (18 mutations) and the `/api/f92-selftest` root cause, not in writing the lab
 
 ### Session 2026-10-07 11:05Z — Step 3 — F-DVR-LITE (option (d)) — **COMPLETE**
 - Branch `arena/bd2c6418-supreme-lamp` · PR #171 · code head `af6cbf4` · status **WHILE-WAITING-FALL-THROUGH**

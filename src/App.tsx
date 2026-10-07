@@ -31,6 +31,11 @@ import { VersionGate } from "@/components/domain/F92VersionGate";
 import Telemetry from "@/pages/Telemetry";
 import Settings from "@/pages/Settings";
 import Collector from "@/pages/Collector";
+// [F106 §2] The Feature Lab. `/#/lab` (index) + `/#/lab/<featureId>` (one section
+// in isolation). LabRoute owns its own FeatureBoundary, built from the route
+// parameter, so the 13 literal fence() calls below are untouched - and the lab is
+// still fenced with the id the operator actually asked for.
+import LabRoute from "@/components/lab/LabRoute";
 // [F94 §3.1] The dashboard-token gate: mounted at the ROOT, outside the router,
 // so it renders on every route and before any page can attempt a write the
 // server would refuse with a 403. One missing ?key= produced eight of the
@@ -82,6 +87,13 @@ export default function App() {
           <Route path="/health" element={fence("health", <HealthPage />)} />
           <Route path="/collector" element={fence("collector", <Collector />)} />
           <Route path="/settings" element={fence("settings", <Settings />)} />
+          {/* [F106 §2] Feature Lab routes. Additive and lab-only: the 11 section
+              routes above are byte-identical to their pre-F106 form, and the lab
+              pattern is the one the F105 registry reserved (`labRoutePattern`).
+              Related pins moved in this commit: tests/f105-feature-registry.test.js
+              F105-h learns the pattern from the registry instead of a hand list. */}
+          <Route path="/lab" element={<LabRoute />} />
+          <Route path="/lab/:featureId" element={<LabRoute />} />
           <Route path="*" element={fence("overview", <Overview />)} />
         </Route>
       </Routes>

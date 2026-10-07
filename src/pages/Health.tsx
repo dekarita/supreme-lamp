@@ -68,14 +68,21 @@ export function HealthPage() {
       </div>
     );
   if (!d) return <div className="p-4 font-mono">Probing…</div>;
-  const v = f92First(d.checks["version:match"]);
+  // [F106 §10] GUARDED: a 200 body without `checks` used to throw here
+  // (`d.checks["version:match"]`), which blanked the section. The lab found it the
+  // first time a section was mounted against a forced empty body - the same shape a
+  // proxy, a stale server or an error object produces. `checks` is the only field
+  // every row below reads, so normalising it once is the whole fix; the page now
+  // renders its degraded (all-red) state instead of a crash card.
+  const checks: Record<string, F92Check[]> = (d && d.checks) || {};
+  const v = f92First(checks["version:match"]);
   const banner = v?.status === "pass" ? "bg-green-100 text-black" : "bg-red-600 text-white";
-  const sites = Object.keys(d.checks)
+  const sites = Object.keys(checks)
     .filter((k) => k.startsWith("search:"))
     .sort();
   const sys = ["launcher:status", "download:writable", "streaming:proxy", "version:match"];
   return (
-    <div className="p-4 font-mono" data-testid="health-page" data-overall={d.status}>
+    <div className="p-4 font-mono" data-testid="health-page" data-overall={d.status ?? "unknown"}>
       <div data-testid="health-version-banner" className={`p-3 ${banner}`}>
         Backend {String(d.releaseId ?? "?").slice(0, 7)} · Frontend {F92_FRONTEND_SHA.slice(0, 7)} · overall{" "}
         {d.status}
@@ -93,7 +100,7 @@ export function HealthPage() {
         </thead>
         <tbody>
           {sites.map((k) => {
-            const c = f92First(d.checks[k]);
+            const c = f92First(checks[k]);
             if (!c) return null;
             return (
               <tr key={k} className={cls(c.status)} data-testid={"health-row-" + k} data-status={c.status}>
@@ -117,7 +124,7 @@ export function HealthPage() {
       <table className="mt-4 w-full border" data-testid="health-system">
         <tbody>
           {sys.map((k) => {
-            const c = f92First(d.checks[k]);
+            const c = f92First(checks[k]);
             if (!c) return null;
             return (
               <tr key={k} className={cls(c.status)} data-testid={"health-row-" + k} data-status={c.status}>
