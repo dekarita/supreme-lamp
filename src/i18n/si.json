@@ -14,7 +14,8 @@
     "settings": "සැකසුම්",
     "files": "ගොනු ගවේෂකය",
     "search": "සොයන්න",
-    "collector": "එකතු කරන්නා"
+    "collector": "එකතු කරන්නා",
+    "health": "සෞඛ්‍යය"
   },
   "sidebar": {
     "nav": "ප්‍රාථමික සංචලනය",
@@ -23,7 +24,8 @@
     "menu": "සංචලනය විවෘත කරන්න",
     "search": "සෙවීම",
     "searchLab": "විද්‍යාගාරය",
-    "collector": "එකතු කරන්නා"
+    "collector": "එකතු කරන්නා",
+    "health": "සෞඛ්‍යය"
   },
   "actions": {
     "autoLogin": "Windows ස්වයංක්‍රීය පිවිසුම",
@@ -31,7 +33,18 @@
     "fixReconnect": "නිවැරදි කර යළි සම්බන්ධ වන්න",
     "download": "බාගන්න",
     "runCheck": "පරීක්ෂණය ධාවනය",
-    "runDiag": "[විනිශ්චය]"
+    "runDiag": "[විනිශ්චය]",
+    "refresh": "අලුත් කරන්න",
+    "close": "වසන්න",
+    "copyLog": "පිටපත්",
+    "pauseLog": "විරාමය",
+    "resumeLog": "දිගටම",
+    "openTerminal": "ටර්මිනලය විවෘත කරන්න",
+    "uploadNow": "සියල්ල දැන් උඩුගත කරන්න",
+    "startWatcher": "watcher අරඹන්න",
+    "diagnose": "විනිශ්චය කරන්න",
+    "copyAllLinks": "සබැඳි සියල්ල පිටපත් කරන්න",
+    "autoLoginVps": "ස්වයංක්‍රීය පිවිසුම (VPS පමණි)"
   },
   "connection": {
     "title": "සම්බන්ධතාව",
@@ -39,7 +52,11 @@
     "username": "RDP පරිශීලක නාමය",
     "mstsc": "MSTSC විධානය",
     "path": "මාර්ගය",
-    "connectivity": "සම්බන්ධතාවය"
+    "connectivity": "සම්බන්ධතාවය",
+    "latency": "ප්‍රමාදය",
+    "rust": "Rust",
+    "primary": "ප්‍රාථමික",
+    "fallback": "විකල්ප"
   },
   "path": {
     "direct": "සෘජු",
@@ -48,14 +65,41 @@
   "keys": {
     "title": "යතුරු",
     "windowsPassword": "Windows මුරපදය",
-    "vncPassword": "VNC මුරපදය"
+    "vncPassword": "VNC මුරපදය",
+    "mirrorGithub": "දර්පණය (github.io)",
+    "legacyRentry": "පැරණි Rentry (අචල)",
+    "legacyKey": "පැරණි යතුර",
+    "currentKey": "වර්තමාන යතුර",
+    "telegraph": "Telegraph",
+    "decryptor": "Decryptor",
+    "archive": "සංරක්ෂණාගාරය",
+    "fileSearch": "ගොනු සෙවීම",
+    "explorer": "ගවේෂකය (Win11)",
+    "terminal": "ටර්මිනලය",
+    "hostOnly": "(ධාරකය පමණක්)",
+    "rememberVnc": "වෙබ් ඩෙස්ක්ටොප් සඳහා මතක තබා ගන්න",
+    "currentKeyMask": "දර්පණ යතුර (මෙම ධාවනය)"
   },
   "webDesktop": {
     "title": "වෙබ් ඩෙස්ක්ටොප්",
     "url": "noVNC URL",
     "status": "තත්ත්වය",
     "host": "ධාරකය",
-    "ticketAudit": "ටිකට් අගයකිරීම"
+    "ticketAudit": "ටිකට් අගයකිරීම",
+    "ready": "සූදානම්",
+    "advisory": "උපදෙස",
+    "magicDns": "MagicDNS",
+    "blockedBy": "අවහිර කළේ",
+    "vpsStatus": "VPS තත්ත්වය",
+    "authMode": "VNC සත්‍යාපන ක්‍රමය",
+    "shortcutText": "කෙටි මාර්ග පෙළ (පිටපත් පමණි; VPS එක් වරක් cmdkey)",
+    "cmdkeyLine": "cmdkey පේළිය:",
+    "mstscLine": "mstsc පේළිය:",
+    "vncMemory": "VNC මුරපද මතකය (මෙම උපාංගය)",
+    "vncPlaceholder": "VNC_PASS වරක් ලියන්න",
+    "vncRemember": "මෙම උපාංගයේ මතක තබා ගන්න (localStorage)",
+    "vncForget": "අමතක කරන්න",
+    "notStored": "ගබුලා කර නැත"
   },
   "mirror": {
     "open": "විවෘත කරන්න",
@@ -97,26 +141,41 @@
     "enableUpload": "සක්‍රිය කර උඩුගත කරන්න",
     "optInCancel": "අවලංගු කරන්න",
     "optOut": "මෙම ධාවනය සඳහා මිරර් අක්‍රිය කරන්න",
-    "moduleMissing": "මිරර්: අක්‍රියයි — මෙම ධාවනයේ මිරර් මොඩියුලය ස්ථාපිත නැත"  },
+    "moduleMissing": "මිරර්: අක්‍රියයි — මෙම ධාවනයේ මිරර් මොඩියුලය ස්ථාපිත නැත",
+    "titleLong": "දර්පණය - AES-256 සංකේතන ධාවක උඩුගත කිරීම",
+    "doneTotal": "නිම / මුළු",
+    "afterTries": "ප්‍රතිපත්ති නැවත උත්සාහ (උපරිම 5) පසුව",
+    "movingAvg": "චල සාමාන්‍ය",
+    "timeRemaining": "ඉතිරි කාලය",
+    "speedHistory": "වේග ඉතිහාසය - පසුගිය නියැදි 90 (මි.නි. 7.5 @ තත්. 5)",
+    "activeFile": "ක්‍රියාකාරී ගොනුව",
+    "perRoot": "මූලය අනුව දුරමිතික",
+    "root": "මූලය:",
+    "publishStatus": "ප්‍රකාශන තත්ත්වය",
+    "encryptAlg": "ඇල්ගොරිතමය"  },
   "logs": {
     "title": "සටහන්",
     "logonEvents": "පිවිසුම් සිදුවීම්",
     "schannel": "Schannel",
     "telescope": "දුරදර්ශනය",
-    "launcher": "දියත්කාර ජීවක සංඥා"
+    "launcher": "දියත්කාර ජීවක සංඥා",
+    "liveLog": "සජීවී සටහන - පසුගිය පේළි 200"
   },
   "telescope": {
     "dns": "DNS",
     "tcp": "TCP",
     "tls": "TLS",
     "cred": "අක්තපත්‍ර",
-    "logon": "පිවිසුම"
+    "logon": "පිවිසුම",
+    "title": "RDP දුරදර්ශන කාල රේඛාව",
+    "waiting": "පළමු /api/native-status නියැදිය සඳහා රැඳී සිටින්න..."
   },
   "diagnostics": {
     "title": "සම්බන්ධතා විනිශ්චය - පිටපත් පේළි",
     "copyLine": "මෙම පේළිය පිටපත් කරන්න",
     "noExecute": "පහත පේළි ඔබ අතින් ධාවනය කිරීමට වේ.",
-    "drawerTitle": "විනිශ්චය"
+    "drawerTitle": "විනිශ්චය",
+    "refreshHint": "සේවකය මත /diag ධාවනය කිරීමට අලුත් කරන්න ඔබන්න."
   },
   "manualVerify": {
     "title": "අතින් සත්‍යාපන පියවර",
@@ -124,7 +183,9 @@
   },
   "installGuide": {
     "title": "ස්ථාපන මාර්ගෝපදේශය - කට්ටලය + මාර්ග",
-    "downloadCmd": "install.cmd බාගන්න"
+    "downloadCmd": "install.cmd බාගන්න",
+    "pathA": "ස්ථාපන මාර්ගෝපදේශය - මාර්ගය A (බාගත් කට්ටලය)",
+    "pathB": "මාර්ගය B (ගබඩා පිටපත)"
   },
   "launcher": {
     "title": "දියත්කාරක - දාමය / ජීවකය / පරීක්ෂණ",
@@ -132,7 +193,9 @@
     "chain": "දියත්කාරක දාමය",
     "beacon": "දියත්කාරක ජීවකය",
     "listener": "RDP සවන්දෙන්නා",
-    "connLog": "සර්වර් සම්බන්ධතා සටහන"
+    "connLog": "සර්වර් සම්බන්ධතා සටහන",
+    "log": "දියත්කාරක සටහන",
+    "noneYet": "(තවම නැත - Windows ස්වයංක්‍රීය පිවිසුම ඔබන්න)"
   },
   "status": {
     "runnerElapsed": "රනර් ගත වූ",
@@ -170,7 +233,8 @@
       "label": "පෙළ ප්‍රමාණය",
       "comfort": "පහසුව",
       "large": "විශාල",
-      "a11y": "ප්‍රවේශ්‍යතාව"
+      "a11y": "ප්‍රවේශ්‍යතාව",
+      "short": "Aa"
     },
     "language": {
       "label": "භාෂාව",
@@ -196,7 +260,12 @@
   "errors": {
     "authFailure": "සත්‍යාපනය අසාර්ථකයි",
     "networkDown": "ජාලය ළඟා විය නොහැක",
-    "certExpired": "සහතිකය කල් ඉකුත්"
+    "certExpired": "සහතිකය කල් ඉකුත්",
+    "connLost": "සම්බන්ධතාව බිඳ වැටුණි - උපකරණ පුවරු සේවකය ළඟා විය නොහැක. පහත අගයන් අවසාන දත්ත වන අතර පැරණි විය හැක. නැවත උත්සාහ කරමින්...",
+    "flushFailed": "flush කිරීම අසාර්ථකයි - සේවකය ළඟා විය නොහැක",
+    "flushOk": "flush ඉල්ලීම යවා ඇත - watcher සියල්ල උඩුගත කරනු ඇත",
+    "launchFailed": "දියත් කිරීම අසාර්ථකයි - සේවකය ළඟා විය නොහැක",
+    "launchOk": "watcher ආරම්භය ඉල්ලා ඇත"
   },
   "stat": {
     "runnerIp": "රනර් IP",
@@ -214,7 +283,9 @@
       "title": "සම්බන්ධතා"
     },
     "mirrorPage": {
-      "title": "දර්පණය"
+      "title": "දර්පණය",
+      "history": "උඩුගත කිරීම් ඉතිහාසය",
+      "egress": "ධාවක පිටගමන දත්ත වේගය (දින 7 චල සාමාන්‍ය)"
     },
     "telemetryPage": {
       "title": "දුරමිතික"
@@ -224,7 +295,8 @@
       "appearance": "පෙනුම",
       "language": "භාෂාව",
       "textScale": "පෙළ ප්‍රමාණය",
-      "theme": "තේමාව"
+      "theme": "තේමාව",
+      "migration": "සංක්‍රමණ සටහන් (F38 → v2)"
     }
   },
   "search": {
@@ -1157,7 +1229,23 @@
     "button": "බොත්තම",
     "lastClicked": "අවසන් ක්ලික්",
     "lastResult": "අවසන් ප්‍රතිඵලය",
-    "liveState": "සජීවී තත්ත්වය"
+    "liveState": "සජීවී තත්ත්වය",
+    "downloadActions": "button-actions.json බාගන්න",
+    "actionsTitle": "මෑත පරිශීලක ක්‍රියා (සටහන් කර ඇත)",
+    "actionsEmpty": "තවම බොත්තම් ක්ලික් කිරීම් සටහන් කර නැත. උපකරණ පුවරුව වටා බොත්තම් (Add site, Open in RDP, Fetch, Download, Reconnect, Preview…) ක්ලික් කරන්න, එවිට මෙම වගුව පිරේ.",
+    "globalTitle": "ගෝලීය ක්ලික් (ස්වයංක්‍රීයව ග්‍රහණය කරන ලද)",
+    "globalEmpty": "තවම ක්ලික් ග්‍රහණය කර නැත. උපකරණ පුවරුවේ ඕනෑම තැනක ඕනෑම බොත්තමක් ක්ලික් කරන්න (මෙම පිටුවේ නොවේ), ඉන්පසු මෙතැනට ආපසු එන්න.",
+    "clear": "හිස් කරන්න",
+    "when": "කවදා",
+    "action": "ක්‍රියාව",
+    "params": "පරාමිතීන්",
+    "result": "ප්‍රතිඵලය",
+    "elapsed": "ms",
+    "control": "පාලකය",
+    "route": "මාර්ගය",
+    "wire": "ඉල්ලීම",
+    "hostPage": "ධාරක පිටුව",
+    "handler": "තත්ත්වය"
   },
   "banners": {
     "ended": "SESSION EXPIRED - GitHub hard cap reached. Runner termination imminent.",
