@@ -245,6 +245,25 @@ resolution (`b145098`), which put four damage classes on main at once:
 - merge-order: **independent — merge FIRST** · blockers-created: **none** · labels-applied: PR (`f-observatory`, `observatory`)
 - next-actionable-step: **7 (F108)**, unblocked, with its §PRE-STEP already run.
 
+### §4 CI verdict for this repair (watch closed 23:14Z) — code head `d8aba1f`
+| workflow | verdict | vs `main` at `e6dc5bd` |
+|---|---|---|
+| `launch-gates` (push) | ✅ **success** — `gates` ✅ **and** `windows-native` ✅ | both were ❌ (F48 SyntaxError; F45 S4 2/138) |
+| `launch-gates` (PR) | ✅ **success** | — |
+| `F59 build-ui` | ✅ **success** | was ❌ in 16 s at `pnpm install --frozen-lockfile` |
+| `autologin-lab` | ✅ **success** | ✅ |
+| `e2e-ui` | ⚠️ **AMBER-INHERITED** — `cancelled` 23:13:57Z after **1518 s**, **0 failed steps**, at "Run F78 + F79 E2E specs" | was ❌ **RED-NEW** in 13 s with a named failed step — i.e. the install red is repaired and the job is back to its inherited self-cancel |
+
+⇒ **mergeable by the §4 criteria** (only RED-NEW blocks); GitHub reports `mergeable: MERGEABLE`,
+`mergeStateStatus: UNSTABLE` (the amber `e2e-ui`), no conflicts.
+**§POST-WATCH-RERUN-OBSERVED: yes** — the docs-only commit `f252782` re-ran `launch-gates` ✅ **×2** on an
+identical source tree. The `windows-native` F45 S4 failure on `e6dc5bd` did not reproduce here and no
+`payloads/` file is touched by this PR, so it was cascade/flake from the un-installable tree.
+- Session log comment: PR #175 comment `#issuecomment-6048770592` (§3 + §4 CI verdict + §7 trace).
+- Post-watch informational commit: this one — records the CI verdict and the comment id, and re-points the two
+  §Shipped-patterns citations that named the retired `full.ts`; **no source file changed** (precedent: steps 4, 5, 6).
+  The code verdict above stands for the identical source tree.
+
 ### §PRE-STEP for step 7 F108 (run this session so the next one can execute directly)
 1. §SPEC-REALITY: **3 drifts** (above). 2. §INVENTORY-RE-DERIVE: both envelope tags confirmed in source —
    `mcrec1:` (step 3 clipboard, `src/lib/dvr-core.js`) and `mcrec2:` (step 6 export, `src/lib/dvr/exportCore.js`);
@@ -756,8 +775,8 @@ the 120min/session cap and needs re-scope. Pages is still operator-manual before
 - Canvas cannot rasterize arbitrary DOM; prove the dependency exception rather than pretending `drawImage(root)` works.
 
 ## §Shipped-patterns (v7; earlier v6 records retained below)
-- {name: "Opt-in local diagnostic content", why: "pixel data may contain secrets; never silently capture", file: "src/lib/dvr/full.ts:38", reusable_in_steps: [F108, F109]}
-- {name: "Serialized bounded local writer", why: "a slow old transaction must not overwrite a newer session; quota stops only full capture", file: "src/lib/dvr/full.ts:33", reusable_in_steps: [F108, F109]}
+- {name: "Opt-in local diagnostic content", why: "pixel data may contain secrets; never silently capture", file: "src/lib/dvr/session.ts (was full.ts:38 — that file was RETIRED by #175 when step 6's duplicate implementation was de-duplicated; the surviving equivalent is the kill-flagged install)", reusable_in_steps: [F108, F109]}
+- {name: "Serialized bounded local writer", why: "a slow old transaction must not overwrite a newer session; quota stops only full capture", file: "src/lib/dvr/storage.ts + session.ts (was full.ts:33 — retired by #175; the surviving writer is the single ordered IDB path in storage.ts with storageCore deciding budget/retention/quota)", reusable_in_steps: [F108, F109]}
 
 
 1. **A parameterised route builds its own fence** (step 5). `fence("id", …)` is for literal routes; a route
