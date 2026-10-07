@@ -91,7 +91,7 @@ export function MirrorHostMatrix() {
     >
       <p className="text-xs text-tertiary mb-2">{t("mirrorHostMatrix.subtitle")}</p>
       <div className="flex items-center gap-2 mb-2">
-        <Button variant="secondary" size="sm" icon={<RefreshCw className="size-3.5" aria-hidden />} onClick={() => void refresh()} disabled={busy}>
+        <Button variant="secondary" size="sm" icon={<RefreshCw className="size-3.5" aria-hidden />} onClick={() => void refresh()} disabled={busy} data-testid="mirror-hosts-refresh">
           {busy ? t("mirrorHostMatrix.refreshing") : t("actions.refresh")}
         </Button>
         <span className="text-xs text-tertiary" data-testid="mirror-host-matrix-count">

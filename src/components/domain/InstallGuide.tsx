@@ -57,7 +57,7 @@ export function InstallGuide() {
       </div>
       <div id="winAutoInstall" className={cn("text-xs text-warning mt-2", autoLogin.installNotice ? "" : "hidden")}>
         One-time handler setup (no script host, no admin, no download of binaries): copy <code id="winAutoFiles">{installFiles}</code>
-        <CopyButton value={installFiles} className="inline-flex ml-1" /> from the repo into one folder on your PC and double-click <b>install.cmd</b> - or use WEB DESKTOP
+        <CopyButton value={installFiles} className="inline-flex ml-1" data-testid="overview-copy-install-files" /> from the repo into one folder on your PC and double-click <b>install.cmd</b> - or use WEB DESKTOP
         (zero install).
       </div>
       <span className="hidden">

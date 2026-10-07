@@ -110,6 +110,7 @@ function TreeNodeButton({
   const longPress = useLongPress(() => onSelect(node));
   return (
     <button
+      data-testid={"files-tree-" + id}
       id={id}
       type="button"
       aria-current={active ? "true" : undefined}

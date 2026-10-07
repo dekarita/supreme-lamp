@@ -256,7 +256,7 @@ export function WebDesktopCard() {
           />
           I ran cmdkey for this FQDN on this PC (copying the line does not count).
         </label>
-        <Button id="autoLoginNative" variant="primary" size="sm" disabled={!nativeBtnOk} onClick={() => void useSessionStore.getState().fireAutoLoginNative()}>
+        <Button id="autoLoginNative" variant="primary" size="sm" disabled={!nativeBtnOk} onClick={() => void useSessionStore.getState().fireAutoLoginNative()} data-testid="overview-auto-login-vps">
           {t("actions.autoLoginVps")}
         </Button>
       </Row>
@@ -269,7 +269,7 @@ export function WebDesktopCard() {
         >
           {webdeskUrl ? new URL(webdeskUrl).hostname : s.webdeskUrl ? "(invalid URL)" : "(not set)"}
         </span>
-        <CopyButton value={() => webdeskUrl} />
+        <CopyButton value={() => webdeskUrl} data-testid="overview-copy-webdesk-url" />
         <span className="text-xs text-tertiary">VNC password = the VNC_PASS secret set at dispatch; this page never stores or shows it.</span>
       </Row>
       <Row k={t("webDesktop.authMode")}>
@@ -327,7 +327,7 @@ export function WebDesktopCard() {
             <input id="vncPassRemember" type="checkbox" checked={vncRemember} onChange={() => rememberVnc()} />
             {t("webDesktop.vncRemember")}
           </label>
-          <Button id="vncPassForget" variant="secondary" size="sm" onClick={forgetVnc}>
+          <Button id="vncPassForget" variant="secondary" size="sm" onClick={forgetVnc} data-testid="overview-vnc-forget">
             {t("webDesktop.vncForget")}
           </Button>
           <span id="vncPassState" className="text-xs text-tertiary">
@@ -345,14 +345,14 @@ export function WebDesktopCard() {
           <code id="cmdkeyLine" className="font-mono text-xs bg-sunken border border-default rounded px-2 py-1 text-success break-all">
             {cmdkeyLine}
           </code>
-          <CopyButton value={cmdkeyLine} />
+          <CopyButton value={cmdkeyLine} data-testid="overview-copy-cmdkey-line" />
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-xs text-tertiary">{t("webDesktop.mstscLine")}</span>
           <code id="mstscFallback" className="font-mono text-xs bg-sunken border border-default rounded px-2 py-1 text-success break-all">
             {mstscLine}
           </code>
-          <CopyButton value={mstscLine} />
+          <CopyButton value={mstscLine} data-testid="overview-copy-mstsc-line" />
         </div>
         <span className="text-xs text-tertiary">
           Password is typed at the prompt, never placed on the command line. Ephemeral hosts: ignore this pair and use WEB DESKTOP.

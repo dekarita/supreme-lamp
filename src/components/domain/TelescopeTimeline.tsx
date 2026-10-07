@@ -44,6 +44,7 @@ export function TelescopeTimeline() {
         </span>
         <div className="flex items-center gap-2 flex-wrap">
           <Button
+            data-testid="telemetry-run-diag"
             id="btnRunDiag"
             variant="secondary"
             size="sm"

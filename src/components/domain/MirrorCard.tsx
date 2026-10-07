@@ -275,7 +275,7 @@ export function MirrorCard() {
       </div>
 
       <div className="flex flex-wrap gap-2 mt-4">
-        <Button variant="primary" size="sm" icon={<Upload className="size-3.5" aria-hidden />} onClick={() => void onUploadNow()}>
+        <Button variant="primary" size="sm" icon={<Upload className="size-3.5" aria-hidden />} onClick={() => void onUploadNow()} data-testid="mirror-upload-now">
           {t("actions.uploadNow")}
         </Button>
         {optIn && optIn.status.enabled && (
@@ -283,13 +283,13 @@ export function MirrorCard() {
             {t("mirror.optOut")}
           </Button>
         )}
-        <Button variant="secondary" size="sm" icon={<Play className="size-3.5" aria-hidden />} onClick={() => void doLaunch()}>
+        <Button variant="secondary" size="sm" icon={<Play className="size-3.5" aria-hidden />} onClick={() => void doLaunch()} data-testid="mirror-start-watcher">
           {t("actions.startWatcher")}
         </Button>
-        <Button variant="secondary" size="sm" icon={<Search className="size-3.5" aria-hidden />} onClick={() => void runDiag()}>
+        <Button variant="secondary" size="sm" icon={<Search className="size-3.5" aria-hidden />} onClick={() => void runDiag()} data-testid="mirror-diagnose">
           {t("actions.diagnose")}
         </Button>
-        <Button variant="secondary" size="sm" icon={<Copy className="size-3.5" aria-hidden />} onClick={() => void copyAllLinks()}>
+        <Button variant="secondary" size="sm" icon={<Copy className="size-3.5" aria-hidden />} onClick={() => void copyAllLinks()} data-testid="mirror-copy-all-links">
           {t("actions.copyAllLinks")}
         </Button>
       </div>

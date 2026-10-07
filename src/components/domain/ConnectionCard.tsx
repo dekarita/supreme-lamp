@@ -101,19 +101,19 @@ export function ConnectionCard() {
         <span id="credIp" className="font-mono text-sm text-text-mono">
           {ip || "__IP__"}
         </span>
-        <CopyButton value={ip} label={t("connection.tailscaleIp")} />
+        <CopyButton value={ip} label={t("connection.tailscaleIp")} data-testid="connections-copy-ip" />
       </Row>
       <Row k={t("connection.username")}>
         <Chip id="credUser" mono tone="accent">
           {user || "__USER__"}
         </Chip>
-        <CopyButton value={user} label={t("connection.username")} />
+        <CopyButton value={user} label={t("connection.username")} data-testid="connections-copy-user" />
       </Row>
       <Row k={t("connection.mstsc")}>
         <span id="mstscVal" className="font-mono text-sm text-text-mono break-all">
           {mstsc}
         </span>
-        <CopyButton value={mstsc} label={t("connection.mstsc")} />
+        <CopyButton value={mstsc} label={t("connection.mstsc")} data-testid="connections-copy-mstsc-line" />
       </Row>
       <Row k={t("connection.connectivity")}>
         <span

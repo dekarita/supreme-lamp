@@ -58,27 +58,27 @@ export function KeysCard() {
         <a id="pagesLink" href={mirrorIndexUrl || "javascript:void(0)"} target="_blank" rel="noopener" className="text-accent underline break-all text-sm">
           {mirrorIndexUrl || "(pages base)"}
         </a>
-        <CopyButton value={mirrorIndexUrl} />
+        <CopyButton value={mirrorIndexUrl} data-testid="keys-copy-mirror-github" />
       </Row>
       <Row k={t("keys.legacyRentry")}>
         <a id="legacyLink" href={legacyIndexUrl} target="_blank" rel="noopener" className="text-accent underline break-all text-sm">
           {legacyIndexUrl}
         </a>
-        <CopyButton value={legacyIndexUrl} />
+        <CopyButton value={legacyIndexUrl} data-testid="keys-copy-legacy-rentry" />
       </Row>
       {rentryNewUrl && (
         <Row k="NEW Rentry">
           <a id="rentryNewLink" href={rentryNewUrl} target="_blank" rel="noopener" className="text-accent underline break-all text-sm">
             {rentryNewUrl}
           </a>
-          <CopyButton value={rentryNewUrl} />
+          <CopyButton value={rentryNewUrl} data-testid="keys-copy-rentry-new" />
         </Row>
       )}
       <Row k={t("keys.legacyKey")}>
         <span id="legacyKey" className="font-mono text-sm text-text-mono break-all">
           {legacyKey}
         </span>
-        <CopyButton value={legacyKey} />
+        <CopyButton value={legacyKey} data-testid="keys-copy-legacy-key" />
         <span className="text-xs text-tertiary">decrypt key for files uploaded before this run</span>
       </Row>
       <Row k={t("keys.currentKey")}>
@@ -93,6 +93,7 @@ export function KeysCard() {
       <Row k={t("keys.vncPassword")}>
         <MaskedField id="credVncPass" value={secrets.credVncPass} mask={secrets.vncPassMask} labelKey="keys.vncPassword" />
         <CopyLink
+          data-testid="keys-copylink-remember-vnc"
           label="remember for WEB DESKTOP"
           value={() => {
             try {
@@ -110,35 +111,36 @@ export function KeysCard() {
         <a id="telegraphLink" href={typeof telegraph === "string" && telegraph.startsWith("http") ? telegraph : "javascript:void(0)"} target="_blank" rel="noopener" className="text-accent underline break-all text-sm">
           {telegraph}
         </a>
-        <CopyButton value={String(telegraph)} />
+        <CopyButton value={String(telegraph)} data-testid="keys-copy-telegraph" />
       </Row>
       <Row id="decryptRow" k={t("keys.decryptor")} className={decryptUrl ? "" : "hidden"}>
         <a id="decryptLink" href={decryptUrl || "javascript:void(0)"} target="_blank" rel="noopener" className="text-accent underline break-all text-sm">
           {decryptUrl || "-"}
         </a>
-        <CopyButton value={decryptUrl} />
+        <CopyButton value={decryptUrl} data-testid="keys-copy-decryptor" />
       </Row>
       <Row id="archiveRow" k={t("keys.archive")} className={archiveUrl ? "" : "hidden"}>
         <a id="archiveLink" href={archiveUrl || "javascript:void(0)"} target="_blank" rel="noopener" className="text-accent underline break-all text-sm">
           {archiveUrl || "-"}
         </a>
-        <CopyButton value={archiveUrl} />
+        <CopyButton value={archiveUrl} data-testid="keys-copy-archive" />
       </Row>
       <Row id="searchRow" k={t("keys.fileSearch")} className={searchUrl ? "" : "hidden"}>
         <a id="searchLink" href={searchUrl || "javascript:void(0)"} target="_blank" rel="noopener" className="text-accent underline break-all text-sm">
           {searchUrl || "-"}
         </a>
-        <CopyButton value={searchUrl} />
+        <CopyButton value={searchUrl} data-testid="keys-copy-file-search" />
       </Row>
       <Row id="explorerRow" k={t("keys.explorer")} className={explorerUrl ? "" : "hidden"}>
         <a id="explorerLink" href={explorerUrl || "javascript:void(0)"} target="_blank" rel="noopener" className="text-accent underline break-all text-sm">
           {explorerUrl || "-"}
         </a>
-        <CopyButton value={explorerUrl} />
+        <CopyButton value={explorerUrl} data-testid="keys-copy-explorer" />
       </Row>
       <Row id="termRow" k={t("keys.terminal")}>
         <Chip tone="neutral">runner · audit-logged · SYSTEM / INTERACTIVE</Chip>
         <Button
+          data-testid="keys-open-terminal"
           id="btnTermOpen"
           variant="primary"
           size="sm"
@@ -150,7 +152,7 @@ export function KeysCard() {
         <code id="termUrl" className="font-mono text-[11px] text-tertiary max-w-[44%] overflow-hidden text-ellipsis whitespace-nowrap">
           {termUrl}
         </code>
-        <CopyButton id="btnTermCopy" value={termUrl} label="Terminal URL" />
+        <CopyButton id="btnTermCopy" value={termUrl} label="Terminal URL" data-testid="keys-copy-terminal" />
       </Row>
     </Card>
   );

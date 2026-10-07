@@ -113,6 +113,7 @@ export function AdvancedPanel({ open }: { open: boolean }) {
           {filterCount}
         </span>
         <button
+          data-testid="search-filters-reset"
           id="f56.search.filtersReset"
           type="button"
           onClick={() => resetFilters()}
@@ -126,6 +127,7 @@ export function AdvancedPanel({ open }: { open: boolean }) {
         <div id="f56.search.categoryGroup" role="group" aria-label={t("search.a11y.categoryGroup")} className="flex flex-wrap items-center gap-1.5">
           <span className="text-xs text-tertiary mr-1">{t("search.filters.category.label")}</span>
           <button
+            data-testid="search-filter-category-all"
             id="f56.search.categoryChip.all"
             type="button"
             aria-pressed={categories.length === 0}
@@ -136,6 +138,7 @@ export function AdvancedPanel({ open }: { open: boolean }) {
           </button>
           {CATEGORIES.map((c) => (
             <button
+              data-testid={"search-filter-category-" + c}
               key={c}
               id={"f56.search.categoryChip." + c}
               type="button"
@@ -152,6 +155,7 @@ export function AdvancedPanel({ open }: { open: boolean }) {
           <span className="text-xs text-tertiary mr-1">{t("search.filters.licence.label")}</span>
           {LICENCES.map((l) => (
             <button
+              data-testid={"search-filter-licence-" + l}
               key={l}
               id={"f56.search.licenceChip." + l}
               type="button"
@@ -169,6 +173,7 @@ export function AdvancedPanel({ open }: { open: boolean }) {
           <span className="text-xs text-tertiary mr-1">{t("search.filters.fileExt.label")}</span>
           {FILE_EXT_CHIPS.map((c) => (
             <button
+              data-testid={"search-filter-fileext-" + c.id}
               key={c.ext}
               id={"f56.search.v2.fileExtChip." + c.id}
               type="button"
@@ -206,6 +211,7 @@ export function AdvancedPanel({ open }: { open: boolean }) {
             className="h-11 w-20 px-2 rounded-md border border-default bg-base text-xs text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
           />
           <button
+            data-testid="search-filter-group-by-source"
             id="f56.search.v2.groupBySourceToggle"
             type="button"
             aria-pressed={groupBySource}
@@ -262,6 +268,7 @@ export function AdvancedPanel({ open }: { open: boolean }) {
           </span>
           {ADAPTER_ROSTER.map((a) => (
             <button
+              data-testid={"search-filter-adapter-" + a.adapterId}
               key={a.adapterId}
               id={"f56.search.v2.adapterChip." + a.adapterId}
               type="button"

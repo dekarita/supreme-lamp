@@ -18,7 +18,7 @@ function Line({ id, text }: { id: string; text: string }) {
       <code id={id} className="font-mono text-xs bg-sunken border border-default rounded px-2 py-1 break-all">
         {text}
       </code>
-      <CopyButton value={text} />
+      <CopyButton value={text} data-testid={"overview-diag-copy-" + id} />
     </span>
   );
 }

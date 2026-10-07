@@ -38,11 +38,11 @@ export function DiagSideDrawer() {
         <header className="flex items-center gap-2 px-4 h-12 border-b border-default">
           <h3 className="text-sm font-semibold text-primary">{t("diagnostics.drawerTitle")}</h3>
           <div className="ml-auto flex items-center gap-1">
-            <Button variant="secondary" size="sm" icon={<RefreshCw className="size-3.5" aria-hidden />} onClick={() => void runDiag()}>
+            <Button variant="secondary" size="sm" icon={<RefreshCw className="size-3.5" aria-hidden />} onClick={() => void runDiag()} data-testid="diag-drawer-refresh">
               {t("actions.refresh")}
             </Button>
-            <CopyButton value={text} label="copy diag" />
-            <IconButton icon={<X className="size-4" />} label={t("actions.close")} onClick={() => setDiag(false)} />
+            <CopyButton value={text} label="copy diag" data-testid="diag-drawer-copy" />
+            <IconButton icon={<X className="size-4" />} label={t("actions.close")} onClick={() => setDiag(false)} data-testid="diag-drawer-close" />
           </div>
         </header>
         <div className="flex-1 overflow-auto p-4">

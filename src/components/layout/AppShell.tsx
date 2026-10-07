@@ -75,6 +75,7 @@ function TopBar() {
   return (
     <header role="banner" className="sticky top-0 z-40 h-12 bg-surface border-b border-default flex items-center px-4 gap-3">
       <button
+        data-testid="topbar-mobile-menu"
         type="button"
         className="lg:hidden text-secondary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
         aria-label={t("sidebar.menu")}
@@ -168,6 +169,7 @@ function TopBar() {
           {t("toggle.classicUi.short")}
         </a>
         <button
+          data-testid="topbar-lang-toggle"
           id="langToggle"
           type="button"
           onClick={toggleLang}
@@ -177,6 +179,7 @@ function TopBar() {
           {lang === "si" ? t("toggle.language.shortEn") : t("toggle.language.shortSi")}
         </button>
         <button
+          data-testid="topbar-text-scale-toggle"
           id="textScaleToggle"
           type="button"
           onClick={cycleScale}
@@ -189,6 +192,7 @@ function TopBar() {
           <span id="textScaleLabel">{scale === "comfort" ? "Aa" : scale === "large" ? "A+" : "A++"}</span>
         </button>
         <button
+          data-testid="topbar-theme-toggle"
           id="themeToggle"
           type="button"
           onClick={toggleTheme}

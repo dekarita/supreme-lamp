@@ -30,8 +30,9 @@ export default function Connections() {
 
       <Card title="Quick actions" className="mb-4">
         <div className="flex flex-wrap gap-2">
-          <CopyButton value={mstsc} label="mstsc command" size="md" />
+          <CopyButton value={mstsc} label="mstsc command" size="md" data-testid="connections-copy-mstsc" />
           <Button
+            data-testid="connections-download-rdp"
             variant="secondary"
             size="sm"
             onClick={() => {

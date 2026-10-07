@@ -403,6 +403,7 @@ export function ResultsGrid() {
                 <StreamCard url={direct} mimeType={r.mimeType} title={r.title} suffix={sfx} />
               ) : null}
               <button
+                data-testid="card-preview"
                 id={"f56.search.resultPreview." + sfx}
                 type="button"
                 title={t("search.actions.comingSoon")}
@@ -441,6 +442,7 @@ export function ResultsGrid() {
               ) : null}
               {retryable ? (
                 <button
+                  data-testid="card-retry"
                   id={"f56.search.resultRetry." + sfx}
                   type="button"
                   aria-label={t("search.actions.retry")}
