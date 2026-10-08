@@ -1831,3 +1831,18 @@ F110/F110b file untouched · budget ≈ 35 min of 120.
 3. **M2 chrome unfencing** (6 surfaces, unchanged) · **M3 Pages `/status.json` freshness** (operator
    deploy-policy decision) · **#181** the patch emitter (do not pin a key first) · **#179** body/labels ·
    **`e2e-ui` never reaches a verdict** (25-min self-cancel; F111's re-plan owns it).
+
+### §4 CI verdict for PR #184 — code head `8f099eb`, final (docs-only) head `2d28752`
+| workflow / check | `8f099eb` (the tree that ships) | `2d28752` (docs-only) | classification |
+|---|---|---|---|
+| `launch-gates` → **gates** (push) | ✅ 2m06s | ✅ | GREEN |
+| `launch-gates` → **gates** (PR) | ✅ 3m12s | ✅ | GREEN |
+| `launch-gates` → **windows-native** (push + PR) | ✅ 9m39s / 10m43s | ✅ | GREEN |
+| `proof` | ✅ 7m06s | (path-filtered) | GREEN |
+| `F59 build-ui (prebuilt UI release asset)` | ✅ 36s | (path-filtered: docs-only) | GREEN |
+| `autologin-lab` | ✅ | (path-filtered) | GREEN |
+| `e2e-ui` | ⚠️ **cancelled** at 11:06:12Z, `created 10:40:51Z` = **1521 s**, only non-success step = `Run F78 + F79 E2E specs` **cancelled by its own 25-min `timeout-minutes`**, **0 failed steps** | ⚠️ same | **AMBER-INHERITED** — checked against the §4.2 discriminator (*< 2 min + ≥1 failed step ⇒ RED-NEW*; *≈25 min + 0 failed steps ⇒ inherited*), not by colour. Identical to main's last four pushes. |
+
+⇒ **mergeable by the §4 criteria** (only RED-NEW blocks): every blocking lane green on both heads,
+`MERGEABLE`, `mergeStateStatus: UNSTABLE` (the amber `e2e-ui` alone). Nothing was merged by this
+session and `main.yml` was not dispatched. Session-log comment: PR #184.
