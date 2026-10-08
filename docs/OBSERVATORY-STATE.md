@@ -1616,7 +1616,7 @@ one would create a NEW drift and redden the gate. The maintenance phase is track
 
 ## Session 2026-10-08 — Maintenance step **M4** — latent bug cleanup (`ghrdp-dash-token` dead read · roadmap `#173`→`#174` drift · `check:ui` landmine) — branch `arena/d5b6da04-supreme-lamp`
 
-**Scope.** M4 is independent of M1 (the F110b PRs), so no ordering applies. Nothing was merged, `main.yml` was not dispatched, no plain issue was edited, and M2/M3 were not touched. No Ed25519 key was pinned. The PR number and CI verdict are recorded in §MAINTENANCE-STEPS-LOG once the PR is open.
+**Scope.** M4 is independent of M1 (the F110b PRs), so no ordering applies. Nothing was merged, `main.yml` was not dispatched, no plain issue was edited, and M2/M3 were not touched. No Ed25519 key was pinned. PR **#183**. The CI verdict is in the M4 row of §MAINTENANCE-STEPS-LOG.
 
 ### §M4-PROMPT-STALENESS — the brief checked against the tree (measured this session)
 - "#181 server emitter, OPEN, merge first": **#181 is an OPEN ISSUE** (F110c, the patch emitter), not a PR (`gh pr view 181` finds no PullRequest). There is nothing to merge, and M4 does not depend on it.
@@ -1680,6 +1680,7 @@ The runtime test also fails when the dead read is re-added to `getDashToken` and
 3. **`window.__GHRDP_DASH_TOKEN`** is read and never written. Remove it together with item 1.
 4. **#179** body and **#181** labels are operator edits, since Arena gets 403 on plain issues. #181 is an OPEN issue for F110c, not a PR.
 5. **STATE.md** (the 60-line ledger, at its line cap) was not updated. §MAINTENANCE-STEPS-LOG in this file is the record of truth for maintenance steps.
+6. **`e2e-ui` never reaches a verdict.** Its F78 + F79 Playwright run does not finish inside the workflow's 25-minute `timeout-minutes` (`.github/workflows/e2e-ui.yml`). It was cancelled on each of the last four pushes to main and on PR #183, always at the same step with zero failed steps. So the E2E specs have no recorded pass or fail on either branch. Playwright browsers cannot be downloaded from this sandbox, so this could not be run locally. Raising the timeout or sharding the specs is a separate CI task.
 
 ### §M4-LANDING — PROJECT-CONTEXT rule 7
 Session-branch push, then PR, then merge with `merge_method=merge`, done by the operator. No `main.yml` dispatch.
@@ -1690,4 +1691,4 @@ Session-branch push, then PR, then merge with `merge_method=merge`, done by the 
 | **M1** | F110b Ed25519 signing | **verifier half COMPLETE**; pin + emitter outstanding | PR **#182** (green), emitter **#181** |
 | M2 | chrome unfencing (6 global surfaces) | not started | — |
 | M3 | Pages `/status.json` freshness | not started (operator decision: widen `replay-viewer.yml`'s fenced push trigger, or accept staleness) | — |
-| M4 | latent bug cleanup | **code COMPLETE on `arena/d5b6da04-supreme-lamp`**: the `ghrdp-dash-token` dead read is deleted at both sites; Step 6 line 115 `#173`→`#174` with both allowlist entries deleted in the same commit; `check:ui` replaced by `ui/dist/index.html` + `check:no-neon-green` (pinned by M4-L1). Gates M4-D1…D6, M4-R1/R2, M4-L1, plus a runtime test. | PR: number recorded in the M4 session record below, after the PR opens. Merge is the operator's call. |
+| M4 | latent bug cleanup | **code COMPLETE on `arena/d5b6da04-supreme-lamp`**: the `ghrdp-dash-token` dead read is deleted at both sites; Step 6 line 115 `#173`→`#174` with both allowlist entries deleted in the same commit; `check:ui` replaced by `ui/dist/index.html` + `check:no-neon-green` (pinned by M4-L1). Gates M4-D1…D6, M4-R1/R2, M4-L1, plus a runtime test. | PR **#183** (head `b8ecb25b`). CI on `b8ecb25b`: `gates` ✅ 13m2s · `windows-native` ✅ 11m28s · `proof` ✅ · `build-ui-prebuilt` ✅ · labs `f56d-qbt-lab` / `f57-explorer-lab` / `f60-warm-lab` ✅ · `e2e-ui` ⚠️ cancelled by its 25-min `timeout-minutes` during `Run F78 + F79 E2E specs`, 0 failed steps. That is the pattern of the last four pushes to main (AMBER-INHERITED, not caused by M4). Merge is the operator's call. |
