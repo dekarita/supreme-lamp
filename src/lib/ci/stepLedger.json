@@ -115,12 +115,12 @@
     },
     {
       "step": 8,
-      "number": null,
+      "number": 178,
       "branch": "arena/33e36146-supreme-lamp",
       "featureIds": ["F109"],
       "status": "open",
       "title": "F109: Debug HUD overlay (F12+Shift) with 5 panels, prod-safe default-off",
-      "note": "Owns the un-fenced chrome (handoffs #2, #7, #10, #11): AppShell/CommandPalette/DvrFab/SessionListModal fencing, and the runtime DVR off switch that should reuse the three now-unreferenced dvr.fullWarning/fullStart/fullStop i18n keys rather than inventing new ones. Step-8 session: the runtime off switch shipped (HUD Actions panel, reusing exactly those three keys); chrome FENCING is not in this PR (recorded as a handoff in docs/OBSERVATORY-STATE.md). number stays null until the PR exists; the post-PR commit sets it and ticks the Step 8 roadmap line in the same commit."
+      "note": "Owns the un-fenced chrome (handoffs #2, #7, #10, #11): AppShell/CommandPalette/DvrFab/SessionListModal fencing, and the runtime DVR off switch that should reuse the three now-unreferenced dvr.fullWarning/fullStart/fullStop i18n keys rather than inventing new ones. Step-8 session: the runtime off switch shipped (HUD Actions panel, reusing exactly those three keys); chrome FENCING is not in this PR (recorded as a handoff in docs/OBSERVATORY-STATE.md). PR #178 opened 2026-10-08; the post-PR commit set the number and ticked the Step 8 roadmap line in the same commit."
     },
     {
       "step": 9,

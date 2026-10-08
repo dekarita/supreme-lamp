@@ -140,7 +140,7 @@
   do NOT add an `actions/deploy-pages` workflow). §PRE-STEP was run this session: all 8 planned paths are collision-free,
   both envelope tags (`mcrec1:` v1 clipboard, `mcrec2:` v2 export) confirmed present, and there is now exactly **ONE** v2
   producer (`exportCore.js`), so the viewer's reader contract is unambiguous.
-- [ ] **Step 8 — F109** · ETA 90min · Debug HUD overlay (F12-shift)
+- [x] **Step 8 — F109** · landed on `arena/33e36146-supreme-lamp`, PR **#178** (open, mergeable on entry base `b6c1516`) · Debug HUD: Shift+F12 overlay, 5 panels, prod-safe default-off; fixed a lab-discovered prod bug (forced lab scenarios outliving the lab) and two F111 gate bugs (see the F109 session block) · · ETA 90min · Debug HUD overlay (F12-shift)
 
 ## Phase 3 — Advanced
 - [ ] **Step 9 — F110** · ETA 150min · Live Patch Protocol (module federation)
@@ -1161,7 +1161,7 @@ the F105 ownership partition - see the §Step 5 record for what shipped instead 
   + a `gh pr list --search` feed — the core needs no rewrite to become a live pre-merge check.
 
 <!-- F109-begin -->
-## Session 2026-10-08 00:49Z — Step 8 — F109 Debug HUD — **COMPLETE** (PR: see the Step 8 roadmap line, ticked by the post-PR commit)
+## Session 2026-10-08 00:49Z — Step 8 — F109 Debug HUD — **COMPLETE**, PR #178
 
 - Branch `arena/33e36146-supreme-lamp` · base = main `b6c1516` (the #176 merge) · v10 prompt.
 - **§PROMPT-STALENESS: 3 corrections.** (1) #176 F108 is **MERGED** (00:47:09Z, `b6c1516`), not open. (2) #177 F111 is **MERGED**
