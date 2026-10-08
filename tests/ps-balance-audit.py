@@ -228,6 +228,9 @@ def main():
         'scripts/f60-scrub-runcommand.ps1',
         'tests/f60-bootstrap-lab.ps1',
         'tests/f60-bootstrap.Tests.ps1',
+        # [F63 §1/§2] speed-opt prebuilt helper + lab.
+        'payloads/f63-prebuilt/f63-prebuilt-helper.ps1',
+        'tests/f63-speed-opt-lab.ps1',
     ]
     failed = 0
     for t in targets:
@@ -239,6 +242,7 @@ def main():
         failed += bool(problems)
     for wf in ['.github/workflows/autologin-lab.yml', '.github/workflows/main.yml',
                '.github/workflows/launch-gates.yml',
+               '.github/workflows/build-webrtc.yml',
                # [F60] the warm-runner workflows embed PowerShell blocks that run on
                # the VM / on a self-hosted runner - audited like the others.
                '.github/workflows/provision-warm-runner.yml',

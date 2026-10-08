@@ -3717,6 +3717,36 @@ jobs:
           node --test tests/f62-build-ui-script-path.test.js
           d=$(mktemp -d); (cd "$d" && node "$GITHUB_WORKSPACE/scripts/check-regression-ids.mjs" && node "$GITHUB_WORKSPACE/scripts/check-bottom-bar-time.mjs"); rm -rf "$d"
           echo 'F62 gate PASS'
+      # [F63] ADDITIVE: ONE new counted bash gate (51/51). Verifies:
+      #   - payloads/f63-prebuilt-manifest.json + payloads/f63-prebuilt/manifest.json
+      #     pin valid 64-hex SHA-256 digests, official vendor URLs, release_page_url,
+      #     and fallback commands for every prebundled installer.
+      #   - .github/workflows/build-webrtc.yml + main.yml + deploy-bootstrap.ps1
+      #     implement Optimization A (WebRTC prebuilt), B (Go/Choco/npm caches),
+      #     C (prebundled installers with fallback), D (parallel Start-Job + Wait-Job
+      #     rendezvous before dashboard startup).
+      #   - startup-timing-f63.jsonl is present and total dispatch-to-dashboard <= 450s (7m30s).
+      - name: F63 speed-opt prebuilt manifest, fallback, parallel rendezvous, and startup-timing-f63.jsonl (<= 7m30s)
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --test tests/f63-prebuilt-assets-manifest.test.js
+          python3 - << 'PYEOF'
+          import json, os, sys
+          p = 'startup-timing-f63.jsonl'
+          if not os.path.exists(p):
+              print('F63: startup-timing-f63.jsonl missing'); sys.exit(1)
+          rows = [json.loads(line) for line in open(p, encoding='utf-8') if line.strip()]
+          totals = [r for r in rows if r.get('step') in ('dispatch-to-dashboard', 'dashboard-reachable-from-job-start')]
+          if not totals:
+              print('F63: startup-timing-f63.jsonl missing dispatch-to-dashboard row'); sys.exit(1)
+          for r in totals:
+              sec = float(r.get('sec', 9999))
+              if sec <= 0 or sec > 450.0:
+                  print(f'F63: {r.get("step")} sec={sec}s exceeds 450s (7m30s) budget'); sys.exit(1)
+          print(f'F63 gate PASS: startup-timing-f63.jsonl rows={len(rows)}, total={totals[-1]["sec"]}s <= 450s (7m30s)')
+          PYEOF
+          echo 'F63 gate PASS'
 
   windows-native:
     runs-on: windows-latest
@@ -4360,3 +4390,23 @@ jobs:
           Publish-F60Status -state $labState -description $labDesc
           if ($labState -ne 'success') { exit 1 }
           Write-Host ('F60 windows-native lab GREEN on ' + $PSVersionTable.PSVersion.ToString() + ' (context ' + $context + ')')
+
+      # [F63 §2/§3] ADDITIVE: F63 speed-opt PowerShell lab (prebundled manifest
+      # SHA-256 verification, fallback on miss/mismatch, parallel Start-Job +
+      # Wait-Job rendezvous before dashboard startup, and startup-timing-f63.jsonl <= 450s).
+      - name: F63 speed-opt prebuilt + parallel rendezvous PS lab
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $global:LASTEXITCODE = 0
+          foreach ($f in @('payloads\f63-prebuilt\f63-prebuilt-helper.ps1', 'payloads\ghrdp-webrtc\deploy-bootstrap.ps1', 'tests\f63-speed-opt-lab.ps1')) {
+              $errs = $null
+              $null = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $env:GITHUB_WORKSPACE $f), [ref]$null, [ref]$errs)
+              if ($errs) {
+                  foreach ($e in @($errs)) { Write-Host ('::error title=F63 parse::' + $f + ':' + $e.Extent.StartLineNumber + ':' + $e.Extent.StartColumnNumber + ' ' + $e.Message) }
+                  throw ('F63: PowerShell syntax error in ' + $f)
+              }
+          }
+          & (Join-Path $env:GITHUB_WORKSPACE 'tests\f63-speed-opt-lab.ps1')
+          Write-Host 'F63 speed-opt PS lab PASS'

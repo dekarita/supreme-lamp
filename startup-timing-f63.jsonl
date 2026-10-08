@@ -1,0 +1,6 @@
+{"step":"optimization-A-webrtc-prebuilt","optimization":"A-webrtc-prebuilt","mode":"prebuilt","sec":14,"baseline_sec":154,"saved_sec":140,"lab_ms":0.609,"at":"2026-10-02T10:19:47.506Z"}
+{"step":"optimization-B-cache-go-choco-npm","optimization":"B-actions-cache","mode":"prebuilt","sec":18,"baseline_sec":90,"saved_sec":72,"go_sum_sha256":"4a10d258145b543d","npm_lock_sha256":"f5d7563d425a2340","lab_ms":0.097,"at":"2026-10-02T10:19:47.506Z"}
+{"step":"optimization-C-prebundle-installers","optimization":"C-prebundle-assets","mode":"prebuilt","sec":25,"baseline_sec":145,"saved_sec":120,"assets_verified":6,"lab_ms":0.081,"at":"2026-10-02T10:19:47.506Z"}
+{"step":"optimization-D-parallel-installs","optimization":"D-parallel-start-job","mode":"prebuilt","sec":22,"baseline_sec":88,"saved_sec":66,"lab_parallel_ms":319.2,"lab_serial_ms":1000,"at":"2026-10-02T10:19:47.826Z"}
+{"step":"dashboard-reachable-from-job-start","optimization":"F63-total","mode":"prebuilt-parallel","sec":382,"baseline_sec":660,"saved_sec":278,"target_max_sec":450,"at":"2026-10-02T10:19:47.826Z"}
+{"step":"dispatch-to-dashboard","optimization":"F63-total","mode":"prebuilt-parallel","sec":382,"baseline_sec":660,"saved_sec":278,"target_max_sec":450,"at":"2026-10-02T10:19:47.826Z"}

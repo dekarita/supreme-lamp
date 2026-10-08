@@ -363,6 +363,9 @@ const targets = [
   'scripts/f60-scrub-runcommand.ps1',
   'tests/f60-bootstrap-lab.ps1',
   'tests/f60-bootstrap.Tests.ps1',
+  // [F63 §1/§2] speed-opt prebuilt helper + lab.
+  'payloads/f63-prebuilt/f63-prebuilt-helper.ps1',
+  'tests/f63-speed-opt-lab.ps1',
 ];
 
 let failed = 0;
@@ -373,6 +376,7 @@ for (const t of targets) {
   failed += problems.length ? 1 : 0;
 }
 for (const wf of ['.github/workflows/autologin-lab.yml', '.github/workflows/main.yml', '.github/workflows/launch-gates.yml',
+                  '.github/workflows/build-webrtc.yml',
                   // [F60] the warm-runner workflows embed PowerShell too.
                   '.github/workflows/provision-warm-runner.yml', '.github/workflows/warm-dispatch.yml',
                   '.github/workflows/f60-warm-pins-bootstrap.yml']) {
