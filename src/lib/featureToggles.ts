@@ -15,9 +15,18 @@
 // F105-j keeps the token `localStorage` out of FeatureBoundary.tsx (the crash path
 // performs no storage I/O); this module is the boundary's only window onto storage,
 // and it only READS on the boundary's behalf.
+//
+// [F110 §3] THE SECOND ENABLER. A signed live patch switches a section off through
+// THIS map, not through a second one - two sources of truth for "is this section off"
+// is how the #163 inventory drifted. That does not relax rule 1, it widens who may opt
+// in: the map bites while the HUD is on OR the patch channel is armed, and inert with
+// neither. state.ts is imported, never channel.ts: channel -> featureToggles -> channel
+// would be a boot-path cycle, and `isLivePatchArmed()` needs no channel to answer.
 import { HUD_TOGGLES_KEY, isToggledOff, parseToggles, serializeToggles, setToggle, type ToggleMap } from "./debugHudCore";
 import { FEATURE_IDS, type FeatureId } from "@/lib/featureRegistry";
 import { isHudEnabled } from "@/lib/debugHud";
+import { toggleSurfaceActive } from "@/lib/livePatch/patchCore";
+import { isLivePatchArmed } from "@/lib/livePatch/state";
 
 type Listener = () => void;
 const listeners = new Set<Listener>();
@@ -58,9 +67,13 @@ export function clearFeatureToggles(): void {
   write({});
 }
 
-/** Asked by FeatureBoundary at mount: should this section render its disabled card? */
+/**
+ * Asked by FeatureBoundary at mount: should this section render its disabled card?
+ * The `enabled` argument is decided in the core (toggleSurfaceActive), so "the HUD is
+ * on, or a patch channel is armed" is one rule with one name and one test table.
+ */
 export function isFeatureToggledOff(id: FeatureId): boolean {
-  return isToggledOff(readFeatureToggles(), id, isHudEnabled());
+  return isToggledOff(readFeatureToggles(), id, toggleSurfaceActive(isHudEnabled(), isLivePatchArmed()));
 }
 
 export function subscribeFeatureToggles(fn: Listener): () => void {

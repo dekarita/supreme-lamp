@@ -140,7 +140,7 @@
   do NOT add an `actions/deploy-pages` workflow). §PRE-STEP was run this session: all 8 planned paths are collision-free,
   both envelope tags (`mcrec1:` v1 clipboard, `mcrec2:` v2 export) confirmed present, and there is now exactly **ONE** v2
   producer (`exportCore.js`), so the viewer's reader contract is unambiguous.
-- [x] **Step 8 — F109** · landed on `arena/33e36146-supreme-lamp`, PR **#178** (open, mergeable on entry base `b6c1516`) · Debug HUD: Shift+F12 overlay, 5 panels, prod-safe default-off; fixed a lab-discovered prod bug (forced lab scenarios outliving the lab) and two F111 gate bugs (see the F109 session block) · · ETA 90min · Debug HUD overlay (F12-shift)
+- [x] **Step 8 — F109** · landed on `arena/33e36146-supreme-lamp`, PR **#178** (**MERGED** 2026-10-08 01:28:13Z by the operator as `01c94f5` (merge commit — this branch's base); the line still said "open" because it was written 41 min before a human read the PR - CI had been green for 3 h 45 min) · Debug HUD: Shift+F12 overlay, 5 panels, prod-safe default-off; fixed a lab-discovered prod bug (forced lab scenarios outliving the lab) and two F111 gate bugs (see the F109 session block) · · ETA 90min · Debug HUD overlay (F12-shift)
 
 ## Phase 3 — Advanced
 - [ ] **Step 9 — F110** · ETA 150min · Live Patch Protocol (module federation)

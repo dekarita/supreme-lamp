@@ -20,6 +20,8 @@ import { useThemeStore, useScaleStore, useLangStore, type TextScale } from "@/st
 import { useTrashStore } from "@/lib/explorer/trashStore";
 import { TRASH_RETENTION_DAYS } from "@/lib/explorer/trash";
 import { isHudEnabled, setHudEnabled } from "@/lib/debugHud";
+// [F110 §5] Live Patch (F110): arm switch + patch audit log + rollback, on this page.
+import PatchAuditPanel from "@/components/livePatch/PatchAuditPanel";
 
 const SCALES: TextScale[] = ["comfort", "large", "a11y"];
 
@@ -173,6 +175,12 @@ export default function Settings() {
           </p>
         </div>
       </Card>
+      {/* [F110 §5] Developer: the Live Patch channel. The audit view lives here (the
+          surface the spec named), while the CHANNEL itself is mounted at the socket in
+          useDashboardPolling - outside every FeatureBoundary and outside AppShell - so a
+          crashed section cannot stop a patch arriving to switch it back on. English-only
+          like the card above: a default-off developer surface moves no i18n lock. */}
+      <PatchAuditPanel />
       <Card title="Secret hygiene (mirror token-less mode)" className="mb-4">
         <div className="flex flex-col gap-2 text-sm text-secondary" data-testid="secret-hygiene">
           <p>

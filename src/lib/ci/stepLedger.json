@@ -118,17 +118,20 @@
       "number": 178,
       "branch": "arena/33e36146-supreme-lamp",
       "featureIds": ["F109"],
-      "status": "open",
+      "status": "merged",
+      "mergedAt": "2026-10-08T01:28:13Z",
+      "tickedBy": "F110 (step 9, §POST-MERGE-ROADMAP-TICK)",
       "title": "F109: Debug HUD overlay (F12+Shift) with 5 panels, prod-safe default-off",
       "note": "Owns the un-fenced chrome (handoffs #2, #7, #10, #11): AppShell/CommandPalette/DvrFab/SessionListModal fencing, and the runtime DVR off switch that should reuse the three now-unreferenced dvr.fullWarning/fullStart/fullStop i18n keys rather than inventing new ones. Step-8 session: the runtime off switch shipped (HUD Actions panel, reusing exactly those three keys); chrome FENCING is not in this PR (recorded as a handoff in docs/OBSERVATORY-STATE.md). PR #178 opened 2026-10-08; the post-PR commit set the number and ticked the Step 8 roadmap line in the same commit."
     },
     {
       "step": 9,
       "number": null,
-      "branch": null,
+      "branch": "arena/28163f3f-supreme-lamp",
       "featureIds": ["F110"],
-      "status": "planned",
-      "title": "F110: Live Patch Protocol (module federation)"
+      "status": "open",
+      "title": "F110: Live Patch Protocol (patch channel + audit log + rollback) [FINAL STEP]",
+      "note": "FINAL STEP of the 10-step roadmap. Shipped as spec variant F110a (patch channel + audit + rollback, NO live component swap): the roadmap line's 'module federation' was never feasible here - F59 ships the UI as ONE inlined file (vite-plugin-singlefile), so there is no chunk graph for a federation runtime to resolve against, and remote-code execution on an authenticated socket would remove the last boundary worth auditing. F110b (per-frame asymmetric signatures + the dynamic-import swap the roadmap line's 'module federation' actually implies) is filed as follow-up issue #179 with that reason and the measured WebCrypto numbers. The code commit carries number:null (no PR exists yet); the post-PR commit records the PR number and ticks the Step 9 roadmap box in the same commit, per the pattern #177 and #178 established. Rides the EXISTING /ws socket (no route, no credential) and the EXISTING toggle map (no second source of truth), and declares both of its persistence surfaces to F111's inventory."
     },
     {
       "step": 10,

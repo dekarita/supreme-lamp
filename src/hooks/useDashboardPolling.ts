@@ -16,6 +16,11 @@ import type { WireState } from "@/lib/domain/connProbe";
 // is a no-op unless Settings ▸ Debug HUD is on. OUR frames are passed as bare type
 // tags, so the dash token inside the hello frame never reaches the HUD.
 import { recordWsFrame } from "@/lib/debugHud";
+// [F110 §2] Live Patch Protocol. The channel is a MESSAGE TYPE on this socket, not a new
+// route: `/ws` is already dash-token authenticated (?key= + the hello frame), so patching
+// buys no new attack surface, and the F99/F101 keepalive/reconnect story stays single.
+import { isPatchFrame } from "@/lib/livePatch/patchCore";
+import { ingestPatchFrame } from "@/lib/livePatch/channel";
 
 export function useDashboardPolling(): void {
   const setConfig = useSessionStore((s) => s.setConfig);
@@ -228,6 +233,17 @@ export function useDashboardPolling(): void {
             }
             // An echoed pong of our own carries no progress; drop it silently.
             if (data && typeof data === "object" && (data as { type?: string }).type === "pong") return;
+            // [F110 §2] A patch frame is NOT progress and must never reach setProgress():
+            // it would land in the telemetry store as a fake progress snapshot. Receipt of
+            // any frame is liveness, so the watchdog stamp still happens; verification,
+            // dedupe, application and the audit row are all decided in
+            // src/lib/livePatch/channel.ts (which returns before any of it while the
+            // channel is disarmed - prod default-off).
+            if (isPatchFrame(data)) {
+              useTelemetryStore.getState().setWsLastPingAt(Date.now());
+              void ingestPatchFrame(evt.data);
+              return;
+            }
             // Any other frame is also proof of liveness.
             useTelemetryStore.getState().setWsLastPingAt(Date.now());
             setProgress(data);

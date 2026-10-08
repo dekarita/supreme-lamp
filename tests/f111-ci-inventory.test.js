@@ -202,17 +202,60 @@ test("F111-c: detectDuplicateStep gives the four verdicts on the real ledger - i
   assert.equal(afterMerge.blocking, true);
 
   // An unstarted step is unique; a started one (PR number recorded) is a sibling of it.
-  // [F109 session] data-driven on the F109 entry, because the code commit carries
+  // [F109 session] made data-driven on the F109 entry, because the code commit carries
   // number:null (no PR yet) and the post-PR commit records the number.
-  const f109 = ledger.find((e) => e.featureIds.includes("F109"));
-  const v109 = detect("F109: Debug HUD overlay (F12-shift)", null);
-  if (f109.number == null) assert.equal(v109.verdict, "unique", "F109 has no PR yet");
-  else {
-    assert.equal(f109.status, "open");
-    assert.equal(v109.verdict, "sibling-open", "a second F109 while #" + f109.number + " is open is a sibling");
-    assert.equal(detect(f109.title, f109.number).verdict, "unique", "the F109 PR is not its own sibling");
+  //
+  // [F110 / step 9 §CROSS-SESSION-SCRUTINY] the SAME fix, applied to the whole ledger and
+  // to the two lines that were still hardcoded, because a pin that quotes an in-flight
+  // status is a time bomb: this block also asserted
+  // `assert.equal(detect("F110: Live Patch Protocol", null).verdict, "unique")`, which is
+  // only true while step 9 has no PR - the moment step 9 recorded #179 in the ledger (the
+  // update the ledger contract DEMANDS) the gate would have failed for doing it right.
+  // The invariant that was actually meant is a table: status drives the verdict, and a PR
+  // is never its own sibling. So the table is now applied to every shipped entry, and a
+  // status with no row in it is itself a failure rather than a silent pass.
+  // A verdict is a property of a FEATURE ID and the whole set of carriers it has - not
+  // of one entry. (Writing it per-entry was this session's own first attempt, and the
+  // ledger corrected it immediately: F107 has TWO carriers, #173 retired and #174
+  // canonical, so a per-entry table said "prior-retired" while the id is unambiguously
+  // shipped. That is the same class of error the gate exists to catch, so it is pinned
+  // as a rule here: shipped-carrier beats inflight beats retired beats nothing.)
+  const byId = new Map();
+  for (const e of ledger) {
+    for (const id of Array.isArray(e.featureIds) ? e.featureIds : []) {
+      if (!byId.has(id)) byId.set(id, []);
+      byId.get(id).push(e);
+    }
   }
-  assert.equal(detect("F110: Live Patch Protocol", null).verdict, "unique");
+  // 10 distinct ids cover the 10 roadmap steps (F-DVR-LITE is step 3's, F107 has two
+  // carriers, #168/#175 ship none) - re-MEASURED against the ledger, not hand-typed:
+  // a step whose id disappears from the ledger must fail here, not shrink the sweep.
+  const carried = [...byId.keys()];
+  assert.ok(carried.length >= 10, "every shipped step must be probed, got " + carried.length + " ids");
+  for (const id of ["F105", "F106", "F107", "F108", "F109", "F110", "F111", "F-TESTID", "F-I18N-SI-72", "F-DVR-LITE"]) {
+    assert.ok(byId.has(id), "the sweep lost " + id + " - a step that vanished from the ledger is how a step gets shipped twice");
+  }
+  let probed = 0;
+  for (const id of carried) {
+    const carriers = byId.get(id);
+    const shipped = carriers.filter((e) => /^merged/.test(String(e.status)) && e.status !== "merged-then-retired");
+    const inflight = carriers.filter((e) => e.status === "open" && e.number != null);
+    const retired = carriers.filter((e) => e.status === "merged-then-retired" || e.status === "closed");
+    const expect = shipped.length ? "duplicate-merged" : inflight.length ? "sibling-open" : retired.length ? "prior-retired" : "unique";
+    const probe = detect(id + ": a second implementation of it", null);
+    assert.deepEqual(probe.ids, [id], "the probe title must carry exactly the id under test");
+    assert.equal(probe.verdict, expect, id + " carriers " + JSON.stringify(carriers.map((e) => "#" + e.number + ":" + e.status)) + " must yield " + expect);
+    assert.equal(probe.blocking, expect === "duplicate-merged", "only an already-MERGED carrier may block a merge (" + id + ")");
+    assert.equal(probe.label, expect === "unique" ? null : "duplicate-step", id + " must be labelled whenever it is not unique");
+    probed += 1;
+  }
+  assert.equal(probed, carried.length, "no id may be skipped by the sweep");
+  // A carrier PR is never reported against ITSELF (self-exclusion is by number).
+  for (const e of ledger) {
+    if (e.number == null || !Array.isArray(e.featureIds) || e.featureIds.length === 0) continue;
+    const own = detect(e.title, e.number);
+    assert.equal(own.matches.filter((m) => m.entry.number === e.number).length, 0, "#" + e.number + " is not its own sibling");
+  }
   // [F109 §GATE-SELF-TEST] key-chord spellings of the HUD shortcut are not feature ids:
   // the step-8 spec's own title "(F12+Shift)" extracted a phantom F12 before this fix.
   assert.deepEqual(core.extractFeatureIds("F109: Debug HUD overlay (F12+Shift) with 5 panels"), ["F109"]);
@@ -306,9 +349,14 @@ test("F111-e: the declared storage inventory equals what the tree really persist
   const byClass = {};
   for (const k of scan.keys) byClass[k.classification] = (byClass[k.classification] || 0) + 1;
   // re-MEASURED by the F109 session (not incremented): 21 + f109:enabled + f109:toggles = 23, both live
-  assert.equal(scan.keys.length, 23, "derived surface count moved - re-measure and update the declaration");
-  assert.deepEqual(byClass, { live: 18, migration: 1, purged: 3, "dead-read": 1 }, "classification census moved");
-  assert.equal(scan.keys.filter((k) => k.kind === "indexedDB").length, 1, "exactly one IndexedDB surface (ghrdp-dvr)");
+  // re-MEASURED again by the F110 session (step 9, not incremented): `gh pr`-verified tree at
+  // this commit scans 25 = 23 + f110:armed (localStorage) + ghrdp-patches (IndexedDB), both live,
+  // both declared with addedBy:"F110", both listed in postInventoryGrowth.F110. F110e in
+  // tests/f110-live-patch.test.js is the gate that fails if those two are added WITHOUT this
+  // re-measurement, so the number cannot drift by omission.
+  assert.equal(scan.keys.length, 25, "derived surface count moved - re-measure and update the declaration");
+  assert.deepEqual(byClass, { live: 20, migration: 1, purged: 3, "dead-read": 1 }, "classification census moved");
+  assert.equal(scan.keys.filter((k) => k.kind === "indexedDB").length, 2, "two IndexedDB surfaces (ghrdp-dvr, ghrdp-patches)");
   assert.equal(diff.agreed.length, declared.keys.length, "every declared key must be fully agreed, not just present");
 
   // the load-bearing individual facts
