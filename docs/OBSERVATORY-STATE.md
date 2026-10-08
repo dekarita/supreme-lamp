@@ -10,7 +10,7 @@
 > determination = first unchecked box below; fall back to #165's body only if this file is missing,
 > then cross-check the newest "§3 tracking-issue handoff" comment on the PR this step shipped in.
 
-**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-07 22:55Z by arena/89b9650b-supreme-lamp (step-6 double-merge repair, PR #175)
+**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-08 03:55Z by arena/f5cd333d-supreme-lamp (maintenance step M1, F110b verifier scaffold, PR #182). **PHASE: the 10-step Observatory is SHIPPED** (step 9 / PR #180 merged 2026-10-08T02:40:31Z as `71f75cc`); work below this line is the post-ship maintenance phase (M1…), see §MAINTENANCE-STEPS-LOG.
 
 ## §OPERATOR-ASSERTIONS (v8; verify independently)
 - GH_PAT: operator previously reported Worker environment variable; **not used** by F107 or by this repair. No secret value was read or stored.
@@ -1445,3 +1445,136 @@ sections off, so fencing it would let a crashing section hide the way back out.
    un-runnable file; the jsdom proof exists and the job is the 25-min self-canceller.
 4. `/api/patches/audit` server-side mirror if the handler ever needs to *revoke* a frame (the dedupe set is
    per-browser today; a second tab arms independently — cross-tab sync covers the flag, not the id set).
+
+## Session 2026-10-08 03:55Z — Maintenance step **M1** — F110b Ed25519 signing, shipped as a FAIL-CLOSED VERIFIER SCAFFOLD — PR **#182** (base `71f75cc` = the #180 merge)
+
+**§OBSERVATORY-COMPLETION-CHECK: OBSERVATORY SHIPPED, 10/10.** Verified independently of the prompt: `gh pr view 180`
+→ `state: MERGED`, `mergedAt: 2026-10-08T02:40:31Z`, `mergeCommit: 71f75ccca07d98d5afb41b233d9484d9a89b7b8a` — which is
+exactly this branch's base commit, so F110a is on `main` and the roadmap's last step is in. The smoke flow listed in
+§0.12 could **not** be run here (no browser, no RDP host, no live `/ws` in this sandbox — the standing fact since step
+4), so it is **not** claimed as verified; it is listed for the operator instead.
+
+### §MAINTENANCE-STEP-SELECTION (why M1 and not M2/M3/M4)
+| candidate | impact | ease | urgency | chosen |
+|---|---|---|---|---|
+| **M1** F110b Ed25519 (#179, the only open follow-up from a shipped step) | high (it is the trust model of a socket-fed control path) | medium (verifier only; the emitter is out of reach) | high (#179 is the only OPEN issue created by the roadmap) | **yes** |
+| M2 chrome unfencing (6 surfaces) | medium | high | low (F109-targeted, unchanged since step 8) | no |
+| M3 Pages `/status.json` freshness | medium | low (a deploy-trigger decision the operator owns — §PAGES-STATUS) | low | no |
+| M4 latent bugs (`ghrdp-dash-token` dead read, line-101 drift, stale `check:ui` refs) | low | high | low | no |
+
+M1 won on impact × urgency. It shipped **partially by design**: see §GREP-DROPPED-FROM-DESIGN.
+
+### §GREP-DROPPED-FROM-DESIGN (claims dropped before shipping, each with the grep that killed it)
+| # | the sketch said | measured | decision |
+|---|---|---|---|
+| 1 | "public key pin in dashboard" | `git grep -cE "Ed25519\|PATCH_PUBLIC_KEY" 71f75cc -- src/` → **0 hits**; the only `importKey` calls in `src/` are `f46.ts` (AES-GCM credential encryption) and F110a's HMAC | ship `PATCH_PUBLIC_KEY_B64 = ""` and **fail closed**; do not invent a trust anchor |
+| 2 | "the live `/ws` server" can sign+broadcast | `grep -cE '"type"\s*:\s*"patch"\|patchFrame\|SendPatch\|livePatch' payloads/ghrdp-server.ps1` → **0**; `Send-F99WsText` occurs **6×** = 1 definition + 5 send sites (`diagInit`, `hello-ack`, the echo, `diag2`, `ping`) | no end-to-end claim; the emitter is **#181** |
+| 3 | "`payloads/ghrdp-handler` is the server to change" (#179 item 1) | `ls payloads/ghrdp-handler` → `GhrdpHandler.csproj`, `Program.cs`; `Program.cs:15` `RidPattern = \Aghrdp:connect\?rid=([0-9a-f]{32})\z` | recorded as a **mislabel**: it is the Windows URI handler; a broadcaster belongs in `ghrdp-server.ps1`'s `Invoke-F99WebSocketUpgrade` |
+| 4 | #179 item 2's "`src/lib/livePatch/mac/WebCryptoPatchMacProvider.ts`" | `ls src/lib/livePatch` → `audit.ts channel.ts patchCore.js patchCore.d.ts state.ts` (no `mac/` dir) | the seam is `setPatchMacProvider` in `channel.ts`; the new one is `setPatchSignatureProvider` in `signature.ts` |
+| 5 | #179 item 1's `GET /api/patch/pubkey` (runtime key fetch) | a pin fetched at runtime is not a pin | **dropped**: build-time constant/env only; `keys.ts` has no `fetch(` and the gate pins its absence |
+
+### §EMPTY-STATE-GUARDS-ADDED
+1. **`settings-live-patch-signer`** — the panel used to imply any signed frame could apply. It now states which
+   scheme *this build* accepts, from the pin: `signer key: none (empty) … Ed25519 (v2) frames are refused as
+   no-signer-pin` vs `Signer key pinned (abcd1234…) … HMAC (v1) frames are now refused as legacy-mac-refused`.
+   Pinned by F110b-h (both refusal names must appear) and by two DOM tests.
+2. **The refusal itself is the guard** — an Ed25519 frame on an unpinned build is not silently dropped: it is
+   written to the audit log with `no-signer-pin`, so "nothing happened" is answerable from the UI.
+
+### §IDB-TX-SPLITS-APPLIED
+**None — none were needed, and that is a fact rather than an omission.** F110b adds **zero** persistence:
+`keys.ts`/`signature.ts`/`signatureCore.js` contain no `localStorage`, `sessionStorage` or `indexedDB` (pinned by
+F110b-g), and the v2 path reuses `appendAuditRow`, which step 9 already split into a put tx + a trim tx. F111's
+derived storage diff re-run in F110b-h: **still 25 keys**.
+
+### §GENERATION-GUARDS-ADDED
+**None new.** F110a's `primeToken` generation guard in `channel.ts` already covers the v2 path: v2 rows enter the
+same live view through the same `remember()` + `notifyLivePatch()` tail, and the DOM gate proves a v2 patch
+survives a module reset + re-prime (`v2-durable`) and re-delivers as `duplicate` afterwards.
+
+### The fail-closed matrix (`signatureCore.signatureGate`) — the step's whole security claim
+| pin | frame | result | why |
+|---|---|---|---|
+| absent (this build) | v1 HMAC | F110a path, unchanged | non-regress |
+| absent | v2 Ed25519 | `rejected / no-signer-pin` | a future emitter must not be trusted before the operator pins its key |
+| present | v1 HMAC | `rejected / legacy-mac-refused` | pinning IS the upgrade switch; leaving v1 open means the strongest key in the repo protects nothing |
+| present | v2 Ed25519 | verify → dedupe → apply | |
+| either | anything else | `rejected / unknown-sig-alg` | |
+
+### §MEASURED-RUNTIME-FACT (load-bearing for the design; re-measured on every run by F110b-i)
+On **node v22.22.3**, which jsdom inherits:
+`subtle.sign({name:"Ed25519"})` reproduces **RFC 8032 vectors 1 and 2 byte-for-byte**, while
+`subtle.verify({name:"Ed25519"})` returns **false** for those same published signatures (`node:crypto`'s
+`verify` returns **true** for both). So in a runtime like this one, a **correctly signed** frame is refused —
+which is the right outcome and the reason the refusal reason is `sig-crypto-unavailable` (support gap) and not
+`bad-signature` (attacker/wrong key). **Browser Ed25519 support is UNCHECKED here** (no Chromium); the operator's
+own browser is where it gets confirmed, and `docs/F110B-SIGNING.md` says so.
+
+### §FALSIFY-3 — 21/21 caught, 0 missed (each mutation applied, run, reverted, grep-verified)
+M1 domain v2→v1 · M2 `sigAlg` unsigned · M3b decoded pin length unchecked · M4 **fail open** (unpinned accepts
+Ed25519) · M5 pinned still accepts the MAC · M6 `exp < now` dropped · M7 missing verify result accepted ·
+M8 `sigAlg` value unchecked · M9 **a throwing verifier answers `ok:true`** · M10 an invented pin ships ·
+M11 conflicting pins ranked · M12b gate moved after the MAC · M13 a second audit-row shape ·
+M14 *(vacuity)* `new WebSocket("/ws/patch")` · M15 *(vacuity)* structural verifier skipped · M16 the doc claims an
+emitter · M17/M18 F110a's schema version / MAC domain moved · M19 the pin becomes a storage key · M20 v2 replay
+window → 24 h · M21 signature length pin → 64 · M22 *(vacuity)* a refusal also toggles · M23 crypto on an
+unvalidated frame (caught by F110b-g **and** 4 DOM tests).
+**M3 and M12's first drafts were not real mutations** (a redundant pre-check, and a move that stayed *before* the
+crypto call) — they were replaced by M3b/M12b rather than counted as caught.
+
+### §GATE-SELF-TEST — 2 defects in the new gate + 1 flake, all found by probing rather than by green
+1. **F110b-d had no case isolating `exp < now`.** Both expiry cases were *also* caught by the age check, so
+   deleting the expiry check passed. Added "recent `ts`, `exp` already past" — only the expiry check can catch it.
+2. **F110b-g's `indexOf("structural.ok") < s2` was vacuous.** Deleting the condition makes the index `-1`, and
+   `-1 < s2` is true, so M23 passed the gate. Replaced with a literal pin on `const check = structural.ok` —
+   the same class of bug step 9 found in its own `split("/** Forget")` slice.
+3. **A flake, caught by running the gate 10× rather than once.** The url-safe base64 case was `k.pin` with
+   `+/`→`-_`, which is a **no-op for roughly one random key in four** (256-bit keys rarely contain `+` or `/`):
+   the gate was red on run 5 of 6. Replaced with a deterministic 32-byte literal whose base64 contains both
+   characters, plus a positive control asserting the standard-alphabet form *is* a valid pin.
+
+### §PROMPT-STALENESS (3 corrections)
+1. "Step 9 F110a: 🟢 PR #180 OPEN, mergeable (SHIPS OBSERVATORY 10/10 WHEN MERGED)" → **MERGED**
+   2026-10-08T02:40:31Z as `71f75cc`. The Observatory is shipped; §0.12's announcement applies and §0.13 selected M1.
+2. "Close #169 (F-DVR option d implemented)" → #169 is **already closed**; the open issues are **#179**, **#165**,
+   **#164** (the label-permission probe) and **#156/#153** (duplicate F99 titles).
+3. "#179 needs operator labels + 3 body fixes" → confirmed and **unfixable from here**: `PATCH /issues/179`,
+   `POST /issues/179/labels` and `POST /issues/179/comments` are 403 for this token (§PLAIN-ISSUE-WRITES-ARE-BLOCKED),
+   so the corrections live in `docs/F110B-SIGNING.md`, in the PR body and in **#181**.
+4. "State file §knownRoadmapDrift: **line 101** cites PR #173 with branch `arena/fa27adb3`" → the drift is real but the
+   **line number is stale**: `grep -n fa27adb3 docs/OBSERVATORY-STATE.md` puts the roadmap checkbox line at **115**
+   (`- [x] **Step 6 — F107** · landed on \`arena/fa27adb3-supreme-lamp\`, PR **#173**`); line 101 is an F106 gates line.
+   The drift itself is allowlisted in `src/lib/ci/stepLedger.json` §knownRoadmapDrift (rule
+   `roadmap-branch-matches-pr`), and that gate **fails on an allowlisted drift that stops being observed**, so the
+   operator's one-word fix must delete the allowlist entry in the same commit. Cite the *rule*, not the line number.
+
+### §KNOWN-DRIFT-REGISTRY additions
+* **"#179's handler-side signer" points at the wrong binary.** `payloads/ghrdp-handler/` is a .NET console app for
+  `ghrdp:connect?rid=`; `/ws` lives in `payloads/ghrdp-server.ps1`. #179's body cannot be edited by this token.
+* **#179's body says F110a "shipped as PR #179"** — it shipped as **#180** (#179 is the follow-up issue itself).
+* **#179 item 2's `src/lib/livePatch/mac/`** does not exist and never did.
+* **`operator-assertions` correction**: nothing in this step reads a GH_PAT, and no secret value was read or stored;
+  the operator keypair is generated on the operator's own machine by `scripts/f110b-sign-patch.mjs --genkey`, which
+  **refuses to write inside a git work tree** (gate-asserted).
+
+### Handoffs recorded (NOT done here)
+1. **#181** — the patch emitter (broadcast + sign in `ghrdp-server.ps1`'s upgrade lane, key handling on the host,
+   a PowerShell-side gate). **Do not pin a key before it lands**: pinning refuses every v1 frame while nothing can
+   send v2 ones — that is a patch outage, and `docs/F110B-SIGNING.md` says so in words the emitter PR must delete.
+2. **Operator labels**: #179 and #181 need `f-observatory` (PR labels work — #182 was labelled via
+   `POST /issues/182/labels` — but plain-issue labels are 403).
+3. **Key-rotation story** is still unwritten: a rotated key needs a rebuild+redeploy (that is the cost of a
+   build-time pin, chosen over a fetchable one on purpose).
+4. M2/M3/M4 unchanged and still open (6 unfenced chrome surfaces; Pages `/status.json` freshness; the
+   `ghrdp-dash-token` dead read at `src/api/fetch/index.ts:124` + `src/lib/f46.ts:51` (both confirmed by grep this
+   session), the roadmap `#173`→`#174` one-word drift, and the stale `check:ui` references).
+
+### Lab numbers
+`node --test tests/*.test.js` **725/725** (was 716; +9 from `tests/f110b-signing.test.js`, auto-run — no workflow
+edit) · `vitest run` **1139/1139** over 87 files (was 1126/86; +13) · `tsc -p tsconfig.build.json` **0** ·
+`tsc -p tsconfig.json` error count unchanged at the pre-existing 81 lines, **0** of them in this step's files ·
+`vite build` clean **1,103.65 kB** (+6.85 over step 9's 1,096.80) · regression-ids **219/219** ·
+no-neon-green / bottom-bar / fx-ids PASS · **0** dependencies (8 deps / 21 devDeps) · **0** i18n keys (lock 1030) ·
+**0** new storage keys (derived inventory 25) · `patchCore.js` **byte-identical** (F110's 11 node + 18 DOM rules pass
+unmodified). Budget ≈ 75 min of 120. GUARDS unchanged: no code execution in the patch surface, no new transport,
+no new credential, no private key in `src/`, every allowlist untouched.
