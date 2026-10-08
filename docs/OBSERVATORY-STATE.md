@@ -1578,3 +1578,30 @@ no-neon-green / bottom-bar / fx-ids PASS · **0** dependencies (8 deps / 21 devD
 **0** new storage keys (derived inventory 25) · `patchCore.js` **byte-identical** (F110's 11 node + 18 DOM rules pass
 unmodified). Budget ≈ 75 min of 120. GUARDS unchanged: no code execution in the patch surface, no new transport,
 no new credential, no private key in `src/`, every allowlist untouched.
+
+### §4 CI verdict for PR #182 (watch closed 04:25Z) — head `dbcfa4d`
+| workflow / check | result | note |
+|---|---|---|
+| `launch-gates` → **gates** | **pass** (3 m 07 s) | includes the node lane `node --test tests/*.test.js`, i.e. the 9 new F110b rules |
+| `launch-gates` → **windows-native** | **pass** (11 m 26 s) | PowerShell side untouched by this step |
+| `launch-gates` (push + pull_request, both `e3565bc` and `dbcfa4d`) | **success** | |
+| `F59 build-ui (prebuilt UI release asset)` | **success** (44 s) | the single-file build this step grew by 6.85 kB |
+| `autologin-lab` | **success** | |
+| `f56d-qbt-lab` / `f57-explorer-lab` / `f60-warm-lab` | **pass** | |
+| `e2e-ui` | **cancelled at ~25 min** | the documented self-canceller — and the SAME outcome `main` produced for #180 and #178, so it is the baseline, not a regression |
+
+**§PATTERN-FOLLOWS-PRIOR-GATE-UPDATE — one deliberate non-update, recorded so nobody "fixes" it.**
+`src/lib/ci/stepLedger.json` was **not** given an M1 entry. The ledger is "one entry per PR that carried a *roadmap*
+step", and `tests/f111-ci-inventory.test.js` fails on a ledger entry that no roadmap checkbox cites (that is exactly
+why #174 sits in `knownRoadmapDrift` as `ledger-pr-cited-in-roadmap`). A maintenance step has no checkbox, so adding
+one would create a NEW drift and redden the gate. The maintenance phase is tracked in this document
+(§MAINTENANCE-STEPS-LOG) instead. If maintenance steps should become ledger entries, the ledger needs a
+`phase: "maintenance"` marker and the citation rule needs to exempt it — its own step, not a drive-by.
+
+### §MAINTENANCE-STEPS-LOG
+| step | scope | status | PR / issue |
+|---|---|---|---|
+| **M1** | F110b Ed25519 signing | **verifier half COMPLETE**; pin + emitter outstanding | PR **#182** (green), emitter **#181** |
+| M2 | chrome unfencing (6 global surfaces) | not started | — |
+| M3 | Pages `/status.json` freshness | not started (operator decision: widen `replay-viewer.yml`'s fenced push trigger, or accept staleness) | — |
+| M4 | latent bug cleanup | not started: `ghrdp-dash-token` dead read (`src/api/fetch/index.ts:124`, `src/lib/f46.ts:51` — both confirmed by grep this session), the roadmap `#173`→`#174` one-word drift (line **115**, allowlisted in the ledger), stale `check:ui` references | — |
