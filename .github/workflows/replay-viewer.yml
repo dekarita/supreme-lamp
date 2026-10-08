@@ -1,0 +1,127 @@
+# [F108 §5] Publish docs/ (including docs/replay/) to GitHub Pages - BY HAND.
+#
+# WHY THIS FILE EXISTS, AND WHY IT HAS NO PUSH TRIGGER.
+#
+# The step-7 spec assumed the site was already live: `has_pages: true`,
+# `docs/.nojekyll` present, "do NOT add an actions/deploy-pages workflow - it
+# would take the docs site down". Measured on 2026-10-07, the opposite is true:
+#
+#   * GET /repos/dekarita/supreme-lamp/pages  -> 200, build_type: "workflow"
+#   * GET .../pages/builds                    -> [] (no legacy builds left)
+#   * GET https://dekarita.github.io/supreme-lamp/ -> GitHub's own
+#     "There isn't a GitHub Pages site here" (verified on `/`, `/status.json`
+#     and `/explorer.html`)
+#   * the last github-pages deployment is 2026-10-01T16:42Z, while the watchdog
+#     kept committing to main for six more days
+#
+# So: Pages is ENABLED but NOT PUBLISHING, because its source is set to
+# "GitHub Actions" and no workflow deploys. This file is that missing deployer -
+# the minimum one that can exist, deliberately hand-run only:
+#
+#   * the only `push:` trigger is fenced to the VIEWER's own paths (docs/replay/**,
+#     docs/REPLAY.md, src/replay/**, the vendor sync script, this file). main gets
+#     a watchdog commit every ~80 s; an unfenced deployer would re-publish the
+#     whole site ~1000 times a day. Scoped this way it runs when the viewer
+#     changes - including the merge that adds it - and never for a heartbeat.
+#   * no `pull_request:` trigger. A PR must never be able to publish.
+#   * the artifact is `docs/` exactly as tracked: no build step runs here, so an
+#     unattended deploy can never ship something that is not in git. The viewer
+#     is static by construction (docs/replay/index.html + app.js + style.css +
+#     the vendored reader cores).
+#   * it refuses to deploy if docs/replay/index.html is missing or if the CSP
+#     promises have been weakened, so the first click cannot publish a page whose
+#     privacy fence was edited away.
+#
+# The OTHER way to end the outage needs no workflow at all: repository
+# Settings -> Pages -> Source -> "Deploy from a branch" -> main /docs. Pick ONE
+# (see docs/REPLAY.md §Publishing). Two publishers, one site, is how a docs tree
+# starts serving yesterday's files.
+name: replay viewer (publish docs/ to Pages)
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Publish docs/ (including docs/replay/) to the github-pages environment"
+        required: false
+        default: "publish"
+        type: choice
+        options:
+          - publish
+          - dry-run
+  # The ONLY push trigger in the repo that publishes anything, and it is fenced to
+  # the viewer's own paths. It matters that the fence is here rather than a
+  # `docs/**` filter: the watchdog commits `docs/status.json` on main every ~80 s,
+  # so a broad filter would start an Actions run (and a full site re-publish) about
+  # a thousand times a day. With these paths, this workflow runs when the viewer
+  # changes - including the merge that introduces it - and never for a heartbeat.
+  push:
+    branches: [main]
+    paths:
+      - "docs/replay/**"
+      - "docs/REPLAY.md"
+      - "src/replay/**"
+      - "scripts/sync-replay-vendor.mjs"
+      - ".github/workflows/replay-viewer.yml"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: github-pages-publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: github-pages
+    steps:
+      - name: Checkout (the artifact IS the tracked tree - no build)
+        uses: actions/checkout@v4
+
+      - name: F108 preflight - the viewer must be present and fenced
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f docs/replay/index.html || { echo 'F108: docs/replay/index.html is missing' >&2; exit 1; }
+          test -f docs/replay/app.js || { echo 'F108: docs/replay/app.js is missing' >&2; exit 1; }
+          test -f docs/replay/vendor/replay/replayCore.js || { echo 'F108: the vendored reader core is missing' >&2; exit 1; }
+          test -f docs/REPLAY.md || { echo 'F108: docs/REPLAY.md is missing' >&2; exit 1; }
+          grep -qF "connect-src 'none'" docs/replay/index.html || { echo 'F108: the viewer CSP lost connect-src none' >&2; exit 1; }
+          grep -qF "script-src 'self'" docs/replay/index.html || { echo 'F108: the viewer CSP lost script-src self' >&2; exit 1; }
+          node scripts/sync-replay-vendor.mjs --check
+          echo 'F108 preflight PASS: viewer present, CSP intact, published reader == shipped reader'
+
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Upload docs/ as the Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - name: Deploy to GitHub Pages
+        if: inputs.target != 'dry-run'
+        id: deploy
+        uses: actions/deploy-pages@v4
+
+      - name: Verify the published site answers (F108 §PAGES-VERIFICATION)
+        if: inputs.target != 'dry-run'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='${{ steps.deploy.outputs.page_url }}'
+          echo "page_url=$base"
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -s -o /tmp/replay.html -w '%{http_code}' "${base}replay/" || true)
+            if [ "$code" = "200" ] && grep -qF 'Replay Viewer' /tmp/replay.html; then
+              echo "VERIFIED: ${base}replay/ serves the F108 viewer (attempt $attempt)"
+              exit 0
+            fi
+            echo "attempt $attempt: HTTP ${code} - waiting for the Pages CDN"
+            sleep 10
+          done
+          echo 'F108: the deploy reported success but /replay/ did not answer with the viewer' >&2
+          exit 1

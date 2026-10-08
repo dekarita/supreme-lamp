@@ -14,16 +14,30 @@
 
 ## §OPERATOR-ASSERTIONS (v8; verify independently)
 - GH_PAT: operator previously reported Worker environment variable; **not used** by F107 or by this repair. No secret value was read or stored.
-- **Pages: ENABLED — the standing "unverified/required" assertion is now CORRECTED.** `GET /repos/dekarita/supreme-lamp` returns
-  `has_pages: true` and this integration holds `admin: true`; `GET /repos/.../pages` still returns 404, which is a **token-scope
-  artifact** (the Pages endpoints need a `pages: read` permission this installation lacks), NOT evidence that Pages is off.
-  Publish root is **`main` / `docs`**: `docs/.nojekyll` is tracked (that file only exists to configure a Pages site served from
-  its own folder), `docs/` is a committed static site (`index.html` → `explorer.html`, `search.html`, `archive.html`,
-  `decrypt.html`, `sw.js`, `*.json`), and there is **no `gh-pages` branch** (30 branches: `main` + 29 `arena/*`) and **no
-  Pages deploy workflow**. ⇒ **Step 7 F108 is NOT blocked on Pages.**
-  ⚠️ **Constraint F108 must respect**: because the source is a branch folder, `actions/deploy-pages` is the WRONG mechanism —
-  switching the repo to `source: workflow` would take the existing `docs/` site down. The viewer belongs at
-  `docs/replay/index.html` (served as `/replay/` under the site root), committed like every other file in `docs/`.
+- **Pages: ENABLED but PUBLISHING NOTHING — the v8 assertion above was WRONG IN THE DANGEROUS DIRECTION (corrected 2026-10-07, step 7).**
+  v8 concluded "Pages is enabled ⇒ step 7 is not blocked ⇒ ship `docs/replay/index.html` and never add `actions/deploy-pages`".
+  The first two clauses are right, the third is inverted. Measured five ways this session:
+  1. `GET /repos/.../pages` → **200** (not the 404 previous sessions recorded), `build_type: "workflow"`, `source: main /`,
+     `html_url: https://dekarita.github.io/supreme-lamp/`, `https_enforced: true`, `public: true`.
+  2. `GET /repos/.../pages/builds` → **`[]`** (no legacy builds at all) · `GET .../pages/builds/latest` → 404.
+  3. `GET /repos/.../actions/workflows` → the dynamic `pages-build-deployment` workflow exists with **16 825** historical runs,
+     but the newest `GET /deployments` entry is **2026-10-01T16:42:27Z** (`creator: github-pages[bot]`, env `github-pages`) —
+     while the watchdog kept committing to `main` for six more days.
+  4. `GET /repos/.../pages/health` → **403 `Resource not accessible by integration`** (read-only token), and
+     `POST /repos/.../pages/builds` → **403** — so this installation cannot flip or force the site from CI.
+  5. **The published URL answers GitHub's own "There isn't a GitHub Pages site here"** on `/`, `/status.json` and
+     `/explorer.html` (fetched 2026-10-07T23:37Z). `/status.json` is the discriminator the earlier sessions could not run:
+     the watchdog rewrites that file every ~80 s, so a live legacy publisher would serve a timestamp minutes old.
+  ⇒ **`has_pages: true` proves the setting is on. It does not prove the site is served.** With `build_type: workflow` and no
+  workflow deploying, the site is DARK; a branch-folder source is NOT the active mechanism, so `actions/deploy-pages` is
+  exactly the mechanism that is missing — adding it cannot "take the docs site down" (there is nothing being served today),
+  and it is the only path that can bring it back from inside the repo (the alternative is a settings change:
+  Settings ▸ Pages ▸ Source ▸ *Deploy from a branch* ▸ `main` / `docs`).
+  **Blast radius of the outage**: `worker.js` line 1 is `const CORS_ORIGIN = 'https://dekarita.github.io'` — the docs site is
+  the browser origin the Cloudflare Worker allows, so the dark site is a broken public surface, not cosmetics.
+  **What step 7 did about it**: ships the viewer + `.github/workflows/replay-viewer.yml` (fenced `push` on the viewer's own
+  paths + `workflow_dispatch`; the F108 gate rejects an unfenced deployer). `docs/replay/index.html` is still the right path
+  (it is what a branch-source site would serve as `/replay/`, and what the Actions artifact serves today).
 - Labels: PR labels **work** (re-verified this session: `f-observatory` + `observatory` applied to PR #175 via
   `POST /issues/175/labels`; `gh pr edit --add-label` fails on the Projects-classic deprecation, so use the REST call).
   Plain-issue labels on #163/#164/#165 remain 403. #169 is closed; operator decision.
@@ -998,6 +1012,41 @@ the F105 ownership partition - see the §Step 5 record for what shipped instead 
 - Post-watch informational commit: recorded in the PR comment after the CI watch
 - Budget: ~95 min of 120
 
+### Session 2026-10-07 23:35Z — Step 7 — F108 Public Replay Viewer — **COMPLETE**
+- Branch `arena/48b758b2-supreme-lamp` · PR (opened this session) · main baseline on entry **GREEN** (#175 already merged —
+  prompt-staleness correction #1: v9 said "#175 OPEN, mergeable; merge it first").
+- §SIBLING-PR-DETECTION: **0 siblings** (`gh pr list --state all --search "F108 in:title"` and `"replay in:title"` both empty).
+  No dedup decision needed; §PRE-STEP 12/12 run.
+- §POST-MERGE-MAIN-VERIFICATION: main's head `edb4691` **is** the #175 merge commit; its CI was green before merge and the
+  four workflows that the step-6 double merge broke are green after it. No inherited-red repair burden this session.
+- §PAGES-VERIFICATION-MULTI-METHOD: **5 methods, unanimous: the site is NOT published** (see §OPERATOR-ASSERTIONS above).
+  Prompt-staleness correction #2 and the session's single largest finding — v9's "Pages confirmed ENABLED … do NOT add
+  actions/deploy-pages (would take docs down)" premise is falsified in the direction that *blocks delivery*.
+- §DAMAGE-DETECTION-CASCADE applied: **no** (main was green on entry) · damage classes discovered: **1** (see below) ·
+  privacy fixes harvested: **0 new** (the step-6 harvest, `routeCore.safeRoute`, is re-pinned at a NEW call site in the
+  viewer: F108-e1 + the jsdom suite) · merge-hygiene gates added: **1** (`F108-h`, the publish-fence gate).
+- Shipped: `docs/replay/{index.html,app.js,style.css}` + `docs/replay/vendor/**` (5 files, generated) · `src/replay/replayCore.js`
+  (+ `.d.ts`) · `scripts/sync-replay-vendor.mjs` · `docs/REPLAY.md` · `.github/workflows/replay-viewer.yml` ·
+  gates: `tests/f108-replay-core.test.js` (9 tests), `src/tests/smoke/f108-replay-dom.test.tsx` (7 tests).
+- Zero new dependencies (`F108-i` pins that), zero i18n keys touched, no existing file modified except this state file.
+- Non-regress proofs: 8 — `node --test tests/*.test.js` **683/683** (was 674 + 9 new) · vitest **1096/1096 (84 files)**
+  (was 1089/83) · `tsc -p tsconfig.build.json` **0 errors** · vite build **1 068.09 kB** · regression-ids **219/219** ·
+  no-neon-green · bottom-bar · fx-ids · vendor `--check` clean · all 15 workflow YAMLs parse (PyYAML).
+- Design drift from the literal step spec, recorded deliberately: **(1)** no second vite config/`pnpm build:replay` — the page
+  is hand-written static JS (the repo already paid for a build-step/bundle mismatch in step 6; a published artifact that only
+  exists after a build is a class of failure Pages cannot surface). **(2)** No DOMPurify and no `innerHTML` at all: the DOM
+  layer builds every node with `createElement` + `textContent`, which removes the sanitization class instead of mitigating it
+  (the v2 bundle carries structure, never markup, so nothing needs sanitizing). **(3)** `src/replay/*` stays the source of
+  truth and the published copies are generated + byte-pinned by the gate, instead of compiled into `docs/replay/main.js`.
+- DAMAGE CLASS #5 (new): **published-copy drift** — a file under `docs/` that is a copy of a `src/` file can silently diverge
+  from the shipped implementation, and the page under test would then not be the page shipped. Hygiene gate: `F108-a`
+  (byte equality on every pair, and the comparator itself is falsified against a tampered scratch tree).
+- §MERGE-ORDER: independent of every open PR *except* `main`'s Pages configuration; §FILE-PATH-COLLISION-CHECK: 8 planned
+  paths, 0 tracked collisions; the workflow is the only new deployer (`F108-h` asserts no second one exists).
+- Operator next: 1) merge this PR — the scoped `push` trigger then publishes `docs/` and the merge itself restores the site;
+  2) verify `https://dekarita.github.io/supreme-lamp/replay/` (the workflow verifies it too, and fails loudly if not);
+  3) if you prefer no Actions publisher, delete the `push:` block (hand-run only) or disable the workflow and set
+  Settings ▸ Pages ▸ Source ▸ *Deploy from a branch* ▸ `main` / `docs`.
 ## Session 2026-10-08 00:10Z — Step 10 — F111 CI Inventory Gate — **COMPLETE** (§WHILE-WAITING fall-through; step 7 belongs to sibling #176)
 
 - Branch `arena/0fb601e2-supreme-lamp` · main baseline on entry **GREEN** (`edb4691` = the #175 merge: `gates` ✅
