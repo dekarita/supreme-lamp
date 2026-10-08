@@ -8,6 +8,7 @@
 // ORDER OF OPERATIONS IS SECURITY, and F110-i pins it (in this order):
 //   1. is it one of ours?            (no work for progress frames)
 //   2. is the channel armed?         (prod default-off: no verify, no write, no database)
+//   2b. is this build allowed to trust this frame's scheme at all?  [F110b]
 //   3. structure + clocks            (a malformed or stale frame never reaches crypto)
 //   4. signature                     (HMAC-SHA256 over the canonical string)
 //   5. dedupe                        (a re-delivered id is a `duplicate`, not a re-apply)
@@ -17,7 +18,15 @@
 //
 // NO CODE EXECUTION. There is no `import()`, no `eval`, no `new Function` here, and no
 // `window.fetch =` wrapper: a patch can move a value in an allowlisted map, nothing else.
-// F110b's component swap is the follow-up and must bring an origin-of-signer story.
+//
+// [F110b / maintenance step M1] The signature upgrade is now PARTIAL and honest about
+// it. Step 2b routes a frame by scheme: v1 frames carry the F110a HMAC (unchanged, same
+// body, same pins) and v2 frames carry an Ed25519 signature verified against a public
+// key the operator pinned (keys.ts, empty in this build). The routing matrix is
+// signatureCore.signatureGate and it fails closed in every cell, because the two things
+// a complete F110b needs do not exist yet: no key is pinned, and no server emits patch
+// frames (payloads/ghrdp-server.ps1 owns /ws and pushes only diag/ping; the ghrdp-handler
+// directory is a Windows URI handler). See docs/F110B-SIGNING.md.
 import { getDashToken } from "@/lib/dashToken";
 import { FEATURE_IDS } from "@/lib/featureRegistry";
 import { readFeatureToggles, setFeatureToggle } from "@/lib/featureToggles";
@@ -28,6 +37,7 @@ import {
   PATCH_MAC_KEY_MIN,
   PATCH_SCHEMA_VERSION,
   appliedPatchIds,
+  buildAuditRow,
   buildRollbackRow,
   canonicalPatch,
   decidePatch,
@@ -36,6 +46,9 @@ import {
   trimAuditRows,
   type PatchAuditRow,
 } from "./patchCore";
+import { canonicalPatchV2, decidePatchV2, signatureGate, verifyPatchV2Frame } from "./signatureCore";
+import { verifyPatchSignatureEd25519 } from "./signature";
+import { resolveSignerPin } from "./keys";
 import { appendAuditRow, clearAudit, listAudit } from "./audit";
 import { isLivePatchArmed, notifyLivePatch, requestPatchReload } from "./state";
 
@@ -187,6 +200,73 @@ function remember(row: PatchAuditRow, verdict: string): void {
   if (verdict === "applied" && row.id && appliedIds.indexOf(row.id) < 0) appliedIds.push(row.id);
 }
 
+// ---------------------------------------------------------------------------
+// [F110b / M1] The Ed25519 half. Three helpers, all defined ABOVE ingestPatchFrame
+// on purpose: F110-i pins the ORDER of the v1 ingest body by index (parse < armed <
+// mac < decide < apply < audit), and a refusal that called appendAuditRow inside
+// that body would silently re-aim those indices at the new branch. So the v2 path
+// lives in its own functions, is pinned by tests/f110b-signing.test.js, and the v1
+// path keeps the exact body F110 shipped.
+// ---------------------------------------------------------------------------
+
+/** Shared tail for a decision: record it in the live view, publish, persist. */
+async function recordPatchVerdict(row: PatchAuditRow, verdict: string, reason: string): Promise<PatchIngestResult> {
+  remember(row, verdict);
+  notifyLivePatch();
+  const durable = await appendAuditRow(row);
+  return { verdict, reason, row, durable: durable.ok };
+}
+
+/**
+ * A frame this build is not allowed to trust. It is AUDITED (an operator needs to
+ * see that something arrived and was refused, and why) and it applies nothing.
+ * The reason is one of the four this layer adds: `no-signer-pin` (an Ed25519 frame
+ * while no key is pinned), `legacy-mac-refused` (an HMAC frame after a key WAS
+ * pinned), `unknown-sig-alg`, or a structural reason from the v2 verifier.
+ */
+async function ingestRefusedPatch(frame: Record<string, unknown>, reason: string, now: number): Promise<PatchIngestResult> {
+  return recordPatchVerdict(buildAuditRow(frame as never, "rejected", reason, { now }), "rejected", reason);
+}
+
+/**
+ * The v2 path. Order is the same security property F110-i pins for v1: structure
+ * decides whether crypto is worth running, the pin is checked before both, and a
+ * frame is applied only after its signature verified against the PINNED key - the
+ * operator's, not the page's own token.
+ */
+async function ingestEd25519Patch(frame: Record<string, unknown>, now: number): Promise<PatchIngestResult> {
+  const pin = resolveSignerPin();
+  const structural = verifyPatchV2Frame(frame, { now, knownFeatures: FEATURE_IDS as readonly string[] });
+  const check = structural.ok
+    ? await verifyPatchSignatureEd25519(
+        canonicalPatchV2(structural.msg as never),
+        String((structural.msg as Record<string, unknown>).sig),
+        pin.b64
+      )
+    : null;
+  const decision = decidePatchV2({
+    frame,
+    now,
+    knownFeatures: FEATURE_IDS as readonly string[],
+    pinOk: pin.ok,
+    sigVerified: check,
+    appliedIds,
+  });
+  const msg = decision.msg as Record<string, unknown> | undefined;
+  const prev = msg ? (readFeatureToggles()[String(msg.feature)] === "off" ? "off" : "on") : "";
+  if (decision.verdict === "applied" && msg) {
+    setFeatureToggle(msg.feature as never, msg.op === "toggle-off");
+  }
+  // ONE row builder for both schemes: the audit log's columns cannot fork.
+  const row = buildAuditRow(
+    (msg || frame) as never,
+    decision.verdict,
+    decision.reason,
+    decision.verdict === "applied" ? { now, prev } : { now }
+  );
+  return recordPatchVerdict(row, decision.verdict, decision.reason);
+}
+
 /**
  * [F110 §2/§3] THE INGEST PATH. Called by useDashboardPolling's onmessage with the raw
  * frame text, and by nothing else. Never throws - a diagnostic path that can break the
@@ -206,6 +286,13 @@ export async function ingestPatchFrame(raw: unknown): Promise<PatchIngestResult>
   // 2. prod default-off. Nothing is verified, written or opened until the operator arms it.
   if (!isLivePatchArmed()) return quiet("ignored-disarmed", "channel-disarmed");
   const now = Date.now();
+  // 2b. [F110b] the pin gate, before any crypto: which scheme this frame claims, and
+  // whether this build is allowed to trust that scheme at all. Fail closed in both
+  // directions - no pin refuses Ed25519, a pin refuses the shared-secret v1 path -
+  // and a refusal is audited rather than dropped, so an operator can see WHY.
+  const gate = signatureGate({ frame: parsed as Record<string, unknown>, pinOk: resolveSignerPin().ok });
+  if (gate.action === "refuse") return ingestRefusedPatch(parsed as Record<string, unknown>, gate.reason, now);
+  if (gate.action === "v2") return ingestEd25519Patch(parsed as Record<string, unknown>, now);
   const secret = getDashToken();
   const frame = parsed as Record<string, unknown>;
   let macHex: string | undefined;
