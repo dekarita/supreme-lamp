@@ -1,6 +1,9 @@
 // [F56-d §4] Real fetch client POST /api/fetch with traceId, idempotency, provenance-6, own-cred encrypted.
 // Replaces F56-c stub. Error envelope 17 codes per F58.
 
+// [M5] ONE token source, shared with every other client (src/lib/dashToken.ts).
+import { getDashToken as resolveDashToken } from '@/lib/dashToken';
+
 export type FetchOperation = 'start' | 'cancel' | 'retry';
 
 export interface FetchStartRequest {
@@ -121,25 +124,28 @@ function genId(): string {
 
 // [M4] The `ghrdp-dash-token` localStorage read that used to sit here was a DEAD READ: no
 // commit in this repo has ever written that key (git log -S: 8 commits, all reads), so it
-// always fell through, and removing it is behaviour-neutral. What remains is a client that
-// sends NO X-Dash-Token, which POST /api/fetch requires (payloads/ghrdp-server.ps1). Routing
-// this through the canonical resolver (src/lib/dashToken.ts, key `ghrdp.dashToken`) changes
-// which credential is sent, so it is a separate, deliberate decision.
-function getDashToken(): string {
-  try {
-    // @ts-ignore
-    if (typeof window !== 'undefined' && (window as any).__GHRDP_DASH_TOKEN) return (window as any).__GHRDP_DASH_TOKEN as string;
-  } catch {}
-  return '';
-}
-
+// always fell through. M4 deleted it and left the routing decision open on purpose.
+//
+// [M5 / operator-approved] The decision is taken: this client now resolves the token through
+// the SAME canonical resolver every other client uses (`?key=` -> `#key=` -> localStorage
+// `ghrdp.dashToken`). Before this, `requestFetch` sent NO `X-Dash-Token`, and the server
+// requires one on POST /api/fetch (401 `dash token required`, payloads/ghrdp-server.ps1), so
+// the search download and the own-credential submit could not authenticate at all.
+//
+// The same change retired `window.__GHRDP_DASH_TOKEN`: a fourth token source that NOTHING in
+// this repo writes (one reader - this file - and zero writers), i.e. the same read-and-never-
+// written class M4 deleted. A credential source that cannot be set is a hazard, not a feature.
+//
+// The token travels in the REQUEST HEADER only: never in the query string, never in the body.
+// The F101 recorder masks the header by name (`SECRET_HEADER` matches "token"), so this is not
+// a new stored copy of the credential.
 export async function requestFetch(req: FetchRequest): Promise<FetchResult> {
   const requestId = (req as any).requestId || genId();
   const traceId = genId();
   const idempotencyKey = (req as any).idempotencyKey || genId();
   const payload = { ...req, requestId, idempotencyKey, traceId } as any;
 
-  const token = getDashToken();
+  const token = resolveDashToken();
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
   };

@@ -14,7 +14,12 @@
 //   F-b add a writer setItem('ghrdp-dash-token', v) to src/lib/dashToken.ts   -> M4-D2 fails
 //   F-c re-declare the shadow key in storageInventory.json keys[]              -> M4-D4 fails
 //   F-d change DASH_TOKEN_STORAGE_KEY to "ghrdp-dash-token"                    -> M4-D3 fails
-//   F-e make getDashToken() read localStorage again                            -> M4-D5 fails
+//   F-e give the fetch client a PRIVATE token source again (local getDashToken) -> M4-D5 fails
+//
+// M5 FLIPPED M4-D5. The routing decision M4 deliberately left open ("send the canonical token
+// or keep sending nothing?") was approved by the operator and implemented in M5: the client now
+// delegates to src/lib/dashToken.ts. M4-D5 therefore pins the DELEGATION now, not the absence -
+// a private token source in this client still fails, which is what the rule was for.
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -76,11 +81,17 @@ test("M4-D4: the F111 inventory no longer declares the shadow key, and records i
   assert.ok(typeof rec.why === "string" && rec.why.length > 40, "the retirement needs a real why");
 });
 
-test("M4-D5: getDashToken() in the fetch client has no localStorage access (the routing change is deliberate, not incidental)", () => {
+test("M4-D5: the fetch client has no PRIVATE token source - it delegates to the canonical resolver (M5 flipped this deliberately)", () => {
   const src = read("src/api/fetch/index.ts");
-  const m = codeOnly(src).match(/function getDashToken\(\)[^{]*\{([\s\S]*?)\n\}/);
-  assert.ok(m, "getDashToken() must still exist");
-  assert.equal(/localStorage/.test(m[1]), false, "getDashToken() reads localStorage again - route it through src/lib/dashToken.ts only as a deliberate, reviewed change");
+  const code = codeOnly(src);
+  assert.ok(
+    /import\s*\{\s*getDashToken\s+as\s+\w+\s*\}\s*from\s*['"]@\/lib\/dashToken['"]/.test(code),
+    "the fetch client must import the canonical resolver (src/lib/dashToken.ts)"
+  );
+  assert.equal(/localStorage/.test(code), false, "the fetch client reads localStorage directly - the resolver owns every source");
+  assert.equal(/function\s+getDashToken\s*\(/.test(code), false, "a private getDashToken() is back - that is the shadow M4 deleted");
+  assert.equal(/__GHRDP_DASH_TOKEN/.test(code), false, "the retired window override is back");
+  assert.ok(code.includes("if (token) headers['X-Dash-Token'] = token;"), "the resolved token must reach the X-Dash-Token header POST /api/fetch requires");
 });
 
 test("M4-D6: getPerRunKey() in f46 has no localStorage access and sends no token from storage", () => {

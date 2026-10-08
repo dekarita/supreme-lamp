@@ -10,7 +10,7 @@
 > determination = first unchecked box below; fall back to #165's body only if this file is missing,
 > then cross-check the newest "§3 tracking-issue handoff" comment on the PR this step shipped in.
 
-**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-08 by arena/d5b6da04-supreme-lamp (maintenance step M4, latent bug cleanup; M1 stays PR #182, merged). **PHASE: the 10-step Observatory is SHIPPED** (step 9 / PR #180 merged 2026-10-08T02:40:31Z as `71f75cc`); work below this line is the post-ship maintenance phase (M1…), see §MAINTENANCE-STEPS-LOG.
+**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-08 by arena/3a1f08df-supreme-lamp (maintenance step M5, auth routing — operator-approved; M1 stays PR #182 merged, M4 stays PR #183 merged). **PHASE: the 10-step Observatory is SHIPPED** (step 9 / PR #180 merged 2026-10-08T02:40:31Z as `71f75cc`); work below this line is the post-ship maintenance phase (M1…), see §MAINTENANCE-STEPS-LOG.
 
 ## §OPERATOR-ASSERTIONS (v8; verify independently)
 - GH_PAT: operator previously reported Worker environment variable; **not used** by F107 or by this repair. No secret value was read or stored.
@@ -1692,3 +1692,157 @@ Session-branch push, then PR, then merge with `merge_method=merge`, done by the 
 | M2 | chrome unfencing (6 global surfaces) | not started | — |
 | M3 | Pages `/status.json` freshness | not started (operator decision: widen `replay-viewer.yml`'s fenced push trigger, or accept staleness) | — |
 | M4 | latent bug cleanup | **code COMPLETE on `arena/d5b6da04-supreme-lamp`**: the `ghrdp-dash-token` dead read is deleted at both sites; Step 6 line 115 `#173`→`#174` with both allowlist entries deleted in the same commit; `check:ui` replaced by `ui/dist/index.html` + `check:no-neon-green` (pinned by M4-L1). Gates M4-D1…D6, M4-R1/R2, M4-L1, plus a runtime test. | PR **#183** (head `b8ecb25b`). CI on `b8ecb25b`: `gates` ✅ 13m2s · `windows-native` ✅ 11m28s · `proof` ✅ · `build-ui-prebuilt` ✅ · labs `f56d-qbt-lab` / `f57-explorer-lab` / `f60-warm-lab` ✅ · `e2e-ui` ⚠️ cancelled by its 25-min `timeout-minutes` during `Run F78 + F79 E2E specs`, 0 failed steps. That is the pattern of the last four pushes to main (AMBER-INHERITED, not caused by M4). Merge is the operator's call. |
+| **M5** | auth routing (the bug M4 found behind the dead read): `requestFetch` sends the canonical `X-Dash-Token` | **code COMPLETE on `arena/3a1f08df-supreme-lamp`** (operator approved the behaviour change in the v14 session; M6 explicitly not taken): `src/api/fetch/index.ts` resolves through `src/lib/dashToken.ts`; `window.__GHRDP_DASH_TOKEN` retired (1 reader / 0 writers) and pinned absent; `M4-D5` flipped deliberately; new gate `tests/m5-auth-routing.test.js` (7 rules) + runtime pin `src/tests/smoke/m5-auth-routing.test.ts` (7). Not scope-crept into `getPerRunKey` (f46) — `/api/config` is not token-gated. | PR **#184** |
+
+## Session 2026-10-08 10:27Z — Maintenance step **M5** — auth routing fix (operator-approved) — branch `arena/3a1f08df-supreme-lamp`
+
+**§STEP-SELECTION (v14 §1).** The prompt's priority order is M5 → M6 → M3 → M2, with the first two
+gated on an operator decision that had **not** been recorded (no comment on the merged #183, no
+issue, no state-file entry — checked before asking). The operator was asked and chose **M5**; M6
+(the per-run key leak) was explicitly **not** chosen, so it stays open with its three options.
+M3 (Pages freshness) and M2 (chrome unfencing) were not attempted. Nothing was merged, `main.yml`
+was not dispatched, no plain issue was written, no Ed25519 key was pinned.
+
+### §M5-PROMPT-STALENESS — the v14 brief checked against the tree (measured this session)
+| # | the brief said | measured | consequence |
+|---|---|---|---|
+| 1 | "M4 Latent Bug Cleanup: 🟢 PR **#183** OPEN, mergeable — merge it when ready" | **#183 is MERGED** (2026-10-08T10:23:47Z, merge commit `533213f` = this branch's base; `gates` ✅ `build-ui-prebuilt` ✅ at entry) | §MERGE-STATUS-RE-CHECK: the operator's step 3 was already done, and this session's branch base is that merge — so M5 starts on top of M4's cleanup, not beside it |
+| 2 | "Issue #163/#164/#165: all CLOSED" | **#164 OPEN** (the label-permission probe) and **#165 OPEN** (the roadmap owner) — #163 and #169 are closed | §CLOSURE-STATUS-RE-CHECK: recorded, not "re-closed"; both are operator items, and this token cannot PATCH/label a plain issue anyway |
+| 3 | "#179 body: 3 stale items; #181 labels" | still true, still unfixable here: `PATCH /issues/179`, `POST /issues/179/labels` and `POST /issues/179/comments` are 403 for this installation (measured in the M1 session; re-confirmed pattern) | operator task, unchanged |
+| 4 | "M5 … if operator approves" (no approval recorded) | no approval existed in any of the three places it could live | asked the operator before touching behaviour — that gate is the whole point of M4's pin |
+
+### §PRE-STEP — all 12 checks run (v14)
+1. **§SPEC-REALITY — 1 drift.** The brief says "route `getDashToken()` through `src/lib/dashToken.ts`".
+   The tree says the honest shape is **delete the local function** and import the resolver: a local
+   wrapper keeping the private name would be the very shadow M4 deleted, and the alias is what the
+   gates pin. Recorded, not silently "fixed differently".
+2. **§DEAD-READ-HIDES-WORSE-BUG — discharged, and this step is the payoff.** M4's dead read hid the
+   401; M5 closes it. The "worse bug" is not theoretical: `requestFetch` is the path under
+   `ResultsGrid` (search download), `LabInspector`, `OwnCredentialModal`, `cancelFetch`, `retryFetch`.
+3. **§BEHAVIOR-PINNING-AS-DELIBERATE-GATE — honoured.** `M4-D5` + `src/tests/smoke/m4-dead-read.test.ts`
+   were written to *force* this decision; both are updated in this commit, with the reason at each site,
+   and the mutation that flips M4-D5 back (M5 in §FALSIFY) is still caught.
+4. **§TRUST-LADDER-ANALYSIS — see the table below.** Verdict: not theatre. The chain was *broken at
+   the last link*, not duplicated.
+5. **§FULL-SUITE-REVEALS-ISOLATED-HIDES — run, and it mattered.** Both full lanes, not the touched
+   files: `node --test tests/*.test.js` and `vitest run`. No hidden pin moved (F101's masking DOM test,
+   F84's client pins, F111's inventory, F110/F110b, M4's own gates all green). See
+   §FULL-SUITE-REVEALED-FAILURES.
+6. **§TEST-SEEDS-RETIRED-KEY-EXCLUSION — applied.** The prod scan for the retired override excludes
+   `src/tests/**`, and the exclusion is **observable**: exactly one file may seed it, that file must
+   really seed it (`… = OVERRIDE`, comment-stripped), and a second seeder fails M5-d.
+7. **§ALLOWLIST-GOAL-STATE-TYPE-CHECK — N/A** (no allowlist touched; `knownRoadmapDrift` stays empty).
+8. **§SECRET-ENUM — 0 new locations.** No secret value was read, printed or stored; the token's value is
+   never logged (the F101 mask is asserted) and never enters a URL or a body. Name-only locations checked:
+   the canonical writer (`src/lib/dashToken.ts`), the F94 gate, F110's channel, the F101 recorder mask,
+   the new tests (seeders, excluded from the prod scan).
+9. **§CI-PIN-DETECTION — 1 family, 0 pins moved.** `launch-gates.yml`'s F56-d step greps
+   `src/api/fetch/index.ts` for `requestId` / `traceId` / `idempotencyKey` / `isProvenanceBlocked` — all
+   still present. `tests/f84-download-fetch.test.js` reads the same file and pins the download URL +
+   envelope: untouched. No workflow edit needed (the node lane globs `tests/*.test.js`).
+10. **§MERGE-STATE-CHECK** — #183 merged (correction #1); #182 merged; no open sibling PR
+    (`gh pr list --search "M5 in:title"`/`auth routing` → empty at bootstrap).
+11. **§FILE-PATH-COLLISION-CHECK** — 3 new paths (`tests/m5-auth-routing.test.js`,
+    `src/tests/smoke/m5-auth-routing.test.ts`, this record) verified absent from `main` first; M4's
+    `m4-*` files are edited, never renamed.
+12. **§MAIN-BASELINE-CHECK — GREEN on entry** (`533213f`: `gates` ✅, `build-ui-prebuilt` ✅;
+    `windows-native`/`proof`/`e2e-ui` were in progress and were re-read before the PR). Local baseline
+    measured before writing anything: `node --test tests/*.test.js` **734/734**. No inherited-red repair.
+
+### §TRUST-LADDER-ANALYSES (v14 §3.1)
+| # | feature | asset | threat model | chain | verdict |
+|---|---|---|---|---|---|
+| 1 | **dash-token routing into `requestFetch` (M5)** | the dashboard token (write access to the runner) | (a) anyone reading the wire, (b) anyone reading local recorder rows, (c) the operator losing a `?key=` URL | generation: F94 resolver (`?key=` → `#key=` → storage) → storage: `ghrdp.dashToken` (already inventoried) → transmission: `X-Dash-Token` header, **now on all clients** → verification: server constant-time compare | **not theatre — it repairs a broken link.** Before: the generation/storage/verification links existed and the transmission link was *missing entirely* on this client (0 of its requests could authenticate). After: every link is the same one the other 15 clients already use. Added value = the operations become possible. Risk delta = one more request shape carries the credential, and it is header-only, masked by the recorder, absent from URL and body ⇒ **no new copy at rest or in logs**. |
+| 2 | **`window.__GHRDP_DASH_TOKEN` (retired by M5)** | same token | anyone who can run script in the page | generation: *nothing* (0 writers) → storage: n/a → transmission: a read in one client → verification: server | **theatre, and removed.** A source that cannot be set protects against nothing while looking like a supported override. Deleted + pinned absent (M5-a/M5-d). |
+| 3 | **F101 recorder masking of `X-Dash-Token`** | the token | anyone with the local Collector/DVR rows | the recorder masks by name (`SECRET_HEADER = /token\|authorization\|cookie\|key\|secret\|password/i`) and renders `present(len=…,sha=…)` | **holds, and M5 depends on it** — pinned by `f101-collector-depth.test.tsx` (a real request with a token records the masked shape) and by M5-e (the mask rule and its call site must stay). Without it, M5 would have *added* a plaintext credential copy to the ring. |
+| 4 | **the fix's residual** | the token | the runner's own configuration | server: `if ($presented -and $Token)` | **honest gap, not verifiable here**: if the host has no `dash-token.txt`/snapshot token, the server refuses even a correct token. No network path to the runner from the sandbox ⇒ the operator's end-to-end check (search download → expect 202, not 401). |
+
+### §DEAD-READ-HIDDEN-BUGS (v14 §3.1)
+| # | dead read | what it was hiding | state |
+|---|---|---|---|
+| 1 | `ghrdp-dash-token` (deleted by M4) | the auth gap below | **fixed by M5** |
+| 2 | the auth gap itself: `requestFetch` resolved a token from `window.__GHRDP_DASH_TOKEN` (1 reader, 0 writers) and sent **no** `X-Dash-Token` to a route that requires one | search download + own-credential submit + cancel/retry could never authenticate (401 `dash token required`) | **fixed by M5**; a second, undocumented dead read (the window global) was retired with it |
+| 3 | `getPerRunKey()` in `src/lib/f46.ts` still sends no token | **not a bug**: `/api/config` is not token-gated in `ghrdp-server.ps1`, so attaching the credential would be a gratuitous copy | deliberately **not** changed (M4 handoff #1's second half; belongs with M6) |
+
+### §BEHAVIOR-PINS-TBD (v14 §3.1) — what remains pinned awaiting an operator decision
+| # | pinned behaviour | pin | decision needed |
+|---|---|---|---|
+| 1 | the per-run AES key is posted in the same body as the ciphertext (`credKeyB64`), and the server never emits `mirrorKey` (`Remove-CredKeys` strips it) ⇒ AES-over-TLS adds nothing against a body reader | M4's record + §M4-SECURITY; **not** pinned by a new test in M5 (M6 owns it) | **M6**, options A (server owns/returns the key), B (remove the layer), C (envelope + pinned public key) — the operator declined to choose this session |
+| 2 | `getPerRunKey()`'s no-token request | `M4-D6` (still green, unchanged) | resolved as a *scope* decision in M5: `/api/config` needs no token, so this is correct code, not a gap (recorded at the call site too) |
+
+### §FULL-SUITE-REVEALED-FAILURES (v14 §3.1)
+**None — and this is a measured "none", not an assumption.** M5 changes the token behaviour of a client
+that five other gates read or exercise, so both full lanes were run: `node --test tests/*.test.js`
+**741/741** (baseline 734) and `vitest run` **1148/1148 over 89 files** (baseline 1141/88). Every
+pre-existing pin that touches this path was checked by *running*, not by reasoning: F84's client pins,
+F111's inventory gate, F101's masking DOM test (the step-8 lesson: it expects a token-bearing request to
+record `present(len=10,sha=…)` — exactly what M5 now produces), F56-d's client test, F110/F110b's
+channel tests, and M4's own two files. One **self-inflicted** gate failure was found and fixed during
+the falsification pass (see below), which is the pattern §FULL-SUITE-REVEALS-ISOLATED-HIDES exists for.
+
+### §M5-FINDING-BEFORE-THE-FIX (§GATE-SELF-TEST — my own new rule failed on my own code)
+M5-d initially scanned **raw text** for the retired override, so it flagged the *comment* that explains
+the retirement (`src/api/fetch/index.ts:135`) as a read — a false positive that would have forced either
+a worse comment or a weakened rule. Fixed by scanning **comment-stripped code** (M4's `codeOnly`
+convention) and by making the stripper itself falsifiable *inside* the rule: the scanner must find the
+literal in a synthetic code fixture, must find `const a = 1;` when a trailing comment is stripped, and
+must **not** count prose about the override as a read. Same class as step 9's vacuous `indexOf` and
+step 10's phantom comment-derived inventory entry.
+
+### §FALSIFY-3 — 12 mutations, **12 caught, 0 missed** (each applied, run, restored byte-identically; `git status` clean afterwards)
+M1 private token source · M2 drop the header assignment · M3 token in the query string · M4 re-add the
+window override read · M5 re-add the M4-retired shadow-key read and *use* it · M6 a second,
+unauthenticated `fetch()` call site · M7 `cancelFetch` stops delegating · M8 the recorder stops masking ·
+M9 the token leaks into the body · M10 the header is set even when empty · M11 the resolver key drifts to
+the retired shadow key · V1 *(vacuity)* delete the runtime pin file. Caught by: the M5 node gate (7 rules),
+the flipped M4-D5 / M4-D3, and the 7 runtime pins — every mutation was caught by **at least two**
+independent gates except M6/M7/M8 (static-only, by construction) and M9 (runtime-only, by construction).
+
+### §MEASURED (this tree, before the PR)
+`node --test tests/*.test.js` **741/741** (+7) · `vitest run` **1148/1148, 89 files** (+7) ·
+`tsc -p tsconfig.build.json` **0** · `vite build` **1,103.58 kB** — with the **baseline measured on this
+machine** by swapping the client file back to `HEAD`: **1,103.70 kB**, so the bundle *shrank* 0.12 kB
+(the local shim was replaced by a call into code already in the graph; the earlier "0.05 kB difference
+not investigated" note in M4's record is the same class of build-level noise, now with both sides
+measured) · `check:regression-ids` **219/219** · `check:no-neon-green` · `check:bottom-bar` ·
+`check:fx-ids` PASS · **0** dependencies (8 / 21) · **0** i18n keys (lock stays 1030) · **0** new storage
+keys (F111's derived set unchanged; the token key was already declared) · `patchCore.js` and every
+F110/F110b file untouched · budget ≈ 35 min of 120.
+
+### §3 updates made
+- this file (header, §MAINTENANCE-STEPS-LOG M5 row, this record + the four v14 sections) · `STATE.md`
+  (folded into the last line, which is at the 60-line cap) · PR **#184** body (§PRE-STEP, trust ladder,
+  falsification table, scope decision) · PR-body footer corrections: none needed.
+- **No ledger entry for M5** — the M1 precedent, restated because it is a trap: `stepLedger.json` is
+  "one entry per PR that carried a *roadmap* step", and `tests/f111-ci-inventory.test.js` fails on a
+  ledger entry no roadmap checkbox cites. A maintenance step has no checkbox ⇒ adding one would create a
+  new drift and redden the gate. The maintenance phase is tracked here.
+- **Operator-decision record**: the M4→M5 handoff was answered as a comment on **#183**
+  (`#issuecomment-6058075174`) so the decision lives with the finding: *M5 approved; M6 not taken.*
+- Labels: PR **#184** got `f-observatory` + `observatory` via the REST call (PR labels work; plain-issue
+  labels are still 403 — #179/#181 remain operator items).
+
+### Handoffs recorded (NOT done here)
+1. **M6 — the per-run key leak** (M4 §M4-SECURITY). Still open, options A/B/C. Nothing in M5 touches
+   `f46.ts`, so `M4-D6` remains a true pin.
+2. **The end-to-end check only the operator can run**: with a live runner, a search download should now
+   answer 202 instead of 401 `dash token required`; if it still 401s, read the server's `$Token`
+   configuration (`dash-token.txt` / snapshot) — the client half is no longer the missing piece.
+3. **M2 chrome unfencing** (6 surfaces, unchanged) · **M3 Pages `/status.json` freshness** (operator
+   deploy-policy decision) · **#181** the patch emitter (do not pin a key first) · **#179** body/labels ·
+   **`e2e-ui` never reaches a verdict** (25-min self-cancel; F111's re-plan owns it).
+
+### §4 CI verdict for PR #184 — code head `8f099eb`, final (docs-only) head `2d28752`
+| workflow / check | `8f099eb` (the tree that ships) | `2d28752` (docs-only) | classification |
+|---|---|---|---|
+| `launch-gates` → **gates** (push) | ✅ 2m06s | ✅ | GREEN |
+| `launch-gates` → **gates** (PR) | ✅ 3m12s | ✅ | GREEN |
+| `launch-gates` → **windows-native** (push + PR) | ✅ 9m39s / 10m43s | ✅ | GREEN |
+| `proof` | ✅ 7m06s | (path-filtered) | GREEN |
+| `F59 build-ui (prebuilt UI release asset)` | ✅ 36s | (path-filtered: docs-only) | GREEN |
+| `autologin-lab` | ✅ | (path-filtered) | GREEN |
+| `e2e-ui` | ⚠️ **cancelled** at 11:06:12Z, `created 10:40:51Z` = **1521 s**, only non-success step = `Run F78 + F79 E2E specs` **cancelled by its own 25-min `timeout-minutes`**, **0 failed steps** | ⚠️ same | **AMBER-INHERITED** — checked against the §4.2 discriminator (*< 2 min + ≥1 failed step ⇒ RED-NEW*; *≈25 min + 0 failed steps ⇒ inherited*), not by colour. Identical to main's last four pushes. |
+
+⇒ **mergeable by the §4 criteria** (only RED-NEW blocks): every blocking lane green on both heads,
+`MERGEABLE`, `mergeStateStatus: UNSTABLE` (the amber `e2e-ui` alone). Nothing was merged by this
+session and `main.yml` was not dispatched. Session-log comment: PR #184.

@@ -4,9 +4,12 @@
 // wrote it). M4 deleted both reads. These tests pin the runtime consequence: a value stored under
 // that key is never used as a dash token by the fetch client or by the F46 per-run-key request.
 //
-// Deliberately NOT pinned here: how the canonical key `ghrdp.dashToken` is routed into those two
-// clients. Today they send no token for it, which is a known gap (see the M4 record in
-// docs/OBSERVATORY-STATE.md). Changing that is a reviewed decision and must not be locked in by a test.
+// [M5 update] The question M4 left open here - how the canonical key `ghrdp.dashToken` reaches
+// those two clients - is now answered for ONE of them: M5 routed the fetch client through
+// src/lib/dashToken.ts, and its new pin is src/tests/smoke/m5-auth-routing.test.ts. The
+// `getPerRunKey()` half stays deliberate: `/api/config` is NOT token-gated on the server
+// (payloads/ghrdp-server.ps1), so sending the credential there would be a gratuitous copy - that
+// belongs with the M6 per-run-key decision, not with the auth-routing fix.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { requestFetch } from '@/api/fetch/index.ts';
 import { encryptOwnCreds } from '@/lib/f46';
