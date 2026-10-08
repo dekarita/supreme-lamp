@@ -14,6 +14,8 @@ import { Toasts } from "@/components/primitives/Feedback";
 import { DiagSideDrawer } from "@/components/domain/DiagSideDrawer";
 import { CollectorRunBridge } from "@/components/domain/CollectorRunBridge";
 import { DvrFab } from "@/components/domain/DvrFab";
+// [F109] Debug HUD (Shift+F12): chrome, default-off, enabled from Settings.
+import DebugHUD from "@/components/DebugHUD";
 import { useDashboardPolling } from "@/hooks/useDashboardPolling";
 import { useLangStore } from "@/stores/prefsStore";
 import i18n from "@/i18n";
@@ -106,6 +108,11 @@ export default function App() {
           as chrome, like the bridge above, so every section route has it and no
           FeatureBoundary fence has to know about it. */}
       <DvrFab />
+      {/* [F109] The Debug HUD. Chrome like the DVR handle above - outside every
+          FeatureBoundary and outside AppShell - so it still opens when a section
+          or the shell has crashed. Renders nothing until Settings ▸ Debug HUD is on
+          and Shift+F12 opens it. */}
+      <DebugHUD />
       {/* [F92 §6.4] full-screen modal iff /api/f92-selftest says the bundle
           and the backend were built from different commits. */}
       <VersionGate />

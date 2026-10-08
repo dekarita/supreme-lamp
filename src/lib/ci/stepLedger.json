@@ -107,18 +107,20 @@
       "number": 176,
       "branch": "arena/48b758b2-supreme-lamp",
       "featureIds": ["F108"],
-      "status": "open",
+      "status": "merged",
       "title": "F108: public replay viewer at docs/replay/ + publish-fence gate + Arena text summary",
+      "mergedAt": "2026-10-08T00:47:09Z",
+      "statusNote": "Flipped open -> merged by the step-8 session (API-verified: merged 00:47:09Z, merge commit b6c1516, two minutes after #177). 'merged', not 'merged-canonical': the vocabulary reserves -canonical for the survivor of a de-duplication, and F108 never had a second implementation - the sibling was DETECTED and not written. Its deployer ran green on b6c1516 and the site answers (four-method check in docs/OBSERVATORY-STATE.md).",
       "note": "SIBLING DETECTED by the 2026-10-08 session before it wrote a line of F108 code: `gh pr list --state all --search \"F108 in:title\"` returned this PR, based on post-#175 main and green on gates/windows-native/build-ui-prebuilt/proof. Per §SIBLING-PR-DETECTION the session did NOT open a second F108 implementation - that is precisely the #173/#174 damage class. detectDuplicateStep() returns sibling-open for any further F108 PR while this one is open, and duplicate-merged once it lands."
     },
     {
       "step": 8,
       "number": null,
-      "branch": null,
+      "branch": "arena/33e36146-supreme-lamp",
       "featureIds": ["F109"],
-      "status": "planned",
-      "title": "F109: Debug HUD overlay (F12-shift)",
-      "note": "Owns the un-fenced chrome (handoffs #2, #7, #10, #11): AppShell/CommandPalette/DvrFab/SessionListModal fencing, and the runtime DVR off switch that should reuse the three now-unreferenced dvr.fullWarning/fullStart/fullStop i18n keys rather than inventing new ones."
+      "status": "open",
+      "title": "F109: Debug HUD overlay (F12+Shift) with 5 panels, prod-safe default-off",
+      "note": "Owns the un-fenced chrome (handoffs #2, #7, #10, #11): AppShell/CommandPalette/DvrFab/SessionListModal fencing, and the runtime DVR off switch that should reuse the three now-unreferenced dvr.fullWarning/fullStart/fullStop i18n keys rather than inventing new ones. Step-8 session: the runtime off switch shipped (HUD Actions panel, reusing exactly those three keys); chrome FENCING is not in this PR (recorded as a handoff in docs/OBSERVATORY-STATE.md). number stays null until the PR exists; the post-PR commit sets it and ticks the Step 8 roadmap line in the same commit."
     },
     {
       "step": 9,
@@ -133,9 +135,10 @@
       "number": 177,
       "branch": "arena/0fb601e2-supreme-lamp",
       "featureIds": ["F111"],
-      "status": "open",
+      "status": "merged",
+      "mergedAt": "2026-10-08T00:44:59Z",
       "title": "F111: CI Inventory Gate - derived storage inventory + double-ship detector (#163 drift)",
-      "note": "This step. The entry shipped with number:null in the code commit (the PR does not exist until the branch is pushed) and was updated to #177 in the post-PR commit, which is also the commit that ticks the Step 10 roadmap line - so the ledger and the roadmap never disagree at any commit. Flip status to merged-canonical when #177 lands."
+      "note": "This step. The entry shipped with number:null in the code commit (the PR does not exist until the branch is pushed) and was updated to #177 in the post-PR commit, which is also the commit that ticks the Step 10 roadmap line - so the ledger and the roadmap never disagree at any commit. Flipped open -> merged by the step-8 session (API-verified: merged 00:44:59Z); 'merged' rather than the 'merged-canonical' this note once asked for, because -canonical is reserved for a de-duplication survivor."
     }
   ],
   "knownRoadmapDrift": [

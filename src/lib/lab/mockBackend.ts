@@ -62,6 +62,17 @@ function labResponse(decision: LabDecision): Record<string, unknown> {
 let installs = 0;
 let patchedFetch: typeof fetch | null = null;
 let originalFetch: typeof fetch | null = null;
+// [F109 §LAB-DISCOVERS-PROD-BUGS] One flag per install generation. The restore guard
+// below (`window.fetch === patchedFetch`) correctly refuses to clobber a LATER patch -
+// but the shipped Collector page installs F101's PERMANENT observer on mount
+// (Collector.tsx -> installFetchObserver), and the lab mounts the shipped Collector.
+// So on /#/lab/collector the lab wrapper ends up UNDER F101's, the guard declines to
+// unwrap it, and - before this flag existed - it kept answering forced scenarios after
+// the lab unmounted: the real dashboard got a synthetic `500` + `x-lab-mock: error500`
+// for the rest of the tab's life (reproduced in src/tests/smoke/f109-debug-hud.test.tsx).
+// A retired wrapper that cannot be unwrapped now becomes a pure forwarder - the same
+// "stay in the chain, stop acting" rule F104's click windows already follow.
+let generation: { live: boolean } | null = null;
 
 /** Is the interceptor currently installed? (read by the panel + gates) */
 export function labMocksInstalled(): boolean {
@@ -80,7 +91,11 @@ export function installLabFetchMock(): () => void {
     // A bare `fetch(...)` call is an illegal invocation in a real browser: the
     // captured function must stay bound to its window.
     const bound = before.bind(window);
+    const gen = { live: true };
+    generation = gen;
     const wrapper = function labFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+      // retired but still in the chain (something wrapped on top): forward, never mock
+      if (!gen.live) return bound(input, init);
       const method = String((init && init.method) || (input as Request)?.method || "GET");
       const url = typeof input === "string" ? input : String((input as Request)?.url ?? input);
       const state = useLabStore.getState();
@@ -96,8 +111,18 @@ export function installLabFetchMock(): () => void {
   }
   return () => {
     installs = Math.max(0, installs - 1);
+    if (installs === 0 && generation) {
+      // Stop mocking FIRST, whether or not the wrapper can be unwrapped below.
+      generation.live = false;
+      generation = null;
+    }
     if (installs === 0 && patchedFetch && window.fetch === patchedFetch) {
       window.fetch = originalFetch as typeof fetch;
+      patchedFetch = null;
+      originalFetch = null;
+    } else if (installs === 0 && patchedFetch) {
+      // Not outermost: leave the (now forwarding) wrapper in place, forget it, and
+      // let the next install wrap whatever is outermost at that time.
       patchedFetch = null;
       originalFetch = null;
     }
@@ -106,6 +131,8 @@ export function installLabFetchMock(): () => void {
 
 /** Test-only: force the module back to its pre-install state. */
 export function __resetLabFetchMockForTests(): void {
+  if (generation) generation.live = false;
+  generation = null;
   installs = 0;
   patchedFetch = null;
   originalFetch = null;

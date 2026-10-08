@@ -37,6 +37,10 @@
       }
     ]
   },
+  "postInventoryGrowth": {
+    "note": "Surfaces added AFTER the F111 gate landed carry addedBy:<feature id>. They are i163:false because #163 could not know them, but they are NOT #163 drift: F111-i counts only i163:false keys WITHOUT addedBy as missed-by-#163, and requires every addedBy to be a feature id the step ledger carries.",
+    "F109": ["f109:enabled", "f109:toggles"]
+  },
   "keys": [
     {
       "key": "__GHRDP_SEARCH_ENABLED",
@@ -55,6 +59,28 @@
       "declaredIn": ["src/lib/collectorAgent.ts"],
       "i163": true,
       "note": "zustand persist through the quota-safe safeLocalStorage adapter (COLLECTOR_STORE_KEY), cap 500 rows, oldest-first slimming on QuotaExceededError."
+    },
+    {
+      "key": "f109:enabled",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "shared",
+      "declaredIn": ["src/lib/debugHud.ts"],
+      "constantName": "HUD_ENABLED_KEY",
+      "i163": false,
+      "addedBy": "F109",
+      "note": "F109 Debug HUD master switch (Settings > Developer > Debug HUD). Exactly \"true\" enables the HUD; off REMOVES the key (no residue). Read and written only by src/lib/debugHud.ts (Settings calls setHudEnabled). Absent = HUD off: the Shift+F12 shortcut is inert, no observer runs, and every f109:toggles entry is ignored."
+    },
+    {
+      "key": "f109:toggles",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "shared",
+      "declaredIn": ["src/lib/featureToggles.ts"],
+      "constantName": "HUD_TOGGLES_KEY",
+      "i163": false,
+      "addedBy": "F109",
+      "note": "F109 dev-time section toggles: ONE JSON object {\"<featureId>\":\"off\"}, not one key per feature, because F111's scanner derives only literal or const-bound keys and an f109:toggles:<id> family would be invisible to F111-e. Read by FeatureBoundary at mount through src/lib/featureToggles.ts; bites only while f109:enabled is \"true\"."
     },
     {
       "key": "f56.search.enabled",

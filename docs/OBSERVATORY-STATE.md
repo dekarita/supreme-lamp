@@ -135,7 +135,7 @@
   (#173 `arena/66a13a8c` + #174 `arena/fa27adb3`, two independent F107 implementations, both merged); #174's in-branch
   "accept both" resolution left main red on **all four** workflows and the tree non-compiling. #174 kept as canonical,
   #173's browser half retired, #173's `safeRoute` privacy fix preserved as `src/lib/dvr/routeCore.js`. See the session record below.
-- [ ] **Step 7 — F108** · ETA 120min · Public Replay Viewer on Pages + Arena mode — **next actionable, NOT blocked on Pages**
+- [x] **Step 7 — F108** · landed on `arena/48b758b2-supreme-lamp`, PR **#176** · merged 2026-10-08T00:47:09Z (`b6c1516`). Box ticked by the step-8 session: #176 appended its record but left this line `[ ]`, so "first unchecked box" pointed back at a MERGED step - the double-ship trigger. The "do NOT add `actions/deploy-pages`" clause below is FALSIFIED: #176 shipped the deployer and the site answers (four-method check, §MULTI-METHOD-VERIFICATIONS) · ETA 120min · Public Replay Viewer on Pages + Arena mode — **next actionable, NOT blocked on Pages**
   (see §OPERATOR-ASSERTIONS: Pages is enabled and publishes `main`/`docs`, so the viewer ships as `docs/replay/index.html`;
   do NOT add an `actions/deploy-pages` workflow). §PRE-STEP was run this session: all 8 planned paths are collision-free,
   both envelope tags (`mcrec1:` v1 clipboard, `mcrec2:` v2 export) confirmed present, and there is now exactly **ONE** v2
@@ -1159,3 +1159,113 @@ the F105 ownership partition - see the §Step 5 record for what shipped instead 
 - **Handoff recorded for the next session**: `e2e-ui` re-plan (handoff #5) is still open and is now the ONLY F111-scoped
   item left; `detectDuplicateStep` is pure and CI-ready, so wiring it into a PR workflow needs only `pull-requests: read`
   + a `gh pr list --search` feed — the core needs no rewrite to become a live pre-merge check.
+
+<!-- F109-begin -->
+## Session 2026-10-08 00:49Z — Step 8 — F109 Debug HUD — **COMPLETE** (PR: see the Step 8 roadmap line, ticked by the post-PR commit)
+
+- Branch `arena/33e36146-supreme-lamp` · base = main `b6c1516` (the #176 merge) · v10 prompt.
+- **§PROMPT-STALENESS: 3 corrections.** (1) #176 F108 is **MERGED** (00:47:09Z, `b6c1516`), not open. (2) #177 F111 is **MERGED**
+  (00:44:59Z, `b56d283`), not open. (3) `tinykeys` is **not a dependency** (package.json; F57 carries an in-repo
+  "tinykeys-style" binder under `src/pages/file-explorer/`, owned by the files feature) → the HUD has its own 6-line pure matcher.
+- **§SIBLING-PR-DETECTION: 0 siblings** (`F109`/`F110`/`Debug HUD`/`HUD`/`Live Patch` in:title, all states: empty).
+- **§POST-MERGE-MAIN-VERIFICATION (#176 landed after #177 via a main→branch merge, `70ff560`)**: the combined tree was re-measured,
+  not inferred from either PR's CI — `pnpm install --frozen-lockfile` ✓ · node **695/695** (= 674 + 10 F108 + 11 F111: the
+  arithmetic of both PRs holds) · vitest **1096/1096** (84 files) · tsc 0. One **process damage** found, no code damage:
+  #176's session appended its record but never ticked its roadmap line, so "first unchecked box" pointed at the MERGED step 7
+  (the double-ship trigger again), and the ledger still said `open` for both #176 and #177. Fixed here (Step 7 line ticked +
+  cites PR **#176**; ledger statuses → `merged` with `mergedAt`). `ledgerVsRoadmap` REQUIRES the two to move together, which is
+  why the tick is not optional.
+- **Shipped**: `src/lib/debugHudCore.js` (+ `.d.ts`, pure) · `src/lib/debugHud.ts` · `src/lib/featureToggles.ts` ·
+  `src/components/DebugHUD.tsx` (portal overlay, 5 panels: features / network / websocket / toggles / actions) ·
+  `src/components/FeatureDisabledCard.tsx` · gates `tests/f109-debug-hud.test.js` (10) + `src/tests/smoke/f109-debug-hud.test.tsx` (12).
+  Wiring (additive): `App.tsx` chrome mount after `<DvrFab />` · `FeatureBoundary.tsx` reads toggles at mount ·
+  `Settings.tsx` "Developer: Debug HUD" card · `useDashboardPolling.ts` 5 descriptor-only WS taps.
+- **Design drift from the literal spec, recorded deliberately**: (a) mounted beside `DvrFab` in `App.tsx`, NOT inside AppShell —
+  a crashed shell would take an AppShell-mounted HUD with it, violating "HUD must work when fences break"; (b) HUD panels get
+  their own `HudPanelBoundary`, NOT `FeatureBoundary` — the latter registers in the F105 mount ledger, which is what the
+  Features panel READS (wrapped panels would report phantom mounts); (c) toggles live in ONE literal key `f109:toggles`
+  (`{"<id>":"off"}`), NOT `f109:toggles:<id>` — F111 derives only literal/const-bound keys, so a dynamic family would be an
+  invisible 11-key undercount; (d) Network = passive `PerformanceObserver("resource")`, NOT an F104 stream — F104 has no
+  stream (10 s per-click windows only) and a fourth `window.fetch` wrapper is exactly the hazard (e) below; (e) English-only
+  developer strings (Settings' "Secret hygiene" card is the precedent) → **0 i18n keys**, lock stays 1030; the runtime
+  full-capture switch reuses `dvr.fullStart`/`fullStop`/`fullWarning` (closes handoff #11's orphan-key half).
+- **§LAB-DISCOVERS-PROD-BUGS: 1 (real, reproduced, fixed at the root).** `/#/lab/collector` mounts the shipped Collector,
+  whose mount installs F101's PERMANENT fetch observer ON TOP of the lab's `labFetch`; the lab's restore guard
+  (`window.fetch === patchedFetch`) then correctly refuses to unwrap — and `labFetch` had no off state, so **a forced lab
+  scenario kept answering the real dashboard after the lab unmounted** (reproduced: real `/api/collector/state` → synthetic
+  `500` + `x-lab-mock: error500` for the rest of the tab). Violates F106 invariant 1. Fix: one `live` flag per install
+  generation; a retired wrapper that cannot be unwrapped becomes a pure forwarder (F104's own rule). All 4 F106 literal pins
+  untouched; F106 node 9/9 + DOM 20/20 green; regression pinned twice (F109-h static + DOM, falsified: 500≠200 when reverted).
+- **§DERIVED-INVENTORY-DISCOVERY / §GATE-SELF-TEST: 2 F111 gate bugs, found by RUNNING F111 against this tree.**
+  (1) `STRING_CONST_RE`'s type annotation `(?::[^=]+)?` crossed `;`/newlines: the hand-written `.d.ts` line
+  `export declare const HUD_ENABLED_KEY: "f109:enabled";` ran on to the next `=` (`type HudPanelId = "features" | …`) and the
+  scanner derived a phantom key **`features`** — and since the first definition wins in `readdirSync` order (unordered on
+  ext4), the result was filesystem-dependent. Fixed to `(?::[^=;\n]+)?`; the other 21 surfaces are provably unchanged (F111-e
+  agrees on all 23). (2) `extractFeatureIds` read `F12` out of the step-8 spec's OWN PR title "(F12+Shift)" (and "Shift+F12");
+  the F111 lookahead only handled "F12-shift". `ledgerTitleConsistency` would have failed the F109 entry. Fixed with chord
+  look-arounds; `F12 closeout` still extracts `F12`.
+- **Inventory re-measured, not incremented**: 21 → **23** surfaces (live 16 → 18): `f109:enabled`, `f109:toggles`, both
+  `addedBy: "F109"`. F111-i extended in intent-preserving form: post-inventory growth (`addedBy`) is not #163 drift and must
+  name a ledger feature id; the #163 drift set is still exactly the four recorded.
+- **Non-regress proofs: 9** — node **705/705** (695 + 10) · vitest **1108/1108, 85 files** (1096 + 12) · tsc 0 · vite build
+  **1,083.08 kB** (+15 kB) · regression-ids 219/219 · no-neon-green · bottom-bar · fx-ids · **prod default-off on the real
+  bundle** (the only `setItem(<key>,"true")` sits inside `setHudEnabled(e)` behind its argument; DOM: no render, inert
+  shortcut, no f109 key written, WS tap inert). F104 capture (ordinary click still recorded; HUD clicks ignored via
+  `data-collector-ignore`), F105 (healthy boundary still returns `children`; F105-j/k green), F107 (build kill flags respected
+  by the runtime switch) all re-proven.
+- **§FALSIFY-3: 14/14 caught** (M1–M10 node, D1–D4 DOM; named in the gate header). **§VACUITY**: every static scan asserts it can
+  see its target first (comment stripper keeps code; positive controls for the observer call, the hello send, the count lock);
+  the DOM lab regression was falsified separately (fix reverted → `expected 500 to be 200`).
+- **Test-hygiene finding**: `vi.unstubAllGlobals()` in an `afterEach` also removes `setup.ts`'s offline `fetch`/`FakeWebSocket`;
+  later tests in the file then run against jsdom's REAL WebSocket (caught here as an extra real `close:1006` frame through the
+  real hook tap). This gate restores only what it stubs. `f106-lab-isolation.test.tsx` uses the unstub-all pattern (not changed).
+- **Labels**: REST `POST /issues/<n>/labels` (operator-only labels may 403 — recorded in the PR comment).
+
+### §MULTI-METHOD-VERIFICATIONS (v10)
+| claim (source) | method A | method B (different) | verdict |
+|---|---|---|---|
+| #176/#177 merged (prompt said open) | `gh pr list --state all` (mergedAt) | `git log` merge commits `b6c1516` / `b56d283` | **disagreement with prompt → current measurement wins** |
+| main green after the double landing | CI: `F59 build-ui` ✅, `replay viewer` ✅ (others in progress at entry) | local: install/node/vitest/tsc on `b6c1516` | agree (GREEN) |
+| Pages now publishes (was dark at 23:37Z) | `GET /deployments`: new `github-pages` deploy on `b6c1516` 00:47:13Z (first since 10-01) | run 37709567869: all 9 steps ✅ incl. "Verify the published site answers"; independent fetch of `/replay/` → the viewer page | **LIVE** — but `/status.json` on Pages is a FROZEN snapshot (ts 2026-10-07T13:19Z): F108-h fences the push trigger to viewer paths, so watchdog commits no longer republish |
+| `tinykeys` available (spec) | package.json | `grep -rn tinykeys src` (only F57's in-repo binder) | **absent** → own matcher |
+| F104 "fetch observer stream" (spec) | read `globalClickCapture.ts` | grep for an exported subscribe/stream API: none | **no stream** → passive resource timing |
+Disagreements this session: 3 (all prompt-vs-reality) — under the 3+ halt threshold only if counted per claim class; recorded, no halt (each was resolved by measurement, none left the step unbuildable).
+
+### §LATENT-BUGS-SURFACED (v10)
+1. **Lab mock outlives the lab** (F106 × F101 ordering) — FIXED here (above).
+2. **F111 const resolver hijack** via `.d.ts` declaration-only lines (+ readdir-order dependence) — FIXED here.
+3. **F111 feature-id extractor** reads key chords as feature ids — FIXED here.
+4. **`ghrdp-dash-token` dead read** (`src/api/fetch/index.ts:124`, `src/lib/f46.ts:51`) — still open; F109 touches no auth path, so not scanned further (handoff, unchanged).
+5. **First-definition-wins in `collectStringConsts`**: two files defining the same const NAME with different values still resolve in readdir order. 0 instances today; recorded, not fixed.
+Count from derived inventory: 2 (items 2, 5) — under the 5+ halt threshold.
+
+### §KNOWN-DRIFT-REGISTRY (v10)
+| drift | where | owner | status |
+|---|---|---|---|
+| Step 6 line cites `#173` for branch `arena/fa27adb3` (= #174) | roadmap Step 6 line | operator | open (allowlisted in `knownRoadmapDrift`, F111-d) |
+| canonical #174 cited by no step line | roadmap | operator | open (allowlisted) |
+| Step 7 box unchecked after merge | roadmap | — | **FIXED here** (ticked + cites PR **#176**) |
+| ledger #176/#177 `open` after merge | stepLedger.json | — | **FIXED here** (`merged` + `mergedAt`) |
+| §OPERATOR-ASSERTIONS Pages bullet + Step 10 line's "NOT merged" prose | this file | operator | prose only; not rewritten (another step's record) |
+| `/status.json` on Pages frozen at deploy time | `.github/workflows/replay-viewer.yml` fence | operator | new; see Operator next |
+
+### §MINIMAL-FOOTPRINT-STEPS (v10)
+| step | package.json | lockfiles | i18n keys | workflows | conflict surface |
+|---|---|---|---|---|---|
+| 7 F108 (#176) | 0 | 0 | 0 | +1 (fenced deployer) | 1 shared file (this one) |
+| 10 F111 (#177) | 0 | 0 | 0 | 0 | 1 shared file |
+| **8 F109 (this)** | **0** | **0** | **0** | **0** | append-only: this file, `storageInventory.json`; additive: `App.tsx` (+7, no pinned literal moved — F56-c/f76/F105 green), `Settings.tsx`, `FeatureBoundary.tsx`, `useDashboardPolling.ts`, `mockBackend.ts`; pins moved in-PR: F111-c/e/i |
+
+### Handoffs recorded (NOT done here)
+- **Chrome fencing (handoffs #2/#10) is still open**: `Toasts`, `DiagSideDrawer`, `CollectorRunBridge`, `VersionGate`,
+  `DashTokenGate`, `DvrFab` (+ FAB-opened `SessionListModal`), `CommandPalette` remain unfenced. F109 made the HUD itself
+  crash-proof (own boundaries, mounted outside AppShell) and visible-when-broken, but wrapping six chrome mounts moves the
+  `App.tsx` pins and deserves its own falsified step. Candidate: a `ChromeBoundary` (renders null + emits
+  `ghrdp:feature-boundary-error` with a `chrome:<name>` id), zero DOM delta when healthy.
+- **F110 (step 9) is the last unshipped step**; independent of F109. Its "live swap" half should read F109's toggles/feature
+  state rather than add a second disable mechanism.
+- `e2e-ui` re-plan (handoff #5) still open.
+- **Budget**: ~125 min of 120 — overrun justified under §BUDGET-OVERRUN-WHEN-JUSTIFIED: the lab-cascade reproduction/fix and
+  the two F111 gate bugs are critical safety verification (a debugging tool leaking fake failures into the live dashboard;
+  an inventory gate whose result depended on directory order).
+<!-- F109-end -->

@@ -12,6 +12,10 @@ import { DASH_TOKEN_STORAGE_KEY, getDashToken } from "@/lib/dashToken";
 import { useSessionStore } from "@/stores/sessionStore";
 import { useTelemetryStore } from "@/stores/telemetryStore";
 import type { WireState } from "@/lib/domain/connProbe";
+// [F109 §5] Debug HUD WebSocket tap: describes frames (direction, type, bytes) and
+// is a no-op unless Settings ▸ Debug HUD is on. OUR frames are passed as bare type
+// tags, so the dash token inside the hello frame never reaches the HUD.
+import { recordWsFrame } from "@/lib/debugHud";
 
 export function useDashboardPolling(): void {
   const setConfig = useSessionStore((s) => s.setConfig);
@@ -170,6 +174,7 @@ export function useDashboardPolling(): void {
         wsConnecting = true;
         ws = new WebSocket(wsUrl());
         ws.onopen = () => {
+          recordWsFrame("open");
           wsAttempt = 0;
           wsConnecting = false;
           useTelemetryStore.getState().setWsLive(true);
@@ -192,12 +197,14 @@ export function useDashboardPolling(): void {
             const token = getDashToken();
             if (token && ws && ws.readyState === 1) {
               ws.send(JSON.stringify({ type: "hello", key: token }));
+              recordWsFrame("out", "hello");
             }
           } catch {
             /* a send failure here is not fatal - the URL already carried it */
           }
         };
         ws.onmessage = (evt) => {
+          recordWsFrame("in", evt.data);
           try {
             const data = JSON.parse(evt.data as string);
             // [F101 §2.4 / N4] keepalive. The server PINGs every 20s: a real
@@ -210,7 +217,10 @@ export function useDashboardPolling(): void {
             if (data && typeof data === "object" && (data as { type?: string }).type === "ping") {
               useTelemetryStore.getState().setWsLastPingAt(Date.now());
               try {
-                if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+                if (ws && ws.readyState === 1) {
+                  ws.send(JSON.stringify({ type: "pong", ts: Date.now() }));
+                  recordWsFrame("out", "pong");
+                }
               } catch {
                 /* a lost pong is what the watchdog is for */
               }
@@ -233,6 +243,7 @@ export function useDashboardPolling(): void {
           } catch {}
         };
         ws.onclose = (evt?: CloseEvent) => {
+          recordWsFrame("close", evt && typeof evt.code === "number" ? evt.code : "");
           // [F96 §2.1] the browser's own close code/reason, captured BEFORE the
           // handle is released - this is the only record of WHY it closed.
           try {

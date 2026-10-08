@@ -171,9 +171,19 @@ test("F111-c: detectDuplicateStep gives the four verdicts on the real ledger - i
   assert.equal(dup.label, "duplicate-step");
   assert.deepEqual(dup.ids, ["F107"]);
 
-  // A second F108 today: #176 is open => sibling, coordinate, do not duplicate.
-  const sib = detect("F108: Public Replay Viewer at docs/replay/ (Pages-published) + Arena mode", null);
-  assert.equal(sib.verdict, "sibling-open", "the live situation this session faced must be reported as a sibling");
+  // [F109 session] #176 MERGED at 2026-10-08T00:47:09Z, so on TODAY's ledger a second F108
+  // is a blocking duplicate. The sibling-open verdict this test was written around (the
+  // live situation the F111 session faced) is still proven - by mutating #176's status
+  // back to open, the mirror image of the afterMerge mutation below.
+  const dup108 = detect("F108: Public Replay Viewer at docs/replay/ (Pages-published) + Arena mode", null);
+  assert.equal(dup108.verdict, "duplicate-merged", "#176 is merged: a second F108 must block");
+  assert.equal(dup108.blocking, true);
+  const sib = core.detectDuplicateStep({
+    title: "F108: Public Replay Viewer at docs/replay/ (Pages-published) + Arena mode",
+    number: null,
+    ledger: ledger.map((e) => (e.number === 176 ? { ...e, status: "open" } : e)),
+  });
+  assert.equal(sib.verdict, "sibling-open", "the live situation the F111 session faced must be reported as a sibling");
   assert.equal(sib.blocking, false);
   assert.equal(sib.label, "duplicate-step", "the operator still gets the label so the pair is visible pre-merge");
   assert.match(sib.reason, /OPEN #176/);
@@ -191,9 +201,23 @@ test("F111-c: detectDuplicateStep gives the four verdicts on the real ledger - i
   assert.equal(afterMerge.verdict, "duplicate-merged");
   assert.equal(afterMerge.blocking, true);
 
-  // An unstarted step is unique.
-  assert.equal(detect("F109: Debug HUD overlay (F12-shift)", null).verdict, "unique");
+  // An unstarted step is unique; a started one (PR number recorded) is a sibling of it.
+  // [F109 session] data-driven on the F109 entry, because the code commit carries
+  // number:null (no PR yet) and the post-PR commit records the number.
+  const f109 = ledger.find((e) => e.featureIds.includes("F109"));
+  const v109 = detect("F109: Debug HUD overlay (F12-shift)", null);
+  if (f109.number == null) assert.equal(v109.verdict, "unique", "F109 has no PR yet");
+  else {
+    assert.equal(f109.status, "open");
+    assert.equal(v109.verdict, "sibling-open", "a second F109 while #" + f109.number + " is open is a sibling");
+    assert.equal(detect(f109.title, f109.number).verdict, "unique", "the F109 PR is not its own sibling");
+  }
   assert.equal(detect("F110: Live Patch Protocol", null).verdict, "unique");
+  // [F109 §GATE-SELF-TEST] key-chord spellings of the HUD shortcut are not feature ids:
+  // the step-8 spec's own title "(F12+Shift)" extracted a phantom F12 before this fix.
+  assert.deepEqual(core.extractFeatureIds("F109: Debug HUD overlay (F12+Shift) with 5 panels"), ["F109"]);
+  assert.deepEqual(core.extractFeatureIds("press Shift+F12 or Shift-F12"), []);
+  assert.deepEqual(core.extractFeatureIds("F12 closeout"), ["F12"], "a real F12 reference must still extract");
 
   // M7: the orchestrator's own name is not a feature id, or every prompt-titled PR
   // would collide with the step-3 halt record (#168).
@@ -281,8 +305,9 @@ test("F111-e: the declared storage inventory equals what the tree really persist
   // counts pinned, so a scanner that quietly narrows is as visible as one that widens
   const byClass = {};
   for (const k of scan.keys) byClass[k.classification] = (byClass[k.classification] || 0) + 1;
-  assert.equal(scan.keys.length, 21, "derived surface count moved - re-measure and update the declaration");
-  assert.deepEqual(byClass, { live: 16, migration: 1, purged: 3, "dead-read": 1 }, "classification census moved");
+  // re-MEASURED by the F109 session (not incremented): 21 + f109:enabled + f109:toggles = 23, both live
+  assert.equal(scan.keys.length, 23, "derived surface count moved - re-measure and update the declaration");
+  assert.deepEqual(byClass, { live: 18, migration: 1, purged: 3, "dead-read": 1 }, "classification census moved");
   assert.equal(scan.keys.filter((k) => k.kind === "indexedDB").length, 1, "exactly one IndexedDB surface (ghrdp-dvr)");
   assert.equal(diff.agreed.length, declared.keys.length, "every declared key must be fully agreed, not just present");
 
@@ -406,7 +431,16 @@ test("F111-i: #163 §3.8's hand count is confirmed wrong by exactly the four sur
 
   // #163's own claim was internally consistent; the drift is what it never saw.
   const known = declared.keys.filter((k) => k.i163);
-  const unknown = declared.keys.filter((k) => !k.i163);
+  // [F109 session] keys added AFTER this gate landed are i163:false (#163 could not know
+  // them) but are not #163 DRIFT. They must say who added them, that carrier must be a
+  // feature the step ledger knows, and postInventoryGrowth must list exactly them.
+  const grown = declared.keys.filter((k) => !k.i163 && k.addedBy);
+  const ledgerIds = new Set(readJson(LEDGER_PATH).entries.flatMap((e) => e.featureIds));
+  for (const k of grown) assert.ok(ledgerIds.has(k.addedBy), k.key + " addedBy " + k.addedBy + ", which no ledger entry carries");
+  const listed = Object.entries(declared.postInventoryGrowth || {}).filter(([id]) => id !== "note").flatMap(([, keys]) => keys).sort();
+  assert.deepEqual(listed, grown.map((k) => k.key).sort(), "postInventoryGrowth must list exactly the addedBy keys");
+  assert.ok(declared.keys.filter((k) => k.i163 && k.addedBy).length === 0, "a key #163 knew cannot have been added later");
+  const unknown = declared.keys.filter((k) => !k.i163 && !k.addedBy);
   assert.equal(known.length, 17, "#163 §3.8 knew 14 live + 3 purged = 17 surfaces");
   assert.equal(known.filter((k) => k.classification === "live").length, 14, "#163's '14 live' is confirmed for the keys it listed");
   assert.equal(known.filter((k) => k.classification === "purged").length, 3, "#163's '3 purged-legacy' is confirmed");
