@@ -144,7 +144,7 @@
 
 ## Phase 3 — Advanced
 - [ ] **Step 9 — F110** · ETA 150min · Live Patch Protocol (module federation)
-- [ ] **Step 10 — F111** · ETA 60min · CI Inventory Gate (PR validates #163 drift)
+- [x] **Step 10 — F111** · landed on `arena/0fb601e2-supreme-lamp`, PR **#177** (opened this session, NOT merged) · CI Inventory Gate: the storage inventory and the step ledger are DERIVED and diffed, not hand-counted. Closes §Handoff #9 (#163 §3.8 says "14 live + 3 purged"; the tree has 21 surfaces, and `ghrdp-dash-token` is a DEAD READ - read by two files, written by nothing) and §Handoff #12 (the double-ship detector, proven by mutating the real ledger back into #173+#174). Reached by §WHILE-WAITING fall-through: step 7 belongs to open sibling #176.
 
 ## Session 2026-10-07 22:27Z — Step 6 REPAIR (double-merge de-duplication) — **COMPLETE**, PR #175
 
@@ -1047,3 +1047,115 @@ the F105 ownership partition - see the §Step 5 record for what shipped instead 
   2) verify `https://dekarita.github.io/supreme-lamp/replay/` (the workflow verifies it too, and fails loudly if not);
   3) if you prefer no Actions publisher, delete the `push:` block (hand-run only) or disable the workflow and set
   Settings ▸ Pages ▸ Source ▸ *Deploy from a branch* ▸ `main` / `docs`.
+## Session 2026-10-08 00:10Z — Step 10 — F111 CI Inventory Gate — **COMPLETE** (§WHILE-WAITING fall-through; step 7 belongs to sibling #176)
+
+- Branch `arena/0fb601e2-supreme-lamp` · main baseline on entry **GREEN** (`edb4691` = the #175 merge: `gates` ✅
+  `windows-native` ✅ `proof` ✅ `build-ui-prebuilt` ✅, `e2e-ui` ⚠️ cancelled = the recorded AMBER-INHERITED
+  25-min self-cancel pattern, 0 failed steps). Re-measured locally before writing anything: `tsc` 0 ·
+  `node --test tests/*.test.js` **674/674** · vitest 1089/1089 (83 files).
+- **§SIBLING-PR-DETECTION: 1 OPEN sibling found — this session did NOT execute step 7.**
+  `gh pr list --state all --search "F108 in:title"` → **#176** (`arena/48b758b2-supreme-lamp`, MERGEABLE, created
+  2026-10-07T23:49:01Z = 17 min AFTER #175 merged at 23:32:07Z, so it is based on the repaired main; `gates` ✅
+  `windows-native` ✅ `build-ui-prebuilt` ✅ `proof` ✅ `f56d`/`f57`/`f60` labs ✅, `e2e-ui` in progress). Writing a
+  second F108 would have been the #173/#174 damage class repeated one step later, so per §SIBLING-PR-DETECTION
+  ("OPEN siblings → coordinate; don't duplicate") this session **verified #176 and fell through** the §DAG to the
+  independent node. §Merge-order-graph v8 says "steps 9/10 independent"; step 9 (F110) is ETA 150 min and step 8
+  (F109) soft-depends on 7, so **step 10 F111 (ETA 60 min, no siblings — `F109`/`F110`/`F111 in:title` are all
+  empty) was the correct fall-through.**
+- **§SIBLING VERIFICATION (independent, not taken on trust).** #176's central premise was re-measured here and
+  **CONFIRMED**: `GET /pages` → 200 with `build_type:"workflow"`, `source: main /`, `status: null`;
+  `GET /pages/builds` → `[]`; `GET /pages/builds/latest` → 404; `GET /actions/workflows` lists the dynamic
+  `pages-build-deployment`; newest `GET /deployments` (env `github-pages`) = **2026-10-01T16:42:27Z**; and
+  `grep -rn "deploy-pages\|upload-pages-artifact" .github/workflows/` → **no deployer exists**. So the site is dark
+  and #176's fenced `.github/workflows/replay-viewer.yml` is the missing mechanism, not a hazard. Cross-check on
+  honesty: #176 claims node 684 = this session's measured 674 + its 10 new `tests/f108-replay-core.test.js` tests
+  (counted: F108-a…F108-j = 10), and vitest 1096 = 1089 + its 7 DOM tests. Both arithmetic checks pass.
+  **One inconsistency found in #176 and reported on the PR**: its session log below says "`tests/f108-replay-core.test.js`
+  (9 tests)" and "node **683/683** (was 674 + 9 new)", but the file has **10** tests and the total is **684**, which is
+  what #176's own PR body says. The PR body is right; the state-file log it appended is off by one.
+- **§OPERATOR-ASSERTIONS: Pages — independently CONFIRMED, not re-corrected.** The v8 assertion in this file
+  ("publish root is `main`/`docs`; do NOT add `actions/deploy-pages`; switching the source to `workflow` would take the
+  docs site down") is wrong on the mechanism, and #176 already rewrote that bullet with five methods. This session
+  re-derived the same verdict by a **different** route (workflow grep + deployments list + builds endpoint) rather than
+  editing the same lines twice — see §PAGES-VERIFICATION-METHOD below. **The v9 prompt's Step-7 constraint
+  "CRITICAL: Do NOT add actions/deploy-pages workflow … would TAKE DOWN existing docs site" is falsified**: there is no
+  served site to take down.
+- **§HANDOFF #9 RESOLVED (registry storage-key audit, open since step 4).** `#163 §3.8` claims **"14 live + 3
+  purged-legacy"** localStorage keys. Derived from `src/` it is **21 surfaces**: 16 live (15 localStorage + **1
+  IndexedDB**), 1 migration, 3 purged, **1 dead read**. #163's own count is internally consistent for what it listed
+  (14 live + 3 purged = 17, all re-confirmed) and it missed exactly four:
+  | surface | class | why #163 could not see it |
+  |---|---|---|
+  | `ghrdp.f57.opqueue` | live | F57 Explorer op queue (`QUEUE_STORAGE_KEY`, `src/lib/explorer/queue.ts`) — simply absent from the table |
+  | `ghrdp-dvr` | live (**IndexedDB**) | F107/step 6 post-dates #163, and §3.8 only ever counted localStorage — the largest persistence surface in the app (recordings + base64 PNG thumbs, 5 MB/session, 30-day retention) was invisible |
+  | `ghrdp-dash-token` | **dead-read** | **LATENT BUG.** Read by `src/api/fetch/index.ts:124` and `src/lib/f46.ts:51`, written by **nothing in the repo** — both reads always fall through. The canonical key is `ghrdp.dashToken` (dot, not hyphen). A shadow key one character from a credential key, invisible to a hand count |
+  | `ghrdp.collector.actions.v1` | migration | Mentioned inline in §3.8's f102 row ("legacy … migrated once") but never counted as a surface |
+  Declared in `src/lib/ci/storageInventory.json` (every key source-cited + classified + `i163` flag), derived by
+  `scanSources()` in `src/lib/ci/inventoryCore.js`. Design drift recorded deliberately: the audit lives in its OWN
+  cited file rather than widening `feature-registry.json` per feature, because F105's gates partition `src/pages`
+  exactly (F105-c) and a second ownership rule for the same fact would drift from the first; surfaces instead carry a
+  `surface` field validated against the registry's 11 ids plus documented `chrome`/`shared`.
+- **§HANDOFF #12 RESOLVED (the roadmap can schedule the SAME step twice and nothing detects it).**
+  `src/lib/ci/stepLedger.json` + `detectDuplicateStep()` / `assertNoDoubleShip()`. The double-ship rule was proven by
+  mutating the REAL ledger back into the damage rather than by a synthetic fixture: setting #173 to
+  `merged-canonical` makes `assertNoDoubleShip` report `no-double-ship` on **F107 naming both #173 and #174** (F111-b
+  M1) — i.e. the gate fails at 2026-10-07T22:27Z. Run against today's ledger it returns `sibling-open` for any second
+  **F108** PR (naming OPEN #176, label `duplicate-step`, non-blocking) and `duplicate-merged`/blocking for a second
+  **F107**, and `unique` for #176 asked about itself. `F-OBSERVATORY` and `F-INVENTORY` are denylisted so a
+  prompt-titled PR never collides with the step-3 halt record #168, whose title names `F-DVR-LITE` without shipping it
+  (`titleNamesButDoesNotShip` + `waiverWhy`, pinned by `ledgerTitleConsistency`).
+- **NEW DRIFT FOUND IN THIS FILE, recorded not rewritten.** The Step-6 roadmap line reads "landed on
+  `arena/fa27adb3-supreme-lamp`, PR **#173**" — but `arena/fa27adb3` is **#174** (API-verified: #173 =
+  `arena/66a13a8c` 22:15:29Z, #174 = `arena/fa27adb3` 22:27:00Z). The line describing the double-ship mis-attributes
+  which PR was which, and the canonical survivor **#174 is cited as no step's PR** (it appears only in the repair
+  line's prose). Both are pinned in the ledger's `knownRoadmapDrift` with a `why`, and the gate fails **both** on a new
+  drift **and** on an allowlisted drift that stops being observed, so the list cannot become a rubbish drawer. Not
+  edited in place: §UI-ACCUMULATOR-FILES forbids rewriting another step's record. *Operator fix, if wanted: change that
+  line's `#173` → `#174`, add a `PR **#174**` citation for the canonical survivor, and delete both allowlist entries in
+  the same commit.*
+- Shipped: `src/lib/ci/inventoryCore.js` (+ hand-written `.d.ts`, pure: no imports, no I/O, no DOM),
+  `src/lib/ci/storageInventory.json`, `src/lib/ci/stepLedger.json`, `tests/f111-ci-inventory.test.js` (11 rules,
+  auto-run by `launch-gates.yml:2449` `node --test tests/*.test.js` — **no workflow edit needed**, which is why this
+  gate is not vacuous). No existing file modified except this state file. Zero new dependencies (F111-k pins 8 deps /
+  21 devDeps), zero i18n keys (the `EXPECTED_FLAT_KEYS = 1030` lock does not move), zero UI.
+- **Non-regress proofs: 7** — node **685/685** (674 + 11 new) · vitest **1089/1089 (83 files)** unchanged ·
+  `tsc -p tsconfig.build.json` **0** · regression-ids **219/219** · bottom-bar OK · fx-ids PASS (10 ids + 1 class,
+  F38 collision-free) · `npm run build` + no-neon-green on the real bundle.
+- **Falsified 9 ways, 0 missed** (M1–M9 are named in the gate header, each mapped to the rule that caught it). Two
+  REAL BUGS were found by running the gate rather than by reasoning about it, and both are pinned now:
+  **(1)** `scanSources` turned its OWN doc comment into inventory — the prose
+  `// factory.open(DVR_DB_NAME, DVR_DB_VERSION)` in `inventoryCore.js` resolved cross-file and produced a phantom
+  `ghrdp-dvr` entry attributed to the tooling. Fixed with `INVENTORY_TOOLING_PREFIXES` + F111-j, which proves the
+  exclusion **hides nothing** (every key derivable from the whole tree is derivable from the tree minus `src/lib/ci/`)
+  and pins the list to exactly one prefix so it cannot widen silently. **(2)** `extractFeatureIds` read `F12` out of
+  F109's own title "(F12-shift)" — a keyboard shortcut that is *also* a real historical feature id in this repo
+  (`tests/f12-closeout.test.js`); fixed with a lookahead that keeps the gate-suffix form `F107-h` but rejects
+  `F12-shift`. A third was caught in the gate itself: `#163 §3.8`-style prose cross-references (`#163`, `#165`,
+  `#169`) were being parsed as shipped PRs until the citation regex was narrowed to the strict `PR **#N**` form (M8).
+- **§VACUITY-PROBES**: F111-g is the probe for the whole storage half — a scanner that returned every key-shaped
+  literal would pass "no undeclared keys" by construction, so the gate asserts the four documented near-misses
+  (`ghrdp://rdp` protocol URL, `ghrdp:feature-boundary-error` + `ghrdp:search-lane` window event names,
+  `files.ops.preview.restricted` an i18n key exported as `*_KEY`) are ABSENT from the derived set, that each is really
+  present in the file it cites, and that the real `ghrdp:*` keys are still found (positive control).
+- **§CI-PIN-DETECTION**: no existing pin covers `src/lib/ci/` or a step ledger; nothing moved. `tests/merge-hygiene.test.js`
+  MH-a (raw duplicate-JSON-key scan over all `*.json`) picks up the two new JSON files automatically — they are covered
+  by the merge-hygiene baseline from the moment they land, with no edit to that gate.
+- **§PRIVACY-FIX-HARVEST**: nothing retired this session, so nothing to harvest. One privacy-adjacent fact is now
+  inventoried instead: `ghrdp:vncPass` is declared as a **credential at rest in the browser** with both its writers
+  cited, so any new reader/writer of a secret key is a reviewed inventory change rather than a silent one.
+- **§MERGE-HYGIENE-GATE**: F111-j is this session's addition to the hygiene baseline (a documented exclusion must
+  prove it hides nothing). §ACCEPT-BOTH-IS-DANGEROUS: the two new files are JSON → **never accept both**; MH-a already
+  scans them for duplicate keys.
+- **§OWN-PR-CONFLICT-PREEMPTION**: branch is exactly main `edb4691`, so no rebase was needed. Conflict surface vs
+  open #176 = **1 file** (`docs/OBSERVATORY-STATE.md`), append-only on both sides (this session appended a new
+  section and deliberately did NOT re-edit the §OPERATOR-ASSERTIONS Pages bullet that #176 already rewrote) ⇒
+  §ACCEPT-BOTH-IS-DANGEROUS classifies it SAFE. Zero source/test/workflow overlap: #176's 17 files and this step's 4
+  share no path.
+- **Merge order**: independent. Can merge before or after #176; the only shared file is append-only.
+- **§DELIBERATE-UNUSED-BUDGET**: step 9 (F110 Live Patch, ETA 150 min) and the `e2e-ui` re-plan (handoff #5, "F111's
+  e2e replan owns it") were **not** attempted. The e2e re-plan means editing a 25-min self-cancelling job with no
+  Chromium in this sandbox — an un-runnable change is not evidence, so it stays a handoff rather than shipping a guess
+  inside a 120-min cap. Recorded below.
+- **Handoff recorded for the next session**: `e2e-ui` re-plan (handoff #5) is still open and is now the ONLY F111-scoped
+  item left; `detectDuplicateStep` is pure and CI-ready, so wiring it into a PR workflow needs only `pull-requests: read`
+  + a `gh pr list --search` feed — the core needs no rewrite to become a live pre-merge check.

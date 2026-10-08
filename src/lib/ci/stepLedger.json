@@ -1,0 +1,153 @@
+{
+  "version": 1,
+  "contract": "The machine-readable Observatory step ledger: one entry per PR that carried a roadmap step, with the feature ids it shipped, its head branch, and its status. tests/f111-ci-inventory.test.js enforces that no feature id is recorded as shipped twice (the step-6 #173/#174 double-ship damage class), that every retirement cites a real repair, that every entry's declared featureIds agree with its own title, and that this ledger and the human roadmap checkboxes in docs/OBSERVATORY-STATE.md do not disagree about what shipped. Drift that is RECORDED rather than fixed lives in knownRoadmapDrift, and the gate fails both on a new drift and on an allowlisted drift that stops being observed - so the list cannot become a rubbish drawer.",
+  "closesHandoff": "docs/OBSERVATORY-STATE.md §Handoff-findings #12 ('the roadmap can schedule the SAME step twice, and nothing detects it')",
+  "roadmapDoc": "docs/OBSERVATORY-STATE.md",
+  "statusVocabulary": {
+    "merged": "shipped and current",
+    "merged-canonical": "shipped, and it is the ONE implementation that survived a de-duplication",
+    "merged-then-retired": "was merged, then superseded by a repair; must cite retiredBy",
+    "open": "in flight - a second PR with the same feature id is a sibling, not a new step",
+    "closed": "abandoned without shipping",
+    "planned": "no PR yet"
+  },
+  "entries": [
+    {
+      "step": 1,
+      "number": 166,
+      "branch": "arena/ad1df050-supreme-lamp",
+      "featureIds": ["F-TESTID"],
+      "status": "merged",
+      "title": "F-TESTID: add data-testid to every button (closes the #163 gap)",
+      "mergedAt": "2026-10-07T07:28:00Z"
+    },
+    {
+      "step": 2,
+      "number": 167,
+      "branch": "arena/0648e4eb-supreme-lamp",
+      "featureIds": ["F-I18N-SI-72"],
+      "status": "merged",
+      "title": "F-I18N-SI-72: close Sinhala i18n gap (88 missing = 72 si-gap + 16 collector.*)",
+      "mergedAt": "2026-10-07T10:48:14Z"
+    },
+    {
+      "step": 3,
+      "number": 168,
+      "branch": "arena/6f15a7da-supreme-lamp",
+      "featureIds": [],
+      "titleNamesButDoesNotShip": ["F-DVR-LITE"],
+      "waiverWhy": "The step-3 HALT record: its title names the feature it found BLOCKED (no upload primitive existed), and it shipped a decision document plus PRE-STEP falsifications - no F-DVR-LITE implementation. Counting it would report a false double-ship against #171, which is the implementation.",
+      "status": "merged",
+      "title": "F-OBSERVATORY step 3 HALT: F-DVR-LITE is BLOCKED (upload primitive does not exist; security-remediated path) + PRE-STEP falsifications",
+      "mergedAt": "2026-10-07T10:48:29Z",
+      "inRoadmap": false,
+      "roadmapNote": "Merged but has no roadmap checkbox line - it is a halt record, not a step delivery. Excluded from the roadmap agreement rules by inRoadmap:false, which the gate pins rather than skips silently."
+    },
+    {
+      "step": 3,
+      "number": 171,
+      "branch": "arena/bd2c6418-supreme-lamp",
+      "featureIds": ["F-DVR-LITE"],
+      "status": "merged",
+      "title": "F-DVR-LITE: diagnostic DVR (option (d) of #169) - clipboard-only, no upload",
+      "mergedAt": "2026-10-07T11:48:31Z"
+    },
+    {
+      "step": 4,
+      "number": 170,
+      "branch": "arena/75bc347b-supreme-lamp",
+      "featureIds": ["F105"],
+      "status": "merged",
+      "title": "F105: Feature Registry + 11 FeatureBoundaries (Observatory step 4)",
+      "mergedAt": "2026-10-07T12:02:48Z"
+    },
+    {
+      "step": 5,
+      "number": 172,
+      "branch": "arena/5f3d21f9-supreme-lamp",
+      "featureIds": ["F106"],
+      "status": "merged",
+      "title": "F106: Feature Lab - /#/lab index + /#/lab/<featureId> x 11 isolated sections",
+      "mergedAt": "2026-10-07T12:52:40Z"
+    },
+    {
+      "step": 6,
+      "number": 173,
+      "branch": "arena/66a13a8c-supreme-lamp",
+      "featureIds": ["F107"],
+      "status": "merged-then-retired",
+      "retiredBy": 175,
+      "title": "F107: Full DVR v2 - DOM mutations + screenshots + IndexedDB (first of two)",
+      "mergedAt": "2026-10-07T22:15:29Z",
+      "note": "The FIRST of the two step-6 implementations. Merged 22:15:29Z; #174 merged 22:27:00Z, eleven and a half minutes later, and neither PR's CI could see the other. Retired by the #175 repair: its browser half was deleted, and its safeRoute privacy fix (stripping ?token= from captured routes) was harvested into src/lib/dvr/routeCore.js so deleting the variant did not re-open a credential leak."
+    },
+    {
+      "step": 6,
+      "number": 174,
+      "branch": "arena/fa27adb3-supreme-lamp",
+      "featureIds": ["F107"],
+      "status": "merged-canonical",
+      "title": "F107: Full DVR v2 - DOM mutations + screenshots + IndexedDB (canonical survivor)",
+      "mergedAt": "2026-10-07T22:27:00Z",
+      "note": "The CANONICAL survivor of the double-ship. Its in-branch 'accept both' merge resolution is what left main red on all four workflows; #175 repaired the tree around it."
+    },
+    {
+      "step": 6,
+      "number": 175,
+      "branch": "arena/89b9650b-supreme-lamp",
+      "featureIds": [],
+      "status": "merged",
+      "repair": true,
+      "title": "Repair main: de-duplicate the step-6 DOUBLE MERGE (#173 + #174) - all four workflows were red; + merge-hygiene gate (5 rules, falsified 9/9)",
+      "mergedAt": "2026-10-07T23:32:07Z",
+      "note": "The repair that retired #173 and kept #174. Carries no feature id on purpose: it is the retiredBy target the ledger's retirement rule resolves against, and repair:true is what makes that resolution valid."
+    },
+    {
+      "step": 7,
+      "number": 176,
+      "branch": "arena/48b758b2-supreme-lamp",
+      "featureIds": ["F108"],
+      "status": "open",
+      "title": "F108: public replay viewer at docs/replay/ + publish-fence gate + Arena text summary",
+      "note": "SIBLING DETECTED by the 2026-10-08 session before it wrote a line of F108 code: `gh pr list --state all --search \"F108 in:title\"` returned this PR, based on post-#175 main and green on gates/windows-native/build-ui-prebuilt/proof. Per §SIBLING-PR-DETECTION the session did NOT open a second F108 implementation - that is precisely the #173/#174 damage class. detectDuplicateStep() returns sibling-open for any further F108 PR while this one is open, and duplicate-merged once it lands."
+    },
+    {
+      "step": 8,
+      "number": null,
+      "branch": null,
+      "featureIds": ["F109"],
+      "status": "planned",
+      "title": "F109: Debug HUD overlay (F12-shift)",
+      "note": "Owns the un-fenced chrome (handoffs #2, #7, #10, #11): AppShell/CommandPalette/DvrFab/SessionListModal fencing, and the runtime DVR off switch that should reuse the three now-unreferenced dvr.fullWarning/fullStart/fullStop i18n keys rather than inventing new ones."
+    },
+    {
+      "step": 9,
+      "number": null,
+      "branch": null,
+      "featureIds": ["F110"],
+      "status": "planned",
+      "title": "F110: Live Patch Protocol (module federation)"
+    },
+    {
+      "step": 10,
+      "number": 177,
+      "branch": "arena/0fb601e2-supreme-lamp",
+      "featureIds": ["F111"],
+      "status": "open",
+      "title": "F111: CI Inventory Gate - derived storage inventory + double-ship detector (#163 drift)",
+      "note": "This step. The entry shipped with number:null in the code commit (the PR does not exist until the branch is pushed) and was updated to #177 in the post-PR commit, which is also the commit that ticks the Step 10 roadmap line - so the ledger and the roadmap never disagree at any commit. Flip status to merged-canonical when #177 lands."
+    }
+  ],
+  "knownRoadmapDrift": [
+    {
+      "rule": "roadmap-branch-matches-pr",
+      "match": "roadmap Step 6 names branch arena/fa27adb3-supreme-lamp (ledger: #174) but cites #173 instead",
+      "why": "REAL ERROR IN THE AUTHORITATIVE DOCUMENT, recorded not rewritten. The Step-6 roadmap line reads 'landed on `arena/fa27adb3-supreme-lamp`, PR **#173**', but arena/fa27adb3 is #174 (verified against the GitHub API: #173 = arena/66a13a8c, #174 = arena/fa27adb3). The line describing the double-ship mis-attributes which PR was which - the exact confusion that caused it. Not fixed in place because §UI-ACCUMULATOR-FILES forbids rewriting another step's record, and because a gate that PINS a known, explained inconsistency is worth more than a silent edit. Operator fix, if wanted: change that line's '#173' to '#174' and delete this allowlist entry in the same commit (the gate fails on an allowlisted drift that stops being observed)."
+    },
+    {
+      "rule": "ledger-pr-cited-in-roadmap",
+      "match": "ledger #174 (step 6) is not cited by any Step 6 roadmap line",
+      "why": "The CANONICAL SURVIVOR IS NOT CITED AS ANY STEP'S PR. No roadmap checkbox line writes 'PR **#174**'; #174 appears only in the repair line's prose ('#173 `arena/66a13a8c` + #174 `arena/fa27adb3`'), and prose is deliberately not a citation - otherwise every issue cross-reference in the document (#163, #165, #169) would count as a shipped PR. Recorded for the same reason as above."
+    }
+  ]
+}
