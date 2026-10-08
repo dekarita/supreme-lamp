@@ -136,3 +136,56 @@ jobs:
           done
           echo 'F108: the deploy reported success but /replay/ did not answer with the viewer' >&2
           exit 1
+
+      - name: Verify publish parity and report freshness (M7 §PAGES-PARITY)
+        if: github.event_name != 'workflow_dispatch' || inputs.target != 'dry-run'
+        shell: bash
+        run: |
+          set -euo pipefail
+          base='${{ steps.deploy.outputs.page_url }}'
+          tracked='docs/status.json'
+          want=$(sha256sum "$tracked" | awk '{print $1}')
+          got=''
+          code='none'
+          for attempt in 1 2 3 4 5 6; do
+            code=$(curl -s -o /tmp/status.published.json -w '%{http_code}' "${base}status.json" || true)
+            if [ "$code" = "200" ]; then
+              got=$(sha256sum /tmp/status.published.json | awk '{print $1}')
+              if [ "$got" = "$want" ]; then break; fi
+            fi
+            echo "attempt $attempt: published status.json is not byte-identical to $tracked yet (HTTP ${code}) - waiting for the Pages CDN"
+            sleep 10
+          done
+          if [ "$got" != "$want" ]; then
+            echo "M7: Pages is not serving the $tracked that main tracks (http=${code} tracked=${want} published=${got:-none})" >&2
+            echo "M7: a second publisher, or a stale Pages artifact - see docs/REPLAY.md (Publishing)." >&2
+            exit 1
+          fi
+          echo "M7 parity PASS: ${base}status.json is byte-identical to main's $tracked"
+          # Freshness is REPORTED here, never enforced: a snapshot is legitimately
+          # old when no runner session is live (main.yml is workflow_dispatch-only).
+          # The one thing worth shouting about is an in_progress claim older than
+          # the 6h session ceiling (480 min): the session that wrote it is gone, so
+          # the published page is lying about a run that no longer exists.
+          ts=$(grep -o '"ts":"[^"]*"' "$tracked" | head -1 | cut -d'"' -f4 || true)
+          run_state=$(grep -o '"runStatus":"[^"]*"' "$tracked" | head -1 | cut -d'"' -f4 || true)
+          age_min='unknown'
+          if [ -n "$ts" ]; then
+            ts_trim=$(printf '%s' "$ts" | sed -E 's/(\.[0-9]{3})[0-9]*/\1/')
+            if t=$(date -u -d "$ts_trim" +%s 2>/dev/null); then
+              age_min=$(( ( $(date -u +%s) - t ) / 60 ))
+            fi
+          fi
+          {
+            echo "### M7 - Pages freshness"
+            echo ""
+            echo "| field | value |"
+            echo "| --- | --- |"
+            echo "| published status.json == main's tracked bytes | yes |"
+            echo "| tracked ts | ${ts:-unknown} |"
+            echo "| runStatus | ${run_state:-unknown} |"
+            echo "| age at deploy | ${age_min} min |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$age_min" != "unknown" ] && [ "$run_state" = "in_progress" ] && [ "$age_min" -gt 480 ]; then
+            echo "::warning::M7: published status.json claims runStatus=in_progress at ${age_min} min old (session ceiling 480 min) - the session that wrote it is gone"
+          fi
