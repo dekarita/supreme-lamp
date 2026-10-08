@@ -130,7 +130,7 @@
 
 ## Phase 3 — Advanced
 - [ ] **Step 9 — F110** · ETA 150min · Live Patch Protocol (module federation)
-- [ ] **Step 10 — F111** · ETA 60min · CI Inventory Gate (PR validates #163 drift)
+- [x] **Step 10 — F111** · landed on `arena/0fb601e2-supreme-lamp`, PR **#177** (opened this session, NOT merged) · CI Inventory Gate: the storage inventory and the step ledger are DERIVED and diffed, not hand-counted. Closes §Handoff #9 (#163 §3.8 says "14 live + 3 purged"; the tree has 21 surfaces, and `ghrdp-dash-token` is a DEAD READ - read by two files, written by nothing) and §Handoff #12 (the double-ship detector, proven by mutating the real ledger back into #173+#174). Reached by §WHILE-WAITING fall-through: step 7 belongs to open sibling #176.
 
 ## Session 2026-10-07 22:27Z — Step 6 REPAIR (double-merge de-duplication) — **COMPLETE**, PR #175
 

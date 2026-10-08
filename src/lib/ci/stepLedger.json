@@ -130,12 +130,12 @@
     },
     {
       "step": 10,
-      "number": null,
+      "number": 177,
       "branch": "arena/0fb601e2-supreme-lamp",
       "featureIds": ["F111"],
       "status": "open",
       "title": "F111: CI Inventory Gate - derived storage inventory + double-ship detector (#163 drift)",
-      "note": "This step. number:null because the PR does not exist until the branch is pushed; the gate tolerates a null number only for status open/planned, and the entry is updated to the real number in the session that lands it."
+      "note": "This step. The entry shipped with number:null in the code commit (the PR does not exist until the branch is pushed) and was updated to #177 in the post-PR commit, which is also the commit that ticks the Step 10 roadmap line - so the ledger and the roadmap never disagree at any commit. Flip status to merged-canonical when #177 lands."
     }
   ],
   "knownRoadmapDrift": [
