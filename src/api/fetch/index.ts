@@ -119,11 +119,13 @@ function genId(): string {
   return Math.random().toString(36).slice(2, 14);
 }
 
+// [M4] The `ghrdp-dash-token` localStorage read that used to sit here was a DEAD READ: no
+// commit in this repo has ever written that key (git log -S: 8 commits, all reads), so it
+// always fell through, and removing it is behaviour-neutral. What remains is a client that
+// sends NO X-Dash-Token, which POST /api/fetch requires (payloads/ghrdp-server.ps1). Routing
+// this through the canonical resolver (src/lib/dashToken.ts, key `ghrdp.dashToken`) changes
+// which credential is sent, so it is a separate, deliberate decision.
 function getDashToken(): string {
-  try {
-    const ls = typeof localStorage !== 'undefined' ? localStorage.getItem('ghrdp-dash-token') : null;
-    if (ls) return ls;
-  } catch {}
   try {
     // @ts-ignore
     if (typeof window !== 'undefined' && (window as any).__GHRDP_DASH_TOKEN) return (window as any).__GHRDP_DASH_TOKEN as string;

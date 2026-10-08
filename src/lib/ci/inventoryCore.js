@@ -14,8 +14,8 @@
 //   (2) INVENTORY DRIFT (#163 §3.8). The hand-written inventory says "14 live +
 //       3 purged-legacy" localStorage keys. Measured from source it is not 14: three
 //       live surfaces are absent from it (`ghrdp.f57.opqueue`, the IndexedDB
-//       `ghrdp-dvr`, and `ghrdp-dash-token`), and the last of those is read by two
-//       files and written by nothing in the repo. A hand-counted inventory cannot be
+//       `ghrdp-dvr`, and `ghrdp-dash-token`), and the last of those was read by two
+//       files and written by nothing in the repo (M4 deleted both reads). A hand-counted inventory cannot be
 //       trusted; a derived one can.
 //
 // So this core DERIVES both inventories from the tree and diffs them against a
@@ -29,7 +29,7 @@
 //
 // A NOTE ON BRITTLENESS, because this gate is a count-and-citation lock and the repo has
 // been burned by those before (see docs/CI-GATE-BRITTLENESS.md): if this gate fails after
-// you ADD a storage key or FIX the dead `ghrdp-dash-token` read, the gate is not wrong and
+// you ADD a storage key or REMOVE one (M4 removed the `ghrdp-dash-token` dead read this way), the gate is not wrong and
 // you should not weaken it - you should re-measure and update
 // `src/lib/ci/storageInventory.json` in the SAME commit. That is the whole point: the
 // declared inventory is the operator-readable answer to "what does this app persist?",
@@ -467,9 +467,9 @@ export function collectStringConsts(sources) {
  *   remove only                    -> `purged`     (deliberately erased, never read or written)
  *   get only                       -> `dead-read`  (read by us, written by NOTHING in the repo)
  *
- * `dead-read` is the interesting one: `ghrdp-dash-token` is read by
+ * `dead-read` is the interesting one: `ghrdp-dash-token` was read by
  * `src/api/fetch/index.ts` and `src/lib/f46.ts` and written by no file in the repo, so
- * both reads always fall through to the next source. That is a latent bug the hand-counted
+ * both reads always fell through to the next source (M4 deleted them). That is a latent bug the hand-counted
  * inventory could not see, and it is why the classification is derived and not asserted.
  */
 export function classifyStorageKey(ops) {

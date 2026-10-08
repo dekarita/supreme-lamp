@@ -144,16 +144,5 @@
       "note": "This step. The entry shipped with number:null in the code commit (the PR does not exist until the branch is pushed) and was updated to #177 in the post-PR commit, which is also the commit that ticks the Step 10 roadmap line - so the ledger and the roadmap never disagree at any commit. Flipped open -> merged by the step-8 session (API-verified: merged 00:44:59Z); 'merged' rather than the 'merged-canonical' this note once asked for, because -canonical is reserved for a de-duplication survivor."
     }
   ],
-  "knownRoadmapDrift": [
-    {
-      "rule": "roadmap-branch-matches-pr",
-      "match": "roadmap Step 6 names branch arena/fa27adb3-supreme-lamp (ledger: #174) but cites #173 instead",
-      "why": "REAL ERROR IN THE AUTHORITATIVE DOCUMENT, recorded not rewritten. The Step-6 roadmap line reads 'landed on `arena/fa27adb3-supreme-lamp`, PR **#173**', but arena/fa27adb3 is #174 (verified against the GitHub API: #173 = arena/66a13a8c, #174 = arena/fa27adb3). The line describing the double-ship mis-attributes which PR was which - the exact confusion that caused it. Not fixed in place because §UI-ACCUMULATOR-FILES forbids rewriting another step's record, and because a gate that PINS a known, explained inconsistency is worth more than a silent edit. Operator fix, if wanted: change that line's '#173' to '#174' and delete this allowlist entry in the same commit (the gate fails on an allowlisted drift that stops being observed)."
-    },
-    {
-      "rule": "ledger-pr-cited-in-roadmap",
-      "match": "ledger #174 (step 6) is not cited by any Step 6 roadmap line",
-      "why": "The CANONICAL SURVIVOR IS NOT CITED AS ANY STEP'S PR. No roadmap checkbox line writes 'PR **#174**'; #174 appears only in the repair line's prose ('#173 `arena/66a13a8c` + #174 `arena/fa27adb3`'), and prose is deliberately not a citation - otherwise every issue cross-reference in the document (#163, #165, #169) would count as a shipped PR. Recorded for the same reason as above."
-    }
-  ]
+  "knownRoadmapDrift": []
 }

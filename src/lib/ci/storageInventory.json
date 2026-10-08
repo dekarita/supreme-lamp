@@ -17,7 +17,7 @@
   },
   "drift": {
     "i163Claim": "14 live + 3 purged-legacy localStorage keys (#163 §3.8, hand-counted)",
-    "derived": "21 surfaces at step 10 (16 live: 15 localStorage + 1 IndexedDB, 1 migration, 3 purged, 1 dead-read). F110 added 2 more (f110:armed, ghrdp-patches), so the CURRENT derived count is 25 - see postInventoryGrowth; the gate pins the current number, this sentence quotes the measurement #163 was tested against",
+    "derived": "21 surfaces at step 10 (16 live: 15 localStorage + 1 IndexedDB, 1 migration, 3 purged, 1 dead-read). F110 added 2 more (f110:armed, ghrdp-patches), so the derived count was 25 before M4 and is 24 after it (M4 removed the ghrdp-dash-token dead read; see drift.retiredByM4) - see postInventoryGrowth; the gate pins the current number, this sentence quotes the measurement #163 was tested against",
     "missedByI163": [
       {
         "key": "ghrdp.f57.opqueue",
@@ -28,12 +28,16 @@
         "why": "IndexedDB database opened by src/lib/dvr/storage.ts (F107, step 6). §3.8 predates step 6 and only ever counted localStorage, so the largest persistence surface the app now has - session recordings with base64 PNG thumbnails, 5 MB/session soft budget, 30-day retention - is not in the inventory at all."
       },
       {
-        "key": "ghrdp-dash-token",
-        "why": "Not merely missing: it is a DEAD READ. src/api/fetch/index.ts and src/lib/f46.ts both read it, nothing in the repo writes it, so both fall through to their next token source. The canonical key is ghrdp.dashToken (note the dot, not the hyphen) written by src/lib/dashToken.ts. §3.8 lists only the canonical one, so the shadow key was invisible. Latent-bug candidate: a token read path that can never succeed."
-      },
-      {
         "key": "ghrdp.collector.actions.v1",
         "why": "Partially known: §3.8 mentions it inline in the f102-collector-actions-v1 row ('legacy ... migrated once') but never counts it as a surface. Declared here as classification=migration so the read-then-delete path in collectorAgent.ts stays visible if the migration is ever removed."
+      }
+    ],
+    "retiredByM4": [
+      {
+        "key": "ghrdp-dash-token",
+        "retiredBy": "M4 (maintenance, latent bug cleanup)",
+        "why": "RETIRED. Not merely missing: it is a DEAD READ. src/api/fetch/index.ts and src/lib/f46.ts both read it, nothing in the repo writes it, so both fall through to their next token source. The canonical key is ghrdp.dashToken (note the dot, not the hyphen) written by src/lib/dashToken.ts. §3.8 lists only the canonical one, so the shadow key was invisible. Latent-bug candidate: a token read path that can never succeed.",
+        "evidence": "git log --all -S ghrdp-dash-token: 8 commits, every one a read; no commit ever added a setItem for the key. Both reads (src/api/fetch/index.ts getDashToken, src/lib/f46.ts getPerRunKey) were deleted in M4, so the key is no longer derived."
       }
     ]
   },
@@ -129,15 +133,6 @@
       "declaredIn": ["src/lib/launchUrl.ts"],
       "i163": true,
       "note": "MANUAL_WEBDESKTOP_KEY; read by readManualWebDesktop() for LogonGateBanner suppression and the F98 sync event."
-    },
-    {
-      "key": "ghrdp-dash-token",
-      "kind": "localStorage",
-      "classification": "dead-read",
-      "surface": "shared",
-      "declaredIn": ["src/api/fetch/index.ts", "src/lib/f46.ts"],
-      "i163": false,
-      "note": "DRIFT + LATENT BUG: read by both files, written by nothing in the repo. The canonical key is 'ghrdp.dashToken'. Both reads therefore always fall through (to window.__GHRDP_DASH_TOKEN, then to ''). Fixing this by writing the key, or by deleting the reads, MUST update this entry's classification in the same commit - that is the point of the gate, not brittleness."
     },
     {
       "key": "ghrdp-dvr",
