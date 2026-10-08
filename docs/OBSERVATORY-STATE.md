@@ -10,7 +10,7 @@
 > determination = first unchecked box below; fall back to #165's body only if this file is missing,
 > then cross-check the newest "§3 tracking-issue handoff" comment on the PR this step shipped in.
 
-**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-08 by arena/3a1f08df-supreme-lamp (maintenance step M5, auth routing — operator-approved; M1 stays PR #182 merged, M4 stays PR #183 merged). **PHASE: the 10-step Observatory is SHIPPED** (step 9 / PR #180 merged 2026-10-08T02:40:31Z as `71f75cc`); work below this line is the post-ship maintenance phase (M1…), see §MAINTENANCE-STEPS-LOG.
+**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-08 by arena/4d9cc1a2-supreme-lamp (maintenance step M2, chrome unfencing — see the record at the end of this file; M1 stays PR #182 merged, M4 stays PR #183 merged, M5 stays PR #184 merged). **PHASE: the 10-step Observatory is SHIPPED** (step 9 / PR #180 merged 2026-10-08T02:40:31Z as `71f75cc`); work below this line is the post-ship maintenance phase (M1…), see §MAINTENANCE-STEPS-LOG.
 
 ## §OPERATOR-ASSERTIONS (v8; verify independently)
 - GH_PAT: operator previously reported Worker environment variable; **not used** by F107 or by this repair. No secret value was read or stored.
@@ -353,6 +353,8 @@ true branch dereferenced `null`) **and** the section is fenced, so a future cras
 1. **Global chrome is intentionally unfenced.** `Toasts`, `DiagSideDrawer`, `CollectorRunBridge`,
    `F92VersionGate`, `DashTokenGate` and `AppShell` live outside `<Routes>`; the 11 fences bound the 11
    *sections* only. A crash in one of those overlays still blanks the app - candidate for F109's HUD step.
+   **[M2 UPDATE]** F109 did not take it; M2 did. All six, plus `DebugHUD`, `LogonGateBanner`, `CommandPalette`
+   and the transitive `SessionListModal`, are fenced by `ChromeBoundary` (10 surfaces, `chromeBoundaryCore.js`).
 2. **The registry does not carry storage keys.** The 14 live `localStorage` keys of #163 §3.8 are reached
    through `lib/` constants, not string literals in the page files the registry owns, so declaring them here
    would have been an unverifiable claim. F107 (DVR) must derive them from source, per key, with the same
@@ -559,8 +561,10 @@ operator once this PR lands.
    and fenced (mutation descriptors = tag names + attribute NAMES + counts; screenshots = the only pixel
    surface, 320×240 PNG thumbs, byte-capped; no F107 file names a network API). The LITE files stayed
    untouched; F107-h locks that posture.
-2. **F109 (step 8) owns the un-fenced chrome** (see the tracker below); the DVR FAB is now one of those
-   surfaces.
+2. ~~**F109 (step 8) owns the un-fenced chrome**~~ **RESOLVED by M2** (maintenance step 2): F109 never took
+   it (its F109-f gate is *about* the HUD being chrome, not about fencing chrome), and the chrome is now fenced
+   by `ChromeBoundary` — 10 surfaces, each with an explicit "what is lost when it crashes" statement in
+   `src/lib/chromeBoundaryCore.js`. The tracker below is updated in place.
 3. **F108 (step 7) needs GitHub Pages**, which no session has verified as enabled - operator item.
 4. ~~PR #170 must be rebased before step 5 can start.~~ **RESOLVED**: #170 merged (`dd2ed68`), and the
    resolution had a cost - it dropped the i18n count lock bump, so `main` shipped red. Step 5 repaired it.
@@ -590,9 +594,10 @@ operator once this PR lands.
 9. **Registry storage-key audit (step 4 handoff 2) is still open**: `feature-registry.json` carries no
    storage keys; the 14 `localStorage` keys of #163 §3.8 + the `ghrdp-dvr` IndexedDB need a cited audit.
    F107 deliberately did not widen the registry schema (that would have moved F105's gates); F109/F111 own it.
-10. **F109 owns the SessionListModal's unfenced mount**: the modal renders from `DvrFab` (chrome, unfenced by
-    design) and from the Collector page (fenced). A crash inside it while opened from the FAB still blanks the
-    app until F109 fences the chrome.
+10. ~~**F109 owns the SessionListModal's unfenced mount**~~ **RESOLVED by M2 (transitively)**: the modal
+    renders from `DvrFab` and from the Collector page. M2 fenced `DvrFab` itself (`<ChromeBoundary
+    surface="dvr-fab">`), and the modal renders INSIDE DvrFab's tree, so the FAB path is now fenced too — with
+    no second fence on the modal (an unreachable-without-the-first surface is not a surface).
 11. **The surviving Full DVR has NO runtime off switch** (new with #175). `installDvrFull()` runs automatically
     from `main.tsx` behind two BUILD-time kill flags (`VITE_DVR_ENABLED`, `VITE_F107_FULL_DVR`); the retired
     #173 variant had a FAB toggle (`dvr-full-toggle` + `dvr.fullWarning`/`fullStart`/`fullStop`, whose i18n keys
@@ -614,13 +619,15 @@ description, not from invented memory), with the target fencing step:
 | surface | where | fenced? | target |
 |---|---|---|---|
 | 11 section routes (`/`, `/search`, `/sessions`, `/connections`, `/keys`, `/files`, `/mirror`, `/telemetry`, `/health`, `/collector`, `/settings`) | `src/App.tsx` | yes (PR #170) | landed with step 4 |
-| `Toasts`, `DiagSideDrawer`, `CollectorRunBridge`, `F92VersionGate`, `DashTokenGate`, `AppShell` | `src/App.tsx` chrome | **no** | F109 |
-| **`DvrFab`** (added by step 3) | `src/App.tsx` chrome | **no** - mounted beside `CollectorRunBridge`, deliberately outside the fences (a crash in a section must still leave the Copy handle reachable) | F109 |
-| `CommandPalette` | `src/components/layout/AppShell.tsx` | **no** | F109 |
+| `Toasts`, `DiagSideDrawer`, `CollectorRunBridge`, `F92VersionGate`, `DashTokenGate`, `AppShell` | `src/App.tsx` chrome | **YES (M2)** - all six, plus `DebugHUD` and `LogonGateBanner` (added after this tracker was written), through `chrome(<surface>, <mount>)` in the block after `</Routes>` and, for `shell`, as the route element | landed with M2 |
+| **`DvrFab`** (added by step 3) | `src/App.tsx` chrome | **YES (M2)** - mounted beside `CollectorRunBridge`, deliberately outside the SECTION fences (a crash in a section must still leave the Copy handle reachable); the chrome fence preserves that property | landed with M2 |
+| `CommandPalette` | `src/components/layout/AppShell.tsx` | **YES (M2)** - `<ChromeBoundary surface="command-palette">` inside the shell's own fence, so a crash nulls the palette only | landed with M2 |
 | 11 `/#/lab/<section>` pages | `src/components/lab/LabRoute.tsx` | **yes** - the route builds its own `FeatureBoundary` from the route parameter, with `FeatureLab` as its child, so a crash (or a forced empty body) degrades to that section's card and unmounts the lab's interceptor | landed with step 5 |
 | the Labs entry | `AppShell.tsx`, after `</nav>` | n/a (not a route) | step 5: a BUTTON, flag-gated, deliberately outside the locked 11-entry `<nav>` list |
 | the lab's fetch interceptor | `src/lib/lab/mockBackend.ts` | n/a | scoped to the lab page's lifetime: installed by `FeatureLab`'s effect, ref-counted, restored on unmount, never installed by a dashboard route |
-| **`SessionListModal`** (added by step 6) | mounted from `DvrFab.tsx` (chrome) AND the Collector page | **mixed** - fenced when opened from `/collector` (the page's boundary), UNFENCED when opened from the FAB | F109 |
+| **`SessionListModal`** (added by step 6) | mounted from `DvrFab.tsx` (chrome) AND the Collector page | **YES (M2)** - fenced when opened from `/collector` (the page's boundary) and now ALSO from the FAB, because the modal renders inside DvrFab's tree and DvrFab is inside `<ChromeBoundary surface="dvr-fab">`. `SessionListModal` deliberately got no fence of its own: a second fence would be a surface that cannot be reached without the first one. | closed transitively by M2 |
+| `LogonGateBanner` (added by F93, after this tracker was written) | `src/components/layout/AppShell.tsx` | **YES (M2)** - a crashing banner used to blank the page it warns about | landed with M2 |
+| `DebugHUD` (added by F109, after this tracker was written) | `src/App.tsx` chrome | **YES (M2)** - the HUD keeps its own `HudPanelBoundary` panels *and* now has a chrome fence, so a crash in the overlay itself cannot take the app with it | landed with M2 |
 
 ## §Quality-metrics (v7)
 | session | loopholes found+closed | falsifications run/caught | main baseline on entry | budget used |
@@ -629,6 +636,7 @@ description, not from invented memory), with the target fencing step:
 | step 5 F106 | 1 | 18/18 | RED-repaired (lock drift) | ~25/120 |
 | **step 6 F107** | **3** (constant-drift class ×2 + triage call-site floor) | **16/16** | GREEN | ~65/120 |
 | **step 6 REPAIR (#175)** | **1** (MH-e: an import-only pin would have passed while the `safeRoute` **call site** was dropped — the import and the call are now asserted separately) | **9/9** | **RED-repaired (all 4 workflows)** | ~45/120 |
+| **M2 chrome unfencing** | **2** (the M12 class: `includes("emitChromeBoundaryError")` passed while the CALL was deleted — the rule now pins the call inside `componentDidCatch`; and the falsification driver's M5 mutation silently did not apply, making that row vacuous until the target was asserted) | **13/13** | GREEN (741 node / 1148 vitest on entry) | ~75/120 |
 
 Trend: gate quality is holding (every session finds at least one real hole in its OWN gate before push);
 main-baseline-red frequency is 1/3 sessions (step 5), and the §LOCK-ARITHMETIC rule introduced after it has
@@ -1692,7 +1700,8 @@ Session-branch push, then PR, then merge with `merge_method=merge`, done by the 
 | M2 | chrome unfencing (6 global surfaces) | not started | — |
 | M3 | Pages `/status.json` freshness | not started (operator decision: widen `replay-viewer.yml`'s fenced push trigger, or accept staleness) | — |
 | M4 | latent bug cleanup | **code COMPLETE on `arena/d5b6da04-supreme-lamp`**: the `ghrdp-dash-token` dead read is deleted at both sites; Step 6 line 115 `#173`→`#174` with both allowlist entries deleted in the same commit; `check:ui` replaced by `ui/dist/index.html` + `check:no-neon-green` (pinned by M4-L1). Gates M4-D1…D6, M4-R1/R2, M4-L1, plus a runtime test. | PR **#183** (head `b8ecb25b`). CI on `b8ecb25b`: `gates` ✅ 13m2s · `windows-native` ✅ 11m28s · `proof` ✅ · `build-ui-prebuilt` ✅ · labs `f56d-qbt-lab` / `f57-explorer-lab` / `f60-warm-lab` ✅ · `e2e-ui` ⚠️ cancelled by its 25-min `timeout-minutes` during `Run F78 + F79 E2E specs`, 0 failed steps. That is the pattern of the last four pushes to main (AMBER-INHERITED, not caused by M4). Merge is the operator's call. |
-| **M5** | auth routing (the bug M4 found behind the dead read): `requestFetch` sends the canonical `X-Dash-Token` | **code COMPLETE on `arena/3a1f08df-supreme-lamp`** (operator approved the behaviour change in the v14 session; M6 explicitly not taken): `src/api/fetch/index.ts` resolves through `src/lib/dashToken.ts`; `window.__GHRDP_DASH_TOKEN` retired (1 reader / 0 writers) and pinned absent; `M4-D5` flipped deliberately; new gate `tests/m5-auth-routing.test.js` (7 rules) + runtime pin `src/tests/smoke/m5-auth-routing.test.ts` (7). Not scope-crept into `getPerRunKey` (f46) — `/api/config` is not token-gated. | PR **#184** |
+| **M5** | auth routing (the bug M4 found behind the dead read): `requestFetch` sends the canonical `X-Dash-Token` | **code COMPLETE on `arena/3a1f08df-supreme-lamp`** (operator approved the behaviour change in the v14 session; M6 explicitly not taken): `src/api/fetch/index.ts` resolves through `src/lib/dashToken.ts`; `window.__GHRDP_DASH_TOKEN` retired (1 reader / 0 writers) and pinned absent; `M4-D5` flipped deliberately; new gate `tests/m5-auth-routing.test.js` (7 rules) + runtime pin `src/tests/smoke/m5-auth-routing.test.ts` (7). Not scope-crept into `getPerRunKey` (f46) — `/api/config` is not token-gated. | PR **#184** (**MERGED** 2026-10-08T11:11:13Z) |
+| **M2** | chrome unfencing (F105 handoff #1: "a crash in one of those overlays still blanks the app") | **code COMPLETE on `arena/4d9cc1a2-supreme-lamp`**: new `ChromeBoundary` primitive + pure core (10 surfaces, each with a `lost` statement) + the shared crash channel extended with a `kind` discriminant (additive; absent == section, so F105's data/tests are unchanged). Null render on crash, bounded auto-retry (3 × 2 s), no F105 ledger registration, no wrapper DOM. `fence()` still counts 13 in App.tsx (M2's helper is `chrome()`), F105/F109/F-DVR-i/F56-c pins all still literally true. Gates `tests/m2-chrome-unfencing.test.js` (6) + `src/tests/smoke/m2-chrome-unfencing.test.tsx` (8). | PR **#185** |
 
 ## Session 2026-10-08 10:27Z — Maintenance step **M5** — auth routing fix (operator-approved) — branch `arena/3a1f08df-supreme-lamp`
 
@@ -1846,3 +1855,180 @@ F110/F110b file untouched · budget ≈ 35 min of 120.
 ⇒ **mergeable by the §4 criteria** (only RED-NEW blocks): every blocking lane green on both heads,
 `MERGEABLE`, `mergeStateStatus: UNSTABLE` (the amber `e2e-ui` alone). Nothing was merged by this
 session and `main.yml` was not dispatched. Session-log comment: PR #184.
+
+## Session 2026-10-08 11:35Z — Maintenance step **M2** — chrome unfencing (`ChromeBoundary`, 10 surfaces) — branch `arena/4d9cc1a2-supreme-lamp`
+
+**§STEP-SELECTION (v15 §1).** The v15 brief's suggested order after #184 was M2 → M6 → M3, with M2
+recommended because it needs **no operator decision**. That held: M2 was executed. M6 (the per-run key
+leak) still needs A/B/C and M3 still needs a Pages deploy policy, so neither was attempted, nothing was
+merged, `main.yml` was not dispatched, no plain issue was written, and no Ed25519 key was pinned.
+
+### §M2-PROMPT-STALENESS — the v15 brief checked against the tree (measured this session, 2 corrections)
+| # | the brief said | measured | consequence |
+|---|---|---|---|
+| 1 | "M5 Auth Routing: 🟢 PR **#184** OPEN, mergeable ... MERGE PR #184 when ready" | **#184 is MERGED** (2026-10-08T11:11:13Z) — and this branch's HEAD **is** that merge commit (`553e165`), so M2 starts on top of M5, not beside it | §MERGE-STATUS-RE-CHECK: the operator's item 3 was already done. No sibling PR exists (`gh pr list --search "M2 in:title OR chrome in:title OR unfencing in:title"` → `[]`) |
+| 2 | "M2 Chrome Unfencing: **6 surfaces** still exposed" (with a note that DvrFab/CommandPalette "may be additional, verify via grep") | **10 surfaces.** The F105 handoff named 6 (Toasts, DiagSideDrawer, CollectorRunBridge, F92VersionGate, DashTokenGate, AppShell); the tracker added DvrFab + CommandPalette; and two were added AFTER the tracker was written — `LogonGateBanner` (F93) and `DebugHUD` (F109). All 10 are fenced | §INVENTORY-RE-DERIVE: the PR TITLE states the honest count (10) and the body records the brief's "6" with the re-derivation — the brief's own instruction was to verify it |
+
+Everything else in the brief checked out: #182/#183 MERGED, #179/#181 OPEN and *issues* (not PRs),
+#164/#165 OPEN, #163/#169 CLOSED, the Ed25519 pin still empty (`PATCH_PUBLIC_KEY_B64 = ""`),
+labels PR-only for this token.
+
+### §PRE-STEP — all 12 checks run (v11 + v15)
+1. **§SPEC-REALITY — 1 drift, executed as written anyway.** The brief's implementation sketch said
+   "`src/components/primitives/ChromeBoundary.tsx` (new) ... same error-boundary pattern as
+   FeatureBoundary ... emits same `ghrdp:feature-boundary-error` event". Kept: one channel, one event
+   name, one reporter. Changed: the detail gained a `kind` discriminant and the row builder branches,
+   because "a chrome crash filed as a broken SECTION" is the one thing a shared channel makes easy to get
+   wrong (`kind` is optional so every pre-M2 producer, test and stored row still means "a route fence").
+   Recorded, not silently re-scoped.
+2. **§INVENTORY-RE-DERIVE — 10, not 6** (correction #2 above). Derived from `grep -n "data-testid"`-level
+   code reading of `App.tsx` + `AppShell.tsx`, not from the tracker.
+3. **§SECRET-ENUM — 0 new locations, 0 values read.** The new files name no credential, no endpoint and no
+   storage key; the Node gate scans them for the F105-j/M5 banned-token class.
+4. **§ARCH-FEASIBILITY — verified.** `FeatureBoundary` is the proven pattern; the chrome variant differs in
+   exactly three intended ways (null instead of a card; bounded retry; no mount-ledger registration).
+5. **§SECURITY-REMEDIATION-CHECK — clear.** No new route/endpoint/storage; the fence wraps existing mounts,
+   and `DashTokenGate`'s crash mode is documented as "the server is still the authority (403)".
+6. **§CI-PIN-DETECTION — 6 pin families, 0 pins moved.** F105-g (`exactly 13 fence("…")` calls), F105-h
+   (route literals), F56-c (`launch-gates.yml` sidebar order + two verbatim route elements), F-DVR-i
+   (`<DvrFab />` literal + `indexOf("<CollectorRunBridge />") < indexOf("<DvrFab />")`), F109-f
+   (`<DebugHUD />` after `</Routes>` before `</HashRouter>`, once, not in AppShell), F-TESTID a–f. Every one
+   is satisfied because **the mount expressions are byte-identical** — M2 adds fences around them and moves
+   nothing. Verified by running the full node lane and the full vitest lane, not by reasoning.
+7. **§FACT-REFRESH — done** (§M2-PROMPT-STALENESS).
+8. **§PRIMITIVE-AUDIT — the right primitive exists and is reused.** `sanitizeBoundaryMessage`,
+   `sanitizeBoundaryRoute`, `FEATURE_BOUNDARY_EVENT`, `installFeatureBoundaryReporter` (installed in
+   `main.tsx` for F105) are all reused unchanged; `ChromeBoundary` is the only new component, and it is a
+   sibling of `FeatureBoundary` rather than a parameterised version of it — a `FeatureBoundary` with a
+   "chrome mode" flag would have made the mount ledger and the i18n card conditional inside the one
+   component every F105 gate reads.
+9. **§MERGE-STATE-CHECK — GREEN on entry** (`553e165`, the #184 merge; re-read before the PR).
+10. **§MAIN-BASELINE-CHECK — GREEN and measured on this machine**: `node --test tests/*.test.js`
+    **741/741** · `vitest run` **1148/1148 (89 files)** · `tsc -p tsconfig.build.json` **0** ·
+    `vite build` **1,103.58 kB** (byte-identical to M5's final number). No inherited-red repair.
+11. **§FILE-PATH-COLLISION-CHECK — 5 new paths, all free** (`src/lib/chromeBoundaryCore.js` + `.d.ts`,
+    `src/components/primitives/ChromeBoundary.tsx`, both gates) — verified absent on `main` first.
+12. **§SIBLING-PR-DETECTION — none** (query above). **§CALL-SITE-MAJORITY-SIGNAL (v15):
+    N/A-with-a-twist** — there was no majority call-site to align to: F105 has exactly ONE producer, so the
+    design question was "extend the channel or fork it", and the answer followed the F107 precedent
+    (two producers, two provenance tags, one mechanism).
+
+### §SCOPE-DECISIONS (v15 §TOUCH-ONLY-WHAT-NEEDS-TOUCHING)
+| # | adjacent code | touched? | why |
+|---|---|---|---|
+| 1 | `src/components/primitives/FeatureBoundary.tsx` (F105's card) | **no** | the section fence's behaviour is not part of M2's bug; the shared types it consumes are widened optionally, so the component needed no change at all — and its DOM gate proves the card still renders on a section crash |
+| 2 | `src/lib/debugHud.ts` (F109's `lastErrors` map) | **no** | chrome details DO reach the HUD's error map (`kind` is carried, the guard is unchanged), but the Features panel renders errors keyed by the 11 registry ids, so a chrome key has no card. Adding a chrome errors panel is F109's surface, not M2's — recorded as a handoff instead of a drive-by |
+| 3 | `SessionListModal` | **no new fence** | it renders inside DvrFab's tree (`DvrFab.tsx:198`), so the `dvr-fab` fence covers the FAB path and the Collector page's own fence covers the page path |
+| 4 | `i18n` catalogs (the count lock is at 1030) | **no** | the chrome card renders nothing, so M2 introduces **0** user-visible strings — the one place where "chrome differs from sections" pays for itself |
+| 5 | `src/lib/ci/stepLedger.json` / `storageInventory.json` | **no** | a maintenance step has no roadmap checkbox (M1's precedent: adding a ledger entry a checkbox does not cite reddens F111-d), and M2 adds no storage key |
+
+### §DESIGN — one channel, two provenances, three deliberate differences
+- **Same event, same subscriber, same dedup budget, same row cap.** A second event name would have meant a
+  second reporter, and two implementations of one budget is exactly the drift class the step-6 double-merge
+  (#175) is remembered for. `emitChromeBoundaryError` mints `kind: "chrome"` + `feature: "chrome:<surface>"`
+  so a caller cannot forget either half; `boundaryCollectorRow` branches BEFORE the section wording, so a
+  chrome failure is never described as a broken section. F105's original shape survives as "absent kind" —
+  the F101 rule ("every new field optional so old rows keep rendering") applied to a live contract.
+- **Null, not a card** (rule 2 in `ChromeBoundary.tsx`): the prompt's policy, and the right one — a crash
+  card for an overlay would paint over a dashboard that is still working.
+- **Bounded auto-retry (3 × 2 s)**: chrome has no Retry button (it renders nothing), so a transient crash
+  would otherwise neuter the surface for the whole session. A deterministic crash settles after ~6 s.
+- **No mount-ledger registration**: `mountedFeatureIds()` is what F105's sweep and the Debug HUD's Features
+  panel read; chrome registering there would make the HUD report sections that are not mounted (the reason
+  F109 refused `FeatureBoundary` for its own panels).
+
+### §FALSIFY-3 — 13 mutations, **13 caught, 0 missed** (applied, both gates run, restored byte-identically; §GATE-SELF-TEST below)
+M1 drop the `toasts` row from the table · M2 add an 11th id to the `.d.ts` union only · M3 unfence the
+Toasts mount · M4 add a NEW chrome element after `</Routes>` unfenced · M5 register in the F105 ledger ·
+M6 paint a wrapper div when healthy · M7 drop the `kind` from the emitter · M8 ignore the chrome kind in the
+row builder · M9 convert a SECTION fence into a `chrome()` call · M10 remove the AppShell fence ·
+M11 unbounded retry · M12 silent null (emitter removed) · M13 file chrome under the SECTION source tag.
+Caught by: M2-a (id set + union parity + policy pair), M2-b (mount/block derivation), M2-c (fence
+properties), M2-d (channel provenance), M2-e (13 `fence()` calls) and the DOM suite's byte-equal / sweep /
+ledger / retry / App-level / reporter tests — most mutations caught by two independent rules.
+
+### §GATE-SELF-TEST — 2 defects in THIS step's own gates, found by falsifying rather than by green
+1. **The silent-failure loophole (M12).** M2-c originally pinned `code.includes("emitChromeBoundaryError")`.
+   Replacing the call with `void ({` **passed it**, because the leftover import still contains the name. A
+   gate that pins a NAME is satisfied by an unused import; it now pins the **call** (`/emitChromeBoundaryError\(\{/`)
+   inside the `componentDidCatch` body, and the retry call site with it. This is the F105/M5
+   comment-stripping lesson one level up: **pin the use, not the mention.**
+2. **The vacuous mutation (M5 of the driver).** The first falsification driver's M5 target string did not
+   exist, so that mutation silently did not apply and the row proved nothing. The driver now asserts the
+   target is present; the row was re-run and is caught. (Same class as the M1 record's "a scan that reads
+   nothing must fail, not pass".)
+3. **A test that could not see what it asserted.** The DOM retry test was first written with a per-render
+   `capture()` helper that unsubscribes when the render returns — so the events fired during
+   `advanceTimersByTime` were invisible and the assertion was blind. It subscribes once per test now, and
+   advances one interval at a time so the SPACING is proved rather than the total.
+
+### §HONEST-RESIDUALS (v15 §HONEST-RESIDUAL-DOCUMENTATION)
+1. **The App-level DOM proofs cover 2 of the 10 surfaces** (DvrFab and AppShell are the two this suite
+   mocks to throw). The other eight are proved by the sweep that mounts each fence directly with a throwing
+   child, and by the Node gate's mount/derivation rules — but "the real App survives a crash in Toasts"
+   specifically is asserted structurally (the fence's containment + App's own mount list), not by making the
+   shipped `<Toasts />` throw. Making all ten throw inside the real App would need ten module mocks.
+2. **The mount wiring is a static claim.** Mutation M3 (unfence the Toasts mount) is caught by the Node gate
+   and NOT by the DOM suite — deliberate (a static property belongs in a static gate), and recorded here so
+   the next reader does not read "DOM: MISSED" as a hole.
+3. **A chrome crash is invisible on screen, by design.** The diagnosis is the Collector row (source
+   `chrome-boundary`, reason naming the surface and what was lost) plus the HUD's error map — the HUD's
+   *Features* panel does not render chrome keys (scope decision 2), so the collector page is the surface
+   where an operator sees it. That is a real, documented gap in the HUD's coverage, handed to F109's owner.
+4. **No live-runner verification is possible from this sandbox.** Nothing in M2 touches the wire, so the
+   residual is narrower than M5's: the browser rendering of a nulled overlay (e.g. the toast container
+   disappearing mid-session) was NOT observed in a real browser — jsdom proves containment and retry, and
+   the visual behaviour follows from a null render.
+5. **`e2e-ui` still has no verdict** (25-min self-cancel; unchanged, not M2's class).
+6. **Pages `/status.json` freshness could not be measured here** (M3's premise): `curl` to
+   `dekarita.github.io` has no network path from this sandbox (HTTP 000), so the brief's "ENABLED + LIVE but
+   frozen" claim is neither confirmed nor refuted by this session; the committed `docs/status.json` still
+   carries a 2026-10-07T13:19Z watcher timestamp, which is consistent with "frozen".
+
+### §BUNDLE-SIZE-CHANGE (v15 §BUNDLE-SIZE-CAN-SHRINK) — **+4.01 kB (GREW), measured both sides**
+baseline (with the new source files present but the App.tsx/AppShell.tsx fences removed): **1,103.58 kB** —
+byte-identical to M5's final number, measured on this machine before M2's first edit. Final tree with all
+10 fences: **1,107.59 kB**. Unlike M5 (which shrank by routing through code already in the graph), M2 adds
+real code — a component, a pure core and their types — so the honest answer is "grew, by 4.01 kB, and that
+is what a new fence costs". `check:regression-ids` 219/219 · `check:no-neon-green` · `check:bottom-bar` ·
+`check:fx-ids` all PASS after the build.
+
+### §MEASURED (this tree, before the PR)
+`node --test tests/*.test.js` **747/747** (+6) · `vitest run` **1156/1156, 90 files** (+8 tests, +1 file) ·
+`tsc -p tsconfig.build.json` **0** · `vite build` **1,107.59 kB** · **0** dependencies added (8 / 21) ·
+**0** i18n keys added (lock stays 1030) · **0** new storage keys (F111's derived set unchanged) · budget
+≈ 75 min of 120.
+
+### §3 updates made
+- this file (header, §Fence-coverage-gap tracker rows, §Handoff-findings 2 and 10, F105's record handoff 1
+  annotated, §MAINTENANCE-STEPS-LOG M2 row, §Quality-metrics row, this record) · `STATE.md` (folded into the
+  last line, which is at the 60-line cap) · PR **#185** body (§PRE-STEP, design notes, falsification table,
+  scope decisions, honest residuals, MERGE-ORDER-DOC).
+- **§DECISION-ON-FINDING-PR**: the finding M2 resolves is F105's handoff #1, documented in PR **#170** and
+  carried in this file. The decision ("fence the chrome, null-render policy, bounded retry") is recorded on
+  **#170** as a comment cross-referencing #185, so the decision flows back to the PR where the finding lived.
+  #165 (the tracking issue) cannot be commented by this token (403) — it stays an operator item.
+- Labels: PR #185 gets `f-observatory` + `observatory` via the REST call (PR labels work; plain-issue labels
+  are still 403 for #179/#181).
+- **No ledger entry for M2** (the M1/M4/M5 precedent, restated: `tests/f111-ci-inventory.test.js` fails on a
+  ledger entry no roadmap checkbox cites, and a maintenance step has no checkbox).
+
+### §CROSS-SESSION-LEARNING (new with M2)
+**A gate that pins a NAME instead of a USE is defeated by an unused import** — the mutation that deleted the
+only emission call passed a scan for the emitter's identifier. Pin the call, scope it to the function that
+must make it (`componentDidCatch`), and keep the rule's own comment-stripping/vacuity controls. This is the
+same family as the M5 record's "M5-d scanned raw text and flagged its own comment", and it is now the third
+time this repo has learned it: **the gate must assert the behaviour, not the vocabulary.**
+
+### Handoffs recorded (NOT done here)
+1. **The HUD does not render chrome errors**: `debugHud.ts` ingests chrome details (the guard accepts them)
+   and the *actions* panel's share summary is feature-keyed, so the Features panel shows nothing for a
+   crashed overlay. F109's owner should add a small "chrome" section or key it into the errors panel — the
+   data is already there; only a renderer is missing.
+2. **M6 — the per-run key leak** (A/B/C) · **M3 — Pages `/status.json` freshness** (operator deploy policy) ·
+   **#181** the patch emitter (do not pin a key first) · **#179** body/labels · **`e2e-ui`** never reaches a
+   verdict (25-min self-cancel).
+3. **`LogonGateBanner`'s crash mode is a UX question worth a second look**: the banner is the F93 evidence
+   surface, and nulling it means "no banner" rather than "unknown logon state" — the bottom bar still
+   reports the last logon, which is why the fence is justified, but an operator who relies on the banner
+   should know the two are not identical.

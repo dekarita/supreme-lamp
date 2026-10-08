@@ -10,6 +10,12 @@ import { AppShell } from "@/components/layout/AppShell";
 // instead of a convention each page has to remember.
 import FeatureBoundary from "@/components/primitives/FeatureBoundary";
 import type { FeatureId } from "@/lib/featureRegistry";
+// [M2 §2.3] The chrome fence. F105 fenced the 11 SECTION routes and recorded the
+// rest as handoff #1 ("a crash in one of those overlays still blanks the app");
+// this is the fence that closes it. It is mounted around chrome only - never
+// inside <Routes> - and renders nothing when healthy.
+import ChromeBoundary from "@/components/primitives/ChromeBoundary";
+import type { ChromeSurfaceId } from "@/lib/chromeBoundaryCore";
 import { Toasts } from "@/components/primitives/Feedback";
 import { DiagSideDrawer } from "@/components/domain/DiagSideDrawer";
 import { CollectorRunBridge } from "@/components/domain/CollectorRunBridge";
@@ -59,6 +65,20 @@ function fence(id: FeatureId, node: ReactNode) {
   return <FeatureBoundary feature={id}>{node}</FeatureBoundary>;
 }
 
+/**
+ * [M2 §2.3] `chrome(surface, node)` keeps the chrome mounts readable while
+ * making the fence unskippable — the same shape as `fence()` above, with two
+ * deliberate differences: the surface id is a ChromeSurfaceId (a typo is a
+ * compile error), and the function is NOT called `fence` because F105-g counts
+ * exactly 13 `fence("...")` calls in this file (11 sections + the Lab sub-route
+ * + the catch-all). A chrome mount that read as a section fence would move that
+ * pinned number instead of failing loudly, and a section that lost its fence
+ * would still be counted. `tests/m2-chrome-unfencing.test.js` pins both counts.
+ */
+function chrome(surface: ChromeSurfaceId, node: ReactNode) {
+  return <ChromeBoundary surface={surface}>{node}</ChromeBoundary>;
+}
+
 export default function App() {
   useDashboardPolling();
   const lang = useLangStore((s) => s.lang);
@@ -72,7 +92,12 @@ export default function App() {
       <span id="ghrdpBuild" className="hidden" data-build={__BUILD_SHA__} aria-hidden />
       <HashRouter>
       <Routes>
-        <Route element={<AppShell />}>
+        {/* [M2 §2.3] The shell is the OUTERMOST chrome fence: a crash in the
+            layout itself is caught here, so the chrome mounted below (toasts,
+            DVR handle, HUD, the two gates) survives it. The two fences INSIDE
+            the shell (command palette, logon banner) are closer boundaries, so
+            they null only themselves - see AppShell.tsx. */}
+        <Route element={chrome("shell", <AppShell />)}>
           {/* [F105 §2.3] 11 features, 11 fences - one per sidebar section. The
               Lab sub-route is part of the search feature, and the catch-all is
               the overview's, so there is no unfenced page route. */}
@@ -99,26 +124,35 @@ export default function App() {
           <Route path="*" element={fence("overview", <Overview />)} />
         </Route>
       </Routes>
-      <Toasts />
-      <DiagSideDrawer />
+      {/* [M2 §2.3] THE CHROME FENCES. Every mount below is byte-identical to
+          what this file rendered before M2 - only the fence around it is new -
+          so the component's own test ids, props and mounting order are
+          untouched (F-DVR-i's `<CollectorRunBridge />` before `<DvrFab />` and
+          F109-f's `<DebugHUD />` after `</Routes>` are still literally true).
+          A surface that crashes renders NOTHING (not a card): chrome is an
+          overlay the operator did not ask for, and the diagnosis belongs in the
+          Collector row + the Debug HUD, not painted over a working dashboard. */}
+      {chrome("toasts", <Toasts />)}
+      {chrome("diag-drawer", <DiagSideDrawer />)}
       {/* [F102 §2.1] Collector "Click now" navigates to the button's page */}
-      <CollectorRunBridge />
+      {chrome("collector-bridge", <CollectorRunBridge />)}
       {/* [F-DVR-LITE §4] The diagnostic DVR handle: last 30 s of clicks, assembled
           in this tab and only ever copied by the operator (#169 option (d)). Mounted
           as chrome, like the bridge above, so every section route has it and no
-          FeatureBoundary fence has to know about it. */}
-      <DvrFab />
+          FeatureBoundary fence has to know about it. Fencing it also fences
+          SessionListModal opened from the FAB, which renders inside this tree. */}
+      {chrome("dvr-fab", <DvrFab />)}
       {/* [F109] The Debug HUD. Chrome like the DVR handle above - outside every
           FeatureBoundary and outside AppShell - so it still opens when a section
           or the shell has crashed. Renders nothing until Settings ▸ Debug HUD is on
           and Shift+F12 opens it. */}
-      <DebugHUD />
+      {chrome("debug-hud", <DebugHUD />)}
       {/* [F92 §6.4] full-screen modal iff /api/f92-selftest says the bundle
           and the backend were built from different commits. */}
-      <VersionGate />
+      {chrome("version-gate", <VersionGate />)}
       {/* [F94 §3.1] Last, so it paints on top: an unauthorised dashboard has
           nothing useful to show behind a modal it cannot dismiss. */}
-      <DashTokenGate />
+      {chrome("dash-token-gate", <DashTokenGate />)}
       </HashRouter>
     </>
   );

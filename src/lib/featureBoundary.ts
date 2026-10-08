@@ -26,8 +26,37 @@
 // so the crash-report path can never grow into an upload path (the F-DVR-LITE
 // lesson from #169: the GitHub write path was removed on purpose and must not
 // come back through a diagnostic channel).
+//
+// [M2 §2] M2 (chrome unfencing) added a SECOND fence on this same channel — see
+// the type block below for why it is one channel and not two. The security
+// property above is unchanged and now also asserted over the M2 files by
+// tests/m2-chrome-unfencing.test.js.
 import { logButtonAction, type ButtonAction } from "@/lib/collectorAgent";
 import type { FeatureId } from "@/lib/featureRegistry";
+import {
+  CHROME_BOUNDARY_KIND,
+  CHROME_SUBJECT_PREFIX,
+  chromeBoundaryCollectorRow,
+  chromeSubject,
+  type ChromeSurfaceId,
+} from "@/lib/chromeBoundaryCore";
+
+/**
+ * [M2 §2] THE CHANNEL SERVES TWO FENCES NOW. F105 built it for the 11 section
+ * fences; M2 adds the chrome fence (ChromeBoundary) and deliberately does NOT
+ * open a second channel: one event, one subscriber, one dedup budget, one row
+ * cap — so a crash can never be logged twice by two reporters that disagree.
+ * The producer tells the two apart with `kind`, and the ABSENCE of `kind` is
+ * load-bearing: every detail written before M2 (and every F105 gate) still means
+ * "a route fence". The row builder branches on it, so a chrome failure is never
+ * described as a broken section.
+ */
+
+/** [M2 §2] `chrome:<surface>` — the subject id a chrome fence reports under. */
+export type ChromeSubjectId = `${typeof CHROME_SUBJECT_PREFIX}${string}`;
+
+/** [M2 §2] whatever caught the failure: a section, or a chrome surface. */
+export type BoundarySubjectId = FeatureId | ChromeSubjectId;
 
 /** [F105 §4.1] the event name every consumer subscribes to. */
 export const FEATURE_BOUNDARY_EVENT = "ghrdp:feature-boundary-error";
@@ -43,9 +72,22 @@ export const FEATURE_BOUNDARY_DEDUP_MS = 5_000;
 export const FEATURE_BOUNDARY_MAX_ROWS = 20;
 
 export interface FeatureBoundaryErrorDetail {
-  feature: FeatureId;
-  /** Localised section name, resolved by the boundary (t(navKey)). */
-  section: string;
+  /**
+   * Which subject caught the failure. A FeatureId for the 11 section fences
+   * (F105), or `chrome:<surface>` for a chrome fence (M2) — the discriminator is
+   * `kind`, not this string, and `params.section`/the reason text are built from
+   * the branch so a chrome id is never rendered as a section name.
+   */
+  feature: BoundarySubjectId;
+  /** Localised section name, resolved by the boundary (t(navKey)). Absent on a
+   *  chrome failure: chrome has no section, and inventing one would be the lie
+   *  this whole channel exists to avoid. */
+  section?: string;
+  /** [M2 §2] which fence caught it. Absent == "feature" (F105's original shape),
+   *  so no pre-M2 producer, test or stored row has to change. */
+  kind?: "feature" | typeof CHROME_BOUNDARY_KIND;
+  /** [M2 §2] the chrome surface id; present iff `kind === "chrome"`. */
+  surface?: ChromeSurfaceId;
   /** Truncated, single-line error message. Never a stack. */
   message: string;
   /** Route with query/fragment stripped (no token can survive). */
@@ -54,6 +96,21 @@ export interface FeatureBoundaryErrorDetail {
   count: number;
   /** ISO timestamp, minted at catch time. */
   ts: string;
+}
+
+/** [M2 §2] what a chrome fence reports. Strictly typed at the producer: the
+ *  surface must be one of CHROME_SURFACES, so a typo is a compile error. */
+export interface ChromeBoundaryErrorDetail {
+  surface: ChromeSurfaceId;
+  message: string;
+  route: string;
+  count: number;
+  ts: string;
+}
+
+/** [M2 §2] true when this failure came from the chrome fence, not a section. */
+export function isChromeBoundaryDetail(detail: FeatureBoundaryErrorDetail | null | undefined): boolean {
+  return !!detail && detail.kind === CHROME_BOUNDARY_KIND;
 }
 
 /** Strip a raw Error message down to what is safe to show and to record. */
@@ -99,6 +156,23 @@ export function emitFeatureBoundaryError(detail: FeatureBoundaryErrorDetail): vo
   }
 }
 
+/**
+ * [M2 §3] Publish one CHROME failure on the same channel. The subject id and the
+ * discriminator are minted here (not by the component), so every chrome failure
+ * carries `kind: "chrome"` + `chrome:<surface>` no matter which caller reports.
+ */
+export function emitChromeBoundaryError(detail: ChromeBoundaryErrorDetail): void {
+  emitFeatureBoundaryError({
+    kind: CHROME_BOUNDARY_KIND,
+    feature: chromeSubject(detail.surface),
+    surface: detail.surface,
+    message: detail.message,
+    route: detail.route,
+    count: detail.count,
+    ts: detail.ts,
+  });
+}
+
 /** Subscribe to boundary failures. Returns the unsubscribe function. */
 export function onFeatureBoundaryError(handler: (detail: FeatureBoundaryErrorDetail) => void): () => void {
   if (typeof window === "undefined") return () => undefined;
@@ -126,6 +200,18 @@ export function onFeatureBoundaryError(handler: (detail: FeatureBoundaryErrorDet
 
 /** The Collector row a boundary failure produces (pure - the reporter writes it). */
 export function boundaryCollectorRow(detail: FeatureBoundaryErrorDetail): Omit<ButtonAction, "id" | "ts"> {
+  // [M2 §2] One channel, two provenances. A chrome failure must never be filed
+  // as a broken section, so it takes the core's own row (source
+  // "chrome-boundary", reason naming the surface and what it costs).
+  if (isChromeBoundaryDetail(detail)) {
+    return chromeBoundaryCollectorRow({
+      surface: String(detail.surface || ""),
+      message: detail.message,
+      route: detail.route,
+      count: detail.count,
+      ts: detail.ts,
+    });
+  }
   return {
     feature: detail.feature,
     action: "renderError",

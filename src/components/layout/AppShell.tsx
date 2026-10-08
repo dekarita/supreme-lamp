@@ -7,6 +7,10 @@ import { Activity, ChevronsLeft, ClipboardList, Clock, Database, FlaskConical, F
 import { useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { CommandPalette } from "@/components/layout/CommandPalette";
+// [M2 §2.3] Both fences below are INSIDE the shell's own ChromeBoundary, so they
+// are the closer boundary for their own subtree: a crash in the palette or the
+// logon banner nulls that surface only, and never reaches the shell's fence.
+import ChromeBoundary from "@/components/primitives/ChromeBoundary";
 import { useThemeStore, useScaleStore, useLangStore, useSidebarStore } from "@/stores/prefsStore";
 // [F106 §5] The Labs entry: flag-gated (VITE_F106_LABS) or shown while the operator
 // is inside the lab, and rendered OUTSIDE <nav> on purpose - the 11-entry NAV list
@@ -468,14 +472,22 @@ export function AppShell() {
       </a>
       <TopBar />
       {/* [F93 §2.1] Logon gate banner: top of EVERY route, self-hiding once a
-          type-10 4624 is observed (no dismiss, no stale opt-out). */}
-      <LogonGateBanner />
+          type-10 4624 is observed (no dismiss, no stale opt-out).
+          [M2 §2.3] Fenced: a crashing banner used to blank the page it warns
+          about. The bottom bar's last-logon row still reports the same fact. */}
+      <ChromeBoundary surface="logon-banner">
+        <LogonGateBanner />
+      </ChromeBoundary>
       <div className="flex flex-1 min-h-0">
         <Sidebar />
         <Main />
       </div>
       <BottomBar />
-      <CommandPalette />
+      {/* [M2 §2.3] Fenced: Ctrl+K is a convenience, not the way home - every
+          route stays reachable from the sidebar and the Alt+E/Alt+F hotkeys. */}
+      <ChromeBoundary surface="command-palette">
+        <CommandPalette />
+      </ChromeBoundary>
     </div>
   );
 }
