@@ -1,0 +1,254 @@
+{
+  "version": 1,
+  "contract": "Every byte this app persists in the browser is declared here exactly once, with the file that declares it, the operations the tree really performs on it, and whether #163 section 3.8 knew about it. It is DERIVED, not hand-counted: src/lib/ci/inventoryCore.js scanSources() walks src/ and tests tests/f111-ci-inventory.test.js fails if this file and the tree disagree in either direction - an undeclared key is drift, a declared key the tree no longer uses is stale, and a key whose operation set changed must be re-classified here in the same commit. This file is the machine-readable successor to #163 section 3.8 ('14 live + 3 purged-legacy'), which was hand-counted and is now measurably wrong: see the drift summary below.",
+  "derivedBy": "src/lib/ci/inventoryCore.js scanSources()",
+  "gatedBy": "tests/f111-ci-inventory.test.js (auto-run by launch-gates.yml `node --test tests/*.test.js`)",
+  "closesHandoff": "docs/OBSERVATORY-STATE.md §Handoff-findings #9 (registry storage-key audit, open since step 4)",
+  "surfaceVocabulary": {
+    "note": "A key's surface is either a feature id from src/lib/feature-registry.json, or one of the two cross-cutting values below. Attribution is by the FILE that declares the key; page ownership of src/pages is already partitioned exactly by F105-c and is deliberately not re-derived here (two rules for one fact would drift apart).",
+    "chrome": "App.tsx / AppShell chrome - NOT behind a FeatureBoundary (see §Fence-coverage-gap tracker); F109 owns fencing it",
+    "shared": "a cross-cutting lib or a component mounted from more than one section"
+  },
+  "classifications": {
+    "live": "something in src/ writes it (setItem, a zustand persist, or an indexedDB.open)",
+    "migration": "read once then deleted, never written - a legacy key upgraded into its replacement",
+    "purged": "removeItem only - deliberately erased and never read or written (F77 stale-dashboard vector)",
+    "dead-read": "read by src/ and written by NOTHING in the repo, so the read always falls through"
+  },
+  "drift": {
+    "i163Claim": "14 live + 3 purged-legacy localStorage keys (#163 §3.8, hand-counted)",
+    "derived": "21 surfaces: 16 live (15 localStorage + 1 IndexedDB), 1 migration, 3 purged, 1 dead-read",
+    "missedByI163": [
+      {
+        "key": "ghrdp.f57.opqueue",
+        "why": "F57 Explorer operation queue, written and read by src/lib/explorer/queue.ts as QUEUE_STORAGE_KEY. Live and load-bearing (a reload keeps the op list) but absent from §3.8's table and from its count."
+      },
+      {
+        "key": "ghrdp-dvr",
+        "why": "IndexedDB database opened by src/lib/dvr/storage.ts (F107, step 6). §3.8 predates step 6 and only ever counted localStorage, so the largest persistence surface the app now has - session recordings with base64 PNG thumbnails, 5 MB/session soft budget, 30-day retention - is not in the inventory at all."
+      },
+      {
+        "key": "ghrdp-dash-token",
+        "why": "Not merely missing: it is a DEAD READ. src/api/fetch/index.ts and src/lib/f46.ts both read it, nothing in the repo writes it, so both fall through to their next token source. The canonical key is ghrdp.dashToken (note the dot, not the hyphen) written by src/lib/dashToken.ts. §3.8 lists only the canonical one, so the shadow key was invisible. Latent-bug candidate: a token read path that can never succeed."
+      },
+      {
+        "key": "ghrdp.collector.actions.v1",
+        "why": "Partially known: §3.8 mentions it inline in the f102-collector-actions-v1 row ('legacy ... migrated once') but never counts it as a surface. Declared here as classification=migration so the read-then-delete path in collectorAgent.ts stays visible if the migration is ever removed."
+      }
+    ]
+  },
+  "keys": [
+    {
+      "key": "__GHRDP_SEARCH_ENABLED",
+      "kind": "localStorage",
+      "classification": "purged",
+      "surface": "chrome",
+      "declaredIn": ["src/components/layout/AppShell.tsx"],
+      "i163": true,
+      "note": "One-shot sidebar purge of the F77 stale-dashboard vector (removeItem only, never read or written)."
+    },
+    {
+      "key": "f102-collector-actions-v1",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "collector",
+      "declaredIn": ["src/lib/collectorAgent.ts"],
+      "i163": true,
+      "note": "zustand persist through the quota-safe safeLocalStorage adapter (COLLECTOR_STORE_KEY), cap 500 rows, oldest-first slimming on QuotaExceededError."
+    },
+    {
+      "key": "f56.search.enabled",
+      "kind": "localStorage",
+      "classification": "purged",
+      "surface": "chrome",
+      "declaredIn": ["src/components/layout/AppShell.tsx"],
+      "i163": true,
+      "note": "One-shot sidebar purge (removeItem only)."
+    },
+    {
+      "key": "f90.hintSeen",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "search",
+      "declaredIn": ["src/pages/Search.tsx"],
+      "i163": true,
+      "note": "F90 tailscale-hint dismiss, one-time (F90_HINT_SEEN_KEY)."
+    },
+    {
+      "key": "f90.viewingMode",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "shared",
+      "declaredIn": ["src/lib/launchUrl.ts"],
+      "i163": true,
+      "note": "VIEWING_MODE_STORAGE_KEY; resolveViewingMode() beats detection. Set by the F90 badge menu and the launch path."
+    },
+    {
+      "key": "f95.manualWebDesktop",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "shared",
+      "declaredIn": ["src/lib/launchUrl.ts"],
+      "i163": true,
+      "note": "MANUAL_WEBDESKTOP_KEY; read by readManualWebDesktop() for LogonGateBanner suppression and the F98 sync event."
+    },
+    {
+      "key": "ghrdp-dash-token",
+      "kind": "localStorage",
+      "classification": "dead-read",
+      "surface": "shared",
+      "declaredIn": ["src/api/fetch/index.ts", "src/lib/f46.ts"],
+      "i163": false,
+      "note": "DRIFT + LATENT BUG: read by both files, written by nothing in the repo. The canonical key is 'ghrdp.dashToken'. Both reads therefore always fall through (to window.__GHRDP_DASH_TOKEN, then to ''). Fixing this by writing the key, or by deleting the reads, MUST update this entry's classification in the same commit - that is the point of the gate, not brittleness."
+    },
+    {
+      "key": "ghrdp-dvr",
+      "kind": "indexedDB",
+      "classification": "live",
+      "surface": "chrome",
+      "declaredIn": ["src/lib/dvr/storage.ts"],
+      "constantName": "DVR_DB_NAME",
+      "i163": false,
+      "note": "DRIFT: F107 (step 6) DVR session database, DVR_DB_NAME exported by src/lib/dvr/storageCore.js and opened as factory.open(DVR_DB_NAME, DVR_DB_VERSION). Holds the recordings and their base64 PNG thumbnails; 5 MB/session soft budget, 30-day retention, oldest-shot-first eviction. Installed from main.tsx, so it is chrome, not a fenced section. The single largest persistence surface in the app and absent from #163 §3.8."
+    },
+    {
+      "key": "ghrdp.cmdkeyConfirmedFqdn",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "shared",
+      "declaredIn": ["src/components/domain/WebDesktopCard.tsx"],
+      "i163": true,
+      "note": "VPS auto-login gate; stores the FQDN the operator confirmed, compared on render."
+    },
+    {
+      "key": "ghrdp.collector.actions.v1",
+      "kind": "localStorage",
+      "classification": "migration",
+      "surface": "collector",
+      "declaredIn": ["src/lib/collectorAgent.ts"],
+      "i163": false,
+      "note": "DRIFT (partially known): LEGACY_STORAGE_KEY, the F100/F101 array shape. Read once, migrated into f102-collector-actions-v1, then removed; never written. Kept visible so removing the migration path is a deliberate, reviewed act."
+    },
+    {
+      "key": "ghrdp.dashToken",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "chrome",
+      "declaredIn": ["src/lib/dashToken.ts"],
+      "i163": true,
+      "note": "DASH_TOKEN_STORAGE_KEY, the canonical dash token. Written by DashTokenGate (F94, unfenced chrome); read by getDashToken() for every REST call and /ws?key=; a 'storage' event rebuilds the socket."
+    },
+    {
+      "key": "ghrdp.f57.opqueue",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "files",
+      "declaredIn": ["src/lib/explorer/queue.ts"],
+      "i163": false,
+      "note": "DRIFT: QUEUE_STORAGE_KEY, the F57 Explorer operation queue, capped at QUEUE_LIMIT newest jobs so a reload keeps them. Live and load-bearing, absent from #163 §3.8."
+    },
+    {
+      "key": "ghrdp.f57.trash",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "files",
+      "declaredIn": ["src/lib/explorer/trashStore.ts"],
+      "i163": true,
+      "note": "TRASH_STORAGE_KEY; read by ExplorerTrashView and the Settings trash card."
+    },
+    {
+      "key": "ghrdp.lane.search",
+      "kind": "localStorage",
+      "classification": "purged",
+      "surface": "chrome",
+      "declaredIn": ["src/components/layout/AppShell.tsx"],
+      "i163": true,
+      "note": "One-shot sidebar purge (removeItem only)."
+    },
+    {
+      "key": "ghrdp:lang",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "settings",
+      "declaredIn": ["src/stores/prefsStore.ts"],
+      "i163": true,
+      "note": "zustand persist (F38-compatible key); rehydrates i18next and html[lang]."
+    },
+    {
+      "key": "ghrdp:sidebarCollapsed",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "chrome",
+      "declaredIn": ["src/stores/prefsStore.ts"],
+      "i163": true,
+      "note": "zustand persist with partialize({collapsed})."
+    },
+    {
+      "key": "ghrdp:textScale",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "settings",
+      "declaredIn": ["src/stores/prefsStore.ts"],
+      "i163": true,
+      "note": "zustand persist; rehydrates html[data-scale]."
+    },
+    {
+      "key": "ghrdp:theme",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "settings",
+      "declaredIn": ["src/stores/prefsStore.ts"],
+      "i163": true,
+      "note": "zustand persist; rehydrates html[data-theme]."
+    },
+    {
+      "key": "ghrdp:vncPass",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "shared",
+      "declaredIn": ["src/components/domain/KeysCard.tsx", "src/components/domain/WebDesktopCard.tsx"],
+      "i163": true,
+      "note": "A CREDENTIAL at rest in the browser, written by KeysCard 'remember' and WebDesktopCard rememberVnc, and handed to the WebDesktop postMessage shim (same-origin frames only). Declared here so any new reader/writer of a secret key is a reviewed inventory change."
+    },
+    {
+      "key": "q:search-history-v1",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "search",
+      "declaredIn": ["src/stores/searchHistoryStore.ts"],
+      "i163": true,
+      "note": "Manual (non-zustand) persistence, capped at 20 entries; read by SuggestionList."
+    },
+    {
+      "key": "tableDensity",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "shared",
+      "declaredIn": ["src/components/primitives/Data.tsx"],
+      "i163": true,
+      "note": "DataTable density toggle (comfortable/compact); wrapped in try/catch so a locked-down storage area cannot break the table."
+    }
+  ],
+  "nonStorageLookalikes": [
+    {
+      "value": "ghrdp://rdp",
+      "why": "custom protocol URL passed to launchProto(), not a storage key. A scanner that matched on the 'ghrdp:' prefix alone would report it as one.",
+      "file": "src/lib/domain/native.ts"
+    },
+    {
+      "value": "ghrdp:feature-boundary-error",
+      "why": "window event name (FEATURE_BOUNDARY_EVENT, F105's crash channel), not a storage key.",
+      "file": "src/lib/featureBoundary.ts"
+    },
+    {
+      "value": "ghrdp:search-lane",
+      "why": "window event name (SEARCH_LANE_EVENT), not a storage key.",
+      "file": "src/lib/search/lane.ts"
+    },
+    {
+      "value": "files.ops.preview.restricted",
+      "why": "an i18n key exported as PREVIEW_RESTRICTED_KEY. It matches a naive '*_KEY constant = storage key' rule; it is resolved only if actually passed to a storage API, which it never is.",
+      "file": "src/lib/explorer/preview.ts"
+    }
+  ]
+}
