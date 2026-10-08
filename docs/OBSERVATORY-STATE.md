@@ -1268,4 +1268,14 @@ Count from derived inventory: 2 (items 2, 5) — under the 5+ halt threshold.
 - **Budget**: ~125 min of 120 — overrun justified under §BUDGET-OVERRUN-WHEN-JUSTIFIED: the lab-cascade reproduction/fix and
   the two F111 gate bugs are critical safety verification (a debugging tool leaking fake failures into the live dashboard;
   an inventory gate whose result depended on directory order).
+### §4 CI verdict for PR #178 (watch closed 01:27Z) — code head `0a86a60`
+| check | result | classification |
+|---|---|---|
+| `gates` (launch-gates) | ✅ 3m13s | GREEN |
+| `windows-native` | ✅ 10m50s | GREEN |
+| `proof` | ✅ 5m39s | GREEN |
+| `build-ui-prebuilt` | ✅ 37s | GREEN |
+| `f56d-qbt-lab` / `f57-explorer-lab` / `f60-warm-lab` | ✅ | GREEN |
+| `e2e-ui` | in progress at watch close: install ✅ (frozen lockfile), build ✅, inside "Run F78 + F79 E2E specs" with **0 failed steps** | ⚠️ **AMBER-INHERITED** (the recorded 25-min self-cancel step; NOT the #175 RED-NEW fast-failure class) |
+Main `b6c1516` (CI, independent of the local run): launch-gates ✅ · build-ui ✅ · autologin-lab ✅ · replay viewer ✅ · e2e-ui cancelled (inherited). **Verdict: mergeable.** This post-watch commit is docs-only.
 <!-- F109-end -->
