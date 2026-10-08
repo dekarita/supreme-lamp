@@ -47,12 +47,11 @@ async function aesGcmEncrypt(plain: string, keyBytes: Uint8Array): Promise<strin
 async function getPerRunKey(): Promise<{ keyBytes: Uint8Array; keyB64: string }> {
   // Try fetch /api/config mirrorKey
   try {
-    const token = (() => {
-      try { return localStorage.getItem('ghrdp-dash-token') || '' } catch { return '' }
-    })();
-    const headers: Record<string, string> = {};
-    if (token) headers['X-Dash-Token'] = token;
-    const res = await fetch('/api/config', { headers });
+    // [M4] No dash token is sent on this request. The removed `ghrdp-dash-token` read was a
+    // dead read (nothing writes that key), so this request has always gone out without one.
+    // The canonical token is `ghrdp.dashToken`; sending it here is a separate decision (see
+    // getDashToken() in src/api/fetch/index.ts).
+    const res = await fetch('/api/config');
     if (res.ok) {
       const j = await res.json();
       const mk = j?.mirrorKey || j?.config?.mirrorKey || '';

@@ -17,6 +17,7 @@
 //      localStorage + the IndexedDB `ghrdp-dvr`), 1 migration, 3 purged and 1
 //      DEAD READ. Four surfaces were missing entirely, and one of those -
 //      `ghrdp-dash-token` - is read by two files and written by nothing in the repo.
+//      (M4 deleted those two reads; the key is no longer derived, see F111-e and F111-i.)
 //
 // Both are now declared in JSON next to a pure core (src/lib/ci/inventoryCore.js) that
 // DERIVES the truth from the tree and diffs it. This gate executes the SHIPPED core
@@ -29,8 +30,8 @@
 //   M2 delete #173's `retiredBy` -> F111-b fails with retirement-cites-its-repair.
 //   M3 delete the `ghrdp.f57.opqueue` declaration -> F111-e fails (undeclared key).
 //   M4 add a declared key that no file uses -> F111-e fails (stale declaration).
-//   M5 reclassify `ghrdp-dash-token` as `live` -> F111-e fails (classificationMismatch,
-//      ops=[getItem] cannot be live).
+//   M5 reclassify `ghrdp.dashToken` as `dead-read` -> F111-e fails (classificationMismatch,
+//      ops=[setItem] cannot be dead-read). (M4 retired the original example, a dead read.)
 //   M6 teach the scanner to accept `factory.open(` in prose by scanning src/lib/ci/ ->
 //      F111-j fails: the tooling prefix pin is exact and the exclusion must hide nothing.
 //   M7 make extractFeatureIds match `F-OBSERVATORY` (drop the denylist) -> F111-c fails:
@@ -296,7 +297,10 @@ test("F111-d: the ledger and the roadmap checkboxes agree, except for exactly th
 
   const observed = core.ledgerVsRoadmap(ledgerDoc.entries, roadmap);
   const allow = ledgerDoc.knownRoadmapDrift;
-  assert.ok(Array.isArray(allow) && allow.length > 0, "the allowlist must be the recorded drift, not an escape hatch");
+  // [M4] Both recorded drifts were fixed in the roadmap line, so the allowlist is now empty. An
+  // empty list is the goal state; the old "length > 0" floor would force a fake entry. The
+  // escape-hatch guard is kept below: any unrecorded drift fails the `unrecorded` assertion.
+  assert.ok(Array.isArray(allow), "the allowlist must be an array; an empty one means no recorded drift");
 
   // every allowlisted drift must explain itself and must STILL be observed
   for (const a of allow) {
@@ -324,9 +328,12 @@ test("F111-d: the ledger and the roadmap checkboxes agree, except for exactly th
   assert.equal(repair.branch, "arena/89b9650b-supreme-lamp", "the first branch on a line is that line's own");
   assert.deepEqual(repair.prs, [175], "prose mentions of #173/#174 are not this line's PR citation");
 
-  // the two recorded drifts are real, and both are about the canonical survivor
+  // [M4] Both recorded drifts were about the canonical survivor #174 and were resolved by the one
+  // roadmap fix (#173 -> #174), so NO drift is observed and the allowlist is empty. Any new drift
+  // is unrecorded and fails the `unrecorded` assertion above; it must be fixed, or allowlisted with
+  // a why, and this pin updated in the same commit.
   const rules = observed.map((o) => o.rule).sort();
-  assert.deepEqual(rules, ["ledger-pr-cited-in-roadmap", "roadmap-branch-matches-pr"], "the observed drift set moved");
+  assert.deepEqual(rules, [], "the observed drift set moved - M4 left no recorded drift; a new drift must be fixed or allowlisted with a why");
 });
 
 // ---------------------------------------------------------------------------
@@ -354,16 +361,17 @@ test("F111-e: the declared storage inventory equals what the tree really persist
   // both declared with addedBy:"F110", both listed in postInventoryGrowth.F110. F110e in
   // tests/f110-live-patch.test.js is the gate that fails if those two are added WITHOUT this
   // re-measurement, so the number cannot drift by omission.
-  assert.equal(scan.keys.length, 25, "derived surface count moved - re-measure and update the declaration");
-  assert.deepEqual(byClass, { live: 20, migration: 1, purged: 3, "dead-read": 1 }, "classification census moved");
+  // [M4] ghrdp-dash-token (the dead read) was deleted from both consumers: 25 - 1 = 24.
+  assert.equal(scan.keys.length, 24, "derived surface count moved - re-measure and update the declaration");
+  assert.deepEqual(byClass, { live: 20, migration: 1, purged: 3 }, "classification census moved");
   assert.equal(scan.keys.filter((k) => k.kind === "indexedDB").length, 2, "two IndexedDB surfaces (ghrdp-dvr, ghrdp-patches)");
   assert.equal(diff.agreed.length, declared.keys.length, "every declared key must be fully agreed, not just present");
 
   // the load-bearing individual facts
   const byKey = new Map(scan.keys.map((k) => [k.key, k]));
-  assert.deepEqual(byKey.get("ghrdp-dash-token").ops, ["getItem"], "the dead read is still a dead read");
-  assert.equal(byKey.get("ghrdp-dash-token").classification, "dead-read");
-  assert.deepEqual(byKey.get("ghrdp-dash-token").paths.sort(), ["src/api/fetch/index.ts", "src/lib/f46.ts"]);
+  // [M4] the dead read is removed, so the key must not be derived at all. A re-added read-only
+  // use would surface as an UNDECLARED key (diff.undeclared above), not as a silent pass.
+  assert.equal(byKey.has("ghrdp-dash-token"), false, "M4 removed the dead read; the key must not be derived");
   assert.equal(byKey.get("ghrdp-dvr").kind, "indexedDB", "F107's database is inventory too");
   assert.equal(byKey.get("ghrdp-dvr").classification, "live");
   assert.equal(byKey.get("ghrdp.collector.actions.v1").classification, "migration", "read-then-delete, never written");
@@ -455,7 +463,7 @@ test("F111-h: every declared key cites real files, and every surface is a regist
       assert.ok(fs.existsSync(path.join(ROOT, p)), k.key + " cites a file that does not exist: " + p);
       const text = read(p);
       // The file must contain the key itself under ANY quote style - src/ mixes them
-      // (`localStorage.getItem('ghrdp-dash-token')` in src/api/fetch/index.ts versus
+      // (the M4-retired `ghrdp-dash-token` read used single quotes, `getItem('...')`, in src/api/fetch/index.ts; versus
       // `localStorage.getItem("tableDensity")` in Data.tsx), so a double-quote-only
       // check reports a false "does not declare it" - caught by running this gate.
       // Or it must contain the exported constant that holds the key.
@@ -492,11 +500,18 @@ test("F111-i: #163 §3.8's hand count is confirmed wrong by exactly the four sur
   assert.equal(known.length, 17, "#163 §3.8 knew 14 live + 3 purged = 17 surfaces");
   assert.equal(known.filter((k) => k.classification === "live").length, 14, "#163's '14 live' is confirmed for the keys it listed");
   assert.equal(known.filter((k) => k.classification === "purged").length, 3, "#163's '3 purged-legacy' is confirmed");
-  assert.equal(unknown.length, 4, "exactly four surfaces were invisible to #163");
+  // [M4] ghrdp-dash-token was one of the four surfaces #163 never saw. It is retired (recorded in
+  // drift.retiredByM4), so exactly three remain.
+  assert.equal(unknown.length, 3, "exactly three surfaces are invisible to #163 (four before M4 retired ghrdp-dash-token)");
 
   // every recorded drift is real: derived, and derived with the classification claimed
   const derived = new Map(scan.keys.map((k) => [k.key, k]));
-  assert.ok(declared.drift.missedByI163.length >= 4, "the drift list must stay populated");
+  assert.ok(declared.drift.missedByI163.length >= 3, "the drift list must stay populated");
+  // [M4] a retired drift must stay retired: it documents history, it is not derived any more.
+  for (const r of declared.drift.retiredByM4 || []) {
+    assert.ok(r.why && r.why.length > 40, "retired drift " + r.key + " needs a real why");
+    assert.equal(derived.has(r.key), false, "retired drift " + r.key + " is still derived - the retirement is not real");
+  }
   for (const d of declared.drift.missedByI163) {
     assert.ok(derived.has(d.key), "drift entry " + d.key + " is not actually derived");
     assert.ok(d.why && d.why.length > 40, "drift entry " + d.key + " needs a real why");
@@ -507,8 +522,8 @@ test("F111-i: #163 §3.8's hand count is confirmed wrong by exactly the four sur
   const driftKeys = declared.drift.missedByI163.map((d) => d.key).sort();
   assert.deepEqual(driftKeys, unknown.map((k) => k.key).sort(), "the drift list and the i163:false set must be the same set");
 
-  // the headline: a credential-adjacent dead read, and a whole database, were invisible
-  assert.equal(derived.get("ghrdp-dash-token").classification, "dead-read");
+  // the headline: a whole database was invisible; the credential-adjacent dead read is retired
+  assert.equal(derived.has("ghrdp-dash-token"), false, "M4 retired the dead read; it must not be derived");
   assert.equal(derived.get("ghrdp-dvr").kind, "indexedDB");
   assert.match(declared.drift.i163Claim, /14 live \+ 3 purged-legacy/, "the claim being tested must be quoted verbatim");
 });

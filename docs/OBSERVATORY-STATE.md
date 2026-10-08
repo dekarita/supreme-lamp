@@ -10,7 +10,7 @@
 > determination = first unchecked box below; fall back to #165's body only if this file is missing,
 > then cross-check the newest "§3 tracking-issue handoff" comment on the PR this step shipped in.
 
-**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-08 03:55Z by arena/f5cd333d-supreme-lamp (maintenance step M1, F110b verifier scaffold, PR #182). **PHASE: the 10-step Observatory is SHIPPED** (step 9 / PR #180 merged 2026-10-08T02:40:31Z as `71f75cc`); work below this line is the post-ship maintenance phase (M1…), see §MAINTENANCE-STEPS-LOG.
+**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-08 by arena/d5b6da04-supreme-lamp (maintenance step M4, latent bug cleanup; M1 stays PR #182, merged). **PHASE: the 10-step Observatory is SHIPPED** (step 9 / PR #180 merged 2026-10-08T02:40:31Z as `71f75cc`); work below this line is the post-ship maintenance phase (M1…), see §MAINTENANCE-STEPS-LOG.
 
 ## §OPERATOR-ASSERTIONS (v8; verify independently)
 - GH_PAT: operator previously reported Worker environment variable; **not used** by F107 or by this repair. No secret value was read or stored.
@@ -112,7 +112,7 @@
   · **NOT done, on purpose**: no Playwright spec (`tests/e2e/f106-mock-controls.spec.ts` was the prompt's
     third gate). No Chromium in this sandbox, and `e2e-ui` is the 25-min self-canceller - an un-runnable
     spec is not evidence, so the transport-level proof lives in the jsdom suite instead. Handoff below.
-- [x] **Step 6 — F107** · landed on `arena/fa27adb3-supreme-lamp`, PR **#173** · Full DVR v2: DOM mutations +
+- [x] **Step 6 — F107** · landed on `arena/fa27adb3-supreme-lamp`, PR **#174** · Full DVR v2: DOM mutations +
   screenshots + IndexedDB session management, extending step 3's F-DVR-LITE (never replacing it)
   · four new plain-JS cores under `src/lib/dvr/` (`mutationCore`, `screenshotCore`, `storageCore`, `exportCore`
   + hand-written `.d.ts`) executed by the Node gate; browser halves `mutations.ts` (MutationObserver on `#root`),
@@ -1614,10 +1614,81 @@ one would create a NEW drift and redden the gate. The maintenance phase is track
 (§MAINTENANCE-STEPS-LOG) instead. If maintenance steps should become ledger entries, the ledger needs a
 `phase: "maintenance"` marker and the citation rule needs to exempt it — its own step, not a drive-by.
 
+## Session 2026-10-08 — Maintenance step **M4** — latent bug cleanup (`ghrdp-dash-token` dead read · roadmap `#173`→`#174` drift · `check:ui` landmine) — branch `arena/d5b6da04-supreme-lamp`
+
+**Scope.** M4 is independent of M1 (the F110b PRs), so no ordering applies. Nothing was merged, `main.yml` was not dispatched, no plain issue was edited, and M2/M3 were not touched. No Ed25519 key was pinned. PR **#183**. The CI verdict is in the M4 row of §MAINTENANCE-STEPS-LOG.
+
+### §M4-PROMPT-STALENESS — the brief checked against the tree (measured this session)
+- "#181 server emitter, OPEN, merge first": **#181 is an OPEN ISSUE** (F110c, the patch emitter), not a PR (`gh pr view 181` finds no PullRequest). There is nothing to merge, and M4 does not depend on it.
+- "#182 client verifier, OPEN, CI green": **#182 is MERGED** (2026-10-08T09:03:10Z, merge commit `b1c0f3a`). That commit is this branch's base.
+- "#169 closable": already CLOSED. "#173" and "#174": both MERGED. #174 is the canonical step-6 survivor (`arena/fa27adb3`). #173 is the retired sibling (`arena/66a13a8c`).
+- "#179 body stale": still OPEN. Arena's plain-issue writes return 403, so this stays an operator task.
+- "`check:ui` is a gate": **no executable reference exists**. It is not a script, not a workflow step, and not a file under `scripts/`. Its only occurrences are historical prose in this file (append-only records) and one line of the STATE.md history, all left as written. The correct artifact is `ui/dist/index.html` (vite `build.outDir`, `vite.config.ts`). The gate that reads it is `npm run check:no-neon-green`. On a checkout with no build, that gate exits 1 with "bundle not found", which is expected and not a regression. It passes after `vite build`.
+
+### §M4-DECISION — Option A (delete the reads), as the operator chose
+- Evidence that the key was never written: `git log --all -S"ghrdp-dash-token"` on the full history returns 8 commits, and every added line that mentions the key is a read. No commit ever added a `setItem` for it. The session clone was shallow, so the history was fetched with `git fetch --unshallow` first.
+- Behaviour check (temporary vitest harness, deleted, not committed). HEAD and this branch were run under three localStorage states. With nothing stored, both send no `X-Dash-Token`. With the canonical `ghrdp.dashToken` stored, both still send no token. With the shadow key injected by hand, which this repo cannot produce, HEAD sends the injected value and this branch sends none. The third state is the only observable difference, and it is the point of the change.
+- The permanent runtime test `src/tests/smoke/m4-dead-read.test.ts` pins that third state: a value stored under the retired key is never sent.
+
+### §M4-FINDING — the dead read sat next to a live auth gap (NOT fixed here; operator decision)
+- `requestFetch` (`src/api/fetch/index.ts`) never reads the canonical key `ghrdp.dashToken`, which `DashTokenGate` stores. So it sends no `X-Dash-Token`. The harness shows this for a normal stored token.
+- The server requires the token on `POST /api/fetch` (`payloads/ghrdp-server.ps1`, `$path -eq '/api/fetch'`). Without a valid `X-Dash-Token` or Bearer token it returns 401 `dash token required`. Per the server source, the search download and own-credential submit paths therefore cannot authenticate. Those paths are `src/lib/fetchStub.ts` → `requestFetch`, used by ResultsGrid, LabInspector and OwnCredentialModal. **This was not observed against the live runner**, because the sandbox has no network path to it.
+- The fix shape is to route `getDashToken()` through the canonical resolver `src/lib/dashToken.ts`. That changes which credential is sent, and to whom, so it needs an explicit decision and an end-to-end check. M4-D5 pins the current no-storage-read behaviour so the change has to be deliberate. The same applies to `window.__GHRDP_DASH_TOKEN`, which `getDashToken` reads and nothing writes. It is not a storage key, so F111 does not see it.
+
+### §M4-SECURITY — recorded, not fixed (out of M4 scope; operator decision)
+- `getPerRunKey` (`src/lib/f46.ts`) takes its AES key from `mirrorKey` in the `/api/config` response. The server never emits `mirrorKey`. `Remove-CredKeys` strips it (`ghrdp-server.ps1`, about line 1880), and no other response path contains it (grep). So the key is always the browser's random fallback.
+- `OwnCredentialModal` then posts that key as `credKeyB64` in the same JSON body as the ciphertext (`credUserEnc`, `credPassEnc`). The server reads all three from the body and decrypts with the posted key (`ghrdp-server.ps1`, about line 3034: "client-side ephemeral key fallback"). Against anyone who can read that request body, the AES layer adds nothing over TLS. `src/lib/collectorAgent.ts` wraps `window.fetch` and records up to 2,000 request-body characters per call. I did not trace where those records go, so I make no claim that they leave the browser.
+- The fix shape is to deliver the key out of band, or to have the server own the key and never accept it in the body. That is a design decision, not a cleanup.
+
+### §M4-CHANGES
+- `src/api/fetch/index.ts`: the `ghrdp-dash-token` read is deleted from `getDashToken()`. The comment cites this record. The window fallback is unchanged.
+- `src/lib/f46.ts`: the same read is deleted from `getPerRunKey()`, which now calls `fetch('/api/config')`. That is the same request, since an empty headers object was always sent.
+- `docs/OBSERVATORY-STATE.md`: Step 6 roadmap line 115 `PR **#173**`→`PR **#174**`. This is the one-word fix and the only edit to another step's line, which the M4 brief authorises. Also the header, the M4 row of §MAINTENANCE-STEPS-LOG, and this record.
+- `src/lib/ci/stepLedger.json`: `knownRoadmapDrift` is emptied. Both entries (`roadmap-branch-matches-pr`, `ledger-pr-cited-in-roadmap`) are resolved by the same edit and are deleted in the same commit. No ledger entry was added for M4, because a maintenance step has no roadmap checkbox (see the M1 record).
+- `src/lib/ci/storageInventory.json`: `ghrdp-dash-token` is removed from `keys` (25→24). It is recorded under `drift.retiredByM4` and removed from `drift.missedByI163` (3 remain). The derived-count sentence is updated.
+- `src/lib/ci/inventoryCore.js`: three comments moved to past tense. No logic changed.
+- `tests/f111-ci-inventory.test.js`: the pins move to a derived count of 24, a census of `{live:20, migration:1, purged:3}`, 3 surfaces invisible to #163 (was 4), and an observed drift set of `[]`. F111-d's allowlist floor `length > 0` is now a type check, because an empty allowlist is the goal state. Unrecorded drift still fails.
+- `tests/f110-live-patch.test.js` (F110-j) and `tests/f110b-signing.test.js` (F110b-h): the derived-count pins move 25→24, with the reason stated in each. F110b still asserts that it adds no surface.
+- New gates: `tests/m4-dead-read-cleanup.test.js` (M4-D1…D6), `tests/m4-drift-fixed.test.js` (M4-R1, M4-R2, M4-L1) and `src/tests/smoke/m4-dead-read.test.ts` (2 runtime tests).
+- No assertion was deleted. Each changed number follows directly from the removed key or the fixed drift.
+
+### §M4-FALSIFY — mutations applied one at a time, gates run, file restored; the working-tree diff was checked byte-identical afterwards
+| id | mutation | caught by |
+|---|---|---|
+| F-a | re-add `localStorage.getItem('ghrdp-dash-token')` in `getPerRunKey` | M4-D1, M4-D2, M4-D6, F111-e, F111-i; runtime test fails too |
+| F-b | add a writer, `setItem('ghrdp-dash-token', …)`, in `src/lib/dashToken.ts` | M4-D2, F111-e, F111-i |
+| F-c | re-declare the key in `storageInventory.json` `keys` | M4-D4, F111-e, F111-i |
+| F-d | `DASH_TOKEN_STORAGE_KEY` = `"ghrdp-dash-token"` | M4-D3, M4-D2, F111-e, F111-i |
+| F-e | `getDashToken()` reads the canonical key (a BEHAVIOUR change: it starts sending the token) | M4-D5; the harness shows the header is sent |
+| F-f | `#173` back on the Step 6 line | M4-R1, F111-d |
+| F-g | one allowlist entry restored, so the drift is no longer observed | M4-R2, F111-d |
+| F-h | a `check:ui` script added to `package.json` | M4-L1 |
+
+The runtime test also fails when the dead read is re-added to `getDashToken` and when it is re-added to `getPerRunKey`. F-a is runtime-neutral today, because nothing writes the key. It is therefore a policy mutation, and the runtime test is what makes it fail on behaviour. F-e is the behaviour mutation.
+
+### §M4-VERIFY — measured on the final tree, before the PR
+- `node --test tests/*.test.js`: **734/734** pass (baseline 725/725, plus 9 M4 gates). Node v22.22.3.
+- `vitest run`: **88 files, 1141/1141** pass (baseline 87 files, 1139/1139, plus the new runtime file with 2 tests).
+- `tsc -p tsconfig.build.json`: exit 0. `vite build`: `ui/dist/index.html` 1,103.65 kB at baseline and 1,103.70 kB on the final tree. The 0.05 kB difference was not investigated.
+- After the build: `check:no-neon-green` OK. `check:regression-ids`, `check:bottom-bar` and `check:fx-ids` exit 0.
+- Installed with `pnpm@9.15.9 install --frozen-lockfile` (the repo's `packageManager`), 308 packages.
+- Not run locally: Playwright e2e. It is outside the launch-gates node lane, and CI covers it.
+
+### §M4-HANDOFFS — each needs an operator decision; none was done in M4
+1. **Route the canonical token into `requestFetch` and `getPerRunKey`** (§M4-FINDING). This is the highest priority, because it decides whether the search download path works. It needs an end-to-end check against the live server, and M4-D5 must change in the same commit.
+2. **Stop posting the per-run key in the request body** (§M4-SECURITY).
+3. **`window.__GHRDP_DASH_TOKEN`** is read and never written. Remove it together with item 1.
+4. **#179** body and **#181** labels are operator edits, since Arena gets 403 on plain issues. #181 is an OPEN issue for F110c, not a PR.
+5. **STATE.md** (the 60-line ledger, at its line cap) was not updated. §MAINTENANCE-STEPS-LOG in this file is the record of truth for maintenance steps.
+6. **`e2e-ui` never reaches a verdict.** Its F78 + F79 Playwright run does not finish inside the workflow's 25-minute `timeout-minutes` (`.github/workflows/e2e-ui.yml`). It was cancelled on each of the last four pushes to main and on PR #183, always at the same step with zero failed steps. So the E2E specs have no recorded pass or fail on either branch. Playwright browsers cannot be downloaded from this sandbox, so this could not be run locally. Raising the timeout or sharding the specs is a separate CI task.
+
+### §M4-LANDING — PROJECT-CONTEXT rule 7
+Session-branch push, then PR, then merge with `merge_method=merge`, done by the operator. No `main.yml` dispatch.
+
 ### §MAINTENANCE-STEPS-LOG
 | step | scope | status | PR / issue |
 |---|---|---|---|
 | **M1** | F110b Ed25519 signing | **verifier half COMPLETE**; pin + emitter outstanding | PR **#182** (green), emitter **#181** |
 | M2 | chrome unfencing (6 global surfaces) | not started | — |
 | M3 | Pages `/status.json` freshness | not started (operator decision: widen `replay-viewer.yml`'s fenced push trigger, or accept staleness) | — |
-| M4 | latent bug cleanup | not started: `ghrdp-dash-token` dead read (`src/api/fetch/index.ts:124`, `src/lib/f46.ts:51` — both confirmed by grep this session), the roadmap `#173`→`#174` one-word drift (line **115**, allowlisted in the ledger), stale `check:ui` references | — |
+| M4 | latent bug cleanup | **code COMPLETE on `arena/d5b6da04-supreme-lamp`**: the `ghrdp-dash-token` dead read is deleted at both sites; Step 6 line 115 `#173`→`#174` with both allowlist entries deleted in the same commit; `check:ui` replaced by `ui/dist/index.html` + `check:no-neon-green` (pinned by M4-L1). Gates M4-D1…D6, M4-R1/R2, M4-L1, plus a runtime test. | PR **#183** (head `b8ecb25b`). CI on `b8ecb25b`: `gates` ✅ 13m2s · `windows-native` ✅ 11m28s · `proof` ✅ · `build-ui-prebuilt` ✅ · labs `f56d-qbt-lab` / `f57-explorer-lab` / `f60-warm-lab` ✅ · `e2e-ui` ⚠️ cancelled by its 25-min `timeout-minutes` during `Run F78 + F79 E2E specs`, 0 failed steps. That is the pattern of the last four pushes to main (AMBER-INHERITED, not caused by M4). Merge is the operator's call. |
