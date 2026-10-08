@@ -35,6 +35,12 @@ import {
   sanitizeBoundaryRoute,
   type FeatureBoundaryErrorDetail,
 } from "@/lib/featureBoundary";
+// [F109 §4] Debug HUD dev toggles. Read ONCE per mount (and on a feature change),
+// so a toggle takes effect at the next route change. The read goes through
+// lib/featureToggles - this file stays free of storage tokens (F105-j) - and is
+// always false unless Settings ▸ Debug HUD is on (prod-safe default-off).
+import { isFeatureToggledOff } from "@/lib/featureToggles";
+import FeatureDisabledCard from "@/components/FeatureDisabledCard";
 
 export interface FeatureBoundaryProps {
   feature: FeatureId;
@@ -44,6 +50,8 @@ export interface FeatureBoundaryProps {
 interface FeatureBoundaryState {
   error: string | null;
   count: number;
+  /** [F109 §4] switched off by the Debug HUD at mount time. */
+  disabled: boolean;
 }
 
 /** The card the operator sees instead of a blank screen. */
@@ -142,7 +150,7 @@ function BoundaryFallback({
  * while a section is crashed and the card follows, like every other surface.
  */
 export default class FeatureBoundary extends React.Component<FeatureBoundaryProps, FeatureBoundaryState> {
-  state: FeatureBoundaryState = { error: null, count: 0 };
+  state: FeatureBoundaryState = { error: null, count: 0, disabled: isFeatureToggledOff(this.props.feature) };
   private unregister: (() => void) | null = null;
   private caughtAt = "";
 
@@ -173,6 +181,8 @@ export default class FeatureBoundary extends React.Component<FeatureBoundaryProp
     if (prev.feature !== this.props.feature) {
       if (this.unregister) this.unregister();
       this.unregister = registerMountedFeature(this.props.feature);
+      const disabled = isFeatureToggledOff(this.props.feature);
+      if (disabled !== this.state.disabled) this.setState({ disabled });
     }
   }
 
@@ -197,6 +207,9 @@ export default class FeatureBoundary extends React.Component<FeatureBoundaryProp
           onRetry={this.retry}
         />
       );
+    }
+    if (this.state.disabled) {
+      return <FeatureDisabledCard feature={this.props.feature} onEnable={() => this.setState({ disabled: false })} />;
     }
     return this.props.children;
   }

@@ -19,6 +19,7 @@ import { InstallGuide } from "@/components/domain/InstallGuide";
 import { useThemeStore, useScaleStore, useLangStore, type TextScale } from "@/stores/prefsStore";
 import { useTrashStore } from "@/lib/explorer/trashStore";
 import { TRASH_RETENTION_DAYS } from "@/lib/explorer/trash";
+import { isHudEnabled, setHudEnabled } from "@/lib/debugHud";
 
 const SCALES: TextScale[] = ["comfort", "large", "a11y"];
 
@@ -36,6 +37,8 @@ export default function Settings() {
   const setLang = useLangStore((s) => s.setLang);
   // [F58 §2] editId drives the shared form into edit mode on the canonical surface.
   const [editId, setEditId] = useState<string | null>(null);
+  // [F109 §1] mirrors lib/debugHud's flag so the switch re-renders on click
+  const [hudEnabled, setHudEnabledState] = useState<boolean>(() => isHudEnabled());
 
   return (
     <div>
@@ -147,6 +150,29 @@ export default function Settings() {
       {/* [F48 §4] OPERATOR SECRET HYGIENE - documented here AND in the PR body.
           The literal secret name may not exist anywhere in this repository (a
           CI gate enforces it), so the card describes the action instead. */}
+      {/* [F109 §1] Developer: the Debug HUD switch. English-only like the card below
+          (a default-off developer surface moves no i18n count lock). Writes
+          f109:enabled through lib/debugHud - the only file that touches that key. */}
+      <Card title="Developer: Debug HUD (F109)" className="mb-4">
+        <div className="flex flex-col gap-2 text-sm text-secondary" data-testid="settings-debug-hud">
+          <div className="flex items-center gap-3">
+            <span className="text-sm font-medium w-40">Enable Debug HUD</span>
+            <Toggle
+              checked={hudEnabled}
+              onChange={(v) => {
+                setHudEnabled(v);
+                setHudEnabledState(v);
+              }}
+              label="Enable Debug HUD"
+              data-testid="settings-debug-hud-toggle"
+            />
+          </div>
+          <p className="text-xs text-tertiary">
+            Off by default. When on, press Shift+F12 anywhere to open the overlay (features, network, WebSocket, dev toggles, DVR actions).
+            Turning it off closes the overlay and re-enables any section switched off from its Toggles panel.
+          </p>
+        </div>
+      </Card>
       <Card title="Secret hygiene (mirror token-less mode)" className="mb-4">
         <div className="flex flex-col gap-2 text-sm text-secondary" data-testid="secret-hygiene">
           <p>

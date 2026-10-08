@@ -48,8 +48,15 @@
  * followed by `-<word>` is a keyboard key or a compound, not a feature id, while
  * `-<single lowercase letter>` is the gate-name suffix form (`F107-h`, `F108-e1`) and must
  * still yield the id.
+ *
+ * [F109 §GATE-SELF-TEST] The lookahead covered `F12-shift` only. The step-8 spec's own
+ * PR title writes the chord as `(F12+Shift)`, and the HUD's UI writes `Shift+F12`; both
+ * still extracted a phantom `F12`, so ledgerTitleConsistency() would have failed the F109
+ * ledger entry for declaring only F109. Key-chord forms are now rejected on BOTH sides:
+ * `F<digits>+<Word>` (lookahead) and `<Word>+F<digits>` / `Shift-F<digits>`-style modifier
+ * prefixes (lookbehind). `F105 + F106` (spaced) still yields both ids.
  */
-const NUMBERED_FEATURE_RE = /\bF(\d{2,4})\b(?!-[a-z]{2,})/g;
+const NUMBERED_FEATURE_RE = /(?<![A-Za-z]{2,}\+|(?:[Ss]hift|[Cc]trl|[Aa]lt|[Mm]eta|[Cc]md|[Mm]od)-)\bF(\d{2,4})\b(?!-[a-z]{2,})(?!\+[A-Za-z]{2,})/g;
 
 /**
  * Named feature ids used by the early roadmap: `F-TESTID`, `F-I18N-SI-72`,
@@ -67,8 +74,17 @@ export const NAMED_FEATURE_DENYLIST = ["F-OBSERVATORY", "F-INVENTORY"];
 /** Storage call sites: `localStorage.getItem(...)`, and the alias form `ls.setItem(...)`. */
 const STORAGE_CALL_RE = /\b([A-Za-z_$][A-Za-z0-9_$]*)\s*\.\s*(getItem|setItem|removeItem)\s*\(\s*([^,)]*)/g;
 
-/** `const X = "literal"` / `export const X: string = "literal"` - used to resolve key identifiers. */
-const STRING_CONST_RE = /\b(?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*(['"`])([^'"`]*)\2/g;
+/**
+ * `const X = "literal"` / `export const X: string = "literal"` - used to resolve key identifiers.
+ *
+ * [F109 §DERIVED-INVENTORY-DISCOVERY] The type annotation may NOT cross `;` or a newline.
+ * It used to be `(?::[^=]+)?`, so a hand-written `.d.ts` line with no initializer -
+ * `export declare const HUD_ENABLED_KEY: "f109:enabled";` - ran on to the NEXT `=` in the
+ * file (`export type HudPanelId = "features" | ...`) and resolved the key to "features".
+ * First definition wins, in readdir order, so the phantom key also depended on the file
+ * system's directory ordering. Found by running F111-e against the F109 tree.
+ */
+const STRING_CONST_RE = /\b(?:export\s+)?const\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=;\n]+)?=\s*(['"`])([^'"`]*)\2/g;
 
 /** `const alias = <something Storage-ish>` - `collectorAgent.ts` reads through `const ls = rawStorage()`. */
 const ALIAS_RE = /\b(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*(?::[^=]+)?=\s*([^;\n]*)/g;
