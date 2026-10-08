@@ -1376,6 +1376,20 @@ foreach ($f46cand in @((Join-Path $Root 'ghrdp-mirror.ps1'), (Join-Path $PSScrip
     }
 }
 if (-not $script:F46MirrorReady) { $script:F46MirrorLoadError = ('ghrdp-mirror.ps1 not found next to the server at ' + $Root) }
+# [M6] Envelope encryption: RSA-2048 keypair for wrapping the per-request ephemeral AES key.
+# The private key stays in process memory ($script:EnvelopeRsa) — never written to disk.
+# The public key (SPKI, base64) is published in /api/config so the client can wrap to it.
+# Generated once at startup; rotation requires a server restart (acceptable for per-session keys).
+$script:EnvelopeRsa = $null
+try {
+    $rsa = [System.Security.Cryptography.RSA]::Create(2048)
+    $script:EnvelopeRsa = $rsa
+    $spkiBytes = $rsa.ExportSubjectPublicKeyInfo()
+    $script:EnvelopePublicKeyB64 = [Convert]::ToBase64String($spkiBytes)
+} catch {
+    $script:EnvelopeRsa = $null
+    $script:EnvelopePublicKeyB64 = ''
+}
 # §1.5/§1.6 CSRF token: one per server process, 24 random bytes, never logged.
 # It reaches the dashboard as the JS-readable SameSite=Strict cookie
 # ghrdp_fx_csrf (and the X-CSRF-Token response header on /api/fx/list); a POST
@@ -3033,6 +3047,9 @@ function Invoke-ClientRequest {
                     $keyB64 = ''
                     try { $userEnc = [string]$bodyJson.credUserEnc; $passEnc = [string]$bodyJson.credPassEnc; $keyB64 = [string]$bodyJson.credKeyB64 } catch { }
                     if (-not $keyB64) { try { $keyB64 = [string]$bodyJson.credKeyIv } catch { } }
+                    # [M6] Envelope encryption: RSA-OAEP-wrapped ephemeral AES key
+                    $credEnvelope = ''
+                    try { $credEnvelope = [string]$bodyJson.credEnvelope } catch { }
                     # Also accept plain creds for lab (own-cred modal submit F46 stub)
                     $plainUser = ''
                     $plainPass = ''
@@ -3041,7 +3058,20 @@ function Invoke-ClientRequest {
                     if ($hasCredEnc) {
                         # Try to get F46 per-run key
                         $keyBytes = $null
-                        if ($script:F46MirrorReady) {
+                        # [M6] Envelope unwrap FIRST: if client sent credEnvelope, unwrap it
+                        # with the RSA-OAEP private key to recover the ephemeral AES key.
+                        # The raw key never traveled in the body — only the wrapped version did.
+                        if ($credEnvelope -and $script:EnvelopeRsa) {
+                            try {
+                                $envelopeBytes = [Convert]::FromBase64String($credEnvelope)
+                                $unwrapped = $script:EnvelopeRsa.Decrypt($envelopeBytes, [System.Security.Cryptography.RSAEncryptionPadding]::OaepSHA256)
+                                if ($unwrapped -and $unwrapped.Length -eq 32) {
+                                    $keyBytes = $unwrapped
+                                }
+                            } catch { $keyBytes = $null }
+                        }
+                        # Legacy path: server config key (when mirrorKey is in config.json)
+                        if (-not $keyBytes -and $script:F46MirrorReady) {
                             try {
                                 $cfgForKey = Read-JsonFile -Path $script:CfgPath
                                 $keyBytes = Get-F46MirrorKeyBytes -Cfg $cfgForKey
@@ -8951,6 +8981,10 @@ boot();
                     $cfgOut.creds | Add-Member -MemberType NoteProperty -Name 'vncPass' -Value ([string]$rawV) -Force
                     $cfgOut.creds | Add-Member -MemberType NoteProperty -Name 'vncPassMask' -Value ([string](Get-CredsMask $rawV)) -Force
                 } catch { }
+            }
+            # [M6] Attach the RSA-OAEP public key for envelope encryption (not a secret, safe to publish).
+            if ($cfgOut -and $script:EnvelopePublicKeyB64) {
+                try { $cfgOut | Add-Member -MemberType NoteProperty -Name 'envelopePublicKey' -Value ([string]$script:EnvelopePublicKeyB64) -Force } catch { }
             }
             if ($cfgOut) { Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes $cfgOut) } else { Send-ClientResponse -Stream $stream -Code 404 -CType 'text/plain' -Body ([System.Text.Encoding]::UTF8.GetBytes('config missing')) }
             return

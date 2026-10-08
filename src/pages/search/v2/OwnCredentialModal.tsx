@@ -63,6 +63,10 @@ export function OwnCredentialModal() {
         credPassEnc: enc.passEnc,
         credKeyB64: enc.keyB64,
         credKeyIv: enc.keyB64,
+        // [M6] Envelope encryption: when server publishes envelopePublicKey, the
+        // ephemeral AES key is wrapped (RSA-OAEP) and sent here. credKeyB64 is empty
+        // in that case — the raw key never travels in the body.
+        credEnvelope: enc.envelope || undefined,
       } as any);
 
       if (result.ok) {

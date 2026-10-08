@@ -1,16 +1,21 @@
 // [F56-d §3] F46 per-run key encryption helper for own-cred modal.
-// Client encrypts creds with WebCrypto AES-GCM using per-run key fetched from /api/config mirrorKey
-// fallback generates ephemeral key, POSTs to /api/fetch with enc blob + key wipe, memory-only.
+// [M6] Upgraded to envelope encryption (Option C): client generates ephemeral AES-256 key,
+// encrypts creds with it, then wraps the ephemeral key with the server's RSA-OAEP public key.
+// The raw AES key NEVER leaves the client — only the RSA-wrapped envelope travels in the body.
+// Fallback to legacy keyB64 path when server does not yet publish envelopePublicKey (phased rollout).
 
 export interface EncryptedCred {
   userEnc: string; // base64 nonce(12)+tag(16)+ct
   passEnc: string;
-  keyB64: string; // per-run key base64 (32B) - server decrypts in memory then wipes
+  keyB64: string; // [M6] legacy field — only populated in fallback mode (no envelopePublicKey)
   iv?: string; // legacy alias
+  /** [M6] RSA-OAEP-wrapped ephemeral AES key (base64). When present, the server must
+   *  unwrap this with its private key instead of using keyB64 directly. */
+  envelope?: string;
 }
 
 function b64FromBytes(b: Uint8Array): string {
-  let s = '';
+  let s = ''
   for (let i = 0; i < b.length; i++) s += String.fromCharCode(b[i]);
   return btoa(s);
 }
@@ -44,6 +49,48 @@ async function aesGcmEncrypt(plain: string, keyBytes: Uint8Array): Promise<strin
   return b64FromBytes(blob);
 }
 
+// [M6] Fetch the server's RSA-OAEP public key from /api/config alongside mirrorKey.
+// Returns null if the server does not yet publish one (legacy / phased rollout).
+async function fetchEnvelopePublicKey(): Promise<{ publicKeyB64: string; spkiBytes: Uint8Array } | null> {
+  try {
+    const res = await fetch('/api/config');
+    if (res.ok) {
+      const j = await res.json();
+      const pk = j?.envelopePublicKey || j?.config?.envelopePublicKey || '';
+      if (pk) {
+        try {
+          const spkiBytes = bytesFromB64(pk);
+          // RSA-2048 SPKI is typically 294 bytes; RSA-4096 is 550. Accept 256-600 range.
+          if (spkiBytes.length >= 256 && spkiBytes.length <= 600) {
+            return { publicKeyB64: pk, spkiBytes };
+          }
+        } catch {}
+      }
+    }
+  } catch {}
+  return null;
+}
+
+// [M6] Wrap the ephemeral AES key with the server's RSA-OAEP public key.
+// Uses RSA-OAEP with SHA-256 (matching the server's .NET RSAEncryptionPadding.OaepSHA256).
+async function wrapKeyWithRsaOaep(ephemeralKey: Uint8Array, spkiBytes: Uint8Array): Promise<string> {
+  const spkiBuf = new ArrayBuffer(spkiBytes.byteLength);
+  new Uint8Array(spkiBuf).set(spkiBytes);
+  const publicKey = await crypto.subtle.importKey(
+    'spki',
+    spkiBuf,
+    { name: 'RSA-OAEP', hash: 'SHA-256' },
+    false,
+    ['encrypt']
+  );
+  const keyBuf = new ArrayBuffer(ephemeralKey.byteLength);
+  new Uint8Array(keyBuf).set(ephemeralKey);
+  const wrapped = await crypto.subtle.encrypt({ name: 'RSA-OAEP' }, publicKey, keyBuf);
+  // Wipe the key material copy
+  try { new Uint8Array(keyBuf).fill(0); } catch {}
+  return b64FromBytes(new Uint8Array(wrapped));
+}
+
 async function getPerRunKey(): Promise<{ keyBytes: Uint8Array; keyB64: string }> {
   // Try fetch /api/config mirrorKey
   try {
@@ -69,6 +116,25 @@ async function getPerRunKey(): Promise<{ keyBytes: Uint8Array; keyB64: string }>
 }
 
 export async function encryptOwnCreds(username: string, password: string): Promise<EncryptedCred> {
+  // [M6] Envelope encryption path: generate ephemeral AES key, encrypt creds,
+  // wrap the ephemeral key with server's RSA-OAEP public key. The raw key never
+  // travels in the request body — only the RSA-wrapped envelope does.
+  const envelopeKey = await fetchEnvelopePublicKey();
+  if (envelopeKey) {
+    // Ephemeral AES-256 key (never sent raw)
+    const ephemeralKey = crypto.getRandomValues(new Uint8Array(32));
+    const userEnc = await aesGcmEncrypt(username, ephemeralKey);
+    const passEnc = await aesGcmEncrypt(password, ephemeralKey);
+    // Wrap the ephemeral key with server's RSA-OAEP public key
+    const envelope = await wrapKeyWithRsaOaep(ephemeralKey, envelopeKey.spkiBytes);
+    // Wipe ephemeral key from memory (best effort)
+    try { ephemeralKey.fill(0); } catch {}
+    // Return with envelope; keyB64 is empty (the leak is fixed)
+    return { userEnc, passEnc, keyB64: '', envelope };
+  }
+
+  // Legacy fallback: server does not publish envelopePublicKey yet.
+  // This path will be removed once all servers are updated.
   const { keyBytes, keyB64 } = await getPerRunKey();
   const userEnc = await aesGcmEncrypt(username, keyBytes);
   const passEnc = await aesGcmEncrypt(password, keyBytes);
