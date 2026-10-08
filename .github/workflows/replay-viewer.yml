@@ -63,6 +63,15 @@ on:
       - "src/replay/**"
       - "scripts/sync-replay-vendor.mjs"
       - ".github/workflows/replay-viewer.yml"
+  # [M3] Scheduled republish: the watchdog updates the heartbeat file on main
+  # every ~80 s and commits it, but the push trigger above is fenced to viewer
+  # paths only (not the heartbeat). Without a schedule, the published site would
+  # show stale data forever (or until a viewer change triggers a redeploy).
+  # This cron re-publishes docs/ every 10 minutes, capping staleness at ~10 min.
+  # Cost: ~144 Actions runs/day (within public-repo free tier). If too high,
+  # change to */30 or delete this trigger (M3 Option 3: accept staleness).
+  schedule:
+    - cron: "*/10 * * * *"
 
 permissions:
   contents: read
@@ -103,12 +112,14 @@ jobs:
           path: docs
 
       - name: Deploy to GitHub Pages
-        if: inputs.target != 'dry-run'
+        # [M3] Scheduled runs have no inputs; they always publish. Only workflow_dispatch
+        # with target=dry-run skips the deploy.
+        if: github.event_name != 'workflow_dispatch' || inputs.target != 'dry-run'
         id: deploy
         uses: actions/deploy-pages@v4
 
       - name: Verify the published site answers (F108 §PAGES-VERIFICATION)
-        if: inputs.target != 'dry-run'
+        if: github.event_name != 'workflow_dispatch' || inputs.target != 'dry-run'
         shell: bash
         run: |
           set -euo pipefail

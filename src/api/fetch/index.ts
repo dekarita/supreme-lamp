@@ -35,6 +35,9 @@ export interface FetchStartRequest {
   credPassEnc?: string;
   credKeyB64?: string;
   credKeyIv?: string;
+  // [M6] RSA-OAEP envelope: ephemeral AES key wrapped to server's public key.
+  // When present, server unwraps with its private key instead of using credKeyB64.
+  credEnvelope?: string;
   // Lab fallback plain (never in prod, but test fixture allows)
   credUser?: string;
   credPass?: string;

@@ -10,7 +10,7 @@
 > determination = first unchecked box below; fall back to #165's body only if this file is missing,
 > then cross-check the newest "§3 tracking-issue handoff" comment on the PR this step shipped in.
 
-**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-08 by arena/4d9cc1a2-supreme-lamp (maintenance step M2, chrome unfencing — see the record at the end of this file; M1 stays PR #182 merged, M4 stays PR #183 merged, M5 stays PR #184 merged). **PHASE: the 10-step Observatory is SHIPPED** (step 9 / PR #180 merged 2026-10-08T02:40:31Z as `71f75cc`); work below this line is the post-ship maintenance phase (M1…), see §MAINTENANCE-STEPS-LOG.
+**Roadmap owner**: #165 · **Inventory prerequisite**: #163 · **Updated**: 2026-10-08 by arena/fa6a907d-supreme-lamp (maintenance steps M6 per-run key leak + M3 Pages freshness — see the record at the end of this file; M1 PR #182 merged, M4 PR #183 merged, M5 PR #184 merged, M2 PR #185 merged). **PHASE: the 10-step Observatory is SHIPPED** (step 9 / PR #180 merged 2026-10-08T02:40:31Z as `71f75cc`); work below this line is the post-ship maintenance phase (M1…), see §MAINTENANCE-STEPS-LOG.
 
 ## §OPERATOR-ASSERTIONS (v8; verify independently)
 - GH_PAT: operator previously reported Worker environment variable; **not used** by F107 or by this repair. No secret value was read or stored.
@@ -2032,3 +2032,29 @@ time this repo has learned it: **the gate must assert the behaviour, not the voc
    surface, and nulling it means "no banner" rather than "unknown logon state" — the bottom bar still
    reports the last logon, which is why the fence is justified, but an operator who relies on the banner
    should know the two are not identical.
+
+### M6 Per-run key leak — envelope encryption (Option C) — PR pending
+- **What changed**: The raw AES-256 per-run key (`credKeyB64`) no longer travels in the POST body.
+  Client generates an ephemeral AES-256 key, encrypts creds with it, wraps the ephemeral key with
+  the server's RSA-OAEP public key (RSA-2048, SHA-256). Only the wrapped envelope travels over the wire.
+- **Files**: `src/lib/f46.ts` (envelope path + legacy fallback), `src/api/fetch/index.ts` (credEnvelope field),
+  `src/pages/search/v2/OwnCredentialModal.tsx` (sends envelope), `payloads/ghrdp-server.ps1` (RSA keypair
+  generation, public key in /api/config, envelope unwrap in /api/fetch).
+- **Gates**: `tests/m6-envelope-encryption.test.js` (10 rules).
+- **LAB**: node 757/757 (+10), vitest 1156/1156, tsc 0, build 1,108.51 kB (+0.92), 0 deps.
+- **Backward compat**: when server doesn't publish `envelopePublicKey`, client falls back to legacy path.
+- **Honest residuals**: live round-trip verification impossible from sandbox (no PowerShell on Linux).
+  WebCrypto RSA-OAEP is standard API; PowerShell RSA.Decrypt(OaepSHA256) is standard .NET. The pins
+  in the tests assert code presence, not runtime behaviour.
+
+### M3 Pages data freshness — scheduled republish (Option 2) — PR pending
+- **What changed**: `replay-viewer.yml` gains `schedule: cron: */10 * * * *` — re-publishes docs/ every 10 min.
+- **Files**: `.github/workflows/replay-viewer.yml`, `tests/m3-pages-freshness.test.js`.
+- **Gates**: 5 rules (schedule exists, cron ≤30 min, deploy allows schedule, preflight runs on schedule,
+  single deployer invariant). F108-h gate preserved (push trigger fencing unchanged).
+- **Cost**: ~144 Actions runs/day (within public-repo free tier).
+- **Honest residuals**: schedule runs need the live repo to verify (GitHub Actions scheduler, not sandbox).
+
+### §3 updates made
+- STATE.md (M6+M3 entry appended to last line, stays ≤60 lines).
+- docs/OBSERVATORY-STATE.md (header updated, M6+M3 records appended).
