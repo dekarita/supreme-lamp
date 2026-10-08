@@ -1532,6 +1532,22 @@ crypto call) — they were replaced by M3b/M12b rather than counted as caught.
    `+/`→`-_`, which is a **no-op for roughly one random key in four** (256-bit keys rarely contain `+` or `/`):
    the gate was red on run 5 of 6. Replaced with a deterministic 32-byte literal whose base64 contains both
    characters, plus a positive control asserting the standard-alphabet form *is* a valid pin.
+4. **A second flake, caught only by CI** (`launch-gates` push run `37724620097`, job `gates`, head `434da42`):
+   `dedupes, rolls back and reloads a v2 patch exactly like a v1 one` asserted `expect(reloader)
+   .toHaveBeenCalledTimes(1)` **beside** an `await waitFor(readFeatureToggles() === {})`. The rollback restores the
+   toggles synchronously and calls `requestPatchReload()` only *after* `await appendAuditRow(marker)`, and
+   fake-indexeddb defers that to a macrotask — so on a slower runner the waitFor resolved first and the spy had
+   0 calls. Green locally 5/5, red on the runner. Fixed by waiting on the spy (repair commit below).
+
+### §CROSS-SESSION-FIXES (v12 — including one lesson this session FAILED to follow)
+| # | where the lesson lived | what happened | fixed here? | proof |
+|---|---|---|---|---|
+| 1 | `src/tests/smoke/f110-live-patch.test.tsx`, the rollback test's own comment: *"fake-indexeddb defers its callbacks to a macrotask, so the chain that ends in the reload outlives act()'s microtask flush: **wait for it, never assert beside it**"* | **I wrote the new v2 rollback test asserting beside it anyway.** It passed locally and reddened `launch-gates`/`gates` on the runner | **yes** — `await waitFor(() => expect(reloader).toHaveBeenCalledTimes(1))` now precedes the toggle assertion, with the reason written at the call site | 5 local runs + the full suite green under parallel load (1139/1139, 87 files); CI re-run on the repair commit |
+| 2 | step 9's `§MOCK-LIFECYCLE-REGISTRY` gotcha list already names the same trap | the trap is now named in THREE places (F110's test, this table, and the F110b call site), because naming it twice did not stop it | n/a | — |
+
+**The transferable rule:** a lesson recorded as *prose in a sibling test* does not transfer. If the next session
+touches a rollback/reload/IDB assertion, the cheapest guard is to copy the sibling test's `waitFor` shape verbatim
+rather than re-deriving the timing.
 
 ### §PROMPT-STALENESS (3 corrections)
 1. "Step 9 F110a: 🟢 PR #180 OPEN, mergeable (SHIPS OBSERVATORY 10/10 WHEN MERGED)" → **MERGED**

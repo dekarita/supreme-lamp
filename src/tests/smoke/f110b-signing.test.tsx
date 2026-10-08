@@ -287,8 +287,12 @@ describe("F110b pinned", () => {
     await act(async () => {
       fireEvent.click(button);
     });
+    // fake-indexeddb defers its callbacks to a macrotask, so the reload that ends the
+    // rollback chain outlives act()'s microtask flush: WAIT for it, never assert beside
+    // it. (F110's own rollback test says this in so many words; asserting beside it is
+    // exactly what made this test red on a CI runner and green locally.)
+    await waitFor(() => expect(reloader).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(readFeatureToggles()).toEqual({}));
-    expect(reloader).toHaveBeenCalledTimes(1);
     expect(patchPendingRollbackCount(), "the marker row closes the plan").toBe(0);
     const rows = patchAuditRows();
     expect(rows[rows.length - 1].kind).toBe("rollback");
