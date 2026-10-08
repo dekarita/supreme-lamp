@@ -126,12 +126,12 @@
     },
     {
       "step": 9,
-      "number": null,
+      "number": 180,
       "branch": "arena/28163f3f-supreme-lamp",
       "featureIds": ["F110"],
       "status": "open",
       "title": "F110: Live Patch Protocol (patch channel + audit log + rollback) [FINAL STEP]",
-      "note": "FINAL STEP of the 10-step roadmap. Shipped as spec variant F110a (patch channel + audit + rollback, NO live component swap): the roadmap line's 'module federation' was never feasible here - F59 ships the UI as ONE inlined file (vite-plugin-singlefile), so there is no chunk graph for a federation runtime to resolve against, and remote-code execution on an authenticated socket would remove the last boundary worth auditing. F110b (per-frame asymmetric signatures + the dynamic-import swap the roadmap line's 'module federation' actually implies) is filed as follow-up issue #179 with that reason and the measured WebCrypto numbers. The code commit carries number:null (no PR exists yet); the post-PR commit records the PR number and ticks the Step 9 roadmap box in the same commit, per the pattern #177 and #178 established. Rides the EXISTING /ws socket (no route, no credential) and the EXISTING toggle map (no second source of truth), and declares both of its persistence surfaces to F111's inventory."
+      "note": "FINAL STEP of the 10-step roadmap. Shipped as spec variant F110a (patch channel + audit + rollback, NO live component swap): the roadmap line's 'module federation' was never feasible here - F59 ships the UI as ONE inlined file (vite-plugin-singlefile), so there is no chunk graph for a federation runtime to resolve against, and remote-code execution on an authenticated socket would remove the last boundary worth auditing. F110b (per-frame asymmetric signatures + the dynamic-import swap the roadmap line's 'module federation' actually implies) is filed as follow-up issue #179 with that reason and the measured WebCrypto numbers. The code commit carries number:null (no PR exists yet); the post-PR commit recorded #180 and ticked the Step 9 roadmap box in the same commit (PR opened 2026-10-08 02:11Z), per the pattern #177 and #178 established. Rides the EXISTING /ws socket (no route, no credential) and the EXISTING toggle map (no second source of truth), and declares both of its persistence surfaces to F111's inventory."
     },
     {
       "step": 10,

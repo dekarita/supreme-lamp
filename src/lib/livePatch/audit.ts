@@ -7,7 +7,9 @@
 // `audit`, keyPath `seq` autoIncrement, bounded to PATCH_AUDIT_MAX_ROWS by the PURE
 // core's trimAuditRows(). Nothing here uploads, and nothing here holds a connection
 // open: every operation opens, works, and closes in a `finally`. A module-level cached
-// IDBDatabase is a leak with a nice name - F110-f pins its absence.
+// IDBDatabase is a leak with a nice name - F110-i pins its absence: the three public
+// callers (listAudit / appendAuditRow / clearAudit) each `db.close()` in a `finally`,
+// asserted by counting the calls in the file, not by hoping.
 //
 // HONEST-FAILURE CONTRACT, copied from src/lib/dvr/storage.ts: every call resolves to
 // a result object and NOTHING throws out of this module. A host without IndexedDB (or

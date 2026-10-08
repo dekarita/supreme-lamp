@@ -2,8 +2,9 @@
 //
 // [F110 §3] The copy names BOTH enablers, because F110's patches switch a section off
 // through this same map (one source of truth, by design) and a card that blamed only the
-// HUD would send the operator to the wrong place to undo it. tests/f110-live-patch.test.js
-// F110-i pins the sentence, so a future edit cannot quietly drop the F110 half.
+// HUD would send the operator to the wrong place to undo it. The DOM gate pins the
+// sentence (src/tests/smoke/f110-live-patch.test.tsx: `toContain("live patch (F110)")`),
+// so a future edit cannot quietly drop the F110 half.
 //
 // Lives in its own file on purpose: FeatureBoundary.tsx's first
 // `data-testid={"…" + feature}` literal is pinned to "feature-boundary-" by F105-k,

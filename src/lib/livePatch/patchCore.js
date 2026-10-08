@@ -47,9 +47,9 @@
 export const PATCH_FRAME_TYPE = "patch";
 /**
  * [F110 §1] the transport, pinned as a literal so "we did not add a route" is a
- * fact a gate can check rather than a claim in a comment. tests/f110-live-patch.test.js
- * F110-f asserts this string equals the socket path useDashboardPolling already builds
- * and that no `/ws/patch` appears anywhere in src/.
+ * fact a gate can check rather than a claim in a comment. F110-b pins this literal
+ * to "/ws", F110-i re-checks it against the socket path `useDashboardPolling`
+ * actually builds, and both require that `/ws/patch` appears nowhere in src/.
  */
 export const PATCH_CHANNEL_URL = "/ws";
 /** [F110 §2] the domain-separator prefix inside the MAC input. A patch MAC is not a MAC of any other message shape. */

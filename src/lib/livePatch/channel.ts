@@ -5,7 +5,7 @@
 // Everything DECISION-shaped lives in patchCore.js and is obeyed here, so the Node gate
 // proves the same table the browser runs.
 //
-// ORDER OF OPERATIONS IS SECURITY, and F110-f pins it, in this order:
+// ORDER OF OPERATIONS IS SECURITY, and F110-i pins it (in this order):
 //   1. is it one of ours?            (no work for progress frames)
 //   2. is the channel armed?         (prod default-off: no verify, no write, no database)
 //   3. structure + clocks            (a malformed or stale frame never reaches crypto)
