@@ -285,7 +285,13 @@ test("F109-i: the two F111 gate bugs this step surfaced stay fixed", async () =>
   // and the real tree resolves both F109 keys to themselves
   const ledger = JSON.parse(read("src/lib/ci/stepLedger.json"));
   const f109 = ledger.entries.find((e) => e.featureIds.includes("F109"));
-  assert.equal(f109.status, "open");
+  // [F110 / step 9 §CROSS-SESSION-SCRUTINY] this line read `f109.status === "open"`.
+  // It was TRUE when the step-8 session wrote it and false 6 hours later: #178 merged at
+  // 2026-10-08T01:28:13Z, so the next session's §POST-MERGE-ROADMAP-TICK (which exists to
+  // stop steps being re-run) would have turned this gate RED for doing its job. Pinned to
+  // the durable fact instead of the in-flight status - `gh pr view 178 --json state,mergedAt`.
+  assert.equal(f109.status, "merged", "#178 is MERGED, so the ledger must say merged - and an F109 re-run must now BLOCK");
+  assert.equal(f109.mergedAt, "2026-10-08T01:28:13Z");
   assert.equal(f109.branch, "arena/33e36146-supreme-lamp");
   assert.deepEqual(inv.extractFeatureIds(f109.title), ["F109"], "the ledger title extracts exactly its declared id");
   for (const n of [176, 177]) {

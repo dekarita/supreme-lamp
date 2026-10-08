@@ -1,5 +1,11 @@
 // [F109 §4] What a section renders while the Debug HUD has it switched off.
 //
+// [F110 §3] The copy names BOTH enablers, because F110's patches switch a section off
+// through this same map (one source of truth, by design) and a card that blamed only the
+// HUD would send the operator to the wrong place to undo it. The DOM gate pins the
+// sentence (src/tests/smoke/f110-live-patch.test.tsx: `toContain("live patch (F110)")`),
+// so a future edit cannot quietly drop the F110 half.
+//
 // Lives in its own file on purpose: FeatureBoundary.tsx's first
 // `data-testid={"…" + feature}` literal is pinned to "feature-boundary-" by F105-k,
 // and the boundary must stay free of storage tokens (F105-j) - this card reaches
@@ -17,8 +23,8 @@ export default function FeatureDisabledCard({ feature, onEnable }: { feature: Fe
       role="status"
       className="rounded-lg border border-warning/60 bg-surface p-5 text-sm text-secondary"
     >
-      <p className="font-semibold text-primary">Section "{feature}" is switched off by the Debug HUD (F109).</p>
-      <p className="mt-1">This is a dev-time toggle: nothing is broken. Re-enable it here or in the HUD's Toggles panel (Shift+F12).</p>
+      <p className="font-semibold text-primary">Section &quot;{feature}&quot; is switched off by the Debug HUD (F109) or a live patch (F110).</p>
+      <p className="mt-1">This is a dev-time toggle: nothing is broken. Re-enable it here, in the HUD&apos;s Toggles panel (Shift+F12), or with Settings &gt; Live Patch &gt; Roll back (F110).</p>
       <Button
         data-testid={"feature-disabled-" + feature + "-enable"}
         variant="secondary"

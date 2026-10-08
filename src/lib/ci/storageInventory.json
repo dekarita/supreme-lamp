@@ -17,7 +17,7 @@
   },
   "drift": {
     "i163Claim": "14 live + 3 purged-legacy localStorage keys (#163 §3.8, hand-counted)",
-    "derived": "21 surfaces: 16 live (15 localStorage + 1 IndexedDB), 1 migration, 3 purged, 1 dead-read",
+    "derived": "21 surfaces at step 10 (16 live: 15 localStorage + 1 IndexedDB, 1 migration, 3 purged, 1 dead-read). F110 added 2 more (f110:armed, ghrdp-patches), so the CURRENT derived count is 25 - see postInventoryGrowth; the gate pins the current number, this sentence quotes the measurement #163 was tested against",
     "missedByI163": [
       {
         "key": "ghrdp.f57.opqueue",
@@ -39,7 +39,8 @@
   },
   "postInventoryGrowth": {
     "note": "Surfaces added AFTER the F111 gate landed carry addedBy:<feature id>. They are i163:false because #163 could not know them, but they are NOT #163 drift: F111-i counts only i163:false keys WITHOUT addedBy as missed-by-#163, and requires every addedBy to be a feature id the step ledger carries.",
-    "F109": ["f109:enabled", "f109:toggles"]
+    "F109": ["f109:enabled", "f109:toggles"],
+    "F110": ["f110:armed", "ghrdp-patches"]
   },
   "keys": [
     {
@@ -69,7 +70,7 @@
       "constantName": "HUD_ENABLED_KEY",
       "i163": false,
       "addedBy": "F109",
-      "note": "F109 Debug HUD master switch (Settings > Developer > Debug HUD). Exactly \"true\" enables the HUD; off REMOVES the key (no residue). Read and written only by src/lib/debugHud.ts (Settings calls setHudEnabled). Absent = HUD off: the Shift+F12 shortcut is inert, no observer runs, and every f109:toggles entry is ignored."
+      "note": "F109 Debug HUD master switch (Settings > Developer > Debug HUD). Exactly \"true\" enables the HUD; off REMOVES the key (no residue). Read and written only by src/lib/debugHud.ts (Settings calls setHudEnabled). Absent = HUD off: the Shift+F12 shortcut is inert, no observer runs, and an f109:toggles entry is inert UNLESS the F110 patch channel is armed (f110:armed) - the map has two enablers since step 9, decided by toggleSurfaceActive()."
     },
     {
       "key": "f109:toggles",
@@ -80,7 +81,18 @@
       "constantName": "HUD_TOGGLES_KEY",
       "i163": false,
       "addedBy": "F109",
-      "note": "F109 dev-time section toggles: ONE JSON object {\"<featureId>\":\"off\"}, not one key per feature, because F111's scanner derives only literal or const-bound keys and an f109:toggles:<id> family would be invisible to F111-e. Read by FeatureBoundary at mount through src/lib/featureToggles.ts; bites only while f109:enabled is \"true\"."
+      "note": "F109 dev-time section toggles: ONE JSON object {\"<featureId>\":\"off\"}, not one key per feature, because F111's scanner derives only literal or const-bound keys and an f109:toggles:<id> family would be invisible to F111-e. Read by FeatureBoundary at mount through src/lib/featureToggles.ts; bites while f109:enabled is \"true\" OR f110:armed is \"true\" (a signed patch switches a section through THIS map - one source of truth for \"is this section off\"), and inert with neither."
+    },
+    {
+      "key": "f110:armed",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "shared",
+      "declaredIn": ["src/lib/livePatch/state.ts"],
+      "constantName": "PATCH_ARM_KEY",
+      "i163": false,
+      "addedBy": "F110",
+      "note": "F110 Live Patch master switch (Settings > Developer > Live Patch). Exactly \"true\" arms the channel; disarming REMOVES the key (no residue), like f109:enabled. Read and written only by src/lib/livePatch/state.ts (Settings calls setLivePatchArmed). Absent = disarmed: useDashboardPolling hands the frame to ingestPatchFrame(), which returns before verification, before any storage read of the toggle map, and before opening ghrdp-patches - so a dashboard nobody armed neither applies nor records a patch."
     },
     {
       "key": "f56.search.enabled",
@@ -136,6 +148,17 @@
       "constantName": "DVR_DB_NAME",
       "i163": false,
       "note": "DRIFT: F107 (step 6) DVR session database, DVR_DB_NAME exported by src/lib/dvr/storageCore.js and opened as factory.open(DVR_DB_NAME, DVR_DB_VERSION). Holds the recordings and their base64 PNG thumbnails; 5 MB/session soft budget, 30-day retention, oldest-shot-first eviction. Installed from main.tsx, so it is chrome, not a fenced section. The single largest persistence surface in the app and absent from #163 §3.8."
+    },
+    {
+      "key": "ghrdp-patches",
+      "kind": "indexedDB",
+      "classification": "live",
+      "surface": "shared",
+      "declaredIn": ["src/lib/livePatch/audit.ts"],
+      "constantName": "PATCH_AUDIT_DB",
+      "i163": false,
+      "addedBy": "F110",
+      "note": "F110 (step 9, FINAL STEP) patch audit database, PATCH_AUDIT_DB exported by src/lib/livePatch/patchCore.js and opened as factory.open(PATCH_AUDIT_DB, PATCH_AUDIT_DB_VERSION) in audit.ts. One store, `audit`, keyPath seq autoIncrement, bounded to PATCH_AUDIT_MAX_ROWS=200 by trimAuditRows() inside the SAME write transaction. Deliberately NOT a store inside ghrdp-dvr: 'clear my recordings' must not erase the log of what was patched, and a second store in another feature's database hides from the inventory as an object-store-count change rather than as a new surface. Rows hold verdict/op/section/reason + the first 8 hex chars of the MAC - never a full authenticator, never the dash token."
     },
     {
       "key": "ghrdp.cmdkeyConfirmedFqdn",

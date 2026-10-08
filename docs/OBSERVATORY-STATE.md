@@ -140,10 +140,10 @@
   do NOT add an `actions/deploy-pages` workflow). §PRE-STEP was run this session: all 8 planned paths are collision-free,
   both envelope tags (`mcrec1:` v1 clipboard, `mcrec2:` v2 export) confirmed present, and there is now exactly **ONE** v2
   producer (`exportCore.js`), so the viewer's reader contract is unambiguous.
-- [x] **Step 8 — F109** · landed on `arena/33e36146-supreme-lamp`, PR **#178** (open, mergeable on entry base `b6c1516`) · Debug HUD: Shift+F12 overlay, 5 panels, prod-safe default-off; fixed a lab-discovered prod bug (forced lab scenarios outliving the lab) and two F111 gate bugs (see the F109 session block) · · ETA 90min · Debug HUD overlay (F12-shift)
+- [x] **Step 8 — F109** · landed on `arena/33e36146-supreme-lamp`, PR **#178** (**MERGED** 2026-10-08 01:28:13Z by the operator as `01c94f5` (merge commit — this branch's base); the line still said "open" because it was written 41 min before a human read the PR - CI had been green for 3 h 45 min) · Debug HUD: Shift+F12 overlay, 5 panels, prod-safe default-off; fixed a lab-discovered prod bug (forced lab scenarios outliving the lab) and two F111 gate bugs (see the F109 session block) · · ETA 90min · Debug HUD overlay (F12-shift)
 
 ## Phase 3 — Advanced
-- [ ] **Step 9 — F110** · ETA 150min · Live Patch Protocol (module federation)
+- [x] **Step 9 — F110** · landed on `arena/28163f3f-supreme-lamp`, PR **#180** (opened this session; the ledger stays `open` until the operator merges, per the §POST-MERGE-ROADMAP-TICK split) · Live Patch Protocol: signed `patch` frames on the authenticated `/ws` -> `f109:toggles` -> IndexedDB `ghrdp-patches` audit -> `rollbackPlan()` in Settings. Shipped as F110a (no remote-code swap; the roadmap's "module federation" is infeasible on a singlefile build and unsafe here) with the asymmetric-signature half filed as #179 · ETA 150 min, ~55 used · node 716/716 · vitest 1126/1126 (86 files) · tsc 0 · build 1,096.80 kB · 0 new deps · 0 new i18n keys · regression-ids 219/219 · 21/21 falsifications + 5 vacuity probes (2 caught my own gate)
 - [x] **Step 10 — F111** · landed on `arena/0fb601e2-supreme-lamp`, PR **#177** (opened this session, NOT merged) · CI Inventory Gate: the storage inventory and the step ledger are DERIVED and diffed, not hand-counted. Closes §Handoff #9 (#163 §3.8 says "14 live + 3 purged"; the tree has 21 surfaces, and `ghrdp-dash-token` is a DEAD READ - read by two files, written by nothing) and §Handoff #12 (the double-ship detector, proven by mutating the real ledger back into #173+#174). Reached by §WHILE-WAITING fall-through: step 7 belongs to open sibling #176.
 
 ## Session 2026-10-07 22:27Z — Step 6 REPAIR (double-merge de-duplication) — **COMPLETE**, PR #175
@@ -1279,3 +1279,169 @@ Count from derived inventory: 2 (items 2, 5) — under the 5+ halt threshold.
 | `e2e-ui` | in progress at watch close: install ✅ (frozen lockfile), build ✅, inside "Run F78 + F79 E2E specs" with **0 failed steps** | ⚠️ **AMBER-INHERITED** (the recorded 25-min self-cancel step; NOT the #175 RED-NEW fast-failure class) |
 Main `b6c1516` (CI, independent of the local run): launch-gates ✅ · build-ui ✅ · autologin-lab ✅ · replay viewer ✅ · e2e-ui cancelled (inherited). **Verdict: mergeable.** This post-watch commit is docs-only.
 <!-- F109-end -->
+
+---
+
+## Session 2026-10-08 01:31Z — Step 9 — F110 Live Patch Protocol — **COMPLETE**, PR **#180** (the roadmap's last step)
+
+- Branch `arena/28163f3f-supreme-lamp` · base = main `01c94f5` = **#178's merge commit** (mergedAt 2026-10-08
+  01:28:13Z, i.e. this session started ~3 min after step 8 landed) · **v11 prompt** · 17 files / **+2417 −26** ·
+  **0 new deps** · **0 new i18n keys** (lock 1030) · node **716/716** (was 705, +11) · vitest **1126/1126, 86 files**
+  (was 1108/85, +18) · tsc 0 · build **1,096.80 kB** (+13.72 over step 8's 1,083.08) · regression-ids 219/219 ·
+  no-neon-green · bottom-bar · fx-ids · §7 budget ~55 min of the 150 ETA (early-stop at 45 min of *waiting* never
+  triggered: CI entry checks were seconds; the 90-min overrun threshold is far away).
+- **Shipped** (`src/lib/livePatch/` + `src/components/livePatch/`): `patchCore.js` **329 lines / 32 exports** (+ a
+  112-line hand-written `.d.ts`, 41 declaration lines) · `channel.ts` 283 (provider seam + ingest + prime + rollback)
+  · `state.ts` 148 (arm flag, cross-tab sync, injectable reloader) · `audit.ts` 182 (IndexedDB) ·
+  `PatchAuditPanel.tsx` 153 (Settings ▸ Developer) · `tests/f110-live-patch.test.js` 596 (11) ·
+  `src/tests/smoke/f110-live-patch.test.tsx` 466 (18). Wiring: `useDashboardPolling.ts` (forward patches before
+  `setProgress`), `Settings.tsx` (one `<PatchAuditPanel />`), `featureToggles.ts` (second enabler),
+  `FeatureDisabledCard.tsx` (copy), both `src/lib/ci/*.json` inventories.
+- **§PROMPT-STALENESS: 3 corrections.** (1) §1 "F110 is #174 OPEN, mergeable, needs a 6th manual label" → #174 is
+  **F107's** canonical PR, **MERGED 2026-10-07 22:27:00Z**, `labels: [f-observatory, observatory]`;
+  `gh pr list --search "F110 in:title" --state all` → empty. So there was no PR to label and the "re-check at commit
+  time" clause is void (`#163/#164/#165` are closed). (2) §4.2 "F101 keepalive is still 45 s" → the shipped watchdog is
+  **30 s** (`websocketWatchdogCore.js:37`, `App.tsx:107` passes no opts) → `PATCH_MAX_AGE_MS = 120000` is 4 × the real
+  cadence (and 2.7× under the prompt's number: no window widened). (3) §2.2 named a Playwright spec for the row cap;
+  `e2e-ui` runs only on `src/**`/`tests/e2e/**` changes and is step 8's 25-min self-canceller with no Chromium here,
+  so the proof runs in jsdom with **fake-indexeddb driving real transaction semantics** instead.
+  No halt: all three were resolved by measurement, none left the step unbuildable.
+- **Design vs spec, and the crypto** (full table in the PR body): `jose` does **not** exist in this tree (F109-j pins 8
+  deps / 21 devDeps; adding a 22nd was out of budget) → the MAC is **WebCrypto HMAC-SHA256** over
+  **the dashboard token itself**, resolved by F94's `getDashToken()` (three sources: `?key=`, `#key=`,
+  `localStorage["ghrdp.dashToken"]`), used **raw** - no derivation, no second copy, floor `PATCH_MAC_KEY_MIN = 16`. `verify*` exists **twice, both in the core**
+  (`verifyPatchFrame`, `verifyPatchSignature`); `grep -c "function verify" src/lib/livePatch/{channel,state,audit}.ts`
+  = **0** → one implementation. (There is **no** `computeDashboardSignature` and no date-salted key derivation in this
+  tree - f46.ts is credential encryption, not token signing. The design sketch this session began from assumed one
+  existed; measured before writing it down, and the shipped code does not claim it either: `grep -n "f46" 
+  src/lib/livePatch/*` is empty.) Ed25519 (the spec's literal ask) is #179, and the reason is key distribution, **not**
+  speed: measured on node v22's WebCrypto (1000–2000 ops) HMAC sign **0.097** / verify **0.060** ms, Ed25519 sign
+  0.121 / verify **0.201** ms, P-256 0.115/0.189, canonicalize+encode 0.0008 → a full 200-row replay costs **40 ms**
+  with asymmetric crypto.
+- **§LAB-DISCOVERS-PROD-BUGS: 3 shipped as fixes** (each first proven with a trace, so none is a guess):
+  the rollback button's row-count vs `rollbackPlan()` mismatch ("Roll back 2" over an empty plan, an empty marker row,
+  no restore, `armed=false` without a reload); `appendAuditRow`'s **single**-transaction put+trim, which dies
+  permanently once the cap is crossed (IDB auto-commits an idle transaction ⇒ `Transaction is dead`, `durable:false`
+  forever, rollback silently degraded to this-session-only) — fixed with a put tx + a trim tx over a shared `readAll`,
+  `db.close()` in `finally` on all three paths, `trim-error:` surfaced; and `primeAudit()`'s awaited read **clobbering**
+  rows applied during the mount (now a `primeToken` generation guard that **merges** `res.value.concat(rows)` only while
+  current, bumped by `forgetAuditLog` and the test reset).
+- **Two non-bugs, recorded so nobody "fixes" correct code** (both were MY wrong expectations, settled by printing a
+  `Storage.prototype.setItem` write trace before touching source): `rollbackPlan` restoring each row's **own** `prev`
+  is right (two patches to one feature ⇒ the earlier row's `prev` wins until the marker), and a healthy
+  `FeatureBoundary` renders **zero** extra DOM (there is no `feature-boundary-<id>` element unless a fallback shows).
+- **§GATE-SELF-TEST: 2 bugs in my own new gate, both caught by probing rather than by green.** A whole-file `indexOf`
+  ordering rule was **vacuous** (the export precedes the caller ⇒ always true) — now scanned inside `verifyPatchFrame`;
+  and a `split("/** Forget")` slice was invisible to the comment-stripped source (`CODE()` strips comments first), so
+  the append-body rule had silently widened to `clearAudit`'s transaction and reported "3" — which is what led me to
+  the trim bug. Slices now anchor on `export async function clearAudit`. Both were fixed rather than relaxed.
+- **§3 updates**: (a) `§CI-GATE-BRITTLENESS` F111 family, twice and **intent-preserving** — `knownRoadmapDrift` gained
+  the line-101 `#173`-vs-`#174` drift (step 6's record; §UI-ACCUMULATOR-FILES forbids rewriting it by hand) and the
+  line-147 "F110 is #174" claim, and the storage scanner now reads a `.js` + hand-written sibling `.d.ts` as **one**
+  declaration set (that is how `patchCore.js` is typed; the old rule rejected the F-DVR-LITE pattern the gate exists to
+  bless). (b) step 8's **§D5-F111-STORAGE-GATE** hazard is **discharged**: F110's two surfaces are declared in
+  `storageInventory.json` (`f110:armed`, `ghrdp-patches`, both `addedBy:"F110"`, `drift.derived` re-worded to 25) and
+  F111's storage tests re-run green. (c) **§Fence-coverage-gap tracker**: F110 adds **zero** new global mounts — the
+  panel lives inside Settings' already-fenced section and its guard is a `FeatureBoundary` that never registers (the
+  F109 fork, because the HUD's Features panel *reads* that registry). The unfenced rows are unchanged and still
+  F109-targeted: `Toasts`, `DiagSideDrawer`, `CollectorRunBridge`, `F92VersionGate`, `DashTokenGate`, `AppShell` (+
+  `DvrFab`, `CommandPalette`, and `SessionListModal`'s FAB path). (d) the operator's "`check:ui` / `dist/index.html`"
+  item is **stale in this tree**: `check:ui` appears in no workflow and no `package.json` script, and every CI
+  `dist/index.html` reference is `ui/dist/index.html` (`vite.config.ts:57 outDir: "ui/dist"`), which builds and is
+  asserted. (e) `ghrdp-dash-token`'s dead read: **still open**, untouched (F110 verifies with the *derived* secret and
+  never reads that key).
+- **§FALSIFY-3: 21/21 caught** (M1–M11 node, D1–D10 DOM; each mutation reverted in-file and `grep`-verified) +
+  **5 vacuity probes**. **§MOCK-LIFECYCLE-REGISTRY**, **§CROSS-SESSION-FIXES**, **§DESIGN-DRIFTS**,
+  **§PROVENANCE** are recorded as tables directly below (new in v11); **§PAGES-STATUS** and
+  **§DEBUG-TOOL-MOUNT-POINTS** are the two sections the v11 prompt asked for and this step could actually measure.
+
+### §MOCK-LIFECYCLE-REGISTRY (v11 — every harness seam F110 installs or touches)
+| # | seam | installed by | off switch | inert when off | leaks into prod? |
+|---|---|---|---|---|---|
+| 1 | the ingest seam: `useDashboardPolling` → `isPatchFrame(data)` → `ingestPatchFrame(evt.data)` | **nothing is installed** - there is no `window.__ghrdp*` global in the shipped design (the first draft had one; deleted as unreachable API surface). The switch is the arm flag alone | Settings ▸ Developer ▸ "Arm live patch channel" ⇒ `localStorage["f110:armed"]`, written only as the literal `"true"`, **removed** on off | ✅ disarmed answers `disarmed` **before** verification, before `f109:toggles` is read, before `ghrdp-patches` is opened - the DOM test spies on `indexedDB.open` and asserts zero calls ("ignores a valid signed patch before verifying it, writing nothing and opening no database") | **no**: default-off, and even armed the only effect is one map entry that `FeatureBoundary` reads at the **next** mount, never mid-render |
+| 2 | `setPatchMacProvider(fn)` - the swappable MAC seam (F107's `setShotRasterizer` / `setExportDownload` convention) | tests, and #179's future verifier | `setPatchMacProvider(null)` restores the shipped `webCryptoMac`; `isDefaultMacProviderActive()` is the assertable proof | ✅ with a <16-char token `decidePatch` answers `no-channel-key` **before** any provider call; a throwing provider is caught and answers `provider-failed`, never crashes the socket | no new global - `crypto.subtle` is the browser's own |
+| 3 | the only subscriptions F110 has: `subscribeLivePatch` (a `Set` behind `useSyncExternalStore`) + `installLivePatchCrossTab` (one `storage` listener) | the panel's effects | the effect cleanups (`listeners.delete`, `removeEventListener`) - "the ONLY way to leave", per state.ts's own comment | ✅ the DOM test reads `livePatchListenerCount()` around mount+unmount and requires the baseline back; `notifyLivePatch()` swallows subscriber errors so a patch-audit subscriber cannot break the page | no |
+| 4 | **absence** of a socket seam: zero `.send`, zero `new WebSocket`, zero `addEventListener("message")` across `src/lib/livePatch/**` + the panel (grep-proven) | n/a - this is the property that keeps F101's hello/keepalive/reconnect machine untouched | n/a | ✅ a patch **arrives**; F110 never asks for one. DOM: an `EventSource`-shaped stub records zero `.send` calls while `/#/overview` still gets its F101 hello | no |
+| 5 | `requestPatchReload()` (default `location.reload()`), used by rollback | the reloader seam | `setLivePatchReloader(fn)`; `isDefaultReloaderActive()` | ✅ tests count reloads instead of performing them - which is what made the "disarm without a reload" bug visible in a trace | no |
+| 6 | jsdom harness: `fake-indexeddb`, `vi.spyOn(indexedDB,"open")`, `vi.stubGlobal("fetch",…)`, `window.localStorage`, real `crypto.subtle` | `src/tests/smoke/f110-live-patch.test.tsx` | per test, in BOTH hooks: `setLivePatchArmed(false)`, `__resetLivePatchForTests()`, `__resetLivePatchChannelForTests()`, `setPatchMacProvider(null)`, `restoreFetch()`, `clearAudit()` | ✅ the file's own `afterEach` asserts the fetch stub is gone - re-confirming step 8's finding that `vi.unstubAllGlobals()` also removes `setup.ts`'s offline stubs, so this suite restores **only what it stubs** | test-only; `vitest.config.ts` untouched (its jsdom include list is an F106 pin) |
+
+Three gotchas worth keeping: IDB **and** `localStorage` persist across tests in a file (`clearAudit()` in both hooks);
+`fake-indexeddb` defers completion to a macrotask, so `await act()` alone cannot see a post-IDB effect — assert with
+`waitFor`; and 200+ signed frames blow the 5 s default, so the bulk test passes `30_000` as its own timeout.
+
+### §CROSS-SESSION-FIXES (v11)
+| # | where the bug lived | bug | fixed here? | proof |
+|---|---|---|---|---|
+| 1 | F109 step 8, `FeatureDisabledCard` (copy only) | the card promised the *only* way back in was the Debug HUD; since step 9 a signed patch is a second enabler and the audit log a second way out | **yes** (copy only) | grep: no gate pins that sentence (`FeatureDisabledCard` appears in F109's file list and an F105 first-literal rule, both still satisfied); the DOM test `renders the disabled card on the patched section` asserts the text a user reads contains "live patch (F110)" |
+| 2 | F111 step 10, `.d.ts` rule | a hand-written `.d.ts` beside a **`.js`** core was unclassifiable (the rule assumed a TS sibling) | **yes**, intent-preserving: `.js` + sibling `.d.ts` = one declaration set | F111-a/b/d/e/f green; the other 21 surfaces unchanged |
+| 3 | step 8's §D5 hazard | "declare new persistence or the build fails" had no worked example | **yes**, by doing it | node 716/716 |
+| — | — | **prior-work bug count 3 < 5** ⇒ §6 halt rule not triggered | | |
+
+### §DESIGN-DRIFTS (v11 — where the build differs from the literal §5/§10 ask)
+1. **HMAC over the shared token derivation, not Ed25519 + `PATCH_PUBLIC_KEY`** (see §Crypto above): the property the
+   spec wants ("an attacker who can reach `/ws` cannot mint a valid frame") is preserved; the *asymmetry* is deferred
+   to #179 with measured numbers. Documented in `channel.ts`'s header.
+2. **No "thin `cryptoVerify` shim" over `verifyDashboardTokenLocally`.** That function derives a key per date string and
+   only ever *compares*; reusing it would have meant either a second verifier (banned by the spirit of §10) or
+   re-deriving inside the core. The provider is instead a 7-line WebCrypto closure with a swappable seam.
+3. **`toggle-off`/`toggle-on`, not `replace-component`** — the spec's own safety sentence decided it; there is no
+   remote execution path in this tree.
+4. **Audit entirely client-side** (no `/api/patches/audit`): the handler has no such route, and `decidePatch` is pure,
+   so a server half can be bolted on without touching the decision.
+5. **`f110:armed` is one literal key**, same reasoning as step 8's `f109:toggles`: F111 derives only
+   literal/const-bound keys, so a dynamic family would be an invisible undercount.
+6. **The cap is core-enforced AND store-enforced**; the DOM gate mutates the constant to prove the two agree.
+
+### §PROVENANCE (v11)
+A patch frame is trusted iff: it arrived on the same origin-protected `/ws` as every other frame; its HMAC over
+`ghrdp-patch-v1|…` verifies **in the browser** against a key that is simply the page's own dashboard token;
+`ts`/`exp` keep it inside 120 s (5 s skew); its `feature` is one of the 11 registry ids; and its `id` was not already
+`applied`. It is **not** provenance in the strong sense — token-mint power equals frame-mint power, which is why the
+channel is operator-armed by hand and why #179 exists. `prev` is deliberately **unsigned** (it is data the page
+already knows, and signing it would make a patch depend on client state the signer cannot see).
+
+### §PAGES-STATUS (v11, measured 2026-10-08 02:05Z)
+* `GET /repos/dekarita/supreme-lamp/pages` → `build_type:"workflow"`, `source:{branch:"main",path:"/"}`,
+  `html_url:"https://dekarita.github.io/supreme-lamp/"`, `https_enforced:true`, **`status:null`, `cname:null`**.
+* `GET /repos/dekarita/supreme-lamp/deployments` → last `github-pages` deployment **2026-10-08T00:47:13Z** (`main`),
+  before that 2026-10-01T16:42Z. So Pages **is** publishing and is **one or more merges behind** `main`.
+* `GET /pages/jobs/latest-pages-build` → **404** (as would `/pages/builds` for a workflow-type site). Step 8's
+  "`succeeded`, 9 steps" therefore can't be reproduced from that endpoint; its real signal was the deployment row.
+  Its `status:"unknown"` reading of `/pages` came from an **unquoted** `gh api … | grep status` — **quote the path**.
+* `GET https://dekarita.github.io/…` from this sandbox → **blocked by the host allowlist** (curl 000), so the
+  `/status.json` *body* could not be re-read this session; step 8's 13:19Z snapshot is **not** restated as current.
+* **Decision left with the operator, deliberately not taken here**: widen `replay-viewer.yml`'s fenced `push:` trigger
+  so watchdog-era commits republish `/status.json`, or accept the staleness. Widening it silently changes what Pages
+  ships (every ~80 s heartbeat commit would re-publish ~1000×/day, which is why the fence exists — F108-h) and would
+  re-open that pin.
+
+### §DEBUG-TOOL-MOUNT-POINTS (v11)
+F110 mounts **nothing** new at the chrome level. What exists after this step: `Settings.tsx:183` renders one
+`<PatchAuditPanel />` inside the already-fenced `/settings` section (153 lines, no portal, no global side effect beyond
+`subscribeLivePatch`) · the *decision* path is `useDashboardPolling`'s frame handler (11 added lines, no JSX, no
+context, no socket write) · `featureToggles.ts:76` is the single point where "does a stored `off` bite" is decided:
+`isToggledOff(readFeatureToggles(), id, toggleSurfaceActive(isHudEnabled(), isLivePatchArmed()))`.
+**Two first-draft components were deleted rather than shipped**: a `window.__ghrdpPatchChannel` install/uninstall API
+(nothing needed it - Settings mounts the panel, so an install handle is purely new reachable surface) and
+`PatchSurfaceBoundary` (a fork of F109's fork of `FeatureBoundary`): the audit panel is the *control* that turns
+sections off, so fencing it would let a crashing section hide the way back out.
+
+### Handoffs recorded (NOT done here)
+1. **#179** — F110b: per-frame Ed25519 signatures + the pubkey-distribution decision (TOFU pin vs handler endpoint vs
+   `state`-embedded `kid`), the `PATCH_MAC_DOMAIN`→`ghrdp-patch-v2` / `PATCH_SCHEMA_VERSION`→2 bump that makes v1
+   frames provably invalid, and a handler-side signer (`payloads/ghrdp-handler` has no patch emitter today). Budget
+   150 min including the Go half.
+2. **#179 needs an operator touch, and the reason is a permission asymmetry worth recording.** Measured in one minute:
+   `POST /issues/179` (create) **✓** · `POST /issues/179/labels` **403** · `gh issue edit --add-label` (GraphQL) **403**
+   · `POST /issues/179/comments` **403** · `PATCH /issues/179` (body) **403** — but `PATCH /issues/180` (a **pull
+   request's** body) **✓** and `POST /issues/180/labels` **✓** `[f-observatory, observatory]`. So this installation can
+   create issues and edit PRs, and can do **nothing else** to an issue. Operator action: add `f-observatory` to #179 and
+   fold in the three corrections it needs (its body was drafted from the pre-ship sketch, and the PR body carries the
+   same corrections as a footer): there is **no** `src/lib/livePatch/mac/` dir (the provider seam is `setPatchMacProvider`
+   / `webCryptoMac` inside `channel.ts`, so #179 is **~40 added lines**, not a module tree); there is **no**
+   `computeDashboardSignature` / date-salted derivation in this tree, so its item 4 (key distribution) is the whole
+   story rather than one option; and the ban/pin test-ids are **F110-a + F110-i**, not F110-d / F110-e.
+3. Playwright `tests/e2e/f110-live-patch.spec.ts` (a real-Chromium arm→patch→reload→rollback loop) — still not worth an
+   un-runnable file; the jsdom proof exists and the job is the 25-min self-canceller.
+4. `/api/patches/audit` server-side mirror if the handler ever needs to *revoke* a frame (the dedupe set is
+   per-browser today; a second tab arms independently — cross-tab sync covers the flag, not the id set).
