@@ -2058,3 +2058,17 @@ time this repo has learned it: **the gate must assert the behaviour, not the voc
 ### §3 updates made
 - STATE.md (M6+M3 entry appended to last line, stays ≤60 lines).
 - docs/OBSERVATORY-STATE.md (header updated, M6+M3 records appended).
+
+### M8 Cancellation-safe status finalizer — this session (arena/374acee7-supreme-lamp) — PR #188
+- **What changed**: `main.yml` rdp job gains a final step `Finalize status.json (M8 cancellation-safe terminal state)` (`if: always()`, explicit `GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}` env, self-contained contents-API PUT with bounded 3x retry, always `exit 0`). It maps the real `job.status` to a truthful terminal `runStatus` (success→completed, cancelled→cancelled, failure→failed, else unknown), adds an additive `finalizeReason` field, carries the remote `overallPct`/`filesDone`/`filesTotal` (no synthetic 100%), and guards ownership so a finished run never clobbers a newer run's heartbeat (initial check + re-check before every PUT attempt).
+- **Root cause fixed (PROB-004/PROB-005, RC-02)**: the Cleanup step's nested finalize wiped `C:\ghrdp\gh-pages-token.txt` before publishing and that step never sees `$env:GITHUB_TOKEN`, so `Publish-StatusToGhPages` silently returned; a cancelled run left `runStatus=in_progress` published (frozen at `2026-10-07T13:19:42Z`, observed 58h+ on 2026-10-09). It also hardcoded `completed` regardless of outcome. M8 is the LAST writer in the rdp job, so its truthful terminal state always wins.
+- **Files**: `.github/workflows/main.yml` (+100 lines, additive step after Cleanup; Cleanup untouched), `tests/m8-cancellation-finalizer.test.js` (new, 10 rules M8-a..M8-j), `STATE.md` (M8 entry folded into last line, stays ≤60 lines), `SESSION_HANDOFF_PROMPT.md` (new, repo root).
+- **Gates**: §FALSIFY-3 5/5 mutations caught by their intended rule (M1 `always()`→`success()`→M8-b, M2 `cancelled`→`in_progress`→M8-d, M3 env removal→M8-c, M4 step deletion→M8-a (+8 more), M5 guard inverted→M8-f). §VACUITY-PROBES P1-P3 documented in the test header. Positive control: 10/10 on the unmutated file.
+- **LAB**: node 781/781 (+10), ps-balance py+mjs 0 failed (the mjs audit tokenizes every pwsh block in main.yml), `js-yaml` parse OK, config-writer-audit 66 step regions 0 overwrite-style writers, launch-gates absence pins re-verified clean (dnsName/piracy/torrent/hex32/vnc-password/GHRDP_LAB_), F108-h fence SHA unchanged (replay-viewer.yml not modified), M7 FENCE_SHA256 gate still green.
+- **Honest residuals**: live dispatch+cancel verification is OPERATOR-ONLY (a session never dispatches main.yml); no pwsh in the sandbox, so the finalize script is structurally audited (ps-balance + YAML parse) but not executed; a job killed by `timeout-minutes` reports `job.status=failure` → `failed` (timeout not distinguished from generic failure); the Cleanup step's nested finalize is superseded but left in place (removal is a separate RC-05-style cleanup); the ownership guard has a seconds-wide race that self-heals via the newer run's ~80s heartbeat.
+- **Operator next**: merge the PR, then dispatch main.yml once and cancel it; confirm `docs/status.json` flips to `runStatus=cancelled` with a fresh `ts` and `finalizeReason=job.status=cancelled` within ~30s, and that the next replay-viewer.yml deploy's M7 freshness summary no longer `::warning::`-fires on it.
+
+### §3 updates made
+- STATE.md (M8 entry folded into last line, stays ≤60 lines).
+- docs/OBSERVATORY-STATE.md (this block appended).
+- SESSION_HANDOFF_PROMPT.md created at repo root.

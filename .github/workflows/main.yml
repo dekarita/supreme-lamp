@@ -6512,6 +6512,106 @@ jobs:
           } catch { Write-Host ('[cleanup] finalize failed: ' + $_.Exception.Message) }
           exit 0
 
+      # [M8] CANCELLATION-SAFE STATUS FINALIZER (PROB-004 / RC-02). The Cleanup
+      # step's nested finalize is token-loss-prone: it wipes C:\ghrdp (including
+      # gh-pages-token.txt) BEFORE publishing and the step never sees
+      # $env:GITHUB_TOKEN, so Publish-StatusToGhPages silently returns - a
+      # cancelled run leaves runStatus=in_progress published forever (observed:
+      # docs/status.json frozen at in_progress for 58h after the 2026-10-07
+      # cancellation). It also hardcodes runStatus='completed' regardless of the
+      # real outcome. This step runs on EVERY outcome (always()), maps the real
+      # job.status to a truthful terminal runStatus, and is fully self-contained
+      # (no RUNNER_TEMP helper, no C:\ghrdp token file). It never fails the job,
+      # and a finished run never clobbers the snapshot a newer run heartbeats.
+      - name: Finalize status.json (M8 cancellation-safe terminal state)
+        if: always()
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+          # Re-read the tracked snapshot; returns @{ sha; runId; obj } (nulls on failure).
+          function Get-TrackedStatus {
+              param($Api, $Headers)
+              try {
+                  $g = Invoke-RestMethod -Uri ($Api + '?ref=main') -Headers $Headers -ErrorAction Stop
+                  $r = @{ sha = [string]$g.sha; runId = ''; obj = $null }
+                  try {
+                      $text = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($g.content -replace "`n", '')))
+                      $r.obj = $text | ConvertFrom-Json
+                      $r.runId = [string]$r.obj.runId
+                  } catch { }
+                  return $r
+              } catch {
+                  return @{ sha = $null; runId = ''; obj = $null }
+              }
+          }
+          try {
+              $jobStatus = '${{ job.status }}'
+              $terminal = 'unknown'
+              switch ($jobStatus) {
+                  'success'   { $terminal = 'completed' }
+                  'cancelled' { $terminal = 'cancelled' }
+                  'failure'   { $terminal = 'failed' }
+              }
+              $repo = $env:GITHUB_REPOSITORY
+              $api = "https://api.github.com/repos/$repo/contents/docs/status.json"
+              $H = @{ Authorization = ('Bearer ' + $env:GITHUB_TOKEN); Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28'; 'User-Agent' = 'ghrdp-runner' }
+              $mine = [string]$env:GITHUB_RUN_ID
+              $cur = Get-TrackedStatus -Api $api -Headers $H
+              if ($cur.runId -and ($cur.runId -ne $mine)) {
+                  # Ownership guard (PROB-004): a finished run never clobbers the
+                  # snapshot a NEWER run is actively heartbeating.
+                  Write-Host ('::notice::[m8] docs/status.json is owned by run ' + $cur.runId + '; skipping finalize for run ' + $mine)
+                  exit 0
+              }
+              $pct = 0; $done = 0; $total = 0
+              if ($cur.obj) {
+                  try { $pct = [double]$cur.obj.overallPct } catch { }
+                  try { $done = [int]$cur.obj.filesDone } catch { }
+                  try { $total = [int]$cur.obj.filesTotal } catch { }
+              }
+              $finalObj = [ordered]@{
+                  ts = (Get-Date -Format o)
+                  runId = $mine
+                  runUrl = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $mine)
+                  runStatus = $terminal
+                  finalizeReason = ('job.status=' + $jobStatus)
+                  watcherAlive = $false
+                  speedBps = 0; overallPct = $pct; filesDone = $done; filesTotal = $total
+                  missionControlUrl = ''; tailnetUrl = ''; rustUrl = ''; funnelUrl = ''
+                  mirrorKey = ''; legacyKey = ''; telegraphUrl = ''; rentryNewUrl = ''
+                  egressIp = ''; encryptMode = ''; files = @(); logTail = @(); history = @()
+              }
+              $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(($finalObj | ConvertTo-Json -Depth 20 -Compress)))
+              $body = @{ message = ('status finalize ' + $terminal + ' ' + (Get-Date -Format o)); content = $b64; branch = 'main' }
+              $published = $false
+              for ($attempt = 1; ($attempt -le 3) -and (-not $published); $attempt++) {
+                  # Re-read before every PUT: if a newer run took over between
+                  # attempts, its heartbeat wins and this stale writer aborts.
+                  $cur = Get-TrackedStatus -Api $api -Headers $H
+                  if ($cur.runId -and ($cur.runId -ne $mine)) {
+                      Write-Host ('::notice::[m8] run ' + $cur.runId + ' now owns docs/status.json; aborting finalize for run ' + $mine)
+                      break
+                  }
+                  if ($cur.sha) { $body.sha = [string]$cur.sha }
+                  try {
+                      Invoke-RestMethod -Uri $api -Headers $H -Method Put -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null
+                      $published = $true
+                  } catch {
+                      if ($attempt -lt 3) { Start-Sleep -Seconds (2 * $attempt) }
+                  }
+              }
+              if ($published) {
+                  Write-Host ('[m8] status.json finalized: runStatus=' + $terminal + ' (job.status=' + $jobStatus + ')')
+              } else {
+                  Write-Host '::warning::[m8] could not publish terminal status.json; the published snapshot stays stale'
+              }
+          } catch {
+              Write-Host ('::warning::[m8] finalize failed: ' + $_.Exception.Message)
+          }
+          exit 0
+
 # [remediation 8E] "Overwrite free space" step removed - no anti-forensics.
 
   # [F92 §7.1] The operator's "it's safe to open the dashboard" signal.
