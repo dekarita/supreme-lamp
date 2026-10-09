@@ -385,7 +385,7 @@ Next session starts at WP-03 (if approved) on the session branch. Read this file
 - M8 runbook: `docs/M8-LIVE-VERIFICATION.md`
 - Observatory history (append-only): `docs/OBSERVATORY-STATE.md`
 - Ledger: `STATE.md` (pointer intentionally not added — locked to 60 lines; see §13)
-- Parent tracking issue: _filled after publication_ (see final response)
+- Parent tracking issue: https://github.com/dekarita/supreme-lamp/issues/191 (docs PR #190)
 - Child issues: none created yet (WP-03 first, after review)
 - Planned, not yet written: `docs/MISSION-CONTROL-DIAGNOSTICS-SPEC.md`, `docs/MISSION-CONTROL-ACCEPTANCE-PLAN.md`, `docs/MISSION-CONTROL-TROUBLESHOOTING.md` (WP-04/WP-11 deliverables; intentionally not created to avoid unverified duplication)
 
