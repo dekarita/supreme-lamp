@@ -150,6 +150,75 @@ export async function listShots(db: IDBDatabase, sessionId: string): Promise<Sto
   }
 }
 
+/** Every shot record in the store, unfiltered (the migration's read). */
+export async function listAllShotRecords(db: IDBDatabase): Promise<StorageResult<ShotRecord[]>> {
+  try {
+    const tx = db.transaction(DVR_STORE_SHOTS, "readonly");
+    const res = await reqResult<ShotRecord[]>(tx.objectStore(DVR_STORE_SHOTS).getAll());
+    return res.ok ? { ok: true, reason: "", value: res.value || [] } : { ok: false, reason: res.reason };
+  } catch (err) {
+    return { ok: false, reason: "shots-error:" + classifyQuotaError(err) };
+  }
+}
+
+/**
+ * Marker record written into the shots store once the purge has run. It lives
+ * in the shots store (keyed `migration/…`, never a `sessionId/seq` shape), so
+ * listShots' prefix filter never surfaces it and no export can reach it.
+ */
+const SHOTS_PURGE_MARKER_KEY = "migration/shots-purged-v1";
+
+/**
+ * [WP-13b / MC-P24] One-time privacy migration: shots recorded BEFORE the
+ * capture fence existed (consent + exclusion pass) may contain credential
+ * pixels — XMLSerializer serializes text and attribute values, so a revealed
+ * password or a reflected input value could be rasterized into a PNG. Pixels
+ * cannot be redacted, so the records are DELETED (never copied, never backed
+ * up) and every session meta is zeroed (shots/bytes counted shot bytes only).
+ *
+ * Idempotent: the marker record makes the second and later runs a no-op, and
+ * the purge runs at DB-open time — before any post-consent shot can be saved —
+ * so legitimately consented shots are never touched. Best-effort like every
+ * other call here: a failure resolves to {ok:false, reason} and the next open
+ * retries; the session itself never depends on the outcome.
+ */
+export async function migratePurgeLegacyShots(
+  db: IDBDatabase
+): Promise<StorageResult<{ purgedShots: number; sessionsRewritten: number }>> {
+  const empty = { purgedShots: 0, sessionsRewritten: 0 };
+  try {
+    const shotsRes = await listAllShotRecords(db);
+    if (!shotsRes.ok) return { ok: false, reason: shotsRes.reason, value: empty };
+    const allShots = shotsRes.value || [];
+    if (allShots.some((s) => String(s.key) === SHOTS_PURGE_MARKER_KEY)) {
+      return { ok: true, reason: "already-migrated", value: empty };
+    }
+    const sessionsRes = await listSessions(db);
+    if (!sessionsRes.ok || !sessionsRes.value) {
+      return { ok: false, reason: sessionsRes.reason || "list-failed", value: empty };
+    }
+    // One readwrite transaction, every request issued synchronously (no await
+    // between requests — an IndexedDB transaction dies otherwise).
+    const tx = db.transaction([DVR_STORE_SESSIONS, DVR_STORE_SHOTS], "readwrite");
+    const shotStore = tx.objectStore(DVR_STORE_SHOTS);
+    for (const s of allShots) shotStore.delete(s.key);
+    shotStore.put({ key: SHOTS_PURGE_MARKER_KEY, at: Date.now() } as unknown as ShotRecord);
+    const sessionStore = tx.objectStore(DVR_STORE_SESSIONS);
+    let rewritten = 0;
+    for (const m of sessionsRes.value) {
+      if (Number(m.shots) !== 0 || Number(m.bytes) !== 0) {
+        sessionStore.put({ ...m, shots: 0, bytes: 0 });
+        rewritten++;
+      }
+    }
+    const done = await txDone(tx);
+    if (!done.ok) return { ok: false, reason: done.reason, value: empty };
+    return { ok: true, reason: "", value: { purgedShots: allShots.length, sessionsRewritten: rewritten } };
+  } catch (err) {
+    return { ok: false, reason: "migrate-error:" + classifyQuotaError(err), value: empty };
+  }
+}
+
 /**
  * Persist shots under the session budget. On QuotaExceededError the adapter asks
  * the pure core for an eviction plan (oldest shots first), drops them, and retries

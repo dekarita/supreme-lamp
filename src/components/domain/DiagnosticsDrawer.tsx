@@ -223,7 +223,11 @@ export function DiagnosticsDrawer() {
               <Line id="rdpAuthCmdKeyDel" text={ad.cmdKeyDel} />
             </span>
             <span id="rdpAuthPassWrap" className={ad.showPassCopy ? "flex items-center gap-2 flex-wrap" : "hidden"}>
-              <CopyLink id="rdpAuthPassCopy" label="copy CURRENT password from KEYS" value={() => secrets.credWinPass} />
+              {/* [WP-13b / MC-P24] the copied value is a credential — this
+                  affordance is excluded from DVR screenshots by contract. */}
+              <span data-dvr-exclude>
+                <CopyLink id="rdpAuthPassCopy" label="copy CURRENT password from KEYS" value={() => secrets.credWinPass} />
+              </span>
             </span>
             <span id="rdpAuthCmdCapi2Wrap" className={ad.showCapi2 ? "flex items-center gap-2 flex-wrap" : "hidden"}>
               <Line id="rdpAuthCmdCapi2" text={"wevtutil epl Microsoft-Windows-CAPI2/Operational %TEMP%\\capi2.evtx"} />

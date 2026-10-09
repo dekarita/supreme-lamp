@@ -15,7 +15,7 @@ import { onDvrEntry } from "../dvr";
 import { FEATURES } from "../featureRegistry";
 import { installMutationRecorder, type MutationRecorder } from "./mutations";
 import { appendShots, SHOT_SESSION_CAP, type ShotRecord } from "./screenshotCore";
-import { captureShot } from "./screenshots";
+import { captureShot, shotsConsented } from "./screenshots";
 import {
   appendMutations,
   MUTATION_SESSION_CAP,
@@ -27,7 +27,17 @@ import {
   sessionBudgetOk,
   type DvrSessionMeta,
 } from "./storageCore";
-import { deleteSession, getSession, listSessions, listShots, openDvrDb, pruneOldSessions, saveSession, saveShots } from "./storage";
+import {
+  deleteSession,
+  getSession,
+  listSessions,
+  listShots,
+  migratePurgeLegacyShots,
+  openDvrDb,
+  pruneOldSessions,
+  saveSession,
+  saveShots,
+} from "./storage";
 import type { DvrCoreEntry } from "../dvr-core";
 
 /** Timeline entries kept per session (bounded; newest win). */
@@ -76,6 +86,12 @@ export function installDvrFull(opts?: { now?: number; persistDelayMs?: number })
     if (res.ok && res.value) {
       db = res.value;
       void pruneOldSessions(db, Date.now());
+      // [WP-13b / MC-P24] one-time privacy migration: shots stored before the
+      // capture fence existed may contain credential pixels, and pixels cannot
+      // be redacted — the records are purged (never copied), the session metas
+      // are zeroed. Idempotent via a marker record; runs before any new shot
+      // can be saved, so post-consent shots are never touched.
+      void migratePurgeLegacyShots(db);
       void persistMeta();
     }
   });
@@ -104,6 +120,13 @@ export function installDvrFull(opts?: { now?: number; persistDelayMs?: number })
 
   async function takeShot(): Promise<void> {
     try {
+      // [WP-13b / MC-P24] screenshots are an OPTIONAL capture path and are OFF
+      // by default: the operator opts in per session (DvrFab panel). With
+      // consent off, the click's timeline entry + mutation descriptors are
+      // still recorded — only the pixel capture is skipped. If safe capture
+      // cannot be established, the path stays disabled; it is never silently
+      // re-enabled.
+      if (!shotsConsented()) return;
       const res = await captureShot({
         viewW: typeof window !== "undefined" ? window.innerWidth : 1280,
         viewH: typeof window !== "undefined" ? window.innerHeight : 800,

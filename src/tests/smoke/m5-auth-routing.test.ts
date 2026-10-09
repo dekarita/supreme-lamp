@@ -19,7 +19,8 @@
 //
 // The F101 recorder's masking of this header name is proved separately and already:
 // `src/tests/smoke/f101-collector-depth.test.tsx` asserts the recorded value is
-// `present(len=10,sha=<8 hex>)` and never the token itself.
+// `present(len=10)` (length only — [WP-13 / MC-P13] removed the secret-derived
+// `sha=` fingerprint) and never the token itself.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { requestFetch, startFetch } from '@/api/fetch/index.ts';
 

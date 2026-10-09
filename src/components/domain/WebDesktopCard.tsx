@@ -318,6 +318,8 @@ export function WebDesktopCard() {
             type="password"
             autoComplete="off"
             spellCheck={false}
+            // [WP-13b / MC-P24] a typed credential never enters a DVR screenshot.
+            data-dvr-exclude
             placeholder={t("webDesktop.vncPlaceholder")}
             value={vncInput}
             onChange={(e) => setVncInput(e.target.value)}

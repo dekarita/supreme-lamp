@@ -77,7 +77,10 @@ const SI_FILE = "src/i18n/si.json";
 // branches' keys, verified lossless (0 keys lost vs #173's 1010, 0 vs #174's
 // 1022, 0 invented).
 // measured 2026-10-07 at HEAD e6dc5bd (post-#174 merge), = 1030
-const EXPECTED_FLAT_KEYS = 1030;
+// [WP-13b 2026-10-09] + 3 keys (dvr.shotsOff, dvr.shotsOn, dvr.shotsNote — the
+// DVR screenshot consent toggle) = 1033. Deliberate catalog addition; the lock
+// is re-measured from the current catalogs, never silently kept.
+const EXPECTED_FLAT_KEYS = 1033;
 
 // Legacy untranslated si values (byte-identical to en). Frozen deliberately:
 // operator-owned copy that predates this step (mirrorHostMatrix/*, egress.line,

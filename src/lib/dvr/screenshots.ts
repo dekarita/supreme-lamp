@@ -14,9 +14,21 @@
 // seam is the ONLY injection point, and tests/f107-dvr-full.test.js pins that the
 // default pipeline is the one shipped.
 //
-// PRIVACY FENCE. Shots are thumbnails (never full resolution), PNG-only, byte-
-// capped by screenshotCore.validShot, and they only ever leave the machine inside
-// an operator-clicked export (src/lib/dvr/export.ts).
+// PRIVACY FENCE (WP-13b / MC-P24 — corrected). Shots are thumbnails (never full
+// resolution), PNG-only, byte-capped by screenshotCore.validShot, and they only
+// ever leave the machine inside an operator-clicked export (src/lib/dvr/export.ts).
+// The old fence claim — "cloneNode + XMLSerializer reads STRUCTURE only" — was
+// WRONG: XMLSerializer serializes text nodes and attribute VALUES, so any
+// secret visible as text or reflected into an attribute was rasterized into the
+// PNG. The fence is now three explicit layers, all testable:
+//   1. CONSENT: shots are OFF by default and enabled per session by the
+//      operator (setShotsEnabled) — capture/export consent is explicit, and the
+//      non-image diagnostics (timeline + mutation descriptors) keep working
+//      with shots off.
+//   2. EXCLUSIONS: prepareShotClone removes every [data-dvr-exclude] subtree and
+//      every typed input value from the cloned DOM BEFORE serialization, so
+//      credential/private surfaces never enter the capture path at all.
+//   3. CAPTURE-SHAPE: thumbnails only, PNG-only, byte-capped (screenshotCore).
 import { SHOT_MIME_PREFIX, THUMB_H, THUMB_W, dataUrlBytes, fitThumb, validShot, type ThumbGeometry } from "./screenshotCore";
 import { DVR_MUTATION_ROOT_ID } from "./mutations";
 
@@ -30,6 +42,67 @@ export interface ShotResult {
   dpr: number;
 }
 
+/**
+ * [WP-13b] The capture-consent gate. Screenshots are OFF by default and are
+ * enabled explicitly, per session, by the operator (the DvrFab panel toggle).
+ * Session-scoped on purpose — the same convention as the DVR's pause/resume
+ * switch — so no persistent "shots on" flag outlives the consent that made it.
+ * The production caller (session.ts takeShot) checks this before capturing.
+ */
+let shotsOn = false;
+
+/** Explicit, per-session opt-in to click screenshots. */
+export function setShotsConsented(on: boolean): void {
+  shotsOn = !!on;
+}
+
+/** True only while the operator has explicitly enabled screenshots this session. */
+export function shotsConsented(): boolean {
+  return shotsOn;
+}
+
+/** Attribute marking a subtree that must never enter a capture (credential and
+ *  private surfaces hang it on their root). */
+export const DVR_EXCLUDE_ATTR = "data-dvr-exclude";
+
+/** Input types whose `value` is the control's visible label (kept in a shot);
+ *  every other input type carries typed content and is stripped. */
+const VALUE_VISIBLE_TYPES = new Set(["submit", "button", "reset", "image"]);
+
+/**
+ * [WP-13b] The exclusion half of the capture fence: clone the root, then remove
+ * everything that must never be rasterized — every [data-dvr-exclude] subtree
+ * (credential/private surfaces) and the typed content of every non-label input
+ * (React 18 reflects a controlled input's value into the `value` attribute, so
+ * cloneNode would otherwise carry a typed password into the serialized XML).
+ * Exported so the gate can drive the SHIPPED exclusion pass on a synthetic DOM.
+ * Never throws.
+ */
+export function prepareShotClone(root: Element): Element {
+  const clone = root.cloneNode(true) as Element;
+  try {
+    for (const el of Array.from(clone.querySelectorAll("[" + DVR_EXCLUDE_ATTR + "]"))) {
+      el.remove();
+    }
+  } catch {
+    /* exclusion is best-effort per subtree */
+  }
+  try {
+    for (const el of Array.from(clone.querySelectorAll("input,textarea"))) {
+      const tag = el.tagName;
+      if (tag === "TEXTAREA") {
+        el.textContent = "";
+        continue;
+      }
+      const type = String((el as HTMLInputElement).getAttribute("type") || "text").toLowerCase();
+      if (!VALUE_VISIBLE_TYPES.has(type)) el.removeAttribute("value");
+    }
+  } catch {
+    /* typed-content stripping is best-effort per element */
+  }
+  return clone;
+}
+
 /** A rasterizer turns the live root + geometry into a PNG data URL, or null. */
 type Rasterizer = (root: Element, geo: ThumbGeometry) => Promise<string | null> | string | null;
 
@@ -39,11 +112,13 @@ const defaultRasterizer: Rasterizer = async (root, geo) => {
   try {
     if (typeof document === "undefined" || typeof XMLSerializer === "undefined") return null;
     // Serialize the live subtree. cloneNode keeps the serializer away from a
-    // tree that React may be committing while it runs; it reads STRUCTURE only -
-    // the content fence is that no F107 file names a content API.
+    // tree that React may be committing while it runs. XMLSerializer emits text
+    // nodes and attribute VALUES, so the content fence is prepareShotClone's
+    // exclusion pass (credential subtrees + typed input values removed BEFORE
+    // serialization) — never the choice of a serialization API (MC-P24).
     const doc = document.implementation.createHTMLDocument("");
     const holder = doc.createElement("div");
-    holder.appendChild(root.cloneNode(true));
+    holder.appendChild(prepareShotClone(root));
     const xml = new XMLSerializer().serializeToString(holder);
     const svg =
       '<svg xmlns="http://www.w3.org/2000/svg" width="' +

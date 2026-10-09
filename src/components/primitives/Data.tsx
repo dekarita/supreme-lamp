@@ -71,7 +71,9 @@ export function MaskedField({
   const [revealed, setRevealed] = useState(false);
   const shown = revealed ? value : mask || "••••••••";
   return (
-    <div id={id} className="flex items-center gap-2 font-mono text-sm bg-sunken border border-default rounded-md px-3 py-1.5">
+    // [WP-13b / MC-P24] a revealed secret is rendered text — it must never be
+    // rasterized into a DVR screenshot: the capture path drops this subtree.
+    <div id={id} data-dvr-exclude className="flex items-center gap-2 font-mono text-sm bg-sunken border border-default rounded-md px-3 py-1.5">
       <span className="flex-1 select-all break-all" aria-label={t(labelKey) + " " + t("field.value")}>
         {value ? shown : placeholder || t("keys.hostOnly")}
       </span>

@@ -496,8 +496,10 @@ test("F110b-h: 0 dependencies, 0 i18n keys, 24 storage surfaces, and the doc cla
     assert.ok(!(banned in pkg.dependencies) && !(banned in pkg.devDependencies), "unneeded crypto dependency appeared: " + banned);
   }
   const lock = read("tests/f-i18n-parity.test.js").match(/const EXPECTED_FLAT_KEYS = (\d+)/);
-  assert.equal(Number(lock[1]), 1030, "a default-off developer surface moves no i18n lock");
-  assert.ok(!/\bt\(/.test(CODE("src/components/livePatch/PatchAuditPanel.tsx")), "the panel stays English-only while the lock says 1030");
+  // [WP-13b 2026-10-09] the lock moved 1030 -> 1033 (three dvr.shots* consent
+  // keys) AFTER F110b shipped; F110b itself still adds no keys.
+  assert.equal(Number(lock[1]), 1033, "a default-off developer surface moves no i18n lock (WP-13b +3 moved it later)");
+  assert.ok(!/\bt\(/.test(CODE("src/components/livePatch/PatchAuditPanel.tsx")), "the panel stays English-only while the lock says 1033");
 
   // no new persistence: F111's derived diff, re-run against THIS tree
   const inv = readJson("src/lib/ci/storageInventory.json");

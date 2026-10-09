@@ -134,6 +134,8 @@ export function OwnCredentialModal() {
           data-testid="cred-password"
           type="password"
           autoComplete="new-password"
+          // [WP-13b / MC-P24] a typed credential never enters a DVR screenshot.
+          data-dvr-exclude
           value={cred.password}
           onChange={(e) => setCredPassword(e.target.value)}
           className="h-11 px-3 rounded-md border border-default bg-base text-sm text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
