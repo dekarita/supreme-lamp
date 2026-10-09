@@ -3796,6 +3796,25 @@ jobs:
                   Write-Host ('::warning title=M8 status::publish failed: ' + $_.Exception.Message)
               }
           }
+          if ($script:M8Failure -and $env:GH_TOKEN) {
+              # Debug channel: the failing scenario's raw child transcript +
+              # request-log presence, chunked into 135-char commit statuses.
+              try {
+                  $trx = Get-ChildItem -Path (Join-Path $env:TEMP 'm8-behavior-*') -Recurse -Filter transcript.txt -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                  $t = '(transcript not found)'
+                  if ($trx) {
+                      $reqFile = Join-Path $trx.Directory.FullName 'requests.jsonl'
+                      $rsize = $(if (Test-Path $reqFile) { (Get-Item $reqFile).Length } else { 'ABSENT' })
+                      $t = ('reqlog=' + $rsize + ' :: ' + ((Get-Content -Raw $trx.FullName) -replace '\s+', ' ').Trim())
+                  }
+                  for ($c = 0; $c -lt 5 -and $t.Length -gt 0; $c++) {
+                      $chunk = $(if ($t.Length -gt 135) { $t.Substring(0, 135) } else { $t })
+                      $t = $(if ($t.Length -gt 135) { $t.Substring(135) } else { '' })
+                      $std = @{ context = ('m8-dbg-' + $c); state = 'failure'; description = $chunk; target_url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID) } | ConvertTo-Json -Compress
+                      Invoke-RestMethod -Uri ('https://api.github.com/repos/' + $env:GITHUB_REPOSITORY + '/statuses/' + $env:GITHUB_SHA) -Method Post -Headers @{ Authorization = ('Bearer ' + $env:GH_TOKEN); Accept = 'application/vnd.github+json'; 'User-Agent' = 'ghrdp-m8' } -Body $std -ContentType 'application/json' -TimeoutSec 30 | Out-Null
+                  }
+              } catch { Write-Host ('::warning title=M8 dbg::publish failed: ' + $_.Exception.Message) }
+          }
           if ($script:M8Failure) {
               Write-Host ('::error title=M8 harness::' + $script:M8Failure)
               throw ('M8: behavioral harness FAILED - ' + $script:M8Failure)
