@@ -29,8 +29,9 @@ Effort ranges are engineering-session estimates with stated uncertainty, not com
 | WP-10 | Sanitized evidence export | CORE_DIAGNOSTICS | SPECIFIED | — | [#204](https://github.com/dekarita/supreme-lamp/issues/204) |
 | WP-11 | Guided troubleshooting in product | CORE_DIAGNOSTICS | SPECIFIED | — | [#205](https://github.com/dekarita/supreme-lamp/issues/205) |
 | WP-12 | Live acceptance + rollout | VERIFICATION_INFRASTRUCTURE | BLOCKED | — | [#206](https://github.com/dekarita/supreme-lamp/issues/206) |
-| WP-13 | Collector privacy defects | VERIFIED_DEFECT_REPAIR | **READY_FOR_IMPLEMENTATION** (first) | — | [#193](https://github.com/dekarita/supreme-lamp/issues/193) |
-| WP-14 | Diagnostic truthfulness and safety defects | VERIFIED_DEFECT_REPAIR | READY_FOR_IMPLEMENTATION | — | [#194](https://github.com/dekarita/supreme-lamp/issues/194) |
+| WP-13 | Collector privacy defects | VERIFIED_DEFECT_REPAIR | **SPECIFIED** (downgraded from READY_FOR_IMPLEMENTATION by ledger J5) | — | [#193](https://github.com/dekarita/supreme-lamp/issues/193) |
+| WP-13b | `.mcrec` v2 screenshot + IndexedDB sinks (MC-P24) | VERIFIED_DEFECT_REPAIR | RESEARCH_PENDING (new, split from WP-13) | — | TBD (see [PRIVACY-SINK-MAP.md](PRIVACY-SINK-MAP.md)) |
+| WP-14 | Diagnostic truthfulness and safety defects | VERIFIED_DEFECT_REPAIR | **SPECIFIED** (downgraded: the `.rdp` rule was rejected by ledger J3 and needs a browser probe) | — | [#194](https://github.com/dekarita/supreme-lamp/issues/194) |
 
 ## Dependency graph
 
@@ -78,9 +79,35 @@ WP-02 (independent)    WP-08 (optional, independent)
 - **Dependencies**: none blocking other WPs (rationale: evidence only).
 - **Privacy**: status.json sensitive-named fields (`mirrorKey`, `legacyKey`, URLs, IPs) were empty in the initial
   snapshot; record only emptiness/shape, never values.
-- **Tests**: compare terminal snapshot against runbook stages B–D. **Acceptance**: terminal snapshot observed with
-  `runStatus ∈ {success, failure, cancelled}` matching the run conclusion, attempt matching, written after the last
-  heartbeat; or a precise LIVE_ACCEPTANCE_NOT_EVIDENCED reason. **Rollback**: n/a.
+- **Tests**: compare terminal snapshot against runbook stages B–D.
+- **Terminal vocabulary (corrected — ledger J1).** The previous text here said `runStatus ∈ {success, failure,
+  cancelled}`. **That is wrong and could never pass.** Two different vocabularies are in play
+  ([main.yml L6606, L6634-L6639, L6702](https://github.com/dekarita/supreme-lamp/blob/823bcb6e94df8117a2f43d491a73e60265a968a1/.github/workflows/main.yml#L6634-L6639)):
+
+  | GitHub `job.status` | status.json `runStatus` |
+  |---|---|
+  | `success` | `completed` |
+  | `failure` | `failed` |
+  | `cancelled` | `cancelled` |
+  | `skipped` / anything else | `unknown` (switch default) |
+
+  Terminal set is **four** values: `@('completed','cancelled','failed','unknown')`. `finalizeReason` carries the
+  *GitHub* word (`job.status=success|failure|cancelled|skipped`), so `runStatus` and `finalizeReason` legitimately
+  disagree — that is the mapping, not a defect.
+- **Acceptance (corrected)**: terminal snapshot observed with `runStatus` equal to the **mapped** value for the run's
+  `job.status`, attempt matching, written after the last heartbeat — **or** `B=NOT_OWNED (action=…)` (below) — **or**
+  a precise `LIVE_ACCEPTANCE_NOT_EVIDENCED` reason.
+- **Ownership step-aside is not a failure (ledger J2).** The finalizer emits `::notice::[m8] … action=skip-owned |
+  skip-superseded | skip-foreign-active | skip-unknown | abort-read | retry-read` and still exits 0
+  ([L6662-L6689](https://github.com/dekarita/supreme-lamp/blob/823bcb6e94df8117a2f43d491a73e60265a968a1/.github/workflows/main.yml#L6662)).
+  A newer run taking ownership is **correct behaviour**. Grep `[m8]` at any severity and classify by the `action=`
+  token; never score `skip-foreign-active`/`skip-superseded` as a finalizer defect.
+- **Bounded observation recorded 2026-10-09T09:19:34Z (ledger J10)**: run
+  [37903915039](https://github.com/dekarita/supreme-lamp/actions/runs/37903915039) on `823bcb6`, `status=in_progress`,
+  `conclusion=""`, started 08:16:09Z (~63 min). Tracked identity: `runId=37903915039, runAttempt=1,
+  runStatus=in_progress, finalizeReason=null, ts=09:12:52Z`. ⇒ **Stage A = NOT_REACHED**; only readiness
+  (initial + heartbeat) is evidenced. Research continued rather than waiting the run out.
+- **Rollback**: n/a.
 - **Operator actions**: only the runbook's own stages (operator decides whether to cancel to test the cancel path).
 - **Effort**: 0.5 session; uncertainty: run duration up to 6 h.
 - **Brief**: "Read-only. For run 37903915039 (and any later main.yml run on a SHA containing #189), list
@@ -171,7 +198,17 @@ WP-02 (independent)    WP-08 (optional, independent)
 <a id="wp-07"></a>
 ## WP-07 — Embedded diagnostics experience (CORE_DIAGNOSTICS)
 - **Spec**: [Part A](../MISSION-CONTROL-DIAGNOSTICS-SPEC.md#part-a--operator-experience). Hosts: top-bar Summary chip,
-  "Diagnose this page" (Alt+D), `DiagSideDrawer` upgraded in place (ids kept), inner static fallback.
+  "Diagnose this page", `DiagSideDrawer` upgraded in place (ids kept), inner static fallback.
+- **Shortcut — Alt+D REJECTED (ledger J8).** In-app bindings at `823bcb6` are `Alt+E`, `Alt+F`
+  ([AppShell.tsx L456, L459](https://github.com/dekarita/supreme-lamp/blob/823bcb6e94df8117a2f43d491a73e60265a968a1/src/components/layout/AppShell.tsx#L456)),
+  `Ctrl/Cmd+K` ([CommandPalette.tsx L21](https://github.com/dekarita/supreme-lamp/blob/823bcb6e94df8117a2f43d491a73e60265a968a1/src/components/layout/CommandPalette.tsx#L21)),
+  `Shift+F12` ([debugHudCore.js L57](https://github.com/dekarita/supreme-lamp/blob/823bcb6e94df8117a2f43d491a73e60265a968a1/src/lib/debugHudCore.js#L57))
+  and the Explorer keymap `F2, Delete, Shift+Delete, mod+c/x/v/a/z, Enter`
+  ([keymap.ts L22-L32](https://github.com/dekarita/supreme-lamp/blob/823bcb6e94df8117a2f43d491a73e60265a968a1/src/pages/file-explorer/keymap.ts#L22)) —
+  so there is **no in-app conflict** (verified). **But `Alt+D` is browser-reserved** on Windows Chrome/Edge/Firefox
+  (focus the address bar), and Mission Control runs inside an RDP browser, so a page handler is expected to be
+  **dead** in the real deployment. Candidate: `Ctrl+Shift+D` (consistent with the existing `Ctrl+K`).
+  **Acceptance must be measured in the RDP browser**, not only in jsdom/Playwright. Status: `NOT_MEASURED`.
 - **Dependencies**: WP-05B, WP-06 (truthful content); WP-14 fixes first. **Tests**: F-12, F-16, EN/SI parity,
   degraded-backend mode, keyboard. **Acceptance**: journey steps 1–12 demonstrable on mock backend; BROWSER_E2E once
   WP-09 restores the lane. **Rollback**: feature flag `VITE_MC_DIAG=false` restores today's drawer. **Effort**: 3 sessions.
@@ -223,18 +260,38 @@ WP-02 (independent)    WP-08 (optional, independent)
   store URLs path-only; drop header fingerprints; bodies only as allow-listed fields; redaction pass on hydration of
   existing rows (one-time, idempotent) and before `button-actions.json`.
 - **Scope**: `src/lib/globalClickCapture.ts`, `src/lib/collectorAgent.ts`, `src/pages/Collector.tsx` (export only).
-  **Exclusions**: attribution changes (WP-06), UI redesign (WP-07), server.
+  **Exclusions**: attribution changes (WP-06), UI redesign (WP-07), server, **and — after the sink trace — the
+  `.mcrec` v2 screenshot and IndexedDB paths (S7/S8)**.
+- **Scope proof (added 2026-10-09, ledger J5–J7)**: [PRIVACY-SINK-MAP.md](PRIVACY-SINK-MAP.md) traces every producer
+  to every sink. Summary: the DVR ring and `.mcrec` **v1 are covered** because `installDvr` *decorates* F104's
+  recorder and copies `params.label` ([dvr.ts L216, L230](https://github.com/dekarita/supreme-lamp/blob/823bcb6e94df8117a2f43d491a73e60265a968a1/src/lib/dvr.ts#L216)) —
+  fixing `describeClick` upstream removes the value before the ring sees it. `.mcrec` v2 `mutations[]` is
+  **verified content-free** ([mutationCore.js L16, L84](https://github.com/dekarita/supreme-lamp/blob/823bcb6e94df8117a2f43d491a73e60265a968a1/src/lib/dvr/mutationCore.js#L16)).
+  `.mcrec` v2 `shots[]` and `storage.sessions[]` are **NOT** covered — `XMLSerializer` emits text and attribute
+  values (**MC-P24**), and those modules are outside the three files.
 - **Dependencies**: none (rationale: uses existing sanitizers; WP-04 later generalizes them).
 - **Schema / migration**: no new fields required; hydration pass rewrites `params.route`, `request.url`,
-  `request.headers`, bodies in place; old rows remain renderable.
+  `request.headers`, bodies in place — **on both the initial load and the cross-tab `storage` rehydrate path**.
+  Old rows remain renderable.
 - **Privacy/security impact**: removes credential exposure paths; no new data collected.
 - **Tests**: F-13 unit + jsdom (synthetic token in `?key=`, `#/x?key=`, `Authorization`, controlled password input);
   falsifiers: restore each removed path → its test reddens; F104/F-DVR/F102 gates updated in place (rewrite pins,
   never delete), e.g. F104-h extended to `currentRoute`.
-- **Acceptance**: no synthetic secret in localStorage, DVR ring, `.mcrec` v1/v2, `button-actions.json`; existing gates
-  green; row counts unchanged. **Rollback**: revert commit (hydration pass is lossy by design — document that
-  reverted builds keep redacted rows).
+- **Acceptance (SPLIT — corrected; the previous single clause was unachievable)**:
+  - *Must pass, in scope (S1–S5, S9, S10)*: no synthetic secret in `localStorage` collector rows, the DVR ring,
+    `.mcrec` **v1**, `.mcrec` v2 `timeline[]`, or `button-actions.json`; both hydration paths redact; existing gates
+    green.
+  - *Not claimed by WP-13*: `.mcrec` v2 `shots[]` (S7) and IndexedDB `ghrdp-dvr` (S8) → tracked as **WP-13b /
+    MC-P24**; F96 bundle (S11) → WP-10. `.mcrec` v2 `mutations[]` needs no claim (verified content-free).
+  - *Irreversibility, stated*: the hydration pass is lossy by design; reverted builds keep redacted rows. Never
+    preserve an unsafe value to keep a row byte-identical.
+  - *Out of reach, stated*: previously **downloaded** files are not retroactively cleanable.
+- **Rollback (corrected — ledger §4.J)**: "keep existing raw downloads" is **not** a safe privacy rollback. The
+  fallback is a kill-switch that **disables capture/export**, not a revert that restores raw capture. Reverting the
+  privacy change reopens the original exposure and must be treated as re-introducing a known defect.
 - **Operator actions**: none. **Effort**: 1 session (uncertainty: number of pins to rewrite in f104/f102/f-dvr).
+- **Unresolved decisions**: who owns S7/S8 (recommend a new **WP-13b**); whether `credWinPass` is rendered as visible
+  text (needs a render-level probe, not a source read).
 - **Execution brief**: "Implement WP-13 on the session branch. Read docs/mission-control/WORK-PACKAGES.md#wp-13 and
   CONTROL-CENSUS §B. Change only globalClickCapture.ts, collectorAgent.ts and Collector.tsx's actions export. Reuse
   sanitizeBoundaryRoute/safeRoute/stripUrl. Add tests that execute the shipped code with synthetic secrets and prove
@@ -248,9 +305,27 @@ WP-02 (independent)    WP-08 (optional, independent)
   without confirmation); MC-P16 (`.rdp` `ok:true` regardless of popup result; reconnect logs only `requested`;
   Watcher chip `!!mirror` ignores heartbeat age, [AppShell.tsx L81](https://github.com/dekarita/supreme-lamp/blob/823bcb6e94df8117a2f43d491a73e60265a968a1/src/components/layout/AppShell.tsx#L81)); MC-P18 (closed drawer focusable).
 - **Required**: `runDiag` via `apiBase()` with status-classified messages; batch/replay skip `mutating` (and
-  `collector-run`) unless the operator confirms each effect class; `.rdp` result reflects `window.open` return value;
-  reconnect row updated with the observed WS outcome within the ladder window; watcher chip from heartbeat age with
-  `stale`; drawer `inert` when closed.
+  `collector-run`) unless the operator confirms each effect class; reconnect row updated with the observed WS
+  outcome within the ladder window; watcher chip from heartbeat age with `stale`; drawer `inert` when closed.
+- **`.rdp` download — the previously proposed rule is REJECTED (ledger J3).** It said "`.rdp` result reflects
+  `window.open` return value". The call is `window.open(url, "_blank", "noopener")`
+  ([Connections.tsx L41](https://github.com/dekarita/supreme-lamp/blob/823bcb6e94df8117a2f43d491a73e60265a968a1/src/pages/Connections.tsx#L41)),
+  and per the HTML spec `window.open` with `noopener` in the features string returns **`null` on a *successful*
+  open**. So `handle === null` cannot discriminate success from a blocked popup, and the proposed rule would mark
+  **every** successful download as a failure — strictly less truthful than today's unconditional
+  `result: { ok: true }` ([L46](https://github.com/dekarita/supreme-lamp/blob/823bcb6e94df8117a2f43d491a73e60265a968a1/src/pages/Connections.tsx#L46)).
+  **Corrected contract**: record `state: "requested"` plus `outcome: "unobserved"` unless a supported side-channel
+  is available. Candidate evidence, in order of strength, each requiring its own probe before use:
+  1. a `Content-Disposition: attachment` response observed for `/rdp` (the server sets this on `/dl`,
+     [ghrdp-server.ps1 L7037](https://github.com/dekarita/supreme-lamp/blob/823bcb6e94df8117a2f43d491a73e60265a968a1/payloads/ghrdp-server.ps1#L7037) —
+     the `/rdp` handler at L8906 is `NOT_READ`);
+  2. a `fetch`-based download the page itself drives (changes UX — needs operator sign-off);
+  3. nothing — in which case `"requested; outcome unobserved"` **is** the truthful terminal state.
+  **Unresolved**: whether any of (1)/(2) is observable inside this shell. Until probed, WP-14 must ship (3).
+- **New item, previously unassigned (ledger J4)**: the same row stores `params: { url }` where
+  `url = "http://" + ip + ":7331/rdp"` ([L40, L45](https://github.com/dekarita/supreme-lamp/blob/823bcb6e94df8117a2f43d491a73e60265a968a1/src/pages/Connections.tsx#L40)) —
+  the runner **IP** enters a persisted row and every export. WP-13 does not own this file; WP-14 does. Store a
+  route template (`/rdp`) plus a boolean "custom host" flag, not the URL.
 - **Scope**: `sessionStore.ts`, `collectorAgent.ts` (batch filter), `Collector.tsx` (confirmation), `Connections.tsx`,
   `AppShell.tsx`, `DiagSideDrawer.tsx`. **Dependencies**: none. **Tests**: P-05, P-06, F-15, F-16.
 - **Acceptance**: each defect has a reddening falsifier; F102 e2e expectations updated in place for the new

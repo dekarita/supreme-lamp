@@ -78,3 +78,38 @@ R5 runner/Windows · R6 Explorer/Search/Mirror · R7 status/delivery · R8 tests
 | R8 | `src/tests/smoke/**` (81), `tests/e2e/**`, remaining `tests/*.js` | structural vs behavioural assertions | smoke f101/f102/f104 bodies |
 
 No full-repository review is claimed.
+
+## 4. Read in the v21 session (2026-10-09) — continuation
+
+Same revision rule: every row is `823bcb6`; `git diff 823bcb6..HEAD` is docs-only, so these reads stay valid.
+**Ancestry caveat (ledger J12):** this sandbox clone was **shallow** (`git rev-parse --is-shallow-repository` →
+`true`). Ancestry claims made before `git fetch --unshallow` are invalid; after unshallowing, `main` = 13651 commits,
+root `88f73e0e`, `merge-base(main, #192) = 823bcb6`.
+
+| Path | Cl. | Scope / ranges | Status | Key mechanisms | Findings | Next exact read |
+|---|---|---|---|---|---|---|
+| `.github/workflows/main.yml` (finalizer) | R7 | L6500-L6745 read in full | **READ** (this range) | `$terminalStates` 4 values (L6606); `Get-TrackedStatus` discriminating reader with states `ok\|missing\|auth\|transient\|invalid\|invalid-identity`; `Resolve-FinalizeAction` ownership policy; `job.status`→`runStatus` map (L6634-L6639); `finalizeReason` (L6702); deadline 150 s / request 30 s / 3 attempts | **J1, J2** — vocabulary mismatch + notice-level ownership step-aside | heartbeat writer range; Pages deploy workflow |
+| `src/pages/Connections.tsx` | R1 | L1-62 **full** | **READ** | `window.open(url,"_blank","noopener")` L41; hardcoded `result:{ok:true}` L46; `params:{url}` with runner IP L45 | **J3, J4** | — |
+| `src/lib/dvr.ts` (DVR ring) | R3 | L200-L250 + grep | **READ** (this range) | `installDvr` **decorates** F104's recorder; copies `params.label` (L230) | ring is downstream ⇒ S3/S4 covered by WP-13's upstream fix | L1-199 |
+| `src/lib/dvr/mutationCore.js` | R3 | L1-133 **full** | **READ** | descriptors = tag + attribute **NAME** only; no values, no characterData, no node text; batch cap 50, session cap 500 | **S6 verified content-free** — `.mcrec` v2 mutations need no redaction claim | — |
+| `src/lib/dvr/exportCore.js` | R3 | L1-133 **full** | **READ** | `buildBundleV2` = timeline + mutations + shots + storage.sessions + features; `mcrec2:` envelope; strict `validateBundleV2` | v2's extra sinks are `shots` + `storage.sessions` (out of WP-13 scope) | — |
+| `src/lib/dvr/screenshots.ts` | R3 | L1-90 | **READ** (this range) | `defaultRasterizer`: `XMLSerializer().serializeToString(root.cloneNode(true))` L46-47; 2.5 s image-load timeout; test seam `setShotRasterizer` | **MC-P24 / J6** — the "STRUCTURE only" comment is unsound; `XMLSerializer` emits text + attribute values | L91-L136 |
+| `src/lib/dvr/screenshotCore.js` | R3 | L1-60 | **READ** (this range) | 320×240 thumb, `SHOT_MAX_BYTES=200_000`, `SHOT_SESSION_CAP=100`, `fitThumb` | pixel caps are weight controls, **not** content controls | remaining ranges |
+| `src/lib/dvr/session.ts` | R3 | grep + L128-L145 | PARTIAL | `takeShot()` on **every** recorded click (L138); env-flag gating only | **J7** — screenshots are opt-**out** | L1-104, L146-L274 |
+| `src/main.tsx` (DVR wiring) | R2 | L11-L61 | **READ** (this range) | `installGlobalClickCapture(installDvr(recorder, …))` L43; `installDvrFull()` behind two env flags L50-51 | confirms the single-recorder chain S1→S3→S4 | — |
+| `payloads/ghrdp-server.ps1` | R5 | route inventory: **all 76** `path -eq/-like/StartsWith` literals extracted; handlers READ at L780-L845, L2286-L2305, L440-L470, L7085-L7107, L8179-L8201, L8596-L8618, L8698-L8720, L9220-L9225 | PARTIAL | two-layer auth (§1 of ENDPOINT-CONTRACTS); `/ws` = PowerShell `Invoke-F99WebSocketUpgrade`; port 7331 bind `0.0.0.0`; `Test-GhrdpDashToken` at 3 groups only | **J9**; resolves the HANDOFF `/ws` open question | `/diag` L2593, `/api/diag/comprehensive` L7568, `/terminal` guard L8542 |
+| `src/components/primitives/Copy.tsx` | R1 | L1-68 | PARTIAL | `CopyButton`/`CopyLink`; `value: string \| (() => string)` (lazy resolution possible) | open question for MC-P24: does `CopyLink` render the value? | L69-end |
+| `src/pages/file-explorer/keymap.ts` | R1 | L1-70 | **READ** (this range) | `EXPLORER_KEYMAP` = F2, Delete, Shift+Delete, mod+c/x/v/a/z, Enter; exact-modifier matching, form fields exempt | **J8** — no in-app Alt+D conflict | bindings table consumers |
+| `src/components/layout/AppShell.tsx` (shortcuts) | R1 | L456-L459 + grep | PARTIAL | `Alt+E`, `Alt+F` | confirms the in-app binding set | L1-455 |
+| `src/components/layout/CommandPalette.tsx` | R1 | L21 | PARTIAL | `Ctrl/Cmd+K`, `!altKey` | — | full file |
+| `src/lib/debugHudCore.js` | R3 | L57 | PARTIAL | HUD = `Shift+F12` exactly | — | full file |
+
+### Still unread — unchanged from §3, with the two highest-value entries promoted
+
+1. `payloads/ghrdp-server.ps1` **L2593-L2692 (`/diag`)** — WP-14 MC-P14 cannot be implemented without it.
+2. `payloads/ghrdp-server.ps1` **L7568-L7990 (`/api/diag/comprehensive`)** — F96 bundle fields for WP-10.
+3. `src/components/domain/PrimaryActions.tsx` (326), `WebDesktopCard.tsx` (382), `MirrorCard.tsx` (410) — the 277
+   `SITE_ONLY` census rows. **Not started this session.**
+4. `src/lib/explorer/*`, `src/pages/file-explorer/*` — Explorer journey J4 (the original user problem).
+   **Not started this session.**
+5. `src/lib/mirror.ts`, upload path — the original upload problem. **Not started this session.**

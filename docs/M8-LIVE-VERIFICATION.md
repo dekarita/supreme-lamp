@@ -51,6 +51,25 @@ Scope guardrails (do not violate while doing this):
   job becomes `cancelled`). If the step never appears, the run was lost to a
   scheduling/runner/cancellation limitation — that is NOT an executed-script
   defect; record A=NOT_REACHED and stop honestly.
+
+  **Stage A means FINALIZER EXECUTED — nothing else.** Dispatch, the initial
+  `status.json` commit, and heartbeat commits are **readiness evidence**, not
+  Stage A. They prove the writer is live; they say nothing about finalization.
+
+  **Terminal vocabulary (two different sets — do not conflate).** The finalizer
+  maps GitHub's `job.status` onto status.json's `runStatus`
+  (`main.yml` L6634-L6639):
+
+  | GitHub `job.status` | status.json `runStatus` |
+  |---|---|
+  | `success` | `completed` |
+  | `failure` | `failed` |
+  | `cancelled` | `cancelled` |
+  | `skipped` / anything else | `unknown` (switch default) |
+
+  Terminal set = `completed | cancelled | failed | unknown` (`main.yml` L6606).
+  `finalizeReason` keeps the **GitHub** word (`job.status=cancelled`), so
+  `runStatus` and `finalizeReason` legitimately use different vocabularies.
 - **B. Terminal snapshot committed.** Fetch the tracked file as in step 5:
   `runStatus` == `cancelled`, `finalizeReason` == `job.status=cancelled`,
   `runId` == this run, `overallPct` carries the last heartbeat value
@@ -74,6 +93,23 @@ Scope guardrails (do not violate while doing this):
 - **Finalizer warns "snapshot stays stale"**: distinguish transient API
   failure (bounded 3-attempt retry visible in log) from auth/token issues
   (explicit 401/403 warning lines).
+- **Ownership step-aside is a SUCCESS-class outcome, not a failure.** The
+  finalizer emits `::notice::[m8] ...` (NOT `::warning::`) and still exits 0
+  when it deliberately declines to write (`main.yml` L6662-L6689). Grep `[m8]`
+  at **any** severity and classify by the `action=` token:
+
+  | `action=` | Meaning | Score as |
+  |---|---|---|
+  | `skip-foreign-active` | a **newer/other** run is heartbeating `in_progress` | **CORRECT** — record `B=NOT_OWNED`, not a defect |
+  | `skip-superseded` | this run's snapshot was already superseded | **CORRECT** — `B=NOT_OWNED` |
+  | `skip-owned` | terminal snapshot of this run+attempt already present | **CORRECT** — idempotent skip |
+  | `skip-unknown` | remote state unidentifiable; stepped aside | **CORRECT (conservative)** — investigate the remote state separately |
+  | `abort-read` | 401/403 reading the tracked file | **auth finding** — investigate token, not the finalizer logic |
+  | `retry-read` | transient API failure; bounded retry | report the retry outcome |
+
+  Misclassifying `skip-foreign-active` as a finalizer failure is the most
+  likely false-positive in this runbook: it is the ownership policy working
+  exactly as designed.
 - **Cancellation happened BEFORE the first heartbeat**: the documented policy
   applies — the previous snapshot is either absent (finalizer creates the
   terminal state) or belongs to an earlier run; a terminal older-run snapshot
