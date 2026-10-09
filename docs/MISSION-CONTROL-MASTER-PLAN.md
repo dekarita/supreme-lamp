@@ -235,7 +235,8 @@ and [HANDOFF](mission-control/HANDOFF.md#exact-next-steps).
   sites); executed isolated probe P-01 (password-value capture mechanism confirmed); classified e2e-ui cancellation
   (systematic 25-min timeout) and M8 live state (run 37903915039 in progress, initial writer live); reconciled
   #153/#156 technically; added specs, troubleshooting matrix, acceptance plan, work packages WP-00…WP-14 and child
-  issues. Application code unchanged.
+  issues #193–#206 (created). The #191 body/comment updates were denied by the integration (HTTP 403); copy-ready
+  text is in mission-control/ISSUE-191-BODY.md and GITHUB-COMMENTS-PENDING.md. Application code unchanged.
 
 ## 15. Sanitized planning handoff
 

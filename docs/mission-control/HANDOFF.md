@@ -30,6 +30,12 @@ Status at hand-off: **PLAN_PARTIAL** (research continues; nothing implemented). 
 4. **WP-09**: find the first non-success `e2e-ui` run after `2b66c11` (2026-10-05) and its commit range.
 5. First implementation package when authorized: **WP-13** ([#193](https://github.com/dekarita/supreme-lamp/issues/193), brief ready).
 
+## Publication limitation
+
+The integration can create issues/PRs but cannot edit issue bodies or comment (HTTP 403, 2026-10-09). Copy-ready
+texts: [ISSUE-191-BODY.md](ISSUE-191-BODY.md), [GITHUB-COMMENTS-PENDING.md](GITHUB-COMMENTS-PENDING.md). Do not retry
+denied writes; ask the operator to paste them or re-check permissions in a later session.
+
 ## Open questions
 
 - Which identity is the intended RDP application account (ISSUE-RECONCILIATION §4)? — operator decision.
