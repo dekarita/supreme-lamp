@@ -5,7 +5,7 @@ hand to the operator. Contains no secrets, tokens, or private conversation data.
 
 ## State at handoff
 
-- Branch: `arena/374acee7-supreme-lamp` — M8 PR pending (title: `M8: cancellation-safe status.json finalizer (PROB-004)`).
+- Branch: `arena/374acee7-supreme-lamp` — M8 PR #188: `M8: cancellation-safe status.json finalizer (PROB-004)` — https://github.com/dekarita/supreme-lamp/pull/188.
 - main HEAD at session start: `5ead8b29a7aae31d11e6b1bc1194ebb89ef2b3f4` (M7, PR #187 merged 2026-10-08T14:42:18Z). Branch was clean at that HEAD.
 - M8 pipeline state: IMPLEMENTED → LOCALLY_VERIFIED → PR_READY. Operator merges; **a session never merges a PR and never dispatches main.yml**.
 - Prior to M8: Observatory 10/10 shipped (F105-F111), maintenance M1-M7 shipped (#182-#187).
