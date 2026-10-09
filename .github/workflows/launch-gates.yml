@@ -3755,9 +3755,18 @@ jobs:
           }
           Write-Host $outText
           $lines = @(($outText -split "`r?`n") | Where-Object { $_.Trim() -ne '' })
-          $iFirstNotOk = -1
-          for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^not ok ') { $iFirstNotOk = $i; break } }
-          $decisive = $(if ($iFirstNotOk -ge 0) { @($lines | Select-Object -Skip ($iFirstNotOk + 1) -First 10) } else { @($lines | Select-Object -Last 8) })
+          # The assertion text lives in the TAP 'error: |-' block between
+          # "  failureType: 'testCodeFailure'" and "  code:".
+          $reason = @()
+          for ($i = 0; $i -lt $lines.Count -and @($reason).Count -eq 0; $i++) {
+              if ($lines[$i] -match "^  failureType: 'testCodeFailure'") {
+                  for ($j = $i + 1; $j -lt $lines.Count -and $j -lt ($i + 16); $j++) {
+                      if ($lines[$j] -match '^  (code|name|stack):') { break }
+                      $reason += (,($lines[$j].Trim()))
+                  }
+              }
+          }
+          $decisive = $(if (@($reason).Count -gt 0) { @($reason) } else { @($lines | Select-Object -Last 8) })
           if (@($decisive).Count -eq 0) { $decisive = @($lines | Select-Object -Last 1) }
           $desc = (([string](@($decisive) -join ' | ')) -replace '\s+', ' ').Trim()
           if (-not $script:M8Failure) { $desc = 'M8 behavioral harness PASS (extracted pwsh, mocked contents API)' }
