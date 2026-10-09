@@ -102,6 +102,17 @@ WP-02 (independent)    WP-08 (optional, independent)
   ([L6662-L6689](https://github.com/dekarita/supreme-lamp/blob/823bcb6e94df8117a2f43d491a73e60265a968a1/.github/workflows/main.yml#L6662)).
   A newer run taking ownership is **correct behaviour**. Grep `[m8]` at any severity and classify by the `action=`
   token; never score `skip-foreign-active`/`skip-superseded` as a finalizer defect.
+- **Verification of the corrected mapping — the repository's own gate agrees.** `node --test
+  tests/m8-cancellation-finalizer.test.js` ⇒ **14 pass / 0 fail / 0 skipped**. The decisive one is
+  **`M8-d: job.status maps to a TRUTHFUL terminal runStatus`**, which asserts `'success' { $terminal = 'completed' }`,
+  `'cancelled' { $terminal = 'cancelled' }`, `'failure' { $terminal = 'failed' }` and the `$terminal = 'unknown'`
+  fallback, plus `runStatus = $terminal` and the absence of a hardcoded `runStatus = 'completed'`
+  ([tests/m8-cancellation-finalizer.test.js L128-L136](https://github.com/dekarita/supreme-lamp/blob/823bcb6e94df8117a2f43d491a73e60265a968a1/tests/m8-cancellation-finalizer.test.js#L128-L136)).
+  **M8-f** ("ownership guard — generation-aware, never clobbers a live newer owner") also passes, corroborating J2.
+  So the *old* WP-01 acceptance text was already contradicted by a green CI gate.
+  **Honest limit:** the companion behavioural harness `tests/m8-finalizer-behavior.test.js` reported
+  **15 pass / 0 fail / 26 SKIPPED — "pwsh unavailable — RUNTIME NOT RUN"** in this environment. Skipped scenarios are
+  **not** counted as passed; the mapping above is `STATIC_CHECK`, not `CONTROLLED_BEHAVIOR_VERIFIED`.
 - **Bounded observation recorded 2026-10-09T09:19:34Z (ledger J10)**: run
   [37903915039](https://github.com/dekarita/supreme-lamp/actions/runs/37903915039) on `823bcb6`, `status=in_progress`,
   `conclusion=""`, started 08:16:09Z (~63 min). Tracked identity: `runId=37903915039, runAttempt=1,

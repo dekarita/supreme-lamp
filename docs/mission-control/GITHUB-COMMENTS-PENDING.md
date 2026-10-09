@@ -43,3 +43,78 @@ Same title as #153 but a different body (B2/B3/B4 guidance differs). Technical r
 ## For #181 (refresh at `9aa6051`)
 
 Re-measured: `Send-F99WsText ` = 6 occurrences (1 definition + 5 sends); patch-emitter grep = 0; `PATCH_PUBLIC_KEY_B64 = ""`; `scripts/f110b-sign-patch.mjs` present; verifier fail-closed. The description above remains accurate. Plan v2 classifies Live Patch as an **optional improvement** (WP-08): no diagnostic view depends on it, and no other work package is blocked by it.
+
+---
+
+## Publication record — v21 session (2026-10-09T09:2xZ)
+
+Permissions were re-checked rather than assumed, because the token's reported repository permission
+**differs** from what the earlier 403 implied:
+
+| Capability | Result |
+|---|---|
+| `gh api repos/dekarita/supreme-lamp` → `.permissions` | `{admin: true, maintain: true, push: true, pull: true, triage: true}` |
+| Token type | fine-grained / integration (`X-Oauth-Scopes` empty) |
+| push branch `arena/822ae03c-supreme-lamp` | **SUCCEEDED** (`50212199`) |
+| create PR **#207** | **SUCCEEDED** |
+| `gh issue comment 191` | **DENIED** — `Resource not accessible by integration` |
+
+So `admin: true` on the repository **does not** imply issue-write permission for this integration. **One** comment
+attempt was made to establish this; it was not retried, per the no-loop rule. Issue-body edits were not attempted
+(the same resource class was already denied earlier today).
+
+**PUBLICATION status: `PARTIALLY_PUBLISHED`.** The documentation PR (#207) is live and accessible; the #191 body and
+the child-issue comments are still **`PUBLICATION_BLOCKED`**. Research completeness and publication status are
+tracked separately — the plan artifacts above are complete for this session's scope regardless of this block.
+
+### Single operator action, if a manual paste is wanted
+
+Paste the block below as a comment on [#191](https://github.com/dekarita/supreme-lamp/issues/191). It is the exact
+text that was denied. Nothing else is required, and no other research is blocked by it.
+
+```markdown
+**Milestone update — planning session v21 (2026-10-09T09:19Z).** Plan **v2.1** is open as PR #207, a
+documentation-only continuation of #192 (based on its head `d077e57`, so the diff is only the corrections).
+
+`application_changes=NONE` · `production_actions=NONE` · stage **PLAN_PARTIAL** (not PLAN_READY).
+
+**Application revision unchanged** at `823bcb6` (PR #189 merge). `main` = `adffebc0`, advanced by **40 status-only
+commits** touching only `docs/status.json` — no new application build exists.
+
+### What this session corrected in the plan itself
+| Row | The plan said | Source says | Why it mattered |
+|---|---|---|---|
+| **J1** | WP-01 accepts `runStatus ∈ {success, failure, cancelled}` | `main.yml` L6634-6639 maps `job.status` → `completed`/`failed`/`cancelled`, default `unknown`; terminal set (L6606) has **4** values; `finalizeReason` (L6702) keeps the GitHub word | **That acceptance could never pass** — it would have failed a *correct* finalizer. Confirmed by the repo's own gate `M8-d` (14 pass / 0 skipped) |
+| **J2** | the finalizer "warns" when the snapshot stays stale | ownership step-aside emits `::notice::` and still exits 0 (L6662-6689) | **A newer run correctly taking ownership would have been scored as a failure.** Added an `action=` table to the runbook |
+| **J3** | WP-14: "`.rdp` result reflects `window.open` return value" | `window.open(url,"_blank","noopener")` (Connections.tsx L41); per spec `noopener` returns **`null` on success** | **Rule rejected** — it would mark every successful download as a failure, worse than the defect it replaced |
+| **J5–J7** | WP-13's 3-file scope satisfies "no secret in `.mcrec` v1/v2" | sink trace S1–S11: ring + v1 **are** covered (ring is downstream of the recorder, dvr.ts L216/L230); v2 `mutations[]` **verified content-free**; v2 `shots[]` + IndexedDB are **not** in the 3 files | **WP-13 could not meet its own acceptance.** Acceptance split; **downgraded to `SPECIFIED`**; new **WP-13b** |
+| **J6 / MC-P24** | screenshots.ts: "cloneNode … reads STRUCTURE only" | `XMLSerializer().serializeToString()` (L46-47) serializes **text nodes and attribute values** | The stated fence is **unsound**; new problem **MC-P24** |
+| **J7** | WP-10 implied screenshots were already opt-in | `void takeShot()` on every click (session.ts L138), env-flag gated only | Opt-**out**; WP-10's item is a behaviour change with a migration question |
+| **J8** | WP-07 bound "Diagnose this page" to Alt+D | in-app bindings verified (Alt+E/Alt+F, Ctrl+K, Shift+F12, Explorer keymap) — **no in-app conflict** | But Alt+D is **browser-reserved** on Windows ⇒ expected dead in the RDP browser. Rejected; `NOT_MEASURED` |
+| **J9** | (implicit) routes are individually token-protected | `Test-GhrdpDashToken` at **3** route groups only; connection guard accepts loopback + tailnet CGNAT with no token | A 401/403 must name a **layer**, never read as "the secret is wrong" |
+
+### Verified vs not
+- **Verified:** M8 finalizer mapping + ownership policy (and `node --test tests/m8-cancellation-finalizer.test.js`
+  ⇒ **14 pass / 0 fail / 0 skipped**, incl. `M8-d` and `M8-f`); the two-layer server auth model; the full **76-route**
+  inventory; **`/ws` is served by the PowerShell server on 7331** — this resolves a standing open question; the WP-13
+  sink trace; the in-app shortcut set.
+- **Bounded M8 observation (J10):** run 37903915039 on `823bcb6` was `in_progress` at 09:19:34Z (~63 min), tracked
+  snapshot `runId=37903915039, runAttempt=1, runStatus=in_progress, finalizeReason=null, ts=09:12:52Z`
+  ⇒ **Stage A = NOT_REACHED**; readiness only. Research continued rather than waiting the run out.
+- **Not verified:** `tests/m8-finalizer-behavior.test.js` reported **15 pass / 26 SKIPPED (pwsh unavailable)** here;
+  skipped scenarios are **not** passed, so the mapping is `STATIC_CHECK`, not `CONTROLLED_BEHAVIOR_VERIFIED`. Nothing
+  here is `BROWSER_VERIFIED` or `LIVE_VERIFIED`. MC-P24 is a **confirmed mechanism**, not a confirmed production leak.
+
+### Still unobserved
+The 277 `SITE_ONLY` census rows, Explorer, and the upload/mirror path were **not** started — those are the original
+user problems and remain open. **No work package is currently `READY_FOR_IMPLEMENTATION`**; both that claimed it were
+downgraded on evidence.
+
+### New artifacts
+`docs/mission-control/PRIVACY-SINK-MAP.md` (WP-13 sink proof S1–S11) and
+`docs/mission-control/ENDPOINT-CONTRACTS.md` (76-route inventory + two-layer auth model).
+
+**Operator action (only one, unchanged):** the RDP application-identity choice A/B/C
+(ISSUE-RECONCILIATION §4). It blocks no other research. No secret re-creation or setup repetition is requested.
+The audit crosswalk (PROB/REQ/RC/GOLD) is **unavailable** — no audit document was supplied; contents not fabricated.
+```
