@@ -87,11 +87,11 @@ git metadata.
 
 ## Unresolved acceptance
 
-- BEHAVIOR_VERIFIED: pending. Exact probe:
-  `gh pr checks <followup-pr#>` → wait for `windows-native` → confirm the
-  "M8 finalizer behavioral harness" step is green, and inspect its log for
-  "[m8-behavior] runtime: node ...; pwsh 7.x" plus per-scenario results.
-  Command: `gh run view --job <windows-native-job-id> --log | grep m8`
+- BEHAVIOR_VERIFIED: DONE 2026-10-09 (PR #189 head). Evidence:
+  `gh api repos/dekarita/supreme-lamp/commits/<sha>/statuses` →
+  m8-behavioral-lab = success ("27/27 PASS, pwsh 7.6.6"); gates + windows-native
+  pass on `gh pr checks 189`. (Raw CI log archives are egress-blocked from
+  sandboxes; the commit-status channel is the reviewable surface.)
 - LIVE_VERIFIED: operator-only, per `docs/M8-LIVE-VERIFICATION.md`
   (readiness-based; stages A/B/C/D recorded independently; bounded windows).
 
