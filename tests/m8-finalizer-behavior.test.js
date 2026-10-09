@@ -427,11 +427,17 @@ test("M8-B-self-falsify: MUT-A (early exit 0) and MUT-B (disabled PUT) redden th
   if (!vB.spawnError) ownedCheck(vB, fB);
   assert.ok(fB.length > 0, "MUT-B (PUT inside if($false)) must redden the acceptance scenario");
   assert.equal(committed(vB).length, 0, "MUT-B commits nothing regardless of what it claims");
+  assert.equal(vB.sentinel.length, 0, "MUT-B writes no terminal sentinel");
+  // Behavioral-red proof (either failure shape counts): (a) the hardened body
+  // stays HONEST under MUT-B - success is gated on the observed 2xx, so no
+  // marker is printed and the scenario red on the missing PUT is what fails;
+  // or (b) a marker IS printed with no commit and the honesty check fires.
+  const claimed = vB.transcript.includes("[m8] status.json finalized:");
   const honest = [];
   successIsHonest(vB, honest);
-  assert.ok(fB.some((x) => x.includes("committed no PUT")) || fB.some((x) => x.includes("runStatus must be completed")) || honest.length > 0,
-    "the red must be behavioral (request/payload/honesty), got: " + JSON.stringify(fB));
-  console.log("[m8-behavior] MUT-B reddened by: " + fB[0]);
+  const behaviorallyRed = fB.some((x) => /PUT|committed|runStatus|sentinel/.test(x)) || honest.length > 0;
+  assert.ok(behaviorallyRed, "the red must be behavioral (request/payload/honesty), got: " + JSON.stringify(fB));
+  console.log("[m8-behavior] MUT-B reddened by: " + fB[0] + (claimed ? " (with deceptive success claim)" : " (script stayed honest - success is gated on the observed PUT status)"));
 });
 
 test("M8-B-20-positive-control: the UNMODIFIED source passes the primary scenario", { skip: !PWSH_OK && "pwsh unavailable - RUNTIME NOT RUN" }, async (t) => {
