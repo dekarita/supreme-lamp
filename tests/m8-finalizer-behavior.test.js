@@ -362,8 +362,8 @@ test("M8-B-00 extraction + runtime discovery (recorded, not assumed)", () => {
 
 for (const [name, sc, check] of CASES) {
   test("M8-B-" + name, { skip: !PWSH_OK && "pwsh unavailable - RUNTIME NOT RUN" }, async (t) => {
-    const v = await runScenario(sc);
-    const f = baseFailures(sc, v);
+    const v = await runScenario({ name, ...sc });
+    const f = baseFailures({ name, ...sc }, v);
     if (f.length === 0) check(v, f);
     assert.deepEqual(f, [], "scenario failures:\n- " + f.join("\n- ") + "\ntranscript tail:\n" + v.transcript.split("\n").slice(-12).join("\n"));
   });
