@@ -365,7 +365,8 @@ for (const [name, sc, check] of CASES) {
     const v = await runScenario({ name, ...sc });
     const f = baseFailures({ name, ...sc }, v);
     if (f.length === 0) check(v, f);
-    assert.deepEqual(f, [], "scenario failures:\n- " + f.join("\n- ") + "\ntranscript tail:\n" + v.transcript.split("\n").slice(-12).join("\n"));
+    const reqDigest = (v.reqs || []).map((r) => r.method + r.call + ":" + r.status + ":" + String(r.note || "").slice(0, 60) + (r.bodySha ? ":sha=" + r.bodySha : "")).join(" | ") || "none";
+    assert.deepEqual(f, [], "scenario failures:\n- " + f.join("\n- ") + "\nreqs: " + reqDigest + "\ntranscript tail:\n" + (v.transcript || "").split("\n").slice(-12).join("\n"));
   });
 }
 
