@@ -315,12 +315,16 @@ const CASES = [
     if (!v.transcript.includes("http 403")) f.push("the auth rejection must be named");
     if (v.transcript.includes("[m8] status.json finalized:")) f.push("no success claim on a 403");
   }],
-  ["15d-deadline-truncates-backoff", { statusJson: MINE_LIVE, requestTimeoutSec: 8, deadlineSec: 12, maxMs: 25000, behaviors: { put: [{ call: 1, respond: "hang", ms: 4000 }, { call: 2, respond: "hang", ms: 4000 }, { call: 3, respond: "hang", ms: 4000 }] } }, (v, f) => {
-    // 3 real 4s sleeps + backoff would exceed 12s; the deadline must truncate
-    // the post-failure sleeps so the whole finalizer stays inside ~deadline+1 request.
-    if (v.elapsedMs > 24000) f.push("the overall deadline is not enforced (~" + v.elapsedMs + "ms for a 12s budget)");
-    if (puts(v).length > 3) f.push("attempts stay structurally bounded");
+  ["15d-deadline-truncates-backoff", { statusJson: MINE_LIVE, requestTimeoutSec: 8, deadlineSec: 12, maxMs: 30000, behaviors: { put: [{ call: 1, respond: "hang", ms: 20000 }, { call: 2, respond: "hang", ms: 20000 }, { call: 3, respond: "hang", ms: 20000 }] } }, (v, f) => {
+    // Every PUT hangs 20s > the 8s request bound, so each attempt dies fast on
+    // the script's own -TimeoutSec; deadline (clamped floor: timeout+10 = 18s)
+    // truncates the 2s/4s backoff; the whole finalize must stay bounded and
+    // end with the stale-warning instead of a success claim.
+    if (v.elapsedMs > 29000) f.push("the overall deadline is not enforced (~" + v.elapsedMs + "ms)");
+    if (puts(v).length !== 3) f.push("attempts stay structurally bounded at 3, got " + puts(v).length);
+    if (puts(v).some((r) => !String(r.note).includes("timeout-enforced"))) f.push("every hung PUT must die on the request bound");
     if (!v.transcript.includes("::warning::[m8] could not publish terminal status.json")) f.push("deadline exhaustion must warn");
+    if (v.transcript.includes("[m8] status.json finalized:")) f.push("no success claim after deadline exhaustion");
   }],
   ["16-no-fabricated-completed-100", { statusJson: { ...MINE_LIVE, overallPct: 88 }, jobStatus: "success" }, (v, f) => {
     // RC-02: the retired Cleanup writer hardcoded completed/100; the finalizer must carry truth.
@@ -388,7 +392,7 @@ test("M8-B-12-late-heartbeat-suppressed-by-sentinel (generated helper, real pwsh
   writeFileSync(join(dir, "ghrdp-m8-terminal-" + RUN_ID + ".json"), JSON.stringify({ runId: RUN_ID, runStatus: "cancelled" }));
   let r = spawnSync(process.env.M8_PWSH || "pwsh", ["-NoProfile", "-File", "tests/m8-finalizer-harness.ps1", "-ScenarioPath", join(dir, "scenario.json")], { env, encoding: "utf8" });
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  let reqs = existsSync(join(dir, "requests.jsonl")) ? readFileSync(join(dir, "requests.jsonl"), "utf8").split("\n").filter(Boolean) : [];
+  let reqs = existsSync(join(dir, "requests.jsonl")) ? readFileSync(join(dir, "requests.jsonl"), "utf8").split(/\r?\n/).filter((l) => l.trim() !== "") : [];
   assert.equal(reqs.length, 0, "NO request may leave once the terminal sentinel exists (late heartbeat would regress cancelled -> in_progress)");
   assert.ok((r.stdout + r.stderr).includes("late publish suppressed"), "the suppression must be observable");
 
@@ -397,7 +401,7 @@ test("M8-B-12-late-heartbeat-suppressed-by-sentinel (generated helper, real pwsh
   unlinkSync(join(dir, "ghrdp-m8-terminal-" + RUN_ID + ".json"));
   if (existsSync(join(dir, "requests.jsonl"))) unlinkSync(join(dir, "requests.jsonl"));
   r = spawnSync(process.env.M8_PWSH || "pwsh", ["-NoProfile", "-File", "tests/m8-finalizer-harness.ps1", "-ScenarioPath", join(dir, "scenario.json")], { env, encoding: "utf8" });
-  reqs = existsSync(join(dir, "requests.jsonl")) ? readFileSync(join(dir, "requests.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)) : [];
+  reqs = existsSync(join(dir, "requests.jsonl")) ? readFileSync(join(dir, "requests.jsonl"), "utf8").split(/\r?\n/).filter((l) => l.trim() !== "").map((l) => JSON.parse(l)) : [];
   assert.equal(puts({ reqs }).length, 1, "a live heartbeat must still publish when no terminal sentinel exists");
   assert.equal(gets({ reqs }).length, 1, "the helper reads the remote sha before writing");
 });
