@@ -25,6 +25,10 @@ import {
   instrumentButton,
   lastOutcomePerButton,
 } from "@/lib/collectorAgent";
+// The fetch-start button is driven through the REAL F56-d lane client: the
+// F56-c gate reserves the /api/fetch call for src/api/fetch (plus the
+// fetchStub/f46 shims), so a fixture must not construct that call itself.
+import { startFetch } from "@/api/fetch/index.ts";
 
 type Impl = (url: string, init?: RequestInit) => Promise<Response>;
 let impl: Impl;
@@ -75,6 +79,11 @@ beforeEach(() => {
   clearActions();
   tokenState.present = true;
   tokenState.value = "tok-abc123";
+  // The F56-d lane client resolves the dash token through the canonical
+  // resolver (@/lib/dashToken -> localStorage `ghrdp.dashToken`), not through
+  // the mocked @/lib/api above — keep the two in lockstep so the lane's
+  // X-Dash-Token header matches the recorded tokenPresence.
+  localStorage.setItem("ghrdp.dashToken", tokenState.value);
   impl = wireRoutes(probeAnswers());
 });
 
@@ -205,18 +214,24 @@ describe("[F101 §3.2] instrumentButton records the whole story", () => {
   it("a missing dash token downgrades a loopback success to WARN with a fix", async () => {
     tokenState.present = false;
     tokenState.value = "";
+    localStorage.removeItem("ghrdp.dashToken");
     // [WP-13 / MC-P12] the fetch-start button's real route is app-classified;
     // /api/progress is a background-poller pattern and is no longer attributed
-    // to a click, so the test drives the app-classified route instead.
-    impl = wireRoutes(probeAnswers(), async (url) => (url === "/api/fetch" ? mkRes(200, { ok: true }) : mkRes(404, {})));
+    // to a click. The drive goes through the real F56-d lane client
+    // (src/api/fetch) — the F56-c gate reserves the /api/fetch call for that
+    // lane, so this fixture must not construct the call itself.
+    impl = wireRoutes(probeAnswers(), async (url) => (url === "/api/fetch" ? mkRes(200, { ok: true, fetchId: "f-1", gid: "g-1" }) : mkRes(404, {})));
     const out = await instrumentButton("fetch", "start", async () => {
-      await fetch("/api/fetch");
+      await startFetch({ adapterId: "arxiv", sourceSnapshotId: "s1", intent: "download", transport: "aria2c", mirrorOptIn: false });
       return { ok: true };
     });
     expect(out.record.preCheck?.tokenPresence).toBe(false);
     expect(out.record.preCheck?.prerequisites.find((p) => p.check === "dashTokenPresent")?.pass).toBe(false);
     expect(out.record.verdict?.status).toBe("warn");
     expect(out.record.verdict?.suggestedFix).toContain("?key=");
+    // the attributed exchange is the lane's real route (path-only, POST)
+    expect(out.record.request?.method).toBe("POST");
+    expect(out.record.request?.url).toBe("/api/fetch");
   });
 
   it("detects a service-state change between pre and post", async () => {
@@ -320,13 +335,18 @@ describe("[F101 §3.4] the button registry", () => {
   it("lastOutcomePerButton keys the table by feature:action", async () => {
     // [WP-13 / MC-P12] app-classified route (see the note above): a
     // background-pattern URL would no longer be attributed to the click.
-    impl = wireRoutes(probeAnswers(), async (url) => (url === "/api/fetch" ? mkRes(200, { ok: true }) : mkRes(404, {})));
+    // The drive goes through the real F56-d lane client (src/api/fetch) —
+    // the F56-c gate reserves the /api/fetch call for that lane.
+    impl = wireRoutes(probeAnswers(), async (url) => (url === "/api/fetch" ? mkRes(200, { ok: true, fetchId: "f-1", gid: "g-1" }) : mkRes(404, {})));
     await instrumentButton("fetch", "start", async () => {
-      await fetch("/api/fetch");
+      await startFetch({ adapterId: "arxiv", sourceSnapshotId: "s1", intent: "download", transport: "aria2c", mirrorOptIn: false });
       return { ok: true };
     });
     const map = lastOutcomePerButton(getRecordedActions());
     expect(map["fetch:start"]).toBeTruthy();
     expect(map["fetch:start"].verdict?.status).toBe("ok");
+    // the row carries the lane's real exchange, attributed to this click
+    expect(map["fetch:start"].request?.method).toBe("POST");
+    expect(map["fetch:start"].request?.url).toBe("/api/fetch");
   });
 });
