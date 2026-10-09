@@ -39,7 +39,7 @@ The attached audit file named in the session prompt was not present in the works
 | PR #190 OPEN at `9aa6051` | `gh pr view 190` |
 | `main` = `580f231` "chore: initial status.json [skip ci]" (08:17:26Z) | `git ls-remote`, commits API |
 | `main.yml` run [37903915039](https://github.com/dekarita/supreme-lamp/actions/runs/37903915039): `workflow_dispatch` by the operator on `823bcb6`, attempt 1, **in progress** (step 59 keep-alive; step 67 M8 finalizer pending) | runs/jobs API |
-| `docs/status.json` on main: `runId 37903915039`, `runAttempt 1`, `runStatus in_progress`; sensitive-named fields present but empty | contents API (identity fields only) |
+| `docs/status.json` on main: initial snapshot (`580f231`) and heartbeat snapshots (e.g. `c3322f8`, 08:47:36Z; 20 status commits by 08:48Z) all carry `runId 37903915039`, `runAttempt 1`, `runStatus in_progress` → M8 initial **and** heartbeat `runAttempt` changes executed live; heartbeat snapshots publish address/URL fields (MC-P24) | contents API (identity fields; others shape-only) |
 | `e2e-ui`: 0 successes in the latest 100 runs (92 cancelled at the 25-min job cap, 8 failure); last success 2026-10-05 | workflow runs API, job annotations |
 | #153, #156, #181 OPEN, 0 comments each; PR #155 merged (F99), PR #154 open ("Closes #153") | issues/PR API |
 
@@ -111,6 +111,7 @@ Full registry with classes and next probes: [TROUBLESHOOTING §3](MISSION-CONTRO
 | MC-P21 | High (security/product) | RDP identity split / password sync | decision pending | WP-02 |
 | MC-P22 | Low | dead fetch-wrapper layers on overlap | LIKELY | WP-06 |
 | MC-P23 | Low | registry `endpoints` incomplete | LIKELY | WP-03B |
+| MC-P24 | Medium (privacy, design) | public status.json publishes tailnet/egress addresses and the Funnel URL (no token in them) | observation; risk HYPOTHESIS | WP-05A / operator |
 
 ---
 
@@ -219,7 +220,7 @@ and [HANDOFF](mission-control/HANDOFF.md#exact-next-steps).
 | Decision | Rationale | Consequences | Revisit trigger |
 |---|---|---|---|
 | Continuation PR instead of pushing to #190's branch | session is fixed to its own branch; continuation carries #190's commits | #190 can merge first (continuation diff shrinks) or be superseded | reviewer preference |
-| Child issues created now | instruction authorizes planning issues; WPs are specified | 13 child issues | operator feedback |
+| Child issues created now | instruction authorizes planning issues; WPs are specified | 14 child issues (#193–#206) + existing #181, #153 | operator feedback |
 | #153 recommended canonical; #156 carried over | evidence richness + open PR reference | closure by operator | operator decision |
 | WP-13 first (not WP-03) | privacy defects in the store every later WP builds on | catalog generator later | none |
 | Live Patch optional | no diagnostic view depends on it | WP-08 deferred | operator asks for it |
@@ -246,6 +247,28 @@ and [HANDOFF](mission-control/HANDOFF.md#exact-next-steps).
 
 - Parent issue: [#191](https://github.com/dekarita/supreme-lamp/issues/191) · plan v1 PR: [#190](https://github.com/dekarita/supreme-lamp/pull/190)
 - M8 runbook: [docs/M8-LIVE-VERIFICATION.md](M8-LIVE-VERIFICATION.md) · history: [docs/OBSERVATORY-STATE.md](OBSERVATORY-STATE.md)
-- Child issues: see [WORK-PACKAGES summary](mission-control/WORK-PACKAGES.md#summary)
+- Continuation docs PR: [#192](https://github.com/dekarita/supreme-lamp/pull/192)
+
+### Child issues
+
+| WP | Child issue | Planning state |
+|---|---|---|
+| WP-13 Collector privacy defects | [#193](https://github.com/dekarita/supreme-lamp/issues/193) | READY_FOR_IMPLEMENTATION |
+| WP-14 Truthfulness + safety defects | [#194](https://github.com/dekarita/supreme-lamp/issues/194) | READY_FOR_IMPLEMENTATION |
+| WP-01 M8 live evidence | [#195](https://github.com/dekarita/supreme-lamp/issues/195) | RESEARCH_IN_PROGRESS |
+| WP-03A Census continuation | [#196](https://github.com/dekarita/supreme-lamp/issues/196) | RESEARCH_IN_PROGRESS |
+| WP-03B Catalog generator + gate | [#197](https://github.com/dekarita/supreme-lamp/issues/197) | SPECIFIED |
+| WP-04 Event + redaction core | [#198](https://github.com/dekarita/supreme-lamp/issues/198) | SPECIFIED |
+| WP-05A Server/runner research | [#199](https://github.com/dekarita/supreme-lamp/issues/199) | RESEARCH_PENDING |
+| WP-05B Health model | [#200](https://github.com/dekarita/supreme-lamp/issues/200) | RESEARCH_PENDING |
+| WP-06 Causal attribution | [#201](https://github.com/dekarita/supreme-lamp/issues/201) | SPECIFIED |
+| WP-07 Embedded diagnostics UX | [#202](https://github.com/dekarita/supreme-lamp/issues/202) | SPECIFIED |
+| WP-09 e2e-ui timeout | [#203](https://github.com/dekarita/supreme-lamp/issues/203) | RESEARCH_IN_PROGRESS |
+| WP-10 Sanitized export | [#204](https://github.com/dekarita/supreme-lamp/issues/204) | SPECIFIED |
+| WP-11 Guided troubleshooting | [#205](https://github.com/dekarita/supreme-lamp/issues/205) | SPECIFIED |
+| WP-12 Live acceptance | [#206](https://github.com/dekarita/supreme-lamp/issues/206) | BLOCKED |
+| WP-08 Patch emitter | [#181](https://github.com/dekarita/supreme-lamp/issues/181) | SPECIFIED, DEFERRED (optional) |
+| WP-02 F99 reconciliation | [#153](https://github.com/dekarita/supreme-lamp/issues/153) (recommended canonical) | SPECIFIED (operator decision) |
+
 
 Final status: `mode=RESEARCH_AND_PLAN_ONLY; status=PLAN_PARTIAL; application_changes=NONE;`

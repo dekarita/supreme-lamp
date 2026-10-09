@@ -15,22 +15,22 @@ Effort ranges are engineering-session estimates with stated uncertainty, not com
 | WP | Title | Category | Planning state | Delivery | Child issue |
 |---|---|---|---|---|---|
 | WP-00 | Plan reconciliation + docs | planning | SPECIFIED | PR_OPEN (#190 + continuation PR) | #191 |
-| WP-01 | M8 live acceptance evidence | VERIFICATION_INFRASTRUCTURE | RESEARCH_IN_PROGRESS (run in flight) | — | ISSUE_WP01 |
+| WP-01 | M8 live acceptance evidence | VERIFICATION_INFRASTRUCTURE | RESEARCH_IN_PROGRESS (run in flight) | — | [#195](https://github.com/dekarita/supreme-lamp/issues/195) |
 | WP-02 | F99 issue reconciliation + RDP identity decision | VERIFIED_DEFECT_REPAIR | SPECIFIED (operator decision pending) | — | #153 (canonical, recommended) |
-| WP-03A | Control and evidence census | CORE_DIAGNOSTICS | RESEARCH_IN_PROGRESS | — | ISSUE_WP03A |
-| WP-03B | Catalog generator + CI gate | VERIFICATION_INFRASTRUCTURE | SPECIFIED | — | ISSUE_WP03B |
-| WP-04 | Event contract + redaction core | CORE_DIAGNOSTICS | SPECIFIED | — | ISSUE_WP04 |
-| WP-05A | Server/runner endpoint research (R5–R7) | CORE_DIAGNOSTICS | RESEARCH_PENDING | — | ISSUE_WP05A |
-| WP-05B | Read-only dependency health model + bounded probes | CORE_DIAGNOSTICS | RESEARCH_PENDING (needs WP-05A) | — | ISSUE_WP05B |
-| WP-06 | Causal action attribution | CORE_DIAGNOSTICS | SPECIFIED | — | ISSUE_WP06 |
-| WP-07 | Embedded diagnostics experience | CORE_DIAGNOSTICS | SPECIFIED | — | ISSUE_WP07 |
+| WP-03A | Control and evidence census | CORE_DIAGNOSTICS | RESEARCH_IN_PROGRESS | — | [#196](https://github.com/dekarita/supreme-lamp/issues/196) |
+| WP-03B | Catalog generator + CI gate | VERIFICATION_INFRASTRUCTURE | SPECIFIED | — | [#197](https://github.com/dekarita/supreme-lamp/issues/197) |
+| WP-04 | Event contract + redaction core | CORE_DIAGNOSTICS | SPECIFIED | — | [#198](https://github.com/dekarita/supreme-lamp/issues/198) |
+| WP-05A | Server/runner endpoint research (R5–R7) | CORE_DIAGNOSTICS | RESEARCH_PENDING | — | [#199](https://github.com/dekarita/supreme-lamp/issues/199) |
+| WP-05B | Read-only dependency health model + bounded probes | CORE_DIAGNOSTICS | RESEARCH_PENDING (needs WP-05A) | — | [#200](https://github.com/dekarita/supreme-lamp/issues/200) |
+| WP-06 | Causal action attribution | CORE_DIAGNOSTICS | SPECIFIED | — | [#201](https://github.com/dekarita/supreme-lamp/issues/201) |
+| WP-07 | Embedded diagnostics experience | CORE_DIAGNOSTICS | SPECIFIED | — | [#202](https://github.com/dekarita/supreme-lamp/issues/202) |
 | WP-08 | F110c patch emitter | OPTIONAL_IMPROVEMENT | SPECIFIED (in #181); DEFERRED from the diagnostics path | — | #181 |
-| WP-09 | e2e-ui systematic timeout | VERIFICATION_INFRASTRUCTURE | RESEARCH_IN_PROGRESS | — | ISSUE_WP09 |
-| WP-10 | Sanitized evidence export | CORE_DIAGNOSTICS | SPECIFIED | — | ISSUE_WP10 |
-| WP-11 | Guided troubleshooting in product | CORE_DIAGNOSTICS | SPECIFIED | — | ISSUE_WP11 |
-| WP-12 | Live acceptance + rollout | VERIFICATION_INFRASTRUCTURE | BLOCKED | — | ISSUE_WP12 |
-| WP-13 | Collector privacy defects | VERIFIED_DEFECT_REPAIR | **READY_FOR_IMPLEMENTATION** (first) | — | ISSUE_WP13 |
-| WP-14 | Diagnostic truthfulness and safety defects | VERIFIED_DEFECT_REPAIR | READY_FOR_IMPLEMENTATION | — | ISSUE_WP14 |
+| WP-09 | e2e-ui systematic timeout | VERIFICATION_INFRASTRUCTURE | RESEARCH_IN_PROGRESS | — | [#203](https://github.com/dekarita/supreme-lamp/issues/203) |
+| WP-10 | Sanitized evidence export | CORE_DIAGNOSTICS | SPECIFIED | — | [#204](https://github.com/dekarita/supreme-lamp/issues/204) |
+| WP-11 | Guided troubleshooting in product | CORE_DIAGNOSTICS | SPECIFIED | — | [#205](https://github.com/dekarita/supreme-lamp/issues/205) |
+| WP-12 | Live acceptance + rollout | VERIFICATION_INFRASTRUCTURE | BLOCKED | — | [#206](https://github.com/dekarita/supreme-lamp/issues/206) |
+| WP-13 | Collector privacy defects | VERIFIED_DEFECT_REPAIR | **READY_FOR_IMPLEMENTATION** (first) | — | [#193](https://github.com/dekarita/supreme-lamp/issues/193) |
+| WP-14 | Diagnostic truthfulness and safety defects | VERIFIED_DEFECT_REPAIR | READY_FOR_IMPLEMENTATION | — | [#194](https://github.com/dekarita/supreme-lamp/issues/194) |
 
 ## Dependency graph
 
@@ -68,7 +68,8 @@ WP-02 (independent)    WP-08 (optional, independent)
 - **Problem / evidence**: the cancellation-safe finalizer (#188/#189) has no live evidence. Run
   [37903915039](https://github.com/dekarita/supreme-lamp/actions/runs/37903915039) (operator dispatch, `823bcb6`,
   attempt 1) committed `580f231` "initial status.json" with `runAttempt: 1` — the M8 initial-snapshot change executed
-  live. Step 67 "Finalize status.json (M8 …)" pending at 08:27Z.
+  live; heartbeat commits every ~70 s also carry `runAttempt: 1` (e.g. `c3322f8` at 08:47:36Z, 20 status commits by
+  08:48Z). Step 67 "Finalize status.json (M8 …)" pending at 08:48Z.
 - **Reusable**: `docs/M8-LIVE-VERIFICATION.md` runbook; `tests/m8-*`; contents-API commit history of `docs/status.json`.
 - **Required behaviour**: after the run ends (normal end or operator cancel), record: final `runStatus`,
   `runAttempt`, `finalizeReason` (if present), finalizer step conclusion, commit sha/time of the terminal snapshot,

@@ -2,7 +2,7 @@
 
 Status at hand-off: **PLAN_PARTIAL** (research continues; nothing implemented). Parent:
 [#191](https://github.com/dekarita/supreme-lamp/issues/191). Plan v1: PR [#190](https://github.com/dekarita/supreme-lamp/pull/190)
-(`9aa6051`). This continuation: branch `arena/b7f4c19a-supreme-lamp` (fast-forwarded from #190's head, so it carries
+(`9aa6051`). This continuation: PR [#192](https://github.com/dekarita/supreme-lamp/pull/192), branch `arena/b7f4c19a-supreme-lamp` (fast-forwarded from #190's head, so it carries
 #190's commits). Source revision researched: `823bcb6` (= application code on `main` `580f231`).
 
 ## Read first (in order)
@@ -28,7 +28,7 @@ Status at hand-off: **PLAN_PARTIAL** (research continues; nothing implemented). 
    `MirrorCard.tsx` (410); fill risk/request/effect for their census rows.
 3. **WP-05A**: read `payloads/ghrdp-server.ps1` route table and the `/diag` + `/api/diag/comprehensive` handlers.
 4. **WP-09**: find the first non-success `e2e-ui` run after `2b66c11` (2026-10-05) and its commit range.
-5. First implementation package when authorized: **WP-13** (brief ready).
+5. First implementation package when authorized: **WP-13** ([#193](https://github.com/dekarita/supreme-lamp/issues/193), brief ready).
 
 ## Open questions
 
