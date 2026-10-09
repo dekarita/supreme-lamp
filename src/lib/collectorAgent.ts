@@ -295,6 +295,30 @@ const safeLocalStorage: StateStorage = {
 
 let setStore: ((partial: Partial<CollectorState>) => void) | null = null;
 
+/**
+ * [WP-13 / #193] One redaction pass over the persisted rows, run from
+ * onRehydrateStorage — i.e. on the initial load, on the legacy-key migration
+ * and on every cross-tab `storage` rehydrate. Every row goes through the shared
+ * core's redactButtonAction (idempotent, never throws); the store is rewritten
+ * only when something actually changed, so a clean store costs one comparison.
+ * Lossy by design: old `?key=` routes, raw URLs, fingerprinted headers, raw
+ * bodies and credential-input labels are rewritten in place and unrecoverable.
+ * The rows come in as a parameter because this runs INSIDE create() on the
+ * initial hydration, where the useCollectorStore binding is still initialising
+ * (the same reason the hydration chip goes through setStore).
+ */
+function redactPersistedRows(rows: ButtonAction[] | undefined): void {
+  try {
+    if (!rows || !rows.length) return;
+    const redacted = rows.map((r) => redactButtonAction(r));
+    if (JSON.stringify(redacted) !== JSON.stringify(rows)) {
+      if (setStore) setStore({ actions: redacted });
+    }
+  } catch {
+    /* redaction must never break hydration */
+  }
+}
+
 export const useCollectorStore = create<CollectorState>()(
   persist(
     (set) => {
@@ -344,6 +368,12 @@ export const useCollectorStore = create<CollectorState>()(
         }
         // hydration is synchronous: setStore exists (the initializer ran first)
         if (setStore) setStore({ hydration: info });
+        // [WP-13 / #193] redaction pass on BOTH hydration paths: this callback
+        // runs on the initial load AND on every cross-tab `storage`-event
+        // rehydrate (and after the legacy-key migration above), so rows
+        // persisted before the WP-13 capture fixes are rewritten in place.
+        // Idempotent + lossy by design: a redacted row stays redacted.
+        redactPersistedRows(state?.actions);
       },
     }
   )
@@ -382,6 +412,17 @@ export function getRecordedActions(): ButtonAction[] {
   return useCollectorStore.getState().actions;
 }
 
+/**
+ * [WP-13 / #193 / MC-P13] The export-safe view of the recorded rows: every row
+ * through the shared redaction pass. The store is already redacted at capture
+ * time and at hydration; this is the export sink's OWN fence, so the
+ * `button-actions.json` download can never ship a raw row even if a future
+ * writer forgets the capture-time sanitizers.
+ */
+export function exportableActions(): ButtonAction[] {
+  return getRecordedActions().map((a) => redactButtonAction(a));
+}
+
 function newActionId(): string {
   // [F102] ids are unique even for rows minted in the same millisecond (the
   // F100 replay id "act_<ms>_r" collided and duplicated React keys).
@@ -402,11 +443,17 @@ let activeCapture: CaptureContext | null = null;
 
 /** Log a button action. Returns the recorded action (with generated id + ts). */
 export function logButtonAction(rec: Omit<ButtonAction, "id" | "ts">): ButtonAction {
-  const action: ButtonAction = {
+  // [WP-13 / #193] the persistence sink's own fence: every row passes through
+  // the shared redaction pass BEFORE it reaches the store (and therefore
+  // localStorage). The capture paths already sanitize at production; this is
+  // the layer that makes a future unsanitized writer unable to persist a raw
+  // `?key=` route, a fingerprinted header or an unscrubbed body. Idempotent,
+  // so already-clean rows pass through unchanged in content.
+  const action: ButtonAction = redactButtonAction({
     id: newActionId(),
     ts: new Date().toISOString(),
     ...rec,
-  };
+  });
   if (activeCapture) {
     activeCapture.nested.push(action);
     return action;
@@ -449,30 +496,30 @@ export function updateRecordedAction(id: string, patch: Partial<ButtonAction>): 
 
 import { apiBase, getDashToken, hasDashToken } from "@/lib/api";
 import { useTelemetryStore } from "@/stores/telemetryStore";
+// [WP-13 / #193] all redaction lives in the shared core (src/lib/diagRedact.ts)
+// so the capture path, the hydration pass and the export sink can never drift
+// into three inconsistent scrubbers. WP-04/WP-10 reuse the same module.
+import {
+  maskSecretHeaders,
+  redactButtonAction,
+  sanitizeExchangeUrl,
+  sanitizeRequestUrl,
+  sanitizeRoute,
+  scrubBodyText,
+  scrubSecretText,
+} from "@/lib/diagRedact";
 
 const PROBE_TIMEOUT_MS = 2500;
 const BODY_CAPTURE_CHARS = 2000;
-const SECRET_HEADER = /token|authorization|cookie|key|secret|password/i;
 
-/** Cheap, dependency-free 8-hex fingerprint so a masked credential is still
- *  comparable across rows without ever storing the value itself. */
-function fingerprint(v: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < v.length; i++) {
-    h ^= v.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return h.toString(16).padStart(8, "0");
-}
-
-function maskHeaders(h: Record<string, string>): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const k of Object.keys(h)) {
-    const v = String(h[k] ?? "");
-    out[k] = SECRET_HEADER.test(k) && v ? "present(len=" + v.length + ",sha=" + fingerprint(v) + ")" : v;
-  }
-  return out;
-}
+/**
+ * [WP-13 / MC-P13] Header masking is the shared core's. A secret-named header
+ * keeps only its LENGTH — never the value, and never a fingerprint of it: the
+ * old `sha=<FNV-1a>` fingerprint was secret-derived (an offline guess-check
+ * oracle against a weak, unkeyed hash) and is removed. The alias keeps the
+ * F101 call sites and pins (`maskHeaders(rawHeaders)`) unchanged.
+ */
+const maskHeaders = maskSecretHeaders;
 
 export interface CapturedExchange {
   /** Monotonic ring position. A plain array index would go stale the moment
@@ -540,7 +587,17 @@ export function installFetchObserver(): void {
     } catch { /* non-string bodies are not captured */ }
     const rec: CapturedExchange = {
       seq: ++exchangeSeq,
-      request: { method, url, headers: maskHeaders(rawHeaders), body: body.slice(0, BODY_CAPTURE_CHARS), timestamp: new Date(startedAt).toISOString() },
+      // [WP-13 / MC-P12] the ring is the source of every persisted
+      // request/response: the URL is stored PATH-ONLY (a `?key=` query must
+      // never reach a row), headers are masked without fingerprints, and bodies
+      // are scrubbed (the /api/config creds block carries raw passwords).
+      request: {
+        method,
+        url: sanitizeRequestUrl(url),
+        headers: maskHeaders(rawHeaders),
+        body: scrubBodyText(body, BODY_CAPTURE_CHARS),
+        timestamp: new Date(startedAt).toISOString(),
+      },
       response: null,
       failed: "",
       origin: originOf(url),
@@ -554,9 +611,12 @@ export function installFetchObserver(): void {
       let headers: Record<string, string> = {};
       let text = "";
       try {
-        res.headers.forEach((v, k) => { headers[k] = SECRET_HEADER.test(k) ? "masked" : v; });
+        const rawRespHeaders: Record<string, string> = {};
+        res.headers.forEach((v, k) => { rawRespHeaders[k] = v; });
+        const masked = maskHeaders(rawRespHeaders);
+        for (const k of Object.keys(masked)) headers[k] = scrubSecretText(masked[k], 300);
         const clone = res.clone();
-        text = (await clone.text()).slice(0, BODY_CAPTURE_CHARS);
+        text = scrubBodyText(await clone.text(), BODY_CAPTURE_CHARS);
       } catch { /* an unreadable body is still a status we can report */ }
       rec.response = { status, headers, body: text, elapsedMs: Date.now() - startedAt };
       rec.endedAtPerf = typeof performance !== "undefined" ? performance.now() : Date.now();
@@ -801,8 +861,12 @@ export async function instrumentButton<T>(
   const elapsedMs = Math.round(Date.now() - startedAt);
   // Slice the window BEFORE the post-check probes run: those four probes are
   // the recorder's own traffic and must never be mistaken for the button's.
-  // [F102] the recorder's own service probes are never the button's request
-  const exchanges = ringBetween(mark, ringMark()).filter((e) => e.origin !== "probe");
+  // [F102] the recorder's own service probes are never the button's request.
+  // [WP-13 / MC-P12] neither is a background poller: only `app` traffic is
+  // attributable to a click — a poll that lands inside the window (e.g. the
+  // /api/config poll whose response carries the creds block) must never be
+  // persisted as the button's request/response.
+  const exchanges = ringBetween(mark, ringMark()).filter((e) => e.origin === "app");
   const exchange = exchanges.length ? exchanges[exchanges.length - 1] : null;
   const postProbe = opts.skipPostCheck ? null : await captureServiceStates();
   const newStates = postProbe ? postProbe.states : pre.serviceStates;
@@ -1172,13 +1236,14 @@ function startEffectProbe(el: HTMLElement): EffectProbe {
   const origOpen = window.open;
   try {
     window.open = function (this: Window, ...args: Parameters<typeof window.open>) {
-      popups.push(String(args[0] ?? ""));
+      // [WP-13] a popup/download URL can carry `?key=` — cut query+fragment.
+      popups.push(sanitizeExchangeUrl(String(args[0] ?? "")));
       return origOpen.apply(this, args);
     } as typeof window.open;
   } catch { /* read-only open: popups simply go uncounted */ }
   const onDocClick = (e: Event) => {
     const a = (e.target as Element | null)?.closest?.("a[download]") as HTMLAnchorElement | null;
-    if (a) downloads.push(a.getAttribute("download") || a.href);
+    if (a) downloads.push(sanitizeExchangeUrl(a.getAttribute("download") || a.href || ""));
   };
   document.addEventListener("click", onDocClick, true);
   const signature = () =>
@@ -1187,7 +1252,8 @@ function startEffectProbe(el: HTMLElement): EffectProbe {
       textOf("#toasts"),
       textOf('[role="alert"]'),
       textOf('[data-testid="status-live"]', 120),
-      String(location.hash || ""),
+      // [WP-13 / MC-P11] route template only — the raw hash can carry `?key=`.
+      sanitizeRoute(typeof location !== "undefined" ? location.hash : ""),
       el.isConnected ? [isDisabled(el), el.getAttribute("aria-expanded"), (el.textContent || "").trim().slice(0, 60)].join("|") : "detached",
       popups.length,
       downloads.length,
@@ -1282,10 +1348,12 @@ async function observeClick(el: HTMLElement, mark: number, maxWaitMs: number): P
 
 function pathOf(url: string): string {
   try {
+    // [WP-13 / MC-P12] path-only: a query string (`?key=…`) must never reach a
+    // verdict reason or a persisted `result.requests[]` entry.
     const u = new URL(url, location.href);
-    return u.pathname + (u.search ? u.search.slice(0, 60) : "");
+    return u.pathname;
   } catch {
-    return url;
+    return String(url || "").split(/[?#]/, 1)[0] || String(url || "");
   }
 }
 
@@ -1430,7 +1498,8 @@ async function runClick(btnOrId: KnownButton | string, opts: ClickOptions): Prom
     }
     running("waiting for [data-testid=" + btn.testId + "]");
     el = await waitForEl(() => findTarget(btn), btn.findTimeoutMs ?? 8000, true);
-    const routeNow = String(location.hash || "#/");
+    // [WP-13 / MC-P11] route template only — the raw hash can carry `?key=`.
+    const routeNow = sanitizeRoute(typeof location !== "undefined" ? location.hash : "");
     if (!el || isDisabled(el)) {
       const disabled = !!el;
       running("recording " + (disabled ? "disabled" : "missing") + " button");

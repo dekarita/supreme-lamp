@@ -103,3 +103,21 @@ test("F104-h: privacy - URLs are cut at ?/# and capped; bodies/headers never cap
   assert.ok(CAP.includes("slice(0, 200)"), "URLs must be length-capped");
   assert.ok(!/init\.body|clone\(\)\.text|res\.headers\.forEach/.test(CAP), "the global observer must not capture bodies or headers");
 });
+
+// [WP-13 / #193 — F104-h EXTENDED in place] the route is a route TEMPLATE and
+// the label never reads the `value` attribute. Both halves are falsified by
+// src/tests/smoke/wp13-privacy-redaction.test.tsx against the shipped code.
+test("F104-h2: WP-13 privacy - currentRoute is sanitized and describeClick never reads value", () => {
+  const slice = (src, start, end) => {
+    const i = src.indexOf(start);
+    assert.ok(i >= 0, "missing: " + start);
+    const j = src.indexOf(end, i + start.length);
+    assert.ok(j > i, "missing end marker: " + end);
+    return src.slice(i, j);
+  };
+  const route = slice(CAP, "function currentRoute(", "export function describePath(");
+  assert.ok(route.includes("sanitizeRoute("), "currentRoute must store a route template (cut ?/#), never the raw hash with ?key=");
+  const desc = slice(CAP, "export function describeClick(", "function dedupeKey(");
+  assert.ok(!desc.includes('g("value")'), "describeClick reads the value attribute — a typed password would become the label (MC-P8)");
+  assert.ok(desc.includes("scrubSecretText("), "the label is not pattern-scrubbed (a credential-shaped aria-label would persist)");
+});

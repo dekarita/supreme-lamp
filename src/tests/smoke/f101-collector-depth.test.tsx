@@ -123,9 +123,12 @@ describe("[F101 §3.2] instrumentButton records the whole story", () => {
     expect(rec.request?.url).toBe("/api/f58/sources");
     expect(rec.request?.body).toContain("openculture.com");
     expect(posted).toContain("openculture.com");
-    // the token NEVER lands in the record, but stays comparable
+    // [WP-13 / MC-P13] the token NEVER lands in the record, and the masked
+    // value keeps only its LENGTH — the old `sha=<FNV-1a>` fingerprint was
+    // secret-derived (an offline guess-check oracle) and is gone.
     expect(rec.request?.headers["X-Dash-Token"]).not.toBe(tokenState.value);
-    expect(rec.request?.headers["X-Dash-Token"]).toMatch(/^present\(len=10,sha=[0-9a-f]{8}\)$/);
+    expect(rec.request?.headers["X-Dash-Token"]).toBe("present(len=10)");
+    expect(JSON.stringify(rec.request?.headers)).not.toContain("sha=");
     // --- response -----------------------------------------------------------
     expect(rec.response?.status).toBe(200);
     expect(rec.response?.body).toContain("openculture.com");
@@ -202,9 +205,12 @@ describe("[F101 §3.2] instrumentButton records the whole story", () => {
   it("a missing dash token downgrades a loopback success to WARN with a fix", async () => {
     tokenState.present = false;
     tokenState.value = "";
-    impl = wireRoutes(probeAnswers(), async (url) => (url === "/api/progress" ? mkRes(200, { ok: true }) : mkRes(404, {})));
+    // [WP-13 / MC-P12] the fetch-start button's real route is app-classified;
+    // /api/progress is a background-poller pattern and is no longer attributed
+    // to a click, so the test drives the app-classified route instead.
+    impl = wireRoutes(probeAnswers(), async (url) => (url === "/api/fetch" ? mkRes(200, { ok: true }) : mkRes(404, {})));
     const out = await instrumentButton("fetch", "start", async () => {
-      await fetch("/api/progress");
+      await fetch("/api/fetch");
       return { ok: true };
     });
     expect(out.record.preCheck?.tokenPresence).toBe(false);
@@ -312,9 +318,11 @@ describe("[F101 §3.4] the button registry", () => {
   }, 15000);
 
   it("lastOutcomePerButton keys the table by feature:action", async () => {
-    impl = wireRoutes(probeAnswers(), async (url) => (url === "/api/progress" ? mkRes(200, { ok: true }) : mkRes(404, {})));
+    // [WP-13 / MC-P12] app-classified route (see the note above): a
+    // background-pattern URL would no longer be attributed to the click.
+    impl = wireRoutes(probeAnswers(), async (url) => (url === "/api/fetch" ? mkRes(200, { ok: true }) : mkRes(404, {})));
     await instrumentButton("fetch", "start", async () => {
-      await fetch("/api/progress");
+      await fetch("/api/fetch");
       return { ok: true };
     });
     const map = lastOutcomePerButton(getRecordedActions());

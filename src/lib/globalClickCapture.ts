@@ -26,10 +26,15 @@
 //     event whose isTrusted is false. The smoke suite disables it because
 //     jsdom cannot mint a trusted event.
 //
-// PRIVACY: recorded URLs are cut at the first "?" or "#" and capped at 200
-// chars - no query string, token, or fragment can reach a row. Bodies and
+// PRIVACY (WP-13 / #193 hardened): recorded URLs are cut at the first "?" or
+// "#" and capped at 200 chars - no query string, token, or fragment can reach a
+// row. The route is a route TEMPLATE (sanitizeRoute cuts the query/fragment of
+// the hash, so `#/search?key=…` is stored as `#/search`). The label NEVER reads
+// the `value` attribute: React 18 reflects controlled input values into it, so
+// a typed password would otherwise become the row's label (MC-P8). Bodies and
 // headers are never captured here (F101's deep rows already do that, masked).
 import type { ButtonAction } from "@/lib/collectorAgent";
+import { sanitizeRoute, scrubSecretText } from "@/lib/diagRedact";
 
 /** [F104 §3] the provenance tag every auto-captured row carries. */
 export const GLOBAL_CLICK_SOURCE = "global-click-capture";
@@ -100,7 +105,9 @@ function stripUrl(raw: string): string {
 function currentRoute(): string {
   try {
     if (typeof window === "undefined") return "";
-    return String(window.location.hash || window.location.pathname || "");
+    // [WP-13 / MC-P11] route template only: the hash can carry `?key=<token>`
+    // (`#/route?key=`), and a raw hash must never reach a persisted row.
+    return sanitizeRoute(window.location.hash || window.location.pathname || "");
   } catch {
     return "";
   }
@@ -137,10 +144,17 @@ export function describeClick(el: Element): ClickDescriptor {
   } catch {
     text = "";
   }
+  // [WP-13 / MC-P8] the label chain is aria-label -> title -> (empty). The
+  // `value` attribute is NEVER read: React 18 reflects a controlled input's
+  // typed value into that attribute, so a password field's value would become
+  // this row's label and persist to localStorage and the DVR ring. aria-label
+  // and title are not assumed inherently safe either - both are pattern-scrubbed
+  // (a credential-shaped string is redacted even there).
+  const label = g("aria-label") || g("title") || "";
   return {
     testId: g("data-testid"),
-    label: g("aria-label") || g("title") || g("value"),
-    text,
+    label: scrubSecretText(label, 120),
+    text: scrubSecretText(text, 80),
     tag: String(el.tagName || "").toLowerCase(),
     route: currentRoute(),
     path: describePath(el),

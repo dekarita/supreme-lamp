@@ -175,7 +175,10 @@ test("MH-c: both i18n catalogs parse, carry no duplicate key at any depth, and t
   const expected = Number((parity.match(/const EXPECTED_FLAT_KEYS = (\d+)/) || [])[1]);
   assert.equal(Object.keys(en).length, expected, "the count lock must equal the measured catalog size (never previous + delta)");
   // measured 2026-10-07 at HEAD e6dc5bd + this repair: the union of #173 (1010) and #174 (1022)
-  assert.equal(expected, 1030, "literal pin: the repaired union is 1030 keys in BOTH catalogs");
+  // [WP-13b 2026-10-09] + 3 keys (dvr.shotsOff/shotsOn/shotsNote, the DVR
+  // screenshot consent toggle) = 1033. Deliberate catalog addition; the lock
+  // is re-measured from the current catalogs, never silently kept.
+  assert.equal(expected, 1033, "literal pin: the repaired union + WP-13b's 3 consent keys is 1033 keys in BOTH catalogs");
 });
 
 test("MH-d: the retired step-6 DVR variant stays retired - one implementation, one session list, one testid", () => {

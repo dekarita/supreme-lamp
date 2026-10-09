@@ -14,7 +14,7 @@ import { Card } from "@/components/primitives/Data";
 import { Button } from "@/components/primitives/Button";
 import { Chip } from "@/components/primitives/Chip";
 import {
-  getRecordedActions,
+  exportableActions,
   clearActions,
   replayAllActions,
   installFetchObserver,
@@ -268,7 +268,10 @@ export default function Collector() {
 
   const downloadActions = useCallback(() => {
     try {
-      const blob = new Blob([JSON.stringify({ recordedUserActions: getRecordedActions() }, null, 2)], { type: "application/json" });
+      // [WP-13 / MC-P13] the export sink's own fence: every row through the
+      // shared redaction pass, so button-actions.json can never carry a raw
+      // `?key=` route, a fingerprinted header or an unscrubbed body.
+      const blob = new Blob([JSON.stringify({ recordedUserActions: exportableActions() }, null, 2)], { type: "application/json" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;

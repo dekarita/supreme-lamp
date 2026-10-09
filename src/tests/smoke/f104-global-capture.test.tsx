@@ -105,12 +105,17 @@ describe("F104 descriptor: what the click hit", () => {
   it("matches a[role=button] and input[type=submit]", () => {
     const rec = stubRecorder();
     uninstall = installGlobalClickCapture(rec, { trustCheck: false, windowMs: 30 });
+    // [WP-13 / MC-P8] the `value` attribute is NEVER read as a label: React 18
+    // reflects a controlled input's typed value into it, so a password field's
+    // value would otherwise become the row's label. A submit input with no
+    // aria-label/title therefore records an EMPTY label — this pin is the
+    // falsifier for restoring `|| g("value")` in describeClick.
     document.body.innerHTML = '<a role="button" data-testid="card-open-rdp">Open</a><input type="submit" value="Save"/>';
     click(document.body.querySelector("a") as Element);
     click(document.body.querySelector("input") as Element);
     expect(rec.rows).toHaveLength(2);
     expect(rec.rows[0].action).toBe("click:card-open-rdp");
-    expect(paramsOf(rec.rows[1])).toMatchObject({ tag: "input", label: "Save" });
+    expect(paramsOf(rec.rows[1])).toMatchObject({ tag: "input", label: "" });
   });
 
   it("matches any testid'd element (cards and rows are click targets)", () => {

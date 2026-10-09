@@ -157,6 +157,9 @@ export function DashTokenGate({ force, onUnlocked }: DashTokenGateProps) {
                 type="password"
                 autoComplete="off"
                 spellCheck={false}
+                // [WP-13b / MC-P24] a typed credential never enters a DVR
+                // screenshot: the capture path drops this subtree.
+                data-dvr-exclude
                 autoFocus
                 value={value}
                 onChange={(e) => {

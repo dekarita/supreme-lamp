@@ -136,9 +136,16 @@ test("M5-d: the retired window override is readable NOWHERE outside the test tha
 
 test("M5-e: the F101 recorder masks the header by name, so this adds no stored plaintext copy", () => {
   const rec = read(RECORDER);
-  assert.ok(rec.includes("const SECRET_HEADER = /token|authorization|cookie|key|secret|password/i;"), "the mask rule changed");
+  // [WP-13 / MC-P13 rewritten in place] the mask rule and the masking itself
+  // moved to the shared redaction core (src/lib/diagRedact.ts); the recorder
+  // delegates. The rule text is unchanged and the call site is still masked.
+  assert.ok(
+    read("src/lib/diagRedact.ts").includes("const SECRET_HEADER = /token|authorization|cookie|key|secret|password/i;"),
+    "the mask rule changed"
+  );
   assert.ok(new RegExp("token|authorization|cookie|key|secret|password", "i").test("X-Dash-Token"), "the mask must match the header this client now sends");
   assert.ok(rec.includes("maskHeaders(rawHeaders)"), "request headers are recorded UNMASKED - the new header would be stored in clear");
+  assert.ok(rec.includes("const maskHeaders = maskSecretHeaders;"), "the recorder no longer delegates masking to the shared core");
 });
 
 test("M5-f: the storage key is owned by the resolver, never named by the client", () => {

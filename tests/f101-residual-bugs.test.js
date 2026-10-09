@@ -20,6 +20,7 @@ const STORE = readFileSync(new URL("../src/stores/telemetryStore.ts", import.met
 const MIRROR_LIB = readFileSync(new URL("../src/lib/mirror.ts", import.meta.url), "utf8");
 const MIRROR_CARD = readFileSync(new URL("../src/components/domain/MirrorCard.tsx", import.meta.url), "utf8");
 const AGENT = readFileSync(new URL("../src/lib/collectorAgent.ts", import.meta.url), "utf8");
+const REDACT = readFileSync(new URL("../src/lib/diagRedact.ts", import.meta.url), "utf8");
 const COLLECTOR = readFileSync(new URL("../src/pages/Collector.tsx", import.meta.url), "utf8");
 const ADDSITE = readFileSync(new URL("../src/components/search/AddSiteQuick.tsx", import.meta.url), "utf8");
 
@@ -167,8 +168,15 @@ test("F101-N5: instrumentButton captures pre -> request -> response -> post -> v
   for (let i = 1; i < order.length; i++) assert.ok(order[i] > order[i - 1], "instrumentButton step order regressed at " + i);
   assert.ok(AGENT.includes("installFetchObserver"), "there is no fetch observer");
   assert.ok(AGENT.includes("window.fetch = async"), "the observer does not wrap window.fetch");
-  assert.ok(AGENT.includes("SECRET_HEADER"), "credentials are not masked in the captured headers");
-  assert.ok(AGENT.includes("present(len="), "a masked credential does not stay comparable");
+  // [WP-13 / MC-P13 rewritten in place] header masking is delegated to the shared
+  // core (diagRedact.maskSecretHeaders): a secret-named header keeps only its
+  // LENGTH. The old `sha=<FNV-1a>` fingerprint was secret-derived and is gone.
+  assert.ok(AGENT.includes("maskSecretHeaders"), "credentials are not masked in the captured headers (shared core)");
+  assert.ok(REDACT.includes('"present(len="'), "a masked credential lost its length marker (shared core)");
+  // no fingerprint DERIVATION anywhere (the shared core's `sha=` regex only
+  // STRIPS legacy fingerprints — a construction would re-add the oracle)
+  assert.ok(!AGENT.includes('",sha="'), "a secret-derived fingerprint is being constructed (MC-P13)");
+  assert.ok(!AGENT.includes("fingerprint("), "the fingerprint helper is back (MC-P13)");
   assert.ok(!/headers\[k\] = v;[\s\S]{0,40}token/i.test(AGENT.replace(/maskHeaders[\s\S]{0,400}/, "")), "a raw token may be stored");
 });
 

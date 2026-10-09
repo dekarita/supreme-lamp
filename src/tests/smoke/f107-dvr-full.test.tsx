@@ -24,7 +24,7 @@ import { __resetDvrForTests, installDvr } from "@/lib/dvr";
 import { __resetGlobalClickCaptureForTests, installGlobalClickCapture, type GlobalClickRecorder } from "@/lib/globalClickCapture";
 import type { ButtonAction } from "@/lib/collectorAgent";
 import { installMutationRecorder } from "@/lib/dvr/mutations";
-import { captureShot, isDefaultRasterizerActive, setShotRasterizer } from "@/lib/dvr/screenshots";
+import { captureShot, isDefaultRasterizerActive, setShotRasterizer, setShotsConsented, shotsConsented } from "@/lib/dvr/screenshots";
 import { exportDvrV2, isDefaultDownloaderActive, setExportDownload } from "@/lib/dvr/export";
 import { validateBundleV2 } from "@/lib/dvr/exportCore";
 import {
@@ -75,6 +75,9 @@ beforeEach(() => {
   __resetGlobalClickCaptureForTests();
   __resetDvrForTests();
   __resetDvrFullForTests();
+  // [WP-13b / MC-P24] screenshots are OFF by default; each test opts in
+  // explicitly (and the afterEach restores the default).
+  setShotsConsented(false);
   mountDom();
   vi.stubGlobal("fetch", vi.fn(() => Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) }) as unknown as Response));
 });
@@ -86,6 +89,7 @@ afterEach(() => {
   prevRasterizer = null;
   if (prevDownloader) setExportDownload(null);
   prevDownloader = null;
+  setShotsConsented(false);
   __resetDvrFullForTests();
   __resetGlobalClickCaptureForTests();
   __resetDvrForTests();
@@ -147,6 +151,10 @@ describe("F107-S1: DOM mutations observed on the real root", () => {
 
 describe("F107-S2: click -> timeline entry + screenshot", () => {
   it("a real click through the F104 chain lands one entry and one shot", async () => {
+    // [WP-13b / MC-P24 rewritten in place] the shot half now requires the
+    // operator's explicit per-session consent; the timeline half does not.
+    expect(shotsConsented()).toBe(false);
+    setShotsConsented(true);
     prevRasterizer = setShotRasterizer(() => TINY_PNG);
     const stub = stubRecorder();
     uninstallCapture = installGlobalClickCapture(installDvr(stub, { enabled: true }), { trustCheck: false });
@@ -166,6 +174,27 @@ describe("F107-S2: click -> timeline entry + screenshot", () => {
     expect(shot.h).toBeGreaterThan(0);
     expect(handle.meta().clicks).toBe(1);
     expect(handle.meta().shots).toBe(1);
+    __resetDvrFullForTests();
+  });
+
+  it("WP-13b: without consent the click still lands its entry — only the pixel capture is off", async () => {
+    expect(shotsConsented()).toBe(false);
+    prevRasterizer = setShotRasterizer(() => TINY_PNG); // a working pipeline must still not fire
+    const stub = stubRecorder();
+    uninstallCapture = installGlobalClickCapture(installDvr(stub, { enabled: true }), { trustCheck: false });
+    const handle = installDvrFull();
+    const btn = document.querySelector('[data-testid="f107-click"]') as HTMLButtonElement;
+    await act(async () => {
+      fireEvent.click(btn);
+    });
+    await waitFor(() => expect(handle.timeline().some((e) => e.kind === "click")).toBe(true));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    // non-image diagnostics preserved; the optional capture path stayed disabled
+    expect(handle.meta().clicks).toBe(1);
+    expect(handle.shots()).toHaveLength(0);
+    expect(handle.meta().shots).toBe(0);
     __resetDvrFullForTests();
   });
 

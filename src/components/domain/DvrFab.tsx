@@ -27,6 +27,9 @@ import {
   subscribeDvr,
   type DvrReport,
 } from "@/lib/dvr";
+// [WP-13b / MC-P24] the screenshot consent gate: shots are OFF by default and
+// this toggle is the operator's explicit, per-session opt-in.
+import { setShotsConsented, shotsConsented } from "@/lib/dvr/screenshots";
 // [F107 §4] The panel grows a Sessions handle: the FAB stays the operator's
 // single DVR entry point, and the stored-session list opens from it.
 import { SessionListModal } from "@/components/dvr/SessionListModal";
@@ -42,6 +45,8 @@ export function DvrFab() {
   const [report, setReport] = useState<DvrReport | null>(null);
   const [copied, setCopied] = useState("");
   const [recording, setRecording] = useState(isDvrRecording());
+  // [WP-13b] screenshot consent: off by default, toggled explicitly here.
+  const [shots, setShots] = useState(shotsConsented());
   // [F107 §4] stored-session list, opened from inside the panel
   const [sessionsOpen, setSessionsOpen] = useState(false);
 
@@ -92,6 +97,14 @@ export function DvrFab() {
     const next = !recording;
     setDvrRecording(next);
     setRecording(next);
+  };
+
+  // [WP-13b / MC-P24] explicit capture consent: screenshots capture page pixels
+  // and are therefore OFF by default; this toggle is the per-session opt-in.
+  const onToggleShots = (): void => {
+    const next = !shots;
+    setShotsConsented(next);
+    setShots(next);
   };
 
   const lastAt = dvrLastActivityAt();
@@ -169,6 +182,18 @@ export function DvrFab() {
               >
                 {recording ? t("dvr.pause") : t("dvr.resume")}
               </button>
+              {/* [WP-13b / MC-P24] the explicit screenshot consent: off by
+                  default, per-session opt-in, with the exclusion note beside it. */}
+              <button
+                type="button"
+                data-testid="dvr-shots-toggle"
+                aria-pressed={shots}
+                title={t("dvr.shotsNote")}
+                onClick={onToggleShots}
+                className="text-xs text-secondary hover:text-primary underline underline-offset-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
+              >
+                {shots ? t("dvr.shotsOn") : t("dvr.shotsOff")}
+              </button>
               <button
                 type="button"
                 data-testid="dvr-sessions-button"
@@ -181,6 +206,9 @@ export function DvrFab() {
                 {lastAt ? t("dvr.lastActivity") : ""}
               </span>
             </div>
+            <p data-testid="dvr-shots-note" className="text-[10px] text-tertiary">
+              {t("dvr.shotsNote")}
+            </p>
             {copied ? (
               <p data-testid="dvr-copied" className="text-xs text-success">
                 {copied}
