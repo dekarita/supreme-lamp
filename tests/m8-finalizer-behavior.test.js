@@ -141,7 +141,11 @@ function runScenario(sc, bodyText) {
       writeFileSync(join(dir, "transcript.txt"), transcript);
       let reqs = [];
       try {
-        reqs = readFileSync(join(dir, "requests.jsonl"), "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+        // CRLF-tolerant; an unparseable line must surface, not silently zero
+        // the request list (that hiding is what made reqs: none so confusing).
+        reqs = readFileSync(join(dir, "requests.jsonl"), "utf8").split(/\r?\n/).filter((l) => l.trim() !== "").map((l) => {
+          try { return JSON.parse(l); } catch { return { method: "?", call: 0, status: 0, note: "UNPARSEABLE-LINE: " + l.slice(0, 120) }; }
+        });
       } catch { }
       let state = null;
       try { state = JSON.parse(readFileSync(join(dir, "state.json"), "utf8")); } catch { }

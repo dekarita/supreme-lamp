@@ -41,7 +41,9 @@ function Save-State {
 }
 Save-State  # persist the pristine state even when the body sends zero requests
 function Write-Req { param($Rec)
-    (($Rec | ConvertTo-Json -Depth 30 -Compress) + "`n") | Add-Content -LiteralPath $reqLogPath -Encoding utf8
+    # One JSON document per line; Add-Content supplies the line terminator
+    # itself (an extra manual `n would inject blank \r junk rows on Windows).
+    ($Rec | ConvertTo-Json -Depth 30 -Compress) | Add-Content -LiteralPath $reqLogPath -Encoding utf8
 }
 function Get-Effect { param([string]$Method, [int]$Call)
     if (-not ($state.PSObject.Properties['behaviors'] -and $state.behaviors)) { return $null }
