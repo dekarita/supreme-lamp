@@ -1,101 +1,133 @@
-# GHRDP — SESSION HANDOFF (post-M8, 2026-10-09)
+# GHRDP — SESSION HANDOFF (M8 follow-up, 2026-10-09)
 
 Sanitized continuation prompt. Safe to paste into a new Arena.ai worker session or
-hand to the operator. Contains no secrets, tokens, or private conversation data.
+hand to the operator. Contains no secrets, tokens, identities, request headers, or
+private conversation data; every identity below is synthetic test data or public
+git metadata.
 
 ## State at handoff
 
-- Branch: `arena/374acee7-supreme-lamp` — M8 PR #188: `M8: cancellation-safe status.json finalizer (PROB-004)` — https://github.com/dekarita/supreme-lamp/pull/188.
-- main HEAD at session start: `5ead8b29a7aae31d11e6b1bc1194ebb89ef2b3f4` (M7, PR #187 merged 2026-10-08T14:42:18Z). Branch was clean at that HEAD.
-- M8 pipeline state: IMPLEMENTED → LOCALLY_VERIFIED → PR_READY. Operator merges; **a session never merges a PR and never dispatches main.yml**.
-- Prior to M8: Observatory 10/10 shipped (F105-F111), maintenance M1-M7 shipped (#182-#187).
+- Branch (this session, fixed): `arena/60cd3ac4-supreme-lamp`.
+- Base: main == `c6de544712fc373f25ae08a0faee13bab6129723` (merge commit of PR #188,
+  MERGED 2026-10-09T04:08:11Z; PR head `bf689310f956c7cab6d66b839cec424be0ba558e`).
+- Working tree carries the M8 follow-up (uncommitted at handoff-write time; committed
+  in this branch before PR creation).
+- Pipeline state: IMPLEMENTED → LOCALLY_VERIFIED (structural) → PR_READY.
+  **BEHAVIOR_VERIFIED** requires the windows-native lane to execute the new
+  behavioral step on the follow-up PR. **LIVE_VERIFIED** is operator-only
+  (runbook: `docs/M8-LIVE-VERIFICATION.md`) and is NOT RUN.
+- A session never merges a PR and never dispatches/cancels `main.yml`.
 
-## What M8 does (one paragraph)
+## What this session did (v18 §1-§3)
 
-`main.yml`'s rdp job had a cancellation-finalization defect (PROB-004/PROB-005, RC-02):
-the only terminal writer of `docs/status.json` was nested inside the Cleanup step, which
-(1) wipes `C:\ghrdp\gh-pages-token.txt` before publishing, (2) never receives
-`$env:GITHUB_TOKEN`, so `Publish-StatusToGhPages` silently returned, and (3) hardcoded
-`runStatus='completed'`. Measured result: the run cancelled 2026-10-07T13:20:15Z left the
-public Pages snapshot claiming `runStatus=in_progress` for 58h+. M8 adds a LAST step in
-the rdp job (`Finalize status.json (M8 cancellation-safe terminal state)`) that runs on
-every outcome (`if: always()`), maps the real `job.status` to a truthful terminal
-`runStatus` (success→completed, cancelled→cancelled, failure→failed, else unknown),
-publishes `docs/status.json` via the contents API with an explicit `GITHUB_TOKEN` env
-(self-contained: no RUNNER_TEMP helper, no `C:\ghrdp` token file), adds an additive
-`finalizeReason` field, carries the remote `overallPct`/`filesDone`/`filesTotal`, retries
-the PUT at most 3 times with backoff, never fails the job, and refuses to clobber the
-snapshot a NEWER run is heartbeating (ownership guard, re-checked before every PUT).
+1. Refreshed the checkpoint: #188 merged; merge-SHA checks at query time =
+   gates success + windows-native success + proof success, e2e-ui in_progress
+   (PR-head e2e-ui conclusion was `cancelled` — gh lists it as "fail"; a
+   cancelled lane proves nothing). windows-native on #188 ran structure/labs;
+   it never executed the M8 PowerShell. No sibling M8-hardening PR exists.
+2. Reproduced both confirmed structural false negatives on isolated copies
+   (mutations verified applied, control preserved): `exit 0` after
+   `$ErrorActionPreference='Continue'` → 10/10 PASS; PUT wrapped in
+   `if ($false)` with `$published = $true` reachable → 10/10 PASS.
+3. Hardened the finalizer in `.github/workflows/main.yml`:
+   per-request `-TimeoutSec $reqTimeoutSec` on BOTH read and PUT (seamed:
+   `M8_REQUEST_TIMEOUT_SEC`, default 30s); monotonic overall deadline
+   (`M8_FINALIZE_DEADLINE_SEC`, default 150s) gating loop + backoff truncation;
+   discriminating reader (`ok|missing|auth|transient|invalid|invalid-identity`)
+   so a failed read is never permission to overwrite; generation-aware
+   ownership (`runAttempt` added to initial publish, heartbeat and finalizer;
+   stale attempts step aside, terminal-foreign may be superseded under the sha
+   fence, live-foreign is never overwritten); payload rebuilt per attempt from
+   the freshest same-run read with explicit `progressSource` (no fabricated
+   100%, no foreign counters); 409 → re-read/revalidate; duplicate
+   finalization idempotent; success is gated on the OBSERVED 2xx; run-scoped
+   terminal sentinel (`ghrdp-m8-terminal-<runId>.json` in RUNNER_TEMP)
+   suppresses late heartbeats inside the generated `Publish-StatusToGhPages`.
+4. §3-F: retired the Cleanup step's nested hardcoded `completed/100%` finalize
+   (M8 is now the sole terminal writer; security cleanup untouched; the old
+   M8-j pin was REPLACED by the stronger single-writer contract, not weakened).
+5. New behavioral gate: `tests/m8-finalizer-behavior.test.js` +
+   `tests/m8-finalizer-harness.ps1` — extracts the REAL step body from the
+   workflow, executes it under pwsh in an isolated child process per scenario
+   against a function-shadowed mocked contents API (no real network; any
+   unmocked method/URI throws a refusal), records redacted request logs, and
+   enforces a wall-clock kill. 23 acceptance scenarios + late-heartbeat helper
+   test + self-falsify (MUT-A/MUT-B) + positive control cover the §4 matrix.
+6. Wired the gate into `launch-gates.yml` windows-native as the step
+   "M8 finalizer behavioral harness" (`M8_BEHAVIORAL=1`: a missing pwsh fails
+   the lane instead of silently skipping).
 
-## Verify after merge (operator-only, ~5 min)
+## Evidence (actual, this session)
 
-1. Dispatch `main.yml` (workflow_dispatch), wait ~2 min, then cancel the run.
-2. `curl -s https://raw.githubusercontent.com/dekarita/supreme-lamp/main/docs/status.json | jq -r '.runStatus, .finalizeReason, .ts'`
-   → expect `cancelled`, `job.status=cancelled`, fresh `ts`.
-3. Next `replay-viewer.yml` deploy: the M7 freshness summary shows `runStatus=cancelled`
-   and the `::warning::` about a stale `in_progress` stops firing for that snapshot.
+- `node --test tests/m8-cancellation-finalizer.test.js` → 14/14 PASS.
+- Mutations M1–M7 (built + verified applied on copies): 7/7 redden intended
+  rules (M1→M8-b, M2→M8-d, M3→M8-c, M4→M8-a/b/c, M5→M8-f, M6→M8-i, M7→M8-g).
+- MUT-A/MUT-B rebuilt against the hardened file, verified applied → structural
+  still 14/14 (documented boundary); reddened only by M8-B-self-falsify.
+- `node --test tests/*.test.js` → 812 tests, 786 pass, 0 fail, 26 skipped
+  (the skips ARE the pwsh-dependent behavioral scenarios, honestly labeled
+  "pwsh unavailable — RUNTIME NOT RUN"; sandbox egress blocks the PowerShell
+  release assets, so no local runtime).
+- ps-balance py + mjs: 0 failed; YAML parse OK (both workflows);
+  config-writer-audit main.yml: 66 regions, 0 bad. NOTE: running the same
+  audit on launch-gates.yml fails identically on the PRISTINE baseline (F25
+  false positive) — pre-existing, not a regression.
+- e2e-ui plays no role in M8 acceptance; its cancelled lanes are recorded as
+  their real states.
 
-## Rollback
+## Failed hypotheses / corrections made
 
-Operator reverts the M8 PR via the GitHub UI. Pre-M8 behavior returns (an `in_progress`
-snapshot can latch after cancellation); nothing else depends on M8. The change is
-additive (+100 lines in main.yml, one new test file, doc appends); reverting restores
-the exact prior bytes of every touched file except the appended ledger blocks.
+- Sentinel-based pins: `runAttempt = $myAttempt` also appears in the sentinel
+  one-liner — the M8-g pin was tightened to payload line-adjacency.
+- The comment stripper treated quotes inside full-line comments as string
+  openers — fixed by removing full-line comments first, then re-verified.
+- npm `pwsh` package + GitHub release download both blocked by sandbox egress
+  (release-assets host unreachable) → local runtime honestly NOT RUN.
+- No pwsh/dotnet/mono exists in the sandbox image.
 
-## Next candidates (ranked)
+## Unresolved acceptance
 
-1. **G7 / F110c emitter** (Issue #181): ship `Send-F99WsPatch` in `payloads/ghrdp-server.ps1`
-   plus the Ed25519 public-key pin — TOGETHER. Do NOT pin a key before the emitter lands
-   (pinning refuses every v1 HMAC frame while nothing can send v2 → patch outage).
-2. **G11 / CF Worker cron fallback** (PROB-001): GitHub's scheduler delivers the
-   `*/10` cron at ~2/day, not ~144/day. A Worker cron that POSTs `workflow_dispatch`
-   on `replay-viewer.yml` when no scheduled run fired in 15 min. Free-tier compatible.
-3. **G1 / M9 heartbeat TTL renewal** (RC-02 architectural fix): renew `runStatus` every
-   heartbeat; consumers compute `(now-ts)>180s ⇒ orphaned`; self-healing without any
-   finalizer. Complements M8 (M8 closes the common exit path; M9 closes the rest).
-4. **Issue hygiene (operator, 15 min)**: close #164 (label probe), close #165 (stale
-   roadmap mirror), fix #179 body (3 stale claims), label #179 + #181, decide on
-   #161 (CONFLICTING, superseded F103).
-5. **G18 / Actions budget monitor**: daily run summing monthly minutes vs the free tier.
+- BEHAVIOR_VERIFIED: pending. Exact probe:
+  `gh pr checks <followup-pr#>` → wait for `windows-native` → confirm the
+  "M8 finalizer behavioral harness" step is green, and inspect its log for
+  "[m8-behavior] runtime: node ...; pwsh 7.x" plus per-scenario results.
+  Command: `gh run view --job <windows-native-job-id> --log | grep m8`
+- LIVE_VERIFIED: operator-only, per `docs/M8-LIVE-VERIFICATION.md`
+  (readiness-based; stages A/B/C/D recorded independently; bounded windows).
 
-## Constraints (unchanged, all hold)
+## Operator queue
 
-- Session NEVER merges a PR; NEVER dispatches main.yml; operator is the sole merger.
-- 7 locked security rules (`PROJECT-CONTEXT-v2-CANONICAL.md` §6): HTTPS-only strict
-  allowlist; NLA=1 only; F27/F28 single-use 60s ticket exception; no MOTW/SmartScreen/
-  publisher evasion; no C2 persistence / anti-forensics; F51 mirror default-OFF except
-  Downloads Always-ON; fail-visible classification.
-- cost=$0/mo (free tier only); 120-min Arena session cap; minimal footprint
-  (0 new deps / i18n keys / workflows / routes / storage keys preferred).
-- AGENTS.md discipline: 12 §PRE-STEP checks, §FALSIFY-3 (3+ mutations per new gate),
-  §VACUITY-PROBES, §PIN-THE-USE-NOT-THE-MENTION, §BYTE-IDENTICAL-WRAP-PRESERVES-PINS.
-- `replay-viewer.yml` is byte-fenced (F108-h SHA `2d5f87f464259d21370ad63b95d171ed3fa8c9371f9cda52e0b525ab37e8655d`)
-  — never widen the push fence, never add a second publisher.
-- `STATE.md` is capped at 60 lines (fold new entries into the last line);
-  `docs/OBSERVATORY-STATE.md` is append-only.
+1. Review/merge this follow-up PR (agent never merges).
+2. Confirm windows-native's M8 behavioral step is green on the PR (and later
+   on the merge SHA — refresh exact-SHA checks, PR head ≠ merge SHA).
+3. Run the M8 live-verification runbook once (dispatch → readiness → cancel →
+   A/B/C/D staged observation). Do not hand-edit docs/status.json.
+4. Backlog (unchanged, NOT fixed by this step; do not mark fixed):
+   scheduler observation/reliability (M3 cron ~10min cadence, skew unproven),
+   F110 emitter + coordinated signing activation (#181),
+   reported crypto-runtime issue (pending independent reproduction),
+   credential persistence/fallback review, e2e-ui cancellation + missing
+   coverage, Explorer/upload live acceptance, docs/config gaps.
 
-## Key files
+## Budget uncertainty
 
-- Producer: `.github/workflows/main.yml` — initial write ~L325-350, helper gen ~L352-371,
-  heartbeat ~L6255-6281, Cleanup + nested finalize ~L6423-6513, **M8 step L6515-6615**.
-- Pages: `.github/workflows/replay-viewer.yml` — F108-h fence + M7 parity/freshness. DO NOT TOUCH.
-- Gates: `tests/m8-cancellation-finalizer.test.js` (10 rules, `M8_MAIN_YML` override for
-  falsification), `tests/m7-pages-freshness-verify.test.js`, `tests/m3-pages-freshness.test.js`,
-  `tests/f111-ci-inventory.test.js`, `tests/merge-hygiene.test.js`.
-- Structural audits: `node scripts/ps-balance-audit.mjs`, `python3 tests/ps-balance-audit.py`,
-  `python3 tests/config-writer-audit.py .github/workflows/main.yml`, `npx -y js-yaml <wf>`.
-- Fast lane: `node --test tests/*.test.js` (781/781 at M8 HEAD).
+Percentage telemetry is unavailable in this environment → usage is UNKNOWN.
+Local signals only: single 120-min wall ceiling respected; work kept compact
+(one focused PR; no unrelated maintenance). Treat cap risk as UNKNOWN, not LOW.
+Next expensive step (watching CI to green) is incremental and stoppable.
 
-## Known residuals after M8
+## Reproduce locally (exact commands)
 
-- Live dispatch+cancel verification is operator-only (session never dispatches main.yml).
-- No pwsh in the sandbox: the finalize script is structurally audited (ps-balance,
-  js-yaml) but not executed; first live run is the real proof.
-- A job killed by `timeout-minutes` reports `job.status=failure` → `failed`; timeout is
-  not distinguished from a generic failure (honest residual).
-- The Cleanup step's nested finalize is superseded but left in place (removal is a
-  separate RC-05-style dead-code cleanup).
-- The ownership guard has a seconds-wide race (newer run starts between the guard's
-  GET and PUT); it self-heals via the newer run's ~80s heartbeat.
-- `docs/status.json` on main is STILL the frozen 2026-10-07 `in_progress` snapshot until
-  the operator's verification dispatch overwrites it — expected, not a regression.
+```bash
+# structural suite (14 rules)
+node --test tests/m8-cancellation-finalizer.test.js
+# behavioral suite (pwsh required; without it: 26 labeled skips, exit 0)
+node --test tests/m8-finalizer-behavior.test.js
+# audits
+python3 tests/ps-balance-audit.py && node scripts/ps-balance-audit.mjs \
+  && python3 tests/config-writer-audit.py .github/workflows/main.yml
+# mutation drill (copies only; never touches tracked files)
+python3 - <<'EOF'
+# insert 'exit 0' after ErrorActionPreference in a COPY, point M8_MAIN_YML at it
+EOF
+```

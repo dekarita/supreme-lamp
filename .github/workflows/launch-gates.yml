@@ -3722,6 +3722,21 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      # [M8 v18 §2] BEHAVIORAL gate: executes the REAL YAML-extracted M8
+      # finalizer PowerShell under pwsh against a mocked contents API
+      # (tests/m8-finalizer-harness.ps1, zero real network). Covers the §4
+      # acceptance matrix (ownership/generation/read-discrimination/bounded
+      # time/late-heartbeat/idempotence/redaction) plus self-falsifying
+      # early-exit (MUT-A) and disabled-PUT (MUT-B) mutations that the
+      # structural gate provably cannot see. M8_BEHAVIORAL=1 makes a missing
+      # pwsh runtime FAIL instead of silently degrading to skips.
+      - name: M8 finalizer behavioral harness (extracted pwsh, mocked contents API)
+        timeout-minutes: 15
+        shell: pwsh
+        working-directory: ${{ github.workspace }}
+        env:
+          M8_BEHAVIORAL: '1'
+        run: node --test tests/m8-finalizer-behavior.test.js
       # [F57] ADDITIVE ONLY: the Explorer real-ops live file-op lab. Every root
       # that exists on the runner gets a real new/rename/move/delete cycle and the
       # walk the watcher scan uses has to see all four states; absent roots are
