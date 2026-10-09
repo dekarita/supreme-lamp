@@ -3755,7 +3755,7 @@ jobs:
           }
           Write-Host $outText
           $lines = @(($outText -split "`r?`n") | Where-Object { $_.Trim() -ne '' })
-          $decisive = @($lines | Where-Object { $_ -match 'not ok |# fail|AssertionError|error:|scenario failures' } | Select-Object -First 3)
+          $decisive = @($lines | Where-Object { $_ -match '^- |not ok \d+ - M8-B|AssertionError' } | Select-Object -First 4)
           if (@($decisive).Count -eq 0) { $decisive = @($lines | Select-Object -Last 1) }
           $desc = (([string](@($decisive) -join ' | ')) -replace '\s+', ' ').Trim()
           if (-not $script:M8Failure) { $desc = 'M8 behavioral harness PASS (extracted pwsh, mocked contents API)' }
