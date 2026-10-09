@@ -3735,8 +3735,49 @@ jobs:
         shell: pwsh
         working-directory: ${{ github.workspace }}
         env:
+          GH_TOKEN: ${{ github.token }}
           M8_BEHAVIORAL: '1'
-        run: node --test tests/m8-finalizer-behavior.test.js
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # [M8 §7] the decisive failure line is published as ONE commit status
+          # (context 'm8-behavioral-lab') on success AND failure - the same
+          # pattern the F56-d/F57 labs use - because raw log archives are not
+          # reachable from every environment (review sandboxes included).
+          $script:M8Failure = ''
+          $outText = ''
+          try {
+              $outText = (node --test tests/m8-finalizer-behavior.test.js *>&1 | Out-String)
+              $rc = $LASTEXITCODE
+              if ($rc -ne 0) { throw ('node --test exited ' + $rc) }
+          } catch {
+              $script:M8Failure = $_.Exception.Message
+              $outText = ($outText + "`n" + ($_ | Out-String))
+          }
+          Write-Host $outText
+          $lines = @(($outText -split "`r?`n") | Where-Object { $_.Trim() -ne '' })
+          $decisive = @($lines | Where-Object { $_ -match 'not ok |# fail|AssertionError|error:|scenario failures' } | Select-Object -First 3)
+          if (@($decisive).Count -eq 0) { $decisive = @($lines | Select-Object -Last 1) }
+          $desc = (([string](@($decisive) -join ' | ')) -replace '\s+', ' ').Trim()
+          if (-not $script:M8Failure) { $desc = 'M8 behavioral harness PASS (extracted pwsh, mocked contents API)' }
+          if ($desc.Length -gt 135) { $desc = $desc.Substring(0, 135) }
+          if ($env:GH_TOKEN) {
+              try {
+                  $st = @{
+                      context = 'm8-behavioral-lab'
+                      state = $(if ($script:M8Failure) { 'failure' } else { 'success' })
+                      description = $desc
+                      target_url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID)
+                  } | ConvertTo-Json -Compress
+                  Invoke-RestMethod -Uri ('https://api.github.com/repos/' + $env:GITHUB_REPOSITORY + '/statuses/' + $env:GITHUB_SHA) -Method Post -Headers @{ Authorization = ('Bearer ' + $env:GH_TOKEN); Accept = 'application/vnd.github+json'; 'User-Agent' = 'ghrdp-m8' } -Body $st -ContentType 'application/json' -TimeoutSec 30 | Out-Null
+              } catch {
+                  Write-Host ('::warning title=M8 status::publish failed: ' + $_.Exception.Message)
+              }
+          }
+          if ($script:M8Failure) {
+              Write-Host ('::error title=M8 harness::' + $script:M8Failure)
+              throw ('M8: behavioral harness FAILED - ' + $script:M8Failure)
+          }
+          Write-Host 'M8 behavioral harness PASS'
       # [F57] ADDITIVE ONLY: the Explorer real-ops live file-op lab. Every root
       # that exists on the runner gets a real new/rename/move/delete cycle and the
       # walk the watcher scan uses has to see all four states; absent roots are
