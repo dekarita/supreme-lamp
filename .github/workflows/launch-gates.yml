@@ -3770,10 +3770,13 @@ jobs:
           if (@($decisive).Count -eq 0) { $decisive = @($lines | Select-Object -Last 1) }
           $desc = (([string](@($decisive) -join ' | ')) -replace '\s+', ' ').Trim()
           if (-not $script:M8Failure) { $desc = 'M8 behavioral harness PASS (extracted pwsh, mocked contents API)' }
-          # Second channel: the TAIL of the harness output (the child's final
-          # printed lines) - the first channel often clips before the action.
-          $tail = (($outText -replace '\s+', ' ').Trim())
-          $descTail = $(if ($tail.Length -gt 135) { $tail.Substring($tail.Length - 135) } else { $tail })
+          # Second channel: the TAIL of the FIRST failing case's TAP error
+          # block (the child pwsh transcript tail lives at its end).
+          $blockEnd = $lines.Count
+          for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match '^not ok ') { for ($j = $i + 1; $j -lt $lines.Count; $j++) { if ($lines[$j] -match '^  code:') { $blockEnd = $j; break } }; break } }
+          $tailBlock = @($lines | Select-Object -First $blockEnd)
+          $tail = (([string]($tailBlock -join ' ') ) -replace '\s+', ' ').Trim()
+          $descTail = $(if ($tail.Length -gt 135) { '...' + $tail.Substring($tail.Length - 132) } else { $tail })
           if ($env:GH_TOKEN) {
               try {
                   $st2 = @{ context = 'm8-behavioral-detail'; state = $(if ($script:M8Failure) { 'failure' } else { 'success' }); description = $descTail; target_url = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID) } | ConvertTo-Json -Compress
