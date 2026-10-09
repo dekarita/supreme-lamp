@@ -3,7 +3,8 @@
 **Program**: GHRDP Mission Control repair program (parent issue #191, orchestrator F-OBSERVATORY-ORCHESTRATOR v22).
 **Branch**: `arena/19dded16-supreme-lamp` (this ledger lives on the implementation branch; the plan docs on
 PR #207 remain the planning snapshot of record — this ledger is the IMPLEMENTATION state of record and is
-kept in lockstep with the code, the tests and the PRs).
+kept in lockstep with the code, the tests and the PRs). From commit `1608c92` the ledger is additionally
+carried on `arena/8dcb6f43-supreme-lamp` (the ND-8 CI-repair follow-up branch for PR #208).
 **Application revision of record for the plan**: `823bcb6e` (PR #189 merge). Main has since advanced only via
 `status update` heartbeat commits touching `docs/status.json` (J11: a status.json-only commit is not a new build).
 **Ledger rule**: one row per problem ID / work package / acceptance case. Statuses: `DONE` (code+tests merged
@@ -152,6 +153,7 @@ WP-04/WP-06). Nothing in this delivery touches them. Recorded so the ledger cove
 |---|---|---|
 | ND-1 | `/api/config` responses carry RAW passwords (`creds.windowsPass`, `creds.vncPass`) when dash-token/tailnet authenticated (server L8956-L8985), and `sessionStore` polls it — the old observer persisted up to 2000 chars of those bodies into rows attributed to clicks | CLOSED by WP-13 (body scrub + app-only attribution); server contract unchanged (the UI needs those fields for copy buttons) |
 | ND-2 | `instrumentButton` attributed background polls to clicks (MC-P12 attribution half) — a poll landing inside the click window was persisted as the button's request/response | CLOSED by WP-13 (app-only attribution); two f101 smoke tests updated in place to drive an app-classified route |
+| ND-8 | The WP-13 f101 fixture re-point used the `/api/fetch` literal, which the F56-c gate reserves for the F56-d transport lane (`src/api/fetch` + fetchStub + f46) — the gates job went red on the PR #208 head (run 37963400358) | CLOSED by follow-up commit `1608c92` (branch `arena/8dcb6f43-supreme-lamp`, follow-up PR into #208's branch): both fixtures now drive the real lane client `startFetch()` from `src/api/fetch`; the collector observer still attributes the lane's POST (app-classified, path-only); assertions strengthened to pin method POST + url `/api/fetch`; gate NOT weakened |
 | ND-3 | `MaskedField` renders the RAW password as visible text when revealed — the old screenshot fence rasterized it into PNGs | CLOSED by WP-13b (data-dvr-exclude + consent default-off) |
 | ND-4 | React 18 reflects controlled input values into the `value` attribute — `cloneNode` + `XMLSerializer` carried typed passwords into screenshots (the "structure-only" fence claim was unsound, J6) | CLOSED by WP-13b (prepareShotClone strips typed values) |
 | ND-5 | The i18n count lock is read literally by FOUR pin files (parity + F109-j + F110-j + F110b-h + MH-c) — a deliberate catalog addition must move all of them | handled in this PR (all four updated with dated notes); process note for future catalog additions |
@@ -174,6 +176,15 @@ WP-04/WP-06). Nothing in this delivery touches them. Recorded so the ledger cove
   comment from PR #208's body onto #193 (or grant the integration `issues: write` and the session will retry).
 - **Commits**: see `git log` on the branch — one commit for the WP-13+WP-13b implementation (code + tests +
   pin rewrites + ledger).
+- **CI repair (follow-up)**: the first PR #208 head (`e5d7c91`) failed the `gates` job — ND-8 above (F101
+  fixtures used the gate-reserved `/api/fetch` call). Fixed in commit `1608c92` on branch
+  `arena/8dcb6f43-supreme-lamp` (which fast-forwards through `e5d7c91` and adds only the fixture repair +
+  this ledger update), delivered as a follow-up PR `arena/8dcb6f43-supreme-lamp` → `arena/19dded16-supreme-lamp`
+  so PR #208's own branch is never pushed to by another session. Local verification of the exact gate
+  commands plus the full regression lane: both F56-c `/api/fetch` greps clean; `vitest run` 1181/1181 (92
+  files); `node --test tests/*.test.js` 796 pass / 0 fail / 26 pre-existing skips; `tsc -p
+  tsconfig.build.json` clean; `check:regression-ids` / `check:fx-ids` / `check:bottom-bar` OK. The e2e-ui
+  lane remains the WP-09 (#203) defect — not claimed here.
 - **CI on push**: `launch-gates.yml` (push trigger, contents:read + statuses:write — ordinary verification)
   and `build-ui.yml` (publishes a SHA-pinned `ui-dist-<sha>.zip` asset to the `ui-dist` release — the standard
   per-arena-branch artifact flow; production downloads are SHA-pinned and unaffected). `main.yml` (the
