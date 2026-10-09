@@ -163,13 +163,26 @@ WP-04/WP-06). Nothing in this delivery touches them. Recorded so the ledger cove
 ## 8. Delivery record
 
 - **Branch**: `arena/19dded16-supreme-lamp` (all work committed here; pushed only here).
-- **PR**: one PR from this branch to `main` covering WP-13 + WP-13b (the privacy repair program). PR number
-  recorded here once opened.
+- **PR**: **#208** — "WP-13 + WP-13b: Collector privacy + DVR screenshot/IndexedDB privacy repair (#193)",
+  base `main`, head `arena/19dded16-supreme-lamp`. Open, awaiting review. **Not merged** — separate merge
+  authorization required.
+- **Issues**: **#209** created (WP-13b child, linked to #191 in its body; creation is permitted).
+  Issue **comment/edit writes are DENIED** to the integration ("Resource not accessible by integration" —
+  probed once each on 2026-10-09, no loop-retry per standing constraint). Copy-ready artifacts delivered:
+  the #193 comment text is in the PR #208 body; the full updated #193 body (with the implementation-update
+  section) is preserved in the PR body's copy-ready block. **One operator publication action**: paste the
+  comment from PR #208's body onto #193 (or grant the integration `issues: write` and the session will retry).
 - **Commits**: see `git log` on the branch — one commit for the WP-13+WP-13b implementation (code + tests +
   pin rewrites + ledger).
-- **Not done (explicitly)**: no merge (separate merge authorization required); no main.yml dispatch/cancel/
-  rerun; no operator account/credential/secret changes; no production endpoint probes; no repository-protection
-  bypass; no hand-edited status.json; no unredacted backups; no other branch touched.
+- **CI on push**: `launch-gates.yml` (push trigger, contents:read + statuses:write — ordinary verification)
+  and `build-ui.yml` (publishes a SHA-pinned `ui-dist-<sha>.zip` asset to the `ui-dist` release — the standard
+  per-arena-branch artifact flow; production downloads are SHA-pinned and unaffected). `main.yml` (the
+  operator-only production workflow) is `workflow_dispatch`-only — **not invoked** by this push. e2e-ui
+  (push: main only) not triggered; it runs on the PR.
+- **Not done (explicitly)**: no merge; no main.yml dispatch/cancel/rerun; no operator account/credential/
+  secret changes; no production remote-exec/credential/launch/upload/deletion/action-batch endpoints
+  exercised; no repository-protection bypass; no hand-edited status.json; no unredacted backups; no other
+  branch touched; plan PRs #190/#192/#207 untouched.
 
 ## 9. Next repairs (priority order, per the orchestrator)
 
