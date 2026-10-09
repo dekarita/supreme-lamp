@@ -84,7 +84,8 @@ function extractHelper(yamlText) {
   return fn;
 }
 
-const YAML = readFileSync(WORKFLOW_PATH, "utf8");
+// git may hand us CRLF on Windows checkouts; normalize before any anchoring.
+const YAML = readFileSync(WORKFLOW_PATH, "utf8").replace(/\r\n?/g, "\n");
 const BODY = extractM8Body(YAML);
 const HELPER = extractHelper(YAML);
 const FAKE_TOKEN = "FAKE_TOKEN_TESTONLY";
@@ -436,7 +437,7 @@ test("M8-B-self-falsify: MUT-A (early exit 0) and MUT-B (disabled PUT) redden th
 test("M8-B-20-positive-control: the UNMODIFIED source passes the primary scenario", { skip: !PWSH_OK && "pwsh unavailable - RUNTIME NOT RUN" }, async (t) => {
   // Already covered by case 01 on the same BODY; this control re-runs it via a
   // FRESH temp copy of the workflow to prove extraction is not mutated.
-  const fresh = extractM8Body(readFileSync(WORKFLOW_PATH, "utf8"));
+  const fresh = extractM8Body(readFileSync(WORKFLOW_PATH, "utf8").replace(/\r\n?/g, "\n"));
   const v = await runScenario({ name: "positive-control", statusJson: MINE_LIVE, jobStatus: "success" }, fresh);
   const f = baseFailures({ name: "positive-control" }, v);
   if (f.length === 0) CASES[0][2](v, f);
