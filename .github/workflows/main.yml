@@ -323,6 +323,7 @@ jobs:
               runId = [string]$env:GITHUB_RUN_ID
               runUrl = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID)
               runStatus = 'in_progress'
+              runAttempt = [int]$env:GITHUB_RUN_ATTEMPT
               startedAt = (Get-Date -Format o)
               sessionStartedAt = ''
               watcherAlive = $false
@@ -351,6 +352,8 @@ jobs:
           $sb = [System.Text.StringBuilder]::new()
           [void]$sb.AppendLine('function Publish-StatusToGhPages {')
           [void]$sb.AppendLine('    param([string]$JsonText)')
+          [void]$sb.AppendLine('    $sf = (Join-Path $env:RUNNER_TEMP ("ghrdp-m8-terminal-" + [string]$env:GITHUB_RUN_ID + ".json"))')
+          [void]$sb.AppendLine('    if ([string]$env:GITHUB_RUN_ID -and (Test-Path -LiteralPath $sf)) { Write-Host "[status] terminal sentinel present for run $([string]$env:GITHUB_RUN_ID) - late publish suppressed (M8 finalized)"; return }')
           [void]$sb.AppendLine('    $repo = $env:GITHUB_REPOSITORY')
           [void]$sb.AppendLine('    $token = ""')
           [void]$sb.AppendLine('    try { $token = ([System.IO.File]::ReadAllText("C:\ghrdp\gh-pages-token.txt")).Trim() } catch { }')
@@ -6253,6 +6256,7 @@ jobs:
                       runId = [string]$env:GITHUB_RUN_ID
                       runUrl = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID)
                       runStatus = 'in_progress'
+                      runAttempt = [int]$env:GITHUB_RUN_ATTEMPT
                       startedAt = $(if ($cfg2) { [string]$cfg2.startedAt } else { '' })
                       sessionStartedAt = $(if ($cfg2) { [string]$cfg2.sessionStartedAt } else { '' })
                       watcherAlive = $(if ($prog2) { [bool]$prog2.alive } else { $false })
@@ -6493,36 +6497,50 @@ jobs:
               $LASTEXITCODE = 0
           }
           Write-Host '[cleanup] done'
-          try {
-              . (Join-Path $env:RUNNER_TEMP 'publish-status.ps1')
-              $finalObj = [ordered]@{
-                  ts = (Get-Date -Format o)
-                  runId = [string]$env:GITHUB_RUN_ID
-                  runUrl = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $env:GITHUB_RUN_ID)
-                  runStatus = 'completed'
-                  watcherAlive = $false
-                  speedBps = 0; overallPct = 100; filesDone = 0; filesTotal = 0
-                  missionControlUrl = ''; tailnetUrl = ''; rustUrl = ''; funnelUrl = ''
-                  mirrorKey = ''; legacyKey = ''; telegraphUrl = ''; rentryNewUrl = ''
-                  egressIp = ''; encryptMode = ''; files = @(); logTail = @(); history = @()
-              }
-              Publish-StatusToGhPages -JsonText ($finalObj | ConvertTo-Json -Depth 20 -Compress)
-              Write-Host '[cleanup] status.json set to completed'
-              # archive.json is appended by the pre-cleanup step only (correct session record with files)
-          } catch { Write-Host ('[cleanup] finalize failed: ' + $_.Exception.Message) }
+          # [M8 follow-up RC-02] the nested terminal publication that used to sit
+          # here (Publish-StatusToGhPages with runStatus='completed' + overallPct=100
+          # hardcoded) is RETIRED: (a) it was token-loss-prone (this step never sees
+          # $env:GITHUB_TOKEN and the C:\ghrdp wipe above deletes gh-pages-token.txt,
+          # so it silently returned - PROB-004), and (b) whenever it DID publish it
+          # wrote a false 'completed/100%' even for cancelled runs - the exact lie
+          # M8 exists to erase. The 'Finalize status.json (M8 ...)' step below is now
+          # the SOLE terminal writer on every outcome; if it fails, the snapshot
+          # truthfully keeps its last published (stale) state instead of a fabricated
+          # completed. The security cleanup above is unchanged.
+          # archive.json is still appended by the pre-cleanup step only.
           exit 0
 
       # [M8] CANCELLATION-SAFE STATUS FINALIZER (PROB-004 / RC-02). The Cleanup
-      # step's nested finalize is token-loss-prone: it wipes C:\ghrdp (including
-      # gh-pages-token.txt) BEFORE publishing and the step never sees
-      # $env:GITHUB_TOKEN, so Publish-StatusToGhPages silently returns - a
-      # cancelled run leaves runStatus=in_progress published forever (observed:
+      # step's nested finalize was token-loss-prone (it wiped C:\ghrdp - including
+      # gh-pages-token.txt - BEFORE publishing, and that step never saw
+      # $env:GITHUB_TOKEN, so Publish-StatusToGhPages silently returned): a
+      # cancelled run left runStatus=in_progress published forever (observed:
       # docs/status.json frozen at in_progress for 58h after the 2026-10-07
-      # cancellation). It also hardcodes runStatus='completed' regardless of the
-      # real outcome. This step runs on EVERY outcome (always()), maps the real
-      # job.status to a truthful terminal runStatus, and is fully self-contained
-      # (no RUNNER_TEMP helper, no C:\ghrdp token file). It never fails the job,
-      # and a finished run never clobbers the snapshot a newer run heartbeats.
+      # cancellation). It also hardcoded runStatus='completed' regardless of the
+      # real outcome (retired in the M8 follow-up - this step is now the SOLE
+      # terminal writer). This step runs on EVERY outcome (always()), maps the
+      # real job.status to a truthful terminal runStatus, and is fully
+      # self-contained (no RUNNER_TEMP helper, no C:\ghrdp token file). It never
+      # fails the job, every request is explicitly timed, the whole finalize is
+      # deadline-bounded, and a finished run never clobbers the snapshot a newer
+      # run (or a newer attempt of the same run) is heartbeating.
+      # OWNERSHIP POLICY (generation-aware, see Resolve-FinalizeAction):
+      #   live snapshot (in_progress) of ANOTHER run   -> step aside, no write
+      #   live snapshot of a NEWER attempt of this run  -> step aside (stale attempt)
+      #   terminal snapshot of THIS run+attempt         -> idempotent skip
+      #   terminal snapshot of a DIFFERENT run          -> safe to supersede
+      #     (a terminal state is dead-state by definition: that run cannot
+      #      resume heartbeating; the per-attempt re-read plus the PUT sha
+      #      fence still protect against a takeover between read and write)
+      #   missing file / older-attempt state            -> finalize
+      #   unreadable/invalid/unidentifiable state       -> UNKNOWN ownership:
+      #     step aside with a visible warning; never treat a failed read as
+      #     permission to overwrite.
+      # HONEST LIMITS: if: always() cannot survive forced runner termination,
+      # job-timeout kills, lost permissions or total network loss; in those
+      # cases this step simply never runs and the snapshot stays stale-UNKNOWN
+      # (observable via the M7 freshness gate), which is truthful - it is never
+      # reported as cancelled/completed by this step.
       - name: Finalize status.json (M8 cancellation-safe terminal state)
         if: always()
         shell: pwsh
@@ -6530,21 +6548,87 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $ErrorActionPreference = 'Continue'
-          # Re-read the tracked snapshot; returns @{ sha; runId; obj } (nulls on failure).
+          # Time bounds (RC-02 follow-up): every request is explicitly timed and
+          # the whole finalize is deadline-bounded; env overrides let the
+          # behavioral harness shrink them. No fixed completion time is promised.
+          $reqTimeoutSec = 30
+          try { if ($env:M8_REQUEST_TIMEOUT_SEC) { $reqTimeoutSec = [int]$env:M8_REQUEST_TIMEOUT_SEC } } catch { }
+          if ($reqTimeoutSec -lt 5) { $reqTimeoutSec = 5 }
+          $deadlineSec = 150
+          try { if ($env:M8_FINALIZE_DEADLINE_SEC) { $deadlineSec = [int]$env:M8_FINALIZE_DEADLINE_SEC } } catch { }
+          if ($deadlineSec -lt ($reqTimeoutSec + 10)) { $deadlineSec = $reqTimeoutSec + 10 }
+          $maxAttempts = 3
+          $clock = [System.Diagnostics.Stopwatch]::StartNew()
+          function Test-M8Deadline { return ($clock.ElapsedMilliseconds -lt ($deadlineSec * 1000)) }
+          function Out-M8Sanitized { param([string]$Msg)
+              $tok = [string]$env:GITHUB_TOKEN
+              if ($tok) { $Msg = $Msg -replace [regex]::Escape($tok), '***' }
+              return $Msg
+          }
+          # Discriminating reader (PROB-004 follow-up): never conflates failure
+          # kinds. state: ok | missing | auth | transient | invalid | invalid-identity
           function Get-TrackedStatus {
               param($Api, $Headers)
+              $r = @{ state = 'transient'; sha = $null; runId = ''; runStatus = ''; runAttempt = 0; pct = 0; done = 0; total = 0; detail = '' }
+              $sc = 0
+              $g = $null
               try {
-                  $g = Invoke-RestMethod -Uri ($Api + '?ref=main') -Headers $Headers -ErrorAction Stop
-                  $r = @{ sha = [string]$g.sha; runId = ''; obj = $null }
-                  try {
-                      $text = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($g.content -replace "`n", '')))
-                      $r.obj = $text | ConvertFrom-Json
-                      $r.runId = [string]$r.obj.runId
-                  } catch { }
-                  return $r
+                  $g = Invoke-RestMethod -Uri ($Api + '?ref=main') -Headers $Headers -TimeoutSec $reqTimeoutSec -SkipHttpErrorCheck -StatusCodeVariable sc -ErrorAction Stop
               } catch {
-                  return @{ sha = $null; runId = ''; obj = $null }
+                  $code = 0
+                  try { $code = [int]$_.Exception.Response.StatusCode } catch { }
+                  if ($code -eq 404) { $r.state = 'missing'; return $r }
+                  if ($code -eq 401 -or $code -eq 403) { $r.state = 'auth'; $r.detail = ('http ' + $code); return $r }
+                  $r.detail = ('request failed: ' + $_.Exception.Message)
+                  return $r
               }
+              if ($sc -eq 404) { $r.state = 'missing'; return $r }
+              if ($sc -eq 401 -or $sc -eq 403) { $r.state = 'auth'; $r.detail = ('http ' + $sc); return $r }
+              if ($sc -lt 200 -or $sc -ge 300) { $r.state = 'transient'; $r.detail = ('http ' + $sc); return $r }
+              $r.sha = [string]$g.sha
+              $text = $null
+              try { $text = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String(($g.content -replace "`n", ''))) } catch { }
+              if ($null -eq $text) { $r.state = 'invalid'; $r.detail = 'base64 decode failed'; return $r }
+              $obj = $null
+              try { $obj = $text | ConvertFrom-Json } catch { }
+              if ($null -eq $obj) { $r.state = 'invalid'; $r.detail = 'json parse failed'; return $r }
+              if (-not ($obj.PSObject.Properties['runId'] -and $obj.runId)) { $r.state = 'invalid-identity'; $r.detail = 'missing runId'; return $r }
+              if (-not ($obj.PSObject.Properties['runStatus'] -and $obj.runStatus)) { $r.state = 'invalid-identity'; $r.detail = 'missing runStatus'; return $r }
+              $r.state = 'ok'
+              $r.runId = [string]$obj.runId
+              $r.runStatus = [string]$obj.runStatus
+              try { if ($obj.PSObject.Properties['runAttempt']) { $r.runAttempt = [int]$obj.runAttempt } } catch { }
+              try { $r.pct = [double]$obj.overallPct } catch { }
+              try { $r.done = [int]$obj.filesDone } catch { }
+              try { $r.total = [int]$obj.filesTotal } catch { }
+              return $r
+          }
+          $terminalStates = @('completed', 'cancelled', 'failed', 'unknown')
+          # Ownership policy (see the step comment for the full table).
+          function Resolve-FinalizeAction {   # -> finalize|skip-owned|skip-foreign-active|skip-superseded|skip-unknown|abort-read|retry-read
+              param($Cur, [string]$Mine, [int]$MyAttempt)
+              switch ($cur.state) {
+                  'missing' { return 'finalize' }
+                  'auth' { return 'abort-read' }
+                  'transient' { return 'retry-read' }
+                  'ok' {
+                      if ($cur.runId -ne $mine) {
+                          if ($cur.runStatus -eq 'in_progress') { return 'skip-foreign-active' }
+                          if ($terminalStates -contains $cur.runStatus) { return 'finalize' }
+                          return 'skip-unknown'
+                      }
+                      if ($cur.runStatus -eq 'in_progress') {
+                          if ($cur.runAttempt -gt $myAttempt) { return 'skip-superseded' }
+                          return 'finalize'
+                      }
+                      if ($terminalStates -contains $cur.runStatus) {
+                          if ($cur.runAttempt -ge $myAttempt) { return 'skip-owned' }
+                          return 'finalize'
+                      }
+                      return 'skip-unknown'
+                  }
+              }
+              return 'skip-unknown'
           }
           try {
               $jobStatus = '${{ job.status }}'
@@ -6554,61 +6638,113 @@ jobs:
                   'cancelled' { $terminal = 'cancelled' }
                   'failure'   { $terminal = 'failed' }
               }
-              $repo = $env:GITHUB_REPOSITORY
-              $api = "https://api.github.com/repos/$repo/contents/docs/status.json"
-              $H = @{ Authorization = ('Bearer ' + $env:GITHUB_TOKEN); Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28'; 'User-Agent' = 'ghrdp-runner' }
-              $mine = [string]$env:GITHUB_RUN_ID
-              $cur = Get-TrackedStatus -Api $api -Headers $H
-              if ($cur.runId -and ($cur.runId -ne $mine)) {
-                  # Ownership guard (PROB-004): a finished run never clobbers the
-                  # snapshot a NEWER run is actively heartbeating.
-                  Write-Host ('::notice::[m8] docs/status.json is owned by run ' + $cur.runId + '; skipping finalize for run ' + $mine)
+              $token = [string]$env:GITHUB_TOKEN
+              if (-not $token) {
+                  # No credential: never attempt an unauthorized write; say so plainly.
+                  Write-Host '::warning::[m8] GITHUB_TOKEN is not available to this step; terminal status.json could not be published (snapshot left unchanged)'
                   exit 0
               }
-              $pct = 0; $done = 0; $total = 0
-              if ($cur.obj) {
-                  try { $pct = [double]$cur.obj.overallPct } catch { }
-                  try { $done = [int]$cur.obj.filesDone } catch { }
-                  try { $total = [int]$cur.obj.filesTotal } catch { }
-              }
-              $finalObj = [ordered]@{
-                  ts = (Get-Date -Format o)
-                  runId = $mine
-                  runUrl = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $mine)
-                  runStatus = $terminal
-                  finalizeReason = ('job.status=' + $jobStatus)
-                  watcherAlive = $false
-                  speedBps = 0; overallPct = $pct; filesDone = $done; filesTotal = $total
-                  missionControlUrl = ''; tailnetUrl = ''; rustUrl = ''; funnelUrl = ''
-                  mirrorKey = ''; legacyKey = ''; telegraphUrl = ''; rentryNewUrl = ''
-                  egressIp = ''; encryptMode = ''; files = @(); logTail = @(); history = @()
-              }
-              $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(($finalObj | ConvertTo-Json -Depth 20 -Compress)))
-              $body = @{ message = ('status finalize ' + $terminal + ' ' + (Get-Date -Format o)); content = $b64; branch = 'main' }
-              $published = $false
-              for ($attempt = 1; ($attempt -le 3) -and (-not $published); $attempt++) {
-                  # Re-read before every PUT: if a newer run took over between
-                  # attempts, its heartbeat wins and this stale writer aborts.
+              $repo = $env:GITHUB_REPOSITORY
+              $api = "https://api.github.com/repos/$repo/contents/docs/status.json"
+              $H = @{ Authorization = ('Bearer ' + $token); Accept = 'application/vnd.github+json'; 'X-GitHub-Api-Version' = '2022-11-28'; 'User-Agent' = 'ghrdp-runner' }
+              $mine = [string]$env:GITHUB_RUN_ID
+              $myAttempt = 1
+              try { if ($env:GITHUB_RUN_ATTEMPT) { $myAttempt = [int]$env:GITHUB_RUN_ATTEMPT } } catch { }
+              $cur = Get-TrackedStatus -Api $api -Headers $H
+              $action = Resolve-FinalizeAction -Cur $cur -Mine $mine -MyAttempt $myAttempt
+              if ($action -eq 'retry-read' -and (Test-M8Deadline)) {
+                  # One bounded read-retry here; the publish loop re-reads again.
+                  Start-Sleep -Seconds 2
                   $cur = Get-TrackedStatus -Api $api -Headers $H
-                  if ($cur.runId -and ($cur.runId -ne $mine)) {
+                  $action = Resolve-FinalizeAction -Cur $cur -Mine $mine -MyAttempt $myAttempt
+              }
+              if ($action -eq 'skip-foreign-active') {
+                  Write-Host ('::notice::[m8] docs/status.json is owned by run ' + $cur.runId + ' (active in_progress); skipping finalize for run ' + $mine)
+                  exit 0
+              }
+              if ($action -eq 'skip-owned' -or $action -eq 'skip-superseded' -or $action -eq 'skip-unknown') {
+                  Write-Host ('::notice::[m8] docs/status.json not finalized by run ' + $mine + ' (action=' + $action + '; remote runId=' + $cur.runId + ' attempt=' + $cur.runAttempt + ' status=' + $cur.runStatus + ') - snapshot left unchanged')
+                  exit 0
+              }
+              if ($action -ne 'finalize') {
+                  Write-Host ('::warning::[m8] could not read/validate docs/status.json safely (action=' + $action + '; detail=' + (Out-M8Sanitized ([string]$cur.detail)) + '); snapshot left unchanged')
+                  exit 0
+              }
+              $published = $false
+              # Progress carry policy (PROB-004 follow-up): counters are refreshed
+              # from the FRESHEST same-run read inside the loop, never taken from
+              # a foreign snapshot, and never fabricated into a synthetic 100%.
+              $pct = 0; $done = 0; $total = 0; $progressSource = 'none-observed'
+              for ($attempt = 1; ($attempt -le $maxAttempts) -and (-not $published) -and (Test-M8Deadline); $attempt++) {
+                  # Re-read before every PUT: a takeover between attempts aborts
+                  # here; the residual race lands as a 409 on the sha fence.
+                  $cur = Get-TrackedStatus -Api $api -Headers $H
+                  $action = Resolve-FinalizeAction -Cur $cur -Mine $mine -MyAttempt $myAttempt
+                  if ($action -eq 'retry-read') { if ($attempt -lt $maxAttempts) { Start-Sleep -Seconds 2 }; continue }
+                  if ($action -eq 'skip-foreign-active') {
                       Write-Host ('::notice::[m8] run ' + $cur.runId + ' now owns docs/status.json; aborting finalize for run ' + $mine)
                       break
                   }
-                  if ($cur.sha) { $body.sha = [string]$cur.sha }
+                  if ($action -ne 'finalize') {
+                      Write-Host ('::notice::[m8] finalize aborted at attempt ' + $attempt + ' (action=' + $action + ') - snapshot left unchanged')
+                      break
+                  }
+                  if ($cur.state -eq 'ok' -and $cur.runId -eq $mine) {
+                      $pct = [double]$cur.pct; $done = [int]$cur.done; $total = [int]$cur.total
+                      $progressSource = ('remote-read attempt=' + $attempt)
+                  }
+                  $finalObj = [ordered]@{
+                      ts = (Get-Date -Format o)
+                      runId = $mine
+                      runAttempt = $myAttempt
+                      runUrl = ('https://github.com/' + $env:GITHUB_REPOSITORY + '/actions/runs/' + $mine)
+                      runStatus = $terminal
+                      finalizeReason = ('job.status=' + $jobStatus)
+                      progressSource = $progressSource
+                      watcherAlive = $false
+                      speedBps = 0; overallPct = $pct; filesDone = $done; filesTotal = $total
+                      missionControlUrl = ''; tailnetUrl = ''; rustUrl = ''; funnelUrl = ''
+                      mirrorKey = ''; legacyKey = ''; telegraphUrl = ''; rentryNewUrl = ''
+                      egressIp = ''; encryptMode = ''; files = @(); logTail = @(); history = @()
+                  }
+                  $b64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes(($finalObj | ConvertTo-Json -Depth 20 -Compress)))
+                  $body = @{ message = ('status finalize ' + $terminal + ' ' + (Get-Date -Format o)); content = $b64; branch = 'main' }
+                  if ($cur.state -eq 'ok' -and $cur.sha) { $body.sha = [string]$cur.sha }
+                  $scPut = 0
                   try {
-                      Invoke-RestMethod -Uri $api -Headers $H -Method Put -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -ErrorAction Stop | Out-Null
-                      $published = $true
+                      Invoke-RestMethod -Uri $api -Headers $H -Method Put -ContentType 'application/json' -Body ($body | ConvertTo-Json -Compress) -TimeoutSec $reqTimeoutSec -SkipHttpErrorCheck -StatusCodeVariable scPut -ErrorAction Stop | Out-Null
+                      if ($scPut -ge 200 -and $scPut -lt 300) { $published = $true }
+                      elseif ($scPut -eq 401 -or $scPut -eq 403) {
+                          Write-Host ('::warning::[m8] terminal publish rejected with http ' + $scPut + ' (auth); credentials are not retried')
+                          break
+                      } elseif ($scPut -eq 409) {
+                          Write-Host ('[m8] publish attempt ' + $attempt + ' hit a 409 conflict; re-reading and re-validating under the bounded policy')
+                      } else {
+                          Write-Host ('[m8] publish attempt ' + $attempt + ' got http ' + $scPut + '; bounded retry follows')
+                      }
                   } catch {
-                      if ($attempt -lt 3) { Start-Sleep -Seconds (2 * $attempt) }
+                      Write-Host ('[m8] publish attempt ' + $attempt + ' failed: ' + (Out-M8Sanitized $_.Exception.Message))
+                  }
+                  if (-not $published -and $attempt -lt $maxAttempts -and (Test-M8Deadline)) {
+                      $sleepSec = [Math]::Min(2 * $attempt, [Math]::Max(1, [int](($deadlineSec * 1000 - $clock.ElapsedMilliseconds) / 2000)))
+                      Start-Sleep -Seconds $sleepSec
                   }
               }
               if ($published) {
+                  # Run-scoped sentinel: any LATE heartbeat through
+                  # Publish-StatusToGhPages (a publisher that outlives the
+                  # cleanup kill) is suppressed, so a valid terminal state
+                  # cannot silently regress to in_progress.
+                  try {
+                      $sentinel = @{ runId = $mine; runAttempt = $myAttempt; runStatus = $terminal; ts = (Get-Date -Format o) }
+                      [System.IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP ('ghrdp-m8-terminal-' + $mine + '.json')), ($sentinel | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
+                  } catch { }
                   Write-Host ('[m8] status.json finalized: runStatus=' + $terminal + ' (job.status=' + $jobStatus + ')')
               } else {
-                  Write-Host '::warning::[m8] could not publish terminal status.json; the published snapshot stays stale'
+                  Write-Host '::warning::[m8] could not publish terminal status.json within the bounded retry/deadline; the published snapshot stays stale'
               }
           } catch {
-              Write-Host ('::warning::[m8] finalize failed: ' + $_.Exception.Message)
+              Write-Host ('::warning::[m8] finalize failed: ' + (Out-M8Sanitized $_.Exception.Message))
           }
           exit 0
 
