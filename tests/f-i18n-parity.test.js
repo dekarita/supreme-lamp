@@ -82,7 +82,10 @@ const SI_FILE = "src/i18n/si.json";
 // (connection.metric.*, connection.remainingBasis.*, mirror.speedHistory*,
 //  search.zero.*, search.progress.*Unavailable/retryFailed,
 //  files.results.windowed, search.progress.feedUnavailable) = 1050
-const EXPECTED_FLAT_KEYS = 1050;
+// [R-GLASS / #213 / #214] + 24 keys (nav.more, nav.primary, sidebar.close and
+// the 21 glass.* keys), added to BOTH catalogs in the same commit as the shell,
+// the Settings controls and the glass lab that call them. 1050 + 24 = 1074.
+const EXPECTED_FLAT_KEYS = 1074;
 
 // Legacy untranslated si values (byte-identical to en). Frozen deliberately:
 // operator-owned copy that predates this step (mirrorHostMatrix/*, egress.line,

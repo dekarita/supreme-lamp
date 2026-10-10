@@ -488,9 +488,9 @@ test("F110-j: 0 dependencies, 0 i18n keys, 0 new registry sections, and both per
   }
   const lock = read("tests/f-i18n-parity.test.js").match(/const EXPECTED_FLAT_KEYS = (\d+)/);
   assert.ok(lock, "positive control: the count lock is still declared");
-  assert.equal(Number(lock[1]), 1050, "a default-off developer surface moves no i18n lock (the F109 precedent; the lock moved for #211/#212/#216)");
+  assert.equal(Number(lock[1]), 1074, "a default-off developer surface moves no i18n lock (the F109 precedent; the lock moved for #211/#212/#216 and again for R-GLASS #213/#214)");
   for (const f of ["src/components/livePatch/PatchAuditPanel.tsx"]) {
-    assert.ok(!/\bt\(/.test(CODE(f)), f + " must not call t() while the lock says 1050");
+    assert.ok(!/\bt\(/.test(CODE(f)), f + " must not call t() while the lock says 1074");
   }
   // no 12th section: the patch surface is the 11 that exist
   const registry = readJson("src/lib/feature-registry.json");

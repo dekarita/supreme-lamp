@@ -79,7 +79,7 @@ export function ExplorerContextMenu({
       aria-label={t("files.ops.ctx.label")}
       data-row-ids={state.rowIds.join(",")}
       style={{ left: state.x, top: state.y }}
-      className="fixed z-50 min-w-48 rounded-md border border-default bg-surface p-1 shadow-lg"
+      className="fixed z-50 min-w-48 rounded-md border border-default glass-menu p-1 shadow-lg"
     >
       {ITEMS.filter((it) => !it.needsRow || hasRow).map((it) => (
         <button

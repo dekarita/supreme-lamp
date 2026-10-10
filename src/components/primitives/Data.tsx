@@ -6,6 +6,12 @@ import { useTranslation } from "react-i18next";
 import { cn } from "@/lib/cn";
 import { CopyButton } from "./Copy";
 import { IconButton } from "./Button";
+// [R-GLASS / #213 §6] Card is a NESTED surface: it paints on the shared
+// backdrop and never opens its own backdrop-filter read. That is the whole
+// compositor budget - one sampling surface in the normal shell - and it is why
+// a page with 40 cards still costs one blur.
+import GlassContainer from "./GlassContainer";
+import type { GlassVariant } from "./GlassContainer";
 
 export function ProgressRing({
   pct,
@@ -97,6 +103,7 @@ export function Card({
   className,
   children,
   labelledBy,
+  variant,
 }: {
   id?: string;
   title?: React.ReactNode;
@@ -106,10 +113,19 @@ export function Card({
   className?: string;
   children: React.ReactNode;
   labelledBy?: string;
+  /** [R-GLASS] tinted (default) for content-heavy panels, clear for chrome. */
+  variant?: GlassVariant;
 }) {
   const titleId = labelledBy || (title ? "card-title-" + String(title).replace(/\s+/g, "-").toLowerCase() : undefined);
   return (
-    <section id={id} aria-labelledby={titleId} className={cn("bg-surface border border-default rounded-lg shadow-xs", padding === "sm" ? "p-3" : padding === "md" ? "p-4" : "p-5", className)}>
+    <GlassContainer
+      as="section"
+      surface="nested"
+      variant={variant || "tinted"}
+      id={id}
+      aria-labelledby={titleId}
+      className={cn(padding === "sm" ? "p-3" : padding === "md" ? "p-4" : "p-5", className)}
+    >
       {title && (
         <div className="flex items-center gap-2 mb-3">
           {icon}
@@ -120,7 +136,7 @@ export function Card({
         </div>
       )}
       {children}
-    </section>
+    </GlassContainer>
   );
 }
 

@@ -31,6 +31,16 @@ export default function LabIndex() {
           </li>
         ))}
       </ul>
+      {/* [R-GLASS / #213] The glass harness is a static route, not a registry
+          feature, so it is linked here instead of being folded into the 11
+          derived rows above. */}
+      <div className="mt-4 rounded-lg border border-default bg-surface p-3">
+        <NavLink to="/lab/glass" data-testid="lab-index-link-glass" className="text-sm font-medium text-accent hover:underline">
+          {t("glass.labTitle")}
+        </NavLink>
+        <p className="mt-1 text-[11px] text-secondary">{t("glass.labIntro")}</p>
+        <p className="font-mono text-[11px] text-tertiary">/lab/glass · GlassLab</p>
+      </div>
       <p className="mt-3 text-[11px] text-tertiary">{t("featureLab.readsOnly")}</p>
     </div>
   );

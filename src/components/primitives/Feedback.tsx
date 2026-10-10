@@ -2,6 +2,9 @@
 // Modal (confirm dialog with focus trap + Escape), Toasts (status/alert roles).
 import React, { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+// [R-GLASS / #213 §6] Portaled overlays are their own backdrop layer. One
+// sampling surface while an overlay is open - the second slot of the budget.
+import GlassContainer from "./GlassContainer";
 import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { useToastStore } from "@/stores/toastStore";
@@ -87,13 +90,19 @@ export function Modal({
   return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/40" onClick={onClose} aria-hidden />
-      <div
+      {/* [R-GLASS] A portal is its own backdrop layer: the panel MAY sample,
+          and everything inside it is forced paint-only by the scope. */}
+      <GlassContainer
         ref={panelRef}
+        surface="backdrop"
+        variant="tinted"
+        radius="overlay"
+        escapeScope
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         aria-describedby={description ? descId : undefined}
-        className="relative bg-surface border border-default rounded-lg shadow-md max-w-md w-full p-5"
+        className="relative max-w-md w-full p-5"
       >
         <div className="flex items-start justify-between gap-3">
           <h2 id={titleId} className="text-base font-semibold text-primary">
@@ -115,7 +124,7 @@ export function Modal({
                 type="button"
                 data-testid="modal-secondary"
                 onClick={secondary.onClick}
-                className="px-3 py-2 text-sm rounded-md border border-default bg-surface text-primary hover:bg-raised focus-visible:ring-2 focus-visible:ring-accent"
+                className="min-h-[44px] px-3 py-2 text-sm rounded-md border border-default bg-surface text-primary hover:bg-raised focus-visible:ring-2 focus-visible:ring-accent"
               >
                 {secondary.label}
               </button>
@@ -126,7 +135,7 @@ export function Modal({
                 data-testid="modal-primary"
                 onClick={primary.onClick}
                 className={cn(
-                  "px-3 py-2 text-sm rounded-md font-medium text-white focus-visible:ring-2 focus-visible:ring-accent",
+                  "min-h-[44px] px-3 py-2 text-sm rounded-md font-medium text-white focus-visible:ring-2 focus-visible:ring-accent",
                   primary.variant === "danger" ? "bg-danger hover:bg-danger-hover" : "bg-accent hover:bg-accent-hover"
                 )}
               >
@@ -135,7 +144,7 @@ export function Modal({
             )}
           </div>
         )}
-      </div>
+      </GlassContainer>
     </div>,
     document.body
   );
@@ -144,7 +153,14 @@ export function Modal({
 export function Toasts() {
   const { toasts, dismiss } = useToastStore();
   return (
-    <div id="toasts" className="fixed bottom-10 right-3 z-50 flex flex-col gap-2" aria-live="polite" aria-atomic="false">
+    // [#214 §8] The old fixed offset sat UNDER the new phone primary bar. The
+    // toasts now clear it (and the safe area) instead of being hidden behind it.
+    <div
+      id="toasts"
+      className="fixed right-3 z-50 flex flex-col gap-2 max-lg:bottom-[calc(4rem+env(safe-area-inset-bottom,0px))] lg:bottom-10"
+      aria-live="polite"
+      aria-atomic="false"
+    >
       {toasts.map((t) => (
         <div
           key={t.id}

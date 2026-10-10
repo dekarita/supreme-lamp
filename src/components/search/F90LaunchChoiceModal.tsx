@@ -53,7 +53,7 @@ export function F90LaunchChoiceModal() {
       role="dialog"
       aria-modal="true"
       aria-label={t("viewingMode.choice.title")}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/65 p-4"
       onClick={close}
     >
       <div

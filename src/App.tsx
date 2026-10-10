@@ -44,6 +44,8 @@ import Collector from "@/pages/Collector";
 // parameter, so the 13 literal fence() calls below are untouched - and the lab is
 // still fenced with the id the operator actually asked for.
 import LabRoute from "@/components/lab/LabRoute";
+// [R-GLASS / #213] the visual-quality harness at /#/lab/glass.
+import GlassLab from "@/components/lab/GlassLab";
 // [F94 §3.1] The dashboard-token gate: mounted at the ROOT, outside the router,
 // so it renders on every route and before any page can attempt a write the
 // server would refuse with a 403. One missing ?key= produced eight of the
@@ -120,6 +122,13 @@ export default function App() {
               Related pins moved in this commit: tests/f105-feature-registry.test.js
               F105-h learns the pattern from the registry instead of a hand list. */}
           <Route path="/lab" element={<LabRoute />} />
+          {/* [R-GLASS / #213 §9] The glass lab. A static segment placed BEFORE
+              the parameter route so `/#/lab/glass` is not resolved as
+              featureId="glass" (React Router ranks static segments higher, and
+              the ordering makes that explicit rather than incidental). It is
+              fenced and it restores the operator's visual-quality preference on
+              unmount, so leaving it leaves nothing behind. */}
+          <Route path="/lab/glass" element={fence("settings", <GlassLab />)} />
           <Route path="/lab/:featureId" element={<LabRoute />} />
           <Route path="*" element={fence("overview", <Overview />)} />
         </Route>

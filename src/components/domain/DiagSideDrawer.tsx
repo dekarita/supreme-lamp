@@ -31,7 +31,7 @@ export function DiagSideDrawer() {
         id="drawer"
         aria-hidden={!open}
         className={cn(
-          "fixed inset-y-0 right-0 z-50 w-full max-w-xl bg-surface border-l border-default shadow-md flex flex-col transition-transform duration-med",
+          "fixed inset-y-0 right-0 z-50 w-full max-w-xl glass-drawer border-l shadow-md flex flex-col transition-transform duration-med",
           open ? "translate-x-0" : "translate-x-full"
         )}
       >

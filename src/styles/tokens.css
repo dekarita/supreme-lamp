@@ -51,6 +51,30 @@
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.10), 0 1px 3px rgba(0, 0, 0, 0.08);
   --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.10), 0 1px 2px rgba(0, 0, 0, 0.06);
+
+  /* 1.8 Glass / visual quality (#213 §6, #214).
+     LIGHT theme defaults. The tint is the surface colour as a SPACE-SEPARATED
+     RGB triple so components can write `rgb(var(--glass-tint-rgb) / a)` —
+     alpha on the background colour, never `opacity` on the element (MDN: an
+     opacity < 1 element becomes a backdrop root and fades its own text).
+     Numeric fill/border alphas live in src/lib/glass/quality.ts; these are the
+     paint channels only. */
+  --glass-tint-rgb: 255 255 255;
+  --glass-edge-rgb: 15 23 42;
+  --glass-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --glass-overlay-radius: 16px;
+  --glass-saturate: 1;
+  /* Brightness veil over the decorative backdrop. Source-derived from the
+     reference's "blend black into the fill instead of filtering backdrop luma"
+     (dark artwork veil 0.35); raised here because a CSS gradient is flatter
+     than album art and the contrast target is measured in the browser lab. */
+  --glass-veil-top: rgba(248, 250, 252, 0.55);
+  --glass-veil-bottom: rgba(248, 250, 252, 0.72);
+  --glass-backdrop-a: rgba(14, 165, 233, 0.18);
+  --glass-backdrop-b: rgba(139, 92, 246, 0.16);
+  --glass-backdrop-c: rgba(13, 148, 136, 0.14);
+  --glass-backdrop-d: rgba(219, 39, 119, 0.10);
+  --glass-backdrop-base: #eef2f7;
 }
 
 html[data-theme="dark"] {
@@ -90,6 +114,18 @@ html[data-theme="dark"] {
   --search-licence-purchase-bg: rgba(245, 158, 11, 0.14);
   --search-licence-own-fg: #cbd5e1;
   --search-licence-own-bg: rgba(148, 163, 184, 0.14);
+
+  /* 1.8 Glass, dark theme — the primary presentation. */
+  --glass-tint-rgb: 15 23 42;
+  --glass-edge-rgb: 148 163 184;
+  --glass-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+  --glass-veil-top: rgba(2, 6, 23, 0.62);
+  --glass-veil-bottom: rgba(2, 6, 23, 0.84);
+  --glass-backdrop-a: rgba(14, 165, 233, 0.26);
+  --glass-backdrop-b: rgba(139, 92, 246, 0.24);
+  --glass-backdrop-c: rgba(13, 148, 136, 0.18);
+  --glass-backdrop-d: rgba(219, 39, 119, 0.14);
+  --glass-backdrop-base: #0b1220;
 }
 
 :root {
