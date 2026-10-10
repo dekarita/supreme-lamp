@@ -136,3 +136,86 @@ test("F203-g: the disproven popup hypothesis is recorded where the next reader w
   assert.match(src, /f86-ten-sites-deep\.spec\.ts/, "the spec must name what the evidence actually points at");
   assert.match(src, /INCOMPLETE/, "the popup theory must be labelled incomplete, not the fix");
 });
+
+test("F203-h: the established #203 root cause stays fixed - no spec waits for the retired ladder transport on a mirror click", () => {
+  // ROOT CAUSE (runs 38027291171 / 38036173948, tally + last annotations):
+  // F91 (1827d3f0) moved every result/row click from POST /api/launch-url to
+  // MIRROR MODE (POST /api/launcher/queue + local popup), but f86/f78 kept
+  // waiting for /api/launch-url. Each site test burned its full 60s budget on
+  // a request that can never come, and 11 sites x (attempt + retry) consumed
+  // the 18m bound before f88/f91/f10x could run. These pins keep the repair:
+  //   1. f86 asserts the mirror contract (queue POST + acceptance + the
+  //      mock's independent /__f91/jobs readback) - the user requirement "the
+  //      click really reaches the RDP session" is preserved on the new
+  //      transport, and a silent local-only fallback still FAILS it;
+  //   2. no spec waits for /api/launch-url after clicking a mirror control.
+  const f86 = read(SPECS_DIR + "/f86-ten-sites-deep.spec.ts");
+  assert.match(f86, /\/api\/launcher\/queue/, "f86 must assert the mirror transport");
+  assert.match(f86, /__f91\/jobs/, "f86 must read the launch back from the mock's own job record");
+  assert.match(f86, /mode\)\.toBe\("navigate"\)/, "f86 must pin the queue job mode");
+  assert.ok(
+    !/waitForRequest\([^)]*\/api\/launch-url/.test(f86),
+    "f86 must not wait for the retired ladder transport on a mirror click",
+  );
+  const f78 = read(SPECS_DIR + "/f78-add-sites.spec.ts");
+  assert.ok(
+    !/page\.route\(\s*["']\*\*\/api\/launch-url["']/.test(f78),
+    "f78 must not intercept the retired ladder transport for the row click",
+  );
+  assert.match(f78, /\/api\/launcher\/queue/, "f78 test 17 must assert the mirror transport");
+});
+
+test("F203-i: no in-page fetch may target a mock route by relative path (the SPA-fallback fake-green class)", () => {
+  // The page under test is served by vite preview on :5173; the mock lives on
+  // :7331 (apiBase()). An in-page `fetch("/api/...")` therefore NEVER reaches
+  // the mock - vite's SPA fallback answers 200 + index.html for ANY unknown
+  // path, so a dead contract reads green. This is how f84 test 5's queue-fence
+  // assertion (expects the mock's 400) was failing against a 200 HTML page on
+  // every run since F91. Every in-page fetch must use the mock base constant.
+  for (const f of specFiles()) {
+    const src = read(SPECS_DIR + "/" + f);
+    const bad = [...src.matchAll(/fetch\(\s*["'](\/api\/|\/__f91)/g)].map((m) => m[0]);
+    assert.deepEqual(bad, [], f + " fetches a mock route by relative path: " + bad.join(", "));
+  }
+});
+
+test("F203-j: popup proof is waitForEvent + explicit close, never a page.on('popup') listener array", () => {
+  // The listener-array pattern raced the queue job (the f91 §1.3 red) and its
+  // unclosed popups pointed at third-party hosts, which a context teardown
+  // waits for (the F203-c wedge class). waitForEvent fails LOUDLY on a blocked
+  // popup; closeExtraPages keeps teardown clean.
+  for (const f of specFiles()) {
+    const src = read(SPECS_DIR + "/" + f);
+    assert.ok(!/page\.on\(\s*["']popup["']/.test(src), f + " uses the racy page.on('popup') listener pattern");
+  }
+});
+
+test("F203-k: every spec that clicks a mirror control isolates the external network and closes its popups", () => {
+  // A mirror click opens a popup at the row's own REAL third-party URL. The
+  // lane must stay isolated (no public-host wait, no wedged teardown), so any
+  // spec that clicks a mirror control must stub external navigations AND
+  // close every page it opens.
+  //
+  // Detection is two-ply: (a) the known mirror-click lanes, pinned by name so
+  // a refactor cannot silently drop one from the requirement; (b) a generic
+  // catch for any FUTURE spec that clicks a mirror control directly
+  // (`getByTestId("<mirror>").first().click()`). f79's `card-direct-url`
+  // reference is deliberately NOT flagged: it asserts CSS on the control, it
+  // never clicks it, so no popup is opened there.
+  const MIRROR_CLICK_SPECS = [
+    "f78-add-sites.spec.ts",
+    "f84-ux.spec.ts",
+    "f86-ten-sites-deep.spec.ts",
+    "f91-mirror-mode.spec.ts",
+  ];
+  const DIRECT_MIRROR_CLICK =
+    /getByTestId\("(lab-link-open|card-direct-url|card-open-rdp|f87-diag-test-launch)"\)[^;\n]*\.click\(/;
+  for (const f of specFiles()) {
+    const src = read(SPECS_DIR + "/" + f);
+    const isKnown = MIRROR_CLICK_SPECS.includes(f);
+    const isDirect = DIRECT_MIRROR_CLICK.test(src);
+    if (!isKnown && !isDirect) continue;
+    assert.match(src, /isolateExternalNetwork\(/, f + " clicks a mirror control but never stubs external navigations");
+    assert.match(src, /closeExtraPages\(/, f + " clicks a mirror control but never closes the popups it opens");
+  }
+});

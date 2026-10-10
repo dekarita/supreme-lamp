@@ -100,7 +100,12 @@ describe("F78 LabInspector", () => {
     expect(btn.getAttribute("target")).toBeNull();
     fireEvent.click(btn);
     await waitFor(() => expect(open).toHaveBeenCalledTimes(1));
-    expect(String(open.mock.calls[0][2])).toContain("noopener");
+    // [F45-R §4 / #203 Defect B] SUPERSEDED assertion: the old line demanded
+    // "noopener" in the features string, but the HTML spec makes window.open()
+    // return null whenever noopener is set - a forced null can never be a
+    // popup-block signal, and it faked popupBlocked on every mirror click.
+    // The call must stay handle-returning; opener is severed on the handle.
+    expect(String(open.mock.calls[0][2] ?? "")).not.toContain("noopener");
     const queueCall = fetchFn.mock.calls.find((c) => String(c[0]).endsWith("/api/launcher/queue"));
     expect(queueCall, "the lab-row click must queue a navigate job for the RDP launcher").toBeTruthy();
     const sent = JSON.parse(String((queueCall![1] as RequestInit).body));

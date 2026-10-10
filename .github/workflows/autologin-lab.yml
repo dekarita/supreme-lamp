@@ -474,6 +474,16 @@ jobs:
               $t = $sr.ReadToEnd(); $sr.Close(); $resp.Close()
               return ($t | ConvertFrom-Json)
           }
+          # [F45-R] readiness is marker + HTTP 200 + MATCHING pid: the owner-pid
+          # check above proves who BOUND the port; /health proves the serving
+          # application instance is ghrdp and agrees on its own pid. A stale
+          # marker or a different process answering must fail the lab here.
+          try { $health = Invoke-LabJson ($base + '/health') }
+          catch { DE-Fail 'health' $_.Exception.Message }
+          if (-not [bool]$health.ok) { DE-Fail 'health-ok' ('ok=[' + [string]$health.ok + ']') }
+          if ([string]$health.app -ne 'ghrdp') { DE-Fail 'health-app' ('app=[' + [string]$health.app + ']') }
+          if ([string]$health.pid -ne [string]$srv.Id) { DE-Fail 'health-pid' ('health pid=[' + [string]$health.pid + '] lab server pid=[' + [string]$srv.Id + ']') }
+          Write-Host ('[D] PASS: /health ok=true app=ghrdp pid=' + [string]$health.pid + ' matches the lab server process')
           try { $plain = Invoke-LabJson ($base + '/api/config') }
           catch { DE-Fail 'config-unauth' $_.Exception.Message }
           try {

@@ -31,6 +31,49 @@ async function runQuery(page: Page, query: string) {
   await expect(page.locator('[id="f78.search.yourSitesRow"]')).toBeVisible();
 }
 
+// [WP-09 / #203] Popup isolation for the mirror click (test 17): the row's
+// REAL third-party URL is fulfilled with a stub before the click, and every
+// page the test opens besides the fixture page is closed in a finally - no
+// public-host wait, no wedged teardown. Same helpers as f86/f91.
+async function isolateExternalNetwork(page: Page): Promise<void> {
+  await page.context().route("**/*", async (route) => {
+    const url = route.request().url();
+    let host = "";
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      host = "";
+    }
+    const isLocal = host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "";
+    try {
+      if (isLocal) return void (await route.continue());
+      return void (await route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body: "<!doctype html><meta charset=utf-8><title>ghrdp e2e stub</title><p>stub",
+      }));
+    } catch {
+      try {
+        await route.continue();
+      } catch {
+        /* a route that raced a page close cannot fail the lane */
+      }
+    }
+  });
+}
+
+/** Close every page in the context except the fixture page (F203-c). */
+async function closeExtraPages(page: Page): Promise<void> {
+  for (const other of page.context().pages()) {
+    if (other === page) continue;
+    try {
+      await other.close({ runBeforeUnload: false });
+    } catch {
+      /* a page that is already gone is the goal, not a failure */
+    }
+  }
+}
+
 test.describe("F78 stored-website Lab Mode", () => {
   test("1 sidebar order is the locked nine entries", async ({ page }) => {
     await page.goto("/");
@@ -164,26 +207,40 @@ test.describe("F78 stored-website Lab Mode", () => {
     await shot(page, "16-matches-first-toggle");
   });
 
-  // [F84 §2.3] The link is no longer an <a target="_blank">: every row click
-  // routes through POST /api/launch-url, so a failed launch can never silently
-  // open the operator's local browser.
+  // [F84 §2.3 -> F91 §B.2] The link is still no new-tab anchor: the element
+  // contract stays a BUTTON without href/target. Since F91 the click itself is
+  // MIRROR MODE - the local tab is the design and the RDP half rides
+  // POST /api/launcher/queue - so the assertion follows the mirror contract:
+  // the queue POST really fires (a silent local-only fallback fails here) and
+  // no retired anchor behaviour returns. [WP-09 / #203] external navigation
+  // is stubbed and the popup is closed, so the lane stays isolated.
   test("17 a link launches through the server route (no new-tab anchor)", async ({ page }) => {
-    let launched = false;
-    await page.route("**/api/launch-url", async (route) => {
-      launched = true;
-      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, launched: true }) });
-    });
-    const popups: number[] = [];
-    page.on("popup", () => popups.push(1));
-    await page.goto("/#/search/lab/docs-python-org?q=tls");
-    const link = page.locator('[data-testid="lab-link-open"]').first();
-    await expect(link).toHaveJSProperty("tagName", "BUTTON");
-    await expect(link).not.toHaveAttribute("target", "_blank");
-    await expect(link).not.toHaveAttribute("href", /./);
-    await link.click();
-    await expect.poll(() => launched).toBe(true);
-    expect(popups.length).toBe(0);
-    await shot(page, "17-link-launch-url");
+    await isolateExternalNetwork(page);
+    try {
+      let queued: { url?: string; mode?: string } | null = null;
+      await page.route("**/api/launcher/queue", async (route) => {
+        queued = route.request().postDataJSON();
+        await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, jobId: "j-f78-17" }) });
+      });
+      await page.goto("/#/search/lab/docs-python-org?q=tls");
+      const link = page.locator('[data-testid="lab-link-open"]').first();
+      await expect(link).toHaveJSProperty("tagName", "BUTTON");
+      await expect(link).not.toHaveAttribute("target", "_blank");
+      await expect(link).not.toHaveAttribute("href", /./);
+      const popupPromise = page.context().waitForEvent("page", { timeout: 15_000 });
+      await link.click();
+      // RDP half: the navigate job reached the launcher queue with the row's
+      // own https URL (never a local-only silent open).
+      await expect.poll(() => queued !== null, { timeout: 10_000 }).toBe(true);
+      expect(queued!.mode).toBe("navigate");
+      expect(String(queued!.url || "")).toMatch(/^https:\/\/www\.docs\.python\.org\//);
+      // Local half: the mirror design opens the tab (the popup fires).
+      const popup = await popupPromise;
+      await expect.poll(() => popup.url(), { timeout: 10_000 }).not.toBe("about:blank");
+      await shot(page, "17-link-launch-url");
+    } finally {
+      await closeExtraPages(page);
+    }
   });
 
   test("18 the footer badge carries the ui sha", async ({ page }) => {

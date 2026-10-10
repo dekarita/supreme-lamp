@@ -2590,6 +2590,40 @@ function Invoke-ClientRequest {
             Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json' -Body (ConvertTo-JsonBytes @{ ok = $true; message = $msg })
             return
         }
+        # [F45-R §2] READINESS PROBE. Answers as soon as the accept loop runs:
+        #   ok + app + pid   -> "the right application instance is responding"
+        #                       (the harness compares this pid with the marker's
+        #                       pid - a stale marker over a recycled port fails);
+        #   listenerBound    -> the bind succeeded (marker + this route);
+        #   scans            -> OPTIONAL scanner FRESHNESS, never readiness:
+        #                       scanTs/probeError per collector, read from the
+        #                       state files the scans own. A slow first scan
+        #                       leaves these null; that is an honest "not
+        #                       reported yet", never a reason for ok=false.
+        # No credentials, no config, no event content - operational metadata
+        # only (same disclosure class as /diag).
+        if ($path -eq '/health') {
+            $hScans = [ordered]@{}
+            foreach ($kv in @(@('logon', $script:LogonStatePath), @('connLog', $script:ConnLogStatePath), @('telescope', $script:F37TelStatePath))) {
+                $hSt = $null
+                try { $hSt = Read-JsonFile -Path ([string]$kv[1]) } catch { $hSt = $null }
+                $hScans[[string]$kv[0]] = [ordered]@{
+                    scanTs     = $(if ($hSt -and $hSt.scanTs) { [string]$hSt.scanTs } else { $null })
+                    probeError = $(if ($hSt -and $hSt.probeError) { [string]$hSt.probeError } else { $null })
+                }
+            }
+            Send-ClientResponse -Stream $stream -Code 200 -CType 'application/json; charset=utf-8' -Body (ConvertTo-JsonBytes ([ordered]@{
+                ok               = $true
+                app              = 'ghrdp'
+                pid              = $PID
+                listenerBound    = $true
+                bind             = [string]$Bind
+                port             = [int]$Port
+                serverStartedUtc = [string]$script:ServerStartedUtc
+                scans            = $hScans
+            }))
+            return
+        }
         if ($path -eq '/diag') {
             $prog = Read-JsonFile -Path $script:ProgPath
             $listen7332 = $false
@@ -9200,29 +9234,45 @@ try {
     }
 } catch { }
 try { Start-Process -FilePath 'powershell.exe' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden','-File',(Join-Path $Root 'rdp-usage.ps1') -WindowStyle Hidden } catch { }
-# [F28 §1] STARTUP SCAN: the first stamp lands before the first client can
-# poll, so /api/native-status never has to guess "not reported yet" when the
-# collector is actually alive. Failure is contained (the function stamps
-# probeError + scanTs instead of throwing).
-try { Update-RdpLogonAuthLast -StatePath $script:LogonStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
-$lastLogonScan = Get-Date
-# [F30 §3] STARTUP SCAN: the first conn-log stamp lands before the first
-# client can poll, so the SERVER CONN LOG row never reads "not reported yet"
-# while the collector is actually alive. Failure is contained (probeError +
-# scanTs are stamped by the function instead of throwing).
-try { Update-RdpConnLog -StatePath $script:ConnLogStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
-$lastConnLogScan = Get-Date
-# [F37 §4] STARTUP SCAN: the telescope stamps BEFORE the first client can poll
-# (same shape as the F28/F30 startup scans), so "not reported yet" can only mean
-# a genuinely absent sample - and the 60s tick below keeps it live.
-try { Update-RdpListenerTelescope -StatePath $script:F37TelStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
-$lastTelScan = Get-Date
+# [F45-R §1] READINESS BEFORE SCANS. The listener bind and the LISTENING
+# marker happen FIRST, and /health (added below the auth gate) answers
+# ok/app/pid as soon as the accept loop runs. Rationale: the three startup
+# scans below are synchronous Get-WinEvent walks of the Security/System logs
+# and can take seconds on a busy host. Readiness (listener bound + the right
+# application instance responding) must never be held hostage by them, and a
+# harness waiting on server-ok.txt must observe the bind, not the scan.
+# What this reorder CHANGES: the F28/F30/F37 guarantee softens from "stamped
+# before the first client can poll" to "stamped promptly after the listener
+# accepts, within one scan duration" - every consumer already tolerates the
+# not-yet-stamped window via scanTs/probeError (an honest "not reported yet",
+# never a fabricated value). What it does NOT fix, and documents honestly:
+# while a scan runs on this thread the accept loop is not draining, so
+# requests arriving mid-scan queue in the TCP backlog. Bounding THAT latency
+# is the isolated-scan-worker work package (docs/mission-control tracker,
+# F45-B): a cooperative delay on this thread cannot yield inside Get-WinEvent.
 $listener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Parse($Bind), $Port)
 try { $listener.Start() } catch {
     try { [System.IO.File]::WriteAllText($script:OkFile, 'LISTEN_FAIL: ' + $_.Exception.Message, $script:NoBom) } catch { }
     exit 1
 }
 [System.IO.File]::WriteAllText($script:OkFile, ('LISTENING pid={0} bind={1} port={2} at={3}' -f $PID, $Bind, $Port, (Get-Date -Format o)), $script:NoBom)
+# [F28 §1] STARTUP SCAN: stamps the logon verdict promptly after the listener
+# starts accepting, so /api/native-status reports a real verdict (scanTs +
+# result) instead of a long "not reported yet" window. Failure is contained
+# (the function stamps probeError + scanTs instead of throwing).
+try { Update-RdpLogonAuthLast -StatePath $script:LogonStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
+$lastLogonScan = Get-Date
+# [F30 §3] STARTUP SCAN: the first conn-log stamp lands promptly after the
+# listener starts, so the SERVER CONN LOG row reports a real verdict instead
+# of "not reported yet" while the collector is actually alive. Failure is
+# contained (probeError + scanTs are stamped by the function, not a throw).
+try { Update-RdpConnLog -StatePath $script:ConnLogStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
+$lastConnLogScan = Get-Date
+# [F37 §4] STARTUP SCAN: the telescope stamps promptly after the listener starts
+# (same shape as the F28/F30 startup scans), and the 60s tick below keeps it
+# live. "Not reported yet" means a genuinely absent sample.
+try { Update-RdpListenerTelescope -StatePath $script:F37TelStatePath -ScanStartedUtc $script:ServerStartedUtc | Out-Null } catch { }
+$lastTelScan = Get-Date
 # [F45 S4 fx-worker-begin] Queue worker: one process per Root owns
 # %TEMP%\ghrdp\fx-upload-queue.json (same singleton discipline as the wire-probe
 # / rdp-ping / rdp-usage loops). It is a no-op off Windows and it never runs
@@ -9401,6 +9451,14 @@ function Invoke-F99WatcherDiagnose {
 $start = Get-Date
 $limit = New-TimeSpan -Minutes $LimitMinutes
 $lastHeal = Get-Date
+# [F45-R §3] Accept-loop yield. The loop yields every N ms; GHRDP_SCAN_DELAY_MS
+# overrides the 50ms default (clamped to 5..1000) so a harness can prove the
+# loop stays responsive under a chosen cadence. This paces the LOOP only - it
+# cannot shorten a synchronous scan that runs on this thread (F45-R §1/F45-B).
+$script:ScanDelayMs = 50
+if ($env:GHRDP_SCAN_DELAY_MS -match '^[0-9]+$') {
+    $script:ScanDelayMs = [Math]::Max(5, [Math]::Min(1000, [int]$env:GHRDP_SCAN_DELAY_MS))
+}
 while (((Get-Date) - $start) -lt $limit) {
     while ($listener.Pending()) {
         $client = $null
@@ -9436,6 +9494,7 @@ while (((Get-Date) - $start) -lt $limit) {
         $lastHeal = Get-Date
         try { Invoke-F95WatcherSupervise | Out-Null } catch { }
     }
-    Start-Sleep -Milliseconds 50
+    # [F45-R §3] yield the accept loop (50ms default, GHRDP_SCAN_DELAY_MS overridable).
+    Start-Sleep -Milliseconds $script:ScanDelayMs
 }
 try { $listener.Stop() } catch { }

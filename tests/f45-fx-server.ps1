@@ -589,13 +589,26 @@ try {
     }
     $okFile = Join-Path $root 'server-ok.txt'
     $up = $false
+    $markerPid = ''
     for ($i = 0; $i -lt 60 -and -not $up; $i++) {
         Start-Sleep -Milliseconds 500
-        if (Test-Path -LiteralPath $okFile) { $t = [System.IO.File]::ReadAllText($okFile); if ($t -match 'LISTENING') { $up = $true } }
+        if (Test-Path -LiteralPath $okFile) { $t = [System.IO.File]::ReadAllText($okFile); if ($t -match 'LISTENING') { $up = $true; if ($t -match 'pid=(\d+)') { $markerPid = $Matches[1] } } }
         if ($proc.HasExited) { break }
     }
     Check 'server reached LISTENING' $up ('server-ok.txt absent; stdout=[' + (Get-Content -LiteralPath $srvOut -Raw -ErrorAction SilentlyContinue) + ']')
     if ($up) {
+        # [F45-R] readiness is marker + HTTP 200 + MATCHING pid: the marker
+        # alone could be stale (recycled port, another process bound it), so
+        # /health must answer for THIS pid. ok/app prove the right instance.
+        $r = Send-FxRaw -Port $port -Method 'GET' -Target '/health'
+        CheckEqual 'I /health 200 from loopback' 200 $r.Code
+        CheckContains 'I /health reports the ghrdp app' $r.Text '"app":"ghrdp"'
+        CheckContains 'I /health reports ok' $r.Text '"ok":true'
+        $hJson = $null
+        try { $hJson = ($r.Text | ConvertFrom-Json) } catch { $hJson = $null }
+        Check 'I /health pid is present' (($hJson -ne $null) -and ([string]$hJson.pid -ne '')) ('text=' + $r.Text)
+        Check 'I /health pid matches the LISTENING marker (no stale-marker server)' ([string]$hJson.pid -eq [string]$markerPid) ('health pid=[' + [string]$hJson.pid + '] marker pid=[' + $markerPid + ']')
+        Check 'I /health pid matches the started process' ([string]$hJson.pid -eq [string]$proc.Id) ('health pid=[' + [string]$hJson.pid + '] proc=[' + [string]$proc.Id + ']')
         $r = Send-FxRaw -Port $port -Method 'GET' -Target '/api/fx/list' -Headers @{ 'X-Dash-Token' = 'wrong-token-value-000000' }
         CheckEqual 'I 401 on a wrong dash token' 401 $r.Code
         $r = Send-FxRaw -Port $port -Method 'GET' -Target '/api/fx/list'

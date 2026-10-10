@@ -25,16 +25,19 @@ test.describe("F81 decisions (15)", () => {
       await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true, launched: true, user: "tester" }) });
     });
     await page.goto("/#/search");
-    // If no result row exists in offline preview, just verify the route
-    // POST contract by direct fetch from inside the page.
-    const ok = await page.evaluate(async () => {
-      const r = await fetch("/api/launch-url", {
+    // Verify the ladder route's POST contract by direct fetch from inside the
+    // page. [WP-09 / #203] the page.route stub above intercepts this fetch,
+    // but the URL still targets the MOCK base: a RELATIVE path from the :5173
+    // preview would silently hit the vite SPA fallback (200 + index.html) if
+    // the stub were ever removed, reading green for a dead contract.
+    const ok = await page.evaluate(async (mock) => {
+      const r = await fetch(mock + "/api/launch-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: "https://example.com" }),
       });
       return r.ok;
-    });
+    }, process.env.F78_MOCK_URL || "http://127.0.0.1:7331");
     expect(ok).toBe(true);
     expect(launched).toBe(true);
   });

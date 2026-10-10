@@ -17,19 +17,32 @@
   --color-text-secondary: #475569;     /* slate-600 */
   --color-text-tertiary: #64748b;      /* slate-500 */
   --color-text-mono: #334155;          /* slate-700 */
-  --color-accent: #0ea5e9;             /* sky-500 */
-  --color-accent-hover: #0284c7;       /* sky-600 */
-  --color-accent-fg: #04121f;
+  /* [F45-R/#214] LIGHT accent contrast repair (measured, WCAG 1.4.3):
+     #0ea5e9 (sky-500) read 2.77:1 as text on --color-bg-surface and 2.65:1
+     on --color-bg-base - both below the 4.5:1 AA bar for the normal-size text
+     links/labels that consume it. sky-700 measures 5.93:1 on the surface and
+     5.42:1 on the raised tint, and keeps white as its on-fill foreground
+     (5.93:1). Hover darkens to sky-800 (7.56:1) instead of lightening, so the
+     hover state never dips below the base state's ratio. The DARK theme keeps
+     sky-500, which measures 5.28:1 on slate-800 and 6.44:1 on slate-900. */
+  --color-accent: #0369a1;             /* sky-700 - 5.93:1 on the white surface */
+  --color-accent-hover: #075985;       /* sky-800 - 7.56:1 on the white surface */
+  --color-accent-fg: #ffffff;          /* text ON a --color-accent fill (5.93:1) */
   --color-success: #059669;            /* emerald-600 - the ONLY green */
   --color-warning: #d97706;            /* amber-600 */
   --color-danger: #dc2626;             /* red-600 */
   --color-danger-hover: #b91c1c;       /* red-700 */
   --color-danger-fg: #ffffff;          /* text ON a --color-danger fill */
-  --color-focus-ring: #0ea5e9;
+  /* Focus rings are non-text UI (WCAG 1.4.11, 3:1): #0ea5e9 measured 2.77:1
+     on the light surface, so the light ring follows the repaired accent. */
+  --color-focus-ring: #0369a1;
 
-  /* F45 Explorer §1.1 — existing slate/sky ramp only. */
+  /* F45 Explorer §1.1 — existing slate/sky ramp only.
+     [F45-R/#214] selection-border is a non-text boundary (3:1 floor);
+     #0ea5e9 measured 2.77:1 against the near-white selection fill, sky-600
+     measures 4.10:1. The dark-theme border (#38bdf8) is unchanged. */
   --color-fx-selection: rgba(14,165,233,0.12);
-  --color-fx-selection-border: #0ea5e9;
+  --color-fx-selection-border: #0284c7;
   --color-fx-drop-target: rgba(14,165,233,0.08);
   --color-fx-thumb-bg: #f1f5f9;
   --color-fx-preview-scrim: rgba(15,23,42,0.60);

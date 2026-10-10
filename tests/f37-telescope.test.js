@@ -225,7 +225,11 @@ test('F37-7 the runner tick is 60s, uses the module, and never invents a format'
   }
   // the 60s tick is wired into the serve loop and runs once at startup
   assert.match(srv, /if \(\(\(Get-Date\) - \$lastTelScan\)\.TotalSeconds -ge \$script:F37TelIntervalSec\)/, 'the tick is not in the accept loop');
-  assert.match(srv, /STARTUP SCAN: the telescope stamps BEFORE the first client can poll/, 'the startup scan is missing');
+  // [F45-R] wording follows the readiness reorder: the listener binds BEFORE
+  // the startup scans, so the honest guarantee is "stamps promptly after the
+  // listener starts" (consumers read scanTs/probeError until then). The pin
+  // still proves the startup scan exists.
+  assert.match(srv, /STARTUP SCAN: the telescope stamps promptly after the listener starts/, 'the startup scan is missing');
   // row surfaces
   assert.ok(srv.includes('telescope = $f37State.telescope'), 'native-status does not serve the runner telescope');
   assert.ok(srv.includes('telescopeCollector = $f37State.telescopeCollector'), 'native-status does not serve the tick liveness');

@@ -866,11 +866,13 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "HEAD") {
-      res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": "0" });
+      // [WP-09 / #203] CORS: the lane reads the relay cross-origin (page on
+      // :5173, mock on :7331) - same openness send() gives every JSON route.
+      res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": "0", "Access-Control-Allow-Origin": "*" });
       res.end();
       return;
     }
-    res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": "2048" });
+    res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": "2048", "Access-Control-Allow-Origin": "*" });
     res.end(Buffer.alloc(2048, 7));
     return;
   }

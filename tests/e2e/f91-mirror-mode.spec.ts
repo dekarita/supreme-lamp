@@ -10,6 +10,13 @@ import { expect, test, type Page } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 
 mkdirSync("screenshots", { recursive: true });
+// [WP-09 / #203] In-page fetches below must use the MOCK base, never a
+// relative path: from the :5173 preview a relative /api/* (or /__f91/*) fetch
+// silently hits the vite SPA fallback (200 + index.html) instead of the mock,
+// which reads green for a dead contract. f79's `backend` constant is the same
+// value. This file predates its first full CI run, so these fetches are
+// corrected HERE, before the lane can reach them.
+const MOCK = process.env.F78_MOCK_URL || "http://127.0.0.1:7331";
 const SITES = [
   "openculture.com", "archive.org", "openverse.org", "awesome.re", "gutenberg.org", "standardebooks.org",
   "librivox.org", "openlibrary.org", "tubitv.com", "pluto.tv", "freemusicarchive.org",
@@ -88,7 +95,7 @@ async function closeExtraPages(page: Page): Promise<void> {
 }
 
 async function jobsOf(page: Page): Promise<{ url: string; mode: string }[]> {
-  const r = await page.evaluate(async () => (await fetch("/__f91/jobs")).json());
+  const r = await page.evaluate(async (mock) => (await fetch(mock + "/__f91/jobs")).json(), MOCK);
   return r.jobs || [];
 }
 
@@ -129,29 +136,29 @@ test.describe("F91 mirror mode - 11 sites", () => {
   test("0: the mock exposes the launcher lanes (queue, health, jobs)", async ({ page }) => {
     await isolateExternalNetwork(page);
     await page.goto("/#/search");
-    const health = await page.evaluate(async () => (await fetch("/api/launcher/health")).json());
+    const health = await page.evaluate(async (mock) => (await fetch(mock + "/api/launcher/health")).json(), MOCK);
     expect(health.serviceRunning).toBe(true);
     expect(health.taskExists).toBe(true);
-    const accepted = await page.evaluate(async () => {
-      const r = await fetch("/api/launcher/queue", {
+    const accepted = await page.evaluate(async (mock) => {
+      const r = await fetch(mock + "/api/launcher/queue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: "https://example.com/", mode: "navigate" }),
       });
       return { status: r.status, body: await r.json() };
-    });
+    }, MOCK);
     expect(accepted.status).toBe(200);
     expect(accepted.body.ok).toBe(true);
     expect(accepted.body.jobId).toBeTruthy();
     // the fence mirrors the server: javascript: never queues
-    const refused = await page.evaluate(async () => {
-      const r = await fetch("/api/launcher/queue", {
+    const refused = await page.evaluate(async (mock) => {
+      const r = await fetch(mock + "/api/launcher/queue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: "javascript:alert(1)", mode: "navigate" }),
       });
       return r.status;
-    });
+    }, MOCK);
     expect(refused).toBe(400);
   });
 
@@ -237,18 +244,18 @@ test.describe("F91 mirror mode - 11 sites", () => {
     await expect(audio).toBeVisible();
     expect(await audio.getAttribute("src")).toContain("/api/stream?url=https%3A%2F%2Fwww.openculture.com");
     // and the relay answers 200 + an audio Content-Type (RDP network view)
-    const res = await page.evaluate(async () => {
+    const res = await page.evaluate(async (mock) => {
       const u = "https://www.openculture.com/audio/platos-republic-lecture.mp3";
-      const r = await fetch("/api/stream?url=" + encodeURIComponent(u));
+      const r = await fetch(mock + "/api/stream?url=" + encodeURIComponent(u));
       return { status: r.status, ct: r.headers.get("content-type") };
-    });
+    }, MOCK);
     expect(res.status).toBe(200);
     expect(res.ct).toContain("audio/");
     // off-allowlist hosts are refused - the relay is not a general proxy
-    const refused = await page.evaluate(async () => {
-      const r = await fetch("/api/stream?url=" + encodeURIComponent("https://evil.example/x.mp3"));
+    const refused = await page.evaluate(async (mock) => {
+      const r = await fetch(mock + "/api/stream?url=" + encodeURIComponent("https://evil.example/x.mp3"));
       return r.status;
-    });
+    }, MOCK);
     expect(refused).toBe(403);
     await shot(page, "stream-relay");
   });
