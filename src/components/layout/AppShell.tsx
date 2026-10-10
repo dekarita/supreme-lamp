@@ -23,7 +23,7 @@ import { Chip } from "@/components/primitives/Chip";
 import { LogonGateBanner } from "@/components/domain/LogonGateBanner";
 import { cn } from "@/lib/cn";
 import { fmtHMS, pad2 } from "@/lib/format";
-import { elapsedSeconds, remainingSeconds } from "@/stores/telemetryStore";
+import { elapsedSeconds, remainingTimeFromStore } from "@/stores/telemetryStore";
 import { logonRowText, rdpUsageSeconds } from "@/lib/domain/native";
 import { useNow } from "@/lib/useNow";
 import { logButtonAction } from "@/lib/collectorAgent";
@@ -370,6 +370,7 @@ function BottomBar() {
   const { t } = useTranslation();
   const serverNow = useTelemetryStore((s) => s.serverNow);
   const runStartedAtMs = useTelemetryStore((s) => s.runStartedAtMs);
+  const sessionEndMs = useTelemetryStore((s) => s.sessionEndMs);
   const usage = useTelemetryStore((s) => s.rdpUsage);
   const logonFallback = useTelemetryStore((s) => s.rdpLogonFallback);
   const native = useSessionNative();
@@ -377,7 +378,18 @@ function BottomBar() {
   const now = serverNow();
 
   const el = elapsedSeconds(runStartedAtMs, now);
-  const rem = remainingSeconds(runStartedAtMs, now);
+  // [R-METRICS / #212] The remaining figure now names its own basis: the
+  // server-published sessionEnd when the server published one, the labelled
+  // 5h30 policy window second, and an explicit unknown state otherwise. The
+  // old code rendered 05:30:00 whenever the run start was unknown, which is a
+  // measured-looking number with nothing behind it.
+  const rem = remainingTimeFromStore({ sessionEndMs, runStartedAtMs, now });
+  const remBasisKey =
+    rem.basis === "server-session-end"
+      ? "connection.remainingBasis.server"
+      : rem.basis === "policy-window"
+        ? "connection.remainingBasis.policy"
+        : "connection.remainingBasis.unknown";
   const usageSec = rdpUsageSeconds(usage, logonFallback, now);
   const rl = (native && native.rdpListener) || null;
   const row = logonRowText((rl && rl.authLast) || null, (rl && rl.logonCollector) || (native && native.logonCollector) || null, now);
@@ -392,8 +404,18 @@ function BottomBar() {
       </span>
       <span id="status-remaining" className="bb-item font-mono text-xs text-tertiary whitespace-nowrap">
         {t("status.remaining")}{" "}
-        <span id="timerRemaining" className="text-secondary">
-          {runStartedAtMs == null ? fmtHMS(19800) : fmtHMS(rem)}
+        <span
+          id="timerRemaining"
+          data-testid="bb-remaining"
+          data-basis={rem.basis}
+          data-expired={rem.expired ? "1" : "0"}
+          title={t(remBasisKey)}
+          className={rem.expired ? "text-danger" : rem.basis === "unknown" ? "text-tertiary" : "text-secondary"}
+        >
+          {rem.seconds == null ? "--:--:--" : fmtHMS(rem.seconds)}
+        </span>
+        <span id="timerRemainingBasis" data-testid="bb-remaining-basis" className="ml-1 text-[10px] uppercase">
+          {rem.basis === "server-session-end" ? "sched" : rem.basis === "policy-window" ? "policy" : "n/a"}
         </span>
       </span>
       <span id="status-rdp-usage" className="bb-item font-mono text-xs text-tertiary whitespace-nowrap">

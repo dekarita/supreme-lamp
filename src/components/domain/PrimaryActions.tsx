@@ -13,7 +13,11 @@ import { Button } from "@/components/primitives/Button";
 import { Chip, StatusDot } from "@/components/primitives/Chip";
 import { CopyLink } from "@/components/primitives/Copy";
 import { cn } from "@/lib/cn";
-import { FQDN_RE, SESSION_WINDOW_MS } from "@/lib/format";
+import { FQDN_RE } from "@/lib/format";
+// [R-METRICS / #212] the session-expiry test now honours the server-published
+// deadline instead of assuming the 5h30 policy window.
+import { remainingTime } from "@/lib/domain/metrics";
+import { SESSION_WINDOW_MS } from "@/lib/format";
 import { credsspChip, recoveryDecision, validFqdnUser, validWebdeskUrl } from "@/lib/domain/native";
 // [F94 §3.2/§3.3] the two buttons the operator reported as dead.
 import { openWebDesktop } from "@/lib/openWebDesktop";
@@ -34,6 +38,7 @@ export function PrimaryActions() {
   const fireFixReconnect = useSessionStore((s) => s.fireFixReconnect);
   const progress = useTelemetryStore((s) => s.progress);
   const runStartedAtMs = useTelemetryStore((s) => s.runStartedAtMs);
+  const sessionEndMs = useTelemetryStore((s) => s.sessionEndMs);
   const sessionExpired = useTelemetryStore((s) => s.sessionExpired);
   const setSessionExpired = useTelemetryStore((s) => s.setSessionExpired);
   // [F94 §3.2] non-empty when the browser blocked the WEB DESKTOP popup; the
@@ -80,8 +85,8 @@ export function PrimaryActions() {
   const autoTitle = autoOk ? autoNote : t("autoLoginBlocked.title") + " " + autoWhy;
 
   // Session-expired banner (F34 window).
-  if (runStartedAtMs) {
-    const expired = remainingSec(runStartedAtMs, Date.now()) <= 0;
+  if (runStartedAtMs || sessionEndMs) {
+    const expired = remainingSec({ sessionEndMs, runStartedAtMs }, Date.now()) <= 0;
     if (expired !== sessionExpired) setSessionExpired(expired);
   }
 
@@ -314,8 +319,24 @@ export function PrimaryActions() {
   );
 }
 
-function remainingSec(runStartedAtMs: number, now: number): number {
-  return SESSION_WINDOW_MS / 1000 - Math.max(0, (now - runStartedAtMs) / 1000);
+/**
+ * [R-METRICS / #212] Seconds until the session ends.
+ *
+ * The server-published `sessionEnd` wins; the 5h30 window is the labelled
+ * fallback. When neither exists the session is NOT reported expired - an
+ * unknown deadline must not raise a false "session ended" banner.
+ */
+function remainingSec(
+  args: { sessionEndMs: number | null; runStartedAtMs: number | null },
+  now: number,
+): number {
+  const r = remainingTime({
+    sessionEndMs: args.sessionEndMs,
+    runStartedAtMs: args.runStartedAtMs,
+    nowMs: now,
+    policyWindowMs: SESSION_WINDOW_MS,
+  });
+  return r.seconds == null ? Number.POSITIVE_INFINITY : r.seconds;
 }
 
 function certDaysRemaining(notAfter: unknown): number | null {

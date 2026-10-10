@@ -56,7 +56,19 @@
     "latency": "Latency",
     "rust": "Rust",
     "primary": "primary",
-    "fallback": "fallback"
+    "fallback": "fallback",
+    "metric": {
+      "http": "browser HTTP",
+      "tailscale": "Tailscale",
+      "probe": "runner probe",
+      "notExposed": "not exposed",
+      "insufficient": "needs 2+ samples"
+    },
+    "remainingBasis": {
+      "server": "server session end (authoritative)",
+      "policy": "5h30 policy window (server sent no deadline)",
+      "unknown": "no deadline available"
+    }
   },
   "path": {
     "direct": "direct",
@@ -152,7 +164,10 @@
     "enableUpload": "Enable & Upload",
     "optInCancel": "Cancel",
     "optOut": "Disable mirror for this run",
-    "moduleMissing": "Mirror: disabled — the mirror module is not installed on this run"
+    "moduleMissing": "Mirror: disabled — the mirror module is not installed on this run",
+    "speedHistoryServer": "Speed history - {{count}} server samples ({{minutes}} min @ 5s)",
+    "speedHistoryClient": "Speed history - {{count}} client samples ({{minutes}} min @ 3s poll)",
+    "speedHistoryEmpty": "Speed history - no samples yet"
   },
   "logs": {
     "title": "Logs",
@@ -514,7 +529,12 @@
       "retry": "Retry",
       "cancel": "Cancel",
       "mirrorOff": "Mirror OFF",
-      "pipelineComplete": "Pipeline complete"
+      "pipelineComplete": "Pipeline complete",
+      "speedUnavailable": "speed n/a",
+      "etaUnavailable": "eta n/a",
+      "bytesUnavailable": "-- / --",
+      "retryFailed": "Retry failed - {{reason}}",
+      "feedUnavailable": "bytes/speed/ETA: no transport feed yet"
     },
     "errors": {
       "validation": "The request was rejected by validation.",
@@ -879,6 +899,11 @@
     "openInLabSite": "Open {{hostname}} in Lab",
     "labMode": {
       "badge": "Lab"
+    },
+    "zero": {
+      "summary": "No results: {{failed}} of {{total}} sources failed",
+      "summaryWithRateLimit": "No results: {{failed}} of {{total}} sources failed, {{rateLimited}} rate-limited",
+      "viewSources": "View source status"
     }
   },
   "files": {
@@ -925,7 +950,8 @@
       "kind": {
         "folder": "Folder",
         "file": "File"
-      }
+      },
+      "windowed": "Showing {{shown}} of {{total}} (windowed)"
     },
     "view": {
       "list": "List view",

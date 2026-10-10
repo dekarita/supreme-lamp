@@ -17,6 +17,76 @@ const SITES = [
 const idOf = (site: string) => site.replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
 const shot = (page: Page, name: string) => page.screenshot({ path: `screenshots/f91-${name}.png`, fullPage: true });
 
+
+// [WP-09 / #203] WHY THIS FILE ISOLATES THE PUBLIC INTERNET AND CLOSES POPUPS.
+//
+// Honorary mention of a DISPROVEN hypothesis, because the next person to read
+// this will otherwise repeat it:
+//   HYPOTHESIS (this file's first fix, run 38024144029 -> 38024230807):
+//     the lane went from ~1m44s (run 37285114245, 2b66c11) to a systematic
+//     job-ceiling timeout on the commit that added THIS spec (run 37289316623,
+//     1827d3f0). This spec opens a popup at a REAL third-party operator site
+//     (pluto.tv, tubitv.com, archive.org, ...) and used to leave it open;
+//     Playwright's per-test teardown closes the whole context, and a context
+//     close waits for every page in it, so a wedged external load plus
+//     workers:1 would stall the entire run.
+//   RESULT: the lane STILL did not go green after this fix - it failed at the
+//     new 18m step bound (run 38024230807, 04:29:17Z -> 04:47:51Z). The
+//     readable evidence that fix's instrumentation produced points somewhere
+//     else entirely: tests/e2e/f86-ten-sites-deep.spec.ts:101, "librivox.org:
+//     add -> Lab >= 50 URLs -> row opens in RDP (tier) -> download", failing
+//     its 60s budget twice, as test #100 of the run. So the popup theory is at
+//     best INCOMPLETE, and the ~18m is being consumed by accumulated per-test
+//     timeouts across the site-loop specs, not by one wedged teardown.
+//
+// The two changes below are KEPT, because they are correct on their own merits
+// and cost no assertion - they are just no longer claimed as THE fix:
+//   1. every external navigation is FULFILLED with a stub, so no test waits on
+//      a third-party host (the spec's own comment already said "its LOAD may
+//      fail in a sandbox; creation + correct target is the proof" - the URL is
+//      the assertion, the page body never was);
+//   2. every popup this file opens is closed explicitly in a finally, so no
+//      context teardown can block on it.
+async function isolateExternalNetwork(page: Page): Promise<void> {
+  await page.context().route("**/*", async (route) => {
+    const url = route.request().url();
+    let host = "";
+    try {
+      host = new URL(url).hostname;
+    } catch {
+      host = "";
+    }
+    const isLocal = host === "127.0.0.1" || host === "localhost" || host === "[::1]" || host === "";
+    try {
+      if (isLocal) return void (await route.continue());
+      return void (await route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body: "<!doctype html><meta charset=utf-8><title>ghrdp e2e stub</title><p>stub",
+      }));
+    } catch {
+      // A route that raced with a page close cannot fail the lane.
+      try {
+        await route.continue();
+      } catch {
+        /* already handled */
+      }
+    }
+  });
+}
+
+/** Close every page in the context except the fixture page. */
+async function closeExtraPages(page: Page): Promise<void> {
+  for (const other of page.context().pages()) {
+    if (other === page) continue;
+    try {
+      await other.close({ runBeforeUnload: false });
+    } catch {
+      /* a page that is already gone is the goal, not a failure */
+    }
+  }
+}
+
 async function jobsOf(page: Page): Promise<{ url: string; mode: string }[]> {
   const r = await page.evaluate(async () => (await fetch("/__f91/jobs")).json());
   return r.jobs || [];
@@ -57,6 +127,7 @@ async function ensureRows(page: Page, site: string, term: string): Promise<void>
 
 test.describe("F91 mirror mode - 11 sites", () => {
   test("0: the mock exposes the launcher lanes (queue, health, jobs)", async ({ page }) => {
+    await isolateExternalNetwork(page);
     await page.goto("/#/search");
     const health = await page.evaluate(async () => (await fetch("/api/launcher/health")).json());
     expect(health.serviceRunning).toBe(true);
@@ -87,6 +158,9 @@ test.describe("F91 mirror mode - 11 sites", () => {
   for (const site of SITES) {
     test(`${site}: click opens locally + mirrors to RDP (never an error toast)`, async ({ page }) => {
       const term = site === "awesome.re" ? "awesome" : "free";
+      await isolateExternalNetwork(page);
+      let popup: Page | null = null;
+      try {
       await page.goto("/#/search/lab/" + idOf(site) + "?q=" + encodeURIComponent(term));
       await expect(page.getByTestId("lab-inspector")).toBeVisible({ timeout: 20_000 });
       await ensureRows(page, site, term);
@@ -98,10 +172,11 @@ test.describe("F91 mirror mode - 11 sites", () => {
       // of asserting a listener array the event may not have reached yet (that
       // race was the CI red - the queue job landed while opened.length was
       // still 0). A blocked popup now fails LOUDLY here instead of flaking.
-      const [popup] = await Promise.all([
+      const opened = await Promise.all([
         page.context().waitForEvent("page", { timeout: 15_000 }),
         first.click(),
       ]);
+      popup = opened[0];
       expect(popup).toBeTruthy();
       // RDP half: a navigate job for that site's own URL landed in the queue.
       await expect
@@ -109,16 +184,20 @@ test.describe("F91 mirror mode - 11 sites", () => {
         .toBeGreaterThan(0);
       // local half: the popup's URL is the row's own site (its LOAD may fail
       // in a sandbox; creation + correct target is the proof).
-      await expect.poll(() => popup.url(), { timeout: 10_000 }).not.toBe("about:blank");
-      expect(popup.url()).toContain(site);
+      await expect.poll(() => (popup as Page).url(), { timeout: 10_000 }).not.toBe("about:blank");
+      expect((popup as Page).url()).toContain(site);
       // the toast is success-first and the banned string never appears
       await expect(page.locator("#toasts")).toContainText(/Opened locally|Mirrored/i);
       expect(await page.locator("#toasts").textContent()).not.toMatch(/Could not open/);
       await shot(page, site + "-mirror");
+      } finally {
+        await closeExtraPages(page);
+      }
     });
   }
 
   test("download: RDP-Downloads path toast + explorer job from the toast action", async ({ page }) => {
+    await isolateExternalNetwork(page);
     // [F104 §1.4] the file-ish row lives in the F88 search-endpoint lane (the
     // plain + deep lanes carry pages only): archive.org's "a matter of life
     // and death" case answers an .mp4 row. matches:false, so the full list
@@ -144,6 +223,7 @@ test.describe("F91 mirror mode - 11 sites", () => {
   });
 
   test("stream: audio rows render the inline /api/stream player (200 through the relay)", async ({ page }) => {
+    await isolateExternalNetwork(page);
     // [F104 §1.4] the .mp3 row lives in the F88 search-endpoint lane:
     // openculture's "free online philosophy courses" case (matches:false, so
     // the full list must be shown first).
@@ -174,6 +254,7 @@ test.describe("F91 mirror mode - 11 sites", () => {
   });
 
   test("self-test: five operator columns green + global launcher line", async ({ page }) => {
+    await isolateExternalNetwork(page);
     await page.goto("/#/search?selftest=1&noRateLimit=1");
     await page.getByTestId("f87-selftest-run").click();
     await expect(page.getByTestId("f87-selftest-panel")).toHaveAttribute("data-phase", "done", { timeout: 30_000 });
@@ -192,6 +273,9 @@ test.describe("F91 mirror mode - 11 sites", () => {
     // [F104 §2] the diag round trip (health read + queue write + popup) gets
     // the full 45 s: it flaked at the default budget on loaded runners.
     test.setTimeout(45_000);
+    await isolateExternalNetwork(page);
+    let popup: Page | null = null;
+    try {
     await page.goto("/#/search?diag=1");
     const line = page.getByTestId("f91-diag-launcher");
     await expect(line).toContainText("running");
@@ -202,15 +286,19 @@ test.describe("F91 mirror mode - 11 sites", () => {
       (r) => r.url().includes("/api/launcher/queue") && r.status() === 200,
       { timeout: 30_000 },
     );
-    const [popup] = await Promise.all([
+    const opened = await Promise.all([
       page.context().waitForEvent("page", { timeout: 30_000 }),
       page.getByTestId("f87-diag-test-launch").click(),
     ]);
+    popup = opened[0];
     expect((await respPromise).status()).toBe(200);
     await expect(page.getByTestId("f87-diag-test-launch-result")).toHaveAttribute("data-ok", "1", { timeout: 10_000 });
     await expect.poll(async () => (await jobsOf(page)).some((j) => j.url === "https://example.com/")).toBe(true);
-    await expect.poll(() => popup.url(), { timeout: 10_000 }).not.toBe("about:blank");
-    expect(popup.url()).toContain("example.com");
+    await expect.poll(() => (popup as Page).url(), { timeout: 10_000 }).not.toBe("about:blank");
+    expect((popup as Page).url()).toContain("example.com");
     await shot(page, "diag-launcher");
+    } finally {
+      await closeExtraPages(page);
+    }
   });
 });

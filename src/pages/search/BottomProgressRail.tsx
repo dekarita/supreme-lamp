@@ -3,13 +3,21 @@
 // [F69 §2.5] Live wiring (F68 Extension Rank 7): rows come from the accepted
 // FetchAccepted records in searchStore.fetches (fetchId, gid, transport,
 // status) and the cancel action calls the F56-d client lane (cancelFetch).
-// Speed / ETA / sparkline stay reserved (template ids unused) until the
-// /api/progress feed lands. Mirror opt-in stays OFF (locked default).
+// [R-DL / #210 stage 1] The reserved speed / ETA / bytes cells were ABSENT,
+// which read as "not implemented" without saying so and left no place for a
+// real measurement to land. They are now rendered with an explicit
+// "unavailable" state and their own testids, so the rail can never imply a
+// number it does not have:
+//   * no status feed is claimed - the cells say n/a until a supported
+//     transport publishes bytes/speed/ETA (see #210 stage 1 follow-up);
+//   * the job lifecycle that IS known stays distinct: downloading / processing
+//     / completed / failed / cancelled are separate labels, never one blob.
+// Mirror opt-in stays OFF (locked default).
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
 import { useSearchStore, type FetchRecord } from "@/stores/searchStore";
 import { useToastStore } from "@/stores/toastStore";
-import { cancelFetch } from "@/lib/fetchStub";
+import { cancelFetch, retryFetch } from "@/lib/fetchStub";
 
 const STATUS_KEYS: Record<string, string> = {
   queued: "queued",
@@ -30,6 +38,8 @@ const STATUS_KEYS: Record<string, string> = {
 };
 
 const TERMINAL = new Set(["completed", "complete", "failed", "error", "cancelled", "removed", "cancel-requested"]);
+/** [R-DL / #210] A retry is meaningful only once a job ended badly. */
+const RETRYABLE = new Set(["failed", "error", "cancelled", "removed"]);
 
 export function BottomProgressRail() {
   const { t } = useTranslation();
@@ -66,6 +76,29 @@ export function BottomProgressRail() {
     [setFetchStatus, push, t]
   );
 
+  // [R-DL / #210] Retry is only offered for a job that ENDED badly. Offering it
+  // on a live job would start a second transfer under the same id.
+  const onRetry = useCallback(
+    async (f: FetchRecord) => {
+      const key = f.resultId || f.fetchId;
+      setFetchStatus(key, "retrying");
+      try {
+        const out = await retryFetch(f.fetchId, f.sourceSnapshotId || "");
+        if (out.ok) {
+          setFetchStatus(key, "queued");
+          push(t("search.fetch.started"));
+        } else {
+          setFetchStatus(key, "failed");
+          push(t(out.error?.messageKey || "search.errors.generic"));
+        }
+      } catch {
+        setFetchStatus(key, "failed");
+        push(t("search.progress.retryFailed", { reason: f.fetchId }));
+      }
+    },
+    [setFetchStatus, push, t],
+  );
+
   const latest = rows.length ? rows[rows.length - 1] : null;
 
   return (
@@ -85,7 +118,9 @@ export function BottomProgressRail() {
         <span id="f56.search.mirrorOff" data-testid="mirror-off" className="rounded bg-raised px-2 py-0.5 text-tertiary font-mono">
           {t("search.progress.mirrorOff")}
         </span>
-        <span className="ml-auto text-tertiary">{t("search.actions.comingSoon")}</span>
+        <span id="f56.search.transportFeedNote" data-testid="progress-feed-note" className="ml-auto text-tertiary">
+          {t("search.progress.feedUnavailable")}
+        </span>
       </div>
       <ul id="f56.search.progressList" data-testid="progress-list" className="flex flex-col gap-1 min-h-10">
         {rows.length === 0 ? (
@@ -96,6 +131,7 @@ export function BottomProgressRail() {
           rows.map((f) => {
             const status = String(f.status || "queued").toLowerCase();
             const cancellable = Boolean(f.gid) && !TERMINAL.has(status);
+            const retryable = RETRYABLE.has(status);
             return (
               <li
                 key={f.fetchId}
@@ -125,6 +161,45 @@ export function BottomProgressRail() {
                 >
                   {statusLabel(f.status)}
                 </span>
+                <span
+                  id={"f56.search.progressBytes." + f.fetchId}
+                  data-testid="progress-bytes"
+                  data-available="0"
+                  title={t("search.progress.bytesUnavailable")}
+                  className="text-tertiary shrink-0"
+                >
+                  {t("search.progress.bytesUnavailable")}
+                </span>
+                <span
+                  id={"f56.search.progressSpeed." + f.fetchId}
+                  data-testid="progress-speed"
+                  data-available="0"
+                  title={t("search.progress.speedUnavailable")}
+                  className="text-tertiary shrink-0"
+                >
+                  {t("search.progress.speedUnavailable")}
+                </span>
+                <span
+                  id={"f56.search.progressEta." + f.fetchId}
+                  data-testid="progress-eta"
+                  data-available="0"
+                  title={t("search.progress.etaUnavailable")}
+                  className="text-tertiary shrink-0"
+                >
+                  {t("search.progress.etaUnavailable")}
+                </span>
+                {retryable ? (
+                  <button
+                    id={"f56.search.progressRetry." + f.fetchId}
+                    data-testid="progress-retry"
+                    type="button"
+                    aria-label={t("search.actions.retry") + " " + f.fetchId}
+                    onClick={() => void onRetry(f)}
+                    className="h-8 px-2 rounded-md border border-default text-xs text-secondary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+                  >
+                    {t("search.actions.retry")}
+                  </button>
+                ) : null}
                 {cancellable ? (
                   <button
                     id={"f56.search.progressCancel." + f.fetchId}

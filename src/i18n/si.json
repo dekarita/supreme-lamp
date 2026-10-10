@@ -56,7 +56,19 @@
     "latency": "ප්‍රමාදය",
     "rust": "Rust",
     "primary": "ප්‍රාථමික",
-    "fallback": "විකල්ප"
+    "fallback": "විකල්ප",
+    "metric": {
+      "http": "බ්‍රවුසර HTTP",
+      "tailscale": "Tailscale",
+      "probe": "runner පරීක්ෂණය",
+      "notExposed": "ලබා නොදේ",
+      "insufficient": "සාම්පල 2ක්වත් අවශ්‍යයි"
+    },
+    "remainingBasis": {
+      "server": "සේවාදායකය ප්‍රකාශ කළ session අවසානය (නිල)",
+      "policy": "5h30 ප්‍රතිපත්ති කවුළුව (සේවාදායකය අවසන් කාලයක් යැව්වේ නැත)",
+      "unknown": "අවසන් කාලයක් නොමැත"
+    }
   },
   "path": {
     "direct": "සෘජු",
@@ -152,7 +164,10 @@
     "perRoot": "මූලය අනුව දුරමිතික",
     "root": "මූලය:",
     "publishStatus": "ප්‍රකාශන තත්ත්වය",
-    "encryptAlg": "ඇල්ගොරිතමය"
+    "encryptAlg": "ඇල්ගොරිතමය",
+    "speedHistoryServer": "වේග ඉතිහාසය - {{count}} සේවාදායක සාම්පල ({{minutes}} min @ 5s)",
+    "speedHistoryClient": "වේග ඉතිහාසය - {{count}} බ්‍රවුසර සාම්පල ({{minutes}} min @ 3s ඡන්දය)",
+    "speedHistoryEmpty": "වේග ඉතිහාසය - තවම සාම්පල නැත"
   },
   "logs": {
     "title": "සටහන්",
@@ -480,7 +495,12 @@
       "retry": "නැවත උත්සාහ",
       "cancel": "අවලංගු",
       "mirrorOff": "දර්පණය OFF",
-      "pipelineComplete": "පයිප්ලයින් සම්පූර්ණයි"
+      "pipelineComplete": "පයිප්ලයින් සම්පූර්ණයි",
+      "speedUnavailable": "වේගය නොදනී",
+      "etaUnavailable": "ETA නොදනී",
+      "bytesUnavailable": "-- / --",
+      "retryFailed": "නැවත උත්සාහය අසාර්ථකයි - {{reason}}",
+      "feedUnavailable": "bytes/වේගය/ETA: තවම ප්‍රවාහන පෝෂණයක් නැත"
     },
     "errors": {
       "validation": "ඉල්ලීම සත්‍යාපනයෙන් ප්‍රතික්ෂේප විය.",
@@ -845,6 +865,11 @@
     "openInLabSite": "{{hostname}} ලැබ් තුළ විවෘත කරන්න",
     "labMode": {
       "badge": "ලැබ්"
+    },
+    "zero": {
+      "summary": "ප්‍රතිඵල නැත: {{total}} මූලාශ්‍රයෙන් {{failed}} ක් අසාර්ථක විය",
+      "summaryWithRateLimit": "ප්‍රතිඵල නැත: {{total}} මූලාශ්‍රයෙන් {{failed}} ක් අසාර්ථක, {{rateLimited}} ක් සීමාවට යටත්",
+      "viewSources": "මූලාශ්‍ර තත්ත්වය බලන්න"
     }
   },
   "files": {
@@ -891,7 +916,8 @@
       "kind": {
         "folder": "ෆෝල්ඩරය",
         "file": "ගොනුව"
-      }
+      },
+      "windowed": "{{total}} න් {{shown}} ක් පෙන්වයි (කවුළුගත)"
     },
     "view": {
       "list": "ලැයිස්තු දැක්ම",

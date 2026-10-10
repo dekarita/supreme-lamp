@@ -38,6 +38,14 @@ export interface MirrorModel {
   encryptionDefect: boolean;
   // [F46 §1] the complete, untruncated failure reason per file plus the raw
   // attempt records behind it (the same table the mirror-diag artifact carries).
+  /**
+   * [R-METRICS / #212] Where `speedHistory` came from. The caption must follow
+   * this, not the array length: the server appends on the watcher's 5s loop
+   * (cap 90) while the client fallback pushes once per 3s progress poll (cap
+   * 90). Same length, different span - so "7.5 min" is only true for the
+   * server-produced array.
+   */
+  speedHistoryOrigin: "server" | "client-fallback";
   files: {
     name: string;
     phase: string;
@@ -72,9 +80,13 @@ export function mirrorModel(d: Any, prevHistory: number[]): MirrorModel {
   const pct = mirrorPercent(liveBytes, agg.bytesTotal);
   const spd = transfer.speed;
   let speedHistory: number[];
-  const hs = pData.speedHistory && pData.speedHistory.length ? pData.speedHistory.slice(-90) : null;
-  if (hs) speedHistory = hs;
-  else {
+  let speedHistoryOrigin: "server" | "client-fallback" = "client-fallback";
+  const serverSeries = Array.isArray(pData.speedHistory) ? pData.speedHistory : null;
+  const hs = serverSeries && serverSeries.length ? serverSeries.slice(-90) : null;
+  if (hs) {
+    speedHistory = hs;
+    speedHistoryOrigin = "server";
+  } else {
     speedHistory = prevHistory.slice();
     speedHistory.push(spd);
     if (speedHistory.length > 90) speedHistory.shift();
@@ -188,5 +200,6 @@ export function mirrorModel(d: Any, prevHistory: number[]): MirrorModel {
     encryptionDefect,
     files,
     speedHistory,
+    speedHistoryOrigin,
   };
 }

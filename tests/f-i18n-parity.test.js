@@ -77,7 +77,12 @@ const SI_FILE = "src/i18n/si.json";
 // branches' keys, verified lossless (0 keys lost vs #173's 1010, 0 vs #174's
 // 1022, 0 invented).
 // measured 2026-10-07 at HEAD e6dc5bd (post-#174 merge), = 1030
-const EXPECTED_FLAT_KEYS = 1030;
+// re-measured 2026-10-10 for R-METRICS (#211/#212) + R-SEARCH (#216) +
+// R-FILES (#217) + R-DL (#210): +20 keys
+// (connection.metric.*, connection.remainingBasis.*, mirror.speedHistory*,
+//  search.zero.*, search.progress.*Unavailable/retryFailed,
+//  files.results.windowed, search.progress.feedUnavailable) = 1050
+const EXPECTED_FLAT_KEYS = 1050;
 
 // Legacy untranslated si values (byte-identical to en). Frozen deliberately:
 // operator-owned copy that predates this step (mirrorHostMatrix/*, egress.line,
