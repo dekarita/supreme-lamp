@@ -1,10 +1,21 @@
-// [F41 plan §4.16-§4.18 + §3] AppShell: TopBar (48px, sticky) + Sidebar
+// [F41 plan §4.16-§4.18 + §3] AppShell: TopBar (sticky) + Sidebar
 // (240px/64px, sticky, <1024 overlay) + Main (max-w-1600) + BottomBar (32px,
 // sticky, the ONLY surface allowed to render the four time fields + clock -
 // enforced by tests/smoke/bottom-bar-time.test.ts + scripts/check-bottom-bar-time.mjs).
-import { NavLink, Outlet, useNavigate } from "react-router-dom";
-import { Activity, ChevronsLeft, ClipboardList, Clock, Database, FlaskConical, Folder, Globe, KeyRound, Menu, Moon, Search, Settings, Sun, Type, Zap } from "lucide-react";
-import { useEffect } from "react";
+//
+// [R-GLASS / #213] The chrome is now ONE glass surface (the sticky TopBar) with
+// the sidebar, the status bar and the mobile bar as paint-only nested surfaces.
+// That is the compositor budget from #213 §6 made structural: exactly one
+// element may own `backdrop-filter` in the normal shell.
+//
+// [R-UX / #214] Responsive instead of compressed: the phone gets a 5-slot
+// primary bar (Overview / Search / Files / Mirror / More) and the tablet keeps
+// the desktop sidebar, chosen from available space rather than device branding.
+// Safe-area insets, 44px targets and a visible drawer close replace the
+// hover-only affordances the old shell relied on.
+import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
+import { Activity, ChevronsLeft, ClipboardList, Clock, Database, FlaskConical, Folder, Globe, KeyRound, Menu, Moon, MoreHorizontal, Search, Settings, Sun, Type, X, Zap } from "lucide-react";
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { CommandPalette } from "@/components/layout/CommandPalette";
 // [M2 §2.3] Both fences below are INSIDE the shell's own ChromeBoundary, so they
@@ -27,6 +38,15 @@ import { elapsedSeconds, remainingTimeFromStore } from "@/stores/telemetryStore"
 import { logonRowText, rdpUsageSeconds } from "@/lib/domain/native";
 import { useNow } from "@/lib/useNow";
 import { logButtonAction } from "@/lib/collectorAgent";
+// [R-GLASS] the shared glass primitive + the decorative backdrop.
+import GlassContainer from "@/components/primitives/GlassContainer";
+import AppBackdrop from "@/components/layout/AppBackdrop";
+import { useVisualQualityRootAttribute } from "@/lib/glass/useVisualQuality";
+// [R-GLASS / #213 §8] Measured fallback: a browser that cannot composite the
+// blur gets the opaque presentation for the rest of the session.
+import { useGlassPerfWatchdog } from "@/lib/glass/perfWatchdog";
+// [R-UX / #214 §4] Escape + focus trap + focus restoration for the mobile drawer.
+import { useOverlayA11y } from "@/lib/useOverlayA11y";
 
 function clockText(ms: number): string {
   const d = new Date(ms);
@@ -81,12 +101,29 @@ function TopBar() {
   const watcherActive = !!mirror;
   const mirrorOn = !!(mirror && (mirror.files.length > 0 || mirror.pubDot !== ""));
 
+  // [#214 §4] 44px minimum on every top-bar control; the glyph stays 20px.
+  const barBtn =
+    "tap-44 inline-flex items-center justify-center gap-1 px-2 text-xs font-medium rounded-md border border-default text-secondary hover:bg-raised hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-base whitespace-nowrap";
+
   return (
-    <header role="banner" className="sticky top-0 z-40 h-12 bg-surface border-b border-default flex items-center px-4 gap-3">
+    <GlassContainer
+      as="header"
+      surface="backdrop"
+      variant="tinted"
+      radius="none"
+      role="banner"
+      data-testid="app-topbar"
+      className={cn(
+        "sticky top-0 z-40 flex items-center gap-3 px-4 safe-x",
+        // [#214 §6] the iOS status bar / notch.
+        "pt-[max(0.5rem,env(safe-area-inset-top))] pb-2 min-h-14"
+      )}
+      style={{ borderTop: "none", borderLeft: "none", borderRight: "none" }}
+    >
       <button
         data-testid="topbar-mobile-menu"
         type="button"
-        className="lg:hidden text-secondary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent rounded"
+        className="tap-44 -ml-2 inline-flex items-center justify-center rounded-md text-secondary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent lg:hidden"
         aria-label={t("sidebar.menu")}
         onClick={() => setMobileOpen(true)}
       >
@@ -156,7 +193,7 @@ function TopBar() {
                 elapsedMs: Math.round(performance.now() - _start),
               });
             }}
-            className="px-2 py-0.5 text-xs rounded-md border border-danger/50 text-danger font-medium hover:bg-danger/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent whitespace-nowrap"
+            className="px-2 py-0.5 text-xs rounded-md border border-danger/50 text-danger font-medium hover:bg-danger/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent whitespace-nowrap min-h-[32px]"
           >
             {t("activity.wsReconnect")}
           </button>
@@ -173,7 +210,7 @@ function TopBar() {
           rel="noopener"
           title={t("toggle.classicUi.title")}
           aria-label={t("toggle.classicUi.label")}
-          className="px-2 py-1 text-xs font-medium rounded-md border border-default text-secondary hover:bg-raised hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent whitespace-nowrap"
+          className={barBtn}
         >
           {t("toggle.classicUi.short")}
         </a>
@@ -183,7 +220,7 @@ function TopBar() {
           type="button"
           onClick={toggleLang}
           aria-label={t("toggle.language.label")}
-          className="px-2 py-1 text-xs font-medium rounded-md border border-default text-secondary hover:bg-raised hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+          className={barBtn}
         >
           {lang === "si" ? t("toggle.language.shortEn") : t("toggle.language.shortSi")}
         </button>
@@ -195,7 +232,7 @@ function TopBar() {
           aria-pressed={scale !== "comfort"}
           aria-label={t("toggle.scale.label") + ": " + t("toggle.scale." + scale)}
           title={t("toggle.scale.label") + ": " + t("toggle.scale." + scale)}
-          className="px-2 py-1 text-xs font-medium rounded-md border border-default text-secondary hover:bg-raised hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent inline-flex items-center gap-1"
+          className={cn(barBtn, "inline-flex items-center gap-1")}
         >
           <Type className="size-3.5" aria-hidden />
           <span id="textScaleLabel">{scale === "comfort" ? "Aa" : scale === "large" ? "A+" : "A++"}</span>
@@ -208,13 +245,13 @@ function TopBar() {
           aria-pressed={theme === "light"}
           aria-label={t("toggle.theme.label")}
           title={t("toggle.theme.label")}
-          className="px-2 py-1 text-xs font-medium rounded-md border border-default text-secondary hover:bg-raised hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent inline-flex items-center gap-1"
+          className={cn(barBtn, "inline-flex items-center gap-1")}
         >
           {theme === "light" ? <Sun className="size-3.5" aria-hidden /> : <Moon className="size-3.5" aria-hidden />}
-          <span id="themeLabel">{theme}</span>
+          <span id="themeLabel" className="hidden sm:inline">{theme}</span>
         </button>
       </div>
-    </header>
+    </GlassContainer>
   );
 }
 
@@ -255,6 +292,20 @@ const NAV: NavItem[] = [
   { to: "/settings", key: "nav.settings", icon: Settings },
 ];
 
+/**
+ * [R-UX / #214 §5] The phone's PRIMARY bar: 5 slots including "More".
+ * There is deliberately no "/downloads" entry — downloads live in the
+ * explorer's progress rail and the search fetch card, and #214 forbids
+ * inventing a route to make a nav list look tidy. "More" opens the SAME
+ * 11-destination drawer the desktop sidebar becomes below lg.
+ */
+const MOBILE_PRIMARY: NavItem[] = [
+  NAV[0],
+  NAV[1],
+  NAV[5],
+  NAV[6],
+];
+
 function Sidebar() {
   const { t } = useTranslation();
   const collapsed = useSidebarStore((s) => s.collapsed);
@@ -268,6 +319,13 @@ function Sidebar() {
   // no lane/gate/enabled field left on any entry, so no /diag answer, store
   // field or cached flag can drop an item. Other lanes were never filtered here.
   const visibleNav = NAV;
+  const closeRef = useRef<HTMLButtonElement | null>(null);
+  const drawerRef = useRef<HTMLElement | null>(null);
+  // [#214 §4] Escape closes the drawer, Tab is trapped inside it, and focus
+  // returns to the control that opened it. The Android back gesture is NOT the
+  // only way out any more: the drawer has a visible close button.
+  useOverlayA11y({ open: mobileOpen, onClose: () => setMobileOpen(false), containerRef: drawerRef });
+
   // [F77 §2.2] one-shot purge of lane flags an OLDER bundle may have cached in this
   // browser (the stale-dashboard vector). Idempotent; storage-less hosts ignored.
   useEffect(() => {
@@ -282,19 +340,47 @@ function Sidebar() {
 
   return (
     <>
-      <div className={cn("fixed inset-0 z-40 bg-black/40 lg:hidden", mobileOpen ? "block" : "hidden")} onClick={() => setMobileOpen(false)} aria-hidden />
-      <aside
+      <div className={cn("fixed inset-0 z-40 bg-black/50 lg:hidden", mobileOpen ? "block" : "hidden")} onClick={() => setMobileOpen(false)} aria-hidden />
+      <GlassContainer
+        as="aside"
+        surface="nested"
+        variant="tinted"
+        radius="none"
         aria-label={t("sidebar.nav")}
         data-testid="sidebar"
+        ref={drawerRef as React.Ref<HTMLElement>}
         className={cn(
-          "sticky top-12 self-start h-[calc(100vh-5rem)] bg-surface border-r border-default",
-          "flex flex-col shrink-0 transition-[width] duration-med z-40",
+          "self-start border-r flex flex-col shrink-0 transition-[width] duration-med z-40",
+          // [#214 §6] clear the safe area on the phone, where the drawer is a
+          // full-height overlay.
+          "pt-[max(0px,env(safe-area-inset-top))] pb-[max(0px,env(safe-area-inset-bottom))] pl-[max(0px,env(safe-area-inset-left))]",
           collapsed ? "w-16" : "w-60",
-          "max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:top-0 max-lg:h-full max-lg:w-60 max-lg:z-50",
+          "lg:sticky lg:top-14 lg:h-[calc(100dvh-5.5rem)]",
+          "max-lg:fixed max-lg:inset-y-0 max-lg:left-0 max-lg:top-0 max-lg:h-full max-lg:w-[min(17rem,85vw)] max-lg:z-50",
           mobileOpen ? "max-lg:block" : "max-lg:hidden"
         )}
+        style={{ borderTop: "none", borderBottom: "none", borderLeft: "none" }}
       >
-        <nav aria-label={t("sidebar.nav")} className="flex-1 overflow-y-auto py-3">
+        {/* [#214 §7] Rendered only while the drawer is OPEN: a control that
+            belongs to an overlay should not exist in the accessibility tree
+            when that overlay is closed (and it must not be the Android back
+            gesture alone that gets the operator out). */}
+        {mobileOpen ? (
+          <div className="flex items-center gap-2 px-3 py-2 lg:hidden">
+            <span className="text-xs font-semibold uppercase tracking-wide text-tertiary">{t("sidebar.nav")}</span>
+            <button
+              ref={closeRef}
+              type="button"
+              onClick={() => setMobileOpen(false)}
+              aria-label={t("sidebar.close")}
+              data-testid="sidebar-close"
+              className="tap-44 ml-auto inline-flex items-center justify-center rounded-md text-secondary hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
+              <X className="size-5" aria-hidden />
+            </button>
+          </div>
+        ) : null}
+        <nav aria-label={t("sidebar.nav")} className="flex-1 overflow-y-auto py-1 lg:py-3">
           {visibleNav.map((item) => {
             const Icon = item.icon;
             // [F76 §2.1] sidebar.* label wins; nav.* stays the translated fallback
@@ -310,14 +396,23 @@ function Sidebar() {
                 onClick={() => setMobileOpen(false)}
                 className={({ isActive }) =>
                   cn(
-                    "flex items-center gap-3 px-3 py-2 mx-2 rounded-md text-sm",
-                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent",
-                    isActive ? "bg-accent/10 text-accent font-medium" : "text-secondary hover:bg-raised hover:text-primary"
+                    // [#214 §4] 44px tall rows, and the name stays VISIBLE even
+                    // when the desktop sidebar is collapsed - on a touch device
+                    // a `title` attribute is not an accessible name.
+                    "flex items-center gap-3 px-3 mx-2 rounded-md text-sm min-h-[44px]",
+                    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-inset",
+                    isActive
+                      ? "bg-accent/15 text-accent font-semibold shadow-[inset_2px_0_0_0_var(--color-accent)]"
+                      : "text-secondary hover:bg-raised/60 hover:text-primary"
                   )
                 }
               >
                 <Icon className="size-5 shrink-0" aria-hidden />
                 <span className={cn("truncate", collapsed && "lg:hidden")}>{label}</span>
+                {/* Collapsed desktop: the name is still in the accessible name
+                    and still in the DOM, so a focus ring lands on something a
+                    screen reader can announce. */}
+                {collapsed ? <span className="sr-only lg:not-sr-only lg:hidden">{label}</span> : null}
               </NavLink>
             );
           })}
@@ -335,7 +430,7 @@ function Sidebar() {
               setMobileOpen(false);
               navigate(labIndexRoute());
             }}
-            className="mx-2 mb-1 flex items-center gap-3 px-3 py-2 rounded-md text-sm text-secondary hover:bg-raised hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            className="mx-2 mb-1 flex items-center gap-3 px-3 rounded-md text-sm text-secondary hover:bg-raised/60 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent min-h-[44px]"
           >
             <FlaskConical className="size-5 shrink-0" aria-hidden />
             <span className={cn("truncate", collapsed && "lg:hidden")}>{t("featureLab.entry")}</span>
@@ -347,19 +442,85 @@ function Sidebar() {
           aria-label={collapsed ? t("sidebar.expand") : t("sidebar.collapse")}
           aria-pressed={collapsed}
           data-testid="sidebar-collapse"
-          className="mx-2 mb-3 p-2 rounded-md text-tertiary hover:bg-raised focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent hidden lg:block"
+          className="tap-44 mx-2 mb-3 inline-flex items-center justify-center rounded-md text-tertiary hover:bg-raised/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent hidden lg:inline-flex"
         >
           <ChevronsLeft className={cn("size-4 transition-transform duration-fast", collapsed && "rotate-180")} aria-hidden />
         </button>
-      </aside>
+      </GlassContainer>
     </>
+  );
+}
+
+/**
+ * [R-UX / #214 §5] The phone bar. Five slots, each 44px+ tall, each with a
+ * visible label (icon-only navigation was explicitly rejected in #214 §5 —
+ * eleven abstract glyphs are not learnable). It is a `nav` with its OWN
+ * testid so the locked desktop selector `[data-testid="sidebar"] nav a`
+ * counts exactly what it counted before.
+ */
+function MobileNav() {
+  const { t } = useTranslation();
+  const setMobileOpen = useSidebarStore((s) => s.setMobileOpen);
+  const location = useLocation();
+  return (
+    <GlassContainer
+      as="nav"
+      surface="nested"
+      variant="tinted"
+      radius="none"
+      aria-label={t("nav.primary")}
+      data-testid="mobile-nav"
+      className={cn(
+        "sticky bottom-0 z-40 flex items-stretch lg:hidden safe-x border-b-0",
+        "pb-[max(0.25rem,env(safe-area-inset-bottom))]"
+      )}
+      style={{ borderBottom: "none", borderLeft: "none", borderRight: "none" }}
+    >
+      {MOBILE_PRIMARY.map((item) => {
+        const Icon = item.icon;
+        const label = item.labelKey ? t(item.labelKey, { defaultValue: t(item.key) }) : t(item.key);
+        const active = item.to === "/" ? location.pathname === "/" : location.pathname.startsWith(item.to);
+        return (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            end={item.to === "/"}
+            data-testid={"mobile-nav-" + (item.id || item.to.replace(/\//g, "") || "home")}
+            aria-current={active ? "page" : undefined}
+            className={cn(
+              "flex min-h-[52px] flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[11px] leading-tight",
+              "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent",
+              active ? "text-accent font-semibold" : "text-secondary"
+            )}
+          >
+            <Icon className="size-5 shrink-0" aria-hidden />
+            <span className="max-w-full truncate">{label}</span>
+          </NavLink>
+        );
+      })}
+      <button
+        type="button"
+        data-testid="mobile-nav-more"
+        onClick={() => setMobileOpen(true)}
+        aria-label={t("nav.more")}
+        className={cn(
+          "flex min-h-[52px] flex-1 flex-col items-center justify-center gap-0.5 px-1 text-[11px] leading-tight text-secondary",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent"
+        )}
+      >
+        <MoreHorizontal className="size-5 shrink-0" aria-hidden />
+        <span className="max-w-full truncate">{t("nav.more")}</span>
+      </button>
+    </GlassContainer>
   );
 }
 
 function Main() {
   return (
     <main id="main" className="flex-1 min-w-0 min-h-0">
-      <div className="max-w-shell mx-auto px-4 md:px-6 py-6">
+      {/* [#214 §8] bottom padding keeps the last row clear of the phone bar and
+          the toasts, instead of relying on the operator to scroll "far enough". */}
+      <div className="max-w-shell mx-auto px-4 md:px-6 py-5 pb-24 lg:pb-6">
         <Outlet />
       </div>
     </main>
@@ -395,7 +556,21 @@ function BottomBar() {
   const row = logonRowText((rl && rl.authLast) || null, (rl && rl.logonCollector) || (native && native.logonCollector) || null, now);
 
   return (
-    <footer role="contentinfo" className="sticky bottom-0 z-40 h-8 bg-surface border-t border-default flex items-center px-4 gap-6 overflow-x-auto">
+    <GlassContainer
+      as="footer"
+      surface="nested"
+      variant="tinted"
+      radius="none"
+      role="contentinfo"
+      data-testid="app-bottombar"
+      className={cn(
+        "z-30 flex items-center gap-6 overflow-x-auto px-4 h-9 safe-x",
+        // [#214 §8] on the phone the status row scrolls with the content
+        // instead of stacking under the primary bar.
+        "lg:sticky lg:bottom-0 max-lg:static"
+      )}
+      style={{ borderBottom: "none", borderLeft: "none", borderRight: "none" }}
+    >
       <span id="status-runner-elapsed" className="bb-item font-mono text-xs text-tertiary whitespace-nowrap">
         {t("status.runnerElapsed")}{" "}
         <span id="timerElapsed" className="text-secondary" data-testid="bb-elapsed">
@@ -456,7 +631,7 @@ function BottomBar() {
       >
         {"ui: " + UI_SHA7}
       </span>
-    </footer>
+    </GlassContainer>
   );
 }
 
@@ -467,6 +642,10 @@ function useSessionNative() {
 export function AppShell() {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  // [R-GLASS] publishes the RESOLVED quality on <html> for CSS + the browser lab.
+  const { resolved } = useVisualQualityRootAttribute();
+  // [R-GLASS / #213 §8] Three bounded frame samples; one-way latch to opaque.
+  useGlassPerfWatchdog(resolved !== "opaque");
 
   // [F56-c] File Explorer = Alt+E, Search = Alt+F (session §1). Ctrl+K is
   // handled by CommandPalette (Plan §D: opens the palette; Search command
@@ -488,7 +667,10 @@ export function AppShell() {
   }, [navigate]);
 
   return (
-    <div className="min-h-screen bg-base text-primary flex flex-col">
+    // [R-GLASS] `relative z-[1]` lifts the whole shell above the fixed
+    // decorative backdrop (.app-backdrop is z-index 0).
+    <div className="relative z-[1] flex min-h-[100dvh] flex-col text-primary">
+      <AppBackdrop />
       <a href="#main" className="skip-link">
         {t("app.skipToMain")}
       </a>
@@ -505,6 +687,7 @@ export function AppShell() {
         <Main />
       </div>
       <BottomBar />
+      <MobileNav />
       {/* [M2 §2.3] Fenced: Ctrl+K is a convenience, not the way home - every
           route stays reachable from the sidebar and the Alt+E/Alt+F hotkeys. */}
       <ChromeBoundary surface="command-palette">

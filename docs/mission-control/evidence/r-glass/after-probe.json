@@ -1,0 +1,762 @@
+{
+ "results": [
+  {
+   "route": "/",
+   "vp": "phone360",
+   "resolved": "frosted",
+   "glassCount": 9,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/",
+   "vp": "phone390",
+   "resolved": "frosted",
+   "glassCount": 9,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/",
+   "vp": "tablet768",
+   "resolved": "frosted",
+   "glassCount": 9,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/",
+   "vp": "desktop1440",
+   "resolved": "frosted",
+   "glassCount": 9,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/search",
+   "vp": "phone360",
+   "resolved": "frosted",
+   "glassCount": 4,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/search",
+   "vp": "phone390",
+   "resolved": "frosted",
+   "glassCount": 4,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/search",
+   "vp": "tablet768",
+   "resolved": "frosted",
+   "glassCount": 4,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/search",
+   "vp": "desktop1440",
+   "resolved": "frosted",
+   "glassCount": 4,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/files",
+   "vp": "phone360",
+   "resolved": "frosted",
+   "glassCount": 4,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 4.98,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/files",
+   "vp": "phone390",
+   "resolved": "frosted",
+   "glassCount": 4,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 4.98,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/files",
+   "vp": "tablet768",
+   "resolved": "frosted",
+   "glassCount": 4,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 4.98,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/files",
+   "vp": "desktop1440",
+   "resolved": "frosted",
+   "glassCount": 4,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 4.98,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/mirror",
+   "vp": "phone360",
+   "resolved": "frosted",
+   "glassCount": 8,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/mirror",
+   "vp": "phone390",
+   "resolved": "frosted",
+   "glassCount": 8,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/mirror",
+   "vp": "tablet768",
+   "resolved": "frosted",
+   "glassCount": 8,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/mirror",
+   "vp": "desktop1440",
+   "resolved": "frosted",
+   "glassCount": 8,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/telemetry",
+   "vp": "phone360",
+   "resolved": "frosted",
+   "glassCount": 5,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/telemetry",
+   "vp": "phone390",
+   "resolved": "frosted",
+   "glassCount": 5,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/telemetry",
+   "vp": "tablet768",
+   "resolved": "frosted",
+   "glassCount": 5,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/telemetry",
+   "vp": "desktop1440",
+   "resolved": "frosted",
+   "glassCount": 5,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/settings",
+   "vp": "phone360",
+   "resolved": "frosted",
+   "glassCount": 12,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.82,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/settings",
+   "vp": "phone390",
+   "resolved": "frosted",
+   "glassCount": 12,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.82,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/settings",
+   "vp": "tablet768",
+   "resolved": "frosted",
+   "glassCount": 12,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.82,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/settings",
+   "vp": "desktop1440",
+   "resolved": "frosted",
+   "glassCount": 12,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.82,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/health",
+   "vp": "phone360",
+   "resolved": "frosted",
+   "glassCount": 4,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.96,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/health",
+   "vp": "phone390",
+   "resolved": "frosted",
+   "glassCount": 4,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.96,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/health",
+   "vp": "tablet768",
+   "resolved": "frosted",
+   "glassCount": 4,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.96,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/health",
+   "vp": "desktop1440",
+   "resolved": "frosted",
+   "glassCount": 4,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.44,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/sessions",
+   "vp": "phone360",
+   "resolved": "frosted",
+   "glassCount": 9,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/sessions",
+   "vp": "phone390",
+   "resolved": "frosted",
+   "glassCount": 9,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/sessions",
+   "vp": "tablet768",
+   "resolved": "frosted",
+   "glassCount": 9,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/sessions",
+   "vp": "desktop1440",
+   "resolved": "frosted",
+   "glassCount": 9,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 5.71,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/connections",
+   "vp": "phone360",
+   "resolved": "frosted",
+   "glassCount": 6,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.44,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/connections",
+   "vp": "phone390",
+   "resolved": "frosted",
+   "glassCount": 6,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.44,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/connections",
+   "vp": "tablet768",
+   "resolved": "frosted",
+   "glassCount": 6,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.44,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/connections",
+   "vp": "desktop1440",
+   "resolved": "frosted",
+   "glassCount": 6,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.44,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/keys",
+   "vp": "phone360",
+   "resolved": "frosted",
+   "glassCount": 6,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.44,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/keys",
+   "vp": "phone390",
+   "resolved": "frosted",
+   "glassCount": 6,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.44,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/keys",
+   "vp": "tablet768",
+   "resolved": "frosted",
+   "glassCount": 6,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.44,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/keys",
+   "vp": "desktop1440",
+   "resolved": "frosted",
+   "glassCount": 6,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.44,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/collector",
+   "vp": "phone360",
+   "resolved": "frosted",
+   "glassCount": 10,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.82,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/collector",
+   "vp": "phone390",
+   "resolved": "frosted",
+   "glassCount": 10,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.82,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/collector",
+   "vp": "tablet768",
+   "resolved": "frosted",
+   "glassCount": 10,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.82,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  },
+  {
+   "route": "/collector",
+   "vp": "desktop1440",
+   "resolved": "frosted",
+   "glassCount": 10,
+   "samplingCount": 1,
+   "sampling": [
+    "blur(8px) saturate(1)"
+   ],
+   "overflow": "none",
+   "contrastMin": 6.44,
+   "contrastFailing": 0,
+   "contrastFailingSample": [],
+   "backdrop": true
+  }
+ ],
+ "errors": [
+  "[phone360 /] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone360 /] console: Failed to load resource: net::ERR_CERT_AUTHORITY_INVALID",
+  "[phone360 /] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone390 /] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone390 /] console: Failed to load resource: net::ERR_CERT_AUTHORITY_INVALID",
+  "[phone390 /] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[tablet768 /] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[tablet768 /] console: Failed to load resource: net::ERR_CERT_AUTHORITY_INVALID",
+  "[tablet768 /] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[desktop1440 /] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[desktop1440 /] console: Failed to load resource: net::ERR_CERT_AUTHORITY_INVALID",
+  "[desktop1440 /] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone360 /search] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone360 /search] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone360 /search] console: Failed to load resource: net::ERR_CONNECTION_CLOSED",
+  "[phone390 /search] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone390 /search] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone390 /search] console: Failed to load resource: net::ERR_CONNECTION_CLOSED",
+  "[tablet768 /search] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[tablet768 /search] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[tablet768 /search] console: Failed to load resource: net::ERR_CONNECTION_CLOSED",
+  "[desktop1440 /search] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[desktop1440 /search] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[desktop1440 /search] console: Failed to load resource: net::ERR_CONNECTION_CLOSED",
+  "[phone360 /files] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone360 /files] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone390 /files] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone390 /files] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[tablet768 /files] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[tablet768 /files] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[desktop1440 /files] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[desktop1440 /files] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone360 /mirror] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone360 /mirror] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone390 /mirror] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone390 /mirror] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[tablet768 /mirror] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[tablet768 /mirror] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[desktop1440 /mirror] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[desktop1440 /mirror] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone360 /telemetry] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone360 /telemetry] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone390 /telemetry] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone390 /telemetry] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[tablet768 /telemetry] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[tablet768 /telemetry] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[desktop1440 /telemetry] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[desktop1440 /telemetry] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone360 /settings] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone360 /settings] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone390 /settings] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone390 /settings] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[tablet768 /settings] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[tablet768 /settings] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[desktop1440 /settings] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[desktop1440 /settings] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone360 /health] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone360 /health] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone390 /health] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone390 /health] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[tablet768 /health] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[tablet768 /health] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[desktop1440 /health] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[desktop1440 /health] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone360 /sessions] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone360 /sessions] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone390 /sessions] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone390 /sessions] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[tablet768 /sessions] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[tablet768 /sessions] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[desktop1440 /sessions] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[desktop1440 /sessions] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone360 /connections] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone360 /connections] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone390 /connections] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone390 /connections] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[tablet768 /connections] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[tablet768 /connections] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[desktop1440 /connections] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[desktop1440 /connections] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone360 /keys] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone360 /keys] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone390 /keys] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone390 /keys] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[tablet768 /keys] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[tablet768 /keys] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[desktop1440 /keys] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[desktop1440 /keys] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone360 /collector] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone360 /collector] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[phone390 /collector] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[phone390 /collector] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[tablet768 /collector] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[tablet768 /collector] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404",
+  "[desktop1440 /collector] console: Failed to load resource: the server responded with a status of 404 (Not Found)",
+  "[desktop1440 /collector] console: WebSocket connection to 'ws://127.0.0.1:4180/ws' failed: Error during WebSocket handshake: Unexpected response code: 404"
+ ]
+}

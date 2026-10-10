@@ -1,10 +1,181 @@
-/* [F41 plan §1.5/§7] Global base + resets + reduced-motion + reduced-transparency.
+/* [F41 plan §1.5/§7 + R-GLASS #213] Global base + resets + reduced-motion +
+   reduced-transparency.
    The F38/F39 glass materials (aurora, blur tiers, 0 8px 32px shadows, 16px radii)
-   are RETIRED here: solid surfaces, enterprise geometry, 0-200ms transitions only. */
+   were RETIRED by v2. R-GLASS re-introduces ONE auditable glass system instead
+   of those scattered utilities: every translucent surface goes through
+   src/components/primitives/GlassContainer.tsx, which is the only writer of
+   `backdrop-filter` in the app. Enterprise geometry and the 0-200ms motion
+   budget are unchanged. */
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* ------------------------------------------------------------------------- *
+ * R-GLASS — the decorative backdrop (#213 §8: "1 decorative backdrop").
+ * A pure CSS gradient field. It is deliberately NOT a screenshot, a file
+ * thumbnail or a DVR frame: any of those can contain operator secrets.
+ * ------------------------------------------------------------------------- */
+.app-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-color: var(--glass-backdrop-base);
+  background-image:
+    radial-gradient(1100px 560px at 10% -12%, var(--glass-backdrop-a), transparent 60%),
+    radial-gradient(880px 520px at 88% 6%, var(--glass-backdrop-b), transparent 62%),
+    radial-gradient(1000px 680px at 72% 102%, var(--glass-backdrop-c), transparent 60%),
+    radial-gradient(720px 480px at 18% 84%, var(--glass-backdrop-d), transparent 62%);
+}
+/* The veil: bound the field's brightness instead of filtering it, so text
+   contrast is a property of the paint and not of the artwork behind it. */
+.app-backdrop::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(180deg, var(--glass-veil-top), var(--glass-veil-bottom));
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-backdrop { background-attachment: scroll; }
+}
+
+/* The single glass surface. Values arrive as inline CSS custom properties
+   computed by GlassContainer from src/lib/glass/quality.ts. */
+.glass {
+  position: relative;
+  border-radius: var(--glass-radius, var(--radius-lg));
+  background-color: rgb(var(--glass-tint-rgb) / var(--glass-alpha, 1));
+  box-shadow: var(--glass-shadow);
+  border: 1px solid
+    rgb(var(--glass-edge-rgb) / var(--glass-border-alpha, 0));
+  /* Alpha transition only. `--glass-blur` is intentionally NOT transitioned:
+     animating a backdrop-filter rebuilds the read every frame, which is the
+     exact cost the quantization in quality.ts exists to avoid. */
+  transition: background-color var(--motion-med), border-color var(--motion-med);
+}
+/* Opaque mode / zero transparency: fall back to the contrast-tested solid
+   border token instead of a 0-alpha hairline. */
+.glass[data-glass-border-alpha="0"] {
+  border-color: var(--color-border-default);
+}
+.glass[data-glass-samples="1"] {
+  -webkit-backdrop-filter: blur(var(--glass-blur, 0px)) saturate(var(--glass-saturate, 1));
+  backdrop-filter: blur(var(--glass-blur, 0px)) saturate(var(--glass-saturate, 1));
+}
+/* Paint-only. Belt and braces: GlassContainer already refuses to set a blur
+   here, but a nested surface must never be able to inherit one. */
+.glass[data-glass-samples="0"] {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+/* Unsupported browsers: readable opaque, not a broken transparent card. */
+@supports not ((backdrop-filter: blur(2px)) or (-webkit-backdrop-filter: blur(2px))) {
+  .glass {
+    --glass-alpha: 1;
+    border-color: var(--color-border-default);
+  }
+  .app-backdrop { display: none; }
+  html { background: var(--color-bg-base); }
+}
+
+/* Explicit opaque preference, resolved-opaque, reduced transparency and the
+   performance latch all share one switch: the RESOLVED quality attribute. */
+html[data-glass-quality-resolved="opaque"] .glass {
+  --glass-alpha: 1;
+  border-color: var(--color-border-default);
+}
+html[data-glass-quality-resolved="opaque"] .glass[data-glass-samples="1"] {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+html[data-glass-quality-resolved="opaque"] .app-backdrop {
+  display: none;
+}
+/* [F38 kept] prefers-reduced-transparency: solid surfaces only. Kept as an
+   independent rule so the media query still wins even if the JS attribute
+   has not been written yet (first paint, crashed shell, no-JS). */
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    --glass-alpha: 1;
+    border-color: var(--color-border-default);
+  }
+  *, *::before, *::after {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+/* Forced colors / high contrast: system colours, no filter, no alpha. */
+@media (forced-colors: active) {
+  .glass {
+    background: Canvas;
+    border-color: CanvasText;
+    box-shadow: none;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+  .app-backdrop { display: none; }
+}
+
+/* Strong-tint menus, popovers and drawers (#213 §4: "strong tint stays the
+   menu/popover treatment"). These are transient OVERLAY surfaces, so they take
+   the second slot in the compositor budget and only while they are open. They
+   use the same tokens as GlassContainer; they are class-based because the
+   in-repo menus predate the primitive and rewriting all of them in the same
+   change as the visual system would put behaviour regressions in the way of
+   the visual review. */
+.glass-menu,
+.glass-drawer {
+  background-color: rgb(var(--glass-tint-rgb) / var(--glass-menu-alpha, 0.93));
+  border-color: rgb(var(--glass-edge-rgb) / 0.3);
+}
+html:not([data-glass-quality-resolved="opaque"]) .glass-menu,
+html:not([data-glass-quality-resolved="opaque"]) .glass-drawer {
+  -webkit-backdrop-filter: blur(8px) saturate(var(--glass-saturate, 1));
+  backdrop-filter: blur(8px) saturate(var(--glass-saturate, 1));
+}
+@media (prefers-reduced-transparency: reduce) {
+  .glass-menu,
+  .glass-drawer {
+    background-color: rgb(var(--glass-tint-rgb) / 1);
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+}
+@media (forced-colors: active) {
+  .glass-menu,
+  .glass-drawer {
+    background: Canvas;
+    border-color: CanvasText;
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
+  }
+}
+@supports not ((backdrop-filter: blur(2px)) or (-webkit-backdrop-filter: blur(2px))) {
+  .glass-menu,
+  .glass-drawer {
+    background-color: rgb(var(--glass-tint-rgb) / 1);
+  }
+}
+
+/* 44x44 minimum primary touch target (#214 §4). Opt-in per control so dense
+   toolbars (explorer rows, table cells) are not blown open. */
+.tap-44 {
+  min-height: 44px;
+  min-width: 44px;
+}
+
+/* Safe-area helpers (#214 §6). The old dashboard had none, so the sticky
+   footer sat under the iOS home indicator. */
+.safe-top { padding-top: env(safe-area-inset-top, 0px); }
+.safe-bottom { padding-bottom: env(safe-area-inset-bottom, 0px); }
+.safe-left { padding-left: env(safe-area-inset-left, 0px); }
+.safe-right { padding-right: env(safe-area-inset-right, 0px); }
+.safe-x {
+  padding-left: env(safe-area-inset-left, 0px);
+  padding-right: env(safe-area-inset-right, 0px);
+}
 
 html {
   font-size: 16px;

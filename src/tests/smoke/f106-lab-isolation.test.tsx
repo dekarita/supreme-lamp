@@ -68,9 +68,32 @@ describe("F106 lab routing", () => {
     stubFetch();
     const { container } = renderAt("#/lab");
     expect(screen.getByTestId("feature-lab-index")).toBeInTheDocument();
-    const links = Array.from(container.querySelectorAll('[data-testid^="lab-index-link-"]'));
+    // [R-GLASS] Scoped to the registry LIST on purpose. The index also links the
+    // glass harness (/lab/glass), which is a static route and NOT a registry
+    // feature - before R-GLASS there was nothing outside the list, so the
+    // document-wide selector and "derived from the registry" were the same
+    // assertion. They are not any more: the selector now names the element that
+    // the registry actually owns, so a 12th registry row still fails here and an
+    // unrelated static link can no longer be mistaken for one.
+    const list = container.querySelector('[data-testid="feature-lab-index-list"]');
+    expect(list).not.toBeNull();
+    const links = Array.from((list as HTMLElement).querySelectorAll('[data-testid^="lab-index-link-"]'));
     expect(links.map((l) => l.getAttribute("data-testid"))).toEqual(FEATURE_IDS.map((id) => "lab-index-link-" + id));
     expect(links.map((l) => (l.getAttribute("href") || "").replace(/^#/, ""))).toEqual(FEATURE_IDS.map((id) => "/lab/" + id));
+  });
+
+  it("[R-GLASS] the index links the glass harness, which is a static route - not a 12th registry feature", () => {
+    stubFetch();
+    const { container } = renderAt("#/lab");
+    const list = container.querySelector('[data-testid="feature-lab-index-list"]') as HTMLElement;
+    // the harness link is OUTSIDE the registry list ...
+    expect(list.querySelector('[data-testid="lab-index-link-glass"]')).toBeNull();
+    // ... and it points at the static glass route, not /lab/<featureId>.
+    const glass = container.querySelector('[data-testid="lab-index-link-glass"]');
+    expect(glass).not.toBeNull();
+    expect((glass?.getAttribute("href") || "").replace(/^#/, "")).toBe("/lab/glass");
+    // and the registry still declares exactly 11 features
+    expect(FEATURE_IDS.length).toBe(11);
   });
 
   it("mounts ONE section at #/lab/<id> and isolates it - no other fence is live", async () => {

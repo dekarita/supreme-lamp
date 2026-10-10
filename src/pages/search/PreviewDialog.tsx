@@ -89,7 +89,7 @@ export function PreviewDialog() {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={closePreview}>
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={closePreview}>
       <div
         id="f56.search.previewDialog"
         role="dialog"
@@ -97,7 +97,7 @@ export function PreviewDialog() {
         aria-label={t("search.actions.preview")}
         data-testid="preview-dialog"
         onClick={(e) => e.stopPropagation()}
-        className="bg-surface border border-default rounded-md shadow-md max-w-lg w-full p-4 flex flex-col gap-2"
+        className="glass-menu border rounded-md shadow-md max-w-lg w-full p-4 flex flex-col gap-2"
       >
         <h3 className="text-sm font-semibold text-primary">{result.title}</h3>
         <dl className="text-xs text-secondary grid grid-cols-[auto_1fr] gap-x-3 gap-y-1">

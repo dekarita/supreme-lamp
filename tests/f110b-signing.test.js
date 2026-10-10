@@ -488,7 +488,7 @@ test("F110b-g: the channel routes before crypto, keeps one audit row builder, an
 // ---------------------------------------------------------------------------
 // F110b-h: the footprint, and the doc's claims grep-checked against the tree.
 // ---------------------------------------------------------------------------
-test("F110b-h: 0 dependencies, 0 i18n keys, 24 storage surfaces, and the doc claims no emitter that does not exist", async () => {
+test("F110b-h: 0 dependencies, 0 i18n keys, 26 storage surfaces, and the doc claims no emitter that does not exist", async () => {
   const pkg = readJson("package.json");
   assert.equal(Object.keys(pkg.dependencies).length, 8, "F110b adds no dependency - WebCrypto/node:crypto do the Ed25519");
   assert.equal(Object.keys(pkg.devDependencies).length, 21, "no dev dependency added");
@@ -496,8 +496,8 @@ test("F110b-h: 0 dependencies, 0 i18n keys, 24 storage surfaces, and the doc cla
     assert.ok(!(banned in pkg.dependencies) && !(banned in pkg.devDependencies), "unneeded crypto dependency appeared: " + banned);
   }
   const lock = read("tests/f-i18n-parity.test.js").match(/const EXPECTED_FLAT_KEYS = (\d+)/);
-  assert.equal(Number(lock[1]), 1050, "a default-off developer surface moves no i18n lock (moved for #211/#212/#216)");
-  assert.ok(!/\bt\(/.test(CODE("src/components/livePatch/PatchAuditPanel.tsx")), "the panel stays English-only while the lock says 1050");
+  assert.equal(Number(lock[1]), 1074, "a default-off developer surface moves no i18n lock (moved for #211/#212/#216 and again for R-GLASS #213/#214)");
+  assert.ok(!/\bt\(/.test(CODE("src/components/livePatch/PatchAuditPanel.tsx")), "the panel stays English-only while the lock says 1074");
 
   // no new persistence: F111's derived diff, re-run against THIS tree
   const inv = readJson("src/lib/ci/storageInventory.json");
@@ -517,7 +517,12 @@ test("F110b-h: 0 dependencies, 0 i18n keys, 24 storage surfaces, and the doc cla
   assert.deepEqual(diff.undeclared, [], "a new surface must be declared");
   assert.deepEqual(diff.stale, [], "no declared key without a call site");
   // [M4] 25 at F110b; M4 deleted the ghrdp-dash-token dead read, so 24. F110b itself adds no surface.
-  assert.equal(scan.keys.length, 24, "F110b adds no storage surface: 24 after M4 removed the dead read");
+  // [R-GLASS / #213 §8] + 1: `ghrdp:glass` (localStorage, the visual-quality
+  // preference, declared beside the theme in prefsStore). The one-way measured-
+  // opaque latch in lib/glass/quality.ts is in memory, not storage, so it adds
+  // no surface. Declared in src/lib/ci/storageInventory.json, so the diff above
+  // stays empty.
+  assert.equal(scan.keys.length, 25, "F110b adds no storage surface: 24 after M4 removed the dead read, + 1 declared R-GLASS surface");
 
   // the panel tells the operator which scheme this build accepts (§EMPTY-STATE-HANDLING)
   const panel = CODE("src/components/livePatch/PatchAuditPanel.tsx");

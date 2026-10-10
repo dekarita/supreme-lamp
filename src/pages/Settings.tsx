@@ -16,6 +16,10 @@ import { Card } from "@/components/primitives/Data";
 import { Button } from "@/components/primitives/Button";
 import { Toggle, Chip } from "@/components/primitives/Chip";
 import { InstallGuide } from "@/components/domain/InstallGuide";
+// [R-GLASS / #213 §8] Settings visibly exposes quality, Tinted/Clear and Glass
+// Clarity - the operator asked for the control, so it is a card here and not a
+// flag, an env var or a query parameter.
+import { VisualQualityCard } from "@/components/domain/VisualQualityCard";
 import { useThemeStore, useScaleStore, useLangStore, type TextScale } from "@/stores/prefsStore";
 import { useTrashStore } from "@/lib/explorer/trashStore";
 import { TRASH_RETENTION_DAYS } from "@/lib/explorer/trash";
@@ -79,6 +83,11 @@ export default function Settings() {
           </div>
         </div>
       </Card>
+
+      {/* [R-GLASS / #213 §8] VISUAL QUALITY. Deliberately second on the page:
+          the operator's very first question about this redesign is "how do I
+          make it solid again". */}
+      <VisualQualityCard />
 
       {/* [F58 §2] CUSTOM SOURCE REGISTRY (canonical surface). Additive: nothing on
           this page changes the mirror opt-in model - the mirror stays default-OFF
