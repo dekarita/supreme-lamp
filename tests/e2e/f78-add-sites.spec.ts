@@ -15,7 +15,22 @@ async function shot(page: Page, name: string) {
   await page.screenshot({ path: `screenshots/f78-${name}.png`, fullPage: true });
 }
 
-const SIDEBAR_ORDER = ["Overview", "Search", "Sessions", "Connections", "Keys & Secrets", "File Explorer", "Mirror", "Telemetry", "Settings"];
+// [#223] ELEVEN entries, not nine. "Health" (F92 self-test dashboard, /#/health)
+// and "Collector" (F99 live feature probes, /#/collector) were added to NAV after
+// this pin was written, so it drifted and test 1 failed a deep-equality compare on
+// every run — `f78-add-sites.spec.ts ✘=4` in runs 38027291171 → 38057454362, and
+// finally NAMED at f78-add-sites.spec.ts:78 by the F79-E2E-FAIL annotation added
+// on 5146952. This is a stale expectation, not a UI regression: AppShell's own
+// comment already calls it "the locked 11-entry list", and both entries are real
+// features with real routes.
+//
+// Source of truth (read, not guessed):
+//   order  -> src/components/layout/AppShell.tsx  `const NAV: NavItem[]`
+//   labels -> src/i18n/en.json  nav.* with sidebar.* winning where labelKey is set
+//             (sidebar.search/health/collector = "Search"/"Health"/"Collector")
+//   count  -> one <span> per anchor: prefsStore defaults `collapsed: false`, so
+//             the collapsed-mode second sr-only span is not rendered.
+const SIDEBAR_ORDER = ["Overview", "Search", "Sessions", "Connections", "Keys & Secrets", "File Explorer", "Mirror", "Telemetry", "Health", "Collector", "Settings"];
 
 async function seedTheme(page: Page, theme: "dark" | "light") {
   await page.addInitScript((t) => {

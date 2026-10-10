@@ -124,17 +124,28 @@ jobs:
                 title = $0
                 sub(/[[:space:]]+$/, "", title)
                 err = ""
+                det = ""
                 while ((getline nxt) > 0) {
                   if (nxt ~ /^  [0-9]+\) /) break
-                  if (nxt ~ /^[[:space:]]+(Error|expect\(|Test timeout|locator\.|Timed out)/) {
+                  if (err == "" && nxt ~ /^[[:space:]]+(Error|expect\(|Test timeout|locator\.|Timed out)/) {
+                    err = nxt
+                    gsub(/^[[:space:]]+/, "", err)
+                    sub(/[[:space:]]+$/, "", err)
+                    continue
+                  }
+                  # [#223] the assertion alone is not enough: "expect(received)
+                  # .toBe(expected)" says nothing without the two values. Take
+                  # Playwright's own Expected/Received lines, bounded, so the
+                  # next reader does not need the unreachable step log.
+                  if (err != "" && nxt ~ /^[[:space:]]+(Expected|Received)/) {
                     e = nxt
                     gsub(/^[[:space:]]+/, "", e)
                     sub(/[[:space:]]+$/, "", e)
-                    err = e
-                    break
+                    det = (det == "" ? e : det " | " e)
+                    if (length(det) > 160) break
                   }
                 }
-                print title " :: " err
+                print title " :: " err (det == "" ? "" : " :: " det)
               }
             ' e2e-run.log > e2e-fails.txt || true
             nfail=0

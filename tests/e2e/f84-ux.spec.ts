@@ -172,6 +172,16 @@ test.describe("F84 UX hardening", () => {
         // No seeded result row in this run: assert the queue fence directly,
         // against the MOCK base (a relative fetch would hit the :5173 SPA
         // fallback and read 200-with-HTML instead of the mock's verdict).
+        //
+        // [#223] UNROUTE FIRST. The stub installed above matches on PATH, not on
+        // origin, so this probe to the MOCK base was still intercepted by it:
+        // the deliberately-invalid `javascript:alert(1)` target then ran the
+        // stub's own `expect(body.url).toMatch(/^https:\/\//)` and failed the
+        // test with "expect(received).toMatch(expected)" — the exact error the
+        // F79-E2E-FAIL annotation named at f84-ux.spec.ts:146 on 5146952.
+        // Switching the fetch to the mock base did NOT fix this; a page.route
+        // pattern is matched before the network layer regardless of host.
+        await page.unroute("**/api/launcher/queue");
         const out = await page.evaluate(async (mock) => {
           const ok = await fetch(mock + "/api/launcher/queue", {
             method: "POST",
@@ -211,6 +221,13 @@ test.describe("F84 UX hardening", () => {
         const popup = await popupPromise;
         await expect.poll(() => popup.url(), { timeout: 10_000 }).not.toBe("about:blank");
       } else {
+        // [#223] UNROUTE FIRST, for the same reason as test 4 — and here the
+        // symptom was different: the 503 stub above swallowed this probe, so
+        // `out` was 503 and `expect(out).toBe(400)` failed. That is the error the
+        // F79-E2E-FAIL annotation named at f84-ux.spec.ts:198 on 5146952
+        // ("expect(received).toBe(expected)"), and it is why this test had been
+        // red since F91: the mock's real fence verdict never reached the assert.
+        await page.unroute("**/api/launcher/queue");
         const out = await page.evaluate(async (mock) => {
           // [F91] the offline half: an EXPLORER job for an https path is refused
           // by the queue fence (400) - the mirror contract never fakes ok.
