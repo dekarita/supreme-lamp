@@ -101,7 +101,7 @@ const SURFACES: Surface[] = [
     name: "Overview",
     page: true,
     node: <Overview />,
-    keys: ["actions.autoLoginVps", "actions.copyAllLinks", "actions.copyLog", "actions.diagnose", "actions.openTerminal", "actions.pauseLog", "actions.startWatcher", "actions.uploadNow", "collector.handler", "collector.route", "connection.fallback", "connection.latency", "connection.primary", "errors.connLost", "installGuide.pathA", "installGuide.pathB", "keys.archive", "keys.currentKey", "keys.currentKeyMask", "keys.explorer", "keys.fileSearch", "keys.hostOnly", "keys.legacyKey", "keys.legacyRentry", "keys.mirrorGithub", "keys.terminal", "launcher.log", "logs.liveLog", "mirror.activeFile", "mirror.afterTries", "mirror.doneTotal", "mirror.movingAvg", "mirror.perRoot", "mirror.speedHistory", "mirror.timeRemaining", "mirror.titleLong", "telescope.title", "webDesktop.advisory", "webDesktop.authMode", "webDesktop.blockedBy", "webDesktop.cmdkeyLine", "webDesktop.mstscLine", "webDesktop.ready", "webDesktop.shortcutText", "webDesktop.vncForget", "webDesktop.vncMemory", "webDesktop.vncPlaceholder", "webDesktop.vncRemember", "webDesktop.vpsStatus"],
+    keys: ["actions.autoLoginVps", "actions.copyAllLinks", "actions.copyLog", "actions.diagnose", "actions.openTerminal", "actions.pauseLog", "actions.startWatcher", "actions.uploadNow", "collector.handler", "collector.route", "connection.fallback", "connection.latency", "connection.primary", "errors.connLost", "installGuide.pathA", "installGuide.pathB", "keys.archive", "keys.currentKey", "keys.currentKeyMask", "keys.explorer", "keys.fileSearch", "keys.hostOnly", "keys.legacyKey", "keys.legacyRentry", "keys.mirrorGithub", "keys.terminal", "launcher.log", "logs.liveLog", "mirror.activeFile", "mirror.afterTries", "mirror.doneTotal", "mirror.movingAvg", "mirror.perRoot", "mirror.speedHistoryEmpty", "mirror.timeRemaining", "mirror.titleLong", "telescope.title", "webDesktop.advisory", "webDesktop.authMode", "webDesktop.blockedBy", "webDesktop.cmdkeyLine", "webDesktop.mstscLine", "webDesktop.ready", "webDesktop.shortcutText", "webDesktop.vncForget", "webDesktop.vncMemory", "webDesktop.vncPlaceholder", "webDesktop.vncRemember", "webDesktop.vpsStatus"],
   },
   {
     name: "Keys",
@@ -113,7 +113,7 @@ const SURFACES: Surface[] = [
     name: "Mirror",
     page: true,
     node: <Mirror />,
-    keys: ["actions.copyAllLinks", "actions.copyLog", "actions.diagnose", "actions.startWatcher", "actions.uploadNow", "mirror.activeFile", "mirror.afterTries", "mirror.doneTotal", "mirror.movingAvg", "mirror.perRoot", "mirror.speedHistory", "mirror.timeRemaining", "mirror.titleLong", "pages.mirrorPage.egress", "pages.mirrorPage.history"],
+    keys: ["actions.copyAllLinks", "actions.copyLog", "actions.diagnose", "actions.startWatcher", "actions.uploadNow", "mirror.activeFile", "mirror.afterTries", "mirror.doneTotal", "mirror.movingAvg", "mirror.perRoot", "mirror.speedHistoryEmpty", "mirror.timeRemaining", "mirror.titleLong", "pages.mirrorPage.egress", "pages.mirrorPage.history"],
   },
   {
     name: "Settings",

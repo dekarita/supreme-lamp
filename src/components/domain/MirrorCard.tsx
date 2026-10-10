@@ -16,6 +16,10 @@ import { getMirrorStatus, setMirrorEnabled, type MirrorOptState } from "@/lib/mi
 import { copyText } from "@/lib/clipboard";
 import { Sparkline } from "./ConnectionCard";
 import { cn } from "@/lib/cn";
+// [R-METRICS / #212] the caption must name the array that is actually on
+// screen: the server-produced series (5s watcher cadence) or the client
+// fallback built at the 3s progress-poll cadence.
+import { speedSeriesInfo } from "@/lib/domain/metrics";
 
 export function MirrorCard() {
   const { t } = useTranslation();
@@ -25,6 +29,18 @@ export function MirrorCard() {
   const runDiag = useSessionStore((s) => s.runDiag);
   const native = useSessionStore((s) => s.native);
   const m = mirror;
+  const series = speedSeriesInfo({
+    history: speedHistory,
+    serverProvided: m ? m.speedHistoryOrigin === "server" : false,
+    serverCadenceMs: 5000,
+    clientCadenceMs: 3000,
+  });
+  const speedCaption =
+    series.origin === "server"
+      ? t("mirror.speedHistoryServer", { count: series.count, minutes: ((series.spanMs || 0) / 60000).toFixed(1) })
+      : series.origin === "client-fallback"
+        ? t("mirror.speedHistoryClient", { count: series.count, minutes: ((series.spanMs || 0) / 60000).toFixed(1) })
+        : t("mirror.speedHistoryEmpty");
   // [F46 §4] ENCRYPTION HONESTY: the card claims exactly what the worker
   // reported. "AES-256 encrypted upload" only when a file row carries
   // encrypted=True; a config that asks for AES-256 while this build cannot
@@ -258,7 +274,15 @@ export function MirrorCard() {
 
       <div className="mt-4">
         <div className="flex items-center justify-between text-xs text-tertiary mb-1">
-          <span>{t("mirror.speedHistory")}</span>
+          <span
+            id="speedHistoryCaption"
+            data-testid="speed-history-caption"
+            data-origin={series.origin}
+            data-count={String(series.count)}
+            data-cadence={series.cadenceMs == null ? "" : String(series.cadenceMs)}
+          >
+            {speedCaption}
+          </span>
           <span id="sparkNow" className="font-mono text-secondary">
             {m ? m.speed : "0 B/s"}
           </span>
