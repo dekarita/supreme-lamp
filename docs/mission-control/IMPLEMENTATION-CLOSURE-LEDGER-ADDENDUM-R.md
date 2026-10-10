@@ -38,6 +38,45 @@ merged into the parent file when #208 lands (next action, §5).
 | Second instrumentation pass | a single oversized `::error::` is truncated by GitHub **from the front**, so only one test line survived. The step now emits two SHORT, `cut -c1-400`-capped annotations: `F79-E2E-TALLY` (ok/fail per spec file) and `F79-E2E-LAST` (the last result lines). `F203-f` pins both |
 | Still true | no per-test timeout was lowered and no spec was deleted (`f203-b` pins ≥11 specs incl. F78/F79/F91); the popup isolation and `finally` closure are kept because they are correct on their own merits, not because they fixed the lane |
 
+**Run 38025794955 — the second instrumentation pass answers the question. The lane is NOT hanging; it is FAILING, and each failure costs two minutes.**
+
+```
+F79-E2E-TALLY:: f78-add-sites.spec.ts          ok=18  FAIL=4
+                f79-google-simple.spec.ts      ok=10
+                f81-decisions.spec.ts          ok=6
+                f84-ux.spec.ts                 ok=5   FAIL=2
+                f85-ten-sites.spec.ts          ok=13
+                f86-ten-sites-deep.spec.ts     ok=1   FAIL=13
+                f101-collector-depth.spec.ts   ok=5
+                f102-all-buttons.spec.ts       ok=20
+                f104-global-capture.spec.ts    ok=2
+                (f88-concrete-cases, f91-mirror-mode: never reached)
+```
+
+19 failing tests × (60s budget + 60s retry) ≈ 38 minutes of work inside an
+18-minute bound, which is why the run can never finish. Two further facts:
+
+- **The failures are not site-specific, so they are not a per-site fixture
+  problem.** Run 38024230807 blamed `librivox.org` as test #100; run
+  38025794955 blamed `awesome.re` (#94) and `gutenberg.org` (#95, #96). A
+  different subset every run is the signature of a *timing* problem, not of
+  broken data.
+- **Pre-existence is highly likely but NOT proven.** The lane has produced zero
+  successes since 2026-10-05, i.e. it was already 100% red long before this
+  branch existed, so this series cannot be the origin of the redness. What is
+  not proven is that this branch adds no failures of its own. The two failure
+  runs that predate it (37696254378, 37696238244, 2026-10-07) died on a
+  *different* cause — `No files were found with the provided path: screenshots/`
+  — so they carry no comparable per-test evidence. Proving it needs either
+  step-log access or a lane run on a branch without these commits.
+
+**What I will not do about it.** Not raise a per-test timeout, not lower
+`retries`, not delete or skip a spec: the brief for #203 is to find the real
+cause, and "the tests are too slow, so give them more time" is the opposite of
+that. The next unit of work is to read ONE failing test's detail block (operator:
+`gh run view 38025794955 --log`, or download the `playwright-report` artifact
+that the workflow now uploads on `failure()`), fix the slow step, and re-run.
+
 **Why I cannot go further alone.** The step log is not retrievable from this sandbox: only `api.github.com` is reachable and `results-receiver.actions.githubusercontent.com` is not, so `gh run view --log` fails with `EOF`. The check-run annotation is the only channel, which is exactly why the second instrumentation pass exists. The next run's `F79-E2E-TALLY` names every red spec file at once.
 
 **Exonerated by static review**: `lab-link-list` / `lab-link-row` are rendered by `src/pages/search/LabInspector.tsx`, not by the `ExplorerResults.tsx` this session rewrote, so the #217 windowing change cannot be the cause of the f86 Lab assertions failing.
