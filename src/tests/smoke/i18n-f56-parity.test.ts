@@ -62,7 +62,12 @@ describe("i18n F56 parity (byte-verified)", () => {
     // The activity.wsReconnect / webdeskBlocked.manualOpened /
     // viewingMode.manual.* keys live OUTSIDE search.* and are asserted by
     // src/tests/smoke/f95-root-causes.test.tsx. 522 -> 528.
-    expect(enNew.length).toBe(528);
+    // [R-METRICS / R-SEARCH / R-FILES, 2026-10-10] +8: search.zero.summary,
+    // search.zero.summaryWithRateLimit, search.zero.viewSources (#216),
+    // search.progress.speedUnavailable / etaUnavailable / bytesUnavailable /
+    // retryFailed (#210 rail honesty) and files.results.windowed (#217).
+    // (+1: search.progress.feedUnavailable, #210 rail honesty) 528 -> 537.
+    expect(enNew.length).toBe(537);
   });
 
   it("every si value is non-empty, byte-stable Sinhala or a technical token", () => {

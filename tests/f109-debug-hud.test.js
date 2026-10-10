@@ -306,7 +306,7 @@ test("F109-j: minimal footprint - zero dependencies, zero i18n keys, and handoff
   assert.ok(!("tinykeys" in pkg.dependencies) && !("tinykeys" in pkg.devDependencies), "the spec's tinykeys is not a dependency; the HUD carries its own matcher");
   const lock = read("tests/f-i18n-parity.test.js").match(/const EXPECTED_FLAT_KEYS = (\d+)/);
   assert.ok(lock, "positive control: the count lock is still declared");
-  assert.equal(Number(lock[1]), 1030, "F109 moves no i18n count lock");
+  assert.equal(Number(lock[1]), 1050, "F109 adds no i18n keys of its own (the lock moved for #211/#212/#216)");
   const hud = read("src/components/DebugHUD.tsx");
   for (const k of ["dvr.fullStart", "dvr.fullStop", "dvr.fullWarning"]) {
     assert.ok(hud.includes('t("' + k + '")'), "handoff #11: the runtime full-capture switch reuses " + k);
