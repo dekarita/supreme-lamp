@@ -98,3 +98,126 @@ research · #216/#217 search/scale · PRs #219/#220/#221.
    REPRO/COMPONENT above.
 3. Budget telemetry: **UNKNOWN** in this sandbox (no metering API reachable);
    see `BUDGET_LEDGER.md` (prior session) for the rule of record.
+
+---
+
+# SESSION 2026-10-10 (b) — branch `arena/f289f02e-supreme-lamp`
+
+Continuation of the #222 repair line. This section records only what this
+session **executed**; nothing here restates a prior session's claim as fact.
+
+## B1. Failure registry (built BEFORE any code was changed)
+
+Three red check runs were live on PR #222 head `b213fd42`.
+
+| ID | revision / event | run / job | failing step | first actionable error | reproduction | cause confidence |
+|---|---|---|---|---|---|---|
+| GATES-01 | `b213fd42` / `pull_request` | run 38057454377 / job 114228734592 | `gates` step **32** "F37 telescope single-source + self-explaining lab gates" | `F37: the telescope startup scan is missing` | **REPRODUCED locally**: extracted the step verbatim to a script and ran it at repo root → identical message, exit 1 | **HIGH** |
+| GATES-02 | `b213fd42` / `push` | run 38057418836 / job 114228631728 | same step | same annotation (`.github:217`) | same script | **HIGH** (same cause, different checkout) |
+| E2E-01 | `b213fd42` / `pull_request` | run 38057454362 / job 114228734568 | `e2e-ui` step **8** "Run F78 + F79 E2E specs" | `F79-E2E-TALLY:: … f84-ux.spec.ts ✘=4 …` | **NOT reproducible here** — no browser binary and `cdn.playwright.dev` is egress-blocked | **LOW** (see B3) |
+
+The two `gates` runs are the **same defect in two checkouts**, not two defects.
+Neither is the earlier `windows-native`/F45 failure — `windows-native`
+**passed** on both runs (job 114228734732 and 114228631588).
+
+## B2. GATES-01/02 — cause, repair, regression proof
+
+**Cause (HIGH).** Commit `b213fd42` ("F45 readiness repair") deliberately moved
+the three startup scans (F28 logon, F30 conn-log, F37 telescope) to run
+**after** the listener bind, so readiness is not held hostage by a synchronous
+`Get-WinEvent` walk. That reworded the F37 comment from
+`STARTUP SCAN: the telescope stamps BEFORE the first client can poll` to
+`STARTUP SCAN: the telescope stamps promptly after the listener starts`.
+`tests/f37-telescope.test.js` was updated to the new sentence; the **workflow
+gate** at `launch-gates.yml:1905` was not. It grepped the old prose and failed.
+The scan itself was intact — this was a prose-pin break, not a runtime defect.
+This is exactly the class the brief warned about: a green `node --test` does
+not cover a workflow shell step.
+
+**Repair (deliberately NOT a prose swap).** Both surfaces now pin the
+*behaviour* the sentence stood for, structurally:
+- (a) the startup-scan **call** exists;
+- (b) it runs **after** the `LISTENING` marker (readiness observable first);
+- (c) it runs **before** the accept loop drains (the first client the loop
+  serves cannot poll a never-attempted sample).
+
+Verified anchors in `payloads/ghrdp-server.ps1`: marker line **9258** <
+telescope startup scan **9274** < accept loop **9462**.
+
+This is strictly stronger than the sentence: a reworded comment can no longer
+break the gate, and deleting or reordering the scan still does. No assertion,
+retry or timeout was loosened.
+
+**Regression proof executed locally:**
+| Check | Result | Tier |
+|---|---|---|
+| F37 gate step, extracted verbatim from the edited workflow and run | `F37 gates PASS`, exit 0 (was exit 1) | STATIC |
+| `node --test tests/f37-telescope.test.js` (runs *inside* that gate) | 36/36 pass | COMPONENT |
+| `node --test` over all `tests/**/*.test.js` | 832 tests, 806 pass, **0 fail**, 26 skip | COMPONENT |
+| `npx vitest run` | 98 files, 1265/1265 pass | COMPONENT |
+| `pnpm run build` (tsc + vite singlefile) | OK, `ui/dist/index.html` 1,153 kB | STATIC |
+| YAML parse of both edited workflows | OK | STATIC |
+
+## B3. E2E-01 — what the evidence does and does not support
+
+Comparing the tally annotation across runs (the only readable channel; the step
+log host `results-receiver.actions.githubusercontent.com` and the artifact host
+`pipelines.actions.githubusercontent.com` are both egress-blocked here):
+
+| spec | PR #221 / main (before) | #222 head `b213fd42` |
+|---|---|---|
+| `f86-ten-sites-deep` | ✘=13 ✓=1 | **✓=12 — fixed** |
+| `f78-add-sites` | ✘=4 ✓=18 | outside the 400-char annotation window |
+| `f84-ux` | ✘=2 ✓=5 | **✘=4 — regressed** |
+
+So the mirror-transport migration **did** fix the large `f86` failure and
+**did** regress `f84-ux` by one test (retries:1 ⇒ ✘=4 = 2 tests × 2 attempts).
+
+**What was ruled out by execution, not by reading:**
+- The mock's `/api/launcher/queue` fence was started locally and probed:
+  `navigate`+https → **200**, `navigate`+`javascript:` → **400**,
+  `explorer`+https → **400**. Both fallback branches of tests 4 and 5 assert
+  exactly those, so **the mock fence is not the cause**.
+- `/api/fx/list` serves the real 5000-row fixture (`files=5000`, `schema=2`).
+- `"Opened locally ✓"` is present in `src/i18n/en.json`
+  (`mirror.openedLocal` / `openedBoth` / `rdpOffline`), so the test-5 toast
+  text is not the cause.
+- `card-direct-url` is a `<button>`, not an anchor, so the click cannot
+  navigate the page away from under the assertions.
+
+**What is NOT established:** the actual failing assertion. Without a browser or
+the step log, any named cause here would be a guess, and a guess shipped as a
+"fix" is how this lane stayed red for ~100 runs.
+
+**Instrument repair (deliberately paired with B2, not a substitute for it).**
+`e2e-ui.yml` now emits `F79-E2E-FAILn` — one bounded annotation per failing
+test carrying `spec:line › title :: first error line`. The tally named the
+*file*; this names the *assertion*. Verified against a realistic Playwright
+list-reporter log. Pinned by a new assertion in `tests/f203-e2e-lane.test.js`
+(F203-f, 11/11 pass) so it cannot silently disappear. Sanitized by
+construction: Playwright's own header and first error line only — never a
+request body, response body or signed URL.
+
+This is evidence tooling. **It does not fix the application**, and E2E-01
+remains **OPEN**.
+
+## B4. Evidence-class tallies for this session
+
+| Class | Result |
+|---|---|
+| SOURCE_INSPECTED | `launch-gates.yml`, `e2e-ui.yml`, `payloads/ghrdp-server.ps1` (telescope/health/accept-loop regions), `src/lib/launchUrl.ts`, `src/pages/search/ResultsGrid.tsx`, `tests/e2e/f84-ux.spec.ts`, `tests/f203-e2e-lane.test.js`, `tests/e2e/fixtures/mock-backend.mjs` |
+| STATIC_CHECK | F37 gate PASS · YAML parse OK · build OK · ps-balance-audit 0 failures |
+| COMPONENT_BEHAVIOUR | node:test 832/806/0/26 · vitest 1265/1265 · F203 lane pins 11/11 |
+| WINDOWS_NATIVE | **NOT_RUN** — no `pwsh` in this sandbox → `windows-native` / `autologin-lab` CI lanes |
+| BROWSER_LAB | **NOT_RUN** — no browser binary; `cdn.playwright.dev` egress-blocked → `e2e-ui` CI lane |
+| CI_VERIFIED | pending — see the run table in the PR body |
+| LIVE_VERIFIED | **NOT_RUN** — production activation needs separate authorization |
+
+## B5. Delivery constraint recorded honestly
+
+This session's environment is fixed to branch `arena/f289f02e-supreme-lamp` and
+cannot push to PR #222's branch (`arena/e491ab8c-supreme-lamp`). #222's commits
+were therefore carried forward by fast-forward (verified: `main` `179a25a` is an
+ancestor of `b213fd42`) and the repairs are published from the session branch as
+a clearly linked continuation. **Nothing from #222 was dropped.**
+#221 and #222 must not be merged independently of this line.

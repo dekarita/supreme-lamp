@@ -110,6 +110,17 @@ test("F203-f: a failing lane emits a per-spec tally, so the offender is named wi
   const wf = read(".github/workflows/e2e-ui.yml");
   assert.match(wf, /F79-E2E-TALLY/, "a per-spec tally annotation must exist");
   assert.match(wf, /F79-E2E-LAST/, "a last-results annotation must exist");
+  // The tally names the FILE, not the assertion. Runs 38027291171 -> 38057454362
+  // all said only "f84-ux.spec.ts ✘=N" and the step log is unreachable from the
+  // agent sandbox, so the failing test stayed unnamed for the whole run. A
+  // per-test annotation (spec:line + title + first error line) is the minimum
+  // that turns a red lane into an actionable one.
+  assert.match(wf, /F79-E2E-FAIL/, "a per-test failure annotation must exist (the tally names only the file)");
+  assert.match(wf, /e2e-fails\.txt/, "the per-test failures must be collected from the run log");
+  // Bounded like the other two: an oversized ::error:: is truncated from the
+  // FRONT by GitHub, and only a handful of offenders are ever worth emitting.
+  assert.ok(/cut -c1-380/.test(wf), "the per-test annotation must be length-capped");
+  assert.ok(/nfail.*-gt 4/.test(wf), "the per-test annotation must stop after a bounded number of failures");
   // Both annotations are length-capped before they are echoed: a single
   // oversized ::error:: is truncated from the FRONT by GitHub, which is how
   // the first instrumented run lost every line but one.

@@ -1902,7 +1902,29 @@ jobs:
           grep -qF 'permissive' "$mod" || { echo 'F37: the TLS probe no longer documents its read-only permissive callback' >&2; exit 1; }
           # (4) RUNNER: 60s tick, startup scan, row fields, live preference
           grep -qF '$script:F37TelIntervalSec = 60' "$srv" || { echo 'F37: the runner telescope tick is not 60s' >&2; exit 1; }
-          grep -qF 'STARTUP SCAN: the telescope stamps BEFORE the first client can poll' "$srv" || { echo 'F37: the telescope startup scan is missing' >&2; exit 1; }
+          # [F37 startup-scan] asserted on CODE, never on prose. The F45-R
+          # readiness reorder (b213fd42) deliberately moved the three startup
+          # scans AFTER the listener bind - readiness must not be held hostage
+          # by a synchronous Get-WinEvent walk - and reworded their comments.
+          # A prose pin on the old sentence then failed (run 38057454377, step
+          # "F37 telescope single-source", .github:217) even though the scan
+          # itself was intact. So this gate pins the BEHAVIOUR the sentence was
+          # a proxy for, structurally:
+          #   (a) the startup-scan CALL exists;
+          #   (b) it runs AFTER the LISTENING marker is written (readiness is
+          #       observable before any scan can block it);
+          #   (c) it runs BEFORE the accept loop starts draining (so the first
+          #       client the loop serves cannot poll a never-attempted sample).
+          # (b)+(c) together are what "stamps before the first client can poll"
+          # actually guaranteed. A reworded comment can no longer break this
+          # gate, and deleting or reordering the scan still does.
+          grep -qF 'Update-RdpListenerTelescope -StatePath $script:F37TelStatePath -ScanStartedUtc $script:ServerStartedUtc' "$srv" || { echo 'F37: the telescope startup scan call is missing' >&2; exit 1; }
+          markerLine=$(grep -nF 'LISTENING pid={0}' "$srv" | head -1 | cut -d: -f1 || true)
+          telScanLine=$(grep -nF 'Update-RdpListenerTelescope -StatePath $script:F37TelStatePath -ScanStartedUtc' "$srv" | head -1 | cut -d: -f1 || true)
+          loopLine=$(grep -nF 'while (((Get-Date) - $start) -lt $limit) {' "$srv" | head -1 | cut -d: -f1 || true)
+          test -n "$markerLine" && test -n "$telScanLine" && test -n "$loopLine" || { echo 'F37: a startup-scan ordering anchor is missing (vacuous gate)' >&2; exit 1; }
+          test "$markerLine" -lt "$telScanLine" || { echo 'F37: the telescope startup scan runs BEFORE the LISTENING marker, so readiness is held hostage by the scan' >&2; exit 1; }
+          test "$telScanLine" -lt "$loopLine" || { echo 'F37: the telescope startup scan runs AFTER the accept loop begins, so the first client can poll a never-attempted sample' >&2; exit 1; }
           grep -qF 'telescope = $f37State.telescope' "$srv" || { echo 'F37: native-status does not serve the runner telescope' >&2; exit 1; }
           grep -qF 'telescopeClient = $f37Client' "$srv" || { echo 'F37: native-status does not serve the client beacons' >&2; exit 1; }
           grep -qF 'telescopeLive' "$srv" || { echo 'F37: bind drift cannot be rendered live' >&2; exit 1; }

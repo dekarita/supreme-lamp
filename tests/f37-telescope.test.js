@@ -225,11 +225,44 @@ test('F37-7 the runner tick is 60s, uses the module, and never invents a format'
   }
   // the 60s tick is wired into the serve loop and runs once at startup
   assert.match(srv, /if \(\(\(Get-Date\) - \$lastTelScan\)\.TotalSeconds -ge \$script:F37TelIntervalSec\)/, 'the tick is not in the accept loop');
-  // [F45-R] wording follows the readiness reorder: the listener binds BEFORE
-  // the startup scans, so the honest guarantee is "stamps promptly after the
-  // listener starts" (consumers read scanTs/probeError until then). The pin
-  // still proves the startup scan exists.
-  assert.match(srv, /STARTUP SCAN: the telescope stamps promptly after the listener starts/, 'the startup scan is missing');
+  // [F37 startup-scan] pinned on CODE, never on prose - the same contract the
+  // launch-gates F37 step pins, so the two surfaces cannot drift again.
+  //
+  // WHY THIS CHANGED: this file and the workflow gate used to pin the SAME
+  // English sentence. The F45-R readiness reorder (b213fd42) moved the three
+  // startup scans after the listener bind and reworded the comment; only this
+  // file was updated, so the workflow gate went red (run 38057454377, step
+  // "F37 telescope single-source", annotation .github:217 =
+  // "F37: the telescope startup scan is missing") while the scan itself was
+  // fine. A green `node --test` does not cover a workflow shell step.
+  //
+  // The sentence was a proxy for a real guarantee, so the guarantee is what is
+  // asserted now, structurally:
+  //   (a) the startup-scan CALL exists;
+  //   (b) it runs AFTER the LISTENING marker (readiness is never held hostage
+  //       by a synchronous Get-WinEvent walk);
+  //   (c) it runs BEFORE the accept loop starts draining (the first client the
+  //       loop serves cannot poll a sample that was never attempted).
+  const lineOf = (needle, from = 0) => {
+    const lines = srv.split('\n');
+    for (let i = from; i < lines.length; i++) if (lines[i].includes(needle)) return i + 1;
+    return -1;
+  };
+  const SCAN_CALL = 'Update-RdpListenerTelescope -StatePath $script:F37TelStatePath -ScanStartedUtc';
+  const markerLine = lineOf('LISTENING pid={0}');
+  const telScanLine = lineOf(SCAN_CALL);
+  const loopLine = lineOf('while (((Get-Date) - $start) -lt $limit) {');
+  assert.ok(telScanLine > 0, 'the telescope startup scan call is missing');
+  assert.ok(markerLine > 0, 'the LISTENING marker write is missing (ordering anchor)');
+  assert.ok(loopLine > 0, 'the accept loop is missing (ordering anchor)');
+  assert.ok(markerLine < telScanLine,
+    'the telescope startup scan runs BEFORE the LISTENING marker, so readiness is held hostage by the scan (' +
+    markerLine + ' !< ' + telScanLine + ')');
+  assert.ok(telScanLine < loopLine,
+    'the telescope startup scan runs AFTER the accept loop begins, so the first client can poll a never-attempted sample (' +
+    telScanLine + ' !< ' + loopLine + ')');
+  // the 60s tick keeps it live (a second call inside the loop, after the first)
+  assert.ok(lineOf(SCAN_CALL, telScanLine) > telScanLine, 'the 60s tick no longer re-runs the telescope');
   // row surfaces
   assert.ok(srv.includes('telescope = $f37State.telescope'), 'native-status does not serve the runner telescope');
   assert.ok(srv.includes('telescopeCollector = $f37State.telescopeCollector'), 'native-status does not serve the tick liveness');
