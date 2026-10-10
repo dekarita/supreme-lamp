@@ -20,6 +20,9 @@ import { SearchHero } from "./search/v2/SearchHero";
 import { ProgressiveLab } from "./search/v2/ProgressiveLab";
 import { OwnCredentialModal } from "./search/v2/OwnCredentialModal";
 import { AdapterStatusList } from "./search/AdapterStatusList";
+// [R-SEARCH / #216] the concise "why is this empty" line for a zero-result
+// search whose sources did not all succeed.
+import { SearchFailureSummary } from "./search/SearchFailureSummary";
 import { ResultsGrid } from "./search/ResultsGrid";
 import { PreviewDialog } from "./search/PreviewDialog";
 import { BottomProgressRail } from "./search/BottomProgressRail";
@@ -338,7 +341,10 @@ export default function Search() {
             ) : null}
             {busy && totalResults === 0 ? <LoadingState /> : null}
             {(phase === "complete" || phase === "empty") && totalResults === 0 ? (
-              <EmptyState query={lastSubmittedQuery} onAddSite={() => setAddSiteOpen(true)} />
+              <>
+                <SearchFailureSummary />
+                <EmptyState query={lastSubmittedQuery} onAddSite={() => setAddSiteOpen(true)} />
+              </>
             ) : null}
             {!hasQuery && phase === "idle" ? (
               <p id="f56.search.resultsEmpty" data-testid="results-noquery" className="text-sm text-secondary">
