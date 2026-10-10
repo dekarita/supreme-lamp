@@ -34,6 +34,7 @@ export default {
         warning: "var(--color-warning)",
         danger: "var(--color-danger)",
         "danger-hover": "var(--color-danger-hover)",
+        "danger-fg": "var(--color-danger-fg)",
         "focus-ring": "var(--color-focus-ring)",
       },
       spacing: {

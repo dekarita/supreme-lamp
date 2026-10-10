@@ -135,7 +135,7 @@ export function Modal({
                 data-testid="modal-primary"
                 onClick={primary.onClick}
                 className={cn(
-                  "min-h-[44px] px-3 py-2 text-sm rounded-md font-medium text-white focus-visible:ring-2 focus-visible:ring-accent",
+                  "min-h-[44px] px-3 py-2 text-sm rounded-md font-medium text-accent-fg focus-visible:ring-2 focus-visible:ring-accent",
                   primary.variant === "danger" ? "bg-danger hover:bg-danger-hover" : "bg-accent hover:bg-accent-hover"
                 )}
               >

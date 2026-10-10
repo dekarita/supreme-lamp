@@ -257,8 +257,22 @@ export const NESTED_FILL_FLOOR = 0.86;
  * frosted would let the next slow frame re-trip it forever.
  * ------------------------------------------------------------------ */
 
-const PERF_KEY = "ghrdp:glassPerfFallback";
 let perfFallback = false;
+/** Why it tripped. IN MEMORY ONLY, deliberately: the latch's job is "the rest
+ *  of this page load", so it must not outlive the tab - and a storage key would
+ *  add a surface to src/lib/ci/storageInventory.json for no operator benefit
+ *  (nothing reads it back after a reload, by design). */
+let perfFallbackWhy = "";
+
+/**
+ * Set by the React bridge so tripping the latch actually re-renders the app.
+ * (A direct import would make quality.ts depend on React and create a cycle
+ * with useVisualQuality.ts, which imports quality.ts.)
+ */
+let envChangeListener: (() => void) | null = null;
+export function setEnvChangeListener(fn: (() => void) | null): void {
+  envChangeListener = fn;
+}
 
 export function isPerfFallbackActive(): boolean {
   return perfFallback;
@@ -267,20 +281,15 @@ export function isPerfFallbackActive(): boolean {
 export function tripPerfFallback(reason: string): void {
   if (perfFallback) return;
   perfFallback = true;
-  try {
-    sessionStorage.setItem(PERF_KEY, reason);
-  } catch {
-    /* private mode: the in-memory latch is enough */
-  }
+  perfFallbackWhy = reason;
   if (typeof document !== "undefined") {
     document.documentElement.setAttribute("data-glass-perf", "opaque");
   }
+  // Publish to React, or the operator would keep looking at a frosted shell
+  // the code has already decided to make solid.
+  if (envChangeListener) envChangeListener();
 }
 
 export function perfFallbackReason(): string {
-  try {
-    return sessionStorage.getItem(PERF_KEY) || "";
-  } catch {
-    return "";
-  }
+  return perfFallbackWhy;
 }

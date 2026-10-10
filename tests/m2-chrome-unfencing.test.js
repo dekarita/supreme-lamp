@@ -241,7 +241,21 @@ test("M2-b: every surface is fenced at its shipped mount, and nothing chrome is 
   // pinned layout part or one of the two fenced chrome mounts.
   const shellFn = shell.slice(shell.indexOf("export function AppShell()"));
   const elems = new Set([...shellFn.matchAll(/<([A-Z][A-Za-z0-9]*)[\s/>]/g)].map((m) => m[1]));
-  assert.deepEqual([...elems].sort(), ["BottomBar", "ChromeBoundary", "CommandPalette", "LogonGateBanner", "Main", "Sidebar", "TopBar"], "AppShell renders an element M2 has not classified (fence it, or extend the table and this pin)");
+  // [R-GLASS / #213 §6 + #214 §5] Two new LAYOUT parts, both classified here
+  // rather than fenced:
+  //   * AppBackdrop - a decorative, aria-hidden, pointer-events-none gradient
+  //     field. It renders a single empty div (or null in opaque mode), so there
+  //     is no subtree a crash could lose and no reason to spend a fence on it.
+  //   * MobileNav   - the phone primary bar: a layout sibling of BottomBar and
+  //     Sidebar, not chrome. It renders no overlay of its own; the drawer it
+  //     opens IS fenced (ChromeBoundary "logon-banner"/"command-palette" cover
+  //     the shell's overlays, and the drawer lives inside the shell's own
+  //     boundary, which M2 already fences at App.tsx).
+  assert.deepEqual(
+    [...elems].sort(),
+    ["AppBackdrop", "BottomBar", "ChromeBoundary", "CommandPalette", "LogonGateBanner", "Main", "MobileNav", "Sidebar", "TopBar"],
+    "AppShell renders an element M2 has not classified (fence it, or extend the table and this pin)"
+  );
   // The shell itself is fenced as a route element (it is not in the chrome block).
   assert.ok(app.includes('element={chrome("shell", <AppShell />)}'), "the shell must be fenced as the route element - it is the outermost chrome fence");
   // SessionListModal is fenced TRANSITIVELY: from the FAB it renders inside

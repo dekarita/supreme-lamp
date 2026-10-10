@@ -362,8 +362,13 @@ test("F111-e: the declared storage inventory equals what the tree really persist
   // tests/f110-live-patch.test.js is the gate that fails if those two are added WITHOUT this
   // re-measurement, so the number cannot drift by omission.
   // [M4] ghrdp-dash-token (the dead read) was deleted from both consumers: 25 - 1 = 24.
-  assert.equal(scan.keys.length, 24, "derived surface count moved - re-measure and update the declaration");
-  assert.deepEqual(byClass, { live: 20, migration: 1, purged: 3 }, "classification census moved");
+  // [F-GLASS / #213 §8] re-MEASURED (not incremented): + `ghrdp:glass` (localStorage,
+  // the persisted visual-quality preference declared beside the theme in
+  // src/stores/prefsStore.ts, addedBy:"F-GLASS", listed under
+  // postInventoryGrowth.F-GLASS). The one-way measured-opaque latch in
+  // src/lib/glass/quality.ts is IN MEMORY, so it adds no surface. 24 + 1 = 25.
+  assert.equal(scan.keys.length, 25, "derived surface count moved - re-measure and update the declaration");
+  assert.deepEqual(byClass, { live: 21, migration: 1, purged: 3 }, "classification census moved");
   assert.equal(scan.keys.filter((k) => k.kind === "indexedDB").length, 2, "two IndexedDB surfaces (ghrdp-dvr, ghrdp-patches)");
   assert.equal(diff.agreed.length, declared.keys.length, "every declared key must be fully agreed, not just present");
 

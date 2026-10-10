@@ -10,6 +10,7 @@ import {
   currentQualityEnv,
   isPerfFallbackActive,
   resolveQuality,
+  setEnvChangeListener,
   prefersForcedColors,
   prefersReducedTransparency,
   supportsBackdropFilter,
@@ -29,6 +30,8 @@ function emit() {
   snapshot = { ...currentQualityEnv(), quality: "auto" };
   for (const l of listeners) l();
 }
+
+setEnvChangeListener(emit);
 
 function bind() {
   if (bound || typeof window === "undefined" || typeof window.matchMedia !== "function") return;
@@ -84,8 +87,9 @@ export function useVisualQuality(): VisualQualityState {
  * <html data-glass-quality-resolved>, plus the capability flags, so CSS and
  * the browser lab can assert the real state without guessing.
  */
-export function useVisualQualityRootAttribute(): void {
-  const { requested, resolved, env } = useVisualQuality();
+export function useVisualQualityRootAttribute(): VisualQualityState {
+  const state = useVisualQuality();
+  const { requested, resolved, env } = state;
   useEffect(() => {
     if (typeof document === "undefined") return;
     const root = document.documentElement;
@@ -99,6 +103,7 @@ export function useVisualQualityRootAttribute(): void {
     root.setAttribute("data-glass-forced-colors", env.forcedColors ? "yes" : "no");
     root.setAttribute("data-glass-perf-fallback", env.perfForcedOpaque ? "yes" : "no");
   }, [requested, resolved, env]);
+  return state;
 }
 
 /* Re-exported so components import from one place. */

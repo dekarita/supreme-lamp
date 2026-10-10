@@ -206,6 +206,8 @@ test("F105-g: App.tsx fences every feature - exactly 13 fence() calls, all regis
   assert.ok(APP.includes('from "@/components/primitives/FeatureBoundary"'), "App.tsx must import the boundary");
 });
 
+const GLASS_LAB_PATH = "/lab/glass";
+
 test("F105-h: every registry route exists in App.tsx and every App.tsx page route is registered", () => {
   const paths = [...APP.matchAll(/<Route\s+path="([^"]+)"/g)].map((m) => m[1]);
   const knownPaths = new Set();
@@ -230,6 +232,13 @@ test("F105-h: every registry route exists in App.tsx and every App.tsx page rout
   assert.ok(paths.includes(labIndexPath), "the lab index route is missing from App.tsx: " + labIndexPath);
   knownPaths.add(labPattern);
   knownPaths.add(labIndexPath);
+  // [R-GLASS / #213 §9] `/lab/glass` is a THIRD lab route: the visual-quality
+  // harness. It is deliberately NOT registered as a 12th feature (this gate
+  // pins `registry.features.length === 11` and F110-j re-asserts it), so it is
+  // named here instead - a lab path the registry does not own, fenced with an
+  // existing id, exactly like the two F106 paths above.
+  knownPaths.add(GLASS_LAB_PATH);
+  assert.ok(paths.includes(GLASS_LAB_PATH), "the glass lab route is missing from App.tsx: " + GLASS_LAB_PATH);
   for (const p of paths) {
     assert.ok(knownPaths.has(p) || p === "*", "App.tsx renders a page route no feature owns: " + p);
   }

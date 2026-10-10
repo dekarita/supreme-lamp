@@ -125,10 +125,14 @@ export default function App() {
           {/* [R-GLASS / #213 §9] The glass lab. A static segment placed BEFORE
               the parameter route so `/#/lab/glass` is not resolved as
               featureId="glass" (React Router ranks static segments higher, and
-              the ordering makes that explicit rather than incidental). It is
-              fenced and it restores the operator's visual-quality preference on
+              the ordering makes that explicit rather than incidental).
+              It builds its FeatureBoundary from the value - the LabRoute
+              pattern - rather than through App.tsx's fence() helper, because
+              F105-g and M2-e pin that helper at exactly 13 calls (11 sections +
+              the Lab sub-route + the catch-all) and the glass lab is none of
+              those. It restores the operator's visual-quality preference on
               unmount, so leaving it leaves nothing behind. */}
-          <Route path="/lab/glass" element={fence("settings", <GlassLab />)} />
+          <Route path="/lab/glass" element={<FeatureBoundary feature="settings"><GlassLab /></FeatureBoundary>} />
           <Route path="/lab/:featureId" element={<LabRoute />} />
           <Route path="*" element={fence("overview", <Overview />)} />
         </Route>

@@ -42,6 +42,9 @@ import { logButtonAction } from "@/lib/collectorAgent";
 import GlassContainer from "@/components/primitives/GlassContainer";
 import AppBackdrop from "@/components/layout/AppBackdrop";
 import { useVisualQualityRootAttribute } from "@/lib/glass/useVisualQuality";
+// [R-GLASS / #213 §8] Measured fallback: a browser that cannot composite the
+// blur gets the opaque presentation for the rest of the session.
+import { useGlassPerfWatchdog } from "@/lib/glass/perfWatchdog";
 // [R-UX / #214 §4] Escape + focus trap + focus restoration for the mobile drawer.
 import { useOverlayA11y } from "@/lib/useOverlayA11y";
 
@@ -640,7 +643,9 @@ export function AppShell() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   // [R-GLASS] publishes the RESOLVED quality on <html> for CSS + the browser lab.
-  useVisualQualityRootAttribute();
+  const { resolved } = useVisualQualityRootAttribute();
+  // [R-GLASS / #213 §8] Three bounded frame samples; one-way latch to opaque.
+  useGlassPerfWatchdog(resolved !== "opaque");
 
   // [F56-c] File Explorer = Alt+E, Search = Alt+F (session §1). Ctrl+K is
   // handled by CommandPalette (Plan §D: opens the palette; Search command

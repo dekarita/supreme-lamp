@@ -31,7 +31,12 @@ export function DiagSideDrawer() {
         id="drawer"
         aria-hidden={!open}
         className={cn(
-          "fixed inset-y-0 right-0 z-50 w-full max-w-xl glass-drawer border-l shadow-md flex flex-col transition-transform duration-med",
+          // [R-GLASS #213 §6] The drawer is ALWAYS mounted (it slides in on a transform),
+          // so `glass-drawer` - which carries the backdrop-filter - is applied only
+          // while it is open. Otherwise Mission Control would carry a permanent
+          // second sampling surface for a panel nobody is looking at.
+          "fixed inset-y-0 right-0 z-50 w-full max-w-xl border-l shadow-md flex flex-col transition-transform duration-med",
+          open ? "glass-drawer" : "bg-surface",
           open ? "translate-x-0" : "translate-x-full"
         )}
       >
