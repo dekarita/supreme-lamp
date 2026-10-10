@@ -20,18 +20,27 @@ const shot = (page: Page, name: string) => page.screenshot({ path: `screenshots/
 
 // [WP-09 / #203] WHY THIS FILE ISOLATES THE PUBLIC INTERNET AND CLOSES POPUPS.
 //
-// The e2e-ui lane went from ~1m44s (run 37285114245, 2b66c11) to a systematic
-// 25-minute job timeout the moment this spec landed (first non-success run:
-// 37289316623, 1827d3f0 - the F91 commit that added this file). The only new
-// thing this lane ever did was open a popup at a REAL third-party operator site
-// (pluto.tv, tubitv.com, archive.org, ...) and leave it open: Playwright's
-// per-test teardown then closes the whole context, and a context close waits
-// for every page in it - including that still-loading external one. With
-// workers:1 a single wedged teardown stalls the entire run, which is exactly
-// the "0 successes in 100 runs, every one cancelled at ~25m" signature.
+// Honorary mention of a DISPROVEN hypothesis, because the next person to read
+// this will otherwise repeat it:
+//   HYPOTHESIS (this file's first fix, run 38024144029 -> 38024230807):
+//     the lane went from ~1m44s (run 37285114245, 2b66c11) to a systematic
+//     job-ceiling timeout on the commit that added THIS spec (run 37289316623,
+//     1827d3f0). This spec opens a popup at a REAL third-party operator site
+//     (pluto.tv, tubitv.com, archive.org, ...) and used to leave it open;
+//     Playwright's per-test teardown closes the whole context, and a context
+//     close waits for every page in it, so a wedged external load plus
+//     workers:1 would stall the entire run.
+//   RESULT: the lane STILL did not go green after this fix - it failed at the
+//     new 18m step bound (run 38024230807, 04:29:17Z -> 04:47:51Z). The
+//     readable evidence that fix's instrumentation produced points somewhere
+//     else entirely: tests/e2e/f86-ten-sites-deep.spec.ts:101, "librivox.org:
+//     add -> Lab >= 50 URLs -> row opens in RDP (tier) -> download", failing
+//     its 60s budget twice, as test #100 of the run. So the popup theory is at
+//     best INCOMPLETE, and the ~18m is being consumed by accumulated per-test
+//     timeouts across the site-loop specs, not by one wedged teardown.
 //
-// Two fixes, both narrowing the lane's dependencies without weakening an
-// assertion:
+// The two changes below are KEPT, because they are correct on their own merits
+// and cost no assertion - they are just no longer claimed as THE fix:
 //   1. every external navigation is FULFILLED with a stub, so no test waits on
 //      a third-party host (the spec's own comment already said "its LOAD may
 //      fail in a sandbox; creation + correct target is the proof" - the URL is

@@ -82,9 +82,34 @@ jobs:
             tail -120 e2e-run.log
             echo "---- last test that STARTED before the lane stopped ----"
             grep -E "^\[[0-9]+/[0-9]+\]|›|\.spec\.ts" e2e-run.log | tail -20 || true
-            detail=$(awk '/^  [0-9]+\) /{f=1} f{if (n < 1700) { print; n += length($0) + 1 }}' e2e-run.log)
-            summary=$(tail -c 400 e2e-run.log)
-            echo "::error::F79-E2E-FAIL::$(printf '%s' "${detail}${summary}" | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g' | iconv -f UTF-8 -t UTF-8 -c)"
+            # [WP-09 / #203] A 500-char annotation is the ONLY readable channel
+            # out of this lane (the step log itself is not retrievable from the
+            # agent sandbox), and a single oversized ::error:: is truncated from
+            # the FRONT -- which is why the first attempt showed one test and
+            # nothing else. So: emit two SHORT annotations, each under ~400
+            # chars, carrying the two things that actually localise a hang.
+            #
+            # (a) TALLY: ok/fail per spec file. Playwright's `list` reporter
+            #     prints every result line with its spec path, so one pass over
+            #     the log turns "the lane is red" into "these files are red".
+            # (b) LAST: the last result lines, i.e. where the run actually was
+            #     when the bound hit.
+            # The full tail above stays in the log for the operator, who can
+            # read it.
+            tally=$(awk '
+              /^  [✓✘✕✗] / {
+                st = $1; file = ""
+                for (i = 1; i <= NF; i++) if ($i ~ /\.spec\.ts/) { file = $i; break }
+                if (file != "") { sub(/:.*/, "", file); sub(/^tests\/e2e\//, "", file); c[file " " st]++ }
+              }
+              END { n = 0; for (k in c) { printf "%s=%d ", k, c[k]; n++ } }
+            ' e2e-run.log)
+            echo "::error::F79-E2E-TALLY::$(printf '%s' "$tally" | cut -c1-400)"
+            # `|| true`: with `set -eo pipefail` an empty grep would exit 1 here
+            # and abort the step BEFORE either annotation is printed -- the exact
+            # class of bug the F82 §2.3 comment above already records.
+            last=$(grep -E '^  [0-9]+\)|^  [✓✘✕✗] ' e2e-run.log | tail -6 | tr '\n' '|' | tr -d '\r' | sed 's/%/%25/g' | cut -c1-400) || true
+            echo "::error::F79-E2E-LAST::$last"
             exit 1
           fi
           tail -8 e2e-run.log

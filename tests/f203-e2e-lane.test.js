@@ -94,3 +94,45 @@ test("F203-e: the mirror spec declares why it isolates the network (the comment 
   assert.match(src, /toContain\(site\)/, "the popup's target URL is still asserted");
   assert.match(src, /not\.toBe\("about:blank"\)/, "the popup must still be proven to have navigated");
 });
+
+test("F203-f: a failing lane emits a per-spec tally, so the offender is named without the step log", () => {
+  // WHY: the step log is NOT retrievable from the agent sandbox (only
+  // api.github.com is reachable, and results-receiver.actions.githubusercontent.com
+  // is not). The ONLY channel out of this lane is the ~500-char check-run
+  // annotation -- and a single oversized ::error:: is truncated from the FRONT,
+  // which is why run 38024230807 (the first run to leave any evidence at all)
+  // showed exactly one test and nothing else.
+  //
+  // So the contract is: on failure the step emits SHORT annotations that carry
+  // (a) an ok/fail count per spec file and (b) the last result lines.
+  // Neither may be dropped by an early pipeline exit (`|| true` under
+  // `set -eo pipefail`).
+  const wf = read(".github/workflows/e2e-ui.yml");
+  assert.match(wf, /F79-E2E-TALLY/, "a per-spec tally annotation must exist");
+  assert.match(wf, /F79-E2E-LAST/, "a last-results annotation must exist");
+  // Both annotations are length-capped before they are echoed: a single
+  // oversized ::error:: is truncated from the FRONT by GitHub, which is how
+  // the first instrumented run lost every line but one.
+  const caps = (wf.match(/cut -c1-400/g) || []);
+  assert.ok(caps.length >= 2, "both failure annotations must be length-capped (found " + caps.length + ")");
+  for (const ann of ["F79-E2E-TALLY", "F79-E2E-LAST"]) {
+    assert.ok(wf.includes("::error::" + ann), ann + " annotation missing");
+  }
+  // (b) is built by a grep whose empty result must not abort the step.
+  const lastLine = wf.split("\n").find((l) => l.trim().startsWith("last=$(grep"));
+  assert.ok(lastLine, "the LAST annotation is built from the log's result lines");
+  assert.match(lastLine, /\|\| true/, "an empty grep must not abort the step before the annotations print");
+});
+
+test("F203-g: the disproven popup hypothesis is recorded where the next reader will see it", () => {
+  // Honorary correction: the first #203 fix guessed that an unclosed f91 popup
+  // at a third-party host wedged context teardown. The lane did NOT go green
+  // (run 38024230807 failed at the new 18m bound) and the evidence it produced
+  // points at tests/e2e/f86-ten-sites-deep.spec.ts:101 instead. The popup
+  // hygiene is kept because it is correct on its own merits, but the comment
+  // must say so -- otherwise it is a false root cause left standing in code.
+  const src = read(SPECS_DIR + "/f91-mirror-mode.spec.ts");
+  assert.match(src, /DISPROVEN hypothesis/, "the spec must record that the popup theory did not fix the lane");
+  assert.match(src, /f86-ten-sites-deep\.spec\.ts/, "the spec must name what the evidence actually points at");
+  assert.match(src, /INCOMPLETE/, "the popup theory must be labelled incomplete, not the fix");
+});
