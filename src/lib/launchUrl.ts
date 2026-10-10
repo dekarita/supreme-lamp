@@ -669,10 +669,31 @@ export async function openMirrored(
   // BEFORE this line is what lets a popup blocker eat the tab). [F104 §1]
   // the return value is the proof: null means the blocker ate it, and
   // claiming success on a null handle is the fake-green this fix removes.
+  //
+  // [F45-R §4 / #203 Defect B] the features string deliberately DROPPED
+  // "noopener,noreferrer": the HTML spec makes window.open() return null
+  // whenever noopener is set (MDN Window.open: "noopener: … returns null";
+  // whatwg/html#1851), so with the old call EVERY mirror click - blocker or
+  // not - read win === null and faked popupBlocked. opener null is NOT a
+  // block signal. The truthful signal needs a real handle, so we open
+  // plainly (modern browsers apply implicit noopener to _blank since
+  // Chrome 88 / Firefox 79 / Safari 12.1) and sever the opener ourselves -
+  // the spec's opener setter is defined to work cross-origin for exactly
+  // this pattern, which keeps the reverse-tabnabbing protection the old
+  // features string provided. Referrer: the dashboard sends no referrer
+  // path/query cross-origin under the browser default policy
+  // (strict-origin-when-cross-origin).
   let localOpened = false;
   let popupBlocked = false;
   try {
-    const win = window.open(url, "_blank", "noopener,noreferrer");
+    const win = window.open(url, "_blank");
+    if (win) {
+      try {
+        win.opener = null;
+      } catch {
+        /* an engine that refuses the sever has already detached it */
+      }
+    }
     if (win) localOpened = true;
     else popupBlocked = true;
   } catch {

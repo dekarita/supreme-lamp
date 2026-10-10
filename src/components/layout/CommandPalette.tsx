@@ -6,6 +6,9 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
+// [R-GLASS / #213 §6] The palette is a portaled overlay: the second permitted
+// backdrop-filter surface, and only while it is open.
+import GlassContainer from "@/components/primitives/GlassContainer";
 import { Search as SearchIcon } from "lucide-react";
 
 export function CommandPalette() {
@@ -41,15 +44,19 @@ export function CommandPalette() {
   };
 
   return (
-    <div className="fixed inset-0 z-50 bg-black/40 flex items-start justify-center pt-24 p-4" onClick={() => setOpen(false)}>
-      <div
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-start justify-center pt-24 p-4" onClick={() => setOpen(false)}>
+      <GlassContainer
         id="f56.search.paletteCommand"
+        surface="backdrop"
+        variant="tinted"
+        radius="overlay"
+        escapeScope
         role="dialog"
         aria-modal="true"
         aria-label={t("search.palette.command")}
         data-testid="command-palette"
         onClick={(e) => e.stopPropagation()}
-        className="bg-surface border border-default rounded-md shadow-md max-w-md w-full p-3 flex flex-col gap-2"
+        className="max-w-md w-full p-3 flex flex-col gap-2"
       >
         <input
           ref={inputRef}
@@ -82,7 +89,7 @@ export function CommandPalette() {
         <p className="text-xs text-tertiary" data-testid="palette-prefill-note">
           {t("search.palette.queryPrefilled")}
         </p>
-      </div>
+      </GlassContainer>
     </div>
   );
 }

@@ -12,9 +12,13 @@ const theme = (selector: string) => {
   });
   return values;
 };
+// [F45-R/#214] the LIGHT selection-border pin moved #0ea5e9 -> #0284c7: the
+// boundary is non-text UI (WCAG 1.4.11, 3:1 floor) and sky-500 measured
+// 2.77:1 against the near-white selection fill; sky-600 measures 4.10:1.
+// The dark pin is unchanged.
 const colors = {
   selection: ['rgba(14,165,233,0.12)', 'rgba(14,165,233,0.18)'],
-  'selection-border': ['#0ea5e9', '#38bdf8'],
+  'selection-border': ['#0284c7', '#38bdf8'],
   'drop-target': ['rgba(14,165,233,0.08)', 'rgba(14,165,233,0.14)'],
   'thumb-bg': ['#f1f5f9', '#0b1220'],
   'preview-scrim': ['rgba(15,23,42,0.60)', 'rgba(15,23,42,0.72)'],

@@ -102,7 +102,17 @@ test("F85-5: launchUrl() keeps its no-window.open-fallback contract; mirror mode
   assert.ok(launchCode.includes('fetch("/api/launcher/queue"'), "the launcher queue POST is missing");
   assert.ok(launchCode.includes("export async function queueLauncherJob("), "queueLauncherJob() is not exported");
   assert.strictEqual((mirrorBody.match(/window\.open\(/g) || []).length, 1, "mirror mode must have exactly one window.open");
-  assert.ok(/noopener/.test(mirrorBody.slice(mirrorOpen, mirrorOpen + 120)), "the mirror popup must keep the noopener features");
+  // [F45-R §4 / #203 Defect B] SUPERSEDED PIN (updated in place, never
+  // deleted - same convention as tests/f93-surgical-fixes.test.js). The old
+  // pin demanded the literal "noopener" features string, but the HTML spec
+  // makes window.open() return null whenever noopener is set (MDN Window.open;
+  // whatwg/html#1851) - which is exactly why every mirrored click faked
+  // popupBlocked: a null handle can never mean "blocked" when noopener forced
+  // it. The contract the old pin PROTECTED - the opened tab must not get
+  // opener access back on the dashboard (reverse tabnabbing) - is now pinned
+  // through the mechanism that actually works with a truthful return value:
+  assert.ok(!/window\.open\([^)]*noopener/.test(mirrorBody.slice(mirrorOpen, mirrorOpen + 160)), "noopener in the mirror features string forces a null return and fakes popupBlocked");
+  assert.ok(/win\.opener = null/.test(mirrorBody.slice(mirrorOpen, mirrorOpen + 600)), "the mirror popup must sever window.opener itself (the noopener protection, without the forced-null return)");
   // [F104 §1] the return value is the proof: a null handle (or a throw) is a
   // NAMED block, and the RDP half still runs after it (halves independent).
   assert.ok(/if \(win\) localOpened = true;/.test(mirrorBody), "mirror mode must honour window.open's return value");

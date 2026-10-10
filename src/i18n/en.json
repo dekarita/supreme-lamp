@@ -15,7 +15,9 @@
     "files": "File Explorer",
     "search": "Search",
     "health": "Health",
-    "collector": "Collector"
+    "collector": "Collector",
+    "more": "More",
+    "primary": "Primary navigation"
   },
   "sidebar": {
     "nav": "Primary navigation",
@@ -25,7 +27,8 @@
     "search": "Search",
     "searchLab": "Lab",
     "health": "Health",
-    "collector": "Collector"
+    "collector": "Collector",
+    "close": "Close navigation"
   },
   "actions": {
     "autoLogin": "WINDOWS AUTO-LOGIN",
@@ -1388,5 +1391,34 @@
       "error500": "500",
       "offline": "offline"
     }
+  },
+  "glass": {
+    "title": "Visual quality",
+    "intro": "Frosted glass is the default on browsers that support it. Choose Opaque at any time, and every accessibility setting below wins over this choice.",
+    "quality": {
+      "label": "Glass quality",
+      "auto": "Auto",
+      "opaque": "Opaque",
+      "frosted": "Frosted",
+      "clear": "Clear",
+      "help": "Auto uses the frosted presentation when the browser supports it. Opaque keeps solid surfaces. Frosted and Clear force one look on every browser that can render it."
+    },
+    "variant": {
+      "label": "Surface tint",
+      "tinted": "Tinted",
+      "clear": "Clear",
+      "help": "Tinted keeps a stronger fill for content-heavy panels. Clear lets more of the backdrop show through and suits chrome."
+    },
+    "clarity": {
+      "label": "Glass clarity",
+      "help": "Higher clarity means a more transparent surface. The value snaps to fixed steps so the blur is never rebuilt while you drag.",
+      "value": "{{percent}}% clear"
+    },
+    "perfNotice": "Frosted effects were turned off for this session because scrolling dropped frames. Reload to try again.",
+    "unsupportedNotice": "This browser does not support backdrop filters, so surfaces stay solid. Everything on this page works the same way.",
+    "reducedNotice": "Your system asks for reduced transparency, so surfaces stay solid. Layout and hierarchy are unchanged.",
+    "labTitle": "Glass lab",
+    "labIntro": "The same production pages, rendered in an isolated harness. Synthetic data only — nothing here reaches the operator's RDP session.",
+    "labSimulated": "Simulated"
   }
 }

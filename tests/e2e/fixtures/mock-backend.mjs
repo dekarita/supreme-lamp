@@ -58,6 +58,18 @@ function f86SitemapRows(hostname) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** [R-GLASS] The explorer's synthetic index, read lazily and cached. */
+let fxIndexCache = null;
+function fxIndex() {
+  if (fxIndexCache) return fxIndexCache;
+  try {
+    fxIndexCache = JSON.parse(readFileSync(join(HERE, "..", "..", "..", "src/components/explorer/data/fixtures/5000-files.json"), "utf8"));
+  } catch {
+    fxIndexCache = { schemaVersion: 2, generatedAt: new Date().toISOString(), runnerId: "mock", roots: [], files: [], gofileHosts: [] };
+  }
+  return fxIndexCache;
+}
+
 /** The launch-url calls the F86 spec inspects (tier proof). */
 const launchCalls = [];
 // [F91] every /api/launcher/queue job ever accepted, in order. The mirror-mode
@@ -661,6 +673,29 @@ const server = createServer(async (req, res) => {
 
   // [F85 §3] The diagnostic-banner contract, mirroring the shipped
   // payloads/ghrdp-server.ps1 /api/version route (features object + sha7).
+  // [R-GLASS / #213 §10] Explorer reads. The 5000-row file list the benchmark
+  // and the preview need comes from the repo's OWN synthetic fixture
+  // (src/components/explorer/data/fixtures/5000-files.json, schemaVersion 2) -
+  // it is labelled synthetic in the UI and it is never a real runner index.
+  // Only READS are answered here; /api/fx/op is deliberately left unhandled so
+  // a write against the mock fails loudly instead of being fabricated.
+  if (path === "/api/fx/list" && req.method === "GET") {
+    const idx = fxIndex();
+    const root = url.searchParams.get("root");
+    send(res, 200, root ? { ...idx, files: idx.files.filter((f) => f.root === root) } : idx);
+    return;
+  }
+  if (path === "/api/fx/meta" && req.method === "GET") {
+    const id = url.searchParams.get("id") || "";
+    const found = fxIndex().files.find((f) => f.id === id) || null;
+    send(res, found ? 200 : 404, found || { error: "not found" });
+    return;
+  }
+  if (path === "/api/fx/gofile/status" && req.method === "GET") {
+    send(res, 200, { code: null, fileId: null, directUrl: null, status: "none", uploadedAt: null, expiryTs: null, downloads: 0, remoteSize: null });
+    return;
+  }
+
   if (path === "/api/version") {
     send(res, 200, {
       ok: true,
@@ -831,11 +866,13 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (req.method === "HEAD") {
-      res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": "0" });
+      // [WP-09 / #203] CORS: the lane reads the relay cross-origin (page on
+      // :5173, mock on :7331) - same openness send() gives every JSON route.
+      res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": "0", "Access-Control-Allow-Origin": "*" });
       res.end();
       return;
     }
-    res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": "2048" });
+    res.writeHead(200, { "Content-Type": "audio/mpeg", "Content-Length": "2048", "Access-Control-Allow-Origin": "*" });
     res.end(Buffer.alloc(2048, 7));
     return;
   }

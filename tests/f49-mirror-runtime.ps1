@@ -165,13 +165,22 @@ try {
     }
     $okFile = Join-Path $srvRoot 'server-ok.txt'
     $up = $false
+    $markerPid = ''
     for ($i = 0; $i -lt 60 -and -not $up; $i++) {
         Start-Sleep -Milliseconds 500
-        if (Test-Path -LiteralPath $okFile) { $t = [System.IO.File]::ReadAllText($okFile); if ($t -match 'LISTENING') { $up = $true } }
+        if (Test-Path -LiteralPath $okFile) { $t = [System.IO.File]::ReadAllText($okFile); if ($t -match 'LISTENING') { $up = $true; if ($t -match 'pid=(\d+)') { $markerPid = $Matches[1] } } }
         if ($proc.HasExited) { break }
     }
     Check 'I server reached LISTENING' $up ('server-ok.txt absent; stdout=[' + (Get-Content -LiteralPath $srvOut -Raw -ErrorAction SilentlyContinue) + ']')
     if ($up) {
+        # [F45-R] readiness is marker + HTTP 200 + MATCHING pid (a stale
+        # marker over a recycled port must fail, not read as ready).
+        $r = Send-F49Raw -Port $port -Method 'GET' -Target '/health'
+        Check 'I /health 200 from loopback' ([int]$r.Code -eq 200) ('code=' + $r.Code)
+        Check 'I /health reports the ghrdp app' ([string]$r.Text -match '"app":"ghrdp"') ('text=' + $r.Text)
+        $hJson = $null
+        try { $hJson = ($r.Text | ConvertFrom-Json) } catch { $hJson = $null }
+        Check 'I /health pid matches the LISTENING marker' (($hJson -ne $null) -and ([string]$hJson.pid -eq [string]$markerPid)) ('health pid=[' + [string]$hJson.pid + '] marker pid=[' + $markerPid + ']')
         $r = Send-F49Raw -Port $port -Method 'GET' -Target '/api/mirror/status'
         Check 'I status 200 from loopback without a token (read)' ([int]$r.Code -eq 200) ('code=' + $r.Code)
         $j0 = $null

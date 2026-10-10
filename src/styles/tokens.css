@@ -17,18 +17,32 @@
   --color-text-secondary: #475569;     /* slate-600 */
   --color-text-tertiary: #64748b;      /* slate-500 */
   --color-text-mono: #334155;          /* slate-700 */
-  --color-accent: #0ea5e9;             /* sky-500 */
-  --color-accent-hover: #0284c7;       /* sky-600 */
-  --color-accent-fg: #ffffff;
+  /* [F45-R/#214] LIGHT accent contrast repair (measured, WCAG 1.4.3):
+     #0ea5e9 (sky-500) read 2.77:1 as text on --color-bg-surface and 2.65:1
+     on --color-bg-base - both below the 4.5:1 AA bar for the normal-size text
+     links/labels that consume it. sky-700 measures 5.93:1 on the surface and
+     5.42:1 on the raised tint, and keeps white as its on-fill foreground
+     (5.93:1). Hover darkens to sky-800 (7.56:1) instead of lightening, so the
+     hover state never dips below the base state's ratio. The DARK theme keeps
+     sky-500, which measures 5.28:1 on slate-800 and 6.44:1 on slate-900. */
+  --color-accent: #0369a1;             /* sky-700 - 5.93:1 on the white surface */
+  --color-accent-hover: #075985;       /* sky-800 - 7.56:1 on the white surface */
+  --color-accent-fg: #ffffff;          /* text ON a --color-accent fill (5.93:1) */
   --color-success: #059669;            /* emerald-600 - the ONLY green */
   --color-warning: #d97706;            /* amber-600 */
   --color-danger: #dc2626;             /* red-600 */
   --color-danger-hover: #b91c1c;       /* red-700 */
-  --color-focus-ring: #0ea5e9;
+  --color-danger-fg: #ffffff;          /* text ON a --color-danger fill */
+  /* Focus rings are non-text UI (WCAG 1.4.11, 3:1): #0ea5e9 measured 2.77:1
+     on the light surface, so the light ring follows the repaired accent. */
+  --color-focus-ring: #0369a1;
 
-  /* F45 Explorer §1.1 — existing slate/sky ramp only. */
+  /* F45 Explorer §1.1 — existing slate/sky ramp only.
+     [F45-R/#214] selection-border is a non-text boundary (3:1 floor);
+     #0ea5e9 measured 2.77:1 against the near-white selection fill, sky-600
+     measures 4.10:1. The dark-theme border (#38bdf8) is unchanged. */
   --color-fx-selection: rgba(14,165,233,0.12);
-  --color-fx-selection-border: #0ea5e9;
+  --color-fx-selection-border: #0284c7;
   --color-fx-drop-target: rgba(14,165,233,0.08);
   --color-fx-thumb-bg: #f1f5f9;
   --color-fx-preview-scrim: rgba(15,23,42,0.60);
@@ -51,6 +65,30 @@
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.10), 0 1px 3px rgba(0, 0, 0, 0.08);
   --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.10), 0 1px 2px rgba(0, 0, 0, 0.06);
+
+  /* 1.8 Glass / visual quality (#213 §6, #214).
+     LIGHT theme defaults. The tint is the surface colour as a SPACE-SEPARATED
+     RGB triple so components can write `rgb(var(--glass-tint-rgb) / a)` —
+     alpha on the background colour, never `opacity` on the element (MDN: an
+     opacity < 1 element becomes a backdrop root and fades its own text).
+     Numeric fill/border alphas live in src/lib/glass/quality.ts; these are the
+     paint channels only. */
+  --glass-tint-rgb: 255 255 255;
+  --glass-edge-rgb: 15 23 42;
+  --glass-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --glass-overlay-radius: 16px;
+  --glass-saturate: 1;
+  /* Brightness veil over the decorative backdrop. Source-derived from the
+     reference's "blend black into the fill instead of filtering backdrop luma"
+     (dark artwork veil 0.35); raised here because a CSS gradient is flatter
+     than album art and the contrast target is measured in the browser lab. */
+  --glass-veil-top: rgba(248, 250, 252, 0.55);
+  --glass-veil-bottom: rgba(248, 250, 252, 0.72);
+  --glass-backdrop-a: rgba(14, 165, 233, 0.18);
+  --glass-backdrop-b: rgba(139, 92, 246, 0.16);
+  --glass-backdrop-c: rgba(13, 148, 136, 0.14);
+  --glass-backdrop-d: rgba(219, 39, 119, 0.10);
+  --glass-backdrop-base: #eef2f7;
 }
 
 html[data-theme="dark"] {
@@ -66,11 +104,16 @@ html[data-theme="dark"] {
   --color-text-mono: #e2e8f0;          /* slate-200 */
   --color-accent: #0ea5e9;
   --color-accent-hover: #38bdf8;       /* sky-400 */
-  --color-accent-fg: #ffffff;
+  --color-accent-fg: #04121f;
   --color-success: #10b981;            /* emerald-500 */
   --color-warning: #f59e0b;            /* amber-500 */
-  --color-danger: #ef4444;             /* red-500 */
-  --color-danger-hover: #f87171;       /* red-400 */
+  /* [R-UX/#214] #ef4444 on --color-bg-surface-raised was 3.89:1 - below AA
+     for the 14px status text 54 call sites render it at. red-400 is 5.28:1.
+     The two SOLID danger buttons keep their legibility through the paired
+     --color-danger-fg (dark ink, 7.0:1) instead of white (2.77:1). */
+  --color-danger: #f87171;             /* red-400 */
+  --color-danger-hover: #fca5a5;       /* red-300 */
+  --color-danger-fg: #1b0707;
   --color-focus-ring: #38bdf8;
 
   --color-fx-selection: rgba(14,165,233,0.18);
@@ -90,6 +133,18 @@ html[data-theme="dark"] {
   --search-licence-purchase-bg: rgba(245, 158, 11, 0.14);
   --search-licence-own-fg: #cbd5e1;
   --search-licence-own-bg: rgba(148, 163, 184, 0.14);
+
+  /* 1.8 Glass, dark theme — the primary presentation. */
+  --glass-tint-rgb: 15 23 42;
+  --glass-edge-rgb: 148 163 184;
+  --glass-shadow: 0 2px 8px rgba(0, 0, 0, 0.14);
+  --glass-veil-top: rgba(2, 6, 23, 0.62);
+  --glass-veil-bottom: rgba(2, 6, 23, 0.84);
+  --glass-backdrop-a: rgba(14, 165, 233, 0.26);
+  --glass-backdrop-b: rgba(139, 92, 246, 0.24);
+  --glass-backdrop-c: rgba(13, 148, 136, 0.18);
+  --glass-backdrop-d: rgba(219, 39, 119, 0.14);
+  --glass-backdrop-base: #0b1220;
 }
 
 :root {

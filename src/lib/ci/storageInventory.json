@@ -3,10 +3,10 @@
   "contract": "Every byte this app persists in the browser is declared here exactly once, with the file that declares it, the operations the tree really performs on it, and whether #163 section 3.8 knew about it. It is DERIVED, not hand-counted: src/lib/ci/inventoryCore.js scanSources() walks src/ and tests tests/f111-ci-inventory.test.js fails if this file and the tree disagree in either direction - an undeclared key is drift, a declared key the tree no longer uses is stale, and a key whose operation set changed must be re-classified here in the same commit. This file is the machine-readable successor to #163 section 3.8 ('14 live + 3 purged-legacy'), which was hand-counted and is now measurably wrong: see the drift summary below.",
   "derivedBy": "src/lib/ci/inventoryCore.js scanSources()",
   "gatedBy": "tests/f111-ci-inventory.test.js (auto-run by launch-gates.yml `node --test tests/*.test.js`)",
-  "closesHandoff": "docs/OBSERVATORY-STATE.md §Handoff-findings #9 (registry storage-key audit, open since step 4)",
+  "closesHandoff": "docs/OBSERVATORY-STATE.md \u00a7Handoff-findings #9 (registry storage-key audit, open since step 4)",
   "surfaceVocabulary": {
     "note": "A key's surface is either a feature id from src/lib/feature-registry.json, or one of the two cross-cutting values below. Attribution is by the FILE that declares the key; page ownership of src/pages is already partitioned exactly by F105-c and is deliberately not re-derived here (two rules for one fact would drift apart).",
-    "chrome": "App.tsx / AppShell chrome - NOT behind a FeatureBoundary (see §Fence-coverage-gap tracker); F109 owns fencing it",
+    "chrome": "App.tsx / AppShell chrome - NOT behind a FeatureBoundary (see \u00a7Fence-coverage-gap tracker); F109 owns fencing it",
     "shared": "a cross-cutting lib or a component mounted from more than one section"
   },
   "classifications": {
@@ -16,35 +16,44 @@
     "dead-read": "read by src/ and written by NOTHING in the repo, so the read always falls through"
   },
   "drift": {
-    "i163Claim": "14 live + 3 purged-legacy localStorage keys (#163 §3.8, hand-counted)",
+    "i163Claim": "14 live + 3 purged-legacy localStorage keys (#163 \u00a73.8, hand-counted)",
     "derived": "21 surfaces at step 10 (16 live: 15 localStorage + 1 IndexedDB, 1 migration, 3 purged, 1 dead-read). F110 added 2 more (f110:armed, ghrdp-patches), so the derived count was 25 before M4 and is 24 after it (M4 removed the ghrdp-dash-token dead read; see drift.retiredByM4) - see postInventoryGrowth; the gate pins the current number, this sentence quotes the measurement #163 was tested against",
     "missedByI163": [
       {
         "key": "ghrdp.f57.opqueue",
-        "why": "F57 Explorer operation queue, written and read by src/lib/explorer/queue.ts as QUEUE_STORAGE_KEY. Live and load-bearing (a reload keeps the op list) but absent from §3.8's table and from its count."
+        "why": "F57 Explorer operation queue, written and read by src/lib/explorer/queue.ts as QUEUE_STORAGE_KEY. Live and load-bearing (a reload keeps the op list) but absent from \u00a73.8's table and from its count."
       },
       {
         "key": "ghrdp-dvr",
-        "why": "IndexedDB database opened by src/lib/dvr/storage.ts (F107, step 6). §3.8 predates step 6 and only ever counted localStorage, so the largest persistence surface the app now has - session recordings with base64 PNG thumbnails, 5 MB/session soft budget, 30-day retention - is not in the inventory at all."
+        "why": "IndexedDB database opened by src/lib/dvr/storage.ts (F107, step 6). \u00a73.8 predates step 6 and only ever counted localStorage, so the largest persistence surface the app now has - session recordings with base64 PNG thumbnails, 5 MB/session soft budget, 30-day retention - is not in the inventory at all."
       },
       {
         "key": "ghrdp.collector.actions.v1",
-        "why": "Partially known: §3.8 mentions it inline in the f102-collector-actions-v1 row ('legacy ... migrated once') but never counts it as a surface. Declared here as classification=migration so the read-then-delete path in collectorAgent.ts stays visible if the migration is ever removed."
+        "why": "Partially known: \u00a73.8 mentions it inline in the f102-collector-actions-v1 row ('legacy ... migrated once') but never counts it as a surface. Declared here as classification=migration so the read-then-delete path in collectorAgent.ts stays visible if the migration is ever removed."
       }
     ],
     "retiredByM4": [
       {
         "key": "ghrdp-dash-token",
         "retiredBy": "M4 (maintenance, latent bug cleanup)",
-        "why": "RETIRED. Not merely missing: it is a DEAD READ. src/api/fetch/index.ts and src/lib/f46.ts both read it, nothing in the repo writes it, so both fall through to their next token source. The canonical key is ghrdp.dashToken (note the dot, not the hyphen) written by src/lib/dashToken.ts. §3.8 lists only the canonical one, so the shadow key was invisible. Latent-bug candidate: a token read path that can never succeed.",
+        "why": "RETIRED. Not merely missing: it is a DEAD READ. src/api/fetch/index.ts and src/lib/f46.ts both read it, nothing in the repo writes it, so both fall through to their next token source. The canonical key is ghrdp.dashToken (note the dot, not the hyphen) written by src/lib/dashToken.ts. \u00a73.8 lists only the canonical one, so the shadow key was invisible. Latent-bug candidate: a token read path that can never succeed.",
         "evidence": "git log --all -S ghrdp-dash-token: 8 commits, every one a read; no commit ever added a setItem for the key. Both reads (src/api/fetch/index.ts getDashToken, src/lib/f46.ts getPerRunKey) were deleted in M4, so the key is no longer derived."
       }
     ]
   },
   "postInventoryGrowth": {
     "note": "Surfaces added AFTER the F111 gate landed carry addedBy:<feature id>. They are i163:false because #163 could not know them, but they are NOT #163 drift: F111-i counts only i163:false keys WITHOUT addedBy as missed-by-#163, and requires every addedBy to be a feature id the step ledger carries.",
-    "F109": ["f109:enabled", "f109:toggles"],
-    "F110": ["f110:armed", "ghrdp-patches"]
+    "F109": [
+      "f109:enabled",
+      "f109:toggles"
+    ],
+    "F110": [
+      "f110:armed",
+      "ghrdp-patches"
+    ],
+    "F-GLASS": [
+      "ghrdp:glass"
+    ]
   },
   "keys": [
     {
@@ -52,7 +61,9 @@
       "kind": "localStorage",
       "classification": "purged",
       "surface": "chrome",
-      "declaredIn": ["src/components/layout/AppShell.tsx"],
+      "declaredIn": [
+        "src/components/layout/AppShell.tsx"
+      ],
       "i163": true,
       "note": "One-shot sidebar purge of the F77 stale-dashboard vector (removeItem only, never read or written)."
     },
@@ -61,7 +72,9 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "collector",
-      "declaredIn": ["src/lib/collectorAgent.ts"],
+      "declaredIn": [
+        "src/lib/collectorAgent.ts"
+      ],
       "i163": true,
       "note": "zustand persist through the quota-safe safeLocalStorage adapter (COLLECTOR_STORE_KEY), cap 500 rows, oldest-first slimming on QuotaExceededError."
     },
@@ -70,7 +83,9 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "shared",
-      "declaredIn": ["src/lib/debugHud.ts"],
+      "declaredIn": [
+        "src/lib/debugHud.ts"
+      ],
       "constantName": "HUD_ENABLED_KEY",
       "i163": false,
       "addedBy": "F109",
@@ -81,7 +96,9 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "shared",
-      "declaredIn": ["src/lib/featureToggles.ts"],
+      "declaredIn": [
+        "src/lib/featureToggles.ts"
+      ],
       "constantName": "HUD_TOGGLES_KEY",
       "i163": false,
       "addedBy": "F109",
@@ -92,7 +109,9 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "shared",
-      "declaredIn": ["src/lib/livePatch/state.ts"],
+      "declaredIn": [
+        "src/lib/livePatch/state.ts"
+      ],
       "constantName": "PATCH_ARM_KEY",
       "i163": false,
       "addedBy": "F110",
@@ -103,7 +122,9 @@
       "kind": "localStorage",
       "classification": "purged",
       "surface": "chrome",
-      "declaredIn": ["src/components/layout/AppShell.tsx"],
+      "declaredIn": [
+        "src/components/layout/AppShell.tsx"
+      ],
       "i163": true,
       "note": "One-shot sidebar purge (removeItem only)."
     },
@@ -112,7 +133,9 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "search",
-      "declaredIn": ["src/pages/Search.tsx"],
+      "declaredIn": [
+        "src/pages/Search.tsx"
+      ],
       "i163": true,
       "note": "F90 tailscale-hint dismiss, one-time (F90_HINT_SEEN_KEY)."
     },
@@ -121,7 +144,9 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "shared",
-      "declaredIn": ["src/lib/launchUrl.ts"],
+      "declaredIn": [
+        "src/lib/launchUrl.ts"
+      ],
       "i163": true,
       "note": "VIEWING_MODE_STORAGE_KEY; resolveViewingMode() beats detection. Set by the F90 badge menu and the launch path."
     },
@@ -130,7 +155,9 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "shared",
-      "declaredIn": ["src/lib/launchUrl.ts"],
+      "declaredIn": [
+        "src/lib/launchUrl.ts"
+      ],
       "i163": true,
       "note": "MANUAL_WEBDESKTOP_KEY; read by readManualWebDesktop() for LogonGateBanner suppression and the F98 sync event."
     },
@@ -139,17 +166,21 @@
       "kind": "indexedDB",
       "classification": "live",
       "surface": "chrome",
-      "declaredIn": ["src/lib/dvr/storage.ts"],
+      "declaredIn": [
+        "src/lib/dvr/storage.ts"
+      ],
       "constantName": "DVR_DB_NAME",
       "i163": false,
-      "note": "DRIFT: F107 (step 6) DVR session database, DVR_DB_NAME exported by src/lib/dvr/storageCore.js and opened as factory.open(DVR_DB_NAME, DVR_DB_VERSION). Holds the recordings and their base64 PNG thumbnails; 5 MB/session soft budget, 30-day retention, oldest-shot-first eviction. Installed from main.tsx, so it is chrome, not a fenced section. The single largest persistence surface in the app and absent from #163 §3.8."
+      "note": "DRIFT: F107 (step 6) DVR session database, DVR_DB_NAME exported by src/lib/dvr/storageCore.js and opened as factory.open(DVR_DB_NAME, DVR_DB_VERSION). Holds the recordings and their base64 PNG thumbnails; 5 MB/session soft budget, 30-day retention, oldest-shot-first eviction. Installed from main.tsx, so it is chrome, not a fenced section. The single largest persistence surface in the app and absent from #163 \u00a73.8."
     },
     {
       "key": "ghrdp-patches",
       "kind": "indexedDB",
       "classification": "live",
       "surface": "shared",
-      "declaredIn": ["src/lib/livePatch/audit.ts"],
+      "declaredIn": [
+        "src/lib/livePatch/audit.ts"
+      ],
       "constantName": "PATCH_AUDIT_DB",
       "i163": false,
       "addedBy": "F110",
@@ -160,7 +191,9 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "shared",
-      "declaredIn": ["src/components/domain/WebDesktopCard.tsx"],
+      "declaredIn": [
+        "src/components/domain/WebDesktopCard.tsx"
+      ],
       "i163": true,
       "note": "VPS auto-login gate; stores the FQDN the operator confirmed, compared on render."
     },
@@ -169,7 +202,9 @@
       "kind": "localStorage",
       "classification": "migration",
       "surface": "collector",
-      "declaredIn": ["src/lib/collectorAgent.ts"],
+      "declaredIn": [
+        "src/lib/collectorAgent.ts"
+      ],
       "i163": false,
       "note": "DRIFT (partially known): LEGACY_STORAGE_KEY, the F100/F101 array shape. Read once, migrated into f102-collector-actions-v1, then removed; never written. Kept visible so removing the migration path is a deliberate, reviewed act."
     },
@@ -178,7 +213,9 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "chrome",
-      "declaredIn": ["src/lib/dashToken.ts"],
+      "declaredIn": [
+        "src/lib/dashToken.ts"
+      ],
       "i163": true,
       "note": "DASH_TOKEN_STORAGE_KEY, the canonical dash token. Written by DashTokenGate (F94, unfenced chrome); read by getDashToken() for every REST call and /ws?key=; a 'storage' event rebuilds the socket."
     },
@@ -187,16 +224,20 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "files",
-      "declaredIn": ["src/lib/explorer/queue.ts"],
+      "declaredIn": [
+        "src/lib/explorer/queue.ts"
+      ],
       "i163": false,
-      "note": "DRIFT: QUEUE_STORAGE_KEY, the F57 Explorer operation queue, capped at QUEUE_LIMIT newest jobs so a reload keeps them. Live and load-bearing, absent from #163 §3.8."
+      "note": "DRIFT: QUEUE_STORAGE_KEY, the F57 Explorer operation queue, capped at QUEUE_LIMIT newest jobs so a reload keeps them. Live and load-bearing, absent from #163 \u00a73.8."
     },
     {
       "key": "ghrdp.f57.trash",
       "kind": "localStorage",
       "classification": "live",
       "surface": "files",
-      "declaredIn": ["src/lib/explorer/trashStore.ts"],
+      "declaredIn": [
+        "src/lib/explorer/trashStore.ts"
+      ],
       "i163": true,
       "note": "TRASH_STORAGE_KEY; read by ExplorerTrashView and the Settings trash card."
     },
@@ -205,7 +246,9 @@
       "kind": "localStorage",
       "classification": "purged",
       "surface": "chrome",
-      "declaredIn": ["src/components/layout/AppShell.tsx"],
+      "declaredIn": [
+        "src/components/layout/AppShell.tsx"
+      ],
       "i163": true,
       "note": "One-shot sidebar purge (removeItem only)."
     },
@@ -214,7 +257,9 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "settings",
-      "declaredIn": ["src/stores/prefsStore.ts"],
+      "declaredIn": [
+        "src/stores/prefsStore.ts"
+      ],
       "i163": true,
       "note": "zustand persist (F38-compatible key); rehydrates i18next and html[lang]."
     },
@@ -223,7 +268,9 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "chrome",
-      "declaredIn": ["src/stores/prefsStore.ts"],
+      "declaredIn": [
+        "src/stores/prefsStore.ts"
+      ],
       "i163": true,
       "note": "zustand persist with partialize({collapsed})."
     },
@@ -232,7 +279,9 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "settings",
-      "declaredIn": ["src/stores/prefsStore.ts"],
+      "declaredIn": [
+        "src/stores/prefsStore.ts"
+      ],
       "i163": true,
       "note": "zustand persist; rehydrates html[data-scale]."
     },
@@ -241,7 +290,9 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "settings",
-      "declaredIn": ["src/stores/prefsStore.ts"],
+      "declaredIn": [
+        "src/stores/prefsStore.ts"
+      ],
       "i163": true,
       "note": "zustand persist; rehydrates html[data-theme]."
     },
@@ -250,7 +301,10 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "shared",
-      "declaredIn": ["src/components/domain/KeysCard.tsx", "src/components/domain/WebDesktopCard.tsx"],
+      "declaredIn": [
+        "src/components/domain/KeysCard.tsx",
+        "src/components/domain/WebDesktopCard.tsx"
+      ],
       "i163": true,
       "note": "A CREDENTIAL at rest in the browser, written by KeysCard 'remember' and WebDesktopCard rememberVnc, and handed to the WebDesktop postMessage shim (same-origin frames only). Declared here so any new reader/writer of a secret key is a reviewed inventory change."
     },
@@ -259,7 +313,9 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "search",
-      "declaredIn": ["src/stores/searchHistoryStore.ts"],
+      "declaredIn": [
+        "src/stores/searchHistoryStore.ts"
+      ],
       "i163": true,
       "note": "Manual (non-zustand) persistence, capped at 20 entries; read by SuggestionList."
     },
@@ -268,9 +324,23 @@
       "kind": "localStorage",
       "classification": "live",
       "surface": "shared",
-      "declaredIn": ["src/components/primitives/Data.tsx"],
+      "declaredIn": [
+        "src/components/primitives/Data.tsx"
+      ],
       "i163": true,
       "note": "DataTable density toggle (comfortable/compact); wrapped in try/catch so a locked-down storage area cannot break the table."
+    },
+    {
+      "key": "ghrdp:glass",
+      "kind": "localStorage",
+      "classification": "live",
+      "surface": "settings",
+      "declaredIn": [
+        "src/stores/prefsStore.ts"
+      ],
+      "i163": false,
+      "note": "zustand persist for the visual-quality system (#213/#214): quality (auto/opaque/frosted/clear), clarity (quantized 0..1) and surface variant (tinted/clear). Rehydrates html[data-glass-quality] / [data-glass-variant] / [data-glass-clarity]; the RESOLVED quality is published separately as [data-glass-quality-resolved] and is recomputed, never stored.",
+      "addedBy": "F-GLASS"
     }
   ],
   "nonStorageLookalikes": [

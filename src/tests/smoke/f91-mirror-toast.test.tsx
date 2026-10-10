@@ -40,7 +40,13 @@ describe("F91 mirror toasts", () => {
     // but the local half is not awaited behind it)
     expect(openSpy).toHaveBeenCalledTimes(1);
     expect(String(openSpy.mock.calls[0][0])).toBe("https://archive.org/details/x");
-    expect(String(openSpy.mock.calls[0][2])).toContain("noopener");
+    // [F45-R §4 / #203 Defect B] SUPERSEDED assertion: the old line demanded
+    // "noopener" in the features string, but the spec makes window.open()
+    // return null whenever noopener is set, so it faked popupBlocked on EVERY
+    // click. The call must stay handle-returning (no noopener feature) and
+    // sever the opener on the returned handle instead:
+    expect(String(openSpy.mock.calls[0][2] ?? "")).not.toContain("noopener");
+    expect((openSpy.mock.results[0].value as { opener?: unknown }).opener).toBeNull();
     const call = fetchFn.mock.calls.find((c) => String(c[0]) === "/api/launcher/queue");
     expect(call).toBeTruthy();
     const init = call![1] as RequestInit;

@@ -105,6 +105,63 @@ jobs:
               END { n = 0; for (k in c) { printf "%s=%d ", k, c[k]; n++ } }
             ' e2e-run.log)
             echo "::error::F79-E2E-TALLY::$(printf '%s' "$tally" | cut -c1-400)"
+            # (c) FAILS: one bounded annotation PER FAILING TEST, carrying
+            #     spec:line + title + the FIRST meaningful error line. The tally
+            #     above names the FILE only. Without this the lane is red with no
+            #     named assertion, which is exactly how tests/e2e/f84-ux.spec.ts
+            #     stayed undiagnosable across runs 38027291171 -> 38057454362
+            #     (the tally said "f84-ux.spec.ts ✘=4" and nothing else) while
+            #     the step log stayed unreachable from the agent sandbox: only
+            #     api.github.com is reachable there, and both
+            #     results-receiver.actions.githubusercontent.com and
+            #     pipelines.actions.githubusercontent.com are not.
+            #     Sanitized by construction: Playwright's own failure header and
+            #     its first assertion/timeout line only - never a request body,
+            #     a response body, or a signed URL.
+            : > e2e-fails.txt
+            awk '
+              /^  [0-9]+\) / {
+                title = $0
+                sub(/[[:space:]]+$/, "", title)
+                err = ""
+                det = ""
+                while ((getline nxt) > 0) {
+                  if (nxt ~ /^  [0-9]+\) /) break
+                  if (err == "" && nxt ~ /^[[:space:]]+(Error|expect\(|Test timeout|locator\.|Timed out)/) {
+                    err = nxt
+                    gsub(/^[[:space:]]+/, "", err)
+                    sub(/[[:space:]]+$/, "", err)
+                    continue
+                  }
+                  # [#223] the assertion alone is not enough: "expect(received)
+                  # .toBe(expected)" says nothing without the two values. Take
+                  # the Playwright Expected/Received lines, bounded, so the next
+                  # reader does not need the unreachable step log.
+                  # NOTE: no apostrophes in this comment. The awk program lives
+                  # inside a SINGLE-QUOTED shell string, so one apostrophe ends
+                  # the string and bash parses the rest of the program as shell
+                  # (that is how head 5ac45b3 died at 35s with exit code 2 and
+                  # no annotations at all - job 114240714800).
+                  # tests/workflow-shell-syntax.test.js runs bash -n over every
+                  # bash run block to catch the class.
+                  if (err != "" && nxt ~ /^[[:space:]]+(Expected|Received)/) {
+                    e = nxt
+                    gsub(/^[[:space:]]+/, "", e)
+                    sub(/[[:space:]]+$/, "", e)
+                    det = (det == "" ? e : det " | " e)
+                    if (length(det) > 160) break
+                  }
+                }
+                print title " :: " err (det == "" ? "" : " :: " det)
+              }
+            ' e2e-run.log > e2e-fails.txt || true
+            nfail=0
+            while IFS= read -r fline; do
+              if [ -z "$fline" ]; then continue; fi
+              nfail=$((nfail + 1))
+              if [ "$nfail" -gt 4 ]; then break; fi
+              echo "::error::F79-E2E-FAIL${nfail}::$(printf '%s' "$fline" | tr -d '\r' | sed 's/%/%25/g' | cut -c1-380)"
+            done < e2e-fails.txt
             # `|| true`: with `set -eo pipefail` an empty grep would exit 1 here
             # and abort the step BEFORE either annotation is printed -- the exact
             # class of bug the F82 §2.3 comment above already records.
