@@ -135,8 +135,15 @@ jobs:
                   }
                   # [#223] the assertion alone is not enough: "expect(received)
                   # .toBe(expected)" says nothing without the two values. Take
-                  # Playwright's own Expected/Received lines, bounded, so the
-                  # next reader does not need the unreachable step log.
+                  # the Playwright Expected/Received lines, bounded, so the next
+                  # reader does not need the unreachable step log.
+                  # NOTE: no apostrophes in this comment. The awk program lives
+                  # inside a SINGLE-QUOTED shell string, so one apostrophe ends
+                  # the string and bash parses the rest of the program as shell
+                  # (that is how head 5ac45b3 died at 35s with exit code 2 and
+                  # no annotations at all - job 114240714800).
+                  # tests/workflow-shell-syntax.test.js runs bash -n over every
+                  # bash run block to catch the class.
                   if (err != "" && nxt ~ /^[[:space:]]+(Expected|Received)/) {
                     e = nxt
                     gsub(/^[[:space:]]+/, "", e)
